@@ -1,15 +1,30 @@
-import { mkdtempSync, mkdirSync, rmSync, statSync, writeFileSync } from "node:fs";
+import {
+  mkdtempSync,
+  mkdirSync,
+  readdirSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
+import type * as NodeFs from "node:fs";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
 import sharp from "sharp";
-import { afterEach, describe, expect, it } from "vitest";
-
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   LibraryService,
   LibraryServiceError,
 } from "../../src/worker/library-service";
+
+vi.mock("node:fs", async (importOriginal) => {
+  const actual = await importOriginal<typeof NodeFs>();
+  return {
+    ...actual,
+    readdirSync: vi.fn(actual.readdirSync),
+  };
+});
 
 const require = createRequire(import.meta.url);
 const TestDatabase = require("better-sqlite3") as new (filename: string) => {
@@ -275,6 +290,66 @@ describe("image sequence persistence", () => {
           previewRevisionId: expect.any(String),
         },
       ],
+    });
+  });
+
+  it("enumerates a selected sequence directory once when expanding multiple frames", () => {
+    const { library, root, service } = fixture();
+    const source = path.join(root, "source");
+    const frames = writeFrames(source, [
+      "shot_001.png",
+      "shot_002.png",
+      "shot_003.png",
+    ]);
+    const readdir = vi.mocked(readdirSync);
+    readdir.mockClear();
+
+    const completion = service.prepareOrExecuteImport({
+      expandImageSequences: true,
+      libraryId: library.libraryId,
+      sourceKind: "files",
+      sourcePaths: [frames[0]!, frames[1]!, frames[2]!],
+    });
+
+    expect(readdir.mock.calls.filter(([directory]) => String(directory) === source))
+      .toHaveLength(1);
+    expect("importId" in completion).toBe(false);
+    if ("importId" in completion) return;
+    expect(completion.importedCount).toBe(3);
+    const assets = service.listAssets({
+      libraryId: library.libraryId,
+      recursive: true,
+    });
+    expect(assets).toHaveLength(1);
+    expect(assets[0]!.sequence).toMatchObject({ frameCount: 3 });
+  });
+
+  it("enumerates a probe directory once and validates one selected run once", async () => {
+    const { library, root, service } = fixture();
+    const source = path.join(root, "source");
+    const frames = await writePngFrames(
+      source,
+      ["shot_001.png", "shot_002.png", "shot_003.png"],
+      { height: 2, width: 3 },
+    );
+    const readdir = vi.mocked(readdirSync);
+    readdir.mockClear();
+
+    const offer = await service.probeImageSequenceImportOffer({
+      libraryId: library.libraryId,
+      sourcePaths: frames,
+    });
+
+    expect(readdir.mock.calls.filter(([directory]) => String(directory) === source))
+      .toHaveLength(1);
+    expect(offer?.sequences).toHaveLength(1);
+    expect(offer?.sequences[0]).toMatchObject({
+      firstFrame: 1,
+      frameCount: 3,
+      framePaths: frames,
+      height: 2,
+      lastFrame: 3,
+      width: 3,
     });
   });
 

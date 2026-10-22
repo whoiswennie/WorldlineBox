@@ -5,7 +5,7 @@ import path from 'node:path';
 import { _electron as electron, expect, test } from '@playwright/test';
 import type { WorldlineBoxLibraryApi } from '../../src/shared/library-api';
 import type { WorldlineBoxLlmApi } from '../../src/shared/llm';
-import { assetCard, electronLaunchEnv, resolveElectronAppPath, resolveElectronExecutablePath } from './electron-test-helpers';
+import { assetCard, electronLaunchEnv, resolveElectronLaunchOptions } from './electron-test-helpers';
 
 type Bridge = { worldlinebox: { library: WorldlineBoxLibraryApi; llm?: WorldlineBoxLlmApi } };
 type Wire = { model: string; messages: Array<{ role: string; content: string | Array<{ type: string; text?: string }> }> };
@@ -50,7 +50,7 @@ test('a TXT asset uses the global text-only model and refreshes its AI descripti
   let application: Awaited<ReturnType<typeof electron.launch>> | undefined;
   let stderr = '', failed = false, cleanupFailure: unknown;
   try {
-    application = await electron.launch({ executablePath: resolveElectronExecutablePath(), args: process.env.WORLDLINEBOX_E2E_PACKAGED_EXECUTABLE ? [] : [resolveElectronAppPath()], cwd: resolveElectronAppPath(),
+    application = await electron.launch({ ...resolveElectronLaunchOptions(),
       env: electronLaunchEnv({ WORLDLINEBOX_E2E: '1', WORLDLINEBOX_E2E_HIDE_WINDOW: '1', WORLDLINEBOX_E2E_USER_DATA_PATH: profile,
         WORLDLINEBOX_E2E_CREATE_PARENT_PATH: root, WORLDLINEBOX_E2E_IMPORT_FILES: source }) });
     application.process().stderr?.on('data', chunk => { stderr += String(chunk); });

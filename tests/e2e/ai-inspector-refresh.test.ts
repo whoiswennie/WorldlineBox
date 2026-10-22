@@ -1,14 +1,69 @@
 import { createServer, type Server } from "node:http";
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
-import { _electron as electron, expect, test } from "@playwright/test";
+import { _electron as electron, expect, test, type ElectronApplication, type Page } from "@playwright/test";
 import sharp from "sharp";
 
-import { resolveElectronExecutablePath } from "./electron-test-helpers";
+import { electronLaunchEnv, resolveElectronExecutablePath } from "./electron-test-helpers";
 
 test.describe.configure({ timeout: 180_000 });
+
+async function configureAndTestAiProfile(
+  window: Page,
+  port: number,
+  requests: Array<{ body: string }>,
+): Promise<void> {
+  await window.getByRole("button", { name: "设置", exact: true }).click();
+  const dialog = window.getByRole("dialog", { name: "通用设置", exact: true });
+  await dialog.getByRole("tab", { name: /^全局模型$|^Global models$/u }).click();
+  await dialog.locator("#ai-config-base-url").fill(`http://127.0.0.1:${port}/v1`);
+  await dialog.locator("#ai-config-api-key").fill("test-key");
+  await dialog
+    .getByRole("button", { name: /保存配置|Save configuration/ })
+    .click();
+
+  // Saving and checking a connection are separate actions in the current UI.
+  // The save callback is fire-and-forget, so wait until Main's profile summary
+  // confirms the credential reached persistent storage before testing it.
+  await expect(dialog.locator("#ai-config-profile option:checked"))
+    .not.toContainText(/需要 API Key|API key needed/u);
+  await dialog.getByRole("button", { name: /测试连接|Test connection/ }).click();
+  await expect
+    .poll(
+      () => requests.some((request) =>
+        request.body.includes("Reply with the single word OK")),
+      { timeout: 30_000 },
+    )
+    .toBe(true);
+  const selectedProfile = dialog.locator("#ai-config-profile option:checked");
+  if (!/当前使用|In use/u.test((await selectedProfile.textContent()) ?? "")) {
+    await dialog.getByRole("button", { name: /设为当前|Set as current/ }).click();
+  }
+  await dialog.press("Escape");
+  await expect(dialog).toBeHidden({ timeout: 15_000 });
+}
+
+async function closeAppServerAndCleanTemp(
+  application: ElectronApplication,
+  server: Server,
+  temporaryRoot: string,
+): Promise<void> {
+  try {
+    await application.close();
+  } finally {
+    if (server.listening) {
+      await new Promise<void>((resolve, reject) => {
+        server.close((error) => {
+          if (error) reject(error);
+          else resolve();
+        });
+      });
+    }
+  }
+  rmSync(temporaryRoot, { recursive: true, force: true });
+}
 
 /**
  * WorldlineBox-c9r3 / REQ-INSPECT-006 regression: after an AI analysis completes
@@ -107,18 +162,20 @@ test("Inspector refreshes immediately after AI analysis completes", async () => 
     args: [applicationDirectory],
     cwd: applicationDirectory,
     executablePath: resolveElectronExecutablePath(),
-    env: {
-      ...process.env,
+    env: electronLaunchEnv({
       WORLDLINEBOX_E2E: "1",
+      WORLDLINEBOX_E2E_HIDE_WINDOW: "1",
+      WORLDLINEBOX_E2E_SHOW_INACTIVE: "1",
       WORLDLINEBOX_E2E_CREATE_PARENT_PATH: temporaryRoot,
       WORLDLINEBOX_E2E_OPEN_LIBRARY_PATH: libraryPath,
       WORLDLINEBOX_E2E_USER_DATA_PATH: userDataPath,
       WORLDLINEBOX_E2E_IMPORT_FILES: imagePath,
-    },
+    }),
   });
 
   try {
     const window = await application.firstWindow();
+    await window.locator('[data-application-module="assets"]').click();
     await window.getByRole("button", { name: "创建资源库" }).click();
     await window.getByRole("textbox", { name: "名称" }).fill(libraryName);
     await window.getByRole("button", { name: "创建", exact: true }).click();
@@ -127,25 +184,7 @@ test("Inspector refreshes immediately after AI analysis completes", async () => 
       .first()
       .click();
 
-    // Configure the API key through the settings UI (safeStorage encryption).
-    await window.getByRole("button", { name: "设置", exact: true }).click();
-    const dialog = window.getByRole("dialog", { name: "通用设置" });
-    await dialog.getByRole("tab", { name: "AI", exact: true }).click();
-    await dialog.locator("#ai-config-base-url").fill(`http://127.0.0.1:${port}/v1`);
-    await dialog.locator("#ai-config-api-key").fill("test-key");
-    // aiConfig.save is missing from both catalogs, so the button currently
-    // renders the raw key ("aiConfig.save") — accept either form.
-    await dialog
-      .getByRole("button", { name: /保存|aiConfig\.save/ })
-      .click();
-    // The save probes the endpoint and keeps the settings page open on
-    // success ("验证通过后将保留当前设置页"); wait for the probe, then
-    // close the dialog with Escape.
-    await expect
-      .poll(() => analysisRequests.length, { timeout: 30_000 })
-      .toBeGreaterThan(0);
-    await dialog.press("Escape");
-    await expect(dialog).toBeHidden({ timeout: 15_000 });
+    await configureAndTestAiProfile(window, port, analysisRequests);
 
     // Select the asset (Inspector opens) and start the AI analysis.
     const card = window.locator(".asset-card").filter({ hasText: "sample.png" });
@@ -180,8 +219,7 @@ test("Inspector refreshes immediately after AI analysis completes", async () => 
       { timeout: 15_000 },
     );
   } finally {
-    await new Promise<void>((resolve) => server.close(() => resolve()));
-    await application.close();
+    await closeAppServerAndCleanTemp(application, server, temporaryRoot);
   }
 });
 
@@ -265,18 +303,20 @@ test("Inspector refreshes after a BATCH AI analysis completes", async () => {
     args: [applicationDirectory],
     cwd: applicationDirectory,
     executablePath: resolveElectronExecutablePath(),
-    env: {
-      ...process.env,
+    env: electronLaunchEnv({
       WORLDLINEBOX_E2E: "1",
+      WORLDLINEBOX_E2E_HIDE_WINDOW: "1",
+      WORLDLINEBOX_E2E_SHOW_INACTIVE: "1",
       WORLDLINEBOX_E2E_CREATE_PARENT_PATH: temporaryRoot,
       WORLDLINEBOX_E2E_OPEN_LIBRARY_PATH: libraryPath,
       WORLDLINEBOX_E2E_USER_DATA_PATH: userDataPath,
       WORLDLINEBOX_E2E_IMPORT_FILES: [firstImage, secondImage].join(path.delimiter),
-    },
+    }),
   });
 
   try {
     const window = await application.firstWindow();
+    await window.locator('[data-application-module="assets"]').click();
     await window.getByRole("button", { name: "创建资源库" }).click();
     await window.getByRole("textbox", { name: "名称" }).fill(libraryName);
     await window.getByRole("button", { name: "创建", exact: true }).click();
@@ -285,20 +325,7 @@ test("Inspector refreshes after a BATCH AI analysis completes", async () => {
       .first()
       .click();
 
-    // Configure the API key (probe must land).
-    await window.getByRole("button", { name: "设置", exact: true }).click();
-    const dialog = window.getByRole("dialog", { name: "通用设置" });
-    await dialog.getByRole("tab", { name: "AI", exact: true }).click();
-    await dialog.locator("#ai-config-base-url").fill(`http://127.0.0.1:${port}/v1`);
-    await dialog.locator("#ai-config-api-key").fill("test-key");
-    await dialog
-      .getByRole("button", { name: /保存|aiConfig\.save/ })
-      .click();
-    await expect
-      .poll(() => analysisRequests.length, { timeout: 30_000 })
-      .toBeGreaterThan(0);
-    await dialog.press("Escape");
-    await expect(dialog).toBeHidden({ timeout: 15_000 });
+    await configureAndTestAiProfile(window, port, analysisRequests);
 
     // Multi-select both assets, then run the batch AI analysis from the
     // context menu of the primary asset.
@@ -331,7 +358,6 @@ test("Inspector refreshes after a BATCH AI analysis completes", async () => {
       timeout: 15_000,
     });
   } finally {
-    await new Promise<void>((resolve) => server.close(() => resolve()));
-    await application.close();
+    await closeAppServerAndCleanTemp(application, server, temporaryRoot);
   }
 });

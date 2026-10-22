@@ -1741,6 +1741,21 @@ const assetOperationSuccessSchemas = [
   }),
   z.strictObject({
     ok: z.literal(true),
+    type: z.literal('ai.profiles.saved'),
+    id: z.string().regex(/^ai_[a-f0-9]{24}$/u),
+  }),
+  z.strictObject({
+    ok: z.literal(true),
+    type: z.literal('ai.profiles.activated'),
+    id: z.string().regex(/^ai_[a-f0-9]{24}$/u),
+  }),
+  z.strictObject({
+    ok: z.literal(true),
+    type: z.literal('ai.profiles.deleted'),
+    id: z.string().regex(/^ai_[a-f0-9]{24}$/u),
+  }),
+  z.strictObject({
+    ok: z.literal(true),
     type: z.literal('asset.import-eagle.completed'),
     result: eagleImportResultSchema,
   }),
@@ -2610,6 +2625,15 @@ const rendererSuccessResultSchema = z.discriminatedUnion('type', [
   z.strictObject({
     ok: z.literal(true),
     type: z.literal('ai.config.got'),
+    activeProfileId: z.string().regex(/^ai_[a-f0-9]{24}$/u).nullable(),
+    profiles: z.array(z.strictObject({
+      id: z.string().regex(/^ai_[a-f0-9]{24}$/u),
+      name: nonBlankString.max(80),
+      apiFormat: z.enum(['dashscope_native', 'openai_chat', 'openai_responses', 'anthropic', 'gemini_native']),
+      model: nonBlankString.max(255),
+      baseUrl: z.string().max(2048),
+      hasCredential: z.boolean(),
+    })).max(100),
     apiFormat: z.enum(['dashscope_native', 'openai_chat', 'openai_responses', 'anthropic', 'gemini_native']).nullable(),
     model: nonBlankString.nullable(),
     /** Empty string means official default for the selected API format. */

@@ -12,6 +12,7 @@
 - [构建与打包](build-packaging.md)——package / make / 发布流水线 / 签名
 - [架构](architecture.md)——进程模型、目录结构、关键设计
 - [应用侧边栏](application-navigation.md)——功能模块登记、状态保留与设置入口
+- [Serpent 0.3.2 增量升级](serpent-032-upgrade/README.md)——来源清单、自有功能适配、配置迁移和验收
 - [伙伴消息系统](companions.md)——独立 SQLite owner、角色模型连接、记忆与 DSH 行动回流
 - [VCP 记忆实施说明](companion-memory-implementation.md)——统一资产库、自然文本日记、原版检索、持续生活及内置多模态向量
 - [伙伴系统验收](companion-system-acceptance.md)——三伙伴、持续生活、授权学习、消息气泡与安装包的实际验证边界

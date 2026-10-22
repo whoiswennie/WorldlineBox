@@ -4,7 +4,8 @@ import { LauncherNetwork } from './dsh/launcher-network';
 import { applyNodeNetworkEnvironment, networkEnvironmentSchema, type NetworkEnvironment } from '../shared/network-environment';
 import { ApplicationNetworkDiagnostics } from './application-network-diagnostics';
 import { ChildNetworkRelay } from './child-network-relay';
-import type { ApplicationNetworkFailure, ApplicationNetworkState } from '../shared/application-network';
+import type { ApplicationNetworkFailure, ApplicationNetworkState, PixivNetworkCheck } from '../shared/application-network';
+import { checkPixivNetwork } from './pixiv-network-check';
 
 let initialized: Promise<LauncherNetwork> | undefined;
 let environment: NetworkEnvironment | undefined;
@@ -14,13 +15,21 @@ let failureReporter: ((failure: ApplicationNetworkFailure) => void) | undefined;
 const observedSessions = new WeakSet<Electron.Session>();
 let childRelay: ChildNetworkRelay | undefined;
 let stopRelayPolicy: (() => void) | undefined;
+let pixivCheck: { revision: number; value: PixivNetworkCheck } | undefined;
+export async function testApplicationPixivNetwork(network: LauncherNetwork): Promise<void> {
+  const revision = network.state().revision;
+  const value = await checkPixivNetwork(network.fetch, url => network.resolveProxy(url), AbortSignal.timeout(40_000));
+  if (network.state().revision !== revision) throw Error('网络设置已变化，请重新检查 Pixiv。');
+  pixivCheck = { revision, value };
+}
 export async function closeApplicationNetwork(): Promise<void> {
   stopRelayPolicy?.(); stopRelayPolicy = undefined;
   await childRelay?.close(); childRelay = undefined;
 }
 export function setApplicationNetworkFailureReporter(reporter: (failure: ApplicationNetworkFailure) => void): void { failureReporter = reporter; }
 export function applicationNetworkState(network: LauncherNetwork): ApplicationNetworkState {
-  return { ...network.state(), recentFailures: diagnostics.state() };
+  const state = network.state();
+  return { ...state, recentFailures: diagnostics.state(), pixivCheck: pixivCheck?.revision === state.revision ? pixivCheck.value : undefined };
 }
 export function onApplicationNetworkDiagnostics(listener: () => void): () => void { return diagnostics.subscribe(listener); }
 export function clearApplicationNetworkDiagnostics(): void { diagnostics.clear(); }

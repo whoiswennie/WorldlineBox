@@ -1,5 +1,6 @@
-import { mkdirSync, mkdtempSync, realpathSync, renameSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, realpathSync, renameSync, rmSync, statSync, utimesSync, writeFileSync } from 'node:fs';
 import { fileSymlinkOrSkip } from './symlink-fixture';
+import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 
@@ -14,6 +15,14 @@ import {
 
 const temporaryRoots: string[] = [];
 const services: LibraryService[] = [];
+const require = createRequire(import.meta.url);
+
+interface TestDatabase {
+  close(): void;
+  prepare(sql: string): { get(...parameters: unknown[]): unknown };
+}
+
+const Database = require('better-sqlite3') as new (filename: string) => TestDatabase;
 
 function newService(
   ...args: ConstructorParameters<typeof LibraryService>
@@ -27,6 +36,20 @@ function temporaryRoot(): string {
   const root = mkdtempSync(path.join(tmpdir(), 'worldlinebox-watcher-test-'));
   temporaryRoots.push(root);
   return root;
+}
+
+function linkedSourceIdentity(libraryPath: string, assetId: string): {
+  source_device: string | null;
+  source_inode: string | null;
+} | undefined {
+  const database = new Database(path.join(libraryPath, '.worldlinebox', 'library.db'));
+  try {
+    return database.prepare(
+      'SELECT source_device, source_inode FROM assets WHERE asset_id = ?',
+    ).get(assetId) as { source_device: string | null; source_inode: string | null } | undefined;
+  } finally {
+    database.close();
+  }
 }
 
 class ManualScheduler implements DebounceScheduler {
@@ -701,6 +724,12 @@ describe('linked folder watcher', () => {
       folderId: linked.folderId,
       recursive: true,
     })[0]!;
+    const originalIdentity = linkedSourceIdentity(library.libraryPath, original.assetId);
+    const originalStat = statSync(path.join(linkedRoot, 'moved.txt'), { bigint: true });
+    expect(originalIdentity).toEqual({
+      source_device: String(originalStat.dev),
+      source_inode: String(originalStat.ino),
+    });
     const collection = service.createCollection({ libraryId: library.libraryId, name: 'Move metadata' });
     service.addCollectionAssets({
       libraryId: library.libraryId,
@@ -719,6 +748,8 @@ describe('linked folder watcher', () => {
       path.join(linkedRoot, 'moved.txt'),
       path.join(linkedRoot, 'destination', 'moved.txt'),
     );
+    const movedStat = statSync(path.join(linkedRoot, 'destination', 'moved.txt'), { bigint: true });
+    expect({ source_device: String(movedStat.dev), source_inode: String(movedStat.ino) }).toEqual(originalIdentity);
     observers.callbacks[1]!();
     await scheduler.flush();
 
@@ -727,7 +758,18 @@ describe('linked folder watcher', () => {
       folderId: linked.folderId,
       recursive: true,
     });
-    expect(assets).toHaveLength(1);
+    expect(
+      assets.map(({ assetId, availability, relativeFilePath }) => ({
+        assetId,
+        availability,
+        relativeFilePath,
+      })),
+      `A linked in-root move must reconcile one row; got ${JSON.stringify(assets.map((asset) => ({
+        assetId: asset.assetId,
+        availability: asset.availability,
+        relativeFilePath: asset.relativeFilePath,
+      })))}`,
+    ).toHaveLength(1);
     expect(assets[0]).toMatchObject({
       assetId: original.assetId,
       availability: 'available',

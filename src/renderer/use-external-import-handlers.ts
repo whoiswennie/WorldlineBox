@@ -24,6 +24,7 @@ import { LibraryOperationError, toMessage, shouldSuppressClipboardPasteFeedback 
 import {
   externalImportPayload,
   reduceInternalDragPhase,
+  scheduleInternalAssetDropCleanup,
   shouldActivateExternalImportOverlay,
   shouldConsumeManagedAssetDrop,
   supportsExternalImportTransfer,
@@ -119,6 +120,7 @@ export function useExternalImportHandlers({
   const externalDragDepth = useRef(0);
   const internalDragPhase = useRef<InternalDragPhase>("idle");
   const internalDragArmTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const internalDragDropCleanupTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const isInternalAssetDrag = useCallback(
     () => internalDragPhase.current !== "idle",
     [],
@@ -131,6 +133,10 @@ export function useExternalImportHandlers({
   }, []);
 
   const beginInternalAssetDrag = useCallback(() => {
+    if (internalDragDropCleanupTimer.current !== null) {
+      clearTimeout(internalDragDropCleanupTimer.current);
+      internalDragDropCleanupTimer.current = null;
+    }
     internalDragPhase.current = reduceInternalDragPhase(
       internalDragPhase.current,
       "begin",
@@ -162,11 +168,20 @@ export function useExternalImportHandlers({
   );
 
   useEffect(() => {
-    // Let React's bubbling drop handler inspect the active drag before the
-    // capture listener clears it. That distinction prevents external files
-    // which happen to live inside a linked/managed root from being mistaken
-    // for a WorldlineBox initiated drag.
-    const onDrop = () => queueMicrotask(() => finishInternalAssetDrag("drop"));
+    // Trusted native drops may run a microtask checkpoint between capture and
+    // bubble listeners. A microtask can therefore clear this before React's
+    // delegated handler reads it; defer cleanup to the next task instead.
+    const onDrop = () => {
+      if (internalDragDropCleanupTimer.current !== null) {
+        clearTimeout(internalDragDropCleanupTimer.current);
+      }
+      internalDragDropCleanupTimer.current = scheduleInternalAssetDropCleanup(
+        () => {
+          internalDragDropCleanupTimer.current = null;
+          finishInternalAssetDrag("drop");
+        },
+      );
+    };
     const onDragEnd = () => finishInternalAssetDrag("dragend");
     window.addEventListener("drop", onDrop, true);
     window.addEventListener("dragend", onDragEnd, true);
@@ -175,6 +190,9 @@ export function useExternalImportHandlers({
       window.removeEventListener("dragend", onDragEnd, true);
       if (internalDragArmTimer.current !== null) {
         clearTimeout(internalDragArmTimer.current);
+      }
+      if (internalDragDropCleanupTimer.current !== null) {
+        clearTimeout(internalDragDropCleanupTimer.current);
       }
     };
   }, [finishInternalAssetDrag]);
@@ -409,8 +427,13 @@ export function useExternalImportHandlers({
       if (!library || !supportsExternalImportTransfer(event.dataTransfer)) {
         return;
       }
+      const internalAssetDrag = internalDragPhase.current !== "idle";
+      const dropEffect = internalAssetDrag
+        ? resolveManagedDropEffect("move", event.dataTransfer.effectAllowed)
+        : "copy";
+      if (!dropEffect) return;
       event.preventDefault();
-      event.dataTransfer.dropEffect = "copy";
+      event.dataTransfer.dropEffect = dropEffect;
       setFolderCardDropTarget(folderId);
     },
     [library, previewBlocksDrop],
@@ -465,8 +488,13 @@ export function useExternalImportHandlers({
         return;
       }
       if (!library || !supportsExternalImportTransfer(event.dataTransfer)) return;
+      const internalAssetDrag = internalDragPhase.current !== "idle";
+      const dropEffect = internalAssetDrag
+        ? resolveManagedDropEffect("move", event.dataTransfer.effectAllowed)
+        : "copy";
+      if (!dropEffect) return;
       event.preventDefault();
-      event.dataTransfer.dropEffect = "copy";
+      event.dataTransfer.dropEffect = dropEffect;
     },
     [library, previewBlocksDrop],
   );
@@ -559,10 +587,14 @@ export function useExternalImportHandlers({
           return;
         }
         if (supportsManagedAssetDrag(event.dataTransfer)) {
-          event.preventDefault();
-          event.dataTransfer.dropEffect = resolveManagedDropEffect(
-            resolveDragDropMode({ altKey: event.altKey }),
+          const mode = resolveDragDropMode({ altKey: event.altKey });
+          const dropEffect = resolveManagedDropEffect(
+            mode,
+            event.dataTransfer.effectAllowed,
           );
+          if (!dropEffect) return;
+          event.preventDefault();
+          event.dataTransfer.dropEffect = dropEffect;
           setFolderCardDropTarget(folderId);
           return;
         }

@@ -1852,6 +1852,15 @@ export const library: WorldlineBoxLibraryApi = Object.freeze({
   },
 
   async getAiConfig(): Promise<LibraryApiResult<{
+    activeProfileId: string | null;
+    profiles: Array<{
+      id: string;
+      name: string;
+      apiFormat: AiApiFormat;
+      model: string;
+      baseUrl: string;
+      hasCredential: boolean;
+    }>;
     apiFormat: AiApiFormat | null;
     model: string | null;
     baseUrl: string;
@@ -1881,8 +1890,9 @@ export const library: WorldlineBoxLibraryApi = Object.freeze({
   },
 
   async setAiConfig(input: {
-    apiFormat: AiApiFormat;
-    model: string;
+    /** Legacy global model clients update the active named connection. */
+    apiFormat?: AiApiFormat;
+    model?: string;
     baseUrl?: string;
     apiKey?: string;
     enabledFields?: { description: boolean; tags: boolean; rating: boolean };
@@ -1907,6 +1917,39 @@ export const library: WorldlineBoxLibraryApi = Object.freeze({
     if (!result.ok) return failure(result);
     if (result.type !== 'ai.config.saved') throw new Error('Unexpected ai-config-save response.');
     return { ok: true, value: undefined };
+  },
+
+  async saveAiProfile(input: {
+    id?: string;
+    name: string;
+    apiFormat: AiApiFormat;
+    model: string;
+    baseUrl: string;
+    apiKey?: string;
+    clearCredential?: boolean;
+  }): Promise<LibraryApiResult<{ id: string }>> {
+    const result = await request({
+      type: 'ai.profiles.save.request',
+      ...input,
+      ...(input.apiKey?.trim() ? { apiKey: input.apiKey.trim() } : {}),
+    });
+    if (!result.ok) return failure(result);
+    if (result.type !== 'ai.profiles.saved') throw new Error('Unexpected AI profile-save response.');
+    return { ok: true, value: { id: result.id } };
+  },
+
+  async activateAiProfile({ id }: { id: string }): Promise<LibraryApiResult<{ id: string }>> {
+    const result = await request({ type: 'ai.profiles.activate.request', id });
+    if (!result.ok) return failure(result);
+    if (result.type !== 'ai.profiles.activated') throw new Error('Unexpected AI profile-activate response.');
+    return { ok: true, value: { id: result.id } };
+  },
+
+  async deleteAiProfile({ id }: { id: string }): Promise<LibraryApiResult<{ id: string }>> {
+    const result = await request({ type: 'ai.profiles.delete.request', id });
+    if (!result.ok) return failure(result);
+    if (result.type !== 'ai.profiles.deleted') throw new Error('Unexpected AI profile-delete response.');
+    return { ok: true, value: { id: result.id } };
   },
 
   async getAiContent(input: {
@@ -2699,11 +2742,13 @@ export const library: WorldlineBoxLibraryApi = Object.freeze({
     model,
     apiKey,
     baseUrl,
+    profileId,
   }: {
     apiFormat: AiApiFormat;
     model: string;
     apiKey?: string;
     baseUrl?: string;
+    profileId?: string;
   }): Promise<LibraryApiResult<{ success: boolean; errorKind?: string; reason?: string }>> {
     const result = await request({
       type: 'ai.test-connection.request',
@@ -2711,6 +2756,7 @@ export const library: WorldlineBoxLibraryApi = Object.freeze({
       model,
       ...(apiKey?.trim() ? { apiKey: apiKey.trim() } : {}),
       ...(baseUrl?.trim() ? { baseUrl: baseUrl.trim() } : {}),
+      ...(profileId ? { profileId } : {}),
     });
     if (!result.ok) return failure(result);
     if (result.type !== 'ai.test-connection.result') throw new Error('Unexpected test-connection response.');
@@ -2721,16 +2767,19 @@ export const library: WorldlineBoxLibraryApi = Object.freeze({
     apiFormat,
     apiKey,
     baseUrl,
+    profileId,
   }: {
     apiFormat: AiApiFormat;
     apiKey?: string;
     baseUrl?: string;
+    profileId?: string;
   }): Promise<LibraryApiResult<{ models: string[]; errorKind?: string; reason?: string }>> {
     const result = await request({
       type: 'ai.list-models.request',
       apiFormat,
       ...(apiKey?.trim() ? { apiKey: apiKey.trim() } : {}),
       ...(baseUrl?.trim() ? { baseUrl: baseUrl.trim() } : {}),
+      ...(profileId ? { profileId } : {}),
     });
     if (!result.ok) return failure(result);
     if (result.type !== 'ai.list-models.result') throw new Error('Unexpected list-models response.');

@@ -90,13 +90,33 @@ export function resolveDragDropMode(modifiers: {
 }
 
 /**
- * HTML5 dropEffect for managed-asset drops onto folder / collection targets.
- * Callers must set effectAllowed to "copyMove" (or broader) at dragstart.
+ * Pick a browser drag operation allowed by the source. This is transport
+ * negotiation only; callers keep using `mode` for the actual Worker action.
+ * Native file drags from Electron may allow copy/link but not move, even when
+ * the in-app action is still a move or trash operation.
  */
 export function resolveManagedDropEffect(
   mode: DragDropMode,
-): 'copy' | 'move' {
-  return mode === 'copy' ? 'copy' : 'move';
+  effectAllowed: DataTransfer['effectAllowed'] = 'all',
+): 'copy' | 'move' | null {
+  if (effectAllowed === 'none') return null;
+
+  const allows = (operation: 'copy' | 'move'): boolean => {
+    if (effectAllowed === 'all' || effectAllowed === 'uninitialized') return true;
+    if (operation === 'copy') {
+      return effectAllowed === 'copy' ||
+        effectAllowed === 'copyLink' ||
+        effectAllowed === 'copyMove';
+    }
+    return effectAllowed === 'move' ||
+      effectAllowed === 'copyMove' ||
+      effectAllowed === 'linkMove';
+  };
+
+  const preferred = mode === 'copy' ? 'copy' : 'move';
+  if (allows(preferred)) return preferred;
+  const fallback = preferred === 'copy' ? 'move' : 'copy';
+  return allows(fallback) ? fallback : null;
 }
 
 /** Assets eligible for a folder drop: managed or linked, present on disk, not trashed. */

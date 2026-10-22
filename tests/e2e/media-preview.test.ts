@@ -836,7 +836,7 @@ test("video preview reports a specific generation failure and persists its diagn
     const reopenedPreview = window.getByRole("region", {
       name: "broken-preview.mp4 查看页面",
     });
-    await expect(reopenedPreview.getByText(/媒体组件|视频播放失败/)).toBeVisible();
+    await expect(reopenedPreview.getByText(/媒体组件|媒体处理失败|视频播放失败/)).toBeVisible();
   } finally {
     await application.close();
     rmSync(temporaryRoot, { force: true, recursive: true });

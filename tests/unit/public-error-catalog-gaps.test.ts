@@ -14,6 +14,7 @@ const CODES = [
   "AUTOMATION_UNDO_STALE",
   "PLUGIN_HOOK_BLOCKED",
   "HISTORY_TOO_LARGE",
+  "AI_PROFILE_STORAGE_FAILED",
   "SYNC_IN_PROGRESS",
 ] as const satisfies readonly PublicErrorCode[];
 

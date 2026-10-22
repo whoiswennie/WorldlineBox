@@ -24,6 +24,35 @@ function release(version: string) { return { name: '@deepseek-ai/dsh', version, 
 const npm = { name: '@deepseek-ai/dsh', 'dist-tags': { latest: '0.2.0-rc.2' }, versions: Object.fromEntries(['0.2.0-rc.2', '0.2.1-alpha.2', '0.2.1-alpha.10'].map(version => [version, release(version)])) };
 
 describe('hot launcher networking', () => {
+  it('persists smart/global policy, shares exact CDN routes with all sessions and Node, and rolls back failures', async () => {
+    const root = await temporary(); const first = scope(); const second = scope();
+    const select = vi.fn(async () => ['s.pximg.net']);
+    const service = new LauncherNetwork(root, () => undefined, () => first as unknown as Session, select);
+    await service.init(); expect(select).not.toHaveBeenCalled();
+    await service.patch({ proxyMode: 'custom', proxyRouting: 'smart' });
+    expect(select).toHaveBeenCalledOnce();
+    await service.attachSession(second as unknown as Session);
+    for (const current of [first, second]) expect(current.setProxy).toHaveBeenLastCalledWith(expect.objectContaining({ mode: 'fixed_servers', proxyBypassRules: expect.stringContaining(';s.pximg.net') }));
+    expect(await service.resolveProxy('https://s.pximg.net/style.css')).toBe('DIRECT');
+    expect(await service.resolveProxy('https://www.bilibili.com')).toBe('DIRECT');
+    expect(await service.resolveProxy('https://accounts.pixiv.net/login')).toBe(service.state().settings.proxyUrl);
+    expect(await service.resolveProxy('https://i.pximg.net/image.jpg')).toBe(service.state().settings.proxyUrl);
+    expect(service.state().smartDirectHosts).toEqual(['s.pximg.net']);
+    first.setProxy.mockRejectedValueOnce(Error('cannot apply smart policy'));
+    await expect(service.patch({ proxyRouting: 'global' })).rejects.toThrow('cannot apply smart policy');
+    expect(service.state().settings.proxyRouting).toBe('smart');
+    expect(await service.resolveProxy('https://s.pximg.net/style.css')).toBe('DIRECT');
+    await service.setProxyEnabled(false); await service.setProxyEnabled(true);
+    expect(service.state().settings.proxyRouting).toBe('smart');
+    const reopened = new LauncherNetwork(root, () => undefined, () => scope() as unknown as Session, select); await reopened.init();
+    expect(await reopened.resolveProxy('https://s.pximg.net/style.css')).toBe('DIRECT');
+    await reopened.patch({ proxyRouting: 'global' });
+    expect(reopened.state().smartDirectHosts).toEqual([]);
+    expect(await reopened.resolveProxy('https://s.pximg.net/style.css')).toBe(service.state().settings.proxyUrl);
+    expect(await reopened.resolveProxy('https://www.bilibili.com/')).toBe(service.state().settings.proxyUrl);
+    expect(await reopened.resolveProxy('http://127.0.0.1/')).toBe('DIRECT');
+    expect(JSON.parse(await readFile(path.join(root, 'network.json'), 'utf8')).proxyRouting).toBe('global');
+  });
   it('preserves an old SOCKS file while keeping startup usable and rejects unsupported active global routes', async () => {
     const root = await temporary();
     const saved = JSON.stringify({ ...DEFAULT_LAUNCHER_NETWORK, proxyMode: 'custom', proxyUrl: 'socks5://127.0.0.1:7891' });

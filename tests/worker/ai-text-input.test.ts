@@ -17,7 +17,7 @@ import { importNoConflict } from './import-no-conflict';
 
 function runtime(): AiRuntime { return { analysisControls: new Map(), publishAiProgress: vi.fn(), aiJobAbortRegistry: new AiJobAbortRegistry(),
   providerConcurrencyLimiter: new ProviderConcurrencyLimiter(1), aiProcessBatchAbortControllers: new Map(), parentPort: undefined, runWithoutAdmission: async (_id, work) => work() }; }
-function config(baseUrl: string): AiOwnedConfig { return { hasKey: true, apiFormat: 'openai_chat', model: 'deepseek-v4-pro', baseUrl,
+function config(baseUrl: string): AiOwnedConfig { return { hasKey: true, activeProfileId: 'ai_000000000000000000000001', profiles: [{ id: 'ai_000000000000000000000001', name: 'Text-only global model', apiFormat: 'openai_chat', model: 'deepseek-v4-pro', baseUrl, hasCredential: true }], apiFormat: 'openai_chat', model: 'deepseek-v4-pro', baseUrl,
   descriptionEnabled: true, tagEnabled: true, ratingEnabled: false, analysisSettings: DEFAULT_AI_ANALYSIS_SETTINGS, languages: ['zh-CN'], concurrencyLimit: 1,
   maxAnalysisImageEdgePx: 2048, reliabilitySettings: DEFAULT_AI_RELIABILITY_SETTINGS, autoAnalyzeEnabled: false, disclaimerAccepted: true }; }
 function queue(libraryId: string, saved: AiOwnedConfig): WorkerCommand { return { type: 'ai.process-queue', libraryId, apiFormat: saved.apiFormat, model: saved.model, apiKey: 'local-fixture-only', baseUrl: saved.baseUrl,
@@ -41,7 +41,7 @@ test('actual Main enqueue → SQLite queue → Worker → local HTTP analyzes TX
       const filename = path.join(root, 'source' + extension); writeFileSync(filename, content + extension);
       const assetId = importNoConflict(service, library.libraryId, filename).assets[0]!.assetId;
       const mainResult = await tryHandleAiOwnedRequest({ type: 'assets.analyze.request', libraryId: library.libraryId, assetIds: [assetId] }, {
-        loadAiConfig: () => saved, getDecryptedApiKey: () => 'local-fixture-only', saveAiConfig: vi.fn(), saveEncryptedApiKey: vi.fn(), workerAvailable: () => true,
+        loadAiConfig: () => saved, getDecryptedApiKey: () => 'local-fixture-only', saveAiConfig: vi.fn(), getDecryptedProfileApiKey: () => 'local-fixture-only', saveConnectionProfile: vi.fn(), activateConnectionProfile: vi.fn(), deleteConnectionProfile: vi.fn(), workerAvailable: () => true,
         requestWorker: async command => (await executeAiWorkerCommand(service, { requestId: 'main-' + serial++, command }, hooks))!,
         processAiQueue: id => { processing = executeAiWorkerCommand(service, { requestId: 'queue-' + serial++, command: queue(id, saved) }, hooks); }, logInfo: vi.fn(), logError: vi.fn(),
       });

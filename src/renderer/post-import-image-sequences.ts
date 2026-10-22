@@ -2,6 +2,7 @@ import {
   DEFAULT_IMAGE_SEQUENCE_FPS,
   detectImageSequences,
   formatImageSequenceDisplayName,
+  indexImageSequenceFramesByValue,
 } from "../shared/image-sequence";
 import type { AssetSummary } from "../shared/asset-types";
 import type { ImageSequenceImportOffer } from "../shared/protocol/responses";
@@ -57,6 +58,7 @@ export function postImportSequencePlanFromAssets(
   const candidates = detectImageSequences(
     eligible.map((asset) => asset.relativeFilePath),
   );
+  const frameIndex = indexImageSequenceFramesByValue(candidates);
   const offerSequences: ImageSequenceImportOffer["sequences"] = [];
   const sequences: PostImportSequencePlan["sequences"][number][] = [];
   for (const candidate of candidates) {
@@ -68,12 +70,8 @@ export function postImportSequencePlanFromAssets(
     if (frames.length < 3) continue;
     const first = frames[0]!;
     const last = frames[frames.length - 1]!;
-    const firstFrame = candidate.frames.find(
-      (frame) => frame.value === first.relativeFilePath,
-    )?.frameNumber;
-    const lastFrame = candidate.frames.find(
-      (frame) => frame.value === last.relativeFilePath,
-    )?.frameNumber;
+    const firstFrame = frameIndex.get(first.relativeFilePath)?.frame.frameNumber;
+    const lastFrame = frameIndex.get(last.relativeFilePath)?.frame.frameNumber;
     if (firstFrame === undefined || lastFrame === undefined) continue;
     offerSequences.push({
       displayName: formatImageSequenceDisplayName({
@@ -96,9 +94,7 @@ export function postImportSequencePlanFromAssets(
     sequences.push({
       frameAssetIds: frames.map((frame) => frame.assetId),
       frameNumbers: frames.map((frame) => {
-        const number = candidate.frames.find(
-          (item) => item.value === frame.relativeFilePath,
-        )?.frameNumber;
+        const number = frameIndex.get(frame.relativeFilePath)?.frame.frameNumber;
         return number ?? 0;
       }),
       frameRevisionIds: frames.map((frame) => frame.currentRevisionId),

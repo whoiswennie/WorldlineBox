@@ -183,6 +183,7 @@ describe('schema v8->v9 migration', () => {
     removeWriteCoordinationSchema(db);
     // Downgrade from v10 to v8 by removing v9+v10 migration metadata + objects.
     db.exec(`
+    DROP INDEX IF EXISTS revisions_size_fingerprint_idx;
     DROP TABLE IF EXISTS linked_ignored_assets;
     DROP TABLE IF EXISTS linked_folder_rules;
     DROP TABLE IF EXISTS trashed_managed_folders;
@@ -236,6 +237,7 @@ describe('downgrade helpers still work with v9', () => {
     const database = new TestDatabase(dbPath);
     removeWriteCoordinationSchema(database);
     database.exec(`
+      DROP INDEX IF EXISTS revisions_size_fingerprint_idx;
       DROP TABLE IF EXISTS asset_search;
       DROP TABLE IF EXISTS asset_search_index;
       DROP TRIGGER IF EXISTS asset_search_index_ai;

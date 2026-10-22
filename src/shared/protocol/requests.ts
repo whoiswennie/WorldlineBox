@@ -1095,11 +1095,10 @@ export const rendererRequestSchema = z.discriminatedUnion('type', [
   }),
   z.strictObject({
     type: z.literal('ai.config.set.request'),
-    apiFormat: aiApiFormatSchema,
-    model: nonBlankString,
-    /** Empty or omitted = official default endpoint for the API format. */
+    apiFormat: aiApiFormatSchema.optional(),
+    model: z.string().trim().min(1).max(255).optional(),
     baseUrl: z.string().max(2048).optional(),
-    apiKey: nonBlankString.optional(),
+    apiKey: z.string().max(4096).optional(),
     enabledFields: aiEnabledFieldsSchema.optional(),
     analysisSettings: aiAnalysisSettingsSchema.optional(),
     languages: aiLanguagesSchema.optional(),
@@ -1110,6 +1109,25 @@ export const rendererRequestSchema = z.discriminatedUnion('type', [
     reliabilitySettings: aiReliabilitySettingsSchema.optional(),
     autoAnalyzeEnabled: z.boolean(),
     disclaimerAccepted: z.boolean(),
+  }),
+  z.strictObject({
+    type: z.literal('ai.profiles.save.request'),
+    id: z.string().regex(/^ai_[a-f0-9]{24}$/u).optional(),
+    name: nonBlankString.max(80),
+    apiFormat: aiApiFormatSchema,
+    model: nonBlankString.max(255),
+    baseUrl: z.string().max(2048),
+    /** Key is sent only over the typed local bridge and encrypted by Main. */
+    apiKey: z.string().max(512).optional(),
+    clearCredential: z.boolean().optional(),
+  }),
+  z.strictObject({
+    type: z.literal('ai.profiles.activate.request'),
+    id: z.string().regex(/^ai_[a-f0-9]{24}$/u),
+  }),
+  z.strictObject({
+    type: z.literal('ai.profiles.delete.request'),
+    id: z.string().regex(/^ai_[a-f0-9]{24}$/u),
   }),
   z.strictObject({
     type: z.literal('ai.content.get.request'),
@@ -1335,6 +1353,7 @@ export const rendererRequestSchema = z.discriminatedUnion('type', [
     /** Omit or blank to use the stored encrypted key. */
     apiKey: z.string().max(512).optional(),
     baseUrl: z.string().max(2048).optional(),
+    profileId: z.string().regex(/^ai_[a-f0-9]{24}$/u).optional(),
   }),
   z.strictObject({
     type: z.literal('ai.list-models.request'),
@@ -1342,6 +1361,7 @@ export const rendererRequestSchema = z.discriminatedUnion('type', [
     /** Omit or blank to use the stored encrypted key. */
     apiKey: z.string().max(512).optional(),
     baseUrl: z.string().max(2048).optional(),
+    profileId: z.string().regex(/^ai_[a-f0-9]{24}$/u).optional(),
   }),
   z.strictObject({
     type: z.literal('ai.clear-content.request'),

@@ -193,6 +193,9 @@ describe('library availability baseline', () => {
     // Rewind the migration history to the v38 divergence point while leaving
     // newer schema objects in place. Replaying later additive migrations must
     // tolerate columns that were already created by the newer schema.
+    // v59 is intentionally not idempotent, so remove its newly added index
+    // before replaying the tail.
+    db.exec('DROP INDEX IF EXISTS revisions_size_fingerprint_idx');
     db.prepare('DELETE FROM schema_migrations WHERE version >= 39').run();
     db.pragma('user_version = 38');
     db.prepare('UPDATE schema_migrations SET checksum = ? WHERE version = 37').run(syncChecksum);

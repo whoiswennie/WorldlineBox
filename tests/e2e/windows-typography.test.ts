@@ -222,7 +222,7 @@ test("uses coherent Windows UI fonts and readable caption sizes", async (
       ".inspector-content .micro-label",
       ".inspector-badge",
       ".inspector-identity-name",
-      ".nav-section-heading",
+      ".nav-section-heading .nav-section-title-row > span:first-child",
       ".library-switcher-menu .library-switcher-item",
     ]) {
       const { nodeId } = await cdp.send("DOM.querySelector", {

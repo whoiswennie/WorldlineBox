@@ -8,9 +8,17 @@ WorldlineBox 的 AI 分析使用已配置的全局 AI 服务。文本资产可�
 
 首次使用预设为 DeepSeek 官方 `OpenAI Chat Completions`、`https://api.deepseek.com`、`deepseek-flash`。内置模型候选无需密钥即可选择；真正调用仍需要自己的 API Key。已经保存的其他服务商和自定义模型不会被预设覆盖。接口和模型名称参考 [DeepSeek 官方 API 文档](https://api-docs.deepseek.com/zh-cn/)。
 
-Windows 开发版和安装版均使用 `%APPDATA%\WorldlineBox\ai-config.json`，密钥单独保存到 `ai-key.enc` 并通过 Electron safeStorage 加密。文件不在资源库或源码目录。DSH 原生账号与模型配置由启动器共享存档管理，这份应用模型配置不会自动覆盖它们。
+Windows 开发版和安装版均使用 `%APPDATA%\WorldlineBox`。升级后，服务名称、地址和模型存于 `ai-profiles.json`，每套密钥分别由 Electron safeStorage 加密后存于 `ai-profile-keys/<id>.bin`，分析选项存于 `ai-analysis-settings.json`。旧 `ai-config.json` 与 `ai-key.enc` 会在迁移并核验成功后清理；失败时保留旧配置以供恢复。文件不在资源库或源码目录。DSH 原生账号与模型配置由启动器共享存档管理，这份应用模型配置不会自动覆盖它们。
 
 ![AI 配置界面](../assets/ui/AI-config.png)
+
+### 多套命名服务配置
+
+- 点击 `新建配置`，填写便于区分的名称、接口、地址、模型和密钥，再保存。每套配置独立保留密钥。
+- 选择已保存的配置可查看和编辑；点击启用按钮才会将它设为当前服务。切换时无需再次输入地址和密钥。
+- 保存非当前配置不会切换正在使用的服务；删除或清除密钥前会显示确认。
+- 当前配置供资产 AI 分析、自然语言 AI 搜索，以及使用全局模型的伙伴和采集工具共享。伙伴单独指定的模型仍按原有规则使用。
+- 内置向量模型和语义索引继续使用独立的语义搜索配置，切换这些服务不会替换本地向量模型。
 
 ### 连接服务
 
@@ -75,4 +83,4 @@ AI 内容与人工内容分开保存，人工描述、标签和评分不会被�
 
 ## 隐私和费用
 
-WorldlineBox 不上传整个资源库，也不提供 AI 搜索。只有明确提交的可分析资产才会发送给所选服务商；启用前请确认服务商的隐私条款和费用。
+WorldlineBox 不上传整个资源库。AI 分析会将所选资产的可分析内容发给当前服务；自然语言 AI 搜索会发送查询和生成筛选计划所需的上下文。内置向量模型的语义检索沿用独立配置。启用前请确认所选服务商的隐私条款和费用。

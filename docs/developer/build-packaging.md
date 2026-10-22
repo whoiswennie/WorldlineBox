@@ -25,6 +25,8 @@ npm run media:ensure
 
 离线环境可设置 `WORLDLINEBOX_MEDIA_AUTO_ACQUIRE=0`，此时校验失败会直接报错，不会联网下载。
 
+Windows Forge 构建会将已锁定工具导出至 `.tools/portable-release/<UUID>/resources`。所有打包产物验证成功后，`postPackage` 仅清理本次 UUID；`preMake` 的导出同样在验证成功后清理。验证失败保留目录用于诊断，不清理其它构建、下载缓存、工具备份或真实资源目录。清理会拒绝根路径上的符号链接和 junction。路径与外部目标保护回归可运行 `node --test tests/node/portable-release-cleanup.test.mjs`。
+
 ## 内置记忆与向量资源
 
 `03-Build-Installer.bat` 同时封装 VCP 运行闭包和唯一内置的 EmbeddingGemma 2 量化模型。`vendor-vcp-memory.mjs` 只从固定提交恢复缺失的原版文件，已有文件必须通过 SHA-256 校验；`stage-vcp-memory-runtime.mjs` 封装原版插件所需依赖。`stage-bundled-embedding.mjs --acquire` 在构建机获取锁定的 GGUF、匹配 projector 和 CPU/Vulkan 组件，所有文件验证后才进入包。已有合格资源时不再下载。

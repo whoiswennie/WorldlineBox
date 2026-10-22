@@ -2,7 +2,6 @@ import {
   existsSync,
   mkdtempSync,
   readdirSync,
-  rmSync,
   writeFileSync,
 } from 'node:fs';
 import { execFileSync } from 'node:child_process';
@@ -22,6 +21,7 @@ import {
   importFilesThroughBridge,
   resolveElectronExecutablePath,
 } from './electron-test-helpers';
+import { removePathWithSyncRetry } from '../../src/worker/windows-fs-retry';
 
 test.describe.configure({ timeout: 180_000 });
 
@@ -37,8 +37,21 @@ const VALID_PNG_ALT = Buffer.from(
 async function killApplication(application: ElectronApplication): Promise<void> {
   const child = application.process();
   if (child.exitCode !== null) return;
+  if (process.platform === 'win32' && child.pid !== undefined) {
+    try {
+      // Electron's UtilityProcess workers outlive a direct child kill on
+      // Windows; terminate the whole app tree so the restart fixture releases
+      // its SQLite and media handles before recovery is tested.
+      execFileSync('taskkill', ['/PID', String(child.pid), '/T', '/F'], {
+        stdio: 'ignore',
+      });
+    } catch {
+      // The process may have exited between the exitCode check and taskkill.
+    }
+    await once(child, 'exit');
+    return;
+  }
   const descendants = (pid: number): number[] => {
-    if (process.platform === 'win32') return [];
     try {
       const output = execFileSync('pgrep', ['-P', String(pid)], { encoding: 'utf8' });
       return output
@@ -174,6 +187,6 @@ test('recovers an interrupted import after a complete Electron process restart',
     expect(readLatestImportOperation(libraryPath)).toBe('rolled_back|PROCESS_INTERRUPTED');
   } finally {
     if (application && application.process().exitCode === null) await application.close();
-    rmSync(temporaryRoot, { force: true, recursive: true });
+    removePathWithSyncRetry(temporaryRoot, { retryLimit: 20, retryDelayMs: 200 });
   }
 });

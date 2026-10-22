@@ -1,7 +1,7 @@
 import { ipcMain, type BrowserWindow } from 'electron';
 import { APPLICATION_NETWORK_CHANGED, APPLICATION_NETWORK_REQUEST, applicationNetworkRequestSchema,
   type ApplicationNetworkResponse } from '../shared/application-network';
-import { applicationNetworkState, clearApplicationNetworkDiagnostics, onApplicationNetworkDiagnostics } from './application-network';
+import { applicationNetworkState, clearApplicationNetworkDiagnostics, onApplicationNetworkDiagnostics, testApplicationPixivNetwork } from './application-network';
 import type { LauncherNetwork } from './dsh/launcher-network';
 
 /** A global policy API with no dependency on DSH service activation. */
@@ -30,6 +30,7 @@ export function registerApplicationNetworkIpc(getWindow: () => BrowserWindow | n
         case 'network.patch': await network.patch(parsed.data.patch); await network.inspect(); break;
         case 'network.proxy.toggle': await network.setProxyEnabled(parsed.data.enabled); await network.inspect(); break;
         case 'network.test': text = await network.test(); break;
+        case 'network.pixiv.test': await testApplicationPixivNetwork(network); break;
         case 'network.diagnostics.clear': clearApplicationNetworkDiagnostics(); break;
       }
       return { ok: true, state: applicationNetworkState(network), ...(text === undefined ? {} : { text }) };

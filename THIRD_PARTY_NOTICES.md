@@ -2,7 +2,7 @@
 
 ## 资产管理基础的来源
 
-WorldlineBox 的资产管理、媒体处理、插件、脚本与 MCP 基础来自 dolag233 及原项目贡献者的 MIT 代码。原始版权通知保存在根目录 LICENSE；WorldlineBox 的新定位、品牌、Windows 一键入口与后续生态功能由本项目继续维护。产品改名不改变上游及第三方组件的权利归属。
+WorldlineBox 的资产管理、媒体处理、插件、脚本与 MCP 基础来自 [Serpent](https://github.com/dolag233/Serpent) 作者 dolag233 及原项目贡献者的 MIT 代码。感谢上游的持续维护；本项目逐项整合 0.3.2 的相关改进，来源提交和取舍见 [0.3.2 升级记录](docs/developer/serpent-032-upgrade/README.md)。原始版权通知保存在根目录 LICENSE；WorldlineBox 的新定位、品牌、Windows 一键入口与后续生态功能由本项目继续维护。产品改名不改变上游及第三方组件的权利归属。
 
 WorldlineBox (MIT, see [LICENSE](LICENSE)) 依赖以下开源组件。各组件按其自身许可证提供；完整许可证文本随依赖包或下方链接分发。
 

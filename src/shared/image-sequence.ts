@@ -47,6 +47,11 @@ export interface ImageSequenceFrameCandidate {
   value: string;
 }
 
+export interface IndexedImageSequenceFrame {
+  readonly candidate: ImageSequenceCandidate;
+  readonly frame: ImageSequenceFrameCandidate;
+}
+
 export interface ParsedImageSequenceName {
   extension: string;
   frameNumber: number;
@@ -246,7 +251,7 @@ export function detectImageSequences(
       for (const frame of sorted) {
         const previous = run.at(-1);
         if (!previous || frame.frameNumber === previous.frameNumber + 1) {
-          run = [...run, frame];
+          run.push(frame);
           continue;
         }
         emit();
@@ -269,4 +274,23 @@ export function findImageSequenceContaining(
       sequence.frames.some((frame) => frame.value === selectedValue),
     ) ?? null
   );
+}
+
+/**
+ * Index candidate frames by their original path/value, preserving the first
+ * candidate and first frame encountered for duplicate values. This matches
+ * `findImageSequenceContaining`'s candidate-order semantics while allowing a
+ * caller to detect once and resolve many selected frames.
+ */
+export function indexImageSequenceFramesByValue(
+  candidates: readonly ImageSequenceCandidate[],
+): ReadonlyMap<string, IndexedImageSequenceFrame> {
+  const byValue = new Map<string, IndexedImageSequenceFrame>();
+  for (const candidate of candidates) {
+    for (const frame of candidate.frames) {
+      if (byValue.has(frame.value)) continue;
+      byValue.set(frame.value, { candidate, frame });
+    }
+  }
+  return byValue;
 }

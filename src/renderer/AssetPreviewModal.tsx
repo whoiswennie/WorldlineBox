@@ -137,6 +137,8 @@ const PREVIEW_ERROR_KEYS: Record<string, string> = {
   OIIO_REQUIRED: "preview.oiioRequired",
   SHARP_UNAVAILABLE: "preview.sharpUnavailable",
   MEDIA_PROCESSING_FAILED: "preview.mediaProcessingFailed",
+  WEBM_PROXY_GENERATION_FAILED: "preview.mediaProcessingFailed",
+  AUDIO_PROXY_GENERATION_FAILED: "preview.mediaProcessingFailed",
   UNSUPPORTED_FORMAT: "preview.unsupportedFormat",
 };
 function previewErrorDetail(

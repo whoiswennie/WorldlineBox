@@ -11,6 +11,7 @@ import {
   chmodSync,
   mkdirSync,
   readFileSync,
+  unlinkSync,
   writeFileSync,
 } from 'node:fs';
 import path from 'node:path';
@@ -48,14 +49,230 @@ export type IssuedMcpClientCredential = {
 
 export type McpCredentialAuthenticationState = 'valid' | 'unknown' | 'revoked';
 
-/**
- * Pure command shape for the pepper-file ACL: replace inheritance and grant
- * full control to the current user only. Kept as a pure builder so the
- * Windows hardening intent is unit-testable on every platform; the win32
- * spawnSync site stays platform-gated (verified on the Windows runner).
- */
-export function buildPepperFileAclArgs(filename: string, user: string): string[] {
-  return [filename, '/inheritance:r', '/grant:r', `${user}:F`];
+export type McpCredentialStoreErrorCode =
+  | 'MCP_CREDENTIAL_ACCESS_DENIED'
+  | 'MCP_CREDENTIAL_INVALID'
+  | 'MCP_CREDENTIAL_READ_FAILED'
+  | 'MCP_CREDENTIAL_CREATE_FAILED'
+  | 'MCP_CREDENTIAL_ACL_FAILED';
+
+export class McpCredentialStoreError extends Error {
+  public readonly code: McpCredentialStoreErrorCode;
+  public readonly filePath: string;
+  public readonly systemCode?: string;
+  public readonly recoveryCode?: string;
+
+  constructor(input: {
+    code: McpCredentialStoreErrorCode;
+    filePath: string;
+    systemCode?: string;
+    recoveryCode?: string;
+    message: string;
+    cause?: unknown;
+  }) {
+    super(input.message, { cause: input.cause });
+    this.name = 'McpCredentialStoreError';
+    this.code = input.code;
+    this.filePath = input.filePath;
+    this.systemCode = input.systemCode;
+    this.recoveryCode = input.recoveryCode;
+  }
+}
+
+type PepperReadDependencies = {
+  platform: NodeJS.Platform;
+  readFile(filename: string): Buffer;
+  repairAccess(filename: string): void;
+};
+
+function errorCode(error: unknown): string | undefined {
+  if (typeof error !== 'object' || error === null || !('code' in error)) return undefined;
+  const code = (error as { code?: unknown }).code;
+  return typeof code === 'string' ? code : undefined;
+}
+
+function credentialFileError(
+  code: McpCredentialStoreErrorCode,
+  filename: string,
+  error: unknown,
+  message: string,
+  recoveryError?: unknown,
+): McpCredentialStoreError {
+  return new McpCredentialStoreError({
+    code,
+    filePath: filename,
+    systemCode: errorCode(error),
+    ...(recoveryError === undefined ? {} : { recoveryCode: errorCode(recoveryError) ?? 'ACL_REPAIR_FAILED' }),
+    message,
+    cause: recoveryError === undefined ? error : new AggregateError([error, recoveryError]),
+  });
+}
+
+export function parseCurrentUserSid(output: string): string {
+  const sid = output.match(/\bS-1-(?:\d+-)*\d+\b/u)?.[0];
+  if (sid === undefined) throw new Error('Could not determine the current Windows user SID.');
+  return sid;
+}
+
+function currentWindowsUserSid(): string {
+  const result = spawnSync('whoami.exe', ['/user', '/fo', 'csv', '/nh'], {
+    encoding: 'utf8',
+    stdio: ['ignore', 'pipe', 'ignore'],
+    windowsHide: true,
+  });
+  if (result.error !== undefined) throw result.error;
+  if (result.status !== 0) throw new Error('whoami.exe could not identify the current Windows user.');
+  return parseCurrentUserSid(result.stdout);
+}
+
+/** ACL for a newly created pepper: remove inherited grants and allow this user. */
+export function buildPepperFileAclArgs(filename: string, userSid: string): string[] {
+  return [filename, '/inheritance:r', '/grant:r', `*${userSid}:F`];
+}
+
+/** Preserve existing ACL entries and add access for the user now running WorldlineBox. */
+export function buildPepperFileAccessRepairArgs(filename: string, userSid: string): string[] {
+  return [filename, '/grant:r', `*${userSid}:F`];
+}
+
+function runIcacls(args: string[]): void {
+  const result = spawnSync('icacls.exe', args, {
+    stdio: 'ignore',
+    windowsHide: true,
+  });
+  if (result.error !== undefined) throw result.error;
+  if (result.status !== 0) {
+    const error = new Error(`icacls.exe failed with exit status ${String(result.status)}.`) as Error & { code?: string };
+    error.code = result.status === null ? 'ICACLS_FAILED' : String(result.status);
+    throw error;
+  }
+}
+
+function repairPepperFileAccess(filename: string): void {
+  const userSid = currentWindowsUserSid();
+  runIcacls(buildPepperFileAccessRepairArgs(filename, userSid));
+}
+
+function restrictNewPepperFile(filename: string): void {
+  const userSid = currentWindowsUserSid();
+  runIcacls(buildPepperFileAclArgs(filename, userSid));
+}
+
+const defaultPepperReadDependencies: PepperReadDependencies = {
+  platform: process.platform,
+  readFile: (filename) => readFileSync(filename),
+  repairAccess: repairPepperFileAccess,
+};
+
+export function readExistingPepper(
+  filename: string,
+  dependencies: PepperReadDependencies = defaultPepperReadDependencies,
+): Buffer | undefined {
+  let contents: Buffer;
+  try {
+    contents = dependencies.readFile(filename);
+  } catch (readError) {
+    const readCode = errorCode(readError);
+    if (readCode === 'ENOENT') return undefined;
+    if (readCode !== 'EACCES' && readCode !== 'EPERM') {
+      throw credentialFileError(
+        'MCP_CREDENTIAL_READ_FAILED',
+        filename,
+        readError,
+        'Could not read the MCP credential key file.',
+      );
+    }
+
+    if (dependencies.platform !== 'win32') {
+      throw credentialFileError(
+        'MCP_CREDENTIAL_ACCESS_DENIED',
+        filename,
+        readError,
+        'Access to the MCP credential key file was denied.',
+      );
+    }
+
+    try {
+      dependencies.repairAccess(filename);
+      contents = dependencies.readFile(filename);
+    } catch (repairError) {
+      if (errorCode(repairError) === 'ENOENT') return undefined;
+      throw credentialFileError(
+        'MCP_CREDENTIAL_ACCESS_DENIED',
+        filename,
+        readError,
+        'Could not restore access to the MCP credential key file. The existing key was not changed.',
+        repairError,
+      );
+    }
+  }
+
+  if (contents.byteLength !== TOKEN_PEPPER_BYTES) {
+    throw new McpCredentialStoreError({
+      code: 'MCP_CREDENTIAL_INVALID',
+      filePath: filename,
+      message: 'The MCP credential key file has an invalid length; the existing key was not changed.',
+    });
+  }
+  return contents;
+}
+
+export function readOrCreatePepper(
+  filename: string,
+  createDirectory: (directory: string) => void = (directory) => mkdirSync(directory, { recursive: true }),
+): Buffer {
+  const existing = readExistingPepper(filename);
+  if (existing !== undefined) return existing;
+
+  const pepper = randomBytes(TOKEN_PEPPER_BYTES);
+  try {
+    createDirectory(path.dirname(filename));
+  } catch (error) {
+    throw credentialFileError(
+      'MCP_CREDENTIAL_CREATE_FAILED',
+      filename,
+      error,
+      'Could not create the MCP credential key directory.',
+    );
+  }
+  try {
+    writeFileSync(filename, pepper, { mode: 0o600, flag: 'wx', flush: true });
+  } catch (error) {
+    if (errorCode(error) === 'EEXIST') {
+      const raced = readExistingPepper(filename);
+      if (raced !== undefined) return raced;
+    }
+    throw credentialFileError(
+      'MCP_CREDENTIAL_CREATE_FAILED',
+      filename,
+      error,
+      'Could not create the MCP credential key file.',
+    );
+  }
+
+  try {
+    chmodSync(filename, 0o600);
+    // POSIX mode bits do not secure a Windows file. Keep a newly created key
+    // readable only by the current SID before allowing the server to use it.
+    if (process.platform === 'win32') restrictNewPepperFile(filename);
+  } catch (error) {
+    let cleanupError: unknown;
+    try {
+      unlinkSync(filename);
+    } catch (failedCleanup) {
+      cleanupError = failedCleanup;
+    }
+    throw credentialFileError(
+      process.platform === 'win32' ? 'MCP_CREDENTIAL_ACL_FAILED' : 'MCP_CREDENTIAL_CREATE_FAILED',
+      filename,
+      error,
+      cleanupError === undefined
+        ? 'Could not secure the new MCP credential key file; the incomplete file was removed.'
+        : 'Could not secure or remove the new MCP credential key file.',
+      cleanupError,
+    );
+  }
+  return pepper;
 }
 
 function hashToken(token: string, pepper: Buffer): string {
@@ -88,47 +305,6 @@ function decryptToken(encoded: string, key: Buffer): string | undefined {
   }
 }
 
-function readOrCreatePepper(filename: string): Buffer {
-  try {
-    const existing = readFileSync(filename);
-    if (existing.byteLength === TOKEN_PEPPER_BYTES) return existing;
-  } catch {
-    // Create the pepper below.
-  }
-  const pepper = randomBytes(TOKEN_PEPPER_BYTES);
-  mkdirSync(path.dirname(filename), { recursive: true });
-  try {
-    writeFileSync(filename, pepper, { mode: 0o600, flag: 'wx', flush: true });
-  } catch (error) {
-    const code = typeof error === 'object' && error !== null && 'code' in error
-      ? (error as { code?: unknown }).code
-      : undefined;
-    if (code !== 'EEXIST') throw error;
-    const existing = readFileSync(filename);
-    if (existing.byteLength !== TOKEN_PEPPER_BYTES) {
-      throw new Error('The MCP credential pepper is invalid.', { cause: error });
-    }
-    return existing;
-  }
-  chmodSync(filename, 0o600);
-  // Windows review: POSIX mode bits are ignored on NTFS — the pepper (the
-  // secret keying every token hash) must get an explicit ACL restricted to
-  // the current user, otherwise it inherits the userData directory ACL.
-  // Fail-closed: an unreachable/unsuccessful ACL means the token-hash secret
-  // may be readable by other local users, so the store refuses to proceed.
-  if (process.platform === 'win32') {
-    const result = spawnSync('icacls', buildPepperFileAclArgs(
-      filename,
-      process.env.USERNAME ?? process.env.USER ?? 'Users',
-    ), { stdio: 'ignore', windowsHide: true });
-    if (result.error !== undefined || result.status !== 0) {
-      throw new Error('Failed to restrict the MCP credential pepper ACL to the current user.', {
-        cause: result.error,
-      });
-    }
-  }
-  return pepper;
-}
 
 function summary(record: CredentialRecord): McpClientCredentialSummary {
   return {

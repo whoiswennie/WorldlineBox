@@ -215,7 +215,7 @@ CPython 包含完整标准库、`ensurepip` 与 `venv`，可以在实例中创�
 - WebDAV 资源库双向同步、浏览器扩展保存网页图片与视频、音乐播放和同步歌词。
 - WorldlineBox 插件、自动化脚本和本机 MCP 通道，扩展资产界面或供外部客户端使用。
 
-资产管理器已按功能同步 Serpent 0.3.0，并增量接入 0.3.1 及本地最新源码修复：自定义快捷键、侧栏拖拽排序、批量传输性能与取消、断开映射盘探测和 Windows 更新清理。可切换新旧界面、编辑和保存主题、调整背景与面板不透明度、从库内资产或文件选择文件夹封面，并设置卡片文字对齐。Windows/macOS 安装版提供登录启动设置。WorldlineBox 的名称、独立版本号、数据目录及启动器、伙伴、浏览器等模块保持原有约定；[0.3.0 升级记录](docs/developer/asset-manager-030-upgrade.md)和 [0.3.1 逐项同步记录](docs/developer/serpent-031-upgrade/README.md)列出来源、验证范围和限制。
+资产管理器以 [Serpent](https://github.com/dolag233/Serpent) 为基础，逐项同步至 0.3.2：AI 分析与 AI 搜索可保存和切换多套命名服务配置，大型资源库导入与图像序列识别提速，媒体处理按可用内存调整并发，并同步原生拖拽和 Windows MCP 凭据恢复修复。扩展按合集保存、批量传输取消、自定义快捷键、侧栏拖拽排序、断开映射盘探测和 Windows 更新清理沿用此前已验证的增量实现。可切换新旧界面、编辑和保存主题、调整背景与面板不透明度、从库内资产或文件选择文件夹封面，并设置卡片文字对齐。Windows/macOS 安装版提供登录启动设置。WorldlineBox 的名称、独立版本号、数据目录及启动器、伙伴、浏览器等模块保持原有约定；[0.3.0 升级记录](docs/developer/asset-manager-030-upgrade.md)、[0.3.1 逐项同步记录](docs/developer/serpent-031-upgrade/README.md)和 [0.3.2 升级记录](docs/developer/serpent-032-upgrade/README.md)列出来源、验证范围和限制。
 
 内置浏览器已自带资产采集能力，无需安装扩展。地址栏「保存到资产库」可选择资源库与文件夹、直接新建目录、导入本地文件，保存网页图片、音视频、选中文字及文件链接。网页保存生成包含可读文字与来源的 `.txt` 快照；最近采集记录独立分页，支持搜索、状态筛选和取消任务。支持范围见[内置浏览器使用说明](docs/user-guide/browser.md#保存到资产库)。外部 Chrome/Edge 仍可单独安装扩展。
 
@@ -310,7 +310,7 @@ WorldlineBox 资产插件与 DSH 原生插件属于不同协议，分别在各�
 
 ## 许可与来源
 
-本项目使用 [MIT 许可](LICENSE)。资产管理基础来自 dolag233 及原项目贡献者，保留其版权通知。
-伙伴记忆架构与相关实现参考并移植自 [VCPToolBox](https://github.com/lioensky/VCPToolBox)，包括日记、向量索引、RiverMemo 召回与长期上下文。感谢 VCP 作者提供改造许可；上游来源和版本记录保留在 `vendor/vcp-memory` 中。
+本项目使用 [MIT 许可](LICENSE)。感谢 [Serpent](https://github.com/dolag233/Serpent) 作者 dolag233 及原项目贡献者提供资产管理基础和持续改进；本项目按功能增量整合其 0.3.2 实现，保留原始版权通知。WorldlineBox 保持独立名称、版本和自有功能。
+伙伴记忆系统的设计参考 [VCPToolBox](https://github.com/lioensky/VCPToolBox) 的日记、向量索引、RiverMemo 召回与长期上下文思路。现有第三方代码的来源、版本和署名记录保留在 `vendor/vcp-memory` 中。
 图标包含维护者提供的素材；媒体组件、工具、字体及其他第三方资源遵循各自许可，见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
 DSH 运行制品保留其原始许可。公开分发携带的 Git / FFmpeg 等组件时，也需要履行对应许可证的源码与声明义务，不能仅以本仓库的 MIT 许可替代。

@@ -37,8 +37,7 @@ export function deepseekStructuredRequestDefaults(baseUrl: string | undefined, m
 /** No library identity is required. Credentials never return through getConfig. */
 export interface WorldlineBoxLlmApi {
   getConfig: WorldlineBoxLibraryApi['getAiConfig'];
-  setConfig(input: Pick<Parameters<WorldlineBoxLibraryApi['setAiConfig']>[0], 'apiFormat' | 'model' | 'baseUrl' | 'apiKey'>
-    & Partial<Omit<Parameters<WorldlineBoxLibraryApi['setAiConfig']>[0], 'apiFormat' | 'model' | 'baseUrl' | 'apiKey'>>): ReturnType<WorldlineBoxLibraryApi['setAiConfig']>;
+  setConfig(input: Partial<Parameters<WorldlineBoxLibraryApi['setAiConfig']>[0]>): ReturnType<WorldlineBoxLibraryApi['setAiConfig']>;
   testConnection: WorldlineBoxLibraryApi['testAiConnection'];
   listModels: WorldlineBoxLibraryApi['listAiModels'];
 }

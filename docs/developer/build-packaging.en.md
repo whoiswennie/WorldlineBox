@@ -27,6 +27,14 @@ npm run media:ensure
 Set `WORLDLINEBOX_MEDIA_AUTO_ACQUIRE=0` in an offline environment to make a failed
 verification stop immediately instead of downloading.
 
+Windows Forge builds export locked tools to `.tools/portable-release/<UUID>/resources`.
+After every packaged output passes verification, `postPackage` removes only that build's
+UUID directory; `preMake` also cleans its export after successful verification. Failed
+verification retains the export for diagnosis. Other builds, download caches, tool
+backups and source resources are preserved. Cleanup rejects symbolic links and junctions
+in its root paths. Run `node --test tests/node/portable-release-cleanup.test.mjs` to check
+path boundaries and external-target protection.
+
 ## Shared user-data location
 
 Normal development launches and installed applications share `appData/WorldlineBox`

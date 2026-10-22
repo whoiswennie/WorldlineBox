@@ -803,7 +803,7 @@ body.platform-darwin .app-shell.left-collapsed .toolbar-workspace-cluster {
   gap: 4px;
   color: var(--tertiary);
   font-size: calc(10px * var(--ui-font-scale));
-  letter-spacing: 0;
+  letter-spacing: 0.01em;
 }
 .discovery-filter-panel .text-field {
   width: 100%;
@@ -7830,6 +7830,21 @@ body.worldlinebox-modal-open .app-shell {
   margin-top: 12px;
 }
 
+.ai-config-section-title {
+  margin: 20px 0 8px;
+}
+
+.ai-config-profile-row {
+  display: flex;
+  align-items: end;
+  gap: 8px;
+}
+
+.ai-config-profile-row .ai-config-field {
+  flex: 1;
+  min-width: 0;
+}
+
 .ai-config-field.is-disabled .micro-label,
 .ai-config-advanced-row.is-disabled .micro-label,
 .ai-config-field.is-disabled .ai-config-hint,
@@ -14281,6 +14296,7 @@ select.ai-config-input.ai-config-languages {
     .filter-tag-count
   ) {
   font-size: calc(12px * var(--ui-font-scale));
+  color: var(--secondary);
 }
 
 :root[data-platform="windows"] :where(
@@ -14330,6 +14346,22 @@ select.ai-config-input.ai-config-languages {
 
 :root[data-platform="windows"] .inspector-identity .micro-label {
   font-family: var(--font-ui-unified);
+}
+
+:root[data-platform="windows"] .app-shell[data-shell-layout="islands"] .inspector-content .micro-label {
+  font-size: calc(12px * var(--ui-font-scale));
+  letter-spacing: 0.01em;
+  color: var(--secondary);
+}
+
+:root[data-platform="windows"] .app-shell[data-shell-layout="islands"] :is(
+    .nav-section-heading,
+    .nav-count,
+    .library-switcher-section-label,
+    .library-switcher-item
+  ) {
+  font-size: calc(12px * var(--ui-font-scale));
+  color: var(--secondary);
 }
 
 :root[data-platform="windows"] :where(

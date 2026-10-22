@@ -18,6 +18,7 @@ function fixture(value = initial()) {
   const unsubscribe = vi.fn();
   const request = vi.fn(async (input: ApplicationNetworkRequest): Promise<ApplicationNetworkResponse> => {
     if (input.type === 'network.proxy.toggle') state = { ...state, revision: state.revision + 1, settings: { ...state.settings, proxyMode: input.enabled ? 'custom' : 'direct' } };
+    if (input.type === 'network.patch') state = { ...state, revision: state.revision + 1, settings: { ...state.settings, ...input.patch } };
     if (input.type === 'network.diagnostics.clear') state = { ...state, recentFailures: [] };
     return { ok: true, state };
   });
@@ -44,6 +45,30 @@ it('loads and switches the application network directly without accessing the la
   expect(launcherRequest).not.toHaveBeenCalled();
   await act(() => root!.unmount()); root = undefined;
   expect(subject.unsubscribe).toHaveBeenCalledOnce();
+});
+it('switches smart/global immediately, retains unrelated drafts and displays individual Pixiv failures', async () => {
+  const subject = fixture({ ...initial(), pixivCheck: { checkedAt: new Date().toISOString(), results: [
+    { kind: 'page', url: 'https://www.pixiv.net/', proxy: 'http://127.0.0.1:7896', elapsedMs: 120, ok: true, status: 200 },
+    { kind: 'image', url: 'https://i.pximg.net/art.jpg', proxy: 'http://127.0.0.1:7896', elapsedMs: 12000, ok: false, error: 'CDN timed out' },
+  ] } });
+  await mount(subject.api);
+  const draftAddress = container!.querySelector<HTMLInputElement>('input[placeholder="http://127.0.0.1:7897"]')!;
+  await act(() => { Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!.call(draftAddress, 'http://127.0.0.1:9999'); draftAddress.dispatchEvent(new Event('input', { bubbles: true })); });
+  const select = [...container!.querySelectorAll<HTMLSelectElement>('select')].find(value => value.options[0]?.value === 'smart')!;
+  await act(() => { select.value = 'smart'; select.dispatchEvent(new Event('change', { bubbles: true })); });
+  expect(subject.request).toHaveBeenCalledWith({ type: 'network.patch', patch: { proxyMode: 'custom', proxyRouting: 'smart' } });
+  expect(draftAddress.value).toBe('http://127.0.0.1:9999');
+  expect(container!.querySelector('[data-network-active]')!.textContent).toContain('智能代理');
+  await act(() => { select.value = 'global'; select.dispatchEvent(new Event('change', { bubbles: true })); });
+  expect(subject.request).toHaveBeenCalledWith({ type: 'network.patch', patch: { proxyMode: 'custom', proxyRouting: 'global' } });
+  expect(container!.querySelector('[data-pixiv-check="page"]')!.getAttribute('data-check-ok')).toBe('true');
+  expect(container!.querySelector('[data-pixiv-check="image"]')!.textContent).toContain('CDN timed out');
+});
+it('runs the separate Pixiv check without starting the package registry checks', async () => {
+  const subject = fixture(); await mount(subject.api);
+  await act(() => button('检查 Pixiv').click());
+  expect(subject.request).toHaveBeenCalledWith({ type: 'network.pixiv.test' });
+  expect(subject.request).not.toHaveBeenCalledWith({ type: 'network.test' });
 });
 
 it('keeps diagnostics bounded and supports paging, searching and clearing failures', async () => {

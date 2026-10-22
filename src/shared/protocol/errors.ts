@@ -100,6 +100,8 @@ export const PUBLIC_ERROR_MESSAGES = {
   // WorldlineBox-50c466 review F7: the user is saving AI settings, not watching an analysis.
   AI_SETTINGS_INCOMPLETE:
     'Automatic analysis is not on yet. Add an API key and choose a model in AI settings, then try again.',
+  AI_PROFILE_STORAGE_FAILED:
+    'WorldlineBox could not finish updating this AI connection. Reopen AI settings and retry; if the problem continues, restart the app and inspect Diagnostics.',
   INVALID_ASSET_FILE_NAME: 'Choose a file name that is safe on macOS and Windows.',
   ASSET_FILE_NAME_CONFLICT: 'A file with this name already exists in the asset folder.',
   INVALID_ASSET_METADATA: 'Choose valid asset metadata values, including six-digit hex colors and an HTTP(S) source page URL.',

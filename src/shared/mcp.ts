@@ -134,6 +134,13 @@ export const mcpSettingsRequestSchema = z.discriminatedUnion('type', [
 ]);
 export type McpSettingsRequest = z.infer<typeof mcpSettingsRequestSchema>;
 
+export const mcpSettingsFailureDetailsSchema = z.strictObject({
+  filePath: z.string().min(1).max(32_768),
+  systemCode: z.string().min(1).max(128).optional(),
+  recoveryCode: z.string().min(1).max(128).optional(),
+});
+export type McpSettingsFailureDetails = z.infer<typeof mcpSettingsFailureDetailsSchema>;
+
 export const mcpSettingsResponseSchema = z.union([
   z.strictObject({
     ok: z.literal(true),
@@ -146,6 +153,7 @@ export const mcpSettingsResponseSchema = z.union([
     code: z.string().min(1).max(128),
     message: z.string().min(1).max(500),
     snapshot: mcpSettingsSnapshotSchema.optional(),
+    details: mcpSettingsFailureDetailsSchema.optional(),
   }),
 ]);
 export type McpSettingsResponse = z.infer<typeof mcpSettingsResponseSchema>;

@@ -78,6 +78,9 @@ const config: ForgeConfig = {
           WORLDLINEBOX_PACKAGE_PLATFORM: `${packageResult.platform}-${packageResult.arch}`,
         });
       }
+      // Packager has finished copying all extra resources. Reclaim only this
+      // build's export after every output passes; failed builds retain evidence.
+      if (packageResult.platform === 'win32') runNodeGate('scripts/portable-release-cleanup.mjs', [packagedResourcesRoot]);
     },
     // Forge supports `make --skip-package`; verify the exact default package
     // input again so that shortcut cannot feed stale or modified bytes to a
@@ -90,6 +93,8 @@ const config: ForgeConfig = {
         WORLDLINEBOX_PACKAGE_ROOT: path.join(projectRoot, 'out', `WorldlineBox-${mediaPlatform}`),
         WORLDLINEBOX_PACKAGE_PLATFORM: mediaPlatform,
       });
+      // Makers consume the verified out/ package, not the temporary tool export.
+      if (mediaPlatform === 'win32-x64') runNodeGate('scripts/portable-release-cleanup.mjs', [packagedResourcesRoot]);
     },
   },
   packagerConfig: {

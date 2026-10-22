@@ -54,8 +54,14 @@ test("ordinary browsing continuously appends every asset without page controls",
     await window.getByRole("textbox", { name: "名称" }).fill(libraryName);
     await window.getByRole("button", { name: "创建", exact: true }).click();
     await window.getByRole("button", { name: "添加文件夹" }).click();
-    await window.getByLabel("新文件夹名称").fill("分页文件夹");
-    await window.keyboard.press("Enter");
+    const newFolderInput = window.locator(".nav-inline-edit input");
+    await expect(newFolderInput).toBeVisible({ timeout: 5_000 });
+    await newFolderInput.fill("分页文件夹");
+    await newFolderInput.press("Enter");
+    await expect(window.locator(".nav-inline-edit")).toHaveCount(0, {
+      timeout: 10_000,
+    });
+    await expect(sidebarFolderRow(window, "分页文件夹")).toBeVisible({ timeout: 15_000 });
     await sidebarFolderRow(window, "分页文件夹").click();
     await window
       .getByRole("button", { name: "导入文件", exact: true })
@@ -147,9 +153,11 @@ test("ordinary browsing continuously appends every asset without page controls",
 
     const sizeControl = window.getByLabel("资产缩略图大小");
     const maxSizeIndex = Number(await sizeControl.getAttribute("max"));
-    const middleSizeIndex = Math.min(3, maxSizeIndex);
-    await sizeControl.fill(String(middleSizeIndex));
-    const anchorCard = window.locator(".asset-card").nth(30);
+    const startSizeIndex = Math.max(0, maxSizeIndex - 1);
+    await sizeControl.fill(String(startSizeIndex));
+    const anchorCard = window.locator(".asset-card").filter({ hasText: "asset-030.txt" });
+    await workspaceCanvas.evaluate((element) => element.scrollTo(0, element.scrollHeight * 0.2));
+    await expect(anchorCard).toHaveCount(1, { timeout: 15_000 });
     await anchorCard.scrollIntoViewIfNeeded();
     const anchorAssetId = await anchorCard.getAttribute("data-asset-id");
     const anchorBox = await anchorCard.boundingBox();
@@ -163,11 +171,15 @@ test("ordinary browsing continuously appends every asset without page controls",
     await expect(sizeControl).toHaveValue(String(sizeBeforeWheel));
     await window.keyboard.down("Control");
     await window.mouse.wheel(0, -120);
-    await window.keyboard.up("Control");
-    await expect
-      .poll(async () => Number(await sizeControl.inputValue()))
-      .toBeGreaterThan(sizeBeforeWheel);
+    try {
+      await expect
+        .poll(async () => Number(await sizeControl.inputValue()))
+        .toBeGreaterThan(sizeBeforeWheel);
+    } finally {
+      await window.keyboard.up("Control");
+    }
     expect(anchorAssetId).not.toBeNull();
+    await expect(workspaceCanvas).not.toHaveClass(/is-reflow-restoring/);
     await expect(
       window.locator(`[data-asset-id="${anchorAssetId}"]`),
     ).toBeInViewport();

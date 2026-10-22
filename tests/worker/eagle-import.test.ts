@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 
@@ -92,6 +92,34 @@ describe('Eagle library import', () => {
     expect(seen.some((snapshot) => snapshot.collections >= 1 && snapshot.assets === 0)).toBe(true);
     expect(service.listAssets({ libraryId: library.libraryId, recursive: true })).toHaveLength(3);
     service.closeAll();
+  });
+
+  it('keeps an unindexed destination orphan and places the Eagle asset under a copy name', async () => {
+    const root = temporaryRoot();
+    const sourceRootPath = writeEagleLibrary(root, 1);
+    const service = new LibraryService({ observerFactory: () => ({ close() {} }) });
+    try {
+      const library = service.createLibrary({
+        displayName: 'Eagle orphan',
+        selectedParentPath: root,
+      });
+      const orphanPath = path.join(library.libraryPath, 'Assets', 'ASSET-0.PNG');
+      writeFileSync(orphanPath, 'external bytes');
+
+      const result = await service.importEagleLibrary({
+        libraryId: library.libraryId,
+        sourceRootPath,
+      });
+
+      expect(result.importedCount).toBe(1);
+      expect(service.listAssets({ libraryId: library.libraryId, recursive: true })
+        .map((asset) => asset.relativeFilePath)).toEqual(['asset-0 (2).png']);
+      expect(readFileSync(orphanPath, 'utf8')).toBe('external bytes');
+      expect(readFileSync(path.join(library.libraryPath, 'Assets', 'asset-0 (2).png')))
+        .toEqual(ONE_PX_RED_PNG);
+    } finally {
+      service.closeAll();
+    }
   });
 
   it('cancels between batches and leaves already imported assets', async () => {

@@ -1437,10 +1437,15 @@ export function NavigationSidebar(props: NavigationSidebarProps) {
    */
   function applyManagedAssetDragOver(
     event: React.DragEvent<HTMLElement>,
-  ): DragDropMode {
+  ): DragDropMode | null {
     const mode = resolveDragDropMode({ altKey: event.altKey });
+    const dropEffect = resolveManagedDropEffect(
+      mode,
+      event.dataTransfer.effectAllowed,
+    );
+    if (!dropEffect) return null;
     event.preventDefault();
-    event.dataTransfer.dropEffect = resolveManagedDropEffect(mode);
+    event.dataTransfer.dropEffect = dropEffect;
     onManagedAssetCopyModeChange?.(mode === "copy");
     return mode;
   }
@@ -2828,15 +2833,33 @@ export function NavigationSidebar(props: NavigationSidebarProps) {
               supportsManagedFolderDrag(event.dataTransfer) ||
               supportsManagedAssetDrag(event.dataTransfer)
             ) {
-              // Trash is always a move/delete target; Option does not copy.
+              // Trash remains a trash action; negotiate only the browser's
+              // transport effect because native file drags may not allow move.
+              const effect = resolveManagedDropEffect(
+                "move",
+                event.dataTransfer.effectAllowed,
+              );
+              if (!effect) return;
               event.preventDefault();
-              event.dataTransfer.dropEffect = "move";
+              event.dataTransfer.dropEffect = effect;
               onManagedAssetCopyModeChange?.(false);
             } else if (supportsExternalImportTransfer(event.dataTransfer)) {
+              const internalAssetDrag = isInternalAssetDrag?.() ?? false;
+              const effect = internalAssetDrag
+                ? resolveManagedDropEffect(
+                    "move",
+                    event.dataTransfer.effectAllowed,
+                  )
+                : null;
+              if (internalAssetDrag && !effect) return;
               // Native asset drags arrive as Files. Resolve them on drop and
               // keep the trash affordance consistent with the managed path.
               event.preventDefault();
-              event.dataTransfer.dropEffect = "move";
+              // Preserve the existing external-file target behavior; internal
+              // asset files use a compatible OS operation while the drop
+              // handler still performs trash semantics.
+              if (effect) event.dataTransfer.dropEffect = effect;
+              else event.dataTransfer.dropEffect = "move";
               setAssetDropTarget("trash");
               onManagedAssetCopyModeChange?.(false);
             }

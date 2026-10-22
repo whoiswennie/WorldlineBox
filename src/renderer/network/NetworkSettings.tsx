@@ -17,6 +17,10 @@ function address(value: string): string {
 function sourceActive(settings: DshNetworkSettings, kind: DshNetworkSourceKind, url: string): boolean {
   return address(kind === 'npm' ? settings.npmRegistry : kind === 'python' ? settings.pythonIndex : settings.githubMirror === 'custom' ? settings.githubMirrorUrl : '') === address(url);
 }
+function proxyChoice(settings: DshNetworkSettings): string { return settings.proxyMode === 'custom' ? settings.proxyRouting ?? 'global' : settings.proxyMode; }
+function proxyChoicePatch(value: string): DshNetworkPatch {
+  return value === 'smart' || value === 'global' ? { proxyMode: 'custom', proxyRouting: value } : { proxyMode: value as 'system' | 'direct' };
+}
 
 export function NetworkSettings({ network, run, disabled = false }: {
   readonly network?: ApplicationNetworkState; readonly run: NetworkRunRequest; readonly disabled?: boolean;
@@ -29,6 +33,7 @@ export function NetworkSettings({ network, run, disabled = false }: {
   const [sourceKind, setSourceKind] = useState<DshNetworkSourceKind>('npm'); const [editingSource, setEditingSource] = useState<string>();
   const [error, setError] = useState(''); const [busy, setBusy] = useState(false);
   const [testResult, setTestResult] = useState(''); const [testing, setTesting] = useState(false);
+  const [testingPixiv, setTestingPixiv] = useState(false);
   const inspected = useRef<number | undefined>(undefined);
   const saving = useRef(false);
   useEffect(() => {
@@ -38,7 +43,7 @@ export function NetworkSettings({ network, run, disabled = false }: {
   if (!stored || !network) return <div className="launcher-page"><h1>{t('appNavigation.network')}</h1><p>{t('launcher.loading')}</p></div>;
   const draft: DshNetworkSettings = { ...stored, ...changes };
   const dirty = JSON.stringify(draft) !== JSON.stringify(stored);
-  const locked = disabled || busy || testing;
+  const locked = disabled || busy || testing || testingPixiv;
   const profiles = draft.sourceProfiles ?? [];
   const inspection = network.inspection?.revision === network.revision ? network.inspection : undefined;
   const checks = network.checks?.revision === network.revision ? network.checks : undefined;
@@ -78,6 +83,15 @@ export function NetworkSettings({ network, run, disabled = false }: {
     } catch (cause) { setError(cause instanceof Error ? cause.message : String(cause)); }
     finally { setTesting(false); }
   };
+  const testPixiv = async () => {
+    setTestingPixiv(true); setError('');
+    try {
+      if (dirty && !await save()) return;
+      const response = await run({ type: 'network.pixiv.test' });
+      if (!response.ok) setError(response.error);
+    } catch (cause) { setError(cause instanceof Error ? cause.message : String(cause)); }
+    finally { setTestingPixiv(false); }
+  };
   const addProxy = async () => {
     if (!profileName.trim() || !profileUrl.trim()) return;
     if (draft.proxyProfiles.some(item => item.id !== editingProxy && address(item.url) === address(profileUrl))) { setError(t('launcher.profileDuplicate')); return; }
@@ -100,7 +114,8 @@ export function NetworkSettings({ network, run, disabled = false }: {
       options={[...Array.from(new Map(options.map(item => [address(item.url), { value: address(item.url), label: item.name + ' · ' + item.url }])).values()), { value: 'custom', label: t('launcher.customSource') }]}
       onValueChange={value => { if (value === 'custom') update(kind === 'npm' ? { npmRegistry: '' } : { pythonIndex: '' }); else void applyLive({ type: 'network.patch', patch: applySource(kind, value) }); }} />;
   };
-  const proxyText = stored.proxyMode === 'direct' ? t('launcher.proxyDirect') : stored.proxyMode === 'system' ? t('launcher.proxySystem') : activeProxy?.name ?? t('launcher.proxyCustom');
+  const proxyOptions = [{ value: 'smart', label: t('launcher.proxySmart') }, { value: 'global', label: t('launcher.proxyGlobal') }, { value: 'system', label: t('launcher.proxySystem') }, { value: 'direct', label: t('launcher.proxyDirect') }];
+  const proxyText = stored.proxyMode === 'direct' ? t('launcher.proxyDirect') : stored.proxyMode === 'system' ? t('launcher.proxySystem') : t(stored.proxyRouting === 'smart' ? 'launcher.proxySmart' : 'launcher.proxyGlobal') + (activeProxy ? ' · ' + activeProxy.name : '');
   const proxyFor = (kind: DshNetworkSourceKind) => {
     const route = inspection?.routes.find(item => item.kind === kind);
     return route?.error ?? (route?.proxy === 'DIRECT' ? t('launcher.proxyDirect') : route?.proxy ?? (stored.proxyMode === 'custom' ? stored.proxyUrl : stored.proxyMode === 'direct' ? t('launcher.proxyDirect') : t('launcher.resolvingProxy')));
@@ -115,6 +130,9 @@ export function NetworkSettings({ network, run, disabled = false }: {
       {dirty ? <p className="launcher-network-pending" role="status">{t('launcher.networkPendingNote')}</p> : null}
       <div className="launcher-active-proxy" data-proxy-enabled={stored.proxyMode !== 'direct'}><span className="launcher-active-dot" /><div><strong>{proxyText}</strong><p>{stored.proxyMode === 'custom' ? stored.proxyUrl : t(stored.proxyMode === 'system' ? 'launcher.systemProxyPerTarget' : 'launcher.directProxyNote')}</p></div><Button className="launcher-proxy-toggle" role="switch" aria-label={t('launcher.proxyEnabled')} aria-checked={stored.proxyMode !== 'direct'} disabled={locked} onClick={() => void applyLive({ type: 'network.proxy.toggle', enabled: stored.proxyMode === 'direct' })} variant={stored.proxyMode === 'direct' ? 'secondary' : 'primary'}>{t(stored.proxyMode === 'direct' ? 'launcher.enableProxy' : 'launcher.disableProxy')}</Button></div>
       <p className="launcher-help">{t('launcher.proxyToggleNote')}</p>
+      <Select disabled={locked} label={t('launcher.activeProxyMode')} value={proxyChoice(stored)} options={proxyOptions} onValueChange={value => void applyLive({ type: 'network.patch', patch: proxyChoicePatch(value) })} />
+      <p className="launcher-help">{t(stored.proxyMode === 'custom' && stored.proxyRouting === 'smart' ? 'launcher.proxySmartNote' : stored.proxyMode === 'custom' ? 'launcher.proxyGlobalNote' : 'launcher.proxySystemDirectNote')}</p>
+      {stored.proxyMode === 'custom' && stored.proxyRouting === 'smart' ? <div data-smart-cdn-routes><p className="launcher-help">{t('launcher.pixivCdnRoutes')} {network.smartDirectHosts?.length ? network.smartDirectHosts.join(', ') + ' · ' + t('launcher.proxyDirect') : t('launcher.pixivCdnViaProxy')}</p><Button disabled={locked} size="sm" variant="quiet" onClick={() => void applyLive({ type: 'network.patch', patch: { proxyRouting: 'smart' } })}>{t('launcher.recheckSmartRoutes')}</Button></div> : null}
       <Select disabled={locked} label={t('launcher.quickProxyPort')} value={stored.proxyMode === 'custom' && LOCAL_HTTP_PROXY_PORTS.some(port => stored.proxyUrl === `http://127.0.0.1:${port}`) ? stored.proxyUrl : ''} options={[{ value: '', label: t('launcher.chooseProxyPort') }, ...LOCAL_HTTP_PROXY_PORTS.map(port => ({ value: `http://127.0.0.1:${port}`, label: `127.0.0.1:${port}` }))]} onValueChange={value => { if (value) void applyLive({ type: 'network.patch', patch: { proxyMode: 'custom', proxyUrl: value } }); }} />
       <p className="launcher-help">{t('launcher.proxyPortNote')}</p>
       <div className="launcher-active-sources">{(['npm', 'python', 'github'] as const).map(kind => <div className="launcher-active-source" key={kind} data-active-source={kind}>
@@ -127,7 +145,7 @@ export function NetworkSettings({ network, run, disabled = false }: {
       <p className="launcher-help">{t('launcher.networkApplyScope')}</p>
     </section>
     <section className="launcher-card"><div className="launcher-card-heading"><div><h2>{t('launcher.connectionRoute')}</h2><p>{t('launcher.proxyScopeNote')}</p></div><span className="launcher-badge">{t(dirty ? 'launcher.networkUnsaved' : 'launcher.networkSaved')}</span></div>
-      <fieldset disabled={locked} className="launcher-network-fields"><div className="launcher-network-grid"><Select label={t('launcher.proxyMode')} onValueChange={value => update({ proxyMode: value as DshNetworkSettings['proxyMode'] })} options={[{ value: 'system', label: t('launcher.proxySystem') }, { value: 'direct', label: t('launcher.proxyDirect') }, { value: 'custom', label: t('launcher.proxyCustom') }]} value={draft.proxyMode} /><TextField autoComplete="off" disabled={draft.proxyMode !== 'custom'} label={t('launcher.proxyAddress')} onChange={event => update({ proxyUrl: event.target.value })} placeholder="http://127.0.0.1:7897" value={draft.proxyUrl} /></div>
+      <fieldset disabled={locked} className="launcher-network-fields"><div className="launcher-network-grid"><Select label={t('launcher.proxyMode')} onValueChange={value => update(proxyChoicePatch(value))} options={proxyOptions} value={proxyChoice(draft)} /><TextField autoComplete="off" disabled={draft.proxyMode !== 'custom'} label={t('launcher.proxyAddress')} onChange={event => update({ proxyUrl: event.target.value })} placeholder="http://127.0.0.1:7897" value={draft.proxyUrl} /></div>
       <div className="launcher-network-profiles"><div><h3>{t('launcher.proxyProfiles')}</h3><p className="launcher-help">{t('launcher.proxyProfilesNote')}</p></div>
         <ul className="launcher-proxy-profile-list">{draft.proxyProfiles.map(profile => {
           const active = stored.proxyMode === 'custom' && activeProxy?.id === profile.id;
@@ -146,6 +164,13 @@ export function NetworkSettings({ network, run, disabled = false }: {
     </section>
     <section className="launcher-card launcher-network-test"><div className="launcher-card-heading"><div><h2>{t('launcher.networkDiagnostics')}</h2><p>{t('launcher.networkTestNote')}</p></div><Button disabled={locked} loading={testing} iconName="activity" onClick={() => void test()}>{t(dirty ? 'launcher.saveAndTestNetwork' : 'launcher.testNetwork')}</Button></div>
       {checks ? <div className="launcher-network-checks">{checks.results.map(result => <div key={result.kind} className="launcher-network-check" data-check-ok={result.ok}><h3>{sourceNames[result.kind]} <span>{t(result.ok ? 'launcher.checkPassed' : 'launcher.checkFailed')}</span></h3>{result.attempts.map((attempt, index) => <div key={index + '-' + attempt.url}><p>{index ? t('launcher.checkFallback') + ' · ' : ''}{attempt.url}</p><code>{attempt.proxy === 'DIRECT' ? t('launcher.proxyDirect') : attempt.proxy} · {Math.round(attempt.elapsedMs)} ms{attempt.status ? ' · HTTP ' + attempt.status : ''}</code>{attempt.error ? <p className="launcher-network-error">{attempt.error}</p> : null}</div>)}</div>)}<p className="launcher-help">{t('launcher.lastChecked')} {new Date(checks.checkedAt).toLocaleString()}</p></div> : <pre aria-label={t('launcher.networkDiagnostics')} className="launcher-command-output">{testResult || t('launcher.networkTestEmpty')}</pre>}
+    </section>
+    <section className="launcher-card launcher-network-test" data-pixiv-network-check>
+      <div className="launcher-card-heading"><div><h2>{t('launcher.pixivCheck')}</h2><p>{t('launcher.pixivCheckNote')}</p></div><Button disabled={locked} loading={testingPixiv} iconName="activity" onClick={() => void testPixiv()}>{t(dirty ? 'launcher.saveAndTestPixiv' : 'launcher.testPixiv')}</Button></div>
+      {network.pixivCheck ? <div className="launcher-network-checks">{network.pixivCheck.results.map(result => <div className="launcher-network-check" key={result.kind} data-pixiv-check={result.kind} data-check-ok={result.ok}>
+        <h3>{t('launcher.pixivCheck_' + result.kind)} · {t(result.ok ? 'launcher.checkPassed' : 'launcher.checkFailed')}</h3><p>{result.url}</p><code>{result.proxy === 'DIRECT' ? t('launcher.proxyDirect') : result.proxy} · {Math.round(result.elapsedMs)} ms{result.status ? ' · HTTP ' + result.status : ''}{result.bytes ? ' · ' + result.bytes + ' B' : ''}</code>{result.error ? <p className="launcher-network-error">{result.error}</p> : null}
+      </div>)}<p className="launcher-help">{t('launcher.lastChecked')} {new Date(network.pixivCheck.checkedAt).toLocaleString()}</p></div> : <p className="launcher-help">{t('launcher.pixivCheckEmpty')}</p>}
+      <p className="launcher-help">{t('launcher.pixivUpstreamNote')}</p>
     </section>
     <RecentNetworkFailures network={network} run={run} />
   </div>;

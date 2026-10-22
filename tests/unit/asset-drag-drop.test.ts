@@ -67,6 +67,14 @@ describe('resolveDragDropMode / resolveManagedDropEffect (WorldlineBox-aa3)', ()
     expect(resolveManagedDropEffect('move')).toBe('move');
   });
 
+  it('negotiates an allowed transport effect without changing the requested action', () => {
+    expect(resolveManagedDropEffect('move', 'copyLink')).toBe('copy');
+    expect(resolveManagedDropEffect('move', 'copyMove')).toBe('move');
+    expect(resolveManagedDropEffect('copy', 'copyLink')).toBe('copy');
+    expect(resolveManagedDropEffect('copy', 'move')).toBe('move');
+    expect(resolveManagedDropEffect('move', 'none')).toBeNull();
+  });
+
   it('uses platform-correct modifier labels (WorldlineBox-2vn)', () => {
     expect(dragCopyModifierLabel('mac')).toBe('Option');
     expect(dragCopyModifierLabel('windows')).toBe('Alt');

@@ -8,11 +8,13 @@ const mocked = vi.hoisted(() => ({
   handlers: new Map<string, (event: IpcMainInvokeEvent, input: unknown) => Promise<ApplicationNetworkResponse>>(),
   handle: vi.fn(), removeHandler: vi.fn(), state: vi.fn(), clear: vi.fn(),
   diagnosticListeners: new Set<() => void>(), stopDiagnostics: vi.fn(),
+  pixivTest: vi.fn(),
 }));
 vi.mock('electron', () => ({ ipcMain: { handle: mocked.handle, removeHandler: mocked.removeHandler } }));
 vi.mock('../../src/main/application-network', () => ({
   applicationNetworkState: mocked.state,
   clearApplicationNetworkDiagnostics: mocked.clear,
+  testApplicationPixivNetwork: mocked.pixivTest,
   onApplicationNetworkDiagnostics: (listener: () => void) => {
     mocked.diagnosticListeners.add(listener);
     return () => { mocked.stopDiagnostics(); mocked.diagnosticListeners.delete(listener); };
@@ -109,6 +111,11 @@ it('returns actual diagnostic test output and routes explicit inspection indepen
   expect(subject.network.inspect).not.toHaveBeenCalled();
   expect((await subject.request({ type: 'network.inspect' })).ok).toBe(true);
   expect(subject.network.inspect).toHaveBeenCalledOnce();
+});
+it('routes the Pixiv check through the authorized application network endpoint', async () => {
+  const subject = fixture();
+  expect((await subject.request({ type: 'network.pixiv.test' })).ok).toBe(true);
+  expect(mocked.pixivTest.mock.calls[0]![0] === subject.network).toBe(true);
 });
 
 it('broadcasts policy and diagnostic changes only to the live owner and removes every subscription on disposal', async () => {

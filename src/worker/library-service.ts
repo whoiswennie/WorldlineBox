@@ -82,6 +82,10 @@ import {
   workerMediaInteractiveDecodeConcurrency,
 } from './media-concurrency';
 import {
+  mediaFfmpegConcurrencyLimit,
+  systemAvailablePhysicalMemoryBytes,
+} from './media-memory-concurrency';
+import {
   encoderUsesHardwareName,
   ffmpegOneFrameEncodeArgs,
   listedH264ProxyEncoders,
@@ -465,7 +469,7 @@ const AUDIO_WAVEFORM_GENERATOR = `ffmpeg@${FFMPEG_VERSION}+${AUDIO_WAVEFORM_COVE
 const VIDEO_PROXY_SCALE_FILTER =
   'scale=w=min(720\\,iw):h=min(720\\,ih):force_original_aspect_ratio=decrease:force_divisible_by=2';
 type VideoProxyProfile = {
-  codec: 'h264' | 'vp9';
+  codec: 'h264';
   encoder: string;
   extension: 'mp4' | 'webm';
   mimeType: 'video/mp4' | 'video/webm';
@@ -742,6 +746,7 @@ import {
   classifyLibraryStorage,
   type LibraryStorageKind,
 } from './network-storage';
+import { ImportDestinationDirectoryCache } from './import-destination-directory-cache';
 import {
   LibraryParentError,
   resolveWritableLibraryParent,
@@ -904,10 +909,10 @@ import { inferRelinkBatchRoot } from '../shared/infer-relink-batch-root';
 import {
   DEFAULT_IMAGE_SEQUENCE_FPS,
   detectImageSequences,
-  findImageSequenceContaining,
   formatImageSequenceDisplayName,
   type ImageSequenceFrameCandidate,
 } from '../shared/image-sequence';
+import { discoverSelectedImageSequenceFrames } from './image-sequence-import-discovery';
 import { isImportConflictPlan, isImportSourceFailurePlan } from '../shared/import-outcome';
 import {
   ImportSourceFailurePause,
@@ -3037,6 +3042,14 @@ const FOLDER_CUSTOM_COVER_ASSET_SCHEMA_CHECKSUM = createHash('sha256')
   .update(FOLDER_CUSTOM_COVER_ASSET_SCHEMA_SQL)
   .digest('hex');
 
+const REVISION_SIZE_FINGERPRINT_INDEX_SCHEMA_SQL = `
+  CREATE INDEX revisions_size_fingerprint_idx
+    ON revisions(byte_size, content_fingerprint);
+`;
+const REVISION_SIZE_FINGERPRINT_INDEX_SCHEMA_CHECKSUM = createHash('sha256')
+  .update(REVISION_SIZE_FINGERPRINT_INDEX_SCHEMA_SQL)
+  .digest('hex');
+
 const ENTITY_APPEARANCE_TABLES = [
   'managed_folders',
   'linked_folders',
@@ -3801,6 +3814,11 @@ export const MIGRATIONS = [
     sql: FOLDER_CUSTOM_COVER_ASSET_SCHEMA_SQL,
     checksum: FOLDER_CUSTOM_COVER_ASSET_SCHEMA_CHECKSUM,
   },
+  {
+    version: 59,
+    sql: REVISION_SIZE_FINGERPRINT_INDEX_SCHEMA_SQL,
+    checksum: REVISION_SIZE_FINGERPRINT_INDEX_SCHEMA_CHECKSUM,
+  },
 ] as const;
 export const SUPPORTED_SCHEMA_VERSION = MIGRATIONS.at(-1)!.version;
 
@@ -4141,6 +4159,34 @@ interface ExistingAssetRow {
 interface ExistingDestination {
   actualRelativePath: string;
   size: number;
+  fileVersion?: {
+    ctimeMs: number;
+    dev: number;
+    ino: number;
+    mtimeMs: number;
+  };
+}
+
+function sameDestinationSnapshot(
+  expected: ExistingDestination | undefined,
+  current: ExistingDestination | undefined,
+): boolean {
+  if (expected === undefined || current === undefined) return expected === current;
+  if (
+    expected.actualRelativePath !== current.actualRelativePath ||
+    expected.size !== current.size
+  ) {
+    return false;
+  }
+  const expectedVersion = expected.fileVersion;
+  const currentVersion = current.fileVersion;
+  if (expectedVersion === undefined || currentVersion === undefined) {
+    return expectedVersion === currentVersion;
+  }
+  return expectedVersion.ctimeMs === currentVersion.ctimeMs
+    && expectedVersion.dev === currentVersion.dev
+    && expectedVersion.ino === currentVersion.ino
+    && expectedVersion.mtimeMs === currentVersion.mtimeMs;
 }
 
 interface PortablePathRow {
@@ -4152,6 +4198,7 @@ interface ImportAction {
   destinationRelativePath: string;
   entry: ImportSourceEntry;
   existingAsset?: ExistingAssetRow;
+  expectedDestination: ExistingDestination | undefined;
   isReplacement: boolean;
 }
 
@@ -4760,7 +4807,8 @@ class AsyncSemaphore {
 // libraries in the process, not merely within one queue drain.
 // Image decode gets a small hard-capped pool; physical CPU topology may only
 // reduce it on single-core machines, never expand native memory pressure.
-// FFmpeg and OIIO stay at one because their frame buffers are memory-bound.
+// FFmpeg concurrency adapts to current system memory; OIIO remains single-flight
+// because its frame buffers are large.
 const MEDIA_DECODE_CONCURRENCY = workerMediaDecodeConcurrency();
 const MEDIA_INTERACTIVE_DECODE_CONCURRENCY = workerMediaInteractiveDecodeConcurrency();
 // Background image work remains limited to the original two slots. Two extra
@@ -4770,9 +4818,6 @@ const MEDIA_INTERACTIVE_DECODE_CONCURRENCY = workerMediaInteractiveDecodeConcurr
 const sharpNativeDecoderSemaphore = new AsyncSemaphore(MEDIA_INTERACTIVE_DECODE_CONCURRENCY);
 const sharpDecoderSemaphore = new AsyncSemaphore(MEDIA_DECODE_CONCURRENCY);
 const interactiveSharpDecoderSemaphore = new AsyncSemaphore(MEDIA_INTERACTIVE_DECODE_CONCURRENCY);
-// FFmpeg's thumbnail filter can retain decoded frames; one native process at
-// a time is the intentional safety limit even on high-core machines.
-const ffmpegDecoderSemaphore = new AsyncSemaphore(1);
 const oiioDecoderSemaphore = new AsyncSemaphore(1);
 
 /** True when a visible/viewer Sharp job can start without aborting a running background decode. */
@@ -4997,6 +5042,8 @@ export interface LibraryServiceOptions {
   /** HTTP(S) transport receives an already validated, pinned address per hop. */
   pinnedHttpTransport?: PinnedHttpTransport;
   destinationLstat?: (destinationPath: string) => Stats;
+  /** Test-only seam for an external destination appearing just before apply. */
+  beforeImportDestinationApply?: () => void;
   failAt?: ImportFailurePoint | ImportFailurePoint[];
   /** E2E-only hard stop used to leave an operation at a real process boundary. */
   terminateProcessAt?: ImportFailurePoint;
@@ -5021,6 +5068,8 @@ export interface LibraryServiceOptions {
   mediaComponentProbe?: (component: MediaAutoRepairComponent) => boolean;
   /** Injectable spawn for binary subprocesses (ffmpeg/ffprobe/oiiotool). */
   spawnFn?: SpawnFunction;
+  /** Test-only system-memory seam for deterministic adaptive FFmpeg concurrency coverage. */
+  availablePhysicalMemoryBytesForTests?: () => number | undefined;
   /**
    * 永久删除一个链接资产的源文件。可注入，用于覆盖权限/占用/磁盘错误等路径。
    * 2026-09-15 起链接资产的删除**不再使用系统回收站**。
@@ -6855,6 +6904,7 @@ function closeIgnoringFailure(connection: DatabaseConnection | undefined): void 
 export class LibraryService {
   /** Stable for this Worker process; a new app process gets a new session. */
   private readonly applicationSessionId = randomUUID();
+  private reportedMemoryProbeUnavailable = false;
   /** App setting: audio grid thumbnails use cover art when the file has one. */
   private audioPreviewPrefersCover = true;
   private readonly openById = new Map<string, OpenLibrary>();
@@ -7407,9 +7457,9 @@ export class LibraryService {
             modified_at: string | null;
           } | undefined;
 
-        let stat: Awaited<ReturnType<typeof lstatAsync>>;
+        let stat: Stats | BigIntStats;
         try {
-          stat = await lstatAsync(absolutePath);
+          stat = await lstatAsync(absolutePath, { bigint: true });
         } catch (error) {
           if (!isMissingPathError(error)) return null;
           if (existing) missingAssetIds.push(existing.asset_id);
@@ -7810,21 +7860,22 @@ export class LibraryService {
     return mediaNativeMemoryBudget.run(
       spawnOptions.signal,
       memoryBytes,
-      () => ffmpegDecoderSemaphore.run(
-        spawnOptions.signal,
-        async () => {
-          try {
-            const result = await this.spawnFn(command, boundedArgs, spawnOptions);
-            if (mediaResourceFailureFromSpawnResult(result)) {
-              throw asMediaResourceExhaustedError(result, 'ffmpeg')
-                ?? new Error('FFmpeg reported native resource pressure.');
-            }
-            return result;
-          } catch (error) {
-            throw asMediaResourceExhaustedError(error, 'ffmpeg') ?? error;
+      async () => {
+        try {
+          const result = await this.spawnFn(command, boundedArgs, spawnOptions);
+          if (mediaResourceFailureFromSpawnResult(result)) {
+            throw asMediaResourceExhaustedError(result, 'ffmpeg')
+              ?? new Error('FFmpeg reported native resource pressure.');
           }
-        },
-      ),
+          return result;
+        } catch (error) {
+          throw asMediaResourceExhaustedError(error, 'ffmpeg') ?? error;
+        }
+      },
+      {
+        key: 'ffmpeg',
+        limit: () => mediaFfmpegConcurrencyLimit(this.availablePhysicalMemoryBytes()),
+      },
     );
   }
 
@@ -7866,6 +7917,32 @@ export class LibraryService {
     } catch {
       // Diagnostics are strictly best effort and must never replace the primary failure.
     }
+  }
+
+  private availablePhysicalMemoryBytes(): number | undefined {
+    let bytes: number | undefined;
+    try {
+      bytes = this.options.availablePhysicalMemoryBytesForTests
+        ? this.options.availablePhysicalMemoryBytesForTests()
+        : systemAvailablePhysicalMemoryBytes();
+    } catch {
+      bytes = undefined;
+    }
+
+    if (Number.isSafeInteger(bytes) && bytes! > 0) {
+      this.reportedMemoryProbeUnavailable = false;
+      return bytes;
+    }
+
+    if (!this.reportedMemoryProbeUnavailable) {
+      this.reportedMemoryProbeUnavailable = true;
+      this.diagnose(
+        'media-memory.probe-unavailable',
+        new Error('System physical memory is unavailable; FFmpeg concurrency uses the conservative limit.'),
+        { fallback: 'conservative', maxConcurrentFfmpeg: mediaFfmpegConcurrencyLimit(undefined) },
+      );
+    }
+    return undefined;
   }
 
   reportDiagnostic(scope: string, error: unknown, context?: Record<string, unknown>): void {
@@ -12902,6 +12979,8 @@ export class LibraryService {
   private portableDiskDestination(
     openLibrary: OpenLibrary,
     relativePath: string,
+    directoryCache?: ImportDestinationDirectoryCache,
+    options: { validateMissingSegments?: boolean; snapshotFile?: boolean } = {},
   ): ExistingDestination | undefined {
     const normalized = normalizeRelativeAssetPath(relativePath);
     const segments = normalized.split('/');
@@ -12910,16 +12989,17 @@ export class LibraryService {
 
     for (const [index, segment] of segments.entries()) {
       const segmentIdentity = portablePathSegmentIdentity(segment);
-      let children;
+      let matches;
       try {
-        children = readdirSync(cursor, { withFileTypes: true });
+        matches = directoryCache
+          ? directoryCache.matches(cursor, segmentIdentity)
+          : readdirSync(cursor, { withFileTypes: true }).filter(
+              (entry) => portablePathSegmentIdentity(entry.name) === segmentIdentity,
+            );
       } catch (error) {
         if (isMissingPathError(error)) return undefined;
         throw error;
       }
-      const matches = children.filter(
-        (entry) => portablePathSegmentIdentity(entry.name) === segmentIdentity,
-      );
       if (matches.length > 1) {
         throw new LibraryServiceError('IMPORT_APPLY_FAILED', {
           reason: 'NAME_NOT_SUPPORTED',
@@ -12927,6 +13007,7 @@ export class LibraryService {
       }
       const match = matches[0];
       if (!match) {
+        if (options.validateMissingSegments === false) return undefined;
         // Let the target filesystem, rather than a guessed constant, decide
         // whether this absent component is a valid candidate name.
         const candidatePath = path.join(cursor, segment);
@@ -12951,9 +13032,22 @@ export class LibraryService {
         cursor = path.join(cursor, match.name);
         continue;
       }
+      let size = -1;
+      let fileVersion: ExistingDestination['fileVersion'];
+      if (match.isFile() && options.snapshotFile !== false) {
+        const stat = lstatSync(path.join(cursor, match.name));
+        size = stat.size;
+        fileVersion = {
+          ctimeMs: stat.ctimeMs,
+          dev: stat.dev,
+          ino: stat.ino,
+          mtimeMs: stat.mtimeMs,
+        };
+      }
       return {
         actualRelativePath: actualSegments.join('/'),
-        size: match.isFile() ? lstatSync(path.join(cursor, match.name)).size : -1,
+        size,
+        ...(fileVersion ? { fileVersion } : {}),
       };
     }
     return undefined;
@@ -12966,7 +13060,8 @@ export class LibraryService {
    */
   private managedDestinationIndex(openLibrary: OpenLibrary): Map<string, ExistingDestination> {
     const assetColumns = columnsFor(openLibrary.connection, 'assets');
-    const deletedClause = assetColumns.has('deleted_at') ? 'WHERE a.deleted_at IS NULL' : '';
+    const filters = ["a.location_kind = 'managed'"];
+    if (assetColumns.has('deleted_at')) filters.push('a.deleted_at IS NULL');
     const rows = openLibrary.connection
       .prepare(
         `SELECT a.path_identity AS path_identity,
@@ -12974,7 +13069,7 @@ export class LibraryService {
                 r.byte_size AS byte_size
            FROM assets a
            LEFT JOIN revisions r ON r.revision_id = a.current_revision_id
-          ${deletedClause}`,
+          WHERE ${filters.join(' AND ')}`,
       )
       .all() as Array<{
         path_identity: string;
@@ -12995,9 +13090,19 @@ export class LibraryService {
     openLibrary: OpenLibrary,
     relativePath: string,
     index: Map<string, ExistingDestination> | undefined,
+    directoryCache?: ImportDestinationDirectoryCache,
+    options: { validateMissingSegments?: boolean } = {},
   ): ExistingDestination | undefined {
-    if (index) return index.get(portablePathIdentity(relativePath));
-    return this.portableDiskDestination(openLibrary, relativePath);
+    if (index) {
+      const indexedDestination = index.get(portablePathIdentity(relativePath));
+      if (indexedDestination !== undefined) return indexedDestination;
+    }
+    return this.portableDiskDestination(
+      openLibrary,
+      relativePath,
+      directoryCache,
+      options,
+    );
   }
 
   private assetsPath(openLibrary: OpenLibrary): string {
@@ -13104,6 +13209,8 @@ export class LibraryService {
 
   private expandImageSequenceSourcePaths(sourcePaths: readonly string[]): string[] {
     const expanded = new Map<string, string>();
+    const selectedPaths: string[] = [];
+    const selectedPathSet = new Set<string>();
     for (const rawPath of sourcePaths) {
       let selectedPath: string;
       try {
@@ -13113,16 +13220,15 @@ export class LibraryService {
         continue;
       }
       expanded.set(selectedPath, selectedPath);
-      const directory = path.dirname(selectedPath);
-      let siblingPaths: string[];
-      try {
-        siblingPaths = readdirSync(directory, { withFileTypes: true })
-          .filter((entry) => entry.isFile() && !entry.isSymbolicLink())
-          .map((entry) => path.join(directory, entry.name));
-      } catch {
-        continue;
+      if (!selectedPathSet.has(selectedPath)) {
+        selectedPathSet.add(selectedPath);
+        selectedPaths.push(selectedPath);
       }
-      const sequence = findImageSequenceContaining(selectedPath, siblingPaths);
+    }
+
+    const sequencesBySelectedPath = discoverSelectedImageSequenceFrames(selectedPaths);
+    for (const selectedPath of selectedPaths) {
+      const sequence = sequencesBySelectedPath.get(selectedPath)?.candidate;
       if (!sequence) continue;
       for (const frame of sequence.frames) {
         expanded.set(frame.value, frame.value);
@@ -13160,6 +13266,7 @@ export class LibraryService {
     if (selectedPaths.length === 0) return null;
 
     const sharp = requireSharp();
+    const sequencesBySelectedPath = discoverSelectedImageSequenceFrames(selectedPaths);
     const metadataCache = new Map<string, { width: number; height: number } | null>();
     const sequences: ImageSequenceImportOffer['sequences'] = [];
     const seenRunKeys = new Set<string>();
@@ -13199,17 +13306,11 @@ export class LibraryService {
     };
 
     for (const selectedPath of selectedPaths) {
-      const directory = path.dirname(selectedPath);
-      let siblingPaths: string[];
-      try {
-        siblingPaths = readdirSync(directory, { withFileTypes: true })
-          .filter((entry) => entry.isFile() && !entry.isSymbolicLink())
-          .map((entry) => path.join(directory, entry.name));
-      } catch {
-        continue;
-      }
-      const candidate = findImageSequenceContaining(selectedPath, siblingPaths);
+      const candidate = sequencesBySelectedPath.get(selectedPath)?.candidate;
       if (!candidate) continue;
+      const runKey = candidate.frames.map((frame) => frame.value).join('\0');
+      if (seenRunKeys.has(runKey)) continue;
+      seenRunKeys.add(runKey);
 
       await Promise.all(
         candidate.frames.map(async (frame) => {
@@ -13247,9 +13348,6 @@ export class LibraryService {
       }
       if (!complete || matching.length !== candidate.frames.length) continue;
       if (!matching.some((frame) => selectedPathSet.has(frame.value))) continue;
-      const runKey = matching.map((frame) => frame.value).join('\0');
-      if (seenRunKeys.has(runKey)) continue;
-      seenRunKeys.add(runKey);
       const firstFrame = matching[0]!.frameNumber;
       const lastFrame = matching.at(-1)!.frameNumber;
       sequences.push({
@@ -28559,31 +28657,10 @@ export class LibraryService {
     };
   }
 
-  private vp9VideoProxyProfile(): VideoProxyProfile {
-    return {
-      codec: 'vp9',
-      encoder: 'libvpx-vp9',
-      extension: 'webm',
-      mimeType: 'video/webm',
-      args: [
-        '-c:v', 'libvpx-vp9',
-        '-threads', '1',
-        '-b:v', '1M',
-        '-deadline', 'realtime',
-        '-cpu-used', '8',
-        '-row-mt', '1',
-        '-g', '60',
-        '-c:a', 'libopus',
-        '-b:a', '128k',
-      ],
-    };
-  }
-
   /**
    * Listing an encoder in `ffmpeg -encoders` is not a capability proof.
-   * Probe a 1-frame lavfi encode and keep the first encoder that writes a
-   * non-empty file. Hardware names that fail fall through to the next listed
-   * candidate, then to VP9.
+   * Probe a 1-frame lavfi encode and keep the first H.264 encoder that writes
+   * a non-empty file. If none works, proxy generation fails without trying VP9.
    */
   private async probeVideoProxyEncoder(
     ffmpegPath: string,
@@ -28652,12 +28729,10 @@ export class LibraryService {
       this.videoProxyEncoderByFfmpegPath.set(ffmpegPath, encoder);
     }
 
-    return encoder === null
-      ? [this.vp9VideoProxyProfile()]
-      : [this.h264VideoProxyProfile(encoder), this.vp9VideoProxyProfile()];
+    return encoder === null ? [] : [this.h264VideoProxyProfile(encoder)];
   }
 
-  /** Generate an H.264/MP4 proxy, with fast VP9/WebM fallback. */
+  /** Generate an H.264/MP4 proxy; VP9 is deliberately never used. */
   private async generateVideoProxy(
     input: { libraryId: string; assetId: string },
     openLibrary: OpenLibrary,
@@ -28669,8 +28744,8 @@ export class LibraryService {
   ): Promise<string> {
     const artifactId = randomUUID();
     const profiles = await this.resolveVideoProxyProfiles(ffmpegPath, execution);
-    let lastError: unknown = new Error('No video proxy encoder is available.');
-    let failedProfile = profiles[0] ?? this.vp9VideoProxyProfile();
+    let lastError: unknown = new Error('No H.264 video proxy encoder is available.');
+    let failedProfile = profiles[0] ?? this.h264VideoProxyProfile('unavailable');
 
     for (const profile of profiles) {
       failedProfile = profile;
@@ -42826,10 +42901,12 @@ export class LibraryService {
       SELECT a.asset_id, a.relative_file_path,
              ra.artifact_id AS thumbnail_artifact_id,
              ra.status AS thumbnail_status
-        FROM assets a
-        JOIN revisions r ON r.revision_id = a.current_revision_id
+        FROM revisions AS r INDEXED BY revisions_size_fingerprint_idx
+        JOIN assets a
+          ON a.asset_id = r.asset_id
+         AND a.current_revision_id = r.revision_id
        LEFT JOIN revision_artifacts ra
-          ON ra.revision_id = a.current_revision_id
+          ON ra.revision_id = r.revision_id
          AND ra.kind = CASE
            WHEN LOWER(a.relative_file_path) LIKE '%.mp4'
              OR LOWER(a.relative_file_path) LIKE '%.webm'
@@ -42862,18 +42939,20 @@ export class LibraryService {
     // Revisions already store a SHA-1 of file bytes. Matching that avoids
     // hashing every same-size library file for each imported item.
     if (contentFingerprint) {
-      const fingerprinted = openLibrary.connection
-        .prepare(`${selectSameSize} AND r.content_fingerprint = ?`)
+      const fingerprinted = this.prepareCached<Statement>(
+        openLibrary,
+        `${selectSameSize} AND r.content_fingerprint = ?`,
+      )
         .get(byteSize, contentFingerprint) as MatchedAssetRow | undefined;
       if (fingerprinted) return toMatch(fingerprinted);
     }
 
-    const rows = openLibrary.connection
-      .prepare(
-        contentFingerprint
-          ? `${selectSameSize} AND r.content_fingerprint IS NULL`
-          : selectSameSize,
-      )
+    const rows = this.prepareCached<Statement>(
+      openLibrary,
+      contentFingerprint
+        ? `${selectSameSize} AND r.content_fingerprint IS NULL`
+        : selectSameSize,
+    )
       .all(byteSize) as MatchedAssetRow[];
 
     for (const row of rows) {
@@ -42905,9 +42984,9 @@ export class LibraryService {
     displayName: string;
     thumbnailArtifactId: string | null;
   } | null {
-    const row = openLibrary.connection
-      .prepare(
-        `SELECT a.asset_id, a.relative_file_path,
+    const row = this.prepareCached<Statement>(
+      openLibrary,
+      `SELECT a.asset_id, a.relative_file_path,
                 ra.artifact_id AS thumbnail_artifact_id,
                 ra.status AS thumbnail_status
            FROM assets a
@@ -42929,9 +43008,8 @@ export class LibraryService {
           WHERE a.deleted_at IS NULL
             AND a.location_kind = 'managed'
             AND a.current_revision_id IS NOT NULL
-            AND LOWER(a.relative_file_path) = LOWER(?)`,
-      )
-      .get(relativeFilePath) as {
+            AND a.path_identity = ?`,
+    ).get(portablePathIdentity(relativeFilePath)) as {
       asset_id: string;
       relative_file_path: string;
       thumbnail_artifact_id: string | null;
@@ -43036,6 +43114,7 @@ export class LibraryService {
       expandImageSequences: input.expandImageSequences === true,
     });
     const seenDestinations = new Map<string, number>();
+    const destinationDirectoryCache = new ImportDestinationDirectoryCache();
     const contentHashCache = new Map<string, string>();
     const seenContentHashes = new Set<string>();
     const sequenceBatchPaths = new Set<string>();
@@ -43067,6 +43146,7 @@ export class LibraryService {
         const destination = this.portableDiskDestination(
           openLibrary,
           entry.destinationRelativePath,
+          destinationDirectoryCache,
         );
         existingSize = destination?.size;
         if (destination && destination.size !== -1) {
@@ -43212,6 +43292,7 @@ export class LibraryService {
     const destinationIndex = skipContentHash
       ? (input.destinationIndex ?? this.managedDestinationIndex(openLibrary))
       : undefined;
+    const manifestDirectoryCache = new ImportDestinationDirectoryCache();
     let preparingManifest: OperationManifest;
     try {
       preparingManifest = {
@@ -43225,13 +43306,15 @@ export class LibraryService {
               openLibrary,
               entry.destinationRelativePath,
               destinationIndex,
+              manifestDirectoryCache,
+              { validateMissingSegments: !skipContentHash },
             ) !== undefined,
           stageName: String(index),
         })),
         directories: directories.map((relativePath) => ({
           existed: skipContentHash
             ? existsSync(this.folderPath(openLibrary, relativePath))
-            : this.portableDiskDestination(openLibrary, relativePath) !== undefined,
+            : this.portableDiskDestination(openLibrary, relativePath, manifestDirectoryCache) !== undefined,
           relativePath,
         })),
       };
@@ -43435,6 +43518,9 @@ export class LibraryService {
       preparingManifest,
     } = context;
     const seenDestinations = new Map<string, number>();
+    // Staging may take a long time. Do not reuse the initial manifest's disk
+    // view; this snapshot belongs only to post-stage classification.
+    const destinationDirectoryCache = new ImportDestinationDirectoryCache();
     const contentHashCache = new Map<string, string>();
     const seenContentHashes = new Set<string>();
     // Intra-batch identical bytes are common in particle/VFX sequences (clear frames).
@@ -43465,6 +43551,8 @@ export class LibraryService {
             openLibrary,
             entry.destinationRelativePath,
             destinationIndex,
+            destinationDirectoryCache,
+            { validateMissingSegments: !skipContentHash },
           );
           existingSize = destination?.size;
           if (destination && destination.size !== -1) {
@@ -43526,6 +43614,8 @@ export class LibraryService {
               openLibrary,
               entry.destinationRelativePath,
               destinationIndex,
+              destinationDirectoryCache,
+              { validateMissingSegments: !skipContentHash },
             );
             const existing =
               destination && destination.size !== -1
@@ -43576,6 +43666,8 @@ export class LibraryService {
             openLibrary,
             entry.destinationRelativePath,
             destinationIndex,
+            destinationDirectoryCache,
+            { validateMissingSegments: !skipContentHash },
           ) !== undefined,
         stageName: String(index),
       })),
@@ -44765,6 +44857,7 @@ export class LibraryService {
     }
 
     const openLibrary = this.requireOpenLibrary(pending.libraryId);
+    const destinationDirectoryCache = new ImportDestinationDirectoryCache();
     const directoryByIdentity = new Map<string, string>();
     let resolvedDirectories: string[];
     try {
@@ -44778,7 +44871,11 @@ export class LibraryService {
           resolvedParent === '.'
             ? path.posix.basename(relativeDirectory)
             : path.posix.join(resolvedParent, path.posix.basename(relativeDirectory));
-        const existing = this.portableDiskDestination(openLibrary, candidate);
+        const existing = this.portableDiskDestination(
+          openLibrary,
+          candidate,
+          destinationDirectoryCache,
+        );
         if (existing && existing.size !== -1) {
           throw new LibraryServiceError('IMPORT_APPLY_FAILED', {
             reason: 'NAME_NOT_SUPPORTED',
@@ -44801,7 +44898,13 @@ export class LibraryService {
     const destination = (relativePath: string): ExistingDestination | undefined => {
       const identity = portablePathIdentity(relativePath);
       return occupied.get(identity)
-        ?? this.lookupImportDestination(openLibrary, relativePath, pending.destinationIndex);
+        ?? this.lookupImportDestination(
+          openLibrary,
+          relativePath,
+          pending.destinationIndex,
+          destinationDirectoryCache,
+          { validateMissingSegments: !pending.skipContentHash },
+        );
     };
     const copyPath = (relativePath: string): string => {
       const directory = path.posix.dirname(relativePath);
@@ -44917,11 +45020,13 @@ export class LibraryService {
           } else {
             const retainedAssetId = existingDestination
               ? (
-                  openLibrary.connection
-                    .prepare(
-                      'SELECT asset_id FROM assets WHERE path_identity = ?',
-                    )
-                    .get(portablePathIdentity(destinationRelativePath)) as
+                  this.prepareCached<Statement>(
+                    openLibrary,
+                    `SELECT asset_id FROM assets
+                      WHERE path_identity = ?
+                        AND location_kind = 'managed'
+                        AND deleted_at IS NULL`,
+                  ).get(portablePathIdentity(destinationRelativePath)) as
                     | { asset_id: string }
                     | undefined
                 )?.asset_id
@@ -44963,11 +45068,21 @@ export class LibraryService {
         }
 
         const pathIdentity = portablePathIdentity(destinationRelativePath);
-        const existingAsset = openLibrary.connection
-          .prepare(
-            'SELECT asset_id, current_revision_id FROM assets WHERE path_identity = ?',
-          )
-          .get(pathIdentity) as ExistingAssetRow | undefined;
+        const existingAsset = this.prepareCached<Statement>(
+          openLibrary,
+          `SELECT asset_id, current_revision_id
+             FROM assets
+            WHERE path_identity = ?
+              AND location_kind = 'managed'
+              AND deleted_at IS NULL`,
+        ).get(pathIdentity) as ExistingAssetRow | undefined;
+        const expectedDestination = pending.skipContentHash
+          ? undefined
+          : this.portableDiskDestination(
+              openLibrary,
+              destinationRelativePath,
+              destinationDirectoryCache,
+            );
         occupied.set(pathIdentity, {
           actualRelativePath: destinationRelativePath,
           size: entry.byteSize,
@@ -44981,6 +45096,7 @@ export class LibraryService {
           destinationRelativePath,
           entry,
           existingAsset,
+          expectedDestination,
           isReplacement,
         });
         occupiedContentHashes.set(pathIdentity, entrySha256);
@@ -45117,6 +45233,7 @@ export class LibraryService {
     let importedCount = 0;
     let replacedCount = 0;
     let committed = false;
+    let destinationGuardFailed = false;
 
     const completeCommittedImport = (): ImportCompletion => {
       const affected = [...new Set([...affectedAssetIds, ...mergedAssetIds])];
@@ -45169,6 +45286,42 @@ export class LibraryService {
         } else if (!lstatSync(directoryPath).isDirectory()) {
           throw new Error('An imported directory conflicts with a file.');
         }
+      }
+
+      // Directory creation and durable operation bookkeeping happen after
+      // classification. Take one final filesystem snapshot immediately
+      // before touching destinations so a file created while the user was
+      // deciding cannot be silently overwritten.
+      try {
+        this.options.beforeImportDestinationApply?.();
+        const applicationDirectoryCache = new ImportDestinationDirectoryCache();
+        for (const action of actions) {
+          const currentDestination = this.portableDiskDestination(
+            openLibrary,
+            action.destinationRelativePath,
+            applicationDirectoryCache,
+            pending.skipContentHash
+              ? { validateMissingSegments: false, snapshotFile: false }
+              : undefined,
+          );
+          if (pending.skipContentHash) {
+            // Bulk import actions are always keep-both placements; any physical
+            // occupant absent from the identity index is an unapproved target.
+            if (currentDestination !== undefined) {
+              throw new LibraryServiceError('IMPORT_APPLY_FAILED');
+            }
+            continue;
+          }
+          if (
+            !sameDestinationSnapshot(action.expectedDestination, currentDestination)
+            || (currentDestination !== undefined && !action.isReplacement)
+          ) {
+            throw new LibraryServiceError('IMPORT_APPLY_FAILED');
+          }
+        }
+      } catch (error) {
+        destinationGuardFailed = true;
+        throw error;
       }
 
       actions.forEach((action, index) => {
@@ -45558,7 +45711,44 @@ export class LibraryService {
       if (error instanceof SimulatedCrashError) {
         throw new LibraryServiceError('IMPORT_APPLY_FAILED', { cause: error });
       }
-      const rolledBack = rollbackFiles();
+      const untouchedGuardFailure = destinationGuardFailed
+        && backups.length === 0
+        && placedPaths.length === 0;
+      const rolledBack = untouchedGuardFailure
+        ? (() => {
+            let succeeded = true;
+            for (const directoryPath of [...createdDirectories].reverse()) {
+              try {
+                rmdirSync(directoryPath);
+              } catch (cleanupError) {
+                if (
+                  isMissingPathError(cleanupError)
+                  || hasErrorCode(cleanupError, 'ENOTEMPTY')
+                  || hasErrorCode(cleanupError, 'EEXIST')
+                ) {
+                  // The guard may have found a newly-created external file in
+                  // this directory. Preserve that occupied directory.
+                  continue;
+                }
+                succeeded = false;
+                this.diagnose('import-apply.preflight-directory-cleanup', cleanupError, {
+                  libraryId: pending.libraryId,
+                  operationId,
+                });
+              }
+            }
+            try {
+              this.removeOperation(operationPath);
+            } catch (cleanupError) {
+              succeeded = false;
+              this.diagnose('import-apply.preflight-operation-cleanup', cleanupError, {
+                libraryId: pending.libraryId,
+                operationId,
+              });
+            }
+            return succeeded;
+          })()
+        : rollbackFiles();
       try {
         openLibrary.connection
           .prepare(
@@ -46153,14 +46343,14 @@ export class LibraryService {
               pendingDirectories.push({ absolutePath, relativePath });
             }
           } else if (child.isFile()) {
-            let stat: Awaited<ReturnType<typeof lstatAsync>>;
+            let stat: Stats | BigIntStats;
             try {
               // Keep the existing synchronous stat seam for deterministic tests;
               // production uses the promise API so a slow volume cannot block the
               // Worker event loop during open reconciliation.
               stat = this.options.assetLstat
                 ? this.options.assetLstat(absolutePath)
-                : await lstatAsync(absolutePath);
+                : await lstatAsync(absolutePath, { bigint: true });
             } catch (error) {
               if (isUnreadablePathError(error)) continue;
               throw new LibraryServiceError(input.errorCode, { cause: error });
@@ -46177,7 +46367,7 @@ export class LibraryService {
                   && isDefaultIgnoredAssetEntry(child.name, 'file'))
                 && !input.explicitlyIgnored(normalized, 'asset')
               ) {
-                const byteSize = stat.size;
+                const byteSize = Number(stat.size);
                 if (!Number.isSafeInteger(byteSize)) {
                   throw new LibraryServiceError(input.errorCode, {
                     reason: 'UNSUPPORTED_FILE_ENTRY',
@@ -47197,7 +47387,7 @@ export class LibraryService {
         verificationConnection.close();
       }
 
-      renameSync(partialPath, finalPath);
+      renamePathWithRetry(partialPath, finalPath);
       renamed = true;
       return this.openLibrary(finalPath);
     } catch (error) {
@@ -47205,8 +47395,8 @@ export class LibraryService {
       const cleanupPath = renamed ? finalPath : partialPath;
       try {
         if (existsSync(cleanupPath)) {
-          if (renamed) renameSync(finalPath, partialPath);
-          rmSync(partialPath, { force: true, recursive: true });
+          if (renamed) renamePathWithRetry(finalPath, partialPath);
+          removePathWithSyncRetry(partialPath);
         }
       } catch (cleanupError) {
         throw new LibraryServiceError('LIBRARY_CLEANUP_FAILED', { cause: cleanupError });

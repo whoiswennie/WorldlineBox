@@ -30,6 +30,22 @@ test('mcp.request uses the owned settings channel', async () => {
   expect(ipcRenderer.invoke).toHaveBeenCalledWith(MCP_SETTINGS_REQUEST_CHANNEL, { type: 'get' });
 });
 
+test('mcp.request preserves structured credential-file diagnostics from Main', async () => {
+  const failure = {
+    ok: false,
+    code: 'MCP_CREDENTIAL_ACCESS_DENIED',
+    message: 'Could not restore access.',
+    details: {
+      filePath: 'user-data/mcp-client-credential-pepper',
+      systemCode: 'EPERM',
+      recoveryCode: '5',
+    },
+  };
+  vi.mocked(ipcRenderer.invoke).mockResolvedValue(failure);
+
+  await expect(mcp.request({ type: 'get' })).resolves.toEqual(failure);
+});
+
 test('mcp.onChanged subscribes to the settings event channel', () => {
   const unsubscribe = mcp.onChanged(() => undefined);
   expect(ipcRenderer.on).toHaveBeenCalledWith(MCP_SETTINGS_EVENT_CHANNEL, expect.any(Function));

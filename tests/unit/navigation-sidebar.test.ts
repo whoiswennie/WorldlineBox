@@ -17,12 +17,16 @@ import {
   customOrderKey,
 } from "../../src/renderer/folder-custom-order";
 
-function createDragTransfer(types: string[]): DataTransfer {
+function createDragTransfer(
+  types: string[],
+  files: File[] = [],
+  effectAllowed: DataTransfer['effectAllowed'] = 'all',
+): DataTransfer {
   return {
     types,
     dropEffect: "none",
-    effectAllowed: "all",
-    files: [],
+    effectAllowed,
+    files,
     getData: () => "",
     setData: () => undefined,
   } as unknown as DataTransfer;
@@ -551,6 +555,148 @@ describe("NavigationSidebar virtual library root", () => {
 
     expect(trashRow?.classList.contains("is-drop-target")).toBe(true);
     expect(collectionRow?.classList.contains("is-drop-target")).toBe(false);
+  });
+
+  it("routes only an active in-app native File drop to the trash", async () => {
+    const files = [new File(["fixture"], "fixture.png", { type: "image/png" })];
+    const onResolveManagedAssetDrop = vi.fn(async () => ["asset-1"]);
+    const onAssetsDroppedOnTrash = vi.fn();
+    const props = createNavigationProps({
+      isInternalAssetDrag: () => true,
+      onResolveManagedAssetDrop,
+      onAssetsDroppedOnTrash,
+    });
+    container = document.createElement("div");
+    document.body.append(container);
+    root = createRoot(container);
+
+    await act(async () => {
+      root?.render(
+        createElement(
+          LocaleProvider,
+          null,
+          createElement(NavigationSidebar, props),
+        ),
+      );
+    });
+
+    const trashRow = [...container.querySelectorAll<HTMLButtonElement>(".nav-row")]
+      .find((row) => /Trash|回收站/u.test(row.textContent ?? ""));
+    expect(trashRow).toBeDefined();
+
+    let dropEvent: Event | undefined;
+    await act(async () => {
+      dropEvent = dispatchDropEvent(trashRow!, createDragTransfer(["Files"], files));
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(dropEvent?.defaultPrevented).toBe(true);
+    expect(onResolveManagedAssetDrop).toHaveBeenCalledWith(files);
+    expect(onAssetsDroppedOnTrash).toHaveBeenCalledWith(["asset-1"]);
+  });
+
+  it("accepts a native internal trash drop when the source allows copy but not move", async () => {
+    const props = createNavigationProps({
+      isInternalAssetDrag: () => true,
+    });
+    container = document.createElement("div");
+    document.body.append(container);
+    root = createRoot(container);
+
+    await act(async () => {
+      root?.render(
+        createElement(
+          LocaleProvider,
+          null,
+          createElement(NavigationSidebar, props),
+        ),
+      );
+    });
+
+    const trashRow = [...container.querySelectorAll<HTMLButtonElement>(".nav-row")]
+      .find((row) => /Trash|回收站/u.test(row.textContent ?? ""));
+    expect(trashRow).toBeDefined();
+    const transfer = createDragTransfer(["Files"], [], "copyLink");
+
+    let dragOver: Event | undefined;
+    await act(async () => {
+      dragOver = dispatchDragEvent(trashRow!, "dragover", transfer);
+    });
+
+    expect(dragOver?.defaultPrevented).toBe(true);
+    expect(transfer.dropEffect).toBe("copy");
+    expect(trashRow?.classList.contains("is-drop-target")).toBe(true);
+  });
+
+  it("does not accept a managed drag when the source allows no operation", async () => {
+    const props = createNavigationProps({});
+    container = document.createElement("div");
+    document.body.append(container);
+    root = createRoot(container);
+
+    await act(async () => {
+      root?.render(
+        createElement(
+          LocaleProvider,
+          null,
+          createElement(NavigationSidebar, props),
+        ),
+      );
+    });
+
+    const trashRow = [...container.querySelectorAll<HTMLButtonElement>(".nav-row")]
+      .find((row) => /Trash|回收站/u.test(row.textContent ?? ""));
+    expect(trashRow).toBeDefined();
+    const transfer = createDragTransfer(
+      ["application/x-worldlinebox-managed-assets"],
+      [],
+      "none",
+    );
+
+    let dragOver: Event | undefined;
+    await act(async () => {
+      dragOver = dispatchDragEvent(trashRow!, "dragover", transfer);
+    });
+
+    expect(dragOver?.defaultPrevented).toBe(false);
+    expect(trashRow?.classList.contains("is-drop-target")).toBe(false);
+  });
+
+  it("does not trash an external native File drop", async () => {
+    const files = [new File(["fixture"], "fixture.png", { type: "image/png" })];
+    const onResolveManagedAssetDrop = vi.fn(async () => ["asset-1"]);
+    const onAssetsDroppedOnTrash = vi.fn();
+    const props = createNavigationProps({
+      isInternalAssetDrag: () => false,
+      onResolveManagedAssetDrop,
+      onAssetsDroppedOnTrash,
+    });
+    container = document.createElement("div");
+    document.body.append(container);
+    root = createRoot(container);
+
+    await act(async () => {
+      root?.render(
+        createElement(
+          LocaleProvider,
+          null,
+          createElement(NavigationSidebar, props),
+        ),
+      );
+    });
+
+    const trashRow = [...container.querySelectorAll<HTMLButtonElement>(".nav-row")]
+      .find((row) => /Trash|回收站/u.test(row.textContent ?? ""));
+    expect(trashRow).toBeDefined();
+
+    await act(async () => {
+      dispatchDropEvent(trashRow!, createDragTransfer(["Files"], files));
+      await Promise.resolve();
+    });
+
+    expect(onResolveManagedAssetDrop).not.toHaveBeenCalled();
+    expect(onAssetsDroppedOnTrash).not.toHaveBeenCalled();
   });
 
   it("keeps the child collection highlighted when a drag enters its row", async () => {

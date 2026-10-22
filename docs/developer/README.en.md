@@ -11,6 +11,7 @@ For developers working on WorldlineBox itself: architecture, building from sourc
 - [Setup](setup.md) — dependencies, first build, development environment
 - [Build & packaging](build-packaging.md) — package / make / release pipeline / signing
 - [Architecture](architecture.md) — process model, directory layout, key design
+- [Serpent 0.3.2 integration](serpent-032-upgrade/README.md) — source audit, custom-module compatibility, configuration migration and validation
 - [Testing](testing.md) — test layers and how to run them
 - [Adding media format support](media-format-support.md) — registry, import, preview, filters, protocols, and acceptance
 - [Branches and workflow](workflow.md) — branching strategy, open source contribution process, and maintainer workflow discipline

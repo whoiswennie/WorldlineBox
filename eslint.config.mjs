@@ -15,6 +15,8 @@ export default tseslint.config(
       'dist/**',
       'out/**',
       'coverage/**',
+      // Electron/Playwright-generated traces, reports, and runtime fixtures.
+      'test-results/**',
       'node_modules/**',
       // Pinned upstream sources are hash-verified and intentionally kept byte-for-byte.
       'vendor/vcp-memory/**',

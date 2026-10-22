@@ -44,6 +44,30 @@ describe("post-import image sequence offer", () => {
     expect(isPostImportSequenceOfferId(plan?.offer.offerId)).toBe(true);
     expect(plan?.offer.sequences).toHaveLength(1);
     expect(plan?.sequences[0]?.frameAssetIds).toEqual(["a1", "a2", "a3"]);
+    expect(plan?.sequences[0]?.frameNumbers).toEqual([1, 2, 3]);
+  });
+
+  it("keeps frame numbers correct across separate runs and numbering styles", () => {
+    const plan = postImportSequencePlanFromAssets("lib-1", [
+      asset({ assetId: "shot-1", relativeFilePath: "shot_01.png" }),
+      asset({ assetId: "shot-2", relativeFilePath: "shot_02.png" }),
+      asset({ assetId: "shot-3", relativeFilePath: "shot_03.png" }),
+      asset({ assetId: "shot-5", relativeFilePath: "shot_05.png" }),
+      asset({ assetId: "shot-6", relativeFilePath: "shot_06.png" }),
+      asset({ assetId: "shot-7", relativeFilePath: "shot_07.png" }),
+      asset({ assetId: "photo-4", relativeFilePath: "photo (4).jpg" }),
+      asset({ assetId: "photo-5", relativeFilePath: "photo (5).jpg" }),
+      asset({ assetId: "photo-6", relativeFilePath: "photo (6).jpg" }),
+    ]);
+
+    expect(plan?.sequences.map((sequence) => ({
+      firstAssetId: sequence.frameAssetIds[0],
+      frameNumbers: sequence.frameNumbers,
+    }))).toEqual([
+      { firstAssetId: "photo-4", frameNumbers: [4, 5, 6] },
+      { firstAssetId: "shot-1", frameNumbers: [1, 2, 3] },
+      { firstAssetId: "shot-5", frameNumbers: [5, 6, 7] },
+    ]);
   });
 
   it("returns trimmed frame ids when confirming a sequence", () => {

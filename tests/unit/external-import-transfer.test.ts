@@ -1,8 +1,9 @@
-import { expect, test } from "vitest";
+import { expect, test, vi } from "vitest";
 
 import { MANAGED_ASSETS_DRAG_TYPE } from "../../src/renderer/asset-drag-drop";
 import {
   reduceInternalDragPhase,
+  scheduleInternalAssetDropCleanup,
   shouldActivateExternalImportOverlay,
   shouldConsumeManagedAssetDrop,
   supportsExternalImportTypes,
@@ -46,4 +47,26 @@ test("the cancelled HTML5 dragend does not end an in-app OS drag", () => {
   phase = reduceInternalDragPhase(phase, "drop");
   expect(phase).toBe("idle");
   expect(shouldActivateExternalImportOverlay(["Files"], phase !== "idle")).toBe(true);
+});
+
+test("native drop cleanup waits through microtask checkpoints until event dispatch ends", async () => {
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+  try {
+    let phase = reduceInternalDragPhase("idle", "begin");
+    phase = reduceInternalDragPhase(phase, "arm");
+
+    scheduleInternalAssetDropCleanup(() => {
+      phase = reduceInternalDragPhase(phase, "drop");
+    });
+
+    // Trusted native drops can checkpoint microtasks between native capture
+    // and bubble listeners. React must still observe the active phase there.
+    await Promise.resolve();
+    expect(phase).toBe("active");
+
+    vi.runOnlyPendingTimers();
+    expect(phase).toBe("idle");
+  } finally {
+    vi.useRealTimers();
+  }
 });

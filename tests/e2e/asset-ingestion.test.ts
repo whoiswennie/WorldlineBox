@@ -13,13 +13,16 @@ import {
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 
-import { _electron as electron, expect, test, type Page } from '@playwright/test';
+import { _electron as electron, expect, test, type ElectronApplication, type Page } from '@playwright/test';
+import sharp from 'sharp';
 
 import {
   closeLibraryViaSwitcher,
+  electronLaunchEnv,
   openFolderImportMenu,
   resolveElectronExecutablePath,
   resolveSessionLogPath,
+  waitForLibraryLoadingToFinish,
 } from './electron-test-helpers';
 
 test.describe.configure({ timeout: 120_000 });
@@ -74,6 +77,7 @@ test('imports files and a directory hierarchy, then reconciles external changes'
 
   try {
     const window = await application.firstWindow();
+    await window.locator('[data-application-module="assets"]').click();
     await window.getByRole('button', { name: '创建资源库' }).click();
     await window.getByRole("textbox", { name: "名称" }).fill(libraryName);
     await window.getByRole('button', { name: '创建', exact: true }).click();
@@ -224,13 +228,19 @@ test('imports into the library root after leaving a folder scope', async () => {
 
   try {
     const window = await application.firstWindow();
+    await window.locator('[data-application-module="assets"]').click();
     await window.getByRole('button', { name: '创建资源库' }).click();
     await window.getByRole('textbox', { name: '名称' }).fill(libraryName);
     await window.getByRole('button', { name: '创建', exact: true }).click();
     await window.getByRole('button', { name: '添加文件夹' }).click();
-    await window.getByLabel('新文件夹名称').fill('项目');
-    await window.keyboard.press('Enter');
-    await expect(sidebarFolderRow(window, '项目')).toBeVisible();
+    const folderNameInput = window.locator('.nav-inline-edit input');
+    await expect(folderNameInput).toBeVisible({ timeout: 5_000 });
+    await folderNameInput.fill('项目');
+    await folderNameInput.press('Enter');
+    await expect(window.locator('.nav-inline-edit')).toHaveCount(0, {
+      timeout: 10_000,
+    });
+    await expect(sidebarFolderRow(window, '项目')).toBeVisible({ timeout: 10_000 });
     await sidebarFolderRow(window, '项目').click();
     await window.getByRole('button', { name: '所有资产' }).click();
     await window.getByRole('button', { name: '导入文件', exact: true }).first().click();
@@ -273,6 +283,7 @@ test('shows a specific safe import reason and persists the complete Worker error
 
   try {
     const window = await application.firstWindow();
+    await window.locator('[data-application-module="assets"]').click();
     await window.getByRole('button', { name: '创建资源库' }).click();
     await window.getByRole("textbox", { name: "名称" }).fill(libraryName);
     await window.getByRole('button', { name: '创建', exact: true }).click();
@@ -319,6 +330,7 @@ test('maps a real filesystem permission failure and logs its complete cause chai
     const logPath = resolveSessionLogPath(logsPath);
     const logOffset = existsSync(logPath) ? readFileSync(logPath).length : 0;
     const window = await application.firstWindow();
+    await window.locator('[data-application-module="assets"]').click();
     await window.getByRole('button', { name: '创建资源库' }).click();
     await window.getByRole("textbox", { name: "名称" }).fill(libraryName);
     await window.getByRole('button', { name: '创建', exact: true }).click();
@@ -345,6 +357,7 @@ test('maps a real filesystem permission failure and logs its complete cause chai
 interface AssetSnapshot {
   assetId: string;
   displayName: string;
+  relativeFilePath: string;
   currentRevisionId: string;
   availability: 'available' | 'missing';
 }
@@ -431,11 +444,14 @@ async function prepareAndAbandonConflict(window: Page): Promise<{
   });
 }
 
-async function importFilesAndResolveConflict(window: Page): Promise<{
+async function importFilesAndResolveConflict(
+  window: Page,
+  targetFolderName: string | null = '项目',
+): Promise<{
   suspectedDuplicateCount: number;
   nameConflictCount: number;
 }> {
-  return window.evaluate(async () => {
+  return window.evaluate(async (folderName) => {
     interface Result<T> {
       ok: boolean;
       value?: T;
@@ -464,10 +480,17 @@ async function importFilesAndResolveConflict(window: Page): Promise<{
     const open = await bridge.worldlinebox.library.listOpen();
     const libraryId = open.value?.[0]?.libraryId;
     if (!open.ok || !libraryId) throw new Error('Expected an open library.');
-    const folders = await bridge.worldlinebox.library.listFolders({ libraryId });
-    const targetFolderId = folders.value?.find((folder) => folder.name === '项目')?.folderId;
-    if (!folders.ok || !targetFolderId) throw new Error('Expected the project folder.');
-    const prepared = await bridge.worldlinebox.library.importFiles({ libraryId, targetFolderId });
+    const folders = folderName === null
+      ? undefined
+      : await bridge.worldlinebox.library.listFolders({ libraryId });
+    const targetFolderId = folders?.value?.find((folder) => folder.name === folderName)?.folderId;
+    if (folderName !== null && (!folders?.ok || !targetFolderId)) {
+      throw new Error(`Expected folder ${folderName}.`);
+    }
+    const prepared = await bridge.worldlinebox.library.importFiles({
+      libraryId,
+      ...(targetFolderId ? { targetFolderId } : {}),
+    });
     if (!prepared.ok || !prepared.value || !('importId' in prepared.value)) {
       throw new Error('Expected an import conflict plan.');
     }
@@ -479,7 +502,7 @@ async function importFilesAndResolveConflict(window: Page): Promise<{
     });
     if (!resolved.ok) throw new Error('Could not resolve the import conflict plan.');
     return plan;
-  });
+  }, targetFolderName);
 }
 
 async function importFilesToProject(window: Page): Promise<void> {
@@ -602,3 +625,120 @@ async function refreshAllAssets(window: Page): Promise<{
     return result.value;
   });
 }
+
+test('keeps same-name imported PNGs and decoded previews across a full restart', async () => {
+  const temporaryRoot = mkdtempSync(path.join(tmpdir(), 'worldlinebox-import-copy-restart-e2e-'));
+  const profilePath = path.join(temporaryRoot, 'user-data');
+  const libraryName = '导入副本恢复';
+  const libraryPath = path.join(temporaryRoot, libraryName);
+  const firstSource = path.join(temporaryRoot, 'first-source', 'same.png');
+  const secondSource = path.join(temporaryRoot, 'second-source', 'same.png');
+  mkdirSync(path.dirname(firstSource), { recursive: true });
+  mkdirSync(path.dirname(secondSource), { recursive: true });
+  const firstPng = await sharp({
+    create: { width: 64, height: 48, channels: 4, background: { r: 220, g: 35, b: 45, alpha: 1 } },
+  }).png().toBuffer();
+  const secondPng = await sharp({
+    create: { width: 96, height: 72, channels: 4, background: { r: 35, g: 80, b: 220, alpha: 1 } },
+  }).png().toBuffer();
+  writeFileSync(firstSource, firstPng);
+  writeFileSync(secondSource, secondPng);
+
+  const executablePath = resolveElectronExecutablePath();
+  const applicationDirectory = process.env.WORLDLINEBOX_E2E_APP_DIRECTORY ?? process.cwd();
+  const launch = (restoreRecent: boolean) => electron.launch({
+    args: [applicationDirectory],
+    cwd: applicationDirectory,
+    executablePath,
+    env: electronLaunchEnv({
+      WORLDLINEBOX_E2E: '1',
+      WORLDLINEBOX_E2E_HIDE_WINDOW: '1',
+      // Enables recent-library persistence as well as restore; set it before first library creation.
+      WORLDLINEBOX_E2E_RESTORE_RECENT: '1',
+      WORLDLINEBOX_E2E_USER_DATA_PATH: profilePath,
+      ...(restoreRecent
+        ? {}
+        : {
+            WORLDLINEBOX_E2E_CREATE_PARENT_PATH: temporaryRoot,
+            WORLDLINEBOX_E2E_OPEN_LIBRARY_PATH: libraryPath,
+            WORLDLINEBOX_E2E_IMPORT_FILES: [firstSource, secondSource].join(path.delimiter),
+          }),
+    }),
+  });
+
+  let application: ElectronApplication | undefined = await launch(false);
+  try {
+    let window = await application.firstWindow();
+    await window.locator('[data-application-module="assets"]').click();
+    expect(await application.evaluate(({ BrowserWindow }) =>
+      BrowserWindow.getAllWindows().some((candidate) => candidate.isVisible()),
+    )).toBe(false);
+    await window.getByRole('button', { name: '创建资源库' }).click();
+    await window.getByRole('textbox', { name: '名称' }).fill(libraryName);
+    await window.getByRole('button', { name: '创建', exact: true }).click();
+    await expect(window.getByRole('heading', { name: '导入资产以开始整理' })).toBeVisible();
+
+    const conflictPlan = await importFilesAndResolveConflict(window, null);
+    expect(conflictPlan).toMatchObject({ suspectedDuplicateCount: 0, nameConflictCount: 1 });
+    const refreshButton = window.getByRole('button', { name: '刷新磁盘变化' });
+    await refreshButton.click();
+    await expect(refreshButton).toBeEnabled({ timeout: 15_000 });
+
+    const importedAssets = await listAllAssets(window);
+    expect(importedAssets).toHaveLength(2);
+    expect(new Set(importedAssets.map((asset) => asset.displayName)).size).toBe(2);
+    expect(importedAssets.every((asset) => asset.displayName.startsWith('same'))).toBe(true);
+    expect(existsSync(firstSource)).toBe(true);
+    expect(existsSync(secondSource)).toBe(true);
+    for (const asset of importedAssets) {
+      const destination = path.join(libraryPath, 'Assets', asset.relativeFilePath);
+      const content = readFileSync(destination);
+      expect([firstPng, secondPng].some((source) => source.equals(content))).toBe(true);
+    }
+
+    const expectImportedImagesDecoded = async () => {
+      for (const asset of importedAssets) {
+        await expect.poll(() => window.evaluate((displayName) => {
+          const card = Array.from(document.querySelectorAll<HTMLElement>('.asset-card'))
+            .find((candidate) => candidate.dataset.assetName === displayName);
+          const image = card?.querySelector<HTMLImageElement>('img.asset-thumbnail');
+          return Boolean(image?.complete && image.naturalWidth > 0 && image.naturalHeight > 0);
+        }, asset.displayName), {
+          message: `expected the imported preview for ${asset.displayName} to decode`,
+          timeout: 30_000,
+        }).toBe(true);
+      }
+    };
+    await expectImportedImagesDecoded();
+
+    const firstProcess = application.process();
+    await application.close();
+    application = undefined;
+    expect(firstProcess.exitCode).not.toBeNull();
+
+    application = await launch(true);
+    window = await application.firstWindow();
+    await window.locator('[data-application-module="assets"]').click();
+    await expect(window.getByRole('button', { name: `当前资源库 ${libraryName}` })).toBeVisible({
+      timeout: 30_000,
+    });
+    await waitForLibraryLoadingToFinish(window);
+    const restoredAssets = await listAllAssets(window);
+    expect(restoredAssets.map((asset) => asset.assetId).sort()).toEqual(
+      importedAssets.map((asset) => asset.assetId).sort(),
+    );
+    expect(restoredAssets.map((asset) => asset.relativeFilePath).sort()).toEqual(
+      importedAssets.map((asset) => asset.relativeFilePath).sort(),
+    );
+    for (const asset of restoredAssets) {
+      expect(readFileSync(path.join(libraryPath, 'Assets', asset.relativeFilePath)).length).toBeGreaterThan(0);
+    }
+    await expectImportedImagesDecoded();
+    if (process.env.WORLDLINEBOX_IMPORT_QA_SCREENSHOT_PATH) {
+      await window.screenshot({ path: process.env.WORLDLINEBOX_IMPORT_QA_SCREENSHOT_PATH });
+    }
+  } finally {
+    if (application && application.process().exitCode === null) await application.close();
+    rmSync(temporaryRoot, { force: true, recursive: true });
+  }
+});

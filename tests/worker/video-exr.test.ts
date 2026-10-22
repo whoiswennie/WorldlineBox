@@ -16,6 +16,7 @@ import {
   type SpawnResult,
 } from '../../src/worker/library-service';
 import { mediaResourceGuard } from '../../src/worker/media-resource-guard';
+import { MEDIA_FFMPEG_MEMORY_THRESHOLD_BYTES } from '../../src/worker/media-memory-concurrency';
 import { extractRawEmbeddedJpegThumbnail } from '../../src/worker/raw-embedded-thumbnail';
 import { AUDIO_FORCED_WAVEFORM_GENERATOR_MARK, AUDIO_WAVEFORM_COVER_GENERATOR_TAG } from '../../src/shared/audio-media';
 import { importNoConflict as sharedImportNoConflict } from './import-no-conflict';
@@ -864,7 +865,7 @@ describe('video (ffprobe + ffmpeg)', () => {
     service.closeAll();
   });
 
-  it('falls back to realtime VP9/WebM when FFmpeg has no H.264 encoder', async () => {
+  it('fails video proxy generation without attempting VP9 when FFmpeg has no H.264 encoder', async () => {
     process.env['WORLDLINEBOX_FFMPEG_PATH'] = '/fake/ffmpeg';
     const root = temporaryRoot();
     const capturedSpawnArgs: Array<{ command: string; args: string[] }> = [];
@@ -903,22 +904,13 @@ describe('video (ffprobe + ffmpeg)', () => {
     await service.processThumbnailQueue(created.libraryId);
 
     expect(service.getCurrentArtifact(created.libraryId, asset.assetId, 'webm_proxy'))
-      .toMatchObject({ status: 'ready', mimeType: 'video/webm' });
-    const proxyCall = capturedSpawnArgs.find(
-      (c) => c.command === '/fake/ffmpeg' && c.args.includes('libvpx-vp9'),
-    );
-    expect(proxyCall).toBeDefined();
-    expect(proxyCall!.args).toContain('-deadline');
-    expect(proxyCall!.args).toContain('realtime');
-    expect(proxyCall!.args).toContain('-cpu-used');
-    expect(proxyCall!.args).toContain('8');
-    expect(proxyCall!.args).toContain('-row-mt');
-    expect(proxyCall!.args).toContain('libopus');
+      .toMatchObject({ status: 'failed', mimeType: 'video/mp4' });
+    expect(capturedSpawnArgs.some((call) => call.args.includes('libvpx-vp9'))).toBe(false);
 
     service.closeAll();
   });
 
-  it('falls back to VP9/WebM when the selected H.264 encoder fails at runtime', async () => {
+  it('does not switch to VP9 when the selected H.264 proxy encode fails at runtime', async () => {
     process.env['WORLDLINEBOX_FFMPEG_PATH'] = '/fake/ffmpeg';
     const root = temporaryRoot();
     const capturedSpawnArgs: Array<{ command: string; args: string[] }> = [];
@@ -926,11 +918,7 @@ describe('video (ffprobe + ffmpeg)', () => {
       spawnFn: async (command, args) => {
         capturedSpawnArgs.push({ command, args });
         if (args.includes('-encoders')) {
-          return {
-            stdout: Buffer.from(' V....D h264_videotoolbox H.264 VideoToolbox encoder\n', 'utf-8'),
-            stderr: '',
-            exitCode: 0,
-          };
+          return { stdout: Buffer.from(' V....D libopenh264 H.264 encoder\n', 'utf-8'), stderr: '', exitCode: 0 };
         }
         const outPath = args[args.length - 1];
         if (outPath && (outPath.endsWith('.mp4') || outPath.endsWith('.webm') || outPath.endsWith('.jpg') || outPath.endsWith('.json'))) {
@@ -940,8 +928,11 @@ describe('video (ffprobe + ffmpeg)', () => {
         if (command === '/fake/ffprobe' || command.includes('ffprobe')) {
           return { stdout: Buffer.from(CANNED_FFPROBE_JSON, 'utf-8'), stderr: '', exitCode: 0 };
         }
-        if (args.includes('h264_videotoolbox')) {
-          return { stdout: Buffer.alloc(0), stderr: 'VideoToolbox unavailable', exitCode: 1 };
+        if (args.includes('testsrc2=size=128x72:rate=12:duration=0.25')) {
+          return { stdout: Buffer.alloc(0), stderr: '', exitCode: 0 };
+        }
+        if (args.includes('libopenh264')) {
+          return { stdout: Buffer.alloc(0), stderr: 'H.264 proxy encode failed', exitCode: 1 };
         }
         return { stdout: Buffer.alloc(0), stderr: '', exitCode: 0 };
       },
@@ -964,9 +955,12 @@ describe('video (ffprobe + ffmpeg)', () => {
     await service.processThumbnailQueue(created.libraryId);
 
     expect(service.getCurrentArtifact(created.libraryId, asset.assetId, 'webm_proxy'))
-      .toMatchObject({ status: 'ready', mimeType: 'video/webm' });
-    expect(capturedSpawnArgs.some((call) => call.args.includes('h264_videotoolbox'))).toBe(true);
-    expect(capturedSpawnArgs.some((call) => call.args.includes('libvpx-vp9'))).toBe(true);
+      .toMatchObject({ status: 'failed', mimeType: 'video/mp4' });
+    expect(capturedSpawnArgs.some((call) => call.args.includes('testsrc2=size=128x72:rate=12:duration=0.25')))
+      .toBe(true);
+    expect(capturedSpawnArgs.some((call) => call.args.includes('libopenh264') && !call.args.includes('-frames:v')))
+      .toBe(true);
+    expect(capturedSpawnArgs.some((call) => call.args.includes('libvpx-vp9'))).toBe(false);
 
     service.closeAll();
   });
@@ -1107,7 +1101,7 @@ describe('video (ffprobe + ffmpeg)', () => {
     service.closeAll();
   });
 
-  it('stores a generated WebM proxy without an output-size gate', async () => {
+  it('stores a generated H.264 proxy without an output-size gate', async () => {
     process.env['WORLDLINEBOX_FFMPEG_PATH'] = '/fake/ffmpeg';
     const root = temporaryRoot();
     const diagnostics: LibraryServiceDiagnostic[] = [];
@@ -1115,17 +1109,32 @@ describe('video (ffprobe + ffmpeg)', () => {
       onDiagnostic: (diagnostic) => diagnostics.push(diagnostic),
       spawnFn: async (_command, args) => {
         if (args.includes('-encoders')) {
+          return {
+            stdout: Buffer.from(' V..... libopenh264 H.264 encoder\n', 'utf-8'),
+            stderr: '',
+            exitCode: 0,
+          };
+        }
+        if (args.includes('lavfi')) {
+          const probeOutputPath = args[args.length - 1]!;
+          mkdirSync(path.dirname(probeOutputPath), { recursive: true });
+          writeFileSync(probeOutputPath, Buffer.from('valid-one-frame-probe'));
           return { stdout: Buffer.alloc(0), stderr: '', exitCode: 0 };
         }
+        if (_command.includes('ffprobe')) {
+          return { stdout: Buffer.from(CANNED_FFPROBE_JSON, 'utf-8'), stderr: '', exitCode: 0 };
+        }
         const outputPath = args[args.length - 1]!;
-        mkdirSync(path.dirname(outputPath), { recursive: true });
-        writeFileSync(outputPath, Buffer.from('oversized-proxy'));
-        truncateSync(outputPath, 512 * 1024 * 1024 + 1);
+        if (outputPath.endsWith('.mp4')) {
+          mkdirSync(path.dirname(outputPath), { recursive: true });
+          writeFileSync(outputPath, Buffer.from('oversized-proxy'));
+          truncateSync(outputPath, 512 * 1024 * 1024 + 1);
+        }
         return { stdout: Buffer.alloc(0), stderr: '', exitCode: 0 };
       },
     });
     const created = service.createLibrary({
-      displayName: 'OversizedWebmProxy',
+      displayName: 'OversizedH264Proxy',
       selectedParentPath: root,
     });
     const sourcePath = path.join(root, 'oversized.avi');
@@ -1617,21 +1626,27 @@ describe('media execution cancellation and global decoder limits', () => {
     service.closeAll();
   });
 
-  it('limits FFmpeg and ffprobe to one native decoder across concurrent libraries', async () => {
+  it.each([
+    { tier: 'below 4 GiB', availableBytes: MEDIA_FFMPEG_MEMORY_THRESHOLD_BYTES - 1, limit: 1 },
+    { tier: 'at 4 GiB', availableBytes: MEDIA_FFMPEG_MEMORY_THRESHOLD_BYTES, limit: 2 },
+  ])('caps FFmpeg across concurrent libraries: $tier → $limit slots', async ({ availableBytes, limit }) => {
     process.env['WORLDLINEBOX_FFMPEG_PATH'] = '/fake/ffmpeg';
     const root = temporaryRoot();
     let active = 0;
     let maximum = 0;
     const spawnFn: SpawnFunction = async (command, args) => {
-      active += 1;
-      maximum = Math.max(maximum, active);
+      const isFfmpeg = !command.toLowerCase().includes('ffprobe');
+      if (isFfmpeg) {
+        active += 1;
+        maximum = Math.max(maximum, active);
+      }
       await new Promise((resolve) => setTimeout(resolve, 10));
       const output = args[args.length - 1]!;
       if (!command.includes('ffprobe') && !args.includes('-encoders')) {
         mkdirSync(path.dirname(output), { recursive: true });
         writeFileSync(output, Buffer.from('video-artifact'));
       }
-      active -= 1;
+      if (isFfmpeg) active -= 1;
       return {
         stdout: command.includes('ffprobe')
           ? Buffer.from(CANNED_FFPROBE_JSON)
@@ -1642,7 +1657,10 @@ describe('media execution cancellation and global decoder limits', () => {
     };
     const targets: Array<{ service: LibraryService; libraryId: string; assetId: string }> = [];
     for (const [index, name] of ['one.mp4', 'two.mp4', 'three.mp4', 'four.mp4', 'five.mp4'].entries()) {
-      const service = new LibraryService({ spawnFn });
+      const service = new LibraryService({
+        spawnFn,
+        availablePhysicalMemoryBytesForTests: () => availableBytes,
+      });
       const created = service.createLibrary({ displayName: `FfmpegLimit-${index}`, selectedParentPath: root });
       const source = path.join(root, name);
       writeFileSync(source, Buffer.alloc(1024));
@@ -1657,7 +1675,77 @@ describe('media execution cancellation and global decoder limits', () => {
       libraryId: target.libraryId,
       assetId: target.assetId,
     })));
-    expect(maximum).toBe(1);
+    expect(maximum).toBe(limit);
+    for (const target of targets) target.service.closeAll();
+  });
+
+  it('stops admitting queued FFmpeg work after system memory drops below 4 GiB', async () => {
+    process.env['WORLDLINEBOX_FFMPEG_PATH'] = '/fake/ffmpeg';
+    const root = temporaryRoot();
+    let availableBytes = MEDIA_FFMPEG_MEMORY_THRESHOLD_BYTES;
+    let active = 0;
+    let maximum = 0;
+    let ffmpegStarts = 0;
+    let notifyTwoStarted!: () => void;
+    const twoStarted = new Promise<void>((resolve) => { notifyTwoStarted = resolve; });
+    let unblockInitial!: () => void;
+    const initialBlocked = new Promise<void>((resolve) => { unblockInitial = resolve; });
+    const spawnFn: SpawnFunction = async (command, args) => {
+      const isFfmpeg = !command.toLowerCase().includes('ffprobe');
+      if (isFfmpeg) {
+        active += 1;
+        maximum = Math.max(maximum, active);
+        ffmpegStarts += 1;
+        if (ffmpegStarts === 2) {
+          availableBytes = MEDIA_FFMPEG_MEMORY_THRESHOLD_BYTES - 1;
+          notifyTwoStarted();
+          await initialBlocked;
+        }
+        if (ffmpegStarts === 1) await initialBlocked;
+      }
+      const output = args[args.length - 1]!;
+      if (isFfmpeg && !args.includes('-encoders')) {
+        mkdirSync(path.dirname(output), { recursive: true });
+        writeFileSync(output, Buffer.from('video-artifact'));
+      }
+      if (isFfmpeg) active -= 1;
+      return {
+        stdout: command.toLowerCase().includes('ffprobe')
+          ? Buffer.from(CANNED_FFPROBE_JSON)
+          : Buffer.alloc(0),
+        stderr: '',
+        exitCode: 0,
+      };
+    };
+    const targets: Array<{ service: LibraryService; libraryId: string; assetId: string }> = [];
+    for (const [index, name] of ['one.mp4', 'two.mp4', 'three.mp4', 'four.mp4', 'five.mp4'].entries()) {
+      const service = new LibraryService({
+        spawnFn,
+        availablePhysicalMemoryBytesForTests: () => availableBytes,
+      });
+      const created = service.createLibrary({ displayName: `FfmpegDrop-${index}`, selectedParentPath: root });
+      const source = path.join(root, name);
+      writeFileSync(source, Buffer.alloc(1024));
+      importNoConflict(service, created.libraryId, source);
+      targets.push({
+        service,
+        libraryId: created.libraryId,
+        assetId: service.listAssets({ libraryId: created.libraryId, recursive: true })[0]!.assetId,
+      });
+    }
+    const processing = Promise.all(targets.map((target) => target.service.generateThumbnail({
+      libraryId: target.libraryId,
+      assetId: target.assetId,
+    })));
+    await twoStarted;
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(ffmpegStarts).toBe(2);
+    expect(maximum).toBe(2);
+
+    unblockInitial();
+    await processing;
+    expect(maximum).toBe(2);
+    expect(ffmpegStarts).toBeGreaterThan(2);
     for (const target of targets) target.service.closeAll();
   });
 

@@ -6,9 +6,17 @@ WorldlineBox’s AI analysis uses your configured global AI service. Text assets
 
 Open `Settings → Global model` from the bottom of the application rail on Windows or macOS. The connection is stored for the application independently of an asset library; asset analysis options are grouped separately below it.
 
-New installations default to DeepSeek's OpenAI Chat Completions endpoint, `https://api.deepseek.com`, and `deepseek-flash`. Built-in model choices are available without a key; actual requests require your API key. Previously saved custom providers and models are retained. Windows development and installed applications both use `%APPDATA%\WorldlineBox\ai-config.json`, with the key encrypted separately in `ai-key.enc`. Native DSH accounts and model configuration continue to belong to the launcher's shared save data.
+New installations default to DeepSeek's OpenAI Chat Completions endpoint, `https://api.deepseek.com`, and `deepseek-flash`. Built-in model choices are available without a key; actual requests require your API key. Previously saved custom providers and models are retained. Windows development and installed applications both use `%APPDATA%\WorldlineBox`: `ai-profiles.json` stores named connections, `ai-profile-keys/<id>.bin` stores each safeStorage-encrypted key, and `ai-analysis-settings.json` stores analysis preferences. The old `ai-config.json` and `ai-key.enc` are removed only after migration and verification succeed; failed migration preserves them for recovery. Native DSH accounts and model configuration continue to belong to the launcher's shared save data.
 
 ![AI configuration](../assets/ui/AI-config.png)
+
+### Named service profiles
+
+- Create a profile, give it a name, and save its format, URL, model and key. Each profile retains its own encrypted credential.
+- Selecting a saved profile lets you edit it. Use its activation button to make it the current service; switching does not require re-entering the URL or key.
+- Saving another profile does not activate it. Deleting a profile or clearing its key requires confirmation.
+- Asset analysis, natural-language AI search, and companions and capture tools that use the global model share the active profile. Explicit companion model overrides retain their existing behavior.
+- The bundled embedding model and semantic index keep their separate settings. Switching a service profile does not replace the local embedding model.
 
 ### Connect a provider
 
@@ -73,4 +81,4 @@ Empty, binary, or unreadable text produces a file-content error. A model without
 
 ## Privacy and cost
 
-WorldlineBox does not upload an entire library or provide AI search. Only explicitly submitted, supported assets are sent to the selected provider; check its privacy terms and pricing before enabling AI.
+WorldlineBox does not upload an entire library. AI analysis sends supported content from selected assets to the active provider. Natural-language AI search sends the query and context needed to generate a filter plan. Bundled embedding and semantic retrieval retain their separate configuration. Check the selected provider’s privacy terms and pricing before enabling these features.

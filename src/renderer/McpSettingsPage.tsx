@@ -8,6 +8,7 @@ import {
 } from "../shared/mcp";
 import { Icon } from "./Icons";
 import { useT } from "./i18n";
+import { formatMcpSettingsFailure } from "./mcp-settings-error";
 import { SettingsCard, SettingsDisclosure } from "./ui/patterns";
 import { Switch } from "./ui/primitives";
 
@@ -74,7 +75,7 @@ export function McpSettingsPage({
         setSnapshot(response.snapshot);
         setPortDraft(String(response.snapshot.preferences.port));
       }
-      if (!response.ok) setError(response.message);
+      if (!response.ok) setError(formatMcpSettingsFailure(response, t));
     }).catch(() => {
       if (active) setError(t("settings.mcpUnavailable"));
     });
@@ -99,7 +100,7 @@ export function McpSettingsPage({
         setSnapshot(response.snapshot);
         setPortDraft(String(response.snapshot.preferences.port));
       }
-      if (!response.ok) setError(response.message);
+      if (!response.ok) setError(formatMcpSettingsFailure(response, t));
       else if (response.copied) {
         setNotice(input.type === "copy-agent-connection"
           ? t("settings.mcpAgentConnectionCopied")

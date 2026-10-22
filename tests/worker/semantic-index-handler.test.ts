@@ -14,6 +14,7 @@ import { LibraryService } from '../../src/worker/library-service';
 import { closeSemanticIndexWorkerLibrary, executeSemanticIndexWorkerCommand, reconcileSemanticPermanentDeletes, reserveSemanticDeleteCleanup, semanticPermanentDeleteCandidates, withSemanticDeleteCleanupStatus } from '../../src/worker/handlers/semantic-index';
 import { SemanticIndexStore } from '../../src/worker/semantic-index-store';
 import { InteractiveScheduler } from '../../src/worker/interactive-scheduler';
+import { removePathWithSyncRetry } from '../../src/worker/windows-fs-retry';
 const { prepareVideo } = vi.hoisted(() => ({ prepareVideo: vi.fn() }));
 vi.mock('../../src/worker/embedding-video', () => ({ prepareEmbeddingVideoWindows: prepareVideo }));
 
@@ -32,7 +33,7 @@ afterEach(async () => {
   vi.unstubAllEnvs();
   await closeSemanticIndexWorkerLibrary();
   for (const service of services.splice(0)) service.closeAll();
-  for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
+  for (const root of roots.splice(0)) removePathWithSyncRetry(root, { retryLimit: 10, retryDelayMs: 200 });
 });
 
 describe('semantic SQLite Worker handler', () => {

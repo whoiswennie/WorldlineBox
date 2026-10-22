@@ -73,6 +73,7 @@ const GOLDEN_CHECKSUMS: Record<number, string> = {
   56: '21bd759f647d3bdcd957f8679dc25e95764697d13f6f16039df26d8bb9b3c88b',
   57: '2cc0c2914f0f54b6d811274d1a72fcc6f94f63c91dba091b24c8cf78c23a138f',
   58: '05723c948856bc143275f1d60acda9661b5d9730331d0a95138b70276e529dbc',
+  59: '26bd0ca9abcba142766fa3d9d3cb3b53db260b7c789a6ba28df6d4c2f2de9b94',
 };
 
 describe('golden migration checksum snapshot (WorldlineBox-033e)', () => {

@@ -1,4 +1,15 @@
 export const launcherZh = {
+  recheckSmartRoutes: '重新检测智能线路',
+  proxySmart: '智能代理（仅本软件）', proxyGlobal: '全局代理（仅本软件）', activeProxyMode: '立即切换代理模式',
+  proxySmartNote: '本地网络和常见国内站点直连，其他外网走所选代理。应用智能模式时检测 Pixiv CDN：优先代理，仅当代理失败且直连成功时改为该 CDN 直连。重新应用智能模式可重测。',
+  proxyGlobalNote: '软件内所有外网请求均交给所选代理，回环地址仍直连。代理服务自身的分流规则和节点仍会影响最终连接。不会修改系统或 Clash 的全局模式。',
+  proxySystemDirectNote: '跟随系统时由系统决定路由；直接连接时停用本软件代理。选择智能或全局模式会使用下方代理地址。',
+  pixivCdnRoutes: 'Pixiv CDN 当前线路：', pixivCdnViaProxy: '使用代理；没有检测到可用的直连替代线路',
+  pixivCheck: 'Pixiv 专项检查', testPixiv: '检查 Pixiv', saveAndTestPixiv: '保存并检查 Pixiv',
+  pixivCheckNote: '分别检查公开页面、登录页、实际样式与脚本、作品 API、真实图片及验证码脚本。不登录账号，不执行收藏、投稿或付费操作。',
+  pixivCheckEmpty: '检查会显示各项实际 URL、线路、HTTP 状态和失败原因。首页可打开不代表图片或登录依赖可用。',
+  pixivUpstreamNote: '若全局模式下 pximg.net 仍超时，请换能访问该 CDN 的代理节点；若代理不可用而直连可用，可选智能模式。登录后的收藏、关注、R-18、投稿及支付还取决于账号权限和站点风控，公开连接检查不能验证这些操作。',
+  pixivCheck_page: '主站页面', pixivCheck_login: '登录页面', pixivCheck_stylesheet: '实际样式', pixivCheck_script: '实际脚本', pixivCheck_api: '作品 API', pixivCheck_image: '真实作品图片', pixivCheck_captcha: '验证码脚本',
   searchOperations: "搜索操作记录", searchOperationsPlaceholder: "搜索名称、类型、实例或错误…", filterOperationStatus: "操作状态", allOperationStatuses: "所有状态", clearOperationFilters: "清除筛选", noMatchingOperations: "没有匹配的操作记录", operationResultRange: "第 {start}–{end} 条 / 匹配 {count} 条 · 共 {total} 条记录", operationPages: "操作记录分页", operationPageNumber: "第 {page} / {pages} 页",
   proxyEnabled: "启用代理", enableProxy: "开启代理", disableProxy: "关闭代理", proxyToggleNote: "开关立即保存并生效。关闭后本项目直接连接，不再跟随系统代理；再次开启会恢复上次的代理方式与地址。其他未保存的修改不会一并应用。", quickProxyPort: "快速启用本机代理端口", chooseProxyPort: "选择 HTTP / 混合端口", proxyPortNote: "请选择代理软件实际配置的 HTTP 或混合端口。端口预设不会启动代理，也不代表该端口已有服务；SOCKS 专用端口请勿按 HTTP 使用。",
   networkActive: '当前生效', networkActiveNote: '这里显示已经应用的配置；修改表单不会提前改变它。', appliedConfig: '已应用',
@@ -86,6 +97,17 @@ export const launcherZh = {
 } as const;
 
 export const launcherEn = {
+  recheckSmartRoutes: 'Recheck smart routes',
+  proxySmart: 'Smart proxy (this app)', proxyGlobal: 'Global proxy (this app)', activeProxyMode: 'Switch applied proxy mode',
+  proxySmartNote: 'Local networks and common Chinese sites connect directly; other public sites use the selected proxy. Applying smart mode probes Pixiv CDNs: prefer the proxy, and use direct only when the proxy fails and direct succeeds. Reapply smart mode to probe again.',
+  proxyGlobalNote: 'All public requests in this app use the selected proxy; loopback stays direct. The upstream proxy still applies its own rules and node selection. System and Clash modes are unchanged.',
+  proxySystemDirectNote: 'System mode follows system routing; direct mode disables this app’s proxy. Smart and global modes use the proxy address below.',
+  pixivCdnRoutes: 'Current Pixiv CDN routes:', pixivCdnViaProxy: 'Using proxy; no working direct alternative was detected',
+  pixivCheck: 'Pixiv connection check', testPixiv: 'Check Pixiv', saveAndTestPixiv: 'Save and check Pixiv',
+  pixivCheckNote: 'Check the public page, sign-in page, actual stylesheet and script, artwork API, a real image and CAPTCHA script. Does not sign in, bookmark, post or purchase.',
+  pixivCheckEmpty: 'The check shows actual URLs, routes, HTTP statuses and errors. A reachable homepage does not establish image or sign-in availability.',
+  pixivUpstreamNote: 'If pximg.net times out in global mode, choose a proxy node that can reach that CDN. Smart mode can use a verified working direct CDN route. Bookmarks, follows, R-18, uploads and payments also depend on account permissions and site restrictions; public checks cannot verify those operations.',
+  pixivCheck_page: 'Homepage', pixivCheck_login: 'Sign-in page', pixivCheck_stylesheet: 'Actual stylesheet', pixivCheck_script: 'Actual script', pixivCheck_api: 'Artwork API', pixivCheck_image: 'Real artwork image', pixivCheck_captcha: 'CAPTCHA script',
   searchOperations: "Search operations", searchOperationsPlaceholder: "Search name, type, instance or error…", filterOperationStatus: "Operation status", allOperationStatuses: "All statuses", clearOperationFilters: "Clear filters", noMatchingOperations: "No matching operations", operationResultRange: "{start}–{end} of {count} matches · {total} records", operationPages: "Operation pages", operationPageNumber: "Page {page} of {pages}",
   proxyEnabled: "Enable proxy", enableProxy: "Enable proxy", disableProxy: "Disable proxy", proxyToggleNote: "The switch saves and applies immediately. Turning it off uses a direct connection in this project, independently of the system proxy. Turning it on restores the previous proxy mode and address. Other unsaved edits are preserved.", quickProxyPort: "Activate a local proxy port", chooseProxyPort: "Choose an HTTP / mixed port", proxyPortNote: "Choose the HTTP or mixed port configured in your proxy app. A preset does not start a proxy or verify a listener. Do not use a SOCKS-only port as HTTP.",
   networkActive: 'Currently applied', networkActiveNote: 'These settings are applied. Editing the form does not change them yet.', appliedConfig: 'Applied',

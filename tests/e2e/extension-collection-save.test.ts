@@ -4,7 +4,7 @@ import path from 'node:path';
 import { _electron as electron, expect, test } from '@playwright/test';
 import sharp from 'sharp';
 import type { WorldlineBoxLibraryApi } from '../../src/shared/library-api';
-import { electronLaunchEnv, resolveElectronAppPath, resolveElectronExecutablePath, resolveSessionLogPath } from './electron-test-helpers';
+import { electronLaunchEnv, resolveElectronLaunchOptions, resolveSessionLogPath } from './electron-test-helpers';
 
 test('extension collection uploads reach Main and Worker and reject a stale target before import', async () => {
   test.setTimeout(120_000);
@@ -17,8 +17,7 @@ test('extension collection uploads reach Main and Worker and reject a stale targ
   };
   let application: Awaited<ReturnType<typeof electron.launch>> | undefined;
   try {
-    application = await electron.launch({ executablePath: resolveElectronExecutablePath(),
-      args: process.env.WORLDLINEBOX_E2E_PACKAGED_EXECUTABLE ? [] : [resolveElectronAppPath()], cwd: resolveElectronAppPath(),
+    application = await electron.launch({ ...resolveElectronLaunchOptions(),
       env: electronLaunchEnv({ WORLDLINEBOX_E2E: '1', WORLDLINEBOX_E2E_HIDE_WINDOW: '1', WORLDLINEBOX_E2E_USER_DATA_PATH: profile,
         WORLDLINEBOX_E2E_CREATE_PARENT_PATH: root }) });
     await application.evaluate(({ dialog }, root) => {

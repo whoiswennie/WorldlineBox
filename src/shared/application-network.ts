@@ -9,10 +9,20 @@ export const applicationNetworkFailureSchema = z.object({
   occurredAt: z.string(), count: z.number().int().positive(),
 });
 export type ApplicationNetworkFailure = z.infer<typeof applicationNetworkFailureSchema>;
+export const pixivNetworkCheckSchema = z.object({
+  checkedAt: z.string(),
+  results: z.array(z.object({
+    kind: z.enum(['page', 'login', 'stylesheet', 'script', 'api', 'image', 'captcha']),
+    url: z.string().max(4096), proxy: z.string().max(2048), ok: z.boolean(),
+    elapsedMs: z.number(), status: z.number().optional(), bytes: z.number().optional(), error: z.string().max(1000).optional(),
+  })).max(7),
+});
+export type PixivNetworkCheck = z.infer<typeof pixivNetworkCheckSchema>;
 // Reuse the existing persisted policy and configuration location for upgrades.
 // This API is owned by the application and never initializes the launcher.
 export const applicationNetworkStateSchema = dshNetworkStateSchema.extend({
   recentFailures: z.array(applicationNetworkFailureSchema).max(40).default([]),
+  pixivCheck: pixivNetworkCheckSchema.optional(),
 });
 export type ApplicationNetworkState = z.infer<typeof applicationNetworkStateSchema>;
 export const applicationNetworkRequestSchema = z.discriminatedUnion('type', [
@@ -22,6 +32,7 @@ export const applicationNetworkRequestSchema = z.discriminatedUnion('type', [
   z.strictObject({ type: z.literal('network.patch'), patch: dshNetworkPatchSchema }),
   z.strictObject({ type: z.literal('network.proxy.toggle'), enabled: z.boolean() }),
   z.strictObject({ type: z.literal('network.test') }),
+  z.strictObject({ type: z.literal('network.pixiv.test') }),
   z.strictObject({ type: z.literal('network.diagnostics.clear') }),
 ]);
 export type ApplicationNetworkRequest = z.infer<typeof applicationNetworkRequestSchema>;

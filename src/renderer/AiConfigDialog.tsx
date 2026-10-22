@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { createShellPortal } from "./ui/ShellStyleScope";
 
 import {
@@ -24,6 +24,7 @@ import {
 } from "../shared/ai-endpoints";
 import { Icon } from "./Icons";
 import { AiConfigNumberInput } from "./ai-config-number-input";
+import { buildAiModelsFetchKey } from "./ai-model-fetch-key";
 import { iconActionAttrs } from "./icon-action-attrs";
 import { isImeKeyboardEvent } from "./ime-safe-dismiss";
 import { useT } from "./i18n";
@@ -41,6 +42,17 @@ export interface AiConfigDialogProps {
   /** Renders inside the settings center instead of a modal dialog. */
   variant?: "dialog" | "embedded";
   apiKey: string;
+  profiles: Array<{
+    id: string;
+    name: string;
+    apiFormat: AiApiFormat;
+    model: string;
+    baseUrl: string;
+    hasCredential: boolean;
+  }>;
+  activeProfileId: string | null;
+  profileDraftId: string | null;
+  profileName: string;
   apiFormat: AiApiFormat;
   model: string;
   baseUrl: string;
@@ -60,6 +72,12 @@ export interface AiConfigDialogProps {
   /** Shown while save is waiting on a connection probe. */
   saveVerifying?: boolean;
   onApiKeyChange: (value: string) => void;
+  onProfileNameChange: (value: string) => void;
+  onNewProfile: () => void;
+  onSelectProfile: (id: string) => void;
+  onActivateProfile: (id: string) => void;
+  onDeleteProfile: (id: string) => void;
+  onClearCredential: () => void;
   onApiFormatChange: (value: AiApiFormat) => void;
   onModelChange: (value: string) => void;
   onBaseUrlChange: (value: string) => void;
@@ -102,6 +120,10 @@ export function AiConfigDialog({
   open,
   variant = "dialog",
   apiKey,
+  profiles,
+  activeProfileId,
+  profileDraftId,
+  profileName,
   apiFormat,
   model,
   baseUrl,
@@ -120,6 +142,12 @@ export function AiConfigDialog({
   connectionReason,
   saveVerifying = false,
   onApiKeyChange,
+  onProfileNameChange,
+  onNewProfile,
+  onSelectProfile,
+  onActivateProfile,
+  onDeleteProfile,
+  onClearCredential,
   onApiFormatChange,
   onModelChange,
   onBaseUrlChange,
@@ -140,11 +168,12 @@ export function AiConfigDialog({
   onFetchModels,
 }: AiConfigDialogProps) {
   const t = useT();
-  const [modelOptions, setModelOptions] = useState<string[]>([]);
-  const availableModels = modelOptions.length ? modelOptions : apiFormat === 'openai_chat' && isDeepseekOfficialEndpoint(baseUrl) ? [...DEEPSEEK_OFFICIAL_MODELS] : [];
+  const [modelOptionsState, setModelOptions] = useState<{ fetchKey: string; models: string[] } | null>(null);
+  const [modelsFetchRetry, setModelsFetchRetry] = useState(0);
   const [busyAction, setBusyAction] = useState<"test" | "models" | null>(null);
-  const [modelsMessage, setModelsMessage] = useState<string | null>(null);
-  const [testInline, setTestInline] = useState<{
+  const [modelsMessageState, setModelsMessage] = useState<{ fetchKey: string; message: string | null } | null>(null);
+  const [testInlineState, setTestInline] = useState<{
+    key: string;
     ok: boolean;
     text: string;
   } | null>(null);
@@ -163,8 +192,38 @@ export function AiConfigDialog({
   const fetchedForRef = useRef<string | null>(null);
 
   const canUseKey = Boolean(apiKey.trim()) || hasKey;
+  const selectedProfile = profiles.find((profile) => profile.id === profileDraftId);
+  const profileDraftIsDirty = selectedProfile !== undefined && (
+    selectedProfile.name !== profileName.trim()
+    || selectedProfile.apiFormat !== apiFormat
+    || selectedProfile.model !== model.trim()
+    || selectedProfile.baseUrl !== baseUrl.trim()
+    || Boolean(apiKey.trim())
+  );
   const language = languages[0] ?? "zh-CN";
-  const modelsFetchKey = `${apiFormat}|${baseUrl.trim()}|${apiKey.trim() ? "typed" : hasKey ? "stored" : "none"}`;
+  const modelsFetchKey = buildAiModelsFetchKey({
+    profileId: profileDraftId,
+    apiFormat,
+    baseUrl,
+    apiKey,
+    hasStoredKey: hasKey,
+  });
+  const testKey = `${modelsFetchKey}\u0001${model}`;
+  const testKeyRef = useRef(testKey);
+  useLayoutEffect(() => { testKeyRef.current = testKey; }, [testKey]);
+  const testInline = testInlineState?.key === testKey ? testInlineState : null;
+  const modelsFetchKeyRef = useRef(modelsFetchKey);
+  useLayoutEffect(() => {
+    modelsFetchKeyRef.current = modelsFetchKey;
+  }, [modelsFetchKey]);
+  const modelsMessage = modelsMessageState?.fetchKey === modelsFetchKey
+    ? modelsMessageState.message
+    : null;
+  const modelOptions = modelOptionsState?.fetchKey === modelsFetchKey
+    ? modelOptionsState.models
+    : [];
+
+  const availableModels = modelOptions.length ? modelOptions : apiFormat === 'openai_chat' && isDeepseekOfficialEndpoint(baseUrl) ? [...DEEPSEEK_OFFICIAL_MODELS] : [];
 
   function patchSettings(patch: Partial<AiAnalysisSettingsWire>) {
     onAnalysisSettingsChange({ ...analysisSettings, ...patch });
@@ -179,11 +238,14 @@ export function AiConfigDialog({
   }
 
   async function runTest() {
+    const requestTestKey = testKey;
     setBusyAction("test");
     setTestInline(null);
     try {
       const result = await onTestConnection();
+      if (testKeyRef.current !== requestTestKey) return;
       setTestInline({
+        key: requestTestKey,
         ok: result.success,
         text: result.success
           ? t("aiConfig.testOk")
@@ -196,29 +258,40 @@ export function AiConfigDialog({
 
   async function runFetchModels(options?: { quiet?: boolean }) {
     if (!canUseKey || modelsFetchInFlightRef.current) return;
+    const requestFetchKey = modelsFetchKey;
     modelsFetchInFlightRef.current = true;
     setBusyAction("models");
-    if (!options?.quiet) setModelsMessage(null);
+    if (!options?.quiet) {
+      setModelsMessage({ fetchKey: requestFetchKey, message: null });
+    }
     try {
       const result = await onFetchModels();
-      fetchedForRef.current = modelsFetchKey;
+      if (modelsFetchKeyRef.current !== requestFetchKey) return;
+      fetchedForRef.current = requestFetchKey;
       if (result.models.length > 0) {
-        setModelOptions(result.models);
-        setModelsMessage(
-          options?.quiet
+        setModelOptions({ fetchKey: requestFetchKey, models: result.models });
+        setModelsMessage({
+          fetchKey: requestFetchKey,
+          message: options?.quiet
             ? null
             : t("aiConfig.fetchModelsOk").replace(
                 "{count}",
                 String(result.models.length),
               ),
-        );
+        });
       } else {
-        setModelOptions([]);
-        setModelsMessage(result.reason ?? t("aiConfig.fetchModelsFailed"));
+        setModelOptions({ fetchKey: requestFetchKey, models: [] });
+        setModelsMessage({
+          fetchKey: requestFetchKey,
+          message: result.reason ?? t("aiConfig.fetchModelsFailed"),
+        });
       }
     } finally {
       modelsFetchInFlightRef.current = false;
       setBusyAction(null);
+      if (modelsFetchKeyRef.current !== requestFetchKey) {
+        setModelsFetchRetry((retry) => retry + 1);
+      }
     }
   }
 
@@ -265,8 +338,8 @@ export function AiConfigDialog({
     if (!current || current === previousDefault) {
       onBaseUrlChange("");
     }
-    setModelOptions([]);
-    setModelsMessage(null);
+    setModelOptions(null);
+    setModelsMessage({ fetchKey: modelsFetchKey, message: null });
     setTestInline(null);
     setModelPickerOpen(false);
     setModelPickerMenuBox(null);
@@ -288,7 +361,7 @@ export function AiConfigDialog({
     }
     void runFetchModels({ quiet: true });
     // eslint-disable-next-line react-hooks/exhaustive-deps -- fingerprint-driven
-  }, [open, modelsFetchKey, canUseKey]);
+  }, [open, modelsFetchKey, canUseKey, modelsFetchRetry]);
 
   useEffect(() => {
     if (!modelPickerOpen) return;
@@ -323,6 +396,7 @@ export function AiConfigDialog({
   if (!open) return null;
 
   const busy = busyAction !== null || saveVerifying;
+  const canSaveProfile = Boolean(model.trim()) && !busy;
   const embedded = variant === "embedded";
   const pickerLabel =
     busyAction === "models"
@@ -383,6 +457,71 @@ export function AiConfigDialog({
         ) : null}
         <div className="ai-config-dialog-body">
           <p className="ai-config-note">{t("aiConfig.note")}</p>
+          <div className="micro-label ai-config-section-title">{t("aiConfig.modelConfiguration")}</div>
+          <div className="ai-config-profile-row">
+            <div className="editor-field ai-config-field">
+              <label className="micro-label" htmlFor="ai-config-profile">
+                {t("aiConfig.savedProfiles")}
+              </label>
+              <select
+                className="text-field ai-config-input"
+                id="ai-config-profile"
+                onChange={(event) => {
+                  onSelectProfile(event.target.value);
+                }}
+                value={profileDraftId ?? ""}
+              >
+                <option value="">{t("aiConfig.newProfileOption")}</option>
+                {profiles.map((profile) => (
+                  <option key={profile.id} value={profile.id}>
+                    {profile.name}{profile.id === activeProfileId ? ` · ${t("aiConfig.activeProfile")}` : ""}{!profile.hasCredential ? ` · ${t("aiConfig.missingCredential")}` : ""}
+                  </option>
+                ))}
+              </select>
+            </div>
+            <button className="secondary-button" onClick={onNewProfile} type="button">
+              {t("aiConfig.addProfile")}
+            </button>
+            {profileDraftId ? (
+              <button
+                className="secondary-button"
+                onClick={() => {
+                  onDeleteProfile(profileDraftId);
+                }}
+                type="button"
+              >
+                {t("aiConfig.deleteProfile")}
+              </button>
+            ) : null}
+            {profileDraftId && profileDraftId !== activeProfileId ? (
+              <button
+                className="secondary-button"
+                disabled={!selectedProfile?.hasCredential || profileDraftIsDirty || busy}
+                onClick={() => onActivateProfile(profileDraftId)}
+                type="button"
+              >
+                {t("aiConfig.activateProfile")}
+              </button>
+            ) : null}
+          </div>
+          {profileDraftId && !selectedProfile?.hasCredential ? (
+            <p className="ai-config-hint">{t("aiConfig.profileNeedsKey")}</p>
+          ) : null}
+          {profileDraftId && selectedProfile?.hasCredential && profileDraftIsDirty ? (
+            <p className="ai-config-hint">{t("aiConfig.profileSaveBeforeActivate")}</p>
+          ) : null}
+          <div className="editor-field ai-config-field">
+            <label className="micro-label" htmlFor="ai-config-profile-name">
+              {t("aiConfig.profileName")}
+            </label>
+            <input
+              className="text-field ai-config-input"
+              id="ai-config-profile-name"
+              maxLength={80}
+              onChange={(event) => onProfileNameChange(event.target.value)}
+              value={profileName}
+            />
+          </div>
           <div className="editor-field ai-config-field">
             <label className="micro-label" htmlFor="ai-config-api-format">
               {t("aiConfig.apiFormat")}
@@ -457,6 +596,15 @@ export function AiConfigDialog({
                 <Icon name={showApiKey ? "eye-off" : "eye"} size={14} />
               </button>
             </div>
+            {profileDraftId && hasKey ? (
+              <button
+                className="secondary-button"
+                onClick={onClearCredential}
+                type="button"
+              >
+                {t("aiConfig.clearApiKey")}
+              </button>
+            ) : null}
           </div>
           <div className="editor-field ai-config-field">
             <label className="micro-label" htmlFor="ai-config-model">
@@ -560,6 +708,7 @@ export function AiConfigDialog({
             </div>
           </div>
           <details className="ai-config-asset-options"><summary>{t("aiConfig.assetOptions")}</summary>
+          <div className="micro-label ai-config-section-title">{t("aiConfig.analysisBehavior")}</div>
           <div className="editor-field ai-config-field">
             <label className="micro-label" htmlFor="ai-config-language">
               {t("aiConfig.language")}
@@ -837,11 +986,11 @@ export function AiConfigDialog({
           </div>
           <button
             className="primary-button"
-            disabled={!canUseKey || !model.trim() || busy}
+            disabled={!canSaveProfile}
             onClick={() => void onSave()}
             type="button"
           >
-            {saveVerifying ? t("aiConfig.savingVerifying") : t("aiConfig.save")}
+            {saveVerifying ? t("aiConfig.savingVerifying") : t("aiConfig.saveProfile")}
           </button>
         </div>
         {saveVerifying ? <LauncherNotification pending message={t("aiConfig.saveVerifyingHint")} onDismiss={() => undefined} /> : null}

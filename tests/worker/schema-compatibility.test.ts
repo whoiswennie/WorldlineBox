@@ -2,7 +2,7 @@
 // inside a transaction so a mid-migration failure leaves user_version
 // unchanged, no half-applied schema, and a library that can be reopened and
 // retried.
-import { mkdirSync, mkdtempSync, rmSync } from 'node:fs';
+import { mkdirSync, mkdtempSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -14,8 +14,10 @@ import {
   MIGRATIONS,
   SUPPORTED_SCHEMA_VERSION,
 } from '../../src/worker/library-service';
+import { removePathWithSyncRetry } from '../../src/worker/windows-fs-retry';
 
 const temporaryRoots: string[] = [];
+const services: LibraryService[] = [];
 const require = createRequire(import.meta.url);
 
 interface TestDatabaseConnection {
@@ -37,8 +39,15 @@ function temporaryRoot(): string {
   return root;
 }
 
+function newService(...args: ConstructorParameters<typeof LibraryService>): LibraryService {
+  const service = new LibraryService(...args);
+  services.push(service);
+  return service;
+}
+
 afterEach(() => {
-  for (const root of temporaryRoots.splice(0)) rmSync(root, { force: true, recursive: true });
+  for (const service of services.splice(0)) service.closeAll();
+  for (const root of temporaryRoots.splice(0)) removePathWithSyncRetry(root);
 });
 
 function libraryFilePath(libraryPath: string): string {
@@ -137,7 +146,7 @@ describe('migration replay (every version opens and migrates to latest)', () => 
     it(`v${migration.version} library migrates cleanly to v${SUPPORTED_SCHEMA_VERSION}`, () => {
       const root = temporaryRoot();
       const libraryPath = buildLibraryAtVersion(root, migration.version);
-      const service = new LibraryService();
+      const service = newService();
       service.openLibrary(libraryPath);
       service.closeAll();
       expect(schemaVersionOf(libraryFilePath(libraryPath))).toBe(SUPPORTED_SCHEMA_VERSION);
@@ -149,7 +158,7 @@ describe('legacy plugin-first v28 migration', () => {
   it('applies canonical v33-v36 objects before normalizing migration history', () => {
     const root = temporaryRoot();
     const libraryPath = buildLegacyPluginFirstV28(root);
-    const service = new LibraryService();
+    const service = newService();
 
     expect(() => service.openLibrary(libraryPath)).not.toThrow();
     const libraryId = 'lib_23';
@@ -224,7 +233,7 @@ describe('mid-migration failure injection', () => {
     // transaction (schema-serialization boundary), so build a v23 library.
     const libraryPath = buildLibraryAtVersion(root, 23);
 
-    const failing = new LibraryService({
+    const failing = newService({
       afterSchemaMigrationTransactionBegin: () => {
         throw new Error('injected migration failure');
       },
@@ -234,7 +243,7 @@ describe('mid-migration failure injection', () => {
     expect(schemaVersionOf(libraryFilePath(libraryPath))).toBe(23);
 
     // No half-applied schema: reopening without the failure migrates cleanly.
-    const retry = new LibraryService();
+    const retry = newService();
     expect(() => retry.openLibrary(libraryPath)).not.toThrow();
     retry.closeAll();
     expect(schemaVersionOf(libraryFilePath(libraryPath))).toBe(SUPPORTED_SCHEMA_VERSION);
@@ -243,7 +252,7 @@ describe('mid-migration failure injection', () => {
   it('a failing migration leaves no partial rows in schema_migrations', () => {
     const root = temporaryRoot();
     const libraryPath = buildLibraryAtVersion(root, 23);
-    const failing = new LibraryService({
+    const failing = newService({
       afterSchemaMigrationTransactionBegin: () => {
         throw new Error('injected');
       },
@@ -281,7 +290,7 @@ describe('mid-migration failure injection', () => {
     // part of the migration, so the foreign-object library is corrupt only by
     // the injected conflict; instead assert the version did not advance and
     // the worker's own retry path handles the pre-v4 chain.
-    const service = new LibraryService();
+    const service = newService();
     // The injected conflicting table makes open fail; drop it and reopen to
     // prove the v3 library itself migrates cleanly afterwards.
     const fixup = new Database(libraryFilePath(libraryPath));
@@ -309,7 +318,7 @@ describe('sync-first v37/v38 migration fork (WorldlineBox-e0dw)', () => {
 
   it('rewrites swapped v37/v38 checksums and opens the library writable', () => {
     const root = temporaryRoot();
-    const creating = new LibraryService();
+    const creating = newService();
     const created = creating.createLibrary({
       displayName: 'Swapped history',
       selectedParentPath: root,
@@ -318,13 +327,14 @@ describe('sync-first v37/v38 migration fork (WorldlineBox-e0dw)', () => {
 
     // 模拟 v38 分叉库：先把新建库回退到 v38，再交换 v37/v38 校验和。
     const db = new Database(libraryFilePath(created.libraryPath));
+    db.exec('DROP INDEX IF EXISTS revisions_size_fingerprint_idx');
     db.prepare('DELETE FROM schema_migrations WHERE version >= 39').run();
     db.pragma('user_version = 38');
     db.prepare('UPDATE schema_migrations SET checksum = ? WHERE version = 37').run(syncChecksum);
     db.prepare('UPDATE schema_migrations SET checksum = ? WHERE version = 38').run(autoChecksum);
     db.close();
 
-    const service = new LibraryService();
+    const service = newService();
     const opened = service.openLibrary(created.libraryPath);
     expect(opened.readOnly).toBeFalsy();
     expect(opened.recovery).toBeUndefined();
@@ -348,7 +358,7 @@ describe('sync-first v37/v38 migration fork (WorldlineBox-e0dw)', () => {
 
   it('upgrades a sync-first v37 library by applying auto-analysis as canonical v37', () => {
     const root = temporaryRoot();
-    const creating = new LibraryService();
+    const creating = newService();
     const created = creating.createLibrary({
       displayName: 'Sync-first v37',
       selectedParentPath: root,
@@ -356,6 +366,7 @@ describe('sync-first v37/v38 migration fork (WorldlineBox-e0dw)', () => {
     creating.closeAll();
 
     const db = new Database(libraryFilePath(created.libraryPath));
+    db.exec('DROP INDEX IF EXISTS revisions_size_fingerprint_idx');
     db.exec('DROP TABLE IF EXISTS asset_auto_analysis_suppression');
     db.prepare('DELETE FROM schema_migrations WHERE version >= 37').run();
     db.prepare(
@@ -364,7 +375,7 @@ describe('sync-first v37/v38 migration fork (WorldlineBox-e0dw)', () => {
     db.pragma('user_version = 37');
     db.close();
 
-    const service = new LibraryService();
+    const service = newService();
     const opened = service.openLibrary(created.libraryPath);
     expect(opened.readOnly).toBeFalsy();
     service.renameLibrary({

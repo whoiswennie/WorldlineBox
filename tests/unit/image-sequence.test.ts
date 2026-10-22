@@ -4,6 +4,7 @@ import {
   detectImageSequences,
   findImageSequenceContaining,
   formatImageSequenceDisplayName,
+  indexImageSequenceFramesByValue,
   parseImageSequenceFileName,
 } from "../../src/shared/image-sequence";
 
@@ -96,6 +97,7 @@ describe("detectImageSequences", () => {
     expect(sequences.map((sequence) =>
       sequence.frames.map((frame) => frame.frameNumber),
     )).toEqual([[1, 2, 3], [5, 6, 7]]);
+    expect(sequences[0]!.frames).not.toBe(sequences[1]!.frames);
   });
 
   it("rejects short, extension-mismatched, and prefix-mismatched runs", () => {
@@ -338,5 +340,40 @@ describe("findImageSequenceContaining", () => {
       "/source/img_6.png",
       "/source/img_7.png",
     ]);
+  });
+});
+
+describe("indexImageSequenceFramesByValue", () => {
+  it("indexes detected frames by original value and keeps the first candidate for duplicates", () => {
+    const detected = detectImageSequences([
+      "shot_001.png",
+      "shot_002.png",
+      "shot_003.png",
+      "take_001.png",
+      "take_002.png",
+      "take_003.png",
+    ]);
+    expect(detected).toHaveLength(2);
+
+    const firstCandidate = detected[0]!;
+    const duplicateValue = firstCandidate.frames[1]!.value;
+    const laterCandidate = {
+      ...detected[1]!,
+      frames: [
+        { ...detected[1]!.frames[0]!, value: duplicateValue },
+        ...detected[1]!.frames.slice(1),
+      ],
+    };
+    const index = indexImageSequenceFramesByValue([firstCandidate, laterCandidate]);
+
+    expect(index.get(duplicateValue)).toEqual({
+      candidate: firstCandidate,
+      frame: firstCandidate.frames[1],
+    });
+    expect(index.get("take_002.png")).toMatchObject({
+      candidate: laterCandidate,
+      frame: { frameNumber: 2, value: "take_002.png" },
+    });
+    expect(index.has("missing_001.png")).toBe(false);
   });
 });

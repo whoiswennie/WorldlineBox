@@ -72,7 +72,8 @@ afterEach(async () => {
   await Promise.all(services.splice(0).map((service) => service.closeAllAsync()));
   for (const root of temporaryRoots.splice(0)) {
     // Yield between retries so Windows can finish delivering watcher-close callbacks.
-    await rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+    // Defender and thumbnail scanners can retain recently closed library trees.
+    await rm(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 });
   }
 });
 

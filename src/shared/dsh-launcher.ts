@@ -88,6 +88,7 @@ export const dshCliStateSchema = z.object({
 export type DshCliState = z.infer<typeof dshCliStateSchema>;
 export const dshNetworkSettingsSchema = z.object({
   proxyMode: z.enum(['system', 'direct', 'custom']), proxyUrl: z.string().trim().max(2048),
+  proxyRouting: z.enum(['smart', 'global']).optional(),
   proxyResumeMode: z.enum(['system', 'custom']).optional(),
   proxyPresetsVersion: z.number().int().min(0).optional(),
   proxyProfiles: z.array(z.object({ id, name, url: z.string().trim().max(2048) })).max(30),
@@ -97,7 +98,7 @@ export const dshNetworkSettingsSchema = z.object({
   sourceProfiles: z.array(z.object({ id, name, kind: z.enum(['npm', 'python', 'github']), url: z.string().trim().max(2048) })).max(30).optional(),
 });
 export type DshNetworkSettings = z.infer<typeof dshNetworkSettingsSchema>;
-export const dshNetworkPatchSchema = dshNetworkSettingsSchema.pick({ proxyMode: true, proxyUrl: true, npmRegistry: true,
+export const dshNetworkPatchSchema = dshNetworkSettingsSchema.pick({ proxyMode: true, proxyUrl: true, proxyRouting: true, npmRegistry: true,
   npmDownloadRoute: true, pythonIndex: true, githubMirror: true, githubMirrorUrl: true }).partial()
   // Zod defaults still run inside optional fields: a proxy-only patch must not reset this policy.
   .extend({ npmDownloadRoute: z.enum(['auto', 'registry']).optional() }).strict();
@@ -108,6 +109,7 @@ const networkRouteSchema = z.object({ kind: dshNetworkSourceKindSchema, url: z.s
 const networkAttemptSchema = z.object({ url: z.string(), proxy: z.string(), elapsedMs: z.number(), ok: z.boolean(), status: z.number().optional(), error: z.string().optional() });
 export const dshNetworkStateSchema = z.object({
   settings: dshNetworkSettingsSchema, revision: z.number().int().min(0), error: z.string().optional(),
+  smartDirectHosts: z.array(z.string().max(253)).max(10).optional(),
   inspection: z.object({ revision: z.number().int(), inspectedAt: z.string(), routes: z.array(networkRouteSchema),
     npmSelection: z.object({ registry: z.string(), checkedAt: z.string(), elapsedMs: z.number(), probed: z.boolean() }).optional(),
     githubSelection: z.object({ url: z.string(), checkedAt: z.string() }).optional(),

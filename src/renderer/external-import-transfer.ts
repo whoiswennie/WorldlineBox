@@ -57,6 +57,17 @@ export function reduceInternalDragPhase(
   return phase === "active" ? "idle" : phase;
 }
 
+/**
+ * Wait until the current drop event has finished propagating before clearing
+ * the native-drag marker. Browsers may run a microtask checkpoint between
+ * trusted native drop listeners, before React's delegated drop handler runs.
+ */
+export function scheduleInternalAssetDropCleanup(
+  cleanup: () => void,
+): ReturnType<typeof setTimeout> {
+  return setTimeout(cleanup, 0);
+}
+
 export function externalImportPayload(transfer: DataTransfer): {
   files: File[];
   html: string;

@@ -9,6 +9,8 @@ import type { HttpsDownloadFetch } from './https-download';
 import type { NodeInstallNetwork } from './node-runtime-service';
 import { AUTOMATIC_NPM_MIRROR, OFFICIAL_NPM_REGISTRY, selectNpmMetadataRoute, type NpmMetadataRoute } from './npm-registry-route';
 import { checkNetworkSource } from './network-diagnostics';
+import { bypassApplicationProxy, proxyBypassRules } from '../../shared/proxy-routing';
+import { selectSmartCdnRoutes } from '../smart-proxy-routes';
 
 export const DEFAULT_LAUNCHER_NETWORK: DshNetworkSettings = {
   proxyMode: 'system', proxyUrl: 'http://127.0.0.1:7897',
@@ -55,13 +57,16 @@ export class LauncherNetwork {
   private npmSelection?: NonNullable<DshNetworkState['inspection']>['npmSelection'];
   private githubSelection?: NonNullable<DshNetworkState['inspection']>['githubSelection'];
   private readonly sessions = new Set<Session>();
+  private smartDirectHosts: string[] = [];
+  private smartRouteProxy?: string;
   private readonly listeners = new Set<() => void>();
   private applyEnvironment?: (environment: NodeJS.ProcessEnv) => void | Promise<void>;
   private childEnvironment?: (environment: NodeJS.ProcessEnv) => NodeJS.ProcessEnv | Promise<NodeJS.ProcessEnv>;
   constructor(private readonly rootPath: string, private readonly onChanged: () => void,
-    private readonly createSession = () => session.fromPartition('persist:worldlinebox-dsh-network')) {}
+    private readonly createSession = () => session.fromPartition('persist:worldlinebox-dsh-network'),
+    private readonly selectCdnRoutes = selectSmartCdnRoutes) {}
   state(): DshNetworkState { return structuredClone({ settings: this.settings, revision: this.revision,
-    ...(this.issue ? { error: this.issue } : {}), inspection: this.inspection, checks: this.checks }); }
+    ...(this.issue ? { error: this.issue } : {}), smartDirectHosts: this.smartDirectHosts, inspection: this.inspection, checks: this.checks }); }
   async init(): Promise<void> {
     try {
       const stored = await readJson<unknown>(path.join(this.rootPath, 'network.json'));
@@ -83,7 +88,10 @@ export class LauncherNetwork {
       }
       this.settings.proxyPresetsVersion = 1;
     }
-    this.scope = this.createSession(); this.sessions.add(this.scope); this.transport = createElectronHttpsDownload(this.scope); await this.apply();
+    this.scope = this.createSession(); this.sessions.add(this.scope); this.transport = createElectronHttpsDownload(this.scope);
+    this.smartDirectHosts = await this.prepareSmartRoutes(this.settings);
+    this.smartRouteProxy = this.settings.proxyMode === 'custom' && this.settings.proxyRouting === 'smart' ? this.settings.proxyUrl : undefined;
+    await this.apply();
   }
   subscribe(listener: () => void): () => void { this.listeners.add(listener); return () => this.listeners.delete(listener); }
   private changed(): void { this.onChanged(); for (const listener of this.listeners) listener(); }
@@ -100,7 +108,7 @@ export class LauncherNetwork {
   private async applySession(scope: Session): Promise<void> {
     const settings = this.settings;
     await scope.setProxy(settings.proxyMode === 'custom'
-      ? { mode: 'fixed_servers', proxyRules: settings.proxyUrl, proxyBypassRules: '<local>;localhost;127.0.0.1;[::1]' }
+      ? { mode: 'fixed_servers', proxyRules: settings.proxyUrl, proxyBypassRules: proxyBypassRules(settings.proxyRouting ?? 'global', this.smartDirectHosts) }
       : { mode: settings.proxyMode });
     await scope.forceReloadProxyConfig();
   }
@@ -108,28 +116,41 @@ export class LauncherNetwork {
     await Promise.all([...this.sessions].map(scope => this.applySession(scope)));
     if (this.applyEnvironment) await this.applyEnvironment(await this.commandEnvironment(process.env, this.settings.npmRegistry));
   }
+  private async prepareSmartRoutes(settings: DshNetworkSettings, force = false): Promise<string[]> {
+    if (settings.proxyMode !== 'custom' || settings.proxyRouting !== 'smart') return [];
+    if (!force && this.smartRouteProxy === settings.proxyUrl) return this.smartDirectHosts;
+    return this.selectCdnRoutes(settings.proxyUrl);
+  }
   save(value: DshNetworkSettings): Promise<void> {
     const settings = validateLauncherNetwork(value);
-    return this.update(() => settings);
+    return this.update(() => settings, true);
   }
   patch(value: DshNetworkPatch): Promise<void> {
     const patch = dshNetworkPatchSchema.parse(value);
-    return this.update(previous => ({ ...previous, ...patch }));
+    return this.update(previous => ({ ...previous, ...patch }), patch.proxyRouting === 'smart');
   }
   setProxyEnabled(enabled: boolean): Promise<void> {
     return this.update(previous => ({ ...previous, proxyMode: enabled
       ? previous.proxyMode === 'direct' ? previous.proxyResumeMode ?? 'system' : previous.proxyMode
       : 'direct' }));
   }
-  private update(next: (previous: DshNetworkSettings) => DshNetworkSettings): Promise<void> {
+  private update(next: (previous: DshNetworkSettings) => DshNetworkSettings, refreshSmartRoutes = false): Promise<void> {
     const work = this.queue.then(async () => {
       const previous = this.settings;
+      const previousHosts = this.smartDirectHosts;
+      const previousRouteProxy = this.smartRouteProxy;
       const candidate = next(previous);
       const settings = validateLauncherNetwork({ ...candidate, proxyResumeMode: candidate.proxyMode !== 'direct' ? candidate.proxyMode
         : previous.proxyMode !== 'direct' ? previous.proxyMode : candidate.proxyResumeMode ?? previous.proxyResumeMode ?? 'system' });
-      this.settings = settings;
-      try { await this.apply(); await Promise.all([...this.sessions].map(scope => scope.closeAllConnections())); await atomicJson(path.join(this.rootPath, 'network.json'), settings); }
-      catch (error) { this.settings = previous; await this.apply(); await Promise.all([...this.sessions].map(scope => scope.closeAllConnections())); throw error; }
+      try {
+        // Probe before exposing the candidate as applied; the previous policy
+        // remains visible while the bounded external health checks run.
+        const directHosts = await this.prepareSmartRoutes(settings, refreshSmartRoutes);
+        this.settings = settings; this.smartDirectHosts = directHosts;
+        this.smartRouteProxy = settings.proxyMode === 'custom' && settings.proxyRouting === 'smart' ? settings.proxyUrl : undefined;
+        await this.apply(); await Promise.all([...this.sessions].map(scope => scope.closeAllConnections())); await atomicJson(path.join(this.rootPath, 'network.json'), settings);
+      }
+      catch (error) { this.settings = previous; this.smartDirectHosts = previousHosts; this.smartRouteProxy = previousRouteProxy; await this.apply(); await Promise.all([...this.sessions].map(scope => scope.closeAllConnections())); throw error; }
       this.issue = undefined; this.revision++; this.lifetime.abort(new Error('Network settings changed.')); this.lifetime = new AbortController();
       this.inspection = undefined; this.checks = undefined; this.npmSelection = undefined; this.githubSelection = undefined;
       this.metadataRoute = undefined; this.changed();
@@ -211,6 +232,7 @@ export class LauncherNetwork {
     return env;
   }
   private async proxyFor(destination: string): Promise<string> {
+    if (this.settings.proxyMode !== 'system' && bypassApplicationProxy(destination, this.settings.proxyRouting ?? 'global', this.smartDirectHosts)) return 'DIRECT';
     let proxy = this.settings.proxyMode === 'custom' ? this.settings.proxyUrl : '';
     if (this.settings.proxyMode === 'system') {
       let timeout: ReturnType<typeof setTimeout> | undefined;
