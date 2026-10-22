@@ -5,7 +5,7 @@ import { createServer, type ServerResponse } from 'node:http';
 import { _electron as electron, expect, test, type ElectronApplication, type Page } from '@playwright/test';
 import type { CompanionsRequest, WorldlineBoxCompanionsApi } from '../../src/shared/companions';
 import type { WorldlineBoxLlmApi } from '../../src/shared/llm';
-import { removeCompanionTestDirectory, ensureCompanionTestWorkspace, electronLaunchEnv, resolveElectronAppPath, resolveElectronExecutablePath } from './electron-test-helpers';
+import { removeCompanionTestDirectory, ensureCompanionTestWorkspace, electronLaunchEnv, preparePackagedCompanionLaunch, resolveElectronLaunchOptions } from './electron-test-helpers';
 type Bridge = Window & { worldlinebox: { companions: WorldlineBoxCompanionsApi; llm: WorldlineBoxLlmApi } };
 type Record = { purpose: string; self?: string; sourceId?: string; speaker?: string; participants?: string[]; tools: boolean; at: number };
 const sender = 'deepseek-sister', receiver = 'deepseek-flash';
@@ -50,8 +50,13 @@ async function provider() {
 }
 function json(response: ServerResponse, output: unknown) { response.writeHead(200, { 'Content-Type': 'application/json' }); response.end(JSON.stringify({ choices: [{ message: { content: JSON.stringify(output) }, finish_reason: 'stop' }] })); }
 async function launch(root: string, baseUrl: string) {
-  const application = await electron.launch({ executablePath: resolveElectronExecutablePath(), args: [resolveElectronAppPath()], cwd: resolveElectronAppPath(),
-    env: electronLaunchEnv({ WORLDLINEBOX_E2E: '1', WORLDLINEBOX_E2E_USER_DATA_PATH: path.join(root, 'profile') }, { gpu: 'software' }) });
+  const profile = path.join(root, 'profile');
+  const application = await electron.launch({ ...resolveElectronLaunchOptions(),
+    env: electronLaunchEnv({ WORLDLINEBOX_E2E: '1', WORLDLINEBOX_E2E_USER_DATA_PATH: profile }, { gpu: 'software' }) });
+  await preparePackagedCompanionLaunch(application, profile);
+  const applicationIdentity = await application.evaluate(({ app }) => ({ packaged: app.isPackaged, appPath: app.getAppPath(), userData: app.getPath('userData'), version: app.getVersion() }));
+  expect(applicationIdentity.userData).toBe(path.resolve(profile));
+  if (process.env.WORLDLINEBOX_E2E_PACKAGED_EXECUTABLE) expect(applicationIdentity.packaged).toBe(true);
   const page = await application.firstWindow(), native = await application.browserWindow(page);
   await native.evaluate(window => { window.unmaximize(); window.setSize(1440, 900); window.setOpacity(0); window.setFocusable(false); window.webContents.setBackgroundThrottling(false); window.hide(); });
   await ensureCompanionTestWorkspace(page);
@@ -66,7 +71,7 @@ async function launch(root: string, baseUrl: string) {
     const routine = (await request(page, { type: 'routine.get', companionId, conversationId })).routine!, current = await world(page);
     await request(page, { type: 'routine.configure', companionId, conversationId, expectedRevision: routine.revision,
       patch: { timeZone: current.settings.timeZone, wakeAt: clock(current.clock.hour - 8), sleepAt: clock(current.clock.hour + 8), meals: [], habits: [] } }); }
-  return { application, page, ids };
+  return { application, page, ids, applicationIdentity };
 }
 async function startTopic(page: Page, fixture: Awaited<ReturnType<typeof provider>>, recipients: string[], triggerId: string) {
   fixture.arm(recipients);
@@ -96,7 +101,7 @@ async function openHistory(page: Page, conversationId: string) {
 test('refuses a dormant peer and cancels an in-flight reply when a participant deactivates', async ({}, testInfo) => {
   test.setTimeout(120000); const root = mkdtempSync(path.join(tmpdir(), 'worldlinebox-social-e2e-')), fixture = await provider(); let application: ElectronApplication | undefined;
   try {
-    const started = await launch(root, fixture.baseUrl); application = started.application; const { page } = started;
+    const started = await launch(root, fixture.baseUrl); application = started.application; const { page, applicationIdentity } = started;
     await request(page, { type: 'companion.set-active', id: receiver, active: false });
     const rejected = await page.evaluate(value => (window as unknown as Bridge).worldlinebox.companions.request(value), {
       type: 'world.tool', companionId: sender, conversationId: 'private-' + sender,
@@ -134,7 +139,7 @@ test('refuses a dormant peer and cancels an in-flight reply when a participant d
     const history = (await request(page, { type: 'social.messages', conversationId: room.id, limit: 50 })).socialMessagePage!;
     expect(history.total).toBe(1); expect(history.items[0]!.message.authorId).toBe(sender);
     expect(fixture.logs.filter(log => log.purpose === 'world_social')).toHaveLength(1);
-    await testInfo.attach('activation-boundary-evidence', { body: JSON.stringify({ rejected, roomId: room.id, delivered: history.items.map(item => ({ id: item.message.id, authorId: item.message.authorId })), modelCalls: fixture.logs }), contentType: 'application/json' });
+    await testInfo.attach('activation-boundary-evidence', { body: JSON.stringify({ applicationIdentity, rejected, roomId: room.id, delivered: history.items.map(item => ({ id: item.message.id, authorId: item.message.authorId })), modelCalls: fixture.logs }), contentType: 'application/json' });
   } catch (error) {
     const page = application?.windows()[0];
     if (page && !page.isClosed()) { await testInfo.attach('social-ui-failure', { body: await page.locator('body').innerText(), contentType: 'text/plain' }); await testInfo.attach('social-ui-screenshot', { body: await page.screenshot(), contentType: 'image/png' }); }
@@ -147,7 +152,7 @@ for (const group of [false, true]) {
   test(group ? 'autonomous phone group keeps real identities, one reusable room and a four-message chain' : 'autonomous private phone responds independently of sleep and uses actual source identity', async ({}, testInfo) => {
     test.setTimeout(150000); const root = mkdtempSync(path.join(tmpdir(), 'worldlinebox-social-e2e-')), fixture = await provider(); let application: ElectronApplication | undefined;
     try {
-      const started = await launch(root, fixture.baseUrl); application = started.application; const { page, ids } = started;
+      const started = await launch(root, fixture.baseUrl); application = started.application; const { page, ids, applicationIdentity } = started;
       if (!group) { const scope = { companionId: receiver, conversationId: 'private-' + receiver }, routine = (await request(page, { type: 'routine.get', ...scope })).routine!, current = await world(page);
         await request(page, { type: 'routine.configure', ...scope, expectedRevision: routine.revision, patch: { wakeAt: clock(current.clock.hour + 3), sleepAt: clock(current.clock.hour - 3) } });
         await expect.poll(async () => (await request(page, { type: 'state.get', ...scope })).runtimeState?.routine?.phase, { timeout: 20000 }).toBe('sleeping'); }
@@ -183,7 +188,7 @@ for (const group of [false, true]) {
       await expect(completedMemory).toHaveAttribute('aria-busy', 'false'); await expect(completedMemory.getByRole('alert')).toHaveCount(0);
       await expect(completedMemory).toContainText('这轮没有注入长期记忆原文');
       const artifacts = path.resolve('.tools/test-output/companions'); mkdirSync(artifacts, { recursive: true }); await page.screenshot({ path: path.join(artifacts, group ? 'verified-social-phone-group.png' : 'verified-social-phone-private.png') });
-      await testInfo.attach('real-peer-phone-chain', { body: JSON.stringify({ room, messages, logs: fixture.logs, typing: typing.actors.find(actor => actor.companionId === typingOwner) }), contentType: 'application/json' });
+      await testInfo.attach('real-peer-phone-chain', { body: JSON.stringify({ applicationIdentity, room, messages, logs: fixture.logs, typing: typing.actors.find(actor => actor.companionId === typingOwner) }), contentType: 'application/json' });
     } catch (error) {
       await testInfo.attach('social-failure', { body: JSON.stringify({ error: error instanceof Error ? error.message : String(error), logs: fixture.logs }), contentType: 'application/json' });
       const page = application?.windows()[0];

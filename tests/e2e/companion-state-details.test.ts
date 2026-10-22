@@ -52,6 +52,9 @@ test('shows source-backed current state and self-understanding, opens exact docu
     await startFixtureWorker(application, path.join(workspaceState.selected!.dataRoot, 'messages.sqlite'));
     const expression = await append(application, smallRoom.id, small, oldPreference);
     const note = (await storage(application, { type: 'memory.record', companionId: small, conversationId: smallRoom.id, candidate: draft(expression, 'preference', '饮品') })).memories![0]!;
+    // Independent early speech is intentionally not attached to the note that
+    // will be revised/forgotten; that note's entire source history is revoked.
+    const lateExpression = await append(application, smallRoom.id, small, oldPreference);
     const other = await append(application, bigRoom.id, big, otherPreference);
     await storage(application, { type: 'memory.record', companionId: big, conversationId: bigRoom.id, candidate: draft(other, 'preference', '饮品') });
     const shared = await append(application, group.id, small, sharedVoice);
@@ -159,12 +162,13 @@ test('shows source-backed current state and self-understanding, opens exact docu
     const afterWithdrawal = (await request(page, { type: 'character.development', companionId: small, conversationId: smallRoom.id, limit: 12 })).characterDevelopment!;
     expect(afterWithdrawal.items.every(item => item.memoryId !== note.id)).toBe(true);
     await capture(page, 'withdrawn-preference-cleared.png');
-    // A delayed capture uses the original, earlier self-expression unchanged.
+    // A delayed capture uses separate, still-visible early speech unchanged.
     // Its later insertion time must not revive an older position after the
-    // newer drink preference has already been withdrawn.
+    // newer drink preference has already been withdrawn; forgotten historical
+    // sources of the revised note remain correctly inaccessible.
     const lateCloneA = (await storage(application, { type: 'memory.record', companionId: small, conversationId: smallRoom.id,
-      candidate: { ...draft(expression, 'preference', '饮品'), content: expression.content + '\n\n补记这次早期表达，形成时间仍以原始发言为准。' } })).memories![0]!;
-    expect(lateCloneA.id).not.toBe(note.id); expect(lateCloneA.sourceSequence).toBe(expression.sequence); expect(lateCloneA.sourceSequence).toBeLessThan(fresh.sequence);
+      candidate: { ...draft(lateExpression, 'preference', '饮品'), content: lateExpression.content + '\n\n补记这次早期表达，形成时间仍以原始发言为准。' } })).memories![0]!;
+    expect(lateCloneA.id).not.toBe(note.id); expect(lateCloneA.sourceSequence).toBe(lateExpression.sequence); expect(lateCloneA.sourceSequence).toBeLessThan(fresh.sequence);
     await request(page, { type: 'conversation.read', id: smallRoom.id });
     const afterLateCapture = (await request(page, { type: 'character.development', companionId: small, conversationId: smallRoom.id, limit: 12 })).characterDevelopment!;
     expect(afterLateCapture.items.filter(item => item.topic === '饮品')).toEqual([]);
@@ -197,7 +201,7 @@ test('shows source-backed current state and self-understanding, opens exact docu
     expect(scrollingUp.chatScrollTop).toBe(scrollingBefore.chatScrollTop);
     const proof = { applicationIdentity, actualUtilityProcess: true, noProjectionMock: true, owner: small, room: smallRoom.id, sourceRoom: group.id, actualAppliedReceipt: receipt,
       exactNoteId: note.id, sourceMessageId: cause.id, groupDevelopment, afterRevision, afterWithdrawal,
-      lateCaptureAfterWithdrawal: { noteId: lateCloneA.id, sourceMessageId: expression.id, originalSourceSequence: expression.sequence,
+      lateCaptureAfterWithdrawal: { noteId: lateCloneA.id, sourceMessageId: lateExpression.id, originalSourceSequence: lateExpression.sequence,
         withdrawnNewerSourceSequence: fresh.sequence, afterLateCapture },
       originalDocumentLink: true, crossRoomSourceNavigation: true, privateScopeAndOwnerIsolation: true, liveRevisionAndWithdrawalClearOldContent: true,
       dormantNeedsActivation: true, activeSleepingBodyCanCommunicate: true, configuredLocalTestTransport: true,

@@ -38,6 +38,8 @@
 
 ## 最终验证与限制
 
+三号脚本最终安装包、SHA-256及实际打包应用的来源/遗忘/内部滚动/社交/学习复验结果，见 [最终构建与打包复验](companion-concurrent-learning-acceptance-2026-10-22.md#三号脚本最终构建与打包复验)。
+
 冻结生产代码后的相关七套回归为 **140/140**，包括自我档案归属、条件性反思、替代和遗忘、私聊/群聊投影、正式状态整合、旧任务覆盖保护及模型输入；TypeScript 与 17 个相关文件的 ESLint 均通过。日志分别为 [validation](../../artifacts/character-development-frozen-validation.log)、[tsc](../../artifacts/character-development-frozen-tsc.log)、[eslint](../../artifacts/character-development-frozen-eslint.log)。这些测试与前轮集合重叠，不累加计数。
 
 本轮真实日记没有提出状态更新，最终 PAD 为零，因此不能将本次内容验收描述为「真实模型已改变情绪」。正式记忆导致表达、关注点及 PAD 变化、修订撤回和较慢任务不覆盖新状态，由 [companion-memory-state-bridge.test.ts](../../tests/worker/companion-memory-state-bridge.test.ts) 的两条确定性回归单独验证。睡眠反思、梦境真实性和来源边界另由日记与梦境单元回归覆盖；没有声称本轮在真实模型中完成睡眠或完整长期生活模拟。

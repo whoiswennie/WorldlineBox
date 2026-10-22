@@ -1,6 +1,6 @@
 # 伙伴并行、持续学习与世界时效验收
 
-本轮基于 `80cd677`，覆盖真实来源到 VCP 的闭环、独立消息处理、长期目标与用户可查看的凭证。上游固定版本 `7ceecd48c46caac8168b909ade5febbc4a254e42` 的127份文件经脚本校验仍未修改。
+本轮基于 `80cd677`，最终生产实现提交为 `f0db30b`，覆盖真实来源到 VCP 的闭环、独立消息处理、长期目标与用户可查看的凭证。上游固定版本 `7ceecd48c46caac8168b909ade5febbc4a254e42` 的127份文件经脚本校验仍未修改。
 
 ## 独立认知任务与真实身体
 
@@ -51,3 +51,23 @@
 持续学习的反思可以选择提出下一关注点，引用本轮真实材料，并携带推理前的状态版本。正式完成时原子核验已保存笔记、材料引用和当前授权；并发新聊天优先，同知识复用不反复改写关注或增加情绪值。学习详情展示实际应用、跳过或无需重复更新的结果，可展开原文引用。相关后端五套61项、根状态/服务/行动三套125项、行动/社交两套36项、学习与状态UI两套24项通过；集合有重叠，不累加。
 
 三角色实际模型与Gemma/VCP的内容结果、初始失败及修复边界见 [本人认识与最新状态验收](companion-character-growth-2026-10-22.md)。真实Electron状态详情验收另覆盖来源跳转、改版撤回、私有范围和独立内部滚动：详情可视449px、内容1041px，鼠标滚轮令内部位置0→180→0，主聊天位置保持不动。此次窗口测试使用可控聊天提供方和真实worker，不冒充真实模型情绪评估。
+
+## 三号脚本最终构建与打包复验
+
+迟到补录退役水位修复后重新执行 `03-Build-Installer.bat`，类型检查、资源门禁、Forge打包及Inno编译均成功。日志为 `artifacts/companion-current-growth-installer-final.log`；最终安装包为 `out/make/inno/WorldlineBoxSetup.exe`，大小1,213,098,880字节。安装包包含本轮 `f0db30b` 生产实现；后续提交仅补充测试启动器和验收记录。
+
+| 最终产物 | SHA-256 |
+| --- | --- |
+| `WorldlineBoxSetup.exe` | `8675dfcddf74339bdaa53b5def455c07891e497e9720c4bb961f2d9588edec7d` |
+| `WorldlineBox.exe` | `b1df6776d4b3df5e5c4ee38b12344e9248da6a0dd0988263665c84afc3ba813d` |
+| `resources/app.asar` | `f3c9b01909e66850d78287b73dbc1882867ddec27f4a9ac865b7d37c883d5016` |
+
+最终解包目录通过真实打包应用复验，不以开发版运行代替：
+
+- 资产库绑定、32份资产的本地语义索引、普通聊天选择性收录、实际Gemma/VCP召回、来源定位、编辑冲突、遗忘和重启：2/2通过，日志 `artifacts/companion-growth-packaged-baseline-final.log`，机器回执 `artifacts/vcp-validation/packaged-companion-memory-both.json`。每次启动断言 `app.isPackaged`、实际ASAR及隔离用户目录；未触碰用户已安装应用的数据。
+- 状态详情、当前认识、原始文档与跨会话来源、群聊范围、修订与遗忘、迟到旧表达不复活、明暗主题及1440/1040/800窗口：1/1通过，日志 `artifacts/companion-current-growth-packaged-state-final.log`。最终包实测详情449px可视、1041px内容，滚轮使内部0→180→0，主聊天始终712px。回执和截图位于 `artifacts/vcp-validation/state-current-ui-packaged/`。
+- 修正启动器后，正式包的休眠伙伴拒绝联系/停用取消、睡眠期间独立手机回复、三角色群聊实时流程，以及实际学习目标阅读→索引→VCP回忆自测→文档定位合计4/4通过，日志 `artifacts/companion-current-growth-packaged-social-learning-final.log`。社交启动同样强制断言正式ASAR及隔离用户目录。这些窗口测试使用可控聊天提供方；不能冒充上述三角色真实模型内容验收或长期自主成长验证。
+
+保留 `artifacts/companion-current-growth-packaged-ui.log` 的初次1失败/1通过：状态测试错误地将已遗忘笔记的历史来源用于延迟补录，宿主正确拒绝。测试改用独立、仍可见的早期正式发言后，上述最终状态测试通过；没有放宽生产来源校验。另发现社交测试旧启动器忽略打包路径，旧三项通过仅算开发版回归，不能充作正式包验收；已改为共用强制校验正式ASAR及隔离用户目录的启动器。
+
+构建保留了当时工作区已有的网络/Pixiv未提交修改；这些其他工作未纳入本次提交或推送。产物哈希用于准确识别本机已验收的包，不表示单独检出 `f0db30b` 即可按字节复现。完整本机发布回执位于 `artifacts/vcp-validation/current-growth-release-final.json`，生成物与大型安装包不进入Git。
