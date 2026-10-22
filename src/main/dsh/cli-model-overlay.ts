@@ -16,9 +16,12 @@ try{
  const sdk=existsSync(path.join(program,'node-runtime.json'))?path.join(program,'dsh/node_modules'):path.join(program,'resources/app.asar/dsh/node_modules');
  const anchor=path.join(sdk,'@deepseek-ai/dsh/package.json'),load=createRequire(anchor);
  const native=await import(pathToFileURL(load.resolve('@deepseek-ai/dsh-app-boot')));
- // The public loadProfile convenience routine can normalize shipped manifests.
- // This helper only composes the existing profile and never changes user files.
- const profile=native.loadProfileDirectory('dsh',native.resolveProfileDir(profileName,process.env.DSH_HOME),anchor,{userLayer:true});
+ // A fresh launcher instance has no manifest until its first official CLI boot.
+ // Initialize only that absent profile with its native template; configured
+ // profiles retain their exact manifest instead of triggering normalization.
+ const profileDirectory=native.resolveProfileDir(profileName,process.env.DSH_HOME);
+ if(!existsSync(path.join(profileDirectory,'package.json'))){const template=native.PROFILE_TEMPLATES[profileName];if(!template)throw Error('CLI_MODEL_PROFILE');native.initProfile(profileDirectory,template.bundles)}
+ const profile=native.loadProfileDirectory('dsh',profileDirectory,anchor,{userLayer:true});
  const overlays=JSON.parse(patchesJson).flatMap(file=>native.loadOverlayPatches('dsh',file));
  const context={dir:profile.dir,patchPath:profile.patchPath,installAnchor:anchor,home:process.env.DSH_HOME,overlays,telemetryDisabledEnv:process.env.DSH_TELEMETRY_DISABLED};
  const effective=project(native.composeEntries([native.readProfilePatches('dsh',context,profile)]));const defaults=project(native.composeEntries(profile.layers.map(layer=>layer.patches)));

@@ -22,7 +22,7 @@ it('requires an explicit library, and keeps only the locator in the device profi
   await expect(access(path.join(f.userData, 'companions'))).rejects.toThrow();
   expect(JSON.parse(await readFile(path.join(f.userData, 'companion-library.json'), 'utf8'))).toEqual(f.library);
 });
-it('moves verified legacy chat, attachments and credentials to the chosen library before removing the old copy', async () => {
+it('starts the selected library without reimporting retired profile conversations or credentials', async () => {
   const f = await fixture(), legacy = path.join(f.userData, 'companions');
   await mkdir(path.join(legacy, 'attachments'), { recursive: true });
   await writeFile(path.join(legacy, 'messages.sqlite'), 'actual-chat-ledger');
@@ -31,20 +31,19 @@ it('moves verified legacy chat, attachments and credentials to the chosen librar
   await mkdir(path.join(legacy, 'vcp'), { recursive: true });
   await writeFile(path.join(legacy, 'vcp', 'derived.db'), 'can-be-rebuilt');
   const selected = await f.store.select(f.library);
-  expect(await readFile(path.join(selected.dataRoot, 'messages.sqlite'), 'utf8')).toBe('actual-chat-ledger');
-  expect(await readFile(path.join(selected.dataRoot, 'attachments', 'portrait.png'), 'utf8')).toBe('portrait');
-  expect(await readFile(path.join(selected.dataRoot, 'credentials.json'), 'utf8')).toBe('encrypted-local-key');
-  await expect(access(path.join(selected.dataRoot, 'vcp'))).rejects.toThrow();
-  await expect(access(legacy)).rejects.toThrow();
+  for (const name of ['messages.sqlite', 'attachments', 'credentials.json', 'vcp', 'migration.json']) {
+    await expect(access(path.join(selected.dataRoot, name))).rejects.toThrow();
+  }
+  expect(await readFile(path.join(legacy, 'messages.sqlite'), 'utf8')).toBe('actual-chat-ledger');
 });
-it('retains old data and refuses to publish the binding on a conflicting interrupted migration', async () => {
+it('does not run retired interrupted migration metadata when binding a library', async () => {
   const f = await fixture(), legacy = path.join(f.userData, 'companions'), destination = path.join(f.library.libraryPath, '.worldlinebox', 'companions');
   await mkdir(legacy, { recursive: true }); await writeFile(path.join(legacy, 'messages.sqlite'), 'newest');
   await mkdir(destination); await writeFile(path.join(destination, 'messages.sqlite'), 'partial-conflict');
   await writeFile(path.join(destination, 'migration.pending.json'), '{}');
-  await expect(f.store.select(f.library)).rejects.toThrow('校验');
+  await expect(f.store.select(f.library)).resolves.toMatchObject({ libraryId: f.library.libraryId });
   expect(await readFile(path.join(legacy, 'messages.sqlite'), 'utf8')).toBe('newest');
-  expect(await f.store.current()).toBeUndefined();
+  expect(await f.store.current()).toMatchObject({ libraryId: f.library.libraryId });
 });
 it('rejects an ordinary folder without creating companion data there', async () => {
   const f = await fixture();

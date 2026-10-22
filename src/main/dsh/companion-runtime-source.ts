@@ -3,7 +3,8 @@
  * The native loop owns model calls, tool scheduling, inbox and durable sessions.
  * Main owns the child lifetime; this adapter only projects events and forwards input.
  */
-export function companionRuntimeSource(anchor: string, resumeSessionId?: string, recovery?: { id: string; prompt: string; inputs: Array<{ id: string; content: string; mode: 'steer' | 'queue' }> }): string {
+import { taskRuntimePolicySource, type DshRuntimeTaskPolicy } from './task-runtime-policy';
+export function companionRuntimeSource(anchor: string, resumeSessionId?: string, recovery?: { id: string; prompt: string; inputs: Array<{ id: string; content: string; mode: 'steer' | 'queue' }> }, policy: DshRuntimeTaskPolicy = {}): string {
   return 'import { createRequire } from "node:module";\nconst require = createRequire(' + JSON.stringify(anchor) + ');\nconst resumeSessionId = ' + JSON.stringify(resumeSessionId ?? null) + ';\nconst recovery = ' + JSON.stringify(recovery ?? null) + ';\n' + String.raw`
 import { pathToFileURL } from 'node:url';
 import { createInterface } from 'node:readline';
@@ -12,15 +13,20 @@ const { createUserMessage } = await import(pathToFileURL(require.resolve('@deeps
 const { installModelSelection } = await import(pathToFileURL(require.resolve('@deepseek-ai/dsh-agent')));
 export const name = 'worldlinebox-companion-runtime';
 export const inject = ['agents', 'agentDefaultModel', 'sessions', 'agentPresets'];
-export function apply(ctx) {
-  const exit = ctx.get('appExit');
+export function apply(ctx, io = {}) {
+  const exit = io.exit || ctx.get('appExit');
   if (typeof exit !== 'function') throw Error('Companion CLI requires its owning app exit boundary');
-  const input = createInterface({ input: process.stdin, terminal: false });
+  const cwd = io.cwd || process.cwd();
+  const currentResume = io.resumeSessionId ?? resumeSessionId;
+  const currentRecovery = io.recovery ?? recovery;
+  const cleanup = []; let handle;
+  const input = createInterface({ input: io.input || process.stdin, terminal: false });
   let agent, started = false, accepting = true, accepted = 0, lastText = '', reason, revision = 0;
   let stream = '', streamId, streamOrdinal = 0, lastPublish = 0, streamTimer, hadLiveText = false;
   let outputState = 'draft'; const toolStreams = new Map();
   const seenInputs = new Set();
   const emit = value => process.stdout.write(JSON.stringify(value) + '\n');
+` + taskRuntimePolicySource(policy) + String.raw`
   const flushText = () => {
     clearTimeout(streamTimer); streamTimer = undefined;
     if (stream) { emit({ type: 'text_stream', streamId, text: stream.slice(0, 16000), outputState }); lastPublish = Date.now(); hadLiveText = true; }
@@ -31,8 +37,12 @@ export function apply(ctx) {
     while (true) {
       const observed = revision;
       await agent.whenIdle();
+      const idleSeq = agent.session.seq;
+      // Match the official headless boundary: children can wake the root with
+      // completion messages after its first idle transition.
+      if (await ctx.get('subagents')?.waitForChildren?.(agent)) continue;
       await new Promise(resolve => setTimeout(resolve, 50));
-      if (observed === revision) break;
+      if (observed === revision && agent.status === 'idle' && agent.session.seq === idleSeq) break;
     }
     accepting = false; flushText();
     await ctx.get('sessions').flush(agent.session);
@@ -43,8 +53,8 @@ export function apply(ctx) {
   const ready = Promise.resolve().then(async () => {
     await ctx.get('loader')?.await();
     const selection = ctx.get('agentDefaultModel').currentSelection();
-    const sessionId = resumeSessionId || 'session-' + randomUUID();
-    ctx.on('session/event', (session, event) => {
+    const sessionId = currentResume || 'session-' + randomUUID();
+    cleanup.push(ctx.on('session/event', (session, event) => {
       if (session.id !== sessionId) return;
       const data = event.data;
       switch (event.type) {
@@ -67,9 +77,10 @@ export function apply(ctx) {
           if (text) { lastText = text; if (!hadLiveText) emit({ type: 'text', text: text.slice(0, 16000) }); }
           break;
         }
+        case 'deliverables/presented': emit({ type: 'artifacts', files: data.files }); break;
       }
-    });
-    ctx.on('agent/assistant-stream', ({ agent: subject, frame }) => {
+    }));
+    cleanup.push(ctx.on('agent/assistant-stream', ({ agent: subject, frame }) => {
       if (subject.id !== sessionId) return;
       if (frame.type === 'start') { if (outputState === 'draft' && (stream || toolStreams.size)) { outputState = 'abandoned'; flushText(); } stream = ''; streamId = 'stream_' + (++streamOrdinal); hadLiveText = false; outputState = 'draft'; toolStreams.clear(); }
       else if (frame.type === 'end') { outputState = frame.outcome?.kind === 'committed' && frame.outcome.eventType === 'assistant/message' ? 'committed' : 'abandoned'; flushText(); }
@@ -85,7 +96,7 @@ export function apply(ctx) {
         else if (!streamTimer) streamTimer = setTimeout(flushText, 100);
       }
       // Native private reasoning-delta is deliberately excluded.
-    });
+    }));
     const collectInputs = subject => {
       const seen = new Set(), turns = new Map();
       for (let seq = 0; seq < subject.session.seq; seq++) {
@@ -103,30 +114,37 @@ export function apply(ctx) {
       setup: async (scope, subject) => {
         // Mount the instance's declared standard composition, including user-edited plugins.
         // A host-only catalog is incomplete when the Web profile owns per-Agent presets.
-        await ctx.get('agentPresets').mount(scope, 'standard');
+        const preset = taskPolicy.mode === 'ptc' ? 'ptc' : 'standard';
+        if (preset === 'ptc' && !ctx.get('ptcRuntime')) throw Error('task/unsupported: this runtime has no PTC runtime');
+        await ctx.get('agentPresets').mount(scope, preset);
         installModelSelection(scope, { current: selection, assembled: undefined });
-        if (!recovery) return;
+        await configureTask(scope, subject);
+        if (!currentRecovery) return;
         const seen = collectInputs(subject);
-        for (const input of recovery.inputs) if (!seen.has(input.id)) {
+        for (const input of currentRecovery.inputs) if (!seen.has(input.id)) {
           subject.inbox.append(input.mode === 'steer' ? 'next-step' : 'next-turn', createUserMessage({ content: [{type:'text',text:'恢复前未完成的补充要求。先结合原会话证据核对已有操作，只完成尚未达成的部分，禁止盲目重复已完成或结果未知的外部动作：\n'+input.content}],source:{kind:'user',worldlineboxInputId:input.id} }));
           seen.add(input.id);
         }
         // Native maintenance holds the driver: resume the original work before
         // letting its queued next-turn requests run, without replaying inputs.
-        if (!seen.has(recovery.id)) subject.inbox.prepend('next-turn', createUserMessage({content:[{type:'text',text:recovery.prompt}],source:{kind:'user',worldlineboxInputId:recovery.id}}));
+        if (!seen.has(currentRecovery.id)) subject.inbox.prepend('next-turn', createUserMessage({content:[{type:'text',text:currentRecovery.prompt}],source:{kind:'user',worldlineboxInputId:currentRecovery.id}}));
       } };
-    if (resumeSessionId) {
+    if (currentResume) {
       if (!ctx.get('sessionPersistence') || !ctx.get('sessionQuery')) throw Error('Native durable session services are required for recovery');
       const observation = await ctx.get('sessionQuery').observeSession(sessionId);
       try {
-        if (observation.header.cwd !== process.cwd() || observation.header.origin === 'subagent' || observation.header.parentSession) throw Error('Native recovery session does not match this original root task workspace');
+        if (observation.header.cwd !== cwd || observation.header.origin === 'subagent' || observation.header.parentSession) throw Error('Native recovery session does not match this original root task workspace');
       } finally { observation[Symbol.dispose](); }
-      agent = (await ctx.get('agents').resume({ ...options, resumeSessionId: sessionId })).agent;
-      if (agent.session.header.cwd !== process.cwd()) throw Error('Recovered native session workspace changed');
-    } else agent = (await ctx.get('agents').create({ ...options, sessionId, meta: { cwd: process.cwd() } })).agent;
+      handle = await ctx.get('agents').resume({ ...options, resumeSessionId: sessionId }); agent = handle.agent;
+      if (agent.session.header.cwd !== cwd) throw Error('Recovered native session workspace changed');
+    } else { handle = await ctx.get('agents').create({ ...options, sessionId, meta: { cwd } }); agent = handle.agent; }
+    // Preset plugins can register scope-local tools in agent/created. Catalog
+    // validation must observe the published Agent before admitting any input.
+    await publishTaskCapabilities(agent);
     for (const id of collectInputs(agent)) seenInputs.add(id);
-    if (recovery) { seenInputs.add(recovery.id); for (const input of recovery.inputs) seenInputs.add(input.id); }
-    emit({ type: 'session', sessionId, resumed: !!resumeSessionId });
+    if (currentRecovery) { seenInputs.add(currentRecovery.id); for (const input of currentRecovery.inputs) seenInputs.add(input.id); }
+    emit({ type: 'session', sessionId, resumed: !!currentResume });
+    if (taskPolicy.discover) { accepting = false; emit({ type: 'final', text: 'Capability discovery completed without a model request.' }); exit(0); return; }
     emit({ type: 'ready' });
   });
   let commands = Promise.resolve();
@@ -148,7 +166,7 @@ export function apply(ctx) {
         if (mode === 'steer') agent.steer(message); else agent.followup(message);
         if (inputId) seenInputs.add(inputId);
       };
-      admit(value.content, value.type, value.sourceInputId);
+      admit(value.type === 'start' ? taskPrelude + value.content : value.content, value.type, value.sourceInputId);
       if (value.type === 'start' && Array.isArray(value.inputs)) {
         if (value.inputs.length > 100) throw Error('Oversized initial input queue');
         for (const input of value.inputs) {
@@ -156,11 +174,11 @@ export function apply(ctx) {
           admit(input.content, input.mode, input.id);
         }
       }
-      if (value.type === 'start' && recovery) {
+      if (value.type === 'start' && currentRecovery) {
         // Inbox mutations during native factory maintenance are durable but
         // deliberately do not wake its driver. Public steering wakes it while
         // preserving the prepended original task ahead of queued followups.
-        agent.steer(createUserMessage({content:[{type:'text',text:'继续已恢复的原任务，按现有队列顺序完成剩余工作，不重复已完成的操作。'}],source:{kind:'user',worldlineboxInputId:recovery.id+'-wake'}}));
+        agent.steer(createUserMessage({content:[{type:'text',text:'继续已恢复的原任务，按现有队列顺序完成剩余工作，不重复已完成的操作。'}],source:{kind:'user',worldlineboxInputId:currentRecovery.id+'-wake'}}));
       }
       revision++; accepted++;
       await ctx.get('sessions').flush(agent.session);
@@ -169,8 +187,18 @@ export function apply(ctx) {
     }).catch(() => { emit({ type: 'error', code: 'task/input' }); exit(1); });
   });
   input.on('close', () => { if (agent && accepting) agent.cancel({ kind: 'parent' }, { keepInbox: true }); });
-  ctx.effect(() => () => { clearTimeout(streamTimer); accepting = false; input.close(); });
+  let disposal;
+  const dispose = () => disposal ||= (async () => {
+    accepting = false; clearTimeout(streamTimer); input.close();
+    try {
+      try { if (agent) await ctx.get('subagents')?.drainContinuableDescendants?.([agent]); }
+      finally { await handle?.dispose(); }
+    }
+    finally { for (const release of cleanup.reverse()) release?.(); }
+  })();
+  if (!io.input) ctx.effect(() => dispose);
   void ready.catch(error => { emit({ type: 'error', code: 'task/startup', message: String(error?.message || 'Native startup failed').slice(0, 1000) }); exit(1); });
+  return dispose;
 }
 `;
 }

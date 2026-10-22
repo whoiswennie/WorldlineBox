@@ -46,7 +46,7 @@ test('keeps three group reply bubbles independent through actual tools, streamin
         if (role !== 'waiting') chunk({ role: 'assistant', content: role === 'tool' ? '甲准备读取资料。' : '乙的第一段已经到达。' });
         const finish = () => {
           released.add(owner);
-          if (role === 'tool') { chunk({ tool_calls: [{ index: 0, id: 'actual_read_file', type: 'function', function: { name: 'read_file', arguments: JSON.stringify({ path: sourceFile }) } }] }); chunk({}, 'tool_calls'); }
+          if (role === 'tool') { chunk({ tool_calls: [{ index: 0, id: 'actual_read_file', type: 'function', function: { name: 'dsh', arguments: JSON.stringify({ operation: 'read_file', parameters: { path: sourceFile } }) } }] }); chunk({}, 'tool_calls'); }
           else { chunk({ content: role === 'stream' ? '乙的第二段也完成了。' : '丙取消后不应出现的旧正文。' }); chunk({}, 'stop'); }
           if (!response.destroyed && !response.writableEnded) response.end('data: [DONE]\n\n');
         };

@@ -10,7 +10,7 @@ const input: CompanionReplyInput = {
   messages: [{ id: 'source', sequence: 1, conversationId: 'private_sister', authorId: 'user', kind: 'text', content: '看看之前的约定', status: 'sent', attachments: [], createdAt: '2026-10-14T00:00:00Z' }], memories: [],
 };
 const config: CompanionModelConfig = { apiFormat: 'openai_chat', model: 'selected-model', baseUrl: 'https://provider.invalid', apiKey: 'private-test-key' };
-const argumentsText = '{"query":"约定"}', callId = 'native_1';
+const argumentsText = '{"action":"search","query":"约定"}', callId = 'native_1';
 const event = (value: unknown, name?: string) => `${name ? `event: ${name}\r\n` : ''}data: ${JSON.stringify(value)}\r\n\r\n`;
 function deferred<T>() { let resolve!: (value: T) => void; const promise = new Promise<T>(yes => { resolve = yes; }); return { promise, resolve }; }
 function controlled() {
@@ -25,16 +25,16 @@ function fixtures(format: AiApiFormat): { initial: string; first: string; second
       ? { choices: [{ index: 0, delta, finish_reason }] } : { output: { choices: [{ index: 0, message: delta, finish_reason }] } });
     const content = (text: string) => format === 'openai_chat' ? text : [{ text }];
     return { initial: ': heartbeat\r\n\r\n' + chunk({ reasoning_content: 'PRIVATE_THINKING' }), first: chunk({ content: content('你好') }),
-      second: chunk({ content: content('，伙伴') }), tools: chunk({ tool_calls: [{ index: 0, id: callId, function: { name: 'memory_search', arguments: '{"query":' } }] })
+      second: chunk({ content: content('，伙伴') }), tools: chunk({ tool_calls: [{ index: 0, id: callId, function: { name: 'memory', arguments: '{"action":"search","query":' } }] })
         + chunk({ tool_calls: [{ index: 0, function: { arguments: '"约定"}' } }] }), finish: chunk({}, 'tool_calls') + 'data: [DONE]\r\n\r\n' };
   }
   if (format === 'openai_responses') return {
     initial: event({ type: 'response.created', response: { status: 'in_progress' } }) + event({ type: 'response.reasoning_text.delta', delta: 'PRIVATE_THINKING' }),
     first: event({ type: 'response.output_text.delta', output_index: 0, delta: '你好' }), second: event({ type: 'response.output_text.delta', output_index: 0, delta: '，伙伴' }),
-    tools: event({ type: 'response.output_item.added', output_index: 1, item: { type: 'function_call', id: 'fc_1', call_id: callId, name: 'memory_search', arguments: '' } })
+    tools: event({ type: 'response.output_item.added', output_index: 1, item: { type: 'function_call', id: 'fc_1', call_id: callId, name: 'memory', arguments: '' } })
       + event({ type: 'response.function_call_arguments.delta', output_index: 1, delta: '{"query":' }) + event({ type: 'response.function_call_arguments.delta', output_index: 1, delta: '"约定"}' }),
     finish: event({ type: 'response.completed', response: { status: 'completed', output: [
-      { type: 'message', content: [{ type: 'output_text', text: '你好，伙伴' }] }, { type: 'function_call', call_id: callId, name: 'memory_search', arguments: argumentsText }] } }),
+      { type: 'message', content: [{ type: 'output_text', text: '你好，伙伴' }] }, { type: 'function_call', call_id: callId, name: 'memory', arguments: argumentsText }] } }),
   };
   if (format === 'anthropic') return {
     initial: event({ type: 'message_start', message: { content: [] } }) + event({ type: 'content_block_start', index: 0, content_block: { type: 'thinking', thinking: '' } })
@@ -42,14 +42,14 @@ function fixtures(format: AiApiFormat): { initial: string; first: string; second
       + event({ type: 'content_block_stop', index: 0 }) + event({ type: 'content_block_start', index: 1, content_block: { type: 'text', text: '' } }),
     first: event({ type: 'content_block_delta', index: 1, delta: { type: 'text_delta', text: '你好' } }),
     second: event({ type: 'content_block_delta', index: 1, delta: { type: 'text_delta', text: '，伙伴' } }),
-    tools: event({ type: 'content_block_stop', index: 1 }) + event({ type: 'content_block_start', index: 2, content_block: { type: 'tool_use', id: callId, name: 'memory_search', input: {} } })
-      + event({ type: 'content_block_delta', index: 2, delta: { type: 'input_json_delta', partial_json: '{"query":' } })
+    tools: event({ type: 'content_block_stop', index: 1 }) + event({ type: 'content_block_start', index: 2, content_block: { type: 'tool_use', id: callId, name: 'memory', input: {} } })
+      + event({ type: 'content_block_delta', index: 2, delta: { type: 'input_json_delta', partial_json: '{"action":"search","query":' } })
       + event({ type: 'content_block_delta', index: 2, delta: { type: 'input_json_delta', partial_json: '"约定"}' } }) + event({ type: 'content_block_stop', index: 2 }),
     finish: event({ type: 'message_delta', delta: { stop_reason: 'tool_use' } }) + event({ type: 'message_stop' }),
   };
   const chunk = (parts: unknown[], finishReason?: string) => event({ candidates: [{ index: 0, content: { parts }, ...(finishReason ? { finishReason } : {}) }] });
   return { initial: chunk([{ thought: true, text: 'PRIVATE_THINKING' }]), first: chunk([{ text: '你好' }]), second: chunk([{ text: '，伙伴' }]),
-    tools: chunk([{ functionCall: { id: callId, name: 'memory_search', args: JSON.parse(argumentsText) }, thoughtSignature: 'opaque-function-signature' }]), finish: chunk([], 'STOP') };
+    tools: chunk([{ functionCall: { id: callId, name: 'memory', args: JSON.parse(argumentsText) }, thoughtSignature: 'opaque-function-signature' }]), finish: chunk([], 'STOP') };
 }
 
 describe('real provider streaming', () => {
@@ -65,7 +65,7 @@ describe('real provider streaming', () => {
       expect(texts).toEqual(['你好', '你好，伙伴']); expect(completed).toBe(false);
       source.send(wire.finish); const reply = await pending;
       expect(source.cancel).toHaveBeenCalled();
-      expect(reply.text).toBe('你好，伙伴'); expect(reply.turn?.calls[0]).toMatchObject({ id: callId, name: 'memory.search', arguments: argumentsText });
+      expect(reply.text).toBe('你好，伙伴'); expect(reply.turn?.calls[0]).toMatchObject({ id: callId, name: 'memory', arguments: argumentsText });
       expect(JSON.stringify(reply)).not.toContain('PRIVATE_THINKING'); expect(texts.join('')).not.toContain('约定');
       if (format === 'gemini_native') expect(reply.turn?.calls[0]?.thoughtSignature).toBe('opaque-function-signature');
       const [url, init] = fetchFn.mock.calls[0]!, request = JSON.parse(String(init?.body));
@@ -105,10 +105,10 @@ describe('real provider streaming', () => {
   it('buffers a tool-only argument across frames and publishes no argument fragments as text', async () => {
     const source = controlled(), onTextDelta = vi.fn(); let complete = false;
     const pending = generateCompanionReply(input, config, undefined, { loop: true, fetchFn: vi.fn<typeof fetch>().mockResolvedValue(source.response), onTextDelta }).then(value => { complete = true; return value; });
-    source.send(event({ choices: [{ delta: { tool_calls: [{ index: 0, id: callId, function: { name: 'memory_', arguments: '{"query":' } }] } }] }));
+    source.send(event({ choices: [{ delta: { tool_calls: [{ index: 0, id: callId, function: { name: 'memo', arguments: '{"action":"search","query":' } }] } }] }));
     await Promise.resolve(); await Promise.resolve(); expect(complete).toBe(false); expect(onTextDelta).not.toHaveBeenCalled();
-    source.send(event({ choices: [{ delta: { tool_calls: [{ index: 0, function: { name: 'search', arguments: '"约定"}' } }] }, finish_reason: 'tool_calls' }] }));
-    const reply = await pending; expect(reply.text).toBe(''); expect(reply.turn?.calls).toEqual([{ id: callId, name: 'memory.search', arguments: argumentsText }]);
+    source.send(event({ choices: [{ delta: { tool_calls: [{ index: 0, function: { name: 'ry', arguments: '"约定"}' } }] }, finish_reason: 'tool_calls' }] }));
+    const reply = await pending; expect(reply.text).toBe(''); expect(reply.turn?.calls).toEqual([{ id: callId, name: 'memory', arguments: argumentsText }]);
     expect(onTextDelta).not.toHaveBeenCalled();
   });
   it('accepts standard SSE multi-line data and CR delimiters across network boundaries', async () => {

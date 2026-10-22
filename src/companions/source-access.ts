@@ -182,18 +182,27 @@ export class CompanionSourceAccess {
         if (visited.has(id))
             return false;
         visited.add(id);
+        if (this.db.prepare(`SELECT 1 FROM companion_message_topics m JOIN companion_topics t ON t.id=m.topic_id
+          WHERE m.message_id=? AND json_extract(t.data,'$.deletedAt') IS NOT NULL`).get(id)) return false;
         const observationRow = this.db.prepare('SELECT value FROM metadata WHERE key=?').get('memory-world-observation/' + id);
         const observation = observationRow ? json<{
             companionId: string;
             forConversationId: string;
             throughSequence?: number;
             assetRead?: string;
+            observation?: { category?: string };
             sources: Array<{
                 id: string;
                 conversationId: string;
                 checksum: string;
             }>;
         }>(row(observationRow).value) : undefined;
+        // Index receipts can contain topic summaries and this reader's working
+        // state without raw-message references. Deletion revokes that old body;
+        // sanitized actual participation receipts remain separate experiences.
+        if (observation?.observation?.category === 'topics' && this.db.prepare(`SELECT 1 FROM json_each(?, '$.items') item
+          JOIN companion_topics topic ON topic.id=json_extract(item.value,'$.topicId')
+          WHERE json_extract(topic.data,'$.deletedAt') IS NOT NULL LIMIT 1`).get(source.content)) return false;
         if (observation?.assetRead && !this.db.prepare("SELECT 1 FROM companion_learning_reads r JOIN companion_learning_grants g ON g.id=r.grant_id WHERE r.id=? AND r.source_message_id=? AND r.companion_id=? AND r.status='read' AND g.enabled=1").get(observation.assetRead, id, scope.companionId)) return false;
         if (observation && (observation.companionId !== scope.companionId
             || observation.sources.some(reference => {

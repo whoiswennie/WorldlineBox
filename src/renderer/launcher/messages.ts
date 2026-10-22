@@ -1,4 +1,10 @@
 export const launcherZh = {
+  'executionReadiness.warming': '正在预热 DSH 能力环境（不会调用模型）…',
+  'executionReadiness.ready': 'DSH 能力环境已就绪，任务将创建独立 Agent。',
+  'executionReadiness.cold': 'DSH 空闲环境已回收，下次任务时会重新启动。',
+  'executionReadiness.failed': 'DSH 能力环境尚未就绪；启动任务时会重试。',
+  managementTarget: '管理目标：{name}', installIntoNamedInstance: '安装到「{name}」', pluginRuntimeSource: '运行版本自带', pluginInstanceSource: '实例私有安装',
+  skillLocalSource: '实例本地技能', skillManageNote: '启停和移除仅作用于下列实例的私有技能目录。', loadingSkills: '正在读取技能…',
   recheckSmartRoutes: '重新检测智能线路',
   proxySmart: '智能代理（仅本软件）', proxyGlobal: '全局代理（仅本软件）', activeProxyMode: '立即切换代理模式',
   proxySmartNote: '本地网络和常见国内站点直连，其他外网走所选代理。应用智能模式时检测 Pixiv CDN：优先代理，仅当代理失败且直连成功时改为该 CDN 直连。重新应用智能模式可重测。',
@@ -68,7 +74,7 @@ export const launcherZh = {
   runtimeIdentity: "运行版本 {version}", source: "来源", sourceDigest: "源制品 SHA-256", contentDigest: "运行文件 SHA-256",
   nodeVersion: "Node 版本", electronVersion: "Electron 版本", installedAt: "安装时间", storage: "文件与容量", files: "{count} 个文件 · {size}",
   verify: "校验运行文件", deleteRuntime: "删除运行版本", referenced: "{count} 个实例引用", adapter: "运行方式", adapterDescription: "官方 DSH CLI + 随包 Web 工作台",
-  overview: "概览", plugins: "插件与检查", logs: "运行日志", snapshots: "快照与备份",
+  overview: "概览", plugins: "插件、技能与检查", logs: "运行日志", snapshots: "快照与备份",
   start: "启动实例", stop: "停止实例", open: "打开 / 返回工作台", default: "默认实例", setDefault: "设为默认", rename: "重命名",
   clone: "复制实例", upgrade: "创建升级副本", deleteInstance: "删除实例", runtime: "DSH 版本", profile: "Profile", process: "进程", port: "端口",
   notRunning: "未运行", createdAt: "创建时间", parent: "来源实例", exitCode: "上次退出码", isolated: "实例隔离", isolatedDescription: "运行制品按摘要固定；每个实例分别保存插件、技能、实例配置和浏览器存储。",
@@ -97,6 +103,12 @@ export const launcherZh = {
 } as const;
 
 export const launcherEn = {
+  'executionReadiness.warming': 'Warming the DSH capability environment without a model request…',
+  'executionReadiness.ready': 'DSH capability environment is ready. Tasks create independent Agents.',
+  'executionReadiness.cold': 'The idle DSH environment was released. The next task starts it again.',
+  'executionReadiness.failed': 'DSH capability environment is not ready. Task startup will retry.',
+  managementTarget: 'Managing: {name}', installIntoNamedInstance: 'Install into “{name}”', pluginRuntimeSource: 'Included with runtime', pluginInstanceSource: 'Private instance installation',
+  skillLocalSource: 'Instance local skill', skillManageNote: 'Enable, disable and remove skills only in this instance’s private directories.', loadingSkills: 'Loading skills…',
   recheckSmartRoutes: 'Recheck smart routes',
   proxySmart: 'Smart proxy (this app)', proxyGlobal: 'Global proxy (this app)', activeProxyMode: 'Switch applied proxy mode',
   proxySmartNote: 'Local networks and common Chinese sites connect directly; other public sites use the selected proxy. Applying smart mode probes Pixiv CDNs: prefer the proxy, and use direct only when the proxy fails and direct succeeds. Reapply smart mode to probe again.',
@@ -166,7 +178,7 @@ export const launcherEn = {
   runtimeIdentity: "Runtime {version}", source: "Source", sourceDigest: "Source SHA-256", contentDigest: "Runtime files SHA-256",
   nodeVersion: "Node version", electronVersion: "Electron version", installedAt: "Installed", storage: "Files and size", files: "{count} files · {size}",
   verify: "Verify runtime files", deleteRuntime: "Delete runtime", referenced: "Used by {count} instances", adapter: "Execution mode", adapterDescription: "Official DSH CLI and bundled Web workbench",
-  overview: "Overview", plugins: "Plugins and checks", logs: "Logs", snapshots: "Snapshots and backups",
+  overview: "Overview", plugins: "Plugins, skills and checks", logs: "Logs", snapshots: "Snapshots and backups",
   start: "Start instance", stop: "Stop instance", open: "Open / return to workbench", default: "Default", setDefault: "Set as default", rename: "Rename",
   clone: "Copy instance", upgrade: "Create upgrade copy", deleteInstance: "Delete instance", runtime: "DSH version", profile: "Profile", process: "Process", port: "Port",
   notRunning: "Not running", createdAt: "Created", parent: "Source instance", exitCode: "Last exit code", isolated: "Instance isolation", isolatedDescription: "Runtime artifacts are pinned by digest. Each instance owns separate plugins, skills, instance settings and browser storage.",

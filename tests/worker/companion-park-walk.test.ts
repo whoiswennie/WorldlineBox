@@ -43,7 +43,7 @@ function untilStrolling(store: CompanionsStore): CompanionWorldSnapshot {
 }
 
 describe('persistent physical park walks', () => {
-  it('counts actual garden walking, pauses for phone replies, survives restart and returns home after a long session', () => {
+  it('counts actual garden walking across independent phone replies, survives restart and returns home after a long session', () => {
     const f = fixture(), started = start(f.store);
     expect(started).toMatchObject({ status: 'active', result: expect.stringContaining('抵达公园后') });
     let world = advance(f.store, 5000);
@@ -56,7 +56,9 @@ describe('persistent physical park walks', () => {
     f.store.request({ type: 'world.work.begin', ...f.scope, workId: 'phone_pause', kind: 'chat', sourceMessageId: source.id });
     const paused = f.store.request({ type: 'world.snapshot' }).world!, progress = actor(paused).parkWalk!.participatedMinutes;
     world = advance(f.store, 4000);
-    expect(actor(world).parkWalk!.participatedMinutes).toBe(progress); expect(actor(world).position).toEqual(actor(paused).position);
+    expect(actor(world).parkWalk!.participatedMinutes).toBeGreaterThan(progress);
+    expect(world.works.find(work => work.workId === 'phone_pause')?.status).toBe('ready');
+    expect(world.events.some(event => event.kind === 'park_walk_interrupted')).toBe(false);
     f.store.request({ type: 'world.work.end', companionId: 'alice', workId: 'phone_pause' });
     world = advance(f.store, 4000); expect(actor(world).parkWalk!.participatedMinutes).toBeGreaterThan(progress);
     const saved = actor(world); f.store.close(); stores.delete(f.store);

@@ -5,6 +5,7 @@ import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { CompanionsStore, type CompanionSeed } from '../../src/companions/store';
 import { companionStorageResponseSchema } from '../../src/shared/companion-storage';
 import { recordUrgentAttention } from '../helpers/companion-world-fixture';
+import { companionGoalProofFixture } from '../helpers/companion-goal-proof-fixture';
 
 const roots: string[] = [], stores = new Set<CompanionsStore>();
 const seeds: CompanionSeed[] = ['alice', 'bob'].map(id => ({ id, name: id, description: '', persona: '尊重来源', model: '', avatar: 'sister', proactive: false }));
@@ -30,7 +31,7 @@ it('respects opting out of autonomous visits while a genuine current player requ
   expect(f.store.request({ type: 'world.tool', ...f.scope, sourceMessageId: message.id, arguments: { action: 'visit', targetCompanionId: 'bob', reason: '按玩家实际委托拜访' } }).world!.visits).toHaveLength(1);
 });
 
-it('answers chat in place using a phone and resumes the paused walking route without reserving a computer', () => {
+it('admits chat during a walking route without reserving a computer or freezing physical movement', () => {
   const f = fixture(), home = f.store.request({ type: 'world.snapshot' }).world!.scenes.find(scene => scene.id === 'home_alice')!;
   f.store.request({ type: 'world.tool', ...f.scope, arguments: { action: 'move', destinationId: home.objects.find(object => object.kind === 'sofa')!.id } });
   advance(f.store, 600); const before = actor(f.store), message = source(f, '今天过得怎么样？');
@@ -39,14 +40,14 @@ it('answers chat in place using a phone and resumes the paused walking route wit
   const ready = f.store.request({ type: 'world.work.ready', companionId: 'alice', workId: work.workId }).worldWork!;
   expect(ready.status).toBe('ready'); expect(ready.computerId).toBeUndefined();
   const during = actor(f.store); expect(during.communication).toMatchObject({ channel: 'phone', phase: 'responding', recipientIds: ['user'] });
-  expect(during.artAction).toBe('phoneTypingStanding'); expect(during.position).toEqual(before.position);
-  advance(f.store, 3000); expect(actor(f.store).position).toEqual(during.position);
+  expect(during.position).toEqual(before.position);
+  advance(f.store, 3000); expect(actor(f.store).position).not.toEqual(during.position);
   expect(f.store.request({ type: 'world.snapshot' }).world!.scenes.flatMap(scene => scene.objects).filter(object => object.kind === 'computer').every(computer => !computer.reservedBy)).toBe(true);
   f.store.request({ type: 'world.work.end', companionId: 'alice', workId: work.workId });
-  advance(f.store, 5000); expect(actor(f.store).communication).toBeUndefined(); expect(actor(f.store).position).not.toEqual(during.position);
+  advance(f.store, 5000); expect(actor(f.store).communication).toBeUndefined();
 });
 
-it('uses the seated phone while resting and wakes for verified urgency without travelling to a computer', () => {
+it('renders a seated phone while resting and admits ordinary and urgent chat independently of the sleeping body', () => {
   const f = fixture(), sofa = f.store.request({ type: 'world.snapshot' }).world!.scenes.find(scene => scene.id === 'home_alice')!.objects.find(object => object.kind === 'sofa')!;
   f.store.request({ type: 'world.tool', ...f.scope, arguments: { action: 'move', destinationId: sofa.id } }); advance(f.store, 10000);
   f.store.request({ type: 'world.tool', ...f.scope, arguments: { action: 'interact', furnitureId: sofa.id, interaction: 'rest' } }); advance(f.store, 1500);
@@ -54,9 +55,9 @@ it('uses the seated phone while resting and wakes for verified urgency without t
   expect(actor(f.store).artAction).toBe('phoneTypingSeated'); f.store.request({ type: 'world.work.end', companionId: 'alice', workId: 'rest_chat' });
   vi.setSystemTime('2026-10-15T23:30:00Z'); f.store.request({ type: 'world.tick' }); advance(f.store, 10000);
   const bedPosition = actor(f.store).position, ordinary = source(f, '普通事情明天说。');
-  expect(f.store.request({ type: 'world.work.begin', ...f.scope, workId: 'sleep_chat', kind: 'chat', sourceMessageId: ordinary.id }).worldWork!.status).toBe('waiting');
+  expect(f.store.request({ type: 'world.work.begin', ...f.scope, workId: 'sleep_chat', kind: 'chat', sourceMessageId: ordinary.id }).worldWork!.status).toBe('ready');
   const urgent = source(f, '紧急，请现在醒来帮我。'); recordUrgentAttention(f.store, 'alice', urgent);
-  expect(f.store.request({ type: 'world.work.begin', ...f.scope, workId: 'urgent_chat', kind: 'chat', sourceMessageId: urgent.id }).worldWork!.status).not.toBe('ready');
+  expect(f.store.request({ type: 'world.work.begin', ...f.scope, workId: 'urgent_chat', kind: 'chat', sourceMessageId: urgent.id }).worldWork!.status).toBe('ready');
   advance(f.store, 3000); expect(f.store.request({ type: 'world.work.ready', companionId: 'alice', workId: 'urgent_chat' }).worldWork!.status).toBe('ready');
   expect(actor(f.store).position).toEqual(bedPosition); expect(actor(f.store).destinationId).not.toBe('alice_computer');
 });
@@ -75,8 +76,8 @@ it('walks from the sofa and sits at the computer for an urgent phone request own
   for (let index = 0; index < 100; index++) {
     const world = advance(f.store, 250), self = world.actors.find(actor => actor.companionId === 'alice')!;
     positions.add(JSON.stringify(self.position));
-    if (self.activity === 'walking') { walked = true; expect(self.artAction).toBe('run'); expect(self.communication?.phase).not.toBe('responding'); }
-    expect(world.works.find(work => work.workId === 'task_chat')!.status).toBe('waiting');
+    if (self.activity === 'walking') { walked = true; expect(self.artAction).toBe('run'); expect(self.communication?.phase).toBe('responding'); }
+    expect(world.works.find(work => work.workId === 'task_chat')!.status).toBe('ready');
     if (world.works.find(work => work.workId === 'task_action')!.status === 'ready') { ready = true; break; }
   }
   expect(walked).toBe(true); expect(positions.size).toBeGreaterThan(3); expect(ready).toBe(true);
@@ -85,7 +86,7 @@ it('walks from the sofa and sits at the computer for an urgent phone request own
   expect(f.store.request({ type: 'world.snapshot' }).world!.scenes.flatMap(scene => scene.objects).find(object => object.id === computer.id)!.reservedBy).toBe('alice');
   const urgent = source(f, '另有急事，现在先回我一句。'); recordUrgentAttention(f.store, 'alice', urgent);
   expect(f.store.request({ type: 'world.work.begin', ...f.scope, workId: 'new_urgent_chat', kind: 'chat', sourceMessageId: urgent.id }).worldWork!.status).toBe('ready');
-  expect(actor(f.store)).toMatchObject({ activity: 'working', artAction: 'phoneTypingSeated', position: computer.anchor });
+  expect(actor(f.store)).toMatchObject({ activity: 'working', position: computer.anchor, communication: { phase: 'responding' } });
   f.store.request({ type: 'world.work.end', companionId: 'alice', workId: 'new_urgent_chat' });
   f.store.updateAction(action.id, { status: 'succeeded', result: '实际文件检查完成。' });
   f.store.request({ type: 'world.work.end', companionId: 'alice', workId: 'task_action' }); advance(f.store, 2000);
@@ -99,6 +100,7 @@ it('upgrades an existing ordinary computer route to a verified urgent run withou
   f.store.request({ type: 'world.tool', ...f.scope, arguments: { action: 'interact', furnitureId: sofa.id, interaction: 'rest' } }); advance(f.store, 1500);
   const message = source(f, '现在有急事，请只读检查文件。');
   const action = f.store.createAction({ ...f.scope, sourceMessageId: message.id, title: '检查文件', status: 'queued' }, { prompt: message.content, supplements: [], waitForActionIds: [] });
+  f.store.request({ type: 'world.work.begin', ...f.scope, sourceMessageId: message.id, workId: 'ordinary_action', kind: 'action' });
   let ordinary = actor(f.store);
   for (let index = 0; index < 16 && ordinary.activity !== 'walking'; index++) { advance(f.store, 100); ordinary = actor(f.store); }
   expect(ordinary).toMatchObject({ activity: 'walking', locomotion: 'walk', movementSpeed: 2.4 });
@@ -121,7 +123,7 @@ it('upgrades an existing ordinary computer route to a verified urgent run withou
   expect(f.store.getAction(action.id).status).toBe('queued'); // Physical readiness cannot fabricate task execution.
 });
 
-it('persists form publication, isolates ownership, holds focus until actual completion and binds one real action', () => {
+it('persists form publication, isolates ownership and holds focus until the whole multi-step goal completes', () => {
   const f = fixture(), order = f.store.request({ type: 'work-order.create', ...f.scope, title: '核对清单', instruction: '只读取清单，不修改文件。', clientId: 'create_once' }).workOrder!;
   expect(order).toMatchObject({ publisherId: 'user', execution: 'external', status: 'accepted', revision: 1 });
   expect(f.store.getMessage(order.sourceMessageId).content).toContain('只读取清单');
@@ -130,13 +132,19 @@ it('persists form publication, isolates ownership, holds focus until actual comp
   expect(() => f.store.request({ type: 'work-order.cancel', ...foreign, id: order.id, expectedRevision: 1 })).toThrow('另一个');
   const claim = companionStorageResponseSchema.parse(f.store.request({ type: 'work-order.claim', companionId: 'alice' })).workOrderClaim!;
   advance(f.store, 10000); expect(actor(f.store).activity).toBe('working');
-  expect(() => f.store.request({ type: 'work-order.complete', id: order.id, leaseToken: claim.leaseToken, result: '伪造完成' })).toThrow('实际行动');
+  expect(() => f.store.request({ type: 'work-order.complete', id: order.id, leaseToken: claim.leaseToken, result: '伪造完成' })).toThrow('主脑');
   const input = { ...f.scope, workOrderId: order.id, sourceMessageId: order.sourceMessageId, title: order.title, status: 'running' as const };
-  const action = f.store.createAction(input); expect(f.store.createAction(input).id).toBe(action.id);
+  const goal = companionGoalProofFixture(f.store, { ...order, kind: 'work' });
+  const action = f.store.createAction({ ...input, ...goal.bind(), taskId: 'native_fixture_first' });
+  const review = f.store.createAction({ ...input, ...goal.bind(), taskId: 'native_fixture_review' }); expect(review.id).not.toBe(action.id);
   const running = f.store.request({ type: 'work-order.list', ...f.scope }).workOrderPage!.items[0]!;
   f.store.updateAction(action.id, { stage: '读取中' }); expect(f.store.request({ type: 'work-order.list', ...f.scope }).workOrderPage!.items[0]!.revision).toBe(running.revision);
   f.store.updateAction(action.id, { status: 'succeeded', result: '实际校验：3 项通过。' });
-  expect(f.store.request({ type: 'work-order.complete', id: order.id, leaseToken: claim.leaseToken }).workOrder).toMatchObject({ status: 'completed', actionId: action.id, result: '实际校验：3 项通过。' });
+  expect(f.store.request({ type: 'work-order.list', ...f.scope }).workOrderPage!.items[0]?.status).toBe('running');
+  f.store.updateAction(review.id, { status: 'succeeded', result: '独立复核：3 项通过。' });
+  const result = '实际校验及独立复核：3 项通过。', proof = goal.finish(result, [f.store.getAction(action.id), f.store.getAction(review.id)]);
+  expect(f.store.request({ type: 'work-order.complete', id: order.id, leaseToken: claim.leaseToken, result, goalInvocationId: proof.invocationId,
+    goalSlot: proof.goalSlot, actionIds: proof.actionIds }).workOrder).toMatchObject({ status: 'completed', actionId: review.id, result });
   advance(f.store, 2500); expect(actor(f.store).activity).not.toBe('working');
   f.store.close(); stores.delete(f.store); const reopened = open(f.filename);
   expect(reopened.request({ type: 'work-order.list', ...f.scope, includeHistory: true }).workOrderPage!.items[0]).toMatchObject({ id: order.id, status: 'completed' });

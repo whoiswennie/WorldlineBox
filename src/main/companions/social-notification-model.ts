@@ -4,7 +4,8 @@ import type { CompanionSocialNotification } from '../../shared/companion-social'
 import type { CompanionWorldSnapshot } from '../../shared/companion-world';
 import type { CompanionProfileInput } from '../../shared/companion-public-profile';
 import { companionIdentity } from './identity';
-import { CompanionModelError, generateCompanionStructured, type CompanionModelConfig, type CompanionModelOptions } from './model';
+import { CompanionModelError, type CompanionModelConfig, type CompanionModelOptions } from './model';
+import { runCompanionStructuredAgent, companionTaskInvocation } from './structured-agent';
 import { refreshCompanionPublicProfileContext } from './public-profile-context';
 import { companionModelWorld, COMPANION_WORLD_PERCEPTION_RULES } from './world-perception-context';
 import type { CompanionActivityTask } from '../../shared/companion-activity-task';
@@ -21,9 +22,10 @@ signal?: AbortSignal, options: Pick<CompanionModelOptions, 'fetchFn' | 'timeoutM
     || input.conversation.id !== event.conversationId || !input.conversation.memberIds.includes(input.companion.id)
     || input.companion.id !== event.companionId || event.origin.ownerId !== input.companion.id
     || event.origin.initiatorId !== 'user' || event.origin.initiatorKind !== 'human_player') throw invalid();
-  const dialogue = (event.dialogue ?? []).filter(message => message.conversationId === input.conversation.id
+  const scopedDialogue = (event.dialogue ?? []).filter(message => message.conversationId === input.conversation.id
     && (message.authorId === 'user' || input.conversation.memberIds.includes(message.authorId)) && message.status === 'sent'
-    && !message.isReplyDraft && !message.replyDraft).map(({ id, authorId, content, replyToId, sequence }) => ({ id, authorId, content, replyToId, sequence }));
+    && !message.isReplyDraft && !message.replyDraft);
+  const dialogue = scopedDialogue.map(({ id, authorId, content, replyToId, sequence }) => ({ id, authorId, content, replyToId, sequence }));
   const events = event.events ?? [{ eventId: event.eventId, kind: event.kind, evidence: event.evidence }];
   const context = refreshCompanionPublicProfileContext({
     system: `你是${input.companion.name}，稳定人格：\n${input.companion.persona}\n${COMPANION_WORLD_PERCEPTION_RULES}\n这是原玩家已委托社交事项的事实后续回报，不是新的闲聊机会或工具授权。原始发起者始终是identity.origin中的真人user；姐姐是另一位有独立ID的伙伴，不能把玩家的委托说成姐姐安排。
@@ -42,7 +44,13 @@ peer_reply只证明对方实际说了evidence.text，不证明已见面、已答
       continuation: { solicited: true, mayGrantExternalExecution: false },
       outputSchema: z.toJSONSchema(resultSchema, { io: 'input' }) }),
   }, { companionId: input.companion.id, memberIds: input.conversation.memberIds, audience: 'player', publicProfiles: input.publicProfiles });
-  const parsed = resultSchema.safeParse(await generateCompanionStructured(context, config, signal, { ...options, visualInputs: input.visualInputs }));
+  const parsed = resultSchema.safeParse(await runCompanionStructuredAgent({ context, frame: {
+    companion: input.companion, conversation: input.conversation, sourceMessage: { ...input.source, content: '' },
+    messages: scopedDialogue.filter(message => message.id !== input.source.id), memories: [],
+    audience: 'player', identityDirectory: input.members, publicProfiles: input.publicProfiles,
+    invocation: companionTaskInvocation({ companion: input.companion, conversationId: input.conversation.id, id: event.id,
+      kind: 'work', goal: '向原委托者如实汇报实际新进展。', createdAt: input.source.createdAt, source: input.source,
+      messageIds: [input.source.id, ...dialogue.map(message => message.id)] }) } }, config, signal, { ...options, visualInputs: input.visualInputs }));
   if (!parsed.success || parsed.data.eventId !== event.eventId) throw invalid();
   return parsed.data.text;
 }

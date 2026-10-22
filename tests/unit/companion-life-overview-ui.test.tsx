@@ -39,7 +39,7 @@ it('shows the persisted shared world clock and actual weather with one bounded o
   expect(request).toHaveBeenCalledExactlyOnceWith({ type: 'life.overview.status', companionId: alice.id, filter: 'all', limit: 20 });
   const environment = node!.querySelector('[aria-label="共享世界时间与天气"]')!;
   expect(environment.querySelector('time')?.dateTime).toBe('2026-10-22T15:00:00.000Z'); expect(environment.textContent).toContain('23:00');
-  expect(environment.textContent).toContain('下雨'); expect(environment.textContent).toContain('室外 14°'); expect(environment.textContent).toContain('世界正在推进未完成时段');
+  expect(environment.textContent).toContain('下雨'); expect(environment.textContent).toContain('室外 14°'); expect(environment.textContent).toContain('世界观测已落后，等待后台继续推进');
   expect(node!.textContent).toContain('正在小屋里休息'); expect(node!.querySelector('[aria-label="查看' + companions[2]!.name + '的生活"]')).toBeNull();
   await act(() => button('查看与调整').click()); expect(props.onOpen).toHaveBeenCalledWith('schedules', expect.objectContaining({ id: 'schedule-a' }));
 });

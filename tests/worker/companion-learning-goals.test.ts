@@ -13,7 +13,6 @@ import type { AssetSummary } from '../../src/shared/asset-types';
 import type { CompanionStorageCommand } from '../../src/shared/companion-storage';
 
 const model = vi.hoisted(() => ({ structured: vi.fn() }));
-vi.mock('../../src/main/companions/model', () => ({ generateCompanionStructured: model.structured }));
 const roots: string[] = [], stores = new Set<CompanionsStore>(), services = new Set<CompanionLearningGoalService>();
 beforeEach(() => { vi.useFakeTimers({ toFake: ['Date'] }); vi.setSystemTime('2026-10-22T10:00:00Z'); model.structured.mockReset(); });
 afterEach(async () => { for (const service of services) await service.close(); services.clear(); for (const store of stores) store.close(); stores.clear(); for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); vi.useRealTimers(); });
@@ -54,7 +53,12 @@ function build(f: ReturnType<typeof fixture>, overrides: Pick<CompanionLearningG
   });
   const report = vi.fn();
   const service = createCompanionLearningGoalService({ request, assets, files: { readFile: vi.fn() }, attachmentPath: vi.fn(), memory,
-    configFor: async () => ({ apiFormat: 'openai_chat', model: 'unit-only', apiKey: 'unit-only' }), changed: vi.fn(), report, ...overrides }); services.add(service);
+    configFor: async () => ({ apiFormat: 'openai_chat', model: 'unit-only', apiKey: 'unit-only' }),
+    fetchFn: async (_url, init) => {
+      const wire = JSON.parse(String(init?.body));
+      const value = await model.structured({ system: wire.messages[0].content, user: wire.messages[1].content });
+      return new Response(JSON.stringify({ choices: [{ message: { content: JSON.stringify(value) } }] }), { headers: { 'Content-Type': 'application/json' } });
+    }, changed: vi.fn(), report, ...overrides }); services.add(service);
   return { service, material, assets, request, memory, report };
 }
 async function completed(f: ReturnType<typeof fixture>, service: CompanionLearningGoalService, goal: CompanionLearningGoal, ordinal: number) {

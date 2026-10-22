@@ -400,7 +400,7 @@ it('preserves a scrolled history position on new messages and preserves the anch
   await f.publish({}, [...history, message(66, '刚想到一件事。')]);
   expect(scroll.scrollTop).toBe(200); expect(container!.textContent).toContain('有新消息');
   expect(scroll.textContent).toContain('刚想到一件事。');
-  await click('查看更早的消息'); expect(f.request).toHaveBeenCalledWith({ type: 'messages', conversationId: 'private-sister', before: 16, limit: 50 });
+  await click('查看更早的消息'); expect(f.request).toHaveBeenCalledWith({ type: 'messages', conversationId: 'private-sister', topicId: null, before: 16, limit: 50 });
   expect(scroll.textContent).toContain('第 1 条消息'); expect(scroll.scrollTop).toBe(200);
   await click('回到最新消息'); expect(scroll.scrollTop).toBe(1000);
 });

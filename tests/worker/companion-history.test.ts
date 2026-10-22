@@ -44,7 +44,7 @@ it('pages in both directions and locates a bounded context without gaps or dupli
   expect(newer.messages.map(item => item.id)).toEqual(latest.messages.map(item => item.id));
   const around = store.messages({ conversationId: room.id, around: all[70]!.id });
   expect(around.messages.map(item => item.id)).toEqual(all.slice(46, 96).map(item => item.id)); expect(around.hasMore && around.hasNewer).toBe(true);
-  expect(() => store.messages({ conversationId: room.id, after: 1, before: 10 })).toThrow('翻页方向');
+  expect(store.messages({ conversationId: room.id, after: all[1]!.sequence, before: all[10]!.sequence }).messages.map(item => item.id)).toEqual(all.slice(2, 10).map(item => item.id));
   const other = store.openPrivate('kimi'); expect(() => store.messages({ conversationId: other.id, around: all[70]!.id })).toThrow('不属于');
 });
 it('indexes short Chinese, literal punctuation, normalized width, filename references and filtered cursor pages', () => {

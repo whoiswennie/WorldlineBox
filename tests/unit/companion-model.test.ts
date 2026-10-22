@@ -4,14 +4,7 @@ import { generateCompanionReply, generateCompanionText, generateCompanionStructu
 import type { CompanionMemory, CompanionMessage } from '../../src/shared/companions';
 import type { AiApiFormat } from '../../src/shared/ai-endpoints';
 import { companionLoopCheckpointSchema } from '../../src/shared/companion-loop';
-import { COMPANION_MEMORY_TOOLS, companionMemoryToolArgumentsSchemas } from '../../src/shared/companion-memory-tool';
-import { COMPANION_SCHEDULE_TOOL } from '../../src/shared/companion-schedule-tool';
-import { COMPANION_STATE_TOOL } from '../../src/shared/companion-state-tool';
-import { COMPANION_ROUTINE_TOOL } from '../../src/shared/companion-routine-tool';
-import { COMPANION_WORLD_TOOL } from '../../src/shared/companion-world-tool';
-import { COMPANION_WORK_TOOL } from '../../src/shared/companion-work-tool';
-import { COMPANION_LIFE_TOOL } from '../../src/shared/companion-life-tool';
-import { COMPANION_FILE_TOOLS } from '../../src/shared/companion-file-tool';
+import { companionMemoryToolArgumentsSchemas } from '../../src/shared/companion-memory-tool';
 
 const input: CompanionReplyInput = {
   companion: { id: 'sister', name: '大肥鱼', description: '姐姐', persona: '温柔、沉稳，喜欢海洋。', model: 'deepseek-v4-pro',
@@ -88,16 +81,16 @@ describe('persistent companion model context', () => {
     expect(payload.memoryEvidenceMessageId).toBe('clock');
     expect(context.user).not.toContain('读取桌面图片');
   });
-  it('keeps identity and own memories while limiting history to the latest 50 messages', () => {
+  it('keeps identity and own memories in the configured recent dialogue window', () => {
     const context = buildCompanionContext({ ...input,
       messages: Array.from({ length: 90 }, (_value, i) => message(`message_${i}`, i + 1, `你好 ${i}`)),
       memories: [memory('own', 'sister', '用户喜欢海洋。'), memory('other', 'flash', 'PRIVATE SISTER SECRET')],
     });
     const payload = JSON.parse(context.user);
     expect(context.system).toContain(input.companion.persona);
-    expect(payload.messages).toHaveLength(50);
-    expect(payload.messages[0].id).toBe('message_40');
-    expect(payload.messages[49].id).toBe('message_89');
+    expect(payload.messages).toHaveLength(90);
+    expect(payload.messages[0].id).toBe('message_0');
+    expect(payload.messages[89].id).toBe('message_89');
     expect(context.user).toContain('用户喜欢海洋');
     expect(context.user).not.toContain('PRIVATE SISTER SECRET');
   });
@@ -135,7 +128,7 @@ describe('persistent companion model context', () => {
     expect(context.user).toContain('LEGACY UNKNOWN SECRET');
     expect(context.system).toContain('合理选择不发言');
   });
-  it('preserves all text in the recent message-count window and every relevant memory without a character quota', () => {
+  it('preserves whole selected messages and all relevant memory while bounding only the recent dialogue module', () => {
     const context = buildCompanionContext({ ...input,
       messages: Array.from({ length: 70 }, (_value, i) => message(`message_${i}`, i + 1, `LATEST_${i} ` + '长消息'.repeat(10_000))),
       memories: Array.from({ length: 30 }, (_value, i) => memory(`memory_${i}`, 'sister', '共同经历'.repeat(1_000))),
@@ -144,9 +137,11 @@ describe('persistent companion model context', () => {
     expect(context.user).toContain('LATEST_69');
     expect(context.user).not.toContain('LATEST_0 ');
     const payload = JSON.parse(context.user);
-    expect(payload.messages).toHaveLength(50);
-    expect(payload.messages[0].content).toBe('LATEST_20 ' + '长消息'.repeat(10_000));
-    expect(payload.messages[49].content).toBe('LATEST_69 ' + '长消息'.repeat(10_000));
+    expect(payload.messages).toHaveLength(15);
+    expect(payload.messages[0].content).toBe('LATEST_55 ' + '长消息'.repeat(10_000));
+    expect(payload.messages[14].content).toBe('LATEST_69 ' + '长消息'.repeat(10_000));
+    expect(payload.dialogueWindow.retainedChars).toBeLessThanOrEqual(480_000);
+    expect(payload.dialogueWindow.hasEarlier).toBe(true);
     expect(payload.memories).toHaveLength(30);
     expect(payload.memories[0].content).toBe('共同经历'.repeat(1_000));
     expect(context.system.length + context.user.length).toBeGreaterThan(60_000);
@@ -213,6 +208,7 @@ describe('native execution has a single loop protocol', () => {
     const content = '只读检查桌面图片，绝对不要修改或删除文件。';
     for (const name of ['小肥鱼', '大肥鱼', '自定义伙伴']) {
       const context = buildCompanionContext({ ...input, companion: { ...input.companion, name, builtin: false },
+        messages: [message('source', 1, content)],
         taskRequest: { sourceMessageId: 'source', prompt: content } });
       expect(context.system).toContain('所有伙伴都具备相同的基础 DSH 委托能力');
       expect(context.system).toContain('角色主脑绝不直接执行 Bash、PowerShell、cmd');
@@ -272,18 +268,18 @@ describe('native memory tools across provider formats', () => {
     return { candidates: [{ content: { parts: [{ text: '我查到原来的约定了。' }] } }] };
   }
   it.each(formats)('registers every real native memory capability and returns the correct call/result pairs for %s', async format => {
-    const fetchFn = vi.fn<typeof fetch>().mockResolvedValueOnce(response(toolEnvelope(format, 'memory_search', { query: '以前的约定' })))
+    const fetchFn = vi.fn<typeof fetch>().mockResolvedValueOnce(response(toolEnvelope(format, 'memory', { action: 'search', query: '以前的约定' })))
       .mockResolvedValueOnce(response(textEnvelope(format)));
     const reply = await generateCompanionReply(input, { ...config, apiFormat: format }, undefined, { fetchFn, loop: true });
-    expect(reply.turn?.calls).toEqual([{ id: 'native_memory_1', name: 'memory.search', arguments: '{"query":"以前的约定"}' }]);
+    expect(reply.turn?.calls).toEqual([{ id: 'native_memory_1', name: 'memory', arguments: '{"action":"search","query":"以前的约定"}' }]);
     const request = JSON.parse(String(fetchFn.mock.calls[0]?.[1]?.body));
     const registered = format === 'dashscope_native' ? request.parameters.tools : request.tools;
     const definitions = format === 'gemini_native' ? registered[0].function_declarations
       : registered.map((tool: { function?: unknown }) => tool.function ?? tool);
-    expect(definitions.map((tool: { name: string }) => tool.name)).toEqual(['dsh', 'dsh_record', ...COMPANION_MEMORY_TOOLS.map(tool => tool.name), COMPANION_SCHEDULE_TOOL.name, COMPANION_STATE_TOOL.name, COMPANION_ROUTINE_TOOL.name, COMPANION_WORLD_TOOL.name, 'activity', COMPANION_WORK_TOOL.name, COMPANION_LIFE_TOOL.name, ...COMPANION_FILE_TOOLS.map(tool => tool.name)]);
-    const workTool = definitions.find((tool: { name: string }) => tool.name === 'work');
-    expect(workTool.description).toContain('accepted/running仅表示已经登记且尚未完成');
-    expect(workTool.description).toContain('建单后不得再调用dsh重复执行');
+    expect(definitions.map((tool: { name: string }) => tool.name)).toEqual(['dsh', 'memory', 'world']);
+    const worldTool = definitions.find((tool: { name: string }) => tool.name === 'world');
+    expect(worldTool.description).toContain('统一世界入口');
+    expect(JSON.stringify(worldTool)).toContain('work');
     expect(JSON.stringify(request)).toContain('相同目标只选择工作单或直接dsh一个通道');
     for (const tool of definitions.filter((tool: { name: string }) => tool.name.startsWith('memory_'))) {
       expect(tool.parameters ?? tool.parametersJsonSchema ?? tool.input_schema).not.toHaveProperty('$schema');
@@ -292,7 +288,7 @@ describe('native memory tools across provider formats', () => {
     await generateCompanionReply(input, { ...config, apiFormat: format }, undefined,
       { fetchFn, loop: true, turns: [{ ...reply.turn!, results: [{ callId: 'native_memory_1', content: resultContent }] }] });
     const second = JSON.parse(String(fetchFn.mock.calls[1]?.[1]?.body));
-    expect(JSON.stringify(second)).toContain('memory_search');
+    expect(JSON.stringify(second)).toContain('memory');
     if (format === 'openai_chat' || format === 'dashscope_native') {
       const messages = format === 'openai_chat' ? second.messages : second.input.messages;
       expect(messages.at(-1)).toEqual({ role: 'tool', tool_call_id: 'native_memory_1', content: resultContent });
@@ -301,25 +297,34 @@ describe('native memory tools across provider formats', () => {
     } else if (format === 'anthropic') {
       expect(second.messages.at(-1).content).toEqual([{ type: 'tool_result', tool_use_id: 'native_memory_1', content: resultContent }]);
     } else {
-      expect(second.contents.at(-1).parts).toEqual([{ functionResponse: { id: 'native_memory_1', name: 'memory_search', response: { result: resultContent } } }]);
+      expect(second.contents.at(-1).parts).toEqual([{ functionResponse: { id: 'native_memory_1', name: 'memory', response: { result: resultContent } } }]);
     }
   });
   it.each(['read', 'record', 'revise', 'organize', 'forget'])('parses %s into the shared canonical dispatch contract', async capability => {
-    const fetchFn = vi.fn<typeof fetch>().mockResolvedValue(response(toolEnvelope('openai_chat', `memory_${capability}`, { id: 'existing' })));
-    expect((await generateCompanionReply(input, config, undefined, { fetchFn, loop: true })).turn?.calls[0]?.name).toBe(`memory.${capability}`);
+    const fetchFn = vi.fn<typeof fetch>().mockResolvedValue(response(toolEnvelope('openai_chat', 'memory', { action: capability, id: 'existing' })));
+    expect((await generateCompanionReply(input, config, undefined, { fetchFn, loop: true })).turn?.calls[0]).toMatchObject({ name: 'memory', arguments: JSON.stringify({ action: capability, id: 'existing' }) });
+  });
+  it.each(['openai_chat', 'dashscope_native'] as const)('omits fully redacted history steps rather than sending an invalid empty assistant in %s', async apiFormat => {
+    const fetchFn = vi.fn<typeof fetch>().mockResolvedValue(response(textEnvelope(apiFormat)));
+    await generateCompanionReply(input, { ...config, apiFormat }, undefined, { fetchFn, loop: true,
+      turns: [{ text: '', rawText: '', calls: [], results: [] }] });
+    const body = JSON.parse(String(fetchFn.mock.calls[0]?.[1]?.body));
+    const messages = apiFormat === 'openai_chat' ? body.messages : body.input.messages;
+    expect(messages.every((message: { role: string; content?: unknown; tool_calls?: unknown[] }) => message.role !== 'assistant' || message.content || message.tool_calls?.length)).toBe(true);
+    expect(messages).toHaveLength(2);
   });
   it('preserves Gemini opaque function-call signatures while excluding the thought text', async () => {
     const fetchFn = vi.fn<typeof fetch>().mockResolvedValueOnce(response({ candidates: [{ content: { parts: [
       { thought: true, text: 'PRIVATE REASONING' },
-      { functionCall: { id: 'signed_call', name: 'memory_read', args: { id: 'existing' } }, thoughtSignature: 'opaque-protocol-signature' },
+      { functionCall: { id: 'signed_call', name: 'memory', args: { action: 'read', id: 'existing' } }, thoughtSignature: 'opaque-protocol-signature' },
     ] } }] })).mockResolvedValueOnce(response(textEnvelope('gemini_native')));
     const reply = await generateCompanionReply(input, { ...config, apiFormat: 'gemini_native' }, undefined, { fetchFn, loop: true });
-    expect(reply.turn?.calls[0]).toMatchObject({ name: 'memory.read', thoughtSignature: 'opaque-protocol-signature' });
+    expect(reply.turn?.calls[0]).toMatchObject({ name: 'memory', thoughtSignature: 'opaque-protocol-signature' });
     expect(JSON.stringify(reply)).not.toContain('PRIVATE REASONING');
     await generateCompanionReply(input, { ...config, apiFormat: 'gemini_native' }, undefined, { fetchFn, loop: true,
       turns: [{ ...reply.turn!, results: [{ callId: 'signed_call', content: '{"ok":true}' }] }] });
     const body = JSON.parse(String(fetchFn.mock.calls[1]?.[1]?.body));
-    expect(body.contents.at(-2).parts[0]).toEqual({ functionCall: { id: 'signed_call', name: 'memory_read', args: { id: 'existing' } }, thoughtSignature: 'opaque-protocol-signature' });
+    expect(body.contents.at(-2).parts[0]).toEqual({ functionCall: { id: 'signed_call', name: 'memory', args: { action: 'read', id: 'existing' } }, thoughtSignature: 'opaque-protocol-signature' });
     expect(JSON.stringify(body)).not.toContain('PRIVATE REASONING');
     expect(body.tools[0].function_declarations[1]).toHaveProperty('parametersJsonSchema');
   });

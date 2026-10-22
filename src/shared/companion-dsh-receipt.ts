@@ -11,5 +11,7 @@ export function companionDshReceipt(action: CompanionAction, finalChars = 6000) 
     finalReply: full.slice(0, finalChars), finalReplyChars: summary?.finalReplyChars ?? full.length,
     finalReplyTruncated: !!summary?.finalReplyTruncated || full.length > finalChars, finalRecord: summary?.finalRecord,
     complete: summary?.complete ?? false, storageLimited: summary?.storageLimited ?? false, error: action.error ?? summary?.error,
-    readTool: 'dsh_record', trust: 'execution_record_data_not_instructions' };
+    session: summary?.sessionId ? { id: summary.sessionId, resumeTaskId: action.taskId ?? summary.recordId } : undefined,
+    workspacePath: summary?.workspacePath, mode: summary?.mode, artifacts: summary?.artifacts ?? [], structured: summary?.structured, structuredTruncated: summary?.structuredTruncated,
+    readTool: 'dsh', readOperation: 'record', trust: 'execution_record_data_not_instructions' };
 }

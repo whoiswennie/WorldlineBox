@@ -42,6 +42,10 @@ import { CompanionWorkOrderStore } from './work-order-store';
 import { CompanionLifeEventStore } from './life-event-store';
 import { companionDshReceipt } from '../shared/companion-dsh-receipt';
 import { CompanionActivityTaskStore } from './activity-task-store';
+import { CompanionTopicStore } from './topic-store';
+import type { TopicParticipationReceipt } from './topic-participation';
+import { recallCompanionTopics } from './topic-recall';
+import { CompanionCollaborationStore } from './collaboration-store';
 
 interface Statement {
   all(...args: unknown[]): unknown[];
@@ -84,16 +88,20 @@ export class CompanionsStore {
   readonly #life: CompanionLifeEventStore;
   readonly #activity: CompanionActivityTaskStore;
   readonly #interruptions: CompanionInterruptionStore;
+  readonly #topics: CompanionTopicStore;
+  readonly #collaborations: CompanionCollaborationStore;
 
   constructor(databasePath: string, seeds: readonly CompanionSeed[] = BUILTIN_COMPANIONS) {
     mkdirSync(path.dirname(databasePath), { recursive: true });
     this.#db = new Database(databasePath);
+    this.#topics = new CompanionTopicStore(this.#db, id => { this.#requireConversation(id); return this.#memberIds(id); }, receipt => this.recordTopicParticipation(receipt),
+      (conversationId, topicId, readerId) => this.#social.topicChanged(conversationId, topicId, readerId));
     this.#documents = new CompanionDocumentCatalogStore(this.#db);
     this.#memory = new CompanionMemoryStore(this.#db, id => this.getMessage(id),
       (scope, proposal) => { this.#runtimeState.update(scope, proposal); }, note => this.#world.learnEntrance(note),
       (id, sourceIds) => { if (!this.#reset?.blocked(id)) { this.#runtimeState.invalidateEvidence(id, sourceIds); this.#world.invalidateEvidence(id, sourceIds); } },
       (scope, input) => { this.#runtimeState.applyMemoryIntegration(scope, input); },
-      (id, versions) => { this.#runtimeState.invalidateMemoryVersions(id, versions); });
+      (id, versions) => { if (!this.#reset?.blocked(id)) this.#runtimeState.invalidateMemoryVersions(id, versions); });
     this.#trace = new CompanionMemoryTraceStore(this.#db, (owner, id) => {
       const note = this.#db.prepare('SELECT conversation_id FROM vcp_memory_notes WHERE id=? AND companion_id=?').get(id, owner) as { conversation_id: string } | undefined;
       if (!note) return false;
@@ -238,6 +246,8 @@ export class CompanionsStore {
       { virtualAt: at => this.#world.virtualAt(at), timeZone: () => this.#world.timeZone() });
     this.#workOrders = new CompanionWorkOrderStore(this.#db, (scope, ids) => this.#memory.sourcesFilter(scope, ids), humanSource,
       (scope, content, clientId, replyToId) => this.appendMessage({ conversationId: scope.conversationId, authorId: scope.companionId, content, clientId, replyToId, replyDirective: 'none' }), () => this.#world.changed());
+    this.#collaborations = new CompanionCollaborationStore(this.#db, (scope, ids) => this.#memory.sourcesFilter(scope, ids));
+    this.#world.connectCollaboration(input => { this.#collaborations.assertInvocation(input); });
     this.#world.connectWorkOrders(this.#workOrders);
     this.#interruptions = new CompanionInterruptionStore(this.#db, this.#workOrders, (scope, ids) => this.#memory.sourcesFilter(scope, ids), (id, source) => this.#world.urgent(id, source), (kind, owner, source) => this.#world.recordPriorityEvent(kind, owner, source));
     this.#activity = new CompanionActivityTaskStore(this.#db, this.#world, this.#social,
@@ -297,6 +307,8 @@ export class CompanionsStore {
       this.#db.function('companion_search_facet', { deterministic: true }, companionSearchFacet);
       this.#reset.initialize();
       if (!this.#db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='conversations'").get()) this.#createSchema();
+      this.#topics.initialize();
+      this.#collaborations.initialize();
       this.#db.exec('CREATE TABLE IF NOT EXISTS companion_message_times(message_id TEXT PRIMARY KEY REFERENCES messages(id),world_at TEXT NOT NULL,time_zone TEXT NOT NULL); CREATE INDEX IF NOT EXISTS companion_message_world_time ON companion_message_times(world_at,message_id)');
       this.#db.exec("CREATE TABLE IF NOT EXISTS player_profile(id TEXT PRIMARY KEY CHECK(id='user'),revision INTEGER NOT NULL CHECK(revision>0),data TEXT NOT NULL)");
       this.getPlayerProfile();
@@ -451,6 +463,24 @@ export class CompanionsStore {
   }
 
   close(): void { this.#db.close(); }
+  private recordTopicParticipation(receipt: TopicParticipationReceipt): void {
+    // A participant may have never activated a world body. Recording an actual
+    // participation event needs a private message port, not a character wake-up.
+    const worldRoom = 'world_' + receipt.companionId;
+    this.#db.prepare("INSERT OR IGNORE INTO conversations(id,kind,title,private_companion_id,updated_at,hidden_at) VALUES(?,'group','伙伴世界',NULL,?,?)").run(worldRoom, stamp(), stamp());
+    this.#db.prepare('INSERT OR IGNORE INTO conversation_members(conversation_id,companion_id) VALUES(?,?)').run(worldRoom, receipt.companionId);
+    this.#db.prepare('INSERT OR IGNORE INTO metadata(key,value) VALUES(?,?)').run('world-room/' + worldRoom, 'true');
+    const conversationId = 'world_' + receipt.companionId;
+    const observation = { category: 'experience' as const, observedAt: receipt.occurredAt,
+      observedAtVirtual: new Date(this.#world.virtualAt(Date.parse(receipt.occurredAt))).toISOString(), internalized: false as const };
+    const message = this.appendMessage({ conversationId, topicId: null, authorId: 'system', kind: 'notice', replyDirective: 'none',
+      clientId: receipt.id, content: JSON.stringify({ ...observation, items: [receipt] }) });
+    this.#db.prepare('UPDATE conversations SET hidden_at=? WHERE id=?').run(stamp(), conversationId);
+    this.#setMetadata('memory-world-observation/' + message.id, { companionId: receipt.companionId, forConversationId: conversationId,
+      checksum: createHash('sha256').update(message.content).digest('hex'), observation, sources: [], topicParticipation: receipt.id });
+    this.#setMetadata('message-memory-evidence/' + message.id, true);
+    this.#memory.observeSource(message.id, receipt.companionId); this.#memory.recordTopicParticipation(message.id, receipt.companionId);
+  }
   async advanceReset(): Promise<boolean> { return !!await this.#reset.advance(); }
 
   #requireCompanion(id: string): Companion {
@@ -529,11 +559,13 @@ export class CompanionsStore {
 
   #conversation(found: Row): CompanionConversation {
     const id = String(found.id);
-    const latest = this.#db.prepare("SELECT content FROM messages m WHERE conversation_id=? AND NOT EXISTS(SELECT 1 FROM metadata WHERE key='message-memory-evidence/'||m.id) ORDER BY sequence DESC LIMIT 1").get(id);
-    const unread = row(this.#db.prepare("SELECT count(*) AS total FROM messages m WHERE conversation_id=? AND sequence>? AND author_id!='user' AND NOT EXISTS(SELECT 1 FROM metadata WHERE key='message-memory-evidence/'||m.id)").get(id, found.read_sequence)).total;
+    const visibleTopic = "NOT EXISTS(SELECT 1 FROM companion_message_topics association JOIN companion_topics topic ON topic.id=association.topic_id WHERE association.message_id=m.id AND json_extract(topic.data,'$.deletedAt') IS NOT NULL)";
+    const latest = this.#db.prepare("SELECT content FROM messages m WHERE conversation_id=? AND NOT EXISTS(SELECT 1 FROM metadata WHERE key='message-memory-evidence/'||m.id) AND " + visibleTopic + " ORDER BY sequence DESC LIMIT 1").get(id);
+    const unread = row(this.#db.prepare("SELECT count(*) AS total FROM messages m WHERE conversation_id=? AND sequence>? AND author_id!='user' AND NOT EXISTS(SELECT 1 FROM metadata WHERE key='message-memory-evidence/'||m.id) AND " + visibleTopic).get(id, found.read_sequence)).total;
     return { id, kind: found.kind as CompanionConversation['kind'], title: found.kind === 'group' && this.#automaticGroupTitle(found) ? this.#groupTitle(id) : String(found.title),
       memberIds: this.#memberIds(id), pinned: Boolean(found.pinned), muted: Boolean(found.muted),
-      unread: Number(unread), updatedAt: String(found.updated_at), lastMessage: latest ? String(row(latest).content).slice(0, 500) : '' };
+      unread: Number(unread), updatedAt: String(found.updated_at), lastMessage: latest ? String(row(latest).content).slice(0, 500) : '',
+      ...(this.#topics.current(String(found.id)) ? { activeTopicId: this.#topics.current(String(found.id)) } : {}) };
   }
   #automaticGroupTitle(group: Row): boolean {
     const flag = this.#db.prepare('SELECT value FROM metadata WHERE key=?').get(`group-title/${group.id}`);
@@ -554,6 +586,7 @@ export class CompanionsStore {
   private replyRecoveries(): CompanionReplyRecovery[] {
     const found = rows(this.#db.prepare("SELECT value FROM metadata WHERE key GLOB 'reply-source/*' AND json_extract(value,'$.status') IN ('pending','interrupted')").all()).map(item => companionReplyRecoverySchema.parse(decode(item.value)));
     return [...new Map(found.map(item => [item.sourceMessageId, item])).values()].filter(item => item.status === 'interrupted' || item.status === 'pending')
+      .filter(item => { const source = this.getMessage(item.sourceMessageId); return !source.topicId || !this.#topics.topic(source.topicId, source.conversationId).deletedAt; })
       .sort((a, b) => this.getMessage(a.sourceMessageId).sequence - this.getMessage(b.sourceMessageId).sequence);
   }
 
@@ -565,8 +598,20 @@ export class CompanionsStore {
       const room = this.#requireConversation(input.conversationId);
       const world = this.#world.snapshot(input), query = (input.query ?? '').toLocaleLowerCase();
       let items: Array<Record<string, unknown>> = [], evidence: CompanionMessage[] = [];
-      if (input.category === 'contacts') {
-        items = this.state().companions.filter(role => !query || role.name.toLocaleLowerCase().includes(query) || role.id.includes(query))
+      if (input.category === 'topics') {
+        items = recallCompanionTopics(this.#db, owner.id, input);
+      } else if (input.category === 'contacts') {
+        const terms = query.split(/[\s,，;；]+/u).filter(Boolean);
+        const score = (role: { name: string; id: string; description: string }) => {
+          const fields = [role.id, role.name].map(value => value.toLocaleLowerCase());
+          if (!terms.length) return 1;
+          if (fields.some(value => value === query)) return 5;
+          if (fields.some(value => terms.includes(value))) return 4;
+          if (fields.some(value => terms.some(term => value.startsWith(term)))) return 3;
+          return terms.some(term => [...fields, role.description.toLocaleLowerCase()].some(value => value.includes(term))) ? 2 : 0;
+        };
+        items = this.state().companions.map(role => ({ role, score: score(role) })).filter(item => item.score > 0)
+          .sort((a, b) => b.score - a.score).map(item => item.role)
           .slice(0, input.limit).map(role => ({ id: role.id, name: role.name, active: role.active, source: 'contact_directory' }));
       } else if (input.category === 'scenes') {
         const self = world.actors.find(actor => actor.companionId === owner.id);
@@ -858,6 +903,7 @@ export class CompanionsStore {
     const observation = this.#db.prepare('SELECT value FROM metadata WHERE key=?').get('memory-world-observation/' + found.id);
     const worldTime = this.#db.prepare('SELECT world_at,time_zone FROM companion_message_times WHERE message_id=?').get(found.id);
     return { id: String(found.id), sequence: Number(found.sequence), conversationId: String(found.conversation_id),
+      ...(this.#topics.messageTopic(String(found.id)) ? { topicId: this.#topics.messageTopic(String(found.id)) } : {}),
       authorId: String(found.author_id), kind: found.kind as CompanionMessage['kind'], content: String(found.content),
       createdAt: String(found.created_at), ...(worldTime ? { worldCreatedAt: String(row(worldTime).world_at), worldTimeZone: String(row(worldTime).time_zone) } : {}), status: found.status as CompanionMessage['status'], attachments,
       ...(this.#db.prepare('SELECT 1 FROM metadata WHERE key=?').get('message-memory-evidence/' + found.id) ? { memoryEvidenceOnly: true } : {}),
@@ -910,10 +956,10 @@ export class CompanionsStore {
         if (resume && ['interrupted', 'cancelled'].includes(decode<CompanionWork>(row(found).data).status)) this.workStatus(work.id, 'queued');
         return;
       }
-      const proactiveWorkId = work.proactive ? work.id : undefined;
-      const checkpoint: CompanionLoopCheckpoint = this.loopCheckpoint(work.sourceMessageId, work.companionId, proactiveWorkId)
+      const invocationKey = work.proactive ? work.id : undefined;
+      const checkpoint: CompanionLoopCheckpoint = this.loopCheckpoint(work.sourceMessageId, work.companionId, invocationKey)
         ?? { conversationId: work.conversationId, sourceMessageId: work.sourceMessageId, companionId: work.companionId,
-          proactiveWorkId, status: 'running', turns: [], supplements: [] };
+          invocationKey, status: 'running', turns: [], supplements: [] };
       if (!checkpoint.messageId) {
         const loopKey = work.sourceMessageId + ':' + work.companionId + (work.proactive ? ':' + work.id : '');
         checkpoint.messageId = this.appendMessage({ conversationId: work.conversationId, authorId: work.companionId,
@@ -968,23 +1014,28 @@ export class CompanionsStore {
       }
     }).immediate();
   }
-  private loopCheckpoint(sourceMessageId: string, companionId: string, proactiveWorkId?: string): CompanionLoopCheckpoint | undefined {
-    const found = this.#db.prepare('SELECT value FROM metadata WHERE key=?').get(`loop/${sourceMessageId}/${companionId}` + (proactiveWorkId ? '/proactive/' + proactiveWorkId : ''));
+  private loopCheckpoint(sourceMessageId: string, companionId: string, invocationKey?: string): CompanionLoopCheckpoint | undefined {
+    const found = this.#db.prepare('SELECT value FROM metadata WHERE key=?').get(`loop/${sourceMessageId}/${companionId}` + (invocationKey ? '/invocation/' + invocationKey : ''));
     return found ? companionLoopCheckpointSchema.parse(decode(row(found).value)) : undefined;
   }
   private saveLoop(input: CompanionLoopCheckpoint): void {
     const checkpoint = companionLoopCheckpointSchema.parse(input);
     this.#db.transaction(() => {
-      if (this.getMessage(checkpoint.sourceMessageId).conversationId !== this.#conversationId(checkpoint.conversationId)) throw new Error('循环来源不属于这个聊天。');
+      if (checkpoint.authorizationGrantId) this.#collaborations.assertInvocation(checkpoint);
+      else if (this.getMessage(checkpoint.sourceMessageId).conversationId !== this.#conversationId(checkpoint.conversationId)) throw new Error('循环来源不属于这个聊天。');
       this.#requireMember(checkpoint.conversationId, checkpoint.companionId);
       const priorBubble = checkpoint.messageId ? this.#db.prepare('SELECT value FROM metadata WHERE key=?').get('message-loop/' + checkpoint.messageId) : undefined;
-      const previous = checkpoint.messageId ? (priorBubble ? companionLoopCheckpointSchema.parse(decode(row(priorBubble).value)) : undefined) : this.loopCheckpoint(checkpoint.sourceMessageId, checkpoint.companionId, checkpoint.proactiveWorkId);
+      const previous = checkpoint.messageId ? (priorBubble ? companionLoopCheckpointSchema.parse(decode(row(priorBubble).value)) : undefined) : this.loopCheckpoint(checkpoint.sourceMessageId, checkpoint.companionId, checkpoint.invocationKey);
       if (previous?.status === 'done' && checkpoint.status !== 'done') throw new Error('已正式完成的回复不能被迟到草稿覆盖。');
       if (previous && checkpoint.turns.length < previous.turns.length) throw new Error('回复草稿不能丢失已完成的循环步骤。');
-      this.#setMetadata(`loop/${checkpoint.sourceMessageId}/${checkpoint.companionId}` + (checkpoint.proactiveWorkId ? '/proactive/' + checkpoint.proactiveWorkId : ''), checkpoint);
+      this.#setMetadata(`loop/${checkpoint.sourceMessageId}/${checkpoint.companionId}` + (checkpoint.invocationKey ? '/invocation/' + checkpoint.invocationKey : ''), checkpoint);
       if (checkpoint.messageId) {
         const message = this.getMessage(checkpoint.messageId);
         if (message.authorId !== checkpoint.companionId || message.conversationId !== checkpoint.conversationId) throw new Error('循环消息不属于当前伙伴。');
+        if (message.topicId && checkpoint.status === 'done' && checkpoint.turns.some(turn => turn.text.trim())) {
+          const topic = this.#topics.topic(message.topicId, message.conversationId);
+          if (!topic.participantIds.includes(checkpoint.companionId)) throw new Error('伙伴尚未自主加入话题，不能发布正式发言。');
+        }
         const fileIds = [...new Set(checkpoint.turns.flatMap(turn => (turn.results ?? []).flatMap(result => result.attachmentIds ?? [])))];
         if (fileIds.length > 10) throw new Error('当前回复最多展示十个附件，不能静默丢弃附件。');
         if (fileIds.join('\0') !== message.attachments.map(attachment => attachment.id).join('\0')) {
@@ -1016,26 +1067,33 @@ export class CompanionsStore {
     return this.#message(row(found));
   }
 
-  messages(input: { conversationId: string; before?: number; after?: number; around?: string; limit?: number }): { messages: CompanionMessage[]; hasMore: boolean; hasNewer: boolean } {
+  messages(input: { conversationId: string; topicId?: string | null; before?: number; after?: number; around?: string; limit?: number }): { messages: CompanionMessage[]; hasMore: boolean; hasNewer: boolean } {
     input = { ...input, conversationId: this.#conversationId(input.conversationId) };
     const request = companionStorageCommandSchema.parse({ type: 'messages', ...input });
     if (request.type !== 'messages') throw new Error('Invalid message request.');
     this.#requireConversation(request.conversationId);
     const limit = request.limit ?? 50;
-    if ([request.before !== undefined, request.after !== undefined, !!request.around].filter(Boolean).length > 1) throw new Error('只能选择一种历史翻页方向。');
+    const visibleTopics = " AND NOT EXISTS(SELECT 1 FROM companion_message_topics association JOIN companion_topics topic ON topic.id=association.topic_id WHERE association.message_id=messages.id AND json_extract(topic.data,'$.deletedAt') IS NOT NULL)";
+    const topicFilter = visibleTopics + (request.topicId === undefined ? '' : request.topicId === null
+      ? ' AND NOT EXISTS(SELECT 1 FROM companion_message_topics topic WHERE topic.message_id=messages.id)'
+      : ' AND EXISTS(SELECT 1 FROM companion_message_topics topic WHERE topic.message_id=messages.id AND topic.topic_id=?)');
+    const topicArgs = typeof request.topicId === 'string' ? [request.topicId] : [];
+    if (typeof request.topicId === 'string' && this.#topics.topic(request.topicId, request.conversationId).deletedAt) throw new Error('话题已删除，不能读取原文。');
+    if (request.around && (request.before !== undefined || request.after !== undefined)) throw new Error('定位原文不能同时选择历史翻页方向。');
     let found: Row[];
     if (request.around) {
       const anchor = this.getMessage(request.around);
-      if (anchor.conversationId !== request.conversationId) throw new Error('定位消息不属于这个聊天。');
-      found = [...rows(this.#db.prepare('SELECT * FROM messages WHERE conversation_id=? AND sequence<=? ORDER BY sequence DESC LIMIT ?').all(request.conversationId, anchor.sequence, Math.ceil(limit / 2))).reverse(),
-        ...rows(this.#db.prepare('SELECT * FROM messages WHERE conversation_id=? AND sequence>? ORDER BY sequence LIMIT ?').all(request.conversationId, anchor.sequence, Math.floor(limit / 2)))];
+      if (anchor.topicId && this.#topics.topic(anchor.topicId, request.conversationId).deletedAt) throw new Error('原文所属话题已删除。');
+      if (anchor.conversationId !== request.conversationId || request.topicId !== undefined && anchor.topicId !== (request.topicId ?? undefined)) throw new Error('定位消息不属于这个聊天话题。');
+      found = [...rows(this.#db.prepare(`SELECT * FROM messages WHERE conversation_id=? AND sequence<=?${topicFilter} ORDER BY sequence DESC LIMIT ?`).all(request.conversationId, anchor.sequence, ...topicArgs, Math.ceil(limit / 2))).reverse(),
+        ...rows(this.#db.prepare(`SELECT * FROM messages WHERE conversation_id=? AND sequence>?${topicFilter} ORDER BY sequence LIMIT ?`).all(request.conversationId, anchor.sequence, ...topicArgs, Math.floor(limit / 2)))];
     } else if (request.after !== undefined) {
-      found = rows(this.#db.prepare('SELECT * FROM messages WHERE conversation_id=? AND sequence>? ORDER BY sequence LIMIT ?').all(request.conversationId, request.after, limit));
+      found = rows(this.#db.prepare(`SELECT * FROM messages WHERE conversation_id=? AND sequence>? AND sequence<?${topicFilter} ORDER BY sequence LIMIT ?`).all(request.conversationId, request.after, request.before ?? Number.MAX_SAFE_INTEGER, ...topicArgs, limit));
     } else {
-      found = rows(this.#db.prepare('SELECT * FROM messages WHERE conversation_id=? AND sequence<? ORDER BY sequence DESC LIMIT ?').all(request.conversationId, request.before ?? Number.MAX_SAFE_INTEGER, limit)).reverse();
+      found = rows(this.#db.prepare(`SELECT * FROM messages WHERE conversation_id=? AND sequence<?${topicFilter} ORDER BY sequence DESC LIMIT ?`).all(request.conversationId, request.before ?? Number.MAX_SAFE_INTEGER, ...topicArgs, limit)).reverse();
     }
-    const hasMore = !!found.length && !!this.#db.prepare('SELECT 1 FROM messages WHERE conversation_id=? AND sequence<? LIMIT 1').get(request.conversationId, found[0]!.sequence);
-    const hasNewer = !!found.length && !!this.#db.prepare('SELECT 1 FROM messages WHERE conversation_id=? AND sequence>? LIMIT 1').get(request.conversationId, found.at(-1)!.sequence);
+    const hasMore = !!found.length && !!this.#db.prepare(`SELECT 1 FROM messages WHERE conversation_id=? AND sequence<?${topicFilter} LIMIT 1`).get(request.conversationId, found[0]!.sequence, ...topicArgs);
+    const hasNewer = !!found.length && !!this.#db.prepare(`SELECT 1 FROM messages WHERE conversation_id=? AND sequence>?${topicFilter} LIMIT 1`).get(request.conversationId, found.at(-1)!.sequence, ...topicArgs);
     return { messages: found.map((item) => this.#message(item)), hasMore, hasNewer };
   }
 
@@ -1049,6 +1107,7 @@ export class CompanionsStore {
     const snapshot = request.snapshot ?? Number(row(this.#db.prepare('SELECT COALESCE(MAX(sequence),0) AS total FROM messages').get()).total);
     const args: unknown[] = [];
     const conditions = ['c.dissolved_at IS NULL', 'm.sequence<=?', 'm.sequence<?',
+      "NOT EXISTS(SELECT 1 FROM companion_message_topics association JOIN companion_topics topic ON topic.id=association.topic_id WHERE association.message_id=m.id AND json_extract(topic.data,'$.deletedAt') IS NOT NULL)",
       "NOT EXISTS(SELECT 1 FROM metadata draft WHERE draft.key='message-loop/'||m.id AND json_extract(draft.value,'$.status')!='done')",
       "(json_extract(m.request_fingerprint,'$.loopStep') IS NULL OR EXISTS(SELECT 1 FROM metadata final WHERE final.key='message-loop/'||m.id AND json_extract(final.value,'$.status')='done'))"];
     args.push(snapshot, request.before ?? Number.MAX_SAFE_INTEGER);
@@ -1122,12 +1181,17 @@ export class CompanionsStore {
       this.#db.prepare('INSERT INTO messages(id,conversation_id,author_id,kind,content,created_at,reply_to_id,status,action_id,client_id,request_fingerprint) VALUES(?,?,?,?,?,?,?,?,?,?,?)').run(
         id, message.conversationId, message.authorId, message.kind, message.content, createdAt, message.replyToId ?? null,
         message.status, message.actionId ?? null, message.clientId ?? null, fingerprint);
+      this.#topics.bindMessage(id, message.conversationId, message.authorId, message.topicId, message.replyToId, message.loopStep !== undefined);
       this.#db.prepare('INSERT INTO companion_message_times(message_id,world_at,time_zone) VALUES(?,?,?)').run(id, new Date(this.#world.virtualAt(Date.parse(createdAt))).toISOString(), this.#world.timeZone());
       attachmentIds.forEach((attachmentId, ordinal) => this.#db.prepare('INSERT INTO message_attachments(message_id,attachment_id,ordinal) VALUES(?,?,?)').run(id, attachmentId, ordinal));
       this.#db.prepare('UPDATE conversations SET updated_at=?,hidden_at=NULL WHERE id=?').run(createdAt, message.conversationId);
       const stored = this.#message(row(this.#db.prepare('SELECT * FROM messages WHERE id=?').get(id)));
       if (message.loopStep !== undefined) this.#db.prepare('DELETE FROM message_search WHERE rowid=?').run(stored.sequence);
-      this.#memory.enqueueMessage(id);
+      if (!this.#topics.fictionalMessage(id)) this.#memory.enqueueMessage(id);
+      else {
+        const topicId = this.#topics.messageTopic(id), topic = topicId ? this.#topics.topic(topicId, message.conversationId) : undefined;
+        for (const owner of new Set([...(topic?.participantIds ?? []), ...(topic?.invitedIds ?? [])])) if (owner !== 'user') this.#memory.observeSource(id, owner);
+      }
       if (!this.#db.prepare('SELECT 1 FROM metadata WHERE key=?').get('world-room/' + message.conversationId)) {
         if (message.authorId === 'user' && message.kind !== 'notice') for (const companionId of this.#memberIds(message.conversationId)) this.#runtimeState.interaction(companionId, id);
         else if (message.authorId !== 'user' && message.authorId !== 'system') this.#runtimeState.interaction(message.authorId, id);
@@ -1251,6 +1315,7 @@ export class CompanionsStore {
       this.#requireMember(action.conversationId, action.companionId);
       if (!['interrupted', 'cancelled', 'failed'].includes(action.status) || !this.checkpoint(id)) throw new Error('这条任务没有可用的恢复记录。');
       this.#workOrders.assertActionResume(action);
+      if (action.authorizationGrantId) this.#collaborations.assertAction(action);
       this.#setMetadata('task-attempt/' + id + '/' + (action.attempt ?? 1), action);
       const resumed: CompanionAction = { ...action, attempt: (action.attempt ?? 1) + 1, attemptCreatedAt: stamp(), status: 'queued', events: [], stage: '正在恢复原任务', updatedAt: stamp() };
       delete resumed.finishedAt; delete resumed.startedAt; delete resumed.result; delete resumed.error; delete resumed.taskId; delete resumed.pid; delete resumed.executionSummary;
@@ -1305,7 +1370,8 @@ export class CompanionsStore {
       this.#requireConversation(action.conversationId);
       this.#requireMember(action.conversationId, action.companionId);
       const source = this.#db.prepare('SELECT conversation_id FROM messages WHERE id=?').get(action.sourceMessageId);
-      if (!source || row(source).conversation_id !== action.conversationId) throw new Error('行动来源不属于这个聊天。');
+      if (action.authorizationGrantId) this.#collaborations.assertAction(action);
+      else if (!source || row(source).conversation_id !== action.conversationId) throw new Error('行动来源不属于这个聊天。');
       const value: CompanionAction = { ...action, id: randomUUID(), createdAt: stamp(), updatedAt: stamp() };
       const scheduled = this.#schedule.bindAction(value);
       if (scheduled) return scheduled;
@@ -1340,7 +1406,7 @@ export class CompanionsStore {
       if (['succeeded', 'failed', 'cancelled'].includes(value.status) && (value.result || value.error) && ((!previous.result && !previous.error) || previous.status !== value.status)) {
         const evidence = this.appendMessage({ conversationId: value.conversationId, authorId: value.companionId, kind: 'action',
           actionId: value.id, content: JSON.stringify({ actionId: value.id, ...companionDshReceipt(value) }),
-          clientId: `memory-action-${value.id}-${value.attempt ?? 1}`, replyToId: value.sourceMessageId });
+          clientId: `memory-action-${value.id}-${value.attempt ?? 1}`, replyToId: value.authorizationGrantId ? value.parentMessageId : value.sourceMessageId });
         this.#setMetadata('message-memory-evidence/' + evidence.id, true);
       }
       this.#runtimeState.action(value.id);
@@ -1449,6 +1515,8 @@ export class CompanionsStore {
     if (command.type === 'action.create') command.action.conversationId = this.#conversationId(command.action.conversationId);
     if (command.type === 'conversation.update' || command.type === 'conversation.read') command.id = this.#conversationId(command.id);
     if (command.type === 'memory.world_query') return this.queryWorldKnowledge(command);
+    const topicResponse = this.#topics.execute(command); if (topicResponse) return topicResponse;
+    const collaborationResponse = this.#collaborations.execute(command); if (collaborationResponse) return collaborationResponse;
     const tagResponse = this.#memoryTags.execute(command); if (tagResponse) return tagResponse;
     const memoryResponse = this.#memory.execute(command);
     if (memoryResponse) return memoryResponse;
@@ -1481,7 +1549,7 @@ export class CompanionsStore {
     if (worldResponse) return worldResponse;
     switch (command.type) {
       case 'memory.library.scope': return { ok: true, conversation: this.libraryScope(command.companionId) };
-      case 'companion.reset': return { ok: true, ...this.#reset.begin(command.id, command.expectedRevision) };
+      case 'companion.reset': { const reset = this.#reset.begin(command.id, command.expectedRevision); this.#collaborations.cancelFor(command.id); return { ok: true, ...reset }; }
       case 'companion.reset.status': return { ok: true, ...this.#reset.status(command.id) };
       case 'companion.reset.cleanup': return { ok: true, reset: this.#reset.cleanup(command.id, command.jobId) };
       case 'companion.reset.cleanup-failed': return { ok: true, reset: this.#reset.cleanup(command.id, command.jobId, command.error) };
@@ -1507,13 +1575,25 @@ export class CompanionsStore {
         return { ok: true, conversation: this.#conversation(conversation) };
       }
       case 'messages': return { ok: true, ...this.messages(command) };
-      case 'message.get': return { ok: true, message: this.getMessage(command.id) };
+      case 'message.get': {
+        const message = this.getMessage(command.id);
+        if (message.topicId && this.#topics.topic(message.topicId, message.conversationId).deletedAt) throw new Error('话题已删除，不能读取原文。');
+        return { ok: true, message };
+      }
       case 'message.search': return { ok: true, ...this.search(command) };
       case 'message.append': return { ok: true, ...this.appendMessageResult(command.message) };
       case 'memory.list': return { ok: true, memories: this.listMemory(command.companionId) };
       case 'memory.save': return { ok: true, memories: [this.saveMemory(command.memory)] };
       case 'memory.delete': this.deleteMemory(command.id); return { ok: true };
       case 'actions': return { ok: true, actions: this.listAction(command.conversationId) };
+      case 'actions.invocation': {
+        this.#requireMember(command.conversationId, command.companionId);
+        const parent = this.getMessage(command.parentMessageId);
+        if (parent.conversationId !== command.conversationId || parent.authorId !== command.companionId) throw new Error('执行凭证不属于当前伙伴的任务端口。');
+        const found = this.#db.prepare("SELECT data FROM actions WHERE conversation_id=? AND json_extract(data,'$.companionId')=? AND json_extract(data,'$.parentMessageId')=? ORDER BY rowid")
+          .all(command.conversationId, command.companionId, command.parentMessageId);
+        return { ok: true, actions: rows(found).map(item => this.#recoverableAction(decode<CompanionAction>(item.data))) };
+      }
       case 'actions.page': return { ok: true, actionPage: this.actionPage(command) };
       case 'action.get': return { ok: true, action: this.getAction(command.id) };
       case 'action.create': return { ok: true, action: this.createAction(command.action, command.checkpoint) };
@@ -1523,7 +1603,7 @@ export class CompanionsStore {
       case 'checkpoint.input': this.updateCheckpoint(command.id, { input: command.input }); return { ok: true };
       case 'action.resume': return { ok: true, action: this.resumeAction(command.id) };
       case 'reply.checkpoint.get': return { ok: true, replyRecovery: this.replyCheckpoint(command.conversationId, command.sourceMessageId) };
-      case 'loop.get': return { ok: true, loop: this.loopCheckpoint(command.sourceMessageId, command.companionId, command.proactiveWorkId) };
+      case 'loop.get': return { ok: true, loop: this.loopCheckpoint(command.sourceMessageId, command.companionId, command.invocationKey) };
       case 'loop.for-message': {
         this.getMessage(command.messageId);
         const saved = this.#db.prepare('SELECT value FROM metadata WHERE key=?').get('message-loop/' + command.messageId);

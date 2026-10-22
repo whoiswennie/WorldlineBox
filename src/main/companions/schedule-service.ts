@@ -1,4 +1,4 @@
-import type { CompanionAction } from '../../shared/companions';
+import type { CompanionGoalResult } from '../../shared/companion-goal-result';
 import type { CompanionSchedule, CompanionScheduleOccurrence } from '../../shared/companion-schedule';
 import type { CompanionStorageCommand, CompanionStorageResponse } from '../../shared/companion-storage';
 import type { CompanionActivityTask } from '../../shared/companion-activity-task';
@@ -7,9 +7,7 @@ interface CompanionScheduleServiceOptions {
   activity?: { start(schedule: CompanionSchedule, occurrence: CompanionScheduleOccurrence): Promise<CompanionActivityTask>;
     get(task: CompanionActivityTask): Promise<CompanionActivityTask>; cancel(task: CompanionActivityTask): Promise<unknown> };
   request(command: CompanionStorageCommand): Promise<CompanionStorageResponse>;
-  launch(schedule: CompanionSchedule, occurrence: CompanionScheduleOccurrence): Promise<CompanionAction>;
-  resume(actionId: string): Promise<unknown>;
-  wait(actionId: string): Promise<unknown> | undefined;
+  runGoal(schedule: CompanionSchedule, occurrence: CompanionScheduleOccurrence, signal: AbortSignal): Promise<CompanionGoalResult>;
   ready(schedule: CompanionSchedule, occurrence: CompanionScheduleOccurrence, signal: AbortSignal): Promise<void>;
   end(schedule: CompanionSchedule, occurrence: CompanionScheduleOccurrence): Promise<void>;
   changed(): void;
@@ -76,6 +74,14 @@ export class CompanionScheduleService {
   }
 
   private async dispatch(schedule: CompanionSchedule, occurrence: CompanionScheduleOccurrence, signal: AbortSignal): Promise<void> {
+    const leaseLost = new AbortController(); signal = AbortSignal.any([signal, leaseLost.signal]);
+    let finished = false, refreshing = false;
+    const heartbeat = setInterval(() => {
+      if (finished || refreshing || signal.aborted || !occurrence.leaseToken) return;
+      refreshing = true;
+      void this.options.request({ type: 'schedule.occurrence.heartbeat', id: occurrence.id, leaseToken: occurrence.leaseToken, leaseMs: 30000 })
+        .catch(error => { if (!finished) { leaseLost.abort(); this.options.report(error); } }).finally(() => { refreshing = false; });
+    }, 10000); heartbeat.unref();
     const update = (patch: Omit<Extract<CompanionStorageCommand, { type: 'schedule.occurrence.update' }>, 'type' | 'id' | 'leaseToken'>) =>
       this.options.request({ type: 'schedule.occurrence.update', id: occurrence.id, leaseToken: occurrence.leaseToken, ...patch });
     try {
@@ -107,24 +113,19 @@ export class CompanionScheduleService {
         await update({ status: task.status === 'succeeded' ? 'done' : task.status === 'cancelled' ? 'cancelled' : 'failed', activityTaskId: task.id,
           result: task.stage, ...(task.status === 'failed' ? { error: task.stage.slice(0, 1000) } : {}) }); return;
       }
-      // A crash after effect creation reuses the occurrence's action. Never start
-      // a second external task merely because its acknowledgement was lost.
-      let action = occurrence.actionId ? (await this.options.request({ type: 'action.get', id: occurrence.actionId })).action : undefined;
+      await update({ status: 'running' });
+      const goal = await this.options.runGoal(schedule, occurrence, signal);
       if (this.closed || signal.aborted) return;
-      if (!action) action = await this.options.launch(schedule, occurrence);
-      if (this.closed || signal.aborted) return;
-      await update({ status: 'running', actionId: action.id });
-      if (action.status === 'interrupted') await this.options.resume(action.id);
-      await this.options.wait(action.id);
-      if (this.closed || signal.aborted) return;
-      const final = (await this.options.request({ type: 'action.get', id: action.id })).action;
-      if (!final || ['queued', 'running', 'interrupted'].includes(final.status)) return;
-      await update({ status: final.status === 'succeeded' ? 'done' : final.status === 'cancelled' ? 'cancelled' : 'failed',
-        actionId: final.id, result: final.result?.slice(0, 4000), error: final.error?.slice(0, 1000) });
+      if (goal.status === 'interrupted') return;
+      await update({ status: goal.status === 'succeeded' ? 'done' : goal.status === 'cancelled' ? 'cancelled' : 'failed',
+        result: goal.result.slice(0, 4000), goalResult: goal.result,
+        goalInvocationId: goal.invocationId, goalSlot: goal.goalSlot, actionIds: goal.actionIds,
+        ...(goal.status === 'failed' ? { error: goal.result.slice(0, 1000) } : {}) });
     } catch (error) {
       if (this.closed || signal.aborted) return;
       await update({ status: 'failed', error: error instanceof Error ? error.message.slice(0, 1000) : '定时安排执行失败。' });
     } finally {
+      finished = true; clearInterval(heartbeat);
       if (schedule.kind === 'reminder') await this.options.end(schedule, occurrence);
     }
   }

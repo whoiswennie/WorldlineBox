@@ -92,7 +92,7 @@ export class SkillInstaller {
     const root = path.join(this.options.rootPath, 'instances', instance.id); const expectedAgents = path.join(root, 'agents');
     if (path.resolve(instance.agentsPath).toLowerCase() !== path.resolve(expectedAgents).toLowerCase()) throw new Error('Skill installation requires the selected instance’s private agents directory.');
     const active = path.join(expectedAgents, 'skills'); const launcher = path.join(root, 'launcher'); const disabled = path.join(root, 'home', 'skills-disabled');
-    await this.directory(active); await this.directory(disabled);
+    await this.directory(active); await this.directory(disabled); await this.directory(launcher);
     return { active, disabled, launcher, receipt: path.join(launcher, 'skill-receipts.json') };
   }
   private async receipts(file: string): Promise<Receipt[]> {
@@ -225,32 +225,38 @@ export class SkillInstaller {
   async setSkillEnabled(instance: DshInstance, nameValue: string, enabled: boolean): Promise<void> {
     this.assertStopped(instance);
     const name = dshSkillNameSchema.parse(nameValue); const locations = await this.instancePaths(instance); const receipts = await this.receipts(locations.receipt);
-    let receipt = receipts.find(item => item.name === name);
-    if (!receipt) {
-      receipt = await this.portableReceipt(contained(locations.active, name), true) ?? await this.portableReceipt(contained(locations.disabled, name), false);
-      if (receipt) receipts.push(receipt);
-    }
-    if (!receipt) throw new Error('This skill was not installed by the launcher; manage it in its source directory.');
+    const receipt = await this.ownedSkill(locations, name, receipts);
     if (receipt.enabled === enabled) return;
     const source = contained(receipt.enabled ? locations.active : locations.disabled, name); const destination = contained(enabled ? locations.active : locations.disabled, name);
     await inventoryTree(source); if (await exists(destination)) throw new Error('The target skill directory already exists.');
-    await rename(source, destination); const previous = { ...receipt }; receipt.enabled = enabled; receipt.path = destination;
-    try { await atomicJson(locations.receipt, { version: 1, entries: receipts }); } catch (error) { Object.assign(receipt, previous); await rename(destination, source); throw error; }
+    await rename(source, destination);
+    try { await atomicJson(locations.receipt, { version: 1, entries: [...receipts.filter(item => item.name !== name), { ...receipt, enabled, path: destination }] }); }
+    catch (error) { await rename(destination, source); throw error; }
   }
   async removeSkill(instance: DshInstance, nameValue: string): Promise<void> {
     this.assertStopped(instance);
     const name = dshSkillNameSchema.parse(nameValue); const locations = await this.instancePaths(instance); const receipts = await this.receipts(locations.receipt);
-    let receipt = receipts.find(item => item.name === name);
-    if (!receipt) {
-      receipt = await this.portableReceipt(contained(locations.active, name), true) ?? await this.portableReceipt(contained(locations.disabled, name), false);
-      if (receipt) receipts.push(receipt);
-    }
-    if (!receipt) throw new Error('This skill was not installed by the launcher; manage it in its source directory.');
+    const receipt = await this.ownedSkill(locations, name, receipts);
     const source = contained(receipt.enabled ? locations.active : locations.disabled, name); await inventoryTree(source);
     const retired = contained(locations.launcher, `skill-removed-${randomUUID()}`); await rename(source, retired);
     try { await atomicJson(locations.receipt, { version: 1, entries: receipts.filter(item => item.name !== name) }); }
     catch (error) { await rename(retired, source); throw error; }
     await removeManaged(locations.launcher, retired);
+  }
+  /** Physical private directories determine activation; receipts only supply recorded source metadata. */
+  private async ownedSkill(locations: Awaited<ReturnType<SkillInstaller['instancePaths']>>, name: string, receipts: Receipt[]): Promise<Receipt> {
+    const active = contained(locations.active, name); const disabled = contained(locations.disabled, name);
+    const activeExists = await exists(active); const disabledExists = await exists(disabled);
+    if (activeExists === disabledExists) throw new Error(activeExists ? 'This skill exists in both active and disabled storage; resolve the duplicate before managing it.' : 'The selected private skill is unavailable.');
+    const directory = activeExists ? active : disabled; const info = await lstat(directory);
+    if (!info.isDirectory() || info.isSymbolicLink()) throw new Error('Private skill directories cannot be linked or replaced by a file.');
+    const document = path.join(directory, 'SKILL.md'); const documentInfo = await lstat(document);
+    if (!documentInfo.isFile() || documentInfo.isSymbolicLink() || documentInfo.size > LIMITS.document) throw new Error('Invalid private skill document.');
+    const skill = readSkillDocument(await readFile(document, 'utf8'));
+    if (skill.name !== name) throw new Error('The private skill document does not match its directory name.');
+    const recorded = receipts.find(item => item.name === name) ?? await this.portableReceipt(directory, activeExists);
+    const inventory = await inventoryTree(directory);
+    return { ...recorded, ...skill, enabled: activeExists, managed: true, path: directory, inventory };
   }
   private assertStopped(instance: DshInstance): void {
     if (['running', 'starting', 'stopping'].includes(instance.status)) throw new Error('Stop this DSH instance before modifying its private skills.');

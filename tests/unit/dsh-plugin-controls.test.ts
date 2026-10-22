@@ -27,6 +27,18 @@ async function fixture() {
   return { rootPath, program, controls, instance, file, patch, manifest };
 }
 describe('Native private plugin bundle controls', () => {
+  it('distinguishes instance installations from immutable runtime bundles and exposes their exact locations', async () => {
+    const test = await fixture(); const plugins = await test.controls.listPlugins(test.instance);
+    expect(plugins.find(item => item.name === '@acme/fixture')).toMatchObject({ scope: 'instance', version: '1.2.3',
+      installPath: path.join(test.instance.homePath, 'profiles', 'web', 'node_modules', '@acme', 'fixture'), sourceUrl: 'https://github.com/acme/fixture' });
+    expect(plugins.find(item => item.name === '@deepseek-ai/dsh-base')).toMatchObject({ scope: 'runtime', version: '0.2.0-rc.2',
+      installPath: path.join(test.program, 'dsh', 'node_modules', '@deepseek-ai', 'dsh-base') });
+  });
+  it('reports the native installation-first bundle version when a private package has the same name', async () => {
+    const test = await fixture(); const duplicate = path.join(test.instance.homePath, 'profiles', 'web', 'node_modules', '@deepseek-ai', 'dsh-base');
+    await mkdir(duplicate, { recursive: true }); await writeFile(path.join(duplicate, 'package.json'), JSON.stringify({ name: '@deepseek-ai/dsh-base', version: '99.0.0' }));
+    expect((await test.controls.listPlugins(test.instance)).find(item => item.name === '@deepseek-ai/dsh-base')).toMatchObject({ scope: 'runtime', version: '0.2.0-rc.2' });
+  });
   it('lists native activation and toggles only the selected bundle without rewriting its settings', async () => {
     const test = await fixture(); expect(await test.controls.listPlugins(test.instance)).toEqual(expect.arrayContaining([
       expect.objectContaining({ name: '@acme/fixture', enabled: true, core: false, bundle: true, sourceUrl: 'https://github.com/acme/fixture' }),

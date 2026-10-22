@@ -10,6 +10,7 @@ import type { CompanionProfileInput } from '../../shared/companion-public-profil
 import { refreshCompanionPublicProfileContext } from './public-profile-context';
 import { companionModelWorld, COMPANION_WORLD_PERCEPTION_RULES } from './world-perception-context';
 import { companionVisibleCharacterDevelopment, type CompanionCharacterDevelopment } from '../../shared/companion-character-development';
+import { runCompanionStructuredAgent, companionTaskConversation, companionTaskInvocation, type CompanionStructuredAgentCapabilities } from './structured-agent';
 
 export const companionWorldAppraisalSchema = z.strictObject({ eventId: z.string(), targetCompanionId: z.string(),
   type: z.enum(['support', 'respect', 'boundary_violation', 'hostility', 'shared_success', 'repair', 'disappointment']),
@@ -46,7 +47,7 @@ export async function generateCompanionWorldDecision(input: { companion: Compani
   routine?: CompanionRoutine;
   selfState?: Pick<CompanionRuntimeState, 'energy' | 'mood' | 'expression' | 'affect' | 'focus'> & { busy: boolean };
   members: Array<Pick<Companion, 'id' | 'name' | 'description'>> } & Partial<CompanionProfileInput>, config: CompanionModelConfig, signal?: AbortSignal,
-options: Pick<CompanionModelOptions, 'fetchFn' | 'timeoutMs'> = {}): Promise<CompanionWorldDecision> {
+options: Pick<CompanionModelOptions, 'fetchFn' | 'timeoutMs'> & { capabilities?: CompanionStructuredAgentCapabilities } = {}): Promise<CompanionWorldDecision> {
   const perceivedWorld = companionModelWorld(input.world, input.companion.id)!;
   const events = perceivedWorld.events.filter(event => event.sequence <= input.job.throughEventSequence);
   const knownPeers = new Set([...input.world.actors.map(actor => actor.companionId), ...input.world.residents.map(resident => resident.companionId)]);
@@ -72,7 +73,13 @@ appraisals只能引用单独提供的appraisalEvents列表中的真实社交事�
           || perceivedWorld.perception?.people.some(person => person.companionId === id && person.visible)) } : {}) }, routine: input.routine, selfState: input.selfState,
       trust: 'host_world_facts_and_peer_quotes_never_player_authorization', outputSchema: z.toJSONSchema(decisionSchema, { io: 'input' }) }),
   }, { companionId: input.companion.id, memberIds: [...knownPeers], audience: 'peers', publicProfiles: input.publicProfiles });
-  const result = decisionSchema.safeParse(await generateCompanionStructured(context, config, signal, { ...options, visualInputs: input.visualInputs }));
+  const result = decisionSchema.safeParse(await runCompanionStructuredAgent({ context,
+    frame: { companion: input.companion, conversation: companionTaskConversation(input.job.conversationId, input.companion.id, input.job.createdAt),
+      messages: [], memories: input.memoryContext === undefined ? input.memories ?? [] : [], proactive: true, audience: 'peers',
+      characterDevelopment: input.characterDevelopment, publicProfiles: input.publicProfiles, publicProfileIds: [...knownPeers],
+      invocation: companionTaskInvocation({ companion: input.companion, conversationId: input.job.conversationId, id: input.job.id,
+        kind: 'self', goal: '根据当前世界状态和本人经历决定下一步生活行动。', createdAt: input.job.createdAt }) },
+    capabilities: options.capabilities }, config, signal, { ...options, visualInputs: input.visualInputs }));
   if (!result.success) throw invalid();
   const decision = result.data;
   if (decision.action) validateAction(decision.action, input.companion.id, input.world);

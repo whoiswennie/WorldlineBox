@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { dshTaskEventSchema } from './dsh-tasks';
+import { dshTaskArtifactSchema } from './dsh-task-spec';
 
 export const DSH_RECORD_LIMITS = { pageSize: 20, maxPageSize: 50, entryChars: 2000, maxEntryChars: 4000, pageChars: 12000, finalChars: 6000 } as const;
 export const dshRecordScopeSchema = z.strictObject({ actionId: z.uuid(), companionId: z.string().regex(/^[A-Za-z0-9_-]{1,100}$/), conversationId: z.string().regex(/^[A-Za-z0-9_-]{1,100}$/), sourceMessageId: z.string().regex(/^[A-Za-z0-9_-]{1,100}$/) });
@@ -21,6 +22,8 @@ export const dshRecordOverviewSchema = z.object({ recordId: z.uuid(), title: z.s
   recordCount: z.number().int().nonnegative(), storedBytes: z.number().int().nonnegative(),
   finalReply: z.string().max(DSH_RECORD_LIMITS.finalChars), finalReplyChars: z.number().int().nonnegative(), finalReplyTruncated: z.boolean(), finalRecord: z.number().int().positive().optional(),
   error: z.string().max(1000).optional(), complete: z.boolean(), storageLimited: z.boolean(),
+  workspacePath: z.string().max(4096).optional(), mode: z.enum(['native', 'ptc']).optional(), sessionId: z.string().max(200).optional(),
+  artifacts: z.array(dshTaskArtifactSchema).max(100).optional(), structured: z.unknown().optional(), structuredTruncated: z.boolean().optional(),
 });
 export type DshRecordOverview = z.infer<typeof dshRecordOverviewSchema>;
 export const dshRecordPageSchema = z.object({ overview: dshRecordOverviewSchema,

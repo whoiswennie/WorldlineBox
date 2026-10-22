@@ -31,6 +31,40 @@ function initial(store: CompanionsStore, conversationId: string, clientId = 'fir
 }
 function complete(store: CompanionsStore, job: CompanionSocialJob, text: string | null) { advance(store, Math.max(1, Date.parse(job.typingNotBefore) - Date.now() + 1)); return store.request({ type: 'social.job.complete', id: job.id, leaseToken: job.leaseToken!, text }); }
 
+it('removes deleted-topic bodies from peer pages, search, calendar, previews and both observer flow branches', () => {
+  const { store } = fixture(), pair = room(store);
+  const topic = store.request({ type: 'topic.create', conversationId: pair.id, readerId: 'alice', title: '待删除讨论', kind: 'discussion', participantIds: ['bob'] }).topic!;
+  store.request({ type: 'topic.join', conversationId: pair.id, readerId: 'bob', topicId: topic.id });
+  store.request({ type: 'topic.activate', conversationId: pair.id, readerId: 'alice', topicId: topic.id });
+  const send = { type: 'social.send', companionId: 'alice', conversationId: pair.id, channel: 'phone', content: 'DELETED_TOPIC_BODY', clientId: 'topic_body' } as const;
+  store.request(send); advance(store, 1300);
+  const secret = store.request(send).socialMessage!;
+  expect(secret.message.topicId).toBe(topic.id);
+  store.request({ type: 'topic.activate', conversationId: pair.id, readerId: 'alice', topicId: null });
+  append(store, pair.id, 2, '2026-10-15T10:00:01.000Z', 'ORDINARY_BODY');
+  const current = store.request({ type: 'topic.read', conversationId: pair.id, readerId: 'alice', topicId: topic.id }).topic!;
+  store.request({ type: 'topic.delete', conversationId: pair.id, readerId: 'user', topicId: topic.id, expectedRevision: current.revision });
+  const pages = [
+    store.request({ type: 'social.messages', conversationId: pair.id }),
+    store.request({ type: 'social.messages', conversationId: pair.id, query: 'DELETED_TOPIC_BODY' }),
+    store.request({ type: 'social.conversations', companionId: 'alice' }),
+    store.request({ type: 'social.flow', conversationId: pair.id }),
+    store.request({ type: 'social.flow', conversationId: pair.id, day: '2026-10-15' }),
+    store.request({ type: 'social.graph', companionId: 'alice' }),
+  ];
+  expect(JSON.stringify(pages)).not.toContain('DELETED_TOPIC_BODY');
+  expect(JSON.stringify(pages)).toContain('ORDINARY_BODY');
+  expect(pages[0]!.socialMessagePage!.total).toBe(1);
+  expect(pages[1]!.socialMessagePage!.items).toEqual([]);
+  const onlyTopicRoom = room(store, ['alice', 'carol'], '保留空会话');
+  const onlyTopic = store.request({ type: 'topic.create', conversationId: onlyTopicRoom.id, readerId: 'alice', title: '唯一话题', kind: 'discussion' }).topic!;
+  store.appendMessage({ conversationId: onlyTopicRoom.id, authorId: 'alice', topicId: onlyTopic.id, content: '唯一话题正文' });
+  store.request({ type: 'topic.delete', conversationId: onlyTopicRoom.id, readerId: 'user', topicId: onlyTopic.id, expectedRevision: onlyTopic.revision });
+  expect(store.request({ type: 'social.conversations', companionId: 'alice', query: '保留空会话' }).socialConversationPage!.items).toContainEqual(expect.objectContaining({ id: onlyTopicRoom.id, messageCount: 0 }));
+  expect(() => store.request({ type: 'social.messages', conversationId: pair.id, around: secret.message.id })).toThrow('引用消息');
+  expect(store.request({ type: 'social.days', companionId: 'alice', month: '2026-10' }).socialDays!.days.reduce((total, day) => total + day.messageCount, 0)).toBe(1);
+});
+
 it('preserves a peer reply exact recall during its live lease and after formal publication, then redacts withdrawn evidence', async () => {
   const { store } = fixture(), pair = room(store), privateRoom = store.openPrivate('bob');
   const introduction = store.appendMessage({ conversationId: privateRoom.id, authorId: 'user', content: '我叫天幻岚。', replyDirective: 'none' });
@@ -191,7 +225,9 @@ it('recovers the phone outbox during virtual sleep after restart and still cance
 it('holds a single live owner lease, clears failed typing, limits retries, and targets every actual group recipient', () => {
   const { store, filename } = fixture(), group = room(store, ['alice', 'bob', 'carol']), first = initial(store, group.id);
   const events = store.request({ type: 'world.snapshot' }).world!.events.filter(event => event.sourceMessageId === first.message.id); expect(new Set(events.map(event => event.targetId))).toEqual(new Set(['bob', 'carol']));
-  let job = store.request({ type: 'social.job.claim' }).socialJob!; expect(job.companionId).toBe('bob'); expect(store.request({ type: 'social.job.claim' }).socialJob).toBeUndefined();
+  let job = store.request({ type: 'social.job.claim' }).socialJob!; expect(job.companionId).toBe('bob');
+  const independent = store.request({ type: 'social.job.claim' }).socialJob!; expect(independent.companionId).toBe('carol');
+  expect(store.request({ type: 'social.job.claim' }).socialJob).toBeUndefined(); complete(store, independent, null);
   for (let attempt = 1; attempt <= 8; attempt++) { store.request({ type: 'social.job.fail', id: job.id, leaseToken: job.leaseToken!, error: 'fixture failure' });
     expect(store.request({ type: 'world.snapshot' }).world!.actors.find(actor => actor.companionId === 'bob')!.communication).toBeUndefined();
     if (attempt < 8) { advance(store, 300001); job = store.request({ type: 'social.job.claim' }).socialJob!; expect(job.attempts).toBe(attempt + 1); }

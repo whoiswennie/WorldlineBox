@@ -45,7 +45,9 @@ type StoredActor = Omit<CompanionWorldActor, 'parkWalk'> & { socialPause?: { sou
   afterWork?: { scope: CompanionWorldScope; args: CompanionWorldArguments; sourceMessageId?: string }; lastClimateKey?: string;
   transition?: { eventId?: string; action?: CompanionWorldActor['activity']; until: number; after: CompanionWorldActor['activity'] }; manualActivityUntil?: number; manualArtAction?: CompanionWorldActor['artAction'];  };
 type LearningWorkProof = { learningGrantId?: string; learningLeaseToken?: string };
-type StoredWork = CompanionWorldWork & LearningWorkProof & { conversationId: string; sourceMessageId?: string; urgent: boolean; fixed: boolean; requestedAtReal: number; workOrderId?: string };
+type CollaborationWorkProof = { authorizationGrantId?: string; invocationId?: string };
+type WorkProof = LearningWorkProof & CollaborationWorkProof;
+type StoredWork = CompanionWorldWork & WorkProof & { conversationId: string; sourceMessageId?: string; urgent: boolean; fixed: boolean; requestedAtReal: number; workOrderId?: string };
 type StoredVisit = CompanionWorldVisit & { responseSourceMessageId?: string; responseConversationId?: string; settledAt?: number };
 type StoredJob = CompanionWorldJob & { memoryVersions?: Array<{ id: string; version: number }>; readSet?: Array<{ eventId: string; checksum: string; sourceChecksum?: string; sourceRevision?: number }> };
 type StoredEvent = CompanionWorldEvent & { visitId?: string; visitDecision?: 'allow' | 'deny'; privateOwner?: string; witnessIds?: string[]; sourceMemoryIds?: string[]; sourceMessageIds?: string[]; evidence?: Array<{ sourceMessageId: string; quote: string }>; positiveChange?: number; appraisalDay?: string;
@@ -77,6 +79,7 @@ export class CompanionWorldStore {
   private perceptionNextAt = 0;
   private social?: CompanionSocialStore;
   private orders?: CompanionWorkOrderStore;
+  private collaborationAllowed?: (input: CompanionWorldScope & { authorizationGrantId: string; sourceMessageId: string; invocationId?: string }) => void;
   private knowledge?: (scope: CompanionWorldScope, args: Extract<CompanionWorldArguments, { action: 'query' }>) => CompanionStorageResponse;
   private life?: { completePhysical(id: string, companionId: string, outcome: 'done' | 'cancelled', result: string): void };
   private startActivityTask?: (companionId: string, jobId: string, task: { title: string; goal: string }) => void;
@@ -101,6 +104,7 @@ export class CompanionWorldStore {
   }
   connectSocial(social: CompanionSocialStore): void { this.social = social; }
   connectWorkOrders(orders: CompanionWorkOrderStore): void { this.orders = orders; }
+  connectCollaboration(validate: NonNullable<CompanionWorldStore['collaborationAllowed']>): void { this.collaborationAllowed = validate; }
   connectLife(life: NonNullable<CompanionWorldStore['life']>): void { this.life = life; }
   connectActivity(start: NonNullable<CompanionWorldStore['startActivityTask']>): void { this.startActivityTask = start; }
   /** Synchronous evidence and capture intent share the world event's SQLite transaction. */
@@ -623,9 +627,20 @@ export class CompanionWorldStore {
     }
     state.actors = state.actors.filter(actor => activeIds.has(actor.companionId));
     for (const work of state.works) if (!activeIds.has(work.companionId) || !this.db.prepare('SELECT 1 FROM conversations c JOIN conversation_members m ON m.conversation_id=c.id WHERE c.id=? AND c.dissolved_at IS NULL AND m.companion_id=?').get(work.conversationId, work.companionId) ||
-      work.sourceMessageId && !this.visibleSources({ companionId: work.companionId, conversationId: work.conversationId }, [work.sourceMessageId]).length) work.status = 'ended';
+      (work.sourceMessageId || work.authorizationGrantId) && !this.workSourceAllowed(work)) work.status = 'ended';
     this.expireLearningWorks(state);
     for (const visit of state.visits) if (!ids.includes(visit.guestId) || !ids.includes(visit.hostId)) visit.status = 'expired';
+  }
+  private workSourceAllowed(work: StoredWork): boolean {
+    try {
+      if (work.authorizationGrantId) {
+        if (!this.collaborationAllowed || !work.sourceMessageId || !work.invocationId || work.kind !== 'action' || work.fixed || work.urgent) return false;
+        this.collaborationAllowed({ companionId: work.companionId, conversationId: work.conversationId,
+          authorizationGrantId: work.authorizationGrantId, sourceMessageId: work.sourceMessageId, invocationId: work.invocationId });
+        return true;
+      }
+      return !!work.sourceMessageId && this.visibleSources(work, [work.sourceMessageId]).some(source => source.authorId === 'user');
+    } catch { return false; }
   }
   private learningWorkAllowed(work: Pick<StoredWork, 'companionId' | 'conversationId'> & LearningWorkProof): boolean {
     if (work.conversationId !== privateRoom(work.companionId) || !work.learningGrantId || !work.learningLeaseToken) return false;
@@ -1435,21 +1450,26 @@ export class CompanionWorldStore {
     state.anchors.push({ realAt: now, virtualAt: nextVirtual, settings: { ...state.settings } }); this.rememberClock(state);
     this.syncOccupancy(state); this.save(state); this.dirty = true; return this.snapshotValue(state, now); });
   }
-  begin(scope: CompanionWorldScope, workId: string, kind: CompanionWorldWork['kind'], sourceMessageId?: string, urgent = false, fixed = false, learning: LearningWorkProof = {}): CompanionWorldWork {
+  begin(scope: CompanionWorldScope, workId: string, kind: CompanionWorldWork['kind'], sourceMessageId?: string, urgent = false, fixed = false, learning: WorkProof = {}): CompanionWorldWork {
     const requestedAtReal = Date.now(); this.requireScope(scope); this.advance(requestedAtReal);
     return this.atomic(() => this.beginAt(scope, workId, kind, requestedAtReal, sourceMessageId, urgent, fixed, learning));
   }
-  private beginAt(scope: CompanionWorldScope, workId: string, kind: CompanionWorldWork['kind'], requestedAtReal: number, sourceMessageId?: string, urgent = false, fixed = false, learning: LearningWorkProof = {}): CompanionWorldWork {
+  private beginAt(scope: CompanionWorldScope, workId: string, kind: CompanionWorldWork['kind'], requestedAtReal: number, sourceMessageId?: string, urgent = false, fixed = false, learning: WorkProof = {}): CompanionWorldWork {
     const state = this.load();
     if (!state.actors.some(actor => actor.companionId === scope.companionId)) throw new Error('伙伴已休眠，请先手动激活。');
     if (kind === 'learning') {
-      if (sourceMessageId || urgent || fixed || !this.learningWorkAllowed({ ...scope, ...learning })) throw new Error('资料阅读需要本人世界域中仍有效的明确授权和读取租约。');
+      if (sourceMessageId || urgent || fixed || learning.authorizationGrantId || learning.invocationId || !this.learningWorkAllowed({ ...scope, ...learning })) throw new Error('资料阅读需要本人世界域中仍有效的明确授权和读取租约。');
     } else if (learning.learningGrantId || learning.learningLeaseToken) throw new Error('学习租约不能授权其它行动。');
+    else if (learning.authorizationGrantId) {
+      if (!this.collaborationAllowed || !sourceMessageId || !learning.invocationId || kind !== 'action' || urgent || fixed) throw new Error('协作电脑工作需要本人真实授权，不能借此扩大固定、紧急或其它行动权限。');
+      this.collaborationAllowed({ ...scope, authorizationGrantId: learning.authorizationGrantId, sourceMessageId, invocationId: learning.invocationId });
+    }
+    else if (learning.invocationId) throw new Error('独立协作身份缺少真实协作授权。');
     else if (sourceMessageId) { const source = this.visibleSources(scope, [sourceMessageId])[0]; if (!source || source.authorId !== 'user') throw new Error('工作需要真实可见的用户来源。'); const verified = this.urgent(scope.companionId, sourceMessageId); if (urgent && !verified) throw new Error('来源缺少已核验的紧急通知判断。'); urgent = verified; }
     else if (!fixed) throw new Error('工作缺少真实用户来源。');
     let work = state.works.find(work => work.workId === workId);
     if (!work) { const saved = this.db.prepare('SELECT data FROM companion_world_work_records WHERE work_id=?').get(workId); if (saved) { work = parse<StoredWork>(row(saved).data); state.works.push(work); } }
-    if (work && (work.companionId !== scope.companionId || work.conversationId !== scope.conversationId || work.kind !== kind || work.sourceMessageId !== sourceMessageId || work.learningGrantId !== learning.learningGrantId || work.learningLeaseToken !== learning.learningLeaseToken)) throw new Error('工作不属于当前伙伴或原来的来源。');
+    if (work && (work.companionId !== scope.companionId || work.conversationId !== scope.conversationId || work.kind !== kind || work.sourceMessageId !== sourceMessageId || work.learningGrantId !== learning.learningGrantId || work.learningLeaseToken !== learning.learningLeaseToken || work.authorizationGrantId !== learning.authorizationGrantId || work.invocationId !== learning.invocationId)) throw new Error('工作不属于当前伙伴或原来的来源。');
     if (!work) { work = { workId, companionId: scope.companionId, conversationId: scope.conversationId, kind, sourceMessageId, urgent, fixed, requestedAtReal, ...learning, status: 'waiting' }; state.works.push(work); }
     else if (work.status === 'ended') { work.status = 'waiting'; work.urgent = urgent; work.fixed = fixed; work.requestedAtReal = requestedAtReal; delete work.computerId; delete work.reason; }
     this.planRoutine(state, state.actors.find(actor => actor.companionId === scope.companionId)!);
@@ -1458,6 +1478,7 @@ export class CompanionWorldStore {
   ready(companionId: string, workId: string): CompanionWorldWork {
     const now = Date.now(); this.advance(now); const saved = this.db.prepare('SELECT data FROM companion_world_work_records WHERE work_id=? AND companion_id=?').get(workId, companionId); if (!saved) throw new Error('工作不存在。');
     const work = parse<StoredWork>(row(saved).data);
+    if (work.authorizationGrantId && work.status !== 'ended' && !this.workSourceAllowed(work)) { this.end(companionId, workId); throw new Error('协作授权已失效，停止这个电脑预约。'); }
     return this.through < now && work.status !== 'ended' ? { ...work, status: 'waiting', reason: '正在补算世界存档', nextCheckAt: iso(now + 250) } : work;
   }
   end(companionId: string, workId: string): CompanionWorldWork | undefined {
@@ -1759,7 +1780,8 @@ export class CompanionWorldStore {
       case 'world.configure': return { ok: true, world: this.configure(command.expectedRevision, command.patch) };
       case 'world.tool': if (command.arguments.action === 'query') return this.queryKnowledge(command, command.arguments); return { ok: true, world: this.tool(command, command.arguments, command.sourceMessageId) };
       case 'world.work.begin': return { ok: true, worldWork: this.begin(command, command.workId, command.kind, command.sourceMessageId, command.urgent, command.fixed,
-        { learningGrantId: command.learningGrantId, learningLeaseToken: command.learningLeaseToken }) };
+        { learningGrantId: command.learningGrantId, learningLeaseToken: command.learningLeaseToken,
+          authorizationGrantId: command.authorizationGrantId, invocationId: command.invocationId }) };
       case 'world.work.ready': return { ok: true, worldWork: this.ready(command.companionId, command.workId) };
       case 'world.work.end': return { ok: true, worldWork: this.end(command.companionId, command.workId) };
       case 'world.job.claim': return { ok: true, worldJob: this.claim(command.kind, command.excludedCompanionIds) };

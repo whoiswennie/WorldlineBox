@@ -15,6 +15,8 @@ import { CompanionTaskMonitor } from './CompanionTaskMonitor';
 import { CompanionWorldStatus } from './CompanionWorldStatus';
 import { CompanionSocialMonitor } from './CompanionSocialMonitor';
 import { CompanionMessageBubble } from './CompanionMessageBubble';
+import { CompanionTopicBar, type CompanionTopicHistoryFilter } from './CompanionTopicBar';
+import type { CompanionTopic } from '../../shared/companion-topic';
 import { CompanionReplyStreamStore } from './reply-stream';
 import { CompanionHistorySearch } from './CompanionHistorySearch';
 import { CompanionPresencePanel } from './CompanionPresencePanel';
@@ -42,6 +44,14 @@ import './world/companion-world.css';
 
 interface ChatDraft { content: string; attachments: CompanionAttachment[]; reply?: CompanionMessage }
 const EMPTY_DRAFT: ChatDraft = { content: '', attachments: [] };
+function chatDraftKey(conversationId: string, topicId?: string) { return topicId ? `${conversationId}/topic/${topicId}` : conversationId; }
+function mergeTopicCatalog(current: CompanionTopic[], next: CompanionTopic[], retainIds: readonly string[]) {
+  const byId = new Map(current.map(topic => [topic.id, topic]));
+  next.forEach(topic => { if ((byId.get(topic.id)?.revision ?? 0) > topic.revision) return; byId.delete(topic.id); byId.set(topic.id, topic); });
+  const retained = new Set(retainIds);
+  const values = [...byId.values()];
+  return [...values.filter(topic => !retained.has(topic.id)).slice(-500), ...values.filter(topic => retained.has(topic.id))];
+}
 const PAGE_SIZE = 50;
 const emojis = ['🐳', '😊', '💙', '✨', '👀', '🥺', '🎉', '☕', '🌙', '👍', '🌸', '😴', '🤔', '😂', '🫶', '🌊'];
 function contactIntroduction(companion: Companion) { return (companion.builtin ? builtinCompanionProfile(companion.id)?.introduction : undefined) || companion.description || '还没有写下简介。可以在编辑资料中介绍这位伙伴。'; }
@@ -76,6 +86,9 @@ export function Companions({ api, dshApi, onOpenSettings, isActive = true }: { r
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [contactId, setContactId] = useState<string | null>(null);
   const [messages, setMessages] = useState<CompanionMessage[]>([]);
+  const [topicsByConversation, setTopicsByConversation] = useState<Record<string, CompanionTopic[]>>({});
+  const [topicHistoryFilter, setTopicHistoryFilter] = useState<CompanionTopicHistoryFilter>('current');
+  const topicHistoryFilterRef = useRef<CompanionTopicHistoryFilter>('current');
   const [hasMore, setHasMore] = useState(false);
   const [loadingMessages, setLoadingMessages] = useState(false);
   const [loadingOlder, setLoadingOlder] = useState(false);
@@ -179,7 +192,7 @@ export function Companions({ api, dshApi, onOpenSettings, isActive = true }: { r
   const clearResetCaches = useCallback((companionId: string) => {
     setMemoryNoteRequest(current => current?.owner === companionId ? undefined : current); ++stateSourceSequence.current;
     const affected = new Set(stateRef.current?.conversations.filter(room => room.memberIds.includes(companionId)).map(room => room.id));
-    setDrafts(current => Object.fromEntries(Object.entries(current).filter(([id]) => !affected.has(id))));
+    setDrafts(current => Object.fromEntries(Object.entries(current).filter(([id]) => !affected.has(id.split('/topic/')[0]!))));
     setActions(current => current.filter(action => action.companionId !== companionId));
     if (affected.has(selectedRef.current ?? '') || messagesRef.current.some(message => message.authorId === companionId)) {
       ++loadEpoch.current; ++latestLoadEpoch.current; ++actionsEpoch.current;
@@ -210,11 +223,29 @@ export function Companions({ api, dshApi, onOpenSettings, isActive = true }: { r
     }
   }, [request, clearResetCaches]);
 
+  const messageTopic = useCallback((id: string): string | null | undefined => {
+    const filter = topicHistoryFilterRef.current;
+    return filter === 'all' ? undefined : filter === 'ordinary' ? null : filter === 'current'
+      ? stateRef.current?.conversations.find(room => room.id === id)?.activeTopicId ?? null : filter.slice('topic:'.length);
+  }, []);
+  const loadTopics = useCallback(async (id: string) => {
+    const response = await request({ type: 'topic.list', conversationId: id, limit: 50 });
+    if (!response?.topics) return;
+    const found = response.topics;
+    const activeId = stateRef.current?.conversations.find(room => room.id === id)?.activeTopicId;
+    if (activeId && !found.some(topic => topic.id === activeId)) {
+      const detail = await request({ type: 'topic.read', conversationId: id, topicId: activeId });
+      if (detail?.topic) found.push(detail.topic);
+    }
+    // Only topic metadata is retained here. Reader-specific working state is not a UI catalog.
+    setTopicsByConversation(current => ({ ...current, [id]: mergeTopicCatalog(current[id] ?? [], found, activeId ? [activeId] : []) }));
+  }, [request]);
   const loadMessages = useCallback(async (id: string, refresh = false) => {
     const epoch = refresh ? loadEpoch.current : ++loadEpoch.current;
     const latestEpoch = ++latestLoadEpoch.current;
-    const response = await request({ type: 'messages', conversationId: id, limit: PAGE_SIZE });
-    if (selectedRef.current !== id || epoch !== loadEpoch.current || latestEpoch !== latestLoadEpoch.current || historyRef.current) return;
+    const topicId = messageTopic(id);
+    const response = await request({ type: 'messages', conversationId: id, topicId, limit: PAGE_SIZE });
+    if (selectedRef.current !== id || epoch !== loadEpoch.current || latestEpoch !== latestLoadEpoch.current || historyRef.current || messageTopic(id) !== topicId) return;
     if (!response?.messages) { if (!refresh) setLoadingMessages(false); return; }
     const newest = response.messages.at(-1)?.sequence ?? 0;
     if (refresh && !stickyRef.current && newest > latestSequence.current) setNewMessages(true);
@@ -224,7 +255,7 @@ export function Companions({ api, dshApi, onOpenSettings, isActive = true }: { r
     setMessages(window); setHasNewer(false);
     if (!refresh || loadedConversation.current !== id || window.length < merged.length) setHasMore((response.hasMore ?? false) || window.length < merged.length);
     loadedConversation.current = id; setLoadingMessages(false);
-  }, [request]);
+  }, [request, messageTopic]);
 
   const loadActions = useCallback(async (id: string) => {
     const epoch = ++actionsEpoch.current;
@@ -240,6 +271,8 @@ export function Companions({ api, dshApi, onOpenSettings, isActive = true }: { r
   }, [request]);
 
   const loadAround = useCallback(async (message: Pick<CompanionMessage, 'id' | 'sequence' | 'conversationId'>) => {
+    // A reference may belong to another topic. Browsing it never changes where new messages go.
+    topicHistoryFilterRef.current = 'all'; setTopicHistoryFilter('all');
     const epoch = ++loadEpoch.current; ++latestLoadEpoch.current;
     pagingRef.current = false; setLoadingOlder(false); setLoadingNewer(false);
     historyRef.current = true; stickyRef.current = false; setHistoryMode(true); setAwayFromBottom(true);
@@ -279,18 +312,19 @@ export function Companions({ api, dshApi, onOpenSettings, isActive = true }: { r
     const refresh = createCoalescedRefresh(async () => {
       const reads: Promise<unknown>[] = [refreshState()];
       const id = selectedRef.current;
-      if (id) { if (!historyRef.current) reads.push(loadMessages(id, true)); reads.push(loadActions(id)); }
+      if (id) { if (!historyRef.current) reads.push(loadMessages(id, true)); reads.push(loadActions(id), loadTopics(id)); }
       await Promise.allSettled(reads);
     }, undefined, 500);
     void refresh.trigger();
     const unsubscribe = api?.onChanged(() => refresh.trigger());
     return () => { unsubscribe?.(); refresh.dispose(); };
-  }, [api, refreshState, loadMessages, loadActions]);
+  }, [api, refreshState, loadMessages, loadActions, loadTopics]);
   useEffect(() => { if (selectedId) void Promise.resolve().then(() => {
     const jump = pendingJump.current; pendingJump.current = null;
     if (jump?.conversationId === selectedId) void loadAround(jump); else void loadMessages(selectedId);
     void loadActions(selectedId);
-  }); }, [selectedId, loadMessages, loadActions, loadAround]);
+    void loadTopics(selectedId);
+  }); }, [selectedId, loadMessages, loadActions, loadAround, loadTopics]);
   useEffect(() => {
     // Quotes are a bounded cache too; evicted history cannot stay alive here.
     const needed = new Set(messages.flatMap(message => message.replyToId ? [message.replyToId] : []));
@@ -300,6 +334,23 @@ export function Companions({ api, dshApi, onOpenSettings, isActive = true }: { r
     }));
   }, [messages]);
   const selected = state?.conversations.find(item => item.id === selectedId);
+  const topics = selectedId ? topicsByConversation[selectedId] ?? [] : [];
+  const activeTopic = topics.find(topic => topic.id === selected?.activeTopicId);
+  const topicBlocked = !!selected?.activeTopicId && (!activeTopic || activeTopic.status !== 'active');
+  const selectedTopicEpoch = useRef<{ conversationId: string | null; topicId?: string } | undefined>(undefined);
+  useEffect(() => {
+    const previous = selectedTopicEpoch.current;
+    selectedTopicEpoch.current = { conversationId: selectedId, topicId: selected?.activeTopicId };
+    // Conversation selection already loads the first page. Only an active-topic
+    // change inside that same room needs to invalidate an existing window.
+    if (!previous || previous.conversationId !== selectedId || previous.topicId === selected?.activeTopicId) return;
+    if (!selectedId || topicHistoryFilterRef.current !== 'current') return;
+    ++loadEpoch.current; ++latestLoadEpoch.current;
+    messagesRef.current = []; setMessages([]); setHasMore(false); setHasNewer(false);
+    historyRef.current = false; setHistoryMode(false); pagingRef.current = false; setLoadingOlder(false); setLoadingNewer(false);
+    stickyRef.current = true; latestSequence.current = 0; loadedConversation.current = null;
+    void loadMessages(selectedId);
+  }, [selectedId, selected?.activeTopicId, loadMessages]);
   const companions = useMemo(() => (state?.companions ?? []).map(role => ({ ...role, availability: companionPresence(role, state?.configured ?? false) })), [state?.companions, state?.configured]);
   const members = companions.filter(item => selected?.memberIds.includes(item.id));
   const primary = members[0];
@@ -346,8 +397,10 @@ export function Companions({ api, dshApi, onOpenSettings, isActive = true }: { r
     else { pendingJump.current = { ...source, excerpt: source.content.slice(0, 600) }; selectConversation(room); }
     void refreshState();
   }
-  const timelineMessages = messages.filter(message => !message.memoryEvidenceOnly);
-  const draft = selectedId ? drafts[selectedId] ?? EMPTY_DRAFT : EMPTY_DRAFT;
+  const visibleTopicId = selectedId ? messageTopic(selectedId) : undefined;
+  const timelineMessages = messages.filter(message => !message.memoryEvidenceOnly && (visibleTopicId === undefined || (message.topicId ?? null) === visibleTopicId));
+  const draftKey = selectedId ? chatDraftKey(selectedId, selected?.activeTopicId) : '';
+  const draft = draftKey ? drafts[draftKey] ?? EMPTY_DRAFT : EMPTY_DRAFT;
   useLayoutEffect(() => {
     const input = composerRef.current;
     if (!input) return;
@@ -381,11 +434,46 @@ export function Companions({ api, dshApi, onOpenSettings, isActive = true }: { r
     if (stickyRef.current && scrollRef.current) scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
   }, [actions]);
 
-  function updateDraft(patch: Partial<ChatDraft>, id = selectedId) {
-    if (id) setDrafts(current => ({ ...current, [id]: { ...EMPTY_DRAFT, ...current[id], ...patch } }));
+  function updateDraft(patch: Partial<ChatDraft>, key = draftKey) {
+    if (key) setDrafts(current => ({ ...current, [key]: { ...EMPTY_DRAFT, ...current[key], ...patch } }));
+  }
+  function filterTopicHistory(filter: CompanionTopicHistoryFilter) {
+    topicHistoryFilterRef.current = filter; setTopicHistoryFilter(filter);
+    ++loadEpoch.current; ++latestLoadEpoch.current;
+    messagesRef.current = []; setMessages([]); setHasMore(false); setHasNewer(false); setNewMessages(false); setHighlightedId(null);
+    historyRef.current = false; setHistoryMode(false); pagingRef.current = false; setLoadingOlder(false); setLoadingNewer(false);
+    stickyRef.current = true; latestSequence.current = 0; loadedConversation.current = null; setLoadingMessages(true);
+    if (selectedRef.current) void loadMessages(selectedRef.current);
+  }
+  function topicChanged(conversationId: string, topic: CompanionTopic) {
+    topicCatalog(conversationId, [topic]);
+    void refreshState();
+  }
+  function topicCatalog(conversationId: string, topics: CompanionTopic[]) {
+    const retainIds = [stateRef.current?.conversations.find(room => room.id === conversationId)?.activeTopicId ?? '',
+      topicHistoryFilterRef.current.startsWith('topic:') ? topicHistoryFilterRef.current.slice('topic:'.length) : '', ...messagesRef.current.flatMap(message => message.topicId ? [message.topicId] : [])];
+    setTopicsByConversation(current => ({ ...current, [conversationId]: mergeTopicCatalog(current[conversationId] ?? [], topics, retainIds) }));
+  }
+  function topicDeleted(conversationId: string, topicId: string) {
+    setTopicsByConversation(current => ({ ...current, [conversationId]: (current[conversationId] ?? []).filter(topic => topic.id !== topicId) }));
+    setDrafts(current => Object.fromEntries(Object.entries(current).filter(([key]) => key !== chatDraftKey(conversationId, topicId))));
+    if (selectedRef.current === conversationId && topicHistoryFilterRef.current === `topic:${topicId}`) filterTopicHistory('current');
+    void refreshState();
+  }
+  async function activateTopic(conversationId: string, topicId: string | null) {
+    const result = await request({ type: 'topic.activate', conversationId, topicId });
+    if (!result) return;
+    const current = stateRef.current;
+    if (current) {
+      const next = { ...current, conversations: current.conversations.map(room => room.id === conversationId ? { ...room, activeTopicId: topicId ?? undefined } : room) };
+      stateRef.current = next; setState(next);
+    }
+    if (selectedRef.current === conversationId) filterTopicHistory('current');
+    void refreshState();
   }
   function selectConversation(conversation: CompanionConversation) {
     if (selectedRef.current !== conversation.id) {
+      topicHistoryFilterRef.current = 'current'; setTopicHistoryFilter('current');
       ++loadEpoch.current; selectedRef.current = conversation.id; historyRef.current = false; stickyRef.current = true; latestSequence.current = 0; loadedConversation.current = null;
       pagingRef.current = false; scrollAnchor.current = null; setLoadingOlder(false); setLoadingNewer(false); setSelectedId(conversation.id); setMessages([]); setActions([]); setHasMore(false); setHasNewer(false); setAwayFromBottom(false); setLoadingMessages(true); setHistoryMode(false);
 
@@ -432,58 +520,67 @@ export function Companions({ api, dshApi, onOpenSettings, isActive = true }: { r
       setTaskOwnerId(owner.id); setSelectedTaskActionId(item.destination.id); setTaskView(item.section === 'events' ? 'history' : 'active'); setShowTaskMonitor(true);
     } else if (kind === 'work') { setSelectedWorkOrderId(undefined); setShowWorkManager(true); }
   }
-  const queuedMessages = [...new Map((state?.queue ?? []).filter(work => work.conversationId === selectedId && work.status === 'queued' && !work.messageId && !messages.some(message => message.authorId === work.companionId && message.replyToId === work.sourceMessageId)).map(work => [work.sourceMessageId, work])).values()];
-  const runningSources = [...new Set((state?.queue ?? []).filter(work => work.conversationId === selectedId && work.status === 'running').map(work => work.sourceMessageId))];
+  const sourceInCurrentTopic = (id: string) => {
+    const source = messages.find(message => message.id === id) ?? referencedMessages[id];
+    return source ? (source.topicId ?? null) === (selected?.activeTopicId ?? null) : !selected?.activeTopicId && !topics.length;
+  };
+  const queuedMessages = [...new Map((state?.queue ?? []).filter(work => work.conversationId === selectedId && sourceInCurrentTopic(work.sourceMessageId) && work.status === 'queued' && !work.messageId && !messages.some(message => message.authorId === work.companionId && message.replyToId === work.sourceMessageId)).map(work => [work.sourceMessageId, work])).values()];
+  const runningSources = [...new Set((state?.queue ?? []).filter(work => work.conversationId === selectedId && sourceInCurrentTopic(work.sourceMessageId) && work.status === 'running').map(work => work.sourceMessageId))];
   async function guideQueued(id: string, target?: string) {
     if (!target && runningSources.length > 1) { setGuideMessageId(id); return; }
     await request({ type: 'message.guide', id, targetSourceMessageId: target ?? runningSources[0] });
     setGuideMessageId(null); void refreshState();
   }
   async function send(guide = false, targetSourceMessageId?: string, urgent = false) {
+    guide = guide && runningSources.length > 0;
     if (guide && !targetSourceMessageId && runningSources.length > 1) { setGuideMessageId('composer'); return; }
-    if (!selectedId || selectedReset || sendInFlight.current || fileJobs.current || (!draft.content.trim() && !draft.attachments.length)) return;
+    if (!selectedId || selectedReset || topicBlocked || sendInFlight.current || fileJobs.current || (!draft.content.trim() && !draft.attachments.length)) return;
     const id = selectedId;
+    const sentDraftKey = draftKey;
+    const sentTopicId = selected?.activeTopicId ?? null;
     const sentDraft = draft;
     sendInFlight.current = true; setSending(true); setError(''); stickyRef.current = true; setHighlightedId(null);
     const wasHistory = historyRef.current;
     if (wasHistory) { historyRef.current = false; setHistoryMode(false); setMessages([]); }
-    const response = await request({ type: 'message.send', conversationId: id, content: sentDraft.content, clientId: crypto.randomUUID(),
+    const response = await request({ type: 'message.send', conversationId: id, topicId: sentTopicId, content: sentDraft.content, clientId: crypto.randomUUID(),
       ...(urgent ? { priority: 'urgent' as const } : {}),
       ...(guide ? { delivery: 'steer', targetSourceMessageId: targetSourceMessageId ?? runningSources[0] } : {}),
       ...(sentDraft.reply ? { replyToId: sentDraft.reply.id } : {}), ...(sentDraft.attachments.length ? { attachmentIds: sentDraft.attachments.map(item => item.id) } : {}) });
     sendInFlight.current = false; setSending(false);
     if (!response) return;
     setDrafts(current => {
-      const currentDraft = current[id] ?? EMPTY_DRAFT;
-      return { ...current, [id]: { content: currentDraft.content === sentDraft.content ? '' : currentDraft.content, attachments: currentDraft.attachments.filter(item => !sentDraft.attachments.some(sent => sent.id === item.id)), ...(currentDraft.reply?.id !== sentDraft.reply?.id && currentDraft.reply ? { reply: currentDraft.reply } : {}) } };
+      const currentDraft = current[sentDraftKey] ?? EMPTY_DRAFT;
+      return { ...current, [sentDraftKey]: { content: currentDraft.content === sentDraft.content ? '' : currentDraft.content, attachments: currentDraft.attachments.filter(item => !sentDraft.attachments.some(sent => sent.id === item.id)), ...(currentDraft.reply?.id !== sentDraft.reply?.id && currentDraft.reply ? { reply: currentDraft.reply } : {}) } };
     });
     if (selectedRef.current === id) {
-      if (response.message) setMessages(current => mergeMessages(current, [response.message!]));
+      if (response.message && (messageTopic(id) === undefined || messageTopic(id) === (response.message.topicId ?? null))) setMessages(current => mergeMessages(current, [response.message!]));
       await loadMessages(id, !wasHistory);
     }
     void refreshState(); if (selectedRef.current === id) composerRef.current?.focus();
   }
   async function pickAttachments(kind?: 'image') {
     const id = selectedId;
+    const key = draftKey;
     if (!id || selectedReset) return;
     const response = await request({ type: 'attachment.pick', ...(kind ? { kind } : {}) });
     if (kind && response?.attachments?.some(item => !item.mime.startsWith('image/'))) setError('已忽略非图片文件，请选择图片。');
     const attachments = response?.attachments?.filter(item => !kind || item.mime.startsWith('image/'));
-    if (attachments) addDraftAttachments(id, attachments);
+    if (attachments) addDraftAttachments(id, key, attachments);
   }
-  function addDraftAttachments(id: string, attachments: CompanionAttachment[]) {
+  function addDraftAttachments(id: string, draftKey: string, attachments: CompanionAttachment[]) {
     if (!aliveRef.current || stateRef.current?.resetJobs?.some(job => job.status !== 'completed' && stateRef.current?.conversations.find(room => room.id === id)?.memberIds.includes(job.companionId))) return;
     setDrafts(current => {
-      const currentDraft = current[id] ?? EMPTY_DRAFT;
+      const currentDraft = current[draftKey] ?? EMPTY_DRAFT;
       const key = (file: CompanionAttachment) => file.path?.replaceAll('\\', '/').toLocaleLowerCase() ?? file.id;
       const seen = new Set(currentDraft.attachments.map(key));
       const added = attachments.filter(file => { const value = key(file); if (seen.has(value)) return false; seen.add(value); return true; });
       if (currentDraft.attachments.length + added.length > 10) { setError('一条消息最多 10 个附件，请先发送或移除部分附件。'); return current; }
-      return { ...current, [id]: { ...currentDraft, attachments: [...currentDraft.attachments, ...added] } };
+      return { ...current, [draftKey]: { ...currentDraft, attachments: [...currentDraft.attachments, ...added] } };
     });
   }
   async function receiveFiles(files: File[], paste = false) {
     const id = selectedRef.current;
+    const key = id ? chatDraftKey(id, stateRef.current?.conversations.find(room => room.id === id)?.activeTopicId) : '';
     if (!id || selectedReset || !api) return;
     if (files.length > 10) { setError('一条消息最多添加 10 个附件。'); return; }
     fileJobs.current++; setAddingFiles(true); setError('');
@@ -492,7 +589,7 @@ export function Companions({ api, dshApi, onOpenSettings, isActive = true }: { r
       if (paste && result?.ok && !result.attachments?.length && files.length) result = await api.importFiles?.(files);
       if (!result?.ok) throw new Error(result?.error || '当前无法读取本机文件路径。');
       if (!result.attachments?.length) throw new Error('剪贴板中没有可读取的文件或图片。');
-      addDraftAttachments(id, result.attachments);
+      addDraftAttachments(id, key, result.attachments);
     } catch (error) { if (aliveRef.current) setError(error instanceof Error ? error.message : '添加文件失败。'); }
     finally { fileJobs.current--; if (aliveRef.current) setAddingFiles(fileJobs.current > 0); }
   }
@@ -516,8 +613,9 @@ export function Companions({ api, dshApi, onOpenSettings, isActive = true }: { r
     const id = selectedId; const epoch = loadEpoch.current; ++latestLoadEpoch.current;
     pagingRef.current = true;
     setLoadingOlder(true);
-    const response = await request({ type: 'messages', conversationId: id, before: messagesRef.current[0]!.sequence, limit: PAGE_SIZE });
-    if (selectedRef.current !== id || epoch !== loadEpoch.current) return;
+    const topicId = messageTopic(id);
+    const response = await request({ type: 'messages', conversationId: id, topicId, before: messagesRef.current[0]!.sequence, limit: PAGE_SIZE });
+    if (selectedRef.current !== id || epoch !== loadEpoch.current || messageTopic(id) !== topicId) return;
     pagingRef.current = false; setLoadingOlder(false);
     if (!response?.messages) return;
     captureScrollAnchor();
@@ -530,8 +628,9 @@ export function Companions({ api, dshApi, onOpenSettings, isActive = true }: { r
     if (!selectedId || !messagesRef.current.length || pagingRef.current || !hasNewer) return;
     const id = selectedId; const epoch = loadEpoch.current;
     pagingRef.current = true; setLoadingNewer(true);
-    const response = await request({ type: 'messages', conversationId: id, after: messagesRef.current.at(-1)!.sequence, limit: PAGE_SIZE });
-    if (selectedRef.current !== id || epoch !== loadEpoch.current) return;
+    const topicId = messageTopic(id);
+    const response = await request({ type: 'messages', conversationId: id, topicId, after: messagesRef.current.at(-1)!.sequence, limit: PAGE_SIZE });
+    if (selectedRef.current !== id || epoch !== loadEpoch.current || messageTopic(id) !== topicId) return;
     pagingRef.current = false; setLoadingNewer(false);
     if (!response?.messages) return;
     captureScrollAnchor(); setHighlightedId(null); stickyRef.current = false;
@@ -633,6 +732,7 @@ export function Companions({ api, dshApi, onOpenSettings, isActive = true }: { r
         : <div className={`companions-chat-layout${showPanel ? ' has-panel' : ''}`}>
           <section className="companions-chat" aria-label={`${selected.title}的聊天`}>
             <CompanionWorldStatus key={selected.id} api={api} members={members} companions={companions} active={isActive && page === 'messages'} onObserve={observeSocial}>{({ clock, activity }) => <><header className="companions-chat-header"><div className="companions-chat-identity"><button className="companions-presence-avatar" data-presence-trigger aria-label="查看伙伴状态" aria-expanded={showPresence} title={COMPANION_PRESENCE_LABELS[roomPresence] + ' · 点击查看状态'} onClick={() => setShowPresence(!showPresence)}>{conversationAvatar(selected)}</button><div><h2><span className="companions-chat-name">{selected.title}{selected.kind === 'group' && '（' + (selected.memberIds.length + 1) + '）'}</span><CompanionStatusBadge className="companions-presence-label" status={roomPresence} />{offlineMembers.length > 0 && selected.kind === 'group' && <CompanionStatusBadge className="companions-presence-label" status="offline">{offlineMembers.length} 位离线</CompanionStatusBadge>}{historyMode && <button className="companions-history-chip" aria-label="正在查看历史消息" title="回到最新消息" onClick={returnToLatest}><Icon name="clock" />历史记录</button>}</h2><div className="companions-chat-meta"><p>{selected.kind === 'group' ? members.map(item => item.name).join('、') : primary?.availability === 'offline' ? primary.availabilityReason || '尚未连接模型服务 · 点击头像配置' : primary?.description || '你们的日常，慢慢聊'}</p>{clock}</div></div></div><div className="companions-header-actions">{activity}{actions.length > 0 && <button className="companions-task-monitor-button" aria-label="查看伙伴任务" onClick={() => { setTaskView(runningActions.length ? 'active' : 'history'); setTaskOwnerId(undefined); setSelectedTaskActionId(undefined); setShowTaskMonitor(true); }}><Icon name="activity" /><span>{runningActions.length ? `进行中 ${runningActions.length}` : '任务'}</span></button>}<button className={`companion-icon-button${selected.pinned ? ' is-active' : ''}`} title={selected.pinned ? '取消置顶' : '置顶聊天'} aria-label={selected.pinned ? '取消置顶' : '置顶聊天'} onClick={() => void request({ type: 'conversation.update', id: selected.id, pinned: !selected.pinned }).then(result => { if (result) void refreshState(); })}><ChatGlyph name="pin" /></button><button className={`companion-icon-button${selected.muted ? ' is-active' : ''}`} aria-label={selected.muted ? '取消免打扰' : '消息免打扰'} title={selected.muted ? '取消免打扰' : '消息免打扰'} onClick={() => void request({ type: 'conversation.update', id: selected.id, muted: !selected.muted }).then(result => { if (result) void refreshState(); })}><ChatGlyph name="bell" /></button><button className="companion-icon-button" title="搜索聊天记录" aria-label="搜索聊天记录" onClick={() => { setSearchScope(selected.id); setShowSearch(true); }}><Icon name="search" /></button>{selected.kind === 'group' && <button className="companion-icon-button" aria-label="管理群聊" title="管理群聊" onClick={() => setDialog({ kind: 'group', conversation: selected })}><ChatGlyph name="group" /></button>}<button className="companion-icon-button" aria-label="删除聊天" title="删除聊天" onClick={() => setDialog({ kind: 'delete-conversation', conversation: selected, mode: 'hide' })}><Icon name="trash" /></button><button className={`companion-icon-button${showPanel ? ' is-active' : ''}`} aria-label="我们之间" title="我们之间" aria-expanded={showPanel} onClick={() => setShowPanel(!showPanel)}><Icon name="panel-right" /></button></div></header></>}</CompanionWorldStatus>
+            <CompanionTopicBar key={`topic-${selected.id}`} conversationId={selected.id} members={members} activeTopicId={selected.activeTopicId} topics={topics} historyFilter={topicHistoryFilter} request={request} onActivate={id => activateTopic(selected.id, id)} onChanged={topic => topicChanged(selected.id, topic)} onCatalog={items => topicCatalog(selected.id, items)} onDeleted={id => topicDeleted(selected.id, id)} onHistoryFilter={filterTopicHistory} />
             {showPresence && <CompanionPresencePanel members={members} onClose={() => setShowPresence(false)} onConfigure={role => { setShowPresence(false); if (role.llm) setDialog({ kind: 'companion', companion: role }); else onOpenSettings(); }} />}
             <div className="companions-message-scroll" ref={scrollRef} data-companion-messages data-window-count={messages.length} onScroll={event => {
               const element = event.currentTarget; const atBottom = element.scrollHeight - element.scrollTop - element.clientHeight < 80;
@@ -651,7 +751,7 @@ export function Companions({ api, dshApi, onOpenSettings, isActive = true }: { r
                 const newDay = index === 0 || dayLabel(timelineMessages[index - 1]!.createdAt) !== dayLabel(message.createdAt);
                 return <div key={message.id}>{newDay && <div className="companions-date-separator">{dayLabel(message.createdAt)}</div>}
                   {message.kind === 'notice' ? <div className={`companions-notice${message.status === 'failed' ? ' is-failed' : ''}`} data-companion-message={message.id}>{message.authorId !== 'system' && <small>内置欢迎 · {authorName(message.authorId)}</small>}<span>{message.content}</span>{message.status === 'failed' && <button onClick={() => void request({ type: 'reply.retry', conversationId: selected.id })}>重试回复</button>}</div> : <article className={`companions-message${own ? ' is-own' : ''}${highlightedId === message.id ? ' is-highlighted' : ''}`} data-companion-message={message.id}>
-                    <Avatar companion={own ? playerAvatar : author} showPresence={false} /><div className="companions-message-body"><div className="companions-message-author">{authorName(message.authorId)}<time title={companionTimestamp(message.createdAt) + ' · ' + companionTimezone(message.createdAt)}>{clockTime(message.createdAt)}</time></div><CompanionMessageBubble message={message} replied={replied} quoteAuthor={replied ? authorName(replied.authorId) : undefined} actions={actions} now={clock} streamStore={replyStreams} interrupted={state?.recoveries?.some(item => item.conversationId === message.conversationId && item.sourceMessageId === message.replyToId && !item.completedIds.includes(message.authorId) && (item.status === 'interrupted' || item.status === 'cancelled')) ?? false} onOpenAction={openTaskProgress} onOpenUrl={url => void openMessageLink(url)} onOpenAttachment={openAttachment} onLocateQuote={id => void jumpToReference(id)} onStreamLayout={scrollStreamingReply} onCancelReply={workId => void request({ type: 'reply.cancel', conversationId: selected.id, workId }).then(() => refreshState())} onRetryReply={workId => void request({ type: 'reply.retry', conversationId: selected.id, workId }).then(() => refreshState())} onGuideReply={message.replyProgress?.sourceMessageId && runningSources.length && !runningSources.includes(message.replyProgress.sourceMessageId) ? sourceMessageId => void guideQueued(sourceMessageId) : undefined} /><div className="companions-message-tools"><button aria-label={`引用消息 ${message.sequence}`} title="引用回复" onClick={() => { updateDraft({ reply: message }); composerRef.current?.focus(); }}><ChatGlyph name="reply" /></button>{message.content && !message.isReplyDraft && <button aria-label={`记住消息 ${message.sequence}`} title="记住这件事" onClick={() => rememberMessage(message)}><Icon name="heart" /></button>}{message.status === 'failed' && <button onClick={() => void request({ type: 'reply.retry', conversationId: selected.id })}>重试回复</button>}</div></div>
+                    <Avatar companion={own ? playerAvatar : author} showPresence={false} /><div className="companions-message-body"><div className="companions-message-author">{authorName(message.authorId)}<button className="companions-message-topic" aria-label={`查看${message.topicId ? topics.find(topic => topic.id === message.topicId)?.title ?? '话题' : '日常'}记录`} onClick={() => filterTopicHistory(message.topicId ? `topic:${message.topicId}` : 'ordinary')}>{message.topicId ? topics.find(topic => topic.id === message.topicId)?.title ?? '历史话题' : '日常'}</button><time title={companionTimestamp(message.createdAt) + ' · ' + companionTimezone(message.createdAt)}>{clockTime(message.createdAt)}</time></div><CompanionMessageBubble message={message} replied={replied} quoteAuthor={replied ? authorName(replied.authorId) : undefined} actions={actions} now={clock} streamStore={replyStreams} interrupted={state?.recoveries?.some(item => item.conversationId === message.conversationId && item.sourceMessageId === message.replyToId && !item.completedIds.includes(message.authorId) && (item.status === 'interrupted' || item.status === 'cancelled')) ?? false} onOpenAction={openTaskProgress} onOpenUrl={url => void openMessageLink(url)} onOpenAttachment={openAttachment} onLocateQuote={id => void jumpToReference(id)} onStreamLayout={scrollStreamingReply} onCancelReply={workId => void request({ type: 'reply.cancel', conversationId: selected.id, workId }).then(() => refreshState())} onRetryReply={workId => void request({ type: 'reply.retry', conversationId: selected.id, workId }).then(() => refreshState())} onGuideReply={message.replyProgress?.sourceMessageId && runningSources.length && !runningSources.includes(message.replyProgress.sourceMessageId) ? sourceMessageId => void guideQueued(sourceMessageId) : undefined} /><div className="companions-message-tools"><button aria-label={`引用消息 ${message.sequence}`} disabled={(message.topicId ?? null) !== (selected.activeTopicId ?? null)} title={(message.topicId ?? null) !== (selected.activeTopicId ?? null) ? "请先进入消息所属话题，再引用回复" : "引用回复"} onClick={() => { updateDraft({ reply: message }); composerRef.current?.focus(); }}><ChatGlyph name="reply" /></button>{message.content && !message.isReplyDraft && <button aria-label={`记住消息 ${message.sequence}`} title="记住这件事" onClick={() => rememberMessage(message)}><Icon name="heart" /></button>}{message.status === 'failed' && <button onClick={() => void request({ type: 'reply.retry', conversationId: selected.id })}>重试回复</button>}</div></div>
                   </article>}
                 </div>;
               })}
@@ -676,11 +776,12 @@ export function Companions({ api, dshApi, onOpenSettings, isActive = true }: { r
               {fileDrag && <div className="companions-file-drop-hint"><Icon name="plus" /><strong>松开以添加文件</strong><span>支持多个文件 · 原文件绝对路径交给伙伴</span></div>}
               {addingFiles && <div className="companions-file-import-status" role="status">正在添加附件…</div>}
               {emojiOpen && <div className="companions-emoji-picker" aria-label="选择表情">{emojis.map(emoji => <button key={emoji} aria-label={`表情 ${emoji}`} onClick={() => { updateDraft({ content: draft.content + emoji }); setEmojiOpen(false); composerRef.current?.focus(); }}>{emoji}</button>)}</div>}
-              {composerMore && <div className="companions-composer-menu"><button disabled={!draft.content.trim() || sending || !!selectedReset} onClick={() => { setComposerMore(false); void send(false, undefined, true); }}><Icon name="activity" />紧急打扰并发送</button><button onClick={() => { setComposerMore(false); void receiveFiles([], true); }}><Icon name="clipboard" />粘贴文件或图片</button><button onClick={() => { setComposerMore(false); openMemoryManager(); }}><Icon name="heart" />查看共同记忆</button></div>}
+              {composerMore && <div className="companions-composer-menu"><button disabled={!draft.content.trim() || sending || !!selectedReset || topicBlocked} onClick={() => { setComposerMore(false); void send(false, undefined, true); }}><Icon name="activity" />紧急打扰并发送</button><button onClick={() => { setComposerMore(false); void receiveFiles([], true); }}><Icon name="clipboard" />粘贴文件或图片</button><button onClick={() => { setComposerMore(false); openMemoryManager(); }}><Icon name="heart" />查看共同记忆</button></div>}
               {draft.reply && <div className="companions-draft-reply"><ChatGlyph name="reply" /><span>回复 {authorName(draft.reply.authorId)}：{draft.reply.content || '附件'}</span><button className="companion-icon-button" aria-label="取消引用" onClick={() => updateDraft({ reply: undefined })}>×</button></div>}
               {!!draft.attachments.length && <div className="companions-draft-attachments">{draft.attachments.map(item => <span key={item.id} title={item.path ?? item.name}>{item.mime.startsWith('image/') && item.url ? <img className="companions-draft-image" src={item.url} alt="" /> : item.mime.startsWith('image/') ? <ChatGlyph name="image" /> : <Icon name="file" />}<span>{item.name}</span><small>{bytes(item.size)}</small><button aria-label={`移除附件 ${item.name}`} onClick={() => updateDraft({ attachments: draft.attachments.filter(attachment => attachment.id !== item.id) })}>×</button></span>)}</div>}
-              <textarea ref={composerRef} rows={2} aria-label="输入消息" disabled={!!selectedReset} placeholder={selectedReset ? '伙伴正在重置，完成后可以重新聊天' : selected.kind === 'group' ? '和大家聊聊，@名字可以指定伙伴…' : `发消息给${selected.title}…`} value={draft.content} maxLength={16000} onChange={event => updateDraft({ content: event.target.value })} onCompositionStart={() => { composingRef.current = true; }} onCompositionEnd={() => { composingRef.current = false; }} onKeyDown={event => { if (event.key === 'Enter' && !event.shiftKey && !event.nativeEvent.isComposing && !composingRef.current && event.keyCode !== 229) { event.preventDefault(); void send((event.ctrlKey || event.metaKey) && activities.length > 0); } }} />
-              <div className="companions-composer-toolbar"><div className="companions-composer-tools"><button className="companion-icon-button" aria-label="发送文件或图片" title="发送文件" onClick={() => void pickAttachments()}><Icon name="plus" /></button><button className={`companion-icon-button${emojiOpen ? ' is-active' : ''}`} aria-label="表情" title="表情" aria-expanded={emojiOpen} onClick={() => { setEmojiOpen(!emojiOpen); setComposerMore(false); }}><ChatGlyph name="smile" /></button><button className="companion-icon-button" aria-label="发送图片" title="发送图片" onClick={() => void pickAttachments('image')}><ChatGlyph name="image" /></button><button className={`companion-icon-button${composerMore ? ' is-active' : ''}`} aria-label="更多聊天操作" title="更多" aria-expanded={composerMore} onClick={() => { setComposerMore(!composerMore); setEmojiOpen(false); }}><ChatGlyph name="more" /></button></div><div className="companions-composer-send"><span>{selectedReset ? '伙伴正在重置' : sending ? '正在发送…' : draft.content.length > 15000 ? `${draft.content.length} / 16000` : 'Enter 发送 · Shift + Enter 换行'}</span><button className="companions-send-button" aria-label="发送" title="发送消息" disabled={!!selectedReset || sending || addingFiles || (!draft.content.trim() && !draft.attachments.length)} onClick={() => void send()}><ChatGlyph name="send" /></button></div></div>
+              <div className="companions-composer-destination">发送到：{selected.activeTopicId ? activeTopic?.title ?? '正在读取话题…' : '日常聊天'}{topicBlocked && <span> · {activeTopic?.status === 'paused' ? '已暂停，请先恢复话题' : activeTopic?.status === 'closed' ? '已结束，请切换日常或恢复话题' : '正在读取话题状态'}</span>}</div>
+              <textarea ref={composerRef} rows={2} aria-label="输入消息" disabled={!!selectedReset || topicBlocked} placeholder={selectedReset ? '伙伴正在重置，完成后可以重新聊天' : selected.kind === 'group' ? '和大家聊聊，@名字可以指定伙伴…' : `发消息给${selected.title}…`} value={draft.content} maxLength={16000} onChange={event => updateDraft({ content: event.target.value })} onCompositionStart={() => { composingRef.current = true; }} onCompositionEnd={() => { composingRef.current = false; }} onKeyDown={event => { if (event.key === 'Enter' && !event.shiftKey && !event.nativeEvent.isComposing && !composingRef.current && event.keyCode !== 229) { event.preventDefault(); void send((event.ctrlKey || event.metaKey) && activities.length > 0); } }} />
+              <div className="companions-composer-toolbar"><div className="companions-composer-tools"><button className="companion-icon-button" aria-label="发送文件或图片" title="发送文件" onClick={() => void pickAttachments()}><Icon name="plus" /></button><button className={`companion-icon-button${emojiOpen ? ' is-active' : ''}`} aria-label="表情" title="表情" aria-expanded={emojiOpen} onClick={() => { setEmojiOpen(!emojiOpen); setComposerMore(false); }}><ChatGlyph name="smile" /></button><button className="companion-icon-button" aria-label="发送图片" title="发送图片" onClick={() => void pickAttachments('image')}><ChatGlyph name="image" /></button><button className={`companion-icon-button${composerMore ? ' is-active' : ''}`} aria-label="更多聊天操作" title="更多" aria-expanded={composerMore} onClick={() => { setComposerMore(!composerMore); setEmojiOpen(false); }}><ChatGlyph name="more" /></button></div><div className="companions-composer-send"><span>{selectedReset ? '伙伴正在重置' : sending ? '正在发送…' : draft.content.length > 15000 ? `${draft.content.length} / 16000` : 'Enter 发送 · Shift + Enter 换行'}</span><button className="companions-send-button" aria-label="发送" title="发送消息" disabled={!!selectedReset || topicBlocked || sending || addingFiles || (!draft.content.trim() && !draft.attachments.length)} onClick={() => void send()}><ChatGlyph name="send" /></button></div></div>
             </section>
           </section>
           {showPanel && memoryOwner && <CompanionPlanner active={isActive && page === 'messages'} initialActivityTaskId={selectedActivityTaskId} key={selected.id + '/' + memoryOwner.id} companion={memoryOwner} members={members} conversationId={selected.id} conversationKind={selected.kind} actions={actions} request={request} api={api} onOwnerChange={id => { setMemoryOwnerId(id); setMemoryDraft(undefined); setSelectedActivityTaskId(undefined); }} onClose={() => setShowPanel(false)} onProfile={() => { setContactId(memoryOwner.id); setPage('contacts'); }} onMemory={() => openMemoryManager()} onLocateStateSource={(room, messageId) => void openStateSource(memoryOwner.id, selected.id, room, messageId)} onStateMemory={noteId => openStateMemory(memoryOwner.id, noteId)} onMemoryProcessing={() => openMemoryManager(true)} onTasks={(view = 'active', ownerId) => { setSelectedTaskActionId(undefined); setTaskView(view); setTaskOwnerId(ownerId); setShowTaskMonitor(true); }} onSchedules={() => { setScheduleSelection(undefined); setShowScheduleManager(true); }} onWork={id => { setSelectedWorkOrderId(id); setShowWorkManager(true); }} onWorld={() => void openWorld(memoryOwner.id)} />}

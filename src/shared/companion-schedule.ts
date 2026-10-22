@@ -44,7 +44,7 @@ export const companionScheduleOccurrenceSchema = z.object({
   status: z.enum(['pending', 'dispatching', 'running', 'done', 'failed', 'cancelled']),
   attempts: z.number().int().nonnegative(), createdAt: timestamp, updatedAt: timestamp,
   leaseToken: id.optional(), leaseUntil: timestamp.optional(), actionId: id.optional(), messageId: id.optional(),
-  activityTaskId: id.optional(),
+  activityTaskId: id.optional(), goalInvocationId: id.optional(), goalSlot: id.optional(), actionIds: z.array(id).optional(),
   startedAt: timestamp.optional(), finishedAt: timestamp.optional(), result: z.string().max(4000).optional(),
   error: z.string().max(1000).optional(), forced: z.boolean().default(false),
 });
@@ -63,8 +63,9 @@ export const companionScheduleStorageCommands = [
   ...companionSchedulePublicCommands,
   z.strictObject({ type: z.literal('schedule.recover-activities') }),
   z.strictObject({ type: z.literal('schedule.due.claim'), now: timestamp.optional(), leaseMs: z.number().int().min(1000).max(600000).default(30000) }),
+  z.strictObject({ type: z.literal('schedule.occurrence.heartbeat'), id, leaseToken: id, leaseMs: z.number().int().min(1000).max(600000).default(30000) }),
   z.strictObject({ type: z.literal('schedule.occurrence.update'), id, leaseToken: id.optional(),
     status: companionScheduleOccurrenceSchema.shape.status, actionId: id.optional(), messageId: id.optional(),
-    activityTaskId: id.optional(),
+    activityTaskId: id.optional(), goalInvocationId: id.optional(), goalSlot: id.optional(), actionIds: z.array(id).optional(), goalResult: z.string().max(65536).optional(),
     result: z.string().max(4000).optional(), error: z.string().max(1000).optional() }),
 ] as const;

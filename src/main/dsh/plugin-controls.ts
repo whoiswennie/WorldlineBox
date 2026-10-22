@@ -3,7 +3,7 @@ import type { DshInstance } from '../../shared/dsh-launcher';
 import { dshInstalledPluginSchema, dshPluginPackageNameSchema, type DshInstalledPlugin } from '../../shared/dsh-plugins';
 import { lstat, readFile, realpath } from './disk';
 import { atomicJson, safeRelative } from './files';
-import { readRuntimeSdkFile } from './runtime-sdk';
+import { readRuntimeSdkFile, runtimeSdkRoot } from './runtime-sdk';
 
 const CORE = new Set(['@deepseek-ai/dsh', '@deepseek-ai/dsh-base', '@deepseek-ai/dsh-web-app', '@deepseek-ai/dsh-headless']);
 type Mapping = Record<string, unknown>;
@@ -51,21 +51,27 @@ export class PluginControls {
       || bundleValue.some(name => !dshPluginPackageNameSchema.safeParse(name).success) || Object.entries(dependencies).some(([name, value]) => !dshPluginPackageNameSchema.safeParse(name).success || typeof value !== 'string' || value.length > 2048)) throw new Error('The private profile has unsupported plugin metadata.');
     return { locations, manifest, dependencies, bundles: bundleValue as string[] };
   }
-  private async metadata(name: string, locations: Awaited<ReturnType<PluginControls['locations']>>): Promise<Mapping | undefined> {
-    const local = await this.readOwned(path.join(locations.profile, 'node_modules', name, 'package.json'), [locations.root, locations.program]);
+  private async metadata(name: string, locations: Awaited<ReturnType<PluginControls['locations']>>, bundleResolution = false): Promise<{ metadata: Mapping; scope: 'instance' | 'runtime'; installPath: string } | undefined> {
+    const localPath = path.join(locations.profile, 'node_modules', name);
+    let runtime: Buffer | undefined;
+    // The upstream bundle resolver prefers the pinned installation; ordinary profile dependencies retain local priority.
+    if (bundleResolution) try { runtime = await readRuntimeSdkFile(locations.program, `${name}/package.json`); } catch { /* A third-party bundle may exist only in the private profile. */ }
+    const local = runtime ? undefined : await this.readOwned(path.join(localPath, 'package.json'), [locations.root, locations.program]);
     try {
-      const bytes = local ?? await readRuntimeSdkFile(locations.program, `${name}/package.json`);
-      return mapping(JSON.parse(bytes.toString('utf8')));
+      const bytes = runtime ?? local ?? await readRuntimeSdkFile(locations.program, `${name}/package.json`);
+      const metadata = mapping(JSON.parse(bytes.toString('utf8')));
+      return metadata ? { metadata, scope: local ? 'instance' : 'runtime', installPath: local ? localPath : path.join(await runtimeSdkRoot(locations.program), name) } : undefined;
     } catch { return undefined; }
   }
   async listPlugins(instance: DshInstance): Promise<DshInstalledPlugin[]> {
     const data = await this.profile(instance); const names = [...new Set([...Object.keys(data.dependencies), ...data.bundles])]; const results: DshInstalledPlugin[] = [];
     for (const name of names) {
-      const metadata = await this.metadata(name, data.locations); const patch = mapping(mapping(metadata?.dsh)?.bundle)?.patch;
+      const resolved = await this.metadata(name, data.locations, data.bundles.includes(name)); const metadata = resolved?.metadata; const patch = mapping(mapping(metadata?.dsh)?.bundle)?.patch;
       const bundle = typeof patch === 'string' || Array.isArray(patch) && patch.every(value => typeof value === 'string');
       results.push(dshInstalledPluginSchema.parse({ name, spec: data.dependencies[name] ?? 'runtime-bundle',
         version: typeof metadata?.version === 'string' ? metadata.version.slice(0, 128) : undefined,
         description: typeof metadata?.description === 'string' ? metadata.description.slice(0, 4000) : '',
+        scope: resolved?.scope ?? 'missing', installPath: resolved?.installPath,
         enabled: data.bundles.includes(name), bundle: bundle || data.bundles.includes(name), core: CORE.has(name), sourceUrl: metadata ? packageSource(metadata) : undefined,
         ...(!metadata ? { error: 'Installed package metadata is unavailable. Remove or repair this dependency.' } : {}) }));
     }
@@ -78,7 +84,7 @@ export class PluginControls {
     if (!Object.hasOwn(data.dependencies, name)) throw new Error('This plugin is not installed in the selected private profile.');
     if (data.bundles.includes(name) === enabled) return;
     if (enabled) {
-      const metadata = await this.metadata(name, data.locations); const patchValue = mapping(mapping(metadata?.dsh)?.bundle)?.patch;
+      const metadata = (await this.metadata(name, data.locations, true))?.metadata; const patchValue = mapping(mapping(metadata?.dsh)?.bundle)?.patch;
       const files = typeof patchValue === 'string' ? [patchValue] : patchValue;
       if (!Array.isArray(files) || !files.length || files.length > 100 || files.some(value => typeof value !== 'string')) throw new Error('This installed package does not declare a DSH bundle.');
       for (const value of files as string[]) {

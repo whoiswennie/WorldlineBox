@@ -4910,7 +4910,7 @@ async function startApplication(): Promise<void> {
   try {
     if (!applicationNetwork) throw new Error('Application network policy is unavailable.');
     const { DshLauncher: LauncherService } = await import('./dsh/launcher');
-    dshLauncher = new LauncherService(() => mainWindow, error => logger?.error('dsh.launcher.initialization', error), applicationNetwork);
+    dshLauncher = new LauncherService(() => mainWindow, error => logger?.error('dsh.launcher.initialization', error), applicationNetwork, () => companionService?.executionCapabilitiesChanged());
     dshLauncher.registerIpc();
   } catch (error) {
     logger.error('dsh.launcher.initialization', error);

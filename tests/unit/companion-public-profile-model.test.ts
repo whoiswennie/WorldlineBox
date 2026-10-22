@@ -99,6 +99,7 @@ it('keeps the public NPC directory and actual remote-peer pixels for world decis
   await generateCompanionWorldDecision({ companion: value.companion, world, job, members: [], publicProfiles: [self, peer, player],
     visualInputs: [image(selfId, 'orthographic'), image(peerId, 'orthographic'), image('user', 'avatar', userPixels)] }, config(), undefined, { fetchFn });
   expect(observed.base.publicProfiles).toEqual([self, peer]); expect(observed.base.identity.self.name).toBe(self.name);
+  expect(observed.base.identity.participants.map((person: { id: string }) => person.id)).toEqual([selfId]);
   expect(observed.parts).toHaveLength(4); expect(JSON.stringify(observed.parts)).toContain(peerId);
   expect(JSON.stringify(observed)).not.toContain(player.description); expect(JSON.stringify(observed)).not.toContain(userPixels);
 });

@@ -10,11 +10,15 @@ import type { OperationContext } from './operations';
 import { dshTaskExecutionPatch, snapshotDshTaskExecution, type DshTaskExecutionOptions } from './task-execution';
 import { randomUUID } from 'node:crypto';
 import { companionRuntimeSource } from './companion-runtime-source';
+import { companionWorkerSource } from './companion-worker-source';
+import { DshWarmCliPool, dshWorkerGeneration, type DshWarmLease } from './warm-cli-pool';
 import { runtimeSdkRoot } from './runtime-sdk';
 import { DshTaskPreparationError } from './task-preparation';
 import { DshTaskInput as DshTaskInbox } from './task-input';
 import { DshTaskRecordStore } from './task-record-store';
 import type { DshRecordQuery } from '../../shared/dsh-task-record';
+import { dshTaskArtifactSchema, dshTaskCapabilitiesSchema, type DshTaskCapabilities } from '../../shared/dsh-task-spec';
+import { prepareDshTaskWorkspace } from './task-workspace';
 
 const LINE_LIMIT = 1024 * 1024;
 const EVENT_LIMIT = 1000;
@@ -89,6 +93,7 @@ export interface DshTaskBrokerOptions {
   rootPath: string; getSelection(instanceId?: string, signal?: AbortSignal, resume?: DshTaskRecord,
     preparation?: { progress(summary: string): void }): Promise<DshCliSelection>; pin(selection: DshCliSelection): Promise<DshTaskPin>;
   onChanged?: () => void; onEvent?: (event: DshTaskEvent) => void;
+  onWorkerReadyChanged?: (instanceId: string, ready: boolean) => void;
 }
 export class DshTaskError extends Error { constructor(message: string, readonly result: DshTaskResult) { super(message); this.name = 'DshTaskError'; } }
 /** Every task pins one selected runtime and private profile before any child starts. Selection changes affect later tasks. */
@@ -105,11 +110,14 @@ export class DshTaskBroker {
   private loadTask?: Promise<void>;
   private writes = Promise.resolve();
   private closed = false;
+  private readonly workers: DshWarmCliPool;
   constructor(private readonly options: DshTaskBrokerOptions) {
+    this.workers = new DshWarmCliPool(options.onWorkerReadyChanged);
     this.archive = new DshTaskRecordStore(path.join(options.rootPath, 'task-records'), (id, error) => this.active.get(id)?.abort.abort(error),
       (id, paused) => this.active.get(id)?.flow?.(paused));
   }
   readRecord(query: DshRecordQuery) { return this.archive.read(query); }
+  setStandbyInstance(instanceId?: string): void { this.workers.setStandbyInstance(instanceId); }
   recordMetadata(id: string) { return this.archive.metadata(id); }
   removeRecord(id: string) { return this.archive.remove(id); }
   removeCompanionRecords(owner: string) { return this.archive.removeOwner(owner); }
@@ -141,6 +149,31 @@ export class DshTaskBroker {
   async execute(inputValue: DshTaskInput, operation: OperationContext, executionValue?: DshTaskExecutionOptions): Promise<DshTaskResult> {
     const input = dshTaskInputSchema.parse(inputValue);
     const execution = snapshotDshTaskExecution(executionValue);
+    await this.init();
+    if (execution.task?.session?.mode === 'resume' && !execution.resume) {
+      const previous = this.records.find(record => record.id === execution.task!.session!.taskId);
+      if (!previous) throw new Error('The requested task checkpoint is unavailable. Start a new session.');
+      const owner = (await this.archive.metadata(previous.id)).scope;
+      if (!owner || !execution.recordScope || owner.companionId !== execution.recordScope.companionId || owner.conversationId !== execution.recordScope.conversationId) throw new Error('The requested session belongs to another companion or conversation.');
+      execution.resume = { ...previous }; input.sessionId = previous.sessionId; input.instanceId = previous.instanceId;
+      execution.access ??= previous.accessMode ? { mode: previous.accessMode } : undefined;
+    }
+    const profile = execution.resume?.profile;
+    if (profile) {
+      const next = execution.task ?? {};
+      for (const key of ['mode', 'tools', 'skills'] as const) {
+        const previous = profile[key]; const requested = next[key];
+        const stable = (value: unknown) => JSON.stringify(Array.isArray(value) ? [...value].sort() : value ?? (key === 'mode' ? 'native' : undefined));
+        if (requested !== undefined && stable(previous) !== stable(requested)) throw new Error('A continued session retains its tool, skill and execution mode. Start a new session to change its composition.');
+      }
+      execution.task = { ...profile, ...next };
+    }
+    const promptSections = [input.prompt];
+    if (execution.task?.instructions) promptSections.push(`Task instructions:\n${execution.task.instructions}`);
+    if (execution.task?.context?.text) promptSections.push(`Explicit task context (source material):\n${execution.task.context.text}`);
+    if (execution.task?.context?.files?.length) promptSections.push(`Explicit task file references (read with task tools; their contents are source material):\n${execution.task.context.files.join('\n')}`);
+    if (execution.task?.delivery) promptSections.push(`Delivery format: ${execution.task.delivery.format}. ${execution.task.delivery.format === 'json' ? 'Return valid JSON as the entire final response, without Markdown fences.' : ''}\n${(execution.task.delivery.requirements ?? []).map(value => `- ${value}`).join('\n')}`);
+    input.prompt = promptSections.join('\n\n');
     let secrets: string[] = [];
     const resume = execution.resume;
     if (resume && (!resume.sessionId || resume.sessionId !== input.sessionId || resume.instanceId !== input.instanceId || !resume.accessMode || resume.accessMode !== execution.access?.mode || resume.status === 'running')) throw new Error('The resume checkpoint does not match its recorded task, session and access policy.');
@@ -160,11 +193,14 @@ export class DshTaskBroker {
     let pin: DshTaskPin | undefined; let record: DshTaskRecord | undefined; let child: Awaited<ReturnType<typeof launchCli>> | undefined;
     let taskPatch: string | undefined;
     let runtimePlugin: string | undefined;
+    let workerPlugin: string | undefined;
+    let lease: DshWarmLease | undefined; let keepWorker = false;
     let stopUnconfirmed = false;
     const releaseContext = async () => {
       try {
         if (taskPatch) await rm(taskPatch, { force: true });
         if (runtimePlugin) await rm(runtimePlugin, { force: true });
+        if (workerPlugin) await rm(workerPlugin, { force: true });
         if (pin) await pin.dispose();
       } catch { await operation.log('The completed task context could not be removed; cleanup was deferred.').catch(() => undefined); }
     };
@@ -203,7 +239,14 @@ export class DshTaskBroker {
       const version = captured.runtimeVersion ?? ''; if (!version) throw new Error('The selected CLI context has no recorded runtime version.');
       if (resume) {
         if (captured.instance.runtimeId !== resume.runtimeId || version !== resume.runtimeVersion) throw new Error('The original task runtime is unavailable; the existing session was preserved.');
-        if (resume.workspacePath) captured.workspacePath = await realpathResumeWorkspace(resume.workspacePath);
+        if (resume.workspacePath) {
+          captured.workspacePath = await realpathResumeWorkspace(resume.workspacePath);
+          captured.taskWorkspaceRoot = resume.taskWorkspaceRoot;
+          if (execution.task?.workspace?.mode === 'existing' && path.resolve(execution.task.workspace.path!) !== path.resolve(captured.workspacePath)) throw new Error('A continued session must retain its original working directory.');
+        }
+      } else {
+        try { Object.assign(captured, await prepareDshTaskWorkspace(execution, operation.id, captured.workspacePath)); }
+        catch (error) { throw new DshTaskPreparationError('context', error instanceof Error ? error.message : 'The task workspace is unavailable.'); }
       }
       if ((execution.toolkit || execution.access || execution.interactive)
         && captured.runtime?.id !== captured.instance.runtimeId) throw new DshTaskPreparationError('selection', 'CLI 任务的运行版本与所选实例不一致，任务尚未启动。');
@@ -222,9 +265,12 @@ export class DshTaskBroker {
             const sdk = await runtimeSdkRoot(path.join(this.options.rootPath, 'runtimes', captured.instance.runtimeId, 'program'));
             runtimePlugin = path.join(directory, `${randomUUID()}-agent.mjs`);
             const plugin = await open(runtimePlugin, 'wx', 0o600);
-            try { await plugin.writeFile(companionRuntimeSource(path.join(sdk, '@deepseek-ai/dsh/package.json'), resume?.sessionId, resume?.sessionId ? { id: operation.id, prompt: input.prompt, inputs: execution.inputs ?? [] } : undefined), 'utf8'); } finally { await plugin.close(); }
+            try { await plugin.writeFile(companionRuntimeSource(path.join(sdk, '@deepseek-ai/dsh/package.json')), 'utf8'); } finally { await plugin.close(); }
+            workerPlugin = path.join(directory, `${randomUUID()}-worker.mjs`);
+            const worker = await open(workerPlugin, 'wx', 0o600);
+            try { await worker.writeFile(companionWorkerSource(runtimePlugin), 'utf8'); } finally { await worker.close(); }
             patch.push({ id: 'headless-startup', disabled: true }, { id: 'headless-runner', disabled: true },
-              { insert: [{ id: 'worldlinebox-companion-runtime', name: runtimePlugin }] });
+              { insert: [{ id: 'worldlinebox-companion-runtime', name: workerPlugin }] });
           }
           await handle.writeFile(JSON.stringify(patch), 'utf8');
         }
@@ -234,22 +280,39 @@ export class DshTaskBroker {
       record = dshTaskRecordSchema.parse({ id: operation.id, operationId: operation.id, instanceId: captured.instance.id, runtimeId: captured.instance.runtimeId,
         runtimeVersion: version, title: sanitizeTaskOutput(input.title ?? 'DSH task').slice(0, 100), status: 'running', accessMode: execution.access?.mode,
         workspacePath: captured.workspacePath, sessionId: input.sessionId && !containsTaskSecret(input.sessionId) ? input.sessionId : undefined, startedAt: new Date().toISOString() });
+      record.profile = { mode: execution.task?.mode ?? 'native', ...(execution.task?.tools === undefined ? {} : { tools: execution.task.tools }), ...(execution.task?.skills === undefined ? {} : { skills: execution.task.skills }) };
+      record.taskWorkspaceRoot = captured.taskWorkspaceRoot;
       this.records.unshift(record); this.prune(); await this.save(); this.changed();
-      result = { taskId: record.id, instanceId: record.instanceId, runtimeId: record.runtimeId, runtimeVersion: version, sessionId: record.sessionId };
+      result = { taskId: record.id, instanceId: record.instanceId, runtimeId: record.runtimeId, runtimeVersion: version, sessionId: record.sessionId,
+        workspacePath: record.workspacePath, mode: record.profile.mode, artifacts: [] };
+      this.archive.execution(operation.id, { workspacePath: result.workspacePath, mode: result.mode, sessionId: result.sessionId, artifacts: [] });
       await operation.update('Starting the task in its pinned DSH environment', 10);
       // The shim appends input after its shared model overlay. Keep this task's
       // last routing overlay before --json starts native app option parsing.
       const args = [...(taskPatch ? ['--patch', taskPatch] : []), ...(execution.interactive ? [] : ['--json', ...(record.sessionId ? ['--session-id', record.sessionId] : []), '-'])];
-      child = await launchCli({ executable: process.execPath, cli: path.join(this.options.rootPath, 'cli', 'shim.cjs'), env: {} }, args,
-        { ...captured.env, ELECTRON_RUN_AS_NODE: '1', WORLDLINEBOX_DSH_CLI_CONTEXT: pin.contextFile }, captured.workspacePath);
-      preparation('starting', '能力进程已启动，正在加载任务环境');
+      const launch = () => launchCli({ executable: process.execPath, cli: path.join(this.options.rootPath, 'cli', 'shim.cjs'), env: {} }, args,
+        { ...captured.env, ELECTRON_RUN_AS_NODE: '1', WORLDLINEBOX_DSH_CLI_CONTEXT: pin!.contextFile }, captured.workspacePath);
+      if (execution.interactive) {
+        const key = await dshWorkerGeneration(this.options.rootPath, captured, execution.access);
+        lease = await this.workers.acquire(key, captured.instance.id, async () => {
+          const ownedPin = pin!, files = [taskPatch, runtimePlugin, workerPlugin].filter((file): file is string => !!file);
+          const owned = await launch();
+          pin = undefined; taskPatch = undefined; runtimePlugin = undefined; workerPlugin = undefined;
+          return { child: owned, disposeContext: async () => { for (const file of files) await rm(file, { force: true }); await ownedPin.dispose(); } };
+        }, signal);
+        // Official boot can normalize its shipped profile manifest on first use.
+        // Retain the generation actually loaded, excluding durable session output.
+        if (!lease.reused) lease.worker.key = await dshWorkerGeneration(this.options.rootPath, captured, execution.access);
+        child = lease.worker.child;
+        preparation('starting', lease.reused ? '已复用就绪的官方 CLI，正在创建独立任务 Agent' : '官方 CLI 已完成冷启动，正在创建独立任务 Agent');
+      } else { child = await launch(); preparation('starting', '能力进程已启动，正在加载任务环境'); }
       const selectedChild = child; const stop = () => {
         selectedChild.stdout.resume();
         taskInput?.cancel();
-        const terminate = () => { void terminateOwnedProcess(selectedChild).catch(() => undefined); };
+        const terminate = () => { void (lease ? lease.destroy() : terminateOwnedProcess(selectedChild)).catch(() => undefined); };
         if (taskInput) setTimeout(terminate, 250); else terminate();
       };
-      this.active.get(operation.id)!.terminate = () => terminateOwnedProcess(selectedChild);
+      this.active.get(operation.id)!.terminate = () => lease ? lease.destroy() : terminateOwnedProcess(selectedChild);
       this.active.get(operation.id)!.flow = paused => { if (paused) selectedChild.stdout.pause(); else selectedChild.stdout.resume(); };
       record.pid = child.pid; await this.save(); this.changed();
       signal.addEventListener('abort', stop, { once: true }); if (signal.aborted) stop();
@@ -291,47 +354,88 @@ export class DshTaskBroker {
         if (type === 'session') {
           const sessionId = dshTaskSessionIdSchema.safeParse(value.sessionId).data;
           if (sessionId && !containsTaskSecret(sessionId)) { safe.sessionId = sessionId; record!.sessionId = sessionId; result!.sessionId = sessionId;
+            this.archive.execution(operation.id, { sessionId });
             void this.save().catch(() => { saveError = true; }); this.changed(); }
+        }
+        if (type === 'capabilities') {
+          const capabilities = dshTaskCapabilitiesSchema.safeParse({ ...value, instanceId: record!.instanceId, runtimeId: record!.runtimeId,
+            runtimeVersion: version, capturedAt: new Date().toISOString(), workspacePath: captured.workspacePath });
+          if (capabilities.success) result!.capabilities = capabilities.data;
+        }
+        if (type === 'artifacts' && Array.isArray(value.files)) {
+          for (const file of value.files.slice(0, 100)) {
+            const artifact = dshTaskArtifactSchema.safeParse(file);
+            if (!artifact.success || !artifact.data.path || containsTaskSecret(artifact.data.path)) continue;
+            const normalized = { path: path.resolve(captured.workspacePath, artifact.data.path), ...(artifact.data.description ? { description: sanitizeTaskOutput(artifact.data.description) } : {}) };
+            if (!result!.artifacts!.some(entry => entry.path === normalized.path) && result!.artifacts!.length < 100 && JSON.stringify(result!.artifacts).length + JSON.stringify(normalized).length < 16000) result!.artifacts!.push(normalized);
+          }
+          safe.artifacts = [...result!.artifacts!];
+          this.archive.execution(operation.id, { artifacts: [...result!.artifacts!] });
         }
         if (type === 'final' && typeof value.text === 'string') {
           const text = sanitizeTaskOutput(value.text); if (Buffer.byteLength(text) > LINE_LIMIT || text.length > LINE_LIMIT) { rejectOutput('The final DSH reply exceeded the one MiB result limit.'); return; }
+          if (execution.task?.delivery?.format === 'json') {
+            try {
+              result!.structured = JSON.parse(text);
+              this.archive.execution(operation.id, text.length <= 16000 ? { structured: result!.structured } : { structuredTruncated: true });
+            } catch { rejectOutput('The task did not return the requested valid JSON delivery.'); return; }
+          }
           safe.text = text; result!.text = text; hasFinal = true;
         }
         if (type === 'error') {
           taskFailed = true;
           if (typeof value.code === 'string' && /^[A-Za-z0-9_./:-]{1,100}$/.test(value.code) && !containsTaskSecret(value.code)) safe.code = value.code;
-          if (value.code === 'task/startup' && typeof value.message === 'string') { safe.text = safeProgressText(value.message).slice(0, 1000); safe.contentKind = 'output'; }
+          if (value.code === 'task/startup' && typeof value.message === 'string') {
+            safe.text = safeProgressText(value.message).slice(0, 1000); safe.contentKind = 'output';
+            if (safe.text.includes('task/unsupported:')) outputError = new Error(safe.text);
+          }
         }
         // Only explicitly projected/redacted fields enter the stream; no raw stderr or reasoning.
         publish(safe);
       };
-      child.stdout.on('data', (chunk: Buffer) => {
+      const receive = (chunk: Buffer) => {
         received += chunk.length; if (received > (input.maxOutputBytes ?? RETAIN_LIMIT)) { rejectOutput('The DSH task output exceeded its configured limit.'); return; }
         pending += decoder.write(chunk); let newline = pending.indexOf('\n');
         while (newline >= 0) { const line = pending.slice(0, newline).replace(/\r$/, ''); pending = pending.slice(newline + 1); event(line); newline = pending.indexOf('\n'); }
         if (Buffer.byteLength(pending) > LINE_LIMIT) rejectOutput('An unterminated DSH task event exceeded the one MiB line limit.');
-      });
+      };
+      child.stdout.on('data', receive);
       // stderr is drained, but never persisted: plugins may print the prompt, arguments or credentials.
-      child.stderr.resume(); child.stdin.on('error', () => { if (!signal.aborted) rejectOutput('The DSH task input pipe closed unexpectedly.'); });
+      const inputError = () => { if (!signal.aborted) rejectOutput('The DSH task input pipe closed unexpectedly.'); };
+      child.stderr.resume(); child.stdin.on('error', inputError);
+      const completion = lease ? this.workers.run(lease.worker, { cwd: captured.workspacePath, resumeSessionId: resume?.sessionId,
+        recovery: resume?.sessionId ? { id: operation.id, prompt: input.prompt, inputs: execution.inputs ?? [] } : undefined,
+        policy: { mode: execution.task?.mode, tools: execution.task?.tools, skills: execution.task?.skills, discover: execution.discover, discoveryQuery: execution.capabilityQuery } })
+        : new Promise<number | null>((resolve, reject) => { selectedChild.once('error', reject); selectedChild.once('close', resolve); });
       if (taskInput) taskInput.begin(child, input.prompt, execution.inputs, operation.id); else child.stdin.end(input.prompt, 'utf8');
       try {
-        const code = await new Promise<number | null>((resolve, reject) => { selectedChild.once('error', reject); selectedChild.once('close', resolve); });
+        const code = await completion;
         pending += decoder.end(); if (pending && !outputError) event(pending);
         result.code = code; record.code = code; signal.throwIfAborted(); if (outputError) throw outputError;
         if (code !== 0 || taskFailed || !hasFinal) throw new Error(code !== 0 ? `The pinned DSH task failed (exit ${code ?? 'unknown'}).` : taskFailed ? 'The selected DSH runtime returned a task error.' : 'The DSH task ended without a final structured reply.');
-      } finally { signal.removeEventListener('abort', stop); await terminateOwnedProcess(selectedChild); }
+      } finally { signal.removeEventListener('abort', stop); child.stdout.off('data', receive); child.stdin.off('error', inputError); if (!lease) await terminateOwnedProcess(selectedChild); }
+      const verifiedArtifacts: NonNullable<DshTaskResult['artifacts']> = [];
+      for (const artifact of result.artifacts ?? []) {
+        const info = await lstat(artifact.path).catch(() => undefined);
+        if (!info?.isFile() || info.isSymbolicLink()) {
+          outputError = new Error('The reported task artifact is unavailable or is not a regular file.');
+        } else verifiedArtifacts.push(artifact);
+      }
+      result.artifacts = verifiedArtifacts;
+      this.archive.execution(operation.id, { artifacts: verifiedArtifacts });
+      if (outputError) throw outputError;
       if (saveError) throw new Error('Task metadata could not be saved.');
       await this.archive.finish(operation.id, 'succeeded', record.startedAt).catch(error => { outputError = error; throw error; });
       archiveStarted = false;
-      record.status = 'succeeded'; record.finishedAt = new Date().toISOString(); this.results.set(record.id, { ...result }); await this.save(); this.changed(); return { ...result };
+      record.status = 'succeeded'; record.finishedAt = new Date().toISOString(); this.results.set(record.id, { ...result }); await this.save(); this.changed(); keepWorker = true; return { ...result };
     } catch (error) {
-      if (child) try { await terminateOwnedProcess(child); }
+      if (child) try { if (lease) await lease.destroy(); else await terminateOwnedProcess(child); }
       catch {
         stopUnconfirmed = true;
         const owned = child;
         // Retain this exact child/Job and its pin for a later explicit retry;
         // terminal journal status is never an OS-process lifetime proof.
-        this.unconfirmedStops.set(operation.id, async () => { await terminateOwnedProcess(owned); await releaseContext(); });
+        this.unconfirmedStops.set(operation.id, async () => { if (lease) await lease.destroy(); else await terminateOwnedProcess(owned); await releaseContext(); });
       }
       if (record && result) {
         outputError ??= this.archive.error(operation.id);
@@ -350,9 +454,17 @@ export class DshTaskBroker {
       throw new Error(detail, { cause: error });
     } finally {
       if (archiveStarted) await this.archive.finish(operation.id, signal.aborted ? 'cancelled' : 'failed', record?.startedAt, outputError?.message ?? '任务在 CLI 启动前失败，请查看已保存的准备阶段记录。').catch(() => undefined);
-      try { if (!stopUnconfirmed) await releaseContext(); }
+      try { if (lease && keepWorker) lease.release(); if (!stopUnconfirmed) await releaseContext(); }
       finally { taskInput?.close(); this.active.delete(operation.id); this.reservations--; if (resume?.sessionId) this.resumedSessions.delete(resume.sessionId); resolveFinished(); }
     }
+  }
+  async discover(instanceId?: string, execution?: DshTaskExecutionOptions): Promise<DshTaskCapabilities> {
+    const id = randomUUID();
+    const result = await this.execute({ prompt: 'Discover the runtime capability catalog without running a model turn.', title: 'DSH capability discovery', instanceId, timeoutMs: 120_000 },
+      { id, signal: new AbortController().signal, log: async () => undefined, update: async () => undefined },
+      { ...execution, recordScope: undefined, workspaceRootPath: undefined, resume: undefined, toolkit: true, interactive: true, discover: true, task: {} });
+    if (!result.capabilities) throw new Error('This DSH runtime did not return its native capability catalog.');
+    return result.capabilities;
   }
   private prune(): void {
     while (this.records.length > MAX_TASKS) {
@@ -384,6 +496,9 @@ export class DshTaskBroker {
     this.closed = true; for (const task of this.active.values()) task.abort.abort(new Error('Application closing.'));
     await Promise.all([...this.active.values()].map(task => task.finished));
     for (const [id, stop] of this.unconfirmedStops) { await stop(); this.unconfirmedStops.delete(id); }
+    await this.workers.shutdown();
     await this.writes;
   }
+  /** Retire idle hosts before launcher mutations, preserving active requests' pins. */
+  async invalidateIdleWorkers(instanceId?: string): Promise<void> { await this.workers.invalidateIdle(instanceId); }
 }

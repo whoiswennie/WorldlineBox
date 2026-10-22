@@ -7,11 +7,13 @@ import type { CompanionsRequest, WorldlineBoxCompanionsApi } from '../../src/sha
 import type { WorldlineBoxLlmApi } from '../../src/shared/llm';
 import { removeCompanionTestDirectory, ensureCompanionTestWorkspace, electronLaunchEnv, preparePackagedCompanionLaunch, resolveElectronLaunchOptions } from './electron-test-helpers';
 type Bridge = Window & { worldlinebox: { companions: WorldlineBoxCompanionsApi; llm: WorldlineBoxLlmApi } };
-type Record = { purpose: string; self?: string; sourceId?: string; speaker?: string; participants?: string[]; tools: boolean; at: number };
+type Record = { purpose: string; self?: string; sourceId?: string; speaker?: string; participants?: string[];
+  toolNames: string[]; nextRecipientId?: string; at: number };
 const sender = 'deepseek-sister', receiver = 'deepseek-flash';
 const opening = '手机话题：想听听你今天自己的音乐与读书计划，不需要操作玩家的任何文件。';
 async function request(page: Page, value: CompanionsRequest) { const result = await page.evaluate(value => (window as unknown as Bridge).worldlinebox.companions.request(value), value); expect(result.ok, result.error).toBe(true); return result; }
 async function world(page: Page) { return (await request(page, { type: 'world.snapshot' })).world!; }
+async function privateRoom(page: Page, companionId: string) { return (await request(page, { type: 'conversation.open', companionId })).conversation!.id; }
 const clock = (hour: number) => String((Math.floor(hour) + 24) % 24).padStart(2, '0') + ':00';
 function cleanup(root: string) { const resolved = path.resolve(root); if (path.dirname(resolved) !== path.resolve(tmpdir()) || !path.basename(resolved).startsWith('worldlinebox-social-e2e-')) throw new Error('Unexpected social fixture cleanup.'); removeCompanionTestDirectory(resolved); }
 async function provider() {
@@ -20,8 +22,10 @@ async function provider() {
     let raw = ''; incoming.setEncoding('utf8'); incoming.on('data', chunk => { raw += chunk; }); incoming.on('end', () => {
       try {
         const body = JSON.parse(raw), data = JSON.parse(body.messages[1].content), purpose = data.purpose ?? 'primary_reply';
-        logs.push({ purpose, self: data.identity?.self.id ?? data.companion?.id, sourceId: data.source?.id, speaker: data.identity?.currentReply?.speaker?.id,
-          participants: data.identity?.participants?.map((member: { id: string }) => member.id), tools: !!body.tools, at: Date.now() });
+        const entry: Record = { purpose, self: data.identity?.self.id ?? data.companion?.id, sourceId: data.source?.id, speaker: data.identity?.currentReply?.speaker?.id,
+          participants: data.identity?.participants?.map((member: { id: string }) => member.id),
+          toolNames: (body.tools ?? []).map((tool: { function: { name: string } }) => tool.function.name), at: Date.now() };
+        logs.push(entry);
         let output: unknown;
         if (purpose === 'world_decision') {
           if (armed && data.companion.id === sender) { armed = false; output = { action: { action: 'message', recipientIds: recipients, text: opening }, reason: '根据当前空闲与人格主动发起手机话题，不代玩家授权。', appraisals: [] }; }
@@ -30,6 +34,7 @@ async function provider() {
           const index = logs.filter(log => log.purpose === purpose).length;
           const members: string[] = data.identity.participants.map((member: { id: string }) => member.id), self: string = data.identity.self.id;
           const nextRecipientId = members[(members.indexOf(self) + 1) % members.length]!;
+          if (keepReplying) entry.nextRecipientId = nextRecipientId;
           output = { text: keepReplying ? `手机回应${index}：我是${self}，在回应${data.source.authorId}的实际来信。` : null,
             ...(keepReplying ? { nextRecipientId } : {}), reason: '只延续本伙伴话题，不执行DSH，不替玩家发话。' };
           const reply = () => { held.delete(reply); json(outgoing, output); };
@@ -75,7 +80,7 @@ async function launch(root: string, baseUrl: string) {
 }
 async function startTopic(page: Page, fixture: Awaited<ReturnType<typeof provider>>, recipients: string[], triggerId: string) {
   fixture.arm(recipients);
-  await request(page, { type: 'world.tool', companionId: triggerId, conversationId: 'private-' + triggerId,
+  await request(page, { type: 'world.tool', companionId: triggerId, conversationId: await privateRoom(page, triggerId),
     arguments: { action: 'visit', targetCompanionId: sender, reason: '路过想聊聊，房主可真实选择现在做什么。' } });
   await expect.poll(async () => (await request(page, { type: 'social.conversations', limit: 20 })).socialConversationPage?.items.some(room => new Set([sender, ...recipients]).size === room.memberIds.length && room.memberIds.every(id => [sender, ...recipients].includes(id))), { timeout: 30000 }).toBe(true);
   return (await request(page, { type: 'social.conversations', limit: 20 })).socialConversationPage!.items.find(room => room.memberIds.length === recipients.length + 1 && room.memberIds.every(id => [sender, ...recipients].includes(id)))!;
@@ -84,7 +89,10 @@ async function verifyQuietPlayerQueues(page: Page, logs: Record[]) {
   const state = (await request(page, { type: 'state' })).state!; expect(state.queue ?? []).toEqual([]); expect(state.activities).toEqual([]);
   const peers = (await request(page, { type: 'social.conversations', limit: 20 })).socialConversationPage!.items;
   for (const conversationId of new Set([...state.conversations.map(room => room.id), ...peers.map(room => room.id)])) expect((await request(page, { type: 'actions', conversationId })).actions).toEqual([]);
-  expect(logs.some(log => log.purpose === 'primary_reply')).toBe(false); expect(logs.filter(log => log.purpose === 'world_social').every(log => !log.tools && !log.participants!.includes('user'))).toBe(true);
+  expect(logs.some(log => log.purpose === 'primary_reply')).toBe(false);
+  for (const log of logs.filter(log => log.purpose === 'world_social')) {
+    expect(log.toolNames).toEqual(['memory', 'world']); expect(log.participants).not.toContain('user');
+  }
 }
 async function openHistory(page: Page, conversationId: string) {
   await page.getByRole('button', { name: '打开伙伴社交观察' }).click();
@@ -104,7 +112,7 @@ test('refuses a dormant peer and cancels an in-flight reply when a participant d
     const started = await launch(root, fixture.baseUrl); application = started.application; const { page, applicationIdentity } = started;
     await request(page, { type: 'companion.set-active', id: receiver, active: false });
     const rejected = await page.evaluate(value => (window as unknown as Bridge).worldlinebox.companions.request(value), {
-      type: 'world.tool', companionId: sender, conversationId: 'private-' + sender,
+      type: 'world.tool', companionId: sender, conversationId: await privateRoom(page, sender),
       arguments: { action: 'message', recipientIds: [receiver], text: '不能向休眠的伙伴主动发出这条消息。' },
     } satisfies CompanionsRequest);
     expect(rejected.ok).toBe(false); expect(rejected.error).toContain('激活');
@@ -113,7 +121,7 @@ test('refuses a dormant peer and cancels an in-flight reply when a participant d
     expect((await request(page, { type: 'state' })).state!.companions.find(role => role.id === receiver)!.active).toBe(false);
 
     await request(page, { type: 'companion.set-active', id: receiver, active: true });
-    await request(page, { type: 'world.tool', companionId: sender, conversationId: 'private-' + sender,
+    await request(page, { type: 'world.tool', companionId: sender, conversationId: await privateRoom(page, sender),
       arguments: { action: 'message', recipientIds: [receiver], text: opening } });
     await expect.poll(async () => (await request(page, { type: 'social.conversations', limit: 20 })).socialConversationPage!.items.some(room => room.memberIds.includes(sender) && room.memberIds.includes(receiver)), { timeout: 20000 }).toBe(true);
     const room = (await request(page, { type: 'social.conversations', limit: 20 })).socialConversationPage!.items.find(room => room.memberIds.includes(sender) && room.memberIds.includes(receiver))!;
@@ -149,35 +157,53 @@ test('refuses a dormant peer and cancels an in-flight reply when a participant d
 
 for (const group of [false, true]) {
   // eslint-disable-next-line no-empty-pattern
-  test(group ? 'autonomous phone group keeps real identities, one reusable room and a four-message chain' : 'autonomous private phone responds independently of sleep and uses actual source identity', async ({}, testInfo) => {
+  test(group ? 'autonomous phone group fairly admits every recipient then one author summary and explicit followup' : 'autonomous private phone responds independently of sleep and uses actual source identity', async ({}, testInfo) => {
     test.setTimeout(150000); const root = mkdtempSync(path.join(tmpdir(), 'worldlinebox-social-e2e-')), fixture = await provider(); let application: ElectronApplication | undefined;
     try {
       const started = await launch(root, fixture.baseUrl); application = started.application; const { page, ids, applicationIdentity } = started;
-      if (!group) { const scope = { companionId: receiver, conversationId: 'private-' + receiver }, routine = (await request(page, { type: 'routine.get', ...scope })).routine!, current = await world(page);
+      if (!group) { const scope = { companionId: receiver, conversationId: await privateRoom(page, receiver) }, routine = (await request(page, { type: 'routine.get', ...scope })).routine!, current = await world(page);
         await request(page, { type: 'routine.configure', ...scope, expectedRevision: routine.revision, patch: { wakeAt: clock(current.clock.hour + 3), sleepAt: clock(current.clock.hour - 3) } });
         await expect.poll(async () => (await request(page, { type: 'state.get', ...scope })).runtimeState?.routine?.phase, { timeout: 20000 }).toBe('sleeping'); }
       const room = await startTopic(page, fixture, group ? [receiver, ids[2]!] : [receiver], ids[3]!);
       await expect.poll(async () => (await request(page, { type: 'social.messages', conversationId: room.id, limit: 50 })).socialMessagePage?.items.length, { timeout: 15000 }).toBe(1);
       const initial = (await request(page, { type: 'social.messages', conversationId: room.id, limit: 50 })).socialMessagePage!.items[0]!;
       expect(initial.message.authorId).toBe(sender); expect(initial.message.content).toBe(opening); expect(new Set(initial.recipientIds)).toEqual(new Set(group ? [receiver, ids[2]!] : [receiver]));
-      await expect.poll(() => fixture.logs.filter(log => log.purpose === 'world_social').length, { timeout: 25000 }).toBe(1);
+      const firstCount = group ? initial.recipientIds.length : 1;
+      await expect.poll(() => fixture.logs.filter(log => log.purpose === 'world_social').length, { timeout: 25000 }).toBe(firstCount);
+      const firstCalls = fixture.logs.filter(log => log.purpose === 'world_social');
+      expect(firstCalls.map(log => log.self).sort()).toEqual(initial.recipientIds.slice().sort());
+      for (const log of firstCalls) expect(log).toMatchObject({ sourceId: initial.message.id, speaker: sender });
       const typing = await world(page), typingOwner = fixture.logs.find(log => log.purpose === 'world_social')!.self!;
       if (!group) { expect(typing.actors.find(actor => actor.companionId === receiver)!.routinePhase).toBe('sleeping');
         expect(typing.actors.find(actor => actor.companionId === receiver)!.artAction).not.toMatch(/^phoneTyping/u); }
       else expect(typing.actors.find(actor => actor.companionId === typingOwner)!.artAction).toMatch(/^phoneTyping(?:Standing|Seated)$/u);
       expect(fixture.logs.find(log => log.purpose === 'world_social')).toMatchObject({ sourceId: initial.message.id, speaker: sender });
       fixture.finishReplies();
-      await expect.poll(async () => (await request(page, { type: 'social.messages', conversationId: room.id, limit: 50 })).socialMessagePage?.total, { timeout: 30000 }).toBe(4);
-      await page.waitForTimeout(1800); expect(fixture.logs.filter(log => log.purpose === 'world_social')).toHaveLength(3);
+      const expectedReplies = group ? initial.recipientIds.length + 2 : 3;
+      const expectedTotal = expectedReplies + 1;
+      await expect.poll(async () => (await request(page, { type: 'social.messages', conversationId: room.id, limit: 50 })).socialMessagePage?.total, { timeout: 30000 }).toBe(expectedTotal);
+      await page.waitForTimeout(1800); const replyCalls = fixture.logs.filter(log => log.purpose === 'world_social'); expect(replyCalls).toHaveLength(expectedReplies);
       const messages = (await request(page, { type: 'social.messages', conversationId: room.id, limit: 50 })).socialMessagePage!.items;
       expect(messages.every(item => item.message.authorId !== 'user' && item.recipientIds.every(id => id !== item.message.authorId && room.memberIds.includes(id)))).toBe(true);
       for (const item of messages.slice(1)) expect(item.message.replyProgress).toMatchObject({ phase: 'completed', memory: { status: 'completed', injected: false } });
-      if (group) expect(new Set(messages.map(item => item.message.authorId))).toEqual(new Set(room.memberIds));
+      if (group) {
+        const firstReplies = messages.slice(1, firstCount + 1), summary = messages[firstCount + 1]!, followup = messages[firstCount + 2]!;
+        expect(firstReplies.map(item => item.message.authorId).sort()).toEqual(initial.recipientIds.slice().sort());
+        expect(firstReplies.every(item => item.message.replyToId === initial.message.id)).toBe(true);
+        expect(summary.message.authorId).toBe(sender);
+        expect(firstReplies.map(item => item.message.id)).toContain(summary.message.replyToId);
+        const summaryCall = replyCalls[firstCount]!; expect(summaryCall.self).toBe(sender);
+        expect(summaryCall.sourceId).toBe(summary.message.replyToId);
+        expect(summaryCall.nextRecipientId).toBeDefined(); expect(summaryCall.nextRecipientId).not.toBe(sender);
+        expect(followup.message.authorId).toBe(summaryCall.nextRecipientId); expect(followup.message.replyToId).toBe(summary.message.id);
+        expect(replyCalls.at(-1)).toMatchObject({ self: followup.message.authorId, sourceId: summary.message.id, speaker: sender });
+        expect(new Set(messages.map(item => item.message.authorId))).toEqual(new Set(room.memberIds));
+      } else expect(messages.map(item => item.message.authorId)).toEqual([sender, receiver, sender, receiver]);
       await verifyQuietPlayerQueues(page, fixture.logs);
       fixture.stopReplies();
-      await request(page, { type: 'world.tool', companionId: receiver, conversationId: 'private-' + receiver,
+      await request(page, { type: 'world.tool', companionId: receiver, conversationId: await privateRoom(page, receiver),
         arguments: { action: 'message', recipientIds: room.memberIds.filter(id => id !== receiver).reverse(), text: '第二次仍使用这个成员集合的同一个伙伴会话。' } });
-      await expect.poll(async () => (await request(page, { type: 'social.messages', conversationId: room.id, limit: 50 })).socialMessagePage?.total, { timeout: 20000 }).toBe(5);
+      await expect.poll(async () => (await request(page, { type: 'social.messages', conversationId: room.id, limit: 50 })).socialMessagePage?.total, { timeout: 20000 }).toBe(expectedTotal + 1);
       const rooms = (await request(page, { type: 'social.conversations', limit: 20 })).socialConversationPage!.items.filter(item => item.memberIds.length === room.memberIds.length && item.memberIds.every(id => room.memberIds.includes(id)));
       expect(rooms).toHaveLength(1); expect(rooms[0]!.id).toBe(room.id);
       await openHistory(page, room.id); await expect(page.locator(`[data-social-message="${initial.message.id}"]`)).toBeVisible();

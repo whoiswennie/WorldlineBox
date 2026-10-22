@@ -3,6 +3,7 @@ import { dshExecutionAccessSettingsSchema, type DshExecutionAccessSettings } fro
 import { dshTaskAccessPatch, snapshotDshTaskAccess } from './task-access';
 import { dshTaskRecordSchema, type DshTaskRecord } from '../../shared/dsh-tasks';
 import { dshRecordScopeSchema } from '../../shared/dsh-task-record';
+import { dshTaskSpecSchema, dshTaskCapabilityQuerySchema, type DshTaskSpec, type DshTaskCapabilityQuery } from '../../shared/dsh-task-spec';
 
 /** Task controls only. Account, provider and model belong exclusively to the selected DSH profile. */
 export interface DshTaskExecutionOptions {
@@ -13,19 +14,29 @@ export interface DshTaskExecutionOptions {
   resume?: DshTaskRecord;
   recordScope?: z.infer<typeof dshRecordScopeSchema>;
   inputs?: Array<{ id: string; content: string; mode: 'steer' | 'queue' }>;
+  task?: DshTaskSpec;
+  /** Trusted library-owned storage root; never accepted from a model or renderer. */
+  workspaceRootPath?: string;
+  allowedWorkspaceRoots?: string[];
+  /** Host-only, read-only capability probe; never submits a model turn. */
+  discover?: boolean;
+  capabilityQuery?: DshTaskCapabilityQuery;
 }
 const executionSchema = z.strictObject({
   toolkit: z.boolean().optional(), interactive: z.boolean().optional(),
   access: dshExecutionAccessSettingsSchema.optional(),
   resume: dshTaskRecordSchema.optional(),
   recordScope: dshRecordScopeSchema.optional(),
+  task: dshTaskSpecSchema.optional(), workspaceRootPath: z.string().min(1).max(4096).optional(),
+  allowedWorkspaceRoots: z.array(z.string().min(1).max(4096)).max(20).optional(), discover: z.boolean().optional(),
+  capabilityQuery: dshTaskCapabilityQuerySchema.optional(),
   inputs: z.array(z.strictObject({ id: z.string().regex(/^[A-Za-z0-9_-]{1,100}$/), content: z.string().min(1).max(16000), mode: z.enum(['steer', 'queue']) })).max(100).optional(),
 });
 export function snapshotDshTaskExecution(input?: DshTaskExecutionOptions): DshTaskExecutionOptions {
   const result = executionSchema.safeParse(input ?? {});
   if (!result.success) throw new Error('The DSH task controls are invalid. Model and credential overrides are not supported.');
   const value = result.data;
-  return { ...value, toolkit: value.toolkit === true, interactive: value.interactive === true,
+  return { ...value, toolkit: value.toolkit === true || !!value.task, interactive: value.interactive === true || !!value.task,
     ...(value.access ? { access: snapshotDshTaskAccess(value.access) } : {}) };
 }
 

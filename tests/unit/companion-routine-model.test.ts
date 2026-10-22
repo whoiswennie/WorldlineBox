@@ -16,26 +16,27 @@ const input: CompanionReplyInput = {
 };
 const config: CompanionModelConfig = { apiFormat: 'openai_chat', model: 'selected-model', baseUrl: 'https://provider.invalid', apiKey: 'private-test-key' };
 const args = { action: 'configure', expectedRevision: 1, patch: { habits: [{ id: 'reading', title: '阅读', at: '21:00', durationMinutes: 30, kind: 'study' }] } };
+const worldArgs = { action: 'routine', parameters: args };
 function response(format: AiApiFormat): Response {
-  const name = 'routine', id = 'routine_1', message = { content: null, tool_calls: [{ id, type: 'function', function: { name, arguments: JSON.stringify(args) } }] };
+  const name = 'world', id = 'routine_1', message = { content: null, tool_calls: [{ id, type: 'function', function: { name, arguments: JSON.stringify(worldArgs) } }] };
   const value = format === 'openai_chat' ? { choices: [{ message }] }
     : format === 'dashscope_native' ? { output: { choices: [{ message }] } }
-      : format === 'openai_responses' ? { output: [{ type: 'function_call', call_id: id, name, arguments: JSON.stringify(args) }] }
-        : format === 'anthropic' ? { content: [{ type: 'tool_use', id, name, input: args }] }
-          : { candidates: [{ content: { parts: [{ functionCall: { id, name, args } }] } }] };
+      : format === 'openai_responses' ? { output: [{ type: 'function_call', call_id: id, name, arguments: JSON.stringify(worldArgs) }] }
+        : format === 'anthropic' ? { content: [{ type: 'tool_use', id, name, input: worldArgs }] }
+          : { candidates: [{ content: { parts: [{ functionCall: { id, name, args: worldArgs } }] } }] };
   return new Response(JSON.stringify(value));
 }
 
 describe('native virtual routine capability', () => {
   it.each<AiApiFormat>(['openai_chat', 'openai_responses', 'anthropic', 'gemini_native', 'dashscope_native'])(
-    'registers routine and carries actual phase, native mutation and its tool result in %s', async format => {
+    'registers world.routine and carries actual phase, native mutation and its tool result in %s', async format => {
       const fetchFn = vi.fn<typeof fetch>().mockImplementation(async () => response(format));
       const reply = await generateCompanionReply(input, { ...config, apiFormat: format }, undefined, { fetchFn, loop: true });
-      expect(reply.turn?.calls).toEqual([{ id: 'routine_1', name: 'routine', arguments: JSON.stringify(args) }]);
+      expect(reply.turn?.calls).toEqual([{ id: 'routine_1', name: 'world', arguments: JSON.stringify(worldArgs) }]);
       const request = JSON.parse(String(fetchFn.mock.calls[0]?.[1]?.body));
       const registry = format === 'dashscope_native' ? request.parameters.tools : request.tools;
       const tools = format === 'gemini_native' ? registry[0].function_declarations : registry.map((tool: { function?: unknown }) => tool.function ?? tool);
-      expect(tools.some((tool: { name: string }) => tool.name === 'routine')).toBe(true);
+      expect(tools.map((tool: { name: string }) => tool.name).sort()).toEqual(['dsh', 'memory', 'world']);
       const data = JSON.parse(format === 'openai_responses' ? request.input[0].content : format === 'gemini_native' ? request.contents[0].parts[0].text
         : format === 'dashscope_native' ? request.input.messages[1].content[0].text : request.messages[format === 'anthropic' ? 0 : 1].content);
       expect(data.runtimeState.routine).toMatchObject(runtimeState.routine!);
@@ -47,7 +48,7 @@ describe('native virtual routine capability', () => {
       if (format === 'openai_chat' || format === 'dashscope_native') expect((format === 'openai_chat' ? next.messages : next.input.messages).at(-1)).toEqual({ role: 'tool', tool_call_id: 'routine_1', content: result });
       else if (format === 'openai_responses') expect(next.input.at(-1)).toEqual({ type: 'function_call_output', call_id: 'routine_1', output: result });
       else if (format === 'anthropic') expect(next.messages.at(-1).content[0]).toEqual({ type: 'tool_result', tool_use_id: 'routine_1', content: result });
-      else expect(next.contents.at(-1).parts[0].functionResponse).toEqual({ id: 'routine_1', name: 'routine', response: { result } });
+      else expect(next.contents.at(-1).parts[0].functionResponse).toEqual({ id: 'routine_1', name: 'world', response: { result } });
     });
   it.each([
     { ...args, companionId: 'other' }, { ...args, conversationId: 'other' }, { ...args, sourceMessageId: 'invented' },
@@ -60,12 +61,15 @@ describe('native virtual routine capability', () => {
   });
   it('does not let a public appraisal source expose an independently private habit during group replay', async () => {
     const group: CompanionReplyInput = { ...input, conversation: { ...input.conversation, id: 'group', kind: 'group' },
+      messages: input.messages.map(message => ({ ...message, conversationId: 'group' })),
       runtimeState: { ...runtimeState, sourceConversationId: 'group' } };
     const context = buildCompanionContext(group), data = JSON.parse(context.user);
     expect(data.runtimeState.routine).toMatchObject({ phase: 'habit', activity: '个人习惯活动' });
     expect(context.user).not.toContain('PRIVATE_HABIT_440'); expect(context.user).not.toContain('private_habit');
     const fetchFn = vi.fn<typeof fetch>().mockImplementation(async () => response('openai_chat'));
-    await generateCompanionReply(group, config, undefined, { fetchFn, loop: true, context: buildCompanionContext(input) });
+    await expect(generateCompanionReply(group, config, undefined, { fetchFn, loop: true, context: buildCompanionContext(input) })).rejects.toThrow(/其他伙伴、消息入口或任务/);
+    expect(fetchFn).not.toHaveBeenCalled();
+    await generateCompanionReply(group, config, undefined, { fetchFn, loop: true, context });
     expect(String(fetchFn.mock.calls[0]?.[1]?.body)).not.toContain('PRIVATE_HABIT_440');
     expect(context.system).toContain('普通问你昨晚睡了吗'); expect(context.system).toContain('虚拟听歌、锻炼、学习不等于现实电脑任务');
   });

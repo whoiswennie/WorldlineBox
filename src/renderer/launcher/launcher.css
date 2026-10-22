@@ -291,6 +291,9 @@
 .launcher-installed-skill strong, .launcher-skill-targets strong { font-weight: 550; overflow-wrap: anywhere; }
 .launcher-installed-skill p, .launcher-skill-targets p { margin: var(--ui-space-2) 0; color: var(--ui-content-secondary); font-size: var(--ui-font-size-caption); line-height: var(--ui-line-height-relaxed); }
 .launcher-installed-skill span, .launcher-skill-targets code { display: block; color: var(--ui-content-tertiary); font-size: var(--ui-font-size-micro); overflow-wrap: anywhere; }
+.launcher-management-target { display: grid; gap: var(--ui-space-1); margin: var(--ui-space-3) 0; min-width: 0; }
+.launcher-management-target strong { color: var(--ui-content-primary); font-size: var(--ui-font-size-caption); overflow-wrap: anywhere; }
+.launcher-management-target span, .launcher-management-target code, .launcher-installed-skill code { color: var(--ui-content-tertiary); font-size: var(--ui-font-size-micro); overflow-wrap: anywhere; }
 .launcher-skill-targets { max-height: 440px; overflow-y: auto; margin-top: var(--ui-space-4); padding-right: var(--ui-space-2); }
 .launcher-pack-url-form { display: flex; align-items: end; gap: var(--ui-space-3); }
 .launcher-pack-url-form > :first-child { flex: 1; min-width: 0; }

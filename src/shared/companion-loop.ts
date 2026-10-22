@@ -9,13 +9,25 @@ export const companionLoopTurnSchema = z.object({ text: z.string().max(65536), r
 // Message-count windows and paginated retrieval limit work. Checkpoints preserve
 // the actual request instead of imposing a hidden global character quota.
 const companionLoopContextSchema = z.object({ system: z.string(), user: z.string() });
-export const companionLoopDraftSchema = z.strictObject({ step: z.number().int().min(0).max(63), attemptId: id, text: z.string().max(65536) });
+export const companionLoopDraftSchema = z.strictObject({ step: z.number().int().nonnegative().safe(), attemptId: id, text: z.string().max(65536) });
+export const companionLoopWorkingStateSchema = z.strictObject({
+  companionId: id, conversationId: id, sourceMessageId: id, invocationKey: id.optional(), topicId: id.optional(), authorizationGrantId: id.optional(),
+  throughTurn: z.number().int().nonnegative().safe(), sourceDigest: z.string().regex(/^[a-f0-9]{64}$/),
+  memoryThroughStep: z.number().int().nonnegative().safe(), withdrawnThroughStep: z.number().int().nonnegative().safe(),
+  summary: z.string().trim().min(1).max(32000), stage: z.string().max(1000), createdAt: z.string(),
+});
 export const companionLoopCheckpointSchema = z.object({ conversationId: id, sourceMessageId: id, companionId: id, messageId: id.optional(),
-  proactiveWorkId: id.optional(), contextThroughSequence: z.number().int().positive().optional(),
-  status: z.enum(['running', 'done']), context: companionLoopContextSchema.optional(), turns: z.array(companionLoopTurnSchema).max(64),
+  authorizationGrantId: id.optional(),
+  invocationKey: id.optional(), contextThroughSequence: z.number().int().positive().optional(),
+  status: z.enum(['running', 'done']), context: companionLoopContextSchema.optional(), turns: z.array(companionLoopTurnSchema),
+  workingState: companionLoopWorkingStateSchema.optional(),
   draft: companionLoopDraftSchema.optional(), progress: companionReplyProgressSchema.optional(), supplements: z.array(z.object({ id, content: z.string().max(16000) })).max(100).default([]) })
   .superRefine((checkpoint, context) => {
     if (checkpoint.draft && (checkpoint.status !== 'running' || checkpoint.draft.step !== checkpoint.turns.length)) context.addIssue({ code: 'custom', path: ['draft'], message: '流式草稿必须属于当前尚未完成的循环步骤。' });
+    if (checkpoint.workingState && (checkpoint.workingState.throughTurn > checkpoint.turns.length
+      || checkpoint.workingState.companionId !== checkpoint.companionId || checkpoint.workingState.conversationId !== checkpoint.conversationId
+      || checkpoint.workingState.sourceMessageId !== checkpoint.sourceMessageId || checkpoint.workingState.invocationKey !== checkpoint.invocationKey
+      || checkpoint.workingState.authorizationGrantId !== checkpoint.authorizationGrantId)) context.addIssue({ code: 'custom', path: ['workingState'], message: '工作摘要必须属于同一伙伴、来源、任务与实际步骤范围。' });
   });
 export type CompanionLoopCall = z.infer<typeof companionLoopCallSchema>;
 export type CompanionLoopTurn = z.infer<typeof companionLoopTurnSchema>;

@@ -87,19 +87,20 @@ it('unloads a suspended actor into SQLite, freezes its state, retains history an
   expect(restored.position).toEqual(before.position); expect(restored.route).toEqual(before.route);
 });
 
-it('delivers one real message to a dormant recipient without loading her world and resumes the pending reply after activation', () => {
+it('requires manual recipient activation before sending and then delivers one real message with its reply', () => {
   const { store } = fixture(); awake(store, fish); advance(store, 6000);
   const room = store.request({ type: 'social.conversation.ensure', companionId: fish, memberIds: [fish, sister] }).socialConversation!;
   const input = { type: 'social.send', companionId: fish, conversationId: room.id, channel: 'phone', content: '想找你玩，你方便的时候回我就好。', clientId: 'invitation' } as const;
-  expect(store.request(input)).toMatchObject({ socialPending: true, socialRecipients: [{ companionId: sister, state: 'dormant' }] });
+  expect(() => store.request(input)).toThrow('手动激活');
+  expect(store.request({ type: 'social.messages', conversationId: room.id }).socialMessagePage!.items).toEqual([]);
+  expect(store.request({ type: 'world.snapshot' }).world!.actors.some(actor => actor.companionId === sister)).toBe(false);
+  activate(store, sister); awake(store, sister); advance(store, 6000);
+  store.request(input);
   advance(store, 1300);
   const delivered = store.request(input).socialMessage!;
   expect(delivered.message.authorId).toBe(fish);
-  expect(store.request({ type: 'social.job.claim' }).socialJob).toBeUndefined();
   const status = companionStorageResponseSchema.parse(store.request({ type: 'world.status', companionIds: [fish] })).worldStatus!;
-  expect(status.interactions).toContainEqual(expect.objectContaining({ companionId: fish, recipientIds: [sister], phase: 'waiting', recipients: [{ companionId: sister, state: 'dormant' }] }));
-  expect(store.request({ type: 'world.snapshot' }).world!.actors.some(actor => actor.companionId === sister)).toBe(false);
-  activate(store, sister); awake(store, sister); advance(store, 6000);
+  expect(status.interactions).toContainEqual(expect.objectContaining({ companionId: fish, recipientIds: [sister], phase: 'waiting' }));
   const job = store.request({ type: 'social.job.claim' }).socialJob!; expect(job.companionId).toBe(sister);
   advance(store, 1300);
   const reply = store.request({ type: 'social.job.complete', id: job.id, leaseToken: job.leaseToken!, text: '现在有空啦。' }).socialMessage!;

@@ -271,37 +271,37 @@ it('reports only the response deliberately shared by the host and preserves an a
   expect(f.store.request(completion).message!.id).toBe(sent.id);
   expect(f.store.messages({ conversationId: f.playerRoom.id }).messages.filter(message => message.id === sent.id)).toHaveLength(1);
 });
-it('holds an initial peer outbox while the same owner is actually replying to the player, then resumes it once', () => {
+it('delivers a peer outbox independently while the same owner replies in the player port without duplicate send', () => {
   const f = fixture(), scope = { companionId: 'deepseek-flash', conversationId: f.playerRoom.id };
   expect(f.store.request({ type: 'world.work.begin', ...scope, workId: 'player_phone', kind: 'chat', sourceMessageId: f.source.id }).worldWork!.status).toBe('ready');
   f.store.request({ type: 'social.send', ...scope, conversationId: f.peer.id, content: '菲比，可以一起玩吗？', channel: 'phone', authorizationMessageId: f.source.id, clientId: 'lease_outbox' });
-  advance(f.store, 1500); expect(f.store.request({ type: 'social.job.claim' }).socialMessage).toBeUndefined();
-  expect(f.store.messages({ conversationId: f.peer.id }).messages).toHaveLength(0);
+  advance(f.store, 1500); expect(f.store.request({ type: 'social.job.claim' }).socialMessage!.message.content).toBe('菲比，可以一起玩吗？');
+  expect(f.store.messages({ conversationId: f.peer.id }).messages).toHaveLength(1);
   f.store.request({ type: 'world.work.end', companionId: scope.companionId, workId: 'player_phone' }); advance(f.store, 1);
   expect(f.store.request({ type: 'social.job.claim' }).socialJob).toBeUndefined(); advance(f.store, 1300);
-  expect(f.store.request({ type: 'social.job.claim' }).socialMessage!.message.content).toBe('菲比，可以一起玩吗？');
+  expect(f.store.request({ type: 'social.job.claim' }).socialMessage).toBeUndefined();
   expect(f.store.messages({ conversationId: f.peer.id }).messages).toHaveLength(1);
 });
 it('does not let a waiting player request steal an active peer lease or block its actual reply', () => {
   const f = fixture(); replied(f); const job = f.store.request({ type: 'social.job.claim' }).socialJob!;
   const source = f.store.appendMessage({ conversationId: f.playerRoom.id, authorId: 'user', content: '有空时和我聊聊。', replyDirective: 'none' });
-  expect(f.store.request({ type: 'world.work.begin', companionId: 'deepseek-flash', conversationId: f.playerRoom.id, workId: 'waiting_player_phone', kind: 'chat', sourceMessageId: source.id }).worldWork!.status).toBe('waiting');
+  expect(f.store.request({ type: 'world.work.begin', companionId: 'deepseek-flash', conversationId: f.playerRoom.id, workId: 'waiting_player_phone', kind: 'chat', sourceMessageId: source.id }).worldWork!.status).toBe('ready');
   advance(f.store, 1300);
   const committed = f.store.request({ type: 'social.job.complete', id: job.id, leaseToken: job.leaseToken!, text: '好的，我们稍后见。' });
   expect(committed.socialMessage!.message.authorId).toBe('deepseek-flash');
 });
-it('returns a late peer reply to pending after verified urgent player phone takeover, then reclaims the same job', () => {
+it('keeps an existing peer reply in its original port while an urgent player chat runs independently', () => {
   const f = fixture(); replied(f); const job = f.store.request({ type: 'social.job.claim' }).socialJob!;
   advance(f.store, 1300); const before = f.store.messages({ conversationId: f.peer.id }).messages.length;
   const source = f.store.appendMessage({ conversationId: f.playerRoom.id, authorId: 'user', content: '紧急，请先回应我。', replyDirective: 'none' });
   recordUrgentAttention(f.store, 'deepseek-flash', source);
   expect(f.store.request({ type: 'world.work.begin', companionId: 'deepseek-flash', conversationId: f.playerRoom.id, workId: 'urgent_player_phone', kind: 'chat', sourceMessageId: source.id, urgent: true }).worldWork!.status).toBe('ready');
-  expect(f.store.request({ type: 'social.job.complete', id: job.id, leaseToken: job.leaseToken!, text: '此时不应发出的旧peer回复' }).socialPending).toBe(true);
-  expect(f.store.messages({ conversationId: f.peer.id }).messages).toHaveLength(before);
-  expect(f.store.request({ type: 'social.job.claim' }).socialJob).toBeUndefined();
+  expect(f.store.request({ type: 'social.job.complete', id: job.id, leaseToken: job.leaseToken!, text: '在原伙伴会话回应，与玩家急事保持独立。' }).socialMessage!.message.conversationId).toBe(f.peer.id);
+  expect(f.store.messages({ conversationId: f.peer.id }).messages).toHaveLength(before + 1);
+  const next = f.store.request({ type: 'social.job.claim' }).socialJob!;
+  expect(next.id).not.toBe(job.id); expect(next.companionId).toBe('phoebe'); expect(next.conversationId).toBe(f.peer.id);
   f.store.request({ type: 'world.work.end', companionId: 'deepseek-flash', workId: 'urgent_player_phone' }); advance(f.store, 1);
-  const reclaimed = f.store.request({ type: 'social.job.claim' }).socialJob!; expect(reclaimed.id).toBe(job.id); expect(reclaimed.attempts).toBe(2);
-  advance(f.store, 1300); expect(f.store.request({ type: 'social.job.complete', id: reclaimed.id, leaseToken: reclaimed.leaseToken!, text: '已经处理完紧急对话，现在回复你。' }).socialMessage!.message.authorId).toBe('deepseek-flash');
+  expect(f.store.request({ type: 'social.job.claim' }).socialJob).toBeUndefined();
   expect(f.store.messages({ conversationId: f.peer.id }).messages).toHaveLength(before + 1);
 });
 it('serializes delegated notification claim and late completion with actual ready player chats', () => {

@@ -14,6 +14,10 @@ const row = (input: unknown) => input as Row;
 const rows = (input: unknown[]) => input.map(row);
 const stamp = () => new Date().toISOString();
 const json = <T>(input: unknown) => JSON.parse(String(input)) as T;
+const fileOperation = (name: string, arguments_: string): boolean => {
+  try { return name === 'dsh' && ['read_file', 'read_image', 'send_file'].includes(json<{ operation?: string }>(arguments_).operation ?? ''); }
+  catch { return false; }
+};
 const ident = (input: string) => { if (!/^[a-z_][a-z0-9_]*$/iu.test(input)) throw new Error('Invalid reset table.'); return '"' + input + '"'; };
 
 /** Incremental deletion on the UtilityProcess's existing connection, with a durable evidence barrier. */
@@ -115,6 +119,12 @@ export class CompanionResetStore {
         throughSequence: Number(row(this.db.prepare('SELECT COALESCE(MAX(sequence),0) AS n FROM messages').get()).n),
         progress: { step: 0, roomAfter: '', messageAfter: 0, refs: 0, taskIds: rows(this.db.prepare("SELECT json_extract(data,'$.taskId') AS task FROM actions WHERE companion_id=? AND status IN('queued','running','interrupted') AND json_extract(data,'$.taskId') IS NOT NULL").all(id)).map(item => String(item.task)) } };
       this.save(job); this.db.prepare('INSERT INTO companion_reset_boundaries(companion_id,through_sequence) VALUES(?,?) ON CONFLICT(companion_id) DO UPDATE SET through_sequence=MAX(through_sequence,excluded.through_sequence)').run(id, job.throughSequence);
+      // Old resets could remove membership from this hidden host port. Capture
+      // its exact ownership marker before owner metadata/projections are reset;
+      // membership must not be fabricated merely to erase stale observations.
+      this.db.prepare(`INSERT OR IGNORE INTO companion_reset_rooms(job_id,conversation_id)
+        SELECT ?,c.id FROM conversations c WHERE c.id=? AND c.kind='group' AND c.hidden_at IS NOT NULL
+        AND EXISTS(SELECT 1 FROM metadata m WHERE m.key='world-room/'||c.id AND m.value='true')`).run(job.id, 'world_' + id);
       for (const attachment of [current.avatarAttachmentId, current.appearanceAttachmentId]) if (attachment) this.garbage(job, attachment);
       this.db.prepare('UPDATE companions SET deleted_at=NULL,data=? WHERE id=?').run(JSON.stringify({ ...defaults, id, createdAt: current.createdAt, revision: (current.revision ?? 1) + 1 }), id);
       this.db.prepare('UPDATE conversations SET title=? WHERE private_companion_id=?').run(defaults.name, id);
@@ -145,6 +155,11 @@ export class CompanionResetStore {
     const id = job.companionId;
     return [
       ['companion_document_catalog', 'companion_id=?', [id]],
+      ['companion_topic_participation_receipts', 'companion_id=?', [id]],
+      ['companion_topic_current', 'reader_id=?', [id]],
+      ['companion_topic_participation', 'reader_id=?', [id]],
+      ['companion_topic_state', 'reader_id=?', [id]],
+      ['companion_topic_events', 'reader_id=?', [id]],
       ['companion_document_folders', 'companion_id=?', [id]],
       ['companion_character_retirement_watermarks', 'companion_id=?', [id]],
       ['companion_world_sleep_episodes', 'companion_id=?', [id]],
@@ -276,10 +291,10 @@ export class CompanionResetStore {
   private metadata(job: Job, limit: number): number {
     const found = rows(this.db.prepare("SELECT key,value FROM metadata WHERE key NOT GLOB 'file-result/*' AND CASE WHEN json_valid(value) THEN json_extract(value,'$.companionId') END=? LIMIT ?").all(job.companionId, Math.min(limit, 16)));
     for (const item of found) {
-      const value = json<{ sourceMessageId?: string; turns?: Array<{ calls: Array<{ id: string; name: string }> }> }>(item.value);
+      const value = json<{ sourceMessageId?: string; invocationKey?: string; turns?: Array<{ calls: Array<{ id: string; name: string; arguments: string }> }> }>(item.value);
       if (value.sourceMessageId && value.turns) value.turns.forEach((turn, index) => {
-        for (const call of turn.calls) if (['read_file', 'read_image', 'send_file'].includes(call.name)) {
-          const key = 'file-result/' + createHash('sha256').update(`${value.sourceMessageId}:${job.companionId}:${index}:${call.id}`).digest('hex');
+        for (const call of turn.calls) if (fileOperation(call.name, call.arguments)) {
+          const key = 'file-result/' + createHash('sha256').update(`${value.sourceMessageId}:${job.companionId}${value.invocationKey ? ':' + value.invocationKey : ''}:${index}:${call.id}`).digest('hex');
           const saved = this.db.prepare('SELECT value FROM metadata WHERE key=?').get(key);
           if (saved) for (const attachment of json<{ attachments?: Array<{ id: string }> }>(row(saved).value).attachments ?? []) this.garbage(job, attachment.id);
           this.db.prepare('DELETE FROM metadata WHERE key=?').run(key);

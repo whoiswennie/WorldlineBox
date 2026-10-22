@@ -38,7 +38,8 @@ describe('independent world cross-layer regression review', () => {
     expect(f.store.request(begin).worldWork!.status).toBe('moving');
     f.store.request({ type: 'world.work.end', companionId: 'alice', workId: begin.workId });
     advance(f.store, 31 * 60000);
-    expect(f.store.request(begin).worldWork!.status).toBe('waiting');
+    expect(f.store.request(begin).worldWork!.status).toBe('moving');
+    expect(f.store.request({ type: 'world.snapshot' }).world!.actors.find(actor => actor.companionId === 'alice')!.locomotion).toBe('walk');
   });
   it('does not cross a private doorway after consent expires while still approaching it', () => {
     const f = fixture();

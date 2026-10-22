@@ -1,6 +1,7 @@
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { appendFile, mkdir, rename, writeFile } from 'node:fs/promises';
+import { watch, type FSWatcher } from 'node:fs';
 import { app, BrowserWindow, dialog, ipcMain, session, shell } from 'electron';
 import { path7za } from '7zip-bin';
 import { DSH_LAUNCHER_CHANNEL, DSH_LAUNCHER_CHANGED_CHANNEL, DSH_TERMINAL_OUTPUT_CHANNEL, DSH_TASK_EVENT_CHANNEL, dshLauncherRequestSchema, dshPackPublicationRecordSchema, type DshLauncherRequest, type DshLauncherResponse, type DshLauncherState, type DshInstance } from '../../shared/dsh-launcher';
@@ -27,8 +28,17 @@ import { runtimeReferences } from '../../shared/dsh-runtime-references';
 import { configureWorkbenchBrowser } from './workbench-browser';
 import { supportsSharedDataRuntime } from '../../shared/dsh-runtime-compatibility';
 import type { DshRecordQuery } from '../../shared/dsh-task-record';
+import { dshWorkerGeneration } from './warm-cli-pool';
+import { dshTaskCapabilityQuerySchema, type DshTaskCapabilities, type DshTaskCapabilityQuery } from '../../shared/dsh-task-spec';
 
 export class DshLauncher {
+  async taskCapabilities(instanceId?: string, execution?: DshTaskExecutionOptions, query?: DshTaskCapabilityQuery): Promise<DshTaskCapabilities> {
+    await this.initialization;
+    if (this.closed) throw new Error('DSH 启动器正在关闭。');
+    const selected = instanceId ?? this.cliTerminal.state().selectedInstanceId ?? this.instances.list().find(instance => instance.isDefault)?.id;
+    if (selected && this.prewarming?.instanceId === selected) await this.prewarming.promise;
+    return this.tasks.discover(instanceId, snapshotDshTaskExecution({ ...execution, access: execution?.access ?? this.taskAccess.state(), capabilityQuery: dshTaskCapabilityQuerySchema.parse(query ?? { kind: 'overview' }) }));
+  }
   async taskRecordScope(recordId: string) { return (await this.tasks.recordMetadata(recordId)).scope; }
   async readTaskRecord(query: DshRecordQuery) { return this.tasks.readRecord(query); }
   async removeCompanionTaskRecords(owner: string) { await this.tasks.removeCompanionRecords(owner); }
@@ -57,12 +67,22 @@ export class DshLauncher {
   private readonly initialization: Promise<void>;
   private closed = false;
   private previousThrottling: boolean | undefined;
+  private capabilityIdentity?: string;
+  private watchedCapabilityIdentity?: string;
+  private readonly capabilityWatchers: FSWatcher[] = [];
+  private readonly capabilityMutations = new Set<string>();
+  private capabilityChangeTimer?: ReturnType<typeof setTimeout>;
+  private prewarmTimer?: ReturnType<typeof setTimeout>;
+  private prewarmRevision = 0;
+  private prewarming?: { instanceId: string; promise: Promise<void> };
+  private executionReadiness?: DshLauncherState['executionReadiness'];
   constructor(private readonly getMainWindow: () => BrowserWindow | null | undefined, reportInitializationError?: (error: unknown) => void,
-    private readonly applicationNetwork?: LauncherNetwork) {
+    private readonly applicationNetwork?: LauncherNetwork, private readonly onExecutionCapabilitiesChanged?: () => void) {
     this.rootPath = path.join(app.getPath('userData'), 'dsh-launcher');
     this.taskAccess = new DshTaskAccessStore(this.rootPath);
     const onChanged = () => {
       if (!this.ready || this.closed) return;
+      this.observeExecutionCapabilities();
       const main = getMainWindow();
       if (main && !main.isDestroyed()) {
         const state = this.state();
@@ -123,6 +143,17 @@ export class DshLauncher {
       return this.instances.prepareCli(current.id);
     } });
     this.tasks = new DshTaskBroker({ rootPath: this.rootPath, onChanged, pin: selection => this.cliTerminal.pinContext(selection),
+      onWorkerReadyChanged: (instanceId, ready) => {
+        if (this.closed || this.executionReadiness?.instanceId !== instanceId) return;
+        // A newly booted host has not yet proven that its Agent/catalog can mount.
+        // Let the bounded prewarm finish before advertising readiness; a host
+        // that crashes during that first probe must fail, not restart forever.
+        if (ready && this.prewarming?.instanceId === instanceId && this.executionReadiness.status === 'warming') return;
+        const replenish = !ready && this.executionReadiness.status === 'ready';
+        this.executionReadiness = { instanceId, status: ready ? 'ready' : 'cold', updatedAt: new Date().toISOString() };
+        if (replenish) this.scheduleExecutionPrewarm(instanceId);
+        const main = getMainWindow(); if (main && !main.isDestroyed()) main.webContents.send(DSH_LAUNCHER_CHANGED_CHANNEL, this.state());
+      },
       getSelection: async (id, signal, resume, preparation) => {
         const selected = id ?? this.cliTerminal.state().selectedInstanceId ?? this.instances.list().find(value => value.isDefault)?.id;
         if (!selected) throw new Error('Create and select a DSH execution instance first.');
@@ -145,14 +176,104 @@ export class DshLauncher {
     const publications = await readJson<unknown[]>(path.join(this.rootPath, 'pack-publications.json')) ?? [];
     this.publications = publications.slice(0, 100).map(value => dshPackPublicationRecordSchema.parse(value));
     this.ready = true;
+    this.observeExecutionCapabilities();
     // Installation and actual execution own compatibility/integrity checks.
     // Listing the home page must never boot every installed runtime or CLI.
+  }
+  /** Capability facts depend on selection/configuration; task stream updates do not invalidate them. */
+  private observeExecutionCapabilities(): void {
+    const selected = this.cliTerminal.state().selectedInstanceId ?? this.instances.list().find(instance => instance.isDefault)?.id;
+    const instance = this.instances.list().find(value => value.id === selected);
+    this.tasks.setStandbyInstance(instance?.id);
+    const runtime = this.runtimes.list().find(value => value.id === instance?.runtimeId);
+    const changes = this.operations.list().filter(operation => operation.status === 'succeeded' &&
+      ['instance.plugin', 'instance.plugin-toggle', 'skill.install', 'skill.toggle', 'skill.remove', 'instance.restore', 'backup.import', 'pack.import', 'pack.import-url'].includes(operation.kind)).map(operation => operation.id);
+    const mutation = changes.some(id => !this.capabilityMutations.has(id));
+    for (const id of changes) this.capabilityMutations.add(id);
+    const identity = JSON.stringify([selected, instance?.runtimeId, runtime?.contentSha256]);
+    if (identity !== this.capabilityIdentity) {
+      const previous = this.capabilityIdentity; this.capabilityIdentity = identity;
+      if (previous !== undefined) this.onExecutionCapabilitiesChanged?.();
+      this.scheduleExecutionPrewarm(instance?.id);
+    } else if (mutation) { this.onExecutionCapabilitiesChanged?.(); this.scheduleExecutionPrewarm(instance?.id); }
+    const watchIdentity = JSON.stringify([selected, instance?.homePath, instance?.agentsPath]);
+    if (watchIdentity === this.watchedCapabilityIdentity) return;
+    this.watchedCapabilityIdentity = watchIdentity;
+    for (const watcher of this.capabilityWatchers.splice(0)) watcher.close();
+    const generation = () => instance ? dshWorkerGeneration(this.rootPath, { instance, plan:{executable:'',cli:'',env:{}},env:{},
+      workspacePath:this.sharedData.paths.workspacePath,routingPatch:'' }, undefined) : Promise.resolve('no-instance');
+    let observed = generation().catch(() => undefined);
+    const changed = () => {
+      clearTimeout(this.capabilityChangeTimer);
+      this.capabilityChangeTimer = setTimeout(() => {
+        if (this.closed) return;
+        void (async () => {
+          const previous = await observed, next = await generation();
+          observed = Promise.resolve(next);
+          if (previous === next || this.closed || watchIdentity !== this.watchedCapabilityIdentity) return;
+          this.onExecutionCapabilitiesChanged?.();
+          await this.tasks.invalidateIdleWorkers(instance?.id);
+          this.scheduleExecutionPrewarm(instance?.id);
+        })().catch(() => {
+          // Lost configuration proof retires a worker instead of publishing stale capability facts.
+          this.onExecutionCapabilitiesChanged?.();
+          void this.tasks.invalidateIdleWorkers(instance?.id).catch(() => undefined);
+        });
+      }, 150);
+      this.capabilityChangeTimer.unref();
+    };
+    const add = (directory: string, recursive: boolean, relevant: (file: string) => boolean) => {
+      try {
+        const watcher = watch(directory, { recursive }, (_event, file) => { if (file && relevant(String(file))) changed(); });
+        watcher.on('error', changed); watcher.unref(); this.capabilityWatchers.push(watcher);
+      } catch { /* Missing optional config directories are checked on the next selection or mutation. */ }
+    };
+    if (instance) {
+      // A newly created instance has no profiles directory until native init.
+      // Watch its existing home so later profile creation and atomic replacement
+      // remain observable without relying on an already present child directory.
+      add(instance.homePath, true, file => {
+        const segments = file.split(/[\\/]/);
+        if (segments.some(part => ['node_modules', 'storages', 'sessions', 'logs', 'cache', 'llm-deepseek', 'skills-disabled'].includes(part))) return false;
+        return segments[0] === 'profiles' || /(?:\.env|credentials\.(?:yaml|yml|json)|cordis\.(?:yaml|yml)|package\.json)$/.test(file);
+      });
+      add(instance.agentsPath, true, () => true);
+    }
+    add(path.join(this.rootPath, 'shared'), false, file => ['model-settings.json', '.credentials.yaml'].includes(file));
+  }
+  private scheduleExecutionPrewarm(instanceId?: string): void {
+    clearTimeout(this.prewarmTimer); const revision = ++this.prewarmRevision;
+    this.executionReadiness = instanceId ? { instanceId, status: 'warming', updatedAt: new Date().toISOString() } : undefined;
+    if (!instanceId || this.closed) return;
+    this.prewarmTimer = setTimeout(() => {
+      if (this.closed || revision !== this.prewarmRevision) return;
+      // Discovery mounts an idle native Agent and reads its real registries; no model turn is submitted.
+      const promise = (async () => {
+        // First admission verifies the complete sealed runtime and the shared-save
+        // contract. It owns its own bounded lifecycle, before the short idle task.
+        const runtimeId = this.instances.get(instanceId).runtimeId;
+        await this.runtimes.assertSharedCompatible(runtimeId);
+        if (this.closed || revision !== this.prewarmRevision) return;
+        await this.tasks.discover(instanceId, { access: this.taskAccess.state() });
+      })().then(() => {
+        if (revision === this.prewarmRevision) this.executionReadiness = { instanceId, status: 'ready', updatedAt: new Date().toISOString() };
+      }, () => {
+        if (revision === this.prewarmRevision) this.executionReadiness = { instanceId, status: 'failed', updatedAt: new Date().toISOString() };
+      }).finally(() => {
+        if (this.prewarming?.promise === promise) this.prewarming = undefined;
+        if (!this.closed && revision === this.prewarmRevision) {
+          const main = this.getMainWindow(); if (main && !main.isDestroyed()) main.webContents.send(DSH_LAUNCHER_CHANGED_CHANNEL, this.state());
+        }
+      });
+      this.prewarming = { instanceId, promise };
+    }, 300);
+    this.prewarmTimer.unref();
   }
   state(): DshLauncherState {
     return { supported: process.platform === 'win32' && process.arch === 'x64', rootPath: this.rootPath,
       runtimes: this.runtimes.list(), instances: this.instances.list(), snapshots: this.instances.snapshots(),
       packs: this.packs.list(), operations: this.operations.list(), sharedData: this.sharedData.state(), cli: this.cliTerminal.state(),
-      network: this.network.state(), versions: this.versions.state(), marketplace: this.marketplace.state(), packPublications: structuredClone(this.publications), tasks: this.tasks.state(), taskAccess: this.taskAccess.state() };
+      network: this.network.state(), versions: this.versions.state(), marketplace: this.marketplace.state(), packPublications: structuredClone(this.publications), tasks: this.tasks.state(), taskAccess: this.taskAccess.state(), executionReadiness: this.executionReadiness };
   }
   private async openWorkbench(instance: DshInstance, value: string): Promise<void> {
     const pending = this.openingWindows.get(instance.id); if (pending) return pending;
@@ -221,12 +342,26 @@ export class DshLauncher {
     if (request.type === 'state') return { ok: true, state: this.state() };
     if (this.operations.list().some(operation => operation.status === 'running' && ['runtime.delete', 'runtime.cleanup'].includes(operation.kind)) && !['operation.cancel', 'task.events', 'task.result', 'task.cancel', 'task.terminate'].includes(request.type)) throw new Error('正在清理运行版本，请等待操作完成。');
     if (!this.state().supported) throw new Error('DSH runtime management currently supports Windows x64.');
+    if (['instance.plugin', 'instance.plugin-toggle', 'skill.install', 'skill.toggle', 'skill.remove', 'market.plugin.install', 'instance.delete', 'instance.clone', 'instance.start', 'instance.switch-start', 'instance.export', 'backup.export', 'backup.import', 'pack.export', 'pack.import', 'pack.import-url', 'runtime.cleanup', 'runtime.delete', 'shared.restore'].includes(request.type)) {
+      await this.tasks.invalidateIdleWorkers('instanceId' in request ? request.instanceId : undefined);
+    }
     switch (request.type) {
-      case 'task.access.save': await this.taskAccess.save(request.mode); return { ok: true, state: this.state() };
+      case 'task.access.save': {
+        const previous = this.taskAccess.state().mode;
+        await this.taskAccess.save(request.mode);
+        if (previous !== request.mode) {
+          await this.tasks.invalidateIdleWorkers();
+          this.onExecutionCapabilitiesChanged?.();
+          this.scheduleExecutionPrewarm(this.cliTerminal.state().selectedInstanceId ?? this.instances.list().find(instance => instance.isDefault)?.id);
+        }
+        return { ok: true, state: this.state() };
+      }
       case 'operation.cancel': this.operations.cancel(request.operationId); return { ok: true };
       case 'operation.clear-finished': return { ok: true, removedOperations: await this.operations.clearFinished(), state: this.state() };
       case 'task.run': {
-        const instanceId = request.instanceId ?? this.cliTerminal.state().selectedInstanceId ?? this.instances.list().find(value => value.isDefault)?.id;
+        const continuedInstance = execution?.resume?.instanceId ?? (execution?.task?.session?.mode === 'resume'
+          ? this.tasks.state().find(record => record.id === execution.task!.session!.taskId)?.instanceId : undefined);
+        const instanceId = continuedInstance ?? request.instanceId ?? this.cliTerminal.state().selectedInstanceId ?? this.instances.list().find(value => value.isDefault)?.id;
         if (!instanceId) throw new Error('Create and select a DSH execution instance first.');
         return { ok: true, operationId: await this.operations.run(request.type, redact(request.title ?? 'DSH 执行任务'), instanceId, async op => {
           await this.tasks.execute({ prompt: request.prompt, instanceId, sessionId: request.sessionId, title: request.title,
@@ -400,6 +535,8 @@ export class DshLauncher {
   }
   async shutdown(): Promise<void> {
     this.closed = true;
+    clearTimeout(this.prewarmTimer); this.prewarmRevision++;
+    clearTimeout(this.capabilityChangeTimer); for (const watcher of this.capabilityWatchers.splice(0)) watcher.close();
     this.runtimes.cancelChecks();
     await this.initialization.catch(() => undefined);
     await this.tasks.shutdown();

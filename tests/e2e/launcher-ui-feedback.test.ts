@@ -18,12 +18,16 @@ test('terminal navigation is removed, background selection stays responsive, wor
   const root = await mkdtemp(path.join(parent, 'worldlinebox-feedback-ui-'));
   const userData = path.join(root, 'user-data'); await mkdir(userData);
   const application = await electron.launch({ executablePath: resolveElectronExecutablePath(), args: [resolveElectronAppPath()],
-    env: electronLaunchEnv({ WORLDLINEBOX_E2E: '1', WORLDLINEBOX_E2E_DSH_SILENT: '1', WORLDLINEBOX_E2E_USER_DATA_PATH: userData }) });
+    env: electronLaunchEnv({ WORLDLINEBOX_E2E: '1', WORLDLINEBOX_E2E_DSH_SILENT: '1', WORLDLINEBOX_USER_DATA_PATH: userData, WORLDLINEBOX_E2E_USER_DATA_PATH: userData }) });
   try {
     const page = await application.firstWindow();
     const native = await application.browserWindow(page);
     await native.evaluate(win => { win.unmaximize(); win.setSize(1440, 960); win.hide(); });
     await expect(page.locator('[data-dsh-launcher]')).toBeVisible();
+    await page.evaluate(async () => {
+      await (window as unknown as {worldlinebox:{dshLauncher:{request(value:{type:'state'}):Promise<unknown>}}}).worldlinebox.dshLauncher.request({type:'state'});
+      await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+    });
     // Only launcher requests use a UI fixture. LLM configuration and encryption
     // below go through the real Main handlers, with no open asset library.
     const fixture: DshLauncherState = { supported: true, rootPath: path.join(userData, 'dsh-launcher'), runtimes: [{ id: 'runtime-a', version: '0.2.1-alpha.2', adapter: 'node-cli-web-v1', nodeVersion: '24.15.0', platform: 'win32-x64', source: 'official', sourceSha256: 'a'.repeat(64), contentSha256: 'b'.repeat(64), fileCount: 1, byteLength: 1, installedAt: '' }],
@@ -34,7 +38,11 @@ test('terminal navigation is removed, background selection stays responsive, wor
     await application.evaluate(({ ipcMain, BrowserWindow }, value) => {
       const runtime = { state: value, calls: [] as DshLauncherRequest[] };
       (globalThis as typeof globalThis & { feedbackFixture?: typeof runtime }).feedbackFixture = runtime;
-      const emit = () => BrowserWindow.getAllWindows()[0]?.webContents.send('worldlinebox:dsh-launcher:changed', runtime.state);
+      const contents = BrowserWindow.getAllWindows()[0]!.webContents, nativeSend = contents.send.bind(contents);
+      // Background launcher initialization must not replace this UI fixture with
+      // the intentionally empty real temporary instance store during inspection.
+      contents.send = (channel, ...args) => nativeSend(channel, ...(channel === 'worldlinebox:dsh-launcher:changed' ? [runtime.state] : args));
+      const emit = () => nativeSend('worldlinebox:dsh-launcher:changed', runtime.state);
       ipcMain.removeHandler('worldlinebox:dsh-launcher');
       ipcMain.handle('worldlinebox:dsh-launcher', async (_event, input: DshLauncherRequest) => {
         runtime.calls.push(input);
@@ -57,12 +65,16 @@ test('terminal navigation is removed, background selection stays responsive, wor
 
     await page.locator('.launcher-navigation').getByRole('button', { name: '技能市场', exact: true }).click();
     const grid = page.locator('.launcher-market-grid'); await expect(grid).toBeVisible();
+    await expect(page.getByRole('combobox', { name: '安装到实例', exact: true })).toHaveValue('');
+    await page.getByRole('combobox', { name: '安装到实例', exact: true }).selectOption('instance-b');
+    await expect(page.locator('[data-management-target="instance-b"]')).toBeVisible();
     const before = await grid.boundingBox();
     await page.getByRole('button', { name: '查看技能', exact: true }).first().click();
     const drawer = page.getByRole('dialog', { name: '选择仓库内的技能', exact: true });
     await expect(drawer).toBeVisible();
     expect(await grid.boundingBox()).toEqual(before);
-    await expect(drawer.getByRole('button', { name: '安装技能', exact: true })).toBeVisible();
+    await expect(drawer.getByRole('button', { name: '安装到「环境 B」', exact: true })).toBeVisible();
+    await expect(drawer.locator('[data-management-target="instance-b"]')).toBeVisible();
     expect(await grid.boundingBox()).toEqual(before);
     await page.screenshot({ path: test.info().outputPath('skill-drawer.png') });
     await page.keyboard.press('Escape'); await expect(drawer).toHaveCount(0);
@@ -86,10 +98,12 @@ test('terminal navigation is removed, background selection stays responsive, wor
     // Test key is deliberately invalid and is never sent to an upstream model.
     const saved = await page.evaluate(() => (window as unknown as { worldlinebox: { llm: WorldlineBoxLlmApi } }).worldlinebox.llm.setConfig({ apiFormat: 'openai_chat', baseUrl: 'https://api.deepseek.com', model: 'deepseek-flash', apiKey: 'local-ui-fixture-key-never-send' }));
     expect(saved.ok).toBe(true);
-    const json = await readFile(path.join(userData, 'ai-config.json'), 'utf8');
-    expect(JSON.parse(json)).toMatchObject({ apiFormat: 'openai_chat', model: 'deepseek-flash', baseUrl: 'https://api.deepseek.com' });
+    const actualUserData = await application.evaluate(({app}) => app.getPath('userData'));
+    const json = await readFile(path.join(actualUserData, 'ai-profiles.json'), 'utf8');
+    const catalog = JSON.parse(json) as {activeProfileId:string;profiles:Array<{id:string;apiFormat:string;model:string;baseUrl:string}>};
+    expect(catalog.profiles.find(profile=>profile.id===catalog.activeProfileId)).toMatchObject({ apiFormat: 'openai_chat', model: 'deepseek-flash', baseUrl: 'https://api.deepseek.com' });
     expect(json).not.toContain('local-ui-fixture-key-never-send');
-    const cipher = await readFile(path.join(userData, 'ai-key.enc'));
+    const cipher = await readFile(path.join(actualUserData, 'ai-profile-keys',catalog.activeProfileId+'.bin'));
     expect(cipher.includes(Buffer.from('local-ui-fixture-key-never-send'))).toBe(false);
   } finally { await application.close(); await removeProfile(root, parent); }
 });

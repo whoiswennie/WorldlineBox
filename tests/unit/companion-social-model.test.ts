@@ -52,7 +52,7 @@ it.each(['phone', 'face_to_face'] as const)('composes ordinary %s visit speech f
     expect(data.runtimeState).not.toHaveProperty('recentChanges');
     expect(data.runtimeBehavior.responseLength).toBe('brief');
     expect(data.characterDevelopment.items[0].statement).toBe('我想先慢慢核实。');
-    expect(data.messages).toEqual([{ authorId: source.authorId, content: source.content, sequence: source.sequence }]);
+    expect(data.messages).toEqual([expect.objectContaining({ authorId: source.authorId, content: source.content, sequence: source.sequence, conversationId: conversation.id })]);
     expect(JSON.stringify(data)).not.toMatch(/PRIVATE_|UNSENT_|OTHER_PEER/); expect(request.tools).toBeUndefined();
     return response({ text: '姐姐，我们已经见面啦，坐一会儿吧。' });
   });

@@ -225,7 +225,7 @@ async function append(application: ElectronApplication, conversationId: string, 
 async function request(page: Page, command: CompanionsRequest) { const result = await page.evaluate(command => (window as unknown as Bridge).worldlinebox.companions.request(command), command); expect(result.ok, result.error).toBe(true); return result; }
 async function workspace(page: Page, command: CompanionWorkspaceRequest) { const result = await page.evaluate(command => (window as unknown as Bridge).worldlinebox.companions.workspace!(command), command); expect(result.ok, result.error).toBe(true); return result; }
 async function storage(application: ElectronApplication, command: CompanionStorageCommand) {
-  const result = await application.evaluate(async (_, command) => { const storage = (globalThis as FixtureHost).stateUiStorage; if (!storage) throw new Error('Actual fixture worker is unavailable.'); return storage.request(command); }, command);
+  const result = await application.evaluate(async (_, serialized) => { const storage = (globalThis as FixtureHost).stateUiStorage; if (!storage) throw new Error('Actual fixture worker is unavailable.'); return storage.request(JSON.parse(serialized) as CompanionStorageCommand); }, JSON.stringify(command));
   expect(result.ok, result.error).toBe(true); return result;
 }
 async function startFixtureWorker(application: ElectronApplication, databasePath: string) {

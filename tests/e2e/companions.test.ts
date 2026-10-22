@@ -284,7 +284,12 @@ test('journal uses live state and calendar plans, reminder runs once, and spacio
     const before = (await request(page, { type: 'state.get', companionId, conversationId })).runtimeState!;
     await sendUi(page, conversationId, '谢谢你一直陪我，我相信你，也会支持你。', [companionId]);
     await expect.poll(async () => (await request(page, { type: 'state.get', companionId, conversationId })).runtimeState!.relationship.affinity, { timeout: 35_000 }).toBeGreaterThan(before.relationship.affinity);
-    expect(provider.requests.some(item => item.toolResults?.some(text => { try { const result = JSON.parse(text) as { ok?: boolean; runtimeState?: unknown }; return result.ok === true && !!result.runtimeState; } catch { return false; } }))).toBe(true);
+    await expect.poll(() => provider.requests.some(item => item.toolResults?.some(text => {
+      try {
+        const result = JSON.parse(text) as { ok?: boolean; stateObservation?: { status?: string; revision?: number } };
+        return result.ok === true && result.stateObservation?.status === 'historical' && (result.stateObservation.revision ?? 0) > before.revision;
+      } catch { return false; }
+    }))).toBe(true);
     const after = (await request(page, { type: 'state.get', companionId, conversationId })).runtimeState!;
     expect(after.affect.pleasure).toBeGreaterThan(before.affect.pleasure);
     await page.getByRole('button', { name: '我们之间', exact: true }).click();
@@ -352,7 +357,10 @@ test('journal uses live state and calendar plans, reminder runs once, and spacio
       await manager.getByRole('button', { name: '关闭伙伴日程', exact: true }).click();
     }
     await journal.getByRole('button', { name: '查看伙伴资料', exact: true }).click();
-    await expect(page.locator('.companions-contact-profile h2')).toHaveText('大肥鱼');
+    const profileHeading = page.locator('.companions-contact-profile h2');
+    await expect.poll(() => profileHeading.evaluate(element => [...element.childNodes]
+      .filter(node => node.nodeType === Node.TEXT_NODE).map(node => node.textContent ?? '').join('').trim())).toBe('大肥鱼');
+    await expect(profileHeading.locator('.companion-status-badge')).toBeVisible();
     await page.locator('.companions-persona-details summary').click();
     const persona = (await request(page, { type: 'state' })).state!.companions.find(companion => companion.id === companionId)!.persona;
     await expect(page.locator('.companions-persona')).toHaveText(persona);
@@ -1023,7 +1031,7 @@ async function providerFixture(hold?: { roleId: string; userText: string }): Pro
               streamTimers.delete(timer); if (response.destroyed || response.writableEnded) return;
               chunk({ content: second });
               const tools = !step && latestUser === '流式验收：工具后接着说';
-              if (tools) chunk({ tool_calls: [{ index: 0, id: 'fixture_stream_inspect', type: 'function', function: { name: 'state', arguments: '{"action":"inspect"}' } }] });
+              if (tools) chunk({ tool_calls: [{ index: 0, id: 'fixture_stream_inspect', type: 'function', function: { name: 'world', arguments: '{"action":"state","parameters":{"action":"inspect"}}' } }] });
               chunk({}, tools ? 'tool_calls' : 'stop'); response.end('data: [DONE]\n\n');
             }, 200); streamTimers.add(timer); };
             streamReleases.set(key, finish);
@@ -1035,10 +1043,10 @@ async function providerFixture(hold?: { roleId: string; userText: string }): Pro
           if (!released && hold?.roleId === context.conversation.replyingAs && hold.userText === latestUser) return;
           const appreciation = latestUser === '谢谢你一直陪我，我相信你，也会支持你。' ? [...context.messages].reverse().find(message => message.speaker === 'user' && message.content === latestUser) : undefined;
           if (appreciation?.id && context.runtimeState && !payload.messages.some(message => message.role === 'tool' && message.tool_call_id === 'fixture_state')) stateCall = {
-            id: 'fixture_state', type: 'function', function: { name: 'state', arguments: JSON.stringify({ action: 'update', expectedRevision: context.runtimeState.revision, proposal: {
+            id: 'fixture_state', type: 'function', function: { name: 'world', arguments: JSON.stringify({ action: 'state', parameters: { action: 'update', expectedRevision: context.runtimeState.revision, proposal: {
               expression: 'gentle', reason: '用户表达了陪伴的感谢与信任。', sourceMessageIds: [appreciation.id], evidence: [{ sourceMessageId: appreciation.id, quote: appreciation.content }],
               appraisals: [{ type: 'support', target: 'user', intensity: .7, confidence: .95 }],
-            } }) },
+            } } }) },
           };
           text = JSON.stringify({ text: reply, memories: [], topic: '一起看海' });
         }

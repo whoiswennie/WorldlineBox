@@ -4,6 +4,7 @@ import path from 'node:path';
 import BetterSqlite3 from 'better-sqlite3';
 import { afterEach, expect, it } from 'vitest';
 import { CompanionsStore, type CompanionConnection, type CompanionSeed } from '../../src/companions/store';
+import { CompanionResetStore } from '../../src/companions/reset-store';
 import { companionStorageResponseSchema } from '../../src/shared/companion-storage';
 import { companionSearchTokens, companionSearchFacet } from '../../src/shared/companion-search';
 const Database = BetterSqlite3 as {
@@ -110,6 +111,51 @@ it('preserves other group authors, invalidates a peer memory whose source is rem
     expect(f.store.request({ type: 'memory.sources.filter', companionId: 'alice', conversationId: group.id, ids: [user.id] }).memorySources).toEqual([]);
     expect(() => f.store.request({ type: 'memory.record', companionId: 'alice', conversationId: group.id, candidate: { content: user.content, sourceMessageIds: [user.id], evidence: [{ sourceMessageId: user.id, quote: user.content }] } })).toThrow();
     expect(() => f.store.request({ type: 'action.create', action: { conversationId: group.id, companionId: 'alice', sourceMessageId: user.id, title: '不该复活', status: 'queued', accessMode: 'danger-full-access' } })).toThrow('重置');
+});
+it('resets an orphaned hidden host port without touching another owner or similarly named rooms', async () => {
+    const f = fixture();
+    f.store.request({ type: 'world.snapshot' });
+    const own = f.store.appendMessage({ conversationId: 'world_alice', authorId: 'system', kind: 'notice', content: 'orphaned own observation' });
+    const other = f.store.appendMessage({ conversationId: 'world_bob', authorId: 'system', kind: 'notice', content: 'other owner observation' });
+    close(f.store);
+    const db = new Database(f.file);
+    db.prepare("DELETE FROM conversation_members WHERE conversation_id='world_alice'").run();
+    db.prepare("UPDATE conversations SET hidden_at=? WHERE id='world_alice'").run(new Date().toISOString());
+    expect(db.prepare("SELECT hidden_at FROM conversations WHERE id='world_alice'").get()).toEqual({ hidden_at: expect.any(String) });
+    expect(db.prepare("SELECT value FROM metadata WHERE key='world-room/world_alice'").get()).toEqual({ value: 'true' });
+    db.prepare("INSERT INTO conversations(id,kind,title,updated_at,hidden_at) VALUES('world_alice_copy','group','similar room',?,?)").run(new Date().toISOString(), new Date().toISOString());
+    db.prepare("INSERT INTO metadata(key,value) VALUES('world-room/world_alice_copy','true')").run();
+    db.close();
+    const store = open(f.file);
+    const similar = store.appendMessage({ conversationId: 'world_alice_copy', authorId: 'system', kind: 'notice', content: 'similar name is not owner evidence' });
+    const reset = store.request({ type: 'companion.reset', id: 'alice', scope: 'all' }).reset!;
+    store.request({ type: 'companion.reset.cleanup', id: 'alice', jobId: reset.id });
+    await finish(store);
+    expect(() => store.getMessage(own.id)).toThrow();
+    expect(store.getMessage(other.id).content).toBe(other.content);
+    expect(store.getMessage(similar.id).content).toBe(similar.content);
+});
+it('does not infer host ownership from an unmarked hidden room with the fixed world name', async () => {
+    const f = fixture();
+    f.store.request({ type: 'world.snapshot' });
+    const unmarked = f.store.appendMessage({ conversationId: 'world_alice', authorId: 'system', kind: 'notice', content: 'no host marker' });
+    close(f.store);
+    const db = new Database(f.file);
+    db.prepare("DELETE FROM conversation_members WHERE conversation_id='world_alice'").run();
+    db.prepare("UPDATE conversations SET hidden_at=? WHERE id='world_alice'").run(new Date().toISOString());
+    db.prepare("DELETE FROM metadata WHERE key='world-room/world_alice'").run();
+    // Exercise the reset ownership gate before a separate world sync can adopt
+    // this reserved name as its host port and publish a fresh marker.
+    try {
+        const resetStore = new CompanionResetStore(db, f.root, () => ({ ...seeds[0]!, active: true, builtin: true, createdAt: new Date().toISOString() }), () => undefined, () => undefined, () => undefined, () => 0);
+        resetStore.initialize(); resetStore.prepareIndexes();
+        const reset = resetStore.begin('alice').reset;
+        resetStore.cleanup('alice', reset.id);
+        for (let i = 0; resetStore.status('alice').reset?.status !== 'completed'; i++) {
+            expect(i).toBeLessThan(1000); await resetStore.advance();
+        }
+        expect(db.prepare('SELECT id FROM messages WHERE id=?').get(unmarked.id)).toEqual({ id: unmarked.id });
+    } finally { db.close(); }
 });
 it('removes only unreferenced managed files and never removes a linked source or another profile/message image', async () => {
     const f = fixture(), directory = path.join(f.root, 'attachments');

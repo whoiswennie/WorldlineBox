@@ -1,9 +1,10 @@
 import type { CompanionLoopTurn } from '../../shared/companion-loop';
+import { normalizeCompanionCapabilityCall } from '../../shared/companion-capability-tools';
 
 /** Keep a past state call's receipt, while current host state owns all numbers. */
 export function companionStateToolTurns(turns: readonly CompanionLoopTurn[]): readonly CompanionLoopTurn[] {
   return turns.map(turn => ({ ...turn, ...(turn.results ? { results: turn.results.map(result => {
-    if (!turn.calls.some(call => call.id === result.callId && call.name === 'state')) return result;
+    if (!turn.calls.some(call => { try { return call.id === result.callId && normalizeCompanionCapabilityCall(call).name === 'state'; } catch { return false; } })) return result;
     try {
       const data = JSON.parse(result.content) as { ok?: boolean; error?: string; runtimeState?: { companionId?: string; revision?: number; updatedAt?: string } };
       if (!data.runtimeState) return result;

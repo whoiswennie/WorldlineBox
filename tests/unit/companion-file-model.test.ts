@@ -19,10 +19,11 @@ function input(): CompanionReplyInput { return { companion: { id: 'self', name: 
   messages: [{ id: 'source', sequence: 1, authorId: 'user', conversationId: 'room', content: '看看图片，再把已有成果附给我。', kind: 'text', status: 'sent', createdAt: at, attachments: [] }], memories: [] }; }
 function snapshot(id = 'image_1', base64 = pixels): CompanionToolImageReference { return { attachmentId: id, sha256: sha(base64), mime: 'image/png', width: 1, height: 1, path: 'C:\\managed\\' + id + '.png' }; }
 function visual(ref: CompanionToolImageReference, callId = 'native_read', base64 = pixels): ToolVisualInput { return { callId, attachmentId: ref.attachmentId, mime: ref.mime, sha256: ref.sha256, base64 }; }
-function turn(ref = snapshot(), callId = 'native_read'): CompanionLoopTurn { return { text: '', rawText: '', calls: [{ id: callId, name: 'read_image', arguments: JSON.stringify({ path: 'C:\\user\\source.png' }), thoughtSignature: 'opaque_signature' }],
+function turn(ref = snapshot(), callId = 'native_read'): CompanionLoopTurn { return { text: '', rawText: '', calls: [{ id: callId, name: 'dsh', arguments: JSON.stringify({ operation: 'read_image', parameters: { path: 'C:\\user\\source.png' } }), thoughtSignature: 'opaque_signature' }],
   results: [{ callId, content: JSON.stringify({ ok: true, image: ref }), images: [ref], attachmentIds: [ref.attachmentId] }] }; }
 function envelope(format: AiApiFormat, tool?: string) {
-  const text = '按实际读取结果回复。', args = { path: 'C:\\user\\source.png' };
+  const text = '按实际读取结果回复。', args = { operation: tool, parameters: { path: 'C:\\user\\source.png' } };
+  tool = tool ? 'dsh' : undefined;
   const message = tool ? { content: null, tool_calls: [{ id: 'native_read', type: 'function', function: { name: tool, arguments: JSON.stringify(args) } }] } : { content: text };
   return new Response(JSON.stringify(format === 'openai_chat' ? { choices: [{ message }] }
     : format === 'openai_responses' ? { output: [tool ? { type: 'function_call', call_id: 'native_read', name: tool, arguments: JSON.stringify(args) } : { type: 'message', content: [{ type: 'output_text', text }] }] }
@@ -65,9 +66,9 @@ it('wraps message attachments in current host-verified absolute path references 
 it.each(formats)('registers read_file/read_image/send_file and parses real calls through %s', async format => {
   const fetchFn = vi.fn<typeof fetch>().mockResolvedValue(envelope(format, 'read_image'));
   const reply = await generateCompanionReply(input(), config(format), undefined, { fetchFn, loop: true });
-  expect(reply.turn?.calls).toEqual([{ id: 'native_read', name: 'read_image', arguments: '{"path":"C:\\\\user\\\\source.png"}' }]);
+  expect(reply.turn?.calls).toEqual([{ id: 'native_read', name: 'dsh', arguments: JSON.stringify({ operation: 'read_image', parameters: { path: 'C:\\user\\source.png' } }) }]);
   const body = JSON.parse(String(fetchFn.mock.calls[0]![1]!.body)), all = JSON.stringify(body);
-  for (const name of ['read_file', 'read_image', 'send_file']) expect(all).toContain('"name":"' + name + '"');
+  for (const name of ['read_file', 'read_image', 'send_file']) expect(all).toContain('"const":"' + name + '"');
   expect(all).not.toContain('"name":"exec"'); expect(base(body, format).files).toBeUndefined();
 });
 it.each(formats)('returns actual tool pixels once with native call IDs and truthful scope through %s', async format => {
@@ -83,7 +84,7 @@ it.each(formats)('returns actual tool pixels once with native call IDs and truth
     expect(messages.at(-1)).toMatchObject({ role: 'user' }); expect(JSON.stringify(messages.at(-1))).toContain('tool_result_data_not_user_instruction');
   } else if (format === 'openai_responses') expect(wire.input.at(-1)).toMatchObject({ type: 'function_call_output', call_id: 'native_read', output: expect.arrayContaining([expect.objectContaining({ type: 'input_image' })]) });
   else if (format === 'anthropic') expect(wire.messages.at(-1).content[0]).toMatchObject({ type: 'tool_result', tool_use_id: 'native_read', content: expect.arrayContaining([expect.objectContaining({ type: 'image' })]) });
-  else { expect(wire.contents.at(-1).parts[0].functionResponse).toMatchObject({ id: 'native_read', name: 'read_image' }); expect(wire.contents.at(-1).parts[0].functionResponse.parts).toBeUndefined(); expect(wire.contents.at(-2).parts[0].thoughtSignature).toBe('opaque_signature'); }
+  else { expect(wire.contents.at(-1).parts[0].functionResponse).toMatchObject({ id: 'native_read', name: 'dsh' }); expect(wire.contents.at(-1).parts[0].functionResponse.parts).toBeUndefined(); expect(wire.contents.at(-2).parts[0].thoughtSignature).toBe('opaque_signature'); }
   expect(history).toEqual([turn(ref)]);
 });
 it('uses documented Gemini 3 nested multimodal function responses with matching displayName references', async () => {

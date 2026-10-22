@@ -41,6 +41,8 @@ export interface DshCliSelection {
   instance: DshInstance; plan: RuntimeLaunchPlan; env: NodeJS.ProcessEnv; workspacePath: string;
   routingPatch: string; runtimeVersion?: string; nativeCli?: string; nativeArgs?: string[];
   runtime?: DshRuntime;
+  /** Main-authorized task directory root, admitted only in pinned task contexts. */
+  taskWorkspaceRoot?: string;
 }
 export interface DshTerminalSummary {
   id: string; instanceId: string; runtimeVersion: string; status: 'running' | 'stopped'; cwd: string;
@@ -125,6 +127,7 @@ interface PersistedCliContext {
   format: typeof CONTEXT_FORMAT; instanceId: string; runtimeId: string; runtimeVersion: string;
   runtimeContentSha256: string; executable: string; nativeCli: string; nativeArgs: string[];
   routingPatch: string; workspacePath: string; env: Record<string, string>;
+  taskWorkspaceRoot?: string;
 }
 function powershellPath(): string {
   return path.join(process.env.SystemRoot ?? 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
@@ -276,14 +279,15 @@ export class DshCliTerminal {
     if (!samePath(instance.homePath, path.join(instanceRoot, 'home')) || !samePath(instance.agentsPath, path.join(instanceRoot, 'agents'))
       || !executable || !samePath(selection.plan.executable, executable)
       || !within(program, selection.nativeCli ?? selection.plan.cli) || !within(instanceRoot, selection.routingPatch)
-      || !within(path.join(this.root, 'shared'), selection.workspacePath)) throw new Error('CLI selection contains an unmanaged path.');
+       || !(selection.taskWorkspaceRoot && path.isAbsolute(selection.taskWorkspaceRoot) && within(selection.taskWorkspaceRoot, selection.workspacePath)
+         || within(path.join(this.root, 'shared'), selection.workspacePath))) throw new Error('CLI selection contains an unmanaged path.');
     const env = Object.fromEntries(Object.entries(selection.env).filter((entry): entry is [string, string] => ENV_KEYS.has(entry[0]) && typeof entry[1] === 'string'));
     env.DSH_HOME = instance.homePath; env.DSH_AGENTS_HOME = instance.agentsPath; env.DSH_DESKTOP_NODE_EXECUTABLE = selection.plan.executable;
     const next: PersistedCliContext = { format: CONTEXT_FORMAT, instanceId: instance.id, runtimeId: instance.runtimeId,
       runtimeVersion: selection.runtimeVersion ?? runtime.version, runtimeContentSha256: runtime.contentSha256,
       executable: selection.plan.executable, nativeCli: selection.nativeCli ?? selection.plan.cli,
       nativeArgs: selection.nativeArgs ?? ['web', '--patch', selection.routingPatch], routingPatch: selection.routingPatch,
-      workspacePath: selection.workspacePath, env };
+      workspacePath: selection.workspacePath, ...(selection.taskWorkspaceRoot ? { taskWorkspaceRoot: selection.taskWorkspaceRoot } : {}), env };
     if (next.nativeArgs.length > 128 || next.nativeArgs.some(argument => typeof argument !== 'string' || argument.length > 16_384 || argument.includes('\0'))) throw new Error('Invalid native CLI routing arguments.');
     return next;
   }
@@ -457,7 +461,8 @@ async function context(){
  ordinary(instance);ordinary(artifact);ordinary(program);
  const registry=json(path.join(ROOT,'runtimes.json')),record=registry.find(r=>r.id===c.runtimeId),seal=json(path.join(artifact,'seal.json'));
  const executable=record?.adapter==='node-cli-web-v1'?path.join(program,'bin','node.exe'):record?.adapter==='desktop-cli-web-v1'?path.join(program,'DeepSeek Harness.exe'):undefined;
- if(!executable||!same(c.executable,executable)||!inside(program,c.nativeCli)||!inside(instance,c.routingPatch)||!inside(path.join(ROOT,'shared'),c.workspacePath)||!same(c.env.DSH_HOME,path.join(instance,'home'))||!same(c.env.DSH_AGENTS_HOME,path.join(instance,'agents')))throw Error('CLI context paths are not managed');
+ const taskWorkspace=override&&typeof c.taskWorkspaceRoot==='string'&&path.isAbsolute(c.taskWorkspaceRoot)&&inside(c.taskWorkspaceRoot,c.workspacePath)&&same(fs.realpathSync(c.taskWorkspaceRoot),c.taskWorkspaceRoot)&&same(fs.realpathSync(c.workspacePath),c.workspacePath);
+ if(!executable||!same(c.executable,executable)||!inside(program,c.nativeCli)||!inside(instance,c.routingPatch)||!(taskWorkspace||inside(path.join(ROOT,'shared'),c.workspacePath))||!same(c.env.DSH_HOME,path.join(instance,'home'))||!same(c.env.DSH_AGENTS_HOME,path.join(instance,'agents')))throw Error('CLI context paths are not managed');
  ordinary(c.routingPatch);if(!ordinary(c.workspacePath).isDirectory())throw Error('Shared workspace is missing');
  if(!record||record.version!==c.runtimeVersion||record.contentSha256!==c.runtimeContentSha256||seal.contentSha256!==c.runtimeContentSha256||c.runtimeId!=='runtime-'+c.runtimeContentSha256.slice(0,24)||!Array.isArray(seal.files)||seal.files.length>150000)throw Error('CLI runtime seal does not match its selected version');
  if(!sharedCompatible(record))throw Error('This DSH version has no verified shared-data adapter');

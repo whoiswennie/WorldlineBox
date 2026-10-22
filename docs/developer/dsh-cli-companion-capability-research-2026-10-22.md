@@ -8,7 +8,7 @@ DSH 可以承担复杂任务的执行 Agent：一次委托内部可以反复调�
 
 不会默认把整个 DSH session 回灌伙伴，也不会自动把伙伴全部记忆和聊天塞给每个新 DSH 任务。但是两层模型各自的后续请求仍会携带各自当前有效的历史；“不跨层复制完整 session”不等于“每步只传新增内容”或“没有重复 token 成本”。
 
-用户明确的目标是：主脑能够按实际任务动态构建 DSH Agent 范式，自行安排上下文、工具、技能、插件、工作目录、会话关系和交付方式。可复用模板是便捷方式，不是唯一可选范围。当前最需要完善的是支持动态构建的接入协议，而非再实现一个工具执行循环：伙伴尚不能结构化声明这些执行要素；多阶段新任务没有自动编译上下文交接包；结果回执尚无统一、可校验的成果清单。主脑的上下文管理交给主脑自身，本研究不要求增加主脑预算限制。
+用户明确的目标是：主脑能够按实际任务动态构建 DSH Agent 范式，自行安排上下文、工具组合、技能、工作目录、会话关系和交付方式。最新范围明确插件不需要伙伴配置，插件的安装、启停、配置和兼容性由启动器管理。可复用模板是便捷方式，不是唯一可选范围。当前最需要完善的是支持动态构建的接入协议，而非再实现一个工具执行循环：伙伴尚不能结构化声明这些执行要素；多阶段新任务没有自动编译上下文交接包；结果回执尚无统一、可校验的成果清单。主脑的上下文管理交给主脑自身，本研究不要求增加主脑预算限制。
 
 ## 2. 证据版本
 
@@ -177,7 +177,7 @@ complete, storageLimited, error?, readTool, trust
 
 ### 7.2 核心能力：主脑动态构建执行范式
 
-不应只开放几个写死的 research/coding/writing 按钮。应让主脑先发现能力，再动态声明本次 Agent：执行角色与指令、工具集合、需要按需加载或预载的技能、插件及其参数、工作目录、访问模式、模型路由引用、上下文输入和成果要求。预设可保存、继承和修改，也可完全按本次目标新建。
+不应只开放几个写死的 research/coding/writing 按钮。应让主脑先发现能力，再动态声明本次 Agent：执行角色与指令、工具集合、需要按需加载或预载的技能、工作目录、访问模式、模型路由引用、上下文输入和成果要求。预设可保存、继承和修改，也可完全按本次目标新建。插件本身由启动器管理；主脑选择工具，宿主解析对应的已配置实现，不要求主脑配置插件。
 
 DSH 的 Cordis 组合、profile/patch、Agent preset 和 scoped setup 为此提供了底层基础；缺的是 WorldlineBox 面向主脑的声明接口和执行工厂。主脑生成声明，Main 将声明解析为本次实际插件组合与作用域，再经正式 CLI profile 启动原生 Agent。只在 prompt 里写“你现在是某种 Agent，只能用这些工具”不算完成能力配置。
 
@@ -192,7 +192,6 @@ TaskSpec
     instructions
     tools: 本次可见且可调用的工具
     skills: 所选技能及加载方式
-    plugins: 本次组合的已安装组件及配置
     workspace: 工作目录与输入/输出目录
     access: 本次真实执行权限
     modelRef: 采用默认执行模型或显式选择已配置路由
@@ -205,7 +204,7 @@ TaskSpec
     成果类型、输出位置、验证方式、返回格式
 ```
 
-其中 tools 要落实到注册与执行入口，skills 要落实到实际技能目录或提供者，plugins 要落实到实际可解析的包及配置，workspace 要落实到 filesystem/shell 的真实工作目录。技能可只提供目录与按需读取入口，不必每次把全部技能正文塞进上下文。宿主可返回解析后的 effective configuration，让主脑知道实际挂载了什么；解析失败时返回具体缺失组件，不伪称已经获得能力。
+其中 tools 要落实到注册与执行入口，skills 要落实到实际技能目录或提供者，workspace 要落实到 filesystem/shell 的真实工作目录。插件包、参数、凭据与版本由宿主维护，主脑按工具能力选择即可。技能可只提供目录与按需读取入口，不必每次把全部技能正文塞进上下文。宿主可返回解析后的 effective configuration，让主脑知道实际可用工具与环境；解析失败时返回具体缺失条件，不伪称已经获得能力。
 
 每个运行任务保留自己的已解析配置、依赖版本和变更记录；另一个任务创建新范式不应偷偷改变正在运行的 Agent。需要在当前 session 内增减工具时，通过明确的 scoped 变更和记录完成。插件安装/升级属于环境准备，已安装组件的逐次组合属于任务启动。这是独立的生命周期管理，不要求把主脑限制在固定模板内。
 
@@ -241,7 +240,7 @@ DSH 自身沿用原生 session 压缩与恢复；主脑自行管理自己的上�
 
 上游 `present` 可提供 `deliverables/presented {turn,callId,files:[{path,description?}]}`，可作为成果引用来源；它证明文件存在，不证明业务验收通过。workspace-changes 的摘要/diff在Host临时服务里，session事件仅记录turn，当前SDK没有对应查询接口。需要主动接入并持久化，不能靠转发默认final自动获得所有交付。依据：`packages/deliverables/tool-present/src/index.ts:78–107`、`packages/deliverables/workspace-changes/src/types.ts:25–39,100–106`。
 
-## 8. 本次验证与未解决项
+## 8. 初始研究时的验证与未解决项
 
 第一组执行了7个测试文件：`dsh-task-execution`、`dsh-task-access`、`dsh-task-record`、`dsh-task-broker`、`companion-activity-memory-receipt`、`dsh-companion-toolkit`、`dsh-native-profile-execution`。结果为5文件通过、2文件失败，40项通过、3项失败。通过部分覆盖 schema、访问配置快照、短回执/分页档案和使用 fixture 的进程接入行为，不等于真实复杂任务验收。
 
@@ -254,3 +253,74 @@ DSH 自身沿用原生 session 压缩与恢复；主脑自行管理自己的上�
 版本差异还包括：用户提供的0.2.0-rc.2源码中headless只等待 `agent.whenIdle()`；应用已安装0.2.1-rc.2的headless另有子任务等待处理。本项目自有伙伴适配器也只等待本Agent空闲。因此不能把新上游“收齐子任务”的行为直接归给旧源码或当前适配器。
 
 研究未修改 WorldlineBox 业务代码或 DSH 源码，未安装、升级运行包，也未变更真实模型或账号配置。
+
+### 8.1 后续工程与真实验收更新（2026-10-23）
+
+本节之后的能力桥接建议已在后续用户授权的工程阶段落实，不能继续把初始研究时的启动超时当作当前状态。当前伙伴公开入口为`dsh`根工具，`operation=run`携带TaskSpec，`operation=capabilities`按需读取工具完整schema、技能正文分页、实际slash命令及原生CLI help；不再新增独立`dsh_capabilities`或旧工具别名。TaskSpec明确传本次prompt/instructions/context，宿主不附整个主脑组合任务；插件与账号/模型配置仍由宿主管理。
+
+实际安装0.2.1-rc.2已通过native多次调用、跨独立Agent/session/cwd的同进程复用、同session续用、真实PTC run_code执行，以及两伙伴自主协作和后台日程/工作单真实内容验收。主脑仅取得短回执、结构化结果与产物引用，完整事件存档按需读取。PTC实测read/write/present组合，读取17、23、19并写出总额59的随机标记文件，耗时9950ms；不是仅声明模式字段。
+
+最新结果和明确边界集中记录于[伙伴Agent升级验收](./companion-agent-upgrade-acceptance-2026-10-23.md)，对应工件为`.tools/test-output/companion-dsh-real-agent-acceptance-final.json`、`companion-dsh-capability-describe-native.json`、`companion-dsh-ptc-content.json`、`companion-autonomous-collaboration-content-acceptance-final.json`及`companion-background-dsh-content-acceptance.json`。初始失败记录继续保留，整体回归和最终收尾仍以最新验收文档为准。
+
+## 9. 让伙伴自动知道当前实例的能力
+
+### 9.1 提供动态环境资料，而非长期记忆
+
+启动器应提供一个按实例、运行版本、配置修订生成的能力服务。主脑在推理时自动得到当前选中实例的环境描述，也可查询完整条目和使用说明。它属于宿主提供的当前事实，不写成伙伴的长期记忆；切换版本或卸载插件之后，旧记忆不能证明能力仍然存在。
+
+初始环境资料至少包含 instanceId/name、runtimeId/version/contentSha256、profile、selectionRevision、catalogRevision、工作区和检查状态，以及工具/技能/插件/指令的目录或目录引用。目录与详情如何使用由主脑决定，不据此引入主脑上下文限额。
+
+### 9.2 现有接口可以复用，但不能直接当完整目录
+
+| 现有部分 | 已能提供 | 尚缺什么 |
+| --- | --- | --- |
+| `instance.plugins` | profile直接依赖与bundle的名称、版本、说明、配置启用状态 | 不等于实际Loader状态；也不代表工具已经注册、服务已经连通 |
+| `skill.list` | 实例agents/skills与home/skills-disabled的技能元数据、来源和启用状态 | 漏掉home/skills、bundle/provider技能与工作区相关技能 |
+| Launcher state | 当前selectedInstanceId、runtime、实例、操作状态等 | 未提供主脑可查询的完整能力快照 |
+| changed事件 | 已向界面发送启动器状态更新 | 还没有Main内部面向伙伴的专用能力订阅与修订刷新 |
+
+依据：`src/main/dsh/launcher.ts:64–79,151–155,286–300`、`src/main/dsh/plugin-controls.ts:61–72`、`src/main/dsh/skill-installer.ts:207–223`。实际技能路由包含home/skills、agents/skills及可用的bundled技能，见 `src/main/dsh/private-skills-routing.ts:115`。
+
+### 9.3 两种目录分别回答两个问题
+
+**实例安装目录**回答“这个执行环境有什么组件可以用来构建Agent”：运行版本内置组件、实例安装的插件/bundle、技能、启用配置、依赖与使用说明。实例停止时也应能读取，不需要启动任务或调用模型。
+
+**执行Agent的有效目录**回答“按这次范式组合后，该Agent实际看见和注册了哪些能力”：必须在同一个实例、profile、工作目录、preset/scoped组合下读取，不能拿Host全局工具表代替。两者都保留，避免把暂时禁用但可组合的组件漏掉，也避免把仅安装的组件说成已经可调用。
+
+上游源码已提供以下读取入口；实际接入时必须由所选运行版本的适配器确认其可用性：
+
+| 类型 | 上游读取入口 | 可得到的内容 |
+| --- | --- | --- |
+| 工具 | `ctx.tools.schemas(agent)`、`get(name,agent)`，另读实际wire schema/transport | Agent作用域内的工具定义与参数schema；省略scope可能漏掉preset/scoped工具，PTC的模型直调入口又不同 |
+| 技能 | `ctx.skills.snapshot({scope:agent,cwd,signal})`、`get(name,...)` | 名称、说明、whenToUse、来源、provider、模型/用户可调用标记、目录是否完整；get读取正文 |
+| 指令 | `ctx.commands.list(agent)` | 当前Agent有效的slash命令及描述、输入提示；不等于系统中所有可执行程序 |
+| 插件状态 | `pluginInventory/list` Remote、`readPluginInventory(ctx)` | Loader实际enabled和pending/loading/active/failed等状态，以及preset组合；不能假设存在同名ctx service |
+| 安装bundle | `pluginManager.listBundles()` | version、installed、enabled、error等安装与配置资料 |
+
+依据：上游 `packages/core/tools/src/index.ts:1230,1260`、`packages/skill/skill/src/index.ts:57–73,470–500`、`packages/interaction/commands/src/index.ts:315`、`packages/host/plugin-inventory/src/index.ts:70`、`packages/host/plugin-inventory/src/types.ts:8–48`、`packages/boot/plugin-manager/src/index.ts:256,280`。
+
+DSH执行模型本来就有能力发现：工具定义进入模型请求，tool-skill在pre-step按Agent与cwd读取技能目录并按变化更新。需要增加的是向伙伴主脑的桥接，不是重做DSH内部技能加载。依据：`packages/core/tools/src/index.ts:854,1008`、`packages/skill/tool-skill/src/index.ts:213–244`。PTC下模型线上可能只得到run_code，目录应同时表示底层可用工具与实际调用方式，避免把schemas中的所有名称都解释成可直接调用。
+
+发现阶段只需要读取目录，不向执行Agent发送任务。可在受控的无模型调用临时检查Agent中读取；正式执行时还应在组合完成、处理目标前回报一次实际目录。自定义插件的加载可能具有副作用，检查runner需有独立检查生命周期，不能把正常profile启动自动当成纯文件读取。若运行检查失败，应保留已知安装目录并明确runtime discovery未完成，不把结果伪装成空能力列表。
+
+工具注册成功也不证明外部搜索、MCP账号或第三方服务已连通。条目应分开记录 declared、installed、configuredEnabled、mounted、agentVisible，以及独立的health/requirements。未知状态和缺失条件明确返回，不因看到插件名就声明业务能力已验证。插件active也不等于MCP初连成功；技能snapshot.complete=false应表示发现未完成，不能当作没有技能。内置bundle还可能来自runtime而不是profile直接依赖，不能只用listBundles.installed过滤掉它。
+
+插件配置说明供宿主解析和启动器管理使用，不作为伙伴构建Agent的必填项。上游 `Config.listConfigs` 可查询条目、包目录与配置JSON Schema，但不返回当前配置值，且不覆盖所有动态Agent preset树；宿主需要时与preset组合目录合并。依据：`packages/extensions/tool-cordis/src/providers.ts:57–63`、`src/config.ts:92–98`。
+
+### 9.4 自动进入主脑，并在环境变化时更新
+
+建议新增 `DshCapabilityRegistry`（名称为设计建议）作为Main内部服务，供所有伙伴共享读取，不为每个角色重复启动相同探针。伙伴每次推理前刷新 `dshEnvironment` 字段，沿用项目已有的clock/files/runtime-state刷新模式；不能只在首次建立并冻结loop上下文时写入一次。依据：`src/main/companions/model.ts:69–71`。
+
+同时提供一个只读 `dsh_capabilities` 工具，允许overview/list/describe/refresh，按工具、技能、插件、CLI入口与slash命令分别查询。describe返回参数schema、配置schema、技能正文或对应本地文档引用，以及适用调用界面和缺失条件。这里只是建议接口，当前伙伴尚无该工具。
+
+按最新范围，主脑自动发现与组合的重点是工具、技能和指令。插件目录可保留为能力来源及排障信息，配置schema主要供宿主使用；不要求主脑安装、启停或配置插件。工具目录应给出稳定ID、名称、用途、输入输出schema、调用方式、可用状态、使用条件，必要时附组合冲突或共享资源信息，供主脑自主选择。
+
+“基础指令”必须区分：所选版本的CLI参数、应用包装器支持的入口、Agent slash命令、系统工具链。某版本支持某个原生参数，不代表WorldlineBox包装器已允许该入口；Web的交互指令也不能直接承诺在headless任务可用。系统工具链只报告已探测的程序、版本和绝对路径，不靠枚举PATH宣称任何命令都可用。
+
+缓存以运行文件摘要、实例配置/依赖锁、技能目录内容和相关工作区为依据。切换CLI实例、插件/技能安装启停卸载、实例升级/恢复/导入、有效配置或技能文件变化后使对应目录失效。普通任务进度变化不应导致全量扫描；更新通过具体配置变更及文件监听触发，下一次推理前确认修订即可。
+
+### 9.5 能力发现与动态范式构建形成闭环
+
+主脑先读实例目录，再声明本次Agent规格；执行工厂返回已解析的实际组件与有效能力目录。TaskSpec携带instanceRef和catalogRevision，让“规划时知道的环境”与“真正启动的环境”对应。若规划期间用户切换实例，应固定原计划环境或返回环境变化供主脑重规划，不能悄悄换到另一个工具集合。
+
+已运行任务继续绑定它自己的环境快照；后续新任务读取新的当前实例。恢复旧session则读取原执行环境，不能用刚切换到的新实例目录替代。这样主脑既能自动知道当前环境，也能自主决定复用、扩展或重新构建执行范式。

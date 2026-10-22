@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { cp, mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { cp, mkdtemp, mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import AdmZip from 'adm-zip';
@@ -112,10 +112,30 @@ describe('Private pinned skill installation', () => {
     const instance = fixtureInstance(rootPath, 'instance-b'); await mkdir(instance.agentsPath, { recursive: true }); await writeFile(path.join(instance.agentsPath, 'skills'), 'not a directory');
     await expect(clean.installSkill(instance, target)).rejects.toThrow();
   });
-  it('does not trust arbitrary renderer destinations or allow deleting unmanaged local skills', async () => {
+  it('manages valid local skills only inside the selected private instance and records their local origin', async () => {
     const rootPath = await fixtureRoot(); const installer = new SkillInstaller({ rootPath, network: fixtureNetwork() }); const instance = fixtureInstance(rootPath, 'instance-a');
     await mkdir(path.join(instance.agentsPath, 'skills', 'fixture-skill'), { recursive: true }); await writeFile(path.join(instance.agentsPath, 'skills', 'fixture-skill', 'SKILL.md'), document);
-    expect(await installer.listSkills(instance)).toEqual([expect.objectContaining({ managed: false })]); await expect(installer.removeSkill(instance, 'fixture-skill')).rejects.toThrow('not installed');
+    expect(await installer.listSkills(instance)).toEqual([expect.objectContaining({ managed: false })]);
+    await installer.setSkillEnabled(instance, 'fixture-skill', false);
+    expect(await installer.listSkills(instance)).toEqual([expect.objectContaining({ managed: true, enabled: false })]);
+    await installer.removeSkill(instance, 'fixture-skill'); expect(await installer.listSkills(instance)).toEqual([]);
     await expect(installer.listSkills({ ...instance, agentsPath: path.join(rootPath, 'foreign') })).rejects.toThrow('private agents directory');
+  });
+  it('uses physical skill activation after an external move rather than an outdated installation receipt', async () => {
+    const rootPath = await fixtureRoot(); const installer = new SkillInstaller({ rootPath, network: fixtureNetwork() }); const instance = fixtureInstance(rootPath, 'instance-a');
+    const target = (await installer.inspectSkill('acme/fixture')).targets[0]!; const installed = await installer.installSkill(instance, target);
+    const disabled = path.join(instance.homePath, 'skills-disabled', target.name); await rename(installed.path, disabled);
+    await installer.setSkillEnabled(instance, target.name, true);
+    expect(await installer.listSkills(instance)).toEqual([expect.objectContaining({ enabled: true, path: installed.path })]);
+    await rename(installed.path, disabled); await installer.removeSkill(instance, target.name); expect(await installer.listSkills(instance)).toEqual([]);
+  });
+  it('rejects ambiguous duplicate local skills instead of choosing a directory to change', async () => {
+    const rootPath = await fixtureRoot(); const installer = new SkillInstaller({ rootPath, network: fixtureNetwork() }); const instance = fixtureInstance(rootPath, 'instance-a');
+    for (const directory of [path.join(instance.agentsPath, 'skills', 'fixture-skill'), path.join(instance.homePath, 'skills-disabled', 'fixture-skill')]) {
+      await mkdir(directory, { recursive: true }); await writeFile(path.join(directory, 'SKILL.md'), document);
+    }
+    await expect(installer.setSkillEnabled(instance, 'fixture-skill', false)).rejects.toThrow('both active and disabled');
+    await expect(installer.removeSkill(instance, 'fixture-skill')).rejects.toThrow('both active and disabled');
+    expect(await installer.listSkills(instance)).toHaveLength(2);
   });
 });

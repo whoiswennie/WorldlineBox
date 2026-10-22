@@ -77,6 +77,43 @@ function dreamResult(data: { messages: Array<{ id: string; content: string }>; r
 }
 
 describe('semantic world background service with actual SQLite sources', () => {
+  it('lets a peer voluntarily join its source topic through native world, then reloads only that topic and its own private state', async () => {
+    let calls = 0, topicId = '';
+    const fetchFn: typeof fetch = async (_url, init) => {
+      const wire = JSON.parse(String(init?.body)), data = JSON.parse(wire.messages[1].content);
+      expect(data.purpose).toBe('world_social'); expect(data.identity.self.id).toBe('bob');
+      expect(data.invocation.topicId).toBe(topicId); expect(JSON.stringify(data)).not.toContain('OTHER_TOPIC_B');
+      expect(JSON.stringify(data)).not.toContain('ALICE_PRIVATE_ONLY');
+      expect(wire.tools.map((tool: { function: { name: string } }) => tool.function.name)).toEqual(['memory', 'world']);
+      if (++calls === 1) {
+        expect(JSON.stringify(data)).not.toContain('PREVIOUS_TOPIC_A'); expect(data.topicState).toBeUndefined();
+        return new Response(JSON.stringify({ choices: [{ message: { content: '', tool_calls: [{ id: 'self_join', type: 'function',
+          function: { name: 'world', arguments: JSON.stringify({ action: 'topic', parameters: { action: 'join', topicId } }) } }] } }] }));
+      }
+      expect(JSON.stringify(data)).toContain('PREVIOUS_TOPIC_A');
+      expect(data.topicState.workingState.state.ownSecret).toBe('BOB_PRIVATE_ONLY');
+      return response({ text: '我自己加入这个话题，按本话题继续。', reason: '愿意参加实际邀请。' });
+    };
+    const f = fixture(fetchFn, false);
+    const peer = f.store.request({ type: 'social.conversation.ensure', companionId: 'alice', memberIds: ['alice', 'bob'] }).socialConversation!;
+    const topic = f.store.request({ type: 'topic.create', conversationId: peer.id, readerId: 'alice', title: '长局A', kind: 'game', participantIds: ['alice', 'bob'] }).topic!; topicId = topic.id;
+    f.store.appendMessage({ conversationId: peer.id, authorId: 'alice', topicId, content: 'PREVIOUS_TOPIC_A', replyDirective: 'none' });
+    let current = f.store.request({ type: 'topic.read', conversationId: peer.id, topicId, readerId: 'alice' }).topic!;
+    f.store.request({ type: 'topic.update', conversationId: peer.id, topicId, readerId: 'alice', expectedRevision: current.revision,
+      patch: { workingState: { state: { ownSecret: 'ALICE_PRIVATE_ONLY' }, sourceMessageIds: [] } } });
+    current = f.store.request({ type: 'topic.read', conversationId: peer.id, topicId, readerId: 'alice' }).topic!;
+    f.store.request({ type: 'topic.update', conversationId: peer.id, topicId, readerId: 'alice', expectedRevision: current.revision,
+      patch: { privateRecipientId: 'bob', workingState: { state: { ownSecret: 'BOB_PRIVATE_ONLY' }, sourceMessageIds: [] } } });
+    const other = f.store.request({ type: 'topic.create', conversationId: peer.id, readerId: 'bob', title: '独立B', kind: 'story', participantIds: ['bob'] }).topic!;
+    f.store.appendMessage({ conversationId: peer.id, authorId: 'bob', topicId: other.id, content: 'OTHER_TOPIC_B', replyDirective: 'none' });
+    f.store.request({ type: 'social.send', companionId: 'alice', conversationId: peer.id, content: 'Bob，愿意加入这个游戏话题吗？', channel: 'phone', clientId: 'peer_topic_invitation' });
+    advance(f.store, 1300); await f.service.tick(); await vi.advanceTimersByTimeAsync(1300);
+    await vi.waitFor(() => expect(f.store.messages({ conversationId: peer.id, topicId }).messages.some(message => message.authorId === 'bob'
+      && message.content === '我自己加入这个话题，按本话题继续。')).toBe(true));
+    expect(calls).toBe(2);
+    expect(f.store.request({ type: 'topic.read', conversationId: peer.id, topicId, readerId: 'alice' }).topic!.participantIds).toContain('bob');
+    expect(f.store.request({ type: 'topic.read', conversationId: peer.id, topicId: other.id, readerId: 'bob' }).topic!.participantIds).toEqual(['bob']);
+  });
   it('requires actual sleep and an indexed source diary before drawing dream admission', () => {
     const f = fixture(async () => response({ notes: [], dream: null }));
     const source = f.store.appendMessage({ conversationId: f.alice.conversationId, authorId: 'alice', content: '我实际读完一段原文，仍保留一个疑问。', replyDirective: 'none' });
@@ -226,7 +263,7 @@ describe('semantic world background service with actual SQLite sources', () => {
   it('lets a resident make a real semantic visit response without granting player tools or leaking private chat', async () => {
     const fetchFn = vi.fn<typeof fetch>().mockImplementation(async (_url, init) => {
       const request = JSON.parse(String(init?.body)), data = JSON.parse(request.messages[1].content);
-      expect(data.purpose).toBe('world_decision'); expect(request.tools).toBeUndefined();
+      expect(data.purpose).toBe('world_decision'); expect(request.tools.map((tool: { function: { name: string } }) => tool.function.name)).toEqual(['memory']);
       expect(JSON.stringify(data)).not.toContain('PRIVATE_PLAYER_ADDRESS');
       expect(data.routine.config.habits[0]).toMatchObject({ kind: 'study', title: '学习活动' });
       expect(data.routine.habitProgress[0].id).toBe(data.routine.config.habits[0].id);
@@ -252,7 +289,7 @@ describe('semantic world background service with actual SQLite sources', () => {
     const fetchFn: typeof fetch = async (_url, init) => {
       const data = JSON.parse(JSON.parse(String(init?.body)).messages[1].content);
       expect(data.purpose).toBe('world_decision'); expect(data.world.events).toEqual([]);
-      expect(data.memories.map((note: { content: string }) => note.content)).toContain('对我而言，独处后再交流有助于想清楚自己的看法。');
+      expect(data.memories).toEqual([]);
       expect(data.memoryContext).toContain('自己的看法'); decisionSeen = true;
       return response({ action: null, reason: '结合自己的已有经历，保持目前的安静生活。', appraisals: [] });
     };

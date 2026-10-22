@@ -85,7 +85,7 @@ test('reads actual text and image pixels with native tools, sends an existing fi
             for (const file of files) { expect(file.available).toBe(true); expect(path.isAbsolute(file.path!)).toBe(true); expect(existsSync(file.path!)).toBe(true); }
             const find = (name: string) => files.find(file => file.name === name)!.path!;
             toolCalls = [['read_text', 'read_file', find('验收记录.txt')], ['read_pixels', 'read_image', find('纸船.png')], ['send_audio', 'send_file', find('现有轻音.wav')]]
-              .map(([id, name, filename]) => ({ id, type: 'function', function: { name, arguments: JSON.stringify({ path: filename }) } }));
+              .map(([id, operation, filename]) => ({ id, type: 'function', function: { name: 'dsh', arguments: JSON.stringify({ operation, parameters: { path: filename } }) } }));
             output = '我先实际查看这份文字和图片，再把已有文件附给你。';
           } else {
             expect(tools.map((tool: { tool_call_id: string }) => tool.tool_call_id).sort()).toEqual(['read_text', 'read_pixels', 'send_audio'].sort());

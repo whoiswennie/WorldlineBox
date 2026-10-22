@@ -8,6 +8,7 @@ import type { DshPackDistribution } from '../../src/shared/dsh-pack-distribution
 import { LocaleProvider } from '../../src/renderer/i18n';
 import { LauncherMarketplace } from '../../src/renderer/launcher/LauncherMarketplace';
 import { InstancePluginControls } from '../../src/renderer/launcher/InstancePluginControls';
+import { InstanceSkillControls } from '../../src/renderer/launcher/InstanceSkillControls';
 import { PackSharing, PackUrlImport } from '../../src/renderer/launcher/PackSharing';
 import type { LauncherRunRequest } from '../../src/renderer/launcher/DshLauncher';
 
@@ -24,6 +25,10 @@ async function mount(element: React.ReactNode) {
 }
 async function render(element: React.ReactNode) { await act(() => root!.render(<LocaleProvider initialPreference="zh-CN">{element}</LocaleProvider>)); }
 async function settle() { await act(async () => { await new Promise(resolve => setTimeout(resolve, 5)); }); }
+async function chooseTarget(id: string) {
+  const select = container!.querySelector<HTMLSelectElement>('select')!;
+  await act(() => { select.value = id; select.dispatchEvent(new Event('change', { bubbles: true })); }); await settle();
+}
 function button(label: string, scope: ParentNode = container!): HTMLButtonElement {
   const found = [...scope.querySelectorAll<HTMLButtonElement>('button')].find(item => item.textContent === label || item.getAttribute('aria-label') === label);
   if (!found) throw new Error(`Missing button ${label}`); return found;
@@ -43,6 +48,8 @@ it('uses cached plugin entries, keeps source-only resources read-only and instal
   expect(run.mock.calls.some(([request]) => request.type === 'market.search')).toBe(false);
   expect(container!.querySelector('script')).toBeNull(); expect(container!.textContent).toContain('<script>plain catalog description</script>');
   expect(button('仅浏览源码').disabled).toBe(true);
+  expect(button('安装到实例').disabled).toBe(true);
+  await chooseTarget('instance-a'); expect(container!.textContent).toContain('管理目标：环境 A');
   await act(() => button('安装到实例').click());
   expect(run).toHaveBeenCalledWith({ type: 'market.plugin.install', instanceId: 'instance-a', entryId: 'npm-plugin' });
   const select = container!.querySelector<HTMLSelectElement>('select')!;
@@ -73,13 +80,52 @@ it('pins the selected repository skill to its inspected commit and reloads insta
   });
   const value = { ...state(), marketplace: { skills: catalog('skill', [entry('skill', 'writing')]) } };
   await mount(<LauncherMarketplace kind="skill" state={value} run={run} />);
+  await chooseTarget('instance-a');
   await act(() => button('查看技能').click());
   expect(container!.textContent).toContain(target.commit.slice(0, 12));
-  await act(() => button('安装技能').click());
+  await act(() => button('安装到「环境 A」').click());
   expect(run).toHaveBeenCalledWith({ type: 'skill.install', instanceId: 'instance-a', target });
+  await act(() => button('本实例已安装技能').click()); await settle();
   const before = run.mock.calls.filter(([request]) => request.type === 'skill.list').length;
   await render(<LauncherMarketplace kind="skill" state={{ ...value, operations: [{ id: 'skill-install', kind: 'skill.install', instanceId: 'instance-a', status: 'succeeded', phase: 'completed', startedAt: '', label: 'install' }] }} run={run} />); await settle();
   expect(run.mock.calls.filter(([request]) => request.type === 'skill.list')).toHaveLength(before + 1);
+});
+
+it('shows skill source revisions and sends management changes to the displayed instance only', async () => {
+  const run = vi.fn<LauncherRunRequest>().mockResolvedValue({ ok: true, installedSkills: [{ name: 'writer', description: 'Write files', enabled: true, managed: true,
+    repository: 'acme/writer', commit: 'a'.repeat(40), sourcePath: 'skills/writer', path: 'C:\\managed\\instances\\instance-a\\agents\\skills\\writer' }] });
+  await mount(<InstanceSkillControls state={state()} instanceId="instance-a" run={run} />);
+  expect(container!.textContent).toContain('管理目标：环境 A'); expect(container!.textContent).toContain('acme/writer'); expect(container!.textContent).toContain('aaaaaaaaaaaa');
+  await act(() => button('停用').click()); expect(run).toHaveBeenCalledWith({ type: 'skill.toggle', instanceId: 'instance-a', name: 'writer', enabled: false });
+  await render(<InstanceSkillControls state={state()} instanceId="instance-b" run={run} />); await settle();
+  expect(button('停用').disabled).toBe(true); expect(container!.textContent).toContain('管理目标：环境 B');
+});
+
+it('discards a skill inspection when its installation target changes, without adopting a later CLI selection', async () => {
+  let finish: ((value: Awaited<ReturnType<LauncherRunRequest>>) => void) | undefined;
+  const target: DshSkillTarget = { name: 'writer', description: 'write', sourcePath: 'skills/writer', repository: 'acme/writer', commit: 'a'.repeat(40), archiveSha256: 'b'.repeat(64) };
+  const run = vi.fn<LauncherRunRequest>().mockImplementation(request => request.type === 'skill.inspect' ? new Promise(resolve => { finish = resolve; }) : Promise.resolve({ ok: true }));
+  const value = { ...state(), marketplace: { skills: catalog('skill', [entry('skill', 'writing')]) } };
+  await mount(<LauncherMarketplace kind="skill" state={value} run={run} />); await chooseTarget('instance-a');
+  await act(() => button('查看技能').click()); await chooseTarget('instance-b');
+  await act(() => finish!({ ok: true, skillInspection: { repository: target.repository, commit: target.commit, archiveSha256: target.archiveSha256, targets: [target] } }));
+  expect(container!.querySelector('.launcher-skill-inspection')).toBeNull();
+  await render(<LauncherMarketplace kind="skill" state={{ ...value, cli: { selectedInstanceId: 'instance-a', commandPath: '', binPath: '', pathEnabled: false, output: '' } }} run={run} />);
+  expect(container!.querySelector<HTMLSelectElement>('select')!.value).toBe('instance-b');
+  expect(run.mock.calls.some(([request]) => request.type === 'skill.install')).toBe(false);
+});
+
+it('does not display an old instance inventory while the new target is loading', async () => {
+  let finish: ((value: Awaited<ReturnType<LauncherRunRequest>>) => void) | undefined;
+  const run = vi.fn<LauncherRunRequest>().mockImplementation(request => request.type === 'instance.plugins' && request.instanceId === 'instance-b'
+    ? new Promise(resolve => { finish = resolve; })
+    : Promise.resolve({ ok: true, installedPlugins: [{ name: '@test/only-a', spec: '1.0.0', description: 'A only', enabled: true, bundle: true, core: false }] }));
+  await mount(<InstancePluginControls state={state()} instanceId="instance-a" run={run} />);
+  expect(container!.querySelector('[data-installed-plugin]')).not.toBeNull();
+  await render(<InstancePluginControls state={state()} instanceId="instance-b" run={run} />); await settle();
+  expect(container!.querySelector('[data-installed-plugin]')).toBeNull();
+  await act(() => finish!({ ok: true, installedPlugins: [] }));
+  expect(container!.textContent).toContain('管理目标：环境 B');
 });
 
 it('offers third-party bundle toggles while protecting core components and avoiding meaningless dependency switches', async () => {

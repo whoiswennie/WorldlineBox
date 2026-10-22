@@ -7,6 +7,7 @@ import type { CompanionScheduleEntry } from '../../src/shared/companion-schedule
 import type { CompanionStateProposal } from '../../src/shared/companion-state';
 import type { CompanionMessage } from '../../src/shared/companions';
 import { recordUrgentAttention } from '../helpers/companion-world-fixture';
+import { companionGoalProofFixture } from '../helpers/companion-goal-proof-fixture';
 
 const seeds: CompanionSeed[] = ['alice', 'bob'].map(id => ({ id, name: id, persona: '认真而尊重用户', description: '', model: '', avatar: 'sister', proactive: false }));
 const stores = new Set<CompanionsStore>(), folders: string[] = [];
@@ -121,22 +122,35 @@ describe('persistent companion schedules', () => {
     expect(store.request({ type: 'schedule.due.claim' }).scheduleOccurrence).toBeUndefined();
   });
 
-  it('keeps one actual action per occurrence and recovers only interrupted execution', () => {
+  it('keeps one parent occurrence across multiple children, renews its lease and requires the final brain proof', () => {
     const { store, scope } = fixture();
     store.request({ type: 'schedule.create', ...scope, entries: [entry({ kind: 'task' })] });
     const claimed = store.request({ type: 'schedule.due.claim' }), occurrence = claimed.scheduleOccurrence!, schedule = claimed.schedule!;
     const input = { ...scope, sourceMessageId: schedule.sourceMessageId, title: '执行任务', status: 'running' as const, scheduleOccurrenceId: occurrence.id };
-    const action = store.createAction(input);
-    expect(store.createAction(input).id).toBe(action.id);
-    store.request({ type: 'schedule.occurrence.update', id: occurrence.id, leaseToken: occurrence.leaseToken, actionId: action.id, status: 'running' });
-    vi.setSystemTime(new Date(time).getTime() + 120000);
+    const goal = companionGoalProofFixture(store, { ...scope, id: occurrence.id, kind: 'schedule', sourceMessageId: schedule.sourceMessageId,
+      instruction: schedule.prompt, authorizationSourceMessageIds: schedule.authorizationSourceMessageIds });
+    const action = store.createAction({ ...input, ...goal.bind(), taskId: 'actual_fixture_step1' });
+    const review = store.createAction({ ...input, ...goal.bind(), taskId: 'actual_fixture_step2' });
+    expect(review.id).not.toBe(action.id);
+    store.request({ type: 'schedule.occurrence.update', id: occurrence.id, leaseToken: occurrence.leaseToken, status: 'running' });
+    vi.setSystemTime(new Date(time).getTime() + 20000);
+    store.request({ type: 'schedule.occurrence.heartbeat', id: occurrence.id, leaseToken: occurrence.leaseToken!, leaseMs: 30000 });
+    vi.setSystemTime(new Date(time).getTime() + 31000);
     expect(store.request({ type: 'schedule.due.claim' }).scheduleOccurrence).toBeUndefined();
+    store.updateAction(action.id, { status: 'succeeded', result: '第一步实际执行完成' });
+    expect(() => store.request({ type: 'schedule.occurrence.update', id: occurrence.id, leaseToken: occurrence.leaseToken,
+      status: 'done', actionId: action.id })).toThrow(/主脑/);
+    expect(store.request({ type: 'schedule.list', ...scope }).scheduleOccurrences?.[0]?.status).toBe('running');
+    vi.setSystemTime(new Date(time).getTime() + 51000);
     store.request({ type: 'action.interrupt-pending' });
     const resumed = store.request({ type: 'schedule.due.claim' }).scheduleOccurrence!;
-    expect(resumed.id).toBe(occurrence.id); expect(resumed.actionId).toBe(action.id);
-    store.updateAction(action.id, { status: 'succeeded', result: '实际执行完成' });
+    expect(resumed.id).toBe(occurrence.id); expect(resumed.actionIds).toEqual([action.id, review.id]);
+    store.updateAction(review.id, { status: 'succeeded', result: '第二步独立核验完成' });
+    const result = '两步均已验收，整个目标完成。', proof = goal.finish(result, [store.getAction(action.id), store.getAction(review.id)]);
+    store.request({ type: 'schedule.occurrence.update', id: resumed.id, leaseToken: resumed.leaseToken,
+      status: 'done', result, goalResult: result, goalInvocationId: proof.invocationId, goalSlot: proof.goalSlot, actionIds: proof.actionIds });
     expect(store.request({ type: 'schedule.due.claim' }).scheduleOccurrence).toBeUndefined();
-    expect(store.request({ type: 'schedule.list', ...scope }).scheduleOccurrences?.[0]).toMatchObject({ id: occurrence.id, status: 'done', result: '实际执行完成' });
+    expect(store.request({ type: 'schedule.list', ...scope }).scheduleOccurrences?.[0]).toMatchObject({ id: occurrence.id, status: 'done', result });
   });
 
   it('protects concurrent edits, records changed authorization and pauses or cancels future work', () => {
@@ -354,7 +368,8 @@ describe('virtual routine scheduling and offline energy', () => {
     store.updateAction(action.id, { status: 'succeeded', result: '实际检查完成' });
     store.request({ type: 'world.work.end', companionId: 'alice', workId: 'long_check' });
     store.request({ type: 'world.work.begin', ...scope, workId: 'crash_check', kind: 'action', sourceMessageId: source.id });
-    store.createAction({ ...scope, sourceMessageId: source.id, title: '退出前的新检查', status: 'running' });
+    const order = store.request({ type: 'work-order.create', ...scope, title: '退出前的新检查', instruction: source.content, sourceMessageId: source.id }).workOrder!;
+    store.createAction({ ...scope, sourceMessageId: source.id, title: order.title, workOrderId: order.id, status: 'running' });
     vi.setSystemTime('2026-10-14T09:15:00Z');
     store.request({ type: 'state.get', ...scope });
     close(store);

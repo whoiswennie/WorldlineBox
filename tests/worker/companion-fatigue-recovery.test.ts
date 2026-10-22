@@ -76,7 +76,7 @@ it('does not abandon accepted work or its real route, then physically rests when
   f.store.request({ type: 'world.work.begin', ...f.scope, kind: 'action', workId: 'concentrated', sourceMessageId: source.id, fixed: true });
   const recoveryStarts = snapshot(f.store).events.filter(event => event.kind === 'recovery_started').length;
   let world = advance(f.store, 10000); expect(actor(world).activity).toBe('working');
-  expect(f.store.request({ type: 'routine.get', ...f.scope }).routine!.runtime.canRespond).toBe(false);
+  expect(f.store.request({ type: 'routine.get', ...f.scope }).routine!.runtime.canRespond).toBe(true);
   expect(world.works.find(work => work.workId === 'concentrated')?.status).toBe('ready');
   world = advance(f.store, 2 * 60000); expect(actor(world).activity).toBe('working'); expect(world.events.filter(event => event.kind === 'recovery_started')).toHaveLength(recoveryStarts);
   f.store.request({ type: 'world.work.end', companionId: 'alice', workId: 'concentrated' });
@@ -92,11 +92,11 @@ it('keeps sleep and meals above fatigue recovery but permits ordinary player pho
   let routine = f.store.request({ type: 'routine.get', ...f.scope }).routine!;
   f.store.request({ type: 'routine.configure', ...f.scope, expectedRevision: routine.revision, patch: { meals: [{ name: '午餐', at: '10:00', durationMinutes: 30 }] } });
   world = advance(f.store, 10000); expect(actor(world).activity).toBe('eating');
-  expect(f.store.request({ type: 'routine.get', ...f.scope }).routine!.runtime.canRespond).toBe(false);
+  expect(f.store.request({ type: 'routine.get', ...f.scope }).routine!.runtime.canRespond).toBe(true);
   routine = f.store.request({ type: 'routine.get', ...f.scope }).routine!;
   f.store.request({ type: 'routine.configure', ...f.scope, expectedRevision: routine.revision, patch: { sleepAt: '09:00', wakeAt: '11:00' } });
   world = advance(f.store, 20000); expect(actor(world).activity).toBe('sleeping');
-  expect(f.store.request({ type: 'routine.get', ...f.scope }).routine!.runtime.canRespond).toBe(false);
+  expect(f.store.request({ type: 'routine.get', ...f.scope }).routine!.runtime.canRespond).toBe(true);
 });
 
 it('leaves a foreign recovery sofa at the actual permission expiry and only resumes recovery after reaching its own sofa', () => {

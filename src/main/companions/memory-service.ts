@@ -314,7 +314,7 @@ export class CompanionMemoryService {
   }
 
   async recall(input: { companion: Companion; conversation: CompanionConversation; messages: readonly CompanionMessage[];
-    currentMessage: CompanionMessage; referencedMessage?: CompanionMessage; beforeSequence?: number; config: CompanionModelConfig; signal?: AbortSignal }): Promise<CompanionMemoryRecall> {
+    currentMessage: CompanionMessage; referencedMessage?: CompanionMessage; beforeSequence?: number; query?: string; config: CompanionModelConfig; signal?: AbortSignal }): Promise<CompanionMemoryRecall> {
     const scope = { companionId: input.companion.id, conversationId: input.conversation.id,
       beforeSequence: input.beforeSequence ?? input.currentMessage.sequence };
     const allowed = (await this.options.request({ type: 'memory.sources.filter', ...scope,
@@ -323,7 +323,7 @@ export class CompanionMemoryService {
     if (!allowed.some(message => message.id === input.currentMessage.id)) return { memories: [], sources: [], reasons: [], pending: false, degraded: false };
     input.signal?.throwIfAborted();
     const reference = input.referencedMessage && allowed.find(message => message.id === input.referencedMessage!.id);
-    const query = { query: [input.currentMessage.content, ...(reference ? [`引用语境：${reference.content}`] : [])].join('\n').slice(0, 16000), limit: 12 };
+    const query = { query: input.query ?? [input.currentMessage.content, ...(reference ? [`引用语境：${reference.content}`] : [])].join('\n').slice(0, 16000), limit: 12 };
     const authorized = new Map(allowed.map(message => [message.id, message]));
     const history = input.messages.filter(message => message.id !== input.currentMessage.id && authorized.has(message.id))
       .map(message => authorized.get(message.id)!).filter(message => message.kind === 'text' && !message.memoryEvidenceOnly)

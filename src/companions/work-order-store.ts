@@ -3,6 +3,7 @@ import type { CompanionConnection } from './store';
 import type { CompanionAction, CompanionMessage } from '../shared/companions';
 import type { CompanionStorageCommand, CompanionStorageResponse } from '../shared/companion-storage';
 import { companionWorkOrderSchema, type CompanionWorkOrder } from '../shared/companion-work-order';
+import { verifyCompanionGoalProof } from './goal-proof';
 
 type Row = Record<string, string | number | null>;
 type Scope = { companionId: string; conversationId: string };
@@ -89,39 +90,31 @@ export class CompanionWorkOrderStore {
       this.db.prepare('INSERT INTO companion_work_order_audit(order_id,revision,data) VALUES(?,?,?)').run(order.id, 1, JSON.stringify(order)); this.changed(); return order;
     }).immediate();
   }
-  /** The action is the execution authority; an order never fabricates success. */
+  /** Bind each attempt to its parent authority. Attempts do not complete it. */
   bindAction(action: CompanionAction, instruction?: string): CompanionAction | undefined {
-    let order: CompanionWorkOrder;
-    if (action.workOrderId) order = this.allowed(action, action.workOrderId);
-    else order = this.create(action, action.title.trim() || '执行安排', instruction || this.visible(action, [action.sourceMessageId])[0]?.content || action.title || '执行已授权安排。', action.sourceMessageId);
+    void instruction;
+    if (!action.workOrderId) return undefined;
+    const order = this.allowed(action, action.workOrderId);
     if (order.execution !== 'external') throw new Error('伙伴发布的工作不能获得现实执行权限，必须由用户明确授权。');
-    if (order.conversationId !== action.conversationId || !order.authorizationSourceMessageIds.includes(action.sourceMessageId)) throw new Error('行动与工作单的实际授权来源不一致。');
-    if (order.actionId) {
-      const existing = this.db.prepare('SELECT data FROM actions WHERE id=?').get(order.actionId);
-      if (existing) return parse<CompanionAction>(row(existing).data);
-    }
+    if (order.conversationId !== action.conversationId || order.sourceMessageId !== action.sourceMessageId) throw new Error('行动与工作单的当前授权来源不一致。');
     if (['offered', 'paused', 'cancelled', 'completed', 'failed'].includes(order.status)) throw new Error('工作单尚未受理、已暂停或已结束。');
     action.workOrderId = order.id; return undefined;
   }
   assertActionResume(action: CompanionAction): void {
     if (!action.workOrderId) return;
     const order = this.reconcile(this.load(action.workOrderId));
-    if (order.actionId !== action.id || order.execution !== 'external' || ['paused', 'cancelled', 'completed', 'offered'].includes(order.status)) throw new Error('工作单已暂停、取消或已有新的执行，请从工作台恢复或新建工作。');
+    if (order.companionId !== action.companionId || order.conversationId !== action.conversationId || order.execution !== 'external'
+      || order.sourceMessageId !== action.sourceMessageId || !['accepted', 'running'].includes(order.status)) throw new Error('工作单未处于可执行状态，请从工作台恢复或新建工作。');
   }
   actionChanged(action: CompanionAction): void {
     if (!action.workOrderId) return;
     const order = this.load(action.workOrderId);
+    if (order.sourceMessageId !== action.sourceMessageId) return;
     const before = JSON.stringify(order);
-    if (order.companionId !== action.companionId || order.actionId && order.actionId !== action.id) throw new Error('行动不属于这张工作单。');
-    order.actionId = action.id;
-    if (!['paused', 'cancelled'].includes(order.status)) {
-      order.status = action.status === 'succeeded' ? 'completed' : action.status === 'failed' ? 'failed' : action.status === 'cancelled' ? 'cancelled' : action.status === 'interrupted' ? 'accepted' : 'running';
-      if (action.result) order.result = action.result.slice(0, 32000);
-      if (action.error) order.error = action.error.slice(0, 2000);
-      if (['queued', 'running'].includes(action.status)) { delete order.result; delete order.error; }
-    }
+    if (order.companionId !== action.companionId || order.conversationId !== action.conversationId) throw new Error('行动不属于这张工作单。');
+    if (!order.actionIds?.includes(action.id)) order.actionId = action.id;
+    order.actionIds = [...new Set([...(order.actionIds ?? []), action.id])];
     if (JSON.stringify(order) !== before) this.save(order);
-    if (terminal.has(order.status)) this.db.prepare('UPDATE companion_work_orders SET lease_until=NULL WHERE id=?').run(order.id);
   }
   private claim(companionId?: string, leaseMs = 120000): CompanionStorageResponse {
     return this.db.transaction(() => {
@@ -131,14 +124,9 @@ export class CompanionWorkOrderStore {
           AND NOT EXISTS(SELECT 1 FROM json_each(o.data,'$.authorizationSourceMessageIds') s WHERE s.value=json_extract(i.data,'$.sourceMessageId')))
         AND NOT EXISTS(SELECT 1 FROM companion_reset_jobs r WHERE r.companion_id=o.companion_id AND r.status!='completed')
         AND EXISTS(SELECT 1 FROM companions p WHERE p.id=o.companion_id AND p.deleted_at IS NULL AND json_extract(p.data,'$.active')=1)
-        AND NOT EXISTS(SELECT 1 FROM actions a WHERE a.id=o.action_id AND a.status IN('queued','running'))
-        AND NOT EXISTS(SELECT 1 FROM companion_work_orders other WHERE other.companion_id=o.companion_id AND other.id!=o.id AND other.status='running' AND (other.lease_until>? OR EXISTS(SELECT 1 FROM actions a WHERE a.id=other.action_id AND a.status IN('queued','running')))) ORDER BY ordinal LIMIT 100`).all(...args, at);
+        AND NOT EXISTS(SELECT 1 FROM companion_work_orders other WHERE other.companion_id=o.companion_id AND other.id!=o.id AND other.status='running' AND other.lease_until>?) ORDER BY ordinal LIMIT 100`).all(...args, at);
       for (const found of candidates) {
         const order = this.reconcile(this.load(String(row(found).id))); if (order.status === 'cancelled') continue;
-        if (order.actionId) { const action = this.db.prepare('SELECT data,status FROM actions WHERE id=?').get(order.actionId); if (action) {
-          if (['queued', 'running'].includes(String(row(action).status))) continue;
-          if (row(action).status === 'succeeded' || order.status !== 'accepted' && ['failed', 'cancelled'].includes(String(row(action).status))) { this.actionChanged(parse(row(action).data)); continue; }
-        } }
         const leaseToken = randomUUID(), leaseUntil = new Date(Date.now() + leaseMs).toISOString(); order.status = 'running'; this.save(order);
         this.db.prepare('UPDATE companion_work_orders SET lease_token=?,lease_until=? WHERE id=?').run(leaseToken, leaseUntil, order.id);
         return { ok: true, workOrderClaim: { order, leaseToken, leaseUntil } };
@@ -175,12 +163,12 @@ export class CompanionWorkOrderStore {
             const source = this.source(command, command.sourceMessageId, title, instruction);
             if (order.authorizationSourceMessageIds.length >= 100) throw new Error('这张工作单修订较多，请新建工作单。');
             order.title = title; order.instruction = instruction; order.publisherId = source.authorId; order.sourceMessageId = source.id;
-            order.authorizationSourceMessageIds = [...new Set([...order.authorizationSourceMessageIds, source.id])]; order.execution = source.authorId === 'user' ? 'external' : 'internal'; delete order.actionId;
+            order.authorizationSourceMessageIds = [...new Set([...order.authorizationSourceMessageIds, source.id])]; order.execution = source.authorId === 'user' ? 'external' : 'internal'; delete order.actionId; delete order.actionIds;
           } else if (command.type === 'work-order.accept') order.status = 'accepted';
           else {
-            if (command.type === 'work-order.pause' && !command.paused && order.actionId) {
-              const action = this.db.prepare('SELECT status FROM actions WHERE id=?').get(order.actionId);
-              if (action && ['queued', 'running'].includes(String(row(action).status))) throw new Error('旧执行尚未停止，请等待停止完成再恢复。');
+            if (command.type === 'work-order.pause' && !command.paused) {
+              const action = this.db.prepare("SELECT 1 FROM actions WHERE json_extract(data,'$.workOrderId')=? AND status IN('queued','running') LIMIT 1").get(order.id);
+              if (action) throw new Error('旧执行尚未停止，请等待停止完成再恢复。');
             }
             order.status = command.type === 'work-order.cancel' ? 'cancelled' : command.paused ? 'paused' : 'accepted';
           }
@@ -202,11 +190,11 @@ export class CompanionWorkOrderStore {
           if (replay && row(replay).lease_token === command.leaseToken && parse<CompanionWorkOrder>(row(replay).data).status === 'completed') return { ok: true, workOrder: this.projection(this.load(command.id)) };
           const order = this.leased(command.id, command.leaseToken);
           if (order.execution === 'external') {
-            const action = order.actionId && this.db.prepare('SELECT data,status FROM actions WHERE id=?').get(order.actionId);
-            if (!action || row(action).status !== 'succeeded') throw new Error('现实工作尚无实际行动成功证据。');
-            this.actionChanged(parse(row(action).data)); return { ok: true, workOrder: this.load(order.id) };
+            verifyCompanionGoalProof(this.db, { kind: 'work', ...order, goalInvocationId: command.goalInvocationId,
+              goalSlot: command.goalSlot, result: command.result, actionIds: command.actionIds });
+            order.actionIds = [...new Set(command.actionIds ?? [])];
           }
-          if (!command.result) throw new Error('内部工作需要实际完成的结果正文。');
+          if (!command.result) throw new Error('工作需要实际完成的结果正文。');
           const message = this.append(order, command.result, 'order_result_' + order.id, order.sourceMessageId);
           order.status = 'completed'; order.result = message.content; order.completionMessageId = message.id; this.save(order);
           this.db.prepare('UPDATE companion_work_orders SET lease_until=NULL WHERE id=?').run(order.id);

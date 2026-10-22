@@ -18,7 +18,8 @@ function setup(fetchFn: typeof fetch) {
   store.request({ type: 'routine.configure', ...scope, expectedRevision: routine.revision, patch: { timeZone: 'UTC', sleepAt: '23:00', wakeAt: '07:00', meals: [], habits: [] } });
   const source = store.appendMessage({ conversationId: scope.conversationId, authorId: 'user', content: '去自己的沙发坐一会儿，完成后告诉我。', replyDirective: 'none' });
   const task = store.request({ type: 'activity.start', ...scope, sourceMessageId: source.id, clientId: 'independent_goal', title: '坐到沙发', goal: source.content }).activityTask!;
-  service = new CompanionActivityTaskService({ request: async input => store.request(input),
+  service = new CompanionActivityTaskService({ request: async input => input.type === 'memory.search'
+    ? { ok: true, memoryPage: { items: [], hasMore: false } } : store.request(input),
     configFor: async () => ({ apiFormat: 'openai_chat', model: 'fixture', apiKey: 'fake-local-key', baseUrl: 'https://fixture.invalid' }),
     profiles: async () => ({ publicProfiles: [], visualInputs: [] }), fetchFn, excludedIds: () => [], changed: vi.fn(), report: error => { throw error; } });
   return { ...scope, task };
@@ -201,7 +202,8 @@ it.each(['private', 'group', 'world', 'world-private-owned', 'private-own-revise
     materialId = store.request({ type: 'memory.record', ...materialScope, candidate: { diaryName: '学习资料', content: source.content, tags: ['学习资料', '阅读方法'],
       sourceMessageIds: [source.id], evidence: [{ sourceMessageId: source.id, quote: source.content }] } }).memories![0]!.id;
     const calls: CompanionStorageCommand[] = [];
-    service = new CompanionActivityTaskService({ request: async input => { calls.push(input); return store.request(input); },
+    service = new CompanionActivityTaskService({ request: async input => { calls.push(input); return input.type === 'memory.search'
+      ? { ok: true, memoryPage: { items: [], hasMore: false } } : store.request(input); },
       configFor: async () => ({ apiFormat: 'openai_chat', model: 'fixture', apiKey: 'fake', baseUrl: 'https://fixture.invalid' }),
       profiles: async () => ({ publicProfiles: [], visualInputs: [] }), fetchFn, excludedIds: () => [], changed: vi.fn(), report: error => { throw error; } });
     const goal = '阅读本人可见资料 ' + materialId + '；只有实际读到内容后才用逐字证据形成个人认识，保持原来源范围。';
@@ -241,7 +243,8 @@ it.each(['revise', 'forget'] as const)('rejects stale learning after a previousl
   const candidate = { diaryName: '学习资料', content: source.content, tags: ['学习资料'], sourceMessageIds: [sourceId], evidence: [{ sourceMessageId: sourceId, quote }] };
   materialId = store.request({ type: 'memory.record', ...scope, candidate }).memories![0]!.id;
   const calls: CompanionStorageCommand[] = [];
-  service = new CompanionActivityTaskService({ request: async input => { calls.push(input); return store.request(input); },
+  service = new CompanionActivityTaskService({ request: async input => { calls.push(input); return input.type === 'memory.search'
+    ? { ok: true, memoryPage: { items: [], hasMore: false } } : store.request(input); },
     configFor: async () => ({ apiFormat: 'openai_chat', model: 'fixture', apiKey: 'fake', baseUrl: 'https://fixture.invalid' }),
     profiles: async () => ({ publicProfiles: [], visualInputs: [] }), fetchFn, excludedIds: () => [], changed: vi.fn(), report: error => { throw error; } });
   const request = store.appendMessage({ conversationId: scope.conversationId, authorId: 'user', content: '阅读这份资料并形成有来源的个人认识。', replyDirective: 'none' });

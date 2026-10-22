@@ -10,6 +10,7 @@ import { initializeMemoryProcessingJournal, memoryProcessingStatus } from './mem
 import { CompanionCharacterDevelopmentStore } from './character-development-store';
 import type { CompanionMemoryStateIntegration } from './state-store';
 import { normalizeCompanionCharacterDiary } from '../shared/companion-character-development';
+import { initializeTopicParticipationReceipts, topicParticipationMemoryContent, topicParticipationMemoryTags, type TopicParticipationReceipt } from './topic-participation';
 type Row = Record<string, string | number | null>;
 const row = (value: unknown) => value as Row;
 const rows = (value: unknown[]) => value.map(row);
@@ -18,6 +19,43 @@ const stamp = () => new Date().toISOString();
 const hash = (value: unknown) => createHash('sha256').update(JSON.stringify(value)).digest('hex');
 /** Host journal ledger, evidence and delivery. Memory retrieval belongs exclusively to VCP. */
 export class CompanionMemoryStore {
+    private deletedTopicSource(messageId: string): boolean {
+        return !!this.db.prepare(`SELECT 1 FROM companion_message_topics m JOIN companion_topics t ON t.id=m.topic_id
+          WHERE m.message_id=? AND json_extract(t.data,'$.deletedAt') IS NOT NULL`).get(messageId);
+    }
+    /** Fictional identities and secrets belong to their topic, never the global VCP ledger. */
+    private fictionalSource(messageId: string, visited = new Set<string>()): boolean {
+        if (visited.has(messageId) || visited.size >= 64) return true;
+        visited.add(messageId);
+        if (this.db.prepare(`SELECT 1 FROM companion_message_topics m JOIN companion_topics t ON t.id=m.topic_id
+          WHERE m.message_id=? AND json_extract(t.data,'$.kind') IN('game','story')`).get(messageId)) return true;
+        const receipt = this.db.prepare('SELECT value FROM metadata WHERE key=?').get('memory-world-observation/' + messageId);
+        if (!receipt) return false;
+        const observation = json<{observation?:{category?:string};sources?:Array<{id:string}>}>(row(receipt).value);
+        return observation.observation?.category === 'topics' || !!observation.sources?.some(source => this.fictionalSource(source.id, new Set(visited)));
+    }
+    private rejectFictionalSources(ids: readonly string[]): void {
+        if (ids.some(id => this.fictionalSource(id))) throw new Error('游戏与故事中的角色、秘密和情节不能写入全局记忆。请在普通对话中记录真实参与的体验。');
+    }
+    private validateParticipationCandidate(companionId:string,sources:readonly CompanionMessage[],draft:ReturnType<typeof companionMemoryCandidateSchema.parse>):void {
+        for(const source of sources){
+            const found=this.db.prepare('SELECT value FROM metadata WHERE key=?').get('memory-world-observation/'+source.id);
+            const receiptId=found?json<{topicParticipation?:string}>(row(found).value).topicParticipation:undefined;
+            if(!receiptId) continue;
+            const saved=this.db.prepare('SELECT data FROM companion_topic_participation_receipts WHERE id=? AND companion_id=?').get(receiptId,companionId);
+            const receipt=saved?json<TopicParticipationReceipt>(row(saved).data):undefined;
+            const expected=receipt?{topicParticipation:receipt.id,topicId:receipt.topicId,participationAction:receipt.action,trust:receipt.trust}:undefined;
+            if(!receipt||sources.length!==1||draft.content!==topicParticipationMemoryContent(receipt)||draft.diaryName!=='活动体验'||draft.occurredAt!==receipt.occurredAt||draft.selfDevelopment||draft.relatedMemoryIds.length||draft.learnedEntranceSourceId
+              ||JSON.stringify([...draft.tags].sort())!==JSON.stringify(topicParticipationMemoryTags(receipt).sort())
+              ||!expected||Object.keys(draft.metadata??{}).length!==Object.keys(expected).length||Object.entries(expected).some(([key,value])=>draft.metadata?.[key]!==value))
+                throw Error('话题参与凭证只能保存宿主核验的实际参与事实，不能改写为游戏角色、秘密或现实知识。');
+        }
+    }
+    private retireFictionalCaptureJobs(): void {
+        this.db.prepare(`UPDATE vcp_capture_jobs SET status='done',lease_token=NULL,lease_until=NULL,error=NULL
+          WHERE status IN('pending','failed','running') AND EXISTS(SELECT 1 FROM companion_message_topics m JOIN companion_topics t ON t.id=m.topic_id
+            WHERE m.message_id=vcp_capture_jobs.message_id AND (json_extract(t.data,'$.kind') IN('game','story') OR json_extract(t.data,'$.deletedAt') IS NOT NULL))`).run();
+    }
     private readonly invalidatedOwners = new Set<string>();
     private readonly invalidatedScopes = new Set<string>();
     invalidateOwner(id: string): void {
@@ -35,11 +73,13 @@ export class CompanionMemoryStore {
       private readonly withdrawStateMemories?: (companionId: string, versions: Array<{ id: string; version: number }>) => void) { this.sources = new CompanionSourceAccess(db, getMessage); this.development = new CompanionCharacterDevelopmentStore(db, (scope, note) => this.visible(scope, note)); }
     initialize(): void {
         this.sources.initialize();
+        initializeTopicParticipationReceipts(this.db);
         this.db.exec(`
       CREATE TABLE IF NOT EXISTS vcp_memory_scopes(scope_id TEXT PRIMARY KEY,companion_id TEXT NOT NULL,conversation_id TEXT NOT NULL,revision INTEGER NOT NULL,state TEXT NOT NULL,updated_at TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS vcp_memory_notes(id TEXT PRIMARY KEY,companion_id TEXT NOT NULL REFERENCES companions(id),conversation_id TEXT NOT NULL,scope_id TEXT NOT NULL REFERENCES vcp_memory_scopes(scope_id),identity_key TEXT NOT NULL,data TEXT NOT NULL,UNIQUE(companion_id,identity_key));
       CREATE INDEX IF NOT EXISTS vcp_note_scope ON vcp_memory_notes(companion_id,conversation_id);
       CREATE INDEX IF NOT EXISTS vcp_note_live_owner ON vcp_memory_notes(companion_id,json_extract(data,'$.status'));
+      CREATE INDEX IF NOT EXISTS vcp_note_reset_pending ON vcp_memory_notes(companion_id,id) WHERE json_extract(data,'$.status') NOT IN('forgotten','invalid');
       CREATE TABLE IF NOT EXISTS vcp_note_sources(note_id TEXT NOT NULL REFERENCES vcp_memory_notes(id) ON DELETE CASCADE,message_id TEXT NOT NULL REFERENCES messages(id),revision INTEGER NOT NULL,checksum TEXT NOT NULL,PRIMARY KEY(note_id,message_id));
       CREATE INDEX IF NOT EXISTS vcp_note_source_message ON vcp_note_sources(message_id,note_id);
       CREATE TABLE IF NOT EXISTS vcp_note_source_history(note_id TEXT NOT NULL REFERENCES vcp_memory_notes(id) ON DELETE CASCADE,message_id TEXT NOT NULL REFERENCES messages(id),PRIMARY KEY(note_id,message_id));
@@ -115,6 +155,15 @@ export class CompanionMemoryStore {
         }
     }
     private enqueue(note: CompanionMemory, operation: 'remember' | 'forget'): void {
+        if (operation === 'remember') {
+            this.rejectFictionalSources(note.sources.map(source => source.messageId));
+            if(typeof note.metadata?.topicParticipation==='string'){
+                const saved=this.db.prepare('SELECT data FROM companion_topic_participation_receipts WHERE id=? AND companion_id=?').get(note.metadata.topicParticipation,note.companionId);
+                const receipt=saved?json<TopicParticipationReceipt>(row(saved).data):undefined;
+                if(!receipt||note.content!==topicParticipationMemoryContent(receipt)||note.diaryName!=='活动体验'||note.occurredAt!==receipt.occurredAt
+                  ||JSON.stringify([...note.tags].sort())!==JSON.stringify(topicParticipationMemoryTags(receipt).sort())) throw Error('宿主参与体验只能保留实际参与事实与原始事件标签，不能改写为现实知识。');
+            }
+        }
         this.db.prepare("UPDATE vcp_memory_outbox SET status='done',lease_token=NULL,lease_until=NULL WHERE note_id=? AND note_version<? AND status!='running'").run(note.id, note.version);
         this.db.prepare('INSERT OR IGNORE INTO vcp_memory_outbox(id,companion_id,scope_id,note_id,note_version,operation,data) VALUES(?,?,?,?,?,?,?)').run(randomUUID(), note.companionId, note.scopeId, note.id, note.version, operation, JSON.stringify({ noteId: note.id, version: note.version }));
         this.db.prepare("UPDATE vcp_memory_scopes SET revision=revision+1,state='dirty',updated_at=? WHERE scope_id=?").run(stamp(), note.scopeId);
@@ -125,7 +174,7 @@ export class CompanionMemoryStore {
             return false;
         visited.add(note.id);
         if (note.companionId !== scope.companionId || ['forgotten', 'invalid'].includes(note.status) || !note.sources.length
-            || this.sources.captureHeld(note.companionId, note.sourceConversationId))
+            || note.sources.some(source => this.fictionalSource(source.messageId)) || this.sources.captureHeld(note.companionId, note.sourceConversationId))
             return false;
         if (this.sources.blockedTag({ ...scope, conversationId: note.sourceConversationId }, note.tags, note.sourceSequence))
             return false;
@@ -135,6 +184,21 @@ export class CompanionMemoryStore {
     }
     sourcesFilter(scope: Scope, ids: string[]): CompanionMessage[] { return this.sources.filter(scope, ids); }
     observeSource(messageId: string, companionId: string): void { this.sources.observe(messageId, companionId); }
+    /** A deterministic activity memory from a persisted transition, with no fictional content. */
+    recordTopicParticipation(messageId:string,companionId:string):CompanionMemory|undefined {
+        const found=this.db.prepare('SELECT * FROM messages WHERE id=?').get(messageId),metadata=this.db.prepare('SELECT value FROM metadata WHERE key=?').get('memory-world-observation/'+messageId);
+        if(!found||!metadata) throw Error('话题参与体验缺少宿主凭证。');
+        const source=row(found),proof=json<{companionId:string;forConversationId:string;checksum:string;topicParticipation?:string}>(row(metadata).value);
+        const saved=proof.topicParticipation?this.db.prepare('SELECT data FROM companion_topic_participation_receipts WHERE id=? AND companion_id=?').get(proof.topicParticipation,companionId):undefined;
+        const receipt=saved?json<TopicParticipationReceipt>(row(saved).data):undefined,worldRoom='world_'+companionId;
+        const payload=json<{items?:unknown[]}>(source.content);
+        if(!receipt||receipt.trust!=='actual_participation_only'||proof.companionId!==companionId||proof.forConversationId!==worldRoom||source.conversation_id!==worldRoom||source.author_id!=='system'||source.kind!=='notice'||source.status!=='sent'
+          ||proof.checksum!==companionSourceChecksum(String(source.content))||JSON.stringify(payload.items?.[0])!==JSON.stringify(receipt)) throw Error('话题参与体验与实际事件不一致。');
+        const scope={companionId,conversationId:worldRoom},tags=topicParticipationMemoryTags(receipt);
+        if(this.sources.captureHeld(companionId,worldRoom)||this.sources.blockedTag(scope,tags,Number(source.sequence))||!this.sources.visible(scope,source)) return;
+        return this.record(scope,{content:topicParticipationMemoryContent(receipt),tags,diaryName:'活动体验',occurredAt:receipt.occurredAt,
+          sourceMessageIds:[messageId],evidence:[{sourceMessageId:messageId,quote:String(source.content)}],metadata:{topicParticipation:receipt.id,topicId:receipt.topicId,participationAction:receipt.action,trust:receipt.trust}});
+    }
     /** Host-only completed-world receipt; ordinary world_query observations remain opt-in. */
     enqueueWorldExperience(messageId: string, companionId: string): void {
         const found = this.db.prepare('SELECT * FROM messages WHERE id=?').get(messageId);
@@ -159,6 +223,7 @@ export class CompanionMemoryStore {
             .run(randomUUID(), companionId, worldRoom, messageId, source.sequence, source.sequence, receipt.checksum, source.revision ?? 1);
     }
     enqueueMessage(messageId: string, finalizedLoop = false, historical = false): void {
+        if (this.fictionalSource(messageId) || this.deletedTopicSource(messageId)) return;
         if (this.sources.managementSource(messageId)) return;
         if (this.db.prepare('SELECT 1 FROM metadata WHERE key=?').get('memory-world-observation/' + messageId))
             return;
@@ -235,6 +300,7 @@ export class CompanionMemoryStore {
     claim(companionId?: string, leaseMs = 120000): CompanionMemoryJob | undefined {
         return this.db.transaction(() => {
             const now = Date.now();
+            this.retireFictionalCaptureJobs();
             this.db.prepare("UPDATE vcp_capture_jobs SET status='pending',lease_token=NULL,lease_until=NULL WHERE status='running' AND lease_until<=?").run(now);
             const found = this.db.prepare(`SELECT j.* FROM vcp_capture_jobs j JOIN companions c ON c.id=j.companion_id WHERE j.status IN('pending','failed') AND j.next_attempt<=? AND j.attempts<8 AND c.deleted_at IS NULL AND json_extract(c.data,'$.active')=1 AND NOT EXISTS(SELECT 1 FROM companion_reset_jobs r WHERE r.companion_id=j.companion_id AND r.status!='completed') AND NOT EXISTS(SELECT 1 FROM vcp_source_policy_holds h WHERE h.companion_id=j.companion_id AND h.conversation_id IN(j.conversation_id,'*') AND h.released_at IS NULL) ${companionId ? 'AND j.companion_id=?' : ''} ORDER BY j.ordinal LIMIT 1`).get(...(companionId ? [now, companionId] : [now]));
             if (!found)
@@ -251,6 +317,12 @@ export class CompanionMemoryStore {
         if (notes.length > 100) throw new Error('单批日记候选不能超过100条。');
         return this.db.transaction(() => {
             const job = this.leased('vcp_capture_jobs', id, token), batch = rows(this.db.prepare("SELECT * FROM vcp_capture_jobs WHERE status='running' AND lease_token=?").all(token)), sourceIds = new Set(batch.map(source => String(source.message_id)));
+            if (batch.some(source => this.fictionalSource(String(source.message_id)) || this.deletedTopicSource(String(source.message_id)))) {
+                // A topic association can be restored while an older capture is in flight.
+                // Discard that model output and its state proposal together.
+                this.db.prepare("UPDATE vcp_capture_jobs SET status='done',error=NULL,lease_token=NULL,lease_until=NULL,output_note_versions='[]' WHERE lease_token=?").run(token);
+                return [];
+            }
             const scope = { companionId: String(job.companion_id), conversationId: String(job.conversation_id), beforeSequence: Math.max(...batch.map(source => Number(source.through_sequence))) };
             this.sources.assertProhibitionRevision(scope, expectedProhibitionRevision);
             for (const source of batch) {
@@ -308,6 +380,8 @@ export class CompanionMemoryStore {
             const available = this.sources.filter(scope, draft.sourceMessageIds);
             if (available.length !== new Set(draft.sourceMessageIds).size)
                 throw new Error('日记来源不可见、已撤回或尚未正式发送。');
+            this.rejectFictionalSources(available.map(source => source.id));
+            this.validateParticipationCandidate(scope.companionId,available,draft);
             const references = available.map(source => this.sources.reference(row(this.db.prepare('SELECT * FROM messages WHERE id=?').get(source.id))));
             const domains = references.map(source => this.sources.logicalDomain(source.messageId));
             if (new Set(domains).size !== 1)
@@ -381,7 +455,7 @@ export class CompanionMemoryStore {
             this.invalidateDependents(id, visited);
         }).immediate();
     }
-    resetOwner(owner: string, limit: number): number { const notes = rows(this.db.prepare("SELECT id FROM vcp_memory_notes WHERE companion_id=? AND json_extract(data,'$.status') NOT IN('forgotten','invalid') LIMIT ?").all(owner, limit)); for (const note of notes)
+    resetOwner(owner: string, limit: number): number { const notes = rows(this.db.prepare("SELECT id FROM vcp_memory_notes INDEXED BY vcp_note_reset_pending WHERE companion_id=? AND json_extract(data,'$.status') NOT IN('forgotten','invalid') LIMIT ?").all(owner, limit)); for (const note of notes)
         this.withdrawNote(String(note.id), 'forgotten'); return notes.length; }
     rebuildIndex(companionId?: string): number { return this.db.transaction(() => { const found = rows(this.db.prepare("SELECT data FROM vcp_memory_notes WHERE json_extract(data,'$.status') IN('queued','indexed')" + (companionId ? ' AND companion_id=?' : '')).all(...(companionId ? [companionId] : []))); for (const entry of found) {
         const note = json<CompanionMemory>(entry.data);
@@ -466,7 +540,9 @@ export class CompanionMemoryStore {
             return { id: String(entry.id), companionId: note.companionId, scopeId: note.scopeId, noteId: note.id, noteVersion: note.version, operation: entry.operation as 'remember' | 'forget', note, leaseToken: token, attempts: Number(entry.attempts) + 1 };
         }).immediate();
     }
-    completeOutbox(id: string, token: string, indexed: boolean, sourceFile?: string): void { this.db.transaction(() => { const entry = this.leased('vcp_memory_outbox', id, token), note = this.load(String(entry.note_id)); if (entry.operation === 'remember' && note.version === Number(entry.note_version) && this.visible(this.sources.ownerScope(note.companionId), note)) {
+    completeOutbox(id: string, token: string, indexed: boolean, sourceFile?: string): void { this.db.transaction(() => { const entry = this.leased('vcp_memory_outbox', id, token), note = this.load(String(entry.note_id));
+      if (entry.operation === 'remember' && note.version === Number(entry.note_version) && note.sources.some(source => this.fictionalSource(source.messageId) || this.deletedTopicSource(source.messageId))) this.withdrawNote(note.id, 'invalid');
+      if (entry.operation === 'remember' && note.version === Number(entry.note_version) && this.visible(this.sources.ownerScope(note.companionId), note)) {
         if (!indexed)
             throw new Error('VCP 尚未确认索引完成。');
         note.status = 'indexed';
@@ -721,6 +797,7 @@ export class CompanionMemoryStore {
                 try {
                     if (item.noteId) { const note = this.load(item.noteId); return item.sourceRevision === String(note.version) && this.visible(this.sources.ownerScope(command.companionId), note) ? note.content : undefined; }
                     if (item.sourceMessageId && item.conversationId) {
+                        if (this.fictionalSource(item.sourceMessageId)) return undefined;
                         const source = this.db.prepare('SELECT * FROM messages WHERE id=?').get(item.sourceMessageId);
                         return source && item.sourceRevision === `${row(source).revision ?? 1}:${companionSourceChecksum(String(row(source).content))}` && this.sources.visible({ companionId: command.companionId, conversationId: item.conversationId }, row(source)) ? String(row(source).content) : undefined;
                     }

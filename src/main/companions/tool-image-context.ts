@@ -1,4 +1,5 @@
 import type { CompanionLoopTurn } from '../../shared/companion-loop';
+import { normalizeCompanionCapabilityCall } from '../../shared/companion-capability-tools';
 import type { CompanionToolImageReference, ToolVisualInput } from '../../shared/companion-file-tool';
 import type { CompanionVisualInput } from '../../shared/companion-public-profile';
 import type { CompanionModelConfig } from './model';
@@ -11,7 +12,7 @@ export interface CompanionToolImageDelivery {
 export function prepareCompanionLoopVisuals(context: { system: string; user: string }, profiles: readonly CompanionVisualInput[] | undefined,
   inputs: readonly ToolVisualInput[] | undefined, turns: readonly CompanionLoopTurn[], config: CompanionModelConfig, rejected = false) {
   const tools: CompanionToolImageDelivery[] = turns.flatMap((turn, index) => (turn.results ?? []).flatMap(result =>
-    turn.calls.some(call => call.id === result.callId && call.name === 'read_image')
+    turn.calls.some(call => { try { return call.id === result.callId && normalizeCompanionCapabilityCall(call).name === 'read_image'; } catch { return false; } })
       ? (result.images ?? []).map(reference => ({ turn: index, callId: result.callId, reference, delivery: 'path_only' as const })) : []));
   const byKey = new Map((inputs ?? []).map(image => [image.callId + ':' + image.attachmentId + ':' + image.sha256, image]));
   const capability = companionModelVisionCapability(config), snapshots = new Set<string>();

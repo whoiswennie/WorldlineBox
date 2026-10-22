@@ -12,7 +12,8 @@ const input: CompanionReplyInput = {
 const config: CompanionModelConfig = { apiFormat: 'openai_chat', model: 'selected-model', baseUrl: 'https://provider.invalid', apiKey: 'private-test-key' };
 const entry = { title: '喝水', prompt: '提醒用户喝水。', kind: 'reminder', runAt: '2026-10-15T09:00:00+08:00', timeZone: 'Asia/Shanghai', recurrence: 'weekly', weekDays: [1, 3, 5] };
 function response(format: AiApiFormat, args: unknown, textOnly = false): Response {
-  const name = 'schedule', text = '已按你的时间设置。';
+  args = { action: 'schedule', parameters: args };
+  const name = 'world', text = '已按你的时间设置。';
   const message = textOnly ? { content: text } : { content: null, tool_calls: [{ id: 'schedule_1', type: 'function', function: { name, arguments: JSON.stringify(args) } }] };
   const body = format === 'openai_chat' ? { choices: [{ message }] }
     : format === 'dashscope_native' ? { output: { choices: [{ message }] } }
@@ -29,11 +30,11 @@ describe('native companion calendar capability', () => {
       const args = { action: 'create', entries: [entry] };
       const fetchFn = vi.fn<typeof fetch>().mockResolvedValueOnce(response(format, args)).mockResolvedValueOnce(response(format, {}, true));
       const reply = await generateCompanionReply(input, { ...config, apiFormat: format }, undefined, { fetchFn, loop: true });
-      expect(reply.turn?.calls).toEqual([{ id: 'schedule_1', name: 'schedule', arguments: JSON.stringify(args) }]);
+      expect(reply.turn?.calls).toEqual([{ id: 'schedule_1', name: 'world', arguments: JSON.stringify({ action: 'schedule', parameters: args }) }]);
       const request = JSON.parse(String(fetchFn.mock.calls[0]?.[1]?.body));
       const registry = format === 'dashscope_native' ? request.parameters.tools : request.tools;
       const tools = format === 'gemini_native' ? registry[0].function_declarations : registry.map((tool: { function?: unknown }) => tool.function ?? tool);
-      expect(tools.some((tool: { name: string }) => tool.name === 'schedule')).toBe(true);
+      expect(tools.some((tool: { name: string }) => tool.name === 'world')).toBe(true);
       const result = JSON.stringify({ ok: true, schedules: [{ id: 'saved_schedule', revision: 1, nextRunAt: '2026-10-15T01:00:00Z' }] });
       await generateCompanionReply(input, { ...config, apiFormat: format }, undefined, { fetchFn, loop: true,
         turns: [{ ...reply.turn!, results: [{ callId: 'schedule_1', content: result }] }] });
@@ -41,7 +42,7 @@ describe('native companion calendar capability', () => {
       if (format === 'openai_chat' || format === 'dashscope_native') expect((format === 'openai_chat' ? second.messages : second.input.messages).at(-1)).toEqual({ role: 'tool', tool_call_id: 'schedule_1', content: result });
       else if (format === 'openai_responses') expect(second.input.at(-1)).toEqual({ type: 'function_call_output', call_id: 'schedule_1', output: result });
       else if (format === 'anthropic') expect(second.messages.at(-1).content[0]).toEqual({ type: 'tool_result', tool_use_id: 'schedule_1', content: result });
-      else expect(second.contents.at(-1).parts[0].functionResponse).toEqual({ id: 'schedule_1', name: 'schedule', response: { result } });
+      else expect(second.contents.at(-1).parts[0].functionResponse).toEqual({ id: 'schedule_1', name: 'world', response: { result } });
     });
   it('accepts a requested series, preserves constraints and defaults fixed-time schedules', () => {
     const parsed = companionScheduleArgumentsSchema.parse({ action: 'create', entries: [entry, { ...entry, title: '只读检查', prompt: '只读检查项目文件；不要修改或删除。', kind: 'task', recurrence: 'once', weekDays: undefined }] });

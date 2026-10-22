@@ -136,8 +136,9 @@ describe('persistent virtual routine source and clock behavior', () => {
     const { store, scope, filename } = fixture(), initial = store.request({ type: 'routine.get', ...scope }).routine!;
     store.request({ type: 'routine.configure', ...scope, expectedRevision: initial.revision, patch: { timeZone: 'UTC', meals: [], habits: [habit] } });
     const source = store.appendMessage({ conversationId: scope.conversationId, authorId: 'user', content: '做一次检查。' });
+    const order = store.request({ type: 'work-order.create', ...scope, sourceMessageId: source.id, title: '检查', instruction: source.content }).workOrder!;
     atComputer(store, scope, source, 'crashed_work');
-    const action = store.createAction({ ...scope, sourceMessageId: source.id, title: '检查', status: 'running' });
+    const action = store.createAction({ ...scope, workOrderId: order.id, sourceMessageId: source.id, title: '检查', status: 'running' });
     const lastObservedAt = '2026-10-14T09:20:00.000Z';
     vi.setSystemTime(lastObservedAt); store.request({ type: 'state.get', ...scope });
     store.close(); stores.delete(store);

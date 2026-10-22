@@ -22,7 +22,7 @@ const config: CompanionModelConfig = { apiFormat: 'openai_chat', model: 'selecte
 const proposal = { reason: '用户实际表达陪伴支持', appraisals: [{ type: 'support', target: 'user', intensity: 0.6, confidence: 0.9 }],
   sourceMessageIds: ['user_message'], evidence: [{ sourceMessageId: 'user_message', quote: '谢谢你一直陪我做 WorldlineBox' }] };
 function response(format: AiApiFormat): Response {
-  const name = 'state', args = { action: 'inspect' };
+  const name = 'world', args = { action: 'state', parameters: { action: 'inspect' } };
   const message = { content: null, tool_calls: [{ id: 'state_1', type: 'function', function: { name, arguments: JSON.stringify(args) } }] };
   const value = format === 'openai_chat' ? { choices: [{ message }] }
     : format === 'dashscope_native' ? { output: { choices: [{ message }] } }
@@ -38,7 +38,7 @@ describe('continuous companion state affects behavior without replacing persona 
     'injects the current host state and exposes a real native state inspection in %s', async format => {
       const fetchFn = vi.fn<typeof fetch>().mockImplementation(async () => response(format));
       const reply = await generateCompanionReply(input, { ...config, apiFormat: format }, undefined, { fetchFn, loop: true });
-      expect(reply.turn?.calls[0]).toEqual({ id: 'state_1', name: 'state', arguments: '{"action":"inspect"}' });
+      expect(reply.turn?.calls[0]).toEqual({ id: 'state_1', name: 'world', arguments: '{"action":"state","parameters":{"action":"inspect"}}' });
       const request = JSON.parse(String(fetchFn.mock.calls[0]?.[1]?.body));
       const data = JSON.parse(format === 'openai_responses' ? request.input[0].content : format === 'gemini_native' ? request.contents[0].parts[0].text
         : format === 'dashscope_native' ? request.input.messages[1].content[0].text : request.messages[format === 'anthropic' ? 0 : 1].content);
@@ -103,7 +103,7 @@ describe('continuous companion state affects behavior without replacing persona 
   it('keeps change receipts out of inference and never forwards old private state tool fields', () => {
     const data = JSON.parse(buildCompanionContext({ ...input, runtimeState: { ...runtimeState, recentChanges: [{ reason: 'PRIVATE_CHANGE_REASON' }] as CompanionRuntimeState['recentChanges'] } }).user);
     expect(data.runtimeState).not.toHaveProperty('recentChanges');
-    const turns = [{ text: '', rawText: '', calls: [{ id: 'old_state', name: 'state', arguments: '{}' }], results: [{ callId: 'old_state', content: JSON.stringify({ ok: true, runtimeState: { ...runtimeState, focus: 'REVOKED_FOCUS' } }) }] }];
+    const turns = [{ text: '', rawText: '', calls: [{ id: 'old_state', name: 'world', arguments: '{"action":"state","parameters":{"action":"inspect"}}' }], results: [{ callId: 'old_state', content: JSON.stringify({ ok: true, runtimeState: { ...runtimeState, focus: 'REVOKED_FOCUS' } }) }] }];
     const projected = companionStateToolTurns(turns);
     expect(JSON.stringify(projected)).not.toContain('REVOKED_FOCUS'); expect(turns[0]!.results[0]!.content).toContain('REVOKED_FOCUS');
     expect(companionStateToolTurns([{ ...turns[0]!, results: [{ callId: 'old_state', content: '{broken' }] }])[0]!.results![0]!.content).toContain('请重新读取当前状态');

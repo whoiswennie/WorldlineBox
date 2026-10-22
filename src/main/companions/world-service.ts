@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import type { Companion, CompanionConversation } from '../../shared/companions';
+import type { Companion, CompanionConversation, CompanionMessage } from '../../shared/companions';
 import type { CompanionStorageCommand, CompanionStorageResponse } from '../../shared/companion-storage';
 import type { CompanionWorldJob, CompanionWorldScope, CompanionWorldSnapshot } from '../../shared/companion-world';
 import type { CompanionModelConfig } from './model';
@@ -12,6 +12,11 @@ import { generateCompanionSocialReply } from './social-model';
 import { generateCompanionSocialNotification } from './social-notification-model';
 import type { CompanionProfileInput } from '../../shared/companion-public-profile';
 import { COMPANION_SLEEP_DREAM_CONCURRENCY, COMPANION_SLEEP_RECALL_LIMIT } from '../../shared/companion-sleep';
+import { companionRecallCapabilities } from './structured-agent';
+import { companionTopicCapabilities } from './topic-capabilities';
+import { ensureTopicContinuity } from './topic-compaction';
+import { COMPANION_DIALOGUE_WINDOW } from './context-window';
+import type { CompanionReplyInput } from './context';
 
 interface WorldServiceOptions {
   request(command: CompanionStorageCommand): Promise<CompanionStorageResponse>;
@@ -97,7 +102,8 @@ export class CompanionWorldService {
     await this.ticking;
   }
   async ready(input: CompanionWorldScope & { workId: string; kind: 'chat' | 'action' | 'schedule' | 'learning'; sourceMessageId?: string;
-    urgent?: boolean; fixed?: boolean; learningGrantId?: string; learningLeaseToken?: string }, signal?: AbortSignal, onWaiting?: (reason: string) => void): Promise<void> {
+    urgent?: boolean; fixed?: boolean; learningGrantId?: string; learningLeaseToken?: string;
+    authorizationGrantId?: string; invocationId?: string }, signal?: AbortSignal, onWaiting?: (reason: string) => void): Promise<void> {
     if (signal?.aborted || this.closed) throw cancelled();
     try {
       let work = (await this.options.request({ type: 'world.work.begin', ...input })).worldWork;
@@ -137,16 +143,35 @@ export class CompanionWorldService {
       const conversation = state?.conversations.find(room => room.id === job.conversationId && room.memberIds.includes(job.companionId));
       if (!companion || !conversation) throw new Error('伙伴通信会话不存在。');
       const scope = { companionId: companion.id, conversationId: conversation.id, beforeSequence: job.throughSequence };
-      const recent = (await this.options.request({ type: 'messages', conversationId: conversation.id, before: job.throughSequence + 1, limit: 50 })).messages ?? [];
-      const sources = (await this.options.request({ type: 'memory.sources.filter', ...scope, ids: [...new Set([...recent.map(message => message.id), job.sourceMessageId])] })).memorySources ?? [];
-      const source = sources.find(message => message.id === job.sourceMessageId);
+      const source = (await this.options.request({ type: 'memory.sources.filter', ...scope, ids: [job.sourceMessageId] })).memorySources?.[0];
       if (!source || source.authorId === 'user') throw new Error('伙伴通信实际来信已不可访问。');
+      const loadPort = async () => {
+        const topicView = source.topicId ? await this.options.request({ type: 'topic.read', conversationId: conversation.id,
+          topicId: source.topicId, readerId: companion.id }) : undefined;
+        if (source.topicId && topicView?.topic?.status !== 'active') throw new Error('本人话题已暂停、结束或删除。');
+        const joined = !source.topicId || topicView?.topic?.participantIds.includes(companion.id);
+        const recent: CompanionMessage[] = []; let before = job.throughSequence + 1;
+        if (joined) while (recent.length < COMPANION_DIALOGUE_WINDOW.maxMessages) {
+          const limit = Math.min(100, COMPANION_DIALOGUE_WINDOW.maxMessages - recent.length);
+          const page = (await this.options.request({ type: 'messages', conversationId: conversation.id, topicId: source.topicId ?? null,
+            before, limit })).messages ?? [];
+          if (!page.length) break;
+          recent.unshift(...page); const next = page[0]!.sequence; if (next >= before) break; before = next;
+          if (page.length < limit) break;
+        }
+        const visible: CompanionMessage[] = [];
+        for (let start = 0; start < recent.length; start += 100) visible.push(...((await this.options.request({ type: 'memory.sources.filter', ...scope,
+          ids: recent.slice(start, start + 100).map(message => message.id) })).memorySources ?? []));
+        return { topic: topicView?.topic, topicState: joined ? topicView?.topicState : undefined,
+          messages: joined ? visible.filter(message => message.topicId === source.topicId) : [source], joined };
+      };
+      const port = await loadPort(), sources = port.messages;
       const world = await this.observe(scope);
       if (!world) throw new Error('伙伴当前世界不可访问。');
       const routine = (await this.options.request({ type: 'routine.get', ...scope })).routine;
       const config = await this.options.configFor(companion);
       await progress('memory', '正在回忆与这条来信有关的经历', { status: 'running' });
-      const recalled: Partial<CompanionMemoryRecall> | undefined = this.options.recall ? await this.options.recall({ companion, conversation, messages: sources,
+      let recalled: Partial<CompanionMemoryRecall> | undefined = this.options.recall ? await this.options.recall({ companion, conversation, messages: sources,
         currentMessage: source, beforeSequence: job.throughSequence, config, signal })
         : await this.options.request({ type: 'memory.search', ...scope, query: source.content.slice(0, 16000), limit: 8 })
           .then(response => ({ memories: response.memoryPage?.items.map(hit => hit.memory) ?? [], context: response.memoryContext }))
@@ -163,11 +188,36 @@ export class CompanionWorldService {
       const runtime = stateResponse.runtimeState;
       if (!latestWorld) throw new Error('伙伴最新世界状态不可访问。');
       const result = await generateCompanionSocialReply({ companion, conversation, source, messages: sources, job, world: latestWorld, routine, ...profiles,
+        topic: port.topic, topicState: port.topicState,
+        memoryRecall: { ...recalled, reasons: recalled?.reasons ?? [], pending: recalled?.pending ?? false, degraded: recalled?.degraded ?? false },
         characterDevelopment: developmentResponse.characterDevelopment,
         memories: recalled?.memories ?? [], memoryContext: recalled?.context?.text,
         ...(runtime ? { selfState: { energy: runtime.energy, mood: runtime.mood, expression: runtime.expression, affect: runtime.affect } } : {}),
         members: state!.companions.filter(member => conversation.memberIds.includes(member.id)).map(member => ({ id: member.id, name: member.name, description: member.description })) },
-      config, signal, { fetchFn: this.options.fetchFn });
+      config, signal, { fetchFn: this.options.fetchFn,
+        capabilities: companionTopicCapabilities(this.options.request, scope, companionRecallCapabilities(this.options.request, scope)),
+        prepareFrame: async (frame: CompanionReplyInput) => {
+          const [currentPort, currentState, validSource] = await Promise.all([loadPort(),
+            this.options.request({ type: 'state', includeHidden: true, conversationId: conversation.id }),
+            this.options.request({ type: 'memory.sources.filter', ...scope, ids: [source.id] })]);
+          const currentSource = validSource.memorySources?.[0];
+          if (!currentSource || currentSource.content !== source.content || currentSource.topicId !== source.topicId) throw new Error('本轮伙伴来信来源已经改变。');
+          const owner = currentState.state?.companions.find(role => role.id === companion.id);
+          if (!owner || owner.active === false) throw cancelled();
+          if (this.options.memoryContextValid && !await this.options.memoryContextValid(scope, recalled?.context)) {
+            recalled = this.options.recall ? await this.options.recall({ companion: owner, conversation, messages: currentPort.messages,
+              currentMessage: currentSource, beforeSequence: job.throughSequence, config, signal })
+              : await this.options.request({ type: 'memory.search', ...scope, query: currentSource.content.slice(0, 16000), limit: 8 })
+                .then(response => ({ memories: response.memoryPage?.items.map(hit => hit.memory) ?? [], context: response.memoryContext }));
+          }
+          const next = { ...frame, companion: owner, ...currentPort,
+            memories: recalled?.context ? [] : recalled?.memories ?? [], memoryRecall: { ...recalled, reasons: recalled?.reasons ?? [],
+              pending: recalled?.pending ?? false, degraded: recalled?.degraded ?? false },
+            invocation: frame.invocation ? { ...frame.invocation, messagePort: currentPort.joined
+              ? { kind: 'conversation' as const } : { kind: 'invocation' as const, messageIds: [source.id] } } : undefined };
+          return currentPort.joined ? ensureTopicContinuity({ frame: next, request: this.options.request, config,
+            signal, fetchFn: this.options.fetchFn }) : next;
+        } });
       const wait = Date.parse(job.typingNotBefore) - Date.now();
       await progress('waiting', '回应已准备好，正在核验并发送');
       if (wait > 0) await delay(wait, signal);
@@ -240,7 +290,8 @@ export class CompanionWorldService {
           memories, memoryContext: memoryResponse?.memoryContext?.text,
           ...profiles, routine, ...(runtime ? { selfState: { energy: runtime.energy, mood: runtime.mood, expression: runtime.expression,
             affect: runtime.affect, focus: runtime.focus, busy: world.works.some(work => work.companionId === companion.id && work.status !== 'ended') } } : {}),
-          members: state!.companions.filter(member => member.id === companion.id || world.perception?.visibleCompanionIds.includes(member.id)).map(member => ({ id: member.id, name: member.name, description: member.description })) }, config, signal, { fetchFn: this.options.fetchFn });
+          members: state!.companions.filter(member => member.id === companion.id || world.perception?.visibleCompanionIds.includes(member.id)).map(member => ({ id: member.id, name: member.name, description: member.description })) }, config, signal,
+        { fetchFn: this.options.fetchFn, capabilities: companionRecallCapabilities(this.options.request, scope) });
         if (signal.aborted || this.closed) throw cancelled();
         if (this.options.memoryContextValid && !await this.options.memoryContextValid(scope, memoryResponse?.memoryContext)) {
           throw new Error('本轮回忆来源已经变化，世界决策将重新读取。');

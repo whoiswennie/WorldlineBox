@@ -102,7 +102,7 @@ async function providerFixture() {
               chunk(response, taskFinalText); chunk(response, '', 'stop'); response.end('data: [DONE]\n\n'); return;
             }
             chunk(response, taskFirstText);
-            response.write('data: ' + JSON.stringify({ choices: [{ index: 0, delta: { tool_calls: [{ index: 0, id: 'flow_dsh_' + sourceId, type: 'function', function: { name: 'dsh', arguments: JSON.stringify({ tasks: [{ title: '隔离计算', prompt: executorMarker + '。只计算用户本轮请求的算式；不运行命令，不访问文件。' }] }) } }] }, finish_reason: null }] }) + '\n\n');
+            response.write('data: ' + JSON.stringify({ choices: [{ index: 0, delta: { tool_calls: [{ index: 0, id: 'flow_dsh_' + sourceId, type: 'function', function: { name: 'dsh', arguments: JSON.stringify({ operation: 'run', tasks: [{ title: '隔离计算', prompt: executorMarker + '。只计算用户本轮请求的算式；不运行命令，不访问文件。' }] }) } }] }, finish_reason: null }] }) + '\n\n');
             response.write('data: ' + JSON.stringify({ choices: [{ index: 0, delta: {}, finish_reason: 'tool_calls' }] }) + '\n\n'); response.end('data: [DONE]\n\n'); return;
           }
           chunk(response, firstText);
@@ -135,6 +135,7 @@ test('phone chat streams from a friends sofa while only native DSH execution req
     const guestRoom = (await request(page, { type: 'conversation.open', companionId: guestId })).conversation!, hostRoom = (await request(page, { type: 'conversation.open', companionId: hostId })).conversation!;
     const initial = await snapshot(page); await request(page, { type: 'world.configure', expectedRevision: initial.settings.revision, patch: { mode: 'realtime' } });
     for (const [companionId, conversationId] of [[guestId, guestRoom.id], [hostId, hostRoom.id]] as const) {
+      await request(page, { type: 'companion.set-active', id: companionId, active: true });
       const routine = (await request(page, { type: 'routine.get', companionId, conversationId })).routine!, hour = (await snapshot(page)).clock.hour;
       await request(page, { type: 'routine.configure', companionId, conversationId, expectedRevision: routine.revision, patch: { wakeAt: clock(hour - 8), sleepAt: clock(hour + 8), meals: [], habits: [] } });
     }
@@ -144,7 +145,13 @@ test('phone chat streams from a friends sofa while only native DSH execution req
     await walkIntoWorldHome(page, guestScope, hostId);
     await expect.poll(async () => { const value = actor(await snapshot(page)); return value.sceneId === 'home_' + hostId && !value.route.length; }, { timeout: 40000 }).toBe(true);
     async function sitAtFriendsSofa() {
-      const anchor = (await snapshot(page)).scenes.find(scene => scene.ownerId === hostId)!.objects.find(object => object.kind === 'sofa')!.anchor;
+      const home = (await snapshot(page)).scenes.find(scene => scene.ownerId === hostId)!, anchor = home.objects.find(object => object.kind === 'sofa')!.anchor;
+      // Walk along the visible entrance aisle and actually perceive the room;
+      // a visit grant does not teach the guest unobserved furniture identifiers.
+      const vantage = { x: home.door.x, y: home.door.y - 7 };
+      await request(page, { type: 'world.tool', ...guestScope, arguments: { action: 'move', position: vantage } });
+      await expect.poll(async () => { const value = actor(await snapshot(page)); return Math.hypot(value.position.x - vantage.x, value.position.y - vantage.y) < .01 && !value.route.length; }, { timeout: 20000 }).toBe(true);
+      await expect.poll(async () => (await request(page, { type: 'world.observe', ...guestScope })).world?.perception?.visibleObjectIds.includes(hostId + '_sofa'), { timeout: 6000 }).toBe(true);
       await request(page, { type: 'world.tool', ...guestScope, arguments: { action: 'move', destinationId: hostId + '_sofa' } });
       await expect.poll(async () => { const value = actor(await snapshot(page)); return Math.hypot(value.position.x - anchor.x, value.position.y - anchor.y) < .01 && !value.route.length && value.activity === 'idle'; }, { timeout: 20000 }).toBe(true);
       await request(page, { type: 'world.tool', ...guestScope, arguments: { action: 'interact', furnitureId: hostId + '_sofa', interaction: 'sit' } });
@@ -179,22 +186,22 @@ test('phone chat streams from a friends sofa while only native DSH execution req
     await expect(page.locator('[data-companion-messages]')).toContainText(provider.finalText);
     await expect.poll(async () => (await snapshot(page)).works.filter(work => work.companionId === guestId).length).toBe(0);
     expect(actor(await snapshot(page)).sceneId).toBe('home_' + hostId);
-    await modal.getByRole('combobox', { name: '观测地点', exact: true }).selectOption('park');
-    const source = (await request(page, { type: 'message.send', conversationId: guestRoom.id, content: urgent, clientId: randomUUID() })).message!;
-    let streetCaptured = false, sawStand = false, sawRun = false;
+    await modal.getByRole('combobox', { name: '观测地点', exact: true }).selectOption('home_' + hostId);
+    const source = (await request(page, { type: 'message.send', conversationId: guestRoom.id, content: urgent, priority: 'urgent', clientId: randomUUID() })).message!;
+    let journeyCaptured = false, sawStand = false, sawRun = false;
     await expect.poll(async () => {
       const world = await snapshot(page), current = actor(world); samples.push({ at: Date.now(), label: 'urgent_journey', actor: current, works: world.works });
       sawStand ||= current.activity === 'standingUp'; sawRun ||= current.activity === 'walking' && current.locomotion === 'run';
       const execution = await executorState(application!);
       if (!world.works.some(work => work.companionId === guestId && work.kind === 'action' && work.status === 'ready')) expect(execution.calls.filter(call => call.type === 'task.run')).toHaveLength(0);
-      if (current.sceneId === 'park' && current.activity === 'walking' && !streetCaptured) {
+      if (current.sceneId === 'home_' + hostId && current.travel?.targetSceneId === 'home_' + guestId && current.route.length && current.activity === 'walking' && !journeyCaptured) {
         await expect(modal.locator('[data-world-actor="' + guestId + '"]')).toBeVisible();
-        await worldPage.screenshot({ path: path.join(artifacts, 'verified-world-urgent-running-home.png') }); streetCaptured = true;
+        await worldPage.screenshot({ path: path.join(artifacts, 'verified-world-urgent-running-home.png') }); journeyCaptured = true;
       }
       return execution.calls.some(call => call.type === 'task.run');
     }, { timeout: 40000, intervals: [150, 250] }).toBe(true);
-    expect(sawStand).toBe(true); expect(streetCaptured).toBe(true);
-    expect(provider.requests.some(request => request.purpose === 'world_attention' && request.sourceText === urgent)).toBe(true);
+    expect(sawStand).toBe(true); expect(journeyCaptured).toBe(true);
+    expect(samples.some(sample => sample.actor.travel?.targetSceneId === 'home_' + guestId && sample.actor.locomotion === 'run' && sample.actor.route.length > 0)).toBe(true);
     const first = (await executorState(application)).calls.find(call => call.type === 'task.run')!;
     expect(actor(first.world!).sceneId).toBe('home_' + guestId); expect(actor(first.world!).furnitureId).toBe(guestId + '_computer'); expect(actor(first.world!).activity).toBe('working');
     expect(first.world!.works.find(work => work.companionId === guestId && work.kind === 'action')?.status).toBe('ready');
@@ -212,8 +219,8 @@ test('phone chat streams from a friends sofa while only native DSH execution req
     await walkIntoWorldHome(page, guestScope, hostId);
     await expect.poll(async () => { const value = actor(await snapshot(page)); return value.sceneId === 'home_' + hostId && !value.route.length && value.activity === 'idle'; }, { timeout: 40000 }).toBe(true);
     await sitAtFriendsSofa();
-    const cancelled = (await request(page, { type: 'message.send', conversationId: guestRoom.id, content: cancelledUrgent, clientId: randomUUID() })).message!;
-    await expect.poll(async () => { const world = await snapshot(page), value = actor(world); samples.push({ at: Date.now(), label: 'cancelled_journey', actor: value, works: world.works }); return value.sceneId === 'park' && value.activity === 'walking'; }, { timeout: 25000, intervals: [200] }).toBe(true);
+    const cancelled = (await request(page, { type: 'message.send', conversationId: guestRoom.id, content: cancelledUrgent, priority: 'urgent', clientId: randomUUID() })).message!;
+    await expect.poll(async () => { const world = await snapshot(page), value = actor(world); samples.push({ at: Date.now(), label: 'cancelled_journey', actor: value, works: world.works }); return value.sceneId === 'home_' + hostId && value.travel?.targetSceneId === 'home_' + guestId && value.activity === 'walking' && value.route.length > 0; }, { timeout: 25000, intervals: [200] }).toBe(true);
     expect(provider.requests.filter(request => request.purpose === 'task_reply' && request.sourceId === cancelled.id)).toHaveLength(1);
     expect((await executorState(application)).calls.filter(call => call.type === 'task.run')).toHaveLength(1);
     await request(page, { type: 'reply.cancel', conversationId: guestRoom.id });

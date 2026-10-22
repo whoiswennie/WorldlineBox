@@ -3,6 +3,8 @@ import type { CompanionConnection } from './store';
 type Row = Record<string, string | number | null>;
 const kinds = "'visit_request','visit_response','scene_depart','scene_enter','travel_blocked','visit_leave','social_interrupt','social_resume'";
 const visibleWorld = `json_extract(data,'$.kind') IN(${kinds}) AND json_extract(data,'$.privateOwner') IS NULL AND COALESCE(json_extract(data,'$.withdrawn'),0)=0`;
+/** Keep tombstoned topic content out of every observer projection, including indexed branches. */
+export const visibleSocialTopic = (messageId: string): string => `NOT EXISTS(SELECT 1 FROM companion_message_topics association JOIN companion_topics topic ON topic.id=association.topic_id WHERE association.message_id=${messageId} AND json_extract(topic.data,'$.deletedAt') IS NOT NULL)`;
 
 /** A rebuildable disk index of actual audiences, never model memory or a second message authority. */
 export function initializeSocialFlowIndex(db: CompanionConnection): void {
@@ -58,7 +60,7 @@ export function recentSocialFacts(db: CompanionConnection, owner: string, now: s
     WHERE json_extract(data,'$.${field}')=? AND ${visibleWorld} AND json_extract(data,'$.at')<=? ORDER BY json_extract(data,'$.at') DESC,id DESC LIMIT ?)`;
   return db.prepare(`SELECT * FROM(
     SELECT * FROM(SELECT 'm' AS source,a.message_id AS id,a.virtual_at AS at FROM companion_social_audience a INDEXED BY companion_social_audience_time JOIN messages m ON m.id=a.message_id
-      WHERE a.companion_id=? AND a.virtual_at<=? AND m.status='sent' AND ${validRoom} ORDER BY a.virtual_at DESC,a.message_id DESC LIMIT ?)
+      WHERE a.companion_id=? AND a.virtual_at<=? AND m.status='sent' AND ${validRoom} AND ${visibleSocialTopic('m.id')} ORDER BY a.virtual_at DESC,a.message_id DESC LIMIT ?)
     UNION ${worldBranch('actorId', 'companion_world_observer_actor_recent')}
     UNION ${worldBranch('targetId', 'companion_world_observer_target_recent')}
   ) ORDER BY at DESC,id DESC LIMIT ?`).all(owner, now, limit, owner, now, limit, owner, now, limit, limit) as Row[];
@@ -67,6 +69,6 @@ export function recentSocialFacts(db: CompanionConnection, owner: string, now: s
 export function recentSocialMessageCounts(db: CompanionConnection, owner: string, now: string): Row[] {
   return db.prepare(`SELECT m.author_id,s.recipient_ids,s.channel,s.virtual_at FROM companion_social_audience a INDEXED BY companion_social_audience_time
     JOIN companion_social_messages s ON s.message_id=a.message_id JOIN messages m ON m.id=a.message_id
-    WHERE a.companion_id=? AND a.virtual_at<=? AND m.status='sent' AND ${validRoom}
+    WHERE a.companion_id=? AND a.virtual_at<=? AND m.status='sent' AND ${validRoom} AND ${visibleSocialTopic('m.id')}
     ORDER BY a.virtual_at DESC,a.message_id DESC LIMIT 1000`).all(owner, now) as Row[];
 }

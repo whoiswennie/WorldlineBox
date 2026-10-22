@@ -38,25 +38,23 @@ it('uses one unordered room per peer member set, separate from player rooms and 
   expect(JSON.stringify(store.request({ type: 'social.messages', conversationId: pair.id }))).not.toContain('PRIVATE_PLAYER_FACT');
   expect(store.request({ type: 'work.list' }).works).toEqual([]); expect(store.request({ type: 'actions' }).actions).toEqual([]);
 });
-it('defers a sleeping recipient without waking or creating computer work, then responds after real wakefulness', () => {
+it('keeps a sleeping body unchanged while its independent peer port responds without creating computer work', () => {
   const store = fixture(), pair = room(store), scope = { companionId: 'bob', conversationId: store.openPrivate('bob').id };
   const routine = store.request({ type: 'routine.get', ...scope }).routine!;
   store.request({ type: 'routine.configure', ...scope, expectedRevision: routine.revision, patch: { wakeAt: '11:00', sleepAt: '09:00' } }); advance(store, 12000);
   expect(store.request({ type: 'state.get', ...scope }).runtimeState!.routine!.phase).toBe('sleeping');
-  send(store, pair.id); expect(store.request({ type: 'social.job.claim' }).socialJob).toBeUndefined();
-  expect(store.request({ type: 'state.get', ...scope }).runtimeState!.routine!.phase).toBe('sleeping');
-  const latest = store.request({ type: 'routine.get', ...scope }).routine!;
-  store.request({ type: 'routine.configure', ...scope, expectedRevision: latest.revision, patch: { wakeAt: '07:00', sleepAt: '23:00' } }); advance(store, 12000);
+  send(store, pair.id);
   const job = store.request({ type: 'social.job.claim' }).socialJob!; expect(job.companionId).toBe('bob');
-  const result = complete(store, job, '刚醒来看到你的消息，我今天想去读书。'); expect(result.socialMessage!.message.authorId).toBe('bob');
+  expect(store.request({ type: 'state.get', ...scope }).runtimeState!.routine!.phase).toBe('sleeping');
+  const result = complete(store, job, '收到你的消息了，我今天想去读书。'); expect(result.socialMessage!.message.authorId).toBe('bob');
+  expect(store.request({ type: 'state.get', ...scope }).runtimeState!.routine!.phase).toBe('sleeping');
   expect(store.request({ type: 'world.snapshot' }).world!.works.filter(work => work.status !== 'ended')).toEqual([]);
 });
-it('keeps phone replies behind real work and rejects stale source leases after withdrawal', () => {
+it('admits an independent peer port during player work and rejects stale source leases after withdrawal', () => {
   const store = fixture(), pair = room(store), userRoom = store.openPrivate('bob');
   const user = store.appendMessage({ conversationId: userRoom.id, authorId: 'user', content: '解释这段代码', replyDirective: 'none' });
   store.request({ type: 'world.work.begin', companionId: 'bob', conversationId: userRoom.id, workId: 'real_work', kind: 'chat', sourceMessageId: user.id });
-  const sent = send(store, pair.id); expect(store.request({ type: 'social.job.claim' }).socialJob).toBeUndefined();
-  store.request({ type: 'world.work.end', companionId: 'bob', workId: 'real_work' }); advance(store, 10000);
+  const sent = send(store, pair.id);
   const job = store.request({ type: 'social.job.claim' }).socialJob!; expect(job.sourceMessageId).toBe(sent.message.id);
   expect(() => companionStorageResponseSchema.parse({ ok: true, socialJob: job })).not.toThrow();
   store.request({ type: 'memory.forget', companionId: 'bob', conversationId: pair.id, sourceMessageIds: [sent.message.id] });

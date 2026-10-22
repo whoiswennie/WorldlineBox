@@ -6,6 +6,7 @@ import { CompanionsStore, type CompanionSeed } from '../../src/companions/store'
 import { CompanionAutonomyService } from '../../src/main/companions/autonomy-service';
 import type { CompanionWorkOrder } from '../../src/shared/companion-work-order';
 import type { CompanionStorageCommand } from '../../src/shared/companion-storage';
+import { companionGoalProofFixture } from '../helpers/companion-goal-proof-fixture';
 
 const roots: string[] = [], stores = new Set<CompanionsStore>(), services = new Set<CompanionAutonomyService>(), releases: Array<() => void> = [];
 const seeds: CompanionSeed[] = ['alice', 'bob'].map(id => ({ id, name: id, description: '', persona: '如实表达，不冒充玩家或他人。', model: '', avatar: 'sister', proactive: false }));
@@ -25,6 +26,15 @@ function fixture() {
       memoryContext: { text: snapshot.notes.map(note => note.content).join('\n'), revision: snapshot.revision, profileKey: 'fixture-vcp-profile' } };
   });
   const fetchFn = vi.fn<typeof fetch>(), report = vi.fn(), changed = vi.fn(), launch = vi.fn(), resume = vi.fn(), wait = vi.fn();
+  const goals = new Map<string, ReturnType<typeof companionGoalProofFixture>>();
+  const create = store.createAction.bind(store);
+  vi.spyOn(store, 'createAction').mockImplementation((input, taskCheckpoint) => {
+    if (!input.workOrderId) return create(input, taskCheckpoint);
+    const order = store.request({ type: 'work-order.list', companionId: input.companionId, conversationId: input.conversationId, includeHistory: true }).workOrderPage!.items.find(item => item.id === input.workOrderId)!;
+    let goal = goals.get(order.id);
+    if (!goal) { goal = companionGoalProofFixture(store, { ...order, kind: 'work' }); goals.set(order.id, goal); }
+    return create({ ...input, ...goal.bind(), taskId: 'fixture_native_task_' + goals.size }, taskCheckpoint);
+  });
   const ready = vi.fn(async (order: CompanionWorkOrder, signal: AbortSignal) => {
     if (signal.aborted) throw new Error('cancelled');
     const workId = 'order_run_' + order.id;
@@ -33,7 +43,18 @@ function fixture() {
     expect(store.request({ type: 'world.work.ready', companionId: order.companionId, workId }).worldWork!.status).toBe('ready');
   });
   const end = vi.fn(async (order: CompanionWorkOrder) => { store.request({ type: 'world.work.end', companionId: order.companionId, workId: 'order_run_' + order.id }); });
-  const service = new CompanionAutonomyService({ request, ready, end, fetchFn, report, changed, launch, resume, wait, blocked: () => false,
+  const runGoal = vi.fn(async (assigned: CompanionWorkOrder, signal: AbortSignal) => {
+    let action = assigned.actionId ? store.getAction(assigned.actionId) : undefined;
+    if (action && ['interrupted', 'cancelled', 'failed'].includes(action.status)) await resume(action.id);
+    action ??= await launch(assigned, signal);
+    if (!action) throw new Error('验收夹具未启动真实工作。');
+    await wait(action.id);
+    const final = store.getAction(action.id);
+    const result = final?.result ?? final?.error ?? '验收夹具未完成工作。';
+    return { status: final?.status === 'succeeded' ? 'succeeded' as const : final?.status === 'cancelled' ? 'cancelled' as const : 'failed' as const,
+      result, ...goals.get(assigned.id)!.finish(result, [final!]) };
+  });
+  const service = new CompanionAutonomyService({ request, ready, end, fetchFn, report, changed, runGoal, blocked: () => false,
     configFor: async () => ({ apiFormat: 'openai_chat', model: 'configured-chat-model', baseUrl: 'https://provider.invalid', apiKey: 'synthetic-key' }) }); services.add(service);
   const orders = (owner = scope) => store.request({ type: 'work-order.list', ...owner, includeHistory: true }).workOrderPage!.items;
   const peerOrder = () => {
@@ -84,7 +105,7 @@ it('keeps another resident life clock advancing while both cognition slots wait 
   expect(f.launch).toHaveBeenCalledTimes(2); expect(f.fetchFn).not.toHaveBeenCalled();
 });
 
-it.each(['succeeded', 'failed'] as const)('keeps a slow actual %s action feedback alive after its order is terminal', async status => {
+it.each(['succeeded', 'failed'] as const)('keeps the parent running after a %s child until the goal returns', async status => {
   const f = fixture(), completion = deferred<void>(); releases.push(() => completion.resolve());
   const order = f.store.request({ type: 'work-order.create', ...f.scope, title: '核对文件', instruction: '只读核对，不修改文件。' }).workOrder!;
   let actionSignal: AbortSignal | undefined;
@@ -95,14 +116,15 @@ it.each(['succeeded', 'failed'] as const)('keeps a slow actual %s action feedbac
   f.wait.mockReturnValue(completion.promise); f.service.tick(); await until(() => f.launch.mock.calls.length === 1);
   const action = f.store.listAction()[0]!;
   f.store.updateAction(action.id, { status, ...(status === 'succeeded' ? { result: '实际检查完成，回报仍在生成。' } : { error: '实际检查失败，失败说明仍在生成。' }) });
-  expect(f.orders()[0]).toMatchObject({ id: order.id, status: status === 'succeeded' ? 'completed' : 'failed' });
+  expect(f.orders()[0]).toMatchObject({ id: order.id, status: 'running' });
   await vi.advanceTimersByTimeAsync(20001);
   expect(actionSignal!.aborted).toBe(false);
   const renewals = f.request.mock.calls.filter(([command]) => command.type === 'work-order.heartbeat').length;
   await vi.advanceTimersByTimeAsync(40000);
-  expect(f.request.mock.calls.filter(([command]) => command.type === 'work-order.heartbeat')).toHaveLength(renewals);
+  expect(f.request.mock.calls.filter(([command]) => command.type === 'work-order.heartbeat').length).toBeGreaterThan(renewals);
   expect(f.end).not.toHaveBeenCalled(); expect(f.launch).toHaveBeenCalledOnce();
   completion.resolve(); await until(() => f.end.mock.calls.length === 1); expect(f.report).not.toHaveBeenCalled();
+  expect(f.orders()[0]?.status).toBe(status === 'succeeded' ? 'completed' : 'failed');
 });
 
 it.each(['pause', 'cancel', 'withdraw'] as const)('still aborts a waiting external action when its order is %s', async kind => {
@@ -127,7 +149,8 @@ it('finishes peer internal work with the configured model, no external tools or 
   f.store.updatePlayerProfile({ name: 'PRIVATE_PLAYER', description: 'PRIVATE_PLAYER_DESCRIPTION' }, 1);
   f.fetchFn.mockImplementation(async (_url, init) => {
     const body = JSON.parse(String(init?.body)), input = JSON.parse(body.messages[1].content);
-    expect(body.tools).toBeUndefined(); expect(input).toMatchObject({ orderId: order.id, assigneeId: 'alice', publisherId: 'bob', source: { id: source.id, authorId: 'bob' } });
+    expect(body.tools.map((tool: { function: { name: string } }) => tool.function.name)).toEqual(['memory']);
+    expect(input).toMatchObject({ orderId: order.id, assigneeId: 'alice', publisherId: 'bob', source: { id: source.id, authorId: 'bob' } });
     expect(String(init?.body)).not.toContain('PRIVATE_PLAYER'); expect(String(init?.body)).toContain('不能调用现实工具');
     return response({ orderId: order.id, result: '依据共同讨论整理出的有限提纲。' });
   });
@@ -146,7 +169,7 @@ it('resumes the stopped action of a paused external order instead of stranding o
   f.store.updateAction(action.id, { status: 'cancelled', error: '实际执行已停止，checkpoint仍在。' });
   current = f.orders()[0]!; expect(current.status).toBe(paused.status);
   f.store.request({ type: 'work-order.pause', ...f.scope, id: order.id, expectedRevision: current.revision, paused: false });
-  f.resume.mockImplementation(async (id: string) => { const resumed = f.store.resumeAction(id); expect(resumed.attempt).toBe(2); f.store.updateAction(id, { status: 'succeeded', result: '原清单剩余核对已实际完成。' }); });
+  f.resume.mockImplementation(async (id: string) => { const resumed = f.store.resumeAction(id); expect(resumed.attempt).toBe(2); f.store.updateAction(id, { taskId: 'fixture_resumed_task', status: 'succeeded', result: '原清单剩余核对已实际完成。' }); });
   f.service.tick(); await until(() => f.orders()[0]?.status === 'completed');
   expect(f.resume).toHaveBeenCalledExactlyOnceWith(action.id); expect(f.launch).not.toHaveBeenCalled(); expect(f.fetchFn).not.toHaveBeenCalled();
   expect(f.store.listAction()).toHaveLength(1); expect(f.store.checkpoint(action.id)?.prompt).toBe(order.instruction);
@@ -173,7 +196,8 @@ it('uses accumulated world-time life probability to send one authored spontaneou
   const rule = f.store.request({ type: 'life-rule.create', companionId: 'alice', rule: { title: '向玩家问候', action: 'message', targetId: 'user', startMinute: 600, endMinute: 610, probability: 1, checkIntervalMinutes: 1 } }).lifeRule!;
   f.fetchFn.mockImplementation(async (_url, init) => {
     const body = JSON.parse(String(init?.body)), input = JSON.parse(body.messages[1].content);
-    expect(body.tools).toBeUndefined(); expect(input).toMatchObject({ speakerId: 'alice', target: { id: 'user', kind: 'human_player' }, action: 'message' });
+    expect(body.tools.map((tool: { function: { name: string } }) => tool.function.name)).toEqual(['memory']);
+    expect(input).toMatchObject({ speakerId: 'alice', target: { id: 'user', kind: 'human_player' }, action: 'message' });
     return response({ eventId: input.eventId, speakerId: 'alice', targetId: 'user', text: '想和你打个招呼，现在方便聊聊吗？' });
   });
   f.service.tick(); await until(() => f.store.request({ type: 'life-rule.list', companionId: 'alice' }).lifeOccurrences!.some(occurrence => occurrence.ruleId === rule.id));

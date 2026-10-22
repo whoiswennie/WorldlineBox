@@ -1,4 +1,3 @@
-import { spawn } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { mkdtemp, mkdir, writeFile } from 'node:fs/promises';
 import os from 'node:os';
@@ -7,8 +6,9 @@ import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import { removeManaged } from '../../src/main/dsh/files';
-import { DSH_NATIVE_CLI_DISABLED_IDS } from '../../src/main/dsh/cli-profile-mode';
+import { DSH_NATIVE_CLI_DISABLED_IDS, prepareNativeCliMode } from '../../src/main/dsh/cli-profile-mode';
 import { dshCompanionTaskToolPatch } from '../../src/main/dsh/task-execution';
+import { launchCli, terminateOwnedProcess } from '../../src/main/dsh/instance-process';
 
 const nativeRoot = path.resolve('.tools/dsh-native-node/manager/runtimes');
 const versions = [
@@ -19,42 +19,26 @@ const available = process.platform === 'win32' && versions.every(([, id]) => exi
 const roots: string[] = [];
 afterEach(async () => { for (const root of roots.splice(0)) await removeManaged(os.tmpdir(), root); });
 
-// Probe code imports the installed sealed SDK. It creates only a temporary
-// native profile, mounts its actual DSL, then observes an idle Agent's catalog.
+// Probe code initializes a temporary profile, then launches the official CLI
+// and observes an idle Agent's actual catalog inside its mounted plugin tree.
 // There is no model followup, external account, credential read or paid request.
 const probe = String.raw`
-import {createRequire} from 'node:module';import {pathToFileURL} from 'node:url';import path from 'node:path';import {writeFile} from 'node:fs/promises';
+import {createRequire} from 'node:module';import {pathToFileURL} from 'node:url';import path from 'node:path';import {writeFile,readFile} from 'node:fs/promises';import {spawn} from 'node:child_process';
 const [program,root,toolkitFile]=process.argv.slice(2);
 const anchor=path.join(program,'dsh/node_modules/@deepseek-ai/dsh/package.json'),load=createRequire(anchor);
 const native=await import(pathToFileURL(load.resolve('@deepseek-ai/dsh-app-boot')));
 process.stdout.write('__PROBE_STAGE__ imported SDK\n');
-const {provideCmdline}=await import(pathToFileURL(load.resolve('@deepseek-ai/dsh-cmdline')));
-const {scopeOf}=await import(pathToFileURL(load.resolve('@deepseek-ai/dsh-scope')));
-let requests=0;globalThis.fetch=async()=>{requests++;throw Error('Model calls are forbidden by this capability probe')};
 const home=path.join(root,'home'),profileDir=path.join(home,'profiles/web');native.initProfile(profileDir,['@deepseek-ai/dsh-base','@deepseek-ai/dsh-web-app']);
-const profile=native.loadProfileDirectory('probe',profileDir,anchor,{userLayer:true});
-const nativeHeadless=native.loadOverlayPatches('probe',path.join(program,'dsh/node_modules/@deepseek-ai/dsh-headless/cordis.patch.yml'));
+process.stdout.write('__PROBE_STAGE__ profile initialized\n');
 const carrierDisabled=JSON.parse(process.env.PROBE_DISABLED_IDS).map(id=>({id,disabled:true}));
-const overrides=[...nativeHeadless,...carrierDisabled,{id:'headless-startup',disabled:true},{id:'headless-runner',disabled:true},...native.loadOverlayPatches('probe',toolkitFile)];
-const context={name:'web',dir:profile.dir,patchPath:profile.patchPath,installAnchor:anchor,home,cwd:process.cwd(),startedBundles:profile.layers.map(layer=>layer.packageName),overlays:overrides,telemetryDisabledEnv:'1'};
-const rootConfig=path.join(profileDir,'cordis.yml');await writeFile(rootConfig,'[]\n');
-const resolution=await native.createRuntimeResolution({installAnchor:anchor,profile,home});
-let ctx;
-try{
- process.stdout.write('__PROBE_STAGE__ booting profile\n');
- ctx=await native.boot('probe',rootConfig,native.readProfilePatches('probe',context,profile),async host=>{
-  process.stdout.write('__PROBE_STAGE__ preparing host\n');
-  host.provide('profileContext',context);host.provide('launchEnvironment',native.loadLayeredEnv('probe',process.cwd()));
-  await host.plugin(native.PluginPackages,{resolution});process.stdout.write('__PROBE_STAGE__ packages mounted\n');provideCmdline(host,{args:[],exit:()=>{}});
-  process.stdout.write('__PROBE_STAGE__ host prepared\n');
- });
- process.stdout.write('__PROBE_STAGE__ profile booted\n');
- const created=await ctx.get('agents').create({sessionId:'probe-session',meta:{cwd:process.cwd()},agentOptions:{provider:'deepseek-official',model:'deepseek-flash'},setup:async scope=>{if(process.env.PROBE_STANDARD==='1')await ctx.get('agentPresets').mount(scope,'standard') }});
- await created.agent.whenIdle();
- process.stdout.write('__PROBE_STAGE__ agent idle\n');
- const catalog=ctx.get('tools').schemas(scopeOf(created.agent.ctx)).map(schema=>schema.name);
- process.stdout.write('__NATIVE_TOOL_CATALOG__'+JSON.stringify({catalog,modelRequests:requests})+'\n');
-}finally{process.stdout.write('__PROBE_STAGE__ disposing\n');await ctx?.fiber.dispose();process.stdout.write('__PROBE_STAGE__ disposed\n')}
+const plugin=path.join(root,'catalog-runtime.mjs'),patch=path.join(root,'catalog.patch.json');
+await writeFile(plugin, "let requests=0;globalThis.fetch=async()=>{requests++;throw Error('Model calls are forbidden by this capability probe')};export const name='catalog-probe';export const inject=['agents','tools'];export function apply(ctx){const exit=ctx.get('appExit');void Promise.resolve().then(async()=>{await ctx.get('loader').await();const created=await ctx.get('agents').create({sessionId:'probe-session',meta:{cwd:process.cwd()},agentOptions:{provider:'deepseek-official',model:'deepseek-flash'},setup:async scope=>{if(process.env.PROBE_STANDARD==='1')await ctx.get('agentPresets').mount(scope,'standard')}});await created.agent.whenIdle();const catalog=ctx.get('tools').schemas(created.agent).map(schema=>schema.name);process.stdout.write('__NATIVE_TOOL_CATALOG__'+JSON.stringify({catalog,modelRequests:requests})+'\\n');await created.dispose();exit(0)}).catch(error=>{console.error(error);exit(1)})}");
+await writeFile(patch,JSON.stringify([...carrierDisabled,{id:'headless-startup',disabled:true},{id:'headless-runner',disabled:true},...JSON.parse(await readFile(toolkitFile,'utf8')),{insert:[{id:'catalog-probe',name:plugin}]}]));
+process.stdout.write('__PROBE_STAGE__ patches written\n');
+const cli=path.join(program,'dsh/node_modules/@deepseek-ai/dsh/lib/bin.js');
+const child=spawn(process.execPath,['--expose-internals',cli,...JSON.parse(process.env.PROBE_CLI_PREFIX),'--patch',patch],{env:process.env,cwd:process.cwd(),windowsHide:true,stdio:['ignore','inherit','inherit']});
+process.stdout.write('__PROBE_STAGE__ official CLI spawned '+child.pid+'\n');
+process.exitCode=await new Promise((resolve,reject)=>{child.once('error',reject);child.once('close',resolve)});
 `;
 
 async function nativeCatalog(versionId: string, toolkit: boolean) {
@@ -63,6 +47,7 @@ async function nativeCatalog(versionId: string, toolkit: boolean) {
   const program = path.join(nativeRoot, versionId, 'program');
   const source = path.join(root, 'catalog-probe.mjs');
   const toolkitFile = path.join(root, 'toolkit.patch.json');
+  const prefix = await prepareNativeCliMode(root, program, versions.find(([,id])=>id===versionId)![0]);
   await writeFile(source, probe);
   await writeFile(toolkitFile, JSON.stringify(toolkit ? dshCompanionTaskToolPatch() : []));
   for (const directory of ['home', 'agents', 'user', 'workspace', 'temp']) await mkdir(path.join(root, directory), { recursive: true });
@@ -76,14 +61,12 @@ async function nativeCatalog(versionId: string, toolkit: boolean) {
   Object.assign(env, { DSH_HOME: path.join(root, 'home'), DSH_AGENTS_HOME: path.join(root, 'agents'),
     HOME: path.join(root, 'user'), USERPROFILE: path.join(root, 'user'), APPDATA: path.join(root, 'user/AppData/Roaming'),
     LOCALAPPDATA: path.join(root, 'user/AppData/Local'), TEMP: path.join(root, 'temp'), TMP: path.join(root, 'temp'),
-    DSH_TELEMETRY_DISABLED: '1', PROBE_DISABLED_IDS: JSON.stringify(DSH_NATIVE_CLI_DISABLED_IDS), PROBE_STANDARD: toolkit ? '1' : '0', NO_COLOR: '1', FORCE_COLOR: '0' });
+    DSH_TELEMETRY_DISABLED: '1', PROBE_CLI_PREFIX: JSON.stringify(prefix), PROBE_DISABLED_IDS: JSON.stringify(DSH_NATIVE_CLI_DISABLED_IDS), PROBE_STANDARD: toolkit ? '1' : '0', NO_COLOR: '1', FORCE_COLOR: '0' });
+  const child = await launchCli({ executable: path.join(program, 'bin/node.exe'), cli: source, env: {} }, [program, root, toolkitFile], env, path.join(root, 'workspace'));
   const output = await new Promise<{ code: number | null; stdout: string; stderr: string }>((resolve, reject) => {
-    const child = spawn(path.join(program, 'bin/node.exe'), ['--expose-internals', source, program, root, toolkitFile], {
-      env, cwd: path.join(root, 'workspace'), windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'],
-    });
     let stdout = ''; let stderr = '';
     let timedOut = false;
-    const timer = setTimeout(() => { timedOut = true; child.kill(); }, 30_000);
+    const timer = setTimeout(() => { timedOut = true; void terminateOwnedProcess(child); }, 30_000);
     child.stdout.on('data', chunk => { stdout += chunk.toString(); });
     child.stderr.on('data', chunk => { stderr += chunk.toString(); });
     child.once('error', error => { clearTimeout(timer); reject(error); });
@@ -92,7 +75,7 @@ async function nativeCatalog(versionId: string, toolkit: boolean) {
       if (timedOut) reject(new Error(`Native tool catalog probe timed out.\n${stdout.slice(-2500)}\n${stderr.slice(-2500)}`));
       else resolve({ code, stdout, stderr });
     });
-  });
+  }).finally(() => terminateOwnedProcess(child));
   expect(output.code, output.stderr.slice(-4000)).toBe(0);
   const line = output.stdout.split(/\r?\n/).find(value => value.startsWith('__NATIVE_TOOL_CATALOG__'));
   if (!line) throw new Error('Native SDK did not publish a real Agent tool catalog.');

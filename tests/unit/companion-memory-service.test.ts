@@ -13,6 +13,7 @@ import type { CompanionStorageCommand, CompanionStorageResponse } from '../../sr
 import type { CompanionMemoryCandidate } from '../../src/shared/companion-memory';
 import type { CompanionMemory } from '../../src/shared/companions';
 import type { DshLauncher } from '../../src/main/dsh/launcher';
+import { COMPANION_DIALOGUE_WINDOW } from '../../src/main/companions/context-window';
 
 const transport = vi.hoisted(() => ({ request: vi.fn<(command: CompanionStorageCommand) => Promise<CompanionStorageResponse>>(),
   start: vi.fn<() => Promise<void>>(async () => undefined), close: vi.fn(async () => undefined), fetch: vi.fn<typeof fetch>(), memoryFetch: vi.fn<typeof fetch>(), worldFetch: vi.fn<typeof fetch>(), authorizationFetch: vi.fn<typeof fetch>(), prohibitionFetch: vi.fn<typeof fetch>() }));
@@ -46,6 +47,9 @@ function structuredResponse(value: unknown): Response { return textResponse(JSON
 function toolResponse(id: string, name: string, args: unknown): Response {
   return new Response(JSON.stringify({ choices: [{ message: { content: null,
     tool_calls: [{ id, type: 'function', function: { name, arguments: JSON.stringify(args) } }] } }] }), { headers: { 'Content-Type': 'application/json' } });
+}
+function memoryResponse(id: string, action: string, args: Record<string, unknown>): Response {
+  return toolResponse(id, 'memory', { action, ...args });
 }
 function journal(source: { id: string; content: string }, content = '用户喜欢茶。', tags = ['饮料偏好']): CompanionMemoryCandidate {
   return { content, sourceMessageIds: [source.id], evidence: [{ sourceMessageId: source.id, quote: source.content }], tags };
@@ -305,7 +309,7 @@ describe('VCP companion memory through the main service and real SQLite', () => 
     });
     const birthday = await sent(f.service, f.store, f.conversation.id, '我的生日是4月9日。', 'old-birthday');
     await background();
-    for (let i = 0; i < 220; i++) f.store.appendMessage({ conversationId: f.conversation.id, authorId: 'user', content: `无关的天气闲聊第${i}次`, replyDirective: 'none' });
+    for (let i = 0; i < COMPANION_DIALOGUE_WINDOW.maxMessages + 20; i++) f.store.appendMessage({ conversationId: f.conversation.id, authorId: 'user', content: `无关的天气闲聊第${i}次`, replyDirective: 'none' });
     let brainPayload: Payload | undefined;
     transport.fetch.mockImplementation(async (_input, init) => {
       brainPayload = payload(init);
@@ -338,14 +342,14 @@ describe('VCP companion memory through the main service and real SQLite', () => 
         const saved = result.memories?.[0] ?? result.memoryRead?.memory ?? result.memoryPage?.items[0]?.memory;
         if (saved) { savedId = saved.id; version = saved.version; }
       }
-      if (source.content === '我一直喜欢茶。' && step === 0) return toolResponse('record_1', 'memory_record', { candidate: journal(source) });
+      if (source.content === '我一直喜欢茶。' && step === 0) return memoryResponse('record_1', 'record', { candidate: journal(source) });
       if (source.content === '回忆并整理饮料日记。') {
-        if (step === 0) return toolResponse('search_1', 'memory_search', { query: '饮料偏好' });
-        if (step === 1) return toolResponse('read_1', 'memory_read', { id: savedId });
-        if (step === 2) return toolResponse('organize_1', 'memory_organize', { ids: [savedId], tags: ['饮料偏好', '茶'] });
+        if (step === 0) return memoryResponse('search_1', 'search', { query: '饮料偏好' });
+        if (step === 1) return memoryResponse('read_1', 'read', { id: savedId });
+        if (step === 2) return memoryResponse('organize_1', 'organize', { ids: [savedId], tags: ['饮料偏好', '茶'] });
       }
-      if (source.content === '更正，现在喜欢水。' && step === 0) return toolResponse('revise_1', 'memory_revise', { id: savedId, expectedVersion: version, candidate: journal(source, '用户现在喜欢水。', ['饮料偏好', '水']) });
-      if (source.content.includes('忘掉') && step === 0) return toolResponse('forget_1', 'memory_forget', { tag: '饮料偏好', persistent: true, requestMessageId: source.id });
+      if (source.content === '更正，现在喜欢水。' && step === 0) return memoryResponse('revise_1', 'revise', { id: savedId, expectedVersion: version, candidate: journal(source, '用户现在喜欢水。', ['饮料偏好', '水']) });
+      if (source.content.includes('忘掉') && step === 0) return memoryResponse('forget_1', 'forget', { tag: '饮料偏好', persistent: true, requestMessageId: source.id });
       return textResponse('处理好了。');
     });
     const recordSource = await sent(f.service, f.store, f.conversation.id, '我一直喜欢茶。', 'native-record'); collect(recordSource.id);
@@ -385,7 +389,7 @@ describe('VCP companion memory through the main service and real SQLite', () => 
     } else {
       let step = 0;
       transport.fetch.mockImplementation(async (_input, init) => {
-        if (step++ === 0) return toolResponse('blocked_diary', `memory_${action}`, {
+        if (step++ === 0) return memoryResponse('blocked_diary', action, {
           ...(action === 'revise' ? { id: safe.id, expectedVersion: safe.version } : {}),
           candidate: journal({ id: payload(init).taskRequest!.sourceMessageId, content: proposed }, proposed, ['新居']),
         });
@@ -439,7 +443,7 @@ describe('VCP companion memory through the main service and real SQLite', () => 
     transport.prohibitionFetch.mockImplementation(async () => structuredResponse({ allowed: false, matchedPolicyIds: [rules[0]!.id] }));
     let step = 0;
     transport.fetch.mockImplementation(async (_input, init) => {
-      if (step++ === 0) return toolResponse('group_diary', 'memory_record', { candidate: journal(source, source.content, ['新居']) });
+      if (step++ === 0) return memoryResponse('group_diary', 'record', { candidate: journal(source, source.content, ['新居']) });
       expect(JSON.parse(body(init).messages.at(-1)!.content)).toMatchObject({ ok: false, error: expect.stringContaining('不再记录') });
       return textResponse('尚未保存。');
     });
@@ -454,7 +458,7 @@ describe('VCP companion memory through the main service and real SQLite', () => 
     let attempted = false, result: CompanionStorageResponse | undefined;
     transport.fetch.mockImplementation(async (_input, init) => {
       const sourceId = payload(init).taskRequest!.sourceMessageId;
-      if (!attempted) { attempted = true; return toolResponse('unauthorized_forget', 'memory_forget', { tag: '饮料偏好', requestMessageId: sourceId }); }
+      if (!attempted) { attempted = true; return memoryResponse('unauthorized_forget', 'forget', { tag: '饮料偏好', requestMessageId: sourceId }); }
       result = JSON.parse(body(init).messages.at(-1)!.content) as CompanionStorageResponse;
       return textResponse('今天慢慢聊。');
     });
@@ -476,16 +480,16 @@ describe('VCP companion memory through the main service and real SQLite', () => 
     let step = 0;
     transport.fetch.mockImplementation(async (_input, init) => {
       const current = payload(init), latest = body(init).messages.at(-1)!;
-      if (step++ === 0) return toolResponse('withdraw_old_secret', 'memory_forget', { id: old.id, requestMessageId: current.taskRequest!.sourceMessageId });
+      if (step++ === 0) return memoryResponse('withdraw_old_secret', 'forget', { id: old.id, requestMessageId: current.taskRequest!.sourceMessageId });
       expect(String(init?.body)).not.toContain(secret);
       if (step === 2) {
         expect(latest.role).not.toBe('tool');
-        return toolResponse('new_search', 'memory_search', { query: '花园计划' });
+        return memoryResponse('new_search', 'search', { query: '花园计划' });
       }
       if (step === 3) {
         expect(latest).toMatchObject({ role: 'tool', tool_call_id: 'new_search' });
         expect((JSON.parse(latest.content) as CompanionStorageResponse).memoryPage?.items[0]?.memory.id).toBe(safe.id);
-        return toolResponse('new_read', 'memory_read', { id: safe.id });
+        return memoryResponse('new_read', 'read', { id: safe.id });
       }
       expect(latest).toMatchObject({ role: 'tool', tool_call_id: 'new_read' });
       expect((JSON.parse(latest.content) as CompanionStorageResponse).memoryRead?.memory.content).toBe(source.content);
@@ -494,7 +498,7 @@ describe('VCP companion memory through the main service and real SQLite', () => 
     const request = await sent(f.service, f.store, f.conversation.id, '请忘掉旧秘密，然后查看仍然有效的花园计划。', 'forget-then-new-tools');
     expect(step).toBe(4);
     const checkpoint = f.store.request({ type: 'loop.get', companionId: 'sister', sourceMessageId: request.id }).loop!;
-    expect(JSON.parse(checkpoint.context!.user).memoryHistoryBoundary).toBe(1);
+    expect(JSON.parse(checkpoint.context!.user).memoryEvidenceThroughStep).toBe(1);
     expect(f.store.messages({ conversationId: f.conversation.id }).messages.at(-1)?.content).toContain('玫瑰浇水');
   });
 
@@ -543,7 +547,7 @@ describe('VCP companion memory through the main service and real SQLite', () => 
     const old = f.store.appendMessage({ conversationId: f.conversation.id, authorId: 'user', content: '请拜访妹妹，原因是' + secret, replyDirective: 'none' });
     f.store.request({ type: 'world.tool', companionId: 'sister', conversationId: f.conversation.id, sourceMessageId: old.id,
       arguments: { action: 'visit', targetCompanionId: 'flash', reason: secret } });
-    for (let index = 0; index < 60; index++) f.store.appendMessage({ conversationId: f.conversation.id, authorId: 'user', content: '普通的历史消息' + index, replyDirective: 'none' });
+    for (let index = 0; index < COMPANION_DIALOGUE_WINDOW.maxMessages + 20; index++) f.store.appendMessage({ conversationId: f.conversation.id, authorId: 'user', content: '普通的历史消息' + index, replyDirective: 'none' });
     let resolvePending!: (value: Response) => void; const pending = new Promise<Response>(resolve => { resolvePending = resolve; });
     transport.fetch.mockResolvedValueOnce(toolResponse('old_world_inspection', 'world', { action: 'inspect' })).mockImplementationOnce(() => pending);
     const source = (await f.service.handle({ type: 'message.send', conversationId: f.conversation.id, content: '看看你现在在哪里。', clientId: 'world-source-withdrawal' })).message!;
@@ -572,7 +576,7 @@ describe('VCP companion memory through the main service and real SQLite', () => 
     } }).memories![0]!;
     let resolvePending!: (response: Response) => void;
     const pending = new Promise<Response>(resolve => { resolvePending = resolve; });
-    transport.fetch.mockResolvedValueOnce(toolResponse('read_before_shutdown', 'memory_read', { id: saved.id })).mockImplementationOnce(() => pending);
+    transport.fetch.mockResolvedValueOnce(memoryResponse('read_before_shutdown', 'read', { id: saved.id })).mockImplementationOnce(() => pending);
     const source = (await f.service.handle({ type: 'message.send', conversationId: f.conversation.id,
       content: requestWithdrawn ? `请核对地址 ${secret}` : '请核对我引用的旧地址。', replyToId: old.id, clientId: 'forgotten-resume-request' })).message!;
     await vi.waitFor(() => expect(transport.fetch).toHaveBeenCalledTimes(2), { timeout: 5000 });

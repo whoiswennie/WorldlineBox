@@ -48,7 +48,7 @@ export class CompanionInterruptionStore {
       for (const found of this.db.prepare("SELECT data FROM companion_work_orders WHERE companion_id=? AND status IN('accepted','running') ORDER BY ordinal LIMIT 100").all(input.companionId) as { data: string }[]) {
         const order = JSON.parse(found.data) as CompanionWorkOrder;
         const paused = this.orders.execute({ type: 'work-order.pause', companionId: input.companionId, conversationId: order.conversationId, id: order.id, expectedRevision: order.revision, paused: true })!.workOrder!;
-        interruption.orders.push({ id: paused.id, conversationId: paused.conversationId, revision: paused.revision, ...(paused.actionId ? { actionId: paused.actionId } : {}) });
+        interruption.orders.push({ id: paused.id, conversationId: paused.conversationId, revision: paused.revision, actionIds: paused.actionIds ?? [], ...(paused.actionId ? { actionId: paused.actionId } : {}) });
       }
       this.event('social_interrupt', input.companionId, source.id);
       this.db.prepare("INSERT INTO companion_focus_interruptions VALUES(?,?,'active',?)").run(interruption.id, interruption.companionId, JSON.stringify(interruption));

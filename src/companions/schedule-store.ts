@@ -4,6 +4,7 @@ import { nextCompanionScheduleRun, resolveCompanionScheduleTimeZone } from '../s
 import type { CompanionAction, CompanionMessage } from '../shared/companions';
 import type { CompanionStorageCommand, CompanionStorageResponse } from '../shared/companion-storage';
 import type { CompanionConnection } from './store';
+import { verifyCompanionGoalProof } from './goal-proof';
 
 type Row = Record<string, string | number | null>;
 const row = (value: unknown) => value as Row;
@@ -23,6 +24,7 @@ export class CompanionScheduleStore {
     private readonly clock: { virtualAt(real: number): number; timeZone(): string } = { virtualAt: real => real, timeZone: () => resolveCompanionScheduleTimeZone('system') }) {}
 
   initialize(): void {
+    this.db.exec('DROP INDEX IF EXISTS companion_schedule_action');
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS companion_schedules (
         id TEXT PRIMARY KEY, companion_id TEXT NOT NULL REFERENCES companions(id), conversation_id TEXT NOT NULL REFERENCES conversations(id),
@@ -37,7 +39,7 @@ export class CompanionScheduleStore {
         UNIQUE(schedule_id,scheduled_at)
       );
       CREATE INDEX IF NOT EXISTS companion_schedule_occurrences_claim ON companion_schedule_occurrences(status,lease_until,scheduled_at);
-      CREATE UNIQUE INDEX IF NOT EXISTS companion_schedule_action ON actions(json_extract(data,'$.scheduleOccurrenceId')) WHERE json_extract(data,'$.scheduleOccurrenceId') IS NOT NULL;
+      CREATE INDEX IF NOT EXISTS companion_schedule_children ON actions(json_extract(data,'$.scheduleOccurrenceId')) WHERE json_extract(data,'$.scheduleOccurrenceId') IS NOT NULL;
     `);
   }
   private requireScope(scope: Scope): Row {
@@ -204,14 +206,12 @@ export class CompanionScheduleStore {
     return this.db.transaction(() => {
       this.stopUnavailable();
       const time = new Date(now).getTime(), worldNow = iso(this.clock.virtualAt(time));
-      for (const item of rows(this.db.prepare(`SELECT o.id,o.action_id,a.status FROM companion_schedule_occurrences o JOIN actions a ON a.id=o.action_id WHERE o.status IN ('dispatching','running') AND a.status IN ('succeeded','failed','cancelled')`).all())) {
-        this.updateOccurrence({ type: 'schedule.occurrence.update', id: String(item.id), actionId: String(item.action_id), status: item.status === 'succeeded' ? 'done' : item.status === 'failed' ? 'failed' : 'cancelled' });
-      }
-      // Reuse interrupted executions and expired dispatches; a live action never gets a competing lease.
+      // Recover the same parent goal after its host lease expires. Individual
+      // child completion never consumes the occurrence or determines its result.
       const resumable = rows(this.db.prepare(`SELECT o.data FROM companion_schedule_occurrences o JOIN companion_schedules s ON s.id=o.schedule_id
-        LEFT JOIN actions a ON a.id=o.action_id WHERE s.status='active' AND EXISTS(SELECT 1 FROM companions p WHERE p.id=s.companion_id AND json_extract(p.data,'$.active')=1) AND (o.scheduled_at<=? OR json_extract(o.data,'$.forced')=1 OR o.action_id IS NOT NULL) AND
+        WHERE s.status='active' AND EXISTS(SELECT 1 FROM companions p WHERE p.id=s.companion_id AND json_extract(p.data,'$.active')=1) AND (o.scheduled_at<=? OR json_extract(o.data,'$.forced')=1 OR o.status='running') AND
         NOT EXISTS(SELECT 1 FROM companion_reset_jobs r WHERE r.companion_id=s.companion_id AND r.status!='completed') AND
-        (o.status='pending' OR (o.status='dispatching' AND o.lease_until<=?) OR (o.status='running' AND a.status='interrupted')) ORDER BY o.scheduled_at,o.id LIMIT 20`).all(worldNow, now));
+        (o.status='pending' OR (o.status IN ('dispatching','running') AND o.lease_until<=?)) ORDER BY o.scheduled_at,o.id LIMIT 20`).all(worldNow, now));
       let occurrence: CompanionScheduleOccurrence | undefined, schedule: CompanionSchedule | undefined;
       for (const item of resumable) {
         const candidate = decode<CompanionScheduleOccurrence>(item.data), owner = this.load(candidate.scheduleId);
@@ -253,14 +253,12 @@ export class CompanionScheduleStore {
     const occurrence = this.occurrence(action.scheduleOccurrenceId), schedule = this.load(occurrence.scheduleId);
     if (schedule.kind !== 'task' || schedule.status !== 'active' || occurrence.status === 'cancelled' || !this.valid(schedule)
       || action.companionId !== schedule.companionId || action.conversationId !== schedule.conversationId || action.sourceMessageId !== schedule.sourceMessageId) throw new Error('行动不属于这个已授权的定时任务。');
-    if (occurrence.actionId) return decode<CompanionAction>(row(this.db.prepare('SELECT data FROM actions WHERE id=?').get(occurrence.actionId)).data);
-    const existing = this.db.prepare("SELECT data FROM actions WHERE json_extract(data,'$.scheduleOccurrenceId')=?").get(occurrence.id);
-    if (existing) { const saved = decode<CompanionAction>(row(existing).data); occurrence.actionId = saved.id; this.saveOccurrence(occurrence); return saved; }
     return;
   }
   actionCreated(action: CompanionAction): void {
     if (!action.scheduleOccurrenceId) return;
-    const occurrence = this.occurrence(action.scheduleOccurrenceId); occurrence.actionId = action.id; occurrence.updatedAt = iso(); this.saveOccurrence(occurrence);
+    const occurrence = this.occurrence(action.scheduleOccurrenceId); occurrence.actionId = action.id;
+    occurrence.actionIds = [...new Set([...(occurrence.actionIds ?? []), action.id])]; occurrence.updatedAt = iso(); this.saveOccurrence(occurrence);
   }
   updateOccurrence(input: Extract<CompanionStorageCommand, { type: 'schedule.occurrence.update' }>): CompanionScheduleOccurrence {
     return this.db.transaction(() => {
@@ -272,8 +270,8 @@ export class CompanionScheduleStore {
         if (!action) throw new Error('定时执行行动不存在。');
         const value = decode<CompanionAction>(row(action).data);
         if (value.scheduleOccurrenceId !== occurrence.id || value.companionId !== schedule.companionId || value.conversationId !== schedule.conversationId) throw new Error('行动不属于当前定时执行。');
-        if (occurrence.actionId && occurrence.actionId !== input.actionId) throw new Error('发生期已经绑定另一项行动。');
         occurrence.actionId = input.actionId;
+        occurrence.actionIds = [...new Set([...(occurrence.actionIds ?? []), input.actionId])];
         if (['done', 'failed', 'cancelled'].includes(input.status)) {
           const expected = value.status === 'succeeded' ? 'done' : value.status === 'failed' ? 'failed' : value.status === 'cancelled' ? 'cancelled' : undefined;
           if (input.status !== expected) throw new Error('行动的实际状态不支持这个完成结果。');
@@ -295,7 +293,14 @@ export class CompanionScheduleStore {
         if (['done','failed','cancelled'].includes(input.status) && input.status !== expected) throw new Error('行动实际结果还不支持完成日程。');
         occurrence.activityTaskId = input.activityTaskId;
       }
-      if (input.status === 'done' && !occurrence.actionId && !occurrence.messageId && !occurrence.activityTaskId) throw new Error('完成状态需要实际行动或已发送提醒证据。');
+      if (input.status === 'done' && schedule.kind === 'task') {
+        if (!this.valid(schedule)) throw new Error('定时任务的当前授权已经失效。');
+        verifyCompanionGoalProof(this.db, { kind: 'schedule', id: occurrence.id, companionId: schedule.companionId,
+          conversationId: schedule.conversationId, sourceMessageId: schedule.sourceMessageId, instruction: schedule.prompt,
+          authorizationSourceMessageIds: schedule.authorizationSourceMessageIds, goalInvocationId: input.goalInvocationId,
+          goalSlot: input.goalSlot, result: input.goalResult, actionIds: input.actionIds });
+        occurrence.goalInvocationId = input.goalInvocationId; occurrence.goalSlot = input.goalSlot; occurrence.actionIds = input.actionIds;
+      } else if (input.status === 'done' && !occurrence.messageId && !occurrence.activityTaskId) throw new Error('完成状态需要实际行动或已发送提醒证据。');
       occurrence.status = input.status; occurrence.updatedAt = iso(); occurrence.startedAt ??= ['running', 'done'].includes(input.status) ? iso() : undefined;
       if (input.result && !occurrence.result) occurrence.result = input.result;
       if (input.error) occurrence.error = input.error;
@@ -324,6 +329,13 @@ export class CompanionScheduleStore {
       }
       case 'schedule.due.claim': { const due = this.claim(command.now, command.leaseMs); return { ok: true, ...due }; }
       case 'schedule.occurrence.update': return { ok: true, scheduleOccurrence: this.updateOccurrence(command) };
+      case 'schedule.occurrence.heartbeat': {
+        const occurrence = this.occurrence(command.id), schedule = this.load(occurrence.scheduleId);
+        if (occurrence.leaseToken !== command.leaseToken || !['dispatching', 'running'].includes(occurrence.status)
+          || !this.valid(schedule) || schedule.status !== 'active') throw new Error('定时任务租约或授权已经失效。');
+        occurrence.leaseUntil = iso(Date.now() + (command.leaseMs ?? 30000)); this.saveOccurrence(occurrence);
+        return { ok: true, scheduleOccurrence: occurrence };
+      }
       default: return undefined;
     }
   }

@@ -8,20 +8,15 @@ import { isDeepseekOfficialEndpoint } from '../../shared/llm';
 import { buildCompanionContext, refreshCompanionContextClock, refreshCompanionRuntimeStateContext, refreshCompanionCharacterDevelopmentContext, refreshCompanionIdentityContext, refreshCompanionFilesContext, type CompanionReplyInput } from './context';
 import { companionPerceivedToolTurns } from './world-perception-context';
 import { companionStateToolTurns } from './state-context';
-import { COMPANION_DSH_TOOL, COMPANION_DSH_RECORD_TOOL } from '../../shared/companion-dsh-tool';
-import { COMPANION_MEMORY_TOOLS, normalizeCompanionMemoryToolName, providerCompanionMemoryToolName } from '../../shared/companion-memory-tool';
-import { COMPANION_SCHEDULE_TOOL } from '../../shared/companion-schedule-tool';
-import { COMPANION_STATE_TOOL } from '../../shared/companion-state-tool';
-import { COMPANION_ROUTINE_TOOL } from '../../shared/companion-routine-tool';
-import { COMPANION_WORLD_TOOL } from '../../shared/companion-world-tool';
-import { COMPANION_ACTIVITY_TOOL } from '../../shared/companion-activity-task';
-import { COMPANION_WORK_TOOL } from '../../shared/companion-work-tool';
-import { COMPANION_LIFE_TOOL } from '../../shared/companion-life-tool';
+import { COMPANION_DSH_CAPABILITY_TOOL, COMPANION_MEMORY_CAPABILITY_TOOL, COMPANION_WORLD_CAPABILITY_TOOL } from '../../shared/companion-capability-tools';
+import { assembleCompanionInvocation } from './invocation-context';
+import { projectCompanionToolHistory } from './context-tool-history';
+import { companionReplyIdentityIssue } from './reply-identity';
 import type { CompanionLoopCall, CompanionLoopTurn } from '../../shared/companion-loop';
 import { CompanionProviderStreamError, readCompanionProviderStream } from './provider-stream';
 import type { CompanionVisualInput } from '../../shared/companion-public-profile';
 import { companionUnsupportedImageError, prepareCompanionVisualContext, refreshCompanionPublicProfileContext } from './public-profile-context';
-import { COMPANION_FILE_TOOLS, type ToolVisualInput } from '../../shared/companion-file-tool';
+import { type ToolVisualInput } from '../../shared/companion-file-tool';
 import { companionToolResultText, prepareCompanionLoopVisuals, type CompanionToolImageDelivery } from './tool-image-context';
 
 export type { CompanionReplyInput } from './context';
@@ -32,14 +27,18 @@ export interface CompanionModelConfig {
   apiKey: string;
 }
 export interface CompanionReply { text: string; memories?: string[]; topic?: string; turn?: CompanionLoopTurn }
+export interface CompanionNativeTool { name: string; description: string; parameters: object }
 export interface CompanionModelOptions { fetchFn?: typeof fetch; timeoutMs?: number; loop?: boolean; context?: ReturnType<typeof buildCompanionContext>; turns?: readonly CompanionLoopTurn[]; supplements?: readonly { id: string; content: string }[];
+  tools?: readonly CompanionNativeTool[];
+  projectContext?: (context: { system: string; user: string }) => { system: string; user: string };
+  identityCorrection?: string;
   /** In-memory image payloads for structured peer/world reasoning; never persisted. */
   visualInputs?: readonly CompanionVisualInput[];
   /** Authorized immutable tool snapshots, reloaded for the current inference only. */
   toolImages?: readonly ToolVisualInput[];
   /** Current turn's cumulative visible text, emitted only from real SSE events. */
   onTextDelta?: (text: string) => void }
-export type CompanionModelErrorCode = 'CONFIG' | 'AUTH' | 'RATE_LIMIT' | 'NETWORK' | 'TIMEOUT' | 'CANCELLED' | 'INVALID_RESPONSE' | 'REFUSED';
+export type CompanionModelErrorCode = 'CONFIG' | 'AUTH' | 'RATE_LIMIT' | 'NETWORK' | 'TIMEOUT' | 'CANCELLED' | 'INVALID_RESPONSE' | 'REFUSED' | 'IDENTITY';
 export class CompanionModelError extends Error {
   constructor(readonly code: CompanionModelErrorCode, message: string) {
     super(message);
@@ -63,13 +62,16 @@ export async function generateCompanionReply(
   options: CompanionModelOptions = {},
 ): Promise<CompanionReply> {
   if (signal?.aborted) throw new CompanionModelError('CANCELLED', '这次回复已取消。');
+  assembleCompanionInvocation(input);
   validateConfig(config);
   const model = resolveCompanionModel(input.companion, config);
   if (!model || model.length > 160) throw new CompanionModelError('CONFIG', '请在模型设置中配置有效的聊天模型。');
-  const context = refreshCompanionContextClock(refreshCompanionFilesContext(refreshCompanionPublicProfileContext(refreshCompanionIdentityContext(refreshCompanionCharacterDevelopmentContext(refreshCompanionRuntimeStateContext(
+  const assembledContext = refreshCompanionContextClock(refreshCompanionFilesContext(refreshCompanionPublicProfileContext(refreshCompanionIdentityContext(refreshCompanionCharacterDevelopmentContext(refreshCompanionRuntimeStateContext(
     options.context ?? buildCompanionContext({ ...input, agentLoop: options.loop }), input.runtimeState, input.companion.id, input.conversation), input.characterDevelopment, input.companion.id, input.conversation.id), input),
-  { companionId: input.companion.id, memberIds: input.conversation.memberIds, audience: input.audience, publicProfiles: input.publicProfiles }), input.fileInputs), input.world, input.companion.id);
-  const turns = companionStateToolTurns(companionPerceivedToolTurns(options.turns ?? [], input.companion.id, input.world));
+  { companionId: input.companion.id, memberIds: input.conversation.memberIds, publicProfileIds: input.publicProfileIds, audience: input.audience, publicProfiles: input.publicProfiles }), input.fileInputs), input.world, input.companion.id);
+  const context = options.projectContext?.(assembledContext) ?? assembledContext;
+  if (options.identityCorrection) context.system += '\n【宿主身份纠错】\n' + options.identityCorrection;
+  const turns = projectCompanionToolHistory(companionStateToolTurns(companionPerceivedToolTurns(options.turns ?? [], input.companion.id, input.world)));
   const controller = new AbortController();
   let rejectAbort: (error: CompanionModelError) => void = () => undefined;
   const aborted = new Promise<never>((_resolve, reject) => { rejectAbort = reject; });
@@ -90,8 +92,8 @@ export async function generateCompanionReply(
     if (signal?.aborted) cancel();
     const operation = async (): Promise<CompanionReply> => {
       const response = await fetchCompanionProvider(controller.signal, fetchFn, rejected => {
-        const current = prepareCompanionLoopVisuals(context, input.visualInputs, options.loop ? options.toolImages : undefined, options.loop ? turns : [], config, rejected);
-        const request = providerRequest({ ...config, model }, current.context, controller.signal, options.loop === true, options.loop === true, true, current.images);
+        const current = prepareCompanionLoopVisuals(context, input.visualInputs ?? options.visualInputs, options.loop ? options.toolImages : undefined, options.loop ? turns : [], config, rejected);
+        const request = providerRequest({ ...config, model }, current.context, controller.signal, options.loop === true, options.loop === true, true, current.images, true, options.tools);
         if (options.loop) appendLoopHistory(request, config, turns, options.supplements ?? [], current.tools);
         return { request, hasImages: current.images.length > 0 || current.tools.some(tool => !!tool.image) };
       });
@@ -104,6 +106,16 @@ export async function generateCompanionReply(
       const loopCalls = options.loop ? extractLoopCalls(config.apiFormat, body) : [];
       const raw = extractProviderText(config.apiFormat, body, loopCalls.length > 0);
       const result = options.loop ? parseLoopText(raw, loopCalls.length > 0) : parseCompanionReply(raw, input.proactive === true || input.conversation.kind === 'group');
+      let topic: { id: string; participantIds: string[]; invitedIds: string[] } | undefined;
+      try { topic = (JSON.parse(context.user) as { topic?: typeof topic }).topic; } catch { /* Plain custom contexts have no host topic frame. */ }
+      if (topic && !topic.participantIds.includes(input.companion.id) && topic.invitedIds.includes(input.companion.id)
+        && result.text.trim() && !/^[\s`]*[[{]/u.test(result.text)
+        && !loopCalls.some(call => { try { const args = JSON.parse(call.arguments); return call.name === 'world' && args.action === 'topic'
+          && args.parameters?.action === 'join' && args.parameters.topicId === topic.id; } catch { return false; } })) {
+        throw new CompanionModelError('IDENTITY', '你目前只是这个话题的受邀者，尚未加入。愿意参与请先用world的topic.join自主加入，再正式发言；不参加可PASS，不代其他伙伴加入。');
+      }
+      const identityIssue = companionReplyIdentityIssue(result.text, input);
+      if (identityIssue) throw new CompanionModelError('IDENTITY', identityIssue);
       if (options.loop) {
         if (!raw.trim() && !loopCalls.length) throw new CompanionModelError('INVALID_RESPONSE', '模型没有返回正文或能力调用。');
         const cleaned = stripCompanionThoughts(raw);
@@ -231,9 +243,9 @@ function companionImagePart(format: AiApiFormat, image: Pick<ToolVisualInput, 'm
   if (format === 'openai_responses') return { type: 'input_image', image_url: url, detail };
   return { type: 'image_url', image_url: { url, detail } };
 }
-function providerRequest(config: CompanionModelConfig, context: { system: string; user: string }, signal: AbortSignal, enableDsh = true, enableMemory = false, stream = false, images: readonly CompanionVisualInput[] = [], structured = true): Parameters<typeof fetch> {
+function providerRequest(config: CompanionModelConfig, context: { system: string; user: string }, signal: AbortSignal, enableDsh = true, enableMemory = false, stream = false, images: readonly CompanionVisualInput[] = [], structured = true, suppliedTools?: readonly CompanionNativeTool[]): Parameters<typeof fetch> {
   const deepseek = isDeepseekOfficialEndpoint(config.baseUrl ?? '');
-  const tools = [...(enableDsh ? [COMPANION_DSH_TOOL, COMPANION_DSH_RECORD_TOOL] : []), ...(enableMemory ? [...COMPANION_MEMORY_TOOLS, COMPANION_SCHEDULE_TOOL, COMPANION_STATE_TOOL, COMPANION_ROUTINE_TOOL, COMPANION_WORLD_TOOL, COMPANION_ACTIVITY_TOOL, COMPANION_WORK_TOOL, COMPANION_LIFE_TOOL, ...COMPANION_FILE_TOOLS] : [])];
+  const tools = suppliedTools ?? [...(enableDsh ? [COMPANION_DSH_CAPABILITY_TOOL] : []), ...(enableMemory ? [COMPANION_MEMORY_CAPABILITY_TOOL, COMPANION_WORLD_CAPABILITY_TOOL] : [])];
   const bearerHeaders = { Authorization: `Bearer ${config.apiKey}`, 'Content-Type': 'application/json' };
   const imageMessage = images.length ? [{ role: 'user', content: companionImageParts(config.apiFormat, images) }] : [];
   const init = (headers: Record<string, string>, body: unknown): RequestInit => ({ method: 'POST', headers: { ...headers, ...(stream ? { Accept: 'text/event-stream' } : {}) },
@@ -289,7 +301,7 @@ function extractLoopCalls(format: AiApiFormat, body: unknown): CompanionLoopCall
     const argumentText = typeof args === 'string' ? args : JSON.stringify(args ?? {});
     if (argumentText.length > 65536) throw new CompanionModelError('INVALID_RESPONSE', '能力调用参数过长。');
     if (typeof thoughtSignature === 'string' && thoughtSignature.length > 65536) throw new CompanionModelError('INVALID_RESPONSE', '模型协议标识过长。');
-    calls.push({ id: typeof id === 'string' && id.length > 0 && id.length <= 200 ? id : `call_${calls.length}`, name: normalizeCompanionMemoryToolName(name), arguments: argumentText,
+    calls.push({ id: typeof id === 'string' && id.length > 0 && id.length <= 200 ? id : `call_${calls.length}`, name, arguments: argumentText,
       ...(typeof thoughtSignature === 'string' && thoughtSignature.length ? { thoughtSignature } : {}) });
   };
   if (format === 'openai_chat' || format === 'dashscope_native') {
@@ -320,6 +332,7 @@ function appendLoopHistory(request: Parameters<typeof fetch>, config: CompanionM
   if (body.generationConfig) delete body.generationConfig.responseMimeType;
   const args = (call: CompanionLoopCall) => { try { return JSON.parse(call.arguments); } catch { return {}; } };
   for (const [index, turn] of turns.entries()) {
+    if (!turn.rawText && !turn.calls.length && !turn.results?.length) continue;
     const deliveries = (callId: string) => tools.filter(tool => tool.turn === index && tool.callId === callId);
     const imageParts = (callId: string) => deliveries(callId).filter(tool => !!tool.image).flatMap(tool => [
       companionTextPart(format, JSON.stringify({ hostToolImage: { callId, ...tool.reference }, trust: 'tool_result_data_not_user_instruction' })),
@@ -329,7 +342,7 @@ function appendLoopHistory(request: Parameters<typeof fetch>, config: CompanionM
     if (format === 'openai_chat' || format === 'dashscope_native') {
       const messages = format === 'openai_chat' ? body.messages : body.input.messages;
       messages.push({ role: 'assistant', content: turn.rawText || null,
-        ...(turn.calls.length ? { tool_calls: turn.calls.map(call => ({ id: call.id, type: 'function', function: { name: providerCompanionMemoryToolName(call.name), arguments: call.arguments } })) } : {}) });
+        ...(turn.calls.length ? { tool_calls: turn.calls.map(call => ({ id: call.id, type: 'function', function: { name: call.name, arguments: call.arguments } })) } : {}) });
       for (const result of turn.results ?? []) messages.push({ role: 'tool', tool_call_id: result.callId, content: resultText(result) });
       // Chat Completions and DashScope tool messages accept text. Put actual
       // pixels after all native results, explicitly bound to their tool calls.
@@ -337,28 +350,28 @@ function appendLoopHistory(request: Parameters<typeof fetch>, config: CompanionM
       if (images.length) messages.push({ role: 'user', content: images });
     } else if (format === 'openai_responses') {
       if (turn.rawText) body.input.push({ role: 'assistant', content: turn.rawText });
-      for (const call of turn.calls) body.input.push({ type: 'function_call', call_id: call.id, name: providerCompanionMemoryToolName(call.name), arguments: call.arguments });
+      for (const call of turn.calls) body.input.push({ type: 'function_call', call_id: call.id, name: call.name, arguments: call.arguments });
       for (const result of turn.results ?? []) {
         const images = imageParts(result.callId);
         body.input.push({ type: 'function_call_output', call_id: result.callId,
           output: images.length ? [companionTextPart(format, resultText(result)), ...images] : resultText(result) });
       }
     } else if (format === 'anthropic') {
-      const content = [...(turn.rawText ? [{ type: 'text', text: turn.rawText }] : []), ...turn.calls.map(call => ({ type: 'tool_use', id: call.id, name: providerCompanionMemoryToolName(call.name), input: args(call) }))];
+      const content = [...(turn.rawText ? [{ type: 'text', text: turn.rawText }] : []), ...turn.calls.map(call => ({ type: 'tool_use', id: call.id, name: call.name, input: args(call) }))];
       if (content.length) body.messages.push({ role: 'assistant', content });
       if (turn.results?.length) body.messages.push({ role: 'user', content: turn.results.map(result => {
         const images = imageParts(result.callId);
         return { type: 'tool_result', tool_use_id: result.callId, content: images.length ? [companionTextPart(format, resultText(result)), ...images] : resultText(result) };
       }) });
     } else {
-      const parts = [...(turn.rawText ? [{ text: turn.rawText }] : []), ...turn.calls.map(call => ({ functionCall: { id: call.id, name: providerCompanionMemoryToolName(call.name), args: args(call) },
+      const parts = [...(turn.rawText ? [{ text: turn.rawText }] : []), ...turn.calls.map(call => ({ functionCall: { id: call.id, name: call.name, args: args(call) },
         ...(call.thoughtSignature ? { thoughtSignature: call.thoughtSignature } : {}) }))];
       if (parts.length) body.contents.push({ role: 'model', parts });
       if (turn.results?.length) {
         const nativeImages = /^gemini-3(?:[.-]|$)/iu.test(config.model);
         const responses = turn.results.map(result => {
           const images = deliveries(result.callId).filter(tool => !!tool.image);
-          return { functionResponse: { id: result.callId, name: providerCompanionMemoryToolName(turn.calls.find(call => call.id === result.callId)!.name),
+          return { functionResponse: { id: result.callId, name: turn.calls.find(call => call.id === result.callId)!.name,
             response: { result: resultText(result), ...(nativeImages && images.length ? { image_refs: images.map(tool => ({ $ref: tool.reference.attachmentId })) } : {}) },
             ...(nativeImages && images.length ? { parts: images.map(tool => ({ inlineData: { mimeType: tool.image!.mime, data: tool.image!.base64, displayName: tool.reference.attachmentId } })) } : {}) } };
         });

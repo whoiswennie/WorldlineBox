@@ -49,6 +49,21 @@ function counts(filename: string) {
     jobs: db.prepare("SELECT COUNT(*) AS n FROM vcp_capture_jobs WHERE conversation_id='world_alice'").get() }; } finally { db.close(); }
 }
 
+it('finds a real directory contact when any name or id alias matches and ranks exact names first', () => {
+  const root = mkdtempSync(path.join(tmpdir(), 'companion-world-experience-')); roots.push(root);
+  const roles = [
+    { ...seeds[0]!, id: 'zhou-lan', name: '周岚', description: '设计伙伴' },
+    { ...seeds[1]!, id: 'reader', name: '周岚的读书搭档', description: '讨论历史与文学' },
+  ];
+  const store = new CompanionsStore(path.join(root, 'messages.sqlite'), roles); stores.add(store);
+  const scope = { companionId: 'zhou-lan', conversationId: store.openPrivate('zhou-lan').id };
+  const contacts = (query: string) => store.request({ type: 'memory.world_query', ...scope, category: 'contacts', query, limit: 10 }).worldKnowledge!.items;
+  expect(contacts('周岚 zhou').map(item => item.id)).toEqual(['zhou-lan', 'reader']);
+  expect(contacts('周岚')[0]!.id).toBe('zhou-lan');
+  expect(contacts('不存在 文学').map(item => item.id)).toEqual(['reader']);
+  expect(contacts('missing')).toEqual([]);
+});
+
 it('durably captures one completed walk in its world domain, survives restart, forms a sourced personal diary and never resurrects forgotten evidence', () => {
   const f = fixture(); startWalk(f.store); const event = finishWalk(f.store);
   expect(counts(f.filename)).toMatchObject({ receipts: { n: 1 }, jobs: { n: 1 } });
