@@ -14,6 +14,8 @@ import type { CompanionMemoryCandidate } from '../../src/shared/companion-memory
 import type { CompanionMemory } from '../../src/shared/companions';
 import type { DshLauncher } from '../../src/main/dsh/launcher';
 import { COMPANION_DIALOGUE_WINDOW } from '../../src/main/companions/context-window';
+import { buildCompanionContext } from '../../src/main/companions/context';
+import type { CompanionLoopCheckpoint } from '../../src/shared/companion-loop';
 
 const transport = vi.hoisted(() => ({ request: vi.fn<(command: CompanionStorageCommand) => Promise<CompanionStorageResponse>>(),
   start: vi.fn<() => Promise<void>>(async () => undefined), close: vi.fn(async () => undefined), fetch: vi.fn<typeof fetch>(), memoryFetch: vi.fn<typeof fetch>(), worldFetch: vi.fn<typeof fetch>(), authorizationFetch: vi.fn<typeof fetch>(), prohibitionFetch: vi.fn<typeof fetch>() }));
@@ -468,6 +470,59 @@ describe('VCP companion memory through the main service and real SQLite', () => 
     expect(status(f.store).forgotten).toBe(0);
   });
 
+  it.each(['memory', 'world'])('keeps a new host world-query receipt visible through the %s entrance without admitting later chat', async entrance => {
+    const f = fixture([...seeds, { id: 'flash', name: '小肥鱼', description: '妹妹', persona: '活泼', model: '', avatar: 'flash', proactive: false }]);
+    const peer = f.store.request({ type: 'social.conversation.ensure', companionId: 'sister', memberIds: ['sister', 'flash'] }).socialConversation!;
+    f.store.request({ type: 'social.message.append', conversationId: peer.id, authorId: 'sister', content: '很高兴认识你。',
+      virtualCreatedAt: fixedTime, clientId: 'known-peer-' + entrance });
+    let step = 0, receiptId: string | undefined;
+    transport.fetch.mockImplementation(async (_input, init) => {
+      if (step++ === 0) {
+        f.store.appendMessage({ conversationId: f.conversation.id, authorId: 'user', content: 'LATER_CHAT_MUST_STAY_OUT', replyDirective: 'none' });
+        return toolResponse('discover_sister', entrance, { action: entrance === 'memory' ? 'world_query' : 'query', category: 'contacts', query: '小肥鱼' });
+      }
+      expect(step).toBe(2);
+      const latest = body(init).messages.at(-1)!;
+      expect(latest).toMatchObject({ role: 'tool', tool_call_id: 'discover_sister' });
+      const result = JSON.parse(latest.content) as CompanionStorageResponse;
+      expect(result.worldKnowledge?.items).toContainEqual(expect.objectContaining({ id: 'flash', name: '小肥鱼' }));
+      receiptId = result.worldKnowledge?.evidenceMessageId;
+      expect(receiptId).toBeTruthy();
+      expect(String(init?.body)).not.toContain('LATER_CHAT_MUST_STAY_OUT');
+      return textResponse('已经查到妹妹的真实联络标识，不必重复查询。');
+    });
+    const source = await sent(f.service, f.store, f.conversation.id, '看看妹妹的联络信息。', 'world-query-receipt-' + entrance);
+    expect(step).toBe(2);
+    const receipt = f.store.getMessage(receiptId!);
+    expect(receipt.sequence).toBeGreaterThan(source.sequence);
+    const checkpoint = f.store.request({ type: 'loop.get', companionId: 'sister', sourceMessageId: source.id }).loop!;
+    expect(JSON.parse(checkpoint.context!.user).withdrawnEvidenceThroughStep).toBeUndefined();
+  });
+
+  it('retains an actual sent-message receipt newer than the dialogue cursor and still revokes its forgotten source', async () => {
+    const f = fixture([...seeds, { id: 'flash', name: '小肥鱼', description: '朋友', persona: '活泼', model: '', avatar: 'flash', proactive: false }]);
+    const source = f.store.appendMessage({ conversationId: f.conversation.id, authorId: 'user', content: '邀请朋友一起玩。', replyDirective: 'none' });
+    const room = f.store.request({ type: 'social.conversation.ensure', companionId: 'sister', memberIds: ['sister', 'flash'] }).socialConversation!;
+    const sent = f.store.request({ type: 'social.message.append', conversationId: room.id, authorId: 'sister', content: '想一起玩吗？',
+      clientId: 'fresh-receipt', virtualCreatedAt: fixedTime }).socialMessage!;
+    expect(sent.message.sequence).toBeGreaterThan(source.sequence);
+    const companion = f.store.state().companions.find(role => role.id === 'sister')!;
+    const checkpoint: CompanionLoopCheckpoint = { companionId: 'sister', conversationId: f.conversation.id, sourceMessageId: source.id,
+      status: 'running', supplements: [], context: buildCompanionContext({ companion, conversation: f.conversation,
+        messages: [source], sourceMessage: source, memories: [], agentLoop: true, taskRequest: { sourceMessageId: source.id, prompt: source.content } }),
+      turns: [{ text: '我已发出邀请。', rawText: '我已发出邀请。', calls: [{ id: 'invite', name: 'world',
+        arguments: JSON.stringify({ action: 'message', recipientIds: ['flash'], text: sent.message.content }) }],
+        results: [{ callId: 'invite', content: JSON.stringify({ ok: true, socialMessage: sent }) }] }] };
+    const inference = (f.service as unknown as { memoryInference(checkpoint: CompanionLoopCheckpoint, id: string, room: string, sequence: number): Promise<{ turns: CompanionLoopCheckpoint['turns'] }> });
+    const current = await inference.memoryInference(checkpoint, 'sister', f.conversation.id, source.sequence);
+    expect(current.turns[0]?.results?.[0]?.content).toContain(sent.message.id);
+    expect(JSON.parse(checkpoint.context!.user).withdrawnEvidenceThroughStep).toBeUndefined();
+    f.store.request({ type: 'memory.forget', companionId: 'sister', conversationId: room.id, sourceMessageIds: [sent.message.id] });
+    const withdrawn = await inference.memoryInference(checkpoint, 'sister', f.conversation.id, source.sequence);
+    expect(JSON.stringify(withdrawn.turns)).not.toContain(sent.message.content);
+    expect(JSON.parse(checkpoint.context!.user).withdrawnEvidenceThroughStep).toBe(1);
+  });
+
   it('keeps new authorized search and read results after forgetting cuts off the contaminated provider history', async () => {
     const f = fixture(), secret = 'WITHDRAWN_SECRET_9127';
     const oldSource = f.store.appendMessage({ conversationId: f.conversation.id, authorId: 'user', content: `旧秘密是${secret}`, replyDirective: 'none' });
@@ -565,6 +620,102 @@ describe('VCP companion memory through the main service and real SQLite', () => 
     await vi.waitFor(() => expect(reopened.request({ type: 'work.list', sourceMessageId: source.id }).works?.[0]?.status).toBe('done'), { timeout: 10000 });
     expect(transport.fetch).toHaveBeenCalled();
     for (const [, init] of transport.fetch.mock.calls) expect(String(init?.body)).not.toContain(secret);
+  });
+
+  it('revalidates an older world receipt after an unrelated VCP revision refresh and later source withdrawal', async () => {
+    const f = fixture([...seeds, { id: 'flash', name: '小肥鱼', description: '妹妹', persona: '活泼', model: '', avatar: 'flash', proactive: false }]);
+    const secret = 'PRIVATE_VISIT_AFTER_MEMORY_REFRESH_5782';
+    const old = f.store.appendMessage({ conversationId: f.conversation.id, authorId: 'user', content: '请拜访妹妹，原因是' + secret, replyDirective: 'none' });
+    f.store.request({ type: 'world.tool', companionId: 'sister', conversationId: f.conversation.id, sourceMessageId: old.id,
+      arguments: { action: 'visit', targetCompanionId: 'flash', reason: secret } });
+    for (let index = 0; index < COMPANION_DIALOGUE_WINDOW.maxMessages + 20; index++) f.store.appendMessage({ conversationId: f.conversation.id, authorId: 'user', content: '无关的日常历史' + index, replyDirective: 'none' });
+    const safe = f.store.appendMessage({ conversationId: f.conversation.id, authorId: 'user', content: '窗台上的薄荷今天浇过水了。', replyDirective: 'none' });
+    const source = f.store.appendMessage({ conversationId: f.conversation.id, authorId: 'user', content: '看看你现在在哪里。', replyDirective: 'none' });
+    const snapshot = f.store.request({ type: 'memory.snapshot', companionId: 'sister', conversationId: f.conversation.id,
+      beforeSequence: source.sequence }).memorySnapshot!;
+    expect(snapshot.revision).toBeTruthy();
+    const inspection = f.store.request({ type: 'world.tool', companionId: 'sister', conversationId: f.conversation.id, arguments: { action: 'inspect' } });
+    expect(JSON.stringify(inspection)).toContain(secret);
+    const companion = f.store.state().companions.find(role => role.id === 'sister')!;
+    const context = buildCompanionContext({ companion, conversation: f.conversation, messages: [source], sourceMessage: source,
+      memories: [], agentLoop: true, taskRequest: { sourceMessageId: source.id, prompt: source.content } });
+    // Capture the real SQLite corpus fingerprint and the fixture runtime's
+    // actual profile. No model response fabricates a changed-context flag.
+    context.user = JSON.stringify({ ...JSON.parse(context.user), memoryRecall: { context: {
+      text: '', revision: snapshot.revision, profileKey: 'bundled-gemma2:768',
+    } } });
+    const checkpoint: CompanionLoopCheckpoint = { companionId: 'sister', conversationId: f.conversation.id, sourceMessageId: source.id,
+      status: 'running', supplements: [], context, turns: [{ text: '', rawText: '', calls: [{ id: 'older_world_inspection', name: 'world',
+        arguments: JSON.stringify({ action: 'inspect' }) }], results: [{ callId: 'older_world_inspection', content: JSON.stringify(inspection) }] }] };
+    // A separate harmless note changes the VCP revision. That may discard old
+    // memory.* results, but this still-valid world receipt must remain usable.
+    f.store.request({ type: 'memory.record', companionId: 'sister', conversationId: f.conversation.id,
+      candidate: journal(safe, safe.content, ['薄荷']) });
+    markIndexed(f.store);
+    const inference = f.service as unknown as { memoryInference(checkpoint: CompanionLoopCheckpoint, id: string, room: string, sequence: number): Promise<{ turns: CompanionLoopCheckpoint['turns'] }> };
+    const refreshed = await inference.memoryInference(checkpoint, 'sister', f.conversation.id, source.sequence);
+    expect(JSON.parse(checkpoint.context!.user).memoryEvidenceThroughStep).toBe(1);
+    expect(JSON.parse(checkpoint.context!.user).withdrawnEvidenceThroughStep).toBeUndefined();
+    expect(JSON.stringify(refreshed.turns)).toContain(secret);
+    // The original request is outside the recent window and VCP recall. Its
+    // later withdrawal must still invalidate the retained world's provenance.
+    const forget = f.store.appendMessage({ conversationId: f.conversation.id, authorId: 'user', content: '请忘掉之前的私人拜访原因。', replyDirective: 'none' });
+    f.store.request({ type: 'memory.forget', companionId: 'sister', conversationId: f.conversation.id,
+      sourceMessageIds: [old.id], requestMessageId: forget.id });
+    const withdrawn = await inference.memoryInference(checkpoint, 'sister', f.conversation.id, source.sequence);
+    expect(JSON.stringify(withdrawn.turns)).not.toContain(secret);
+    expect(JSON.parse(checkpoint.context!.user).withdrawnEvidenceThroughStep).toBe(1);
+    expect(JSON.parse(checkpoint.context!.user).messages.some((message: { id: string }) => message.id === old.id)).toBe(false);
+  });
+
+  it('withdraws an older native history receipt after its source outside the recent window is forgotten', async () => {
+    const f = fixture(), secret = 'HISTORY_RECEIPT_WITHDRAWN_6741';
+    const old = f.store.appendMessage({ conversationId: f.conversation.id, authorId: 'user', content: secret, replyDirective: 'none' });
+    for (let index = 0; index < COMPANION_DIALOGUE_WINDOW.maxMessages + 20; index++) f.store.appendMessage({ conversationId: f.conversation.id, authorId: 'user', content: '普通历史' + index, replyDirective: 'none' });
+    const source = f.store.appendMessage({ conversationId: f.conversation.id, authorId: 'user', content: '请核对更早的聊天。', replyDirective: 'none' });
+    const companion = f.store.state().companions.find(role => role.id === 'sister')!;
+    const checkpoint: CompanionLoopCheckpoint = { companionId: 'sister', conversationId: f.conversation.id, sourceMessageId: source.id,
+      status: 'running', supplements: [], context: buildCompanionContext({ companion, conversation: f.conversation, messages: [source], sourceMessage: source,
+        memories: [], agentLoop: true, taskRequest: { sourceMessageId: source.id, prompt: source.content } }),
+      turns: [{ text: '', rawText: '', calls: [{ id: 'older_history', name: 'world', arguments: JSON.stringify({ action: 'history', before: old.sequence + 1, limit: 1 }) }],
+        results: [{ callId: 'older_history', content: JSON.stringify({ messages: [f.store.getMessage(old.id)], nextBefore: old.sequence }) }] }] };
+    const inference = f.service as unknown as { memoryInference(checkpoint: CompanionLoopCheckpoint, id: string, room: string, sequence: number): Promise<{ turns: CompanionLoopCheckpoint['turns'] }> };
+    expect(JSON.stringify((await inference.memoryInference(checkpoint, 'sister', f.conversation.id, source.sequence)).turns)).toContain(secret);
+    expect(JSON.parse(checkpoint.context!.user).messages.some((message: { id: string }) => message.id === old.id)).toBe(false);
+    f.store.request({ type: 'memory.forget', companionId: 'sister', conversationId: f.conversation.id, sourceMessageIds: [old.id] });
+    expect(JSON.stringify((await inference.memoryInference(checkpoint, 'sister', f.conversation.id, source.sequence)).turns)).not.toContain(secret);
+    expect(JSON.parse(checkpoint.context!.user).withdrawnEvidenceThroughStep).toBe(1);
+  });
+
+  it('withdraws old native topic receipts after a VCP-only refresh and hides the forgotten checkpoint from fresh reads and recall', async () => {
+    const f = fixture(), secret = 'TOPIC_RECEIPT_WITHDRAWN_9638';
+    const topic = f.store.request({ type: 'topic.create', conversationId: f.conversation.id, readerId: 'user', title: '长期规则讨论', kind: 'discussion', participantIds: ['sister'] }).topic!;
+    const joined = f.store.request({ type: 'topic.join', conversationId: f.conversation.id, topicId: topic.id, readerId: 'sister' }).topic!;
+    const old = f.store.appendMessage({ conversationId: f.conversation.id, authorId: 'user', topicId: topic.id, content: secret, replyDirective: 'none' });
+    const receipt = f.store.request({ type: 'topic.update', conversationId: f.conversation.id, topicId: topic.id, readerId: 'user', expectedRevision: joined.revision,
+      patch: { shared: { summary: secret, sourceMessageIds: [old.id], state: { sourceMessageIds: ['FREE_STATE_NOT_A_REAL_SOURCE'] } } } });
+    const topicReceipt = f.store.request({ type: 'topic.read', conversationId: f.conversation.id, topicId: topic.id, readerId: 'sister' });
+    expect(receipt.topicState?.shared?.summary).toBe(secret);
+    const safe = f.store.appendMessage({ conversationId: f.conversation.id, authorId: 'user', topicId: null, content: '今天给薄荷浇过水了。', replyDirective: 'none' });
+    const source = f.store.appendMessage({ conversationId: f.conversation.id, authorId: 'user', topicId: null, content: '请查看之前话题的规则。', replyDirective: 'none' });
+    const snapshot = f.store.request({ type: 'memory.snapshot', companionId: 'sister', conversationId: f.conversation.id, beforeSequence: source.sequence }).memorySnapshot!;
+    const companion = f.store.state().companions.find(role => role.id === 'sister')!;
+    const context = buildCompanionContext({ companion, conversation: f.conversation, messages: [source], sourceMessage: source,
+      memories: [], agentLoop: true, taskRequest: { sourceMessageId: source.id, prompt: source.content } });
+    context.user = JSON.stringify({ ...JSON.parse(context.user), memoryRecall: { context: { text: '', revision: snapshot.revision, profileKey: 'bundled-gemma2:768' } } });
+    const checkpoint: CompanionLoopCheckpoint = { companionId: 'sister', conversationId: f.conversation.id, sourceMessageId: source.id,
+      status: 'running', supplements: [], context, turns: [{ text: '', rawText: '', calls: [{ id: 'older_topic', name: 'world',
+        arguments: JSON.stringify({ action: 'topic', parameters: { action: 'read', topicId: topic.id } }) }], results: [{ callId: 'older_topic', content: JSON.stringify(topicReceipt) }] }] };
+    f.store.request({ type: 'memory.record', companionId: 'sister', conversationId: f.conversation.id, candidate: journal(safe, safe.content, ['薄荷']) }); markIndexed(f.store);
+    const inference = f.service as unknown as { memoryInference(checkpoint: CompanionLoopCheckpoint, id: string, room: string, sequence: number): Promise<{ turns: CompanionLoopCheckpoint['turns'] }> };
+    expect(JSON.stringify((await inference.memoryInference(checkpoint, 'sister', f.conversation.id, source.sequence)).turns)).toContain(secret);
+    expect(JSON.parse(checkpoint.context!.user).memoryEvidenceThroughStep).toBe(1);
+    expect(JSON.parse(checkpoint.context!.user).withdrawnEvidenceThroughStep).toBeUndefined();
+    f.store.request({ type: 'memory.forget', companionId: 'sister', conversationId: f.conversation.id, sourceMessageIds: [old.id] });
+    expect(JSON.stringify((await inference.memoryInference(checkpoint, 'sister', f.conversation.id, source.sequence)).turns)).not.toContain(secret);
+    expect(JSON.parse(checkpoint.context!.user).withdrawnEvidenceThroughStep).toBe(1);
+    expect(f.store.request({ type: 'topic.read', conversationId: f.conversation.id, topicId: topic.id, readerId: 'sister' }).topicState?.shared).toBeUndefined();
+    expect(JSON.stringify(f.store.request({ type: 'memory.world_query', companionId: 'sister', conversationId: f.conversation.id, category: 'topics', topicId: topic.id, query: '', limit: 10 }))).not.toContain(secret);
   });
 
   it.each([false, true])('does not reintroduce withdrawn evidence when a loop resumes (request itself withdrawn: %s)', async requestWithdrawn => {

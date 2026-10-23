@@ -59,6 +59,199 @@ it('creates a real nested notebook text with authoritative tags, source metadata
   expect(page.documents?.items.some(item => item.path === 'profile.md' && item.readOnly)).toBe(true);
 });
 
+it('opens a cold notebook before file imports or a whole catalogue scan complete', async () => {
+  const f = fixture(), folder = path.join(f.directory, 'alice', '资料');
+  mkdirSync(folder, { recursive: true });
+  for (let n = 0; n < 400; n++) writeFileSync(path.join(folder, `资料-${n}.md`), `真实外部资料 ${n}`);
+  let importPages = 0, catalogued = 0, cataloguedAtFirstQuery: number | undefined;
+  const { call } = f.make(async command => {
+    if (command.type === 'memory.library.page') importPages++;
+    if (command.type === 'document.catalog.put') catalogued += command.entries.length;
+    if (command.type === 'document.catalog.query' && cataloguedAtFirstQuery === undefined) cataloguedAtFirstQuery = catalogued;
+    return f.request(command);
+  });
+  const started = performance.now();
+  const first = await call({ type: 'memory.documents.list', directory: '', limit: 64 });
+  const elapsedMs = performance.now() - started;
+  expect(first.ok, first.error).toBe(true);
+  expect(importPages).toBe(0);
+  expect(cataloguedAtFirstQuery).toBeLessThanOrEqual(16);
+  expect(first.documents?.index?.state).toBe('building');
+  expect(elapsedMs).toBeLessThan(2000);
+  await expect.poll(async () => (await call({ type: 'memory.documents.list', directory: '资料', limit: 64 })).documents?.index?.state, { timeout: 15000 }).toBe('ready');
+  expect((await call({ type: 'memory.documents.list', directory: '资料', limit: 64 })).documents?.total).toBe(400);
+  expect(f.store.request({ type: 'memory.list', companionId: 'alice' }).memories).toEqual([]);
+});
+
+it('opens another owner notebook while one owner is waiting on a background import policy', async () => {
+  const f = fixture();
+  let release!: () => void, entered!: () => void;
+  const gate = new Promise<void>(resolve => { release = resolve; });
+  const waiting = new Promise<void>(resolve => { entered = resolve; });
+  const { library, call } = f.make(async command => {
+    if (command.type === 'memory.library.page' && command.companionId === 'alice') { entered(); await gate; }
+    return f.request(command);
+  });
+  const background = library.sync();
+  await waiting;
+  try {
+    const response = await Promise.race([
+      call({ type: 'memory.documents.list', companionId: 'bob', directory: '', limit: 64 }),
+      new Promise<never>((_, reject) => { const timer = setTimeout(() => reject(new Error('An unrelated notebook waited for the blocked import')), 1500); timer.unref(); }),
+    ]);
+    expect(response.ok, response.error).toBe(true);
+    expect(response.documents?.items.some(item => item.path === 'profile.md')).toBe(true);
+  } finally { release(); await background; }
+});
+
+it('reads the same notebook during a blocked import without granting its snapshot file-write authority', async () => {
+  const f = fixture();
+  let blocked = false, release!: () => void, entered!: () => void;
+  const gate = new Promise<void>(resolve => { release = resolve; });
+  const waiting = new Promise<void>(resolve => { entered = resolve; });
+  const { library, call } = f.make(async command => {
+    if (blocked && command.type === 'memory.library.page' && command.companionId === 'alice') { entered(); await gate; }
+    return f.request(command);
+  });
+  const note = (await call({ type: 'memory.documents.create', path: '日记/安全读取.md', content: '不依赖待审资料的真实已有日记。' })).document!;
+  blocked = true;
+  const background = library.sync(); await waiting;
+  try {
+    const response = await Promise.race([
+      call({ type: 'memory.documents.list', directory: '', limit: 64 }),
+      new Promise<never>((_, reject) => { const timer = setTimeout(() => reject(new Error('Reading waited for the same owner import')), 1500); timer.unref(); }),
+    ]);
+    expect(response.ok, response.error).toBe(true);
+    expect(response.documents?.items.some(item => item.noteId === note.memory!.id)).toBe(true);
+    expect((await call({ type: 'memory.documents.read', path: note.document.path })).document?.content).toBe(note.content);
+    await expect(library.withDocuments('alice', session => session.atomic('资料/只读不准写.md', '不能写入'), { synchronize: false, readOnly: true })).rejects.toThrow('只读');
+    expect(existsSync(path.join(f.directory, 'alice', '资料/只读不准写.md'))).toBe(false);
+  } finally { release(); await background; }
+});
+
+it('does not return an old exported body after the host has revised that note', async () => {
+  const f = fixture(), { library, call } = f.make();
+  const original = (await call({ type: 'memory.documents.create', path: '日记/宿主已更新.md', content: '不得从旧导出继续展示的正文。' })).document!;
+  f.store.saveMemory({ ...f.scope, id: original.memory!.id, expectedVersion: 1, content: '宿主中当前有效的新正文。' });
+  const stale = await call({ type: 'memory.documents.read', path: original.document.path });
+  expect(stale).toMatchObject({ ok: false });
+  expect(stale.document).toBeUndefined();
+  await library.sync();
+  expect((await call({ type: 'memory.documents.read', path: original.document.path })).document?.content).toBe('宿主中当前有效的新正文。');
+});
+
+it('binds a concurrently read automatic timeline to its published content hash as well as source revision', async () => {
+  const f = fixture(); let replace = false;
+  const relative = '时间线/VCP-alice-2026-10.md';
+  const { library, call } = f.make(async command => {
+    const result = await f.request(command);
+    if (replace && command.type === 'memory.snapshot') { replace = false; writeFileSync(path.join(f.directory, 'alice', relative), 'UNPUBLISHED_TIMELINE_BODY'); }
+    return result;
+  });
+  await library.sync();
+  const revision = f.store.request({ type: 'memory.snapshot', ...f.scope }).memorySnapshot!.revision;
+  await library.publishTimelines(f.scope, { schema: 'worldlinebox.vcp-timeline-artifacts', sourceRevision: revision,
+    owner: companionMemoryIdentity(f.store.state().companions.find(owner => owner.id === 'alice')!),
+    agents: [{ agentName: 'alice', months: [{ month: '2026-10', sourceDigest: 'digest', content: '实际发布的时间线。' }] }] }, async () => true);
+  replace = true;
+  const stale = await call({ type: 'memory.documents.read', path: relative });
+  expect(stale).toMatchObject({ ok: false });
+  expect(stale.document).toBeUndefined();
+  expect(existsSync(path.join(f.directory, 'alice', relative))).toBe(false);
+});
+
+it('does not publish a body while its new note mapping and post-write authority are still pending', async () => {
+  const f = fixture(), publicationGate: { noteId?: string } = {}; let release!: () => void, entered!: () => void;
+  const gate = new Promise<void>(resolve => { release = resolve; }), waiting = new Promise<void>(resolve => { entered = resolve; });
+  const { library, call } = f.make(async command => {
+    if (publicationGate.noteId && command.type === 'memory.library.read' && command.id === publicationGate.noteId && !('sourceLimit' in command)) { entered(); await gate; }
+    return f.request(command);
+  });
+  const first = (await call({ type: 'memory.documents.create', path: '日记/映射甲.md', content: '已授权的甲正文。' })).document!;
+  const second = (await call({ type: 'memory.documents.create', path: '日记/映射乙.md', content: '不得按甲的来源返回的乙正文。' })).document!;
+  publicationGate.noteId = second.memory!.id;
+  const publication = library.withDocuments('alice', async session => { await session.project(first.document.path, second.memory!); await session.save(); }, { synchronize: false });
+  await waiting;
+  try {
+    const response = await call({ type: 'memory.documents.read', path: first.document.path });
+    expect(response).toMatchObject({ ok: false }); expect(response.document).toBeUndefined();
+    f.store.request({ type: 'memory.library.delete', companionId: 'alice', id: second.memory!.id, expectedVersion: second.memory!.version });
+  } finally { release(); await publication; }
+  expect(existsSync(path.join(f.directory, 'alice', first.document.path))).toBe(false);
+});
+
+it('rejects a withdrawn candidate promptly while its physical cleanup waits behind an import', async () => {
+  const f = fixture(); let blocked = false, release!: () => void, entered!: () => void;
+  const gate = new Promise<void>(resolve => { release = resolve; }), waiting = new Promise<void>(resolve => { entered = resolve; });
+  const { library, call } = f.make(async command => {
+    if (blocked && command.type === 'memory.library.page' && command.companionId === 'alice') { entered(); await gate; }
+    return f.request(command);
+  });
+  const note = (await call({ type: 'memory.documents.create', path: '日记/撤回无需等审核.md', content: '已撤回的正文不得出现。' })).document!;
+  blocked = true; const background = library.sync(); await waiting;
+  f.store.request({ type: 'memory.library.delete', companionId: 'alice', id: note.memory!.id, expectedVersion: note.memory!.version });
+  try {
+    const result = await Promise.race([
+      call({ type: 'memory.documents.read', path: note.document.path }),
+      new Promise<never>((_, reject) => { const timer = setTimeout(() => reject(new Error('Withdrawal waited for an unrelated pending import')), 1500); timer.unref(); }),
+    ]);
+    expect(result).toMatchObject({ ok: false }); expect(result.document).toBeUndefined();
+  } finally { release(); await background; }
+  await expect.poll(() => existsSync(path.join(f.directory, 'alice', note.document.path))).toBe(false);
+});
+
+it('rechecks source authority after an awaited tag-status read', async () => {
+  const f = fixture(); let hold = false, release!: () => void, entered!: () => void;
+  const gate = new Promise<void>(resolve => { release = resolve; }), waiting = new Promise<void>(resolve => { entered = resolve; });
+  const { call } = f.make(async command => {
+    if (hold && command.type === 'memory.tags.status') { entered(); await gate; }
+    return f.request(command);
+  });
+  const note = (await call({ type: 'memory.documents.create', path: '日记/标签等待期间撤回.md', content: '读取末尾也必须核验来源。' })).document!;
+  hold = true; const pending = call({ type: 'memory.documents.read', path: note.document.path });
+  await waiting;
+  f.store.request({ type: 'memory.library.delete', companionId: 'alice', id: note.memory!.id, expectedVersion: note.memory!.version });
+  release();
+  const response = await pending;
+  expect(response).toMatchObject({ ok: false }); expect(response.document).toBeUndefined();
+});
+
+it('repairs a failed publication marker once the persisted mapping and actual body agree again', async () => {
+  const f = fixture(); let fail = false;
+  const { library, call } = f.make(async command => {
+    if (fail && command.type === 'memory.library.read' && !('sourceLimit' in command)) { fail = false; throw new Error('Post-publication transport failure'); }
+    return f.request(command);
+  });
+  const note = (await call({ type: 'memory.documents.create', path: '日记/发布失败后恢复.md', content: '仍然有效的宿主正文。' })).document!;
+  fail = true;
+  await expect(library.withDocuments('alice', session => session.project(note.document.path, note.memory!), { synchronize: false })).rejects.toThrow('transport failure');
+  expect((await call({ type: 'memory.documents.read', path: note.document.path })).ok).toBe(false);
+  await library.sync();
+  expect((await call({ type: 'memory.documents.read', path: note.document.path })).document?.content).toBe(note.content);
+});
+
+it('rechecks a pending message-derived document even before it has a committed diary note', async () => {
+  const f = fixture(), source = f.store.appendMessage({ conversationId: f.scope.conversationId, authorId: 'user', content: '一条后来明确要求遗忘的原消息。', replyDirective: 'none' });
+  let withdraw = false;
+  const { library, call } = f.make(async command => {
+    const result = await f.request(command);
+    if (withdraw && command.type === 'memory.sources.filter') {
+      withdraw = false; f.store.request({ type: 'memory.forget', ...f.scope, sourceMessageIds: [source.id] });
+    }
+    return result;
+  });
+  const relative = '日记/尚未登记的聊天摘记.md', content = '这份摘记必须始终受原消息的可见权限约束。';
+  await library.withDocuments('alice', async session => {
+    session.manifest.files[relative] = { state: 'tracked', hash: createHash('sha256').update(content).digest('hex'), conversationId: f.scope.conversationId,
+      pending: { operationId: 'pending-source-race', hash: createHash('sha256').update(content).digest('hex'), kind: 'record', sourceMessageId: source.id,
+        sourceChecksum: createHash('sha256').update(source.content).digest('hex'), tags: [] } };
+    await session.atomic(relative, content); await session.save();
+  }, { synchronize: false });
+  withdraw = true;
+  const response = await call({ type: 'memory.documents.read', path: relative });
+  expect(response).toMatchObject({ ok: false }); expect(response.document).toBeUndefined();
+});
+
 it('locates the exact owned note after a move and refuses another owner or a forgotten note', async () => {
   const f = fixture(), { call } = f.make();
   const first = (await call({ type: 'memory.documents.create', path: '日记/同名.md', content: 'Alice的海边约定。', tags: ['约定'] })).document!;

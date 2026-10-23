@@ -1,5 +1,5 @@
 import { expect, it, vi } from 'vitest';
-import { authorizeCompanionMessage, generateCompanionSocialReply } from '../../src/main/companions/social-model';
+import { authorizeCompanionContact, authorizeCompanionMessage, authorizeCompanionSocialInitiative, generateCompanionSocialReply } from '../../src/main/companions/social-model';
 import { generateCompanionSocialNotification } from '../../src/main/companions/social-notification-model';
 import { generateCompanionVisitSpeech } from '../../src/main/companions/visit-speech-model';
 import type { CompanionActivityTask } from '../../src/shared/companion-activity-task';
@@ -24,6 +24,47 @@ const input = () => ({ companion, conversation, source, messages: [source], job,
     people: [], objects: [], visibleObjectIds: [], visibleCompanionIds: [] },
 } as CompanionWorldSnapshot });
 const response = (value: unknown) => new Response(JSON.stringify({ choices: [{ message: { content: JSON.stringify(value) } }] }), { headers: { 'Content-Type': 'application/json' } });
+it.each([true, false])('classifies continuation from the original full human goal independently of the initial proposed greeting: %s', async requiresContinuation => {
+  const human = { ...source, authorId: 'user', content: requiresContinuation ? '找妹妹和其他伙伴一起组织游戏并玩起来。' : '帮我问妹妹吃饭了吗，把答复告诉我。' };
+  const fetchFn = vi.fn<typeof fetch>(async (_url, init) => {
+    const request = JSON.parse(String(init?.body)), data = JSON.parse(request.messages[1].content);
+    expect(data.source.content).toBe(human.content); expect(data.proposedText).toBe('你好，现在方便吗？');
+    expect(data.continuationRules).toContain('不能按这次proposedText的第一步代替');
+    expect(data.outputSchema.required).toContain('requiresContinuation');
+    return response({ allowed: true, confidence: .99, evidence: [human.content], reason: '依据原目标判断是否还有后续步骤。', intent: 'message', requiresContinuation });
+  });
+  expect(await authorizeCompanionContact({ source: human, recipients: [members[1]!], text: '你好，现在方便吗？' }, config, undefined, { fetchFn }))
+    .toEqual({ allowed: true, intent: 'message', requiresContinuation });
+});
+it('preserves human presence and distinct speaker identity in companion-created player groups', async () => {
+  const fetchFn = vi.fn<typeof fetch>(async (_url, init) => {
+    const request = JSON.parse(String(init?.body)), data = JSON.parse(request.messages[1].content);
+    expect(data.identity.audience).toBe('player');
+    expect(data.identity.participants.map((person: { id: string }) => person.id)).toContain('user');
+    expect(data.identity.self.id).toBe(companion.id);
+    expect(data.identity.currentReply.speaker.id).toBe(source.authorId);
+    expect(data.messages.map((message: { authorId: string }) => message.authorId)).toEqual(['user', source.authorId]);
+    expect(data.messages[0].content).toBe('我是真人，等我一起玩。');
+    expect(request.messages[0].content).not.toContain('这是独立peer-only伙伴通信，没有玩家在会话中。');
+    return response({ text: '姐姐，我们等玩家一起。', reason: '按真实成员与来源回应。' });
+  });
+  await generateCompanionSocialReply({ ...input(), conversation: { ...conversation, peerOnly: false }, messages: [
+    { ...source, id: 'human_group_message', sequence: 9, authorId: 'user', content: '我是真人，等我一起玩。' }, source,
+  ] }, config, undefined, { fetchFn });
+  expect(fetchFn).toHaveBeenCalledOnce();
+});
+it.each([{ allowed: true, confidence: .98, expected: true }, { allowed: true, confidence: .5, expected: false }, { allowed: false, confidence: .99, expected: false }])('checks autonomous social content without inventing human authorization: $expected', async proposal => {
+  const fetchFn = vi.fn<typeof fetch>(async (_url, init) => {
+    const request = JSON.parse(String(init?.body)), data = JSON.parse(request.messages[1].content);
+    expect(data.purpose).toBe('companion_social_initiative'); expect(data.self.id).toBe(companion.id);
+    expect(data.proposedText).toBe('你好，想邀请你一起玩狼人杀。');
+    expect(data).not.toHaveProperty('source');
+    expect(data.privateSources[0].content).toBe('PRIVATE_CONTENT_FOR_LEAK_CHECK_ONLY');
+    return response({ allowed: proposal.allowed, confidence: proposal.confidence, reason: '核验角色自身问候与私密来源。' });
+  });
+  expect(await authorizeCompanionSocialInitiative({ companion, recipients: [members[1]!], text: '你好，想邀请你一起玩狼人杀。',
+    privateSources: [{ id: 'private_source', authorId: 'user', content: 'PRIVATE_CONTENT_FOR_LEAK_CHECK_ONLY' }] }, config, undefined, { fetchFn })).toBe(proposal.expected);
+});
 it('uses only the currently verified own-scope self-understanding and retains its uncertainty in peer speech', async () => {
   const characterDevelopment = { companionId: companion.id, conversationId: conversation.id, observedAt: source.createdAt, truncated: false,
     items: [{ memoryId: 'self_note', memoryVersion: 2, kind: 'voice' as const, topic: '讨论节奏', statement: '我愿意先核实出处再慢慢讨论。', basis: 'reflection' as const,

@@ -239,6 +239,21 @@ it('refreshes metadata without repeatedly transferring an unchanged selected doc
   expect(element('.memory-library-paper h1').textContent).toBe('海边散步');
 });
 
+it('keeps one pending first-page read through frequent background events and renders its eventual result', async () => {
+  const f = fixture(), base = f.workspace.getMockImplementation()!;
+  let release!: (response: CompanionWorkspaceResponse) => void;
+  const pending = new Promise<CompanionWorkspaceResponse>(resolve => { release = resolve; });
+  f.workspace.mockImplementation(command => command.type === 'memory.documents.list' ? pending : base(command));
+  await mount(f);
+  expect(container!.textContent).toContain('正在打开日记本');
+  for (let n = 0; n < 8; n++) { await act(async () => f.emit()); await advance(); }
+  expect(f.workspace.mock.calls.filter(([command]) => command.type === 'memory.documents.list')).toHaveLength(1);
+  await act(async () => release(await base({ type: 'memory.documents.list', companionId: 'role', directory: '', limit: 64 })));
+  expect(container!.textContent).not.toContain('正在打开日记本');
+  expect(element('.memory-library-files').textContent).toContain('海边散步');
+  expect(element('.memory-library-paper h1').textContent).toBe('海边散步');
+});
+
 it('sends explicit time sorting and a complete local date range to the server', async () => {
   const f = await mount(); await click('高级筛选记忆文档');
   const sort = element<HTMLSelectElement>('[aria-label="记忆文档排序"]');

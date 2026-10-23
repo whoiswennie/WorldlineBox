@@ -3,7 +3,8 @@ import { buildCompanionContext, refreshCompanionContextClock } from '../../src/m
 import { generateCompanionReply } from '../../src/main/companions/model';
 import { generateCompanionWorldDecision } from '../../src/main/companions/world-model';
 import { generateCompanionSocialReply } from '../../src/main/companions/social-model';
-import { companionModelWorld, companionPerceivedToolTurns } from '../../src/main/companions/world-perception-context';
+import { companionModelPhoneReceipt, companionModelWorld, companionPerceivedToolTurns } from '../../src/main/companions/world-perception-context';
+import { runCompanionStructuredAgent } from '../../src/main/companions/structured-agent';
 import { createCompanionWorldHome } from '../../src/shared/companion-world-engine';
 import type { Companion, CompanionConversation, CompanionMessage } from '../../src/shared/companions';
 import type { CompanionWorldActor, CompanionWorldSnapshot } from '../../src/shared/companion-world';
@@ -205,6 +206,82 @@ it('leaves non-world receipts untouched and still sanitizes unavailable world ob
   const turns = companionPerceivedToolTurns([{ text: '', rawText: '', calls: [{ id: 'memory', name: 'memory', arguments: '{}' }, { id: 'world', name: 'world', arguments: '{}' }],
     results: [other, { callId: 'world', content: 'invalid old snapshot' }] }], 'self');
   expect(turns[0]!.results![0]).toBe(other); expect(JSON.parse(turns[0]!.results![1]!.content)).toMatchObject({ ok: false });
+});
+
+it.each(['message', 'introduce', 'create_group'])('projects a world %s phone receipt without a world snapshot as communication reachability, preserving calls and message text', action => {
+  const receipt = { ok: true, socialPending: true, socialRecipients: ['available', 'dormant', 'sleeping', 'eating', 'working', 'busy'].map((state, index) => ({ companionId: 'peer_' + index, state })),
+    socialMessage: { message: { content: '我昨晚在睡觉，今天愿意玩。', createdAt: old }, virtualCreatedAt: old },
+    activityTask: { goal: '不要把sleeping这段真实原文删掉。' } };
+  const call = { id: 'phone', name: 'world', arguments: JSON.stringify({ action, text: '邀请一起玩。' }), thoughtSignature: 'OPAQUE_NATIVE_SIGNATURE' };
+  const turn = { text: '', rawText: '', calls: [call], results: [{ callId: call.id, content: JSON.stringify(receipt) }] };
+  const original = JSON.stringify(turn), projected = companionPerceivedToolTurns([turn], 'self', fixture());
+  const content = JSON.parse(projected[0]!.results![0]!.content);
+  expect(content.socialRecipients.map((recipient: { state: string }) => recipient.state)).toEqual(['available', 'dormant', 'available', 'available', 'available', 'available']);
+  expect(content.socialMessage).toEqual(receipt.socialMessage); expect(content.activityTask).toEqual(receipt.activityTask);
+  expect(content.socialReceiptObservation).toMatchObject({ asOf: 'original_tool_receipt', scope: 'phone_contactability_only', confirmsRead: false, confirmsReply: false,
+    sentAtReal: old, sentAtVirtual: old });
+  expect(content.socialReceiptObservation).not.toHaveProperty('asOfReal');
+  expect(projected[0]!.calls[0]).toBe(call); expect(projected[0]!.calls[0]!.arguments).toBe(call.arguments);
+  expect(JSON.stringify(turn)).toBe(original);
+});
+
+it('keeps a recorded receipt timestamp across immediate inference and checkpoint replay without refreshing it from the current body', () => {
+  const world = fixture(); world.clock.realNow = old;
+  const receipt = { ok: true, world, socialPending: false, socialRecipients: [{ companionId: 'far', state: 'sleeping', privateRoute: 'UNSEEN_ROUTINE' }] };
+  const turns = [{ text: '', rawText: '', calls: [{ id: 'phone', name: 'world', arguments: '{"action":"message","recipientIds":["far"],"text":"一起玩吗？"}' }],
+    results: [{ callId: 'phone', content: JSON.stringify(receipt) }] }];
+  const immediate = companionPerceivedToolTurns(turns, 'self'), checkpoint = companionPerceivedToolTurns(immediate, 'self', fixture());
+  const content = JSON.parse(checkpoint[0]!.results![0]!.content);
+  expect(content.socialRecipients).toEqual([{ companionId: 'far', state: 'available' }]);
+  expect(content.socialReceiptObservation).toMatchObject({ asOfReal: old, confirmsRead: false, confirmsReply: false });
+  expect(content.world.observation).toMatchObject({ status: 'historical', comparedToReal: now });
+  expect(JSON.stringify(content)).not.toContain('UNSEEN_ROUTINE');
+  expect(receipt.socialRecipients[0]!.state).toBe('sleeping');
+});
+
+it('only narrows typed phone recipients and never scans DSH output, free JSON, direct bodily observations or contact directory reads', () => {
+  const content = JSON.stringify({ ok: true, socialRecipients: [{ companionId: 'far', state: 'sleeping' }],
+    worldKnowledge: { category: 'contacts', items: [{ id: 'far', state: 'available', description: '她说昨晚睡得不错。' }] }, text: 'sleeping是原文。' });
+  const calls = [{ id: 'dsh', name: 'dsh', arguments: '{"operation":"run"}' }, { id: 'memory', name: 'memory', arguments: '{"action":"world_query","category":"contacts"}' },
+    { id: 'inspect', name: 'world', arguments: '{"action":"inspect"}' }, { id: 'query', name: 'world', arguments: '{"action":"query","category":"contacts"}' },
+    { id: 'face', name: 'world', arguments: '{"action":"social","targetCompanionId":"far","kind":"talk","text":"你好"}' }];
+  const results = calls.map(call => ({ callId: call.id, content }));
+  const projected = companionPerceivedToolTurns([{ text: '', rawText: '', calls, results }], 'self');
+  for (const [index, result] of results.entries()) expect(projected[0]!.results![index]).toBe(result);
+  expect(companionModelPhoneReceipt({ ok: true, socialRecipients: [{ companionId: 'far', state: 'invented_private_state' }, { companionId: 'other', state: 'working' }] })!.socialRecipients)
+    .toEqual([{ companionId: 'other', state: 'available' }]);
+});
+
+it('uses the same phone projection at the provider boundary for an immediate receipt and the same recovered checkpoint', async () => {
+  const turns = [{ text: '', rawText: '', calls: [{ id: 'phone', name: 'world', arguments: '{"action":"message","recipientIds":["far"],"text":"一起玩吗？"}' }],
+    results: [{ callId: 'phone', content: JSON.stringify({ ok: true, socialPending: true, socialRecipients: [{ companionId: 'far', state: 'sleeping' }] }) }] }];
+  const fetchFn = vi.fn<typeof fetch>(async (_url, init) => {
+    const messages = JSON.parse(String(init?.body)).messages, content = JSON.parse(messages.find((message: { role: string }) => message.role === 'tool').content);
+    expect(content.socialRecipients).toEqual([{ companionId: 'far', state: 'available' }]);
+    expect(content.socialReceiptObservation).toMatchObject({ scope: 'phone_contactability_only', confirmsRead: false, confirmsReply: false });
+    expect(content.socialReceiptObservation).not.toHaveProperty('asOfReal');
+    return response({ text: '邀请还在待发中，是否愿意参加要等实际回复；我不知道她此刻的身体状态。' });
+  });
+  await generateCompanionReply(modelInput(fixture()), config, undefined, { fetchFn, loop: true, turns });
+  await generateCompanionReply(modelInput(fixture()), config, undefined, { fetchFn, loop: true, turns: companionPerceivedToolTurns(turns, 'self') });
+  expect(fetchFn).toHaveBeenCalledTimes(2);
+});
+
+it('applies the same phone receipt boundary inside the structured agent tool loop', async () => {
+  const fetchFn = vi.fn<typeof fetch>(async (_url, init) => {
+    const messages = JSON.parse(String(init?.body)).messages, tool = messages.find((message: { role: string }) => message.role === 'tool');
+    if (!tool) return new Response(JSON.stringify({ choices: [{ message: { content: null,
+      tool_calls: [{ id: 'phone', type: 'function', function: { name: 'world', arguments: '{"action":"message","recipientIds":["far"],"text":"一起玩吗？"}' } }] } }] }),
+    { headers: { 'Content-Type': 'application/json' } });
+    const content = JSON.parse(tool.content);
+    expect(content.socialRecipients).toEqual([{ companionId: 'far', state: 'available' }]);
+    expect(content.socialReceiptObservation).toMatchObject({ confirmsRead: false, confirmsReply: false });
+    return response({ done: true });
+  });
+  const result = await runCompanionStructuredAgent({ frame: modelInput(fixture()), context: { system: '按本次领域JSON结构交付。', user: '{"purpose":"phone_receipt_boundary"}' },
+    capabilities: { tools: [{ name: 'world', parameters: { type: 'object' }, description: '发送真实自己的邀约。' }],
+      execute: async () => ({ ok: true, socialRecipients: [{ companionId: 'far', state: 'working' }] }) } }, config, undefined, { fetchFn });
+  expect(result).toEqual({ done: true }); expect(fetchFn).toHaveBeenCalledTimes(2);
 });
 
 it('keeps world decision and phone reply provider payloads within the same finite perception', async () => {

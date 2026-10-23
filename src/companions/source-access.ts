@@ -176,7 +176,7 @@ export class CompanionSourceAccess {
         }
         return false;
     }
-    visible(scope: CompanionSourceScope, source: Row, visited = new Set<string>()): boolean {
+    visible(scope: CompanionSourceScope, source: Row, visited = new Set<string>(), sharedCheckpoint = false): boolean {
         this.requireScope(scope);
         const id = String(source.id);
         if (visited.has(id))
@@ -230,9 +230,19 @@ export class CompanionSourceAccess {
         // Conversation is an interaction entrance, not a second identity. The
         // persisted observer is the proof this owner actually witnessed a source;
         // joining a room later must never make its old messages knowable.
-        if (!this.db.prepare('SELECT 1 FROM vcp_source_observers WHERE message_id=? AND companion_id=?').get(id, scope.companionId))
+        if (!sharedCheckpoint && !this.db.prepare('SELECT 1 FROM vcp_source_observers WHERE message_id=? AND companion_id=?').get(id, scope.companionId))
             return false;
         return this.formal(source) && !this.forgotten(scope, source);
+    }
+    /** Topic ACL grants the derived checkpoint, never the original messages.
+     * Late invitees may read shared stages without witnessing old raw chat;
+     * their own withdrawals and all source lifecycle checks still apply. */
+    checkpointSourcesValid(scope: CompanionSourceScope, ids: readonly string[]): boolean {
+        this.requireScope(scope);
+        return ids.every(id => {
+            const source = this.db.prepare('SELECT * FROM messages WHERE id=?').get(id);
+            return !!source && this.visible(scope, row(source), new Set<string>(), true);
+        });
     }
     filter(scope: CompanionSourceScope, ids: readonly string[]): CompanionMessage[] {
         this.requireScope(scope);

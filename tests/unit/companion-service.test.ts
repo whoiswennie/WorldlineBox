@@ -1579,22 +1579,36 @@ describe('CompanionService native work and life management', () => {
       return modelResponseForJson({ allowed: true, confidence: .98, sourceMessageId: data.source.id, tool: data.tool, action: data.action, targetId: data.targetId, evidence: [data.source.content] });
     });
   }
-  it.each(['visit', 'message'] as const)('retains the full user intent=%s when the first native action is only a phone message', async intent => {
+  it.each([{ intent: 'visit', requiresContinuation: true }, { intent: 'message', requiresContinuation: false },
+    { intent: 'message', requiresContinuation: true }] as const)('retains the full user intent=$intent continuation=$requiresContinuation when the first native action is only a phone message', async ({ intent, requiresContinuation }) => {
     const f = fixture(fakeDsh(() => ({ tasks: [], operations: [] }), vi.fn(async () => ({ ok: true as const }))));
     await f.service.handle({ type: 'state' });
     const target = f.store.createCompanion({ name: '妹妹', description: '', persona: '友好', model: '', avatar: 'flash', proactive: false });
     f.store.setCompanionActive(target.id, true);
-    const source = f.store.appendMessage({ conversationId: f.conversation.id, authorId: 'user', content: intent === 'visit' ? '你去找妹妹玩吧。' : '你发消息问问妹妹有空吗。', replyDirective: 'none' });
+    const known = f.store.request({ type: 'social.conversation.ensure', companionId: 'sister', memberIds: ['sister', target.id] }).socialConversation!;
+    f.store.request({ type: 'social.message.append', conversationId: known.id, authorId: 'sister', content: '很高兴认识你。',
+      virtualCreatedAt: fixedTime, clientId: 'known-native-target-' + intent });
+    const source = f.store.appendMessage({ conversationId: f.conversation.id, authorId: 'user', content: intent === 'visit' ? '你亲自去妹妹家找她玩吧。'
+      : requiresContinuation ? '问问妹妹能否一起玩狼人杀，确认后继续安排。' : '你发消息问问妹妹有空吗。', replyDirective: 'none' });
     transport.fetch.mockImplementation(async (_url, init) => {
       const data = JSON.parse(JSON.parse(String(init?.body)).messages[1].content);
       expect(data.purpose).toBe('world_message_authorization'); expect(data.intentRules).toContain('完整目标');
-      return modelResponseForJson({ allowed: true, confidence: .99, evidence: [source.content], reason: '当前明确请求。', intent });
+      return modelResponseForJson({ allowed: true, confidence: .99, evidence: [source.content], reason: '当前明确请求。', intent, requiresContinuation });
     });
     const scope = { companionId: 'sister', conversationId: f.conversation.id }, args = { action: 'message', recipientIds: [target.id], text: '现在方便吗？' };
-    const sent = await native(f.service, 'world', args, scope, [source.id], 'native_phone_visit', source.sequence);
-    expect(sent.ok).toBe(true); expect(sent.socialPending).toBe(true);
+    const pending = native(f.service, 'world', args, scope, [source.id], 'native_phone_visit', source.sequence);
+    if (intent === 'message') {
+      await vi.waitFor(() => expect(transport.request.mock.calls.some(([command]) => command.type === 'social.send')).toBe(true));
+      await vi.advanceTimersByTimeAsync(2000);
+    }
+    const sent = await pending;
+    expect(sent.ok).toBe(true);
+    if (intent === 'visit') expect(sent.socialPending).toBe(true);
+    else expect(sent.socialMessage?.message.content).toBe(args.text);
     expect(sent.activityTask?.visitTargetId).toBe(intent === 'visit' ? target.id : undefined);
-    expect(f.store.request({ type: 'activity.list', ...scope }).activityTasks).toHaveLength(intent === 'visit' ? 1 : 0);
+    const tasks = f.store.request({ type: 'activity.list', ...scope }).activityTasks;
+    expect(tasks).toHaveLength(requiresContinuation ? 1 : 0);
+    if (requiresContinuation) expect(tasks?.[0]).toMatchObject({ sourceMessageId: source.id, goal: source.content });
     await closeService(f.service);
   });
   it('rejects native contact with a dormant peer before invoking authorization or creating an outbox', async () => {
@@ -1615,8 +1629,8 @@ describe('CompanionService native work and life management', () => {
     const f = fixture(fakeDsh(() => ({ tasks: [], operations: [] }), vi.fn(async () => ({ ok: true as const }))));
     await f.service.handle({ type: 'state' });
     const target = f.store.createCompanion({ name: '妹妹', description: '', persona: '友好', model: '', avatar: 'flash', proactive: false });
-    const source = f.store.appendMessage({ conversationId: f.conversation.id, authorId: 'user', content: intent === 'visit' ? '去找妹妹玩吧。' : '给妹妹发一句问好就行，不用过去。', replyDirective: 'none' });
-    transport.fetch.mockResolvedValue(modelResponseForJson({ allowed: true, intent, confidence: .99, evidence: [source.content], reason: '明确的原始目标。' }));
+    const source = f.store.appendMessage({ conversationId: f.conversation.id, authorId: 'user', content: intent === 'visit' ? '亲自去妹妹家找她玩吧。' : '给妹妹发一句问好就行，不用过去。', replyDirective: 'none' });
+    transport.fetch.mockResolvedValue(modelResponseForJson({ allowed: true, intent, requiresContinuation: intent === 'visit', confidence: .99, evidence: [source.content], reason: '明确的原始目标。' }));
     const scope = { companionId: 'sister', conversationId: f.conversation.id };
     const result = await native(f.service, 'world', { action: 'visit', targetCompanionId: target.id, reason: '现在方便来找你玩吗？' }, scope, [source.id], 'direct_visit', source.sequence);
     expect(result.ok).toBe(intent === 'visit');

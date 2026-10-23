@@ -55,6 +55,35 @@ function invite() {
     store.request({ type: 'world.tool', ...bob, arguments: { action: 'respond', requestId: request.id, decision: 'allow', reason: '欢迎来玩。' } });
     return request;
 }
+it('defers to the exact durable Main source across recovery and commit races while allowing unrelated queued or running chats', () => {
+    const f = start('primary_recovery_goal');
+    const other = store.appendMessage({ conversationId: alice.conversationId, authorId: 'user', content: '另一个独立聊天，不是原目标。', replyDirective: 'none' });
+    const enqueue = (id: string, sourceMessageId: string) => store.request({ type: 'work.enqueue', work: { id, ...alice, sourceMessageId,
+        status: 'queued', proactive: false, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() } });
+    enqueue('unrelated_main_chat', other.id);
+    const leased = claim()!;
+    expect(leased.id).toBe(f.task.id);
+    store.request({ type: 'activity.observe', id: leased.id, leaseToken: leased.leaseToken! });
+    // Main can begin restoring after activity obtained its own planning lease.
+    enqueue('original_main_chat', f.source.id);
+    const decision = { status: 'continue', action: { action: 'query', category: 'contacts' }, wait: null, summary: '读取本人的熟人资料，继续原目标。' } satisfies ActivityDecision;
+    expect(commit(leased, decision)).toMatchObject({ status: 'queued', step: 0, history: [] });
+    expect(() => commit(leased, decision)).toThrow('租约');
+    store.close(); store = new CompanionsStore(filename, seeds.map(seed => ({ ...seed, active: true })));
+    store.request({ type: 'activity.recover' }); advance(5100);
+    expect(claim()).toBeUndefined();
+    store.request({ type: 'work.status', id: 'original_main_chat', status: 'running' }); advance(5100);
+    expect(claim()).toBeUndefined();
+    expect(store.request({ type: 'activity.get', ...alice, id: f.task.id }).activityTask).toMatchObject({ status: 'queued', step: 0, history: [] });
+    store.request({ type: 'work.status', id: 'original_main_chat', status: 'done' }); advance(5100);
+    // The saved atomic step executes once inside claim after Primary releases.
+    expect(claim()).toBeUndefined();
+    const executed = store.request({ type: 'activity.get', ...alice, id: f.task.id }).activityTask!;
+    expect(executed.step).toBe(1); expect(executed.history).toHaveLength(1);
+    expect(executed.history[0]).toMatchObject({ action: 'query', ok: true });
+    store.request({ type: 'work.status', id: 'unrelated_main_chat', status: 'running' }); advance(1600);
+    expect(claim()).toMatchObject({ id: f.task.id, step: 1, status: 'running' });
+});
 it('continues a chat-issued weather check after physical arrival, coalesces repeat moves and survives restart', () => {
     store.request({ type: 'world.tool', ...alice, arguments: { action: 'move', destinationId: 'alice_computer' } });
     advance(15000);
@@ -128,6 +157,34 @@ it('atomically retains a visit goal behind a first phone message, coalesces retr
     const arrived = claim()!, observation = store.request({ type: 'activity.observe', id: arrived.id, leaseToken: arrived.leaseToken! });
     expect(observation.activityTask!.visitArrivedAt).toBeDefined();
     expect(commit(arrived, { status: 'complete', action: null, wait: null, summary: '实际抵达bob的小屋了。' }).status).toBe('queued');
+});
+it.each([false, true])('keeps the visit task peer window bound to its own initial invitation chain (initial message: %s)', initialMessage => {
+    const room = store.request({ type: 'social.conversation.ensure', companionId: 'alice', memberIds: ['alice', 'bob'] }).socialConversation!;
+    const old = store.appendMessage({ conversationId: room.id, authorId: 'bob', content: 'OLD_UNRELATED_PRIVATE_CONVERSATION', replyDirective: 'none' });
+    expect(store.request({ type: 'memory.sources.filter', companionId: 'alice', conversationId: room.id, ids: [old.id] }).memorySources).toHaveLength(1);
+    const source = store.appendMessage({ conversationId: alice.conversationId, authorId: 'user', content: '请去bob家找她玩。', replyDirective: 'none' });
+    const task = store.request({ type: 'activity.visit.ensure', ...alice, sourceMessageId: source.id, targetId: 'bob',
+        ...(initialMessage ? { initialMessage: { text: '现在方便来找你玩吗？', clientId: 'visit_window_invite' } } : {}) }).activityTask!;
+    let inviteId: string | undefined, replyId: string | undefined;
+    if (initialMessage) {
+        advance(1600);
+        const delivered = store.request({ type: 'social.job.claim' });
+        inviteId = delivered.socialMessage!.message.id;
+        expect(delivered.socialJob!.companionId).toBe('bob');
+        advance(1600);
+        replyId = store.request({ type: 'social.job.complete', id: delivered.socialJob!.id,
+            leaseToken: delivered.socialJob!.leaseToken!, text: '这次邀请我收到了，欢迎来找我。' }).socialMessage!.message.id;
+        advance(6000);
+    }
+    const claimed = claim()!;
+    expect(claimed.id).toBe(task.id);
+    const observed = store.request({ type: 'activity.observe', id: claimed.id, leaseToken: claimed.leaseToken! });
+    expect(observed.activityMessages!.some(message => message.id === old.id)).toBe(false);
+    if (initialMessage) {
+        expect(observed.activityMessages!.map(message => message.id)).toEqual([replyId]);
+        expect(observed.activityMessageOrigins).toContainEqual(expect.objectContaining({ messageId: replyId, sourceMessageId: inviteId,
+            deliveryClientId: 'visit_window_invite', conversationId: room.id }));
+    } else expect(observed.activityMessages).toEqual([]);
 });
 it('keeps a dormant recipient unloaded and refuses a new contact without queuing it', () => {
     store.setCompanionActive('bob', false);
@@ -267,6 +324,8 @@ it('resumes a goal from real arrival across restart, keeps UUID and effects idem
     expect(messages.filter(message => message.authorId === 'user' && message.content === input.goal)).toHaveLength(1);
 });
 it('waits on genuine peer replies, internalizes a shared entrance explicitly, and revokes it on forgetting', () => {
+    const pair = store.request({ type: 'social.conversation.ensure', companionId: 'alice', memberIds: ['alice', 'bob'] }).socialConversation!;
+    store.request({ type: 'social.message.append', conversationId: pair.id, authorId: 'bob', content: 'alice你好，我是bob。', virtualCreatedAt: new Date().toISOString(), clientId: 'known_peer_before_address' });
     const { task } = start();
     const running = claim()!;
     commit(running, { status: 'continue', action: { action: 'message', recipientIds: ['bob'], text: '想去你家坐坐，可以分享地址吗？' }, wait: { kind: 'reply', targetCompanionId: 'bob' }, summary: '询问地址' });

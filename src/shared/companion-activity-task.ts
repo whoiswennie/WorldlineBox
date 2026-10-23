@@ -31,6 +31,7 @@ export const activityTaskSchema = z.object({ id, companionId: id, conversationId
   step: z.number().int().nonnegative().max(32), attempts: z.number().int().nonnegative().max(3),
   createdAt: z.iso.datetime(), updatedAt: z.iso.datetime(), deadline: z.iso.datetime(), leaseToken: id.optional(),
   stage: z.string().max(2000), targetId: id.optional(), wait: activityWaitSchema.optional(),
+  peerConversationId: id.optional(), peerTopicId: id.nullable().optional(),
   visitTargetId: id.optional(), visitArrivedAt: z.iso.datetime().optional(), visitInteractionAt: z.iso.datetime().optional(), visitRequestId: id.optional(),
   history: z.array(z.object({ step: z.number().int().positive(), at: z.iso.datetime(), action: z.string(), arguments: companionWorldArgumentsSchema.optional(), result: z.string().max(16000), ok: z.boolean() })).max(32) });
 export type CompanionActivityTask = z.infer<typeof activityTaskSchema>;
@@ -42,6 +43,8 @@ export const activityPublicCommands = [
   scope.extend({ type: z.literal('activity.get'), id }).strict(),
 ] as const;
 export const activityStorageCommands = [...activityPublicCommands,
+  scope.extend({ type: z.literal('activity.social.ensure'), sourceMessageId: id, deliveryClientId: id,
+    operation: z.enum(['message', 'introduce', 'create_group']) }).strict(),
   scope.extend({ type: z.literal('activity.motion.ensure'), sourceMessageId: id,
     arguments: companionWorldArgumentsSchema.refine(value => ['move', 'travel', 'leave'].includes(value.action), '这里只接受需要等待到达的移动动作。') }).strict(),
   scope.extend({ type: z.literal('activity.visit.ensure'), sourceMessageId: id, targetId: id,

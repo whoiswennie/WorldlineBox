@@ -81,6 +81,7 @@ export class CompanionWorldStore {
   private orders?: CompanionWorkOrderStore;
   private collaborationAllowed?: (input: CompanionWorldScope & { authorizationGrantId: string; sourceMessageId: string; invocationId?: string }) => void;
   private knowledge?: (scope: CompanionWorldScope, args: Extract<CompanionWorldArguments, { action: 'query' }>) => CompanionStorageResponse;
+  private topicCommand?: (command: CompanionStorageCommand) => CompanionStorageResponse | undefined;
   private life?: { completePhysical(id: string, companionId: string, outcome: 'done' | 'cancelled', result: string): void };
   private startActivityTask?: (companionId: string, jobId: string, task: { title: string; goal: string }) => void;
   private captureExperience?: (receipt: CompanionWorldExperienceReceipt) => void;
@@ -98,6 +99,7 @@ export class CompanionWorldStore {
       event: { eventKey: string; kind: 'sleep'; expectedRevision?: number }) => void) {}
 
   connectKnowledge(query: NonNullable<CompanionWorldStore['knowledge']>): void { this.knowledge = query; }
+  connectTopics(execute: NonNullable<CompanionWorldStore['topicCommand']>): void { this.topicCommand = execute; }
   queryKnowledge(scope: CompanionWorldScope, args: Extract<CompanionWorldArguments, { action: 'query' }>): CompanionStorageResponse {
     if (!this.knowledge) throw new Error('世界知识查询尚未连接。');
     return this.knowledge(scope, args);
@@ -1548,6 +1550,10 @@ export class CompanionWorldStore {
     });
   }
   private performTool(scope: CompanionWorldScope, args: CompanionWorldArguments, sourceMessageId?: string): CompanionWorldSnapshot {
+    if (args.action === 'introduce' || args.action === 'create_group') {
+      const result = this.initiateSocial(scope, args, sourceMessageId);
+      if (!result.world) throw new Error('社交动作缺少实际世界回执。'); return result.world;
+    }
     this.requireScope(scope); this.advance(); const state = this.load(), actor = state.actors.find(actor => actor.companionId === scope.companionId);
     if (!actor) throw new Error('伙伴处于休眠状态，请由玩家在联系人资料中手动激活。');
     if (sourceMessageId && !this.visibleSources(scope, [sourceMessageId]).length) throw new Error('世界行为的消息来源不可见。');
@@ -1634,11 +1640,54 @@ export class CompanionWorldStore {
       return this.snapshotValue(this.load(), Date.now(), scope);
     } else if (args.action === 'message') {
       if (!this.social) throw new Error('社交存储尚未连接。');
+      this.social.requireAcquaintances(actor.companionId, args.recipientIds);
       const room = this.social.ensure(actor.companionId, [actor.companionId, ...args.recipientIds]);
       this.social.send({ companionId: actor.companionId, conversationId: room.id, content: args.text, channel: 'phone', urgent: args.urgent, clientId: randomUUID() });
       return this.snapshotValue(this.load(), Date.now(), scope);
     }
     this.syncOccupancy(state); this.save(state); return this.snapshotValue(state, Date.now(), scope);
+  }
+  private initiateSocial(scope: CompanionWorldScope, args: Extract<CompanionWorldArguments, { action: 'introduce' | 'create_group' }>, sourceMessageId?: string, clientId: string = randomUUID()): CompanionStorageResponse {
+    return this.atomic(() => {
+      this.requireScope(scope); this.advance();
+      if (!this.social) throw new Error('社交存储尚未连接。');
+      if (!this.load().actors.some(actor => actor.companionId === scope.companionId)) throw new Error('伙伴已休眠，请先由玩家激活。');
+      const source = sourceMessageId ? this.visibleSources(scope, [sourceMessageId])[0] : undefined;
+      if (sourceMessageId && !source) throw new Error('世界行为的消息来源不可见。');
+      const recipients = args.action === 'introduce' ? [args.targetCompanionId] : args.recipientIds;
+      if (new Set(recipients).size !== recipients.length || recipients.includes(scope.companionId) || recipients.some(id => this.contactState(id) === 'dormant')) throw new Error('请选择本人之外已激活的真实伙伴；不能唤醒休眠者。');
+      if (args.action === 'introduce') {
+        const observed = this.db.prepare('SELECT value FROM metadata WHERE key=?').get(`world-person-observation/${scope.companionId}/${args.targetCompanionId}`);
+        const record = observed ? parse<{ messageId: string }>(row(observed).value) : undefined;
+        const visible = this.perception(scope.companionId)?.people.some(person => person.companionId === args.targetCompanionId && person.visible);
+        if (!this.social.acquaintanceIds(scope.companionId).has(args.targetCompanionId) && !visible && (!record || !this.visibleSources({ companionId: scope.companionId, conversationId: scope.conversationId }, [record.messageId]).length)) throw new Error('尚未了解这个人。先query category=people读取公开目录，或在现场实际见到对方，再主动自我介绍。');
+      } else this.social.requireAcquaintances(scope.companionId, recipients);
+      const members = [scope.companionId, ...recipients];
+      const room = args.action === 'create_group' && args.includePlayer ? this.social.ensurePlayerGroup(scope.companionId, members, args.title)
+        : this.social.ensure(scope.companionId, members, args.action === 'create_group' ? args.title : '');
+      let topicResult: CompanionStorageResponse | undefined;
+      if (args.action === 'create_group' && args.topic) {
+        if (!this.topicCommand) throw new Error('群话题能力尚未连接。');
+        const key = `world-group-topic/${scope.companionId}/${clientId}`;
+        const previous = this.db.prepare('SELECT value FROM metadata WHERE key=?').get(key);
+        const fingerprint = createHash('sha256').update(JSON.stringify([room.id, args.topic])).digest('hex');
+        if (previous) {
+          const saved = parse<{ topicId: string; fingerprint: string }>(row(previous).value);
+          if (saved.fingerprint !== fingerprint) throw new Error('本次建群重试对应的话题设置已改变。');
+          topicResult = this.topicCommand({ type: 'topic.read', conversationId: room.id, readerId: scope.companionId, topicId: saved.topicId });
+        } else {
+          topicResult = this.topicCommand({ type: 'topic.create', conversationId: room.id, readerId: scope.companionId,
+            ...args.topic, participantIds: [...recipients, ...(args.includePlayer ? ['user'] : [])] });
+          if (!topicResult?.topic) throw new Error('群话题未成功建立。');
+          this.db.prepare('INSERT INTO metadata(key,value) VALUES(?,?)').run(key, JSON.stringify({ companionId: scope.companionId, topicId: topicResult.topic.id, fingerprint }));
+        }
+      }
+      const delivery = this.social.send({ companionId: scope.companionId, conversationId: room.id, content: args.text, channel: 'phone', clientId,
+        ...(args.action === 'create_group' ? { topicId: topicResult?.topic?.id ?? null } : {}),
+        ...(source ? { agentSource: { conversationId: scope.conversationId, messageId: source.id } } : {}),
+        ...(source?.authorId === 'user' ? { authorizationMessageId: source.id } : {}) });
+      return { ...delivery, ...(topicResult ? { topic: topicResult.topic, topicState: topicResult.topicState } : {}), socialConversation: room, world: this.snapshotValue(this.load(), Date.now(), scope) };
+    });
   }
   private claim(kind: CompanionWorldJob['kind'], excludedCompanionIds: readonly string[] = []): CompanionWorldJob | undefined {
     const claimAt = Date.now(); this.advance(claimAt); return this.db.transaction(() => {
@@ -1778,7 +1827,9 @@ export class CompanionWorldStore {
       case 'world.tick': { const now = command.now ? Date.parse(command.now) : Date.now(); this.advance(now); return { ok: true, ...(command.snapshot ? { world: this.snapshotValue(this.load(), now) } : {}) }; }
       case 'world.attention.record': this.recordAttention(command); return { ok: true };
       case 'world.configure': return { ok: true, world: this.configure(command.expectedRevision, command.patch) };
-      case 'world.tool': if (command.arguments.action === 'query') return this.queryKnowledge(command, command.arguments); return { ok: true, world: this.tool(command, command.arguments, command.sourceMessageId) };
+      case 'world.tool': if (command.arguments.action === 'query') return this.queryKnowledge(command, command.arguments);
+        if (command.arguments.action === 'introduce' || command.arguments.action === 'create_group') return this.initiateSocial(command, command.arguments, command.sourceMessageId, command.clientId);
+        return { ok: true, world: this.tool(command, command.arguments, command.sourceMessageId) };
       case 'world.work.begin': return { ok: true, worldWork: this.begin(command, command.workId, command.kind, command.sourceMessageId, command.urgent, command.fixed,
         { learningGrantId: command.learningGrantId, learningLeaseToken: command.learningLeaseToken,
           authorizationGrantId: command.authorizationGrantId, invocationId: command.invocationId }) };

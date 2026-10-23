@@ -8,12 +8,13 @@ import { CompanionModelError } from './model';
 import { generateCompanionWorldDecision } from './world-model';
 import { generateCompanionMemoryDream } from './memory-model';
 import type { CompanionSocialJob, CompanionSocialNotification } from '../../shared/companion-social';
-import { generateCompanionSocialReply } from './social-model';
+import { authorizeCompanionSocialInitiative, generateCompanionSocialReply } from './social-model';
 import { generateCompanionSocialNotification } from './social-notification-model';
 import type { CompanionProfileInput } from '../../shared/companion-public-profile';
 import { COMPANION_SLEEP_DREAM_CONCURRENCY, COMPANION_SLEEP_RECALL_LIMIT } from '../../shared/companion-sleep';
 import { companionRecallCapabilities } from './structured-agent';
 import { companionTopicCapabilities } from './topic-capabilities';
+import { companionSocialCapabilities } from './social-capabilities';
 import { ensureTopicContinuity } from './topic-compaction';
 import { COMPANION_DIALOGUE_WINDOW } from './context-window';
 import type { CompanionReplyInput } from './context';
@@ -179,7 +180,7 @@ export class CompanionWorldService {
       if (signal.aborted || this.closed) throw cancelled();
       await progress('thinking', '正在组织给伙伴的回应', { status: recalled?.degraded ? 'unavailable' : 'completed',
         count: recalled?.reasons?.length ?? recalled?.memories?.length ?? 0, injected: !!recalled?.context?.text.trim(), pending: recalled?.pending === true }, recalled);
-      const profiles = await this.options.profiles?.({ companionId: companion.id, conversation, sourceAuthorId: source.authorId, audience: 'peers' });
+      const profiles = await this.options.profiles?.({ companionId: companion.id, conversation, sourceAuthorId: source.authorId, audience: conversation.peerOnly === false ? 'player' : 'peers' });
       const currentScope = { companionId: companion.id, conversationId: conversation.id };
       const [stateResponse, developmentResponse, latestWorld] = await Promise.all([
         this.options.request({ type: 'state.get', ...currentScope }),
@@ -195,7 +196,13 @@ export class CompanionWorldService {
         ...(runtime ? { selfState: { energy: runtime.energy, mood: runtime.mood, expression: runtime.expression, affect: runtime.affect } } : {}),
         members: state!.companions.filter(member => conversation.memberIds.includes(member.id)).map(member => ({ id: member.id, name: member.name, description: member.description })) },
       config, signal, { fetchFn: this.options.fetchFn,
-        capabilities: companionTopicCapabilities(this.options.request, scope, companionRecallCapabilities(this.options.request, scope)),
+        capabilities: companionSocialCapabilities(this.options.request, { ...scope, sourceMessageId: source.id },
+          companionTopicCapabilities(this.options.request, scope, companionRecallCapabilities(this.options.request, scope)),
+          async (proposed, actionSignal) => {
+            const recipients = state!.companions.filter(role => proposed.recipientIds.includes(role.id));
+            if (recipients.length !== proposed.recipientIds.length) return false;
+            return authorizeCompanionSocialInitiative({ companion, recipients, text: proposed.text, privateSources: sources }, config, actionSignal, { fetchFn: this.options.fetchFn });
+          }),
         prepareFrame: async (frame: CompanionReplyInput) => {
           const [currentPort, currentState, validSource] = await Promise.all([loadPort(),
             this.options.request({ type: 'state', includeHidden: true, conversationId: conversation.id }),
@@ -233,6 +240,7 @@ export class CompanionWorldService {
         ...(result.nextRecipientId ? { nextRecipientId: result.nextRecipientId } : {}), ...(result.workOffer ? { workOffer: result.workOffer } : {}) });
       this.options.changed();
     } catch (error) {
+      if (!signal.aborted && !this.closed) this.options.report(error);
       await this.options.request({ type: 'social.job.fail', id: job.id, leaseToken,
         error: error instanceof CompanionModelError ? error.message : '伙伴通信稍后继续。' });
     } finally { await this.options.endPriority?.(interruptionId); }

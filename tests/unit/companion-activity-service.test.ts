@@ -41,7 +41,7 @@ it.each([{ initiallyQueued: true, offline: false }, { initiallyQueued: false, of
       expect(JSON.stringify(data)).not.toMatch(/PRIVATE_PLAYER_SECRET|PRIVATE_UNSENT_PLAYER_DRAFT/);
       return response({ text: data.channel === 'face_to_face' ? '我到了，很高兴见到你。' : '想来找你玩，现在方便吗？' });
     }
-    if (data.purpose === 'world_message_authorization') return response({ allowed: true, intent: 'visit', confidence: .99, evidence: [data.source.content], reason: '原委托明确要求本人拜访。' });
+    if (data.purpose === 'world_message_authorization') return response({ allowed: true, intent: 'visit', requiresContinuation: true, confidence: .99, evidence: [data.source.content], reason: '原委托明确要求本人拜访。' });
     expect(data.purpose).toBe('activity_task_step');
     if (data.task.step > 0) expect(data.task.visitTargetId).toBe(targetId);
     if (data.task.step === 0) return response({ status: 'continue', action: { action: 'message', recipientIds: [targetId], text: '我想去找你玩，现在方便吗？' },
@@ -68,6 +68,8 @@ it.each([{ initiallyQueued: true, offline: false }, { initiallyQueued: false, of
   const host = { companionId: targetId, conversationId: store.openPrivate(targetId).id }, routine = store.request({ type: 'routine.get', ...host }).routine!;
   store.request({ type: 'routine.configure', ...host, expectedRevision: routine.revision, patch: { timeZone: 'UTC', sleepAt: '23:00', wakeAt: '07:00', meals: [], habits: [] } });
   const scope = { companionId: base.companionId, conversationId: base.conversationId };
+  const acquaintance = store.request({ type: 'social.conversation.ensure', companionId: scope.companionId, memberIds: [scope.companionId, targetId] }).socialConversation!;
+  store.request({ type: 'social.message.append', conversationId: acquaintance.id, authorId: scope.companionId, content: 'Bob你好，我是Alice。', virtualCreatedAt: new Date().toISOString(), clientId: 'actual_prior_acquaintance' });
   const source = store.appendMessage({ conversationId: scope.conversationId, authorId: 'user', content: '去找Bob玩吧。PRIVATE_PLAYER_SECRET', replyDirective: 'none' });
   const task = initiallyQueued ? store.request({ type: 'activity.visit.ensure', ...scope, sourceMessageId: source.id, targetId,
     initialMessage: { text: '我想去找你玩，现在方便吗？', clientId: 'agent_visit_first_message' } }).activityTask!
@@ -116,7 +118,7 @@ it.each([{ initiallyQueued: true, offline: false }, { initiallyQueued: false, of
 it('rejects an out-of-scope draft without sending it or ending the goal, then lets the planner correct its next action', async () => {
   const fetchFn = vi.fn<typeof fetch>(async (_url, init) => {
     const data = JSON.parse(JSON.parse(String(init?.body)).messages[1].content);
-    if (data.purpose === 'world_message_authorization') return response({ allowed: false, intent: 'message', confidence: .99, evidence: [data.source.content], reason: '原请求只要求自己去沙发坐一会儿。' });
+    if (data.purpose === 'world_message_authorization') return response({ allowed: false, intent: 'message', requiresContinuation: false, confidence: .99, evidence: [data.source.content], reason: '原请求只要求自己去沙发坐一会儿。' });
     expect(data.purpose).toBe('activity_task_step');
     if (data.task.step === 0) return response({ status: 'continue', action: { action: 'message', recipientIds: ['unrelated'], text: 'PRIVATE_UNSENT' }, wait: null, summary: '错误的额外联系' });
     expect(data.task.history[0]).toMatchObject({ action: 'message', ok: false });

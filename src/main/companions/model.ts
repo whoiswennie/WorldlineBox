@@ -10,7 +10,7 @@ import { companionPerceivedToolTurns } from './world-perception-context';
 import { companionStateToolTurns } from './state-context';
 import { COMPANION_DSH_CAPABILITY_TOOL, COMPANION_MEMORY_CAPABILITY_TOOL, COMPANION_WORLD_CAPABILITY_TOOL } from '../../shared/companion-capability-tools';
 import { assembleCompanionInvocation } from './invocation-context';
-import { projectCompanionToolHistory } from './context-tool-history';
+import { companionRepeatedObservation, projectCompanionToolHistory } from './context-tool-history';
 import { companionReplyIdentityIssue } from './reply-identity';
 import type { CompanionLoopCall, CompanionLoopTurn } from '../../shared/companion-loop';
 import { CompanionProviderStreamError, readCompanionProviderStream } from './provider-stream';
@@ -32,6 +32,7 @@ export interface CompanionModelOptions { fetchFn?: typeof fetch; timeoutMs?: num
   tools?: readonly CompanionNativeTool[];
   projectContext?: (context: { system: string; user: string }) => { system: string; user: string };
   identityCorrection?: string;
+  deliveryCorrection?: string;
   /** In-memory image payloads for structured peer/world reasoning; never persisted. */
   visualInputs?: readonly CompanionVisualInput[];
   /** Authorized immutable tool snapshots, reloaded for the current inference only. */
@@ -71,7 +72,11 @@ export async function generateCompanionReply(
   { companionId: input.companion.id, memberIds: input.conversation.memberIds, publicProfileIds: input.publicProfileIds, audience: input.audience, publicProfiles: input.publicProfiles }), input.fileInputs), input.world, input.companion.id);
   const context = options.projectContext?.(assembledContext) ?? assembledContext;
   if (options.identityCorrection) context.system += '\n【宿主身份纠错】\n' + options.identityCorrection;
+  if (options.deliveryCorrection) context.system += '\n【宿主交付事实核验】\n' + options.deliveryCorrection;
   const turns = projectCompanionToolHistory(companionStateToolTurns(companionPerceivedToolTurns(options.turns ?? [], input.companion.id, input.world)));
+  const repeatedObservation = companionRepeatedObservation(options.turns ?? []);
+  if (repeatedObservation) context.system += '\n【宿主进展检查】\n' + JSON.stringify(repeatedObservation)
+    + '：最近多次查询已返回相同世界资料，完整结果仍在原生tool回执中。查询不是联系、邀约或建群。请使用已有真实标识执行当前目标的下一步，或说明实际阻碍后结束；不要继续用同样查询搭配“我先看看”来代替行动。新证据与真实行动会重新计算此提示。这不是任务轮数上限，也不改变你的身份、目标或权限。';
   const controller = new AbortController();
   let rejectAbort: (error: CompanionModelError) => void = () => undefined;
   const aborted = new Promise<never>((_resolve, reject) => { rejectAbort = reject; });
@@ -112,7 +117,9 @@ export async function generateCompanionReply(
         && result.text.trim() && !/^[\s`]*[[{]/u.test(result.text)
         && !loopCalls.some(call => { try { const args = JSON.parse(call.arguments); return call.name === 'world' && args.action === 'topic'
           && args.parameters?.action === 'join' && args.parameters.topicId === topic.id; } catch { return false; } })) {
-        throw new CompanionModelError('IDENTITY', '你目前只是这个话题的受邀者，尚未加入。愿意参与请先用world的topic.join自主加入，再正式发言；不参加可PASS，不代其他伙伴加入。');
+        throw new CompanionModelError('IDENTITY', '你目前只是这个话题的受邀者，尚未加入。愿意参与请先原生调用world，参数'
+          + JSON.stringify({ action: 'topic', parameters: { action: 'join', topicId: topic.id } })
+          + '，收到成功回执后再正式发言。不参加时按本入口约定返回空text/null/PASS；不代其他伙伴加入。');
       }
       const identityIssue = companionReplyIdentityIssue(result.text, input);
       if (identityIssue) throw new CompanionModelError('IDENTITY', identityIssue);

@@ -81,6 +81,8 @@ export function CompanionMemoryLibraryWorkspace({ companions, companionId, api, 
   const [policies, setPolicies] = useState<NonNullable<CompanionsResponse['memoryPolicies']>>([]);
   const [libraryName, setLibraryName] = useState(''), [maintenance, setMaintenance] = useState(false);
   const alive = useRef(true), listEpoch = useRef(0), readEpoch = useRef(0), textarea = useRef<HTMLTextAreaElement>(null), fileScroll = useRef<HTMLDivElement>(null), paperScroll = useRef<HTMLDivElement>(null);
+  const firstList = useRef(true);
+  const pendingList = useRef<{ key: string; epoch: number; promise: Promise<CompanionMemoryDocumentsPage | undefined> } | undefined>(undefined);
   const locatedNoteRequest = useRef<string | undefined>(undefined);
   const dirty = !!editor && (!editor.original || editor.content !== editor.original.content || editor.tags !== editor.original.document.tags.join('，') || editor.diaryName !== (editor.original.memory?.diaryName ?? ''));
 
@@ -89,20 +91,30 @@ export function CompanionMemoryLibraryWorkspace({ companions, companionId, api, 
     try { const result = await api.workspace(command); if (!result.ok && reportError && alive.current) setError(result.error || '文档操作未完成。'); return result; }
     catch (cause) { const error = cause instanceof Error ? cause.message : '文档操作未完成，请重试。'; if (reportError && alive.current) setError(error); return { ok: false, error }; }
   }, [api]);
-  const load = useCallback(async (pageCursor: string | undefined = cursor, preserveSelection = false) => {
-    const epoch = ++listEpoch.current; setLoading(true);
-    if (parseTags(tag).length > 20) { setError('一次最多按20个标签筛选。'); setLoading(false); return; }
-    if (fromDate && toDate && fromDate > toDate) { setError('开始日期不能晚于结束日期。'); setLoading(false); return; }
-    const result = await call({ type: 'memory.documents.list', companionId, directory, limit: 64, ...(sort !== 'updated_desc' ? { sort } : {}),
+  const load = useCallback((pageCursor: string | undefined = cursor, preserveSelection = false): Promise<CompanionMemoryDocumentsPage | undefined> => {
+    if (parseTags(tag).length > 20) { setError('一次最多按20个标签筛选。'); setLoading(false); return Promise.resolve(undefined); }
+    if (fromDate && toDate && fromDate > toDate) { setError('开始日期不能晚于结束日期。'); setLoading(false); return Promise.resolve(undefined); }
+    const command: CompanionMemoryDocumentCommand = { type: 'memory.documents.list', companionId, directory, limit: 64, ...(sort !== 'updated_desc' ? { sort } : {}),
       ...(fromDate || toDate ? { dateField, ...(fromDate ? { from: memoryFilterDate(fromDate, false) } : {}), ...(toDate ? { to: memoryFilterDate(toDate, true) } : {}) } : {}),
-      ...(query.trim() ? { query: query.trim(), mode: 'keyword' } : {}), ...(parseTags(tag).length ? { tags: parseTags(tag) } : {}), ...(pageCursor ? { cursor: pageCursor } : {}) }, false);
-    if (!alive.current || epoch !== listEpoch.current) return;
-    setLoading(false);
-    if (result?.documents) {
-      setPage({ ...result.documents, items: result.documents.items.slice(0, 64) });
-      setSelectedPath(current => current && (preserveSelection || result.documents!.items.some(item => item.path === current)) ? current : result.documents!.items.find(item => item.category === 'diary')?.path ?? result.documents!.items.find(item => item.kind === 'note')?.path ?? result.documents!.items[0]?.path);
-      return result.documents;
-    } else { setPage(undefined); setError(result?.error || '文档列表暂时无法读取。'); }
+      ...(query.trim() ? { query: query.trim(), mode: 'keyword' } : {}), ...(parseTags(tag).length ? { tags: parseTags(tag) } : {}), ...(pageCursor ? { cursor: pageCursor } : {}) };
+    const key = JSON.stringify(command);
+    // Frequent life/memory notifications must not start another identical read
+    // and invalidate its still-pending result on every refresh tick.
+    if (pendingList.current?.key === key && pendingList.current.epoch === listEpoch.current) return pendingList.current.promise;
+    const epoch = ++listEpoch.current; setLoading(true);
+    const promise = (async () => {
+      const result = await call(command, false);
+      if (!alive.current || epoch !== listEpoch.current) return;
+      setLoading(false);
+      if (result?.documents) {
+        setPage({ ...result.documents, items: result.documents.items.slice(0, 64) });
+        setSelectedPath(current => current && (preserveSelection || result.documents!.items.some(item => item.path === current)) ? current : result.documents!.items.find(item => item.category === 'diary')?.path ?? result.documents!.items.find(item => item.kind === 'note')?.path ?? result.documents!.items[0]?.path);
+        return result.documents;
+      } else { setPage(undefined); setError(result?.error || '文档列表暂时无法读取。'); }
+    })();
+    pendingList.current = { key, epoch, promise };
+    void promise.finally(() => { if (pendingList.current?.promise === promise) pendingList.current = undefined; });
+    return promise;
   }, [call, companionId, directory, cursor, query, tag, sort, dateField, fromDate, toDate]);
   const readDocument = useCallback(async (path: string, sourceCursor?: number) => {
     const epoch = ++readEpoch.current; setReading(true);
@@ -118,7 +130,7 @@ export function CompanionMemoryLibraryWorkspace({ companions, companionId, api, 
   }, [request, companionId]);
   useEffect(() => { alive.current = true; return () => { alive.current = false; }; }, []);
   useEffect(() => { onEditorChange?.(companionId, editor); }, [companionId, editor, onEditorChange]);
-  useEffect(() => { if (!active) return; const timer = setTimeout(() => { if (alive.current) void load(); }, 240); return () => clearTimeout(timer); }, [load, active]);
+  useEffect(() => { if (!active) return; const timer = setTimeout(() => { if (alive.current) { firstList.current = false; void load(); } }, firstList.current ? 0 : 240); return () => clearTimeout(timer); }, [load, active]);
   useEffect(() => { if (fileScroll.current) fileScroll.current.scrollTop = 0; }, [cursor, query, tag, directory, sort, dateField, fromDate, toDate]);
   useEffect(() => { if (paperScroll.current) paperScroll.current.scrollTop = 0; }, [selectedPath]);
   useEffect(() => {

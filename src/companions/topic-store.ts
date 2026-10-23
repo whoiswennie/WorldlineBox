@@ -12,7 +12,8 @@ type Command = Extract<CompanionStorageCommand, { type: `topic.${string}` }>;
 export class CompanionTopicStore {
   constructor(private readonly db: CompanionConnection, private readonly members: (conversationId: string) => string[],
     private readonly participation?: (receipt: TopicParticipationReceipt) => void,
-    private readonly changed?: (conversationId: string, topicId: string, readerId?: string) => void) {}
+    private readonly changed?: (conversationId: string, topicId: string, readerId?: string) => void,
+    private readonly checkpointSourcesValid?: (conversationId: string, readerId: string, sourceMessageIds: readonly string[]) => boolean) {}
   initialize(): void {
     this.db.exec(`CREATE TABLE IF NOT EXISTS companion_topics(id TEXT PRIMARY KEY,conversation_id TEXT NOT NULL REFERENCES conversations(id),data TEXT NOT NULL);
       CREATE INDEX IF NOT EXISTS companion_topics_room ON companion_topics(conversation_id,id);
@@ -58,7 +59,12 @@ export class CompanionTopicStore {
   private state(topic: CompanionTopic, readerId: string): CompanionTopicState {
     this.allowed(topic, readerId);
     const load = (reader: string) => { const found = this.db.prepare('SELECT data FROM companion_topic_state WHERE topic_id=? AND reader_id=?').get(topic.id, reader);
-      return found ? decode<NonNullable<CompanionTopicState['shared']>>(row(found).data) : undefined; };
+      const checkpoint = found ? decode<NonNullable<CompanionTopicState['shared']>>(row(found).data) : undefined;
+      // Canonical state belongs to all participants. A withdrawal only hides
+      // this reader's derived view; arbitrary state JSON is never provenance.
+      if (checkpoint && readerId !== 'user' && checkpoint.sourceMessageIds.length
+        && !this.checkpointSourcesValid?.(topic.conversationId, readerId, checkpoint.sourceMessageIds)) return undefined;
+      return checkpoint; };
     return { topicId: topic.id, readerId, shared: load('*'), workingState: topic.participantIds.includes(readerId) ? load(readerId) : undefined, trust: 'topic_state_not_real_world_facts' };
   }
   private paused(topicId: string, readerId: string): boolean {
@@ -98,6 +104,8 @@ export class CompanionTopicStore {
       return { ok: true, topic, topicState: this.state(topic, command.readerId) };
     }
     const topic = this.topic(command.topicId!, command.conversationId); this.allowed(topic, command.readerId);
+    if (command.type === 'topic.sources.valid') return { ok: true, topicSourcesValid: command.readerId === 'user'
+      || !command.sourceMessageIds.length || !!this.checkpointSourcesValid?.(topic.conversationId, command.readerId, command.sourceMessageIds) };
     if (command.type === 'topic.read') return { ok: true, topic: this.project(topic, command.readerId), topicState: this.state(topic, command.readerId) };
     if (command.type === 'topic.join' || command.type === 'topic.leave') {
       const wasJoined = topic.participantIds.includes(command.readerId);

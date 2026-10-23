@@ -82,7 +82,7 @@ export const companionWorldPublicCommands = [
   z.strictObject({ type: z.literal('world.snapshot') }),
   z.strictObject({ type: z.literal('world.configure'), expectedRevision: z.number().int().positive(), patch: companionWorldSettingsSchema.omit({ revision: true }).partial() }),
   scope.extend({ type: z.literal('world.observe') }).strict(),
-  scope.extend({ type: z.literal('world.tool'), sourceMessageId: id.optional(), arguments: companionWorldArgumentsSchema }).strict(),
+  scope.extend({ type: z.literal('world.tool'), sourceMessageId: id.optional(), clientId: id.optional(), arguments: companionWorldArgumentsSchema }).strict(),
   z.strictObject({ type: z.literal('world.status'), companionIds: z.array(id).max(20) }),
 ] as const;
 export const companionWorldStorageCommands = [

@@ -92,9 +92,11 @@ export const companionSocialPublicCommands = [
   z.strictObject({ type: z.literal('social.days'), companionId: id.optional(), month: month.optional(), query: z.string().trim().max(500).optional() }),
 ] as const;
 export const companionSocialStorageCommands = [...companionSocialPublicCommands,
+  z.strictObject({ type: z.literal('social.contact.check'), companionId: id, recipientIds: z.array(id).min(1).max(19) }),
   z.strictObject({ type: z.literal('social.conversation.ensure'), companionId: id, memberIds: z.array(id).min(2).max(20), title: z.string().trim().max(100).default('') }),
   z.strictObject({ type: z.literal('social.message.append'), conversationId: id, authorId: id, content: z.string().min(1).max(65536), virtualCreatedAt: z.iso.datetime(), clientId: id, recipientIds: z.array(id).max(20).optional(), replyToId: id.optional() }),
-  z.strictObject({ type: z.literal('social.send'), urgent: z.boolean().optional(), companionId: id, conversationId: id, content: z.string().min(1).max(2000), channel: z.enum(['phone', 'face_to_face']), sourceMessageId: id.optional(), authorizationMessageId: id.optional(), replyToId: id.optional(), clientId: id }),
+  z.strictObject({ type: z.literal('social.send'), urgent: z.boolean().optional(), companionId: id, conversationId: id, content: z.string().min(1).max(2000), channel: z.enum(['phone', 'face_to_face']), sourceMessageId: id.optional(), authorizationMessageId: id.optional(), replyToId: id.optional(), clientId: id,
+    agentSource: z.strictObject({ conversationId: id, messageId: id }).optional() }),
   z.strictObject({ type: z.literal('social.job.claim') }),
   z.strictObject({ type: z.literal('social.job.complete'), id, leaseToken: id, text: z.string().trim().max(2000).nullable().optional(), nextRecipientId: id.optional(), workOffer: companionSocialWorkOfferSchema.optional(), shareAddress: z.boolean().optional(), expectedMemoryRevision: z.string().min(1).max(160).optional(), memoryRecall: companionSocialRecallSchema.optional() }),
   z.strictObject({ type: z.literal('social.job.progress'), id, leaseToken: id,

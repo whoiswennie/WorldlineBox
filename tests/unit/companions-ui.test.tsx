@@ -840,7 +840,10 @@ it('shows real waiting and generation stages before reply text exists and allows
 it('exposes explicit activation in contacts and preserves dormancy when opening a private conversation', async () => {
   const f = fixture({ companions: sisters.map(role => ({ ...role, active: role.id === 'deepseek-flash' })) });
   await mount(f.api);
-  expect(container!.textContent).toContain('伙伴已休眠');
+  expect(container!.querySelector('.companions-dormant-note')).toBeNull();
+  const composer = container!.querySelector('section[aria-label="消息输入区"]')!;
+  expect(composer.querySelector('.companions-composer-dormant')!.textContent).toBe('伙伴休眠中激活');
+  expect(button('激活大肥鱼').closest('section[aria-label="消息输入区"]')).toBe(composer);
   expect(f.request.mock.calls.some(([input]) => input.type === 'companion.set-active')).toBe(false);
   await click('联系人');
   expect(container!.textContent).toContain('虚拟世界未加载');
@@ -849,4 +852,17 @@ it('exposes explicit activation in contacts and preserves dormancy when opening 
   expect(container!.textContent).toContain('已激活');
   await click('让伙伴休眠');
   expect(f.request).toHaveBeenCalledWith(expect.objectContaining({ type: 'companion.set-active', id: 'deepseek-sister', active: false }));
+});
+
+it('keeps dormant chat sending available and offers activation beside its compact composer status', async () => {
+  const f = fixture({ companions: sisters.map(role => ({ ...role, active: false })) });
+  await mount(f.api);
+  const input = await fill('textarea[aria-label="输入消息"]', '先给你留条消息。');
+  expect(input.disabled).toBe(false); expect(button('发送').disabled).toBe(false);
+  await click('发送');
+  expect(f.request).toHaveBeenCalledWith(expect.objectContaining({ type: 'message.send', content: '先给你留条消息。' }));
+  expect(f.request.mock.calls.some(([call]) => call.type === 'companion.set-active')).toBe(false);
+  await click('激活大肥鱼');
+  expect(f.request).toHaveBeenCalledWith({ type: 'companion.set-active', id: 'deepseek-sister', active: true });
+  expect(container!.querySelector('.companions-composer-dormant')).toBeNull();
 });

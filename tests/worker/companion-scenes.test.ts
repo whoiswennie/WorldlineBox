@@ -83,8 +83,8 @@ it('rechecks dormancy and busyness at the portal and never loads or enters an un
 it('queries world and social evidence without automatically creating memories, and learns only through memory.record', () => {
     const { store } = fixture(), conversationId = store.openPrivate('alice').id;
     const source = store.appendMessage({ conversationId, authorId: 'user', content: '找一下bob。', replyDirective: 'none' });
-    const queried = store.request({ type: 'memory.world_query', companionId: 'alice', conversationId, beforeSequence: source.sequence, category: 'contacts', query: 'bob' });
-    expect(queried.worldKnowledge).toMatchObject({ internalized: false, items: [{ id: 'bob', name: 'bob', active: true, source: 'contact_directory' }] });
+    const queried = store.request({ type: 'memory.world_query', companionId: 'alice', conversationId, beforeSequence: source.sequence, category: 'people', query: 'bob' });
+    expect(queried.worldKnowledge).toMatchObject({ internalized: false, items: [{ id: 'bob', name: 'bob', active: true, known: false, source: 'world_public_directory' }] });
     expect(store.request({ type: 'memory.browse', companionId: 'alice', conversationId }).memoryPage?.items).toEqual([]);
     const evidence = queried.memorySources![0]!;
     expect(evidence.worldObservation?.internalized).toBe(false);
@@ -103,7 +103,7 @@ it('lets an intrinsic action agent query, selectively learn and organize its own
     const task = store.request({ type: 'activity.start', ...scope, clientId: 'self_learning', title: '整理新的联系人知识', goal: '查找bob，仅内化有来源且有用的信息。' }).activityTask!;
     let leased = store.request({ type: 'activity.claim' }).activityTask!;
     expect(leased.id).toBe(task.id);
-    const queried = store.request({ type: 'activity.commit', id: task.id, leaseToken: leased.leaseToken!, decision: { status: 'continue', action: { action: 'query', category: 'contacts', query: 'bob', limit: 1 }, wait: null, summary: '先查一次联系人目录。' } }).activityTask!;
+    const queried = store.request({ type: 'activity.commit', id: task.id, leaseToken: leased.leaseToken!, decision: { status: 'continue', action: { action: 'query', category: 'people', query: 'bob', limit: 1 }, wait: null, summary: '先查一次世界公开人物目录。' } }).activityTask!;
     const receipt = JSON.parse(queried.history[0]!.result).memorySources[0];
     expect(store.request({ type: 'memory.browse', ...scope }).memoryPage!.items).toEqual([]);
     advance(store, 1600);
@@ -139,7 +139,8 @@ it('keeps scene observations queryable as external evidence without automaticall
 });
 it('invalidates queried social evidence and its learned memory after the actual source is forgotten', () => {
     const { store } = fixture(), scope = { companionId: 'alice', conversationId: 'world_alice' };
-    act(store, 'alice', { action: 'message', recipientIds: ['bob'], text: '我今天想听一首轻快的曲子。' });
+    act(store, 'alice', { action: 'query', category: 'people', query: 'bob' });
+    act(store, 'alice', { action: 'introduce', targetCompanionId: 'bob', text: '我今天想听一首轻快的曲子。' });
     advance(store, 1600);
     store.request({ type: 'social.job.claim' });
     const room = store.request({ type: 'social.conversation.ensure', companionId: 'alice', memberIds: ['alice', 'bob'] }).socialConversation!;

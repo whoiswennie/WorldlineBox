@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { buildCompanionContext, type CompanionReplyInput } from '../../src/main/companions/context';
 import { assembleCompanionInvocation, type CompanionInvocationContext } from '../../src/main/companions/invocation-context';
 import { selectCompanionDialogue } from '../../src/main/companions/context-window';
-import { projectCompanionEvidenceHistory, projectCompanionToolHistory } from '../../src/main/companions/context-tool-history';
+import { companionRepeatedObservation, projectCompanionEvidenceHistory, projectCompanionToolHistory } from '../../src/main/companions/context-tool-history';
 import { normalizeCompanionCapabilityCall, COMPANION_MEMORY_CAPABILITY_TOOL, COMPANION_WORLD_CAPABILITY_TOOL } from '../../src/shared/companion-capability-tools';
 import type { CompanionMessage } from '../../src/shared/companions';
 import { companionReplyIdentityIssue } from '../../src/main/companions/reply-identity';
@@ -119,6 +119,22 @@ it('rebuilds tool evidence from each request without changing the durable transc
   expect(view[2]?.results?.[0]?.content).toBe('CURRENT_WORLD_SNAPSHOT');
   expect(turns[0]?.results[0]?.content).toBe('OLD_WORLD_SNAPSHOT');
 });
+it('reports repeated unchanged directory observations across capability entrances without limiting actual work or polling', () => {
+  const read = (index: number, changed = false) => ({ text: '我先看看', rawText: '我先看看', calls: [{ id: 'read_' + index,
+    name: index % 2 ? 'world' : 'memory', arguments: JSON.stringify({ action: index % 2 ? 'query' : 'world_query', category: 'contacts', query: index % 3 ? '' : '妹妹' }) }],
+    results: [{ callId: 'read_' + index, content: JSON.stringify({ ok: true, worldKnowledge: { category: 'contacts',
+      observedAt: new Date(index).toISOString(), evidenceMessageId: 'receipt_' + index, items: [{ id: 'flash', active: !changed }] } }) }] });
+  const repeated = Array.from({ length: 5 }, (_, index) => read(index));
+  expect(companionRepeatedObservation(repeated)).toEqual({ repetitions: 4, categories: ['contacts'] });
+  expect(companionRepeatedObservation([...repeated, read(5, true)])).toBeUndefined();
+  const action = { text: '', rawText: '', calls: [{ id: 'sent', name: 'world', arguments: JSON.stringify({ action: 'message', recipientIds: ['flash'], text: '来玩吗？' }) }],
+    results: [{ callId: 'sent', content: '{"ok":true,"socialPending":true}' }] };
+  expect(companionRepeatedObservation([...repeated, action, read(6)])).toBeUndefined();
+  const poll = { text: '', rawText: '', calls: [{ id: 'poll', name: 'dsh', arguments: '{"operation":"record","query":{"recordId":"record"}}' }],
+    results: [{ callId: 'poll', content: '{"status":"running"}' }] };
+  expect(companionRepeatedObservation(Array.from({ length: 100 }, () => poll))).toBeUndefined();
+  expect(repeated[0]!.results[0]!.content).toContain('receipt_0');
+});
 it('refreshes VCP evidence without losing successful native execution receipts and preserves status after explicit withdrawal', () => {
   const turns = [{ text: 'OLD_MEMORY_TEXT', rawText: 'OLD_MEMORY_TEXT', calls: [
     { id: 'executed', name: 'dsh', thoughtSignature: 'SIGNED_NATIVE_EXECUTION', arguments: '{"operation":"run","tasks":[{"title":"实际汇总","prompt":"读取CSV"}]}' },
@@ -143,6 +159,15 @@ it('advertises unified world and VCP roots and rejects retired tool aliases', ()
   expect(normalizeCompanionCapabilityCall({ id: 'world', name: 'world', arguments: '{"action":"activity","parameters":{"action":"list"}}' })).toMatchObject({ name: 'activity', arguments: '{"action":"list"}' });
   const legacy = { id: 'legacy', name: 'memory.read', arguments: '{"id":"note"}' };
   expect(() => normalizeCompanionCapabilityCall(legacy)).toThrow('统一入口');
+});
+
+it('rejects substantial verbatim peer speech under a different author while allowing short agreements and quoted discussion', () => {
+  const content = '我玩。'.repeat(40) + '我是来报名的，主持人发牌前我想先确认实际玩家人数。';
+  const peer = message('peer', 1, content, { authorId: 'other' });
+  const input: CompanionReplyInput = { ...base, messages: [peer], sourceMessage: peer, members: [{ id: 'other', name: '其他伙伴', description: '' }] };
+  expect(companionReplyIdentityIssue(content, input)).toContain('完整复述另一位伙伴');
+  expect(companionReplyIdentityIssue('我玩。', { ...input, messages: [{ ...peer, content: '我玩。' }] })).toBeUndefined();
+  expect(companionReplyIdentityIssue('你刚才说：\n> ' + content + '\n我同意先核对人数。', input)).toBeUndefined();
 });
 
 it('rejects explicit impersonation and a mistaken sibling salutation without blocking ordinary discussion or an explicit nickname', () => {

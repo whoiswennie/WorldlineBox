@@ -57,7 +57,7 @@ it('finds a real directory contact when any name or id alias matches and ranks e
   ];
   const store = new CompanionsStore(path.join(root, 'messages.sqlite'), roles); stores.add(store);
   const scope = { companionId: 'zhou-lan', conversationId: store.openPrivate('zhou-lan').id };
-  const contacts = (query: string) => store.request({ type: 'memory.world_query', ...scope, category: 'contacts', query, limit: 10 }).worldKnowledge!.items;
+  const contacts = (query: string) => store.request({ type: 'memory.world_query', ...scope, category: 'people', query, limit: 10 }).worldKnowledge!.items;
   expect(contacts('周岚 zhou').map(item => item.id)).toEqual(['zhou-lan', 'reader']);
   expect(contacts('周岚')[0]!.id).toBe('zhou-lan');
   expect(contacts('不存在 文学').map(item => item.id)).toEqual(['reader']);

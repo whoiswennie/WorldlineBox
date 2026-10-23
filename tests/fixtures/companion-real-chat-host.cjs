@@ -19,9 +19,13 @@ try {
 app.whenReady().then(() => {
   let result;
   try {
-    const stored = JSON.parse(fs.readFileSync(path.join(source, 'ai-config.json'), 'utf8'));
+    const catalog = JSON.parse(fs.readFileSync(path.join(source, 'ai-profiles.json'), 'utf8'));
+    const profileId = catalog.activeProfileId;
+    if (!/^ai_[a-f0-9]{24}$/u.test(profileId)) throw new Error('No active connection profile.');
+    const stored = catalog.profiles.find(profile => profile.id === profileId);
+    if (!stored) throw new Error('Active connection profile is missing.');
     if (!safeStorage.isEncryptionAvailable()) throw Object.assign(new Error(), { code: 'DECRYPT_UNAVAILABLE' });
-    const key = safeStorage.decryptString(Buffer.from(fs.readFileSync(path.join(source, 'ai-key.enc'))));
+    const key = safeStorage.decryptString(Buffer.from(fs.readFileSync(path.join(source, 'ai-profile-keys', profileId + '.bin'))));
     result = { ok: true, stored: { apiFormat: stored.apiFormat, provider: stored.provider, model: stored.model, baseUrl: stored.baseUrl }, apiKey: key };
   } catch (error) { result = { ok: false, code: ['ENOENT', 'DECRYPT_UNAVAILABLE'].includes(error.code) ? error.code : 'GLOBAL_CHAT_CONFIG_UNREADABLE' }; }
   // No credential is printed, written to a fixture file, or included in errors.

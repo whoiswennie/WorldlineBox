@@ -60,7 +60,11 @@ function button(label: string, scope: ParentNode = container) {
   const found = [...scope.querySelectorAll<HTMLButtonElement>('button')].find(item => item.getAttribute('aria-label') === label || item.textContent?.trim() === label);
   if (!found) throw new Error(`Missing button ${label}`); return found;
 }
-async function click(label: string, scope?: ParentNode) { await act(() => button(label, scope).click()); }
+async function click(label: string, scope?: ParentNode) {
+  const target = button(label, scope);
+  const more = target.closest('details'); if (more) more.open = true;
+  await act(() => target.click());
+}
 async function select(label: string, value: string) {
   const element = container.querySelector<HTMLSelectElement>(`select[aria-label="${label}"]`)!;
   await act(() => { element.value = value; element.dispatchEvent(new Event('change', { bubbles: true })); });
@@ -73,9 +77,40 @@ async function fill(label: string, value: string) {
 function input() { return container.querySelector<HTMLTextAreaElement>('textarea[aria-label="输入消息"]')!; }
 function timeline() { return container.querySelector('[data-companion-messages]')!.textContent; }
 function row(title: string) { return [...container.querySelectorAll<HTMLElement>('.companions-topic-library-list article')].find(element => element.querySelector('strong')!.textContent === title)!; }
-async function openTopics() { if (!container.querySelector('section[aria-label="话题列表"]')) { await click('选择发送话题'); await act(() => new Promise(resolve => setTimeout(resolve, 10))); } }
+async function openTopics() { if (!container.querySelector('section[aria-label="话题列表"]')) { await click('话题管理'); await act(() => new Promise(resolve => setTimeout(resolve, 10))); } }
 async function enterTopic(title: string) { await openTopics(); await click('进入话题', row(title)); }
 function destination() { return container.querySelector('[aria-label="当前发送话题"]')!.textContent; }
+
+it('keeps a single topic entry in the chat header and restores focus after closing its manager', async () => {
+  const test = fixture(); await mount(test.api);
+  const entry = button('话题管理');
+  expect(entry.className).toBe('companion-icon-button');
+  expect(entry.textContent).toBe(''); expect(entry.getAttribute('title')).toBe('话题管理');
+  expect(entry.children).toHaveLength(1); expect(entry.firstElementChild?.tagName.toLowerCase()).toBe('svg');
+  expect(entry.querySelector('svg')?.getAttribute('stroke-width')).toBe('1.6');
+  expect(entry.closest('.companions-header-actions')).not.toBeNull();
+  expect(container.querySelector('.companions-topic-bar')).toBeNull();
+  expect(container.querySelector('button[aria-label="选择发送话题"]')).toBeNull();
+  expect(container.querySelector('[role="dialog"][aria-label="话题管理"]')).toBeNull();
+  entry.focus(); await openTopics();
+  const manager = container.querySelector<HTMLElement>('[role="dialog"][aria-label="话题管理"]')!;
+  expect(manager.getAttribute('aria-modal')).toBe('true'); expect(entry.getAttribute('aria-expanded')).toBe('true');
+  expect(entry.className).toBe('companion-icon-button is-active');
+  expect(manager.closest('.companions-chat-header')).toBeNull();
+  await act(() => manager.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })));
+  expect(container.querySelector('[role="dialog"][aria-label="话题管理"]')).toBeNull();
+  expect(document.activeElement).toBe(entry); expect(entry.getAttribute('aria-expanded')).toBe('false');
+  await enterTopic('狼人杀');
+  expect(container.querySelector('[role="dialog"][aria-label="话题管理"]')).toBeNull();
+  expect(destination()).toContain('狼人杀'); expect(input().disabled).toBe(false);
+  expect(entry.className).toBe('companion-icon-button'); expect(entry.textContent).toBe('');
+  await openTopics(); await click('查看记录', row('周末旅行'));
+  expect(container.querySelector('.companions-topic-browsing')!.textContent).toContain('周末旅行');
+  expect(destination()).toContain('狼人杀');
+  await click('回到当前聊天');
+  expect(container.querySelector('.companions-topic-browsing')).toBeNull();
+  expect(timeline()).toContain('第一局开始');
+});
 
 it('keeps current destination separate from historical topic browsing and sends explicit topic identities', async () => {
   const test = fixture(); await mount(test.api);
@@ -84,31 +119,33 @@ it('keeps current destination separate from historical topic browsing and sends 
   await enterTopic('狼人杀');
   expect(timeline()).toContain('第一局开始'); expect(timeline()).not.toContain('日常消息'); expect(input().value).toBe('');
   await fill('输入消息', '狼人杀草稿');
+  await openTopics();
   await click('查看记录', row('周末旅行'));
   expect(timeline()).toContain('去海边'); expect(timeline()).not.toContain('第一局开始');
   expect(container.querySelector('.companions-composer-destination')!.textContent).toContain('狼人杀');
   await click('发送');
   expect(test.request).toHaveBeenCalledWith(expect.objectContaining({ type: 'message.send', content: '狼人杀草稿', topicId: 'wolves' }));
-  await click('返回日常'); expect(input().value).toBe('日常草稿');
+  await openTopics(); await click('返回日常'); expect(input().value).toBe('日常草稿');
   await click('发送'); expect(test.request).toHaveBeenCalledWith(expect.objectContaining({ type: 'message.send', content: '日常草稿', topicId: null }));
   expect(test.request.mock.calls.some(([call]) => call.type === 'topic.read')).toBe(false);
 });
 
 it('creates game topics, pauses and resumes them, and preserves pending attachment ownership across topic switches', async () => {
   const test = fixture(); await mount(test.api);
-  await click('新建话题'); await fill('话题名称', '狼人杀第二局'); await select('话题类型', 'game');
+  await openTopics(); await click('新建话题'); await fill('话题名称', '狼人杀第二局'); await select('话题类型', 'game');
   await act(() => container.querySelector<HTMLFormElement>('form[aria-label="新建聊天话题"]')!.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true })));
   expect(test.request).toHaveBeenCalledWith({ type: 'topic.create', conversationId: 'room', title: '狼人杀第二局', kind: 'game', tags: [], participantIds: room.memberIds });
   expect(destination()).toContain('狼人杀第二局');
-  await click('暂停话题'); expect(input().disabled).toBe(true); expect(button('发送').disabled).toBe(true);
+  await openTopics(); await click('暂停话题'); expect(input().disabled).toBe(true); expect(button('发送').disabled).toBe(true);
   await click('返回日常'); await openTopics(); await click('恢复并进入', row('狼人杀第二局'));
   expect(test.request).toHaveBeenCalledWith({ type: 'topic.resume', conversationId: 'room', topicId: 'created-topic', expectedRevision: 2 });
   expect(input().disabled).toBe(false);
+  expect(container.querySelector('[role="dialog"][aria-label="话题管理"]')).toBeNull();
   await enterTopic('狼人杀'); test.deferAttachment(); await click('发送文件或图片');
   await enterTopic('周末旅行'); await test.finishAttachment();
   expect(container.querySelector('.companions-draft-attachments')).toBeNull();
   await enterTopic('狼人杀'); expect(container.querySelector('.companions-draft-attachments')!.textContent).toContain('附件只属于狼人杀.png');
-  await click('结束话题'); expect(destination()).toContain('日常聊天');
+  await openTopics(); await click('结束话题'); expect(destination()).toContain('日常聊天');
 });
 
 it('manages long-lived topics with rename, restore, fork, search and explicit deletion', async () => {
@@ -117,8 +154,9 @@ it('manages long-lived topics with rename, restore, fork, search and explicit de
   await click('编辑话题', row('狼人杀')); await fill('新的话题名称', '狼人杀长期会话'); await fill('编辑话题标签', '游戏, 长期');
   await act(() => container.querySelector<HTMLFormElement>('form[aria-label="重命名话题"]')!.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true })));
   expect(test.request).toHaveBeenCalledWith({ type: 'topic.update', conversationId: 'room', topicId: 'wolves', expectedRevision: 1, patch: { title: '狼人杀长期会话', tags: ['游戏', '长期'], invitedIds: [] } });
-  await enterTopic('狼人杀长期会话'); await click('结束话题'); expect(row('狼人杀长期会话').textContent).toContain('已结束');
+  await enterTopic('狼人杀长期会话'); await openTopics(); await click('结束话题'); expect(row('狼人杀长期会话').textContent).toContain('已结束');
   await click('恢复并进入', row('狼人杀长期会话')); expect(destination()).toContain('狼人杀长期会话');
+  await openTopics();
   await click('创建分支', row('狼人杀长期会话')); await fill('分支话题名称', '平行第二局');
   await act(() => container.querySelector<HTMLFormElement>('form[aria-label="创建话题分支"]')!.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true })));
   expect(test.request).toHaveBeenCalledWith({ type: 'topic.fork', conversationId: 'room', topicId: 'wolves', title: '平行第二局' });
@@ -134,7 +172,7 @@ it('manages long-lived topics with rename, restore, fork, search and explicit de
 });
 
 it('joins and leaves only as the user while other participants remain in their own topics', async () => {
-  const test = fixture(); await mount(test.api); await openTopics(); await enterTopic('狼人杀');
+  const test = fixture(); await mount(test.api); await enterTopic('狼人杀'); await openTopics();
   await click('退出话题', row('狼人杀'));
   expect(test.request).toHaveBeenCalledWith({ type: 'topic.leave', conversationId: 'room', topicId: 'wolves' });
   expect(destination()).toContain('日常聊天'); expect(row('狼人杀').textContent).toContain('受邀加入');
@@ -142,6 +180,7 @@ it('joins and leaves only as the user while other participants remain in their o
   await click('加入话题', row('狼人杀'));
   expect(test.request).toHaveBeenCalledWith({ type: 'topic.join', conversationId: 'room', topicId: 'wolves' });
   expect(destination()).toContain('狼人杀');
+  expect(container.querySelector('[role="dialog"][aria-label="话题管理"]')).toBeNull();
   expect(test.request.mock.calls.filter(([call]) => call.type.startsWith('topic.')).every(([call]) => !('readerId' in call))).toBe(true);
 });
 
@@ -166,7 +205,7 @@ it('pages and searches large topic collections without building an unbounded sel
 });
 
 it('allows an empty invitation list and validates tags before creating a topic', async () => {
-  const test = fixture(); await mount(test.api); await click('新建话题');
+  const test = fixture(); await mount(test.api); await openTopics(); await click('新建话题');
   await fill('话题名称', '自己的工作区'); await fill('话题标签', 'x'.repeat(81));
   expect(button('创建并进入').disabled).toBe(true); expect(container.querySelector('[role="alert"]')!.textContent).toContain('80');
   await fill('话题标签', '写作,私稿');

@@ -5033,13 +5033,18 @@ async function startApplication(): Promise<void> {
   let workspaceTail: Promise<unknown> = Promise.resolve();
   ipcMain.handle(COMPANION_WORKSPACE_CHANNEL, (event, input: unknown) => {
     if (!mainWindow || mainWindow.isDestroyed() || event.sender !== mainWindow.webContents || event.senderFrame !== mainWindow.webContents.mainFrame) return { ok: false, error: '无权管理伙伴资产库。' };
+    const parsed = companionWorkspaceRequestSchema.safeParse(input);
+    if (!parsed.success) return { ok: false, error: '伙伴资产库请求格式不正确。' };
+    const command = parsed.data;
     const operation = workspaceTail.then(async () => {
-      const parsed = companionWorkspaceRequestSchema.safeParse(input);
-      if (!parsed.success) return { ok: false, error: '伙伴资产库请求格式不正确。' };
-      const command = parsed.data;
       if (command.type.startsWith('memory.learning.')) return (await ensureCompanionService()).manageLearningSources(command as CompanionLearningWorkspaceCommand);
       if (command.type.startsWith('memory.documents.')) {
-        return (await ensureCompanionService()).manageMemoryDocuments(command as CompanionMemoryDocumentCommand);
+        const started = performance.now();
+        try { return await (await ensureCompanionService()).manageMemoryDocuments(command as CompanionMemoryDocumentCommand); }
+        finally {
+          const durationMs = performance.now() - started;
+          if (durationMs >= 500) logger?.info('companions.memory.documents.slow', 'Notebook request exceeded 500 ms.', { type: command.type, durationMs });
+        }
       }
       const selectedWorkspace = command.type === 'status' ? await companionWorkspace.current() : undefined;
       if (selectedWorkspace) await ensureCompanionLibrary(selectedWorkspace);
@@ -5081,7 +5086,11 @@ async function startApplication(): Promise<void> {
         return { ok: true, selected, libraries };
       } finally { changingCompanionWorkspace = false; }
     }).catch(error => { logger?.error('companions.workspace', error); return { ok: false, error: error instanceof Error && /[\u4e00-\u9fff]/u.test(error.message) ? error.message : '伙伴资产库暂时不可用，请重新选择。' }; });
-    workspaceTail = operation; return operation;
+    // Only selecting a different library mutates the shared locator. Notebook
+    // reads use their owner's file queue and must not wait for unrelated asset
+    // listing, semantic searches or model-backed imports in other notebooks.
+    if (command.type === 'select' || command.type === 'choose') workspaceTail = operation;
+    return operation;
   });
   // Register before creating renderer processes: a late protocol.handle() is
   // invisible to an already running Chromium URL loader factory. Keep only the

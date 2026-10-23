@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import type { Companion, CompanionConversation, CompanionMessage } from '../../src/shared/companions';
 import { assembleCompanionRoleContext, companionRecallCapabilities, companionTaskInvocation, runCompanionStructuredAgent } from '../../src/main/companions/structured-agent';
 import type { CompanionReplyInput } from '../../src/main/companions/context';
+import type { CompanionTopic } from '../../src/shared/companion-topic';
 
 const companion: Companion = { id: 'a', name: '小澄', description: '妹妹', persona: '平静，认真核对事实。你是小澄，姐姐是小岚，用户是独立真人。',
   model: '', avatar: 'sister', builtin: false, proactive: false, active: true, createdAt: '2026-10-22T00:00:00Z' };
@@ -13,6 +14,26 @@ const config = { apiFormat: 'openai_chat' as const, model: 'test-model', baseUrl
 const domain = { system: '只输出JSON {answer:string}。', user: JSON.stringify({ purpose: 'isolation_test', messages: [{ content: 'DOMAIN_WINDOW_MUST_NOT_OVERRIDE' }] }) };
 
 describe('same role Agent kernel across independent invocation ports', () => {
+  it('repairs a rejected topic admission inside the same loop before actually joining and publishing', async () => {
+    const source = { ...message('invitation', 'group', 'b', '愿意的话加入游戏。'), topicId: 'game' };
+    let topic: CompanionTopic = { id: 'game', conversationId: 'group', title: '共同游戏', kind: 'game', status: 'active',
+      participantIds: ['b'], invitedIds: ['a'], moderatorId: 'b', tags: [], revision: 1, createdAt: source.createdAt, updatedAt: source.createdAt };
+    const frame = (): CompanionReplyInput => ({ companion, conversation: conversation('group'), sourceMessage: source,
+      messages: [source], memories: [], topic, audience: 'peers' });
+    const execute = vi.fn(async () => { topic = { ...topic, participantIds: ['a', 'b'], invitedIds: [], revision: 2 }; return { ok: true, topic }; });
+    const fetchFn = vi.fn<typeof fetch>().mockResolvedValueOnce(new Response(JSON.stringify({ choices: [{ message: { content: 'REJECTED_UNJOINED_SPEECH' } }] })))
+      .mockImplementationOnce(async (_url, init) => {
+        const body = JSON.parse(String(init?.body));
+        expect(body.messages[0].content).toContain('"action":"topic","parameters":{"action":"join","topicId":"game"}');
+        return new Response(JSON.stringify({ choices: [{ message: { content: '', tool_calls: [{ id: 'actual_join', type: 'function',
+          function: { name: 'world', arguments: '{"action":"topic","parameters":{"action":"join","topicId":"game"}}' } }] } }] }));
+      }).mockResolvedValueOnce(new Response(JSON.stringify({ choices: [{ message: { content: '{"answer":"我已自己加入。"}' } }] })));
+    const result = await runCompanionStructuredAgent({ context: domain, frame: frame(), refresh: async () => frame(),
+      capabilities: { tools: [{ name: 'world', description: '本人自主加入话题', parameters: { type: 'object' } }], execute } }, config, undefined, { fetchFn });
+    expect(result).toEqual({ answer: '我已自己加入。' }); expect(execute).toHaveBeenCalledTimes(1); expect(fetchFn).toHaveBeenCalledTimes(3);
+    expect(String(fetchFn.mock.calls[2]![1]?.body)).not.toContain('REJECTED_UNJOINED_SPEECH');
+    expect(topic.participantIds).toContain('a');
+  });
   it('rejects malformed and illegal proposals before effects and corrects within the same invocation', async () => {
     const source = message('source', 'group', 'user', '只选择当前可用的目标。');
     const fetchFn = vi.fn<typeof fetch>().mockResolvedValueOnce(new Response(JSON.stringify({ choices: [{ message: { content: '不是JSON' } }] })))

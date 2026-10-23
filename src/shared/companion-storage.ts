@@ -177,6 +177,7 @@ export const companionStorageCommandSchema = z.discriminatedUnion('type', [
 ]);
 export type CompanionStorageCommand = z.input<typeof companionStorageCommandSchema>;
 export const companionStorageResponseSchema = companionsResponseSchema.extend({
+  topicSourcesValid: z.boolean().optional(),
   collaboration: companionCollaborationGrantSchema.optional(), collaborations: z.array(companionCollaborationGrantSchema).max(100).optional(),
   interruption: companionInterruptionSchema.optional(),
   inserted: z.boolean().optional(),

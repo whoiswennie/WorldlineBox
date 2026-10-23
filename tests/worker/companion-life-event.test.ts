@@ -58,7 +58,7 @@ it('respects an existing opt-out and never sends a backlog of greetings after a 
   expect(f.store.request({ type: 'life-event.claim' }).lifeOccurrence).toBeUndefined();
 });
 
-it('selects only activated autonomous contacts and can reconsider after the player activates the first peer', () => {
+it('selects only known activated autonomous contacts and reconsiders after an actual introduction', () => {
   const f = fixture();
   f.store.request({ type: 'life-rule.remove', companionId: 'alice', id: f.rule.id, expectedRevision: f.rule.revision });
   const peer = f.store.createCompanion({ name: 'Bob', description: '', persona: '独立伙伴', model: '', avatar: 'sister', proactive: false });
@@ -69,6 +69,10 @@ it('selects only activated autonomous contacts and can reconsider after the play
   expect(waiting).toMatchObject({ status: 'observing', multiplier: 0 }); expect(waiting.targetId).toBeUndefined();
   expect(f.store.state().companions.find(role => role.id === peer.id)?.active).toBe(false);
   f.store.setCompanionActive(peer.id, true); vi.setSystemTime(Date.now() + 900);
+  expect(f.store.request({ type: 'life-event.claim' }).lifeOccurrence).toBeUndefined();
+  const room = f.store.request({ type: 'social.conversation.ensure', companionId: 'alice', memberIds: ['alice', peer.id] }).socialConversation!;
+  f.store.request({ type: 'social.message.append', conversationId: room.id, authorId: peer.id, content: '你好Alice，我是Bob。', virtualCreatedAt: new Date().toISOString(), clientId: 'actual_life_acquaintance' });
+  vi.setSystemTime(Date.now() + 900);
   const claimed = f.store.request({ type: 'life-event.claim' }).lifeOccurrence!;
   expect(claimed).toMatchObject({ ruleId: rule.id, companionId: 'alice', targetId: peer.id, status: 'running' });
 });

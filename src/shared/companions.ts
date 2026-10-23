@@ -60,6 +60,7 @@ export const conversationSchema = z.object({
   memberIds: z.array(companionIdSchema).max(20), pinned: z.boolean(), muted: z.boolean(),
   unread: z.number().int().min(0), updatedAt: z.string(), lastMessage: z.string().max(500),
   activeTopicId: companionIdSchema.optional(),
+  peerOnly: z.boolean().optional(),
 });
 export type CompanionConversation = z.infer<typeof conversationSchema>;
 export const attachmentSchema = z.object({ id: companionIdSchema, name: z.string().max(240),
@@ -217,7 +218,9 @@ export const companionsResponseSchema = z.object({
   memoryProbe: companionMemoryProbeSchema.optional(),
   memoryCorpusStamp: z.string().min(1).max(1000).optional(),
   replyMemory: companionReplyMemorySchema.optional(),
-  activityTask: activityTaskSchema.optional(), activityTasks: z.array(activityTaskSchema).max(50).optional(), activityMessages: z.array(messageSchema).max(20).optional(),
+  activityTask: activityTaskSchema.optional(), activityTasks: z.array(activityTaskSchema).max(50).optional(), activityMessages: z.array(messageSchema).max(100).optional(),
+  activityMessageOrigins: z.array(z.strictObject({ messageId: companionIdSchema, sourceMessageId: companionIdSchema, deliveryClientId: companionIdSchema,
+    conversationId: companionIdSchema, topicId: companionIdSchema.optional(), chainId: companionIdSchema })).max(100).optional(),
   ok: z.boolean(), error: z.string().optional(), state: companionStateSchema.optional(),
   playerProfile: playerProfileSchema.optional(),
   reset: companionResetSchema.optional(),
@@ -246,7 +249,7 @@ export const companionsResponseSchema = z.object({
   characterDevelopment: companionCharacterDevelopmentSchema.optional(),
   routine: companionRoutineSchema.optional(),
   routineRuntime: companionRoutineRuntimeSchema.optional(),
-  worldKnowledge: z.object({ category: z.enum(['contacts', 'scenes', 'social', 'observations', 'topics']), observedAt: z.iso.datetime(), observedAtVirtual: z.iso.datetime(), internalized: z.literal(false), items: z.array(z.record(z.string(), z.unknown())).max(20), hasMore: z.boolean().optional(), evidenceMessageId: companionIdSchema }).optional(),
+  worldKnowledge: z.object({ category: z.enum(['contacts', 'people', 'scenes', 'social', 'observations', 'topics']), observedAt: z.iso.datetime(), observedAtVirtual: z.iso.datetime(), internalized: z.literal(false), items: z.array(z.record(z.string(), z.unknown())).max(20), hasMore: z.boolean().optional(), evidenceMessageId: companionIdSchema }).optional(),
   worldStatus: companionWorldStatusSchema.optional(),
   socialRecipients: z.array(companionContactReceiptSchema).max(20).optional(),
   world: companionWorldSnapshotSchema.optional(),

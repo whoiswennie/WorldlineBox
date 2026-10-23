@@ -4,7 +4,7 @@ import { inspectCompanionReplyMemory, inspectCompanionSocialReplyMemory } from '
 import { probeCompanionMemory } from './memory-probe';
 import { existsSync } from 'node:fs';
 import { createHash, randomUUID } from 'node:crypto';
-import { setImmediate as yieldLoop } from 'node:timers/promises';
+import { setImmediate as yieldLoop, setTimeout as delay } from 'node:timers/promises';
 import { copyFile, lstat, mkdir, readFile, realpath, writeFile } from 'node:fs/promises';
 import { type BrowserWindow, clipboard, dialog, ipcMain, net, protocol, shell } from 'electron';
 import { createFileClipboardDeps, readFilePathsFromClipboard } from '../file-clipboard';
@@ -49,7 +49,9 @@ import { CompanionScheduleService } from './schedule-service';
 import { CompanionReplyStream } from './reply-stream';
 import { CompanionWorldService } from './world-service';
 import { generateCompanionWorldAttention } from './world-model';
-import { authorizeCompanionContact } from './social-model';
+import { authorizeCompanionContact, authorizeCompanionSocialInitiative } from './social-model';
+import { ensureCompanionSocialContinuation } from './social-continuation';
+import { reviewCompanionSocialProgress } from './social-progress-review';
 import { CompanionPublicProfiles } from './public-profiles';
 import { companionAttachmentResponse } from './attachment-response';
 import { cropCompanionAvatar } from './avatar-crop';
@@ -1191,6 +1193,7 @@ export class CompanionService {
           if (!turn) {
             let reply: Awaited<ReturnType<typeof generateCompanionReply>> | undefined;
             let identityCorrection: string | undefined;
+            let deliveryCorrection: string | undefined;
             let completedStream: CompanionReplyStream | undefined;
             for (let retry = 0; retry < 3; retry++) {
               let stream: CompanionReplyStream | undefined;
@@ -1216,8 +1219,22 @@ export class CompanionService {
                 updateActivity('thinking', retry ? '模型连接重试中' : '正在生成回复');
                 reply = await generateCompanionReply({ companion: currentCompanion, conversation: currentConversation, messages: replyMessages, memories, proactive, ...profiles, fileInputs, world: inference.world, runtimeState: inference.runtimeState, characterDevelopment: inference.characterDevelopment,
                   sourceMessage: userMessage, identityDirectory: inference.members, addressedCompanionIds: speakers, members: inference.members }, config, controller.signal,
-                  { loop: true, ...inference, toolImages, identityCorrection, onTextDelta: text => { if (text && checkpoint.progress?.phase !== 'streaming') updateActivity('thinking', '正在输出回复', 'streaming'); stream!.onTextDelta(text); },
+                  { loop: true, ...inference, toolImages, identityCorrection, deliveryCorrection, onTextDelta: text => { if (text && checkpoint.progress?.phase !== 'streaming') updateActivity('thinking', '正在输出回复', 'streaming'); stream!.onTextDelta(text); },
                     fetchFn: (input, init) => net.fetch(input instanceof URL ? input.toString() : input, { ...init, credentials: 'omit' }) });
+                if (reply.turn && !reply.turn.calls.length && !proactive && userMessage.authorId === 'user') {
+                  const tasks = (await this.call({ type: 'activity.list', companionId: id, conversationId, limit: 50 })).activityTasks
+                    ?.filter(task => task.sourceMessageId === userMessage.id) ?? [];
+                  const correction = await reviewCompanionSocialProgress(reply.turn.text, tasks, config, controller.signal, {
+                    names: tasks.length ? (await this.call({ type: 'state' })).state?.companions.map(role => ({ id: role.id, name: role.name })) : undefined,
+                    fetchFn: (input, init) => net.fetch(input instanceof URL ? input.toString() : input, { ...init, credentials: 'omit' }),
+                  });
+                  if (correction) {
+                    await stream.stop('discarded');
+                    if (retry === 2) throw new CompanionModelError('INVALID_RESPONSE', '这次进度汇报仍缺少事实支持，已保留实际任务，未发布不可靠结论。');
+                    deliveryCorrection = '上一个草稿没有通过事实核验，未正式发布，不能作为后续事实。请重新简短汇报本轮已核实的实际邀约、回信进展和已保存的持续目标；没有证据的报名、规则、时间和身体状态就明确尚待核实，不扩大结论。\n' + correction;
+                    continue;
+                  }
+                }
                 await stream.complete();
                 if (controller.signal.aborted || this.closed) throw new CompanionModelError('CANCELLED', '这次回复已取消。');
                 this.unavailableCompanions.delete(id);
@@ -1663,26 +1680,44 @@ export class CompanionService {
     const boundary = Number.isSafeInteger(data.memoryEvidenceThroughStep) && data.memoryEvidenceThroughStep! >= 0
       && data.memoryEvidenceThroughStep! <= checkpoint.turns.length ? data.memoryEvidenceThroughStep! : 0;
     const currentTurns = checkpoint.turns.slice(boundary);
-    const toolProvenance = checkpointToolProvenance(checkpoint, boundary);
+    const toolProvenance = checkpointToolProvenance(checkpoint, boundary, data.withdrawnEvidenceThroughStep ?? 0);
     const fingerprints = [...toolProvenance.contexts, ...(data.memoryRecall?.context ? [data.memoryRecall.context] : [])];
     const firstFingerprint = fingerprints[0];
     const changedContext = !!firstFingerprint && (fingerprints.some(item => item.revision !== firstFingerprint.revision || item.profileKey !== firstFingerprint.profileKey)
       || !await this.memory.contextValid(scope, firstFingerprint));
     const sourceIds = [...new Set([...(data.messages ?? []), ...(data.memorySources ?? []), ...checkpoint.supplements,
       ...(data.taskRequest?.replyReference ? [data.taskRequest.replyReference] : []),
-      ...(data.memories ?? []).flatMap(memory => (memory.sources ?? []).map(source => ({ id: source.messageId }))),
-      ...toolProvenance.sourceIds.map(id => ({ id }))].map(message => message.id))];
+      ...(data.memories ?? []).flatMap(memory => (memory.sources ?? []).map(source => ({ id: source.messageId })))].map(message => message.id))];
     const allowedSources = new Set<string>();
     for (let start = 0; start < sourceIds.length; start += 100) {
       const checked = await this.call({ type: 'memory.sources.filter', ...scope,
         beforeSequence: Math.max(scope.beforeSequence, checkpoint.contextThroughSequence ?? sourceSequence), ids: sourceIds.slice(start, start + 100) });
-      for (const message of checked.memorySources ?? []) if (message.sequence <= scope.beforeSequence
+      // SourceAccess already verifies an observation's owner, logical entrance,
+      // throughSequence, original sources and withdrawal policy. Its receipt is
+      // created after the request: applying the chat cursor again discards the
+      // result just read and makes every next inference repeat the same query.
+      for (const message of checked.memorySources ?? []) if (message.memoryEvidenceOnly && message.worldObservation || message.sequence <= scope.beforeSequence
         || message.replyToId === checkpoint.sourceMessageId && message.authorId !== 'user' && data.conversation?.memberIds?.includes(message.authorId)) allowedSources.add(message.id);
     }
     const records = await this.call({ type: 'memory.records.filter', ...scope,
       ids: [...new Set([...(data.memories ?? []).map(memory => memory.id), ...(data.memoryRecall?.reasons ?? []).map(reason => reason.id)])].slice(0, 100) });
     const allowedRecords = new Set((records.memories ?? []).map(memory => memory.id));
-    const lostSource = sourceIds.some(id => !allowedSources.has(id));
+    // Tool execution can create a fresh observation or sent message after the
+    // frozen dialogue cursor. Revalidate these exact host-returned references
+    // against current ownership/withdrawals, independently of the chat window.
+    // They never become additional recent chat or authorize another request.
+    const allowedToolSources = new Set<string>();
+    for (let start = 0; start < toolProvenance.sourceIds.length; start += 100) {
+      const checked = await this.call({ type: 'memory.sources.filter', companionId, conversationId,
+        ids: toolProvenance.sourceIds.slice(start, start + 100) });
+      for (const message of checked.memorySources ?? []) allowedToolSources.add(message.id);
+    }
+    let invalidTopicSource = false;
+    for (const reference of toolProvenance.topicReferences) {
+      const checked = await this.call({ type: 'topic.sources.valid', conversationId, readerId: companionId, ...reference });
+      if (!checked.topicSourcesValid) invalidTopicSource = true;
+    }
+    const lostSource = invalidTopicSource || sourceIds.some(id => !allowedSources.has(id)) || toolProvenance.sourceIds.some(id => !allowedToolSources.has(id));
     data.messages = data.messages?.filter(message => allowedSources.has(message.id));
     data.memorySources = data.memorySources?.filter(message => allowedSources.has(message.id));
     data.memories = data.memoryRecall?.context ? [] : records.memories ?? [];
@@ -1887,6 +1922,21 @@ export class CompanionService {
     if (this.closed || signal?.aborted) throw new CompanionModelError('CANCELLED', '这次回复已取消。');
   }
 
+  /** Wait for the actual outbox receipt inside the tool, with one stable effect
+   * identity. The model need not repeatedly send while natural typing finishes. */
+  private async socialDelivery(command: Extract<CompanionStorageCommand, { type: 'world.tool' | 'social.send' }>, signal?: AbortSignal) {
+    // Bound the short outbox wait independently of world or wall-clock changes.
+    let pendingChecks = 0;
+    let result = await this.call(command);
+    while (result.socialPending && !result.socialMessage && pendingChecks++ < 54) {
+      this.assertReplyActive(signal);
+      await delay(150, undefined, { signal });
+      this.assertReplyActive(signal);
+      result = await this.call(command);
+    }
+    return result;
+  }
+
   private async executePartnerTool(name: string, serialized: string, scope: { companionId: string; conversationId: string },
     requestMessageIds: readonly string[], callIdentity: string, beforeSequence: number, signal?: AbortSignal, currentPlayerRequest = true): Promise<CompanionStorageResponse> {
     try {
@@ -2040,22 +2090,43 @@ export class CompanionService {
       if (name === 'world') {
         const args = companionWorldArgumentsSchema.parse(input);
         const sourceMessageId = currentPlayerRequest ? requestMessageIds.at(-1) : undefined;
-        if (args.action === 'message' || args.action === 'social') {
-          const recipientIds = args.action === 'message' ? args.recipientIds : args.recipientIds ?? (args.targetCompanionId ? [args.targetCompanionId] : []);
-          if (!currentPlayerRequest) throw new Error('自主聊天不能沿用旧玩家消息分享私人内容。');
-          const source = (await this.call({ type: 'memory.sources.filter', ...scope, beforeSequence, ids: [...requestMessageIds] })).memorySources?.filter(message => message.authorId === 'user').at(-1);
+        if (args.action === 'message' || args.action === 'social' || args.action === 'introduce' || args.action === 'create_group') {
+          const recipientIds = args.action === 'introduce' ? [args.targetCompanionId] : args.action === 'social'
+            ? args.recipientIds ?? (args.targetCompanionId ? [args.targetCompanionId] : []) : args.recipientIds;
+          const sources = (await this.call({ type: 'memory.sources.filter', ...scope, beforeSequence, ids: [...requestMessageIds] })).memorySources ?? [];
+          const source = currentPlayerRequest ? sources.filter(message => message.authorId === 'user').at(-1) : undefined;
           const state = (await this.call({ type: 'state' })).state;
           const owner = state?.companions.find(member => member.id === scope.companionId);
           const recipients = state?.companions.filter(member => recipientIds.includes(member.id)).map(member => ({ id: member.id, name: member.name })) ?? [];
-          if (!source || !owner || new Set(recipientIds).size !== recipientIds.length || recipients.length !== recipientIds.length || recipientIds.includes(owner.id)) throw new Error('本次联系的来源或收件人无效。');
+          if (currentPlayerRequest && !source || !owner || new Set(recipientIds).size !== recipientIds.length || recipients.length !== recipientIds.length || recipientIds.includes(owner.id)) throw new Error('本次联系的来源或收件人无效。');
           if (!owner.active || recipientIds.some(id => !state?.companions.find(member => member.id === id)?.active)) throw new Error('联系双方都需要先由玩家手动激活；不能向休眠伙伴发起聊天，也不会自动唤醒对方。');
-          const contact = await authorizeCompanionContact({ source, recipients, text: args.text }, await this.configFor(owner), signal,
-            { fetchFn: (input, init) => net.fetch(input instanceof URL ? input.toString() : input, { ...init, credentials: 'omit' }) });
+          const fetchFn: typeof fetch = (input, init) => net.fetch(input instanceof URL ? input.toString() : input, { ...init, credentials: 'omit' });
+          // Social initiative is the character's own capacity. A dormant user
+          // request is never repurposed as a sharing or execution grant.
+          const privateSources = currentPlayerRequest ? [] : [
+            ...await this.recentDialogue(scope.conversationId, beforeSequence + 1, COMPANION_DIALOGUE_WINDOW.maxMessages,
+              sources.filter(message => message.conversationId === scope.conversationId).at(-1)?.topicId ?? null), ...sources,
+          ].map(({ id, authorId, content }) => ({ id, authorId, content }));
+          const contact = source ? await authorizeCompanionContact({ source, recipients, text: args.text }, await this.configFor(owner), signal, { fetchFn })
+            : { allowed: await authorizeCompanionSocialInitiative({ companion: owner, recipients, text: args.text, privateSources },
+              await this.configFor(owner), signal, { fetchFn }), intent: 'message' as const, requiresContinuation: false };
           if (!contact.allowed) throw new Error('拟发内容或收件人超出了本次联系目标。请收敛为你自己的必要问候或邀约并自行重试，不转发玩家私人信息；无需玩家改口或提供消息模板。');
           this.assertReplyActive(signal);
-          const current = (await this.call({ type: 'memory.sources.filter', ...scope, beforeSequence, ids: [source.id] })).memorySources?.find(message => message.id === source.id && message.content === source.content);
-          if (!current) throw new Error('本次联系的原委托已更新或撤回。');
-          if (args.action === 'message' && contact.intent === 'visit') {
+          if (source) {
+            const current = (await this.call({ type: 'memory.sources.filter', ...scope, beforeSequence, ids: [source.id] })).memorySources?.find(message => message.id === source.id && message.content === source.content);
+            if (!current) throw new Error('本次联系的原委托已更新或撤回。');
+          }
+          const clientId = 'native_' + createHash('sha256').update(callIdentity).digest('hex').slice(0, 48);
+          if (args.action === 'introduce' || args.action === 'create_group') {
+            const result = await this.socialDelivery({ type: 'world.tool', ...scope, beforeSequence, arguments: args, clientId,
+              ...(source ? { sourceMessageId: source.id } : {}) }, signal);
+            const activityTask = source ? await ensureCompanionSocialContinuation(command => this.call(command), {
+              contact, companionId: owner.id, source, deliveryClientId: clientId, operation: args.action,
+            }) : undefined;
+            this.changed(); return { ...result, ...(activityTask ? { activityTask } : {}) };
+          }
+          if (args.action === 'message') await this.call({ type: 'social.contact.check', companionId: owner.id, recipientIds });
+          if (source && args.action === 'message' && contact.intent === 'visit') {
             const visit = recipientIds.length === 1 ? await this.call({ type: 'activity.visit.ensure', ...scope, sourceMessageId: source.id,
               targetId: recipientIds[0]!, initialMessage: { text: args.text, urgent: args.urgent, clientId: 'native_' + createHash('sha256').update(callIdentity).digest('hex').slice(0, 48) } })
               : await this.call({ type: 'activity.start', ...scope, sourceMessageId: source.id, title: '前往拜访伙伴', goal: source.content,
@@ -2066,9 +2137,13 @@ export class CompanionService {
             memberIds: [owner.id, ...recipientIds] })).socialConversation;
           this.assertReplyActive(signal);
           if (!peer) throw new Error('伙伴通信会话当前不可用。');
-          const sent = await this.call({ type: 'social.send', companionId: owner.id, conversationId: peer.id, channel: args.action === 'social' ? 'face_to_face' : 'phone',
-            content: args.text, ...(args.action === 'message' ? { urgent: args.urgent } : {}), authorizationMessageId: source.id, clientId: 'native_' + createHash('sha256').update(callIdentity).digest('hex').slice(0, 48) });
-          this.changed(); return sent;
+          const sent = await this.socialDelivery({ type: 'social.send', companionId: owner.id, conversationId: peer.id, channel: args.action === 'social' ? 'face_to_face' : 'phone',
+            content: args.text, ...(args.action === 'message' ? { urgent: args.urgent } : {}), ...(source ? { authorizationMessageId: source.id,
+              agentSource: { conversationId: source.conversationId, messageId: source.id } } : {}), clientId }, signal);
+          const activityTask = source && args.action === 'message' ? await ensureCompanionSocialContinuation(command => this.call(command), {
+            contact, companionId: owner.id, source, deliveryClientId: clientId, operation: 'message',
+          }) : undefined;
+          this.changed(); return { ...sent, ...(activityTask ? { activityTask } : {}) };
         }
         if (currentPlayerRequest && args.action === 'visit') {
           const source = (await this.call({ type: 'memory.sources.filter', ...scope, beforeSequence, ids: [...requestMessageIds] })).memorySources?.filter(message => message.authorId === 'user').at(-1);
@@ -2710,9 +2785,10 @@ function worldWorkId(kind: 'chat' | 'action' | 'schedule', id: string): string {
 function capabilityOperation(call: CompanionLoopTurn['calls'][number]): string | undefined {
   try { return normalizeCompanionCapabilityCall(call).name; } catch { return undefined; }
 }
-function checkpointToolProvenance(checkpoint: CompanionLoopCheckpoint, boundary = 0): { sourceIds: string[]; worldEventIds: string[]; contexts: Array<{ revision: string; profileKey: string }> } {
+function checkpointToolProvenance(checkpoint: CompanionLoopCheckpoint, memoryBoundary = 0, withdrawnBoundary = 0): { sourceIds: string[]; worldEventIds: string[]; contexts: Array<{ revision: string; profileKey: string }>; topicReferences: Array<{ topicId: string; sourceMessageIds: string[] }> } {
   const sourceIds = new Set<string>(), worldEventIds = new Set<string>();
   const contexts = new Map<string, { revision: string; profileKey: string }>();
+  const topicReferences = new Map<string, { topicId: string; sourceMessageIds: string[] }>();
   const visit = (value: unknown): void => {
     if (!value || typeof value !== 'object') return;
     if (Array.isArray(value)) { value.forEach(visit); return; }
@@ -2727,14 +2803,36 @@ function checkpointToolProvenance(checkpoint: CompanionLoopCheckpoint, boundary 
     }
     Object.values(row).forEach(visit);
   };
-  for (const turn of checkpoint.turns.slice(boundary)) for (const result of turn.results ?? []) {
+  for (const [step, turn] of checkpoint.turns.entries()) for (const result of turn.results ?? []) {
+    const operation = turn.calls.find(call => call.id === result.callId);
+    const name = operation && capabilityOperation(operation);
+    if (step >= withdrawnBoundary && (name === 'history' || name === 'topic')) {
+      // These are typed host records. Never inspect arbitrary game/story state
+      // or DSH JSON for lookalike source fields supplied by untrusted content.
+      try {
+        const data = JSON.parse(result.content) as { messages?: Array<{ id: string; authorId: string; sequence: number }>;
+          topicState?: { topicId: string; shared?: { sourceMessageIds?: string[] }; workingState?: { sourceMessageIds?: string[] } } };
+        if (name === 'history') for (const message of data.messages ?? []) {
+          if (typeof message.id === 'string' && typeof message.authorId === 'string' && typeof message.sequence === 'number') sourceIds.add(message.id);
+        }
+        if (name === 'topic' && typeof data.topicState?.topicId === 'string') for (const state of [data.topicState.shared, data.topicState.workingState]) {
+          const ids = [...new Set((state?.sourceMessageIds ?? []).filter(id => typeof id === 'string'))];
+          if (ids.length) {
+            const reference = { topicId: data.topicState.topicId, sourceMessageIds: ids };
+            topicReferences.set(JSON.stringify(reference), reference);
+          }
+        }
+      } catch { /* A textual public error contains no typed evidence. */ }
+      continue;
+    }
     // Host world observations carry message provenance too (for example a
     // visit reason outside the recent chat window). Recheck those references
     // before replaying an old observation after its source was withdrawn.
-    if (!turn.calls.some(call => call.id === result.callId && (capabilityOperation(call)?.startsWith('memory.') || capabilityOperation(call) === 'world'))) continue;
+    if (!turn.calls.some(call => call.id === result.callId && (capabilityOperation(call)?.startsWith('memory.')
+      ? step >= memoryBoundary : capabilityOperation(call) === 'world' && step >= withdrawnBoundary))) continue;
     try { visit(JSON.parse(result.content)); } catch { /* Public textual errors have no host evidence metadata. */ }
   }
-  return { sourceIds: [...sourceIds], worldEventIds: [...worldEventIds], contexts: [...contexts.values()] };
+  return { sourceIds: [...sourceIds], worldEventIds: [...worldEventIds], contexts: [...contexts.values()], topicReferences: [...topicReferences.values()] };
 }
 function publicError(error: unknown): string {
   if (error instanceof CompanionModelError) return error.message;

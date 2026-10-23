@@ -2,13 +2,10 @@ import type { Companion, CompanionConversation, CompanionMessage } from '../../s
 import type { CompanionPublicProfile } from '../../shared/companion-public-profile';
 import { visibleCompanionPublicProfiles } from './public-profile-context';
 import type { CompanionSocialOrigin } from '../../shared/companion-social';
+import { COMPANION_CHARACTER_RELATIONS } from '../../shared/companion-character-relations';
 
 type Person = { id: string; name: string; kind: 'human_player' | 'companion' | 'unknown'; description?: string };
 /** Character relationships are author settings, never inferred from an assistant's earlier wording. */
-const authoredRelations = [
-  { subjectId: 'deepseek-flash', relation: 'elder_sister', label: '姐姐', targetId: 'deepseek-sister', targetName: '大肥鱼' },
-  { subjectId: 'deepseek-sister', relation: 'younger_sister', label: '妹妹', targetId: 'deepseek-flash', targetName: '小肥鱼' },
-] as const;
 export function companionIdentity(input: {
   companion: Pick<Companion, 'id' | 'name' | 'builtin'>; conversation: Pick<CompanionConversation, 'id' | 'kind' | 'memberIds'>;
   source?: Pick<CompanionMessage, 'id' | 'authorId' | 'conversationId'>;
@@ -32,7 +29,7 @@ export function companionIdentity(input: {
   return {
     self: { ...person(input.companion.id), kind: 'companion' as const },
     participants: [...new Set(participantIds)].map(person), audience,
-    characterRelations: input.companion.builtin ? authoredRelations.filter(relation => relation.subjectId === input.companion.id)
+    characterRelations: input.companion.builtin ? COMPANION_CHARACTER_RELATIONS.filter(relation => relation.subjectId === input.companion.id)
       .map(relation => ({ ...relation, targetName: names.get(relation.targetId) ?? relation.targetName, provenance: 'authored_character_setting' })) : [],
     currentReply: { author: { ...person(input.companion.id), kind: 'companion' as const },
       conversationId: input.conversation.id, recipientIds: [...new Set(participantIds)].filter(id => id !== input.companion.id),

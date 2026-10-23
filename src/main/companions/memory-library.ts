@@ -26,7 +26,7 @@ export type MemoryLibraryManifest = { version: 1; files: Record<string, Entry>; 
 type Manifest = MemoryLibraryManifest;
 type Scan = { category: number; notebooks?: string[]; directories?: Array<{ relative: string; directory: Dir }> };
 export interface MemoryLibraryTimelineScope { companionId: string; conversationId: string; beforeSequence?: number }
-type TimelineManifest = { version: 1; files: Record<string, { scope: MemoryLibraryTimelineScope; sourceRevision: string; ownerIdentity?: VcpMemoryOwnerIdentity }>; cursor: number };
+type TimelineManifest = { version: 1; files: Record<string, { scope: MemoryLibraryTimelineScope; sourceRevision: string; contentHash: string; ownerIdentity?: VcpMemoryOwnerIdentity }>; cursor: number };
 export interface MemoryLibrarySyncReport {
   exported: number; imported: number; forgotten: number;
   conflicts: Array<{ companionId: string; file: string; message: string }>;
@@ -59,15 +59,18 @@ export function memoryLibraryPathParts(relative: string): string[] {
 
 export interface MemoryLibraryDocumentSession {
   owner: Companion; root: string; manifest: MemoryLibraryManifest;
+  readOnly?: boolean;
   file(relative: string): string;
   text(relative: string, optional?: boolean): Promise<string | undefined>;
   atomic(relative: string, content: string): Promise<void>;
   directory(relative: string): Promise<string>;
   current(entry: MemoryLibraryEntry): Promise<CompanionMemory | undefined>;
+  currentEntry(relative: string): Promise<MemoryLibraryEntry | undefined>;
+  readVersion(relative: string): number;
   project(relative: string, note: CompanionMemory): Promise<void>;
   reconcile(relative: string): Promise<void>;
   recoverMove(): Promise<void>;
-  timelineValid(relative: string): Promise<boolean>;
+  timelineValid(relative: string, contentHash?: string): Promise<boolean>;
   save(): Promise<void>;
   request(command: CompanionStorageCommand): Promise<CompanionStorageResponse>;
 }
@@ -83,7 +86,11 @@ export class CompanionMemoryLibrary {
   private readonly conflicts = new Set<string>();
   private readonly timelineTails = new Map<string, Promise<void>>();
   private readonly timelineGenerations = new Map<string, number>();
-  private fileTail: Promise<unknown> = Promise.resolve();
+  private readonly fileTails = new Map<string, Promise<unknown>>();
+  private readonly readers = new Set<Promise<unknown>>();
+  private readonly layoutTails = new Map<string, Promise<unknown>>();
+  private readonly fileVersions = new Map<string, { revision: number; publishing: boolean }>();
+  private readonly publications = new Map<string, Set<string>>();
   constructor(private readonly options: CompanionMemoryLibraryOptions) {
     if (!path.isAbsolute(options.libraryDirectory)) throw new Error('伙伴记忆目录必须是绝对路径。');
   }
@@ -100,16 +107,17 @@ export class CompanionMemoryLibrary {
   sync(): Promise<MemoryLibrarySyncReport> {
     if (this.closed) return Promise.resolve({ exported: 0, imported: 0, forgotten: 0, conflicts: [] });
     if (this.running) return this.running;
-    const pending = this.serial(() => this.perform()); this.running = pending;
+    const pending = this.perform(); this.running = pending;
     void pending.finally(() => { if (this.running === pending) this.running = undefined; }).catch(() => undefined);
     return pending;
   }
-  private serial<T>(work: () => Promise<T>): Promise<T> {
-    const pending = this.fileTail.catch(() => undefined).then(() => {
+  private serial<T>(owner: string, work: () => Promise<T>): Promise<T> {
+    const pending = (this.fileTails.get(owner) ?? Promise.resolve()).catch(() => undefined).then(() => {
       if (this.closed) throw new Error('伙伴记忆目录已经关闭。');
       return work();
     });
-    this.fileTail = pending;
+    this.fileTails.set(owner, pending);
+    void pending.finally(() => { if (this.fileTails.get(owner) === pending) this.fileTails.delete(owner); }).catch(() => undefined);
     return pending;
   }
   private async perform(): Promise<MemoryLibrarySyncReport> {
@@ -122,10 +130,12 @@ export class CompanionMemoryLibrary {
     for (let n = 0; n < count && !this.closed; n++) {
       const owner = owners[this.ownerCursor++ % owners.length]!;
       const conflictStart = result.conflicts.length;
-      try { await this.owner(owner, result); }
-      catch (error) { this.conflict(result, owner.id, owner.id, error instanceof Error ? error.message : '目录同步失败。'); }
-      try { await this.statusFile(owner.id, result.conflicts.slice(conflictStart)); }
-      catch (error) { this.options.report?.(error); }
+      await this.serial(owner.id, async () => {
+        try { await this.owner(owner, result); }
+        catch (error) { this.conflict(result, owner.id, owner.id, error instanceof Error ? error.message : '目录同步失败。'); }
+        try { await this.statusFile(owner.id, result.conflicts.slice(conflictStart)); }
+        catch (error) { this.options.report?.(error); }
+      });
     }
     return result;
   }
@@ -160,7 +170,12 @@ export class CompanionMemoryLibrary {
       if (stat.isSymbolicLink() || !stat.isDirectory()) throw new Error('记忆目录不能是符号链接、目录联接或普通文件。');
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
-      await mkdir(target);
+      try { await mkdir(target); }
+      catch (creating) {
+        if ((creating as NodeJS.ErrnoException).code !== 'EEXIST') throw creating;
+        const concurrent = await lstat(target);
+        if (concurrent.isSymbolicLink() || !concurrent.isDirectory()) throw new Error('记忆目录不能是符号链接、目录联接或普通文件。', { cause: creating });
+      }
     }
     const resolved = await realpath(target);
     if (!inside(this.root!, resolved)) throw new Error('记忆目录指向资产库外部。');
@@ -198,6 +213,25 @@ export class CompanionMemoryLibrary {
   private async save(ownerRoot: string, manifest: Manifest): Promise<void> {
     const file = path.join(ownerRoot, '.同步状态.json'), content = JSON.stringify(manifest, null, 2) + '\n';
     if (await this.text(file, true) !== content) await this.atomic(file, content);
+    const publishing = this.publications.get(ownerRoot);
+    for (const target of publishing ?? []) {
+      const relative = path.relative(ownerRoot, target).replaceAll('\\', '/'), entry = manifest.files[relative];
+      // A later repair transaction can also finish a failed publication, but
+      // only after the persisted mapping agrees with its actual authorized body.
+      if (entry?.state !== 'forgotten') {
+        const actual = await this.text(target, true);
+        if (!entry || entry.state === 'projecting' || actual === undefined || entry.hash !== digest(actual)) continue;
+      }
+      const current = this.fileVersions.get(target);
+      this.fileVersions.set(target, { revision: (current?.revision ?? 0) + 1, publishing: false });
+      publishing?.delete(target);
+    }
+    if (!publishing?.size) this.publications.delete(ownerRoot);
+  }
+  private publishing(root: string, relative: string): void {
+    const file = this.file(root, relative), previous = this.fileVersions.get(file);
+    this.fileVersions.set(file, { revision: (previous?.revision ?? 0) + 1, publishing: true });
+    const files = this.publications.get(root) ?? new Set<string>(); files.add(file); this.publications.set(root, files);
   }
   private async load(ownerRoot: string): Promise<Manifest> {
     const text = await this.text(path.join(ownerRoot, '.同步状态.json'), true);
@@ -235,52 +269,103 @@ export class CompanionMemoryLibrary {
     await this.save(root, manifest);
   }
   /** Human file operations share the watcher/publication queue and the same ledger. */
-  withDocuments<T>(companionId: string, work: (session: MemoryLibraryDocumentSession) => Promise<T>, options?: { synchronize?: boolean }): Promise<T> {
+  documentsWriting(companionId: string): boolean { return this.fileTails.has(companionId); }
+  withDocuments<T>(companionId: string, work: (session: MemoryLibraryDocumentSession) => Promise<T>, options?: { synchronize?: boolean; readOnly?: boolean }): Promise<T> {
     if (!id.test(companionId)) return Promise.reject(new Error('伙伴标识无效。'));
-    return this.serial(async () => {
+    const open = async () => {
+      if (this.closed) throw new Error('伙伴记忆目录已经关闭。');
       await this.initializeRoot();
       const state = await this.call({ type: 'state', includeConversations: false });
       const owner = state.state?.companions.find(owner => owner.id === companionId);
       if (!owner) throw new Error('伙伴不存在或已经移除。');
-      if (options?.synchronize !== false) {
+      if (!options?.readOnly && options?.synchronize !== false) {
         await this.owner(owner, { exported: 0, imported: 0, forgotten: 0, conflicts: [] });
         const scan = this.scans.get(companionId);
         for (const frame of scan?.directories ?? []) await frame.directory.close();
         this.scans.delete(companionId);
       }
-      const root = await this.directory(this.root!, companionId), manifest = await this.load(root);
-      await this.recoverMove(root, manifest);
+      const root = await this.directory(this.root!, companionId);
+      // Opening a notebook needs its local layout, not an import/reconciliation
+      // pass (which may wait for a model-backed write policy).
+      if (options?.readOnly && await this.text(path.join(root, 'profile.md'), true) === undefined) {
+        await this.layout(companionId, async () => {
+          if (await this.text(path.join(root, 'profile.md'), true) !== undefined) return;
+          const initial = await this.load(root);
+          await this.prepareOwnerFiles(owner, root, initial);
+          await this.save(root, initial);
+        });
+      }
+      let manifest = await this.load(root);
+      if (options?.readOnly && manifest.move) {
+        await this.serial(companionId, async () => { const latest = await this.load(root); await this.recoverMove(root, latest); });
+        manifest = await this.load(root);
+      }
+      if (!options?.readOnly) {
+        const previousProfileHash = manifest.profileHash;
+        await this.prepareOwner(owner, root, manifest);
+        if (manifest.profileHash !== previousProfileHash) await this.save(root, manifest);
+        await this.recoverMove(root, manifest);
+      }
+      const writable = () => { if (options?.readOnly) throw new Error('只读日记本视图不能修改文件或同步登记。'); };
+      let latest: { stamp: string; manifest: Manifest } | undefined;
+      const manifestStamp = async () => {
+        const info = await lstat(path.join(root, '.同步状态.json'));
+        return `${info.ino}:${info.size}:${info.mtimeMs}:${info.ctimeMs}`;
+      };
       const target = (relative: string) => {
         const file = path.join(root, ...memoryLibraryPathParts(relative));
         if (!inside(root, file)) throw new Error('文件超出伙伴目录。');
         return file;
       };
-      return work({ owner, root, manifest, file: target,
+      return work({ owner, root, manifest, ...(options?.readOnly ? { readOnly: true } : {}), file: target,
         text: (relative, optional) => this.text(target(relative), optional),
-        atomic: (relative, content) => this.atomic(target(relative), content),
+        atomic: (relative, content) => { writable(); this.publishing(root, relative); return this.atomic(target(relative), content); },
         directory: async relative => {
+          writable();
           let parent = root;
           for (const part of memoryLibraryPathParts(relative)) parent = await this.directory(parent, part);
           return parent;
         },
         current: entry => this.current(owner.id, entry),
-        project: (relative, note) => this.project(root, manifest, relative, note),
+        readVersion: relative => {
+          const current = this.fileVersions.get(target(relative));
+          if (current?.publishing) throw Object.assign(new Error('文档正在发布，请稍后重新读取。'), { code: 'MEMORY_DOCUMENT_WITHDRAWN' });
+          return current?.revision ?? 0;
+        },
+        currentEntry: async relative => {
+          const before = await manifestStamp();
+          if (latest?.stamp === before) return latest.manifest.files[relative];
+          const current = await this.load(root), after = await manifestStamp();
+          if (before !== after) throw Object.assign(new Error('文档登记正在更新，请重新读取。'), { code: 'MEMORY_DOCUMENT_WITHDRAWN' });
+          latest = { stamp: after, manifest: current };
+          return current.files[relative];
+        },
+        project: (relative, note) => { writable(); return this.project(root, manifest, relative, note); },
         reconcile: async relative => {
+          writable();
           const result: MemoryLibrarySyncReport = { exported: 0, imported: 0, forgotten: 0, conflicts: [] };
           await this.reconcile(owner, root, manifest, relative, result);
           if (result.conflicts.length) throw new Error(result.conflicts.map(item => item.message).join('\n'));
         },
-        recoverMove: () => this.recoverMove(root, manifest),
-        timelineValid: async relative => {
+        recoverMove: () => { writable(); return this.recoverMove(root, manifest); },
+        timelineValid: async (relative, contentHash) => {
           const file = relative.slice('时间线/'.length), timelines = await this.timelineManifest(root), entry = timelines.files[file];
           if (!relative.startsWith('时间线/') || file.includes('/') || !entry || entry.scope.companionId !== owner.id
             || !sameCompanionMemoryIdentity(entry.ownerIdentity, companionMemoryIdentity(owner))) return false;
+          const content = contentHash ?? digest(await this.text(target(relative), true) ?? '');
+          if (!entry.contentHash || entry.contentHash !== content) return false;
           const revision = (await this.call({ type: 'memory.snapshot', ...entry.scope })).memorySnapshot?.revision;
           return revision === entry.sourceRevision;
         },
-        save: () => this.save(root, manifest), request: command => this.call(command),
+        save: () => { writable(); return this.save(root, manifest); }, request: command => this.call(command),
       });
-    });
+    };
+    if (!options?.readOnly) return this.serial(companionId, open);
+    // Readers use an immutable manifest snapshot and re-authorize every result.
+    // They never edit exports or registration while an import waits on a model.
+    const pending = open(); this.readers.add(pending);
+    void pending.finally(() => this.readers.delete(pending)).catch(() => undefined);
+    return pending;
   }
   private async statusFile(owner: string, conflicts: MemoryLibrarySyncReport['conflicts']): Promise<void> {
     const root = await this.directory(this.root!, owner), file = path.join(root, '同步状态.md');
@@ -290,18 +375,30 @@ export class CompanionMemoryLibrary {
     if (previous?.endsWith(body) && last && Date.now() - Date.parse(last) < 3600000) return;
     await this.atomic(file, `# 伙伴记忆同步状态\n\n最近核对：${new Date().toISOString()}\n\n${body}`);
   }
-  private async owner(owner: Companion, result: MemoryLibrarySyncReport): Promise<void> {
-    const root = await this.directory(this.root!, owner.id);
+  private layout<T>(owner: string, work: () => Promise<T>): Promise<T> {
+    const pending = (this.layoutTails.get(owner) ?? Promise.resolve()).catch(() => undefined).then(work);
+    this.layoutTails.set(owner, pending);
+    void pending.finally(() => { if (this.layoutTails.get(owner) === pending) this.layoutTails.delete(owner); }).catch(() => undefined);
+    return pending;
+  }
+  private prepareOwner(owner: Companion, root: string, manifest: Manifest, report?: MemoryLibrarySyncReport): Promise<void> {
+    return this.layout(owner.id, () => this.prepareOwnerFiles(owner, root, manifest, report));
+  }
+  private async prepareOwnerFiles(owner: Companion, root: string, manifest: Manifest, report?: MemoryLibrarySyncReport): Promise<void> {
     for (const name of categories) await this.directory(root, name);
-    const manifest = await this.load(root), limit = Math.max(1, Math.min(256, this.options.maxFilesPerOwner ?? 32));
-    await this.recoverMove(root, manifest);
-    await this.pruneTimelines(owner, root, limit);
     const profile = `# ${owner.name}\n\n伙伴标识：${owner.id}\n\n## 稳定人格\n\n${owner.persona}\n\n此文件供查阅；日记、学习资料和自我认识不会自动改写稳定人格。请在伙伴资料管理中修改人格。\n`;
     const profileFile = path.join(root, 'profile.md'), currentProfile = await this.text(profileFile, true);
-    if (currentProfile === undefined || manifest.profileHash === digest(currentProfile)) {
+    if (currentProfile === undefined || currentProfile === profile || manifest.profileHash === digest(currentProfile)) {
       if (currentProfile !== profile) await this.atomic(profileFile, profile);
       manifest.profileHash = digest(profile);
-    } else if (currentProfile !== profile) this.conflict(result, owner.id, 'profile.md', '资料文件有外部修改，未自动覆盖，也未自动修改稳定人格。');
+    } else if (currentProfile !== profile && report) this.conflict(report, owner.id, 'profile.md', '资料文件有外部修改，未自动覆盖，也未自动修改稳定人格。');
+  }
+  private async owner(owner: Companion, result: MemoryLibrarySyncReport): Promise<void> {
+    const root = await this.directory(this.root!, owner.id);
+    const manifest = await this.load(root), limit = Math.max(1, Math.min(256, this.options.maxFilesPerOwner ?? 32));
+    await this.recoverMove(root, manifest);
+    await this.prepareOwner(owner, root, manifest, result);
+    await this.pruneTimelines(owner, root, limit);
 
     const keys = Object.keys(manifest.files);
     for (let n = 0; n < Math.min(limit, keys.length); n++) {
@@ -353,6 +450,7 @@ export class CompanionMemoryLibrary {
     const entry = manifest.files[relative], actual = await this.text(this.file(root, relative), true);
     if (actual !== undefined && actual !== note.content && digest(actual) !== (entry?.pending?.hash ?? entry?.hash))
       throw new Error('文件在同步期间再次修改，保留外部内容，未覆盖。');
+    this.publishing(root, relative);
     await this.atomic(this.file(root, relative), note.content);
     await this.atomic(this.file(root, relative) + '.meta.json', JSON.stringify({ id: note.id, companionId: note.companionId, version: note.version,
       diaryName: note.diaryName, tags: note.tags, occurredAt: note.occurredAt, status: note.status,
@@ -500,12 +598,14 @@ export class CompanionMemoryLibrary {
     this.closed = true; if (this.timer) clearTimeout(this.timer);
     await this.running?.catch(() => undefined);
     await Promise.allSettled(this.timelineTails.values());
-    await this.fileTail.catch(() => undefined);
+    await Promise.allSettled(this.fileTails.values());
+    await Promise.allSettled(this.readers);
+    await Promise.allSettled(this.layoutTails.values());
     for (const scan of this.scans.values()) for (const frame of scan.directories ?? []) await frame.directory.close();
     this.scans.clear();
   }
   private timelineSerial(owner: string, work: () => Promise<void>): Promise<void> {
-    const pending = (this.timelineTails.get(owner) ?? Promise.resolve()).catch(() => undefined).then(() => this.serial(work));
+    const pending = (this.timelineTails.get(owner) ?? Promise.resolve()).catch(() => undefined).then(() => this.serial(owner, work));
     this.timelineTails.set(owner, pending);
     void pending.finally(() => { if (this.timelineTails.get(owner) === pending) this.timelineTails.delete(owner); }).catch(() => undefined);
     return pending;
@@ -573,7 +673,7 @@ export class CompanionMemoryLibrary {
       for (const file of Object.keys(manifest.files)) if (manifest.files[file]!.scope.companionId === scope.companionId && !output.has(file)) {
         await this.removeTimeline(root, file); delete manifest.files[file];
       }
-      for (const file of output.keys()) manifest.files[file] = { scope, sourceRevision: artifacts.sourceRevision, ownerIdentity: artifacts.owner };
+      for (const [file, content] of output) manifest.files[file] = { scope, sourceRevision: artifacts.sourceRevision, contentHash: digest(content), ownerIdentity: artifacts.owner };
       await this.atomic(path.join(root, '.时间线索引.json'), JSON.stringify(manifest, null, 2) + '\n');
       for (const [file, content] of output) {
         await this.atomic(path.join(root, '时间线', file), content);

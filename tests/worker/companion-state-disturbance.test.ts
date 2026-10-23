@@ -82,6 +82,8 @@ it.each(['eating', 'working'] as const)('observes actual %s activity while leavi
 });
 
 it('attributes an actual peer interruption to that peer evidence without changing the player relationship', () => {
+  const pair = store.request({ type: 'social.conversation.ensure', companionId: 'alice', memberIds: ['alice', 'bob'] }).socialConversation!;
+  store.request({ type: 'social.message.append', conversationId: pair.id, authorId: 'bob', content: '你好alice，我是bob。', virtualCreatedAt: new Date().toISOString(), clientId: 'known_peer' });
   sleep('bob'); const before = state('bob');
   store.request({ type: 'world.tool', ...scope('alice'), arguments: { action: 'message', recipientIds: ['bob'], text: '现在有件急事，需要先听你说一下。', urgent: true } });
   let job = store.request({ type: 'social.job.claim' }).socialJob;

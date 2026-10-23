@@ -10,10 +10,15 @@ import { companionTimeInZone } from '../shared/companion-schedule-time';
 import { companionPlayerPhoneBusy } from './social-continuity-store';
 import type { CompanionWorldSnapshot } from '../shared/companion-world';
 type Row = { data: string };
+type GoalSocialOrigin = { messageId: string; sourceMessageId: string; deliveryClientId: string; conversationId: string; topicId?: string; chainId: string };
 type Stored = CompanionActivityTask & { clientId: string; sourceChecksum?: string; nextAt: number; leaseUntil?: number;
   planningMs?: number; planningStartedAt?: number; reportVersion?: number;
   reportPending?: boolean; memoryIntentId?: string;
   peerConversationId?: string;
+  peerTopicId?: string | null;
+  seededSocialClientIds?: string[];
+  deferredDecision?: { step: number; decision: ActivityDecision; socialEvidence: Array<{ id: string; checksum: string }> };
+  observedSocialEvidence?: { leaseToken: string; messages: Array<{ id: string; checksum: string }> };
   worldDay?: string; createdVirtualAt?: number;
   evidence?: Array<{ id: string; conversationId: string; checksum: string }>;
   memoryVersions?: Array<{ id: string; version: number }>;
@@ -59,7 +64,18 @@ export class CompanionActivityTaskStore {
   }
   private public(task: Stored): CompanionActivityTask {
     const parsed = activityTaskSchema.parse(task);
-    if (this.valid(task)) return parsed;
+    if (this.valid(task)) {
+      if (task.seededSocialClientIds?.length && !terminal(task)) {
+        const authors = [...new Set(this.goalSocialMessages(task).messages.map(message => message.authorId))];
+        const progress = authors.length
+          ? `本目标已收到${authors.length}位伙伴的真实回信（${authors.slice(0, 6).join('、')}${authors.length > 6 ? '等' : ''}）。回信不等于报名；本轮未读正文时应说仍在确认，不能断言无人回复、报名0人或全员同意。`
+          : '本目标当前尚无可见的真实回信凭证；这不是“无人报名”的证明，不能替未读的对方作判断。';
+        // Read-only progress derived solely from this goal's actual invitation
+        // chains. Other rooms' message bodies never become chat's recent flow.
+        return { ...parsed, stage: `${progress}\n${parsed.stage}`.slice(0, 2000) };
+      }
+      return parsed;
+    }
     return { ...parsed, title: '来源不可访问的行动', goal: '[来源已撤回，任务内容已隐藏]', stage: '来源已撤回、更新或主体不可访问，不能读取旧目标和过程。', history: [], targetId: undefined, wait: undefined };
   }
   private valid(task: Stored): boolean {
@@ -93,7 +109,7 @@ export class CompanionActivityTaskStore {
       if (self && self.sceneId === self.homeSceneId) summary += '现在已经回到自己的小屋。';
       else if (world.scenes.some(scene => scene.id === self?.sceneId && scene.ownerId === task.visitTargetId)) summary += '现在仍在对方的小屋。';
     }
-    task.status = status; task.stage = summary; delete task.wait; delete task.condition; delete task.leaseToken; delete task.leaseUntil;
+    task.status = status; task.stage = summary; delete task.wait; delete task.condition; delete task.leaseToken; delete task.leaseUntil; delete task.deferredDecision;
     task.reportPending = !!task.sourceMessageId && this.valid(task); task.nextAt = Date.now();
     if (status !== 'cancelled' && task.sourceMessageId && this.valid(task)
       && task.history.some(item => item.ok && !item.action.startsWith('memory.') && item.action !== 'observe')) this.experienced(task, task.sourceMessageId);
@@ -142,8 +158,47 @@ export class CompanionActivityTaskStore {
     if (!task.targetId) return [];
     const group = task.peerConversationId && this.db.prepare('SELECT 1 FROM conversation_members WHERE conversation_id=? AND companion_id=?').get(task.peerConversationId, task.targetId);
     const conversationId = group ? task.peerConversationId! : this.social.ensure(task.companionId, [task.companionId, task.targetId]).id;
-    const ids = (this.db.prepare('SELECT id FROM messages WHERE conversation_id=? ORDER BY sequence DESC LIMIT 20').all(conversationId) as { id: string }[]).map(row => row.id);
-    return this.visible({ companionId: task.companionId, conversationId }, ids).reverse();
+    const ids = (this.db.prepare(`SELECT id FROM messages WHERE conversation_id=?${task.peerTopicId === undefined ? '' : task.peerTopicId === null
+      ? ' AND NOT EXISTS(SELECT 1 FROM companion_message_topics WHERE message_id=messages.id)'
+      : ' AND EXISTS(SELECT 1 FROM companion_message_topics WHERE message_id=messages.id AND topic_id=?)'} ORDER BY sequence DESC LIMIT 20`)
+      .all(conversationId, ...(task.peerTopicId ? [task.peerTopicId] : [])) as { id: string }[]).map(row => row.id);
+    // A dedicated game/story port may carry that topic's live flow. An ordinary
+    // private room is reusable: only this goal's anchored job chains may cross
+    // into task cognition, never that room's unrelated earlier conversation.
+    const current = (task.sourceMessageId || task.seededSocialClientIds?.length) && !task.peerTopicId ? []
+      : this.visible({ companionId: task.companionId, conversationId }, ids).reverse();
+    return [...new Map([...this.goalSocialMessages(task).messages, ...current].map(message => [message.id, message])).values()]
+      .sort((a, b) => a.sequence - b.sequence).slice(-100);
+  }
+  private goalSocialMessages(task: Stored): { messages: CompanionMessage[]; origins: GoalSocialOrigin[] } {
+    const messages = new Map<string, CompanionMessage>(), origins = new Map<string, GoalSocialOrigin>();
+    for (const clientId of task.seededSocialClientIds ?? []) {
+      const value = this.db.prepare("SELECT message_id,data FROM companion_social_outbox WHERE client_id=? AND companion_id=? AND status='sent'").get(clientId, task.companionId) as { message_id: string; data: string } | undefined;
+      if (!value) continue;
+      const sent = JSON.parse(value.data) as { conversationId: string; authorizationMessageId?: string; agentSource?: { messageId: string; conversationId: string }; topicId?: string | null };
+      if (task.sourceMessageId ? !(sent.authorizationMessageId === task.sourceMessageId || sent.agentSource?.messageId === task.sourceMessageId && sent.agentSource.conversationId === task.conversationId)
+        : !clientId.startsWith(`activity_${task.id}_`)) continue;
+      const source = this.visible({ companionId: task.companionId, conversationId: sent.conversationId }, [value.message_id])[0];
+      if (!source || source.authorId !== task.companionId || (source.topicId ?? null) !== (sent.topicId ?? null)) continue;
+      const chains = (this.db.prepare("SELECT DISTINCT json_extract(data,'$.chainId') AS id FROM companion_social_jobs WHERE conversation_id=? AND json_extract(data,'$.sourceMessageId')=?").all(sent.conversationId, source.id) as Array<{ id: string }>).map(row => row.id);
+      if (!chains.length) continue;
+      const replies = this.db.prepare(`SELECT json_extract(data,'$.resultMessageId') AS id,json_extract(data,'$.chainId') AS chain_id FROM companion_social_jobs WHERE conversation_id=? AND companion_id!=? AND status='done' AND json_extract(data,'$.chainId') IN(${chains.map(() => '?').join(',')}) AND json_extract(data,'$.resultMessageId') IS NOT NULL ORDER BY created_at,id LIMIT 80`)
+        .all(sent.conversationId, task.companionId, ...chains) as Array<{ id: string; chain_id: string }>;
+      const visible = this.visible({ companionId: task.companionId, conversationId: sent.conversationId }, replies.map(row => row.id))
+        .filter(message => message.status === 'sent' && !message.isReplyDraft && message.authorId !== task.companionId && message.sequence > source.sequence && (message.topicId ?? null) === (sent.topicId ?? null));
+      const byAuthor = new Map<string, CompanionMessage[]>();
+      for (const reply of visible) { const own = byAuthor.get(reply.authorId) ?? []; own.push(reply); byAuthor.set(reply.authorId, own); }
+      for (const own of byAuthor.values()) for (const reply of [own[0]!, own.at(-1)!]) {
+        messages.set(reply.id, reply); origins.set(reply.id, { messageId: reply.id, sourceMessageId: source.id, deliveryClientId: clientId,
+          conversationId: sent.conversationId, ...(reply.topicId ? { topicId: reply.topicId } : {}), chainId: replies.find(row => row.id === reply.id)!.chain_id });
+      }
+    }
+    return { messages: [...messages.values()], origins: [...origins.values()] };
+  }
+  private matchingPeerRoom(task: Stored, recipients: string[]): string | undefined {
+    if (!task.peerConversationId || !this.db.prepare('SELECT 1 FROM companion_social_conversations s JOIN conversations c ON c.id=s.id WHERE s.id=? AND c.dissolved_at IS NULL').get(task.peerConversationId)) return;
+    const members = (this.db.prepare('SELECT companion_id FROM conversation_members WHERE conversation_id=? ORDER BY companion_id').all(task.peerConversationId) as Array<{ companion_id: string }>).map(row => row.companion_id);
+    return JSON.stringify(members) === JSON.stringify([task.companionId, ...recipients].sort()) ? task.peerConversationId : undefined;
   }
   /** A chat-issued movement is the first step of the original request, not its
    * completion. Persist the effect and its arrival predicate in one transaction
@@ -166,7 +221,7 @@ export class CompanionActivityTaskStore {
       task.status = 'running'; task.leaseToken = randomUUID(); task.leaseUntil = Date.now() + PLANNING_LEASE_MS;
       this.save(task);
       const result = this.commit(task.id, task.leaseToken, { status: 'continue', action: input.arguments,
-        wait: { kind: 'arrival' }, summary: '实际到达后继续原请求，重新观察并反馈结果。' });
+        wait: { kind: 'arrival' }, summary: '实际到达后继续原请求，重新观察并反馈结果。' }, true);
       return { ok: true, activityTask: result, world: this.world.snapshot(task) };
     }).immediate();
   }
@@ -199,11 +254,52 @@ export class CompanionActivityTaskStore {
           sourceMessageId: source.id, recipientIds: [input.targetId], sharedText: input.initialMessage.text, intent: 'visit' });
         sent = this.social.send({ companionId: input.companionId, conversationId: created.peerConversationId, content: input.initialMessage.text,
           channel: 'phone', urgent: input.initialMessage.urgent, authorizationMessageId: source.id, clientId: input.initialMessage.clientId });
+        (created.seededSocialClientIds ??= []).push(input.initialMessage.clientId);
         created.step++; created.history.push({ step: created.step, at: iso(), action: 'message', arguments: { action: 'message', recipientIds: [input.targetId], text: input.initialMessage.text },
           ok: true, result: '必要问候已进入真实手机发件队列，待对方回应后继续拜访；排队不代表已送达、获准或抵达。' });
         created.stage = '已联系对方，持续核对回复、拜访许可与实际到达。';
       }
       this.save(created); return { ...sent, activityTask: this.public(created) };
+    }).immediate();
+  }
+  private ensureSocial(input: Extract<CompanionStorageCommand, { type: 'activity.social.ensure' }>): CompanionStorageResponse {
+    return this.db.transaction(() => {
+      const source = this.visible(input, [input.sourceMessageId])[0];
+      if (!source || source.authorId !== 'user' || source.conversationId !== input.conversationId || source.isReplyDraft) throw new Error('持续社交需要本次真实、仍然可见的用户目标。');
+      const outbox = this.db.prepare('SELECT companion_id,conversation_id,status,message_id,data FROM companion_social_outbox WHERE client_id=?').get(input.deliveryClientId) as {
+        companion_id: string; conversation_id: string; status: string; message_id: string | null; data: string;
+      } | undefined;
+      const sent = outbox ? JSON.parse(outbox.data) as { companionId: string; conversationId: string; content: string;
+        authorizationMessageId?: string; agentSource?: { conversationId: string; messageId: string }; topicId?: string | null } : undefined;
+      if (!outbox || !sent || outbox.companion_id !== input.companionId || sent.companionId !== input.companionId || outbox.conversation_id !== sent.conversationId
+        || !['pending', 'sent'].includes(outbox.status) || !(sent.authorizationMessageId === source.id
+          || sent.agentSource?.messageId === source.id && sent.agentSource.conversationId === source.conversationId)) throw new Error('持续社交只能承接本次真实出站消息，不能伪造回执或借用别人的邀约。');
+      const members = (this.db.prepare('SELECT companion_id FROM conversation_members WHERE conversation_id=? ORDER BY companion_id').all(sent.conversationId) as Array<{ companion_id: string }>).map(value => value.companion_id);
+      const recipients = members.filter(id => id !== input.companionId);
+      if (!members.includes(input.companionId) || !recipients.length || input.operation === 'introduce' && recipients.length !== 1
+        || input.operation === 'create_group' && recipients.length < 2) throw new Error('实际社交会话与这次行为不相符。');
+      const previous = this.db.prepare('SELECT data FROM companion_activity_tasks WHERE companion_id=? AND source_message_id=? ORDER BY rowid LIMIT 1').get(input.companionId, source.id) as Row | undefined;
+      const clientId = 'social_continue_' + createHash('sha256').update(input.companionId + ':' + source.id).digest('hex');
+      const task = previous ? JSON.parse(previous.data) as Stored : this.get(this.start({ type: 'activity.start', companionId: input.companionId,
+        conversationId: input.conversationId, sourceMessageId: source.id, clientId, title: '继续完成社交活动', goal: source.content }).id);
+      // A completed/cancelled original goal never resurrects from a late reply.
+      if (terminal(task) || task.seededSocialClientIds?.includes(input.deliveryClientId)) return { ok: true, activityTask: this.public(task) };
+      const message = outbox.message_id ? this.visible({ companionId: input.companionId, conversationId: sent.conversationId }, [outbox.message_id])[0] : undefined;
+      if (outbox.status === 'sent' && !message) throw new Error('已发送的社交来源已经撤回或不可见，不能承接旧回执。');
+      if (task.step >= 31) throw new Error('该持续目标已达到安全步骤范围，不能静默丢失已执行的社交行为。');
+      task.goal = source.content; task.peerConversationId = sent.conversationId; task.peerTopicId = sent.topicId ?? null; task.targetId = recipients[0];
+      const result = { ok: true, socialConversation: { id: sent.conversationId, memberIds: members },
+        socialPending: outbox.status === 'pending', ...(message ? { socialMessage: { messageId: message.id, authorId: message.authorId,
+          sequence: message.sequence, content: message.content, ...(message.topicId ? { topicId: message.topicId } : {}) } } : {}) };
+      task.step++; task.history.push({ step: task.step, at: iso(), action: input.operation, ok: true, result: JSON.stringify(result) });
+      (task.seededSocialClientIds ??= []).push(input.deliveryClientId);
+      task.stage = '初次社交行动已有真实回执；等待实际回复后继续完成原始完整目标，不重复邀请。';
+      if (task.status !== 'running') {
+        task.status = 'waiting'; task.wait = { kind: 'reply', targetCompanionId: recipients[0]! };
+        task.condition = { until: Date.now() + 300_000, afterSequence: message?.sequence ?? Number((this.db.prepare('SELECT COALESCE(MAX(sequence),0) AS n FROM messages').get() as { n: number }).n) };
+        task.nextAt = Date.now() + 1500; delete task.leaseToken; delete task.leaseUntil;
+      }
+      this.save(task); return { ok: true, activityTask: this.public(task) };
     }).immediate();
   }
   private wake(task: Stored): boolean {
@@ -216,7 +312,8 @@ export class CompanionActivityTaskStore {
     } else if (wait.kind === 'reply') {
       const permission = task.visitTargetId === wait.targetCompanionId && !task.visitArrivedAt && world.visits.find(visit =>
         visit.guestId === task.companionId && visit.hostId === wait.targetCompanionId && visit.id === (condition.visitId ?? task.visitRequestId));
-      ready = !!permission && permission.status !== 'requested' || this.peerMessages(task).some(message => message.authorId === wait.targetCompanionId && message.sequence > condition.afterSequence);
+      ready = !!permission && permission.status !== 'requested' || this.peerMessages(task).some(message => (task.seededSocialClientIds?.length
+        ? message.authorId !== task.companionId && message.authorId !== 'system' : message.authorId === wait.targetCompanionId) && message.sequence > condition.afterSequence);
       reason = permission && permission.status !== 'requested' ? '拜访许可已有实际结果，不再等待重复的手机确认；核对许可与当前位置后继续。' : '收到目标伙伴的真实新回复。';
     }
     else if (wait.kind === 'permission') { ready = world.visits.some(visit => visit.id === (condition.visitId ?? task.visitRequestId) && visit.guestId === task.companionId && visit.hostId === wait.targetCompanionId && visit.status !== 'requested'); reason = '拜访许可已有实际结果，请核对允许、拒绝或过期。'; }
@@ -236,6 +333,10 @@ export class CompanionActivityTaskStore {
   private peerBusy(owner: string): boolean {
     return !!this.db.prepare("SELECT 1 FROM companion_social_communication WHERE companion_id=? AND until_real>? AND json_extract(data,'$.phase')='typing' UNION ALL SELECT 1 FROM companion_social_notifications WHERE companion_id=? AND status='running' AND lease_until>? LIMIT 1").get(owner, iso(), owner, iso());
   }
+  private primaryChatBusy(task: Stored): boolean {
+    return !!task.sourceMessageId && !!this.db.prepare("SELECT 1 FROM companion_work_queue WHERE companion_id=? AND status IN('queued','running') AND json_extract(data,'$.sourceMessageId')=? AND json_extract(data,'$.conversationId')=? LIMIT 1")
+      .get(task.companionId, task.sourceMessageId, task.conversationId);
+  }
   claim(excluded: string[]): CompanionActivityTask | undefined {
     return this.db.transaction(() => {
       this.flushReports();
@@ -251,12 +352,28 @@ export class CompanionActivityTaskStore {
         if (task.memoryIntentId) { task.nextAt = Date.now() + 1500; this.save(task); continue; }
         if (task.status === 'waiting' && !this.wake(task)) { task.nextAt = Date.now() + 1500; this.save(task); continue; }
         const world = this.world.snapshot(task), self = world.actors.find(actor => actor.companionId === task.companionId);
-        if (world.backlog || this.peerBusy(task.companionId) || !self || ['sleeping','eating'].includes(self.routinePhase) || ['working','eating','sleeping','lyingDown','waking'].includes(self.activity) || world.works.some(work => work.companionId === task.companionId && work.kind !== 'chat' && work.status !== 'ended')) { task.nextAt = Date.now() + 5000; this.save(task); continue; }
+        if (world.backlog || this.primaryChatBusy(task) || this.peerBusy(task.companionId) || !self || ['sleeping','eating'].includes(self.routinePhase) || ['working','eating','sleeping','lyingDown','waking'].includes(self.activity) || world.works.some(work => work.companionId === task.companionId && work.kind !== 'chat' && work.status !== 'ended')) { task.nextAt = Date.now() + 5000; this.save(task); continue; }
         if ((task.planningMs ?? 0) >= PLANNING_BUDGET_MS || task.step >= 32) {
           this.noteArrival(task, world);
           this.finish(task, 'failed', '这次安排多次尝试后仍未完成，已停止继续尝试。' + (task.visitTargetId
             ? task.visitInteractionAt ? '已经与对方当面交流，后续安排尚未完成。' : task.visitArrivedAt ? '已经抵达，但尚未完成当面交流。' : '尚未抵达对方的小屋。'
             : '目标尚未完成，已发生的行为保留。')); continue;
+        }
+        if (task.deferredDecision) {
+          const deferred = task.deferredDecision;
+          const socialEvidence = this.peerMessages(task).map(message => ({ id: message.id, checksum: checksum(message) }));
+          if (deferred.step !== task.step || JSON.stringify(deferred.socialEvidence) !== JSON.stringify(socialEvidence)) {
+            delete task.deferredDecision; task.stage = '原目标已有新的真实进展或相关回复，重新根据最新回执判断下一步。'; this.save(task);
+          }
+          else {
+            // The planner and Main already authorized this exact atomic step.
+            // Admission waits do not discard it or ask the model to invent a
+            // replacement. A fresh lease/source check still guards execution.
+            task.status = 'running'; task.leaseToken = randomUUID(); task.leaseUntil = Date.now() + PLANNING_LEASE_MS;
+            task.nextAt = task.leaseUntil; this.save(task);
+            this.commit(task.id, task.leaseToken, deferred.decision);
+            continue;
+          }
         }
         if (task.attempts >= 3) { this.finish(task, 'failed', '同一步连续失败三次，已停止自动重试。'); continue; }
         task.attempts++; task.status = 'running'; task.leaseToken = randomUUID(); task.planningStartedAt = Date.now();
@@ -267,14 +384,17 @@ export class CompanionActivityTaskStore {
     }).immediate();
   }
   private leased(id: string, token: string): Stored { const task = this.get(id); if (task.status !== 'running' || task.leaseToken !== token || (task.leaseUntil ?? 0) < Date.now() || !this.valid(task)) throw new Error('行动任务租约或来源已失效。'); return task; }
-  private commit(id: string, token: string, decision: ActivityDecision): CompanionActivityTask {
+  private commit(id: string, token: string, decision: ActivityDecision, fromPrimary = false): CompanionActivityTask {
     return this.db.transaction(() => {
       const task = this.leased(id, token);
       this.chargePlanning(task);
       const present = this.world.snapshot(task), self = present.actors.find(actor => actor.companionId === task.companionId);
-      if (present.backlog || this.peerBusy(task.companionId) || !self || ['sleeping','eating'].includes(self.routinePhase) || ['working','eating','sleeping','lyingDown','waking'].includes(self.activity) || present.works.some(work => work.companionId === task.companionId && work.kind !== 'chat' && work.status !== 'ended')) {
-        task.status = 'queued'; task.stage = '实际状态已变化，等待工作、用餐或睡眠结束后重新规划。'; task.nextAt = Date.now() + 5000; task.attempts = 0; delete task.leaseToken; delete task.leaseUntil; this.save(task); return this.public(task);
+      if (!fromPrimary && this.primaryChatBusy(task) || decision.status === 'continue' && decision.action && (present.backlog || this.peerBusy(task.companionId) || !self || ['sleeping','eating'].includes(self.routinePhase) || ['working','eating','sleeping','lyingDown','waking'].includes(self.activity) || present.works.some(work => work.companionId === task.companionId && work.kind !== 'chat' && work.status !== 'ended'))) {
+        task.deferredDecision = { step: task.step, decision, socialEvidence: task.deferredDecision?.socialEvidence
+          ?? (task.observedSocialEvidence?.leaseToken === token ? task.observedSocialEvidence.messages : []) };
+        task.status = 'queued'; task.stage = '这一步已完成授权核验并保存，暂等当前通信或身体动作结束后执行；尚未执行，不需要重新规划。'; task.nextAt = Date.now() + 5000; task.attempts = 0; delete task.leaseToken; delete task.leaseUntil; this.save(task); return this.public(task);
       }
+      delete task.deferredDecision;
       this.noteArrival(task, present);
       if (decision.status === 'complete' && task.visitTargetId && (!task.visitArrivedAt || !task.visitInteractionAt)) {
         task.stage = !task.visitArrivedAt ? '尚未实际抵达拜访对象的场景，不能完成。请继续核实回复与许可，再 travel 并等待真实到达；若不方便则等待或如实受阻。' : '已到场，但还没有与拜访对象实际当面交流。请依据本地感知寻找并走近对方，用 social 打招呼并等待真实回应；不方便时如实受阻。';
@@ -284,12 +404,8 @@ export class CompanionActivityTaskStore {
       if (decision.status !== 'continue') { this.finish(task, decision.status === 'complete' ? 'succeeded' : 'failed', decision.summary); return this.public(task); }
       const action = decision.action;
       if (action && 'targetCompanionId' in action) task.targetId = action.targetCompanionId;
-      if (action?.action === 'message') task.targetId = action.recipientIds[0];
+      if (action?.action === 'message' || action?.action === 'create_group') task.targetId = action.recipientIds[0];
       if (decision.wait && 'targetCompanionId' in decision.wait) task.targetId = decision.wait.targetCompanionId;
-      if (action?.action === 'message' || action?.action === 'social') {
-        const recipients = action.action === 'message' ? action.recipientIds : action.recipientIds ?? [action.targetCompanionId!];
-        task.peerConversationId = this.social.ensure(task.companionId, [task.companionId, ...recipients]).id;
-      }
       const afterSequence = this.peerMessages(task).at(-1)?.sequence ?? 0;
       let result = decision.summary, ok = true;
       // Nested savepoint keeps a rejected world action from leaking partial physics changes.
@@ -303,12 +419,32 @@ export class CompanionActivityTaskStore {
       try {
       if (action) {
         this.db.transaction(() => {
-          if (task.sourceMessageId && (action.action === 'message' || action.action === 'social')) {
+          if (action.action === 'message' || action.action === 'social') {
             const recipients = action.action === 'message' ? action.recipientIds : action.recipientIds ?? [action.targetCompanionId!];
-            const room = this.social.ensure(task.companionId, [task.companionId, ...recipients]);
-            this.social.send({ companionId: task.companionId, conversationId: room.id, content: action.text,
+            if (action.action === 'message') this.social.requireAcquaintances(task.companionId, recipients);
+            const currentRoom = this.matchingPeerRoom(task, recipients);
+            const roomId = currentRoom ?? this.social.ensure(task.companionId, [task.companionId, ...recipients]).id;
+            const sent = this.social.send({ companionId: task.companionId, conversationId: roomId, content: action.text,
+              ...(currentRoom && task.peerTopicId !== undefined ? { topicId: task.peerTopicId } : {}),
               channel: action.action === 'social' ? 'face_to_face' : 'phone', ...(action.action === 'message' ? { urgent: action.urgent } : {}), clientId: `activity_${task.id}_${task.step}`,
-              authorizationMessageId: task.sourceMessageId });
+              ...(task.sourceMessageId ? { agentSource: { conversationId: task.conversationId, messageId: task.sourceMessageId }, authorizationMessageId: task.sourceMessageId } : {}) });
+            const queued = this.db.prepare('SELECT data FROM companion_social_outbox WHERE client_id=?').get(`activity_${task.id}_${task.step}`) as Row | undefined;
+            task.peerConversationId = roomId;
+            task.peerTopicId = sent.socialMessage?.message.topicId ?? (queued ? (JSON.parse(queued.data) as { topicId?: string | null }).topicId : null) ?? null;
+            const clientId = `activity_${task.id}_${task.step}`;
+            if (!(task.seededSocialClientIds ??= []).includes(clientId)) task.seededSocialClientIds.push(clientId);
+            result = JSON.stringify(sent);
+          } else if (action.action === 'introduce' || action.action === 'create_group') {
+            const sent = this.world.execute({ type: 'world.tool', companionId: task.companionId, conversationId: task.conversationId,
+              sourceMessageId: task.sourceMessageId, clientId: `activity_${task.id}_${task.step}`, arguments: action });
+            if (!sent?.socialConversation) throw new Error('社交动作没有产生真实会话回执。');
+            const queued = this.db.prepare('SELECT data FROM companion_social_outbox WHERE client_id=?').get(`activity_${task.id}_${task.step}`) as Row | undefined;
+            task.peerConversationId = sent.socialConversation.id;
+            task.peerTopicId = sent.topic?.id ?? sent.socialMessage?.message.topicId ?? (queued ? (JSON.parse(queued.data) as { topicId?: string | null }).topicId : null) ?? null;
+            const clientId = `activity_${task.id}_${task.step}`;
+            if (!(task.seededSocialClientIds ??= []).includes(clientId)) task.seededSocialClientIds.push(clientId);
+            result = JSON.stringify({ ok: sent.ok, socialConversation: sent.socialConversation, socialPending: sent.socialPending,
+              socialMessage: sent.socialMessage, socialRecipients: sent.socialRecipients, topic: sent.topic, topicState: sent.topicState });
           } else if (action.action === 'query') {
             const queried = this.world.queryKnowledge(task, action);
             result = JSON.stringify({ worldKnowledge: queried.worldKnowledge, memorySources: queried.memorySources });
@@ -326,7 +462,7 @@ export class CompanionActivityTaskStore {
           }
           if (['move','travel','leave'].includes(action.action)) this.world.tagTaskMovement(task.companionId, task.id);
         }).immediate();
-        if (action.action !== 'query') result = `宿主已接纳 ${action.action} 原子行为；异步行为以实际世界状态为准，尚不代表任务完成。`;
+        if (!['query', 'introduce', 'create_group', 'message', 'social'].includes(action.action)) result = `宿主已接纳 ${action.action} 原子行为；异步行为以实际世界状态为准，尚不代表任务完成。`;
       }
       } catch (error) { ok = false; result = error instanceof Error ? error.message.slice(0, 2000) : '原子行为失败。'; }
       const boundedResult = result.length <= 16000 ? result : JSON.stringify({ truncated: true, originalChars: result.length,
@@ -434,12 +570,16 @@ export class CompanionActivityTaskStore {
       case 'activity.claim': return { ok: true, activityTask: this.claim(command.excludedIds ?? []) };
       case 'activity.observe': {
         const task = this.leased(command.id, command.leaseToken), messages = this.peerMessages(task);
+        task.observedSocialEvidence = { leaseToken: command.leaseToken, messages: messages.map(message => ({ id: message.id, checksum: checksum(message) })) };
         const evidence = new Map((task.evidence ?? []).map(item => [item.id, item]));
         for (const message of messages) evidence.set(message.id, { id: message.id, conversationId: message.conversationId, checksum: checksum(message) });
         task.evidence = [...evidence.values()]; const world = this.world.snapshot(task); this.noteArrival(task, world); this.save(task);
-        return { ok: true, activityTask: this.public(task), world, activityMessages: messages };
+        const shown = new Set(messages.map(message => message.id));
+        return { ok: true, activityTask: this.public(task), world, activityMessages: messages,
+          activityMessageOrigins: this.goalSocialMessages(task).origins.filter(origin => shown.has(origin.messageId)) };
       }
       case 'activity.commit': return { ok: true, activityTask: this.commit(command.id, command.leaseToken, command.decision) };
+      case 'activity.social.ensure': return this.ensureSocial(command);
       case 'activity.reject': {
         const task = this.leased(command.id, command.leaseToken); this.chargePlanning(task);
         task.step++; task.history.push({ step: task.step, at: iso(), action: command.action.action, arguments: command.action, result: command.reason, ok: false });

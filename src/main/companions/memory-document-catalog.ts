@@ -37,8 +37,13 @@ export class CompanionMemoryDocumentCatalog {
         });
         state.watcher.on('error', error => { state!.error = error.message; state!.lastScan = 0; });
       } catch (error) { state.error = error instanceof Error ? error.message : String(error); }
-      await this.batch(session, state, 128);
-    } else if (state.dirty.size) await this.refresh(session, state, 64);
+      // A first page must not await scanning the entire initial 128-file batch.
+      // Persisted rows remain candidates; the authoritative reader checks every
+      // returned item while the rest of the catalogue catches up in small turns.
+      const initial = this.batch(session, state, 16); state.job = initial;
+      try { await initial; } finally { if (state.job === initial) state.job = undefined; }
+    } else if (state.job) return state;
+    else if (state.dirty.size) await this.refresh(session, state, 16);
     if (state.complete && Date.now() - state.lastScan > 60_000) {
       for (const frame of state.frames) await frame.dir.close().catch(() => undefined);
       state.frames = []; state.error = undefined;
@@ -101,7 +106,7 @@ export class CompanionMemoryDocumentCatalog {
       if (this.closed) return;
       await this.options.library.withDocuments(owner, async session => {
         await this.refresh(session, state, 64);
-        if (!state.complete) await this.batch(session, state, 128);
+        if (!state.complete) await this.batch(session, state, 64);
       }, { synchronize: false });
     }).catch((error: unknown) => { state.error = error instanceof Error ? error.message : String(error); state.complete = true; }).finally(() => {
       state.job = undefined;

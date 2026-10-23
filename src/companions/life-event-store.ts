@@ -10,6 +10,7 @@ import type { CompanionConnection } from './store';
 
 type Row = { data: string };
 type LifeOptions = { world(): CompanionWorldSnapshot; perception(id: string): CompanionWorldPerception | undefined; elapsed(from: number, to: number): number;
+  acquaintances(id: string): ReadonlySet<string>;
   perform(occurrence: CompanionLifeOccurrence, text?: string): string;
   memoryRevision?(scope: { companionId: string; conversationId: string }): string };
 const iso = (at = Date.now()) => new Date(at).toISOString();
@@ -124,7 +125,8 @@ export class CompanionLifeEventStore {
   }
   private chooseTarget(world: CompanionWorldSnapshot, rule: CompanionLifeRule, key: string): string | undefined {
     if (rule.targetId || !['message', 'visit'].includes(rule.action)) return rule.targetId;
-    const peers = world.residents.filter(peer => peer.companionId !== rule.companionId && peer.active !== false && this.activated(peer.companionId)).sort((a, b) => a.companionId.localeCompare(b.companionId));
+    const known = this.options.acquaintances(rule.companionId);
+    const peers = world.residents.filter(peer => known.has(peer.companionId) && peer.active !== false && this.activated(peer.companionId)).sort((a, b) => a.companionId.localeCompare(b.companionId));
     // Exponential race gives affinity-weighted selection without a biased sort.
     return peers.map(peer => ({ id: peer.companionId, score: companionLifeThreshold(key + '/' + peer.companionId)
       / Math.exp(((world.relationships.find(edge => edge.companionId === rule.companionId && edge.targetCompanionId === peer.companionId)?.affinity ?? 50) - 50) / 50) }))

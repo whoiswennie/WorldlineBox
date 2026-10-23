@@ -80,13 +80,16 @@ export async function runCompanionStructuredAgent(input: CompanionStructuredAgen
   signal?: AbortSignal, options: RoleOptions = {}): Promise<unknown> {
   const turns: CompanionLoopTurn[] = [];
   let outputCorrection: { rejectedProposal: string; error: string } | undefined, invalidOutputs = 0;
+  let identityCorrection: string | undefined, identityAttempts = 0;
   for (let step = 0; step < 32; step++) {
     signal?.throwIfAborted();
     const frame = input.refresh ? await input.refresh() : input.frame;
     const context = outputCorrection ? { ...input.context, user: JSON.stringify({ ...JSON.parse(input.context.user),
       outputCorrection: { ...outputCorrection, instruction: '上一个提案未通过宿主验证，没有产生行动。依据当前真实状态修正后重新交付；不能沿用被拒绝提案当作已发生的事实。' } }) } : input.context;
     const assembled = assembleCompanionRoleContext(frame, context);
-    const result = await generateCompanionReply(frame, config, signal, { ...options, loop: true,
+    let result: Awaited<ReturnType<typeof generateCompanionReply>>;
+    try {
+      result = await generateCompanionReply(frame, config, signal, { ...options, loop: true, identityCorrection,
       context: assembled, tools: input.capabilities?.tools ?? [], turns,
       // Domain facts were just read and narrowed by that entry's host. Applying
       // the generic historical world replay projection again loses current
@@ -99,6 +102,17 @@ export async function runCompanionStructuredAgent(input: CompanionStructuredAgen
         if (domain.identity?.origin) refreshed.identity.origin = domain.identity.origin;
         return { system: current.system, user: JSON.stringify(refreshed) };
       } });
+      identityCorrection = undefined; identityAttempts = 0;
+    } catch (error) {
+      // A rejected identity/topic admission is a correctable proposal, just as
+      // malformed final JSON is. Keep it inside this same independent loop;
+      // do not fail the whole social job and wait for the outbox retry timer.
+      if (!signal?.aborted && error instanceof CompanionModelError && error.code === 'IDENTITY' && identityAttempts++ < 2) {
+        identityCorrection = error.message;
+        continue;
+      }
+      throw error;
+    }
     const turn = result.turn;
     if (!turn) throw new CompanionModelError('INVALID_RESPONSE', '伙伴领域调用缺少原生循环结果。');
     if (!turn.calls.length) {

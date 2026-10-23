@@ -27,7 +27,6 @@ export class CompanionMemoryDocuments {
   private closed = false;
   private readonly jobs = new Set<Promise<unknown>>();
   private readonly catalog: CompanionMemoryDocumentCatalog;
-  private readonly initializedOwners = new Set<string>();
   constructor(private readonly options: CompanionMemoryDocumentsOptions) {
     if (!path.isAbsolute(options.libraryDirectory)) throw new Error('伙伴记忆目录必须是绝对路径。');
     this.catalog = new CompanionMemoryDocumentCatalog({ library: options.library, request: options.requestStorage,
@@ -35,9 +34,8 @@ export class CompanionMemoryDocuments {
   }
   handle(command: CompanionMemoryDocumentCommand): Promise<CompanionWorkspaceResponse> {
     if (this.closed) return Promise.resolve({ ok: false, error: '伙伴记忆文档管理已关闭。' });
-    const synchronize = !this.initializedOwners.has(command.companionId) || !['memory.documents.list', 'memory.documents.read', 'memory.documents.locate', 'memory.documents.tags.status'].includes(command.type);
+    const synchronize = !['memory.documents.list', 'memory.documents.read', 'memory.documents.locate', 'memory.documents.tags.status'].includes(command.type);
     const pending = this.options.library.withDocuments(command.companionId, async session => {
-      this.initializedOwners.add(command.companionId);
       switch (command.type) {
         case 'memory.documents.locate': {
           const found = Object.entries(session.manifest.files).find(([, entry]) => entry.noteId === command.noteId && entry.state !== 'forgotten');
@@ -63,7 +61,7 @@ export class CompanionMemoryDocuments {
         case 'memory.documents.delete': await this.delete(session, command); return { ok: true, deletedPath: command.path };
         case 'memory.documents.mkdir': this.editableDirectory(command.path); await session.directory(command.path); return { ok: true, createdDirectory: command.path };
       }
-    }, { synchronize }).then(response => {
+    }, { synchronize, readOnly: !synchronize }).then(response => {
       if (!['memory.documents.list', 'memory.documents.read', 'memory.documents.locate', 'memory.documents.tags.status'].includes(command.type)) {
         if ('path' in command) this.catalog.mark(command.companionId, command.path);
         if ('targetPath' in command) this.catalog.mark(command.companionId, command.targetPath);
@@ -84,6 +82,29 @@ export class CompanionMemoryDocuments {
     if (automatic(relative)) throw new Error('稳定人格和 VCP 自动时间线只供查阅；需要学习时请另存到资料。');
   }
   private async remove(session: MemoryLibraryDocumentSession, relative: string): Promise<void> {
+    if (session.readOnly) {
+      // Re-enter the writer queue only for a withdrawn candidate, then check a
+      // fresh manifest before erasing it. A stale reader cannot erase a newer
+      // authorized export or overwrite an import's registration.
+      const writing = this.options.library.documentsWriting(session.owner.id);
+      const cleanup = this.options.library.withDocuments(session.owner.id, async fresh => {
+        const entry = fresh.manifest.files[relative];
+        if (relative.startsWith('时间线/')) { if (await fresh.timelineValid(relative)) return; }
+        else if (entry?.state === 'forgotten') { /* This path has been explicitly withdrawn. */ }
+        else if (entry?.noteId) {
+          if ((await fresh.request({ type: 'memory.library.read', companionId: fresh.owner.id, id: entry.noteId, sourceLimit: 1 })).memoryRead) return;
+        } else if (entry?.pending?.kind === 'record') {
+          const source = (await fresh.request({ type: 'memory.sources.filter', companionId: fresh.owner.id, conversationId: entry.conversationId!, ids: [entry.pending.sourceMessageId!] })).memorySources?.[0];
+          if (source && hash(source.content) === entry.pending.sourceChecksum) return;
+        } else return;
+        await this.remove(fresh, relative);
+        if (entry) { entry.state = 'forgotten'; entry.withdrawn = !!entry.noteId; delete entry.pending; await fresh.save(); }
+      }, { synchronize: false });
+      this.jobs.add(cleanup);
+      void cleanup.finally(() => this.jobs.delete(cleanup)).catch(() => undefined);
+      if (!writing) await cleanup;
+      return;
+    }
     for (const suffix of ['', '.meta.json']) {
       if (await session.text(relative + suffix, true) !== undefined) await unlink(session.file(relative + suffix));
     }
@@ -95,14 +116,17 @@ export class CompanionMemoryDocuments {
       if (entry?.pending?.kind === 'record') {
         const source = await session.request({ type: 'memory.sources.filter', companionId: session.owner.id, conversationId: entry.conversationId!, ids: [entry.pending.sourceMessageId!] });
         if (!source.memorySources?.length || hash(source.memorySources[0]!.content) !== entry.pending.sourceChecksum) {
-          await this.remove(session, relative); entry.state = 'forgotten'; await session.save(); throw new Error('文档原消息已变化或已撤回。');
+          await this.remove(session, relative);
+          if (!session.readOnly) { entry.state = 'forgotten'; await session.save(); }
+          throw new Error('文档原消息已变化或已撤回。');
         }
       }
       return undefined;
     }
     const result = (await session.request({ type: 'memory.library.read', companionId: session.owner.id, id: entry.noteId, sourceLimit, sourceCursor })).memoryRead;
     if (!result) {
-      await this.remove(session, relative); entry.state = 'forgotten'; entry.withdrawn = true; delete entry.pending; await session.save();
+      await this.remove(session, relative);
+      if (!session.readOnly) { entry.state = 'forgotten'; entry.withdrawn = true; delete entry.pending; await session.save(); }
       throw new Error('日记来源已经失效，旧文档已撤回。');
     }
     return result;
@@ -127,6 +151,7 @@ export class CompanionMemoryDocuments {
   private async read(session: MemoryLibraryDocumentSession, relative: string, sourceLimit = 30, sourceCursor?: number): Promise<CompanionMemoryDocumentRead> {
     memoryLibraryPathParts(relative);
     if (!isDocument(path.posix.basename(relative))) throw new Error('只能读取 Markdown 或纯文本记忆文档。');
+    const readVersion = session.readOnly ? session.readVersion(relative) : undefined;
     const timeline = relative.startsWith('时间线/') && path.posix.basename(relative).startsWith('VCP-');
     if (timeline && !await session.timelineValid(relative)) {
       await this.remove(session, relative); throw Object.assign(new Error('自动时间线的原始来源已经变化，旧文档已撤回。'), { code: 'MEMORY_DOCUMENT_WITHDRAWN' });
@@ -137,13 +162,25 @@ export class CompanionMemoryDocuments {
     if (content.length > 2_000_000) throw new Error('文档超过 200 万字符阅读上限，请在系统文件管理器中拆分。');
     const info = await lstat(session.file(relative));
     if (ledger) {
-      const fresh = await this.authorized(session, relative, sourceLimit, sourceCursor);
-      if (!fresh || fresh.memory.version !== ledger.memory.version) throw new Error('日记在读取过程中已修订，请重新载入。');
-    }
-    if (timeline && !await session.timelineValid(relative)) {
-      await this.remove(session, relative); throw Object.assign(new Error('自动时间线的来源在读取过程中变化，旧文档已撤回。'), { code: 'MEMORY_DOCUMENT_WITHDRAWN' });
+      const entry = session.manifest.files[relative];
+      if ((entry?.version !== ledger.memory.version || entry?.state === 'projecting') && hash(content) !== hash(ledger.memory.content)) {
+        throw Object.assign(new Error('宿主日记已经更新，文档正在同步，请稍后重新读取。'), { code: 'MEMORY_DOCUMENT_WITHDRAWN' });
+      }
     }
     const tagStatus = ledger ? (await session.request({ type: 'memory.tags.status', companionId: session.owner.id, noteId: ledger.memory.id })).memoryTagStatus : undefined;
+    if (session.readOnly && JSON.stringify(await session.currentEntry(relative)) !== JSON.stringify(session.manifest.files[relative])) {
+      throw Object.assign(new Error('文档在读取过程中已移动或重新登记，请重新读取。'), { code: 'MEMORY_DOCUMENT_WITHDRAWN' });
+    }
+    if (timeline && !await session.timelineValid(relative, hash(content))) {
+      await this.remove(session, relative); throw Object.assign(new Error('自动时间线的来源在读取过程中变化，旧文档已撤回。'), { code: 'MEMORY_DOCUMENT_WITHDRAWN' });
+    }
+    // Keep authority last: tag status and the latest manifest may themselves
+    // yield while the original source is withdrawn.
+    const fresh = await this.authorized(session, relative, sourceLimit, sourceCursor);
+    if (ledger && (!fresh || fresh.memory.version !== ledger.memory.version)) throw new Error('日记在读取过程中已修订，请重新载入。');
+    if (session.readOnly && session.readVersion(relative) !== readVersion) {
+      throw Object.assign(new Error('文档在读取过程中重新发布，请重新读取。'), { code: 'MEMORY_DOCUMENT_WITHDRAWN' });
+    }
     return { document: this.describe(relative, content, info.mtime.toISOString(), ledger?.memory, session.manifest.files[relative], info.birthtimeMs > 0 ? info.birthtime.toISOString() : undefined), content,
       ...(tagStatus ? { tagStatus } : {}),
       ...(ledger ? { memory: ledger.memory } : {}), sources: ledger?.sources ?? [], hasMoreSources: ledger?.hasMore ?? false,

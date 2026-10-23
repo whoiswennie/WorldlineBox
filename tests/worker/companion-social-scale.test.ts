@@ -5,6 +5,7 @@ import BetterSqlite3 from 'better-sqlite3';
 import { expect, it } from 'vitest';
 import { CompanionsStore, type CompanionConnection, type CompanionSeed } from '../../src/companions/store';
 import { companionStorageResponseSchema } from '../../src/shared/companion-storage';
+import { companionSearchFacet, companionSearchTokens } from '../../src/shared/companion-search';
 const Database = BetterSqlite3 as { new(filename: string): CompanionConnection };
 
 it('queries a real 20,000-person ego network without truncation, large IPC payloads, world loading or losing off-page live events', () => {
@@ -18,15 +19,23 @@ it('queries a real 20,000-person ego network without truncation, large IPC paylo
     store.close(); store = undefined;
     // Synthetic authority records in a closed, disposable SQLite fixture. Counts are never mocked.
     const db = new Database(filename);
-    db.transaction(() => {
+    db.function('companion_search_tokens', { deterministic: true }, value => companionSearchTokens(String(value)));
+    db.function('companion_search_facet', { deterministic: true }, value => companionSearchFacet(String(value)));
+    try { db.transaction(() => {
       const companion = db.prepare('INSERT INTO companions(id,data) VALUES(?,?)'), room = db.prepare("INSERT INTO conversations(id,kind,title,updated_at,hidden_at) VALUES(?,'group',?,?,?)"), member = db.prepare('INSERT INTO conversation_members VALUES(?,?)'), social = db.prepare('INSERT INTO companion_social_conversations VALUES(?,?)');
       const now = new Date().toISOString();
+      const historical = new Date(Date.now() - 2 * 86400000).toISOString();
+      const message = db.prepare("INSERT INTO messages(id,conversation_id,author_id,kind,content,created_at,status) VALUES(?,?,'alice','text','之前实际打过招呼。',?,'sent')");
+      const socialMessage = db.prepare('INSERT INTO companion_social_messages(message_id,conversation_id,sequence,virtual_at,recipient_ids) SELECT id,conversation_id,sequence,?,? FROM messages WHERE id=?');
+      const search = db.prepare("INSERT INTO companion_social_search(rowid,content,title) SELECT sequence,'之前实际打过招呼','真实关系记录' FROM messages WHERE id=?");
       for (let index = 0; index < 20000; index++) {
         const id = 'scale_' + String(index).padStart(5, '0'), roomId = 'scale_room_' + index;
         companion.run(id, JSON.stringify({ ...template, id, name: '关系对象 ' + index, avatar: 'custom', active: false, builtin: false }));
         room.run(roomId, '真实关系记录 ' + index, now, now); member.run(roomId, 'alice'); member.run(roomId, id); social.run(roomId, 'alice|' + id);
+        const messageId = 'historical_greeting_' + index;
+        message.run(messageId, roomId, historical); socialMessage.run(historical, JSON.stringify([id]), messageId); search.run(messageId);
       }
-    }).immediate(); db.close();
+    }).immediate(); } finally { db.close(); }
     store = new CompanionsStore(filename, seeds);
     const context = store.request({ type: 'state', includeHidden: true, activeOnly: true, conversationId: 'scale_room_19999' }).state!;
     expect(context.companions.map(role => role.id)).toEqual(['alice']); expect(context.conversations.map(room => room.id)).toEqual(['scale_room_19999']);

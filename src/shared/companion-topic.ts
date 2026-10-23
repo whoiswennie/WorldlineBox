@@ -38,7 +38,9 @@ export const companionTopicPublicCommands = [create, list, read, update, activat
 /** The reader is bound by Main; a model never chooses another participant's private state. */
 export const companionTopicStorageCommands = [create.extend({ readerId: id }), list.extend({ readerId: id }), read.extend({ readerId: id }),
   update.extend({ readerId: id, maintenance: z.boolean().optional() }), activate.extend({ readerId: id }), pause.extend({ readerId: id }), resume.extend({ readerId: id }), close.extend({ readerId: id }),
-  reopen.extend({ readerId: id }), remove.extend({ readerId: id }), fork.extend({ readerId: id }), join.extend({ readerId: id }), leave.extend({ readerId: id })] as const;
+  reopen.extend({ readerId: id }), remove.extend({ readerId: id }), fork.extend({ readerId: id }), join.extend({ readerId: id }), leave.extend({ readerId: id }),
+  z.strictObject({ type: z.literal('topic.sources.valid'), conversationId: id, topicId: id, readerId: id, sourceMessageIds: z.array(id).max(256) }),
+] as const;
 export const companionTopicArgumentsSchema = z.union(companionTopicPublicCommands.map(command => {
   const { type, conversationId: _conversationId, ...shape } = command.shape; void _conversationId;
   return z.strictObject({ ...shape, action: z.literal(type.value.slice('topic.'.length)) });

@@ -54,6 +54,52 @@ it('anchors replies and paginated history to the original topic while ordinary c
   expect(() => f.store.appendMessage({ conversationId: f.room.id, authorId: 'alice', topicId: second.id, content: '错误回复', replyToId: source.id })).toThrow('保留实际来源');
   expect(f.store.request({ type: 'memory.sources.filter', companionId: 'alice', conversationId: f.room.id, ids: [source.id] }).memorySources?.[0]?.id).toBe(source.id);
 });
+it('projects withdrawn checkpoint sources per reader while preserving canonical shared state, other owners and source-free settings', () => {
+  const f = fixture(), topic = f.create('来源隔离');
+  for (const readerId of ['alice', 'bob']) f.store.request({ type: 'topic.join', conversationId: f.room.id, topicId: topic.id, readerId });
+  const source = f.store.appendMessage({ conversationId: f.room.id, authorId: 'user', content: 'CHECKPOINT_ORIGINAL_SECRET', topicId: topic.id });
+  const update = (readerId: string, patch: { shared?: { summary: string; sourceMessageIds: string[] }; workingState?: { summary: string; sourceMessageIds: string[]; state?: Record<string, unknown> } }) => {
+    const current = f.store.request({ type: 'topic.read', conversationId: f.room.id, topicId: topic.id, readerId }).topic!;
+    return f.store.request({ type: 'topic.update', conversationId: f.room.id, topicId: topic.id, readerId, expectedRevision: current.revision, patch });
+  };
+  update('user', { shared: { summary: 'SHARED_DERIVED_SECRET', sourceMessageIds: [source.id] } });
+  update('alice', { workingState: { summary: 'ALICE_DERIVED_SECRET', sourceMessageIds: [source.id] } });
+  update('bob', { workingState: { summary: 'BOB_PRIVATE_STATE', sourceMessageIds: [source.id] } });
+  f.store.request({ type: 'memory.forget', companionId: 'alice', conversationId: f.room.id, sourceMessageIds: [source.id] });
+  const read = (readerId: string) => f.store.request({ type: 'topic.read', conversationId: f.room.id, topicId: topic.id, readerId });
+  expect(read('alice').topicState?.shared).toBeUndefined(); expect(read('alice').topicState?.workingState).toBeUndefined();
+  expect(read('bob').topicState?.shared?.summary).toBe('SHARED_DERIVED_SECRET');
+  expect(read('bob').topicState?.workingState?.summary).toBe('BOB_PRIVATE_STATE');
+  expect(JSON.stringify(read('bob'))).not.toContain('ALICE_DERIVED_SECRET');
+  expect(read('user').topicState?.shared?.summary).toBe('SHARED_DERIVED_SECRET');
+  expect(f.store.getMessage(source.id).content).toBe('CHECKPOINT_ORIGINAL_SECRET');
+  expect(f.store.request({ type: 'topic.sources.valid', conversationId: f.room.id, topicId: topic.id, readerId: 'alice', sourceMessageIds: [source.id] }).topicSourcesValid).toBe(false);
+  expect(f.store.request({ type: 'topic.sources.valid', conversationId: f.room.id, topicId: topic.id, readerId: 'bob', sourceMessageIds: [source.id] }).topicSourcesValid).toBe(true);
+  const recall = (companionId: string, query = '') => f.store.request({ type: 'memory.world_query', companionId, conversationId: f.room.id, category: 'topics', topicId: topic.id, query, limit: 10 });
+  expect(JSON.stringify(recall('alice'))).not.toContain('SHARED_DERIVED_SECRET');
+  expect(JSON.stringify(recall('alice'))).not.toContain('ALICE_DERIVED_SECRET');
+  expect(recall('alice', 'SHARED_DERIVED_SECRET').worldKnowledge?.items).toEqual([]);
+  expect(JSON.stringify(recall('bob'))).toContain('SHARED_DERIVED_SECRET');
+  expect(JSON.stringify(recall('bob'))).toContain('BOB_PRIVATE_STATE');
+  update('user', { shared: { summary: '主持人设置的独立规则', sourceMessageIds: [] } });
+  update('alice', { workingState: { summary: '独立的游戏设定', sourceMessageIds: [], state: { sourceMessageIds: [source.id] } } });
+  expect(read('alice').topicState?.shared?.summary).toBe('主持人设置的独立规则');
+  expect(read('alice').topicState?.workingState?.summary).toBe('独立的游戏设定');
+  expect(JSON.stringify(recall('alice'))).toContain('独立的游戏设定');
+});
+it('keeps shared checkpoint access for late invitees without granting its original chat messages', () => {
+  const f = fixture();
+  f.store.request({ type: 'conversation.update', id: f.room.id, memberIds: ['alice'] });
+  const topic = f.create('迟到的参与者');
+  const source = f.store.appendMessage({ conversationId: f.room.id, topicId: topic.id, authorId: 'user', content: 'SHARED_ORIGIN_BEFORE_BOB_JOINED' });
+  f.store.request({ type: 'conversation.update', id: f.room.id, memberIds: ['alice', 'bob'] });
+  const current = f.store.request({ type: 'topic.read', conversationId: f.room.id, topicId: topic.id, readerId: 'user' }).topic!;
+  f.store.request({ type: 'topic.update', conversationId: f.room.id, topicId: topic.id, readerId: 'user', expectedRevision: current.revision,
+    patch: { shared: { summary: '已公开的游戏阶段', sourceMessageIds: [source.id] }, invitedIds: ['alice', 'bob'] } });
+  expect(f.store.request({ type: 'memory.sources.filter', companionId: 'bob', conversationId: f.room.id, ids: [source.id] }).memorySources).toEqual([]);
+  expect(f.store.request({ type: 'topic.read', conversationId: f.room.id, topicId: topic.id, readerId: 'bob' }).topicState?.shared?.summary).toBe('已公开的游戏阶段');
+  expect(f.store.request({ type: 'topic.sources.valid', conversationId: f.room.id, topicId: topic.id, readerId: 'bob', sourceMessageIds: [source.id] })).toEqual({ ok: true, topicSourcesValid: true });
+});
 it('lets the human manage companion-only topics without joining them or reading another participant private state', () => {
   const f = fixture();
   const topic = f.store.request({ type: 'topic.create', conversationId: f.room.id, readerId: 'alice', participantIds: ['bob'], title: '伙伴自己的游戏', kind: 'game' }).topic!;
