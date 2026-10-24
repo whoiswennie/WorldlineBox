@@ -1188,3 +1188,11 @@ e01cbfc实际构建的测试包位于out/WorldlineBox-win32-x64/WorldlineBox.exe
 本局原生 VCP 自动完成 47 次 capture、提交 50 篇日记、53 次 indexed outbox 确认；五位数据库经历条数为 122/35/39/47/40，共 283，均归属现实日期 2026-10-25。这里是实际日历查询计数，不冒充本轮逐文件磁盘复核。DSH 能力可用但演员没有选择调用，taskRuns=0；配置一致性守卫为 true，不能把预热任务列为本局真实思考任务，也不复述为本局验证了 DSH。真实 DSH 功能证明仍是 16.67 中的独立活动实际任务。
 
 构建在复验结束前过早开始，发现上述合同缺口后正常停止该构建，不把中断算成功。native-final-build-interruption.json 保留精确进程身份、停止树和原因；更新合同冻结后重新执行官方 release:package 与 make:inno。完整对局和总体内容验收保持未通过，官方新包、界面复核及推送结果随后登记。
+
+### 16.73 本轮最终包、实际界面与远程记录（2026-10-25）
+
+最终产品源码提交为 fcf3feb8e95127a06ba86447422ef669869d5736（包含前序03e3adb），已推送并核对远程分支哈希。随后只补交付记录，不再改产品源码。官方 npm run release:package 自然退出0，原版129个VCP文件、164项依赖绑定、原内置EmbeddingGemma及打包运行时校验通过；npm run make:inno 自然退出0，实际697.281秒。安装器 out/make/inno/WorldlineBoxSetup.exe 为1198673923字节，SHA256 fab9b70cc0f20a483d0c5078d0a05fd9d4d17014f1722b79933c190eca39722a；app.asar 为607359049字节，SHA256 3d28197e3514b32bd79ea072794914be9f91c90827a97880c677c3843ba53448，界面检查结束后再次核对未变。
+
+该实际ASAR的唯一经历界面检查1/1通过、31.3秒、正常退出0。使用真实日程及世界事件，核对现实同步、日期、详情、改名与页面重载持久化、不同伙伴隔离、明暗主题；本轮没有进行完整应用重启用例。Root查看两张实际截图，三栏大弹窗、同秒多条时间线、标题、详情与留存资料显示正常，无横向溢出。截图及native-final-atomic-ui.json保存在项目外归档，不能据此推断完整狼人杀或所有模型质量通过。
+
+新增校验报告及Playwright输出已分别移至外部归档的native-final-validation、native-final-atomic-playwright-results，原失败及中断均保留。官方临时portable-release导出已完成清理，所需运行时、模型、构建输入和最终安装器保留；当前工作区无额外源码变化。包、界面与清理凭据分别见外部native-final-delivery-binary.json、native-final-atomic-ui.json、native-final-cleanup-index.json及native-final-atomic-ui-cleanup.json。完整狼人杀和总体内容验收仍未通过，overallAcceptanceComplete为false，长期目标不标为全部完成；不将本轮最后的合同修改冒充已完成整局实模验证。最后文档提交及远程一致性另记native-final-delivery-git.json。
