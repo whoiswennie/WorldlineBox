@@ -9,7 +9,7 @@ import type { CompanionWorldActor, CompanionWorldSnapshot } from '../../src/shar
 import type { WorldlineBoxLlmApi } from '../../src/shared/llm';
 import type { DshLauncherRequest, DshLauncherResponse, DshLauncherState } from '../../src/shared/dsh-launcher';
 import type { DshTaskRecord } from '../../src/shared/dsh-tasks';
-import { removeCompanionTestDirectory, ensureCompanionTestWorkspace, electronLaunchEnv, resolveElectronAppPath, resolveElectronExecutablePath } from './electron-test-helpers';
+import { removeCompanionTestDirectory, ensureCompanionTestWorkspace, electronLaunchEnv, preparePackagedCompanionLaunch, resolveElectronLaunchOptions } from './electron-test-helpers';
 import { openCompanionWorldWindow } from './companion-world-window-helpers';
 import { shareWorldHomeAddress, walkIntoWorldHome } from './companion-world-address-helpers';
 
@@ -69,10 +69,11 @@ function cleanup(root: string) {
   removeCompanionTestDirectory(resolved);
 }
 async function launch(profile: string) {
-  const application = await electron.launch({ executablePath: resolveElectronExecutablePath(), args: [resolveElectronAppPath()], cwd: resolveElectronAppPath(),
+  const application = await electron.launch({ ...resolveElectronLaunchOptions(),
     env: electronLaunchEnv({ WORLDLINEBOX_E2E: '1', WORLDLINEBOX_E2E_USER_DATA_PATH: profile }, { gpu: 'software' }) });
   const page = await application.firstWindow(), nativeWindow = await application.browserWindow(page);
   await nativeWindow.evaluate(win => { win.unmaximize(); win.setSize(1440, 900); win.setFocusable(false); win.setOpacity(0); win.webContents.setBackgroundThrottling(false); win.hide(); });
+  await preparePackagedCompanionLaunch(application, profile);
   await ensureCompanionTestWorkspace(page);
   await expect(page.locator('[data-application-module="dsh"]')).toHaveAttribute('aria-current', 'page', { timeout: 60_000 });
   await page.locator('[data-application-module="companions"]').click(); return { application, page };
@@ -331,7 +332,9 @@ test('world save resumes an actual route, peer relationship and visit after proc
     expect(restoredActor.destinationId).toBe(savedActor.destinationId);
     expect(restoredActor.sceneId).not.toBe(allowed.destination!.sceneId);
     expect(restoredActor.route.length).toBeGreaterThan(0);
-    expect(restoredActor.route.length).toBeLessThan(savedActor.route.length);
+    // Position advancement is checked above; a fractional step need not consume
+    // a complete waypoint after the actual turn and process restart.
+    expect(restoredActor.route.length).toBeLessThanOrEqual(savedActor.route.length);
     expect(restoredActor.route).toEqual(savedActor.route.slice(savedActor.route.length - restoredActor.route.length));
     expect(restoredActor.route.every(point => point.sceneId === savedActor.sceneId)).toBe(true);
     expect(restoredActor.activity).not.toBe('working');
@@ -347,29 +350,77 @@ test('world save resumes an actual route, peer relationship and visit after proc
     await expect(modal.locator('canvas')).toHaveAttribute('data-world-ready', 'true');
     await worldPage.screenshot({ path: path.join(artifacts, 'verified-world-save-restart.png') });
     await modal.getByRole('button', { name: '关闭伙伴世界', exact: true }).click();
-    // A different, real in-flight reply must survive as a draft, never acquire a
-    // successful result merely because the world clock advances while offline.
+    // Safe model-only work resumes automatically in its original bubble. Offline
+    // time alone cannot supply a completed response: the new stream must finish.
     const partialText = '存档中断验收：请核对这句文字，等待我确认后再继续。';
     const partialSource = (await request(page, { type: 'message.send', conversationId: guestRoom.id, content: partialText, clientId: randomUUID() })).message!;
     await expect.poll(() => provider.requests.filter(request => request.purpose === 'task_reply' && request.sourceId === partialSource.id).length, { timeout: 40000 }).toBe(1);
     await expect.poll(async () => (await request(page, { type: 'messages', conversationId: guestRoom.id, limit: 100 })).messages!.some(message => message.replyToId === partialSource.id && message.replyDraft?.text === provider.firstText), { timeout: 10000 }).toBe(true);
+    const partialDraftsBefore = (await request(page, { type: 'messages', conversationId: guestRoom.id, limit: 100 })).messages!.filter(message => message.replyToId === partialSource.id && message.authorId === guestId);
+    expect(partialDraftsBefore).toHaveLength(1); const originalDraft = partialDraftsBefore[0]!;
+    expect(originalDraft.isReplyDraft).toBe(true); expect(originalDraft.content).not.toContain(provider.finalText);
     const partialBefore = await snapshot(page);
     expect(partialBefore.works.find(work => work.companionId === guestId)?.status).toBe('ready');
     await application.close(); application = undefined;
     await new Promise(resolve => setTimeout(resolve, 1200));
     started = await launch(profile); application = started.application; page = started.page;
     await page.locator('[data-companion-conversation="' + guestRoom.id + '"]').click();
+    await expect.poll(() => provider.requests.filter(request => request.purpose === 'task_reply' && request.sourceId === partialSource.id).length, { timeout: 40000 }).toBe(2);
+    await expect.poll(async () => (await request(page, { type: 'messages', conversationId: guestRoom.id, limit: 100 })).messages!.find(message => message.id === originalDraft.id)?.replyDraft?.text, { timeout: 10000 }).toBe(provider.firstText);
     const partialAfter = await snapshot(page);
-    expect(partialAfter.works).toHaveLength(0);
+    expect(partialAfter.works.filter(work => work.companionId === guestId)).toEqual([expect.objectContaining({ kind: 'chat', status: 'ready' })]);
     expect(actor(partialAfter).activity).not.toBe('working');
-    await page.waitForTimeout(1500);
-    expect(provider.requests.filter(request => request.purpose === 'task_reply' && request.sourceId === partialSource.id)).toHaveLength(1);
+    const resumedDrafts = (await request(page, { type: 'messages', conversationId: guestRoom.id, limit: 100 })).messages!.filter(message => message.replyToId === partialSource.id && message.authorId === guestId);
+    expect(resumedDrafts).toHaveLength(1); expect(resumedDrafts[0]!.id).toBe(originalDraft.id);
+    expect(resumedDrafts[0]!.isReplyDraft).toBe(true); expect(resumedDrafts[0]!.content).not.toContain(provider.finalText);
+    provider.finish(partialText);
+    await expect.poll(async () => (await request(page, { type: 'messages', conversationId: guestRoom.id, limit: 100 })).messages!.filter(message => message.replyToId === partialSource.id && message.authorId === guestId && !message.isReplyDraft && message.content.includes(provider.finalText)).length, { timeout: 10000 }).toBe(1);
+    await expect.poll(async () => (await snapshot(page)).works.length).toBe(0);
     const partialReplies = (await request(page, { type: 'messages', conversationId: guestRoom.id, limit: 100 })).messages!.filter(message => message.replyToId === partialSource.id && message.authorId === guestId);
-    expect(partialReplies).toHaveLength(1); const partialReply = partialReplies[0]!; expect(partialReply.isReplyDraft).toBe(true);
-    expect(partialReply.replyDraft?.text).toBe(provider.firstText); expect(partialReply.content).not.toContain(provider.finalText);
-    await expect(page.locator('[data-companion-message="' + partialReply.id + '"]')).toContainText('回复已中断');
+    expect(partialReplies).toHaveLength(1); const partialReply = partialReplies[0]!;
+    expect(partialReply.id).toBe(originalDraft.id); expect(partialReply.isReplyDraft).not.toBe(true);
+    expect(partialReply.replyProgress?.phase).toBe('completed'); expect(partialReply.content.split(provider.finalText)).toHaveLength(2);
+    expect(provider.requests.filter(request => request.purpose === 'task_reply' && request.sourceId === source.id)).toHaveLength(1);
+    expect(provider.requests.filter(request => request.purpose === 'task_reply' && request.sourceId === partialSource.id)).toHaveLength(2);
+    const partialCompleted = await snapshot(page);
+
+    // Explicit cancellation is a different durable terminal state: it must not
+    // be re-enqueued merely because the process starts again.
+    const cancelledText = '存档取消验收：请开始核对这句文字，本轮随后会明确取消。';
+    const cancelledSource = (await request(page, { type: 'message.send', conversationId: guestRoom.id, content: cancelledText, clientId: randomUUID() })).message!;
+    await expect.poll(() => provider.requests.filter(request => request.purpose === 'task_reply' && request.sourceId === cancelledSource.id).length, { timeout: 40000 }).toBe(1);
+    await expect.poll(async () => (await request(page, { type: 'messages', conversationId: guestRoom.id, limit: 100 })).messages!.some(message => message.replyToId === cancelledSource.id && message.replyDraft?.text === provider.firstText), { timeout: 10000 }).toBe(true);
+    const cancelledDraftsBefore = (await request(page, { type: 'messages', conversationId: guestRoom.id, limit: 100 })).messages!.filter(message => message.replyToId === cancelledSource.id && message.authorId === guestId);
+    expect(cancelledDraftsBefore).toHaveLength(1); const cancelledDraft = cancelledDraftsBefore[0]!;
+    expect(cancelledDraft.replyProgress?.workId).toBeDefined();
+    await request(page, { type: 'reply.cancel', conversationId: guestRoom.id, workId: cancelledDraft.replyProgress!.workId! });
+    await expect.poll(async () => (await request(page, { type: 'messages', conversationId: guestRoom.id, limit: 100 })).messages!.find(message => message.id === cancelledDraft.id)?.replyProgress?.phase, { timeout: 10000 }).toBe('cancelled');
+    await expect.poll(async () => (await snapshot(page)).works.length).toBe(0);
+    const cancelledBefore = await snapshot(page);
+    await application.close(); application = undefined;
+    await new Promise(resolve => setTimeout(resolve, 1200));
+    started = await launch(profile); application = started.application; page = started.page;
+    await page.locator('[data-companion-conversation="' + guestRoom.id + '"]').click();
+    await page.waitForTimeout(1500);
+    const cancelledAfter = await snapshot(page);
+    expect(cancelledAfter.works).toHaveLength(0); expect(actor(cancelledAfter).activity).not.toBe('working');
+    expect(provider.requests.filter(request => request.purpose === 'task_reply' && request.sourceId === cancelledSource.id)).toHaveLength(1);
+    expect(provider.requests.filter(request => request.purpose === 'task_reply' && request.sourceId === source.id)).toHaveLength(1);
+    expect(provider.requests.filter(request => request.purpose === 'task_reply' && request.sourceId === partialSource.id)).toHaveLength(2);
+    const cancelledReplies = (await request(page, { type: 'messages', conversationId: guestRoom.id, limit: 100 })).messages!.filter(message => message.replyToId === cancelledSource.id && message.authorId === guestId);
+    expect(cancelledReplies).toHaveLength(1); expect(cancelledReplies[0]!.id).toBe(cancelledDraft.id);
+    expect(cancelledReplies[0]!.isReplyDraft).toBe(true); expect(cancelledReplies[0]!.replyProgress?.phase).toBe('cancelled');
+    expect(cancelledReplies[0]!.replyDraft?.text).toBe(provider.firstText); expect(cancelledReplies[0]!.content).not.toContain(provider.finalText);
+    for (const [completedSource, messageId] of [[source, undefined], [partialSource, originalDraft.id]] as const) {
+      const completedReplies = (await request(page, { type: 'messages', conversationId: guestRoom.id, limit: 100 })).messages!.filter(message => message.replyToId === completedSource.id && message.authorId === guestId);
+      expect(completedReplies).toHaveLength(1); expect(completedReplies[0]!.isReplyDraft).not.toBe(true);
+      expect(completedReplies[0]!.content).toContain(provider.finalText);
+      if (messageId) expect(completedReplies[0]!.id).toBe(messageId);
+    }
+    await expect(page.locator('[data-companion-message="' + cancelledDraft.id + '"]').locator('[data-reply-stage="cancelled"]')).toBeVisible();
     await page.screenshot({ path: path.join(artifacts, 'verified-world-save-interrupted.png') });
-    const completeEvidence = { ...evidence, partialSourceId: partialSource.id, partialBefore, partialAfter, partialReplies };
+    const completeEvidence = { ...evidence, partialSourceId: partialSource.id, partialDraftsBefore, partialBefore, partialAfter, resumedDrafts, partialReplies, partialCompleted,
+      cancelledSourceId: cancelledSource.id, cancelledDraftsBefore, cancelledBefore, cancelledAfter, cancelledReplies };
     expect(provider.errors).toEqual([]);
     expect(provider.socialReviews.length).toBeGreaterThan(0);
     writeFileSync(path.join(artifacts, 'verified-world-save-restart.json'), JSON.stringify(completeEvidence, null, 2));
