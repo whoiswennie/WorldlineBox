@@ -23,11 +23,15 @@ export const quantityDisjointCapacity = 1000;
 const viewSchema = z.enum(['focus', 'before', 'after', 'source_identity']);
 const evidenceRefSchema = z.strictObject({ view: viewSchema, clauseIndex: z.number().int().nonnegative() });
 export const quantityAuthorAllProjectionSchema = z.strictObject({
-  statement: z.enum(['affirmative_whole_set', 'explicit_not_all', 'no_whole_set_assertion', 'ambiguous']),
   coverage: z.literal('whole_focus'),
   reviewedFocusRef: z.strictObject({ view: z.literal('focus'), clauseIndex: z.number().int().nonnegative() }),
+  domainScope: z.enum(['whole_collection_candidate', 'explicit_partitive_scope', 'ambiguous']),
+  exhaustivity: z.enum(['exhaustive', 'explicit_not_exhaustive', 'not_asserted', 'ambiguous']),
+  holding: z.enum(['affirmed', 'denied', 'not_asserted', 'ambiguous']),
+  opposition: z.enum(['none_in_reviewed_scope', 'competing_whole_possession_assertions', 'unresolved_possible_competition']),
   witnesses: z.array(z.strictObject({
-    role: z.enum(['whole_set_quantifier_or_collective_domain', 'scoped_possession_predicate', 'negative_or_limited_scope', 'target_scope']),
+    role: z.enum(['domain_reference', 'exhaustive_coverage_operator', 'scoped_possession_predicate',
+      'negative_or_limited_scope', 'partitive_domain_restriction', 'target_scope']),
     evidenceRef: z.strictObject({ view: z.enum(['focus', 'before', 'after']), clauseIndex: z.number().int().nonnegative() }), quote: z.string().min(1).max(600),
   })).max(6),
 });
@@ -216,33 +220,58 @@ function compatible(basis: Basis, raw: Axes, target: QuantityDisjointCheck['targ
   }
 }
 
-/** Projection concerns what the whole focus asserts, not whether possession
- * of the entire inventory is possible in the world. Literal spans bind the
- * witness; interpreting its quantified domain remains the independent reader's
- * responsibility, never a keyword or numeral-equality rule. */
+/** One author IR produces one statement. Domain reference is not an exhaustive
+ * operator, and an operator must govern the very same holding proposition.
+ * Literal roles certify declared prerequisites, not natural-language truth. */
+export function deriveQuantityAuthorAllProjection(projection: QuantityAuthorAllProjection, clauseIndex: number) {
+  type Statement = 'affirmative_whole_set' | 'explicit_not_all' | 'no_whole_set_assertion' | 'ambiguous';
+  const result = (statement: Statement, failure?: string) => ({ statement, ...(failure ? { failure } : {}) });
+  const has = (role: QuantityAuthorAllProjection['witnesses'][number]['role']) => projection.witnesses.some(w => w.role === role);
+  const focus = projection.witnesses.filter(w => w.evidenceRef.view === 'focus' && w.evidenceRef.clauseIndex === clauseIndex);
+  if (projection.reviewedFocusRef.clauseIndex !== clauseIndex || !focus.length) return result('ambiguous', 'all_projection_unwitnessed');
+  // A relevant competing assertion takes precedence over every absence branch.
+  // Uncertainty in an unrelated domain/holding axis is not itself opposition.
+  if (projection.opposition !== 'none_in_reviewed_scope') return result('ambiguous', 'all_projection_opposed_or_unresolved_scope');
+  const operator = has('exhaustive_coverage_operator'), predicate = has('scoped_possession_predicate');
+  const negative = has('negative_or_limited_scope');
+  if (projection.exhaustivity === 'not_asserted' && (negative || operator)
+    || projection.holding === 'not_asserted' && (predicate || negative || operator
+      || projection.exhaustivity === 'exhaustive' || projection.exhaustivity === 'explicit_not_exhaustive')
+    || projection.exhaustivity === 'exhaustive' && projection.holding === 'affirmed' && negative)
+    return result('ambiguous', 'all_projection_inconsistent_ir');
+  const focusStrong = focus.some(w => w.role !== 'target_scope');
+  // These are positive, scope-bound absence interpretations, not unknown axes.
+  // A universal nonholding property cannot be cross-composed with numeric holding.
+  if (projection.exhaustivity === 'not_asserted' || projection.holding === 'not_asserted')
+    return result('no_whole_set_assertion');
+  if (projection.exhaustivity === 'explicit_not_exhaustive'
+    || projection.exhaustivity === 'exhaustive' && projection.holding === 'denied')
+    return negative && focusStrong ? result('explicit_not_all') : result('ambiguous', 'all_projection_unwitnessed');
+  if (projection.exhaustivity === 'exhaustive' && projection.holding === 'affirmed') {
+    if (!operator || !predicate || !has('domain_reference') || !focusStrong) return result('ambiguous', 'all_projection_unwitnessed');
+    if (projection.domainScope === 'whole_collection_candidate') return result('affirmative_whole_set');
+    if (projection.domainScope === 'explicit_partitive_scope') return has('partitive_domain_restriction')
+      ? result('no_whole_set_assertion') : result('ambiguous', 'all_projection_unwitnessed');
+  }
+  return result('ambiguous');
+}
+
+/** Projection concerns the author assertion, not whether holding the entire
+ * inventory is possible. Only the host derives a statement from the blind IR;
+ * later identity/voice/time exemptions cannot rewrite that interpretation. */
 export function quantityAuthorAllProjectionAdmission(candidate: Candidate, raw: Axes) {
   const projection = candidate.authorAllProjection;
-  const finish = (safeAbsence: boolean, conflictsWithRaw: boolean, failure?: string) => ({ safeAbsence, conflictsWithRaw, failure,
-    receipt: { protocol: 'quantity_author_all_projection_v1', producerPhase: candidate.authorAllPhase, logicalPair: candidate.authorAllPair,
+  const derived = projection ? deriveQuantityAuthorAllProjection(projection, candidate.clauseIndex)
+    : { statement: 'ambiguous' as const, failure: 'missing_author_projection' };
+  const failure = derived.failure;
+  const absence = !failure && ['no_whole_set_assertion', 'explicit_not_all'].includes(derived.statement);
+  const safeAbsence = absence && raw.relation !== 'affirmed_all', conflictsWithRaw = absence && raw.relation === 'affirmed_all';
+  return { safeAbsence, conflictsWithRaw, failure, derivedStatement: derived.statement,
+    receipt: { protocol: 'quantity_author_all_projection_v2', producerPhase: candidate.authorAllPhase, logicalPair: candidate.authorAllPair,
       inputChecksum: candidate.authorAllInputChecksum, parsedOutputChecksum: candidate.authorAllOutputChecksum,
-      projection, literalWitnessLocations: candidate.authorAllWitnessLocations, rawClassification: { ...raw },
+      projection, derivedStatement: derived.statement, literalWitnessLocations: candidate.authorAllWitnessLocations, rawClassification: { ...raw },
       safeAbsence, conflictsWithRaw, ...(failure ? { failure } : {}),
-      scope: 'Host-bound author-only syntax projection; not a fifth-reader exemption or source identity/mathematical proof.' } });
-  if (!projection) return finish(false, false, 'missing_author_projection');
-  const focusWitness = projection.witnesses.some(w => w.evidenceRef.view === 'focus'
-    && w.evidenceRef.clauseIndex === projection.reviewedFocusRef.clauseIndex);
-  // Canon identifies the inventory, never supplies a proposition that the
-  // proposed focus did not make. Strong witnesses must be actual proposal text.
-  const has = (role: QuantityAuthorAllProjection['witnesses'][number]['role']) => projection.witnesses.some(w => w.role === role);
-  const focusStrongWitness = projection.witnesses.some(w => w.evidenceRef.view === 'focus'
-    && w.evidenceRef.clauseIndex === projection.reviewedFocusRef.clauseIndex && w.role !== 'target_scope');
-  const witnessed = projection.statement === 'affirmative_whole_set'
-    ? focusStrongWitness && has('whole_set_quantifier_or_collective_domain') && has('scoped_possession_predicate')
-    : projection.statement === 'explicit_not_all' ? focusStrongWitness && has('negative_or_limited_scope')
-      : projection.statement === 'no_whole_set_assertion' ? projection.witnesses.length > 0 : true;
-  const failure = projection.statement !== 'ambiguous' && (!focusWitness || !witnessed) ? 'all_projection_unwitnessed' : undefined;
-  const absence = !failure && ['no_whole_set_assertion', 'explicit_not_all'].includes(projection.statement);
-  return finish(absence && raw.relation !== 'affirmed_all', absence && raw.relation === 'affirmed_all', failure);
+      scope: 'Host-derived author-only quantified-holding IR; literal witnesses are not source identity, semantic truth or mathematics.' } };
 }
 
 export function admitQuantityDisjointWaivers<T extends QuantityCollectionReview>(reviews: readonly T[], value: Waiver, input: QuantityDisjointInput,
@@ -266,9 +295,10 @@ export function admitQuantityDisjointWaivers<T extends QuantityCollectionReview>
                 : check.target.kind === 'number' && !['different_inventory', 'attributed_claim', 'question', 'hypothetical', 'earlier_history', 'future', 'member_role', 'count_role'].includes(review.basis)
                   ? 'number_projection_requires_independent_safe_or'
                 : check.target.kind === 'all' && !['different_inventory', 'attributed_claim', 'question', 'hypothetical', 'earlier_history', 'future'].includes(review.basis)
-                  ? candidate.authorAllProjection?.statement === 'affirmative_whole_set' ? 'whole_set_projection_incompatible_basis' : author.failure ?? 'all_projection_requires_independent_safe_or' : undefined;
+                  ? check.target.kind === 'all' && quantityAuthorAllProjectionAdmission(candidate, raw).derivedStatement === 'affirmative_whole_set'
+                    ? 'whole_set_projection_incompatible_basis' : author.failure ?? 'all_projection_requires_independent_safe_or' : undefined;
     const admitted = admissionFailure === undefined;
-    return { protocol: 'quantity_semantic_exemption_v5', inputChecksum: digest(JSON.stringify(input)), authorityChecksum: digest(JSON.stringify(authority)),
+    return { protocol: 'quantity_semantic_exemption_v6', inputChecksum: digest(JSON.stringify(input)), authorityChecksum: digest(JSON.stringify(authority)),
       checkIndex: review.checkIndex, candidateIndex: check.candidateIndex, target: check.target, verdict: review.verdict, basis: review.basis,
       evidenceRefs: review.evidenceRefs, admitted, ...(admissionFailure ? { admissionFailure } : {}), reason: review.reason,
       // These diagnostics stay host-side: neither prior axes nor arithmetic

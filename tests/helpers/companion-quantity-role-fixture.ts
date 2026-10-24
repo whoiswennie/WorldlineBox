@@ -1,14 +1,20 @@
 import type { TopicSourceQuantityReviewOptions } from '../../src/main/companions/topic-summary-quantity-review';
 
 type Infer = NonNullable<TopicSourceQuantityReviewOptions['verifyRoles']>;
-/** Explicit legacy test declaration only. This does not classify real text. */
+/** Explicit legacy test declaration only. Each old declared result is now a
+ * declared IR premise; this adapter never classifies or certifies real text. */
 export function declaredAllProjectionFixture(check: { evidence: Array<{ view: string; clauseIndex: number; text: string }> },
   statement: 'affirmative_whole_set' | 'explicit_not_all' | 'no_whole_set_assertion' | 'ambiguous' = 'no_whole_set_assertion') {
   const focus = check.evidence.find(item => item.view === 'focus')!;
   const evidenceRef = { view: 'focus' as const, clauseIndex: focus.clauseIndex };
-  return { statement, coverage: 'whole_focus' as const, reviewedFocusRef: evidenceRef,
+  return { coverage: 'whole_focus' as const, reviewedFocusRef: evidenceRef,
+    domainScope: statement === 'affirmative_whole_set' || statement === 'explicit_not_all' ? 'whole_collection_candidate' as const : 'ambiguous' as const,
+    exhaustivity: statement === 'affirmative_whole_set' ? 'exhaustive' as const : statement === 'explicit_not_all' ? 'explicit_not_exhaustive' as const
+      : statement === 'no_whole_set_assertion' ? 'not_asserted' as const : 'ambiguous' as const,
+    holding: statement === 'affirmative_whole_set' ? 'affirmed' as const : statement === 'explicit_not_all' ? 'denied' as const : 'ambiguous' as const,
+    opposition: 'none_in_reviewed_scope' as const,
     witnesses: statement === 'ambiguous' ? [] : (statement === 'affirmative_whole_set'
-      ? ['whole_set_quantifier_or_collective_domain', 'scoped_possession_predicate'] as const
+      ? ['domain_reference', 'exhaustive_coverage_operator', 'scoped_possession_predicate'] as const
       : statement === 'explicit_not_all' ? ['negative_or_limited_scope'] as const : ['target_scope'] as const)
       .map(role => ({ role, evidenceRef, quote: focus.text.slice(0, 600) })) };
 }
