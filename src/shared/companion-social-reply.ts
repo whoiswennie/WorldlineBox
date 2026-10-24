@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { companionReplyProgressSchema } from './companion-reply-progress';
+import { companionMemoryContextEvidenceSchema } from './companion-memory-context-evidence';
 
 const id = z.string().regex(/^[a-zA-Z0-9_-]{1,100}$/u);
 export const companionSocialRecallSchema = z.strictObject({
@@ -7,7 +8,7 @@ export const companionSocialRecallSchema = z.strictObject({
     reasons: z.array(z.string().max(500)).max(20), path: z.array(id).max(50) })).max(12),
   pending: z.boolean(), degraded: z.boolean(),
   context: z.strictObject({ text: z.string().max(1024 * 1024), revision: z.string().max(160), profileKey: z.string().max(4096),
-    evidence: z.strictObject({ capturedAt: z.string(), corpusHash: z.string(), beforeSequence: z.number().int().nonnegative().optional() }).optional(),
+    evidence: companionMemoryContextEvidenceSchema.optional(),
   }).optional(),
 });
 export const companionSocialReplyProgressEntrySchema = z.strictObject({

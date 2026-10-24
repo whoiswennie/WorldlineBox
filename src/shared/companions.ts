@@ -5,6 +5,7 @@ import { companionSocialReplyProgressEntrySchema } from './companion-social-repl
 import { companionReplyMemoryCommand, companionReplyMemorySchema } from './companion-reply-memory';
 import { companionMemoryCorpusStateCommand, companionMemoryProbeCommand, companionMemoryProbeSchema } from './companion-memory-probe';
 import { companionMemoryRetrievalSchema } from './companion-memory-retrieval';
+import { companionMemoryContextEvidenceSchema } from './companion-memory-context-evidence';
 import { companionMemoryRetrievalModesSchema } from './companion-memory-modes';
 import type { CompanionWorkspaceRequest, CompanionWorkspaceResponse } from './companion-workspace';
 import { companionWorldObservationSchema } from './companion-knowledge';
@@ -241,19 +242,7 @@ export const companionsResponseSchema = z.object({
   lifeOverview: companionLifeOverviewSchema.optional(),
   memoryTracePage: companionMemoryTracePageSchema.optional(), memoryTrace: companionMemoryTraceSchema.optional(),
   memoryContext: z.object({ text: z.string().max(1024 * 1024), revision: z.string(), profileKey: z.string(),
-    evidence: z.object({ capturedAt: z.string(), corpusHash: z.string(), beforeSequence: z.number().int().nonnegative().optional(),
-      queryCorpusHash: z.string().optional(), pageMemoryIds: z.array(z.string()).optional(),
-      queryClock: z.object({ now: z.string(), timeZone: z.string(), domain: z.literal('world') }).optional(),
-      recallPolicy: z.object({ schema: z.literal('episodic-v1'), halfLifeDays: z.literal(180), minScore: z.literal(0), protectedNoteIds: z.array(z.string()),
-        applied: z.boolean(), eligibleCount: z.number().int().nonnegative(), protectedCount: z.number().int().nonnegative() }).optional(),
-      candidateOrder: z.literal('independent_native_query').optional(), contextOrder: z.literal('original_context_pipeline').optional(),
-      referenceCoverage: z.enum(['observed', 'partial', 'unavailable']).optional(),
-      dependencyCoverage: z.literal('complete').optional(),
-      dependencies: z.array(z.object({ id: z.string().regex(/^[a-zA-Z0-9_-]{1,100}$/u), version: z.number().int().positive().safe() })).max(100).optional(),
-      references: z.array(z.object({ id: z.string(), version: z.number().int().positive(), role: z.enum(['returned', 'focus_input']),
-        sourceFile: z.string().optional(), textHash: z.string(),
-        sources: z.array(z.object({ messageId: z.string(), revision: z.number().int().positive(), checksum: z.string() })) })).optional(),
-    }).optional() }).optional(),
+    evidence: companionMemoryContextEvidenceSchema.optional() }).optional(),
   memoryPolicies: z.array(companionMemoryPolicySchema).optional(),
   memoryRead: z.object({ memory: memorySchema, sources: z.array(messageSchema), related: z.array(memorySchema), hasMore: z.boolean(), nextSourceCursor: z.number().int().nonnegative().optional() }).optional(),
   memorySources: z.array(messageSchema).optional(), forgottenCount: z.number().int().nonnegative().optional(),
