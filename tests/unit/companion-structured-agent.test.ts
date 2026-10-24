@@ -3,6 +3,7 @@ import type { Companion, CompanionConversation, CompanionMessage } from '../../s
 import { assembleCompanionRoleContext, companionRecallCapabilities, companionTaskInvocation, runCompanionStructuredAgent } from '../../src/main/companions/structured-agent';
 import type { CompanionReplyInput } from '../../src/main/companions/context';
 import type { CompanionTopic } from '../../src/shared/companion-topic';
+import { CompanionAgentNoProgressError } from '../../src/main/companions/agent-progress';
 
 const companion: Companion = { id: 'a', name: '小澄', description: '妹妹', persona: '平静，认真核对事实。你是小澄，姐姐是小岚，用户是独立真人。',
   model: '', avatar: 'sister', builtin: false, proactive: false, active: true, createdAt: '2026-10-22T00:00:00Z' };
@@ -14,6 +15,87 @@ const config = { apiFormat: 'openai_chat' as const, model: 'test-model', baseUrl
 const domain = { system: '只输出JSON {answer:string}。', user: JSON.stringify({ purpose: 'isolation_test', messages: [{ content: 'DOMAIN_WINDOW_MUST_NOT_OVERRIDE' }] }) };
 
 describe('same role Agent kernel across independent invocation ports', () => {
+  it('awaits a semantic final-proposal review before committing the final turn and evaluates an accepted turn only once', async () => {
+    const validateOutput = vi.fn(async (value: unknown) => {
+      await new Promise(resolve => setImmediate(resolve));
+      if ((value as { unsafe?: boolean }).unsafe) throw new Error('共享状态含私密内容，原提案未写入。');
+      return value;
+    });
+    const fetchFn = vi.fn<typeof fetch>().mockResolvedValueOnce(new Response(JSON.stringify({ choices: [{ message: { content: '{"unsafe":true}' } }] })))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ choices: [{ message: { content: '{"safe":true}' } }] })));
+    const result = await runCompanionStructuredAgent({ context: domain, validateOutput,
+      frame: { companion, conversation: conversation('group'), messages: [], memories: [] } }, config, undefined, { fetchFn });
+    expect(result).toEqual({ safe: true }); expect(validateOutput).toHaveBeenCalledTimes(2);
+    const data = JSON.parse(JSON.parse(String(fetchFn.mock.calls[1]![1]?.body)).messages[1].content);
+    expect(data.outputCorrection.error).toContain('私密内容');
+  });
+  it('stops an unchanged empty-corpus search after the one correction without dispatching the proposed seventh read', async () => {
+    let inference = 0;
+    const execute = vi.fn(async () => ({ ok: true, memoryPage: { items: [], hasMore: false }, memoryRetrieval: {
+      authorizedCorpusEmpty: true, authorizedCorpusRevision: 'actual-empty', engine: 'none', resultCount: 0 } }));
+    const fetchFn = vi.fn<typeof fetch>(async () => new Response(JSON.stringify({ choices: [{ message: { content: '', tool_calls: [{
+      id: `search_${++inference}`, type: 'function', function: { name: 'memory', arguments: JSON.stringify({ action: 'search', query: `变词${inference}` }) } }] } }] })));
+    await expect(runCompanionStructuredAgent({ context: domain,
+      frame: { companion, conversation: conversation('group'), messages: [], memories: [] }, capabilities: {
+        replaySafe: true, tools: [{ name: 'memory', description: '实际检索', parameters: { type: 'object' } }], execute } }, config, undefined, { fetchFn }))
+      .rejects.toBeInstanceOf(CompanionAgentNoProgressError);
+    expect(execute).toHaveBeenCalledTimes(6); expect(fetchFn).toHaveBeenCalledTimes(7);
+  });
+  it('makes one bounded decision correction after repeated whole-corpus-empty recall without replaying reads or declaring the goal complete', async () => {
+    let inference = 0;
+    const execute = vi.fn(async () => ({ ok: true, memoryPage: { items: [], hasMore: false }, memoryRetrieval: {
+      authorizedCorpusEmpty: true, authorizedCorpusRevision: 'actual-empty-ledger', engine: 'none', resultCount: 0 } }));
+    const fetchFn = vi.fn<typeof fetch>(async (_url, init) => {
+      const wire = JSON.parse(String(init?.body)), data = JSON.parse(wire.messages[1].content);
+      inference++;
+      if (inference <= 6) return new Response(JSON.stringify({ choices: [{ message: { content: '', tool_calls: [{ id: `search_${inference}`,
+        type: 'function', function: { name: 'memory', arguments: JSON.stringify({ action: 'search', query: `换词${inference}` }) } }] } }] }));
+      expect(inference).toBe(7); expect(wire.tools ?? []).toEqual([]);
+      expect(data.observationCorrection.proof).toMatchObject({ kind: 'empty_authorized_memory', repetitions: 6 });
+      expect(wire.messages.filter((item: { role: string }) => item.role === 'tool')).toHaveLength(6);
+      return new Response(JSON.stringify({ choices: [{ message: { content: JSON.stringify({ status: 'continue',
+        action: { action: 'query', category: 'people' }, summary: '根据已有真实上下文选择实际下一步。' }) } }] }));
+    });
+    const result = await runCompanionStructuredAgent({ context: domain,
+      frame: { companion, conversation: conversation('group'), messages: [], memories: [] }, capabilities: {
+        replaySafe: true, tools: [{ name: 'memory', description: '实际检索', parameters: { type: 'object' } }], execute } }, config, undefined, { fetchFn });
+    expect(result).toMatchObject({ status: 'continue', action: { action: 'query' } });
+    expect(execute).toHaveBeenCalledTimes(6); expect(fetchFn).toHaveBeenCalledTimes(7);
+  });
+  it('compresses an actual rejected work pair and retries the same inference without replaying its effect or shrinking identity and goal', async () => {
+    const source = message('source', 'group', 'user', '保留这个完整目标：核验record_701，完成后只汇报真实结论。');
+    const execute = vi.fn(async () => ({ ok: true, recordId: 'record_701', output: 'large real result '.repeat(600) }));
+    const purposes: string[] = [], wires: unknown[] = [];
+    let inference = 0;
+    const fetchFn: typeof fetch = async (_url, init) => {
+      const wire = JSON.parse(String(init?.body)), data = JSON.parse(wire.messages[1].content); wires.push(wire); purposes.push(data.purpose);
+      if (data.purpose === 'companion_loop_compaction') {
+        expect(data.steps).toHaveLength(1); expect(data.steps[0].results[0].content).toContain('record_701');
+        return new Response(JSON.stringify({ choices: [{ message: { content: JSON.stringify({ summary: '已经核验真实回执record_701；不得重执行。', stage: '汇报结果' }) } }] }));
+      }
+      inference++;
+      expect(wire.messages[0].content).toContain(companion.persona);
+      expect(JSON.stringify(data)).toContain(source.content);
+      if (inference === 1) return new Response(JSON.stringify({ choices: [{ message: { content: '', tool_calls: [{ id: 'effect', type: 'function',
+        function: { name: 'memory', arguments: '{"action":"read","id":"note"}' } }] } }] }));
+      if (inference === 2) return new Response(JSON.stringify({ error: { code: 'context_length_exceeded' } }), { status: 400 });
+      expect(data.loopContinuity.summary).toContain('record_701');
+      expect(wire.messages.filter((row: { role: string }) => row.role === 'tool')).toEqual([]);
+      return new Response(JSON.stringify({ choices: [{ message: { content: '{"answer":"已依据真实record_701核验。"}' } }] }));
+    };
+    const result = await runCompanionStructuredAgent({ context: domain, frame: { companion, conversation: conversation('group'),
+      messages: [source], sourceMessage: source, memories: [] }, capabilities: { replaySafe: true,
+      tools: [{ name: 'memory', description: 'fixture read', parameters: { type: 'object' } }], execute } }, config, undefined, { fetchFn });
+    expect(result).toEqual({ answer: '已依据真实record_701核验。' }); expect(execute).toHaveBeenCalledOnce();
+    expect(purposes).toEqual(['isolation_test', 'isolation_test', 'companion_loop_compaction', 'isolation_test']); expect(wires).toHaveLength(4);
+  });
+  it('fails an indivisible current source after one rejected request instead of paying for identical retries', async () => {
+    const source = message('source', 'group', 'user', '完整不可静默截断的当前来源。'.repeat(3000));
+    const fetchFn = vi.fn<typeof fetch>(async () => new Response(JSON.stringify({ error: { code: 'context_length_exceeded' } }), { status: 400 }));
+    await expect(runCompanionStructuredAgent({ context: domain, frame: { companion, conversation: conversation('group'),
+      messages: [source], sourceMessage: source, memories: [] } }, config, undefined, { fetchFn })).rejects.toMatchObject({ code: 'CONTEXT_CAPACITY' });
+    expect(fetchFn).toHaveBeenCalledOnce();
+  });
   it('repairs a rejected topic admission inside the same loop before actually joining and publishing', async () => {
     const source = { ...message('invitation', 'group', 'b', '愿意的话加入游戏。'), topicId: 'game' };
     let topic: CompanionTopic = { id: 'game', conversationId: 'group', title: '共同游戏', kind: 'game', status: 'active',

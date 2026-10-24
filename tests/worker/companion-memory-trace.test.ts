@@ -149,12 +149,33 @@ describe('bounded persistent memory provenance', () => {
     const f = fixture(), { read, content } = learned(f), capture = f.store.request({ type: 'memory.jobs.claim', companionId: 'alice' }).memoryJob!;
     const note = f.store.request({ type: 'memory.jobs.complete', id: capture.id, leaseToken: capture.leaseToken, notes: [{ content, diaryName: '查证资料', sourceMessageIds: [read.sourceMessageId], evidence: [{ sourceMessageId: read.sourceMessageId, quote: content }] }] }).memories![0]!;
     const scope = { companionId: 'alice', conversationId: 'world_alice' };
-    // Persisted-store fixtures test the trace contract, not model-generated dream quality.
-    const sleepId = 'trace_sleep_job', episode = 'trace_sleep_episode';
-    f.db.prepare("INSERT INTO companion_world_jobs(id,companion_id,kind,status,data) VALUES(?,'alice','dream','done',?)").run(sleepId, JSON.stringify({ id: sleepId, ...scope, kind: 'dream', status: 'done', createdAt: new Date().toISOString(), throughEventSequence: 0, attempts: 1, sourceMemoryIds: [note.id], memoryVersions: [{ id: note.id, version: 1 }], sleepEpisodeId: episode, dreamAllowed: true }));
-    f.db.prepare('INSERT INTO companion_world_dream_watermark VALUES(?,?,?,?)').run('alice', note.id, 1, new Date().toISOString());
-    const record = (dream: boolean) => f.store.request({ type: 'memory.record', ...scope, candidate: { content: dream ? '梦境里的书签像海风一样轻。这是虚拟联想。' : '资料中的结论应当保留出处与适用条件。', diaryName: dream ? '梦境' : '睡眠反思', sourceMessageIds: [read.sourceMessageId], relatedMemoryIds: [note.id], evidence: [{ sourceMessageId: read.sourceMessageId, quote: content }], metadata: { consolidation: true, ...(dream ? { dream: true, simulation: true, worldJobId: sleepId, sleepEpisodeId: episode } : {}) } } }).memories![0]!;
-    const reflection = record(false), dream = record(true);
+    const outbox = f.store.request({ type: 'memory.outbox.claim', companionId: 'alice' }).memoryOutbox!;
+    f.store.request({ type: 'memory.outbox.complete', id: outbox.id, leaseToken: outbox.leaseToken, indexed: true });
+    // Trace exact host receipts from the actual sleeping actor and current
+    // lease. Ordinary metadata must never manufacture a link to some job.
+    const random = vi.spyOn(Math, 'random').mockReturnValue(0);
+    const world = f.store.request({ type: 'world.snapshot' }).world!;
+    f.store.request({ type: 'world.configure', expectedRevision: world.settings.revision, patch: { mode: 'realtime', timeZone: 'UTC' } });
+    const routineScope = { companionId: 'alice', conversationId: f.store.openPrivate('alice').id };
+    const routine = f.store.request({ type: 'routine.get', ...routineScope }).routine!;
+    f.store.request({ type: 'routine.configure', ...routineScope, expectedRevision: routine.revision, patch: { timeZone: 'UTC', sleepAt: '09:00', wakeAt: '11:00', meals: [], habits: [] } });
+    vi.setSystemTime(Date.now() + 16000); f.store.request({ type: 'world.tick' });
+    const job = f.store.request({ type: 'world.job.claim', kind: 'dream' }).worldJob!;
+    random.mockRestore(); expect(job.dreamAllowed).toBe(true);
+    const sleepId = job.id, episode = job.sleepEpisodeId!;
+    f.store.request({ type: 'world.job.complete', id: sleepId, leaseToken: job.leaseToken!, sourceMemoryIds: [note.id],
+      memoryCandidates: [{ content: '资料中的结论应当保留出处与适用条件。', diaryName: '睡眠反思', sourceMessageIds: [read.sourceMessageId], relatedMemoryIds: [note.id],
+        evidence: [{ sourceMessageId: read.sourceMessageId, quote: content }] }],
+      dream: { text: '梦境里的书签像海风一样轻。这是虚拟联想。', sourceMessageIds: [read.sourceMessageId], relatedMemoryIds: [note.id],
+        evidence: [{ sourceMessageId: read.sourceMessageId, quote: content }] } });
+    for (;;) {
+      const pending = f.store.request({ type: 'memory.outbox.claim', companionId: 'alice' }).memoryOutbox;
+      if (!pending) break;
+      f.store.request({ type: 'memory.outbox.complete', id: pending.id, leaseToken: pending.leaseToken, indexed: true });
+    }
+    const saved = f.store.request({ type: 'memory.snapshot', ...scope }).memorySnapshot!.notes;
+    const reflection = saved.find(note => note.diaryName === '睡眠反思')!, dream = saved.find(note => note.metadata?.dream === true)!;
+    expect(reflection).toBeDefined(); expect(dream).toBeDefined();
     const trace = f.store.request({ type: 'memory.trace.inspect', companionId: 'alice', kind: 'journal', id: note.id }).memoryTrace!;
     expect(companionMemoryTraceSchema.parse(trace)).toEqual(trace);
     expect(trace.stages.find(stage => stage.kind === 'sleep')?.records).toEqual(expect.arrayContaining([expect.objectContaining({ kind: 'review', relation: 'reviewed_version', version: 1 }), expect.objectContaining({ kind: 'sleep', relation: 'bound_version' })]));

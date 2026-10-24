@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync, statSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, statSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterEach, expect, it } from 'vitest';
@@ -8,6 +8,7 @@ import { CompanionMemoryLibrary } from '../../src/main/companions/memory-library
 import { companionMemoryIdentity } from '../../src/main/companions/memory-identity';
 import type { CompanionStorageCommand } from '../../src/shared/companion-storage';
 import type { VcpMemoryTimelineArtifacts } from '../../src/main/vcp-memory/contracts';
+import { removeOwnedDirectorySync } from '../../src/main/vcp-memory/filesystem';
 
 const roots: string[] = [], stores: CompanionsStore[] = [], libraries: CompanionMemoryLibrary[] = [];
 afterEach(async () => {
@@ -15,7 +16,7 @@ afterEach(async () => {
   for (const store of stores.splice(0)) store.close();
   for (const root of roots.splice(0)) {
     if (path.dirname(root) !== tmpdir() || !path.basename(root).startsWith('vcp-readable-library-')) throw new Error('Invalid fixture cleanup');
-    rmSync(root, { recursive: true, force: true });
+    removeOwnedDirectorySync(root);
   }
 });
 function fixture(count = 1) {

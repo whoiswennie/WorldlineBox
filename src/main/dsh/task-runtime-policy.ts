@@ -4,6 +4,7 @@ import type { DshTaskSpec, DshTaskCapabilityQuery } from '../../shared/dsh-task-
 export interface DshRuntimeTaskPolicy {
   mode?: DshTaskSpec['mode']; tools?: string[]; skills?: string[]; discover?: boolean;
   discoveryQuery?: DshTaskCapabilityQuery;
+  expectedEffectiveDigest?: string;
 }
 
 /** Native registry restrictions plus a final executor guard, including nested/subagent calls. */
@@ -18,6 +19,20 @@ export function taskRuntimePolicySource(policy: DshRuntimeTaskPolicy): string {
     const management = new Set(['plugin_manager']);
     const catalog = registry.schemas(subject).filter(tool => !management.has(tool.name) && (!allowed || allowed.has(tool.name)));
     const entries = skills ? await skills.list({ cwd, scope: subject }) : [];
+    const { createHash } = require('node:crypto');
+    const canonical = value => Array.isArray(value) ? value.map(canonical) : value && typeof value === 'object'
+      ? Object.fromEntries(Object.keys(value).sort().filter(key => value[key] !== undefined).map(key => [key, canonical(value[key])])) : value;
+    const skillContracts = [];
+    for (const entry of entries) {
+      const definition = await skills.get(entry.name, { cwd, scope: subject });
+      if (!definition) throw Error('task/unsupported: effective skill could not be loaded');
+      skillContracts.push({ name: entry.name, provider: definition.provider, content: definition.content });
+    }
+    const effective = { digest: createHash('sha256').update(JSON.stringify(canonical({ mode: taskPolicy.mode || 'native',
+      tools: [...catalog].sort((a,b) => a.name.localeCompare(b.name)), skills: skillContracts.sort((a,b) => a.name.localeCompare(b.name)) }))).digest('hex'),
+      mode: taskPolicy.mode || 'native', preset: taskPolicy.mode === 'ptc' ? 'ptc' : 'standard', toolCount: catalog.length, skillCount: entries.length };
+    if (taskPolicy.expectedEffectiveDigest && taskPolicy.expectedEffectiveDigest !== effective.digest)
+      throw Error('task/unsupported: continued session capabilities changed; start a new session with explicit handoff');
     const rows = await ctx.get('agentPresets').list();
     const modes = ['native'];
     if (rows.some(row => row.id === 'ptc') && ctx.get('ptcRuntime')) modes.push('ptc');
@@ -48,7 +63,7 @@ export function taskRuntimePolicySource(policy: DshRuntimeTaskPolicy): string {
         commands: selected.slice(0,100), totalCommands: selected.length, truncated: selected.length > 100, commandsExecutable: false,
         cli: { help, source: 'native-cli --help', modes } };
     }
-    emit({ type: 'capabilities', modes, preset: taskPolicy.mode === 'ptc' ? 'ptc' : 'standard',
+    emit({ type: 'capabilities', modes, preset: taskPolicy.mode === 'ptc' ? 'ptc' : 'standard', effective,
       ...(detail ? { detail } : {}),
       tools: catalog.filter(item => !management.has(item.name)).slice(0,100).map(item => ({ name: item.name, description: String(item.description || '').slice(0,500) })),
       skills: entries.slice(0,100).map(item => ({ name: item.name, description: String(item.description || '').slice(0,500) })),

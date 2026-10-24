@@ -2,13 +2,13 @@ import {
   mkdirSync,
   mkdtempSync,
   realpathSync,
-  rmSync,
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 
 import { afterEach, describe, expect, it } from 'vitest';
+import { removeOwnedDirectorySync } from '../../src/main/vcp-memory/filesystem';
 
 import {
   LibraryParentError,
@@ -19,7 +19,7 @@ const roots: string[] = [];
 
 afterEach(() => {
   for (const root of roots.splice(0)) {
-    rmSync(root, { force: true, recursive: true });
+    removeOwnedDirectorySync(root);
   }
 });
 

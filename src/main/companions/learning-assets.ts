@@ -27,14 +27,16 @@ export function companionLearningAssets(options: { request(command: WorkerComman
     const opened = await request({ type: 'library.open', selectedLibraryPath: grant.libraryPath });
     if (opened.type !== 'library.opened' || opened.library.libraryId !== grant.libraryId) throw new Error('学习资料库身份已变化，请重新选择来源。');
   };
+  const describe = async (input: { libraryId: string; folderId?: string }) => {
+    const library = (await libraries()).find(library => library.libraryId === input.libraryId); if (!library) throw new Error('请先在资产管理中打开要授予的资料库。');
+    const folder = input.folderId ? (await folders(input.libraryId)).find(folder => folder.id === input.folderId) : undefined;
+    if (input.folderId && !folder) throw new Error('学习目录不存在或属于伙伴私有存档。');
+    return { libraryName: library.displayName, libraryPath: library.libraryPath, ...(folder ? { folderName: folder.name } : {}) };
+  };
   return {
     catalog: async () => Promise.all((await libraries()).map(async library => ({ libraryId: library.libraryId, displayName: library.displayName, folders: await folders(library.libraryId) }))),
-    grant: async input => {
-      const library = (await libraries()).find(library => library.libraryId === input.libraryId); if (!library) throw new Error('请先在资产管理中打开要授予的资料库。');
-      const folder = input.folderId ? (await folders(input.libraryId)).find(folder => folder.id === input.folderId) : undefined;
-      if (input.folderId && !folder) throw new Error('学习目录不存在或属于伙伴私有存档。');
-      return { libraryName: library.displayName, libraryPath: library.libraryPath, ...(folder ? { folderName: folder.name } : {}) };
-    },
+    grant: describe,
+    describe: async grant => { await ensure(grant); return describe(grant); },
     page: async (grant, afterId) => {
       await ensure(grant);
       const result = await request({ type: 'asset.learning.page', libraryId: grant.libraryId, folderId: grant.folderId, afterId, limit: 32 });

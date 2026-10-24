@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { companionMemoryCandidateSchema, companionMemorySearchSchema, companionMemoryForgetSchema, type CompanionMemoryCandidate, type CompanionMemoryJob, type CompanionMemorySearch, type CompanionMemoryPage } from '../shared/companion-memory';
+import { companionMemoryCandidateSchema, companionMemoryConsolidateSchema, companionMemorySearchSchema, companionMemoryForgetSchema, type CompanionMemoryCandidate, type CompanionMemoryJob, type CompanionMemorySearch, type CompanionMemoryPage } from '../shared/companion-memory';
 import type { CompanionMemory, CompanionMessage } from '../shared/companions';
 import type { CompanionStorageCommand, CompanionStorageResponse, SaveCompanionMemory } from '../shared/companion-storage';
 import type { CompanionStateProposal } from '../shared/companion-state';
@@ -8,10 +8,17 @@ import { CompanionSourceAccess, companionSourceChecksum, type CompanionSourceSco
 import { retireFactMemory } from './memory-migration';
 import { initializeMemoryProcessingJournal, memoryProcessingStatus } from './memory-processing-store';
 import { CompanionCharacterDevelopmentStore } from './character-development-store';
+import { CompanionMemoryConsolidationStore } from './memory-consolidation-store';
 import type { CompanionMemoryStateIntegration } from './state-store';
 import { normalizeCompanionCharacterDiary } from '../shared/companion-character-development';
 import { initializeTopicParticipationReceipts, topicParticipationMemoryContent, topicParticipationMemoryTags, type TopicParticipationReceipt } from './topic-participation';
+import { companionAutomaticConsolidationHasNovelty } from '../shared/companion-memory-novelty';
+import { companionMemoryDateRange } from '../shared/companion-memory-time';
+import { companionMessageFictionalLineage } from './fictional-source';
 type Row = Record<string, string | number | null>;
+type HostClassification = { consolidation?: true | 'source_version_graph'; automaticConsolidation?: true; sleepReflection?: true;
+  sleepWorldJobId?: string; worldJobId?: string; sleepEpisodeId?: string };
+const hostClassificationKeys = ['consolidation', 'automaticConsolidation', 'sleepReflection', 'sleepWorldJobId', 'worldJobId', 'sleepEpisodeId'] as const;
 const row = (value: unknown) => value as Row;
 const rows = (value: unknown[]) => value.map(row);
 const json = <T>(value: unknown) => JSON.parse(String(value)) as T;
@@ -27,8 +34,7 @@ export class CompanionMemoryStore {
     private fictionalSource(messageId: string, visited = new Set<string>()): boolean {
         if (visited.has(messageId) || visited.size >= 64) return true;
         visited.add(messageId);
-        if (this.db.prepare(`SELECT 1 FROM companion_message_topics m JOIN companion_topics t ON t.id=m.topic_id
-          WHERE m.message_id=? AND json_extract(t.data,'$.kind') IN('game','story')`).get(messageId)) return true;
+        if (companionMessageFictionalLineage(this.db, messageId)) return true;
         const receipt = this.db.prepare('SELECT value FROM metadata WHERE key=?').get('memory-world-observation/' + messageId);
         if (!receipt) return false;
         const observation = json<{observation?:{category?:string};sources?:Array<{id:string}>}>(row(receipt).value);
@@ -68,9 +74,21 @@ export class CompanionMemoryStore {
     takeInvalidatedScopes(): string[] { const ids = [...this.invalidatedScopes]; this.invalidatedScopes.clear(); return ids; }
     readonly sources: CompanionSourceAccess;
     private readonly development: CompanionCharacterDevelopmentStore;
+    private readonly consolidation: CompanionMemoryConsolidationStore;
     constructor(private readonly db: CompanionConnection, private readonly getMessage: (id: string) => CompanionMessage, private readonly applyState?: (scope: Scope, proposal: CompanionStateProposal) => void, private readonly observeNote?: (note: CompanionMemory) => void, private readonly withdrawStateSources?: (companionId: string, sourceIds: string[]) => void,
       private readonly applyIntegration?: (scope: Scope, input: CompanionMemoryStateIntegration) => void,
-      private readonly withdrawStateMemories?: (companionId: string, versions: Array<{ id: string; version: number }>) => void) { this.sources = new CompanionSourceAccess(db, getMessage); this.development = new CompanionCharacterDevelopmentStore(db, (scope, note) => this.visible(scope, note)); }
+      private readonly withdrawStateMemories?: (companionId: string, versions: Array<{ id: string; version: number }>) => void,
+      private readonly memoryTimeZone: () => string = () => Intl.DateTimeFormat().resolvedOptions().timeZone) {
+        this.sources = new CompanionSourceAccess(db, getMessage, (owner, id, version, scope) => {
+          try { const note = this.load(id); return note.version === version && this.visible(scope ?? this.sources.ownerScope(owner), note); } catch { return false; }
+        }); this.development = new CompanionCharacterDevelopmentStore(db, (scope, note) => this.visible(scope, note));
+        this.consolidation = new CompanionMemoryConsolidationStore(db, {
+          load: id => this.load(id), valid: note => this.visible(this.sources.ownerScope(note.companionId), note),
+          persist: note => this.persist(note), enqueue: (note, operation) => this.enqueue(note, operation), invalidate: owner => this.invalidateOwner(owner),
+          record: (command, automatic) => this.recordJournal(command, command.candidate, undefined, 'automatic', command.expectedProhibitionRevision,
+            false, { consolidation: 'source_version_graph', ...automatic }),
+        });
+      }
     initialize(): void {
         this.sources.initialize();
         initializeTopicParticipationReceipts(this.db);
@@ -169,9 +187,12 @@ export class CompanionMemoryStore {
         this.db.prepare("UPDATE vcp_memory_scopes SET revision=revision+1,state='dirty',updated_at=? WHERE scope_id=?").run(stamp(), note.scopeId);
     }
     private visible(scope: Scope, note: CompanionMemory, visited = new Set<string>()): boolean {
-        this.sources.requireScope(scope);
         if (visited.has(note.id))
             return false;
+        return this.sources.validateMemory(scope, note, () => this.visibleValue(scope, note, visited));
+    }
+    private visibleValue(scope: Scope, note: CompanionMemory, visited: Set<string>): boolean {
+        this.sources.requireScope(scope);
         visited.add(note.id);
         if (note.companionId !== scope.companionId || ['forgotten', 'invalid'].includes(note.status) || !note.sources.length
             || note.sources.some(source => this.fictionalSource(source.messageId)) || this.sources.captureHeld(note.companionId, note.sourceConversationId))
@@ -370,21 +391,86 @@ export class CompanionMemoryStore {
         this.db.prepare(`UPDATE ${table} SET status='pending',attempts=0,next_attempt=0,error=NULL,lease_token=NULL,lease_until=NULL
           WHERE (status='failed' OR status='pending' AND attempts>=8 OR status='running' AND attempts>=8 AND lease_until<=?)
           ${companionId ? 'AND companion_id=?' : ''}`).run(Date.now(), ...(companionId ? [companionId] : [])); }
-    record(scope: Scope, input: CompanionMemoryCandidate, revision?: {
+    recordPrivateConsolidation(scope: Scope, candidate: CompanionMemoryCandidate, worldJobId: string, leaseToken: string): CompanionMemory | undefined {
+        return this.db.transaction(() => {
+            const found = this.db.prepare("SELECT data,lease_until FROM companion_world_jobs WHERE id=? AND companion_id=? AND kind='dream' AND status='running'").get(worldJobId, scope.companionId);
+            if (!found) throw new Error('私人睡眠整理必须属于当前真实梦任务。');
+            const job = json<{ companionId: string; conversationId: string; leaseToken?: string; sleepEpisodeId?: string; memoryVersions?: Array<{ id: string; version: number }> }>(row(found).data);
+            if (job.leaseToken !== leaseToken || String(row(found).lease_until) < stamp() || job.conversationId !== scope.conversationId) throw new Error('私人睡眠整理租约或消息入口已变化。');
+            const room = this.sources.requireScope(scope);
+            if (room.kind !== 'private' && scope.conversationId !== 'world_' + scope.companionId) throw new Error('跨经历反思只能发布到本人私人入口。');
+            const versions = new Map(job.memoryVersions?.map(memory => [memory.id, memory.version]));
+            const related = candidate.relatedMemoryIds ?? [];
+            if (!related.length || related.some(id => !versions.has(id))) throw new Error('私人整理缺少本轮实际读取的记忆版本。');
+            const seeds = related.map(id => this.load(id));
+            const ownerScope = this.sources.ownerScope(scope.companionId);
+            if (seeds.some(seed => seed.companionId !== scope.companionId || seed.version !== versions.get(seed.id) || !this.visible(ownerScope, seed))) throw new Error('私人整理的种子已经变化。');
+            const sourceIds = new Set(seeds.flatMap(seed => seed.sources.map(source => source.messageId)));
+            if (candidate.sourceMessageIds.some(id => !sourceIds.has(id))) throw new Error('私人整理不能引入本轮未读取的来源。');
+            return this.recordJournal(scope, candidate, undefined, 'automatic', undefined, true,
+              { consolidation: true, sleepReflection: true, sleepWorldJobId: worldJobId, worldJobId, ...(job.sleepEpisodeId ? { sleepEpisodeId: job.sleepEpisodeId } : {}) });
+        }).immediate();
+    }
+    /** Automatic merges are admitted only by the current real sleep lease and
+     * its immutable seed readset. The outer world transaction commits the job
+     * and pending index together; publication retains the original evidence. */
+    recordSleepConsolidation(scope: Scope, input: { inputs: Array<{ id: string; version: number }>; candidate: CompanionMemoryCandidate },
+      worldJobId: string, leaseToken: string): CompanionMemory | undefined {
+        return this.db.transaction(() => {
+            const plan = companionMemoryConsolidateSchema.parse(input);
+            const found = this.db.prepare("SELECT data,lease_until FROM companion_world_jobs WHERE id=? AND companion_id=? AND kind='dream' AND status='running'").get(worldJobId, scope.companionId);
+            if (!found) throw new Error('自动记忆整合必须属于当前真实睡眠任务。');
+            const job = json<{ conversationId: string; leaseToken?: string; seedMemoryVersions?: Array<{ id: string; version: number }> }>(row(found).data);
+            if (job.leaseToken !== leaseToken || String(row(found).lease_until) < stamp() || job.conversationId !== scope.conversationId) throw new Error('自动记忆整合的睡眠租约或入口已变化。');
+            const versions = new Map(job.seedMemoryVersions?.map(note => [note.id, note.version]));
+            if (plan.inputs.some(note => versions.get(note.id) !== note.version)) throw new Error('自动整合只能使用本轮准确读取的真实种子版本。');
+            const originals = plan.inputs.map(note => this.load(note.id)), ownerScope = this.sources.ownerScope(scope.companionId);
+            if (originals.some((note, index) => note.companionId !== scope.companionId || note.version !== plan.inputs[index]!.version
+              || note.status !== 'indexed' || note.archivedAt || note.metadata?.dream || note.metadata?.simulation
+              || note.metadata?.characterDevelopment !== undefined || !this.visible(ownerScope, note))) throw new Error('自动整合的原始记忆已经变化或不是可整合的实际经历。');
+            if (plan.candidate.selfDevelopment || plan.candidate.metadata?.characterDevelopment !== undefined
+              || plan.candidate.metadata?.dream || plan.candidate.metadata?.simulation) throw new Error('自动整合不能改写成长档案或把虚构内容发布为真实经历。');
+            if (new Set(originals.map(note => note.sourceConversationId)).size !== 1) throw new Error('自动整合不能混合不同来源可见域。');
+            if (!companionAutomaticConsolidationHasNovelty(originals)) throw new Error('自动整合需要原始日记的新信息，不能反复归档旧摘要或同源反思。');
+            const sources = new Map(originals.flatMap(note => note.sources).map(source => [source.messageId, source]));
+            if (plan.candidate.sourceMessageIds.length !== sources.size || plan.candidate.sourceMessageIds.some(id => !sources.has(id))) throw new Error('自动整合必须完整保留选定记忆的原始来源。');
+            const candidate = { ...plan.candidate, relatedMemoryIds: plan.inputs.map(note => note.id),
+              sourceChecksums: Object.fromEntries([...sources].map(([id, source]) => [id, source.checksum])),
+              metadata: plan.candidate.metadata };
+            return this.operation({ ...scope, operationId: 'sleep_merge_' + hash([worldJobId, plan]).slice(0, 48) }, () => {
+                const note = this.consolidation.prepare({ type: 'memory.consolidate', ...scope, inputs: plan.inputs, candidate },
+                  { automaticConsolidation: true, sleepWorldJobId: worldJobId });
+                return { ok: true, memories: note ? [note] : [] };
+            }).memories?.[0];
+        }).immediate();
+    }
+    record(scope: Scope, input: CompanionMemoryCandidate, revision?: { id: string; expectedVersion: number },
+      captureMethod: 'automatic' | 'manual' = 'automatic', expectedProhibitionRevision?: string): CompanionMemory | undefined {
+        return this.recordJournal(scope, input, revision, captureMethod, expectedProhibitionRevision);
+    }
+    private recordJournal(scope: Scope, input: CompanionMemoryCandidate, revision?: {
         id: string;
         expectedVersion: number;
-    }, captureMethod: 'automatic' | 'manual' = 'automatic', expectedProhibitionRevision?: string): CompanionMemory | undefined {
+    }, captureMethod: 'automatic' | 'manual' = 'automatic', expectedProhibitionRevision?: string, privateConsolidation = false, hostClassification?: HostClassification): CompanionMemory | undefined {
         return this.db.transaction(() => {
             const draft = companionMemoryCandidateSchema.parse(normalizeCompanionCharacterDiary(input));
+            // Free metadata is not an alternate host authority. Only the
+            // verified sleep lease and actual consolidation path below may
+            // classify a note as processed/derived or associate a sleep job.
+            // Keep dream/simulation markers conservative: declaring fiction
+            // never turns it into an original factual source.
+            const metadata = { ...draft.metadata };
+            for (const key of hostClassificationKeys) delete metadata[key];
+            draft.metadata = { ...metadata, ...hostClassification };
             this.sources.requireScope(scope);
-            const available = this.sources.filter(scope, draft.sourceMessageIds);
+            const available = this.sources.filter(privateConsolidation ? this.sources.ownerScope(scope.companionId) : scope, draft.sourceMessageIds);
             if (available.length !== new Set(draft.sourceMessageIds).size)
                 throw new Error('日记来源不可见、已撤回或尚未正式发送。');
             this.rejectFictionalSources(available.map(source => source.id));
             this.validateParticipationCandidate(scope.companionId,available,draft);
             const references = available.map(source => this.sources.reference(row(this.db.prepare('SELECT * FROM messages WHERE id=?').get(source.id))));
             const domains = references.map(source => this.sources.logicalDomain(source.messageId));
-            if (new Set(domains).size !== 1)
+            if (new Set(domains).size !== 1 && !privateConsolidation)
                 throw new Error('不同来源可见域不能混写同一篇日记。');
             for (const source of available) {
                 if (draft.sourceChecksums?.[source.id] && draft.sourceChecksums[source.id] !== companionSourceChecksum(source.content))
@@ -394,7 +480,10 @@ export class CompanionMemoryStore {
             }
             if (draft.evidence.some(evidence => !available.some(source => source.id === evidence.sourceMessageId && source.content.includes(evidence.quote))))
                 throw new Error('日记证据不是来源原文。');
-            const conversationId = domains[0]!, sourceSequence = Math.max(...references.map(source => source.sequence));
+            const conversationId = privateConsolidation ? scope.conversationId : domains[0]!, sourceSequence = Math.max(...references.map(source => source.sequence));
+            if (privateConsolidation) for (const domain of new Set(domains)) {
+                if (this.sources.captureHeld(scope.companionId, domain) || this.sources.blockedTag({ ...scope, conversationId: domain }, draft.tags, sourceSequence)) throw new Error('私人整理的真实来源域仍有禁记限制。');
+            }
             this.sources.assertProhibitionRevision({ ...scope, conversationId }, expectedProhibitionRevision);
             if (this.sources.captureHeld(scope.companionId, conversationId)) throw new Error('此可见域仍有旧版持续遗忘限制，请先在记忆管理中确认处理。');
             if (this.sources.blockedTag({ ...scope, conversationId }, draft.tags, sourceSequence))
@@ -409,8 +498,18 @@ export class CompanionMemoryStore {
             const existing = !previous && this.db.prepare('SELECT data FROM vcp_memory_notes WHERE companion_id=? AND identity_key=?').get(scope.companionId, identity);
             if (existing) {
                 const note = json<CompanionMemory>(row(existing).data);
-                if (this.visible(scope, note))
+                if (this.visible(scope, note)) {
+                    // A verified host operation can reuse an identical body
+                    // previously written as an ordinary diary. Its actual
+                    // classification still needs to be recorded; free input
+                    // metadata never reaches this branch as an authority.
+                    if (hostClassification) {
+                        const metadata = { ...note.metadata };
+                        for (const key of hostClassificationKeys) delete metadata[key];
+                        note.metadata = { ...metadata, ...hostClassification }; this.persist(note);
+                    }
                     return note;
+                }
                 throw new Error('该日记来源已失效或已遗忘。');
             }
             const note: CompanionMemory = { id: previous?.id ?? 'note_' + identity.slice(0, 48), companionId: scope.companionId, scopeId, content: draft.content, tags: draft.tags, occurredAt: draft.occurredAt ?? references.at(-1)?.worldCreatedAt ?? references.at(-1)?.createdAt, diaryName: draft.diaryName ?? '经历', metadata: { ...draft.metadata, ...(draft.selfDevelopment ? { characterDevelopment: draft.selfDevelopment } : {}), learnedEntranceSourceId: draft.learnedEntranceSourceId, sourceMessageIds: references.map(source => source.messageId) }, sourceMessageId: references[0]!.messageId, sourceConversationId: conversationId, sources: references, sourceSequence, createdAt: previous?.createdAt ?? stamp(), updatedAt: stamp(), origin: references.some(source => source.authorId === 'user') ? 'user' : 'companion', status: 'queued', version: (previous?.version ?? 0) + 1, captureMethod };
@@ -442,6 +541,7 @@ export class CompanionMemoryStore {
             this.withdrawStateMemories?.(note.companionId, [{ id: note.id, version: note.version }]);
             this.invalidateOwner(note.companionId);
             note.status = status;
+            this.consolidation.restore(note.id);
             note.version++;
             note.updatedAt = stamp();
             note.content = status === 'forgotten' ? '已遗忘的日记' : '来源已失效的日记';
@@ -457,7 +557,7 @@ export class CompanionMemoryStore {
     }
     resetOwner(owner: string, limit: number): number { const notes = rows(this.db.prepare("SELECT id FROM vcp_memory_notes INDEXED BY vcp_note_reset_pending WHERE companion_id=? AND json_extract(data,'$.status') NOT IN('forgotten','invalid') LIMIT ?").all(owner, limit)); for (const note of notes)
         this.withdrawNote(String(note.id), 'forgotten'); return notes.length; }
-    rebuildIndex(companionId?: string): number { return this.db.transaction(() => { const found = rows(this.db.prepare("SELECT data FROM vcp_memory_notes WHERE json_extract(data,'$.status') IN('queued','indexed')" + (companionId ? ' AND companion_id=?' : '')).all(...(companionId ? [companionId] : []))); for (const entry of found) {
+    rebuildIndex(companionId?: string): number { return this.db.transaction(() => { const found = rows(this.db.prepare("SELECT data FROM vcp_memory_notes WHERE json_extract(data,'$.status') IN('queued','indexed') AND json_extract(data,'$.archivedAt') IS NULL" + (companionId ? ' AND companion_id=?' : '')).all(...(companionId ? [companionId] : []))); for (const entry of found) {
         const note = json<CompanionMemory>(entry.data);
         this.invalidateOwner(note.companionId);
         note.status = 'queued';
@@ -468,11 +568,36 @@ export class CompanionMemoryStore {
     read(scope: Scope, id: string, limit = 30, cursor = 0): NonNullable<CompanionStorageResponse['memoryRead']> { const note = this.load(id); if (!this.visible(scope, note))
         throw new Error('日记来源失效或不属于当前可见范围。'); const next = cursor + limit; return { memory: note, sources: this.sources.filter(scope, note.sources.slice(cursor, next).map(source => source.messageId)), related: [], hasMore: next < note.sources.length, nextSourceCursor: next < note.sources.length ? next : undefined }; }
     inspect(scope: Scope, id: string, limit = 30, cursor = 0) { return this.read(scope, id, limit, cursor); }
-    list(companionId: string): CompanionMemory[] { return rows(this.db.prepare("SELECT data FROM vcp_memory_notes WHERE companion_id=? AND json_extract(data,'$.status') NOT IN('forgotten','invalid') ORDER BY rowid DESC").all(companionId)).map(found => json<CompanionMemory>(found.data)); }
-    browse(input: CompanionMemorySearch): CompanionMemoryPage { const query = companionMemorySearchSchema.parse(input); this.sources.requireScope(query); if (query.query.trim())
-        throw new Error('正文搜索必须由 VCP 执行。'); const available = this.list(query.companionId).filter(note => this.visible(query, note) && (!query.diaryName || note.diaryName === query.diaryName) && query.tags.every(tag => note.tags.includes(tag)) && (!query.from || (note.occurredAt ?? note.createdAt) >= query.from) && (!query.to || (note.occurredAt ?? note.createdAt) <= query.to)); const cursor = query.cursor ?? 0; return { items: available.slice(cursor, cursor + query.limit).map(memory => ({ memory, reasons: ['journal-list'], path: [memory.id] })), hasMore: available.length > cursor + query.limit, nextCursor: available.length > cursor + query.limit ? cursor + query.limit : undefined }; }
-    snapshot(scope: Scope): NonNullable<CompanionStorageResponse['memorySnapshot']> { this.sources.requireScope(scope); const notes = rows(this.db.prepare("SELECT data FROM vcp_memory_notes WHERE companion_id=? AND json_extract(data,'$.status')='indexed' ORDER BY id").all(scope.companionId)).map(found => json<CompanionMemory>(found.data)).filter(note => this.visible(scope, note)); const revision = hash(['owner-memory-v2', scope.companionId, scope.beforeSequence ?? null, notes.map(note => [note.id, note.version, note.sources.map(source => [source.messageId, source.revision, source.checksum])])]); return { scopeId: 'view_' + revision.slice(0, 48), revision, notes }; }
+    list(companionId: string, includeArchived = false): CompanionMemory[] { return rows(this.db.prepare("SELECT data FROM vcp_memory_notes WHERE companion_id=? AND json_extract(data,'$.status') NOT IN('forgotten','invalid') ORDER BY rowid DESC").all(companionId)).map(found => json<CompanionMemory>(found.data)).filter(note => includeArchived || !note.archivedAt); }
+    browse(input: CompanionMemorySearch): CompanionMemoryPage {
+        const query = companionMemorySearchSchema.parse(input); this.sources.requireScope(query);
+        if (query.query.trim()) throw new Error('正文搜索必须由 VCP 执行。');
+        const { start, end } = companionMemoryDateRange(query.from, query.to, this.memoryTimeZone());
+        const available = this.list(query.companionId).filter(note => {
+            const at = Date.parse(note.occurredAt ?? note.sources.at(-1)?.worldCreatedAt ?? note.sources.at(-1)?.createdAt ?? note.createdAt);
+            return this.visible(query, note) && (!query.diaryName || note.diaryName === query.diaryName) && query.tags.every(tag => note.tags.includes(tag))
+              && (start === undefined || at >= start) && (end === undefined || at <= end);
+        });
+        const cursor = query.cursor ?? 0;
+        return { items: available.slice(cursor, cursor + query.limit).map(memory => ({ memory, reasons: ['journal-list'], path: [memory.id] })),
+            hasMore: available.length > cursor + query.limit, nextCursor: available.length > cursor + query.limit ? cursor + query.limit : undefined };
+    }
+    snapshot(scope: Scope): NonNullable<CompanionStorageResponse['memorySnapshot']> { this.sources.requireScope(scope); const notes = rows(this.db.prepare("SELECT data FROM vcp_memory_notes WHERE companion_id=? AND json_extract(data,'$.status')='indexed' ORDER BY id").all(scope.companionId)).map(found => json<CompanionMemory>(found.data)).filter(note => !note.archivedAt && this.visible(scope, note)); const revision = hash(['owner-memory-v2', scope.companionId, scope.beforeSequence ?? null, notes.map(note => [note.id, note.version, note.sources.map(source => [source.messageId, source.revision, source.checksum])])]); return { scopeId: 'view_' + revision.slice(0, 48), revision, notes }; }
     domains(scope: Scope): NonNullable<CompanionStorageResponse['memoryDomains']> { this.sources.requireScope(scope); return rows(this.db.prepare('SELECT * FROM vcp_memory_scopes WHERE companion_id=? ORDER BY scope_id').all(scope.companionId)).map(domain => ({ scopeId: String(domain.scope_id), companionId: String(domain.companion_id), conversationId: String(domain.conversation_id), revision: Number(domain.revision), state: domain.state as 'dirty' | 'ready', updatedAt: String(domain.updated_at) })); }
+    private transitiveSourceIds(note: CompanionMemory): string[] {
+        const ids = new Set<string>(), visited = new Set<string>(), pending = [note.id];
+        while (pending.length) {
+            const id = pending.pop()!;
+            if (visited.has(id)) continue;
+            visited.add(id);
+            const source = this.load(id);
+            if (source.companionId !== note.companionId) throw new Error('派生来源不能属于其他伙伴。');
+            for (const entry of source.sources) ids.add(entry.messageId);
+            for (const entry of rows(this.db.prepare('SELECT message_id FROM vcp_note_source_history WHERE note_id=?').all(id))) ids.add(String(entry.message_id));
+            for (const entry of rows(this.db.prepare('SELECT source_note_id FROM vcp_note_dependencies WHERE note_id=?').all(id))) pending.push(String(entry.source_note_id));
+        }
+        return [...ids];
+    }
     forget(input: Extract<CompanionStorageCommand, {
         type: 'memory.forget';
     }>): number {
@@ -484,9 +609,9 @@ export class CompanionMemoryStore {
                 throw new Error('请指定需要遗忘的日记、来源或标签。');
             if (command.requestMessageId && !this.sources.filter(command, [command.requestMessageId]).some(source => source.authorId === 'user'))
                 throw new Error('遗忘请求不是当前可见的用户来源。');
-            const notes = this.list(command.companionId).filter(note => this.visible(command, note) && (command.id ? note.id === command.id : command.sourceMessageIds.length ? note.sources.some(source => command.sourceMessageIds.includes(source.messageId)) : note.tags.includes(command.tag!)));
+            const notes = this.list(command.companionId, true).filter(note => this.visible(command, note) && (command.id ? note.id === command.id : command.sourceMessageIds.length ? note.sources.some(source => command.sourceMessageIds.includes(source.messageId)) : note.tags.includes(command.tag!)));
             const sourceIds = [...new Set([...command.sourceMessageIds, ...notes.flatMap(note => [
-                ...note.sources.map(source => source.messageId),
+                ...this.transitiveSourceIds(note),
                 ...rows(this.db.prepare('SELECT message_id FROM vcp_note_source_history WHERE note_id=?').all(note.id)).map(source => String(source.message_id)),
             ])])];
             if (command.sourceMessageIds.length && this.sources.filter(command, command.sourceMessageIds).length !== command.sourceMessageIds.length)
@@ -526,6 +651,16 @@ export class CompanionMemoryStore {
             if (!found)
                 return;
             const entry = row(found), note = this.load(String(entry.note_id));
+            if (entry.operation === 'remember' && note.archivedAt) {
+                this.db.prepare("UPDATE vcp_memory_outbox SET status='done',lease_token=NULL,lease_until=NULL WHERE id=?").run(entry.id);
+                return;
+            }
+            if (entry.operation === 'forget' && !note.archivedAt && ['queued', 'indexed'].includes(note.status)) {
+                // A derivative was invalidated after archiving this original.
+                // Its obsolete archive removal must not erase a restored note.
+                this.db.prepare("UPDATE vcp_memory_outbox SET status='done',lease_token=NULL,lease_until=NULL WHERE id=?").run(entry.id);
+                return;
+            }
             if (note.version !== Number(entry.note_version)) {
                 this.db.prepare("UPDATE vcp_memory_outbox SET status='done' WHERE id=?").run(entry.id);
                 return;
@@ -549,6 +684,7 @@ export class CompanionMemoryStore {
         note.sourceFile = sourceFile;
         note.updatedAt = stamp();
         this.persist(note);
+        this.consolidation.publish(note);
     } this.db.prepare("UPDATE vcp_memory_outbox SET status='done',error=NULL,lease_token=NULL,lease_until=NULL WHERE id=?").run(id); if (!this.db.prepare("SELECT 1 FROM vcp_memory_outbox WHERE scope_id=? AND status!='done' LIMIT 1").get(note.scopeId))
         this.db.prepare("UPDATE vcp_memory_scopes SET state='ready',updated_at=? WHERE scope_id=?").run(stamp(), note.scopeId); }).immediate(); }
     failOutbox(id: string, token: string, error: string, retryAfterMs = 30000): void { this.leased('vcp_memory_outbox', id, token); this.db.prepare("UPDATE vcp_memory_outbox SET status='failed',error=?,next_attempt=?,lease_token=NULL,lease_until=NULL WHERE id=?").run(error, Date.now() + retryAfterMs, id); }
@@ -791,6 +927,9 @@ export class CompanionMemoryStore {
                 return this.operation(command, () => { const note = this.record(command, command.candidate, { id: command.id, expectedVersion: command.expectedVersion }, 'automatic', command.expectedProhibitionRevision); return { ok: true, memories: note ? [note] : [] }; });
             }
             case 'memory.organize': return this.operation(command, () => ({ ok: true, memories: this.organize(command, command.ids, command.tags ?? [], command.expectedProhibitionRevision) }));
+            case 'memory.consolidate': return this.operation(command, () => {
+                const note = this.consolidation.prepare(command); return { ok: true, memories: note ? [note] : [] };
+            });
             case 'memory.forget': return { ok: true, forgottenCount: this.forget(command) };
             case 'memory.status': return { ok: true, memoryStatus: this.status(command.companionId, command.conversationId) };
             case 'memory.processing.status': return { ok: true, memoryProcessing: memoryProcessingStatus(this.db, command.companionId, command.limit, command.filter, item => {

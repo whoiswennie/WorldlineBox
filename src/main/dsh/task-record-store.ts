@@ -103,7 +103,7 @@ export class DshTaskRecordStore {
     }).catch(() => { this.fail(id, writer, new Error('任务记录保存失败，执行结果不可视为已完整记录。')); }).finally(() => { writer.pending -= line.length; this.pressure(id, writer); });
   }
   error(id: string): Error | undefined { return this.writers.get(id)?.failure; }
-  execution(id: string, value: Pick<DshRecordOverview, 'workspacePath' | 'mode' | 'sessionId' | 'artifacts' | 'structured' | 'structuredTruncated'>): void {
+  execution(id: string, value: Pick<DshRecordOverview, 'workspacePath' | 'mode' | 'sessionId' | 'artifacts' | 'structured' | 'structuredTruncated' | 'verification' | 'effective'>): void {
     const writer = this.writers.get(id);
     if (writer) Object.assign(writer.metadata.overview, value);
   }

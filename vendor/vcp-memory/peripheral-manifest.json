@@ -205,6 +205,11 @@
       "sha256": "4017ea5229f8fed5da97ce8b0352363f75cad904729d565f3d74b7082136d44b"
     },
     {
+      "path": "TDBKnowledge.js",
+      "bytes": 66004,
+      "sha256": "8016fa552b7291c4b410832285804480c9886fedc378a57156b3c0f9c76463d5"
+    },
+    {
       "path": "Plugin/DailyNote/TagMaster.txt",
       "bytes": 1748,
       "sha256": "d88ca2d340b639acc6af040c4fc2826e5650eee0f39d0e0a319db9a80d5c246f"
@@ -258,6 +263,11 @@
       "path": "Plugin/RAGDiaryPlugin/semantic_groups.edit.json.example",
       "bytes": 732,
       "sha256": "fffdcef65799260c9fb4eb2a975b1edbeb10bcd595d9f723e4035726cdc23542"
+    },
+    {
+      "path": "Plugin/AgentDream/DreamWaveEngine.js",
+      "bytes": 34490,
+      "sha256": "7a136bbd491323ceff48beaa39a39d9c6b9373ec93b037bae06c0fa41906ef6a"
     }
   ],
   "runtimePackages": [
@@ -272,6 +282,12 @@
     "dotenv",
     "https-proxy-agent",
     "mime-types",
-    "node-fetch"
-  ]
+    "node-fetch",
+    "triviumdb"
+  ],
+  "coldKnowledge": {
+    "entry": "TDBKnowledge.js",
+    "package": "triviumdb",
+    "version": "0.8.5"
+  }
 }

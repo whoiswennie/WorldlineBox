@@ -21,6 +21,8 @@ export interface VcpMemoryNote {
   author?: string;
   diaryName?: string;
   metadata?: Record<string, unknown>;
+  /** Host-only calendar projection; source content/occurredAt remain unchanged. */
+  hostProjection?: { timeZone: string };
 }
 
 /** Unweighted values copied from upstream's final ordered result; not probabilities. */
@@ -77,13 +79,40 @@ export interface VcpMemoryWorkerConfiguration {
 }
 
 export interface VcpMemoryPluginConfiguration {
-  chat?: { baseUrl: string; model: string; apiKey: string };
+  chat?: { baseUrl: string; model: string; apiKey: string;
+    /** Non-secret signature of the provider behind a loopback facade. */
+    sourceSignature?: string;
+    /** In-memory credential generation; never a credential-derived public hash. */
+    connectionGeneration?: number };
   riverThinkingEnabled?: boolean;
+  /** Explicit A/B profile; default preserves corrections as the existing host did. */
+  behaviorProfile?: 'preserve-corrections' | 'upstream';
+}
+/** Observed at the original formatter/model-input boundary, not inferred from top-K ranks. */
+export interface VcpMemoryContextReference {
+  id: string;
+  role: 'returned' | 'focus_input';
+  sourceFile?: string;
+  textHash: string;
+}
+export interface VcpMemoryCapabilities {
+  plugins: Record<string, { version: string; available: boolean }>;
+  timelineGenerationConfigured: boolean;
+  coldKnowledge: boolean;
+  modes?: Record<string, { available: boolean; configured: boolean; enabledByDefault: boolean; exposure: string; cost: string; observedCalls: number;
+    reason?: string; configurations?: string[] }>;
+  behavior?: { profile: string; differences: Array<{ parameter: string; upstream: unknown; effective: unknown }>; generation: Record<string, unknown> };
 }
 export interface VcpMemoryMessage {
   role: string;
   content: string | Array<Record<string, unknown>>;
   [key: string]: unknown;
+}
+export interface VcpMemoryQueryClock { now: string; timeZone: string }
+export interface VcpMemoryAutomaticDecayPolicy { schema: 'episodic-v1'; halfLifeDays: 180; minScore: 0; protectedNoteIds: string[] }
+export interface VcpMemoryDecayObservation {
+  policy: 'episodic-v1'; halfLifeDays: 180; minScore: 0; eligibleCount: number; protectedCount: number;
+  results: Array<{ id?: string; score?: number; originalScore?: number; diffDays?: number; decayFactor?: number; protected: boolean; explicitTime: boolean }>;
 }
 export type VcpMemoryPluginName = 'DailyNote' | 'DailyNoteManager' | 'LightMemo';
 export interface VcpMemoryOwnerIdentity {
@@ -103,6 +132,8 @@ export interface VcpMemoryTimelineRequest {
 export interface VcpMemoryTimelineArtifacts {
   schema: 'worldlinebox.vcp-timeline-artifacts';
   sourceRevision: string;
+  /** Calendar used to project source dates and group months; legacy is Shanghai. */
+  calendarTimeZone?: string;
   /** Host provenance; legacy artifacts without this must be regenerated for a resident. */
   owner?: VcpMemoryOwnerIdentity;
   agents: Array<{ agentName: string; months: Array<{ month: string; sourceDigest: string; content?: string; summary?: string }> }>;
@@ -117,7 +148,8 @@ export type VcpMemoryCommand =
   | { type: 'list' }
   | { type: 'forget'; id: string }
   | { type: 'plugin'; plugin: VcpMemoryPluginName; arguments: Record<string, unknown> }
-  | { type: 'preprocess'; messages: VcpMemoryMessage[] }
+  | { type: 'preprocess'; messages: VcpMemoryMessage[]; clock?: VcpMemoryQueryClock; automaticDecay?: VcpMemoryAutomaticDecayPolicy }
+  | { type: 'dream-wave'; request: VcpMemoryDreamWaveRequest }
   | { type: 'timeline'; request: VcpMemoryTimelineRequest }
   | { type: 'capabilities' }
   | { type: 'export-notes' }
@@ -136,3 +168,4 @@ export function vcpMemoryNotebookFolder(diaryName?: string): string {
   const label = Array.from(name.replaceAll('日记本', '日记').replace(/[^\p{L}\p{N}-]/gu, '_').replace(/_+/gu, '_').replace(/^_+|_+$/gu, '')).slice(0, 24).join('') || 'notebook';
   return `nb-${label}-${createHash('sha256').update(name).digest('hex').slice(0, 32)}`;
 }
+import type { VcpMemoryDreamWaveRequest } from './dream-contracts';

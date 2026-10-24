@@ -202,9 +202,9 @@ export class CompanionResetStore {
   }
   private memoryBatch(job: Job, limit: number): number { return this.resetNotes(job.companionId, limit); }
   private rooms(job: Job, limit: number): number {
-    const found = rows(this.db.prepare('SELECT c.id,c.kind,(SELECT COUNT(*) FROM conversation_members x WHERE x.conversation_id=c.id) AS members,EXISTS(SELECT 1 FROM companion_social_conversations s WHERE s.id=c.id) AS peer FROM conversation_members m JOIN conversations c ON c.id=m.conversation_id WHERE m.companion_id=? AND c.id>? ORDER BY c.id LIMIT ?').all(job.companionId, job.progress.roomAfter, limit));
+    const found = rows(this.db.prepare("SELECT c.id,c.kind,(SELECT COUNT(*) FROM conversation_members x WHERE x.conversation_id=c.id) AS members,EXISTS(SELECT 1 FROM companion_social_conversations s WHERE s.id=c.id) AS peer,EXISTS(SELECT 1 FROM metadata marker WHERE marker.key='world-room/'||c.id) AS peer_only FROM conversation_members m JOIN conversations c ON c.id=m.conversation_id WHERE m.companion_id=? AND c.id>? ORDER BY c.id LIMIT ?").all(job.companionId, job.progress.roomAfter, limit));
     for (const item of found) {
-      if (item.kind === 'private' || Number(item.members) === 1 || item.peer && Number(item.members) === 2) this.db.prepare('INSERT OR IGNORE INTO companion_reset_rooms(job_id,conversation_id) VALUES(?,?)').run(job.id, item.id);
+      if (item.kind === 'private' || item.peer_only && (Number(item.members) === 1 || item.peer && Number(item.members) === 2)) this.db.prepare('INSERT OR IGNORE INTO companion_reset_rooms(job_id,conversation_id) VALUES(?,?)').run(job.id, item.id);
       if (item.peer) {
         this.db.prepare('INSERT OR IGNORE INTO companion_reset_social_rooms(job_id,conversation_id) VALUES(?,?)').run(job.id, item.id);
         // Empty histories must not leave a known social relationship behind.
@@ -223,14 +223,16 @@ export class CompanionResetStore {
     for (const item of found) {
       const members = rows(this.db.prepare("SELECT p.id,json_extract(p.data,'$.name') AS name FROM conversation_members m JOIN companions p ON p.id=m.companion_id WHERE m.conversation_id=? ORDER BY p.id").all(item.conversation_id));
       this.db.prepare('DELETE FROM companion_social_room_search WHERE id=?').run(item.conversation_id);
-      if (members.length < 2) {
+      const peerOnly = !!this.db.prepare('SELECT 1 FROM metadata WHERE key=?').get('world-room/' + item.conversation_id);
+      if (peerOnly && members.length < 2) {
         this.db.prepare('DELETE FROM companion_social_conversations WHERE id=?').run(item.conversation_id);
         this.db.prepare('DELETE FROM conversation_members WHERE conversation_id=?').run(item.conversation_id);
         this.db.prepare('DELETE FROM metadata WHERE key=?').run('world-room/' + item.conversation_id);
         this.db.prepare('UPDATE conversations SET dissolved_at=?,hidden_at=? WHERE id=?').run(stamp(), stamp(), item.conversation_id);
       } else {
-        const title = members.map(member => member.name).join('、').slice(0, 100);
-        this.db.prepare('UPDATE conversations SET title=? WHERE id=?').run(title, item.conversation_id);
+        const title = peerOnly ? members.map(member => member.name).join('、').slice(0, 100)
+          : String(row(this.db.prepare('SELECT title FROM conversations WHERE id=?').get(item.conversation_id)).title);
+        if (peerOnly) this.db.prepare('UPDATE conversations SET title=? WHERE id=?').run(title, item.conversation_id);
         this.db.prepare('INSERT INTO companion_social_room_search(id,title) VALUES(?,?)').run(item.conversation_id, companionSearchTokens(title));
       }
       this.db.prepare('DELETE FROM companion_reset_social_rooms WHERE job_id=? AND conversation_id=?').run(job.id, item.conversation_id);
@@ -282,7 +284,7 @@ export class CompanionResetStore {
     if (!found.length) return 0;
     const stage = 'SELECT message_id FROM companion_reset_messages WHERE job_id=?';
     const removeMetadata = this.db.prepare('DELETE FROM metadata WHERE key IN(SELECT ?||message_id FROM companion_reset_messages WHERE job_id=?)');
-    for (const prefix of ['message-loop/', 'message-memory-evidence/', 'message-published-after/', 'reply-source/', 'memory-world-observation/', 'scene-entry-source/']) removeMetadata.run(prefix, job.id);
+    for (const prefix of ['message-loop/', 'message-memory-evidence/', 'message-published-after/', 'message-topic-publication/', 'reply-source/', 'memory-world-observation/', 'scene-entry-source/']) removeMetadata.run(prefix, job.id);
     this.db.prepare(`DELETE FROM companion_social_budget WHERE message_id IN(${stage})`).run(job.id);
     this.db.prepare(`DELETE FROM messages WHERE id IN(${stage})`).run(job.id);
     this.db.prepare('DELETE FROM companion_reset_messages WHERE job_id=?').run(job.id);

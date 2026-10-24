@@ -26,7 +26,7 @@ lines.on('line',line=>{
  emit({type:'session',sessionId}); emit({type:'capabilities',modes:['native'],preset:'standard',tools:[{name:'read',description:'read'}],skills:[],toolRestrictions:true,skillSelection:true});
  if(opened.policy?.discover){emit({type:'final',text:'discovered'});emit({type:'task_finished',code:0});opened=undefined;return}
  const file=path.join(opened.cwd,'result.txt');
- if(!input.content.includes('missing-artifact'))fs.writeFileSync(file,'verified output');
+ if(!input.content.includes('missing-artifact'))fs.writeFileSync(file,input.content.includes('echo-constraints')?input.content:'verified output');
  emit({type:'artifacts',files:[{path:'result.txt',description:'test delivery'}]});
  emit({type:'status',phase:'turn_start'});emit({type:'status',phase:'turn_end',reason:{kind:'completed'}});
  emit({type:'final',text:input.content.includes('bad-json')?'bad':input.content.includes('Delivery format: json')?JSON.stringify({done:true}):'done'});emit({type:'task_finished',code:0});opened=undefined;
@@ -79,6 +79,45 @@ describe('DSH TaskSpec execution and receipts', () => {
       const catalog = await test.broker.discover('fixture');
       expect(catalog).toMatchObject({ instanceId: 'fixture', runtimeId: 'runtime-fixture', modes: ['native'], tools: [{ name: 'read', description: 'read' }] });
       expect(test.broker.state()[0]?.status).toBe('succeeded');
+    } finally { await test.broker.shutdown(); }
+  }, 30000);
+
+  it('requires current source proof and the same topic/domain when continuing a scoped task', async () => {
+    const test = await fixture();
+    const recordScope = { ...test.execution.recordScope!, topicId: 'topic-a', domain: 'reality' as const,
+      sourceDigest: 'a'.repeat(64), invocationId: 'invocation-original', executionReadsetDigest: 'c'.repeat(64) };
+    try {
+      const first = await test.broker.execute({ prompt: 'Create output.' }, test.operation(), { ...test.execution, recordScope, task: {} });
+      const task = { session: { mode: 'resume' as const, taskId: first.taskId } };
+      await expect(test.broker.execute({ prompt: 'Continue.' }, test.operation(), { ...test.execution, recordScope, task })).rejects.toThrow('revalidated');
+      await expect(test.broker.execute({ prompt: 'Continue.' }, test.operation(), { ...test.execution, recordScope: { ...recordScope, topicId: null }, resumeScope: recordScope, task })).rejects.toThrow('another topic');
+      await expect(test.broker.execute({ prompt: 'Continue.' }, test.operation(), { ...test.execution, recordScope, resumeScope: { ...recordScope, sourceDigest: 'b'.repeat(64) }, task })).rejects.toThrow('revalidated');
+      await expect(test.broker.execute({ prompt: 'Continue.' }, test.operation(), { ...test.execution, recordScope: { ...recordScope, executionReadsetDigest: 'd'.repeat(64) }, resumeScope: recordScope, task })).rejects.toThrow('source dependencies');
+      const continued = await test.broker.execute({ prompt: 'Continue.' }, test.operation(), { ...test.execution,
+        recordScope: { ...recordScope, actionId: randomUUID(), sourceMessageId: 'new-user-source', sourceDigest: 'b'.repeat(64), invocationId: 'invocation-new', executionReadsetDigest: 'd'.repeat(64) }, resumeScope: recordScope, task });
+      expect(continued.sessionId).toBe(first.sessionId);
+    } finally { await test.broker.shutdown(); }
+  }, 30000);
+
+  it('compiles positive/conditional host constraints and validates JSON business shape and real files', async () => {
+    const test = await fixture();
+    try {
+      const accepted = await test.broker.execute({ prompt: 'Create output.' }, test.operation(), { ...test.execution, task: { delivery: {
+        format: 'json', jsonSchema: { type: 'object', properties: { done: { const: true } }, required: ['done'], additionalProperties: false },
+        artifacts: [{ path: 'result.txt', minBytes: 10, containsText: 'verified output' }], requirements: ['Reviewer must inspect style.'] } } });
+      expect(accepted.artifacts?.[0]).toMatchObject({ bytes: 15, sha256: expect.stringMatching(/^[a-f0-9]{64}$/) });
+      expect(accepted.verification).toMatchObject({ jsonSchema: true, artifactChecks: 1, unverifiedRequirements: ['Reviewer must inspect style.'] });
+      await expect(test.broker.execute({ prompt: 'Create output.' }, test.operation(), { ...test.execution, task: { delivery: {
+        format: 'json', jsonSchema: { type: 'object', properties: { total: { type: 'number' } }, required: ['total'] } } } })).rejects.toThrow('required schema');
+      await expect(test.broker.execute({ prompt: 'Create output.' }, test.operation(), { ...test.execution, task: { delivery: {
+        format: 'text', artifacts: [{ path: 'result.txt', containsText: 'required-but-missing' }] } } })).rejects.toThrow('required text');
+      const exact = 'Only after both reviews pass, publish the report into the authorized output directory.';
+      const output = await test.broker.execute({ prompt: 'echo-constraints' }, test.operation(), { ...test.execution,
+        constraints: [{ id: 'user-conditional', text: exact, sourceMessageId: 'original-message', revision: 2 }], task: {} });
+      expect(await readFile(output.artifacts![0]!.path, 'utf8')).toContain(exact);
+      expect(test.broker.state()[0]?.constraintsDigest).toMatch(/^[a-f0-9]{64}$/);
+      await expect(test.broker.execute({ prompt: 'Bounded context.' }, test.operation(), { ...test.execution,
+        constraints: Array.from({ length: 5 }, (_, index) => ({ id: String(index), text: 'x'.repeat(16000), sourceMessageId: 'original-message' })), task: {} })).rejects.toThrow('not truncated');
     } finally { await test.broker.shutdown(); }
   }, 30000);
 });

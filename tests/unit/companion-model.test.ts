@@ -68,6 +68,29 @@ function chatResponse(text = '{"text":"那就慢慢来。","memories":["用户�
   return response({ choices: [{ message: { content: text, reasoning_content: 'THIS MUST NOT BE RETAINED' } }] });
 }
 
+it.each([
+  { status: 400, body: { error: { code: 'context_length_exceeded', message: 'PRIVATE_PROVIDER_DETAIL' } } },
+  { status: 413, body: { error: { type: 'invalid_request_error', message: 'prompt is too long: 999999 tokens > 100 maximum PRIVATE_PROVIDER_DETAIL' } } },
+  { status: 422, body: { error: { message: 'The input token count (99999) exceeds the maximum number of tokens allowed (100).' } } },
+  { status: 200, body: { error: { code: 'context_window_exceeded' } } },
+])('normalizes explicit provider input capacity feedback at HTTP $status without repeating the request', async ({ status, body }) => {
+  const fetchFn = vi.fn<typeof fetch>(async () => new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } }));
+  const error = await generateCompanionReply(input, config, undefined, { fetchFn }).catch(error => error);
+  expect(error).toMatchObject({ code: 'CONTEXT_CAPACITY' }); expect(error.message).not.toContain('PRIVATE_PROVIDER_DETAIL');
+  expect(fetchFn).toHaveBeenCalledOnce();
+});
+it.each([400, 413, 422])('does not guess context capacity from HTTP %s alone', async status => {
+  const fetchFn = vi.fn<typeof fetch>(async () => new Response(JSON.stringify({ error: { message: 'Invalid image dimensions or request field' } }), { status }));
+  await expect(generateCompanionReply(input, config, undefined, { fetchFn })).rejects.toMatchObject({ code: 'INVALID_RESPONSE' });
+  expect(fetchFn).toHaveBeenCalledOnce();
+});
+it('preserves explicit context capacity errors delivered as an SSE error event', async () => {
+  const fetchFn = vi.fn<typeof fetch>(async () => new Response('event: error\ndata: {"error":{"type":"invalid_request_error","message":"prompt is too long"}}\n\n',
+    { headers: { 'Content-Type': 'text/event-stream' } }));
+  await expect(generateCompanionReply(input, config, undefined, { fetchFn, loop: true })).rejects.toMatchObject({ code: 'CONTEXT_CAPACITY' });
+  expect(fetchFn).toHaveBeenCalledOnce();
+});
+
 describe('persistent companion model context', () => {
   it('pins the current task independently of older requests and excludes messages after its source cursor', () => {
     const prompt = '现在几点了？' + '补充信息'.repeat(2_000) + '只查时间，不要重新查天气。';

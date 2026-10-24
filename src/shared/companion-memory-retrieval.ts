@@ -10,10 +10,13 @@ const match = z.object({
 export const companionMemoryRetrievalSchema = z.object({
   mode: z.enum(['active', 'passive']), engine: z.enum(['river', 'knn', 'none']), observedAt: z.string(), resultCount: z.number().int().nonnegative(),
   candidateQuerySeparateFromContext: z.literal(true),
+  /** Only the unfiltered owner authorization snapshot can establish this. */
+  authorizedCorpusEmpty: z.literal(true).optional(), authorizedCorpusRevision: z.string().min(1).optional(),
   stages: z.array(z.object({
     id: z.enum(['scope', 'embedding', 'sensing', 'candidates', 'ranking', 'context']),
     state: z.enum(['completed', 'not_observed', 'degraded', 'skipped']), title: z.string().max(100), description: z.string().max(1500),
     facts: z.array(fact).max(16), tags: z.array(z.string().max(100)).max(30), matches: z.array(match).max(12),
+    contextReferences: z.array(z.object({ id: z.string(), version: z.number().int().positive(), role: z.enum(['returned', 'focus_input']), textHash: z.string() })).max(100).optional(),
   })).max(6),
 });
 export type CompanionMemoryRetrieval = z.infer<typeof companionMemoryRetrievalSchema>;

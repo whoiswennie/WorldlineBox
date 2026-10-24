@@ -1,13 +1,15 @@
 import { z } from 'zod';
+import { companionKnowledgeCommandSchema, companionKnowledgeResponseSchema } from './companion-knowledge-store';
 import { companionReplyProgressSchema } from './companion-reply-progress';
 import { companionSocialReplyProgressEntrySchema } from './companion-social-reply';
 import { companionReplyMemoryCommand, companionReplyMemorySchema } from './companion-reply-memory';
 import { companionMemoryCorpusStateCommand, companionMemoryProbeCommand, companionMemoryProbeSchema } from './companion-memory-probe';
 import { companionMemoryRetrievalSchema } from './companion-memory-retrieval';
+import { companionMemoryRetrievalModesSchema } from './companion-memory-modes';
 import type { CompanionWorkspaceRequest, CompanionWorkspaceResponse } from './companion-workspace';
 import { companionWorldObservationSchema } from './companion-knowledge';
 import { companionContactReceiptSchema } from './companion-contact';
-import { activityPublicCommands, activityTaskSchema } from './companion-activity-task';
+import { activityPublicCommands, activityTaskSchema, activityHistoryPageSchema } from './companion-activity-task';
 import { dshRecordOverviewSchema, dshRecordQuerySchema, dshRecordPageSchema } from './dsh-task-record';
 import { dshExecutionAccessModeSchema } from './dsh-access';
 import { companionWorkSchema, companionLoopDraftSchema } from './companion-loop';
@@ -120,6 +122,7 @@ export const actionSchema = z.object({ id: companionIdSchema, conversationId: co
   createdAt: z.string(), updatedAt: z.string(),
   startedAt: z.string().optional(), finishedAt: z.string().optional(),
   canResume: z.boolean().optional(), pid: z.number().int().positive().optional(), attempt: z.number().int().positive().optional(), attemptCreatedAt: z.string().optional(),
+  contentAvailable: z.boolean().optional(),
   stage: z.string().max(1000).optional(), events: z.array(companionActionEventSchema).max(150).optional(),
   accessMode: dshExecutionAccessModeSchema.optional(),
 });
@@ -157,6 +160,7 @@ export const companionsRequestSchema = z.discriminatedUnion('type', [
   companionMemoryProbeCommand, companionMemoryCorpusStateCommand,
   companionReplyMemoryCommand,
   ...activityPublicCommands,
+  companionKnowledgeCommandSchema,
   ...companionTopicPublicCommands,
   z.strictObject({ type: z.literal('message.guide'), id: companionIdSchema, targetSourceMessageId: companionIdSchema.optional() }),
   z.strictObject({ type: z.literal('state') }),
@@ -213,12 +217,13 @@ export const companionsRequestSchema = z.discriminatedUnion('type', [
 ]);
 export type CompanionsRequest = z.infer<typeof companionsRequestSchema>;
 export const companionsResponseSchema = z.object({
+  memoryKnowledge: companionKnowledgeResponseSchema.optional(),
   topic: companionTopicSchema.optional(), topics: z.array(companionTopicSchema).max(500).optional(), topicState: companionTopicStateSchema.optional(),
   topicNextCursor: z.number().int().positive().optional(),
   memoryProbe: companionMemoryProbeSchema.optional(),
   memoryCorpusStamp: z.string().min(1).max(1000).optional(),
   replyMemory: companionReplyMemorySchema.optional(),
-  activityTask: activityTaskSchema.optional(), activityTasks: z.array(activityTaskSchema).max(50).optional(), activityMessages: z.array(messageSchema).max(100).optional(),
+  activityTask: activityTaskSchema.optional(), activityTasks: z.array(activityTaskSchema).max(50).optional(), activityHistory: activityHistoryPageSchema.optional(), activityMessages: z.array(messageSchema).max(100).optional(),
   activityMessageOrigins: z.array(z.strictObject({ messageId: companionIdSchema, sourceMessageId: companionIdSchema, deliveryClientId: companionIdSchema,
     conversationId: companionIdSchema, topicId: companionIdSchema.optional(), chainId: companionIdSchema })).max(100).optional(),
   ok: z.boolean(), error: z.string().optional(), state: companionStateSchema.optional(),
@@ -230,13 +235,25 @@ export const companionsResponseSchema = z.object({
   action: actionSchema.optional(), actionPage: companionActionPageSchema.optional(),
   taskRecord: dshRecordPageSchema.optional(),
   message: messageSchema.optional(), companion: companionSchema.optional(),
-  memoryPage: companionMemoryPageSchema.optional(), memoryStatus: companionMemoryStatusSchema.optional(), memoryRetrieval: companionMemoryRetrievalSchema.optional(),
+  memoryPage: companionMemoryPageSchema.optional(), memoryStatus: companionMemoryStatusSchema.optional(), memoryRetrieval: companionMemoryRetrievalSchema.optional(), memoryRetrievalModes: companionMemoryRetrievalModesSchema.optional(),
   memoryProcessing: companionMemoryProcessingSchema.optional(),
   memoryLifePlan: companionMemoryLifePlanSchema.optional(),
   lifeOverview: companionLifeOverviewSchema.optional(),
   memoryTracePage: companionMemoryTracePageSchema.optional(), memoryTrace: companionMemoryTraceSchema.optional(),
   memoryContext: z.object({ text: z.string().max(1024 * 1024), revision: z.string(), profileKey: z.string(),
-    evidence: z.object({ capturedAt: z.string(), corpusHash: z.string(), beforeSequence: z.number().int().nonnegative().optional() }).optional() }).optional(),
+    evidence: z.object({ capturedAt: z.string(), corpusHash: z.string(), beforeSequence: z.number().int().nonnegative().optional(),
+      queryCorpusHash: z.string().optional(), pageMemoryIds: z.array(z.string()).optional(),
+      queryClock: z.object({ now: z.string(), timeZone: z.string(), domain: z.literal('world') }).optional(),
+      recallPolicy: z.object({ schema: z.literal('episodic-v1'), halfLifeDays: z.literal(180), minScore: z.literal(0), protectedNoteIds: z.array(z.string()),
+        applied: z.boolean(), eligibleCount: z.number().int().nonnegative(), protectedCount: z.number().int().nonnegative() }).optional(),
+      candidateOrder: z.literal('independent_native_query').optional(), contextOrder: z.literal('original_context_pipeline').optional(),
+      referenceCoverage: z.enum(['observed', 'partial', 'unavailable']).optional(),
+      dependencyCoverage: z.literal('complete').optional(),
+      dependencies: z.array(z.object({ id: z.string().regex(/^[a-zA-Z0-9_-]{1,100}$/u), version: z.number().int().positive().safe() })).max(100).optional(),
+      references: z.array(z.object({ id: z.string(), version: z.number().int().positive(), role: z.enum(['returned', 'focus_input']),
+        sourceFile: z.string().optional(), textHash: z.string(),
+        sources: z.array(z.object({ messageId: z.string(), revision: z.number().int().positive(), checksum: z.string() })) })).optional(),
+    }).optional() }).optional(),
   memoryPolicies: z.array(companionMemoryPolicySchema).optional(),
   memoryRead: z.object({ memory: memorySchema, sources: z.array(messageSchema), related: z.array(memorySchema), hasMore: z.boolean(), nextSourceCursor: z.number().int().nonnegative().optional() }).optional(),
   memorySources: z.array(messageSchema).optional(), forgottenCount: z.number().int().nonnegative().optional(),

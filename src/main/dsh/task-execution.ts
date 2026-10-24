@@ -3,7 +3,7 @@ import { dshExecutionAccessSettingsSchema, type DshExecutionAccessSettings } fro
 import { dshTaskAccessPatch, snapshotDshTaskAccess } from './task-access';
 import { dshTaskRecordSchema, type DshTaskRecord } from '../../shared/dsh-tasks';
 import { dshRecordScopeSchema } from '../../shared/dsh-task-record';
-import { dshTaskSpecSchema, dshTaskCapabilityQuerySchema, type DshTaskSpec, type DshTaskCapabilityQuery } from '../../shared/dsh-task-spec';
+import { dshTaskSpecSchema, dshTaskCapabilityQuerySchema, dshExecutionConstraintSchema, type DshExecutionConstraint, type DshTaskSpec, type DshTaskCapabilityQuery } from '../../shared/dsh-task-spec';
 
 /** Task controls only. Account, provider and model belong exclusively to the selected DSH profile. */
 export interface DshTaskExecutionOptions {
@@ -13,6 +13,9 @@ export interface DshTaskExecutionOptions {
   /** Trusted Main checkpoint only; never accepted as renderer launch options. */
   resume?: DshTaskRecord;
   recordScope?: z.infer<typeof dshRecordScopeSchema>;
+  /** Main revalidates the original source/authorization before issuing this resume proof. */
+  resumeScope?: z.infer<typeof dshRecordScopeSchema>;
+  constraints?: DshExecutionConstraint[];
   inputs?: Array<{ id: string; content: string; mode: 'steer' | 'queue' }>;
   task?: DshTaskSpec;
   /** Trusted library-owned storage root; never accepted from a model or renderer. */
@@ -27,6 +30,7 @@ const executionSchema = z.strictObject({
   access: dshExecutionAccessSettingsSchema.optional(),
   resume: dshTaskRecordSchema.optional(),
   recordScope: dshRecordScopeSchema.optional(),
+  resumeScope: dshRecordScopeSchema.optional(), constraints: z.array(dshExecutionConstraintSchema).max(128).optional(),
   task: dshTaskSpecSchema.optional(), workspaceRootPath: z.string().min(1).max(4096).optional(),
   allowedWorkspaceRoots: z.array(z.string().min(1).max(4096)).max(20).optional(), discover: z.boolean().optional(),
   capabilityQuery: dshTaskCapabilityQuerySchema.optional(),

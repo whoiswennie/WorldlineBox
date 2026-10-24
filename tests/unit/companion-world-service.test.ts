@@ -1,12 +1,14 @@
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
+import Database from 'better-sqlite3';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { CompanionsStore, type CompanionSeed } from '../../src/companions/store';
+import { CompanionsStore, type CompanionSeed, type CompanionConnection } from '../../src/companions/store';
 import { CompanionWorldService } from '../../src/main/companions/world-service';
 import type { CompanionMemoryCandidate } from '../../src/shared/companion-memory';
 import type { CompanionStorageResponse } from '../../src/shared/companion-storage';
 import type { CompanionMemoryService } from '../../src/main/companions/memory-service';
+import type { VcpMemoryDreamWaveResult } from '../../src/main/vcp-memory/dream-contracts';
 
 const seeds: CompanionSeed[] = ['alice', 'bob'].map(id => ({ id, name: id, persona: id === 'alice' ? '安静友好，喜欢阅读。' : '坦率，尊重彼此边界。', description: '', model: '', avatar: 'sister', proactive: true }));
 const stores = new Set<CompanionsStore>(), services = new Set<CompanionWorldService>(), roots: string[] = [];
@@ -19,7 +21,7 @@ afterEach(async () => {
   vi.useRealTimers();
   vi.restoreAllMocks();
 });
-function fixture(fetchFn: typeof fetch, asleep = true, members = seeds) {
+function fixture(fetchFn: typeof fetch, asleep = true, members = seeds, narrateDream = false) {
   const root = mkdtempSync(path.join(tmpdir(), 'companion-world-service-')); roots.push(root);
   const store = new CompanionsStore(path.join(root, 'messages.sqlite'), members.map(seed => ({ ...seed, active: true }))); stores.add(store);
   const alice = { companionId: 'alice', conversationId: store.openPrivate('alice').id }, bob = { companionId: 'bob', conversationId: store.openPrivate('bob').id };
@@ -44,9 +46,17 @@ function fixture(fetchFn: typeof fetch, asleep = true, members = seeds) {
     return { memories: response.memoryPage?.items.map(hit => hit.memory) ?? [], sources: [], reasons: [], pending: false, degraded: false,
       context: response.memoryContext };
   });
+  const dreamWave = vi.fn(async (input: { companionId: string; conversationId: string; now: string; clockDomain: 'world' | 'real' }): Promise<VcpMemoryDreamWaveResult> => {
+    const snapshot = store.request({ type: 'memory.snapshot', companionId: input.companionId, conversationId: input.conversationId }).memorySnapshot!;
+    return { schema: 'worldlinebox.vcp-dream-wave', owner: { version: 2, companionId: input.companionId, agentName: input.companionId, name: input.companionId },
+      sourceRevision: snapshot.revision, now: input.now, clockDomain: input.clockDomain, boundaries: { recentDays: 7, midDays: 90 },
+      stages: { recent: { seeds: narrateDream ? snapshot.notes.map(note => ({ id: note.id, version: note.version, text: note.content,
+        eventTime: input.now, clockDomain: input.clockDomain })) : [], resonanceL1: [], cascadeL2: [] }, mid: { seeds: [], cascadeL1: [] }, deep: { recalls: [] } },
+      diagnostics: { algorithm: 'upstream-DreamWaveEngine', sourceCount: snapshot.notes.length, indexedCount: snapshot.notes.length, queries: [] } };
+  });
   const service = new CompanionWorldService({ request, fetchFn, configFor: async () => ({ apiFormat: 'openai_chat', model: 'test-model', apiKey: 'private-key', baseUrl: 'https://provider.invalid' }),
-    changed: vi.fn(), wakeWaiting: vi.fn(), report: vi.fn(), memoryContextValid, recall }); services.add(service);
-  return { store, service, alice, bob, request, memoryContextValid, recall, root };
+    changed: vi.fn(), wakeWaiting: vi.fn(), report: vi.fn(), memoryContextValid, recall, dreamWave }); services.add(service);
+  return { store, service, alice, bob, request, memoryContextValid, recall, dreamWave, root };
 }
 function advance(store: CompanionsStore, milliseconds: number) { vi.setSystemTime(Date.now() + milliseconds); return store.request({ type: 'world.tick' }).world!; }
 function indexNotes(store: CompanionsStore) {
@@ -73,10 +83,203 @@ function dreamResult(data: { messages: Array<{ id: string; content: string }>; r
   const source = data.messages.find(message => message.content.includes('实际修复了聊天保存问题'))!, journal = data.relevantMemories.find(memory => memory.content === source.content)!;
   const common = { sourceMessageIds: [source.id], relatedMemoryIds: [journal.id], evidence: [{ sourceMessageId: source.id, quote: source.content }] };
   const note: CompanionMemoryCandidate = { ...common, tags: ['聊天保存', '备份', '修复经验'], content: '这次聊天保存修复中先备份再修改保留了恢复入口；仅是本次实际经历的经验。' };
-  return { notes: [note], dream: { ...common, text: '梦中，我把聊天纸片整理好；这是实际修复经历的主观联想。' } };
+  return { notes: [note], dream: null };
 }
 
 describe('semantic world background service with actual SQLite sources', () => {
+  it('automatically prepares a multi-seed merge from normal journal jobs during real sleep and publishes only after index acknowledgement', async () => {
+    vi.mocked(Math.random).mockReturnValue(.99);
+    const fetchFn = vi.fn<typeof fetch>(async (_url, init) => {
+      const payload = JSON.parse(JSON.parse(String(init?.body)).messages[1].content);
+      if (payload.purpose === 'vcp_sleep_reflection') {
+        expect(payload.reflectionOnly).toBe(true); expect(payload.outputSchema.properties).not.toHaveProperty('consolidations');
+        return response({ notes: [], dream: null });
+      }
+      expect(payload.purpose).toBe('vcp_sleep_memory_maintenance');
+      const inputs = payload.relevantMemories.map((note: { id: string; version: number }) => ({ id: note.id, version: note.version }));
+      expect(inputs).toHaveLength(2);
+      return response({ decision: 'merge', reason: '同一把钥匙的错误记录与明确更正分散在两篇，保留前后顺序整合。', consolidations: [{ inputs, candidate: {
+        content: '玩家先记成K-710，后来明确更正钥匙编号为K-701；搬家日期仍未定。', tags: ['钥匙'],
+        sourceMessageIds: payload.messages.map((source: { id: string }) => source.id), relatedMemoryIds: inputs.map((note: { id: string }) => note.id),
+        evidence: payload.messages.map((source: { id: string; content: string }) => ({ sourceMessageId: source.id, quote: source.content })),
+      } }] });
+    });
+    const f = fixture(fetchFn);
+    const sources = ['钥匙先记成K-710，搬家日期还未确定。', '更正：钥匙编号是K-701，不是K-710；搬家日期仍未定。']
+      .map(content => f.store.appendMessage({ conversationId: f.alice.conversationId, authorId: 'user', content, replyDirective: 'none' }));
+    const journalJob = f.store.request({ type: 'memory.jobs.claim', companionId: 'alice' }).memoryJob!;
+    const originals = f.store.request({ type: 'memory.jobs.complete', id: journalJob.id, leaseToken: journalJob.leaseToken,
+      notes: sources.map(source => ({ content: source.content, tags: ['钥匙'], sourceMessageIds: [source.id], evidence: [{ sourceMessageId: source.id, quote: source.content }] })) }).memories!;
+    expect(originals).toHaveLength(2); indexNotes(f.store); advance(f.store, 10000); advance(f.store, 6000);
+    await f.service.tick();
+    await vi.waitFor(() => expect(f.request.mock.calls.some(([command]) => command.type === 'world.job.complete' && command.consolidations?.length === 1)).toBe(true));
+    const completed = f.request.mock.calls.find(([command]) => command.type === 'world.job.complete' && command.consolidations?.length === 1)![0];
+    expect(completed.type).toBe('world.job.complete');
+    const pending = f.store.request({ type: 'memory.browse', ...f.alice }).memoryPage!.items.map(hit => hit.memory);
+    const merged = pending.find(note => note.metadata?.consolidation === 'source_version_graph')!;
+    expect(merged.status).toBe('queued'); expect(pending.filter(note => originals.some(original => original.id === note.id)).every(note => !note.archivedAt)).toBe(true);
+    indexNotes(f.store);
+    const published = f.store.request({ type: 'memory.snapshot', ...f.alice }).memorySnapshot!.notes;
+    expect(published.map(note => note.id)).toEqual([merged.id]); expect(published[0]!.content).toContain('K-701'); expect(published[0]!.content).toContain('仍未定');
+    for (const original of originals) expect(f.store.request({ type: 'memory.read', ...f.alice, id: original.id }).memoryRead!.memory).toMatchObject({ archivedAt: expect.any(String), supersededBy: merged.id });
+    expect(f.store.request(completed).ok).toBe(true); expect(f.store.request({ type: 'memory.snapshot', ...f.alice }).memorySnapshot!.notes).toHaveLength(1);
+    expect(completed.type === 'world.job.complete' && completed.maintenance).toMatchObject({ decision: 'merge', reviewedMemoryVersions: originals.map(note => ({ id: note.id, version: note.version })) });
+    expect(fetchFn).toHaveBeenCalledTimes(2); expect(f.request.mock.calls.some(([command]) => command.type === 'memory.consolidate')).toBe(false);
+  });
+  it('does not remerge a prior summary and same-source reflection over several sleep episodes, then absorbs a genuinely new journal source', async () => {
+    vi.mocked(Math.random).mockReturnValue(.99);
+    let merges = 0;
+    const fetchFn = vi.fn<typeof fetch>(async (_url, init) => {
+      const payload = JSON.parse(JSON.parse(String(init?.body)).messages[1].content);
+      const inputs = payload.relevantMemories.map((note: { id: string; version: number }) => ({ id: note.id, version: note.version }));
+      expect(inputs).toHaveLength(2);
+      const first = payload.messages[0] as { id: string; content: string };
+      if (payload.purpose === 'vcp_sleep_reflection') return response({ notes: merges === 0 ? [{ content: '核对钥匙时仍需保留明确的更正与尚未完成的限定。', tags: ['核对'],
+        sourceMessageIds: [first.id], relatedMemoryIds: [inputs[0]!.id], evidence: [{ sourceMessageId: first.id, quote: first.content }] }] : [], dream: null });
+      expect(payload.purpose).toBe('vcp_sleep_memory_maintenance'); merges++;
+      return response({ decision: 'merge', reason: '同一钥匙的原始记录带来尚未包含的新来源，应保留限制并整合。',
+        consolidations: [{ inputs, candidate: { content: merges === 1 ? '钥匙已经更正为K-701；搬家日期仍未定。' : '钥匙更正为K-701，搬家日期仍未定；新确认钥匙放在第二层抽屉。', tags: ['钥匙'],
+        sourceMessageIds: payload.messages.map((source: { id: string }) => source.id), relatedMemoryIds: inputs.map((note: { id: string }) => note.id),
+        evidence: payload.messages.map((source: { id: string; content: string }) => ({ sourceMessageId: source.id, quote: source.content })) } }] });
+    });
+    const f = fixture(fetchFn);
+    const publishJournals = (texts: string[]) => {
+      const sources = texts.map(content => f.store.appendMessage({ conversationId: f.alice.conversationId, authorId: 'user', content, replyDirective: 'none' }));
+      const job = f.store.request({ type: 'memory.jobs.claim', companionId: 'alice' }).memoryJob!;
+      f.store.request({ type: 'memory.jobs.complete', id: job.id, leaseToken: job.leaseToken,
+        notes: sources.map(source => ({ content: source.content, tags: ['钥匙'], sourceMessageIds: [source.id], evidence: [{ sourceMessageId: source.id, quote: source.content }] })) });
+      indexNotes(f.store); return sources;
+    };
+    const changeSleep = (asleep: boolean) => {
+      const routine = f.store.request({ type: 'routine.get', ...f.alice }).routine!;
+      f.store.request({ type: 'routine.configure', ...f.alice, expectedRevision: routine.revision,
+        patch: { sleepAt: asleep ? '01:00' : '23:00', wakeAt: asleep ? '03:00' : '01:00' } });
+      advance(f.store, 10000); advance(f.store, 6000);
+    };
+    const originals = publishJournals(['钥匙先记成K-710，搬家日期仍未定。', '更正：钥匙编号是K-701，不是K-710。']);
+    advance(f.store, 10000); advance(f.store, 6000); await f.service.tick();
+    await vi.waitFor(() => expect(f.request.mock.calls.filter(([command]) => command.type === 'world.job.complete' && command.consolidations?.length)).toHaveLength(1));
+    indexNotes(f.store);
+    const firstSnapshot = f.store.request({ type: 'memory.snapshot', ...f.alice }).memorySnapshot!.notes;
+    const prior = firstSnapshot.find(note => note.metadata?.automaticConsolidation === true)!, reflection = firstSnapshot.find(note => note.metadata?.sleepReflection === true)!;
+    expect(prior).toBeDefined(); expect(reflection).toBeDefined(); expect(reflection.archivedAt).toBeUndefined();
+    for (let episode = 0; episode < 3; episode++) {
+      changeSleep(false); await f.service.tick(); changeSleep(true); await f.service.tick();
+      expect(f.store.request({ type: 'memory.snapshot', ...f.alice }).memorySnapshot!.notes).toEqual(firstSnapshot);
+    }
+    expect(merges).toBe(1); expect(fetchFn).toHaveBeenCalledTimes(2);
+    changeSleep(false);
+    const [newSource] = publishJournals(['新确认：钥匙K-701放在第二层抽屉，搬家日期仍未定。']);
+    changeSleep(true); await f.service.tick();
+    await vi.waitFor(() => expect(f.request.mock.calls.filter(([command]) => command.type === 'world.job.complete' && command.consolidations?.length),
+      JSON.stringify({ merges, recent: f.request.mock.calls.slice(-12).map(([command]) => command), sleep: f.store.request({ type: 'world.sleep-plan', companionId: 'alice' }) })).toHaveLength(2));
+    indexNotes(f.store);
+    const active = f.store.request({ type: 'memory.snapshot', ...f.alice }).memorySnapshot!.notes;
+    const next = active.find(note => note.metadata?.automaticConsolidation === true)!;
+    expect(next.id).not.toBe(prior.id); expect(next.sources.some(source => source.messageId === newSource!.id)).toBe(true);
+    expect(next.content).toContain('第二层抽屉'); expect(next.content).toContain('仍未定');
+    expect(f.store.request({ type: 'memory.read', ...f.alice, id: prior.id }).memoryRead!.memory.supersededBy).toBe(next.id);
+    expect(active.find(note => note.id === reflection.id)?.archivedAt).toBeUndefined(); expect(fetchFn).toHaveBeenCalledTimes(4);
+    expect(f.request.mock.calls.some(([command]) => command.type === 'memory.consolidate')).toBe(false);
+    f.store.request({ type: 'memory.forget', ...f.alice, sourceMessageIds: [originals[0]!.id] }); indexNotes(f.store);
+    const withdrawn = f.store.request({ type: 'memory.snapshot', ...f.alice }).memorySnapshot!.notes;
+    expect(withdrawn.some(note => note.id === next.id || note.id === prior.id || note.sources.some(source => source.messageId === originals[0]!.id))).toBe(false);
+    expect(f.store.request({ type: 'memory.sources.filter', ...f.alice, ids: [originals[0]!.id] }).memorySources).toEqual([]);
+  });
+  it('persists a reasoned independent-event defer and does not pay again in later sleep episodes without new sources', async () => {
+    vi.mocked(Math.random).mockReturnValue(.99);
+    const fetchFn = vi.fn<typeof fetch>(async (_url, init) => {
+      const data = JSON.parse(JSON.parse(String(init?.body)).messages[1].content);
+      return response(data.purpose === 'vcp_sleep_reflection' ? { notes: [], dream: null }
+        : { decision: 'defer', reason: '借伞和修收音机是两件独立发生的事，混合归档会破坏各自情境。', consolidations: [] });
+    });
+    const f = fixture(fetchFn);
+    const sources = ['上午把雨伞借给小周，约好明天归还。', '晚上独自修好收音机的音量旋钮，没有其它维修结果。']
+      .map(content => f.store.appendMessage({ conversationId: f.alice.conversationId, authorId: 'user', content, replyDirective: 'none' }));
+    const capture = f.store.request({ type: 'memory.jobs.claim', companionId: 'alice' }).memoryJob!;
+    const originals = f.store.request({ type: 'memory.jobs.complete', id: capture.id, leaseToken: capture.leaseToken,
+      notes: sources.map(source => ({ content: source.content, sourceMessageIds: [source.id], evidence: [{ sourceMessageId: source.id, quote: source.content }] })) }).memories!;
+    indexNotes(f.store); advance(f.store, 10000); advance(f.store, 6000); await f.service.tick();
+    await vi.waitFor(() => expect(f.request.mock.calls.some(([command]) => command.type === 'world.job.complete' && command.maintenance?.decision === 'defer')).toBe(true));
+    const completed = f.request.mock.calls.find(([command]) => command.type === 'world.job.complete' && command.maintenance?.decision === 'defer')![0];
+    expect(completed.type === 'world.job.complete' && completed.consolidations).toBeUndefined();
+    const db = new (Database as { new(file: string): CompanionConnection })(path.join(f.root, 'messages.sqlite'));
+    try {
+      const saved = db.prepare('SELECT data FROM companion_world_jobs WHERE id=?').get(completed.type === 'world.job.complete' ? completed.id : '') as { data: string };
+      expect(JSON.parse(saved.data)).toMatchObject({ status: 'done', maintenance: { decision: 'defer', reason: expect.stringContaining('独立发生'),
+        reviewedMemoryVersions: originals.map(note => ({ id: note.id, version: note.version })) } });
+    } finally { db.close(); }
+    for (let episode = 0; episode < 3; episode++) for (const asleep of [false, true]) {
+      const routine = f.store.request({ type: 'routine.get', ...f.alice }).routine!;
+      f.store.request({ type: 'routine.configure', ...f.alice, expectedRevision: routine.revision,
+        patch: { sleepAt: asleep ? '01:00' : '23:00', wakeAt: asleep ? '03:00' : '01:00' } });
+      advance(f.store, 10000); advance(f.store, 6000); await f.service.tick();
+    }
+    expect(fetchFn).toHaveBeenCalledTimes(2);
+    expect(f.store.request({ type: 'memory.snapshot', ...f.alice }).memorySnapshot!.notes.map(note => [note.id, note.archivedAt]).sort()).toEqual(originals.map(note => [note.id, undefined]).sort());
+  });
+  it('rechecks seed novelty in the SQLite completion transaction before allowing a derived-only automatic archive plan', () => {
+    vi.mocked(Math.random).mockReturnValue(.99);
+    const f = fixture(async () => response({ notes: [], dream: null }));
+    const sources = ['先记钥匙K-710。', '更正：钥匙K-701。'].map(content => f.store.appendMessage({ conversationId: f.alice.conversationId, authorId: 'user', content, replyDirective: 'none' }));
+    const capture = f.store.request({ type: 'memory.jobs.claim', companionId: 'alice' }).memoryJob!;
+    const notes = f.store.request({ type: 'memory.jobs.complete', id: capture.id, leaseToken: capture.leaseToken,
+      notes: sources.map(source => ({ content: source.content, tags: ['钥匙'], sourceMessageIds: [source.id], evidence: [{ sourceMessageId: source.id, quote: source.content }] })) }).memories!;
+    indexNotes(f.store); advance(f.store, 10000); advance(f.store, 6000);
+    const job = f.store.request({ type: 'world.job.claim', kind: 'dream' }).worldJob!;
+    expect(job.sourceMemoryIds).toEqual(notes.map(note => note.id));
+    // Adversarial synthetic legacy metadata: exact indexed IDs/versions remain,
+    // but both captured notes are now known to be derived. Host code must not
+    // rely on the model's earlier novelty claim to archive either note.
+    const db = new (Database as { new(file: string): CompanionConnection })(path.join(f.root, 'messages.sqlite'));
+    try {
+      for (const note of notes) db.prepare("UPDATE vcp_memory_notes SET data=json_set(data,'$.metadata.sleepReflection',json('true'),'$.metadata.consolidation',json('true')) WHERE id=?").run(note.id);
+    } finally { db.close(); }
+    expect(() => f.store.request({ type: 'world.job.complete', id: job.id, leaseToken: job.leaseToken!, sourceMemoryIds: notes.map(note => note.id),
+      consolidations: [{ inputs: notes.map(note => ({ id: note.id, version: note.version })), candidate: { content: '钥匙已更正为K-701。', tags: ['钥匙'],
+        sourceMessageIds: sources.map(source => source.id), relatedMemoryIds: notes.map(note => note.id), evidence: sources.map(source => ({ sourceMessageId: source.id, quote: source.content })) } }] })).toThrow('需要原始日记的新信息');
+    expect(f.store.request({ type: 'world.job.check', id: job.id, leaseToken: job.leaseToken! }).worldJob?.status).toBe('running');
+    const snapshot = f.store.request({ type: 'memory.snapshot', ...f.alice }).memorySnapshot!.notes;
+    expect(new Set(snapshot.map(note => note.id))).toEqual(new Set(notes.map(note => note.id))); expect(snapshot.every(note => !note.archivedAt)).toBe(true);
+  });
+  it.each(['record', 'capture', 'revise', 'manual'] as const)('does not let ordinary %s metadata masquerade as a completed sleep classification', mode => {
+    const f = fixture(async () => response({ notes: [], dream: null }));
+    const source = f.store.appendMessage({ conversationId: f.alice.conversationId, authorId: 'user', content: '新确认：钥匙在第二层抽屉。', replyDirective: 'none' });
+    const candidate = { content: source.content, sourceMessageIds: [source.id], evidence: [{ sourceMessageId: source.id, quote: source.content }],
+      metadata: { consolidation: true, automaticConsolidation: true, sleepReflection: true, sleepWorldJobId: 'fake_job', worldJobId: 'fake_job',
+        sleepEpisodeId: 'fake_episode', personalLabel: '保留自由分类' } };
+    let note;
+    if (mode === 'manual') {
+      expect(() => f.store.saveMemory({ ...candidate, ...f.alice })).toThrow('Unrecognized keys');
+      note = f.store.saveMemory({ ...f.alice, content: candidate.content });
+    }
+    else if (mode === 'capture') {
+      const job = f.store.request({ type: 'memory.jobs.claim', companionId: 'alice' }).memoryJob!;
+      note = f.store.request({ type: 'memory.jobs.complete', id: job.id, leaseToken: job.leaseToken, notes: [candidate] }).memories![0]!;
+    } else if (mode === 'revise') {
+      const first = f.store.request({ type: 'memory.record', ...f.alice, candidate: { ...candidate, content: '此前记录：钥匙位置未确认。', metadata: {} } }).memories![0]!;
+      note = f.store.request({ type: 'memory.revise', ...f.alice, id: first.id, expectedVersion: first.version, candidate }).memories![0]!;
+    } else note = f.store.request({ type: 'memory.record', ...f.alice, candidate }).memories![0]!;
+    if (mode !== 'manual') expect(note.metadata?.personalLabel).toBe('保留自由分类');
+    for (const key of ['consolidation', 'automaticConsolidation', 'sleepReflection', 'sleepWorldJobId', 'worldJobId', 'sleepEpisodeId']) expect(note.metadata?.[key]).toBeUndefined();
+    indexNotes(f.store);
+    expect(f.store.request({ type: 'world.sleep-plan', companionId: 'alice' }).worldSleepPlan?.hasUnconsolidated).toBe(true);
+    advance(f.store, 10000); advance(f.store, 6000);
+    expect(f.store.request({ type: 'world.job.claim', kind: 'dream' }).worldJob?.sourceMemoryIds).toContain(note.id);
+  });
+  it('keeps freely declared dream/simulation material out of fresh factual sleep seeds after rejecting forged host flags', () => {
+    const f = fixture(async () => response({ notes: [], dream: null }));
+    for (const fiction of ['dream', 'simulation']) {
+      const source = f.store.appendMessage({ conversationId: f.alice.conversationId, authorId: 'user', content: '虚构联想：书签会飞。' + fiction, replyDirective: 'none' });
+      const note = f.store.request({ type: 'memory.record', ...f.alice, candidate: { content: source.content, sourceMessageIds: [source.id],
+        evidence: [{ sourceMessageId: source.id, quote: source.content }], metadata: { [fiction]: true, consolidation: true, sleepReflection: true, worldJobId: 'fake' } } }).memories![0]!;
+      expect(note.metadata?.[fiction]).toBe(true); expect(note.metadata?.consolidation).toBeUndefined(); expect(note.metadata?.worldJobId).toBeUndefined();
+    }
+    indexNotes(f.store);
+    expect(f.store.request({ type: 'world.sleep-plan', companionId: 'alice' }).worldSleepPlan?.hasUnconsolidated).toBe(false);
+    advance(f.store, 10000); advance(f.store, 6000);
+    expect(f.store.request({ type: 'world.job.claim', kind: 'dream' }).worldJob).toBeUndefined();
+  });
   it('lets a peer voluntarily join its source topic through native world, then reloads only that topic and its own private state', async () => {
     let calls = 0, topicId = '';
     const fetchFn: typeof fetch = async (_url, init) => {
@@ -183,6 +386,33 @@ describe('semantic world background service with actual SQLite sources', () => {
     expect(vi.mocked(Math.random)).toHaveBeenCalledOnce();
   });
 
+  it('parks an indivisible provider capacity failure as failed and does not automatically pay for unchanged sleep retries', async () => {
+    const fetchFn = vi.fn<typeof fetch>(async () => new Response(JSON.stringify({ error: { code: 'context_length_exceeded' } }), { status: 400 }));
+    const f = fixture(fetchFn); prepareDream(f); await f.service.tick();
+    await vi.waitFor(() => expect(f.request.mock.calls.some(([command]) => command.type === 'world.job.fail' && command.terminal)).toBe(true));
+    expect(fetchFn).toHaveBeenCalledOnce();
+    for (let tick = 0; tick < 4; tick++) { advance(f.store, 120001); await f.service.tick(); }
+    expect(fetchFn).toHaveBeenCalledOnce(); expect(f.store.request({ type: 'world.job.claim', kind: 'dream' }).worldJob).toBeUndefined();
+    expect(f.store.request({ type: 'world.sleep-plan', companionId: 'alice' }).worldSleepPlan!.job).toMatchObject({ status: 'failed', attempts: 1 });
+  });
+  it('parks a peer kernel with six unchanged memory reads instead of retrying the social job after its lease timer', async () => {
+    const fetchFn = vi.fn<typeof fetch>(async (_url, init) => {
+      const data = JSON.parse(JSON.parse(String(init?.body)).messages[1].content);
+      if (data.purpose !== 'world_social') return response({ action: null, reason: '没有新的世界事项。', appraisals: [] });
+      return new Response(JSON.stringify({ choices: [{ message: { content: '', tool_calls: [{ id: 'repeated_provider_id', type: 'function',
+        function: { name: 'memory', arguments: '{"action":"search","query":"same unchanged query","limit":8}' } }] } }] }));
+    });
+    const f = fixture(fetchFn, false), peer = f.store.request({ type: 'social.conversation.ensure', companionId: 'alice', memberIds: ['alice', 'bob'] }).socialConversation!;
+    f.store.request({ type: 'social.send', companionId: 'alice', conversationId: peer.id, content: '请基于实际资料回答这个问题。', channel: 'phone', clientId: 'stall_terminal' });
+    advance(f.store, 1300); await f.service.tick(); await vi.advanceTimersByTimeAsync(1300);
+    await vi.waitFor(() => expect(f.request.mock.calls.some(([command]) => command.type === 'social.job.fail' && command.terminal)).toBe(true));
+    const calls = fetchFn.mock.calls.length;
+    for (let tick = 0; tick < 3; tick++) { advance(f.store, 180001); await f.service.tick(); }
+    expect(fetchFn).toHaveBeenCalledTimes(calls);
+    expect(f.store.request({ type: 'social.job.claim' }).socialJob).toBeUndefined();
+    expect(f.store.request({ type: 'social.messages', conversationId: peer.id }).socialMessagePage!.items.filter(item => item.message.authorId === 'bob')).toEqual([]);
+  });
+
   it.each(['unchanged', 'forget-during-inference', 'forget-after-validation', 'other-private-note'] as const)(
     'uses focused owner-wide VCP recollections and revalidates publication when %s', async change => {
       let resolve!: (value: Response) => void, requested = false;
@@ -234,6 +464,7 @@ describe('semantic world background service with actual SQLite sources', () => {
     const purposes: string[] = [];
     const fetchFn = vi.fn<typeof fetch>(async (_url, init) => {
       const request = JSON.parse(String(init?.body)), data = JSON.parse(request.messages[1].content); purposes.push(data.purpose);
+      if (data.purpose === 'companion_social_progress_review') return response({ supported: true, correction: '' });
       if (data.purpose === 'world_social') {
         expect(data.origin).toMatchObject({ initiatorId: 'user', initiatorKind: 'human_player', ownerId: 'alice' });
         expect(JSON.stringify(data)).not.toContain('PRIVATE_REQUEST_DETAIL'); expect(data.identity.currentReply.author.id).toBe(data.identity.self.id);
@@ -308,20 +539,28 @@ describe('semantic world background service with actual SQLite sources', () => {
   });
 
   it('commits a sleeping dream and conditional learned experience atomically, then withdraws both with the actual source', async () => {
-    const fetchFn = vi.fn<typeof fetch>().mockImplementation(async (_url, init) => response(dreamResult(JSON.parse(JSON.parse(String(init?.body)).messages[1].content))));
-    const f = fixture(fetchFn), { source } = prepareDream(f);
+    const purposes: string[] = [];
+    const fetchFn = vi.fn<typeof fetch>().mockImplementation(async (_url, init) => {
+      const data = JSON.parse(JSON.parse(String(init?.body)).messages[1].content); purposes.push(data.purpose);
+      if (data.purpose === 'companion_dream_wave_narrative') return response({ text: '梦里我把聊天纸片变成小船，虚构地划过书桌。', relatedMemoryIds: [data.stages.recent.seeds[0].id] });
+      expect(data.reflectionOnly).toBe(true); expect(data.dreamAdmission.allowed).toBe(true);
+      return response(dreamResult(data));
+    });
+    const f = fixture(fetchFn, true, seeds, true), { source } = prepareDream(f);
     await f.service.tick();
     await vi.waitFor(() => expect(f.store.request({ type: 'memory.browse', ...f.alice }).memoryPage!.items.some(hit => hit.memory.tags.includes('修复经验'))).toBe(true));
     expect(f.request.mock.calls.some(([command]) => command.type === 'memory.record')).toBe(false);
     const completion = f.request.mock.calls.find(([command]) => command.type === 'world.job.complete' && command.memoryCandidates?.length)?.[0];
     expect(completion?.type === 'world.job.complete' && completion.memoryCandidates?.[0]?.sourceChecksums?.[source.id]).toMatch(/^[a-f0-9]{64}$/);
     expect(f.store.request({ type: 'world.observe', ...f.alice }).world!.events.some(event => event.kind === 'dream')).toBe(true);
+    expect(purposes).toEqual(['vcp_sleep_reflection', 'companion_dream_wave_narrative']);
+    expect(f.dreamWave).toHaveBeenCalledOnce();
     f.store.request({ type: 'memory.forget', ...f.alice, sourceMessageIds: [source.id] });
     expect(f.store.request({ type: 'memory.browse', ...f.alice }).memoryPage!.items.some(hit => hit.memory.tags.includes('修复经验'))).toBe(false);
     expect(f.store.request({ type: 'world.observe', ...f.alice }).world!.events.some(event => event.kind === 'dream')).toBe(false);
   });
 
-  it('consolidates private, group and world diaries in separate successful sleep batches without mixing evidence domains', async () => {
+  it('reflects on private, group and world seed batches into private notes preserving each actual source', async () => {
     const batches: string[][] = [];
     const fetchFn: typeof fetch = async (_url, init) => {
       const data = JSON.parse(JSON.parse(String(init?.body)).messages[1].content);
@@ -350,10 +589,60 @@ describe('semantic world background service with actual SQLite sources', () => {
     expect(batches).toEqual([[privateSource.conversationId], [group.id], [worldScope.conversationId]]);
     expect(f.request.mock.calls.filter(([command]) => command.type === 'world.job.fail')).toEqual([]);
     const learned = f.store.request({ type: 'memory.browse', ...f.alice }).memoryPage!.items.map(hit => hit.memory).filter(note => note.metadata?.consolidation);
-    expect(new Set(learned.map(note => note.sourceConversationId))).toEqual(new Set([privateSource.conversationId, group.id, worldScope.conversationId]));
+    expect(new Set(learned.map(note => note.sourceConversationId))).toEqual(new Set([f.alice.conversationId]));
+    expect(new Set(learned.flatMap(note => note.sources.map(source => source.conversationId)))).toEqual(new Set([privateSource.conversationId, group.id, worldScope.conversationId]));
     expect(learned).toHaveLength(3);
     f.store.request({ type: 'memory.forget', ...f.alice, sourceMessageIds: [groupSource.id] });
     expect(f.store.request({ type: 'memory.browse', ...f.alice }).memoryPage!.items.filter(hit => hit.memory.metadata?.consolidation)).toHaveLength(2);
+  });
+
+  it.each([false, true])('keeps cross-entry dream fiction separate from real seeds and revalidates associated sources when withdrawn=%s', async withdraw => {
+    let related: string[] = [], sourceRead = false, finishNarrative!: (value: Response) => void;
+    const pending = new Promise<Response>(resolve => { finishNarrative = resolve; });
+    const fetchFn: typeof fetch = async (_url, init) => {
+      const data = JSON.parse(JSON.parse(String(init?.body)).messages[1].content);
+      if (data.purpose === 'vcp_sleep_reflection') {
+        expect(data.reflectionOnly).toBe(true); expect(data.relevantMemories).toHaveLength(1);
+        expect(data.messages.map((message: { content: string }) => message.content)).toEqual(['PRIVATE_REAL_SEED']);
+        expect(JSON.stringify(data)).not.toContain('GROUP_REAL_SOURCE');
+        return response({ notes: [], dream: null });
+      }
+      expect(data.purpose).toBe('companion_dream_wave_narrative');
+      const materials = data.stages.recent.seeds as Array<{ id: string; text: string }>;
+      related = materials.filter(note => note.text !== 'PRIVATE_REAL_SEED').map(note => note.id);
+      expect(related).toHaveLength(2); sourceRead = true; return pending;
+    };
+    const f = fixture(fetchFn, true, seeds, true), group = f.store.createConversation('共同研究', ['alice', 'bob']);
+    const own = f.store.appendMessage({ conversationId: f.alice.conversationId, authorId: 'alice', content: 'PRIVATE_REAL_SEED', replyDirective: 'none' });
+    const shared = f.store.appendMessage({ conversationId: group.id, authorId: 'alice', content: 'GROUP_REAL_SOURCE', replyDirective: 'none' });
+    const worldScope = { companionId: 'alice', conversationId: 'world_alice' };
+    const observed = f.store.request({ type: 'memory.world_query', ...worldScope, category: 'observations', query: '', limit: 3 }).memorySources![0]!;
+    let groupMemoryId = '';
+    for (const source of [own, shared, observed]) {
+      const note = f.store.request({ type: 'memory.record', companionId: 'alice', conversationId: source.conversationId,
+        candidate: { content: source.content, tags: ['真实种子'], sourceMessageIds: [source.id], evidence: [{ sourceMessageId: source.id, quote: source.content }] } }).memories![0]!;
+      if (source.id === shared.id) groupMemoryId = note.id;
+    }
+    indexNotes(f.store); advance(f.store, 10000); advance(f.store, 6000);
+    await f.service.tick(); await vi.waitFor(() => expect(sourceRead).toBe(true));
+    const associationReadIds = f.request.mock.calls.flatMap(([command]) => command.type === 'memory.library.read' ? [command.id] : []);
+    expect(associationReadIds).toEqual(expect.arrayContaining(related));
+    if (withdraw) f.store.request({ type: 'memory.forget', companionId: 'alice', conversationId: group.id, sourceMessageIds: [shared.id] });
+    finishNarrative(response({ text: '我梦见书页变成天空中的纸船；只是梦中的虚构画面。', relatedMemoryIds: related }));
+    await vi.waitFor(() => expect(f.request.mock.calls.some(([command]) => command.type === (withdraw ? 'world.job.fail' : 'world.job.complete'))).toBe(true));
+    const dreams = f.store.request({ type: 'memory.browse', ...f.alice }).memoryPage!.items.map(hit => hit.memory).filter(note => note.metadata?.dream);
+    if (withdraw) { expect(dreams).toEqual([]); return; }
+    expect(dreams).toHaveLength(1); expect(dreams[0]!.sourceConversationId).toBe(f.alice.conversationId);
+    const completion = f.request.mock.calls.find(([command]) => command.type === 'world.job.complete' && command.dream)?.[0];
+    expect(completion?.type === 'world.job.complete' && completion.dream?.relatedMemoryIds).toEqual(related);
+    expect(new Set(dreams[0]!.sources.map(source => source.messageId))).toEqual(new Set([shared.id, observed.id]));
+    expect(f.store.request({ type: 'memory.browse', companionId: 'bob', conversationId: group.id }).memoryPage!.items.some(hit => hit.memory.metadata?.dream)).toBe(false);
+    advance(f.store, 1000);
+    const next = f.store.request({ type: 'world.job.claim', kind: 'dream' }).worldJob!;
+    expect(next.sourceMemoryIds).toEqual([groupMemoryId]);
+    f.store.request({ type: 'memory.forget', companionId: 'alice', conversationId: group.id, sourceMessageIds: [shared.id] });
+    expect(f.store.request({ type: 'memory.browse', ...f.alice }).memoryPage!.items.some(hit => hit.memory.metadata?.dream)).toBe(false);
+    expect(f.store.request({ type: 'world.observe', ...f.alice }).world!.events.some(event => event.kind === 'dream')).toBe(false);
   });
 
   it.each(['wake', 'forget', 'revise', 'cancel'])('does not leave a learned fragment when %s invalidates a pending dream before its final commit', async invalidation => {

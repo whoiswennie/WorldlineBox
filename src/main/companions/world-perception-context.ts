@@ -97,7 +97,7 @@ export function companionModelWorld(value: unknown, companionId: string, options
         ? '实际目击伙伴外在动作：' + (behavior?.kind ?? (event.kind === 'move' ? 'walking' : event.kind)) : event.text;
       return [{ id: event.id, sequence: event.sequence, at: event.at, realAt: event.realAt, kind: event.kind,
         actorId: event.actorId, targetId: event.targetId, sceneId: event.kind === 'social_phone' ? undefined : event.sceneId, text: outwardText, simulation: event.simulation,
-        sourceMessageId: event.sourceMessageId, conversationId: event.conversationId,
+        sourceMessageId: event.sourceMessageId, conversationId: event.conversationId, sourceReads: event.sourceReads,
         ...(witnessed ? { witnessIds: [companionId] } : {}), ...(behavior ? { behavior } : {}),
         ...(event.effect && event.actorId === companionId ? { effect: event.effect } : {}) }]; }),
     relationships: rows(source.relationships).flatMap(item => { const result = companionWorldRelationshipSchema.safeParse(item);

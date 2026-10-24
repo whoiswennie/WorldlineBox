@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { existsSync, linkSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { existsSync, linkSync, mkdirSync, mkdtempSync, readFileSync, renameSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterEach, expect, it } from 'vitest';
@@ -11,6 +11,7 @@ import type { companionMemoryDocumentCommands } from '../../src/shared/companion
 import type { CompanionStorageCommand, CompanionStorageResponse } from '../../src/shared/companion-storage';
 import { companionWorkspaceRequestSchema } from '../../src/shared/companion-workspace';
 import { companionMemoryIdentity } from '../../src/main/companions/memory-identity';
+import { removeOwnedDirectorySync } from '../../src/main/vcp-memory/filesystem';
 
 const roots: string[] = [], stores: CompanionsStore[] = [], libraries: CompanionMemoryLibrary[] = [], documents: CompanionMemoryDocuments[] = [];
 type CommandInput<T = z.input<(typeof companionMemoryDocumentCommands)[number]>> = T extends unknown ? Omit<T, 'companionId'> & { companionId?: string } : never;
@@ -20,7 +21,7 @@ afterEach(async () => {
   for (const store of stores.splice(0)) store.close();
   for (const root of roots.splice(0)) {
     if (path.dirname(root) !== tmpdir() || !path.basename(root).startsWith('vcp-memory-documents-')) throw new Error('Invalid fixture cleanup');
-    rmSync(root, { recursive: true, force: true });
+    removeOwnedDirectorySync(root);
   }
 });
 function fixture() {

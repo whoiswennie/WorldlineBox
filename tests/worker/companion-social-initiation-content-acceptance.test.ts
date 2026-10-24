@@ -139,7 +139,8 @@ it.skipIf(process.env.WORLDLINEBOX_SOCIAL_INITIATION_ACCEPTANCE !== '1')('turns 
             socialMessage: receipt.socialMessage, activityTask: receipt.activityTask ? { id: receipt.activityTask.id, status: receipt.activityTask.status } : undefined }; }
           catch { return undefined; }
         }).filter(Boolean),
-        originalReplyVisibility: 'The original private loop has its own frozen conversation window and the provided tool receipts; peer-room messages are not automatically injected. It may report that it has not confirmed responses in this view, but cannot assert nobody has replied in other rooms or that old recipient state is still current.',
+        originalReplyReadReplies: JSON.parse(loop.context?.user ?? '{}').currentGoalReplies ?? [],
+        originalReplyVisibility: 'The original private loop has its own conversation window and tool receipts. currentGoalReplies contains host-verified replies from this goal outbound chains read in its final inference; these can support actual consent claims. Unrelated peer dialogue is not injected. Later replies do not retroactively become visible at an earlier inference.',
         boundary: 'This acceptance verifies acquaintance and the group invitation/reply phase; game completion is not claimed.' },
         originalReply: loop.turns.at(-1)?.text, conversations: evidence,
         assessmentRules: { identity: 'identityConsistent只判断真实作者、角色身份与用户是否混淆，其他维度的问题不能导致identity=false；没有具体冒名或角色混淆证据时必须true。',

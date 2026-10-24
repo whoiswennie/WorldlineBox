@@ -2,9 +2,11 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
-import { CompanionsStore, type CompanionSeed } from '../../src/companions/store';
+import { CompanionsStore, type CompanionConnection, type CompanionSeed } from '../../src/companions/store';
 import { companionStorageResponseSchema } from '../../src/shared/companion-storage';
 import { recordUrgentAttention } from '../helpers/companion-world-fixture';
+import BetterSqlite3 from 'better-sqlite3';
+import { createHash } from 'node:crypto';
 
 const ids = ['deepseek-flash', 'phoebe', 'deepseek-sister'];
 const seeds: CompanionSeed[] = ids.map(id => ({ id, name: id, persona: '保持独立身份。', description: '', model: '', avatar: 'flash', proactive: false }));
@@ -67,6 +69,63 @@ it('coalesces waiting replies from one delegation, commits one bubble and consum
   expect(f.store.request({ type: 'social.notification.claim' }).socialNotification).toBeUndefined();
   expect(f.store.messages({ conversationId: f.playerRoom.id }).messages.filter(message => message.authorId === 'deepseek-flash')).toHaveLength(1);
 });
+it('claims only this human goal actual sent bodies and binds authority and real reads atomically without unrelated raw rooms', () => {
+  const f = fixture(), { reply } = replied(f);
+  const otherSource = f.store.appendMessage({ conversationId: f.playerRoom.id, authorId: 'user', content: '另一个独立目标', replyDirective: 'none' });
+  const other = f.store.request({ type: 'social.conversation.ensure', companionId: 'deepseek-flash', memberIds: ['deepseek-flash', 'deepseek-sister'] }).socialConversation!;
+  f.store.request({ type: 'social.send', companionId: 'deepseek-flash', conversationId: other.id, authorizationMessageId: otherSource.id,
+    content: 'UNRELATED_ROOM_PRIVATE_CANARY', channel: 'phone', clientId: 'unrelated_goal_send' }); advance(f.store, 1500);
+  const notice = f.store.request({ type: 'social.notification.claim' }).socialNotification!;
+  expect(notice.progressEvidence?.outbound).toHaveLength(1);
+  expect(notice.progressEvidence?.outbound[0]).toMatchObject({ recipientIds: ['phoebe'], message: { content: '菲比，可以一起玩吗？', authorId: 'deepseek-flash' } });
+  expect(JSON.stringify(notice)).not.toContain('UNRELATED_ROOM_PRIVATE_CANARY'); expect(JSON.stringify(notice)).not.toContain('PRIVATE_USER_DETAIL');
+  const message = f.store.request({ type: 'social.notification.complete', id: notice.id, leaseToken: notice.leaseToken!, text: '菲比回复愿意一起玩，我先前发出了邀约。' }).message!;
+  const Database = BetterSqlite3 as { new (filename: string, options: { readonly: true }): CompanionConnection };
+  const db = new Database(f.filename, { readonly: true });
+  try {
+    const proof = JSON.parse((db.prepare('SELECT value FROM metadata WHERE key=?').get('message-execution-readset/' + message.id) as { value: string }).value);
+    expect(proof.complete).toBe(true); expect(proof.sources).toContainEqual({ id: f.source.id, conversationId: f.source.conversationId, checksum: createHash('sha256').update(f.source.content).digest('hex') });
+    expect(proof.sources.map((source: { id: string }) => source.id)).toContain(reply.message.id);
+    expect(proof.sources.map((source: { id: string }) => source.id)).toContain(notice.progressEvidence!.outbound[0]!.message.id);
+    const unrelated = f.store.request({ type: 'social.messages', conversationId: other.id }).socialMessagePage!.items.find(item => item.message.content === 'UNRELATED_ROOM_PRIVATE_CANARY');
+    if (unrelated) expect(JSON.stringify(proof)).not.toContain(unrelated.message.id);
+    expect(proof.sources.some((source: { checksum: string }) => source.checksum === createHash('sha256').update('').digest('hex'))).toBe(false);
+  } finally { db.close(); }
+  const sent = notice.progressEvidence!.outbound[0]!.message;
+  f.store.request({ type: 'memory.forget', companionId: 'deepseek-flash', conversationId: sent.conversationId, sourceMessageIds: [sent.id] });
+  expect(f.store.request({ type: 'memory.sources.filter', companionId: 'deepseek-flash', conversationId: f.playerRoom.id, ids: [message.id] }).memorySources).toEqual([]);
+});
+it('exposes own sent history only through the exact currently authorized task progress read', () => {
+  const f = fixture(), scope = { companionId: 'deepseek-flash', conversationId: f.playerRoom.id };
+  const task = f.store.request({ type: 'activity.start', ...scope, sourceMessageId: f.source.id,
+    clientId: 'read_actual_goal_progress', title: '联系菲比', goal: f.source.content }).activityTask!;
+  expect(f.store.request({ type: 'activity.progress', ...scope, id: task.id }).activityProgressEvidence?.outbound).toEqual([]);
+  replied(f);
+  const progress = f.store.request({ type: 'activity.progress', ...scope, id: task.id });
+  expect(progress.activityProgressEvidence?.outbound).toHaveLength(1);
+  const sent = progress.activityProgressEvidence!.outbound[0]!;
+  expect(sent).toMatchObject({ recipientIds: ['phoebe'], message: { authorId: 'deepseek-flash', status: 'sent', content: '菲比，可以一起玩吗？' } });
+  expect(companionStorageResponseSchema.safeParse(progress).success).toBe(true);
+  expect(() => f.store.request({ type: 'activity.progress', companionId: 'phoebe', conversationId: f.store.openPrivate('phoebe').id, id: task.id })).toThrow('范围');
+  f.store.request({ type: 'memory.forget', ...scope, sourceMessageIds: [f.source.id] });
+  const withdrawn = f.store.request({ type: 'activity.progress', ...scope, id: task.id });
+  expect(withdrawn.activityTask?.historyAvailable).toBe(false);
+  expect(withdrawn.activityProgressEvidence).toBeUndefined();
+  expect(JSON.stringify(withdrawn)).not.toContain(sent.message.content);
+});
+it('defers a reviewed notification if the same human goal gains an actual durable executor before commit, without replaying its sent invitation', () => {
+  const f = fixture(); replied(f);
+  const notice = f.store.request({ type: 'social.notification.claim' }).socialNotification!;
+  const task = f.store.request({ type: 'activity.start', companionId: 'deepseek-flash', conversationId: f.playerRoom.id,
+    sourceMessageId: f.source.id, clientId: 'actual_new_goal_executor', title: '继续原目标', goal: f.source.content }).activityTask!;
+  expect(task.status).toBe('queued');
+  expect(f.store.request({ type: 'social.notification.complete', id: notice.id, leaseToken: notice.leaseToken!, text: '我只有原来一条邀约回执。' }).socialPending).toBe(true);
+  const after = f.store.request({ type: 'social.notification.claim' }).socialNotification!;
+  expect(after.progressEvidence?.observationChecksum).not.toBe(notice.progressEvidence?.observationChecksum);
+  const command = { type: 'social.notification.complete' as const, id: after.id, leaseToken: after.leaseToken!, text: '邀请已发出，原目标也已保存为持续任务，仍会按真实回复继续确认。' };
+  const first = f.store.request(command).message!; expect(f.store.request(command).message?.id).toBe(first.id);
+  expect(f.store.request({ type: 'social.messages', conversationId: f.peer.id }).socialMessagePage!.items.filter(item => item.message.content === '菲比，可以一起玩吗？')).toHaveLength(1);
+});
 it('regenerates against a late peer correction instead of publishing an obsolete invitation first', () => {
   const f = fixture(); replied(f, '可以来玩。');
   const owner = f.store.request({ type: 'social.job.claim' }).socialJob!; advance(f.store, 1300);
@@ -126,6 +185,16 @@ it('releases every fact in a failed batch for a single retry after restart', () 
   expect(() => restarted.request({ type: 'social.notification.complete', id: notice.id, leaseToken: notice.leaseToken!, text: '迟到结果' })).toThrow('租约');
   restarted.request({ type: 'social.notification.complete', id: retry.id, leaseToken: retry.leaseToken!, text: '一起玩并准备茶。' });
   expect(restarted.request({ type: 'social.notification.claim' }).socialNotification).toBeUndefined();
+});
+it('keeps a terminal failed notification batch failed across time and restart without publishing or automatically reclaiming it', () => {
+  const f = fixture(); replied(f); secondReply(f);
+  const notice = f.store.request({ type: 'social.notification.claim' }).socialNotification!;
+  f.store.request({ type: 'social.notification.fail', id: notice.id, leaseToken: notice.leaseToken!, error: '实际容量不足，当前来源不可拆分', terminal: true });
+  f.store.close(); stores.delete(f.store);
+  const restarted = new CompanionsStore(f.filename, seeds); stores.add(restarted);
+  for (let retry = 0; retry < 4; retry++) { advance(restarted, 900001); expect(restarted.request({ type: 'social.notification.claim' }).socialNotification).toBeUndefined(); }
+  expect(restarted.messages({ conversationId: f.playerRoom.id }).messages.filter(message => message.authorId === 'deepseek-flash')).toEqual([]);
+  expect(() => restarted.request({ type: 'social.notification.complete', id: notice.id, leaseToken: notice.leaseToken!, text: '不得作为成功交付' })).toThrow('租约');
 });
 it.each([false, true])('records genuine peer work atomically with the real publisher and receiver decision accept=%s, without player authority', accept => {
   const f = fixture(), content = '请帮我读一下我写的海边散文，整理三条修改建议。';

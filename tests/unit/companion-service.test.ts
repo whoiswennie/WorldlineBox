@@ -1,15 +1,18 @@
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { CompanionsStore, type CompanionSeed } from '../../src/companions/store';
 import type { CompanionStorageCommand, CompanionStorageResponse } from '../../src/shared/companion-storage';
+import type { CreateCompanionAction } from '../../src/shared/companion-storage';
+import { captureCompanionExecutionReadset, companionExecutionReadsetDigest } from '../../src/main/companions/execution-evidence';
 import type { DshLauncherResponse } from '../../src/shared/dsh-launcher';
 import type { DshTaskEvent, DshTaskRecord } from '../../src/shared/dsh-tasks';
 import type { DshTaskSpec } from '../../src/shared/dsh-task-spec';
 import type { DshLauncher } from '../../src/main/dsh/launcher';
+import type { DshRecordScope } from '../../src/shared/dsh-task-record';
 import { CompanionService } from '../../src/main/companions/service';
 import type { CompanionFileReader } from '../../src/main/companions/file-reader';
 import type { CompanionMemoryService } from '../../src/main/companions/memory-service';
@@ -21,6 +24,7 @@ const transport = vi.hoisted(() => ({
   request: vi.fn<(command: CompanionStorageCommand) => Promise<CompanionStorageResponse>>(),
   start: vi.fn(async () => undefined), close: vi.fn(async () => undefined), fetch: vi.fn<typeof fetch>(), memoryFetch: vi.fn<typeof fetch>(),
   worldFetch: vi.fn<typeof fetch>(),
+  socialReviewFetch: vi.fn<typeof fetch>(),
   send: vi.fn<(channel: string, payload?: unknown) => void>(),
 }));
 
@@ -34,9 +38,10 @@ vi.mock('electron', () => ({
   net: { fetch: ((input: Parameters<typeof fetch>[0], init?: RequestInit) => {
     let purpose: unknown;
     try { purpose = JSON.parse(JSON.parse(String(init?.body)).messages[1].content).purpose; } catch { /* Ordinary replies need no purpose. */ }
-    return purpose === 'vcp_experience_journal' || purpose === 'vcp_sleep_reflection'
+    return purpose === 'vcp_experience_journal' || purpose === 'vcp_sleep_reflection' || purpose === 'vcp_sleep_memory_maintenance'
       ? transport.memoryFetch(input, init) : purpose === 'world_decision' || purpose === 'world_attention'
-        ? transport.worldFetch(input, init) : transport.fetch(input, init);
+        ? transport.worldFetch(input, init) : purpose === 'companion_social_progress_review'
+          ? transport.socialReviewFetch(input, init) : transport.fetch(input, init);
   }) }, dialog: { showOpenDialog: vi.fn() }, ipcMain: { handle: vi.fn() },
   protocol: { handle: vi.fn() }, shell: { showItemInFolder: vi.fn() },
   safeStorage: { isEncryptionAvailable: () => true, encryptString: (value: string) => Buffer.from(value),
@@ -56,13 +61,19 @@ beforeEach(() => {
   vi.setSystemTime(new Date(fixedTime));
   transport.fetch.mockReset();
   transport.memoryFetch.mockReset();
+  transport.socialReviewFetch.mockReset();
+  // Most cases isolate other host contracts. Keep this new model phase explicit
+  // and observable; semantic rejection cases below supply their own reviewer.
+  transport.socialReviewFetch.mockImplementation(async () => modelResponseForJson({ supported: true, correction: '' }));
   transport.worldFetch.mockReset(); transport.worldFetch.mockImplementation(async (_url, init) => {
     const data = JSON.parse(JSON.parse(String(init?.body)).messages[1].content);
     if (data.purpose === 'world_attention') return modelResponseForJson({ urgency: data.source.content === '醒醒，有件紧急的事需要你帮忙。' ? 'urgent' : 'ordinary',
       confidence: .95, evidence: [data.source.content], reason: '测试中实际通知的明确语义分类。' });
     return modelResponseForJson({ action: null, reason: '当前没有需要打扰的世界事件。', appraisals: [] });
   });
-  transport.memoryFetch.mockImplementation(async (_url, init) => new Response(JSON.stringify({ choices: [{ message: { content: JSON.stringify(/vcp_sleep_reflection/u.test(String(init?.body)) ? { notes: [], dream: null } : { notes: [] }) } }] }),
+  transport.memoryFetch.mockImplementation(async (_url, init) => new Response(JSON.stringify({ choices: [{ message: { content: JSON.stringify(/vcp_sleep_memory_maintenance/u.test(String(init?.body))
+    ? { decision: 'defer', reason: '本测试没有需要整合的重叠事件。', consolidations: [] }
+    : /vcp_sleep_reflection/u.test(String(init?.body)) ? { notes: [], dream: null } : { notes: [] }) } }] }),
     { headers: { 'Content-Type': 'application/json' } }));
   transport.fetch.mockImplementation(async () => modelResponse('这次执行未成功，详情保存在行动卡中。'));
 });
@@ -96,12 +107,29 @@ function sourceContext(serialized: string) {
   // identity projection) are intentionally refreshed on each inference.
   const { worldClock: _clock, runtimeState: _state, runtimeBehavior: _behavior, world: _world, worldTrust: _worldTrust,
     identity: _identity, characterDevelopment: _character, publicProfiles: _profiles, visionManifest: _vision, visionNotice: _notice, ongoingGoals: _goals, dshCapabilities: _capabilities,
-    executionLedger: _executionLedger, executionLedgerTrust: _ledgerTrust, executionLedgerArchive: _ledgerArchive, loopContinuity: _loopContinuity, ...sources } = JSON.parse(serialized);
+    capabilityAvailability: _availability,
+    executionLedger: _executionLedger, executionLedgerTrust: _ledgerTrust, executionLedgerArchive: _ledgerArchive, loopContinuity: _loopContinuity,
+    resourceBounds: _resources, activityHandoff: _handoff, ...sources } = JSON.parse(serialized);
   void _clock; void _state; void _behavior; void _world; void _worldTrust;
   void _identity; void _character; void _profiles; void _vision; void _notice;
-  void _goals; void _capabilities; void _executionLedger; void _ledgerTrust; void _ledgerArchive; void _loopContinuity;
+  void _goals; void _capabilities; void _availability; void _executionLedger; void _ledgerTrust; void _ledgerArchive; void _loopContinuity; void _resources; void _handoff;
   return { ...sources, messages: sources.messages?.map((message: { author?: { id: string; kind: string; type: string } }) => ({ ...message,
     ...(message.author ? { author: { id: message.author.id, kind: message.author.kind, type: message.author.type } } : {}) })) };
+}
+function currentCapabilityObservations(serialized: readonly string[], snapshot: string, companionId: string, conversationId: string) {
+  const expected = JSON.parse(snapshot).capabilityAvailability;
+  const { observedAt: _oldTime, ...expectedBasis } = expected;
+  void _oldTime;
+  return serialized.map(value => {
+    const current = JSON.parse(value).capabilityAvailability;
+    expect(current).toMatchObject({ companionId, conversationId, boundToolNames: ['world', 'memory', 'dsh'] });
+    const { observedAt, ...basis } = current;
+    // These fixtures change no runtime configuration or grants. Verify every
+    // capability field separately; only its actual observation time advances.
+    expect(basis).toEqual(expectedBasis);
+    expect(Number.isFinite(Date.parse(observedAt))).toBe(true);
+    return observedAt as string;
+  });
 }
 function taskRecord(status: DshTaskRecord['status'] = 'running'): DshTaskRecord {
   return { id: 'dsh-task', operationId: 'dsh-task', instanceId: 'instance', runtimeId: 'runtime', runtimeVersion: '1.0',
@@ -109,7 +137,29 @@ function taskRecord(status: DshTaskRecord['status'] = 'running'): DshTaskRecord 
 }
 function fakeDsh(state: () => { tasks: DshTaskRecord[]; operations: Array<{ id: string; status: string }> },
   requestTask: DshLauncher['requestTask']): DshLauncher {
-  return { state, requestTask, readTaskRecord: vi.fn(async () => { throw new Error('legacy record'); }), removeCompanionTaskRecords: vi.fn(async () => undefined) } as unknown as DshLauncher;
+  const scopes = new Map<string, DshRecordScope>();
+  const invoke = vi.fn<DshLauncher['requestTask']>(async (request, execution) => {
+    const result = execution === undefined ? await requestTask(request) : await requestTask(request, execution);
+    if (request.type === 'task.run' && result.ok && result.operationId && execution?.recordScope) scopes.set(result.operationId, execution.recordScope);
+    return result;
+  });
+  return { state, requestTask: invoke, taskRecordScope: async (recordId: string) => {
+    if (scopes.has(recordId)) return scopes.get(recordId);
+    const action = (await transport.request({ type: 'actions' })).actions?.find(action => action.taskId === recordId);
+    if (!action) return undefined;
+    const source = (await transport.request({ type: 'message.get', id: action.sourceMessageId })).message!;
+    const readset = (await transport.request({ type: 'checkpoint.get', id: action.id })).checkpoint?.executionReadset;
+    return { actionId: action.id, companionId: action.companionId, conversationId: action.conversationId, sourceMessageId: action.sourceMessageId,
+      sourceDigest: createHash('sha256').update(source.content).digest('hex'), ...(readset ? { executionReadsetDigest: companionExecutionReadsetDigest(readset) } : {}) };
+  }, readTaskRecord: vi.fn(async () => { throw new Error('legacy record'); }), removeCompanionTaskRecords: vi.fn(async () => undefined) } as unknown as DshLauncher;
+}
+function verifiedAction(store: CompanionsStore, input: CreateCompanionAction) {
+  const source = store.getMessage(input.sourceMessageId);
+  const readset = captureCompanionExecutionReadset({ companionId: input.companionId, conversationId: input.conversationId },
+    { context: { user: JSON.stringify({ messages: [source] }) } });
+  const action = store.request({ type: 'action.create', action: { ...input, status: 'queued', result: undefined },
+    checkpoint: { prompt: '按夹具明确来源执行。', executionReadset: readset, supplements: [], waitForActionIds: [] } }).action!;
+  return store.request({ type: 'action.update', id: action.id, patch: { status: input.status, result: input.result } }).action!;
 }
 function fixture(dsh: DshLauncher, publish = false, prepareComputer = true) {
   const testNow = Date.now(); if (prepareComputer) vi.setSystemTime(testNow - 10_000);
@@ -161,6 +211,744 @@ async function closeService(service: CompanionService) {
 function replyEvents(): CompanionReplyStreamEvent[] {
   return transport.send.mock.calls.filter(([channel]) => channel === COMPANION_REPLY_STREAM_CHANNEL).map(([, value]) => value as CompanionReplyStreamEvent);
 }
+
+it.each(['unread_new_input', 'new_root_reads_late_narrative'] as const)('keeps latest formal input admission separate from actual narrative publication order in Main: %s', async mode => {
+  const { buildCompanionContext } = await import('../../src/main/companions/context');
+  const dsh = fakeDsh(() => ({ tasks: [], operations: [] }), vi.fn(async () => ({ ok: true as const })));
+  const f = fixture(dsh, false, false); await f.service.handle({ type: 'state' }); await closeService(f.service);
+  const store = new CompanionsStore(f.databasePath, seeds); stores.add(store); bindStorage(store);
+  const peers = ['较早创建的作者', '较早发布的作者'].map(name => store.createCompanion({ name, description: '', persona: '独立写作', model: '', avatar: 'flash', proactive: false }));
+  const room = store.createConversation('独立真实发布顺序', ['sister', ...peers.map(peer => peer.id)]);
+  const topic = store.request({ type: 'topic.create', conversationId: room.id, readerId: 'user', kind: 'story', title: '先输入边界，再实际正文尾' }).topic!;
+  for (const readerId of ['sister', ...peers.map(peer => peer.id)]) store.request({ type: 'topic.join', conversationId: room.id, topicId: topic.id, readerId });
+  const first = store.appendMessage({ conversationId: room.id, topicId: topic.id, authorId: 'user', content: '继续阿澄当前所处的场景。', replyDirective: 'none' });
+  const earlyDraft = store.appendMessage({ conversationId: room.id, topicId: topic.id, authorId: peers[0]!.id,
+    replyToId: first.id, content: '', loopStep: 0, replyDirective: 'none' });
+  const earlyCheckpoint = { conversationId: room.id, companionId: peers[0]!.id, sourceMessageId: first.id,
+    messageId: earlyDraft.id, status: 'running' as const, supplements: [], turns: [] };
+  store.request({ type: 'loop.save', checkpoint: earlyCheckpoint });
+  const fast = store.appendMessage({ conversationId: room.id, topicId: topic.id, authorId: peers[1]!.id,
+    replyToId: first.id, content: '较早发布：阿澄还在屋内。', replyDirective: 'none' });
+  const appendNewInput = () => store.appendMessage({ conversationId: room.id, topicId: topic.id, authorId: 'user',
+    content: '继续当前真实进度，不倒退已经完成的动作。', replyDirective: 'none' });
+  let newer = mode === 'unread_new_input' ? appendNewInput() : undefined;
+  const actualLateText = '较晚发布：阿澄已经走到庭院，带上了身后的门。';
+  store.request({ type: 'loop.save', checkpoint: { ...earlyCheckpoint, status: 'done', turns: [{ text: actualLateText, rawText: actualLateText, calls: [] }] } });
+  const late = store.getMessage(earlyDraft.id);
+  if (!newer) newer = appendNewInput();
+  expect(late.sequence).toBeLessThan(fast.sequence);
+  const source = mode === 'unread_new_input' ? first : newer;
+  const at = new Date().toISOString(), work = { id: 'publication_input_main_' + mode, companionId: 'sister', conversationId: room.id,
+    sourceMessageId: source.id, status: 'queued' as const, createdAt: at, updatedAt: at };
+  store.request({ type: 'work.enqueue', work });
+  const loop = store.request({ type: 'loop.get', sourceMessageId: source.id, companionId: 'sister' }).loop!;
+  const companion = store.request({ type: 'state' }).state!.companions.find(role => role.id === 'sister')!;
+  loop.context = buildCompanionContext({ companion, conversation: room, sourceMessage: source,
+    messages: store.messages({ conversationId: room.id, topicId: topic.id }).messages.filter(message => message.sequence <= source.sequence),
+    memories: [], agentLoop: true, taskRequest: { sourceMessageId: source.id, prompt: source.content } });
+  store.request({ type: 'loop.save', checkpoint: loop });
+  store.request({ type: 'work.status', id: work.id, status: 'interrupted', resumeOnRestart: true });
+  let writes = 0, reviews = 0;
+  transport.fetch.mockReset(); transport.request.mockClear();
+  transport.fetch.mockImplementation(async (_url, init) => {
+    const wire = JSON.parse(String(init?.body)), data = JSON.parse(wire.messages[1].content);
+    if (data.purpose === 'topic_user_canon_extract') return modelResponseForJson({ additions: [], revisions: [] });
+    if (data.purpose === 'topic_narrative_reference_extract') return modelResponseForJson({ references: [] });
+    if (data.purpose === 'topic_reply_quantity_source_sets') return modelResponseForJson({ sets: [] });
+    if (data.purpose === 'topic_continuity_review') {
+      reviews++; expect(data.latestFormalContinuation).toMatchObject({ id: late.id, content: actualLateText });
+      return modelResponseForJson({ supported: true, issues: [], clockClaims: [] });
+    }
+    writes++; expect(mode).toBe('new_root_reads_late_narrative');
+    expect(data.topicPublicationReference.message).toMatchObject({ id: late.id, content: actualLateText });
+    expect(data.topicPublicationReference.message.id).not.toBe(fast.id);
+    expect(data.topicContinuityFocus.latestPublishedText).toMatchObject({ id: late.id, content: actualLateText });
+    return modelResponse('阿澄站在庭院里，望向已经带上的门。');
+  });
+  const restarted = startService(f.root, dsh); await restarted.handle({ type: 'state' });
+  await vi.waitFor(() => {
+    const current = store.request({ type: 'loop.get', sourceMessageId: source.id, companionId: 'sister' }).loop!;
+    expect(current.status === 'done' || current.progress?.phase === 'failed').toBe(true);
+  }, { timeout: 5000 });
+  const final = store.request({ type: 'loop.get', sourceMessageId: source.id, companionId: 'sister' }).loop!;
+  if (mode === 'unread_new_input') {
+    expect(writes).toBe(0); expect(reviews).toBe(0); expect(final.status).toBe('running');
+    expect(final.progress?.phase).toBe('failed'); expect(store.getMessage(final.messageId!).isReplyDraft).toBe(true);
+  } else {
+    if (final.status !== 'done') writeFileSync(path.resolve('artifacts/vcp-validation/main-derived-publication-valid-diagnostic-2026-10-24.json'), JSON.stringify({
+      final, writes, reviews, topic: store.request({ type: 'topic.read', conversationId: room.id, topicId: topic.id, readerId: 'sister' }),
+      purposes: transport.fetch.mock.calls.map(([, init]) => { const data = JSON.parse(JSON.parse(String(init?.body)).messages[1].content);
+        return { purpose: data.purpose, keys: Object.keys(data) }; }),
+    }, null, 2));
+    expect(final.status).toBe('done'); expect(writes).toBe(1); expect(reviews).toBe(1);
+    expect(store.getMessage(final.messageId!).content).toBe('阿澄站在庭院里，望向已经带上的门。');
+  }
+  expect(store.getMessage(newer.id).content).toBe(newer.content); expect(store.getMessage(late.id).content).toBe(actualLateText);
+  await closeService(restarted);
+});
+
+it.each(['cached_false_final', 'empty_final', 'bad_tool_prefix'] as const)('reviews the whole private social bubble on automatic restart without replaying delivery: %s', async mode => {
+  const { buildCompanionContext } = await import('../../src/main/companions/context');
+  const dsh = fakeDsh(() => ({ tasks: [], operations: [] }), vi.fn(async () => ({ ok: true as const })));
+  const f = fixture(dsh, false, false); await f.service.handle({ type: 'state' }); await closeService(f.service);
+  const store = new CompanionsStore(f.databasePath, seeds); stores.add(store); bindStorage(store);
+  const peer = store.createCompanion({ name: '实际伙伴', description: '', persona: '友好', model: '', avatar: 'flash', proactive: false });
+  const room = store.request({ type: 'social.conversation.ensure', companionId: 'sister', memberIds: ['sister', peer.id] }).socialConversation!;
+  const sent = store.request({ type: 'social.message.append', conversationId: room.id, authorId: 'sister', content: 'PRIVATE_REAL_INVITATION',
+    virtualCreatedAt: new Date().toISOString(), clientId: 'actual-social-before-restart' });
+  expect(sent.socialMessage).toBeDefined();
+  const source = store.appendMessage({ conversationId: f.conversation.id, authorId: 'user', content: '如实说明当前的联系进度。', replyDirective: 'none' });
+  const at = new Date().toISOString(), work = { id: 'social_restart_' + mode, conversationId: f.conversation.id, companionId: 'sister',
+    sourceMessageId: source.id, status: 'queued' as const, createdAt: at, updatedAt: at };
+  store.request({ type: 'work.enqueue', work });
+  const loop = store.request({ type: 'loop.get', sourceMessageId: source.id, companionId: 'sister' }).loop!;
+  const firstText = mode === 'bad_tool_prefix' ? '我已经给另外四人发了邀请。' : '我已给实际伙伴发了一条消息。';
+  const confirmed = { text: firstText, rawText: firstText,
+    calls: [{ id: 'real-social-native', name: 'world', arguments: JSON.stringify({ action: 'message', recipientIds: [peer.id], text: 'PRIVATE_REAL_INVITATION' }) }],
+    results: [{ callId: 'real-social-native', content: JSON.stringify(sent) }] };
+  const cached = { text: mode === 'cached_false_final' ? '我已经给另外四人发了邀请。' : '',
+    rawText: mode === 'cached_false_final' ? '我已经给另外四人发了邀请。' : '', calls: [] };
+  const companion = store.request({ type: 'state' }).state!.companions.find(role => role.id === 'sister')!;
+  loop.context = buildCompanionContext({ companion, conversation: f.conversation, sourceMessage: source, messages: [source], memories: [], agentLoop: true,
+    taskRequest: { sourceMessageId: source.id, prompt: source.content } });
+  loop.turns = [confirmed, cached]; store.request({ type: 'loop.save', checkpoint: loop });
+  store.request({ type: 'work.status', id: work.id, status: 'interrupted', resumeOnRestart: true });
+  let writes = 0; const reviewedTexts: string[] = [];
+  transport.request.mockClear(); transport.fetch.mockReset();
+  transport.socialReviewFetch.mockImplementation((input, init) => transport.fetch(input, init));
+  transport.fetch.mockImplementation(async (_url, init) => {
+    const wire = JSON.parse(String(init?.body)), data = JSON.parse(wire.messages[1].content);
+    if (data.purpose === 'companion_social_progress_review') {
+      reviewedTexts.push(data.proposedText);
+      expect(data.nativeActions).toEqual([expect.objectContaining({ delivery: 'sent', recipientIds: [peer.id], messageId: sent.socialMessage!.message.id })]);
+      return modelResponseForJson({ supported: !data.proposedText.includes('另外四人'), correction: data.proposedText.includes('另外四人') ? '只有给实际伙伴的一条真实发信，另外四人没有完成凭据。' : '' });
+    }
+    writes++;
+    expect(wire.messages.some((message: { role: string; tool_call_id?: string }) => message.role === 'tool' && message.tool_call_id === 'real-social-native')).toBe(true);
+    if (mode === 'cached_false_final') expect(wire.messages.filter((message: { role: string }) => message.role === 'assistant')
+      .some((message: { content?: string }) => message.content?.includes('另外四人'))).toBe(false);
+    return modelResponse('其余联系还没有完成凭据。');
+  });
+  const restarted = startService(f.root, dsh); await restarted.handle({ type: 'state' });
+  await vi.waitFor(() => {
+    const current = store.request({ type: 'loop.get', sourceMessageId: source.id, companionId: 'sister' }).loop!;
+    expect(current.status === 'done' || current.progress?.phase === 'failed').toBe(true);
+  }, { timeout: 5000 });
+  const final = store.request({ type: 'loop.get', sourceMessageId: source.id, companionId: 'sister' }).loop!;
+  expect(final.turns[0]).toMatchObject(confirmed);
+  expect(store.messages({ conversationId: room.id }).messages.filter(message => message.content === 'PRIVATE_REAL_INVITATION')).toHaveLength(1);
+  expect(transport.request.mock.calls.some(([command]) => command.type === 'social.send' || command.type === 'world.tool' && command.arguments.action === 'message')).toBe(false);
+  if (mode === 'bad_tool_prefix') {
+    expect(final.status).toBe('running'); expect(final.progress?.phase).toBe('failed'); expect(writes).toBe(3);
+    expect(store.getMessage(final.messageId!).isReplyDraft).toBe(true);
+  } else {
+    expect(final.status).toBe('done'); expect(store.getMessage(final.messageId!).content).not.toContain('另外四人');
+    expect(store.getMessage(final.messageId!).content).toContain(firstText);
+    if (mode === 'empty_final') { expect(writes).toBe(0); expect(reviewedTexts).toEqual([firstText]); }
+    else { expect(writes).toBe(1); expect(final.turns[1]!.topicPublicationRejection).toBeDefined(); expect(final.turns[1]).toMatchObject(cached); }
+  }
+  await closeService(restarted);
+});
+
+it.each(['waiting', 'succeeded'] as const)('reviews a new human follow-up despite an old %s goal and an unsupported historical completion claim', async status => {
+  const f = fixture(fakeDsh(() => ({ tasks: [], operations: [] }), vi.fn(async () => ({ ok: true as const }))), false, false);
+  const scope = { companionId: 'sister', conversationId: f.conversation.id };
+  const oldSource = f.store.appendMessage({ conversationId: scope.conversationId, authorId: 'user',
+    content: '整理六人配置并实际告诉其他伙伴。', replyDirective: 'none' });
+  const task = f.store.request({ type: 'activity.start', ...scope, sourceMessageId: oldSource.id,
+    clientId: 'old_progress_' + status, title: '原持久目标', goal: oldSource.content }).activityTask!;
+  const lease = f.store.request({ type: 'activity.claim' }).activityTask!; expect(lease.id).toBe(task.id);
+  f.store.request({ type: 'activity.commit', id: task.id, leaseToken: lease.leaseToken!, decision: status === 'waiting'
+    ? { status: 'continue', action: null, wait: { kind: 'delay', seconds: 300 }, summary: '等待下一次实际核查。' }
+    : { status: 'complete', action: null, wait: null, summary: '旧记录自述已结束，本测试没有发送效果。' } });
+  // A pre-upgrade unsupported statement is readable history, never a receipt.
+  const wrong = '我已经把六人配置发给她们了。';
+  const oldReport = f.store.appendMessage({ conversationId: scope.conversationId, authorId: 'sister', replyToId: oldSource.id,
+    content: wrong, replyDirective: 'none' });
+  await f.service.handle({ type: 'state' });
+  let writes = 0; const reviewed: string[] = [];
+  const corrected = '旧记录曾这样说，但我本轮还没有核验实际送达回执。';
+  transport.fetch.mockImplementation(async (_url, init) => {
+    const wire = JSON.parse(String(init?.body)), context = JSON.parse(wire.messages[1].content);
+    expect(context.messages.some((message: { id: string; content: string }) => message.id === oldReport.id && message.content === wrong)).toBe(true);
+    writes++;
+    if (writes > 1) expect(wire.messages[0].content).toContain('旧汇报不是实际送达凭据');
+    return modelResponse(writes === 1 ? wrong : corrected);
+  });
+  transport.socialReviewFetch.mockImplementation(async (_url, init) => {
+    const data = JSON.parse(JSON.parse(String(init?.body)).messages[1].content);
+    expect(data.purpose).toBe('companion_social_progress_review'); expect(data.facts).toEqual([]);
+    expect(data.nativeActions).toBeUndefined(); expect(data.verifiedOutbound).toBeUndefined();
+    reviewed.push(data.proposedText);
+    return modelResponseForJson({ supported: data.proposedText === corrected,
+      correction: data.proposedText === wrong ? '旧汇报不是实际送达凭据；当前没有该具体内容送达的真实凭据。' : '' });
+  });
+  transport.request.mockClear();
+  const source = (await f.service.handle({ type: 'message.send', conversationId: scope.conversationId,
+    content: '之前那个目标的六人配置，已经实际告诉她们了吗？', clientId: 'new_progress_question_' + status })).message!;
+  await vi.waitFor(() => expect(f.store.request({ type: 'loop.get', sourceMessageId: source.id, companionId: 'sister' }).loop?.status).toBe('done'), { timeout: 5000 });
+  const loop = f.store.request({ type: 'loop.get', sourceMessageId: source.id, companionId: 'sister' }).loop!;
+  expect(writes).toBe(2); expect(reviewed).toEqual([wrong, corrected]);
+  expect(f.store.getMessage(loop.messageId!).content).toBe(corrected);
+  expect(f.store.getMessage(oldReport.id).content).toBe(wrong);
+  expect(f.store.request({ type: 'activity.get', ...scope, id: task.id }).activityTask?.status).toBe(status);
+  expect(source.id).not.toBe(oldSource.id); expect(loop.turns).toHaveLength(1);
+  expect(transport.request.mock.calls.some(([command]) => command.type === 'social.send' || command.type === 'world.tool')).toBe(false);
+});
+
+it('certifies an old concrete delivery only after the new human invocation actually reads linked progress evidence', async () => {
+  const f = fixture(fakeDsh(() => ({ tasks: [], operations: [] }), vi.fn(async () => ({ ok: true as const }))), false, false);
+  const scope = { companionId: 'sister', conversationId: f.conversation.id };
+  const peer = f.store.createCompanion({ name: '小岚', description: '', persona: '友好', model: '', avatar: 'flash', proactive: false });
+  f.store.setCompanionActive(peer.id, true);
+  const oldSource = f.store.appendMessage({ conversationId: scope.conversationId, authorId: 'user',
+    content: '把六人配置告诉小岚，然后继续组织。', replyDirective: 'none' });
+  const task = f.store.request({ type: 'activity.start', ...scope, sourceMessageId: oldSource.id,
+    clientId: 'old_concrete_delivery', title: '原配置目标', goal: oldSource.content }).activityTask!;
+  const lease = f.store.request({ type: 'activity.claim' }).activityTask!; expect(lease.id).toBe(task.id);
+  f.store.request({ type: 'activity.commit', id: task.id, leaseToken: lease.leaseToken!, decision: {
+    status: 'continue', action: null, wait: { kind: 'delay', seconds: 300 }, summary: '稍后继续确认实际情况。' } });
+  const room = f.store.request({ type: 'social.conversation.ensure', companionId: 'sister', memberIds: ['sister', peer.id] }).socialConversation!;
+  const sentText = '六人配置：两名狼人、一名预言家、三名村民。';
+  expect(f.store.request({ type: 'social.send', companionId: 'sister', conversationId: room.id, authorizationMessageId: oldSource.id,
+    content: sentText, channel: 'phone', clientId: 'concrete_configuration_sent' }).socialPending).toBe(true);
+  vi.setSystemTime(Date.now() + 1500); f.store.request({ type: 'world.tick' });
+  const delivered = f.store.request({ type: 'social.job.claim' });
+  expect(delivered.socialJob?.companionId).toBe(peer.id);
+  const actualSent = delivered.socialMessage!.message;
+  expect(actualSent.content).toBe(sentText); expect(actualSent.status).toBe('sent');
+  await f.service.handle({ type: 'state' });
+  let writes = 0; const reviewed: string[] = [];
+  const answer = '我核对了原目标的真实出站正文：六人配置已发给小岚；这不表示她已答应参加。';
+  transport.fetch.mockImplementation(async (_url, init) => {
+    const wire = JSON.parse(String(init?.body)); writes++;
+    if (writes === 1) return new Response(JSON.stringify({ choices: [{ message: { content: null,
+      tool_calls: [{ id: 'read_actual_old_progress', type: 'function', function: { name: 'world',
+        arguments: JSON.stringify({ action: 'activity', parameters: { action: 'progress', id: task.id } }) } }] } }] }),
+    { headers: { 'Content-Type': 'application/json' } });
+    const tool = wire.messages.find((message: { role: string; tool_call_id?: string }) => message.role === 'tool' && message.tool_call_id === 'read_actual_old_progress');
+    expect(tool).toBeDefined();
+    const receipt = JSON.parse(tool.content);
+    expect(receipt.activityTask.id).toBe(task.id);
+    expect(receipt.activityProgressEvidence.outbound).toEqual([expect.objectContaining({ recipientIds: [peer.id], message: expect.objectContaining({ id: actualSent.id, content: sentText }) })]);
+    return modelResponse(answer);
+  });
+  transport.socialReviewFetch.mockImplementation(async (_url, init) => {
+    const data = JSON.parse(JSON.parse(String(init?.body)).messages[1].content);
+    expect(data.proposedText).toBe(answer); expect(data.facts).toEqual([]); expect(data.nativeActions).toBeUndefined();
+    expect(data.verifiedOutbound).toEqual([expect.objectContaining({ id: actualSent.id, content: sentText, recipientIds: [peer.id] })]);
+    reviewed.push(data.proposedText); return modelResponseForJson({ supported: true, correction: '' });
+  });
+  transport.request.mockClear();
+  const source = (await f.service.handle({ type: 'message.send', conversationId: scope.conversationId,
+    content: '之前那个六人配置，实际已经告诉小岚了吗？', clientId: 'new_question_reads_old_progress' })).message!;
+  await vi.waitFor(() => expect(f.store.request({ type: 'loop.get', sourceMessageId: source.id, companionId: 'sister' }).loop?.status).toBe('done'), { timeout: 5000 });
+  const loop = f.store.request({ type: 'loop.get', sourceMessageId: source.id, companionId: 'sister' }).loop!;
+  expect(writes).toBe(2); expect(reviewed).toEqual([answer]);
+  expect(f.store.getMessage(loop.messageId!).content).toBe(answer); expect(loop.turns).toHaveLength(2);
+  expect(transport.request.mock.calls.some(([command]) => command.type === 'activity.progress' && command.id === task.id)).toBe(true);
+  expect(transport.request.mock.calls.some(([command]) => command.type === 'social.send' || command.type === 'world.tool')).toBe(false);
+  expect(f.store.request({ type: 'social.messages', conversationId: room.id }).socialMessagePage!.items.filter(item => item.message.content === sentText)).toHaveLength(1);
+  const published = transport.request.mock.calls.map(([command]) => command).find(command => command.type === 'loop.save'
+    && command.checkpoint.sourceMessageId === source.id && command.checkpoint.status === 'done' && !!command.executionReadset);
+  expect(published?.type).toBe('loop.save');
+  if (published?.type === 'loop.save') expect(published.executionReadset?.sources).toContainEqual({ id: actualSent.id,
+    conversationId: actualSent.conversationId, checksum: createHash('sha256').update(actualSent.content).digest('hex') });
+});
+
+it('revalidates a tool-free cached human final with no current goal receipts on automatic restart', async () => {
+  const { buildCompanionContext } = await import('../../src/main/companions/context');
+  const dsh = fakeDsh(() => ({ tasks: [], operations: [] }), vi.fn(async () => ({ ok: true as const })));
+  const f = fixture(dsh, false, false); await f.service.handle({ type: 'state' }); await closeService(f.service);
+  const store = new CompanionsStore(f.databasePath, seeds.map(seed => ({ ...seed, active: true }))); stores.add(store); bindStorage(store);
+  const historical = store.appendMessage({ conversationId: f.conversation.id, authorId: 'sister', replyToId: f.source.id,
+    content: '旧汇报：配置已经发给她们。', replyDirective: 'none' });
+  const source = store.appendMessage({ conversationId: f.conversation.id, authorId: 'user',
+    content: '之前说已发送配置，现在能确认实际送达吗？', replyDirective: 'none' });
+  const at = new Date().toISOString(), work = { id: 'cached_tool_free_progress', conversationId: f.conversation.id,
+    companionId: 'sister', sourceMessageId: source.id, status: 'queued' as const, createdAt: at, updatedAt: at };
+  store.request({ type: 'work.enqueue', work });
+  const loop = store.request({ type: 'loop.get', sourceMessageId: source.id, companionId: 'sister' }).loop!;
+  const companion = store.request({ type: 'state' }).state!.companions.find(role => role.id === 'sister')!;
+  loop.context = buildCompanionContext({ companion, conversation: f.conversation, sourceMessage: source,
+    messages: [historical, source], memories: [], agentLoop: true, taskRequest: { sourceMessageId: source.id, prompt: source.content } });
+  const wrong = '我已经把配置发给她们了。', corrected = '旧汇报写着已发送，但我尚未核实实际送达凭据。';
+  loop.turns = [{ text: wrong, rawText: wrong, calls: [] }];
+  store.request({ type: 'loop.save', checkpoint: loop });
+  store.request({ type: 'work.status', id: work.id, status: 'interrupted', resumeOnRestart: true });
+  let writes = 0; const reviewed: string[] = [];
+  transport.fetch.mockImplementation(async (_url, init) => {
+    const wire = JSON.parse(String(init?.body)); writes++;
+    // Recovery deliberately does not reinject old audit quotations as current
+    // facts. It supplies the bounded rejection notice and the original source.
+    expect(wire.messages[0].content).toContain('先前缓存的最终草稿未正式发布');
+    expect(wire.messages[0].content).not.toContain('旧汇报不是实际送达凭据');
+    const context = JSON.parse(wire.messages[1].content);
+    expect(context.messages.some((message: { id: string }) => message.id === historical.id)).toBe(true);
+    return modelResponse(corrected);
+  });
+  transport.socialReviewFetch.mockImplementation(async (_url, init) => {
+    const data = JSON.parse(JSON.parse(String(init?.body)).messages[1].content);
+    expect(data.facts).toEqual([]); expect(data.nativeActions).toBeUndefined();
+    reviewed.push(data.proposedText);
+    return modelResponseForJson({ supported: data.proposedText === corrected,
+      correction: data.proposedText === wrong ? '旧汇报不是实际送达凭据；请保留尚未核验的事实边界。' : '' });
+  });
+  transport.request.mockClear();
+  const restarted = startService(f.root, dsh); await restarted.handle({ type: 'state' });
+  await vi.waitFor(() => {
+    const current = store.request({ type: 'loop.get', sourceMessageId: source.id, companionId: 'sister' }).loop!;
+    expect(current.status === 'done' || current.progress?.phase === 'failed').toBe(true);
+  }, { timeout: 5000 });
+  const final = store.request({ type: 'loop.get', sourceMessageId: source.id, companionId: 'sister' }).loop!;
+  if (final.status !== 'done') writeFileSync(path.resolve('artifacts/vcp-validation/main-human-cached-progress-diagnostic-2026-10-24.json'), JSON.stringify({ final, writes, reviewed,
+    writerPayloads: transport.fetch.mock.calls.map(([, init]) => JSON.parse(String(init?.body))) }, null, 2));
+  expect(final.status).toBe('done');
+  expect(writes).toBe(1); expect(reviewed).toEqual([wrong, corrected]);
+  expect(final.turns[0]!.topicPublicationRejection).toBeDefined(); expect(final.turns[0]!.text).toBe(wrong);
+  expect(store.getMessage(final.messageId!).content).toBe(corrected);
+  expect(store.getMessage(historical.id).content).toBe(historical.content);
+  expect(transport.request.mock.calls.some(([command]) => command.type === 'social.send' || command.type === 'world.tool')).toBe(false);
+  await closeService(restarted);
+});
+
+it.each([
+  { label: 'ordinary conversation', question: '今天想慢慢聊一会儿。', answer: '好，我们可以慢慢聊。' },
+  { label: 'qualified historical quote', question: '旧记录写着“已发配置”，能直接当送达凭据吗？', answer: '你引用的“已发配置”只是旧说法，我尚未核验实际送达回执。' },
+  { label: 'attributed third-party claim', question: '小岚说“已发配置”，这是她的说法。', answer: '小岚说“已发配置”，这是她的说法，我没有本人实际发送的凭据。' },
+])('still reviews and permits $label without turning it into an actor effect', async ({ question, answer }) => {
+  const f = fixture(fakeDsh(() => ({ tasks: [], operations: [] }), vi.fn(async () => ({ ok: true as const }))), false, false);
+  await f.service.handle({ type: 'state' });
+  transport.fetch.mockImplementation(async () => modelResponse(answer));
+  transport.socialReviewFetch.mockImplementation(async (_url, init) => {
+    const wire = JSON.parse(String(init?.body)), data = JSON.parse(wire.messages[1].content);
+    expect(data).toMatchObject({ purpose: 'companion_social_progress_review', proposedText: answer, facts: [] });
+    expect(data.nativeActions).toBeUndefined(); expect(wire.messages[0].content).toContain('引用不是伙伴真实发信回执');
+    return modelResponseForJson({ supported: true, correction: '' });
+  });
+  transport.request.mockClear();
+  const source = (await f.service.handle({ type: 'message.send', conversationId: f.conversation.id,
+    content: question, clientId: 'permitted_progress_' + randomUUID() })).message!;
+  await vi.waitFor(() => expect(f.store.request({ type: 'loop.get', sourceMessageId: source.id, companionId: 'sister' }).loop?.status).toBe('done'), { timeout: 5000 });
+  const loop = f.store.request({ type: 'loop.get', sourceMessageId: source.id, companionId: 'sister' }).loop!;
+  expect(transport.fetch).toHaveBeenCalledOnce(); expect(transport.socialReviewFetch).toHaveBeenCalledOnce();
+  expect(f.store.getMessage(loop.messageId!).content).toBe(answer);
+  expect(transport.request.mock.calls.some(([command]) => command.type === 'social.send' || command.type === 'world.tool')).toBe(false);
+});
+
+it('keeps explicit story dialogue under topic continuity review without treating it as a real social effect', async () => {
+  const f = fixture(fakeDsh(() => ({ tasks: [], operations: [] }), vi.fn(async () => ({ ok: true as const }))), false, false);
+  await f.service.handle({ type: 'state' });
+  const topic = f.store.request({ type: 'topic.create', conversationId: f.conversation.id, readerId: 'sister',
+    kind: 'story', title: '虚构信件', participantIds: ['user'] }).topic!;
+  f.store.request({ type: 'topic.join', conversationId: f.conversation.id, topicId: topic.id, readerId: 'user' });
+  const text = '阿澄对渡口的人说：“我已经把信寄给她们了。”'; let writes = 0, topicReviews = 0;
+  transport.fetch.mockImplementation(async (_url, init) => {
+    const data = JSON.parse(JSON.parse(String(init?.body)).messages[1].content);
+    if (data.purpose === 'topic_user_canon_extract') return modelResponseForJson({ additions: [], revisions: [] });
+    if (data.purpose === 'topic_narrative_reference_extract') return modelResponseForJson({ references: [] });
+    if (data.purpose === 'topic_reply_quantity_source_sets') return modelResponseForJson({ sets: [] });
+    if (data.purpose === 'topic_continuity_review') {
+      topicReviews++; expect(data.proposed.text).toBe(text);
+      return modelResponseForJson({ supported: true, issues: [], clockClaims: [] });
+    }
+    writes++; return modelResponse(text);
+  });
+  const source = (await f.service.handle({ type: 'message.send', conversationId: f.conversation.id, topicId: topic.id,
+    content: '写一段阿澄在渡口讲述虚构寄信经历的小说。', clientId: 'fictional_social_effect', delivery: 'chat' })).message!;
+  await vi.waitFor(() => expect(f.store.request({ type: 'loop.get', sourceMessageId: source.id, companionId: 'sister' }).loop?.status).toBe('done'), { timeout: 5000 });
+  const loop = f.store.request({ type: 'loop.get', sourceMessageId: source.id, companionId: 'sister' }).loop!;
+  expect(writes).toBe(1); expect(topicReviews).toBe(1); expect(transport.socialReviewFetch).not.toHaveBeenCalled();
+  expect(f.store.getMessage(loop.messageId!).content).toBe(text);
+  expect(loop.turns[0]!.topicPublicationApproval).toBeDefined();
+});
+
+it.each(['stale_final', 'valid_final', 'confirmed_topic_tool', 'review_race'] as const)('revalidates a legacy cached story final on actual automatic startup: %s', async mode => {
+  const { companionTopicNarrativeBasis } = await import('../../src/shared/companion-topic-canon');
+  const { buildCompanionContext } = await import('../../src/main/companions/context');
+  const hash = (text: string) => createHash('sha256').update(text).digest('hex');
+  const dsh = fakeDsh(() => ({ tasks: [], operations: [] }), vi.fn(async () => ({ ok: true as const })));
+  const f = fixture(dsh, false, false); await f.service.handle({ type: 'state' }); await closeService(f.service);
+  const store = new CompanionsStore(f.databasePath, seeds.map(seed => ({ ...seed, active: true }))); stores.add(store); bindStorage(store);
+  const topic = store.request({ type: 'topic.create', conversationId: f.conversation.id, readerId: 'sister',
+    title: '旧版本最终草稿的真实重启恢复', kind: 'story', participantIds: ['user'] }).topic!;
+  store.request({ type: 'topic.join', conversationId: f.conversation.id, readerId: 'user', topicId: topic.id });
+  const read = () => store.request({ type: 'topic.read', conversationId: f.conversation.id, readerId: 'sister', topicId: topic.id });
+  const canonSource = store.appendMessage({ conversationId: f.conversation.id, topicId: topic.id, authorId: 'user',
+    content: '只叙述09:00至09:30，主角阿澄使用她。', replyDirective: 'none' });
+  const canon = { version: 1 as const, throughSequence: canonSource.sequence, entries: [{ id: hash('actual-legacy-rule'),
+    sourceMessageId: canonSource.id, sourceChecksum: hash(canonSource.content), quote: canonSource.content, rule: canonSource.content,
+    timeRange: { start: 540, end: 570, includeStart: true, includeEnd: true } }] };
+  const rangeDigest = hash(JSON.stringify(canon.entries.map(item => [item.id, item.timeRange])));
+  const baselineText = '09:20，阿澄站在屋内，尚未检查门锁。';
+  const baseline = store.appendMessage({ conversationId: f.conversation.id, topicId: topic.id, authorId: 'sister', replyToId: canonSource.id,
+    content: '', loopStep: 0, replyDirective: 'none' });
+  store.request({ type: 'loop.save', checkpoint: { conversationId: f.conversation.id, companionId: 'sister', sourceMessageId: canonSource.id,
+    messageId: baseline.id, status: 'done', turns: [{ text: baselineText, rawText: baselineText, calls: [], topicNarrativeApproval: {
+      topicId: topic.id, quote: '09:20', minutes: 560, contentChecksum: hash(baselineText), rangeDigest,
+      userCanon: canon, contentScope: 'full_reply' } }], supplements: [] } });
+  const source = store.appendMessage({ conversationId: f.conversation.id, topicId: topic.id, authorId: 'user',
+    content: '继续当前屋内场景。', replyDirective: 'none' });
+  const at = new Date().toISOString(), work = { id: 'legacy_startup_' + mode, conversationId: f.conversation.id, companionId: 'sister',
+    sourceMessageId: source.id, status: 'queued' as const, createdAt: at, updatedAt: at };
+  store.request({ type: 'work.enqueue', work });
+  const loop = store.request({ type: 'loop.get', sourceMessageId: source.id, companionId: 'sister' }).loop!;
+  let confirmed: typeof loop.turns[number] | undefined;
+  if (mode === 'confirmed_topic_tool') {
+    const parameters = { action: 'update', roomId: f.conversation.id, topicId: topic.id, expectedRevision: read().topic!.revision,
+      patch: { workingState: { summary: '已确认的原工具步骤：记录本轮检索标记。', sourceMessageIds: [source.id] } } };
+    const { action: _action, roomId: _roomId, ...update } = parameters; void _action; void _roomId;
+    const actualReceipt = store.request({ type: 'topic.update', conversationId: f.conversation.id, readerId: 'sister',
+      operationId: 'actual-confirmed-legacy-topic-update', ...update });
+    expect(actualReceipt.ok).toBe(true);
+    expect(read().topicState?.workingState?.summary).toBe('已确认的原工具步骤：记录本轮检索标记。');
+    confirmed = { text: '', rawText: '', calls: [{ id: 'actual-legacy-topic-call', name: 'world',
+      arguments: JSON.stringify({ action: 'topic', parameters }) }],
+    results: [{ callId: 'actual-legacy-topic-call', content: JSON.stringify(actualReceipt) }] };
+  }
+  const frame = read(), initialBasis = companionTopicNarrativeBasis(frame.topicState!.workingState), oldCounter = frame.topic!.formalPublicationRevision!;
+  const companion = store.request({ type: 'state' }).state!.companions.find(item => item.id === 'sister')!;
+  loop.context = buildCompanionContext({ companion, conversation: f.conversation, sourceMessage: source,
+    messages: [canonSource, store.getMessage(baseline.id), source], memories: [], agentLoop: true, topic: frame.topic, topicState: frame.topicState,
+    taskRequest: { sourceMessageId: source.id, prompt: source.content } });
+  const stale = '09:25，阿澄尚未检查门锁，仍站在屋内。';
+  const fresh = '09:25，阿澄在走廊继续核对门牌，门锁已经查过。';
+  const raceFresh = '09:25，阿澄留在庭院继续观察，门牌已收入袋中。';
+  const cached = mode === 'valid_final' || mode === 'review_race' ? fresh : stale;
+  const originalFinal = { text: cached, rawText: cached, calls: [], topicNarrativeApproval: { topicId: topic.id, quote: '09:25', minutes: 565,
+    contentChecksum: hash(cached), rangeDigest, userCanon: canon, contentScope: 'full_reply' as const, expectedStateChecksum: hash(initialBasis) } };
+  loop.turns = [...(confirmed ? [confirmed] : []), originalFinal];
+  store.request({ type: 'loop.save', checkpoint: loop });
+  store.request({ type: 'work.status', id: work.id, status: 'interrupted', resumeOnRestart: true });
+  // This fixture tests later formal actor publication within an already read
+  // input port. An unread newer human request is a separate admission barrier,
+  // even if an actor later publishes after it; do not hide one in this fixture.
+  const newerSource = canonSource;
+  const newer = store.appendMessage({ conversationId: f.conversation.id, topicId: topic.id, authorId: 'sister', replyToId: newerSource.id,
+    content: '阿澄已经检查完门锁，走出屋外并带上了门。', replyDirective: 'none' });
+  const changed = read(); expect(companionTopicNarrativeBasis(changed.topicState!.workingState)).toBe(initialBasis);
+  expect(changed.topic!.formalPublicationRevision).toBeGreaterThan(oldCounter);
+  let racedFormal: typeof newer | undefined;
+  let writes = 0, reviews = 0, adjudications = 0;
+  const writerFrames: unknown[] = [];
+  transport.request.mockClear(); transport.fetch.mockReset();
+  transport.fetch.mockImplementation(async (_url, init) => {
+    const wire = JSON.parse(String(init?.body)), data = JSON.parse(wire.messages[1].content);
+    if (data.purpose === 'topic_user_canon_extract') return modelResponseForJson({ additions: [], revisions: [] });
+    if (data.purpose === 'topic_reply_quantity_source_sets') return modelResponseForJson({ sets: [] });
+    if (data.purpose === 'topic_narrative_reference_extract') return modelResponseForJson({ references: [] });
+    if (data.purpose === 'topic_continuity_review') {
+      reviews++;
+      const actualFormal = racedFormal ?? newer;
+      expect(data.latestFormalContinuation).toMatchObject({ id: actualFormal.id, content: actualFormal.content });
+      if (mode === 'review_race' && reviews === 1) racedFormal = store.appendMessage({ conversationId: f.conversation.id,
+        topicId: topic.id, authorId: 'sister', replyToId: newerSource.id,
+        content: '阿澄已经离开走廊回到庭院，把门牌收进口袋。', replyDirective: 'none' });
+      const contradictsLatest = data.proposed.text.includes(stale) || mode === 'review_race' && reviews > 1 && data.proposed.text.includes(fresh);
+      const issues = contradictsLatest ? [{ claim: '把已经完成的动作写回旧位置或未发生', basis: '紧前正式正文已经明确完成。',
+        claimQuote: data.proposed.text.includes(stale) ? '尚未检查门锁，仍站在屋内' : '阿澄在走廊继续核对门牌',
+        basisQuote: actualFormal.content, correction: '承接紧前正式段落已经完成的动作和当前位置。' }] : [];
+      return modelResponseForJson({ supported: !issues.length, issues,
+        clockClaims: data.clockMentions.map((mention: { index: number }) => ({ index: mention.index, usage: 'narration_now', reason: '拟稿明确当前场景时刻。' })) });
+    }
+    if (data.purpose === 'topic_continuity_issue_adjudication') { adjudications++; return modelResponseForJson({ upheldIssueIndexes: [0] }); }
+    writes++;
+    writerFrames.push({ taskRequest: data.taskRequest, topicPublicationReference: data.topicPublicationReference,
+      history: wire.messages.slice(2).map((message: { role: string; tool_call_id?: string; content?: string; tool_calls?: unknown }) => ({
+        role: message.role, toolCallId: message.tool_call_id, content: message.content?.slice(0, 250), toolCalls: message.tool_calls })) });
+    expect(data.taskRequest).toMatchObject({ sourceMessageId: source.id, prompt: source.content });
+    const currentFormal = racedFormal ?? newer;
+    expect(data.topicPublicationReference.message).toMatchObject({ id: currentFormal.id, content: currentFormal.content });
+    expect(wire.messages.filter((message: { role: string }) => message.role === 'assistant')
+      .some((message: { content?: string }) => message.content?.includes(stale) === true)).toBe(false);
+    if (confirmed) expect(wire.messages.some((message: { role: string; tool_call_id?: string }) =>
+      message.role === 'tool' && message.tool_call_id === confirmed!.calls[0]!.id)).toBe(true);
+    return modelResponse(mode === 'review_race' ? raceFresh : fresh);
+  });
+  const restarted = startService(f.root, dsh); await restarted.handle({ type: 'state' });
+  try { await vi.waitFor(() => expect(store.request({ type: 'loop.get', sourceMessageId: source.id, companionId: 'sister' }).loop!.status).toBe('done'), { timeout: 5000 }); }
+  catch (error) {
+    writeFileSync(path.resolve('artifacts/vcp-validation/legacy-startup-main-' + mode + '-diagnostic-2026-10-24.json'), JSON.stringify({
+      checkpoint: store.request({ type: 'loop.get', sourceMessageId: source.id, companionId: 'sister' }).loop,
+      writes, reviews, adjudications, writerFrames, racedFormal,
+      currentTopic: read(), commands: transport.request.mock.calls.map(([command]) => command.type),
+    }, null, 2));
+    throw error;
+  }
+  const final = store.request({ type: 'loop.get', sourceMessageId: source.id, companionId: 'sister' }).loop!;
+  const published = mode === 'review_race' ? raceFresh : fresh;
+  expect(store.getMessage(final.messageId!).content).toBe(published);
+  expect(store.getMessage(newer.id).content).toBe(newer.content);
+  expect(final.sourceMessageId).toBe(source.id);
+  if (mode === 'valid_final') {
+    expect(writes).toBe(0); expect(reviews).toBe(1); expect(adjudications).toBe(0);
+    expect(final.turns).toHaveLength(1); expect(final.turns[0]!.topicPublicationRejection).toBeUndefined();
+  } else {
+    expect(writes).toBe(1); expect(reviews).toBe(mode === 'review_race' ? 3 : 2); expect(adjudications).toBe(1);
+    expect(final.turns).toHaveLength(confirmed ? 3 : 2);
+    const rejected = final.turns[confirmed ? 1 : 0]!;
+    expect(rejected).toMatchObject(originalFinal);
+    expect(rejected.topicPublicationRejection).toMatchObject({ rawTextChecksum: hash(cached), contentChecksum: hash(cached) });
+    expect(rejected.topicPublicationRejection?.reason).toContain('已经完成');
+  }
+  expect(final.turns.at(-1)?.topicPublicationApproval).toMatchObject({ companionId: 'sister', conversationId: f.conversation.id,
+    topicId: topic.id, contentChecksum: hash(published), contentScope: 'full_reply',
+    expectedFormalPublicationRevision: changed.topic!.formalPublicationRevision! + (racedFormal ? 1 : 0) });
+  if (confirmed) {
+    expect(final.turns[0]).toEqual(confirmed);
+    expect(transport.request.mock.calls.filter(([command]) => command.type === 'topic.update')).toHaveLength(0);
+  }
+  expect(dsh.requestTask).not.toHaveBeenCalled();
+  const totalFetches = transport.fetch.mock.calls.length;
+  await closeService(restarted);
+  const reopened = new CompanionsStore(f.databasePath, seeds.map(seed => ({ ...seed, active: true }))); stores.add(reopened); bindStorage(reopened);
+  const secondRestart = startService(f.root, dsh); await secondRestart.handle({ type: 'state' }); await vi.advanceTimersByTimeAsync(1000);
+  expect(transport.fetch).toHaveBeenCalledTimes(totalFetches);
+  expect(reopened.getMessage(final.messageId!).content).toBe(published);
+  expect(reopened.request({ type: 'loop.get', sourceMessageId: source.id, companionId: 'sister' }).loop).toEqual(final);
+  await closeService(secondRestart);
+});
+
+it.each(['private_final', 'public_final', 'tool_body_empty_repair', 'source_withdrawn', 'commit_source_withdrawn'] as const)('revalidates a legacy cached public game final on actual automatic startup: %s', async mode => {
+  const { buildCompanionContext } = await import('../../src/main/companions/context');
+  const hash = (text: string) => createHash('sha256').update(text).digest('hex');
+  const dsh = fakeDsh(() => ({ tasks: [], operations: [] }), vi.fn(async () => ({ ok: true as const })));
+  const f = fixture(dsh, true, false); await f.service.handle({ type: 'state' }); await closeService(f.service);
+  const store = new CompanionsStore(f.databasePath, seeds.map(seed => ({ ...seed, active: true }))); stores.add(store); bindStorage(store);
+  const peers = ['甲', '乙'].map(name => store.createCompanion({ name, description: '', persona: '独立玩家', model: '', avatar: 'flash', proactive: false }));
+  const group = store.createConversation('真实群公开旧缓存恢复', ['sister', ...peers.map(peer => peer.id)]);
+  const topic = store.request({ type: 'topic.create', conversationId: group.id, readerId: 'sister', kind: 'game',
+    title: '未公开私牌的第一夜', participantIds: ['user', ...peers.map(peer => peer.id)] }).topic!;
+  store.request({ type: 'topic.join', conversationId: group.id, topicId: topic.id, readerId: 'user' });
+  const source = store.appendMessage({ conversationId: group.id, topicId: topic.id, authorId: 'user',
+    content: '大肥鱼，继续主持当前这局游戏，只作正常公开提示。', replyDirective: 'none' });
+  const read = () => store.request({ type: 'topic.read', conversationId: group.id, readerId: 'sister', topicId: topic.id });
+  const secret = 'LEGACY_PRIVATE_WOLF_CARD_CANARY';
+  const parameters = { action: 'update', roomId: group.id, topicId: topic.id, expectedRevision: read().topic!.revision,
+    patch: { workingState: { summary: '主持本人私态，身份尚未公开。', state: { privateRole: secret, playerId: peers[0]!.id }, sourceMessageIds: [source.id] } } };
+  const { action: _action, roomId: _roomId, ...update } = parameters; void _action; void _roomId;
+  const actualReceipt = store.request({ type: 'topic.update', conversationId: group.id, readerId: 'sister',
+    operationId: 'actual-private-game-state-' + mode, ...update });
+  expect(actualReceipt.ok).toBe(true); expect(read().topicState?.workingState?.state?.privateRole).toBe(secret);
+  const oldToolProse = mode === 'tool_body_empty_repair' ? '主持工具步骤正文泄露：' + secret + '是尚未公开的狼人。' : '';
+  const confirmed = { text: oldToolProse, rawText: oldToolProse, calls: [{ id: 'actual-legacy-game-topic-call', name: 'world',
+    arguments: JSON.stringify({ action: 'topic', parameters }) }],
+  results: [{ callId: 'actual-legacy-game-topic-call', content: JSON.stringify(actualReceipt) }] };
+  const at = new Date().toISOString(), work = { id: 'legacy_game_startup_' + mode, conversationId: group.id, companionId: 'sister',
+    sourceMessageId: source.id, status: 'queued' as const, createdAt: at, updatedAt: at };
+  store.request({ type: 'work.enqueue', work });
+  const loop = store.request({ type: 'loop.get', sourceMessageId: source.id, companionId: 'sister' }).loop!;
+  const frame = read(), companion = store.request({ type: 'state' }).state!.companions.find(item => item.id === 'sister')!;
+  loop.context = buildCompanionContext({ companion, conversation: group, sourceMessage: source, messages: [source], memories: [], agentLoop: true,
+    topic: frame.topic, topicState: frame.topicState, taskRequest: { sourceMessageId: source.id, prompt: source.content } });
+  const privateText = peers[0]!.name + '的狼人身份是' + secret + '，请公开报刀。';
+  const publicText = '天黑了，请所有玩家按规则私下行动。';
+  const cached = ['private_final', 'source_withdrawn', 'commit_source_withdrawn'].includes(mode) ? privateText : publicText;
+  const original = { text: cached, rawText: cached, calls: [] };
+  loop.turns = [confirmed, original]; store.request({ type: 'loop.save', checkpoint: loop });
+  store.request({ type: 'work.status', id: work.id, status: 'interrupted', resumeOnRestart: true });
+  let writes = 0, privacyChecks = 0;
+  let withdrawalReceipt: CompanionStorageResponse | undefined;
+  let commitWithdrawalReached = false;
+  let interceptedFormalReadset: unknown;
+  transport.request.mockClear(); transport.fetch.mockReset(); transport.send.mockClear();
+  if (mode === 'commit_source_withdrawn') transport.request.mockImplementation(async command => {
+    if (!commitWithdrawalReached && command.type === 'loop.save' && command.checkpoint.status === 'done'
+      && command.checkpoint.sourceMessageId === source.id) {
+      commitWithdrawalReached = true; interceptedFormalReadset = command.executionReadset;
+      withdrawalReceipt = store.request({ type: 'memory.forget', companionId: 'sister', conversationId: group.id, sourceMessageIds: [source.id] });
+    }
+    return store.request(command);
+  });
+  transport.fetch.mockImplementation(async (_url, init) => {
+    const wire = JSON.parse(String(init?.body)), data = JSON.parse(wire.messages[1].content);
+    if (data.purpose === 'game_public_reply_privacy') {
+      privacyChecks++; expect(data.actualAudience).toMatchObject({ conversationId: group.id, topicId: topic.id, publicDelivery: true });
+      if (mode !== 'source_withdrawn' || privacyChecks === 1) expect(data.currentOwnState.workingState.state.privateRole).toBe(secret);
+      if (mode === 'source_withdrawn' && privacyChecks === 1) withdrawalReceipt = store.request({ type: 'memory.forget', companionId: 'sister',
+        conversationId: group.id, sourceMessageIds: [source.id] });
+      return modelResponseForJson({ allowed: mode === 'commit_source_withdrawn' || mode === 'source_withdrawn' && privacyChecks > 1 || !data.exactProposedText.includes(secret), confidence: .99,
+        reason: '群公开正文不得点名未公开的私牌或秘密夜间动作，改为正常公共提示。' });
+    }
+    if (data.purpose === 'topic_user_canon_extract') return modelResponseForJson({ additions: [], revisions: [] });
+    if (data.purpose === 'topic_continuity_review') return modelResponseForJson({ supported: true, issues: [], clockClaims: [] });
+    writes++; expect(data.taskRequest).toMatchObject({ sourceMessageId: source.id, prompt: source.content });
+    expect(wire.messages.filter((message: { role: string }) => message.role === 'assistant')
+      .some((message: { content?: string }) => message.content?.includes(secret) === true)).toBe(mode === 'tool_body_empty_repair');
+    expect(wire.messages.some((message: { role: string; tool_call_id?: string }) => message.role === 'tool'
+      && message.tool_call_id === confirmed.calls[0]!.id)).toBe(true);
+    return modelResponse(mode === 'tool_body_empty_repair' ? '' : publicText);
+  });
+  const restarted = startService(f.root, dsh, true); await restarted.handle({ type: 'state' });
+  await vi.waitFor(() => {
+    const current = store.request({ type: 'loop.get', sourceMessageId: source.id, companionId: 'sister' }).loop!;
+    expect(current.status === 'done' || ['failed', 'cancelled'].includes(current.progress?.phase ?? '')).toBe(true);
+  }, { timeout: 5000 });
+  const final = store.request({ type: 'loop.get', sourceMessageId: source.id, companionId: 'sister' }).loop!;
+  const finalMessage = store.getMessage(final.messageId!);
+  writeFileSync(path.resolve('artifacts/vcp-validation/legacy-game-startup-' + mode + '-evidence-2026-10-24.json'), JSON.stringify({
+    writes, privacyChecks, finalMessage, final, streamEvents: replyEvents(), actualSourceId: source.id,
+    commitWithdrawalReached, interceptedFormalReadset,
+    actualPrivateCheckpointId: frame.topicState?.workingState?.sourceEventId,
+    ...(withdrawalReceipt ? { withdrawalReceipt, currentTopicAfterWithdrawal: read(), currentlyVisibleOriginalSources: store.request({
+      type: 'memory.sources.filter', companionId: 'sister', conversationId: group.id, ids: [source.id] }).memorySources } : {}),
+    repeatedTopicUpdates: transport.request.mock.calls.filter(([command]) => command.type === 'topic.update').length,
+  }, null, 2));
+  if (mode === 'source_withdrawn' || mode === 'commit_source_withdrawn') {
+    expect(final.status).toBe('running'); expect(['failed', 'cancelled']).toContain(final.progress?.phase);
+    expect(writes).toBe(0); expect(privacyChecks).toBeGreaterThanOrEqual(1); expect(privacyChecks).toBeLessThanOrEqual(2);
+    if (mode === 'commit_source_withdrawn') {
+      expect(commitWithdrawalReached).toBe(true);
+      expect(interceptedFormalReadset).toMatchObject({ sources: expect.arrayContaining([{ id: source.id,
+        conversationId: group.id, checksum: hash(source.content) }]) });
+      expect(read().topic?.formalPublicationRevision).toBe(frame.topic!.formalPublicationRevision);
+    }
+    expect(final.turns[0]).toEqual(confirmed); expect(final.turns[1]).toMatchObject(original);
+    expect(read().topicState?.workingState).toBeUndefined();
+    expect(store.request({ type: 'memory.sources.filter', companionId: 'sister', conversationId: group.id, ids: [source.id] }).memorySources).toEqual([]);
+    expect(store.messages({ conversationId: group.id }).messages.filter(message => !message.isReplyDraft)
+      .some(message => message.content.includes(secret))).toBe(false);
+    expect(JSON.stringify(replyEvents())).not.toContain(secret);
+    expect(transport.request.mock.calls.filter(([command]) => command.type === 'topic.update')).toHaveLength(0);
+    const totalFetches = transport.fetch.mock.calls.length;
+    await closeService(restarted);
+    const reopened = new CompanionsStore(f.databasePath, seeds.map(seed => ({ ...seed, active: true }))); stores.add(reopened); bindStorage(reopened);
+    const secondRestart = startService(f.root, dsh, true); await secondRestart.handle({ type: 'state' }); await vi.advanceTimersByTimeAsync(1000);
+    expect(transport.fetch).toHaveBeenCalledTimes(totalFetches);
+    expect(reopened.request({ type: 'loop.get', sourceMessageId: source.id, companionId: 'sister' }).loop!.turns[0]).toEqual(confirmed);
+    await closeService(secondRestart);
+    return;
+  }
+  if (mode === 'tool_body_empty_repair') {
+    expect(final.status).toBe('running'); expect(final.progress?.phase).toBe('failed');
+    expect(writes).toBe(3); expect(privacyChecks).toBe(4);
+    expect(final.turns).toHaveLength(2); expect(final.turns[0]).toEqual(confirmed);
+    expect(final.turns[1]).toMatchObject(original);
+    expect(final.turns[1]!.topicPublicationRejection).toMatchObject({ rawTextChecksum: hash(cached), contentChecksum: hash(cached) });
+    expect(store.messages({ conversationId: group.id }).messages.filter(message => !message.isReplyDraft)
+      .some(message => message.content.includes(secret))).toBe(false);
+    expect(JSON.stringify(replyEvents())).not.toContain(secret);
+    expect(transport.request.mock.calls.filter(([command]) => command.type === 'topic.update')).toHaveLength(0);
+    const totalFetches = transport.fetch.mock.calls.length;
+    await closeService(restarted);
+    const reopened = new CompanionsStore(f.databasePath, seeds.map(seed => ({ ...seed, active: true }))); stores.add(reopened); bindStorage(reopened);
+    const secondRestart = startService(f.root, dsh, true); await secondRestart.handle({ type: 'state' }); await vi.advanceTimersByTimeAsync(1000);
+    expect(transport.fetch).toHaveBeenCalledTimes(totalFetches);
+    expect(reopened.request({ type: 'loop.get', sourceMessageId: source.id, companionId: 'sister' }).loop!.turns[0]).toEqual(confirmed);
+    await closeService(secondRestart);
+    return;
+  }
+  expect(finalMessage.content).toBe(publicText);
+  expect(JSON.stringify(store.messages({ conversationId: group.id }).messages)).not.toContain(secret);
+  expect(JSON.stringify(replyEvents())).not.toContain(secret);
+  expect(final.turns[0]).toEqual(confirmed);
+  expect(transport.request.mock.calls.filter(([command]) => command.type === 'topic.update')).toHaveLength(0);
+  expect(dsh.requestTask).not.toHaveBeenCalled();
+  if (mode === 'private_final') {
+    expect(writes).toBe(1); expect(privacyChecks).toBe(2); expect(final.turns).toHaveLength(3);
+    expect(final.turns[1]).toMatchObject(original);
+    expect(final.turns[1]!.topicPublicationRejection).toMatchObject({ rawTextChecksum: hash(cached), contentChecksum: hash(cached) });
+  } else {
+    expect(writes).toBe(0); expect(privacyChecks).toBe(1); expect(final.turns).toHaveLength(2);
+    expect(final.turns[1]!.topicPublicationRejection).toBeUndefined();
+  }
+  const totalFetches = transport.fetch.mock.calls.length;
+  await closeService(restarted);
+  const reopened = new CompanionsStore(f.databasePath, seeds.map(seed => ({ ...seed, active: true }))); stores.add(reopened); bindStorage(reopened);
+  const secondRestart = startService(f.root, dsh, true); await secondRestart.handle({ type: 'state' }); await vi.advanceTimersByTimeAsync(1000);
+  expect(transport.fetch).toHaveBeenCalledTimes(totalFetches);
+  expect(reopened.getMessage(final.messageId!).content).toBe(publicText);
+  expect(reopened.request({ type: 'loop.get', sourceMessageId: source.id, companionId: 'sister' }).loop).toEqual(final);
+  await closeService(secondRestart);
+});
+
+it.each([{ final: '09:25，纸封仍闭着。', minutes: 565 }, { final: '纸封仍闭着。', minutes: 560 }])('reviews the whole pending story reply across tool turns before one exact publication (tail=$minutes)', async ({ final, minutes }) => {
+  const f = fixture(fakeDsh(() => ({ tasks: [], operations: [] }), vi.fn(async () => ({ ok: true as const }))), false, false);
+  await f.service.handle({ type: 'state' });
+  const topic = f.store.request({ type: 'topic.create', conversationId: f.conversation.id, readerId: 'sister', kind: 'story', title: '完整回复时间连续性', participantIds: ['user'] }).topic!;
+  f.store.request({ type: 'topic.join', conversationId: f.conversation.id, topicId: topic.id, readerId: 'user' });
+  const first = '09:20，纸封仍闭着。', bad = '09:19，纸封仍闭着。';
+  const reviewed: string[] = []; let writes = 0;
+  transport.fetch.mockImplementation(async (_url, init) => {
+    const data = JSON.parse(JSON.parse(String(init?.body)).messages[1].content);
+    if (data.purpose === 'topic_reply_quantity_source_sets') return modelResponseForJson({ sets: [] });
+    if (data.purpose === 'topic_user_canon_extract') {
+      const source = data.newUserMessages.at(-1);
+      return modelResponseForJson({ additions: [{ sourceMessageId: source.id, quote: source.content, rule: source.content,
+        timeRange: { start: 540, end: 570, includeStart: true, includeEnd: true } }], revisions: [] });
+    }
+    if (data.purpose === 'topic_continuity_review') {
+      reviewed.push(data.proposed.text);
+      return modelResponseForJson({ supported: true, issues: [], clockClaims: data.clockMentions.map((mention: { index: number }) => ({
+        index: mention.index, usage: 'narration_now', reason: '本测试所有正文钟面均明确为当前场景，宿主独立核算先后。' })) });
+    }
+    writes++;
+    if (writes === 1) return new Response(JSON.stringify({ choices: [{ message: { content: first, tool_calls: [{
+      id: 'read-story-stage', type: 'function', function: { name: 'world', arguments: JSON.stringify({ action: 'topic',
+        parameters: { action: 'read', roomId: f.conversation.id, topicId: topic.id } }) } }] } }] }), { headers: { 'Content-Type': 'application/json' } });
+    return modelResponse(writes === 2 ? bad : final);
+  });
+  const sent = await f.service.handle({ type: 'message.send', conversationId: f.conversation.id, topicId: topic.id,
+    content: '只叙述09:00至09:30，不打开信。', clientId: 'full-story-reply-clock', delivery: 'chat' });
+  await vi.waitFor(() => expect(f.store.messages({ conversationId: f.conversation.id }).messages.some(message => message.content === first + '\n\n' + final)).toBe(true), { timeout: 5000 });
+  expect(writes).toBe(3); expect(reviewed).toEqual([first, first + '\n\n' + bad, first + '\n\n' + final]);
+  const loop = f.store.request({ type: 'loop.get', sourceMessageId: sent.message!.id, companionId: 'sister' }).loop!;
+  expect(loop.status).toBe('done'); expect(loop.turns).toHaveLength(2); expect(loop.turns[0]!.calls).toHaveLength(1);
+  expect(loop.turns[1]!.topicNarrativeApproval).toMatchObject({ contentScope: 'full_reply', minutes,
+    contentChecksum: createHash('sha256').update(first + '\n\n' + final).digest('hex') });
+  expect(f.store.request({ type: 'topic.read', conversationId: f.conversation.id, topicId: topic.id, readerId: 'sister' })
+    .topicState?.workingState?.state?.__topicNarrativeTime).toMatchObject({ sourceMessageId: loop.messageId, minutes });
+  expect(f.store.messages({ conversationId: f.conversation.id }).messages.some(message => message.content.includes(bad))).toBe(false);
+});
+
+it.each(['same_source', 'other_source'] as const)('refreshes the same story decision when %s clockless prose publishes during its clockless review', async sourceKind => {
+  const f = fixture(fakeDsh(() => ({ tasks: [], operations: [] }), vi.fn(async () => ({ ok: true as const }))), false, false);
+  await f.service.handle({ type: 'state' });
+  const topic = f.store.request({ type: 'topic.create', conversationId: f.conversation.id, readerId: 'sister',
+    kind: 'story', title: '无钟面动作发布竞态', participantIds: ['user'] }).topic!;
+  f.store.request({ type: 'topic.join', conversationId: f.conversation.id, topicId: topic.id, readerId: 'user' });
+  const otherSource = sourceKind === 'other_source' ? f.store.appendMessage({ conversationId: f.conversation.id, topicId: topic.id,
+    authorId: 'user', content: '先前的独立请求，只处理门锁。', replyDirective: 'none' }) : undefined;
+  const stale = '门锁尚未检查，阿澄仍在屋内。', fresh = '阿澄在走廊继续查看门牌。';
+  let writes = 0, reviews = 0, actualFormalId = '';
+  transport.fetch.mockImplementation(async (_url, init) => {
+    const data = JSON.parse(JSON.parse(String(init?.body)).messages[1].content);
+    if (data.purpose === 'topic_user_canon_extract') return modelResponseForJson({ additions: [], revisions: [] });
+    if (data.purpose === 'topic_continuity_review') {
+      reviews++;
+      if (reviews === 1) {
+        expect(data.proposed.text).toBe(stale);
+        actualFormalId = f.store.appendMessage({ conversationId: f.conversation.id, topicId: topic.id,
+          authorId: 'sister', replyToId: otherSource?.id ?? data.currentSourceId,
+          content: '门锁检查完毕，阿澄走出屋外并带上门。' }).id;
+      }
+      return modelResponseForJson({ supported: true, issues: [], clockClaims: [] });
+    }
+    writes++;
+    if (writes === 2) {
+      expect(data.topicPublicationReference.message).toMatchObject({ id: actualFormalId, content: '门锁检查完毕，阿澄走出屋外并带上门。' });
+      expect(data.topicContinuityFocus.latestPublishedText.id).toBe(actualFormalId);
+      expect(data.topicContinuityFocus.currentRequest.content).toBe('接着写门锁检查的场景，只写正文。');
+      expect(data.messages.some((message: { id: string }) => message.id === actualFormalId)).toBe(false);
+    }
+    return modelResponse(writes === 1 ? stale : fresh);
+  });
+  const sent = await f.service.handle({ type: 'message.send', conversationId: f.conversation.id, topicId: topic.id,
+    content: '接着写门锁检查的场景，只写正文。', clientId: 'clockless-publication-race', delivery: 'chat' });
+  await vi.waitFor(() => expect(f.store.messages({ conversationId: f.conversation.id }).messages.some(message => message.content === fresh)).toBe(true), { timeout: 5000 });
+  expect(writes).toBe(2); expect(reviews).toBe(2);
+  const messages = f.store.messages({ conversationId: f.conversation.id }).messages;
+  expect(messages.some(message => message.content === stale)).toBe(false);
+  expect(messages.find(message => message.id === actualFormalId)?.content).toContain('门锁检查完毕');
+  const loop = f.store.request({ type: 'loop.get', sourceMessageId: sent.message!.id, companionId: 'sister' }).loop!;
+  expect(loop).toMatchObject({ status: 'done', turns: [{ topicPublicationApproval: {
+    companionId: 'sister', conversationId: f.conversation.id, topicId: topic.id, contentScope: 'full_reply',
+    contentChecksum: createHash('sha256').update(fresh).digest('hex'), expectedFormalPublicationRevision: otherSource ? 3 : 2 } }] });
+  expect(loop.turns[0]!.topicNarrativeApproval).toBeUndefined();
+  const state = f.store.request({ type: 'topic.read', conversationId: f.conversation.id, topicId: topic.id, readerId: 'sister' });
+  expect(state.topic?.formalPublicationRevision).toBe(otherSource ? 4 : 3);
+  expect(state.topicState?.workingState?.state?.__topicNarrativeTime).toBeUndefined();
+});
 
 it('reads an exact owner schedule through the public service without publishing a change notification', async () => {
   const f = fixture(fakeDsh(() => ({ tasks: [], operations: [] }), vi.fn(async () => ({ ok: true as const }))), false, false);
@@ -1000,10 +1788,8 @@ describe('CompanionService DSH action lifecycle with real SQLite', () => {
     await vi.waitFor(() => expect(transport.fetch).toHaveBeenCalledTimes(2), { timeout: 12000 });
     const closing = closeService(f.service); pending.resolve(modelResponse('这条未完成的回复不应写入。')); await closing;
     const reopened = new CompanionsStore(f.databasePath, seeds.map(seed => ({ ...seed, active: true }))); stores.add(reopened); bindStorage(reopened);
-    const restarted = startService(f.root, dsh);
-    expect((await restarted.handle({ type: 'state' })).state?.recoveries).toEqual([expect.objectContaining({ completedIds: ['sister'], status: 'interrupted' })]);
     transport.fetch.mockImplementation(async () => modelResponse('妹妹继续之前的话题。'));
-    await restarted.handle({ type: 'reply.resume', conversationId: group.id });
+    const restarted = startService(f.root, dsh);
     await vi.waitFor(() => expect(reopened.messages({ conversationId: group.id }).messages.some(message => message.content === '妹妹继续之前的话题。')).toBe(true), { timeout: 5000 });
     const messages = reopened.messages({ conversationId: group.id }).messages;
     expect(messages.filter(message => message.content === '姐姐已经说完。')).toHaveLength(1);
@@ -1346,7 +2132,10 @@ describe('one durable bubble per source and native multi-step main loop', () => 
     await vi.advanceTimersByTimeAsync(2000);
     const reports = f.store.messages({ conversationId: f.conversation.id }).messages.filter(message => message.replyToId === source.id && message.content.includes('我到门口看过了'));
     expect(reports).toHaveLength(1); expect(reports[0]!.content).toContain(expectedLabel); expect(observations).toBe(1); expect(chatCalls).toBe(3);
-    expect(transport.request.mock.calls.filter(([request]) => request.type === 'activity.motion.ensure')).toHaveLength(2);
+    // The first confirmed move retains its real receipt. A different later call
+    // is handed to that actual executor rather than issuing another movement.
+    expect(transport.request.mock.calls.filter(([request]) => request.type === 'activity.motion.ensure')).toHaveLength(1);
+    expect(transport.request.mock.calls.some(([request]) => request.type === 'activity.handoff' && request.sourceMessageId === source.id)).toBe(true);
     expect(f.store.messages({ conversationId: f.conversation.id }).messages.filter(message => message.authorId === 'user' && message.content === source.content)).toHaveLength(1);
   });
   it('processes one retried player submission only once while generating and after completion', async () => {
@@ -1410,6 +2199,11 @@ describe('one durable bubble per source and native multi-step main loop', () => 
     const bases = transport.fetch.mock.calls.map(([, init]) => JSON.parse(String(init?.body)).messages[1].content);
     expect(bases.filter(value => JSON.stringify(sourceContext(value)) === JSON.stringify(sourceContext(weatherSnapshot.user)))).toHaveLength(2);
     expect(bases.filter(value => JSON.stringify(sourceContext(value)) === JSON.stringify(sourceContext(clockSnapshot.user)))).toHaveLength(2);
+    for (const [source, snapshot] of [[weather, weatherSnapshot], [clock, clockSnapshot]] as const) {
+      const actual = bases.filter(value => JSON.parse(value).taskRequest?.sourceMessageId === source.id);
+      expect(actual).toHaveLength(2);
+      expect(new Set(currentCapabilityObservations(actual, snapshot.user, 'sister', f.conversation.id)).size).toBe(2);
+    }
   });
 
   it('restores a saved source context after newer history has filled the latest page', async () => {
@@ -1423,13 +2217,15 @@ describe('one durable bubble per source and native multi-step main loop', () => 
     for (let i = 0; i < 150; i++) f.store.appendMessage({ conversationId: f.conversation.id, authorId: 'user', content: '后来的其他消息 ' + i });
     const closing = closeService(f.service); pending.resolve(modelResponse('已停止的回复')); await closing;
     const reopened = new CompanionsStore(f.databasePath, seeds.map(seed => ({ ...seed, active: true }))); stores.add(reopened); bindStorage(reopened);
-    const restarted = startService(f.root, dsh);
     transport.fetch.mockImplementation(async () => modelResponse('这个最早的问题已回复'));
-    await restarted.handle({ type: 'reply.resume', conversationId: f.conversation.id });
+    const restarted = startService(f.root, dsh);
     await vi.waitFor(() => expect(reopened.getMessage(reopened.request({ type: 'loop.get', sourceMessageId: source.id, companionId: 'sister' }).loop!.messageId!).content).toBe('这个最早的问题已回复'), { timeout: 5000 });
     const restored = JSON.parse(String(transport.fetch.mock.lastCall?.[1]?.body));
     expect(sourceContext(restored.messages[1].content)).toEqual(sourceContext(snapshot.user));
     expect(JSON.parse(restored.messages[1].content).taskRequest.sourceMessageId).toBe(source.id);
+    const [currentTime] = currentCapabilityObservations([restored.messages[1].content], snapshot.user, 'sister', f.conversation.id);
+    expect(Date.parse(currentTime!)).toBeGreaterThan(Date.parse(JSON.parse(snapshot.user).capabilityAvailability.observedAt));
+    await closeService(restarted);
   });
   it('waits for a genuine tool result, then continues the same loop and bubble', async () => {
     let finished = false;
@@ -1550,7 +2346,7 @@ describe('one durable bubble per source and native multi-step main loop', () => 
     expect(bubbles.find(item => item.replyToId === sources[0])?.content).not.toContain('旧决定');
     expect((await f.service.handle({ type: 'state' })).state?.queue?.some(item => item.sourceMessageId === queued.message!.id)).toBe(false);
   });
-  it('automatically starts durable unstarted messages after restart while interrupted work stays recoverable', async () => {
+  it('automatically resumes interrupted model-only work and durable unstarted messages after restart', async () => {
     transport.fetch.mockImplementation(() => new Promise<Response>(() => undefined));
     const dsh = fakeDsh(() => ({ tasks: [], operations: [] }), vi.fn<DshLauncher['requestTask']>().mockResolvedValue({ ok: true }));
     const f = fixture(dsh); const ids: string[] = [];
@@ -1558,11 +2354,35 @@ describe('one durable bubble per source and native multi-step main loop', () => 
     await vi.waitFor(() => expect(transport.fetch).toHaveBeenCalledTimes(5), { timeout: 5000 });
     await closeService(f.service);
     const reopened = new CompanionsStore(f.databasePath, seeds.map(seed => ({ ...seed, active: true }))); stores.add(reopened); bindStorage(reopened);
-    transport.fetch.mockReset(); transport.fetch.mockImplementation(async () => modelResponse('自动继续未开始的排队消息。'));
+    transport.fetch.mockReset(); transport.fetch.mockImplementation(async () => modelResponse('自动继续尚未正式完成的消息。'));
     const restarted = startService(f.root, dsh);
-    await vi.waitFor(() => expect(transport.fetch).toHaveBeenCalledTimes(2), { timeout: 5000 });
-    await vi.waitFor(() => expect(reopened.messages({ conversationId: f.conversation.id }).messages.filter(item => item.content === '自动继续未开始的排队消息。')).toHaveLength(2), { timeout: 5000 });
-    expect(reopened.request({ type: 'work.list' }).works?.filter(item => item.status === 'done').map(item => item.sourceMessageId)).toEqual(ids.slice(5));
+    await vi.waitFor(() => expect(transport.fetch).toHaveBeenCalledTimes(7), { timeout: 5000 });
+    await vi.waitFor(() => expect(reopened.messages({ conversationId: f.conversation.id }).messages.filter(item => item.content === '自动继续尚未正式完成的消息。')).toHaveLength(7), { timeout: 5000 });
+    expect(reopened.request({ type: 'work.list' }).works?.filter(item => item.status === 'done').map(item => item.sourceMessageId)).toEqual(ids);
+    await closeService(restarted);
+  });
+  it('does not automatically replay unconfirmed effects, cancelled work, terminal failures or withdrawn sources on restart', async () => {
+    const requestTask = vi.fn<DshLauncher['requestTask']>().mockResolvedValue({ ok: true });
+    const dsh = fakeDsh(() => ({ tasks: [], operations: [] }), requestTask), f = fixture(dsh);
+    for (const kind of ['unknown_effect', 'cancelled', 'failed', 'withdrawn'] as const) {
+      const source = f.store.appendMessage({ conversationId: f.conversation.id, authorId: 'user', content: kind, replyDirective: 'none' });
+      const at = new Date().toISOString(), work = { id: 'restart_' + kind, sourceMessageId: source.id, conversationId: f.conversation.id,
+        companionId: 'sister', proactive: false, status: 'queued' as const, createdAt: at, updatedAt: at };
+      f.store.request({ type: 'work.enqueue', work });
+      const loop = f.store.request({ type: 'loop.get', sourceMessageId: source.id, companionId: 'sister' }).loop!;
+      loop.progress = { ...loop.progress!, phase: kind === 'failed' ? 'failed' : 'context', detail: '实际测试停点' };
+      if (kind === 'unknown_effect') loop.turns.push({ text: '', rawText: '', calls: [{ id: 'pending_real_effect', name: 'dsh', arguments: '{"action":"run"}' }] });
+      f.store.request({ type: 'loop.save', checkpoint: loop });
+      f.store.request({ type: 'work.status', id: work.id, status: kind === 'cancelled' ? 'cancelled' : 'interrupted', resumeOnRestart: true });
+      if (kind === 'withdrawn') f.store.request({ type: 'memory.forget', companionId: 'sister', conversationId: f.conversation.id, sourceMessageIds: [source.id] });
+    }
+    await closeService(f.service);
+    const reopened = new CompanionsStore(f.databasePath, seeds.map(seed => ({ ...seed, active: true }))); stores.add(reopened); bindStorage(reopened);
+    transport.fetch.mockReset();
+    const restarted = startService(f.root, dsh);
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(transport.fetch).not.toHaveBeenCalled(); expect(requestTask).not.toHaveBeenCalled();
+    expect(reopened.request({ type: 'work.list' }).works?.map(work => work.status)).toEqual(['interrupted', 'cancelled', 'interrupted', 'interrupted']);
     await closeService(restarted);
   });
 });
@@ -1572,6 +2392,188 @@ describe('CompanionService native work and life management', () => {
     return (service as unknown as { executePartnerTool(name: string, serialized: string, scope: { companionId: string; conversationId: string }, ids: string[], identity: string, sequence: number, signal: undefined, current: boolean): Promise<CompanionStorageResponse> })
       .executePartnerTool(name, JSON.stringify(args), scope, ids, identity, sequence, undefined, current);
   }
+  it('rejects a tool-bearing false completion claim before dispatch and lets the same author correct it', async () => {
+    const f = fixture(fakeDsh(() => ({ tasks: [], operations: [] }), vi.fn(async () => ({ ok: true as const }))), false, false);
+    await f.service.handle({ type: 'state' });
+    let writes = 0, reviews = 0;
+    transport.socialReviewFetch.mockImplementation((input, init) => transport.fetch(input, init));
+    transport.fetch.mockImplementation(async (_url, init) => {
+      const wire = JSON.parse(String(init?.body)), data = JSON.parse(wire.messages[1].content);
+      if (data.purpose === 'companion_social_progress_review') {
+        reviews++;
+        if (reviews === 1) {
+          expect(data.proposedText).toBe('我已经给Kimi发出邀请了。');
+          expect(data.nativeActions).toEqual([{ callId: 'unexecuted_invitation', action: 'introduce', proposedRecipientIds: ['kimi'], delivery: 'proposed' }]);
+          return modelResponseForJson({ supported: false, correction: '本次邀请只是尚未执行的提案，没有实际发信回执。' });
+        }
+        expect(data.proposedText).toBe('我还没有发出邀请。'); expect(data.nativeActions).toBeUndefined();
+        return modelResponseForJson({ supported: true, correction: '' });
+      }
+      writes++;
+      if (writes === 1) return new Response(JSON.stringify({ choices: [{ message: { content: '我已经给Kimi发出邀请了。',
+        tool_calls: [{ id: 'unexecuted_invitation', type: 'function', function: { name: 'world',
+          arguments: JSON.stringify({ action: 'introduce', targetCompanionId: 'kimi', text: '不应派发的邀请。' }) } }] }, finish_reason: 'tool_calls' }] }), { headers: { 'Content-Type': 'application/json' } });
+      expect(wire.messages[0].content).toContain('没有实际发信回执');
+      return modelResponse('我还没有发出邀请。');
+    });
+    const source = (await f.service.handle({ type: 'message.send', conversationId: f.conversation.id,
+      content: '告诉我目前邀请进度。', clientId: 'truthful-tool-prose' })).message!;
+    await vi.waitFor(() => expect(f.store.request({ type: 'loop.get', sourceMessageId: source.id, companionId: 'sister' }).loop?.status).toBe('done'), { timeout: 5000 });
+    const loop = f.store.request({ type: 'loop.get', sourceMessageId: source.id, companionId: 'sister' }).loop!;
+    expect(writes).toBe(2); expect(reviews).toBe(2);
+    expect(loop.turns).toHaveLength(1); expect(loop.turns[0]!.calls).toEqual([]);
+    expect(f.store.getMessage(loop.messageId!)?.content).toBe('我还没有发出邀请。');
+    expect(transport.request.mock.calls.some(([command]) => command.type === 'world.tool' && command.arguments.action === 'introduce')).toBe(false);
+    expect(transport.request.mock.calls.some(([command]) => command.type === 'social.send')).toBe(false);
+  });
+  it('hands an existing same-source virtual goal to its real background executor while preserving exact first-effect retries', async () => {
+    const f = fixture(fakeDsh(() => ({ tasks: [], operations: [] }), vi.fn(async () => ({ ok: true as const }))), false, false);
+    await f.service.handle({ type: 'state' });
+    const target = f.store.createCompanion({ name: '实际伙伴', description: '', persona: '友好', model: '', avatar: 'flash', proactive: false });
+    f.store.setCompanionActive(target.id, true);
+    const known = f.store.request({ type: 'social.conversation.ensure', companionId: 'sister', memberIds: ['sister', target.id] }).socialConversation!;
+    f.store.request({ type: 'social.message.append', conversationId: known.id, authorId: 'sister', content: '我们认识。', virtualCreatedAt: fixedTime, clientId: 'handoff-known-peer' });
+    const scope = { companionId: 'sister', conversationId: f.conversation.id };
+    const source = f.store.appendMessage({ conversationId: scope.conversationId, authorId: 'user', content: '去找伙伴玩一局完整游戏，结束后告诉我结果。', replyDirective: 'none' });
+    transport.fetch.mockImplementation(async (_url, init) => {
+      const data = JSON.parse(JSON.parse(String(init?.body)).messages[1].content);
+      expect(data.purpose).toBe('world_message_authorization');
+      return modelResponseForJson({ allowed: true, confidence: .99, evidence: [data.source.content], reason: '原完整目标要求继续。', intent: 'message', requiresContinuation: true });
+    });
+    const args = { action: 'message', recipientIds: [target.id], text: '现在方便一起玩吗？' };
+    const firstPending = native(f.service, 'world', args, scope, [source.id], 'first_handoff_effect', source.sequence);
+    await vi.waitFor(() => expect(transport.request.mock.calls.some(([command]) => command.type === 'social.send')).toBe(true));
+    await vi.advanceTimersByTimeAsync(2000);
+    const first = await firstPending;
+    expect(first.ok).toBe(true); expect(first.socialMessage?.message.content).toBe(args.text);
+    expect(first.activityTask).toMatchObject({ sourceMessageId: source.id, goal: source.content, historyAvailable: true });
+    const repeat = await native(f.service, 'world', args, scope, [source.id], 'first_handoff_effect', source.sequence);
+    expect(repeat.socialMessage?.message.id).toBe(first.socialMessage?.message.id);
+    expect(repeat.activityTask?.id).toBe(first.activityTask?.id);
+    const changed = await native(f.service, 'world', { ...args, text: '完全不同的第二条邀请。' }, scope, [source.id], 'first_handoff_effect', source.sequence);
+    expect(changed.ok).toBe(false);
+    const second = f.store.createCompanion({ name: '另一实际伙伴', description: '', persona: '友好', model: '', avatar: 'flash', proactive: false });
+    f.store.setCompanionActive(second.id, true);
+    const secondRoom = f.store.request({ type: 'social.conversation.ensure', companionId: 'sister', memberIds: ['sister', second.id] }).socialConversation!;
+    f.store.request({ type: 'social.message.append', conversationId: secondRoom.id, authorId: 'sister', content: '我们也认识。', virtualCreatedAt: fixedTime, clientId: 'handoff-second-known-peer' });
+    const roomsBeforeChangedOperation = f.store.request({ type: 'social.conversations', companionId: 'sister' }).socialConversationPage!.items.map(room => room.id).sort();
+    for (const differentOperation of [{ action: 'introduce', targetCompanionId: target.id, text: args.text },
+      { action: 'create_group', recipientIds: [target.id, second.id], title: '旧调用不能新建群', text: args.text, topic: { title: '旧调用不能新建局', kind: 'game' } }]) {
+      const crossed = await native(f.service, 'world', differentOperation, scope, [source.id], 'first_handoff_effect', source.sequence);
+      expect(crossed.ok).toBe(false);
+    }
+    expect(f.store.request({ type: 'social.conversations', companionId: 'sister' }).socialConversationPage!.items.map(room => room.id).sort()).toEqual(roomsBeforeChangedOperation);
+    const previousSends = transport.request.mock.calls.filter(([command]) => command.type === 'social.send').length;
+    const handed = await native(f.service, 'world', { ...args, text: '不应由第二个规划者再次邀请。' }, scope, [source.id], 'different_effect', source.sequence);
+    expect(handed).toMatchObject({ ok: true, activityHandoff: { executor: 'background_activity', existingEffect: false,
+      newVirtualActionDispatched: false, task: { id: first.activityTask!.id, sourceMessageId: source.id } } });
+    expect(transport.request.mock.calls.filter(([command]) => command.type === 'social.send')).toHaveLength(previousSends);
+    for (const [tool, parameters] of [['topic', { action: 'create', kind: 'game', title: '跨工具旧标识不能新建' }],
+      ['world', { action: 'move', destinationId: 'sister_door' }]] as const) {
+      const crossed = await native(f.service, tool, parameters, scope, [source.id], 'first_handoff_effect', source.sequence);
+      expect(crossed).toMatchObject({ ok: true, activityHandoff: { existingEffect: false, newVirtualActionDispatched: false } });
+    }
+    expect(transport.request.mock.calls.some(([command]) => command.type === 'activity.motion.ensure')).toBe(false);
+    const topicWrite = await native(f.service, 'topic', { action: 'create', kind: 'game', title: '不应重复开局' }, scope, [source.id], 'second_planner_topic', source.sequence);
+    expect(topicWrite.activityHandoff?.task.id).toBe(first.activityTask!.id);
+    expect(f.store.request({ type: 'topic.list', conversationId: scope.conversationId, readerId: scope.companionId }).topics).toEqual([]);
+    const read = await native(f.service, 'topic', { action: 'list' }, scope, [source.id], 'read_not_mutation', source.sequence);
+    expect(read.ok).toBe(true); expect(read.activityHandoff).toBeUndefined();
+    const nextSource = f.store.appendMessage({ conversationId: scope.conversationId, authorId: 'user', content: '另外新建一个独立讨论话题。', replyDirective: 'none' });
+    const newTopic = await native(f.service, 'topic', { action: 'create', kind: 'discussion', title: '新请求的真实话题' }, scope, [nextSource.id], 'new_human_source', nextSource.sequence);
+    expect(newTopic.ok).toBe(true); expect(newTopic.topic?.title).toBe('新请求的真实话题'); expect(newTopic.activityHandoff).toBeUndefined();
+    expect(f.store.messages({ conversationId: known.id }).messages.filter(message => message.content === args.text)).toHaveLength(1);
+    await closeService(f.service);
+  });
+  it.each(['shared', 'title', 'tags'] as const)('rejects private game material in native topic %s before any shared write', async field => {
+    const f = fixture(fakeDsh(() => ({ tasks: [], operations: [] }), vi.fn(async () => ({ ok: true as const }))), false, false);
+    await f.service.handle({ type: 'state' });
+    const scope = { companionId: 'sister', conversationId: f.conversation.id };
+    const topic = f.store.request({ type: 'topic.create', conversationId: scope.conversationId, readerId: 'sister', kind: 'game', title: '独立对局', participantIds: ['user'] }).topic!;
+    f.store.request({ type: 'topic.join', conversationId: scope.conversationId, topicId: topic.id, readerId: 'user' });
+    const source = f.store.appendMessage({ conversationId: scope.conversationId, authorId: 'user', content: '主持这局游戏，身份只私下发送。', replyDirective: 'none' });
+    const revision = f.store.request({ type: 'topic.read', conversationId: scope.conversationId, topicId: topic.id, readerId: 'sister' }).topic!.revision;
+    const patch = field === 'shared' ? { shared: { summary: '身份表', state: { cards: { user: 'PRIVATE_CARD_CANARY' } } } }
+      : field === 'title' ? { title: 'PRIVATE_CARD_CANARY' } : { tags: ['PRIVATE_CARD_CANARY'] };
+    transport.fetch.mockImplementation(async (_url, init) => {
+      const data = JSON.parse(JSON.parse(String(init?.body)).messages[1].content);
+      expect(data.purpose).toBe('game_shared_state_privacy'); expect(data.exactProposedPatch).toMatchObject(patch);
+      expect(data.actualAudience.participantIds).toEqual(expect.arrayContaining(['user', 'sister']));
+      return modelResponseForJson({ allowed: false, confidence: .99, reason: '公开载荷含未公开身份，移到指定成员私态。' });
+    });
+    transport.request.mockClear();
+    const result = await native(f.service, 'topic', { action: 'update', topicId: topic.id, expectedRevision: revision, patch }, scope, [source.id], 'private-native-' + field, source.sequence);
+    expect(result.ok).toBe(false); expect(result.error).toContain('未提交');
+    expect(transport.request.mock.calls.some(([command]) => command.type === 'topic.update')).toBe(false);
+    const stored = f.store.request({ type: 'topic.read', conversationId: scope.conversationId, topicId: topic.id, readerId: 'sister' });
+    expect(stored.topic?.revision).toBe(revision); expect(JSON.stringify(stored)).not.toContain('PRIVATE_CARD_CANARY');
+  });
+  it('commits an approved native public game stage with a truthful state-only receipt and no message delivery', async () => {
+    const f = fixture(fakeDsh(() => ({ tasks: [], operations: [] }), vi.fn(async () => ({ ok: true as const }))), false, false);
+    await f.service.handle({ type: 'state' });
+    const scope = { companionId: 'sister', conversationId: f.conversation.id };
+    const topic = f.store.request({ type: 'topic.create', conversationId: scope.conversationId, readerId: 'sister', kind: 'game', title: '公开阶段', participantIds: ['user'] }).topic!;
+    const source = f.store.appendMessage({ conversationId: scope.conversationId, authorId: 'user', content: '主持这局游戏。', replyDirective: 'none' });
+    transport.fetch.mockResolvedValue(modelResponseForJson({ allowed: true, confidence: .99, reason: '只有公开阶段，无私密信息。' }));
+    transport.request.mockClear();
+    const result = await native(f.service, 'topic', { action: 'update', topicId: topic.id, expectedRevision: topic.revision,
+      patch: { shared: { stage: '第一夜', summary: '等待实际行动。' } } }, scope, [source.id], 'safe-native-stage', source.sequence);
+    expect(result.ok).toBe(true); expect(result.topicState?.shared?.stage).toBe('第一夜');
+    expect(result.topicDelivery).toMatchObject({ stateStored: true, messageSent: false, recipientAwakened: false });
+    expect(transport.request.mock.calls.some(([command]) => command.type === 'social.send' || command.type === 'social.message.append')).toBe(false);
+  });
+  it('keeps native private-only game working state private without a public-audience model review', async () => {
+    const f = fixture(fakeDsh(() => ({ tasks: [], operations: [] }), vi.fn(async () => ({ ok: true as const }))), false, false);
+    await f.service.handle({ type: 'state' });
+    const scope = { companionId: 'sister', conversationId: f.conversation.id };
+    const topic = f.store.request({ type: 'topic.create', conversationId: scope.conversationId, readerId: 'sister', kind: 'game', title: '本人私态', participantIds: ['user'] }).topic!;
+    transport.fetch.mockClear();
+    const result = await native(f.service, 'topic', { action: 'update', topicId: topic.id, expectedRevision: topic.revision,
+      patch: { workingState: { state: { cards: { user: 'PRIVATE_CARD_CANARY' } } } } }, scope, [], 'private-native-state', f.source.sequence, false);
+    expect(result.ok).toBe(true); expect(result.topicState?.workingState?.state).toEqual({ cards: { user: 'PRIVATE_CARD_CANARY' } });
+    expect(result.topicState?.shared).toBeUndefined(); expect(transport.fetch).not.toHaveBeenCalled();
+  });
+  it('withholds an unapproved public game draft from both stream events and formal history before the same-slot correction', async () => {
+    const f = fixture(fakeDsh(() => ({ tasks: [], operations: [] }), vi.fn(async () => ({ ok: true as const }))), true, false);
+    await f.service.handle({ type: 'state' });
+    const peers = ['甲', '乙'].map(name => f.store.createCompanion({ name, description: '', persona: '友好', model: '', avatar: 'flash', proactive: false }));
+    const group = f.store.createConversation('真实公开对局', ['sister', ...peers.map(peer => peer.id)]);
+    const topic = f.store.request({ type: 'topic.create', conversationId: group.id, readerId: 'sister', kind: 'game', title: '第一夜', participantIds: ['user', ...peers.map(peer => peer.id)] }).topic!;
+    f.store.request({ type: 'topic.join', conversationId: group.id, topicId: topic.id, readerId: 'user' });
+    let writes = 0, privacyChecks = 0;
+    transport.fetch.mockImplementation(async (_url, init) => {
+      const data = JSON.parse(JSON.parse(String(init?.body)).messages[1].content);
+      if (data.purpose === 'game_public_reply_privacy') {
+        privacyChecks++;
+        return modelResponseForJson({ allowed: !data.exactProposedText.includes('PRIVATE_CARD_CANARY'), confidence: .99,
+          reason: '群消息不能点名秘密身份，应使用实际私信能力。' });
+      }
+      if (data.purpose === 'topic_user_canon_extract') return modelResponseForJson({ additions: [], revisions: [] });
+      if (data.purpose === 'topic_continuity_review') return modelResponseForJson({ supported: true, issues: [], clockClaims: [] });
+      writes++;
+      return modelResponse(writes === 1 ? '狼人 PRIVATE_CARD_CANARY，请出刀。' : '天黑了，请按规则私下行动。');
+    });
+    await f.service.handle({ type: 'message.send', conversationId: group.id, topicId: topic.id, content: '大肥鱼，继续当前对局。', clientId: 'game-public-review-main', delivery: 'chat' });
+    await vi.waitFor(() => expect(f.store.messages({ conversationId: group.id }).messages.some(message => message.content === '天黑了，请按规则私下行动。')).toBe(true), { timeout: 5000 });
+    expect(writes).toBe(2); expect(privacyChecks).toBe(2);
+    expect(JSON.stringify(replyEvents())).not.toContain('PRIVATE_CARD_CANARY');
+    expect(JSON.stringify(f.store.messages({ conversationId: group.id }).messages)).not.toContain('PRIVATE_CARD_CANARY');
+  });
+  it('rejects a native game shared update if its real human source is withdrawn during the privacy review', async () => {
+    const f = fixture(fakeDsh(() => ({ tasks: [], operations: [] }), vi.fn(async () => ({ ok: true as const }))), false, false);
+    await f.service.handle({ type: 'state' });
+    const scope = { companionId: 'sister', conversationId: f.conversation.id };
+    const topic = f.store.request({ type: 'topic.create', conversationId: scope.conversationId, readerId: 'sister', kind: 'game', title: '撤回核验', participantIds: ['user'] }).topic!;
+    const source = f.store.appendMessage({ conversationId: scope.conversationId, authorId: 'user', content: '主持这局游戏。', replyDirective: 'none' });
+    transport.fetch.mockImplementation(async () => {
+      f.store.request({ type: 'memory.forget', ...scope, sourceMessageIds: [source.id] });
+      return modelResponseForJson({ allowed: true, confidence: .99, reason: '内容原本可公开。' });
+    });
+    const result = await native(f.service, 'topic', { action: 'update', topicId: topic.id, expectedRevision: topic.revision,
+      patch: { shared: { stage: '不能落地' } } }, scope, [source.id], 'withdrawn-native-stage', source.sequence);
+    expect(result.ok).toBe(false); expect(result.error).toContain('核验期间');
+    expect(f.store.request({ type: 'topic.read', conversationId: scope.conversationId, topicId: topic.id, readerId: 'sister' }).topic?.revision).toBe(topic.revision);
+  });
   function authorize() {
     transport.fetch.mockImplementation(async (_url, init) => {
       const data = JSON.parse(JSON.parse(String(init?.body)).messages[1].content);
@@ -1707,7 +2709,7 @@ describe('CompanionService executor feedback evidence boundary', () => {
     const f = fixture(fakeDsh(() => ({ tasks: [], operations: [] }), vi.fn(async () => ({ ok: true as const }))));
     await f.service.handle({ type: 'state' });
     const source = f.store.appendMessage({ conversationId: f.conversation.id, authorId: 'user', content: '只读核对SOURCE_FEEDBACK_SECRET。', replyDirective: 'none' });
-    const action = f.store.createAction({ companionId: 'sister', conversationId: f.conversation.id, sourceMessageId: source.id, title: 'FALLBACK_TITLE_SECRET', status: 'succeeded' });
+    const action = verifiedAction(f.store, { companionId: 'sister', conversationId: f.conversation.id, sourceMessageId: source.id, title: 'FALLBACK_TITLE_SECRET', status: 'succeeded' });
     const generated = deferred<Response>();
     transport.fetch.mockImplementation(async () => { const response = await generated.promise; if (fails) throw new Error('Provider failed after withdrawal'); return response; });
     const pending = feedback(f.service, action);
@@ -1733,7 +2735,7 @@ describe('CompanionService executor feedback evidence boundary', () => {
       sources: f.store.request({ type: 'memory.sources.filter', ...scope, ids: [history.id] }).memorySources ?? [],
       reasons: [], pending: false, degraded: false,
     }));
-    const action = f.store.createAction({ ...scope, sourceMessageId: source.id, title: '核对实际结果', status: 'succeeded' });
+    const action = verifiedAction(f.store, { ...scope, sourceMessageId: source.id, title: '核对实际结果', status: 'succeeded' });
     const generated = deferred<Response>(); let calls = 0;
     transport.fetch.mockImplementation(async (_url, init) => {
       const data = JSON.parse(JSON.parse(String(init?.body)).messages[1].content);
@@ -1748,7 +2750,7 @@ describe('CompanionService executor feedback evidence boundary', () => {
   });
   it('bounds repeated evidence changes to the initial generation plus two retries and never publishes a stale result', async () => {
     const f = fixture(fakeDsh(() => ({ tasks: [], operations: [] }), vi.fn(async () => ({ ok: true as const })))); await f.service.handle({ type: 'state' });
-    const scope = { companionId: 'sister', conversationId: f.conversation.id }, action = f.store.createAction({ ...scope, sourceMessageId: f.source.id, title: '已完成的检查', status: 'succeeded' });
+    const scope = { companionId: 'sister', conversationId: f.conversation.id }, action = verifiedAction(f.store, { ...scope, sourceMessageId: f.source.id, title: '已完成的检查', status: 'succeeded' });
     const unrelated = Array.from({ length: 3 }, (_, index) => f.store.appendMessage({ conversationId: scope.conversationId, authorId: 'user', content: '稍后独立的话题' + index, replyDirective: 'none' }));
     let calls = 0;
     transport.fetch.mockImplementation(async () => { const source = unrelated[calls++]!; await f.service.handle({ type: 'memory.forget', ...scope, sourceMessageIds: [source.id], persistent: true }); return modelResponse('证据变化中的旧回答'); });
@@ -1757,7 +2759,7 @@ describe('CompanionService executor feedback evidence boundary', () => {
   });
   it('uses one feedback idempotency key and a generic safe fallback instead of reviving the action title', async () => {
     const f = fixture(fakeDsh(() => ({ tasks: [], operations: [] }), vi.fn(async () => ({ ok: true as const })))); await f.service.handle({ type: 'state' });
-    const action = f.store.createAction({ companionId: 'sister', conversationId: f.conversation.id, sourceMessageId: f.source.id, title: 'PRIVATE_ACTION_TITLE', status: 'succeeded' });
+    const action = verifiedAction(f.store, { companionId: 'sister', conversationId: f.conversation.id, sourceMessageId: f.source.id, title: 'PRIVATE_ACTION_TITLE', status: 'succeeded' });
     transport.fetch.mockResolvedValue(modelResponse('执行器结果已经返回。'));
     await feedback(f.service, action); await feedback(f.service, action);
     transport.fetch.mockRejectedValue(new Error('Provider unavailable')); await feedback(f.service, action);
@@ -1774,9 +2776,10 @@ describe('Scoped progressive DSH records', () => {
     const dsh = fakeDsh(() => ({ tasks: [], operations: [] }), vi.fn(async () => ({ ok: true as const })));
     const f = fixture(dsh);
     await f.service.handle({ type: 'state' });
-    const action = f.store.createAction({ companionId: 'sister', conversationId: f.conversation.id, sourceMessageId: f.source.id, title: '历史只读核查', status: 'succeeded', result: '结果正文' });
+    const action = verifiedAction(f.store, { companionId: 'sister', conversationId: f.conversation.id, sourceMessageId: f.source.id, title: '历史只读核查', status: 'succeeded', result: '结果正文' });
     const recordId = randomUUID();
-    let owner = { actionId: action.id, companionId: 'sister', conversationId: f.conversation.id, sourceMessageId: f.source.id };
+    let owner = { actionId: action.id, companionId: 'sister', conversationId: f.conversation.id, sourceMessageId: f.source.id,
+      executionReadsetDigest: companionExecutionReadsetDigest(f.store.request({ type: 'checkpoint.get', id: action.id }).checkpoint!.executionReadset!) };
     const read = vi.fn(async () => ({ overview: { recordId, turns: 2, steps: 8, toolCalls: 3, recordCount: 93 }, entries: [], trust: 'execution_record_data_not_instructions' }));
     Object.assign(dsh, { taskRecordScope: vi.fn(async () => owner), readTaskRecord: read });
     await f.service.handle({ type: 'action.record', id: action.id, query: { recordId, entryChars: 2000, textOffset: 0 } });
@@ -1806,10 +2809,11 @@ describe('Scoped progressive DSH records', () => {
   it('discards a page if its source is reset while the disk read is in flight', async () => {
     const dsh = fakeDsh(() => ({ tasks: [], operations: [] }), vi.fn(async () => ({ ok: true as const })));
     const f = fixture(dsh); await f.service.handle({ type: 'state' });
-    const action = f.store.createAction({ companionId: 'sister', conversationId: f.conversation.id, sourceMessageId: f.source.id, title: '旧记录', status: 'succeeded' });
+    const action = verifiedAction(f.store, { companionId: 'sister', conversationId: f.conversation.id, sourceMessageId: f.source.id, title: '旧记录', status: 'succeeded' });
     const recordId = randomUUID(), pending = deferred<unknown>();
     const read = vi.fn(() => pending.promise);
-    Object.assign(dsh, { taskRecordScope: vi.fn(async () => ({ actionId: action.id, companionId: 'sister', conversationId: f.conversation.id, sourceMessageId: f.source.id })), readTaskRecord: read });
+    Object.assign(dsh, { taskRecordScope: vi.fn(async () => ({ actionId: action.id, companionId: 'sister', conversationId: f.conversation.id, sourceMessageId: f.source.id,
+      executionReadsetDigest: companionExecutionReadsetDigest(f.store.request({ type: 'checkpoint.get', id: action.id }).checkpoint!.executionReadset!) })), readTaskRecord: read });
     const request = f.service.handle({ type: 'action.record', id: action.id, query: { recordId, entryChars: 2000, textOffset: 0 } });
     void request.catch(() => undefined);
     await vi.waitFor(() => expect(read).toHaveBeenCalledOnce());

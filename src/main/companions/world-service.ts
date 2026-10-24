@@ -1,23 +1,32 @@
 import { createHash } from 'node:crypto';
-import type { Companion, CompanionConversation, CompanionMessage } from '../../shared/companions';
+import type { Companion, CompanionConversation, CompanionMessage, CompanionState } from '../../shared/companions';
 import type { CompanionStorageCommand, CompanionStorageResponse } from '../../shared/companion-storage';
 import type { CompanionWorldJob, CompanionWorldScope, CompanionWorldSnapshot } from '../../shared/companion-world';
 import type { CompanionModelConfig } from './model';
 import type { CompanionMemoryRecall, CompanionMemoryService } from './memory-service';
 import { CompanionModelError } from './model';
 import { generateCompanionWorldDecision } from './world-model';
-import { generateCompanionMemoryDream } from './memory-model';
+import { companionAutomaticMaintenanceSeeds, generateCompanionMemoryDream, generateCompanionMemoryMaintenance } from './memory-model';
+import { generateCompanionDreamNarrative } from './dream-wave-model';
+import { validateCompanionMemoryProhibitions } from './memory-model';
+import type { VcpMemoryDreamWaveResult, VcpMemoryDreamClock } from '../vcp-memory/dream-contracts';
+import { CompanionAgentNoProgressError } from './agent-kernel';
 import type { CompanionSocialJob, CompanionSocialNotification } from '../../shared/companion-social';
 import { authorizeCompanionSocialInitiative, generateCompanionSocialReply } from './social-model';
 import { generateCompanionSocialNotification } from './social-notification-model';
 import type { CompanionProfileInput } from '../../shared/companion-public-profile';
-import { COMPANION_SLEEP_DREAM_CONCURRENCY, COMPANION_SLEEP_RECALL_LIMIT } from '../../shared/companion-sleep';
+import { COMPANION_SLEEP_DREAM_CONCURRENCY } from '../../shared/companion-sleep';
 import { companionRecallCapabilities } from './structured-agent';
 import { companionTopicCapabilities } from './topic-capabilities';
+import { reviewCompanionGameSharedUpdate } from './game-topic-privacy';
+import { resolveCompanionGameInitiativeContext, loadCompanionGameCommunication } from './game-contact-context';
 import { companionSocialCapabilities } from './social-capabilities';
 import { ensureTopicContinuity } from './topic-compaction';
 import { COMPANION_DIALOGUE_WINDOW } from './context-window';
 import type { CompanionReplyInput } from './context';
+import type { CompanionExecutionReadset } from '../../shared/companion-execution-evidence';
+import { verifyCompanionExecutionReadset } from './execution-evidence';
+import { companionRoleResourceBounds } from './role-resource-context';
 
 interface WorldServiceOptions {
   request(command: CompanionStorageCommand): Promise<CompanionStorageResponse>;
@@ -34,6 +43,7 @@ interface WorldServiceOptions {
     sourceAuthorId?: string; audience?: 'player' | 'peers'; directory?: boolean }): Promise<CompanionProfileInput>;
   memoryContextValid?(scope: CompanionWorldScope, context?: { revision: string; profileKey: string }): Promise<boolean>;
   recall?(input: Parameters<CompanionMemoryService['recall']>[0]): Promise<CompanionMemoryRecall>;
+  dreamWave?(input: CompanionWorldScope & { now: string; clockDomain: VcpMemoryDreamClock }): Promise<VcpMemoryDreamWaveResult>;
 }
 
 /** Physics and reservations keep ticking while semantic decisions run separately. */
@@ -167,6 +177,16 @@ export class CompanionWorldService {
           messages: joined ? visible.filter(message => message.topicId === source.topicId) : [source], joined };
       };
       const port = await loadPort(), sources = port.messages;
+      const gameCommunication = await loadCompanionGameCommunication(this.options.request, { job, source });
+      const resources = async (current: CompanionState, currentPort: typeof port, game: typeof gameCommunication) => {
+        const topic = game?.topic ?? currentPort.topic;
+        const room = topic?.kind === 'game' ? current.conversations.find(room => room.id === topic.conversationId)
+          ?? (await this.options.request({ type: 'state', includeHidden: true, conversationId: topic.conversationId })).state?.conversations.find(room => room.id === topic.conversationId) : undefined;
+        return companionRoleResourceBounds({ ownerId: companion.id, activeCharacterIds: current.companions.filter(role => role.active).map(role => role.id),
+          ...(room && topic ? { game: { conversation: room, topic } } : {}) });
+      };
+      const resourceBounds = await resources(state!, port, gameCommunication);
+      let executionReadset: CompanionExecutionReadset | undefined;
       const world = await this.observe(scope);
       if (!world) throw new Error('伙伴当前世界不可访问。');
       const routine = (await this.options.request({ type: 'routine.get', ...scope })).routine;
@@ -189,7 +209,7 @@ export class CompanionWorldService {
       const runtime = stateResponse.runtimeState;
       if (!latestWorld) throw new Error('伙伴最新世界状态不可访问。');
       const result = await generateCompanionSocialReply({ companion, conversation, source, messages: sources, job, world: latestWorld, routine, ...profiles,
-        topic: port.topic, topicState: port.topicState,
+        topic: port.topic, topicState: port.topicState, gameCommunication, resourceBounds,
         memoryRecall: { ...recalled, reasons: recalled?.reasons ?? [], pending: recalled?.pending ?? false, degraded: recalled?.degraded ?? false },
         characterDevelopment: developmentResponse.characterDevelopment,
         memories: recalled?.memories ?? [], memoryContext: recalled?.context?.text,
@@ -197,12 +217,25 @@ export class CompanionWorldService {
         members: state!.companions.filter(member => conversation.memberIds.includes(member.id)).map(member => ({ id: member.id, name: member.name, description: member.description })) },
       config, signal, { fetchFn: this.options.fetchFn,
         capabilities: companionSocialCapabilities(this.options.request, { ...scope, sourceMessageId: source.id },
-          companionTopicCapabilities(this.options.request, scope, companionRecallCapabilities(this.options.request, scope)),
+          companionTopicCapabilities(this.options.request, scope, companionRecallCapabilities(this.options.request, scope), {
+            reviewUpdate: (command, actionSignal) => reviewCompanionGameSharedUpdate({ command, request: this.options.request, source },
+              config, actionSignal, { fetchFn: this.options.fetchFn, timeoutMs: 30_000 }),
+          }),
           async (proposed, actionSignal) => {
             const recipients = state!.companions.filter(role => proposed.recipientIds.includes(role.id));
             if (recipients.length !== proposed.recipientIds.length) return false;
-            return authorizeCompanionSocialInitiative({ companion, recipients, text: proposed.text, privateSources: sources }, config, actionSignal, { fetchFn: this.options.fetchFn });
-          }),
+            const game = proposed.action === 'message' ? await resolveCompanionGameInitiativeContext(this.options.request, {
+              scope, source, recipientIds: proposed.recipientIds, job,
+            }) : undefined;
+            return authorizeCompanionSocialInitiative({ companion, recipients, text: proposed.text, privateSources: sources, game }, config, actionSignal, { fetchFn: this.options.fetchFn });
+          }, { ...(gameCommunication ? { gamePort: gameCommunication.gamePort }
+            : port.topic?.kind === 'game' ? { gamePort: { conversationId: port.topic.conversationId, topicId: port.topic.id } } : {}),
+          executionReadset: () => executionReadset }),
+        observeReadset: async readset => {
+          if (!await verifyCompanionExecutionReadset(readset, scope, { request: this.options.request,
+            contextValid: this.options.memoryContextValid })) throw new Error('伙伴本轮实际读取的来源、游戏私态或记忆已撤回，不能发布或继续行动。');
+          executionReadset = readset;
+        },
         prepareFrame: async (frame: CompanionReplyInput) => {
           const [currentPort, currentState, validSource] = await Promise.all([loadPort(),
             this.options.request({ type: 'state', includeHidden: true, conversationId: conversation.id }),
@@ -217,7 +250,9 @@ export class CompanionWorldService {
               : await this.options.request({ type: 'memory.search', ...scope, query: currentSource.content.slice(0, 16000), limit: 8 })
                 .then(response => ({ memories: response.memoryPage?.items.map(hit => hit.memory) ?? [], context: response.memoryContext }));
           }
-          const next = { ...frame, companion: owner, ...currentPort,
+          const currentGame = await loadCompanionGameCommunication(this.options.request, { job, source: currentSource });
+          const next = { ...frame, companion: owner, ...currentPort, gameCommunication: currentGame,
+            resourceBounds: await resources(currentState.state!, currentPort, currentGame),
             memories: recalled?.context ? [] : recalled?.memories ?? [], memoryRecall: { ...recalled, reasons: recalled?.reasons ?? [],
               pending: recalled?.pending ?? false, degraded: recalled?.degraded ?? false },
             invocation: frame.invocation ? { ...frame.invocation, messagePort: currentPort.joined
@@ -232,7 +267,10 @@ export class CompanionWorldService {
       if (this.options.memoryContextValid && !await this.options.memoryContextValid(scope, recalled?.context)) {
         throw new Error('伙伴回忆来源已经变化，本轮发言将重新读取。');
       }
+      if (!executionReadset || !await verifyCompanionExecutionReadset(executionReadset, scope,
+        { request: this.options.request, contextValid: this.options.memoryContextValid })) throw new Error('伙伴交付使用的来源或游戏检查点已失效。');
       await this.options.request({ type: 'social.job.complete', id: job.id, leaseToken, text: result.text,
+        executionReadset,
         memoryRecall: { reasons: recalled?.reasons ?? [], pending: recalled?.pending === true, degraded: recalled?.degraded === true,
           ...(recalled?.context ? { context: recalled.context } : {}) },
         ...(recalled?.context ? { expectedMemoryRevision: recalled.context.revision } : {}),
@@ -242,7 +280,7 @@ export class CompanionWorldService {
     } catch (error) {
       if (!signal.aborted && !this.closed) this.options.report(error);
       await this.options.request({ type: 'social.job.fail', id: job.id, leaseToken,
-        error: error instanceof CompanionModelError ? error.message : '伙伴通信稍后继续。' });
+        error: error instanceof Error ? error.message : '伙伴通信稍后继续。', ...(terminalInferenceFailure(error) ? { terminal: true } : {}) });
     } finally { await this.options.endPriority?.(interruptionId); }
   }
   private async processNotification(notification: CompanionSocialNotification, signal: AbortSignal): Promise<void> {
@@ -259,14 +297,25 @@ export class CompanionWorldService {
       const activityTask = (await this.options.request({ type: 'activity.list', ...scope, limit: 20 })).activityTasks?.find(task => task.sourceMessageId === source.id);
       const profiles = await this.options.profiles?.({ companionId: companion.id, conversation, audience: 'player', sourceAuthorId: 'user' });
       const participants = new Set([companion.id, notification.origin.initiatorId, notification.evidence.authorId, ...(notification.events?.map(event => event.evidence.authorId) ?? [])]);
-      const text = await generateCompanionSocialNotification({ companion, conversation, source, notification, world, activityTask, ...profiles,
+      const eventMessages: CompanionMessage[] = [];
+      for (const event of notification.events ?? [notification]) if (event.peerConversationId && event.evidence.messageId) {
+        const message = (await this.options.request({ type: 'memory.sources.filter', companionId: companion.id,
+          conversationId: event.peerConversationId, ids: [event.evidence.messageId] })).memorySources?.find(message => message.id === event.evidence.messageId);
+        if (!message || message.content !== event.evidence.text || message.authorId !== event.evidence.authorId) throw cancelled();
+        eventMessages.push(message);
+      }
+      let executionReadset: CompanionExecutionReadset | undefined;
+      const text = await generateCompanionSocialNotification({ companion, conversation, source, notification, world, activityTask, eventMessages, ...profiles,
         members: state!.companions.filter(member => participants.has(member.id)).map(member => ({ id: member.id, name: member.name })) }, await this.options.configFor(companion), signal,
-      { fetchFn: this.options.fetchFn });
+      { fetchFn: this.options.fetchFn, observeReadset: readset => { executionReadset = readset; } });
       if (signal.aborted || this.closed) throw cancelled();
-      await this.options.request({ type: 'social.notification.complete', id: notification.id, leaseToken, text });
+      if (!executionReadset || !await verifyCompanionExecutionReadset(executionReadset, scope,
+        { request: this.options.request, contextValid: this.options.memoryContextValid })) throw new Error('后续回报使用的实际来源已经变化，未发送。');
+      await this.options.request({ type: 'social.notification.complete', id: notification.id, leaseToken, text, executionReadset });
     } catch (error) {
       await this.options.request({ type: 'social.notification.fail', id: notification.id, leaseToken,
-        error: error instanceof CompanionModelError ? error.message : '这次后续回报尚未完成，稍后继续。' });
+        error: error instanceof CompanionModelError ? error.message : '这次后续回报尚未完成，稍后继续。',
+        ...(terminalInferenceFailure(error) || error instanceof CompanionModelError && error.code === 'INVALID_RESPONSE' ? { terminal: true } : {}) });
     }
   }
   private async process(job: CompanionWorldJob, signal: AbortSignal): Promise<void> {
@@ -316,7 +365,8 @@ export class CompanionWorldService {
       } else await this.dream(job, leaseToken, companion, conversation, config, signal);
     } catch (error) {
       await this.options.request({ type: 'world.job.fail', id: jobId, leaseToken,
-        error: error instanceof CompanionModelError ? error.message : '伙伴世界认知暂未完成，稍后会继续。' });
+        error: error instanceof CompanionModelError || error instanceof CompanionAgentNoProgressError ? error.message : '伙伴世界认知暂未完成，稍后会继续。',
+        ...(terminalInferenceFailure(error) ? { terminal: true } : {}) });
     }
   }
   private async dream(job: CompanionWorldJob, leaseToken: string, companion: Companion, conversation: CompanionConversation,
@@ -324,21 +374,22 @@ export class CompanionWorldService {
     const scope = { companionId: companion.id, conversationId: conversation.id };
     const reads = await Promise.all(job.sourceMemoryIds.map(id => this.options.request({ type: 'memory.read', ...scope, id, sourceLimit: 100 })));
     const atoms = reads.flatMap(read => read.memoryRead?.memory ? [read.memoryRead.memory] : []).filter(memory => memory.status === 'indexed');
-    if (atoms.length !== job.sourceMemoryIds.length) throw new Error('本次睡眠整理的实际记忆已经变化。');
-    const domain = atoms[0]?.sourceConversationId;
-    if (domain && job.dreamAllowed) {
-      // Upstream DreamWave starts with real seed diaries and asks native River
-      // for associations. This host boundary uses that same authorized VCP
-      // search, then actually reads every result; it never widens diary scope.
-      const recalled = await this.options.request({ type: 'memory.search', companionId: companion.id, conversationId: domain,
-        query: atoms.slice(0, 3).map(note => note.content).join('\n\n').slice(0, 16000), limit: 8 });
-      const ids = recalled.memoryPage?.items.map(hit => hit.memory).filter(note => note.companionId === companion.id
-        && note.sourceConversationId === domain && note.status === 'indexed' && !note.metadata?.dream
-        && !atoms.some(seed => seed.id === note.id)).slice(0, COMPANION_SLEEP_RECALL_LIMIT - atoms.length).map(note => note.id) ?? [];
-      for (const read of await Promise.all(ids.map(id => this.options.request({ type: 'memory.read', ...scope, id, sourceLimit: 100 })))) {
+    if (atoms.length !== job.sourceMemoryIds.length || reads.some(read => read.memoryRead?.hasMore)) throw new Error('本次睡眠整理的实际记忆已经变化或尚未完整读取。');
+    const seedAtoms = [...atoms], seedReads = [...reads];
+    let wave: VcpMemoryDreamWaveResult | undefined;
+    if (job.dreamAllowed) {
+      if (!this.options.dreamWave) throw new Error('完整 DreamWave 尚未连接，本次梦境保持未完成。');
+      const world = await this.observe(scope);
+      if (!world) throw new Error('睡眠的实际世界时钟不可访问。');
+      wave = await this.options.dreamWave({ ...scope, now: world.clock.virtualNow, clockDomain: 'world' });
+      const stages = wave.stages;
+      const items = [...new Map([...stages.recent.seeds, ...stages.recent.resonanceL1, ...stages.recent.cascadeL2,
+        ...stages.mid.seeds, ...stages.mid.cascadeL1, ...stages.deep.recalls].map(item => [item.id, item])).values()];
+      for (const item of items) {
+        const read = await this.options.request({ type: 'memory.library.read', companionId: companion.id, id: item.id, sourceLimit: 100 });
         const note = read.memoryRead?.memory;
-        if (!note || note.status !== 'indexed' || note.sourceConversationId !== domain || note.companionId !== companion.id) throw new Error('梦境联想日记已经变化。');
-        reads.push(read); atoms.push(note);
+        if (!note || note.companionId !== companion.id || note.status !== 'indexed' || note.version !== item.version || read.memoryRead?.hasMore) throw new Error('梦境浪潮的真实来源已变化或尚未完整读取。');
+        if (!atoms.some(seed => seed.id === note.id)) { reads.push(read); atoms.push(note); }
       }
     }
     if (signal.aborted || this.closed) throw cancelled();
@@ -352,16 +403,40 @@ export class CompanionWorldService {
     const prohibitions = await this.options.request({ type: 'memory.prohibitions', ...scope, worldJobId: job.id });
     const runtimeState = (await this.options.request({ type: 'state.get', ...scope })).runtimeState;
     const characterDevelopment = (await this.options.request({ type: 'character.development', ...scope, limit: 12 })).characterDevelopment;
-    const result = await generateCompanionMemoryDream({ companion, conversation, messages: [...sources.values()], relevantMemories: atoms,
+    const realSeedSources = new Map(seedReads.flatMap(read => read.memoryRead?.sources ?? []).map(source => [source.id, source]));
+    // Real reflections see only their actual seed evidence. The invented dream
+    // is generated separately and never becomes the reflection's input.
+    const result = await generateCompanionMemoryDream({ companion, conversation, messages: [...realSeedSources.values()], relevantMemories: seedAtoms,
       runtimeState, characterDevelopment,
-      dreamAllowed: job.dreamAllowed === true,
+      dreamAllowed: job.dreamAllowed, reflectionOnly: true, maintenanceSeparated: true,
       prohibitions: prohibitions.memoryProhibitions,
-      intent: '本批日记只属于同一来源可见域。睡眠中整理这些真实经历、学习资料与自己的主观认识，保留原始细节、逐字证据和可撤回来源，不混入其它会话或世界范围。' }, config, signal, { fetchFn: this.options.fetchFn });
+      intent: '睡眠中只对本批真实种子经历、实际学习资料与有据主观认识作可追溯反思。不同入口的来源各保留实际域；无新反思时notes=[]。本调用不生成梦，任何虚构联想都不是本批知识或经历证据。' }, config, signal, { fetchFn: this.options.fetchFn });
+    let dream: { text: string; relatedMemoryIds: string[]; sourceMessageIds: string[]; evidence: Array<{ sourceMessageId: string; quote: string }> } | undefined;
+    if (wave) {
+      const imagined = await generateCompanionDreamNarrative({ companion, wave }, config, signal, { fetchFn: this.options.fetchFn });
+      if (imagined && await validateCompanionMemoryProhibitions({ content: imagined.text, tags: ['梦境'], prohibitions: prohibitions.memoryProhibitions ?? [] }, config, signal, { fetchFn: this.options.fetchFn })) {
+        const evidence = imagined.relatedMemoryIds.map(id => {
+          const note = atoms.find(note => note.id === id)!;
+          const source = note.sources.map(source => sources.get(source.messageId)).find(Boolean);
+          if (!source) throw new Error('梦境依赖缺少可核验的本人真实来源。');
+          return { sourceMessageId: source.id, quote: source.content.slice(0, 300) };
+        });
+        dream = { ...imagined, sourceMessageIds: [...new Set(evidence.map(item => item.sourceMessageId))], evidence };
+      }
+    }
+    const maintenanceSeeds = companionAutomaticMaintenanceSeeds(seedAtoms);
+    const maintenance = maintenanceSeeds.length ? await generateCompanionMemoryMaintenance({ companion, conversation,
+      messages: [...realSeedSources.values()], relevantMemories: maintenanceSeeds, prohibitions: prohibitions.memoryProhibitions },
+      config, signal, { fetchFn: this.options.fetchFn }) : undefined;
     if (signal.aborted || this.closed) throw cancelled();
-    await this.options.request({ type: 'world.job.complete', id: job.id, leaseToken, ...(result.dream ? { dream: result.dream } : {}),
+    await this.options.request({ type: 'world.job.complete', id: job.id, leaseToken, ...(dream ? { dream } : {}),
       expectedProhibitionRevision: prohibitions.memoryProhibitionRevision,
       ...(result.stateProposal ? { stateProposal: result.stateProposal, expectedStateRevision: runtimeState?.revision } : {}),
-      sourceMemoryIds: [...new Set([...(result.dream?.relatedMemoryIds ?? []), ...result.notes.flatMap(note => note.relatedMemoryIds ?? [])])],
+      sourceMemoryIds: [...new Set([...(dream?.relatedMemoryIds ?? []), ...result.notes.flatMap(note => note.relatedMemoryIds ?? []),
+        ...maintenanceSeeds.map(note => note.id)])],
+      ...(maintenance ? { maintenance: { decision: maintenance.decision, reason: maintenance.reason,
+        reviewedMemoryVersions: maintenanceSeeds.map(note => ({ id: note.id, version: note.version })) },
+        ...(maintenance.consolidations.length ? { consolidations: maintenance.consolidations } : {}) } : {}),
       memoryCandidates: result.notes.map(candidate => ({ ...candidate,
         sourceChecksums: Object.fromEntries(candidate.sourceMessageIds.map(id => [id, createHash('sha256').update(sources.get(id)!.content).digest('hex')])) })) });
   }
@@ -372,6 +447,9 @@ export class CompanionWorldService {
   }
 }
 function cancelled() { return new CompanionModelError('CANCELLED', '伙伴本次世界工作已停止。'); }
+function terminalInferenceFailure(error: unknown): boolean {
+  return error instanceof CompanionAgentNoProgressError || error instanceof CompanionModelError && error.code === 'CONTEXT_CAPACITY';
+}
 function delay(ms: number, signal?: AbortSignal): Promise<void> {
   if (signal?.aborted) return Promise.reject(cancelled());
   return new Promise((resolve, reject) => {

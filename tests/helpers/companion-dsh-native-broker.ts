@@ -11,6 +11,7 @@ import { instanceEnvironment, launchCli, terminateOwnedProcess } from '../../src
 import type { DshCliSelection } from '../../src/main/dsh/cli-terminal';
 import type { DshTaskExecutionOptions } from '../../src/main/dsh/task-execution';
 import { dshWorkerGeneration } from '../../src/main/dsh/warm-cli-pool';
+import { removeOwnedDirectory } from '../../src/main/vcp-memory/filesystem';
 
 /** A temporary profile and real native Agent behind the production broker. No installed account/profile is changed. */
 export async function createNativeAcceptanceBroker(options: { program: string; apiKey: string; model: string; baseURL?: string; onWorkerReadyChanged?: (instanceId: string, ready: boolean) => void }) {
@@ -19,6 +20,18 @@ export async function createNativeAcceptanceBroker(options: { program: string; a
   const anchor = path.join(sdk, '@deepseek-ai/dsh/package.json');
   const manifest = JSON.parse(await readFile(anchor, 'utf8')) as { version: string };
   const root = await mkdtemp(path.join(os.tmpdir(), 'worldlinebox-native-acceptance-'));
+  const cleanup = async () => {
+    if (path.dirname(path.resolve(root)) !== path.resolve(os.tmpdir()) || !path.basename(root).startsWith('worldlinebox-native-acceptance-')) throw new Error('Unexpected native acceptance fixture root.');
+    // This fixture links the actual installed runtime. Detach every link rather
+    // than passing the tree to Electron's platform recursive remover.
+    for (let attempt = 0; ; attempt++) {
+      try { await removeOwnedDirectory(root); return; }
+      catch (error) {
+        if (attempt >= 20 || !['EPERM', 'EBUSY', 'ENOTEMPTY', 'EACCES'].includes((error as NodeJS.ErrnoException).code ?? '')) throw error;
+        await new Promise(resolve => setTimeout(resolve, 100));
+      }
+    }
+  };
   let broker: DshTaskBroker | undefined;
   try {
     const runtimeId = 'runtime-acceptance';
@@ -78,6 +91,6 @@ child.once('close',code=>{process.exitCode=code??1;process.stdin.destroy()});
     };
     return { root, broker, execution, generation: () => dshWorkerGeneration(root, selected, execution.access), configurationSnapshot,
       operation: () => ({ id: randomUUID(), signal: new AbortController().signal, log: async () => undefined, update: async () => undefined }),
-      dispose: async () => { await broker!.shutdown(); await rm(root, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 }); } };
-  } catch (error) { await broker?.shutdown(); await rm(root, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 }); throw error; }
+      dispose: async () => { await broker!.shutdown(); await cleanup(); } };
+  } catch (error) { await broker?.shutdown(); await cleanup(); throw error; }
 }

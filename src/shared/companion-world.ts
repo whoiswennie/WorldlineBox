@@ -1,7 +1,7 @@
 import { z } from 'zod';
 import { companionInteractionSchema, companionContactReceiptSchema } from './companion-contact';
 import { companionWorldArgumentsSchema } from './companion-world-tool';
-import { companionMemoryCandidateSchema } from './companion-memory';
+import { companionMemoryCandidateSchema, companionMemoryConsolidateSchema } from './companion-memory';
 import { COMPANION_WORLD_ART_ACTIONS } from './companion-world-actions';
 import { companionWorldPerceptionSchema } from './companion-world-perception';
 import { companionHomeAddressSchema } from './companion-world-address';
@@ -31,11 +31,17 @@ export const companionWorldActorSchema = z.object({ companionId: id, sceneId: id
   routinePhase: z.enum(['awake', 'sleeping', 'eating', 'resting', 'habit']), activityLabel: z.string().optional(),
   parkWalk: z.object({ stage: z.enum(['travelling', 'strolling', 'returning']), durationMinutes: z.number().positive(), participatedMinutes: z.number().nonnegative() }).optional(),
   communication: z.object({ channel: z.enum(['phone', 'face_to_face']), phase: z.enum(['notification', 'typing', 'responding', 'speaking', 'listening']), conversationId: id, recipientIds: z.array(id).max(20), untilReal: z.iso.datetime() }).optional() });
+/** Immutable bytes consumed when a world quotation was created, retained at
+ * observation time. A later source read must validate these exact bytes. */
+export const companionWorldSourceReadSchema = z.strictObject({ id, conversationId: id, checksum: z.string().regex(/^[a-f0-9]{64}$/u) });
 export const companionWorldVisitSchema = z.object({ id, guestId: id, hostId: id, status: z.enum(['requested', 'allowed', 'denied', 'left', 'expired']),
-  reason: z.string(), response: z.string().optional(), createdAt: z.iso.datetime(), expiresAt: z.iso.datetime(), sourceMessageId: id.optional(), conversationId: id.optional(), destination: z.object({ sceneId: id, entryId: id }).optional() });
+  reason: z.string(), response: z.string().optional(), createdAt: z.iso.datetime(), expiresAt: z.iso.datetime(), sourceMessageId: id.optional(), conversationId: id.optional(),
+  sourceRead: companionWorldSourceReadSchema.optional(), responseSourceMessageId: id.optional(), responseConversationId: id.optional(), responseSourceRead: companionWorldSourceReadSchema.optional(),
+  destination: z.object({ sceneId: id, entryId: id }).optional() });
 export const companionWorldEventSchema = z.object({ id, sequence: z.number().int().positive(), at: z.iso.datetime(), realAt: z.iso.datetime(),
   kind: z.string(), actorId: id.optional(), targetId: id.optional(), sceneId: id.optional(), text: z.string(), simulation: z.literal(true),
   sourceMessageId: id.optional(), conversationId: id.optional(),
+  sourceReads: z.array(companionWorldSourceReadSchema).max(128).optional(),
   witnessIds: z.array(id).max(100).optional(),
   behavior: z.object({ id, kind: companionWorldActorSchema.shape.activity, phase: z.enum(['started', 'completed', 'interrupted']), targetId: id.optional(), parentId: id.optional() }).optional(),
   perception: companionWorldPerceptionSchema.pick({ revision: true, radius: true, visibleObjectIds: true, visibleCompanionIds: true, environment: true }).optional(),
@@ -44,9 +50,12 @@ export const companionWorldRelationshipSchema = z.object({ companionId: id, targ
   trust: z.number().min(0).max(100), interactions: z.number().int().nonnegative(), updatedAt: z.iso.datetime() });
 export const companionWorldWorkSchema = z.object({ workId: id, companionId: id, kind: z.enum(['chat', 'action', 'schedule', 'learning']),
   status: z.enum(['waiting', 'moving', 'seating', 'ready', 'ended']), computerId: id.optional(), nextCheckAt: z.iso.datetime().optional(), reason: z.string().optional() });
+export const companionMemoryMaintenanceAuditSchema = z.strictObject({ decision: z.enum(['merge', 'defer']), reason: z.string().trim().min(1).max(2000),
+  reviewedMemoryVersions: z.array(z.strictObject({ id, version: z.number().int().positive() })).min(2).max(128) });
 export const companionWorldJobSchema = z.object({ id, kind: z.enum(['decision', 'dream']), companionId: id, conversationId: id, status: z.enum(['pending', 'running', 'done', 'failed']),
-  leaseToken: id.optional(), throughEventSequence: z.number().int().nonnegative(), createdAt: z.iso.datetime(), attempts: z.number().int().nonnegative(), sourceMemoryIds: z.array(id).max(20).default([]), encounterMemberIds: z.array(id).min(2).max(4).optional(),
-  sleepEpisodeId: id.optional(), dreamAllowed: z.boolean().optional() });
+  terminal: z.boolean().optional(), error: z.string().max(2000).optional(),
+  leaseToken: id.optional(), throughEventSequence: z.number().int().nonnegative(), createdAt: z.iso.datetime(), attempts: z.number().int().nonnegative(), sourceMemoryIds: z.array(id).max(128).default([]), encounterMemberIds: z.array(id).min(2).max(4).optional(),
+  sleepEpisodeId: id.optional(), dreamAllowed: z.boolean().optional(), maintenance: companionMemoryMaintenanceAuditSchema.optional() });
 export const companionWorldSnapshotSchema = z.object({
   settings: companionWorldSettingsSchema,
   clock: z.object({ realNow: z.iso.datetime(), virtualNow: z.iso.datetime(), speed: z.number().positive(), day: z.number().int(), hour: z.number().min(0).max(24), daylight: z.boolean() }),
@@ -100,9 +109,11 @@ export const companionWorldStorageCommands = [
   z.strictObject({ type: z.literal('world.job.claim'), kind: z.enum(['decision', 'dream']), excludedCompanionIds: z.array(id).max(100).optional() }),
   z.strictObject({ type: z.literal('world.job.check'), id, leaseToken: id }),
   z.strictObject({ type: z.literal('world.job.bind-memories'), id, leaseToken: id,
-    memoryVersions: z.array(z.strictObject({ id, version: z.number().int().positive() })).min(1).max(20) }),
-  z.strictObject({ type: z.literal('world.job.complete'), id, leaseToken: id, expectedMemoryRevision: z.string().min(1).max(128).optional(), expectedProhibitionRevision: z.string().min(1).max(128).optional(), stateProposal: companionStateToolProposalSchema.optional(), expectedStateRevision: z.number().int().positive().optional(), activityTask: z.strictObject({ title: z.string().trim().min(1).max(120), goal: z.string().trim().min(1).max(16000) }).optional(), action: companionWorldArgumentsSchema.optional(), sourceMemoryIds: z.array(id).max(30).default([]), memoryCandidates: z.array(companionMemoryCandidateSchema).max(20).default([]),
+    memoryVersions: z.array(z.strictObject({ id, version: z.number().int().positive() })).min(1).max(128) }),
+  z.strictObject({ type: z.literal('world.job.complete'), id, leaseToken: id, expectedMemoryRevision: z.string().min(1).max(128).optional(), expectedProhibitionRevision: z.string().min(1).max(128).optional(), stateProposal: companionStateToolProposalSchema.optional(), expectedStateRevision: z.number().int().positive().optional(), activityTask: z.strictObject({ title: z.string().trim().min(1).max(120), goal: z.string().trim().min(1).max(16000) }).optional(), action: companionWorldArgumentsSchema.optional(), sourceMemoryIds: z.array(id).max(128).default([]), memoryCandidates: z.array(companionMemoryCandidateSchema).max(40).default([]),
+    consolidations: z.array(companionMemoryConsolidateSchema).max(4).optional(),
+    maintenance: companionMemoryMaintenanceAuditSchema.optional(),
     dream: z.strictObject({ text: z.string().max(8000), sourceMessageIds: z.array(id).min(1).max(30), relatedMemoryIds: z.array(id).min(1).max(30), evidence: z.array(z.object({ sourceMessageId: id, quote: z.string().min(1).max(4000) })).min(1).max(60) }).optional(),
     appraisals: z.array(z.strictObject({ eventId: id, targetCompanionId: id, type: z.enum(['support', 'respect', 'boundary_violation', 'hostility', 'shared_success', 'repair', 'disappointment']), intensity: z.number().min(0).max(1), confidence: z.number().min(0).max(1) })).max(10).default([]) }),
-  z.strictObject({ type: z.literal('world.job.fail'), id, leaseToken: id, error: z.string().max(2000) }),
+  z.strictObject({ type: z.literal('world.job.fail'), id, leaseToken: id, error: z.string().max(2000), terminal: z.boolean().optional() }),
 ] as const;

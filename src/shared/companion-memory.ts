@@ -3,6 +3,7 @@ import { companionWorldQuerySchema } from './companion-knowledge';
 import { companionStateProposalSchema } from './companion-state';
 import { companionMemoryProcessingCommand } from './companion-memory-processing';
 import { companionCharacterDevelopmentCommand, companionCharacterDevelopmentDraftSchema } from './companion-character-development';
+import { companionMemoryRetrievalOptionsSchema } from './companion-memory-modes';
 const id = z.string().regex(/^[a-zA-Z0-9_-]{1,100}$/);
 /** Ordered VCP tags; the host has no tag inference or retrieval algorithm. */
 export const companionMemoryTagSchema = z.string().trim().min(1).max(100);
@@ -22,6 +23,9 @@ export const companionMemoryCandidateSchema = z.strictObject({
     learnedEntranceSourceId: id.optional(),
 });
 export type CompanionMemoryCandidate = z.input<typeof companionMemoryCandidateSchema>;
+export const companionMemoryConsolidateSchema = z.strictObject({ inputs: z.array(z.strictObject({ id, version: z.number().int().positive() })).min(2).max(50)
+    .refine(inputs => new Set(inputs.map(input => input.id)).size === inputs.length, '整合来源不能重复。'), candidate: companionMemoryCandidateSchema });
+export type CompanionMemoryConsolidation = z.output<typeof companionMemoryConsolidateSchema>;
 export const companionMemorySchema = z.object({
     id, companionId: id, scopeId: id, content: z.string().trim().min(1).max(65536),
     tags: z.array(companionMemoryTagSchema), occurredAt: z.string().optional(), diaryName: z.string().optional(),
@@ -30,11 +34,13 @@ export const companionMemorySchema = z.object({
     sourceSequence: z.number().int().nonnegative(), createdAt: z.string(), updatedAt: z.string(),
     origin: z.enum(['user', 'companion']), status: z.enum(['queued', 'indexed', 'forgotten', 'invalid']),
     version: z.number().int().positive(), captureMethod: z.enum(['automatic', 'manual']),
+    archivedAt: z.string().optional(), supersededBy: id.optional(),
 });
 export const companionMemoryScopeSchema = z.object({ companionId: id, conversationId: id, beforeSequence: z.number().int().nonnegative().optional() });
 export const companionMemorySearchSchema = companionMemoryScopeSchema.extend({
     query: z.string().trim().max(16000).default(''), tags: z.array(companionMemoryTagSchema).max(50).default([]),
     diaryName: z.string().max(160).optional(), from: z.string().max(100).optional(), to: z.string().max(100).optional(),
+    retrievalOptions: companionMemoryRetrievalOptionsSchema.optional(),
     limit: z.number().int().min(1).max(100).default(20), cursor: z.number().int().nonnegative().optional(),
 });
 export type CompanionMemorySearch = z.input<typeof companionMemorySearchSchema>;
@@ -61,6 +67,7 @@ export const companionMemoryDomainSchema = z.object({ scopeId: id, companionId: 
 export const companionMemoryOutboxSchema = z.object({
     id, companionId: id, scopeId: id, noteId: id, noteVersion: z.number().int().positive(), operation: z.enum(['remember', 'forget']),
     note: companionMemorySchema, leaseToken: id, attempts: z.number().int().positive(),
+    maintenanceOnly: z.literal(true).optional(), contentAvailable: z.literal(false).optional(),
 });
 export type CompanionMemoryOutbox = z.infer<typeof companionMemoryOutboxSchema>;
 export const companionMemorySnapshotSchema = z.object({ scopeId: id, revision: z.string(), notes: z.array(companionMemorySchema) });
@@ -94,6 +101,7 @@ export const companionMemoryPublicCommands = [
     companionMemoryProcessingCommand,
     companionMemoryScopeSchema.merge(companionWorldQuerySchema).extend({ type: z.literal('memory.world_query') }).strict(),
     companionMemorySearchSchema.extend({ type: z.literal('memory.search') }).strict(),
+    companionMemoryScopeSchema.extend({ type: z.literal('memory.retrieval_modes') }).strict(),
     companionMemorySearchSchema.extend({ type: z.literal('memory.browse') }).strict(),
     companionMemoryScopeSchema.extend({ type: z.literal('memory.sources.filter'), ids: z.array(id).max(100) }).strict(),
     companionMemoryScopeSchema.extend({ type: z.literal('memory.records.filter'), ids: z.array(id).max(100) }).strict(),
@@ -131,4 +139,6 @@ export const companionMemoryStorageCommands = [
     companionMemoryScopeSchema.extend({ type: z.literal('memory.record'), candidate: companionMemoryCandidateSchema, operationId: id.optional(), expectedProhibitionRevision: z.string().min(1).max(128).optional() }).strict(),
     companionMemoryScopeSchema.extend({ type: z.literal('memory.revise'), id, expectedVersion: z.number().int().positive(), candidate: companionMemoryCandidateSchema, operationId: id.optional(), expectedProhibitionRevision: z.string().min(1).max(128).optional() }).strict(),
     companionMemoryScopeSchema.extend({ type: z.literal('memory.organize'), ids: z.array(id).min(1).max(100), tags: z.array(companionMemoryTagSchema).max(50).default([]), operationId: id.optional(), expectedProhibitionRevision: z.string().min(1).max(128).optional() }).strict(),
+    companionMemoryScopeSchema.extend({ type: z.literal('memory.consolidate'), ...companionMemoryConsolidateSchema.shape,
+      operationId: id.optional(), expectedProhibitionRevision: z.string().min(1).max(128).optional() }).strict(),
 ] as const;

@@ -1,9 +1,10 @@
 import { randomUUID } from 'node:crypto';
 import { createRequire } from 'node:module';
-import { mkdirSync, mkdtempSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterEach, expect, it } from 'vitest';
+import { removeOwnedDirectorySync } from '../../src/main/vcp-memory/filesystem';
 import { LibraryService } from '../../src/worker/library-service';
 import { companionLearningAssets } from '../../src/main/companions/learning-assets';
 import type { CompanionLearningGrant } from '../../src/shared/companion-learning';
@@ -19,7 +20,7 @@ afterEach(() => {
   // Unlink only our known junctions before recursive cleanup. Never follow a
   // reparse point to another root or shared runtime during fixture cleanup.
   for (const link of links.splice(0)) { try { unlinkSync(link); } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; } }
-  for (const root of roots.splice(0)) { if (path.dirname(root) !== tmpdir() || !path.basename(root).startsWith('worldlinebox-learning-assets-')) throw new Error('Unexpected learning fixture root.'); rmSync(root, { recursive: true, force: true }); }
+  for (const root of roots.splice(0)) { if (path.dirname(root) !== tmpdir() || !path.basename(root).startsWith('worldlinebox-learning-assets-')) throw new Error('Unexpected learning fixture root.'); removeOwnedDirectorySync(root); }
 });
 function fixture() {
   const root = mkdtempSync(path.join(tmpdir(), 'worldlinebox-learning-assets-')); roots.push(root);

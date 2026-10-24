@@ -1,11 +1,25 @@
 import { z } from 'zod';
 import { companionReplyProgressSchema } from './companion-reply-progress';
 import { companionToolImageReferenceSchema } from './companion-file-tool';
+import { companionTopicNarrativeApprovalSchema as topicNarrativeApprovalSchema, companionTopicPublicationApprovalSchema } from './companion-topic-canon';
 const id = z.string().regex(/^[a-zA-Z0-9_-]{1,100}$/);
 export const companionLoopCallSchema = z.object({ id: z.string().min(1).max(200), name: z.string().max(100), arguments: z.string().max(65536),
   // Opaque provider protocol metadata, never thought text or a memory source.
   thoughtSignature: z.string().min(1).max(65536).optional() });
-export const companionLoopTurnSchema = z.object({ text: z.string().max(65536), rawText: z.string().max(65536), calls: z.array(companionLoopCallSchema).max(16), messageId: id.optional(), results: z.array(z.object({ callId: z.string().max(200), content: z.string(), images: z.array(companionToolImageReferenceSchema).max(4).optional(), attachmentIds: z.array(id).max(10).optional() })).max(16).optional() });
+/** Host review of a turn or the complete pending reply. Narrative state is
+ * published only with the exact resulting message in the same transaction. */
+export const companionTopicNarrativeApprovalSchema = topicNarrativeApprovalSchema.extend({ topicId: id,
+  quote: z.string().min(1).max(128), contentScope: z.literal('full_reply').optional() }).strict().refine(value => JSON.stringify(value).length <= 256000);
+export const companionLoopTurnSchema = z.object({ text: z.string().max(65536), rawText: z.string().max(65536), calls: z.array(companionLoopCallSchema).max(16), messageId: id.optional(),
+  /** Host digest of actual source/evidence versions; never provider metadata. */
+  hostProgressKey: z.string().regex(/^[a-f0-9]{64}$/).optional(),
+  topicNarrativeApproval: companionTopicNarrativeApprovalSchema.optional(),
+  topicPublicationApproval: companionTopicPublicationApprovalSchema.optional(),
+  /** Host rejection of an uncommitted cached final; original bytes remain in
+   * this turn for audit, but are excluded from publication and model history. */
+  topicPublicationRejection: z.object({ rawTextChecksum: z.string().regex(/^[a-f0-9]{64}$/u),
+    contentChecksum: z.string().regex(/^[a-f0-9]{64}$/u), reason: z.string().min(1).max(16000), rejectedAt: z.string() }).optional(),
+  results: z.array(z.object({ callId: z.string().max(200), content: z.string(), images: z.array(companionToolImageReferenceSchema).max(4).optional(), attachmentIds: z.array(id).max(10).optional() })).max(16).optional() });
 // Message-count windows and paginated retrieval limit work. Checkpoints preserve
 // the actual request instead of imposing a hidden global character quota.
 const companionLoopContextSchema = z.object({ system: z.string(), user: z.string() });
@@ -32,7 +46,13 @@ export const companionLoopCheckpointSchema = z.object({ conversationId: id, sour
 export type CompanionLoopCall = z.infer<typeof companionLoopCallSchema>;
 export type CompanionLoopTurn = z.infer<typeof companionLoopTurnSchema>;
 export type CompanionLoopCheckpoint = z.infer<typeof companionLoopCheckpointSchema>;
+/** Match the actual bubble exactly, including whitespace and tool-bearing
+ * turns. Callers enforce the message boundary instead of truncating prose. */
+export function companionLoopPublishedText(turns: readonly Pick<CompanionLoopTurn, 'text' | 'topicPublicationRejection'>[], draft?: Pick<z.infer<typeof companionLoopDraftSchema>, 'text'>): string {
+  return [...turns.filter(turn => !turn.topicPublicationRejection).map(turn => turn.text), ...(draft ? [draft.text] : [])].filter(Boolean).join('\n\n');
+}
 export const companionWorkSchema = z.object({ id, conversationId: id, sourceMessageId: id, companionId: id,
   messageId: id.optional(), status: z.enum(['queued', 'running', 'interrupted', 'done', 'cancelled']), ordinal: z.number().int().positive().optional(), proactive: z.boolean().default(false),
+  resumeOnRestart: z.boolean().optional(),
   createdAt: z.string(), updatedAt: z.string() });
 export type CompanionWork = z.infer<typeof companionWorkSchema>;

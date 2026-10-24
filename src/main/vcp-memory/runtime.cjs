@@ -13,6 +13,12 @@ function identity(value, label) {
   if (typeof value !== 'string' || !value.trim() || value.length > 4096) throw failure('VCP_MEMORY_INVALID_INPUT', `Invalid ${label}.`);
   return value;
 }
+// Match the public diary/query contracts. IDs and paths keep their smaller
+// boundary; content is chunked by upstream rather than silently truncated here.
+function memoryText(value, label, maximum) {
+  if (typeof value !== 'string' || !value.trim() || value.trim().length > maximum) throw failure('VCP_MEMORY_INVALID_INPUT', `Invalid ${label}.`);
+  return value.trim();
+}
 function digest(value) { return createHash('sha256').update(value).digest('hex'); }
 function notebookFolder(diaryName) {
   const name = diaryName?.trim();
@@ -33,7 +39,7 @@ function embeddingConfiguration(input) {
 }
 function normalizeNote(input) {
   const id = identity(input?.id, 'memory ID');
-  const content = identity(input?.content, 'memory content').trim();
+  const content = memoryText(input?.content, 'memory content', 65536);
   if (!Array.isArray(input.tags) || input.tags.some(tag => typeof tag !== 'string' || /[\r\n,，、;|｜]/u.test(tag))) throw failure('VCP_MEMORY_INVALID_INPUT', 'Tags must be individual names without separators.');
   const tags = [...new Set(input.tags.map(tag => tag.trim()).filter(Boolean))];
   if (tags.length > 50) throw failure('VCP_MEMORY_INVALID_INPUT', 'A memory may have at most 50 tags.');
@@ -41,8 +47,15 @@ function normalizeNote(input) {
   if (input.author !== undefined && (typeof input.author !== 'string' || !input.author.trim() || /[\r\n]/u.test(input.author))) throw failure('VCP_MEMORY_INVALID_INPUT', 'Invalid memory author.');
   if (input.diaryName !== undefined && (typeof input.diaryName !== 'string' || !input.diaryName.trim() || input.diaryName.length > 160)) throw failure('VCP_MEMORY_INVALID_INPUT', 'Invalid diary notebook name.');
   if (input.metadata !== undefined && (!input.metadata || typeof input.metadata !== 'object' || Array.isArray(input.metadata))) throw failure('VCP_MEMORY_INVALID_INPUT', 'Invalid memory metadata.');
+  if (input.hostProjection !== undefined) {
+    const zone = input.hostProjection?.timeZone;
+    if (typeof zone !== 'string' || zone.length > 100) throw failure('VCP_MEMORY_INVALID_INPUT', 'Invalid memory projection timezone.');
+    try { new Intl.DateTimeFormat('en', { timeZone: zone }).format(); }
+    catch { throw failure('VCP_MEMORY_INVALID_INPUT', 'Invalid memory projection timezone.'); }
+  }
   // The JSON boundary also rejects cyclic metadata before any file mutation.
-  return JSON.parse(JSON.stringify({ id, content, tags, occurredAt: input.occurredAt, author: input.author, diaryName: input.diaryName?.trim(), metadata: input.metadata }));
+  return JSON.parse(JSON.stringify({ id, content, tags, occurredAt: input.occurredAt, author: input.author, diaryName: input.diaryName?.trim(), metadata: input.metadata,
+    ...(input.hostProjection ? { hostProjection: { timeZone: input.hostProjection.timeZone } } : {}) }));
 }
 /** Copy upstream observables only. The host does not score, clamp, combine or reorder candidates. */
 function projectNativeScoreDetails(hit, result, rank) {
@@ -148,10 +161,24 @@ class VcpMemoryRuntime {
     // every vendored source and parameter template remains byte-identical.
     const paramsFile = path.join(this.runtimeRoot, 'rag_params.json');
     const params = await jsonOrNull(paramsFile);
+    const profile = configuration.plugins?.behaviorProfile || 'preserve-corrections';
+    if (!['preserve-corrections', 'upstream'].includes(profile)) throw failure('VCP_MEMORY_INVALID_INPUT', 'Unknown VCP behavior profile.');
     params.KnowledgeBaseManager ||= {};
-    params.KnowledgeBaseManager.deduplicationThreshold = 1;
     params.KnowledgeBaseManager.resultDeduplication ||= {};
-    Object.assign(params.KnowledgeBaseManager.resultDeduplication, { semanticThreshold: 1, finalSemanticThreshold: 1 });
+    const differences = [];
+    for (const [container, key, parameter] of [
+      [params.KnowledgeBaseManager, 'deduplicationThreshold', 'KnowledgeBaseManager.deduplicationThreshold'],
+      [params.KnowledgeBaseManager.resultDeduplication, 'semanticThreshold', 'KnowledgeBaseManager.resultDeduplication.semanticThreshold'],
+      [params.KnowledgeBaseManager.resultDeduplication, 'finalSemanticThreshold', 'KnowledgeBaseManager.resultDeduplication.finalSemanticThreshold'],
+    ]) {
+      const upstream = container[key];
+      if (profile === 'preserve-corrections') container[key] = 1;
+      differences.push({ parameter, upstream, effective: container[key] });
+    }
+    this.behavior = { profile, differences, generation: { aimemoBatchSize: 2, aimemoMaxTokensPerBatch: 18000,
+      aimemoOutputTokens: 40000, queryResultCacheEnabled: false, riverThinkingEnabled: !!configuration.plugins?.riverThinkingEnabled,
+      queryEncoding: 'upstream_chunk_token_weighted_average', queryScope: 'physical_projection_before_top_k',
+      contextClock: 'request_local_dayjs_host_world_clock_or_native_real_fallback', passiveRecallPolicy: { schema: 'episodic-v1', halfLifeDays: 180, minScore: 0 } } };
     await atomicJson(paramsFile, params);
     const vendorRequire = createRequire(path.join(vendorRoot, 'package.json'));
     let tokenDirectory = path.dirname(vendorRequire.resolve('@dqbd/tiktoken'));
@@ -214,6 +241,7 @@ class VcpMemoryRuntime {
     });
     this.kb = require(path.join(this.runtimeRoot, 'KnowledgeBaseManager.js'));
     this.getEmbeddingsBatch = require(path.join(this.runtimeRoot, 'EmbeddingUtils.js')).getEmbeddingsBatch;
+    this.chunkText = require(path.join(this.runtimeRoot, 'TextChunker.js')).chunkText;
     await this.kb.initialize();
     const { VcpMemoryPeripherals } = require('./peripherals.cjs');
     this.peripherals = new VcpMemoryPeripherals(this, configuration.plugins || {});
@@ -265,9 +293,10 @@ class VcpMemoryRuntime {
     this.artifactsDirty = true;
   }
   async writeRecordNote(note, recordedAt) {
-    const day = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Shanghai', year: 'numeric', month: '2-digit', day: '2-digit' })
+    const timeZone = note.hostProjection?.timeZone || 'Asia/Shanghai';
+    const day = new Intl.DateTimeFormat('en-CA', { timeZone, year: 'numeric', month: '2-digit', day: '2-digit' })
       .format(new Date(note.occurredAt || recordedAt));
-    const time = new Intl.DateTimeFormat('en-GB', { timeZone: 'Asia/Shanghai', hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit' })
+    const time = new Intl.DateTimeFormat('en-GB', { timeZone, hourCycle: 'h23', hour: '2-digit', minute: '2-digit', second: '2-digit' })
       .format(new Date(note.occurredAt || recordedAt));
     const key = digest(note.id);
     const folder = notebookFolder(note.diaryName);
@@ -304,8 +333,9 @@ class VcpMemoryRuntime {
     // so a crash after create can replay as update without creating a duplicate.
     {
       const date = new Date(note.occurredAt || recordedAt);
-      const day = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Shanghai', year: 'numeric', month: '2-digit', day: '2-digit' }).format(date);
-      const time = new Intl.DateTimeFormat('en-GB', { timeZone: 'Asia/Shanghai', hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit' }).format(date);
+      const timeZone = note.hostProjection?.timeZone || 'Asia/Shanghai';
+      const day = new Intl.DateTimeFormat('en-CA', { timeZone, year: 'numeric', month: '2-digit', day: '2-digit' }).format(date);
+      const time = new Intl.DateTimeFormat('en-GB', { timeZone, hourCycle: 'h23', hour: '2-digit', minute: '2-digit', second: '2-digit' }).format(date);
       this.bindNotePath(note.id, path.join(this.notesRoot, notebookFolder(note.diaryName), `${day}-${time.replaceAll(':', '_')}-${digest(note.id)}.md`));
     }
     const rawPath = path.relative(this.notesRoot, this.paths(note.id).note);
@@ -413,7 +443,7 @@ class VcpMemoryRuntime {
   }
   async search(input) {
     this.requireReady();
-    const text = identity(input?.text, 'memory query');
+    const text = memoryText(input?.text, 'memory query', 16000);
     const topK = input.topK ?? 8;
     if (!Number.isInteger(topK) || topK < 1 || topK > 100) throw failure('VCP_MEMORY_INVALID_INPUT', 'topK must be between 1 and 100.');
     await this.peripherals.validateExistingTimelines();
@@ -427,6 +457,7 @@ class VcpMemoryRuntime {
     await this.ensureArtifacts();
     const result = await this.kb.withMemoObservationScope(() => this.kb.executeNativeRiverQuery(
       { text, vector }, { diaryNames, topK, fallbackToLegacy: false, includeTrace: true }));
+    if (this.peripherals.observedCalls) this.peripherals.observedCalls.river = (this.peripherals.observedCalls.river || 0) + 1;
     const seen = new Set();
     const results = [];
     const traceHits = [];
@@ -450,7 +481,7 @@ class VcpMemoryRuntime {
         ...(typeof hit.text === 'string' ? { text: hit.text.slice(0, 300) } : {}), matchedTags: scoreDetails.matchedTags || [], coreTagsMatched: scoreDetails.coreTagsMatched || [],
         ...(Object.keys(anchor).length ? { anchor } : {}) });
     }
-    const counts = {}, diagnostics = result.diagnostics || {}, native = diagnostics.nativeTopologyV3 || {};
+    const counts = {}, diagnostics = { ...result.diagnostics, hostBehavior: this.behavior, queryEncoding: this.lastQueryEncoding }, native = diagnostics.nativeTopologyV3 || {};
     for (const key of ['offeredCandidates', 'projectedCandidates', 'selectedCandidates', 'rankedCandidates', 'returnedCandidates', 'artifactNodes', 'artifactEdges']) {
       if (Number.isSafeInteger(native[key]) && native[key] >= 0) counts[key] = native[key];
     }
@@ -460,8 +491,19 @@ class VcpMemoryRuntime {
         coreTagsMatched: tags(result.queryTags?.coreTagsMatched), counts, hits: traceHits } };
   }
   async queryEmbedding(text) {
-    const vectors = await this.getEmbeddingsBatch([text], { ...this.embedding, apiUrl: this.embedding.queryApiUrl || this.embedding.apiUrl });
-    const vector = vectors?.[0];
+    // Reuse the original RAG encoder, including TextChunker, its token-estimate
+    // weights and VectorMathUtils weighted average. Direct EmbeddingUtils calls
+    // skip a legal high-token query instead of splitting it. The upstream
+    // single-chunk path returns that exact vector without averaging or scaling.
+    const rag = await this.peripherals.load('RAGDiaryPlugin');
+    const chunks = this.chunkText(text.trim());
+    const vectors = await this.getEmbeddingsBatch(chunks, { ...this.embedding, apiUrl: this.embedding.queryApiUrl || this.embedding.apiUrl });
+    if (vectors?.length !== chunks.length || !chunks.length || vectors.some(vector => !vector || vector.length !== this.embedding.dimension || Array.from(vector).some(value => !Number.isFinite(value))))
+      throw failure('VCP_MEMORY_EMBEDDING_RESPONSE_INVALID', 'The embedding service returned an invalid query vector.');
+    const weights = chunks.map(chunk => Math.max(1, rag._estimateTokens(chunk)));
+    const vector = rag._getWeightedAverageVector(vectors, weights);
+    this.lastQueryEncoding = { inputCharacters: text.length, chunkCount: chunks.length, aggregation: chunks.length === 1 ? 'unchanged_single_vector' : 'upstream_token_weighted_average',
+      complete: true };
     if (!vector || vector.length !== this.embedding.dimension || Array.from(vector).some(value => !Number.isFinite(value))) throw failure('VCP_MEMORY_EMBEDDING_RESPONSE_INVALID', 'The embedding service returned an invalid query vector.');
     return vector;
   }

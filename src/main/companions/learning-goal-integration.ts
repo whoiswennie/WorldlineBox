@@ -8,6 +8,7 @@ import type { CompanionFileReader } from './file-reader';
 import type { CompanionMemoryService } from './memory-service';
 import { type CompanionModelConfig } from './model';
 import { runCompanionStructuredAgent, companionTaskConversation, companionTaskInvocation } from './structured-agent';
+import { companionAgentJournal } from './agent-journal';
 import { CompanionLearningGoalService, type CompanionLearningGoalServiceOptions, type GoalInferenceStage } from './learning-goal-service';
 import { readGoalPublicWeb, type GoalWebDocument } from './learning-goal-web';
 import { readGoalTextFile } from './learning-goal-file';
@@ -83,7 +84,7 @@ export function createCompanionLearningGoalService(options: CompanionLearningGoa
         selfTest: last.selfTest ? { kind: last.selfTest.kind, questions: last.selfTest.questions.slice(0, 3).map(item => ({ question: item.question.slice(0, 500), answer: item.answer.slice(0, 500), evaluation: item.evaluation, rationale: item.rationale.slice(0, 500) })) } : undefined,
         gaps: last.gaps, nextPlan: last.nextPlan, memoryIds: last.memoryIds } : undefined } : input.data;
       const conversationId = 'learning_' + input.goal.id;
-      return runCompanionStructuredAgent({ frame: { companion,
+      return runCompanionStructuredAgent({ journal: companionAgentJournal(request), frame: { companion,
         conversation: companionTaskConversation(conversationId, companion.id, input.goal.createdAt), messages: [], memories: [], proactive: true,
         invocation: companionTaskInvocation({ companion, conversationId, id: input.round.id + ':' + input.stage, kind: 'work',
           goal: input.goal.text, createdAt: input.goal.createdAt }) },

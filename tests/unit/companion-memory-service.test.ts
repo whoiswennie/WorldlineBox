@@ -86,7 +86,7 @@ class FakeVcpClient extends VcpMemoryClient {
   override capabilities = vi.fn(async () => ({ plugins: {}, timelineGenerationConfigured: false, coldKnowledge: false }));
   override preprocess = vi.fn(async (scope: VcpMemoryScope, messages: VcpMemoryMessage[]) => ({
     messages: messages.map(message => ({ ...message, content: typeof message.content === 'string'
-      ? message.content.replace(/\[\[([^\]]+)日记本::RiverMemo(?:::AIMemo\+)?\]\]/gu, (_marker, folders: string) => [...(this.notes.get(scope.scopeId)?.values() ?? [])]
+      ? message.content.replace(/\[\[([^\]]+)日记本::RiverMemo(?:::TimeDecay180\/0)?(?:::AIMemo\+)?\]\]/gu, (_marker, folders: string) => [...(this.notes.get(scope.scopeId)?.values() ?? [])]
         .filter(note => folders.split('|').includes(vcpMemoryNotebookFolder(note.diaryName))).map(note => note.content).join('\n'))
         .replace('[[AIMemo=True]]', '')
         .replace('[[VCPTimeLine::WorldlineBox]]', '') : message.content })), events: [],
@@ -136,7 +136,14 @@ async function closeService(service: CompanionService) {
 async function sent(service: CompanionService, store: CompanionsStore, conversationId: string, content: string, clientId: string) {
   const result = await service.handle({ type: 'message.send', conversationId, content, clientId, delivery: 'chat' });
   const message = result.message!;
-  await vi.waitFor(() => expect(store.request({ type: 'work.list', sourceMessageId: message.id }).works?.every(work => work.status === 'done'), content).toBe(true), { timeout: 5000 });
+  try { await vi.waitFor(() => expect(store.request({ type: 'work.list', sourceMessageId: message.id }).works?.every(work => work.status === 'done'), content).toBe(true), { timeout: 5000 }); }
+  catch (error) {
+    const reports = (service as unknown as { options: { report: { mock: { calls: unknown[][] } } } }).options.report.mock.calls.flat().map(value => value instanceof Error ? value.message : String(value));
+    const work = store.request({ type: 'work.list', sourceMessageId: message.id }).works;
+    const checkpoint = store.request({ type: 'loop.get', companionId: 'sister', sourceMessageId: message.id }).loop;
+    const memory = (service as unknown as { memory: { invalidations: Map<string, unknown>; queryTails: Map<string, unknown>; captures: Map<string, unknown>; continuity?: { owner: string } } }).memory;
+    throw new Error(`${error instanceof Error ? error.message : String(error)}\nHost reports: ${JSON.stringify(reports)}\nWork: ${JSON.stringify(work)}\nLoop: ${JSON.stringify({ status: checkpoint?.status, calls: checkpoint?.turns.flatMap(turn => turn.calls.map(call => call.id)), progress: checkpoint?.progress })}\nMemory waits: ${JSON.stringify({ invalidations: [...memory.invalidations.keys()], queries: [...memory.queryTails.keys()], captures: [...memory.captures.keys()], continuity: memory.continuity?.owner })}`, { cause: error });
+  }
   return message;
 }
 function active(store: CompanionsStore, conversationId: string, companionId = 'sister') {
@@ -323,8 +330,8 @@ describe('VCP companion memory through the main service and real SQLite', () => 
     expect(brainPayload?.memoryRecall?.context?.text).toContain('4月9日');
     expect(clients.get(f.root)!.search).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ text: expect.stringContaining('出生的那天') }));
     expect(clients.get(f.root)!.preprocess).toHaveBeenCalledWith(expect.anything(), expect.arrayContaining([
-      expect.objectContaining({ role: 'system', content: expect.stringContaining(`[[${vcpMemoryNotebookFolder('经历')}日记本::RiverMemo::AIMemo+]]`) }),
-    ]));
+      expect.objectContaining({ role: 'system', content: expect.stringContaining(`[[${vcpMemoryNotebookFolder('经历')}日记本::RiverMemo::TimeDecay180/0::AIMemo+]]`) }),
+    ]), expect.objectContaining({ now: expect.any(String), timeZone: expect.any(String) }), expect.objectContaining({ schema: 'episodic-v1', halfLifeDays: 180, minScore: 0 }));
     expect(f.store.messages({ conversationId: f.conversation.id }).messages.at(-1)?.content).toBe('是4月9日。');
   });
 
@@ -376,6 +383,26 @@ describe('VCP companion memory through the main service and real SQLite', () => 
     const newSource = f.store.appendMessage({ conversationId: f.conversation.id, authorId: 'user', content: '再说一次，我喜欢茶。', replyDirective: 'none' });
     expect(() => f.store.request({ type: 'memory.record', companionId: 'sister', conversationId: f.conversation.id, candidate: journal(newSource) })).toThrow();
     expect(transport.prohibitionFetch).not.toHaveBeenCalled();
+  });
+
+  it('reads a legitimate note whose arbitrary metadata resembles nested host source and context receipts', async () => {
+    const f = fixture(), source = f.store.appendMessage({ conversationId: f.conversation.id, authorId: 'user', content: '庭院里种着薄荷。', replyDirective: 'none' });
+    const metadata = { extra: { text: '这是用户资料中的合法说明。', revision: 'not-a-host-revision', profileKey: 'not-a-host-profile',
+      sourceMessageIds: ['missing-untrusted-metadata-id'], memoryContext: { text: '普通嵌套JSON', revision: 'unrelated', profileKey: 'unrelated' } } };
+    const note = f.store.request({ type: 'memory.record', companionId: 'sister', conversationId: f.conversation.id,
+      candidate: { ...journal(source, '庭院里种着薄荷。', ['薄荷']), metadata } }).memories![0]!;
+    markIndexed(f.store); let calls = 0;
+    transport.fetch.mockImplementation(async (_input, init) => {
+      if (calls++ === 0) return memoryResponse('read_legitimate_metadata', 'read', { id: note.id });
+      const receipt = JSON.parse(body(init).messages.at(-1)!.content) as CompanionStorageResponse;
+      expect(receipt.memoryRead?.memory).toMatchObject({ id: note.id, content: note.content, metadata });
+      expect(receipt.memoryRead?.sources.some(row => row.id === source.id)).toBe(true);
+      return textResponse('已核对真实来源，庭院里种着薄荷。');
+    });
+    const request = await sent(f.service, f.store, f.conversation.id, '读取那篇薄荷日记。', 'read-legitimate-metadata');
+    expect(calls).toBe(2);
+    expect(f.store.request({ type: 'loop.get', companionId: 'sister', sourceMessageId: request.id }).loop?.status).toBe('done');
+    expect(active(f.store, f.conversation.id).some(row => row.id === note.id && row.content === note.content)).toBe(true);
   });
 
   it.each(['record', 'revise', 'save'] as const)('checks a changed-word residence proposal at the unified %s entrance', async action => {

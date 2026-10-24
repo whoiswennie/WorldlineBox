@@ -1,20 +1,24 @@
 import type { AiApiFormat } from '../../shared/ai-endpoints';
+import { companionProviderContextCapacity } from './provider-capacity';
 
 type RecordValue = Record<string, unknown>;
 const record = (value: unknown): RecordValue => value && typeof value === 'object' && !Array.isArray(value) ? value as RecordValue : {};
 const array = (value: unknown): unknown[] => Array.isArray(value) ? value : [];
 const MAX_STREAM_BYTES = 4 * 1_024 * 1_024, MAX_EVENT_LENGTH = 256 * 1_024;
 export class CompanionProviderStreamError extends Error {
-  constructor(readonly code: 'INVALID_RESPONSE' | 'REFUSED' | 'CANCELLED' | 'NETWORK', message: string) { super(message); }
+  constructor(readonly code: 'INVALID_RESPONSE' | 'REFUSED' | 'CANCELLED' | 'NETWORK' | 'CONTEXT_CAPACITY', message: string,
+    readonly diagnostic?: 'missing_body' | 'malformed_event_json' | 'event_bytes_limit' | 'stream_bytes_limit' | 'uncompleted_stream'
+      | 'provider_output_limit' | 'provider_error_event' | 'invalid_tool_arguments' | 'invalid_frame') { super(message); }
 }
-const invalid = () => new CompanionProviderStreamError('INVALID_RESPONSE', '模型流式回复不完整或格式无效，请重试。');
+const invalid = (diagnostic: NonNullable<CompanionProviderStreamError['diagnostic']> = 'invalid_frame') =>
+  new CompanionProviderStreamError('INVALID_RESPONSE', '模型流式回复不完整或格式无效，请重试。', diagnostic);
 const refused = () => new CompanionProviderStreamError('REFUSED', '模型未能回复这条消息。');
 type Call = { id: string; name: string; arguments: string; thoughtSignature?: string };
 
 /** SSE adapters build the same final envelopes as non-streaming provider calls. */
 export async function readCompanionProviderStream(response: Response, format: AiApiFormat,
   options: { signal: AbortSignal; onText?: (text: string) => void; onActivity?: () => void }): Promise<unknown> {
-  const reader = response.body?.getReader(); if (!reader) throw invalid();
+  const reader = response.body?.getReader(); if (!reader) throw invalid('missing_body');
   const accumulator = new ProviderAccumulator(format, options.onText), decoder = new TextDecoder('utf-8', { fatal: true });
   let bytes = 0, pending = '', eventName = '', data: string[] = [], completed = false, skipLeadingLf = false;
   const abort = () => { void reader.cancel().catch(() => undefined); };
@@ -25,7 +29,7 @@ export async function readCompanionProviderStream(response: Response, format: Ai
     if (data.length) {
       const value = data.join('\n'); data = [];
       if (value !== '[DONE]') {
-        let parsed: unknown; try { parsed = JSON.parse(value); } catch { throw invalid(); }
+        let parsed: unknown; try { parsed = JSON.parse(value); } catch { throw invalid('malformed_event_json'); }
         accumulator.accept(eventName, parsed);
         if (streamActivity(format, eventName, parsed)) options.onActivity?.();
       } else accumulator.done();
@@ -39,7 +43,7 @@ export async function readCompanionProviderStream(response: Response, format: Ai
     const field = colon < 0 ? '' : value.slice(colon + 1).replace(/^ /u, '');
     if (key === 'event') eventName = field;
     if (key === 'data') data.push(field);
-    if (data.reduce((sum, part) => sum + part.length, 0) > MAX_EVENT_LENGTH) throw invalid();
+    if (data.reduce((sum, part) => sum + part.length, 0) > MAX_EVENT_LENGTH) throw invalid('event_bytes_limit');
   };
   try {
     if (options.signal.aborted) throw new CompanionProviderStreamError('CANCELLED', '这次回复已取消。');
@@ -52,7 +56,7 @@ export async function readCompanionProviderStream(response: Response, format: Ai
       }
       if (options.signal.aborted) throw new CompanionProviderStreamError('CANCELLED', '这次回复已取消。');
       if (chunk.done) break;
-      bytes += chunk.value.byteLength; if (bytes > MAX_STREAM_BYTES) throw invalid();
+      bytes += chunk.value.byteLength; if (bytes > MAX_STREAM_BYTES) throw invalid('stream_bytes_limit');
       pending += decoder.decode(chunk.value, { stream: true });
       if (skipLeadingLf && pending) { if (pending.startsWith('\n')) pending = pending.slice(1); skipLeadingLf = false; }
       let end: number;
@@ -65,7 +69,7 @@ export async function readCompanionProviderStream(response: Response, format: Ai
         const result = accumulator.finish(); completed = true;
         void reader.cancel().catch(() => undefined); return result;
       }
-      if (pending.length > MAX_EVENT_LENGTH) throw invalid();
+      if (pending.length > MAX_EVENT_LENGTH) throw invalid('event_bytes_limit');
     }
     pending += decoder.decode();
     if (pending) line(pending.replace(/\r$/u, ''));
@@ -111,14 +115,14 @@ class ProviderAccumulator {
   get isFinished(): boolean { return this.terminal; }
   done(): void {
     // Chat/DashScope also require their native finish reason before [DONE].
-    if (!this.terminal) throw invalid();
+    if (!this.terminal) throw invalid('uncompleted_stream');
   }
   private updateText(value: string, cumulative = false): void {
     if (cumulative) { if (!value.startsWith(this.text)) throw invalid(); this.text = value; }
     else this.text += value;
-    if (this.text.length > 65_536) throw invalid();
+    if (this.text.length > 65_536) throw invalid('provider_output_limit');
     const visible = visibleCompanionStreamText(this.text);
-    if (visible.length > 16_000) throw invalid();
+    if (visible.length > 16_000) throw invalid('provider_output_limit');
     if (visible && visible !== this.visible) {
       if (!visible.startsWith(this.visible)) throw invalid();
       this.visible = visible; this.onText?.(visible);
@@ -126,7 +130,10 @@ class ProviderAccumulator {
   }
   accept(eventName: string, value: unknown): void {
     const chunk = record(value), type = typeof chunk.type === 'string' ? chunk.type : eventName;
-    if (chunk.error || type === 'error' || chunk.code && !chunk.output) throw invalid();
+    if (chunk.error || type === 'error' || chunk.code && !chunk.output) {
+      if (companionProviderContextCapacity(chunk)) throw new CompanionProviderStreamError('CONTEXT_CAPACITY', '模型服务明确拒绝了本次输入的上下文容量，必须先减少较早工作历史后再试。');
+      throw invalid('provider_error_event');
+    }
     if (this.format === 'openai_chat' || this.format === 'dashscope_native') this.chat(chunk);
     else if (this.format === 'openai_responses') this.responses(type, chunk);
     else if (this.format === 'anthropic') this.anthropic(type, chunk);
@@ -138,7 +145,7 @@ class ProviderAccumulator {
     const choice = record(choices.find(value => record(value).index === 0) ?? choices[0]);
     const delta = record(this.format === 'dashscope_native' ? choice.message : choice.delta);
     if (delta.refusal || choice.finish_reason === 'content_filter') throw refused();
-    if (choice.finish_reason === 'length') throw invalid();
+    if (choice.finish_reason === 'length') throw invalid('provider_output_limit');
     if (typeof delta.content === 'string') this.updateText(delta.content);
     else for (const value of array(delta.content)) {
       const part = record(value); if (part.type === 'refusal') throw refused();
@@ -159,7 +166,7 @@ class ProviderAccumulator {
     }
   }
   private responses(type: string, chunk: RecordValue): void {
-    if (['response.failed', 'response.incomplete'].includes(type)) throw invalid();
+    if (['response.failed', 'response.incomplete'].includes(type)) throw invalid(type === 'response.incomplete' ? 'uncompleted_stream' : 'provider_error_event');
     if (type === 'response.refusal.delta' || type === 'response.refusal.done') throw refused();
     const index = Number(chunk.output_index ?? 0);
     if (!Number.isInteger(index) || index < 0 || index > 32) throw invalid();
@@ -216,7 +223,7 @@ class ProviderAccumulator {
       const call = this.calls.get(index); if (call && !call.arguments) call.arguments = JSON.stringify(this.blocks.get(index)!.input ?? {});
     } else if (type === 'message_delta') {
       const reason = record(chunk.delta).stop_reason;
-      if (reason === 'max_tokens') throw invalid(); if (reason === 'refusal') throw refused();
+      if (reason === 'max_tokens') throw invalid('provider_output_limit'); if (reason === 'refusal') throw refused();
       if (typeof reason === 'string') this.stopReason = reason;
     } else if (type === 'message_stop') {
       if (this.openBlocks.size || !this.stopReason) throw invalid(); this.terminal = true;
@@ -245,10 +252,11 @@ class ProviderAccumulator {
     if (this.calls.size > 16 || call.id.length > 200 || call.name.length > 100 || call.arguments.length > 65_536 || (call.thoughtSignature?.length ?? 0) > 65_536) throw invalid();
   }
   finish(): unknown {
-    if (!this.terminal || this.calls.size > 16) throw invalid();
+    if (!this.terminal) throw invalid('uncompleted_stream');
+    if (this.calls.size > 16) throw invalid();
     const calls = [...this.calls].sort(([left], [right]) => left - right).map(([, call]) => {
       this.checkCall(call); if (!call.id || !call.name) throw invalid();
-      try { JSON.parse(call.arguments); } catch { throw invalid(); } return call;
+      try { JSON.parse(call.arguments); } catch { throw invalid('invalid_tool_arguments'); } return call;
     });
     if (new Set(calls.map(call => call.id)).size !== calls.length) throw invalid();
     if (this.format === 'openai_chat' || this.format === 'dashscope_native') {

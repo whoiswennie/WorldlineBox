@@ -383,6 +383,11 @@
       "sha256": "fa8f89310d75d07683f2bba2f81cffd33786be615fa661a1c72b1d9e2774bae5"
     },
     {
+      "path": "LICENSE",
+      "bytes": 14022,
+      "sha256": "5392a8b3f46108fa3494e8c15b57da9e14e9bbd93335590cb5b50364fcf770a8"
+    },
+    {
       "path": "Plugin/DailyNote/dailynote.js",
       "bytes": 70721,
       "sha256": "021e23c975daea121c2ce16a20770fd6a1a3252675e53c1936ab23fcbd231e2e"
@@ -578,6 +583,11 @@
       "sha256": "4017ea5229f8fed5da97ce8b0352363f75cad904729d565f3d74b7082136d44b"
     },
     {
+      "path": "TDBKnowledge.js",
+      "bytes": 66004,
+      "sha256": "8016fa552b7291c4b410832285804480c9886fedc378a57156b3c0f9c76463d5"
+    },
+    {
       "path": "Plugin/DailyNote/TagMaster.txt",
       "bytes": 1748,
       "sha256": "d88ca2d340b639acc6af040c4fc2826e5650eee0f39d0e0a319db9a80d5c246f"
@@ -633,9 +643,9 @@
       "sha256": "fffdcef65799260c9fb4eb2a975b1edbeb10bcd595d9f723e4035726cdc23542"
     },
     {
-      "path": "LICENSE",
-      "bytes": 14022,
-      "sha256": "5392a8b3f46108fa3494e8c15b57da9e14e9bbd93335590cb5b50364fcf770a8"
+      "path": "Plugin/AgentDream/DreamWaveEngine.js",
+      "bytes": 34490,
+      "sha256": "7a136bbd491323ceff48beaa39a39d9c6b9373ec93b037bae06c0fa41906ef6a"
     }
   ]
 }

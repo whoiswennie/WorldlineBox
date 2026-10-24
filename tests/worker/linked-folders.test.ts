@@ -5,6 +5,7 @@ import { hostname, tmpdir } from 'node:os';
 import path from 'node:path';
 
 import { afterEach, describe, expect, it } from 'vitest';
+import { removeOwnedDirectorySync } from '../../src/main/vcp-memory/filesystem';
 
 import { LibraryService, SUPPORTED_SCHEMA_VERSION } from '../../src/worker/library-service';
 
@@ -45,7 +46,8 @@ function temporaryRoot(): string {
 afterEach(() => {
   for (const service of services.splice(0)) service.closeAll();
   for (const root of temporaryRoots.splice(0)) {
-    rmSync(root, { force: true, recursive: true });
+    if (path.dirname(path.resolve(root)) !== path.resolve(tmpdir())) throw new Error('Unexpected linked fixture root');
+    removeOwnedDirectorySync(root);
   }
 });
 

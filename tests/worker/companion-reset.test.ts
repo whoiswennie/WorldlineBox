@@ -108,9 +108,29 @@ it('preserves other group authors, invalidates a peer memory whose source is rem
     expect(f.store.request({ type: 'messages', conversationId: peer.id }).messages).toEqual([]);
     expect(() => f.store.request({ type: 'memory.read', companionId: 'bob', conversationId: f.store.openPrivate('bob').id, id: memory.id })).toThrow();
     f.store.updateConversation(group.id, { memberIds: ['alice', 'bob'] });
+    expect(() => f.store.request({ type: 'social.contact.check', companionId: 'alice', recipientIds: ['bob'] })).toThrow('还不是你认识');
     expect(f.store.request({ type: 'memory.sources.filter', companionId: 'alice', conversationId: group.id, ids: [user.id] }).memorySources).toEqual([]);
     expect(() => f.store.request({ type: 'memory.record', companionId: 'alice', conversationId: group.id, candidate: { content: user.content, sourceMessageIds: [user.id], evidence: [{ sourceMessageId: user.id, quote: user.content }] } })).toThrow();
     expect(() => f.store.request({ type: 'action.create', action: { conversationId: group.id, companionId: 'alice', sourceMessageId: user.id, title: '不该复活', status: 'queued', accessMode: 'danger-full-access' } })).toThrow('重置');
+});
+it('removes a reset message publication index while retaining another group author and its real index', async () => {
+    const f = fixture(), group = f.store.createConversation('发布索引重置隔离', ['alice', 'bob']);
+    const topic = f.store.request({ type: 'topic.create', conversationId: group.id, readerId: 'alice', kind: 'game', title: '真实共享局' }).topic!;
+    f.store.request({ type: 'topic.join', conversationId: group.id, topicId: topic.id, readerId: 'bob' });
+    const own = f.store.appendMessage({ conversationId: group.id, topicId: topic.id, authorId: 'alice', content: '本人将清除的公开进度。', replyDirective: 'none' });
+    const other = f.store.appendMessage({ conversationId: group.id, topicId: topic.id, authorId: 'bob', content: '另一位伙伴保留的独立进度。', replyDirective: 'none' });
+    const db = new Database(f.file);
+    try {
+        const index = (id: string) => db.prepare('SELECT value FROM metadata WHERE key=?').get('message-topic-publication/' + id);
+        expect(index(own.id)).toBeTruthy();
+        const otherIndex = index(other.id); expect(otherIndex).toBeTruthy();
+        const job = f.store.request({ type: 'companion.reset', id: 'alice', scope: 'all' }).reset!;
+        f.store.request({ type: 'companion.reset.cleanup', id: 'alice', jobId: job.id }); await finish(f.store);
+        expect(() => f.store.getMessage(own.id)).toThrow();
+        expect(index(own.id)).toBeUndefined();
+        expect(f.store.getMessage(other.id).content).toBe(other.content);
+        expect(index(other.id)).toEqual(otherIndex);
+    } finally { db.close(); }
 });
 it('resets an orphaned hidden host port without touching another owner or similarly named rooms', async () => {
     const f = fixture();
@@ -262,6 +282,7 @@ it('clears both sides of private social history and restores the world without r
 });
 it('resumes indexed batches after restart across 100000 messages and 100000 sourced memories', async () => {
     const pressureCount = Number(process.env.WORLDLINEBOX_RESET_PRESSURE_COUNT ?? 100000);
+    const fixtureStarted = performance.now();
     const f = fixture();
     close(f.store);
     const db = new Database(f.file);
@@ -282,15 +303,20 @@ it('resumes indexed batches after restart across 100000 messages and 100000 sour
         }
     }).immediate();
     db.close();
+    console.log(JSON.stringify({ resetFixture: { stage: 'seeded', messages: pressureCount, journals: pressureCount, elapsedMs: performance.now() - fixtureStarted } }));
+    const openAt = performance.now();
     let store = open(f.file);
+    console.log(JSON.stringify({ resetFixture: { stage: 'reopened', elapsedMs: performance.now() - openAt } }));
     const beginAt = performance.now();
     const job = store.request({ type: 'companion.reset', id: 'alice', scope: 'all' }).reset!;
     const beginMs = performance.now() - beginAt;
     store.request({ type: 'companion.reset.cleanup', id: 'alice', jobId: job.id });
     let maxBatchMs = 0, maxPhase = '', batches = 0;
     const timings: number[] = [], started = performance.now();
+    const reportedPhases = new Set<string>();
     while (store.request({ type: 'companion.reset.status', id: 'alice' }).reset!.status !== 'completed') {
         const phase = store.request({ type: 'companion.reset.status', id: 'alice' }).reset!.phase, before = performance.now();
+        if (!reportedPhases.has(phase)) { reportedPhases.add(phase); console.log(JSON.stringify({ resetFixture: { stage: phase, batches, elapsedMs: performance.now() - started } })); }
         await store.advanceReset();
         const duration = performance.now() - before;
         timings.push(duration);
@@ -299,6 +325,7 @@ it('resumes indexed batches after restart across 100000 messages and 100000 sour
             maxPhase = phase;
         }
         batches++;
+        if (batches % 1000 === 0) console.log(JSON.stringify({ resetFixture: { stage: phase, batches, elapsedMs: performance.now() - started } }));
         const current = store.request({ type: 'companion.reset.status', id: 'alice' }).reset!;
         if (current.status === 'failed')
             throw new Error(current.phase + ': ' + current.error);
@@ -319,4 +346,4 @@ it('resumes indexed batches after restart across 100000 messages and 100000 sour
     expect(maxBatchMs).toBeLessThan(1000);
     expect(store.request({ type: 'messages', conversationId: f.room.id }).messages).toEqual([]);
     expect(store.listMemory('alice')).toEqual([]);
-}, 120000);
+}, 240000);

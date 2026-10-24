@@ -16,6 +16,7 @@ import path from 'node:path';
 import { fileSymlinkOrSkip } from './symlink-fixture';
 
 import { afterEach, describe, expect, it } from 'vitest';
+import { removeOwnedDirectorySync } from '../../src/main/vcp-memory/filesystem';
 
 import {
   LibraryService,
@@ -62,7 +63,10 @@ function expectServiceCode(operation: () => unknown, code: LibraryServiceError['
 }
 
 afterEach(() => {
-  for (const root of temporaryRoots.splice(0)) rmSync(root, { force: true, recursive: true });
+  for (const root of temporaryRoots.splice(0)) {
+    if (path.dirname(path.resolve(root)) !== path.resolve(tmpdir())) throw new Error('Unexpected import-planning fixture root');
+    removeOwnedDirectorySync(root);
+  }
 });
 
 describe('asset listing', () => {

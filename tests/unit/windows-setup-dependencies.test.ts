@@ -22,14 +22,14 @@ describe.skipIf(process.platform !== 'win32')('Windows setup dependency installa
       @{ calls = $script:calls; failure = $failure; skipElectronDownload = $env:ELECTRON_SKIP_BINARY_DOWNLOAD } | ConvertTo-Json -Compress -Depth 5
       if ($failure) { exit 1 }
     `,
-  ], { encoding: 'utf8', windowsHide: true, timeout: 20_000 });
+  ], { encoding: 'utf8', windowsHide: true, timeout: 20_000, env: { ...process.env, WORLDLINEBOX_SETUP_OFFLINE: '0' } });
 
   it('avoids host SQLite compilation while preparing the other native packages', () => {
     const result = run();
     expect(result.status, result.stdout + result.stderr).toBe(0);
     expect(JSON.parse(result.stdout)).toEqual({
       calls: [
-        ['ci', '--ignore-scripts', '--registry=https://registry.npmjs.org', '--no-audit', '--no-fund'],
+        ['ci', '--ignore-scripts', '--include=optional', '--prefer-offline', '--registry=https://registry.npmjs.org', '--no-audit', '--no-fund'],
         ['rebuild', 'koffi', 'node-pty', '--ignore-scripts=false'],
       ],
       failure: null,

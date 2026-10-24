@@ -1,15 +1,16 @@
-import { mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 
 import { afterEach, describe, expect, it } from 'vitest';
 
 import { createArtifactResponse, parseByteRange } from '../../src/main/artifact-response';
+import { removeOwnedDirectorySync } from '../../src/main/vcp-memory/filesystem';
 
 const roots: string[] = [];
 
 afterEach(() => {
-  for (const root of roots.splice(0)) rmSync(root, { force: true, recursive: true });
+  for (const root of roots.splice(0)) removeOwnedDirectorySync(root);
 });
 
 describe('artifact protocol byte ranges', () => {

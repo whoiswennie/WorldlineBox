@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { removeOwnedDirectorySync } from '../../src/main/vcp-memory/filesystem';
 
 const extractAuthorFromExifMock = vi.hoisted(() => vi.fn(async () => null as string | null));
 vi.mock('../../src/worker/author-from-exif', () => ({
@@ -131,7 +132,8 @@ afterEach(() => {
   extractAuthorFromExifMock.mockResolvedValue(null);
   for (const root of temporaryRoots.splice(0)) {
     try {
-      rmSync(root, { force: true, recursive: true });
+      if (path.dirname(path.resolve(root)) !== path.resolve(tmpdir())) throw new Error('Unexpected thumbnails fixture root');
+      removeOwnedDirectorySync(root);
     } catch {
       // Cleanup is best-effort.
     }

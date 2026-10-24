@@ -16,6 +16,9 @@ beforeEach(() => {
     const s = scope(id), routine = store.request({ type: 'routine.get', ...s }).routine!;
     store.request({ type: 'routine.configure', ...s, expectedRevision: routine.revision, patch: { timeZone: 'UTC', sleepAt: '23:00', wakeAt: '07:00', meals: [], habits: [] } });
   }
+  const introduced = store.request({ type: 'social.conversation.ensure', companionId: 'alice', memberIds: ['alice', 'bob'] }).socialConversation!;
+  store.request({ type: 'social.message.append', conversationId: introduced.id, authorId: 'alice', content: 'bob你好，我是alice，我们先互相认识。',
+    clientId: 'actual_introduction_before_interruption', virtualCreatedAt: new Date().toISOString() });
   advance(20000);
 });
 afterEach(() => { store.close(); if (path.dirname(path.resolve(root)) !== path.resolve(tmpdir()) || !path.basename(root).startsWith('companion-interrupt-')) throw new Error('Unexpected fixture'); rmSync(root, { recursive: true, force: true }); vi.useRealTimers(); });
@@ -51,12 +54,15 @@ it.each(['sleeping', 'eating', 'resting', 'working'])('interrupts a real %s peer
 
 it('keeps a manually dormant peer unloaded even when an urgent source exists', () => {
   store.setCompanionActive('bob', false); const alice = scope('alice');
+  const before = store.request({ type: 'social.graph', companionId: 'alice' }).socialGraph!;
   expect(() => store.request({ type: 'world.tool', ...alice, arguments: { action: 'message', recipientIds: ['bob'], text: '急事，需要你回应。', urgent: true } })).toThrow('手动激活');
   advance(1300); expect(store.request({ type: 'social.job.claim' }).socialJob).toBeUndefined();
   advance(10000); expect(store.request({ type: 'social.job.claim' }).socialJob).toBeUndefined();
   const world = store.request({ type: 'world.snapshot' }).world!;
   expect(world.actors.some(actor => actor.companionId === 'bob')).toBe(false); expect(world.scenes.some(scene => scene.ownerId === 'bob')).toBe(false);
-  expect(store.request({ type: 'social.graph', companionId: 'alice' }).socialGraph!.nodes.find(node => node.id === 'bob')).toBeUndefined(); // Rejected contact cannot invent a relationship.
+  const after = store.request({ type: 'social.graph', companionId: 'alice' }).socialGraph!;
+  expect(after.nodes.find(node => node.id === 'bob')).toEqual(before.nodes.find(node => node.id === 'bob'));
+  expect(after.links).toEqual(before.links); expect(after.events).toEqual(before.events); // A rejected urgent attempt cannot change the actual prior introduction.
 });
 
 it.each([false, true])('durably pauses and restores original work while respecting a later human edit=%s', edited => {

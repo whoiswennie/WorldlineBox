@@ -21,6 +21,15 @@ const project = (sleep = context(), chatModelConfigured = true) => projectCompan
 const row = (sleep: CompanionWorldSleepPlan, kind: string) => project(sleep).items.find(item => item.kind === kind)!;
 
 describe('truthful owner memory and learning plans', () => {
+  it('shows an attention-required failed review as waiting without promising automatic retry or eligibility', () => {
+    const sleep = context({ hasUnconsolidated: true, admission: 'admitted',
+      actor: { activity: 'sleeping', routinePhase: 'sleeping', activityStartedAtReal: '2026-10-22T09:00:00.000Z', moving: false, working: false },
+      job: { status: 'failed', attempts: 1, dreamAllowed: true, leaseActive: false, terminal: true, error: '当前原文块超过实际容量，需明确处理后继续。' } });
+    for (const kind of ['sleep_consolidation', 'dream']) {
+      expect(row(sleep, kind)).toMatchObject({ state: 'waiting', timing: { kind: 'conditional', clock: 'real' } });
+      expect(row(sleep, kind).reason).toContain('需明确处理'); expect(row(sleep, kind).timing.at).toBeUndefined();
+    }
+  });
   it('keeps event-driven diaries distinct from fixed daily tasks and probability dreams', () => {
     const plan = project();
     expect(companionMemoryLifePlanSchema.parse(plan)).toEqual(plan);

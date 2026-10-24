@@ -6,6 +6,7 @@ import type { VcpMemorySearchResult } from '../vcp-memory/contracts';
 export function projectCompanionMemoryRetrieval(input: {
   mode: 'active' | 'passive'; observedAt: string; documentCount: number;
   result?: VcpMemorySearchResult; hits: CompanionMemoryPage['items']; contextText: string;
+  contextReferences?: Array<{ id: string; version: number; role: 'returned' | 'focus_input'; textHash: string }>;
 }): CompanionMemoryRetrieval {
   const { result, hits, documentCount, mode } = input, trace = result?.retrieval, counts = trace?.counts;
   const empty = documentCount === 0, degraded = result?.degraded === true;
@@ -44,8 +45,10 @@ export function projectCompanionMemoryRetrieval(input: {
         description: '沿用 VCP 实际返回顺序，每篇文档保留首先命中的片段。基础分、关系加成和锚点凭证只在引擎确实提供时显示；分数不是记忆真实性的概率。',
         facts: [...present('原生返回片段', counts?.returnedCandidates), fact('本页获权记忆', hits.length)], tags: [], matches }),
       stage({ id: 'context', title: mode === 'passive' ? '聚焦本轮回忆' : '返回主动回忆', state: empty ? 'skipped' : 'completed',
-        description: mode === 'passive' ? '原版 RAGDiary / AIMemo 在独立的原有调用中生成本轮聚焦正文。上方候选查询用于核对，不代表其中每条都注入；聚焦调用没有提供完整逐阶段引用轨迹。'
-          : '原版 LightMemo 在独立的原有调用中生成工具实际返回的正文。上方候选查询用于核对，不把候选排序冒充工具正文的逐条引用。',
-        facts: empty ? [] : [fact('实际返回正文字符', input.contextText.length), fact('逐条聚焦引用轨迹', '原版接口未提供')], tags: [], matches: [] }),
+        description: mode === 'passive' ? '原版 RAGDiary / AIMemo 在本页获权资料内独立聚焦。来源凭证记录聚焦模型实际输入及版本，不把候选分数或输入片段冒充回答的逐句引用。'
+          : '原版 LightMemo 在本页获权资料内独立生成正文。来源凭证来自实际输出格式器，正文排序与上方候选查询分别保留。',
+        facts: empty ? [] : [fact('实际返回正文字符', input.contextText.length), fact('观测到的正文来源片段', input.contextReferences?.length ?? 0),
+          fact('来源含义', mode === 'passive' ? '聚焦模型实际输入；不等于最终逐句引用' : '原版格式器实际输出；排序独立于候选查询')], tags: [], matches: [],
+        ...(input.contextReferences ? { contextReferences: input.contextReferences.slice(0, 100) } : {}) }),
     ] };
 }

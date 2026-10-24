@@ -1,7 +1,6 @@
 import {
   mkdirSync,
   mkdtempSync,
-  rmSync,
   symlinkSync,
   writeFileSync,
 } from 'node:fs';
@@ -13,6 +12,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { createPluginPackageRequestHandler } from '../../src/main/plugin-package-ipc';
 import { PluginPackageManager } from '../../src/main/plugin-package-manager';
 import manifestFixture from '../fixtures/plugin-manifests/palette-tools.worldlinebox-plugin.json';
+import { removeOwnedDirectorySync } from '../../src/main/vcp-memory/filesystem';
 
 const roots: string[] = [];
 
@@ -32,7 +32,7 @@ function writePlugin(directory: string): void {
 }
 
 afterEach(() => {
-  for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
+  for (const root of roots.splice(0)) removeOwnedDirectorySync(root);
 });
 
 describe('plugin install failure detail', () => {

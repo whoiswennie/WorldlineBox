@@ -131,10 +131,17 @@ it.skipIf(process.env.WORLDLINEBOX_AUTONOMOUS_COLLAB_ACCEPTANCE !== '1')('lets o
     const ownerLoop = store.request({ type: 'loop.get', sourceMessageId: source.id, companionId: 'lin' }).loop;
     expect(ownerLoop?.status, 'the original owner brain must continue through final handoff').toBe('done');
     const collaborationCalls = ownerLoop!.turns.flatMap(turn => turn.calls).filter(call => call.name === 'world' && JSON.parse(call.arguments).action === 'collaborate');
-    expect(collaborationCalls.length, 'the actual owner model must choose the invitation tool').toBeGreaterThan(0);
+    const ownerContactCalls = ownerLoop!.turns.flatMap(turn => turn.calls).filter(call => {
+      if (call.name !== 'world') return false;
+      const args = JSON.parse(call.arguments);
+      return args.action === 'collaborate' && args.participantIds?.includes('zhou')
+        || args.action === 'message' && args.recipientIds?.includes('zhou');
+    });
     const grants = store.request({ type: 'collaboration.list', companionId: 'lin', conversationId: origin.id }).collaborations!;
     const grant = grants.find(grant => grant.sourceMessageId === source.id && grant.participants.some(participant => participant.companionId === 'zhou'))!;
-    expect(grant).toBeDefined(); expect(grant.status).toBe('completed');
+    expect(grant, 'real independent execution must have a current human grant, regardless of the chosen contact path').toBeDefined();
+    expect(ownerContactCalls.length, 'the actual owner model must choose its contact or delegation step').toBeGreaterThan(0);
+    expect(grant.status).toBe('completed');
     const verifier = grant.participants.find(participant => participant.companionId === 'zhou')!;
     expect(verifier.status).toBe('succeeded'); expect(verifier.reason).toBeTruthy(); expect(verifier.actionIds.length).toBeGreaterThan(0);
     expect(grant.ownerId).toBe('lin'); expect(verifier.conversationId).not.toBe(origin.id);
@@ -168,7 +175,8 @@ it.skipIf(process.env.WORLDLINEBOX_AUTONOMOUS_COLLAB_ACCEPTANCE !== '1')('lets o
     evidence.grant = grant; evidence.actions = actions; evidence.tasks = tasks; evidence.proofRoot = proofRoot;
     evidence.verifierCalls = verifierLoop.turns.flatMap(turn => turn.calls.map(call => ({ name: call.name, arguments: JSON.parse(call.arguments) })));
     evidence.allTaskResultsVerified = true; evidence.independentWorkspacesVerified = true; evidence.privateBackgroundIsolated = true;
-    evidence.invitationWasModelChosen = true; evidence.peerAcceptanceWasRealModelDecision = commands.some(command => command.type === 'collaboration.respond' && command.decision === 'accept');
+    evidence.invitationWasModelChosen = ownerContactCalls.length > 0; evidence.explicitCollaborationToolCalls = collaborationCalls.length;
+    evidence.peerAcceptanceWasRealModelDecision = commands.some(command => command.type === 'collaboration.respond' && command.decision === 'accept');
     status = 'passed';
   } catch (error) { status = 'failed'; failures.push(error instanceof Error ? error.message : String(error)); throw error; }
   finally {

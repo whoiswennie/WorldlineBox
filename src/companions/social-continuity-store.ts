@@ -3,6 +3,7 @@ import type { CompanionConnection } from './store';
 import type { CompanionMessage } from '../shared/companions';
 import type { AppendCompanionMessage, CompanionStorageCommand, CompanionStorageResponse } from '../shared/companion-storage';
 import type { CompanionSocialNotification, CompanionSocialOrigin } from '../shared/companion-social';
+import type { CompanionExecutionReadset } from '../shared/companion-execution-evidence';
 
 type Row = Record<string, string | number | null>;
 type Scope = { companionId: string; conversationId: string };
@@ -97,10 +98,10 @@ export class CompanionSocialContinuityStore {
   }
   hasDelegationTo(owner: string, target: string): boolean { return !!this.matchVisit(owner, [target]); }
   validOrigin(id: string): boolean { return !!this.get(id); }
-  bind(chainId: string, owner: string, text: string, originId?: string): void {
+  bind(chainId: string, owner: string, text: string, originId?: string, shareCurrentTextOnly = false): void {
     const origin = originId ? this.get(originId) : undefined;
     if (originId && !origin) throw new Error('原玩家委托已经失效。');
-    const value: CompanionSocialOrigin = origin ? this.publicOrigin(origin) : { id: chainId, initiatorId: owner,
+    const value: CompanionSocialOrigin = origin ? { ...this.publicOrigin(origin), ...(shareCurrentTextOnly ? { sharedText: text } : {}) } : { id: chainId, initiatorId: owner,
       initiatorKind: 'companion', ownerId: owner, sharedText: text, provenance: 'companion_initiative' };
     this.db.prepare('INSERT INTO companion_social_chain_origins(chain_id,origin_id,data) VALUES(?,?,?)').run(chainId, originId ?? null, JSON.stringify(value));
   }
@@ -205,6 +206,97 @@ export class CompanionSocialContinuityStore {
     return this.visible({ companionId: notice.companionId, conversationId: notice.conversationId }, ids).filter(message => message.conversationId === notice.conversationId && message.status === 'sent'
       && !message.isReplyDraft && !message.replyDraft).sort((a, b) => a.sequence - b.sequence);
   }
+  /** Resolve sent facts only after proving the immutable human goal and real
+   * outbox/job lineage. Reading metadata here grants no unrelated raw room. */
+  private progress(notice: Pick<Notice, 'sourceMessageId' | 'companionId' | 'conversationId'>): NonNullable<CompanionSocialNotification['progressEvidence']> {
+    const original = this.message(notice.sourceMessageId), bodyHash = (text: string) => createHash('sha256').update(text).digest('hex');
+    const taskRows = this.db.prepare('SELECT data FROM companion_activity_tasks WHERE companion_id=? AND conversation_id=? AND source_message_id=?')
+      .all(notice.companionId, notice.conversationId, original.id) as Row[];
+    const tasks = taskRows.map(value => parse<{ id: string; sourceChecksum?: string; seededSocialClientIds?: string[]; status: string; step: number; history: unknown[] }>(value.data))
+      .filter(task => task.sourceChecksum === bodyHash(original.content))
+      .map(task => ({ id: task.id, status: ['queued', 'running', 'waiting'].includes(task.status) ? 'active' : task.status,
+        step: task.step, history: task.history, seededSocialClientIds: task.seededSocialClientIds }));
+    const seeded = new Set(tasks.flatMap(task => task.seededSocialClientIds ?? []));
+    const sent: Array<{ message: CompanionMessage; recipientIds: string[] }> = [];
+    const add = (id: string, room: string, expected?: string) => {
+      const message = this.visible({ companionId: notice.companionId, conversationId: room }, [id]).find(message => message.id === id && message.conversationId === room);
+      if (!message || message.authorId !== notice.companionId || message.status !== 'sent' || message.isReplyDraft || message.replyDraft
+        || expected !== undefined && message.content !== expected) return;
+      const indexed = this.db.prepare('SELECT recipient_ids FROM companion_social_messages WHERE message_id=? AND conversation_id=?').get(id, room);
+      if (!indexed) return;
+      const recipientIds = parse<string[]>(row(indexed).recipient_ids).filter(id => id !== notice.companionId);
+      if (!recipientIds.length) return;
+      sent.push({ message, recipientIds });
+    };
+    const digest = (message: CompanionMessage) => hash([message.id, message.conversationId, message.topicId, message.authorId, message.content, message.status, message.replyToId]);
+    for (const value of this.db.prepare("SELECT client_id,message_id,conversation_id,data FROM companion_social_outbox WHERE companion_id=? AND status='sent' AND (json_extract(data,'$.authorizationMessageId')=? OR client_id IN(SELECT value FROM json_each(?))) ORDER BY rowid")
+      .all(notice.companionId, original.id, JSON.stringify([...seeded])) as Row[]) {
+      const out = parse<{ companionId: string; conversationId: string; content: string; authorizationMessageId?: string; authorizationChecksum?: string;
+        sourceMessageId?: string; sourceChecksum?: string; agentSource?: { conversationId: string; messageId: string }; agentChecksum?: string }>(value.data);
+      if (out.companionId !== notice.companionId || out.conversationId !== value.conversation_id
+        || out.authorizationMessageId !== original.id && !seeded.has(String(value.client_id))) continue;
+      const check = (room: string, id: string, expected?: string) => this.visible({ companionId: notice.companionId, conversationId: room }, [id])
+        .some(message => message.id === id && message.conversationId === room && digest(message) === expected);
+      if (out.authorizationMessageId && (out.authorizationMessageId !== original.id || digest(original) !== out.authorizationChecksum)
+        || out.sourceMessageId && !check(out.conversationId, out.sourceMessageId, out.sourceChecksum)
+        || out.agentSource && !check(out.agentSource.conversationId, out.agentSource.messageId, out.agentChecksum)) continue;
+      if (!out.authorizationMessageId) {
+        const causal = out.agentSource ?? (out.sourceMessageId ? { conversationId: out.conversationId, messageId: out.sourceMessageId } : undefined);
+        if (!causal) continue;
+        if (causal.messageId !== original.id || causal.conversationId !== original.conversationId) {
+          const jobs = this.db.prepare("SELECT j.data,c.origin_id FROM companion_social_jobs j JOIN companion_social_chain_origins c ON c.chain_id=json_extract(j.data,'$.chainId') JOIN companion_social_delegations d ON d.id=c.origin_id WHERE j.companion_id=? AND j.conversation_id=? AND json_extract(j.data,'$.sourceMessageId')=? AND j.status IN('running','done') AND d.companion_id=? AND d.source_message_id=? AND json_extract(d.data,'$.conversationId')=?")
+            .all(notice.companionId, causal.conversationId, causal.messageId, notice.companionId, original.id, original.conversationId) as Row[];
+          if (!jobs.some(value => {
+            const job = parse<{ chainId: string; readSet?: Array<{ id: string; checksum: string }> }>(value.data);
+            const source = this.visible({ companionId: notice.companionId, conversationId: causal.conversationId }, [causal.messageId])[0];
+            return source && this.chainValid(job.chainId) && job.readSet?.some(read => read.id === source.id && read.checksum === digest(source));
+          })) continue;
+        }
+      }
+      if (value.message_id) add(String(value.message_id), out.conversationId, out.content);
+    }
+    // Replies made by this owner on the same original delegation are real
+    // outbound too, even though social.job.complete does not create an outbox.
+    for (const value of this.db.prepare("SELECT j.data FROM companion_social_jobs j JOIN companion_social_chain_origins c ON c.chain_id=json_extract(j.data,'$.chainId') JOIN companion_social_delegations d ON d.id=c.origin_id WHERE j.companion_id=? AND j.status='done' AND d.companion_id=? AND d.source_message_id=? AND json_extract(d.data,'$.conversationId')=?").all(notice.companionId, notice.companionId, original.id, notice.conversationId) as Row[]) {
+      const job = parse<{ chainId: string; conversationId: string; resultMessageId?: string }>(value.data);
+      if (job.resultMessageId && this.chainValid(job.chainId)) add(job.resultMessageId, job.conversationId);
+    }
+    const all = [...new Map(sent.map(item => [item.message.id, item])).values()].sort((a, b) => a.message.sequence - b.message.sequence);
+    return { observationChecksum: hash({ tasks, sent: all.map(item => [item.message.id, item.message.conversationId, bodyHash(item.message.content), item.recipientIds]) }),
+      outbound: all.slice(-100), complete: all.length <= 100 };
+  }
+  /** The existing Activity observer may request the same exact goal view. It
+   * is not a new model tool and never accepts a model-supplied origin/title. */
+  progressForGoal(scope: { companionId: string; conversationId: string; sourceMessageId: string }): NonNullable<CompanionSocialNotification['progressEvidence']> {
+    const source = this.visible(scope, [scope.sourceMessageId]).find(message => message.id === scope.sourceMessageId
+      && message.conversationId === scope.conversationId && message.authorId === 'user' && message.status === 'sent' && !message.isReplyDraft && !message.replyDraft);
+    if (!source) throw new Error('实际目标来源不可访问，不能读取出站进度。');
+    return this.progress(scope);
+  }
+  private readset(notice: Notice, provided?: CompanionExecutionReadset): CompanionExecutionReadset {
+    if (provided && (!provided.complete || provided.companionId !== notice.companionId || provided.conversationId !== notice.conversationId)) throw new Error('通知执行读集归属或覆盖不完整。');
+    const result: CompanionExecutionReadset = provided ?? { schema: 'worldlinebox.companion-execution-readset-v1', companionId: notice.companionId,
+      conversationId: notice.conversationId, complete: true, sources: [], memories: [], contexts: [], topics: [], knowledgeReads: [] };
+    const messages = [this.message(notice.sourceMessageId), ...notice.dialogue ?? [], ...notice.progressEvidence?.outbound.map(item => item.message) ?? []];
+    for (const item of this.batch(notice)) {
+      if (item.kind === 'peer_reply' && item.evidence.messageId) messages.push(this.message(item.evidence.messageId));
+      // A host's deliberately released visit response is a public permission
+      // fact, not a grant to read the host's private request. validNotice checks
+      // that authority before publication; never invent a guest raw-source read.
+    }
+    const sources = new Map<string, CompanionExecutionReadset['sources'][number]>();
+    for (const source of result.sources) {
+      const previous = sources.get(source.id);
+      if (previous && (previous.checksum !== source.checksum || previous.conversationId !== source.conversationId)) throw new Error('通知读集包含同一来源的冲突版本。');
+      sources.set(source.id, source);
+    }
+    for (const message of messages) {
+      const source = { id: message.id, conversationId: message.conversationId, checksum: createHash('sha256').update(message.content).digest('hex') }, previous = sources.get(message.id);
+      if (previous && (previous.checksum !== source.checksum || previous.conversationId !== source.conversationId)) throw new Error('通知所读来源已变化，不能用新字节覆盖旧证明。');
+      sources.set(source.id, source);
+    }
+    return { ...result, sources: [...sources.values()] };
+  }
   private batch(notice: Notice): Notice[] {
     return (notice.batchIds ?? [notice.id]).flatMap(id => {
       const found = this.db.prepare('SELECT data FROM companion_social_notifications WHERE id=?').get(id);
@@ -220,16 +312,17 @@ export class CompanionSocialContinuityStore {
   claim(): CompanionStorageResponse {
     return this.db.transaction(() => {
       this.observeVisits(); if (this.backlog()) return { ok: true };
-      const values = this.db.prepare("SELECT data FROM companion_social_notifications WHERE status='pending' OR status IN('running','failed') AND lease_until<=? ORDER BY created_at,rowid LIMIT 32").all(iso()) as Row[];
+      const values = this.db.prepare("SELECT data FROM companion_social_notifications WHERE COALESCE(json_extract(data,'$.terminal'),0)=0 AND (status='pending' OR status IN('running','failed') AND lease_until<=?) ORDER BY created_at,rowid LIMIT 32").all(iso()) as Row[];
       for (const value of values) {
         const notice = parse<Notice>(value.data);
         if (!this.db.prepare("SELECT 1 FROM companions WHERE id=? AND json_extract(data,'$.active')=1").get(notice.companionId)) continue;
         if (!this.validNotice(notice)) { notice.status = 'cancelled'; delete notice.leaseToken; this.save(notice); continue; }
         if (!this.ready(notice.companionId) || companionPlayerPhoneBusy(this.db, notice.companionId) || this.db.prepare("SELECT 1 FROM companion_social_jobs WHERE companion_id=? AND status='running' AND lease_until>? LIMIT 1").get(notice.companionId, iso())
+          || this.db.prepare("SELECT 1 FROM companion_activity_tasks WHERE companion_id=? AND report_pending=1 AND json_extract(data,'$.reportLeaseUntil')>? LIMIT 1").get(notice.companionId, Date.now())
           || this.db.prepare("SELECT 1 FROM companion_social_communication WHERE companion_id=? AND until_real>? AND json_extract(data,'$.phase')='typing'").get(notice.companionId, iso())
           || this.db.prepare("SELECT 1 FROM companion_social_notifications WHERE companion_id=? AND status='running' AND lease_until>? LIMIT 1").get(notice.companionId, iso())) continue;
         // Collapse already waiting facts for the same delegation into one coherent report.
-        const siblings = this.db.prepare("SELECT data FROM companion_social_notifications WHERE origin_id=? AND id!=? AND (status='pending' OR status IN('running','failed') AND lease_until<=?) ORDER BY created_at,rowid LIMIT 15")
+        const siblings = this.db.prepare("SELECT data FROM companion_social_notifications WHERE origin_id=? AND id!=? AND COALESCE(json_extract(data,'$.terminal'),0)=0 AND (status='pending' OR status IN('running','failed') AND lease_until<=?) ORDER BY created_at,rowid LIMIT 15")
           .all(notice.origin.id, notice.id, iso()) as Row[];
         const batch = [notice];
         for (const sibling of siblings) {
@@ -245,6 +338,7 @@ export class CompanionSocialContinuityStore {
         notice.batchIds = batch.map(item => item.id);
         notice.events = batch.map(({ kind, eventId, peerConversationId, evidence }) => ({ kind, eventId, peerConversationId, evidence }));
         notice.dialogue = this.dialogue(notice); notice.dialogueChecksum = hash(notice.dialogue);
+        notice.progressEvidence = this.progress(notice);
         notice.eventWatermark = this.eventWatermark(notice.origin.id);
         this.save(notice, until); return { ok: true, socialNotification: this.publicNotice(notice) };
       }
@@ -264,9 +358,10 @@ export class CompanionSocialContinuityStore {
       // Rebuild from the new dialogue instead of committing an isolated stale answer.
       if (batch.some(item => !this.validNotice(item)) || this.backlog() || !this.ready(notice.companionId) || companionPlayerPhoneBusy(this.db, notice.companionId)
         || notice.eventWatermark !== undefined && this.eventWatermark(notice.origin.id) !== notice.eventWatermark
-        || notice.dialogueChecksum !== undefined && notice.dialogueChecksum !== hash(this.dialogue(notice))) return this.defer(batch);
+        || notice.dialogueChecksum !== undefined && notice.dialogueChecksum !== hash(this.dialogue(notice))
+        || notice.progressEvidence?.observationChecksum !== this.progress(notice).observationChecksum) return this.defer(batch);
       const message = input.text === null ? undefined : this.append({ conversationId: notice.conversationId, authorId: notice.companionId, content: input.text,
-        replyToId: notice.sourceMessageId, clientId: 'notice_' + notice.id });
+        replyToId: notice.sourceMessageId, clientId: 'notice_' + notice.id, executionReadset: this.readset(notice, input.executionReadset) });
       for (const item of batch) {
         item.status = 'done'; delete item.leaseToken; item.resultMessageId = message?.id;
         delete item.dialogue; delete item.dialogueChecksum; delete item.events; delete item.batchIds; delete item.eventWatermark; this.save(item);
@@ -280,6 +375,10 @@ export class CompanionSocialContinuityStore {
       const notice = parse<Notice>(row(found).data); if (notice.status !== 'running' || notice.leaseToken !== input.leaseToken) return;
       for (const item of this.batch(notice)) {
         if (item.status !== 'running' || item.leaseToken !== input.leaseToken) continue;
+        if (input.terminal) {
+          item.status = 'failed'; item.terminal = true; item.error = input.error; delete item.leaseToken;
+          this.save(item); continue;
+        }
         item.status = this.validNotice(item) ? 'failed' : 'cancelled'; delete item.leaseToken;
         this.save(item, new Date(Date.now() + Math.min(900000, 10000 * 2 ** Math.min(item.attempts, 7))).toISOString());
       }

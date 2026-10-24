@@ -7,6 +7,8 @@ import type { Companion, CompanionConversation, CompanionMessage, CompanionMemor
 import type { CompanionSocialJob } from '../../src/shared/companion-social';
 import type { CompanionSocialNotification, CompanionSocialOrigin } from '../../src/shared/companion-social';
 import type { CompanionWorldSnapshot } from '../../src/shared/companion-world';
+import type { CompanionExecutionReadset } from '../../src/shared/companion-execution-evidence';
+import { createHash } from 'node:crypto';
 const config = { apiFormat: 'openai_chat' as const, model: 'fixture', apiKey: 'fixture-key', baseUrl: 'https://fixture.invalid' };
 const companion: Companion = { id: 'deepseek-flash', name: '小肥鱼', description: '妹妹', persona: '姐姐是大肥鱼，爱好音乐。', model: '', avatar: 'flash', builtin: true, proactive: false, createdAt: '2026-10-15T00:00:00Z' };
 const members = [companion, { ...companion, id: 'deepseek-sister', name: '大肥鱼' }, { ...companion, id: 'friend', name: '朋友' }];
@@ -24,6 +26,36 @@ const input = () => ({ companion, conversation, source, messages: [source], job,
     people: [], objects: [], visibleObjectIds: [], visibleCompanionIds: [] },
 } as CompanionWorldSnapshot });
 const response = (value: unknown) => new Response(JSON.stringify({ choices: [{ message: { content: JSON.stringify(value) } }] }), { headers: { 'Content-Type': 'application/json' } });
+it('corrects a public game final containing a private night action, sends an actual single-recipient tool message, then publishes only a safe acknowledgement', async () => {
+  const gameSource = { ...source, topicId: 'actual_game', content: '第二夜，有行动的角色请真实单独联系主持，群里不要报目标。' };
+  let authorCalls = 0, reviewCalls = 0;
+  const execute = vi.fn(async (call: { arguments: string }) => {
+    expect(JSON.parse(call.arguments)).toEqual({ action: 'message', recipientIds: ['deepseek-sister'], text: '我第二夜的私密目标是friend。' });
+    return { ok: true, socialConversation: { id: 'actual_pair', memberIds: [companion.id, 'deepseek-sister'] }, socialMessage: { message: { id: 'actual_private_send' } } };
+  });
+  const fetchFn = vi.fn<typeof fetch>(async (_url, init) => {
+    const wire = JSON.parse(String(init?.body)), data = JSON.parse(wire.messages[1].content);
+    if (data.purpose === 'game_public_reply_privacy') {
+      reviewCalls++; expect(data.actualAudience.memberIds).toEqual(conversation.memberIds);
+      const allowed = data.exactProposedText === '收到，已按要求单独联系主持。';
+      return response({ allowed, confidence: .99, reason: allowed ? '公共回执没有秘密。' : '群final直接报夜间目标，需实际单独message后再回公共无敏感内容。' });
+    }
+    expect(data.purpose).toBe('world_social'); authorCalls++;
+    if (authorCalls === 1) return response({ text: '我私报第二夜目标是friend。', reason: '拟报夜间行动' });
+    if (authorCalls === 2) {
+      expect(data.outputCorrection.error).toContain('实际群投递');
+      return new Response(JSON.stringify({ choices: [{ message: { content: '', tool_calls: [{ id: 'actual_private_call', type: 'function',
+        function: { name: 'world', arguments: JSON.stringify({ action: 'message', recipientIds: ['deepseek-sister'], text: '我第二夜的私密目标是friend。' }) } }] } }] }));
+    }
+    return response({ text: '收到，已按要求单独联系主持。', reason: '真实私信已送达，公共只回执。' });
+  });
+  const result = await generateCompanionSocialReply({ companion, conversation, source: gameSource, messages: [gameSource], job: { ...job, sourceMessageId: gameSource.id },
+    members, world: input().world, topic: { id: 'actual_game', conversationId: conversation.id, title: '本局', kind: 'game', status: 'active', moderatorId: 'deepseek-sister',
+      participantIds: conversation.memberIds, invitedIds: conversation.memberIds, tags: [], revision: 1, createdAt: source.createdAt, updatedAt: source.createdAt },
+    topicState: { topicId: 'actual_game', readerId: companion.id, trust: 'topic_state_not_real_world_facts' } }, config, undefined, { fetchFn,
+    capabilities: { replaySafe: true, tools: [{ name: 'world', description: '实际单独联系能力', parameters: { type: 'object' } }], execute } });
+  expect(result.text).toBe('收到，已按要求单独联系主持。'); expect(execute).toHaveBeenCalledOnce(); expect(authorCalls).toBe(3); expect(reviewCalls).toBe(2);
+});
 it.each([true, false])('classifies continuation from the original full human goal independently of the initial proposed greeting: %s', async requiresContinuation => {
   const human = { ...source, authorId: 'user', content: requiresContinuation ? '找妹妹和其他伙伴一起组织游戏并玩起来。' : '帮我问妹妹吃饭了吗，把答复告诉我。' };
   const fetchFn = vi.fn<typeof fetch>(async (_url, init) => {
@@ -35,6 +67,20 @@ it.each([true, false])('classifies continuation from the original full human goa
   });
   expect(await authorizeCompanionContact({ source: human, recipients: [members[1]!], text: '你好，现在方便吗？' }, config, undefined, { fetchFn }))
     .toEqual({ allowed: true, intent: 'message', requiresContinuation });
+});
+it('distinguishes a real independently executed subtask from social continuation without granting it authority', async () => {
+  const human = { ...source, authorId: 'user', content: '请你分析这份CSV，再请周岚独立用DSH复核；我授权本次分工及必要的文件路径共享。' };
+  const fetchFn = vi.fn<typeof fetch>(async (_url, init) => {
+    const request = JSON.parse(String(init?.body)), data = JSON.parse(request.messages[1].content);
+    expect(data.source.content).toBe(human.content); expect(data.proposedText).toBe('周岚你好，我是林澄。');
+    expect(data.collaborationRules).toContain('不创建grant');
+    expect(data.collaborationRules).toContain('即使proposedText只是第一句问候');
+    expect(data.outputSchema.properties.requiresCollaboration.type).toBe('boolean');
+    return response({ allowed: true, confidence: .99, evidence: [human.content], reason: '允许认识，但实际分工需要独立授权。',
+      intent: 'message', requiresContinuation: true, requiresCollaboration: true });
+  });
+  expect(await authorizeCompanionContact({ source: human, recipients: [members[1]!], text: '周岚你好，我是林澄。' }, config, undefined, { fetchFn }))
+    .toEqual({ allowed: true, intent: 'message', requiresContinuation: true, requiresCollaboration: true });
 });
 it('preserves human presence and distinct speaker identity in companion-created player groups', async () => {
   const fetchFn = vi.fn<typeof fetch>(async (_url, init) => {
@@ -253,6 +299,7 @@ it('reports one committed peer event to the actual original player without impor
     status: 'running', attempts: 1, leaseToken: 'lease', createdAt: source.createdAt };
   const fetchFn = vi.fn<typeof fetch>(async (_url, init) => {
     const request = JSON.parse(String(init?.body)), payload = JSON.parse(request.messages[1].content);
+    if (payload.purpose === 'companion_social_progress_review') return response({ supported: true, correction: '' });
     expect(payload.purpose).toBe('world_social_notification'); expect(payload.identity.currentReply.speaker.id).toBe('user');
     expect(payload.identity.currentReply.author.id).toBe(companion.id); expect(payload.origin.initiatorId).toBe('user');
     expect(payload.confirmedEvent).toEqual({ eventId: notification.eventId, kind: 'peer_reply', evidence: notification.evidence });
@@ -278,4 +325,33 @@ it('reports one committed peer event to the actual original player without impor
     expect(request.messages[0].content).toContain('text=null');
     return response({ text: null, eventId: followup.eventId, initiatorId: 'user' });
   } })).resolves.toBeNull();
+});
+it('corrects a notification false delivery claim in its original slot using the exact linked sent body, without exposing the private root', async () => {
+  const room = { ...conversation, id: 'human_notice_room', kind: 'private' as const, memberIds: [companion.id] };
+  const human = { ...source, id: 'human_notice_source', conversationId: room.id, authorId: 'user', content: '去邀朋友一起玩。PRIVATE_NOTICE_AUTHORITY' };
+  const outbound = { ...source, id: 'actual_generic_invite', authorId: companion.id, content: '一起玩一局吗？' };
+  const eventMessage = { ...source, id: 'actual_question', authorId: 'friend', content: '先说说人数和规则吧。' };
+  const notice: CompanionSocialNotification = { id: 'notice_progress', companionId: companion.id, conversationId: room.id, sourceMessageId: human.id,
+    origin: { id: 'real_origin', initiatorId: 'user', initiatorKind: 'human_player', ownerId: companion.id, sharedText: outbound.content, provenance: 'current_player_request' },
+    kind: 'peer_reply', eventId: eventMessage.id, peerConversationId: conversation.id,
+    evidence: { authorId: 'friend', text: eventMessage.content, messageId: eventMessage.id }, status: 'running', attempts: 1, createdAt: source.createdAt,
+    progressEvidence: { observationChecksum: 'a'.repeat(64), complete: true, outbound: [{ message: outbound, recipientIds: ['friend'] }] } };
+  let authors = 0, reviews = 0; let proof: CompanionExecutionReadset | undefined;
+  const fetchFn = vi.fn<typeof fetch>(async (_url, init) => {
+    const body = JSON.parse(String(init?.body)), data = JSON.parse(body.messages[1].content);
+    expect(body.tools).toBeUndefined(); expect(JSON.stringify(body)).not.toContain('PRIVATE_NOTICE_AUTHORITY');
+    if (data.purpose === 'companion_social_progress_review') {
+      reviews++; expect(data.verifiedOutbound).toEqual([expect.objectContaining({ id: outbound.id, content: outbound.content, recipientIds: ['friend'] })]);
+      return response({ supported: !data.proposedText.includes('已经告诉'), correction: data.proposedText.includes('已经告诉') ? '真实出站只有泛泛邀约，不能证明已送达6人配置。' : '' });
+    }
+    authors++;
+    if (authors === 2) expect(data.outputCorrection.error).toContain('真实出站只有泛泛邀约');
+    return response({ text: authors === 1 ? '6人配置我已经告诉她了。' : '她在问人数和规则，我先前只发出了邀请，还要继续确认。', eventId: notice.eventId, initiatorId: 'user' });
+  });
+  const text = await generateCompanionSocialNotification({ companion, conversation: room, source: human, notification: notice,
+    eventMessages: [eventMessage], world: input().world, members }, config, undefined, { fetchFn, observeReadset: value => { proof = value; } });
+  expect(text).toContain('先前只发出了邀请'); expect({ authors, reviews }).toEqual({ authors: 2, reviews: 2 });
+  expect(proof?.sources.map(source => source.id)).toContain(outbound.id); expect(proof?.sources.map(source => source.id)).toContain(eventMessage.id);
+  expect(proof?.sources.some(source => source.id === human.id)).toBe(false);
+  expect(proof?.sources.some(source => source.checksum === createHash('sha256').update('').digest('hex'))).toBe(false);
 });

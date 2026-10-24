@@ -1,8 +1,23 @@
 import { afterEach, expect, it, vi } from 'vitest';
+import { createHash } from 'node:crypto';
 import { VcpChatGateway } from '../../src/main/vcp-chat-gateway';
 
 const gateways: VcpChatGateway[] = [];
 afterEach(async () => { for (const gateway of gateways.splice(0)) await gateway.close(); });
+it('identifies the global source behind the stable loopback model and keeps credential rotation private', async () => {
+  const gateway = new VcpChatGateway(async () => 'unused'); gateways.push(gateway);
+  const semanticProfile = { apiFormat: 'openai_chat', model: 'model-one', baseUrl: 'https://private.invalid', generation: { maxOutputTokens: 8192 } };
+  const first = await gateway.configuration({ semanticProfile, credential: 'private-one' });
+  const unchanged = await gateway.configuration({ semanticProfile, credential: 'private-one' });
+  expect(unchanged).toEqual(first);
+  const rotated = await gateway.configuration({ semanticProfile, credential: 'private-two' });
+  expect(rotated.sourceSignature).toBe(first.sourceSignature); expect(rotated.connectionGeneration).toBe(first.connectionGeneration! + 1);
+  const changed = await gateway.configuration({ semanticProfile: { ...semanticProfile, model: 'model-two' }, credential: 'private-two' });
+  expect(changed.sourceSignature).not.toBe(first.sourceSignature); expect(changed.baseUrl).toBe(first.baseUrl);
+  expect(changed.model).toBe('global-chat'); expect(changed.connectionGeneration).toBe(rotated.connectionGeneration);
+  expect(JSON.stringify(changed)).not.toContain('private.invalid'); expect(JSON.stringify(changed)).not.toContain('private-two');
+  expect(JSON.stringify(changed)).not.toContain(createHash('sha256').update('private-two').digest('hex'));
+});
 it('accepts original single-user AIMemo and system/user TimeLine through the authenticated loopback facade', async () => {
   const generate = vi.fn<(context: { system: string; user: string }, signal: AbortSignal) => Promise<string>>(async () => '这是我获取的所有相关知识/记忆[[未找到相关记忆]]');
   const gateway = new VcpChatGateway(generate); gateways.push(gateway);

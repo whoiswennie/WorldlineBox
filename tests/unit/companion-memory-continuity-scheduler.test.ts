@@ -92,6 +92,22 @@ it('gives original passive RAG only authorized recent dialogue, preserves self r
   expect(messages[0]?.content).not.toContain('[[VCPTimeLine::');
 });
 
+it.each([{ zone: 'Asia/Shanghai', month: '2035-01' }, { zone: 'UTC', month: '2034-12' }])('automatically groups the same source instant in the $zone month', async test => {
+  const f = await fixture(), world = f.store.request({ type: 'world.snapshot' }).world!;
+  f.store.request({ type: 'world.configure', expectedRevision: world.settings.revision, patch: { timeZone: test.zone } });
+  f.store.request({ type: 'memory.revise', companionId: 'alpha', conversationId: f.room.id, id: f.note.id, expectedVersion: f.note.version,
+    candidate: { content: f.source.content, occurredAt: '2034-12-31T20:00:00Z', tags: ['alpha'], sourceMessageIds: [f.source.id], evidence: [{ sourceMessageId: f.source.id, quote: f.source.content }] } });
+  f.index(); f.service.schedule(0);
+  await vi.waitFor(() => expect(f.client.pending.size, JSON.stringify(f.report.mock.calls)).toBe(1), { timeout: 5000 });
+  const call = f.client.timeline.mock.calls.find(([, request]) => request.operation === 'generateTimelines')!;
+  expect(call[1].options).toMatchObject({ startMonth: test.month, endMonth: test.month });
+  expect(f.client.notes.get(call[0].scopeId)?.[0]).toMatchObject({ occurredAt: '2034-12-31T20:00:00Z', hostProjection: { timeZone: test.zone } });
+  [...f.client.pending.values()][0]!.resolve();
+  await vi.waitFor(() => expect(f.service.processingFor('alpha').some(job => job.status === 'completed')).toBe(true));
+  const cache = new CompanionMemoryViewCache(path.join(f.root, 'views'));
+  expect(await cache.loadArtifacts('alpha:owner-v2', 'local-profile')).toMatchObject({ calendarTimeZone: test.zone });
+});
+
 it.each(['revision', 'profile'] as const)('does not publish a completed original model result after its %s changes', async change => {
   const f = await fixture(); f.service.schedule(0);
   await vi.waitFor(() => expect(f.client.pending.size, JSON.stringify({ errors: f.report.mock.calls.map(([error]) => String(error)), requests: f.request.mock.calls.slice(-8).map(([command]) => command.type) })).toBe(1), { timeout: 5000 });

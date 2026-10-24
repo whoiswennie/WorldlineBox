@@ -1,6 +1,9 @@
 import { expect, it, vi } from 'vitest';
 import { reviewCompanionSocialProgress } from '../../src/main/companions/social-progress-review';
 import type { CompanionActivityTask } from '../../src/shared/companion-activity-task';
+import type { CompanionLoopTurn } from '../../src/shared/companion-loop';
+import { COMPANION_ACTIVITY_HANDOFF_NOTICE } from '../../src/shared/companion-activity-task';
+import { socialProgressActions, socialProgressReads, socialProgressOutbound } from '../../src/main/companions/social-progress-evidence';
 
 const now = '2026-10-23T03:00:00.000Z';
 const config = { apiFormat: 'openai_chat' as const, model: 'reviewer', apiKey: 'fixture-only', baseUrl: 'https://fixture.invalid' };
@@ -116,4 +119,108 @@ it('maps only actual related people to natural names and preserves the current t
   expect(await reviewCompanionSocialProgress('小肥鱼和Kimi已经收到邀请，游戏话题已经建好，我会继续确认意愿。', [source], config, undefined, { fetchFn, names })).toBeUndefined();
   expect(await reviewCompanionSocialProgress('我继续安排。', [{ ...task(), history: [{ step: 1, at: now, action: 'message', ok: false, result: '没有实际出站回执' }] }], config, undefined, { fetchFn, names })).toBeUndefined();
   expect(fetchFn).toHaveBeenCalledTimes(2);
+});
+
+function nativeSocialTurns(): CompanionLoopTurn[] {
+  const sent = { message: { id: 'real_sent', sequence: 13, conversationId: 'actual_pair', authorId: 'alice',
+    content: 'PRIVATE_OUTGOING_BODY', kind: 'text', status: 'sent', attachments: [], createdAt: now },
+    recipientIds: ['deepseek-flash'], virtualCreatedAt: now };
+  return [{ text: '先联系妹妹。', rawText: '先联系妹妹。', calls: [{ id: 'sent_flash', name: 'world',
+    arguments: JSON.stringify({ action: 'message', recipientIds: ['deepseek-flash'], text: 'PRIVATE_OUTGOING_BODY' }) }],
+  results: [{ callId: 'sent_flash', content: JSON.stringify({ ok: true, socialMessage: sent }) }] },
+  ...['grok', 'kimi', 'qwen', 'gugugaga'].map(person => ({ text: '', rawText: '',
+    calls: [{ id: 'blocked_' + person, name: 'world', arguments: JSON.stringify({ action: 'introduce', targetCompanionId: person, text: 'PRIVATE_INTRO_BODY' }) }],
+    results: [{ callId: 'blocked_' + person, content: JSON.stringify({ ok: true, activityHandoff: { task: task(), existingEffect: false,
+      executor: 'background_activity', newVirtualActionDispatched: false, notice: COMPANION_ACTIVITY_HANDOFF_NOTICE } }) }] }))];
+}
+
+it('distinguishes four successful handoffs from one actual sent invitation without borrowing proposed or unrelated text', async () => {
+  const turns = nativeSocialTurns(), original = JSON.stringify(turns);
+  const fetchFn = vi.fn<typeof fetch>(async (_url, init) => {
+    const data = JSON.parse(JSON.parse(String(init?.body)).messages[1].content);
+    expect(data.nativeActions.map((action: { delivery: string }) => action.delivery)).toEqual(['sent', ...Array(4).fill('not_dispatched')]);
+    expect(data.nativeActions[0]).toMatchObject({ recipientIds: ['deepseek-flash'], messageId: 'real_sent' });
+    for (const action of data.nativeActions.slice(1)) { expect(action).not.toHaveProperty('messageId'); expect(action).not.toHaveProperty('recipientIds'); }
+    expect(data.nativeActions[0].sentContent).toBe('PRIVATE_OUTGOING_BODY');
+    for (const canary of ['PRIVATE_INTRO_BODY', 'PRIVATE_ORIGINAL_HUMAN_REQUEST']) expect(JSON.stringify(data)).not.toContain(canary);
+    return response({ supported: false, correction: '只有妹妹的真实发信回执，另外四次仅交接后台，没有实际发信。' });
+  });
+  expect(await reviewCompanionSocialProgress('我给另外四人都发了邀请。还在等回信。', [], config, undefined, { turns, fetchFn })).toContain('没有实际发信');
+  expect(JSON.stringify(turns)).toBe(original);
+});
+
+it('treats current social calls as proposals before dispatch and never as completed sends', async () => {
+  const calls = [{ id: 'current_proposal', name: 'world', arguments: JSON.stringify({ action: 'introduce', targetCompanionId: 'kimi', text: 'PRIVATE_PROPOSAL_BODY' }) }];
+  const fetchFn = vi.fn<typeof fetch>(async (_url, init) => {
+    const data = JSON.parse(JSON.parse(String(init?.body)).messages[1].content);
+    expect(data.nativeActions).toEqual([{ callId: 'current_proposal', action: 'introduce', proposedRecipientIds: ['kimi'], delivery: 'proposed' }]);
+    expect(JSON.stringify(data)).not.toContain('PRIVATE_PROPOSAL_BODY');
+    return response({ supported: false, correction: '当前调用尚未执行，不能说已经发出。' });
+  });
+  expect(await reviewCompanionSocialProgress('我已经发给Kimi了。', [], config, undefined, { proposedCalls: calls, fetchFn })).toContain('尚未执行');
+});
+
+it('does not promote an external tool lookalike or invalid native receipt to delivery evidence', () => {
+  const turn = nativeSocialTurns()[0]!;
+  expect(socialProgressActions([{ ...turn, calls: turn.calls.map(call => ({ ...call, name: 'dsh' })) }])).toEqual([]);
+  expect(socialProgressActions([{ ...turn, results: [{ callId: 'sent_flash', content: JSON.stringify({ ok: true, socialMessage: { messageId: 'fabricated' } }) }] }]))
+    .toEqual([expect.objectContaining({ delivery: 'unconfirmed' })]);
+  expect(socialProgressActions([{ ...turn, results: [] }])).toEqual([expect.objectContaining({ delivery: 'unconfirmed' })]);
+});
+it('binds only an actually returned sent native body and never borrows a proposed or failed configuration body', async () => {
+  const turns = nativeSocialTurns();
+  turns[0] = { ...turns[0]!, calls: [{ ...turns[0]!.calls[0]!, arguments: JSON.stringify({ action: 'message', recipientIds: ['deepseek-flash'], text: 'UNDELIVERED_PROPOSAL_CONFIGURATION' }) }] };
+  const sent = turns[0]!, actions = socialProgressActions(turns);
+  expect(actions.find(action => action.delivery === 'sent')?.sentContent).toBe('PRIVATE_OUTGOING_BODY');
+  expect(actions.filter(action => action.delivery !== 'sent').every(action => action.sentContent === undefined)).toBe(true);
+  const reads = socialProgressReads(turns);
+  expect([...reads.values()].map(message => message.content)).toEqual(['PRIVATE_OUTGOING_BODY']);
+  const proposed = { id: 'not_yet_sent', name: 'world', arguments: JSON.stringify({ action: 'message', recipientIds: ['grok'], text: '6人配置已经告诉你。' }) };
+  const fetchFn = vi.fn<typeof fetch>(async (_url, init) => {
+    const data = JSON.parse(JSON.parse(String(init?.body)).messages[1].content);
+    expect(data.nativeActions[0].sentContent).toBe('PRIVATE_OUTGOING_BODY');
+    expect(JSON.stringify(data)).not.toContain('6人配置已经告诉你');
+    expect(JSON.stringify(data)).not.toContain('UNDELIVERED_PROPOSAL_CONFIGURATION');
+    return response({ supported: false, correction: '实际已送达正文只有邀请，未告知具体配置。' });
+  });
+  expect(await reviewCompanionSocialProgress('6人配置已经告诉她们了。', [], config, undefined,
+    { turns, proposedCalls: [proposed], fetchFn })).toContain('未告知具体配置');
+  expect(socialProgressReads([{ ...sent, calls: sent.calls.map(call => ({ ...call, name: 'dsh' })) }]).size).toBe(0);
+});
+
+it('reads exact historical task progress as evidence without treating it as a new native effect', async () => {
+  const message = JSON.parse(nativeSocialTurns()[0]!.results![0]!.content).socialMessage.message;
+  const evidence = { observationChecksum: 'a'.repeat(64), outbound: [{ message, recipientIds: ['deepseek-flash'] }], complete: true };
+  const source = task();
+  const turn: CompanionLoopTurn = { text: '', rawText: '', calls: [{ id: 'actual_progress', name: 'world',
+    arguments: JSON.stringify({ action: 'activity', parameters: { action: 'progress', id: source.id } }) }],
+  results: [{ callId: 'actual_progress', content: JSON.stringify({ ok: true, activityTask: source, activityProgressEvidence: evidence }) }] };
+  const outbound = socialProgressOutbound([turn]);
+  expect(outbound?.outbound).toEqual(evidence.outbound);
+  expect(socialProgressReads([turn]).get(message.id)).toEqual(message);
+  expect(socialProgressActions([turn])).toEqual([]);
+  const fetchFn = vi.fn<typeof fetch>(async (_url, init) => {
+    const request = JSON.parse(String(init?.body)), data = JSON.parse(request.messages[1].content);
+    expect(data.verifiedOutbound).toEqual([{ id: message.id, conversationId: message.conversationId, authorId: 'alice',
+      content: message.content, createdAt: now, recipientIds: ['deepseek-flash'] }]);
+    expect(data.nativeActions).toBeUndefined();
+    expect(request.messages[0].content).toContain('不是本轮新增发送');
+    return response({ supported: true, correction: '' });
+  });
+  expect(await reviewCompanionSocialProgress('此前给妹妹的邀请里写了这些内容。', [], config, undefined,
+    { requireReview: true, outbound, fetchFn })).toBeUndefined();
+  expect(fetchFn).toHaveBeenCalledTimes(1);
+  for (const receipt of [
+    { ok: false, activityTask: source, activityProgressEvidence: evidence },
+    { ok: true, activityTask: { ...source, id: 'foreign_task' }, activityProgressEvidence: evidence },
+    { ok: true, activityTask: { ...source, historyAvailable: false }, activityProgressEvidence: evidence },
+    { ok: true, activityTask: source, activityProgressEvidence: { ...evidence, outbound: [{ message: { ...message, authorId: 'bob' }, recipientIds: ['deepseek-flash'] }] } },
+    { ok: true, activityTask: source, activityProgressEvidence: { ...evidence, outbound: [{ message: { ...message, status: 'failed' }, recipientIds: ['deepseek-flash'] }] } },
+    { ok: true, activityTask: source },
+  ]) {
+    const invalid = [{ ...turn, results: [{ callId: 'actual_progress', content: JSON.stringify(receipt) }] }];
+    expect(socialProgressOutbound(invalid)).toBeUndefined(); expect(socialProgressReads(invalid).size).toBe(0);
+  }
+  expect(socialProgressOutbound([{ ...turn, calls: turn.calls.map(call => ({ ...call, name: 'dsh' })) }])).toBeUndefined();
+  expect(socialProgressOutbound([{ ...turn, results: [{ callId: 'wrong_call', content: turn.results![0]!.content }] }])).toBeUndefined();
 });

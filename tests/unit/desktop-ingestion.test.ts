@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -15,10 +15,11 @@ import {
   wrapDibInBmp,
 } from '../../src/main/desktop-ingestion';
 import { resolveDroppedFilePaths } from '../../src/preload/dropped-files';
+import { removeOwnedDirectorySync } from '../../src/main/vcp-memory/filesystem';
 
 const roots: string[] = [];
 afterEach(() => {
-  for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
+  for (const root of roots.splice(0)) removeOwnedDirectorySync(root);
 });
 
 describe('desktop drop path resolution', () => {

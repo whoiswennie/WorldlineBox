@@ -1,8 +1,9 @@
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
+import BetterSqlite3 from 'better-sqlite3';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { CompanionsStore, type CompanionSeed } from '../../src/companions/store';
+import { CompanionsStore, type CompanionSeed, type CompanionConnection } from '../../src/companions/store';
 import { companionWorldCellWalkable, createCompanionWorldHome, createCompanionWorldPark, findCompanionWorldPath } from '../../src/shared/companion-world-engine';
 import type { CompanionStorageCommand } from '../../src/shared/companion-storage';
 import { recordUrgentAttention } from '../helpers/companion-world-fixture';
@@ -318,6 +319,29 @@ describe('one authoritative companion world', () => {
         expect(f.store.request({ type: 'world.observe', ...f.alice }).world!.events.some(event => event.kind === 'dream')).toBe(true);
         f.store.request({ type: 'memory.forget', ...f.alice, sourceMessageIds: [source.id] });
         expect(f.store.request({ type: 'world.observe', ...f.alice }).world!.events.some(event => event.kind === 'dream')).toBe(false);
+    });
+    it('keeps a terminal sleep failure unfinished while allowing a new actual sleep episode to review its unprocessed sources', () => {
+        vi.setSystemTime('2026-10-14T02:00:00Z');
+        const f = fixture('realtime');
+        const source = f.store.appendMessage({ conversationId: f.alice.conversationId, authorId: 'alice', content: '一次真实读书经历，尚未反思整理。', replyDirective: 'none' });
+        f.store.request({ type: 'memory.record', ...f.alice, candidate: { content: source.content, sourceMessageIds: [source.id], evidence: [{ sourceMessageId: source.id, quote: source.content }] } });
+        indexNotes(f.store); advance(f.store, 10000); advance(f.store, 6000);
+        const failed = f.store.request({ type: 'world.job.claim', kind: 'dream' }).worldJob!;
+        f.store.request({ type: 'world.job.fail', id: failed.id, leaseToken: failed.leaseToken!, error: '当前来源不可拆分，需要处理', terminal: true });
+        const inspect = () => {
+            const db = new (BetterSqlite3 as { new(filename: string): CompanionConnection })(f.filename);
+            try { return JSON.parse((db.prepare('SELECT data FROM companion_world_jobs WHERE id=?').get(failed.id) as { data: string }).data); } finally { db.close(); }
+        };
+        advance(f.store, 180001); expect(f.store.request({ type: 'world.job.claim', kind: 'dream' }).worldJob).toBeUndefined();
+        let routine = f.store.request({ type: 'routine.get', ...f.alice }).routine!;
+        f.store.request({ type: 'routine.configure', ...f.alice, expectedRevision: routine.revision, patch: { sleepAt: '23:00', wakeAt: '01:00' } });
+        advance(f.store, 20000); expect(inspect()).toMatchObject({ status: 'failed', terminal: true });
+        routine = f.store.request({ type: 'routine.get', ...f.alice }).routine!;
+        f.store.request({ type: 'routine.configure', ...f.alice, expectedRevision: routine.revision, patch: { sleepAt: '01:00', wakeAt: '03:00' } });
+        advance(f.store, 20000); advance(f.store, 6000);
+        const next = f.store.request({ type: 'world.job.claim', kind: 'dream' }).worldJob!;
+        expect(next).toBeDefined(); expect(next.id).not.toBe(failed.id); expect(next.sourceMemoryIds).toEqual(failed.sourceMemoryIds);
+        expect(inspect()).toMatchObject({ status: 'failed', terminal: true });
     });
     it('checks the dream job policies across every owned source domain before committing its private review', () => {
         vi.spyOn(Math, 'random').mockReturnValue(.1);

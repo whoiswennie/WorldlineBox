@@ -160,6 +160,22 @@ it('advertises unified world and VCP roots and rejects retired tool aliases', ()
   const legacy = { id: 'legacy', name: 'memory.read', arguments: '{"id":"note"}' };
   expect(() => normalizeCompanionCapabilityCall(legacy)).toThrow('统一入口');
 });
+it('exposes independent real collaboration first while keeping social delivery and acquaintance prerequisites explicit', () => {
+  const definition = COMPANION_WORLD_CAPABILITY_TOOL;
+  expect(definition.description.split('\n')[0]).toContain('action=collaborate');
+  expect(definition.description.split('\n')[0]).toContain('message只发送社交文字');
+  const request = { action: 'collaborate', title: '独立核验', goal: '核对指定CSV', participantIds: ['bob'], sourceMessageId: 'current_human',
+    evidence: ['请波波独立核对'], assignments: [{ companionId: 'bob', goal: '只读指定CSV，在自己的工作目录写review.json' }] };
+  const normalized = normalizeCompanionCapabilityCall({ id: 'delegate', name: 'world', arguments: JSON.stringify(request) });
+  expect(normalized.name).toBe('collaborate'); expect(JSON.parse(normalized.arguments)).toEqual(request);
+  expect(() => normalizeCompanionCapabilityCall({ id: 'invalid-social', name: 'world',
+    arguments: JSON.stringify({ action: 'message', kind: 'invite', recipientIds: ['bob'], text: '请独立核验' }) })).toThrow();
+  const source = message('current_human', 1, '请波波独立核对');
+  const context = buildCompanionContext({ ...base, messages: [source], sourceMessage: source,
+    taskRequest: { sourceMessageId: source.id, prompt: source.content }, agentLoop: true });
+  expect(context.system).toContain('即使用户给出真实ID也须遵守认识前置');
+  expect(context.system).toContain('collaborate会等待并返回真实结果');
+});
 
 it('rejects substantial verbatim peer speech under a different author while allowing short agreements and quoted discussion', () => {
   const content = '我玩。'.repeat(40) + '我是来报名的，主持人发牌前我想先确认实际玩家人数。';

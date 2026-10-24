@@ -1,6 +1,17 @@
 import { z } from 'zod';
 
 const name = z.string().regex(/^[A-Za-z][A-Za-z0-9_.:-]{0,99}$/);
+export const dshArtifactRequirementSchema = z.strictObject({ path: z.string().min(1).max(4096),
+  minBytes: z.number().int().nonnegative().optional(), maxBytes: z.number().int().nonnegative().optional(),
+  sha256: z.string().regex(/^[a-f0-9]{64}$/).optional(), containsText: z.string().max(16000).optional() });
+export const dshDeliveryVerificationSchema = z.object({ status: z.literal('passed'), jsonSchema: z.boolean(),
+  artifactChecks: z.number().int().nonnegative(), unverifiedRequirements: z.array(z.string().max(1000)).max(20) });
+export const dshEffectiveCapabilitiesSchema = z.object({ digest: z.string().regex(/^[a-f0-9]{64}$/),
+  mode: z.enum(['native', 'ptc']), preset: z.string().max(100), toolCount: z.number().int().nonnegative(), skillCount: z.number().int().nonnegative() });
+export const dshExecutionConstraintSchema = z.strictObject({ id: z.string().min(1).max(200), text: z.string().min(1).max(16000),
+  kind: z.enum(['constraint', 'source_requirements']).optional(),
+  sourceMessageId: z.string().min(1).max(100), sourceDigest: z.string().regex(/^[a-f0-9]{64}$/).optional(), revision: z.number().int().nonnegative().optional() });
+export type DshExecutionConstraint = z.infer<typeof dshExecutionConstraintSchema>;
 /** Per-invocation choices. Plugin installation, credentials and models remain host-owned. */
 export const dshTaskSpecSchema = z.strictObject({
   instructions: z.string().trim().min(1).max(16000).optional(),
@@ -14,7 +25,11 @@ export const dshTaskSpecSchema = z.strictObject({
   workspace: z.strictObject({ mode: z.enum(['managed', 'existing']), path: z.string().min(1).max(4096).optional() }).superRefine((value, ctx) => {
     if ((value.mode === 'existing') !== !!value.path) ctx.addIssue({ code: 'custom', message: 'Only existing workspace requires a path.' });
   }).optional(),
-  delivery: z.strictObject({ format: z.enum(['text', 'json']), requirements: z.array(z.string().trim().min(1).max(1000)).max(20).optional() }).optional(),
+  delivery: z.strictObject({ format: z.enum(['text', 'json']), requirements: z.array(z.string().trim().min(1).max(1000)).max(20).optional(),
+    jsonSchema: z.record(z.string(), z.unknown()).refine(value => JSON.stringify(value).length <= 16000, 'Delivery schema is too large.').optional(),
+    artifacts: z.array(dshArtifactRequirementSchema).max(100).optional() }).superRefine((value, ctx) => {
+      if (value.jsonSchema && value.format !== 'json') ctx.addIssue({ code: 'custom', message: 'A delivery JSON schema requires JSON format.' });
+    }).optional(),
 });
 export type DshTaskSpec = z.infer<typeof dshTaskSpecSchema>;
 /** Read only the reference material needed for the current task. Skill text can be continued without truncation loss. */
@@ -45,6 +60,8 @@ export const dshTaskCapabilitiesSchema = z.object({ instanceId: z.string(), runt
   toolRestrictions: z.boolean(), skillSelection: z.boolean(), workspacePath: z.string(),
   toolsTotal: z.number().int().nonnegative().optional(), skillsTotal: z.number().int().nonnegative().optional(), truncated: z.boolean().optional(),
   detail: dshTaskCapabilityDetailSchema.optional(),
+  effective: dshEffectiveCapabilitiesSchema.optional(),
 });
 export type DshTaskCapabilities = z.infer<typeof dshTaskCapabilitiesSchema>;
-export const dshTaskArtifactSchema = z.object({ path: z.string().max(4096), description: z.string().max(1000).optional() });
+export const dshTaskArtifactSchema = z.object({ path: z.string().max(4096), description: z.string().max(1000).optional(),
+  bytes: z.number().int().nonnegative().optional(), sha256: z.string().regex(/^[a-f0-9]{64}$/).optional() });

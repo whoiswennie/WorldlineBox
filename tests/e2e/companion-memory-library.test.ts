@@ -75,7 +75,18 @@ test('binds the first companion entry to a real asset library and keeps readable
     expect(JSON.parse(readFileSync(file + '.meta.json', 'utf8'))).toMatchObject({ id: imported.id, version: imported.version, sources: [{ sourceType: 'manual_input' }] });
     const recall = await request(page, { type: 'memory.search', ...scope, query: '海獭怎样保存敲贝壳的工具？', tags: [], limit: 20 });
     expect(recall.memoryPage?.items.find(hit => hit.memory.id === imported.id)).toMatchObject({ score: expect.any(Number), reasons: expect.arrayContaining(['VCP river']) });
-    expect(recall.memoryContext?.profileKey).toBe(localTextEmbeddingProfileKey());
+    const memoryProfile = recall.memoryContext?.profileKey;
+    expect(memoryProfile?.split(':vcp-')).toEqual([localTextEmbeddingProfileKey(), expect.stringMatching(/^[a-f0-9]{20}$/u)]);
+    const cold = (await request(page, { type: 'memory.knowledge', ...scope, operation: 'ingest', sourceType: 'memory', sourceId: imported.id })).memoryKnowledge!;
+    expect(cold).toMatchObject({ engine: 'original-TDBKnowledge', available: true, indexed: true,
+      result: { sourceId: imported.id, sourceType: 'memory', sourceVersion: String(imported.version), chunks: expect.any(Number) } });
+    const coldDocument = cold.result!;
+    expect((await request(page, { type: 'memory.knowledge', ...scope, operation: 'read', id: coldDocument.id, version: coldDocument.version }))
+      .memoryKnowledge?.result?.text).toBe(originalText);
+    const coldRecall = (await request(page, { type: 'memory.knowledge', ...scope, operation: 'search', query: '海獭的石头放在哪里？', sourceIds: [imported.id], limit: 10 })).memoryKnowledge!;
+    expect(coldRecall.items).toContainEqual(expect.objectContaining({ id: coldDocument.id, version: coldDocument.version, sourceId: imported.id,
+      text: expect.stringContaining('腋下') }));
+    expect((await request(page, { type: 'memory.knowledge', ...scope, operation: 'search', query: '海獭', sourceIds: [], limit: 10 })).memoryKnowledge?.items).toEqual([]);
 
     const linked = await page.evaluate(id => (window as unknown as BridgeWindow).worldlinebox.library.listLinkedFolders({ libraryId: id }), libraryId);
     expect(linked.ok).toBe(true);
@@ -108,6 +119,13 @@ test('binds the first companion entry to a real asset library and keeps readable
     const revised = (await noteWith(revisedText))!;
     expect(revised.id).toBe(imported.id); expect(revised.version).toBe(imported.version + 1);
     expect(revised.sources.some(item => item.sourceType === 'manual_input' && item.messageId !== source.id)).toBe(true);
+    const staleCold = await page.evaluate(input => (window as unknown as BridgeWindow).worldlinebox.companions.request(input),
+      { type: 'memory.knowledge', ...scope, operation: 'read', id: coldDocument.id, version: coldDocument.version } as CompanionsRequest);
+    expect(staleCold.ok).toBe(false);
+    const revisedCold = (await request(page, { type: 'memory.knowledge', ...scope, operation: 'ingest', sourceType: 'memory', sourceId: revised.id })).memoryKnowledge!;
+    expect(revisedCold.indexed).toBe(true); expect(revisedCold.result?.version).not.toBe(coldDocument.version);
+    expect((await request(page, { type: 'memory.knowledge', ...scope, operation: 'read', id: revisedCold.result!.id, version: revisedCold.result!.version }))
+      .memoryKnowledge?.result?.text).toBe(revisedText);
     const renamed = path.join(folder, '海獭学习笔记.md'); renameSync(file, renamed);
     await expect.poll(() => existsSync(renamed + '.meta.json'), { timeout: 45_000 }).toBe(true);
     const afterRename = (await request(page, { type: 'memory.read', ...scope, id: imported.id, sourceLimit: 100 })).memoryRead!.memory;
@@ -120,6 +138,7 @@ test('binds the first companion entry to a real asset library and keeps readable
     await expect.poll(async () => (await browse()).memoryPage?.items.some(hit => hit.memory.id === imported.id), { timeout: 90_000 }).toBe(false);
     expect((await request(page, { type: 'memory.search', ...scope, query: '海獭收藏的石头和牵手休息', tags: [], limit: 20 })).memoryPage?.items).toEqual([]);
     expect((await request(page, { type: 'memory.sources.filter', ...scope, ids: [source.id, ...revised.sources.map(item => item.messageId)] })).memorySources).toEqual([]);
+    expect((await request(page, { type: 'memory.knowledge', ...scope, operation: 'search', query: '海獭收藏的石头', sourceIds: [imported.id] })).memoryKnowledge?.items).toEqual([]);
     // Restoring an old managed export is not new user authorization to remember it.
     writeFileSync(renamed, revisedText, 'utf8');
     await application.close(); application = undefined;
@@ -132,6 +151,7 @@ test('binds the first companion entry to a real asset library and keeps readable
     await expect.poll(() => existsSync(renamed), { timeout: 45_000 }).toBe(false);
     expect((await request(page, { type: 'memory.browse', ...scope, query: '', tags: [], limit: 100 })).memoryPage?.items).toEqual([]);
     expect((await request(page, { type: 'memory.search', ...scope, query: '海獭收藏石头', tags: [], limit: 20 })).memoryPage?.items).toEqual([]);
+    expect((await request(page, { type: 'memory.knowledge', ...scope, operation: 'status' })).memoryKnowledge?.total).toBe(0);
     await expect.poll(async () => {
       const opened = await page.evaluate(() => (window as unknown as BridgeWindow).worldlinebox.library.listOpen());
       return opened.ok && opened.value.some(item => item.libraryId === libraryId);
@@ -140,6 +160,9 @@ test('binds the first companion entry to a real asset library and keeps readable
     const restartText = '这是应用重启后由用户提供的一份新资料，用来核查目录监听已经恢复。';
     writeFileSync(afterRestart, restartText, 'utf8');
     await expect.poll(async () => (await noteWith(restartText))?.status, { timeout: 90_000 }).toBe('indexed');
+    const restartRecall = await request(page, { type: 'memory.search', ...scope, query: '应用重启后目录监听恢复的新资料', tags: [], limit: 20 });
+    expect(restartRecall.memoryContext?.profileKey).toBe(memoryProfile);
+    expect(restartRecall.memoryPage?.items.some(hit => hit.memory.content === restartText)).toBe(true);
     await expect.poll(async () => (await assets(page, libraryId)).find(item => item.displayName === '重启后的新资料.md')?.availability, { timeout: 60_000 }).toBe('available');
     expect(existsSync(path.join(profile, 'companions'))).toBe(false);
     const locator = JSON.parse(readFileSync(path.join(profile, 'companion-library.json'), 'utf8'));
@@ -150,7 +173,8 @@ test('binds the first companion entry to a real asset library and keeps readable
     const report = { selectedLibraryId: libraryId, companionId, noteId: imported.id, sourceType: imported.sources[0]?.sourceType,
       nativeIndexed: true, originalVcpRecall: true, assetSemanticRecall, profileKey: recall.memoryContext?.profileKey,
       editedVersion: revised.version, renamePreservedVersion: true, forgottenAcrossRestart: true, linkedWatcherRestored: true, profileHasCompanionData: false,
-      profileModelWeightCopies: copiedWeights.length, realBundledEmbedding: true, configuredPaidChat: false };
+      profileModelWeightCopies: copiedWeights.length, realBundledEmbedding: true, configuredPaidChat: false,
+      originalColdTdbKnowledge: true, coldVersionReadAndNativeSearch: true, coldSourceFilterBeforeQuery: true, coldInvalidatedAfterEditAndWithdrawal: true };
     const output = path.resolve('artifacts/vcp-validation'); mkdirSync(output, { recursive: true });
     writeFileSync(path.join(output, 'verified-memory-library.json'), JSON.stringify(report, null, 2));
     await testInfo.attach('real-library-memory-proof', { body: JSON.stringify(report, null, 2), contentType: 'application/json' });

@@ -1,4 +1,3 @@
-/* eslint-disable @typescript-eslint/no-require-imports -- Standalone worker is shipped as CommonJS without bundling. */
 /* global require, process, setTimeout */
 'use strict';
 
@@ -23,7 +22,8 @@ function receive(message) {
         case 'list': value = await runtime.list(); break;
         case 'forget': value = await runtime.forget(command.id); break;
         case 'plugin': value = await runtime.peripherals.call(command.plugin, command.arguments); break;
-        case 'preprocess': value = await runtime.peripherals.preprocess(command.messages); break;
+        case 'preprocess': value = await runtime.peripherals.preprocess(command.messages, command.clock, command.automaticDecay); break;
+        case 'dream-wave': value = await require('./dream-runtime.cjs').generateDreamWave(runtime, command.request); break;
         case 'timeline': value = await runtime.peripherals.timeline(command.request); break;
         case 'capabilities': value = await runtime.peripherals.capabilities(); break;
         case 'export-notes': value = await runtime.exportNotes(); break;

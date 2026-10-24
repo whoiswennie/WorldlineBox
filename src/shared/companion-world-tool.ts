@@ -23,8 +23,8 @@ export const companionWorldArgumentsSchema = z.discriminatedUnion('action', [
   z.strictObject({ action: z.literal('social'), targetCompanionId: id.optional(), recipientIds: z.array(id).min(1).max(3).optional(), text: z.string().trim().min(1).max(2000),
     kind: z.enum(['greet', 'talk', 'invite', 'comfort', 'apologize', 'boundary']) })
     .refine(action => Boolean(action.targetCompanionId) !== Boolean(action.recipientIds), '现场交流请指定单个对象或多人对象列表。'),
-  z.strictObject({ action: z.literal('message'), urgent: z.boolean().optional(), recipientIds: z.array(id).min(1).max(19), text: z.string().trim().min(1).max(2000) })
-    .describe('通过手机给一个或多个伙伴发送自己的私聊/群聊消息，无需同场。只填接收伙伴ID，宿主固定你为发言者；不含玩家，不替对方授权或发话。普通消息等待对方方便；确有需要打断的紧急联系可urgent=true，宿主有限时中断并保留原活动，不能激活手动休眠伙伴，也不扩大现实操作权限。联系、招呼和邀约是基础能力。当前玩家让你去找某伙伴玩就可以用自己的话询问对方是否方便，无需逐字发件模板；不转发玩家私人资料。'),
+  z.strictObject({ action: z.literal('message'), urgent: z.boolean().optional(), recipientIds: z.array(id).min(1).max(19), roomId: id.optional(), topicId: id.nullable().optional(), text: z.string().trim().min(1).max(2000) })
+    .describe('通过手机给熟人发送自己的社交消息，无需同场。此操作只发聊天，不创建现实执行grant；让另一个伙伴独立通过DSH读文件、核算或交付产物，应在已认识后用统一world的action=collaborate，并携带本轮sourceMessageId/evidence/assignments。继续已有群时填写其真实roomId及topicId（来自create_group回执或本目标端口），不另开同成员群；recipientIds必须恰好为该群除本人之外的伙伴。topicId=null明确发送到普通聊天，省略时沿用本人在该群选中的话题。只填接收伙伴ID，宿主固定你为发言者；不含玩家，不替对方授权或发话。普通消息等待对方方便；确有需要打断的紧急联系可urgent=true，宿主有限时中断并保留原活动，不能激活手动休眠伙伴，也不扩大现实操作权限。联系、招呼和邀约是基础能力。当前玩家让你去找某伙伴玩就可以用自己的话询问对方是否方便，无需逐字发件模板；不转发玩家私人资料。'),
 ]);
 export type CompanionWorldArguments = z.output<typeof companionWorldArgumentsSchema>;
 const parameters = z.toJSONSchema(companionWorldArgumentsSchema, { io: 'input' }) as Record<string, unknown>;

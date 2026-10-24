@@ -8,6 +8,7 @@ import type { CompanionWorldArguments } from '../../src/shared/companion-world-t
 import { CompanionWorldService } from '../../src/main/companions/world-service';
 import type { CompanionSocialJob } from '../../src/shared/companion-social';
 import type { ActivityDecision } from '../../src/shared/companion-activity-task';
+import { createdSocialPort, socialProgressReads } from '../../src/main/companions/social-progress-evidence';
 
 let store: CompanionsStore, root: string;
 const residents = ['alice', 'bob', 'carol', 'outsider', 'deepseek-flash', 'deepseek-sister'];
@@ -122,6 +123,26 @@ it.each([false, true])('creates a real autonomous group includePlayer=%s with fi
   expect(['bob', 'carol']).toContain(job.companionId); expect(job.memberIds).toEqual(['alice', 'bob', 'carol']);
 });
 
+it('routes subsequent phone messages to the explicit player group and its topic without creating a parallel room', () => {
+  know('bob'); know('carol');
+  const created = act({ action: 'create_group', recipientIds: ['bob', 'carol'], title: '共同讨论', text: '在本话题讨论。', includePlayer: true,
+    topic: { title: '独立活动', kind: 'discussion' } }, 'explicit_group');
+  const roomId = created.socialConversation!.id, topicId = created.topic!.id;
+  const creationTurn = { text: '', rawText: '', calls: [{ id: 'created', name: 'world', arguments: JSON.stringify({ action: 'create_group', recipientIds: ['bob', 'carol'], title: '共同讨论', text: '在本话题讨论。' }) }],
+    results: [{ callId: 'created', content: JSON.stringify(created) }] };
+  expect(createdSocialPort([creationTurn], 'alice', ['carol', 'bob'])).toEqual({ roomId, topicId });
+  expect(createdSocialPort([creationTurn], 'alice', ['bob'])).toBeUndefined();
+  advance();
+  const resolved = store.request({ type: 'social.conversation.ensure', companionId: 'alice', memberIds: ['carol', 'alice', 'bob'], roomId }).socialConversation!;
+  expect(resolved.id).toBe(roomId);
+  const send = { type: 'social.send', companionId: 'alice', conversationId: resolved.id, topicId, content: '沿用本群和话题的规则。', channel: 'phone', clientId: 'explicit_followup' } as const;
+  store.request(send); advance(); const delivery = store.request(send);
+  expect(delivery.socialMessage!.message).toMatchObject({ conversationId: roomId, topicId, content: send.content });
+  expect(store.request({ type: 'social.conversations', companionId: 'alice' }).socialConversationPage!.items.filter(room => room.kind === 'group')).toHaveLength(1);
+  expect(() => store.request({ type: 'social.conversation.ensure', companionId: 'alice', memberIds: ['alice', 'bob'], roomId })).toThrow('实际伙伴成员');
+  expect(() => store.request({ type: 'social.conversation.ensure', companionId: 'outsider', memberIds: ['outsider', 'bob', 'carol'], roomId })).toThrow('有效社交会话');
+});
+
 it('rejects stranger groups, dormant invitations and forged speaker identifiers without creating a room', () => {
   know('bob');
   const action = { action: 'create_group', recipientIds: ['bob', 'carol'], title: '陌生群', text: '来玩吗？' } satisfies CompanionWorldArguments;
@@ -198,7 +219,12 @@ it.each([false, true])('runs the actual social brain through native voluntary ga
   const job = store.request({ type: 'social.job.claim' }).socialJob!;
   const errors: unknown[] = [], frames: Array<Record<string, unknown>> = [];
   const fetchFn = vi.fn<typeof fetch>(async (_url, init) => {
-    const body = JSON.parse(String(init?.body)), frame = JSON.parse(body.messages[1].content); frames.push(frame);
+    const body = JSON.parse(String(init?.body)), frame = JSON.parse(body.messages[1].content);
+    if (frame.purpose === 'game_public_reply_privacy') {
+      expect(frame.exactProposedText).toBe(`我是${job.companionId}，我愿意参加这局游戏。`);
+      return new Response(JSON.stringify({ choices: [{ message: { content: JSON.stringify({ allowed: true, confidence: .99, reason: '本人真实愿意参加，无私密信息。' }) } }] }), { headers: { 'Content-Type': 'application/json' } });
+    }
+    frames.push(frame);
     expect(frame.identity.self.id).toBe(job.companionId);
     expect(frame.identity.audience).toBe(includePlayer ? 'player' : 'peers');
     if (!frame.topic.participantIds.includes(job.companionId)) {
@@ -215,7 +241,7 @@ it.each([false, true])('runs the actual social brain through native voluntary ga
     recall: async () => ({ memories: [], reasons: [], sources: [], pending: false, degraded: false }) });
   try {
     await (service as unknown as { processSocial(job: CompanionSocialJob, signal: AbortSignal): Promise<void> }).processSocial(job, new AbortController().signal);
-    expect(errors).toEqual([]); expect(fetchFn).toHaveBeenCalledTimes(2);
+    expect(errors).toEqual([]); expect(fetchFn).toHaveBeenCalledTimes(3);
     const topic = store.request({ type: 'topic.read', conversationId: group.topic!.conversationId, readerId: job.companionId, topicId: group.topic!.id }).topic!;
     expect(topic.participantIds).toContain(job.companionId);
     const messages = store.request({ type: 'social.messages', conversationId: topic.conversationId }).socialMessagePage!.items;
@@ -270,6 +296,25 @@ it('persists one original social goal from a pending real introduction, defers w
   const observed = store.request({ type: 'activity.observe', id: resumed.id, leaseToken: resumed.leaseToken! });
   expect(observed.activityMessages!.some(message => message.authorId === 'bob')).toBe(true);
   expect(store.request({ type: 'social.messages', conversationId: f.initial.socialConversation!.id }).socialMessagePage!.items.filter(item => item.message.authorId === 'alice')).toHaveLength(1);
+});
+it('lets the original goal read its exact incoming reply chain without importing unrelated peer dialogue and hides it after withdrawal', () => {
+  const f = continuingIntroduction(); advance(); store.request(f.send);
+  const job = store.request({ type: 'social.job.claim' }).socialJob!;
+  const reply = completeJob(job, '我愿意报名参加。').socialMessage!.message;
+  store.request({ type: 'social.message.append', conversationId: reply.conversationId, authorId: 'bob', content: 'UNRELATED_PEER_PRIVATE_CONTEXT',
+    virtualCreatedAt: new Date().toISOString(), clientId: 'unrelated_to_goal' });
+  const command = { type: 'activity.progress', ...f.origin, id: f.task.id } as const;
+  const progress = store.request(command);
+  const readTurn = { text: '', rawText: '', calls: [{ id: 'read', name: 'world', arguments: JSON.stringify({ action: 'activity', parameters: { action: 'progress', id: f.task.id } }) }], results: [{ callId: 'read', content: JSON.stringify(progress) }] };
+  expect([...socialProgressReads([readTurn]).keys()]).toContain(reply.id);
+  expect(socialProgressReads([{ ...readTurn, calls: [{ ...readTurn.calls[0]!, name: 'dsh' }] }]).size).toBe(0);
+  expect(progress.activityMessages!.map(message => message.id)).toContain(reply.id);
+  expect(JSON.stringify(progress.activityMessages)).not.toContain('UNRELATED_PEER_PRIVATE_CONTEXT');
+  expect(progress.activityMessageOrigins).toContainEqual(expect.objectContaining({ messageId: reply.id, sourceMessageId: f.initial.socialMessage?.message.id ?? store.request(f.send).socialMessage!.message.id }));
+  expect(() => store.request({ ...command, companionId: 'bob' })).toThrow('范围不可访问');
+  store.request({ type: 'memory.forget', ...f.origin, sourceMessageIds: [f.source.id] });
+  expect(store.request(command).activityMessages).toEqual([]);
+  expect(store.request(command).activityTask!.historyAvailable).toBe(false);
 });
 it('reuses the same goal after group creation, freezes that game topic port, survives restart and never resurrects a cancelled source', () => {
   const f = continuingIntroduction(); advance(); store.request(f.send); know('carol');

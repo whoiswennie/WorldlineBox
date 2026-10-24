@@ -1,4 +1,5 @@
 import { CompanionInterruptionStore } from './interruption-store';
+import { CompanionAgentRunStore } from './agent-run-store';
 import { CompanionDocumentCatalogStore } from './document-catalog-store';
 import { initializeCompanionLifeOverview } from './life-overview-store';
 import { CompanionMemoryTraceStore } from './memory-trace-store';
@@ -28,7 +29,7 @@ import {
 } from '../shared/companion-storage';
 import { BUILTIN_COMPANIONS } from '../shared/companion-personas';
 import { companionGroupTitle } from '../shared/companion-titles';
-import { companionLoopCheckpointSchema, companionWorkSchema, type CompanionWork, type CompanionLoopCheckpoint } from '../shared/companion-loop';
+import { companionLoopCheckpointSchema, companionLoopPublishedText, companionWorkSchema, type CompanionWork, type CompanionLoopCheckpoint } from '../shared/companion-loop';
 import { companionSearchTokens, companionSearchMatch, companionSearchExcerpt, companionSearchFacet } from '../shared/companion-search';
 import { CompanionMemoryStore } from './memory-store';
 import { CompanionScheduleStore } from './schedule-store';
@@ -44,8 +45,11 @@ import { companionDshReceipt } from '../shared/companion-dsh-receipt';
 import { CompanionActivityTaskStore } from './activity-task-store';
 import { CompanionTopicStore } from './topic-store';
 import type { TopicParticipationReceipt } from './topic-participation';
-import { recallCompanionTopics } from './topic-recall';
+import { recallCompanionTopics, type CompanionTopicCheckpointReference } from './topic-recall';
 import { CompanionCollaborationStore } from './collaboration-store';
+import { CompanionExecutionSourceStore } from './execution-source-store';
+import { executionSourceInvalidKey } from './execution-source-access';
+import type { CompanionExecutionReadset } from '../shared/companion-execution-evidence';
 
 interface Statement {
   all(...args: unknown[]): unknown[];
@@ -90,19 +94,21 @@ export class CompanionsStore {
   readonly #interruptions: CompanionInterruptionStore;
   readonly #topics: CompanionTopicStore;
   readonly #collaborations: CompanionCollaborationStore;
+  readonly #agentRuns: CompanionAgentRunStore;
 
   constructor(databasePath: string, seeds: readonly CompanionSeed[] = BUILTIN_COMPANIONS) {
     mkdirSync(path.dirname(databasePath), { recursive: true });
     this.#db = new Database(databasePath);
     this.#topics = new CompanionTopicStore(this.#db, id => { this.#requireConversation(id); return this.#memberIds(id); }, receipt => this.recordTopicParticipation(receipt),
       (conversationId, topicId, readerId) => this.#social.topicChanged(conversationId, topicId, readerId),
-      (conversationId, companionId, ids) => this.#memory.sources.checkpointSourcesValid({ companionId, conversationId }, ids));
+      (conversationId, companionId, ids) => this.#memory.sources.checkpointSourcesValid({ companionId, conversationId }, ids),
+      (conversationId, companionId, ids) => this.#memory.sourcesFilter({ companionId, conversationId }, [...ids]).length === ids.length);
     this.#documents = new CompanionDocumentCatalogStore(this.#db);
     this.#memory = new CompanionMemoryStore(this.#db, id => this.getMessage(id),
       (scope, proposal) => { this.#runtimeState.update(scope, proposal); }, note => this.#world.learnEntrance(note),
       (id, sourceIds) => { if (!this.#reset?.blocked(id)) { this.#runtimeState.invalidateEvidence(id, sourceIds); this.#world.invalidateEvidence(id, sourceIds); } },
       (scope, input) => { this.#runtimeState.applyMemoryIntegration(scope, input); },
-      (id, versions) => { if (!this.#reset?.blocked(id)) this.#runtimeState.invalidateMemoryVersions(id, versions); });
+      (id, versions) => { if (!this.#reset?.blocked(id)) this.#runtimeState.invalidateMemoryVersions(id, versions); }, () => this.#world.timeZone());
     this.#trace = new CompanionMemoryTraceStore(this.#db, (owner, id) => {
       const note = this.#db.prepare('SELECT conversation_id FROM vcp_memory_notes WHERE id=? AND companion_id=?').get(id, owner) as { conversation_id: string } | undefined;
       if (!note) return false;
@@ -196,12 +202,19 @@ export class CompanionsStore {
     this.#world = new CompanionWorldStore(this.#db, id => this.#routine.configuration(id), (scope, ids) => this.#memory.sourcesFilter(scope, ids),
       id => this.#runtimeState.worldState(id), event => this.#runtimeState.worldEvent(event), (scope, candidate) => this.#memory.record(scope, candidate),
       scope => this.#memory.snapshot(scope).revision, (scope, noteIds) => noteIds ? this.#memory.prohibitionPolicyForNotes(scope, noteIds).memoryProhibitionRevision! : this.#memory.sources.prohibitionRevision(scope),
-      (scope, notes, proposal, event) => this.#memory.integrateState(scope, notes, proposal, event));
+      (scope, notes, proposal, event) => this.#memory.integrateState(scope, notes, proposal, event),
+      (scope, candidate, jobId, leaseToken) => this.#memory.recordPrivateConsolidation(scope, candidate, jobId, leaseToken),
+      (scope, plan, jobId, leaseToken) => this.#memory.recordSleepConsolidation(scope, plan, jobId, leaseToken));
     this.#social = new CompanionSocialStore(this.#db, input => this.appendMessage(input), id => this.getMessage(id),
       (scope, ids) => this.#memory.sourcesFilter(scope, ids), () => this.#world.socialContext(),
       (id, channel, recipients) => this.#world.socialAvailable(id, channel, recipients), (message, channel) => this.#world.recordSocialSpeech(message, channel),
       { elapsedVirtual: (from, to) => this.#world.elapsedVirtual(from, to) }, {
         observationCalendar: () => this.#world.socialContext(true),
+        topicExecute: command => this.#topics.execute(command),
+        activityTaskValid: (id, companionId, conversationId) => {
+          try { return this.#activity.execute({ type: 'activity.get', id, companionId, conversationId })?.activityTask?.historyAvailable === true; }
+          catch { return false; }
+        },
         memoryRevision: scope => this.#memory.snapshot(scope).revision,
         contactState: owner => this.#world.contactState(owner), interrupt: (owner, source) => this.#world.interruptSocial(owner, source), endInterrupt: (owner, sourceId) => this.#world.endSocialInterrupt(owner, sourceId),
         addressText: owner => this.#world.addressText(owner), shareHome: (owner, recipients, source) => this.#world.shareHome(owner, recipients, source), createPeerWork: input => {
@@ -252,9 +265,18 @@ export class CompanionsStore {
     this.#world.connectCollaboration(input => { this.#collaborations.assertInvocation(input); });
     this.#world.connectWorkOrders(this.#workOrders);
     this.#interruptions = new CompanionInterruptionStore(this.#db, this.#workOrders, (scope, ids) => this.#memory.sourcesFilter(scope, ids), (id, source) => this.#world.urgent(id, source), (kind, owner, source) => this.#world.recordPriorityEvent(kind, owner, source));
+    const activityMemoryValid = (owner: string, id: string, version: number) => {
+      try {
+        const note = this.#memory.execute({ type: 'memory.library.read', companionId: owner, id, sourceLimit: 1 })?.memoryRead?.memory;
+        return !!note && note.version === version && ['queued', 'indexed'].includes(note.status);
+      } catch { return false; }
+    };
+    this.#agentRuns = new CompanionAgentRunStore(this.#db, (scope, ids) => this.#memory.sourcesFilter(scope, ids), activityMemoryValid,
+      command => this.#topics.execute(command));
     this.#activity = new CompanionActivityTaskStore(this.#db, this.#world, this.#social,
       (scope, ids) => this.#memory.sourcesFilter(scope, ids), input => this.appendMessage(input),
-      (task, source) => this.#runtimeState.experience(task, 'world-task:' + task.id, [source]));
+      (task, source) => this.#runtimeState.experience(task, 'world-task:' + task.id, [source]), command => this.#topics.execute(command),
+      command => this.#agentRuns.execute(command), activityMemoryValid);
     this.#world.connectActivity((companionId, jobId, task) => { this.#activity.start({ type: 'activity.start', companionId,
       conversationId: 'world_' + companionId, clientId: 'world_activity_' + jobId, ...task }); });
     this.#life = new CompanionLifeEventStore(this.#db, { world: () => this.#world.snapshot(), perception: id => this.#world.perception(id), elapsed: (from, to) => this.#world.elapsedVirtual(from, to),
@@ -509,7 +531,25 @@ export class CompanionsStore {
     }
     throw new Error('群聊引用无法解析，原有记录已保留。');
   }
-  /** Same membership means the same durable room; merge matching rooms atomically. */
+  /** Durable scopes bind immutable authorization and provenance to a room ID.
+   * Editing the audience must never rewrite those scopes or delete their room. */
+  #hasDurableConversationScope(id: string): boolean {
+    const scopedTables = ['companion_topics', 'companion_topic_current', 'companion_activity_tasks', 'companion_activity_memory_intents',
+      'companion_work_orders', 'companion_schedules', 'actions', 'vcp_memory_notes', 'vcp_source_prohibitions', 'vcp_source_policy_holds', 'vcp_operation_receipts'];
+    for (const table of scopedTables) if (this.#db.prepare(`SELECT 1 FROM ${table} WHERE conversation_id=? LIMIT 1`).get(id)) return true;
+    for (const table of ['vcp_note_sources', 'vcp_note_source_history']) {
+      if (this.#db.prepare(`SELECT 1 FROM ${table} source JOIN messages message ON message.id=source.message_id WHERE message.conversation_id=? LIMIT 1`).get(id)) return true;
+    }
+    for (const table of ['companion_collaborations', 'companion_work_queue', 'companion_world_jobs', 'companion_world_work_records']) {
+      if (this.#db.prepare(`SELECT 1 FROM ${table} entry,json_tree(entry.data) scope WHERE scope.key='conversationId' AND scope.value=? LIMIT 1`).get(id)) return true;
+    }
+    return !!this.#db.prepare(`SELECT 1 FROM metadata entry,json_tree(CASE WHEN json_valid(entry.value) THEN entry.value ELSE '{}' END) scope
+      WHERE (entry.key GLOB 'agent-run/*' OR entry.key GLOB 'loop/*' OR entry.key GLOB 'message-loop/*'
+        OR entry.key GLOB 'task-checkpoint/*' OR entry.key GLOB 'message-execution-readset/*')
+        AND scope.key='conversationId' AND scope.value=? LIMIT 1`).get(id);
+  }
+
+  /** Coalesce only ordinary message rooms with no durable scoped state. */
   #coalesceGroups(): void {
     this.#db.transaction(() => {
       const known = new Map<string, string>();
@@ -517,7 +557,9 @@ export class CompanionsStore {
         const id = String(group.id), key = JSON.stringify(this.#memberIds(id).sort());
         const canonical = known.get(key);
         if (!canonical) { known.set(key, id); continue; }
+        if (this.#hasDurableConversationScope(id) || this.#hasDurableConversationScope(canonical)) continue;
         const target = this.#requireConversation(canonical);
+        this.#social.rehomePlayerRoom(id, canonical);
         for (const message of rows(this.#db.prepare('SELECT id,request_fingerprint FROM messages WHERE conversation_id=?').all(id))) {
           if (!message.request_fingerprint) continue;
           const fingerprint = decode<Record<string, unknown>>(message.request_fingerprint);
@@ -602,9 +644,10 @@ export class CompanionsStore {
       const room = this.#requireConversation(input.conversationId);
       const world = this.#world.snapshot(input), query = (input.query ?? '').toLocaleLowerCase();
       let items: Array<Record<string, unknown>> = [], evidence: CompanionMessage[] = [];
+      const topicCheckpoints: CompanionTopicCheckpointReference[] = [];
       if (input.category === 'topics') {
         items = recallCompanionTopics(this.#db, owner.id, input,
-          (conversationId, ids) => this.#memory.sources.checkpointSourcesValid({ companionId: owner.id, conversationId }, ids));
+          (conversationId, ids) => this.#memory.sources.checkpointSourcesValid({ companionId: owner.id, conversationId }, ids), reference => topicCheckpoints.push(reference));
       } else if (input.category === 'contacts' || input.category === 'people') {
         const known = this.#social.acquaintanceIds(owner.id);
         const terms = query.split(/[\s,，;；]+/u).filter(Boolean);
@@ -666,12 +709,14 @@ export class CompanionsStore {
       let hasMore = false;
       while (items.length > 1 && JSON.stringify(items).length > 5500) { items.pop(); hasMore = true; }
       const keptMessageIds = new Set(items.flatMap(item => [item.messageId, item.lastMessageId, item.sourceMessageId]).filter((id): id is string => typeof id === 'string'));
+      const keptTopicIds = new Set(items.map(item => item.topicId).filter((id): id is string => typeof id === 'string'));
       evidence = evidence.filter(message => keptMessageIds.has(message.id));
       const observation = { category: input.category, observedAt: stamp(), observedAtVirtual: world.clock.virtualNow, internalized: false as const, ...(hasMore ? { hasMore } : {}) };
       const message = this.appendMessage({ conversationId: 'world_' + owner.id, authorId: 'system', kind: 'notice', content: JSON.stringify({ ...observation, items }), replyDirective: 'none' });
       this.#db.prepare('UPDATE conversations SET hidden_at=? WHERE id=?').run(stamp(), message.conversationId);
       this.#setMetadata('memory-world-observation/' + message.id, { companionId: owner.id, forConversationId: input.conversationId, throughSequence: input.beforeSequence,
         checksum: createHash('sha256').update(message.content).digest('hex'), observation,
+        ...(input.category === 'topics' ? { topicCheckpoints: topicCheckpoints.filter(reference => keptTopicIds.has(reference.topicId)) } : {}),
         sources: evidence.map(source => ({ id: source.id, conversationId: source.conversationId, checksum: createHash('sha256').update(source.content).digest('hex') })) });
       this.#setMetadata('message-memory-evidence/' + message.id, true);
       this.#memory.observeSource(message.id, owner.id);
@@ -857,7 +902,8 @@ export class CompanionsStore {
     return this.#db.transaction(() => {
       const existing = this.#requireConversation(id);
       if (existing.dissolved_at) throw new Error('这个群聊已经解散。');
-      if (this.#db.prepare('SELECT 1 FROM companion_social_conversations WHERE id=?').get(id)) throw new Error('伙伴社交会话的成员与身份由实际通信确定。');
+      if (this.#db.prepare("SELECT 1 FROM companion_social_conversations s JOIN metadata marker ON marker.key='world-room/'||s.id WHERE s.id=?").get(id)) throw new Error('伙伴社交会话的成员与身份由实际通信确定。');
+      const audienceChanged = input.memberIds !== undefined && JSON.stringify([...new Set(input.memberIds)].sort()) !== JSON.stringify(this.#memberIds(id).sort());
       const keepAutomatic = existing.kind === 'group' && this.#automaticGroupTitle(existing) && input.title === this.#groupTitle(id);
       if (input.memberIds) {
         if (existing.kind !== 'group') throw new Error('私聊的伙伴不能替换。');
@@ -870,8 +916,10 @@ export class CompanionsStore {
         input.title ?? existing.title, input.pinned === undefined ? existing.pinned : Number(input.pinned),
         input.muted === undefined ? existing.muted : Number(input.muted), id);
       if (existing.kind === 'group' && input.title !== undefined) this.#db.prepare('INSERT OR REPLACE INTO metadata(key,value) VALUES(?,?)').run(`group-title/${id}`, !input.title || keepAutomatic ? 'auto' : 'custom');
+      this.#social.syncPlayerRoom(id, audienceChanged);
       if (input.memberIds) this.#coalesceGroups();
-      return this.#conversation(this.#requireConversation(id));
+      const resolvedId = this.#conversationId(id); this.#social.syncPlayerRoom(resolvedId);
+      return this.#conversation(this.#requireConversation(resolvedId));
     }).immediate();
   }
 
@@ -943,7 +991,9 @@ export class CompanionsStore {
     if (!found) return undefined;
     const checkpoint = decode<CompanionLoopCheckpoint>(row(found).value), turns = checkpoint.turns;
     const actions = rows(this.#db.prepare("SELECT id,data FROM actions WHERE json_extract(data,'$.parentMessageId')=? ORDER BY rowid").all(id));
-    const segments = turns.map((turn, index) => ({ text: turn.text, actionIds: actions.filter(item => decode<CompanionAction>(item.data).loopStep === index).map(item => String(item.id)) }));
+    const segments = turns.flatMap((turn, index) => turn.topicPublicationRejection ? [] : [
+      { text: turn.text, actionIds: actions.filter(item => decode<CompanionAction>(item.data).loopStep === index).map(item => String(item.id)) },
+    ]);
     if (checkpoint.draft?.text) segments.push({ text: checkpoint.draft.text, actionIds: [] });
     return segments;
   }
@@ -981,13 +1031,13 @@ export class CompanionsStore {
         .run(work.id, 'queued', work.companionId, JSON.stringify({ ...work, messageId: checkpoint.messageId, status: 'queued' }));
     }).immediate();
   }
-  private workStatus(id: string, status: CompanionWork['status']): void {
+  private workStatus(id: string, status: CompanionWork['status'], resumeOnRestart = false): void {
     const found = this.#db.prepare('SELECT data FROM companion_work_queue WHERE id=?').get(id);
     if (!found) throw new Error('队列任务不存在。');
     const previous = decode<CompanionWork>(row(found).data);
     if (previous.status === 'cancelled' && status !== 'queued') return;
     if (previous.status === 'running') this.#runtimeState.energy(previous.companionId);
-    const work = { ...previous, status, updatedAt: stamp() };
+    const work = { ...previous, status, resumeOnRestart: status === 'interrupted' && resumeOnRestart || undefined, updatedAt: stamp() };
     if (['queued', 'cancelled', 'interrupted'].includes(status)) {
       const checkpoint = this.loopCheckpoint(previous.sourceMessageId, previous.companionId, previous.proactive ? previous.id : undefined);
       if (checkpoint && checkpoint.status !== 'done' && (status !== 'interrupted' || !['failed', 'cancelled'].includes(checkpoint.progress?.phase ?? ''))) {
@@ -1026,7 +1076,7 @@ export class CompanionsStore {
     const found = this.#db.prepare('SELECT value FROM metadata WHERE key=?').get(`loop/${sourceMessageId}/${companionId}` + (invocationKey ? '/invocation/' + invocationKey : ''));
     return found ? companionLoopCheckpointSchema.parse(decode(row(found).value)) : undefined;
   }
-  private saveLoop(input: CompanionLoopCheckpoint): void {
+  private saveLoop(input: CompanionLoopCheckpoint, executionReadset?: CompanionExecutionReadset): void {
     const checkpoint = companionLoopCheckpointSchema.parse(input);
     this.#db.transaction(() => {
       if (checkpoint.authorizationGrantId) this.#collaborations.assertInvocation(checkpoint);
@@ -1036,10 +1086,26 @@ export class CompanionsStore {
       const previous = checkpoint.messageId ? (priorBubble ? companionLoopCheckpointSchema.parse(decode(row(priorBubble).value)) : undefined) : this.loopCheckpoint(checkpoint.sourceMessageId, checkpoint.companionId, checkpoint.invocationKey);
       if (previous?.status === 'done' && checkpoint.status !== 'done') throw new Error('已正式完成的回复不能被迟到草稿覆盖。');
       if (previous && checkpoint.turns.length < previous.turns.length) throw new Error('回复草稿不能丢失已完成的循环步骤。');
+      for (const [index, turn] of checkpoint.turns.entries()) if (turn.topicPublicationRejection) {
+        const rejection = turn.topicPublicationRejection, prior = previous?.turns[index];
+        const topicId = checkpoint.messageId && this.#topics.messageTopic(checkpoint.messageId);
+        const topicFinal = topicId && ['story', 'game'].includes(this.#topics.topic(topicId, checkpoint.conversationId).kind);
+        const playerReplyFinal = !checkpoint.invocationKey && this.getMessage(checkpoint.sourceMessageId).authorId === 'user';
+        if (!topicFinal && !playerReplyFinal
+          || turn.calls.length || createHash('sha256').update(turn.rawText).digest('hex') !== rejection.rawTextChecksum
+          || createHash('sha256').update(turn.text).digest('hex') !== rejection.contentChecksum
+          || !prior || prior.text !== turn.text || prior.rawText !== turn.rawText || prior.calls.length
+          || previous?.status === 'done' && !prior.topicPublicationRejection
+          || prior.topicPublicationRejection && JSON.stringify(prior.topicPublicationRejection) !== JSON.stringify(rejection))
+          throw new Error('只能保留原任务尚未正式发布的最终草稿拒绝记录，不能隐藏已完成工具或改写原文。');
+      }
+      if (previous?.turns.some((turn, index) => turn.topicPublicationRejection && !checkpoint.turns[index]?.topicPublicationRejection))
+        throw new Error('已保存的最终草稿拒绝记录不能移除。');
       this.#setMetadata(`loop/${checkpoint.sourceMessageId}/${checkpoint.companionId}` + (checkpoint.invocationKey ? '/invocation/' + checkpoint.invocationKey : ''), checkpoint);
       if (checkpoint.messageId) {
         const message = this.getMessage(checkpoint.messageId);
         if (message.authorId !== checkpoint.companionId || message.conversationId !== checkpoint.conversationId) throw new Error('循环消息不属于当前伙伴。');
+        if (executionReadset && checkpoint.status !== 'done') throw new Error('只有正式完成的循环才能绑定执行读集。');
         if (message.topicId && checkpoint.status === 'done' && checkpoint.turns.some(turn => turn.text.trim())) {
           const topic = this.#topics.topic(message.topicId, message.conversationId);
           if (!topic.participantIds.includes(checkpoint.companionId)) throw new Error('伙伴尚未自主加入话题，不能发布正式发言。');
@@ -1052,12 +1118,31 @@ export class CompanionsStore {
           fileIds.forEach((attachmentId, ordinal) => this.#db.prepare('INSERT INTO message_attachments(message_id,attachment_id,ordinal) VALUES(?,?,?)').run(checkpoint.messageId, attachmentId, ordinal));
         }
         this.#setMetadata('message-loop/' + checkpoint.messageId, checkpoint);
-        const content = [...checkpoint.turns.map(turn => turn.text), ...(checkpoint.draft ? [checkpoint.draft.text] : [])].filter(Boolean).join('\n\n').slice(0, 65536);
+        const content = companionLoopPublishedText(checkpoint.turns, checkpoint.draft);
+        if (content.length > 65536) throw new Error('完整话题正文或回复正文超过65536字符，不能静默截断已经接受的循环步骤。');
+        const exactFormalReplay = checkpoint.status === 'done' && previous?.status === 'done' && message.content === content;
+        const publication = checkpoint.status === 'done' ? checkpoint.turns.findLast(turn => !turn.topicPublicationRejection && !!turn.topicPublicationApproval)?.topicPublicationApproval : undefined;
+        const publicationBasis = publication ? this.#topics.publicationBasis(message) : undefined;
         if (checkpoint.status === 'done' && (previous?.status !== 'done' || message.content !== content)) {
           const publishedAfter = Number(row(this.#db.prepare('SELECT COALESCE(MAX(sequence),0) AS seq FROM messages').get()).seq);
           this.#setMetadata('message-published-after/' + checkpoint.messageId, publishedAfter);
         }
         this.#db.prepare('UPDATE messages SET revision=revision+CASE WHEN ? AND content!=? THEN 1 ELSE 0 END,content=? WHERE id=?').run(Number(checkpoint.status === 'done'), content, content, checkpoint.messageId);
+        if (executionReadset) new CompanionExecutionSourceStore(this.#db, this.#memory).bind(checkpoint.messageId, executionReadset);
+        if (checkpoint.status === 'done') {
+          const approvedTurn = checkpoint.turns.findLast(turn => !turn.topicPublicationRejection && !!turn.topicNarrativeApproval);
+          const approval = approvedTurn?.topicNarrativeApproval;
+          if (approval && approvedTurn) {
+            const approvedText = approval.contentScope === 'full_reply' ? content : approvedTurn.text;
+            if (approval.topicId !== message.topicId || createHash('sha256').update(approvedText).digest('hex') !== approval.contentChecksum
+              || !approvedText.includes(approval.quote) || !content.includes(approvedTurn.text)) throw new Error('叙事时刻审批不属于本次实际发布的完整话题正文。');
+          }
+          const clock = approval ? { ...approval, contentChecksum: createHash('sha256').update(content).digest('hex') } : undefined;
+          const formal = this.getMessage(checkpoint.messageId);
+          if (publication) this.#topics.recordPublication(formal, publication, clock, exactFormalReplay, publicationBasis);
+          else if (clock && !exactFormalReplay) this.#topics.recordNarrativeTime(formal, clock);
+          if (!exactFormalReplay) this.#topics.noteFormalPublication(formal);
+        }
         this.#db.prepare('DELETE FROM message_search WHERE rowid=?').run(message.sequence);
         if (checkpoint.status === 'done') this.#indexMessageSearch(checkpoint.messageId);
         if (checkpoint.status === 'done') this.#social.observePlayerMessage(this.getMessage(checkpoint.messageId));
@@ -1191,15 +1276,18 @@ export class CompanionsStore {
         id, message.conversationId, message.authorId, message.kind, message.content, createdAt, message.replyToId ?? null,
         message.status, message.actionId ?? null, message.clientId ?? null, fingerprint);
       this.#topics.bindMessage(id, message.conversationId, message.authorId, message.topicId, message.replyToId, message.loopStep !== undefined);
+      if (message.executionReadset) new CompanionExecutionSourceStore(this.#db, this.#memory).bind(id, message.executionReadset);
       this.#db.prepare('INSERT INTO companion_message_times(message_id,world_at,time_zone) VALUES(?,?,?)').run(id, new Date(this.#world.virtualAt(Date.parse(createdAt))).toISOString(), this.#world.timeZone());
       attachmentIds.forEach((attachmentId, ordinal) => this.#db.prepare('INSERT INTO message_attachments(message_id,attachment_id,ordinal) VALUES(?,?,?)').run(id, attachmentId, ordinal));
       this.#db.prepare('UPDATE conversations SET updated_at=?,hidden_at=NULL WHERE id=?').run(createdAt, message.conversationId);
       const stored = this.#message(row(this.#db.prepare('SELECT * FROM messages WHERE id=?').get(id)));
+      if (message.loopStep === undefined) this.#topics.noteFormalPublication(stored);
       if (message.loopStep !== undefined) this.#db.prepare('DELETE FROM message_search WHERE rowid=?').run(stored.sequence);
       if (!this.#topics.fictionalMessage(id)) this.#memory.enqueueMessage(id);
       else {
         const topicId = this.#topics.messageTopic(id), topic = topicId ? this.#topics.topic(topicId, message.conversationId) : undefined;
-        for (const owner of new Set([...(topic?.participantIds ?? []), ...(topic?.invitedIds ?? [])])) if (owner !== 'user') this.#memory.observeSource(id, owner);
+        const observers = topic ? [...topic.participantIds, ...topic.invitedIds] : this.#memberIds(message.conversationId);
+        for (const owner of new Set(observers)) if (owner !== 'user') this.#memory.observeSource(id, owner);
       }
       if (!this.#db.prepare('SELECT 1 FROM metadata WHERE key=?').get('world-room/' + message.conversationId)) {
         if (message.authorId === 'user' && message.kind !== 'notice') for (const companionId of this.#memberIds(message.conversationId)) this.#runtimeState.interaction(companionId, id);
@@ -1265,6 +1353,7 @@ export class CompanionsStore {
   }
   #setMetadata(key: string, value: unknown): void { this.#db.prepare('INSERT OR REPLACE INTO metadata(key,value) VALUES(?,?)').run(key, JSON.stringify(value)); }
   #recoverableAction(action: CompanionAction): CompanionAction {
+    if (this.#db.prepare('SELECT 1 FROM metadata WHERE key=?').get(executionSourceInvalidKey('action', action.id))) return { ...action, contentAvailable: false, canResume: false };
     return { ...action, canResume: ['interrupted', 'cancelled', 'failed'].includes(action.status) && !!(this.#db.prepare('SELECT 1 FROM metadata WHERE key=?').get('task-checkpoint/' + action.id) || action.sessionId || action.taskId) };
   }
   checkpoint(id: string): CompanionTaskCheckpoint | undefined {
@@ -1273,8 +1362,15 @@ export class CompanionsStore {
     return found ? companionTaskCheckpointSchema.parse(decode(row(found).value)) : undefined;
   }
   saveCheckpoint(id: string, checkpoint: CompanionTaskCheckpoint): void {
-    this.getAction(id);
-    this.#setMetadata('task-checkpoint/' + id, companionTaskCheckpointSchema.parse(checkpoint));
+    this.#db.transaction(() => {
+      const action = this.getAction(id), parsed = companionTaskCheckpointSchema.parse(checkpoint), previous = this.checkpoint(id);
+      const readset = parsed.executionReadset;
+      if (readset && (readset.companionId !== action.companionId || readset.conversationId !== action.conversationId)) throw new Error('执行依赖读集不属于此伙伴或任务入口。');
+      if (previous?.executionReadset) {
+        if (JSON.stringify(previous.executionReadset) !== JSON.stringify(readset)) throw new Error('已登记的执行依赖读集不可替换、扩大或丢弃。');
+      } else if (readset && (action.taskId || previous?.execution || action.status !== 'queued')) throw new Error('已开始的旧任务不能补造执行依赖读集，请重新委托。');
+      this.#setMetadata('task-checkpoint/' + id, parsed);
+    }).immediate();
   }
   updateCheckpoint(id: string, update: { execution?: CompanionTaskCheckpoint['execution']; input?: CompanionTaskCheckpoint['supplements'][number] }): void {
     this.#db.transaction(() => {
@@ -1323,7 +1419,7 @@ export class CompanionsStore {
     return this.#db.transaction(() => {
       const action = this.getAction(id);
       this.#requireMember(action.conversationId, action.companionId);
-      if (!['interrupted', 'cancelled', 'failed'].includes(action.status) || !this.checkpoint(id)) throw new Error('这条任务没有可用的恢复记录。');
+      if (action.contentAvailable === false || !['interrupted', 'cancelled', 'failed'].includes(action.status) || !this.checkpoint(id)) throw new Error('这条任务没有可用的恢复记录。');
       this.#workOrders.assertActionResume(action);
       if (action.authorizationGrantId) this.#collaborations.assertAction(action);
       this.#setMetadata('task-attempt/' + id + '/' + (action.attempt ?? 1), action);
@@ -1422,7 +1518,7 @@ export class CompanionsStore {
       this.#runtimeState.action(value.id);
       this.#workOrders.actionChanged(value);
       if (['succeeded', 'failed', 'cancelled'].includes(value.status)) this.#completeRoutineInterruptIfIdle(value.companionId);
-      return value;
+      return this.#recoverableAction(value);
     }).immediate();
   }
 
@@ -1513,18 +1609,38 @@ export class CompanionsStore {
     return owners.length || scopes.length ? { memoryInvalidatedCompanionIds: owners, memoryInvalidatedScopeIds: scopes } : {};
   }
   request(input: CompanionStorageCommand): CompanionStorageResponse {
-    const response = this.dispatch(input);
-    return { ...response, ...this.takeMemoryInvalidations() };
+    return this.#memory.sources.withValidation(() => {
+      const response = this.dispatch(input);
+      return { ...response, ...this.takeMemoryInvalidations() };
+    });
   }
   private dispatch(input: CompanionStorageCommand): CompanionStorageResponse {
     const command = companionStorageCommandSchema.parse(input);
     if (command.type === 'companion.reset') this.#memory.invalidateOwner(command.id);
     this.#reset.assertCommand(command);
+    const agentRunResponse = this.#agentRuns.execute(command);
+    if (agentRunResponse) return agentRunResponse;
     if ('conversationId' in command && command.conversationId) command.conversationId = this.#conversationId(command.conversationId);
     if (command.type === 'message.append') command.message.conversationId = this.#conversationId(command.message.conversationId);
     if (command.type === 'action.create') command.action.conversationId = this.#conversationId(command.action.conversationId);
     if (command.type === 'conversation.update' || command.type === 'conversation.read') command.id = this.#conversationId(command.id);
     if (command.type === 'memory.world_query') return this.queryWorldKnowledge(command);
+    if (command.type === 'topic.compaction.sources') {
+      this.#requireCompanion(command.readerId);
+      const page = this.#topics.publicationPage(command);
+      // publicationPage owns the frozen port boundary. Reapplying the old
+      // creation-sequence cursor here would hide an older draft published late.
+      const sources = new Map(this.#memory.sourcesFilter({ companionId: command.readerId, conversationId: command.conversationId },
+        page.items.map(item => item.messageId)).map(message => [message.id, message]));
+      const items = page.items.flatMap(({ messageId, ...reference }) => {
+        const message = sources.get(messageId);
+        if (!message || message.conversationId !== command.conversationId || message.topicId !== command.topicId
+          || message.status !== 'sent' || message.isReplyDraft || message.replyDraft || !message.content.trim()
+          || createHash('sha256').update(message.content).digest('hex') !== reference.sourceChecksum) return [];
+        return [{ ...reference, message }];
+      });
+      return { ok: true, topicCompactionPage: { ...page, items } };
+    }
     const topicResponse = this.#topics.execute(command); if (topicResponse) return topicResponse;
     const collaborationResponse = this.#collaborations.execute(command); if (collaborationResponse) return collaborationResponse;
     const tagResponse = this.#memoryTags.execute(command); if (tagResponse) return tagResponse;
@@ -1627,11 +1743,13 @@ export class CompanionsStore {
         return { ok: true, memoryCorpusStamp: JSON.stringify([command.companionId, epoch ? row(epoch).revision : 0,
           row(scopes).total, row(scopes).revisions, row(notes).total, row(notes).indexed, row(notes).versions]) };
       }
-      case 'loop.save': this.saveLoop(command.checkpoint); return { ok: true };
+      case 'loop.save': this.saveLoop(command.checkpoint, command.executionReadset); return { ok: true };
+      case 'execution.sources': return { ok: true, executionSources: new CompanionExecutionSourceStore(this.#db, this.#memory).resolve(command.sourceMessageIds, command.memoryIds) };
+      case 'execution.invalidate': new CompanionExecutionSourceStore(this.#db, this.#memory).invalidate(command); return { ok: true };
       case 'work.enqueue': this.enqueueWork(command.work, command.resume); return { ok: true };
       case 'work.claim': return { ok: true, work: this.claimWork() };
       case 'work.list': return { ok: true, works: this.workList(command.sourceMessageId, command.unfinishedOnly) };
-      case 'work.status': this.workStatus(command.id, command.status); return { ok: true };
+      case 'work.status': this.workStatus(command.id, command.status, command.resumeOnRestart); return { ok: true };
       case 'work.promote': {
         this.#db.transaction(() => {
           const works = this.workList(command.sourceMessageId);
@@ -1654,7 +1772,7 @@ export class CompanionsStore {
                 startedAt: checkpoint.progress?.startedAt ?? work.createdAt, updatedAt: stamp() };
               this.saveLoop(checkpoint);
             }
-            this.#db.prepare('UPDATE companion_work_queue SET status=?,data=? WHERE id=?').run('interrupted', JSON.stringify({ ...work, status: 'interrupted', updatedAt: stamp() }), work.id);
+            this.#db.prepare('UPDATE companion_work_queue SET status=?,data=? WHERE id=?').run('interrupted', JSON.stringify({ ...work, status: 'interrupted', resumeOnRestart: true, updatedAt: stamp() }), work.id);
             owners.add(work.companionId);
           }
           for (const owner of owners) this.#completeRoutineInterruptIfIdle(owner);

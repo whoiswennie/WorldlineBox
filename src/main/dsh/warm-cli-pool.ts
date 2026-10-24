@@ -108,11 +108,19 @@ export class DshWarmCliPool {
     }
     worker.busy = true; clearTimeout(worker.timer); worker.timer = undefined; worker.uses++;
     const current = worker;
-    const bootSignal = AbortSignal.any([signal, AbortSignal.timeout(60_000)]);
+    // Cold official-profile loading competes with runtime sealing and file scans.
+    // Preserve the caller's earlier deadline; do not misclassify a busy host's
+    // one-minute boundary as an Agent/task failure.
+    const readyDeadline = AbortSignal.timeout(120_000);
+    const bootSignal = AbortSignal.any([signal, readyDeadline]);
     const abort = () => { void this.destroy(current).catch(() => undefined); };
     bootSignal.addEventListener('abort', abort, { once: true });
     try { bootSignal.throwIfAborted(); await current.ready; bootSignal.throwIfAborted(); }
-    catch (error) { await this.destroy(current); throw error; }
+    catch (error) {
+      await this.destroy(current);
+      if (readyDeadline.aborted && !signal.aborted) throw Object.assign(new Error('The native DSH host did not become ready within its startup window; no Agent input was admitted.'), { code: 'DSH_HOST_READY_TIMEOUT' });
+      throw error;
+    }
     finally { bootSignal.removeEventListener('abort', abort); }
     return { worker: current, reused, release: () => {
       current.finished = undefined; current.busy = false;

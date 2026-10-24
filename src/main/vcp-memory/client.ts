@@ -1,13 +1,16 @@
 import { createHash, randomUUID } from 'node:crypto';
 import path from 'node:path';
 import { EventEmitter } from 'node:events';
+import { readdir } from 'node:fs/promises';
 import { utilityProcess } from 'electron';
 import { detachRuntimeDependencyLinks, removeOwnedDirectory } from './filesystem';
+import type { VcpMemoryDreamWaveRequest, VcpMemoryDreamWaveResult } from './dream-contracts';
 import type {
   VcpMemoryCommand, VcpMemoryDeleteReceipt, VcpMemoryEmbeddingConfig, VcpMemoryNote,
   VcpMemoryScope, VcpMemorySearchResult, VcpMemoryWriteReceipt,
   VcpMemoryMessage, VcpMemoryPluginConfiguration, VcpMemoryPluginName, VcpMemoryTimelineRequest,
   VcpMemoryTimelineArtifacts,
+  VcpMemoryContextReference, VcpMemoryCapabilities, VcpMemoryQueryClock, VcpMemoryAutomaticDecayPolicy, VcpMemoryDecayObservation,
 } from './contracts';
 
 export interface VcpMemoryTransport {
@@ -45,6 +48,7 @@ interface ScopeProcess {
   exited: Promise<void>;
   failed: boolean;
   detached?: Promise<void>;
+  retirement?: Promise<void>;
 }
 
 function launchUtility(workerPath: string): VcpMemoryTransport {
@@ -87,7 +91,10 @@ export class VcpMemoryClient {
     this.rejectAll(child, error);
     for (const [key, candidate] of this.scopes) if (candidate === child) this.scopes.delete(key);
     child.transport.kill();
-    const retirement = this.waitForExit(child);
+    this.trackRetirement(child);
+  }
+  private trackRetirement(child: ScopeProcess): void {
+    const retirement = child.retirement ??= this.waitForExit(child);
     this.retiring.set(child.key, retirement);
     void retirement.then(() => { if (this.retiring.get(child.key) === retirement) this.retiring.delete(child.key); }, () => undefined);
   }
@@ -168,6 +175,9 @@ export class VcpMemoryClient {
         child.failed = true;
         this.rejectAll(child, new Error(`VCP memory process exited (${code}).`));
         if (this.scopes.get(key) === child) this.scopes.delete(key);
+        // An idle crash has no request-timeout path. Its dependency links still
+        // belong to us and must be detached before close/purge can finish.
+        this.trackRetirement(child);
       });
       transport.on('error', error => this.failProcess(child, error));
       child.ready = this.send(child, { type: 'initialize', configuration: {
@@ -193,12 +203,13 @@ export class VcpMemoryClient {
   read(scope: VcpMemoryScope, id: string): Promise<VcpMemoryNote | null> { return this.request(scope, { type: 'read', id }); }
   list(scope: VcpMemoryScope): Promise<VcpMemoryNote[]> { return this.request(scope, { type: 'list' }); }
   forget(scope: VcpMemoryScope, id: string): Promise<VcpMemoryDeleteReceipt> { return this.request(scope, { type: 'forget', id }); }
-  pluginCall(scope: VcpMemoryScope, plugin: VcpMemoryPluginName, arguments_: Record<string, unknown>): Promise<{ result: unknown; indexed: boolean }> {
+  pluginCall(scope: VcpMemoryScope, plugin: VcpMemoryPluginName, arguments_: Record<string, unknown>): Promise<{ result: unknown; indexed: boolean; contextReferences?: VcpMemoryContextReference[]; contextReferenceCoverage?: 'observed' | 'partial' }> {
     return this.request(scope, { type: 'plugin', plugin, arguments: arguments_ });
   }
-  preprocess(scope: VcpMemoryScope, messages: VcpMemoryMessage[]): Promise<{ messages: VcpMemoryMessage[]; events: unknown[] }> { return this.request(scope, { type: 'preprocess', messages }); }
+  preprocess(scope: VcpMemoryScope, messages: VcpMemoryMessage[], clock?: VcpMemoryQueryClock, automaticDecay?: VcpMemoryAutomaticDecayPolicy): Promise<{ messages: VcpMemoryMessage[]; events: unknown[]; contextReferences?: VcpMemoryContextReference[]; contextReferenceCoverage?: 'observed' | 'partial'; queryClock?: VcpMemoryQueryClock; automaticDecay?: VcpMemoryDecayObservation[]; parsedTimeRanges?: Array<{ start: string; end: string }>; cacheClock?: { bucket: string; invalidated: boolean } }> { return this.request(scope, { type: 'preprocess', messages, ...(clock ? { clock } : {}), ...(automaticDecay ? { automaticDecay } : {}) }); }
+  dreamWave(scope: VcpMemoryScope, request: VcpMemoryDreamWaveRequest): Promise<VcpMemoryDreamWaveResult> { return this.request(scope, { type: 'dream-wave', request }); }
   timeline(scope: VcpMemoryScope, request: VcpMemoryTimelineRequest): Promise<unknown> { return this.request(scope, { type: 'timeline', request }); }
-  capabilities(scope: VcpMemoryScope): Promise<{ plugins: Record<string, { version: string; available: boolean }>; timelineGenerationConfigured: boolean; coldKnowledge: boolean }> { return this.request(scope, { type: 'capabilities' }); }
+  capabilities(scope: VcpMemoryScope): Promise<VcpMemoryCapabilities> { return this.request(scope, { type: 'capabilities' }); }
   exportNotes(scope: VcpMemoryScope): Promise<VcpMemoryNote[]> { return this.request(scope, { type: 'export-notes' }); }
   exportTimelineArtifacts(scope: VcpMemoryScope, sourceRevision: string): Promise<VcpMemoryTimelineArtifacts> {
     return this.request(scope, { type: 'export-timelines', sourceRevision });
@@ -260,5 +271,20 @@ export class VcpMemoryClient {
     await Promise.all(this.retiring.values());
     const failure = results.find(result => result.status === 'rejected');
     if (failure?.status === 'rejected') throw failure.reason;
+  }
+  /** All scope directories are rebuildable projections. A configuration change
+   * retires their old graph/model caches after every process has actually exited. */
+  async retire(): Promise<void> {
+    await this.close();
+    const base = path.resolve(this.options.dataRoot);
+    let entries;
+    try { entries = await readdir(base, { withFileTypes: true }); }
+    catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') return; throw error; }
+    for (const entry of entries) {
+      if (!/^[a-f0-9]{64}$/u.test(entry.name)) continue;
+      const target = path.resolve(base, entry.name);
+      if (path.dirname(target) !== base) throw new Error('Unsafe retired VCP scope path.');
+      await removeOwnedDirectory(target);
+    }
   }
 }

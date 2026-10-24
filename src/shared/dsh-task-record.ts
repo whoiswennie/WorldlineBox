@@ -1,9 +1,14 @@
 import { z } from 'zod';
 import { dshTaskEventSchema } from './dsh-tasks';
-import { dshTaskArtifactSchema } from './dsh-task-spec';
+import { dshTaskArtifactSchema, dshDeliveryVerificationSchema, dshEffectiveCapabilitiesSchema } from './dsh-task-spec';
 
 export const DSH_RECORD_LIMITS = { pageSize: 20, maxPageSize: 50, entryChars: 2000, maxEntryChars: 4000, pageChars: 12000, finalChars: 6000 } as const;
-export const dshRecordScopeSchema = z.strictObject({ actionId: z.uuid(), companionId: z.string().regex(/^[A-Za-z0-9_-]{1,100}$/), conversationId: z.string().regex(/^[A-Za-z0-9_-]{1,100}$/), sourceMessageId: z.string().regex(/^[A-Za-z0-9_-]{1,100}$/) });
+export const dshRecordScopeSchema = z.strictObject({ actionId: z.uuid(), companionId: z.string().regex(/^[A-Za-z0-9_-]{1,100}$/), conversationId: z.string().regex(/^[A-Za-z0-9_-]{1,100}$/), sourceMessageId: z.string().regex(/^[A-Za-z0-9_-]{1,100}$/),
+  topicId: z.string().min(1).max(100).nullable().optional(), invocationId: z.string().min(1).max(200).optional(),
+  sourceDigest: z.string().regex(/^[a-f0-9]{64}$/).optional(), authorizationGrantId: z.string().min(1).max(100).optional(),
+  executionReadsetDigest: z.string().regex(/^[a-f0-9]{64}$/u).optional(),
+  domain: z.enum(['reality', 'game', 'story', 'discussion']).optional() });
+export type DshRecordScope = z.infer<typeof dshRecordScopeSchema>;
 export const dshRecordQuerySchema = z.strictObject({ recordId: z.uuid(),
   start: z.number().int().min(1).max(100001).optional(), end: z.number().int().min(1).max(100001).optional(),
   snapshot: z.number().int().min(0).max(100000).optional(),
@@ -24,6 +29,7 @@ export const dshRecordOverviewSchema = z.object({ recordId: z.uuid(), title: z.s
   error: z.string().max(1000).optional(), complete: z.boolean(), storageLimited: z.boolean(),
   workspacePath: z.string().max(4096).optional(), mode: z.enum(['native', 'ptc']).optional(), sessionId: z.string().max(200).optional(),
   artifacts: z.array(dshTaskArtifactSchema).max(100).optional(), structured: z.unknown().optional(), structuredTruncated: z.boolean().optional(),
+  verification: dshDeliveryVerificationSchema.optional(), effective: dshEffectiveCapabilitiesSchema.optional(),
 });
 export type DshRecordOverview = z.infer<typeof dshRecordOverviewSchema>;
 export const dshRecordPageSchema = z.object({ overview: dshRecordOverviewSchema,

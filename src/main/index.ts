@@ -5014,7 +5014,9 @@ async function startApplication(): Promise<void> {
                 baseUrl: config.baseUrl, apiKey: getDecryptedApiKey() }, signal,
               { fetchFn: (input, init) => net.fetch(input instanceof URL ? input.toString() : input, { ...init, credentials: 'omit' }), timeoutMs: 120000 });
             });
-            return { chat: await vcpChatGateway.configuration() };
+            const config = loadAiConfig(), { COMPANION_TEXT_GENERATION_PROFILE } = await import('./companions/model');
+            return { chat: await vcpChatGateway.configuration({ semanticProfile: { apiFormat: config.apiFormat, model: config.model,
+              baseUrl: config.baseUrl, generation: COMPANION_TEXT_GENERATION_PROFILE }, credential: config.hasKey ? getDecryptedApiKey() : '' }) };
           } }),
         userData: app.getPath('userData'), dataRoot: workspace.dataRoot, memoryLibraryRoot: workspace.memoryRoot,
         workerPath: path.join(__dirname, 'companion_worker.js'), appPath: app.getAppPath(),

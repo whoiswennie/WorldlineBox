@@ -6,6 +6,8 @@ import type { CompanionWorkspaceResponse } from '../../shared/companion-workspac
 export interface CompanionLearningAssets {
   catalog(): Promise<NonNullable<CompanionLearningStatus['libraries']>>;
   grant(input: { libraryId: string; folderId?: string }): Promise<{ libraryName: string; libraryPath: string; folderName?: string }>;
+  /** Existing authorization metadata only; may reopen its exact persisted library. */
+  describe?(grant: CompanionLearningGrant): Promise<{ libraryName: string; libraryPath: string; folderName?: string }>;
   page(grant: CompanionLearningGrant, afterId?: string): Promise<{ assets: AssetSummary[]; hasMore: boolean; nextCursor?: string }>;
   asset?(grant: CompanionLearningGrant, assetId: string): Promise<AssetSummary | undefined>;
   read(grant: CompanionLearningGrant, asset: AssetSummary): Promise<{ content: string; revisionId: string; truncated: boolean }>;

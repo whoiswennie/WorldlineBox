@@ -41,8 +41,12 @@ it('persists explicit grants without adding the invited partner to the private s
 it('finds a real collaborator when contact queries contain both their display name and ID', () => {
   const f = fixture();
   f.store.request({ type: 'companion.update', id: 'b', companion: { name: '周岚', description: '', persona: '独立核对', avatar: 'sister', model: '', proactive: false } });
+  expect(f.store.request({ type: 'memory.world_query', companionId: 'a', conversationId: f.origin.id, category: 'contacts', query: '周岚 b', limit: 10 }).worldKnowledge?.items).toEqual([]);
+  const introduced = f.store.request({ type: 'social.conversation.ensure', companionId: 'a', memberIds: ['a', 'b'] }).socialConversation!;
+  f.store.request({ type: 'social.message.append', conversationId: introduced.id, authorId: 'a', content: '周岚你好，我是a，想认识你一起核对结果。',
+    clientId: 'actual_introduction', virtualCreatedAt: new Date().toISOString() });
   const result = f.store.request({ type: 'memory.world_query', companionId: 'a', conversationId: f.origin.id, category: 'contacts', query: '周岚 b', limit: 10 });
-  expect(result.worldKnowledge?.items).toContainEqual(expect.objectContaining({ id: 'b', name: '周岚', source: 'contact_directory' }));
+  expect(result.worldKnowledge?.items).toContainEqual(expect.objectContaining({ id: 'b', name: '周岚', known: true, source: 'own_social_acquaintance' }));
 });
 
 it('allows cross-port action and loop lineage only after the invited actor accepts and starts that exact grant', () => {

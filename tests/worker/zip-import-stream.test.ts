@@ -5,7 +5,6 @@ import {
   mkdtempSync,
   readdirSync,
   readFileSync,
-  rmSync,
   writeFileSync,
 } from 'node:fs';
 import { createRequire } from 'node:module';
@@ -14,6 +13,7 @@ import path from 'node:path';
 import { randomBytes } from 'node:crypto';
 
 import { afterEach, describe, expect, it } from 'vitest';
+import { removeOwnedDirectorySync } from '../../src/main/vcp-memory/filesystem';
 
 import {
   extractZipStream,
@@ -104,7 +104,8 @@ async function expectCode(
 
 afterEach(() => {
   for (const root of temporaryRoots.splice(0)) {
-    rmSync(root, { recursive: true, force: true });
+    if (path.dirname(path.resolve(root)) !== path.resolve(tmpdir())) throw new Error('Unexpected zip fixture root');
+    removeOwnedDirectorySync(root);
   }
 });
 

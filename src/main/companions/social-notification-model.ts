@@ -9,14 +9,19 @@ import { runCompanionStructuredAgent, companionTaskInvocation } from './structur
 import { refreshCompanionPublicProfileContext } from './public-profile-context';
 import { companionModelWorld, COMPANION_WORLD_PERCEPTION_RULES } from './world-perception-context';
 import type { CompanionActivityTask } from '../../shared/companion-activity-task';
+import type { CompanionExecutionReadset } from '../../shared/companion-execution-evidence';
+import { captureCompanionExecutionReadset } from './execution-evidence';
+import { reviewCompanionSocialProgress } from './social-progress-review';
+import { createHash } from 'node:crypto';
 
 const resultSchema = z.strictObject({ text: z.string().trim().min(1).max(2000).nullable(), eventId: z.string(), initiatorId: z.literal('user') });
 
 /** A no-tool update grounded in committed facts and what the original human has already heard. */
 export async function generateCompanionSocialNotification(input: { companion: Companion; conversation: CompanionConversation;
   source: CompanionMessage; notification: CompanionSocialNotification; world: CompanionWorldSnapshot; activityTask?: CompanionActivityTask;
+  eventMessages?: CompanionMessage[];
   members: Array<Pick<Companion, 'id' | 'name'>> } & Partial<CompanionProfileInput>, config: CompanionModelConfig,
-signal?: AbortSignal, options: Pick<CompanionModelOptions, 'fetchFn' | 'timeoutMs'> = {}): Promise<string | null> {
+signal?: AbortSignal, options: Pick<CompanionModelOptions, 'fetchFn' | 'timeoutMs'> & { observeReadset?(readset: CompanionExecutionReadset): void } = {}): Promise<string | null> {
   const event = input.notification;
   if (input.source.authorId !== 'user' || input.source.id !== event.sourceMessageId || input.source.conversationId !== event.conversationId
     || input.conversation.id !== event.conversationId || !input.conversation.memberIds.includes(input.companion.id)
@@ -34,7 +39,10 @@ peer_reply只证明对方实际说了evidence.text，不证明已见面、已答
     user: JSON.stringify({ purpose: 'world_social_notification', identity: companionIdentity({ companion: input.companion,
       conversation: input.conversation, source: input.source, directory: input.members, origin: event.origin, audience: 'player', publicProfiles: input.publicProfiles }),
       origin: event.origin, confirmedEvent: { eventId: event.eventId, kind: event.kind, evidence: event.evidence },
-      confirmedEvents: events, dialogue,
+      originalAuthority: { messageId: input.source.id, conversationId: input.source.conversationId, authorId: 'user',
+        checksum: createHash('sha256').update(input.source.content).digest('hex'), contentOmitted: true,
+        trust: 'host_verified_original_authority_not_a_read_of_private_request_text' },
+      confirmedEvents: events, dialogue, verifiedOutbound: event.progressEvidence,
       worldClock: companionModelWorld(input.world, input.companion.id)?.clock, world: companionModelWorld(input.world, input.companion.id),
       visitProgress: input.activityTask && input.activityTask.sourceMessageId === input.source.id && input.activityTask.companionId === input.companion.id
         && input.activityTask.conversationId === input.conversation.id ? { status: input.activityTask.status, stage: input.activityTask.stage,
@@ -44,13 +52,36 @@ peer_reply只证明对方实际说了evidence.text，不证明已见面、已答
       continuation: { solicited: true, mayGrantExternalExecution: false },
       outputSchema: z.toJSONSchema(resultSchema, { io: 'input' }) }),
   }, { companionId: input.companion.id, memberIds: input.conversation.memberIds, audience: 'player', publicProfiles: input.publicProfiles });
-  const parsed = resultSchema.safeParse(await runCompanionStructuredAgent({ context, frame: {
+  const { observeReadset, ...modelOptions } = options;
+  const parsed = resultSchema.safeParse(await runCompanionStructuredAgent({ context,
+    observeReadset: readset => {
+      const sourceProof = readset.sources.find(source => source.id === input.source.id);
+      if (sourceProof && sourceProof.checksum !== createHash('sha256').update(input.source.content).digest('hex')) throw invalid();
+      observeReadset?.(captureCompanionExecutionReadset({ companionId: readset.companionId, conversationId: readset.conversationId,
+        beforeSequence: readset.beforeSequence }, { readsets: [readset], sources: [
+      // The private root is not a model read. Its separate host authority
+      // dependency is added atomically by notification.complete, never by
+      // hashing this identity-only empty source body.
+      ...input.eventMessages ?? [], ...event.progressEvidence?.outbound.map(item => item.message) ?? [],
+    ].map(message => ({ id: message.id, conversationId: message.conversationId, checksum: createHash('sha256').update(message.content).digest('hex') })) }));
+    },
+    validateOutput: async value => {
+      const candidate = resultSchema.safeParse(value);
+      if (!candidate.success || candidate.data.eventId !== event.eventId) throw invalid();
+      if (candidate.data.text !== null) {
+        const correction = await reviewCompanionSocialProgress(candidate.data.text, input.activityTask ? [input.activityTask] : [], config, signal,
+          { ...modelOptions, requireReview: true, includeTerminal: true, names: input.members, replies: input.eventMessages,
+            outbound: event.progressEvidence });
+        if (correction) throw new CompanionModelError('INVALID_RESPONSE', '后续回报尚未发送：' + correction);
+      }
+      return candidate.data;
+    }, frame: {
     companion: input.companion, conversation: input.conversation, sourceMessage: { ...input.source, content: '' },
     messages: scopedDialogue.filter(message => message.id !== input.source.id), memories: [],
     audience: 'player', identityDirectory: input.members, publicProfiles: input.publicProfiles,
     invocation: companionTaskInvocation({ companion: input.companion, conversationId: input.conversation.id, id: event.id,
       kind: 'work', goal: '向原委托者如实汇报实际新进展。', createdAt: input.source.createdAt, source: input.source,
-      messageIds: [input.source.id, ...dialogue.map(message => message.id)] }) } }, config, signal, { ...options, visualInputs: input.visualInputs }));
+      messageIds: [input.source.id, ...dialogue.map(message => message.id)] }) } }, config, signal, { ...modelOptions, visualInputs: input.visualInputs }));
   if (!parsed.success || parsed.data.eventId !== event.eventId) throw invalid();
   return parsed.data.text;
 }

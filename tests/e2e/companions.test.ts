@@ -1,4 +1,4 @@
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { createServer, type IncomingHttpHeaders, type Server } from 'node:http';
@@ -20,7 +20,7 @@ interface ProviderRequest {
   memories: unknown[]; reply: string; processedMemory?: { text: string; revision: string; profileKey: string };
   stateRevision?: number; toolResults?: string[];
 }
-interface ProviderFixture { baseUrl: string; requests: ProviderRequest[]; memoryRequests: Array<{ purpose: string; companionId: string; sourceIds: string[] }>; streamStarts: Array<{ userText: string; step: number; first: string; second: string }>; releaseStream(userText: string, step?: number): void; release(): void; close(): Promise<void> }
+interface ProviderFixture { baseUrl: string; requests: ProviderRequest[]; memoryRequests: Array<{ purpose: string; companionId: string; sourceIds: string[] }>; socialReviews: Array<{ proposedText: string; facts: unknown[]; nativeActions: unknown[] }>; streamStarts: Array<{ userText: string; step: number; first: string; second: string }>; releaseStream(userText: string, step?: number): void; release(): void; close(): Promise<void> }
 
 // Electron supplies the window; no Playwright browser fixture is needed.
 // eslint-disable-next-line no-empty-pattern
@@ -85,6 +85,10 @@ test('automatically records ordinary conversation, exposes sources and progress,
 
     // The next reply receives automatically recalled evidence without a memory tool or manual prompt.
     await sendUi(page, conversationId, '你还记得我喜欢什么吗？', [companionId]);
+    expect(provider.socialReviews).toEqual(expect.arrayContaining([
+      { proposedText: '好呀，我记住你喜欢看海了。周末可以留些时间慢慢逛。', facts: [], nativeActions: [] },
+      { proposedText: '记得，你喜欢看海。', facts: [], nativeActions: [] },
+    ]));
     expect(provider.requests.at(-1)!.memories).toEqual([]);
     expect(provider.requests.at(-1)!.processedMemory).toMatchObject({ text: expect.stringContaining('用户喜欢看海'), revision: expect.any(String), profileKey: expect.any(String) });
     expect(provider.memoryRequests.some(item => item.purpose === 'vcp_aimemo')).toBe(true);
@@ -761,6 +765,60 @@ test('task monitor pages durable role history and shows complete local timestamp
   } finally { if (application) await application.close(); cleanup(root); }
 });
 
+// eslint-disable-next-line no-empty-pattern
+test('pages complete persisted activity steps through the real renderer and keeps each group owner separate', async ({}, testInfo) => {
+  test.setTimeout(150_000);
+  const root = mkdtempSync(path.join(tmpdir(), 'worldlinebox-companions-e2e-activity-history-')), profile = path.join(root, 'profile');
+  let application: ElectronApplication | undefined;
+  try {
+    let started = await launch(profile); application = started.application;
+    const group = (await request(started.page, { type: 'conversation.create-group', memberIds: ['deepseek-sister', 'deepseek-flash'], title: '行动记录分页验收' })).conversation!;
+    const source = (await request(started.page, { type: 'message.send', conversationId: group.id, content: '请分别完成自己的虚拟行动，保留每一步真实记录。', clientId: randomUUID() })).message!;
+    await application.close(); application = undefined;
+    // Only the closed, isolated fixture database is seeded. The UI and all
+    // subsequent paging use production Main/preload/SQLite without replacement.
+    const sourceChecksum = createHash('sha256').update(source.content).digest('hex');
+    const data = ['deepseek-sister', 'deepseek-flash'].map((companionId, owner) => ({
+      id: 'activity_history_owner_' + owner, companionId, conversationId: group.id, sourceMessageId: source.id, sourceChecksum,
+      clientId: 'activity_history_fixture_' + owner, title: owner ? '妹妹自己的行动记录' : '姐姐自己的行动记录', goal: source.content,
+      status: 'succeeded', step: 72, attempts: 0, createdAt: source.createdAt, updatedAt: source.createdAt,
+      deadline: new Date(Date.parse(source.createdAt) + 3600000).toISOString(), stage: '本轮历史展示夹具已结束', nextAt: 0,
+      history: Array.from({ length: 72 }, (_, index) => ({ step: index + 1, at: source.createdAt,
+        action: 'observe', result: `OWNER_${owner}_ACTIVITY_STEP_${String(index + 1).padStart(3, '0')}`, ok: true })),
+    }));
+    const script = `const Database=require('better-sqlite3');const db=new Database(process.argv[1]);const rows=JSON.parse(process.argv[2]);db.transaction(()=>{for(const row of rows)db.prepare('INSERT INTO companion_activity_tasks(id,companion_id,conversation_id,source_message_id,status,next_at,client_id,data) VALUES(?,?,?,?,?,?,?,?)').run(row.id,row.companionId,row.conversationId,row.sourceMessageId,row.status,row.nextAt,row.clientId,JSON.stringify(row))})();db.close();`;
+    const seeded = spawnSync(resolveElectronExecutablePath(), ['-e', script, path.join(companionDataRoot(profile), 'messages.sqlite'), JSON.stringify(data)],
+      { cwd: process.cwd(), env: { ...electronLaunchEnv(), ELECTRON_RUN_AS_NODE: '1' }, encoding: 'utf8', windowsHide: true });
+    expect(seeded.status, seeded.stderr).toBe(0);
+    started = await launch(profile); application = started.application; const page = started.page;
+    await page.locator('[data-application-module="companions"]').click();
+    await page.locator(`[data-companion-conversation="${group.id}"]`).click();
+    await page.getByRole('button', { name: '我们之间', exact: true }).click();
+    const planner = page.getByRole('complementary', { name: '伙伴手帐', exact: true });
+    await planner.getByRole('combobox', { name: '待办所属伙伴', exact: true }).selectOption('deepseek-sister');
+    const panel = page.getByRole('region', { name: '持续行动任务', exact: true });
+    const task = panel.locator('[data-activity-task="activity_history_owner_0"]');
+    await expect(task).toBeVisible(); await task.locator('summary').click();
+    await expect(task.locator('li')).toHaveCount(32);
+    await expect(task).toContainText('OWNER_0_ACTIVITY_STEP_041'); await expect(task).not.toContainText('OWNER_0_ACTIVITY_STEP_001');
+    await task.getByRole('button', { name: '查看更早步骤', exact: true }).click();
+    await expect(task.locator('li')).toHaveCount(64);
+    await task.getByRole('button', { name: '查看更早步骤', exact: true }).click();
+    await expect(task.locator('li')).toHaveCount(72);
+    expect(await task.locator('li span').allTextContents()).toEqual(data[0]!.history.map(step => step.result));
+    await expect(task.getByRole('button', { name: '查看更早步骤', exact: true })).toHaveCount(0);
+    await planner.getByRole('combobox', { name: '待办所属伙伴', exact: true }).selectOption('deepseek-flash');
+    const second = panel.locator('[data-activity-task="activity_history_owner_1"]');
+    await expect(second).toBeVisible(); await second.locator('summary').click();
+    await expect(second.locator('li')).toHaveCount(32); await expect(panel).not.toContainText('OWNER_0_ACTIVITY_STEP_');
+    await expect(second).toContainText('OWNER_1_ACTIVITY_STEP_072');
+    const artifacts = path.resolve('artifacts/vcp-validation/activity-history-ui'); mkdirSync(artifacts, { recursive: true });
+    await page.screenshot({ path: path.join(artifacts, 'owner-separated-activity-history.png') });
+    await testInfo.attach('activity-history-pagination', { body: JSON.stringify({ totalStepsPerOwner: 72, pageSizes: [32, 64, 72],
+      realMainAndStorage: true, isolatedClosedDatabaseSeed: true, ownerSwitchIsolated: true }), contentType: 'application/json' });
+  } finally { await application?.close(); cleanup(root); }
+});
+
 test('keeps capability entries and quoted messages compact and opens the linked task in its monitor', async () => {
   test.setTimeout(90_000);
   const root = mkdtempSync(path.join(tmpdir(), 'worldlinebox-companions-e2e-entries-'));
@@ -941,6 +999,7 @@ async function prepareReplyAuthors(page: Page, authors: string[]) {
 async function providerFixture(hold?: { roleId: string; userText: string }): Promise<ProviderFixture> {
   const requests: ProviderRequest[] = [];
   const memoryRequests: ProviderFixture['memoryRequests'] = [];
+  const socialReviews: ProviderFixture['socialReviews'] = [];
   const streamStarts: ProviderFixture['streamStarts'] = [], streamReleases = new Map<string, () => void>();
   const streamTimers = new Set<ReturnType<typeof setTimeout>>();
   let released = false;
@@ -995,11 +1054,17 @@ async function providerFixture(hold?: { roleId: string; userText: string }): Pro
         }
         const context = JSON.parse(userContext) as {
           purpose?: string; companion?: { id: string }; currentMessage?: { content: string }; source?: { content: string };
+          proposedText?: string; facts?: unknown[]; nativeActions?: unknown[];
           runtimeState?: { revision: number }; memoryRecall?: { context?: { text: string; revision: string; profileKey: string } };
           conversation: { replyingAs: string }; messages: Array<{ id?: string; authorId?: string; speaker?: string; content: string }>; memories: unknown[];
         };
         let text: string, stateCall: Record<string, unknown> | undefined;
-        if (context.purpose === 'world_decision') text = JSON.stringify({ action: null, reason: '没有需要打扰的世界事件。', appraisals: [] });
+        // This deterministic provider verifies phase wiring only. Actual
+        // unsupported social claims have separate negative and real-model gates.
+        if (context.purpose === 'companion_social_progress_review') {
+          socialReviews.push({ proposedText: context.proposedText ?? '', facts: context.facts ?? [], nativeActions: context.nativeActions ?? [] });
+          text = JSON.stringify({ supported: true, correction: '' });
+        } else if (context.purpose === 'world_decision') text = JSON.stringify({ action: null, reason: '没有需要打扰的世界事件。', appraisals: [] });
         else if (context.purpose === 'world_social') text = JSON.stringify({ text: null, reason: '本例不继续伙伴话题。' });
         else if (context.purpose === 'world_message_authorization') text = JSON.stringify({ allowed: false, confidence: .99, evidence: [], reason: '本例无转发委托。' });
         else if (context.purpose === 'world_attention') text = JSON.stringify({ urgency: 'ordinary', confidence: .95, evidence: [context.source?.content ?? ''], reason: '用户没有请求打断当前作息。' });
@@ -1068,7 +1133,7 @@ async function providerFixture(hold?: { roleId: string; userText: string }): Pro
   await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
   const address = server.address();
   if (!address || typeof address === 'string') throw new Error('Provider fixture has no local port.');
-  return { baseUrl: `http://127.0.0.1:${address.port}`, requests, memoryRequests, streamStarts, releaseStream: (text, step = 0) => { const key = text + '/' + step, finish = streamReleases.get(key); streamReleases.delete(key); finish?.(); }, release: () => { released = true; },
+  return { baseUrl: `http://127.0.0.1:${address.port}`, requests, memoryRequests, socialReviews, streamStarts, releaseStream: (text, step = 0) => { const key = text + '/' + step, finish = streamReleases.get(key); streamReleases.delete(key); finish?.(); }, release: () => { released = true; },
     close: () => new Promise<void>((resolve, reject) => { for (const timer of streamTimers) clearTimeout(timer); streamTimers.clear(); server.close(error => error ? reject(error) : resolve()); server.closeAllConnections(); }) };
 }
 

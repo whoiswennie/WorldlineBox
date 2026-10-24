@@ -22,6 +22,27 @@ describe('VCP memory host input boundaries', () => {
     expect(() => normalizeNote({ id: 'note', content: 'fact', tags: ['safe\nTag: injected'] })).toThrow(/Tags/u);
     expect(() => normalizeNote({ id: 'note', content: 'fact', tags: [], occurredAt: 'not-a-date' })).toThrow(/date/u);
   });
+  it('accepts the full public diary length and rejects only text beyond that contract', () => {
+    for (const length of [4096, 4097, 16000, 65536]) {
+      expect(normalizeNote({ id: 'long', content: 'x'.repeat(length), tags: [] })).toMatchObject({ content: 'x'.repeat(length) });
+    }
+    expect(() => normalizeNote({ id: 'long', content: 'x'.repeat(65537), tags: [] })).toThrow(/content/iu);
+    expect(() => normalizeNote({ id: 'x'.repeat(4097), content: 'valid', tags: [] })).toThrow(/ID/u);
+  });
+  it('accepts 16000-character queries without truncation and rejects 16001 before embedding', async () => {
+    const queryEmbedding = async (text: string) => { expect(text).toHaveLength(16000); return [1, 0]; };
+    const runtime = Object.assign(Object.create(VcpMemoryRuntime.prototype), {
+      requireReady() {}, peripherals: { async validateExistingTimelines() {} }, queryEmbedding, async ensureArtifacts() {},
+      kb: { async listDistinctDiaries() { return ['memories']; }, withMemoObservationScope: (callback: () => unknown) => callback(),
+        async executeNativeRiverQuery(query: { text: string }) { expect(query.text).toHaveLength(16000); return { results: [], diagnostics: {} }; } },
+    });
+    for (const length of [4096, 4097, 16000]) {
+      runtime.queryEmbedding = async (text: string) => { expect(text).toHaveLength(length); return [1, 0]; };
+      runtime.kb.executeNativeRiverQuery = async (query: { text: string }) => { expect(query.text).toHaveLength(length); return { results: [], diagnostics: {} }; };
+      await expect(runtime.search({ text: 'q'.repeat(length) })).resolves.toMatchObject({ results: [] });
+    }
+    await expect(runtime.search({ text: 'q'.repeat(16001) })).rejects.toThrow(/query/iu);
+  });
   it('copies real native ranking components without normalization and leaves missing components absent', () => {
     const raw = { score: .7324, rank: 3, originalScore: -.18, vectorScore: .41, baseScore: .63, topologyBonus: .06,
       anchorBonus: 0, omega: .51, role: 'direct_fact_anchor', riverRegime: 'mesoscopic', matchedTags: ['海边', '约定'], coreTagsMatched: ['约定'],

@@ -23,11 +23,13 @@ else {
   const graphFiles = new Map(selected.flatMap(name => graph.entries[name].files)
     .filter(file => file.kind === 'js').map(file => [file.path, file]));
   const assets = selected.map(name => `Plugin/${name}/plugin-manifest.json`).concat([
+    'TDBKnowledge.js',
     'Plugin/DailyNote/TagMaster.txt', 'Plugin/DailyNoteManager/Readme.md', 'Plugin/LightMemo/config.env.example',
     'Plugin/RAGDiaryPlugin/README.md', 'Plugin/RAGDiaryPlugin/META_THINKING_GUIDE.md',
     'Plugin/RAGDiaryPlugin/AIMemoPrompt.txt', 'Plugin/RAGDiaryPlugin/MoreAIMemoPresets/AIMemoPromptX.txt',
     'Plugin/RAGDiaryPlugin/config.env.example', 'Plugin/RAGDiaryPlugin/rag_tags.json.example',
     'Plugin/RAGDiaryPlugin/semantic_groups.json.example', 'Plugin/RAGDiaryPlugin/semantic_groups.edit.json.example',
+    'Plugin/AgentDream/DreamWaveEngine.js',
   ]);
   const extraFiles = [...graphFiles.values()].filter(file => !entries.some(entry => entry.path === file.path))
     .map(({ path: filePath, bytes, sha256 }) => ({ path: filePath, bytes, sha256 }));
@@ -37,7 +39,8 @@ else {
   }
   peripheralManifest = { repository: manifest.upstream.repository, commit: manifest.upstream.commit,
     plugins: selected, files: extraFiles, runtimePackages: [...new Set(selected.flatMap(name => graph.entries[name].npmPackages))]
-      .filter(name => !name.startsWith('vexus-lite-')).sort() };
+      .filter(name => !name.startsWith('vexus-lite-')).concat(['triviumdb']).sort(),
+    coldKnowledge: { entry: 'TDBKnowledge.js', package: 'triviumdb', version: '0.8.5' } };
 }
 entries.push(...peripheralManifest.files);
 const restored = restoreMissing ? await restoreMissingVcpFiles({ destination, entries,
@@ -54,7 +57,8 @@ for (const entry of entries) {
   if (!verifyOnly && !restoreMissing) {
     const output = path.join(destination, relative);
     await mkdir(path.dirname(output), { recursive: true });
-    await copyFile(source, output);
+    const existing = await readFile(output).catch(error => { if (error.code !== 'ENOENT') throw error; return undefined; });
+    if (!existing?.equals(bytes)) await copyFile(source, output);
   }
 }
 if (!verifyOnly && !restoreMissing) {

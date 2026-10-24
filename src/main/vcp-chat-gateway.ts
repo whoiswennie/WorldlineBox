@@ -1,4 +1,4 @@
-import { randomBytes, timingSafeEqual } from 'node:crypto';
+import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
 import { createServer, type Server } from 'node:http';
 
 /** Converts VCP's internal chat call to the application's global provider, with no credential copy. */
@@ -8,10 +8,18 @@ export class VcpChatGateway {
   private port?: number;
   private readonly token = randomBytes(32).toString('hex');
   private readonly active = new Set<AbortController>();
+  private sourceCredentialDigest?: string;
+  private connectionGeneration = 0;
   constructor(private readonly generate: (context: { system: string; user: string }, signal: AbortSignal) => Promise<string>) {}
-  async configuration() {
+  async configuration(source?: { semanticProfile: unknown; credential: string }) {
     await this.start();
-    return { baseUrl: `http://127.0.0.1:${this.port}`, model: 'global-chat', apiKey: this.token };
+    if (source) {
+      const digest = createHash('sha256').update(source.credential).digest('hex');
+      if (digest !== this.sourceCredentialDigest) { this.sourceCredentialDigest = digest; this.connectionGeneration++; }
+    }
+    return { baseUrl: `http://127.0.0.1:${this.port}`, model: 'global-chat', apiKey: this.token,
+      ...(source ? { sourceSignature: createHash('sha256').update(JSON.stringify(source.semanticProfile)).digest('hex'),
+        connectionGeneration: this.connectionGeneration } : {}) };
   }
   private start(): Promise<void> {
     return this.pending ??= new Promise((resolve, reject) => {

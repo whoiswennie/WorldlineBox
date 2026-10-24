@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { removeOwnedDirectorySync } from '../../src/main/vcp-memory/filesystem';
 
 import {
   LibraryService,
@@ -120,7 +121,8 @@ afterEach(() => {
     service.closeAll();
   }
   for (const root of temporaryRoots.splice(0)) {
-    rmSync(root, { force: true, recursive: true, maxRetries: 5, retryDelay: 200 });
+    if (path.dirname(path.resolve(root)) !== path.resolve(tmpdir())) throw new Error('Unexpected library-watcher fixture root');
+    removeOwnedDirectorySync(root);
   }
 });
 

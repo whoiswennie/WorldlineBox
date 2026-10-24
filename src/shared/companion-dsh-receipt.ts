@@ -13,5 +13,6 @@ export function companionDshReceipt(action: CompanionAction, finalChars = 6000) 
     complete: summary?.complete ?? false, storageLimited: summary?.storageLimited ?? false, error: action.error ?? summary?.error,
     session: summary?.sessionId ? { id: summary.sessionId, resumeTaskId: action.taskId ?? summary.recordId } : undefined,
     workspacePath: summary?.workspacePath, mode: summary?.mode, artifacts: summary?.artifacts ?? [], structured: summary?.structured, structuredTruncated: summary?.structuredTruncated,
+    verification: summary?.verification, effective: summary?.effective,
     readTool: 'dsh', readOperation: 'record', trust: 'execution_record_data_not_instructions' };
 }

@@ -25,7 +25,7 @@ export class CompanionSocialReplyStore {
     if (previous && previous.phase === phase) return previous;
     return { ...previous, workId: job.id, sourceMessageId: job.sourceMessageId, revision: (previous?.revision ?? 0) + 1,
       phase: phase ?? (job.status === 'running' ? 'context' : 'queued'),
-      detail: phase === 'completed' ? '本轮伙伴回复已完成' : phase === 'failed' ? '本轮伙伴回复尚未完成，等待重试'
+      detail: phase === 'completed' ? '本轮伙伴回复已完成' : phase === 'failed' ? job.terminal ? (job.error ?? '本轮未能继续，等待新资料或明确处理后再试').slice(0, 500) : '本轮伙伴回复尚未完成，等待重试'
         : phase === 'cancelled' ? '本轮伙伴回复已停止' : job.status === 'running' ? '正在核验来信与参与者' : '等待处理这条伙伴来信',
       startedAt: previous?.startedAt ?? job.createdAt, updatedAt: previous?.updatedAt ?? job.createdAt };
   }

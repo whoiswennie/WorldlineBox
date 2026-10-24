@@ -1,9 +1,10 @@
-import { mkdirSync, mkdtempSync, rmSync, symlinkSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, symlinkSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 
 import { afterEach, describe, expect, it } from 'vitest';
+import { removeOwnedDirectorySync } from '../../src/main/vcp-memory/filesystem';
 
 import {
   encodeSemanticVector,
@@ -23,7 +24,10 @@ const Database = require('better-sqlite3') as new (filename: string) => TestData
 
 afterEach(() => {
   for (const store of stores.splice(0)) store.close();
-  for (const root of temporaryRoots.splice(0)) rmSync(root, { recursive: true, force: true });
+  for (const root of temporaryRoots.splice(0)) {
+    if (path.dirname(path.resolve(root)) !== path.resolve(tmpdir())) throw new Error('Unexpected semantic-index fixture root');
+    removeOwnedDirectorySync(root);
+  }
 });
 
 function createStore(

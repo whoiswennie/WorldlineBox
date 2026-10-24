@@ -5,6 +5,8 @@ import BetterSqlite3 from 'better-sqlite3';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { CompanionsStore, type CompanionConnection, type CompanionSeed } from '../../src/companions/store';
 import type { CompanionActivityTask, ActivityDecision } from '../../src/shared/companion-activity-task';
+import { createHash } from 'node:crypto';
+import { captureCompanionExecutionReadset } from '../../src/main/companions/execution-evidence';
 const seeds: CompanionSeed[] = ['alice', 'bob'].map(id => ({ id, name: id, persona: '友好且尊重边界', description: '', model: '', avatar: 'sister', proactive: true }));
 const Database = BetterSqlite3 as {
     new (filename: string): CompanionConnection;
@@ -38,7 +40,34 @@ function start(clientId = 'goal_one') {
     return { input, task: store.request(input).activityTask!, source };
 }
 function claim() { return store.request({ type: 'activity.claim' }).activityTask; }
-function commit(task: CompanionActivityTask, decision: ActivityDecision) { return store.request({ type: 'activity.commit', id: task.id, leaseToken: task.leaseToken!, decision }).activityTask!; }
+function commit(task: CompanionActivityTask, decision: ActivityDecision) {
+    // This worker fixture exercises actual source/provenance commits, not an
+    // LLM semantic approval. The semantic author/reviewer has separate tests.
+    const source = task.sourceMessageId ? store.request({ type: 'memory.sources.filter', companionId: task.companionId,
+        conversationId: task.conversationId, ids: [task.sourceMessageId] }).memorySources?.[0] : undefined;
+    const executionReadset = captureCompanionExecutionReadset({ companionId: task.companionId, conversationId: task.conversationId }, { sources: source ? [{ id: source.id, conversationId: source.conversationId,
+        checksum: createHash('sha256').update(source.content).digest('hex') }] : [] });
+    const result = store.request({ type: 'activity.commit', id: task.id, leaseToken: task.leaseToken!, decision, executionReadset }).activityTask!;
+    if (['succeeded', 'failed', 'cancelled'].includes(result.status)) {
+        const report = store.request({ type: 'activity.report.claim', id: task.id }).activityReport;
+        if (report) store.request({ type: 'activity.report.complete', id: task.id, leaseToken: report.leaseToken, executionReadset: report.executionReadset });
+    }
+    return result;
+}
+it('does not certify an unreviewed legacy terminal narrative and still binds its real authority revocation', () => {
+    const { task, source } = start('legacy_terminal_without_readset');
+    const leased = claim()!; expect(leased.id).toBe(task.id);
+    const ended = store.request({ type: 'activity.commit', id: task.id, leaseToken: leased.leaseToken!, decision: {
+        status: 'complete', action: null, wait: null, summary: '已经给四人送达了6人配置。UNVERIFIED_LEGACY_NARRATIVE',
+    } }).activityTask!;
+    expect(ended.status).toBe('succeeded');
+    const report = store.messages({ conversationId: alice.conversationId }).messages.find(message => message.replyToId === source.id && message.authorId === 'alice')!;
+    expect(report.content).toBe('持续任务 · 记录已结束\n\n这条任务记录已结束，实际结果尚未核验。');
+    expect(report.content).not.toMatch(/已完成|四人|6人|UNVERIFIED_LEGACY_NARRATIVE/);
+    store.request({ type: 'memory.forget', ...alice, sourceMessageIds: [source.id] });
+    expect(store.request({ type: 'memory.sources.filter', ...alice, ids: [report.id] }).memorySources).toEqual([]);
+    expect(claim()).toBeUndefined();
+});
 function shareAddress() {
     store.request({ type: 'world.tool', ...bob, arguments: { action: 'share_entrance', recipientIds: ['alice'] } });
     store.request({ type: 'social.job.claim' });
@@ -55,6 +84,35 @@ function invite() {
     store.request({ type: 'world.tool', ...bob, arguments: { action: 'respond', requestId: request.id, decision: 'allow', reason: '欢迎来玩。' } });
     return request;
 }
+it('continues past 32 lifetime steps, paginates original receipts and resumes after restart', () => {
+    const { task } = start('long_goal_over_32');
+    for (let index = 0; index < 35; index++) {
+        const leased = claim()!;
+        expect(leased?.id).toBe(task.id);
+        commit(leased, { status: 'continue', action: { action: 'query', category: index % 2 ? 'contacts' : 'scenes' }, wait: null,
+            summary: `核对第${index + 1}项实际资料。` });
+        advance(1600);
+    }
+    store.close(); store = new CompanionsStore(filename, seeds.map(seed => ({ ...seed, active: true })));
+    const next = claim()!;
+    expect(next).toMatchObject({ id: task.id, status: 'running', step: 35 });
+    expect(next.history).toHaveLength(32);
+    const first = store.request({ type: 'activity.history', ...alice, id: task.id, limit: 20 }).activityHistory!;
+    const older = store.request({ type: 'activity.history', ...alice, id: task.id, beforeStep: first.beforeStep, limit: 20 }).activityHistory!;
+    expect(first.total).toBe(35); expect(first.items).toHaveLength(20); expect(older.items).toHaveLength(15);
+    expect([...older.items, ...first.items].map(item => item.step)).toEqual(Array.from({ length: 35 }, (_, index) => index + 1));
+    expect(commit(next, { status: 'complete', action: null, wait: null, summary: '已经核对全部35项真实回执。' }).status).toBe('succeeded');
+});
+it('releases the owner lane while waiting for an external condition so another goal can progress', () => {
+    const { task } = start('external_wait');
+    const waiting = commit(claim()!, { status: 'continue', action: null, wait: { kind: 'delay', seconds: 300 }, summary: '等世界时间后继续。' });
+    expect(waiting.status).toBe('waiting');
+    const source = store.appendMessage({ conversationId: alice.conversationId, authorId: 'user', content: '等待期间单独核对本人联系人。', replyDirective: 'none' });
+    const second = store.request({ type: 'activity.start', ...alice, sourceMessageId: source.id, clientId: 'second_parallel_goal', title: '独立核对', goal: source.content }).activityTask!;
+    advance(1600);
+    expect(claim()?.id).toBe(second.id);
+    expect(store.request({ type: 'activity.get', ...alice, id: task.id }).activityTask?.status).toBe('waiting');
+});
 it('defers to the exact durable Main source across recovery and commit races while allowing unrelated queued or running chats', () => {
     const f = start('primary_recovery_goal');
     const other = store.appendMessage({ conversationId: alice.conversationId, authorId: 'user', content: '另一个独立聊天，不是原目标。', replyDirective: 'none' });
@@ -83,6 +141,29 @@ it('defers to the exact durable Main source across recovery and commit races whi
     expect(executed.history[0]).toMatchObject({ action: 'query', ok: true });
     store.request({ type: 'work.status', id: 'unrelated_main_chat', status: 'running' }); advance(1600);
     expect(claim()).toMatchObject({ id: f.task.id, step: 1, status: 'running' });
+});
+it.each(['complete', 'continue'] as const)('returns an uncommitted deferred %s proposal to a fresh lease after actual own outbound changes, without replaying an action', status => {
+    const { task, source } = start('deferred_current_outbound_' + status), leased = claim()!;
+    store.request({ type: 'activity.observe', id: task.id, leaseToken: leased.leaseToken! });
+    store.request({ type: 'work.enqueue', work: { id: 'exact_main_goal_lane', ...alice, sourceMessageId: source.id,
+        status: 'queued', proactive: false, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() } });
+    const pending = commit(leased, { status, action: status === 'continue' ? { action: 'move', destinationId: 'alice_sofa' } : null,
+        wait: null, summary: '尚未提交的旧提案。' });
+    expect(pending.status).toBe('queued'); expect(pending.step).toBe(0);
+    const peer = store.request({ type: 'social.conversation.ensure', companionId: 'alice', memberIds: ['alice', 'bob'] }).socialConversation!;
+    store.request({ type: 'social.send', companionId: 'alice', conversationId: peer.id, authorizationMessageId: source.id,
+        content: '这是同一目标新增的实际发送内容。', channel: 'phone', clientId: 'actual_new_outbound_' + status });
+    advance(1600); store.request({ type: 'social.job.claim' });
+    const actual = store.request({ type: 'social.messages', conversationId: peer.id }).socialMessagePage!.items.find(item => item.message.authorId === 'alice')!;
+    expect(actual.message.content).toBe('这是同一目标新增的实际发送内容。');
+    store.request({ type: 'work.status', id: 'exact_main_goal_lane', status: 'done' }); advance(5100);
+    const renewed = claim()!; expect(renewed).toMatchObject({ id: task.id, step: 0, status: 'running' });
+    expect(renewed.leaseToken).not.toBe(leased.leaseToken);
+    const current = store.request({ type: 'activity.observe', id: task.id, leaseToken: renewed.leaseToken! });
+    expect(current.activityProgressEvidence?.outbound.map(item => item.message.id)).toContain(actual.message.id);
+    expect(current.activityTask?.history).toEqual([]);
+    expect(store.request({ type: 'world.observe', ...alice }).world!.actors.find(actor => actor.companionId === 'alice')!.route).toEqual([]);
+    expect(store.request({ type: 'social.messages', conversationId: peer.id }).socialMessagePage!.items.filter(item => item.message.id === actual.message.id)).toHaveLength(1);
 });
 it('continues a chat-issued weather check after physical arrival, coalesces repeat moves and survives restart', () => {
     store.request({ type: 'world.tool', ...alice, arguments: { action: 'move', destinationId: 'alice_computer' } });
@@ -185,6 +266,30 @@ it.each([false, true])('keeps the visit task peer window bound to its own initia
         expect(observed.activityMessageOrigins).toContainEqual(expect.objectContaining({ messageId: replyId, sourceMessageId: inviteId,
             deliveryClientId: 'visit_window_invite', conversationId: room.id }));
     } else expect(observed.activityMessages).toEqual([]);
+});
+it('keeps a reply arriving after the leased observation eligible to wake a newly committed wait', () => {
+    const source = store.appendMessage({ conversationId: alice.conversationId, authorId: 'user', content: '请联系bob，按真实回复继续找她玩。', replyDirective: 'none' });
+    const task = store.request({ type: 'activity.visit.ensure', ...alice, sourceMessageId: source.id, targetId: 'bob',
+        initialMessage: { text: '方便来找你玩吗？', clientId: 'reply_during_planning' } }).activityTask!;
+    advance(1600);
+    const delivery = store.request({ type: 'social.job.claim' });
+    expect(delivery.socialJob?.companionId).toBe('bob');
+    const leased = claim()!;
+    expect(leased.id).toBe(task.id);
+    expect(store.request({ type: 'activity.observe', id: leased.id, leaseToken: leased.leaseToken! }).activityMessages).toEqual([]);
+    advance(1600);
+    const actualReply = store.request({ type: 'social.job.complete', id: delivery.socialJob!.id,
+        leaseToken: delivery.socialJob!.leaseToken!, text: '邀请收到了，我愿意一起玩。' }).socialMessage!.message;
+    const waiting = commit(leased, { status: 'continue', action: null, wait: { kind: 'reply', targetCompanionId: 'bob' }, summary: '只依据模型实际已见的观察等待。' });
+    expect(waiting).toMatchObject({ status: 'waiting', step: leased.step + 1 });
+    advance(6000);
+    const next = claim()!;
+    expect(next).toMatchObject({ id: task.id, step: waiting.step, status: 'running' });
+    expect(next.stage).toContain('真实新回复');
+    expect(store.request({ type: 'activity.observe', id: next.id, leaseToken: next.leaseToken! }).activityMessages?.map(message => message.id)).toEqual([actualReply.id]);
+    const db = new Database(filename);
+    try { expect(db.prepare('SELECT count(*) AS n FROM companion_social_outbox WHERE client_id=?').get('reply_during_planning')).toEqual({ n: 1 }); }
+    finally { db.close(); }
 });
 it('keeps a dormant recipient unloaded and refuses a new contact without queuing it', () => {
     store.setCompanionActive('bob', false);
@@ -372,8 +477,13 @@ it('cancels withdrawn sources, rejects foreign owners, caps repeated failures an
         advance(1600);
     }
     start('empty_goal');
-    const empty = commit(claim()!, { status: 'continue', action: null, wait: null, summary: '空循环' });
-    expect(empty.status).toBe('failed');
+    const empty = claim()!;
+    expect(() => commit(empty, { status: 'continue', action: null, wait: null, summary: '空循环' })).toThrow('status=continue必须');
+    expect(() => commit(empty, { status: 'continue', action: null, wait: null, memory: null, topic: null, planningState: null,
+      summary: '空的可选字段仍不能当作实际步骤。' })).toThrow('status=continue必须');
+    expect(store.request({ type: 'activity.get', ...alice, id: empty.id }).activityTask).toMatchObject({ status: 'running', step: empty.step });
+    expect(commit(empty, { status: 'continue', action: null, wait: { kind: 'delay', seconds: 1 }, memory: null, topic: null, planningState: null,
+      summary: '如实等待下一实际时刻。' }).status).toBe('waiting');
 });
 it('stops only its own pending route on cancellation and times out waits without endless polling', () => {
     shareAddress();

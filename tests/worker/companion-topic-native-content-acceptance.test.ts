@@ -82,7 +82,7 @@ it.skipIf(process.env.WORLDLINEBOX_TOPIC_NATIVE_ACCEPTANCE !== '1')('uses actual
     expect(store.request({ type: 'topic.list', conversationId: group.id, readerId: 'bob', query: '旅行计划A' }).topics).toHaveLength(1);
     status = 'passed';
   } finally {
-    const file = path.resolve('artifacts/companion-agent-acceptance/topic-native-content.json'); await mkdir(path.dirname(file), { recursive: true });
+    const file = path.resolve('artifacts/companion-agent-acceptance/topic-native-content-2026-10-23.json'); await mkdir(path.dirname(file), { recursive: true });
     await writeFile(file, JSON.stringify({ status, startedAt: stamp, finishedAt: new Date().toISOString(), model: config.model,
       setup: 'actual model native topic choices; host creates fixture sources and seeds Alice private sentinel', calls, replies }, null, 2));
   }

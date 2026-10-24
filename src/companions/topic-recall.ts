@@ -1,10 +1,15 @@
 import type { CompanionConnection } from './store';
 import { companionTopicSchema, companionTopicCheckpointSchema } from '../shared/companion-topic';
+import { companionTopicCheckpointValid } from './topic-context';
 
 interface TopicRecallQuery { query?: string; roomId?: string; topicId?: string; tags?: string[]; limit?: number; }
+export interface CompanionTopicCheckpointReference {
+  conversationId: string; topicId: string; readerId: string; checkpointEventIds: string[];
+}
 /** A scoped reference index. Topic roles and private state never become reality claims. */
 export function recallCompanionTopics(db: CompanionConnection, ownerId: string, query: TopicRecallQuery,
-  sourcesValid: (conversationId: string, sourceMessageIds: readonly string[]) => boolean): Array<Record<string, unknown>> {
+  sourcesValid: (conversationId: string, sourceMessageIds: readonly string[]) => boolean,
+  onCheckpoint?: (reference: CompanionTopicCheckpointReference) => void): Array<Record<string, unknown>> {
   const text = query.query ?? '', tags = JSON.stringify(query.tags ?? []);
   const entries = db.prepare(`SELECT t.data,shared.data AS shared_data,mine.data AS mine_data FROM companion_topics t
     JOIN conversations c ON c.id=t.conversation_id AND c.dissolved_at IS NULL
@@ -23,9 +28,11 @@ export function recallCompanionTopics(db: CompanionConnection, ownerId: string, 
   return entries.flatMap(entry=>{
     const topic=companionTopicSchema.parse(JSON.parse(entry.data));
     const checkpoint=(data:string|null)=>{const value=data?companionTopicCheckpointSchema.parse(JSON.parse(data)):undefined;
-      return value&&sourcesValid(topic.conversationId,value.sourceMessageIds)?value:undefined;};
+      return value&&companionTopicCheckpointValid(db,topic,ownerId,value,ids=>sourcesValid(topic.conversationId,ids))?value:undefined;};
     const shared=checkpoint(entry.shared_data),mine=checkpoint(entry.mine_data);
     if(text&&!`${topic.title} ${topic.tags.join(' ')} ${shared?.summary??''} ${mine?.summary??''}`.toLowerCase().includes(text.toLowerCase()))return[];
+    const checkpointEventIds=[...new Set([shared?.sourceEventId,mine?.sourceEventId].filter((id):id is string=>!!id))];
+    if(checkpointEventIds.length)onCheckpoint?.({conversationId:topic.conversationId,topicId:topic.id,readerId:ownerId,checkpointEventIds});
     return [{topicId:topic.id,conversationId:topic.conversationId,title:topic.title,tags:topic.tags,kind:topic.kind,status:topic.status,
       participation:topic.participantIds.includes(ownerId)?'joined':'invited',moderatorId:topic.moderatorId,revision:topic.revision,
       ...(shared?{shared:{stage:shared.stage,summary:shared.summary,revision:shared.revision,updatedAt:shared.updatedAt}}:{}),

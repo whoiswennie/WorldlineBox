@@ -97,18 +97,20 @@ export function projectCompanionMemoryLifePlan(input: CompanionMemoryLifePlanInp
     ? { kind: 'eligibility', clock: 'real', at: new Date(minimumAt).toISOString() } : realConditional();
   const retryAt = future(job?.nextAttemptAt, realNow);
   const running = job?.status === 'running' && job.leaseActive;
+  const terminalFailure = job?.terminal === true;
   items.push({ id: 'sleep-consolidation', kind: 'sleep_consolidation', title: '睡眠记忆整合',
-    state: blocked ? 'waiting' : running ? 'running' : !sleep.hasUnconsolidated ? 'idle'
+    state: blocked || terminalFailure ? 'waiting' : running ? 'running' : !sleep.hasUnconsolidated ? 'idle'
       : actuallySleeping ? sleepReady && !retryAt ? 'eligible' : 'waiting' : 'scheduled',
-    timing: retryAt ? { kind: 'retry', clock: 'real', at: retryAt } : actuallySleeping ? minTiming : window,
-    reason: blocked ?? (running ? '正在本次真实睡眠中回顾有来源的记忆；醒来会停止。'
+    timing: terminalFailure ? realConditional() : retryAt ? { kind: 'retry', clock: 'real', at: retryAt } : actuallySleeping ? minTiming : window,
+    reason: blocked ?? (terminalFailure ? (job.error ?? '本次整合未完成，等待新资料或明确处理后再试。').slice(0, 1000) : running ? '正在本次真实睡眠中回顾有来源的记忆；醒来会停止。'
       : !sleep.hasUnconsolidated ? '暂无待整合的已收录记忆；有新记忆并真正入睡后才检查。'
         : retryAt ? '本次整合失败后等待重试资格；仍须保持实际睡眠。'
           : actuallySleeping ? sleepReady ? '已达到实际睡眠与记忆条件，等待后台空位检查。' : '真正入睡满5秒后才可检查；醒来或占用工作会停止。'
             : '作息窗口是可检查时间；还须真正躺下入睡、拥有待整合记忆，并且没有工作占用。') });
   let dreamReason = '有待整合记忆并真正入睡后才评估；每段睡眠一次60%准入，且相隔至少8世界小时，不保证产生梦境。';
   let dreamState: CompanionMemoryLifePlanItem['state'] = 'idle', dreamTiming: Timing = actuallySleeping ? minTiming : window;
-  if (sleep.admission === 'not_admitted') dreamReason = '本次睡眠未通过入梦条件，不会反复抽签；仍可进行记忆整合。';
+  if (terminalFailure) { dreamState = 'waiting'; dreamReason = (job.error ?? '本次梦境尚未完成，需要新资料或明确处理；不会原样自动重试。').slice(0, 1000); dreamTiming = realConditional(); }
+  else if (sleep.admission === 'not_admitted') dreamReason = '本次睡眠未通过入梦条件，不会反复抽签；仍可进行记忆整合。';
   else if (job?.dreamAllowed) {
     dreamState = running ? 'running' : sleepReady && !retryAt ? 'eligible' : 'waiting';
     dreamReason = running ? '本次已获入梦资格，正在尝试联想；模型仍可不产出梦境。' : '本次已获入梦资格，等待睡眠整合执行；不保证梦境产出。';

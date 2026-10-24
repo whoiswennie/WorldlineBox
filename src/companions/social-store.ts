@@ -11,11 +11,14 @@ import { CompanionSocialContinuityStore } from './social-continuity-store';
 import { initializeSocialFlowIndex, recentSocialFacts, recentSocialMessageCounts, visibleSocialTopic } from './social-flow-index';
 import { CompanionSocialReplyStore } from './social-reply-store';
 import { COMPANION_CHARACTER_RELATIONS } from '../shared/companion-character-relations';
+import { companionSocialGameContext } from './social-game-context';
+import { companionSocialGoalOrigin } from './social-goal-origin';
+import type { CompanionExecutionReadset } from '../shared/companion-execution-evidence';
 
 type Row = Record<string, string | number | null>;
 type Calendar = { timeZone: string; virtualNow: string; observedDay: string; backlog: boolean };
-type Send = { urgent?: boolean; companionId: string; conversationId: string; content: string; channel: 'phone' | 'face_to_face'; sourceMessageId?: string; authorizationMessageId?: string; replyToId?: string; clientId: string; shareAddress?: boolean; topicId?: string | null; agentSource?: { conversationId: string; messageId: string } };
-type PendingSend = Send & { fingerprint: string; authorizationChecksum?: string; sourceChecksum?: string; agentChecksum?: string; typingNotBefore?: string; originId?: string };
+type Send = { urgent?: boolean; companionId: string; conversationId: string; content: string; channel: 'phone' | 'face_to_face'; sourceMessageId?: string; authorizationMessageId?: string; replyToId?: string; clientId: string; shareAddress?: boolean; topicId?: string | null; agentSource?: { conversationId: string; messageId: string }; executionReadset?: CompanionExecutionReadset };
+type PendingSend = Send & { fingerprint: string; authorizationChecksum?: string; sourceChecksum?: string; agentChecksum?: string; typingNotBefore?: string; originId?: string; originFromAgentSource?: boolean };
 type Read = { id: string; checksum: string };
 type StoredJob = CompanionSocialJob & { readSet?: Read[]; resultMessageId?: string; round: 'pair' | 'first' | 'summary' | 'followup' };
 type ChainData = { kind: 'pair' | 'group'; initiatorId: string; recipientIds: string[]; phase: 'first' | 'summary' | 'followup' | 'done'; maxMessages: number };
@@ -39,12 +42,34 @@ export class CompanionSocialStore {
     private readonly available: (owner: string, channel: Send['channel'], recipients: string[]) => boolean,
     private readonly speech: (message: CompanionSocialMessage, channel: Send['channel']) => void,
     private readonly clock: { elapsedVirtual(from: number, to: number): number } = { elapsedVirtual: (from, to) => to - from },
-    private readonly options: { observationCalendar?(): Calendar; memoryRevision?(scope: { companionId: string; conversationId: string; beforeSequence: number }): string; interrupt?(owner: string, source: CompanionSocialMessage): void; endInterrupt?(owner: string, sourceId: string): void; contactState?(owner: string): CompanionContactState; createPeerWork?(input: CompanionPeerWorkInput): void; addressText?(owner: string): string; shareHome?(owner: string, recipients: string[], source: CompanionMessage): void; createPlayerGroup?(title: string, members: string[]): { id: string } } = {}) {
+    private readonly options: { observationCalendar?(): Calendar; memoryRevision?(scope: { companionId: string; conversationId: string; beforeSequence: number }): string; interrupt?(owner: string, source: CompanionSocialMessage): void; endInterrupt?(owner: string, sourceId: string): void; contactState?(owner: string): CompanionContactState; createPeerWork?(input: CompanionPeerWorkInput): void; addressText?(owner: string): string; shareHome?(owner: string, recipients: string[], source: CompanionMessage): void; createPlayerGroup?(title: string, members: string[]): { id: string }; topicExecute?(command: Extract<CompanionStorageCommand, { type: `topic.${string}` }>): CompanionStorageResponse | undefined; activityTaskValid?(id: string, owner: string, conversationId: string): boolean } = {}) {
     this.continuity = new CompanionSocialContinuityStore(db, append, message, visible,
       owner => available(owner, 'phone', []), () => calendar().backlog);
     this.replies = new CompanionSocialReplyStore(db);
   }
   private observationCalendar(): Calendar { return this.options.observationCalendar?.() ?? this.calendar(); }
+  /** Preserve the exact host-read dependencies and add the actual causal
+   * source(s). Storage's append transaction validates each source as its sender,
+   * never by granting the recipient access to a human private room. */
+  private executionSources(owner: string, room: string, ids: string[], provided?: CompanionExecutionReadset, beforeSequence?: number): CompanionExecutionReadset | undefined {
+    if (!ids.length && !provided) return;
+    if (provided && (provided.companionId !== owner || provided.conversationId !== room || !provided.complete)) throw new Error('社交发信的执行读集归属或覆盖不完整。');
+    const readset: CompanionExecutionReadset = provided ?? { schema: 'worldlinebox.companion-execution-readset-v1', companionId: owner,
+      conversationId: room, ...(beforeSequence !== undefined ? { beforeSequence } : {}), complete: true, sources: [], memories: [], topics: [], contexts: [], knowledgeReads: [] };
+    const sources = new Map<string, CompanionExecutionReadset['sources'][number]>();
+    for (const source of readset.sources) {
+      const previous = sources.get(source.id);
+      if (previous && (previous.checksum !== source.checksum || previous.conversationId !== source.conversationId)) throw new Error('社交发信读集含同一来源的冲突版本。');
+      sources.set(source.id, source);
+    }
+    for (const id of new Set(ids)) {
+      const message = this.message(id), ref = { id: message.id, conversationId: message.conversationId, checksum: createHash('sha256').update(message.content).digest('hex') };
+      const previous = sources.get(id);
+      if (previous && (previous.checksum !== ref.checksum || previous.conversationId !== ref.conversationId)) throw new Error('社交发信所读来源已经变化，不能替换旧读集。');
+      sources.set(id, ref);
+    }
+    return { ...readset, sources: [...sources.values()] };
+  }
 
   initialize(): void {
     this.continuity.initialize();
@@ -110,6 +135,41 @@ export class CompanionSocialStore {
     }
   }
   private members(id: string): string[] { return (this.db.prepare('SELECT companion_id FROM conversation_members WHERE conversation_id=? ORDER BY companion_id').all(id) as Row[]).map(value => String(value.companion_id)); }
+  private cancelPlayerRoomWork(id: string): void {
+    this.db.prepare("UPDATE companion_social_outbox SET status='cancelled' WHERE conversation_id=? AND status='pending'").run(id);
+    for (const value of this.db.prepare("SELECT data FROM companion_social_jobs WHERE conversation_id=? AND status IN('pending','running','failed')").all(id) as Row[]) {
+      const job = parse<StoredJob>(value.data); job.status = 'cancelled'; delete job.leaseToken; delete job.readSet; this.saveJob(job);
+      this.db.prepare("UPDATE companion_social_chains SET status='done' WHERE id=?").run(job.chainId);
+      if (job.urgent) this.options.endInterrupt?.(job.companionId, job.sourceMessageId);
+    }
+    this.db.prepare("DELETE FROM companion_social_communication WHERE json_extract(data,'$.conversationId')=?").run(id);
+  }
+  /** A formal user-room greeting is indexed without changing who owns the
+   * room. UI edits keep prior recipients/observers as immutable history. */
+  syncPlayerRoom(id: string, audienceChanged = false): void {
+    if (this.db.prepare('SELECT 1 FROM metadata WHERE key=?').get('world-room/' + id)) return;
+    const found = this.db.prepare('SELECT c.title FROM companion_social_conversations s JOIN conversations c ON c.id=s.id WHERE s.id=?').get(id);
+    if (!found) return;
+    if (audienceChanged) this.cancelPlayerRoomWork(id);
+    const key = 'player|' + this.members(id).join('|');
+    const occupied = this.db.prepare('SELECT id FROM companion_social_conversations WHERE member_key=? AND id!=?').get(key, id);
+    this.db.prepare('UPDATE companion_social_conversations SET member_key=? WHERE id=?').run(occupied ? 'player-instance|' + id : key, id);
+    this.db.prepare('DELETE FROM companion_social_room_search WHERE id=?').run(id);
+    const title = companionSearchTokens(String(row(found).title));
+    this.db.prepare('INSERT INTO companion_social_room_search(id,title) VALUES(?,?)').run(id, title);
+    this.db.prepare('UPDATE companion_social_search SET title=? WHERE rowid IN(SELECT sequence FROM companion_social_messages WHERE conversation_id=?)').run(title, id);
+  }
+  /** Only the existing user-room coalescer calls this, in its transaction. */
+  rehomePlayerRoom(sourceId: string, targetId: string): void {
+    if (this.db.prepare('SELECT 1 FROM metadata WHERE key IN(?,?)').get('world-room/' + sourceId, 'world-room/' + targetId)) throw new Error('真实伙伴社交入口不能通过用户群成员编辑合并。');
+    if (!this.db.prepare('SELECT 1 FROM companion_social_conversations WHERE id=?').get(sourceId)) return;
+    this.cancelPlayerRoomWork(sourceId); this.cancelPlayerRoomWork(targetId);
+    this.db.prepare('INSERT OR IGNORE INTO companion_social_conversations(id,member_key) VALUES(?,?)').run(targetId, 'player-instance|' + targetId);
+    this.db.prepare('UPDATE companion_social_messages SET conversation_id=? WHERE conversation_id=?').run(targetId, sourceId);
+    this.db.prepare('DELETE FROM companion_social_room_search WHERE id=?').run(sourceId);
+    this.db.prepare('DELETE FROM companion_social_conversations WHERE id=?').run(sourceId);
+    this.syncPlayerRoom(targetId);
+  }
   private requireRoom(id: string, owner?: string): string[] {
     const exists = this.db.prepare('SELECT 1 FROM companion_social_conversations s JOIN conversations c ON c.id=s.id WHERE s.id=? AND c.dissolved_at IS NULL').get(id);
     const members = this.members(id);
@@ -133,6 +193,13 @@ export class CompanionSocialStore {
       return this.conversation(id);
     }).immediate();
   }
+  /** An explicit destination preserves a goal's actual audience and topic port. */
+  resolveRoom(owner: string, ids: string[], roomId?: string, title = ''): CompanionSocialConversation {
+    if (!roomId) return this.ensure(owner, ids, title);
+    const members = this.requireRoom(roomId, owner);
+    if (new Set(ids).size !== ids.length || JSON.stringify([...ids].sort()) !== JSON.stringify(members)) throw new Error('目标群的实际伙伴成员与收件人不一致，不能隐式扩大或缩小受众。');
+    return this.conversation(roomId);
+  }
   /** Player presence is a room property; never forge a user-authored invitation. */
   ensurePlayerGroup(owner: string, ids: string[], title: string): CompanionSocialConversation {
     return this.db.transaction(() => {
@@ -149,7 +216,10 @@ export class CompanionSocialStore {
       SELECT peer.companion_id AS id FROM focus,conversation_members own JOIN companion_social_conversations r ON r.id=own.conversation_id
       JOIN conversations c ON c.id=r.id JOIN conversation_members peer ON peer.conversation_id=c.id
       WHERE own.companion_id=focus.id AND peer.companion_id!=focus.id AND c.dissolved_at IS NULL
-      AND EXISTS(SELECT 1 FROM companion_social_messages s JOIN messages m ON m.id=s.message_id WHERE s.conversation_id=c.id AND m.status='sent' AND m.kind='text')
+      AND EXISTS(SELECT 1 FROM companion_social_messages s JOIN messages m ON m.id=s.message_id WHERE s.conversation_id=c.id AND m.status='sent' AND m.kind='text'
+        AND m.sequence>COALESCE((SELECT through_sequence FROM companion_reset_boundaries boundary WHERE boundary.companion_id=focus.id),0)
+        AND (m.author_id=focus.id OR EXISTS(SELECT 1 FROM json_each(s.recipient_ids) audience WHERE audience.value=focus.id))
+        AND (m.author_id=peer.companion_id OR EXISTS(SELECT 1 FROM json_each(s.recipient_ids) audience WHERE audience.value=peer.companion_id)))
       AND NOT EXISTS(SELECT 1 FROM conversation_members bad JOIN companions p ON p.id=bad.companion_id WHERE bad.conversation_id=c.id AND (p.deleted_at IS NOT NULL OR EXISTS(SELECT 1 FROM companion_reset_jobs j WHERE j.companion_id=p.id AND j.status!='completed')))
       UNION SELECT CASE WHEN guest_id=focus.id THEN host_id ELSE guest_id END FROM focus,companion_social_visit_contacts WHERE guest_id=focus.id OR host_id=focus.id
       UNION SELECT p.id FROM focus,companions self,companions p WHERE self.id=focus.id AND json_extract(self.data,'$.builtin')=1 AND json_extract(p.data,'$.builtin')=1 AND (${family})
@@ -341,7 +411,7 @@ export class CompanionSocialStore {
       const fromId = active && ['speaking', 'typing'].includes(active.phase) ? active.owner : undefined;
       const pending = visits.some(visit => visit.status === 'requested' && [visit.guestId, visit.hostId].includes(targetId));
       const queued = shared.some(id => this.db.prepare("SELECT 1 FROM companion_social_outbox WHERE conversation_id=? AND status='pending' LIMIT 1").get(id));
-      const reply = shared.some(id => this.db.prepare("SELECT 1 FROM companion_social_jobs WHERE conversation_id=? AND status IN('pending','running','failed') LIMIT 1").get(id));
+      const reply = shared.some(id => this.db.prepare("SELECT 1 FROM companion_social_jobs WHERE conversation_id=? AND status IN('pending','running','failed') AND COALESCE(json_extract(data,'$.terminal'),0)=0 LIMIT 1").get(id));
       const together = scenes.find(value => value.id === owner)?.scene && scenes.find(value => value.id === owner)?.scene === scenes.find(value => value.id === targetId)?.scene;
       const status: CompanionSocialGraph['links'][number]['status'] = active ? active.channel === 'face_to_face' ? 'face' : 'phone' : pending ? 'permission' : queued ? 'queued' : reply ? 'reply' : together ? 'visiting' : 'idle';
       return { targetId, ...(fromId ? { fromId } : {}), kind: 'peer' as const, conversationIds: shared, status, phoneCount: between.filter(message => message.channel === 'phone').length, faceCount: between.filter(message => message.channel === 'face_to_face').length,
@@ -405,6 +475,26 @@ export class CompanionSocialStore {
   canInitiate(owner: string, virtualNow: string, timeZone: string): boolean {
     return this.budget(owner, 'initial', { virtualNow, timeZone, observedDay: dayAt(Date.parse(virtualNow), timeZone), backlog: false });
   }
+  private agentSourceOrigin(send: Send): string | undefined {
+    if (!send.agentSource) return;
+    const source = this.visible({ companionId: send.companionId, conversationId: send.agentSource.conversationId }, [send.agentSource.messageId])[0];
+    if (!source || source.authorId === 'user' || source.authorId === send.companionId || source.authorId === 'system') return;
+    const jobs = this.db.prepare("SELECT data FROM companion_social_jobs WHERE companion_id=? AND conversation_id=? AND json_extract(data,'$.sourceMessageId')=? AND status IN('running','done')")
+      .all(send.companionId, send.agentSource.conversationId, source.id) as Row[];
+    const origins = new Map<string, string>();
+    for (const stored of jobs) {
+      const job = parse<StoredJob>(stored.data);
+      if (!job.readSet?.some(read => read.id === source.id && read.checksum === checksum(source))) continue;
+      const origin = this.continuity.forChain(job.chainId);
+      if (!origin || origin.initiatorKind !== 'human_player' || origin.initiatorId !== 'user') continue;
+      const delegation = this.db.prepare("SELECT source_message_id,data FROM companion_social_delegations WHERE id=? AND status='active'").get(origin.id) as Row | undefined;
+      if (!delegation) continue;
+      const original = parse<{ conversationId: string }>(delegation.data);
+      origins.set(original.conversationId + '/' + String(delegation.source_message_id), origin.id);
+    }
+    if (origins.size > 1) throw new Error('本次实际来信关联多个原目标，不能猜测或混合游戏上下文。');
+    return [...origins.values()][0];
+  }
   send(input: Send): CompanionStorageResponse {
     const context = this.calendar();
     const result: CompanionStorageResponse = this.db.transaction(() => {
@@ -415,9 +505,10 @@ export class CompanionSocialStore {
       if (input.urgent && this.db.prepare("SELECT 1 FROM companion_social_outbox WHERE companion_id=? AND json_extract(data,'$.urgent')=1 AND status IN('pending','sent') AND created_at>? LIMIT 1").get(input.companionId, iso(Date.now() - 120000))) throw new Error('刚刚已经发起紧急联系，请等待对方处理，不要重复打扰。');
       const sourceChecksums = this.sources(input), recipients = this.requireRoom(input.conversationId, input.companionId).filter(id => id !== input.companionId);
       const authorization = input.authorizationMessageId ? this.message(input.authorizationMessageId) : undefined;
+      const inheritedOrigin = !authorization ? this.agentSourceOrigin(input) : undefined;
       const originId = authorization ? this.continuity.record({ type: 'social.delegation.record', companionId: input.companionId,
         conversationId: authorization.conversationId, sourceMessageId: authorization.id, recipientIds: recipients, sharedText: input.content, intent: 'message' })
-        : this.continuity.matchVisit(input.companionId, recipients);
+        : inheritedOrigin ?? this.continuity.matchVisit(input.companionId, recipients);
       if (!originId && !input.sourceMessageId && !input.agentSource && row(this.db.prepare("SELECT json_extract(data,'$.proactive') AS enabled FROM companions WHERE id=?").get(input.companionId)).enabled === 0) throw new Error('该伙伴已关闭主动闲聊。');
       const channel = !input.sourceMessageId && !input.agentSource && this.available(input.companionId, 'face_to_face', recipients) ? 'face_to_face' : input.channel;
       if (channel === 'face_to_face' && !this.available(input.companionId, channel, recipients)) throw new Error('所有参与者需要在同一现场、彼此5格内且方便交流。');
@@ -426,7 +517,7 @@ export class CompanionSocialStore {
       // Freeze the sender's chosen port at enqueue time. A later switch must
       // never retarget an already composed or delayed message.
       const topicId = input.replyToId ? this.message(input.replyToId).topicId ?? null : input.topicId ?? (input.topicId === undefined && chosen ? String(row(chosen).topic_id) : null);
-      const send: PendingSend = { ...input, topicId, channel, ...sourceChecksums, fingerprint, ...(originId ? { originId } : {}) };
+      const send: PendingSend = { ...input, topicId, channel, ...sourceChecksums, fingerprint, ...(originId ? { originId } : {}), ...(inheritedOrigin ? { originFromAgentSource: true } : {}) };
       this.db.prepare("INSERT INTO companion_social_outbox(client_id,companion_id,conversation_id,status,created_at,data) VALUES(?,?,?,'pending',?,?)").run(input.clientId, input.companionId, input.conversationId, iso(), JSON.stringify(send));
       const delivered = this.deliver(send, context); return { ok: true, ...(delivered ? { socialMessage: delivered } : { socialPending: true }) };
     }).immediate();
@@ -458,13 +549,15 @@ export class CompanionSocialStore {
       this.db.prepare('UPDATE companion_social_outbox SET data=? WHERE client_id=?').run(JSON.stringify(send), send.clientId); return undefined;
     }
     if (send.typingNotBefore && Date.parse(send.typingNotBefore) > Date.now()) return undefined;
-    const source = this.append({ conversationId: send.conversationId, authorId: send.companionId, topicId: send.topicId, content: send.content, clientId: send.clientId, replyToId: send.replyToId });
+    const executionReadset = this.executionSources(send.companionId, send.conversationId,
+      [send.sourceMessageId, send.authorizationMessageId, send.agentSource?.messageId, send.replyToId].filter((id): id is string => !!id), send.executionReadset);
+    const source = this.append({ conversationId: send.conversationId, authorId: send.companionId, topicId: send.topicId, content: send.content, clientId: send.clientId, replyToId: send.replyToId, ...(executionReadset ? { executionReadset } : {}) });
     this.index(source, context.virtualNow, recipients, send.channel); const message = this.wrap(source.id), chainId = randomUUID();
     if (send.shareAddress) this.options.shareHome?.(send.companionId, recipients, source);
     const chain: ChainData = { kind: recipients.length === 1 ? 'pair' : 'group', initiatorId: send.companionId, recipientIds: recipients,
       phase: 'first', maxMessages: recipients.length === 1 ? 4 : recipients.length + 3 };
     this.db.prepare("INSERT INTO companion_social_chains(id,used,status,data) VALUES(?,1,'active',?)").run(chainId, JSON.stringify(chain));
-    this.continuity.bind(chainId, send.companionId, send.content, send.originId);
+    this.continuity.bind(chainId, send.companionId, send.content, send.originId, !!send.originFromAgentSource);
     this.db.prepare("INSERT INTO companion_social_budget VALUES(?,?,'initial',?,?)").run(source.id, send.companionId, context.virtualNow, iso());
     this.db.prepare("UPDATE companion_social_outbox SET status='sent',message_id=? WHERE client_id=?").run(source.id, send.clientId);
     this.clearCommunication(send.companionId, 'outbox:' + send.clientId);
@@ -498,7 +591,7 @@ export class CompanionSocialStore {
   private settleGroupFirstRound(job: StoredJob): void {
     const chain = this.chain(job.chainId); if (!chain || chain.data.kind !== 'group' || chain.data.phase !== 'first') return;
     const first = (this.db.prepare("SELECT data FROM companion_social_jobs WHERE json_extract(data,'$.chainId')=? AND json_extract(data,'$.round')='first'").all(job.chainId) as Row[]).map(value => parse<StoredJob>(value.data));
-    if (first.some(value => !['done', 'cancelled'].includes(value.status) && !(value.status === 'failed' && value.attempts >= 8))) return;
+    if (first.some(value => !['done', 'cancelled'].includes(value.status) && !(value.status === 'failed' && (value.attempts >= 8 || value.terminal)))) return;
     const replies = first.flatMap(value => value.resultMessageId ? [this.message(value.resultMessageId)] : []).sort((a, b) => b.sequence - a.sequence);
     const latest = replies[0];
     if (!latest || this.topicAdmission(chain.data.initiatorId, job.conversationId, latest.topicId) === 'cancelled') { this.endChain(job.chainId); return; }
@@ -619,7 +712,7 @@ export class CompanionSocialStore {
         const message = this.db.transaction(() => this.deliver(pending, context)).immediate(); dispatched ??= message;
         if (message || pending.typingNotBefore && Date.parse(pending.typingNotBefore) > Date.now()) { this.scanned('companion_social_outbox', pending.companionId, 0); break; }
       }
-      const jobPredicate = "json_extract(data,'$.attempts')<8 AND (status='pending' OR status IN('running','failed') AND lease_until<=?)", now = iso();
+      const jobPredicate = "COALESCE(json_extract(data,'$.terminal'),0)=0 AND json_extract(data,'$.attempts')<8 AND (status='pending' OR status IN('running','failed') AND lease_until<=?)", now = iso();
       const jobOwners = this.db.prepare('SELECT companion_id FROM companion_social_jobs WHERE ' + jobPredicate + ' GROUP BY companion_id ORDER BY MIN(rowid)').all(now) as Row[];
       for (const owner of jobOwners) for (const value of this.candidates('companion_social_jobs', String(owner.companion_id), jobPredicate, [now])) {
         this.scanned('companion_social_jobs', String(owner.companion_id), Number(value.ordinal));
@@ -680,7 +773,8 @@ export class CompanionSocialStore {
       this.clearCommunication(job.companionId, 'job:' + job.id);
       if (!input.text?.trim()) { this.saveJob(job); this.replies.complete(job, undefined, this.message(job.sourceMessageId).content, input.memoryRecall); this.continueChain(job); if (job.channel === 'face_to_face') this.clearFace(job.conversationId); return { ok: true }; }
       const content = input.text + (input.shareAddress ? '\n\n' + this.options.addressText?.(job.companionId) : '');
-      const source = this.append({ conversationId: job.conversationId, authorId: job.companionId, content, replyToId: job.sourceMessageId, clientId: 'social_' + job.id });
+      const executionReadset = this.executionSources(job.companionId, job.conversationId, (job.readSet ?? []).map(source => source.id), input.executionReadset, job.throughSequence);
+      const source = this.append({ conversationId: job.conversationId, authorId: job.companionId, content, replyToId: job.sourceMessageId, clientId: 'social_' + job.id, ...(executionReadset ? { executionReadset } : {}) });
       this.replies.complete(job, source.id, this.message(job.sourceMessageId).content, input.memoryRecall);
       const recipients = job.memberIds.filter(id => id !== job.companionId); this.index(source, context.virtualNow, recipients, job.channel); const message = this.wrap(source.id);
       if (input.shareAddress) this.options.shareHome?.(job.companionId, recipients, source);
@@ -696,6 +790,14 @@ export class CompanionSocialStore {
     this.db.transaction(() => {
       const existing = this.db.prepare('SELECT data FROM companion_social_jobs WHERE id=?').get(input.id); if (!existing) return; const job = parse<StoredJob>(row(existing).data);
       if (job.status !== 'running' || job.leaseToken !== input.leaseToken) return;
+      if (input.terminal) {
+        job.status = 'failed'; job.terminal = true; job.error = input.error; delete job.leaseToken;
+        this.saveJob(job); this.clearCommunication(job.companionId, 'job:' + job.id);
+        if (job.urgent) this.options.endInterrupt?.(job.companionId, job.sourceMessageId);
+        if (job.round === 'first') this.settleGroupFirstRound(job);
+        if (job.channel === 'face_to_face') this.clearFace(job.conversationId);
+        return;
+      }
       const admission = this.jobTopicAdmission(job); if (admission !== 'active') { this.holdOrCancelTopicJob(job, admission); return; }
       job.status = 'failed'; delete job.leaseToken; this.saveJob(job, iso(Date.now() + Math.min(300000, 10000 * 2 ** Math.min(job.attempts, 5))));
       this.clearCommunication(job.companionId, 'job:' + job.id);
@@ -706,7 +808,7 @@ export class CompanionSocialStore {
   execute(command: CompanionStorageCommand): CompanionStorageResponse | undefined {
     const continuity = this.continuity.execute(command); if (continuity) return continuity;
     switch (command.type) {
-      case 'social.conversation.ensure': return { ok: true, socialConversation: this.ensure(command.companionId, command.memberIds, command.title) };
+      case 'social.conversation.ensure': return { ok: true, socialConversation: this.resolveRoom(command.companionId, command.memberIds, command.roomId, command.title) };
       case 'social.message.append': return { ok: true, socialMessage: this.appendMessage(command) };
       case 'social.conversations': return { ok: true, socialConversationPage: this.conversations(command) };
       case 'social.messages': return { ok: true, socialMessagePage: this.messages(command) };
@@ -720,6 +822,8 @@ export class CompanionSocialStore {
       case 'social.job.progress': this.replies.update(command); return { ok: true };
       case 'social.send': return this.send(command);
       case 'social.job.claim': return this.claim();
+      case 'social.job.game_context': return { ok: true, socialGameContext: companionSocialGameContext(this.db, command, {
+        visible: this.visible, validRead: job => this.validRead(job as StoredJob), sourceGoal: (owner, source) => companionSocialGoalOrigin(this.db, this, this.visible, owner, source), topicExecute: this.options.topicExecute, activityTaskValid: this.options.activityTaskValid }) };
       case 'social.job.complete': return this.complete(command);
       case 'social.job.fail': this.fail(command); return { ok: true };
       default: return undefined;

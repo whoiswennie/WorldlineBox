@@ -7,11 +7,28 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { CompanionsStore, type CompanionSeed } from '../../src/companions/store';
 import { companionStorageCommandSchema } from '../../src/shared/companion-storage';
 import { BUILTIN_COMPANIONS } from '../../src/shared/companion-personas';
+import { captureCompanionExecutionReadset } from '../../src/main/companions/execution-evidence';
 
 const seeds: CompanionSeed[] = [
   { id: 'deepseek-sister', name: '大肥鱼', description: '姐姐', persona: '温柔沉稳', model: '', avatar: 'sister', proactive: false },
   { id: 'deepseek-flash', name: '小肥鱼', description: '妹妹', persona: '活泼好奇', model: '', avatar: 'flash', proactive: false },
 ];
+
+it('persists immutable host execution dependencies before dispatch without retroactively certifying an old task', () => {
+  const { store, databasePath } = fixture(), companionId = 'deepseek-sister', conversationId = store.openPrivate(companionId).id;
+  const source = store.appendMessage({ conversationId, authorId: 'user', content: '只执行这件明确委托。' });
+  const executionReadset = captureCompanionExecutionReadset({ companionId, conversationId }, { memories: [{ id: 'actual_read_note', version: 1 }] });
+  const checkpoint = { prompt: source.content, supplements: [], waitForActionIds: [], executionReadset };
+  const action = store.createAction({ conversationId, companionId, sourceMessageId: source.id, title: '实际执行', status: 'queued' }, checkpoint);
+  store.saveCheckpoint(action.id, { ...checkpoint, supplements: [{ id: source.id, content: source.content, mode: 'steer' }] });
+  expect(() => store.saveCheckpoint(action.id, { ...checkpoint, executionReadset: undefined })).toThrow('不可替换');
+  expect(() => store.saveCheckpoint(action.id, { ...checkpoint, executionReadset: { ...executionReadset, memories: [] } })).toThrow('不可替换');
+  expect(() => store.saveCheckpoint(action.id, { ...checkpoint, executionReadset: { ...executionReadset, companionId: 'deepseek-flash' } })).toThrow('不属于');
+  const old = store.createAction({ conversationId, companionId, sourceMessageId: source.id, title: '旧任务', status: 'running' }, { prompt: source.content, supplements: [], waitForActionIds: [] });
+  expect(() => store.saveCheckpoint(old.id, checkpoint)).toThrow('补造');
+  close(store); const reopened = open(databasePath);
+  expect(reopened.checkpoint(action.id)?.executionReadset).toEqual(executionReadset);
+});
 
 it('creates one durable queued bubble per group loop, keeps its identity on retry and cancels only the selected work', () => {
   const f = fixture();
@@ -199,7 +216,7 @@ describe('CompanionsStore real SQLite persistence', () => {
     expect(store.state().conversations.filter(chat => chat.kind === 'group')).toHaveLength(1);
     expect(store.state().conversations.find(chat => chat.id === first.id)?.title).toBe('我们的群聊');
   });
-  it('merges matching rooms after a member edit while preserving message and task sources', () => {
+  it('preserves independent room identities and immutable task sources after a member edit creates matching audiences', () => {
     const { store, databasePath } = fixture();
     const first = store.createConversation('我们的群聊', ['deepseek-sister', 'deepseek-flash']);
     const other = store.createConversation('单人讨论', ['deepseek-sister']);
@@ -207,12 +224,12 @@ describe('CompanionsStore real SQLite persistence', () => {
     const message = store.appendMessage(source);
     const action = store.createAction({ conversationId: other.id, companionId: 'deepseek-sister', sourceMessageId: message.id, title: '群任务', status: 'succeeded' });
     store.appendMessage({ conversationId: other.id, authorId: 'deepseek-sister', content: '群结果已经保留', replyToId: message.id, kind: 'action', actionId: action.id });
-    expect(store.updateConversation(other.id, { memberIds: ['deepseek-sister', 'deepseek-flash'] }).id).toBe(first.id);
+    expect(store.updateConversation(other.id, { memberIds: ['deepseek-sister', 'deepseek-flash'] }).id).toBe(other.id);
     close(store);
     const reopened = open(databasePath);
-    expect(reopened.state().conversations.filter(chat => chat.kind === 'group')).toHaveLength(1);
-    expect(reopened.getAction(action.id)).toMatchObject({ conversationId: first.id, sourceMessageId: message.id });
-    expect(reopened.getMessage(message.id).conversationId).toBe(first.id);
+    expect(reopened.state().conversations.filter(chat => chat.kind === 'group').map(chat => chat.id)).toEqual(expect.arrayContaining([first.id, other.id]));
+    expect(reopened.getAction(action.id)).toMatchObject({ conversationId: other.id, sourceMessageId: message.id });
+    expect(reopened.getMessage(message.id).conversationId).toBe(other.id);
     expect(reopened.search({ query: '群中的' }).messages[0]?.id).toBe(message.id);
   });
   it('seeds only once and keeps one permanent private chat across restart', () => {

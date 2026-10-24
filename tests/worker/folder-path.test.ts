@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 
 import { afterEach, describe, expect, it } from 'vitest';
+import { removeOwnedDirectorySync } from '../../src/main/vcp-memory/filesystem';
 
 import { LibraryService } from '../../src/worker/library-service';
 import type { LibraryServiceError } from '../../src/worker/library-service';
@@ -47,7 +48,10 @@ function expectCode(
 
 afterEach(() => {
   for (const service of services.splice(0)) service.closeAll();
-  for (const value of roots.splice(0)) rmSync(value, { force: true, recursive: true });
+  for (const value of roots.splice(0)) {
+    if (path.dirname(path.resolve(value)) !== path.resolve(tmpdir())) throw new Error('Unexpected folder-path fixture root');
+    removeOwnedDirectorySync(value);
+  }
 });
 
 describe('resolveFolderPath (REQ-MENU-006)', () => {

@@ -130,7 +130,10 @@ it('opens a real 3,000-file library incrementally and performs repeat searches w
   const manager = new CompanionMemoryDocuments({ libraryDirectory: directory, library, requestStorage: request }); closes.push(() => manager.close());
   const list = async (query = '') => manager.handle({ type: 'memory.documents.list', companionId: 'alice', directory: '资料', limit: 64, query });
   const at = performance.now(), first = await list(), firstPageMs = performance.now() - at;
-  expect(first.ok, first.error).toBe(true); expect(first.documents?.items).toHaveLength(64); expect(first.documents?.index?.state).toBe('building');
+  // The cold catalogue publishes a bounded initial scan before finishing the
+  // tree; limit is an upper bound, not a demand to block until 64 files exist.
+  expect(first.ok, first.error).toBe(true); expect(first.documents?.items.length).toBeGreaterThan(0);
+  expect(first.documents?.items.length).toBeLessThanOrEqual(64); expect(first.documents?.index?.state).toBe('building');
   const until = Date.now() + 60_000;
   while (store.request({ type: 'document.catalog.query', companionId: 'alice', directory: '资料', query: '', tags: [], limit: 1 }).documentCatalog!.total < 3000) {
     if (Date.now() > until) throw new Error('Incremental catalogue did not finish');
@@ -138,13 +141,14 @@ it('opens a real 3,000-file library incrementally and performs repeat searches w
   }
   // Let the scanner's final generation fence settle before testing steady state.
   await new Promise(resolve => setTimeout(resolve, 100));
+  const ready = await list(); expect(ready.documents?.items).toHaveLength(64); expect(ready.documents?.index?.state).toBe('ready');
   const fullScanMs = performance.now() - at, before = writes, times: number[] = [];
   for (let i = 0; i < 5; i++) {
     const start = performance.now(), found = await list('蓝色鲸鱼'); times.push(performance.now() - start);
     expect(found.ok, found.error).toBe(true); expect(found.documents?.items.map(item => item.path)).toEqual(['资料/资料-02999.md']);
   }
   expect(writes).toBe(before);
-  const report = { files: 3000, charactersPerOrdinaryFile: body.length, firstPageMs, fullScanMs, repeatQueryMs: times, steadyStateCatalogWrites: writes - before, pageLimit: 64 };
+  const report = { files: 3000, charactersPerOrdinaryFile: body.length, firstPageItems: first.documents!.items.length, firstPageMs, fullScanMs, repeatQueryMs: times, steadyStateCatalogWrites: writes - before, pageLimit: 64 };
   const output = path.resolve('artifacts/vcp-validation'); mkdirSync(output, { recursive: true }); writeFileSync(path.join(output, 'document-catalog-real-files.json'), JSON.stringify(report, null, 2));
   console.log('DOCUMENT_CATALOG_REAL_FILES', JSON.stringify(report));
 }, 120_000);

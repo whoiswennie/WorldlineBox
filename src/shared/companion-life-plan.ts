@@ -25,6 +25,7 @@ export const companionWorldSleepPlanSchema = z.object({ companionId: id, checked
   hasUnconsolidated: z.boolean(), admission: z.enum(['unchecked', 'admitted', 'not_admitted']),
   dreamCooldownUntilWorld: instant.optional(),
   job: z.object({ status: z.enum(['pending', 'running', 'failed']), attempts: z.number().int().nonnegative(),
+    terminal: z.boolean().optional(), error: z.string().max(2000).optional(),
     nextAttemptAt: instant.optional(), leaseActive: z.boolean(), dreamAllowed: z.boolean() }).optional(),
   captureQueue: z.object({ pending: z.number().int().nonnegative(), running: z.number().int().nonnegative(), failed: z.number().int().nonnegative(),
     liveRunning: z.number().int().nonnegative(), expiredLeases: z.number().int().nonnegative(),

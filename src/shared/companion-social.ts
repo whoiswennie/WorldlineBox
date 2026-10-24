@@ -4,6 +4,8 @@ import { companionSocialWorkOfferSchema } from './companion-social-work';
 import { COMPANION_AVATAR_IDS } from './companion-template-ids';
 import { companionReplyProgressSchema } from './companion-reply-progress';
 import { companionSocialRecallSchema, companionSocialReplyProgressCommand, companionSocialReplyMemoryCommand } from './companion-social-reply';
+import { companionTopicSchema, companionTopicStateSchema } from './companion-topic';
+import { companionExecutionReadsetSchema } from './companion-execution-evidence';
 
 const id = z.string().regex(/^[a-zA-Z0-9_-]{1,100}$/);
 export const companionSocialDaySchema = z.string().regex(/^\d{4}-\d{2}-\d{2}$/).refine(value => {
@@ -66,20 +68,38 @@ export const companionSocialJobSchema = z.strictObject({ id, companionId: id, co
   throughSequence: z.number().int().positive(), chainId: id, remainingTurns: z.number().int().min(0).max(4),
   memberIds: z.array(id).min(2).max(20), channel: z.enum(['phone', 'face_to_face']), urgent: z.boolean().optional(),
   status: z.enum(['pending', 'running', 'done', 'failed', 'cancelled']), attempts: z.number().int().nonnegative(),
+  terminal: z.boolean().optional(), error: z.string().max(2000).optional(),
   leaseToken: id.optional(), typingNotBefore: z.iso.datetime(), createdAt: z.iso.datetime(),
   origin: companionSocialOriginSchema.optional(),
 });
+/** A host-selected same-game reference, never an imported human request or grant. */
+export const companionSocialGameContextSchema = z.strictObject({
+  gamePort: z.strictObject({ conversationId: id, topicId: id }),
+  topic: companionTopicSchema,
+  topicState: companionTopicStateSchema,
+  binding: z.strictObject({ jobId: id, companionId: id, sourceMessageId: id, sourceConversationId: id,
+    sourceChecksum: z.string().regex(/^[a-f0-9]{64}$/) }),
+  trust: z.literal('actual_job_same_game_reference_not_source_or_human_authority'),
+});
+export type CompanionSocialGameContext = z.infer<typeof companionSocialGameContextSchema>;
 const companionSocialNotificationEventSchema = z.strictObject({
   kind: z.enum(['peer_reply', 'visit_permission']), eventId: id, peerConversationId: id.optional(),
   evidence: z.strictObject({ authorId: id, text: z.string().max(65536), messageId: id.optional(),
     visitId: id.optional(), visitStatus: z.enum(['allowed', 'denied', 'expired', 'left']).optional() }),
 });
+export const companionSocialProgressEvidenceSchema = z.strictObject({ observationChecksum: z.string().regex(/^[a-f0-9]{64}$/),
+  outbound: z.array(z.strictObject({ message: z.lazy(() => messageSchema), recipientIds: z.array(id).max(19) })).max(100),
+  complete: z.boolean() });
 export const companionSocialNotificationSchema = z.strictObject({
   id, companionId: id, conversationId: id, sourceMessageId: id, origin: companionSocialOriginSchema,
   ...companionSocialNotificationEventSchema.shape,
   events: z.array(companionSocialNotificationEventSchema).min(1).max(16).optional(),
   dialogue: z.array(z.lazy(() => messageSchema)).max(50).optional(),
+  /** Host claim only: actual sent bodies linked to this human goal and its
+   * exact recipients. Unrelated owner rooms are never part of this view. */
+  progressEvidence: companionSocialProgressEvidenceSchema.optional(),
   status: z.enum(['pending', 'running', 'done', 'failed', 'cancelled']), attempts: z.number().int().nonnegative(),
+  terminal: z.boolean().optional(), error: z.string().max(2000).optional(),
   leaseToken: id.optional(), createdAt: z.iso.datetime(),
 });
 export const companionSocialPublicCommands = [
@@ -93,23 +113,25 @@ export const companionSocialPublicCommands = [
 ] as const;
 export const companionSocialStorageCommands = [...companionSocialPublicCommands,
   z.strictObject({ type: z.literal('social.contact.check'), companionId: id, recipientIds: z.array(id).min(1).max(19) }),
-  z.strictObject({ type: z.literal('social.conversation.ensure'), companionId: id, memberIds: z.array(id).min(2).max(20), title: z.string().trim().max(100).default('') }),
+  z.strictObject({ type: z.literal('social.conversation.ensure'), companionId: id, memberIds: z.array(id).min(2).max(20), roomId: id.optional(), title: z.string().trim().max(100).default('') }),
   z.strictObject({ type: z.literal('social.message.append'), conversationId: id, authorId: id, content: z.string().min(1).max(65536), virtualCreatedAt: z.iso.datetime(), clientId: id, recipientIds: z.array(id).max(20).optional(), replyToId: id.optional() }),
   z.strictObject({ type: z.literal('social.send'), urgent: z.boolean().optional(), companionId: id, conversationId: id, content: z.string().min(1).max(2000), channel: z.enum(['phone', 'face_to_face']), sourceMessageId: id.optional(), authorizationMessageId: id.optional(), replyToId: id.optional(), clientId: id,
-    agentSource: z.strictObject({ conversationId: id, messageId: id }).optional() }),
+    topicId: id.nullable().optional(), agentSource: z.strictObject({ conversationId: id, messageId: id }).optional(), executionReadset: companionExecutionReadsetSchema.optional() }),
   z.strictObject({ type: z.literal('social.job.claim') }),
-  z.strictObject({ type: z.literal('social.job.complete'), id, leaseToken: id, text: z.string().trim().max(2000).nullable().optional(), nextRecipientId: id.optional(), workOffer: companionSocialWorkOfferSchema.optional(), shareAddress: z.boolean().optional(), expectedMemoryRevision: z.string().min(1).max(160).optional(), memoryRecall: companionSocialRecallSchema.optional() }),
+  z.strictObject({ type: z.literal('social.job.game_context'), id, leaseToken: id, companionId: id, conversationId: id, sourceMessageId: id,
+    sourceChecksum: z.string().regex(/^[a-f0-9]{64}$/), recipientIds: z.array(id).max(19).optional() }),
+  z.strictObject({ type: z.literal('social.job.complete'), id, leaseToken: id, text: z.string().trim().max(2000).nullable().optional(), nextRecipientId: id.optional(), workOffer: companionSocialWorkOfferSchema.optional(), shareAddress: z.boolean().optional(), expectedMemoryRevision: z.string().min(1).max(160).optional(), memoryRecall: companionSocialRecallSchema.optional(), executionReadset: companionExecutionReadsetSchema.optional() }),
   z.strictObject({ type: z.literal('social.job.progress'), id, leaseToken: id,
     phase: z.enum(['context', 'memory', 'thinking', 'waiting']), detail: z.string().max(500),
     memory: companionReplyProgressSchema.shape.memory, memoryRecall: companionSocialRecallSchema.optional() }),
   z.strictObject({ type: z.literal('social.reply.for-message'), messageId: id }),
   z.strictObject({ type: z.literal('social.reply.for-job'), jobId: id }),
-  z.strictObject({ type: z.literal('social.job.fail'), id, leaseToken: id, error: z.string().max(2000) }),
+  z.strictObject({ type: z.literal('social.job.fail'), id, leaseToken: id, error: z.string().max(2000), terminal: z.boolean().optional() }),
   z.strictObject({ type: z.literal('social.delegation.record'), companionId: id, conversationId: id, sourceMessageId: id,
     recipientIds: z.array(id).min(1).max(19), sharedText: z.string().trim().min(1).max(2000), visitId: id.optional(), intent: z.enum(['visit', 'message']).default('visit') }),
   z.strictObject({ type: z.literal('social.notification.claim') }),
-  z.strictObject({ type: z.literal('social.notification.complete'), id, leaseToken: id, text: z.string().trim().min(1).max(2000).nullable() }),
-  z.strictObject({ type: z.literal('social.notification.fail'), id, leaseToken: id, error: z.string().max(2000) }),
+  z.strictObject({ type: z.literal('social.notification.complete'), id, leaseToken: id, text: z.string().trim().min(1).max(2000).nullable(), executionReadset: companionExecutionReadsetSchema.optional() }),
+  z.strictObject({ type: z.literal('social.notification.fail'), id, leaseToken: id, error: z.string().max(2000), terminal: z.boolean().optional() }),
 ] as const;
 export type CompanionSocialConversation = z.infer<typeof companionSocialConversationSchema>;
 export type CompanionSocialConversationPage = z.infer<typeof companionSocialConversationPageSchema>;

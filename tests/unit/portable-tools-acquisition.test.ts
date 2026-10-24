@@ -1,11 +1,12 @@
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs';
+import { copyFileSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, unlinkSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import AdmZip from 'adm-zip';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { removeOwnedDirectorySync } from '../../src/main/vcp-memory/filesystem';
 
 describe.skipIf(process.platform !== 'win32')('portable tool acquisition', () => {
   let root: string;
@@ -50,7 +51,9 @@ describe.skipIf(process.platform !== 'win32')('portable tool acquisition', () =>
     root = mkdtempSync(path.join(os.tmpdir(), 'worldlinebox-portable-acquisition-'));
     for (const directory of ['scripts', '.tools/portable-downloads', 'resources/portable-tools']) mkdirSync(path.join(root, directory), { recursive: true });
     copyFileSync('scripts/acquire-portable-tools.mjs', path.join(root, 'scripts/acquire-portable-tools.mjs'));
-    symlinkSync(path.resolve('node_modules'), path.join(root, 'node_modules'), 'junction');
+    // This script has exactly one package dependency. Copy it into the fixture
+    // so no test cleanup can ever point at the checkout's dependency tree.
+    cpSync(path.resolve('node_modules/adm-zip'), path.join(root, 'node_modules/adm-zip'), { recursive: true, dereference: true });
     writeFileSync(path.join(root, 'resources/portable-tools/tool-lock.json'), approved);
     sourceLock();
     stage();
@@ -58,7 +61,7 @@ describe.skipIf(process.platform !== 'win32')('portable tool acquisition', () =>
   afterEach(() => {
     const relative = path.relative(os.tmpdir(), root);
     if (!relative.startsWith('worldlinebox-portable-acquisition-') || path.isAbsolute(relative) || relative.includes(path.sep)) throw new Error('Unexpected cleanup target');
-    rmSync(root, { recursive: true, force: true });
+    removeOwnedDirectorySync(root);
   });
 
   it('uses verified cached archives and requests staging against the existing lock', () => {

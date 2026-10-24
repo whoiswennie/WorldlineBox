@@ -14,12 +14,16 @@ import { companionRepeatedObservation, projectCompanionToolHistory } from './con
 import { companionReplyIdentityIssue } from './reply-identity';
 import type { CompanionLoopCall, CompanionLoopTurn } from '../../shared/companion-loop';
 import { CompanionProviderStreamError, readCompanionProviderStream } from './provider-stream';
+import { companionProviderContextCapacity } from './provider-capacity';
 import type { CompanionVisualInput } from '../../shared/companion-public-profile';
 import { companionUnsupportedImageError, prepareCompanionVisualContext, refreshCompanionPublicProfileContext } from './public-profile-context';
 import { type ToolVisualInput } from '../../shared/companion-file-tool';
 import { companionToolResultText, prepareCompanionLoopVisuals, type CompanionToolImageDelivery } from './tool-image-context';
+import { prepareTopicContinuityFocus, projectTopicContinuityFocus, type TopicContinuityFocusFrame } from './topic-continuity-focus';
 
 export type { CompanionReplyInput } from './context';
+/** Included in the memory focus generation profile as well as actual requests. */
+export const COMPANION_TEXT_GENERATION_PROFILE = Object.freeze({ maxOutputTokens: 8_192, providerAdapterVersion: 1, sampling: 'provider-default' });
 export interface CompanionModelConfig {
   apiFormat: AiApiFormat;
   model: string;
@@ -29,6 +33,8 @@ export interface CompanionModelConfig {
 export interface CompanionReply { text: string; memories?: string[]; topic?: string; turn?: CompanionLoopTurn }
 export interface CompanionNativeTool { name: string; description: string; parameters: object }
 export interface CompanionModelOptions { fetchFn?: typeof fetch; timeoutMs?: number; loop?: boolean; context?: ReturnType<typeof buildCompanionContext>; turns?: readonly CompanionLoopTurn[]; supplements?: readonly { id: string; content: string }[];
+  /** Main's already source-validated typed topic frame, never model JSON. */
+  topicReviewFrame?: TopicContinuityFocusFrame;
   tools?: readonly CompanionNativeTool[];
   projectContext?: (context: { system: string; user: string }) => { system: string; user: string };
   identityCorrection?: string;
@@ -39,9 +45,9 @@ export interface CompanionModelOptions { fetchFn?: typeof fetch; timeoutMs?: num
   toolImages?: readonly ToolVisualInput[];
   /** Current turn's cumulative visible text, emitted only from real SSE events. */
   onTextDelta?: (text: string) => void }
-export type CompanionModelErrorCode = 'CONFIG' | 'AUTH' | 'RATE_LIMIT' | 'NETWORK' | 'TIMEOUT' | 'CANCELLED' | 'INVALID_RESPONSE' | 'REFUSED' | 'IDENTITY';
+export type CompanionModelErrorCode = 'CONFIG' | 'AUTH' | 'RATE_LIMIT' | 'NETWORK' | 'TIMEOUT' | 'CANCELLED' | 'INVALID_RESPONSE' | 'REFUSED' | 'IDENTITY' | 'CONTEXT_CAPACITY';
 export class CompanionModelError extends Error {
-  constructor(readonly code: CompanionModelErrorCode, message: string) {
+  constructor(readonly code: CompanionModelErrorCode, message: string, readonly diagnostic?: string) {
     super(message);
     this.name = 'CompanionModelError';
   }
@@ -70,7 +76,19 @@ export async function generateCompanionReply(
   const assembledContext = refreshCompanionContextClock(refreshCompanionFilesContext(refreshCompanionPublicProfileContext(refreshCompanionIdentityContext(refreshCompanionCharacterDevelopmentContext(refreshCompanionRuntimeStateContext(
     options.context ?? buildCompanionContext({ ...input, agentLoop: options.loop }), input.runtimeState, input.companion.id, input.conversation), input.characterDevelopment, input.companion.id, input.conversation.id), input),
   { companionId: input.companion.id, memberIds: input.conversation.memberIds, publicProfileIds: input.publicProfileIds, audience: input.audience, publicProfiles: input.publicProfiles }), input.fileInputs), input.world, input.companion.id);
-  const context = options.projectContext?.(assembledContext) ?? assembledContext;
+  let context = options.projectContext?.(assembledContext) ?? assembledContext;
+  const topicFrame = options.topicReviewFrame;
+  if (topicFrame?.topic?.kind === 'story') {
+    const actualSource = input.sourceMessage, capturedSource = topicFrame.sourceMessage;
+    if (topicFrame.companion.id !== input.companion.id || topicFrame.conversation.id !== input.conversation.id
+      || !actualSource || !capturedSource || actualSource.id !== capturedSource.id || actualSource.content !== capturedSource.content
+      || actualSource.conversationId !== input.conversation.id || capturedSource.conversationId !== input.conversation.id
+      || actualSource.authorId !== capturedSource.authorId
+      || actualSource.topicId !== topicFrame.topic.id || capturedSource.topicId !== topicFrame.topic.id)
+      throw new CompanionModelError('INVALID_RESPONSE', '话题写作焦点与当前推理身份或实际来源不一致，未调用作者模型。');
+    const focus = await prepareTopicContinuityFocus({ frame: topicFrame, config, signal, fetchFn: options.fetchFn });
+    context = projectTopicContinuityFocus(context, focus);
+  }
   if (options.identityCorrection) context.system += '\n【宿主身份纠错】\n' + options.identityCorrection;
   if (options.deliveryCorrection) context.system += '\n【宿主交付事实核验】\n' + options.deliveryCorrection;
   const turns = projectCompanionToolHistory(companionStateToolTurns(companionPerceivedToolTurns(options.turns ?? [], input.companion.id, input.world)));
@@ -142,7 +160,7 @@ export async function generateCompanionReply(
     return await Promise.race([operation(), aborted]);
   } catch (error) {
     if (error instanceof CompanionModelError) throw error;
-    if (error instanceof CompanionProviderStreamError) throw new CompanionModelError(error.code, error.message);
+    if (error instanceof CompanionProviderStreamError) throw new CompanionModelError(error.code, error.message, error.diagnostic);
     // Never propagate raw network errors: providers can include URLs, headers or credentials.
     throw new CompanionModelError('NETWORK', '无法连接聊天模型，请检查网络和模型设置。');
   } finally {
@@ -225,11 +243,15 @@ async function fetchCompanionProvider(signal: AbortSignal, fetchFn: typeof fetch
   if (!response.ok && current.hasImages && [400, 415].includes(response.status)) {
     const status = response.status;
     let error: unknown; try { error = await readBoundedJson(response); } catch { throw httpError(status); }
-    if (!companionUnsupportedImageError(error)) throw httpError(status);
+    if (!companionUnsupportedImageError(error)) throw companionContextCapacityError(error) ?? httpError(status);
     if (signal.aborted) throw new CompanionModelError('CANCELLED', '这次模型请求已取消。');
     response = await fetchFn(...build(true).request);
   }
-  if (!response.ok) { void response.body?.cancel().catch(() => undefined); throw httpError(response.status); }
+  if (!response.ok) {
+    let error: unknown;
+    try { error = await readBoundedJson(response); } catch { throw httpError(response.status); }
+    throw ([400, 413, 422].includes(response.status) ? companionContextCapacityError(error) : undefined) ?? httpError(response.status);
+  }
   return response;
 }
 function companionImageParts(format: AiApiFormat, images: readonly CompanionVisualInput[]): Array<Record<string, unknown>> {
@@ -260,14 +282,14 @@ function providerRequest(config: CompanionModelConfig, context: { system: string
   switch (config.apiFormat) {
     case 'openai_chat':
       return [resolveOpenAiChatCompletionsUrl(config.baseUrl), init(bearerHeaders, {
-        model: config.model, max_tokens: 8_192, stream,
+        model: config.model, max_tokens: COMPANION_TEXT_GENERATION_PROFILE.maxOutputTokens, stream,
         ...(tools.length ? { tools: tools.map(tool => ({ type: 'function', function: tool })), parallel_tool_calls: true } : {}),
         ...(deepseek ? { thinking: { type: 'disabled' }, ...(structured ? { response_format: { type: 'json_object' } } : {}) } : {}),
         messages: [{ role: 'system', content: context.system }, { role: 'user', content: context.user }, ...imageMessage],
       })];
     case 'openai_responses':
       return [resolveOpenAiResponsesUrl(config.baseUrl), init(bearerHeaders, {
-        model: config.model, max_output_tokens: 8_192, stream,
+        model: config.model, max_output_tokens: COMPANION_TEXT_GENERATION_PROFILE.maxOutputTokens, stream,
         ...(tools.length ? { tools: tools.map(tool => ({ type: 'function', ...tool, strict: false })), parallel_tool_calls: true } : {}),
         ...(deepseek ? { reasoning: { effort: 'none' }, ...(structured ? { text: { format: { type: 'json_object' } } } : {}) } : {}),
         instructions: context.system, input: [{ role: 'user', content: context.user }, ...imageMessage],
@@ -275,7 +297,7 @@ function providerRequest(config: CompanionModelConfig, context: { system: string
     case 'anthropic':
       return [resolveAnthropicMessagesUrl(config.baseUrl), init({ 'x-api-key': config.apiKey,
         'anthropic-version': '2023-06-01', 'Content-Type': 'application/json' }, {
-        model: config.model, max_tokens: 8_192, stream, system: context.system,
+        model: config.model, max_tokens: COMPANION_TEXT_GENERATION_PROFILE.maxOutputTokens, stream, system: context.system,
         ...(tools.length ? { tools: tools.map(tool => ({ name: tool.name, description: tool.description, input_schema: tool.parameters })) } : {}),
         ...(deepseek ? { thinking: { type: 'disabled' } } : {}),
         messages: [{ role: 'user', content: context.user }, ...imageMessage],
@@ -287,13 +309,13 @@ function providerRequest(config: CompanionModelConfig, context: { system: string
         ...(tools.length ? { tools: [{ function_declarations: tools.map(tool => ({ name: tool.name,
           description: tool.description, parametersJsonSchema: tool.parameters })) }] } : {}),
         contents: [{ role: 'user', parts: [{ text: context.user }] }, ...(images.length ? [{ role: 'user', parts: companionImageParts(config.apiFormat, images) }] : [])],
-        generationConfig: { maxOutputTokens: 8_192, ...(structured ? { responseMimeType: 'application/json' } : {}) },
+        generationConfig: { maxOutputTokens: COMPANION_TEXT_GENERATION_PROFILE.maxOutputTokens, ...(structured ? { responseMimeType: 'application/json' } : {}) },
       })];
     case 'dashscope_native':
       return [resolveDashScopeMultimodalGenerationUrl(config.baseUrl), init({ ...bearerHeaders, ...(stream ? { 'X-DashScope-SSE': 'enable' } : {}) }, {
         model: config.model, input: { messages: [{ role: 'system', content: [{ text: context.system }] },
           { role: 'user', content: [{ text: context.user }] }, ...imageMessage] },
-        parameters: { result_format: 'message', max_tokens: 8_192, enable_thinking: false, ...(structured ? { response_format: { type: 'json_object' } } : {}),
+        parameters: { result_format: 'message', max_tokens: COMPANION_TEXT_GENERATION_PROFILE.maxOutputTokens, enable_thinking: false, ...(structured ? { response_format: { type: 'json_object' } } : {}),
           ...(stream ? { incremental_output: true } : {}),
           ...(tools.length ? { tools: tools.map(tool => ({ type: 'function', function: tool })) } : {}) },
       })];
@@ -426,6 +448,7 @@ async function readBoundedJson(response: Response): Promise<unknown> {
 function extractProviderText(format: AiApiFormat, body: unknown, allowToolOnly = false): string {
   const record = asRecord(body);
   if (record.error || record.code && !record.output && !record.candidates && !record.content && !record.choices) {
+    const capacity = companionContextCapacityError(body); if (capacity) throw capacity;
     throw new CompanionModelError('INVALID_RESPONSE', '模型接口返回错误，请检查接口格式和模型名称。');
   }
   if (format === 'openai_chat' || format === 'dashscope_native') {
@@ -515,6 +538,13 @@ function httpError(status: number): CompanionModelError {
   if (status === 429 || status === 402) return new CompanionModelError('RATE_LIMIT', '模型服务暂时受限，请检查额度或稍后重试。');
   if (status >= 500) return new CompanionModelError('NETWORK', '模型服务暂时不可用，请稍后重试。');
   return new CompanionModelError('INVALID_RESPONSE', `模型接口请求失败（HTTP ${status}），请检查接口格式和模型名称。`);
+}
+/** Act only on an explicit provider input/context rejection. Output limits,
+ * account quotas and arbitrary HTTP 400/413 failures are different failures.
+ * Provider prose is inspected in memory and never exposed with credentials. */
+export function companionContextCapacityError(body: unknown): CompanionModelError | undefined {
+  return companionProviderContextCapacity(body) ? new CompanionModelError('CONTEXT_CAPACITY',
+    '模型服务明确拒绝了本次输入的上下文容量。可受控压缩较早的工作历史或话题原文后重试；完整人格、当前目标和未完成工具调用必须保留。') : undefined;
 }
 function asRecord(value: unknown): Record<string, unknown> {
   return value !== null && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {};

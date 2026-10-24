@@ -4,6 +4,7 @@ import path from 'node:path';
 import os from 'node:os';
 import { randomUUID } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
+import { createRequire } from 'node:module';
 import { writeFile } from 'node:fs/promises';
 import { companionDshArgumentsSchema } from '../../src/shared/companion-dsh-tool';
 import { dshTaskSpecSchema } from '../../src/shared/dsh-task-spec';
@@ -58,8 +59,8 @@ function runtime(policy: DshRuntimeTaskPolicy) {
     snapshot: async () => ({ skills: await skills.list() }) };
   const ctx = { get: (name: string) => name === 'tools' ? registry : name === 'skills' ? skills : name === 'agentPresets' ? { list: async () => [{ id: 'standard' }] } : undefined };
   const scope = { tools: { restrict: (value: { allow?: string[]; deny?: string[] }) => { restrictions.push(value); } } };
-  const build = new Function('ctx', 'emit', 'Buffer', 'process', `const io={},cwd=process.cwd(),cleanup=[]; ${taskRuntimePolicySource(policy)}; return { configureTask, publishTaskCapabilities, prelude: () => taskPrelude };`);
-  const adapter = build(ctx, (value: Record<string, unknown>) => emitted.push(value), Buffer, process) as { configureTask(scope: object, agent: object): Promise<void>; publishTaskCapabilities(agent:object):Promise<void>; prelude(): string };
+  const build = new Function('ctx', 'emit', 'Buffer', 'process', 'require', `const io={},cwd=process.cwd(),cleanup=[]; ${taskRuntimePolicySource(policy)}; return { configureTask, publishTaskCapabilities, prelude: () => taskPrelude };`);
+  const adapter = build(ctx, (value: Record<string, unknown>) => emitted.push(value), Buffer, process, createRequire(import.meta.url)) as { configureTask(scope: object, agent: object): Promise<void>; publishTaskCapabilities(agent:object):Promise<void>; prelude(): string };
   return { adapter, skills, registry, restrictions, emitted, prepare: async () => {const subject={}; await adapter.configureTask(scope,subject); await adapter.publishTaskCapabilities(subject);}, deny: (exec: Call) => guards.map(guard => guard(exec)).find(Boolean) };
 }
 
@@ -95,5 +96,17 @@ describe('Native task policy at tool dispatch', () => {
     await expect(runtime({ skills: ['invented'] }).prepare()).rejects.toThrow('unknown skill');
     const test = runtime({ tools: ['read'] }); Object.assign(test.registry, { guard: undefined });
     await expect(test.prepare()).rejects.toThrow('cannot be isolated');
+  });
+  it('pins actual tool schemas and skill instructions before admitting a continued session', async () => {
+    const first = runtime({}); await first.prepare();
+    const effective = first.emitted[0]?.effective as { digest: string };
+    expect(effective.digest).toMatch(/^[a-f0-9]{64}$/);
+    await expect(runtime({ expectedEffectiveDigest: effective.digest }).prepare()).resolves.toBeUndefined();
+    const changed = runtime({ expectedEffectiveDigest: effective.digest });
+    changed.skills.get = async name => ({ name, content: `changed-${name}` });
+    await expect(changed.prepare()).rejects.toThrow('capabilities changed');
+    const changedTools = runtime({ expectedEffectiveDigest: effective.digest });
+    changedTools.registry.schemas()[0]!.description = 'Changed provider contract';
+    await expect(changedTools.prepare()).rejects.toThrow('capabilities changed');
   });
 });

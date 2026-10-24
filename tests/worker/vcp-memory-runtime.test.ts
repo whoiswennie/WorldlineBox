@@ -71,6 +71,186 @@ afterEach(async () => {
 });
 
 describe('unchanged VCP core behind isolated worker processes', () => {
+  it('indexes a full-length diary across chunks, recalls its tail with a legal long query and reopens it intact', async () => {
+    const { createClient, requests } = await fixture(), client = createClient(), scope = { scopeId: 'public-length-contract' };
+    const tail = '\n\ncocoa tail evidence beyond the first embedding chunk';
+    const prefix = 'alpha opening evidence.\n\n';
+    const filler = 'quiet garden observations and ordinary notes.\n'.repeat(1600);
+    const content = prefix + filler.slice(0, 65536 - prefix.length - tail.length) + tail;
+    expect(content).toHaveLength(65536);
+    await client.remember(scope, { id: 'long-diary', content, tags: ['alpha', 'cocoa'] });
+    expect(requests.filter(request => request.path.startsWith('/document/')).flatMap(request => request.input).some(input => input.includes('cocoa tail evidence'))).toBe(true);
+    const tailRecall = await client.search(scope, { text: 'cocoa tail evidence', topK: 8 });
+    expect(tailRecall.results[0]?.id).toBe('long-diary');
+    expect(tailRecall.results[0]?.content.length).toBe(65536);
+    const beforeLongQuery = requests.length;
+    const longQuery = ('cocoa ' + 'q'.repeat(500) + '\n').repeat(40).slice(0, 16000);
+    const result = await client.search(scope, { text: longQuery, topK: 8 });
+    expect(result.results[0]?.id).toBe('long-diary');
+    const queryChunks = requests.slice(beforeLongQuery).filter(request => request.path.startsWith('/query/')).flatMap(request => request.input);
+    expect(queryChunks.length).toBeGreaterThan(1);
+    expect(queryChunks.some(chunk => chunk.startsWith('cocoa '))).toBe(true);
+    expect(queryChunks.join('').length).toBeGreaterThanOrEqual(longQuery.length);
+    await client.closeScope(scope);
+    expect(await client.read(scope, 'long-diary')).toMatchObject({ content });
+    await expect(client.remember(scope, { id: 'oversized', content: 'x'.repeat(65537), tags: [] })).rejects.toThrow(/content/iu);
+    await expect(client.search(scope, { text: 'q'.repeat(16001) })).rejects.toThrow(/query/iu);
+  });
+  it('reports explicit host/upstream behavior profiles and optional-mode configuration without enabling every mode', async () => {
+    const { root, embedding } = await fixture();
+    for (const profile of ['preserve-corrections', 'upstream'] as const) {
+      const client = new VcpMemoryClient({ dataRoot: root, vendorRoot, workerPath, embedding, launch, requestTimeoutMs: 30_000,
+        plugins: { behaviorProfile: profile } }); clients.push(client);
+      const capabilities = await client.capabilities({ scopeId: 'behavior-' + profile });
+      expect(capabilities.behavior?.profile).toBe(profile);
+      expect(capabilities.behavior?.differences.map(item => item.effective)).toEqual(profile === 'upstream' ? [.88, .92, .97] : [1, 1, 1]);
+      expect(capabilities.behavior?.generation).toMatchObject({ aimemoBatchSize: 2, aimemoMaxTokensPerBatch: 18000, queryResultCacheEnabled: false });
+      expect(capabilities.modes?.semantic_group).toMatchObject({ available: false, configured: false, enabledByDefault: false, observedCalls: 0, configurations: [], reason: expect.any(String) });
+      expect(capabilities.modes?.meta_thinking).toMatchObject({ available: false, configured: false, enabledByDefault: false, configurations: [] });
+      expect(capabilities.modes?.external_rerank?.enabledByDefault).toBe(false);
+      expect(capabilities.modes?.jev_rerank).toMatchObject({ available: false, reason: expect.any(String) });
+      expect(capabilities.modes?.associate).toMatchObject({ available: true, enabledByDefault: false });
+    }
+  });
+  it('executes the original optional Time, TimeDecay, Expand and Associate pipeline and observes its real calls', async () => {
+    const { createClient } = await fixture(), client = createClient(), scope = { scopeId: 'optional-original-pipeline' };
+    await client.replace(scope, [
+      { id: 'alpha-event', content: 'alpha umbrella was borrowed near the garden', tags: ['alpha', 'umbrella'], occurredAt: new Date(Date.now() - 86400000).toISOString() },
+      { id: 'beta-event', content: 'beta brought plants while alpha carried the blue umbrella', tags: ['alpha', 'plants'], occurredAt: new Date(Date.now() - 86400000).toISOString() },
+      { id: 'cocoa-event', content: 'cocoa was served while the umbrella dried', tags: ['umbrella', 'cocoa'], occurredAt: new Date(Date.now() - 172800000).toISOString() },
+    ]);
+    const before = await client.capabilities(scope);
+    for (const mode of ['time', 'time_decay', 'expand', 'associate']) expect(before.modes?.[mode]).toMatchObject({ available: true, enabledByDefault: mode === 'time_decay', observedCalls: 0 });
+    const processed = await client.preprocess(scope, [{ role: 'system', content: '[[memories日记本::RiverMemo::Time0.3::TimeDecay30/0.01::Expand::Associate]]' },
+      { role: 'user', content: '昨天 alpha umbrella 的事情' }]);
+    expect(processed.messages.some(message => typeof message.content === 'string' && message.content.includes('umbrella'))).toBe(true);
+    expect(processed.events).toContainEqual(expect.objectContaining({ type: 'RAG_RETRIEVAL_DETAILS', useTime: true, useExpand: true, useAssociate: true, useRiverMemo: true }));
+    expect(processed.contextReferences?.length).toBeGreaterThan(0);
+    expect(processed.contextReferences?.every(reference => reference.role === 'returned')).toBe(true);
+    const after = await client.capabilities(scope);
+    for (const mode of ['time', 'time_decay', 'expand', 'associate']) expect(after.modes?.[mode]?.observedCalls, mode).toBeGreaterThan(0);
+    expect(after.modes?.external_rerank?.observedCalls).toBe(0); expect(after.modes?.jev_rerank?.observedCalls).toBe(0);
+  });
+  it('uses the supplied paused or accelerated world clock in the unchanged native Time pipeline', async () => {
+    const { createClient } = await fixture(), client = createClient(), scope = { scopeId: 'world-time-adapter' };
+    await client.replace(scope, [
+      { id: 'alpha-past', content: 'alpha umbrella old event', tags: ['alpha'], occurredAt: '2035-03-10T12:00:00+08:00' },
+      { id: 'alpha-recent', content: 'alpha umbrella later event', tags: ['alpha'], occurredAt: '2035-03-20T12:00:00+08:00' },
+    ]);
+    const messages = [{ role: 'system', content: '[[memories日记本::RiverMemo::Time0.5::TimeDecay180/0]]' }, { role: 'user', content: '昨天 alpha umbrella' }];
+    const clock = { now: '2035-03-11T00:00:00+08:00', timeZone: 'Asia/Shanghai' };
+    const ranges = (result: Awaited<ReturnType<typeof client.preprocess>>) => (result.events.find(event => !!event && typeof event === 'object' && 'type' in event && event.type === 'RAG_RETRIEVAL_DETAILS') as { timeRanges: unknown[] }).timeRanges;
+    const first = await client.preprocess(scope, messages, clock), paused = await client.preprocess(scope, messages, clock);
+    expect(first.queryClock).toEqual({ now: '2035-03-10T16:00:00.000Z', timeZone: clock.timeZone });
+    expect(ranges(first)).toEqual([{ start: '2035-03-09T16:00:00.000Z', end: '2035-03-10T15:59:59.999Z' }]);
+    expect(ranges(paused)).toEqual(ranges(first));
+    const advanced = await client.preprocess(scope, messages, { ...clock, now: '2035-03-21T00:00:00+08:00' });
+    expect(ranges(advanced)).toEqual([{ start: '2035-03-19T16:00:00.000Z', end: '2035-03-20T15:59:59.999Z' }]);
+    const real = await client.preprocess(scope, messages);
+    expect(real.queryClock).toBeUndefined(); expect(ranges(real)).not.toEqual(ranges(first));
+  });
+  it('matches one projected event to yesterday and decay in Shanghai, UTC, negative-offset and DST calendar zones', async () => {
+    const { root, createClient } = await fixture(), client = createClient(), scope = { scopeId: 'calendar-zone-projection' };
+    const policy = { schema: 'episodic-v1' as const, halfLifeDays: 180 as const, minScore: 0 as const, protectedNoteIds: [] };
+    const cases = [
+      { timeZone: 'Asia/Shanghai', now: '2035-03-11T00:30:00Z', event: '2035-03-10T23:30:00Z', day: '2035-03-11', start: '2035-03-09T16:00:00.000Z', end: '2035-03-10T15:59:59.999Z', age: 0, yesterday: false },
+      { timeZone: 'UTC', now: '2035-03-11T00:30:00Z', event: '2035-03-10T23:30:00Z', day: '2035-03-10', start: '2035-03-10T00:00:00.000Z', end: '2035-03-10T23:59:59.999Z', age: 1, yesterday: true },
+      { timeZone: 'America/Los_Angeles', now: '2035-03-11T00:30:00Z', event: '2035-03-10T23:30:00Z', day: '2035-03-10', start: '2035-03-09T08:00:00.000Z', end: '2035-03-10T07:59:59.999Z', age: 0, yesterday: false },
+      { timeZone: 'America/New_York', now: '2026-03-09T04:30:00Z', event: '2026-03-08T05:30:00Z', day: '2026-03-08', start: '2026-03-08T05:00:00.000Z', end: '2026-03-09T03:59:59.999Z', age: 1, yesterday: true },
+      { timeZone: 'America/New_York', now: '2026-11-02T05:30:00Z', event: '2026-11-01T04:30:00Z', day: '2026-11-01', start: '2026-11-01T04:00:00.000Z', end: '2026-11-02T04:59:59.999Z', age: 1, yesterday: true },
+    ];
+    for (const test of cases) {
+      const note = { id: 'calendar-event', content: 'alpha umbrella same exact event', tags: ['alpha'], occurredAt: test.event, hostProjection: { timeZone: test.timeZone } };
+      await client.replace(scope, [note]);
+      const exported = (await client.exportNotes(scope))[0]!;
+      expect(exported.content).toBe(note.content); expect(exported.occurredAt).toBe(test.event);
+      expect(exported.metadata?.vcpSourceFile).toMatch(new RegExp(`^memories/${test.day}-`, 'u'));
+      const source = await readFile(path.join(root, createHash('sha256').update(scope.scopeId).digest('hex'), 'notes', String(exported.metadata?.vcpSourceFile)), 'utf8');
+      expect(source).toContain(`[${test.day}] - WorldlineBox\n`); expect(source).toContain(note.content);
+      const process = (query: string) => client.preprocess(scope, [{ role: 'system', content: '[[memories日记本::RiverMemo::Time0.5::TimeDecay180/0]]' }, { role: 'user', content: query }], { now: test.now, timeZone: test.timeZone }, policy);
+      const temporal = await process('昨天 alpha umbrella');
+      expect(temporal.parsedTimeRanges, test.timeZone).toEqual([{ start: test.start, end: test.end }]);
+      expect(temporal.automaticDecay!.flatMap(observation => observation.results).some(row => row.id === note.id && row.explicitTime), test.timeZone).toBe(test.yesterday);
+      const ordinary = await process('alpha umbrella');
+      const decayed = ordinary.automaticDecay!.flatMap(observation => observation.results).find(row => row.id === note.id)!;
+      expect(decayed.diffDays, test.timeZone).toBe(test.age); expect(decayed.decayFactor).toBeCloseTo(Math.pow(.5, test.age / 180), 12);
+    }
+    await expect(client.remember(scope, { id: 'invalid-zone', content: 'must not mutate', tags: [], hostProjection: { timeZone: 'Invalid/Zone' } })).rejects.toThrow('timezone');
+    expect((await client.list(scope)).map(note => note.id)).toEqual(['calendar-event']);
+  }, 120000);
+  it('keeps monthly artifacts in their source projection calendar across a Shanghai and UTC month boundary', async () => {
+    const { createClient } = await fixture(), client = createClient(), scope = { scopeId: 'monthly-calendar-projection' };
+    const source = { id: 'month-event', content: 'alpha umbrella event at one exact instant', tags: ['alpha'], author: 'alpha', occurredAt: '2034-12-31T20:00:00Z' };
+    await client.replace(scope, [{ ...source, hostProjection: { timeZone: 'Asia/Shanghai' } }]);
+    await client.timeline(scope, { operation: 'saveTimelineFile', agentName: 'alpha', month: '2035-01', content: 'Shanghai January timeline: alpha umbrella event.' });
+    await client.timeline(scope, { operation: 'saveSummary', agentName: 'alpha', month: '2035-01', content: 'Shanghai January summary.' });
+    const shanghai = await client.exportTimelineArtifacts(scope, 'unchanged-ledger');
+    expect(shanghai.calendarTimeZone).toBe('Asia/Shanghai'); expect(shanghai.agents[0]?.months.map(month => month.month)).toEqual(['2035-01']);
+    await client.replace(scope, [{ ...source, hostProjection: { timeZone: 'UTC' } }]);
+    expect(await client.importTimelineArtifacts(scope, 'unchanged-ledger', shanghai)).toEqual({ acceptedMonths: 0, skippedMonths: 1 });
+    await client.timeline(scope, { operation: 'saveTimelineFile', agentName: 'alpha', month: '2034-12', content: 'UTC December timeline: alpha umbrella event.' });
+    await client.timeline(scope, { operation: 'saveSummary', agentName: 'alpha', month: '2034-12', content: 'UTC December summary.' });
+    const utc = await client.exportTimelineArtifacts(scope, 'unchanged-ledger');
+    expect(utc.calendarTimeZone).toBe('UTC'); expect(utc.agents[0]?.months.map(month => month.month)).toEqual(['2034-12']);
+    expect(await client.read(scope, source.id)).toMatchObject({ content: source.content, occurredAt: source.occurredAt });
+  });
+  it('refreshes focused answers across world days and half-lives without discarding same-day caches or source indexes', async () => {
+    const { root, embedding, chatRequests } = await fixture();
+    const client = new VcpMemoryClient({ dataRoot: root, vendorRoot, workerPath, embedding, launch, requestTimeoutMs: 30_000,
+      plugins: { chat: { baseUrl: embedding.baseUrl.replace('/document', '/chat'), model: 'fixture-chat', apiKey: 'fixture' } } }); clients.push(client);
+    const scope = { scopeId: 'world-clock-cache' };
+    await client.replace(scope, [{ id: 'alpha-clock', content: 'alpha umbrella long-lived event', tags: ['alpha'], occurredAt: '2035-03-01T00:00:00+08:00' }]);
+    const messages = [{ role: 'system', content: '[[AIMemo=True]]\n[[memories日记本::RiverMemo::TimeDecay180/0::AIMemo+]]' }, { role: 'user', content: 'alpha umbrella' }];
+    const clock = { now: '2035-03-11T12:00:00+08:00', timeZone: 'Asia/Shanghai' };
+    const policy = { schema: 'episodic-v1' as const, halfLifeDays: 180 as const, minScore: 0 as const, protectedNoteIds: [] };
+    const score = (result: Awaited<ReturnType<typeof client.preprocess>>) => result.automaticDecay!.flatMap(row => row.results).find(row => row.id === 'alpha-clock')!;
+    const first = await client.preprocess(scope, messages, clock, policy), count = chatRequests.length;
+    expect(count).toBeGreaterThan(0);
+    const sameDay = await client.preprocess(scope, messages, { ...clock, now: '2035-03-11T12:00:00.500+08:00' }, policy);
+    expect(sameDay.cacheClock?.invalidated).toBe(false); expect(chatRequests.length).toBe(count); expect(score(sameDay)).toEqual(score(first));
+    const nextDay = await client.preprocess(scope, messages, { ...clock, now: '2035-03-12T12:00:00+08:00' }, policy);
+    expect(nextDay.cacheClock?.invalidated).toBe(true); expect(chatRequests.length).toBeGreaterThan(count);
+    expect(score(nextDay).diffDays).toBe(score(first).diffDays! + 1);
+    const advanced = await client.preprocess(scope, messages, { ...clock, now: new Date(Date.parse(clock.now) + 180 * 86400000).toISOString() }, policy);
+    expect(advanced.cacheClock?.invalidated).toBe(true); expect(score(advanced).decayFactor).toBeCloseTo(score(first).decayFactor! / 2, 12);
+    const changedZone = await client.preprocess(scope, messages, { ...clock, timeZone: 'America/Los_Angeles' }, policy);
+    expect(changedZone.cacheClock?.invalidated).toBe(true);
+    expect((await client.list(scope)).map(note => note.id)).toEqual(['alpha-clock']);
+  });
+  it('observes LightMemo formatter output and AIMemo input provenance independently of candidate search ranks', async () => {
+    const { root, embedding } = await fixture();
+    const client = new VcpMemoryClient({ dataRoot: root, vendorRoot, workerPath, embedding, launch, requestTimeoutMs: 30_000,
+      plugins: { chat: { baseUrl: embedding.baseUrl.replace('/document', '/chat'), model: 'fixture-chat', apiKey: 'fixture' } } }); clients.push(client);
+    const scope = { scopeId: 'actual-context-provenance' };
+    await client.replace(scope, [{ id: 'host-alpha', content: 'alpha borrowed a blue umbrella', tags: ['alpha', 'umbrella'] }]);
+    const light = await client.pluginCall(scope, 'LightMemo', { query: 'alpha umbrella', folder: 'memories', k: 3, enginemode: 'rivermemo' });
+    expect(light.contextReferences).toContainEqual({ id: 'host-alpha', role: 'returned', sourceFile: expect.any(String), textHash: expect.stringMatching(/^[a-f0-9]{64}$/u) });
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const passive = await client.preprocess(scope, [{ role: 'system', content: '[[AIMemo=True]]\n[[memories日记本::RiverMemo::AIMemo+]]' }, { role: 'user', content: 'alpha umbrella' }]);
+      expect(passive.contextReferences).toContainEqual({ id: 'host-alpha', role: 'focus_input', sourceFile: expect.any(String), textHash: expect.stringMatching(/^[a-f0-9]{64}$/u) });
+      expect(passive.contextReferences?.every(reference => reference.role === 'focus_input')).toBe(true);
+    }
+  });
+  it('runs the original DreamWave through real Rust vectors with owner/version receipts and native time-scoped candidates', async () => {
+    const { createClient } = await fixture(), client = createClient(), scope = { scopeId: 'dream-native-smoke' };
+    const owner = { version: 2 as const, companionId: 'alpha', name: 'Alpha', agentName: 'alpha' }, now = '2026-10-23T12:00:00Z';
+    const notes = [1, 2, 3, 20, 40, 120, 160].map((age, index) => ({ id: 'dream-note-' + index,
+      content: `alpha umbrella memory from ${age} days ago with independent event ${index}.`, tags: ['alpha', 'umbrella'],
+      occurredAt: new Date(Date.parse(now) - age * 86400000).toISOString(), author: owner.agentName,
+      metadata: { hostMemoryOwner: owner, hostMemoryVersion: 1 } }));
+    await client.replace(scope, notes);
+    const wave = await client.dreamWave(scope, { owner, now, clockDomain: 'real', sourceRevision: 'snapshot-one',
+      notes: notes.map(note => ({ id: note.id, version: 1, eventTime: note.occurredAt, clockDomain: 'real', contentHash: createHash('sha256').update(note.content).digest('hex') })) });
+    expect(wave.diagnostics.indexedCount).toBe(7);
+    expect(wave.stages.recent.seeds).toHaveLength(3); expect(wave.stages.mid.seeds).toHaveLength(2);
+    expect(wave.diagnostics.queries.some(query => query.phase === 'deep')).toBe(true);
+    expect(wave.stages.deep.recalls.length, JSON.stringify(wave.diagnostics)).toBeGreaterThan(0);
+    for (const query of wave.diagnostics.queries) {
+      expect(query.returnedNoteIds.every(id => query.allowedNoteIds.includes(id))).toBe(true);
+      if (query.phase === 'deep') expect(query.allowedNoteIds.every(id => ['dream-note-5', 'dream-note-6'].includes(id))).toBe(true);
+    }
+    expect(wave.stages.deep.recalls.every(item => ['dream-note-5', 'dream-note-6'].includes(item.id))).toBe(true);
+  });
   it('detaches its own dependency junctions on close and safely purges an interrupted worker without touching their sources', async () => {
     const { root, createClient } = await fixture(), client = createClient(), scope = { scopeId: 'dependency-link-cleanup' };
     const directory = path.join(root, createHash('sha256').update(scope.scopeId).digest('hex'));
@@ -278,7 +458,9 @@ describe('unchanged VCP core behind isolated worker processes', () => {
       console.log(JSON.stringify(runtimePackages));
     `], { cwd: root, env: environment, encoding: 'utf8', timeout: 30_000 });
     expect(modules.status, modules.stderr).toBe(0);
-    expect(JSON.parse(modules.stdout.trim())).toHaveLength(12);
+    const expectedPackages = JSON.parse(await readFile(path.join(vendorRoot, 'peripheral-manifest.json'), 'utf8')).runtimePackages;
+    expect(JSON.parse(modules.stdout.trim())).toEqual(expectedPackages);
+    expect(expectedPackages).toContain('triviumdb');
     const client = new VcpMemoryClient({ dataRoot: path.join(root, 'userData'), vendorRoot: packagedVendor,
       workerPath: path.join(packagedHost, 'worker.cjs'), embedding, launch, requestTimeoutMs: 30_000 });
     clients.push(client);
@@ -433,7 +615,7 @@ describe('unchanged VCP core behind isolated worker processes', () => {
     controls.hangQuery = true;
     const searching = client.search(scope, { text: 'alpha' });
     const rejectedSearch = expect(searching).rejects.toThrow(/interrupted/u);
-    await vi.waitFor(() => expect(requests.some(request => request.path.startsWith('/query/'))).toBe(true));
+    await vi.waitFor(() => expect(requests.some(request => request.path.startsWith('/query/'))).toBe(true), { timeout: 10_000 });
     const queued = client.list(other);
     const rejectedQueued = expect(queued).rejects.toThrow(/interrupted/u);
     await new Promise(resolve => setTimeout(resolve, 50));

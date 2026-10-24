@@ -1,22 +1,60 @@
 import { z } from 'zod';
-import { companionTopicArgumentsSchema } from '../../shared/companion-topic';
+import { companionTopicArgumentsSchema, companionTopicOperationSchema, companionTopicOperationExample, COMPANION_TOPIC_CONTINUITY_RULES, COMPANION_TOPIC_STATE_WRITE_RECEIPT } from '../../shared/companion-topic';
 import type { CompanionStorageCommand, CompanionStorageResponse } from '../../shared/companion-storage';
 import type { CompanionStructuredAgentCapabilities } from './structured-agent';
+import type { CompanionGameTopicUpdate, CompanionGameTopicPrivacyReview } from './game-topic-privacy';
 
-/** Self-managed topics are available in peer cognition as well as player chat.
- * No model-supplied reader or conversation can escape this actual message port. */
+/** Self-managed topics can explicitly target a real member room without
+ * changing the current message port or choosing another reader's identity. */
 export function companionTopicCapabilities(request: (command: CompanionStorageCommand) => Promise<CompanionStorageResponse>,
-  scope: { companionId: string; conversationId: string }, other?: CompanionStructuredAgentCapabilities): CompanionStructuredAgentCapabilities {
+  scope: { companionId: string; conversationId: string }, other?: CompanionStructuredAgentCapabilities,
+  options: { reviewUpdate?(command: CompanionGameTopicUpdate, signal?: AbortSignal): Promise<CompanionGameTopicPrivacyReview> } = {}): CompanionStructuredAgentCapabilities {
   const schema = z.strictObject({ action: z.literal('topic'), parameters: companionTopicArgumentsSchema });
   const parameters = z.toJSONSchema(schema, { io: 'input' }) as Record<string, unknown>; delete parameters.$schema;
-  return { tools: [...(other?.tools ?? []), { name: 'world', parameters: { type: 'object', ...parameters },
-    description: '管理本人在当前真实会话的话题。action=topic，parameters.action=create/list/read/join/leave/activate/update/pause/resume/close/reopen/fork/delete。创建只代表本人加入，其他成员必须自愿join；activate与pause仅替换本人上下文。update只能更新本人workingState，主持人可管理shared与分发私态；不能越过宿主ACL。话题是可持续压缩的工作上下文，游戏/小说不写成全局现实事实。' }],
+  return { journal: other?.journal, replaySafe: other?.replaySafe ?? true, continuityRequest: request,
+    tools: [...(other?.tools ?? []), { name: 'world', parameters: { type: 'object', ...parameters },
+    description: '管理本人在当前真实会话的话题。action=topic，parameters.action=create/list/read/join/leave/activate/update/pause/resume/close/reopen/fork/delete。创建只代表本人加入，其他成员必须自愿join；activate与pause仅替换本人上下文。update先read取得真实topicId和最新revision；parameters.roomId/topicId/expectedRevision与parameters.patch同级，绝不能塞进patch。patch只含title/shared/workingState/privateRecipientId/tags/invitedIds；活动自定义字段放patch.shared.state或patch.workingState.state，来源ID放相应sourceMessageIds。update只能更新本人workingState，主持人可管理shared与分发私态；不能越过宿主ACL。话题是可持续压缩的工作上下文，游戏/小说不写成全局现实事实。' + COMPANION_TOPIC_CONTINUITY_RULES }],
     execute: async (call, signal) => {
       signal?.throwIfAborted();
       if (call.name !== 'world') { if (!other) throw new Error('当前没有该能力。'); return other.execute(call, signal); }
-      const { parameters: args } = schema.parse(JSON.parse(call.arguments));
-      const { action, ...payload } = args;
-      return request({ type: 'topic.' + action, ...payload, conversationId: scope.conversationId,
-        readerId: scope.companionId } as CompanionStorageCommand);
+      let body: unknown;
+      try { body = JSON.parse(call.arguments); }
+      catch { return { ok: false, error: '话题调用必须是合法JSON，外层action=topic，具体操作放parameters.action。',
+        argumentIssues: [{ path: '$', code: 'invalid_json', message: '请修正JSON语法后重试。' }] }; }
+      if (body && typeof body === 'object' && 'action' in body && body.action !== 'topic') throw new Error('当前入口没有提供此世界能力。');
+      const envelope = z.strictObject({ action: z.literal('topic'), parameters: z.record(z.string(), z.unknown()) }).safeParse(body);
+      const feedback = (issues: readonly z.core.$ZodIssue[], action?: string, prefix: string[] = []) => {
+        const argumentIssues = issues.flatMap(issue => {
+          const base = [...prefix, ...issue.path.map(String)];
+          const paths = issue.code === 'unrecognized_keys' ? issue.keys.map(key => [...base, key]) : [base];
+          return paths.map(parts => {
+            const path = parts.join('.') || '$', field = parts.at(-1);
+            let message = issue.message;
+            if (parts[0] === 'parameters' && parts[1] === 'patch' && ['roomId', 'topicId', 'expectedRevision'].includes(field ?? '')) message = `${field}属于parameters.${field}，须与parameters.patch同级。`;
+            else if (path === 'parameters.expectedRevision') message = 'expectedRevision必须为该话题read返回的最新正整数revision。';
+            else if (path === 'parameters.patch.state') message = '自定义状态应放parameters.patch.shared.state或parameters.patch.workingState.state。';
+            return { path, code: issue.code, message };
+          });
+        }).slice(0, 12);
+        return { ok: false, error: '话题参数无效：' + argumentIssues.map(issue => `${issue.path}: ${issue.message}`).join('；'), argumentIssues,
+          minimumExample: action ? companionTopicOperationExample(action) : undefined };
+      };
+      if (!envelope.success) return feedback(envelope.error.issues);
+      const operation = envelope.data.parameters.action;
+      const operationSchema = typeof operation === 'string' ? companionTopicOperationSchema(operation) : undefined;
+      if (!operationSchema) return { ok: false, error: 'parameters.action必须选择create/list/read/join/leave/activate/update/pause/resume/close/reopen/fork/delete。',
+        argumentIssues: [{ path: 'parameters.action', code: 'invalid_value', message: '请选择一个受支持的话题操作。' }] };
+      const parsed = operationSchema.safeParse(envelope.data.parameters);
+      if (!parsed.success) return feedback(parsed.error.issues, String(operation), ['parameters']);
+      const args = parsed.data as z.infer<typeof companionTopicArgumentsSchema>;
+      const { action, roomId, ...payload } = args;
+      const command = { type: 'topic.' + action, ...payload, conversationId: roomId ?? scope.conversationId,
+        readerId: scope.companionId, operationId: 'brain_' + call.id } as CompanionStorageCommand;
+      if (command.type === 'topic.update' && options.reviewUpdate) {
+        const review = await options.reviewUpdate(command, signal);
+        if (!review.allowed) return { ok: false, error: '游戏话题公开载荷未通过隐私核验，未写入。' + (review.reason ?? '请修订公开字段，秘密保存到正确私态。') };
+      }
+      const result = await request(command);
+      return action === 'update' && result.ok ? { ...result, topicDelivery: COMPANION_TOPIC_STATE_WRITE_RECEIPT } : result;
     } };
 }
