@@ -9,6 +9,8 @@ import type { CompanionMemoryCandidate } from '../../src/shared/companion-memory
 import type { CompanionStorageResponse } from '../../src/shared/companion-storage';
 import type { CompanionMemoryService } from '../../src/main/companions/memory-service';
 import type { VcpMemoryDreamWaveResult } from '../../src/main/vcp-memory/dream-contracts';
+import { CompanionOptionalDreamError } from '../../src/main/companions/optional-dream-error';
+import { companionDreamComponentFailureSchema } from '../../src/shared/companion-world';
 
 const seeds: CompanionSeed[] = ['alice', 'bob'].map(id => ({ id, name: id, persona: id === 'alice' ? '安静友好，喜欢阅读。' : '坦率，尊重彼此边界。', description: '', model: '', avatar: 'sister', proactive: true }));
 const stores = new Set<CompanionsStore>(), services = new Set<CompanionWorldService>(), roots: string[] = [];
@@ -87,6 +89,111 @@ function dreamResult(data: { messages: Array<{ id: string; content: string }>; r
 }
 
 describe('semantic world background service with actual SQLite sources', () => {
+  it.each(['not_admitted', 'not_dream_job', 'also_publishes_dream'] as const)('rejects optional dream diagnostics when %s violates the actual job contract', condition => {
+    if (condition === 'not_admitted') vi.mocked(Math.random).mockReturnValue(.99);
+    const f = fixture(async () => response({ notes: [], dream: null })), { source, journal } = prepareDream(f);
+    const job = f.store.request({ type: 'world.job.claim', kind: 'dream' }).worldJob!;
+    if (condition === 'not_dream_job') {
+      const db = new (Database as { new(file: string): CompanionConnection })(path.join(f.root, 'messages.sqlite'));
+      try { db.prepare("UPDATE companion_world_jobs SET kind='decision',data=json_set(data,'$.kind','decision') WHERE id=?").run(job.id); }
+      finally { db.close(); }
+    }
+    expect(() => f.store.request({ type: 'world.job.complete', id: job.id, leaseToken: job.leaseToken!,
+      dreamComponentFailure: new CompanionOptionalDreamError('wave_operation_failed').diagnostic,
+      ...(condition === 'also_publishes_dream' ? { dream: { text: '不能和失败诊断同时发布。', sourceMessageIds: [source.id], relatedMemoryIds: [journal.id], evidence: [{ sourceMessageId: source.id, quote: source.content }] } } : {}) }))
+      .toThrow('可选梦境失败诊断只能记录已入梦任务且不能同时发布梦境。');
+  });
+  it('accepts only the fixed host stage/code/description diagnostic and rejects provider text', () => {
+    const diagnostic = new CompanionOptionalDreamError('wave_operation_failed').diagnostic;
+    expect(companionDreamComponentFailureSchema.safeParse(diagnostic).success).toBe(true);
+    expect(companionDreamComponentFailureSchema.safeParse({ ...diagnostic, stage: 'narrative' }).success).toBe(false);
+    expect(companionDreamComponentFailureSchema.safeParse({ ...diagnostic, message: 'Raw provider response or private endpoint' }).success).toBe(false);
+    expect(companionDreamComponentFailureSchema.safeParse({ ...diagnostic, code: 'arbitrary_failure' }).success).toBe(false);
+  });
+
+  it.each(['wave', 'narrative'] as const)('retains independent maintenance and index-before-archive when optional %s service fails', async failedStage => {
+    const purposes: string[] = [];
+    const fetchFn = vi.fn<typeof fetch>(async (_url, init) => {
+      const data = JSON.parse(JSON.parse(String(init?.body)).messages[1].content); purposes.push(data.purpose);
+      if (data.purpose === 'vcp_sleep_reflection') return response({ notes: [], dream: null });
+      if (data.purpose === 'companion_dream_wave_narrative') return response({ text: '不可发布的梦', relatedMemoryIds: ['unread-memory'] });
+      expect(data.purpose).toBe('vcp_sleep_memory_maintenance');
+      const inputs = data.relevantMemories.map((note: { id: string; version: number }) => ({ id: note.id, version: note.version }));
+      return response({ decision: 'merge', reason: '按真实原文保留编号更正，不依赖虚构梦是否成功。', consolidations: [{ inputs,
+        candidate: { content: '钥匙先记为K-710，后来更正为K-701；搬家日期仍未定。', tags: ['钥匙'],
+          relatedMemoryIds: inputs.map((note: { id: string }) => note.id), sourceMessageIds: data.messages.map((message: { id: string }) => message.id),
+          evidence: data.messages.map((message: { id: string; content: string }) => ({ sourceMessageId: message.id, quote: message.content })) } }] });
+    });
+    const f = fixture(fetchFn, true, seeds, true);
+    if (failedStage === 'wave') f.dreamWave.mockRejectedValue(new CompanionOptionalDreamError('wave_operation_failed'));
+    const sources = ['钥匙先记为K-710，搬家日期仍未定。', '后来更正：钥匙编号是K-701，搬家日期仍未定。']
+      .map(content => f.store.appendMessage({ conversationId: f.alice.conversationId, authorId: 'user', content, replyDirective: 'none' }));
+    const capture = f.store.request({ type: 'memory.jobs.claim', companionId: 'alice' }).memoryJob!;
+    const originals = f.store.request({ type: 'memory.jobs.complete', id: capture.id, leaseToken: capture.leaseToken,
+      notes: sources.map(source => ({ content: source.content, tags: ['钥匙'], sourceMessageIds: [source.id], evidence: [{ sourceMessageId: source.id, quote: source.content }] })) }).memories!;
+    indexNotes(f.store); advance(f.store, 10000); advance(f.store, 6000);
+    await f.service.tick();
+    await vi.waitFor(() => expect(f.request.mock.calls.some(([command]) => command.type === 'world.job.complete' && command.maintenance?.decision === 'merge')).toBe(true));
+    const completion = f.request.mock.calls.find(([command]) => command.type === 'world.job.complete' && command.maintenance?.decision === 'merge')![0];
+    if (completion.type !== 'world.job.complete') throw Error('Missing actual maintenance completion.');
+    expect(completion.dream).toBeUndefined();
+    expect(completion.dreamComponentFailure).toMatchObject({ stage: failedStage, code: failedStage === 'wave' ? 'wave_operation_failed' : 'narrative_generation_failed' });
+    expect(completion.maintenance?.reviewedMemoryVersions).toEqual(originals.map(note => ({ id: note.id, version: note.version })));
+    const merged = f.store.request({ type: 'memory.browse', ...f.alice }).memoryPage!.items.map(hit => hit.memory)
+      .find(note => note.metadata?.consolidation === 'source_version_graph')!;
+    expect(merged.status).toBe('queued');
+    for (const original of originals) expect(f.store.request({ type: 'memory.read', ...f.alice, id: original.id }).memoryRead!.memory.archivedAt).toBeUndefined();
+    indexNotes(f.store);
+    expect(f.store.request({ type: 'memory.snapshot', ...f.alice }).memorySnapshot!.notes.map(note => note.id)).toEqual([merged.id]);
+    for (const original of originals) expect(f.store.request({ type: 'memory.read', ...f.alice, id: original.id }).memoryRead!.memory)
+      .toMatchObject({ archivedAt: expect.any(String), supersededBy: merged.id });
+    const db = new (Database as { new(file: string): CompanionConnection })(path.join(f.root, 'messages.sqlite'));
+    try {
+      const saved = db.prepare('SELECT data FROM companion_world_jobs WHERE id=?').get(completion.id) as { data: string };
+      expect(JSON.parse(saved.data)).toMatchObject({ status: 'done', dreamComponentFailure: completion.dreamComponentFailure, maintenance: { decision: 'merge' } });
+      expect((db.prepare('SELECT COUNT(*) AS n FROM companion_world_dream_watermark WHERE companion_id=?').get('alice') as { n: number }).n).toBe(2);
+    } finally { db.close(); }
+    expect(f.store.request({ type: 'world.observe', ...f.alice }).world!.events.some(event => event.kind === 'dream')).toBe(false);
+    expect(purposes).toEqual(failedStage === 'wave' ? ['vcp_sleep_reflection', 'vcp_sleep_memory_maintenance']
+      : ['vcp_sleep_reflection', 'companion_dream_wave_narrative', 'vcp_sleep_memory_maintenance']);
+  });
+
+  it.each(['wake', 'forget', 'cancel', 'untyped_source_error'] as const)('does not turn %s during an optional dream failure into successful maintenance', async invalidation => {
+    const f = fixture(async () => response({ notes: [], dream: null }));
+    const { source } = prepareDream(f);
+    f.dreamWave.mockImplementation(async () => {
+      if (invalidation === 'forget') f.store.request({ type: 'memory.forget', ...f.alice, sourceMessageIds: [source.id] });
+      else if (invalidation === 'cancel') f.service.cancelCompanion('alice');
+      else if (invalidation === 'wake') {
+        const routine = f.store.request({ type: 'routine.get', ...f.alice }).routine!;
+        f.store.request({ type: 'routine.configure', ...f.alice, expectedRevision: routine.revision, patch: { sleepAt: '23:00', wakeAt: '01:00' } });
+        f.store.request({ type: 'world.tick' });
+      }
+      if (invalidation === 'untyped_source_error') throw Error('Actual source ownership or receipt is invalid.');
+      throw new CompanionOptionalDreamError('wave_operation_failed');
+    });
+    await f.service.tick();
+    await vi.waitFor(() => expect(f.request.mock.calls.some(([command]) => command.type === 'world.job.fail')).toBe(true));
+    expect(f.request.mock.calls.some(([command]) => command.type === 'world.job.complete')).toBe(false);
+    const db = new (Database as { new(file: string): CompanionConnection })(path.join(f.root, 'messages.sqlite'));
+    try { expect((db.prepare('SELECT COUNT(*) AS n FROM companion_world_dream_watermark WHERE companion_id=?').get('alice') as { n: number }).n).toBe(0); }
+    finally { db.close(); }
+  });
+
+  it('does not replace failed real reflection with empty notes or advance its watermark after an optional wave failure', async () => {
+    const fetchFn = vi.fn<typeof fetch>(async () => response({ notes: 'invalid-real-reflection', dream: null }));
+    const f = fixture(fetchFn); prepareDream(f);
+    f.dreamWave.mockRejectedValue(new CompanionOptionalDreamError('wave_operation_failed'));
+    await f.service.tick();
+    await vi.waitFor(() => expect(f.request.mock.calls.some(([command]) => command.type === 'world.job.fail')).toBe(true));
+    expect(f.request.mock.calls.some(([command]) => command.type === 'world.job.complete')).toBe(false);
+    expect(fetchFn).toHaveBeenCalledOnce();
+    expect(JSON.parse(JSON.parse(String(fetchFn.mock.calls[0]![1]?.body)).messages[1].content).purpose).toBe('vcp_sleep_reflection');
+    const db = new (Database as { new(file: string): CompanionConnection })(path.join(f.root, 'messages.sqlite'));
+    try { expect((db.prepare('SELECT COUNT(*) AS n FROM companion_world_dream_watermark WHERE companion_id=?').get('alice') as { n: number }).n).toBe(0); }
+    finally { db.close(); }
+  });
+
   it('automatically prepares a multi-seed merge from normal journal jobs during real sleep and publishes only after index acknowledgement', async () => {
     vi.mocked(Math.random).mockReturnValue(.99);
     const fetchFn = vi.fn<typeof fetch>(async (_url, init) => {

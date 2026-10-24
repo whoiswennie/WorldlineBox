@@ -1877,6 +1877,11 @@ export class CompanionWorldStore {
       const found = this.db.prepare('SELECT * FROM companion_world_jobs WHERE id=?').get(command.id); if (!found) throw new Error('世界后台任务不存在。');
       const job = parse<StoredJob>(row(found).data); if (job.status === 'done' && job.leaseToken === command.leaseToken) return;
       if (job.status !== 'running' || job.leaseToken !== command.leaseToken || String(row(found).lease_until) < iso()) throw new Error('世界任务租约已失效。');
+      if (command.dreamComponentFailure) {
+        if (job.kind !== 'dream' || !job.dreamAllowed || command.dream)
+          throw new Error('可选梦境失败诊断只能记录已入梦任务且不能同时发布梦境。');
+        job.dreamComponentFailure = command.dreamComponentFailure;
+      }
       const scope = { companionId: job.companionId, conversationId: job.conversationId };
       if (command.expectedProhibitionRevision !== undefined && this.prohibitionRevision(scope, job.kind === 'dream' ? job.sourceMemoryIds : undefined) !== command.expectedProhibitionRevision)
         throw new Error('世界任务使用的记忆禁记规则已变化，请重新核对主题范围。');

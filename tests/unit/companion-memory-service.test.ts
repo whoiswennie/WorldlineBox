@@ -16,6 +16,9 @@ import type { DshLauncher } from '../../src/main/dsh/launcher';
 import { COMPANION_DIALOGUE_WINDOW } from '../../src/main/companions/context-window';
 import { buildCompanionContext } from '../../src/main/companions/context';
 import type { CompanionLoopCheckpoint } from '../../src/shared/companion-loop';
+import { CompanionMemoryService } from '../../src/main/companions/memory-service';
+import { CompanionOptionalDreamError } from '../../src/main/companions/optional-dream-error';
+import type { VcpMemoryDreamWaveResult } from '../../src/main/vcp-memory/dream-contracts';
 
 const transport = vi.hoisted(() => ({ request: vi.fn<(command: CompanionStorageCommand) => Promise<CompanionStorageResponse>>(),
   start: vi.fn<() => Promise<void>>(async () => undefined), close: vi.fn(async () => undefined), fetch: vi.fn<typeof fetch>(), memoryFetch: vi.fn<typeof fetch>(), worldFetch: vi.fn<typeof fetch>(), authorizationFetch: vi.fn<typeof fetch>(), prohibitionFetch: vi.fn<typeof fetch>(), progressFetch: vi.fn<typeof fetch>() }));
@@ -197,6 +200,61 @@ afterEach(async () => {
 });
 
 describe('VCP companion memory through the main service and real SQLite', () => {
+  it.each(['runtime', 'native', 'source_revision', 'owner', 'generation', 'native_integrity', 'native_abort', 'returned_owner', 'returned_time', 'returned_revision',
+    'VCP_MEMORY_CLOSED', 'VCP_MEMORY_DERIVED_TIMEOUT', 'VCP_MEMORY_DERIVED_FAILED', 'VCP_MEMORY_EMBEDDING_RESPONSE_INVALID', 'VCP_MEMORY_PACKAGE_MISSING', 'VCP_MEMORY_ERROR',
+    'VCP_MEMORY_UNSAFE_SOURCE', 'VCP_MEMORY_SOURCE_ID_MISMATCH', 'VCP_MEMORY_DIARY_ID_CONFLICT', 'VCP_MEMORY_EMBEDDING_SPACE_MISMATCH',
+    'VCP_MEMORY_RUNTIME_LAYOUT', 'VCP_MEMORY_INVALID_INPUT', 'VCP_MEMORY_INVALID_DIMENSION', 'VCP_MEMORY_UNKNOWN_FUTURE_CODE'] as const)(
+    'classifies optional dream %s failure only while the actual owner and sources remain current', async failure => {
+    const f = fixture(), scope = { companionId: 'sister', conversationId: f.conversation.id };
+    const source = f.store.appendMessage({ conversationId: f.conversation.id, authorId: 'user', content: '梦境服务故障不改变这一真实来源。', replyDirective: 'none' });
+    f.store.request({ type: 'memory.record', ...scope, candidate: journal(source, source.content) }); markIndexed(f.store);
+    const client = new FakeVcpClient(path.join(f.root, 'optional-dream'));
+    let cancelDuringOwnerCheck = false;
+    const get = vi.fn(async () => {
+      if (failure === 'runtime') throw Error('Operational failure with private endpoint details that must not be persisted.');
+      return { client, profileKey: 'optional-dream-fixture' };
+    });
+    const memory = new CompanionMemoryService({ cacheRoot: path.join(f.root, 'optional-dream-views'), runtime: { get, close: async () => client.close() },
+      request: async command => {
+        const response = f.store.request(command);
+        if (cancelDuringOwnerCheck && command.type === 'state') { cancelDuringOwnerCheck = false; memory.cancelCompanion('sister'); }
+        return response;
+      }, configFor: async () => ({ apiFormat: 'openai_chat', model: 'unused', baseUrl: 'https://provider.invalid', apiKey: 'unused' }),
+      fetchFn: async () => { throw Error('No model dispatch is allowed in operational-boundary tests.'); }, busy: () => true, changed: vi.fn(), report: vi.fn() });
+    const native = vi.spyOn(client, 'dreamWave').mockImplementation(async (_view, request): Promise<VcpMemoryDreamWaveResult> => {
+      if (failure === 'source_revision') {
+        const db = new (Database as { new(file: string): CompanionConnection })(f.databasePath);
+        try { db.prepare('UPDATE messages SET revision=revision+1 WHERE id=?').run(source.id); }
+        finally { db.close(); }
+      } else if (failure === 'owner') f.store.updateCompanion('sister', { name: '改名后的真实伙伴', description: '姐姐', persona: '温柔沉稳', model: '', avatar: 'sister', proactive: false });
+      else if (failure === 'generation') cancelDuringOwnerCheck = true;
+      else if (failure === 'native_integrity') throw Object.assign(Error('Native owner/version/content evidence is invalid.'), { code: 'VCP_MEMORY_DREAM_INVALID' });
+      else if (failure === 'native_abort') throw Object.assign(Error('Native scope was cancelled.'), { name: 'AbortError', code: 'ABORT_ERR' });
+      else if (failure.startsWith('VCP_MEMORY_')) throw Object.assign(Error('Native operation returned a coded failure.'), { code: failure });
+      if (failure.startsWith('returned_')) return { schema: 'worldlinebox.vcp-dream-wave', owner: { ...request.owner,
+        ...(failure === 'returned_owner' ? { companionId: 'another-owner' } : {}) },
+        sourceRevision: failure === 'returned_revision' ? 'forged-revision' : request.sourceRevision,
+        now: failure === 'returned_time' ? '1999-01-01T00:00:00Z' : request.now, clockDomain: request.clockDomain,
+        boundaries: { recentDays: 7, midDays: 90 }, stages: { recent: { seeds: [], resonanceL1: [], cascadeL2: [] }, mid: { seeds: [], cascadeL1: [] }, deep: { recalls: [] } },
+        diagnostics: { algorithm: 'upstream-DreamWaveEngine', sourceCount: 1, indexedCount: 1, queries: [] } };
+      throw Error('Native request failed; this raw provider detail must not become a persisted diagnostic.');
+    });
+    try {
+      const result = memory.dreamWave({ ...scope, now: fixedTime, clockDomain: 'world' });
+      const operational = new Set<string>(['runtime', 'native', 'VCP_MEMORY_CLOSED', 'VCP_MEMORY_DERIVED_TIMEOUT', 'VCP_MEMORY_DERIVED_FAILED',
+        'VCP_MEMORY_EMBEDDING_RESPONSE_INVALID', 'VCP_MEMORY_PACKAGE_MISSING', 'VCP_MEMORY_ERROR']);
+      if (operational.has(failure)) {
+        await expect(result).rejects.toBeInstanceOf(CompanionOptionalDreamError);
+        await expect(result).rejects.toMatchObject({ code: failure === 'runtime' ? 'runtime_unavailable' : 'wave_operation_failed' });
+      } else {
+        await expect(result).rejects.not.toBeInstanceOf(CompanionOptionalDreamError);
+        await expect(result).rejects.toThrow(/来源|授权|取消|归属|时间凭证|Native/u);
+      }
+      expect(native).toHaveBeenCalledTimes(failure === 'runtime' ? 0 : 1);
+      if (failure === 'runtime') expect(get).toHaveBeenCalledOnce();
+    } finally { await memory.close(); }
+  });
+
   it('polls processing, life plan and unified overview without advancing the world, opening chats or loading a model', async () => {
     const f = fixture();
     await f.service.handle({ type: 'memory.processing.status', companionId: 'sister', limit: 5 });

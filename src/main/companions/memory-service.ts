@@ -19,6 +19,7 @@ import { planCompanionMemoryRetrieval, projectCompanionMemoryRetrievalModes } fr
 import type { VcpMemoryDreamClock, VcpMemoryDreamWaveRequest, VcpMemoryDreamWaveResult } from '../vcp-memory/dream-contracts';
 import { companionAutomaticRecallDecay, companionMemoryClockBucket } from './memory-recall-policy';
 import { companionMemoryDateRange } from '../../shared/companion-memory-time';
+import { CompanionOptionalDreamError, isOptionalDreamOperationalFailure } from './optional-dream-error';
 
 type MemoryScope = { companionId: string; conversationId: string };
 // One character owns one cognitive corpus. Entrances stay on source receipts;
@@ -265,7 +266,28 @@ export class CompanionMemoryService {
       this.assertCurrent(input.companionId, generation);
       const snapshot = (await this.options.request({ type: 'memory.snapshot', companionId: input.companionId, conversationId: input.conversationId })).memorySnapshot;
       if (!snapshot || !this.options.runtime) throw new Error('梦境联想的授权记忆尚不可用。');
-      const owner = await this.ownerIdentity(input.companionId), runtime = await this.options.runtime.get();
+      const owner = await this.ownerIdentity(input.companionId);
+      const verifySource = async () => {
+        this.assertCurrent(input.companionId, generation);
+        const current = (await this.options.request({ type: 'memory.snapshot', companionId: input.companionId, conversationId: input.conversationId })).memorySnapshot;
+        this.assertCurrent(input.companionId, generation);
+        const currentOwner = await this.ownerIdentity(input.companionId);
+        this.assertCurrent(input.companionId, generation);
+        if (!current || current.revision !== snapshot.revision
+          || !sameCompanionMemoryIdentity(currentOwner, owner))
+          throw new Error('梦境联想的来源或授权已经变化，不予继续。');
+      };
+      const operational = async <T>(code: 'runtime_unavailable' | 'wave_operation_failed', operation: () => Promise<T>): Promise<T> => {
+        try { return await operation(); }
+        catch (error) {
+          if (!isOptionalDreamOperationalFailure(error)) throw error;
+          // Cancellation, revocation and identity changes remain hard errors.
+          // A failed operation has no result that could authorize a dream.
+          await verifySource();
+          throw new CompanionOptionalDreamError(code);
+        }
+      };
+      const runtime = await operational('runtime_unavailable', () => this.options.runtime!.get());
       const view = await this.views.prepare(`${key}:dream-v1`, runtime.profileKey, snapshot.notes, companionMemoryIdentitySignature(owner));
       this.assertCurrent(input.companionId, generation); this.register(input.companionId, view.scopeId, runtime.client);
       if (view.replacedScopeId) {
@@ -283,10 +305,11 @@ export class CompanionMemoryService {
         const eventTime = times.sort((left, right) => Date.parse(right) - Date.parse(left))[0] ?? note.createdAt;
         return { id: note.id, version: note.version, eventTime, clockDomain: world ? 'world' : 'real', contentHash: createHash('sha256').update(note.content).digest('hex') };
       });
-      const result = await runtime.client.dreamWave(view, { owner, sourceRevision: snapshot.revision, now: input.now, clockDomain: input.clockDomain, notes });
+      const result = await operational('wave_operation_failed', () => runtime.client.dreamWave(view,
+        { owner, sourceRevision: snapshot.revision, now: input.now, clockDomain: input.clockDomain, notes }));
       const verified = (await this.options.request({ type: 'memory.snapshot', companionId: input.companionId, conversationId: input.conversationId })).memorySnapshot;
       this.assertCurrent(input.companionId, generation);
-      if (!verified || verified.revision !== snapshot.revision || (await this.options.runtime.get()).profileKey !== runtime.profileKey
+      if (!verified || verified.revision !== snapshot.revision || (await operational('runtime_unavailable', () => this.options.runtime!.get())).profileKey !== runtime.profileKey
         || !sameCompanionMemoryIdentity(await this.ownerIdentity(input.companionId), owner)) throw new Error('梦境联想的来源、授权或模型已经变化，不予发布。');
       if (result.sourceRevision !== snapshot.revision || !sameCompanionMemoryIdentity(result.owner, owner)
         || result.clockDomain !== input.clockDomain || result.now !== input.now) throw new Error('梦境联想的归属或时间凭证不匹配。');

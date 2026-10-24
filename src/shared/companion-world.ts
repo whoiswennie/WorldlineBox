@@ -52,10 +52,23 @@ export const companionWorldWorkSchema = z.object({ workId: id, companionId: id, 
   status: z.enum(['waiting', 'moving', 'seating', 'ready', 'ended']), computerId: id.optional(), nextCheckAt: z.iso.datetime().optional(), reason: z.string().optional() });
 export const companionMemoryMaintenanceAuditSchema = z.strictObject({ decision: z.enum(['merge', 'defer']), reason: z.string().trim().min(1).max(2000),
   reviewedMemoryVersions: z.array(z.strictObject({ id, version: z.number().int().positive() })).min(2).max(128) });
+export const COMPANION_OPTIONAL_DREAM_FAILURES = {
+  runtime_unavailable: { stage: 'wave', message: '可选梦境运行暂不可用，未生成梦境；真实反思与维护仍独立处理。' },
+  wave_operation_failed: { stage: 'wave', message: '可选梦境联想服务未完成，未生成梦境；真实反思与维护仍独立处理。' },
+  narrative_generation_failed: { stage: 'narrative', message: '可选虚构梦叙述未完成，未生成梦境；真实反思与维护仍独立处理。' },
+} as const;
+export const companionDreamComponentFailureSchema = z.strictObject({ stage: z.enum(['wave', 'narrative']),
+  code: z.enum(['runtime_unavailable', 'wave_operation_failed', 'narrative_generation_failed']), message: z.string().min(1).max(300) })
+  .superRefine((value, context) => {
+    const expected = COMPANION_OPTIONAL_DREAM_FAILURES[value.code];
+    if (value.stage !== expected.stage || value.message !== expected.message)
+      context.addIssue({ code: 'custom', message: '梦境组件失败只接受宿主固定阶段、代码与说明。' });
+  });
 export const companionWorldJobSchema = z.object({ id, kind: z.enum(['decision', 'dream']), companionId: id, conversationId: id, status: z.enum(['pending', 'running', 'done', 'failed']),
   terminal: z.boolean().optional(), error: z.string().max(2000).optional(),
   leaseToken: id.optional(), throughEventSequence: z.number().int().nonnegative(), createdAt: z.iso.datetime(), attempts: z.number().int().nonnegative(), sourceMemoryIds: z.array(id).max(128).default([]), encounterMemberIds: z.array(id).min(2).max(4).optional(),
-  sleepEpisodeId: id.optional(), dreamAllowed: z.boolean().optional(), maintenanceMemoryIds: z.array(id).max(12).optional(), maintenance: companionMemoryMaintenanceAuditSchema.optional() });
+  sleepEpisodeId: id.optional(), dreamAllowed: z.boolean().optional(), maintenanceMemoryIds: z.array(id).max(12).optional(), maintenance: companionMemoryMaintenanceAuditSchema.optional(),
+  dreamComponentFailure: companionDreamComponentFailureSchema.optional() });
 export const companionWorldSnapshotSchema = z.object({
   settings: companionWorldSettingsSchema,
   clock: z.object({ realNow: z.iso.datetime(), virtualNow: z.iso.datetime(), speed: z.number().positive(), day: z.number().int(), hour: z.number().min(0).max(24), daylight: z.boolean() }),
@@ -113,6 +126,7 @@ export const companionWorldStorageCommands = [
   z.strictObject({ type: z.literal('world.job.complete'), id, leaseToken: id, expectedMemoryRevision: z.string().min(1).max(128).optional(), expectedProhibitionRevision: z.string().min(1).max(128).optional(), stateProposal: companionStateToolProposalSchema.optional(), expectedStateRevision: z.number().int().positive().optional(), activityTask: z.strictObject({ title: z.string().trim().min(1).max(120), goal: z.string().trim().min(1).max(16000) }).optional(), action: companionWorldArgumentsSchema.optional(), sourceMemoryIds: z.array(id).max(128).default([]), memoryCandidates: z.array(companionMemoryCandidateSchema).max(40).default([]),
     consolidations: z.array(companionMemoryConsolidateSchema).max(4).optional(),
     maintenance: companionMemoryMaintenanceAuditSchema.optional(),
+    dreamComponentFailure: companionDreamComponentFailureSchema.optional(),
     dream: z.strictObject({ text: z.string().max(8000), sourceMessageIds: z.array(id).min(1).max(30), relatedMemoryIds: z.array(id).min(1).max(30), evidence: z.array(z.object({ sourceMessageId: id, quote: z.string().min(1).max(4000) })).min(1).max(60) }).optional(),
     appraisals: z.array(z.strictObject({ eventId: id, targetCompanionId: id, type: z.enum(['support', 'respect', 'boundary_violation', 'hostility', 'shared_success', 'repair', 'disappointment']), intensity: z.number().min(0).max(1), confidence: z.number().min(0).max(1) })).max(10).default([]) }),
   z.strictObject({ type: z.literal('world.job.fail'), id, leaseToken: id, error: z.string().max(2000), terminal: z.boolean().optional() }),

@@ -8,6 +8,7 @@ import { CompanionModelError } from './model';
 import { generateCompanionWorldDecision } from './world-model';
 import { companionAutomaticMaintenanceSeeds, generateCompanionMemoryDream, generateCompanionMemoryMaintenance } from './memory-model';
 import { generateCompanionDreamNarrative } from './dream-wave-model';
+import { CompanionOptionalDreamError } from './optional-dream-error';
 import { validateCompanionMemoryProhibitions } from './memory-model';
 import type { VcpMemoryDreamWaveResult, VcpMemoryDreamClock } from '../vcp-memory/dream-contracts';
 import { CompanionAgentNoProgressError } from './agent-kernel';
@@ -380,14 +381,24 @@ export class CompanionWorldService {
     const seedAtoms = atoms.filter(note => seedIds.has(note.id)), seedReads = reads.filter(read => seedIds.has(read.memoryRead!.memory.id));
     const maintenanceAtoms = atoms.filter(note => maintenanceIds.has(note.id)), maintenanceReads = reads.filter(read => maintenanceIds.has(read.memoryRead!.memory.id));
     let wave: VcpMemoryDreamWaveResult | undefined;
+    let dreamComponentFailure: CompanionWorldJob['dreamComponentFailure'];
+    const optionalFailure = (error: CompanionOptionalDreamError) => {
+      if (signal.aborted || this.closed) throw cancelled();
+      dreamComponentFailure = error.diagnostic;
+      this.options.report(error);
+    };
     if (job.dreamAllowed) {
-      if (!this.options.dreamWave) throw new Error('完整 DreamWave 尚未连接，本次梦境保持未完成。');
+      if (!this.options.dreamWave) optionalFailure(new CompanionOptionalDreamError('runtime_unavailable'));
       const world = await this.observe(scope);
       if (!world) throw new Error('睡眠的实际世界时钟不可访问。');
-      wave = await this.options.dreamWave({ ...scope, now: world.clock.virtualNow, clockDomain: 'world' });
-      const stages = wave.stages;
-      const items = [...new Map([...stages.recent.seeds, ...stages.recent.resonanceL1, ...stages.recent.cascadeL2,
-        ...stages.mid.seeds, ...stages.mid.cascadeL1, ...stages.deep.recalls].map(item => [item.id, item])).values()];
+      if (this.options.dreamWave) try { wave = await this.options.dreamWave({ ...scope, now: world.clock.virtualNow, clockDomain: 'world' }); }
+      catch (error) {
+        if (!(error instanceof CompanionOptionalDreamError)) throw error;
+        optionalFailure(error);
+      }
+      const stages = wave?.stages;
+      const items = stages ? [...new Map([...stages.recent.seeds, ...stages.recent.resonanceL1, ...stages.recent.cascadeL2,
+        ...stages.mid.seeds, ...stages.mid.cascadeL1, ...stages.deep.recalls].map(item => [item.id, item])).values()] : [];
       for (const item of items) {
         const read = await this.options.request({ type: 'memory.library.read', companionId: companion.id, id: item.id, sourceLimit: 100 });
         const note = read.memoryRead?.memory;
@@ -416,8 +427,16 @@ export class CompanionWorldService {
       intent: '睡眠中只对本批真实种子经历、实际学习资料与有据主观认识作可追溯反思。不同入口的来源各保留实际域；无新反思时notes=[]。本调用不生成梦，任何虚构联想都不是本批知识或经历证据。' }, config, signal, { fetchFn: this.options.fetchFn });
     let dream: { text: string; relatedMemoryIds: string[]; sourceMessageIds: string[]; evidence: Array<{ sourceMessageId: string; quote: string }> } | undefined;
     if (wave) {
-      const imagined = await generateCompanionDreamNarrative({ companion, wave }, config, signal, { fetchFn: this.options.fetchFn });
-      if (imagined && await validateCompanionMemoryProhibitions({ content: imagined.text, tags: ['梦境'], prohibitions: prohibitions.memoryProhibitions ?? [] }, config, signal, { fetchFn: this.options.fetchFn })) {
+      let imagined: Awaited<ReturnType<typeof generateCompanionDreamNarrative>>;
+      try {
+        imagined = await generateCompanionDreamNarrative({ companion, wave }, config, signal, { fetchFn: this.options.fetchFn });
+        if (imagined && !await validateCompanionMemoryProhibitions({ content: imagined.text, tags: ['梦境'], prohibitions: prohibitions.memoryProhibitions ?? [] }, config, signal, { fetchFn: this.options.fetchFn })) imagined = null;
+      } catch (error) {
+        if (!(error instanceof CompanionModelError) || error.code === 'CANCELLED' || signal.aborted || this.closed) throw error;
+        imagined = null;
+        optionalFailure(new CompanionOptionalDreamError('narrative_generation_failed'));
+      }
+      if (imagined) {
         const evidence = imagined.relatedMemoryIds.map(id => {
           const note = atoms.find(note => note.id === id)!;
           const source = note.sources.map(source => sources.get(source.messageId)).find(Boolean);
@@ -434,6 +453,7 @@ export class CompanionWorldService {
       config, signal, { fetchFn: this.options.fetchFn }) : undefined;
     if (signal.aborted || this.closed) throw cancelled();
     await this.options.request({ type: 'world.job.complete', id: job.id, leaseToken, ...(dream ? { dream } : {}),
+      ...(dreamComponentFailure ? { dreamComponentFailure } : {}),
       expectedProhibitionRevision: prohibitions.memoryProhibitionRevision,
       ...(result.stateProposal ? { stateProposal: result.stateProposal, expectedStateRevision: runtimeState?.revision } : {}),
       sourceMemoryIds: [...new Set([...(dream?.relatedMemoryIds ?? []), ...result.notes.flatMap(note => note.relatedMemoryIds ?? []),
