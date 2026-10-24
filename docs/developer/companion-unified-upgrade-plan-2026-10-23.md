@@ -928,3 +928,11 @@ v8唯一门实际仍首warm一次后停止：`quantity-host-number-target-v8-fou
 Root全文审读3633525d汇总helper并实际prepared，6e8a47df独审独立从两完整raw报告重构后，已正式采纳27文件/+45通过的时间分离overlay。当前`whole-repo-offline-coverage-current-2026-10-23.json` SHA256 8d21cc9c3bb9ab95868980dd74121b1b5559e98da3fd7e8eb5388c817fc8b884：1226文件/10126项，10006通过、3原baseline失败、117默认skip。全部旧10081身份/状态、78退休映射的原JSON literal字节/顺序和86旧报告SHA保留，仅追加两份新执行phase，不重复登记旧19文件执行。完整3890输入前后重枚举/hash无漂移，原472ce汇总另存；precommit审计5922aeda、postcommit回执60696ddd开头。这不是新的一次性全仓全绿，c5ac实模RED完全独立。
 
 上述同payload的thinking-low探针已完成唯一零付费预登记与双独立全文冷读后单独获准启动：runner52cbc186、registration3f8d1fb6、readiness4cda37dc开头。实际请求须由当前providerRequest先重构历史e81 body再只改两参数并匹配907b body，官方endpoint由相同冻结函数重构；历史raw没有记录URL，此证据限制明确保留。总新HTTP最多1、120秒、原8192、零重试，禁止自动升级high或增加token。此时探针结果尚待，不改变生产配置，不启动其它真实门；长期目标保持active。
+
+### 16.50 用户模型自选约束与通用架构方向（2026-10-24）
+
+用户明确补充：模型可由用户自行设置，不能把DeepSeek专有参数当作产品修复方向或正确性前提。该约束优先，停止全部厂商专有参数后续扩展/请求；生产模型配置未因上述探针改变。后续数量修复须在通用宿主契约、必要语义判断和既有多提供方适配层完成，以实际用户/伙伴配置为准，不假定固定全局模型。嵌入编码器与生成模型分别核对，现有生成配置路由正在只读复查，不能先宣称所有VCP子调用均遵循同一覆盖规则。
+
+在该补充到达前已结束的唯一探针仍为RED：`quantity-v8-thinking-low-one-registration-1792832975562-actual.json` SHA256 1d6049a18c939e51e9ddb1d693e2c79c41ca2295aaddbb78622e1958a6f31d31；1HTTP/200/stop、37.269秒、10104tokens（3356输入+6748输出，其中5855思考token），原8192输出上限未增，全3890无漂移。全部literal、host位置与四数字原语义期待均过，但两all仍自由声明competing，宿主依原门派生ambiguous，首quoted-all旧heldout未过。没有cold/第五/完整业务结果/重试。思考字段只保长度与SHA，未保存原文；独审f78660d6、因果/隐私f662930f开头。该时分单例既不能证明模式普遍改善，也不能证明它完全无效；更不能据此要求用户换模型或开启某厂商模式。
+
+唯一后续设计方向收敛为模型无关：host预先绑定每个目标允许的evidenceId和真实原文/SHA/span/window，模型不自由重建quote/view/offset；少量有据命题用判别联合表达，反对关系从真实同目标的相反整体持有命题及各自作用域派生，不能再由独立free competing枚举压过无全称声明。身份/声部/时间作用域未知及独立reader分歧仍须未决；证据ID不是语义证明，不因缺少操作数直接猜安全。同一批分lane只能证明准入隔离，不能冒称模型注意力看不见其它lane；不得偷偷增加调用预算。原sourcev6、数学/既有pending优先、真实最终业务期待、原有限格式/作者预算与后续原30/u4/长程/包完成门保持。当前只有只读合同d40bdf10开头与具体形状研究，尚未批准或实施新all结构，全部新请求继续停止。
