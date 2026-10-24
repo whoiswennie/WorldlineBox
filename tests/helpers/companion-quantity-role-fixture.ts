@@ -57,8 +57,8 @@ export function declaredNumberProjectionFixture(clause: { clauseIndex: number; t
   statement: 'affirmative_possession' | 'explicit_nonpossession' | 'no_possession_assertion' | 'ambiguous' = 'ambiguous') {
   const number = clause.numberCandidates[numberIndex]!, evidenceRef = { view: 'focus' as const, clauseIndex: clause.clauseIndex };
   return { statement, coverage: 'whole_focus' as const, reviewedFocusRef: evidenceRef, targetNumberQuote: number.numberQuote, targetOccurrence: number.occurrence,
-    witnesses: statement === 'ambiguous' ? [] : (statement === 'affirmative_possession' ? ['target_scope', 'scoped_possession_predicate'] as const
-      : statement === 'explicit_nonpossession' ? ['target_scope', 'negative_scope'] as const : ['target_scope'] as const)
+    witnesses: (statement === 'affirmative_possession' ? ['scoped_possession_predicate'] as const
+      : statement === 'explicit_nonpossession' ? ['negative_scope'] as const : [])
       .map(role => ({ role, evidenceRef, quote: clause.text.slice(0, 300) })) };
 }
 

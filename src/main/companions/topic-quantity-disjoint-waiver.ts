@@ -13,6 +13,7 @@ interface Candidate {
   authorAllPair?: { clauseIndex: number; setIndex: number };
   authorAllWitnessLocations?: ReturnType<typeof validateQuantityAuthorAllProjection>;
   authorNumberProjections?: ReadonlyArray<{ numberIndex: number; projection: QuantityAuthorNumberProjection;
+    hostTargetBinding?: QuantityHostNumberTargetBinding;
     literalWitnessLocations: ReturnType<typeof validateQuantityAuthorNumberProjection> }>;
 }
 interface Axes { collection: 'same' | 'different' | 'ambiguous'; voice: string; time: string; relation: string; reason: string }
@@ -42,12 +43,18 @@ export const quantityAuthorNumberProjectionSchema = z.strictObject({
   coverage: z.literal('whole_focus'),
   reviewedFocusRef: z.strictObject({ view: z.literal('focus'), clauseIndex: z.number().int().nonnegative() }),
   targetNumberQuote: z.string().min(1).max(65536), targetOccurrence: z.number().int().nonnegative(),
-  witnesses: z.array(z.strictObject({ role: z.enum(['scoped_possession_predicate', 'negative_scope', 'target_scope']),
+  witnesses: z.array(z.strictObject({ role: z.enum(['scoped_possession_predicate', 'negative_scope']),
     evidenceRef: z.strictObject({ view: z.enum(['focus', 'before', 'after']), clauseIndex: z.number().int().nonnegative() }),
     quote: z.string().min(1).max(300),
   })).max(4),
 });
 export type QuantityAuthorNumberProjection = z.infer<typeof quantityAuthorNumberProjectionSchema>;
+export interface QuantityHostNumberTargetBinding {
+  protocol: 'quantity_host_number_target_v1'; origin: 'host';
+  logicalTriple: { clauseIndex: number; setIndex: number; numberIndex: number };
+  focusChecksum: string; targetUtf16Span: { start: number; end: number };
+  targetNumberQuote: string; targetOccurrence: number;
+}
 export const quantityExemptionBasis = z.enum(['different_inventory', 'attributed_claim', 'question', 'hypothetical', 'earlier_history', 'future',
   'negative_or_missing', 'pure_collection_total', 'unrelated_target', 'member_role', 'count_role', 'no_all_assertion', 'none']);
 export const quantityDisjointWaiverSchema = z.strictObject({ reviews: z.array(z.strictObject({
@@ -155,10 +162,27 @@ export function validateQuantityAuthorAllProjection(projection: QuantityAuthorAl
   });
 }
 
+/** This neutral binding locates an existing literal only. It certifies no
+ * possession, absence, inventory identity, voice or mathematical conclusion. */
+export function bindQuantityHostNumberTarget(logicalTriple: QuantityHostNumberTargetBinding['logicalTriple'],
+  clauses: readonly { clauseIndex: number; text: string; numberCandidates: readonly NumericSpan[] }[]): QuantityHostNumberTargetBinding {
+  const { clauseIndex, numberIndex, setIndex } = logicalTriple, focus = clauses[clauseIndex], span = focus?.numberCandidates[numberIndex];
+  if (!Number.isSafeInteger(clauseIndex) || clauseIndex < 0 || !Number.isSafeInteger(numberIndex) || numberIndex < 0
+    || !Number.isSafeInteger(setIndex) || setIndex < 0 || !focus || focus.clauseIndex !== clauseIndex || !span
+    || !Number.isSafeInteger(span.start) || !Number.isSafeInteger(span.end) || span.start < 0 || span.end <= span.start || span.end > focus.text.length)
+    throw new Error('数字持有投影须绑定本目标实际完整数词及occurrence。');
+  const targetNumberQuote = focus.text.slice(span.start, span.end);
+  return { protocol: 'quantity_host_number_target_v1', origin: 'host', logicalTriple: { clauseIndex, setIndex, numberIndex }, focusChecksum: digest(focus.text),
+    targetUtf16Span: { start: span.start, end: span.end }, targetNumberQuote,
+    targetOccurrence: focus.numberCandidates.slice(0, numberIndex).filter(item => focus.text.slice(item.start, item.end) === targetNumberQuote).length };
+}
+
 /** Numeric occurrences never collapse by equal value or first matching quote.
- * The host binds the model's literal occurrence to its complete actual span. */
+ * Model witnesses remain semantic claims with strictly literal provenance;
+ * the neutral host binding is never inserted into this model witness array. */
 export function validateQuantityAuthorNumberProjection(projection: QuantityAuthorNumberProjection, clauseIndex: number, numberIndex: number,
   clauses: readonly { clauseIndex: number; text: string; numberCandidates: readonly NumericSpan[] }[]) {
+  quantityAuthorNumberProjectionSchema.parse(projection);
   const focus = clauses[clauseIndex], span = focus?.numberCandidates[numberIndex];
   if (!focus || focus.clauseIndex !== clauseIndex || projection.reviewedFocusRef.clauseIndex !== clauseIndex || !span
     || focus.text.slice(span.start, span.end) !== projection.targetNumberQuote
@@ -173,8 +197,6 @@ export function validateQuantityAuthorNumberProjection(projection: QuantityAutho
     const targetCoveringMatches = view === 'focus' ? matches.filter(start => start <= span.start && start + witness.quote.length >= span.end) : [];
     if (!actual || actual.clauseIndex !== index || view !== witness.evidenceRef.view || !matches.length || seen.has(identity))
       throw new Error('数字持有投影引文须绑定本目标实际有界原句及occurrence。');
-    if (witness.role === 'target_scope' && (view !== 'focus' || !targetCoveringMatches.length))
-      throw new Error('数字持有投影引文须绑定本目标实际有界原句及occurrence。');
     seen.add(identity);
     return { role: witness.role, evidenceRef: witness.evidenceRef, allMatchingUtf16Spans: matches.map(start => ({ start, end: start + witness.quote.length })),
       targetCoveringUtf16Spans: targetCoveringMatches.map(start => ({ start, end: start + witness.quote.length })), evidenceTextChecksum: digest(actual.text), coversTarget: targetCoveringMatches.length > 0 };
@@ -184,19 +206,28 @@ export function validateQuantityAuthorNumberProjection(projection: QuantityAutho
 export function quantityAuthorNumberProjectionAdmission(candidate: Candidate, raw: NumberAxes) {
   const row = candidate.authorNumberProjections?.find(item => item.numberIndex === raw.numberIndex), projection = row?.projection;
   const locations = row?.literalWitnessLocations ?? [], span = candidate.numberSpans[raw.numberIndex];
-  const focus = locations.filter(location => location.evidenceRef.view === 'focus' && location.evidenceRef.clauseIndex === candidate.clauseIndex);
-  const targetScope = focus.some(location => location.role === 'target_scope' && location.coversTarget);
-  const witnessed = projection?.statement === 'explicit_nonpossession' ? targetScope && locations.some(location => location.role === 'negative_scope')
-    : projection?.statement === 'affirmative_possession' ? targetScope && locations.some(location => location.role === 'scoped_possession_predicate')
-      : projection?.statement === 'no_possession_assertion' ? targetScope : true;
+  const binding = row?.hostTargetBinding, quote = span && candidate.claimQuote.slice(span.start, span.end);
+  const targetBound = !!span && Number.isSafeInteger(span.start) && Number.isSafeInteger(span.end) && span.start >= 0 && span.end > span.start
+    && span.end <= candidate.claimQuote.length && binding?.protocol === 'quantity_host_number_target_v1' && binding.origin === 'host'
+    && binding.logicalTriple.clauseIndex === candidate.clauseIndex && binding.logicalTriple.setIndex === candidate.authorAllPair?.setIndex
+    && binding.logicalTriple.clauseIndex === candidate.authorAllPair?.clauseIndex && binding.logicalTriple.numberIndex === raw.numberIndex
+    && binding.focusChecksum === digest(candidate.claimQuote) && binding.targetUtf16Span.start === span.start && binding.targetUtf16Span.end === span.end
+    && binding.targetNumberQuote === quote && binding.targetOccurrence === candidate.numberSpans.slice(0, raw.numberIndex)
+      .filter(item => candidate.claimQuote.slice(item.start, item.end) === quote).length
+    && projection?.reviewedFocusRef.clauseIndex === candidate.clauseIndex && projection.targetNumberQuote === quote
+    && projection.targetOccurrence === binding.targetOccurrence;
+  const witnessed = projection?.statement === 'explicit_nonpossession' ? locations.some(location => location.role === 'negative_scope')
+    : projection?.statement === 'affirmative_possession' ? locations.some(location => location.role === 'scoped_possession_predicate') : true;
   const failure = !projection ? 'missing_author_number_projection'
-    : projection.statement !== 'ambiguous' && !witnessed ? 'number_projection_unwitnessed' : undefined;
+    : !targetBound ? 'invalid_host_number_target_binding'
+      : projection.statement !== 'ambiguous' && !witnessed ? 'number_projection_unwitnessed' : undefined;
   const absence = !failure && !!projection && ['explicit_nonpossession', 'no_possession_assertion'].includes(projection.statement);
   const conflictsWithRaw = absence && raw.relation === 'affirmed_holding', safeAbsence = absence && !conflictsWithRaw;
-  return { safeAbsence, conflictsWithRaw, failure, receipt: { protocol: 'quantity_author_number_projection_v1', producerPhase: candidate.authorAllPhase,
+  return { safeAbsence, conflictsWithRaw, failure, receipt: { protocol: 'quantity_author_number_projection_v2', producerPhase: candidate.authorAllPhase,
     logicalTriple: { ...candidate.authorAllPair, numberIndex: raw.numberIndex }, inputChecksum: candidate.authorAllInputChecksum,
     parsedOutputChecksum: candidate.authorAllOutputChecksum, targetUtf16Span: span && { start: span.start, end: span.end },
-    focusChecksum: digest(candidate.claimQuote), projection, literalWitnessLocations: locations, rawClassification: { ...raw },
+    focusChecksum: digest(candidate.claimQuote), projection, hostTargetBinding: binding, hostTargetBindingValid: targetBound,
+    literalWitnessLocations: locations, rawClassification: { ...raw },
     safeAbsence, conflictsWithRaw, ...(failure ? { failure } : {}), scope: 'Author-only target proposition, not source identity or a mathematical conclusion.' } };
 }
 
@@ -298,7 +329,7 @@ export function admitQuantityDisjointWaivers<T extends QuantityCollectionReview>
                   ? check.target.kind === 'all' && quantityAuthorAllProjectionAdmission(candidate, raw).derivedStatement === 'affirmative_whole_set'
                     ? 'whole_set_projection_incompatible_basis' : author.failure ?? 'all_projection_requires_independent_safe_or' : undefined;
     const admitted = admissionFailure === undefined;
-    return { protocol: 'quantity_semantic_exemption_v7', inputChecksum: digest(JSON.stringify(input)), authorityChecksum: digest(JSON.stringify(authority)),
+    return { protocol: 'quantity_semantic_exemption_v8', inputChecksum: digest(JSON.stringify(input)), authorityChecksum: digest(JSON.stringify(authority)),
       checkIndex: review.checkIndex, candidateIndex: check.candidateIndex, target: check.target, verdict: review.verdict, basis: review.basis,
       evidenceRefs: review.evidenceRefs, admitted, ...(admissionFailure ? { admissionFailure } : {}), reason: review.reason,
       // These diagnostics stay host-side: neither prior axes nor arithmetic

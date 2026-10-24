@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 import { expect, it, vi } from 'vitest';
 import { quantityDisjointChecks, quantityDisjointInput, quantityDisjointWaiverSchema, validateQuantityDisjointWaivers,
   admitQuantityDisjointWaivers, quantityAuthorAllProjectionSchema, quantityAuthorAllProjectionAdmission, validateQuantityAuthorAllProjection, deriveQuantityAuthorAllProjection,
-  quantityAuthorNumberProjectionSchema, validateQuantityAuthorNumberProjection, quantityAuthorNumberProjectionAdmission,
+  quantityAuthorNumberProjectionSchema, validateQuantityAuthorNumberProjection, bindQuantityHostNumberTarget, quantityAuthorNumberProjectionAdmission,
   type QuantityAuthorAllProjection, type QuantityAuthorNumberProjection, type QuantityCollectionReview } from '../../src/main/companions/topic-quantity-disjoint-waiver';
 import { reviewTopicSourceQuantities, topicQuantityNumberCandidates } from '../../src/main/companions/topic-summary-quantity-review';
 import { topicSummaryClauses } from '../../src/main/companions/topic-summary-canon-review';
@@ -152,7 +152,7 @@ it.each(['unresolved', 'no_exemption', 'positive_exemption'] as const)('runs the
   expect(verifyDisjointWaivers).toHaveBeenCalledTimes(1); expect(JSON.stringify(r)).toBe(snapshot);
   if (verdict === 'positive_exemption') expect(correction).toBeUndefined();
   else { expect(correction).toContain('unresolved_semantic_exemption'); expect(correction).not.toContain('mathematical_contradiction');
-    expect(correction).toContain('quantity_semantic_exemption_v7'); expect(correction).toContain('"admitted":false'); }
+    expect(correction).toContain('quantity_semantic_exemption_v8'); expect(correction).toContain('"admitted":false'); }
 });
 
 it('binds the ephemeral receipt to exact source/draft authority without changing its independent input', () => {
@@ -422,7 +422,7 @@ it.each(['not_affirmed_all', 'ambiguous'])('cannot waive a witnessed affirmative
   const r: QuantityCollectionReview = { candidateIndex: 0, numbers: [], all: { ...noAll, relation } }, data = dataFor(c, r), value = decision(data, 'positive_exemption');
   value.reviews[0]!.basis = 'unrelated_target'; const result = admit(r, value, data, c);
   expect(result.receipts[0]!.admissionFailure).toBe('whole_set_projection_incompatible_basis');
-  expect(result.receipts[0]!.protocol).toBe('quantity_semantic_exemption_v7'); expect(result.pending).toHaveLength(1);
+  expect(result.receipts[0]!.protocol).toBe('quantity_semantic_exemption_v8'); expect(result.pending).toHaveLength(1);
   expect(result.pending[0]!.diagnosticType).toBe('unresolved_semantic_exemption');
 });
 
@@ -488,7 +488,7 @@ function numericCandidate(text: string, statement: Parameters<typeof declaredNum
   const clauses = numericClauses(text), projection = declaredNumberProjectionFixture(clauses[0]!, index, statement);
   return { ...candidate(text), authorAllPhase: 'topic_reply_quantity_actual_claims', authorAllPair: { clauseIndex: 0, setIndex: 0 },
     authorAllInputChecksum: '1'.repeat(64), authorAllOutputChecksum: '2'.repeat(64),
-    authorNumberProjections: [{ numberIndex: index, projection,
+    authorNumberProjections: [{ numberIndex: index, projection, hostTargetBinding: bindQuantityHostNumberTarget({ clauseIndex: 0, setIndex: 0, numberIndex: index }, clauses),
       literalWitnessLocations: validateQuantityAuthorNumberProjection(projection, 0, index, clauses) }] };
 }
 
@@ -501,8 +501,63 @@ it('binds repeated equal numerals to their actual UTF16 target instead of the fi
   expect(located[0]!.targetCoveringUtf16Spans).toEqual([{ start: clauses[0]!.numberCandidates[1]!.start, end: clauses[0]!.numberCandidates[1]!.end }]);
   expect(() => validateQuantityAuthorNumberProjection({ ...projection, targetOccurrence: 0 }, 0, 1, clauses)).toThrow('完整数词');
   projection.witnesses[0]!.quote = '编号2';
-  expect(() => validateQuantityAuthorNumberProjection(projection, 0, 1, clauses)).toThrow('有界原句');
+  const unassociated = validateQuantityAuthorNumberProjection(projection, 0, 1, clauses);
+  expect(unassociated[0]!.coversTarget).toBe(false);
+  // A semantic witness is still literal, but need not contain the target.
+  // The neutral target location comes only from the independently bound span.
+  expect(bindQuantityHostNumberTarget({ clauseIndex: 0, setIndex: 0, numberIndex: 1 }, clauses).targetUtf16Span)
+    .toEqual({ start: clauses[0]!.numberCandidates[1]!.start, end: clauses[0]!.numberCandidates[1]!.end });
+  const binding = bindQuantityHostNumberTarget({ clauseIndex: 0, setIndex: 0, numberIndex: 1 }, clauses);
+  expect(binding.targetNumberQuote).toBe('2'); expect(binding.targetOccurrence).toBe(1);
+  expect(binding.focusChecksum).toBe(createHash('sha256').update(text).digest('hex'));
+  expect(binding.origin).toBe('host'); expect(binding.protocol).toBe('quantity_host_number_target_v1');
 });
+
+it('binds the exact archived parallel-member focus without inventing a missing contiguous noun phrase', async () => {
+  // Exact clause from strict-RED 2d33; this is a new neutral-binding control,
+  // not a reclassification of that historical model output or report.
+  const text = '她实际只有第1和第3把钥匙，第2把仍未找到。', clauses = numericClauses(text);
+  expect(text).not.toContain('第1把钥匙');
+  const bindings = clauses[0]!.numberCandidates.map(number => bindQuantityHostNumberTarget({ clauseIndex: 0, setIndex: 0, numberIndex: number.numberIndex }, clauses));
+  expect(bindings.map(binding => binding.targetNumberQuote)).toEqual(['1', '3', '2']);
+  for (const binding of bindings) expect(text.slice(binding.targetUtf16Span.start, binding.targetUtf16Span.end)).toBe(binding.targetNumberQuote);
+  const r: QuantityCollectionReview = { candidateIndex: 0, numbers: [
+    number({ numberIndex: 0, kind: 'member', collection: 'same' }),
+    number({ numberIndex: 1, kind: 'member', collection: 'same' }),
+    number({ numberIndex: 2, kind: 'member', collection: 'same', relation: 'missing' }),
+  ], all: noAll }, reader = vi.fn<Infer>();
+  const correction = await production(text, r, reader, false, true, authorProjection(text, 'no_whole_set_assertion'),
+    { '0:0:0': 'affirmative_possession', '0:0:1': 'affirmative_possession', '0:0:2': 'explicit_nonpossession' });
+  expect(correction).toBeUndefined(); expect(reader).not.toHaveBeenCalled();
+});
+
+it('rejects the removed model neutral target role instead of repairing or treating it as semantic evidence', () => {
+  const projection = declaredNumberProjectionFixture(numericClauses('她仍未取得第2把钥匙。')[0]!, 0, 'explicit_nonpossession');
+  expect(() => quantityAuthorNumberProjectionSchema.parse({ ...projection,
+    witnesses: [{ role: 'target_scope', evidenceRef: { view: 'focus', clauseIndex: 0 }, quote: '第2把钥匙' }] })).toThrow();
+});
+
+it.each(['foreign_number', 'foreign_set', 'stale_focus', 'wrong_span', 'missing_binding'] as const)(
+  'does not borrow a host neutral binding for another actual target: %s', mode => {
+    const c = numericCandidate('😺编号2与第2把钥匙仍未取得。', 'explicit_nonpossession', 1), row = c.authorNumberProjections[0]!;
+    if (mode === 'foreign_number') row.hostTargetBinding.logicalTriple.numberIndex = 0;
+    else if (mode === 'foreign_set') row.hostTargetBinding.logicalTriple.setIndex = 1;
+    else if (mode === 'stale_focus') row.hostTargetBinding.focusChecksum = 'f'.repeat(64);
+    else if (mode === 'wrong_span') row.hostTargetBinding.targetUtf16Span = { start: 4, end: 5 };
+    const actual = mode === 'missing_binding' ? { ...c, authorNumberProjections: [{ ...row, hostTargetBinding: undefined }] } : c;
+    const result = quantityAuthorNumberProjectionAdmission(actual, number({ numberIndex: 1, kind: 'member', relation: 'missing' }));
+    expect(result.safeAbsence).toBe(false); expect(result.failure).toBe('invalid_host_number_target_binding');
+  });
+
+it.each(['affirmative_possession', 'explicit_nonpossession', 'ambiguous'] as const)(
+  'never turns host-only position proof into a numeric semantic assertion: %s', statement => {
+    const c = numericCandidate('那是第2把钥匙。', statement); c.authorNumberProjections[0]!.projection.witnesses = [];
+    c.authorNumberProjections[0]!.literalWitnessLocations = validateQuantityAuthorNumberProjection(c.authorNumberProjections[0]!.projection, 0, 0, numericClauses(c.claimQuote));
+    const result = quantityAuthorNumberProjectionAdmission(c, number({ kind: 'member', relation: 'missing' }));
+    expect(result.receipt.protocol).toBe('quantity_author_number_projection_v2'); expect(result.receipt.hostTargetBindingValid).toBe(true);
+    expect(result.receipt.projection!.statement).toBe(statement); expect(result.safeAbsence).toBe(false);
+    if (statement !== 'ambiguous') expect(result.failure).toBe('number_projection_unwitnessed');
+  });
 
 it.each(['explicit_nonpossession', 'no_possession_assertion'] as const)('uses witnessed current numeric absence without requiring never-held world history: %s', statement => {
   const c = numericCandidate('她曾持有第2把钥匙，如今第2把钥匙仍未取得。', statement, 1), raw = number({ numberIndex: 1, kind: 'member', relation: 'missing' });
@@ -527,8 +582,7 @@ it.each(['获得了', '取回了', '随身携带', '当场实际可用的是'] a
 it('accepts a focus-bound numeric target with its real governing negative predicate in the adjacent clause', async () => {
   const text = '那是第2把钥匙。她仍未得到它。', clauses = numericClauses(text);
   const projection: QuantityAuthorNumberProjection = declaredNumberProjectionFixture(clauses[0]!, 0, 'explicit_nonpossession');
-  projection.witnesses = [{ role: 'target_scope', evidenceRef: { view: 'focus', clauseIndex: 0 }, quote: clauses[0]!.text },
-    { role: 'negative_scope', evidenceRef: { view: 'after', clauseIndex: 1 }, quote: clauses[1]!.text }];
+  projection.witnesses = [{ role: 'negative_scope', evidenceRef: { view: 'after', clauseIndex: 1 }, quote: clauses[1]!.text }];
   const r = review({ kind: 'member', relation: 'missing', collection: 'same' }), reader = vi.fn<Infer>();
   const correction = await production(text, r, reader, false, false, (_context, input) => ({ ...(input as object),
     allProjections: [{ clauseIndex: 0, setIndex: 0, projection: authorProjection(clauses[0]!.text, 'no_whole_set_assertion') }],
@@ -548,7 +602,7 @@ it.each(['missing', 'duplicate', 'foreign', 'wrong_occurrence', 'fabricated_quot
       else if (mode === 'duplicate') value.numberProjections.push({ ...value.numberProjections[0]! });
       else if (mode === 'foreign') value.numberProjections[0]!.numberIndex = 99;
       else if (mode === 'wrong_occurrence') value.numberProjections[0]!.projection.targetOccurrence = 99;
-      else value.numberProjections[0]!.projection.witnesses = [{ role: 'target_scope', evidenceRef: { view: 'focus', clauseIndex: 0 }, quote: '不存在的引文' }];
+      else value.numberProjections[0]!.projection.witnesses = [{ role: 'scoped_possession_predicate', evidenceRef: { view: 'focus', clauseIndex: 0 }, quote: '不存在的引文' }];
       return value;
     }), reader = vi.fn<Infer>();
     await expect(production('她带三把钥匙。', review(), reader, false, false, warm)).rejects.toThrow('未发布正文');

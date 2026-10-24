@@ -7,7 +7,7 @@ import { admitQuantitySourcePremises, buildQuantitySourcePremiseCandidates, quan
   type QuantitySourcePremiseReview, type VerifiedQuantitySourceSet } from './topic-source-quantity-premise';
 import { quantityDisjointChecks, quantityDisjointInput, quantityDisjointWaiverSchema, quantityDisjointWaiverSystem, quantityDisjointCapacity,
   validateQuantityDisjointWaivers, admitQuantityDisjointWaivers, quantityAuthorAllProjectionSchema, validateQuantityAuthorAllProjection, quantityAuthorAllProjectionAdmission,
-  quantityAuthorNumberProjectionSchema, validateQuantityAuthorNumberProjection, quantityAuthorNumberProjectionAdmission, quantityAuthorProjectionCapacity, quantityNumberHasRisk } from './topic-quantity-disjoint-waiver';
+  quantityAuthorNumberProjectionSchema, validateQuantityAuthorNumberProjection, bindQuantityHostNumberTarget, quantityAuthorNumberProjectionAdmission, quantityAuthorProjectionCapacity, quantityNumberHasRisk } from './topic-quantity-disjoint-waiver';
 
 type Infer = (context: { system: string; user: string }, signal?: AbortSignal) => Promise<unknown>;
 const numberIndex = z.number().int().nonnegative();
@@ -205,7 +205,7 @@ export async function reviewTopicSourceQuantities(input: TopicSourceQuantityRevi
 holding=affirmed/denied/not_asserted/ambiguous，分别是作者实际肯定持有/明确否定持有/完整scope没有持有命题/持有作用域未知；not_asserted是有原文范围见证的缺席，不是“不知道”。人物声称的命题仍可肯定，声音/时点另行判断，不改变此IR。opposition=none_in_reviewed_scope仅指完整scope没有同目标相关相反整体持有断言；有相关正反为competing_whole_possession_assertions，可能有竞争但作用域未明为unresolved_possible_competition，不借无关轴未知制造冲突。冲突优先，不能选一个安全片段抹掉更广肯定。只要声明本holding的正向exhaustive_coverage_operator就不能同时写exhaustivity=not_asserted，不能靠缺另一role解除矛盾；negative/limited见证本身不是相反的正向全称，可以和未作肯定全称共存；holding=not_asserted不得与holding的算子、持有/否定role或明确exhaustive/explicit_not_exhaustive并存。其它属性的全称不是本holding的算子，不入这两个字段。其余无关domain或holding未知不妨碍有完整scope见证的exhaustivity=not_asserted；无持有命题也可与其它属性的全称共存。整体否定只由真实negative scope支持；子域穷尽不是更广库存的整体否定。未知/弱证据保持未证，不能造数学结论。
 每projection coverage=whole_focus，reviewedFocusRef精确绑定本clause。witnesses最多6项，只引用实际focus或前后各一句的连续逐字quote，不生成offset。role分别为domain_reference（名词域，永不单独证明穷尽）、exhaustive_coverage_operator（真实穷尽算子/构式且作用于同一持有谓词）、scoped_possession_predicate（实际持有/取得/取回/携带/可用谓词）、negative_or_limited_scope（真实成员/整体持有否定或有限持有范围，不能自动生成正向穷尽断言）、partitive_domain_restriction（真实子域限制，不能代替整体否定）、target_scope（中性完整目标范围）。肯定整体须域+算子+持有谓词，子域穷尽另须子域限制，整体否定须真实negative；强出处至少一项在本focus。算子和域引文可重叠，但普通数量名词不能充算子。没有全称可用target_scope，不捏造不存在的谓词/量词。空见证或缺强role是正常语义未证，不为填齐强造；逐字出处不等同语义证明。不要套有限关键词表或用来源规则修正作者断言。
 再独立返回numberProjections，完整唯一覆盖requiredNumberTargets每个(clauseIndex,setIndex,numberIndex)，包括无关ID、近似/不可计算数词和每次重复出现，不能只选usage或猜想有风险的数字。targetNumberQuote与targetOccurrence照本focus宿主numberCandidates逐字绑定；相同字面不同occurrence不是同一目标。只审该数字支配的作者命题，不判断来源库存身份或数学安全。statement四态：affirmative_possession=本目标实际断言角色获得、取回、携带、随身物理在场或当场实际可用的目标物；不要求动词持有。explicit_nonpossession=本目标在被审场景明确被否定、未得或排除在实际持有范围之外；不要求世界全部历史从未持有，也不要求未来永不能获得。no_possession_assertion=完整焦点本目标没有肯定持有断言，可为抽象总量、ID、他物数词、成员引用；不是证明现实不可能持有。ambiguous=该目标命题/否定scope不明。单独未寻获不必强推物理不存在，但不能反向补出肯定持有；以实际完整语境选择negative或无肯定断言，不能要求永不持有。历史否定不擦除当前肯定，先前已得也不改写当前明确未得；同focus相反作用域不明须ambiguous。人物对白中的肯定仍可affirmative，声部/时点留后续独立比较；不要用all或另一数字代答。
-每数字projection coverage=whole_focus并绑定reviewedFocusRef。witnesses用本focus或±1实际句，逐字quote，不数offset或引文出现次数；宿主枚举全部匹配并筛选覆盖本目标真实span的匹配，不采用首次匹配；每个非未知投影需本focus的target_scope引文覆盖完整目标数词。affirmative另需scoped_possession_predicate、negative另需negative_scope；实际支配谓词可在focus或±1句，不强迫谓词引文本身包含数字，指代和作用域须真实关联本target而非另一事件。no_possession只需实际focus target_scope。保持最短充分原文且每quote≤300字符。缺强见证或空witness是语义未证，不强造；不按数字角色自动决定持有极性，不把纯编号写成当前肯定持有。`,
+每数字projection coverage=whole_focus并绑定reviewedFocusRef。数字中性定位由宿主从requiredNumberTargets及本focus完整数词span独立生成hostTargetBinding；这只证明目标位置，不是持有/缺席/库存身份见证，模型不得返回target_scope角色或自行补造定位引文。witnesses仅用scoped_possession_predicate或negative_scope，取本focus或±1实际句的连续逐字quote，不数offset或引文出现次数，宿主枚举全部匹配，不采用首次匹配。affirmative须真实scoped_possession_predicate，negative须真实negative_scope；实际支配谓词可在focus或±1句，不强迫谓词引文本身包含数字，指代和作用域须真实关联本target而非另一事件。no_possession_assertion仍须你独立审完完整focus后作出无肯定持有命题的语义声明，不由宿主定位、空witness、数字角色或另一目标推得；可返回空witness，不强造不存在的谓词。保持最短充分原文且每quote≤300字符。affirmative/negative缺强见证或空witness是语义未证，不强造；不按数字角色自动决定持有极性，不把纯编号写成当前肯定持有。`,
     claimData, value => {
       const indexes = value.clauses.map(clause => clause.clauseIndex);
       if (new Set(indexes).size !== indexes.length || indexes.some(index => !input.clauses[index])) throw new Error('clauses须唯一引用实际clauseIndex，且不得出现伪造或重复行。');
@@ -237,6 +237,7 @@ holding=affirmed/denied/not_asserted/ambiguous，分别是作者实际肯定持�
   const authorProjectionByPair = new Map(extracted.allProjections.map(row => [row.clauseIndex + ':' + row.setIndex, row.projection]));
   const authorNumbersByPair = new Map(requiredPairs.map(pair => [pair.clauseIndex + ':' + pair.setIndex,
     extracted.numberProjections.filter(row => row.clauseIndex === pair.clauseIndex && row.setIndex === pair.setIndex).map(row => ({ numberIndex: row.numberIndex, projection: row.projection,
+      hostTargetBinding: bindQuantityHostNumberTarget(row, actualClauses),
       literalWitnessLocations: validateQuantityAuthorNumberProjection(row.projection, row.clauseIndex, row.numberIndex, actualClauses) }))]));
   // Retain the warm count's exact host indexes for a narrowly scoped unresolved
   // relationship check. They are never sent to the independent cold reader.
@@ -377,12 +378,12 @@ holding=affirmed/denied/not_asserted/ambiguous，分别是作者实际肯定持�
     const candidate = possible[review.candidateIndex]!;
     const all = quantityAuthorAllProjectionAdmission(candidate, review.all).conflictsWithRaw
       ? [{ ...candidate, diagnosticType: 'unresolved_semantic_exemption', target: { kind: 'all' },
-        unresolvedReason: 'opposed_raw_author_projection', rawClassification: review.all, protocol: 'quantity_semantic_exemption_v7',
+        unresolvedReason: 'opposed_raw_author_projection', rawClassification: review.all, protocol: 'quantity_semantic_exemption_v8',
         authorAllReceipt: quantityAuthorAllProjectionAdmission(candidate, review.all).receipt }] : [];
     const numbers = review.numbers.filter(number => quantityNumberHasRisk(candidate, number.numberIndex)
       && quantityAuthorNumberProjectionAdmission(candidate, number).conflictsWithRaw).map(number => ({
       diagnosticType: 'unresolved_semantic_exemption', target: { kind: 'number', numberIndex: number.numberIndex },
-      unresolvedReason: 'opposed_raw_author_projection', rawClassification: number, protocol: 'quantity_semantic_exemption_v7',
+      unresolvedReason: 'opposed_raw_author_projection', rawClassification: number, protocol: 'quantity_semantic_exemption_v8',
       authorNumberReceipt: quantityAuthorNumberProjectionAdmission(candidate, number).receipt }));
     return [...all, ...numbers];
   });
