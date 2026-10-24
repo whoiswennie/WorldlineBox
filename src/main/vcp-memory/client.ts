@@ -54,6 +54,12 @@ interface ScopeProcess {
   retirement?: Promise<void>;
   finalized?: Promise<void>;
   stopping?: Promise<void>;
+  retirementStartedAt?: number;
+  exitObservedAt?: number;
+  exitCode?: number;
+  detachStartedAt?: number;
+  detachCompletedAt?: number;
+  closeAcknowledgedAt?: number;
 }
 
 function launchUtility(workerPath: string): VcpMemoryTransport {
@@ -114,15 +120,26 @@ export class VcpMemoryClient {
     return child.retirement ??= this.waitForExitOperation(child);
   }
   private async waitForExitOperation(child: ScopeProcess): Promise<void> {
+    child.retirementStartedAt ??= Date.now();
     child.finalized ??= child.exited.then(async () => {
+      child.detachStartedAt ??= Date.now();
       child.detached ??= detachRuntimeDependencyLinks(path.join(path.resolve(this.options.dataRoot), child.key));
       await child.detached;
+      child.detachCompletedAt = Date.now();
       this.broker.retired(`${this.brokerNamespace}:${child.key}`, child.brokerIdentity);
     });
     let timer: ReturnType<typeof setTimeout> | undefined;
     try {
       await Promise.race([child.finalized, new Promise<never>((_, reject) => {
-        timer = setTimeout(() => reject(new Error('VCP memory process did not exit after shutdown.')), 5_000);
+        timer = setTimeout(() => {
+          const stage = child.exitObservedAt === undefined ? 'exit_notification'
+            : child.detachCompletedAt === undefined ? 'dependency_cleanup' : 'permit_release';
+          const diagnostic = { stage, elapsedMs: Math.max(0, Date.now() - child.retirementStartedAt!),
+            closeAcknowledged: child.closeAcknowledgedAt !== undefined, exitObserved: child.exitObservedAt !== undefined,
+            exitCode: child.exitCode, detachStarted: child.detachStartedAt !== undefined, detachCompleted: child.detachCompletedAt !== undefined };
+          reject(Object.assign(new Error(`VCP memory shutdown did not finish (stage=${stage}, elapsedMs=${diagnostic.elapsedMs}, closeAcknowledged=${diagnostic.closeAcknowledged}, exitObserved=${diagnostic.exitObserved}, exitCode=${diagnostic.exitCode ?? 'unknown'}, detachStarted=${diagnostic.detachStarted}, detachCompleted=${diagnostic.detachCompleted}).`),
+            { code: 'VCP_MEMORY_SHUTDOWN_TIMEOUT', diagnostic }));
+        }, 5_000);
       })]);
     } finally { if (timer) clearTimeout(timer); }
   }
@@ -183,6 +200,7 @@ export class VcpMemoryClient {
       });
       transport.on('exit', code => {
         this.broker.beginRetirement(`${this.brokerNamespace}:${key}`, brokerIdentity);
+        child.exitObservedAt = Date.now(); child.exitCode = code;
         acknowledgeExit();
         child.failed = true;
         this.rejectAll(child, new Error(`VCP memory process exited (${code}).`));
@@ -250,7 +268,10 @@ export class VcpMemoryClient {
       }
       await new Promise(resolve => setTimeout(resolve, 20));
     }
-    try { await child.ready; if (!child.failed) await this.send(child, { type: 'close' }); }
+    try {
+      await child.ready;
+      if (!child.failed) { await this.send(child, { type: 'close' }); child.closeAcknowledgedAt = Date.now(); }
+    }
     finally {
       child.transport.kill();
       if (this.scopes.get(key) === child) this.scopes.delete(key);

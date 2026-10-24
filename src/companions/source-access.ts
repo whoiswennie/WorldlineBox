@@ -19,14 +19,31 @@ export const companionSourceChecksum = (content: string) => createHash('sha256')
 /** Message evidence and authorization only. No memory retrieval, facts or vector state. */
 export class CompanionSourceAccess {
     private readonly executionPath = new Set<string>();
+    private readonly statements = new Map<string, ReturnType<CompanionConnection['prepare']>>();
     private validation?: { stamp: string; values: Map<string, boolean>; active: Set<string> };
     constructor(private readonly db: CompanionConnection, private readonly getMessage: (id: string) => CompanionMessage,
       private readonly memoryValid?: (owner: string, id: string, version: number, scope?: CompanionSourceScope) => boolean) { }
+    /** Reuse only compiled static SQL on this connection. Statement results,
+     * bindings and authorization proofs are never retained by this cache. */
+    private statement(sql: string): ReturnType<CompanionConnection['prepare']> {
+        const existing = this.statements.get(sql);
+        if (existing) {
+            this.statements.delete(sql); this.statements.set(sql, existing);
+            return existing;
+        }
+        const prepared = this.db.prepare(sql);
+        if (this.statements.size >= 64) {
+            const oldest = this.statements.keys().next().value;
+            if (oldest !== undefined) this.statements.delete(oldest);
+        }
+        this.statements.set(sql, prepared);
+        return prepared;
+    }
     /** One synchronous top-level read owns this memo. Local and other-connection
      * writes invalidate completed results; it never survives a public read. */
     private validationStamp(): string {
-        const changes = this.db.prepare('SELECT total_changes() AS n').get() as { n: number };
-        const version = this.db.prepare('PRAGMA data_version').get() as { data_version: number };
+        const changes = this.statement('SELECT total_changes() AS n').get() as { n: number };
+        const version = this.statement('PRAGMA data_version').get() as { data_version: number };
         return `${changes.n}:${version.data_version}`;
     }
     /** Share completed proofs only inside one synchronous storage command.
@@ -68,8 +85,8 @@ export class CompanionSourceAccess {
     validatedMessageReadsetDigest(id: string, expected: CompanionExecutionReadset): string | undefined {
         return this.withValidation(() => {
             const before = this.validationStamp();
-            const source = this.db.prepare('SELECT * FROM messages WHERE id=?').get(id);
-            const stored = this.db.prepare('SELECT value FROM metadata WHERE key=?').get(executionMessageReadsetKey(id));
+            const source = this.statement('SELECT * FROM messages WHERE id=?').get(id);
+            const stored = this.statement('SELECT value FROM metadata WHERE key=?').get(executionMessageReadsetKey(id));
             const readset = stored ? executionReadsetFromJson(String(row(stored).value)) : undefined;
             const bytes = JSON.stringify(expected);
             if (!source || row(source).author_id !== expected.companionId || row(source).conversation_id !== expected.conversationId
@@ -80,7 +97,7 @@ export class CompanionSourceAccess {
             // a note newer than the captured dialogue boundary.
             for (const reference of readset.sources) {
                 const scope = { companionId: readset.companionId, conversationId: reference.conversationId };
-                const current = this.db.prepare('SELECT * FROM messages WHERE id=?').get(reference.id);
+                const current = this.statement('SELECT * FROM messages WHERE id=?').get(reference.id);
                 if (!current || row(current).conversation_id !== reference.conversationId
                     || companionSourceChecksum(String(row(current).content)) !== reference.checksum) return;
                 try { this.requireScope(scope); } catch { return; }
@@ -91,7 +108,7 @@ export class CompanionSourceAccess {
             for (const reference of readset.topics) {
                 const scope = { companionId: readset.companionId, conversationId: reference.conversationId };
                 try { this.requireScope(scope); } catch { return; }
-                const found = this.db.prepare('SELECT data FROM companion_topics WHERE id=? AND conversation_id=?').get(reference.topicId, reference.conversationId);
+                const found = this.statement('SELECT data FROM companion_topics WHERE id=? AND conversation_id=?').get(reference.topicId, reference.conversationId);
                 const topic = found ? json<CompanionTopic>(row(found).data) : undefined;
                 if (!topic || topic.deletedAt || !topic.participantIds.includes(readset.companionId) && !topic.invitedIds.includes(readset.companionId)
                     || !this.checkpointSourcesValid(scope, reference.sourceMessageIds)) return;
@@ -102,12 +119,12 @@ export class CompanionSourceAccess {
     }
     private executionValid(kind: 'action' | 'message', id: string, owner: string, room: string, readset: unknown): boolean {
         const key = `${kind}:${id}`;
-        if (this.executionPath.has(key) || this.db.prepare('SELECT 1 FROM metadata WHERE key=?').get(executionSourceInvalidKey(kind, id))) return false;
+        if (this.executionPath.has(key) || this.statement('SELECT 1 FROM metadata WHERE key=?').get(executionSourceInvalidKey(kind, id))) return false;
         return this.memo(JSON.stringify(['execution', kind, id, owner, room, companionSourceChecksum(JSON.stringify(readset) ?? '')]), () => {
         this.executionPath.add(key);
         try { return companionExecutionReadsetValidSync(this.db, readset, owner, room, {
             sourceValid: (owner, sourceRoom, sourceId, checksum) => {
-                const source = this.db.prepare('SELECT * FROM messages WHERE id=?').get(sourceId);
+                const source = this.statement('SELECT * FROM messages WHERE id=?').get(sourceId);
                 return !!source && String(row(source).conversation_id) === sourceRoom && companionSourceChecksum(String(row(source).content)) === checksum && this.visible(this.ownerScope(owner), row(source));
             }, memoryValid: (owner, id, version) => this.memoryValid?.(owner, id, version) === true,
             topicSourcesValid: (owner, conversationId, ids) => this.checkpointSourcesValid({ companionId: owner, conversationId }, ids),
@@ -115,6 +132,7 @@ export class CompanionSourceAccess {
         });
     }
     initialize(): void {
+        this.statements.clear();
         this.db.exec(`
       CREATE TABLE IF NOT EXISTS vcp_source_observers(message_id TEXT NOT NULL REFERENCES messages(id),companion_id TEXT NOT NULL REFERENCES companions(id),PRIMARY KEY(message_id,companion_id));
       CREATE TABLE IF NOT EXISTS vcp_source_blocks(message_id TEXT NOT NULL REFERENCES messages(id),companion_id TEXT NOT NULL REFERENCES companions(id),created_at TEXT NOT NULL,PRIMARY KEY(message_id,companion_id));
@@ -130,46 +148,46 @@ export class CompanionSourceAccess {
     `);
     }
     requireScope(scope: CompanionSourceScope): Row {
-        if (!this.db.prepare('SELECT 1 FROM companions WHERE id=? AND deleted_at IS NULL').get(scope.companionId))
+        if (!this.statement('SELECT 1 FROM companions WHERE id=? AND deleted_at IS NULL').get(scope.companionId))
             throw new Error('伙伴不存在。');
-        const conversation = this.db.prepare('SELECT * FROM conversations WHERE id=?').get(scope.conversationId);
-        if (!conversation || !this.db.prepare('SELECT 1 FROM conversation_members WHERE conversation_id=? AND companion_id=?').get(scope.conversationId, scope.companionId))
+        const conversation = this.statement('SELECT * FROM conversations WHERE id=?').get(scope.conversationId);
+        if (!conversation || !this.statement('SELECT 1 FROM conversation_members WHERE conversation_id=? AND companion_id=?').get(scope.conversationId, scope.companionId))
             throw new Error('伙伴不是聊天成员。');
         return row(conversation);
     }
     /** Existing host-owned entrance, never opens or creates a conversation. */
     ownerScope(companionId: string): CompanionSourceScope {
-        const found = this.db.prepare(`SELECT c.id FROM conversations c JOIN conversation_members m ON m.conversation_id=c.id
+        const found = this.statement(`SELECT c.id FROM conversations c JOIN conversation_members m ON m.conversation_id=c.id
           WHERE m.companion_id=? ORDER BY CASE WHEN c.id=? THEN 0 WHEN c.kind='private' THEN 1 ELSE 2 END,c.rowid LIMIT 1`)
             .get(companionId, 'world_' + companionId);
         return { companionId, conversationId: found ? String(row(found).id) : 'world_' + companionId };
     }
     observe(messageId: string, companionId: string): void {
-        this.db.prepare('INSERT OR IGNORE INTO vcp_source_observers(message_id,companion_id) VALUES(?,?)').run(messageId, companionId);
+        this.statement('INSERT OR IGNORE INTO vcp_source_observers(message_id,companion_id) VALUES(?,?)').run(messageId, companionId);
     }
     captureHeld(companionId: string, conversationId: string): boolean {
-        return !!this.db.prepare("SELECT 1 FROM vcp_source_policy_holds WHERE companion_id=? AND conversation_id IN(?,'*') AND released_at IS NULL LIMIT 1").get(companionId, conversationId);
+        return !!this.statement("SELECT 1 FROM vcp_source_policy_holds WHERE companion_id=? AND conversation_id IN(?,'*') AND released_at IS NULL LIMIT 1").get(companionId, conversationId);
     }
-    worldScope(conversationId: string): boolean { return !!this.db.prepare('SELECT 1 FROM metadata WHERE key=?').get('world-room/' + conversationId); }
-    managementSource(messageId: string): boolean { return !!this.db.prepare('SELECT 1 FROM vcp_source_prohibition_requests WHERE message_id=? LIMIT 1').get(messageId); }
+    worldScope(conversationId: string): boolean { return !!this.statement('SELECT 1 FROM metadata WHERE key=?').get('world-room/' + conversationId); }
+    managementSource(messageId: string): boolean { return !!this.statement('SELECT 1 FROM vcp_source_prohibition_requests WHERE message_id=? LIMIT 1').get(messageId); }
     logicalDomain(messageId: string): string {
-        const observation = this.db.prepare('SELECT value FROM metadata WHERE key=?').get('memory-world-observation/' + messageId);
+        const observation = this.statement('SELECT value FROM metadata WHERE key=?').get('memory-world-observation/' + messageId);
         if (observation) return json<{ forConversationId: string }>(row(observation).value).forConversationId;
-        const source = this.db.prepare('SELECT conversation_id FROM messages WHERE id=?').get(messageId);
+        const source = this.statement('SELECT conversation_id FROM messages WHERE id=?').get(messageId);
         if (!source) throw new Error('记忆来源不存在。');
         return String(row(source).conversation_id);
     }
     formal(source: Row): boolean {
-        const derived = this.db.prepare('SELECT value FROM metadata WHERE key=?').get(executionMessageReadsetKey(String(source.id)));
+        const derived = this.statement('SELECT value FROM metadata WHERE key=?').get(executionMessageReadsetKey(String(source.id)));
         if (derived && !this.executionValid('message', String(source.id), String(source.author_id), String(source.conversation_id), executionReadsetFromJson(String(row(derived).value)))) return false;
-        if (this.db.prepare('SELECT 1 FROM metadata WHERE key=?').get(executionSourceInvalidKey('message', String(source.id)))) return false;
-        const manual = this.db.prepare('SELECT value FROM metadata WHERE key=?').get('vcp-manual-input/' + source.id);
+        if (this.statement('SELECT 1 FROM metadata WHERE key=?').get(executionSourceInvalidKey('message', String(source.id)))) return false;
+        const manual = this.statement('SELECT value FROM metadata WHERE key=?').get('vcp-manual-input/' + source.id);
         if (manual)
             return source.author_id === 'user' && source.kind === 'notice' && source.status === 'sent'
                 && json<{
                     checksum: string;
                 }>(row(manual).value).checksum === companionSourceChecksum(String(source.content));
-        const observation = this.db.prepare('SELECT value FROM metadata WHERE key=?').get('memory-world-observation/' + source.id);
+        const observation = this.statement('SELECT value FROM metadata WHERE key=?').get('memory-world-observation/' + source.id);
         if (observation)
             return source.author_id === 'system' && source.kind === 'notice'
                 && json<{
@@ -178,7 +196,7 @@ export class CompanionSourceAccess {
         if (source.status !== 'sent' || source.author_id === 'system' || source.kind === 'notice')
             return false;
         if (source.kind === 'action' || source.action_id) {
-            const action = source.action_id ? this.db.prepare('SELECT data,status FROM actions WHERE id=?').get(source.action_id) : undefined;
+            const action = source.action_id ? this.statement('SELECT data,status FROM actions WHERE id=?').get(source.action_id) : undefined;
             if (!action || !['succeeded', 'failed', 'cancelled'].includes(String(row(action).status)))
                 return false;
             const result = json<{
@@ -186,11 +204,11 @@ export class CompanionSourceAccess {
                 result?: string;
                 error?: string;
             }>(row(action).data);
-            const checkpoint = this.db.prepare('SELECT value FROM metadata WHERE key=?').get('task-checkpoint/' + result.id);
+            const checkpoint = this.statement('SELECT value FROM metadata WHERE key=?').get('task-checkpoint/' + result.id);
             const readset = checkpoint ? json<{ executionReadset?: unknown }>(row(checkpoint).value).executionReadset : undefined;
             return !!(result.result || result.error) && this.executionValid('action', result.id, result.companionId, result.conversationId, readset);
         }
-        const loop = this.db.prepare('SELECT value FROM metadata WHERE key=?').get('message-loop/' + source.id);
+        const loop = this.statement('SELECT value FROM metadata WHERE key=?').get('message-loop/' + source.id);
         if (loop)
             return json<{
                 status: string;
@@ -201,19 +219,19 @@ export class CompanionSourceAccess {
         return fingerprint?.loopStep === undefined;
     }
     reference(source: Row): z.infer<typeof companionMemorySourceSchema> {
-        const manual = this.db.prepare('SELECT 1 FROM metadata WHERE key=?').get('vcp-manual-input/' + source.id);
-        const observation = this.db.prepare('SELECT value FROM metadata WHERE key=?').get('memory-world-observation/' + source.id);
-        const publication = this.db.prepare('SELECT value FROM metadata WHERE key=?').get('message-published-after/' + source.id);
-        const worldTime = this.db.prepare('SELECT world_at FROM companion_message_times WHERE message_id=?').get(source.id);
+        const manual = this.statement('SELECT 1 FROM metadata WHERE key=?').get('vcp-manual-input/' + source.id);
+        const observation = this.statement('SELECT value FROM metadata WHERE key=?').get('memory-world-observation/' + source.id);
+        const publication = this.statement('SELECT value FROM metadata WHERE key=?').get('message-published-after/' + source.id);
+        const worldTime = this.statement('SELECT world_at FROM companion_message_times WHERE message_id=?').get(source.id);
         const assetReadId = observation ? json<{ assetRead?: string }>(row(observation).value).assetRead : undefined;
-        const assetRead = assetReadId ? this.db.prepare('SELECT 1 FROM companion_learning_reads WHERE source_message_id=? AND id=?').get(source.id, assetReadId) : undefined;
+        const assetRead = assetReadId ? this.statement('SELECT 1 FROM companion_learning_reads WHERE source_message_id=? AND id=?').get(source.id, assetReadId) : undefined;
         return { sourceType: manual ? 'manual_input' : assetRead ? 'asset_read' : observation ? 'world_observation' : 'message', messageId: String(source.id), conversationId: String(source.conversation_id),
             sequence: Number(source.sequence), authorId: String(source.author_id), revision: Number(source.revision ?? 1),
             checksum: companionSourceChecksum(String(source.content)), createdAt: String(source.created_at),
             ...(worldTime ? { worldCreatedAt: String(row(worldTime).world_at) } : {}), ...(publication ? { publishedAfterSequence: Number(row(publication).value) } : {}) };
     }
     blockedTag(scope: CompanionSourceScope, tags: readonly string[], sequence: number): boolean {
-        return this.db.prepare('SELECT tag,through_sequence,persistent FROM vcp_source_prohibitions WHERE companion_id=? AND (conversation_id=? OR conversation_id=\'*\')').all(scope.companionId, scope.conversationId)
+        return this.statement('SELECT tag,through_sequence,persistent FROM vcp_source_prohibitions WHERE companion_id=? AND (conversation_id=? OR conversation_id=\'*\')').all(scope.companionId, scope.conversationId)
             .some(value => {
             const rule = row(value);
             return (rule.persistent || sequence <= Number(rule.through_sequence))
@@ -227,9 +245,9 @@ export class CompanionSourceAccess {
             // actually captured sources. Public callers validate their current
             // entrance before requesting this internal provenance lookup.
             this.requireScope(this.ownerScope(scope.companionId));
-            if (!this.db.prepare('SELECT 1 FROM vcp_memory_scopes WHERE companion_id=? AND conversation_id=?').get(scope.companionId, scope.conversationId)) throw error;
+            if (!this.statement('SELECT 1 FROM vcp_memory_scopes WHERE companion_id=? AND conversation_id=?').get(scope.companionId, scope.conversationId)) throw error;
         }
-        return this.db.prepare("SELECT id,tag,conversation_id,through_sequence,persistent FROM vcp_source_prohibitions WHERE companion_id=? AND conversation_id IN(?,'*') ORDER BY id").all(scope.companionId, scope.conversationId)
+        return this.statement("SELECT id,tag,conversation_id,through_sequence,persistent FROM vcp_source_prohibitions WHERE companion_id=? AND conversation_id IN(?,'*') ORDER BY id").all(scope.companionId, scope.conversationId)
             .map(value => {
                 const rule = row(value);
                 return { id: String(rule.id), tags: [String(rule.tag)], conversationId: String(rule.conversation_id),
@@ -251,9 +269,9 @@ export class CompanionSourceAccess {
         if (visited.has(id))
             return true;
         visited.add(id);
-        if (this.db.prepare('SELECT 1 FROM vcp_source_blocks WHERE message_id=? AND companion_id=?').get(id, scope.companionId))
+        if (this.statement('SELECT 1 FROM vcp_source_blocks WHERE message_id=? AND companion_id=?').get(id, scope.companionId))
             return true;
-        const blocked = this.db.prepare('SELECT tag,through_sequence,persistent FROM vcp_source_prohibitions p WHERE companion_id=? AND (conversation_id=? OR conversation_id=\'*\') AND NOT EXISTS(SELECT 1 FROM vcp_source_prohibition_requests r WHERE r.prohibition_id=p.id AND r.message_id=?)').all(scope.companionId, source.conversation_id, id)
+        const blocked = this.statement('SELECT tag,through_sequence,persistent FROM vcp_source_prohibitions p WHERE companion_id=? AND (conversation_id=? OR conversation_id=\'*\') AND NOT EXISTS(SELECT 1 FROM vcp_source_prohibition_requests r WHERE r.prohibition_id=p.id AND r.message_id=?)').all(scope.companionId, source.conversation_id, id)
             .some(value => {
             const rule = row(value);
             return (rule.persistent || Number(source.sequence) <= Number(rule.through_sequence))
@@ -265,21 +283,21 @@ export class CompanionSourceAccess {
         if (source.author_id !== 'user' && source.reply_to_id)
             ancestors.add(String(source.reply_to_id));
         if (source.author_id !== 'user') {
-            const loop = this.db.prepare('SELECT value FROM metadata WHERE key=?').get('message-loop/' + id);
+            const loop = this.statement('SELECT value FROM metadata WHERE key=?').get('message-loop/' + id);
             if (loop)
                 ancestors.add(json<{
                     sourceMessageId: string;
                 }>(row(loop).value).sourceMessageId);
         }
         if (source.action_id) {
-            const action = this.db.prepare('SELECT data FROM actions WHERE id=?').get(source.action_id);
+            const action = this.statement('SELECT data FROM actions WHERE id=?').get(source.action_id);
             if (action)
                 ancestors.add(json<{
                     sourceMessageId: string;
                 }>(row(action).data).sourceMessageId);
         }
         for (const ancestorId of ancestors) {
-            const ancestor = this.db.prepare('SELECT * FROM messages WHERE id=?').get(ancestorId);
+            const ancestor = this.statement('SELECT * FROM messages WHERE id=?').get(ancestorId);
             if (ancestor && this.forgotten(scope, row(ancestor), new Set(visited)))
                 return true;
         }
@@ -295,9 +313,9 @@ export class CompanionSourceAccess {
         if (visited.has(id))
             return false;
         visited.add(id);
-        if (this.db.prepare(`SELECT 1 FROM companion_message_topics m JOIN companion_topics t ON t.id=m.topic_id
+        if (this.statement(`SELECT 1 FROM companion_message_topics m JOIN companion_topics t ON t.id=m.topic_id
           WHERE m.message_id=? AND json_extract(t.data,'$.deletedAt') IS NOT NULL`).get(id)) return false;
-        const observationRow = this.db.prepare('SELECT value FROM metadata WHERE key=?').get('memory-world-observation/' + id);
+        const observationRow = this.statement('SELECT value FROM metadata WHERE key=?').get('memory-world-observation/' + id);
         const observation = observationRow ? json<{
             companionId: string;
             forConversationId: string;
@@ -315,51 +333,51 @@ export class CompanionSourceAccess {
         // state without raw-message references. Deletion revokes that old body;
         // sanitized actual participation receipts remain separate experiences.
         if (observation?.observation?.category === 'topics' && !Array.isArray(observation.topicCheckpoints)) return false;
-        if (observation?.observation?.category === 'topics' && this.db.prepare(`SELECT 1 FROM json_each(?, '$.items') item
+        if (observation?.observation?.category === 'topics' && this.statement(`SELECT 1 FROM json_each(?, '$.items') item
           JOIN companion_topics topic ON topic.id=json_extract(item.value,'$.topicId')
           WHERE json_extract(topic.data,'$.deletedAt') IS NOT NULL LIMIT 1`).get(source.content)) return false;
-        if (observation?.assetRead && !this.db.prepare("SELECT 1 FROM companion_learning_reads r JOIN companion_learning_grants g ON g.id=r.grant_id WHERE r.id=? AND r.source_message_id=? AND r.companion_id=? AND r.status='read' AND g.enabled=1").get(observation.assetRead, id, scope.companionId)) return false;
+        if (observation?.assetRead && !this.statement("SELECT 1 FROM companion_learning_reads r JOIN companion_learning_grants g ON g.id=r.grant_id WHERE r.id=? AND r.source_message_id=? AND r.companion_id=? AND r.status='read' AND g.enabled=1").get(observation.assetRead, id, scope.companionId)) return false;
         for (const reference of observation?.topicCheckpoints ?? []) {
             if (reference.readerId !== scope.companionId || reference.readerId !== observation!.companionId) return false;
             try {
                 const topicScope = { companionId: scope.companionId, conversationId: reference.conversationId };
                 this.requireScope(topicScope);
-                const found = this.db.prepare('SELECT data FROM companion_topics WHERE id=? AND conversation_id=?').get(reference.topicId, reference.conversationId);
+                const found = this.statement('SELECT data FROM companion_topics WHERE id=? AND conversation_id=?').get(reference.topicId, reference.conversationId);
                 const topic = found ? json<CompanionTopic>(row(found).data) : undefined;
                 if (!topic || !reference.checkpointEventIds.length || !reference.checkpointEventIds.every(eventId => companionTopicCheckpointEventValid(this.db, topic, scope.companionId, eventId,
                     ids => ids.every(sourceId => {
-                        const source = this.db.prepare('SELECT * FROM messages WHERE id=?').get(sourceId);
+                        const source = this.statement('SELECT * FROM messages WHERE id=?').get(sourceId);
                         return !!source && this.visible(topicScope, row(source), new Set(visited), true);
                     })))) return false;
             } catch { return false; }
         }
         if (observation && (observation.companionId !== scope.companionId
             || observation.sources.some(reference => {
-                const original = this.db.prepare('SELECT * FROM messages WHERE id=?').get(reference.id);
+                const original = this.statement('SELECT * FROM messages WHERE id=?').get(reference.id);
                 return !original || companionSourceChecksum(String(row(original).content)) !== reference.checksum
                     || !this.visible(scope, row(original), new Set(visited));
             })))
             return false;
         const currentObservation = !!observation && observation.forConversationId === scope.conversationId
             && (scope.beforeSequence === undefined || observation.throughSequence !== undefined && observation.throughSequence <= scope.beforeSequence);
-        if (this.db.prepare("SELECT 1 FROM companion_reset_jobs WHERE companion_id=? AND status!='completed'").get(source.author_id)
-            || this.db.prepare("SELECT 1 FROM companion_reset_rooms s JOIN companion_reset_jobs j ON j.id=s.job_id WHERE s.conversation_id=? AND j.status!='completed' LIMIT 1").get(source.conversation_id)
-            || this.db.prepare('SELECT 1 FROM companion_reset_messages WHERE message_id=? LIMIT 1').get(id))
+        if (this.statement("SELECT 1 FROM companion_reset_jobs WHERE companion_id=? AND status!='completed'").get(source.author_id)
+            || this.statement("SELECT 1 FROM companion_reset_rooms s JOIN companion_reset_jobs j ON j.id=s.job_id WHERE s.conversation_id=? AND j.status!='completed' LIMIT 1").get(source.conversation_id)
+            || this.statement('SELECT 1 FROM companion_reset_messages WHERE message_id=? LIMIT 1').get(id))
             return false;
-        const boundary = this.db.prepare('SELECT through_sequence FROM companion_reset_boundaries WHERE companion_id=?').get(scope.companionId);
+        const boundary = this.statement('SELECT through_sequence FROM companion_reset_boundaries WHERE companion_id=?').get(scope.companionId);
         if (boundary && Number(source.sequence) <= Number(row(boundary).through_sequence))
             return false;
-        if (this.db.prepare("SELECT 1 FROM companion_reset_jobs WHERE companion_id=? AND status!='completed'").get(scope.companionId))
+        if (this.statement("SELECT 1 FROM companion_reset_jobs WHERE companion_id=? AND status!='completed'").get(scope.companionId))
             return false;
         if (!currentObservation && scope.beforeSequence !== undefined && Number(source.sequence) > scope.beforeSequence)
             return false;
-        const publication = this.db.prepare('SELECT value FROM metadata WHERE key=?').get('message-published-after/' + id);
+        const publication = this.statement('SELECT value FROM metadata WHERE key=?').get('message-published-after/' + id);
         if (scope.beforeSequence !== undefined && publication && scope.beforeSequence <= Number(row(publication).value))
             return false;
         // Conversation is an interaction entrance, not a second identity. The
         // persisted observer is the proof this owner actually witnessed a source;
         // joining a room later must never make its old messages knowable.
-        if (!sharedCheckpoint && !this.db.prepare('SELECT 1 FROM vcp_source_observers WHERE message_id=? AND companion_id=?').get(id, scope.companionId))
+        if (!sharedCheckpoint && !this.statement('SELECT 1 FROM vcp_source_observers WHERE message_id=? AND companion_id=?').get(id, scope.companionId))
             return false;
         return this.formal(source) && !this.forgotten(scope, source);
     }
@@ -370,7 +388,7 @@ export class CompanionSourceAccess {
         return this.withValidation(() => {
         this.requireScope(scope);
         return ids.every(id => {
-            const source = this.db.prepare('SELECT * FROM messages WHERE id=?').get(id);
+            const source = this.statement('SELECT * FROM messages WHERE id=?').get(id);
             return !!source && this.visible(scope, row(source), new Set<string>(), true);
         });
         });
@@ -379,13 +397,13 @@ export class CompanionSourceAccess {
         return this.withValidation(() => {
         this.requireScope(scope);
         return [...new Set(ids)].flatMap(id => {
-            const source = this.db.prepare('SELECT * FROM messages WHERE id=?').get(id);
+            const source = this.statement('SELECT * FROM messages WHERE id=?').get(id);
             return source && this.visible(scope, row(source)) ? [this.getMessage(id)] : [];
         });
         });
     }
     block(companionId: string, ids: readonly string[]): void {
         for (const id of ids)
-            this.db.prepare('INSERT OR IGNORE INTO vcp_source_blocks(message_id,companion_id,created_at) VALUES(?,?,?)').run(id, companionId, new Date().toISOString());
+            this.statement('INSERT OR IGNORE INTO vcp_source_blocks(message_id,companion_id,created_at) VALUES(?,?,?)').run(id, companionId, new Date().toISOString());
     }
 }

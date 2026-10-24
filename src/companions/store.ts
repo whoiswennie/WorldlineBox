@@ -50,8 +50,9 @@ import type { TopicParticipationReceipt } from './topic-participation';
 import { recallCompanionTopics, type CompanionTopicCheckpointReference } from './topic-recall';
 import { CompanionCollaborationStore } from './collaboration-store';
 import { CompanionExecutionSourceStore } from './execution-source-store';
-import { executionSourceInvalidKey } from './execution-source-access';
+import { executionSourceInvalidKey, companionExecutionReadsetValidSync } from './execution-source-access';
 import type { CompanionExecutionReadset } from '../shared/companion-execution-evidence';
+import type { CompanionActivityThoughtAuthorization } from '../shared/companion-activity-thought';
 
 interface Statement {
   all(...args: unknown[]): unknown[];
@@ -362,6 +363,7 @@ export class CompanionsStore {
       this.#db.exec("CREATE INDEX IF NOT EXISTS actions_chronology ON actions(conversation_id,json_extract(data,'$.createdAt') DESC,id DESC)");
       this.#db.exec("CREATE INDEX IF NOT EXISTS actions_live_status ON actions(status,conversation_id)");
       this.#db.exec("CREATE INDEX IF NOT EXISTS actions_parent_message ON actions(json_extract(data,'$.parentMessageId'))");
+      this.#db.exec("CREATE UNIQUE INDEX IF NOT EXISTS actions_activity_thought ON actions(companion_id,json_extract(data,'$.thought.taskId'),json_extract(data,'$.thought.step'),json_extract(data,'$.thought.effectId')) WHERE json_type(data,'$.thought')='object'");
       this.#db.exec("CREATE TABLE IF NOT EXISTS companion_work_queue(ordinal INTEGER PRIMARY KEY AUTOINCREMENT,id TEXT NOT NULL UNIQUE,status TEXT NOT NULL,companion_id TEXT NOT NULL,data TEXT NOT NULL)");
       this.#db.exec("CREATE INDEX IF NOT EXISTS companion_work_status ON companion_work_queue(status,ordinal)");
       this.#db.exec("CREATE INDEX IF NOT EXISTS companion_work_source ON companion_work_queue(json_extract(data,'$.sourceMessageId'))");
@@ -1394,6 +1396,7 @@ export class CompanionsStore {
   #setMetadata(key: string, value: unknown): void { this.#db.prepare('INSERT OR REPLACE INTO metadata(key,value) VALUES(?,?)').run(key, JSON.stringify(value)); }
   #recoverableAction(action: CompanionAction): CompanionAction {
     if (this.#db.prepare('SELECT 1 FROM metadata WHERE key=?').get(executionSourceInvalidKey('action', action.id))) return { ...action, contentAvailable: false, canResume: false };
+    if (action.thought) return { ...action, canResume: false };
     return { ...action, canResume: ['interrupted', 'cancelled', 'failed'].includes(action.status) && !!(this.#db.prepare('SELECT 1 FROM metadata WHERE key=?').get('task-checkpoint/' + action.id) || action.sessionId || action.taskId) };
   }
   checkpoint(id: string): CompanionTaskCheckpoint | undefined {
@@ -1404,6 +1407,7 @@ export class CompanionsStore {
   saveCheckpoint(id: string, checkpoint: CompanionTaskCheckpoint): void {
     this.#db.transaction(() => {
       const action = this.getAction(id), parsed = companionTaskCheckpointSchema.parse(checkpoint), previous = this.checkpoint(id);
+      if (JSON.stringify(parsed.activityThought) !== JSON.stringify(previous?.activityThought)) throw new Error('持续活动思考凭证只能由本活动的宿主原子创建，不可替换或删除。');
       const readset = parsed.executionReadset;
       if (readset && (readset.companionId !== action.companionId || readset.conversationId !== action.conversationId)) throw new Error('执行依赖读集不属于此伙伴或任务入口。');
       if (previous?.executionReadset) {
@@ -1458,6 +1462,7 @@ export class CompanionsStore {
   resumeAction(id: string): CompanionAction {
     return this.#db.transaction(() => {
       const action = this.getAction(id);
+      if (action.thought) throw new Error('持续活动思考只能由当前有效活动继续，不能作为普通执行任务恢复。');
       this.#requireMember(action.conversationId, action.companionId);
       if (action.contentAvailable === false || !['interrupted', 'cancelled', 'failed'].includes(action.status) || !this.checkpoint(id)) throw new Error('这条任务没有可用的恢复记录。');
       this.#workOrders.assertActionResume(action);
@@ -1510,13 +1515,70 @@ export class CompanionsStore {
   }
 
   createAction(input: CreateCompanionAction, checkpoint?: CompanionTaskCheckpoint): CompanionAction {
+    if (!input.sourceMessageId || input.thought || checkpoint?.activityThought) throw new Error('普通行动必须有真实来源，不能附带或伪造持续活动思考凭证。');
+    return this.#insertAction(input, checkpoint);
+  }
+  #thoughtReadsetValid(proof: CompanionExecutionReadset): boolean {
+    return companionExecutionReadsetValidSync(this.#db, proof, proof.companionId, proof.conversationId, {
+      sourceValid: (owner, conversationId, id, checksum) => this.#memory.sourcesFilter(this.#memory.sources.ownerScope(owner), [id])
+        .some(source => source.conversationId === conversationId && createHash('sha256').update(source.content).digest('hex') === checksum),
+      memoryValid: (owner, id, version) => this.#memory.execute({ type: 'memory.records.filter', ...this.#memory.sources.ownerScope(owner), ids: [id] })
+        ?.memories?.some(note => note.version === version) === true,
+      topicSourcesValid: (owner, conversationId, ids) => this.#memory.sources.checkpointSourcesValid({ companionId: owner, conversationId }, ids),
+    });
+  }
+  #thoughtAction(authorization: CompanionActivityThoughtAuthorization): CompanionAction | undefined {
+    const found = this.#db.prepare("SELECT data FROM actions WHERE json_type(data,'$.thought')='object' AND companion_id=? AND json_extract(data,'$.thought.taskId')=? AND json_extract(data,'$.thought.step')=? AND json_extract(data,'$.thought.effectId')=?")
+      .get(authorization.companionId, authorization.taskId, authorization.step, authorization.effectId);
+    return found ? this.#recoverableAction(decode<CompanionAction>(row(found).data)) : undefined;
+  }
+  #createActivityThought(command: Extract<CompanionStorageCommand, { type: 'activity.thought.create' }>): CompanionStorageResponse {
+    return this.#db.transaction(() => {
+      const prepared = this.#activity.prepareThought(command), { authorization, executionReadset } = prepared;
+      if (!this.#thoughtReadsetValid(executionReadset)) throw new Error('持续活动思考引用的真实来源、记忆或授权已变化。');
+      const existing = this.#thoughtAction(authorization);
+      if (existing) {
+        const checkpoint = this.checkpoint(existing.id);
+        if (!checkpoint?.activityThought || existing.title !== command.title || checkpoint.prompt !== command.prompt
+          || JSON.stringify(checkpoint.executionReadset) !== JSON.stringify(executionReadset)
+          || checkpoint.activityThought.observationFingerprint !== authorization.observationFingerprint) throw new Error('持续活动思考幂等标识与原提案或读集冲突。');
+        // A crash before dispatch may replace only the lease of a still-queued
+        // action. Started/confirmed work and its immutable proof stay intact.
+        if (existing.status === 'queued' && !existing.startedAt && !existing.taskId && !checkpoint.execution) {
+          checkpoint.activityThought = authorization;
+          this.#setMetadata('task-checkpoint/' + existing.id, checkpoint);
+        }
+        return { ok: true, action: existing, checkpoint };
+      }
+      const checkpoint: CompanionTaskCheckpoint = { prompt: command.prompt, activityThought: authorization, executionReadset, waitForActionIds: [], supplements: [] };
+      const thought = { taskId: authorization.taskId, step: authorization.step, effectId: authorization.effectId };
+      const action = this.#insertAction({ companionId: authorization.companionId, conversationId: authorization.conversationId,
+        ...(prepared.sourceMessageId ? { sourceMessageId: prepared.sourceMessageId } : {}), thought, title: command.title, status: 'queued' }, checkpoint, authorization);
+      return { ok: true, action, checkpoint };
+    }).immediate();
+  }
+  #validateActivityThought(command: Extract<CompanionStorageCommand, { type: 'activity.thought.validate' }>): CompanionStorageResponse {
+    return this.#db.transaction(() => {
+      const action = this.#thoughtAction(command.authorization), checkpoint = action && this.checkpoint(action.id);
+      const valid = !!action && action.contentAvailable !== false && !!checkpoint?.activityThought
+        && JSON.stringify(checkpoint.activityThought) === JSON.stringify(command.authorization)
+        && JSON.stringify(checkpoint.executionReadset) === JSON.stringify(command.executionReadset)
+        && this.#thoughtReadsetValid(command.executionReadset)
+        && this.#activity.thoughtValid(command.authorization, command.mode, command.mode === 'execute' && command.renew === true);
+      return { ok: true, activityThoughtValid: valid };
+    }).immediate();
+  }
+  #insertAction(input: CreateCompanionAction, checkpoint?: CompanionTaskCheckpoint, thoughtAuthorization?: CompanionActivityThoughtAuthorization): CompanionAction {
     const action = createCompanionActionSchema.parse(input);
     action.conversationId = this.#conversationId(action.conversationId);
     return this.#db.transaction(() => {
       this.#requireConversation(action.conversationId);
       this.#requireMember(action.conversationId, action.companionId);
-      const source = this.#db.prepare('SELECT conversation_id FROM messages WHERE id=?').get(action.sourceMessageId);
-      if (action.authorizationGrantId) this.#collaborations.assertAction(action);
+      const source = action.sourceMessageId ? this.#db.prepare('SELECT conversation_id FROM messages WHERE id=?').get(action.sourceMessageId) : undefined;
+      if (thoughtAuthorization) {
+        if (!action.thought || checkpoint?.activityThought !== thoughtAuthorization || action.companionId !== thoughtAuthorization.companionId
+          || action.conversationId !== thoughtAuthorization.conversationId) throw new Error('持续活动思考凭证与行动不一致。');
+      } else if (action.authorizationGrantId) this.#collaborations.assertAction(action);
       else if (!source || row(source).conversation_id !== action.conversationId) throw new Error('行动来源不属于这个聊天。');
       const value: CompanionAction = { ...action, id: randomUUID(), createdAt: stamp(), updatedAt: stamp() };
       const scheduled = this.#schedule.bindAction(value);
@@ -1525,7 +1587,10 @@ export class CompanionsStore {
       if (existingOrderAction) return existingOrderAction;
       this.#runtimeState.energy(value.companionId);
       this.#db.prepare('INSERT INTO actions(id,conversation_id,companion_id,status,data) VALUES(?,?,?,?,?)').run(value.id, value.conversationId, value.companionId, value.status, JSON.stringify(value));
-      if (checkpoint) this.saveCheckpoint(value.id, checkpoint);
+      if (checkpoint) {
+        if (thoughtAuthorization) this.#setMetadata('task-checkpoint/' + value.id, companionTaskCheckpointSchema.parse(checkpoint));
+        else this.saveCheckpoint(value.id, checkpoint);
+      }
       this.#schedule.actionCreated(value);
       this.#workOrders.actionChanged(value);
       if (value.status === 'running') this.#routine.beginWork(value.companionId, 'action:' + value.id);
@@ -1549,7 +1614,7 @@ export class CompanionsStore {
       this.#db.prepare('UPDATE actions SET data=?,status=? WHERE id=?').run(JSON.stringify(value), value.status, id);
       if (value.status === 'running') this.#routine.beginWork(value.companionId, 'action:' + value.id);
       else this.#routine.endWork(value.companionId, 'action:' + value.id);
-      if (['succeeded', 'failed', 'cancelled'].includes(value.status) && (value.result || value.error) && ((!previous.result && !previous.error) || previous.status !== value.status)) {
+      if (!value.thought && ['succeeded', 'failed', 'cancelled'].includes(value.status) && (value.result || value.error) && ((!previous.result && !previous.error) || previous.status !== value.status)) {
         const evidence = this.appendMessage({ conversationId: value.conversationId, authorId: value.companionId, kind: 'action',
           actionId: value.id, content: JSON.stringify({ actionId: value.id, ...companionDshReceipt(value) }),
           clientId: `memory-action-${value.id}-${value.attempt ?? 1}`, replyToId: value.authorizationGrantId ? value.parentMessageId : value.sourceMessageId });
@@ -1765,6 +1830,8 @@ export class CompanionsStore {
       case 'actions.page': return { ok: true, actionPage: this.actionPage(command) };
       case 'action.get': return { ok: true, action: this.getAction(command.id) };
       case 'action.create': return { ok: true, action: this.createAction(command.action, command.checkpoint) };
+      case 'activity.thought.create': return this.#createActivityThought(command);
+      case 'activity.thought.validate': return this.#validateActivityThought(command);
       case 'checkpoint.get': return { ok: true, checkpoint: this.checkpoint(command.id) };
       case 'checkpoint.save': this.saveCheckpoint(command.id, command.checkpoint); return { ok: true };
       case 'checkpoint.execution': this.updateCheckpoint(command.id, { execution: command.execution }); return { ok: true };

@@ -1,6 +1,7 @@
 import { companionInterruptionCommands, companionInterruptionSchema } from './companion-interruption';
 import { companionAgentRunCommands, companionAgentRunSchema } from './companion-agent-run';
 import { companionExecutionReadsetSchema } from './companion-execution-evidence';
+import { companionActivityThoughtAuthorizationSchema } from './companion-activity-thought';
 import { companionExperienceCommands, companionExperiencePublishSchema } from './companion-experience';
 import { companionKnowledgeCommandSchema } from './companion-knowledge-store';
 import { companionSocialReplyReceiptSchema } from './companion-social-reply';
@@ -83,6 +84,7 @@ export const createCompanionActionSchema = actionSchema.omit({ id: true, created
 export type CreateCompanionAction = z.infer<typeof createCompanionActionSchema>;
 export const companionTaskCheckpointSchema = z.strictObject({ prompt: z.string().min(1).max(65536),
   dshTask: dshTaskSpecSchema.optional(),
+  activityThought: companionActivityThoughtAuthorizationSchema.optional(),
   executionReadset: companionExecutionReadsetSchema.optional(),
   waitForActionIds: z.array(companionIdSchema).max(100).default([]),
   execution: dshTaskRecordSchema.optional(), supplements: z.array(z.object({ id: companionIdSchema, content: z.string().max(16000), mode: z.enum(['steer', 'queue']) })).max(100).default([]) });
@@ -155,6 +157,12 @@ export const companionStorageCommandSchema = z.discriminatedUnion('type', [
   companionActionPageQuerySchema.extend({ type: z.literal('actions.page') }).strict(),
   z.strictObject({ type: z.literal('action.get'), id: companionIdSchema }),
   z.strictObject({ type: z.literal('action.create'), action: createCompanionActionSchema, checkpoint: companionTaskCheckpointSchema.optional() }),
+  z.strictObject({ type: z.literal('activity.thought.create'), taskId: companionIdSchema, leaseToken: companionIdSchema,
+    expectedStep: z.number().int().nonnegative().safe(), effectId: z.string().min(1).max(200),
+    observationFingerprint: z.string().min(2).max(65536), executionReadset: companionExecutionReadsetSchema,
+    prompt: z.string().trim().min(1).max(65536), title: z.string().trim().min(1).max(120) }),
+  z.strictObject({ type: z.literal('activity.thought.validate'), authorization: companionActivityThoughtAuthorizationSchema,
+    executionReadset: companionExecutionReadsetSchema, mode: z.enum(['execute', 'read']), renew: z.boolean().optional() }),
   z.strictObject({ type: z.literal('action.update'), id: companionIdSchema, patch: updateCompanionActionSchema }),
   z.strictObject({ type: z.literal('action.interrupt-pending') }),
   z.strictObject({ type: z.literal('checkpoint.get'), id: companionIdSchema }),
@@ -202,6 +210,7 @@ export const companionTopicCompactionPageSchema = z.strictObject({
 });
 export type CompanionTopicCompactionPage = z.infer<typeof companionTopicCompactionPageSchema>;
 export const companionStorageResponseSchema = companionsResponseSchema.extend({
+  activityThoughtValid: z.boolean().optional(),
   experienceEvidence: companionExecutionReadsetSchema.optional(),
   agentRun: companionAgentRunSchema.optional(),
   executionSources: z.array(z.object({ kind: z.enum(['message', 'action']), id: companionIdSchema, companionId: companionIdSchema,

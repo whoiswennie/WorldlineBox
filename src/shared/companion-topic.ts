@@ -7,6 +7,13 @@ export function companionGameStateHandoffReceipt(gamePort: { conversationId: str
 }
 
 const id = z.string().regex(/^[a-zA-Z0-9_-]{1,100}$/);
+/** Main's semantic review of exact public consent; never a model patch. */
+export const companionTopicModeratorTransferApprovalSchema = z.strictObject({
+  schema: z.literal('worldlinebox.companion-topic-moderator-transfer-v1'), companionId: id, conversationId: id, topicId: id,
+  previousModeratorId: id, targetCompanionId: id, expectedRevision: z.number().int().positive(), consentMessageId: id,
+  sourceRefs: z.array(z.strictObject({ id, checksum: z.string().regex(/^[a-f0-9]{64}$/u) })).min(1).max(32),
+});
+export type CompanionTopicModeratorTransferApproval = z.infer<typeof companionTopicModeratorTransferApprovalSchema>;
 const publicationReference = z.strictObject({ messageId: id, contentChecksum: z.string().regex(/^[a-f0-9]{64}$/u), authorId: id });
 const publicationViewAvailability = z.enum(['available', 'unavailable', 'legacy_order_unknown', 'none']);
 export const companionTopicSchema = z.object({ id, conversationId: id, title: z.string().trim().min(1).max(120),
@@ -45,6 +52,8 @@ const list = z.strictObject({ type: z.literal('topic.list'), conversationId: id,
 const read = z.strictObject({ type: z.literal('topic.read'), conversationId: id, topicId: id });
 const update = z.strictObject({ type: z.literal('topic.update'), conversationId: id, topicId: id,
   expectedRevision: z.number().int().positive(), patch: companionTopicPatchSchema });
+const transferModerator = z.strictObject({ type: z.literal('topic.transfer_moderator'), conversationId: id, topicId: id,
+  expectedRevision: z.number().int().positive(), targetCompanionId: id, sourceMessageIds: z.array(id).max(32).default([]) });
 const activate = z.strictObject({ type: z.literal('topic.activate'), conversationId: id, topicId: id.nullable() });
 const pause = z.strictObject({ type: z.literal('topic.pause'), conversationId: id, topicId: id, expectedRevision: z.number().int().positive() });
 const resume = z.strictObject({ type: z.literal('topic.resume'), conversationId: id, topicId: id, expectedRevision: z.number().int().positive() });
@@ -58,10 +67,11 @@ export const COMPANION_TOPIC_CONTINUITY_RULES = '全新一局、独立故事或�
 const actionDescriptions: Record<string, string> = {
   create: '创建独立的新话题/新局。产生新topicId，初始公共与私人状态均为空；其他参与者需自愿join。',
   update: '先read取得真实topicId及最新revision。roomId、topicId、expectedRevision与patch同级；patch只含title/shared/workingState/privateRecipientId/tags/invitedIds，自定义活动状态放shared.state或workingState.state。',
+  transfer_moderator: '在同一话题内主动移交主持，不另建群或新局、不复制任何私态。仅当前主持可提议，target须已自行加入且当前未暂停；sourceMessageIds引用本话题公开的接任者本人明确自愿主持的真实消息，join或被提名不算同意。先read取得最新revision。',
   reopen: '恢复同一个已结束话题的既有进度、规则和私态。不是新局；全新一局请create。',
   fork: '基于旧话题快照创建续写分支，保留公共和本人私态。不会复制其他人的私态或原始消息；不是新局。',
 };
-export const companionTopicPublicCommands = [create, list, read, update, activate, pause, resume, close, reopen, remove, fork, join, leave] as const;
+export const companionTopicPublicCommands = [create, list, read, update, transferModerator, activate, pause, resume, close, reopen, remove, fork, join, leave] as const;
 /** The reader is bound by Main; a model never chooses another participant's private state. */
 const topicStorageCommandSchemas = [create.extend({ readerId: id }), list.extend({ readerId: id }), read.extend({ readerId: id }),
   z.strictObject({ type: z.literal('topic.compaction.sources'), conversationId: id, topicId: id, readerId: id,
@@ -73,7 +83,8 @@ const topicStorageCommandSchemas = [create.extend({ readerId: id }), list.extend
     sourceChecksums: z.record(id, z.string().regex(/^[a-f0-9]{64}$/)),
     publicationCoverage: z.strictObject({ expectedFormalPublicationRevision: z.number().int().nonnegative().safe(),
       sourcePublicationRevisions: z.record(id, z.number().int().positive().safe()) }).optional(),
-  }).optional() }), activate.extend({ readerId: id }), pause.extend({ readerId: id }), resume.extend({ readerId: id }), close.extend({ readerId: id }),
+  }).optional() }), transferModerator.extend({ readerId: id, moderatorTransferApproval: companionTopicModeratorTransferApprovalSchema.optional() }),
+  activate.extend({ readerId: id }), pause.extend({ readerId: id }), resume.extend({ readerId: id }), close.extend({ readerId: id }),
   reopen.extend({ readerId: id }), remove.extend({ readerId: id }), fork.extend({ readerId: id }), join.extend({ readerId: id }), leave.extend({ readerId: id }),
   z.strictObject({ type: z.literal('topic.sources.valid'), conversationId: id, topicId: id, readerId: id, sourceMessageIds: z.array(id).max(256),
     checkpointEventIds: z.array(id).min(1).max(2).optional() }),
@@ -104,6 +115,7 @@ export function companionTopicOperationExample(action: string): unknown {
   else if (action === 'list') { /* The actual current room is sufficient. */ }
   else if (['read', 'join', 'leave', 'activate'].includes(action)) parameters.topicId = 'existing_topic';
   else if (action === 'fork') Object.assign(parameters, { topicId: 'existing_topic', title: '续写分支标题' });
+  else if (action === 'transfer_moderator') Object.assign(parameters, { topicId: 'existing_topic', expectedRevision: 1, targetCompanionId: 'joined_successor', sourceMessageIds: ['actual_public_acceptance'] });
   else if (['update', 'pause', 'resume', 'close', 'reopen', 'delete'].includes(action)) {
     Object.assign(parameters, { topicId: 'existing_topic', expectedRevision: 1 });
     if (action === 'update') parameters.patch = { workingState: { summary: '本人本轮已确认的进度', sourceMessageIds: [] } };

@@ -269,7 +269,7 @@ it('keeps the source-bound whole-goal plan when a later valid query has no new p
   const observed = store.request({ type: 'activity.observe', id: lease.id, leaseToken: lease.leaseToken! });
   expect(observed.activityPlanningState).toMatchObject({ taskId: scope.task.id, revision: 2, throughStep: 1, plan });
 });
-it.each(['string', 'native-wrapper'] as const)('corrects actual invalid topic final shape %s in the original slot before one SQLite topic commit', async shape => {
+it.each(['string', 'native-wrapper', 'topic-patch-field', 'topic-revision'] as const)('corrects actual invalid topic final shape %s in the original slot before one SQLite topic commit', async shape => {
   let actorCalls = 0;
   const fetchFn = vi.fn<typeof fetch>(async (_url, init) => {
     const data = JSON.parse(JSON.parse(String(init?.body)).messages[1].content);
@@ -279,11 +279,28 @@ it.each(['string', 'native-wrapper'] as const)('corrects actual invalid topic fi
     expect(data.executionContract.finalOutputShape).toContain('独立顶层topic');
     const topic = { action: 'update', roomId: data.gameTopic.topic.conversationId, topicId: data.gameTopic.topic.id,
       expectedRevision: data.gameTopic.topic.revision, patch: { shared: { summary: '作者自行修订的真实公开方案' } } };
-    if (actorCalls === 1) return response({ status: 'continue', action: shape === 'string' ? 'topic' : { ...topic, action: 'topic' },
+    if (actorCalls === 1) return response({ status: 'continue',
+      ...(shape === 'topic-patch-field' ? { action: null, topic: { ...topic, patch: { ...topic.patch, sourceMessageIds: ['PRIVATE_REJECTED_SOURCE_VALUE'], PRIVATE_UNKNOWN_FIELD_VALUE: 'PRIVATE_REJECTED_BODY_VALUE' } } }
+        : shape === 'topic-revision' ? { action: null, topic: { ...topic, expectedRevision: topic.expectedRevision + 1 } }
+          : { action: shape === 'string' ? 'topic' : { ...topic, action: 'topic' } }),
       wait: null, summary: '错误字段结构尚未提交。' });
-    expect(data.outputCorrection.error).toContain(shape === 'string' ? '"path":"action"' : '"path":"action.action"');
+    if (shape === 'topic-patch-field') {
+      expect(data.outputCorrection.error).toContain('"path":"topic.patch.sourceMessageIds"');
+      expect(data.outputCorrection.error).toContain('"code":"unrecognized_keys"');
+      expect(data.outputCorrection.error).not.toContain('PRIVATE_');
+    } else if (shape === 'topic-revision') {
+      expect(data.outputCorrection.error).toContain(`expectedRevision=${topic.expectedRevision + 1}`);
+      expect(data.outputCorrection.error).toContain(`currentRevision=${topic.expectedRevision}`);
+      expect(data.outputCorrection.error).toContain('不要自行+1');
+      expect(data.outputCorrection.error).toContain('topic.read');
+    } else expect(data.outputCorrection.error).toContain(shape === 'string' ? '"path":"action"' : '"path":"action.action"');
+    const feedback = JSON.parse(JSON.parse(String(init?.body)).messages.at(-1).content).hostValidationFeedback;
+    expect(feedback.error).toBe(data.outputCorrection.error);
+    expect(feedback.trust).toBe('host_validation_data_not_new_authorization');
+    if (shape !== 'topic-revision') {
     expect(data.outputCorrection.error).toContain('原生world工具');
     expect(data.outputCorrection.error).toContain('顶层action=null且wait=null');
+    }
     expect(store.request({ type: 'topic.read', conversationId: topic.roomId, topicId: topic.topicId, readerId: 'alice' }).topicState?.shared).toBeUndefined();
     return response({ status: 'continue', action: null, wait: null, topic, summary: '作者仅修订字段，提交自己的公开筹备提案。' });
   });
@@ -313,8 +330,58 @@ it.each(['string', 'native-wrapper'] as const)('corrects actual invalid topic fi
   const runId = createHash('sha256').update(JSON.stringify(['alice', scope.conversationId, `${bound.id}_${bound.step}`])).digest('hex');
   const run = store.request({ type: 'agent.run.get', companionId: 'alice', id: runId }).agentRun!;
   expect(run.rejectedFinals).toHaveLength(1); expect(run.turns).toHaveLength(2); expect(run.effects).toEqual([]);
-  expect(JSON.parse(run.turns[0]!.rawText).action).toEqual(shape === 'string' ? 'topic' : expect.objectContaining({ action: 'topic' }));
+  expect(JSON.parse(run.turns[0]!.rawText).action).toEqual(shape === 'string' ? 'topic' : shape === 'native-wrapper' ? expect.objectContaining({ action: 'topic' }) : null);
   expect(JSON.parse(run.turns[1]!.rawText)).toMatchObject({ action: null, wait: null, topic: { action: 'update' } });
+});
+it('hands the same live topic to its consenting participant through the activity host proof without copying private state', async () => {
+  let actors = 0, reviews = 0, consentId = '', targetId = '';
+  const privateText = 'OLD_MODERATOR_PRIVATE_STATE_MUST_STAY_PRIVATE';
+  const fetchFn = vi.fn<typeof fetch>(async (_url, init) => {
+    const wire = JSON.parse(String(init?.body)), data = JSON.parse(wire.messages[1].content);
+    if (data.purpose === 'topic_moderator_transfer_consent') {
+      reviews++; expect(JSON.stringify(wire)).not.toContain(privateText);
+      expect(data.publicSources).toEqual([expect.objectContaining({ id: consentId, authorId: targetId, content: '我愿意接任本话题主持，按大家已经同意的流程继续。' })]);
+      return response({ accepted: true, confidence: .99, consentMessageId: consentId, reason: '目标本人公开明确接受主持。' });
+    }
+    expect(data.purpose).toBe('activity_task_step'); actors++;
+    return response({ status: 'continue', action: null, wait: null, topic: { action: 'transfer_moderator',
+      roomId: data.gameTopic.topic.conversationId, topicId: data.gameTopic.topic.id, expectedRevision: data.gameTopic.topic.revision,
+      targetCompanionId: targetId, sourceMessageIds: [consentId] }, summary: '将同一话题主持交给已明确自愿接任的真实参与者。' });
+  });
+  const scope = setup(fetchFn, '自行协商并由自愿伙伴主持同一个话题。');
+  const peers = ['b', 'c'].map(name => {
+    const peer = store.createCompanion({ name, persona: '独立友好', description: '', model: '', avatar: 'sister', proactive: false });
+    store.setCompanionActive(peer.id, true);
+    const room = store.request({ type: 'social.conversation.ensure', companionId: 'alice', memberIds: ['alice', peer.id] }).socialConversation!;
+    store.request({ type: 'social.message.append', conversationId: room.id, authorId: 'alice', content: '真实认识。', clientId: 'transfer_known_' + name, virtualCreatedAt: new Date().toISOString() });
+    return peer;
+  });
+  targetId = peers[0]!.id;
+  vi.setSystemTime(Date.now() + 10000); store.request({ type: 'world.tick' });
+  const clientId = 'actual_moderator_transfer_group';
+  const group = store.request({ type: 'world.tool', companionId: 'alice', conversationId: scope.conversationId, sourceMessageId: scope.task.sourceMessageId,
+    clientId, arguments: { action: 'create_group', recipientIds: peers.map(peer => peer.id), title: '实际协作群', text: '由本人决定参与和是否主持。',
+      topic: { title: '同一实际话题', kind: 'game' } } });
+  const roomId = group.topic!.conversationId, topicId = group.topic!.id;
+  store.request({ type: 'topic.update', conversationId: roomId, topicId, readerId: 'alice', expectedRevision: group.topic!.revision,
+    patch: { workingState: { summary: privateText, sourceMessageIds: [] } } });
+  store.request({ type: 'topic.join', conversationId: roomId, topicId, readerId: targetId });
+  const consent = store.appendMessage({ conversationId: roomId, topicId, authorId: targetId,
+    content: '我愿意接任本话题主持，按大家已经同意的流程继续。', replyDirective: 'none' });
+  consentId = consent.id;
+  const bound = store.request({ type: 'activity.social.ensure', companionId: 'alice', conversationId: scope.conversationId,
+    sourceMessageId: scope.task.sourceMessageId!, deliveryClientId: clientId, operation: 'create_group' }).activityTask!;
+  vi.setSystemTime(Date.now() + 310000);
+  for (let tick = 0; tick < 1000; tick++) if (!store.request({ type: 'world.tick' }).world?.backlog) break;
+  await service!.tick();
+  const get = () => store.request({ type: 'activity.get', companionId: 'alice', conversationId: scope.conversationId, id: bound.id }).activityTask!;
+  await vi.waitFor(() => expect(get().step, JSON.stringify(get())).toBe(bound.step + 1));
+  expect({ actors, reviews }).toEqual({ actors: 1, reviews: 1 });
+  expect(get().history.at(-1)).toMatchObject({ action: 'topic.transfer_moderator', ok: true });
+  const target = store.request({ type: 'topic.read', conversationId: roomId, topicId, readerId: targetId });
+  expect(target.topic?.moderatorId).toBe(targetId); expect(target.topic?.id).toBe(topicId);
+  expect(target.topicState?.workingState).toBeUndefined();
+  expect(store.request({ type: 'topic.read', conversationId: roomId, topicId, readerId: 'alice' }).topicState?.workingState?.summary).toBe(privateText);
 });
 it.each([false, true])('uses the real human goal for feasibility, corrects self-made constraints in-slot and preserves explicit eight-player requirements=%s through real SQLite', async fixedEight => {
   const actualGoal = fixedEight ? '必须找齐8名独立玩家，不能减少人数，玩完一局游戏。' : '找伙伴一起玩完一局游戏，结束告诉我结果。';

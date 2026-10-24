@@ -1,7 +1,7 @@
 import { z } from 'zod';
 import { companionMemoryCandidateSchema, companionMemoryTagSchema, companionMemoryConsolidateSchema } from './companion-memory';
 import { companionWorldArgumentsSchema } from './companion-world-tool';
-import { companionTopicArgumentsSchema } from './companion-topic';
+import { companionTopicArgumentsSchema, companionTopicModeratorTransferApprovalSchema } from './companion-topic';
 import { companionKnowledgeReadSchema } from './companion-agent-run';
 import { companionExecutionReadsetSchema } from './companion-execution-evidence';
 const id = z.string().regex(/^[a-zA-Z0-9_-]{1,100}$/);
@@ -88,7 +88,7 @@ export const activityStorageCommands = [...activityPublicCommands,
   z.strictObject({ type: z.literal('activity.observe'), id, leaseToken: id }),
   z.strictObject({ type: z.literal('activity.plan.save'), id, leaseToken: id, expectedStep: z.number().int().nonnegative().safe(), sourceDigest: z.string().regex(/^[a-f0-9]{64}$/) }),
   z.strictObject({ type: z.literal('activity.commit'), id, leaseToken: id, expectedStep: z.number().int().nonnegative().safe().optional(), decision: activityDecisionSchema,
-    executionReadset: companionExecutionReadsetSchema.optional() }),
+    executionReadset: companionExecutionReadsetSchema.optional(), topicModeratorTransferApproval: companionTopicModeratorTransferApprovalSchema.optional() }),
   z.strictObject({ type: z.literal('activity.memory.claim') }),
   z.strictObject({ type: z.literal('activity.memory.complete'), id, leaseToken: id, result: z.string().max(16000),
     sourceMessageIds: z.array(id).max(100).default([]), noteVersions: z.array(z.object({ id, version: z.number().int().positive() })).max(100).default([]) }),

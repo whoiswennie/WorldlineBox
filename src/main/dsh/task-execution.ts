@@ -7,6 +7,8 @@ import { dshTaskSpecSchema, dshTaskCapabilityQuerySchema, dshExecutionConstraint
 
 /** Task controls only. Account, provider and model belong exclusively to the selected DSH profile. */
 export interface DshTaskExecutionOptions {
+  /** Trusted Main-only thought request; never an actor/renderer TaskSpec field. */
+  cognitiveOnly?: boolean;
   toolkit?: boolean;
   interactive?: boolean;
   access?: Readonly<DshExecutionAccessSettings>;
@@ -26,6 +28,7 @@ export interface DshTaskExecutionOptions {
   capabilityQuery?: DshTaskCapabilityQuery;
 }
 const executionSchema = z.strictObject({
+  cognitiveOnly: z.boolean().optional(),
   toolkit: z.boolean().optional(), interactive: z.boolean().optional(),
   access: dshExecutionAccessSettingsSchema.optional(),
   resume: dshTaskRecordSchema.optional(),
@@ -40,6 +43,15 @@ export function snapshotDshTaskExecution(input?: DshTaskExecutionOptions): DshTa
   const result = executionSchema.safeParse(input ?? {});
   if (!result.success) throw new Error('The DSH task controls are invalid. Model and credential overrides are not supported.');
   const value = result.data;
+  if (value.cognitiveOnly) {
+    if (!value.recordScope?.companionId || !value.workspaceRootPath)
+      throw new Error('A cognitive task requires a trusted owner and managed workspace root.');
+    if (value.resume || value.resumeScope || value.task?.session?.mode === 'resume')
+      throw new Error('A cognitive task requires a new session and cannot resume an existing task.');
+    if (value.discover || value.inputs?.length) throw new Error('A cognitive task accepts only its new, explicit thought request.');
+    return { ...value, interactive: true, toolkit: true, access: snapshotDshTaskAccess({ mode: 'read-only' }),
+      task: { ...value.task, mode: 'native', tools: [], skills: [], session: { mode: 'new' }, workspace: { mode: 'managed' } } };
+  }
   return { ...value, toolkit: value.toolkit === true || !!value.task, interactive: value.interactive === true || !!value.task,
     ...(value.access ? { access: snapshotDshTaskAccess(value.access) } : {}) };
 }

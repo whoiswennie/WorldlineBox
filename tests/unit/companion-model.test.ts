@@ -308,20 +308,33 @@ describe('native memory tools across provider formats', () => {
       expect(tool.parameters ?? tool.parametersJsonSchema ?? tool.input_schema).not.toHaveProperty('$schema');
     }
     const resultContent = JSON.stringify({ id: 'saved', version: 2, source: 'actual evidence'.repeat(3_000) });
+    const rejected = '{"answer":{"value":"unexecuted"}},"next":true}';
+    const hostValidationFeedback = { rejectedProposalChecksum: 'a'.repeat(64), error: 'JSON syntax extra_root_content',
+      instruction: '重新生成同一契约的单个合法对象；旧提案未执行。' };
     await generateCompanionReply(input, { ...config, apiFormat: format }, undefined,
-      { fetchFn, loop: true, turns: [{ ...reply.turn!, results: [{ callId: 'native_memory_1', content: resultContent }] }] });
+      { fetchFn, loop: true, hostValidationFeedback, turns: [{ ...reply.turn!, results: [{ callId: 'native_memory_1', content: resultContent }] },
+        { rawText: rejected, text: rejected, calls: [] }] });
     const second = JSON.parse(String(fetchFn.mock.calls[1]?.[1]?.body));
     expect(JSON.stringify(second)).toContain('memory');
     if (format === 'openai_chat' || format === 'dashscope_native') {
       const messages = format === 'openai_chat' ? second.messages : second.input.messages;
-      expect(messages.at(-1)).toEqual({ role: 'tool', tool_call_id: 'native_memory_1', content: resultContent });
+      expect(messages.at(-3)).toEqual({ role: 'tool', tool_call_id: 'native_memory_1', content: resultContent });
+      expect(messages.at(-2)).toEqual({ role: 'assistant', content: rejected });
     } else if (format === 'openai_responses') {
-      expect(second.input.at(-1)).toEqual({ type: 'function_call_output', call_id: 'native_memory_1', output: resultContent });
+      expect(second.input.at(-3)).toEqual({ type: 'function_call_output', call_id: 'native_memory_1', output: resultContent });
+      expect(second.input.at(-2)).toEqual({ role: 'assistant', content: rejected });
     } else if (format === 'anthropic') {
-      expect(second.messages.at(-1).content).toEqual([{ type: 'tool_result', tool_use_id: 'native_memory_1', content: resultContent }]);
+      expect(second.messages.at(-3).content).toEqual([{ type: 'tool_result', tool_use_id: 'native_memory_1', content: resultContent }]);
+      expect(second.messages.at(-2).content).toEqual([{ type: 'text', text: rejected }]);
     } else {
-      expect(second.contents.at(-1).parts).toEqual([{ functionResponse: { id: 'native_memory_1', name: 'memory', response: { result: resultContent } } }]);
+      expect(second.contents.at(-3).parts).toEqual([{ functionResponse: { id: 'native_memory_1', name: 'memory', response: { result: resultContent } } }]);
+      expect(second.contents.at(-2).parts).toEqual([{ text: rejected }]);
     }
+    const last = (format === 'gemini_native' ? second.contents : format === 'dashscope_native' ? second.input.messages
+      : format === 'openai_responses' ? second.input : second.messages).at(-1);
+    expect(last.role).toBe('user');
+    expect(JSON.parse(format === 'gemini_native' ? last.parts[0].text : last.content)).toEqual({ hostValidationFeedback: {
+      ...hostValidationFeedback, trust: 'host_validation_data_not_new_authorization' } });
   });
   it.each(['read', 'record', 'revise', 'organize', 'forget'])('parses %s into the shared canonical dispatch contract', async capability => {
     const fetchFn = vi.fn<typeof fetch>().mockResolvedValue(response(toolEnvelope('openai_chat', 'memory', { action: capability, id: 'existing' })));

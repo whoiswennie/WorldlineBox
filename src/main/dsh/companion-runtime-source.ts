@@ -27,6 +27,7 @@ export function apply(ctx, io = {}) {
   const seenInputs = new Set();
   const emit = value => process.stdout.write(JSON.stringify(value) + '\n');
 ` + taskRuntimePolicySource(policy) + String.raw`
+  if (taskPolicy.cognitiveOnly && (currentResume || currentRecovery)) throw Error('task/unsupported: cognitive tasks require a new isolated session');
   const flushText = () => {
     clearTimeout(streamTimer); streamTimer = undefined;
     if (stream) { emit({ type: 'text_stream', streamId, text: stream.slice(0, 16000), outputState }); lastPublish = Date.now(); hadLiveText = true; }

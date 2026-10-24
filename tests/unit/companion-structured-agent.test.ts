@@ -6,6 +6,7 @@ import { assembleCompanionRoleContext, companionRecallCapabilities, companionTas
 import type { CompanionReplyInput } from '../../src/main/companions/context';
 import type { CompanionTopic } from '../../src/shared/companion-topic';
 import { CompanionAgentNoProgressError } from '../../src/main/companions/agent-progress';
+import { createHash } from 'node:crypto';
 
 const companion: Companion = { id: 'a', name: '小澄', description: '妹妹', persona: '平静，认真核对事实。你是小澄，姐姐是小岚，用户是独立真人。',
   model: '', avatar: 'sister', builtin: false, proactive: false, active: true, createdAt: '2026-10-22T00:00:00Z' };
@@ -74,6 +75,30 @@ describe('same role Agent kernel across independent invocation ports', () => {
     expect(result).toEqual({ safe: true }); expect(validateOutput).toHaveBeenCalledTimes(2);
     const data = JSON.parse(JSON.parse(String(fetchFn.mock.calls[1]![1]?.body)).messages[1].content);
     expect(data.outputCorrection.error).toContain('私密内容');
+  });
+  it('pinpoints an extra root closure and ends the request with safe host correction without repairing the proposal', async () => {
+    const malformed = '{"answer":{"detail":"PRIVATE_MODEL_VALUE🧭"}},"next":true}';
+    const offset = malformed.indexOf(',"next"');
+    const fetchFn = vi.fn<typeof fetch>(async (_url, init): Promise<Response> => {
+      const wire = JSON.parse(String(init?.body));
+      if (fetchFn.mock.calls.length > 1) {
+        const feedback = JSON.parse(wire.messages.at(-1).content).hostValidationFeedback;
+        expect(wire.messages.at(-1).role).toBe('user');
+        expect(JSON.parse(wire.messages[1].content).outputCorrection.rejectedProposal).toBe(malformed);
+        expect(feedback.rejectedProposalChecksum).toBe(createHash('sha256').update(malformed).digest('hex'));
+        expect(feedback.error).toContain('extra_root_content');
+        expect(feedback.error).toContain(`UTF-16 offset=${offset}, line=1, column=${offset + 1}`);
+        expect(feedback.error).toContain('同一根对象');
+        expect(feedback.error).not.toContain('PRIVATE_MODEL_VALUE');
+        expect(feedback.error).not.toContain('next');
+        expect(feedback.trust).toBe('host_validation_data_not_new_authorization');
+      }
+      return new Response(JSON.stringify({ choices: [{ message: { content: fetchFn.mock.calls.length < 3 ? malformed : '{"answer":"已重新生成合法对象"}' } }] }));
+    });
+    expect(await runCompanionStructuredAgent({ context: domain,
+      frame: { companion, conversation: conversation('group'), messages: [], memories: [] } }, config, undefined, { fetchFn }))
+      .toEqual({ answer: '已重新生成合法对象' });
+    expect(fetchFn).toHaveBeenCalledTimes(3);
   });
   it('stops an unchanged empty-corpus search after the one correction without dispatching the proposed seventh read', async () => {
     let inference = 0;

@@ -10,8 +10,9 @@ import type { CompanionSocialStore } from './social-store';
 import { companionTimeInZone } from '../shared/companion-schedule-time';
 import { companionPlayerPhoneBusy } from './social-continuity-store';
 import type { CompanionWorldSnapshot } from '../shared/companion-world';
-import { companionTopicOperationSchema, COMPANION_TOPIC_STATE_WRITE_RECEIPT, companionGameStateHandoffReceipt } from '../shared/companion-topic';
+import { companionTopicOperationSchema, COMPANION_TOPIC_STATE_WRITE_RECEIPT, companionGameStateHandoffReceipt, type CompanionTopicModeratorTransferApproval } from '../shared/companion-topic';
 import { companionSocialGoalOrigin } from './social-goal-origin';
+import type { CompanionActivityThoughtAuthorization } from '../shared/companion-activity-thought';
 type Row = { data: string };
 type GoalSocialOrigin = { messageId: string; sourceMessageId: string; deliveryClientId: string; conversationId: string; topicId?: string; chainId: string };
 type Stored = CompanionActivityTask & { clientId: string; sourceChecksum?: string; nextAt: number; leaseUntil?: number;
@@ -25,7 +26,8 @@ type Stored = CompanionActivityTask & { clientId: string; sourceChecksum?: strin
   peerConversationId?: string;
   peerTopicId?: string | null;
   seededSocialClientIds?: string[];
-  deferredDecision?: { step: number; decision: ActivityDecision; socialEvidence: Array<{ id: string; checksum: string }>; executionReadset?: CompanionExecutionReadset };
+  deferredDecision?: { step: number; decision: ActivityDecision; socialEvidence: Array<{ id: string; checksum: string }>; executionReadset?: CompanionExecutionReadset;
+    topicModeratorTransferApproval?: CompanionTopicModeratorTransferApproval };
   observedSocialEvidence?: { leaseToken: string; messages: Array<{ id: string; checksum: string }> };
   worldDay?: string; createdVirtualAt?: number;
   evidence?: Array<{ id: string; conversationId: string; checksum: string }>;
@@ -339,6 +341,39 @@ export class CompanionActivityTaskStore {
     task.executionKnowledgeReads = [...new Map([...(task.executionKnowledgeReads ?? []), ...proof.knowledgeReads].map(read => [JSON.stringify(read), read])).values()];
     if (!this.valid(task)) throw new Error('行动提案的真实来源在提交前已经变化，未执行或发布旧提案。');
     return proof;
+  }
+  /** Storage-only admission for a tool-less DSH analysis of this exact live
+   * activity. A peer/self goal has no invented human message. */
+  prepareThought(command: Extract<CompanionStorageCommand, { type: 'activity.thought.create' }>): {
+    authorization: CompanionActivityThoughtAuthorization; executionReadset: CompanionExecutionReadset; sourceMessageId?: string;
+  } {
+    const task = this.leased(command.taskId, command.leaseToken);
+    const authorization: CompanionActivityThoughtAuthorization = { taskId: task.id, companionId: task.companionId,
+      conversationId: task.conversationId, step: command.expectedStep, effectId: command.effectId,
+      leaseToken: command.leaseToken, observationFingerprint: command.observationFingerprint };
+    if (!this.thoughtValid(authorization, 'execute')) throw new Error('持续活动的步骤、租约或实际观察已变化，未委托旧思考。');
+    const executionReadset = this.bindExecutionEvidence(task, command.executionReadset);
+    this.save(task);
+    return { authorization, executionReadset, ...(task.sourceMessageId ? { sourceMessageId: task.sourceMessageId } : {}) };
+  }
+  thoughtValid(authorization: CompanionActivityThoughtAuthorization, mode: 'execute' | 'read', renew = false): boolean {
+    const found = this.db.prepare('SELECT data FROM companion_activity_tasks WHERE id=?').get(authorization.taskId) as Row | undefined;
+    if (!found) return false;
+    const task = JSON.parse(found.data) as Stored;
+    if (task.companionId !== authorization.companionId || task.conversationId !== authorization.conversationId || !this.valid(task)) return false;
+    // A later step or an ordinary terminal status does not erase an actual
+    // historical analysis. Its captured source/readset is verified by Store.
+    if (mode === 'read') return true;
+    if (task.status !== 'running' || task.step !== authorization.step || task.leaseToken !== authorization.leaseToken
+      || (task.leaseUntil ?? 0) < Date.now() || task.observedSocialEvidence?.leaseToken !== authorization.leaseToken) return false;
+    const messages = this.peerMessages(task);
+    const observed = messages.map(message => ({ id: message.id, checksum: checksum(message) }));
+    const fingerprint = JSON.stringify(messages.map(message => [message.id, message.conversationId, message.sequence, checksum(message)]));
+    if (authorization.observationFingerprint !== fingerprint || JSON.stringify(task.observedSocialEvidence.messages) !== JSON.stringify(observed)) return false;
+    if (task.sourceMessageId && task.observedProgressEvidence?.leaseToken === authorization.leaseToken
+      && task.observedProgressEvidence.observationChecksum !== this.social.continuity.progressForGoal({ ...task, sourceMessageId: task.sourceMessageId }).observationChecksum) return false;
+    if (renew) { task.leaseUntil = Date.now() + PLANNING_LEASE_MS; task.nextAt = task.leaseUntil; this.save(task); }
+    return true;
   }
   private reportObservation(task: Stored): string {
     return createHash('sha256').update(JSON.stringify({ id: task.id, status: task.status, step: task.step, stage: task.stage,
@@ -658,7 +693,7 @@ export class CompanionActivityTaskStore {
             task.status = 'running'; task.leaseToken = randomUUID(); task.leaseUntil = Date.now() + PLANNING_LEASE_MS;
             if (task.observedProgressEvidence) task.observedProgressEvidence.leaseToken = task.leaseToken;
             task.nextAt = task.leaseUntil; this.save(task);
-            this.commit(task.id, task.leaseToken, deferred.decision, false, undefined, deferred.executionReadset);
+            this.commit(task.id, task.leaseToken, deferred.decision, false, undefined, deferred.executionReadset, deferred.topicModeratorTransferApproval);
             continue;
           }
         }
@@ -671,7 +706,7 @@ export class CompanionActivityTaskStore {
     }).immediate();
   }
   private leased(id: string, token: string): Stored { const task = this.get(id); if (task.status !== 'running' || task.leaseToken !== token || (task.leaseUntil ?? 0) < Date.now() || !this.valid(task)) throw new Error('行动任务租约或来源已失效。'); return task; }
-  private topicStep(task: Stored, input: NonNullable<ActivityDecision['topic']>): CompanionStorageResponse {
+  private topicStep(task: Stored, input: NonNullable<ActivityDecision['topic']>, moderatorTransferApproval?: CompanionTopicModeratorTransferApproval): CompanionStorageResponse {
     if (!this.topicExecute) throw new Error('当前宿主没有装配话题操作接口，未执行。');
     const operation = input as { action: string; roomId?: string; topicId?: string | null };
     const schema = companionTopicOperationSchema(operation.action);
@@ -692,9 +727,19 @@ export class CompanionActivityTaskStore {
     if (operation.action === 'list') return { ok: true, topics: [read.topic], hasMore: false };
     const { action, roomId: _roomId, ...parameters } = parsed; void _roomId;
     const command = { ...parameters, type: `topic.${action}`, conversationId: port.conversationId,
-      readerId: task.companionId, operationId: `activity_${task.id}_${task.step}` } as Extract<CompanionStorageCommand, { type: `topic.${string}` }>;
+      readerId: task.companionId, operationId: `activity_${task.id}_${task.step}`,
+      ...(operation.action === 'transfer_moderator' ? { moderatorTransferApproval } : {}) } as Extract<CompanionStorageCommand, { type: `topic.${string}` }>;
     const result = this.topicExecute(command);
     if (!result?.ok) throw new Error(result?.error ?? '话题操作没有产生成功回执。');
+    if (operation.action === 'transfer_moderator') {
+      // These are dependencies actually read by the host consent review, not
+      // a claim that the planning author read arbitrary nested message JSON.
+      const references = moderatorTransferApproval?.sourceRefs ?? [];
+      const sources = this.visible({ companionId: task.companionId, conversationId: port.conversationId }, references.map(ref => ref.id));
+      if (sources.length !== references.length || sources.some(source => checksum(source) !== references.find(ref => ref.id === source.id)?.checksum)) throw new Error('主持移交的同意来源已撤回，未保存旧执行回执。');
+      for (const source of sources) if (!task.evidence?.some(item => item.id === source.id)) (task.evidence ??= []).push({ id: source.id,
+        conversationId: source.conversationId, checksum: checksum(source) });
+    }
     this.captureTopicReceipt(task, port, result);
     return operation.action === 'update' ? { ...result, topicDelivery: COMPANION_TOPIC_STATE_WRITE_RECEIPT } : result;
   }
@@ -710,7 +755,8 @@ export class CompanionActivityTaskStore {
       (task.topicEvidence ??= []).push({ conversationId: port.conversationId, topicId: port.topicId, eventId: checkpoint.sourceEventId });
     }
   }
-  private commit(id: string, token: string, decision: ActivityDecision, fromPrimary = false, expectedStep?: number, executionReadset?: CompanionExecutionReadset): CompanionActivityTask {
+  private commit(id: string, token: string, decision: ActivityDecision, fromPrimary = false, expectedStep?: number, executionReadset?: CompanionExecutionReadset,
+    topicModeratorTransferApproval?: CompanionTopicModeratorTransferApproval): CompanionActivityTask {
     return this.db.transaction(() => {
       const task = this.leased(id, token);
       if (expectedStep !== undefined && task.step !== expectedStep) throw new Error('行动步骤已有真实进展，旧提案未执行；须重新观察。');
@@ -721,7 +767,7 @@ export class CompanionActivityTaskStore {
       this.chargePlanning(task);
       const present = this.world.snapshot(task), self = present.actors.find(actor => actor.companionId === task.companionId);
       if (!fromPrimary && this.primaryChatBusy(task) || decision.status === 'continue' && decision.action && (present.backlog || this.peerBusy(task.companionId) || !self || ['sleeping','eating'].includes(self.routinePhase) || ['working','eating','sleeping','lyingDown','waking'].includes(self.activity) || present.works.some(work => work.companionId === task.companionId && work.kind !== 'chat' && work.status !== 'ended'))) {
-        task.deferredDecision = { step: task.step, decision, executionReadset, socialEvidence: task.deferredDecision?.socialEvidence
+        task.deferredDecision = { step: task.step, decision, executionReadset, topicModeratorTransferApproval, socialEvidence: task.deferredDecision?.socialEvidence
           ?? (task.observedSocialEvidence?.leaseToken === token ? task.observedSocialEvidence.messages : []) };
         task.status = 'queued'; task.stage = '这一步已完成授权核验并保存，暂等当前通信或身体动作结束后执行；尚未执行，不需要重新规划。'; task.nextAt = Date.now() + 5000; task.attempts = 0; delete task.leaseToken; delete task.leaseUntil; this.save(task); return this.public(task);
       }
@@ -756,7 +802,7 @@ export class CompanionActivityTaskStore {
       }
       try {
       if (decision.topic) {
-        topicReceipt = this.db.transaction(() => this.topicStep(task, decision.topic!)).immediate();
+        topicReceipt = this.db.transaction(() => this.topicStep(task, decision.topic!, topicModeratorTransferApproval)).immediate();
         result = JSON.stringify(topicReceipt);
       }
       if (action) {
@@ -1001,7 +1047,7 @@ export class CompanionActivityTaskStore {
         if (!this.valid(task)) throw new Error('计划引用的来源或记忆已撤回，未保存。');
         this.save(task); return { ok: true, activityPlanningState: task.wholeGoalPlan };
       }).immediate();
-      case 'activity.commit': return { ok: true, activityTask: this.commit(command.id, command.leaseToken, command.decision, false, command.expectedStep, command.executionReadset) };
+      case 'activity.commit': return { ok: true, activityTask: this.commit(command.id, command.leaseToken, command.decision, false, command.expectedStep, command.executionReadset, command.topicModeratorTransferApproval) };
       case 'activity.social.ensure': return this.ensureSocial(command);
       case 'activity.reject': {
         const task = this.leased(command.id, command.leaseToken); this.chargePlanning(task);

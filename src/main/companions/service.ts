@@ -63,6 +63,7 @@ import { reviewTopicContinuity } from './topic-continuity-review';
 import { socialProgressReads, socialProgressOutbound, socialProgressFingerprint, createdSocialPort } from './social-progress-evidence';
 import { companionGameContactExecutionReadset, resolveCompanionGameContactContext, resolveCompanionInvocationTopicPort } from './game-contact-context';
 import { companionGamePublicReplyEvidence, reviewCompanionGamePublicReply, reviewCompanionGameSharedUpdate } from './game-topic-privacy';
+import { reviewCompanionTopicModeratorTransfer } from './topic-moderator-transfer';
 import { captureCompanionExecutionReadset, companionExecutionReadsetDigest, companionWorldReadSources, verifyCompanionExecutionReadset, projectCompanionExecutionReceipt } from './execution-evidence';
 import type { CompanionExecutionReadset } from '../../shared/companion-execution-evidence';
 import { companionExecutionSourceReadOnly, guardCompanionExecutionSources } from './source-execution-evidence';
@@ -278,6 +279,7 @@ export class CompanionService {
       changed: () => this.changed(), wakeWaiting: () => { void this.pumpQueue(); }, report: options.report, blocked: id => this.resettingCompanions.has(id) || this.dormantCompanions.has(id) });
     this.activityTasks = new CompanionActivityTaskService({ request: command => this.call(command), configFor: role => this.configFor(role),
       profiles: input => this.profiles.prepare(input), fetchFn: (url, init) => net.fetch(url instanceof URL ? url.toString() : url, { ...init, credentials: 'omit' }),
+      think: (input, signal) => this.thinkForActivity(input, signal),
       memoryContextValid: (scope, context) => this.memory.contextValid(scope, context),
       excludedIds: () => [...new Set([...this.resettingCompanions, ...[...this.activities.values()].map(activity => activity.companionId)])],
       changed: () => this.changed(), report: options.report });
@@ -395,6 +397,12 @@ export class CompanionService {
     try {
     const stored = (await this.storage.request({ type: 'action.get', id: action.id })).action;
     if (!stored || stored.contentAvailable === false || stored.companionId !== action.companionId || stored.conversationId !== action.conversationId) return false;
+    const checkpoint = (await this.storage.request({ type: 'checkpoint.get', id: action.id })).checkpoint;
+    if (stored.thought) {
+      if (!checkpoint?.activityThought || !checkpoint.executionReadset
+        || !(await this.call({ type: 'activity.thought.validate', authorization: checkpoint.activityThought,
+          executionReadset: checkpoint.executionReadset, mode: 'read' })).activityThoughtValid) return false;
+    } else if (!stored.sourceMessageId) return false;
     if (stored.authorizationGrantId) {
       try {
         const grant = (await this.call({ type: 'collaboration.read', id: stored.authorizationGrantId, companionId: stored.companionId })).collaboration;
@@ -405,7 +413,7 @@ export class CompanionService {
         if (!source || grant.sourceMessageId !== stored.sourceMessageId || createHash('sha256').update(source.content).digest('hex') !== grant.sourceChecksum) return false;
       } catch { return false; }
     }
-    const evidence = readset ?? (await this.storage.request({ type: 'checkpoint.get', id: action.id })).checkpoint?.executionReadset;
+    const evidence = readset ?? checkpoint?.executionReadset;
     return await verifyCompanionExecutionReadset(evidence, action, { request: command => this.call(command), contextValid: (scope, context) => this.memory.contextValid(scope, context) });
     } catch { return false; }
   }
@@ -609,7 +617,7 @@ export class CompanionService {
           .filter(work => work.conversationId === request.conversationId);
         const actions = ((await this.call({ type: 'actions' })).actions ?? []).filter(action => ['queued', 'running'].includes(action.status));
         const affected = new Set<string>();
-        for (const id of new Set([...works.map(work => work.sourceMessageId), ...actions.map(action => action.sourceMessageId)])) {
+        for (const id of new Set([...works.map(work => work.sourceMessageId), ...actions.flatMap(action => action.sourceMessageId ? [action.sourceMessageId] : [])])) {
           const source = (await this.call({ type: 'message.get', id }).catch(() => ({ ok: false } as CompanionStorageResponse))).message;
           if (source?.conversationId === request.conversationId && source.topicId === request.topicId) affected.add(id);
         }
@@ -620,10 +628,10 @@ export class CompanionService {
           await this.call({ type: 'work.status', id: work.id, status: 'cancelled' });
           await this.call({ type: 'reply.checkpoint.status', conversationId: work.conversationId, sourceMessageId: work.sourceMessageId, status: 'cancelled' });
         }
-        for (const action of actions) if (affected.has(action.sourceMessageId)) await this.handle({ type: 'action.cancel', id: action.id });
+        for (const action of actions) if (action.sourceMessageId && affected.has(action.sourceMessageId)) await this.handle({ type: 'action.cancel', id: action.id });
         this.changed(); return result;
       }
-      case 'topic.create': case 'topic.list': case 'topic.read': case 'topic.update': case 'topic.activate': case 'topic.pause': case 'topic.resume': case 'topic.close': case 'topic.reopen': case 'topic.fork': case 'topic.join': case 'topic.leave': {
+      case 'topic.create': case 'topic.list': case 'topic.read': case 'topic.update': case 'topic.transfer_moderator': case 'topic.activate': case 'topic.pause': case 'topic.resume': case 'topic.close': case 'topic.reopen': case 'topic.fork': case 'topic.join': case 'topic.leave': {
         const result = await this.call({ ...request, readerId: 'user' });
         if (request.type !== 'topic.list' && request.type !== 'topic.read') this.changed();
         return result;
@@ -2468,7 +2476,7 @@ export class CompanionService {
         const port = !roomId && typeof args.topicId === 'string' ? await resolveCompanionInvocationTopicPort(command => this.call(command), {
           scope, turns: invocationTurns, topicId: args.topicId, ...(currentPlayerRequest ? { sourceMessageId: requestMessageIds.at(-1) } : {}),
         }) : undefined;
-        const command = { type: 'topic.' + action, ...parameters, conversationId: roomId ?? port?.roomId ?? scope.conversationId, readerId: scope.companionId,
+        let command = { type: 'topic.' + action, ...parameters, conversationId: roomId ?? port?.roomId ?? scope.conversationId, readerId: scope.companionId,
           operationId: 'brain_' + createHash('sha256').update(callIdentity).digest('hex') } as CompanionStorageCommand;
         if (command.type === 'topic.update' && (command.patch.shared || command.patch.title !== undefined || command.patch.tags !== undefined || command.patch.invitedIds !== undefined)) {
           const owner = (await this.call({ type: 'state', includeConversations: false })).state?.companions.find(member => member.id === scope.companionId);
@@ -2484,6 +2492,14 @@ export class CompanionService {
             const current = (await this.call({ type: 'memory.sources.filter', ...scope, beforeSequence, ids: [source.id] })).memorySources?.find(message => message.id === source.id && message.content === source.content);
             if (!current) throw new Error('话题修改的原始请求在核验期间已经更新或撤回。');
           }
+        }
+        if (command.type === 'topic.transfer_moderator') {
+          const owner = (await this.call({ type: 'state', includeConversations: false })).state?.companions.find(member => member.id === scope.companionId);
+          if (!owner) throw new Error('当前伙伴不可访问，未移交话题主持。');
+          const moderatorTransferApproval = await reviewCompanionTopicModeratorTransfer({ command, request: request => this.call(request) },
+            await this.configFor(owner), signal, { fetchFn: (url, init) => net.fetch(url instanceof URL ? url.toString() : url, { ...init, credentials: 'omit' }), timeoutMs: 30_000 });
+          this.assertReplyActive(signal);
+          command = { ...command, moderatorTransferApproval };
         }
         const result = await this.call(command);
         if (action !== 'list' && action !== 'read') this.changed();
@@ -2845,13 +2861,41 @@ export class CompanionService {
       checkpoint: { prompt: request.prompt, dshTask, executionReadset, supplements: [], waitForActionIds } });
     if (!response.action) throw new Error('无法登记这件事。');
     const action = response.action;
+    return this.queueAction(action, request.prompt, signal, queuedBehind);
+  }
+  /** The activity lease grants only computation, never player execution authority. */
+  private async thinkForActivity(input: Omit<Extract<CompanionStorageCommand, { type: 'activity.thought.create' }>, 'type'>, signal?: AbortSignal): Promise<unknown> {
+    this.assertReplyActive(signal);
+    const created = await this.call({ type: 'activity.thought.create', ...input });
+    const action = created.action, proof = created.checkpoint?.activityThought;
+    const readset = created.checkpoint?.executionReadset;
+    if (!created.ok || !action?.thought || !proof || !readset) throw new Error(created.error ?? '思考任务没有取得当前活动的真实授权。');
+    if (!await this.executionEvidenceValid(action, readset)) throw new Error('思考所读资料已经变化，未执行。');
+    await this.queueAction(action, input.prompt, signal);
+    await this.actionJobs.get(action.id);
+    this.assertReplyActive(signal);
+    const current = (await this.call({ type: 'activity.thought.validate', authorization: proof, executionReadset: readset, mode: 'execute' })).activityThoughtValid;
+    if (!current || !await verifyCompanionKnowledgeReads(readset.knowledgeReads, action, command => this.call(command)))
+      throw new Error('思考期间当前活动或所读资料已经变化，旧分析没有交给当前提案。');
+    const final = (await this.call({ type: 'action.get', id: action.id })).action!;
+    if (final.status === 'succeeded' && (!final.executionSummary?.effective || final.executionSummary.effective.mode !== 'native'
+      || final.executionSummary.effective.toolCount !== 0 || final.executionSummary.effective.skillCount !== 0))
+      throw new Error('思考回执缺少原生零工具/零技能能力证明，未采用分析。');
+    return { tasks: [companionDshReceipt(final)], trust: 'cognitive_analysis_not_execution_fact',
+      instruction: '仅为本人本目标的分析资料；不证明工具执行、他人决定或世界状态改变。按当前真实回执自行继续原目标。' };
+  }
+  /** One existing capacity/job/session pipeline for external execution and restricted thought. */
+  private async queueAction(action: CompanionAction, prompt: string, signal?: AbortSignal, queuedBehind?: Promise<unknown>): Promise<CompanionsResponse> {
     if (this.dormantCompanions.has(action.companionId)) throw new Error('伙伴已休眠，请先手动激活。');
     if (this.resettingCompanions.has(action.companionId)) throw new Error('伙伴正在停止，暂不启动新任务。');
     if (this.actionJobs.has(action.id) || ['succeeded', 'failed', 'cancelled'].includes(action.status)) return { ok: true, actions: [action] };
-    if (action.status === 'interrupted') return this.resumeAction(action.id);
-    if (!association?.parentMessageId) await this.call({ type: 'message.append', message: { conversationId: action.conversationId, authorId: action.companionId,
+    if (action.status === 'interrupted') {
+      if (action.thought) throw new Error('这次思考已中断，真实记录保留；不会自动重放未确认的生成。');
+      return this.resumeAction(action.id);
+    }
+    if (!action.parentMessageId && !action.thought) await this.call({ type: 'message.append', message: { conversationId: action.conversationId, authorId: action.companionId,
       kind: 'action', content: action.title, actionId: action.id, replyToId: action.sourceMessageId,
-      ...(association?.scheduleOccurrenceId ? { clientId: `schedule-action-${association.scheduleOccurrenceId}` } : {}) } });
+      ...(action.scheduleOccurrenceId ? { clientId: `schedule-action-${action.scheduleOccurrenceId}` } : {}) } });
     if (this.dormantCompanions.has(action.companionId)) throw new Error('伙伴已休眠，请先手动激活。');
     if (this.resettingCompanions.has(action.companionId)) throw new Error('伙伴正在停止，暂不启动新任务。');
     this.changed();
@@ -2869,7 +2913,7 @@ export class CompanionService {
       if (this.closed || this.cancelledActions.has(action.id)) {
         await this.call({ type: 'action.update', id: action.id, patch: { status: this.cancelledActions.has(action.id) ? 'cancelled' : 'interrupted' } }); return;
       }
-      await this.executeAction(action, request.prompt);
+      await this.executeAction(action, prompt);
       } finally { release(); }
     }).catch(async error => {
       if (this.resettingCompanions.has(action.companionId)) return;
@@ -2886,6 +2930,7 @@ export class CompanionService {
     return { ok: true, actions: (await this.call({ type: 'actions', conversationId: action.conversationId })).actions };
   }
   private async deliverInput(action: CompanionAction, content: string, mode: 'steer' | 'queue', messageId: string) {
+    if (action.thought) throw new Error('活动内部思考只接收该次已核验资料，不能通过外部会话输入更换目标。');
     if (this.dormantCompanions.has(action.companionId)) throw new Error('伙伴已休眠，请先手动激活。');
     if (this.resettingCompanions.has(action.companionId)) throw new Error('伙伴正在停止，暂不接收任务补充。');
     try {
@@ -2912,6 +2957,7 @@ export class CompanionService {
     try {
       const action = (await this.call({ type: 'action.get', id })).action;
       if (!action || !['interrupted', 'cancelled', 'failed'].includes(action.status)) throw new Error('这条任务无需恢复。');
+      if (action.thought) throw new Error('活动思考由原活动主脑接回，不沿普通现实任务入口重发。');
       if (this.dormantCompanions.has(action.companionId)) throw new Error('伙伴已休眠，请先手动激活。');
     if (this.resettingCompanions.has(action.companionId)) throw new Error('伙伴正在停止，暂不恢复任务。');
       const dsh = this.options.dsh();
@@ -2970,6 +3016,14 @@ export class CompanionService {
     const verify = async () => {
       const action = (await this.call({ type: 'action.get', id: owner.actionId })).action;
       const checkpoint = (await this.storage.request({ type: 'checkpoint.get', id: owner.actionId })).checkpoint;
+      if (action?.thought) {
+        if (!checkpoint?.activityThought || action.companionId !== owner.companionId || action.conversationId !== owner.conversationId
+          || JSON.stringify(owner.activityThought) !== JSON.stringify(action.thought)
+          || !checkpoint.executionReadset || owner.executionReadsetDigest !== companionExecutionReadsetDigest(checkpoint.executionReadset)
+          || !await this.executionEvidenceValid(action, checkpoint.executionReadset)) throw new Error('活动思考资料或来源已变化，不能读取旧分析。');
+        return;
+      }
+      if (!owner.sourceMessageId) throw new Error('执行记录缺少真实授权来源。');
       const grant = action?.authorizationGrantId ? (await this.call({ type: 'collaboration.read', id: action.authorizationGrantId, companionId: scope.companionId })).collaboration : undefined;
       const source = (await this.call({ type: 'memory.sources.filter', companionId: grant?.ownerId ?? scope.companionId, conversationId: grant?.conversationId ?? scope.conversationId,
         beforeSequence: scope.beforeSequence, ids: [owner.sourceMessageId] })).memorySources?.[0];
@@ -2994,11 +3048,18 @@ export class CompanionService {
       const dsh = this.options.dsh();
       if (!dsh) throw new Error('DSH 执行环境不可用，请在启动器中创建并选择实例。');
       if (this.cancelledActions.has(action.id) || this.closed) return;
+      const checkpoint = (await this.call({ type: 'checkpoint.get', id: action.id })).checkpoint;
+      const thought = checkpoint?.activityThought;
+      if (!!action.thought !== !!thought) throw new Error('活动思考授权与实际任务记录不一致。');
+      const thoughtCurrent = async () => !thought || !!checkpoint?.executionReadset
+        && !!(await this.call({ type: 'activity.thought.validate', authorization: thought,
+          executionReadset: checkpoint.executionReadset, mode: 'execute', renew: true })).activityThoughtValid;
+      if (!await thoughtCurrent()) throw new Error('当前活动已停止、观察或租约已变化，未执行思考。');
       const grant = action.authorizationGrantId ? (await this.call({ type: 'collaboration.read', id: action.authorizationGrantId, companionId: action.companionId })).collaboration : undefined;
-      const source = (await this.call({ type: 'memory.sources.filter', companionId: grant?.ownerId ?? action.companionId,
-        conversationId: grant?.conversationId ?? action.conversationId, ids: [action.sourceMessageId] })).memorySources?.[0];
-      if (!source) throw new Error('现实任务的原始授权来源已不可访问，未继续执行。');
-      if (grant && (grant.status !== 'running' || grant.sourceChecksum !== createHash('sha256').update(source.content).digest('hex')
+      const source = action.sourceMessageId ? (await this.call({ type: 'memory.sources.filter', companionId: grant?.ownerId ?? action.companionId,
+        conversationId: grant?.conversationId ?? action.conversationId, ids: [action.sourceMessageId] })).memorySources?.[0] : undefined;
+      if (!thought && (!source || source.authorId !== 'user')) throw new Error('现实任务的原始授权来源已不可访问，未继续执行。');
+      if (grant && (!source || grant.status !== 'running' || grant.sourceChecksum !== createHash('sha256').update(source.content).digest('hex')
         || !grant.participants.some(participant => participant.companionId === action.companionId && participant.status === 'running' && participant.conversationId === action.conversationId))) throw new Error('协作授权已停止或不再属于本执行入口。');
       let fixed = false;
       if (action.scheduleOccurrenceId) {
@@ -3006,16 +3067,17 @@ export class CompanionService {
         const occurrence = listed.scheduleOccurrences?.find(item => item.id === action.scheduleOccurrenceId);
         fixed = !!occurrence && listed.schedules?.find(item => item.id === occurrence.scheduleId)?.flexible === false;
       }
-      if (!fixed && !grant) await this.assessAttention(action.companionId, action.sourceMessageId);
-      await this.world.ready({ companionId: action.companionId, conversationId: action.conversationId, workId: worldWorkId('action', action.id),
+      if (!thought && !fixed && !grant && action.sourceMessageId) await this.assessAttention(action.companionId, action.sourceMessageId);
+      // A computation-only extension does not reserve a physical computer or
+      // borrow the player's authority to interrupt a routine/world action.
+      if (!thought) await this.world.ready({ companionId: action.companionId, conversationId: action.conversationId, workId: worldWorkId('action', action.id),
         kind: 'action', sourceMessageId: action.sourceMessageId,
         ...(grant ? { authorizationGrantId: grant.id, invocationId: grant.participants.find(participant => participant.companionId === action.companionId)?.invocationId } : {}), fixed }, controller.signal);
       if (controller.signal.aborted || this.closed || this.cancelledActions.has(action.id)) return;
-      const checkpoint = (await this.call({ type: 'checkpoint.get', id: action.id })).checkpoint;
       if (!await this.executionEvidenceValid(action, checkpoint?.executionReadset)) throw new Error('执行任务引用的资料已变化或撤回，未沿旧资料启动执行。');
       const sourceScope = { companionId: grant?.ownerId ?? action.companionId, conversationId: grant?.conversationId ?? action.conversationId };
-      const freshSource = (await this.call({ type: 'memory.sources.filter', ...sourceScope, ids: [action.sourceMessageId] })).memorySources?.[0];
-      if (!freshSource || freshSource.content !== source.content) throw new Error('等待执行期间原始授权已变化，未沿旧目标启动。');
+      const freshSource = action.sourceMessageId ? (await this.call({ type: 'memory.sources.filter', ...sourceScope, ids: [action.sourceMessageId] })).memorySources?.[0] : undefined;
+      if (source && (!freshSource || freshSource.content !== source.content) || !await thoughtCurrent()) throw new Error('等待执行期间原始授权已变化，未沿旧目标启动。');
       if (grant) {
         const current = (await this.call({ type: 'collaboration.read', id: grant.id, companionId: action.companionId })).collaboration;
         if (current?.status !== 'running' || !current.participants.some(member => member.companionId === action.companionId
@@ -3029,30 +3091,32 @@ export class CompanionService {
       const resumeScope = resumeTaskId ? await dsh.taskRecordScope(resumeTaskId) : undefined;
       if (resumeTaskId) {
         if (!resumeScope || resumeScope.companionId !== action.companionId || resumeScope.conversationId !== action.conversationId) throw new Error('待续接执行记录不属于当前伙伴和会话。');
+        if (!resumeScope.sourceMessageId) throw new Error('普通执行恢复缺少真实玩家来源，不能借内部思考记录恢复。');
         const oldSource = (await this.call({ type: 'memory.sources.filter', ...sourceScope, ids: [resumeScope.sourceMessageId] })).memorySources?.[0];
         if (!oldSource || resumeScope.sourceDigest && resumeScope.sourceDigest !== createHash('sha256').update(oldSource.content).digest('hex')) throw new Error('旧执行会话的原始来源已撤回或变化，不能续接。');
         const oldCheckpoint = (await this.storage.request({ type: 'checkpoint.get', id: resumeScope.actionId })).checkpoint;
         if (!oldCheckpoint?.executionReadset || resumeScope.executionReadsetDigest !== companionExecutionReadsetDigest(oldCheckpoint.executionReadset)
           || !await this.executionEvidenceValid({ ...action, id: resumeScope.actionId }, oldCheckpoint.executionReadset)) throw new Error('旧执行会话引用的资料已变化，不能续接。');
       }
-      const topic = source.topicId ? (await this.call({ type: 'topic.read', conversationId: source.conversationId,
+      const topic = source?.topicId ? (await this.call({ type: 'topic.read', conversationId: source.conversationId,
         topicId: source.topicId, readerId: sourceScope.companionId })).topic : undefined;
       const requestedWorkspace = checkpoint?.dshTask?.workspace?.mode === 'existing' ? checkpoint.dshTask.workspace.path : undefined;
       const allowedWorkspaceRoots = [dsh.state().sharedData?.workspacePath,
-        ...(requestedWorkspace && path.isAbsolute(requestedWorkspace) && source.content.includes(requestedWorkspace) ? [requestedWorkspace] : [])]
+        ...(requestedWorkspace && path.isAbsolute(requestedWorkspace) && source?.content.includes(requestedWorkspace) ? [requestedWorkspace] : [])]
         .filter((root): root is string => !!root);
       this.pendingInputs.delete(action.id);
       if (controller.signal.aborted || this.closed || this.resettingCompanions.has(action.companionId)) return;
       const started = await dsh.requestTask({ type: 'task.run', title: action.title.slice(0, 100),
         ...(resume?.sessionId ? { instanceId: resume.instanceId, sessionId: resume.sessionId } : {}),
-        prompt }, { toolkit: true, interactive: true, inputs: checkpoint?.supplements,
-        task: checkpoint?.dshTask, workspaceRootPath: path.join(this.root, 'dsh-tasks'), allowedWorkspaceRoots,
+        prompt }, { toolkit: true, interactive: true, ...(thought ? { cognitiveOnly: true } : { inputs: checkpoint?.supplements }),
+        task: thought ? { mode: 'native', tools: [], skills: [], session: { mode: 'new' }, workspace: { mode: 'managed' } } : checkpoint?.dshTask,
+        workspaceRootPath: path.join(this.root, 'dsh-tasks'), allowedWorkspaceRoots: thought ? [] : allowedWorkspaceRoots,
         recordScope: { actionId: action.id, companionId: action.companionId, conversationId: action.conversationId, sourceMessageId: action.sourceMessageId,
-          topicId: source.topicId ?? null, invocationId: action.parentMessageId ?? action.id,
-          sourceDigest: createHash('sha256').update(source.content).digest('hex'), authorizationGrantId: action.authorizationGrantId,
+          topicId: source?.topicId ?? null, invocationId: action.parentMessageId ?? action.id, ...(action.thought ? { activityThought: action.thought } : {}),
+          ...(source ? { sourceDigest: createHash('sha256').update(source.content).digest('hex') } : {}), authorizationGrantId: action.authorizationGrantId,
           executionReadsetDigest: companionExecutionReadsetDigest(checkpoint!.executionReadset!),
           domain: topic?.kind ?? 'reality' },
-        resumeScope, constraints: companionExecutionConstraintLedger([source, ...supplements]),
+        resumeScope, constraints: companionExecutionConstraintLedger([...(source ? [source] : []), ...supplements]),
           ...(resume?.sessionId ? { resume, access: { mode: resume.accessMode! } } : {}) });
       if (!started.ok || !started.operationId) throw new Error('任务未能启动，请检查启动器中的执行实例。');
       taskId = started.operationId;
@@ -3082,7 +3146,7 @@ export class CompanionService {
       let recordedExecution = '';
       let events: CompanionActionEvent[] = [];
       while (!this.closed) {
-        if (!await this.executionEvidenceValid(action, checkpoint?.executionReadset)) {
+        if (!await this.executionEvidenceValid(action, checkpoint?.executionReadset) || !await thoughtCurrent()) {
           const actual = dsh.state().tasks?.find(value => value.id === taskId);
           if (!actual || actual.status === 'running') await dsh.requestTask({ type: 'task.terminate', taskId }).catch(() => undefined);
           await this.call({ type: 'action.update', id: action.id, patch: { status: actual && actual.status !== 'running' ? actual.status : 'interrupted',
@@ -3136,7 +3200,7 @@ export class CompanionService {
           await this.call({ type: 'action.update', id: action.id, patch });
           settled = true;
           this.changed();
-          if (!action.parentMessageId && (record.status === 'succeeded' || record.status === 'failed')) await this.feedbackAction(action, record.status, output?.text ?? record.error ?? '执行器未返回详细结果。');
+          if (!action.thought && !action.parentMessageId && (record.status === 'succeeded' || record.status === 'failed')) await this.feedbackAction(action, record.status, output?.text ?? record.error ?? '执行器未返回详细结果。');
           break;
         }
         const operation = dsh.state().operations.find(value => value.id === taskId);
@@ -3156,9 +3220,11 @@ export class CompanionService {
         await this.call({ type: 'action.update', id: action.id,
           patch: { status: this.cancelledActions.has(action.id) ? 'cancelled' : 'failed', error: publicError(error), executionSummary } });
       }
-    } finally { await this.world.end(action.companionId, worldWorkId('action', action.id)); this.activities.delete(`action:${action.id}`); this.actionControllers.delete(action.id); }
+    } finally { if (!action.thought) await this.world.end(action.companionId, worldWorkId('action', action.id)); this.activities.delete(`action:${action.id}`); this.actionControllers.delete(action.id); }
   }
   private async feedbackAction(action: CompanionAction, status: 'succeeded' | 'failed', content: string) {
+    const sourceMessageId = action.sourceMessageId;
+    if (action.thought || !sourceMessageId) return;
     type Message = NonNullable<CompanionStorageResponse['message']>;
     const signal = this.actionControllers.get(action.id)?.signal;
     const blocked = () => this.closed || signal?.aborted || this.cancelledActions.has(action.id) || this.resettingCompanions.has(action.companionId);
@@ -3170,7 +3236,7 @@ export class CompanionService {
       for (let index = 0; index < unique.length && !blocked(); index += 100) found.push(...(await this.call({ type: 'memory.sources.filter', ...scope, ids: unique.slice(index, index + 100) })).memorySources ?? []);
       return found.filter(message => message.status === 'sent' && !message.isReplyDraft && !message.replyDraft);
     };
-    const sourceNow = async () => (await visible([action.sourceMessageId])).find(message => message.id === action.sourceMessageId && message.conversationId === action.conversationId);
+    const sourceNow = async () => (await visible([sourceMessageId])).find(message => message.id === sourceMessageId && message.conversationId === action.conversationId);
     const clientId = 'action_feedback_' + createHash('sha256').update(action.id).digest('hex');
     let originalSource: string | undefined;
     // Initial generation plus two fresh attempts, never an unbounded retry on withdrawal.
@@ -3220,7 +3286,7 @@ export class CompanionService {
           ...profiles, sourceMessage: source, identityDirectory: state?.companions.filter(role => conversation.memberIds.includes(role.id)).map(role => ({ id: role.id, name: role.name })),
           world: await this.world.observe(scope), runtimeState: (await this.call({ type: 'state.get', ...scope, beforeSequence: source.sequence })).runtimeState,
           memorySources: recalled.sources, memoryRecall: recalled,
-          actionResult: { id: action.id, title: action.title, status, sourceMessageId: action.sourceMessageId,
+          actionResult: { id: action.id, title: action.title, status, sourceMessageId,
             content: JSON.stringify(companionDshReceipt({ ...action, result: action.result ?? content })) } };
         const originalReadset = (await this.storage.request({ type: 'checkpoint.get', id: action.id })).checkpoint?.executionReadset;
         if (!originalReadset) return;

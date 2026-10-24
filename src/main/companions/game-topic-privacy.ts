@@ -19,7 +19,8 @@ config: CompanionModelConfig, signal?: AbortSignal, options: Pick<CompanionModel
   const current = await input.request({ type: 'topic.read', conversationId: command.conversationId, topicId: command.topicId, readerId: command.readerId });
   if (!current.ok || !current.topic || current.topicState?.readerId !== command.readerId) throw new Error(current.error ?? '无法读取本次真实话题及本人状态，未提交共享修改。');
   if (current.topic.kind !== 'game') return { allowed: true };
-  if (current.topic.revision !== command.expectedRevision) return { allowed: false, reason: '话题revision已经变化，先read最新话题后修订完整提案；本次未写入。' };
+  if (current.topic.revision !== command.expectedRevision) return { allowed: false,
+    reason: `话题expectedRevision=${command.expectedRevision}与已获权读取的currentRevision=${current.topic.revision}不一致；本次未写入。不要自行+1或猜测版本，可先通过topic.read读取最新话题，再依据实际回执修订完整提案。` };
   return reviewPublicGamePayload({ purpose: 'game_shared_state_privacy', actorId: command.readerId,
     actualAudience: { conversationId: current.topic.conversationId, topicId: current.topic.id,
       participantIds: current.topic.participantIds, invitedIds: current.topic.invitedIds, sharedVisibleToJoinedParticipants: true },

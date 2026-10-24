@@ -14,6 +14,7 @@ import { BUILTIN_COMPANIONS } from '../../src/shared/companion-personas';
 import { realGlobalChatConfig } from '../fixtures/companion-real-chat';
 import { realMemoryRuntime } from '../fixtures/companion-real-memory';
 import { auditNaturalGameRosters, naturalGamePublicPatch, prepareNaturalGameEvidenceRisks, naturalGameTerminalReady, type NaturalGameTerminalReceipt } from '../helpers/natural-game-content-audit';
+import { createNativeAcceptanceBroker, createNativeAcceptanceLauncher, installedNativeAcceptanceSource } from '../helpers/companion-dsh-native-broker';
 
 const transport = vi.hoisted(() => ({ request: undefined as ((command: CompanionStorageCommand) => Promise<CompanionStorageResponse>) | undefined,
   requests: 0, maxRequests: 600, budgetExceeded: false, judging: false, judgeRequests: 0,
@@ -66,19 +67,33 @@ it.skipIf(process.env.WORLDLINEBOX_NATURAL_GAME_ACCEPTANCE !== '1')('finishes a 
   const scenario = process.env.WORLDLINEBOX_NATURAL_GAME_SCENARIO ?? 'legacy-six';
   if (!['legacy-six', 'fresh-five-autonomous-host'].includes(scenario)) throw new Error('Unknown natural game fixture scenario.');
   const freshFive = scenario === 'fresh-five-autonomous-host';
-  if (freshFive && resumeFrom) throw new Error('The fresh five-companion scenario cannot resume an existing source.');
   const prior = resumeFrom ? JSON.parse(await readFile(path.resolve(resumeFrom), 'utf8')) as {
     root: string; sourceId: string; sourceFilesUnchanged: boolean; userTaskMessages: number; modelRequests: number; priorReport?: string;
+    fixtureScenario?: string; awakeScenario?: string[]; durationMs?: number; independentJudgeRequests?: number;
     ownerMessages: Array<{ id: string; authorId: string; content: string }>;
     persistentTasks: Array<{ id: string; sourceMessageId?: string; status: string }>;
     commands: Array<{ at: string; command: CompanionStorageCommand; receipt: unknown }>;
   } : undefined;
-  let priorSourceModelRequests = 0;
+  let priorSourceModelRequests = 0, priorSourceNonJudgeRequests = 0, priorSourceDurationMs = 0;
   if (prior) {
     const visited = new Set<string>(); let previous = prior, reportPath = path.resolve(resumeFrom!);
     for (;;) {
       if (visited.has(reportPath)) throw new Error('Recovery report ancestry cannot loop.');
-      visited.add(reportPath); expect(previous.sourceId).toBe(prior.sourceId); priorSourceModelRequests += previous.modelRequests;
+      visited.add(reportPath); expect(previous.sourceId).toBe(prior.sourceId);
+      expect(previous.sourceFilesUnchanged).toBe(true); expect(previous.userTaskMessages).toBe(1);
+      expect(path.resolve(previous.root)).toBe(path.resolve(prior.root));
+      expect(Number.isSafeInteger(previous.modelRequests) && previous.modelRequests >= 0).toBe(true);
+      expect(Number.isSafeInteger(previous.independentJudgeRequests ?? 0) && (previous.independentJudgeRequests ?? 0) >= 0
+        && (previous.independentJudgeRequests ?? 0) <= previous.modelRequests).toBe(true);
+      expect(Number.isFinite(previous.durationMs ?? 0) && (previous.durationMs ?? 0) >= 0).toBe(true);
+      priorSourceModelRequests += previous.modelRequests;
+      priorSourceNonJudgeRequests += previous.modelRequests - (previous.independentJudgeRequests ?? 0);
+      priorSourceDurationMs += previous.durationMs ?? 0;
+      if (freshFive) {
+        expect(previous.fixtureScenario).toBe('fresh-five-autonomous-host');
+        expect(previous.awakeScenario).toEqual(['deepseek-sister', 'deepseek-flash', 'gugugaga', 'kimi', 'qwen']);
+        expect(Number.isFinite(previous.durationMs)).toBe(true);
+      }
       if (!previous.priorReport) break;
       reportPath = path.resolve(previous.priorReport); previous = JSON.parse(await readFile(reportPath, 'utf8')) as NonNullable<typeof prior>;
     }
@@ -89,6 +104,11 @@ it.skipIf(process.env.WORLDLINEBOX_NATURAL_GAME_ACCEPTANCE !== '1')('finishes a 
     expect(path.basename(prior.root)).toMatch(/^worldlinebox-natural-werewolf-/u);
     expect(existsSync(path.join(prior.root, 'companions', 'messages.sqlite'))).toBe(true);
   }
+  // Recovery observes the same original source after a normal app restart. It
+  // cannot obtain a fresh game, another user request or another full budget.
+  transport.maxRequests = 600 - priorSourceNonJudgeRequests;
+  const remainingAcceptanceMs = 20 * 60000 - priorSourceDurationMs;
+  if (transport.maxRequests < 1 || remainingAcceptanceMs < 1000) throw new Error('The original natural-game acceptance budget is exhausted.');
   const root = prior ? path.resolve(prior.root) : await mkdtemp(path.join(tmpdir(), 'worldlinebox-natural-werewolf-'));
   const evidenceRiskPath = process.env.WORLDLINEBOX_NATURAL_GAME_EVIDENCE_RISKS;
   const retainedRisk = evidenceRiskPath ? prepareNaturalGameEvidenceRisks(JSON.parse(await readFile(path.resolve(evidenceRiskPath), 'utf8'))) : undefined;
@@ -119,6 +139,7 @@ it.skipIf(process.env.WORLDLINEBOX_NATURAL_GAME_ACCEPTANCE !== '1')('finishes a 
     : ['deepseek-sister', 'deepseek-flash', 'gugugaga', 'kimi', 'qwen', 'grok'];
   const sourcePaths = ['src/main/companions/service.ts', 'src/main/companions/activity-task-service.ts', 'src/main/companions/world-service.ts',
     'src/main/companions/social-model.ts', 'src/main/companions/social-capabilities.ts', 'src/main/companions/topic-capabilities.ts',
+    'src/main/companions/topic-moderator-transfer.ts',
     'src/main/companions/game-contact-context.ts', 'src/main/companions/game-topic-privacy.ts', 'src/main/companions/game-goal-completion.ts',
     'src/main/companions/structured-agent.ts', 'src/main/companions/agent-kernel.ts', 'src/main/companions/agent-progress.ts',
     'src/main/companions/activity-output-contract.ts',
@@ -135,6 +156,9 @@ it.skipIf(process.env.WORLDLINEBOX_NATURAL_GAME_ACCEPTANCE !== '1')('finishes a 
     'src/main/companions/activity-feasibility.ts', 'src/main/companions/working-summary-budget.ts', 'src/main/companions/loop-continuity.ts',
     'src/main/companions/topic-compaction.ts', 'src/main/companions/topic-continuity-focus.ts', 'src/main/companions/topic-continuity-review.ts',
     'src/main/companions/topic-narrative-references.ts', 'src/main/companions/topic-summary-canon-review.ts', 'src/main/companions/topic-user-canon.ts',
+    'src/main/dsh/task-execution.ts', 'src/main/dsh/task-runtime-policy.ts', 'src/main/dsh/task-broker.ts', 'src/main/dsh/task-scope.ts',
+    'src/main/dsh/companion-runtime-source.ts', 'src/main/dsh/companion-worker-source.ts', 'src/shared/dsh-task-record.ts',
+    'src/shared/companion-activity-thought.ts',
     'src/companions/reset-store.ts', 'src/main/companions/memory-service.ts', 'src/main/companions/memory-model.ts',
     'src/main/companions/memory-retrieval.ts', 'src/main/companions/provider-stream.ts', 'src/shared/companion-execution-evidence.ts',
     'src/main/companions/world-perception-context.ts', 'src/main/companions/social-continuation.ts', 'src/main/companions/social-progress-review.ts',
@@ -163,8 +187,17 @@ it.skipIf(process.env.WORLDLINEBOX_NATURAL_GAME_ACCEPTANCE !== '1')('finishes a 
     BUILTIN_COMPANIONS.filter(role => roles.includes(role.id)).map(role => ({ ...role, active: true, proactive: false })));
   const native = await realMemoryRuntime(root, undefined, { modelFetch: (input, init) => net.fetch(input instanceof URL ? input.toString() : input, { ...init, credentials: 'omit' }) });
   let createdService: CompanionService | undefined, nativeClosing: Promise<void> | undefined;
+  let nativeDsh: Awaited<ReturnType<typeof createNativeAcceptanceBroker>> | undefined;
+  let dshBridge: Awaited<ReturnType<typeof createNativeAcceptanceLauncher>> | undefined, dshClosing: Promise<void> | undefined;
+  const closeDsh = () => dshClosing ??= dshBridge?.close() ?? nativeDsh?.close() ?? Promise.resolve();
   const closeNative = () => nativeClosing ??= native.close();
-  onTestFinished(async () => { closing = true; try { await createdService?.shutdown(); } finally { try { await closeNative(); } finally { store.close(); } } });
+  onTestFinished(async () => { closing = true; try { await createdService?.shutdown(); } finally { try { await closeDsh(); await closeNative(); } finally { store.close(); } } });
+  if (process.env.WORLDLINEBOX_NATURAL_GAME_DSH_PROFILE === '1') {
+    nativeDsh = await createNativeAcceptanceBroker(await installedNativeAcceptanceSource());
+    dshBridge = await createNativeAcceptanceLauncher(nativeDsh, {
+      maxTaskRuns: Number(process.env.WORLDLINEBOX_NATURAL_GAME_DSH_MAX_TASKS ?? '5'),
+      timeoutMs: Number(process.env.WORLDLINEBOX_NATURAL_GAME_DSH_TASK_TIMEOUT_MS ?? '120000') });
+  }
   const nativeMemoryObservations = { captureCommits: 0, notesCommitted: 0, indexedOutboxCompletions: 0 };
   const ReportDatabase = BetterSqlite3 as { new (filename: string, options: { readonly: true }): CompanionConnection };
   const reportMessages = new ReportDatabase(path.join(dataRoot, 'messages.sqlite'), { readonly: true });
@@ -210,7 +243,7 @@ it.skipIf(process.env.WORLDLINEBOX_NATURAL_GAME_ACCEPTANCE !== '1')('finishes a 
   }
   const service = createdService = new CompanionService({ userData: path.join(root, 'profile'), dataRoot, workerPath: 'in-process-port', window: () => undefined,
     memoryRuntime: native.runtime,
-    getConfig: () => config, hasConfig: () => true, dsh: () => undefined, report: error => {
+    getConfig: () => config, hasConfig: () => true, dsh: () => dshBridge?.launcher, report: error => {
       if (closing && error instanceof CompanionModelError && error.code === 'CANCELLED') return;
       failures.push(error instanceof Error ? error.message : String(error));
     } });
@@ -286,7 +319,7 @@ it.skipIf(process.env.WORLDLINEBOX_NATURAL_GAME_ACCEPTANCE !== '1')('finishes a 
         ? '你们五位自行讨论狼人杀规则并推选一位上帝，上帝不参与抽牌，由上帝给其余伙伴随机且秘密分配身份；请在项目群聊中完整玩到结算，结束后告诉我结果。我不参与，也不会后续主持或替你们推进。'
         : '你去找你妹妹还有别的伙伴玩一局完整的狼人杀，结束后告诉我结果。' })).message!;
     sourceId = source.id; stopReason = 'acceptance_deadline';
-    const deadline = Date.now() + 20 * 60000; let nextProgress = 0;
+    const deadline = Date.now() + Math.max(0, remainingAcceptanceMs - (performance.now() - started)); let nextProgress = 0;
     while (Date.now() < deadline) {
       if (existsSync(stopFile)) { stopReason = 'research_stop_requested'; break; }
       const rooms = snapshot(), tasks = store.request({ type: 'activity.list', companionId: 'deepseek-sister', conversationId: origin.id, limit: 50 }).activityTasks ?? [];
@@ -299,6 +332,7 @@ it.skipIf(process.env.WORLDLINEBOX_NATURAL_GAME_ACCEPTANCE !== '1')('finishes a 
         stopReason = 'actual_activity_terminal'; break;
       }
       if (transport.budgetExceeded) { stopReason = 'acceptance_model_call_budget'; break; }
+      if (dshBridge?.telemetry().budgetExceeded) { stopReason = 'acceptance_dsh_task_budget'; break; }
       const loop = store.request({ type: 'loop.get', sourceMessageId: source.id, companionId: 'deepseek-sister' }).loop;
       // A rejected private progress draft is not the end of a durable activity.
       // Keep observing actual background continuations rather than cancelling
@@ -308,7 +342,8 @@ it.skipIf(process.env.WORLDLINEBOX_NATURAL_GAME_ACCEPTANCE !== '1')('finishes a 
       }
       if (Date.now() >= nextProgress) {
         nextProgress = Date.now() + 30000;
-        await save({ status: 'running', fixtureScenario: scenario, awakeScenario: roles, startedAt, observedAt: new Date().toISOString(), sourceFingerprints, acceptanceBudget: { minutes: 20, modelCalls: transport.maxRequests },
+        await save({ status: 'running', fixtureScenario: scenario, awakeScenario: roles, startedAt, observedAt: new Date().toISOString(), sourceFingerprints,
+          acceptanceBudget: { totalMinutes: 20, totalNonJudgeModelCalls: 600, remainingMs: remainingAcceptanceMs, modelCalls: transport.maxRequests, priorSourceDurationMs },
           modelRequests: transport.requests, priorSourceModelRequests, cumulativeSourceModelRequests: priorSourceModelRequests + transport.requests,
           failures: [...failures],
           inferenceMetrics: inferenceMetrics(), sourceId, continuedExistingSource: !!prior, resumePreflight,
@@ -367,13 +402,19 @@ it.skipIf(process.env.WORLDLINEBOX_NATURAL_GAME_ACCEPTANCE !== '1')('finishes a 
     closing = true; let teardownFailure: unknown;
     try { if (!stopped) await service.shutdown(); } catch (error) { teardownFailure = error; failures.push('Main shutdown failed.'); status = 'failed'; }
     try { await closeNative(); } catch (error) { teardownFailure ??= error; failures.push('Native memory shutdown failed.'); status = 'failed'; }
+    try { await closeDsh(); } catch (error) { teardownFailure ??= error; failures.push('Native DSH shutdown failed.'); status = 'failed'; }
+    const dshSourceConfigurationUnchanged = nativeDsh ? await nativeDsh.sourceConfigurationUnchanged() : undefined;
+    if (dshSourceConfigurationUnchanged === false) { status = 'failed'; failures.push('Original DSH source configuration changed.'); }
     const finishedSourceFingerprints = await fingerprints(), sourceFilesUnchanged = JSON.stringify(finishedSourceFingerprints) === JSON.stringify(sourceFingerprints);
     if (!sourceFilesUnchanged) status = 'failed';
     await save({ status, fixtureScenario: scenario, awakeScenario: roles, startedAt, finishedAt: new Date().toISOString(), durationMs: Math.round(performance.now() - started),
       sourceFingerprints, finishedSourceFingerprints, sourceFilesUnchanged,
       model: config.model, modelRequests: transport.requests, priorSourceModelRequests, cumulativeSourceModelRequests: priorSourceModelRequests + transport.requests,
-      inferenceMetrics: inferenceMetrics(), acceptanceBudget: { minutes: 20, modelCalls: transport.maxRequests, productLifetimeLimit: false },
+      inferenceMetrics: inferenceMetrics(), acceptanceBudget: { totalMinutes: 20, totalNonJudgeModelCalls: 600, remainingMs: remainingAcceptanceMs,
+        modelCalls: transport.maxRequests, priorSourceDurationMs, cumulativeDurationMs: priorSourceDurationMs + Math.round(performance.now() - started), productLifetimeLimit: false },
       independentJudgeRequests: transport.judgeRequests, maxIndependentJudgeRequests: 1,
+      nativeDsh: dshBridge ? { ...dshBridge.telemetry(), sourceConfigurationUnchanged: dshSourceConfigurationUnchanged,
+        profileRoute: 'unchanged-selected-native-profile-and-credentials; isolated-home-sessions-and-records' } : { enabled: false },
       nativeMemory: { profileKey: native.profile.profileKey, selectionId: native.profile.selectionId, dimension: native.profile.dimension, ...nativeMemoryObservations },
       dailyExperiences: roles.map(companionId => {
         const calendar = store.request({ type: 'experience.days', companionId, limit: 3 }).experienceDays;

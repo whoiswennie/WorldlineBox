@@ -58,13 +58,40 @@ function runtime(policy: DshRuntimeTaskPolicy) {
     get: async (name: string) => ({ name, content: `instructions-${name}` }),
     snapshot: async () => ({ skills: await skills.list() }) };
   const ctx = { get: (name: string) => name === 'tools' ? registry : name === 'skills' ? skills : name === 'agentPresets' ? { list: async () => [{ id: 'standard' }] } : undefined };
-  const scope = { tools: { restrict: (value: { allow?: string[]; deny?: string[] }) => { restrictions.push(value); } } };
+  type Assembly = { tools?: Array<{ name: string }> };
+  let assemblyHook: ((_assembly: unknown, _context: unknown, next: () => Promise<Assembly>) => Promise<Assembly>) | undefined;
+  const scope = { tools: { restrict: (value: { allow?: string[]; deny?: string[] }) => { restrictions.push(value); } },
+    on: (_event: string, hook: NonNullable<typeof assemblyHook>) => { assemblyHook = hook; return () => undefined; } };
   const build = new Function('ctx', 'emit', 'Buffer', 'process', 'require', `const io={},cwd=process.cwd(),cleanup=[]; ${taskRuntimePolicySource(policy)}; return { configureTask, publishTaskCapabilities, prelude: () => taskPrelude };`);
   const adapter = build(ctx, (value: Record<string, unknown>) => emitted.push(value), Buffer, process, createRequire(import.meta.url)) as { configureTask(scope: object, agent: object): Promise<void>; publishTaskCapabilities(agent:object):Promise<void>; prelude(): string };
-  return { adapter, skills, registry, restrictions, emitted, prepare: async () => {const subject={}; await adapter.configureTask(scope,subject); await adapter.publishTaskCapabilities(subject);}, deny: (exec: Call) => guards.map(guard => guard(exec)).find(Boolean) };
+  return { adapter, skills, registry, restrictions, emitted, scope,
+    assemble: async (tools: Array<{ name: string }>) => assemblyHook ? assemblyHook(undefined, undefined, async () => ({ tools })) : { tools },
+    prepare: async () => {const subject={}; await adapter.configureTask(scope,subject); await adapter.publishTaskCapabilities(subject);}, deny: (exec: Call) => guards.map(guard => guard(exec)).find(Boolean) };
 }
 
 describe('Native task policy at tool dispatch', () => {
+  it('enforces a host-only cognitive task with a fresh workspace and no assembled, effective or dispatchable tools or skills', async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'worldlinebox-cognitive-policy-')); roots.push(root);
+    const execution = snapshotDshTaskExecution({ cognitiveOnly: true, workspaceRootPath: root, recordScope: owner,
+      task: { mode: 'ptc', tools: ['read', 'run_code'], skills: ['alpha'], workspace: { mode: 'existing', path: process.cwd() } } });
+    expect(execution).toMatchObject({ cognitiveOnly: true, interactive: true, toolkit: true, access: { mode: 'read-only' },
+      task: { mode: 'native', tools: [], skills: [], session: { mode: 'new' }, workspace: { mode: 'managed' } } });
+    expect(dshTaskSpecSchema.safeParse({ cognitiveOnly: true }).success).toBe(false);
+    expect(() => snapshotDshTaskExecution({ cognitiveOnly: true })).toThrow('trusted owner');
+    expect(() => snapshotDshTaskExecution({ cognitiveOnly: true, workspaceRootPath: root, recordScope: owner,
+      task: { session: { mode: 'resume', taskId: owner.actionId } } })).toThrow('new session');
+    const first = await prepareDshTaskWorkspace(execution, randomUUID(), process.cwd());
+    const second = await prepareDshTaskWorkspace(execution, randomUUID(), process.cwd());
+    expect(first.workspacePath).not.toBe(second.workspacePath); expect(first.taskWorkspaceRoot).toBe(root);
+    const test = runtime({ cognitiveOnly: true, mode: 'ptc', tools: ['read', 'run_code'], skills: ['alpha'] });
+    await test.prepare();
+    expect((await test.assemble([{ name: 'read' }, { name: 'run_code' }, { name: 'late_plugin_tool' }])).tools).toEqual([]);
+    for (const name of ['read', 'write', 'run_code', 'skill', 'late_plugin_tool'])
+      expect(test.deny({ name, arguments: { name: 'alpha' }, agent: { descendant: true } })).toContain('cognitive');
+    expect(await test.skills.list()).toEqual([]); expect(await test.skills.get('alpha')).toBeUndefined();
+    expect((await test.skills.snapshot()).skills).toEqual([]); expect(test.adapter.prelude()).toBe('');
+    expect(test.emitted[0]).toMatchObject({ tools: [], skills: [], effective: { mode: 'native', toolCount: 0, skillCount: 0 } });
+  });
   it('emits a syntactically valid native plugin with data-only task controls', async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), 'worldlinebox-task-plugin-')); roots.push(root);
     const filename = path.join(root, 'task.mjs');

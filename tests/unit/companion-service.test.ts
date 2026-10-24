@@ -147,6 +147,7 @@ function fakeDsh(state: () => { tasks: DshTaskRecord[]; operations: Array<{ id: 
     if (scopes.has(recordId)) return scopes.get(recordId);
     const action = (await transport.request({ type: 'actions' })).actions?.find(action => action.taskId === recordId);
     if (!action) return undefined;
+    if (!action.sourceMessageId) throw new Error('This fixture expects an ordinary user-sourced action.');
     const source = (await transport.request({ type: 'message.get', id: action.sourceMessageId })).message!;
     const readset = (await transport.request({ type: 'checkpoint.get', id: action.id })).checkpoint?.executionReadset;
     return { actionId: action.id, companionId: action.companionId, conversationId: action.conversationId, sourceMessageId: action.sourceMessageId,
@@ -154,6 +155,7 @@ function fakeDsh(state: () => { tasks: DshTaskRecord[]; operations: Array<{ id: 
   }, readTaskRecord: vi.fn(async () => { throw new Error('legacy record'); }), removeCompanionTaskRecords: vi.fn(async () => undefined) } as unknown as DshLauncher;
 }
 function verifiedAction(store: CompanionsStore, input: CreateCompanionAction) {
+  if (!input.sourceMessageId) throw new Error('This fixture requires its actual user source.');
   const source = store.getMessage(input.sourceMessageId);
   const readset = captureCompanionExecutionReadset({ companionId: input.companionId, conversationId: input.conversationId },
     { context: { user: JSON.stringify({ messages: [source] }) } });
@@ -2822,4 +2824,70 @@ describe('Scoped progressive DSH records', () => {
     await expect(request).rejects.toThrow(/重置|来源/);
     await closeService(f.service);
   });
+});
+
+
+it('returns restricted DSH thought to a source-free activity through the real Main action pipeline without publishing its analysis', async () => {
+  const recordId = randomUUID(), analysis = 'OWN_PRIVATE_COGNITIVE_ANALYSIS_ONLY';
+  const fixtureErrors: string[] = [];
+  const thoughtReceipts: unknown[] = [];
+  let dispatched = false, authors = 0;
+  const record: DshTaskRecord = { ...taskRecord('succeeded'), id: recordId, operationId: recordId, sessionId: 'isolated-thought-session' };
+  const requestTask = vi.fn<DshLauncher['requestTask']>(async (request, execution) => {
+    if (request.type === 'task.run') {
+      expect(execution).toMatchObject({ cognitiveOnly: true, task: { mode: 'native', tools: [], skills: [], session: { mode: 'new' }, workspace: { mode: 'managed' } } });
+      expect(request).not.toHaveProperty('sessionId'); expect(execution?.recordScope?.sourceMessageId).toBeUndefined();
+      expect(execution?.recordScope?.activityThought).toBeDefined();
+      dispatched = true; return { ok: true, operationId: recordId };
+    }
+    if (request.type === 'task.result') return { ok: true, taskResult: { taskId: recordId, instanceId: record.instanceId,
+      runtimeId: record.runtimeId, runtimeVersion: record.runtimeVersion, text: analysis, sessionId: record.sessionId } };
+    if (request.type === 'task.events') return { ok: true, taskEvents: [] };
+    return { ok: true };
+  });
+  const dsh = fakeDsh(() => ({ tasks: dispatched ? [record] : [], operations: [] }), requestTask);
+  Object.assign(dsh, { readTaskRecord: vi.fn(async () => ({ overview: { recordId, title: '分析当前下一步', status: 'succeeded', createdAt: fixedTime,
+    durationMs: 1, turns: 1, steps: 1, toolCalls: 0, recordCount: 1, storedBytes: analysis.length, finalReply: analysis,
+    finalReplyChars: analysis.length, finalReplyTruncated: false, complete: true, storageLimited: false, mode: 'native', sessionId: record.sessionId,
+    effective: { digest: 'a'.repeat(64), mode: 'native', preset: 'standard', toolCount: 0, skillCount: 0 } }, entries: [], snapshot: 1, hasMore: false })) });
+  const f = fixture(dsh), scope = { companionId: 'sister', conversationId: 'world_sister' };
+  const task = f.store.request({ type: 'activity.start', ...scope, clientId: 'self_cognitive_goal', title: '继续自己的原目标', goal: '先认真分析，再查询自己的当前场景，不执行现实操作。' }).activityTask!;
+  const oldUserMessages = f.store.messages({ conversationId: f.conversation.id }).messages.filter(message => message.authorId === 'user').length;
+  transport.fetch.mockImplementation(async (_url, init) => {
+    try {
+    const wire = JSON.parse(String(init?.body)), data = JSON.parse(wire.messages[1].content);
+    expect(data.purpose).toBe('activity_task_step'); expect(data.invocation.authorization.externalActions).toBe(false);
+    if (++authors === 1) {
+      expect(wire.tools.find((tool: { function: { name: string } }) => tool.function.name === 'dsh')).toBeDefined();
+      return new Response(JSON.stringify({ choices: [{ message: { content: '', tool_calls: [{ id: 'self_thought_call', type: 'function',
+        function: { name: 'dsh', arguments: JSON.stringify({ tasks: [{ title: '分析当前下一步', prompt: '仅分析当前已提供的目标，不读取其他资料或执行行为。' }] }) } }] } }] }), { headers: { 'Content-Type': 'application/json' } });
+    }
+    thoughtReceipts.push(...wire.messages.filter((message: { role: string }) => message.role === 'tool').map((message: { content: string }) => JSON.parse(message.content)));
+    expect(wire.messages.filter((message: { role: string }) => message.role === 'tool').map((message: { content: string }) => message.content).join('\n'))
+      .toContain(analysis);
+    return modelResponseForJson({ status: 'continue', action: { action: 'query', category: 'scenes', limit: 1 }, wait: null, summary: '已收到分析资料，仍按原目标核实本人的当前场景。' });
+    } catch (error) { fixtureErrors.push(error instanceof Error ? error.message : String(error)); throw error; }
+  });
+  await f.service.handle({ type: 'state' });
+  const activity = (f.service as unknown as { activityTasks: { tick(): Promise<void> } }).activityTasks;
+  await activity.tick();
+  const current = () => f.store.request({ type: 'activity.get', ...scope, id: task.id }).activityTask!;
+  for (let i = 0; i < 30 && current().step === 0; i++) await vi.advanceTimersByTimeAsync(1000);
+  expect(current(), JSON.stringify({ task: current(), fixtureErrors, thoughtReceipts })).toMatchObject({ step: 1, history: [expect.objectContaining({ action: 'query', ok: true })] });
+  expect(authors).toBe(2); expect(requestTask.mock.calls.filter(([request]) => request.type === 'task.run')).toHaveLength(1);
+  const actions = f.store.request({ type: 'actions', conversationId: scope.conversationId }).actions!.filter(action => action.thought?.taskId === task.id);
+  expect(actions).toHaveLength(1); expect(actions[0]).toMatchObject({ status: 'succeeded', result: analysis }); expect(actions[0]!.sourceMessageId).toBeUndefined();
+  expect(f.store.messages({ conversationId: scope.conversationId, limit: 100 }).messages.some(message => message.content.includes(analysis))).toBe(false);
+  expect(f.store.messages({ conversationId: f.conversation.id }).messages.filter(message => message.authorId === 'user')).toHaveLength(oldUserMessages);
+  const days = f.store.request({ type: 'experience.days', companionId: scope.companionId, limit: 10 }).experienceDays!.days;
+  const entries = days.flatMap(day => f.store.request({ type: 'experience.list', companionId: scope.companionId, day: day.day, limit: 100 }).experiencePage!.items);
+  expect(entries.some(entry => entry.source.kind === 'action' && entry.source.id === actions[0]!.id)).toBe(true);
+  f.store.request({ type: 'activity.cancel', ...scope, id: task.id });
+  await closeService(f.service);
+  const reopened = new CompanionsStore(f.databasePath, seeds.map(seed => ({ ...seed, active: true }))); stores.add(reopened); bindStorage(reopened);
+  const restored = startService(f.root, dsh); await restored.handle({ type: 'state' }); await vi.advanceTimersByTimeAsync(1500);
+  expect(reopened.request({ type: 'activity.get', ...scope, id: task.id }).activityTask?.status).toBe('cancelled');
+  expect(reopened.request({ type: 'action.get', id: actions[0]!.id }).action).toMatchObject({ status: 'succeeded', result: analysis });
+  expect(requestTask.mock.calls.filter(([request]) => request.type === 'task.run')).toHaveLength(1);
+  await closeService(restored);
 });

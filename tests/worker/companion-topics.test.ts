@@ -3,6 +3,8 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterEach, expect, it } from 'vitest';
 import { CompanionsStore, type CompanionSeed } from '../../src/companions/store';
+import { createHash } from 'node:crypto';
+import { companionsRequestSchema } from '../../src/shared/companions';
 
 const roots: string[] = [], stores: CompanionsStore[] = [];
 const seed = (id: string): CompanionSeed => ({ id, name: id, description: '', persona: '保持真实身份。', model: '', avatar: 'sister', proactive: false, active: true });
@@ -17,6 +19,48 @@ function fixture() {
   const create = (title: string, readerId = 'user') => store.request({ type: 'topic.create', conversationId: room.id, title, kind: 'game', readerId }).topic!;
   return { file, store, room, create };
 }
+it('transfers only the existing moderator with exact live consent and preserves every participant private state', () => {
+  const f = fixture(), topic = f.create('同一话题主持移交', 'alice');
+  const read = (readerId = 'alice') => f.store.request({ type: 'topic.read', conversationId: f.room.id, topicId: topic.id, readerId });
+  const command = { type: 'topic.transfer_moderator' as const, conversationId: f.room.id, topicId: topic.id, readerId: 'alice',
+    expectedRevision: topic.revision, targetCompanionId: 'bob', sourceMessageIds: [] as string[], operationId: 'actual_moderator_handoff' };
+  expect(() => f.store.request(command)).toThrow('自行加入');
+  f.store.request({ type: 'topic.join', conversationId: f.room.id, topicId: topic.id, readerId: 'bob' });
+  for (const readerId of ['alice', 'bob']) f.store.request({ type: 'topic.update', conversationId: f.room.id, topicId: topic.id,
+    readerId, expectedRevision: read().topic!.revision, patch: { workingState: { summary: readerId + '_PRIVATE', state: { secret: readerId + '_ONLY' }, sourceMessageIds: [] } } });
+  const consent = f.store.appendMessage({ conversationId: f.room.id, topicId: topic.id, authorId: 'bob', content: '我本人愿意接任本话题主持。' });
+  const current = read().topic!, beforeAlice = read('alice').topicState, beforeBob = read('bob').topicState;
+  const approval = { schema: 'worldlinebox.companion-topic-moderator-transfer-v1' as const, companionId: 'alice', conversationId: f.room.id,
+    topicId: topic.id, previousModeratorId: 'alice', targetCompanionId: 'bob', expectedRevision: current.revision,
+    consentMessageId: consent.id, sourceRefs: [{ id: consent.id, checksum: createHash('sha256').update(consent.content).digest('hex') }] };
+  const approved = { ...command, expectedRevision: current.revision, sourceMessageIds: [consent.id], moderatorTransferApproval: approval };
+  const publicCommand = { type: command.type, conversationId: f.room.id, topicId: topic.id, expectedRevision: current.revision,
+    targetCompanionId: 'bob', sourceMessageIds: [consent.id] };
+  expect(companionsRequestSchema.safeParse(publicCommand).success).toBe(true);
+  expect(companionsRequestSchema.safeParse({ ...publicCommand, moderatorTransferApproval: approval }).success).toBe(false);
+  expect(() => f.store.request({ ...approved, readerId: 'bob' })).toThrow('当前主持');
+  expect(() => f.store.request({ ...approved, moderatorTransferApproval: undefined })).toThrow('宿主同意');
+  expect(() => f.store.request({ ...approved, expectedRevision: current.revision - 1 })).toThrow('新进展');
+  expect(() => f.store.request({ ...approved, moderatorTransferApproval: { ...approval, sourceRefs: [{ id: consent.id, checksum: 'a'.repeat(64) }] } })).toThrow('公开原文');
+  const changed = f.store.request(approved);
+  expect(changed.topic).toMatchObject({ id: topic.id, moderatorId: 'bob', revision: current.revision + 1,
+    participantIds: current.participantIds, invitedIds: current.invitedIds });
+  expect(read('alice').topicState).toEqual(beforeAlice); expect(read('bob').topicState).toEqual(beforeBob);
+  expect(JSON.stringify(read('bob'))).not.toContain('alice_ONLY');
+  expect(f.store.request(approved).topic!.revision).toBe(changed.topic!.revision);
+  expect(() => f.store.request({ type: 'topic.update', conversationId: f.room.id, topicId: topic.id, readerId: 'alice',
+    expectedRevision: changed.topic!.revision, patch: { shared: { summary: '旧主持不能再改公共阶段', sourceMessageIds: [] } } })).toThrow('真实主持人');
+  // The ordinary user command retains its existing direct configuration authority.
+  const restored = f.store.request({ ...command, readerId: 'user', expectedRevision: changed.topic!.revision,
+    targetCompanionId: 'alice', operationId: 'actual_user_handoff' }).topic!;
+  expect(restored.moderatorId).toBe('alice');
+  f.store.request({ type: 'memory.forget', companionId: 'alice', conversationId: f.room.id, sourceMessageIds: [consent.id] });
+  expect(() => f.store.request({ ...approved, operationId: 'withdrawn_consent', expectedRevision: restored.revision,
+    moderatorTransferApproval: { ...approval, expectedRevision: restored.revision } })).toThrow('公开原文');
+  const reopened = new CompanionsStore(f.file, ['alice', 'bob'].map(seed)); stores.push(reopened);
+  expect(reopened.request({ type: 'topic.read', conversationId: f.room.id, topicId: topic.id, readerId: 'bob' }).topic).toMatchObject({ id: topic.id, moderatorId: 'alice' });
+  expect(reopened.request({ type: 'topic.read', conversationId: f.room.id, topicId: topic.id, readerId: 'bob' }).topicState).toEqual(beforeBob);
+});
 it('keeps per-reader topic selections, invitations, pause state and private working memory independent across restart', () => {
   const f = fixture(), first = f.create('狼人杀'), second = f.create('小说', 'bob');
   expect(first.participantIds).toEqual(['user']); expect(first.invitedIds).toEqual(['alice', 'bob']);

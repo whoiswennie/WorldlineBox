@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { companionActivityThoughtOriginSchema } from './companion-activity-thought';
 import { companionKnowledgeCommandSchema, companionKnowledgeResponseSchema } from './companion-knowledge-store';
 import { companionReplyProgressSchema } from './companion-reply-progress';
 import { companionSocialReplyProgressEntrySchema } from './companion-social-reply';
@@ -116,7 +117,8 @@ export const actionSchema = z.object({ id: companionIdSchema, conversationId: co
   parentMessageId: companionIdSchema.optional(), toolCallId: z.string().max(240).optional(), loopStep: z.number().int().nonnegative().optional(),
   scheduleOccurrenceId: companionIdSchema.optional(), workOrderId: companionIdSchema.optional(),
   authorizationGrantId: companionIdSchema.optional(),
-  companionId: companionIdSchema, sourceMessageId: companionIdSchema, title: z.string().max(120),
+  companionId: companionIdSchema, sourceMessageId: companionIdSchema.optional(), title: z.string().max(120),
+  thought: companionActivityThoughtOriginSchema.optional(),
   status: z.enum(['queued', 'running', 'succeeded', 'failed', 'cancelled', 'interrupted']),
   taskId: companionIdSchema.optional(), sessionId: z.string().max(200).optional(),
   result: z.string().max(65536).optional(), error: z.string().max(1000).optional(),

@@ -84,6 +84,31 @@ it('validates shared source DAGs with linear SQL growth instead of recursively e
   mkdirSync('artifacts/vcp-validation', { recursive: true });
   writeFileSync('artifacts/vcp-validation/source-access-dag-memo-performance-2026-10-23.json', JSON.stringify({ actualSQLite: true, measurements }, null, 2));
 });
+it('reuses compiled statements while every read still observes source edits and actual withdrawal', () => {
+  const f = fixture(6), leaf = f.nodes.at(-1)!; let gets = 0;
+  const prepare = vi.fn((sql: string) => {
+    const statement = f.db.prepare(sql);
+    return { get: (...args: unknown[]) => { gets++; return statement.get(...args); },
+      all: statement.all.bind(statement), run: statement.run.bind(statement) };
+  });
+  const access = new CompanionSourceAccess({ prepare } as unknown as CompanionConnection, id => f.store.getMessage(id));
+  expect(access.filter(f.alice, [leaf.id])).toHaveLength(1);
+  // Delegated readset validators keep their own uncached prepares. Measure
+  // only this source-access instance's hot static statements, not all SQL.
+  const statements = ['SELECT * FROM messages WHERE id=?', 'SELECT total_changes() AS n', 'PRAGMA data_version'];
+  const prepared = () => statements.map(sql => prepare.mock.calls.filter(([query]) => query === sql).length);
+  const firstGets = gets;
+  expect(prepared()).toEqual([1, 1, 1]);
+  expect(access.filter(f.alice, [leaf.id])).toHaveLength(1);
+  expect(prepared()).toEqual([1, 1, 1]); expect(gets).toBeGreaterThan(firstGets);
+  f.db.prepare('UPDATE messages SET content=?,revision=revision+1 WHERE id=?').run('EDITED_CACHED_STATEMENT_SOURCE', f.base.id);
+  expect(access.filter(f.alice, [leaf.id])).toEqual([]);
+  f.db.prepare('UPDATE messages SET content=?,revision=revision+1 WHERE id=?').run(f.base.content, f.base.id);
+  expect(access.filter(f.alice, [leaf.id])).toHaveLength(1);
+  f.store.request({ type: 'memory.forget', ...f.alice, sourceMessageIds: [f.base.id] });
+  expect(access.filter(f.alice, [leaf.id])).toEqual([]);
+  expect(prepared()).toEqual([1, 1, 1]);
+});
 it('rechecks same-ID source bytes and owner/cursor ACLs on every top-level read', () => {
   const f = fixture(20), leaf = f.nodes.at(-1)!;
   expect(f.access.filter(f.alice, [leaf.id])).toHaveLength(1);

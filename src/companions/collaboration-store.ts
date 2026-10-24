@@ -67,7 +67,8 @@ export class CompanionCollaborationStore {
     return grant;
   }
   assertAction(action: Pick<CompanionAction, 'authorizationGrantId' | 'companionId' | 'conversationId' | 'sourceMessageId'>): void {
-    this.assertInvocation(action);
+    if (!action.sourceMessageId) throw new Error('协作执行必须保留真实授权来源。');
+    this.assertInvocation({ ...action, sourceMessageId: action.sourceMessageId });
   }
   cancelFor(companionId: string): void {
     const found = this.db.prepare("SELECT data FROM companion_collaborations WHERE owner_id=? OR EXISTS(SELECT 1 FROM json_each(data,'$.participants') p WHERE json_extract(p.value,'$.companionId')=?)").all(companionId, companionId);

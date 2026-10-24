@@ -417,6 +417,37 @@ export class CompanionTopicStore {
       return { ok: true, topic: cloned, topicState: this.state(cloned, command.readerId) };
     }
     if (command.expectedRevision !== topic.revision) throw new Error('话题已有新进展，请重新读取后保存。');
+    if (command.type === 'topic.transfer_moderator') {
+      const target = command.targetCompanionId, previousModeratorId = topic.moderatorId;
+      if (command.readerId !== 'user' && command.readerId !== previousModeratorId) throw new Error('只有当前主持本人或用户可以移交主持。');
+      if (topic.status !== 'active' || command.readerId !== 'user' && this.paused(topic.id, command.readerId)) throw new Error('请先恢复当前话题，再移交主持。');
+      if (target === previousModeratorId) throw new Error('接任者已经是当前主持。');
+      if (!topic.participantIds.includes(target) || this.paused(topic.id, target) || target !== 'user' && (!roomMembers.includes(target)
+        || !this.db.prepare("SELECT 1 FROM companions WHERE id=? AND deleted_at IS NULL AND json_extract(data,'$.active')=1").get(target))) throw new Error('接任主持必须已自行加入、仍是本群真实可用成员且未暂停。');
+      const approval = command.moderatorTransferApproval;
+      if (command.readerId !== 'user') {
+        if (!topic.participantIds.includes(command.readerId) || !approval || approval.companionId !== command.readerId
+          || approval.conversationId !== topic.conversationId || approval.topicId !== topic.id || approval.previousModeratorId !== previousModeratorId
+          || approval.targetCompanionId !== target || approval.expectedRevision !== topic.revision) throw new Error('主持移交缺少本话题本版本的宿主同意证明。');
+        const ids = command.sourceMessageIds ?? [], references = approval.sourceRefs;
+        if (new Set(ids).size !== ids.length || new Set(references.map(ref => ref.id)).size !== references.length
+          || JSON.stringify([...ids].sort()) !== JSON.stringify(references.map(ref => ref.id).sort())
+          || !references.some(ref => ref.id === approval.consentMessageId)) throw new Error('主持移交的公开来源与宿主证明不一致。');
+        for (const reference of references) {
+          const source = this.db.prepare('SELECT author_id FROM messages WHERE id=? AND conversation_id=?').get(reference.id, topic.conversationId) as { author_id: string } | undefined;
+          if (!source || reference.id === approval.consentMessageId && source.author_id !== target
+            || !this.publicationReadable(topic, command.readerId, { messageId: reference.id, authorId: source.author_id, contentChecksum: reference.checksum }))
+            throw new Error('接任同意的公开原文已变化、撤回或不属于本话题真实接任者。');
+        }
+      }
+      topic.moderatorId = target; topic.revision++; topic.updatedAt = new Date().toISOString();
+      this.db.prepare('UPDATE companion_topics SET data=? WHERE id=?').run(JSON.stringify(topic), topic.id);
+      this.db.prepare('INSERT INTO metadata(key,value) VALUES(?,?)').run(`topic-moderator-transfer/${topic.id}/${topic.revision}`, JSON.stringify({
+        actorId: command.readerId, previousModeratorId, targetCompanionId: target, previousRevision: command.expectedRevision,
+        revision: topic.revision, at: topic.updatedAt, ...(command.readerId !== 'user' ? { approval } : { authority: 'explicit_user_command' }) }));
+      this.changed?.(topic.conversationId, topic.id);
+      return { ok: true, topic, topicState: this.state(topic, command.readerId) };
+    }
     if (command.type === 'topic.delete') {
       if (command.readerId !== 'user') throw new Error('删除话题档案仅能由用户界面明确操作，伙伴可以暂停、退出或结束。');
       this.db.prepare('DELETE FROM companion_topic_current WHERE topic_id=?').run(topic.id);

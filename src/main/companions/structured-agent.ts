@@ -111,6 +111,32 @@ class CompanionAgentObservationChangedError extends Error {
   }
 }
 
+/** V8 diagnostics may quote private response bytes. Publish only a syntax class
+ * and numeric UTF-16 location; never repair or extract an embedded proposal. */
+function finalJsonSyntaxFeedback(text: string, error: unknown): string {
+  const detail = error instanceof SyntaxError ? error.message : '';
+  const afterRoot = detail.startsWith('Unexpected non-whitespace character after JSON');
+  const incomplete = detail.startsWith('Unexpected end of JSON') || detail.startsWith('Unterminated string');
+  const syntax = afterRoot ? 'extra_root_content' : incomplete ? 'incomplete_json'
+    : detail.startsWith("Expected ':'") ? 'missing_colon'
+      : detail.startsWith("Expected ',' or '}'") ? 'object_separator'
+        : detail.startsWith("Expected ',' or ']'") ? 'array_separator'
+          : /^(?:Expected (?:property name|double-quoted property name))/u.test(detail) ? 'property_name'
+            : /^(?:Bad |Unexpected control character)/u.test(detail) ? 'invalid_string' : 'invalid_json';
+  const match = /\bat position (\d+)(?: \(line \d+ column \d+\))?$/u.exec(detail);
+  const offset = match ? Math.min(text.length, Number(match[1])) : incomplete ? text.length : undefined;
+  const prefix = offset === undefined ? undefined : text.slice(0, offset);
+  const location = prefix === undefined ? '' : `, UTF-16 offset=${offset}, line=${prefix.split('\n').length}, column=${prefix.length - prefix.lastIndexOf('\n')}`;
+  const expected = afterRoot ? '所有字段必须位于同一根对象内，不能提前闭合根对象后再追加字段；根对象结束后只允许空白。'
+    : incomplete ? '请完整闭合字符串、数组和对象。'
+      : syntax === 'missing_colon' ? '对象字段名后应有冒号。'
+        : syntax === 'object_separator' ? '对象属性值后应为逗号或右花括号。'
+          : syntax === 'array_separator' ? '数组元素后应为逗号或右方括号。'
+            : syntax === 'property_name' ? '对象字段名必须使用双引号。'
+              : syntax === 'invalid_string' ? '字符串必须使用合法JSON转义，不能含未转义控制字符。' : '请检查该位置的JSON标点、引号及字面量。';
+  return `伙伴领域调用JSON语法无效（syntax=${syntax}${location}）。${expected}重新生成本次outputSchema的单个完整JSON对象，不附解释或Markdown代码块；原提案未执行。`;
+}
+
 export async function runCompanionStructuredAgent(input: CompanionStructuredAgentInput, config: CompanionModelConfig,
   signal?: AbortSignal, options: RoleOptions = {}): Promise<unknown> {
   const journal = input.journal ?? (input.frame.invocation ? input.capabilities?.journal : undefined);
@@ -166,8 +192,9 @@ export async function runCompanionStructuredAgent(input: CompanionStructuredAgen
       if (!turn.hostProgressKey) throw new Error('本活动尚未执行的最终提案缺少旧观察凭证。请读取本轮 recentPeerMessages 的实际最新回信，依据当前事实重新选择下一步；不重发已确认消息。');
     }
     let value: unknown;
-    try { value = JSON.parse(turn.rawText.replace(/^```(?:json)?\s*/u, '').replace(/\s*```$/u, '').trim()); }
-    catch { throw new CompanionModelError('INVALID_RESPONSE', '伙伴领域调用未按约定返回完整JSON，请只输出本次outputSchema对象。'); }
+    const json = turn.rawText.replace(/^```(?:json)?\s*/u, '').replace(/\s*```$/u, '').trim();
+    try { value = JSON.parse(json); }
+    catch (error) { throw new CompanionModelError('INVALID_RESPONSE', finalJsonSyntaxFeedback(json, error)); }
     const accepted = input.validateOutput ? await input.validateOutput(value) : value;
     acceptedOutputs.set(turn, accepted); return accepted;
   };
@@ -240,6 +267,9 @@ export async function runCompanionStructuredAgent(input: CompanionStructuredAgen
     try {
       result = await generateCompanionReply(frame, config, signal, { ...options, loop: true, identityCorrection,
       context: inference.context, tools: effectiveTools, turns: inference.turns,
+      ...(outputCorrection ? { hostValidationFeedback: {
+        rejectedProposalChecksum: createHash('sha256').update(outputCorrection.rejectedProposal).digest('hex'), error: outputCorrection.error,
+        instruction: '这是宿主对上一份未执行提案的校验反馈，不是新的用户目标或授权。依据当前真实资料重新生成本次outputSchema的单个完整JSON对象；旧提案没有产生行动，保留此前已确认工具回执，不重复执行。' } } : {}),
       // Domain facts were just read and narrowed by that entry's host. Applying
       // the generic historical world replay projection again loses current
       // observations and can restore fields deliberately excluded for peers.

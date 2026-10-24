@@ -20,6 +20,7 @@ import { COMPANION_SLEEP_DREAM_CONCURRENCY } from '../../shared/companion-sleep'
 import { companionRecallCapabilities } from './structured-agent';
 import { companionTopicCapabilities } from './topic-capabilities';
 import { reviewCompanionGameSharedUpdate } from './game-topic-privacy';
+import { reviewCompanionTopicModeratorTransfer } from './topic-moderator-transfer';
 import { resolveCompanionGameInitiativeContext, loadCompanionGameCommunication } from './game-contact-context';
 import { companionSocialCapabilities } from './social-capabilities';
 import { ensureTopicContinuity } from './topic-compaction';
@@ -220,6 +221,8 @@ export class CompanionWorldService {
         capabilities: companionSocialCapabilities(this.options.request, { ...scope, sourceMessageId: source.id },
           companionTopicCapabilities(this.options.request, scope, companionRecallCapabilities(this.options.request, scope), {
             reviewUpdate: (command, actionSignal) => reviewCompanionGameSharedUpdate({ command, request: this.options.request, source },
+              config, actionSignal, { fetchFn: this.options.fetchFn, timeoutMs: 30_000 }),
+            reviewTransfer: (command, actionSignal) => reviewCompanionTopicModeratorTransfer({ command, request: this.options.request },
               config, actionSignal, { fetchFn: this.options.fetchFn, timeoutMs: 30_000 }),
           }),
           async (proposed, actionSignal) => {

@@ -2,6 +2,8 @@ import type { DshTaskSpec, DshTaskCapabilityQuery } from '../../shared/dsh-task-
 
 /** Data-only controls embedded in a private, per-invocation native plugin. */
 export interface DshRuntimeTaskPolicy {
+  /** Main-only thought isolation, enforced independently of advertised tools. */
+  cognitiveOnly?: boolean;
   mode?: DshTaskSpec['mode']; tools?: string[]; skills?: string[]; discover?: boolean;
   discoveryQuery?: DshTaskCapabilityQuery;
   expectedEffectiveDigest?: string;
@@ -9,7 +11,9 @@ export interface DshRuntimeTaskPolicy {
 
 /** Native registry restrictions plus a final executor guard, including nested/subagent calls. */
 export function taskRuntimePolicySource(policy: DshRuntimeTaskPolicy): string {
-  return `const taskPolicy = io.policy || ${JSON.stringify(policy)};\n` + String.raw`
+  return `const taskPolicy = { ...(io.policy || ${JSON.stringify(policy)}) };\n` + String.raw`
+  const cognitiveOnly = taskPolicy.cognitiveOnly === true;
+  if (cognitiveOnly) { taskPolicy.mode = 'native'; taskPolicy.tools = []; taskPolicy.skills = []; }
   let taskPrelude = '';
   let taskScope, validateTaskTools = () => {};
   const publishTaskCapabilities = async subject => {
@@ -31,6 +35,8 @@ export function taskRuntimePolicySource(policy: DshRuntimeTaskPolicy): string {
     const effective = { digest: createHash('sha256').update(JSON.stringify(canonical({ mode: taskPolicy.mode || 'native',
       tools: [...catalog].sort((a,b) => a.name.localeCompare(b.name)), skills: skillContracts.sort((a,b) => a.name.localeCompare(b.name)) }))).digest('hex'),
       mode: taskPolicy.mode || 'native', preset: taskPolicy.mode === 'ptc' ? 'ptc' : 'standard', toolCount: catalog.length, skillCount: entries.length };
+    if (cognitiveOnly && (effective.mode !== 'native' || effective.toolCount !== 0 || effective.skillCount !== 0))
+      throw Error('task/unsupported: cognitive task capabilities are not empty');
     if (taskPolicy.expectedEffectiveDigest && taskPolicy.expectedEffectiveDigest !== effective.digest)
       throw Error('task/unsupported: continued session capabilities changed; start a new session with explicit handoff');
     const rows = await ctx.get('agentPresets').list();
@@ -75,6 +81,12 @@ export function taskRuntimePolicySource(policy: DshRuntimeTaskPolicy): string {
     taskScope = scope;
     const registry = ctx.get('tools'), skills = ctx.get('skills');
     if (!registry || typeof registry.schemas !== 'function') throw Error('task/unsupported: native tool catalog is unavailable');
+    if (cognitiveOnly) {
+      if (typeof registry.guard !== 'function' || typeof scope.on !== 'function' || !skills
+        || typeof skills.list !== 'function' || typeof skills.get !== 'function')
+        throw Error('task/unsupported: this runtime cannot enforce cognitive task isolation');
+      cleanup.push(registry.guard(() => 'All tool dispatch is disabled for this cognitive-only task.'));
+    }
     const catalog = registry.schemas(subject);
     const entries = skills ? await skills.list({ cwd, scope: subject }) : [];
     const management = new Set(['plugin_manager']);
@@ -99,7 +111,7 @@ export function taskRuntimePolicySource(policy: DshRuntimeTaskPolicy): string {
     // Filter the final native assembly as well as enforcing every actual dispatch.
     if (typeof scope.on === 'function') cleanup.push(scope.on('system-prompt/assemble', async (_assembly, _context, next) => {
       const assembled = await next();
-      return { ...assembled, tools: assembled.tools?.filter(tool => !management.has(tool.name) && (!allowed || tool.name === 'run_code' || allowed.has(tool.name))) };
+      return { ...assembled, tools: cognitiveOnly ? [] : assembled.tools?.filter(tool => !management.has(tool.name) && (!allowed || tool.name === 'run_code' || allowed.has(tool.name))) };
     }, { prepend: true }));
     if (taskPolicy.skills !== undefined) {
       if (!skills) throw Error('task/unsupported: skill selection is unavailable');

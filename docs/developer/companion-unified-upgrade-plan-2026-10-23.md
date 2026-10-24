@@ -1122,3 +1122,39 @@ e01cbfc实际构建的测试包位于out/WorldlineBox-win32-x64/WorldlineBox.exe
 仓库官方 `npm run release:package` 已退出 0，原版 VCP 文件、内置 EmbeddingGemma 和打包运行时校验通过。最终 app.asar SHA256 为 `6b3d594de39c171c4fb1094fe24ce7de56f67a2edc1329df1e982a16a84c8bf9`。该实际 ASAR 的经历端到端用例再次通过，35.6 秒、1/1、正常退出；Root 检查明暗两种截图，日期箭头、中文行为标题、详情和改名显示正常，无横向溢出。核验采用真实日程和世界事件，不预写经历。官方 `npm run make:inno` 退出 0（747.110 秒），安装器为 `out/make/inno/WorldlineBoxSetup.exe`，1198654415 字节，SHA256 `93fe5f5502d0dce71c4a460f9d2c8ebf33d91b81ce1db57c69ba2c8fb8c591eb`；完整构建日志和 `delivery-binary.json` 保存于项目外归档。
 
 无关验证中间产物已移出项目，完整保留在 `C:\Users\hp\Desktop\project\new\WorldlineBox-validation-archive-2026-10-25`：原 `artifacts/vcp-validation` 对应 `vcp-validation`，原 `.tools/test-output` 对应 `test-output`，原 `test-results` 对应 `playwright-test-results`；`archive-index.json` 记录映射和关键证据。真实运行时、依赖、资源及源码回归测试保留。本节与实现一同交付于 `codex/companion-unified-upgrade-2026-10-23` 分支；实际提交哈希和远程推送状态另存于归档的 `delivery-git.json`。
+
+### 16.67 持续活动的真实 DSH 思考及具体纠错反馈（2026-10-25）
+
+继续核对时确认：原聊天主脑和已授权现实工作能使用 DSH，但持久 world/activity 规划器明确没有这项能力。这是实际能力缺口。现将纯思考接入原结构化循环和中心 action/DSH 管道，宿主以真实活动 owner、会话、步骤、租约、观察及执行读集创建幂等思考记录，不伪造用户消息。普通外部任务仍要求真实可见用户授权；内部分析强制新会话、受管目录、native、read-only、零工具及零技能，实际派发 guard 也拒绝 run_code。分析接回同一活动前复核有效性，不向群聊发布私密分析，不增加现实任务奖励，不能通过普通恢复或补充输入转成外部执行。仅计算不占用虚拟电脑或改变作息。
+
+真实 CLI 验收沿用当前所选原生 profile 的提供方、模型及账户路线，仅将配置和认证复制到临时隔离目录；正式配置逐文件核对未变。首轮真实推演成功，但验收器在 task succeeded 后提前 shutdown，截断正式报告，且一次独立复核碰到测试的单任务上限。首轮 RED 原件完整保留，不能说成重复执行或产品已完成报告。随后只修观察等待，并将测试上限改为三次以容纳正常复核，未改产品权限或补造输出。
+
+新 actual `final-activity-thought-native-report-actual.json` 与完整测试 1/1 自然退出 0：11 次 Main HTTP、2 个真实 CLI 任务，原活动 succeeded 且物理 client_id=activity_result_f738c2ad… 对应正式已发送消息 22dba088…；DSH 自身 HTTP 数未知，另列 null，不冒充包含在 Main 预算。两任务均 native/effective 0工具0技能，各有独立 session/cwd；两条 action 自动成为同一伙伴现实日 2026-10-25 的经历，经历中的 dsh-report.md 与原 CLI 报告 SHA256 分别完全一致，归档队列为零。首任务准备约23.20ms、冷启动约8230.30ms，第二任务准备约38.91ms、复用等待约3.61ms。CLI 启动复用不等于复用 Agent 或会话，也不承诺用户模型响应耗时。
+
+模型输出错误反馈还修复了两项一般问题：真实 SyntaxError 分类及安全 UTF16 位置反馈；宿主拒绝理由作为最后一条 user 验证数据出现在被拒 assistant/tool 历史之后。严格 JSON.parse、原始输出、五协议适配和原三次模型修正上限均保留，不偷偷修 JSON 或丢字段。持续活动 Main/Activity/SQLite 三完整文件 184/184 串行通过；模型、结构化循环、任务 schema/来源及 VCP 关闭诊断五完整文件 90/90 串行通过，两者不合并成无重复总数。全 main/extension 类型检查与全仓 lint 退出0，仍有七条原有 renderer warning。
+
+第一场修复后自主局 `final-five-real-dsh-autonomous.json` 仍 RED，470.506秒、196HTTP、零该场源码漂移；五人已建群并讨论 Kimi 主持，但没有发牌或结算。最后一步的三个实际错误为 topic.patch 中非法字段层级、未闭合 JSON、expectedRevision=6 而真实 revision=5。另一次实际来信变化已正确免计，不占三槽。不能将从未存在的版本6误称竞态，也不能免费接受或重开它。后续仅补错误诊断：按既有 action 分支给安全字段路径/错误码、列出已获权当前版本并提示先 read，原 schema/CAS/权限/次数逐字保留。两完整相关文件51/51、main类型检查、目标lint及独立只读审查通过；前次构建因此正常中止并留 interruption 记录，最终包将在本次诊断修正后重新生成。新自主局的实际结果及最终安装包另行登记，不提前宣称通过。
+
+新增 VCP 关闭诊断仍保留原5秒预算与真实退出后清理完才释放配额的规则。真人桥实际两条关闭错误已定位 dependency_cleanup：closeAcknowledged/exitObserved 均 true、exitCode=0、约6.1/6.5秒；这两次不是子进程未退出。单次桥延迟的只读检查未取得 CPU 栈，不能宣称已找到或修复性能根因。该桥把 SQLite 与 HTTP 宿主同步放在同一测试进程，正式应用使用独立 storage utility process，不将桥的 status 停顿直接外推为正式 UI 卡顿。
+
+### 16.68 保留原对局继续核实通用主持交接与查询开销（2026-10-25）
+
+新真人主持局 `human-god-five-final-current-2026-10-25` 到硬截止仍未结算：480HTTP、69正常公共命令，包含关闭共1238.536秒，硬截止后无新HTTP。五位真实伙伴各自join及同意，正常秘密发牌1狼1预言家3村民，完成第一夜与四人讨论；仅Qwen→gugugaga一张正式票，其余三位缺正式票。主持首次未及时同步shared阶段，后续又发生约76/91秒接口延迟，更正截止未及时送达，不能把缺票统一归玩家自愿或模型错误。五位138条经历的SQLite、详情及实体索引owner一致；25篇日记已索引。原件保存在外部归档的 `vcp-validation/human-god-five-final-current-2026-10-25-bundle`，原raw SHA256以592f7e08开头。桥控制测试自然exit0仅证明按预算结束，不代表游戏通过。
+
+对仍在进行的另一自主局发现实际权限缺口：讨论推选Qwen主持，但由Sister创建的话题没有同topic主持移交操作；非主持不能分发其他成员私态或维护公共阶段。另建话题会丢原端口，不能拿来冒充原局自然继续。因此正常停止并完整保留原任务、原群与话题，`final-feedback-five-autonomous.json` 为interrupted、443.136秒、180HTTP、零源码漂移，原task fcdf186d…仍waiting/step12，不重发用户请求、不重洗身份。
+
+补通通用transfer_moderator：原主持主动提交或真人明确操作，目标须在原话题真实加入；AI还要引用目标本人在本话题公开接受主持的真实消息，经宿主审核与准确来源证明。最终事务重新核当前主持、版本、成员、来源可见性和哈希；只更换moderatorId、revision及审计，不复制或改写任何人的私态或共享内容。旧主持失去公共阶段管理权，接任者仍只能读自己的私态。模型和公共请求不能注入宿主proof。存储侧完整worker8/8、目标lint及独立只读审查通过；Main最后接线检查及原任务实际恢复另记。
+
+在被保留的原自主进程取得唯一12秒CPU采样，进程PID经OS与Runtime核对：store.request包含约8.15秒，SQLite prepare包含约3.93秒；来源验证/查询栈互相重叠，不能相加，GC约4.6%。这证明查询准备有实际开销，不证明无限循环或原76秒卡顿根因。现在仅在source-access同连接内部加入容量64的Statement缓存，SQL、参数、每次step及原授权结果失效规则不变，不缓存资料或权限。真实SQLite原17例保留并新增编辑/恢复/遗忘回归，完整18/18通过、types/lint通过；首次新计数断言范围过宽的RED保留。实际收益待同一原任务恢复采样，不能把语句复用断言冒充速度实测。
+
+恢复观察器沿用原source、任务和全部真实历史，逐段核对报告root/source/scenario/五位成员/源码守卫及原用户消息数量；预算累计原180HTTP和443136ms，仍只有总600非judge请求/20分钟观察额（关闭时间另按实际记录），剩420请求和约12.6分钟，不通过恢复获得新一局或新预算。新旧源码阶段分开记录，前述RED和interrupted不改判。
+
+### 16.69 本轮同源真实恢复结果及交付边界（2026-10-25）
+
+最终冻结源码后正常恢复原source 01babf65…和原task fcdf186d…，同群e753a019…/同topic1d4b5cc7…，没有新增玩家指令或重建该任务。`final-handoff-five-same-source.json` 实际144.705秒、58HTTP（含独立judge1），累计原source238HTTP；本段与原interrupted段源码守卫各自无漂移，按两个源码阶段登记。实际推进12→17步，随后仍因三次最终JSON错误终止，最后诊断为object_separator/UTF16 offset1433。独立评审gameCompleted=false，其余人数、身份隐私、自主参与、无重复对局作用和进度陈述五项均true。尚未发牌、夜间或结算，不能称自主狼人杀通过；主持字段仍Sister，新增主持移交在本段未实际触发，只有真实SQLite/Main机制验证，不能冒称模型已经用过它。恢复中出现额外无话题的空社交群，不报告为零新增群，独立评审未据此判重复开局。
+
+同一恢复进程再做唯一12秒CPU采样，身份由log/OS父链/本机端口owner/Runtime.pid共同核对。source-access原来直接prepare约2.371秒的采样路径在新窗未再出现，私有statement helper包含约45.8ms，证明暖Statement缓存确已用于实际来源验证。全模块prepare仍约2.300秒，来源查询及get仍有CPU开销；不同窗业务负载不完全相同，store.request总包含时间接近，不能据此宣传整体加速倍数或76秒停顿已修复。
+
+主持移交相关五完整Main单元首轮235过1败（旧world-service工具白名单仅memory，导致mock抛错而未进入访客拒绝）；保留原件后，仅把该旧fixture改为当前精确memory+world(action=experience)，没有开放DSH或任意world工具，也不改拒绝/私聊/日程/真实提交断言。其余四文件191/191原结果保留，完整world文件随后45/45自然退出0；存储worker8/8，缓存SQLite18/18，最终main/extension类型检查及全部改动JS/TS文件lint退出0。原类型及新计数测试RED均保留。本轮不再追加新对局或将负向内容判断改成绿色，剩余工作只做官方包、最终ASAR经历界面、清理和远程提交。
+
+新验证目录已经整体移到外部归档 `followup-vcp-validation`，`followup-cleanup-index.json` 保存映射；未删除原始失败证据。一次清理测试临时目录中认证副本的请求被自动审批返回“策略阻止”，操作未执行；这些副本位于项目外临时目录，不纳入仓库或软件包。正式用户配置的只读一致性守卫均通过。

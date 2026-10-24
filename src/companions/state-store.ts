@@ -407,6 +407,11 @@ export class CompanionStateStore {
     const found = this.db.prepare('SELECT data FROM actions WHERE id=?').get(actionId);
     if (!found) throw new Error('行动不存在。');
     const action = decode<CompanionAction>(row(found).data);
+    // Private reasoning is not a completed real-world arrangement or a source
+    // of relationship/experience rewards, even when its analysis succeeded.
+    if (action.thought) return;
+    if (!action.sourceMessageId) throw new Error('普通行动状态缺少真实来源，未产生状态或经历奖励。');
+    const sourceMessageId = action.sourceMessageId;
     if (!['running', 'succeeded', 'failed', 'cancelled'].includes(action.status)) return;
     this.db.transaction(() => {
       this.requireCompanion(action.companionId);
@@ -420,9 +425,9 @@ export class CompanionStateStore {
       state.mood = deriveCompanionMood(state.affect, state.energy, this.busy(action.companionId));
       state.sourceConversationId = action.conversationId;
       const evidence = this.db.prepare('SELECT id FROM messages WHERE action_id=? AND status=\'sent\' ORDER BY sequence DESC LIMIT 1').get(action.id);
-      state.sourceMessageIds = [evidence ? String(row(evidence).id) : action.sourceMessageId]; state.evidence = [];
+      state.sourceMessageIds = [evidence ? String(row(evidence).id) : sourceMessageId]; state.evidence = [];
       if (['succeeded', 'failed'].includes(action.status) && (action.result || action.error)) this.addExperience(state,
-        { companionId: action.companionId, conversationId: action.conversationId }, 'action:' + action.id, [action.sourceMessageId]);
+        { companionId: action.companionId, conversationId: action.conversationId }, 'action:' + action.id, [sourceMessageId]);
       this.save(state);
       this.changes.add(action.companionId, { id: 'action-state-' + action.id + '-' + action.status, kind: 'task', appliedAt: state.updatedAt,
         occurredAt: state.updatedAt, reason: state.reason!, sourceConversationId: action.conversationId, sourceMessageIds: state.sourceMessageIds ?? [] }, before, state);

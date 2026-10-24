@@ -3,6 +3,7 @@ import { reviewCompanionGameSharedUpdate, reviewCompanionGamePublicReply, type C
 import type { CompanionStorageCommand, CompanionStorageResponse } from '../../src/shared/companion-storage';
 import { companionTopicCapabilities } from '../../src/main/companions/topic-capabilities';
 import type { CompanionReplyInput } from '../../src/main/companions/context';
+import { reviewCompanionTopicModeratorTransfer } from '../../src/main/companions/topic-moderator-transfer';
 
 const config = { apiFormat: 'openai_chat' as const, model: 'fixture', apiKey: 'fake', baseUrl: 'https://fixture.invalid' };
 const command: CompanionGameTopicUpdate = { type: 'topic.update', conversationId: 'actual_group', topicId: 'actual_game', readerId: 'host',
@@ -18,6 +19,26 @@ const publicFrame = (): Parameters<typeof reviewCompanionGamePublicReply>[0]['fr
   companion: { id: 'host', name: '主持', description: '', persona: '', model: '', avatar: 'sister', active: true, proactive: false, builtin: false, createdAt: '2026-10-23T00:00:00Z' },
   conversation: { id: 'actual_group', kind: 'group', title: '本局', memberIds: ['host', 'a', 'b'], pinned: false, muted: false, unread: 0, lastMessage: '', updatedAt: '2026-10-23T00:00:00Z' },
   messages: [], topic: current().topic, topicState: current().topicState });
+it.each([true, false])('reviews target consent from exact public sources without reading any private working state accepted=%s', async accepted => {
+  const transfer = { type: 'topic.transfer_moderator' as const, conversationId: 'actual_group', topicId: 'actual_game', readerId: 'host',
+    expectedRevision: 7, targetCompanionId: 'a', sourceMessageIds: ['actual_target_statement'] };
+  const source = { id: 'actual_target_statement', conversationId: 'actual_group', topicId: 'actual_game', authorId: 'a',
+    content: accepted ? '我愿意接任本话题主持。' : '我愿意参与讨论，但不接受主持。', sequence: 1,
+    kind: 'text' as const, status: 'sent' as const, attachments: [], createdAt: '2026-10-23T00:00:00Z' };
+  const request = vi.fn<(command: CompanionStorageCommand) => Promise<CompanionStorageResponse>>(async input => input.type === 'topic.read' ? current()
+    : input.type === 'topic.sources.valid' ? { ok: true, topicSourcesValid: true } : { ok: true, memorySources: [source] });
+  const fetchFn = vi.fn<typeof fetch>(async (_url, init) => {
+    const data = JSON.parse(JSON.parse(String(init?.body)).messages[1].content);
+    expect(data).toMatchObject({ purpose: 'topic_moderator_transfer_consent', publicSources: [expect.objectContaining({ id: source.id, content: source.content })] });
+    expect(JSON.stringify(data)).not.toContain('opaqueRecord'); expect(data).not.toHaveProperty('currentOwnState');
+    return response({ accepted, confidence: .99, consentMessageId: accepted ? source.id : null, reason: accepted ? '目标本人明确接受主持。' : '只有参与意愿，没有主持意愿。' });
+  });
+  const result = reviewCompanionTopicModeratorTransfer({ command: transfer, request }, config, undefined, { fetchFn });
+  if (accepted) expect(await result).toMatchObject({ previousModeratorId: 'host', targetCompanionId: 'a', consentMessageId: source.id,
+    sourceRefs: [{ id: source.id, checksum: expect.stringMatching(/^[a-f0-9]{64}$/u) }] });
+  else await expect(result).rejects.toThrow('没有主持意愿');
+  expect(fetchFn).toHaveBeenCalledOnce(); expect(request.mock.calls.some(([input]) => input.type === 'topic.transfer_moderator')).toBe(false);
+});
 it.each([
   { text: '狼人照常出刀：a请私信告诉我刀谁。', allowed: false },
   { text: '我不透牌，我私报狼刀目标是b。', allowed: false },

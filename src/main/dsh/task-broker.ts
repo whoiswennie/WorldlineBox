@@ -151,6 +151,7 @@ export class DshTaskBroker {
   async execute(inputValue: DshTaskInput, operation: OperationContext, executionValue?: DshTaskExecutionOptions): Promise<DshTaskResult> {
     const input = dshTaskInputSchema.parse(inputValue);
     const execution = snapshotDshTaskExecution(executionValue);
+    if (execution.cognitiveOnly && input.sessionId) throw new Error('A cognitive task requires a new session; existing session IDs are not accepted.');
     compileDshDeliverySchema(execution.task?.delivery?.jsonSchema);
     await this.init();
     if (execution.task?.session?.mode === 'resume' && !execution.resume) {
@@ -433,7 +434,7 @@ export class DshTaskBroker {
       child.stderr.resume(); child.stdin.on('error', inputError);
       const completion = lease ? this.workers.run(lease.worker, { cwd: captured.workspacePath, title: record.title, resumeSessionId: resume?.sessionId,
         recovery: resume?.sessionId ? { id: operation.id, prompt: input.prompt, inputs: execution.inputs ?? [] } : undefined,
-        policy: { mode: execution.task?.mode, tools: execution.task?.tools, skills: execution.task?.skills, discover: execution.discover, discoveryQuery: execution.capabilityQuery,
+        policy: { ...(execution.cognitiveOnly ? { cognitiveOnly: true } : {}), mode: execution.task?.mode, tools: execution.task?.tools, skills: execution.task?.skills, discover: execution.discover, discoveryQuery: execution.capabilityQuery,
           expectedEffectiveDigest: resume?.effective?.digest } })
         : new Promise<number | null>((resolve, reject) => { selectedChild.once('error', reject); selectedChild.once('close', resolve); });
       if (taskInput) taskInput.begin(child, input.prompt, execution.inputs, operation.id); else child.stdin.end(input.prompt, 'utf8');

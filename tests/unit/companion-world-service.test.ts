@@ -653,7 +653,11 @@ describe('semantic world background service with actual SQLite sources', () => {
   it('lets a resident make a real semantic visit response without granting player tools or leaking private chat', async () => {
     const fetchFn = vi.fn<typeof fetch>().mockImplementation(async (_url, init) => {
       const request = JSON.parse(String(init?.body)), data = JSON.parse(request.messages[1].content);
-      expect(data.purpose).toBe('world_decision'); expect(request.tools.map((tool: { function: { name: string } }) => tool.function.name)).toEqual(['memory']);
+      expect(data.purpose).toBe('world_decision'); expect(request.tools.map((tool: { function: { name: string } }) => tool.function.name)).toEqual(['memory', 'world']);
+      // The second root is the existing owner-scoped experience catalog, not
+      // unrestricted world mutations or the player's external DSH tools.
+      expect(request.tools[1].function.parameters.properties.action.const).toBe('experience');
+      expect(request.tools[1].function.parameters.additionalProperties).toBe(false);
       expect(JSON.stringify(data)).not.toContain('PRIVATE_PLAYER_ADDRESS');
       expect(data.routine.config.habits[0]).toMatchObject({ kind: 'study', title: '学习活动' });
       expect(data.routine.habitProgress[0].id).toBe(data.routine.config.habits[0].id);

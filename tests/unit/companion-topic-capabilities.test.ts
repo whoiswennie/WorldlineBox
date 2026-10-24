@@ -3,6 +3,7 @@ import { companionTopicCapabilities } from '../../src/main/companions/topic-capa
 import { companionTopicPublicCommands, companionTopicOperationSchema, companionTopicOperationExample } from '../../src/shared/companion-topic';
 import type { CompanionLoopCall } from '../../src/shared/companion-loop';
 import type { CompanionStorageCommand, CompanionStorageResponse } from '../../src/shared/companion-storage';
+import type { CompanionTopicModeratorTransferApproval } from '../../src/shared/companion-topic';
 
 const call = (parameters: unknown): CompanionLoopCall => ({ id: 'stable_host_slot', name: 'world', arguments: JSON.stringify({ action: 'topic', parameters }) });
 function fixture() {
@@ -53,4 +54,20 @@ it('reports unknown operation and malformed JSON precisely without dispatch or b
     argumentIssues: [{ path: '$', code: 'invalid_json', message: expect.any(String) }] });
   expect(f.request).not.toHaveBeenCalled(); expect(companionTopicOperationSchema('rewrite_everyone')).toBeUndefined();
   expect(companionTopicOperationExample('rewrite_everyone')).toBeUndefined();
+});
+it('requires host consent review for moderator transfer and never accepts model-supplied approval', async () => {
+  const f = fixture(), args = { action: 'transfer_moderator', roomId: 'actual_group', topicId: 'actual_topic', expectedRevision: 7,
+    targetCompanionId: 'bob', sourceMessageIds: ['actual_bob_acceptance'] };
+  expect(await f.capabilities.execute(call(args))).toMatchObject({ ok: false, error: expect.stringContaining('核验能力') });
+  expect(f.request).not.toHaveBeenCalled();
+  const approval: CompanionTopicModeratorTransferApproval = { schema: 'worldlinebox.companion-topic-moderator-transfer-v1', companionId: 'alice',
+    conversationId: 'actual_group', topicId: 'actual_topic', previousModeratorId: 'alice', targetCompanionId: 'bob', expectedRevision: 7,
+    consentMessageId: 'actual_bob_acceptance', sourceRefs: [{ id: 'actual_bob_acceptance', checksum: 'a'.repeat(64) }] };
+  const reviewTransfer = vi.fn(async () => approval);
+  const capability = companionTopicCapabilities(f.request, { companionId: 'alice', conversationId: 'actual_group' }, undefined, { reviewTransfer });
+  expect(await capability.execute(call({ ...args, moderatorTransferApproval: approval }))).toMatchObject({ ok: false });
+  expect(reviewTransfer).not.toHaveBeenCalled(); expect(f.request).not.toHaveBeenCalled();
+  await capability.execute(call(args));
+  expect(reviewTransfer).toHaveBeenCalledOnce();
+  expect(f.request).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ type: 'topic.transfer_moderator', readerId: 'alice', moderatorTransferApproval: approval }));
 });

@@ -8,6 +8,7 @@ import { lstat, mkdir, mkdtemp, readFile, symlink, writeFile } from 'node:fs/pro
 import path from 'node:path';
 import { tmpdir } from 'node:os';
 import { removeOwnedDirectory } from '../../src/main/vcp-memory/filesystem';
+import * as memoryFilesystem from '../../src/main/vcp-memory/filesystem';
 
 vi.mock('electron', () => ({ utilityProcess: { fork: vi.fn() } }));
 
@@ -123,10 +124,37 @@ describe('VCP worker transport serialization', () => {
     const client=new VcpMemoryClient({dataRoot:'unused-late-exit',vendorRoot:'unused',workerPath:'unused',embedding:{baseUrl:'http://127.0.0.1',apiKey:'local-fixture',model:'fixture',dimension:4},processBroker:broker,
       launch:()=>({on:events.on.bind(events),kill(){},postMessage(message:unknown){const envelope=message as {requestId:string};events.emit('message',{requestId:envelope.requestId,ok:true,value:{}});}})});
     try{
-      await client.list({scopeId:'late-exit'});const closing=client.closeScope({scopeId:'late-exit'}),rejected=expect(closing).rejects.toThrow('did not exit');
+      await client.list({scopeId:'late-exit'});const closing=client.closeScope({scopeId:'late-exit'}),rejected=expect(closing).rejects.toMatchObject({
+        code: 'VCP_MEMORY_SHUTDOWN_TIMEOUT', diagnostic: { stage: 'exit_notification', elapsedMs: 5000,
+          closeAcknowledged: true, exitObserved: false, detachStarted: false, detachCompleted: false } });
       await vi.advanceTimersByTimeAsync(5_001);await rejected;expect(broker.snapshot().processes).toBe(1);
       events.emit('exit',0);await vi.waitFor(()=>expect(broker.snapshot().processes).toBe(0));
     }finally{await client.close().catch(()=>undefined);await broker.close();vi.useRealTimers();}
+  });
+
+  it('distinguishes dependency cleanup from a missing exit notification without releasing its permit early', async () => {
+    vi.useFakeTimers();
+    let completeDetach!: () => void;
+    const detaching = new Promise<void>(resolve => { completeDetach = resolve; });
+    const detach = vi.spyOn(memoryFilesystem, 'detachRuntimeDependencyLinks').mockImplementationOnce(() => detaching);
+    const broker = new VcpMemoryProcessBroker(1), events = new EventEmitter();
+    const client = new VcpMemoryClient({ dataRoot: 'unused-delayed-detach', vendorRoot: 'unused', workerPath: 'unused',
+      embedding: { baseUrl: 'http://127.0.0.1', apiKey: 'local-fixture', model: 'fixture', dimension: 4 }, processBroker: broker,
+      launch: () => ({ on: events.on.bind(events), kill() { events.emit('exit', 0); }, postMessage(message: unknown) {
+        const envelope = message as { requestId: string }; events.emit('message', { requestId: envelope.requestId, ok: true, value: {} });
+      } }) });
+    try {
+      await client.list({ scopeId: 'delayed-detach' });
+      const closing = client.closeScope({ scopeId: 'delayed-detach' });
+      const rejected = expect(closing).rejects.toMatchObject({ code: 'VCP_MEMORY_SHUTDOWN_TIMEOUT',
+        diagnostic: { stage: 'dependency_cleanup', elapsedMs: 5000, closeAcknowledged: true,
+          exitObserved: true, exitCode: 0, detachStarted: true, detachCompleted: false } });
+      await vi.advanceTimersByTimeAsync(5001); await rejected;
+      expect(broker.snapshot().processes).toBe(1);
+      completeDetach(); await vi.waitFor(() => expect(broker.snapshot().processes).toBe(0));
+    } finally {
+      completeDetach(); detach.mockRestore(); await client.close().catch(() => undefined); await broker.close(); vi.useRealTimers();
+    }
   });
 
 });

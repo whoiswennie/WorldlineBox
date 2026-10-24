@@ -12,9 +12,38 @@ import type { DshCliSelection } from '../../src/main/dsh/cli-terminal';
 import type { DshTaskExecutionOptions } from '../../src/main/dsh/task-execution';
 import { dshWorkerGeneration } from '../../src/main/dsh/warm-cli-pool';
 import { removeOwnedDirectory } from '../../src/main/vcp-memory/filesystem';
+import { dshInstanceSchema, dshRuntimeSchema, type DshInstance } from '../../src/shared/dsh-launcher';
+import { writeSharedModels } from '../../src/main/dsh/shared-settings';
+import { credentialRoutingPatches } from '../../src/main/dsh/shared-credentials';
+import { sharedSessionRoutingPatches } from '../../src/main/dsh/shared-session-data';
+import { OperationStore } from '../../src/main/dsh/operations';
+import type { DshLauncher } from '../../src/main/dsh/launcher';
+
+/** Metadata only: this does not boot a CLI, load an account or request a model. */
+export async function installedNativeAcceptanceSource(userData = process.env.WORLDLINEBOX_USER_DATA_PATH ?? path.join(process.env.APPDATA!, 'WorldlineBox')) {
+  const manager = path.join(userData, 'dsh-launcher');
+  const instances = (JSON.parse(await readFile(path.join(manager, 'instances.json'), 'utf8')) as unknown[]).map(value => dshInstanceSchema.parse(value));
+  const pinned = await readFile(path.join(manager, 'cli/context.json'), 'utf8').then(text => JSON.parse(text) as { instanceId?: string }).catch(error => {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return undefined; throw error;
+  });
+  const instance = instances.find(value => value.id === pinned?.instanceId) ?? instances.find(value => value.isDefault);
+  if (!instance || path.resolve(instance.homePath) !== path.resolve(manager, 'instances', instance.id, 'home')) throw new Error('The selected native profile is unavailable.');
+  const runtimes = (JSON.parse(await readFile(path.join(manager, 'runtimes.json'), 'utf8')) as unknown[]).map(value => dshRuntimeSchema.parse(value));
+  const runtime = runtimes.find(value => value.id === instance.runtimeId);
+  if (!runtime || runtime.adapter !== 'node-cli-web-v1') throw new Error('The selected profile does not use the installed native Node runtime.');
+  return { program: path.join(manager, 'runtimes', runtime.id, 'program'),
+    sourceProfile: { instance, sharedRoot: path.join(manager, 'shared') } };
+}
+
+type NativeAcceptanceOptions = { program: string; apiKey?: string; model?: string; baseURL?: string;
+  sourceProfile?: { instance: DshInstance; sharedRoot: string };
+  onWorkerReadyChanged?: (instanceId: string, ready: boolean) => void };
 
 /** A temporary profile and real native Agent behind the production broker. No installed account/profile is changed. */
-export async function createNativeAcceptanceBroker(options: { program: string; apiKey: string; model: string; baseURL?: string; onWorkerReadyChanged?: (instanceId: string, ready: boolean) => void }) {
+export async function createNativeAcceptanceBroker(options: NativeAcceptanceOptions) {
+  if (options.sourceProfile && (options.apiKey !== undefined || options.model !== undefined || options.baseURL !== undefined))
+    throw new Error('A source-profile acceptance must retain its own model and credential route.');
+  if (!options.sourceProfile && (!options.apiKey || !options.model)) throw new Error('The native acceptance model route is missing.');
   const program = path.resolve(options.program);
   const sdk = path.join(program, 'dsh/node_modules');
   const anchor = path.join(sdk, '@deepseek-ai/dsh/package.json');
@@ -34,13 +63,14 @@ export async function createNativeAcceptanceBroker(options: { program: string; a
   };
   let broker: DshTaskBroker | undefined;
   try {
-    const runtimeId = 'runtime-acceptance';
+    const runtimeId = options.sourceProfile?.instance.runtimeId ?? 'runtime-acceptance';
     await mkdir(path.join(root, 'runtimes', runtimeId), { recursive: true });
     // The test resolves the real installed SDK through a directory link. Runtime sealing is covered separately.
     await symlink(program, path.join(root, 'runtimes', runtimeId, 'program'), process.platform === 'win32' ? 'junction' : 'dir');
-    const instanceRoot = path.join(root, 'instances', 'acceptance');
+    const instanceId = options.sourceProfile?.instance.id ?? 'acceptance';
+    const instanceRoot = path.join(root, 'instances', instanceId);
     const workspace = path.join(root, 'workspace'); await mkdir(workspace);
-    const instance: DshCliSelection['instance'] = { id: 'acceptance', name: 'Acceptance', runtimeId, profile: 'web', status: 'stopped',
+    const instance: DshCliSelection['instance'] = { id: instanceId, name: 'Acceptance', runtimeId, profile: 'web', status: 'stopped',
       homePath: path.join(instanceRoot, 'home'), agentsPath: path.join(instanceRoot, 'agents'), workspacePath: workspace,
       browserPartition: 'temporary:acceptance', isDefault: true, createdAt: '', updatedAt: '' };
     const plan = { ...canonicalRuntimeEntryPaths(program, 'node-cli-web-v1'), env: {} };
@@ -52,12 +82,36 @@ export async function createNativeAcceptanceBroker(options: { program: string; a
       const code = await new Promise<number | null>((resolve, reject) => { child.once('error', reject); child.once('close', resolve); });
       if (code !== 0) throw new Error('The temporary native acceptance profile could not be initialized.');
     } finally { await terminateOwnedProcess(child); }
-    const profile = [{ id: 'agent-default-model', config: { provider: 'deepseek-official', model: options.model } },
-      { id: 'llm-deepseek', config: { ...(options.baseURL ? { baseURL: options.baseURL } : {}), apiKeyEnv: 'WORLDLINEBOX_ACCEPTANCE_API_KEY', thinking: 'disabled' } }];
-    await writeFile(path.join(instance.homePath, 'profiles/web/cordis.patch.yml'), JSON.stringify(profile));
-    // Native credentials resolve this explicit reference from the launch environment; no plaintext key enters the temporary profile.
-    env.WORLDLINEBOX_ACCEPTANCE_API_KEY = options.apiKey;
+    const configGuards: Record<string, string> = {};
+    const sourceFile = async (filename: string, optional = false) => {
+      const info = await lstat(filename).catch((error: NodeJS.ErrnoException) => { if (optional && error.code === 'ENOENT') return undefined; throw error; });
+      if (!info) return undefined;
+      if (!info.isFile() || info.isSymbolicLink() || info.size > 8 * 1024 * 1024) throw new Error('The source profile configuration is not a small ordinary file.');
+      const bytes = await readFile(filename); configGuards[filename] = createHash('sha256').update(bytes).digest('hex'); return bytes;
+    };
     const nativeArgs = await prepareNativeCliMode(instanceRoot, program, manifest.version);
+    if (options.sourceProfile) {
+      const source = options.sourceProfile;
+      for (const filename of ['cordis.yml', 'cordis.patch.yml', 'package.json', 'pnpm-workspace.yaml']) {
+        const bytes = await sourceFile(path.join(source.instance.homePath, 'profiles/web', filename), true);
+        if (bytes) await writeFile(path.join(instance.homePath, 'profiles/web', filename), bytes, { mode: 0o600 });
+      }
+      const settings = JSON.parse((await sourceFile(path.join(source.sharedRoot, 'model-settings.json')))!.toString('utf8')) as { values: unknown };
+      const patch = path.join(instance.homePath, 'profiles/web/cordis.patch.yml');
+      await writeFile(patch, writeSharedModels(await readFile(patch, 'utf8'), settings.values as Parameters<typeof writeSharedModels>[1]), { mode: 0o600 });
+      const shared = path.join(root, 'shared');
+      await Promise.all(['', 'sessions', 'documents', 'attachments/v1'].map(relative => mkdir(path.join(shared, relative), { recursive: true })));
+      await writeFile(path.join(shared, '.credentials.yaml'), (await sourceFile(path.join(source.sharedRoot, '.credentials.yaml')))!, { mode: 0o600 });
+      const routing = path.join(instanceRoot, 'isolated-data.patch.json');
+      await writeFile(routing, JSON.stringify([...credentialRoutingPatches(shared), ...sharedSessionRoutingPatches(shared)]), { mode: 0o600 });
+      nativeArgs.push('--patch', routing);
+    } else {
+      const profile = [{ id: 'agent-default-model', config: { provider: 'deepseek-official', model: options.model } },
+        { id: 'llm-deepseek', config: { ...(options.baseURL ? { baseURL: options.baseURL } : {}), apiKeyEnv: 'WORLDLINEBOX_ACCEPTANCE_API_KEY', thinking: 'disabled' } }];
+      await writeFile(path.join(instance.homePath, 'profiles/web/cordis.patch.yml'), JSON.stringify(profile));
+      // Existing synthetic/explicit-key fixtures keep their original route.
+      env.WORLDLINEBOX_ACCEPTANCE_API_KEY = options.apiKey!;
+    }
     const selected: DshCliSelection = { instance, plan, env, nativeCli: plan.cli, nativeArgs, workspacePath: workspace, routingPatch: '',
       runtimeVersion: manifest.version, runtime: { id: runtimeId, version: manifest.version } as DshCliSelection['runtime'] };
     await mkdir(path.join(root, 'cli'));
@@ -89,8 +143,55 @@ child.once('close',code=>{process.exitCode=code??1;process.stdin.destroy()});
       } };
       await walk(instance.homePath); await walk(instance.agentsPath); return result;
     };
-    return { root, broker, execution, generation: () => dshWorkerGeneration(root, selected, execution.access), configurationSnapshot,
+    const sourceConfigurationUnchanged = async () => (await Promise.all(Object.entries(configGuards).map(async ([filename, digest]) =>
+      createHash('sha256').update(await readFile(filename)).digest('hex') === digest))).every(Boolean);
+    return { root, broker, execution, instance, runtimeVersion: manifest.version, sourceConfigurationUnchanged,
+      generation: () => dshWorkerGeneration(root, selected, execution.access), configurationSnapshot,
       operation: () => ({ id: randomUUID(), signal: new AbortController().signal, log: async () => undefined, update: async () => undefined }),
+      close: async () => { await broker!.shutdown(); },
       dispose: async () => { await broker!.shutdown(); await cleanup(); } };
   } catch (error) { await broker?.shutdown(); await cleanup(); throw error; }
+}
+
+/** Normal launcher task semantics over the real isolated broker. No model output,
+ * task receipt, native event or ownership record is supplied by this fixture. */
+export async function createNativeAcceptanceLauncher(native: Awaited<ReturnType<typeof createNativeAcceptanceBroker>>,
+  limits: { maxTaskRuns: number; timeoutMs: number }) {
+  if (!Number.isSafeInteger(limits.maxTaskRuns) || limits.maxTaskRuns < 1 || limits.maxTaskRuns > 20
+    || !Number.isSafeInteger(limits.timeoutMs) || limits.timeoutMs < 1000 || limits.timeoutMs > 300000) throw new Error('The real CLI acceptance budget is invalid.');
+  const operationsRoot = path.join(native.root, 'operations'); await mkdir(operationsRoot);
+  const operations = new OperationStore(operationsRoot, () => undefined); await operations.init();
+  let taskRuns = 0, budgetExceeded = false;
+  const launcher = {
+    state: () => ({ tasks: native.broker.state(), operations: operations.list(), cli: { selectedInstanceId: native.instance.id },
+      instances: [native.instance], runtimes: [{ id: native.instance.runtimeId, version: native.runtimeVersion }], taskAccess: { mode: 'read-only' } }),
+    taskCapabilities: (instanceId?: string, execution?: DshTaskExecutionOptions, query?: Parameters<DshLauncher['taskCapabilities']>[2]) =>
+      native.broker.discover(instanceId, { ...native.execution, ...execution, ...(query ? { capabilityQuery: query } : {}) }),
+    taskRecordScope: async (recordId: string) => (await native.broker.recordMetadata(recordId)).scope,
+    readTaskRecord: (query: Parameters<DshLauncher['readTaskRecord']>[0]) => native.broker.readRecord(query),
+    removeCompanionTaskRecords: (companionId: string) => native.broker.removeCompanionRecords(companionId),
+    requestTask: async (request: Parameters<DshLauncher['requestTask']>[0], execution?: DshTaskExecutionOptions) => {
+      if (request.type === 'task.run') {
+        if (taskRuns >= limits.maxTaskRuns) { budgetExceeded = true; throw new Error('REAL_CLI_ACCEPTANCE_TASK_BUDGET'); }
+        taskRuns++;
+        return { ok: true, operationId: await operations.run('task.run', request.title ?? 'DSH task', native.instance.id, async operation => {
+          await native.broker.execute({ prompt: request.prompt, title: request.title, instanceId: request.instanceId, sessionId: request.sessionId,
+            timeoutMs: Math.min(request.timeoutMs ?? limits.timeoutMs, limits.timeoutMs), maxOutputBytes: request.maxOutputBytes }, operation,
+          { ...native.execution, ...execution });
+        }) };
+      }
+      if (request.type === 'task.result') return { ok: true, taskResult: native.broker.result(request.taskId) };
+      if (request.type === 'task.events') return { ok: true, taskEvents: native.broker.events(request.taskId, request.after) };
+      if (request.type === 'task.record') return { ok: true, taskRecord: await native.broker.readRecord(request.query) };
+      if (request.type === 'task.message') await native.broker.sendInput(request.taskId, request.content, request.mode, request.messageId);
+      if (request.type === 'task.cancel') { native.broker.cancel(request.taskId); operations.cancel(request.taskId); }
+      if (request.type === 'task.terminate') { operations.cancel(request.taskId); await native.broker.terminate(request.taskId); }
+      return { ok: true };
+    },
+  } as unknown as DshLauncher;
+  return { launcher, telemetry: () => ({ root: native.root, taskRuns, taskLimit: limits.maxTaskRuns, taskTimeoutMs: limits.timeoutMs, budgetExceeded,
+    nativeTurns: native.broker.state().reduce((sum, task) => sum + native.broker.events(task.id).filter(event => event.stage === 'turn_start').length, 0),
+    modelLogicalCalls: null, modelHttpRequests: null, observation: 'Native turns and task runs only; CLI provider logical/HTTP calls are not covered by the Main fetch budget.',
+    tasks: native.broker.state().map(task => ({ id: task.id, status: task.status, sessionId: task.sessionId, workspacePath: task.workspacePath, effective: task.effective })) }),
+    close: async () => { await operations.shutdown(); await native.close(); } };
 }

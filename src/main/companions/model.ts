@@ -33,6 +33,8 @@ export interface CompanionModelConfig {
 export interface CompanionReply { text: string; memories?: string[]; topic?: string; turn?: CompanionLoopTurn }
 export interface CompanionNativeTool { name: string; description: string; parameters: object }
 export interface CompanionModelOptions { fetchFn?: typeof fetch; timeoutMs?: number; loop?: boolean; context?: ReturnType<typeof buildCompanionContext>; turns?: readonly CompanionLoopTurn[]; supplements?: readonly { id: string; content: string }[];
+  /** Trusted host validation of an unexecuted proposal, never new user authority. */
+  hostValidationFeedback?: { rejectedProposalChecksum: string; error: string; instruction: string };
   /** Main's already source-validated typed topic frame, never model JSON. */
   topicReviewFrame?: TopicContinuityFocusFrame;
   tools?: readonly CompanionNativeTool[];
@@ -117,7 +119,7 @@ export async function generateCompanionReply(
       const response = await fetchCompanionProvider(controller.signal, fetchFn, rejected => {
         const current = prepareCompanionLoopVisuals(context, input.visualInputs ?? options.visualInputs, options.loop ? options.toolImages : undefined, options.loop ? turns : [], config, rejected);
         const request = providerRequest({ ...config, model }, current.context, controller.signal, options.loop === true, options.loop === true, true, current.images, true, options.tools);
-        if (options.loop) appendLoopHistory(request, config, turns, options.supplements ?? [], current.tools);
+        if (options.loop) appendLoopHistory(request, config, turns, options.supplements ?? [], current.tools, options.hostValidationFeedback);
         return { request, hasImages: current.images.length > 0 || current.tools.some(tool => !!tool.image) };
       });
       let body: unknown;
@@ -351,7 +353,7 @@ function extractLoopCalls(format: AiApiFormat, body: unknown): CompanionLoopCall
 }
 
 /** Real assistant/function-result pairs preserve native IDs; the next inference follows every result. */
-function appendLoopHistory(request: Parameters<typeof fetch>, config: CompanionModelConfig, turns: readonly CompanionLoopTurn[], supplements: readonly { id: string; content: string }[], tools: readonly CompanionToolImageDelivery[]): void {
+function appendLoopHistory(request: Parameters<typeof fetch>, config: CompanionModelConfig, turns: readonly CompanionLoopTurn[], supplements: readonly { id: string; content: string }[], tools: readonly CompanionToolImageDelivery[], hostValidationFeedback?: CompanionModelOptions['hostValidationFeedback']): void {
   const init = request[1]!;
   const body = JSON.parse(String(init.body));
   const format = config.apiFormat;
@@ -408,12 +410,16 @@ function appendLoopHistory(request: Parameters<typeof fetch>, config: CompanionM
       }
     }
   }
-  if (supplements.length) {
-    const text = '用户在本次执行过程中给出的补充要求：\n' + supplements.map(item => item.content).join('\n');
+  const appendUser = (text: string) => {
     if (format === 'gemini_native') body.contents.push({ role: 'user', parts: [{ text }] });
     else if (format === 'openai_responses') body.input.push({ role: 'user', content: text });
     else (format === 'dashscope_native' ? body.input.messages : body.messages).push({ role: 'user', content: text });
-  }
+  };
+  if (supplements.length) appendUser('用户在本次执行过程中给出的补充要求：\n' + supplements.map(item => item.content).join('\n'));
+  // The rejected assistant bytes remain unchanged above. Give the author the
+  // current host result after that proposal, including across provider formats.
+  if (hostValidationFeedback) appendUser(JSON.stringify({ hostValidationFeedback: {
+    ...hostValidationFeedback, trust: 'host_validation_data_not_new_authorization' } }));
   init.body = JSON.stringify(body);
 }
 

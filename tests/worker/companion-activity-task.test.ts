@@ -7,6 +7,7 @@ import { CompanionsStore, type CompanionConnection, type CompanionSeed } from '.
 import type { CompanionActivityTask, ActivityDecision } from '../../src/shared/companion-activity-task';
 import { createHash } from 'node:crypto';
 import { captureCompanionExecutionReadset } from '../../src/main/companions/execution-evidence';
+import { companionsRequestSchema } from '../../src/shared/companions';
 const seeds: CompanionSeed[] = ['alice', 'bob'].map(id => ({ id, name: id, persona: '友好且尊重边界', description: '', model: '', avatar: 'sister', proactive: true }));
 const Database = BetterSqlite3 as {
     new (filename: string): CompanionConnection;
@@ -54,6 +55,58 @@ function commit(task: CompanionActivityTask, decision: ActivityDecision) {
     }
     return result;
 }
+it('atomically binds source-free activity reasoning to its actual observation and never turns private analysis into authority or public effects', () => {
+    const own = { companionId: 'alice', conversationId: 'world_alice' };
+    const task = store.request({ type: 'activity.start', ...own, clientId: 'self_reasoning', title: '独立思考', goal: '核对当前真实情况再决定下一步。' }).activityTask!;
+    advance(10000);
+    const leased = claim()!; expect(leased.id).toBe(task.id);
+    const observed = store.request({ type: 'activity.observe', id: task.id, leaseToken: leased.leaseToken! });
+    const fingerprint = JSON.stringify((observed.activityMessages ?? []).map(message => [message.id, message.conversationId, message.sequence,
+        createHash('sha256').update(message.content).digest('hex')]));
+    const readset = captureCompanionExecutionReadset(own, {});
+    const command = { type: 'activity.thought.create' as const, taskId: task.id, leaseToken: leased.leaseToken!, expectedStep: leased.step,
+        effectId: 'native_thought_1', observationFingerprint: fingerprint, executionReadset: readset, title: '私密分析', prompt: '只分析已提供的资料，不执行现实或虚拟动作。' };
+    expect(companionsRequestSchema.safeParse(command).success).toBe(false);
+    expect(companionsRequestSchema.safeParse({ type: 'action.run', ...own, title: '绕过来源', prompt: '执行' }).success).toBe(false);
+    expect(() => store.request({ type: 'action.create', action: { ...own, title: '绕过来源', status: 'queued' } })).toThrow('真实来源');
+    expect(() => store.request({ ...command, expectedStep: leased.step + 1 })).toThrow('步骤');
+    expect(() => store.request({ ...command, observationFingerprint: '["unread"]' })).toThrow('观察');
+    const created = store.request(command), action = created.action!, checkpoint = created.checkpoint!, authorization = checkpoint.activityThought!;
+    expect(action).toMatchObject({ ...own, thought: { taskId: task.id, step: leased.step, effectId: command.effectId }, status: 'queued' });
+    expect(action.sourceMessageId).toBeUndefined();
+    expect(checkpoint.dshTask).toBeUndefined();
+    expect(checkpoint.executionReadset).toEqual(readset);
+    expect(store.request(command).action!.id).toBe(action.id);
+    expect(() => store.request({ ...command, prompt: 'changed' })).toThrow('幂等');
+    expect(() => store.request({ type: 'checkpoint.save', id: action.id, checkpoint: { ...checkpoint, activityThought: { ...authorization, leaseToken: 'forged' } } })).toThrow('凭证');
+    const validate = { type: 'activity.thought.validate' as const, authorization, executionReadset: checkpoint.executionReadset!, mode: 'execute' as const, renew: true };
+    expect(store.request(validate).activityThoughtValid).toBe(true);
+    expect(store.request({ ...validate, authorization: { ...authorization, companionId: 'bob' } }).activityThoughtValid).toBe(false);
+    expect(store.request({ ...validate, authorization: { ...authorization, leaseToken: 'forged' } }).activityThoughtValid).toBe(false);
+    store.close(); store = new CompanionsStore(filename, seeds.map(seed => ({ ...seed, active: true })));
+    expect(store.request(command).action!.id).toBe(action.id);
+    const stateBefore = store.request({ type: 'state.get', ...own }).runtimeState!;
+    store.updateAction(action.id, { status: 'running' });
+    store.updateAction(action.id, { status: 'succeeded', result: 'PRIVATE_ANALYSIS_NOT_A_PUBLIC_ACTION' });
+    const stateAfter = store.request({ type: 'state.get', ...own }).runtimeState!;
+    expect(stateAfter.familiarity).toEqual(stateBefore.familiarity);
+    expect(stateAfter.affect).toEqual(stateBefore.affect);
+    expect(store.messages({ conversationId: own.conversationId }).messages.some(message => message.actionId === action.id || message.content.includes('PRIVATE_ANALYSIS'))).toBe(false);
+    expect(store.getAction(action.id).canResume).toBe(false);
+    expect(() => store.resumeAction(action.id)).toThrow('持续活动思考');
+    commit(leased, { status: 'complete', action: null, wait: null, summary: '已完成本次分析，未执行额外行动。' });
+    expect(store.request({ ...validate, mode: 'read' }).activityThoughtValid).toBe(true);
+    expect(store.request(validate).activityThoughtValid).toBe(false);
+    const { source, task: next } = start('user_sourced_reasoning');
+    const nextLease = claim()!; expect(nextLease.id).toBe(next.id);
+    store.request({ type: 'activity.observe', id: next.id, leaseToken: nextLease.leaseToken! });
+    const nextProof = captureCompanionExecutionReadset(alice, { sources: [{ id: source.id, conversationId: source.conversationId,
+        checksum: createHash('sha256').update(source.content).digest('hex') }] });
+    const nextThought = store.request({ ...command, taskId: next.id, leaseToken: nextLease.leaseToken!, expectedStep: nextLease.step, executionReadset: nextProof });
+    expect(nextThought.action!.sourceMessageId).toBe(source.id);
+    store.request({ type: 'memory.forget', ...alice, sourceMessageIds: [source.id] });
+    expect(store.request({ ...validate, authorization: nextThought.checkpoint!.activityThought!, executionReadset: nextThought.checkpoint!.executionReadset!, mode: 'read' }).activityThoughtValid).toBe(false);
+});
 it('does not certify an unreviewed legacy terminal narrative and still binds its real authority revocation', () => {
     const { task, source } = start('legacy_terminal_without_readset');
     const leased = claim()!; expect(leased.id).toBe(task.id);
