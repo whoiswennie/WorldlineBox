@@ -902,3 +902,29 @@ Root共同main/extension类型与全仓lint均退出0，无源码漂移；run SH
 内容效果仍为RED：模型同时把引述普通数量的all标为可能冲突，实际partial也标成相反整体持有竞争，宿主按现有opposition门正确派生两项ambiguous；引述的“三”数字命题还从肯定改为ambiguous。runtime在首quoted-all原有heldout期待失败处已abort；partial及数字的额外漂移由后验独审揭示，不能冒称运行时逐项都已审过。checks为空，0第三槽、0第五阶段、0第二材料、0最终业务allow/correction。原2d33失败原字节及判定均保留，不能因引文修正成功就宣布内容通过。独审`quantity-v7-format-repair-four-first-independent-actual-review-2026-10-24.json`，SHA256 dc3fae1951e250ab21fe3c747e301f1c517dc212fc6651649628fe0fe55d2944。
 
 当前停止继续同样的付费重采样，转查结构性修复：宿主已经精确拥有的数字目标位置不应要求模型再次自由抄写；格式错误若迫使完整重判，其它原合法语义也可能漂移。相关opposition保护不能为这次样本直接删除。后续原30与u4模板仍硬禁执行；独立静态审计c737335e开头另列五项正式化阻断，涉及条件repair精确绑定、必须先决验收、真实成功状态、summary11实际correction观测及独审所消费原件绑定。当前尚无新的生产改动或付费准入，长期目标保持active。
+
+### 16.47 中性目标定位与可选梦境故障隔离（2026-10-24，实际效果继续验收）
+
+数字定位已作为本地提交acd78fd保存。模型不再生成数字target_scope角色；宿主从实际完整数词span生成独立hostTargetBinding，保存真实focus SHA、逻辑triple、UTF16位置、数词及occurrence。模型仍须精确回显目标数词/occurrence，affirmative与negative仍各需逐字的实际谓词/负证；no_possession仍是模型核完整focus的独立声明，宿主中性位置不能造出持有或缺席。all/opposition、sourcev6、数学/旧pending、角色/时点和原有限预算均未改。number receipt升v2、mixed升v8，all仍v2。完整七文件437通过/7真实门默认skip，434旧身份与状态全保、新增10、无退休；旧中性复制责任明确迁移到宿主定位，伪造语义引文仍按原三槽拒绝。冻单bdca082e、责任账ccd156e7、独审4e88f429开头。首次两个新增夹具误保留删见证前的已验证locations，修正为重新调用原validator后重跑全部七文件；初始RED保留，未改生产或期待。
+
+另经源码核查确认可选DreamWave/梦叙述异常会在独立维护之前抛出，耗尽同episode重试可能让准确种子始终没有维护判断。已作为047c8a9窄修：仅在明确的runtime.get/原生dreamWave调用边界把已知运营故障转为typed optional错误，分类前重核generation、完整来源快照与owner；原生完整性/来源/布局/输入拒绝、未知有定义code、取消及返回的owner/时间/版本凭证仍硬失败。世界服务仅隔离该typed故障或非取消的虚构梦模型故障，不发布梦，报告并随成功的正常回顾持久保存固定host诊断，继续真实反思与维护。诊断不冒充maintenance defer。真实reflection或maintenance失败仍走原job.fail，不能用空notes替代；原seed watermark、概率、冷却、重试、最终原子来源校验及索引ACK后归档均保持。
+
+本线20完整默认208通过/2真实门默认skip，旧175身份/状态全保、新增35、无退休；含真实SQLite中wave与narrative故障后的准确合并/ACK前后归档、醒来/取消/撤回硬停止、反思失败零水位和原生错误分类反控。模型与index ACK明确为受控机制，不能当作新实模或原生质量结果。Root第一次共同main发现五处新增unit的Database类型为unknown；仅按既有CompanionConnection构造声明修正五行，生产五文件不变，完整20重跑208/2。原20绿报告、首次lint及共同main RED均保留。最终冻单9cffbc7e、报告fe6964cd、责任账6aeb749e、独审95d37d57开头；实际监测30输入，无漂移。
+
+两线重新停写后，Root共同main/extension类型及全仓lint全部退出0，仍仅七项既有renderer warning，run SHA256 ee09ada29d03f9d5248a71959d099e520ac06724bad04d3c75bfe8a57ea7668b。a7fbd207完整prepare-only清单3890项，SHA256 38bc276ea42dfb3912fd8b6d150f9c7fe833c0c6f238a1f14c2d1ddbe0dd3afe；3080共同交集、两冻单及全输入重枚举/hash吻合，收口f5e40abe开头。旧3c19类型未确认的清单及零付费预登记留作历史，未运行。当前27完整文件合计645通过/9skip，不等于全仓一次性通过；全仓时间分离汇总待单独正式采纳。仅开放a7f绑定的v8原两材料四请求小门，实际结果尚待；没有据此启动原30、三长程、原u4或新包，长期目标保持active。
+
+### 16.48 全称证据坐标的实际失败与配置隔离研究（2026-10-24）
+
+v8唯一门实际仍首warm一次后停止：`quantity-host-number-target-v8-four-registration-1792832004594-actual.json`，SHA256 c5ac719bc5b153eac74864380c23467185add777b83ee78d0aa276f6f8c5948e。4230tokens、3.535秒、HTTP200/stop，全3890增删改/哈希守卫无漂移。首错是all clause0的negative/limited见证指向实际clause2，却写view=focus，且距离2超出原±1允许范围，现有逐字与出处校验正确拒绝。新增failureMessage已保留准确原因，不把大桶TRANSPORT_SCHEMA_OR_LENGTH当作网络或截断。四项数字的schema/literal/hostTargetBinding后验均有效；quoted数字仍被模型写成ambiguous，partial另有错误whole/exhaustive/opposition。runtime先在all字面出处失败，未到数字后验、cold/第五/第二材料/完整业务结果；businessEvaluationCompleted=false，checks为空。0补采/0writer，原strict RED保持。独立实际审计4ad7d6fe、责任因果63d84d9d开头；准备纸面39002641封制晚于GO，事前已完成的完整冷读另有消息记录，不冒称纸面先于实测。
+
+当前停止同模式逐例改提示再采样。结构审查确认warm同时看全篇proposed与all actualClauses，却为每个目标只接受focus±1见证，模型容易借全篇另一命题解释本目标的opposition；证据坐标、引文和多轴语义同时自由生成也造成负担。后续候选包括host预先绑定不透明evidenceId、仅允许模型声明语义role，以及把局部命题与跨句反对关系分清；尚未批准这些all结构变化，不能直接扩大所有scope或删除opposition保护。只读设计940df673开头，原业务期待不变。
+
+另查本地model.ts的DeepSeek openai_chat请求无条件thinking.disabled。[DeepSeek官方思考模式文档](https://api-docs.deepseek.com/guides/thinking_mode/)及[Chat Completions参数](https://api-docs.deepseek.com/api/create-chat-completion/)当前支持同模型启用思考并选择low/high/max；[JSON输出文档](https://api-docs.deepseek.com/guides/json_mode/)仍要求完整JSON并处理长度/空输出。硬关闭是待检配置差异，不能未经测试就认定为上述错误的原因。依16.24既定研究方向，仅准备一次同model/URL/system/user/max8192/JSON的artifact隔离探针，预登记恰thinking.enabled与reasoning_effort=low两处wire差异，最多1HTTP/120秒/0重试，不改生产。原schema、字面来源和所有heldout期待保留；只保存思考字段长度/SHA，不保存原文。单次探针只能核有限配置可行性，不是同时随机A/B或准确率保证，更不能覆盖c5ac的原失败。此时尚未执行探针，后续整组、长程、自然u4及最终包继续停止。
+
+### 16.49 当前自动能力与默认覆盖收口（2026-10-24）
+
+最新14行自动能力矩阵为`automatic-capability-actual-evidence-matrix-after-optional-dream-joint-confirmed-2026-10-24.json`，SHA256 ea82701b240263f94da40e78849b2d7e1b363fec39296598018608b6180e9229。20个实际调用点按当前a7f源码/行/SHA绑定，37份报告/日志保持原SHA；明确6030的真实全局模型11call是历史执行，四个memory源随后已合法变化，不能继续称八路径全与6030字节一致。当前自动触发与真实历史效果、G1受控故障效果和待完成包验收分开列明；不是只列工具或开启标志。
+
+Root全文审读3633525d汇总helper并实际prepared，6e8a47df独审独立从两完整raw报告重构后，已正式采纳27文件/+45通过的时间分离overlay。当前`whole-repo-offline-coverage-current-2026-10-23.json` SHA256 8d21cc9c3bb9ab95868980dd74121b1b5559e98da3fd7e8eb5388c817fc8b884：1226文件/10126项，10006通过、3原baseline失败、117默认skip。全部旧10081身份/状态、78退休映射的原JSON literal字节/顺序和86旧报告SHA保留，仅追加两份新执行phase，不重复登记旧19文件执行。完整3890输入前后重枚举/hash无漂移，原472ce汇总另存；precommit审计5922aeda、postcommit回执60696ddd开头。这不是新的一次性全仓全绿，c5ac实模RED完全独立。
+
+上述同payload的thinking-low探针已完成唯一零付费预登记与双独立全文冷读后单独获准启动：runner52cbc186、registration3f8d1fb6、readiness4cda37dc开头。实际请求须由当前providerRequest先重构历史e81 body再只改两参数并匹配907b body，官方endpoint由相同冻结函数重构；历史raw没有记录URL，此证据限制明确保留。总新HTTP最多1、120秒、原8192、零重试，禁止自动升级high或增加token。此时探针结果尚待，不改变生产配置，不启动其它真实门；长期目标保持active。
