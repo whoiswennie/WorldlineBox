@@ -10,7 +10,7 @@ import { companionRecallCapabilities, runCompanionStructuredAgent } from '../../
 import { companionTopicCapabilities } from '../../src/main/companions/topic-capabilities';
 import type { CompanionReplyInput } from '../../src/main/companions/context';
 import { activityDecisionSchema } from '../../src/shared/companion-activity-task';
-import type { CompanionAgentRun } from '../../src/shared/companion-agent-run';
+import { companionFinalValidationFailures, type CompanionAgentRun } from '../../src/shared/companion-agent-run';
 
 let root: string, store: CompanionsStore, frame: CompanionReplyInput;
 const seeds = [{ id: 'alice', name: 'Alice', persona: '认真核对事实', description: '', model: '', avatar: 'sister' as const, proactive: false, active: true }];
@@ -66,9 +66,10 @@ async function legacyActivityFinal(withEffect = false, finalObservationFingerpri
   await runCompanionStructuredAgent({ context: domain, frame, capabilities: capabilities(), finalObservationFingerprint }, config, undefined, { fetchFn });
   const id = createHash('sha256').update(JSON.stringify(['alice', frame.conversation.id, frame.invocation.id])).digest('hex');
   const run = store.request({ type: 'agent.run.get', companionId: 'alice', id }).agentRun!;
-  const command = (input: { runId: string; expectedRevision: number; step: number; proposalChecksum: string; reason: string }, lease = leased.leaseToken!) => ({
+  const command = (input: Parameters<NonNullable<Parameters<typeof runCompanionStructuredAgent>[0]['reviseFinal']>>[0], lease = leased.leaseToken!) => ({
     type: 'agent.run.revise_final' as const, companionId: 'alice', id: input.runId, expectedRevision: input.expectedRevision,
-    activityTaskId: task.id, leaseToken: lease, expectedStep: leased.step, turnStep: input.step, proposalChecksum: input.proposalChecksum, reason: input.reason });
+    activityTaskId: task.id, leaseToken: lease, expectedStep: leased.step, turnStep: input.step, proposalChecksum: input.proposalChecksum, reason: input.reason,
+    ...(input.hostObservation ? { hostObservation: input.hostObservation } : {}) });
   const reject = { runId: id, expectedRevision: run.revision, step: run.turns.length - 1,
     proposalChecksum: createHash('sha256').update(run.turns.at(-1)!.rawText).digest('hex'), reason: '旧提案不符合当前实际资料，尚未执行。' };
   return { scope, task: leased, run, id, command, reject, capabilities };
@@ -82,39 +83,47 @@ it('reuses an unchanged host observation without another model call and never re
   const unchanged = store.request({ type: 'agent.run.get', companionId: 'alice', id: f.id }).agentRun!;
   expect(unchanged.rejectedFinals).toBeUndefined(); expect(unchanged.turns).toEqual(f.run.turns); expect(unchanged.effects).toEqual(f.run.effects);
 });
-it('keeps the same three-final budget across changed actual observation fingerprints and restart', async () => {
+it('reopens an obsolete done final for new native work without spending the third semantic correction or replaying confirmed effects', async () => {
   const f = await legacyActivityFinal(true, '[]');
+  const reviseFinal = async (input: Parameters<NonNullable<Parameters<typeof runCompanionStructuredAgent>[0]['reviseFinal']>>[0]) => store.request(f.command(input)).agentRun;
+  const firstFetch = vi.fn<typeof fetch>().mockResolvedValueOnce(response('{"invalid":true}'))
+    .mockResolvedValueOnce(response('{"answer":"依据旧观察尚未执行的提案"}'));
+  await runCompanionStructuredAgent({ context: domain, frame, capabilities: f.capabilities(), finalObservationFingerprint: '[]', reviseFinal,
+    validateOutput: value => { if (!(value as { answer?: string }).answer) throw new Error('作者提案缺少真实结论。'); return value; } }, config, undefined, { fetchFn: firstFetch });
+  const before = store.request({ type: 'agent.run.get', companionId: 'alice', id: f.id }).agentRun!;
+  expect(before.status).toBe('done'); expect(companionFinalValidationFailures(before)).toBe(2);
   const bob = store.createCompanion({ name: 'Bob', persona: '独立回应', description: '', model: '', avatar: 'sister', proactive: false });
   store.setCompanionActive(bob.id, true);
   const pair = store.request({ type: 'social.conversation.ensure', companionId: 'alice', memberIds: ['alice', bob.id] }).socialConversation!;
-  const observation = (index: number) => {
-    const message = store.request({ type: 'social.message.append', conversationId: pair.id, authorId: bob.id, content: `实际新回信${index}`,
-      clientId: `actual_observation_${index}`, virtualCreatedAt: new Date().toISOString() }).socialMessage!.message;
-    return { context: { ...domain, user: JSON.stringify({ purpose: 'durable_test', recentPeerMessages: [message] }) },
-      fingerprint: JSON.stringify([[message.id, message.conversationId, message.sequence, createHash('sha256').update(message.content).digest('hex')]]) };
-  };
-  const fetchFn = vi.fn<typeof fetch>(async () => response('{"answer":"作者根据本次新观察自行交付的提案"}'));
-  for (let index = 1; index <= 2; index++) {
-    const current = observation(index);
-    const result = await runCompanionStructuredAgent({ context: current.context, frame, capabilities: f.capabilities(),
-      finalObservationFingerprint: current.fingerprint,
-      reviseFinal: async input => store.request(f.command(input)).agentRun }, config, undefined, { fetchFn });
-    expect(result).toEqual({ answer: '作者根据本次新观察自行交付的提案' });
-  }
+  const message = store.request({ type: 'social.message.append', conversationId: pair.id, authorId: bob.id, content: '实际新回信要求继续核实资料。',
+    clientId: 'actual_observation', virtualCreatedAt: new Date().toISOString() }).socialMessage!.message;
+  store.request({ type: 'activity.observe', id: f.task.id, leaseToken: f.task.leaseToken! });
+  const current = { context: { ...domain, user: JSON.stringify({ purpose: 'durable_test', recentPeerMessages: [message] }) },
+    fingerprint: JSON.stringify([[message.id, message.conversationId, message.sequence, createHash('sha256').update(message.content).digest('hex')]]) };
+  const fetchFn = vi.fn<typeof fetch>().mockResolvedValueOnce(response('', { id: 'new_observation_work', type: 'function', function: { name: 'world',
+    arguments: JSON.stringify({ action: 'topic', parameters: { action: 'create', kind: 'discussion', title: '新观察后的独立核验话题' } }) } }))
+    .mockResolvedValueOnce(response('{"answer":"作者根据本次新观察自行交付的提案"}'));
+  expect(await runCompanionStructuredAgent({ context: current.context, frame, capabilities: f.capabilities(),
+    finalObservationFingerprint: current.fingerprint, reviseFinal }, config, undefined, { fetchFn })).toEqual({ answer: '作者根据本次新观察自行交付的提案' });
   expect(fetchFn).toHaveBeenCalledTimes(2);
-  const third = observation(3);
-  await expect(runCompanionStructuredAgent({ context: third.context, frame, capabilities: f.capabilities(), finalObservationFingerprint: third.fingerprint,
-    reviseFinal: async input => store.request(f.command(input)).agentRun }, config, undefined, { fetchFn })).rejects.toThrow('真实回信观察已变化');
-  expect(fetchFn).toHaveBeenCalledTimes(2);
+  const refreshed = store.request({ type: 'agent.run.get', companionId: 'alice', id: f.id }).agentRun!;
+  expect(refreshed.status).toBe('done'); expect(companionFinalValidationFailures(refreshed)).toBe(2);
+  expect(refreshed.rejectedFinals?.filter(item => item.hostObservation)).toHaveLength(1);
+  expect(refreshed.turns.slice(0, before.turns.length)).toEqual(before.turns);
+  expect(refreshed.effects.slice(0, f.run.effects.length)).toEqual(f.run.effects); expect(refreshed.effects).toHaveLength(2);
+  const noMoreFetch = vi.fn<typeof fetch>();
+  await expect(runCompanionStructuredAgent({ context: current.context, frame, capabilities: f.capabilities(), finalObservationFingerprint: current.fingerprint,
+    validateOutput: () => { throw new Error('第三次模型语义错误。'); }, reviseFinal }, config, undefined, { fetchFn: noMoreFetch })).rejects.toThrow('第三次模型语义错误');
+  expect(noMoreFetch).not.toHaveBeenCalled();
   const exhausted = store.request({ type: 'agent.run.get', companionId: 'alice', id: f.id }).agentRun!;
-  expect(exhausted.rejectedFinals).toHaveLength(3); expect(exhausted.effects).toEqual(f.run.effects);
-  expect(exhausted.turns.slice(0, f.run.turns.length)).toEqual(f.run.turns);
+  expect(exhausted.rejectedFinals).toHaveLength(4); expect(companionFinalValidationFailures(exhausted)).toBe(3);
+  expect(exhausted.effects).toEqual(refreshed.effects);
   store.close(); store = new CompanionsStore(path.join(root, 'legacy-state.sqlite'), seeds);
   const later = vi.fn<typeof fetch>();
-  await expect(runCompanionStructuredAgent({ context: third.context, frame, capabilities: f.capabilities(), finalObservationFingerprint: third.fingerprint,
-    reviseFinal: async input => store.request(f.command(input)).agentRun }, config, undefined, { fetchFn: later })).rejects.toThrow('真实回信观察已变化');
+  await expect(runCompanionStructuredAgent({ context: current.context, frame, capabilities: f.capabilities(), finalObservationFingerprint: current.fingerprint,
+    reviseFinal }, config, undefined, { fetchFn: later })).rejects.toThrow('第三次模型语义错误');
   expect(later).not.toHaveBeenCalled();
-  expect(store.request({ type: 'topic.list', conversationId: frame.conversation.id, readerId: 'alice' }).topics).toHaveLength(1);
+  expect(store.request({ type: 'topic.list', conversationId: frame.conversation.id, readerId: 'alice' }).topics).toHaveLength(2);
 });
 it.each(['withdrawn', 'lease_changed', 'cancelled'] as const)('does not let a changed observation reopen a saved final after the live activity is %s', async invalid => {
   const f = await legacyActivityFinal(true, '[]');

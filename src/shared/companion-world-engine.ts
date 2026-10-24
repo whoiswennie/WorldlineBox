@@ -9,9 +9,10 @@ export const COMPANION_WORLD_SEATING_MS = COMPANION_WORLD_ACTION_TIMINGS.sitDown
 export type WorldPoint = { x: number; y: number };
 export type WorldWaypoint = WorldPoint & { sceneId: string };
 export type CompanionWorldClockAnchor = { realAt: number; virtualAt: number };
-export const companionWorldSpeed = (settings: Pick<CompanionWorldSettings, 'mode' | 'dayDurationMinutes'>): number => settings.mode === 'realtime' ? 1 : 1440 / settings.dayDurationMinutes;
-export const companionWorldVirtualAt = (anchor: CompanionWorldClockAnchor, settings: CompanionWorldSettings, realAt: number): number => settings.mode === 'realtime' ? realAt : anchor.virtualAt + (realAt - anchor.realAt) * companionWorldSpeed(settings);
-export const companionWorldRealAt = (anchor: CompanionWorldClockAnchor, settings: CompanionWorldSettings, virtualAt: number): number => settings.mode === 'realtime' ? virtualAt : anchor.realAt + (virtualAt - anchor.virtualAt) / companionWorldSpeed(settings);
+/** Civil time always follows the system clock, including when reading a legacy save. */
+export const companionWorldSpeed = (settings: Pick<CompanionWorldSettings, 'mode' | 'dayDurationMinutes'>): number => { void settings; return 1; };
+export const companionWorldVirtualAt = (_anchor: CompanionWorldClockAnchor, _settings: CompanionWorldSettings, realAt: number): number => realAt;
+export const companionWorldRealAt = (_anchor: CompanionWorldClockAnchor, _settings: CompanionWorldSettings, virtualAt: number): number => virtualAt;
 
 /** The same anchors and solid footprints drive rendering, pathfinding and interactions. */
 export function companionWorldHomeFootprint(ownerId: string) {

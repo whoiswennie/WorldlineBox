@@ -40,8 +40,22 @@ it('gives concurrent tasks different processes and destroys an aborted boot', as
   expect(first.worker.child.pid).not.toBe(second.worker.child.pid);
   first.release(); second.release();
   const aborted = new AbortController(); aborted.abort();
+  const beforeAbort = test.counts().starts;
   await expect(test.acquire('third', aborted.signal)).rejects.toThrow();
+  expect(test.counts().starts).toBe(beforeAbort);
   await test.pool.shutdown(); expect(test.counts().disposed).toBe(test.counts().starts);
+});
+
+it('closes a late-started owned process when shutdown wins the launch race', async () => {
+  const test = await fixture(); let admitted!: () => void, release!: () => void, disposed = 0;
+  const starting = new Promise<void>(resolve => { admitted = resolve; }), gate = new Promise<void>(resolve => { release = resolve; });
+  const pending = test.pool.acquire('late', 'instance', async () => {
+    const child = await launchCli({ executable: process.execPath, cli: path.join(test.root, 'worker.cjs'), env: {} }, [],
+      { ...process.env, ELECTRON_RUN_AS_NODE: '1' }, test.root);
+    admitted(); await gate; return { child, disposeContext: async () => { disposed++; } };
+  }, new AbortController().signal);
+  await starting; await test.pool.shutdown(); release();
+  await expect(pending).rejects.toThrow('closing'); expect(disposed).toBe(1);
 });
 
 it('keeps only the selected standby beyond ten idle minutes and restores expiry after selection or shutdown', async () => {

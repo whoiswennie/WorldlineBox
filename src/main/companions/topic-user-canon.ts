@@ -63,19 +63,6 @@ export async function prepareTopicUserCanon(input: { frame: Frame; config: Compa
 prior中的每项默认仍有效。只有newUserMessages中user明确更正/修订某项时，才在revisions给真实supersedes旧id和replacement（逐字新quote，保留旧值是错误或历史的语义）。不能因“继续/承接进度/不要越过原范围”删改旧规则。所有未被修订旧项宿主自动保留；不要重复加入。不能让助手写错的时间或已经推进的情节放宽user时间窗。
 明确的当天叙事时间范围必须给timeRange，start/end为该日分钟数，includeStart/includeEnd准确表达上下界是否含端点；“至/最晚不超过”含端点，“之前/不得到达”不含。未来预约时刻不是叙事时间范围。跨午夜范围end可小于start。只在源quote里有两个明确时间端点时填timeRange，宿主会核验对应的数字，不猜。其它约束不用timeRange。`,
     user: JSON.stringify({ purpose: 'topic_user_canon_extract', prior: topicCanonSourceProjection(prior), newUserMessages: messages.map(({ id, sequence, content }) => ({ id, sequence, content })), outputSchema: z.toJSONSchema(extraction, { io: 'input' }) }) };
-  let value: z.infer<typeof extraction> | undefined;
-  for (let attempt = 0; attempt < 3; attempt++) {
-    try {
-      const parsed = extraction.safeParse(input.extract ? await input.extract(context, input.signal)
-        : await generateCompanionStructured(context, input.config, input.signal, { fetchFn: input.fetchFn, timeoutMs: 120000 }));
-      if (!parsed.success) throw new CompanionModelError('INVALID_RESPONSE', '话题用户约束提取失败，未丢弃原规则或推进摘要。');
-      value = parsed.data; break;
-    } catch (error) {
-      if (input.signal?.aborted || !(error instanceof CompanionModelError) || error.code !== 'INVALID_RESPONSE' || attempt === 2) throw error;
-      context.user = JSON.stringify({ ...JSON.parse(context.user), formatCorrection: '上一份JSON格式或结构无效，未提交任何规则。请按完全相同的user原文和prior，严格输出包含additions和revisions数组的单个完整JSON对象。' });
-    }
-  }
-  if (!value) throw new CompanionModelError('INVALID_RESPONSE', '话题用户约束尚未形成有效结构。');
   const bind = (value: z.infer<typeof draft>) => {
     const source = messages.find(message => message.id === value.sourceMessageId);
     if (!source || !source.content.includes(value.quote)) throw new CompanionModelError('INVALID_RESPONSE', '话题用户约束缺少逐字原文来源。');
@@ -85,16 +72,31 @@ prior中的每项默认仍有效。只有newUserMessages中user明确更正/修�
     }
     return { ...value, rule: value.quote, id: hash(JSON.stringify([source.id, value.quote])), sourceChecksum: hash(source.content) };
   };
-  const removed = new Set<string>();
-  const replacements = value.revisions.map(revision => {
-    if (revision.supersedes.some(id => !prior.entries.some(item => item.id === id) || removed.has(id)))
-      throw new CompanionModelError('INVALID_RESPONSE', '话题修订没有指向本人的真实既有约束。');
-    revision.supersedes.forEach(id => removed.add(id)); return bind(revision.replacement);
-  });
-  const all = [...prior.entries.filter(item => !removed.has(item.id)), ...value.additions.map(bind), ...replacements];
-  const entries = [...new Map(all.map(item => [item.id, item])).values()];
-  if (entries.length > 80 || JSON.stringify(entries).length > 128000) throw new CompanionModelError('CONTEXT_CAPACITY', '话题精确约束超过当前结构容量；原文和约束保留，需按需读取或分支整理，不能静默截断。');
-  const result = { version: 1 as const, throughSequence: Math.max(prior.throughSequence, ...messages.map(message => message.sequence)), entries };
+  const accept = (value: z.infer<typeof extraction>): TopicUserCanon => {
+    const removed = new Set<string>();
+    const replacements = value.revisions.map(revision => {
+      if (revision.supersedes.some(id => !prior.entries.some(item => item.id === id) || removed.has(id)))
+        throw new CompanionModelError('INVALID_RESPONSE', '话题修订没有指向本人的真实既有约束。');
+      revision.supersedes.forEach(id => removed.add(id)); return bind(revision.replacement);
+    });
+    const all = [...prior.entries.filter(item => !removed.has(item.id)), ...value.additions.map(bind), ...replacements];
+    const entries = [...new Map(all.map(item => [item.id, item])).values()];
+    if (entries.length > 80 || JSON.stringify(entries).length > 128000) throw new CompanionModelError('CONTEXT_CAPACITY', '话题精确约束超过当前结构容量；原文和约束保留，需按需读取或分支整理，不能静默截断。');
+    return { version: 1 as const, throughSequence: Math.max(prior.throughSequence, ...messages.map(message => message.sequence)), entries };
+  };
+  let result: TopicUserCanon | undefined;
+  for (let attempt = 0; attempt < 3; attempt++) {
+    try {
+      const parsed = extraction.safeParse(input.extract ? await input.extract(context, input.signal)
+        : await generateCompanionStructured(context, input.config, input.signal, { fetchFn: input.fetchFn, timeoutMs: 120000 }));
+      if (!parsed.success) throw new CompanionModelError('INVALID_RESPONSE', '话题用户约束提取失败，未丢弃原规则或推进摘要。');
+      result = accept(parsed.data); break;
+    } catch (error) {
+      if (input.signal?.aborted || !(error instanceof CompanionModelError) || error.code !== 'INVALID_RESPONSE' || attempt === 2) throw error;
+      context.user = JSON.stringify({ ...JSON.parse(context.user), formatCorrection: `上一份提取未通过核验：${error.message} 未提交任何规则。请按完全相同的user原文和prior自行修正，不删除或放宽真实约束；quote须逐字来自指定user消息，timeRange仅用于quote内有两个明确时刻端点的范围，相对时长不是时刻端点。严格输出包含additions和revisions数组的单个完整JSON对象。` });
+    }
+  }
+  if (!result) throw new CompanionModelError('INVALID_RESPONSE', '话题用户约束尚未形成有效结构。');
   cache.set(key, structuredClone(result)); while (cache.size > 128) cache.delete(cache.keys().next().value!);
   return result;
 }

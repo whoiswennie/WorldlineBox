@@ -55,6 +55,7 @@ interface MemoryServiceOptions {
   fetchFn: typeof fetch; changed(): void; report(error: unknown): void; busy(): boolean;
   blocked?(companionId: string): boolean;
   onTimelineArtifacts?(scope: MemoryScope, artifacts: VcpMemoryTimelineArtifacts, stillValid: () => Promise<boolean>): Promise<void> | void;
+  onProcessing?(companionId: string, job: CompanionMemoryProcessingJob): void;
 }
 export interface CompanionMemoryRecall {
   memories: CompanionMemory[]; sources: CompanionMessage[];
@@ -179,10 +180,13 @@ export class CompanionMemoryService {
       title: `${owner.name}的时间线整理`, conversationId: scope.conversationId, sourceRevision,
       attempts: (previous?.attempts ?? 0) + 1, createdAt: previous?.createdAt ?? now, startedAt: now, updatedAt: now };
     this.timelineProcessing.set(scope.companionId, [job, ...jobs.filter(item => item.id !== id)].slice(0, 10));
+    this.options.onProcessing?.(scope.companionId, job);
     this.options.changed(); return job;
   }
   private updateTimelineProcessing(job: CompanionMemoryProcessingJob, patch: Partial<CompanionMemoryProcessingJob>): void {
     Object.assign(job, patch, { updatedAt: new Date().toISOString() }); this.options.changed();
+    const owner = [...this.timelineProcessing].find(([, jobs]) => jobs.includes(job))?.[0];
+    if (owner) this.options.onProcessing?.(owner, job);
   }
 
   private async ownerIdentity(companionId: string): Promise<VcpMemoryOwnerIdentity> {

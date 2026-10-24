@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import type { CompanionConnection } from './store';
-import { companionAgentRunSchema, type CompanionAgentRun } from '../shared/companion-agent-run';
+import { companionAgentRunSchema, companionFinalValidationFailures, type CompanionAgentRun } from '../shared/companion-agent-run';
 import type { CompanionStorageCommand, CompanionStorageResponse } from '../shared/companion-storage';
 import type { CompanionMessage } from '../shared/companions';
 import type { CompanionActivityTask, activityPlanningStateSchema } from '../shared/companion-activity-task';
@@ -44,16 +44,21 @@ export class CompanionAgentRunStore {
       const run = this.load(command.companionId, command.id), turn = run?.turns[command.turnStep];
       if (!run || run.revision !== command.expectedRevision || command.turnStep !== run.turns.length - 1 || !turn || turn.calls.length
         || createHash('sha256').update(turn.rawText).digest('hex') !== command.proposalChecksum
-        || run.rejectedFinals?.some(item => item.step === command.turnStep) || (run.rejectedFinals?.length ?? 0) >= 3)
+        || run.rejectedFinals?.some(item => item.step === command.turnStep) || companionFinalValidationFailures(run) >= 3
+        || command.hostObservation && (turn.hostProgressKey !== command.hostObservation.previousKey
+          || command.hostObservation.previousKey === command.hostObservation.currentKey))
         throw new Error('最终提案或修订版本不匹配，未重开推理。');
       const row = this.db.prepare('SELECT data FROM companion_activity_tasks WHERE id=?').get(command.activityTaskId) as { data: string } | undefined;
       const task = row ? JSON.parse(row.data) as CompanionActivityTask & { leaseUntil?: number; sourceChecksum?: string; clientId: string;
         evidence?: Array<{ id: string; conversationId: string; checksum: string }>; memoryVersions?: Array<{ id: string; version: number }>;
-        topicEvidence?: Array<{ conversationId: string; topicId: string; eventId: string }>; wholeGoalPlan?: z.infer<typeof activityPlanningStateSchema> } : undefined;
+        topicEvidence?: Array<{ conversationId: string; topicId: string; eventId: string }>; wholeGoalPlan?: z.infer<typeof activityPlanningStateSchema>;
+        observedSocialEvidence?: { leaseToken: string } } : undefined;
       if (!task || task.companionId !== command.companionId || task.conversationId !== run.conversationId || task.status !== 'running'
         || task.leaseToken !== command.leaseToken || (task.leaseUntil ?? 0) <= Date.now() || task.step !== command.expectedStep
         || run.invocationId !== `${task.id}_${task.step}` || !this.db.prepare("SELECT 1 FROM companions WHERE id=? AND deleted_at IS NULL AND json_extract(data,'$.active')=1").get(task.companionId))
         throw new Error('原活动任务、步骤或实际执行lease已变化，不能重开旧最终提案。');
+      if (command.hostObservation && task.observedSocialEvidence?.leaseToken !== command.leaseToken)
+        throw new Error('观察变化必须绑定本次实际活动观察及执行lease。');
       const checkedSource = (room: string, id: string, checksum: string | undefined, domain: 'plain' | 'social' = 'plain') => {
         const source = this.visible({ companionId: task.companionId, conversationId: room }, [id]).find(item => item.id === id && item.conversationId === room);
         // Activity/readset checksums cover raw body bytes; actual social outbox
@@ -102,7 +107,8 @@ export class CompanionAgentRunStore {
       }
       const next: CompanionAgentRun = { ...run, revision: run.revision + 1, status: 'running', rejectedFinals: [...(run.rejectedFinals ?? []), {
         step: command.turnStep, proposalChecksum: command.proposalChecksum, reason: command.reason, rejectedAt: new Date().toISOString(),
-        activityTaskId: task.id, activityStep: task.step, leaseTokenChecksum: createHash('sha256').update(command.leaseToken).digest('hex') }] };
+        activityTaskId: task.id, activityStep: task.step, leaseTokenChecksum: createHash('sha256').update(command.leaseToken).digest('hex'),
+        ...(command.hostObservation ? { hostObservation: command.hostObservation } : {}) }] };
       this.assertValid(next);
       this.db.prepare('UPDATE metadata SET value=? WHERE key=?').run(JSON.stringify(companionAgentRunSchema.parse(next)), `agent-run/${run.companionId}/${run.id}`);
       return { ok: true, agentRun: next };

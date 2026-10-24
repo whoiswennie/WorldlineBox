@@ -10,11 +10,14 @@ const frame: CompanionReplyInput = { companion: { id: 'reader', name: '读者', 
 
 it('omits a capability snapshot from a different owner or conversation and keeps the native/execution domains distinct', () => {
   const valid = companionBoundCapabilityContext('reader', 'room', ['memory']);
+  expect(valid).toMatchObject({ status: 'only_these_immediate_tools_bound_in_this_entry', otherDomains: 'not_advertised_as_immediate_tools_here' });
+  expect(valid.finalProposalAuthority).toContain('仅在本次executionContract/outputSchema明确提供');
   expect(JSON.parse(buildCompanionContext({ ...frame, capabilityAvailability: valid }).user).capabilityAvailability).toEqual(valid);
   for (const changed of [{ companionId: 'other' }, { conversationId: 'other' }])
     expect(JSON.parse(buildCompanionContext({ ...frame, capabilityAvailability: { ...valid, ...changed } }).user).capabilityAvailability).toBeUndefined();
   const system = buildCompanionContext(frame).system;
   expect(system).toContain('一次DSH执行失败只证明该次执行失败');
+  expect(system).toContain('即时工具目录未列出某领域，不表示已有最终提案字段不可使用');
   expect(system).not.toContain('你的唯一行动能力');
 });
 

@@ -28,6 +28,8 @@ export const dshRecordOverviewSchema = z.object({ recordId: z.uuid(), title: z.s
   finalReply: z.string().max(DSH_RECORD_LIMITS.finalChars), finalReplyChars: z.number().int().nonnegative(), finalReplyTruncated: z.boolean(), finalRecord: z.number().int().positive().optional(),
   error: z.string().max(1000).optional(), complete: z.boolean(), storageLimited: z.boolean(),
   workspacePath: z.string().max(4096).optional(), mode: z.enum(['native', 'ptc']).optional(), sessionId: z.string().max(200).optional(),
+  archivePath: z.string().max(4096).optional(), reportPath: z.string().max(4096).optional(), archiveDay: z.string().regex(/^\d{4}-\d{2}-\d{2}$/u).optional(),
+  startup: z.object({ preparationMs: z.number().nonnegative(), bootMs: z.number().nonnegative(), reusedWorker: z.boolean() }).optional(),
   artifacts: z.array(dshTaskArtifactSchema).max(100).optional(), structured: z.unknown().optional(), structuredTruncated: z.boolean().optional(),
   verification: dshDeliveryVerificationSchema.optional(), effective: dshEffectiveCapabilitiesSchema.optional(),
 });

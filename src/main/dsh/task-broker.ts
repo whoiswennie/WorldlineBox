@@ -219,6 +219,7 @@ export class DshTaskBroker {
     let result: DshTaskResult | undefined; let taskFailed = false; let outputError: Error | undefined; let saveError = false;
     let sequence = 0; let retained = 0;
     let archiveStarted = false;
+    const preparationStarted = performance.now();
     this.histories.set(operation.id, []);
     const publish = (event: DshTaskEvent) => {
       if (archiveStarted) this.archive.append(operation.id, event);
@@ -304,6 +305,7 @@ export class DshTaskBroker {
       const args = [...(taskPatch ? ['--patch', taskPatch] : []), ...(execution.interactive ? [] : ['--json', ...(record.sessionId ? ['--session-id', record.sessionId] : []), '-'])];
       const launch = () => launchCli({ executable: process.execPath, cli: path.join(this.options.rootPath, 'cli', 'shim.cjs'), env: {} }, args,
         { ...captured.env, ELECTRON_RUN_AS_NODE: '1', WORLDLINEBOX_DSH_CLI_CONTEXT: pin!.contextFile }, captured.workspacePath);
+      const bootStarted = performance.now();
       if (execution.interactive) {
         const key = await dshWorkerGeneration(this.options.rootPath, captured, execution.access);
         if (resume?.configurationDigest && resume.configurationDigest !== key) {
@@ -322,6 +324,8 @@ export class DshTaskBroker {
         child = lease.worker.child;
         preparation('starting', lease.reused ? '已复用就绪的官方 CLI，正在创建独立任务 Agent' : '官方 CLI 已完成冷启动，正在创建独立任务 Agent');
       } else { child = await launch(); preparation('starting', '能力进程已启动，正在加载任务环境'); }
+      this.archive.execution(operation.id, { startup: { preparationMs: Math.max(0, bootStarted - preparationStarted),
+        bootMs: Math.max(0, performance.now() - bootStarted), reusedWorker: lease?.reused ?? false } });
       const selectedChild = child; const stop = () => {
         selectedChild.stdout.resume();
         taskInput?.cancel();
@@ -427,7 +431,7 @@ export class DshTaskBroker {
       // stderr is drained, but never persisted: plugins may print the prompt, arguments or credentials.
       const inputError = () => { if (!signal.aborted) rejectOutput('The DSH task input pipe closed unexpectedly.'); };
       child.stderr.resume(); child.stdin.on('error', inputError);
-      const completion = lease ? this.workers.run(lease.worker, { cwd: captured.workspacePath, resumeSessionId: resume?.sessionId,
+      const completion = lease ? this.workers.run(lease.worker, { cwd: captured.workspacePath, title: record.title, resumeSessionId: resume?.sessionId,
         recovery: resume?.sessionId ? { id: operation.id, prompt: input.prompt, inputs: execution.inputs ?? [] } : undefined,
         policy: { mode: execution.task?.mode, tools: execution.task?.tools, skills: execution.task?.skills, discover: execution.discover, discoveryQuery: execution.capabilityQuery,
           expectedEffectiveDigest: resume?.effective?.digest } })

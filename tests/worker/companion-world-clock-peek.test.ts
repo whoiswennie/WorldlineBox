@@ -24,15 +24,16 @@ it('peeks persisted world time without advancing or rolling jobs while preservin
       const overview = store.request({ type: 'life.overview.read', companionId: 'alice', filter: 'all', limit: 20 }).lifeOverviewContext!;
       expect(observed.backlog, `ordinary tick delay ${lag}ms`).toBe(false);
       expect(overview.clock.backlog, `overview tick delay ${lag}ms`).toBe(false);
-      expect(observed.virtualNow).toBe(initial.virtualNow); expect(overview.clock.virtualNow).toBe(initial.virtualNow);
+      expect(observed.virtualNow).toBe(new Date().toISOString()); expect(overview.clock.virtualNow).toBe(observed.virtualNow);
     }
     vi.setSystemTime(base + 3_600_000);
     for (let n = 0; n < 5; n++) {
       const observed = store.request({ type: 'world.clock.peek' }).worldClock!;
       const overview = store.request({ type: 'life.overview.read', companionId: 'alice', filter: 'all', limit: 20 }).lifeOverviewContext!;
       expect(companionWorldTimeSchema.parse(observed)).toEqual(observed);
-      expect(observed.virtualNow).toBe(initial.virtualNow); expect(observed.backlog).toBe(true);
-      expect(overview.clock.virtualNow).toBe(initial.virtualNow); expect(overview.clock.backlog).toBe(true);
+      expect(observed.virtualNow).toBe(new Date().toISOString()); expect(observed.backlog).toBe(true);
+      expect(overview.clock.virtualNow).toBe(observed.virtualNow); expect(overview.clock.backlog).toBe(true);
+      expect(overview.clock.observedRealAt).toBe(initial.realNow);
     }
     expect(db.prepare('SELECT data FROM companion_world WHERE id=1').get()).toEqual(state);
     expect(db.prepare('PRAGMA data_version').get()).toEqual(version);

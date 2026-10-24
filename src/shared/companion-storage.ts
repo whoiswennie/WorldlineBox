@@ -1,6 +1,7 @@
 import { companionInterruptionCommands, companionInterruptionSchema } from './companion-interruption';
 import { companionAgentRunCommands, companionAgentRunSchema } from './companion-agent-run';
 import { companionExecutionReadsetSchema } from './companion-execution-evidence';
+import { companionExperienceCommands, companionExperiencePublishSchema } from './companion-experience';
 import { companionKnowledgeCommandSchema } from './companion-knowledge-store';
 import { companionSocialReplyReceiptSchema } from './companion-social-reply';
 import { z } from 'zod';
@@ -103,6 +104,8 @@ export const companionProactiveStateSchema = z.strictObject({
 export type CompanionProactiveState = z.infer<typeof companionProactiveStateSchema>;
 
 export const companionStorageCommandSchema = z.discriminatedUnion('type', [
+  ...companionExperienceCommands,
+  companionExperiencePublishSchema,
   ...companionAgentRunCommands,
   companionKnowledgeCommandSchema,
   ...companionLearningStorageCommands,
@@ -199,6 +202,7 @@ export const companionTopicCompactionPageSchema = z.strictObject({
 });
 export type CompanionTopicCompactionPage = z.infer<typeof companionTopicCompactionPageSchema>;
 export const companionStorageResponseSchema = companionsResponseSchema.extend({
+  experienceEvidence: companionExecutionReadsetSchema.optional(),
   agentRun: companionAgentRunSchema.optional(),
   executionSources: z.array(z.object({ kind: z.enum(['message', 'action']), id: companionIdSchema, companionId: companionIdSchema,
     conversationId: companionIdSchema, sourceMessageIds: z.array(companionIdSchema), invalidated: z.boolean().optional(), executionReadset: companionExecutionReadsetSchema.optional(),

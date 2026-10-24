@@ -9,9 +9,14 @@ import { companionStateToolProposalSchema } from './companion-state-tool';
 
 const id = z.string().regex(/^[a-zA-Z0-9_-]{1,100}$/);
 const point = z.object({ x: z.number().finite(), y: z.number().finite() });
-export const COMPANION_WORLD_DEFAULT_SETTINGS = { mode: 'realtime', dayDurationMinutes: 20, timeZone: 'system' } as const;
+export const COMPANION_WORLD_DEFAULT_SETTINGS = { mode: 'realtime', dayDurationMinutes: 1440, timeZone: 'system' } as const;
+// Legacy modes remain readable in archived settings; new commands cannot enable them.
 export const companionWorldSettingsSchema = z.object({ revision: z.number().int().positive(), mode: z.enum(['compressed', 'realtime']),
   dayDurationMinutes: z.number().min(5).max(1440), timeZone: z.string().min(1).max(100) });
+const worldSettingsPatchSchema = companionWorldSettingsSchema.omit({ revision: true }).partial().superRefine((patch, context) => {
+  if (patch.mode !== undefined && patch.mode !== 'realtime' || patch.dayDurationMinutes !== undefined && patch.dayDurationMinutes !== 1440)
+    context.addIssue({ code: 'custom', message: '伙伴生活始终跟随现实时间，只能修改显示时区。' });
+});
 export const companionWorldFurnitureSchema = z.object({ id, kind: z.enum(['bed', 'desk', 'computer', 'chair', 'kitchen', 'dining', 'sofa', 'habit', 'door', 'tree', 'bench', 'building', 'fountain', 'lamp']),
   name: z.string(), position: point, width: z.number().positive(), depth: z.number().positive(), anchor: point, blocking: z.boolean(), occupantId: id.optional(), reservedBy: id.optional() });
 export const companionWorldSceneSchema = z.object({ id, kind: z.enum(['home', 'park']), name: z.string(), ownerId: id.optional(),
@@ -102,7 +107,7 @@ export type CompanionWorldOccupancy = { start: number; end: number; phase: 'slee
 const scope = z.object({ companionId: id, conversationId: id, beforeSequence: z.number().int().positive().optional() });
 export const companionWorldPublicCommands = [
   z.strictObject({ type: z.literal('world.snapshot') }),
-  z.strictObject({ type: z.literal('world.configure'), expectedRevision: z.number().int().positive(), patch: companionWorldSettingsSchema.omit({ revision: true }).partial() }),
+  z.strictObject({ type: z.literal('world.configure'), expectedRevision: z.number().int().positive(), patch: worldSettingsPatchSchema }),
   scope.extend({ type: z.literal('world.observe') }).strict(),
   scope.extend({ type: z.literal('world.tool'), sourceMessageId: id.optional(), clientId: id.optional(), arguments: companionWorldArgumentsSchema }).strict(),
   z.strictObject({ type: z.literal('world.status'), companionIds: z.array(id).max(20) }),

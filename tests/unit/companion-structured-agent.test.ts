@@ -1,4 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
+import { z } from 'zod';
+import { activityDecisionSchema } from '../../src/shared/companion-activity-task';
 import type { Companion, CompanionConversation, CompanionMessage } from '../../src/shared/companions';
 import { assembleCompanionRoleContext, companionRecallCapabilities, companionTaskInvocation, runCompanionStructuredAgent } from '../../src/main/companions/structured-agent';
 import type { CompanionReplyInput } from '../../src/main/companions/context';
@@ -15,6 +17,50 @@ const config = { apiFormat: 'openai_chat' as const, model: 'test-model', baseUrl
 const domain = { system: '只输出JSON {answer:string}。', user: JSON.stringify({ purpose: 'isolation_test', messages: [{ content: 'DOMAIN_WINDOW_MUST_NOT_OVERRIDE' }] }) };
 
 describe('same role Agent kernel across independent invocation ports', () => {
+  it('distinguishes host-validated final action proposals from the unchanged native recall tool list', async () => {
+    const source = message('source', 'group', 'user', '请和认识的伙伴一起组织活动。');
+    const proposed = { status: 'continue', action: { action: 'create_group', recipientIds: ['b', 'c'],
+      title: '共同活动', text: '愿意的话一起商量活动。' }, wait: null, summary: '提交建群邀约提案，尚未执行。' };
+    const execute = vi.fn(async () => ({ ok: true }));
+    const validateOutput = vi.fn((value: unknown) => activityDecisionSchema.parse(value));
+    const fetchFn = vi.fn<typeof fetch>(async (_url, init) => {
+      const wire = JSON.parse(String(init?.body)), data = JSON.parse(wire.messages[1].content);
+      expect(wire.tools.map((tool: { function: { name: string } }) => tool.function.name)).toEqual(['memory']);
+      expect(data.capabilityAvailability).toMatchObject({ companionId: 'a', conversationId: 'group', boundToolNames: ['memory'] });
+      expect(data.identity.self.id).toBe('a'); expect(data.source.content).toBe(source.content);
+      expect(data.executionContract).toEqual({ finalProposalIsNotExecution: true });
+      expect(data.outputSchema).toEqual(z.toJSONSchema(activityDecisionSchema, { io: 'input' }));
+      expect(wire.messages[0].content).toContain('不需要存在同名原生工具');
+      expect(wire.messages[0].content).toContain('未提供的字段和行动仍不获授权');
+      expect(wire.messages[0].content).toContain('单个完整JSON对象，不附解释正文或Markdown代码块');
+      return new Response(JSON.stringify({ choices: [{ message: { content: JSON.stringify(proposed) } }] }));
+    });
+    const result = await runCompanionStructuredAgent({ context: { system: '本领域最终行动必须通过原schema与宿主权限核验。',
+      user: JSON.stringify({ purpose: 'activity_test', executionContract: { finalProposalIsNotExecution: true },
+        outputSchema: z.toJSONSchema(activityDecisionSchema, { io: 'input' }) }) },
+      frame: { companion, conversation: conversation('group'), sourceMessage: source, messages: [source], memories: [] },
+      capabilities: { tools: [{ name: 'memory', description: '只读本人记忆', parameters: { type: 'object' } }], execute }, validateOutput },
+    config, undefined, { fetchFn });
+    expect(result).toEqual(proposed); expect(validateOutput).toHaveBeenCalledOnce();
+    expect(fetchFn).toHaveBeenCalledOnce(); expect(execute).not.toHaveBeenCalled();
+  });
+  it('still rejects three prose-prefixed JSON code blocks without extracting or executing their embedded proposals', async () => {
+    const malformed = '这一步没有执行。\n```json\n{"status":"blocked","action":null,"wait":{"kind":"delay","seconds":60},"summary":"等待"}\n```';
+    const fetchFn = vi.fn<typeof fetch>(async (_url, init) => {
+      const data = JSON.parse(JSON.parse(String(init?.body)).messages[1].content);
+      if (fetchFn.mock.calls.length > 1) {
+        expect(data.outputCorrection.rejectedProposal).toBe(malformed);
+        expect(data.outputCorrection.error).toContain('完整JSON');
+      }
+      return new Response(JSON.stringify({ choices: [{ message: { content: malformed } }] }));
+    });
+    const execute = vi.fn(async () => ({ ok: true })), validateOutput = vi.fn((value: unknown) => activityDecisionSchema.parse(value));
+    await expect(runCompanionStructuredAgent({ context: domain,
+      frame: { companion, conversation: conversation('group'), messages: [], memories: [] }, validateOutput,
+      capabilities: { tools: [], execute } }, config, undefined, { fetchFn })).rejects.toMatchObject({ code: 'INVALID_RESPONSE' });
+    expect(fetchFn).toHaveBeenCalledTimes(3); expect(validateOutput).not.toHaveBeenCalled(); expect(execute).not.toHaveBeenCalled();
+    expect(activityDecisionSchema.safeParse({ status: 'blocked', action: null, wait: { kind: 'delay', seconds: 60 }, summary: '等待' }).success).toBe(false);
+  });
   it('awaits a semantic final-proposal review before committing the final turn and evaluates an accepted turn only once', async () => {
     const validateOutput = vi.fn(async (value: unknown) => {
       await new Promise(resolve => setImmediate(resolve));
@@ -162,6 +208,15 @@ describe('same role Agent kernel across independent invocation ports', () => {
       id: 'wrong_actor', kind: 'work', goal: '无效', createdAt: source.createdAt }) }, domain)).toThrow(/身份/);
   });
 
+  it('scopes unsupported native operations without denying the separate domain final contract', async () => {
+    const request = vi.fn(async () => ({ ok: true }));
+    const capabilities = companionRecallCapabilities(request, { companionId: 'a', conversationId: 'peer_b' });
+    await expect(capabilities.execute({ id: 'native_topic', name: 'world', arguments: JSON.stringify({ action: 'topic',
+      parameters: { action: 'read', roomId: 'peer_b', topicId: 'actual_topic' } }) })).rejects.toThrow(
+      '本次即时工具调用不支持该操作，未执行。可即时调用的操作以当前工具schema为准；领域最终提案仍按executionContract/outputSchema交付，由宿主另行核验执行。');
+    expect(request).not.toHaveBeenCalled();
+  });
+
   it('executes active VCP recall through the same native loop and rejects unoffered real-world tools', async () => {
     const source = message('peer_msg', 'peer_b', 'b', '回忆我们的约定再回答。');
     const request = vi.fn(async () => ({ ok: true as const, memories: [] }));
@@ -176,7 +231,7 @@ describe('same role Agent kernel across independent invocation ports', () => {
     expect(result).toEqual({ answer: '按本人记忆核对，没有执行外部动作。' });
     expect(request).toHaveBeenCalledExactlyOnceWith({ type: 'memory.search', companionId: 'a', conversationId: 'peer_b', beforeSequence: 1, query: '约定', limit: 8, tags: [] });
     const body = JSON.parse(String(fetchFn.mock.calls[2]![1]?.body));
-    expect(body.tools.map((tool: { function: { name: string } }) => tool.function.name)).toEqual(['memory']);
+    expect(body.tools.map((tool: { function: { name: string } }) => tool.function.name)).toEqual(['memory', 'world']);
     expect(body.messages.some((row: { role: string; content: string }) => row.role === 'tool' && row.content.includes('未提供此能力'))).toBe(true);
   });
 });

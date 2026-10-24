@@ -31,6 +31,7 @@ import { CompanionAutonomyService } from './autonomy-service';
 import { CompanionActivityTaskService } from './activity-task-service';
 import { activityArgumentsSchema } from '../../shared/companion-activity-task';
 import { CompanionMemoryService } from './memory-service';
+import { companionExperienceArgumentsSchema, companionExperienceModelResponse, type CompanionExperienceEntry } from '../../shared/companion-experience';
 import { companionMemoryClockBucket } from './memory-recall-policy';
 import type { VcpMemoryQueryClock } from '../vcp-memory/contracts';
 import { CompanionKnowledgeService } from './knowledge-service';
@@ -204,6 +205,8 @@ export class CompanionService {
       runtimeAvailability: options.memoryDeviceStatus,
       cacheRoot: path.join(this.root, 'vcp-context'),
       onTimelineArtifacts: (scope, artifacts, valid) => this.memoryLibrary?.publishTimelines(scope, artifacts, valid) ?? Promise.resolve(),
+      onProcessing: (companionId, job) => { void this.call({ type: 'experience.publish', companionId, id: job.id, title: job.title ?? '时间线整理',
+        status: job.status, summary: [job.stage, job.error].filter(Boolean).join('；').slice(0, 1000), ...(job.conversationId ? { conversationId: job.conversationId } : {}) }).catch(options.report); },
       configFor: companion => this.configFor(companion),
       fetchFn: (input, init) => net.fetch(input instanceof URL ? input.toString() : input, { ...init, credentials: 'omit' }),
       changed: () => this.changed(), report: options.report,
@@ -366,6 +369,26 @@ export class CompanionService {
     if (response.action) response.action = await this.projectActionEvidence(response.action);
     if (response.actions) response.actions = await Promise.all(response.actions.map(action => this.projectActionEvidence(action)));
     if (response.actionPage) response.actionPage.items = await Promise.all(response.actionPage.items.map(action => this.projectActionEvidence(action)));
+    if (command.type === 'experience.list' || command.type === 'experience.read') {
+      const unavailable = (entry: CompanionExperienceEntry) => entry.source.kind === 'action'
+        && !response.actions?.some(action => action.id === entry.source.id && action.companionId === entry.companionId && action.contentAvailable !== false);
+      const hide = (entry: CompanionExperienceEntry) => ({ ...entry, title: '引用资料已变化的经历', summary: '保留实际执行状态；旧结果正文已不可引用。' });
+      if (response.experiencePage) response.experiencePage.items = response.experiencePage.items.map(entry => unavailable(entry) ? hide(entry) : entry);
+      if (response.experienceDetail && unavailable(response.experienceDetail.entry)) response.experienceDetail = {
+        entry: hide(response.experienceDetail.entry), sections: [{ title: '引用资料不可用', text: '保留实际执行状态；旧结果正文和报告不再提供。' }], artifacts: [] };
+      if (command.type === 'experience.read' && response.experienceDetail) {
+        const entry = response.experienceDetail.entry, scope = { companionId: command.companionId, conversationId: 'world_' + command.companionId };
+        if (entry.source.kind === 'action' && !unavailable(entry)) response.experienceEvidence = (await this.storage.request({ type: 'checkpoint.get', id: entry.source.id })).checkpoint?.executionReadset;
+        else if (entry.source.kind === 'memory' && entry.status !== 'withdrawn') {
+          response.experienceEvidence = captureCompanionExecutionReadset(scope, { memories: entry.source.version ? [{ id: entry.source.id, version: entry.source.version }] : [] });
+        }
+        if (response.memorySources?.length) response.experienceEvidence = captureCompanionExecutionReadset(scope, {
+          ...(response.experienceEvidence ? { readsets: [{ ...response.experienceEvidence, ...scope }] } : {}),
+          context: { user: JSON.stringify({ memorySources: response.memorySources }) } });
+      }
+      delete response.actions;
+      delete response.memorySources;
+    }
     return response;
   }
   private async executionEvidenceValid(action: Pick<CompanionAction, 'id' | 'companionId' | 'conversationId'>, readset?: CompanionExecutionReadset): Promise<boolean> {
@@ -835,6 +858,9 @@ export class CompanionService {
         } }); this.changed(); return response;
       }
       case 'memory.trace.list': case 'memory.trace.inspect': return this.call(request);
+      case 'experience.days': case 'experience.list': case 'experience.read': case 'experience.rename': {
+        const result = await this.call(request); if (request.type === 'experience.rename') this.changed(); return result;
+      }
       case 'life.overview.status': {
         const companion = (await this.call({ type: 'state', includeConversations: false })).state?.companions.find(item => item.id === request.companionId);
         if (!companion) throw new Error('伙伴不存在。');
@@ -1815,6 +1841,7 @@ export class CompanionService {
           companionWorldArgumentsSchema.parse(JSON.parse(call.arguments)); return { call, world: true };
         }
         if (call.name === 'topic') { companionTopicArgumentsSchema.parse(JSON.parse(call.arguments)); return { call, topic: true }; }
+        if (call.name === 'experience') { companionExperienceArgumentsSchema.parse(JSON.parse(call.arguments)); return { call, experience: true }; }
         if (call.name === 'history') {
           companionHistoryArgumentsSchema.parse(JSON.parse(call.arguments)); return { call, history: true };
         }
@@ -1920,7 +1947,7 @@ export class CompanionService {
         memoryChain = result.catch(() => undefined);
         return { callId: plan.call.id, content: JSON.stringify(await result) };
       }
-      if (plan.schedule || plan.runtimeState || plan.routine || plan.world || plan.work || plan.lifeRule || plan.activity || plan.collaboration || plan.topic) {
+      if (plan.schedule || plan.runtimeState || plan.routine || plan.world || plan.work || plan.lifeRule || plan.activity || plan.collaboration || plan.topic || plan.experience) {
         const result = memoryChain.then(async () => {
           const beforeSequence = await this.memoryBoundary(checkpoint, userMessage.sequence);
           this.assertReplyActive(signal);
@@ -2052,6 +2079,10 @@ export class CompanionService {
     // Rebuild inference from the current version rather than certifying stale
     // bodies at final publication, or replaying the already committed write.
     const readMemories = captureCompanionExecutionReadset(scope, { turns: currentTurns }).memories;
+    const experienceTurns = currentTurns.map(turn => ({ ...turn, calls: turn.calls.filter(call => capabilityOperation(call) === 'experience') }));
+    const changedExperience = experienceTurns.some(turn => turn.calls.length) && !await verifyCompanionExecutionReadset(
+      captureCompanionExecutionReadset(scope, { turns: experienceTurns }), scope,
+      { request: command => this.call(command), contextValid: (scope, context) => this.memory.contextValid(scope, context) });
     let changedNote = false;
     for (let offset = 0; offset < readMemories.length; offset += 100) {
       const expected = readMemories.slice(offset, offset + 100);
@@ -2100,7 +2131,7 @@ export class CompanionService {
       const checked = await this.call({ type: 'topic.sources.valid', readerId: companionId, ...reference });
       if (!checked.topicSourcesValid) invalidTopicSource = true;
     }
-    const lostSource = changedExecution || changedProgress || changedWorldSource || invalidTopicSource || sourceIds.some(id => !allowedSources.has(id)) || toolProvenance.sourceIds.some(id => !allowedToolSources.has(id));
+    const lostSource = changedExecution || changedExperience || changedProgress || changedWorldSource || invalidTopicSource || sourceIds.some(id => !allowedSources.has(id)) || toolProvenance.sourceIds.some(id => !allowedToolSources.has(id));
     data.messages = data.messages?.filter(message => allowedSources.has(message.id));
     data.memorySources = data.memorySources?.filter(message => allowedSources.has(message.id));
     data.memories = data.memoryRecall?.context ? [] : records.memories ?? [];
@@ -2415,6 +2446,13 @@ export class CompanionService {
     try {
       this.assertReplyActive(signal);
       const input: unknown = JSON.parse(serialized);
+      if (name === 'experience') {
+        const { action, ...args } = companionExperienceArgumentsSchema.parse(input);
+        const result = await this.call({ type: 'experience.' + action, ...args, companionId: scope.companionId } as CompanionStorageCommand);
+        if (action === 'rename') this.changed();
+        if (result.experienceEvidence) result.experienceEvidence = { ...result.experienceEvidence, ...scope, beforeSequence };
+        return companionExperienceModelResponse(result);
+      }
       if (currentPlayerRequest && companionMainVirtualMutation(name, input)) {
         const source = (await this.call({ type: 'memory.sources.filter', ...scope, beforeSequence,
           ids: [...requestMessageIds] })).memorySources?.filter(message => message.authorId === 'user').at(-1);

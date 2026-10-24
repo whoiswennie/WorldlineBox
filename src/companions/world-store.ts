@@ -376,6 +376,15 @@ export class CompanionWorldStore {
     this.db.exec(`CREATE TABLE IF NOT EXISTS companion_world_sleep_episodes(companion_id TEXT NOT NULL,episode_id TEXT NOT NULL,virtual_at INTEGER NOT NULL,
       roll REAL NOT NULL,admitted INTEGER NOT NULL,job_id TEXT,PRIMARY KEY(companion_id,episode_id));
       CREATE INDEX IF NOT EXISTS companion_world_sleep_recent ON companion_world_sleep_episodes(companion_id,admitted,virtual_at DESC)`);
+    if (!(this.db.prepare('PRAGMA table_info(companion_world_sleep_episodes)').all() as Row[]).some(column => column.name === 'real_at'))
+      this.db.exec('ALTER TABLE companion_world_sleep_episodes ADD COLUMN real_at INTEGER');
+    // Keep the original virtual timestamp as audit evidence. Old admitted jobs
+    // already carry a real creation time; an unanchored legacy row conservatively
+    // starts its cooldown at migration, rather than retaining a virtual future.
+    this.db.prepare(`UPDATE companion_world_sleep_episodes SET real_at=COALESCE(
+      (SELECT CAST(ROUND((julianday(json_extract(j.data,'$.createdAt'))-2440587.5)*86400000) AS INTEGER)
+       FROM companion_world_jobs j WHERE j.id=companion_world_sleep_episodes.job_id),?) WHERE real_at IS NULL`).run(Date.now());
+    this.db.exec('CREATE INDEX IF NOT EXISTS companion_world_sleep_real_recent ON companion_world_sleep_episodes(companion_id,admitted,real_at DESC)');
     this.db.exec('CREATE TABLE IF NOT EXISTS companion_world_encounters(pair_key TEXT PRIMARY KEY,left_id TEXT NOT NULL,right_id TEXT NOT NULL,data TEXT NOT NULL); CREATE INDEX IF NOT EXISTS companion_world_encounter_left ON companion_world_encounters(left_id); CREATE INDEX IF NOT EXISTS companion_world_encounter_right ON companion_world_encounters(right_id)');
     this.db.exec(`CREATE TABLE IF NOT EXISTS companion_world_visit_records(id TEXT PRIMARY KEY,guest_id TEXT NOT NULL,host_id TEXT NOT NULL,status TEXT NOT NULL,settled_at INTEGER,data TEXT NOT NULL);
       CREATE INDEX IF NOT EXISTS companion_world_visit_history ON companion_world_visit_records(guest_id,host_id,status,settled_at DESC);
@@ -399,6 +408,32 @@ export class CompanionWorldStore {
     const existing = this.db.prepare('SELECT data FROM companion_world WHERE id=1').get();
     if (existing) {
       const state = parse<StoredWorld>(row(existing).data);
+      const anchor = state.anchors.at(-1)!;
+      if (state.settings.mode !== 'realtime' || state.settings.dayDurationMinutes !== 1440 || anchor.virtualAt !== anchor.realAt) this.atomic(() => {
+        // Normalize at the persisted processing cursor, without replaying an
+        // accelerated offline interval or rewriting historical messages/events.
+        const legacyAt = anchor.settings.mode === 'compressed'
+          ? anchor.virtualAt + (state.cursor - anchor.realAt) * 1440 / anchor.settings.dayDurationMinutes : state.cursor;
+        const shift = state.cursor - legacyAt;
+        for (const visit of state.visits) if (activeVisit(visit)) visit.expiresAt = iso(Math.max(state.cursor, Date.parse(visit.expiresAt) + shift));
+        const realignActor = (actor: StoredActor, at: number) => {
+          const segment = this.clockAnchor(state.anchors, at);
+          const prior = segment.settings.mode === 'compressed'
+            ? segment.virtualAt + (at - segment.realAt) * 1440 / segment.settings.dayDurationMinutes : at;
+          actor.lastDecisionAt += at - prior;
+          if (actor.manualActivityUntil !== undefined) actor.manualActivityUntil += at - prior;
+          if (actor.lastDreamDay !== undefined) actor.lastDreamDay = Math.floor(at / 86400000);
+        };
+        for (const actor of state.actors) realignActor(actor, state.cursor);
+        for (const found of this.db.prepare('SELECT companion_id,data FROM companion_world_suspended').all() as Row[]) {
+          const saved = parse<{ actor: StoredActor; since: number }>(found.data);
+          realignActor(saved.actor, saved.since);
+          this.db.prepare('UPDATE companion_world_suspended SET data=? WHERE companion_id=?').run(JSON.stringify(saved), found.companion_id);
+        }
+        state.settings = { ...state.settings, mode: 'realtime', dayDurationMinutes: 1440, revision: state.settings.revision + 1 };
+        state.anchors.push({ realAt: state.cursor, virtualAt: state.cursor, settings: { ...state.settings } });
+        this.save(state);
+      });
       if (state.sceneVersion !== 2) {
         state.sceneVersion = 2; state.actors = []; state.works = []; state.visits = [];
         this.db.exec('DELETE FROM companion_world_suspended; DELETE FROM companion_world_perceptions; DELETE FROM companion_world_encounters;');
@@ -540,7 +575,7 @@ export class CompanionWorldStore {
   }
   clock(since?: string[]) {
     const now = Date.now(), observedAt = this.ensureThrough(now), state = this.load();
-    return { realNow: iso(now), virtualNow: iso(this.virtualFor(state, observedAt)), timeZone: state.settings.timeZone,
+    return { realNow: iso(now), virtualNow: iso(now), timeZone: state.settings.timeZone,
       mode: state.settings.mode, speed: companionWorldSpeed(state.settings), backlog: observedAt < now,
       ...(since ? { elapsed: since.map(realAt => ({ realAt, milliseconds: this.elapsedVirtual(Date.parse(realAt), observedAt) })) } : {}) };
   }
@@ -550,8 +585,8 @@ export class CompanionWorldStore {
     const state = saved ? parse<StoredWorld>(row(saved).data) : undefined;
     const settings = state?.settings ?? { ...COMPANION_WORLD_DEFAULT_SETTINGS, revision: 1, timeZone: resolveCompanionScheduleTimeZone('system') };
     const observedAt = state?.cursor ?? now;
-    return { realNow: iso(now), virtualNow: iso(state ? this.virtualFor(state, observedAt) : observedAt), timeZone: settings.timeZone,
-      mode: settings.mode, speed: companionWorldSpeed(settings), backlog: observationBacklog(observedAt, now) };
+    return { realNow: iso(now), virtualNow: iso(now), timeZone: settings.timeZone,
+      mode: 'realtime' as const, speed: 1, backlog: observationBacklog(observedAt, now) };
   }
   private virtualFor(state: StoredWorld, realAt: number): number {
     const anchor = this.clockAnchor(state.anchors, realAt);
@@ -1270,12 +1305,12 @@ export class CompanionWorldStore {
       let episode = this.db.prepare('SELECT * FROM companion_world_sleep_episodes WHERE companion_id=? AND episode_id=?').get(companionId, job.sleepEpisodeId);
       if (!episode) {
         const virtualAt = this.virtualFor(state, state.cursor);
-        const previous = this.db.prepare('SELECT virtual_at FROM companion_world_sleep_episodes WHERE companion_id=? AND admitted=1 ORDER BY virtual_at DESC LIMIT 1').get(companionId);
+        const previous = this.db.prepare('SELECT real_at FROM companion_world_sleep_episodes WHERE companion_id=? AND admitted=1 ORDER BY real_at DESC LIMIT 1').get(companionId);
         const roll = Math.random();
-        const admitted = (!previous || virtualAt - Number(row(previous).virtual_at) >= COMPANION_SLEEP_DREAM_COOLDOWN_MS)
+        const admitted = (!previous || state.cursor - Number(row(previous).real_at) >= COMPANION_SLEEP_DREAM_COOLDOWN_MS)
           && roll < COMPANION_SLEEP_DREAM_PROBABILITY;
-        this.db.prepare('INSERT INTO companion_world_sleep_episodes(companion_id,episode_id,virtual_at,roll,admitted) VALUES(?,?,?,?,?)')
-          .run(companionId, job.sleepEpisodeId, virtualAt, roll, admitted ? 1 : 0);
+        this.db.prepare('INSERT INTO companion_world_sleep_episodes(companion_id,episode_id,virtual_at,real_at,roll,admitted) VALUES(?,?,?,?,?,?)')
+          .run(companionId, job.sleepEpisodeId, virtualAt, state.cursor, roll, admitted ? 1 : 0);
         episode = this.db.prepare('SELECT * FROM companion_world_sleep_episodes WHERE companion_id=? AND episode_id=?').get(companionId, job.sleepEpisodeId);
       }
       job.dreamAllowed = Number(row(episode).admitted) === 1 && row(episode).job_id === null;
@@ -1375,7 +1410,7 @@ export class CompanionWorldStore {
     const now = Date.now(), checkedAt = iso(now), saved = this.db.prepare('SELECT data FROM companion_world WHERE id=1').get();
     const state = saved ? parse<StoredWorld>(row(saved).data) : undefined;
     const settings = state?.settings ?? { ...COMPANION_WORLD_DEFAULT_SETTINGS, revision: 1, timeZone: resolveCompanionScheduleTimeZone('system') };
-    const observedAt = state?.cursor ?? now, virtualNow = state ? this.virtualFor(state, observedAt) : now;
+    const observedAt = state?.cursor ?? now, virtualNow = now;
     const actor = state?.actors.find(actor => actor.companionId === companionId);
     let routine = defaultCompanionRoutineConfig(companionId);
     const storedRoutine = this.db.prepare('SELECT data FROM companion_routines WHERE companion_id=?').get(companionId);
@@ -1391,7 +1426,7 @@ export class CompanionWorldStore {
     routine = { ...routine, timeZone: settings.timeZone };
     const episodeId = actor?.activity === 'sleeping' ? this.sleepEpisode(actor) : undefined;
     const episode = episodeId ? this.db.prepare('SELECT admitted FROM companion_world_sleep_episodes WHERE companion_id=? AND episode_id=?').get(companionId, episodeId) : undefined;
-    const prior = this.db.prepare('SELECT MAX(virtual_at) AS at FROM companion_world_sleep_episodes WHERE companion_id=? AND admitted=1').get(companionId);
+    const prior = this.db.prepare('SELECT MAX(real_at) AS at FROM companion_world_sleep_episodes WHERE companion_id=? AND admitted=1').get(companionId);
     const cooldown = prior && row(prior).at !== null ? Number(row(prior).at) + COMPANION_SLEEP_DREAM_COOLDOWN_MS : undefined;
     const foundJob = episodeId ? this.db.prepare("SELECT data,lease_until FROM companion_world_jobs WHERE companion_id=? AND kind='dream' AND status IN('pending','running','failed') AND json_extract(data,'$.sleepEpisodeId')=? ORDER BY rowid DESC LIMIT 1").get(companionId, episodeId) : undefined;
     const job = foundJob ? parse<StoredJob>(row(foundJob).data) : undefined;
@@ -1466,9 +1501,8 @@ export class CompanionWorldStore {
     try { return this.buildSnapshotValue(state, now, scope); } finally { this.advancing = previous; }
   }
   private buildSnapshotValue(state: StoredWorld, now: number, scope?: CompanionWorldScope): CompanionWorldSnapshot {
-    // A bounded offline tick may not have reached the wall clock yet. Render the
-    // same observed instant as positions and physical recovery, not future weather
-    // or completed animation frames that the simulation has not reached.
+    // The calendar follows real time. Positions, perception and animation retain
+    // their actual processing cursor; backlog never claims offline work finished.
     const observedAt = state.cursor, virtualAt = this.virtualFor(state, observedAt), environment = companionWorldEnvironment(virtualAt, state.settings.timeZone), scenes = this.scenes(state);
     const perception = scope ? this.perception(scope.companionId) : undefined;
     const allowedScenes = scope ? scenes.filter(scene => scene.kind === 'park' || scene.ownerId && this.permitted(state, scope.companionId, scene.ownerId))
@@ -1480,9 +1514,8 @@ export class CompanionWorldStore {
     const sensedEnvironment = perception ? { light: perception.environment.light,
       ...(perception.environment.weatherObservedAtVirtual === perception.observedAtVirtual ? { weather: perception.environment.weather } : {}),
       ...(perception.sceneId === 'park' ? { outdoorTemperature: perception.environment.temperature } : { indoorTemperature: perception.environment.temperature }) } : { light: 0 };
-    const sensedAt = perception ? Date.parse(perception.observedAtVirtual) : virtualAt;
-    return companionWorldSnapshotSchema.parse({ settings: state.settings, clock: { realNow: iso(now), virtualNow: iso(scope ? sensedAt : virtualAt), speed: companionWorldSpeed(state.settings),
-      ...(scope ? companionWorldEnvironment(sensedAt, state.settings.timeZone).clock : environment.clock) }, environment: scope ? sensedEnvironment : environment.environment,
+    return companionWorldSnapshotSchema.parse({ settings: state.settings, clock: { realNow: iso(now), virtualNow: iso(now), speed: 1,
+      ...companionWorldEnvironment(now, state.settings.timeZone).clock }, environment: scope ? sensedEnvironment : environment.environment,
       residents: (this.db.prepare("SELECT id,json_extract(data,'$.name') AS name,json_extract(data,'$.active') AS active FROM companions WHERE deleted_at IS NULL ORDER BY rowid").all() as Row[]).map(companion => ({ companionId: String(companion.id), name: String(companion.name), active: companion.active === 1, ...(!scope || scope.companionId === companion.id ? { homeSceneId: 'home_' + companion.id } : {}) })),
       knownAddresses: scope ? this.homeKnowledge(scope.companionId, state) : [],
       ...(perception ? { perception } : {}),
@@ -1539,15 +1572,11 @@ export class CompanionWorldStore {
   configure(expectedRevision: number, patch: Partial<Omit<CompanionWorldSettings, 'revision'>>): CompanionWorldSnapshot {
     const now = Date.now(); this.advance(now); return this.atomic(() => { const state = this.load(); if (state.settings.revision !== expectedRevision) throw new Error('世界设置已更新，请重新读取。');
     if (state.cursor < now) throw new Error('世界存档仍在补算，请完成后再修改时间设置。');
-    const current = this.virtualFor(state, now); state.settings = { ...state.settings, ...patch, revision: state.settings.revision + 1 };
+    if (patch.mode !== undefined && patch.mode !== 'realtime' || patch.dayDurationMinutes !== undefined && patch.dayDurationMinutes !== 1440)
+      throw new Error('伙伴生活始终跟随现实时间，只能修改显示时区。');
+    state.settings = { ...state.settings, ...patch, mode: 'realtime', dayDurationMinutes: 1440, revision: state.settings.revision + 1 };
     if (!isCompanionScheduleTimeZone(state.settings.timeZone)) throw new Error('世界时区无效。'); state.settings.timeZone = resolveCompanionScheduleTimeZone(state.settings.timeZone);
-    const nextVirtual = state.settings.mode === 'realtime' ? now : current, shift = nextVirtual - current;
-    for (const visit of state.visits) if (activeVisit(visit)) visit.expiresAt = iso(Math.max(nextVirtual, Date.parse(visit.expiresAt) + shift));
-    for (const actor of state.actors) {
-      actor.lastDecisionAt += shift;
-      if (actor.manualActivityUntil !== undefined) actor.manualActivityUntil += shift;
-    }
-    state.anchors.push({ realAt: now, virtualAt: nextVirtual, settings: { ...state.settings } }); this.rememberClock(state);
+    state.anchors.push({ realAt: now, virtualAt: now, settings: { ...state.settings } }); this.rememberClock(state);
     this.syncOccupancy(state); this.save(state); this.dirty = true; return this.snapshotValue(state, now); });
   }
   begin(scope: CompanionWorldScope, workId: string, kind: CompanionWorldWork['kind'], sourceMessageId?: string, urgent = false, fixed = false, learning: WorkProof = {}): CompanionWorldWork {
@@ -1991,9 +2020,7 @@ export class CompanionWorldStore {
       case 'world.sleep-plan': return { ok: true, worldSleepPlan: this.sleepPlan(command.companionId) };
       case 'life.overview.read': {
         const sleep = this.sleepPlan(command.companionId);
-        const saved = this.db.prepare('SELECT data FROM companion_world WHERE id=1').get();
-        const state = saved ? parse<StoredWorld>(row(saved).data) : undefined;
-        const clock = { ...sleep.clock, mode: state?.settings.mode ?? COMPANION_WORLD_DEFAULT_SETTINGS.mode,
+        const clock = { ...sleep.clock, mode: 'realtime' as const,
           backlog: observationBacklog(Date.parse(sleep.clock.observedRealAt), Date.parse(sleep.checkedAt)) };
         const climate = companionWorldEnvironment(Date.parse(clock.virtualNow), clock.timeZone);
         const labels: Record<string, string> = { idle: '清醒的日常', walking: '正在走路', seating: '正在坐下', sitting: '安静坐着', working: '正在处理工作', sleeping: '在床上睡眠', eating: '正在用餐', resting: '正在休息', habit: '正在进行日常习惯', standingUp: '正在起身', lyingDown: '正在躺下', waking: '正在醒来', turning: '正在转身' };

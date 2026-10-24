@@ -80,7 +80,9 @@ it.skipIf(process.platform !== 'win32' || !existsSync(path.join(program, 'bin/no
     for (let attempt = 0; attempt < 4; attempt++) {
       const started = performance.now();
       const cwd = path.join(workspace, String(attempt)); await mkdir(cwd);
-      const signal = AbortSignal.timeout(60000);
+      // Match the production pool's cold-profile readiness window; warm tasks
+      // still retain the original whole-case deadline and actual timing checks.
+      const signal = AbortSignal.timeout(120000);
       const lease = await pool.acquire('fixture-generation', 'fixture', async () => ({ child: await launchCli(plan, [...prefix, '--patch', patch], env, workspace), disposeContext: async () => undefined }), signal);
       const child = lease.worker.child; pids.push(child.pid!);
       let output = '', diagnostics = '', pending = '', sent = false;
@@ -98,10 +100,12 @@ it.skipIf(process.platform !== 'win32' || !existsSync(path.join(program, 'bin/no
       child.stdout.on('data', receive); child.stderr.on('data', diagnostic);
       const timer = setTimeout(() => { console.error('Native task readiness timeout', { output: output.slice(-8000), diagnostics: diagnostics.slice(-4000), prefix }); void terminateOwnedProcess(child); }, 40000);
       try {
-        const code = await pool.run(lease.worker, {cwd,policy: attempt === 0 ? {tools:[],skills:[]} : attempt===3 ? {tools:['subagent'],skills:[]} : {skills:[]} });
+        const title = `伙伴实际行动 ${attempt + 1}`;
+        const code = await pool.run(lease.worker, {cwd,title,policy: attempt === 0 ? {tools:[],skills:[]} : attempt===3 ? {tools:['subagent'],skills:[]} : {skills:[]} });
         expect(code, output + diagnostics).toBe(0);
         const events = output.split(/\r?\n/).filter(line => line.startsWith('{')).map(line => JSON.parse(line));
         expect(events.find(event => event.type === 'final')?.text).toBe('NATIVE_INSTANCE_CONFIGURATION_CONFIRMED');
+        expect(events.find(event => event.type === 'session')?.title).toBe(title);
         expect(output).not.toContain('dsh web:');
         expect(await readFile(profileFile)).toEqual(before); expect(await readFile(credentialsFile)).toEqual(credentialsBefore);
         durations.push(Math.round(performance.now() - started));

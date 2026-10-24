@@ -69,6 +69,40 @@ it('preserves prior exact canon when only the assistant has drifted and rejects 
     .rejects.toThrow('逐字原文来源');
 });
 
+it.each(['clock', 'quote'] as const)('repairs an invalid %s binding inside the existing extraction slots without changing the user source', async invalid => {
+  const f = extractionFrame();
+  f.message.id = 'relative_time_' + invalid; f.message.content = '收到通知后两分钟内确认，未确认前不要执行。';
+  expect(topicClockMentions(f.message.content)).toEqual([]);
+  const original = JSON.stringify(f.frame.messages); let calls = 0;
+  const result = await prepareTopicUserCanon({ ...f, extract: async context => {
+    const data = JSON.parse(context.user); expect(data.newUserMessages[0].content).toBe(f.message.content);
+    if (++calls === 1) return { additions: [{ sourceMessageId: f.message.id,
+      quote: invalid === 'quote' ? '收到通知后三分钟内确认。' : f.message.content, rule: f.message.content,
+      ...(invalid === 'clock' ? { timeRange: { start: 0, end: 2, includeStart: true, includeEnd: true } } : {}) }], revisions: [] };
+    expect(data.formatCorrection).toContain(invalid === 'clock' ? '数字不一致' : '逐字原文来源');
+    expect(data.formatCorrection).toContain('不删除或放宽真实约束');
+    return { additions: [{ sourceMessageId: f.message.id, quote: f.message.content, rule: f.message.content }], revisions: [] };
+  } });
+  expect(calls).toBe(2); expect(JSON.stringify(f.frame.messages)).toBe(original);
+  expect(result.entries).toHaveLength(1); expect(result.entries[0]!.quote).toBe(f.message.content);
+  expect(result.entries[0]!.rule).toBe(f.message.content); expect(result.entries[0]!.timeRange).toBeUndefined();
+});
+
+it('rejects three invalid clock bindings without accepting or caching a silently weakened canon', async () => {
+  const f = extractionFrame(); f.message.id = 'relative_time_never_repaired'; f.message.content = '收到通知后两分钟内确认，不得提前操作。';
+  let calls = 0;
+  await expect(prepareTopicUserCanon({ ...f, extract: async context => {
+    if (++calls > 1) expect(JSON.parse(context.user).formatCorrection).toContain('数字不一致');
+    return { additions: [{ sourceMessageId: f.message.id, quote: f.message.content, rule: f.message.content,
+      timeRange: { start: 0, end: 2, includeStart: true, includeEnd: true } }], revisions: [] };
+  } })).rejects.toThrow('数字不一致');
+  expect(calls).toBe(3); expect(f.frame.topicState).toBeUndefined();
+  const recovered = await prepareTopicUserCanon({ ...f, extract: async () => {
+    calls++; return { additions: [{ sourceMessageId: f.message.id, quote: f.message.content, rule: f.message.content }], revisions: [] };
+  } });
+  expect(calls).toBe(4); expect(recovered.entries[0]!.quote).toBe(f.message.content);
+});
+
 it('authenticates only source quotes, hides legacy rule paraphrases from extraction, and binds new rules without invented attributes', async () => {
   const f = extractionFrame(), legacy = { ...entry, rule: 'UNSOURCED_FEMALE_ATTRIBUTE' };
   const prior = { version: 1 as const, throughSequence: 1, entries: [legacy] };

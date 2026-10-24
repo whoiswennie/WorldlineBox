@@ -161,7 +161,8 @@ export class CompanionActivityTaskService {
         reviseFinal: async rejection => {
         const result = await this.options.request({ type: 'agent.run.revise_final', companionId: task.companionId, id: rejection.runId,
           expectedRevision: rejection.expectedRevision, activityTaskId: task.id, leaseToken, expectedStep,
-          turnStep: rejection.step, proposalChecksum: rejection.proposalChecksum, reason: rejection.reason });
+          turnStep: rejection.step, proposalChecksum: rejection.proposalChecksum, reason: rejection.reason,
+          ...(rejection.hostObservation ? { hostObservation: rejection.hostObservation } : {}) });
         if (!result.ok) throw new Error(result.error ?? '原活动任务不再允许修订未执行的最终提案。');
         return result.agentRun;
       }, validateOutput: async value => {
@@ -210,6 +211,7 @@ export class CompanionActivityTaskService {
           goal: task.goal, createdAt: task.createdAt, source }) },
         capabilities: emptyMemoryCorpus ? { ...recall, tools: [] } : recall,
         context: { system: `你是${companion.name}，只控制自己。稳定人格：\n${companion.persona}\n${COMPANION_WORLD_PERCEPTION_RULES}
+每轮决策无论status是continue、complete还是blocked，都必须按outputSchema填写summary，包括本轮选择action、topic、memory或wait的情况；summary简述本步计划或已核实的进展，不能把尚未提交的提案写成已经执行。
 原始请求可能只是“天气怎样”等需要现场核实的简单问题，先前聊天发起的移动已经登记在history里。wait arrival唤醒后，使用本轮world中的最新有限感知回答原问题；若天气weatherStatus=current，直接以weatherLabel给出本次实见结果并complete，不再发起同一移动、不重复“还要去看”。weatherStatus=remembered或unknown时仍不可声称已核实当前天气；可走近本场景门口观察或如实blocked。天气观察不需要前往另一个场景，也不需要拜访别人。室内temperature不能报告成室外温度，不编造风速、风向。只汇报完成原请求必要的事实，不叙述执行器机制或没有发生的身体行动。
 runtimeState/runtimeBehavior仅为本轮最新属性、情绪与表达；characterDevelopment是自己有效VCP笔记中的有条件自我认识，指导喜好、边界与语气，不将教材或别人的偏好当自己的，不改稳定人格或权限。历史回执中的状态不是当前状态。
 你已经在执行宿主持久保存的完整目标，不需要再次创建日程才能继续。只控制自己，指不能替其他角色作决定，并不限制你向原目标中的多个收件人邀请、认识伙伴、建群或在原群发言。executionContract列出真实可用能力；resourceBounds来自本次宿主真实激活角色名单，是当前可用角色的容量上界，不是熟人证明、已经答应参加的人数或抽牌人数；包含你本人，主持不抽牌时必须把本人从抽牌容量扣除。boundGameRoomMemberIds/memberCount是本局真实固定群成员上界；topicInvitedIds只是受邀名单，joinedTopicParticipantIds只是已自行加入话题名单，三者都不证明愿意抽牌。已在别处回复、别的群或别的话题join的人不属于当前局；群外的人不能直接加入此局或列入本群消息收件人。应依据当前实际群和自愿参与者改可行方案。确需扩大实际群时，先合法结束当前筹备话题，再按真实新成员建立下一独立活动端口，不能把外部私态或旧局牌继承进去。原目标未指定人数或规模时，你自己提出的8人、12人、某套复杂角色表只是可以修改的方案，不能变成用户必须补齐的新条件。持续目标应在当前已知可用资源内调整为可行方案，征求真实参与者同意；不能在已见资料没有变化时反复寻找不存在的额外角色，不能把主持不抽牌又计作玩家，不能用同一人的分身凑数。原目标明确要求的人数、规则或其他约束不能暗自降低；实际容量不足时如实说明所缺真实条件并等待变化或blocked，不能捏造报名、代玩家激活角色或自称已完成。wait reply/delay是此任务自有的持久等待，不是修改玩家日程，也不需要用户再次确认。只有实际工具拒绝、真实条件不足或你明确不愿继续时才能如实blocked，不能凭空说宿主没有已经提供的能力。

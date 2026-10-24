@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from 'vitest';
-import { mkdtemp, open, readFile, writeFile } from 'node:fs/promises';
+import { mkdtemp, open, readFile, writeFile, readdir } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
@@ -20,6 +20,38 @@ async function fixture() {
   return { root, store, id, owner, event };
 }
 describe('Indexed DSH execution records', () => {
+  it('archives real reports by owner, local start date and action title while retaining complete indexed steps', async () => {
+    const f = await fixture();
+    const text = '实际执行器最终正文。'.repeat(1000);
+    f.store.execution(f.id, { sessionId: 'native-session-one', artifacts: [{ path: '/actual/result.txt', description: '实际产物' }],
+      startup: { preparationMs: 12, bootMs: 3, reusedWorker: true } });
+    f.store.append(f.id, f.event(0, { stage: 'step_start' }));
+    f.store.append(f.id, f.event(1, { type: 'final', text }));
+    await f.store.finish(f.id, 'succeeded');
+    const overview = (await f.store.read({ recordId: f.id })).overview;
+    const started = new Date(overview.createdAt), day = `${started.getFullYear()}-${String(started.getMonth() + 1).padStart(2, '0')}-${String(started.getDate()).padStart(2, '0')}`;
+    expect(overview.archivePath).toBe(path.join(f.root, 'by-owner', 'one', day, '查询资料--' + f.id));
+    const report = await readFile(overview.reportPath!, 'utf8');
+    expect(report).toContain(text); expect(report).toContain('native-session-one'); expect(report).toContain('实际产物');
+    expect(report).toContain('复用预热进程'); expect(report).toContain(path.join(f.root, f.id, 'events.jsonl'));
+    const manifest = JSON.parse(await readFile(path.join(overview.archivePath!, 'session.json'), 'utf8'));
+    expect(manifest.scope).toEqual(f.owner); expect(manifest.overview.status).toBe('succeeded');
+    expect((await new DshTaskRecordStore(f.root).read({ recordId: f.id, start: 2, end: 2 })).entries[0]?.event.text).toBe(text.slice(0, 2000));
+  });
+  it('keeps cancelled and failed same-title sessions separate and cleans only their exact owner archives', async () => {
+    const f = await fixture(), second = randomUUID(), other = randomUUID();
+    await f.store.begin(second, '查询资料', f.owner);
+    await f.store.begin(other, '../unsafe:*title', { ...f.owner, companionId: 'two' });
+    await f.store.finish(f.id, 'cancelled'); await f.store.finish(second, 'failed', undefined, '实际失败');
+    await f.store.finish(other, 'succeeded');
+    const first = (await f.store.read({ recordId: f.id })).overview, failed = (await f.store.read({ recordId: second })).overview;
+    expect(first.archivePath).not.toBe(failed.archivePath); expect(await readFile(first.reportPath!, 'utf8')).toContain('已取消');
+    expect(await readFile(failed.reportPath!, 'utf8')).toContain('实际失败');
+    await f.store.removeOwner('one'); expect(await readdir(path.join(f.root, 'by-owner'))).toEqual(['two']);
+    const remaining = (await f.store.read({ recordId: other })).overview;
+    expect(path.relative(path.join(f.root, 'by-owner', 'two'), remaining.reportPath!)).not.toMatch(/^\.\./u);
+    expect(await readFile(remaining.reportPath!, 'utf8')).toContain('已成功');
+  });
   it('returns overview only by default, with exact host counters and a resumable final reply', async () => {
     const f = await fixture();
     f.store.append(f.id, f.event(0, { stage: 'turn_start' }));

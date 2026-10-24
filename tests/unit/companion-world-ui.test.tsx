@@ -116,15 +116,15 @@ it('keeps the compact header on authoritative world date/time and presents realt
   expect(header.querySelector('h2')).toBeNull(); expect(container!.querySelector('.companion-world-brand')).toBeNull();
   expect(container!.textContent).not.toMatch(/A LITTLE WORLD|日子，在这里发生|HOME, SWEET HOME|THE NEIGHBORHOOD/);
   await click('世界设置');
-  const labels = [...container!.querySelectorAll('.companion-world-mode')].map(item => item.textContent);
-  expect(labels.find(value => value?.includes('与你使用相同的时间'))).toContain('默认 · 推荐');
-  expect(labels.find(value => value?.includes('加速体验一天'))).not.toContain('默认');
+  expect(container!.querySelector('form')?.textContent).toContain('相同的现实日期与时间');
+  expect(container!.querySelector('input[type="radio"]')).toBeNull();
+  expect(container!.querySelector('[aria-label="世界一天的现实分钟"]')).toBeNull();
 });
 
 it('saves the inspected settings revision and keeps the previous world on conflict', async () => {
   const snapshot = world(), api = apiFor(() => snapshot, input => input.type === 'world.configure' ? { ok: false, error: '世界设置已变化，请刷新。' } : { ok: true }); await mount(api);
-  await click('世界设置'); const radio = container!.querySelectorAll<HTMLInputElement>('input[type="radio"]')[1]!; await act(async () => radio.click()); await click('保存世界设置');
-  expect(api.request).toHaveBeenCalledWith({ type: 'world.configure', expectedRevision: 4, patch: { mode: 'realtime', dayDurationMinutes: 20, timeZone: 'Asia/Shanghai' } });
+  await click('世界设置'); await click('保存世界设置');
+  expect(api.request).toHaveBeenCalledWith({ type: 'world.configure', expectedRevision: 4, patch: { timeZone: 'Asia/Shanghai' } });
   expect(container!.querySelector('form')!.textContent).toContain('世界设置已变化'); expect(container!.textContent).toContain('16:00');
   await click('关闭世界设置'); expect(container!.querySelector('form')).toBeNull();
 });

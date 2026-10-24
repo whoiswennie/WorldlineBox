@@ -78,11 +78,19 @@ export class DshWarmCliPool {
   }
   async acquire(key: string, instanceId: string, start: () => Promise<{ child: ChildProcessWithoutNullStreams; disposeContext(): Promise<void> }>, signal: AbortSignal): Promise<DshWarmLease> {
     if (this.closed) throw new Error('The DSH worker pool is closing.');
+    signal.throwIfAborted();
     for (const worker of this.workers) if (!worker.busy && (worker.key !== key && worker.instanceId === instanceId)) await this.destroy(worker);
+    signal.throwIfAborted();
+    if (this.closed) throw new Error('The DSH worker pool is closing.');
     let worker = [...this.workers].find(value => !value.busy && !value.dead && !value.retired && value.key === key);
     const reused = !!worker;
     if (!worker) {
       const owned = await start();
+      if (this.closed || signal.aborted) {
+        try { await terminateOwnedProcess(owned.child); } finally { await owned.disposeContext(); }
+        signal.throwIfAborted();
+        throw new Error('The DSH worker pool is closing.');
+      }
       let resolveReady!: () => void, rejectReady!: (error: Error) => void;
       const ready = new Promise<void>((resolve, reject) => { resolveReady = resolve; rejectReady = reject; }); void ready.catch(() => undefined);
       worker = { ...owned, key, instanceId, uses: 0, busy: true, ready, dead: false };
@@ -118,6 +126,7 @@ export class DshWarmCliPool {
     try { bootSignal.throwIfAborted(); await current.ready; bootSignal.throwIfAborted(); }
     catch (error) {
       await this.destroy(current);
+      signal.throwIfAborted();
       if (readyDeadline.aborted && !signal.aborted) throw Object.assign(new Error('The native DSH host did not become ready within its startup window; no Agent input was admitted.'), { code: 'DSH_HOST_READY_TIMEOUT' });
       throw error;
     }

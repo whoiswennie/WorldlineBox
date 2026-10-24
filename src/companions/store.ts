@@ -3,6 +3,8 @@ import { CompanionAgentRunStore } from './agent-run-store';
 import { CompanionDocumentCatalogStore } from './document-catalog-store';
 import { initializeCompanionLifeOverview } from './life-overview-store';
 import { CompanionMemoryTraceStore } from './memory-trace-store';
+import { CompanionExperienceStore } from './experience-store';
+import type { CompanionExperienceEntry } from '../shared/companion-experience';
 import { CompanionLearningStore } from './learning-store';
 import { CompanionLearningGoalStore } from './learning-goal-store';
 import { CompanionMemoryTagStore } from './autotag-store';
@@ -78,6 +80,7 @@ export class CompanionsStore {
   readonly #learningGoals: CompanionLearningGoalStore;
   readonly #documents: CompanionDocumentCatalogStore;
   readonly #trace: CompanionMemoryTraceStore;
+  readonly #experience: CompanionExperienceStore;
   readonly #db: CompanionConnection;
   readonly #memory: CompanionMemoryStore;
   readonly #memoryTags: CompanionMemoryTagStore;
@@ -99,6 +102,25 @@ export class CompanionsStore {
   constructor(databasePath: string, seeds: readonly CompanionSeed[] = BUILTIN_COMPANIONS) {
     mkdirSync(path.dirname(databasePath), { recursive: true });
     this.#db = new Database(databasePath);
+    this.#experience = new CompanionExperienceStore(this.#db, path.dirname(databasePath), entry => {
+      if (entry.source.kind === 'action') return !this.#db.prepare('SELECT 1 FROM metadata WHERE key=?').get(executionSourceInvalidKey('action', entry.source.id));
+      if (entry.source.kind === 'memory') {
+        const found = this.#db.prepare('SELECT 1 FROM vcp_memory_notes WHERE id=? AND companion_id=?').get(entry.source.id, entry.companionId);
+        return !!found && !!this.#memory.execute({ type: 'memory.records.filter', ...this.#memory.sources.ownerScope(entry.companionId), ids: [entry.source.id] })?.memories?.some(note => note.version === entry.source.version);
+      }
+      if (entry.source.kind === 'learning_read') {
+        const ids = this.#experienceSourceIds(entry)!;
+        return !!this.#db.prepare("SELECT 1 FROM companion_learning_reads r JOIN companion_learning_grants g ON g.id=r.grant_id AND g.companion_id=r.companion_id WHERE r.id=? AND r.companion_id=? AND r.status='read' AND g.enabled=1").get(entry.source.id, entry.companionId)
+          && this.#memory.sourcesFilter(this.#memory.sources.ownerScope(entry.companionId), ids).length === ids.length;
+      }
+      if (entry.source.kind === 'activity') {
+        const task = this.#db.prepare('SELECT data FROM companion_activity_tasks WHERE id=? AND companion_id=?').get(entry.source.id, entry.companionId) as { data: string } | undefined;
+        const sourceId = task && (JSON.parse(task.data) as { sourceMessageId?: string }).sourceMessageId;
+        return !!task && (!sourceId || !!this.#memory.sourcesFilter(this.#memory.sources.ownerScope(entry.companionId), [sourceId]).length);
+      }
+      const ids = this.#experienceSourceIds(entry);
+      return ids === undefined || this.#memory.sourcesFilter(this.#memory.sources.ownerScope(entry.companionId), ids).length === ids.length;
+    }, entry => this.#memory.sourcesFilter(this.#memory.sources.ownerScope(entry.companionId), this.#experienceSourceIds(entry) ?? []));
     this.#topics = new CompanionTopicStore(this.#db, id => { this.#requireConversation(id); return this.#memberIds(id); }, receipt => this.recordTopicParticipation(receipt),
       (conversationId, topicId, readerId) => this.#social.topicChanged(conversationId, topicId, readerId),
       (conversationId, companionId, ids) => this.#memory.sources.checkpointSourcesValid({ companionId, conversationId }, ids),
@@ -366,8 +388,10 @@ export class CompanionsStore {
       this.#life.initialize();
       initializeCompanionLifeOverview(this.#db);
       this.#trace.initialize();
+      this.#experience.initialize();
       this.#reset.prepareIndexes();
       this.#memory.backfill();
+      this.#experience.backfill(64); this.#experience.flush();
     } catch (error) {
       this.#db.close();
       throw error;
@@ -452,7 +476,7 @@ export class CompanionsStore {
   }
 
   /** Bounded, crash-safe upgrade batches; the worker yields between batches. */
-  backfillTraceIndex(limit = 200): boolean { return this.#trace.backfill(limit); }
+  backfillTraceIndex(limit = 200): boolean { const traceReady = this.#trace.backfill(limit), experienceReady = this.#experience.backfill(limit); this.#experience.flush(); return traceReady && experienceReady; }
   backfillSearchIndex(): boolean {
     return this.#db.transaction(() => {
       const target = Number(row(this.#db.prepare("SELECT value FROM metadata WHERE key='message-index-target'").get()).value);
@@ -828,6 +852,22 @@ export class CompanionsStore {
       this.#world.changed();
       this.#schedule.stopUnavailable();
     }).immediate();
+    this.#experience.resetOwner(id);
+  }
+
+  /** Exact typed producer fields, never free metadata or quoted source JSON. */
+  #experienceSourceIds(entry: CompanionExperienceEntry): string[] | undefined {
+    const kind = entry.source.kind;
+    const query = kind === 'schedule' ? 'SELECT s.data FROM companion_schedule_occurrences o JOIN companion_schedules s ON s.id=o.schedule_id WHERE o.id=? AND s.companion_id=?'
+      : kind === 'activity' ? 'SELECT data FROM companion_activity_tasks WHERE id=? AND companion_id=?'
+        : kind === 'learning_round' ? 'SELECT data FROM companion_learning_goal_rounds WHERE id=? AND companion_id=?'
+          : kind === 'learning_read' ? 'SELECT data FROM companion_learning_reads WHERE id=? AND companion_id=?'
+            : kind === 'world_event' ? "SELECT data FROM companion_world_events WHERE id=? AND json_extract(data,'$.actorId')=?" : undefined;
+    if (!query) return;
+    const found = this.#db.prepare(query).get(entry.source.id, entry.companionId) as { data: string } | undefined;
+    if (!found) return ['missing_experience_source'];
+    const value = JSON.parse(found.data) as { sourceMessageId?: string; authorizationSourceMessageIds?: string[]; reads?: Array<{ sourceMessageId?: string }>; sourceReads?: Array<{ id: string }> };
+    return [...new Set([value.sourceMessageId, ...(value.authorizationSourceMessageIds ?? []), ...(value.reads ?? []).map(read => read.sourceMessageId), ...(value.sourceReads ?? []).map(read => read.id)].filter((id): id is string => typeof id === 'string'))];
   }
 
   restoreBuiltin(id: string): Companion {
@@ -1611,6 +1651,7 @@ export class CompanionsStore {
   request(input: CompanionStorageCommand): CompanionStorageResponse {
     return this.#memory.sources.withValidation(() => {
       const response = this.dispatch(input);
+      this.#experience.flush();
       return { ...response, ...this.takeMemoryInvalidations() };
     });
   }
@@ -1647,6 +1688,7 @@ export class CompanionsStore {
     const memoryResponse = this.#memory.execute(command);
     if (memoryResponse) return memoryResponse;
     const traceResponse = this.#trace.execute(command); if (traceResponse) return traceResponse;
+    const experienceResponse = this.#experience.execute(command); if (experienceResponse) return experienceResponse;
     const documentResponse = this.#documents.execute(command);
     if (documentResponse) return documentResponse;
     const learningResponse = this.#learning.execute(command);
@@ -1675,7 +1717,7 @@ export class CompanionsStore {
     if (worldResponse) return worldResponse;
     switch (command.type) {
       case 'memory.library.scope': return { ok: true, conversation: this.libraryScope(command.companionId) };
-      case 'companion.reset': { const reset = this.#reset.begin(command.id, command.expectedRevision); this.#collaborations.cancelFor(command.id); return { ok: true, ...reset }; }
+      case 'companion.reset': { const reset = this.#reset.begin(command.id, command.expectedRevision); this.#experience.resetOwner(command.id); this.#collaborations.cancelFor(command.id); return { ok: true, ...reset }; }
       case 'companion.reset.status': return { ok: true, ...this.#reset.status(command.id) };
       case 'companion.reset.cleanup': return { ok: true, reset: this.#reset.cleanup(command.id, command.jobId) };
       case 'companion.reset.cleanup-failed': return { ok: true, reset: this.#reset.cleanup(command.id, command.jobId, command.error) };

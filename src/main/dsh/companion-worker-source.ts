@@ -20,7 +20,7 @@ export function apply(ctx) {
       if (value.type !== 'open') { if (!current) throw Error('No active worker request'); current.input.write(line+'\n'); return; }
       if (current || typeof value.cwd !== 'string') throw Error('Worker request is already active or lacks its workspace');
       const task = {input:new PassThrough(),dispose:undefined,finishing:false}; current = task;
-      task.dispose = runTask(ctx, {input:task.input,cwd:value.cwd,policy:value.policy,resumeSessionId:value.resumeSessionId,recovery:value.recovery,
+      task.dispose = runTask(ctx, {input:task.input,cwd:value.cwd,title:value.title,policy:value.policy,resumeSessionId:value.resumeSessionId,recovery:value.recovery,
         exit: code => {
           if (task.finishing) return; task.finishing = true;
           void Promise.resolve().then(async () => {

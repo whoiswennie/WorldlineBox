@@ -196,10 +196,21 @@ export function captureCompanionExecutionReadset(scope: Scope, input: Partial<Fi
     try {
       const name = normalizeCompanionCapabilityCall(call).name;
       const receipt = turn.results?.find(result => result.callId === call.id);
-      if (!receipt || !(name.startsWith('memory.') || ['history', 'topic', 'world'].includes(name))) continue;
+      if (!receipt || !(name.startsWith('memory.') || ['history', 'topic', 'world', 'experience'].includes(name))) continue;
       const data = row(JSON.parse(receipt.content));
       if (!data || data.ok === false) continue;
       if (name === 'history') entries(data.messages).forEach(value => source(value));
+      else if (name === 'experience') {
+        // Only the matched owner-bound host receipt supplies provenance;
+        // renamed titles and arbitrary nested metadata confer none.
+        if (data.experienceEvidence !== undefined) {
+          const parsed = companionExecutionReadsetSchema.safeParse(data.experienceEvidence);
+          if (!parsed.success || parsed.data.companionId !== scope.companionId || parsed.data.conversationId !== scope.conversationId) result.complete = false;
+          else { const proof = parsed.data; result.complete &&= proof.complete;
+            result.memories.push(...proof.memories); result.sources.push(...proof.sources); result.knowledgeReads.push(...proof.knowledgeReads);
+            result.contexts.push(...proof.contexts); result.topics.push(...proof.topics); }
+        }
+      }
       else if (name === 'topic') topic(data.topicState, data.topic);
       else if (name === 'world') { entries(data.memorySources).forEach(value => source(value)); topic(data.topicState, data.topic); }
       else if (data.ok === true) {

@@ -17,9 +17,10 @@ import { activityArgumentsSchema, activityDecisionSchema } from '../../src/share
 const seeds: CompanionSeed[] = [{ id: 'alice', name: 'Alice', persona: '尊重实际结果', description: '', model: '', avatar: 'sister', active: true, proactive: true }];
 let worldService: CompanionWorldService | undefined;
 let root: string, store: CompanionsStore, service: CompanionActivityTaskService | undefined;
-beforeEach(() => { vi.useFakeTimers({ toFake: ['Date'] }); vi.setSystemTime('2026-10-16T10:00:00Z'); root = mkdtempSync(path.join(tmpdir(), 'companion-agent-service-')); store = new CompanionsStore(path.join(root, 'state.sqlite'), seeds.map(seed => ({ ...seed, active: true }))); });
+const feasibilityReviews: Array<Record<string, unknown>> = [];
+beforeEach(() => { feasibilityReviews.length = 0; vi.useFakeTimers({ toFake: ['Date'] }); vi.setSystemTime('2026-10-16T10:00:00Z'); root = mkdtempSync(path.join(tmpdir(), 'companion-agent-service-')); store = new CompanionsStore(path.join(root, 'state.sqlite'), seeds.map(seed => ({ ...seed, active: true }))); });
 afterEach(async () => { await service?.close(); service = undefined; await worldService?.close(); worldService = undefined; store.close(); if (path.dirname(path.resolve(root)) !== path.resolve(tmpdir()) || !path.basename(root).startsWith('companion-agent-service-')) throw new Error('Invalid cleanup'); rmSync(root, { recursive: true, force: true }); vi.useRealTimers(); });
-function setup(fetchFn: typeof fetch, goal = '去自己的沙发坐一会儿，完成后告诉我。', forwardProgressReview = false) {
+function setup(fetchFn: typeof fetch, goal = '去自己的沙发坐一会儿，完成后告诉我。', forwardProgressReview = false, forwardFeasibilityReview = false) {
   const scope = { companionId: 'alice', conversationId: store.openPrivate('alice').id };
   const world = store.request({ type: 'world.snapshot' }).world!; store.request({ type: 'world.configure', expectedRevision: world.settings.revision, patch: { mode: 'realtime', timeZone: 'UTC' } });
   const routine = store.request({ type: 'routine.get', ...scope }).routine!;
@@ -29,15 +30,19 @@ function setup(fetchFn: typeof fetch, goal = '去自己的沙发坐一会儿，�
   service = new CompanionActivityTaskService({ request: async input => input.type === 'memory.search'
     ? { ok: true, memoryPage: { items: [], hasMore: false } } : store.request(input),
     configFor: async () => ({ apiFormat: 'openai_chat', model: 'fixture', apiKey: 'fake-local-key', baseUrl: 'https://fixture.invalid' }),
-    profiles: async () => ({ publicProfiles: [], visualInputs: [] }), fetchFn: forwardProgressReview ? fetchFn : withProgressReview(fetchFn), excludedIds: () => [], changed: vi.fn(), report: error => { throw error; } });
+    profiles: async () => ({ publicProfiles: [], visualInputs: [] }), fetchFn: forwardProgressReview ? fetchFn : withProgressReview(fetchFn, forwardFeasibilityReview), excludedIds: () => [], changed: vi.fn(), report: error => { throw error; } });
   return { ...scope, task };
 }
 const response = (value: unknown) => new Response(JSON.stringify({ choices: [{ message: { content: JSON.stringify(value) } }] }), { headers: { 'Content-Type': 'application/json' } });
-/** Existing domain fixtures model valid progress; the dedicated progress tests
- * exercise denials and same-slot author repair instead of hiding that branch. */
-function withProgressReview(fetchFn: typeof fetch): typeof fetch {
+/** Domain fixtures provide controlled review results, separately from actor
+ * calls. Dedicated review cases forward their real positive/negative controls. */
+function withProgressReview(fetchFn: typeof fetch, forwardFeasibilityReview = false): typeof fetch {
   return async (input, init) => {
     const data = JSON.parse(JSON.parse(String(init?.body)).messages[1].content);
+    if (data.purpose === 'activity_resource_feasibility' && !forwardFeasibilityReview) {
+      feasibilityReviews.push(data);
+      return response({ allowed: true, confidence: .99, reason: '受控领域夹具允许本步；实际可行性拒绝与修复由专用正反控制覆盖。' });
+    }
     return data.purpose === 'companion_social_progress_review' ? response({ supported: true, correction: '' }) : fetchFn(input, init);
   };
 }
@@ -257,6 +262,8 @@ it('keeps the source-bound whole-goal plan when a later valid query has no new p
   await service!.tick(); await vi.waitFor(() => expect(get().step).toBe(1));
   vi.setSystemTime(Date.now() + 3000); await service!.tick(); await vi.waitFor(() => expect(get().step).toBe(2));
   expect(actorCalls).toBe(2); expect(get().history.map(item => item.action)).toEqual(['query', 'query']);
+  expect(feasibilityReviews).toHaveLength(1);
+  expect(feasibilityReviews[0]).toMatchObject({ purpose: 'activity_resource_feasibility', exactProposedDecision: { planningState: plan } });
   vi.setSystemTime(Date.now() + 3000);
   const lease = store.request({ type: 'activity.claim' }).activityTask!;
   const observed = store.request({ type: 'activity.observe', id: lease.id, leaseToken: lease.leaseToken! });
@@ -280,7 +287,7 @@ it.each(['string', 'native-wrapper'] as const)('corrects actual invalid topic fi
     expect(store.request({ type: 'topic.read', conversationId: topic.roomId, topicId: topic.topicId, readerId: 'alice' }).topicState?.shared).toBeUndefined();
     return response({ status: 'continue', action: null, wait: null, topic, summary: '作者仅修订字段，提交自己的公开筹备提案。' });
   });
-  const scope = setup(fetchFn, '找伙伴玩完一局游戏。');
+  const scope = setup(fetchFn, '找伙伴玩完一局游戏。', false, true);
   for (const name of ['b', 'c']) {
     const peer = store.createCompanion({ name, persona: '独立友好', description: '', model: '', avatar: 'sister', proactive: false });
     store.setCompanionActive(peer.id, true);
@@ -341,7 +348,7 @@ it.each([false, true])('uses the real human goal for feasibility, corrects self-
         expectedRevision: data.gameTopic.topic.revision, patch: { shared: { summary: actorCalls === 1 ? 'BAD_SIX_PLAYER_PROPOSAL' : 'AUTHOR_REVISED_FEASIBLE_PROPOSAL' } } },
       summary: '按当前真实资料拟定下一步方案。' });
   });
-  const scope = setup(fetchFn, actualGoal);
+  const scope = setup(fetchFn, actualGoal, false, true);
   for (const id of ['b', 'c']) {
     const role = store.createCompanion({ name: id, persona: '独立友好', description: '', model: '', avatar: 'sister', proactive: false });
     store.setCompanionActive(role.id, true);
@@ -461,7 +468,7 @@ it('omits useless recall only for a current whole-corpus-empty host receipt and 
   const fetchFn = vi.fn<typeof fetch>(async (_url, init) => {
     const wire = JSON.parse(String(init?.body)), data = JSON.parse(wire.messages[1].content);
     if (empty) { expect(wire.tools ?? []).toEqual([]); expect(data.memoryAvailability).toMatchObject({ authorizedCorpusEmpty: true, revision: 'empty-now' }); }
-    else { expect(wire.tools).toHaveLength(1); expect(wire.tools[0].function.name).toBe('memory'); expect(data.memoryAvailability).toBeUndefined(); }
+    else { expect(wire.tools).toHaveLength(2); expect(wire.tools.map((tool: { function: { name: string } }) => tool.function.name)).toEqual(['memory', 'world']); expect(data.memoryAvailability).toBeUndefined(); }
     return response({ status: 'continue', action: { action: 'query', category: 'scenes', limit: 1 }, wait: null, summary: '用当前真实上下文继续，回忆可用性每步核实。' });
   });
   const base = setup(fetchFn); await service!.close();
@@ -472,7 +479,7 @@ it('omits useless recall only for a current whole-corpus-empty host receipt and 
     profiles: async () => ({ publicProfiles: [], visualInputs: [] }), excludedIds: () => [], changed: vi.fn(), report: error => { throw error; } });
   const get = () => store.request({ type: 'activity.get', companionId: base.companionId, conversationId: base.conversationId, id: base.task.id }).activityTask!;
   await service.tick(); await vi.waitFor(() => expect(get().step).toBe(1));
-  empty = false; vi.setSystemTime(Date.now() + 3000); await service.tick(); await vi.waitFor(() => expect(get().step).toBe(2));
+  empty = false; vi.setSystemTime(Date.now() + 3000); await service.tick(); await vi.waitFor(() => expect(get().step, JSON.stringify(get())).toBe(2));
   expect(fetchFn).toHaveBeenCalledTimes(2);
 });
 it('binds the native initial recall actually consumed by the plan, excludes candidates, and withdraws the plan with its material source', async () => {

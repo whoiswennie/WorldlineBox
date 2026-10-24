@@ -138,12 +138,15 @@ export function apply(ctx, io = {}) {
       handle = await ctx.get('agents').resume({ ...options, resumeSessionId: sessionId }); agent = handle.agent;
       if (agent.session.header.cwd !== cwd) throw Error('Recovered native session workspace changed');
     } else { handle = await ctx.get('agents').create({ ...options, sessionId, meta: { cwd } }); agent = handle.agent; }
+    // The companion already supplied an action title. Pin that exact title in
+    // the native log instead of generating another one with a model request.
+    if (!currentResume && typeof io.title === 'string' && io.title.trim()) ctx.get('sessionTitle')?.rename(agent.session, io.title);
     // Preset plugins can register scope-local tools in agent/created. Catalog
     // validation must observe the published Agent before admitting any input.
     await publishTaskCapabilities(agent);
     for (const id of collectInputs(agent)) seenInputs.add(id);
     if (currentRecovery) { seenInputs.add(currentRecovery.id); for (const input of currentRecovery.inputs) seenInputs.add(input.id); }
-    emit({ type: 'session', sessionId, resumed: !!currentResume });
+    emit({ type: 'session', sessionId, resumed: !!currentResume, title: ctx.get('sessionTitle')?.get(agent.session)?.title });
     if (taskPolicy.discover) { accepting = false; emit({ type: 'final', text: 'Capability discovery completed without a model request.' }); exit(0); return; }
     emit({ type: 'ready' });
   });

@@ -6,6 +6,7 @@ import { companionReplyMemoryCommand, companionReplyMemorySchema } from './compa
 import { companionMemoryCorpusStateCommand, companionMemoryProbeCommand, companionMemoryProbeSchema } from './companion-memory-probe';
 import { companionMemoryRetrievalSchema } from './companion-memory-retrieval';
 import { companionMemoryContextEvidenceSchema } from './companion-memory-context-evidence';
+import { companionExperienceCommands, companionExperienceDayPageSchema, companionExperienceEntryPageSchema, companionExperienceDetailSchema, companionExperienceEntrySchema } from './companion-experience';
 import { companionMemoryRetrievalModesSchema } from './companion-memory-modes';
 import type { CompanionWorkspaceRequest, CompanionWorkspaceResponse } from './companion-workspace';
 import { companionWorldObservationSchema } from './companion-knowledge';
@@ -158,6 +159,7 @@ export const companionDraftSchema = companionSchema.pick({ name: true, descripti
   .extend({ llm: companionLlmSchema.omit({ hasKey: true }).optional() });
 export type CompanionDraft = z.infer<typeof companionDraftSchema>;
 export const companionsRequestSchema = z.discriminatedUnion('type', [
+  ...companionExperienceCommands,
   companionMemoryProbeCommand, companionMemoryCorpusStateCommand,
   companionReplyMemoryCommand,
   ...activityPublicCommands,
@@ -218,6 +220,8 @@ export const companionsRequestSchema = z.discriminatedUnion('type', [
 ]);
 export type CompanionsRequest = z.infer<typeof companionsRequestSchema>;
 export const companionsResponseSchema = z.object({
+  experienceDays: companionExperienceDayPageSchema.optional(), experiencePage: companionExperienceEntryPageSchema.optional(),
+  experienceDetail: companionExperienceDetailSchema.optional(), experienceEntry: companionExperienceEntrySchema.optional(),
   memoryKnowledge: companionKnowledgeResponseSchema.optional(),
   topic: companionTopicSchema.optional(), topics: z.array(companionTopicSchema).max(500).optional(), topicState: companionTopicStateSchema.optional(),
   topicNextCursor: z.number().int().positive().optional(),
