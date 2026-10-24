@@ -6,7 +6,8 @@ import type { TopicUserCanon } from '../../src/main/companions/topic-user-canon'
 import { confirmedQuantitySourcePremiseFixture, declaredDisjointQuantityFixture, quantityRoleFixture, withDeclaredQuantitySemanticFixture } from '../helpers/companion-quantity-role-fixture';
 
 const actualProductionQuantityReview = (options: Parameters<typeof productionQuantityReview>[0] & {
-  declaredAuthorAllStatement?: 'affirmative_whole_set' | 'explicit_not_all' | 'no_whole_set_assertion' | 'ambiguous' }) => productionQuantityReview(withDeclaredQuantitySemanticFixture(options));
+  declaredAuthorAllStatement?: 'affirmative_whole_set' | 'explicit_not_all' | 'no_whole_set_assertion' | 'ambiguous';
+  declaredAuthorNumberStatements?: Parameters<typeof withDeclaredQuantitySemanticFixture>[0]['declaredAuthorNumberStatements'] }) => productionQuantityReview(withDeclaredQuantitySemanticFixture(options));
 
 const actualQuantityReview = (options: Parameters<typeof actualProductionQuantityReview>[0]) => actualProductionQuantityReview({ ...options,
   verifyRoles: options.verifyRoles ? quantityRoleFixture(options.verifyRoles) : undefined });
@@ -99,6 +100,7 @@ it.each([
 ] as const)('does not derive current possession merely from numeral kind when the assertion is %s', async (assertion, text, _numberQuote, kind) => {
   const base = input(text);
   const correction = await reviewTopicSourceQuantities({ ...base,
+    declaredAuthorNumberStatements: { '0:0:0': assertion === 'collection_total' ? 'no_possession_assertion' : assertion === 'not_possessed' ? 'explicit_nonpossession' : 'ambiguous' },
     extractClaims: async () => ({ clauses: [{ clauseIndex: 0, quantities: [{ setIndex: 0, usage: 'total', numberIndexes: [0] }] }] }),
     verifyRoles: async () => ({ reviews: [{ candidateIndex: 0, assertion, kind, currentNumberIndexes: [0], reason: '数字语法不等于当前肯定持有关系。' }] }) });
   if (assertion === 'ambiguous') { expect(correction).toContain('unresolved_holding_relation'); expect(correction).not.toContain('mathematical_contradiction'); }
@@ -203,6 +205,7 @@ it.each(['3,000', '3e3'])('does not mistake the parseable prefix of unsupported 
 it.each([['三', true], ['两', false]] as const)('gives independent cold grammar the actual target noun instead of another inventory: %s keys', async (quantity, rejected) => {
   const base = input(`她随身携带${quantity}把钥匙和两张卡。`);
   const correction = await reviewTopicSourceQuantities({ ...base,
+    declaredAuthorNumberStatements: { '0:0:1': 'no_possession_assertion' },
     extractClaims: async () => ({ clauses: [{ clauseIndex: 0, quantities: [{ setIndex: 0, usage: 'current_possessed_count', numberIndexes: [0] }] }] }),
     verifyRoles: async context => {
       const candidate = JSON.parse(context.user).data.candidates[0];
@@ -322,6 +325,8 @@ it.each([
     return { reviews: [{ candidateIndex: 0, numbers: test.numbers.map((number, numberIndex) => ({ numberIndex, ...number })), all: test.all ? { collection: 'same', ...test.all } : noAllPremise }] };
   });
   const correction = await actualProductionQuantityReview({ ...base,
+    declaredAuthorNumberStatements: Object.fromEntries(test.numbers.map((number, index) => ['0:0:' + index,
+      number.relation === 'missing' ? 'explicit_nonpossession' : ['unrelated', 'collection_size'].includes(number.relation) ? 'no_possession_assertion' : 'ambiguous'])),
     extractClaims: async () => ({ clauses: base.clauses.map(clause => ({ clauseIndex: clause.clauseIndex,
       quantities: [{ setIndex: 0, usage: test.usage ?? 'current_possessed_count', numberIndexes: [test.index ?? 0] }] })) }), verifyRoles });
   expect(!!correction).toBe(test.rejected); expect(verifyRoles).toHaveBeenCalledTimes(1);
@@ -377,6 +382,8 @@ it.each([
   const base = input(test.text), verifyRoles = vi.fn(async () => ({ reviews: [{ candidateIndex: 0,
     numbers: test.numbers.map((number, numberIndex) => ({ numberIndex, ...number })), all: noAllPremise }] }));
   const correction = await actualProductionQuantityReview({ ...base,
+    declaredAuthorNumberStatements: Object.fromEntries(test.numbers.map((number, index) => ['0:0:' + index,
+      number.relation === 'missing' ? 'explicit_nonpossession' : ['unrelated', 'collection_size'].includes(number.relation) ? 'no_possession_assertion' : 'ambiguous'])),
     extractClaims: async () => ({ clauses: [{ clauseIndex: 0, quantities: [{ setIndex: 0, usage: test.usage,
       numberIndexes: [test.warmIndex] }] }] }), verifyRoles });
   if (test.ambiguous) { expect(correction).toContain('ambiguous_numeric_premise'); expect(correction).not.toContain('count_holding_vs_total'); }
@@ -472,6 +479,7 @@ it.each([0, 2])('bounds source context to one real neighbor at the first or last
       numbers: [{ numberIndex: 0, ...numericPremise('narrated_fact', 'collection_size') }], all: noAllPremise })) };
   });
   expect(await actualProductionQuantityReview({ ...base,
+    declaredAuthorNumberStatements: { '0:0:0': 'no_possession_assertion', '2:0:0': 'no_possession_assertion' },
     extractClaims: async () => ({ clauses: base.clauses.map(clause => ({ clauseIndex: clause.clauseIndex,
       quantities: clause.text.includes('钥匙') ? [{ setIndex: 0, usage: 'total', numberIndexes: [0] }] : [] })) }), verifyRoles })).toBeUndefined();
   expect(verifyRoles).toHaveBeenCalledTimes(1);
@@ -517,9 +525,10 @@ it('independently audits an uncertain warm quantity instead of letting it bypass
 it('lets cold identify another actual collection despite a shared noun and uncertain warm binding', async () => {
   const base = input('张明携带别组的三把备用钥匙，与本组无关。'), verifyRoles = vi.fn(async context => {
     expect(context.system).toContain('同名物品不证明同一集合');
-    return { reviews: [{ candidateIndex: 0, numbers: [{ numberIndex: 0, ...numericPremise('unrelated', 'unrelated', 'scene', 'unrelated') }], all: noAllPremise }] };
+    return { reviews: [{ candidateIndex: 0, numbers: [{ numberIndex: 0, ...numericPremise('unrelated', 'unrelated', 'scene', 'unrelated'), collection: 'different' }], all: noAllPremise }] };
   });
   expect(await actualProductionQuantityReview({ ...base,
+    verifyDisjointWaivers: declaredDisjointQuantityFixture,
     extractClaims: async () => ({ clauses: [{ clauseIndex: 0, quantities: [{ setIndex: 0, usage: 'ambiguous', numberIndexes: [0] }] }] }),
     verifyRoles })).toBeUndefined();
   expect(verifyRoles).toHaveBeenCalledTimes(1);
@@ -547,6 +556,8 @@ it.each([
   const base = input(test.text), verifyRoles = vi.fn(async () => ({ reviews: [{ candidateIndex: 0,
     numbers: [{ numberIndex: 0, ...test.premise }], all: noAllPremise }] }));
   const correction = await actualProductionQuantityReview({ ...base,
+    declaredAuthorNumberStatements: { '0:0:0': test.premise.relation === 'missing' ? 'explicit_nonpossession'
+      : ['unrelated', 'collection_size'].includes(test.premise.relation) ? 'no_possession_assertion' : 'ambiguous' },
     extractClaims: async () => ({ clauses: [{ clauseIndex: 0, quantities: [{ setIndex: 0, usage: 'ambiguous', numberIndexes: [0] }] }] }), verifyRoles });
   if (test.pending) { expect(correction).toContain('ambiguous_numeric_premise'); expect(correction).not.toContain('mathematical_contradiction'); }
   else expect(correction).toBeUndefined();
@@ -676,11 +687,12 @@ it.each([12, 80])('can represent every actual source collection in one clause be
     expect(candidates).toHaveLength(count);
     return { reviews: candidates.map((_candidate: unknown, candidateIndex: number) => ({ candidateIndex, numbers: [], all: noAllPremise })) };
   });
-  expect(await actualProductionQuantityReview({ ...base, canon: { version: 1, throughSequence: 1, entries: nouns.map((noun, index) => ({
+  const correction = await actualProductionQuantityReview({ ...base, canon: { version: 1, throughSequence: 1, entries: nouns.map((noun, index) => ({
     id: 'set-' + index, sourceMessageId: 'source-' + index, sourceChecksum: 'c'.repeat(64), quote: `这组${noun}共有3件，第2件尚未取得。`, rule: '非来源解释' })) },
     extractSets: async () => ({ sets: nouns.map((entityQuote, canonIndex) => ({ canonIndex, entityQuote, totalNumberIndex: 0, missingOrdinalNumberIndexes: [1] })) }),
-    extractClaims, verifyRoles })).toBeUndefined();
-  expect(extractClaims).toHaveBeenCalledTimes(1); expect(verifyRoles).toHaveBeenCalledTimes(1);
+    extractClaims, verifyRoles });
+  if (count > 32) { expect(correction).toContain('unresolved_author_projection_capacity'); expect(extractClaims).not.toHaveBeenCalled(); expect(verifyRoles).not.toHaveBeenCalled(); }
+  else { expect(correction).toBeUndefined(); expect(extractClaims).toHaveBeenCalledTimes(1); expect(verifyRoles).toHaveBeenCalledTimes(1); }
 });
 
 it('rejects role output beyond its unchanged thousand-review capacity within the original three slots', async () => {

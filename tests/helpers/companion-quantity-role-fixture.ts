@@ -26,16 +26,34 @@ export const declaredDisjointQuantityFixture: NonNullable<TopicSourceQuantityRev
 /** Explicit protocol adaptation for old declarative mocks, not a text classifier.
  * New projection tests return their own complete sidecar and bypass this helper. */
 export function declaredWarmAllFixture(context: { user: string }, value: unknown,
-  declaredStatement?: Parameters<typeof declaredAllProjectionFixture>[1]) {
-  if (!record(value) || !Array.isArray(value.clauses) || 'allProjections' in value) return value;
+  declaredStatement?: Parameters<typeof declaredAllProjectionFixture>[1], declaredNumbers?: Record<string, Parameters<typeof declaredNumberProjectionFixture>[2]>) {
+  if (!record(value) || !Array.isArray(value.clauses)) return value;
   const data = JSON.parse(context.user).data as { requiredPairs: Array<{ clauseIndex: number; setIndex: number }>;
-    actualClauses: Array<{ clauseIndex: number; text: string }> };
-  return { ...value, allProjections: data.requiredPairs.map(pair => {
+    actualClauses: Array<{ clauseIndex: number; text: string; numberCandidates: Array<{ numberIndex: number; numberQuote: string; occurrence: number }> }> };
+  return { ...value, ...('allProjections' in value ? {} : { allProjections: data.requiredPairs.map(pair => {
     const row = (value.clauses as Array<{ clauseIndex: number; quantities: Array<{ setIndex: number; usage: string }> }>).find(c => c.clauseIndex === pair.clauseIndex);
     const statement = declaredStatement ?? (row?.quantities.some(q => q.setIndex === pair.setIndex && q.usage === 'current_possessed_all')
       ? 'affirmative_whole_set' as const : 'no_whole_set_assertion' as const);
     return { ...pair, projection: declaredAllProjectionFixture({ evidence: [{ view: 'focus', ...data.actualClauses[pair.clauseIndex]! }] }, statement) };
-  }) };
+  }) }), ...('numberProjections' in value ? {} : { numberProjections: data.requiredPairs.flatMap(pair => {
+    return data.actualClauses[pair.clauseIndex]!.numberCandidates.map(number => {
+      // The legacy mock tests raw mechanics. No usage enum gains an author
+      // proposition by default; individual cases declare their new premise.
+      const statement = declaredNumbers?.[pair.clauseIndex + ':' + pair.setIndex + ':' + number.numberIndex] ?? 'ambiguous';
+      return { ...pair, numberIndex: number.numberIndex, projection: declaredNumberProjectionFixture(data.actualClauses[pair.clauseIndex]!, number.numberIndex, statement) };
+    });
+  }) }) };
+}
+
+/** Explicit declarative mock, never a production text classifier. */
+export function declaredNumberProjectionFixture(clause: { clauseIndex: number; text: string;
+  numberCandidates: Array<{ numberIndex: number; numberQuote: string; occurrence: number }> }, numberIndex: number,
+  statement: 'affirmative_possession' | 'explicit_nonpossession' | 'no_possession_assertion' | 'ambiguous' = 'ambiguous') {
+  const number = clause.numberCandidates[numberIndex]!, evidenceRef = { view: 'focus' as const, clauseIndex: clause.clauseIndex };
+  return { statement, coverage: 'whole_focus' as const, reviewedFocusRef: evidenceRef, targetNumberQuote: number.numberQuote, targetOccurrence: number.occurrence,
+    witnesses: statement === 'ambiguous' ? [] : (statement === 'affirmative_possession' ? ['target_scope', 'scoped_possession_predicate'] as const
+      : statement === 'explicit_nonpossession' ? ['target_scope', 'negative_scope'] as const : ['target_scope'] as const)
+      .map(role => ({ role, evidenceRef, quote: clause.text.slice(0, 300) })) };
 }
 
 /** Legacy mechanism tests already declare semantic roles rather than measure
@@ -43,9 +61,10 @@ export function declaredWarmAllFixture(context: { user: string }, value: unknown
  * phase from those declarations; new admission tests inject a separate reader.
  * No production path obtains this fixture or defaults a missing model field. */
 export function withDeclaredQuantitySemanticFixture<T extends TopicSourceQuantityReviewOptions>(options: T & {
-  declaredAuthorAllStatement?: Parameters<typeof declaredAllProjectionFixture>[1] }): T {
+  declaredAuthorAllStatement?: Parameters<typeof declaredAllProjectionFixture>[1];
+  declaredAuthorNumberStatements?: Record<string, Parameters<typeof declaredNumberProjectionFixture>[2]> }): T {
   const originalClaims = options.extractClaims;
-  options = { ...options, ...(originalClaims ? { extractClaims: async (context, signal) => declaredWarmAllFixture(context, await originalClaims(context, signal), options.declaredAuthorAllStatement) } : {}) };
+  options = { ...options, ...(originalClaims ? { extractClaims: async (context, signal) => declaredWarmAllFixture(context, await originalClaims(context, signal), options.declaredAuthorAllStatement, options.declaredAuthorNumberStatements) } : {}) };
   if (!options.verifyRoles || options.verifyDisjointWaivers && options.verifyDisjointWaivers !== declaredDisjointQuantityFixture) return options;
   let declared: Array<{ candidateIndex: number; numbers: Array<{ numberIndex: number; collection: string; voice: string; time: string; relation: string; kind: string }>;
     all: { collection: string; voice: string; time: string; relation: string } }> = [];

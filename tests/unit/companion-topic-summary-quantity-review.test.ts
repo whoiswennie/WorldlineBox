@@ -3,7 +3,8 @@ import { reviewTopicSummaryQuantities as actualQuantityReview } from '../../src/
 import type { TopicUserCanon } from '../../src/main/companions/topic-user-canon';
 import { confirmedQuantitySourcePremiseFixture, quantityRoleFixture, withDeclaredQuantitySemanticFixture } from '../helpers/companion-quantity-role-fixture';
 
-const reviewTopicSummaryQuantities = (options: Parameters<typeof actualQuantityReview>[0]) => actualQuantityReview(withDeclaredQuantitySemanticFixture({ ...options,
+const reviewTopicSummaryQuantities = (options: Parameters<typeof actualQuantityReview>[0] & {
+  declaredAuthorNumberStatements?: Parameters<typeof withDeclaredQuantitySemanticFixture>[0]['declaredAuthorNumberStatements'] }) => actualQuantityReview(withDeclaredQuantitySemanticFixture({ ...options,
   verifySourcePremises: options.verifySourcePremises ?? confirmedQuantitySourcePremiseFixture,
   verifyRoles: options.verifyRoles ? quantityRoleFixture(options.verifyRoles) : undefined }));
 
@@ -43,6 +44,7 @@ it('does not turn no identified set into a quantity authority and rejects forged
 it('checks number grammar without source rules and excludes a parenthetical missing member before arithmetic', async () => {
   const input = fixture('带第1、3张卡（第4张未得到）。');
   expect(await reviewTopicSummaryQuantities({ ...input,
+    declaredAuthorNumberStatements: { '0:0:2': 'explicit_nonpossession' },
     extractClaims: async () => ({ clauses: [{ clauseIndex: 0, quantities: [{ setIndex: 0, usage: 'current_possessed_members',
       numberIndexes: [0, 1, 2] }] }] }),
     verifyRoles: async context => {
