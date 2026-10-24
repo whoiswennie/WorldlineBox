@@ -23,14 +23,17 @@ async function request(page: Page, input: CompanionsRequest) {
 test('a native weather check finishes and reports fresh world evidence after leaving the chat, with one retained movement', async () => {
   test.setTimeout(100000);
   const root = mkdtempSync(path.join(tmpdir(), 'worldlinebox-weather-feedback-'));
-  let chatCalls = 0, observationCalls = 0, observedWeather = ''; const failures: string[] = [];
+  let chatCalls = 0, observationCalls = 0, observedWeather = ''; const failures: string[] = [], socialReviews: string[] = [];
   const server = createServer((incoming, response) => {
     let data = ''; incoming.on('data', chunk => { data += String(chunk); }); incoming.on('end', () => {
       try {
         const body = JSON.parse(data), raw = body.messages?.[1]?.content;
         const text = typeof raw === 'string' ? raw : raw?.find((part: { type: string; text?: string }) => part.type === 'text')?.text;
         const context = JSON.parse(text); let content: unknown = { notes: [] }; let calls: unknown;
-        if (context.purpose === 'world_attention') content = { urgency: 'ordinary', confidence: .99, evidence: [], reason: '普通问题。' };
+        if (context.purpose === 'companion_social_progress_review') {
+          expect(typeof context.proposedText).toBe('string'); socialReviews.push(context.proposedText);
+          content = { supported: true, correction: '' };
+        } else if (context.purpose === 'world_attention') content = { urgency: 'ordinary', confidence: .99, evidence: [], reason: '普通问题。' };
         else if (context.purpose === 'world_decision') content = { action: null, reason: '没有新的自主安排。', appraisals: [] };
         else if (context.purpose === 'activity_task_step') {
           observationCalls++;
@@ -75,6 +78,7 @@ test('a native weather check finishes and reports fresh world evidence after lea
     await page.locator('[data-application-module="browser"]').click();
     await expect.poll(async () => (await request(page, { type: 'activity.list', ...scope, limit: 20 })).activityTasks?.find(task => task.sourceMessageId === source.id)?.status, { timeout: 40000 }).toBe('succeeded');
     expect(failures).toEqual([]); expect(observationCalls).toBe(1);
+    expect(socialReviews.length).toBeGreaterThan(0);
     const tasks = (await request(page, { type: 'activity.list', ...scope, limit: 20 })).activityTasks!.filter(task => task.sourceMessageId === source.id);
     expect(tasks).toHaveLength(1); expect(tasks[0]!.history.filter(step => step.action === 'move')).toHaveLength(1);
     const report = (await request(page, { type: 'messages', conversationId: room.id })).messages!.filter(message => message.replyToId === source.id && message.content.includes('我到门口看过了'));
@@ -86,7 +90,7 @@ test('a native weather check finishes and reports fresh world evidence after lea
     await expect(page.locator('[data-companion-messages]')).toContainText(report[0]!.content);
     const output = path.resolve('.tools/test-output/companions'); mkdirSync(output, { recursive: true });
     await page.screenshot({ path: path.join(output, 'verified-weather-feedback.png') });
-    const evidence = { packaged: await app.evaluate(({ app }) => app.isPackaged), chatCalls, observationCalls,
+    const evidence = { packaged: await app.evaluate(({ app }) => app.isPackaged), chatCalls, observationCalls, socialReviewCount: socialReviews.length, socialReviews,
       movementCount: 1, reportCount: report.length, questionCount: 1, observedWeather, authoritativeWeather: actual.environment.weather, completedWithChatHidden: true };
     writeFileSync(path.join(output, 'verified-weather-feedback.json'), JSON.stringify(evidence, null, 2));
     console.log('COMPANION_WEATHER_FEEDBACK_RESULT', JSON.stringify(evidence));

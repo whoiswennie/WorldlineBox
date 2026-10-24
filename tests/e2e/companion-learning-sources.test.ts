@@ -69,12 +69,14 @@ test('manages explicit library learning permissions and real reading receipts wi
     await learning.getByRole('button', { name: '添加来源', exact: true }).click();
     await learning.getByRole('combobox', { name: '学习资料资产库', exact: true }).selectOption(source.libraryId);
     await learning.getByRole('combobox', { name: '学习资料目录', exact: true }).selectOption(source.folderId);
+    await expect(learning.getByRole('checkbox', { name: '添加后空闲时自主阅读', exact: true })).toBeChecked();
+    const evidence = path.resolve('artifacts/vcp-validation/learning-sources-ui'); mkdirSync(evidence, { recursive: true });
+    await page.screenshot({ path: path.join(evidence, 'learning-source-automatic-default.png') });
     await learning.getByRole('button', { name: '添加为学习来源', exact: true }).click();
     const grant = learning.getByRole('article', { name: '海岸学习资料库 / 海岸课程', exact: true });
-    await expect(grant).toBeVisible(); await expect(grant.getByRole('checkbox', { name: '空闲时自主阅读', exact: true })).not.toBeChecked();
+    await expect(grant).toBeVisible(); await expect(grant.getByRole('checkbox', { name: '空闲时自主阅读', exact: true })).toBeChecked();
     let status = (await workspace(page, { type: 'memory.learning.status', companionId })).learning!;
-    expect(status.grants).toHaveLength(1); expect(status.grants[0]).toMatchObject({ ...source, autonomous: false }); expect(status.reads).toEqual([]);
-    await grant.getByRole('checkbox', { name: '空闲时自主阅读', exact: true }).check();
+    expect(status.grants).toHaveLength(1); expect(status.grants[0]).toMatchObject({ ...source, autonomous: true }); expect(status.reads).toEqual([]);
     await grant.getByRole('combobox', { name: '海岸学习资料库核对间隔', exact: true }).selectOption('60');
     await grant.getByRole('button', { name: '保存安排', exact: true }).click();
     await expect.poll(async () => (await workspace(page, { type: 'memory.learning.status', companionId })).learning!.grants[0]?.autonomous).toBe(true);
@@ -83,7 +85,6 @@ test('manages explicit library learning permissions and real reading receipts wi
     console.log('LEARNING_UI_READINESS', JSON.stringify({ actor: (await request(page, { type: 'world.snapshot' })).world!.actors.find(actor => actor.companionId === companionId),
       routine: (await request(page, { type: 'routine.get', companionId, conversationId: 'private-' + companionId })).routine?.runtime,
       config: await page.evaluate(() => (window as unknown as Bridge).worldlinebox.llm.getConfig()) }));
-    await grant.getByRole('button', { name: '读一轮', exact: true }).click();
     let previous = '';
     await expect.poll(async () => {
       const current = (await workspace(page, { type: 'memory.learning.status', companionId })).learning!;
@@ -94,7 +95,6 @@ test('manages explicit library learning permissions and real reading receipts wi
     expect(status.reads.map(read => read.assetName).sort()).toEqual(['海岸观察.md', '潮汐说明.txt'].sort());
     expect(status.reads.every(read => read.characters > 0 && read.status === 'read' && read.contentHash.length === 64)).toBe(true);
     await expect(learning.locator('.learning-history')).toContainText('已读取原文'); await expect(learning).not.toContainText('已经学会');
-    const evidence = path.resolve('artifacts/vcp-validation/learning-sources-ui'); mkdirSync(evidence, { recursive: true });
     const screenshots: Array<{ file: string; requestedWidth: number; innerWidth: number; innerHeight: number; devicePixelRatio: number }> = [];
     for (const [theme, width] of [['light', 1440], ['dark', 1440], ['light', 800]] as const) {
       await native.evaluate((win, width) => win.setSize(width, 960), width); await setTheme(page, theme);
@@ -112,7 +112,7 @@ test('manages explicit library learning permissions and real reading receipts wi
     const filtered = await request(page, { type: 'memory.sources.filter', companionId, conversationId: 'world_' + companionId, ids: revoked.reads.map(read => read.sourceMessageId) }); expect(filtered.memorySources).toEqual([]);
     const stoppedAt = Date.now(); await expect.poll(async () => { const current = (await workspace(page, { type: 'memory.learning.status', companionId })).learning!;
       expect(current.reads).toHaveLength(2); expect(current.grants).toEqual([]); return Date.now() - stoppedAt >= 5500; }, { timeout: 10_000, intervals: [500, 1000] }).toBe(true);
-    writeFileSync(path.join(evidence, 'reading-permission-proof.json'), JSON.stringify({ source, grantedManually: true, initiallyAutonomous: false, scheduleSaved: true, reads: status.reads, revoked: revoked.reads, noMasteryClaim: true, screenshots }, null, 2));
+    writeFileSync(path.join(evidence, 'reading-permission-proof.json'), JSON.stringify({ source, grantedManually: true, initiallyAutonomous: true, readOneRoundClicked: false, automaticAfterActivation: true, scheduleSaved: true, reads: status.reads, revoked: revoked.reads, noMasteryClaim: true, screenshots }, null, 2));
     await testInfo.attach('actual-reading-receipts', { body: JSON.stringify(status.reads), contentType: 'application/json' });
   } finally { await application.close(); server.closeAllConnections(); await new Promise<void>(resolve => server.close(() => resolve())); cleanup(root); }
 });

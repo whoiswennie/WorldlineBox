@@ -78,7 +78,7 @@ async function launch(profile: string) {
   await page.locator('[data-application-module="companions"]').click(); return { application, page };
 }
 async function providerFixture() {
-  const requests: LoggedRequest[] = [], streams = new Map<string, ServerResponse>(), errors: string[] = [];
+  const requests: LoggedRequest[] = [], streams = new Map<string, ServerResponse>(), errors: string[] = [], socialReviews: string[] = [];
   const firstText = '我正用手机看你这句话。', finalText = '文字核对已经完成。这是隔离验收，没有执行文件操作。';
   const taskFirstText = '我去有空的电脑前处理你这项计算。', taskFinalText = '执行器返回了隔离计算结果：2+2=4，没有访问外部文件。';
   const chunk = (response: ServerResponse, text: string, finish: string | null = null) => response.write('data: ' + JSON.stringify({ choices: [{ index: 0, delta: { content: text }, finish_reason: finish }] }) + '\n\n');
@@ -87,6 +87,11 @@ async function providerFixture() {
     incoming.on('end', () => {
       try {
         const body = JSON.parse(raw), data = JSON.parse(body.messages[1].content), purpose = data.purpose ?? 'task_reply', sourceText = data.source?.content ?? data.taskRequest?.prompt ?? '', sourceId = data.source?.id ?? data.taskRequest?.sourceMessageId;
+        if (purpose === 'companion_social_progress_review') {
+          expect(typeof data.proposedText).toBe('string'); socialReviews.push(data.proposedText);
+          response.writeHead(200, { 'Content-Type': 'application/json' });
+          response.end(JSON.stringify({ choices: [{ message: { content: JSON.stringify({ supported: true, correction: '' }) }, finish_reason: 'stop' }] })); return;
+        }
         requests.push({ at: Date.now(), purpose, sourceText, sourceId, ...(data.world ? { world: data.world } : {}) });
         let output: unknown;
         if (purpose === 'world_attention') output = { urgency: [urgent, cancelledUrgent].includes(sourceText) ? 'urgent' : 'ordinary', confidence: .98, evidence: [sourceText], reason: '脚本中这条实际用户消息临近截止并请求立即协助。' };
@@ -113,7 +118,7 @@ async function providerFixture() {
     });
   });
   await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve)); const address = server.address(); if (!address || typeof address === 'string') throw new Error('No provider fixture port.');
-  return { requests, errors, baseUrl: 'http://127.0.0.1:' + address.port, firstText, finalText, taskFirstText, taskFinalText,
+  return { requests, errors, socialReviews, baseUrl: 'http://127.0.0.1:' + address.port, firstText, finalText, taskFirstText, taskFinalText,
     finish(text: string) { const response = streams.get(text); if (!response) throw new Error('No actual pending stream.'); chunk(response, '\n' + finalText); chunk(response, '', 'stop'); response.end('data: [DONE]\n\n'); },
     async close() { for (const response of streams.values()) response.destroy(); await new Promise<void>((resolve, reject) => { server.close(error => error ? reject(error) : resolve()); server.closeAllConnections(); }); },
   };
@@ -234,12 +239,13 @@ test('phone chat streams from a friends sofa while only native DSH execution req
     expect(events.some(value => value.event.sourceMessageId === cancelled.id && value.event.text.includes(provider.taskFinalText))).toBe(false);
     const execution = await executorState(application);
     expect(provider.errors).toEqual([]);
-    writeFileSync(path.join(artifacts, 'verified-world-work-flow.json'), JSON.stringify({ executorKind: 'scripted external backend; actual Main/native dispatch and world gate', phoneSourceId: phoneSource.id, sourceId: source.id, cancelledSourceId: cancelled.id, samples, requests: provider.requests, execution, streamEvents: events }, null, 2));
-    await testInfo.attach('world-work-flow-evidence', { body: JSON.stringify({ samples, requests: provider.requests, execution, streamEvents: events }, null, 2), contentType: 'application/json' });
+    expect(provider.socialReviews.length).toBeGreaterThan(0);
+    writeFileSync(path.join(artifacts, 'verified-world-work-flow.json'), JSON.stringify({ executorKind: 'scripted external backend; actual Main/native dispatch and world gate', phoneSourceId: phoneSource.id, sourceId: source.id, cancelledSourceId: cancelled.id, samples, requests: provider.requests, socialReviewCount: provider.socialReviews.length, socialReviews: provider.socialReviews, execution, streamEvents: events }, null, 2));
+    await testInfo.attach('world-work-flow-evidence', { body: JSON.stringify({ samples, requests: provider.requests, socialReviewCount: provider.socialReviews.length, socialReviews: provider.socialReviews, execution, streamEvents: events }, null, 2), contentType: 'application/json' });
     expect(sawRun, 'A host-verified urgent computer task must run along its actual route.').toBe(true);
   } catch (error) {
     const execution = application ? await executorState(application).catch(() => undefined) : undefined;
-    writeFileSync(path.join(artifacts, 'verified-world-work-flow-failure.json'), JSON.stringify({ samples, requests: provider.requests, execution, fixtureErrors: provider.errors }, null, 2));
+    writeFileSync(path.join(artifacts, 'verified-world-work-flow-failure.json'), JSON.stringify({ samples, requests: provider.requests, socialReviewCount: provider.socialReviews.length, socialReviews: provider.socialReviews, execution, fixtureErrors: provider.errors }, null, 2));
     if (application) await application.firstWindow().then(page => page.screenshot({ path: testInfo.outputPath('world-flow-failure.png') })).catch(() => undefined);
     throw error;
   } finally {
@@ -311,7 +317,7 @@ test('world save resumes an actual route, peer relationship and visit after proc
     await page.waitForTimeout(1500);
     expect(provider.requests.filter(request => request.purpose === 'task_reply' && request.sourceId === source.id)).toHaveLength(1);
     expect((await request(page, { type: 'messages', conversationId: guestRoom.id, limit: 100 })).messages!.filter(message => message.replyToId === source.id && message.authorId === guestId && message.content.includes(provider.finalText))).toHaveLength(1);
-    const evidence = { sourceId: source.id, savedAt, restoredAt: Date.now(), saved, restored, providerRequests: provider.requests };
+    const evidence = { sourceId: source.id, savedAt, restoredAt: Date.now(), saved, restored, providerRequests: provider.requests, socialReviewCount: provider.socialReviews.length, socialReviews: provider.socialReviews };
     const artifacts = path.resolve('.tools/test-output/companions'); mkdirSync(artifacts, { recursive: true }); writeFileSync(path.join(artifacts, 'verified-world-save-restart.json'), JSON.stringify(evidence, null, 2));
     const worldPage = await openCompanionWorldWindow(application, page);
     const modal = worldPage.getByRole('region', { name: '伙伴世界', exact: true });
@@ -344,6 +350,7 @@ test('world save resumes an actual route, peer relationship and visit after proc
     await page.screenshot({ path: path.join(artifacts, 'verified-world-save-interrupted.png') });
     const completeEvidence = { ...evidence, partialSourceId: partialSource.id, partialBefore, partialAfter, partialReplies };
     expect(provider.errors).toEqual([]);
+    expect(provider.socialReviews.length).toBeGreaterThan(0);
     writeFileSync(path.join(artifacts, 'verified-world-save-restart.json'), JSON.stringify(completeEvidence, null, 2));
     await testInfo.attach('world-save-restart-evidence', { body: JSON.stringify(completeEvidence, null, 2), contentType: 'application/json' });
   } catch (error) {

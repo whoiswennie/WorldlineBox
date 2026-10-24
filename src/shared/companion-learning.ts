@@ -18,7 +18,7 @@ export const companionLearningStatusSchema = z.object({ grants: z.array(companio
 });
 export const companionLearningWorkspaceCommands = [
   z.strictObject({ type: z.literal('memory.learning.status'), companionId: owner }),
-  z.strictObject({ type: z.literal('memory.learning.grant'), companionId: owner, libraryId: identifier, folderId: z.string().max(4096).optional(), autonomous: z.boolean().default(false), intervalMinutes: z.number().int().min(5).max(1440).default(30) }),
+  z.strictObject({ type: z.literal('memory.learning.grant'), companionId: owner, libraryId: identifier, folderId: z.string().max(4096).optional(), autonomous: z.boolean().default(true), intervalMinutes: z.number().int().min(5).max(1440).default(30) }),
   z.strictObject({ type: z.literal('memory.learning.update'), companionId: owner, id: owner, expectedRevision: z.number().int().positive(), autonomous: z.boolean(), intervalMinutes: z.number().int().min(5).max(1440) }),
   z.strictObject({ type: z.literal('memory.learning.revoke'), companionId: owner, id: owner, expectedRevision: z.number().int().positive() }),
   z.strictObject({ type: z.literal('memory.learning.run'), companionId: owner, id: owner, expectedRevision: z.number().int().positive() }),

@@ -1,10 +1,12 @@
 import { expect, it, vi } from 'vitest';
 import { createHash } from 'node:crypto';
-import { reviewTopicSourceQuantities, topicQuantityNumberCandidates } from '../../src/main/companions/topic-summary-quantity-review';
+import { reviewTopicSourceQuantities as actualQuantityReview, topicQuantityNumberCandidates } from '../../src/main/companions/topic-summary-quantity-review';
 import { topicSummaryClauses } from '../../src/main/companions/topic-summary-canon-review';
 import { admitQuantitySourcePremises, buildQuantitySourcePremiseCandidates, quantitySourceEvidenceClauses,
   quantitySourcePremiseInput, quantitySourcePremiseSchema, quantitySourcePremiseSystem, validateQuantitySourcePremises } from '../../src/main/companions/topic-source-quantity-premise';
-import { declaredDisjointQuantityFixture } from '../helpers/companion-quantity-role-fixture';
+import { declaredDisjointQuantityFixture, withDeclaredQuantitySemanticFixture } from '../helpers/companion-quantity-role-fixture';
+
+const reviewTopicSourceQuantities = (options: Parameters<typeof actualQuantityReview>[0]) => actualQuantityReview(withDeclaredQuantitySemanticFixture(options));
 
 function candidates(quote = '盒内有7张照片，第5张背面的名字仍不可辨认。', totalNumberIndex = 0, missingOrdinalNumberIndexes = [1]) {
   return buildQuantitySourcePremiseCandidates([{ canonIndex: 0, sourceMessageId: 'actual-source', sourceChecksum: 'c'.repeat(64), quote,
@@ -198,19 +200,19 @@ it.each(['reply', 'summary'] as const)('keeps source-only and identity prompts s
     else if (wire.purpose.endsWith('_actual_claims')) output = { clauses: [{ clauseIndex: 0, quantities: [{ setIndex: 0, usage: 'current_possessed_count', numberIndexes: [0] }] }] };
     else if (wire.purpose.endsWith('_role_verification')) output = { reviews: [{ candidateIndex: 0, numbers: [{ numberIndex: 0, collection: 'different',
       voice: 'narrated_fact', time: 'scene', relation: 'affirmed_holding', kind: 'count', reason: '明确另一组的实际数量。' }], all: { ...noAll, collection: 'different' } }] };
-    else if (wire.purpose.endsWith('_disjoint_waiver_verification')) output = { reviews: wire.data.checks.map((check: { checkIndex: number }) => ({
-      checkIndex: check.checkIndex, verdict: 'positive_disjoint', evidenceRefs: [{ view: 'focus', clauseIndex: 0 }], reason: '本句明确另一组。' })) };
+    else if (wire.purpose.endsWith('_semantic_exemption_verification')) output = { reviews: wire.data.checks.map((check: { checkIndex: number }) => ({
+      checkIndex: check.checkIndex, verdict: 'positive_exemption', basis: 'different_inventory', evidenceRefs: [{ view: 'focus', clauseIndex: 0 }], reason: '本句明确另一组。' })) };
     else throw new Error('Unexpected quantity phase in the isolated actual provider path.');
     return new Response(JSON.stringify({ choices: [{ message: { content: JSON.stringify(output) } }] }), { headers: { 'Content-Type': 'application/json' } });
   });
   expect(await reviewTopicSourceQuantities({ kind, config, fetchFn, canon: sourceCanon(), summary: text, stage: '', clauses: topicSummaryClauses(text, '') })).toBeUndefined();
   const prefix = 'topic_' + kind + '_quantity_';
-  expect([...systems.keys()]).toEqual(['source_sets', 'source_premise_verification', 'actual_claims', 'role_verification', 'disjoint_waiver_verification'].map(phase => prefix + phase));
+  expect([...systems.keys()]).toEqual(['source_sets', 'source_premise_verification', 'actual_claims', 'role_verification', 'semantic_exemption_verification'].map(phase => prefix + phase));
   expect(fetchFn).toHaveBeenCalledTimes(5);
   expect(systems.get(prefix + 'source_premise_verification')).toBe(quantitySourcePremiseSystem);
   expect(quantitySourcePremiseSystem).toContain('不要求知道或换算其具体数值');
   expect(quantitySourcePremiseSystem).toContain('成员与这份集合关系不明只令该member.applicability=ambiguous');
-  for (const phase of ['source_premise_verification', 'disjoint_waiver_verification']) {
+  for (const phase of ['source_premise_verification', 'semantic_exemption_verification']) {
     expect(systems.get(prefix + phase)).not.toContain('宿主numberCandidates.value=null');
     expect(systems.get(prefix + phase)).not.toContain('来源总数/缺失序号不可计算时不能建立set');
   }

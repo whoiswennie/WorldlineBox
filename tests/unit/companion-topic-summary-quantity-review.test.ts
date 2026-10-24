@@ -1,11 +1,11 @@
 import { expect, it, vi } from 'vitest';
 import { reviewTopicSummaryQuantities as actualQuantityReview } from '../../src/main/companions/topic-summary-quantity-review';
 import type { TopicUserCanon } from '../../src/main/companions/topic-user-canon';
-import { confirmedQuantitySourcePremiseFixture, quantityRoleFixture } from '../helpers/companion-quantity-role-fixture';
+import { confirmedQuantitySourcePremiseFixture, quantityRoleFixture, withDeclaredQuantitySemanticFixture } from '../helpers/companion-quantity-role-fixture';
 
-const reviewTopicSummaryQuantities = (options: Parameters<typeof actualQuantityReview>[0]) => actualQuantityReview({ ...options,
+const reviewTopicSummaryQuantities = (options: Parameters<typeof actualQuantityReview>[0]) => actualQuantityReview(withDeclaredQuantitySemanticFixture({ ...options,
   verifySourcePremises: options.verifySourcePremises ?? confirmedQuantitySourcePremiseFixture,
-  verifyRoles: options.verifyRoles ? quantityRoleFixture(options.verifyRoles) : undefined });
+  verifyRoles: options.verifyRoles ? quantityRoleFixture(options.verifyRoles) : undefined }));
 
 const canon: TopicUserCanon = { version: 1, throughSequence: 1, entries: [{ id: 'count', sourceMessageId: 'source', sourceChecksum: 'c'.repeat(64),
   quote: '共有5张卡，第4张仍未得到。', rule: '不发给模型的自由解释' }] };
@@ -49,7 +49,10 @@ it('checks number grammar without source rules and excludes a parenthetical miss
       const data = JSON.parse(context.user).data;
       expect(data.proposed).toBeUndefined(); expect(context.user).not.toContain(canon.entries[0]!.quote);
       expect(data.candidates[0].sourceCollectionQuote).toBeUndefined();
-      return { reviews: [{ candidateIndex: 0, assertion: 'scene_possession', kind: 'members', currentNumberIndexes: [0, 1], reason: '4明确未得，仅1和3属持有列表' }] };
+      return { reviews: [{ candidateIndex: 0, numbers: [
+        ...[0, 1].map(numberIndex => ({ numberIndex, collection: 'same', voice: 'narrated_fact', time: 'scene', relation: 'affirmed_holding', kind: 'member', reason: '仅1和3属持有列表。' })),
+        { numberIndex: 2, collection: 'same', voice: 'narrated_fact', time: 'scene', relation: 'missing', kind: 'member', reason: '第4明确未得。' },
+      ], all: { collection: 'same', voice: 'narrated_fact', time: 'scene', relation: 'not_affirmed_all', reason: '并无带齐断言。' } }] };
     } })).toBeUndefined();
 });
 

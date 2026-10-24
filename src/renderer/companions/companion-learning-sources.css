@@ -47,6 +47,8 @@
 .companion-learning-sources .learning-danger { background: var(--ui-action-danger); color: var(--ui-content-on-accent); border-color: transparent; }
 .learning-add { display: grid; gap: 14px; padding: 20px; margin-bottom: 18px; border: 1px solid var(--ui-border-control); border-radius: 10px; background: var(--ui-surface-raised); }
 .learning-add label { display: grid; grid-template-columns: 70px minmax(0,1fr); align-items: center; gap: 12px; font-size: 12px; }
+.learning-add label:has(input[type="checkbox"]) { grid-template-columns: auto minmax(0,1fr); justify-self: start; gap: 8px; }
+.learning-add input { accent-color: var(--ui-action-accent); }
 .learning-add p { color: var(--ui-content-secondary); font-size: 12px; }
 .learning-add > div { display: flex; justify-content: flex-end; gap: 8px; }
 .learning-empty { display: grid; justify-items: center; gap: 14px; padding: 46px 30px; margin: 0 0 22px; border: 1px dashed var(--ui-border-control); border-radius: 10px; text-align: center; }

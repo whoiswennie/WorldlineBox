@@ -32,7 +32,7 @@ const cache = new Map<string, { sets: QuantitySet[]; receipt: QuantitySourcePrem
 const formatPathKeys = new Set(['sets', 'canonIndex', 'entityQuote', 'totalNumberIndex', 'missingOrdinalNumberIndexes', 'clauses', 'clauseIndex',
   'quantities', 'setIndex', 'usage', 'numberIndexes', 'reviews', 'candidateIndex', 'numbers', 'numberIndex', 'collection', 'voice', 'time', 'relation', 'kind', 'reason', 'all',
   'totalBinding', 'totalEvidenceClauseIndex', 'members', 'ordinalNumberIndex', 'evidenceClauseIndexes', 'predicateTarget', 'memberAvailability', 'applicability',
-  'checkIndex', 'verdict', 'evidenceRefs', 'view']);
+  'checkIndex', 'verdict', 'basis', 'evidenceRefs', 'view']);
 const hostFormatMessages = new Set([
   '数字索引必须对应本原句宿主枚举的完整可计算整数；不得自造引文、截取部分数字或猜不支持的数值。',
   'entityQuote须仅含原句逐字物品本体名词，不含数字或整句。', '来源数字索引必须存在且明确缺失成员不能重复。',
@@ -45,8 +45,8 @@ const hostFormatMessages = new Set([
   'count必须对应正在被问的实际基数，不能把第N成员序号当数量；请核本数字为member或ambiguous，不能改选其它索引。',
   'source premise须绑定实际来源与数字所在原句。', 'source premise必须完整唯一覆盖每个实际setIndex。',
   'source premise证据必须选实际宿主原句，且包含所指数字。', 'source premise必须完整唯一覆盖每个候选member数字。',
-  '异组豁免须完整唯一覆盖实际checkIndex。', '异组豁免证据须引用本目标实际有界原句。',
-  '异组豁免目标须绑定实际焦点数词位置。',
+  '数量语义豁免须完整唯一覆盖实际checkIndex。', '数量语义豁免证据须引用本目标实际有界原句。',
+  '数量语义豁免目标须绑定实际焦点数词位置。',
 ]);
 function quantityFormatFeedback(error: unknown) {
   if (error instanceof z.ZodError) return ('响应结构不符outputSchema：' + error.issues.slice(0, 12).map(issue => {
@@ -129,7 +129,7 @@ export async function reviewTopicSourceQuantities(input: TopicSourceQuantityRevi
       try {
         const context = { system: system + '\n宿主numberCandidates.value=null只证明完整字面数词存在，尚不能可靠换算整数；不得拆词、猜数或把它当已知数量。来源总数/缺失序号不可计算时不能建立set；拟稿实际关系/数值不明确可用ambiguous弃权。明确count必须有一个实际数字索引，不能用空count代替弃权。actualEntityQuote/actualEntitySpans若存在，只核这些实际字面物品，不能用同句其它物品的数量代答，主体或集合无法明确对应应ambiguous。第1、3这样的序号列表也不能把末位3当基数数量，即使宿主ordinal只标了显式第N。',
           user: JSON.stringify({ purpose, data, outputSchema: z.toJSONSchema(schema), ...(feedback ? { formatCorrection: feedback } : {}) }) };
-        if (purpose.endsWith('_source_premise_verification') || purpose.endsWith('_disjoint_waiver_verification')) context.system = system;
+        if (purpose.endsWith('_source_premise_verification') || purpose.endsWith('_semantic_exemption_verification')) context.system = system;
         const value = schema.parse(alternate ? await alternate(context, input.signal)
           : await generateCompanionStructured(context, input.config, input.signal, { fetchFn: input.fetchFn, timeoutMs: 120000 })); validate(value); return value;
       } catch (error) {
@@ -260,26 +260,9 @@ export async function reviewTopicSourceQuantities(input: TopicSourceQuantityRevi
         }
       }
     }, input.verifyRoles);
-  let effectiveReviews = roles.reviews;
-  const checks = quantityDisjointChecks(possible, roles.reviews);
-  if (checks.length > quantityDisjointCapacity) throw new CompanionModelError('INVALID_RESPONSE', kind === 'reply'
-    ? '正文异组核验目标超过单批容量，未发布正文。' : '摘要异组核验目标超过单批容量，未推进水位。');
-  let disjointReceipts: ReturnType<typeof admitQuantityDisjointWaivers>['receipts'] = [];
-  if (checks.length) {
-    const data = quantityDisjointInput(checks, possible, actualClauses, text => quantityIdentityReference(text).text);
-    const waiver = await infer(quantityDisjointWaiverSchema, purpose('disjoint_waiver_verification'), quantityDisjointWaiverSystem,
-      data, value => validateQuantityDisjointWaivers(value, data), input.verifyDisjointWaivers);
-    const admitted = admitQuantityDisjointWaivers(roles.reviews, waiver, data, {
-      scope: input.scope, evidence: possible.map((candidate, candidateIndex) => ({ candidateIndex,
-        sourceQuoteChecksum: createHash('sha256').update(candidate.canonQuote).digest('hex'),
-        focusChecksum: createHash('sha256').update(candidate.claimQuote).digest('hex') })),
-    });
-    effectiveReviews = admitted.reviews as typeof roles.reviews;
-    disjointReceipts = admitted.receipts;
-  }
-  const checkedCandidates = possible.map((candidate, candidateIndex) => ({ ...candidate,
-    ...(disjointReceipts.some(receipt => receipt.candidateIndex === candidateIndex)
-      ? { disjointWaiverReceipts: disjointReceipts.filter(receipt => receipt.candidateIndex === candidateIndex) } : {}) }));
+  // Original mathematics and unresolved premises take precedence. A later
+  // independent exemption can never overrule an already rejected whole draft.
+  const effectiveReviews = roles.reviews, checkedCandidates = possible;
   const failures = effectiveReviews.flatMap(review => {
     const candidate = checkedCandidates[review.candidateIndex]!, members: number[] = [];
     const errors: Array<{ numberIndex?: number; value?: number; verifiedUsage: string; roleVerificationReason: string }> = [];
@@ -348,8 +331,23 @@ export async function reviewTopicSourceQuantities(input: TopicSourceQuantityRevi
     return [...numbers, ...all];
   });
   const pending = [...unresolved, ...unresolvedSource];
-  return pending.length ? '来源相关的持有前提未决，尚不能认证安全，也不等于已证明的数学矛盾。请同槽澄清目标主体、集合和场景时点，以及是集合总量还是当场携带量，'
-    + (kind === 'reply' ? '原提案未正式发布。\n' : '原文/水位未推进。\n') + JSON.stringify(pending) : undefined;
+  if (pending.length) return '来源相关的持有前提未决，尚不能认证安全，也不等于已证明的数学矛盾。请同槽澄清目标主体、集合和场景时点，以及是集合总量还是当场携带量，'
+    + (kind === 'reply' ? '原提案未正式发布。\n' : '原文/水位未推进。\n') + JSON.stringify(pending);
+  const checks = quantityDisjointChecks(possible, roles.reviews);
+  if (checks.length > quantityDisjointCapacity) throw new CompanionModelError('INVALID_RESPONSE', kind === 'reply'
+    ? '正文语义豁免目标超过单批容量，未发布正文。' : '摘要语义豁免目标超过单批容量，未推进水位。');
+  if (!checks.length) return undefined;
+  const data = quantityDisjointInput(checks, possible, actualClauses, text => quantityIdentityReference(text).text);
+  const waiver = await infer(quantityDisjointWaiverSchema, purpose('semantic_exemption_verification'), quantityDisjointWaiverSystem,
+    data, value => validateQuantityDisjointWaivers(value, data), input.verifyDisjointWaivers);
+  const admitted = admitQuantityDisjointWaivers(roles.reviews, waiver, data, {
+    scope: input.scope, evidence: possible.map((candidate, candidateIndex) => ({ candidateIndex,
+      sourceQuoteChecksum: createHash('sha256').update(candidate.canonQuote).digest('hex'),
+      focusChecksum: createHash('sha256').update(candidate.claimQuote).digest('hex') })),
+  }, possible);
+  return admitted.pending.length ? '风险数量的语义豁免尚无一致且有原句依据的认证；这是独立未决，不等于已证明的数学矛盾。请同槽澄清该目标的实际声音、时点、集合和数量角色，'
+    + (kind === 'reply' ? '原提案未正式发布。\n' : '原文/水位未推进。\n')
+    + JSON.stringify(admitted.pending.map(item => ({ ...possible[item.candidateIndex], ...item }))) : undefined;
 }
 
 /** Existing summary callers retain their purpose names and output contract. */

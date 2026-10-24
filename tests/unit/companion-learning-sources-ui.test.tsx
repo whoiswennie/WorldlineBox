@@ -33,13 +33,26 @@ function button(label: string) { const found = [...node!.querySelectorAll<HTMLBu
 async function click(label: string) { await act(async () => button(label).click()); }
 async function select(label: string, value: string) { const input = node!.querySelector<HTMLSelectElement>(`select[aria-label="${label}"]`)!; await act(async () => { input.value = value; input.dispatchEvent(new Event('change', { bubbles: true })); }); }
 
-it('grants an explicitly selected folder with autonomous reading off, and never starts reading just by opening the UI', async () => {
+it('grants an explicitly selected folder with autonomous reading on, and never starts reading just by opening the UI', async () => {
   const f = await mount(); expect(f.workspace).toHaveBeenCalledTimes(1); expect(f.workspace).toHaveBeenCalledWith({ type: 'memory.learning.status', companionId: owner.id });
   expect(node!.textContent).toContain('未授权的资料不会自动进入记忆');
-  await click('添加来源'); await select('学习资料目录', 'nature'); await click('添加为学习来源');
-  expect(f.workspace).toHaveBeenCalledWith({ type: 'memory.learning.grant', companionId: owner.id, libraryId: 'books', folderId: 'nature', autonomous: false, intervalMinutes: 30 });
+  await click('添加来源'); await select('学习资料目录', 'nature');
+  expect(node!.querySelector<HTMLInputElement>('.learning-add input[type="checkbox"]')!.checked).toBe(true);
+  expect(node!.textContent).toContain('自动开始'); await click('添加为学习来源');
+  expect(f.workspace).toHaveBeenCalledWith({ type: 'memory.learning.grant', companionId: owner.id, libraryId: 'books', folderId: 'nature', autonomous: true, intervalMinutes: 30 });
   expect(f.workspace.mock.calls.some(([command]) => command.type === 'memory.learning.run')).toBe(false);
-  expect(node!.textContent).toContain('手动安排');
+  expect(node!.textContent).toContain('按计划阅读');
+});
+
+it('preserves an existing manual source and allows a new grant to opt out before reading starts', async () => {
+  const f = await mount(fixture({ grants: [grant] }));
+  expect(node!.querySelector<HTMLInputElement>('.learning-source input[type="checkbox"]')!.checked).toBe(false);
+  expect(f.workspace.mock.calls.some(([command]) => command.type !== 'memory.learning.status')).toBe(false);
+  await click('添加来源');
+  await act(async () => node!.querySelector<HTMLInputElement>('.learning-add input[type="checkbox"]')!.click());
+  await select('学习资料目录', 'nature'); await click('添加为学习来源');
+  expect(f.workspace).toHaveBeenCalledWith({ type: 'memory.learning.grant', companionId: owner.id, libraryId: 'books', folderId: 'nature', autonomous: false, intervalMinutes: 30 });
+  expect(f.workspace.mock.calls.some(([command]) => command.type === 'memory.learning.run' || command.type === 'memory.learning.update')).toBe(false);
 });
 
 it('saves per-companion reading cadence using the current revision and requires an explicit withdrawal action', async () => {

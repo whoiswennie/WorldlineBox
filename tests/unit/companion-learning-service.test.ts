@@ -6,6 +6,7 @@ import { CompanionsStore } from '../../src/companions/store';
 import { CompanionLearningService, CompanionLearningReadError, type CompanionLearningAssets } from '../../src/main/companions/learning-service';
 import type { AssetSummary } from '../../src/shared/asset-types';
 import type { CompanionStorageCommand } from '../../src/shared/companion-storage';
+import { companionWorkspaceRequestSchema } from '../../src/shared/companion-workspace';
 
 const roots: string[] = [], stores = new Set<CompanionsStore>(), services = new Set<CompanionLearningService>(), releases: Array<() => void> = [];
 beforeEach(() => { vi.useFakeTimers({ toFake: ['Date'] }); vi.setSystemTime('2026-10-22T10:00:00Z'); });
@@ -29,6 +30,23 @@ it('never reads an ungranted or non-autonomous source without a human run reques
   const f = fixture(); await f.service.tick(); f.grant('alice', false); await f.service.tick();
   expect(f.assets.page).not.toHaveBeenCalled(); expect(f.assets.read).not.toHaveBeenCalled();
   expect(f.store.request({ type: 'learning.status', companionId: 'alice' }).learning!.reads).toEqual([]);
+});
+
+it('automatically reads a newly granted source without a run command and preserves an existing manual grant', async () => {
+  const f = fixture(); f.grant('bob', false);
+  const command = companionWorkspaceRequestSchema.parse({ type: 'memory.learning.grant', companionId: 'alice', libraryId: 'library' });
+  if (command.type !== 'memory.learning.grant') throw new Error('Unexpected parsed learning request');
+  await f.service.handle(command);
+  await vi.waitFor(() => expect(f.store.request({ type: 'learning.status', companionId: 'alice' }).learning!.reads).toHaveLength(1));
+  const status = f.store.request({ type: 'learning.status', companionId: 'alice' }).learning!;
+  expect(status.grants[0]).toMatchObject({ autonomous: true, reads: 1 });
+  expect(f.assets.read).toHaveBeenCalledOnce();
+  expect(f.assets.read.mock.calls[0]![0]).toMatchObject({ companionId: 'alice', autonomous: true });
+  const capture = f.store.request({ type: 'memory.jobs.claim', companionId: 'alice' }).memoryJob!;
+  expect(capture.sourceMessageIds).toContain(status.reads[0]!.sourceMessageId);
+  expect(f.request.mock.calls.some(([request]) => request.type === 'learning.run')).toBe(false);
+  expect(f.store.request({ type: 'learning.status', companionId: 'bob' }).learning!.grants[0]).toMatchObject({ autonomous: false, reads: 0 });
+  expect(f.report).not.toHaveBeenCalled();
 });
 
 it('reports missing global model configuration as waiting without reading or recording anything', async () => {

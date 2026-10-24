@@ -18,12 +18,13 @@ import { buildCompanionContext } from '../../src/main/companions/context';
 import type { CompanionLoopCheckpoint } from '../../src/shared/companion-loop';
 
 const transport = vi.hoisted(() => ({ request: vi.fn<(command: CompanionStorageCommand) => Promise<CompanionStorageResponse>>(),
-  start: vi.fn<() => Promise<void>>(async () => undefined), close: vi.fn(async () => undefined), fetch: vi.fn<typeof fetch>(), memoryFetch: vi.fn<typeof fetch>(), worldFetch: vi.fn<typeof fetch>(), authorizationFetch: vi.fn<typeof fetch>(), prohibitionFetch: vi.fn<typeof fetch>() }));
+  start: vi.fn<() => Promise<void>>(async () => undefined), close: vi.fn(async () => undefined), fetch: vi.fn<typeof fetch>(), memoryFetch: vi.fn<typeof fetch>(), worldFetch: vi.fn<typeof fetch>(), authorizationFetch: vi.fn<typeof fetch>(), prohibitionFetch: vi.fn<typeof fetch>(), progressFetch: vi.fn<typeof fetch>() }));
 vi.mock('../../src/main/companions/storage-client', () => ({ CompanionStorageClient: class {
   start = transport.start; request = transport.request; close = transport.close;
 } }));
 vi.mock('electron', () => ({
-  net: { fetch: ((input: Parameters<typeof fetch>[0], init?: RequestInit) => /companion_management_authorization/u.test(String(init?.body))
+  net: { fetch: ((input: Parameters<typeof fetch>[0], init?: RequestInit) => payload(init).purpose === 'companion_social_progress_review'
+    ? transport.progressFetch(input, init) : /companion_management_authorization/u.test(String(init?.body))
     ? transport.authorizationFetch(input, init) : /vcp_memory_prohibition_check/u.test(String(init?.body)) ? transport.prohibitionFetch(input, init) : /vcp_(?:experience_journal|sleep_reflection)/u.test(String(init?.body))
     ? transport.memoryFetch(input, init) : /world_(?:decision|attention)/u.test(String(init?.body)) ? transport.worldFetch(input, init) : transport.fetch(input, init)) },
   dialog: { showOpenDialog: vi.fn() }, ipcMain: { handle: vi.fn() }, protocol: { handle: vi.fn() }, shell: { showItemInFolder: vi.fn() },
@@ -172,6 +173,9 @@ beforeEach(() => {
   vi.clearAllMocks(); vi.useFakeTimers(); vi.setSystemTime(new Date(fixedTime));
   transport.start.mockReset(); transport.start.mockResolvedValue(undefined);
   transport.fetch.mockReset(); transport.memoryFetch.mockReset();
+  // This suite verifies memory orchestration, not semantic critic accuracy.
+  // Keep the actual mandatory review phase separate from writer mock sequences.
+  transport.progressFetch.mockReset(); transport.progressFetch.mockImplementation(async () => structuredResponse({ supported: true, correction: '' }));
   transport.prohibitionFetch.mockReset(); transport.prohibitionFetch.mockImplementation(async () => structuredResponse({ allowed: true, matchedPolicyIds: [] }));
   transport.authorizationFetch.mockReset(); transport.authorizationFetch.mockImplementation(async (_input, init) => {
     const data = JSON.parse(body(init).messages[1]!.content) as { source: { id: string; content: string }; tool: string; action: string; targetId: string | null };
@@ -204,7 +208,7 @@ describe('VCP companion memory through the main service and real SQLite', () => 
     try {
       const before = capture(), clock = f.store.request({ type: 'world.clock.peek' }).worldClock!;
       transport.request.mockClear();
-      for (const fn of [transport.fetch, transport.memoryFetch, transport.worldFetch, transport.prohibitionFetch]) fn.mockClear();
+      for (const fn of [transport.fetch, transport.memoryFetch, transport.worldFetch, transport.prohibitionFetch, transport.progressFetch]) fn.mockClear();
       const base = Date.now();
       for (const lag of [500, 4_900, 3_600_000]) {
         vi.setSystemTime(base + lag);
@@ -226,7 +230,7 @@ describe('VCP companion memory through the main service and real SQLite', () => 
       expect(observations.length).toBeGreaterThan(0);
       expect(observations.every(command => command.includeConversations === false), 'management projections must not load the full conversation list').toBe(true);
       for (const mutation of ['world.clock', 'world.tick', 'world.job.claim', 'conversation.open']) expect(commands).not.toContain(mutation);
-      for (const fn of [transport.fetch, transport.memoryFetch, transport.worldFetch, transport.prohibitionFetch]) expect(fn).not.toHaveBeenCalled();
+      for (const fn of [transport.fetch, transport.memoryFetch, transport.worldFetch, transport.prohibitionFetch, transport.progressFetch]) expect(fn).not.toHaveBeenCalled();
       expect(clients.get(f.root)?.replace).not.toHaveBeenCalled(); expect(clients.get(f.root)?.remember).not.toHaveBeenCalled();
     } finally { db.close(); }
   });
@@ -251,7 +255,15 @@ describe('VCP companion memory through the main service and real SQLite', () => 
       if (note && reply) { note.sourceMessageIds.push(reply.id); note.evidence.push({ sourceMessageId: reply.id, quote: reply.content }); }
       return structuredResponse({ notes: note ? [note] : [] });
     });
+    transport.progressFetch.mockImplementationOnce(async () => {
+      const current = f.store.request({ type: 'messages', conversationId: f.conversation.id }).messages ?? [];
+      expect(current.filter(message => message.authorId === 'sister' && message.kind === 'text' && message.status === 'sent'
+        && !message.isReplyDraft && !message.replyDraft)).toHaveLength(0);
+      return structuredResponse({ supported: true, correction: '' });
+    });
     const source = await sent(f.service, f.store, f.conversation.id, '我一直喜欢茶。', 'normal-preference');
+    expect(transport.progressFetch).toHaveBeenCalled();
+    expect(payload(transport.progressFetch.mock.calls[0]![1])).toMatchObject({ purpose: 'companion_social_progress_review', proposedText: '好，慢慢聊。' });
     expect(active(f.store, f.conversation.id)).toHaveLength(0);
     await background();
     expect(active(f.store, f.conversation.id)).toHaveLength(1);

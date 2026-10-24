@@ -84,6 +84,7 @@ export class CompanionMemoryService {
   private continuity?: { owner: string; promise: Promise<void> };
   private busySince?: number;
   private captureCursor = 0;
+  private continuityCursor = 0;
   private deliveringOwner?: string;
   constructor(private readonly options: MemoryServiceOptions) { this.views = new CompanionMemoryViewCache(options.cacheRoot); }
 
@@ -203,11 +204,31 @@ export class CompanionMemoryService {
     const scopes = this.registeredScopes.get(owner) ?? new Map<string, VcpMemoryClient>();
     scopes.set(scopeId, client); this.registeredScopes.set(owner, scopes);
   }
-  private queueContinuity(scope: MemoryScope) {
+  private queueContinuity(scope: MemoryScope): boolean {
     const identity = identityFor(scope);
-    if (!this.continuityCandidates.has(identity) && this.continuityCandidates.size >= 256) return;
+    if (!this.continuityCandidates.has(identity) && this.continuityCandidates.size >= 256) return false;
     // A foreground historical cutoff must not become the owner's background publication boundary.
     this.continuityCandidates.set(identity, { companionId: scope.companionId, conversationId: scope.conversationId });
+    return true;
+  }
+  /** Refill a bounded work queue from the complete current directory. A full
+   * queue never advances past the next unadmitted owner, and checked entries
+   * are released rather than occupying a slot forever. */
+  private queueContinuityWindow(companions: readonly Companion[], conversations: readonly CompanionConversation[]): void {
+    const active = new Set(companions.map(companion => companion.id));
+    for (const [identity, scope] of this.continuityCandidates) {
+      if (!active.has(scope.companionId) || this.options.blocked?.(scope.companionId)) this.continuityCandidates.delete(identity);
+    }
+    if (!companions.length) { this.continuityCursor = 0; return; }
+    const rooms = new Map<string, string>();
+    for (const room of conversations) for (const owner of room.memberIds) if (!rooms.has(owner)) rooms.set(owner, room.id);
+    this.continuityCursor %= companions.length;
+    for (let checked = 0; checked < Math.min(32, companions.length); checked++) {
+      const companion = companions[this.continuityCursor]!, conversationId = rooms.get(companion.id);
+      if (conversationId && !this.options.blocked?.(companion.id)
+        && !this.queueContinuity({ companionId: companion.id, conversationId })) break;
+      this.continuityCursor = (this.continuityCursor + 1) % companions.length;
+    }
   }
   schedule(delay = 2000): void {
     if (this.closed) return;
@@ -539,7 +560,7 @@ export class CompanionMemoryService {
       for (const [identity, scope] of candidates) {
         if (this.closed || this.options.busy()) break;
         if (this.invalidations.has(scope.companionId) || this.options.blocked?.(scope.companionId)) continue;
-        this.continuityCandidates.delete(identity); this.continuityCandidates.set(identity, scope);
+        this.continuityCandidates.delete(identity);
         const generation = this.generation(scope.companionId);
         if (this.continuity) this.continuity.owner = scope.companionId;
         try { if (await this.runContinuity(scope, generation)) break; }
@@ -685,15 +706,17 @@ export class CompanionMemoryService {
     else this.busySince ??= Date.now();
     if (busy && Date.now() - this.busySince! < 15000) { this.again = true; return; }
     let claimed = 0;
-    const state = (await this.options.request({ type: 'state', includeConversations: true, activeOnly: true })).state;
-    for (const conversation of state?.conversations ?? []) for (const companion of state?.companions ?? []) {
-      if (conversation.memberIds.includes(companion.id)) this.queueContinuity({ companionId: companion.id, conversationId: conversation.id });
-    }
-    const companions = (state?.companions ?? []).slice(0, 32);
-    const ordered = [...companions.slice(this.captureCursor), ...companions.slice(0, this.captureCursor)];
+    const state = (await this.options.request({ type: 'state', includeConversations: true, includeHidden: true, activeOnly: true })).state;
+    const companions = state?.companions ?? [];
+    this.queueContinuityWindow(companions, state?.conversations ?? []);
+    const start = companions.length ? this.captureCursor % companions.length : 0;
+    const ordered = Array.from({ length: Math.min(32, companions.length) }, (_, offset) => ({
+      companion: companions[(start + offset) % companions.length]!, nextCursor: (start + offset + 1) % companions.length,
+    }));
     const capturing = new Set<Promise<void>>();
-    for (const companion of ordered) {
+    for (const { companion, nextCursor } of ordered) {
       if (this.closed || busy && claimed >= 1 || !busy && this.options.busy()) break;
+      this.captureCursor = nextCursor;
       if (this.options.blocked?.(companion.id)) continue;
       let config: CompanionModelConfig;
       try { config = await this.options.configFor(companion); } catch { continue; }
@@ -701,7 +724,6 @@ export class CompanionMemoryService {
       const job = (await this.options.request({ type: 'memory.jobs.claim', companionId: companion.id, leaseMs: 600000 })).memoryJob;
       if (!job) continue;
       claimed++;
-      this.captureCursor = (companions.indexOf(companion) + 1) % companions.length;
       if (busy) this.busySince = Date.now();
       const task = (async () => {
       const controller = new AbortController();

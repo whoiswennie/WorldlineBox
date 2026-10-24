@@ -1,9 +1,11 @@
 import { expect, it, vi } from 'vitest';
 import { createHash } from 'node:crypto';
-import { reviewTopicSourceQuantities as actualProductionQuantityReview, topicQuantityNumberCandidates } from '../../src/main/companions/topic-summary-quantity-review';
+import { reviewTopicSourceQuantities as productionQuantityReview, topicQuantityNumberCandidates } from '../../src/main/companions/topic-summary-quantity-review';
 import { topicSummaryClauses } from '../../src/main/companions/topic-summary-canon-review';
 import type { TopicUserCanon } from '../../src/main/companions/topic-user-canon';
-import { confirmedQuantitySourcePremiseFixture, declaredDisjointQuantityFixture, quantityRoleFixture } from '../helpers/companion-quantity-role-fixture';
+import { confirmedQuantitySourcePremiseFixture, declaredDisjointQuantityFixture, quantityRoleFixture, withDeclaredQuantitySemanticFixture } from '../helpers/companion-quantity-role-fixture';
+
+const actualProductionQuantityReview = (options: Parameters<typeof productionQuantityReview>[0]) => productionQuantityReview(withDeclaredQuantitySemanticFixture(options));
 
 const actualQuantityReview = (options: Parameters<typeof actualProductionQuantityReview>[0]) => actualProductionQuantityReview({ ...options,
   verifyRoles: options.verifyRoles ? quantityRoleFixture(options.verifyRoles) : undefined });
@@ -15,8 +17,7 @@ const canon: TopicUserCanon = { version: 1, throughSequence: 2, entries: [{ id: 
 const extractSets = async () => ({ sets: [{ canonIndex: 0, entityQuote: '钥匙', totalNumberIndex: 0, missingOrdinalNumberIndexes: [1] }] });
 const input = (text: string) => ({ kind: 'reply' as const, canon, summary: text, stage: '', config, clauses: topicSummaryClauses(text, ''), extractSets,
   fetchFn: vi.fn<typeof fetch>(async () => { throw new Error('Unexpected transport in a declared semantic fixture.'); }),
-  verifySourcePremises: confirmedQuantitySourcePremiseFixture,
-  verifyDisjointWaivers: vi.fn(async () => { throw new Error('This fixture did not declare an independent disjoint waiver.'); }) });
+  verifySourcePremises: confirmedQuantitySourcePremiseFixture });
 const originalParagraph = '许岚把这句话在心里过了一遍。她想起口袋里的三把钥匙，冰冷的金属贴在大腿外侧。第一把在她手里，第三把也在她手里，第二把却始终没有找到——翻遍了该翻的地方，问了该问的人，得到的都是模棱两可的摇头。这件事她没对A17提起。';
 
 it.each(['current_possessed_count', 'total', 'planned', 'attributed', 'missing'] as const)('audits original prose and independently rejects three-held even when warm usage is %s', async warmUsage => {
@@ -208,7 +209,10 @@ it.each([['三', true], ['两', false]] as const)('gives independent cold gramma
       expect(candidate.actualEntitySpans.map((span: { start: number; end: number }) => candidate.actualClause.slice(span.start, span.end))).toEqual(['钥匙']);
       expect(context.system).toContain('不能用同句其它物品的数量代答');
       expect(context.user).not.toContain(canon.entries[0]!.quote); expect(context.user).not.toContain('availableUpperBound');
-      return { reviews: [{ candidateIndex: 0, assertion: 'scene_possession', kind: 'count', currentNumberIndexes: [0], reason: '只核钥匙数量，卡片属于另一个本体。' }] };
+      return { reviews: [{ candidateIndex: 0, numbers: [
+        { numberIndex: 0, collection: 'same', voice: 'narrated_fact', time: 'scene', relation: 'affirmed_holding', kind: 'count', reason: '只核钥匙数量。' },
+        { numberIndex: 1, collection: 'same', voice: 'unrelated', time: 'scene', relation: 'unrelated', kind: 'unrelated', reason: '卡片属于另一个本体。' },
+      ], all: noAllPremise }] };
     } });
   expect(!!correction).toBe(rejected);
 });
@@ -524,7 +528,6 @@ it.each([
   { text: '她带三把钥匙。', premise: numericPremise('narrated_fact', 'ambiguous'), pending: true },
   { text: '她带三把钥匙。', premise: numericPremise('narrated_fact', 'affirmed_holding', 'ambiguous'), pending: true },
   { text: '她带三把钥匙。', premise: numericPremise('narrated_fact', 'affirmed_holding', 'scene', 'ambiguous'), pending: true },
-  { text: '她带两把钥匙。', premise: numericPremise('ambiguous', 'ambiguous', 'ambiguous', 'ambiguous'), pending: false },
   { text: '她带一万把钥匙。', premise: numericPremise('ambiguous', 'ambiguous', 'ambiguous', 'ambiguous'), pending: false },
   { text: '她带第2把钥匙。', premise: numericPremise('ambiguous', 'ambiguous', 'scene', 'member'), pending: true },
   { text: '她带第3把钥匙。', premise: numericPremise('ambiguous', 'ambiguous', 'scene', 'member'), pending: false },
@@ -546,6 +549,14 @@ it.each([
   if (test.pending) { expect(correction).toContain('ambiguous_numeric_premise'); expect(correction).not.toContain('mathematical_contradiction'); }
   else expect(correction).toBeUndefined();
   expect(verifyRoles).toHaveBeenCalledTimes(1);
+});
+
+it('requires independent semantic pending for a low cardinality that could denote the explicitly missing member', async () => {
+  const correction = await actualProductionQuantityReview({ ...input('她带两把钥匙。'),
+    extractClaims: async () => ({ clauses: [{ clauseIndex: 0, quantities: [{ setIndex: 0, usage: 'ambiguous', numberIndexes: [0] }] }] }),
+    verifyRoles: async () => ({ reviews: [{ candidateIndex: 0, numbers: [{ numberIndex: 0,
+      ...numericPremise('ambiguous', 'ambiguous', 'ambiguous', 'ambiguous') }], all: noAllPremise }] }) });
+  expect(correction).toContain('unresolved_semantic_exemption'); expect(correction).not.toContain('mathematical_contradiction');
 });
 
 it.each([

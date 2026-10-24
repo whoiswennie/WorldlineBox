@@ -63,13 +63,17 @@ test('reads actual text and image pixels with native tools, sends an existing fi
   const imageFile = path.join(uploads, '纸船.png'), textFile = path.join(uploads, '验收记录.txt'), audioFile = path.join(uploads, '现有轻音.wav');
   await sharp(Buffer.from('<svg xmlns="http://www.w3.org/2000/svg" width="240" height="160"><rect width="240" height="160" fill="#5b8fa8"/><path d="M35 88H205L165 132H75Z" fill="#e9d7a5"/><path d="M120 25L170 88H120Z" fill="#c85c45"/></svg>')).png().toFile(imageFile);
   writeFileSync(textFile, marker + '\n第二行保留原始来源。\n', 'utf8'); const originalAudio = wave(); writeFileSync(audioFile, originalAudio);
+  const socialReviews: string[] = [];
   const providerErrors: string[] = [], primary: Array<{ files: CompanionFileInput[]; toolIds: string[] }> = [];
   let application: ElectronApplication | undefined, proof: { image: CompanionToolImageReference; bytes: number; sha256: string } | undefined;
   const server = createServer((incoming, outgoing) => {
     let raw = ''; incoming.setEncoding('utf8'); incoming.on('data', chunk => { raw += chunk; }); incoming.on('end', () => { void (async () => {
       try {
         const body = JSON.parse(raw), context = JSON.parse(body.messages[1].content); let output: unknown, toolCalls: unknown;
-        if (context.purpose === 'world_attention') output = { urgency: 'ordinary', confidence: .99, evidence: [context.source.content], reason: '普通只读查看请求，正常等待。' };
+        if (context.purpose === 'companion_social_progress_review') {
+          expect(typeof context.proposedText).toBe('string'); socialReviews.push(context.proposedText);
+          output = { supported: true, correction: '' };
+        } else if (context.purpose === 'world_attention') output = { urgency: 'ordinary', confidence: .99, evidence: [context.source.content], reason: '普通只读查看请求，正常等待。' };
         else if (context.purpose === 'world_decision') output = { action: null, reason: '遵守当前生活安排。', appraisals: [] };
         else if (context.purpose === 'world_social') output = { text: null, reason: '自然结束。' };
         else if (context.purpose === 'vcp_memory_prohibition_check') output = { allowed: true, matchedPolicyIds: [] };
@@ -124,6 +128,7 @@ test('reads actual text and image pixels with native tools, sends an existing fi
     let reply: CompanionMessage | undefined;
     await expect.poll(async () => { expect(providerErrors).toEqual([]); const messages = (await request(page, { type: 'messages', conversationId, limit: 30 })).messages!; reply = messages.find(message => message.authorId === companionId && !message.isReplyDraft && message.content.includes(finalText)); return reply?.attachments.length ?? 0; }, { timeout: 45000 }).toBe(3);
     expect(providerErrors).toEqual([]); expect(primary).toHaveLength(2); expect(proof).toBeTruthy();
+    expect(socialReviews.length).toBeGreaterThan(0);
     const source = (await request(page, { type: 'messages', conversationId, limit: 30 })).messages!.find(message => message.authorId === 'user' && message.content.includes('直接查看上传'))!;
     expect(reply!.replyToId).toBe(source.id); expect(reply!.attachments.map(attachment => attachment.mime).sort()).toEqual(['audio/wav', 'image/jpeg', 'text/plain'].sort());
     const bubble = page.locator(`[data-companion-message="${reply!.id}"]`); await expect(bubble).toContainText('蓝色的纸船'); await expect(bubble.locator('.companions-attachment-images img')).toHaveCount(1); await expect(bubble.locator('.is-text')).toHaveCount(1); await expect(bubble.locator('audio')).toHaveCount(1);
@@ -149,7 +154,7 @@ test('reads actual text and image pixels with native tools, sends an existing fi
     const restored = (await request(page, { type: 'messages', conversationId, limit: 30 })).messages!.find(message => message.id === replyId)!; expect(restored.attachments.map(attachment => attachment.id)).toEqual(attachmentIds);
     const restoredBubble = page.locator(`[data-companion-message="${replyId}"]`); await expect(restoredBubble).toContainText(finalText); await expect.poll(() => restoredBubble.locator('.companions-attachment-images img').evaluate((image: HTMLImageElement) => image.complete && image.naturalWidth)).toBe(240);
     await expect.poll(() => restoredBubble.locator('audio').evaluate((audio: HTMLAudioElement) => audio.readyState), { timeout: 15000 }).toBeGreaterThanOrEqual(1); expect(primary).toHaveLength(2);
-    const report = { fixture: 'scripted_local_model_real_main_tools', toolCallIds: ['read_text', 'read_pixels', 'send_audio'], modelRequests: primary.length, actualJpeg: { width: 240, height: 160, bytes: proof!.bytes, sha256: proof!.sha256 }, managedAttachments: attachmentIds.length, originalFilesDeleted: true, restartPreservedAttachmentIds: true, dshTasks: 0, checkpointHasNoPixels: true, providerErrors };
+    const report = { fixture: 'scripted_local_model_real_main_tools', toolCallIds: ['read_text', 'read_pixels', 'send_audio'], modelRequests: primary.length, socialReviewCount: socialReviews.length, socialReviews, actualJpeg: { width: 240, height: 160, bytes: proof!.bytes, sha256: proof!.sha256 }, managedAttachments: attachmentIds.length, originalFilesDeleted: true, restartPreservedAttachmentIds: true, dshTasks: 0, checkpointHasNoPixels: true, providerErrors };
     const artifacts = path.resolve('.tools/test-output/companions'); mkdirSync(artifacts, { recursive: true }); writeFileSync(path.join(artifacts, 'verified-companion-file-vision.json'), JSON.stringify(report, null, 2)); await restoredBubble.screenshot({ path: path.join(artifacts, 'verified-companion-file-vision.png') }); await testInfo.attach('file-vision-proof', { body: JSON.stringify(report), contentType: 'application/json' });
   } finally { await application?.close().catch(() => undefined); await new Promise<void>(resolve => { server.close(() => resolve()); server.closeAllConnections(); }); cleanup(root); }
 });

@@ -59,6 +59,7 @@ test('persists public player and companion references, displays the real user id
   const board = `<svg xmlns="http://www.w3.org/2000/svg" width="960" height="480"><rect width="960" height="480" fill="#f4f2eb"/><text x="30" y="40" font-family="Arial" font-size="18" fill="#49656c">PUBLIC CHARACTER REFERENCE</text>${['FRONT', 'SIDE', 'BACK'].map((label, i) => `<g transform="translate(${160 + i * 320},135)"><circle cy="0" r="35" fill="#e8c9b1"/><path d="M-33 50Q0 25 33 50L45 180H-45Z" fill="${i === 1 ? '#7d9da3' : '#95b4b6'}"/><path d="M-25 180V250M25 180V250" stroke="#50656c" stroke-width="22"/><text y="300" text-anchor="middle" font-family="Arial" font-size="17" fill="#49656c">${label}</text></g>`).join('')}</svg>`;
   await sharp(Buffer.from(board)).png().toFile(boardFile);
   await sharp(Buffer.from('<svg xmlns="http://www.w3.org/2000/svg" width="180" height="180"><rect width="180" height="180" rx="90" fill="#8faeb3"/><circle cx="90" cy="66" r="31" fill="#f2e8da"/><path d="M35 155Q42 100 90 100Q138 100 145 155" fill="#f2e8da"/></svg>')).png().toFile(avatarFile);
+  const socialReviews: string[] = [];
   const captures: Capture[] = [], providerErrors: string[] = [], auxiliaryPurposes: string[] = []; let application: ElectronApplication | undefined;
   const server = createServer((incoming, outgoing) => { let raw = ''; incoming.setEncoding('utf8'); incoming.on('data', chunk => { raw += chunk; }); incoming.on('end', () => { void (async () => {
     try {
@@ -66,7 +67,10 @@ test('persists public player and companion references, displays the real user id
       if (payload.messages?.length === 1 && payload.messages[0]?.role === 'user' && payload.messages[0]?.content === 'Reply with the single word OK.') { auxiliaryPurposes.push('connection_probe'); outgoing.writeHead(200, { 'Content-Type': 'application/json' }); outgoing.end(JSON.stringify({ choices: [{ message: { content: 'OK' }, finish_reason: 'stop' }] })); return; }
       const context = JSON.parse(payload.messages[1]?.content ?? payload.messages[0]?.content); let output: unknown;
       if (payload.messages.length === 1) { if (typeof context.purpose !== 'string') throw new Error('A primary reply must retain the base JSON in messages[1].'); auxiliaryPurposes.push(context.purpose); }
-      if (context.purpose === 'world_decision') output = { action: null, reason: '保持当前生活安排。', appraisals: [] };
+      if (context.purpose === 'companion_social_progress_review') {
+        expect(typeof context.proposedText).toBe('string'); socialReviews.push(context.proposedText);
+        output = { supported: true, correction: '' };
+      } else if (context.purpose === 'world_decision') output = { action: null, reason: '保持当前生活安排。', appraisals: [] };
       else if (context.purpose === 'world_attention') output = { urgency: 'ordinary', confidence: .99, evidence: [context.source.content], reason: '正常交流。' };
       else if (context.purpose === 'vcp_memory_prohibition_check') output = { allowed: true, matchedPolicyIds: [] };
       else if (context.purpose === 'vcp_sleep_reflection') output = { notes: [], dream: null };
@@ -137,7 +141,8 @@ test('persists public player and companion references, displays the real user id
     expect(JSON.stringify(captures[2]!.context)).not.toContain(user.orthographic!.absolutePath!); expect(JSON.stringify(captures[2]!.context)).not.toContain(self.orthographic!.absolutePath!);
     settings = await openSettings(page); await settings.getByRole('button', { name: '移除头像', exact: true }).click(); await settings.getByRole('button', { name: '保存用户信息', exact: true }).click(); await expect(settings).toContainText('用户信息已保存'); expect((await request(page, { type: 'player.profile.get' })).playerProfile!.avatarAttachmentId).toBeUndefined();
     expect(providerErrors).toEqual([]);
-    const report = { fixtureKind: 'synthetic_public_profile', authorId: 'user', imageProofs: captures.map(capture => capture.images), originalUploadsDeleted: true, restartPreservedManagedImages: true, removedCustomBoardsAbsentFromNextRequest: true, builtInBoardRestored: true, auxiliaryPurposes, providerErrors };
+    expect(socialReviews.length).toBeGreaterThan(0);
+    const report = { fixtureKind: 'synthetic_public_profile', authorId: 'user', imageProofs: captures.map(capture => capture.images), originalUploadsDeleted: true, restartPreservedManagedImages: true, removedCustomBoardsAbsentFromNextRequest: true, builtInBoardRestored: true, auxiliaryPurposes, providerErrors, socialReviewCount: socialReviews.length, socialReviews };
     writeFileSync(path.join(artifacts, 'verified-companion-public-profile.json'), JSON.stringify(report, null, 2)); await testInfo.attach('public-profile-image-proof', { body: JSON.stringify(report), contentType: 'application/json' });
   } catch (cause) {
     const logs = application && await application.evaluate(({ app }) => app.getPath('logs')).catch(() => undefined);

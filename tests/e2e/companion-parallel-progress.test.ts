@@ -19,15 +19,19 @@ test('keeps three group reply bubbles independent through actual tools, streamin
   const sourceFile = path.join(root, '可读验收资料.txt'); writeFileSync(sourceFile, '真实工具结果：这是一份由本次夹具创建的文本资料。', 'utf8');
   const roles = new Map<string, 'tool' | 'stream' | 'waiting'>(), held = new Map<string, () => void>(), counts = new Map<string, number>();
   const released = new Set<string>();
-  const toolReceipts: string[] = [];
+  const toolReceipts: string[] = [], socialReviews: string[] = [];
   const server = createServer((request, response) => {
     let raw = ''; request.setEncoding('utf8'); request.on('data', chunk => { raw += chunk; });
     request.on('end', () => {
       try {
         const payload = JSON.parse(raw) as { messages: Array<{ role: string; content: string; tool_call_id?: string }> };
         const user = payload.messages.findLast(message => message.role === 'user')?.content ?? '{}';
-        let context: { purpose?: string; source?: { id?: string }; conversation?: { replyingAs: string } };
+        let context: { purpose?: string; proposedText?: string; source?: { id?: string }; conversation?: { replyingAs: string } };
         try { context = JSON.parse(user); } catch { json(response, '[[Tag: 验收]]'); return; }
+        if (context.purpose === 'companion_social_progress_review') {
+          expect(typeof context.proposedText).toBe('string'); socialReviews.push(context.proposedText!);
+          json(response, JSON.stringify({ supported: true, correction: '' })); return;
+        }
         if (context.purpose) {
           const text = context.purpose === 'world_attention' ? JSON.stringify({ urgency: 'ordinary', confidence: .99, evidence: [], reason: '无紧急打断。' })
             : context.purpose === 'world_social' ? JSON.stringify({ text: null, reason: '不扩展本例话题。' })
@@ -111,10 +115,11 @@ test('keeps three group reply bubbles independent through actual tools, streamin
     // The last visible token precedes the durable loop commit.
     await expect.poll(async () => { final = (await call(page, { type: 'messages', conversationId: room.id, limit: 100 })).messages!.filter(message => owners.includes(message.authorId)); return final.every(message => message.replyProgress?.phase === 'completed'); }, { timeout: 15_000 }).toBe(true);
     expect(final.map(message => message.id)).toEqual(replies.map(message => message.id));
+    expect(socialReviews.length).toBeGreaterThan(0);
     const events = await page.evaluate(() => (window as unknown as Bridge).progressEvidence!);
     for (const owner of owners) expect(events.some(event => event.companionId === owner && event.progress?.phase === 'memory')).toBe(true);
-    writeFileSync(path.join(evidence, 'actual-loop-progress-proof.json'), JSON.stringify({ owners, stableMessageIds: final.map(message => message.id), targetedCancellation: true, nativeToolReceipts: toolReceipts, events }, null, 2));
-    await testInfo.attach('actual-loop-progress', { body: JSON.stringify({ owners, stableMessageIds: final.map(message => message.id), events }), contentType: 'application/json' });
+    writeFileSync(path.join(evidence, 'actual-loop-progress-proof.json'), JSON.stringify({ owners, stableMessageIds: final.map(message => message.id), targetedCancellation: true, nativeToolReceipts: toolReceipts, socialReviewCount: socialReviews.length, socialReviews, events }, null, 2));
+    await testInfo.attach('actual-loop-progress', { body: JSON.stringify({ owners, stableMessageIds: final.map(message => message.id), socialReviewCount: socialReviews.length, socialReviews, events }), contentType: 'application/json' });
   } finally {
     await application.close(); for (const finish of held.values()) finish(); server.closeAllConnections(); await new Promise<void>(resolve => server.close(() => resolve()));
     cleanup(root);

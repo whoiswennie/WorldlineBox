@@ -8,9 +8,43 @@ export const declaredDisjointQuantityFixture: NonNullable<TopicSourceQuantityRev
   const { checks } = JSON.parse(context.user).data as { checks: Array<{ checkIndex: number;
     evidence: Array<{ view: string; clauseIndex: number }> }> };
   return { reviews: checks.map(check => { const focus = check.evidence.find(item => item.view === 'focus')!;
-    return { checkIndex: check.checkIndex, verdict: 'positive_disjoint',
+    return { checkIndex: check.checkIndex, verdict: 'positive_exemption', basis: 'different_inventory',
       evidenceRefs: [{ view: focus.view, clauseIndex: focus.clauseIndex }], reason: '仅此test声明的原异组语义，独立fixture准入。' }; }) };
 };
+
+/** Legacy mechanism tests already declare semantic roles rather than measure
+ * model accuracy. This explicit test adapter supplies the new independent
+ * phase from those declarations; new admission tests inject a separate reader.
+ * No production path obtains this fixture or defaults a missing model field. */
+export function withDeclaredQuantitySemanticFixture<T extends TopicSourceQuantityReviewOptions>(options: T): T {
+  if (!options.verifyRoles || options.verifyDisjointWaivers && options.verifyDisjointWaivers !== declaredDisjointQuantityFixture) return options;
+  let declared: Array<{ candidateIndex: number; numbers: Array<{ numberIndex: number; collection: string; voice: string; time: string; relation: string; kind: string }>;
+    all: { collection: string; voice: string; time: string; relation: string } }> = [];
+  return { ...options, verifyRoles: async (context, signal) => {
+    const response = await options.verifyRoles!(context, signal);
+    if (record(response) && Array.isArray(response.reviews)) declared = response.reviews as typeof declared;
+    return response;
+  }, verifyDisjointWaivers: async context => {
+    const { checks } = JSON.parse(context.user).data as { checks: Array<{ checkIndex: number; candidateIndex: number;
+      target: { kind: string; numberIndex?: number }; evidence: Array<{ view: string; clauseIndex: number }> }> };
+    return { reviews: checks.map(check => {
+      const candidate = declared.find(item => item.candidateIndex === check.candidateIndex)!;
+      const axes = check.target.kind === 'all' ? candidate.all : candidate.numbers.find(item => item.numberIndex === check.target.numberIndex)!;
+      const basis = axes.collection === 'different' ? 'different_inventory'
+        : ['attributed_claim', 'question', 'hypothetical'].includes(axes.voice) ? axes.voice
+          : ['earlier_history', 'future'].includes(axes.time) ? axes.time
+            : axes.relation === 'missing' ? 'negative_or_missing'
+              : check.target.kind === 'all' ? axes.relation === 'not_affirmed_all' ? 'no_all_assertion' : 'none'
+                : axes.relation === 'collection_size' ? 'pure_collection_total'
+                  : 'kind' in axes && axes.kind === 'member' ? 'member_role'
+                    : 'kind' in axes && axes.kind === 'count' ? 'count_role'
+                      : axes.relation === 'unrelated' ? 'unrelated_target' : 'none';
+      const focus = check.evidence.find(item => item.view === 'focus')!;
+      return { checkIndex: check.checkIndex, verdict: basis === 'none' ? 'unresolved' : 'positive_exemption', basis,
+        evidenceRefs: [{ view: focus.view, clauseIndex: focus.clauseIndex }], reason: '仅原机制test已声明的语义前提；不证明真实模型准确率。' };
+    }) };
+  } };
+}
 /** Existing semantic mocks describe already-confirmed missing inventories.
  * This is test-only; production always obtains its own source-only receipt. */
 export const confirmedQuantitySourcePremiseFixture: NonNullable<TopicSourceQuantityReviewOptions['verifySourcePremises']> = async context => {

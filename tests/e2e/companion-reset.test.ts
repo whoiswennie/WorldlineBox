@@ -21,12 +21,15 @@ test('factory reset restores the built-in, stops an old stream, preserves other 
   const root = mkdtempSync(path.join(tmpdir(), 'worldlinebox-reset-e2e-')), profile = path.join(root, 'profile'), originalFile = path.join(root, 'shared-avatar.png');
   await sharp({ create: { width: 96, height: 96, channels: 4, background: '#6384aa' } }).png().toFile(originalFile);
   let application: ElectronApplication | undefined, held: ServerResponse | undefined, oldStreamClosed = false;
-  const primaryContexts: string[] = [];
+  const primaryContexts: string[] = [], socialReviews: string[] = [];
   const server = createServer((incoming, response) => {
     let raw = ''; incoming.setEncoding('utf8'); incoming.on('data', chunk => { raw += chunk; }); incoming.on('end', () => {
       try {
         const body = JSON.parse(raw), serialized = body.messages[1].content as string, context = JSON.parse(serialized); let output: unknown;
-        if (context.purpose === 'world_attention') output = { urgency: 'ordinary', confidence: .98, evidence: [context.source.content], reason: '普通聊天。' };
+        if (context.purpose === 'companion_social_progress_review') {
+          expect(typeof context.proposedText).toBe('string'); socialReviews.push(context.proposedText);
+          output = { supported: true, correction: '' };
+        } else if (context.purpose === 'world_attention') output = { urgency: 'ordinary', confidence: .98, evidence: [context.source.content], reason: '普通聊天。' };
         else if (context.purpose === 'world_decision') output = { action: null, reason: '保持当前生活。', appraisals: [] };
         else if (context.purpose === 'vcp_memory_prohibition_check') output = { allowed: true, matchedPolicyIds: [] };
         else if (context.purpose === 'vcp_sleep_reflection') output = { notes: [], dream: null };
@@ -119,7 +122,8 @@ test('factory reset restores the built-in, stops an old stream, preserves other 
     launched = await launch(); application = launched.app; page = launched.page;
     const persisted = (await request(page, { type: 'state' })).state!; expect(persisted.companions.find(person => person.id === sister.id)).toMatchObject({ name: defaults.name, persona: defaults.persona });
     const messages = (await request(page, { type: 'messages', conversationId: ownRoom })).messages!; expect(messages.some(message => message.content === '重新开始的问候')).toBe(true); expect(messages.some(message => message.id === old.id)).toBe(false);
-    const report = { fixtureKind: 'real_electron_factory_reset', restoredDefaultProfile: true, stoppedInFlightStream: oldStreamClosed, oldResultNotReplayed: true, preservedOtherPrivateChat: true, preservedOtherGroupAuthors: true, leftOldGroup: true, preservedSharedPlayerAvatar: true, sourceOriginalKept: true, encryptedCompanionKeyRemoved: true, freshContextAfterReset: true, persistedAcrossRestart: true };
+    expect(socialReviews.length).toBeGreaterThan(0);
+    const report = { fixtureKind: 'real_electron_factory_reset', restoredDefaultProfile: true, stoppedInFlightStream: oldStreamClosed, oldResultNotReplayed: true, preservedOtherPrivateChat: true, preservedOtherGroupAuthors: true, leftOldGroup: true, preservedSharedPlayerAvatar: true, sourceOriginalKept: true, encryptedCompanionKeyRemoved: true, freshContextAfterReset: true, persistedAcrossRestart: true, socialReviewCount: socialReviews.length, socialReviews };
     writeFileSync(path.join(artifacts, 'verified-companion-reset.json'), JSON.stringify(report, null, 2)); await testInfo.attach('actual-factory-reset', { body: JSON.stringify(report), contentType: 'application/json' });
   } finally { held?.destroy(); await application?.close().catch(() => undefined); await new Promise<void>(resolve => { server.close(() => resolve()); server.closeAllConnections(); }); cleanup(root); }
 });

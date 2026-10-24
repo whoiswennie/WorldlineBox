@@ -22,14 +22,17 @@ async function request(page: Page, input: CompanionsRequest) {
 test('empty native tool turns add no blank space while streaming, after commit or after reopening saved replies', async () => {
   test.setTimeout(90000);
   const root = mkdtempSync(path.join(tmpdir(), 'worldlinebox-reply-spacing-'));
-  const failures: string[] = []; let chatCalls = 0, beginText: (() => void) | undefined, finish: (() => void) | undefined;
+  const failures: string[] = [], socialReviews: string[] = []; let chatCalls = 0, beginText: (() => void) | undefined, finish: (() => void) | undefined;
   const server = createServer((incoming, response) => {
     let data = ''; incoming.on('data', chunk => { data += String(chunk); }); incoming.on('end', () => {
       try {
         const body = JSON.parse(data), raw = body.messages?.[1]?.content;
         const context = JSON.parse(typeof raw === 'string' ? raw : raw?.find((part: { type: string; text?: string }) => part.type === 'text')?.text);
         let content: unknown = { notes: [] }; let calls: unknown;
-        if (context.purpose === 'world_attention') content = { urgency: 'ordinary', confidence: .99, evidence: [], reason: '普通问题。' };
+        if (context.purpose === 'companion_social_progress_review') {
+          expect(typeof context.proposedText).toBe('string'); socialReviews.push(context.proposedText);
+          content = { supported: true, correction: '' };
+        } else if (context.purpose === 'world_attention') content = { urgency: 'ordinary', confidence: .99, evidence: [], reason: '普通问题。' };
         else if (context.purpose === 'world_decision') content = { action: null, reason: '没有新的自主安排。', appraisals: [] };
         else if (context.taskRequest?.prompt === prompt) {
           const step = chatCalls++;
@@ -92,10 +95,11 @@ test('empty native tool turns add no blank space while streaming, after commit o
     await expect(bubble).toContainText(last); const reopened = await geometry();
     expect(reopened.top).toBeLessThan(20); expect(reopened.gap).toBeLessThan(20); expect(reopened.segments).toBe(2);
     expect(failures).toEqual([]); expect(chatCalls).toBe(10);
+    expect(socialReviews.length).toBeGreaterThan(0);
     const saved = (await request(page, { type: 'messages', conversationId: room.id })).messages!.find(message => message.id === reply.id)!;
     expect(saved.segments).toHaveLength(10); expect(saved.content).toBe(first + '\n\n' + last);
     await page.screenshot({ path: path.join(output, 'verified-reply-spacing.png') });
-    const evidence = { packaged: await app.evaluate(({ app }) => app.isPackaged), chatCalls, persistedSteps: saved.segments!.length, streaming, completed, reopened };
+    const evidence = { packaged: await app.evaluate(({ app }) => app.isPackaged), chatCalls, socialReviewCount: socialReviews.length, socialReviews, persistedSteps: saved.segments!.length, streaming, completed, reopened };
     writeFileSync(path.join(output, 'verified-reply-spacing.json'), JSON.stringify(evidence, null, 2));
     console.log('COMPANION_REPLY_SPACING_RESULT', JSON.stringify(evidence));
   } finally { await app?.close(); server.closeAllConnections(); await new Promise<void>(resolve => server.close(() => resolve())); cleanup(root); }
