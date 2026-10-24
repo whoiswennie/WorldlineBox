@@ -130,12 +130,15 @@ export async function realMainFixture(label: string, seeds: CompanionSeed[], use
   };
   transport.fetch = modelFetch;
   const native = useRealEncoder ? await realMemoryRuntime(root, (context, signal) => generateCompanionText(context, config, signal, { fetchFn: modelFetch, timeoutMs: 120000 }),
-    options.enableCold ? { observeColdWorker: options.observeColdWorker } : {}) : undefined;
+    { modelFetch, ...(options.enableCold ? { observeColdWorker: options.observeColdWorker } : {}) }) : undefined;
   // A Main restart must not dispose this test-owned native host. Final cleanup
   // closes it once, after every Main owner and pending request has stopped.
   let cold: ColdKnowledgeService | undefined;
   let coldAuthorize: ColdKnowledgeServiceOptions['authorize'] | undefined;
-  const runtime: CompanionMemoryRuntime | undefined = native ? { get: native.runtime.get, close: async () => undefined,
+  const runtime: CompanionMemoryRuntime | undefined = native ? { get: () => native.runtime.get(), close: async () => undefined,
+    describeEmbedding: () => native.runtime.describeEmbedding(), describeGeneration: input => native.runtime.describeGeneration(input),
+    acquireGeneration: input => native.runtime.acquireGeneration(input), interruptOwner: owner => native.runtime.interruptOwner(owner),
+    purgeOwner: (owner, scopes) => native.runtime.purgeOwner(owner, scopes),
     ...(options.enableCold ? {
       getCold: async (authorize: ColdKnowledgeServiceOptions['authorize']) => {
         // Match production's rebinding on every actual caller, including after

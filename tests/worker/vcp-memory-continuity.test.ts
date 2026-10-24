@@ -1,4 +1,5 @@
 import { fork } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { mkdtemp, readdir } from 'node:fs/promises';
 import { createServer, type ServerResponse } from 'node:http';
 import { tmpdir } from 'node:os';
@@ -7,9 +8,10 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { CompanionsStore } from '../../src/companions/store';
 import { CompanionMemoryService } from '../../src/main/companions/memory-service';
 import { CompanionMemoryViewCache } from '../../src/main/companions/memory-view-cache';
-import { VcpMemoryClient, type VcpMemoryTransport } from '../../src/main/vcp-memory/client';
+import type { VcpMemoryTransport } from '../../src/main/vcp-memory/client';
 import { removeOwnedDirectory } from '../../src/main/vcp-memory/filesystem';
 import { companionMemoryIdentity } from '../../src/main/companions/memory-identity';
+import { ownerGenerationRuntime } from '../fixtures/owner-generation-runtime';
 
 vi.mock('electron', () => ({ utilityProcess: { fork: vi.fn() } }));
 const cleanups: Array<() => Promise<void>> = [];
@@ -38,9 +40,10 @@ async function fixture() {
       if (JSON.stringify(body).includes('vcp_experience_journal')) {
         response.end(JSON.stringify({ choices: [{ message: { content: '{"notes":[]}' } }] })); return;
       }
-      if (body.messages?.length === 1 && body.messages[0]?.role === 'user') {
-        controls.focusCalls++; controls.focusPrompts.push(body.messages[0].content);
-        const content = `这是我获取的所有相关知识/记忆[[alpha borrowed the blue umbrella.${body.messages[0].content.includes('TIMELINE_ONLY_VALIDATED_MONTH') ? ' TIMELINE_ONLY_VALIDATED_MONTH.' : ''}]]`;
+      if (body.messages?.length === 1 && body.messages[0]?.role === 'user' || body.messages?.[0]?.content?.startsWith('你是 VCP 记忆处理单元')) {
+        const prompt = body.messages.at(-1).content;
+        controls.focusCalls++; controls.focusPrompts.push(prompt);
+        const content = `这是我获取的所有相关知识/记忆[[alpha borrowed the blue umbrella.${prompt.includes('TIMELINE_ONLY_VALIDATED_MONTH') ? ' TIMELINE_ONLY_VALIDATED_MONTH.' : ''}]]`;
         response.end(JSON.stringify({ choices: [{ message: { content } }] })); return;
       }
       controls.timelineCalls++;
@@ -73,11 +76,14 @@ async function fixture() {
   const cacheRoot = path.join(root, 'views');
   const services: CompanionMemoryService[] = [];
   cleanups.push(async () => { for (const service of services) await service.close(); });
-  function createService() {
-    const client = new VcpMemoryClient({ dataRoot: path.join(root, 'runtime'), vendorRoot: path.resolve('vendor/vcp-memory'),
-      workerPath: path.resolve('src/main/vcp-memory/worker.cjs'), launch, maxOpenScopes: 4, requestTimeoutMs: 30000,
-      embedding: { baseUrl: `${baseUrl}/document`, queryBaseUrl: `${baseUrl}/query`, model: 'fixture', modelSignature: 'continuity-test', dimension: 4, apiKey: 'fixture-key' },
-      plugins: { chat: { baseUrl: `${baseUrl}/chat`, model: 'fixture-chat', apiKey: 'fixture-key' } } });
+  async function createService() {
+    const native = ownerGenerationRuntime(path.join(root, 'runtime'),
+      { baseUrl: `${baseUrl}/document`, queryBaseUrl: `${baseUrl}/query`, model: 'fixture', modelSignature: 'continuity-test', dimension: 4, apiKey: 'fixture-key' }, launch);
+    cleanups.push(native.close);
+    // An explicitly acquired/released handle observes the actual generation
+    // client; it does not replace Main's own lease or select a global model.
+    const observed = await native.runtime.acquireGeneration({ ownerId: 'alpha', config });
+    const client = observed.client, profileKey = observed.profileKey; await observed.release();
     const changed = vi.fn(), report = vi.fn(), published = vi.fn();
     const service = new CompanionMemoryService({ cacheRoot, request: async command => {
       const response = store.request(command);
@@ -85,11 +91,11 @@ async function fixture() {
       if (response.worldClock) response.worldClock.backlog = false;
       return response;
     },
-      configFor: async () => ({ ...config, model: controls.modelConfigured ? config.model : '' }), runtime: { get: async () => ({ client, profileKey: 'continuity-test' }), close: () => client.close() },
+      configFor: async () => ({ ...config, model: controls.modelConfigured ? config.model : '' }), runtime: native.runtime,
       runtimeAvailability: () => { controls.deviceStatusReads++; return { state: controls.deviceState, message: '实际检测快照的公开原因。' }; },
       fetchFn: fetch, busy: () => controls.foregroundBusy, changed, report,
       onTimelineArtifacts: async (scope, artifacts, stillValid) => { published({ scope, artifacts, stillValid }); } });
-    services.push(service); return { service, client, changed, report, published };
+    services.push(service); return { service, client, changed, report, published, profileKey, runtime: native.runtime };
   }
   return { root, store, note, conversation, cacheRoot, controls, pending, createService };
 }
@@ -97,7 +103,7 @@ async function fixture() {
 describe('original monthly VCP continuity behind the main memory service', () => {
   it('reports only registered future host checks and explains busy and unconfigured conditions without loading a worker', async () => {
     const { createService, controls } = await fixture();
-    const { service, client, changed } = createService();
+    const { service, client, changed } = await createService();
     const replace = vi.spyOn(client, 'replace'), before = Date.now();
     service.schedule(10000);
     const planned = await service.schedulingFor('alpha'), at = planned.schedulers.find(item => item.kind === 'capture')!.nextCheckAt!;
@@ -135,15 +141,15 @@ describe('original monthly VCP continuity behind the main memory service', () =>
 
   it('generates and persists a real monthly timeline and summary, then reuses them after restart in passive RAG context', async () => {
     const { createService, cacheRoot, controls, conversation } = await fixture();
-    const first = createService(); first.service.schedule(0);
+    const first = await createService(); first.service.schedule(0);
     const cache = new CompanionMemoryViewCache(cacheRoot);
     const identity = 'alpha:owner-v2';
     await vi.waitFor(async () => {
-      const artifacts = await cache.loadArtifacts(identity, 'continuity-test');
+      const artifacts = await cache.loadArtifacts(identity, first.profileKey);
       expect(artifacts?.agents[0]?.months[0], first.report.mock.calls.map(([error]) => String(error)).join('\n')).toMatchObject({ month: '2026-10', summary: expect.stringContaining('TIMELINE_ONLY_VALIDATED_MONTH') });
     }, { timeout: 20000, interval: 50 });
     expect(controls.timelineCalls).toBe(2);
-    const artifacts = await cache.loadArtifacts(identity, 'continuity-test');
+    const artifacts = await cache.loadArtifacts(identity, first.profileKey);
     expect(artifacts?.owner).toEqual(companionMemoryIdentity({ id: 'alpha', name: 'Alpha' }));
     expect(artifacts?.agents[0]?.agentName).toBe('Alpha');
     expect(artifacts?.agents[0]?.months[0]?.content).toContain('2026-10 Alpha时间线');
@@ -157,7 +163,7 @@ describe('original monthly VCP continuity behind the main memory service', () =>
     expect(first.published).toHaveBeenCalledWith(expect.objectContaining({ scope: { companionId: 'alpha', conversationId: conversation.id }, artifacts: expect.objectContaining({ sourceRevision: expect.any(String) }) }));
     expect(await first.published.mock.calls[0]![0].stillValid()).toBe(true);
     await first.service.close();
-    const restarted = createService();
+    const restarted = await createService();
     expect(restarted.service.processingFor('alpha')).toEqual([]);
     const replayed = await restarted.service.search({ companionId: 'alpha', conversationId: conversation.id, query: 'alpha umbrella' }, 'passive');
     expect(replayed.memoryContext?.text).toContain('umbrella');
@@ -176,9 +182,9 @@ describe('original monthly VCP continuity behind the main memory service', () =>
     const { createService, cacheRoot, controls, conversation, store, note } = await fixture();
     const identity = 'alpha:owner-v2', cache = new CompanionMemoryViewCache(cacheRoot);
     const revision = store.request({ type: 'memory.snapshot', companionId: 'alpha', conversationId: conversation.id }).memorySnapshot!.revision;
-    await cache.saveArtifacts(identity, 'continuity-test', { schema: 'worldlinebox.vcp-timeline-artifacts', sourceRevision: revision,
+    const first = await createService(), imported = vi.spyOn(first.client, 'importTimelineArtifacts');
+    await cache.saveArtifacts(identity, first.profileKey, { schema: 'worldlinebox.vcp-timeline-artifacts', sourceRevision: revision,
       agents: [{ agentName: 'WorldlineBox', months: [{ month: '2026-10', sourceDigest: 'a'.repeat(64), content: 'STALE_BRAND_OWNER', summary: 'STALE_BRAND_OWNER' }] }] });
-    const first = createService(), imported = vi.spyOn(first.client, 'importTimelineArtifacts');
     first.service.schedule(0);
     await vi.waitFor(() => expect(first.published).toHaveBeenCalled(), { timeout: 20000 });
     expect(imported).not.toHaveBeenCalled();
@@ -187,7 +193,7 @@ describe('original monthly VCP continuity behind the main memory service', () =>
     await first.service.close();
     const owner = store.state().companions.find(role => role.id === 'alpha')!;
     store.updateCompanion(owner.id, { ...owner, name: '小肥鱼' }, owner.revision);
-    const renamed = createService(); renamed.service.schedule(0);
+    const renamed = await createService(); renamed.service.schedule(0);
     await vi.waitFor(() => expect(renamed.published).toHaveBeenCalled(), { timeout: 20000 });
     const artifacts = renamed.published.mock.calls[0]![0].artifacts;
     expect(artifacts.owner).toMatchObject({ companionId: 'alpha', name: '小肥鱼', agentName: '小肥鱼', version: 2 });
@@ -199,18 +205,22 @@ describe('original monthly VCP continuity behind the main memory service', () =>
   });
 
   it('serves a foreground query during long generation and immediately cancels and purges on source retraction', async () => {
-    const { createService, cacheRoot, controls, conversation, store, note, pending } = await fixture();
-    const { service, client, report } = createService();
+    const { root, createService, cacheRoot, controls, conversation, store, note, pending } = await fixture();
+    const { service, client, report, runtime } = await createService();
     controls.hangTimeline = true; service.schedule(0);
     await vi.waitFor(() => expect(pending.size, report.mock.calls.map(([error]) => String(error)).join('\n')).toBe(1), { timeout: 20000 });
     expect(service.processingFor('alpha')[0]).toMatchObject({ kind: 'timeline', status: 'running', stage: '整理2026-10的月度时间线' });
     const front = await service.search({ companionId: 'alpha', conversationId: conversation.id, query: 'alpha umbrella' }, 'passive');
     expect(front.memoryPage?.items[0]?.memory.id).toBe(note.id);
+    const ownerProjection = path.join(root, 'runtime', 'generation', createHash('sha256').update('alpha').digest('hex'));
+    expect((await readdir(ownerProjection)).length).toBeGreaterThan(0);
     store.request({ type: 'memory.forget', companionId: 'alpha', conversationId: conversation.id, id: note.id });
-    const interrupted = vi.spyOn(client, 'interruptScope'), purged = vi.spyOn(client, 'purgeScope');
+    const interrupted = vi.spyOn(client, 'interruptScope'), purged = vi.spyOn(runtime, 'purgeOwner');
     await service.invalidate('alpha', [note.scopeId]);
     expect(service.processingFor('alpha')[0]?.status).toBe('cancelled');
-    expect(interrupted).toHaveBeenCalled(); expect(purged).toHaveBeenCalled();
+    expect(interrupted).toHaveBeenCalled();
+    expect(purged).toHaveBeenCalledWith('alpha', expect.objectContaining({ canonicalScopes: expect.arrayContaining([note.scopeId]) }));
+    await expect(readdir(ownerProjection)).rejects.toMatchObject({ code: 'ENOENT' });
     await vi.waitFor(() => expect(controls.disconnected).toBeGreaterThan(0));
     expect((await readdir(cacheRoot)).some(file => file.endsWith('.timeline'))).toBe(false);
     const recalled = await service.search({ companionId: 'alpha', conversationId: conversation.id, query: 'alpha umbrella' }, 'passive');
@@ -220,7 +230,7 @@ describe('original monthly VCP continuity behind the main memory service', () =>
 
   it('explicitly retries only a failed owner without waiting for the five-minute monthly cooldown', async () => {
     const { createService, controls, store, note, conversation } = await fixture();
-    const { service, client, published } = createService();
+    const { service, client, published } = await createService();
     vi.spyOn(client, 'timeline').mockRejectedValueOnce(new Error('fixture timeline interruption'));
     service.schedule(0);
     await vi.waitFor(() => expect(service.processingFor('alpha')[0]?.status).toBe('failed'), { timeout: 20000 });
@@ -239,7 +249,7 @@ describe('original monthly VCP continuity behind the main memory service', () =>
 
   it('retires a queued old revision when a newer source revision is actually retried', async () => {
     const { createService, store, conversation, controls } = await fixture();
-    const { service, client, published } = createService();
+    const { service, client, published } = await createService();
     vi.spyOn(client, 'timeline').mockRejectedValueOnce(new Error('first revision failure')).mockRejectedValueOnce(new Error('new revision failure'));
     service.schedule(0);
     await vi.waitFor(() => expect(service.processingFor('alpha')[0]?.status).toBe('failed'), { timeout: 20000 });
@@ -265,7 +275,7 @@ describe('original monthly VCP continuity behind the main memory service', () =>
 
   it('closes while the original timeline model call is pending', async () => {
     const { createService, controls, pending } = await fixture();
-    const { service, report } = createService(); controls.hangTimeline = true; service.schedule(0);
+    const { service, report } = await createService(); controls.hangTimeline = true; service.schedule(0);
     await vi.waitFor(() => expect(pending.size, report.mock.calls.map(([error]) => String(error)).join('\n')).toBe(1), { timeout: 20000 });
     await service.close();
     await vi.waitFor(() => expect(controls.disconnected).toBe(1));

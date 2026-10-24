@@ -58,7 +58,7 @@ it.skipIf(!enabled)('audits two resident identities and virtual dates through or
         usage: payload.usage ?? null, responseStatus: response.status });
       return response;
     };
-    native = await realMemoryRuntime(root, (context, signal) => generateCompanionText(context, config, signal, { fetchFn, timeoutMs: 90000 }));
+    native = await realMemoryRuntime(root, (context, signal) => generateCompanionText(context, config, signal, { fetchFn, timeoutMs: 90000 }), { modelFetch: fetchFn });
     report.embeddingProfile = native.profile;
     service = new CompanionMemoryService({ request: async command => { const result = store!.request(command); if (result.worldClock) result.worldClock.backlog = false; return result; },
       configFor: async () => config, runtime: native.runtime, cacheRoot: path.join(root, 'views'), fetchFn,

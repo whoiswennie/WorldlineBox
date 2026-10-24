@@ -36,7 +36,7 @@ it.skipIf(!enabled)('audits three distinct companions using real global chat jou
     modelCalls.push({ purpose, owner, startedMs: started, elapsedMs: performance.now() - started, output: payload.choices?.[0]?.message?.content, finishReason: payload.choices?.[0]?.finish_reason, usage: payload.usage });
     return response;
   };
-  const native = await realMemoryRuntime(root, (context, signal) => generateCompanionText(context, config, signal, { fetchFn, timeoutMs: 90000 }));
+  const native = await realMemoryRuntime(root, (context, signal) => generateCompanionText(context, config, signal, { fetchFn, timeoutMs: 90000 }), { modelFetch: fetchFn });
   const request = async (command: Parameters<CompanionsStore['request']>[0]) => { const result = store.request(command); if (result.worldClock) result.worldClock.backlog = false; return result; };
   const service = new CompanionMemoryService({ request, configFor: async () => config, runtime: native.runtime, cacheRoot: path.join(root, 'views'), fetchFn,
     busy: () => false, blocked: () => false, changed: () => undefined, report: error => errors.push(error) });

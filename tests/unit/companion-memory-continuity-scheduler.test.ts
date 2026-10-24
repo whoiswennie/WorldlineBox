@@ -1,3 +1,4 @@
+import { controlledMemoryRuntime } from '../fixtures/controlled-memory-runtime';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -63,7 +64,7 @@ async function fixture(busy = false) {
   const request = vi.fn(async (command: CompanionStorageCommand) => {
     const response = store.request(command); if (response.worldClock) response.worldClock.backlog = false; return response;
   });
-  const service = new CompanionMemoryService({ cacheRoot: path.join(root, 'views'), request, runtime: { get: async () => ({ client, profileKey: profile.value }), close: () => client.close() },
+  const service = new CompanionMemoryService({ cacheRoot: path.join(root, 'views'), request, runtime: controlledMemoryRuntime({ get: async () => ({ client, profileKey: profile.value }), close: () => client.close() }),
     configFor: async () => ({ model: 'fixture', apiFormat: 'openai_chat', baseUrl: 'http://fixture.invalid', apiKey: 'fixture-key' }),
     fetchFn: vi.fn(async () => new Response(JSON.stringify({ choices: [{ message: { content: '{"notes":[]}' } }] }))), busy: () => busy, report, changed });
   cleanups.push(() => service.close());

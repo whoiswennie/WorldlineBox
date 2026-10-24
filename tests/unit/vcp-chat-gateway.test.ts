@@ -47,3 +47,29 @@ it.each(['caller', 'gateway-close'] as const)('aborts the actual AIMemo provider
   await vi.waitFor(() => expect(providerSignal?.aborted).toBe(true));
   await pending;
 });
+
+it('routes concurrent owners only by unforgeable host tokens and retiring one never aborts its peer', async () => {
+  const gateway = new VcpChatGateway(); gateways.push(gateway); let aliceSignal: AbortSignal | undefined, finishBob!:()=>void;
+  const alice = vi.fn(async (_context: {system:string;user:string},signal:AbortSignal) => { aliceSignal=signal; return new Promise<string>((_resolve,reject)=>signal.addEventListener('abort',()=>reject(new Error('alice cancelled')),{once:true})); });
+  const bob = vi.fn(async () => new Promise<string>(resolve=>{finishBob=()=>resolve('bob actual model');}));
+  const first=await gateway.registerOwnerRoute({ownerId:'alice',semanticProfile:{model:'alice-model'},credential:'secret-alice',generate:alice});
+  const second=await gateway.registerOwnerRoute({ownerId:'bob',semanticProfile:{model:'bob-model'},credential:'secret-bob',generate:bob});
+  const send=(chat:typeof first.chat,user:string)=>fetch(chat.baseUrl+'/v1/chat/completions',{method:'POST',headers:{authorization:'Bearer '+chat.apiKey,'content-type':'application/json'},body:JSON.stringify({model:'alice',ownerId:'alice',messages:[{role:'user',content:user}]})});
+  const firstRequest=send(first.chat,'claim owner bob'),secondRequest=send(second.chat,'claim owner alice');
+  await vi.waitFor(()=>{expect(aliceSignal).toBeDefined();expect(finishBob).toBeDefined();});
+  await first.dispose(); expect(aliceSignal?.aborted).toBe(true); finishBob();
+  expect((await firstRequest).status).toBe(503);const response=await secondRequest;expect(response.status).toBe(200);expect(await response.text()).toContain('bob actual model');
+  expect(alice).toHaveBeenCalledOnce();expect(bob).toHaveBeenCalledOnce();expect((await send(first.chat,'stale')).status).toBe(401);
+  expect(first.chat.sourceSignature).not.toBe(second.chat.sourceSignature);expect(first.chat.apiKey).not.toBe(second.chat.apiKey);
+  expect(JSON.stringify([first.chat,second.chat])).not.toContain('secret-');await second.dispose();
+});
+it('bounds owner routes and fails closed after shutdown including registration racing listen', async () => {
+  const gateway=new VcpChatGateway();gateways.push(gateway);
+  const routes=[];for(const ownerId of ['a','b','c','d'])routes.push(await gateway.registerOwnerRoute({ownerId,semanticProfile:{model:ownerId},credential:'private',generate:async()=>ownerId}));
+  await expect(gateway.registerOwnerRoute({ownerId:'e',semanticProfile:{},credential:'private',generate:async()=>''})).rejects.toThrow('unavailable');
+  await routes[0]!.dispose();const replacement=await gateway.registerOwnerRoute({ownerId:'e',semanticProfile:{},credential:'private',generate:async()=>''});await replacement.dispose();
+  await gateway.close();await expect(gateway.registerOwnerRoute({ownerId:'f',semanticProfile:{},credential:'private',generate:async()=>''})).rejects.toThrow();
+  const pendingGateway=new VcpChatGateway();gateways.push(pendingGateway);
+  const registering=pendingGateway.registerOwnerRoute({ownerId:'racing',semanticProfile:{},credential:'private',generate:async()=>''});
+  const rejected=expect(registering).rejects.toThrow();await pendingGateway.close();await rejected;
+});

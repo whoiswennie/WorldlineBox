@@ -69,7 +69,7 @@ it.skipIf(process.env.WORLDLINEBOX_MEMORY_SCALE_REAL !== '1')('measures the real
     const started = performance.now(), response = await fetch(input, init);
     modelCalls.push({ purpose, headerLatencyMs: performance.now() - started }); return response;
   };
-  const native = await realMemoryRuntime(root, (context, signal) => generateCompanionText(context, config, signal, { fetchFn, timeoutMs: 90000 }));
+  const native = await realMemoryRuntime(root, (context, signal) => generateCompanionText(context, config, signal, { fetchFn, timeoutMs: 90000 }), { modelFetch: fetchFn });
   const embed = native.encoder.embed.bind(native.encoder);
   vi.spyOn(native.encoder, 'embed').mockImplementation(async (...args) => {
     const started = performance.now(), result = await embed(...args);
@@ -112,7 +112,12 @@ it.skipIf(process.env.WORLDLINEBOX_MEMORY_SCALE_REAL !== '1')('measures the real
       '刚才关于名字和晚间咖啡的说法都不变，不是新约定。',
     ].map(content => store.appendMessage({ conversationId: autoRoom.id, authorId: 'user', content, replyDirective: 'none' }));
     const capture = new CompanionMemoryService({ request, configFor: async () => config,
-      runtime: { ...native.runtime, close: async () => undefined }, cacheRoot: path.join(root, 'auto-views'), fetchFn,
+      runtime: { get: () => native.runtime.get(), describeEmbedding: () => native.runtime.describeEmbedding(),
+        describeGeneration: selection => native.runtime.describeGeneration(selection),
+        acquireGeneration: selection => native.runtime.acquireGeneration(selection),
+        interruptOwner: ownerId => native.runtime.interruptOwner(ownerId),
+        purgeOwner: (ownerId, scopes) => native.runtime.purgeOwner(ownerId, scopes),
+        close: async () => undefined }, cacheRoot: path.join(root, 'auto-views'), fetchFn,
       busy: () => false, changed: () => undefined, report: error => errors.push(String(error)) });
     try {
       capture.schedule(0);

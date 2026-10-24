@@ -1,3 +1,4 @@
+import { controlledMemoryRuntime } from '../fixtures/controlled-memory-runtime';
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -72,7 +73,7 @@ function fixture(count: number) {
     requests.push(structuredClone(command)); if (command.type === 'memory.snapshot') snapshots.push(command.companionId);
     return store.request(command);
   }, configFor, fetchFn, blocked: id => blocked.has(id), busy: () => busy,
-  runtime: { get: async () => ({ client, profileKey: 'owner-fairness-v1' }), close: () => client.close() },
+  runtime: controlledMemoryRuntime({ get: async () => ({ client, profileKey: 'owner-fairness-v1' }), close: () => client.close() }),
   cacheRoot: path.join(root, 'views'), changed: () => undefined, report: reports,
   onTimelineArtifacts: published });
   fixtures.push({ root, store, service });

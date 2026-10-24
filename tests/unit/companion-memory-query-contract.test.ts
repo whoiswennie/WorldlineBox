@@ -1,3 +1,4 @@
+import { controlledMemoryRuntime } from '../fixtures/controlled-memory-runtime';
 import { describe, expect, it, vi } from 'vitest';
 import { CompanionMemoryService } from '../../src/main/companions/memory-service';
 import type { CompanionMemory } from '../../src/shared/companions';
@@ -51,8 +52,8 @@ function fixture(notes: CompanionMemory[]) {
     throw new Error('Unexpected request: ' + command.type);
   });
   const get = vi.fn(async () => ({ client: client as unknown as VcpMemoryClient, profileKey: 'fixture' }));
-  const service = new CompanionMemoryService({ request: request as never, runtime: { get, close: async () => undefined },
-    configFor: async () => { throw new Error('No model'); }, fetchFn: async () => { throw new Error('No network'); },
+  const service = new CompanionMemoryService({ request: request as never, runtime: controlledMemoryRuntime({ get, close: async () => undefined }),
+    configFor: async () => ({ apiFormat: 'openai_chat', model: 'controlled-generation', apiKey: 'controlled-key', baseUrl: 'https://fixture.invalid' }), fetchFn: async () => { throw new Error('No network'); },
     changed: () => undefined, report: () => undefined, busy: () => false });
   return { service, client, scopes, get, request };
 }

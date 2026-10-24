@@ -77,6 +77,7 @@ export class CompanionMemoryService {
   private readonly invalidations = new Map<string, Promise<void>>();
   private readonly views: CompanionMemoryViewCache;
   private readonly generations = new Map<string, number>();
+  private readonly generationSignals = new Map<string, AbortController>();
   private readonly registeredScopes = new Map<string, Map<string, VcpMemoryClient>>();
   private readonly continuityCandidates = new Map<string, MemoryScope>();
   private readonly continuityAttempts = new Map<string, { revision: string; profileKey: string; identitySignature: string; retryAt: number }>();
@@ -189,6 +190,40 @@ export class CompanionMemoryService {
     const owner = state?.companions.find(companion => companion.id === companionId);
     if (!owner) throw new Error('记忆所属伙伴已不可访问。');
     return companionMemoryIdentity(owner);
+  }
+  private async generationSelection(ownerId: string, generation = this.generation(ownerId)) {
+    this.assertCurrent(ownerId, generation);
+    const companion = (await this.options.request({ type: 'state', includeConversations: false, includeHidden: true })).state?.companions.find(item => item.id === ownerId);
+    if (!companion || this.options.blocked?.(ownerId)) throw new Error('记忆生成所属伙伴已不可访问或暂停。');
+    const config = Object.freeze({ ...await this.options.configFor(companion) });
+    this.assertCurrent(ownerId, generation);
+    if (!config.model?.trim() || !config.apiKey?.trim()) throw new Error('尚未配置此伙伴可用的聊天模型。');
+    return { ownerId, config };
+  }
+  private generationSignal(ownerId: string, signal?: AbortSignal) {
+    let controller = this.generationSignals.get(ownerId);
+    if (!controller) { controller = new AbortController(); this.generationSignals.set(ownerId, controller); }
+    return signal ? AbortSignal.any([controller.signal, signal]) : controller.signal;
+  }
+  private async embeddingProfile() {
+    if (!this.options.runtime?.describeEmbedding) throw new Error('记忆运行未连接向量配置元数据接口。');
+    return this.options.runtime.describeEmbedding();
+  }
+  private async verifyGenerationSelection(selection: { ownerId: string; config: Readonly<CompanionModelConfig> }, generation: number) {
+    const current = await this.generationSelection(selection.ownerId, generation);
+    if (current.config.apiFormat !== selection.config.apiFormat || current.config.model !== selection.config.model
+      || current.config.baseUrl !== selection.config.baseUrl || current.config.apiKey !== selection.config.apiKey)
+      throw new Error('原生生成期间伙伴模型连接或凭证已经变化，旧结果不予发布。');
+  }
+  /** A model change revokes only generation routes; core indexing remains usable. */
+  async generationConfigurationChanged(ownerId?: string): Promise<void> {
+    const companions = (await this.options.request({ type: 'state', includeConversations: false, includeHidden: true })).state?.companions ?? [];
+    const owners = ownerId ? [ownerId] : companions.filter(companion => !companion.llm).map(companion => companion.id);
+    for (const owner of owners) {
+      this.generationSignals.get(owner)?.abort(); this.generationSignals.delete(owner);
+      await this.options.runtime?.interruptOwner?.(owner);
+      for (const key of this.continuityAttempts.keys()) if (key.startsWith(`${owner}:`)) this.continuityAttempts.delete(key);
+    }
   }
   private ownedArtifacts(artifacts: VcpMemoryTimelineArtifacts | undefined, owner: VcpMemoryOwnerIdentity, timeZone?: string): artifacts is VcpMemoryTimelineArtifacts {
     return !!artifacts && sameCompanionMemoryIdentity(artifacts.owner, owner) && artifacts.agents.every(agent => agent.agentName === owner.agentName)
@@ -309,7 +344,7 @@ export class CompanionMemoryService {
         { owner, sourceRevision: snapshot.revision, now: input.now, clockDomain: input.clockDomain, notes }));
       const verified = (await this.options.request({ type: 'memory.snapshot', companionId: input.companionId, conversationId: input.conversationId })).memorySnapshot;
       this.assertCurrent(input.companionId, generation);
-      if (!verified || verified.revision !== snapshot.revision || (await operational('runtime_unavailable', () => this.options.runtime!.get())).profileKey !== runtime.profileKey
+      if (!verified || verified.revision !== snapshot.revision || (await operational('runtime_unavailable', () => this.embeddingProfile())).profileKey !== runtime.profileKey
         || !sameCompanionMemoryIdentity(await this.ownerIdentity(input.companionId), owner)) throw new Error('梦境联想的来源、授权或模型已经变化，不予发布。');
       if (result.sourceRevision !== snapshot.revision || !sameCompanionMemoryIdentity(result.owner, owner)
         || result.clockDomain !== input.clockDomain || result.now !== input.now) throw new Error('梦境联想的归属或时间凭证不匹配。');
@@ -334,23 +369,33 @@ export class CompanionMemoryService {
       await runtime.client.interruptScope({ scopeId: view.replacedScopeId }); await runtime.client.purgeScope({ scopeId: view.replacedScopeId });
       this.registeredScopes.get(scope.companionId)?.delete(view.replacedScopeId);
     }
-    const catalog = projectCompanionMemoryRetrievalModes(await runtime.client.capabilities(view));
+    const capabilities = await runtime.client.capabilities(view);
+    let configured = false;
+    try {
+      const selection = await this.generationSelection(scope.companionId, generation);
+      configured = !!this.options.runtime.acquireGeneration && !!await this.options.runtime.describeGeneration?.(selection);
+    } catch { /* Missing owner generation configuration never disables vector-only modes. */ }
+    const modes = { ...capabilities.modes };
+    for (const id of ['passive', 'timeline'] as const) if (modes[id]) modes[id] = { ...modes[id], available: configured, configured,
+      exposure: `${modes[id].exposure}:owner_configuration_not_probed`,
+      ...(!configured ? { reason: '尚未配置此伙伴可用的原生生成连接。' } : {}) };
+    const catalog = projectCompanionMemoryRetrievalModes({ ...capabilities, modes });
     this.assertCurrent(scope.companionId, generation);
-    if ((await this.options.runtime.get()).profileKey !== runtime.profileKey || !sameCompanionMemoryIdentity(await this.ownerIdentity(scope.companionId), owner)) throw new Error('记忆运行配置在能力发现期间发生变化，请重试。');
+    if ((await this.embeddingProfile()).profileKey !== runtime.profileKey || !sameCompanionMemoryIdentity(await this.ownerIdentity(scope.companionId), owner)) throw new Error('记忆运行配置在能力发现期间发生变化，请重试。');
     await view.commit();
     return { ok: true, memoryRetrievalModes: catalog };
   }
-  private async searchScoped(query: CompanionMemorySearch, mode: 'active' | 'passive', history: readonly VcpMemoryMessage[] = []): Promise<CompanionStorageResponse> {
+  private async searchScoped(query: CompanionMemorySearch, mode: 'active' | 'passive', history: readonly VcpMemoryMessage[] = [], signal?: AbortSignal): Promise<CompanionStorageResponse> {
     if (query.retrievalOptions && !query.query?.trim()) throw new Error('可选检索模式需要非空查询；按日期浏览请使用 from/to。');
     if (!query.query?.trim()) return this.options.request({ ...query, type: 'memory.browse' });
     const key = identityFor(query);
     const generation = this.generation(query.companionId);
     const pending = Promise.all([this.queryTails.get(key), this.invalidations.get(query.companionId)])
-      .catch(() => undefined).then(() => { this.assertCurrent(query.companionId, generation); return this.searchView(query, mode, generation, history); });
+      .catch(() => undefined).then(() => { signal?.throwIfAborted(); this.assertCurrent(query.companionId, generation); return this.searchView(query, mode, generation, history, signal); });
     this.queryTails.set(key, pending);
     try { return await pending; } finally { if (this.queryTails.get(key) === pending) this.queryTails.delete(key); }
   }
-  private async searchView(query: CompanionMemorySearch, mode: 'active' | 'passive', generation: number, history: readonly VcpMemoryMessage[]): Promise<CompanionStorageResponse> {
+  private async searchView(query: CompanionMemorySearch, mode: 'active' | 'passive', generation: number, history: readonly VcpMemoryMessage[], signal?: AbortSignal): Promise<CompanionStorageResponse> {
     const scope = { companionId: query.companionId, conversationId: query.conversationId, beforeSequence: query.beforeSequence };
     for (let attempt = 0; attempt < 3; attempt++) {
       const capturedAt = new Date().toISOString();
@@ -375,7 +420,15 @@ export class CompanionMemoryService {
       // day refreshes volatile answers, never the physical corpus or provenance.
       const projectionSignature = JSON.stringify([companionMemoryIdentitySignature(owner), clock.timeZone, 'civil-projection-v1']);
       if (!this.options.runtime) throw new Error('内置向量服务尚未就绪，请在全局模型页面查看运行状态或修复。');
-      const runtime = await this.options.runtime.get();
+      // Passive AIMemo generates; explicit suffixes and the raw LightMemo call
+      // below do not. The latter explicitly disables its optional AI bridge.
+      const selection = mode === 'passive' ? await this.generationSelection(scope.companionId, generation) : undefined;
+      const generationSignal = selection ? this.generationSignal(scope.companionId, signal) : signal;
+      if (selection && !this.options.runtime.acquireGeneration) throw new Error('原生记忆生成未连接此伙伴的模型路由。');
+      const lease = selection ? await this.options.runtime.acquireGeneration!({ ...selection, signal: generationSignal }) : undefined;
+      const runtime = lease ?? await this.options.runtime.get();
+      try {
+      generationSignal?.throwIfAborted();
       const project = async (notes: readonly CompanionMemory[], lane: 'filtered' | 'context') => {
         // Exactly two bounded projection lanes per owner/profile. Repeating a
         // query/page reuses its index; removals or revisions create a fresh graph.
@@ -464,7 +517,7 @@ export class CompanionMemoryService {
       } else if (contextView) {
         if (!notebooks.length) contextText = '';
         else {
-          const light = await runtime.client.pluginCall(contextView, 'LightMemo', { folder: notebooks.join(','), query: query.query, k: query.limit ?? 20, enginemode: 'rivermemo' });
+          const light = await runtime.client.pluginCall(contextView, 'LightMemo', { folder: notebooks.join(','), query: query.query, k: query.limit ?? 20, enginemode: 'rivermemo', aimemo: false });
           contextReferences = light.contextReferences;
           referenceCoverage = light.contextReferenceCoverage ?? (contextReferences ? 'observed' : 'unavailable');
           contextText = typeof light.result === 'string' ? light.result : JSON.stringify(light.result);
@@ -473,11 +526,14 @@ export class CompanionMemoryService {
       const observedModes = query.retrievalOptions && contextView ? projectCompanionMemoryRetrievalModes(await runtime.client.capabilities(contextView)) : undefined;
       const verified = (await this.options.request({ type: 'memory.snapshot', ...scope })).memorySnapshot;
       if (!verified || verified.revision !== snapshot.revision) continue;
-      const currentProfile = await this.options.runtime.get();
+      const currentProfile = selection ? await this.options.runtime.describeGeneration?.(await this.generationSelection(scope.companionId, generation)) : await this.embeddingProfile();
+      generationSignal?.throwIfAborted();
       this.assertCurrent(scope.companionId, generation);
-      if (currentProfile.profileKey !== runtime.profileKey) continue;
+      if (currentProfile?.profileKey !== runtime.profileKey) continue;
       if (!sameCompanionMemoryIdentity(await this.ownerIdentity(scope.companionId), owner)) continue;
       if ((await this.options.request({ type: 'world.clock' })).worldClock?.timeZone !== clock.timeZone) continue;
+      if (selection) await this.verifyGenerationSelection(selection, generation);
+      generationSignal?.throwIfAborted();
       this.queueContinuity(scope);
       const references = (contextReferences ?? []).flatMap(reference => {
         const note = contextNotes.find(note => note.id === reference.id);
@@ -496,6 +552,7 @@ export class CompanionMemoryService {
         result, hits: page, contextText, contextReferences: references }), memoryContext: { text: contextText, revision: snapshot.revision, profileKey: runtime.profileKey,
         evidence }, memoryPage: { items: page, hasMore: end < hits.length,
         ...(end < hits.length ? { nextCursor: end } : {}) } };
+      } finally { await lease?.release(); }
     }
     throw new Error('记忆来源在查询期间发生变化，请重试。');
   }
@@ -520,7 +577,7 @@ export class CompanionMemoryService {
     const status = (await this.options.request({ type: 'memory.status', companionId: input.companion.id })).memoryStatus;
     this.schedule();
     try {
-      const result = await this.searchScoped({ ...query, ...scope }, 'passive', history);
+      const result = await this.searchScoped({ ...query, ...scope }, 'passive', history, input.signal);
       input.signal?.throwIfAborted();
       const hits = result.memoryPage?.items ?? [];
       return { memories: hits.map(hit => hit.memory), sources: [], reasons: hits.map(hit => ({ id: hit.memory.id, version: hit.memory.version, reasons: hit.reasons, path: hit.path })),
@@ -537,7 +594,12 @@ export class CompanionMemoryService {
   async contextValid(scope: { companionId: string; conversationId: string; beforeSequence?: number }, context?: { revision: string; profileKey: string }): Promise<boolean> {
     if (!context) return true;
     const snapshot = (await this.options.request({ type: 'memory.snapshot', ...scope })).memorySnapshot;
-    return snapshot?.revision === context.revision && (await this.options.runtime?.get())?.profileKey === context.profileKey;
+    if (snapshot?.revision !== context.revision || !this.options.runtime) return false;
+    try {
+      if ((await this.embeddingProfile()).profileKey === context.profileKey) return true;
+      const selection = await this.generationSelection(scope.companionId);
+      return (await this.options.runtime.describeGeneration?.(selection))?.profileKey === context.profileKey;
+    } catch { return false; }
   }
   /** Volatile prompt freshness. A new world day requests another recall but
    * does not revoke an old reply or the factual provenance of its source. */
@@ -552,19 +614,26 @@ export class CompanionMemoryService {
   invalidate(owner: string, canonicalScopes: readonly string[] = []): Promise<void> {
     if (this.closed) return Promise.resolve();
     this.generations.set(owner, this.generation(owner) + 1);
+    this.generationSignals.get(owner)?.abort(); this.generationSignals.delete(owner);
     const capture = this.captures.get(owner);
     capture?.controller.abort();
     const scopes = this.registeredScopes.get(owner) ?? new Map<string, VcpMemoryClient>();
     const interruptions = [...scopes].map(([scopeId, client]) => client.interruptScope({ scopeId }));
+    if (this.options.runtime?.interruptOwner) interruptions.push(this.options.runtime.interruptOwner(owner));
     const active = [...this.queryTails].filter(([key]) => key.startsWith(`${owner}:`)).map(([, pending]) => pending);
     const continuity = this.continuity?.owner === owner ? this.continuity.promise : undefined;
     const cleanup = (this.invalidations.get(owner) ?? Promise.resolve()).catch(() => undefined).then(async () => {
       await Promise.all(interruptions);
       await Promise.allSettled([...active, continuity, capture?.settled]);
       const views = await this.views.invalidateOwner(owner);
-      const runtime = await this.options.runtime?.get();
-      if (runtime) for (const scopeId of new Set([...canonicalScopes, ...views.filter(view => view.profileKey === runtime.profileKey).map(view => view.scopeId)])) scopes.set(scopeId, scopes.get(scopeId) ?? runtime.client);
-      for (const [scopeId, client] of scopes) await client.purgeScope({ scopeId });
+      if (this.options.runtime?.purgeOwner) await this.options.runtime.purgeOwner(owner, {
+        canonicalScopes: [...new Set([...canonicalScopes, ...scopes.keys()])], historicalViews: views });
+      else {
+        // Old test ports may still own their currently registered scopes. They
+        // cannot certify cleanup of an unopened historical projection.
+        if ([...canonicalScopes, ...views.map(view => view.scopeId)].some(scope => !scopes.has(scope))) throw new Error('记忆运行未连接历史投影清理接口。');
+        for (const [scopeId, client] of scopes) await client.purgeScope({ scopeId });
+      }
       this.registeredScopes.delete(owner);
       for (const key of this.continuityAttempts.keys()) if (key.startsWith(`${owner}:`)) this.continuityAttempts.delete(key);
       for (const key of this.generatedMonths.keys()) if (key.startsWith(`${owner}:`)) this.generatedMonths.delete(key);
@@ -598,14 +667,16 @@ export class CompanionMemoryService {
     const identity = identityFor(scope), previous = this.continuityAttempts.get(identity);
     const snapshot = (await this.options.request({ type: 'memory.snapshot', ...scope })).memorySnapshot;
     if (!snapshot?.notes.length) return false;
-    const runtime = await this.options.runtime!.get();
-    const state = (await this.options.request({ type: 'state', includeConversations: false, activeOnly: true })).state;
-    const companion = state?.companions.find(companion => companion.id === scope.companionId);
-    if (!companion || !(await this.options.configFor(companion)).model?.trim()) return false;
+    if (!this.options.runtime?.acquireGeneration || !this.options.runtime.describeGeneration) throw new Error('原生时间线未连接此伙伴的模型路由。');
+    const selection = await this.generationSelection(scope.companionId, generation);
+    const generationSignal = this.generationSignal(scope.companionId);
+    const runtime = await this.options.runtime.acquireGeneration({ ...selection, signal: generationSignal });
+    try {
+    generationSignal.throwIfAborted();
     const worldClock = (await this.options.request({ type: 'world.clock' })).worldClock;
     if (!worldClock) throw new Error('时间线整理的宿主世界时钟暂不可用。');
     const timeZone = worldClock.timeZone;
-    const owner = companionMemoryIdentity(companion), identitySignature = JSON.stringify([companionMemoryIdentitySignature(owner), timeZone, 'civil-projection-v1']);
+    const owner = await this.ownerIdentity(scope.companionId), identitySignature = JSON.stringify([companionMemoryIdentitySignature(owner), timeZone, 'civil-projection-v1']);
     if (previous?.revision === snapshot.revision && previous.profileKey === runtime.profileKey && previous.identitySignature === identitySignature && previous.retryAt > Date.now()) return false;
     if (this.options.blocked?.(scope.companionId)) return false;
     const processing = this.beginTimelineProcessing(scope, owner, snapshot.revision);
@@ -626,7 +697,7 @@ export class CompanionMemoryService {
       return false;
     }
     const capabilities = await runtime.client.capabilities(view);
-    if (!capabilities.timelineGenerationConfigured) throw new Error('VCP 时间线未连接全局聊天模型，后台整理将稍后重试。');
+    if (!capabilities.timelineGenerationConfigured) throw new Error('VCP 时间线未连接此伙伴可用的聊天模型，后台整理将稍后重试。');
     await runtime.client.replace(view, snapshot.notes.map(note => runtimeNote(note, owner, timeZone)));
     this.assertCurrent(scope.companionId, generation);
     await view.commit();
@@ -644,11 +715,14 @@ export class CompanionMemoryService {
       this.assertCurrent(scope.companionId, generation);
       if (this.options.blocked?.(scope.companionId)) throw new Error('伙伴已暂停，后台时间线不会继续发布。');
       const current = (await this.options.request({ type: 'memory.snapshot', ...scope })).memorySnapshot;
-      const profile = await this.options.runtime!.get();
+      const profile = await this.options.runtime!.describeGeneration!(await this.generationSelection(scope.companionId, generation));
+      generationSignal.throwIfAborted();
       this.assertCurrent(scope.companionId, generation);
       if (current?.revision !== snapshot.revision || profile.profileKey !== runtime.profileKey) throw new Error('时间线生成期间来源或模型已变化，结果不予发布。');
       if (!sameCompanionMemoryIdentity(await this.ownerIdentity(scope.companionId), owner)) throw new Error('伙伴身份已变化，旧时间线不会继续发布。');
       if ((await this.options.request({ type: 'world.clock' })).worldClock?.timeZone !== timeZone) throw new Error('世界日历时区已变化，旧月份的时间线不会继续发布。');
+      await this.verifyGenerationSelection(selection, generation);
+      generationSignal.throwIfAborted();
     };
     if (month) {
       const generationKey = `${identity}\n${runtime.profileKey}\n${identitySignature}\n${month}`, generatedAt = this.generatedMonths.get(generationKey);
@@ -689,6 +763,7 @@ export class CompanionMemoryService {
         ...(cancelled ? {} : { nextAttemptAt: new Date(retryAt).toISOString() }) });
       throw cause;
     }
+    } finally { await runtime.release(); }
   }
 
   private async deliver(): Promise<void> {
@@ -805,6 +880,8 @@ export class CompanionMemoryService {
   }
   async close(): Promise<void> {
     this.closed = true;
+    for (const controller of this.generationSignals.values()) controller.abort();
+    this.generationSignals.clear();
     if (this.timer) clearTimeout(this.timer);
     for (const capture of this.captures.values()) capture.controller.abort();
     for (const owner of this.registeredScopes.keys()) this.generations.set(owner, this.generation(owner) + 1);

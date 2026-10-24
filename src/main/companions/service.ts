@@ -542,7 +542,7 @@ export class CompanionService {
   configurationChanged() {
     if (this.closed) return;
     void this.initialization.then(() => { if (!this.closed) return this.call({ type: 'memory.jobs.retry' }); })
-      .then(() => { if (!this.closed) this.memory.schedule(0); }).catch(this.options.report);
+      .then(async () => { if (!this.closed) { await this.memory.generationConfigurationChanged(); this.memory.schedule(0); } }).catch(this.options.report);
     this.changed();
     this.schedules.wake();
   }
@@ -685,6 +685,7 @@ export class CompanionService {
         if (id && companion.llm && request.apiKey !== undefined) await this.credentials.save(id, request.apiKey.trim());
         const old = previous?.companions.find(role => role.id === id);
         if (old && (old.persona !== companion.persona || JSON.stringify(old.llm) !== JSON.stringify(companion.llm) || request.apiKey !== undefined)) {
+          if (JSON.stringify(old.llm) !== JSON.stringify(companion.llm) || request.apiKey !== undefined) await this.memory.generationConfigurationChanged(id);
           const rooms = new Set(previous!.conversations.filter(room => room.memberIds.includes(id!)).map(room => room.id));
           for (const [controller, roomId] of this.replyControllers) if (rooms.has(roomId)) controller.abort();
         }

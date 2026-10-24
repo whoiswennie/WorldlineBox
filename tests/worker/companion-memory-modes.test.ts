@@ -1,3 +1,4 @@
+import { controlledMemoryRuntime } from '../fixtures/controlled-memory-runtime';
 import { mkdtemp } from 'node:fs/promises';
 import path from 'node:path';
 import { tmpdir } from 'node:os';
@@ -18,8 +19,8 @@ it('discovers actual original modes, rejects missing dependencies, and executes 
   const delivery = store.request({ type: 'memory.outbox.claim' }).memoryOutbox!;
   store.request({ type: 'memory.outbox.complete', id: delivery.id, leaseToken: delivery.leaseToken, indexed: true });
   const native = await nativeManagementHarness(root, async command => store.request(command));
-  const service = new CompanionMemoryService({ request: async command => store.request(command), cacheRoot: path.join(root, 'views'), runtime: {
-    get: async () => ({ client: native.client, profileKey: 'synthetic-mode-host' }), close: () => native.client.close() }, configFor: async () => ({ apiFormat: 'openai_chat', baseUrl: '', model: '', apiKey: '' }),
+  const service = new CompanionMemoryService({ request: async command => store.request(command), cacheRoot: path.join(root, 'views'), runtime: controlledMemoryRuntime({
+    get: async () => ({ client: native.client, profileKey: 'synthetic-mode-host' }), close: () => native.client.close() }), configFor: async () => ({ apiFormat: 'openai_chat', baseUrl: '', model: '', apiKey: '' }),
     fetchFn: fetch, busy: () => true, changed: () => undefined, report: () => undefined });
   try {
     const catalog = (await service.retrievalModes(scope)).memoryRetrievalModes!;

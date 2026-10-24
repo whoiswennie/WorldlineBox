@@ -1,3 +1,4 @@
+import { controlledMemoryRuntime } from '../fixtures/controlled-memory-runtime';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -112,7 +113,7 @@ function bindStorage(store: CompanionsStore) {
 function startService(root: string): CompanionService {
   const dsh = { state: () => ({ tasks: [], operations: [] }), requestTask: vi.fn(async () => ({ ok: true })) } as unknown as DshLauncher;
   const client = new FakeVcpClient(root); clients.set(root, client);
-  const runtime: CompanionMemoryRuntime = { get: async () => ({ client, profileKey: 'bundled-gemma2:768' }), close: async () => client.close() };
+  const runtime: CompanionMemoryRuntime = controlledMemoryRuntime({ get: async () => ({ client, profileKey: 'bundled-gemma2:768' }), close: async () => client.close() });
   const service = new CompanionService({ userData: root, workerPath: 'mocked-worker', window: () => undefined, memoryRuntime: runtime,
     getConfig: () => ({ apiFormat: 'openai_chat', model: 'memory-test-chat-model', baseUrl: 'https://provider.invalid', apiKey: 'private-test-key' }),
     hasConfig: () => true, dsh: () => dsh, report: vi.fn() });
@@ -214,7 +215,7 @@ describe('VCP companion memory through the main service and real SQLite', () => 
       if (failure === 'runtime') throw Error('Operational failure with private endpoint details that must not be persisted.');
       return { client, profileKey: 'optional-dream-fixture' };
     });
-    const memory = new CompanionMemoryService({ cacheRoot: path.join(f.root, 'optional-dream-views'), runtime: { get, close: async () => client.close() },
+    const memory = new CompanionMemoryService({ cacheRoot: path.join(f.root, 'optional-dream-views'), runtime: controlledMemoryRuntime({ get, close: async () => client.close() }),
       request: async command => {
         const response = f.store.request(command);
         if (cancelDuringOwnerCheck && command.type === 'state') { cancelDuringOwnerCheck = false; memory.cancelCompanion('sister'); }

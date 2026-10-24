@@ -8,6 +8,8 @@ import { VcpChatGateway } from '../../src/main/vcp-chat-gateway';
 import { VcpMemoryClient, type VcpMemoryTransport } from '../../src/main/vcp-memory/client';
 import type { VcpMemoryPluginConfiguration } from '../../src/main/vcp-memory/contracts';
 import { ColdKnowledgeService, type ColdKnowledgeServiceOptions } from '../../src/main/vcp-memory/cold-service';
+import { CompanionVcpRuntime } from '../../src/main/companions/vcp-runtime';
+import { generateCompanionText, COMPANION_TEXT_GENERATION_PROFILE } from '../../src/main/companions/model';
 
 export interface RealColdWorkerObservation {
   direction: 'request' | 'response'; requestId: string; commandType: string; ok?: boolean;
@@ -17,7 +19,7 @@ export interface RealColdWorkerObservation {
 }
 
 export async function realMemoryRuntime(root: string, generate?: (context: { system: string; user: string }, signal: AbortSignal) => Promise<string>,
-  options: { observeColdWorker?(event: RealColdWorkerObservation): void } = {}) {
+  options: { observeColdWorker?(event: RealColdWorkerObservation): void; modelFetch?: typeof fetch } = {}) {
   const encoder = new GlobalEmbeddingService({ userDataPath: path.join(root, 'encoder'), bundleDirectory: path.resolve('resources/embedding-models'), koffiPath: createRequire(import.meta.url).resolve('koffi') });
   const profile = await encoder.resolveProfile(); const gateway = new VcpEmbeddingGateway(encoder);
   const configuration = await gateway.configuration(profile.selectionId, profile);
@@ -73,6 +75,17 @@ export async function realMemoryRuntime(root: string, generate?: (context: { sys
       launch: childLaunch, maxOpenScopes: 2, requestTimeoutMs: 120000 });
     extraClients.push(instance); return instance;
   };
-  const runtime = { get: async () => ({ client, profileKey: profile.profileKey }), close: () => client.close() };
-  return { client, encoder, gateway, runtime, profile, profileClient, cold, close: async () => { await Promise.all(coldServices.map(service => service.close())); await Promise.all(extraClients.map(client => client.close())); await client.close(); await chat?.close(); await gateway.close(); await encoder.close(); } };
+  // Direct parity clients above retain their explicit test callback. Main's
+  // generation path uses the production runtime and the actual owner snapshot.
+  const ownerChat = new VcpChatGateway();
+  const runtime = new CompanionVcpRuntime({ dataRoot: path.join(root, 'owner-runtime'), vendorRoot: path.resolve('vendor/vcp-memory'),
+    workerPath: path.resolve('src/main/vcp-memory/worker.cjs'), resolveEmbedding: async () => configuration, launch: childLaunch,
+    generationProfile: COMPANION_TEXT_GENERATION_PROFILE, resolveGenerationPlugins: async input => {
+      const snapshot = Object.freeze({ ...input.config });
+      const route = await ownerChat.registerOwnerRoute({ ownerId: input.ownerId, credential: snapshot.apiKey,
+        semanticProfile: { ownerId: input.ownerId, profileKey: input.profileKey, generation: COMPANION_TEXT_GENERATION_PROFILE },
+        generate: (context, signal) => generateCompanionText(context, snapshot, signal, { fetchFn: options.modelFetch, timeoutMs: 120000 }) });
+      return { plugins: { chat: route.chat }, dispose: route.dispose };
+    } });
+  return { client, encoder, gateway, runtime, profile, profileClient, cold, close: async () => { await runtime.close(); await ownerChat.close(); await Promise.all(coldServices.map(service => service.close())); await Promise.all(extraClients.map(client => client.close())); await client.close(); await chat?.close(); await gateway.close(); await encoder.close(); } };
 }

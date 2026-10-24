@@ -4,6 +4,7 @@ import { EventEmitter } from 'node:events';
 import { readdir } from 'node:fs/promises';
 import { utilityProcess } from 'electron';
 import { detachRuntimeDependencyLinks, removeOwnedDirectory } from './filesystem';
+import { VcpMemoryProcessBroker } from './process-broker';
 import type { VcpMemoryDreamWaveRequest, VcpMemoryDreamWaveResult } from './dream-contracts';
 import type {
   VcpMemoryCommand, VcpMemoryDeleteReceipt, VcpMemoryEmbeddingConfig, VcpMemoryNote,
@@ -29,6 +30,7 @@ export interface VcpMemoryClientOptions {
   requestTimeoutMs?: number;
   maxOpenScopes?: number;
   plugins?: VcpMemoryPluginConfiguration;
+  processBroker?: VcpMemoryProcessBroker;
   /** Tests can launch the identical CJS worker with Node's fork transport. */
   launch?: (workerPath: string) => VcpMemoryTransport;
 }
@@ -40,6 +42,7 @@ interface Pending {
 }
 interface ScopeProcess {
   key: string;
+  brokerIdentity: symbol;
   transport: VcpMemoryTransport;
   ready: Promise<void>;
   pending: Map<string, Pending>;
@@ -49,6 +52,8 @@ interface ScopeProcess {
   failed: boolean;
   detached?: Promise<void>;
   retirement?: Promise<void>;
+  finalized?: Promise<void>;
+  stopping?: Promise<void>;
 }
 
 function launchUtility(workerPath: string): VcpMemoryTransport {
@@ -73,12 +78,15 @@ export class VcpMemoryClient {
   private scopeGenerations = new Map<string, number>();
   private closed = false;
   private poolTail: Promise<unknown> = Promise.resolve();
+  private readonly broker: VcpMemoryProcessBroker;
+  private readonly brokerNamespace = randomUUID();
 
   constructor(private readonly options: VcpMemoryClientOptions) {
     if (!Number.isInteger(options.embedding.dimension) || options.embedding.dimension < 1 || options.embedding.dimension > 4096) throw new Error('VCP embedding dimension must be between 1 and 4096.');
+    this.broker = options.processBroker ?? new VcpMemoryProcessBroker(Math.max(1, Math.floor(options.maxOpenScopes ?? 4)));
   }
   hasOpenScope(scope: VcpMemoryScope): boolean {
-    const child = this.scopes.get(scopeKey(scope)); return Boolean(child && !child.failed);
+    const child = this.scopes.get(scopeKey(scope)); return Boolean(child && !child.failed && !child.stopping);
   }
 
   private rejectAll(child: ScopeProcess, error: Error): void {
@@ -87,6 +95,7 @@ export class VcpMemoryClient {
   }
   private failProcess(child: ScopeProcess, error: Error): void {
     if (child.failed) return;
+    this.broker.beginRetirement(`${this.brokerNamespace}:${child.key}`, child.brokerIdentity);
     child.failed = true;
     this.rejectAll(child, error);
     for (const [key, candidate] of this.scopes) if (candidate === child) this.scopes.delete(key);
@@ -94,29 +103,39 @@ export class VcpMemoryClient {
     this.trackRetirement(child);
   }
   private trackRetirement(child: ScopeProcess): void {
-    const retirement = child.retirement ??= this.waitForExit(child);
+    const retirement = this.waitForExit(child);
     this.retiring.set(child.key, retirement);
-    void retirement.then(() => { if (this.retiring.get(child.key) === retirement) this.retiring.delete(child.key); }, () => undefined);
+    // Reporting a shutdown timeout must not abandon eventual exit cleanup.
+    // Keep its permit until exit+detach, then unblock the scope even if the
+    // original caller already received the timeout error.
+    void child.finalized!.then(() => { if (this.retiring.get(child.key) === retirement) this.retiring.delete(child.key); }, () => undefined);
   }
-  private async waitForExit(child: ScopeProcess): Promise<void> {
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    try {
-      await Promise.race([child.exited, new Promise<never>((_, reject) => {
-        timer = setTimeout(() => reject(new Error('VCP memory process did not exit after shutdown.')), 5_000);
-      })]);
+  private waitForExit(child: ScopeProcess): Promise<void> {
+    return child.retirement ??= this.waitForExitOperation(child);
+  }
+  private async waitForExitOperation(child: ScopeProcess): Promise<void> {
+    child.finalized ??= child.exited.then(async () => {
       child.detached ??= detachRuntimeDependencyLinks(path.join(path.resolve(this.options.dataRoot), child.key));
       await child.detached;
+      this.broker.retired(`${this.brokerNamespace}:${child.key}`, child.brokerIdentity);
+    });
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      await Promise.race([child.finalized, new Promise<never>((_, reject) => {
+        timer = setTimeout(() => reject(new Error('VCP memory process did not exit after shutdown.')), 5_000);
+      })]);
     } finally { if (timer) clearTimeout(timer); }
   }
-  private send(child: ScopeProcess, command: VcpMemoryCommand): Promise<unknown> {
+  private send(child: ScopeProcess, command: VcpMemoryCommand, deadline = Date.now() + (this.options.requestTimeoutMs ?? 180_000)): Promise<unknown> {
     if (child.failed) return Promise.reject(new Error('VCP memory process is no longer available.'));
+    if (Date.now() >= deadline) return Promise.reject(new Error('VCP memory request timed out.'));
     const requestId = randomUUID();
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
         child.pending.delete(requestId);
         const error = new Error('VCP memory request timed out.');
         reject(error); this.failProcess(child, error);
-      }, this.options.requestTimeoutMs ?? 180_000);
+      }, Math.max(1, deadline - Date.now()));
       child.pending.set(requestId, { resolve, reject, timer });
       // The worker contract is JSON. Electron uses structured clone while Node's
       // test fork serializes implicitly; use the same plain payload for both.
@@ -127,36 +146,28 @@ export class VcpMemoryClient {
       }
     });
   }
-  private ensureScope(scope: VcpMemoryScope): Promise<ScopeProcess> {
+  private ensureScope(scope: VcpMemoryScope, deadline: number): Promise<{ child: ScopeProcess; release(): void }> {
     const key = scopeKey(scope), generation = this.scopeGenerations.get(key) ?? 0;
     const assertCurrent = () => {
+      if (this.closed) throw new Error('VCP memory client is closed.');
       if ((this.scopeGenerations.get(key) ?? 0) !== generation) throw new Error('VCP memory scope was interrupted.');
+      if (Date.now() >= deadline) throw new Error('VCP memory request timed out.');
     };
     const result = this.poolTail.then(async () => {
       if (this.closed) throw new Error('VCP memory client is closed.');
       assertCurrent();
-      await this.retiring.get(key);
+      let retired = !this.retiring.has(key), failure: unknown;
+      void this.retiring.get(key)?.then(() => { retired = true; }, error => { failure = error; retired = true; });
+      while (!retired) { assertCurrent(); await new Promise(resolve => setTimeout(resolve, 20)); }
+      if (failure) throw failure;
       if (this.closed) throw new Error('VCP memory client is closed.');
       assertCurrent();
-      const existing = this.scopes.get(key);
-      if (existing) { existing.used = Date.now(); existing.busy++; return existing; }
-      const limit = Math.max(1, Math.floor(this.options.maxOpenScopes ?? 4));
-      const deadline = Date.now() + (this.options.requestTimeoutMs ?? 180_000);
-      while (this.scopes.size >= limit) {
-        if (this.closed) throw new Error('VCP memory client is closed.');
-        assertCurrent();
-        const idle = [...this.scopes.entries()].filter(([, child]) => child.busy === 0 && !child.failed)
-          .sort((left, right) => left[1].used - right[1].used)[0];
-        if (idle) { await this.stopScope(idle[0], idle[1]); break; }
-        if (Date.now() > deadline) throw new Error('VCP memory process pool remained busy.');
-        await new Promise(resolve => setTimeout(resolve, 20));
-      }
-      if (this.closed) throw new Error('VCP memory client is closed.');
-      assertCurrent();
+      const permit = await this.broker.acquire(`${this.brokerNamespace}:${key}`, { assertCurrent,
+        deadline, open: brokerIdentity => {
       const transport = (this.options.launch ?? launchUtility)(this.options.workerPath);
       let acknowledgeExit: () => void = () => undefined;
       const exited = new Promise<void>(resolve => { acknowledgeExit = resolve; });
-      const child: ScopeProcess = { key, transport, pending: new Map(), used: Date.now(), busy: 1, ready: Promise.resolve(), exited, failed: false };
+      const child: ScopeProcess = { key, brokerIdentity, transport, pending: new Map(), used: Date.now(), busy: 0, ready: Promise.resolve(), exited, failed: false };
       this.scopes.set(key, child);
       transport.on('message', message => {
         if (!message || typeof message !== 'object' || !('requestId' in message) || typeof message.requestId !== 'string') return;
@@ -171,6 +182,7 @@ export class VcpMemoryClient {
         }
       });
       transport.on('exit', code => {
+        this.broker.beginRetirement(`${this.brokerNamespace}:${key}`, brokerIdentity);
         acknowledgeExit();
         child.failed = true;
         this.rejectAll(child, new Error(`VCP memory process exited (${code}).`));
@@ -187,15 +199,22 @@ export class VcpMemoryClient {
       } }).then(() => undefined).catch(error => {
         this.failProcess(child, error instanceof Error ? error : new Error(String(error))); throw error;
       });
-      return child;
+      return { stop: () => this.stopScope(key, child) };
+      } });
+      try {
+        assertCurrent(); const child = this.scopes.get(key);
+        if (!child || child.failed) throw new Error('VCP memory process is no longer available.');
+        child.busy++; child.used = Date.now(); return { child, release: permit.release };
+      } catch (error) { permit.release(); throw error; }
     });
     this.poolTail = result.catch(() => undefined);
     return result;
   }
   private async request<T>(scope: VcpMemoryScope, command: VcpMemoryCommand): Promise<T> {
-    const child = await this.ensureScope(scope);
+    const deadline = Date.now() + (this.options.requestTimeoutMs ?? 180_000);
+    const { child, release } = await this.ensureScope(scope, deadline);
     try { await child.ready; return await this.send(child, command) as T; }
-    finally { child.busy--; child.used = Date.now(); }
+    finally { child.busy--; child.used = Date.now(); release(); }
   }
   remember(scope: VcpMemoryScope, note: VcpMemoryNote): Promise<VcpMemoryWriteReceipt> { return this.request(scope, { type: 'remember', note }); }
   replace(scope: VcpMemoryScope, notes: VcpMemoryNote[]): Promise<{ replaced: true; count: number }> { return this.request(scope, { type: 'replace', notes }); }
@@ -218,7 +237,11 @@ export class VcpMemoryClient {
     return this.request(scope, { type: 'import-timelines', sourceRevision, artifacts });
   }
 
-  private async stopScope(key: string, child: ScopeProcess): Promise<void> {
+  private stopScope(key: string, child: ScopeProcess): Promise<void> {
+    this.broker.beginRetirement(`${this.brokerNamespace}:${key}`, child.brokerIdentity);
+    return child.stopping ??= this.stopScopeOperation(key, child);
+  }
+  private async stopScopeOperation(key: string, child: ScopeProcess): Promise<void> {
     const deadline = Date.now() + (this.options.requestTimeoutMs ?? 180_000);
     while (child.busy > 0) {
       if (Date.now() > deadline) {
@@ -235,11 +258,12 @@ export class VcpMemoryClient {
     }
   }
   async closeScope(scope: VcpMemoryScope): Promise<void> {
-    const result = this.poolTail.then(async () => {
-      const key = scopeKey(scope), child = this.scopes.get(key);
-      await this.retiring.get(key);
-      if (child) await this.stopScope(key, child);
-    });
+    const key = scopeKey(scope), child = this.scopes.get(key);
+    this.scopeGenerations.set(key, (this.scopeGenerations.get(key) ?? 0) + 1);
+    // Mark/stop immediately. Queuing stop behind an acquire waiting for this
+    // retiring process would deadlock the per-client admission queue.
+    const stop = child ? this.stopScope(key, child) : this.retiring.get(key);
+    const result = Promise.all([this.poolTail, stop]).then(() => undefined);
     this.poolTail = result.catch(() => undefined);
     return result;
   }
@@ -252,10 +276,9 @@ export class VcpMemoryClient {
     await this.retiring.get(key);
   }
   async purgeScope(scope: VcpMemoryScope): Promise<void> {
+    const closing = this.closeScope(scope);
     const result = this.poolTail.then(async () => {
-      const key = scopeKey(scope), child = this.scopes.get(key);
-      await this.retiring.get(key);
-      if (child) await this.stopScope(key, child);
+      const key = scopeKey(scope); await closing;
       const base = path.resolve(this.options.dataRoot), target = path.resolve(base, key);
       if (path.dirname(target) !== base || !/^[a-f0-9]{64}$/u.test(path.basename(target))) throw new Error('Unsafe VCP scope deletion path.');
       await removeOwnedDirectory(target);

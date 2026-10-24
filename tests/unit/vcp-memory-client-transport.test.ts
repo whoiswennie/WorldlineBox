@@ -1,5 +1,6 @@
 import { EventEmitter } from 'node:events';
 import { describe, expect, it, vi } from 'vitest';
+import { VcpMemoryProcessBroker } from '../../src/main/vcp-memory/process-broker';
 import { VcpMemoryClient, type VcpMemoryTransport } from '../../src/main/vcp-memory/client';
 import type { VcpMemoryCommand } from '../../src/main/vcp-memory/contracts';
 import { createHash } from 'node:crypto';
@@ -54,4 +55,78 @@ describe('VCP worker transport serialization', () => {
       expect(view.commit).not.toHaveBeenCalled();
     } finally { await client.close(); }
   });
+  it('shares four actual children across clients and never evicts an active peer', async () => {
+    const broker = new VcpMemoryProcessBroker(4), live = new Set<EventEmitter>(); let peak = 0;
+    let complete!: () => void; const killed: string[] = [];
+    const launch = () => {
+      const events = new EventEmitter(); live.add(events); peak = Math.max(peak,live.size); let scope = '';
+      const exit = () => { if (!live.delete(events)) return; killed.push(scope); events.emit('exit',0); };
+      return { on: events.on.bind(events), kill: exit, postMessage(message: unknown) {
+        const envelope = message as {requestId:string;command:VcpMemoryCommand};
+        if (envelope.command.type === 'initialize') scope = envelope.command.configuration.scope.scopeId;
+        const reply = () => events.emit('message',{requestId:envelope.requestId,ok:true,value:{}});
+        if (envelope.command.type === 'search' && envelope.command.text === 'hold') complete = () => { reply(); };
+        else { reply(); if (envelope.command.type === 'close') exit(); }
+      } };
+    };
+    const options = { dataRoot:'unused-shared-pool',vendorRoot:'unused',workerPath:'unused',embedding:{baseUrl:'http://127.0.0.1',apiKey:'local-fixture',model:'fixture',dimension:4},processBroker:broker,launch };
+    const alice = new VcpMemoryClient(options), bob = new VcpMemoryClient({...options,dataRoot:'unused-shared-peer'});
+    try {
+      const active = alice.search({scopeId:'alice-active'},{text:'hold'}); await vi.waitFor(() => expect(complete).toBeDefined());
+      for (const scopeId of ['bob-one','bob-two','bob-three','bob-four','bob-five']) await bob.list({scopeId});
+      expect(peak).toBe(4); expect(live.size).toBe(4); expect(killed).not.toContain('alice-active');
+      complete(); await active; expect(broker.snapshot().active).toBe(0);
+    } finally { await Promise.all([alice.close(),bob.close()]); await broker.close(); }
+    expect(live.size).toBe(0);
+  });
+  it('coalesces manual close with LRU retirement and waits for exit before opening a replacement', async () => {
+    const broker = new VcpMemoryProcessBroker(1); let closes = 0, launches = 0, kills = 0, exit!: () => void;
+    const launch = () => {
+      const events = new EventEmitter(); const ordinal = ++launches; let exited = false;
+      const finish = () => { if (exited) return; exited=true; events.emit('exit',0); };
+      return { on:events.on.bind(events), kill() { kills++; if (ordinal !== 1) finish(); }, postMessage(message:unknown) {
+        const envelope = message as {requestId:string;command:VcpMemoryCommand};
+        if (envelope.command.type === 'close') { closes++; if (ordinal === 1) exit = () => { events.emit('message',{requestId:envelope.requestId,ok:true,value:{}}); finish(); }; else { events.emit('message',{requestId:envelope.requestId,ok:true,value:{}}); finish(); } }
+        else events.emit('message',{requestId:envelope.requestId,ok:true,value:{}});
+      } };
+    };
+    const options = {dataRoot:'unused-race',vendorRoot:'unused',workerPath:'unused',embedding:{baseUrl:'http://127.0.0.1',apiKey:'local-fixture',model:'fixture',dimension:4},processBroker:broker,launch};
+    const first = new VcpMemoryClient(options), peer = new VcpMemoryClient({...options,dataRoot:'unused-race-peer'});
+    try {
+      await first.list({scopeId:'one'}); const closing = first.closeScope({scopeId:'one'});
+      const next = peer.list({scopeId:'two'}); await vi.waitFor(() => expect(exit).toBeDefined());
+      await new Promise(resolve => setTimeout(resolve,25)); expect(closes).toBe(1); expect(launches).toBe(1);
+      exit(); await closing; await next; expect(launches).toBe(2); expect(closes).toBe(1);
+      expect(kills).toBe(1); expect(broker.snapshot().processes).toBe(1);
+    } finally { await first.close(); await peer.close(); await broker.close(); }
+  });
+  it('cancels queued admission without spawning after scope interruption and does not renew its original deadline', async () => {
+    const broker = new VcpMemoryProcessBroker(1); let launches=0, finish!:()=>void;
+    const launch = () => { launches++; const events=new EventEmitter(); return {on:events.on.bind(events),kill(){events.emit('exit',0);},postMessage(message:unknown){
+      const envelope=message as {requestId:string;command:VcpMemoryCommand}; const reply=()=>events.emit('message',{requestId:envelope.requestId,ok:true,value:{}});
+      if(envelope.command.type==='search')finish=reply; else {reply();if(envelope.command.type==='close')events.emit('exit',0);}
+    }}; };
+    const options={dataRoot:'unused-cancel',vendorRoot:'unused',workerPath:'unused',embedding:{baseUrl:'http://127.0.0.1',apiKey:'local-fixture',model:'fixture',dimension:4},processBroker:broker,launch};
+    const busy=new VcpMemoryClient(options),waiting=new VcpMemoryClient({...options,dataRoot:'unused-cancel-peer',requestTimeoutMs:100});
+    try {
+      const work=busy.search({scopeId:'busy'},{text:'hold'}); await vi.waitFor(()=>expect(finish).toBeDefined());
+      const pending=waiting.list({scopeId:'cancelled'}), rejected=expect(pending).rejects.toThrow('interrupted');
+      await new Promise(resolve=>setTimeout(resolve,25)); await waiting.interruptScope({scopeId:'cancelled'}); await rejected;
+      expect(launches).toBe(1);
+      const expired=waiting.list({scopeId:'expired'}); await expect(expired).rejects.toThrow(/timed out|busy/u); expect(launches).toBe(1);
+      finish();await work;
+    } finally {await Promise.all([busy.close(),waiting.close()]);await broker.close();}
+  });
+
+  it('reports shutdown timeout but still detaches and releases the exact permit on a later actual exit',async()=>{
+    vi.useFakeTimers();const broker=new VcpMemoryProcessBroker(1),events=new EventEmitter();
+    const client=new VcpMemoryClient({dataRoot:'unused-late-exit',vendorRoot:'unused',workerPath:'unused',embedding:{baseUrl:'http://127.0.0.1',apiKey:'local-fixture',model:'fixture',dimension:4},processBroker:broker,
+      launch:()=>({on:events.on.bind(events),kill(){},postMessage(message:unknown){const envelope=message as {requestId:string};events.emit('message',{requestId:envelope.requestId,ok:true,value:{}});}})});
+    try{
+      await client.list({scopeId:'late-exit'});const closing=client.closeScope({scopeId:'late-exit'}),rejected=expect(closing).rejects.toThrow('did not exit');
+      await vi.advanceTimersByTimeAsync(5_001);await rejected;expect(broker.snapshot().processes).toBe(1);
+      events.emit('exit',0);await vi.waitFor(()=>expect(broker.snapshot().processes).toBe(0));
+    }finally{await client.close().catch(()=>undefined);await broker.close();vi.useRealTimers();}
+  });
+
 });

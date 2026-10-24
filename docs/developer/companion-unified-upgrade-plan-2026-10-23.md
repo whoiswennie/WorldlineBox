@@ -948,3 +948,17 @@ Root全文审读3633525d汇总helper并实际prepared，6e8a47df独审独立从�
 所有厂商专有参数扩展和新外部模型请求保持停止。后续共同类型/lint、完整测试身份账、新源码清单与原30、长程、自然u4及包验收，均须绑定实际冻结后的源码；a7f和历史模型结果不冒充这些开发中的修改已通过。长期目标保持active。
 
 自动阅读配置门已单独完成并保存为本地提交eac3dac：两个生产文件、两个测试文件，未改提供方适配或模型参数。冻结1c5ea212、完整15文件报告90dcdec6、责任账4996e719开头；280通过、2真实门默认skip，旧273身份/状态保留、新增9项通过、无退休，26个本线输入无漂移、4path lint为0。Root独立核原报告、全部四个当前文件/旧备份、完整身份和旧九条unit AST正文，edd4d085审计一致。首轮夹具因实际入座尚未完成及混入作息setup旧capture而RED，原件保留；修正只在新grant和Main服务之前结清夹具旧capture，并等待真实world就绪，自动阅读的新receipt/source/capture没有被替代或删除。本线是配置准入和自动读取机制验收，数量生产文件同时在开发，故尚不能当作共同冻结源码、任意模型语义质量或native路由已完成。
+
+### 16.52 用户模型路由与通用命题修复的共同回归完成，最终验收剩五类（2026-10-24）
+
+本节更新16.51的开发状态。通用数量修复已实现并提交b3d40d3：host绑定原文出处ID，模型只选有据命题及角色，所有相关肯定断言分别保留第五复核义务，未知不自动变安全；未修改原sourcev6、数学与pending优先级、有限格式/作者预算或原业务期待。冻结b2ef3686开头的7个完整文件451通过、7默认skip，旧444身份/状态保留、新14项、零退休；独审4b21e289与67ba10e4开头。证据ID证明出处，不证明模型语义正确；新v9尚无远端模型通过结果，旧实际RED保持。
+
+原生AIMemo和月度时间线的生成现在显式绑定任务owner及其实际配置快照，复用原多提供方生成适配，不依赖固定全局模型或厂商专有参数。generation lease与普通embedding管理分离；不可变owner路由、配置/凭证变化取消、最终配置重核、共享四个hot子进程额度、实际退出与依赖释放后归还额度、历史owner/profile/scope清理均已实现。冷库保留独立worker边界，不冒称共享hot四进程上限涵盖cold。读取、管理、撤回和清理不强制要求聊天模型；显式全局自动标签设置仍依原政策。
+
+Core冻结f4f981e9、caller冻结14e37920开头，分别经edd8a3ea、670eaa1e独立源码核对，无新确认硬阻。Root新增真实SQLite/实际Main配置解析/生产MemoryService与native worker组件场景，受控Anthropic和Gemini上游分别收到各owner配置；取消Alpha时Beta同一focus子进程仍能继续，清理后零遗留子进程。原件native-owner-root-component-first-2026-10-24-tests.json为1通过；审计9eec6237开头。此处上游响应、embedding和safeStorage有明确受控边界，未证明远端模型内容质量、Windows加密或完整应用启动。
+
+首轮共同检查main类型失败，extension和全仓lint退出0；错误来自新增传输夹具缺必填模拟apiKey，以及真实scale opt-in夹具对runtime类实例使用spread遗漏原型方法。只修正夹具，保原失败记录和原业务断言；scale仍为默认skip，不能称实际规模验收完成。第二轮共同main、extension类型和全仓lint均退出0；七条既有renderer warning不变。随后以同一源码跑81个完整相关文件：1082项中1052通过、0失败、30默认skip。原件unified-vcp-final-owner-routes-propositions-final-related-union-2026-10-24-tests.json，SHA256 3f9c1cc66c38e5a85203b033dc997fdabb8d8f9ded5b8c625c8c04c36586df5c；没有新远端请求。
+
+Root共同封口owner-routing-propositions-root-joint-closure-2026-10-24.json，SHA256 c978279c5c20ea46605e686eb52d33a26188adcfbffc064b889cdba33f3eea2b：复用原package collector完整重枚举3898输入，增删改/哈希均无漂移；类型/lint与81文件两轮各3089守卫输入一致，Core9、caller25、数量9个当前冻结记录逐项核对。封口初稿漏读数量freeze的files映射、计为0条的形状问题及修正版均保留，不替代或重写测试。新parent为unified-final-package-2026-10-24T10-42-53-781Z-5a832dc5-prepare-only-source-sha256.json（a7cac116开头），仅prepare，未构建安装包。全仓旧汇总8d21cc9c尚未吸收本轮，不将分线报告相加冒充新全仓全绿。
+
+用户询问约28小时后的进度时，六类剩余项中的第一类“通用修复及多模型路由共同机制回归”刚完成，故当前剩五类最终验收：（1）新v9真实短门及原30数量/事实场景；（2）自动记忆整理与召回的内容质量，保留既有strict judge RED及其事实错误分析，不将模型评审错误与业务质量混为一谈；（3）三组fresh长上下文，含反复压缩、纠正、暂停和重启；（4）原始狼人杀目标自然完整结束，仍不能用新任务或脚本主持场景代替；（5）最终安装包资源、ASAR原生热冷与界面自动功能。30默认skip未冒充通过，既有真实执行不冒充本次源码复验。长期目标保持active，整体开发尚未验收完成；继续只收口这些门，不扩展厂商参数或无关功能。

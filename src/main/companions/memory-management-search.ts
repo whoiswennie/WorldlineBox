@@ -123,7 +123,11 @@ export class CompanionMemoryManagementSearch {
   }
   private async discard(local: Owner): Promise<void> {
     const previous = local.manifest; local.manifest = undefined; local.warmed = false;
-    if (previous && local.runtime) { await local.runtime.client.interruptScope(previous); await local.runtime.client.purgeScope(previous); }
+    if (previous) {
+      if (this.options.runtime?.purgeOwner) await this.options.runtime.purgeOwner(local.owner, { historicalViews: [{ scopeId: previous.scopeId, profileKey: previous.profileKey }] });
+      else if (local.runtime?.profileKey === previous.profileKey) { await local.runtime.client.interruptScope(previous); await local.runtime.client.purgeScope(previous); }
+      else throw new Error('管理索引未连接历史投影清理接口。');
+    }
     if (this.options.cacheRoot) await rm(this.file(local.owner), { force: true });
   }
   private async advance(local: Owner, generation: number): Promise<void> {

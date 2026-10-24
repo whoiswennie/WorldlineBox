@@ -45,8 +45,8 @@ if (send) process.send = function(message, ...args) { return send({ ...message, 
     child.on('message', value => { if (value && typeof value === 'object' && '__vcpAudit' in value) { const audit = value.__vcpAudit as VcpManagementAudit; audits.set(audit.pid, audit); } });
     return { postMessage: message => { child.send(message as object); }, on: child.on.bind(child), kill: () => { child.kill(); } };
   };
-  const client = new VcpMemoryClient({ dataRoot: path.join(root, 'native'), vendorRoot: path.resolve('vendor/vcp-memory'), workerPath: path.resolve('src/main/vcp-memory/worker.cjs'),
-    embedding: { baseUrl: `http://127.0.0.1:${address.port}/document`, queryBaseUrl: `http://127.0.0.1:${address.port}/query`, model: 'synthetic-benchmark', dimension: 16, apiKey: 'synthetic-localhost-fixture' },
+  const embedding = { baseUrl: `http://127.0.0.1:${address.port}/document`, queryBaseUrl: `http://127.0.0.1:${address.port}/query`, model: 'synthetic-benchmark', dimension: 16, apiKey: 'synthetic-localhost-fixture' };
+  const client = new VcpMemoryClient({ dataRoot: path.join(root, 'native'), vendorRoot: path.resolve('vendor/vcp-memory'), workerPath: path.resolve('src/main/vcp-memory/worker.cjs'), embedding,
     ...(options?.plugins ? { plugins: options.plugins } : options?.chatReply !== undefined ? { plugins: { chat: { baseUrl: `http://127.0.0.1:${address.port}/chat`, model: 'synthetic-focusing', apiKey: 'synthetic-localhost-fixture' } } } : {}), launch, requestTimeoutMs: 120000, maxOpenScopes: 1 });
   const errors: unknown[] = [];
   const makeManager = () => new CompanionMemoryManagementSearch({ runtime: { get: async () => ({ client, profileKey: 'synthetic-native-benchmark' }), close: () => client.close() },
@@ -56,5 +56,5 @@ if (send) process.send = function(message, ...args) { return send({ ...message, 
     await client.close();
     await new Promise<void>(resolve => { server.close(() => resolve()); server.closeAllConnections(); });
   };
-  return { client, makeManager, errors, embeddingRequests, chatRequests, audits, audit, close };
+  return { client, makeManager, errors, embeddingRequests, chatRequests, audits, audit, close, embedding, launch };
 }

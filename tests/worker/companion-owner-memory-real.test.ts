@@ -34,7 +34,7 @@ it.skipIf(process.env.WORLDLINEBOX_OWNER_MEMORY_REAL !== '1')('recalls an automa
     calls.push({ purpose, elapsedMs: performance.now() - started });
     return response;
   };
-  const native = await realMemoryRuntime(root, (context, signal) => generateCompanionText(context, config, signal, { fetchFn, timeoutMs: 90000 }));
+  const native = await realMemoryRuntime(root, (context, signal) => generateCompanionText(context, config, signal, { fetchFn, timeoutMs: 90000 }), { modelFetch: fetchFn });
   const service = new CompanionMemoryService({ request: async command => {
     const response = store.request(command);
     if (response.worldClock) response.worldClock.backlog = false; // Memory host fixture has no independent world ticker.

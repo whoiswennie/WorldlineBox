@@ -5,8 +5,8 @@ import { expect, it, vi } from 'vitest';
 import { CompanionsStore } from '../../src/companions/store';
 import { CompanionMemoryService } from '../../src/main/companions/memory-service';
 import { CompanionWorldService } from '../../src/main/companions/world-service';
-import { generateCompanionStructured, generateCompanionText } from '../../src/main/companions/model';
-import { VcpChatGateway } from '../../src/main/vcp-chat-gateway';
+import { generateCompanionStructured } from '../../src/main/companions/model';
+import { ownerGenerationRuntime } from '../fixtures/owner-generation-runtime';
 import type { CompanionMemory, CompanionMessage } from '../../src/shared/companions';
 import type { CompanionStorageCommand, CompanionStorageResponse } from '../../src/shared/companion-storage';
 import { nativeManagementHarness } from '../fixtures/vcp-management-native';
@@ -32,11 +32,10 @@ it.skipIf(process.env.WORLDLINEBOX_AUTOMATIC_MEMORY_ACCEPTANCE !== '1')('automat
     try { const body = JSON.parse(String(init?.body)); purposes.push(JSON.parse(body.messages[1].content).purpose ?? 'unknown'); } catch { /* No configuration is logged. */ }
     return fetch(url, init);
   };
-  const gateway = new VcpChatGateway((context, signal) => generateCompanionText(context, config, signal, { fetchFn: modelFetch, timeoutMs: 120000 }));
-  const native = await nativeManagementHarness(root, request, { plugins: { chat: await gateway.configuration() } });
-  const memory = new CompanionMemoryService({ request, cacheRoot: path.join(root, 'views'), runtime: {
-    get: async () => ({ client: native.client, profileKey: 'auto-memory-native-deterministic-embedding' }), close: () => native.client.close(),
-  }, configFor: async () => config, fetchFn: modelFetch, busy: () => false, changed: () => undefined,
+  const native = await nativeManagementHarness(root, request);
+  const ownerRuntime = ownerGenerationRuntime(path.join(root, 'owner-runtime'), native.embedding, native.launch, modelFetch);
+  const memory = new CompanionMemoryService({ request, cacheRoot: path.join(root, 'views'), runtime: ownerRuntime.runtime,
+    configFor: async () => config, fetchFn: modelFetch, busy: () => false, changed: () => undefined,
   report: error => errors.push(error instanceof Error ? error.message : 'UNKNOWN_MEMORY_ERROR') });
   let world: CompanionWorldService | undefined, status = 'failed', judgment: unknown;
   let nativePublished = false, nativeWithdrawn = false;
@@ -108,19 +107,19 @@ it.skipIf(process.env.WORLDLINEBOX_AUTOMATIC_MEMORY_ACCEPTANCE !== '1')('automat
       user: JSON.stringify({ purpose: 'automatic_memory_content_judge', originalMessages: sourceMessages.filter(message => originalSourceIds.has(message.id)),
         originalNotes: inputs.map(note => note.content), mergedNote: merged.content }) }, config, undefined, { fetchFn: modelFetch });
     expect(judgment).toMatchObject({ passed: true, lostFacts: [], fabricatedFacts: [] });
-    nativePublished = !!await native.client.read({ scopeId: merged.scopeId }, merged.id);
+    nativePublished = !!await (await ownerRuntime.runtime.get()).client.read({ scopeId: merged.scopeId }, merged.id);
     expect(nativePublished).toBe(true);
     await world.close(); world = undefined;
     const forgotten = sourceMessages.find(message => originalSourceIds.has(message.id))!;
     store.request({ type: 'memory.forget', ...scope, sourceMessageIds: [forgotten.id] }); memory.schedule(0);
     expect(snapshot().some(note => note.id === merged!.id)).toBe(false);
     await waitFor(async () => {
-      nativeWithdrawn = await native.client.read({ scopeId: merged!.scopeId }, merged!.id) === null;
+      nativeWithdrawn = await (await ownerRuntime.runtime.get()).client.read({ scopeId: merged!.scopeId }, merged!.id) === null;
       return nativeWithdrawn;
     }, 'native_withdrawal', 120000);
     status = 'passed';
   } finally {
-    await world?.close(); await memory.close(); await native.close(); await gateway.close(); vi.restoreAllMocks();
+    await world?.close(); await memory.close(); await ownerRuntime.close(); await native.close(); vi.restoreAllMocks();
     const output = path.resolve(process.env.WORLDLINEBOX_AUTOMATIC_MEMORY_RESULT ?? 'artifacts/vcp-validation/automatic-memory-content-2026-10-23.json');
     await mkdir(path.dirname(output), { recursive: true });
     await writeFile(output, JSON.stringify({ status, startedAt, finishedAt: new Date().toISOString(), durationMs: Math.round(performance.now() - started),

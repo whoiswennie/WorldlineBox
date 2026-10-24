@@ -1,3 +1,4 @@
+import { controlledMemoryRuntime } from '../fixtures/controlled-memory-runtime';
 import { mkdir, mkdtemp, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -22,8 +23,8 @@ it('automatically applies original gentle decay during ordinary recall while ret
   expect(notes.every(note => note.captureMethod === 'automatic')).toBe(true);
   for (let i = 0; i < notes.length; i++) { const outbox = store.request({ type: 'memory.outbox.claim' }).memoryOutbox!; store.request({ type: 'memory.outbox.complete', id: outbox.id, leaseToken: outbox.leaseToken, indexed: true }); }
   const native = await nativeManagementHarness(root, async command => store.request(command), { chatReply: '按有出处的旧资料与近期经历核对后再回答。', semanticVariants: true });
-  const service = new CompanionMemoryService({ request: async command => store.request(command), cacheRoot: path.join(root, 'views'), runtime: { get: async () => ({ client: native.client, profileKey: 'automatic-recall-test' }), close: () => native.client.close() },
-    configFor: async () => { throw new Error('Synthetic background capture disabled'); }, busy: () => true, fetchFn: fetch, changed: () => undefined, report: () => undefined });
+  const service = new CompanionMemoryService({ request: async command => store.request(command), cacheRoot: path.join(root, 'views'), runtime: controlledMemoryRuntime({ get: async () => ({ client: native.client, profileKey: 'automatic-recall-test' }), close: () => native.client.close() }),
+    configFor: async () => ({ apiFormat: 'openai_chat', model: 'controlled-local-focusing', apiKey: 'controlled-key', baseUrl: 'https://fixture.invalid' }), busy: () => true, fetchFn: fetch, changed: () => undefined, report: () => undefined });
   try {
     const preprocess = vi.spyOn(native.client, 'preprocess');
     const source = store.appendMessage({ conversationId: conversation.id, authorId: 'user', content: 'group0 alpha umbrella 有哪些经历？', replyDirective: 'none' });

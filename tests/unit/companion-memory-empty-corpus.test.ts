@@ -1,3 +1,4 @@
+import { controlledMemoryRuntime } from '../fixtures/controlled-memory-runtime';
 import { expect, it, vi } from 'vitest';
 import { CompanionMemoryService } from '../../src/main/companions/memory-service';
 import type { CompanionStorageCommand, CompanionStorageResponse } from '../../src/shared/companion-storage';
@@ -11,7 +12,7 @@ it.each(['active', 'passive'] as const)('returns an actual empty authorized %s c
     expect(command.type).toBe('memory.snapshot');
     return { ok: true, memorySnapshot: { scopeId: 'actual-empty', revision: 'empty-current-ledger', notes: [] } };
   });
-  const service = new CompanionMemoryService({ request, runtime: { get, close: async () => undefined },
+  const service = new CompanionMemoryService({ request, runtime: controlledMemoryRuntime({ get, close: async () => undefined }),
     configFor: async () => { throw new Error('No model request needed.'); }, fetchFn: vi.fn(), changed: vi.fn(), report: vi.fn(), busy: () => false });
   try {
     const response = await service.search({ companionId: 'owner', conversationId: 'private-owner', query: '早上好' }, mode);

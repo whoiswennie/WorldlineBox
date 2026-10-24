@@ -1,3 +1,4 @@
+import { controlledMemoryRuntime } from '../fixtures/controlled-memory-runtime';
 import { mkdtempSync } from 'node:fs';
 import { mkdir,writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -83,7 +84,7 @@ it('recalls only actual participation experiences through the real VCP engine wi
   expect(()=>f.store.request({type:'memory.record',...f.scope,candidate:{...candidate(receiptSource),content:'ALICE_SECRET_CULPRIT 是现实事实',diaryName:'知识',metadata:notes[0]!.metadata}})).toThrow('只能保存宿主核验的实际参与事实');
   const native=await nativeManagementHarness(f.root,async command=>f.store.request(command)),errors:unknown[]=[];
   const service=new CompanionMemoryService({request:async command=>f.store.request(command),configFor:async()=>({apiFormat:'openai_chat',baseUrl:'',model:'',apiKey:''}),
-    runtime:{get:async()=>({client:native.client,profileKey:'topic-native-recall'}),close:()=>native.client.close()},cacheRoot:path.join(f.root,'recall-cache'),fetchFn:fetch,changed:()=>undefined,report:error=>errors.push(error),busy:()=>false});
+    runtime:controlledMemoryRuntime({get:async()=>({client:native.client,profileKey:'topic-native-recall'}),close:()=>native.client.close()}),cacheRoot:path.join(f.root,'recall-cache'),fetchFn:fetch,changed:()=>undefined,report:error=>errors.push(error),busy:()=>false});
   try{
     while(true){
       const delivery=f.store.request({type:'memory.outbox.claim'}).memoryOutbox;if(!delivery)break;

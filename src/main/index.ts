@@ -4993,6 +4993,7 @@ async function startApplication(): Promise<void> {
         finally { logger?.info('companions.activation.phase', 'Companion activation phase finished.', { phase: name, durationMs: performance.now() - started, totalMs: performance.now() - activationStarted }); }
       };
       const { CompanionService } = await phase('load-service', () => import('./companions/service'));
+      const { COMPANION_TEXT_GENERATION_PROFILE } = await import('./companions/model');
       const workspace = await phase('workspace', () => companionWorkspace.current());
       if (!workspace) throw new Error('请先为伙伴选择一个资产库。');
       await phase('open-library', () => ensureCompanionLibrary(workspace));
@@ -5006,17 +5007,18 @@ async function startApplication(): Promise<void> {
           vendorRoot: app.isPackaged ? path.join(process.resourcesPath, 'vcp-memory') : path.join(app.getAppPath(), 'vendor', 'vcp-memory'),
           workerPath: app.isPackaged ? path.join(process.resourcesPath, 'vcp-memory-host', 'worker.cjs') : path.join(app.getAppPath(), 'src', 'main', 'vcp-memory', 'worker.cjs'),
           resolveEmbedding: vcpEmbeddingConfiguration,
-          resolvePlugins: async () => {
-            vcpChatGateway ??= new VcpChatGateway(async (context, signal) => {
-              const { generateCompanionText } = await import('./companions/model');
-              const config = loadAiConfig();
-              return generateCompanionText(context, { apiFormat: config.apiFormat, model: config.model,
-                baseUrl: config.baseUrl, apiKey: getDecryptedApiKey() }, signal,
-              { fetchFn: (input, init) => net.fetch(input instanceof URL ? input.toString() : input, { ...init, credentials: 'omit' }), timeoutMs: 120000 });
-            });
-            const config = loadAiConfig(), { COMPANION_TEXT_GENERATION_PROFILE } = await import('./companions/model');
-            return { chat: await vcpChatGateway.configuration({ semanticProfile: { apiFormat: config.apiFormat, model: config.model,
-              baseUrl: config.baseUrl, generation: COMPANION_TEXT_GENERATION_PROFILE }, credential: config.hasKey ? getDecryptedApiKey() : '' }) };
+          generationProfile: COMPANION_TEXT_GENERATION_PROFILE,
+          resolveGenerationPlugins: async input => {
+            const config = Object.freeze({ ...input.config });
+            vcpChatGateway ??= new VcpChatGateway();
+            const route = await vcpChatGateway.registerOwnerRoute({ ownerId: input.ownerId,
+              semanticProfile: { ownerId: input.ownerId, profileKey: input.profileKey, generation: COMPANION_TEXT_GENERATION_PROFILE },
+              credential: config.apiKey, generate: async (context, signal) => {
+                const { generateCompanionText } = await import('./companions/model');
+                return generateCompanionText(context, config, signal,
+                  { fetchFn: (input, init) => net.fetch(input instanceof URL ? input.toString() : input, { ...init, credentials: 'omit' }), timeoutMs: 120000 });
+              } });
+            return { plugins: { chat: route.chat }, dispose: route.dispose };
           } }),
         userData: app.getPath('userData'), dataRoot: workspace.dataRoot, memoryLibraryRoot: workspace.memoryRoot,
         workerPath: path.join(__dirname, 'companion_worker.js'), appPath: app.getAppPath(),

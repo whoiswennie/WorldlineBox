@@ -1,3 +1,4 @@
+import { controlledMemoryRuntime } from '../fixtures/controlled-memory-runtime';
 import { mkdtempSync } from 'node:fs';
 import path from 'node:path';
 import { tmpdir } from 'node:os';
@@ -100,8 +101,8 @@ it.each(['revise', 'forget'] as const)('retains an actual focused reply and its 
   const parent = store.request({ type: 'memory.record', ...scope, candidate: { content: parentSource.content, tags: ['group0'], sourceMessageIds: [parentSource.id], evidence: [{ sourceMessageId: parentSource.id, quote: parentSource.content }] } }).memories![0]!;
   index(); const native = await nativeManagementHarness(root, request, { chatReply: '核验后的 PARENT_FACT。' });
   let profileKey = 'profile-one';
-  const service = new CompanionMemoryService({ request, runtime: { get: async () => ({ client: native.client, profileKey }), close: () => native.client.close() },
-    configFor: async () => { throw new Error('No background capture'); }, fetchFn: fetch, busy: () => true, changed: () => undefined, report: () => undefined });
+  const service = new CompanionMemoryService({ request, runtime: controlledMemoryRuntime({ get: async () => ({ client: native.client, profileKey }), close: () => native.client.close() }),
+    configFor: async () => ({ apiFormat: 'openai_chat', model: 'controlled-local-focusing', apiKey: 'controlled-key', baseUrl: 'https://fixture.invalid' }), fetchFn: fetch, busy: () => true, changed: () => undefined, report: () => undefined });
   try {
     const actual = await service.search({ ...scope, query: 'group0 parent fact' }, 'passive');
     expect(actual.memoryContext?.evidence?.dependencies).toEqual([{ id: parent.id, version: parent.version }]);
