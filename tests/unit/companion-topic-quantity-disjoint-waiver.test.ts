@@ -1,7 +1,8 @@
 import { createHash } from 'node:crypto';
 import { expect, it, vi } from 'vitest';
 import { quantityDisjointChecks, quantityDisjointInput, quantityDisjointWaiverSchema, validateQuantityDisjointWaivers,
-  admitQuantityDisjointWaivers, type QuantityCollectionReview } from '../../src/main/companions/topic-quantity-disjoint-waiver';
+  admitQuantityDisjointWaivers, quantityAuthorAllProjectionSchema, quantityAuthorAllProjectionAdmission, validateQuantityAuthorAllProjection,
+  type QuantityAuthorAllProjection, type QuantityCollectionReview } from '../../src/main/companions/topic-quantity-disjoint-waiver';
 import { reviewTopicSourceQuantities, topicQuantityNumberCandidates } from '../../src/main/companions/topic-summary-quantity-review';
 import { topicSummaryClauses } from '../../src/main/companions/topic-summary-canon-review';
 import { confirmedQuantitySourcePremiseFixture, declaredAllProjectionFixture } from '../helpers/companion-quantity-role-fixture';
@@ -25,10 +26,9 @@ function dataFor(c = candidate(), r = review()) {
 }
 const decision = (data: ReturnType<typeof dataFor>, verdict: Value['reviews'][number]['verdict'], witness = true, basis: Basis = 'different_inventory'): Value => ({
   reviews: data.checks.map(check => ({ checkIndex: check.checkIndex, verdict, basis: verdict === 'positive_exemption'
-    ? check.target.kind === 'all' ? 'no_all_assertion' : basis : 'none',
+    ? check.target.kind === 'all' ? 'different_inventory' : basis : 'none',
   evidenceRefs: witness ? [{ view: 'focus', clauseIndex: check.evidence.find(item => item.view === 'focus')!.clauseIndex }] : [],
-  reason: 'Independent decision, not a stored authority.',
-  ...(check.target.kind === 'all' ? { allProjection: declaredAllProjectionFixture(check) } : {}) })),
+  reason: 'Independent decision, not a stored authority.' })),
 });
 const authority = { scope: { ownerId: 'reader', conversationId: 'room', topicId: 'topic' },
   evidence: [{ candidateIndex: 0, sourceQuoteChecksum: 'a'.repeat(64), focusChecksum: 'b'.repeat(64) }] };
@@ -114,7 +114,8 @@ it('binds the opaque target to the actual UTF16 span rather than guessing numeri
   expect(focus.text).not.toContain('204'); expect(focus.text).not.toContain('三'); expect(check.target).toEqual({ kind: 'number', numberIndex: 1 });
 });
 
-async function production(text: string, r: QuantityCollectionReview, verifyDisjointWaivers: Infer, unresolvedSource = false, memberFixture = false) {
+async function production(text: string, r: QuantityCollectionReview, verifyDisjointWaivers: Infer, unresolvedSource = false, memberFixture = false,
+  projection?: QuantityAuthorAllProjection | ((context: { user: string }, value: unknown) => unknown)) {
   return reviewTopicSourceQuantities({ kind: 'reply', config, summary: text, stage: '', clauses: topicSummaryClauses(text, ''),
     fetchFn: async () => { throw new Error('No external transport is allowed in an injected semantic fixture.'); },
     canon: { version: 1, throughSequence: 1, entries: [{ id: 'source', quote: '共有3把钥匙，第2把尚未找到。', rule: '', sourceMessageId: 'actual', sourceChecksum: 'c'.repeat(64) }] },
@@ -123,10 +124,13 @@ async function production(text: string, r: QuantityCollectionReview, verifyDisjo
       const value = await confirmedQuantitySourcePremiseFixture(context) as { sets: Array<{ members: Array<{ memberAvailability: string }> }> };
       for (const set of value.sets) for (const member of set.members) member.memberAvailability = 'ambiguous'; return value;
     } : confirmedQuantitySourcePremiseFixture,
-    extractClaims: async () => ({ clauses: [{ clauseIndex: 0, quantities: memberFixture ? [
+    extractClaims: async context => { const value = { clauses: [{ clauseIndex: 0, quantities: memberFixture ? [
       { setIndex: 0, usage: 'current_possessed_members', numberIndexes: r.numbers.filter(item => item.relation === 'affirmed_holding').map(item => item.numberIndex) },
       { setIndex: 0, usage: 'missing', numberIndexes: r.numbers.filter(item => item.relation === 'missing').map(item => item.numberIndex) },
-    ] : [{ setIndex: 0, usage: r.numbers.length ? 'current_possessed_count' : 'current_possessed_all', numberIndexes: r.numbers.map(item => item.numberIndex) }] }] }),
+    ] : [{ setIndex: 0, usage: r.numbers.length ? 'current_possessed_count' : 'current_possessed_all', numberIndexes: r.numbers.map(item => item.numberIndex) }] }],
+    allProjections: [{ clauseIndex: 0, setIndex: 0, projection: typeof projection === 'object' ? projection
+      : declaredAllProjectionFixture({ evidence: [{ view: 'focus', clauseIndex: 0, text }] }, 'ambiguous') }] };
+      return typeof projection === 'function' ? projection(context, value) : value; },
     verifyRoles: async () => r && ({ reviews: [r] }), verifyDisjointWaivers });
 }
 
@@ -145,7 +149,7 @@ it.each(['unresolved', 'no_exemption', 'positive_exemption'] as const)('runs the
   expect(verifyDisjointWaivers).toHaveBeenCalledTimes(1); expect(JSON.stringify(r)).toBe(snapshot);
   if (verdict === 'positive_exemption') expect(correction).toBeUndefined();
   else { expect(correction).toContain('unresolved_semantic_exemption'); expect(correction).not.toContain('mathematical_contradiction');
-    expect(correction).toContain('quantity_semantic_exemption_v3'); expect(correction).toContain('"admitted":false'); }
+    expect(correction).toContain('quantity_semantic_exemption_v4'); expect(correction).toContain('"admitted":false'); }
 });
 
 it('binds the ephemeral receipt to exact source/draft authority without changing its independent input', () => {
@@ -206,7 +210,8 @@ it('rejects more than one thousand actual risky targets before rendering or requ
     canon: { version: 1, throughSequence: 1, entries: [{ id: 'source', quote: '共有3把钥匙，第2把尚未找到。', rule: '', sourceMessageId: 'actual', sourceChecksum: 'c'.repeat(64) }] },
     extractSets: async () => ({ sets: [{ canonIndex: 0, entityQuote: '钥匙', totalNumberIndex: 0, missingOrdinalNumberIndexes: [1] }] }),
     verifySourcePremises: confirmedQuantitySourcePremiseFixture,
-    extractClaims: async () => ({ clauses: clauses.map(clause => ({ clauseIndex: clause.clauseIndex, quantities: [{ setIndex: 0, usage: 'current_possessed_count', numberIndexes: [0] }] })) }),
+    extractClaims: async () => ({ clauses: clauses.map(clause => ({ clauseIndex: clause.clauseIndex, quantities: [{ setIndex: 0, usage: 'current_possessed_count', numberIndexes: [0] }] })),
+      allProjections: clauses.map(clause => ({ clauseIndex: clause.clauseIndex, setIndex: 0, projection: declaredAllProjectionFixture({ evidence: [{ view: 'focus', ...clause }] }, 'ambiguous') })) }),
     verifyRoles: async () => ({ reviews: clauses.map(clause => ({ candidateIndex: clause.clauseIndex, numbers: [number(), number({ numberIndex: 1 })], all: noAll })) }),
     verifyDisjointWaivers: reader })).rejects.toThrow('超过单批容量'); expect(reader).not.toHaveBeenCalled();
 });
@@ -250,9 +255,8 @@ it.each([
 });
 
 it.each(['not_affirmed_all', 'ambiguous', 'affirmed_all'])('admits independent no_all only against unknown or compatible all semantics: %s', relation => {
-  const c = candidate('这里有钥匙。'), r = { ...review(), numbers: [], all: { ...noAll, relation } }, data = dataFor(c, r);
-  const result = admit(r, decision(data, 'positive_exemption'), data, c);
-  expect(result.receipts[0]!.admitted).toBe(relation !== 'affirmed_all');
+  const text = '这里有钥匙。', c = { ...candidate(text), authorAllProjection: declaredAllProjectionFixture({ evidence: [{ view: 'focus', clauseIndex: 0, text }] }) };
+  expect(quantityAuthorAllProjectionAdmission(c, { ...noAll, relation }).safeAbsence).toBe(relation !== 'affirmed_all');
 });
 
 it('does not let a role label hide a simultaneous count and missing-member risk or use a numeral role for all', () => {
@@ -273,10 +277,11 @@ it('keeps known sibling risks and independent all after an unknown token, and ad
 it.each(['ambiguous', 'affirmed_all'])('uses independent no_all evidence through production without treating unknown as a contrary assertion: %s', async relation => {
   const r = { candidateIndex: 0, numbers: [], all: { ...noAll, voice: 'question', time: 'ambiguous', relation } };
   const reader = vi.fn<Infer>(async context => decision(JSON.parse(context.user).data, 'positive_exemption'));
-  const correction = await production('她问钥匙在哪里。', r, reader);
-  expect(reader).toHaveBeenCalledTimes(1);
+  const text = '她问钥匙在哪里。', correction = await production(text, r, reader, false, false,
+    declaredAllProjectionFixture({ evidence: [{ view: 'focus', clauseIndex: 0, text }] }));
+  expect(reader).not.toHaveBeenCalled();
   if (relation === 'ambiguous') expect(correction).toBeUndefined();
-  else { expect(correction).toContain('unresolved_semantic_exemption'); expect(correction).toContain('opposed_raw_assertion'); }
+  else { expect(correction).toContain('unresolved_semantic_exemption'); expect(correction).toContain('opposed_raw_author_projection'); }
 });
 
 it('still checks independent all once for a safe low nonmember while omitting its unnecessary numeric target', async () => {
@@ -314,42 +319,34 @@ it.each(['她说自己没有带三把钥匙。', '昨夜她曾携带三把钥匙
     expect(await production(text, r, reader)).toBeUndefined(); expect(reader).toHaveBeenCalledTimes(1);
   });
 
+const authorProjection = (text: string, statement: QuantityAuthorAllProjection['statement']) =>
+  declaredAllProjectionFixture({ evidence: [{ view: 'focus', clauseIndex: 0, text }] }, statement);
+
 it.each(['no_whole_set_assertion', 'explicit_not_all'] as const)('admits the original lawful partial-member scope through production with either supported projection: %s', async statement => {
   const text = '她实际只有第1和第3把钥匙，第2把仍未找到。';
   const r: QuantityCollectionReview = { candidateIndex: 0, numbers: [number({ collection: 'same', kind: 'member' }),
-    number({ numberIndex: 1, collection: 'same', kind: 'member' }), number({ numberIndex: 2, collection: 'same', kind: 'member', relation: 'missing' })],
-  all: { ...noAll, collection: 'same' } };
-  const reader = vi.fn<Infer>(async context => {
-    const data = JSON.parse(context.user).data as ReturnType<typeof dataFor>;
-    const value = decision(data, 'positive_exemption', true, 'negative_or_missing');
-    const all = value.reviews.find(row => data.checks[row.checkIndex]!.target.kind === 'all')!;
-    all.basis = statement === 'explicit_not_all' ? 'negative_or_missing' : 'no_all_assertion';
-    all.allProjection = declaredAllProjectionFixture(data.checks[all.checkIndex]!, statement);
-    expect(context.system).toContain('不是证明现实中不可能持齐');
-    return value;
-  });
-  expect(await production(text, r, reader, false, true)).toBeUndefined(); expect(reader).toHaveBeenCalledTimes(1);
+    number({ numberIndex: 1, collection: 'same', kind: 'member' }), number({ numberIndex: 2, collection: 'same', kind: 'member', relation: 'missing' })], all: { ...noAll, collection: 'same' } };
+  const reader = vi.fn<Infer>(async context => { const data = JSON.parse(context.user).data as ReturnType<typeof dataFor>;
+    expect(data.checks.every(check => check.target.kind === 'number')).toBe(true);
+    return decision(data, 'positive_exemption', true, 'negative_or_missing'); });
+  expect(await production(text, r, reader, false, true, authorProjection(text, statement))).toBeUndefined();
+  expect(reader).toHaveBeenCalledTimes(1);
 });
 
 it.each(['她把整套钥匙收入随身衣袋。', '她把整套钥匙收入随身衣袋，却说没有全部带上。'])(
   'cannot discharge a positive whole-inventory projection with absence or a selected negative: %s', async text => {
     const r: QuantityCollectionReview = { candidateIndex: 0, numbers: [], all: { ...noAll, collection: 'same' } };
-    const reader = vi.fn<Infer>(async context => {
-      const data = JSON.parse(context.user).data as ReturnType<typeof dataFor>, value = decision(data, 'positive_exemption');
-      value.reviews[0]!.allProjection = declaredAllProjectionFixture(data.checks[0]!, 'affirmative_whole_set');
-      return value;
-    });
-    const correction = await production(text, r, reader);
-    expect(correction).toContain('all_projection_does_not_support_absence');
-    expect(correction).toContain('unresolved_semantic_exemption'); expect(correction).not.toContain('mathematical_contradiction');
-    expect(reader).toHaveBeenCalledTimes(1);
+    const reader = vi.fn<Infer>(async context => { const value = decision(JSON.parse(context.user).data, 'positive_exemption'); value.reviews[0]!.basis = 'no_all_assertion'; return value; });
+    const correction = await production(text, r, reader, false, false, authorProjection(text, 'affirmative_whole_set'));
+    expect(correction).toContain('whole_set_projection_incompatible_basis');
+    expect(correction).toContain('unresolved_semantic_exemption'); expect(correction).not.toContain('mathematical_contradiction'); expect(reader).toHaveBeenCalledTimes(1);
   });
 
 it.each(['这里的钥匙刻有字母。', '她站在钥匙柜旁。'])(
   'allows no-whole projection with a neutral literal target scope and no invented holding predicate: %s', async text => {
-    const r: QuantityCollectionReview = { candidateIndex: 0, numbers: [], all: { ...noAll, collection: 'same' } };
-    const reader = vi.fn<Infer>(async context => decision(JSON.parse(context.user).data, 'positive_exemption'));
-    expect(await production(text, r, reader)).toBeUndefined(); expect(reader).toHaveBeenCalledTimes(1);
+    const r: QuantityCollectionReview = { candidateIndex: 0, numbers: [], all: { ...noAll, collection: 'same' } }, reader = vi.fn<Infer>();
+    expect(await production(text, r, reader, false, false, authorProjection(text, 'no_whole_set_assertion'))).toBeUndefined();
+    expect(reader).not.toHaveBeenCalled(); // New phase3 authority clears only all; phase5 cannot reproject it.
   });
 
 it('keeps universality over an explicitly held subset separate from the whole inventory', async () => {
@@ -357,70 +354,124 @@ it('keeps universality over an explicitly held subset separate from the whole in
   const r: QuantityCollectionReview = { candidateIndex: 0, numbers: [number({ collection: 'same', kind: 'member' }),
     number({ numberIndex: 1, collection: 'same', kind: 'member' }), number({ numberIndex: 2, collection: 'same', kind: 'member', relation: 'missing' })], all: { ...noAll, collection: 'same' } };
   const reader = vi.fn<Infer>(async context => decision(JSON.parse(context.user).data, 'positive_exemption', true, 'negative_or_missing'));
-  expect(await production(text, r, reader, false, true)).toBeUndefined(); expect(reader).toHaveBeenCalledTimes(1);
+  expect(await production(text, r, reader, false, true, authorProjection(text, 'explicit_not_all'))).toBeUndefined(); expect(reader).toHaveBeenCalledTimes(1);
 });
 
 it.each(['attributed_claim', 'earlier_history', 'future', 'different_inventory'] as const)(
   'retains a compatible independently evidenced safe OR basis for an actual whole-set proposition: %s', basis => {
-    const c = candidate('她声称曾把整套钥匙带在身上。'), r: QuantityCollectionReview = { candidateIndex: 0, numbers: [],
-      all: { ...noAll, voice: 'ambiguous', time: 'ambiguous', collection: 'ambiguous', relation: 'affirmed_all' } }, data = dataFor(c, r);
+    const text = '她声称曾把整套钥匙带在身上。', c = { ...candidate(text), authorAllProjection: authorProjection(text, 'affirmative_whole_set') };
+    const r: QuantityCollectionReview = { candidateIndex: 0, numbers: [], all: { ...noAll, voice: 'ambiguous', time: 'ambiguous', collection: 'ambiguous', relation: 'affirmed_all' } }, data = dataFor(c, r);
     const value = decision(data, 'positive_exemption'); value.reviews[0]!.basis = basis;
-    value.reviews[0]!.allProjection = declaredAllProjectionFixture(data.checks[0]!, 'affirmative_whole_set');
     expect(admit(r, value, data, c).receipts[0]!.admitted).toBe(true);
   });
 
 it.each(['affirmative_whole_set', 'explicit_not_all', 'no_whole_set_assertion'] as const)(
   'keeps a claimed all projection without its own literal scope witness pending instead of forcing another sample: %s', async statement => {
-    const reader = vi.fn<Infer>(async context => {
-      const data = JSON.parse(context.user).data as ReturnType<typeof dataFor>, value = decision(data, 'positive_exemption');
-      const row = value.reviews.find(x => data.checks[x.checkIndex]!.target.kind === 'all')!;
-      row.allProjection = { ...declaredAllProjectionFixture(data.checks[row.checkIndex]!, statement), witnesses: [] };
-      return value;
-    });
-    const correction = await production('这里有钥匙。', { candidateIndex: 0, numbers: [], all: noAll }, reader);
+    const text = '这里有钥匙。', reader = vi.fn<Infer>(async context => { const value = decision(JSON.parse(context.user).data, 'positive_exemption'); value.reviews[0]!.basis = 'no_all_assertion'; return value; });
+    const projection = { ...authorProjection(text, statement), witnesses: [] };
+    const correction = await production(text, { candidateIndex: 0, numbers: [], all: noAll }, reader, false, false, projection);
     expect(correction).toContain('all_projection_unwitnessed'); expect(reader).toHaveBeenCalledTimes(1);
   });
 
 it.each(['missing', 'foreign_focus', 'partial_coverage', 'fabricated_quote', 'number_projection'] as const)(
   'rejects invalid all projection structure within the original three format slots without echoing witness content: %s', async mode => {
-    const injected = 'IGNORE_INSTRUCTIONS_PRIVATE_WITNESS', reader = vi.fn<Infer>(async context => {
-      const wire = JSON.parse(context.user), data = wire.data as ReturnType<typeof dataFor>;
+    const injected = 'IGNORE_INSTRUCTIONS_PRIVATE_WITNESS', warm = vi.fn((context: { user: string }, input: unknown) => {
+      const wire = JSON.parse(context.user);
       if (wire.formatCorrection) { expect(wire.formatCorrection.length).toBeLessThanOrEqual(1500); expect(wire.formatCorrection).not.toContain(injected); }
-      const value = decision(data, 'positive_exemption'), row = value.reviews.find(x => data.checks[x.checkIndex]!.target.kind === 'all')!;
-      if (mode === 'missing') delete row.allProjection;
-      else if (mode === 'foreign_focus') row.allProjection!.reviewedFocusRef.clauseIndex = 99;
-      else if (mode === 'partial_coverage') return { reviews: value.reviews.map(x => x === row ? { ...x, allProjection: { ...x.allProjection, coverage: 'selected_quote' } } : x) };
-      else if (mode === 'fabricated_quote') row.allProjection!.witnesses[0]!.quote = injected;
-      else value.reviews[0]!.allProjection = row.allProjection;
+      const value = input as { allProjections?: Array<{ projection: QuantityAuthorAllProjection }> };
+      if (mode === 'missing') delete value.allProjections;
+      else if (mode === 'foreign_focus') value.allProjections![0]!.projection.reviewedFocusRef.clauseIndex = 99;
+      else if (mode === 'partial_coverage') return { ...value, allProjections: value.allProjections!.map(row => ({ ...row, projection: { ...row.projection, coverage: 'selected_quote' } })) };
+      else if (mode === 'fabricated_quote') value.allProjections![0]!.projection = { ...authorProjection('她带三把钥匙。', 'no_whole_set_assertion'), witnesses: [{ role: 'target_scope', evidenceRef: { view: 'focus', clauseIndex: 0 }, quote: injected }] };
+      else return { ...value, allProjections: undefined, reviews: [{ allProjection: value.allProjections![0]!.projection }] };
       return value;
     });
-    await expect(production('她带三把钥匙。', review(), reader)).rejects.toThrow('未发布正文'); expect(reader).toHaveBeenCalledTimes(3);
+    const reader = vi.fn<Infer>();
+    await expect(production('她带三把钥匙。', review(), reader, false, false, warm)).rejects.toThrow('未发布正文');
+    expect(warm).toHaveBeenCalledTimes(3); expect(reader).not.toHaveBeenCalled();
   });
 
 it('stores the projection and host located literal UTF16 witness only on its all receipt', () => {
-  const c = candidate('😺这里有钥匙。'), r: QuantityCollectionReview = { candidateIndex: 0, numbers: [], all: noAll }, data = dataFor(c, r);
-  const value = decision(data, 'positive_exemption'), result = admit(r, value, data, c);
-  expect(result.receipts[0]!.allProjection!.coverage).toBe('whole_focus');
-  const located = result.receipts[0]!.literalWitnessLocations![0]!, focus = data.checks[0]!.evidence.find(x => x.view === 'focus')!;
-  expect(focus.text.slice(located.firstMatchUtf16Span.start, located.firstMatchUtf16Span.end)).toBe(value.reviews[0]!.allProjection!.witnesses[0]!.quote);
+  const text = '😺这里有钥匙。', projection = authorProjection(text, 'ambiguous');
+  projection.witnesses = [{ role: 'target_scope', evidenceRef: { view: 'focus', clauseIndex: 0 }, quote: '钥匙' }];
+  const c = { ...candidate(text), authorAllProjection: projection, authorAllWitnessLocations: validateQuantityAuthorAllProjection(projection, 0, topicSummaryClauses(text, '')) };
+  const r: QuantityCollectionReview = { candidateIndex: 0, numbers: [], all: noAll }, data = dataFor(c, r), value = decision(data, 'positive_exemption'), result = admit(r, value, data, c);
+  expect(result.receipts[0]!.authorAllProjection!.coverage).toBe('whole_focus');
+  const located = result.receipts[0]!.literalWitnessLocations![0]!;
+  expect(text.slice(located.firstMatchUtf16Span.start, located.firstMatchUtf16Span.end)).toBe(projection.witnesses[0]!.quote);
 });
 
 it('cannot substitute a source-canon negative for a proposition missing from the actual focus', () => {
-  const c = candidate('她把整套钥匙收入衣袋。'), r: QuantityCollectionReview = { candidateIndex: 0, numbers: [], all: noAll }, data = dataFor(c, r);
-  const value = decision(data, 'positive_exemption'), source = data.checks[0]!.evidence.find(x => x.view === 'source_identity')!;
-  const row = value.reviews[0]!; row.basis = 'negative_or_missing';
-  row.allProjection!.statement = 'explicit_not_all';
-  row.allProjection!.witnesses.push({ role: 'negative_or_limited_scope', evidenceRef: { view: 'source_identity', clauseIndex: source.clauseIndex }, quote: source.text });
+  const text = '她把整套钥匙收入衣袋。', projection = { ...authorProjection(text, 'explicit_not_all'), witnesses: [{ role: 'negative_or_limited_scope', evidenceRef: { view: 'source_identity', clauseIndex: 0 }, quote: '第2把尚未找到' }] };
+  expect(() => quantityAuthorAllProjectionSchema.parse(projection)).toThrow();
+  const c = { ...candidate(text), authorAllProjection: authorProjection(text, 'affirmative_whole_set') }, r: QuantityCollectionReview = { candidateIndex: 0, numbers: [], all: noAll }, data = dataFor(c, r);
+  const value = decision(data, 'positive_exemption'); value.reviews[0]!.basis = 'negative_or_missing';
   const result = admit(r, value, data, c);
-  expect(result.receipts[0]!.admissionFailure).toBe('all_projection_unwitnessed'); expect(result.pending).toHaveLength(1);
+  expect(result.receipts[0]!.admissionFailure).toBe('whole_set_projection_incompatible_basis'); expect(result.pending).toHaveLength(1);
 });
 
 it.each(['not_affirmed_all', 'ambiguous'])('cannot waive a witnessed affirmative whole-inventory proposition as an unrelated target under raw %s', relation => {
-  const c = candidate('她把整套钥匙收入随身衣袋。'), r: QuantityCollectionReview = { candidateIndex: 0, numbers: [], all: { ...noAll, relation } }, data = dataFor(c, r);
-  const value = decision(data, 'positive_exemption'), row = value.reviews[0]!;
-  row.basis = 'unrelated_target'; row.allProjection = declaredAllProjectionFixture(data.checks[0]!, 'affirmative_whole_set');
-  const result = admit(r, value, data, c);
+  const text = '她把整套钥匙收入随身衣袋。', c = { ...candidate(text), authorAllProjection: authorProjection(text, 'affirmative_whole_set') };
+  const r: QuantityCollectionReview = { candidateIndex: 0, numbers: [], all: { ...noAll, relation } }, data = dataFor(c, r), value = decision(data, 'positive_exemption');
+  value.reviews[0]!.basis = 'unrelated_target'; const result = admit(r, value, data, c);
   expect(result.receipts[0]!.admissionFailure).toBe('whole_set_projection_incompatible_basis');
-  expect(result.receipts[0]!.protocol).toBe('quantity_semantic_exemption_v3');
-  expect(result.pending).toHaveLength(1); expect(result.pending[0]!.diagnosticType).toBe('unresolved_semantic_exemption');
+  expect(result.receipts[0]!.protocol).toBe('quantity_semantic_exemption_v4'); expect(result.pending).toHaveLength(1);
+  expect(result.pending[0]!.diagnosticType).toBe('unresolved_semantic_exemption');
+});
+
+it('makes the complete warm request source-state-blind while preserving actual text and canonical identity in the later reader', async () => {
+  const text = '她拿两把钥匙。', warm = vi.fn((context: { user: string }, value: unknown) => {
+    const data = JSON.parse(context.user).data;
+    expect(Object.keys(data).sort()).toEqual(['actualClauses', 'proposed', 'requiredClauseIndexes', 'requiredPairs', 'sets']);
+    expect(data.sets).toEqual([{ setIndex: 0, entityQuote: '钥匙' }]);
+    expect(data.proposed).toEqual({ kind: 'reply', text }); expect(data.actualClauses[0].text).toBe(text);
+    expect(data.actualClauses[0].numberCandidates[0].value).toBe(2); // Actual author numbers remain visible, not source state.
+    return { ...(value as object), allProjections: [{ clauseIndex: 0, setIndex: 0, projection: authorProjection(text, 'no_whole_set_assertion') }] };
+  });
+  const reader = vi.fn<Infer>(async context => {
+    const data = JSON.parse(context.user).data as ReturnType<typeof dataFor>;
+    expect(data.checks).toHaveLength(1); expect(data.checks[0]!.target.kind).toBe('number');
+    expect(data.checks[0]!.evidence.find(e => e.view === 'source_identity')!.text).toContain('尚未找到');
+    expect(JSON.stringify(data)).not.toContain('authorAllProjection'); expect(JSON.stringify(data)).not.toContain('allProjections');
+    return decision(data, 'positive_exemption', true, 'count_role');
+  });
+  expect(await production(text, review({ collection: 'same' }), reader, false, false, warm)).toBeUndefined();
+  expect(warm).toHaveBeenCalledTimes(1); expect(reader).toHaveBeenCalledTimes(1);
+});
+
+it.each(['duplicate', 'missing_pair', 'foreign_set', 'foreign_source_view'] as const)(
+  'enforces blind all sidecar coverage and actual-author references through the real warm validator: %s', async mode => {
+    const warm = vi.fn((_context: { user: string }, input: unknown) => {
+      const value = input as { allProjections: Array<{ clauseIndex: number; setIndex: number; projection: QuantityAuthorAllProjection }> };
+      if (mode === 'duplicate') value.allProjections.push({ ...value.allProjections[0]! });
+      else if (mode === 'missing_pair') value.allProjections = [];
+      else if (mode === 'foreign_set') value.allProjections[0]!.setIndex = 99;
+      else return { ...value, allProjections: value.allProjections.map(row => ({ ...row, projection: { ...row.projection,
+        witnesses: [{ role: 'negative_or_limited_scope', evidenceRef: { view: 'source_identity', clauseIndex: 0 }, quote: '第2把尚未找到' }] } })) };
+      return value;
+    }), reader = vi.fn<Infer>();
+    await expect(production('她拿两把钥匙。', review(), reader, false, false, warm)).rejects.toThrow('未发布正文');
+    expect(warm).toHaveBeenCalledTimes(3); expect(reader).not.toHaveBeenCalled();
+  });
+
+it.each(['affirmative_whole_set', 'ambiguous'] as const)(
+  'keeps a real independent safe OR route for a semantically unproved blind projection: %s', async statement => {
+    const text = '她说自己把整套钥匙拿走了。', r: QuantityCollectionReview = { candidateIndex: 0, numbers: [],
+      all: { ...noAll, voice: 'attributed_claim', relation: 'ambiguous' } }, warm = vi.fn((_context: { user: string }, value: unknown) => ({ ...(value as object),
+        allProjections: [{ clauseIndex: 0, setIndex: 0, projection: { ...authorProjection(text, statement), witnesses: [] } }] }));
+    const reader = vi.fn<Infer>(async context => { const value = decision(JSON.parse(context.user).data, 'positive_exemption'); value.reviews[0]!.basis = 'attributed_claim'; return value; });
+    expect(await production(text, r, reader, false, false, warm)).toBeUndefined(); expect(warm).toHaveBeenCalledTimes(1); expect(reader).toHaveBeenCalledTimes(1);
+  });
+
+it('rejects any fifth-stage attempt to emit or replace the author all projection', async () => {
+  const text = '这里有钥匙。', reader = vi.fn<Infer>(async context => { const value = decision(JSON.parse(context.user).data, 'positive_exemption');
+    return { reviews: value.reviews.map(row => ({ ...row, allProjection: authorProjection(text, 'no_whole_set_assertion') })) }; });
+  await expect(production(text, { candidateIndex: 0, numbers: [], all: noAll }, reader)).rejects.toThrow('未发布正文'); expect(reader).toHaveBeenCalledTimes(3);
+});
+
+it('does not let a blind absence projection discharge the same candidate numeric risk', async () => {
+  const text = '她声称自己带三把钥匙。', reader = vi.fn<Infer>(async context => { const data = JSON.parse(context.user).data;
+    expect(data.checks.map((x: { target: unknown }) => x.target)).toEqual([{ kind: 'number', numberIndex: 0 }]); return decision(data, 'no_exemption'); });
+  const correction = await production(text, review({ voice: 'attributed_claim' }), reader, false, false, authorProjection(text, 'no_whole_set_assertion'));
+  expect(correction).toContain('unresolved_semantic_exemption'); expect(correction).toContain('"kind":"number"'); expect(reader).toHaveBeenCalledTimes(1);
 });

@@ -6,17 +6,18 @@ import { admitQuantitySourcePremises, buildQuantitySourcePremiseCandidates, quan
   quantitySourcePremiseProtocol, quantitySourcePremiseSchema, quantitySourcePremiseSystem, validateQuantitySourcePremises,
   type QuantitySourcePremiseReview, type VerifiedQuantitySourceSet } from './topic-source-quantity-premise';
 import { quantityDisjointChecks, quantityDisjointInput, quantityDisjointWaiverSchema, quantityDisjointWaiverSystem, quantityDisjointCapacity,
-  validateQuantityDisjointWaivers, admitQuantityDisjointWaivers } from './topic-quantity-disjoint-waiver';
+  validateQuantityDisjointWaivers, admitQuantityDisjointWaivers, quantityAuthorAllProjectionSchema, validateQuantityAuthorAllProjection, quantityAuthorAllProjectionAdmission } from './topic-quantity-disjoint-waiver';
 
 type Infer = (context: { system: string; user: string }, signal?: AbortSignal) => Promise<unknown>;
 const numberIndex = z.number().int().nonnegative();
 const setSchema = z.strictObject({ canonIndex: z.number().int().nonnegative(), entityQuote: z.string().min(1).max(80), totalNumberIndex: numberIndex,
   missingOrdinalNumberIndexes: z.array(numberIndex).min(1).max(100) });
 const setsSchema = z.strictObject({ sets: z.array(setSchema).max(80) });
-const claimsSchema = z.strictObject({ clauses: z.array(z.strictObject({ clauseIndex: z.number().int().nonnegative(), quantities: z.array(z.object({
+export const quantityClaimsSchema = z.strictObject({ clauses: z.array(z.strictObject({ clauseIndex: z.number().int().nonnegative(), quantities: z.array(z.object({
   setIndex: z.number().int().nonnegative(),
   usage: z.enum(['current_possessed_count', 'current_possessed_all', 'current_possessed_members', 'missing', 'total', 'planned', 'historical', 'attributed', 'ambiguous']),
-  numberIndexes: z.array(numberIndex).max(100) })).max(80) })).max(1000) });
+  numberIndexes: z.array(numberIndex).max(100) })).max(80) })).max(1000),
+  allProjections: z.array(z.strictObject({ clauseIndex: z.number().int().nonnegative(), setIndex: z.number().int().nonnegative(), projection: quantityAuthorAllProjectionSchema })).max(1000) });
 const voiceSchema = z.enum(['narrated_fact', 'attributed_claim', 'question', 'hypothetical', 'ambiguous']);
 const numberVoiceSchema = z.enum([...voiceSchema.options, 'unrelated']);
 const timeSchema = z.enum(['scene', 'earlier_history', 'future', 'ambiguous']);
@@ -32,9 +33,9 @@ const cache = new Map<string, { sets: QuantitySet[]; receipt: QuantitySourcePrem
 const formatPathKeys = new Set(['sets', 'canonIndex', 'entityQuote', 'totalNumberIndex', 'missingOrdinalNumberIndexes', 'clauses', 'clauseIndex',
   'quantities', 'setIndex', 'usage', 'numberIndexes', 'reviews', 'candidateIndex', 'numbers', 'numberIndex', 'collection', 'voice', 'time', 'relation', 'kind', 'reason', 'all',
   'totalBinding', 'totalEvidenceClauseIndex', 'members', 'ordinalNumberIndex', 'evidenceClauseIndexes', 'predicateTarget', 'memberAvailability', 'applicability',
-  'checkIndex', 'verdict', 'basis', 'evidenceRefs', 'view', 'allProjection', 'statement', 'coverage', 'reviewedFocusRef', 'witnesses', 'role', 'evidenceRef', 'quote']);
+  'allProjections', 'projection', 'checkIndex', 'verdict', 'basis', 'evidenceRefs', 'view', 'allProjection', 'statement', 'coverage', 'reviewedFocusRef', 'witnesses', 'role', 'evidenceRef', 'quote']);
 const hostFormatMessages = new Set([
-  '数字目标不能借用全部持有投影。', '全部持有投影须完整核验本目标实际焦点。', '全部持有投影引文须唯一绑定本目标实际有界原句。',
+  '全部持有投影须完整唯一覆盖实际clauseIndex和setIndex。', '数字目标不能借用全部持有投影。', '全部持有投影须完整核验本目标实际焦点。', '全部持有投影引文须唯一绑定本目标实际有界原句。',
   '数字索引必须对应本原句宿主枚举的完整可计算整数；不得自造引文、截取部分数字或猜不支持的数值。',
   'entityQuote须仅含原句逐字物品本体名词，不含数字或整句。', '来源数字索引必须存在且明确缺失成员不能重复。',
   '总数须是实际基数，明确缺失序号必须是有效且不重复的实际成员。', 'clauses必须完整唯一覆盖实际clauseIndex。',
@@ -130,7 +131,7 @@ export async function reviewTopicSourceQuantities(input: TopicSourceQuantityRevi
       try {
         const context = { system: system + '\n宿主numberCandidates.value=null只证明完整字面数词存在，尚不能可靠换算整数；不得拆词、猜数或把它当已知数量。来源总数/缺失序号不可计算时不能建立set；拟稿实际关系/数值不明确可用ambiguous弃权。明确count必须有一个实际数字索引，不能用空count代替弃权。actualEntityQuote/actualEntitySpans若存在，只核这些实际字面物品，不能用同句其它物品的数量代答，主体或集合无法明确对应应ambiguous。第1、3这样的序号列表也不能把末位3当基数数量，即使宿主ordinal只标了显式第N。',
           user: JSON.stringify({ purpose, data, outputSchema: z.toJSONSchema(schema), ...(feedback ? { formatCorrection: feedback } : {}) }) };
-        if (purpose.endsWith('_source_premise_verification') || purpose.endsWith('_semantic_exemption_verification')) context.system = system;
+        if (purpose.endsWith('_source_premise_verification') || purpose.endsWith('_semantic_exemption_verification') || purpose.endsWith('_actual_claims')) context.system = system;
         const value = schema.parse(alternate ? await alternate(context, input.signal)
           : await generateCompanionStructured(context, input.config, input.signal, { fetchFn: input.fetchFn, timeoutMs: 120000 })); validate(value); return value;
       } catch (error) {
@@ -183,11 +184,15 @@ export async function reviewTopicSourceQuantities(input: TopicSourceQuantityRevi
   const requiredPairs = actualClauses.flatMap(clause => actualSets.flatMap((set, setIndex) => clause.text.includes(set.entityQuote)
     ? [{ clauseIndex: clause.clauseIndex, setIndex }] : []));
   if (!requiredPairs.length) return undefined;
-  const extracted = await infer(claimsSchema, purpose('actual_claims'), '只抽取拟稿每个实际片段的数量角色，不判断它对不对、不修改正文。宿主requiredPairs逐字列出了必须独立核查的每个clauseIndex/setIndex。clauses必须完整覆盖每个requiredPair，至少一条该set的quantity；尚无明确数量命题或主体/集合有疑问时可usage=ambiguous且numberIndexes=[]，不能省略目标或返回空quantities。没有任何目标物品名词的非required实际clause可以不返回，也允许返回原完整clause列表；所有返回clauseIndex必须真实唯一。只核sets对应同一集合、实际主体明确的片段；跨主体/同名不同集合/不确定则ambiguous，不能仅数字相同就绑集合。逐项分类：current_possessed_count=叙述事实肯定句中角色在本句所述场景携带/持有多少个；实际携带可以由动作谓词表达，也可以由名词短语断言物品当场在角色穿戴或随身携带的容器中、或贴身的实体位置/接触状态表达，不要求出现持有动词。认知或回忆动作不能抹掉其对象被叙述的物理状态。不是作者或旁白本人拥有，不要求出现“当前”二字，也不要求全部；current_possessed_all=叙述事实肯定句中角色在该场景带齐目标集合/全部在手；current_possessed_members=实际断言当前携带哪些序号；missing=明确未得/缺失，不是持有；total=仅集合总数；planned=将来或计划；historical=有明确比当前叙事层更早的回忆或曾经库存时间锚；已完成进展的摘要、第三人称或普通过去式本身不自动成为historical；attributed=明确归属人物的对白/声称/猜测，不等于叙述事实；ambiguous=不确定。仅从本片段实际语法及完整proposed的作者归属和时间归属判断，不因为用户约束写了缺失就把正文实际“带N个”的措辞改读为总数。心理活动本身不自动改变所指状态的叙事时点，明确更早历史的库存也不能当成本句场景库存。numberIndexes只选择本actualClause宿主numberCandidates的numberIndex，禁止自写数字引文/occurrence或拆分完整数字；count恰一个，members给实际序号的索引，all可空。宿主数字标记仅证明逐字来源，不证明持有。不得代算或替稿子修错。',
-    { sets: actualSets.map((set, setIndex) => ({ setIndex, canonIndex: set.canonIndex, quote: set.quote,
-      entityQuote: set.entityQuote, total: set.total, missingOrdinals: set.missingOrdinals, unresolvedOrdinals: set.unresolvedOrdinals })), requiredPairs,
-      requiredClauseIndexes: [...new Set(requiredPairs.map(pair => pair.clauseIndex))], proposed: kind === 'reply'
-      ? { kind: 'reply', text: input.summary } : { summary: input.summary, stage: input.stage }, actualClauses }, value => {
+  if (requiredPairs.length > quantityDisjointCapacity) throw new CompanionModelError('INVALID_RESPONSE', kind === 'reply'
+    ? '正文数量目标超过单批容量，未发布正文。' : '摘要数量目标超过单批容量，未推进水位。');
+  const claimData = { sets: actualSets.map((set, setIndex) => ({ setIndex, entityQuote: set.entityQuote })), requiredPairs,
+    requiredClauseIndexes: [...new Set(requiredPairs.map(pair => pair.clauseIndex))], proposed: kind === 'reply'
+      ? { kind: 'reply', text: input.summary } : { summary: input.summary, stage: input.stage }, actualClauses };
+  const extracted = await infer(quantityClaimsSchema, purpose('actual_claims'), `只从完整作者拟稿抽取实际数量语法和全称命题，不判断设定对错、不改文本。整个输入没有来源规则/库存数/缺失状态；setIndex只是目标物品短名词的宿主opaque定位键，同名不证明同一库存，也不能因为看不到来源身份就漏掉本句数量角色。clauses完整覆盖每个requiredPair，至少一条quantity；usage依实际原句给current_possessed_count、current_possessed_members、current_possessed_all、missing、total、planned、historical、attributed或ambiguous。count恰一个真实numberIndex，members选本句真实序号；all可无数字。场景实体持有含动作或实际随身容器/贴身状态，不要求作者本人持有或出现当前二字。认知动作不自动消除其对象的事实预设，明确更早库存才historical，普通已完成进展不自动成为过去库存。主体/声部未知可ambiguous，不从来源猜身份。numberIndexes只用本actualClause完整宿主候选，不拆词/自造/改选，value=null只弃权该数值。
+另独立返回allProjections，每个required(clauseIndex,setIndex)恰一项，不从quantity usage、数字存在或成员列表推投影，不因无数字或usage ambiguous省略。projection只审作者完整focus实际量词命题，不证明现实能否持齐，也不对齐看不到的canon库存。statement四态：affirmative_whole_set=作者对本句物品所指整体库存有肯定全称/整体集合持有命题；explicit_not_all=完整focus明确否定全量或限制持有子集且没有相反整套断言；no_whole_set_assertion=完整focus没有整体库存全称持有命题，可仅普通数量/成员/物品/编号描写，不要求证明现实不可能全持有；ambiguous=范围/相反断言/域不明。人物声称也可含全称命题，声音/时间不改变本次命题投影。明确已得到子集的全部不自动是整体库存，不能因普通基数或列出成员就推全集；数字是否相等或穷尽留给宿主数学。同focus含肯定整套和局部否定不能只选否定放行，应保ambiguous。
+每projection coverage=whole_focus，reviewedFocusRef精确绑定本clause。witnesses只引用实际focus或前后各一句的逐字quote，不生成offset：affirmative需要whole_set_quantifier_or_collective_domain和scoped_possession_predicate；explicit_not_all需要negative_or_limited_scope；no_whole可用中性target_scope，不捏造不存在的谓词/量词。强语义出处至少一项在本focus；空witness或缺强role是正常语义未证，不为填齐强造。ambiguous可空witness。不要套有限关键词表或用来源规则修正作者断言。`,
+    claimData, value => {
       const indexes = value.clauses.map(clause => clause.clauseIndex);
       if (new Set(indexes).size !== indexes.length || indexes.some(index => !input.clauses[index])) throw new Error('clauses须唯一引用实际clauseIndex，且不得出现伪造或重复行。');
       if (requiredPairs.some(pair => !value.clauses.some(clause => clause.clauseIndex === pair.clauseIndex
@@ -202,7 +207,15 @@ export async function reviewTopicSourceQuantities(input: TopicSourceQuantityRevi
         if (quantity.usage === 'current_possessed_count' && quantity.numberIndexes.length !== 1
           || quantity.usage === 'current_possessed_members' && !quantity.numberIndexes.length) throw new Error('实际持有数量/成员的数字索引不完整。');
       }
+      const pairKeys = value.allProjections.map(row => row.clauseIndex + ':' + row.setIndex);
+      if (pairKeys.length !== requiredPairs.length || new Set(pairKeys).size !== pairKeys.length
+        || requiredPairs.some(pair => !pairKeys.includes(pair.clauseIndex + ':' + pair.setIndex)))
+        throw new Error('全部持有投影须完整唯一覆盖实际clauseIndex和setIndex。');
+      for (const row of value.allProjections) validateQuantityAuthorAllProjection(row.projection, row.clauseIndex, actualClauses);
     }, input.extractClaims);
+  const authorAllInputChecksum = createHash('sha256').update(JSON.stringify(claimData)).digest('hex');
+  const authorAllOutputChecksum = createHash('sha256').update(JSON.stringify(extracted)).digest('hex');
+  const authorProjectionByPair = new Map(extracted.allProjections.map(row => [row.clauseIndex + ':' + row.setIndex, row.projection]));
   // Retain the warm count's exact host indexes for a narrowly scoped unresolved
   // relationship check. They are never sent to the independent cold reader.
   const warmCountIndexes = new Map<string, Set<number>>();
@@ -226,7 +239,10 @@ export async function reviewTopicSourceQuantities(input: TopicSourceQuantityRevi
     return [{ clauseIndex: clause.clauseIndex, setIndex: quantity.setIndex, canonIndex: set.canonIndex, canonQuote: set.quote, claimQuote: text, actualNumbers: numberSpans.map(span => span.value),
       numberSpans, actualEntityQuote: set.entityQuote, actualEntitySpans,
       total: set.total, missingOrdinals: set.missingOrdinals, availableUpperBound: upperBound, unresolvedSourceOrdinals: set.unresolvedOrdinals,
-      warmCountNumberIndexes: [...warmCountIndexes.get(clause.clauseIndex + ':' + quantity.setIndex) ?? []] }];
+      warmCountNumberIndexes: [...warmCountIndexes.get(clause.clauseIndex + ':' + quantity.setIndex) ?? []],
+      authorAllProjection: authorProjectionByPair.get(clause.clauseIndex + ':' + quantity.setIndex)!,
+      authorAllInputChecksum, authorAllOutputChecksum, authorAllPhase: purpose('actual_claims'), authorAllPair: { clauseIndex: clause.clauseIndex, setIndex: quantity.setIndex },
+      authorAllWitnessLocations: validateQuantityAuthorAllProjection(authorProjectionByPair.get(clause.clauseIndex + ':' + quantity.setIndex)!, clause.clauseIndex, actualClauses) }];
   }));
   const possible = [...new Map(proposedCandidates.map(candidate => [candidate.clauseIndex + ':' + candidate.setIndex, candidate])).values()];
   if (!possible.length) return undefined;
@@ -334,6 +350,14 @@ export async function reviewTopicSourceQuantities(input: TopicSourceQuantityRevi
   const pending = [...unresolved, ...unresolvedSource];
   if (pending.length) return '来源相关的持有前提未决，尚不能认证安全，也不等于已证明的数学矛盾。请同槽澄清目标主体、集合和场景时点，以及是集合总量还是当场携带量，'
     + (kind === 'reply' ? '原提案未正式发布。\n' : '原文/水位未推进。\n') + JSON.stringify(pending);
+  const authorDisagreements = roles.reviews.flatMap(review => {
+    const candidate = possible[review.candidateIndex]!;
+    return quantityAuthorAllProjectionAdmission(candidate, review.all).conflictsWithRaw
+      ? [{ ...candidate, diagnosticType: 'unresolved_semantic_exemption', target: { kind: 'all' },
+        unresolvedReason: 'opposed_raw_author_projection', rawClassification: review.all, protocol: 'quantity_semantic_exemption_v4',
+        authorAllReceipt: quantityAuthorAllProjectionAdmission(candidate, review.all).receipt }] : [];
+  });
+  if (authorDisagreements.length) return '作者盲投影与原肯定全量分类不一致，这是独立未决，不是新的数学结论。原提案/水位未推进。\n' + JSON.stringify(authorDisagreements);
   const checks = quantityDisjointChecks(possible, roles.reviews);
   if (checks.length > quantityDisjointCapacity) throw new CompanionModelError('INVALID_RESPONSE', kind === 'reply'
     ? '正文语义豁免目标超过单批容量，未发布正文。' : '摘要语义豁免目标超过单批容量，未推进水位。');

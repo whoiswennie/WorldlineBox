@@ -5,7 +5,8 @@ import { topicSummaryClauses } from '../../src/main/companions/topic-summary-can
 import type { TopicUserCanon } from '../../src/main/companions/topic-user-canon';
 import { confirmedQuantitySourcePremiseFixture, declaredDisjointQuantityFixture, quantityRoleFixture, withDeclaredQuantitySemanticFixture } from '../helpers/companion-quantity-role-fixture';
 
-const actualProductionQuantityReview = (options: Parameters<typeof productionQuantityReview>[0]) => productionQuantityReview(withDeclaredQuantitySemanticFixture(options));
+const actualProductionQuantityReview = (options: Parameters<typeof productionQuantityReview>[0] & {
+  declaredAuthorAllStatement?: 'affirmative_whole_set' | 'explicit_not_all' | 'no_whole_set_assertion' | 'ambiguous' }) => productionQuantityReview(withDeclaredQuantitySemanticFixture(options));
 
 const actualQuantityReview = (options: Parameters<typeof actualProductionQuantityReview>[0]) => actualProductionQuantityReview({ ...options,
   verifyRoles: options.verifyRoles ? quantityRoleFixture(options.verifyRoles) : undefined });
@@ -250,7 +251,7 @@ it.each([{ indexes: [1] }, { indexes: [0, 0] }, { indexes: [0, 99] }])('refuses 
 it.each([['她把钥匙全部带在身上。', 'scene_all', true], ['她计划日后带齐钥匙，当前尚未带齐。', 'not_scene_all', false]] as const)(
   'audits no-numeral all possession separately from member inference: %s', async (text, allAssertion, rejected) => {
     const base = input(text);
-    const correction = await actualQuantityReview({ ...base,
+    const correction = await actualQuantityReview({ ...base, declaredAuthorAllStatement: rejected ? 'affirmative_whole_set' : 'explicit_not_all',
       extractClaims: async () => ({ clauses: [{ clauseIndex: 0, quantities: [{ setIndex: 0, usage: 'current_possessed_all', numberIndexes: [] }] }] }),
       verifyRoles: async () => ({ reviews: [{ candidateIndex: 0, numbers: [], allAssertion, allReason: '只审原句明确当前全部关系，未来和否定不能算当前。' }] }) });
     expect(!!correction).toBe(rejected);
@@ -379,6 +380,7 @@ it.each([
     extractClaims: async () => ({ clauses: [{ clauseIndex: 0, quantities: [{ setIndex: 0, usage: test.usage,
       numberIndexes: [test.warmIndex] }] }] }), verifyRoles });
   if (test.ambiguous) { expect(correction).toContain('ambiguous_numeric_premise'); expect(correction).not.toContain('count_holding_vs_total'); }
+  else if (test.usage === 'current_possessed_all') { expect(correction).toContain('unresolved_semantic_exemption'); expect(correction).not.toContain('count_holding_vs_total'); }
   else expect(correction).toBeUndefined();
   expect(verifyRoles).toHaveBeenCalledTimes(1);
 });
@@ -579,7 +581,7 @@ it.each([
 ])('keeps explicit nonfact or noncurrent whole-set claims exempt while exposing unknown premises: %j', async test => {
   const base = input('她把钥匙带齐。'), verifyRoles = vi.fn(async () => ({ reviews: [{ candidateIndex: 0, numbers: [], all: {
     collection: 'same', voice: test.voice, time: test.time, relation: test.relation, reason: '本all命题自己的独立判断。' } }] }));
-  const correction = await actualProductionQuantityReview({ ...base,
+  const correction = await actualProductionQuantityReview({ ...base, declaredAuthorAllStatement: test.relation === 'not_affirmed_all' ? 'no_whole_set_assertion' : 'ambiguous',
     extractClaims: async () => ({ clauses: [{ clauseIndex: 0, quantities: [{ setIndex: 0, usage: 'ambiguous', numberIndexes: [] }] }] }), verifyRoles });
   if (test.pending) { expect(correction).toContain('ambiguous_all_relation'); expect(correction).not.toContain('mathematical_contradiction'); }
   else expect(correction).toBeUndefined();
@@ -709,7 +711,7 @@ it.each([
   { text: '张明带别组的三把钥匙。', relation: 'collection_size', kind: 'count' },
   { text: '张明带别组的第2把钥匙。', relation: 'affirmed_holding', kind: 'member' },
 ])('never applies a source bound or warm disagreement to a clearly different collection: $text $relation', async test => {
-  const correction = await actualProductionQuantityReview({ ...input(test.text),
+  const correction = await actualProductionQuantityReview({ ...input(test.text), declaredAuthorAllStatement: 'ambiguous',
     verifyDisjointWaivers: declaredDisjointQuantityFixture,
     extractClaims: async () => ({ clauses: [{ clauseIndex: 0, quantities: [{ setIndex: 0, usage: 'current_possessed_count', numberIndexes: [0] }] }] }),
     verifyRoles: async () => ({ reviews: [{ candidateIndex: 0,
@@ -763,7 +765,7 @@ it.each([
   { collection: 'ambiguous', voice: 'narrated_fact', time: 'earlier_history', relation: 'affirmed_all', result: 'allowed' },
   { collection: 'ambiguous', voice: 'narrated_fact', time: 'future', relation: 'affirmed_all', result: 'allowed' },
 ])('uses the all assertion own collection binding without borrowing a numeric or different-group conclusion: %j', async test => {
-  const correction = await actualProductionQuantityReview({ ...input('他把钥匙带齐。'),
+  const correction = await actualProductionQuantityReview({ ...input('他把钥匙带齐。'), declaredAuthorAllStatement: test.relation === 'not_affirmed_all' ? 'no_whole_set_assertion' : 'ambiguous',
     verifyDisjointWaivers: declaredDisjointQuantityFixture,
     extractClaims: async () => ({ clauses: [{ clauseIndex: 0, quantities: [{ setIndex: 0, usage: 'ambiguous', numberIndexes: [] }] }] }),
     verifyRoles: async () => ({ reviews: [{ candidateIndex: 0, numbers: [], all: { collection: test.collection, voice: test.voice,

@@ -4,7 +4,7 @@ import { reviewTopicSourceQuantities as actualQuantityReview, topicQuantityNumbe
 import { topicSummaryClauses } from '../../src/main/companions/topic-summary-canon-review';
 import { admitQuantitySourcePremises, buildQuantitySourcePremiseCandidates, quantitySourceEvidenceClauses,
   quantitySourcePremiseInput, quantitySourcePremiseSchema, quantitySourcePremiseSystem, validateQuantitySourcePremises } from '../../src/main/companions/topic-source-quantity-premise';
-import { declaredDisjointQuantityFixture, withDeclaredQuantitySemanticFixture } from '../helpers/companion-quantity-role-fixture';
+import { declaredDisjointQuantityFixture, declaredWarmAllFixture, withDeclaredQuantitySemanticFixture } from '../helpers/companion-quantity-role-fixture';
 
 const reviewTopicSourceQuantities = (options: Parameters<typeof actualQuantityReview>[0]) => actualQuantityReview(withDeclaredQuantitySemanticFixture(options));
 
@@ -197,7 +197,7 @@ it.each(['reply', 'summary'] as const)('keeps source-only and identity prompts s
     let output: unknown;
     if (wire.purpose.endsWith('_source_sets')) output = { sets: [{ canonIndex: 0, entityQuote: '照片', totalNumberIndex: 0, missingOrdinalNumberIndexes: [1] }] };
     else if (wire.purpose.endsWith('_source_premise_verification')) output = premiseResponse(wire.data);
-    else if (wire.purpose.endsWith('_actual_claims')) output = { clauses: [{ clauseIndex: 0, quantities: [{ setIndex: 0, usage: 'current_possessed_count', numberIndexes: [0] }] }] };
+    else if (wire.purpose.endsWith('_actual_claims')) output = declaredWarmAllFixture({ user: JSON.stringify(wire) }, { clauses: [{ clauseIndex: 0, quantities: [{ setIndex: 0, usage: 'current_possessed_count', numberIndexes: [0] }] }] });
     else if (wire.purpose.endsWith('_role_verification')) output = { reviews: [{ candidateIndex: 0, numbers: [{ numberIndex: 0, collection: 'different',
       voice: 'narrated_fact', time: 'scene', relation: 'affirmed_holding', kind: 'count', reason: '明确另一组的实际数量。' }], all: { ...noAll, collection: 'different' } }] };
     else if (wire.purpose.endsWith('_semantic_exemption_verification')) output = await declaredDisjointQuantityFixture({ system: request.messages[0].content, user: JSON.stringify(wire) });
@@ -215,7 +215,10 @@ it.each(['reply', 'summary'] as const)('keeps source-only and identity prompts s
     expect(systems.get(prefix + phase)).not.toContain('宿主numberCandidates.value=null');
     expect(systems.get(prefix + phase)).not.toContain('来源总数/缺失序号不可计算时不能建立set');
   }
-  for (const phase of ['source_sets', 'actual_claims', 'role_verification']) expect(systems.get(prefix + phase)).toContain('宿主numberCandidates.value=null');
+  for (const phase of ['source_sets', 'role_verification']) expect(systems.get(prefix + phase)).toContain('宿主numberCandidates.value=null');
+  expect(systems.get(prefix + 'actual_claims')).toContain('value=null只弃权该数值');
+  const blindData = payloads.get(prefix + 'actual_claims') as { sets: unknown[] };
+  expect(blindData.sets).toEqual([{ setIndex: 0, entityQuote: '照片' }]);
   const premiseData = payloads.get(prefix + 'source_premise_verification') as ReturnType<typeof quantitySourcePremiseInput>;
   expect(premiseData.candidates[0]!.numberReferences.every(reference => !('value' in reference) && !('numberQuote' in reference))).toBe(true);
   expect(premiseData).not.toHaveProperty('proposed'); expect(premiseData).not.toHaveProperty('upper'); expect(premiseData).not.toHaveProperty('warm');

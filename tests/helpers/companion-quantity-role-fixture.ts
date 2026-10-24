@@ -20,15 +20,32 @@ export const declaredDisjointQuantityFixture: NonNullable<TopicSourceQuantityRev
     target: { kind: string }; evidence: Array<{ view: string; clauseIndex: number; text: string }> }> };
   return { reviews: checks.map(check => { const focus = check.evidence.find(item => item.view === 'focus')!;
     return { checkIndex: check.checkIndex, verdict: 'positive_exemption', basis: 'different_inventory',
-      evidenceRefs: [{ view: focus.view, clauseIndex: focus.clauseIndex }], reason: '仅此test声明的原异组语义，独立fixture准入。',
-      ...(check.target.kind === 'all' ? { allProjection: declaredAllProjectionFixture(check, 'ambiguous') } : {}) }; }) };
+      evidenceRefs: [{ view: focus.view, clauseIndex: focus.clauseIndex }], reason: '仅此test声明的原异组语义，独立fixture准入。' }; }) };
 };
+
+/** Explicit protocol adaptation for old declarative mocks, not a text classifier.
+ * New projection tests return their own complete sidecar and bypass this helper. */
+export function declaredWarmAllFixture(context: { user: string }, value: unknown,
+  declaredStatement?: Parameters<typeof declaredAllProjectionFixture>[1]) {
+  if (!record(value) || !Array.isArray(value.clauses) || 'allProjections' in value) return value;
+  const data = JSON.parse(context.user).data as { requiredPairs: Array<{ clauseIndex: number; setIndex: number }>;
+    actualClauses: Array<{ clauseIndex: number; text: string }> };
+  return { ...value, allProjections: data.requiredPairs.map(pair => {
+    const row = (value.clauses as Array<{ clauseIndex: number; quantities: Array<{ setIndex: number; usage: string }> }>).find(c => c.clauseIndex === pair.clauseIndex);
+    const statement = declaredStatement ?? (row?.quantities.some(q => q.setIndex === pair.setIndex && q.usage === 'current_possessed_all')
+      ? 'affirmative_whole_set' as const : 'no_whole_set_assertion' as const);
+    return { ...pair, projection: declaredAllProjectionFixture({ evidence: [{ view: 'focus', ...data.actualClauses[pair.clauseIndex]! }] }, statement) };
+  }) };
+}
 
 /** Legacy mechanism tests already declare semantic roles rather than measure
  * model accuracy. This explicit test adapter supplies the new independent
  * phase from those declarations; new admission tests inject a separate reader.
  * No production path obtains this fixture or defaults a missing model field. */
-export function withDeclaredQuantitySemanticFixture<T extends TopicSourceQuantityReviewOptions>(options: T): T {
+export function withDeclaredQuantitySemanticFixture<T extends TopicSourceQuantityReviewOptions>(options: T & {
+  declaredAuthorAllStatement?: Parameters<typeof declaredAllProjectionFixture>[1] }): T {
+  const originalClaims = options.extractClaims;
+  options = { ...options, ...(originalClaims ? { extractClaims: async (context, signal) => declaredWarmAllFixture(context, await originalClaims(context, signal), options.declaredAuthorAllStatement) } : {}) };
   if (!options.verifyRoles || options.verifyDisjointWaivers && options.verifyDisjointWaivers !== declaredDisjointQuantityFixture) return options;
   let declared: Array<{ candidateIndex: number; numbers: Array<{ numberIndex: number; collection: string; voice: string; time: string; relation: string; kind: string }>;
     all: { collection: string; voice: string; time: string; relation: string } }> = [];
@@ -53,9 +70,7 @@ export function withDeclaredQuantitySemanticFixture<T extends TopicSourceQuantit
                       : axes.relation === 'unrelated' ? 'unrelated_target' : 'none';
       const focus = check.evidence.find(item => item.view === 'focus')!;
       return { checkIndex: check.checkIndex, verdict: basis === 'none' ? 'unresolved' : 'positive_exemption', basis,
-        evidenceRefs: [{ view: focus.view, clauseIndex: focus.clauseIndex }], reason: '仅原机制test已声明的语义前提；不证明真实模型准确率。',
-        ...(check.target.kind === 'all' ? { allProjection: declaredAllProjectionFixture(check,
-          axes.relation === 'missing' ? 'explicit_not_all' : axes.relation === 'not_affirmed_all' ? 'no_whole_set_assertion' : 'ambiguous') } : {}) };
+        evidenceRefs: [{ view: focus.view, clauseIndex: focus.clauseIndex }], reason: '仅原机制test已声明的语义前提；不证明真实模型准确率。' };
     }) };
   } };
 }
