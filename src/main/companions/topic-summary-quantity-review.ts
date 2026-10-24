@@ -5,6 +5,8 @@ import type { TopicUserCanon } from './topic-user-canon';
 import { admitQuantitySourcePremises, buildQuantitySourcePremiseCandidates, quantitySourcePremiseInput,
   quantitySourcePremiseProtocol, quantitySourcePremiseSchema, quantitySourcePremiseSystem, validateQuantitySourcePremises,
   type QuantitySourcePremiseReview, type VerifiedQuantitySourceSet } from './topic-source-quantity-premise';
+import { quantityDisjointChecks, quantityDisjointInput, quantityDisjointWaiverSchema, quantityDisjointWaiverSystem, quantityDisjointCapacity,
+  validateQuantityDisjointWaivers, admitQuantityDisjointWaivers } from './topic-quantity-disjoint-waiver';
 
 type Infer = (context: { system: string; user: string }, signal?: AbortSignal) => Promise<unknown>;
 const numberIndex = z.number().int().nonnegative();
@@ -29,7 +31,8 @@ type QuantitySet = VerifiedQuantitySourceSet;
 const cache = new Map<string, { sets: QuantitySet[]; receipt: QuantitySourcePremiseReview }>();
 const formatPathKeys = new Set(['sets', 'canonIndex', 'entityQuote', 'totalNumberIndex', 'missingOrdinalNumberIndexes', 'clauses', 'clauseIndex',
   'quantities', 'setIndex', 'usage', 'numberIndexes', 'reviews', 'candidateIndex', 'numbers', 'numberIndex', 'collection', 'voice', 'time', 'relation', 'kind', 'reason', 'all',
-  'totalBinding', 'totalEvidenceClauseIndex', 'members', 'ordinalNumberIndex', 'evidenceClauseIndexes', 'predicateTarget', 'memberAvailability', 'applicability']);
+  'totalBinding', 'totalEvidenceClauseIndex', 'members', 'ordinalNumberIndex', 'evidenceClauseIndexes', 'predicateTarget', 'memberAvailability', 'applicability',
+  'checkIndex', 'verdict', 'evidenceRefs', 'view']);
 const hostFormatMessages = new Set([
   '数字索引必须对应本原句宿主枚举的完整可计算整数；不得自造引文、截取部分数字或猜不支持的数值。',
   'entityQuote须仅含原句逐字物品本体名词，不含数字或整句。', '来源数字索引必须存在且明确缺失成员不能重复。',
@@ -42,6 +45,8 @@ const hostFormatMessages = new Set([
   'count必须对应正在被问的实际基数，不能把第N成员序号当数量；请核本数字为member或ambiguous，不能改选其它索引。',
   'source premise须绑定实际来源与数字所在原句。', 'source premise必须完整唯一覆盖每个实际setIndex。',
   'source premise证据必须选实际宿主原句，且包含所指数字。', 'source premise必须完整唯一覆盖每个候选member数字。',
+  '异组豁免须完整唯一覆盖实际checkIndex。', '异组豁免证据须引用本目标实际有界原句。',
+  '异组豁免目标须绑定实际焦点数词位置。',
 ]);
 function quantityFormatFeedback(error: unknown) {
   if (error instanceof z.ZodError) return ('响应结构不符outputSchema：' + error.issues.slice(0, 12).map(issue => {
@@ -109,7 +114,7 @@ function boundNumber(candidates: readonly TopicQuantityNumberCandidate[], index:
   return candidate.value;
 }
 export interface TopicSourceQuantityReviewOptions { canon: TopicUserCanon; clauses: readonly { clauseIndex: number; text: string; start?: number; end?: number }[]; summary: string; stage: string;
-  config: CompanionModelConfig; signal?: AbortSignal; fetchFn?: typeof fetch; extractSets?: Infer; verifySourcePremises?: Infer; extractClaims?: Infer; verifyRoles?: Infer;
+  config: CompanionModelConfig; signal?: AbortSignal; fetchFn?: typeof fetch; extractSets?: Infer; verifySourcePremises?: Infer; extractClaims?: Infer; verifyRoles?: Infer; verifyDisjointWaivers?: Infer;
   scope?: { ownerId: string; conversationId: string; topicId: string }; kind?: 'summary' | 'reply' }
 
 /** Semantic extraction identifies one actual collection and sentence modality.
@@ -124,6 +129,7 @@ export async function reviewTopicSourceQuantities(input: TopicSourceQuantityRevi
       try {
         const context = { system: system + '\n宿主numberCandidates.value=null只证明完整字面数词存在，尚不能可靠换算整数；不得拆词、猜数或把它当已知数量。来源总数/缺失序号不可计算时不能建立set；拟稿实际关系/数值不明确可用ambiguous弃权。明确count必须有一个实际数字索引，不能用空count代替弃权。actualEntityQuote/actualEntitySpans若存在，只核这些实际字面物品，不能用同句其它物品的数量代答，主体或集合无法明确对应应ambiguous。第1、3这样的序号列表也不能把末位3当基数数量，即使宿主ordinal只标了显式第N。',
           user: JSON.stringify({ purpose, data, outputSchema: z.toJSONSchema(schema), ...(feedback ? { formatCorrection: feedback } : {}) }) };
+        if (purpose.endsWith('_disjoint_waiver_verification')) context.system = system;
         const value = schema.parse(alternate ? await alternate(context, input.signal)
           : await generateCompanionStructured(context, input.config, input.signal, { fetchFn: input.fetchFn, timeoutMs: 120000 })); validate(value); return value;
       } catch (error) {
@@ -254,8 +260,28 @@ export async function reviewTopicSourceQuantities(input: TopicSourceQuantityRevi
         }
       }
     }, input.verifyRoles);
-  const failures = roles.reviews.flatMap(review => {
-    const candidate = possible[review.candidateIndex]!, members: number[] = [];
+  let effectiveReviews = roles.reviews;
+  const checks = quantityDisjointChecks(possible, roles.reviews);
+  if (checks.length > quantityDisjointCapacity) throw new CompanionModelError('INVALID_RESPONSE', kind === 'reply'
+    ? '正文异组核验目标超过单批容量，未发布正文。' : '摘要异组核验目标超过单批容量，未推进水位。');
+  let disjointReceipts: ReturnType<typeof admitQuantityDisjointWaivers>['receipts'] = [];
+  if (checks.length) {
+    const data = quantityDisjointInput(checks, possible, actualClauses, text => quantityIdentityReference(text).text);
+    const waiver = await infer(quantityDisjointWaiverSchema, purpose('disjoint_waiver_verification'), quantityDisjointWaiverSystem,
+      data, value => validateQuantityDisjointWaivers(value, data), input.verifyDisjointWaivers);
+    const admitted = admitQuantityDisjointWaivers(roles.reviews, waiver, data, {
+      scope: input.scope, evidence: possible.map((candidate, candidateIndex) => ({ candidateIndex,
+        sourceQuoteChecksum: createHash('sha256').update(candidate.canonQuote).digest('hex'),
+        focusChecksum: createHash('sha256').update(candidate.claimQuote).digest('hex') })),
+    });
+    effectiveReviews = admitted.reviews as typeof roles.reviews;
+    disjointReceipts = admitted.receipts;
+  }
+  const checkedCandidates = possible.map((candidate, candidateIndex) => ({ ...candidate,
+    ...(disjointReceipts.some(receipt => receipt.candidateIndex === candidateIndex)
+      ? { disjointWaiverReceipts: disjointReceipts.filter(receipt => receipt.candidateIndex === candidateIndex) } : {}) }));
+  const failures = effectiveReviews.flatMap(review => {
+    const candidate = checkedCandidates[review.candidateIndex]!, members: number[] = [];
     const errors: Array<{ numberIndex?: number; value?: number; verifiedUsage: string; roleVerificationReason: string }> = [];
     for (const number of review.numbers) {
       if (number.collection !== 'same' || number.voice !== 'narrated_fact' || number.relation !== 'affirmed_holding' || number.time !== 'scene' || number.kind === 'unrelated' || number.kind === 'ambiguous') continue;
@@ -274,8 +300,8 @@ export async function reviewTopicSourceQuantities(input: TopicSourceQuantityRevi
   });
   if (failures.length) return '宿主对已来源绑定且分类为实际持有的同一集合计算：总数减明确缺失成员数为可持有上界；拟稿超上界或声称持有明确缺失成员。此数学矛盾不能用其它地方正确重抄规则抵消。请同槽自行改正实际断言，'
     + (kind === 'reply' ? '原提案未正式发布。\n' : '原文/水位未推进。\n') + JSON.stringify(failures);
-  const unresolved = roles.reviews.flatMap(review => {
-    const candidate = possible[review.candidateIndex]!;
+  const unresolved = effectiveReviews.flatMap(review => {
+    const candidate = checkedCandidates[review.candidateIndex]!;
     const numeric = review.numbers.flatMap(number => {
       const span = candidate.numberSpans[number.numberIndex]!;
       if (number.collection !== 'different' && number.voice === 'narrated_fact' && number.time === 'scene' && number.kind === 'count' && number.relation === 'collection_size'
@@ -299,8 +325,8 @@ export async function reviewTopicSourceQuantities(input: TopicSourceQuantityRevi
       ? [{ ...candidate, diagnosticType: 'unresolved_holding_relation', unresolvedReason: 'ambiguous_all_relation', roleVerificationReason: review.all.reason }] : [];
     return [...numeric, ...all];
   });
-  const unresolvedSource = roles.reviews.flatMap(review => {
-    const candidate = possible[review.candidateIndex]!;
+  const unresolvedSource = effectiveReviews.flatMap(review => {
+    const candidate = checkedCandidates[review.candidateIndex]!;
     if (!candidate.unresolvedSourceOrdinals.length) return [];
     // This number is a possible conflict under unresolved physical-member
     // availability, never a factual count bound. Clear negative source verdicts

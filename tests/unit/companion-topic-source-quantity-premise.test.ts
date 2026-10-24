@@ -4,6 +4,7 @@ import { reviewTopicSourceQuantities, topicQuantityNumberCandidates } from '../.
 import { topicSummaryClauses } from '../../src/main/companions/topic-summary-canon-review';
 import { admitQuantitySourcePremises, buildQuantitySourcePremiseCandidates, quantitySourceEvidenceClauses,
   quantitySourcePremiseInput, quantitySourcePremiseSchema, validateQuantitySourcePremises } from '../../src/main/companions/topic-source-quantity-premise';
+import { declaredDisjointQuantityFixture } from '../helpers/companion-quantity-role-fixture';
 
 function candidates(quote = '盒内有7张照片，第5张背面的名字仍不可辨认。', totalNumberIndex = 0, missingOrdinalNumberIndexes = [1]) {
   return buildQuantitySourcePremiseCandidates([{ canonIndex: 0, sourceMessageId: 'actual-source', sourceChecksum: 'c'.repeat(64), quote,
@@ -136,6 +137,8 @@ it.each([
 ])('keeps unconfirmed physical absence out of arithmetic and only raises an actual possible conflict: $text $availability', async test => {
   const clauses = topicSummaryClauses(test.text, '');
   const correction = await reviewTopicSourceQuantities({ kind: 'reply', config, canon: sourceCanon(), summary: test.text, stage: '', clauses,
+    fetchFn: vi.fn<typeof fetch>(async () => { throw new Error('Unexpected transport in a declared source-premise fixture.'); }),
+    verifyDisjointWaivers: declaredDisjointQuantityFixture,
     extractSets: async () => ({ sets: [{ canonIndex: 0, entityQuote: '照片', totalNumberIndex: 0, missingOrdinalNumberIndexes: [1] }] }),
     verifySourcePremises: async context => premiseResponse(JSON.parse(context.user).data, { memberAvailability: test.availability }),
     extractClaims: async () => ({ clauses: [{ clauseIndex: 0, quantities: [{ setIndex: 0, usage: test.all ? 'current_possessed_all' : test.member ? 'current_possessed_members' : 'current_possessed_count',

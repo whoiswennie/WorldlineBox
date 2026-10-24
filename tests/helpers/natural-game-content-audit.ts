@@ -1,5 +1,19 @@
 import { createHash } from 'node:crypto';
 import { z } from 'zod';
+import type { CompanionActivityTask } from '../../src/shared/companion-activity-task';
+import type { CompanionMessage } from '../../src/shared/companions';
+
+export type NaturalGameTerminalReceipt = { clientId: string; message: CompanionMessage };
+/** The exact task's actual message ledger identity plus currently authorized
+ * formal bytes. Task stage/status alone never proves the user got its report. */
+export function naturalGameTerminalReady(task: Pick<CompanionActivityTask, 'id' | 'status' | 'companionId' | 'conversationId' | 'sourceMessageId'>,
+  receipt?: NaturalGameTerminalReceipt): boolean {
+  if (task.status === 'failed' || task.status === 'cancelled') return true;
+  if (task.status !== 'succeeded' || !task.sourceMessageId || !receipt || receipt.clientId !== 'activity_result_' + task.id) return false;
+  const message = receipt.message;
+  return message.authorId === task.companionId && message.conversationId === task.conversationId && message.replyToId === task.sourceMessageId
+    && message.kind === 'text' && message.status === 'sent' && !message.isReplyDraft && !message.replyDraft && !!message.content.trim();
+}
 
 const checksumSchema = z.string().regex(/^[a-f0-9]{64}$/);
 const retainedSourceSchema = z.object({ messageId: z.string().min(1), conversationId: z.string().min(1), authorId: z.string().min(1), checksum: checksumSchema });

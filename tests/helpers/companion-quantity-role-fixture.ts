@@ -1,6 +1,16 @@
 import type { TopicSourceQuantityReviewOptions } from '../../src/main/companions/topic-summary-quantity-review';
 
 type Infer = NonNullable<TopicSourceQuantityReviewOptions['verifyRoles']>;
+/** The caller explicitly declares this legacy semantic fixture disjoint.
+ * Production never receives this test receipt, and uncertain/new tests must
+ * supply their own independent decision instead of using this declaration. */
+export const declaredDisjointQuantityFixture: NonNullable<TopicSourceQuantityReviewOptions['verifyDisjointWaivers']> = async context => {
+  const { checks } = JSON.parse(context.user).data as { checks: Array<{ checkIndex: number;
+    evidence: Array<{ view: string; clauseIndex: number }> }> };
+  return { reviews: checks.map(check => { const focus = check.evidence.find(item => item.view === 'focus')!;
+    return { checkIndex: check.checkIndex, verdict: 'positive_disjoint',
+      evidenceRefs: [{ view: focus.view, clauseIndex: focus.clauseIndex }], reason: '仅此test声明的原异组语义，独立fixture准入。' }; }) };
+};
 /** Existing semantic mocks describe already-confirmed missing inventories.
  * This is test-only; production always obtains its own source-only receipt. */
 export const confirmedQuantitySourcePremiseFixture: NonNullable<TopicSourceQuantityReviewOptions['verifySourcePremises']> = async context => {

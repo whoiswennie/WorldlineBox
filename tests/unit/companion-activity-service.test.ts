@@ -3,7 +3,9 @@ import { createHash } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
-import { CompanionsStore, type CompanionSeed } from '../../src/companions/store';
+import { CompanionsStore, type CompanionSeed, type CompanionConnection } from '../../src/companions/store';
+import BetterSqlite3 from 'better-sqlite3';
+import { naturalGameTerminalReady, type NaturalGameTerminalReceipt } from '../helpers/natural-game-content-audit';
 import { CompanionWorldService } from '../../src/main/companions/world-service';
 import { CompanionActivityTaskService, companionActivitySocialObservationFingerprint } from '../../src/main/companions/activity-task-service';
 import { companionStorageCommandSchema, type CompanionStorageCommand } from '../../src/shared/companion-storage';
@@ -73,6 +75,56 @@ it('reviews a zero-history terminal social claim in-slot before any final report
   const proof = store.request({ type: 'execution.sources', sourceMessageIds: [report.id], memoryIds: [] }).executionSources?.find(source => source.id === report.id);
   expect(proof?.executionReadset?.sources.map(source => source.id)).toContain(scope.task.sourceMessageId);
   expect(store.request({ type: 'social.conversations', companionId: scope.companionId }).socialConversationPage!.items).toEqual([]);
+});
+it('waits for the exact actual formal report after terminal commit while its publication review is held', async () => {
+  let reviews = 0, publicationHeld = false, release: (() => void) | undefined;
+  const fetchFn = vi.fn<typeof fetch>(async (_url, init) => {
+    const data = JSON.parse(JSON.parse(String(init?.body)).messages[1].content);
+    if (data.purpose === 'companion_social_progress_review') {
+      if (++reviews === 2) { publicationHeld = true; await new Promise<void>(resolve => { release = resolve; }); }
+      return response({ supported: true, correction: '' });
+    }
+    return response({ status: 'complete', action: null, wait: null, summary: '本次检查已经结束，这是实际检查结果。' });
+  });
+  const scope = setup(fetchFn, '完成本次检查并将结果告诉我。', true);
+  const Database = BetterSqlite3 as { new (filename: string, options: { readonly: true }): CompanionConnection };
+  const messages = new Database(path.join(root, 'state.sqlite'), { readonly: true });
+  const actualReport = (): NaturalGameTerminalReceipt | undefined => {
+    const row = messages.prepare('SELECT id,client_id FROM messages WHERE client_id=?').get('activity_result_' + scope.task.id) as { id: string; client_id: string } | undefined;
+    if (!row) return undefined;
+    const message = store.request({ type: 'memory.sources.filter', companionId: scope.companionId, conversationId: scope.conversationId, ids: [row.id] }).memorySources?.find(message => message.id === row.id);
+    return message ? { clientId: row.client_id, message } : undefined;
+  };
+  try {
+    await service!.tick();
+    const current = () => store.request({ type: 'activity.get', companionId: scope.companionId, conversationId: scope.conversationId, id: scope.task.id }).activityTask!;
+    await vi.waitFor(() => { expect(current().status).toBe('succeeded'); expect(publicationHeld).toBe(true); });
+    expect(store.messages({ conversationId: scope.conversationId }).messages.some(message => message.authorId === scope.companionId && message.replyToId === scope.task.sourceMessageId)).toBe(false);
+    const oldNaturalLoopWouldStop = ['succeeded', 'failed', 'cancelled'].includes(current().status);
+    expect(oldNaturalLoopWouldStop).toBe(true);
+    expect(naturalGameTerminalReady(current(), actualReport())).toBe(false);
+    release!(); release = undefined;
+    await vi.waitFor(() => expect(actualReport()).toBeDefined());
+    const receipt = actualReport()!;
+    expect(naturalGameTerminalReady(current(), receipt)).toBe(true);
+    expect(receipt.message.content).toContain('本次检查已经结束，这是实际检查结果。');
+    expect(reviews).toBe(2); expect(fetchFn).toHaveBeenCalledTimes(3);
+    for (const changed of [
+      { ...receipt, clientId: 'activity_result_wrong_task' },
+      { ...receipt, message: { ...receipt.message, authorId: 'foreign_owner' } },
+      { ...receipt, message: { ...receipt.message, conversationId: 'foreign_room' } },
+      { ...receipt, message: { ...receipt.message, replyToId: 'foreign_source' } },
+      { ...receipt, message: { ...receipt.message, status: 'failed' as const } },
+      { ...receipt, message: { ...receipt.message, isReplyDraft: true } },
+      { ...receipt, message: { ...receipt.message, content: '' } },
+    ]) expect(naturalGameTerminalReady(current(), changed)).toBe(false);
+    expect(naturalGameTerminalReady({ ...current(), status: 'failed' })).toBe(true);
+    expect(naturalGameTerminalReady({ ...current(), status: 'cancelled' })).toBe(true);
+    expect(naturalGameTerminalReady({ ...current(), status: 'waiting' }, receipt)).toBe(false);
+    // Presence is a delivery condition only. Neutral host fallback content is
+    // still judged by the unchanged independent seven semantic acceptance gates.
+    expect(naturalGameTerminalReady(current(), { ...receipt, message: { ...receipt.message, content: '这条任务记录已结束，实际结果尚未核验。' } })).toBe(true);
+  } finally { release?.(); messages.close(); }
 });
 it.each([true, false])('verifies an actual current partial recall using its exact context proof instead of the old human sequence valid=%s', async valid => {
   const fetchFn = vi.fn<typeof fetch>(async () => response({ status: 'continue', action: { action: 'query', category: 'scenes', limit: 1 }, wait: null,

@@ -3,7 +3,7 @@ import { createHash } from 'node:crypto';
 import { reviewTopicSourceQuantities as actualProductionQuantityReview, topicQuantityNumberCandidates } from '../../src/main/companions/topic-summary-quantity-review';
 import { topicSummaryClauses } from '../../src/main/companions/topic-summary-canon-review';
 import type { TopicUserCanon } from '../../src/main/companions/topic-user-canon';
-import { confirmedQuantitySourcePremiseFixture, quantityRoleFixture } from '../helpers/companion-quantity-role-fixture';
+import { confirmedQuantitySourcePremiseFixture, declaredDisjointQuantityFixture, quantityRoleFixture } from '../helpers/companion-quantity-role-fixture';
 
 const actualQuantityReview = (options: Parameters<typeof actualProductionQuantityReview>[0]) => actualProductionQuantityReview({ ...options,
   verifyRoles: options.verifyRoles ? quantityRoleFixture(options.verifyRoles) : undefined });
@@ -14,7 +14,9 @@ const canon: TopicUserCanon = { version: 1, throughSequence: 2, entries: [{ id: 
   quote: '共有3把钥匙，第2把仍未找到，不能自行找回。', rule: '自由解释不是数学来源' }] };
 const extractSets = async () => ({ sets: [{ canonIndex: 0, entityQuote: '钥匙', totalNumberIndex: 0, missingOrdinalNumberIndexes: [1] }] });
 const input = (text: string) => ({ kind: 'reply' as const, canon, summary: text, stage: '', config, clauses: topicSummaryClauses(text, ''), extractSets,
-  verifySourcePremises: confirmedQuantitySourcePremiseFixture });
+  fetchFn: vi.fn<typeof fetch>(async () => { throw new Error('Unexpected transport in a declared semantic fixture.'); }),
+  verifySourcePremises: confirmedQuantitySourcePremiseFixture,
+  verifyDisjointWaivers: vi.fn(async () => { throw new Error('This fixture did not declare an independent disjoint waiver.'); }) });
 const originalParagraph = '许岚把这句话在心里过了一遍。她想起口袋里的三把钥匙，冰冷的金属贴在大腿外侧。第一把在她手里，第三把也在她手里，第二把却始终没有找到——翻遍了该翻的地方，问了该问的人，得到的都是模棱两可的摇头。这件事她没对A17提起。';
 
 it.each(['current_possessed_count', 'total', 'planned', 'attributed', 'missing'] as const)('audits original prose and independently rejects three-held even when warm usage is %s', async warmUsage => {
@@ -680,6 +682,7 @@ it('rejects role output beyond its unchanged thousand-review capacity within the
 it.each(['different', 'same', 'ambiguous'] as const)('keeps collection binding per numeral for a same-clause source count and another inventory: %s', async collection => {
   const base = input('本组带两把钥匙，张明带别组的三把钥匙。');
   const correction = await actualProductionQuantityReview({ ...base,
+    verifyDisjointWaivers: declaredDisjointQuantityFixture,
     canon: { ...canon, entries: [{ ...canon.entries[0]!, quote: '本组共有3把钥匙，第2把尚未找到。' }] },
     extractClaims: async () => ({ clauses: [{ clauseIndex: 0, quantities: [{ setIndex: 0, usage: 'current_possessed_count', numberIndexes: [1] }] }] }),
     verifyRoles: async () => ({ reviews: [{ candidateIndex: 0, numbers: [
@@ -696,6 +699,7 @@ it.each([
   { text: '张明带别组的第2把钥匙。', relation: 'affirmed_holding', kind: 'member' },
 ])('never applies a source bound or warm disagreement to a clearly different collection: $text $relation', async test => {
   const correction = await actualProductionQuantityReview({ ...input(test.text),
+    verifyDisjointWaivers: declaredDisjointQuantityFixture,
     extractClaims: async () => ({ clauses: [{ clauseIndex: 0, quantities: [{ setIndex: 0, usage: 'current_possessed_count', numberIndexes: [0] }] }] }),
     verifyRoles: async () => ({ reviews: [{ candidateIndex: 0,
       numbers: [{ numberIndex: 0, ...numericPremise('narrated_fact', test.relation, 'scene', test.kind, 'different') }],
@@ -749,6 +753,7 @@ it.each([
   { collection: 'ambiguous', voice: 'narrated_fact', time: 'future', relation: 'affirmed_all', result: 'allowed' },
 ])('uses the all assertion own collection binding without borrowing a numeric or different-group conclusion: %j', async test => {
   const correction = await actualProductionQuantityReview({ ...input('他把钥匙带齐。'),
+    verifyDisjointWaivers: declaredDisjointQuantityFixture,
     extractClaims: async () => ({ clauses: [{ clauseIndex: 0, quantities: [{ setIndex: 0, usage: 'ambiguous', numberIndexes: [] }] }] }),
     verifyRoles: async () => ({ reviews: [{ candidateIndex: 0, numbers: [], all: { collection: test.collection, voice: test.voice,
       time: test.time, relation: test.relation, reason: '独立all集合身份，不借其它数字的结论。' } }] }) });
