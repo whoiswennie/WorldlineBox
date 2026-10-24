@@ -962,3 +962,17 @@ Core冻结f4f981e9、caller冻结14e37920开头，分别经edd8a3ea、670eaa1e�
 Root共同封口owner-routing-propositions-root-joint-closure-2026-10-24.json，SHA256 c978279c5c20ea46605e686eb52d33a26188adcfbffc064b889cdba33f3eea2b：复用原package collector完整重枚举3898输入，增删改/哈希均无漂移；类型/lint与81文件两轮各3089守卫输入一致，Core9、caller25、数量9个当前冻结记录逐项核对。封口初稿漏读数量freeze的files映射、计为0条的形状问题及修正版均保留，不替代或重写测试。新parent为unified-final-package-2026-10-24T10-42-53-781Z-5a832dc5-prepare-only-source-sha256.json（a7cac116开头），仅prepare，未构建安装包。全仓旧汇总8d21cc9c尚未吸收本轮，不将分线报告相加冒充新全仓全绿。
 
 用户询问约28小时后的进度时，六类剩余项中的第一类“通用修复及多模型路由共同机制回归”刚完成，故当前剩五类最终验收：（1）新v9真实短门及原30数量/事实场景；（2）自动记忆整理与召回的内容质量，保留既有strict judge RED及其事实错误分析，不将模型评审错误与业务质量混为一谈；（3）三组fresh长上下文，含反复压缩、纠正、暂停和重启；（4）原始狼人杀目标自然完整结束，仍不能用新任务或脚本主持场景代替；（5）最终安装包资源、ASAR原生热冷与界面自动功能。30默认skip未冒充通过，既有真实执行不冒充本次源码复验。长期目标保持active，整体开发尚未验收完成；继续只收口这些门，不扩展厂商参数或无关功能。
+
+### 16.53 命题极性与现实认证的定义消歧，以及自动格式修复待验（2026-10-24）
+
+同一通用driver经Root全文及独立冷读，按3898输入的5a832 parent实际运行两材料短门；唯一登记1792840085814的原始actual SHA256 3e8f33c6bfa5a8a02b37eed5f5f7db5223bfdd006a7383ac7a03618e4710709e。实际仅1HTTP、5385tokens，严格RED：两all选择no_whole方向正确，却同时缺semanticRoles/bases，宿主正确保留未决；引述基数另为ambiguous，三个成员肯定/否定判断正确，四数字host绑定均有效。Root生产纯函数因果审计d7615979开头，不把未证说成已证明的错误全称，也不把没有执行的第五阶段当实际结果。业务判定未完成，无重试/补采，完整输入无漂移且临时环境已清理。
+
+第一次仅提示证明义务后，47fd parent登记1792841016006仍严格RED，actual SHA256 f0901ac947656f32aa0d72908ff03f90704b92304c6ed9dca8151c7e638464a1，1HTTP、5831tokens。实际partial的limited证据已齐、safeAbsence=true；引述ordinary仍domainRole=null，quoted数字仍未决，其余三数字正确。两份独审与纯函数重算区分了模型遗漏和提示概念歧义：旧首定义“实际肯定/被审场景”容易与命题内容极性混淆，domain_reference也未解释普通被持物品指称与全集覆盖的区别；这不是声称已知道模型内部原因。
+
+最终仅修改topic-summary-quantity-review.ts同一个claims system模板字面量：明确已确定no_whole须有原文EID的basis；domain_reference为命题内被持物品名词或指代，普通基数、成员和转述同样可有，不等于来源全集/同库存/coverage；numeric四态统一描述被述内容关系与极性，外层说法未经认可本身不构成歧义。否定、疑问、条件保原结构，真实不明和null/空roles继续pending，未改schema、宿主推断、数学、声部审查或调用预算。旧46418256→c31b08b6→5cb3e480每步完整备份与逆变、AST字面外同字节证明均保留，单文件lint均零错误/警告，未增加仅复述提示的测试。
+
+两次各跑原7个完整相关文件，均451通过、0失败、7默认skip，458身份/状态完全一致；当前报告unified-vcp-final-predicate-scope-quantity-default-2026-10-24-tests.json。最新freeze cdc18f5c开头；5653bf34 parent SHA256 708125cd299e6c44c9f2e823d8e348d6e1e9b1b5d039611c5ca62cfa7c1ca9bd，3898输入完整重枚举/哈希无漂移，相对上一轮仅helper变化。前轮全main/extension/lint及81文件为历史共同检查；本轮仅字面变化的静态证明、单文件lint和7文件重跑分开记录，不冒称再次全仓执行。
+
+最新同源码实际登记1792841712763，actual SHA256 e4b1d0561f45eba1a02b05ffec21e3ca6c855a0c4f9689a6b52bd8b42f647c79：2HTTP，warm5915tokens、第五1567tokens。作者全部all/数字原heldout真实通过，进入独立第五；第五正确选择attributed_claim及focus0/after1实际依据，但为number目标填入all专属assertionEvidenceIds，并错误使用textChecksum，来源校验拒绝。此strict零修复短门仍RED，0完整业务checks、第二材料未执行，完整输入无漂移、临时环境已清理。不能把作者阶段通过扩大成整门或原30通过。
+
+生产infer原有最多3格式槽位，可在schema/来源绑定错误后自动生成formatCorrection；当前短门预校验即abort，未覆盖此自动修复能力。下一步只准备同一driver的有界续验：同parent真实成功warm及首个错误第五透明回放给生产host，让原infer自然生成第二槽修正上下文，再实际请求该修正；原第二材料仍独立真实warm/条件第五。前两份与本份严格RED不变，不手工修JSON，不把语义未决当格式错误重采，不增加生产调用上限，不以回放冒称全部fresh，也不在准备阶段请求模型。原30、长篇、原自然活动和当前最终包仍未验收，长期目标active。
