@@ -279,7 +279,17 @@ export class CompanionService {
       excludedIds: () => [...new Set([...this.resettingCompanions, ...[...this.activities.values()].map(activity => activity.companionId)])],
       changed: () => this.changed(), report: options.report });
     if (options.learningAssets) this.learning = new CompanionLearningService({ assets: options.learningAssets, request: command => this.call(command),
-      configured: options.hasConfig, blocked: owner => this.resettingCompanions.has(owner) || this.dormantCompanions.has(owner),
+      configured: async owner => {
+        const companion = (await this.call({ type: 'state', includeConversations: false, activeOnly: true })).state?.companions.find(companion => companion.id === owner);
+        if (!companion) return false;
+        try {
+          const config = await this.configFor(companion);
+          return !!config.model?.trim() && !!config.apiKey?.trim();
+        } catch (error) {
+          if (error instanceof CompanionModelError && error.code === 'CONFIG') return false;
+          throw error;
+        }
+      }, blocked: owner => this.resettingCompanions.has(owner) || this.dormantCompanions.has(owner),
       ready: async (owner, workId, signal, job) => {
         if ([...this.activities.values()].some(activity => activity.companionId === owner && activity.status === 'thinking')) return false;
         const scope = { companionId: owner, conversationId: 'world_' + owner };

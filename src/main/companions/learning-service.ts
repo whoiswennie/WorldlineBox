@@ -23,7 +23,7 @@ interface Options {
   ready?(owner: string, workId: string, signal: AbortSignal, job: CompanionLearningJob): Promise<boolean>;
   end?(owner: string, workId: string): Promise<void>;
   blocked?(owner: string): boolean;
-  configured?(): boolean;
+  configured?(owner: string): boolean | Promise<boolean>;
   changed(): void; report(error: unknown): void;
 }
 /** Bounded actual reading, independent from the user's asset semantic-search switch. */
@@ -63,7 +63,8 @@ export class CompanionLearningService {
   private async process(job: CompanionLearningJob, signal: AbortSignal): Promise<void> {
     const owner = job.grant.companionId, workId = 'learning_' + job.leaseToken;
     try {
-      if (this.options.configured && !this.options.configured()) throw new CompanionLearningWaitingError('等待全局聊天模型配置，尚未读取或内化资料。');
+      if (this.options.configured && !await this.options.configured(owner)) throw new CompanionLearningWaitingError('等待此伙伴可用的聊天模型配置，尚未读取或内化资料。');
+      signal.throwIfAborted();
       if (this.options.blocked?.(owner) || this.options.ready && !await this.options.ready(owner, workId, signal, job)) throw new CompanionLearningWaitingError('等待伙伴醒来或完成手头的事情。');
       signal.throwIfAborted();
       const page = await this.options.assets.page(job.grant, job.afterAssetId);

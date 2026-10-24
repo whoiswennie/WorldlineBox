@@ -58,6 +58,35 @@ it('reports missing global model configuration as waiting without reading or rec
   expect(f.store.request({ type: 'memory.jobs.claim', companionId: 'alice' }).memoryJob).toBeUndefined();
 });
 
+it('checks asynchronous model availability separately for the actual reading owner', async () => {
+  const f = fixture(); f.grant('alice'); f.grant('bob');
+  const configured = vi.fn(async (owner: string) => owner === 'bob');
+  const service = new CompanionLearningService({ assets: f.assets, request: f.request, configured,
+    changed: vi.fn(), report: f.report }); services.add(service);
+  await service.tick();
+  await vi.waitFor(() => expect(f.store.request({ type: 'learning.status', companionId: 'bob' }).learning!.reads).toHaveLength(1));
+  expect(configured.mock.calls.map(([owner]) => owner)).toEqual(['alice', 'bob']);
+  expect(f.assets.page.mock.calls.map(([grant]) => grant.companionId)).toEqual(['bob']);
+  expect(f.assets.read.mock.calls.map(([grant]) => grant.companionId)).toEqual(['bob']);
+  expect(f.store.request({ type: 'learning.status', companionId: 'alice' }).learning!).toMatchObject({ grants: [{ status: 'waiting' }], reads: [] });
+});
+
+it.each(['cancel', 'revoke'] as const)('does not read after %s while asynchronous owner configuration is pending', async mode => {
+  const f = fixture(), grant = f.grant(), configuration = deferred<boolean>();
+  releases.push(() => configuration.resolve(true));
+  const configured = vi.fn(() => configuration.promise), ready = vi.fn(async () => true);
+  const service = new CompanionLearningService({ assets: f.assets, request: f.request, configured, ready,
+    changed: vi.fn(), report: f.report }); services.add(service);
+  await service.tick(); await vi.waitFor(() => expect(configured).toHaveBeenCalledWith('alice'));
+  if (mode === 'revoke') await service.handle({ type: 'memory.learning.revoke', companionId: 'alice', id: grant.id, expectedRevision: grant.revision });
+  else service.cancel('alice');
+  configuration.resolve(true); await service.drain('alice');
+  expect(ready).not.toHaveBeenCalled(); expect(f.assets.page).not.toHaveBeenCalled(); expect(f.assets.read).not.toHaveBeenCalled();
+  expect(f.request.mock.calls.some(([command]) => command.type === 'learning.commit')).toBe(false);
+  expect(f.store.request({ type: 'learning.status', companionId: 'alice' }).learning!.reads).toEqual([]);
+  if (mode === 'revoke') expect(f.store.request({ type: 'learning.status', companionId: 'alice' }).learning!.grants).toEqual([]);
+});
+
 it('keeps durable status and a successful revocation visible when the asset catalog is unavailable', async () => {
   const f = fixture(), grant = f.grant('alice', false); f.assets.catalog.mockRejectedValue(new Error('Asset Worker unavailable.'));
   expect(await f.service.handle({ type: 'memory.learning.status', companionId: 'alice' })).toMatchObject({ ok: true,
