@@ -44,6 +44,37 @@ export const quantityAuthorAllProjectionSchema = z.discriminatedUnion('kind', [
   z.strictObject({ ...authorCommon, kind: z.literal('unresolved_author_scope'), concernEvidenceIds: z.array(authorEvidenceId).max(2),
     reason: z.enum(['coverage_unclear', 'holding_unclear', 'scope_unclear', 'more_than_two_relevant_propositions', 'insufficient_evidence']) }),
 ]);
+// A producer hint, not an acceptance schema. Consumer-legal weak projections
+// must still reach the existing pending/safe-OR rules without semantic retries.
+const requestedRoleIndex = z.number().int().nonnegative();
+const requestedNoWhole = quantityAuthorAllProjectionSchema.options[0].extend({
+  semanticRoles: quantityAuthorAllProjectionSchema.options[0].shape.semanticRoles.min(1),
+  bases: z.array(z.discriminatedUnion('kind', [
+    ordinaryProposition.extend({ domainRole: requestedRoleIndex, predicateRole: requestedRoleIndex }),
+    limitedProposition.extend({ domainRole: requestedRoleIndex, predicateRole: requestedRoleIndex, restrictionRole: requestedRoleIndex }),
+    nonholdingProposition.extend({ scopeRole: requestedRoleIndex }),
+  ])).min(1).max(2),
+});
+const requestedScopeIds = wholeProposition.shape.scopeEvidenceIds.min(1);
+const requestedWhole = quantityAuthorAllProjectionSchema.options[1].extend({
+  semanticRoles: quantityAuthorAllProjectionSchema.options[1].shape.semanticRoles.min(1),
+  propositions: z.array(z.discriminatedUnion('polarity', [
+    wholeProposition.extend({ polarity: z.literal('affirmed'), domainRole: requestedRoleIndex, predicateRole: requestedRoleIndex,
+      coverageRole: requestedRoleIndex, negativeRole: z.null(), scopeEvidenceIds: requestedScopeIds }),
+    wholeProposition.extend({ polarity: z.literal('denied'), domainRole: requestedRoleIndex, predicateRole: requestedRoleIndex,
+      negativeRole: requestedRoleIndex, scopeEvidenceIds: requestedScopeIds }),
+  ])).min(1).max(2),
+});
+export const quantityAuthorAllProjectionRequestSchema = z.discriminatedUnion('kind', [
+  requestedNoWhole, requestedWhole, quantityAuthorAllProjectionSchema.options[2],
+]);
+export const quantityAuthorEvidencePolicy = {
+  roleEvidenceKinds: { domain_reference: ['entity_span', 'text_segment'], coverage_operator: ['text_segment'],
+    possession_predicate: ['text_segment'], whole_negative_scope: ['text_segment'], limited_scope: ['text_segment'],
+    partitive_restriction: ['text_segment'], non_holding_scope: ['focus_scope', 'text_segment'], negative_scope: ['text_segment'] },
+  neutralAddressFields: { reviewedFocusId: 'focus_scope', targetId: 'numeric_span' },
+  scope: 'Producer guidance only; existing consumer validates current lane IDs and retains weak semantic outputs as pending.',
+} as const;
 export type QuantityAuthorAllProjection = z.infer<typeof quantityAuthorAllProjectionSchema>;
 export const quantityAuthorProjectionCapacity = 32;
 export const quantityAuthorNumberProjectionSchema = z.strictObject({
@@ -218,6 +249,14 @@ export function validateQuantityDisjointWaivers(value: Waiver, input: QuantityDi
   }
 }
 
+function resolveScopeAddressAlias(lane: QuantityAuthorEvidenceLane, evidence: QuantityAuthorEvidence) {
+  if (!['focus_scope', 'neighbor_scope'].includes(evidence.kind) || evidence.laneId !== lane.id) return undefined;
+  const matches = lane.evidence.filter(other => other.kind === 'text_segment' && other.laneId === lane.id
+    && other.clauseIndex === evidence.clauseIndex && other.view === evidence.view && other.actualTextChecksum === evidence.actualTextChecksum
+    && other.utf16Span.start === evidence.utf16Span.start && other.utf16Span.end === evidence.utf16Span.end
+    && other.utf8Span.start === evidence.utf8Span.start && other.utf8Span.end === evidence.utf8Span.end && other.quote === evidence.quote);
+  return matches.length === 1 ? matches[0] : undefined;
+}
 /** A legal evidence ID proves an address, never the role's semantic truth. */
 function authorRoleLocations(projection: { laneId: string; reviewedFocusId: string; semanticRoles: Array<{ role: string; evidenceId: string }> }, lane: QuantityAuthorEvidenceLane) {
   if (projection.laneId !== lane.id || projection.reviewedFocusId !== lane.focusId) throw new Error('作者证据须绑定实际完整焦点。');
@@ -226,11 +265,14 @@ function authorRoleLocations(projection: { laneId: string; reviewedFocusId: stri
     const evidence = lane.evidence.find(e => e.id === role.evidenceId), key = JSON.stringify(role);
     if (!evidence || evidence.laneId !== lane.id || seen.has(key)) throw new Error('作者语义出处须选本目标允许的实际evidenceId。');
     seen.add(key);
+    const canonical = resolveScopeAddressAlias(lane, evidence);
     return { role: role.role, roleIndex, evidenceId: evidence.id, evidenceKind: evidence.kind,
       evidenceRef: { view: evidence.view, clauseIndex: evidence.clauseIndex }, quote: evidence.quote,
       firstMatchUtf16Span: evidence.utf16Span, hostUtf16Span: evidence.utf16Span, hostUtf8Span: evidence.utf8Span,
       evidenceTextChecksum: evidence.actualTextChecksum,
-      strongEligible: evidence.kind === 'text_segment' || role.role === 'non_holding_scope' && evidence.kind === 'focus_scope' };
+      ...(canonical ? { canonicalEvidenceId: canonical.id, canonicalEvidenceKind: canonical.kind,
+        addressAliasReason: 'exact_scope_to_existing_text_segment_v1' as const } : {}),
+      strongEligible: evidence.kind === 'text_segment' || !!canonical || role.role === 'non_holding_scope' && evidence.kind === 'focus_scope' };
   });
 }
 function validateAuthorRoleReference(index: number | null, expected: readonly string[], projection: QuantityAuthorAllProjection) {

@@ -1,10 +1,12 @@
 import { createHash } from 'node:crypto';
 import { expect, it, vi } from 'vitest';
+import { z } from 'zod';
 import { quantityDisjointChecks, quantityDisjointInput, quantityDisjointWaiverSchema, validateQuantityDisjointWaivers,
   admitQuantityDisjointWaivers, quantityAuthorAllProjectionSchema, quantityAuthorAllProjectionAdmission as actualAllAdmission, validateQuantityAuthorAllProjection, deriveQuantityAuthorAllProjection as actualAllDerive, buildQuantityAuthorEvidenceLane,
   quantityAuthorNumberProjectionSchema, validateQuantityAuthorNumberProjection, bindQuantityHostNumberTarget, quantityAuthorNumberProjectionAdmission,
+  quantityAuthorAllProjectionRequestSchema, quantityAuthorEvidencePolicy,
   type QuantityAuthorAllProjection, type QuantityAuthorNumberProjection, type QuantityCollectionReview } from '../../src/main/companions/topic-quantity-disjoint-waiver';
-import { reviewTopicSourceQuantities, topicQuantityNumberCandidates } from '../../src/main/companions/topic-summary-quantity-review';
+import { reviewTopicSourceQuantities, topicQuantityNumberCandidates, quantityClaimsSchema, quantityClaimsRequestSchema } from '../../src/main/companions/topic-summary-quantity-review';
 import { topicSummaryClauses } from '../../src/main/companions/topic-summary-canon-review';
 import { confirmedQuantitySourcePremiseFixture, declaredAllProjectionFixture, declaredWarmAllFixture, declaredNumberProjectionFixture } from '../helpers/companion-quantity-role-fixture';
 
@@ -504,7 +506,9 @@ it.each(['not_affirmed_all', 'ambiguous'])('cannot waive a witnessed affirmative
 it('makes the complete warm request source-state-blind while preserving actual text and canonical identity in the later reader', async () => {
   const text = '她拿两把钥匙。', warm = vi.fn((context: { user: string }, value: unknown) => {
     const data = JSON.parse(context.user).data;
-    expect(Object.keys(data).sort()).toEqual(['authorLanes', 'requiredClauseIndexes', 'requiredNumberTargets', 'requiredPairs', 'sets']);
+    const { authorEvidencePolicy: requestedPolicy, ...blindEvidenceData } = data;
+    expect(requestedPolicy).toEqual(quantityAuthorEvidencePolicy);
+    expect(Object.keys(blindEvidenceData).sort()).toEqual(['authorLanes', 'requiredClauseIndexes', 'requiredNumberTargets', 'requiredPairs', 'sets']);
     expect(data.sets).toEqual([{ setIndex: 0, entityQuote: '钥匙' }]);
     expect(data.authorLanes[0].window[0].text).toBe(text); expect(data).not.toHaveProperty('proposed');
     expect(data.authorLanes[0].window[0].numberCandidates[0].value).toBe(2); // Actual author numbers remain visible, not source state.
@@ -1003,4 +1007,127 @@ it('counts every actual whole sub-obligation before cold dispatch without increa
   const correction = await production(text, r, reader, false, false, (_context, value) => ({ ...(value as object),
     clauses: [{ clauseIndex: 0, quantities: [{ setIndex: 0, usage: 'ambiguous', numberIndexes: [] }] }], allProjections: [{ clauseIndex: 0, setIndex: 0, projection }] }));
   expect(correction).toContain('unresolved_author_projection_capacity'); expect(reader).not.toHaveBeenCalled();
+});
+
+it('requests complete same-IR strong propositions while accepting legal weak or unresolved consumer output', () => {
+  const text = '她带三把钥匙。', lane = buildQuantityAuthorEvidenceLane({ clauseIndex: 0, setIndex: 0 }, numericClauses(text), '钥匙');
+  const segment = lane.evidence.find(evidence => evidence.kind === 'text_segment' && evidence.view === 'focus')!;
+  const ordinary: QuantityAuthorAllProjection = { kind: 'no_whole_assertion_in_complete_focus', laneId: lane.id, reviewedFocusId: lane.focusId,
+    semanticRoles: [{ role: 'domain_reference', evidenceId: segment.id }, { role: 'possession_predicate', evidenceId: segment.id }],
+    bases: [{ kind: 'ordinary_possession', domainRole: 0, predicateRole: 1 }] };
+  expect(quantityAuthorAllProjectionRequestSchema.safeParse(ordinary).success).toBe(true);
+  const ordinaryBasis = ordinary.bases[0]!;
+  if (ordinaryBasis.kind !== 'ordinary_possession') throw new Error('Ordinary fixture required.');
+  ordinaryBasis.domainRole = null;
+  expect(quantityAuthorAllProjectionSchema.safeParse(ordinary).success).toBe(true);
+  expect(quantityAuthorAllProjectionRequestSchema.safeParse(ordinary).success).toBe(false);
+  const limited: QuantityAuthorAllProjection = { ...ordinary, bases: [{ kind: 'limited_possession', domainRole: 0, predicateRole: 1, restrictionRole: null, coverageRole: null }] };
+  expect(quantityAuthorAllProjectionSchema.safeParse(limited).success).toBe(true);
+  expect(quantityAuthorAllProjectionRequestSchema.safeParse(limited).success).toBe(false);
+  const limitedBasis = limited.bases[0]!;
+  if (limitedBasis.kind !== 'limited_possession') throw new Error('Limited fixture required.');
+  limited.semanticRoles.push({ role: 'partitive_restriction', evidenceId: segment.id }); limitedBasis.restrictionRole = 2;
+  expect(quantityAuthorAllProjectionRequestSchema.safeParse(limited).success).toBe(true); // No invented coverage operator.
+  const whole = declaredAllProjectionFixture({ evidence: [{ view: 'focus', clauseIndex: 0, text: '她把整套钥匙带齐。' }] }, 'affirmative_whole_set');
+  if (whole.kind !== 'recorded_whole_assertions') throw new Error('Whole fixture required.');
+  expect(quantityAuthorAllProjectionRequestSchema.safeParse(whole).success).toBe(true);
+  whole.propositions[0]!.coverageRole = null;
+  expect(quantityAuthorAllProjectionSchema.safeParse(whole).success).toBe(true);
+  expect(quantityAuthorAllProjectionRequestSchema.safeParse(whole).success).toBe(false);
+  const unknown = declaredAllProjectionFixture({ evidence: [{ view: 'focus', clauseIndex: 0, text }] }, 'ambiguous');
+  expect(quantityAuthorAllProjectionRequestSchema.safeParse(unknown).success).toBe(true);
+});
+
+it('keeps a producer-incomplete but consumer-legal author projection pending after one production warm callback', async () => {
+  let warmCallbacks = 0;
+  const reader = vi.fn<Infer>(async context => decision(JSON.parse(context.user).data, 'unresolved'));
+  const correction = await production('她带三把钥匙。', review(), reader, false, false, (context, value) => {
+    warmCallbacks++;
+    const wire = JSON.parse(context.user), parsed = quantityClaimsSchema.parse(value), row = parsed.allProjections[0]!, lane = wire.data.authorLanes[0];
+    expect(wire.outputSchema).toEqual(z.toJSONSchema(quantityClaimsRequestSchema, { reused: 'ref' }));
+    expect(wire.data.authorEvidencePolicy).toEqual(quantityAuthorEvidencePolicy);
+    const segment = lane.evidence.find((evidence: { kind: string; view: string }) => evidence.kind === 'text_segment' && evidence.view === 'focus');
+    row.projection = { kind: 'no_whole_assertion_in_complete_focus', laneId: lane.id, reviewedFocusId: lane.focusId,
+      semanticRoles: [{ role: 'possession_predicate', evidenceId: segment.id }], bases: [{ kind: 'ordinary_possession', domainRole: null, predicateRole: 0 }] };
+    expect(quantityClaimsRequestSchema.safeParse(parsed).success).toBe(false);
+    expect(quantityClaimsSchema.safeParse(parsed).success).toBe(true);
+    return parsed;
+  });
+  expect(warmCallbacks).toBe(1); expect(reader).toHaveBeenCalledTimes(1);
+  expect(correction).toContain('all_projection_unwitnessed'); expect(correction).toContain('unresolved_semantic_exemption');
+});
+
+function scopeAliasNumericFixture(text: string, statement: 'affirmative_possession' | 'explicit_nonpossession' = 'affirmative_possession') {
+  const clauses = numericClauses(text), lane = buildQuantityAuthorEvidenceLane({ clauseIndex: 0, setIndex: 0 }, clauses, '钥匙');
+  const projection = declaredNumberProjectionFixture(lane, 0, statement);
+  projection.semanticRoles[0]!.evidenceId = lane.focusId;
+  const located = () => validateQuantityAuthorNumberProjection(projection, 0, 0, clauses, lane);
+  const bound = () => ({ ...candidate(clauses[0]!.text), authorEvidenceLane: lane, authorAllPair: { clauseIndex: 0, setIndex: 0 },
+    authorNumberProjections: [{ numberIndex: 0, projection, hostTargetBinding: bindQuantityHostNumberTarget({ clauseIndex: 0, setIndex: 0, numberIndex: 0 }, clauses), literalWitnessLocations: located() }] });
+  return { clauses, lane, projection, located, bound };
+}
+
+it('resolves exact full-focus scope aliases for declared all and numeric roles while retaining both raw and canonical addresses', () => {
+  const fixture = scopeAliasNumericFixture('😺她带三把钥匙。'), { lane, clauses } = fixture, locations = fixture.located();
+  const canonical = lane.evidence.find(evidence => evidence.kind === 'text_segment' && evidence.view === 'focus' && evidence.quote === clauses[0]!.text)!;
+  expect(locations[0]).toMatchObject({ evidenceId: lane.focusId, evidenceKind: 'focus_scope', canonicalEvidenceId: canonical.id,
+    canonicalEvidenceKind: 'text_segment', addressAliasReason: 'exact_scope_to_existing_text_segment_v1', strongEligible: true });
+  expect(quantityAuthorNumberProjectionAdmission(fixture.bound(), number()).failure).toBeUndefined();
+  const projection: QuantityAuthorAllProjection = { kind: 'no_whole_assertion_in_complete_focus', laneId: lane.id, reviewedFocusId: lane.focusId,
+    semanticRoles: [{ role: 'domain_reference', evidenceId: lane.evidence.find(evidence => evidence.kind === 'entity_span')!.id },
+      { role: 'possession_predicate', evidenceId: lane.focusId }], bases: [{ kind: 'ordinary_possession', domainRole: 0, predicateRole: 1 }] };
+  const original = JSON.stringify(projection), c = { ...fixture.bound(), authorAllProjection: projection,
+    authorAllWitnessLocations: validateQuantityAuthorAllProjection(projection, 0, clauses, lane) };
+  expect(actualAllAdmission(c, noAll).safeAbsence).toBe(true);
+  expect(JSON.stringify(projection)).toBe(original); expect(projection.semanticRoles[1]!.evidenceId).toBe(lane.focusId);
+});
+
+it('resolves only the exact adjacent negative scope without changing its view or numeric target', () => {
+  const fixture = scopeAliasNumericFixture('第2把钥匙。她仍未取得。', 'explicit_nonpossession');
+  const adjacent = fixture.lane.evidence.find(evidence => evidence.kind === 'neighbor_scope' && evidence.view === 'after')!;
+  fixture.projection.semanticRoles[0]!.evidenceId = adjacent.id;
+  expect(fixture.located()[0]).toMatchObject({ evidenceId: adjacent.id, evidenceKind: 'neighbor_scope', evidenceRef: { view: 'after', clauseIndex: 1 },
+    canonicalEvidenceKind: 'text_segment', strongEligible: true });
+  expect(quantityAuthorNumberProjectionAdmission(fixture.bound(), number({ kind: 'member', relation: 'missing' })).safeAbsence).toBe(true);
+});
+
+it.each(['missing_segment', 'multiple_segments', 'lane', 'clause', 'view', 'checksum', 'utf16', 'utf8', 'quote'] as const)(
+  'does not strengthen a scope address without one exact existing text segment: %s', mode => {
+    const fixture = scopeAliasNumericFixture('😺她带三把钥匙。'), { lane } = fixture;
+    const canonical = lane.evidence.find(evidence => evidence.kind === 'text_segment' && evidence.view === 'focus' && evidence.quote === fixture.clauses[0]!.text)!;
+    if (mode === 'missing_segment') lane.evidence = lane.evidence.filter(evidence => evidence !== canonical);
+    if (mode === 'multiple_segments') lane.evidence.push({ ...structuredClone(canonical), id: 'duplicate_existing_segment' });
+    if (mode === 'lane') canonical.laneId = 'different_lane';
+    if (mode === 'clause') canonical.clauseIndex = 1;
+    if (mode === 'view') canonical.view = 'before';
+    if (mode === 'checksum') canonical.actualTextChecksum = 'f'.repeat(64);
+    if (mode === 'utf16') canonical.utf16Span.start++;
+    if (mode === 'utf8') canonical.utf8Span.end--;
+    if (mode === 'quote') canonical.quote += ' ';
+    expect(fixture.located()[0]).toMatchObject({ evidenceId: lane.focusId, evidenceKind: 'focus_scope', strongEligible: false });
+    expect(fixture.located()[0]!.canonicalEvidenceId).toBeUndefined();
+    expect(quantityAuthorNumberProjectionAdmission(fixture.bound(), number()).failure).toBe('number_projection_unwitnessed');
+  });
+
+it.each(['numeric_span', 'entity_span'] as const)('never upgrades a neutral %s even when its bytes equal a whole text segment', kind => {
+  const fixture = scopeAliasNumericFixture('3'), lane = buildQuantityAuthorEvidenceLane({ clauseIndex: 0, setIndex: 0 }, fixture.clauses, '3');
+  const neutral = lane.evidence.find(evidence => evidence.kind === kind)!, projection = declaredNumberProjectionFixture(lane, 0, 'affirmative_possession');
+  projection.semanticRoles[0]!.evidenceId = neutral.id;
+  const locations = validateQuantityAuthorNumberProjection(projection, 0, 0, fixture.clauses, lane);
+  expect(lane.evidence.some(evidence => evidence.kind === 'text_segment' && evidence.quote === neutral.quote
+    && evidence.utf16Span.start === neutral.utf16Span.start && evidence.utf16Span.end === neutral.utf16Span.end)).toBe(true);
+  expect(locations[0]!.strongEligible).toBe(false); expect(locations[0]!.canonicalEvidenceId).toBeUndefined();
+});
+
+it('keeps a missing limited restriction pending after resolving its real predicate address alias', () => {
+  const fixture = scopeAliasNumericFixture('她只有第1和第3把钥匙。'), { lane, clauses } = fixture;
+  const projection: QuantityAuthorAllProjection = { kind: 'no_whole_assertion_in_complete_focus', laneId: lane.id, reviewedFocusId: lane.focusId,
+    semanticRoles: [{ role: 'domain_reference', evidenceId: lane.evidence.find(evidence => evidence.kind === 'entity_span')!.id },
+      { role: 'possession_predicate', evidenceId: lane.focusId }], bases: [{ kind: 'limited_possession', domainRole: 0, predicateRole: 1, restrictionRole: null, coverageRole: null }] };
+  const locations = validateQuantityAuthorAllProjection(projection, 0, clauses, lane);
+  const basis = projection.bases[0]!;
+  if (basis.kind !== 'limited_possession') throw new Error('Limited fixture required.');
+  expect(locations[1]!.strongEligible).toBe(true); expect(basis.restrictionRole).toBeNull();
+  expect(actualAllAdmission({ ...fixture.bound(), authorAllProjection: projection, authorAllWitnessLocations: locations }, noAll))
+    .toMatchObject({ safeAbsence: false, failure: 'all_projection_unwitnessed' });
 });

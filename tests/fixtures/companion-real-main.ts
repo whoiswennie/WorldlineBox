@@ -15,6 +15,7 @@ import { realGlobalChatConfig } from './companion-real-chat';
 import { realMemoryRuntime, type RealColdWorkerObservation } from './companion-real-memory';
 import type { CompanionLearningAssets } from '../../src/main/companions/learning-service';
 import type { ColdKnowledgeService, ColdKnowledgeServiceOptions } from '../../src/main/vcp-memory/cold-service';
+import { observeCompanionProviderRequest, observeCompanionProviderResponse } from './companion-provider-observation';
 
 const transport = vi.hoisted(() => ({ request: undefined as ((command: CompanionStorageCommand) => Promise<CompanionStorageResponse>) | undefined,
   fetch: undefined as typeof fetch | undefined }));
@@ -30,6 +31,7 @@ vi.mock('electron', () => ({ net: { fetch: (url: string, init?: RequestInit) => 
 export interface RealMainModelCall {
   purpose: string; owner?: string; startedAt: string; elapsedMs?: number; requestChars: number;
   usage?: unknown; finishReason?: unknown; visibleText?: string; error?: string;
+  providerObservation?: { request: 'observed' | 'unavailable'; response?: 'observed' | 'unavailable'; requestDiagnostic?: string; responseDiagnostic?: string };
   /** Whitelisted metadata from the actual final provider user wire only. */
   storyFocusWire?: { topicId?: unknown; readerId?: unknown; sourceId?: unknown; sourceChecksum?: unknown;
     latestPublishedId?: unknown; latestPublishedChecksum?: unknown; latestPublishedChars?: number;
@@ -61,11 +63,9 @@ export async function realMainFixture(label: string, seeds: CompanionSeed[], use
   const modelFetch: typeof fetch = async (url, init) => {
     throwIfResearchStopped();
     const serialized = String(init?.body ?? ''), started = performance.now();
-    let payload: Record<string, unknown> = {};
-    let observedUserText: string | undefined;
+    const requestObservation = observeCompanionProviderRequest(config.apiFormat, serialized), payload = requestObservation.payload;
     let observedTextLeaves: string[] | undefined;
-    try { const wire = JSON.parse(serialized); const text = wire.messages?.find((message: { role: string }) => message.role === 'user')?.content;
-      if (typeof text === 'string') observedUserText = text;
+    try { const wire = JSON.parse(serialized);
       if (options.observeProviderTextLeaves) {
         observedTextLeaves = [];
         const collect = (value: unknown): void => {
@@ -75,11 +75,13 @@ export async function realMainFixture(label: string, seeds: CompanionSeed[], use
         };
         collect(wire);
       }
-      payload = JSON.parse(observedUserText ?? '{}'); } catch { /* No headers or credentials are recorded. */ }
+      } catch { /* No headers or credentials are recorded. */ }
     if (observedTextLeaves !== undefined) options.observeProviderTextLeaves?.(observedTextLeaves, String(payload.purpose ?? 'reply_or_upstream_processor'));
     const identity = payload.identity as { self?: { id: string } } | undefined;
     const call: RealMainModelCall = { purpose: String(payload.purpose ?? 'reply_or_upstream_processor'), owner: identity?.self?.id ?? (payload.companion as { id?: string } | undefined)?.id,
-      startedAt: new Date().toISOString(), requestChars: serialized.length };
+      startedAt: new Date().toISOString(), requestChars: serialized.length,
+      providerObservation: { request: requestObservation.evidenceMissing ? 'unavailable' : 'observed',
+        ...(requestObservation.evidenceMissing ? { requestDiagnostic: requestObservation.evidenceMissing } : {}) } };
     const focus = payload.topicContinuityFocus as { topicId?: unknown; readerId?: unknown; currentRequest?: { id?: unknown; sourceChecksum?: unknown; content?: unknown };
       latestPublishedText?: { id?: unknown; sourceChecksum?: unknown; content?: unknown }; workingCheckpointCoverage?: Record<string, unknown>;
       userCanon?: { entries?: Record<string, unknown>[] }; sourceBoundNarrativeReferences?: { status: unknown; selectedSources: unknown; references: Array<Record<string, unknown>>; conflicts: unknown } } | undefined;
@@ -105,24 +107,15 @@ export async function realMainFixture(label: string, seeds: CompanionSeed[], use
     try {
       const response = await fetch(url, options.researchStopFile ? { ...init,
         signal: AbortSignal.any([researchAbort.signal, ...(init?.signal ? [init.signal] : [])]) } : init);
-      const capture = response.clone().text().then(text => {
-        const bodies: Array<Record<string, unknown>> = [];
-        if (response.headers.get('content-type')?.includes('text/event-stream')) {
-          for (const line of text.split('\n')) if (line.startsWith('data: ') && line.slice(6).trim() !== '[DONE]') {
-            try { bodies.push(JSON.parse(line.slice(6))); } catch { /* The actual parser owns stream validity. */ }
-          }
-        } else { try { bodies.push(JSON.parse(text)); } catch { /* Do not retain raw provider diagnostics. */ } }
-        const visible: string[] = [];
-        for (const body of bodies) {
-          if (body.usage) call.usage = body.usage;
-          for (const choice of (body.choices ?? []) as Array<{ message?: { content?: string }; delta?: { content?: string }; finish_reason?: string }>) {
-            if (typeof choice.message?.content === 'string') visible.push(choice.message.content);
-            if (typeof choice.delta?.content === 'string') visible.push(choice.delta.content);
-            if (choice.finish_reason) call.finishReason = choice.finish_reason;
-          }
-        }
-        call.visibleText = visible.join('').replace(/<(think|analysis|reasoning)>[\s\S]*?<\/\1>/giu, '').replace(/<(?:think|analysis|reasoning)>[\s\S]*/giu, '').trim();
-      }).catch(() => undefined).finally(() => { call.elapsedMs = performance.now() - started; captures.delete(capture); });
+      const capture = observeCompanionProviderResponse(response, config.apiFormat, { signal: options.researchStopFile
+        ? AbortSignal.any([researchAbort.signal, ...(init?.signal ? [init.signal] : [])]) : init?.signal ?? undefined }).then(observed => {
+        call.visibleText = observed.visibleText;
+        if (observed.usage) call.usage = observed.usage;
+        if (observed.finishReason) call.finishReason = observed.finishReason;
+        call.providerObservation!.response = observed.status;
+        if (observed.diagnostic) call.providerObservation!.responseDiagnostic = observed.diagnostic;
+      }).catch(() => { call.providerObservation!.response = 'unavailable'; call.providerObservation!.responseDiagnostic = 'response_observation_failed'; })
+        .finally(() => { call.elapsedMs = performance.now() - started; captures.delete(capture); });
       captures.add(capture); return response;
     } catch (error) { call.elapsedMs = performance.now() - started; call.error = error instanceof Error ? error.message : 'MODEL_FETCH_FAILED';
       if (researchAbort.signal.aborted) throw researchAbort.signal.reason;

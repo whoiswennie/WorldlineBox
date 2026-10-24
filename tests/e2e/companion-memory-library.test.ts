@@ -76,7 +76,7 @@ test('binds the first companion entry to a real asset library and keeps readable
     const recall = await request(page, { type: 'memory.search', ...scope, query: '海獭怎样保存敲贝壳的工具？', tags: [], limit: 20 });
     expect(recall.memoryPage?.items.find(hit => hit.memory.id === imported.id)).toMatchObject({ score: expect.any(Number), reasons: expect.arrayContaining(['VCP river']) });
     const memoryProfile = recall.memoryContext?.profileKey;
-    expect(memoryProfile?.split(':vcp-')).toEqual([localTextEmbeddingProfileKey(), expect.stringMatching(/^[a-f0-9]{20}$/u)]);
+    expect(memoryProfile).toBe(localTextEmbeddingProfileKey());
     const cold = (await request(page, { type: 'memory.knowledge', ...scope, operation: 'ingest', sourceType: 'memory', sourceId: imported.id })).memoryKnowledge!;
     expect(cold).toMatchObject({ engine: 'original-TDBKnowledge', available: true, indexed: true,
       result: { sourceId: imported.id, sourceType: 'memory', sourceVersion: String(imported.version), chunks: expect.any(Number) } });

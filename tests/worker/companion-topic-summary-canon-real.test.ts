@@ -34,7 +34,7 @@ it.skipIf(process.env.WORLDLINEBOX_SUMMARY_CANON_REAL !== '1')('rejects the real
     for (const test of cases) {
       const start = f.calls.length, correction = await reviewTopicSummaryCanon({ canon: test.canon, summary: test.summary, stage: test.stage, config: f.config, fetchFn: f.modelFetch,
         scope: { ownerId: 'readonly_fixture_auditor', conversationId: f.label, topicId: 'explicit_boundary_controls' } });
-      checks.push({ id: test.id, summary: test.summary, stage: test.stage, rejected: test.rejected, correction,
+      checks.push({ id: test.id, summary: test.summary, stage: test.stage, expectedQuantityRejected: test.rejected, rejected: Boolean(correction), correction,
         addedCalls: f.calls.length - start, elapsedMs: f.calls.slice(start).reduce((sum, call) => sum + (call.elapsedMs ?? 0), 0) });
       expect(!!correction, test.id + '\n' + correction).toBe(test.rejected);
     }
