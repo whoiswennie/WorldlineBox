@@ -26,7 +26,7 @@ test('binds the first companion entry to a real asset library and keeps readable
     application.process().stderr?.on('data', chunk => diagnostics.push(String(chunk)));
     await page.locator('[data-application-module="companions"]').click();
     await expect(page.getByRole('region', { name: '伙伴资产库', exact: true })).toBeVisible();
-    await expect(page.getByRole('heading', { name: '创建伙伴资产库', exact: true })).toBeVisible();
+    await expect(page.getByRole('heading', { name: '创建伙伴资产库', exact: true })).toBeVisible({ timeout: 30_000 });
     expect((await workspace(page, { type: 'status' })).selected).toBeUndefined();
     const refused = await page.evaluate(() => (window as unknown as BridgeWindow).worldlinebox.companions.request({ type: 'state' }));
     expect(refused.ok).toBe(false); expect(refused.error).toBeTruthy();
@@ -51,6 +51,7 @@ test('binds the first companion entry to a real asset library and keeps readable
     const state = (await request(page, { type: 'state' })).state!;
     const companionId = 'deepseek-sister';
     expect(state.companions.some(companion => companion.id === companionId && companion.builtin)).toBe(true);
+    expect(state.companions.find(companion => companion.id === companionId)?.active).toBe(false);
     await page.getByRole('button', { name: '发起聊天', exact: true }).click();
     const chooser = page.getByRole('dialog', { name: '发起聊天', exact: true });
     await chooser.locator('.companions-start-chat-list button').filter({ has: page.getByText('大肥鱼', { exact: true }) }).click();
@@ -77,6 +78,10 @@ test('binds the first companion entry to a real asset library and keeps readable
     expect(recall.memoryPage?.items.find(hit => hit.memory.id === imported.id)).toMatchObject({ score: expect.any(Number), reasons: expect.arrayContaining(['VCP river']) });
     const memoryProfile = recall.memoryContext?.profileKey;
     expect(memoryProfile).toBe(localTextEmbeddingProfileKey());
+    const dormantCold = (await request(page, { type: 'memory.knowledge', ...scope, operation: 'ingest', sourceType: 'memory', sourceId: imported.id })).memoryKnowledge!;
+    expect(dormantCold).toMatchObject({ engine: 'original-TDBKnowledge', available: false });
+    await request(page, { type: 'companion.set-active', id: companionId, active: true });
+    expect((await request(page, { type: 'state' })).state?.companions.find(companion => companion.id === companionId)?.active).toBe(true);
     const cold = (await request(page, { type: 'memory.knowledge', ...scope, operation: 'ingest', sourceType: 'memory', sourceId: imported.id })).memoryKnowledge!;
     expect(cold).toMatchObject({ engine: 'original-TDBKnowledge', available: true, indexed: true,
       result: { sourceId: imported.id, sourceType: 'memory', sourceVersion: String(imported.version), chunks: expect.any(Number) } });

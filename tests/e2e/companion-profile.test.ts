@@ -44,6 +44,7 @@ test('all built-in contacts show their complete default orthographic reference',
 });
 async function openSettings(page: Page) { await page.getByRole('button', { name: '设置', exact: true }).click(); const dialog = page.getByRole('dialog', { name: '通用设置', exact: true }); await expect(dialog.getByRole('tab', { name: '用户信息', exact: true })).toHaveAttribute('aria-selected', 'true'); return dialog; }
 async function awake(page: Page, companionId: string, conversationId: string) {
+  await request(page, { type: 'companion.set-active', id: companionId, active: true });
   const world = (await request(page, { type: 'world.snapshot' })).world!; await request(page, { type: 'world.configure', expectedRevision: world.settings.revision, patch: { mode: 'realtime' } });
   const routine = (await request(page, { type: 'routine.get', companionId, conversationId })).routine!, clock = (delta: number) => String((Math.floor(world.clock.hour) + delta + 24) % 24).padStart(2, '0') + ':00';
   await request(page, { type: 'routine.configure', companionId, conversationId, expectedRevision: routine.revision, patch: { timeZone: world.settings.timeZone, wakeAt: clock(-8), sleepAt: clock(8), meals: [], habits: [] } });

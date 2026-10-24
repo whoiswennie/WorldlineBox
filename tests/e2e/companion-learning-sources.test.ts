@@ -64,7 +64,8 @@ test('manages explicit library learning permissions and real reading receipts wi
     await page.locator('[data-application-module="companions"]').click(); await page.getByRole('button', { name: '打开伙伴记忆库', exact: true }).click();
     const manager = page.getByRole('region', { name: '共同记忆管理', exact: true, includeHidden: true });
     await manager.getByRole('combobox', { name: '记忆所属伙伴', exact: true }).selectOption(companionId);
-    await manager.getByRole('button', { name: '学习来源', exact: true }).click();
+    await manager.getByRole('button', { name: '学习与成长', exact: true }).click();
+    await page.getByRole('region', { name: '伙伴学习与成长', exact: true }).getByRole('button', { name: '材料授权', exact: true }).click();
     const learning = page.getByRole('region', { name: '学习来源管理', exact: true });
     await learning.getByRole('button', { name: '添加来源', exact: true }).click();
     await learning.getByRole('combobox', { name: '学习资料资产库', exact: true }).selectOption(source.libraryId);
