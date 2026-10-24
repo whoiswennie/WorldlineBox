@@ -214,7 +214,7 @@ export function validateQuantityDisjointWaivers(value: Waiver, input: QuantityDi
       throw new Error('数量语义豁免证据须引用本目标实际有界原句。');
     const assertionIds = review.assertionEvidenceIds ?? [];
     if (new Set(assertionIds).size !== assertionIds.length || assertionIds.some(id => !check.scopeObligation?.assertionEvidenceIds.includes(id)))
-      throw new Error('数量语义豁免证据须引用本目标实际有界原句。');
+      throw new Error('assertionEvidenceIds只准用于all目标且只能唯一选取本目标scopeObligation.assertionEvidenceIds；number目标须省略或返回空数组，textChecksum不是该ID。');
   }
 }
 
@@ -465,5 +465,6 @@ export const quantityDisjointWaiverSystem = `只核每个固定target实际文�
 number：targetMaskedSpan是宿主真实数词位置的专用marker，不能按numberIndex猜顺序或改答其它数字。作者是否肯定、否定或没有持有断言已由来源状态盲投影绑定，你不能重判或改写，也不得返回numberProjections。只核本target：different_inventory=明确另一独立库存，换人或容器本身不充分；attributed_claim=数量命题本身仅属人物声称/未确认信念，认知动作本身不充分，实际随身位置/贴身状态不能自动降为信念；question=询问；hypothetical=条件/假设/计划；earlier_history=明确更早库存事件而非普通已完成叙事；future=明确未来；member_role/count_role=本数词自己的数量角色，实际剩余数学风险由宿主核算。数字角色不能借别的数词或all背书。negative_or_missing、pure_collection_total、unrelated_target不再是本阶段的合法数字豁免，不能借来源规则把作者肯定改为否定/总量/无关；没有前述六类或两角色正证返回unresolved或no_exemption。
 all：作者完整焦点的量词投影已由独立来源状态盲视图绑定，你没有修改或重判它的权限。不得返回allProjection，也不判断有无全称断言、是否现实能带齐、全部是否仅已得子集。只核本all目标有无不同库存、声部或时点正证，允许的basis只有different_inventory、attributed_claim、question、hypothetical、earlier_history、future。即便来源有缺失，也不是作者原句的否定，不能用negative_or_missing、no_all_assertion、pure_collection_total、unrelated_target或任何数字role解除all。没有这六类正证即unresolved或no_exemption，不替作者重释量词。
 每个all check的scopeObligation绑定完整实际focus校验和。必须审完完整focus且targetScopeComplete=true；已定位的assertionIndex只解除该实际命题，assertionEvidenceIds须完整回指本项所有实际出处，不能将一段引用的豁免借给另一段旁白持有。未知/弱命题不得靠空roles当无断言；仅当六类正证真正覆盖完整target scope才可豁免，否则unresolved。不得返回或改写作者命题。
+number目标省略targetScopeComplete，assertionEvidenceIds须省略或返回[]；all的assertionEvidenceIds只选本check.scopeObligation.assertionEvidenceIds，不得用textChecksum、focusChecksum或自造哈希代替。
 每个目标独立，正证须实际引用本check的focus，可加实际前后一句及source_identity。声音/时点必须支配该target命题，不因附近有说话、回忆或计划动作便套用。旁白提到说话行为不让被转述命题变事实；名词加引号也不自动成为人物声称。source_identity只供真实库存身份语境，遮数可能丢失ID差异，不能由marker/哈希或同名物品猜同组/异组；只有被隐藏数字身份可分时应unresolved。逐字引用只证出处，实际异组和归因仍需判断。
 positive_exemption须有正面依据且evidenceRefs含本focus。无证据/未决正常返回unresolved,basis=none，可空refs；明确不能豁免返回no_exemption,basis=none，不是格式错误。不要为了凑肯定而捏造依据，不改原文、不作数学结论。`;

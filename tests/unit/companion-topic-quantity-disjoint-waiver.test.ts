@@ -109,6 +109,30 @@ it.each(['missing', 'duplicate', 'foreign_target', 'foreign_clause', 'foreign_vi
   expect(() => validateQuantityDisjointWaivers(quantityDisjointWaiverSchema.parse(value), data)).toThrow();
 });
 
+it('distinguishes invalid assertion IDs from valid clause references and preserves missing-all-ID semantic pending', () => {
+  const data = dataFor(), value = decision(data, 'positive_exemption'), numberCheck = data.checks.find(check => check.target.kind === 'number')!;
+  const row = value.reviews[numberCheck.checkIndex]!, originalRefs = structuredClone(row.evidenceRefs);
+  row.assertionEvidenceIds = [numberCheck.evidence.find(evidence => evidence.view === 'focus')!.textChecksum];
+  expect(quantityDisjointWaiverSchema.safeParse(value).success).toBe(true);
+  expect(row.evidenceRefs).toEqual(originalRefs);
+  expect(() => validateQuantityDisjointWaivers(value, data)).toThrow('assertionEvidenceIds');
+  row.assertionEvidenceIds = [];
+  expect(() => validateQuantityDisjointWaivers(value, data)).not.toThrow();
+  row.evidenceRefs[0]!.clauseIndex = 999;
+  expect(() => validateQuantityDisjointWaivers(value, data)).toThrow('数量语义豁免证据须引用本目标实际有界原句。');
+
+  const text = '他说整套钥匙都带走了，她也声称带齐。', { projection } = twoWholeFixture(text), c = propositionCandidate(text, projection);
+  const r: QuantityCollectionReview = { candidateIndex: 0, numbers: [], all: { ...noAll, voice: 'ambiguous', collection: 'ambiguous' } };
+  const allData = dataFor(c, r), allValue = decision(allData, 'positive_exemption');
+  expect(allData.checks[0]!.scopeObligation!.assertionEvidenceIds.length).toBeGreaterThan(0);
+  expect(() => validateQuantityDisjointWaivers(allValue, allData)).not.toThrow();
+  allValue.reviews[0]!.assertionEvidenceIds = [allData.checks[0]!.evidence.find(evidence => evidence.view === 'focus')!.textChecksum];
+  expect(() => validateQuantityDisjointWaivers(allValue, allData)).toThrow('assertionEvidenceIds');
+  for (const review of allValue.reviews) delete review.assertionEvidenceIds;
+  expect(() => validateQuantityDisjointWaivers(allValue, allData)).not.toThrow();
+  expect(admit(r, allValue, allData, c).pending).toHaveLength(allData.checks.length);
+});
+
 it('binds the opaque target to the actual UTF16 span rather than guessing numeric order or alias markers', () => {
   const c = candidate('😺B204有〔本目标数词〕标记，她另带三把钥匙。'), r = review({ numberIndex: 1 });
   const data = dataFor(c, r), check = data.checks[0]!, focus = check.evidence.find(item => item.view === 'focus')!;
@@ -138,6 +162,36 @@ async function production(text: string, r: QuantityCollectionReview, verifyDisjo
       return typeof projection === 'function' ? projection(context, complete) : complete; },
     verifyRoles: async () => r && ({ reviews: [r] }), verifyDisjointWaivers });
 }
+
+it('lets production infer repair invalid assertion IDs in its next original slot without changing semantics or clause references', async () => {
+  const text = '他说她带三把钥匙。', r = review({ voice: 'attributed_claim', collection: 'ambiguous' }), rawSnapshot = JSON.stringify(r);
+  let attempts = 0, firstData: string, firstSchema: string, firstSemantics: string, rejectedIDs: string[] = [];
+  const reader = vi.fn<Infer>(async context => {
+    const wire = JSON.parse(context.user), value = decision(wire.data, 'positive_exemption', true, 'attributed_claim');
+    expect(wire.data.checks).toHaveLength(1); expect(wire.data.checks[0].target.kind).toBe('number');
+    const semanticCopy = structuredClone(value); for (const row of semanticCopy.reviews) delete row.assertionEvidenceIds;
+    if (++attempts === 1) {
+      expect(wire.formatCorrection).toBeUndefined();
+      firstData = JSON.stringify(wire.data); firstSchema = JSON.stringify(wire.outputSchema); firstSemantics = JSON.stringify(semanticCopy);
+      rejectedIDs = wire.data.checks[0].evidence.map((evidence: { textChecksum: string }) => evidence.textChecksum);
+      value.reviews[0]!.assertionEvidenceIds = rejectedIDs;
+      expect(quantityDisjointWaiverSchema.safeParse(value).success).toBe(true);
+      return value; // The real infer validator must reject this exact first slot.
+    }
+    expect(attempts).toBe(2);
+    expect(wire.formatCorrection).toContain('assertionEvidenceIds');
+    expect(wire.formatCorrection).toContain('scopeObligation.assertionEvidenceIds');
+    expect(wire.formatCorrection).toContain('number目标须省略或返回空数组');
+    expect(wire.formatCorrection).toContain('textChecksum不是该ID');
+    expect(wire.formatCorrection.length).toBeLessThanOrEqual(1500);
+    for (const rejected of rejectedIDs) expect(wire.formatCorrection).not.toContain(rejected);
+    expect(JSON.stringify(wire.data)).toBe(firstData); expect(JSON.stringify(wire.outputSchema)).toBe(firstSchema);
+    expect(JSON.stringify(semanticCopy)).toBe(firstSemantics);
+    return value;
+  });
+  const correction = await production(text, r, reader, false, false, authorProjection(text, 'no_whole_set_assertion'));
+  expect(correction).toBeUndefined(); expect(reader).toHaveBeenCalledTimes(2); expect(JSON.stringify(r)).toBe(rawSnapshot);
+});
 
 it.each(['unresolved', 'no_exemption', 'positive_exemption'] as const)('runs the unified independent batch through production while preserving raw cold bytes: %s', async verdict => {
   const text = '她想起口袋里的三把钥匙，冰冷的金属贴在腿边。', r = review({ voice: 'attributed_claim', collection: 'ambiguous' }), snapshot = JSON.stringify(r);

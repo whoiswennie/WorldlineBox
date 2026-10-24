@@ -54,6 +54,7 @@ const hostFormatMessages = new Set([
   'source premise须绑定实际来源与数字所在原句。', 'source premise必须完整唯一覆盖每个实际setIndex。',
   'source premise证据必须选实际宿主原句，且包含所指数字。', 'source premise必须完整唯一覆盖每个候选member数字。',
   '数量语义豁免须完整唯一覆盖实际checkIndex。', '数量语义豁免证据须引用本目标实际有界原句。',
+  'assertionEvidenceIds只准用于all目标且只能唯一选取本目标scopeObligation.assertionEvidenceIds；number目标须省略或返回空数组，textChecksum不是该ID。',
   '数量语义豁免目标须绑定实际焦点数词位置。', '作者证据须绑定实际完整焦点。', '作者语义出处须选本目标允许的实际evidenceId。',
   '作者命题roleIndex须绑定实际且种类相符的语义角色。', '整体反对关系须引用两个不同的实际整体命题。',
 ]);
