@@ -33,8 +33,22 @@ export function parseCompanionActivityDecision(value: unknown) {
     return { path: issue.path.length ? issue.path.join('.') : '(root)', receivedType: received === null ? 'null' : Array.isArray(received) ? 'array' : typeof received,
       code: issue.code };
   });
+  const fieldsInUse = value && typeof value === 'object' ? value as Record<string, unknown> : undefined;
+  // Zod's root refinements deliberately enforce atomic decisions. Name only
+  // those fixed fields; private proposal values must not appear in feedback.
+  const atomicIssues: Array<{ path: string; code: string; conflicts?: string[] }> = [];
+  if (fieldsInUse && parsed.error.issues.some(issue => issue.code === 'custom' && !issue.path.length)) {
+    const active = ['action', 'wait', 'memory', 'topic'].filter(field => !!fieldsInUse[field]);
+    if (fieldsInUse.memory && active.length > 1) atomicIssues.push({ path: 'memory', code: 'memory_must_be_separate', conflicts: active.filter(field => field !== 'memory') });
+    if (fieldsInUse.topic && (fieldsInUse.action || fieldsInUse.wait)) atomicIssues.push({ path: 'topic', code: 'topic_must_be_separate',
+      conflicts: active.filter(field => field === 'action' || field === 'wait') });
+    if ((fieldsInUse.status === 'complete' || fieldsInUse.status === 'blocked') && active.length)
+      atomicIssues.push({ path: 'status', code: 'terminal_has_pending_effects', conflicts: active });
+    if (fieldsInUse.status === 'continue' && !active.length) atomicIssues.push({ path: 'status', code: 'continue_requires_operation' });
+  }
   // The author gets the exact failing path and the existing contract, rather
   // than a host-normalized action that could accidentally execute a proposal.
-  throw new Error('活动final字段校验失败，提案没有保存或执行。实际错误：' + JSON.stringify(issues).slice(0, 1100)
+  throw new Error('活动final字段校验失败，提案没有保存或执行。实际错误：' + JSON.stringify([...atomicIssues, ...issues]).slice(0, 1100)
+    + (atomicIssues.length ? '\n原子提交约束：memory必须独立；topic与action、wait不能同时非空。不要把读取和读取后的等待合并到同一提案，依据本步所需选择一项，后续依据真实回执再决定；action与wait仍允许按原规则组合。complete/blocked不能附待执行项，continue必须有实际操作或等待。' : '')
     + '\n' + COMPANION_ACTIVITY_FINAL_CONTRACT);
 }

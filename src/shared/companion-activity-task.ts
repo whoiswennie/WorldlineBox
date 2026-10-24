@@ -42,6 +42,21 @@ export const activityDecisionSchema = z.strictObject({ status: z.enum(['continue
     '完成或受阻的任务不能再附带副作用。').refine(value => value.status !== 'continue' || !!(value.action || value.memory || value.topic || value.wait),
     'status=continue必须提供action、memory、topic或真实wait至少一种。planningState和summary只是计划，不执行下一步。按当前真实上下文选择下一步：只有确缺当前资料时才用topic.action=read及本轮真实roomId/topicId读取；已有最新revision与信息时应执行必要更新、发送或真实等待，不以重复读同页冒充进展。已确认的原生工具作用保留，不得重放；complete/blocked仍按实际完成或受阻事实判断。');
 export type ActivityDecision = z.input<typeof activityDecisionSchema>;
+/** JSON Schema cannot infer Zod refinements. Advertise the same operation
+ * combinations without changing the host validator or choosing an action. */
+export function activityDecisionJsonSchema(): Record<string, unknown> {
+  const schema = z.toJSONSchema(activityDecisionSchema, { io: 'input' }) as Record<string, unknown>;
+  const fields = ['action', 'wait', 'memory', 'topic'] as const;
+  const empty = { type: 'null' };
+  return { ...schema, allOf: [
+    { anyOf: [
+      { properties: { status: { const: 'continue' } }, anyOf: fields.map(field => ({ required: [field], properties: { [field]: { type: 'object' } } })) },
+      { properties: { status: { enum: ['complete', 'blocked'] }, action: empty, wait: empty, memory: empty, topic: empty } },
+    ] },
+    { anyOf: [{ properties: { memory: empty } }, { properties: { action: empty, wait: empty, topic: empty } }] },
+    { anyOf: [{ properties: { topic: empty } }, { properties: { action: empty, wait: empty } }] },
+  ] };
+}
 export const activityTaskSchema = z.object({ id, companionId: id, conversationId: id, sourceMessageId: id.optional(),
   title: z.string().min(1).max(120), goal: z.string().min(1).max(16000),
   status: z.enum(['queued', 'running', 'waiting', 'succeeded', 'failed', 'cancelled']),

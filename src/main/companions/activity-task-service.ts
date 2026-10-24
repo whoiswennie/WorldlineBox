@@ -2,7 +2,7 @@ import { z } from 'zod';
 import { createHash } from 'node:crypto';
 import type { Companion, CompanionConversation, CompanionMessage } from '../../shared/companions';
 import type { CompanionStorageCommand, CompanionStorageResponse } from '../../shared/companion-storage';
-import { activityDecisionSchema, type CompanionActivityTask, type CompanionActivityMemoryIntent } from '../../shared/companion-activity-task';
+import { activityDecisionSchema, activityDecisionJsonSchema, type CompanionActivityTask, type CompanionActivityMemoryIntent } from '../../shared/companion-activity-task';
 import type { CompanionProfileInput } from '../../shared/companion-public-profile';
 import { CompanionModelError, type CompanionModelConfig } from './model';
 import { CompanionAgentNoProgressError, CompanionAgentFinalValidationError } from './agent-kernel';
@@ -166,7 +166,7 @@ export class CompanionActivityTaskService {
             executionReadset, ...proposal! }, nativeSignal);
         } };
       const output = await runCompanionStructuredAgent({
-        finalSchema: z.toJSONSchema(activityDecisionSchema, { io: 'input' }),
+        finalSchema: activityDecisionJsonSchema(),
         evidenceScope: {},
         observeReadset: readset => {
           // A durable task explicitly reads current host material at every
@@ -267,7 +267,7 @@ planningState是同一完整目标跨步骤持久保存的工作计划，独立�
           recentPeerMessages: observed.activityMessages?.map(message => ({ id: message.id, authorId: message.authorId, conversationId: message.conversationId,
             goalReplyOrigin: observed.activityMessageOrigins?.find(origin => origin.messageId === message.id),
             sequence: message.sequence, topicId: message.topicId, content: message.content.slice(0, 2000), originalChars: message.content.length, truncated: message.content.length > 2000 })), contacts: state!.companions.filter(role => role.id === companion.id || observed.world?.perception?.visibleCompanionIds.includes(role.id)).map(role => ({ id: role.id, name: role.name, active: role.active })),
-          publicProfiles: profiles.publicProfiles, outputSchema: z.toJSONSchema(activityDecisionSchema, { io: 'input' }) }) } },
+          publicProfiles: profiles.publicProfiles, outputSchema: activityDecisionJsonSchema() }) } },
       await this.options.configFor(companion), signal, { fetchFn: this.options.fetchFn, timeoutMs: 60_000, visualInputs: profiles.visualInputs });
       const decision = activityDecisionSchema.parse(output);
       if (signal.aborted || this.closed) return;

@@ -1166,3 +1166,25 @@ e01cbfc实际构建的测试包位于out/WorldlineBox-win32-x64/WorldlineBox.exe
 该实际ASAR的唯一经历界面端到端检查1/1通过，33.0秒，自然退出0；真实日程和生活事件生成经历后，核对现实钟、日期、详情、改名及页面重载持久化、两伙伴隔离和明暗主题。Root实际查看两截图，三栏弹窗、时间线与中文标题显示正常，无横向溢出。截图和日志保存在外部归档final-handoff-experience-ui及同名前缀log，不以此宣称未执行的全仓或多人内容门通过。
 
 新测试输出与Playwright目录已移出项目；还将官方脚本按失败证据保留的六份旧portable-release导出目录移至外部retained-failed-portable-exports，逐一核对目录身份、时间及路径，没有删除原件。正常运行时、内置模型、构建输入及本轮安装器保留。清理映射、包校验值和实际Git结果分别见外部followup-cleanup-index.json、failed-portable-exports-cleanup.json、final-delivery-binary.json及final-delivery-git.json。安装包和经历/DSH功能可以交付测试，但完整狼人杀验收仍为未通过，overallAcceptanceComplete保持false，长期目标不标为全部完成。
+
+### 16.71 领域最终提案复用原生工具协议及下游计划保存（2026-10-25）
+
+新增宿主专用 companion_submit_result，以调用方现有输出 schema 注册，复用已有五种协议的原生工具适配，不增加厂商分支、tool_choice 或新的模型配置。仅持续活动、伙伴来信与世界决策这三个明确绑定校验器的入口启用；普通聊天和其他领域保留原交付方式。旧文本 JSON 仍兼容，原格式、语义、来源与权限校验不变，模型错误仍最多三次。
+
+原 rawText、call.id、arguments 与 opaque signature 完整留存，宿主终结标记绑定 schema 校验值；拒绝摘要覆盖实际原生参数及调用，不能用空正文摘要代替。混合辅助调用或多次提交在任何作用前整轮拒绝，每个原 ID 都有明确未执行回执；最终工具不写 dispatched/confirmed 作用账本。接受回执仅为 accepted_for_domain_commit，实际行为仍经原领域提交。断点恢复保留三槽，原活动 lease、step、CAS、来源撤回与观察变化门保持，普通聊天存档不接受领域标记。
+
+新增五协议受控测试首跑 9/9，通过精确调用/回执、尾部反馈、混合调用零执行、伪来源隔离及无 activity 修订端口的跨重启三槽检查。SQLite 机制最终完整文件 12/12，通过真实关库重开、owner/lease/CAS/撤源和两种交付到 activity.plan.save 的往返。旧相关四文件首轮 109/114，五败均是目录新增最终工具后旧 fixture 仍要求无工具；只修对应精确白名单，三个完整文件 87/87，另 journal 原 27/27 保留。相关 structured/kernel 旧三个文件 30/30；下游修复后的 structured、五协议、SQLite journal 三个完整文件自然退出 0。不同运行有重叠，不合并成无重复总数。全仓类型检查与 lint 退出 0，lint 有七条原有 renderer warning；下游共享读取器再做类型及目标 lint 检查。
+
+首轮实际自主对局 native-final-five-autonomous.json 为 failed，203.256 秒、51 HTTP（含独立 judge），源码守卫无漂移。只读 SQLite 审计确认四份原生最终参数均为合法 JSON、已接受、终结步骤零领域执行。真实失败是本次接线遗漏：activity.plan.save 仍从空 rawText 取 JSON，而未读已接受的原生参数，三次业务重试后终止。修复以唯一 companionFinalProposalJsonText 供推理校验与领域计划读取共用，不改写正文、不改任务终态、不补造计划。原失败报告及只读审计保留，不能归咎模型或当作通过。全仓窄查未见第二处同类 agent-run 输出消费者；普通聊天发布等原 callless 约束继续保留。
+
+实现提交为 03e3adb。修复后的唯一实际复验与官方打包并行进行，结果随后按原件登记，不预先声明完整对局或整体验收成功。
+
+### 16.72 原生交付实际复验与原子合同收口（2026-10-25）
+
+修复下游读取后，唯一复验 native-final-downstream-five-autonomous.json 仍未通过完整对局：628.011 秒、306 HTTP（含独立 judge 1 次），实际任务推进至第 16 步，源码守卫无漂移。五位确已建群和参与，其中两个话题并存；独立评审没有据此判重复开局。尚未实际发牌、夜间、投票或结算。只读 SQLite 审计确认 56 份原生最终参数全部为合法 JSON，其中 48 份接受、8 份拒绝；最后三份都同时提交 topic.read 和 wait.reply，原子约束正确拒绝后任务终止，不能把合法 JSON 等同合法领域提案。原 failed 及全部原始调用、实际修订凭证完整保留。
+
+终止处进一步发现合同表达缺口：Zod 的运行时 refine 正确限制 memory/topic 独占及终态无待执行项，但默认导出的 JSON Schema 不表达这些跨字段约束。新增 activityDecisionJsonSchema 以紧凑 allOf/anyOf 表达同一接受域，工具参数及用户上下文共用；action+wait 的原合法组合保持。错误反馈增加固定字段的冲突码及路径，不含私密参数，不删除 wait 或重写提案。新增现有 AJV 对照原 Zod 的 243 结构组合及实际负例、正确正例通过；包含活动服务、五协议、字段反馈、合同对照的四完整文件 50/50 自然退出 0，main/extension 类型检查和目标 lint 退出 0。此收口没有再次新开对局，不冒称最终合同已经完整实模通关。
+
+本局原生 VCP 自动完成 47 次 capture、提交 50 篇日记、53 次 indexed outbox 确认；五位数据库经历条数为 122/35/39/47/40，共 283，均归属现实日期 2026-10-25。这里是实际日历查询计数，不冒充本轮逐文件磁盘复核。DSH 能力可用但演员没有选择调用，taskRuns=0；配置一致性守卫为 true，不能把预热任务列为本局真实思考任务，也不复述为本局验证了 DSH。真实 DSH 功能证明仍是 16.67 中的独立活动实际任务。
+
+构建在复验结束前过早开始，发现上述合同缺口后正常停止该构建，不把中断算成功。native-final-build-interruption.json 保留精确进程身份、停止树和原因；更新合同冻结后重新执行官方 release:package 与 make:inno。完整对局和总体内容验收保持未通过，官方新包、界面复核及推送结果随后登记。
