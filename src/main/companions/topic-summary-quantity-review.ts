@@ -129,7 +129,7 @@ export async function reviewTopicSourceQuantities(input: TopicSourceQuantityRevi
       try {
         const context = { system: system + '\n宿主numberCandidates.value=null只证明完整字面数词存在，尚不能可靠换算整数；不得拆词、猜数或把它当已知数量。来源总数/缺失序号不可计算时不能建立set；拟稿实际关系/数值不明确可用ambiguous弃权。明确count必须有一个实际数字索引，不能用空count代替弃权。actualEntityQuote/actualEntitySpans若存在，只核这些实际字面物品，不能用同句其它物品的数量代答，主体或集合无法明确对应应ambiguous。第1、3这样的序号列表也不能把末位3当基数数量，即使宿主ordinal只标了显式第N。',
           user: JSON.stringify({ purpose, data, outputSchema: z.toJSONSchema(schema), ...(feedback ? { formatCorrection: feedback } : {}) }) };
-        if (purpose.endsWith('_disjoint_waiver_verification')) context.system = system;
+        if (purpose.endsWith('_source_premise_verification') || purpose.endsWith('_disjoint_waiver_verification')) context.system = system;
         const value = schema.parse(alternate ? await alternate(context, input.signal)
           : await generateCompanionStructured(context, input.config, input.signal, { fetchFn: input.fetchFn, timeoutMs: 120000 })); validate(value); return value;
       } catch (error) {
@@ -145,7 +145,7 @@ export async function reviewTopicSourceQuantities(input: TopicSourceQuantityRevi
     quote: entry.quote, numberCandidates: topicQuantityNumberCandidates(entry.quote) }));
   const actualClauses = input.clauses.map(clause => ({ ...clause, numberCandidates: topicQuantityNumberCandidates(clause.text) }));
   const fullProposedText = [input.summary, input.stage].join('\n');
-  const key = createHash('sha256').update(JSON.stringify(['source_bound_quantity_v4_verified_premises', quantitySourcePremiseProtocol, input.scope, input.config.model, input.config.apiFormat, input.config.baseUrl, canon])).digest('hex');
+  const key = createHash('sha256').update(JSON.stringify(['source_bound_quantity_v6_relative_inventory_contract', quantitySourcePremiseProtocol, input.scope, input.config.model, input.config.apiFormat, input.config.baseUrl, canon])).digest('hex');
   // No owner/room/topic host scope means no cache reuse, rather than inferring
   // authority from a quote or assuming a global source id is sufficient.
   let sets = input.extractSets || input.verifySourcePremises || !input.scope ? undefined : cache.get(key)?.sets;

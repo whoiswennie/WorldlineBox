@@ -3,7 +3,7 @@ import { createHash } from 'node:crypto';
 import { reviewTopicSourceQuantities, topicQuantityNumberCandidates } from '../../src/main/companions/topic-summary-quantity-review';
 import { topicSummaryClauses } from '../../src/main/companions/topic-summary-canon-review';
 import { admitQuantitySourcePremises, buildQuantitySourcePremiseCandidates, quantitySourceEvidenceClauses,
-  quantitySourcePremiseInput, quantitySourcePremiseSchema, validateQuantitySourcePremises } from '../../src/main/companions/topic-source-quantity-premise';
+  quantitySourcePremiseInput, quantitySourcePremiseSchema, quantitySourcePremiseSystem, validateQuantitySourcePremises } from '../../src/main/companions/topic-source-quantity-premise';
 import { declaredDisjointQuantityFixture } from '../helpers/companion-quantity-role-fixture';
 
 function candidates(quote = '盒内有7张照片，第5张背面的名字仍不可辨认。', totalNumberIndex = 0, missingOrdinalNumberIndexes = [1]) {
@@ -185,4 +185,109 @@ it('does not cache a raw empty proposal as a verified negative source receipt', 
     summary: '她拿7张照片。', stage: '', clauses: topicSummaryClauses('她拿7张照片。', ''),
     scope: { ownerId: 'raw-empty-owner', conversationId: 'raw-empty-room', topicId: 'raw-empty-topic' } })).resolves.toBeUndefined();
   expect(fetchFn).toHaveBeenCalledTimes(2);
+});
+
+it.each(['reply', 'summary'] as const)('keeps source-only and identity prompts separate from numeric-value instructions through the actual %s provider path', async kind => {
+  const text = '张明拿着7张照片，这套物品与来源库存互不共用。', systems = new Map<string, string>(), payloads = new Map<string, unknown>();
+  const fetchFn = vi.fn<typeof fetch>(async (_url, init) => {
+    const request = JSON.parse(String(init?.body)), wire = JSON.parse(request.messages.at(-1).content);
+    systems.set(wire.purpose, request.messages[0].content); payloads.set(wire.purpose, wire.data);
+    let output: unknown;
+    if (wire.purpose.endsWith('_source_sets')) output = { sets: [{ canonIndex: 0, entityQuote: '照片', totalNumberIndex: 0, missingOrdinalNumberIndexes: [1] }] };
+    else if (wire.purpose.endsWith('_source_premise_verification')) output = premiseResponse(wire.data);
+    else if (wire.purpose.endsWith('_actual_claims')) output = { clauses: [{ clauseIndex: 0, quantities: [{ setIndex: 0, usage: 'current_possessed_count', numberIndexes: [0] }] }] };
+    else if (wire.purpose.endsWith('_role_verification')) output = { reviews: [{ candidateIndex: 0, numbers: [{ numberIndex: 0, collection: 'different',
+      voice: 'narrated_fact', time: 'scene', relation: 'affirmed_holding', kind: 'count', reason: '明确另一组的实际数量。' }], all: { ...noAll, collection: 'different' } }] };
+    else if (wire.purpose.endsWith('_disjoint_waiver_verification')) output = { reviews: wire.data.checks.map((check: { checkIndex: number }) => ({
+      checkIndex: check.checkIndex, verdict: 'positive_disjoint', evidenceRefs: [{ view: 'focus', clauseIndex: 0 }], reason: '本句明确另一组。' })) };
+    else throw new Error('Unexpected quantity phase in the isolated actual provider path.');
+    return new Response(JSON.stringify({ choices: [{ message: { content: JSON.stringify(output) } }] }), { headers: { 'Content-Type': 'application/json' } });
+  });
+  expect(await reviewTopicSourceQuantities({ kind, config, fetchFn, canon: sourceCanon(), summary: text, stage: '', clauses: topicSummaryClauses(text, '') })).toBeUndefined();
+  const prefix = 'topic_' + kind + '_quantity_';
+  expect([...systems.keys()]).toEqual(['source_sets', 'source_premise_verification', 'actual_claims', 'role_verification', 'disjoint_waiver_verification'].map(phase => prefix + phase));
+  expect(fetchFn).toHaveBeenCalledTimes(5);
+  expect(systems.get(prefix + 'source_premise_verification')).toBe(quantitySourcePremiseSystem);
+  expect(quantitySourcePremiseSystem).toContain('不要求知道或换算其具体数值');
+  expect(quantitySourcePremiseSystem).toContain('成员与这份集合关系不明只令该member.applicability=ambiguous');
+  for (const phase of ['source_premise_verification', 'disjoint_waiver_verification']) {
+    expect(systems.get(prefix + phase)).not.toContain('宿主numberCandidates.value=null');
+    expect(systems.get(prefix + phase)).not.toContain('来源总数/缺失序号不可计算时不能建立set');
+  }
+  for (const phase of ['source_sets', 'actual_claims', 'role_verification']) expect(systems.get(prefix + phase)).toContain('宿主numberCandidates.value=null');
+  const premiseData = payloads.get(prefix + 'source_premise_verification') as ReturnType<typeof quantitySourcePremiseInput>;
+  expect(premiseData.candidates[0]!.numberReferences.every(reference => !('value' in reference) && !('numberQuote' in reference))).toBe(true);
+  expect(premiseData).not.toHaveProperty('proposed'); expect(premiseData).not.toHaveProperty('upper'); expect(premiseData).not.toHaveProperty('warm');
+});
+
+it('still filters an actually uncomputable source total before the source-only reviewer instead of confusing masking with null', async () => {
+  const verifySourcePremises = vi.fn(), systems: string[] = [];
+  const fetchFn = vi.fn<typeof fetch>(async (_url, init) => {
+    const request = JSON.parse(String(init?.body)), wire = JSON.parse(request.messages.at(-1).content);
+    systems.push(request.messages[0].content);
+    expect(wire.purpose).toBe('topic_reply_quantity_source_sets');
+    expect(wire.data.canon[0].numberCandidates[0].value).toBeNull();
+    return new Response(JSON.stringify({ choices: [{ message: { content: JSON.stringify({ sets: [{ canonIndex: 0, entityQuote: '照片', totalNumberIndex: 0,
+      missingOrdinalNumberIndexes: [1] }] }) } }] }), { headers: { 'Content-Type': 'application/json' } });
+  });
+  expect(await reviewTopicSourceQuantities({ kind: 'reply', config, fetchFn, verifySourcePremises, canon: sourceCanon('盒内一万张照片，第5张照片未取得。'),
+    summary: '她拿着7张照片。', stage: '', clauses: topicSummaryClauses('她拿着7张照片。', '') })).toBeUndefined();
+  expect(fetchFn).toHaveBeenCalledTimes(1); expect(verifySourcePremises).not.toHaveBeenCalled();
+  expect(systems[0]).toContain('宿主numberCandidates.value=null');
+});
+
+it.each([
+  { id: 'same_inventory_and_time', quote: '蓝盒共有7张照片，第5张照片尚未取得。', applicability: 'current_direct', diagnostic: 'mathematical_contradiction' },
+  { id: 'same_inventory_shared_custody', quote: '本组共有7张照片，由张明和王玲共同保管，第5张照片尚未取得。', applicability: 'current_direct', diagnostic: 'mathematical_contradiction' },
+  { id: 'same_inventory_transferred_box', quote: '本组7张照片从蓝盒转存红盒，第5张照片尚未取得。', applicability: 'current_direct', diagnostic: 'mathematical_contradiction' },
+  { id: 'other_box_inventory', quote: '蓝盒共有7张照片。红盒独立库存的第5张照片尚未取得。', applicability: 'outside_current_inventory' },
+  { id: 'other_owner_inventory', quote: '张明共有7张照片。王玲独立库存的第5张照片尚未取得。', applicability: 'outside_current_inventory' },
+  { id: 'different_inventory_time', quote: '去年这组有7张照片。今年第5张照片尚未取得。', applicability: 'outside_current_inventory' },
+  { id: 'attributed_inventory', quote: '这组共有7张照片。王玲声称第5张照片未取得。', applicability: 'attributed_or_conditional' },
+  { id: 'only_total_inventory_attributed', quote: '王玲声称这组共有7张照片。第5张照片尚未取得。', applicability: 'attributed_or_conditional' },
+  { id: 'only_total_inventory_conditional', quote: '如果这组共有7张照片，第5张照片尚未取得。', applicability: 'attributed_or_conditional' },
+  { id: 'masked_identity_uncertain', quote: 'A17共有7张照片。A18的第5张照片未取得。', applicability: 'ambiguous', diagnostic: 'unresolved_source_premise' },
+])('keeps total syntax independent and applies member absence only relative to that inventory and time: $id', async test => {
+  const text = '她拿着7张照片。', sourceNumbers = topicQuantityNumberCandidates(test.quote), extractClaims = vi.fn(async () => ({ clauses: [{
+    clauseIndex: 0, quantities: [{ setIndex: 0, usage: 'current_possessed_count', numberIndexes: [0] }] }] }));
+  const totalNumberIndex = sourceNumbers.find(number => number.numberQuote === '7')!.numberIndex;
+  const ordinalNumberIndex = sourceNumbers.find(number => number.ordinal && number.value === 5)!.numberIndex;
+  const result = await reviewTopicSourceQuantities({ kind: 'reply', config, canon: sourceCanon(test.quote), summary: text, stage: '',
+    clauses: topicSummaryClauses(text, ''),
+    fetchFn: vi.fn<typeof fetch>(async () => { throw new Error('No actual transport is permitted in the relative-inventory contract control.'); }),
+    extractSets: async () => ({ sets: [{ canonIndex: 0, entityQuote: '照片', totalNumberIndex, missingOrdinalNumberIndexes: [ordinalNumberIndex] }] }),
+    verifySourcePremises: async context => {
+      const data = JSON.parse(context.user).data;
+      expect(context.system).toBe(quantitySourcePremiseSystem);
+      expect(context.system).toContain('不比较总数与member序号');
+      expect(context.system).toContain('相对于totalReference所计的那份实际inventory及其适用时点');
+      expect(context.system).toContain('不能只因另一组自己的句子是现在时就扣本组库存');
+      expect(context.system).toContain('换owner或容器本身不充分，同组共管或同一集合转盒仍可current_direct');
+      expect(context.system).toContain('total所计库存本身与该member未得/可用状态均为直接陈述并适用于同一实际当前库存及其时点');
+      expect(context.system).toContain('total库存侧或member状态侧任一侧仅人物声称/条件/计划均为attributed_or_conditional');
+      expect(data.candidates[0].numberReferences.every((reference: Record<string, unknown>) => !('value' in reference))).toBe(true);
+      return premiseResponse(data, { applicability: test.applicability });
+    },
+    extractClaims,
+    verifyRoles: async () => ({ reviews: [{ candidateIndex: 0, numbers: [{ numberIndex: 0, collection: 'same', voice: 'narrated_fact', time: 'scene',
+      relation: 'affirmed_holding', kind: 'count', reason: '本地注入的拟稿同集合控制，不声称实模分类准确率。' }], all: noAll }] }) });
+  if (test.diagnostic) { expect(result).toContain(test.diagnostic); expect(extractClaims).toHaveBeenCalledTimes(1); }
+  else { expect(result).toBeUndefined(); expect(extractClaims).not.toHaveBeenCalled(); }
+  if (test.applicability === 'ambiguous') expect(result).not.toContain('mathematical_contradiction');
+});
+
+it.each([
+  '照片盒编号7，第5张照片尚未取得。',
+  '这箱照片重7千克，第5张照片尚未取得。',
+])('does not admit a source number that is not a cardinality of the actual object collection: %s', async quote => {
+  const extractClaims = vi.fn(), verifyRoles = vi.fn();
+  expect(await reviewTopicSourceQuantities({ kind: 'reply', config, canon: sourceCanon(quote), summary: '她拿着7张照片。', stage: '',
+    clauses: topicSummaryClauses('她拿着7张照片。', ''),
+    extractSets: async () => ({ sets: [{ canonIndex: 0, entityQuote: '照片', totalNumberIndex: 0, missingOrdinalNumberIndexes: [1] }] }),
+    verifySourcePremises: async context => {
+      const data = JSON.parse(context.user).data;
+      expect(context.system).toContain('时间、重量、ID或属性的数量不是物品本体集合的基数');
+      return { sets: premiseResponse(data).sets.map(set => ({ ...set, totalBinding: 'not_supported' })) };
+    }, extractClaims, verifyRoles })).toBeUndefined();
+  expect(extractClaims).not.toHaveBeenCalled(); expect(verifyRoles).not.toHaveBeenCalled();
 });
