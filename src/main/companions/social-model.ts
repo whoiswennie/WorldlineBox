@@ -113,6 +113,7 @@ phone是远程手机文字通信，不代表同一地点、拜访许可或电脑
         participants: input.conversation.memberIds, messagePort: { kind: 'conversation' },
         authorization: { kind: 'peer', sourceMessageIds: [input.source.id], externalActions: false } } };
   const result = replySchema.safeParse(await runCompanionStructuredAgent({ context, frame: currentFrame,
+    finalSchema: z.toJSONSchema(replySchema, { io: 'input' }),
     refresh: options.prepareFrame ? async () => { currentFrame = await options.prepareFrame!(currentFrame); return currentFrame; } : undefined,
     validateOutput: async raw => {
       const proposal = replySchema.parse(raw);

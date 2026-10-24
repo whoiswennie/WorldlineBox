@@ -5,6 +5,7 @@ import type { CompanionStorageCommand, CompanionStorageResponse } from '../share
 import type { CompanionMessage } from '../shared/companions';
 import type { CompanionActivityTask, activityPlanningStateSchema } from '../shared/companion-activity-task';
 import type { z } from 'zod';
+import { companionFinalProposalBytes, companionFinalProposalReceiptSchema, companionFinalProposalResults, isCompanionFinalTurn } from '../shared/companion-final-proposal';
 
 /** Domain job IDs are durable inference ports, including synthetic learning
  * rooms. These records never create a chat message or enlarge source access. */
@@ -14,8 +15,13 @@ export class CompanionAgentRunStore {
     private readonly memoryValid: (owner: string, id: string, version: number) => boolean,
     private readonly topicExecute?: (command: CompanionStorageCommand) => CompanionStorageResponse | undefined) {}
   private assertValid(run: CompanionAgentRun): void {
-    for (const rejected of run.rejectedFinals ?? []) if (createHash('sha256').update(run.turns[rejected.step]!.rawText).digest('hex') !== rejected.proposalChecksum)
+    for (const rejected of run.rejectedFinals ?? []) if (createHash('sha256').update(companionFinalProposalBytes(run.turns[rejected.step]!)).digest('hex') !== rejected.proposalChecksum)
       throw new Error('被拒最终提案的不可变原文校验不匹配。');
+    for (const turn of run.turns) if (turn.finalProposal && turn.results) {
+      const checksum = createHash('sha256').update(companionFinalProposalBytes(turn)).digest('hex');
+      for (const result of turn.results) if (companionFinalProposalReceiptSchema.parse(JSON.parse(result.content)).proposalChecksum !== checksum)
+        throw new Error('最终提案的宿主校验回执未绑定原始调用。');
+    }
     if (!this.db.prepare("SELECT 1 FROM companions WHERE id=? AND deleted_at IS NULL AND NOT EXISTS(SELECT 1 FROM companion_reset_jobs WHERE companion_id=? AND status<>'completed')").get(run.companionId, run.companionId)) throw new Error('伙伴推理主体已不可用。');
     const room = this.db.prepare('SELECT 1 FROM conversations WHERE id=?').get(run.conversationId);
     if (room && !this.db.prepare('SELECT 1 FROM conversation_members WHERE conversation_id=? AND companion_id=?').get(run.conversationId, run.companionId)) throw new Error('伙伴已不属于本次推理会话。');
@@ -42,8 +48,8 @@ export class CompanionAgentRunStore {
   private reviseFinal(command: Extract<CompanionStorageCommand, { type: 'agent.run.revise_final' }>): CompanionStorageResponse {
     return this.db.transaction(() => {
       const run = this.load(command.companionId, command.id), turn = run?.turns[command.turnStep];
-      if (!run || run.revision !== command.expectedRevision || command.turnStep !== run.turns.length - 1 || !turn || turn.calls.length
-        || createHash('sha256').update(turn.rawText).digest('hex') !== command.proposalChecksum
+      if (!run || run.revision !== command.expectedRevision || command.turnStep !== run.turns.length - 1 || !turn || !isCompanionFinalTurn(turn)
+        || createHash('sha256').update(companionFinalProposalBytes(turn)).digest('hex') !== command.proposalChecksum
         || run.rejectedFinals?.some(item => item.step === command.turnStep) || companionFinalValidationFailures(run) >= 3
         || command.hostObservation && (turn.hostProgressKey !== command.hostObservation.previousKey
           || command.hostObservation.previousKey === command.hostObservation.currentKey))
@@ -105,7 +111,9 @@ export class CompanionAgentRunStore {
         if (sent.agentSource && checkedSource(sent.agentSource.conversationId, sent.agentSource.messageId, sent.agentChecksum, 'social').kind !== 'text')
           throw new Error('原游戏入口来源不是实际文本消息。');
       }
-      const next: CompanionAgentRun = { ...run, revision: run.revision + 1, status: 'running', rejectedFinals: [...(run.rejectedFinals ?? []), {
+      const turns = run.turns.map((saved, step) => step === command.turnStep && saved.finalProposal ? { ...saved,
+        results: companionFinalProposalResults(saved, command.proposalChecksum, 'rejected_before_execution', command.reason) } : saved);
+      const next: CompanionAgentRun = { ...run, turns, revision: run.revision + 1, status: 'running', rejectedFinals: [...(run.rejectedFinals ?? []), {
         step: command.turnStep, proposalChecksum: command.proposalChecksum, reason: command.reason, rejectedAt: new Date().toISOString(),
         activityTaskId: task.id, activityStep: task.step, leaseTokenChecksum: createHash('sha256').update(command.leaseToken).digest('hex'),
         ...(command.hostObservation ? { hostObservation: command.hostObservation } : {}) }] };

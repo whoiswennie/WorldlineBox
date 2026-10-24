@@ -1,3 +1,4 @@
+import { COMPANION_SUBMIT_RESULT_TOOL } from '../../src/shared/companion-final-proposal';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { tmpdir } from 'node:os';
@@ -534,8 +535,8 @@ it('omits useless recall only for a current whole-corpus-empty host receipt and 
   let empty = true;
   const fetchFn = vi.fn<typeof fetch>(async (_url, init) => {
     const wire = JSON.parse(String(init?.body)), data = JSON.parse(wire.messages[1].content);
-    if (empty) { expect(wire.tools ?? []).toEqual([]); expect(data.memoryAvailability).toMatchObject({ authorizedCorpusEmpty: true, revision: 'empty-now' }); }
-    else { expect(wire.tools).toHaveLength(2); expect(wire.tools.map((tool: { function: { name: string } }) => tool.function.name)).toEqual(['memory', 'world']); expect(data.memoryAvailability).toBeUndefined(); }
+    if (empty) { expect(wire.tools.map((tool: { function: { name: string } }) => tool.function.name)).toEqual([COMPANION_SUBMIT_RESULT_TOOL]); expect(data.memoryAvailability).toMatchObject({ authorizedCorpusEmpty: true, revision: 'empty-now' }); }
+    else { expect(wire.tools).toHaveLength(3); expect(wire.tools.map((tool: { function: { name: string } }) => tool.function.name)).toEqual(['memory', 'world', COMPANION_SUBMIT_RESULT_TOOL]); expect(data.memoryAvailability).toBeUndefined(); }
     return response({ status: 'continue', action: { action: 'query', category: 'scenes', limit: 1 }, wait: null, summary: '用当前真实上下文继续，回忆可用性每步核实。' });
   });
   const base = setup(fetchFn); await service!.close();

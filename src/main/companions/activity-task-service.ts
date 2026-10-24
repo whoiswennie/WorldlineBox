@@ -166,6 +166,7 @@ export class CompanionActivityTaskService {
             executionReadset, ...proposal! }, nativeSignal);
         } };
       const output = await runCompanionStructuredAgent({
+        finalSchema: z.toJSONSchema(activityDecisionSchema, { io: 'input' }),
         evidenceScope: {},
         observeReadset: readset => {
           // A durable task explicitly reads current host material at every

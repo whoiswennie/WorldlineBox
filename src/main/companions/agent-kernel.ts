@@ -2,6 +2,7 @@ import type { CompanionLoopTurn } from '../../shared/companion-loop';
 import { createHash } from 'node:crypto';
 import { companionAgentNoProgress, companionAgentRepeatsObservation, CompanionAgentNoProgressError, type CompanionAgentNoProgressProof } from './agent-progress';
 import type { CompanionRejectedFinal } from '../../shared/companion-agent-run';
+import { companionFinalProposalBytes, companionFinalProposalReceiptStatus, companionFinalProposalReceiptSchema, isCompanionFinalTurn } from '../../shared/companion-final-proposal';
 export { CompanionAgentNoProgressError } from './agent-progress';
 
 /** The durable decision/effect boundary shared by all character inference ports.
@@ -62,8 +63,10 @@ export async function runCompanionAgentKernel<T>(options: CompanionAgentKernelOp
     }
     signal?.throwIfAborted();
     let turn = state.turns[step];
-    if (turn && !turn.calls.length && (options.finalWasRejected?.(turn, step) || state.rejectedFinals?.some(rejected => rejected.step === step
-      && rejected.proposalChecksum === createHash('sha256').update(turn!.rawText).digest('hex')))) continue;
+    if (turn && isCompanionFinalTurn(turn) && (options.finalWasRejected?.(turn, step)
+      || companionFinalProposalReceiptStatus(turn) === 'rejected_before_execution'
+      || state.rejectedFinals?.some(rejected => rejected.step === step
+        && rejected.proposalChecksum === createHash('sha256').update(companionFinalProposalBytes(turn!)).digest('hex')))) continue;
     if (!turn) {
       turn = await options.infer(step);
       signal?.throwIfAborted();
@@ -76,9 +79,15 @@ export async function runCompanionAgentKernel<T>(options: CompanionAgentKernelOp
       await options.save();
       options.decisionCommitted?.(turn, step);
     }
-    if (!turn.calls.length) {
+    if (isCompanionFinalTurn(turn)) {
       let output: T;
-      try { output = await options.finish(turn, step); }
+      try {
+        output = await options.finish(turn, step);
+        if (turn.finalProposal && (companionFinalProposalReceiptStatus(turn) !== 'accepted_for_domain_commit'
+          || turn.results!.some(result => companionFinalProposalReceiptSchema.parse(JSON.parse(result.content)).proposalChecksum
+            !== createHash('sha256').update(companionFinalProposalBytes(turn)).digest('hex'))))
+          throw new Error('领域最终提案尚未获得与原调用准确绑定的宿主接受回执。');
+      }
       catch (error) { if (await options.recoverFinal?.(turn, step, error)) continue; throw error; }
       signal?.throwIfAborted();
       state.status = 'done';

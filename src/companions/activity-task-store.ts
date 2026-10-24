@@ -13,6 +13,7 @@ import type { CompanionWorldSnapshot } from '../shared/companion-world';
 import { companionTopicOperationSchema, COMPANION_TOPIC_STATE_WRITE_RECEIPT, companionGameStateHandoffReceipt, type CompanionTopicModeratorTransferApproval } from '../shared/companion-topic';
 import { companionSocialGoalOrigin } from './social-goal-origin';
 import type { CompanionActivityThoughtAuthorization } from '../shared/companion-activity-thought';
+import { companionFinalProposalJsonText } from '../shared/companion-final-proposal';
 type Row = { data: string };
 type GoalSocialOrigin = { messageId: string; sourceMessageId: string; deliveryClientId: string; conversationId: string; topicId?: string; chainId: string };
 type Stored = CompanionActivityTask & { clientId: string; sourceChecksum?: string; nextAt: number; leaseUntil?: number;
@@ -1031,8 +1032,7 @@ export class CompanionActivityTaskStore {
         const runId = createHash('sha256').update(JSON.stringify([task.companionId, task.conversationId, invocationId])).digest('hex');
         const run = this.agentRunExecute?.({ type: 'agent.run.get', companionId: task.companionId, id: runId })?.agentRun;
         if (!run || run.status !== 'done' || run.companionId !== task.companionId || run.conversationId !== task.conversationId || run.invocationId !== invocationId) throw new Error('没有本任务本步骤已完成且来源有效的推理，未保存计划。');
-        const text = run.turns.at(-1)?.rawText ?? '';
-        const decision = activityDecisionSchema.parse(JSON.parse(text.replace(/^```(?:json)?\s*/u, '').replace(/\s*```$/u, '').trim()));
+        const decision = activityDecisionSchema.parse(JSON.parse(companionFinalProposalJsonText(run.turns.at(-1)!)));
         const evidence = new Map((task.evidence ?? []).map(item => [item.id, item]));
         for (const item of run.sources) evidence.set(item.id, item);
         task.evidence = [...evidence.values()];

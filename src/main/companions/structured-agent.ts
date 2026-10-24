@@ -18,6 +18,8 @@ import { CompanionAgentNoProgressError, type CompanionAgentNoProgressProof } fro
 import type { CompanionExecutionReadset } from '../../shared/companion-execution-evidence';
 import { captureCompanionExecutionReadset } from './execution-evidence';
 import { companionBoundCapabilityContext } from './capability-availability';
+import { COMPANION_SUBMIT_RESULT_TOOL, companionFinalProposalBytes, companionFinalProposalReceipt, isCompanionFinalTurn,
+  companionFinalProposalReceiptSchema, companionFinalProposalJsonText } from '../../shared/companion-final-proposal';
 
 type RoleOptions = Pick<CompanionModelOptions, 'fetchFn' | 'timeoutMs' | 'visualInputs'>;
 type Scope = { companionId: string; conversationId: string; beforeSequence?: number };
@@ -41,6 +43,8 @@ export interface CompanionStructuredAgentInput {
   refresh?: () => Promise<CompanionReplyInput>;
   /** The caller validates proposed output before any domain effect commits. */
   validateOutput?: (value: unknown) => unknown;
+  /** Trusted caller's existing output contract. Never read from model/context JSON. */
+  finalSchema?: Record<string, unknown>;
   /** Host-only live-domain observation. A changed input supersedes only a saved,
    * uncommitted final through reviseFinal; confirmed native turns stay intact. */
   finalObservationFingerprint?: string;
@@ -139,6 +143,15 @@ function finalJsonSyntaxFeedback(text: string, error: unknown): string {
 
 export async function runCompanionStructuredAgent(input: CompanionStructuredAgentInput, config: CompanionModelConfig,
   signal?: AbortSignal, options: RoleOptions = {}): Promise<unknown> {
+  const finalSchema = input.finalSchema ? JSON.parse(JSON.stringify(input.finalSchema)) as Record<string, unknown> : undefined;
+  if (finalSchema && !input.validateOutput) throw new Error('宿主最终提案通道必须绑定原领域的实际输出校验器。');
+  if (finalSchema) delete finalSchema.$schema;
+  const finalSchemaDigest = finalSchema ? createHash('sha256').update(JSON.stringify(finalSchema)).digest('hex') : undefined;
+  if (input.capabilities?.tools.some(tool => tool.name === COMPANION_SUBMIT_RESULT_TOOL))
+    throw new Error('领域能力不能注册宿主保留的最终提案工具。');
+  const finalTool = finalSchema ? { name: COMPANION_SUBMIT_RESULT_TOOL,
+    description: '向宿主提交本轮最终提案，参数直接使用本工具的原领域schema。单独调用一次，不与任何辅助工具同轮调用。不执行领域行动，也不授予权限；通过原格式、语义、来源核验后才交回原领域提交。',
+    parameters: finalSchema } : undefined;
   const journal = input.journal ?? (input.frame.invocation ? input.capabilities?.journal : undefined);
   const projected = assembleCompanionInvocation(input.frame);
   const run: CompanionAgentRun = journal ? await journal.load({ ...input.frame, messages: projected.messages,
@@ -166,8 +179,17 @@ export async function runCompanionStructuredAgent(input: CompanionStructuredAgen
   const save = async () => { if (journal) await journal.save(run); };
   if (journal && !run.revision) await save();
   const previousRejection = run.rejectedFinals?.findLast(item => item.step === turns.length - 1);
+  const nativeRejection = (turn: CompanionLoopTurn) => {
+    if (!turn.finalProposal || !turn.results?.length) return;
+    try {
+      const receipt = companionFinalProposalReceiptSchema.safeParse(JSON.parse(turn.results[0]!.content));
+      return receipt.success && receipt.data.status === 'rejected_before_execution' ? receipt.data : undefined;
+    } catch { return; }
+  };
+  const priorNativeRejection = turns.at(-1) ? nativeRejection(turns.at(-1)!) : undefined;
   let outputCorrection: { rejectedProposal: string; error: string } | undefined = previousRejection
-    ? { rejectedProposal: turns[previousRejection.step]!.rawText, error: previousRejection.reason } : undefined;
+    ? { rejectedProposal: companionFinalProposalBytes(turns[previousRejection.step]!), error: previousRejection.reason }
+    : priorNativeRejection ? { rejectedProposal: companionFinalProposalBytes(turns.at(-1)!), error: priorNativeRejection.reason! } : undefined;
   let invalidOutputs = companionFinalValidationFailures(run), observationChanges = 0;
   let identityCorrection: string | undefined, identityAttempts = 0;
   let capacityFeedback = false, capacityAttempts = 0;
@@ -192,22 +214,34 @@ export async function runCompanionStructuredAgent(input: CompanionStructuredAgen
       if (!turn.hostProgressKey) throw new Error('本活动尚未执行的最终提案缺少旧观察凭证。请读取本轮 recentPeerMessages 的实际最新回信，依据当前事实重新选择下一步；不重发已确认消息。');
     }
     let value: unknown;
-    const json = turn.rawText.replace(/^```(?:json)?\s*/u, '').replace(/\s*```$/u, '').trim();
+    if (turn.finalProposal && (!finalSchemaDigest || turn.finalProposal.schemaDigest !== finalSchemaDigest))
+      throw new Error('最终提案与本轮宿主注册的领域契约不一致，未执行。');
+    const json = companionFinalProposalJsonText(turn);
     try { value = JSON.parse(json); }
     catch (error) { throw new CompanionModelError('INVALID_RESPONSE', finalJsonSyntaxFeedback(json, error)); }
     const accepted = input.validateOutput ? await input.validateOutput(value) : value;
     acceptedOutputs.set(turn, accepted); return accepted;
   };
   const rejectFinal = async (turn: CompanionLoopTurn, step: number, error: unknown, persisted: boolean): Promise<boolean> => {
-    if (!input.reviseFinal || turn.calls.length) return false;
-    if (companionFinalValidationFailures(run) >= 3) throw new CompanionAgentFinalValidationError(run.rejectedFinals!.at(-1)!.reason);
+    if (!isCompanionFinalTurn(turn) || !input.reviseFinal && !turn.finalProposal) return false;
+    if (companionFinalValidationFailures(run) >= 3) throw new CompanionAgentFinalValidationError(outputCorrection?.error ?? '最终提案已达到三次校验失败上限。');
     const hostObservation = error instanceof CompanionAgentObservationChangedError ? error.hostObservation : undefined;
     // One new host snapshot per scheduling entry; further changes yield to the
     // existing activity retry/deadline rather than creating a busy repair loop.
     if (hostObservation && observationChanges++ >= 1) throw error;
     if (!persisted) { turns.push(turn); await save(); }
     const reason = (error instanceof Error ? error.message : '最终提案未通过当前契约核验。').slice(0, 2000);
-    const proposalChecksum = createHash('sha256').update(turn.rawText).digest('hex');
+    const proposalChecksum = createHash('sha256').update(companionFinalProposalBytes(turn)).digest('hex');
+    if (!input.reviseFinal) {
+      if (run.status === 'done' || turn.results && !nativeRejection(turn)) throw error;
+      if (hostObservation) throw error;
+      turn.results = companionFinalProposalReceipt(turn, 'rejected_before_execution', proposalChecksum, reason);
+      await save();
+      outputCorrection = { rejectedProposal: companionFinalProposalBytes(turn), error: reason };
+      invalidOutputs = companionFinalValidationFailures(run);
+      if (invalidOutputs >= 3) throw new CompanionAgentFinalValidationError(reason);
+      return true;
+    }
     const revised = await input.reviseFinal({ runId: run.id, expectedRevision: run.revision, step, proposalChecksum, reason,
       ...(hostObservation ? { hostObservation } : {}) });
     if (!revised) return false;
@@ -216,19 +250,24 @@ export async function runCompanionStructuredAgent(input: CompanionStructuredAgen
       || revised.invocationId !== run.invocationId || revised.revision !== run.revision + 1 || revised.status !== 'running'
       || rejection?.step !== step || rejection.proposalChecksum !== proposalChecksum
       || JSON.stringify(rejection.hostObservation) !== JSON.stringify(hostObservation)) throw new Error('宿主未返回当前原任务最终提案的准确拒绝凭证。');
+    const revisedTurn = revised.turns[step];
+    if (!revisedTurn || JSON.stringify({ ...turn, results: undefined }) !== JSON.stringify({ ...revisedTurn, results: undefined }))
+      throw new Error('宿主改写了已提交最终提案的原始调用，停止恢复。');
+    turn.results = revisedTurn.results;
     run.revision = revised.revision; run.status = revised.status; run.rejectedFinals = revised.rejectedFinals;
-    outputCorrection = { rejectedProposal: turn.rawText, error: reason }; invalidOutputs = companionFinalValidationFailures(run);
+    outputCorrection = { rejectedProposal: companionFinalProposalBytes(turn), error: reason }; invalidOutputs = companionFinalValidationFailures(run);
     if (invalidOutputs >= 3) throw new CompanionAgentFinalValidationError(reason);
     return true;
   };
   return runCompanionAgentKernel({ state: run, signal, save,
     recoverFinal: (turn, step, error) => rejectFinal(turn, step, error, true),
+    finalWasRejected: turn => !!nativeRejection(turn),
     recoverNoProgress: async proof => {
       if (proof.kind !== 'empty_authorized_memory' || emptyCorpusRecovery) return false;
       emptyCorpusRecovery = proof; return true;
     },
     beforeStep: async () => {
-      if (companionFinalValidationFailures(run) >= 3) throw new CompanionAgentFinalValidationError(run.rejectedFinals!.at(-1)!.reason);
+      if (companionFinalValidationFailures(run) >= 3) throw new CompanionAgentFinalValidationError(outputCorrection?.error ?? '最终提案已达到三次校验失败上限。');
       if (journal && !await journal.valid(run)) throw new Error('本轮推理来源或检查点已变化，不能继续发布。');
       refreshedFrame = input.refresh ? await input.refresh() : input.frame;
       refreshedFrame = { ...refreshedFrame, capabilityAvailability: companionBoundCapabilityContext(refreshedFrame.companion.id,
@@ -240,7 +279,7 @@ export async function runCompanionStructuredAgent(input: CompanionStructuredAgen
   infer: async step => { for (;;) {
     signal?.throwIfAborted();
     let frame = capacityFeedback && input.refresh ? await input.refresh() : refreshedFrame;
-    const effectiveTools = emptyCorpusRecovery ? [] : input.capabilities?.tools ?? [];
+    const effectiveTools = [...(emptyCorpusRecovery ? [] : input.capabilities?.tools ?? []), ...(finalTool ? [finalTool] : [])];
     frame = { ...frame, capabilityAvailability: companionBoundCapabilityContext(frame.companion.id, frame.conversation.id,
       effectiveTools.map(tool => tool.name)) };
     const capacityBefore = capacityFeedback ? JSON.stringify({ messages: frame.messages, topicState: frame.topicState }).length : 0;
@@ -252,6 +291,7 @@ export async function runCompanionStructuredAgent(input: CompanionStructuredAgen
     const assembled = assembleCompanionRoleContext(frame, emptyCorpusRecovery ? { ...context, user: JSON.stringify({ ...JSON.parse(context.user),
       observationCorrection: { proof: emptyCorpusRecovery,
         instruction: '宿主已连续确认当前整个获权VCP日记语料为空，同一版本换检索措辞不能找到实时对话、当前话题或未写入日记的状态。这不是资料缺失的新用户条件。此纠错槽只交付本次outputSchema最终提案，不再调用检索；依据已提供的真实当前上下文、历史回执与持续计划，选择实际下一步或有真实条件的等待。提案仍由原领域校验后执行，不能编造已发生行为或把空日记当成任务已完成。' } }) } : context);
+    if (finalTool) assembled.system += `\n【宿主最终提案通道】\n本次已注册 ${COMPANION_SUBMIT_RESULT_TOOL}。完成必要的辅助查询后，优先单独调用它并直接以原领域outputSchema作为参数，不输出正文或再次包裹JSON字符串；不能与其他工具同轮调用。提交仅接受原提案，原领域仍校验来源、语义与权限后才执行；回执中的accepted_for_domain_commit不代表行动已经完成。若服务返回文本最终JSON，仍使用原严格校验，不能以口头声称完成代替提案。`;
     evidenceContext = assembled;
     await captureEvidence();
     const continuity: CompanionLoopCheckpoint = { companionId: run.companionId, conversationId: run.conversationId,
@@ -303,7 +343,9 @@ export async function runCompanionStructuredAgent(input: CompanionStructuredAgen
     }
     const turn = result.turn;
     if (!turn) throw new CompanionModelError('INVALID_RESPONSE', '伙伴领域调用缺少原生循环结果。');
-    if (emptyCorpusRecovery && turn.calls.length) throw new CompanionAgentNoProgressError(emptyCorpusRecovery);
+    const submission = finalTool && turn.calls.find(call => call.name === COMPANION_SUBMIT_RESULT_TOOL);
+    if (submission) turn.finalProposal = { callId: submission.id, schemaDigest: finalSchemaDigest! };
+    if (emptyCorpusRecovery && turn.calls.length && !turn.finalProposal) throw new CompanionAgentNoProgressError(emptyCorpusRecovery);
     if (!turn.calls.length) {
       await captureEvidence();
       try {
@@ -348,7 +390,13 @@ export async function runCompanionStructuredAgent(input: CompanionStructuredAgen
       await captureEvidence([...turns.slice(0, -1), { ...turn, results: [...results] }]);
     }
     return results;
-  }, finish: async turn => { await captureEvidence(); return parseOutput(turn); } });
+  }, finish: async turn => {
+    await captureEvidence();
+    const output = await parseOutput(turn);
+    if (turn.finalProposal) turn.results = companionFinalProposalReceipt(turn, 'accepted_for_domain_commit',
+      createHash('sha256').update(companionFinalProposalBytes(turn)).digest('hex'));
+    return output;
+  } });
 }
 
 /** Active recall uses the same VCP storage port and owner/scope checks as chat.

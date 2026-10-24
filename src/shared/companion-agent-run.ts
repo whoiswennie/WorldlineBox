@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { companionLoopTurnSchema, companionLoopWorkingStateSchema } from './companion-loop';
+import { companionFinalProposalReceiptStatus, isCompanionFinalTurn, type CompanionFinalProposalTurn } from './companion-final-proposal';
 
 const id = z.string().regex(/^[a-zA-Z0-9_-]{1,100}$/);
 const digest = z.string().regex(/^[a-f0-9]{64}$/);
@@ -26,8 +27,11 @@ export const companionRejectedFinalSchema = z.strictObject({ step: z.number().in
   reason: z.string().min(1).max(2000), rejectedAt: z.iso.datetime(), activityTaskId: id,
   activityStep: z.number().int().nonnegative().safe(), leaseTokenChecksum: digest, hostObservation: companionHostObservationChangeSchema.optional() });
 export type CompanionRejectedFinal = z.infer<typeof companionRejectedFinalSchema>;
-export const companionFinalValidationFailures = (run: { rejectedFinals?: readonly CompanionRejectedFinal[] }) =>
-  run.rejectedFinals?.filter(rejection => !rejection.hostObservation).length ?? 0;
+export const companionFinalValidationFailures = (run: { rejectedFinals?: readonly CompanionRejectedFinal[]; turns?: readonly CompanionFinalProposalTurn[] }) => {
+  const rejectedSteps = new Set(run.rejectedFinals?.map(rejection => rejection.step));
+  return (run.rejectedFinals?.filter(rejection => !rejection.hostObservation).length ?? 0)
+    + (run.turns?.filter((turn, step) => !rejectedSteps.has(step) && companionFinalProposalReceiptStatus(turn) === 'rejected_before_execution').length ?? 0);
+};
 export const companionAgentRunSchema = z.object({
   id, companionId: id, conversationId: id, invocationId: z.string().min(1).max(300),
   topicId: id.optional(), requestDigest: digest, revision: z.number().int().nonnegative().safe(),
@@ -42,22 +46,29 @@ export const companionAgentRunSchema = z.object({
     state: z.enum(['dispatched', 'confirmed']), result: z.string().optional() })).default([]),
   workingState: companionLoopWorkingStateSchema.optional(),
 }).superRefine((run, context) => {
-  if (run.status === 'done' && (!run.turns.length || run.turns.at(-1)!.calls.length)) context.addIssue({ code: 'custom', path: ['status'], message: '持久推理只有真实最终交付才能完成。' });
+  const final = run.turns.at(-1);
+  if (run.status === 'done' && (!final || !isCompanionFinalTurn(final)
+    || final.finalProposal && companionFinalProposalReceiptStatus(final) !== 'accepted_for_domain_commit'))
+    context.addIssue({ code: 'custom', path: ['status'], message: '持久推理只有真实最终交付才能完成。' });
+  for (const [step, turn] of run.turns.entries()) if (turn.finalProposal && turn.results && !companionFinalProposalReceiptStatus(turn))
+    context.addIssue({ code: 'custom', path: ['turns', step, 'results'], message: '领域最终提案只能保存与原调用完整配对的宿主校验回执。' });
   const rejectedSteps = new Set<number>();
   if (companionFinalValidationFailures(run) > 3)
     context.addIssue({ code: 'custom', path: ['rejectedFinals'], message: '模型最终提案最多允许三次格式或语义错误。' });
   for (const rejection of run.rejectedFinals ?? []) {
-    if (!run.turns[rejection.step] || run.turns[rejection.step]!.calls.length || rejectedSteps.has(rejection.step)
+    if (!run.turns[rejection.step] || !isCompanionFinalTurn(run.turns[rejection.step]!) || rejectedSteps.has(rejection.step)
       || run.status === 'done' && rejection.step === run.turns.length - 1)
       context.addIssue({ code: 'custom', path: ['rejectedFinals'], message: '拒绝记录只能引用尚未执行的独立最终提案，不能重复或把已拒提案标为完成。' });
     rejectedSteps.add(rejection.step);
     if (rejection.hostObservation && run.turns[rejection.step]?.hostProgressKey !== rejection.hostObservation.previousKey)
       context.addIssue({ code: 'custom', path: ['rejectedFinals'], message: '旧最终提案的宿主观察凭证不匹配。' });
+    if (run.turns[rejection.step]?.finalProposal && companionFinalProposalReceiptStatus(run.turns[rejection.step]!) !== 'rejected_before_execution')
+      context.addIssue({ code: 'custom', path: ['rejectedFinals'], message: '被拒原生提案必须保留每个调用未执行的真实宿主回执。' });
   }
   const seen = new Set<string>();
   for (const [index, effect] of run.effects.entries()) {
     const key = `${effect.step}:${effect.callId}`;
-    if (seen.has(key) || !run.turns[effect.step]?.calls.some(call => call.id === effect.callId)
+    if (seen.has(key) || run.turns[effect.step]?.finalProposal || !run.turns[effect.step]?.calls.some(call => call.id === effect.callId)
       || effect.state === 'confirmed' && effect.result === undefined) context.addIssue({ code: 'custom', path: ['effects', index], message: '作用凭证必须属于已提交调用，已确认作用必须保存回执。' });
     seen.add(key);
   }

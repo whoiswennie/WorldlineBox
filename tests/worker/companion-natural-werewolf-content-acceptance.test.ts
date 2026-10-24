@@ -142,6 +142,7 @@ it.skipIf(process.env.WORLDLINEBOX_NATURAL_GAME_ACCEPTANCE !== '1')('finishes a 
     'src/main/companions/topic-moderator-transfer.ts',
     'src/main/companions/game-contact-context.ts', 'src/main/companions/game-topic-privacy.ts', 'src/main/companions/game-goal-completion.ts',
     'src/main/companions/structured-agent.ts', 'src/main/companions/agent-kernel.ts', 'src/main/companions/agent-progress.ts',
+    'src/shared/companion-final-proposal.ts', 'src/main/companions/world-model.ts',
     'src/main/companions/activity-output-contract.ts',
     'src/companions/activity-task-store.ts', 'src/companions/world-store.ts', 'src/companions/social-goal-origin.ts',
     'src/shared/companion-activity-task.ts', 'src/shared/companion-topic.ts',

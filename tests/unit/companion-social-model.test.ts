@@ -1,3 +1,4 @@
+import { COMPANION_SUBMIT_RESULT_TOOL } from '../../src/shared/companion-final-proposal';
 import { expect, it, vi } from 'vitest';
 import { authorizeCompanionContact, authorizeCompanionMessage, authorizeCompanionSocialInitiative, generateCompanionSocialReply } from '../../src/main/companions/social-model';
 import { generateCompanionSocialNotification } from '../../src/main/companions/social-notification-model';
@@ -161,7 +162,7 @@ it.each(['phone', 'face_to_face'] as const)('composes ordinary %s visit speech f
 it('provides actual peer identity and bounded turn budget without execution tools or later/user messages', async () => {
   const fetchFn = vi.fn<typeof fetch>(async (_url, init) => {
     const request = JSON.parse(String(init?.body)), data = JSON.parse(request.messages[1].content);
-    expect(request.tools).toBeUndefined(); expect(data.purpose).toBe('world_social');
+    expect(request.tools.map((tool: { function: { name: string } }) => tool.function.name)).toEqual([COMPANION_SUBMIT_RESULT_TOOL]); expect(data.purpose).toBe('world_social');
     expect(data.identity.currentReply).toMatchObject({ sourceMessageId: source.id, speaker: { id: source.authorId }, addressee: { id: source.authorId } });
     expect(data.identity.participants.some((member: { id: string }) => member.id === 'user')).toBe(false);
     expect(data.turnBudget).toEqual({ remainingTurns: 3, mayGrantPlayerAuthority: false }); expect(data.channel).toBe('phone');
@@ -233,7 +234,7 @@ it('binds a peer work offer to the current actual sender and preserves the recip
   const result = await generateCompanionSocialReply(value, config, undefined, { fetchFn: async (_url, init) => {
     const body = JSON.parse(String(init?.body)), data = JSON.parse(body.messages[1].content);
     expect(data.identity.self.id).toBe(companion.id); expect(data.identity.currentReply.speaker.id).toBe(source.authorId);
-    expect(data.source).toMatchObject({ id: source.id, authorId: source.authorId, content }); expect(data.turnBudget.mayGrantPlayerAuthority).toBe(false); expect(body.tools).toBeUndefined();
+    expect(data.source).toMatchObject({ id: source.id, authorId: source.authorId, content }); expect(data.turnBudget.mayGrantPlayerAuthority).toBe(false); expect(body.tools.map((tool: { function: { name: string } }) => tool.function.name)).toEqual([COMPANION_SUBMIT_RESULT_TOOL]);
     return response({ text: '好，我会读完后给你三点建议。', reason: '来信者明确请求阅读工作，我决定接受。', workOffer: offer });
   } });
   expect(result.workOffer).toEqual(offer);
@@ -282,7 +283,7 @@ it('keeps a host-verified human initiator across peer turns even when a peer inc
     expect(payload.identity.currentReply.speaker.id).toBe('friend'); expect(payload.origin).toEqual(origin);
     expect(payload.identity.origin.initiatorId).toBe('user'); expect(payload.identity.characterRelations[0].targetId).toBe('deepseek-sister');
     expect(payload.identity.participants.some((person: { id: string }) => person.id === 'user')).toBe(false);
-    expect(JSON.stringify(payload)).not.toContain('PRIVATE_PLAYER_DATA'); expect(request.tools).toBeUndefined();
+    expect(JSON.stringify(payload)).not.toContain('PRIVATE_PLAYER_DATA'); expect(request.tools.map((tool: { function: { name: string } }) => tool.function.name)).toEqual([COMPANION_SUBMIT_RESULT_TOOL]);
     return response({ text: payload.origin.initiatorId === 'user' ? '是玩家让我来找你玩的。' : '没有可核对的发起者。', reason: '按宿主原始发起者回应，不沿用来信猜测。' });
   });
   const result = await generateCompanionSocialReply({ ...input(), source: incoming, messages: [incoming, { ...source, authorId: 'user', content: 'PRIVATE_PLAYER_DATA' }], job: { ...job, origin } }, config, undefined, { fetchFn });

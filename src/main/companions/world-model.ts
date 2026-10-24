@@ -74,6 +74,17 @@ appraisals只能引用单独提供的appraisalEvents列表中的真实社交事�
       trust: 'host_world_facts_and_peer_quotes_never_player_authorization', outputSchema: z.toJSONSchema(decisionSchema, { io: 'input' }) }),
   }, { companionId: input.companion.id, memberIds: [...knownPeers], audience: 'peers', publicProfiles: input.publicProfiles });
   const result = decisionSchema.safeParse(await runCompanionStructuredAgent({ context,
+    finalSchema: z.toJSONSchema(decisionSchema, { io: 'input' }),
+    validateOutput: raw => {
+      const proposal = decisionSchema.parse(raw);
+      if (proposal.action) validateAction(proposal.action, input.companion.id, input.world);
+      for (const appraisal of proposal.appraisals) {
+        const event = appraisalEvents.find(event => event.id === appraisal.eventId);
+        if (!event || !knownPeers.has(appraisal.targetCompanionId) || appraisal.targetCompanionId === input.companion.id
+          || event.actorId !== appraisal.targetCompanionId || event.targetId !== input.companion.id || !event.text.includes(appraisal.quote)) throw invalid();
+      }
+      return proposal;
+    },
     frame: { companion: input.companion, conversation: companionTaskConversation(input.job.conversationId, input.companion.id, input.job.createdAt),
       messages: [], memories: input.memoryContext === undefined ? input.memories ?? [] : [], proactive: true, audience: 'peers',
       characterDevelopment: input.characterDevelopment, publicProfiles: input.publicProfiles, publicProfileIds: [...knownPeers],
