@@ -1,7 +1,7 @@
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { afterEach, beforeEach, expect, it } from 'vitest';
+import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { CompanionsStore } from '../../src/companions/store';
 import type { CompanionMemory, CompanionMessage } from '../../src/shared/companions';
 import type { CompanionMemoryCandidate } from '../../src/shared/companion-memory';
@@ -53,6 +53,54 @@ it('withdraws the derivative when a source reached only through the dependency g
   store.request({ type: 'memory.forget', ...scope, sourceMessageIds: [b.source.id] });
   expect(() => read(merged.id)).toThrow();
   expect(active().map(note => note.id)).toEqual([a.memory.id]);
+});
+it.each(['A', 'B'] as const)('preserves the other original after source-only forget %s invalidates a merge carrying both sources and an expired archive outbox', forgottenSide => {
+  const a = note('昨日不适合运动。'), b = note('今天天气允许时可以散步，并非保证总能出门。'); index();
+  const forgotten = forgottenSide === 'A' ? a : b, survivor = forgottenSide === 'A' ? b : a;
+  const merged = store.request({ type: 'memory.consolidate', ...scope, operationId: 'merge_complete_sources',
+    inputs: [read(a.memory.id), read(b.memory.id)].map(memory => ({ id: memory.id, version: memory.version })),
+    candidate: { content: `${a.source.content}${b.source.content}`, tags: ['有条件认识'], sourceMessageIds: [a.source.id, b.source.id],
+      evidence: [a.source, b.source].map(source => ({ sourceMessageId: source.id, quote: source.content })) } }).memories![0]!;
+  expect(merged.sources.map(source => source.messageId).sort()).toEqual([a.source.id, b.source.id].sort());
+  const publish = store.request({ type: 'memory.outbox.claim' }).memoryOutbox!;
+  expect(publish).toMatchObject({ operation: 'remember', noteId: merged.id });
+  store.request({ type: 'memory.outbox.complete', id: publish.id, leaseToken: publish.leaseToken, indexed: true });
+  expect(active().map(memory => memory.id)).toEqual([merged.id]);
+  expect(read(survivor.memory.id).archivedAt).toBeDefined();
+  const now = Date.now(), clock = vi.spyOn(Date, 'now').mockReturnValue(now);
+  try {
+    let staleArchive: NonNullable<ReturnType<CompanionsStore['request']>['memoryOutbox']> | undefined;
+    for (let count = 0; count < 2; count++) {
+      const job = store.request({ type: 'memory.outbox.claim' }).memoryOutbox;
+      expect(job?.operation).toBe('forget');
+      if (job?.noteId === survivor.memory.id) { staleArchive = job; break; }
+      store.request({ type: 'memory.outbox.complete', id: job!.id, leaseToken: job!.leaseToken, indexed: true });
+    }
+    expect(staleArchive).toMatchObject({ operation: 'forget', noteId: survivor.memory.id, noteVersion: 1 });
+    store.request({ type: 'memory.forget', ...scope, sourceMessageIds: [forgotten.source.id] });
+    expect(() => read(forgotten.memory.id)).toThrow(); expect(() => read(merged.id)).toThrow();
+    expect(store.request({ type: 'memory.sources.filter', ...scope, ids: [forgotten.source.id] }).memorySources).toEqual([]);
+    expect(store.request({ type: 'memory.sources.filter', ...scope, ids: [survivor.source.id] }).memorySources).toEqual([survivor.source]);
+    expect(read(survivor.memory.id)).toMatchObject({ content: survivor.source.content, sources: [expect.objectContaining({ messageId: survivor.source.id })] });
+    expect(read(survivor.memory.id).archivedAt).toBeUndefined();
+    clock.mockReturnValue(now + 120001);
+    const dispatched: Array<{ id: string; noteId: string; operation: string }> = [];
+    for (let count = 0; count < 100; count++) {
+      const job = store.request({ type: 'memory.outbox.claim' }).memoryOutbox;
+      if (!job) continue;
+      dispatched.push({ id: job.id, noteId: job.noteId, operation: job.operation });
+      store.request({ type: 'memory.outbox.complete', id: job.id, leaseToken: job.leaseToken, indexed: true });
+    }
+    expect(dispatched.some(job => job.noteId === survivor.memory.id && job.operation === 'remember')).toBe(true);
+    expect(dispatched.some(job => job.id === staleArchive!.id || job.noteId === survivor.memory.id && job.operation === 'forget')).toBe(false);
+    expect(active().map(memory => memory.id)).toEqual([survivor.memory.id]);
+    expect(read(survivor.memory.id)).toMatchObject({ content: survivor.source.content, status: 'indexed' });
+    store.close(); store = new CompanionsStore(path.join(root, 'state.sqlite'), seeds); index();
+    expect(active().map(memory => memory.id)).toEqual([survivor.memory.id]);
+    expect(read(survivor.memory.id)).toMatchObject({ content: survivor.source.content, status: 'indexed' });
+    expect(store.request({ type: 'memory.sources.filter', ...scope, ids: [survivor.source.id] }).memorySources).toEqual([survivor.source]);
+    expect(() => read(forgotten.memory.id)).toThrow(); expect(() => read(merged.id)).toThrow();
+  } finally { clock.mockRestore(); }
 });
 it('does not resurrect omitted parent evidence when the merged entry itself is forgotten', () => {
   const a = note('昨日不适合运动。'), b = note('今天天气允许时可以散步。'); index();

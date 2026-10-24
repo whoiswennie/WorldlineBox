@@ -129,6 +129,14 @@ export class CompanionStateStore {
       state.focus = state.focus ? '处理已有安排' : undefined;
       state.sourceConversationId = undefined; state.sourceMessageIds = []; state.evidence = [];
     }
+    // Restored delivery fields can have different evidence from the current
+    // reason. Check the focus's own provenance before exposing it in a room.
+    const delivery = this.db.prepare('SELECT value FROM metadata WHERE key=?').get('state-delivery-origin/' + scope.companionId);
+    const focusIds = delivery ? decode<{ focus?: { sourceMessageIds: string[] } }>(row(delivery).value).focus?.sourceMessageIds ?? [] : [];
+    if (state.focus && focusIds.length) {
+      const focusSources = this.visibleSources(scope, focusIds);
+      if (focusSources.length !== focusIds.length || conversation.kind === 'group' && focusSources.some(source => source.conversationId !== scope.conversationId)) state.focus = '处理已有安排';
+    } else if (state.focus && conversation.kind === 'group' && !state.sourceConversationId) state.focus = '处理已有安排';
     if (conversation.kind === 'group') {
       const interactionCount = Number(row(this.db.prepare('SELECT count(*) AS n FROM companion_state_interactions WHERE companion_id=? AND conversation_id=?').get(scope.companionId, scope.conversationId)).n);
       const sharedEventCount = Number(row(this.db.prepare("SELECT count(*) AS n FROM companion_state_events WHERE companion_id=? AND conversation_id=? AND event_key GLOB 'experience:*'").get(scope.companionId, scope.conversationId)).n);
@@ -158,8 +166,8 @@ export class CompanionStateStore {
         }
       }
       this.changes.withdraw(companionId, sourceIds);
-      this.restoreDelivery(state, sourceIds);
       if ((state.sourceMessageIds ?? []).some(id => sourceIds.includes(id))) { state.focus = undefined; state.reason = undefined; state.evidence = []; state.sourceMessageIds = []; state.sourceConversationId = undefined; }
+      this.restoreDelivery(state, sourceIds);
       state.familiarity.stage = stage(state.familiarity.interactionCount, state.familiarity.sharedEventCount);
       state.mood = deriveCompanionMood(state.affect, state.energy, this.busy(companionId)); this.save(state);
     }).immediate();
@@ -214,10 +222,14 @@ export class CompanionStateStore {
     for (const field of ['expression', 'focus'] as const) {
       const origin = origins[field];
       if (!origin || !origin.sourceMessageIds.some(id => sourceIds.includes(id)) && !(origin.changeId && changeIds.includes(origin.changeId))) continue;
-      const value = this.changes.delivery({ companionId: state.companionId, conversationId: 'world_' + state.companionId }, field);
+      const restored = this.changes.delivery({ companionId: state.companionId, conversationId: 'world_' + state.companionId }, field);
+      const value = restored?.[field]?.after;
       if (field === 'expression') state.expression = value as CompanionRuntimeState['expression'] || 'gentle';
       else state.focus = value;
-      delete origins[field];
+      // A restored value still has evidence. Retain it so a later revocation
+      // can restore the next valid state instead of stranding a stale value.
+      if (restored) origins[field] = { sourceMessageIds: restored.sourceMessageIds, changeId: restored.id };
+      else delete origins[field];
     }
     this.db.prepare('UPDATE metadata SET value=? WHERE key=?').run(JSON.stringify({ ...origins, companionId: state.companionId }), key);
   }

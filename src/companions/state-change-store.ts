@@ -44,11 +44,11 @@ export class CompanionStateChangeStore {
   withdraw(owner: string, sourceIds: string[]): void {
     for (const source of sourceIds) this.db.prepare('UPDATE companion_state_changes SET active=0 WHERE companion_id=? AND id IN(SELECT change_id FROM companion_state_change_sources WHERE message_id=?)').run(owner, source);
   }
-  delivery(scope: Scope, field: 'expression' | 'focus'): string | undefined {
+  delivery(scope: Scope, field: 'expression' | 'focus'): CompanionStateChange | undefined {
     const found = this.db.prepare(`SELECT data FROM companion_state_changes WHERE companion_id=? AND active=1 AND json_type(data,'$.${field}')='object' ORDER BY applied_at DESC,rowid DESC LIMIT 30`).all(scope.companionId) as { data: string }[];
     for (const row of found) {
       const change = companionStateChangeSchema.parse(JSON.parse(row.data));
-      if (!change.sourceMessageIds.length || this.visible(scope, change.sourceMessageIds).length === change.sourceMessageIds.length) return change[field]?.after;
+      if (!change.sourceMessageIds.length || this.visible(scope, change.sourceMessageIds).length === change.sourceMessageIds.length) return change;
     }
     return undefined;
   }

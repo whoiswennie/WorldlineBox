@@ -551,7 +551,20 @@ export class CompanionMemoryStore {
             delete note.sourceMessageId;
             this.persist(note);
             this.enqueue(note, 'forget');
-            this.withdrawStateSources?.(note.companionId, sourceIds);
+            if (this.withdrawStateSources && sourceIds.length) {
+                // Retiring a derivative does not revoke its still-valid raw
+                // evidence. Its own state effects were withdrawn by version.
+                const scope = this.sources.ownerScope(note.companionId);
+                // Reset can remove the last entrance before journal cleanup.
+                // No entrance means no readable source; never recreate one.
+                const accessible = this.db.prepare(`SELECT 1 FROM companions p
+                  JOIN conversation_members m ON m.companion_id=p.id JOIN conversations c ON c.id=m.conversation_id
+                  WHERE p.id=? AND p.deleted_at IS NULL AND c.id=?
+                  AND NOT EXISTS(SELECT 1 FROM companion_reset_jobs j WHERE j.companion_id=p.id AND j.status!='completed')`).get(note.companionId, scope.conversationId);
+                const retained = new Set(accessible ? this.sources.filter(scope, sourceIds).map(source => source.id) : []);
+                const revoked = sourceIds.filter(id => !retained.has(id));
+                if (revoked.length) this.withdrawStateSources(note.companionId, revoked);
+            }
             this.invalidateDependents(id, visited);
         }).immediate();
     }
@@ -610,10 +623,14 @@ export class CompanionMemoryStore {
             if (command.requestMessageId && !this.sources.filter(command, [command.requestMessageId]).some(source => source.authorId === 'user'))
                 throw new Error('遗忘请求不是当前可见的用户来源。');
             const notes = this.list(command.companionId, true).filter(note => this.visible(command, note) && (command.id ? note.id === command.id : command.sourceMessageIds.length ? note.sources.some(source => command.sourceMessageIds.includes(source.messageId)) : note.tags.includes(command.tag!)));
-            const sourceIds = [...new Set([...command.sourceMessageIds, ...notes.flatMap(note => [
+            // A source selector revokes only the named sources. A matched merge
+            // may also contain unrelated evidence that must remain restorable.
+            // Note/tag selectors still revoke their full provenance graph.
+            const sourceOnly = !command.id && command.sourceMessageIds.length > 0;
+            const sourceIds = [...new Set([...command.sourceMessageIds, ...(sourceOnly ? [] : notes.flatMap(note => [
                 ...this.transitiveSourceIds(note),
                 ...rows(this.db.prepare('SELECT message_id FROM vcp_note_source_history WHERE note_id=?').all(note.id)).map(source => String(source.message_id)),
-            ])])];
+            ]))])];
             if (command.sourceMessageIds.length && this.sources.filter(command, command.sourceMessageIds).length !== command.sourceMessageIds.length)
                 throw new Error('遗忘来源不可访问。');
             this.sources.block(command.companionId, sourceIds);
