@@ -28,8 +28,9 @@ it.each(['current_possessed_count', 'total', 'planned', 'attributed', 'missing']
     extractSets: async context => { const wire = JSON.parse(context.user); purposes.push(wire.purpose);
       expect(wire.data.canon[0].quote).toBe(canon.entries[0]!.quote); return extractSets(); },
     extractClaims: async context => { const wire = JSON.parse(context.user); purposes.push(wire.purpose);
-      expect(wire.data.proposed).toEqual({ kind: 'reply', text: originalParagraph });
-      expect(wire.data.actualClauses.map((clause: { text: string }) => clause.text)).toEqual(base.clauses.map(clause => clause.text));
+      expect(wire.data.proposed).toBeUndefined();
+      const focusIndex = wire.data.authorLanes[0].logicalPair.clauseIndex;
+      expect(wire.data.authorLanes[0].window.map((clause: { text: string }) => clause.text)).toEqual(base.clauses.slice(Math.max(0, focusIndex - 1), focusIndex + 2).map(clause => clause.text));
       return { clauses: base.clauses.map(clause => ({ clauseIndex: clause.clauseIndex, quantities: clause.text.includes('口袋里的三把钥匙')
         ? [{ setIndex: 0, usage: warmUsage, numberIndexes: [0] }] : [] })) }; },
     verifyRoles: async context => { const wire = JSON.parse(context.user); purposes.push(wire.purpose);

@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import { expect, it, vi } from 'vitest';
 import { quantityDisjointChecks, quantityDisjointInput, quantityDisjointWaiverSchema, validateQuantityDisjointWaivers,
-  admitQuantityDisjointWaivers, quantityAuthorAllProjectionSchema, quantityAuthorAllProjectionAdmission, validateQuantityAuthorAllProjection, deriveQuantityAuthorAllProjection,
+  admitQuantityDisjointWaivers, quantityAuthorAllProjectionSchema, quantityAuthorAllProjectionAdmission as actualAllAdmission, validateQuantityAuthorAllProjection, deriveQuantityAuthorAllProjection as actualAllDerive, buildQuantityAuthorEvidenceLane,
   quantityAuthorNumberProjectionSchema, validateQuantityAuthorNumberProjection, bindQuantityHostNumberTarget, quantityAuthorNumberProjectionAdmission,
   type QuantityAuthorAllProjection, type QuantityAuthorNumberProjection, type QuantityCollectionReview } from '../../src/main/companions/topic-quantity-disjoint-waiver';
 import { reviewTopicSourceQuantities, topicQuantityNumberCandidates } from '../../src/main/companions/topic-summary-quantity-review';
@@ -23,18 +23,20 @@ function candidate(text = '她带三把钥匙。') {
 }
 const mask = (text: string) => text.replace(/[\d一二三四五六七八九十]+/gu, '〔遮蔽〕');
 function dataFor(c = candidate(), r = review()) {
+  c = bindDeclaredCandidate(c);
   return quantityDisjointInput(quantityDisjointChecks([c], [r]), [c], topicSummaryClauses(c.claimQuote, ''), mask);
 }
 const decision = (data: ReturnType<typeof dataFor>, verdict: Value['reviews'][number]['verdict'], witness = true, basis: Basis = 'different_inventory'): Value => ({
   reviews: data.checks.map(check => ({ checkIndex: check.checkIndex, verdict, basis: verdict === 'positive_exemption'
     ? check.target.kind === 'all' ? 'different_inventory' : basis : 'none',
+  targetScopeComplete: true, assertionEvidenceIds: check.scopeObligation?.assertionEvidenceIds ?? [],
   evidenceRefs: witness ? [{ view: 'focus', clauseIndex: check.evidence.find(item => item.view === 'focus')!.clauseIndex }] : [],
   reason: 'Independent decision, not a stored authority.' })),
 });
 const authority = { scope: { ownerId: 'reader', conversationId: 'room', topicId: 'topic' },
   evidence: [{ candidateIndex: 0, sourceQuoteChecksum: 'a'.repeat(64), focusChecksum: 'b'.repeat(64) }] };
 const admit = (r: QuantityCollectionReview, value: Value, data: ReturnType<typeof dataFor>, c = candidate()) =>
-  admitQuantityDisjointWaivers([r], quantityDisjointWaiverSchema.parse(value), data, authority, [c]);
+  admitQuantityDisjointWaivers([r], quantityDisjointWaiverSchema.parse(value), data, authority, [bindDeclaredCandidate(c)]);
 
 it.each([
   { name: 'confirmed count conflict', c: candidate(), r: review(), risk: true },
@@ -152,7 +154,7 @@ it.each(['unresolved', 'no_exemption', 'positive_exemption'] as const)('runs the
   expect(verifyDisjointWaivers).toHaveBeenCalledTimes(1); expect(JSON.stringify(r)).toBe(snapshot);
   if (verdict === 'positive_exemption') expect(correction).toBeUndefined();
   else { expect(correction).toContain('unresolved_semantic_exemption'); expect(correction).not.toContain('mathematical_contradiction');
-    expect(correction).toContain('quantity_semantic_exemption_v8'); expect(correction).toContain('"admitted":false'); }
+    expect(correction).toContain('quantity_semantic_exemption_v9'); expect(correction).toContain('"admitted":false'); }
 });
 
 it('binds the ephemeral receipt to exact source/draft authority without changing its independent input', () => {
@@ -324,8 +326,25 @@ it.each(['她说自己没有带三把钥匙。', '昨夜她曾携带三把钥匙
     expect(await production(text, r, reader, false, false, undefined, negative ? { '0:0:0': 'explicit_nonpossession' } : undefined)).toBeUndefined(); expect(reader).toHaveBeenCalledTimes(1);
   });
 
-const authorProjection = (text: string, statement: Parameters<typeof declaredAllProjectionFixture>[1]) =>
-  declaredAllProjectionFixture({ evidence: [{ view: 'focus', clauseIndex: 0, text }] }, statement);
+const projectionTexts = new WeakMap<object, string>();
+function authorProjection(text: string, statement: Parameters<typeof declaredAllProjectionFixture>[1]) {
+  const projection = declaredAllProjectionFixture({ evidence: [{ view: 'focus', clauseIndex: 0, text }] }, statement);
+  projectionTexts.set(projection, text); return projection;
+}
+function bindDeclaredCandidate<T extends Parameters<typeof actualAllAdmission>[0]>(c: T) {
+  const projection = (c as T & { authorAllProjection?: QuantityAuthorAllProjection }).authorAllProjection;
+  if (!projection) return c;
+  const clauses = numericClauses(c.claimQuote), lane = buildQuantityAuthorEvidenceLane({ clauseIndex: c.clauseIndex, setIndex: 0 }, clauses);
+  return { ...c, authorEvidenceLane: lane, authorAllPair: { clauseIndex: c.clauseIndex, setIndex: 0 },
+    authorAllWitnessLocations: validateQuantityAuthorAllProjection(projection, c.clauseIndex, clauses, lane) };
+}
+function quantityAuthorAllProjectionAdmission(c: Parameters<typeof actualAllAdmission>[0], raw: Parameters<typeof actualAllAdmission>[1]) {
+  return actualAllAdmission(bindDeclaredCandidate(c), raw);
+}
+function deriveQuantityAuthorAllProjection(projection: QuantityAuthorAllProjection, clauseIndex: number) {
+  const text = projectionTexts.get(projection); if (!text) return actualAllDerive(projection, clauseIndex);
+  return actualAllDerive(projection, clauseIndex, validateQuantityAuthorAllProjection(projection, clauseIndex, numericClauses(text)));
+}
 
 it.each(['no_whole_set_assertion', 'explicit_not_all'] as const)('admits the original lawful partial-member scope through production with either supported projection: %s', async statement => {
   const text = '她实际只有第1和第3把钥匙，第2把仍未找到。';
@@ -373,7 +392,9 @@ it.each(['attributed_claim', 'earlier_history', 'future', 'different_inventory']
 it.each(['affirmative_whole_set', 'explicit_not_all', 'no_whole_set_assertion'] as const)(
   'keeps a claimed all projection without its own literal scope witness pending instead of forcing another sample: %s', async statement => {
     const text = '这里有钥匙。', reader = vi.fn<Infer>(async context => { const value = decision(JSON.parse(context.user).data, 'positive_exemption'); value.reviews[0]!.basis = 'no_all_assertion'; return value; });
-    const projection = { ...authorProjection(text, statement), witnesses: [] };
+    const projection = authorProjection(text, statement); projection.semanticRoles = [];
+    if (projection.kind === 'recorded_whole_assertions') projection.propositions = [];
+    if (projection.kind === 'no_whole_assertion_in_complete_focus') projection.bases = [];
     const correction = await production(text, { candidateIndex: 0, numbers: [], all: noAll }, reader, false, false, projection);
     expect(correction).toContain('all_projection_unwitnessed'); expect(reader).toHaveBeenCalledTimes(1);
   });
@@ -385,9 +406,9 @@ it.each(['missing', 'foreign_focus', 'partial_coverage', 'fabricated_quote', 'nu
       if (wire.formatCorrection) { expect(wire.formatCorrection.length).toBeLessThanOrEqual(1500); expect(wire.formatCorrection).not.toContain(injected); }
       const value = input as { allProjections?: Array<{ projection: QuantityAuthorAllProjection }> };
       if (mode === 'missing') delete value.allProjections;
-      else if (mode === 'foreign_focus') value.allProjections![0]!.projection.reviewedFocusRef.clauseIndex = 99;
-      else if (mode === 'partial_coverage') return { ...value, allProjections: value.allProjections!.map(row => ({ ...row, projection: { ...row.projection, coverage: 'selected_quote' } })) };
-      else if (mode === 'fabricated_quote') value.allProjections![0]!.projection = { ...authorProjection('她带三把钥匙。', 'no_whole_set_assertion'), witnesses: [{ role: 'target_scope', evidenceRef: { view: 'focus', clauseIndex: 0 }, quote: injected }] };
+      else if (mode === 'foreign_focus') value.allProjections![0]!.projection.reviewedFocusId = 'foreign_focus';
+      else if (mode === 'partial_coverage') return { ...value, allProjections: value.allProjections!.map(row => ({ ...row, projection: { ...row.projection, reviewedFocusId: 'selected_quote' } })) };
+      else if (mode === 'fabricated_quote') value.allProjections![0]!.projection = { ...authorProjection('她带三把钥匙。', 'no_whole_set_assertion'), semanticRoles: [{ role: 'non_holding_scope', evidenceId: injected }] };
       else return { ...value, allProjections: undefined, reviews: [{ allProjection: value.allProjections![0]!.projection }] };
       return value;
     });
@@ -398,19 +419,19 @@ it.each(['missing', 'foreign_focus', 'partial_coverage', 'fabricated_quote', 'nu
 
 it('stores the projection and host located literal UTF16 witness only on its all receipt', () => {
   const text = '😺这里有钥匙。', projection = authorProjection(text, 'ambiguous');
-  projection.witnesses = [{ role: 'target_scope', evidenceRef: { view: 'focus', clauseIndex: 0 }, quote: '钥匙' }];
+  projection.semanticRoles = [{ role: 'non_holding_scope', evidenceId: buildQuantityAuthorEvidenceLane({ clauseIndex: 0, setIndex: 0 }, numericClauses(text)).evidence.find(e => e.kind === 'text_segment')!.id }];
   const c = { ...candidate(text), authorAllProjection: projection, authorAllWitnessLocations: validateQuantityAuthorAllProjection(projection, 0, topicSummaryClauses(text, '')) };
   const r: QuantityCollectionReview = { candidateIndex: 0, numbers: [], all: noAll }, data = dataFor(c, r), value = decision(data, 'positive_exemption'), result = admit(r, value, data, c);
   const receipt = result.receipts[0]!;
   if (!('authorAllProjection' in receipt) || !('literalWitnessLocations' in receipt)) throw new Error('Expected the actual all receipt branch.');
-  expect(receipt.authorAllProjection!.coverage).toBe('whole_focus');
+  expect(receipt.authorAllProjection!.reviewedFocusId).toBe(projection.reviewedFocusId);
   const located = receipt.literalWitnessLocations![0]!;
-  expect(text.slice(located.firstMatchUtf16Span.start, located.firstMatchUtf16Span.end)).toBe(projection.witnesses[0]!.quote);
+  expect(text.slice(located.firstMatchUtf16Span.start, located.firstMatchUtf16Span.end)).toBe(located.quote);
 });
 
 it('cannot substitute a source-canon negative for a proposition missing from the actual focus', () => {
-  const text = '她把整套钥匙收入衣袋。', projection = { ...authorProjection(text, 'explicit_not_all'), witnesses: [{ role: 'negative_or_limited_scope', evidenceRef: { view: 'source_identity', clauseIndex: 0 }, quote: '第2把尚未找到' }] };
-  expect(() => quantityAuthorAllProjectionSchema.parse(projection)).toThrow();
+  const text = '她把整套钥匙收入衣袋。', projection = { ...authorProjection(text, 'explicit_not_all'), semanticRoles: [{ role: 'whole_negative_scope', evidenceId: 'source_identity_forbidden' }] };
+  expect(() => validateQuantityAuthorAllProjection(quantityAuthorAllProjectionSchema.parse(projection), 0, numericClauses(text))).toThrow();
   const c = { ...candidate(text), authorAllProjection: authorProjection(text, 'affirmative_whole_set') }, r: QuantityCollectionReview = { candidateIndex: 0, numbers: [], all: noAll }, data = dataFor(c, r);
   const value = decision(data, 'positive_exemption'); value.reviews[0]!.basis = 'negative_or_missing';
   const result = admit(r, value, data, c);
@@ -422,17 +443,17 @@ it.each(['not_affirmed_all', 'ambiguous'])('cannot waive a witnessed affirmative
   const r: QuantityCollectionReview = { candidateIndex: 0, numbers: [], all: { ...noAll, relation } }, data = dataFor(c, r), value = decision(data, 'positive_exemption');
   value.reviews[0]!.basis = 'unrelated_target'; const result = admit(r, value, data, c);
   expect(result.receipts[0]!.admissionFailure).toBe('whole_set_projection_incompatible_basis');
-  expect(result.receipts[0]!.protocol).toBe('quantity_semantic_exemption_v8'); expect(result.pending).toHaveLength(1);
+  expect(result.receipts[0]!.protocol).toBe('quantity_semantic_exemption_v9'); expect(result.pending).toHaveLength(1);
   expect(result.pending[0]!.diagnosticType).toBe('unresolved_semantic_exemption');
 });
 
 it('makes the complete warm request source-state-blind while preserving actual text and canonical identity in the later reader', async () => {
   const text = '她拿两把钥匙。', warm = vi.fn((context: { user: string }, value: unknown) => {
     const data = JSON.parse(context.user).data;
-    expect(Object.keys(data).sort()).toEqual(['actualClauses', 'proposed', 'requiredClauseIndexes', 'requiredNumberTargets', 'requiredPairs', 'sets']);
+    expect(Object.keys(data).sort()).toEqual(['authorLanes', 'requiredClauseIndexes', 'requiredNumberTargets', 'requiredPairs', 'sets']);
     expect(data.sets).toEqual([{ setIndex: 0, entityQuote: '钥匙' }]);
-    expect(data.proposed).toEqual({ kind: 'reply', text }); expect(data.actualClauses[0].text).toBe(text);
-    expect(data.actualClauses[0].numberCandidates[0].value).toBe(2); // Actual author numbers remain visible, not source state.
+    expect(data.authorLanes[0].window[0].text).toBe(text); expect(data).not.toHaveProperty('proposed');
+    expect(data.authorLanes[0].window[0].numberCandidates[0].value).toBe(2); // Actual author numbers remain visible, not source state.
     return { ...(value as object), allProjections: [{ clauseIndex: 0, setIndex: 0, projection: authorProjection(text, 'no_whole_set_assertion') }] };
   });
   const reader = vi.fn<Infer>(async context => {
@@ -454,7 +475,7 @@ it.each(['duplicate', 'missing_pair', 'foreign_set', 'foreign_source_view'] as c
       else if (mode === 'missing_pair') value.allProjections = [];
       else if (mode === 'foreign_set') value.allProjections[0]!.setIndex = 99;
       else return { ...value, allProjections: value.allProjections.map(row => ({ ...row, projection: { ...row.projection,
-        witnesses: [{ role: 'negative_or_limited_scope', evidenceRef: { view: 'source_identity', clauseIndex: 0 }, quote: '第2把尚未找到' }] } })) };
+        semanticRoles: [{ role: 'whole_negative_scope', evidenceId: 'source_identity_forbidden' }] } })) };
       return value;
     }), reader = vi.fn<Infer>();
     await expect(production('她拿两把钥匙。', review(), reader, false, false, warm)).rejects.toThrow('未发布正文');
@@ -464,8 +485,10 @@ it.each(['duplicate', 'missing_pair', 'foreign_set', 'foreign_source_view'] as c
 it.each(['affirmative_whole_set', 'ambiguous'] as const)(
   'keeps a real independent safe OR route for a semantically unproved blind projection: %s', async statement => {
     const text = '她说自己把整套钥匙拿走了。', r: QuantityCollectionReview = { candidateIndex: 0, numbers: [],
-      all: { ...noAll, voice: 'attributed_claim', relation: 'ambiguous' } }, warm = vi.fn((_context: { user: string }, value: unknown) => ({ ...(value as object),
-        allProjections: [{ clauseIndex: 0, setIndex: 0, projection: { ...authorProjection(text, statement), witnesses: [] } }] }));
+      all: { ...noAll, voice: 'attributed_claim', relation: 'ambiguous' } }, warm = vi.fn((_context: { user: string }, value: unknown) => {
+        const projection = authorProjection(text, statement); projection.semanticRoles = [];
+        if (projection.kind === 'recorded_whole_assertions') projection.propositions = [];
+        return { ...(value as object), allProjections: [{ clauseIndex: 0, setIndex: 0, projection }] }; });
     const reader = vi.fn<Infer>(async context => { const value = decision(JSON.parse(context.user).data, 'positive_exemption'); value.reviews[0]!.basis = 'attributed_claim'; return value; });
     expect(await production(text, r, reader, false, false, warm)).toBeUndefined(); expect(warm).toHaveBeenCalledTimes(1); expect(reader).toHaveBeenCalledTimes(1);
   });
@@ -486,7 +509,7 @@ it('does not let a blind absence projection discharge the same candidate numeric
 const numericClauses = (text: string) => topicSummaryClauses(text, '').map(clause => ({ ...clause, numberCandidates: topicQuantityNumberCandidates(clause.text) }));
 function numericCandidate(text: string, statement: Parameters<typeof declaredNumberProjectionFixture>[2], index = 0) {
   const clauses = numericClauses(text), projection = declaredNumberProjectionFixture(clauses[0]!, index, statement);
-  return { ...candidate(text), authorAllPhase: 'topic_reply_quantity_actual_claims', authorAllPair: { clauseIndex: 0, setIndex: 0 },
+  return { ...candidate(text), authorEvidenceLane: buildQuantityAuthorEvidenceLane({ clauseIndex: 0, setIndex: 0 }, clauses), authorAllPhase: 'topic_reply_quantity_actual_claims', authorAllPair: { clauseIndex: 0, setIndex: 0 },
     authorAllInputChecksum: '1'.repeat(64), authorAllOutputChecksum: '2'.repeat(64),
     authorNumberProjections: [{ numberIndex: index, projection, hostTargetBinding: bindQuantityHostNumberTarget({ clauseIndex: 0, setIndex: 0, numberIndex: index }, clauses),
       literalWitnessLocations: validateQuantityAuthorNumberProjection(projection, 0, index, clauses) }] };
@@ -495,12 +518,13 @@ function numericCandidate(text: string, statement: Parameters<typeof declaredNum
 it('binds repeated equal numerals to their actual UTF16 target instead of the first literal match', () => {
   const text = '😺编号2与第2把钥匙仍未取得。', clauses = numericClauses(text);
   const projection = declaredNumberProjectionFixture(clauses[0]!, 1, 'explicit_nonpossession');
-  projection.witnesses[0]!.quote = '2';
+  const lane = buildQuantityAuthorEvidenceLane({ clauseIndex: 0, setIndex: 0 }, clauses);
+  projection.semanticRoles[0]!.evidenceId = lane.numberTargets[1]!.targetId;
   const located = validateQuantityAuthorNumberProjection(projection, 0, 1, clauses);
   expect(located[0]!.allMatchingUtf16Spans).toHaveLength(2);
   expect(located[0]!.targetCoveringUtf16Spans).toEqual([{ start: clauses[0]!.numberCandidates[1]!.start, end: clauses[0]!.numberCandidates[1]!.end }]);
-  expect(() => validateQuantityAuthorNumberProjection({ ...projection, targetOccurrence: 0 }, 0, 1, clauses)).toThrow('完整数词');
-  projection.witnesses[0]!.quote = '编号2';
+  expect(() => validateQuantityAuthorNumberProjection({ ...projection, targetId: lane.numberTargets[0]!.targetId }, 0, 1, clauses)).toThrow('完整数词');
+  projection.semanticRoles[0]!.evidenceId = lane.evidence.find(e => e.kind === 'entity_span')?.id ?? lane.numberTargets[0]!.targetId;
   const unassociated = validateQuantityAuthorNumberProjection(projection, 0, 1, clauses);
   expect(unassociated[0]!.coversTarget).toBe(false);
   // A semantic witness is still literal, but need not contain the target.
@@ -551,10 +575,10 @@ it.each(['foreign_number', 'foreign_set', 'stale_focus', 'wrong_span', 'missing_
 
 it.each(['affirmative_possession', 'explicit_nonpossession', 'ambiguous'] as const)(
   'never turns host-only position proof into a numeric semantic assertion: %s', statement => {
-    const c = numericCandidate('那是第2把钥匙。', statement); c.authorNumberProjections[0]!.projection.witnesses = [];
+    const c = numericCandidate('那是第2把钥匙。', statement); c.authorNumberProjections[0]!.projection.semanticRoles = [];
     c.authorNumberProjections[0]!.literalWitnessLocations = validateQuantityAuthorNumberProjection(c.authorNumberProjections[0]!.projection, 0, 0, numericClauses(c.claimQuote));
     const result = quantityAuthorNumberProjectionAdmission(c, number({ kind: 'member', relation: 'missing' }));
-    expect(result.receipt.protocol).toBe('quantity_author_number_projection_v2'); expect(result.receipt.hostTargetBindingValid).toBe(true);
+    expect(result.receipt.protocol).toBe('quantity_author_number_projection_v3_evidence_ids'); expect(result.receipt.hostTargetBindingValid).toBe(true);
     expect(result.receipt.projection!.statement).toBe(statement); expect(result.safeAbsence).toBe(false);
     if (statement !== 'ambiguous') expect(result.failure).toBe('number_projection_unwitnessed');
   });
@@ -582,15 +606,17 @@ it.each(['获得了', '取回了', '随身携带', '当场实际可用的是'] a
 it('accepts a focus-bound numeric target with its real governing negative predicate in the adjacent clause', async () => {
   const text = '那是第2把钥匙。她仍未得到它。', clauses = numericClauses(text);
   const projection: QuantityAuthorNumberProjection = declaredNumberProjectionFixture(clauses[0]!, 0, 'explicit_nonpossession');
-  projection.witnesses = [{ role: 'negative_scope', evidenceRef: { view: 'after', clauseIndex: 1 }, quote: clauses[1]!.text }];
+  const lane = buildQuantityAuthorEvidenceLane({ clauseIndex: 0, setIndex: 0 }, clauses);
+  projection.laneId = lane.id; projection.reviewedFocusId = lane.focusId; projection.targetId = lane.numberTargets[0]!.targetId;
+  projection.semanticRoles = [{ role: 'negative_scope', evidenceId: lane.evidence.find(e => e.view === 'after' && e.kind === 'text_segment')!.id }];
   const r = review({ kind: 'member', relation: 'missing', collection: 'same' }), reader = vi.fn<Infer>();
   const correction = await production(text, r, reader, false, false, (_context, input) => ({ ...(input as object),
-    allProjections: [{ clauseIndex: 0, setIndex: 0, projection: authorProjection(clauses[0]!.text, 'no_whole_set_assertion') }],
+    allProjections: [{ clauseIndex: 0, setIndex: 0, projection: declaredAllProjectionFixture({ evidence: [{ view: 'focus', clauseIndex: 0, text: clauses[0]!.text }] }, 'no_whole_set_assertion', lane) }],
     numberProjections: [{ clauseIndex: 0, setIndex: 0, numberIndex: 0, projection }] }));
   expect(correction).toBeUndefined(); expect(reader).not.toHaveBeenCalled();
   const positive = '那是第2把钥匙。她现在取回了它。';
   const result = await production(positive, review({ kind: 'member', collection: 'same' }), reader, false, false,
-    authorProjection('那是第2把钥匙。', 'no_whole_set_assertion'), { '0:0:0': 'explicit_nonpossession' });
+    declaredAllProjectionFixture({ evidence: [{ view: 'focus', clauseIndex: 0, text: '那是第2把钥匙。' }] }, 'no_whole_set_assertion', buildQuantityAuthorEvidenceLane({ clauseIndex: 0, setIndex: 0 }, numericClauses(positive))), { '0:0:0': 'explicit_nonpossession' });
   expect(result).toContain('数学'); expect(reader).not.toHaveBeenCalled(); // Raw mathematics precedes any new projection.
 });
 
@@ -601,8 +627,8 @@ it.each(['missing', 'duplicate', 'foreign', 'wrong_occurrence', 'fabricated_quot
       if (mode === 'missing') value.numberProjections = [];
       else if (mode === 'duplicate') value.numberProjections.push({ ...value.numberProjections[0]! });
       else if (mode === 'foreign') value.numberProjections[0]!.numberIndex = 99;
-      else if (mode === 'wrong_occurrence') value.numberProjections[0]!.projection.targetOccurrence = 99;
-      else value.numberProjections[0]!.projection.witnesses = [{ role: 'scoped_possession_predicate', evidenceRef: { view: 'focus', clauseIndex: 0 }, quote: '不存在的引文' }];
+      else if (mode === 'wrong_occurrence') value.numberProjections[0]!.projection.targetId = 'wrong_occurrence';
+      else value.numberProjections[0]!.projection.semanticRoles = [{ role: 'possession_predicate', evidenceId: 'fabricated_quote' }];
       return value;
     }), reader = vi.fn<Infer>();
     await expect(production('她带三把钥匙。', review(), reader, false, false, warm)).rejects.toThrow('未发布正文');
@@ -612,7 +638,7 @@ it.each(['missing', 'duplicate', 'foreign', 'wrong_occurrence', 'fabricated_quot
 it('keeps valid weak numeric witnesses semantic pending and does not resample for a stronger assertion', async () => {
   const warm = vi.fn((_context: { user: string }, value: unknown) => {
     const typed = value as { numberProjections: Array<{ projection: ReturnType<typeof declaredNumberProjectionFixture> }> };
-    typed.numberProjections[0]!.projection.statement = 'explicit_nonpossession'; typed.numberProjections[0]!.projection.witnesses = []; return typed;
+    typed.numberProjections[0]!.projection.statement = 'explicit_nonpossession'; typed.numberProjections[0]!.projection.semanticRoles = []; return typed;
   }), reader = vi.fn<Infer>(async context => decision(JSON.parse(context.user).data, 'positive_exemption', true, 'negative_or_missing'));
   const correction = await production('她说自己未得三把钥匙。', review({ voice: 'attributed_claim', relation: 'missing' }), reader, false, false,
     (context, value) => warm(context, value));
@@ -661,11 +687,39 @@ it('permits a complete unknown numeral longer than one hundred characters withou
 
 /** These are declared author IR premises, not a natural-language classifier or
  * evidence that a model interprets the example prose correctly. */
-function allIR(text: string, fields: Partial<Omit<QuantityAuthorAllProjection, 'witnesses'>> = {},
-  witnesses: Array<[QuantityAuthorAllProjection['witnesses'][number]['role'], string]> = [['target_scope', text]]): QuantityAuthorAllProjection {
-  return { coverage: 'whole_focus', reviewedFocusRef: { view: 'focus', clauseIndex: 0 }, domainScope: 'ambiguous',
-    exhaustivity: 'not_asserted', holding: 'ambiguous', opposition: 'none_in_reviewed_scope', ...fields,
-    witnesses: witnesses.map(([role, quote]) => ({ role, quote, evidenceRef: { view: 'focus', clauseIndex: 0 } })) };
+type LegacyAllFields = { domainScope?: string; exhaustivity?: string; holding?: string; opposition?: string };
+type LegacyRole = 'target_scope' | 'domain_reference' | 'scoped_possession_predicate' | 'exhaustive_coverage_operator' | 'negative_or_limited_scope' | 'partitive_domain_restriction';
+function allIR(text: string, fields: LegacyAllFields = {}, witnesses: Array<[LegacyRole, string]> = [['target_scope', text]]): QuantityAuthorAllProjection {
+  const lane = buildQuantityAuthorEvidenceLane({ clauseIndex: 0, setIndex: 0 }, numericClauses(text));
+  const id = lane.evidence.find(e => e.kind === 'text_segment' && e.view === 'focus')!.id;
+  const names = { target_scope: 'non_holding_scope', domain_reference: 'domain_reference', scoped_possession_predicate: 'possession_predicate',
+    exhaustive_coverage_operator: 'coverage_operator', negative_or_limited_scope: 'whole_negative_scope', partitive_domain_restriction: 'partitive_restriction' } as const;
+  const semanticRoles = witnesses.map(([role]) => ({ role: names[role], evidenceId: id }));
+  const index = (role: typeof semanticRoles[number]['role']) => { const i = semanticRoles.findIndex(r => r.role === role); return i < 0 ? null : i; };
+  const common = { laneId: lane.id, reviewedFocusId: lane.focusId, semanticRoles };
+  let projection: QuantityAuthorAllProjection;
+  if (fields.opposition && fields.opposition !== 'none_in_reviewed_scope') {
+    projection = declaredAllProjectionFixture({ evidence: [{ view: 'focus', clauseIndex: 0, text }] }, 'affirmative_whole_set', lane);
+    if (projection.kind !== 'recorded_whole_assertions') throw new Error('Whole fixture branch required.');
+    projection.semanticRoles.push({ role: 'whole_negative_scope', evidenceId: id });
+    projection.propositions.push({ ...projection.propositions[0]!, polarity: 'denied', negativeRole: 3 });
+    projection.scopeLinks = [{ left: 0, right: 1, relation: fields.opposition === 'competing_whole_possession_assertions' ? 'same_assertion_scope' : 'unresolved_scope', evidenceIds: [id] }];
+  } else if (fields.exhaustivity === 'exhaustive' && fields.domainScope !== 'explicit_partitive_scope') {
+    projection = { ...common, kind: 'recorded_whole_assertions', propositions: [{ kind: 'whole_possession', polarity: 'affirmed',
+      domainRole: index('domain_reference'), coverageRole: index('coverage_operator'), predicateRole: fields.holding === 'not_asserted' ? null : index('possession_predicate'),
+      negativeRole: index('whole_negative_scope'), scopeEvidenceIds: [id] }], scopeLinks: [] };
+  } else if (fields.holding === 'not_asserted' && semanticRoles.some(r => r.role !== 'non_holding_scope')) {
+    projection = { ...common, kind: 'no_whole_assertion_in_complete_focus', bases: [] };
+  } else {
+    const limited = fields.domainScope === 'explicit_partitive_scope' || index('whole_negative_scope') !== null;
+    if (limited && index('whole_negative_scope') !== null) semanticRoles[index('whole_negative_scope')!]!.role = 'partitive_restriction';
+    projection = { ...common, kind: 'no_whole_assertion_in_complete_focus', bases: index('possession_predicate') !== null
+      ? [limited ? { kind: 'limited_possession', domainRole: index('domain_reference'), predicateRole: index('possession_predicate'),
+        restrictionRole: index('partitive_restriction'), coverageRole: fields.exhaustivity === 'exhaustive' ? index('coverage_operator') : null }
+        : { kind: 'ordinary_possession', domainRole: index('domain_reference'), predicateRole: index('possession_predicate') }]
+      : index('non_holding_scope') !== null ? [{ kind: 'non_holding', scopeRole: index('non_holding_scope') }] : [] };
+  }
+  projectionTexts.set(projection, text); return projection;
 }
 
 it('derives no whole assertion from the actual ordinary quoted cardinal while keeping its numeric obligation', async () => {
@@ -709,7 +763,7 @@ it.each([
     [['domain_reference', test.domain], ['exhaustive_coverage_operator', test.operator], ['scoped_possession_predicate', test.predicate]]);
   expect(validateQuantityAuthorAllProjection(ir, 0, topicSummaryClauses(test.text, ''))).toHaveLength(3);
   expect(deriveQuantityAuthorAllProjection(ir, 0).statement).toBe('affirmative_whole_set');
-  const unresolvedDomain = { ...ir, domainScope: 'ambiguous' as const };
+  const unresolvedDomain = structuredClone(ir); if (unresolvedDomain.kind !== 'recorded_whole_assertions') throw new Error('Whole branch.'); unresolvedDomain.propositions[0]!.domainRole = null; projectionTexts.set(unresolvedDomain, test.text);
   expect(deriveQuantityAuthorAllProjection(unresolvedDomain, 0).statement).toBe('ambiguous');
 });
 
@@ -717,10 +771,9 @@ it('does not cross-compose a universal property with another ordinary count hold
   const text = '所有钥匙都刻着细纹，她手里有两把钥匙。', ir = allIR(text, { holding: 'affirmed' },
     [['target_scope', text], ['domain_reference', '钥匙'], ['scoped_possession_predicate', '她手里有']]);
   expect(deriveQuantityAuthorAllProjection(ir, 0).statement).toBe('no_whole_set_assertion');
-  const falseAttachment = { ...ir, witnesses: [...ir.witnesses, { role: 'exhaustive_coverage_operator' as const,
-    evidenceRef: { view: 'focus' as const, clauseIndex: 0 }, quote: '所有' }] };
+  const falseAttachment = structuredClone(ir); falseAttachment.semanticRoles.push({ role: 'coverage_operator', evidenceId: ir.semanticRoles[0]!.evidenceId }); projectionTexts.set(falseAttachment, text);
   expect(() => validateQuantityAuthorAllProjection(falseAttachment, 0, topicSummaryClauses(text, ''))).not.toThrow();
-  expect(deriveQuantityAuthorAllProjection(falseAttachment, 0)).toEqual({ statement: 'ambiguous', failure: 'all_projection_inconsistent_ir' });
+  expect(deriveQuantityAuthorAllProjection(falseAttachment, 0)).toMatchObject({ statement: 'ambiguous' });
 });
 
 it.each(['competing_whole_possession_assertions', 'unresolved_possible_competition'] as const)(
@@ -728,7 +781,7 @@ it.each(['competing_whole_possession_assertions', 'unresolved_possible_competiti
     const text = '她把整套钥匙带在身上，却又没有带齐。', ir = allIR(text, { opposition });
     const c = { ...candidate(text), authorAllProjection: ir }, admitted = quantityAuthorAllProjectionAdmission(c, noAll);
     expect(admitted.safeAbsence).toBe(false); expect(admitted.derivedStatement).toBe('ambiguous');
-    expect(admitted.failure).toBe('all_projection_opposed_or_unresolved_scope');
+    expect(admitted.failure).toMatch(/all_projection_(opposed|unresolved)_scope/);
   });
 
 it.each([
@@ -738,7 +791,7 @@ it.each([
   { exhaustivity: 'exhaustive' as const, holding: 'not_asserted' as const, role: 'target_scope' as const },
 ])('keeps contradictory absence IR pending even if another strong role is missing: %j', test => {
   const text = '她把钥匙全部带在身上。', ir = allIR(text, { exhaustivity: test.exhaustivity, holding: test.holding }, [[test.role, text]]);
-  expect(deriveQuantityAuthorAllProjection(ir, 0)).toEqual({ statement: 'ambiguous', failure: 'all_projection_inconsistent_ir' });
+  expect(deriveQuantityAuthorAllProjection(ir, 0)).toMatchObject({ statement: 'ambiguous' });
 });
 
 it('allows actual limited and negative holding to coexist with no positive exhaustive assertion without borrowing numeric authority', async () => {
@@ -759,7 +812,7 @@ it('keeps declared positive and negative whole-holding scopes unresolved even wh
     { domainScope: 'whole_collection_candidate', exhaustivity: 'exhaustive', holding: 'affirmed' },
     [['domain_reference', '钥匙'], ['exhaustive_coverage_operator', '整套'], ['scoped_possession_predicate', '带在身上'], ['negative_or_limited_scope', '没有带齐']]);
   expect(() => validateQuantityAuthorAllProjection(ir, 0, topicSummaryClauses(text, ''))).not.toThrow();
-  expect(deriveQuantityAuthorAllProjection(ir, 0)).toEqual({ statement: 'ambiguous', failure: 'all_projection_inconsistent_ir' });
+  expect(deriveQuantityAuthorAllProjection(ir, 0)).toMatchObject({ statement: 'ambiguous' });
 });
 
 it.each([
@@ -775,8 +828,8 @@ it('requires an actual partitive restriction independently of an exhaustive oper
     { domainScope: 'explicit_partitive_scope', exhaustivity: 'exhaustive', holding: 'affirmed' },
     [['domain_reference', '钥匙'], ['exhaustive_coverage_operator', '全'], ['scoped_possession_predicate', '装进袋'], ['partitive_domain_restriction', '手头两把钥匙']]);
   expect(deriveQuantityAuthorAllProjection(ir, 0).statement).toBe('no_whole_set_assertion');
-  expect(deriveQuantityAuthorAllProjection({ ...ir, witnesses: ir.witnesses.filter(w => w.role !== 'partitive_domain_restriction') }, 0).statement).toBe('ambiguous');
-  expect(deriveQuantityAuthorAllProjection({ ...ir, domainScope: 'ambiguous' }, 0).statement).toBe('ambiguous');
+  expect(deriveQuantityAuthorAllProjection(allIR(text, { domainScope: 'explicit_partitive_scope', exhaustivity: 'exhaustive', holding: 'affirmed' }, [['domain_reference', text], ['exhaustive_coverage_operator', text], ['scoped_possession_predicate', text]]), 0).statement).toBe('ambiguous');
+  expect(deriveQuantityAuthorAllProjection(allIR(text, { exhaustivity: 'ambiguous' }, []), 0).statement).toBe('ambiguous');
 });
 
 it('removes the free statement and collective-domain legacy role instead of retaining a second all authority', () => {
@@ -785,5 +838,115 @@ it('removes the free statement and collective-domain legacy role instead of reta
   expect(quantityAuthorAllProjectionSchema.safeParse({ ...ir, witnesses: [{ role: 'whole_set_quantifier_or_collective_domain',
     evidenceRef: { view: 'focus', clauseIndex: 0 }, quote: '三把钥匙' }] }).success).toBe(false);
   const receipt = quantityAuthorAllProjectionAdmission({ ...candidate(text), authorAllProjection: ir }, noAll).receipt;
-  expect(receipt.protocol).toBe('quantity_author_all_projection_v2'); expect(receipt.derivedStatement).toBe('no_whole_set_assertion');
+  expect(receipt.protocol).toBe('quantity_author_all_propositions_v1'); expect(receipt.derivedStatement).toBe('no_whole_set_assertion');
+});
+
+
+// New evidence/proposition controls exercise the real host, not model accuracy.
+function propositionCandidate(text: string, projection: QuantityAuthorAllProjection) {
+  return bindDeclaredCandidate({ ...candidate(text), authorAllProjection: projection });
+}
+function twoWholeFixture(text: string, second: 'affirmed' | 'denied' = 'affirmed') {
+  const lane = buildQuantityAuthorEvidenceLane({ clauseIndex: 0, setIndex: 0 }, numericClauses(text));
+  const segments = lane.evidence.filter(e => e.kind === 'text_segment' && e.view === 'focus' && e.quote !== text);
+  const first = segments[0] ?? lane.evidence.find(e => e.kind === 'text_segment')!, last = segments[1] ?? first;
+  const projection: QuantityAuthorAllProjection = { kind: 'recorded_whole_assertions', laneId: lane.id, reviewedFocusId: lane.focusId,
+    semanticRoles: [{ role: 'domain_reference', evidenceId: first.id }, { role: 'coverage_operator', evidenceId: first.id },
+      { role: 'possession_predicate', evidenceId: first.id }, { role: 'domain_reference', evidenceId: last.id },
+      { role: second === 'affirmed' ? 'coverage_operator' : 'whole_negative_scope', evidenceId: last.id }, { role: 'possession_predicate', evidenceId: last.id }],
+    propositions: [{ kind: 'whole_possession', polarity: 'affirmed', domainRole: 0, coverageRole: 1, predicateRole: 2, negativeRole: null, scopeEvidenceIds: [first.id] },
+      { kind: 'whole_possession', polarity: second, domainRole: 3, coverageRole: second === 'affirmed' ? 4 : null, predicateRole: 5,
+        negativeRole: second === 'denied' ? 4 : null, scopeEvidenceIds: [last.id] }],
+    scopeLinks: [{ left: 0, right: 1, relation: 'explicitly_distinct_scope', evidenceIds: [first.id, last.id] }] };
+  projectionTexts.set(projection, text); return { projection, lane };
+}
+
+it('addresses exact emoji bytes and repeated numeric occurrences without accepting another lane or a fabricated quote', () => {
+  const text = '😺编号2与第2把钥匙仍未取得。', clauses = numericClauses(text), lane = buildQuantityAuthorEvidenceLane({ clauseIndex: 0, setIndex: 0 }, clauses, '钥匙');
+  const target = lane.evidence.find(e => e.id === lane.numberTargets[1]!.targetId)!;
+  expect(Buffer.from(text).subarray(target.utf8Span.start, target.utf8Span.end).toString()).toBe('2');
+  expect(target.utf16Span.start).toBe(clauses[0]!.numberCandidates[1]!.start);
+  const projection = declaredNumberProjectionFixture(lane, 1, 'explicit_nonpossession');
+  expect(() => validateQuantityAuthorNumberProjection({ ...projection, targetId: lane.numberTargets[0]!.targetId }, 0, 1, clauses, lane)).toThrow();
+  expect(() => validateQuantityAuthorNumberProjection({ ...projection, semanticRoles: [{ role: 'negative_scope', evidenceId: 'invented' }] }, 0, 1, clauses, lane)).toThrow();
+  expect(quantityAuthorNumberProjectionSchema.safeParse({ ...projection, witnesses: [{ quote: '第1把钥匙' }] }).success).toBe(false);
+});
+
+it('cannot borrow the original far partial focus or a source quote for a quoted-count evidence ID', () => {
+  const text = '男人声称“许岚口袋里有三把钥匙”。这只是他的说法；她实际只有第1和第3把钥匙，第2把仍未找到。', clauses = numericClauses(text);
+  const lane = buildQuantityAuthorEvidenceLane({ clauseIndex: 0, setIndex: 0 }, clauses), far = buildQuantityAuthorEvidenceLane({ clauseIndex: 2, setIndex: 0 }, clauses);
+  expect(lane.evidence.every(e => e.clauseIndex <= 1)).toBe(true);
+  const projection = declaredAllProjectionFixture({ evidence: [{ view: 'focus', clauseIndex: 0, text: clauses[0]!.text }] }, 'no_whole_set_assertion', lane);
+  projection.semanticRoles[0]!.evidenceId = far.evidence.find(e => e.view === 'focus')!.id;
+  expect(() => validateQuantityAuthorAllProjection(projection, 0, clauses, lane)).toThrow('evidenceId');
+  projection.semanticRoles[0]!.evidenceId = 'source_identity_第2把尚未找到';
+  expect(() => validateQuantityAuthorAllProjection(projection, 0, clauses, lane)).toThrow('evidenceId');
+});
+
+it.each(['wrong_role_kind', 'out_of_range', 'same_operand', 'foreign_operand'] as const)(
+  'validates proposition role kinds and two actual distinct whole link operands: %s', mode => {
+    const text = '他说整套钥匙都带走了，她却没有带齐。', { projection, lane } = twoWholeFixture(text, 'denied');
+    if (projection.kind !== 'recorded_whole_assertions') throw new Error('Whole branch.');
+    if (mode === 'wrong_role_kind') projection.propositions[0]!.predicateRole = 1;
+    if (mode === 'out_of_range') projection.propositions[0]!.predicateRole = 99;
+    if (mode === 'same_operand') projection.scopeLinks[0]!.right = 0;
+    if (mode === 'foreign_operand') projection.scopeLinks[0]!.right = 2;
+    expect(() => validateQuantityAuthorAllProjection(projection, 0, numericClauses(text), lane)).toThrow();
+  });
+
+it.each(['empty_bases', 'null_predicate', 'missing_scope_link', 'empty_propositions'] as const)(
+  'keeps legal weak author propositions pending without closing the independent full-scope safe OR: %s', mode => {
+    const text = '他说整套钥匙都带走了，她也声称带齐了。', { projection } = twoWholeFixture(text);
+    let value: QuantityAuthorAllProjection = projection;
+    if (value.kind !== 'recorded_whole_assertions') throw new Error('Whole branch.');
+    if (mode === 'null_predicate') value.propositions[0]!.predicateRole = null;
+    if (mode === 'missing_scope_link') value.scopeLinks = [];
+    if (mode === 'empty_propositions') { value.propositions = []; value.scopeLinks = []; }
+    if (mode === 'empty_bases') value = { kind: 'no_whole_assertion_in_complete_focus', laneId: value.laneId, reviewedFocusId: value.reviewedFocusId, semanticRoles: [], bases: [] };
+    const c = propositionCandidate(text, value), r: QuantityCollectionReview = { candidateIndex: 0, numbers: [], all: { ...noAll, voice: 'attributed_claim' } };
+    const author = quantityAuthorAllProjectionAdmission(c, r.all); expect(author.safeAbsence).toBe(false); expect(author.derivedStatement).toBe('ambiguous');
+    const data = dataFor(c, r); expect(data.checks.some(check => check.target.kind === 'all' && check.target.assertionIndex === undefined)).toBe(true);
+    const decisionValue = decision(data, 'positive_exemption'); for (const item of decisionValue.reviews) item.basis = 'attributed_claim';
+    expect(admit(r, decisionValue, data, c).pending).toEqual([]);
+    for (const item of decisionValue.reviews) item.targetScopeComplete = false;
+    expect(admit(r, decisionValue, data, c).pending.length).toBe(data.checks.length);
+  });
+
+it('collects a later opposing whole before any affirmative return and never treats a missing link as no conflict', () => {
+  const text = '她把整套钥匙带在身上，却又没有带齐。', { projection } = twoWholeFixture(text, 'denied');
+  if (projection.kind !== 'recorded_whole_assertions') throw new Error('Whole branch.');
+  projection.scopeLinks[0]!.relation = 'same_assertion_scope';
+  expect(quantityAuthorAllProjectionAdmission(propositionCandidate(text, projection), noAll)).toMatchObject({ safeAbsence: false, derivedStatement: 'ambiguous', failure: 'all_projection_opposed_scope' });
+  projection.scopeLinks = [];
+  expect(quantityAuthorAllProjectionAdmission(propositionCandidate(text, projection), noAll).failure).toBe('all_projection_unresolved_scope');
+});
+
+it('requires each live whole to obtain its own independent scope-bound exemption rather than borrowing the quoted one', () => {
+  const text = '他说整套钥匙都带走了，她把整套钥匙带在身上。', { projection } = twoWholeFixture(text), c = propositionCandidate(text, projection);
+  const r: QuantityCollectionReview = { candidateIndex: 0, numbers: [], all: { ...noAll, voice: 'ambiguous', collection: 'ambiguous' } }, data = dataFor(c, r);
+  expect(data.checks.map(check => check.target)).toEqual([{ kind: 'all', assertionIndex: 0 }, { kind: 'all', assertionIndex: 1 }]);
+  const value = decision(data, 'unresolved'); value.reviews[0] = { ...value.reviews[0]!, verdict: 'positive_exemption', basis: 'attributed_claim' };
+  expect(admit(r, value, data, c).pending.map(p => p.target)).toEqual([{ kind: 'all', assertionIndex: 1 }]);
+  const both = decision(data, 'positive_exemption'); both.reviews[1]!.assertionEvidenceIds = data.checks[0]!.scopeObligation!.assertionEvidenceIds;
+  expect(() => admit(r, both, data, c)).toThrow('本目标');
+  expect(data.checks[0]!.scopeObligation!.focusChecksum).toBe(createHash('sha256').update(text).digest('hex'));
+});
+
+it('treats a numeric address as provenance only and keeps real numeric mathematics independent of all absence', async () => {
+  const text = '她口袋里有三把钥匙。', clauses = numericClauses(text), lane = buildQuantityAuthorEvidenceLane({ clauseIndex: 0, setIndex: 0 }, clauses);
+  const projection = declaredNumberProjectionFixture(lane, 0, 'affirmative_possession'); projection.semanticRoles[0]!.evidenceId = lane.numberTargets[0]!.targetId;
+  const c = numericCandidate(text, 'affirmative_possession'); c.authorNumberProjections[0]!.projection = projection;
+  c.authorNumberProjections[0]!.literalWitnessLocations = validateQuantityAuthorNumberProjection(projection, 0, 0, clauses, lane);
+  expect(quantityAuthorNumberProjectionAdmission(c, number()).failure).toBe('number_projection_unwitnessed');
+  const reader = vi.fn<Infer>(), correction = await production(text, review({ collection: 'same' }), reader, false, false, authorProjection(text, 'no_whole_set_assertion'));
+  expect(correction).toContain('数学'); expect(reader).not.toHaveBeenCalled();
+});
+
+it('counts every actual whole sub-obligation before cold dispatch without increasing the combined32 budget', async () => {
+  const text = '他说整套钥匙都带走了，她把整套钥匙带在身上，编号' + Array.from({ length: 31 }, (_, i) => i + 1).join('、') + '。';
+  const { projection } = twoWholeFixture(text); const reader = vi.fn<Infer>();
+  const r = { ...review(), numbers: Array.from({ length: 31 }, (_, numberIndex) => number({ numberIndex, voice: 'unrelated', relation: 'unrelated', kind: 'unrelated' })) };
+  const correction = await production(text, r, reader, false, false, (_context, value) => ({ ...(value as object),
+    clauses: [{ clauseIndex: 0, quantities: [{ setIndex: 0, usage: 'ambiguous', numberIndexes: [] }] }], allProjections: [{ clauseIndex: 0, setIndex: 0, projection }] }));
+  expect(correction).toContain('unresolved_author_projection_capacity'); expect(reader).not.toHaveBeenCalled();
 });

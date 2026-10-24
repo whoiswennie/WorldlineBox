@@ -1,32 +1,36 @@
+import { buildQuantityAuthorEvidenceLane, type QuantityAuthorEvidenceLane, type QuantityAuthorAllProjection } from '../../src/main/companions/topic-quantity-disjoint-waiver';
 import type { TopicSourceQuantityReviewOptions } from '../../src/main/companions/topic-summary-quantity-review';
 
 type Infer = NonNullable<TopicSourceQuantityReviewOptions['verifyRoles']>;
 /** Explicit legacy test declaration only. Each old declared result is now a
  * declared IR premise; this adapter never classifies or certifies real text. */
 export function declaredAllProjectionFixture(check: { evidence: Array<{ view: string; clauseIndex: number; text: string }> },
-  statement: 'affirmative_whole_set' | 'explicit_not_all' | 'no_whole_set_assertion' | 'ambiguous' = 'no_whole_set_assertion') {
+  statement: 'affirmative_whole_set' | 'explicit_not_all' | 'no_whole_set_assertion' | 'ambiguous' = 'no_whole_set_assertion', suppliedLane?: QuantityAuthorEvidenceLane): QuantityAuthorAllProjection {
   const focus = check.evidence.find(item => item.view === 'focus')!;
-  const evidenceRef = { view: 'focus' as const, clauseIndex: focus.clauseIndex };
-  return { coverage: 'whole_focus' as const, reviewedFocusRef: evidenceRef,
-    domainScope: statement === 'affirmative_whole_set' || statement === 'explicit_not_all' ? 'whole_collection_candidate' as const : 'ambiguous' as const,
-    exhaustivity: statement === 'affirmative_whole_set' ? 'exhaustive' as const : statement === 'explicit_not_all' ? 'explicit_not_exhaustive' as const
-      : statement === 'no_whole_set_assertion' ? 'not_asserted' as const : 'ambiguous' as const,
-    holding: statement === 'affirmative_whole_set' ? 'affirmed' as const : statement === 'explicit_not_all' ? 'denied' as const : 'ambiguous' as const,
-    opposition: 'none_in_reviewed_scope' as const,
-    witnesses: statement === 'ambiguous' ? [] : (statement === 'affirmative_whole_set'
-      ? ['domain_reference', 'exhaustive_coverage_operator', 'scoped_possession_predicate'] as const
-      : statement === 'explicit_not_all' ? ['negative_or_limited_scope'] as const : ['target_scope'] as const)
-      .map(role => ({ role, evidenceRef, quote: focus.text.slice(0, 600) })) };
+  const clauses = Array.from({ length: focus.clauseIndex + 1 }, (_, clauseIndex) => ({ clauseIndex, text: clauseIndex === focus.clauseIndex ? focus.text : '' }));
+  const lane = suppliedLane ?? buildQuantityAuthorEvidenceLane({ clauseIndex: focus.clauseIndex, setIndex: 0 }, clauses);
+  const id = lane.evidence.find(e => e.view === 'focus' && e.kind === 'text_segment')!.id;
+  const common = { laneId: lane.id, reviewedFocusId: lane.focusId };
+  // Explicit declared semantics only; the full-text address is provenance,
+  // never an automatic classifier or a claim of real model accuracy.
+  if (statement === 'ambiguous') return { ...common, kind: 'unresolved_author_scope', semanticRoles: [], concernEvidenceIds: [], reason: 'insufficient_evidence' };
+  if (statement === 'no_whole_set_assertion') return { ...common, kind: 'no_whole_assertion_in_complete_focus',
+    semanticRoles: [{ role: 'non_holding_scope', evidenceId: id }], bases: [{ kind: 'non_holding', scopeRole: 0 }] };
+  return { ...common, kind: 'recorded_whole_assertions', semanticRoles: [
+    { role: 'domain_reference', evidenceId: id }, { role: 'coverage_operator', evidenceId: id },
+    { role: 'possession_predicate', evidenceId: id }, ...(statement === 'explicit_not_all' ? [{ role: 'whole_negative_scope' as const, evidenceId: id }] : [])],
+    propositions: [{ kind: 'whole_possession', polarity: statement === 'affirmative_whole_set' ? 'affirmed' : 'denied',
+      domainRole: 0, coverageRole: 1, predicateRole: 2, negativeRole: statement === 'explicit_not_all' ? 3 : null, scopeEvidenceIds: [id] }], scopeLinks: [] };
 }
 /** The caller explicitly declares this legacy semantic fixture disjoint.
  * Production never receives this test receipt, and uncertain/new tests must
  * supply their own independent decision instead of using this declaration. */
 export const declaredDisjointQuantityFixture: NonNullable<TopicSourceQuantityReviewOptions['verifyDisjointWaivers']> = async context => {
   const { checks } = JSON.parse(context.user).data as { checks: Array<{ checkIndex: number;
-    target: { kind: string }; evidence: Array<{ view: string; clauseIndex: number; text: string }> }> };
+    target: { kind: string }; scopeObligation?: { assertionEvidenceIds: string[] }; evidence: Array<{ view: string; clauseIndex: number; text: string }> }> };
   return { reviews: checks.map(check => { const focus = check.evidence.find(item => item.view === 'focus')!;
     return { checkIndex: check.checkIndex, verdict: 'positive_exemption', basis: 'different_inventory',
-      evidenceRefs: [{ view: focus.view, clauseIndex: focus.clauseIndex }], reason: '仅此test声明的原异组语义，独立fixture准入。' }; }) };
+      evidenceRefs: [{ view: focus.view, clauseIndex: focus.clauseIndex }], targetScopeComplete: true, assertionEvidenceIds: check.scopeObligation?.assertionEvidenceIds ?? [], reason: '仅此test声明的原异组语义，独立fixture准入。' }; }) };
 };
 
 /** Explicit protocol adaptation for old declarative mocks, not a text classifier.
@@ -34,32 +38,39 @@ export const declaredDisjointQuantityFixture: NonNullable<TopicSourceQuantityRev
 export function declaredWarmAllFixture(context: { user: string }, value: unknown,
   declaredStatement?: Parameters<typeof declaredAllProjectionFixture>[1], declaredNumbers?: Record<string, Parameters<typeof declaredNumberProjectionFixture>[2]>) {
   if (!record(value) || !Array.isArray(value.clauses)) return value;
-  const data = JSON.parse(context.user).data as { requiredPairs: Array<{ clauseIndex: number; setIndex: number }>;
-    actualClauses: Array<{ clauseIndex: number; text: string; numberCandidates: Array<{ numberIndex: number; numberQuote: string; occurrence: number }> }> };
+  const data = JSON.parse(context.user).data as { requiredPairs: Array<{ clauseIndex: number; setIndex: number }>; authorLanes: Array<{
+    logicalPair: { clauseIndex: number; setIndex: number }; window: Array<{ clauseIndex: number; text: string; numberCandidates: Array<{ start: number; end: number; value: number | null; ordinal: boolean }> }> }> };
+  const lanes = data.authorLanes.map(input => {
+    const last = Math.max(...input.window.map(c => c.clauseIndex));
+    const clauses = Array.from({ length: last + 1 }, (_, clauseIndex) => input.window.find(c => c.clauseIndex === clauseIndex) ?? { clauseIndex, text: '', numberCandidates: [] });
+    return buildQuantityAuthorEvidenceLane(input.logicalPair, clauses);
+  });
   return { ...value, ...('allProjections' in value ? {} : { allProjections: data.requiredPairs.map(pair => {
     const row = (value.clauses as Array<{ clauseIndex: number; quantities: Array<{ setIndex: number; usage: string }> }>).find(c => c.clauseIndex === pair.clauseIndex);
     const statement = declaredStatement ?? (row?.quantities.some(q => q.setIndex === pair.setIndex && q.usage === 'current_possessed_all')
       ? 'affirmative_whole_set' as const : 'no_whole_set_assertion' as const);
-    return { ...pair, projection: declaredAllProjectionFixture({ evidence: [{ view: 'focus', ...data.actualClauses[pair.clauseIndex]! }] }, statement) };
+    const lane = lanes.find(l => l.logicalPair.clauseIndex === pair.clauseIndex && l.logicalPair.setIndex === pair.setIndex)!;
+    const focus = lane.evidence.find(e => e.id === lane.focusId)!;
+    return { ...pair, projection: declaredAllProjectionFixture({ evidence: [{ view: 'focus', clauseIndex: pair.clauseIndex, text: focus.quote }] }, statement, lane) };
   }) }), ...('numberProjections' in value ? {} : { numberProjections: data.requiredPairs.flatMap(pair => {
-    return data.actualClauses[pair.clauseIndex]!.numberCandidates.map(number => {
-      // The legacy mock tests raw mechanics. No usage enum gains an author
-      // proposition by default; individual cases declare their new premise.
+    const lane = lanes.find(l => l.logicalPair.clauseIndex === pair.clauseIndex && l.logicalPair.setIndex === pair.setIndex)!;
+    return lane.numberTargets.map(number => {
       const statement = declaredNumbers?.[pair.clauseIndex + ':' + pair.setIndex + ':' + number.numberIndex] ?? 'ambiguous';
-      return { ...pair, numberIndex: number.numberIndex, projection: declaredNumberProjectionFixture(data.actualClauses[pair.clauseIndex]!, number.numberIndex, statement) };
+      return { ...pair, numberIndex: number.numberIndex, projection: declaredNumberProjectionFixture(lane, number.numberIndex, statement) };
     });
   }) }) };
 }
 
 /** Explicit declarative mock, never a production text classifier. */
 export function declaredNumberProjectionFixture(clause: { clauseIndex: number; text: string;
-  numberCandidates: Array<{ numberIndex: number; numberQuote: string; occurrence: number }> }, numberIndex: number,
-  statement: 'affirmative_possession' | 'explicit_nonpossession' | 'no_possession_assertion' | 'ambiguous' = 'ambiguous') {
-  const number = clause.numberCandidates[numberIndex]!, evidenceRef = { view: 'focus' as const, clauseIndex: clause.clauseIndex };
-  return { statement, coverage: 'whole_focus' as const, reviewedFocusRef: evidenceRef, targetNumberQuote: number.numberQuote, targetOccurrence: number.occurrence,
-    witnesses: (statement === 'affirmative_possession' ? ['scoped_possession_predicate'] as const
-      : statement === 'explicit_nonpossession' ? ['negative_scope'] as const : [])
-      .map(role => ({ role, evidenceRef, quote: clause.text.slice(0, 300) })) };
+  numberCandidates: Array<{ numberIndex: number; numberQuote: string; occurrence: number; start: number; end: number; value: number | null; ordinal: boolean }> } | QuantityAuthorEvidenceLane,
+  numberIndex: number, statement: 'affirmative_possession' | 'explicit_nonpossession' | 'no_possession_assertion' | 'ambiguous' = 'ambiguous') {
+  const lane = 'logicalPair' in clause ? clause : buildQuantityAuthorEvidenceLane({ clauseIndex: clause.clauseIndex, setIndex: 0 },
+    Array.from({ length: clause.clauseIndex + 1 }, (_, clauseIndex) => clauseIndex === clause.clauseIndex ? clause : { clauseIndex, text: '', numberCandidates: [] }));
+  const id = lane.evidence.find(e => e.view === 'focus' && e.kind === 'text_segment')!.id;
+  return { statement, laneId: lane.id, reviewedFocusId: lane.focusId, targetId: lane.numberTargets.find(t => t.numberIndex === numberIndex)!.targetId,
+    semanticRoles: (statement === 'affirmative_possession' ? ['possession_predicate'] as const : statement === 'explicit_nonpossession' ? ['negative_scope'] as const : [])
+      .map(role => ({ role, evidenceId: id })) };
 }
 
 /** Legacy mechanism tests already declare semantic roles rather than measure
@@ -80,7 +91,7 @@ export function withDeclaredQuantitySemanticFixture<T extends TopicSourceQuantit
     return response;
   }, verifyDisjointWaivers: async context => {
     const { checks } = JSON.parse(context.user).data as { checks: Array<{ checkIndex: number; candidateIndex: number;
-      target: { kind: string; numberIndex?: number }; evidence: Array<{ view: string; clauseIndex: number; text: string }> }> };
+      target: { kind: string; numberIndex?: number }; scopeObligation?: { assertionEvidenceIds: string[] }; evidence: Array<{ view: string; clauseIndex: number; text: string }> }> };
     return { reviews: checks.map(check => {
       const candidate = declared.find(item => item.candidateIndex === check.candidateIndex)!;
       const axes = check.target.kind === 'all' ? candidate.all : candidate.numbers.find(item => item.numberIndex === check.target.numberIndex)!;
@@ -95,7 +106,7 @@ export function withDeclaredQuantitySemanticFixture<T extends TopicSourceQuantit
                       : axes.relation === 'unrelated' ? 'unrelated_target' : 'none';
       const focus = check.evidence.find(item => item.view === 'focus')!;
       return { checkIndex: check.checkIndex, verdict: basis === 'none' ? 'unresolved' : 'positive_exemption', basis,
-        evidenceRefs: [{ view: focus.view, clauseIndex: focus.clauseIndex }], reason: '仅原机制test已声明的语义前提；不证明真实模型准确率。' };
+        evidenceRefs: [{ view: focus.view, clauseIndex: focus.clauseIndex }], targetScopeComplete: true, assertionEvidenceIds: check.scopeObligation?.assertionEvidenceIds ?? [], reason: '仅原机制test已声明的语义前提；不证明真实模型准确率。' };
     }) };
   } };
 }
