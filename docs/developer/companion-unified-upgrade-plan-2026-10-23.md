@@ -1158,3 +1158,11 @@ e01cbfc实际构建的测试包位于out/WorldlineBox-win32-x64/WorldlineBox.exe
 主持移交相关五完整Main单元首轮235过1败（旧world-service工具白名单仅memory，导致mock抛错而未进入访客拒绝）；保留原件后，仅把该旧fixture改为当前精确memory+world(action=experience)，没有开放DSH或任意world工具，也不改拒绝/私聊/日程/真实提交断言。其余四文件191/191原结果保留，完整world文件随后45/45自然退出0；存储worker8/8，缓存SQLite18/18，最终main/extension类型检查及全部改动JS/TS文件lint退出0。原类型及新计数测试RED均保留。本轮不再追加新对局或将负向内容判断改成绿色，剩余工作只做官方包、最终ASAR经历界面、清理和远程提交。
 
 新验证目录已经整体移到外部归档 `followup-vcp-validation`，`followup-cleanup-index.json` 保存映射；未删除原始失败证据。一次清理测试临时目录中认证副本的请求被自动审批返回“策略阻止”，操作未执行；这些副本位于项目外临时目录，不纳入仓库或软件包。正式用户配置的只读一致性守卫均通过。
+
+### 16.70 最终软件包与远程交付记录（2026-10-25）
+
+本轮实现代码提交为4928c43aa29600b9a443d22835012d24c7353706，已推送当前codex/companion-unified-upgrade-2026-10-23分支并核对远程哈希。此后仅补本文交付记录，没有再改产品源码。官方npm run release:package与npm run make:inno均自然退出0；Inno实际689.813秒。最终安装器为out/make/inno/WorldlineBoxSetup.exe，1198709065字节，SHA256为1530c0c8197b9ff572a3d109d222a4b89cdfddd31b2e6c65c54f9c5bdc9c44d2；app.asar为607340363字节，SHA256为0b1652a23505959f4016f3436d82428297c7e9cbe1d5fb0584b5603a748f900d。
+
+该实际ASAR的唯一经历界面端到端检查1/1通过，33.0秒，自然退出0；真实日程和生活事件生成经历后，核对现实钟、日期、详情、改名及页面重载持久化、两伙伴隔离和明暗主题。Root实际查看两截图，三栏弹窗、时间线与中文标题显示正常，无横向溢出。截图和日志保存在外部归档final-handoff-experience-ui及同名前缀log，不以此宣称未执行的全仓或多人内容门通过。
+
+新测试输出与Playwright目录已移出项目；还将官方脚本按失败证据保留的六份旧portable-release导出目录移至外部retained-failed-portable-exports，逐一核对目录身份、时间及路径，没有删除原件。正常运行时、内置模型、构建输入及本轮安装器保留。清理映射、包校验值和实际Git结果分别见外部followup-cleanup-index.json、failed-portable-exports-cleanup.json、final-delivery-binary.json及final-delivery-git.json。安装包和经历/DSH功能可以交付测试，但完整狼人杀验收仍为未通过，overallAcceptanceComplete保持false，长期目标不标为全部完成。
