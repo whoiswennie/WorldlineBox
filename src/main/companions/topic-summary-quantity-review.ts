@@ -32,8 +32,9 @@ const cache = new Map<string, { sets: QuantitySet[]; receipt: QuantitySourcePrem
 const formatPathKeys = new Set(['sets', 'canonIndex', 'entityQuote', 'totalNumberIndex', 'missingOrdinalNumberIndexes', 'clauses', 'clauseIndex',
   'quantities', 'setIndex', 'usage', 'numberIndexes', 'reviews', 'candidateIndex', 'numbers', 'numberIndex', 'collection', 'voice', 'time', 'relation', 'kind', 'reason', 'all',
   'totalBinding', 'totalEvidenceClauseIndex', 'members', 'ordinalNumberIndex', 'evidenceClauseIndexes', 'predicateTarget', 'memberAvailability', 'applicability',
-  'checkIndex', 'verdict', 'basis', 'evidenceRefs', 'view']);
+  'checkIndex', 'verdict', 'basis', 'evidenceRefs', 'view', 'allProjection', 'statement', 'coverage', 'reviewedFocusRef', 'witnesses', 'role', 'evidenceRef', 'quote']);
 const hostFormatMessages = new Set([
+  '数字目标不能借用全部持有投影。', '全部持有投影须完整核验本目标实际焦点。', '全部持有投影引文须唯一绑定本目标实际有界原句。',
   '数字索引必须对应本原句宿主枚举的完整可计算整数；不得自造引文、截取部分数字或猜不支持的数值。',
   'entityQuote须仅含原句逐字物品本体名词，不含数字或整句。', '来源数字索引必须存在且明确缺失成员不能重复。',
   '总数须是实际基数，明确缺失序号必须是有效且不重复的实际成员。', 'clauses必须完整唯一覆盖实际clauseIndex。',

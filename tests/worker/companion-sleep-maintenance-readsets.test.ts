@@ -1,0 +1,127 @@
+import { createHash } from 'node:crypto';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
+import BetterSqlite3 from 'better-sqlite3';
+import { afterEach, beforeEach, expect, it, vi } from 'vitest';
+import { CompanionsStore, type CompanionConnection } from '../../src/companions/store';
+import type { CompanionWorldJob } from '../../src/shared/companion-world';
+
+const roots: string[] = [], stores = new Set<CompanionsStore>();
+beforeEach(() => { vi.useFakeTimers({ toFake: ['Date'] }); vi.setSystemTime('2026-10-24T02:00:00Z'); vi.spyOn(Math, 'random').mockReturnValue(.99); });
+afterEach(() => { for (const store of stores) store.close(); stores.clear(); for (const root of roots.splice(0)) { if (path.dirname(root) !== path.resolve(tmpdir()) || !path.basename(root).startsWith('worldlinebox-maintenance-readsets-')) throw Error('Unexpected cleanup'); rmSync(root, { recursive: true, force: true }); } vi.restoreAllMocks(); vi.useRealTimers(); });
+function fixture() {
+  const root = mkdtempSync(path.join(tmpdir(), 'worldlinebox-maintenance-readsets-')); roots.push(root);
+  const filename = path.join(root, 'messages.sqlite');
+  const store = new CompanionsStore(filename, ['alice', 'bob'].map(id => ({ id, name: id, description: '', persona: '认真', model: '', avatar: 'sister' as const, active: true, proactive: false }))); stores.add(store);
+  const scope = { companionId: 'alice', conversationId: store.openPrivate('alice').id }, world = store.request({ type: 'world.snapshot' }).world!;
+  store.request({ type: 'world.configure', expectedRevision: world.settings.revision, patch: { mode: 'realtime', timeZone: 'UTC' } });
+  const advance = (ms: number) => { vi.setSystemTime(Date.now() + ms); return store.request({ type: 'world.tick', snapshot: true }).world!; };
+  const cycle = (asleep: boolean) => { const routine = store.request({ type: 'routine.get', ...scope }).routine!;
+    store.request({ type: 'routine.configure', ...scope, expectedRevision: routine.revision, patch: { timeZone: 'UTC', sleepAt: asleep ? '01:00' : '23:00', wakeAt: asleep ? '07:00' : '01:00', meals: [], habits: [] } });
+    advance(10000); const result = advance(6000); expect(result.actors.find(actor => actor.companionId === 'alice')?.activity === 'sleeping').toBe(asleep); };
+  const original = (content: string, room = scope.conversationId, owner = 'alice', sourceRevision = 1) => {
+    const source = store.appendMessage({ conversationId: room, authorId: 'user', content, replyDirective: 'none' });
+    if (sourceRevision !== 1) {
+      // Coherent imported same-text revision fixture; there is no public UI edit
+      // port in this test. Claim/complete/index below remain the real APIs.
+      const db = new (BetterSqlite3 as unknown as { new(filename: string): CompanionConnection })(filename);
+      try { db.transaction(() => {
+        db.prepare('UPDATE messages SET revision=? WHERE id=?').run(sourceRevision, source.id);
+        db.prepare('UPDATE vcp_capture_jobs SET source_revision=? WHERE message_id=?').run(sourceRevision, source.id);
+      }).immediate(); } finally { db.close(); }
+    }
+    let job = store.request({ type: 'memory.jobs.claim', companionId: owner }).memoryJob!;
+    // A group source also legitimately queued Bob's separate capture. Settle
+    // that unrelated controlled empty output before selecting his private one.
+    for (let skipped = 0; !job.sourceMessageIds.includes(source.id) && skipped < 20; skipped++) {
+      store.request({ type: 'memory.jobs.complete', id: job.id, leaseToken: job.leaseToken, notes: [] });
+      job = store.request({ type: 'memory.jobs.claim', companionId: owner }).memoryJob!;
+    }
+    expect(job.sourceMessageIds).toContain(source.id);
+    const memory = store.request({ type: 'memory.jobs.complete', id: job.id, leaseToken: job.leaseToken, notes: [{ content, tags: ['实际来源'], sourceMessageIds: [source.id], evidence: [{ sourceMessageId: source.id, quote: content }] }] }).memories![0]!;
+    for (;;) { const entry = store.request({ type: 'memory.outbox.claim' }).memoryOutbox; if (!entry) break; store.request({ type: 'memory.outbox.complete', id: entry.id, leaseToken: entry.leaseToken, indexed: true }); }
+    expect(memory.captureMethod).toBe('automatic'); return { source, memory };
+  };
+  const claim = () => { const job = store.request({ type: 'world.job.claim', kind: 'dream', excludedCompanionIds: ['bob'] }).worldJob!; expect(job).toBeDefined(); return job; };
+  const bind = (job: CompanionWorldJob) => {
+    const ids = [...new Set([...job.sourceMemoryIds, ...(job.maintenanceMemoryIds ?? [])])];
+    const memories = ids.map(id => store.request({ type: 'memory.read', ...scope, id }).memoryRead!.memory);
+    store.request({ type: 'world.job.bind-memories', id: job.id, leaseToken: job.leaseToken!, memoryVersions: memories.map(note => ({ id: note.id, version: note.version })) }); return memories;
+  };
+  const complete = (job: CompanionWorldJob) => { const memories = bind(job), reviewed = memories.filter(note => (job.maintenanceMemoryIds ?? job.sourceMemoryIds).includes(note.id));
+    store.request({ type: 'world.job.complete', id: job.id, leaseToken: job.leaseToken!, sourceMemoryIds: memories.map(note => note.id),
+      ...(reviewed.length >= 2 ? { maintenance: { decision: 'defer', reason: '受控存储协议夹具：本轮保留原文，不声称真实语义判断。', reviewedMemoryVersions: reviewed.map(note => ({ id: note.id, version: note.version })) } } : {}) }); };
+  const database = () => new (BetterSqlite3 as unknown as { new(filename: string): CompanionConnection })(filename);
+  return { root, filename, store, scope, cycle, original, claim, bind, complete, database };
+}
+
+it('keeps old maintenance atoms outside reflection seeds and rejects their withdrawal before the actual complete transaction', () => {
+  const f = fixture(), a = f.original('第一批真实原始经历。'); f.cycle(true); const first = f.claim(); f.complete(first); f.cycle(false);
+  const b = f.original('第二批同域补充经历。'); f.cycle(true); const second = f.claim();
+  expect(second.sourceMemoryIds).toEqual([b.memory.id]); expect(second.maintenanceMemoryIds?.sort()).toEqual([a.memory.id, b.memory.id].sort());
+  const memories = f.bind(second); f.store.request({ type: 'memory.forget', ...f.scope, sourceMessageIds: [a.source.id] });
+  expect(() => f.store.request({ type: 'world.job.complete', id: second.id, leaseToken: second.leaseToken!, sourceMemoryIds: memories.map(note => note.id),
+    maintenance: { decision: 'defer', reason: '已撤回旧依赖，不能结算。', reviewedMemoryVersions: memories.map(note => ({ id: note.id, version: note.version })) } })).toThrow('记忆已经变化');
+  expect(f.store.request({ type: 'memory.read', ...f.scope, id: b.memory.id }).memoryRead!.memory.archivedAt).toBeUndefined();
+});
+
+it('rotates at least thirteen deferred old originals and advances past an invalid old source without exceeding twelve maintenance atoms', () => {
+  const f = fixture(), old = Array.from({ length: 13 }, (_, index) => f.original('待维护旧原始资料 ' + index));
+  f.cycle(true); f.complete(f.claim()); f.cycle(false); f.cycle(true); f.complete(f.claim()); f.cycle(false);
+  const db = f.database(); try {
+    // Controlled stored-source corruption: a legitimate admission must skip it,
+    // and the pure scheduling cursor must still advance past this actual row.
+    db.prepare("UPDATE vcp_memory_notes SET data=json_set(data,'$.sources[0].checksum',?) WHERE id=?").run('0'.repeat(64), old[0]!.memory.id);
+    db.prepare("UPDATE vcp_memory_notes SET data=json_set(data,'$.sources[0].revision',999) WHERE id=?").run(old[1]!.memory.id);
+  } finally { db.close(); }
+  const seen = new Set<string>();
+  for (let round = 0; round < 3; round++) {
+    const fresh = f.original('后续实际新来源 ' + round); f.cycle(true); const job = f.claim();
+    expect(job.sourceMemoryIds).toEqual([fresh.memory.id]); expect(job.maintenanceMemoryIds!.length).toBeLessThanOrEqual(12);
+    expect(job.maintenanceMemoryIds).not.toContain(old[0]!.memory.id);
+    expect(job.maintenanceMemoryIds).not.toContain(old[1]!.memory.id);
+    for (const id of job.maintenanceMemoryIds!) seen.add(id); f.complete(job); f.cycle(false);
+  }
+  for (const entry of old.slice(2)) expect(seen.has(entry.memory.id)).toBe(true);
+  expect(seen.has(old[12]!.memory.id)).toBe(true);
+});
+
+it('does not advance an old-original cursor when twelve fresh reflection seeds already fill the maintenance budget', () => {
+  const f = fixture(); f.original('已审旧来源'); f.cycle(true); f.complete(f.claim()); f.cycle(false);
+  const db = f.database(), key = 'world-maintenance-original-cursor/' + createHash('sha256').update(JSON.stringify(['alice', f.scope.conversationId])).digest('hex');
+  let before: unknown; try { before = db.prepare('SELECT value FROM metadata WHERE key=?').get(key); } finally { db.close(); }
+  const fresh = Array.from({ length: 12 }, (_, index) => f.original('满批新原始来源 ' + index)); f.cycle(true); const job = f.claim();
+  expect(job.maintenanceMemoryIds?.sort()).toEqual(fresh.map(note => note.memory.id).sort());
+  const after = f.database(); try { expect(after.prepare('SELECT value FROM metadata WHERE key=?').get(key)).toEqual(before); } finally { after.close(); }
+});
+
+it('keeps maintenance owner and actual source-domain boundaries when adding a prior original', () => {
+  const f = fixture(), a = f.original('本人私聊旧来源'); f.cycle(true); f.complete(f.claim()); f.cycle(false);
+  const group = f.store.createConversation('独立来源域', ['alice', 'bob']), foreign = f.original('本人另一实际域来源', group.id);
+  f.cycle(true); f.complete(f.claim()); f.cycle(false);
+  const bob = f.original('另一伙伴私有来源', f.store.openPrivate('bob').id, 'bob');
+  const fresh = f.original('本人私聊新补充'); f.cycle(true); const job = f.claim();
+  expect(job.sourceMemoryIds).toEqual([fresh.memory.id]); expect(job.maintenanceMemoryIds?.sort()).toEqual([a.memory.id, fresh.memory.id].sort());
+  expect(job.maintenanceMemoryIds).not.toContain(foreign.memory.id); expect(job.maintenanceMemoryIds).not.toContain(bob.memory.id);
+});
+
+it('retains the exact legacy seed authority when a saved running job has no separate maintenance fields', () => {
+  const f = fixture(), a = f.original('兼容旧运行任务A'), b = f.original('兼容旧运行任务B'); f.cycle(true); const job = f.claim();
+  const db = f.database(); try { db.prepare("UPDATE companion_world_jobs SET data=json_remove(data,'$.maintenanceMemoryIds','$.maintenanceMemoryVersions') WHERE id=?").run(job.id); } finally { db.close(); }
+  const legacy = { ...job }; delete legacy.maintenanceMemoryIds; f.complete(legacy);
+  expect(f.store.request({ type: 'memory.read', ...f.scope, id: a.memory.id }).memoryRead!.memory.archivedAt).toBeUndefined();
+  expect(f.store.request({ type: 'memory.read', ...f.scope, id: b.memory.id }).memoryRead!.memory.archivedAt).toBeUndefined();
+});
+
+it('admits a valid same-text source revision above one from persisted messages while still reading its exact current reference', () => {
+  const f = fixture(), a = f.original('同字节但已合法记录第二版本的真实来源。', f.scope.conversationId, 'alice', 2);
+  expect(a.memory.sources[0]?.revision).toBe(2);
+  expect(f.store.request({ type: 'memory.read', ...f.scope, id: a.memory.id }).memoryRead!.memory.sources[0]?.revision).toBe(2);
+  f.cycle(true); f.complete(f.claim()); f.cycle(false);
+  const b = f.original('后来新增的同域实际补充。'); f.cycle(true); const job = f.claim();
+  expect(job.sourceMemoryIds).toEqual([b.memory.id]);
+  expect(job.maintenanceMemoryIds?.sort()).toEqual([a.memory.id, b.memory.id].sort());
+  expect(f.bind(job).find(note => note.id === a.memory.id)?.sources[0]?.revision).toBe(2);
+  f.complete(job);
+});

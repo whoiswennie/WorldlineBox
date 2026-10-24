@@ -420,9 +420,9 @@ export class CompanionMemoryStore {
             const plan = companionMemoryConsolidateSchema.parse(input);
             const found = this.db.prepare("SELECT data,lease_until FROM companion_world_jobs WHERE id=? AND companion_id=? AND kind='dream' AND status='running'").get(worldJobId, scope.companionId);
             if (!found) throw new Error('自动记忆整合必须属于当前真实睡眠任务。');
-            const job = json<{ conversationId: string; leaseToken?: string; seedMemoryVersions?: Array<{ id: string; version: number }> }>(row(found).data);
+            const job = json<{ conversationId: string; leaseToken?: string; seedMemoryVersions?: Array<{ id: string; version: number }>; maintenanceMemoryVersions?: Array<{ id: string; version: number }> }>(row(found).data);
             if (job.leaseToken !== leaseToken || String(row(found).lease_until) < stamp() || job.conversationId !== scope.conversationId) throw new Error('自动记忆整合的睡眠租约或入口已变化。');
-            const versions = new Map(job.seedMemoryVersions?.map(note => [note.id, note.version]));
+            const versions = new Map((job.maintenanceMemoryVersions ?? job.seedMemoryVersions)?.map(note => [note.id, note.version]));
             if (plan.inputs.some(note => versions.get(note.id) !== note.version)) throw new Error('自动整合只能使用本轮准确读取的真实种子版本。');
             const originals = plan.inputs.map(note => this.load(note.id)), ownerScope = this.sources.ownerScope(scope.companionId);
             if (originals.some((note, index) => note.companionId !== scope.companionId || note.version !== plan.inputs[index]!.version

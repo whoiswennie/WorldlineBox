@@ -55,7 +55,7 @@ export const companionMemoryMaintenanceAuditSchema = z.strictObject({ decision: 
 export const companionWorldJobSchema = z.object({ id, kind: z.enum(['decision', 'dream']), companionId: id, conversationId: id, status: z.enum(['pending', 'running', 'done', 'failed']),
   terminal: z.boolean().optional(), error: z.string().max(2000).optional(),
   leaseToken: id.optional(), throughEventSequence: z.number().int().nonnegative(), createdAt: z.iso.datetime(), attempts: z.number().int().nonnegative(), sourceMemoryIds: z.array(id).max(128).default([]), encounterMemberIds: z.array(id).min(2).max(4).optional(),
-  sleepEpisodeId: id.optional(), dreamAllowed: z.boolean().optional(), maintenance: companionMemoryMaintenanceAuditSchema.optional() });
+  sleepEpisodeId: id.optional(), dreamAllowed: z.boolean().optional(), maintenanceMemoryIds: z.array(id).max(12).optional(), maintenance: companionMemoryMaintenanceAuditSchema.optional() });
 export const companionWorldSnapshotSchema = z.object({
   settings: companionWorldSettingsSchema,
   clock: z.object({ realNow: z.iso.datetime(), virtualNow: z.iso.datetime(), speed: z.number().positive(), day: z.number().int(), hour: z.number().min(0).max(24), daylight: z.boolean() }),

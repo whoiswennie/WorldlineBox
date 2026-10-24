@@ -372,10 +372,13 @@ export class CompanionWorldService {
   private async dream(job: CompanionWorldJob, leaseToken: string, companion: Companion, conversation: CompanionConversation,
     config: CompanionModelConfig, signal: AbortSignal): Promise<void> {
     const scope = { companionId: companion.id, conversationId: conversation.id };
-    const reads = await Promise.all(job.sourceMemoryIds.map(id => this.options.request({ type: 'memory.read', ...scope, id, sourceLimit: 100 })));
+    const seedIds = new Set(job.sourceMemoryIds), maintenanceIds = new Set(job.maintenanceMemoryIds ?? job.sourceMemoryIds);
+    const initialIds = [...new Set([...seedIds, ...maintenanceIds])];
+    const reads = await Promise.all(initialIds.map(id => this.options.request({ type: 'memory.read', ...scope, id, sourceLimit: 100 })));
     const atoms = reads.flatMap(read => read.memoryRead?.memory ? [read.memoryRead.memory] : []).filter(memory => memory.status === 'indexed');
-    if (atoms.length !== job.sourceMemoryIds.length || reads.some(read => read.memoryRead?.hasMore)) throw new Error('本次睡眠整理的实际记忆已经变化或尚未完整读取。');
-    const seedAtoms = [...atoms], seedReads = [...reads];
+    if (atoms.length !== initialIds.length || reads.some(read => read.memoryRead?.hasMore)) throw new Error('本次睡眠整理的实际记忆已经变化或尚未完整读取。');
+    const seedAtoms = atoms.filter(note => seedIds.has(note.id)), seedReads = reads.filter(read => seedIds.has(read.memoryRead!.memory.id));
+    const maintenanceAtoms = atoms.filter(note => maintenanceIds.has(note.id)), maintenanceReads = reads.filter(read => maintenanceIds.has(read.memoryRead!.memory.id));
     let wave: VcpMemoryDreamWaveResult | undefined;
     if (job.dreamAllowed) {
       if (!this.options.dreamWave) throw new Error('完整 DreamWave 尚未连接，本次梦境保持未完成。');
@@ -424,9 +427,10 @@ export class CompanionWorldService {
         dream = { ...imagined, sourceMessageIds: [...new Set(evidence.map(item => item.sourceMessageId))], evidence };
       }
     }
-    const maintenanceSeeds = companionAutomaticMaintenanceSeeds(seedAtoms);
+    const maintenanceSeeds = companionAutomaticMaintenanceSeeds(maintenanceAtoms);
+    const maintenanceSources = new Map(maintenanceReads.flatMap(read => read.memoryRead?.sources ?? []).map(source => [source.id, source]));
     const maintenance = maintenanceSeeds.length ? await generateCompanionMemoryMaintenance({ companion, conversation,
-      messages: [...realSeedSources.values()], relevantMemories: maintenanceSeeds, prohibitions: prohibitions.memoryProhibitions },
+      messages: [...maintenanceSources.values()], relevantMemories: maintenanceSeeds, prohibitions: prohibitions.memoryProhibitions },
       config, signal, { fetchFn: this.options.fetchFn }) : undefined;
     if (signal.aborted || this.closed) throw cancelled();
     await this.options.request({ type: 'world.job.complete', id: job.id, leaseToken, ...(dream ? { dream } : {}),

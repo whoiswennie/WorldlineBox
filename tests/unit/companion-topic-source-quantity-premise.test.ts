@@ -200,8 +200,7 @@ it.each(['reply', 'summary'] as const)('keeps source-only and identity prompts s
     else if (wire.purpose.endsWith('_actual_claims')) output = { clauses: [{ clauseIndex: 0, quantities: [{ setIndex: 0, usage: 'current_possessed_count', numberIndexes: [0] }] }] };
     else if (wire.purpose.endsWith('_role_verification')) output = { reviews: [{ candidateIndex: 0, numbers: [{ numberIndex: 0, collection: 'different',
       voice: 'narrated_fact', time: 'scene', relation: 'affirmed_holding', kind: 'count', reason: '明确另一组的实际数量。' }], all: { ...noAll, collection: 'different' } }] };
-    else if (wire.purpose.endsWith('_semantic_exemption_verification')) output = { reviews: wire.data.checks.map((check: { checkIndex: number }) => ({
-      checkIndex: check.checkIndex, verdict: 'positive_exemption', basis: 'different_inventory', evidenceRefs: [{ view: 'focus', clauseIndex: 0 }], reason: '本句明确另一组。' })) };
+    else if (wire.purpose.endsWith('_semantic_exemption_verification')) output = await declaredDisjointQuantityFixture({ system: request.messages[0].content, user: JSON.stringify(wire) });
     else throw new Error('Unexpected quantity phase in the isolated actual provider path.');
     return new Response(JSON.stringify({ choices: [{ message: { content: JSON.stringify(output) } }] }), { headers: { 'Content-Type': 'application/json' } });
   });

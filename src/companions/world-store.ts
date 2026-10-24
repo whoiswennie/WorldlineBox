@@ -54,6 +54,7 @@ type WorkProof = LearningWorkProof & CollaborationWorkProof;
 type StoredWork = CompanionWorldWork & WorkProof & { conversationId: string; sourceMessageId?: string; urgent: boolean; fixed: boolean; requestedAtReal: number; workOrderId?: string };
 type StoredVisit = CompanionWorldVisit & { settledAt?: number };
 type StoredJob = CompanionWorldJob & { memoryVersions?: Array<{ id: string; version: number }>; seedMemoryVersions?: Array<{ id: string; version: number }>;
+  maintenanceMemoryVersions?: Array<{ id: string; version: number }>;
   readSet?: Array<{ eventId: string; checksum: string; sourceChecksum?: string; sourceRevision?: number }> };
 type StoredEvent = CompanionWorldEvent & { visitId?: string; visitDecision?: 'allow' | 'deny'; privateOwner?: string; witnessIds?: string[]; sourceMemoryIds?: string[]; sourceMessageIds?: string[]; evidence?: Array<{ sourceMessageId: string; quote: string }>; positiveChange?: number; appraisalDay?: string;
   memoryVersions?: Array<{ id: string; version: number }>; relationshipDelta?: { affinity: number; trust: number }; withdrawn?: boolean };
@@ -1332,6 +1333,41 @@ export class CompanionWorldStore {
       .map(value => parse<CompanionMemory>(value.data)).find(note => companionAutomaticConsolidationHasNovelty([...originals, note]));
     return previous ? [...fresh.slice(0, COMPANION_SLEEP_SEED_LIMIT - 1), { id: previous.id, version: previous.version }] : fresh;
   }
+  /** New original experience may justify maintaining older, still-live originals.
+   * These are an independent readset, never extra reflection/watermark seeds. */
+  private maintenanceSeeds(companionId: string, seeds: readonly { id: string; version: number }[]): Array<{ id: string; version: number }> {
+    if (!seeds.length) return [];
+    if (seeds.length >= COMPANION_SLEEP_SEED_LIMIT) return [...seeds];
+    const first = parse<CompanionMemory>(row(this.db.prepare('SELECT data FROM vcp_memory_notes WHERE id=?').get(seeds[0]!.id)).data);
+    const cursorKey = 'world-maintenance-original-cursor/' + createHash('sha256').update(JSON.stringify([companionId, first.sourceConversationId])).digest('hex');
+    const storedCursor = this.db.prepare('SELECT value FROM metadata WHERE key=?').get(cursorKey);
+    const cursor = storedCursor ? Number(row(storedCursor).value) : 0;
+    const candidates = this.db.prepare(`SELECT n.rowid AS ordinal,n.data FROM vcp_memory_notes n WHERE n.companion_id=?
+      AND json_extract(n.data,'$.status')='indexed' AND json_extract(n.data,'$.archivedAt') IS NULL
+      AND json_extract(n.data,'$.sourceConversationId')=? AND json_array_length(json_extract(n.data,'$.sources'))>0
+      AND json_type(n.data,'$.metadata.consolidation') IS NULL
+      AND COALESCE(json_extract(n.data,'$.metadata.automaticConsolidation'),0)=0
+      AND COALESCE(json_extract(n.data,'$.metadata.sleepReflection'),0)=0
+      AND COALESCE(json_extract(n.data,'$.metadata.dream'),0)=0 AND COALESCE(json_extract(n.data,'$.metadata.simulation'),0)=0
+      AND json_type(n.data,'$.metadata.characterDevelopment') IS NULL
+      AND n.id NOT IN(SELECT value FROM json_each(?))
+      AND EXISTS(SELECT 1 FROM companion_world_dream_watermark w WHERE w.companion_id=n.companion_id AND w.memory_id=n.id AND w.version=json_extract(n.data,'$.version'))
+      ORDER BY (n.rowid<=?),n.rowid LIMIT ?`).all(companionId, first.sourceConversationId, JSON.stringify(seeds.map(note => note.id)),
+      Number.isSafeInteger(cursor) && cursor >= 0 ? cursor : 0, COMPANION_SLEEP_SEED_LIMIT) as Row[];
+    const selected = [...seeds];
+    for (const value of candidates) {
+      const note = parse<CompanionMemory>(value.data);
+      const sources = this.visibleSources({ companionId, conversationId: note.sourceConversationId }, note.sources.map(source => source.messageId));
+      const valid = sources.length === note.sources.length && note.sources.every(source => sources.some(actual => actual.id === source.messageId
+        && actual.conversationId === source.conversationId
+        && Number(row(this.db.prepare('SELECT revision FROM messages WHERE id=? AND conversation_id=?').get(actual.id, actual.conversationId) ?? {}).revision ?? 1) === source.revision
+        && createHash('sha256').update(actual.content).digest('hex') === source.checksum));
+      this.db.prepare('INSERT INTO metadata(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value').run(cursorKey, String(value.ordinal));
+      if (valid) selected.push({ id: note.id, version: note.version });
+      if (selected.length >= COMPANION_SLEEP_SEED_LIMIT) break;
+    }
+    return selected;
+  }
   /** Observe persisted scheduling state without ticking the world or drawing a dream. */
   private sleepPlan(companionId: string): CompanionWorldSleepPlan {
     const owner = this.db.prepare('SELECT data FROM companions WHERE id=? AND deleted_at IS NULL').get(companionId);
@@ -1818,7 +1854,10 @@ export class CompanionWorldStore {
       }); if (!found) return undefined;
       const job = parse<StoredJob>(row(found).data); job.status = 'running'; job.leaseToken = randomUUID(); job.attempts++;
       if (job.encounterMemberIds && !this.faceGroupAvailable(state, job.encounterMemberIds)) { job.status = 'done'; this.db.prepare("UPDATE companion_world_jobs SET status='done',lease_until=NULL,data=? WHERE id=?").run(JSON.stringify(job), job.id); for (const actor of state.actors) if (actor.meetingHold?.jobId === job.id) this.releaseMeeting(actor, true); this.save(state); return undefined; }
-      if (kind === 'dream') { job.memoryVersions = this.sleepSeeds(job.companionId); job.seedMemoryVersions = [...job.memoryVersions]; job.sourceMemoryIds = job.memoryVersions.map(memory => memory.id);
+      if (kind === 'dream') { job.seedMemoryVersions = this.sleepSeeds(job.companionId); job.sourceMemoryIds = job.seedMemoryVersions.map(memory => memory.id);
+        job.maintenanceMemoryVersions = this.maintenanceSeeds(job.companionId, job.seedMemoryVersions);
+        job.maintenanceMemoryIds = job.maintenanceMemoryVersions.map(memory => memory.id);
+        job.memoryVersions = [...new Map([...job.seedMemoryVersions, ...job.maintenanceMemoryVersions].map(memory => [memory.id, memory])).values()];
         if (!job.sourceMemoryIds.length) { job.status = 'done'; this.db.prepare("UPDATE companion_world_jobs SET status='done',lease_until=NULL,data=? WHERE id=?").run(JSON.stringify(job), job.id); return undefined; } }
       job.throughEventSequence = Number(row(this.db.prepare('SELECT COALESCE(MAX(sequence),0) AS n FROM companion_world_events').get()).n);
       if (kind === 'decision') {
@@ -1871,7 +1910,7 @@ export class CompanionWorldStore {
       }
       const usedInputs = new Set<string>(), usedSources = new Set<string>();
       if (command.maintenance) {
-        const audit = command.maintenance, seeds = new Map((job.seedMemoryVersions ?? []).map(note => [note.id, note.version]));
+        const audit = command.maintenance, seeds = new Map((job.maintenanceMemoryVersions ?? job.seedMemoryVersions ?? []).map(note => [note.id, note.version]));
         const reviewed = new Map(audit.reviewedMemoryVersions.map(note => [note.id, note.version]));
         if (job.kind !== 'dream' || reviewed.size !== audit.reviewedMemoryVersions.length
           || audit.reviewedMemoryVersions.some(note => seeds.get(note.id) !== note.version)

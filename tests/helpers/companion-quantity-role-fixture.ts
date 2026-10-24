@@ -1,15 +1,27 @@
 import type { TopicSourceQuantityReviewOptions } from '../../src/main/companions/topic-summary-quantity-review';
 
 type Infer = NonNullable<TopicSourceQuantityReviewOptions['verifyRoles']>;
+/** Explicit legacy test declaration only. This does not classify real text. */
+export function declaredAllProjectionFixture(check: { evidence: Array<{ view: string; clauseIndex: number; text: string }> },
+  statement: 'affirmative_whole_set' | 'explicit_not_all' | 'no_whole_set_assertion' | 'ambiguous' = 'no_whole_set_assertion') {
+  const focus = check.evidence.find(item => item.view === 'focus')!;
+  const evidenceRef = { view: 'focus' as const, clauseIndex: focus.clauseIndex };
+  return { statement, coverage: 'whole_focus' as const, reviewedFocusRef: evidenceRef,
+    witnesses: statement === 'ambiguous' ? [] : (statement === 'affirmative_whole_set'
+      ? ['whole_set_quantifier_or_collective_domain', 'scoped_possession_predicate'] as const
+      : statement === 'explicit_not_all' ? ['negative_or_limited_scope'] as const : ['target_scope'] as const)
+      .map(role => ({ role, evidenceRef, quote: focus.text.slice(0, 600) })) };
+}
 /** The caller explicitly declares this legacy semantic fixture disjoint.
  * Production never receives this test receipt, and uncertain/new tests must
  * supply their own independent decision instead of using this declaration. */
 export const declaredDisjointQuantityFixture: NonNullable<TopicSourceQuantityReviewOptions['verifyDisjointWaivers']> = async context => {
   const { checks } = JSON.parse(context.user).data as { checks: Array<{ checkIndex: number;
-    evidence: Array<{ view: string; clauseIndex: number }> }> };
+    target: { kind: string }; evidence: Array<{ view: string; clauseIndex: number; text: string }> }> };
   return { reviews: checks.map(check => { const focus = check.evidence.find(item => item.view === 'focus')!;
     return { checkIndex: check.checkIndex, verdict: 'positive_exemption', basis: 'different_inventory',
-      evidenceRefs: [{ view: focus.view, clauseIndex: focus.clauseIndex }], reason: '仅此test声明的原异组语义，独立fixture准入。' }; }) };
+      evidenceRefs: [{ view: focus.view, clauseIndex: focus.clauseIndex }], reason: '仅此test声明的原异组语义，独立fixture准入。',
+      ...(check.target.kind === 'all' ? { allProjection: declaredAllProjectionFixture(check, 'ambiguous') } : {}) }; }) };
 };
 
 /** Legacy mechanism tests already declare semantic roles rather than measure
@@ -26,7 +38,7 @@ export function withDeclaredQuantitySemanticFixture<T extends TopicSourceQuantit
     return response;
   }, verifyDisjointWaivers: async context => {
     const { checks } = JSON.parse(context.user).data as { checks: Array<{ checkIndex: number; candidateIndex: number;
-      target: { kind: string; numberIndex?: number }; evidence: Array<{ view: string; clauseIndex: number }> }> };
+      target: { kind: string; numberIndex?: number }; evidence: Array<{ view: string; clauseIndex: number; text: string }> }> };
     return { reviews: checks.map(check => {
       const candidate = declared.find(item => item.candidateIndex === check.candidateIndex)!;
       const axes = check.target.kind === 'all' ? candidate.all : candidate.numbers.find(item => item.numberIndex === check.target.numberIndex)!;
@@ -41,7 +53,9 @@ export function withDeclaredQuantitySemanticFixture<T extends TopicSourceQuantit
                       : axes.relation === 'unrelated' ? 'unrelated_target' : 'none';
       const focus = check.evidence.find(item => item.view === 'focus')!;
       return { checkIndex: check.checkIndex, verdict: basis === 'none' ? 'unresolved' : 'positive_exemption', basis,
-        evidenceRefs: [{ view: focus.view, clauseIndex: focus.clauseIndex }], reason: '仅原机制test已声明的语义前提；不证明真实模型准确率。' };
+        evidenceRefs: [{ view: focus.view, clauseIndex: focus.clauseIndex }], reason: '仅原机制test已声明的语义前提；不证明真实模型准确率。',
+        ...(check.target.kind === 'all' ? { allProjection: declaredAllProjectionFixture(check,
+          axes.relation === 'missing' ? 'explicit_not_all' : axes.relation === 'not_affirmed_all' ? 'no_whole_set_assertion' : 'ambiguous') } : {}) };
     }) };
   } };
 }
