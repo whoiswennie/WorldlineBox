@@ -234,7 +234,7 @@ export function deriveQuantityAuthorAllProjection(projection: QuantityAuthorAllP
   if (projection.opposition !== 'none_in_reviewed_scope') return result('ambiguous', 'all_projection_opposed_or_unresolved_scope');
   const operator = has('exhaustive_coverage_operator'), predicate = has('scoped_possession_predicate');
   const negative = has('negative_or_limited_scope');
-  if (projection.exhaustivity === 'not_asserted' && (negative || operator)
+  if (projection.exhaustivity === 'not_asserted' && operator
     || projection.holding === 'not_asserted' && (predicate || negative || operator
       || projection.exhaustivity === 'exhaustive' || projection.exhaustivity === 'explicit_not_exhaustive')
     || projection.exhaustivity === 'exhaustive' && projection.holding === 'affirmed' && negative)
@@ -298,7 +298,7 @@ export function admitQuantityDisjointWaivers<T extends QuantityCollectionReview>
                   ? check.target.kind === 'all' && quantityAuthorAllProjectionAdmission(candidate, raw).derivedStatement === 'affirmative_whole_set'
                     ? 'whole_set_projection_incompatible_basis' : author.failure ?? 'all_projection_requires_independent_safe_or' : undefined;
     const admitted = admissionFailure === undefined;
-    return { protocol: 'quantity_semantic_exemption_v6', inputChecksum: digest(JSON.stringify(input)), authorityChecksum: digest(JSON.stringify(authority)),
+    return { protocol: 'quantity_semantic_exemption_v7', inputChecksum: digest(JSON.stringify(input)), authorityChecksum: digest(JSON.stringify(authority)),
       checkIndex: review.checkIndex, candidateIndex: check.candidateIndex, target: check.target, verdict: review.verdict, basis: review.basis,
       evidenceRefs: review.evidenceRefs, admitted, ...(admissionFailure ? { admissionFailure } : {}), reason: review.reason,
       // These diagnostics stay host-side: neither prior axes nor arithmetic

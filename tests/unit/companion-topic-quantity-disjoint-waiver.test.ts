@@ -152,7 +152,7 @@ it.each(['unresolved', 'no_exemption', 'positive_exemption'] as const)('runs the
   expect(verifyDisjointWaivers).toHaveBeenCalledTimes(1); expect(JSON.stringify(r)).toBe(snapshot);
   if (verdict === 'positive_exemption') expect(correction).toBeUndefined();
   else { expect(correction).toContain('unresolved_semantic_exemption'); expect(correction).not.toContain('mathematical_contradiction');
-    expect(correction).toContain('quantity_semantic_exemption_v6'); expect(correction).toContain('"admitted":false'); }
+    expect(correction).toContain('quantity_semantic_exemption_v7'); expect(correction).toContain('"admitted":false'); }
 });
 
 it('binds the ephemeral receipt to exact source/draft authority without changing its independent input', () => {
@@ -422,7 +422,7 @@ it.each(['not_affirmed_all', 'ambiguous'])('cannot waive a witnessed affirmative
   const r: QuantityCollectionReview = { candidateIndex: 0, numbers: [], all: { ...noAll, relation } }, data = dataFor(c, r), value = decision(data, 'positive_exemption');
   value.reviews[0]!.basis = 'unrelated_target'; const result = admit(r, value, data, c);
   expect(result.receipts[0]!.admissionFailure).toBe('whole_set_projection_incompatible_basis');
-  expect(result.receipts[0]!.protocol).toBe('quantity_semantic_exemption_v6'); expect(result.pending).toHaveLength(1);
+  expect(result.receipts[0]!.protocol).toBe('quantity_semantic_exemption_v7'); expect(result.pending).toHaveLength(1);
   expect(result.pending[0]!.diagnosticType).toBe('unresolved_semantic_exemption');
 });
 
@@ -679,13 +679,25 @@ it.each(['competing_whole_possession_assertions', 'unresolved_possible_competiti
 
 it.each([
   { exhaustivity: 'not_asserted' as const, holding: 'ambiguous' as const, role: 'exhaustive_coverage_operator' as const },
-  { exhaustivity: 'not_asserted' as const, holding: 'ambiguous' as const, role: 'negative_or_limited_scope' as const },
   { exhaustivity: 'ambiguous' as const, holding: 'not_asserted' as const, role: 'scoped_possession_predicate' as const },
   { exhaustivity: 'ambiguous' as const, holding: 'not_asserted' as const, role: 'exhaustive_coverage_operator' as const },
   { exhaustivity: 'exhaustive' as const, holding: 'not_asserted' as const, role: 'target_scope' as const },
 ])('keeps contradictory absence IR pending even if another strong role is missing: %j', test => {
   const text = '她把钥匙全部带在身上。', ir = allIR(text, { exhaustivity: test.exhaustivity, holding: test.holding }, [[test.role, text]]);
   expect(deriveQuantityAuthorAllProjection(ir, 0)).toEqual({ statement: 'ambiguous', failure: 'all_projection_inconsistent_ir' });
+});
+
+it('allows actual limited and negative holding to coexist with no positive exhaustive assertion without borrowing numeric authority', async () => {
+  const text = '她实际只有第1和第3把钥匙，第2把仍未找到。', ir = allIR(text,
+    { domainScope: 'whole_collection_candidate', holding: 'affirmed', exhaustivity: 'not_asserted' },
+    [['domain_reference', '钥匙'], ['scoped_possession_predicate', '她实际只有'], ['negative_or_limited_scope', '第2把仍未找到']]);
+  expect(deriveQuantityAuthorAllProjection(ir, 0).statement).toBe('no_whole_set_assertion');
+  expect(quantityAuthorAllProjectionAdmission({ ...candidate(text), authorAllProjection: ir }, noAll).safeAbsence).toBe(true);
+  const r: QuantityCollectionReview = { candidateIndex: 0, numbers: [number({ collection: 'same', kind: 'member' }),
+    number({ numberIndex: 1, collection: 'same', kind: 'member' }), number({ numberIndex: 2, collection: 'same', kind: 'member', relation: 'missing' })],
+    all: { ...noAll, collection: 'same' } }, reader = vi.fn<Infer>();
+  expect(await production(text, r, reader, false, true, ir, { '0:0:2': 'explicit_nonpossession' })).toBeUndefined();
+  expect(reader).not.toHaveBeenCalled();
 });
 
 it('keeps declared positive and negative whole-holding scopes unresolved even when the opposition field omits the conflict', () => {
