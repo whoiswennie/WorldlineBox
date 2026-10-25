@@ -65,7 +65,7 @@ test('archives real daily experiences, opens details, preserves names and isolat
     await page.locator('[data-application-module="companions"]').click();
     const owners = (await request(page, { type: 'state' })).state!.companions.slice(0, 2);
     expect(owners).toHaveLength(2);
-    const records: Array<{ owner: Companion; entry: CompanionExperienceEntry; prompt: string }> = [];
+    const records: Array<{ owner: Companion; entry: CompanionExperienceEntry; speech: CompanionExperienceEntry; prompt: string }> = [];
     for (const [index, owner] of owners.entries()) {
       if (owner.active === false) await request(page, { type: 'companion.set-active', id: owner.id, active: true, expectedRevision: owner.revision });
       const conversationId = (await request(page, { type: 'conversation.open', companionId: owner.id })).conversation!.id;
@@ -99,12 +99,18 @@ test('archives real daily experiences, opens details, preserves names and isolat
       expect(entry.day).toBe(await localDay(page, entry.occurredAt, entry.timeZone));
       expect(entry.archiveRelativePath).toBe(`experiences/${owner.id}/${entry.day}/${entry.id}`);
       expect(entries.some(item => item.source.kind === 'world_event'), 'Real scheduler movement must also reach the daily life archive.').toBe(true);
-      records.push({ owner, entry, prompt });
+      const speech = entries.find(item => item.source.kind === 'message' && item.source.id === delivered!.id);
+      expect(speech, 'The actual published companion message must reach its own timeline.').toBeDefined();
+      expect(speech).toMatchObject({ companionId: owner.id, day, kind: 'activity', origin: 'action', status: 'completed' });
+      records.push({ owner, entry, speech: speech!, prompt });
     }
     const [first, second] = records;
     let dialog = await openExperiences(page, first!.owner);
     await expect(dialog.getByLabel('经历日期', { exact: true })).toHaveValue(await localDay(page));
     await dialog.getByLabel('经历日期', { exact: true }).fill(first!.entry.day);
+    await dialog.locator(`[data-experience-id="${first!.speech.id}"]`).getByRole('button').click();
+    await expect(dialog.getByRole('complementary', { name: '经历详情', exact: true })).toContainText(first!.prompt);
+    await expect(dialog.getByRole('complementary', { name: '经历详情', exact: true })).toContainText('本人在原会话正式发布');
     const row = dialog.locator(`[data-experience-id="${first!.entry.id}"]`);
     await expect(row).toBeVisible();
     await expect(row.locator('time')).toHaveAttribute('datetime', first!.entry.occurredAt);

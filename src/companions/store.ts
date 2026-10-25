@@ -104,6 +104,12 @@ export class CompanionsStore {
     mkdirSync(path.dirname(databasePath), { recursive: true });
     this.#db = new Database(databasePath);
     this.#experience = new CompanionExperienceStore(this.#db, path.dirname(databasePath), entry => {
+      if (entry.source.kind === 'message') {
+        const message = this.#db.prepare("SELECT revision FROM messages WHERE id=? AND author_id=? AND conversation_id=? AND kind='text' AND status='sent' AND length(trim(content))>0 AND (json_extract(request_fingerprint,'$.loopStep') IS NULL OR EXISTS(SELECT 1 FROM metadata final WHERE final.key='message-loop/'||messages.id AND json_extract(final.value,'$.status')='done'))")
+          .get(entry.source.id, entry.companionId, entry.source.conversationId ?? '') as { revision: number } | undefined;
+        return !!message && message.revision === entry.source.version
+          && this.#memory.sourcesFilter({ companionId: entry.companionId, conversationId: entry.source.conversationId! }, [entry.source.id]).some(source => source.authorId === entry.companionId);
+      }
       if (entry.source.kind === 'action') return !this.#db.prepare('SELECT 1 FROM metadata WHERE key=?').get(executionSourceInvalidKey('action', entry.source.id));
       if (entry.source.kind === 'memory') {
         const found = this.#db.prepare('SELECT 1 FROM vcp_memory_notes WHERE id=? AND companion_id=?').get(entry.source.id, entry.companionId);
@@ -121,7 +127,8 @@ export class CompanionsStore {
       }
       const ids = this.#experienceSourceIds(entry);
       return ids === undefined || this.#memory.sourcesFilter(this.#memory.sources.ownerScope(entry.companionId), ids).length === ids.length;
-    }, entry => this.#memory.sourcesFilter(this.#memory.sources.ownerScope(entry.companionId), this.#experienceSourceIds(entry) ?? []));
+    }, entry => this.#memory.sourcesFilter(entry.source.kind === 'message' && entry.source.conversationId
+      ? { companionId: entry.companionId, conversationId: entry.source.conversationId } : this.#memory.sources.ownerScope(entry.companionId), this.#experienceSourceIds(entry) ?? []));
     this.#topics = new CompanionTopicStore(this.#db, id => { this.#requireConversation(id); return this.#memberIds(id); }, receipt => this.recordTopicParticipation(receipt),
       (conversationId, topicId, readerId) => this.#social.topicChanged(conversationId, topicId, readerId),
       (conversationId, companionId, ids) => this.#memory.sources.checkpointSourcesValid({ companionId, conversationId }, ids),
@@ -865,6 +872,7 @@ export class CompanionsStore {
   /** Exact typed producer fields, never free metadata or quoted source JSON. */
   #experienceSourceIds(entry: CompanionExperienceEntry): string[] | undefined {
     const kind = entry.source.kind;
+    if (kind === 'message') return [entry.source.id];
     const query = kind === 'schedule' ? 'SELECT s.data FROM companion_schedule_occurrences o JOIN companion_schedules s ON s.id=o.schedule_id WHERE o.id=? AND s.companion_id=?'
       : kind === 'activity' ? 'SELECT data FROM companion_activity_tasks WHERE id=? AND companion_id=?'
         : kind === 'learning_round' ? 'SELECT data FROM companion_learning_goal_rounds WHERE id=? AND companion_id=?'
@@ -1164,7 +1172,9 @@ export class CompanionsStore {
           this.#db.prepare('DELETE FROM message_attachments WHERE message_id=?').run(checkpoint.messageId);
           fileIds.forEach((attachmentId, ordinal) => this.#db.prepare('INSERT INTO message_attachments(message_id,attachment_id,ordinal) VALUES(?,?,?)').run(checkpoint.messageId, attachmentId, ordinal));
         }
-        this.#setMetadata('message-loop/' + checkpoint.messageId, checkpoint);
+        const previousPublishedAt = priorBubble ? decode<{ updatedAt?: string }>(row(priorBubble).value).updatedAt : undefined;
+        this.#setMetadata('message-loop/' + checkpoint.messageId, { ...checkpoint,
+          updatedAt: checkpoint.status === 'done' && previous?.status === 'done' ? previousPublishedAt ?? message.createdAt : stamp() });
         const content = companionLoopPublishedText(checkpoint.turns, checkpoint.draft);
         if (content.length > 65536) throw new Error('完整话题正文或回复正文超过65536字符，不能静默截断已经接受的循环步骤。');
         const exactFormalReplay = checkpoint.status === 'done' && previous?.status === 'done' && message.content === content;

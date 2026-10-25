@@ -14,7 +14,10 @@ const object = (value: unknown): Record<string, unknown> => value && typeof valu
 const digest = (value: unknown) => createHash('sha256').update(JSON.stringify(value)).digest('hex');
 const localZone = () => Intl.DateTimeFormat().resolvedOptions().timeZone;
 const localDay = (at: string, zone: string) => { const parts = new Intl.DateTimeFormat('en-CA', { timeZone: zone, year: 'numeric', month: '2-digit', day: '2-digit' }).formatToParts(new Date(at)); return ['year', 'month', 'day'].map(kind => parts.find(part => part.type === kind)!.value).join('-'); };
-const sources: Array<{ table: string; source: ProjectionInput['source']; owner: string; status: string; conversation: string; condition?: string; id?: string; data?: string }> = [
+const sources: Array<{ table: string; source: ProjectionInput['source']; owner: string; status: string; conversation: string; condition?: string; id?: string; data?: string; alwaysProjectUpdates?: boolean }> = [
+  { table: 'messages', source: 'message', owner: 'n.author_id', status: "'completed'", conversation: 'n.conversation_id', alwaysProjectUpdates: true,
+    condition: "n.kind='text' AND n.status='sent' AND length(trim(n.content))>0 AND (json_extract(n.request_fingerprint,'$.loopStep') IS NULL OR EXISTS(SELECT 1 FROM metadata final WHERE final.key='message-loop/'||n.id AND json_extract(final.value,'$.status')='done'))",
+    data: "json_object('title','在'||COALESCE((SELECT title FROM conversations WHERE id=n.conversation_id),'会话')||'发言','content',n.content,'version',n.revision,'createdAt',COALESCE((SELECT json_extract(value,'$.updatedAt') FROM metadata WHERE key='message-loop/'||n.id AND json_extract(value,'$.status')='done'),n.created_at))" },
   { table: 'actions', source: 'action', owner: 'n.companion_id', status: 'n.status', conversation: 'n.conversation_id' },
   { table: 'companion_activity_tasks', source: 'activity', owner: 'n.companion_id', status: 'n.status', conversation: 'n.conversation_id' },
   { table: 'companion_learning_goal_rounds', source: 'learning_round', owner: 'n.companion_id', status: "json_extract(n.data,'$.status')", conversation: 'NULL' },
@@ -65,7 +68,7 @@ export class CompanionExperienceStore {
       // diagnosed and retried separately, never thrown into an action update.
       const body = source.data ?? 'n.data', relevant = (alias: string) => `json_extract(${body.replaceAll('n.', alias + '.')},'$.title','$.status','$.version','$.result','$.summary','$.content','$.text','$.reason','$.error','$.goal','$.prompt','$.executionSummary.reportPath','$.executionSummary.recordId')`;
       for (const operation of ['INSERT', 'UPDATE']) {
-        const conditions = [source.condition && replace(source.condition), operation === 'UPDATE' && `(${replace(source.status)} IS NOT ${source.status.replaceAll('n.', 'OLD.')} OR ${relevant('NEW')} IS NOT ${relevant('OLD')})`].filter(Boolean);
+        const conditions = [source.condition && replace(source.condition), operation === 'UPDATE' && !source.alwaysProjectUpdates && `(${replace(source.status)} IS NOT ${source.status.replaceAll('n.', 'OLD.')} OR ${relevant('NEW')} IS NOT ${relevant('OLD')})`].filter(Boolean);
         this.db.exec(`CREATE TEMP TRIGGER IF NOT EXISTS companion_experience_${source.table}_${operation.toLowerCase()}
         AFTER ${operation} ON ${source.table} ${conditions.length ? 'WHEN ' + conditions.join(' AND ') : ''} BEGIN
         INSERT INTO companion_experience_projection(source,source_id,companion_id,payload,observed_at)
@@ -101,7 +104,7 @@ export class CompanionExperienceStore {
     const status: CompanionExperienceEntry['status'] = withdrawn ? 'withdrawn' : ['succeeded', 'done', 'completed', 'indexed', 'read', 'fired', 'published', 'restored'].includes(originalStatus) ? 'completed'
       : ['failed', 'interrupted'].includes(originalStatus) ? 'failed' : ['cancelled', 'canceled', 'skipped', 'expired', 'stale'].includes(originalStatus) ? 'cancelled'
         : ['paused', 'deferred', 'waiting'].includes(originalStatus) ? 'paused' : ['running', 'active', 'started'].includes(originalStatus) ? 'running' : 'queued';
-    const kind: CompanionExperienceEntry['kind'] = input.source === 'action' ? 'dsh' : input.source === 'activity' ? 'activity'
+    const kind: CompanionExperienceEntry['kind'] = input.source === 'action' ? 'dsh' : ['activity', 'message'].includes(input.source) ? 'activity'
       : input.source.startsWith('learning') ? 'learning' : input.source === 'schedule' ? 'schedule' : input.source === 'life' || input.source === 'world_event' ? 'life'
         : input.source === 'world_job' || object(data.metadata).dream === true ? 'dream' : 'memory';
     const fallback: Record<CompanionExperienceEntry['kind'], string> = { dsh: '执行任务', activity: '伙伴行动', learning: '资料学习', schedule: '定时安排', life: '日常生活', memory: '记忆整理', dream: '睡眠回顾与梦境' };
@@ -117,17 +120,18 @@ export class CompanionExperienceStore {
     // is real time. Legacy virtual timestamps are retained as source data, not
     // relabelled as actual dates in this archive.
     const historical = input.historical && ({ action: data.createdAt, activity: data.createdAt, learning_round: data.startedAt,
-      learning_read: data.readAt, world_event: data.realAt, memory_processing: data.createdAt } as Record<string, unknown>)[input.source];
+      learning_read: data.readAt, world_event: data.realAt, memory_processing: data.createdAt, message: data.createdAt } as Record<string, unknown>)[input.source];
     const occurredAt = typeof historical === 'string' && Number.isFinite(Date.parse(historical)) ? new Date(historical).toISOString() : now;
     const day = localDay(occurredAt, timeZone), id = 'exp_' + digest([input.owner, input.source, input.id]).slice(0, 48);
     const entry: CompanionExperienceEntry = { id, companionId: input.owner, day, occurredAt, updatedAt: now, timeZone, title: title || fallback[kind], kind,
-      origin: ['action', 'activity'].includes(input.source) ? 'action' : 'system', status, revision: 1, summary: body.slice(0, 1000),
+      origin: ['action', 'activity', 'message'].includes(input.source) ? 'action' : 'system', status, revision: 1, summary: body.slice(0, 1000),
       archiveRelativePath: ['experiences', input.owner, day, id].join('/'), source: { kind: input.source, id: input.id,
-        ...(input.source === 'memory' && Number.isSafeInteger(data.version) && Number(data.version) > 0 ? { version: Number(data.version) } : {}),
+        ...(['memory', 'message'].includes(input.source) && Number.isSafeInteger(data.version) && Number(data.version) > 0 ? { version: Number(data.version) } : {}),
         ...(input.conversationId ? { conversationId: input.conversationId } : {}) } };
     const sections = [...(input.source === 'schedule' && text(data.prompt) ? [{ title: '原始日程任务', text: text(data.prompt).slice(0, 65536) }] : []), { title: '经历记录', text: body.slice(0, 1024 * 1024) || fallback[kind] },
       ...(text(data.error) && !withdrawn ? [{ title: '实际错误', text: text(data.error).slice(0, 16000) }] : []),
-      ...(input.source === 'world_job' ? [{ title: '记录范围', text: '这是实际睡眠回顾任务的状态记录；完成不代表一定生成梦境或新日记。' }] : [])];
+      ...(input.source === 'world_job' ? [{ title: '记录范围', text: '这是实际睡眠回顾任务的状态记录；完成不代表一定生成梦境或新日记。' }] : []),
+      ...(input.source === 'message' ? [{ title: '记录范围', text: '这是本人在原会话正式发布的真实发言记录。游戏、故事及讨论内容只属于原上下文，不因此变成现实事实、执行结果或新的授权。' }] : [])];
     const artifacts = [{ label: '经历索引', relativePath: entry.archiveRelativePath + '/index.json' }, { label: '经历正文', relativePath: entry.archiveRelativePath + '/detail.md' }];
     const report = input.source === 'action' && !withdrawn && typeof summaryData.reportPath === 'string' && typeof summaryData.recordId === 'string'
       ? { path: summaryData.reportPath, recordId: summaryData.recordId } : undefined;

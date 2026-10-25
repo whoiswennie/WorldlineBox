@@ -10,7 +10,7 @@ export const companionExperienceEntrySchema = z.object({ id, companionId: owner,
   occurredAt: z.iso.datetime(), updatedAt: z.iso.datetime(), timeZone: z.string().max(100), title: z.string().min(1).max(160),
   kind: companionExperienceKindSchema, origin: z.enum(['action', 'system']), status: companionExperienceStatusSchema,
   revision: z.number().int().positive(), summary: z.string().max(1000).optional(), archiveRelativePath: z.string().max(4096),
-  source: z.object({ kind: z.enum(['action', 'activity', 'learning_round', 'learning_read', 'schedule', 'life', 'world_job', 'memory', 'world_event', 'memory_processing']),
+  source: z.object({ kind: z.enum(['action', 'activity', 'message', 'learning_round', 'learning_read', 'schedule', 'life', 'world_job', 'memory', 'world_event', 'memory_processing']),
     id: z.string().min(1).max(180), conversationId: owner.optional(), version: z.number().int().positive().optional() }),
 });
 export const companionExperienceDayPageSchema = z.object({ companionId: owner, timeZone: z.string(),
