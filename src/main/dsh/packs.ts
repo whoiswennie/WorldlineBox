@@ -2,14 +2,13 @@ import { randomUUID } from 'node:crypto';
 import { copyFile, lstat, mkdir, readFile, readdir, realpath, rename, writeFile } from './disk';
 import path from 'node:path';
 import { z } from 'zod';
+import YAML from 'yaml';
 import { dshPackSchema, type DshInstance, type DshLauncherRequest, type DshLauncherResponse, type DshPack, type DshRuntime } from '../../shared/dsh-launcher';
-import { dshNodePackRuntimeLockSchema, dshPackRuntimeV1Schema, type DshNodePackRuntimeLock } from '../../shared/dsh-pack-runtime';
+import { dshNodePackRuntimeLockSchema, type DshNodePackRuntimeLock } from '../../shared/dsh-pack-runtime';
 import { extractSealedArchive, parseSealedManifest, validateSealedDirectory, writeSealedArchive, type SealedArchiveManifest } from './archive';
 import { atomicJson, contained, copyTree, inventoryTree, readJson, removeManaged } from './files';
 import type { OperationContext, OperationStore } from './operations';
 import type { RuntimeServiceLike } from './runtime-service';
-import { installPackPnpmMetadata, sealPackPnpmMetadata, validatePackPnpmMetadata } from './pack-pnpm-metadata';
-import { writeSharedModels } from './shared-settings';
 import { validateOfficialNodeProgram } from './node-runtime-service';
 import { validatePortableNodeRuntimeLock } from './node-runtime-lock';
 import { nodeRuntimePayloadSha256 } from './node-runtime-payload';
@@ -19,19 +18,17 @@ export interface PackInstanceService {
   create(name: string, runtimeId: string, operation?: OperationContext): Promise<DshInstance>;
   getRoot(id: string): string;
   withStoppedInstance<T>(id: string, work: () => Promise<T>): Promise<T>;
+  installDependencies(id: string, signal?: AbortSignal): Promise<void>;
   remove(id: string): Promise<void>;
 }
 const packShape = { name: z.string().trim().min(1).max(100), version: z.string().trim().min(1).max(100), createdAt: z.string() };
-const packMetadataSchema = z.discriminatedUnion('format', [
-  z.object({ ...packShape, format: z.literal('worldlinebox-dshpack-v1'), runtime: dshPackRuntimeV1Schema }),
-  z.object({ ...packShape, format: z.literal('worldlinebox-dshpack-v2'), runtime: dshNodePackRuntimeLockSchema }),
-]);
+const packMetadataSchema = z.object({ ...packShape, format: z.literal('worldlinebox-dshpack-v2'), runtime: dshNodePackRuntimeLockSchema });
 export type PackManifest = z.infer<typeof packMetadataSchema> & SealedArchiveManifest;
 
 function parsePackManifest(value: unknown): PackManifest {
   const manifest = { ...parseSealedManifest(value), ...packMetadataSchema.parse(value) };
   for (const file of manifest.files) {
-    if (file.path !== 'home/cordis.patch.yml' && !(manifest.format === 'worldlinebox-dshpack-v2' && file.path === 'runtime-lock/package-lock.json')
+    if (file.path !== 'home/cordis.patch.yml' && !(file.path === 'runtime-lock/package-lock.json')
       && !/^(?:home\/(?:profiles|skills|skills-disabled)|agents\/skills)\//.test(file.path)) throw new Error('A DSH pack contains private instance data or an unexpected file.');
     if (excludedProfilePath(file.path)) throw new Error('A DSH pack contains credentials, environment files or private state.');
   }
@@ -55,7 +52,7 @@ function excludedProfilePath(relative: string): boolean {
   if (!relative) return false;
   const segments = relative.replaceAll('\\', '/').split('/');
   if (segments.some(segment => /^\.env(?:\.|$)|^\.credentials(?:\.|$)|^\.anonymous-user-id$/i.test(segment))) return true;
-  if (segments.includes('node_modules')) return false;
+  if (segments.includes('node_modules')) return true;
   return segments.some(segment => /^\.env(?:\.|$)|^\.credentials(?:\.|$)|^\.anonymous-user-id$|^(?:sessions|storages|attachments|logs|cache|caches)$/i.test(segment)) || segments.at(-1) === 'lock' || segments.at(-1) === 'cordis.yml';
 }
 
@@ -78,17 +75,23 @@ async function auditPackData(directory: string): Promise<void> {
   await walk(directory, '');
 }
 
-async function removeSharedModelSettings(directory: string): Promise<void> {
-  const homePatch = path.join(directory, 'home', 'cordis.patch.yml');
-  const homeText = await readFile(homePatch, 'utf8').catch((error: NodeJS.ErrnoException) => { if (error.code === 'ENOENT') return undefined; throw error; });
-  if (homeText !== undefined) await writeFile(homePatch, writeSharedModels(homeText, {}));
-  const profiles = path.join(directory, 'home', 'profiles');
-  for (const entry of await readdir(profiles, { withFileTypes: true }).catch((error: NodeJS.ErrnoException) => { if (error.code === 'ENOENT') return []; throw error; })) {
-    if (!entry.isDirectory()) continue;
-    const patch = path.join(profiles, entry.name, 'cordis.patch.yml');
-    const text = await readFile(patch, 'utf8').catch((error: NodeJS.ErrnoException) => { if (error.code === 'ENOENT') return undefined; throw error; });
-    if (text !== undefined) await writeFile(patch, writeSharedModels(text, {}));
-  }
+/** The launcher supplies its own bridge on installation; never distribute its local file dependency. */
+async function omitLauncherBridge(home: string): Promise<void> {
+  const profile = path.join(home, 'profiles', 'web'), name = '@worldlinebox/dsh-bridge';
+  const file = path.join(profile, 'package.json');
+  const manifest = await readJson<{ dependencies?: Record<string, string>; dsh?: { profile?: { bundles?: string[] } } }>(file);
+  if (!manifest?.dependencies?.[name]) return;
+  delete manifest.dependencies[name];
+  const bundles = manifest.dsh?.profile?.bundles;
+  if (bundles) manifest.dsh!.profile!.bundles = bundles.filter(bundle => bundle !== name);
+  await atomicJson(file, manifest);
+  const lockFile = path.join(profile, 'pnpm-lock.yaml');
+  const text = await readFile(lockFile, 'utf8').catch(error => { if ((error as NodeJS.ErrnoException).code === 'ENOENT') return undefined; throw error; });
+  if (text === undefined) return;
+  const lock = YAML.parse(text) as { importers?: Record<string, Record<string, Record<string, unknown>>>; packages?: Record<string, unknown>; snapshots?: Record<string, unknown> };
+  for (const importer of Object.values(lock.importers ?? {})) for (const group of ['dependencies', 'devDependencies', 'optionalDependencies']) delete importer[group]?.[name];
+  for (const group of [lock.packages, lock.snapshots]) for (const key of Object.keys(group ?? {})) if (key.startsWith(name + '@')) delete group![key];
+  await writeFile(lockFile, YAML.stringify(lock));
 }
 
 export class PackService {
@@ -110,7 +113,6 @@ export class PackService {
         const manifest = parsePackManifest(await readJson(path.join(this.directory, entry, 'manifest.json')));
         await validateSealedDirectory(path.join(this.directory, entry, 'data'), manifest);
         await auditPackData(path.join(this.directory, entry, 'data'));
-        await validatePackPnpmMetadata(path.join(this.directory, entry, 'data'));
         await this.validateRuntimeLock(manifest, path.join(this.directory, entry, 'data'));
         const runtime = await this.resolveRuntime(manifest);
         this.records.push({ id: entry, name: manifest.name, version: manifest.version, runtimeId: runtime.id, runtimeVersion: runtime.version,
@@ -143,7 +145,6 @@ export class PackService {
   private async matchesRuntime(runtime: DshRuntime, manifest: PackManifest, signal?: AbortSignal): Promise<boolean> {
     const expected = manifest.runtime;
     if (runtime.version !== expected.version || runtime.platform !== expected.platform || runtime.adapter !== expected.adapter) return false;
-    if (manifest.format === 'worldlinebox-dshpack-v1') return runtime.contentSha256 === expected.contentSha256;
     const actual = await this.nodeIdentity(runtime, signal); const lock = manifest.runtime;
     return actual.sourceSha256 === lock.sourceSha256 && actual.npmIntegrity === lock.npmIntegrity && actual.dependencyLockSha256 === lock.dependencyLockSha256
       && actual.nodeVersion === lock.nodeVersion && actual.npmVersion === lock.npmVersion && actual.nodeExecutableSha256 === lock.nodeExecutableSha256 && actual.payloadSha256 === lock.payloadSha256;
@@ -152,7 +153,7 @@ export class PackService {
     for (const runtime of this.options.runtimes.list()) {
       if (await this.matchesRuntime(runtime, manifest, operation?.signal)) return runtime;
     }
-    if (manifest.format === 'worldlinebox-dshpack-v2' && data && operation && this.options.ensureRuntime) {
+    if (data && operation && this.options.ensureRuntime) {
       const runtime = await this.options.ensureRuntime(manifest.runtime, path.join(data, 'runtime-lock', 'package-lock.json'), operation);
       if (!await this.matchesRuntime(runtime, manifest, operation.signal)) throw new Error('The installed runtime differs from the pack’s recorded source, dependency graph or interpreter.');
       return runtime;
@@ -160,7 +161,7 @@ export class PackService {
     throw new Error(`Install the exact DSH runtime ${manifest.runtime.version} (${manifest.runtime.contentSha256.slice(0, 12)}) before importing or installing this pack.`);
   }
   private async validateRuntimeLock(manifest: PackManifest, data: string, signal?: AbortSignal): Promise<void> {
-    if (manifest.format === 'worldlinebox-dshpack-v2') await validatePortableNodeRuntimeLock(manifest.runtime, path.join(data, 'runtime-lock', 'package-lock.json'), signal);
+    await validatePortableNodeRuntimeLock(manifest.runtime, path.join(data, 'runtime-lock', 'package-lock.json'), signal);
   }
   private async load(id: string, operation: OperationContext): Promise<{ manifest: PackManifest; data: string }> {
     const record = this.get(id);
@@ -171,7 +172,6 @@ export class PackService {
       || !await this.matchesRuntime(this.options.runtimes.get(record.runtimeId), manifest, operation.signal)) throw new Error('Stored pack metadata failed verification.');
     await validateSealedDirectory(data, manifest, operation.signal);
     await auditPackData(data);
-    await validatePackPnpmMetadata(data);
     await this.validateRuntimeLock(manifest, data, operation.signal);
     return { manifest, data };
   }
@@ -225,16 +225,15 @@ export class PackService {
           }
           await copyTree(source, path.join(staging, 'data', relative), { signal: operation.signal, skip: item => skipped.has(item) || excludedProfilePath(item) });
         }
-        await removeSharedModelSettings(path.join(staging, 'data'));
-        await sealPackPnpmMetadata(path.join(staging, 'data'));
-        const nodeLock = runtime.adapter === 'node-cli-web-v1' ? await this.nodeIdentity(runtime, operation.signal) : undefined;
+        await omitLauncherBridge(path.join(staging, 'data', 'home'));
+        const nodeLock = await this.nodeIdentity(runtime, operation.signal);
         if (nodeLock) { const lockDirectory = path.join(staging, 'data', 'runtime-lock'); await mkdir(lockDirectory);
           await copyFile(path.join(this.options.runtimes.directory(runtime.id), 'dsh', 'package-lock.json'), path.join(lockDirectory, 'package-lock.json'));
           await validatePortableNodeRuntimeLock(nodeLock, path.join(lockDirectory, 'package-lock.json'), operation.signal); }
         await auditPackData(path.join(staging, 'data'));
         const inventory = await inventoryTree(path.join(staging, 'data'), operation.signal);
-        const manifest = parsePackManifest({ format: nodeLock ? 'worldlinebox-dshpack-v2' : 'worldlinebox-dshpack-v1', name, version, createdAt: new Date().toISOString(),
-          runtime: nodeLock ?? { contentSha256: runtime.contentSha256, version: runtime.version, platform: runtime.platform, adapter: runtime.adapter }, ...inventory });
+        const manifest = parsePackManifest({ format: 'worldlinebox-dshpack-v2', name, version, createdAt: new Date().toISOString(),
+          runtime: nodeLock, ...inventory });
         operation.signal.throwIfAborted();
         await this.commit(staging, id, manifest);
       } finally { await removeManaged(this.directory, staging); }
@@ -250,9 +249,7 @@ export class PackService {
       await this.options.instances.withStoppedInstance(instance.id, async () => {
         await operation.update('installing-pack', 50);
         await copyTree(data, this.options.instances.getRoot(instance.id), { signal: operation.signal, skip: relative => relative === 'runtime-lock' || relative.startsWith('runtime-lock/') });
-        // Older packs may predate shared accounts/models. Their copied settings must not replace the current shared choices.
-        await removeSharedModelSettings(this.options.instances.getRoot(instance.id));
-        await installPackPnpmMetadata(this.options.instances.getRoot(instance.id));
+        await this.options.instances.installDependencies(instance.id, operation.signal);
         operation.signal.throwIfAborted();
         await operation.log(`Installed pack ${packId} into instance ${instance.id}.`);
       });
@@ -268,7 +265,7 @@ export class PackService {
     try {
       await operation.update('verifying-archive', 10);
       const manifest = parsePackManifest(await extractSealedArchive(filePath, path.join(staging, 'data'), operation.signal));
-      await auditPackData(path.join(staging, 'data')); await validatePackPnpmMetadata(path.join(staging, 'data'));
+      await auditPackData(path.join(staging, 'data'));
       await this.validateRuntimeLock(manifest, path.join(staging, 'data'), operation.signal);
       const runtime = await this.resolveRuntime(manifest, path.join(staging, 'data'), operation); await this.options.runtimes.verify(runtime.id, operation.signal);
       operation.signal.throwIfAborted(); await this.commit(staging, id, manifest); return this.get(id);

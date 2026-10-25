@@ -12,6 +12,7 @@ export const companionLoopCallSchema = z.object({ id: z.string().min(1).max(200)
 export const companionTopicNarrativeApprovalSchema = topicNarrativeApprovalSchema.extend({ topicId: id,
   quote: z.string().min(1).max(128), contentScope: z.literal('full_reply').optional() }).strict().refine(value => JSON.stringify(value).length <= 256000);
 export const companionLoopTurnSchema = z.object({ text: z.string().max(65536), rawText: z.string().max(65536), calls: z.array(companionLoopCallSchema).max(16), messageId: id.optional(),
+  inputRevision: z.number().int().nonnegative().optional(),
   /** Host-only final schema binding. Calls and provider body remain intact. */
   finalProposal: companionFinalProposalSchema.optional(),
   /** Host digest of actual source/evidence versions; never provider metadata. */
@@ -61,6 +62,7 @@ export function companionLoopPublishedText(turns: readonly Pick<CompanionLoopTur
   return [...turns.filter(turn => !turn.topicPublicationRejection).map(turn => turn.text), ...(draft ? [draft.text] : [])].filter(Boolean).join('\n\n');
 }
 export const companionWorkSchema = z.object({ id, conversationId: id, sourceMessageId: id, companionId: id,
+  inputMode: z.enum(['steer', 'queue']).optional(),
   messageId: id.optional(), status: z.enum(['queued', 'running', 'interrupted', 'done', 'cancelled']), ordinal: z.number().int().positive().optional(), proactive: z.boolean().default(false),
   resumeOnRestart: z.boolean().optional(),
   createdAt: z.string(), updatedAt: z.string() });

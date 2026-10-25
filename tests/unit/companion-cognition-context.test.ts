@@ -158,7 +158,7 @@ it('advertises unified world and VCP roots and rejects retired tool aliases', ()
   expect(normalizeCompanionCapabilityCall({ id: 'memory', name: 'memory', arguments: '{"action":"read","id":"note"}' })).toMatchObject({ name: 'memory.read' });
   expect(normalizeCompanionCapabilityCall({ id: 'world', name: 'world', arguments: '{"action":"activity","parameters":{"action":"list"}}' })).toMatchObject({ name: 'activity', arguments: '{"action":"list"}' });
   const legacy = { id: 'legacy', name: 'memory.read', arguments: '{"id":"note"}' };
-  expect(() => normalizeCompanionCapabilityCall(legacy)).toThrow('统一入口');
+    expect(() => normalizeCompanionCapabilityCall(legacy)).toThrow('伙伴能力名称无效');
 });
 it('exposes independent real collaboration first while keeping social delivery and acquaintance prerequisites explicit', () => {
   const definition = COMPANION_WORLD_CAPABILITY_TOOL;

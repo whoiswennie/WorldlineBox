@@ -28,9 +28,9 @@ import {
 } from "./pdf-viewer-layout";
 
 export type PdfViewerSurfaceProps = {
-  api: WorldlineBoxLibraryApi;
-  libraryId: string;
-  assetId: string;
+  api?: WorldlineBoxLibraryApi;
+  libraryId?: string;
+  assetId?: string;
   sourceUrl: string | null;
   /** Ready document thumbnail shown while pdf.js loads the real source. */
   placeholderUrl?: string | null;

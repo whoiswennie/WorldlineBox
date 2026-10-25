@@ -40,6 +40,7 @@ if (existsSync(path.join(resourcesPath, 'resources', 'embedding-models'))) {
 }
 
 const requiredPaths = [
+  ...['package.json', 'index.js', 'cordis.patch.yml'].map(name => path.join(resourcesPath, 'dsh-bridge', name)),
   path.join(resourcesPath, 'embedding-models', 'manifest.json'),
   path.join(resourcesPath, 'vcp-memory', 'KnowledgeBaseManager.js'),
   path.join(resourcesPath, 'vcp-memory-host', 'worker.cjs'),
@@ -77,6 +78,11 @@ if (sqliteVecPackage) {
 const missingPaths = requiredPaths.filter((requiredPath) => !existsSync(requiredPath));
 if (missingPaths.length > 0) {
   throw new Error(`Package is missing required runtime files:\n${missingPaths.join('\n')}`);
+}
+for (const name of ['package.json', 'index.js', 'cordis.patch.yml']) {
+  const expected = readFileSync(path.join(projectRoot, 'resources', 'dsh-bridge', name));
+  const actual = readFileSync(path.join(resourcesPath, 'dsh-bridge', name));
+  if (!expected.equals(actual)) throw new Error(`Packaged native DSH bridge differs from source: ${name}`);
 }
 
 if (sqliteVecPackage) {

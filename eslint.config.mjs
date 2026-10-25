@@ -27,7 +27,7 @@ export default tseslint.config(
   },
   js.configs.recommended,
   {
-    files: ['scripts/**/*.mjs', 'tests/node/**/*.mjs'],
+    files: ['scripts/**/*.mjs', 'tests/node/**/*.mjs', 'resources/dsh-bridge/**/*.js'],
     languageOptions: {
       globals: globals.node,
     },

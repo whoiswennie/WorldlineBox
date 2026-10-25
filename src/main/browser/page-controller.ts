@@ -51,11 +51,11 @@ const ACT = String.raw`(() => {
 
 export class BrowserPageController {
   private readonly observations = new Map<number, { token: string; version: number }>();
-  constructor(private readonly version: (id: string) => number) {}
+  constructor(private readonly version: (id: string) => number, private readonly observationKey = '__wbBrowserObservation') {}
   forget(contentsId: number): void { this.observations.delete(contentsId); }
   private async evaluate(contents: WebContents, code: string): Promise<unknown> {
     if (contents.isDestroyed()) throw Error('页面已关闭。');
-    return contents.executeJavaScriptInIsolatedWorld(WORLD, [{ code }]);
+    return contents.executeJavaScriptInIsolatedWorld(WORLD, [{ code: code.replaceAll('globalThis.__wbBrowserObservation', `globalThis[${JSON.stringify(this.observationKey)}]`) }]);
   }
   async observe(tabId: string, contents: WebContents, options: { query: string; offset: number; limit: number } = { query: '', offset: 0, limit: 40 }): Promise<unknown> {
     const token = randomUUID(), version = this.version(tabId);

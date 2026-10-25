@@ -5,6 +5,7 @@ import path from 'node:path';
 import type { Companion, CompanionMemory } from '../../shared/companions';
 import type { CompanionStorageCommand, CompanionStorageResponse } from '../../shared/companion-storage';
 import type { VcpMemoryOwnerIdentity, VcpMemoryTimelineArtifacts } from '../vcp-memory/contracts';
+import { removeOwnedDirectory } from './owned-directory-cleanup';
 import { companionMemoryIdentity, sameCompanionMemoryIdentity } from './memory-identity';
 
 export const companionMemoryLibraryCategories = ['日记', '资料', '自我认识', '世界经历', '时间线'] as const;
@@ -80,6 +81,7 @@ export class CompanionMemoryLibrary {
   private timer?: ReturnType<typeof setTimeout>;
   private running?: Promise<MemoryLibrarySyncReport>;
   private closed = false;
+  private readonly resetting = new Set<string>();
   private root?: string;
   private ownerCursor = 0;
   private readonly scans = new Map<string, Scan>();
@@ -113,7 +115,7 @@ export class CompanionMemoryLibrary {
   }
   private serial<T>(owner: string, work: () => Promise<T>): Promise<T> {
     const pending = (this.fileTails.get(owner) ?? Promise.resolve()).catch(() => undefined).then(() => {
-      if (this.closed) throw new Error('伙伴记忆目录已经关闭。');
+      if (this.closed || this.resetting.has(owner)) throw new Error('伙伴记忆目录正在关闭或重置。');
       return work();
     });
     this.fileTails.set(owner, pending);
@@ -124,7 +126,8 @@ export class CompanionMemoryLibrary {
     const result: MemoryLibrarySyncReport = { exported: 0, imported: 0, forgotten: 0, conflicts: [] };
     await this.initializeRoot();
     const state = await this.call({ type: 'state', includeConversations: false });
-    const owners = (state.state?.companions ?? []).filter(owner => id.test(owner.id)).sort((a, b) => a.id.localeCompare(b.id));
+    const resetting = new Set((state.state?.resetJobs ?? []).filter(job => job.status !== 'completed').map(job => job.companionId));
+    const owners = (state.state?.companions ?? []).filter(owner => id.test(owner.id) && !this.resetting.has(owner.id) && !resetting.has(owner.id)).sort((a, b) => a.id.localeCompare(b.id));
     if (!owners.length) return result;
     const count = Math.min(owners.length, Math.max(1, this.options.maxOwnersPerSync ?? 4));
     for (let n = 0; n < count && !this.closed; n++) {
@@ -273,7 +276,7 @@ export class CompanionMemoryLibrary {
   withDocuments<T>(companionId: string, work: (session: MemoryLibraryDocumentSession) => Promise<T>, options?: { synchronize?: boolean; readOnly?: boolean }): Promise<T> {
     if (!id.test(companionId)) return Promise.reject(new Error('伙伴标识无效。'));
     const open = async () => {
-      if (this.closed) throw new Error('伙伴记忆目录已经关闭。');
+      if (this.closed || this.resetting.has(companionId)) throw new Error('伙伴记忆目录正在关闭或重置。');
       await this.initializeRoot();
       const state = await this.call({ type: 'state', includeConversations: false });
       const owner = state.state?.companions.find(owner => owner.id === companionId);
@@ -594,6 +597,19 @@ export class CompanionMemoryLibrary {
       await this.reconcile(owner, root, manifest, relative, result);
     }
   }
+  async reset(owner: string, jobId: string): Promise<void> {
+    if (!id.test(owner)) throw new Error('伙伴归属无效。');
+    this.resetting.add(owner);
+    this.timelineGenerations.set(owner, (this.timelineGenerations.get(owner) ?? 0) + 1);
+    try {
+      await this.running?.catch(() => undefined);
+      await Promise.allSettled([this.timelineTails.get(owner), this.fileTails.get(owner), ...this.readers, ...this.layoutTails.values()]);
+      const scan = this.scans.get(owner);
+      for (const frame of scan?.directories ?? []) await frame.directory.close();
+      this.scans.delete(owner);
+      await removeOwnedDirectory(this.options.libraryDirectory, owner, jobId);
+    } finally { this.resetting.delete(owner); }
+  }
   async close(): Promise<void> {
     this.closed = true; if (this.timer) clearTimeout(this.timer);
     await this.running?.catch(() => undefined);
@@ -688,7 +704,7 @@ export class CompanionMemoryLibrary {
   }
   /** Synchronous generation bump prevents an in-flight old publication from winning. */
   async invalidate(owner: string): Promise<void> {
-    if (!id.test(owner) || this.closed) return;
+    if (!id.test(owner) || this.closed || this.resetting.has(owner)) return;
     this.timelineGenerations.set(owner, (this.timelineGenerations.get(owner) ?? 0) + 1);
     await this.timelineSerial(owner, async () => {
       await this.initializeRoot(); const root = await this.directory(this.root!, owner), directory = await this.directory(root, '时间线');

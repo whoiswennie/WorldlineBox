@@ -265,7 +265,7 @@ describe('VCP companion memory through the main service and real SQLite', () => 
       conversations: db.prepare('SELECT COUNT(*) AS n FROM conversations').get(), jobs: db.prepare('SELECT COUNT(*) AS n FROM companion_world_jobs').get(),
       admissions: db.prepare('SELECT COUNT(*) AS n FROM companion_world_sleep_episodes').get(), version: db.prepare('PRAGMA data_version').get() });
     try {
-      const before = capture(), clock = f.store.request({ type: 'world.clock.peek' }).worldClock!;
+      const before = capture();
       transport.request.mockClear();
       for (const fn of [transport.fetch, transport.memoryFetch, transport.worldFetch, transport.prohibitionFetch, transport.progressFetch]) fn.mockClear();
       const base = Date.now();
@@ -278,7 +278,9 @@ describe('VCP companion memory through the main service and real SQLite', () => 
             f.service.handle({ type: 'life.overview.status', companionId: 'sister', filter: 'all', limit: 20 }),
           ]);
           expect(processing.memoryProcessing?.companionId).toBe('sister'); expect(life.memoryLifePlan?.companionId).toBe('sister');
-          expect(overview.lifeOverview?.clock.virtualNow, transport.request.mock.calls.map(([command]) => command.type).join(',')).toBe(clock.virtualNow);
+          // Civil time follows the wall clock; the persisted observation cursor
+          // remains unchanged, including when the background world is behind.
+          expect(overview.lifeOverview?.clock.virtualNow).toBe(new Date(base + lag).toISOString());
           expect(overview.lifeOverview?.clock.backlog, `persisted observation lag ${lag}ms`).toBe(lag > 5_000);
           expect(processing.memoryProcessing?.schedule?.schedulers.some(item => item.waitingReason === 'world_backlog'), `memory schedule lag ${lag}ms`).toBe(lag > 5_000);
         }

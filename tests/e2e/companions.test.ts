@@ -10,7 +10,6 @@ import { _electron as electron, expect, test, type ElectronApplication, type Pag
 
 import type { CompanionMessage, CompanionsRequest, WorldlineBoxCompanionsApi } from '../../src/shared/companions';
 import type { WorldlineBoxLlmApi } from '../../src/shared/llm';
-import type { WorldlineBoxDshLauncherApi } from '../../src/shared/dsh-launcher';
 import type { WorldlineBoxLibraryApi } from '../../src/shared/library-api';
 import { removeCompanionTestDirectory, electronLaunchEnv, preparePackagedCompanionLaunch, resolveElectronExecutablePath, resolveElectronLaunchOptions } from './electron-test-helpers';
 
@@ -875,34 +874,6 @@ test('keeps capability entries and quoted messages compact and opens the linked 
     await modal.getByRole('button', { name: '关闭任务监视', exact: true }).click();
     await page.getByRole('button', { name: '查看引用消息 quoted-source', exact: true }).click();
     await expect(timeline.locator('[data-companion-message="quoted-source"]')).toHaveClass(/is-highlighted/);
-  } finally { if (application) await application.close(); cleanup(root); }
-});
-
-test('launcher persists the shared DSH access policy, defaulting every companion to full access', async () => {
-  const root = mkdtempSync(path.join(tmpdir(), 'worldlinebox-companions-e2e-'));
-  const profile = path.join(root, 'profile');
-  let application: ElectronApplication | undefined;
-  const access = (page: Page) => page.evaluate(async () => {
-    const bridge = window as unknown as Window & { worldlinebox: { dshLauncher: WorldlineBoxDshLauncherApi } };
-    const response = await bridge.worldlinebox.dshLauncher.request({ type: 'state' });
-    return response.ok ? response.state?.taskAccess?.mode : undefined;
-  });
-  try {
-    let started = await launch(profile); application = started.application;
-    await started.page.getByRole('button', { name: '执行权限', exact: true }).click();
-    await expect(started.page.getByRole('heading', { name: '执行权限', exact: true })).toBeVisible();
-    expect(await access(started.page)).toBe('danger-full-access');
-    await started.page.getByRole('radio', { name: /^工作区可写/ }).click();
-    await expect.poll(() => access(started.page)).toBe('workspace-write');
-    await application.close(); application = undefined;
-    started = await launch(profile); application = started.application;
-    expect(await access(started.page)).toBe('workspace-write');
-    await started.page.getByRole('button', { name: '执行权限', exact: true }).click();
-    await expect(started.page.getByRole('radio', { name: /^工作区可写/ })).toBeChecked();
-    await started.page.getByRole('radio', { name: /^完全访问/ }).click();
-    await expect.poll(() => access(started.page)).toBe('danger-full-access');
-    await expect(started.page.getByRole('radio', { name: /^完全访问/ })).toBeChecked();
-    await started.page.screenshot({ path: path.resolve('.tools/test-output/companions/verified-execution-access.png') });
   } finally { if (application) await application.close(); cleanup(root); }
 });
 

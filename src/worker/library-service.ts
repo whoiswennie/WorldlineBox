@@ -14923,6 +14923,7 @@ export class LibraryService {
     linkedFolderId: string;
     relativePath: string;
     deleteFromDisk: boolean;
+    includeDeleted?: boolean;
   }): Promise<{ deletedAssetCount: number; failedCount: number }> {
     const openLibrary = this.requireOpenLibrary(input.libraryId);
     this.assertLibraryWritable(openLibrary);
@@ -14959,19 +14960,20 @@ export class LibraryService {
             `SELECT asset_id FROM assets
               WHERE linked_folder_id = ?
                 AND location_kind = 'linked'
-                AND deleted_at IS NULL`,
+                AND (deleted_at IS NULL OR ?)`,
           )
-          .all(input.linkedFolderId)
+          .all(input.linkedFolderId, input.includeDeleted ? 1 : 0)
       : openLibrary.connection
           .prepare(
             `SELECT asset_id FROM assets
               WHERE linked_folder_id = ?
                 AND location_kind = 'linked'
-                AND deleted_at IS NULL
+                AND (deleted_at IS NULL OR ?)
                 AND (relative_file_path = ? OR substr(relative_file_path, 1, ?) = ?)`,
           )
           .all(
             input.linkedFolderId,
+            input.includeDeleted ? 1 : 0,
             relativePath,
             [...prefix].length,
             prefix,

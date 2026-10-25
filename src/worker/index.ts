@@ -2295,8 +2295,11 @@ function destructiveBackupLibraryId(command: WorkerCommand): string | undefined 
     case 'folder.delete-from-disk':
     case 'folder.delete-empty':
     case 'linked-folder.remove':
-    case 'linked-folder.delete-subtree':
       return command.libraryId;
+    case 'linked-folder.delete-subtree':
+      // Forgetting an index does not delete source files. A reset may already
+      // have quarantined its directory, so no filesystem backup target exists.
+      return command.deleteFromDisk ? command.libraryId : undefined;
     default:
       return undefined;
   }

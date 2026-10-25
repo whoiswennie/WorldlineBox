@@ -1,3 +1,4 @@
+import { CompanionMediaPlayer } from './companions/CompanionMediaPlayer';
 import { lazy, Suspense, useCallback, useEffect, useRef, useState } from 'react';
 import { ApplicationShell, type ApplicationShellState } from './ApplicationShell';
 import { ContextMenuProvider } from './context-menu';
@@ -82,6 +83,7 @@ export function App() {
     <div className="application-root"><ThemeBackground /><HoverTipHost /><EditTextContextMenuHost />
       {usesWindowsStyleShell(navigator.userAgent) ? <><WindowsWindowControls shell={api?.shell} /><WindowEdgeResizeHandles shell={api?.shell} /></> : null}
       {toolError ? <div className="application-tool-error" role="alert">{toolError}<button type="button" onClick={() => setToolError('')} aria-label={t('common.close')}>×</button></div> : null}
+      <CompanionMediaPlayer />
       <ApplicationShell activeModuleId={activeModuleId} onSelectModule={setActiveModuleId} onOpenSettings={openSettings}
         tools={api?.captureTools ? <CaptureToolsToolbar onOpen={openTool} /> : null}
         settingsOpen={shellState.settingsOpen} settingsDisabled={activeModuleId === 'assets' && shellState.settingsDisabled}

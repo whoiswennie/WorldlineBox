@@ -346,7 +346,9 @@ export class CompanionResetStore {
         do {
         let count = 0;
         if (job.phase === 'rooms') { count = this.rooms(job, limit); if (!count) job.phase = 'journals'; }
-        else if (job.phase === 'journals') { count = this.memoryBatch(job, limit); if (!count) job.phase = 'owner-records'; }
+        // Each note also removes source, vector and history links. Keep this
+        // denser phase smaller so one owner does not monopolize the Worker.
+        else if (job.phase === 'journals') { count = this.memoryBatch(job, Math.min(limit, 100)); if (!count) job.phase = 'owner-records'; }
         else if (job.phase === 'owner-records') {
           const step = this.ownerSteps(job)[job.progress.step];
           if (!step) job.phase = 'metadata';

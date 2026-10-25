@@ -1814,6 +1814,7 @@ export const workerCommandSchema = z.discriminatedUnion('type', [
     linkedFolderId: identifierSchema,
     relativePath: linkedSubtreeRelativePathSchema,
     deleteFromDisk: z.boolean(),
+    includeDeleted: z.boolean().optional(),
   }),
   z.strictObject({
     type: z.literal('linked-folder.create-directory'),

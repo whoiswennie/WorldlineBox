@@ -1,186 +1,82 @@
-# DSH 启动器实现
+# DSH 原生 Web Host 接入
 
-实现参考维护者提供的 PCL / DSH 调研，独立实现管理逻辑，不复制 PCL 源码。入口是 `ApplicationShell` 的 `dsh` 模块，preload 提供类型化 request / state 通知；IPC 只接受管理器主窗口的 main frame。资产 Worker 和资源库数据库不持有 DSH 实例。
+本实现以官方 DSH npm 运行版本与原生 `web` profile 为中心。每个实例运行一个持久 Web Host，用户工作台和所有使用该实例的伙伴通过同一套原生服务工作。没有伙伴专用 CLI、伪用户目录、跨版本共享存档或存档格式改写层。
 
-## 管理目录与适配器
+## 版本与实例
 
-`app.getPath('userData')/dsh-launcher` 下保存 `runtimes.json`、`instances.json`、`snapshots.json`、`packs`、`operations`、`cache`、staging 和 `shared`。实体 ID 不依赖版本号或显示名。程序版本与插件环境独立，共享存档层持有日常会话、默认工作区、账户和模型配置。
+`RuntimeService` 保留官方发行索引、下载、npm SRI 与 SHA-256 校验、固定依赖锁、Node 版本、运行文件封存、完整性缓存、安装提交恢复和引用感知删除。版本必须同时具有官方 GitHub Release 和同版本官方 npm Web 包；安装时再次检查精确 tag。发行物缺少依赖时安装失败，不能通过修改依赖或替换版本冒充成功。唯一运行适配器为 `node-cli-web-v1`，直接运行官方 `dsh web`，与 DSH 桌面版无关。
 
-`application-user-data.ts` 统一开发版与安装版的用户目录：默认 `appData/WorldlineBox`，
-可由绝对路径 `WORLDLINEBOX_USER_DATA_PATH` 覆盖。E2E 与显式多实例开发仍隔离。
-`legacy-dsh-storage.ts` 在取得目标单实例锁后、启动器初始化前，只迁移无实例、无已安装
-环境且无运行操作的旧 DSH 存储。物理复制前后检查完整文件摘要，提交前再次确认目标不存在；
-旧目录始终保留。已有目标不合并，存在实例或环境时返回明确的备份导入结果；路径、祖先及内容链接
-或复制期间源数据变化均拒绝提交。它不会迁移整个 Chromium profile 或覆盖已有资产/世界数据。
+截至本次验收，GitHub Release 附件是源码归档和证明文件，官方 Web 分发入口是 `@deepseek-ai/dsh`。启动器选择 Release 版本后安装对应的精确 npm 包，不把 GitHub 源码 ZIP 当成可运行的 Web 制品。移除了 Desktop EXE、ASAR、桌面安装器解析和旧包格式兼容分支。
 
-主路线为 `node-cli-web-v1`：`OfficialVersionCatalogue` 合并 GitHub Releases 说明与官方 `@deepseek-ai/dsh` npm 目录，固定具体版本和官方 SHA-512 SRI。`node-runtime-service.ts` 使用内置 Node / npm 安装依赖、检查第一方 DSH 包版本闭包、封存完整文件清单及规范化依赖图。单纯 GitHub source archive 不会登记为可运行制品。制品包含 `program/bin/node.exe`、`program/dsh/node_modules` 和 `node-runtime.json`，不依赖用户全局 Node。
+根目录是 `app.getPath('userData')/dsh`。原生实例与快照的注册文件分别为 `native-instances.json`、`native-snapshots.json`。旧目录没有迁移或 fallback 入口。
 
-安装分为解析依赖锁、预取依赖归档、`npm ci` 本地安装与生命周期脚本、封存校验。预取由固定 npm 随附的 pacote 完成：对当前平台的生产依赖按 URL 与完整性摘要去重，最多 8 路并发，保留 npm 的流式 SRI 校验、缓存损坏恢复与有界重试。依赖图中的重复安装位置不会重复下载相同归档；便携锁回放使用同一预取流程，仍校验原始锁及有效载荷摘要。归档缓存位于启动器的 `npm-cache/_cacache`，跨版本及重试复用；隔离用户目录、npmrc 与临时文件仍在每次安装的 staging 中，不读取用户全局 npm 缓存或模型凭据。
+`InstanceService` 为每个实例提供原生 `DSH_HOME`、`DSH_AGENTS_HOME`、workspace 和浏览器 partition。`instanceEnvironment` 继承真实用户环境，仅清除上一 DSH 命名空间和启动器内部能力变量，再设置当前实例的原生命名空间。用户 PATH、HOME/USERPROFILE、APPDATA、Git、Python 和包管理器配置不伪装成另一个用户。
 
-安装器审查临时目录的所有权、符号链接和硬链接；对独立普通文件组成的树直接在同一临时根内原子移动，避免先复制数万个文件再递归删除原件。存在链接或 Windows 持有移动锁时，回退为 16 路有界复制并扁平化受限链接，复用已建立的父目录。`copyTree` 的其他调用方默认仍为串行；路径约束、链接范围检查、文件数上限、取消和全部任务收尾保持有效。移动或复制后仍逐文件封存 SHA-256，不省略完整性校验。`dsh-node-runtime-stage.test.ts` 验证移动、硬链接隔离及不合并已有目标；`dsh-bounded-copy.test.ts` 验证复制并发上限、摘要一致及取消。
+Host 启动采用参数数组执行原封不动的官方 `web --no-open --host 127.0.0.1 --port 0`。完整性检查只在 Host 启动时进行，缓存依据实际文件身份失效；任务和重复选择不触发全文件扫描。首次通过原生 CLI 生成默认 profile、安装桥接 bundle，内容 stamp 避免每次安装。
 
-包管理器的退出监听在启动子进程后立即建立，避免缓存命中的短命进程在异步保存进度期间已经退出、管理器却一直等待；下载字节在进度初始化后重放累计值，避免丢失过早到达的报告。对应真实短命进程回归位于 `dsh-npm-download-control.test.ts`。
+每个实例的并发 `ensureHost` 合并为一次启动，取消一个等待者不影响其他等待者。多个实例可同时运行。就绪要求：原生认证 Web URL、桥接就绪标记、协议/PID 健康检查和 Web 认证 cookie 交换全部成功。启动最多等待 120 秒，并保留真实日志。
 
-`npmDownloadRoute=auto` 为向后兼容的默认值，仅在注册表为官方 npm 时开启。先竞速官方与 npmmirror 的完整依赖元数据响应，验证包名及版本表后选择先完成的来源；每路最多 12 秒、16 MiB，取消败者，结果缓存 5 分钟。并发安装共享探测，单次安装取消不会终止其他安装的探测。网络设置变更会使缓存失效。镜像解析遇到网络、缺包或版本缺失错误时最多回退官方一次，后续预取及 npm ci 沿用回退后的注册表与代理；完整性失败直接终止。官方 DSH 入口包仍按官方目录的 SHA-512 校验，依赖图及依赖 SRI 来自选定来源解析出的锁。
+进程由 Windows Job 与 PID/创建时间/解释器/CLI 身份记录管理。停止优先走原生优雅退出，超时只清理自己拥有的进程树。退出确认、journal 删除、状态落盘与工作台关闭完成后，stop 才结束。
 
-归档预取另外对锁内同一代表依赖（优先 zod）竞速官方与 npmmirror，15 秒内选择先完成且通过锁内 SRI 的线路，取消另一探测；复用已校验的探测数据，镜像失败逐包回退官方。元数据与归档请求均保持所选代理；子进程按最终注册表目标解析 PAC。用户可在「依赖解析与下载线路」改为只使用所填注册表，自定义注册表始终保持原线路。该策略不更改系统代理、Clash 规则或用户保存的注册表配置。
+## 标准桥接插件
 
-代理在启动安装子进程时解析：系统模式采用 Chromium 返回的第一条 PAC 路线（包括 DIRECT），自定义模式使用所填地址。清除继承的大小写代理变量及 npm 配置后，只注入当前连接的代理、排除地址、注册表和安装策略。子进程日志记录实际代理与注册表。连接检查显示解析出的 npm 代理和注册表响应时间；这不等于带宽保证，生命周期脚本的额外下载也取决于上游脚本是否支持标准代理环境变量。请求超时为 120 秒、重试 2 次、退避 1–10 秒。安装器不关闭 TLS 校验、不跳过生命周期脚本。
+`resources/dsh-bridge` 是普通 Cordis bundle，随应用资源分发，经原生 `plugin add` 安装到每个实例。DSH 代码、预设与模型配置不打补丁。其源码按内容摘要放在实例 Home 的 `.worldlinebox/bridge/<hash>`，打包配置在 `forge.config.ts`。
 
-界面区分解析、按包计数的下载校验、本地安装及封存阶段。无已知传输总量时不显示虚假的下载百分比；每秒采样让空闲网络速度回落到零。`tests/unit/dsh-npm-prefetch.test.ts` 用真实内置 Node/npm 与独立 HTTPS CONNECT 代理验证 150 个相同依赖位置仅请求一次、跨次安装复用缓存及 SRI 拒绝。可用 `WORLDLINEBOX_DSH_REAL_INSTALL=1` 运行 `tests/e2e/dsh-install-network.test.ts`，在独立临时目录完整安装官方版本并比较冷、热缓存字节和耗时，不触及真实实例或共享存档。
+插件通过原生 `sessionController`、`agents`、`sessions`、`tools` 和 `agentPresets` 服务工作。启动时从环境读取随机 256-bit 能力 token 后立即删除，避免下游工具继承。独立监听 loopback 随机端口，所有请求要求 Bearer 能力，没有 CORS；健康检查验证协议与 PID。原生 Web 的用户登录与鉴权继续由 DSH 持有。
 
-兼容导入仍支持官方 Windows SFX / NSIS 制品和原有完整桌面安装目录。使用固定 `7zip-bin` 解包，不执行安装向导；在解包前检查列表路径、链接、数量和容量，之后对物理文件创建 SHA-256 清单。程序、seal、artifact 先在 staging 完整写入，再提交整个目录；完整目录与索引写入之间的中断可在初始化时重新登记。来源摘要和程序内容摘要分别保存。
+主要协议：
 
-`LauncherNetwork` 使用应用专属 Chromium Session 管理系统 / 直连 / 固定代理，原子保存多组地址、npm / Python 镜像与 GitHub 镜像。`setProxy`、连接池刷新和每次生成子进程环境使用当前配置；鉴权发布只允许官方 GitHub API / Uploads 域名，拒绝 Token 重定向或镜像。便携工具由 `portable-tools.ts` 在主日志初始化后加载，工具字节、完整清单、第三方许可和打包门禁见 [便携工具说明](portable-tools.md)。
-
-官方下载使用 Electron `net.request` 的 Chromium 网络栈，保留系统代理，在每次重定向事件中确认 HTTPS 后跟随。不要依赖 `net.fetch` 的 `Response.url`：实际 Electron 返回空字符串，会导致 `new URL` 抛出 `Invalid URL`。传输流受取消和超时信号约束，校验长度和来源摘要，异常只记录为失败操作，并移除未完成文件。真实 Electron 网络夹具覆盖重定向、降级、取消、截断和摘要不符；官方完整安装包下载、解包与封存复验也已通过。
-
-Electron 会把 ASAR 当作虚拟目录，因此 DSH 的 `disk.ts` 使用 `original-fs`。物理 ASAR 通过 FileHandle 有界块读取，避免 Node stream 内部重新使用 Electron 的虚拟 fs。完整备份归档也从该物理读取器惰性取流，不展开或遗漏 ASAR 文件。
-
-Windows 的运行计划同时对程序目录取 `realpath`，再由同一物理前缀产生 exe 与 ASAR CLI 路径。
-`WorldlineBox` 与 `worldlinebox` 在 Windows 可指向同一目录，但不同大小写的文件 URL 会让
-Node ESM 实例化两份模块；官方 `app-boot` 的 Include WeakMap 因而不能识别根配置，原生设置
-写入会报 `profile reload requires the root Include entry`。统一物理路径修复该问题，不改动 sealed 程序。
-
-当前 `desktop-cli-web-v1` 适配器启动固定制品中的：
-
-```text
-DeepSeek Harness.exe --expose-internals resources/app.asar/dsh/node_modules/@deepseek-ai/dsh-desktop-host/lib/cli.js web --no-open --host 127.0.0.1 --port 0
-```
-
-启动环境设 `ELECTRON_RUN_AS_NODE=1`，由该发行物提供宿主 ABI 与私有包管理工具。Home、agents、user、包缓存、临时目录与浏览器分区各实例独立；默认工作目录进入共享 workspace。边界见[使用指南](../user-guide/dsh-launcher.md)。上游命令通过参数数组调用，禁止 renderer 任意 shell 命令。未来发行物必须具有可识别的 Desktop/CLI descriptor 和入口，实际就绪交换也必须通过；缺少适配能力时失败，不把未知版本伪装为已兼容。
-
-## 共享存档与模型设置
-
-`SharedInstanceData` 在实例启动前协调共享迁移与技术路由。独立 `DSH_HOME` 和 web profile
-继续持有插件、技能、锁文件及实例 UI 状态，不通过共享整个 Home 或 profile 实现存档。
-
-| 共享内容 | 受管路径 / 原生入口 |
+| 入口 | 行为 |
 | --- | --- |
-| 会话 | `shared/sessions`，`session-persistence-jsonl.root` |
-| 附件 | `shared/attachments/v1`，`attachment-local.dshHome` |
-| 默认工作区 | `shared/documents/deepseek-harness/default-workspace`，`workspace-controller.documentsDirectory` |
-| 登录 / API 凭据 | `shared/.credentials.yaml`，原生 CredentialsLocal 文件与跨进程锁 |
-| 模型设置 | `shared/model-settings.json`，选择性同步到各私有 `profiles/web/cordis.patch.yml` |
+| `GET /health` | 返回协议、PID 与原生 profile 身份 |
+| `POST /sessions` | 原生创建或采用 Session，返回事件游标、真实能力及权限 |
+| `POST /sessions/:id/prompt` | 原生队列/steer 提交，使用稳定 requestId 去重 |
+| `GET /sessions/:id/events?after=N` | 推送带序号 NDJSON 公开事件 |
+| `POST /sessions/:id/cancel` | 取消该 Session，等待 Agent/子代理停止并 flush |
+| `POST /capabilities` | 读取原生工具、技能、预设与命令，无模型请求 |
+| `POST /plugins` | 调用原生 bundle 安装、开关、移除、列举 |
+| `POST /shutdown` | 原生 Host 优雅退出 |
 
-共享日志之外，`shared-workspace-adapter.ts` 生成实例私有的技术插件，在已运行的官方 Web Host
-中同步共享默认工作区的会话成员和列表摘要。官方 workspace v2 只在首次启动分组已有日志，
-不能仅靠共用 Session 文件发现另一 Host 后来创建的会话。适配器使用原生
-`workspace.attachSession` 与 `sessionQuery.observeSession`：读取并验证 Header / cwd，
-更新本实例索引、发布原生列表事件，不创建 Agent、抢占会话 writer 或改写聊天日志。
-标题等投影使用只读 observation 的准确切面，保留为有界内存摘要；不把可能含恢复事件的
-冷读切面写回 checkpoint。派生列表摘要服务于首次读取与重连，关闭插件时恢复原处理器。
-程序制品保持密封，插件清单、私有工作区排序与 UI 偏好保持独立；用户删除的工作区注册不会
-被后台重新创建。冷摘要通过实际输入与返回值协商，不按发行版本号选择调用方式。共享资格来自安装后自动执行的隔离原生检测，绑定完整制品 SHA-256 和检测代码摘要；前后端均读取检测证据，不再维护发行版本白名单。流程、检查项和失败边界见 [运行版本兼容性检测](dsh-runtime-compatibility.md)。
+完成事件等待 Agent 空闲、子代理结束、队列与 session 序号稳定并 flush。只转发公开文本、工具输入输出、状态和交付物，不转发模型推理。事件保留有数量/字节上限；慢消费者断开，客户端遇到断流按失败处理并取消所属 Session，不会误报完成。
 
-模型设置只共享当前官方适配器的四个 namespace：`llm-deepseek`、`llm-pi-ai`、
-`llm-deepseek-account` 和 `agent-default-model`。`shared-settings.ts` 按已知字段读取和改写，
-保留 profile 的插件条目、顺序、禁用状态、skills、其它选项以及 `ui-settings-general`。
-`apiKeyEnv` 是引用，密钥值由共享凭据提供；回调与诊断仅包含 namespace、字段路径与错误码。
+普通任务继承原生默认预设、全部工具/技能与权限。显式工具/技能选择通过 Agent scope 的原生 registry 与工具 guard 实施，子代理继承边界；用户和其他伙伴的 registry 不变。仅思考任务使用新会话、只读权限和空工具集合。无伙伴专属模型或凭据覆盖。
 
-启动前在停机 profile 中同步。在线使用 `shared-settings-rpc.ts`：认证实例 ready URL 得到
-HttpOnly Cookie，向同一 loopback origin 的 `/api/settings/describe`、`/api/settings/mutate`
-发送官方 unary envelope，写入携带 namespace 的 `expectedRevision`。经认证
-`/api/remote.mux` 的 `$events` 监听 `settings/document-updated`，并以有界周期读取作为失联兜底。
-协调器串行收集各实例的 user config，按最后同步基线进行三方合并：不同字段可合并，同字段双改
-明确报告冲突，CAS 失败不盲目重试。涉及已脱敏 secret 路径时拒绝替换，保留实例值。
+## 伙伴主脑循环
 
-完整备份恢复先调用 `assertImportableFrom` 做只读模型冲突预检，与会话 schema 和凭据 dry-run
-一起完成后才发布共享内容，避免最后才发现模型冲突而留下部分导入。它不写 canonical 设置或
-实例基线；正式 `importFrom` 再合并允许的值。恢复阶段需全部 Web Host 和 CLI 停止。
+`CompanionService` 使用 `dsh` 能力接口，查询与执行由 `DshLauncher` 转交 `DshTaskBroker`。提交操作快速登记后，broker 连接所选实例 Host，准备授权工作区，创建原生 Session，再发送 prompt 并订阅事件。DSH 自己完成 Agent loop、工具调用、子代理、审批和存档。
 
-不能用 Home patch 或 CLI `--patch` 覆盖模型设置：官方 ConfigEditor 会拒绝其 UI 写入，
-因为最终配置被更高优先级的层覆盖。技术 patch 路由共享存储和凭据，并挂载只读会话列表桥；模型仍写入原生可编辑的
-私有 profile，并由原生锁、HMR 与 revision 校验提交。实际官方 0.2.0-rc.2 的原生 provider
-修改、过期 revision 拒绝和 WS 推送已在 canonical 程序路径与完整 instanceEnvironment 下验证。
+Main 从伙伴状态读取 `companionName`；该字段不属于模型 TaskSpec。默认托管工作目录固定为库内 `dsh-tasks/<companionId>`，不按任务另建 cwd。桥接插件通过原生 `workspaceRegistry.create(cwd, companionName)` 登记工作区、用 `workspaceId` 创建 Session，并由原生 API 关联会话。显示名随伙伴改名更新，底层路径保持稳定；同名伙伴不合并目录。指定已有项目目录时不发送伙伴工作区标题。已存在的 Session 恢复保留原 cwd，不改写原生存档。
 
-## CLI 上下文
+`tests/worker/dsh-companion-workspace-native.test.ts` 使用真实 RC.2 Web Host 验证并发会话归组、同名伙伴隔离、改名和重启持久化，模型请求数为零；证据写入 `artifacts/companion-workspace-native/result.json`。
 
-`cli-terminal.ts` 的 `DshCliTerminal` 持有当前 CLI 上下文、命令 shim 与受管 PowerShell，
-状态通过 `DshLauncherState.cli` 分发。`cli.select` 只选择实例，不启动 Web Host；
-`cli.install-command` 显式把 bin 放到当前用户 PATH 首位，并广播环境变更。命令位于
-`dsh-launcher/cli/bin/dsh.cmd`；只更新管理器标记的文件，不覆盖其它命令文件。机器 PATH 的
-同名命令若仍会抢先则拒绝启用，不改机器 PATH；已有用户 PATH 命令文件保留。
+broker 负责来源 ACL、授权证据、输入校验、恢复所有权、交付 JSON Schema 与真实产物检查。恢复固定原实例、版本、目录与策略，任意 sessionId 不能绕过任务 checkpoint；切换默认实例不影响在途任务。
 
-shim 每次读取 `cli/context.json`，检查实例、精确 runtime 摘要和受管路径，然后用选中版本的
-Electron Node 调用随包 CLI。无参数 `dsh` 使用自身 readline 循环，逐轮向原生 headless
-driver 发送任务并保留会话 id；`/new` 清除当前会话选择，`/exit` 退出，不删除共享日志。
-有参数时直接转发原生 CLI 参数。
+取消只发给所属 Session。传输失败仍尝试确认原生取消；无法确认时记为 interrupted，并阻止该 Session 恢复，直到终止确认。早到的补充输入等待初始 prompt 受理，再按 messageId 去重送入原生收件箱。
 
-`cli-profile-mode.ts` 沿用实例私有 web profile 与已安装插件树，附加官方 `dsh-headless`
-bundle，再关闭 `web-startup`、`webserver`、`web-runtime`、`connection`、`modules` 等
-Web carrier 条目。外置 patch 不改 sealed runtime、manifest 或插件安装；共享存储技术路由
-随后附加。任何发行版本都可以接受同一套实际能力检查；共享存档必须具有当前制品的通过证据。原生 CLI 组合始终检查随包 manifest 与 Web / headless transport 行，未知能力不会因为版本名称较新而获得放行。
+`DshTaskRecordStore` 保存独立的来源审计投影与按行索引，运行时环缓存不替代完整记录。DSH 的权威会话仍保存在原生 Home。启动指标分别记录连接/工作区准备与创建 Session 的耗时；端到端主脑交付时间需另行从真实用户消息计时。
 
-实时终端页面与 xterm 渲染依赖已移除；CLI 上下文仍为伙伴任务和外部受管命令提供固定的执行环境。浏览器使用独立 WebContentsView 服务，见 [浏览器与网络验收](browser-network-acceptance-2026-10-18.md)。
+## 插件、技能、终端和备份
 
-## 主脑与角色调用的任务入口
+运行中插件变更调用同一 Host 的原生 plugin manager；停机操作使用所选运行版本的原生 CLI。原生应用失败/取消必须报告失败，不能只看命令已受理。断开安装请求会取消原生安装。插件是否热加载或需要重启由上游决定。插件市场搜索同时匹配展示名、npm 名和来源。
 
-未来角色和主脑委托统一使用类型化 `task.run` / `task.cancel` / `task.result` / `task.events`，实时订阅 `onTaskEvent`。`DshTaskBroker` 在请求进入时固定实例与精确运行版本，使用受管 CLI shim、私有上下文、共享账户路由和原生 headless 驱动，不通过用户全局 Node 或猜测 PATH 中的其它 DSH 执行。切换默认实例只影响后续任务；既有任务的 metadata 和进程保持原绑定。
+技能安装仍有固定 Git commit、下载摘要与安全解包检查，目标为原生 agents/skills；文件变化直接供 DSH 发现。用户 Web UI 与伙伴能力查询读取同一个 registry。
 
-任务 ID 与操作 ID 相同，最多四个同时执行，结构化输出有行、总量和保留上限。Prompt 通过 stdin 发送，任务登记不保存 Prompt、工具参数或密钥；回复只在内存里保留，原生会话 ID 记录可用于继续会话。重启时未完成记录标记 interrupted，不擅自重复执行可能有外部副作用的任务。取消只终止该任务的 Windows Job，并释放固定上下文。
+用户终端是显式功能：ConPTY 和可选导出 dsh 命令使用相同原生 profile 与真实用户环境。它不参与伙伴任务执行，不覆盖机器上已有的官方命令。
 
-两个真实版本已验证无模型账号时的任务失败仍记录正确绑定；成功回复与取消的执行协议由实际子进程夹具覆盖。真实模型任务需要用户在 DSH 中配置账户或 API。
-
-## 监督与一致性
-
-只有上游完成初始化打印专属 `dsh web:` URL，且其 token 交换返回本适配器预期的 HTTP 303 / `Location: ./` / Set-Cookie 后，才标记 running。认证 URL 仅保存在主进程内存，不进入状态或磁盘日志。工作台是独立 BrowserWindow，没有管理器 preload，使用实例专属 partition，限制跨源导航和新窗口。
-
-每个实例的写操作互斥。插件命令、克隆、快照、包生成不并发修改同一 Home。Web 启动全局串行且同时只允许一个 Host；普通第二次启动拒绝，明确 `instance.switch-start` 才停止旧 Host 后启动新实例。默认 CLI 选择携带主进程意图序号，较慢的旧选择请求或旧启动回调不能覆盖较新的选择。停止只结束观察到的自有子进程树。恢复 journal 通过 PID、可执行路径、CLI 路径和 Windows 创建时间确认身份，避免误杀复用的 PID。进程或插件安装崩溃不会要求管理器一起退出。
-
-静态 JSON/YAML 配置审计与链接审计保护已知管理数据位置；YAML 使用不执行自定义 tag 的解析器和别名 / 深度限制。不可将这个边界解释为第三方插件代码的 OS 沙盒。克隆重绑定受控配置和 pnpm 布局中的旧实例路径，不改写用户工作区源码。
-
-DSH 0.2.0-rc.2 的会话 Header 保存绝对 cwd。`instance-data-rebase.ts` 仅在停机新副本内迁移受管实例的内部 cwd，并按官方 projectKey 重定位所有日志世代；Zstd 日志仅重写首个 Header frame，后续聊天事件 frame 字节保持原样。Workspace v2 只重写对应 path；清除已知可再生项目缓存，记录迁移摘要。外部用户项目保留。未知会话格式或运行版本存在内部引用时拒绝迁移，原实例和完整备份仍保留。官方 writer / loader API 已验证迁移后的 list / open / read。
-
-Windows 的受管进程立即加入实例专属、不可继承句柄的 Job Object，关闭句柄、Host 退出或管理器崩溃都会结束所属子树。旧 PID journal 恢复仍核对精确身份；不通过进程名终止其他应用。
-
-归档每次只消费一个物理文件源，输入与输出错误均进入操作结果。1,200 文件压力验证断言源句柄峰值为 1；模拟 EMFILE 会失败并删除 partial，避免未捕获 stream 错误产生原生错误弹窗。耗时操作临时关闭主窗口节流并使用有界并发校验，结束后恢复窗口策略。
-
-启动器依赖在主日志初始化后加载，其构造、依赖或注册表失败局限在启动器模块，资产主窗口继续可用。Electron 真实验证覆盖损坏的登记文件和缺失的启动器依赖。
-
-操作 journal 在发出任务前写入，重启时将未完成操作标为 interrupted。复制升级永远新建私有环境，继续使用共享存档。快照只恢复实例执行环境；完整备份另含共享层，导入导出需全部 DSH Host、内置终端和外部受管 CLI 停止，先预检再合并缺失数据与保留冲突。程序版本回退与共享数据格式降级是不同问题。
-
-`copyData` 封存 `home`、`agents`、`workspace`、`user`，已迁移实例排除这些目录里的共享
-会话、附件、默认工作区和凭据原件，以及模型共享字段；共享层由 `exportTo` 单独封存。
-外层完整备份再追加精确 `runtime/program`。Electron partition 在管理器 sessionData 下，不在
-实例 `user` 内，故 Cookies / LocalStorage 不随归档；可再生缓存、事务锁及 `.cli-users` 控制树排除。
-
-完整 `.dshbackup` 同时封存实例数据、内层备份清单和程序制品。外层归档检验全部字节，内层实例恢复再次核对数据清单与精确程序摘要。软件 `.dshpack` 的边界另见[整合包格式](dsh-packs-format.md)。备份包含凭据，包不包含默认私有账户和会话数据。
+复制/升级建立新的原生配置副本，不合并会话格式。快照/私人备份保存停止实例的 Home、agents、workspace 与精确运行引用，不复制运行缓存、node_modules、事务锁或浏览器存储；快照恢复要求保留匹配运行版本；完整 ZIP 备份还包含可校验导入的运行制品。实例依赖由原生包管理器重建。整合包去除凭据、会话及启动器自供的本地桥接依赖，见 [包格式说明](dsh-packs-format.md)。
 
 ## 验证
 
-单元测试包括运行制品去重与篡改、路径 / 归档校验、单 Web 启动与显式切换、配置与插件隔离、依赖锁重放、不同测试版本的升级副本、快照恢复、取消与身份匹配恢复，以及 UI 请求与异步错误。模拟版本只用于测试，不修改官方版本标签。此前双 Host 验证属于采用单工作台要求之前的历史验证。
-
-实际官方 Windows 0.2.0-rc.2 / Node 24.18.1 已验证下载、SFX 提取、固定制品封存、双实例并行启动、单独停止、插件 list、包创建与新实例安装启动、快照恢复及应用重启。验证没有发送模型请求、读取原 `.dsh` 的凭据或执行实际账户登录。
-
 ```powershell
-# 使用项目 Node 24 执行 vitest / playwright；普通本机 Node 也须满足项目要求。
-node node_modules/vitest/vitest.mjs run tests/unit/dsh-runtime.test.ts tests/unit/dsh-instance.test.ts tests/unit/dsh-pack.test.ts tests/unit/dsh-launcher-ui.test.tsx
-$env:WORLDLINEBOX_DSH_REAL_DIRECTORY = (Resolve-Path '.tools/dsh-research/extracted').Path
-node node_modules/vitest/vitest.mjs run tests/unit/dsh-pack.test.ts
-$env:WORLDLINEBOX_DSH_TEST_RUNTIME = $env:WORLDLINEBOX_DSH_REAL_DIRECTORY
-node scripts/run-e2e.mjs tests/e2e/dsh-launcher.test.ts
+npm run typecheck
+npx vitest run tests/unit/dsh-
+# 使用已安装版本，临时原生 Home；不请求模型
+npx vitest run tests/worker/dsh-capability-describe-native.test.ts
+# 以下显式使用已配置的真实模型，分别运行，不要并发操作同一个用户管理器
+$env:WORLDLINEBOX_DSH_ECOSYSTEM_REAL = '1'
+npx vitest run tests/worker/dsh-native-web-ecosystem.test.ts
+$env:WORLDLINEBOX_DESKTOP_TRACE_REAL = '1'
+npx vitest run tests/worker/companion-desktop-dsh-trace-real.test.ts
 ```
 
-桌面测试应设置 `WORLDLINEBOX_E2E_ISOLATED_BUILD=1`，使用 `.tools/e2e-app/.vite` 和独立临时用户目录；本任务的测试通过 `resolveElectronAppPath()` 获取该测试应用。该模式不清理或覆盖开发中的 `.vite`。DSH 工作台验证使用静默窗口，不在用户桌面反复弹出测试窗口。
-
-真正不同官方数据 schema 的升级 / 降级、第三方原生插件 ABI 兼容、模型请求和平台账户仍需在对应版本和账户上验证。管理器展示失败与保留原环境，不承诺自动兼容所有插件。
-
-2026-10-12 首轮 Windows x64 检查：主程序 / 扩展 TypeScript 与修改文件 ESLint 通过，49 项普通单元测试通过（6 项需显式环境或其他平台的测试跳过），7 项隔离 Electron 验证通过。另已显式执行官方 HTTPS 下载 / SFX 导入、真实原生插件安装与移除 / 包安装后继续管理依赖，以及官方 Session API 写入与迁移后读取的验证。完整备份的真实桌面流程包含空白环境离线导入运行文件、恢复数据和再次启停。未执行模型请求。
-
-后续共享用户目录与安装提交修复验证：真实 Electron 使用已有官方安装包分别测试短时锁、持续可读锁与独占锁。三种原生 `CreateFileW` 占用均复现目录移动 `EPERM`；修复后重试、复制校验、失败保留与恢复通过，每例封存 9,769 个文件并在重新初始化后再次校验。未重新下载安装包。Vite watcher 开启前 / 开启时 / 关闭后同目录移动分别为成功 / `EPERM` / 成功，证明项目内存储会受开发监视器影响；历史失败的具体句柄持有者无法追溯。
-
-共享目录、浏览器存储持久化与 E2E 隔离、旧缓存校验迁移、历史通知清理、全局壁纸、设置导航及启动器故障隔离的 7 项桌面回归通过。主程序 / 扩展类型检查及修改文件 ESLint 通过；Forge 开发和生产配置共 18 次隔离构建不再出现 `inlineDynamicImports` 弃用警告，真实 Electron 日志事件验证不再出现 `console-message` 弃用警告。
-
-
-## 执行记录与伙伴摘要协议
-
-`DshTaskRecordStore` 为每次 operation UUID 创建 `dsh-launcher/task-records/<uuid>/`，按追加顺序从 1 编号。`events.jsonl` 仅存 broker 已脱敏的协议投影，`events.idx` 每项 12 字节（uint64 LE 字节偏移、uint32 LE 字节长度）。定向读取只访问目标索引和对应行，不扫描整份 JSONL；记录和结果不依赖 broker 最近 100 条任务或 1,000 条实时环缓存。保留完整的受管公开正文，实时 IPC 继续截短，并排除 reasoning/thinking/analysis。
-
-单任务两个文件句柄顺序写入，约 1 MiB 待写时暂停该任务 stdout，低于 256 KiB 恢复。待写 8 MiB 是最后故障保护；总存档上限 64 MiB/100,000 条。元数据每 32 条提交恢复点，终态先刷完队列并同步文件后原子提交元数据。异常退出只暴露最后提交范围并标为 interrupted/partial，不把未提交尾部当完整记录。统计分别数 turn_start、step_start、tool_start；耗时使用单调时钟，包括本次 CLI 绑定与执行，现实起止时间用于审计。
-
-`companionDshReceipt` 是主脑循环、独立结果反馈及记忆来源的统一投影：UUID、状态、轮数/步骤/工具次数、耗时、记录数、有限最终回复、截断与完整性标记。没有旧统计时返回 null。最终回复默认最多 6,000 字符，多任务进一步分摊预算；不在摘要里放事件数组。`dsh_record` 是无外部副作用的只读原生能力，各 provider 均注册，同一步最多四份读取。查询概览为默认行为，区间含两端；每页最多 50 条、单条最多 4,000 字符、条目 JSON 累计最多 12,000 字符，另有有限概览。续读使用 snapshot/nextStart 或单条 textOffset/nextTextOffset。编码转义也计入页预算。
-
-recordScope 仅接受可信 Main 的 actionId/companionId/conversationId/sourceMessageId，渲染端不能伪造执行归属。伙伴读取前后两次核验 action、原会话、原作者归属及 memory.sources.filter，发生重置或来源撤回就丢弃页。返回 sourceMessageId 进入循环来源校验。公开执行正文始终作为资料，不作为授权。人工 UI 走 action.record；任务记录不会改变 DSH 自身账号、模型和共享会话配置。
-
-by-owner/<companionId>/<uuid> 是精确归属标记，停止该伙伴全部作业之后流式枚举，逐份删除固定文件并移除标记；不一次加载多年 ID，不递归删除调用者路径。失败保留标记供重试。恢复执行会分配新的 UUID，旧记录保持可读，旧 action 本身仍是稳定工作入口。没有新存档的旧任务明确返回不可用，不从小型进度缓存构造“完整”日志。
+真实安装、市场入口、共享插件/技能、重启持久化、伙伴桌面任务与耗时证据见 [2026-10-25 验收](dsh-native-web-acceptance-2026-10-25.md)。历史日期文档描述当时实现，不是当前架构规范。

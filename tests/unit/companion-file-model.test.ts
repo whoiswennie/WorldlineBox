@@ -12,6 +12,19 @@ const at = '2026-10-15T02:00:00Z';
 const pixels = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jxZkAAAAASUVORK5CYII=';
 const sha = (base64: string) => createHash('sha256').update(Buffer.from(base64, 'base64')).digest('hex');
 const formats: AiApiFormat[] = ['openai_chat', 'openai_responses', 'anthropic', 'gemini_native', 'dashscope_native'];
+it('provides browser screenshot pixels through native vision and never treats an ordinary read as an image', async () => {
+  for (const action of ['screenshot', 'read']) {
+    let body: Record<string, unknown> = {};
+    const ref = snapshot(), step = turn(ref);
+    step.calls[0] = { id: 'native_read', name: 'browser', arguments: JSON.stringify({ action, tabId: 'actual_tab' }) };
+    await generateCompanionReply(input(), config(), undefined, { loop: true, browser: true, turns: [step], toolImages: [visual(ref)],
+      fetchFn: async (_url, init) => { body = JSON.parse(String(init?.body)); return envelope('openai_chat'); } });
+    const wire = JSON.stringify(body);
+    expect(wire.includes('data:image/png;base64,' + pixels)).toBe(action === 'screenshot');
+    expect(!!base(body, 'openai_chat').toolVisionManifest?.some((item: { delivery: string }) => item.delivery === 'image_provided')).toBe(action === 'screenshot');
+    expect(wire).toContain('"name":"browser"');
+  }
+});
 function config(apiFormat: AiApiFormat = 'openai_chat'): CompanionModelConfig { return { apiFormat, apiKey: 'private-test-key', baseUrl: 'https://fixture.invalid',
   model: apiFormat === 'anthropic' ? 'claude-sonnet-4-20250514' : apiFormat === 'gemini_native' ? 'gemini-2.5-flash' : apiFormat === 'dashscope_native' ? 'qwen3-vl-plus' : 'gpt-4o' }; }
 function input(): CompanionReplyInput { return { companion: { id: 'self', name: '伙伴', description: '', persona: '温和并尊重真实证据。', model: '', avatar: 'flash', builtin: false, proactive: false, createdAt: at },

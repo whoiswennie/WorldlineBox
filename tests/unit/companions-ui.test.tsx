@@ -563,7 +563,7 @@ it('adds a custom contact with the complete global connection inherited by defau
   await fill('[role="dialog"] input', '阿蓝'); await fill('[role="dialog"] textarea', '喜欢海风，也会有自己的看法。');
   expect(container!.querySelector('[role="dialog"] input[aria-label="模型"]')).toBeNull();
   await submitDialog();
-  expect(f.request).toHaveBeenCalledWith({ type: 'companion.create', companion: { name: '阿蓝', description: '', persona: '喜欢海风，也会有自己的看法。', model: '', avatar: 'custom', proactive: true } });
+  expect(f.request).toHaveBeenCalledWith({ type: 'companion.create', companion: { name: '阿蓝', description: '', persona: '喜欢海风，也会有自己的看法。', model: '', avatar: 'custom', proactive: true, inputMode: 'steer' } });
   await click('联系人'); expect(container!.querySelector('[data-companion-contact="new-companion"]')).not.toBeNull();
 });
 

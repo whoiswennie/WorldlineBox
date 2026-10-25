@@ -1,3 +1,4 @@
+import { assertCompanionInboxCapacity, companionAttentionCanClaim } from './attention-queue';
 import { CompanionInterruptionStore } from './interruption-store';
 import { CompanionAgentRunStore } from './agent-run-store';
 import { CompanionDocumentCatalogStore } from './document-catalog-store';
@@ -669,7 +670,13 @@ export class CompanionsStore {
       activities: [], configured: false, recoveries: this.replyRecoveries() };
   }
   private replyRecoveries(): CompanionReplyRecovery[] {
-    const found = rows(this.#db.prepare("SELECT value FROM metadata WHERE key GLOB 'reply-source/*' AND json_extract(value,'$.status') IN ('pending','interrupted')").all()).map(item => companionReplyRecoverySchema.parse(decode(item.value)));
+    // Only unfinished inbox work can recover. Completed historical receipts
+    // must never make opening a chat scan and deserialize its entire history.
+    const found = rows(this.#db.prepare(`SELECT DISTINCT m.value FROM companion_work_queue q
+      JOIN metadata m ON m.key='reply-source/'||json_extract(q.data,'$.sourceMessageId')
+      JOIN messages s ON s.id=json_extract(q.data,'$.sourceMessageId')
+      WHERE q.status IN('queued','running','interrupted') AND json_extract(m.value,'$.status') IN('pending','interrupted')`).all())
+      .map(item => companionReplyRecoverySchema.parse(decode(item.value)));
     return [...new Map(found.map(item => [item.sourceMessageId, item])).values()].filter(item => item.status === 'interrupted' || item.status === 'pending')
       .filter(item => { const source = this.getMessage(item.sourceMessageId); return !source.topicId || !this.#topics.topic(source.topicId, source.conversationId).deletedAt; })
       .sort((a, b) => this.getMessage(a.sourceMessageId).sequence - this.getMessage(b.sourceMessageId).sequence);
@@ -1009,8 +1016,8 @@ export class CompanionsStore {
 
   #message(found: Row, includeSegments = true): CompanionMessage {
     const attachments = rows(this.#db.prepare('SELECT a.data FROM message_attachments ma JOIN attachments a ON a.id=ma.attachment_id WHERE ma.message_id=? ORDER BY ma.ordinal').all(found.id)).map((item) => decode<StoredCompanionAttachment['attachment']>(item.data));
-    const loop = this.#db.prepare('SELECT value FROM metadata WHERE key=?').get('message-loop/' + found.id);
-    const loopState = loop ? decode<CompanionLoopCheckpoint>(row(loop).value) : undefined;
+    const loop = this.#db.prepare("SELECT json_object('status',json_extract(value,'$.status'),'draft',json_extract(value,'$.draft'),'progress',json_extract(value,'$.progress')) AS value FROM metadata WHERE key=?").get('message-loop/' + found.id);
+    const loopState = loop ? decode<Pick<CompanionLoopCheckpoint, 'status' | 'draft' | 'progress'>>(row(loop).value) : undefined;
     const draft = loopState?.draft;
     const observation = this.#db.prepare('SELECT value FROM metadata WHERE key=?').get('memory-world-observation/' + found.id);
     const worldTime = this.#db.prepare('SELECT world_at,time_zone FROM companion_message_times WHERE message_id=?').get(found.id);
@@ -1019,7 +1026,7 @@ export class CompanionsStore {
       authorId: String(found.author_id), kind: found.kind as CompanionMessage['kind'], content: String(found.content),
       createdAt: String(found.created_at), ...(worldTime ? { worldCreatedAt: String(row(worldTime).world_at), worldTimeZone: String(row(worldTime).time_zone) } : {}), status: found.status as CompanionMessage['status'], attachments,
       ...(this.#db.prepare('SELECT 1 FROM metadata WHERE key=?').get('message-memory-evidence/' + found.id) ? { memoryEvidenceOnly: true } : {}),
-      ...(this.#isReplyDraft(found) ? { isReplyDraft: true } : {}),
+      ...((loopState ? loopState.status !== 'done' : this.#isReplyDraft(found)) ? { isReplyDraft: true } : {}),
       ...(draft ? { replyDraft: draft } : {}),
       ...(loopState?.progress ? { replyProgress: loopState.progress } : {}),
       ...(observation ? { worldObservation: decode<{ observation: NonNullable<CompanionMessage['worldObservation']> }>(row(observation).value).observation } : {}),
@@ -1027,8 +1034,8 @@ export class CompanionsStore {
       ...(found.reply_to_id ? { replyToId: String(found.reply_to_id) } : {}), ...(found.action_id ? { actionId: String(found.action_id) } : {}) };
   }
   #isReplyDraft(found: Row): boolean {
-    const loop = this.#db.prepare('SELECT value FROM metadata WHERE key=?').get('message-loop/' + found.id);
-    if (loop) return decode<CompanionLoopCheckpoint>(row(loop).value).status !== 'done';
+    const loop = this.#db.prepare("SELECT json_extract(value,'$.status') AS status FROM metadata WHERE key=?").get('message-loop/' + found.id);
+    if (loop) return row(loop).status !== 'done';
     return found.request_fingerprint ? decode<{ loopStep?: number }>(found.request_fingerprint).loopStep !== undefined : false;
   }
   #indexMessageSearch(id: string): void {
@@ -1043,14 +1050,14 @@ export class CompanionsStore {
   }
 
   private messageSegments(id: string): CompanionMessage['segments'] {
-    const found = this.#db.prepare('SELECT value FROM metadata WHERE key=?').get('message-loop/' + id);
+    // Project presentation fields inside SQLite: tool results, image payloads
+    // and provider context never travel through a history-page JSON parse.
+    const found = this.#db.prepare("SELECT json_extract(value,'$.draft.text') AS draft FROM metadata WHERE key=?").get('message-loop/' + id);
     if (!found) return undefined;
-    const checkpoint = decode<CompanionLoopCheckpoint>(row(found).value), turns = checkpoint.turns;
-    const actions = rows(this.#db.prepare("SELECT id,data FROM actions WHERE json_extract(data,'$.parentMessageId')=? ORDER BY rowid").all(id));
-    const segments = turns.flatMap((turn, index) => turn.topicPublicationRejection ? [] : [
-      { text: turn.text, actionIds: actions.filter(item => decode<CompanionAction>(item.data).loopStep === index).map(item => String(item.id)) },
-    ]);
-    if (checkpoint.draft?.text) segments.push({ text: checkpoint.draft.text, actionIds: [] });
+    const turns = rows(this.#db.prepare("SELECT CAST(t.key AS INTEGER) AS step,json_extract(t.value,'$.text') AS text FROM metadata m,json_each(m.value,'$.turns') t WHERE m.key=? AND json_extract(t.value,'$.topicPublicationRejection') IS NULL ORDER BY step").all('message-loop/' + id));
+    const actions = rows(this.#db.prepare("SELECT id,json_extract(data,'$.loopStep') AS step FROM actions WHERE json_extract(data,'$.parentMessageId')=? ORDER BY rowid").all(id));
+    const segments = turns.map(turn => ({ text: String(turn.text ?? ''), actionIds: actions.filter(action => action.step === turn.step).map(action => String(action.id)) }));
+    if (row(found).draft) segments.push({ text: String(row(found).draft), actionIds: [] });
     return segments;
   }
   private workList(sourceMessageId?: string, unfinishedOnly = false, conversationId?: string): CompanionWork[] {
@@ -1070,10 +1077,16 @@ export class CompanionsStore {
         if (resume && ['interrupted', 'cancelled'].includes(decode<CompanionWork>(row(found).data).status)) this.workStatus(work.id, 'queued');
         return;
       }
+      assertCompanionInboxCapacity(this.#db, work.companionId);
       const invocationKey = work.proactive ? work.id : undefined;
       const checkpoint: CompanionLoopCheckpoint = this.loopCheckpoint(work.sourceMessageId, work.companionId, invocationKey)
         ?? { conversationId: work.conversationId, sourceMessageId: work.sourceMessageId, companionId: work.companionId,
           invocationKey, status: 'running', turns: [], supplements: [] };
+      if (work.inputMode === 'steer' && !checkpoint.messageId) {
+        this.#db.prepare('INSERT INTO companion_work_queue(id,status,companion_id,data) VALUES(?,?,?,?)')
+          .run(work.id, 'queued', work.companionId, JSON.stringify({ ...work, status: 'queued' }));
+        return;
+      }
       if (!checkpoint.messageId) {
         const loopKey = work.sourceMessageId + ':' + work.companionId + (work.proactive ? ':' + work.id : '');
         checkpoint.messageId = this.appendMessage({ conversationId: work.conversationId, authorId: work.companionId,
@@ -1117,10 +1130,11 @@ export class CompanionsStore {
       if (Number(row(this.#db.prepare("SELECT count(*) AS total FROM companion_work_queue WHERE status='running'").get()).total) >= 20) return;
       const candidates = rows(this.#db.prepare(`SELECT data,ordinal FROM companion_work_queue queued WHERE status='queued' AND EXISTS(SELECT 1 FROM companions p WHERE p.id=queued.companion_id AND json_extract(p.data,'$.active')=1) AND
         NOT EXISTS(SELECT 1 FROM companion_reset_jobs r WHERE r.companion_id=queued.companion_id AND r.status!='completed') AND
-        (SELECT count(*) FROM companion_work_queue running WHERE running.companion_id=queued.companion_id AND running.status='running')<5 ORDER BY COALESCE((SELECT CASE WHEN a.urgency='urgent' AND a.confidence>=.85 AND a.at>? THEN 1 ELSE 0 END FROM companion_world_attention a WHERE a.companion_id=queued.companion_id AND a.source_message_id=json_extract(queued.data,'$.sourceMessageId')),0) DESC,ordinal`).all(Date.now() - 1800000));
+        (SELECT count(*) FROM companion_work_queue running WHERE running.companion_id=queued.companion_id AND running.status='running')<1 ORDER BY ordinal`).all());
       for (const found of candidates) {
         const next = { ...companionWorkSchema.parse(decode(found.data)), ordinal: Number(found.ordinal) };
         if (!this.#memory.sourcesFilter(next, [next.sourceMessageId]).length) { this.workStatus(next.id, 'cancelled'); continue; }
+        if (!companionAttentionCanClaim(this.#db, next.companionId, next.sourceMessageId)) continue;
         if (!this.#routine.allowWork(next.companionId, next.sourceMessageId, Date.now(), next.proactive)) continue;
         this.#runtimeState.energy(next.companionId);
         this.workStatus(next.id, 'running');
@@ -1355,6 +1369,19 @@ export class CompanionsStore {
         this.saveReplyCheckpoint({ conversationId: message.conversationId, sourceMessageId: id,
           dispatcher: 'queue',
           status: message.replyDirective === 'none' ? 'done' : 'pending', delivery: message.replyDirective === 'none' ? 'chat' : message.replyDirective, completedIds: [], updatedAt: createdAt });
+      }
+      // Receive the message and reserve its inbox entry atomically. A full
+      // recipient rolls back publication, so the sender can safely retry.
+      if (message.authorId === 'user' && message.replyDirective && message.replyDirective !== 'none') {
+        const members = this.#memberIds(message.conversationId).map(owner => this.#requireCompanion(owner));
+        const addressed = members.filter(owner => message.content.includes('@' + owner.name) || message.content.includes(owner.name));
+        const topic = stored.topicId ? this.#topics.topic(stored.topicId, message.conversationId) : undefined;
+        for (const owner of addressed.length ? addressed : members) {
+          if (topic && (topic.status !== 'active' || !topic.participantIds.includes(owner.id) && !topic.invitedIds.includes(owner.id))) continue;
+          this.enqueueWork({ id: createHash('sha256').update(id + ':' + owner.id).digest('hex'), companionId: owner.id,
+            conversationId: message.conversationId, sourceMessageId: id, status: 'queued', proactive: false,
+            createdAt, updatedAt: createdAt, inputMode: message.replyDirective === 'queue' ? 'queue' : owner.inputMode ?? 'steer' });
+        }
       }
       if (message.replyCompletion) this.completeReply(message.conversationId, message.replyCompletion.sourceMessageId, message.replyCompletion.companionId);
       this.#social.observePlayerMessage(stored);
@@ -1885,9 +1912,9 @@ export class CompanionsStore {
       case 'work.status': this.workStatus(command.id, command.status, command.resumeOnRestart); return { ok: true };
       case 'work.promote': {
         this.#db.transaction(() => {
-          const works = this.workList(command.sourceMessageId);
+          const works = this.workList(command.sourceMessageId).filter(work => !command.companionId || work.companionId === command.companionId);
           if (works.some(work => work.status === 'running' || work.status === 'done')) throw new Error('这条消息已经开始处理，不能再从队列转为引导。');
-          for (const work of works) if (work.status === 'queued') this.workStatus(work.id, 'cancelled');
+          for (const work of works) if (work.status === 'queued') { this.workStatus(work.id, 'cancelled'); this.completeReply(work.conversationId, work.sourceMessageId, work.companionId); }
         }).immediate();
         return { ok: true };
       }

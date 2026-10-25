@@ -18,6 +18,13 @@ import { BrowserPageController } from './page-controller';
 import type { CompanionModelConfig } from '../companions/model';
 import type { BrowserAgentToolName } from '../../shared/browser-agent-tools';
 import { browserAiRequestSchema, type BrowserAiSource } from '../../shared/browser-ai';
+import { companionBrowserArgumentsSchema, type CompanionBrowserArguments, type CompanionBrowserScope } from '../../shared/companion-browser';
+import { BrowserCompanionActivity } from './companion-activity';
+import { companionVideo } from './companion-video';
+import { companionScreenshot } from './companion-screenshot';
+import { companionViewport } from './companion-viewport';
+
+export interface CompanionBrowserResult { value: unknown; screenshot?: Uint8Array }
 
 const MAX_LIVE_PAGES = 8;
 export class BrowserService {
@@ -50,6 +57,9 @@ export class BrowserService {
   private readonly searchPages = new Map<string, { query: string; sources: BrowserAiSource[]; producerId: string }>();
   private agentClosingTab?: string;
   private aiSearchTabId?: string;
+  private readonly companionActivity = new BrowserCompanionActivity(() => { this.layout(); this.changed(false); });
+  private readonly companionPages = new Map<string, BrowserPageController>();
+  private readonly companionOpenedTabs = new Map<string, string>();
   constructor(private readonly getWindow: () => BrowserWindow | null | undefined, private readonly root = path.join(app.getPath('userData'), 'browser'), private readonly captureHooks?: BrowserCaptureHooks, private readonly onSelection?: (text: string) => Promise<void>, private readonly fullscreenShortcut?: (input: Electron.Input) => boolean, getModelConfig?: () => CompanionModelConfig) {
     this.store = new BrowserStore(root, error => { this.error = '浏览器配置保存失败：' + String(error).slice(0, 600); this.changed(false); });
     this.ai = new BrowserAiService(root, { getConfig: getModelConfig, changed: () => this.changed(false), hasTab: id => this.store.data.tabs.some(tab => tab.id === id),
@@ -221,6 +231,7 @@ export class BrowserService {
   closeLibrary(libraryId: string): void { this.capture?.closeLibrary(libraryId); }
   state(): BrowserState {
     return { tabs: structuredClone(this.store.data.tabs), activeTabId: this.store.data.activeTabId, bookmarks: structuredClone(this.store.data.bookmarks),
+      companions: this.companionActivity.state(),
       downloads: structuredClone(this.store.data.downloads), historyCount: this.store.data.history.length, preferences: { ...this.store.data.preferences },
       permissions: [...this.pendingPermissions].map(([id, value]) => ({ id, origin: value.origin, permission: value.permission })),
       fullscreen: this.fullscreen, revision: this.revision, find: this.find, cacheBytes: this.cacheBytes, error: this.error, capture: this.capture?.state(),
@@ -240,8 +251,8 @@ export class BrowserService {
       this.owner = owner;
       owner.on('resize', () => this.layout());
       owner.webContents.on('did-start-navigation', (_event, _url, _inPlace, mainFrame) => { if (mainFrame) { this.visible = false; this.layout(); } });
-      owner.webContents.on('render-process-gone', () => { this.visible = false; this.layout(); });
-      owner.once('closed', () => { this.visible = false; this.invalidateText(); for (const [tabId, item] of this.views) { this.capture?.cancelTab(tabId); if (!item.view.webContents.isDestroyed()) item.view.webContents.close(); } this.views.clear(); });
+      owner.webContents.on('render-process-gone', () => { this.visible = false; this.companionActivity.pause(true); this.layout(); });
+      owner.once('closed', () => { this.visible = false; this.companionActivity.cancel(); this.companionPages.clear(); this.invalidateText(); for (const [tabId, item] of this.views) { this.capture?.cancelTab(tabId); if (!item.view.webContents.isDestroyed()) item.view.webContents.close(); } this.views.clear(); });
     }
     return owner;
   }
@@ -255,6 +266,7 @@ export class BrowserService {
   }
   private evictionCandidate(protectedTab?: string) {
     return [...this.views].filter(([id, entry]) => id !== protectedTab && id !== this.store.data.activeTabId
+      && !this.companionActivity.busy(id)
       && !entry.view.webContents.isDestroyed() && !entry.view.webContents.isCurrentlyAudible()).sort((a, b) => a[1].used - b[1].used)[0];
   }
   private pageAction(action: () => void): void {
@@ -336,7 +348,7 @@ export class BrowserService {
         tab.error = formatBrowserLoadError(code, description); tab.loading = false; this.layout(); this.changed();
       }
     });
-    contents.on('render-process-gone', () => { this.invalidateText(tab.id); tab.error = '页面进程已退出，请重新加载。'; tab.loading = false; tab.discarded = true; this.layout(); this.changed(); });
+    contents.on('render-process-gone', () => { this.invalidateText(tab.id); this.companionActivity.cancel(tab.id); tab.error = '页面进程已退出，请重新加载。'; tab.loading = false; tab.discarded = true; this.layout(); this.changed(); });
     contents.on('will-navigate', (event, url) => { if (!isBrowserUrl(url)) event.preventDefault(); });
     contents.on('will-redirect', (event, url) => { if (!isBrowserUrl(url)) event.preventDefault(); });
     contents.setWindowOpenHandler(details => {
@@ -351,7 +363,9 @@ export class BrowserService {
         // must be adopted verbatim to preserve opener, POST and navigation.
         const supplied = options as Electron.WebContentsViewConstructorOptions;
         try {
-          const child = this.addTab(details.url, details.disposition === 'background-tab', false, supplied, tab.id);
+          const companion = this.companionActivity.state().activities.find(activity => activity.tabId === tab.id && ['click', 'key'].includes(activity.action));
+          const child = this.addTab(details.url, details.disposition === 'background-tab' || !!companion, false, supplied, tab.id);
+          if (companion) this.companionOpenedTabs.set(child.id, companion.companionId);
           this.rememberSignInSource(child.id, details.url, tab.url);
           const childContents = this.views.get(child.id)!.view.webContents;
           // OpenURLFromTab can omit a native guest. In that path a custom
@@ -441,6 +455,8 @@ export class BrowserService {
   private destroyView(id: string): void {
     const entry = this.views.get(id); if (!entry) return;
     this.pages.forget(entry.view.webContents.id);
+    for (const controller of this.companionPages.values()) controller.forget(entry.view.webContents.id);
+    this.companionActivity.cancel(id);
     this.invalidateText(id); this.capture?.cancelTab(id); this.owner?.contentView.removeChildView(entry.view); this.views.delete(id); this.navigationVersions.delete(id); this.textVersions.delete(id);
     if (!entry.view.webContents.isDestroyed()) entry.view.webContents.close();
     const tab = this.store.data.tabs.find(item => item.id === id); if (tab) { tab.discarded = true; tab.loading = false; }
@@ -470,6 +486,7 @@ export class BrowserService {
   }
   private closeTab(id: string): void {
     const index = this.store.data.tabs.findIndex(item => item.id === id); if (index < 0) return;
+    this.companionActivity.forget(id); this.companionOpenedTabs.delete(id);
     const [closed] = this.store.data.tabs.splice(index, 1); if (closed) { this.store.data.closedTabs.unshift(closed); this.store.data.closedTabs.length = Math.min(20, this.store.data.closedTabs.length); }
     const retained = new Set([...this.store.data.tabs, ...this.store.data.closedTabs].map(tab => tab.id));
     for (const key of Object.keys(this.store.data.navigation)) if (!retained.has(key)) delete this.store.data.navigation[key];
@@ -488,12 +505,16 @@ export class BrowserService {
     for (const [id, entry] of this.views) {
       const tab = this.store.data.tabs.find(tab => tab.id === id);
       const visible = this.visible && id === this.store.data.activeTabId && bounds.width > 0 && bounds.height > 0 && !tab?.error && (tab?.url !== BROWSER_HOME || tab.nativeBlank === true);
+      const backgroundCapture = !visible && this.companionActivity.busy(id);
       // Reapplying native bounds/visibility during media and subframe events
       // needlessly invalidates the compositor's video surface.
-      if (visible) {
+      if (visible || backgroundCapture) {
         const current = entry.view.getBounds();
-        if (current.x !== bounds.x || current.y !== bounds.y || current.width !== bounds.width || current.height !== bounds.height) entry.view.setBounds(bounds);
+        const target = bounds.width > 0 && bounds.height > 0 ? bounds : { x: 0, y: 0, width: 1024, height: 768 };
+        if (current.x !== target.x || current.y !== target.y || current.width !== target.width || current.height !== target.height) entry.view.setBounds(target);
       }
+      // Child views always cover the host WebContents on Windows, even at
+      // index zero. Hidden capture must never expose a page over chat.
       if (entry.view.getVisible() !== visible) entry.view.setVisible(visible);
     }
   }
@@ -600,6 +621,77 @@ export class BrowserService {
     await delay(80, undefined, { signal });
     while (!contents.isDestroyed() && contents.isLoadingMainFrame()) await delay(80, undefined, { signal });
     signal.throwIfAborted(); if (contents.isDestroyed()) throw Error('页面已关闭。'); if (tab.error) throw Error(tab.error);
+  }
+  /** Shares ordinary tabs and their Session. Never selects/focuses a user's tab. */
+  async companionTool(scope: CompanionBrowserScope, raw: CompanionBrowserArguments, signal?: AbortSignal): Promise<CompanionBrowserResult> {
+    signal?.throwIfAborted(); await this.init(); signal?.throwIfAborted();
+    const input = companionBrowserArgumentsSchema.parse(raw);
+    this.companionActivity.assertAllowed('tabId' in input ? input.tabId : undefined);
+    if (input.action === 'tabs') return { value: { tabs: this.store.data.tabs.map(({ id, title, url, loading, muted }) => ({ id, title, url, loading, muted,
+      active: id === this.store.data.activeTabId, openedBy: this.companionOpenedTabs.get(id), paused: this.companionActivity.state().pausedTabIds.includes(id) })) } };
+    const existing = input.action === 'open' ? this.store.data.tabs.find(tab => tab.url === new URL(input.url).href || tab.url === input.url) : undefined;
+    const tab = input.action === 'open' ? existing ?? this.addTab(input.url, true) : this.requireTab(input.tabId);
+    if (input.action === 'open' && !existing) this.companionOpenedTabs.set(tab.id, scope.companionId);
+    // Closing is explicit. Ending a read never closes or discards the page.
+    if (input.action === 'tab' && input.operation === 'close') {
+      if (this.companionOpenedTabs.get(tab.id) !== scope.companionId) throw Error('只能自主关闭本人打开的标签页；用户已有标签页请交由用户关闭。');
+      this.closeTab(tab.id); return { value: { closed: true, tabId: tab.id } };
+    }
+    return this.companionActivity.run(scope, tab.id, input.action, signal, async current => {
+      const view = this.ensureView(tab), contents = view.webContents; this.layout();
+      let releaseViewport: (() => Promise<void>) | undefined;
+      const scopeKey = `${scope.companionId}:${scope.conversationId}`;
+      let controller = this.companionPages.get(scopeKey);
+      if (!controller) { controller = new BrowserPageController(id => this.navigationVersions.get(id) ?? 0, 'companion:' + scopeKey); this.companionPages.set(scopeKey, controller); }
+      const confirm = async (description: string) => {
+        current.throwIfAborted();
+        const result = await dialog.showMessageBox(this.attachOwner(), { type: 'question', title: scope.companionName + ' · 浏览器操作', message: description,
+          detail: '请核对此操作是否符合你的当前意愿。', buttons: ['取消', '允许这次操作'], defaultId: 0, cancelId: 0, noLink: true });
+        current.throwIfAborted(); return result.response === 1;
+      };
+      const navigating = input.action === 'open' || input.action === 'navigate' || input.action === 'tab' && ['reload', 'back', 'forward'].includes(input.operation);
+      const cancel = () => { if (navigating && !contents.isDestroyed()) contents.stop(); };
+      current.addEventListener('abort', cancel, { once: true });
+      try {
+        if (input.action === 'navigate') await this.load(tab, input.url);
+        if (input.action === 'tab') {
+          if (input.operation === 'mute' || input.operation === 'unmute') this.setMuted(tab.id, input.operation === 'mute');
+          if (input.operation === 'reload') contents.reload();
+          if (input.operation === 'back' && contents.navigationHistory.canGoBack()) contents.navigationHistory.goBack();
+          if (input.operation === 'forward' && contents.navigationHistory.canGoForward()) contents.navigationHistory.goForward();
+        }
+        await this.waitForPage(tab, current); current.throwIfAborted();
+        releaseViewport = await companionViewport(contents, view.getBounds());
+        const version = this.navigationVersions.get(tab.id), pageUrl = contents.getURL();
+        let value: unknown;
+        if (input.action === 'observe') value = await controller.observe(tab.id, contents, input);
+        else if (input.action === 'read') value = await controller.read(tab.id, contents, input.offset, input.length);
+        else if (input.action === 'screenshot') {
+          if (tab.url === BROWSER_HOME && !tab.nativeBlank) throw Error('原生起始页没有网页图像，请先打开网站。');
+          await delay(120, undefined, { signal: current });
+          const image = await companionScreenshot(contents, current);
+          current.throwIfAborted();
+          if (version !== this.navigationVersions.get(tab.id) || image.isEmpty()) throw Error('页面正在跳转或图像为空，请重新查看。');
+          return { value: { tabId: tab.id, url: pageUrl, title: tab.title, capturedAt: new Date().toISOString() }, screenshot: image.toPNG() };
+        } else if (['click', 'hover', 'fill', 'select'].includes(input.action)) value = await controller.act(tab.id, contents, input.action as 'click' | 'hover' | 'fill' | 'select', input, confirm, current);
+        else if (input.action === 'key') value = await controller.key(contents, input.key, confirm, current);
+        else if (input.action === 'scroll') value = await controller.scroll(contents, input.direction, input.pixels);
+        else if (input.action === 'wait') { await delay(input.ms, undefined, { signal: current }); value = { waited: input.ms }; }
+        else if (input.action === 'video') value = await companionVideo(contents, input);
+        else value = { url: tab.url, title: tab.title, success: true };
+        // Native input is dispatched asynchronously; retain the actual call
+        // while its immediate navigation/popup is being delivered.
+        if (input.action === 'click' || input.action === 'key') await delay(120, undefined, { signal: current });
+        current.throwIfAborted();
+        if (!this.store.data.tabs.includes(tab)) throw Error('标签页已关闭。');
+        if (['read', 'observe', 'video'].includes(input.action) && version !== this.navigationVersions.get(tab.id)) throw Error('页面已跳转，请重新查看。');
+        const snapshot = input.action === 'observe' ? value : await controller.observe(tab.id, contents, { query: '', offset: 0, limit: 40 })
+          .catch(error => ({ unavailable: true, reason: error instanceof Error ? error.message : String(error) }));
+        return { value: { tabId: tab.id, result: value, page: { url: tab.url, title: tab.title, loading: contents.isLoading(), snapshot },
+          tabs: this.store.data.tabs.map(({ id, title, url, loading, audible }) => ({ id, title, url, loading, audible, active: id === this.store.data.activeTabId })),
+          observedAt: new Date().toISOString(), reused: input.action === 'open' ? !!existing : undefined } };
+      } finally { current.removeEventListener('abort', cancel); await releaseViewport?.(); }
+    });
   }
   private async agentTool(name: BrowserAgentToolName, input: Record<string, unknown>, signal: AbortSignal, confirm: (description: string) => Promise<boolean>): Promise<unknown> {
     signal.throwIfAborted();
@@ -710,6 +802,7 @@ export class BrowserService {
     const ai = browserAiRequestSchema.safeParse(request);
     if (ai.success) { await this.ai.handle(ai.data); return { ok: true, state: this.state() }; }
     switch (request.type) {
+      case 'companion.pause': if (request.tabId) this.requireTab(request.tabId); this.companionActivity.pause(request.paused, request.tabId); break;
       case 'activate': this.ensureView(this.active()); break;
       case 'state': break;
       case 'layout': this.visible = request.visible; this.bounds = request.bounds; this.layout(); return { ok: true };
@@ -788,6 +881,7 @@ export class BrowserService {
     this.changed(); return { ok: true, state: this.state() };
   }
   async shutdown(): Promise<void> {
+    this.companionActivity.pause(true); this.companionPages.clear();
     await this.initialization?.catch(() => undefined);
     await this.ai.shutdown();
     this.searchPages.clear(); this.aiSearchTabId = undefined;
@@ -801,7 +895,7 @@ export class BrowserService {
   }
 }
 
-export function registerBrowserIpc(getWindow: () => BrowserWindow | null | undefined, captureHooks?: BrowserCaptureHooks, onSelection?: (text: string) => Promise<void>, fullscreenShortcut?: (input: Electron.Input) => boolean, getModelConfig?: () => CompanionModelConfig): { shutdown(): Promise<void>; closeLibrary(libraryId: string): void; captureViewport(): Promise<CaptureImageSource>; selectedText(): Promise<string>; saveScreenshot(bytes: Uint8Array, filename: string): Promise<void> } {
+export function registerBrowserIpc(getWindow: () => BrowserWindow | null | undefined, captureHooks?: BrowserCaptureHooks, onSelection?: (text: string) => Promise<void>, fullscreenShortcut?: (input: Electron.Input) => boolean, getModelConfig?: () => CompanionModelConfig): Pick<BrowserService, 'shutdown' | 'closeLibrary' | 'captureViewport' | 'selectedText' | 'saveScreenshot' | 'companionTool'> {
   let browser: BrowserService | undefined;
   ipcMain.handle(BROWSER_REQUEST, async (event, input: unknown): Promise<BrowserResponse> => {
     const owner = getWindow(); if (!owner || event.sender !== owner.webContents || event.senderFrame !== owner.webContents.mainFrame) return { ok: false, error: '无权访问浏览器。' };
@@ -820,6 +914,7 @@ export function registerBrowserIpc(getWindow: () => BrowserWindow | null | undef
   });
   ipcMain.on(BROWSER_CAPTURE_SELECTION_STATE, (event, value: unknown) => browser?.captureSelectionState(event, value));
   return { shutdown: async () => { await browser?.shutdown(); }, closeLibrary: libraryId => browser?.closeLibrary(libraryId),
+    companionTool: (scope, input, signal) => (browser ??= new BrowserService(getWindow, undefined, captureHooks, onSelection, fullscreenShortcut, getModelConfig)).companionTool(scope, input, signal),
     captureViewport: () => (browser ??= new BrowserService(getWindow, undefined, captureHooks, onSelection, fullscreenShortcut, getModelConfig)).captureViewport(),
     selectedText: () => (browser ??= new BrowserService(getWindow, undefined, captureHooks, onSelection, fullscreenShortcut, getModelConfig)).selectedText(),
     saveScreenshot: (bytes, filename) => (browser ??= new BrowserService(getWindow, undefined, captureHooks, onSelection, fullscreenShortcut, getModelConfig)).saveScreenshot(bytes, filename) };

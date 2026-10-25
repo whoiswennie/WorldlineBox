@@ -1,3 +1,4 @@
+import { COMPANION_MEDIA_PREVIEW_MAX_BYTES } from '../../shared/companion-media';
 import { createHash, randomUUID } from 'node:crypto';
 import { lstat, mkdir, open, realpath, rename, unlink } from 'node:fs/promises';
 import path from 'node:path';
@@ -10,7 +11,7 @@ const MAX_FILE_BYTES = 20 * 1024 * 1024;
 const MAX_TEXT_BYTES = 128 * 1024;
 const MAX_IMAGE_BYTES = 1024 * 1024;
 const MAX_PIXELS = 64 * 1024 * 1024;
-const MAX_SEND_BYTES = 100 * 1024 * 1024;
+const MAX_SEND_BYTES = COMPANION_MEDIA_PREVIEW_MAX_BYTES;
 const sha = (bytes: Buffer) => createHash('sha256').update(bytes).digest('hex');
 type StableFile = { path: string; bytes: Buffer };
 export interface CompanionReadFileResult {
@@ -20,7 +21,7 @@ export interface CompanionReadFileResult {
     encoding: 'utf-8' | 'utf-16le' | 'utf-16be'; truncated: boolean; attachmentId: string; sha256: string };
 }
 export interface CompanionReadImageResult { content: string; images: CompanionToolImageReference[]; attachments: CompanionAttachment[] }
-export interface CompanionSendFileResult { content: string; attachments: CompanionAttachment[]; file: { path: string; size: number; mime: string; attachmentId: string; sha256: string } }
+export interface CompanionSendFileResult { content: string; attachments: CompanionAttachment[]; file: { path: string; size: number; mime: string; attachmentId: string; sha256?: string; linked?: boolean } }
 export interface CompanionHydratedImages { images: Array<Omit<ToolVisualInput, 'callId'>>; unavailable: Array<{ attachmentId: string; error: string }> }
 
 /** Read-only source access, with immutable managed copies for durable UI/provenance. No command execution. */
@@ -122,6 +123,12 @@ export class CompanionFileReader {
   async readImage(input: { path: string }, key?: string): Promise<CompanionReadImageResult> {
     const previous = await this.cached<CompanionReadImageResult>(key); if (previous !== undefined) return previous;
     const args = companionFileToolArgumentsSchemas.read_image.parse(input), source = await this.stableFile(args.path);
+    return this.captureImage(source.bytes, source.path, key);
+  }
+
+  /** Pixels captured by the native browser, without accepting a model-supplied path. */
+  async captureImage(input: Uint8Array, name = 'browser-page.png', key?: string): Promise<CompanionReadImageResult> {
+    const source = { bytes: Buffer.from(input), path: name };
     let bytes: Buffer, width: number, height: number, frames: number;
     try {
       const pixels = sharp(source.bytes, { limitInputPixels: MAX_PIXELS, failOn: 'warning', animated: false }), metadata = await pixels.metadata();
@@ -145,9 +152,23 @@ export class CompanionFileReader {
     if (!path.isAbsolute(args.path)) throw new Error('发送文件需要真实绝对路径。');
     const source = await realpath(args.path), first = await lstat(args.path, { bigint: true });
     if (!first.isFile() || first.isSymbolicLink()) throw new Error('只能发送已有普通文件，不能发送目录或符号链接。');
-    if (first.size > BigInt(MAX_SEND_BYTES)) throw new Error('发送文件超过 100 MiB 上限。');
+
     const { directory } = await this.managedDirectory(), id = randomUUID(), rawExtension = path.extname(source).slice(1).toLowerCase();
     const extension = /^[a-z0-9]{1,16}$/u.test(rawExtension) ? '.' + rawExtension : '.bin', relativePath = `attachments/${id}${extension}`;
+    const mime = ({ png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', webp: 'image/webp', gif: 'image/gif',
+      mp3: 'audio/mpeg', wav: 'audio/wav', ogg: 'audio/ogg', opus: 'audio/opus', flac: 'audio/flac', m4a: 'audio/mp4', aac: 'audio/aac',
+      mp4: 'video/mp4', webm: 'video/webm', mov: 'video/quicktime', mkv: 'video/x-matroska', avi: 'video/x-msvideo',
+      pdf: 'application/pdf', doc: 'application/msword', docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+      xls: 'application/vnd.ms-excel', xlsx: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+      ppt: 'application/vnd.ms-powerpoint', pptx: 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+      txt: 'text/plain', md: 'text/markdown', csv: 'text/csv', json: 'application/json', xml: 'application/xml', html: 'text/html', zip: 'application/zip' } as Record<string, string>)[rawExtension] ?? 'application/octet-stream';
+    if (first.size > BigInt(MAX_SEND_BYTES)) {
+      if (first.size > BigInt(Number.MAX_SAFE_INTEGER)) throw new Error('文件大小超出可登记范围。');
+      const attachment: CompanionAttachment = { id, name: path.basename(source).slice(0, 240), mime, size: Number(first.size) };
+      const file = { path: source, size: attachment.size, mime, attachmentId: id, linked: true };
+      return this.commit({ content: JSON.stringify({ ...file, notice: '已附上本机原文件引用。大文件不复制、不载入内存，在聊天卡片中使用系统应用打开；源文件移动或删除后将不可用。' }),
+        file, attachments: [{ ...attachment, path: source, url: 'worldlinebox-companion://attachment/' + id }] }, [{ attachment, relativePath, sourcePath: source }], key);
+    }
     const destination = path.join(directory, id + extension), temporary = destination + '.tmp', original = await open(source, 'r');
     let count = 0; const digest = createHash('sha256');
     try {
@@ -159,7 +180,7 @@ export class CompanionFileReader {
         const buffer = Buffer.alloc(1024 * 1024);
         while (true) {
           const read = await original.read(buffer, 0, buffer.length, count); if (!read.bytesRead) break;
-          if (count + read.bytesRead > MAX_SEND_BYTES) throw new Error('文件在复制期间超过 100 MiB 上限。');
+          if (count + read.bytesRead > MAX_SEND_BYTES) throw new Error('文件在复制期间超过 256 MiB 快照上限，请重新发送原文件引用。');
           let written = 0; while (written < read.bytesRead) { const part = await copy.write(buffer, written, read.bytesRead - written, count + written); if (!part.bytesWritten) throw new Error('无法完整保存附件快照。'); written += part.bytesWritten; }
           digest.update(buffer.subarray(0, read.bytesRead)); count += read.bytesRead;
         }
@@ -170,13 +191,7 @@ export class CompanionFileReader {
       await rename(temporary, destination);
     } finally { await original.close(); await unlink(temporary).catch(() => undefined); }
     if (path.dirname(await realpath(destination)) !== directory) throw new Error('附件快照不属于受管目录。');
-    const mime = ({ png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', webp: 'image/webp', gif: 'image/gif',
-      mp3: 'audio/mpeg', wav: 'audio/wav', ogg: 'audio/ogg', opus: 'audio/opus', flac: 'audio/flac', m4a: 'audio/mp4', aac: 'audio/aac',
-      mp4: 'video/mp4', webm: 'video/webm', mov: 'video/quicktime', mkv: 'video/x-matroska', avi: 'video/x-msvideo',
-      pdf: 'application/pdf', doc: 'application/msword', docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
-      xls: 'application/vnd.ms-excel', xlsx: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-      ppt: 'application/vnd.ms-powerpoint', pptx: 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
-      txt: 'text/plain', md: 'text/markdown', csv: 'text/csv', json: 'application/json', xml: 'application/xml', html: 'text/html', zip: 'application/zip' } as Record<string, string>)[rawExtension] ?? 'application/octet-stream';
+
     const attachment: CompanionAttachment = { id, name: path.basename(source).slice(0, 240), mime, size: count };
     const file = { path: source, size: count, mime, attachmentId: id, sha256: digest.digest('hex') };
     return this.commit({ content: JSON.stringify({ ...file, notice: '仅将已有文件附在当前回复中；未分析音频、视频或文档内容，也未执行或更改源文件。' }),

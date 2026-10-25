@@ -260,7 +260,8 @@ it('advertises no dispatch tools in the actual non-loop executor feedback provid
     await (f.service as unknown as { feedbackAction(action: typeof done, status: 'succeeded', content: string): Promise<void> })
       .feedbackAction(done, 'succeeded', '本次真实测试回执。');
     expect(observed).toEqual([{ companionId: 'reader', conversationId: room.id, boundToolNames: [],
-      status: 'only_these_tools_bound_in_this_entry', otherDomains: 'not_advertised_or_probed_in_this_entry' }]);
+      status: 'only_these_immediate_tools_bound_in_this_entry', otherDomains: 'not_advertised_as_immediate_tools_here',
+      finalProposalAuthority: '领域最终提案仅在本次executionContract/outputSchema明确提供时独立可用，须由宿主核验执行；此目录不新增授权。' }]);
     expect(f.store.messages({ conversationId: room.id }).messages.some(message => message.kind === 'text' && message.replyToId === source.id && message.content.includes('真实回执'))).toBe(true);
   } finally { await f.close(true); vi.unstubAllGlobals(); await removeFixtureRoot(f.root); }
 });

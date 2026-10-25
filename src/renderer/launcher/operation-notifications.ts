@@ -28,7 +28,7 @@ export function operationNotificationsReducer(previous: OperationNotifications, 
     }
     const request = action.request;
     const attempt = { kind: request.type, instanceId: 'instanceId' in request ? request.instanceId : undefined,
-      retryRequest: request.type === 'runtime.install' || request.type === 'runtime.download' || request.type === 'pack.import-url' ? request : undefined };
+      retryRequest: request.type === 'runtime.install' || request.type === 'pack.import-url' ? request : undefined };
     return { ...previous, failures: previous.failures.filter(operation => !sameOperation(operation, attempt)) };
   }
   const seen = { ...previous.seen };

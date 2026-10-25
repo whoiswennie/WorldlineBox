@@ -11,6 +11,7 @@ import { BrowserDownloadRecords } from './BrowserDownloadRecords';
 import { BrowserMorePanel } from './BrowserMorePanel';
 import { BrowserLoadFailure } from './BrowserLoadFailure';
 import { BrowserTabStrip } from './BrowserTabStrip';
+import { BrowserCompanionStatus } from './BrowserCompanionStatus';
 import { browserTabShortcut } from '../../shared/browser-shortcuts';
 import { BrowserStartPage } from './BrowserStartPage';
 import { BrowserAiPanel } from './BrowserAiPanel';
@@ -151,7 +152,8 @@ export function BrowserPage({ api, active, onOpenNetwork, onOpenAssets, onScreen
   const activeDownloads = state?.downloads.filter(item => item.status === 'progressing').length ?? 0;
   const panelIcon: Record<Panel, IconName> = { bookmarks: 'star', history: 'clock', downloads: 'download', settings: 'settings', more: 'sliders', capture: 'save', ai: 'sparkles' };
   return <section className="web-browser" data-web-browser aria-label={b('title')}>
-    <BrowserTabStrip tabs={state?.tabs ?? []} activeId={state?.activeTabId} run={run} b={b} />
+    <BrowserTabStrip tabs={state?.tabs ?? []} activeId={state?.activeTabId} activities={state?.companions?.activities} run={run} b={b} />
+    {state ? <BrowserCompanionStatus state={state} run={run} b={b} /> : null}
     <div className="browser-toolbar" aria-label={b('toolbar')}>
       <div className="browser-navigation" role="group" aria-label={b('navigation')}>{iconButton('chevron-left', b('back'), () => action('back'), !tab?.canGoBack)}{iconButton('chevron-right', b('forward'), () => action('forward'), !tab?.canGoForward)}{iconButton(tab?.loading ? 'stop' : 'refresh', b(tab?.loading ? 'stop' : 'reload'), () => action(tab?.loading ? 'stop' : 'reload'), !tab)}<span className="browser-home-action">{iconButton('globe', b('home'), () => action('home'))}</span></div>
       <form className="browser-address" onSubmit={event => { event.preventDefault(); if (tab && location.trim()) navigate(location); }}><span title={tab?.url.startsWith('https:') ? 'HTTPS' : 'HTTP'}><Icon name="globe" size={15} /></span><input ref={locationField} aria-label={b('address')} autoComplete="off" spellCheck={false} disabled={!tab} value={location} onFocus={() => { locationEditing.current = true; }} onBlur={() => { locationEditing.current = false; }} onChange={event => setLocation(event.target.value)} placeholder={b('address')} /></form>

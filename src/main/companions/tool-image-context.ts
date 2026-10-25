@@ -12,7 +12,11 @@ export interface CompanionToolImageDelivery {
 export function prepareCompanionLoopVisuals(context: { system: string; user: string }, profiles: readonly CompanionVisualInput[] | undefined,
   inputs: readonly ToolVisualInput[] | undefined, turns: readonly CompanionLoopTurn[], config: CompanionModelConfig, rejected = false) {
   const tools: CompanionToolImageDelivery[] = turns.flatMap((turn, index) => (turn.results ?? []).flatMap(result =>
-    turn.calls.some(call => { try { return call.id === result.callId && normalizeCompanionCapabilityCall(call).name === 'read_image'; } catch { return false; } })
+    turn.calls.some(call => { try {
+      if (call.id !== result.callId) return false;
+      const normalized = normalizeCompanionCapabilityCall(call);
+      return normalized.name === 'read_image' || normalized.name === 'browser' && JSON.parse(normalized.arguments).action === 'screenshot';
+    } catch { return false; } })
       ? (result.images ?? []).map(reference => ({ turn: index, callId: result.callId, reference, delivery: 'path_only' as const })) : []));
   const byKey = new Map((inputs ?? []).map(image => [image.callId + ':' + image.attachmentId + ':' + image.sha256, image]));
   const capability = companionModelVisionCapability(config), snapshots = new Set<string>();

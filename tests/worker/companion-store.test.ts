@@ -60,7 +60,7 @@ it('creates one durable queued bubble per group loop, keeps its identity on retr
   expect(reopened.getMessage(source.id).content).toBe(source.content);
 });
 
-it('persists a FIFO queue, admits at most 20 globally and 5 per role, and refills after release and restart', () => {
+it('persists a FIFO queue with one active location per role and refills after release and restart', () => {
   vi.useFakeTimers({ toFake: ['Date'] }); vi.setSystemTime('2026-10-14T08:00:00Z');
   const f = fixture();
   const roles = [f.store.openPrivate('deepseek-sister'), f.store.openPrivate('deepseek-flash')];
@@ -70,22 +70,22 @@ it('persists a FIFO queue, admits at most 20 globally and 5 per role, and refill
     roles.push(f.store.openPrivate(role.id));
   }
   for (let round = 0; round < 7; round++) for (const [index, conversation] of roles.entries()) {
-    const source = f.store.appendMessage({ conversationId: conversation.id, authorId: 'user', content: '队列消息 ' + round, replyDirective: 'auto' });
+    const source = f.store.appendMessage({ conversationId: conversation.id, authorId: 'user', content: '队列消息 ' + round, replyDirective: 'none' });
     f.store.request({ type: 'work.enqueue', work: { id: 'work_' + round + '_' + index, conversationId: conversation.id, sourceMessageId: source.id,
       companionId: conversation.memberIds[0]!, status: 'queued', proactive: false, createdAt: source.createdAt, updatedAt: source.createdAt } });
   }
-  const claimed = Array.from({ length: 20 }, () => f.store.request({ type: 'work.claim' }).work!);
+  const claimed = Array.from({ length: 4 }, () => f.store.request({ type: 'work.claim' }).work!);
   expect(claimed.every(Boolean)).toBe(true);
   expect(f.store.request({ type: 'work.claim' }).work).toBeUndefined();
-  for (const conversation of roles) expect(claimed.filter(work => work.companionId === conversation.memberIds[0])).toHaveLength(5);
+  for (const conversation of roles) expect(claimed.filter(work => work.companionId === conversation.memberIds[0])).toHaveLength(1);
   f.store.request({ type: 'work.status', id: 'work_0_0', status: 'done' });
-  expect(f.store.request({ type: 'work.claim' }).work?.id).toBe('work_5_0');
+  expect(f.store.request({ type: 'work.claim' }).work?.id).toBe('work_1_0');
   close(f.store);
   const reopened = open(f.databasePath);
   expect(reopened.request({ type: 'work.list' }).works).toHaveLength(28);
   reopened.request({ type: 'work.interrupt-running' });
-  const resumed = Array.from({ length: 7 }, () => reopened.request({ type: 'work.claim' }).work!);
-  expect(resumed.map(work => work.id)).toEqual(['work_5_1', 'work_5_2', 'work_5_3', 'work_6_0', 'work_6_1', 'work_6_2', 'work_6_3']);
+  const resumed = Array.from({ length: 4 }, () => reopened.request({ type: 'work.claim' }).work!);
+  expect(resumed.map(work => work.id)).toEqual(['work_1_1', 'work_1_2', 'work_1_3', 'work_2_0']);
   expect(reopened.request({ type: 'work.claim' }).work).toBeUndefined();
 });
 const welcomes = { 'deepseek-sister': '内置欢迎：我是大肥鱼。', 'deepseek-flash': '内置欢迎：我是小肥鱼。' };

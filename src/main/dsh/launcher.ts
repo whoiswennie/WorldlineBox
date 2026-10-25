@@ -1,9 +1,8 @@
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
-import { appendFile, mkdir, rename, writeFile } from 'node:fs/promises';
+import { appendFile, mkdir, rename, rm, writeFile } from 'node:fs/promises';
 import { watch, type FSWatcher } from 'node:fs';
 import { app, BrowserWindow, dialog, ipcMain, session, shell } from 'electron';
-import { path7za } from '7zip-bin';
 import { DSH_LAUNCHER_CHANNEL, DSH_LAUNCHER_CHANGED_CHANNEL, DSH_TERMINAL_OUTPUT_CHANNEL, DSH_TASK_EVENT_CHANNEL, dshLauncherRequestSchema, dshPackPublicationRecordSchema, type DshLauncherRequest, type DshLauncherResponse, type DshLauncherState, type DshInstance } from '../../shared/dsh-launcher';
 import { atomicJson, copyTree, inventoryTree, readJson, redact, removeManaged } from './files';
 import { OperationStore } from './operations';
@@ -16,19 +15,15 @@ import { SkillInstaller } from './skill-installer';
 import { PackDistributionService } from './pack-distribution';
 import { resolveDshWorkbenchIcon } from './workbench-icon';
 import { InstanceService } from './instance-service';
-import { SharedInstanceData } from './shared-instance-data';
 import { DshCliTerminal } from './cli-terminal';
 import { PackService } from './packs';
 import { extractSealedArchive, writeSealedArchive } from './archive';
 import { PluginControls } from './plugin-controls';
 import { DshTaskBroker } from './task-broker';
-import { DshTaskAccessStore } from './task-access';
 import { snapshotDshTaskExecution, type DshTaskExecutionOptions } from './task-execution';
 import { runtimeReferences } from '../../shared/dsh-runtime-references';
 import { configureWorkbenchBrowser } from './workbench-browser';
-import { supportsSharedDataRuntime } from '../../shared/dsh-runtime-compatibility';
 import type { DshRecordQuery } from '../../shared/dsh-task-record';
-import { dshWorkerGeneration } from './warm-cli-pool';
 import { dshTaskCapabilityQuerySchema, type DshTaskCapabilities, type DshTaskCapabilityQuery } from '../../shared/dsh-task-spec';
 
 export class DshLauncher {
@@ -37,11 +32,11 @@ export class DshLauncher {
     if (this.closed) throw new Error('DSH 启动器正在关闭。');
     const selected = instanceId ?? this.cliTerminal.state().selectedInstanceId ?? this.instances.list().find(instance => instance.isDefault)?.id;
     if (selected && this.prewarming?.instanceId === selected) await this.prewarming.promise;
-    return this.tasks.discover(instanceId, snapshotDshTaskExecution({ ...execution, access: execution?.access ?? this.taskAccess.state(), capabilityQuery: dshTaskCapabilityQuerySchema.parse(query ?? { kind: 'overview' }) }));
+    return this.tasks.discover(instanceId, snapshotDshTaskExecution({ ...execution, capabilityQuery: dshTaskCapabilityQuerySchema.parse(query ?? { kind: 'overview' }) }));
   }
   async taskRecordScope(recordId: string) { return (await this.tasks.recordMetadata(recordId)).scope; }
   async readTaskRecord(query: DshRecordQuery) { return this.tasks.readRecord(query); }
-  async removeCompanionTaskRecords(owner: string) { await this.tasks.removeCompanionRecords(owner); }
+  async removeCompanionTaskRecords(owner: string, jobId: string = randomUUID()) { await this.tasks.removeCompanionRecords(owner, jobId); }
   private ready = false;
   private readonly windows = new Map<string, BrowserWindow>();
   private readonly openingWindows = new Map<string, Promise<void>>();
@@ -49,7 +44,6 @@ export class DshLauncher {
   private readonly runtimes: RuntimeService;
   private readonly instances: InstanceService;
   private readonly packs: PackService;
-  private readonly sharedData: SharedInstanceData;
   private readonly cliTerminal: DshCliTerminal;
   private readonly network: LauncherNetwork;
   private readonly versions: OfficialVersionCatalogue;
@@ -57,12 +51,10 @@ export class DshLauncher {
   private readonly skills: SkillInstaller;
   private readonly plugins: PluginControls;
   private readonly tasks: DshTaskBroker;
-  private readonly taskAccess: DshTaskAccessStore;
   private readonly distributions: PackDistributionService;
   private publications: NonNullable<DshLauncherState['packPublications']> = [];
   private tools?: Promise<PortableToolchain>;
   private selectionEpoch = 0;
-  private readonly launchSelectionEpochs = new Map<string, number>();
   private readonly rootPath: string;
   private readonly initialization: Promise<void>;
   private closed = false;
@@ -78,8 +70,7 @@ export class DshLauncher {
   private executionReadiness?: DshLauncherState['executionReadiness'];
   constructor(private readonly getMainWindow: () => BrowserWindow | null | undefined, reportInitializationError?: (error: unknown) => void,
     private readonly applicationNetwork?: LauncherNetwork, private readonly onExecutionCapabilitiesChanged?: () => void) {
-    this.rootPath = path.join(app.getPath('userData'), 'dsh-launcher');
-    this.taskAccess = new DshTaskAccessStore(this.rootPath);
+    this.rootPath = path.join(app.getPath('userData'), 'dsh');
     const onChanged = () => {
       if (!this.ready || this.closed) return;
       this.observeExecutionCapabilities();
@@ -105,25 +96,17 @@ export class DshLauncher {
       }
     };
     this.operations = new OperationStore(path.join(this.rootPath, 'operations'), onChanged);
-    this.network = applicationNetwork ?? new LauncherNetwork(this.rootPath, onChanged);
+    this.network = applicationNetwork ?? new LauncherNetwork(path.join(app.getPath('userData'), 'network'), onChanged);
     if (applicationNetwork) applicationNetwork.subscribe(onChanged);
     this.versions = new OfficialVersionCatalogue({ rootPath: this.rootPath, json: (url, signal) => this.network.json(url, signal), onChanged });
     this.marketplace = new MarketplaceService({ rootPath: this.rootPath, network: this.network, onChanged });
     this.skills = new SkillInstaller({ rootPath: this.rootPath, network: this.network });
-    this.plugins = new PluginControls({ rootPath: this.rootPath, runtimeDirectory: id => this.runtimes.directory(id) });
-    this.runtimes = new RuntimeService({ rootPath: this.rootPath, sevenZipPath: path7za.replace(/app\.asar([/\\])/, 'app.asar.unpacked$1'), onChanged, fetch: this.network.fetch,
+    this.plugins = new PluginControls(id => this.instances.ensureHost(id));
+    this.runtimes = new RuntimeService({ rootPath: this.rootPath, onChanged, fetch: this.network.fetch,
       nodeTools: () => this.toolchain(), nodeInstallNetwork: signal => this.network.nodeInstallNetwork(signal) });
-    this.sharedData = new SharedInstanceData({ rootPath: this.rootPath, plan: id => this.runtimes.plan(id),
-      assertCompatible: (id, signal) => this.runtimes.assertSharedCompatible(id, signal),
-      onIssue: (id, message) => { if (/^[a-z0-9-]{1,80}$/.test(id)) void appendFile(path.join(this.rootPath, 'instances', id, 'logs', 'host.log'), `${message}\n`).catch(() => undefined); },
-    });
     this.instances = new InstanceService({ rootPath: this.rootPath, runtimes: this.runtimes, operations: this.operations, onChanged,
-      sharedData: this.sharedData,
+      bridgePackagePath: app.isPackaged ? path.join(process.resourcesPath, 'dsh-bridge') : path.join(app.getAppPath(), 'resources', 'dsh-bridge'),
       networkEnvironment: env => this.network.environment(env),
-      onSelectedWebInstance: async selection => {
-        if (this.launchSelectionEpochs.get(selection.instance.id) !== this.selectionEpoch) return false;
-        await this.cliTerminal.selectContext(selection); return true;
-      },
       isCliInUse: id => (this.cliTerminal.state().terminals ?? []).some(terminal => terminal.status === 'running' && (!id || terminal.instanceId === id)),
       openWorkbench: (instance, url) => this.openWorkbench(instance, url),
       closeWorkbench: async id => { const window = this.windows.get(id); if (window && !window.isDestroyed()) window.destroy(); this.windows.delete(id); },
@@ -134,34 +117,20 @@ export class DshLauncher {
     this.distributions = new PackDistributionService({ rootPath: this.rootPath, network: this.network,
       exportArchive: (id, file, signal) => this.packs.exportArchive(id, file, signal),
       importArchive: (file, op) => this.packs.importArchive(file, op), request: (url, input) => this.network.request(url, input) });
-    this.cliTerminal = new DshCliTerminal({ rootPath: this.rootPath, onChanged, toolchain: () => this.toolchain(),
-      verifyRuntime: async (id, digest) => { if (this.runtimes.get(id).contentSha256 !== digest) throw new Error('CLI runtime identity changed.'); await this.runtimes.verify(id); },
+    this.cliTerminal = new DshCliTerminal({ rootPath: this.rootPath, onChanged,
       onOutput: output => { const main = getMainWindow(); if (main && !main.isDestroyed()) main.webContents.send(DSH_TERMINAL_OUTPUT_CHANNEL, output); }, resolveSelection: async () => {
       const records = this.instances.list();
       const current = records.find(value => value.id === this.cliTerminal.state().selectedInstanceId) ?? records.find(value => value.isDefault);
       if (!current) throw new Error('Create and select a DSH instance before opening its CLI terminal.');
       return this.instances.prepareCli(current.id);
     } });
-    this.tasks = new DshTaskBroker({ rootPath: this.rootPath, onChanged, pin: selection => this.cliTerminal.pinContext(selection),
-      onWorkerReadyChanged: (instanceId, ready) => {
-        if (this.closed || this.executionReadiness?.instanceId !== instanceId) return;
-        // A newly booted host has not yet proven that its Agent/catalog can mount.
-        // Let the bounded prewarm finish before advertising readiness; a host
-        // that crashes during that first probe must fail, not restart forever.
-        if (ready && this.prewarming?.instanceId === instanceId && this.executionReadiness.status === 'warming') return;
-        const replenish = !ready && this.executionReadiness.status === 'ready';
-        this.executionReadiness = { instanceId, status: ready ? 'ready' : 'cold', updatedAt: new Date().toISOString() };
-        if (replenish) this.scheduleExecutionPrewarm(instanceId);
-        const main = getMainWindow(); if (main && !main.isDestroyed()) main.webContents.send(DSH_LAUNCHER_CHANGED_CHANNEL, this.state());
-      },
-      getSelection: async (id, signal, resume, preparation) => {
+    this.tasks = new DshTaskBroker({ rootPath: this.rootPath, onChanged,
+      getHost: async (id, signal) => {
         const selected = id ?? this.cliTerminal.state().selectedInstanceId ?? this.instances.list().find(value => value.isDefault)?.id;
-        if (!selected) throw new Error('Create and select a DSH execution instance first.');
+        if (!selected) throw new Error('Create and select a DSH instance first.');
         const instance = this.instances.get(selected);
-        const runtimeId = resume?.runtimeId ?? instance.runtimeId;
-        if (!supportsSharedDataRuntime(this.runtimes.get(runtimeId))) preparation?.progress('正在完成所选 DSH 的共享存档检测；同一版本的请求会共用检测结果');
-        await this.runtimes.assertSharedCompatible(runtimeId, signal);
-        return this.instances.prepareCli(selected, signal, resume?.runtimeId, preparation?.progress);
+        const client = await this.instances.ensureHost(selected, signal);
+        return { instance, runtime: this.runtimes.get(instance.runtimeId), client };
       }, onEvent: event => { const main = getMainWindow(); if (main && !main.isDestroyed()) main.webContents.send(DSH_TASK_EVENT_CHANNEL, event); } });
     this.initialization = this.init();
     // Surface startup failures through state requests without an unhandled rejection.
@@ -171,8 +140,8 @@ export class DshLauncher {
   private async init(): Promise<void> {
     await mkdir(this.rootPath, { recursive: true });
     if (!this.applicationNetwork) await this.network.init(); await this.versions.init(); await this.marketplace.init();
-    await this.operations.init(); await this.runtimes.init(); await this.sharedData.init(); await this.instances.init(); await this.packs.init(); await this.cliTerminal.init();
-    await this.tasks.init(); await this.taskAccess.load();
+    await this.operations.init(); await this.runtimes.init(); await this.instances.init(); await this.packs.init(); await this.cliTerminal.init();
+    await this.tasks.init();
     const publications = await readJson<unknown[]>(path.join(this.rootPath, 'pack-publications.json')) ?? [];
     this.publications = publications.slice(0, 100).map(value => dshPackPublicationRecordSchema.parse(value));
     this.ready = true;
@@ -184,7 +153,6 @@ export class DshLauncher {
   private observeExecutionCapabilities(): void {
     const selected = this.cliTerminal.state().selectedInstanceId ?? this.instances.list().find(instance => instance.isDefault)?.id;
     const instance = this.instances.list().find(value => value.id === selected);
-    this.tasks.setStandbyInstance(instance?.id);
     const runtime = this.runtimes.list().find(value => value.id === instance?.runtimeId);
     const changes = this.operations.list().filter(operation => operation.status === 'succeeded' &&
       ['instance.plugin', 'instance.plugin-toggle', 'skill.install', 'skill.toggle', 'skill.remove', 'instance.restore', 'backup.import', 'pack.import', 'pack.import-url'].includes(operation.kind)).map(operation => operation.id);
@@ -200,27 +168,9 @@ export class DshLauncher {
     if (watchIdentity === this.watchedCapabilityIdentity) return;
     this.watchedCapabilityIdentity = watchIdentity;
     for (const watcher of this.capabilityWatchers.splice(0)) watcher.close();
-    const generation = () => instance ? dshWorkerGeneration(this.rootPath, { instance, plan:{executable:'',cli:'',env:{}},env:{},
-      workspacePath:this.sharedData.paths.workspacePath,routingPatch:'' }, undefined) : Promise.resolve('no-instance');
-    let observed = generation().catch(() => undefined);
     const changed = () => {
       clearTimeout(this.capabilityChangeTimer);
-      this.capabilityChangeTimer = setTimeout(() => {
-        if (this.closed) return;
-        void (async () => {
-          const previous = await observed, next = await generation();
-          observed = Promise.resolve(next);
-          if (previous === next || this.closed || watchIdentity !== this.watchedCapabilityIdentity) return;
-          this.onExecutionCapabilitiesChanged?.();
-          await this.tasks.invalidateIdleWorkers(instance?.id);
-          this.scheduleExecutionPrewarm(instance?.id);
-        })().catch(() => {
-          // Lost configuration proof retires a worker instead of publishing stale capability facts.
-          this.onExecutionCapabilitiesChanged?.();
-          void this.tasks.invalidateIdleWorkers(instance?.id).catch(() => undefined);
-        });
-      }, 150);
-      this.capabilityChangeTimer.unref();
+      this.capabilityChangeTimer = setTimeout(() => { if (!this.closed) this.onExecutionCapabilitiesChanged?.(); }, 150);
     };
     const add = (directory: string, recursive: boolean, relevant: (file: string) => boolean) => {
       try {
@@ -239,7 +189,6 @@ export class DshLauncher {
       });
       add(instance.agentsPath, true, () => true);
     }
-    add(path.join(this.rootPath, 'shared'), false, file => ['model-settings.json', '.credentials.yaml'].includes(file));
   }
   private scheduleExecutionPrewarm(instanceId?: string): void {
     clearTimeout(this.prewarmTimer); const revision = ++this.prewarmRevision;
@@ -249,17 +198,7 @@ export class DshLauncher {
       if (this.closed || revision !== this.prewarmRevision) return;
       // Discovery mounts an idle native Agent and reads its real registries; no model turn is submitted.
       const promise = (async () => {
-        // First admission verifies the complete sealed runtime and the shared-save
-        // contract. It owns its own bounded lifecycle, before the short idle task.
-        const runtimeId = this.instances.get(instanceId).runtimeId;
-        await this.runtimes.assertSharedCompatible(runtimeId);
-        if (this.closed || revision !== this.prewarmRevision) return;
-        const outcomes = await Promise.allSettled([
-          this.tasks.discover(instanceId, { access: this.taskAccess.state() }),
-          this.tasks.prewarmThought(instanceId),
-        ]);
-        const failure = outcomes.find(outcome => outcome.status === 'rejected');
-        if (failure?.status === 'rejected') throw failure.reason;
+        await this.tasks.discover(instanceId);
       })().then(() => {
         if (revision === this.prewarmRevision) this.executionReadiness = { instanceId, status: 'ready', updatedAt: new Date().toISOString() };
       }, () => {
@@ -277,8 +216,8 @@ export class DshLauncher {
   state(): DshLauncherState {
     return { supported: process.platform === 'win32' && process.arch === 'x64', rootPath: this.rootPath,
       runtimes: this.runtimes.list(), instances: this.instances.list(), snapshots: this.instances.snapshots(),
-      packs: this.packs.list(), operations: this.operations.list(), sharedData: this.sharedData.state(), cli: this.cliTerminal.state(),
-      network: this.network.state(), versions: this.versions.state(), marketplace: this.marketplace.state(), packPublications: structuredClone(this.publications), tasks: this.tasks.state(), taskAccess: this.taskAccess.state(), executionReadiness: this.executionReadiness };
+      packs: this.packs.list(), operations: this.operations.list(), cli: this.cliTerminal.state(),
+      network: this.network.state(), versions: this.versions.state(), marketplace: this.marketplace.state(), packPublications: structuredClone(this.publications), tasks: this.tasks.state(), executionReadiness: this.executionReadiness };
   }
   private async openWorkbench(instance: DshInstance, value: string): Promise<void> {
     const pending = this.openingWindows.get(instance.id); if (pending) return pending;
@@ -318,13 +257,13 @@ export class DshLauncher {
       } catch (error) { return { ok: false, error: redact(error instanceof Error ? error.message : String(error)) }; }
     });
   }
-  private async pick(kind: 'directory' | 'installer' | 'archive'): Promise<string | undefined> {
+  private async pick(kind: 'directory' | 'archive'): Promise<string | undefined> {
     const parent = this.getMainWindow(); if (!parent) throw new Error('Main window unavailable.');
     const testing = process.env.WORLDLINEBOX_E2E === '1' ? process.env[`WORLDLINEBOX_E2E_DSH_${kind.toUpperCase()}`] : undefined;
     if (testing) return path.resolve(testing);
-    const result = await dialog.showOpenDialog(parent, { title: kind === 'directory' ? '导入 DSH 安装目录' : kind === 'installer' ? '导入 DSH 官方安装包' : '导入 DSH 备份或整合包',
+    const result = await dialog.showOpenDialog(parent, { title: kind === 'directory' ? '导入 DSH Web UI 运行目录' : '导入 DSH 备份或整合包',
       properties: kind === 'directory' ? ['openDirectory'] : ['openFile'],
-      filters: kind === 'installer' ? [{ name: 'DSH installer', extensions: ['exe'] }] : kind === 'archive' ? [{ name: 'DSH package', extensions: ['dshpack', 'dshbackup'] }] : undefined });
+      filters: kind === 'archive' ? [{ name: 'DSH package', extensions: ['dshpack', 'dshbackup'] }] : undefined });
     return result.canceled ? undefined : result.filePaths[0];
   }
   private async saveArchive(extension: 'dshpack' | 'dshbackup'): Promise<string | undefined> {
@@ -340,27 +279,13 @@ export class DshLauncher {
     const execution = snapshotDshTaskExecution(executionValue);
     await this.initialization;
     if (this.closed) throw new Error('DSH 启动器正在关闭。');
-    if (execution?.toolkit && !execution.access) execution.access = this.taskAccess.state();
     return this.handle(request, execution);
   }
   private async handle(request: DshLauncherRequest, execution?: DshTaskExecutionOptions): Promise<DshLauncherResponse> {
     if (request.type === 'state') return { ok: true, state: this.state() };
     if (this.operations.list().some(operation => operation.status === 'running' && ['runtime.delete', 'runtime.cleanup'].includes(operation.kind)) && !['operation.cancel', 'task.events', 'task.result', 'task.cancel', 'task.terminate'].includes(request.type)) throw new Error('正在清理运行版本，请等待操作完成。');
     if (!this.state().supported) throw new Error('DSH runtime management currently supports Windows x64.');
-    if (['instance.plugin', 'instance.plugin-toggle', 'skill.install', 'skill.toggle', 'skill.remove', 'market.plugin.install', 'instance.delete', 'instance.clone', 'instance.start', 'instance.switch-start', 'instance.export', 'backup.export', 'backup.import', 'pack.export', 'pack.import', 'pack.import-url', 'runtime.cleanup', 'runtime.delete', 'shared.restore'].includes(request.type)) {
-      await this.tasks.invalidateIdleWorkers('instanceId' in request ? request.instanceId : undefined);
-    }
     switch (request.type) {
-      case 'task.access.save': {
-        const previous = this.taskAccess.state().mode;
-        await this.taskAccess.save(request.mode);
-        if (previous !== request.mode) {
-          await this.tasks.invalidateIdleWorkers();
-          this.onExecutionCapabilitiesChanged?.();
-          this.scheduleExecutionPrewarm(this.cliTerminal.state().selectedInstanceId ?? this.instances.list().find(instance => instance.isDefault)?.id);
-        }
-        return { ok: true, state: this.state() };
-      }
       case 'operation.cancel': this.operations.cancel(request.operationId); return { ok: true };
       case 'operation.clear-finished': return { ok: true, removedOperations: await this.operations.clearFinished(), state: this.state() };
       case 'task.run': {
@@ -388,10 +313,6 @@ export class DshLauncher {
         await this.cliTerminal.selectContext(selection);
         const result = await this.instances.handle({ type: 'instance.default', instanceId: request.instanceId });
         return result.ok ? { ok: true, state: this.state() } : result;
-      }
-      case 'instance.start': case 'instance.switch-start': {
-        this.launchSelectionEpochs.set(request.instanceId, ++this.selectionEpoch);
-        return this.instances.handle(request);
       }
       case 'cli.install-command': await this.cliTerminal.installCommand(); return { ok: true, state: this.state() };
       case 'terminal.open': await this.cliTerminal.open(request.instanceId ? await this.instances.prepareCli(request.instanceId) : undefined); return { ok: true, state: this.state() };
@@ -424,30 +345,27 @@ export class DshLauncher {
       }
       case 'skill.inspect': return { ok: true, skillInspection: await this.skills.inspectSkill(request.repository, request.revision) };
       case 'instance.plugins': return { ok: true, installedPlugins: await this.plugins.listPlugins(this.instances.get(request.instanceId)) };
-      case 'instance.plugin-toggle': return { ok: true, operationId: await this.operations.run(request.type, '启用或停用实例插件', request.instanceId, op =>
-        this.instances.withStoppedInstance(request.instanceId, () => this.plugins.setPluginEnabled(this.instances.get(request.instanceId), request.name, request.enabled, op.signal))) };
+      case 'instance.plugin-toggle': return { ok: true, operationId: await this.operations.run(request.type, '启用或停用实例插件', request.instanceId, async op => {
+        const result = await this.plugins.setPluginEnabled(this.instances.get(request.instanceId), request.name, request.enabled, op.signal);
+        await this.instances.recordPluginChange(request.instanceId, result); await op.log(JSON.stringify(result));
+      }) };
       case 'skill.list': {
         const instance = this.instances.list().find(value => value.id === request.instanceId); if (!instance) throw new Error('Instance unavailable.');
         return { ok: true, installedSkills: await this.skills.listSkills(instance) };
       }
       case 'skill.install': case 'skill.toggle': case 'skill.remove': return { ok: true, operationId: await this.operations.run(request.type, '管理实例技能', request.instanceId, async op => {
-        await this.instances.withStoppedInstance(request.instanceId, async () => {
+        {
           const instance = this.instances.list().find(value => value.id === request.instanceId)!;
           if (request.type === 'skill.install') await this.skills.installSkill(instance, request.target, op);
           else if (request.type === 'skill.toggle') await this.skills.setSkillEnabled(instance, request.name, request.enabled);
           else await this.skills.removeSkill(instance, request.name);
-        });
+        }
       }) };
-      case 'runtime.download': return { ok: true, operationId: await this.operations.run(request.type, '下载官方 DSH 运行版本', undefined, async op => { await this.runtimes.download(op, request.expectedSha256); }, request) };
       case 'runtime.import': {
         const source = await this.pick(request.sourceKind); if (!source) return { ok: true, cancelled: true };
         return { ok: true, operationId: await this.operations.run(request.type, '导入 DSH 运行版本', undefined, async op => { await this.runtimes.import(source, request.sourceKind, 'local-import', op); }) };
       }
       case 'runtime.verify': return { ok: true, operationId: await this.operations.run(request.type, '校验 DSH 运行版本', undefined, async op => { await op.update('verifying'); await this.runtimes.verify(request.runtimeId, op.signal, true); }) };
-      case 'runtime.compatibility': return { ok: true, operationId: await this.operations.run(request.type, '隔离检测共享存档兼容性', undefined, async op => {
-        const report = await this.runtimes.checkCompatibility(request.runtimeId, op);
-        if (report.status !== 'passed') throw new Error(`兼容性检测未通过：${report.checks.find(check => check.status === 'failed')?.detail ?? '检测被中断，请重试。'}`);
-      }) };
       case 'runtime.cleanup': {
         if (this.operations.list().some(operation => operation.status === 'running')) throw new Error('请等待当前下载、检测和任务结束后再清理缓存。');
         return { ok: true, operationId: await this.operations.run(request.type, '清理 DSH 下载缓存和残留文件', undefined, op => this.runtimes.cleanup(op)) };
@@ -460,12 +378,7 @@ export class DshLauncher {
       }
       case 'instance.folder': {
         const root = this.instances.getRoot(request.instanceId);
-        const directory = request.scope === 'workspace' ? this.sharedData.paths.workspacePath : request.scope === 'root' ? root : path.join(root, request.scope);
-        const error = await shell.openPath(directory); if (error) throw new Error(error);
-        return { ok: true };
-      }
-      case 'shared.folder': {
-        const directory = request.scope === 'root' ? this.sharedData.paths.rootPath : request.scope === 'sessions' ? this.sharedData.paths.sessionsPath : this.sharedData.paths.workspacePath;
+        const directory = request.scope === 'workspace' ? this.instances.get(request.instanceId).workspacePath : request.scope === 'root' ? root : path.join(root, request.scope);
         const error = await shell.openPath(directory); if (error) throw new Error(error);
         return { ok: true };
       }
@@ -508,9 +421,9 @@ export class DshLauncher {
             await copyTree(this.runtimes.directory(runtime.id), path.join(staging, 'runtime', 'program'), { signal: op.signal });
             await atomicJson(path.join(staging, 'runtime', 'artifact.json'), runtime);
             await op.update('archiving', 75);
-            await writeSealedArchive(staging, temporary, { kind: 'worldlinebox-dshbackup-v1', runtimeContentSha256: runtime.contentSha256, runtimeVersion: runtime.version, platform: runtime.platform }, op.signal);
+            await writeSealedArchive(staging, temporary, { kind: 'worldlinebox-native-dshbackup-v1', runtimeContentSha256: runtime.contentSha256, runtimeVersion: runtime.version, platform: runtime.platform }, op.signal);
             op.signal.throwIfAborted(); await rename(temporary, target);
-          } finally { await removeManaged(this.rootPath, staging); }
+          } finally { await rm(temporary, { force: true }); await removeManaged(this.rootPath, staging); }
         }) };
       }
       case 'backup.import': {
@@ -519,7 +432,7 @@ export class DshLauncher {
           const staging = path.join(this.rootPath, 'staging', randomUUID());
           try {
             const manifest = await extractSealedArchive(source, staging, op.signal);
-            if (manifest.kind !== 'worldlinebox-dshbackup-v1') throw new Error('This is not a WorldlineBox DSH instance backup.');
+            if (manifest.kind !== 'worldlinebox-native-dshbackup-v1') throw new Error('This is not a native WorldlineBox DSH instance backup.');
             const inner = await readJson<{ runtimeContentSha256?: string }>(path.join(staging, 'manifest.json'));
             if (inner?.runtimeContentSha256 !== manifest.runtimeContentSha256) throw new Error('Backup runtime manifests disagree.');
             let runtime = this.runtimes.list().find(value => value.contentSha256 === manifest.runtimeContentSha256);
@@ -542,7 +455,6 @@ export class DshLauncher {
     this.closed = true;
     clearTimeout(this.prewarmTimer); this.prewarmRevision++;
     clearTimeout(this.capabilityChangeTimer); for (const watcher of this.capabilityWatchers.splice(0)) watcher.close();
-    this.runtimes.cancelChecks();
     await this.initialization.catch(() => undefined);
     await this.tasks.shutdown();
     await this.cliTerminal.shutdown();

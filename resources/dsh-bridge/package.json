@@ -1,0 +1,10 @@
+{
+  "name": "@worldlinebox/dsh-bridge",
+  "version": "1.0.0",
+  "type": "module",
+  "main": "index.js",
+  "files": ["index.js", "cordis.patch.yml"],
+  "dsh": { "bundle": { "patch": "./cordis.patch.yml" } },
+  "engines": { "dsh": ">=0.2.0-0 <0.3.0" },
+  "description": "WorldlineBox sessions on the native DSH Web Host"
+}

@@ -301,7 +301,7 @@ it('keeps world decision and phone reply provider payloads within the same finit
   } }, config, undefined, { fetchFn: async (_url, init) => {
     const body = JSON.parse(String(init?.body)), data = JSON.parse(body.messages[1].content); checkBoundary(data.world);
     expect(data.channel).toBe('phone'); expect(data.world.actors.some((actor: { companionId: string }) => actor.companionId === 'far')).toBe(false);
-    expect(data.world.works).toBeUndefined(); expect(body.tools).toBeUndefined();
+    expect(data.world.works).toBeUndefined(); expect(body.tools.map((tool: { function: { name: string } }) => tool.function.name)).toEqual(['wait', 'companion_submit_result']);
     return response({ text: '我在家里，刚看见身边有人走过。你那边现在怎么样？', reason: '只说明自己的实际感知，不猜远程位置。' });
   } });
 });

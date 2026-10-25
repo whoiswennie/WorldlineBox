@@ -163,3 +163,12 @@
 .browser-capture-feedback strong { color: var(--ui-content-primary); font-weight: 550; }
 .browser-capture-feedback.is-error { color: var(--ui-status-danger-content); background: var(--ui-status-danger-surface); }
 .browser-capture-feedback.is-error strong { color: inherit; }
+.browser-tab-companions { display: inline-flex; flex: 0 0 auto; color: var(--ui-content-accent); }
+.browser-companion-status { display: flex; flex: 0 0 auto; align-items: center; flex-wrap: wrap; gap: 6px 10px; padding: 7px 12px; border-bottom: 1px solid var(--ui-border-subtle); background: var(--ui-surface-canvas); font-size: 12px; }
+.browser-companion-status-label { display: inline-flex; align-items: center; gap: 5px; color: var(--ui-content-secondary); }
+.browser-companion-page { display: inline-flex; align-items: center; gap: 5px; max-width: 480px; }
+.browser-companion-status button { font: inherit; color: var(--ui-content-primary); background: transparent; border: 1px solid var(--ui-border-subtle); border-radius: 6px; padding: 3px 7px; cursor: pointer; }
+.browser-companion-status button:hover { background: var(--ui-surface-field); }
+.browser-companion-status button:focus-visible { outline: 2px solid var(--ui-border-focus); outline-offset: 2px; }
+.browser-companion-location { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.browser-companion-toggle { margin-left: auto; }

@@ -3,8 +3,6 @@ import { mkdtemp, mkdir, readFile, rename, rm, writeFile, stat, utimes } from 'n
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { RuntimeIntegrity } from '../../src/main/dsh/runtime-integrity';
-import { CliAdmission } from '../../src/main/dsh/cli-admission';
-import { connect } from 'node:net';
 import { inventoryTree, type TreeHashCacheEntry, type TreeInventoryProgress } from '../../src/main/dsh/files';
 
 const roots: string[] = []; const gates: RuntimeIntegrity[] = [];
@@ -65,18 +63,4 @@ test('inventory progress reports completed work and cache reuse without changing
   await expect(inventoryTree(f.directory, cancelled.signal, undefined, cache, value => {
     if (value.phase === 'hashing') cancelled.abort(Error('cancel cached verification'));
   })).rejects.toThrow('cancel cached verification');
-});
-test('local CLI admission waits for verification, rejects invalid identities and shuts down without a Host', async () => {
-  const f = await fixture(); await mkdir(path.join(f.root, 'cli'));
-  const digest = 'a'.repeat(64); const runtimeId = 'runtime-' + digest.slice(0, 24); let checks = 0;
-  const service = new CliAdmission(f.root, async (id, hash) => { if (id !== runtimeId || hash !== digest) throw Error('changed'); await new Promise(resolve => setTimeout(resolve, 20)); checks++; });
-  await service.start();
-  const endpoint = JSON.parse(await readFile(path.join(f.root, 'cli/admission.json'), 'utf8'));
-  const request = (token: string) => new Promise<{ ok: boolean }>((resolve, reject) => {
-    let text = ''; const socket = connect(endpoint.port, '127.0.0.1', () => socket.write(JSON.stringify({ token, runtimeId, digest }) + '\n'));
-    socket.on('data', bytes => { text += String(bytes); }); socket.once('end', () => resolve(JSON.parse(text))); socket.once('error', reject);
-  });
-  try { expect(await request(endpoint.token)).toEqual({ ok: true }); expect(checks).toBe(1); expect(await request('wrong')).toEqual({ ok: false }); expect(checks).toBe(1); }
-  finally { await service.close(); }
-  await expect(readFile(path.join(f.root, 'cli/admission.json'))).rejects.toMatchObject({ code: 'ENOENT' });
 });

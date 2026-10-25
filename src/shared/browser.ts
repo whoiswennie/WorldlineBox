@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { browserCompanionActivitySchema } from './companion-browser';
 import { browserCaptureStateSchema, type BrowserCaptureRequest, type BrowserCaptureResponse } from './browser-capture';
 import { browserAiConfigSchema, browserAiRequests, browserAiTaskSchema, browserAiSourceSchema } from './browser-ai';
 export const BROWSER_REQUEST = 'worldlinebox:browser:request';
@@ -22,6 +23,7 @@ export const browserPreferencesSchema = z.object({ homepage: z.string().max(8192
   searchEngine: z.enum(['bing', 'baidu', 'duckduckgo']).default('bing'), askDownloadLocation: z.boolean().default(false) });
 export const browserPermissionSchema = z.object({ id, origin: z.string().max(8192), permission: z.string().max(100) });
 export const browserStateSchema = z.object({ tabs: z.array(browserTabSchema).max(50), activeTabId: id.optional(), bookmarks: z.array(browserBookmarkSchema).max(1000),
+  companions: z.object({ activities: z.array(browserCompanionActivitySchema), paused: z.boolean(), pausedTabIds: z.array(id) }).optional(),
   downloads: z.array(browserDownloadSchema).max(200), historyCount: z.number().int().min(0), preferences: browserPreferencesSchema,
   permissions: z.array(browserPermissionSchema).max(10), fullscreen: z.boolean(), revision: z.number().int().min(0),
   find: z.object({ matches: z.number(), activeMatchOrdinal: z.number() }).optional(), cacheBytes: z.number().min(0).optional(), error: z.string().optional(),
@@ -35,6 +37,7 @@ export type BrowserHistory = z.infer<typeof browserHistorySchema>;
 export const browserRequestSchema = z.discriminatedUnion('type', [
   ...browserAiRequests,
   z.object({ type: z.literal('activate') }), z.object({ type: z.literal('state') }),
+  z.strictObject({ type: z.literal('companion.pause'), paused: z.boolean(), tabId: id.optional() }),
   z.object({ type: z.literal('layout'), visible: z.boolean(), bounds: z.object({ x: z.number().int().min(0), y: z.number().int().min(0), width: z.number().int().min(0).max(20000), height: z.number().int().min(0).max(20000) }) }),
   z.object({ type: z.literal('tab.new'), url: z.string().max(8192).optional(), background: z.boolean().optional() }),
   z.object({ type: z.literal('tab.select'), id }), z.object({ type: z.literal('tab.close'), id }), z.object({ type: z.literal('tab.restore') }),

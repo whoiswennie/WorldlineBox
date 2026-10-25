@@ -217,6 +217,35 @@ describe('official executable release catalogue', () => {
     const service = new OfficialVersionCatalogue({ rootPath: root, json, onChanged: changed }); await service.init(); await service.refresh();
     expect(service.state().source).toBe('github-npm'); expect(service.state().entries.find(row => row.version === '0.2.1-alpha.2')?.notes).toBe('Official alpha notes');
     const reopened = new OfficialVersionCatalogue({ rootPath: root, json: async () => { throw Error('offline'); }, onChanged: changed }); await reopened.init(); await reopened.refresh();
-    expect(reopened.state()).toMatchObject({ source: 'cache', stale: true }); expect(reopened.state().entries).toHaveLength(3);
+    expect(reopened.state()).toMatchObject({ source: 'cache', stale: true }); expect(reopened.state().entries).toHaveLength(1);
+    expect(service.state().entries.map(row => row.version)).toEqual(['0.2.1-alpha.2']);
+  });
+  it('keeps verified releases when GitHub is unavailable and refuses npm-only installation or a substituted release tag', async () => {
+    const root = await temporary();
+    const github = { tag_name: 'dsh-v0.2.0-rc.2', html_url: 'https://github.com/deepseek-ai/deepseek-harness/releases/tag/dsh-v0.2.0-rc.2' };
+    let offline = false;
+    const json = vi.fn(async (url: string) => {
+      if (url === DSH_NPM_METADATA) return npm;
+      if (offline) throw Error('GitHub unavailable');
+      return url.includes('/tags/') ? github : [github];
+    });
+    const service = new OfficialVersionCatalogue({ rootPath: root, json, onChanged: () => undefined }); await service.refresh();
+    offline = true; await service.refresh();
+    expect(service.state()).toMatchObject({ stale: true, entries: [{ version: '0.2.0-rc.2' }] });
+    await expect(service.release('0.2.0-rc.2')).rejects.toThrow('GitHub unavailable');
+    offline = false; json.mockClear();
+    await expect(service.release('0.2.1-alpha.2')).rejects.toThrow('GitHub Release');
+    expect(json).toHaveBeenCalledOnce();
+    github.tag_name = 'desktop-v0.2.0-rc.2';
+    await expect(service.release('0.2.0-rc.2')).rejects.toThrow('GitHub Release');
+  });
+  it('resolves the exact official Web package only after confirming its GitHub Release', async () => {
+    const version = '0.2.0-rc.2'; const json = vi.fn(async (url: string) => url.includes('/releases/tags/')
+      ? { tag_name: `dsh-v${version}`, html_url: `https://github.com/deepseek-ai/deepseek-harness/releases/tag/dsh-v${version}` } : release(version));
+    const service = new OfficialVersionCatalogue({ rootPath: await temporary(), json, onChanged: () => undefined });
+    expect(await service.release(version)).toMatchObject({ version, integrity: sri });
+    expect(json.mock.calls.map(call => call[0])).toEqual([
+      `https://api.github.com/repos/deepseek-ai/deepseek-harness/releases/tags/dsh-v${version}`, `${DSH_NPM_METADATA}/${version}`,
+    ]);
   });
 });

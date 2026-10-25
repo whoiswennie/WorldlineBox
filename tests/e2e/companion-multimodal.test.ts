@@ -41,19 +41,33 @@ test('displays real image galleries, plays registered audio and video, and locat
     const own = page.locator('.companions-message.is-own').last(); await expect(own.locator('.companions-attachment-images img')).toHaveCount(2); await expect(own.locator('.is-pdf')).toContainText('PDF 文档'); await expect(own.locator('.is-text')).toContainText('文本文件');
     for (const image of await own.locator('.companions-attachment-images img').all()) await expect(image).toHaveJSProperty('naturalWidth', 320);
     const audio = own.locator('audio'), video = own.locator('video');
-    for (const media of [audio, video]) { await expect.poll(() => media.evaluate((element: HTMLMediaElement) => element.readyState), { timeout: 15000 }).toBeGreaterThanOrEqual(1); await media.evaluate((element: HTMLMediaElement) => element.play()); await expect.poll(() => media.evaluate((element: HTMLMediaElement) => element.currentTime)).toBeGreaterThan(.2); await media.evaluate((element: HTMLMediaElement) => element.pause()); }
+    for (const [media, filename] of [[audio, '轻音.wav'], [video, '生活片段.webm']] as const) {
+      await own.getByRole('button', { name: '播放：' + filename, exact: true }).click();
+      await expect.poll(() => media.evaluate((element: HTMLMediaElement) => element.readyState), { timeout: 15000 }).toBeGreaterThanOrEqual(1);
+      await expect.poll(() => media.evaluate((element: HTMLMediaElement) => element.currentTime)).toBeGreaterThan(.2);
+      await media.evaluate((element: HTMLMediaElement) => element.pause());
+    }
     expect(await video.evaluate((element: HTMLVideoElement) => element.videoWidth)).toBe(160);
     const source = await video.getAttribute('src'); const range = await page.evaluate(async url => { const response = await fetch(url!, { headers: { Range: 'bytes=0-15' } }); return { status: response.status, bytes: (await response.arrayBuffer()).byteLength, range: response.headers.get('content-range'), accepts: response.headers.get('accept-ranges') }; }, source);
     expect(range).toMatchObject({ status: 206, bytes: 16, accepts: 'bytes' }); expect(range.range).toMatch(/^bytes 0-15\/\d+$/u);
     const head = await page.evaluate(async url => { const response = await fetch(url!, { method: 'HEAD' }); return { status: response.status, bytes: (await response.arrayBuffer()).byteLength, length: Number(response.headers.get('content-length')) }; }, source); expect(head).toMatchObject({ status: 200, bytes: 0 }); expect(head.length).toBe(webm.length);
     await own.getByRole('button', { name: '预览图片：天空.png', exact: true }).click(); await expect(page.getByRole('dialog', { name: '图片预览：天空.png', exact: true })).toContainText('2 / 2'); await page.keyboard.press('ArrowLeft'); await expect(page.getByRole('dialog', { name: '图片预览：海边.png', exact: true })).toContainText('1 / 2'); await page.keyboard.press('Escape');
-    await own.getByRole('button', { name: '查看文件位置：旅行计划.pdf', exact: true }).click(); await expect.poll(() => application.evaluate(() => (globalThis as typeof globalThis & { locatedMediaFiles?: string[] }).locatedMediaFiles)).toEqual([files[4]]);
+    await own.getByRole('button', { name: '预览文件：旅行计划.pdf', exact: true }).click();
+    const pdfDialog = page.getByRole('dialog', { name: '文件预览：旅行计划.pdf', exact: true }); await expect(pdfDialog).toBeVisible();
+    await pdfDialog.getByRole('button', { name: '文件位置', exact: true }).click(); await expect.poll(() => application.evaluate(() => (globalThis as typeof globalThis & { locatedMediaFiles?: string[] }).locatedMediaFiles)).toEqual([files[4]]);
+    await pdfDialog.getByRole('button', { name: '关闭文件预览' }).click();
+    await own.getByRole('button', { name: '预览文件：随手记.txt', exact: true }).click(); await expect(page.getByRole('dialog', { name: '文件预览：随手记.txt', exact: true }).locator('pre')).not.toBeEmpty(); await page.keyboard.press('Escape');
+    await own.getByRole('button', { name: '播放：轻音.wav', exact: true }).click();
+    const persistent = await page.locator('audio').elementHandle(); await page.locator('[data-application-module="browser"]').click();
+    await expect(page.getByRole('region', { name: '聊天媒体播放器' }).locator('audio')).toHaveCount(1);
+    expect(await persistent!.evaluate(element => element.isConnected)).toBe(true);
+    await page.locator('[data-application-module="companions"]').click(); expect(await persistent!.evaluate(element => element.isConnected)).toBe(true);
     const stored = await page.evaluate(() => (window as unknown as { worldlinebox: { companions: WorldlineBoxCompanionsApi } }).worldlinebox.companions.request({ type: 'messages', conversationId: 'private-deepseek-sister', limit: 20 })); expect(stored.ok).toBe(true); expect(stored.messages!.find(message => message.authorId === 'user')!.attachments).toHaveLength(6);
     await page.reload(); await page.locator('[data-application-module="companions"]').click();
     await page.evaluate(() => (window as unknown as { worldlinebox: { companions: WorldlineBoxCompanionsApi } }).worldlinebox.companions.request({ type: 'conversation.open', companionId: 'deepseek-sister' }));
     await expect(own.locator('.companions-attachment-images img')).toHaveCount(2);
     for (const image of await own.locator('.companions-attachment-images img').all()) await expect(image).toHaveJSProperty('naturalWidth', 320);
-    for (const media of [audio, video]) await expect.poll(() => media.evaluate((element: HTMLMediaElement) => element.readyState)).toBeGreaterThanOrEqual(1);
+    await expect(own.getByRole('button', { name: '播放：生活片段.webm', exact: true })).toBeVisible();
     const artifacts = path.resolve('.tools/test-output/companions'); mkdirSync(artifacts, { recursive: true }); await own.locator('.companions-message-attachments').screenshot({ path: path.join(artifacts, 'verified-companion-multimodal.png') });
     const report = { fixtureKind: 'synthetic_media_files', imageCount: 2, audioActuallyPlayed: true, videoActuallyPlayed: true, videoSize: { width: 160, height: 90, bytes: webm.length }, range, head, documentLocationExplicit: true, storedAttachments: 6 }; writeFileSync(path.join(artifacts, 'verified-companion-multimodal.json'), JSON.stringify(report, null, 2)); await testInfo.attach('actual-media-proof', { body: JSON.stringify(report), contentType: 'application/json' });
   } finally { await application.close().catch(() => undefined); cleanup(root); }

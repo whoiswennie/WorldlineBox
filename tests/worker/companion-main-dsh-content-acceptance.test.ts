@@ -22,7 +22,8 @@ vi.mock('electron', () => ({ net: { fetch: (url: string, init?: RequestInit) => 
 it.skipIf(process.env.WORLDLINEBOX_MAIN_DSH_ACCEPTANCE !== '1')('lets actual companion brains choose DSH tools, produce real files, and review another group member result', async () => {
   const configRoot = path.resolve('.tools/test-output/main-dsh-key-profile'); await mkdir(configRoot, { recursive: true });
   const config = await realGlobalChatConfig(configRoot);
-  const program = process.env.WORLDLINEBOX_DSH_NATIVE_PROGRAM ?? path.join(process.env.APPDATA!, 'WorldlineBox/dsh-launcher/runtimes/runtime-7166bc2240b170bff29c0dfe/program');
+  const { installedDshAcceptanceProgram } = await import('../helpers/companion-dsh-real-route');
+  const program = await installedDshAcceptanceProgram();
   const native = await createNativeAcceptanceBroker({ program, apiKey: config.apiKey, model: 'deepseek-flash' });
   const owned: { store?: CompanionsStore; service?: CompanionService } = {};
   onTestFinished(async () => { await owned.service?.shutdown(); owned.store?.close(); await native.dispose(); });

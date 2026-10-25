@@ -23,7 +23,7 @@ app.whenReady().then(async () => {
     if (op && current !== op.phase) { current=op.phase; if(!op.phase.includes(':') || /(?:0\/|[05]0\/)/.test(op.phase)) console.log('INSTALL_PHASE', op.phase, op.download?.transferredBytes ?? 0); }
   });
   await ops.init();
-  const manager = new RuntimeService({ rootPath:root,sevenZipPath:'unused',onChanged:()=>undefined,
+  const manager = new RuntimeService({ rootPath:root,onChanged:()=>undefined,
     fetch:network.fetch,nodeTools:async()=>tools,nodeInstallNetwork:signal=>network.nodeInstallNetwork(signal) });
   await manager.init();
   const results = [];

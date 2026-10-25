@@ -3,21 +3,13 @@ import { nativeImage, type NativeImage } from 'electron';
 import { appIconImage } from '../app-icon';
 import { lstat, realpath } from './disk';
 import { contained } from './files';
-import { readAsarEntry } from './runtime-service';
 
 const MAX_ICON_BYTES = 4 * 1024 * 1024;
-// The official Windows 0.2.0-rc.2 runtime supplies resources/icon.png. Read
-// candidates from the selected sealed version only; no global DSH install is
-// used, and no generated image is written into immutable runtime files.
+// Read artwork only from the selected sealed Web runtime.
 const FILE_CANDIDATES = [
   'resources/icon.png', 'resources/icon.ico', 'icon.png', 'icon.ico',
   'resources/app.png', 'resources/app.ico', 'resources/tray.ico',
 ] as const;
-const ASAR_PNG_CANDIDATES = [
-  'assets/icon.png', 'resources/icon.png', 'build/icon.png', 'icon.png',
-  'dist/assets/icon.png', 'dist/icon.png',
-] as const;
-
 async function rejectLinkedComponents(root: string, relative: string, allowMissing = false): Promise<void> {
   let current = root;
   for (const part of relative.split('/')) {
@@ -61,20 +53,6 @@ export async function resolveDshWorkbenchIcon(programDirectory: string): Promise
         if (!image.isEmpty()) return image;
       } catch { /* A missing/invalid optional image must not prevent the fallback. */ }
     }
-    try {
-      const archive = await iconFile(root, 'resources/app.asar', true);
-      for (const relative of ASAR_PNG_CANDIDATES) {
-        try {
-          // readAsarEntry also supports .unpacked entries. Reject links in that
-          // sibling tree before the physical reader could follow one.
-          await rejectLinkedComponents(root, `resources/app.asar.unpacked/${relative}`, true);
-          const buffer = await readAsarEntry(archive, relative);
-          if (!buffer.length || buffer.length > MAX_ICON_BYTES) continue;
-          const image = nativeImage.createFromBuffer(buffer);
-          if (!image.isEmpty()) return image;
-        } catch { /* Probe only this finite set of bounded image entries. */ }
-      }
-    } catch { /* Some official versions may keep only an external icon. */ }
   } catch { /* Missing optional runtime artwork falls back to the app artwork. */ }
   const fallback = appIconImage();
   if (fallback && !fallback.isEmpty()) return fallback;

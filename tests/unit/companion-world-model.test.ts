@@ -100,7 +100,7 @@ describe('world reasoning and native tools', () => {
       appraisals: [{ eventId: 'peer_event', targetCompanionId: 'peer', type: 'support', intensity: 0.5, confidence: 0.9, quote: '我支持你' }] };
     const fetchFn = vi.fn<typeof fetch>().mockResolvedValue(envelope('openai_chat', value));
     expect(await generateCompanionWorldDecision({ companion: input.companion, world, job, members: [] }, config, undefined, { fetchFn })).toEqual(value);
-    const body = JSON.parse(String(fetchFn.mock.calls[0]?.[1]?.body)); expect(body.tools.map((tool: { function: { name: string } }) => tool.function.name)).toEqual([COMPANION_SUBMIT_RESULT_TOOL]);
+    const body = JSON.parse(String(fetchFn.mock.calls[0]?.[1]?.body)); expect(body.tools.map((tool: { function: { name: string } }) => tool.function.name)).toEqual(['wait', COMPANION_SUBMIT_RESULT_TOOL]);
     expect(JSON.parse(body.messages[1].content).purpose).toBe('world_decision');
     expect(body.messages[0].content).toContain('列表为空必须[]');
     expect(body.messages[0].content).toContain(input.companion.persona);

@@ -8,8 +8,8 @@ import { seedNativeRuntime } from './fixtures/dsh-native-runtime';
 import { electronLaunchEnv, resolveElectronAppPath, resolveElectronExecutablePath } from './electron-test-helpers';
 
 test('cold and repeated real native Host starts finish through the launcher with saved phase timings and no inherited user data', async () => {
-  // A never-admitted runtime must read every byte once (the verifier itself has
-  // a five-minute bound). Repeated starts have a separate, much tighter limit.
+  // The first launch verifies the runtime and initializes its native profile.
+  // Later launches reuse the native profile and cached integrity inventory.
   test.setTimeout(540000);
   const fixtureFile = process.env.WORLDLINEBOX_DSH_NODE_FIXTURE ?? path.resolve('.tools/dsh-native-node/result.json');
   test.skip(process.platform !== 'win32' || !existsSync(fixtureFile), 'An inspected Windows native runtime is required.');
@@ -35,7 +35,7 @@ test('cold and repeated real native Host starts finish through the launcher with
         const output = path.resolve('.tools/test-output/dsh-startup'); await mkdir(output, { recursive: true });
         const current = await state();
         await writeFile(path.join(output, 'failed-startup-state.json'), JSON.stringify({ runtimeVersion: runtime!.version, operation: current.operations.find(operation => operation.id === id) }, null, 2));
-        await writeFile(path.join(output, 'failed-startup.log'), await readFile(path.join(profile, 'dsh-launcher/operations', id + '.log'), 'utf8'));
+        await writeFile(path.join(output, 'failed-startup.log'), await readFile(path.join(profile, 'dsh/operations', id + '.log'), 'utf8'));
         throw error;
       }
       const operation = (await state()).operations.find(operation => operation.id === id)!; expect(operation.status, operation.error).toBe('succeeded'); return operation;
@@ -46,10 +46,10 @@ test('cold and repeated real native Host starts finish through the launcher with
       if (run === 4) { await app.close(); app = await launch(); page = await app.firstWindow(); await expect(page.locator('[data-dsh-launcher]')).toBeVisible(); }
       const started = performance.now(), operation = await complete({ type: 'instance.start', instanceId: instance.id }, run === 1 ? 360000 : 60000);
       const milliseconds = Math.round(performance.now() - started); expect((await state()).instances[0]!.status).toBe('running');
-      const log = await readFile(path.join(profile, 'dsh-launcher/operations', operation.id + '.log'), 'utf8');
-      expect(log).toContain('Host startup completed'); expect(log).not.toContain('dsh web: http:');
-      reports.push({ run, scenario: run === 1 ? 'unverified-runtime-first-admission' : run === 4 ? 'application-restart' : 'repeated-start', milliseconds, timingLog: log.split('\n').filter(line => line.startsWith('Host startup')) });
-      if (run > 1) expect(milliseconds, 'Previously admitted runtime should not repeat first-install checks').toBeLessThan(30000);
+      const log = await readFile(path.join(profile, 'dsh/operations', operation.id + '.log'), 'utf8');
+      expect(log).toContain('Native Web Host ready'); expect(log).not.toContain('dsh web: http:');
+      reports.push({ run, scenario: run === 1 ? 'first-native-profile-start' : run === 4 ? 'application-restart' : 'repeated-start', milliseconds, timingLog: log.split('\n').filter(line => line.startsWith('Native Web Host')) });
+      if (run > 1) expect(milliseconds, 'An initialized native profile should start promptly').toBeLessThan(30000);
       await complete({ type: 'instance.stop', instanceId: instance.id });
       expect((await state()).instances[0]!.status).toBe('stopped');
     }

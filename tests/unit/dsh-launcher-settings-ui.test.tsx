@@ -27,9 +27,9 @@ async function fill(field: HTMLInputElement, text: string) {
   await act(() => { Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!.call(field, text); field.dispatchEvent(new Event('input', { bubbles: true })); });
 }
 
-it('installs the native release even when the same desktop version exists and bounds version DOM size', async () => {
+it('installs another native release alongside the installed version and bounds version DOM size', async () => {
   const request = vi.fn<LauncherRunRequest>().mockResolvedValue({ ok: true });
-  const state = { ...base(), runtimes: [runtime('desktop-cli-web-v1', '0.2.0-rc.2')], versions: { source: 'github-npm' as const, stale: false, entries: Array.from({ length: 14 }, (_, index) => ({ version: index === 0 ? '0.2.0-rc.2' : `0.2.1-alpha.${index}`, channel: 'alpha' as const, recommended: index === 0, nodeRange: '>=24', integrity: 'sha512-fixture', releaseUrl: 'https://github.com/deepseek-ai/deepseek-harness/releases', notes: '<script>never execute</script>' })) } };
+  const state = { ...base(), runtimes: [runtime('node-cli-web-v1', '0.2.0-rc.1')], versions: { source: 'github-npm' as const, stale: false, entries: Array.from({ length: 14 }, (_, index) => ({ version: index === 0 ? '0.2.0-rc.2' : `0.2.1-alpha.${index}`, channel: 'alpha' as const, recommended: index === 0, nodeRange: '>=24', integrity: 'sha512-fixture', releaseUrl: 'https://github.com/deepseek-ai/deepseek-harness/releases', notes: '<script>never execute</script>' })) } };
   await mount(<OfficialVersionPicker state={state} run={request} />);
   expect(container!.querySelectorAll('[data-dsh-version]')).toHaveLength(12);
   const release = container!.querySelector('[data-dsh-version="0.2.0-rc.2"]')!;
@@ -83,14 +83,16 @@ it('formats release headings, lists, code and tables while keeping anchors local
   expect(request).not.toHaveBeenCalled();
 });
 
-function control<T extends HTMLInputElement | HTMLSelectElement>(label: string): T {
+function control<T extends HTMLInputElement | HTMLSelectElement | HTMLButtonElement>(label: string): T {
   const field = [...container!.querySelectorAll<HTMLLabelElement>('label')].find(item => item.textContent === label);
   if (!field) throw Error('Missing field ' + label);
   return document.getElementById(field.htmlFor) as T;
 }
 async function select(label: string, value: string) {
-  const field = control<HTMLSelectElement>(label);
-  await act(() => { field.value = value; field.dispatchEvent(new Event('change', { bubbles: true })); });
+  const field = control<HTMLButtonElement | HTMLSelectElement>(label);
+  if (field instanceof HTMLSelectElement) { await act(() => { field.value = value; field.dispatchEvent(new Event('change', { bubbles: true })); }); return; }
+  await act(() => field.click());
+  await act(() => document.querySelector<HTMLButtonElement>(`[role="option"][data-value="${value}"]`)!.click());
 }
 async function mountNetwork(initial = network(), rejectSave = false) {
   let applied: ApplicationNetworkState = { settings: initial, revision: 0, recentFailures: [] };
@@ -116,7 +118,7 @@ async function mountNetwork(initial = network(), rejectSave = false) {
 
 it('keeps the applied summary unchanged while editing and applies new proxy profiles immediately', async () => {
   const request = await mountNetwork();
-  await select('代理模式', 'custom');
+  await select('代理模式', 'global');
   await fill(control('代理地址'), 'http://127.0.0.1:7890');
   expect(container!.querySelector('[data-network-active]')!.textContent).toContain('跟随系统代理');
   expect(container!.querySelector('[data-network-active]')!.textContent).toContain('有未应用的修改');
@@ -178,7 +180,7 @@ it('adds and activates a custom mirror and removes a saved profile without chang
 
 it('retains an unsaved draft and active route when saving fails, and does not test it', async () => {
   const request = await mountNetwork(network(), true);
-  await select('代理模式', 'custom');
+  await select('代理模式', 'global');
   await fill(control('代理地址'), 'invalid address');
   await act(() => button('保存并测试').click());
   expect(request.mock.calls.filter(([input]) => input.type === 'network.save')).toHaveLength(1);

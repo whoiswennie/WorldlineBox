@@ -29,6 +29,7 @@ it.each([{ diaryName: 'missing' }, { tags: ['missing'] }, { from: '2027-01-01', 
 function fixture(notes: CompanionMemory[]) {
   const scopes = new Map<string, VcpMemoryNote[]>();
   const client = {
+    hasOpenScope: (scope: VcpMemoryScope) => scopes.has(scope.scopeId),
     replace: vi.fn(async (scope: VcpMemoryScope, values: VcpMemoryNote[]) => { scopes.set(scope.scopeId, values); }),
     search: vi.fn(async (scope: VcpMemoryScope, input: { topK?: number }) => ({
       results: (scopes.get(scope.scopeId) ?? []).slice(0, input.topK).map(note => ({ ...note, sourceFile: note.id + '.md', engine: 'river' as const })),
@@ -106,7 +107,8 @@ describe('one physical corpus for memory filters, context and citation pages', (
       const originalScope = f.client.replace.mock.calls[0]?.[0].scopeId;
       await f.service.search({ companionId: 'owner', conversationId: 'private', query: 'facts',
         tags: ['flower'], diaryName: 'journal', from: '2026-10-23', to: '2026-10-23', limit: 20 }, mode);
-      expect(f.client.replace.mock.calls[1]?.[0].scopeId).toBe(originalScope);
+      expect(f.client.replace).toHaveBeenCalledOnce();
+      expect(f.scopes.has(originalScope!)).toBe(true);
       expect(f.scopes.size).toBe(1);
     } finally { await f.service.close(); }
   });

@@ -4,13 +4,14 @@ import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync,
 import os from 'node:os';
 import path from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { TEST_NODE_EXECUTABLE, TEST_NODE_VERSION } from '../helpers/node-executable';
 
 describe.skipIf(process.platform !== 'win32')('Windows entrypoint responsibilities', () => {
   let root: string;
   let trace: string;
   let state: string;
   let lockHash: string;
-  const nodeVersion = process.versions.node;
+  const nodeVersion = TEST_NODE_VERSION;
   const write = (name: string, value: string) => {
     const file = path.join(root, name);
     mkdirSync(path.dirname(file), { recursive: true });
@@ -38,7 +39,7 @@ describe.skipIf(process.platform !== 'win32')('Windows entrypoint responsibiliti
     receipt();
     const nodeDirectory = path.join('.tools', `node-v${nodeVersion}-win-x64`);
     write(path.join(nodeDirectory, 'npm.cmd'), '@echo off\r\necho %*>>"%WORLDLINEBOX_WINDOWS_FLOW_TRACE%"\r\nexit /b 0\r\n');
-    copyFileSync(process.execPath, path.join(root, nodeDirectory, 'node.exe'));
+    copyFileSync(TEST_NODE_EXECUTABLE, path.join(root, nodeDirectory, 'node.exe'));
     write('node_modules/electron/dist/electron.exe', 'fixture');
     write('node_modules/.bin/electron-forge.cmd', 'fixture');
     write('.tools/inno/ISCC.exe', 'fixture');
@@ -124,7 +125,7 @@ it.skipIf(process.platform !== 'win32')('reports a failed portable download and 
       $projectRoot = ${quote(root)}
       $toolsRoot = Join-Path $projectRoot '.tools'
       $setupState = Join-Path $toolsRoot 'setup-state.json'
-      $nodeExe = ${quote(process.execPath)}
+      $nodeExe = ${quote(TEST_NODE_EXECUTABLE)}
       $ast = [System.Management.Automation.Language.Parser]::ParseFile(${quote(path.resolve('scripts/windows.ps1'))}, [ref]$null, [ref]$null)
       foreach ($name in @('Test-PortableToolsCurrent', 'Prepare-PortableTools', 'Setup-Environment')) {
         $definition = $ast.Find({ param($node) $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq $name }, $true)

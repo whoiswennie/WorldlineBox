@@ -32,7 +32,9 @@ import { companionRoleResourceBounds } from './role-resource-context';
 import { companionThoughtCapabilities } from './thought-capabilities';
 import type { DshRecordQuery } from '../../shared/dsh-task-record';
 
+import type { CompanionBrowserExtension } from './browser-capabilities';
 interface WorldServiceOptions {
+  browserCapabilities?: CompanionBrowserExtension;
   request(command: CompanionStorageCommand): Promise<CompanionStorageResponse>;
   configFor(companion: Companion): Promise<CompanionModelConfig>;
   fetchFn: typeof fetch;
@@ -120,7 +122,7 @@ export class CompanionWorldService {
   }
   async ready(input: CompanionWorldScope & { workId: string; kind: 'chat' | 'action' | 'schedule' | 'learning'; sourceMessageId?: string;
     urgent?: boolean; fixed?: boolean; learningGrantId?: string; learningLeaseToken?: string;
-    authorizationGrantId?: string; invocationId?: string }, signal?: AbortSignal, onWaiting?: (reason: string) => void): Promise<void> {
+    authorizationGrantId?: string; invocationId?: string }, signal?: AbortSignal, onWaiting?: (reason: string) => void | Promise<void>): Promise<void> {
     if (signal?.aborted || this.closed) throw cancelled();
     try {
       let work = (await this.options.request({ type: 'world.work.begin', ...input })).worldWork;
@@ -128,7 +130,7 @@ export class CompanionWorldService {
       while (work?.status !== 'ready') {
         if (signal?.aborted || this.closed) throw cancelled();
         if (!work || work.status === 'ended') throw new Error('伙伴当前无法使用电脑，任务仍需等待。');
-        onWaiting?.(work.reason ?? (input.kind === 'chat' ? '正在结束当前动作，准备查看消息' : '正在前往电脑，准备处理任务'));
+        await onWaiting?.(work.reason ?? (input.kind === 'chat' ? '正在结束当前动作，准备查看消息' : '正在前往电脑，准备处理任务'));
         await delay(250, signal);
         await this.options.request({ type: 'world.tick' });
         work = (await this.options.request({ type: 'world.work.ready', companionId: input.companionId, workId: input.workId })).worldWork;
@@ -240,7 +242,7 @@ export class CompanionWorldService {
         }, { ...(gameCommunication ? { gamePort: gameCommunication.gamePort }
           : port.topic?.kind === 'game' ? { gamePort: { conversationId: port.topic.conversationId, topicId: port.topic.id } } : {}),
         executionReadset: () => executionReadset });
-      const capabilities = this.options.think ? companionThoughtCapabilities(socialCapabilities, {
+      let capabilities = this.options.think ? companionThoughtCapabilities(socialCapabilities, {
         run: async (proposal, effectId, thoughtSignal) => {
           if (!executionReadset) throw new Error('伙伴思考实际读集不可用。');
           return this.options.think!({ companionId: companion.id, conversationId: conversation.id, jobId: job.id, leaseToken,
@@ -248,6 +250,7 @@ export class CompanionWorldService {
         }, ...(this.options.readThought ? { read: (query: DshRecordQuery, thoughtSignal?: AbortSignal) => this.options.readThought!({
           companionId: companion.id, conversationId: conversation.id, jobId: job.id, query }, thoughtSignal) } : {}),
       }) : socialCapabilities;
+      capabilities = this.options.browserCapabilities?.(scope, capabilities) ?? capabilities;
       const result = await generateCompanionSocialReply({ companion, conversation, source, messages: sources, job, world: latestWorld, routine, ...profiles,
         topic: port.topic, topicState: port.topicState, gameCommunication, resourceBounds,
         memoryRecall: { ...recalled, reasons: recalled?.reasons ?? [], pending: recalled?.pending ?? false, degraded: recalled?.degraded ?? false },

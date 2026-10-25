@@ -119,7 +119,7 @@ it.each(formats)('preserves actual native IDs, schema and rejected call/result p
   let inference = 0;
   const fetchFn = vi.fn<typeof fetch>(async (_url, init) => {
     const wire = object(JSON.parse(String(init?.body))), defs = definitions(format, wire);
-    expect(defs.map(tool => tool.name)).toEqual(['memory', COMPANION_SUBMIT_RESULT_TOOL]);
+    expect(defs.map(tool => tool.name)).toEqual(['memory', 'wait', COMPANION_SUBMIT_RESULT_TOOL]);
     const final = defs.find(tool => tool.name === COMPANION_SUBMIT_RESULT_TOOL)!;
     expect(final.parameters ?? final.parametersJsonSchema ?? final.input_schema).toEqual(expectedSchema);
     if (inference >= 1) assertNativeHistory(format, wire, f.read().turns[0]!);

@@ -61,6 +61,7 @@ export interface CompanionMemoryRecall {
   memories: CompanionMemory[]; sources: CompanionMessage[];
   reasons: Array<{ id: string; version?: number; reasons: string[]; path: string[] }>;
   pending: boolean; degraded: boolean;
+  timings?: Record<string, number>;
   context?: NonNullable<CompanionStorageResponse['memoryContext']>;
   continuation?: { query: Omit<CompanionMemorySearch, 'companionId' | 'conversationId' | 'beforeSequence'>;
     memoryCursor?: number; sourceCursor?: number; memoryHasMore: boolean; sourceHasMore: boolean };
@@ -294,8 +295,8 @@ export class CompanionMemoryService {
     this.options.changed();
   }
 
-  async search(query: CompanionMemorySearch, mode: 'active' | 'passive' = 'active'): Promise<CompanionStorageResponse> {
-    return this.searchScoped(query, mode);
+  async search(query: CompanionMemorySearch, mode: 'active' | 'passive' = 'active', signal?: AbortSignal, onProgress?: (stage: string) => void): Promise<CompanionStorageResponse> {
+    return this.searchScoped(query, mode, [], signal, onProgress);
   }
   /** Background sleep uses the owner's complete witnessed corpus, across entrances. */
   async dreamWave(input: MemoryScope & { now: string; clockDomain: VcpMemoryDreamClock }): Promise<VcpMemoryDreamWaveResult> {
@@ -389,17 +390,22 @@ export class CompanionMemoryService {
     await view.commit();
     return { ok: true, memoryRetrievalModes: catalog };
   }
-  private async searchScoped(query: CompanionMemorySearch, mode: 'active' | 'passive', history: readonly VcpMemoryMessage[] = [], signal?: AbortSignal): Promise<CompanionStorageResponse> {
+  private async searchScoped(query: CompanionMemorySearch, mode: 'active' | 'passive', history: readonly VcpMemoryMessage[] = [], signal?: AbortSignal, onProgress?: (stage: string) => void): Promise<CompanionStorageResponse> {
     if (query.retrievalOptions && !query.query?.trim()) throw new Error('可选检索模式需要非空查询；按日期浏览请使用 from/to。');
     if (!query.query?.trim()) return this.options.request({ ...query, type: 'memory.browse' });
     const key = identityFor(query);
-    const generation = this.generation(query.companionId);
+    const generation = this.generation(query.companionId), queuedAt = performance.now();
+    onProgress?.('等待本伙伴的记忆查询');
     const pending = Promise.all([this.queryTails.get(key), this.invalidations.get(query.companionId)])
-      .catch(() => undefined).then(() => { signal?.throwIfAborted(); this.assertCurrent(query.companionId, generation); return this.searchView(query, mode, generation, history, signal); });
+      .catch(() => undefined).then(() => { signal?.throwIfAborted(); this.assertCurrent(query.companionId, generation); return this.searchView(query, mode, generation, history, signal, onProgress, performance.now() - queuedAt); });
     this.queryTails.set(key, pending);
     try { return await pending; } finally { if (this.queryTails.get(key) === pending) this.queryTails.delete(key); }
   }
-  private async searchView(query: CompanionMemorySearch, mode: 'active' | 'passive', generation: number, history: readonly VcpMemoryMessage[], signal?: AbortSignal): Promise<CompanionStorageResponse> {
+  private async searchView(query: CompanionMemorySearch, mode: 'active' | 'passive', generation: number, history: readonly VcpMemoryMessage[], signal?: AbortSignal, onProgress?: (stage: string) => void, queuedMs = 0): Promise<CompanionStorageResponse> {
+    const timings: Record<string, number> = { queue: queuedMs };
+    let stage = 'sources', stageAt = performance.now();
+    const mark = (next: string, label: string) => { const now = performance.now(); timings[stage] = (timings[stage] ?? 0) + now - stageAt; stage = next; stageAt = now; onProgress?.(label); signal?.throwIfAborted(); };
+    onProgress?.('核验记忆来源');
     const scope = { companionId: query.companionId, conversationId: query.conversationId, beforeSequence: query.beforeSequence };
     for (let attempt = 0; attempt < 3; attempt++) {
       const capturedAt = new Date().toISOString();
@@ -416,9 +422,9 @@ export class CompanionMemoryService {
       // Explicit modes must not silently look successful against an empty
       // library when their original dependencies are missing.
       if (!corpus.length && query.retrievalOptions) planCompanionMemoryRetrieval(query.retrievalOptions, (await this.retrievalModes(scope)).memoryRetrievalModes!);
-      if (!corpus.length) return { ok: true, memoryPage: { items: [], hasMore: false },
+      if (!corpus.length) { mark('complete', '记忆检索完成'); return { ok: true, memorySearchTimings: timings, memoryPage: { items: [], hasMore: false },
         memoryRetrieval: { ...projectCompanionMemoryRetrieval({ mode, observedAt: capturedAt, documentCount: 0, hits: [], contextText: '' }),
-          ...(snapshot.notes.length === 0 ? { authorizedCorpusEmpty: true, authorizedCorpusRevision: snapshot.revision } : {}) } };
+          ...(snapshot.notes.length === 0 ? { authorizedCorpusEmpty: true, authorizedCorpusRevision: snapshot.revision } : {}) } }; }
       const owner = await this.ownerIdentity(scope.companionId);
       // Calendar projection changes only when the query timezone changes. A new
       // day refreshes volatile answers, never the physical corpus or provenance.
@@ -426,6 +432,7 @@ export class CompanionMemoryService {
       if (!this.options.runtime) throw new Error('内置向量服务尚未就绪，请在全局模型页面查看运行状态或修复。');
       // Passive AIMemo generates; explicit suffixes and the raw LightMemo call
       // below do not. The latter explicitly disables its optional AI bridge.
+      mark('runtime', '连接记忆引擎');
       const selection = mode === 'passive' ? await this.generationSelection(scope.companionId, generation) : undefined;
       const generationSignal = selection ? this.generationSignal(scope.companionId, signal) : signal;
       if (selection && !this.options.runtime.acquireGeneration) throw new Error('原生记忆生成未连接此伙伴的模型路由。');
@@ -444,7 +451,7 @@ export class CompanionMemoryService {
           await runtime.client.purgeScope({ scopeId: projected.replacedScopeId });
           this.registeredScopes.get(scope.companionId)?.delete(projected.replacedScopeId);
         }
-        await runtime.client.replace(projected, notes.map(note => runtimeNote(note, owner, clock.timeZone)));
+        if (!projected.unchanged || !runtime.client.hasOpenScope(projected)) await runtime.client.replace(projected, notes.map(note => runtimeNote(note, owner, clock.timeZone)));
         this.assertCurrent(scope.companionId, generation);
         await projected.commit();
         return { scopeId: projected.scopeId, replacedScopeId: undefined, commit: async () => undefined };
@@ -452,6 +459,7 @@ export class CompanionMemoryService {
       // Filter the physical corpus before graph construction and native top-K.
       // A post-search list filter would leave out-of-range text in LightMemo,
       // AIMemo, graph propagation and full-file expansion.
+      mark('projection', '同步本轮记忆索引');
       const filtered = !!(query.diaryName || query.tags?.length || query.from || query.to);
       const view = filtered ? await project(corpus, 'filtered')
         : await this.views.prepare(identityFor(scope), runtime.profileKey, corpus, projectionSignature);
@@ -462,11 +470,12 @@ export class CompanionMemoryService {
         await runtime.client.purgeScope({ scopeId: view.replacedScopeId });
         this.registeredScopes.get(scope.companionId)?.delete(view.replacedScopeId);
       }
-      if (!filtered) await runtime.client.replace(view, corpus.map(note => runtimeNote(note, owner, clock.timeZone)));
+      if (!filtered && (!('unchanged' in view) || !view.unchanged || !runtime.client.hasOpenScope(view))) await runtime.client.replace(view, corpus.map(note => runtimeNote(note, owner, clock.timeZone)));
       this.assertCurrent(scope.companionId, generation);
       await view.commit();
       const plan: ReturnType<typeof planCompanionMemoryRetrieval> = query.retrievalOptions ? planCompanionMemoryRetrieval(query.retrievalOptions, projectCompanionMemoryRetrievalModes(await runtime.client.capabilities(view)))
         : { modifierSuffix: '', requestedModes: [] };
+      mark('retrieval', '检索相关记忆');
       const result = await runtime.client.search(view, { text: query.query!, topK: 100 });
       const notes = new Map(corpus.map(note => [note.id, note]));
       const seen = new Set<string>();
@@ -496,6 +505,11 @@ export class CompanionMemoryService {
       let referenceCoverage: 'observed' | 'partial' | 'unavailable' = 'unavailable';
       let queryClock: VcpMemoryQueryClock | undefined = clock;
       let recallPolicy: NonNullable<NonNullable<CompanionStorageResponse['memoryContext']>['evidence']>['recallPolicy'];
+      mark('focus', mode === 'passive' ? 'VCP 正在按当前话题聚焦回忆' : '整理检索片段');
+      const interruptedScopes = new Set([view.scopeId, ...(contextView ? [contextView.scopeId] : [])]);
+      const interrupt = () => { for (const scopeId of interruptedScopes) void runtime.client.interruptScope({ scopeId }).catch(this.options.report); };
+      generationSignal?.addEventListener('abort', interrupt, { once: true });
+      try {
       if ((mode === 'passive' || plan.requestedModes.length > 0) && contextView) {
         const automaticDecay = mode === 'passive' ? companionAutomaticRecallDecay(contextNotes, worldClock.mode) : undefined;
         // Validated monthly files are retrieved through the same original topic
@@ -527,6 +541,8 @@ export class CompanionMemoryService {
           contextText = typeof light.result === 'string' ? light.result : JSON.stringify(light.result);
         }
       }
+      } finally { generationSignal?.removeEventListener('abort', interrupt); }
+      mark('verification', '核验本轮回忆');
       const observedModes = query.retrievalOptions && contextView ? projectCompanionMemoryRetrievalModes(await runtime.client.capabilities(contextView)) : undefined;
       const verified = (await this.options.request({ type: 'memory.snapshot', ...scope })).memorySnapshot;
       if (!verified || verified.revision !== snapshot.revision) continue;
@@ -552,7 +568,8 @@ export class CompanionMemoryService {
         dependencies: contextNotes.map(note => ({ id: note.id, version: note.version })), dependencyCoverage: 'complete' as const,
         references, referenceCoverage: references.length < (contextReferences?.length ?? 0) ? 'partial' as const : referenceCoverage,
         candidateOrder: 'independent_native_query' as const, contextOrder: 'original_context_pipeline' as const };
-      return { ok: true, ...(observedModes ? { memoryRetrievalModes: observedModes } : {}), memoryRetrieval: projectCompanionMemoryRetrieval({ mode, observedAt: capturedAt, documentCount: corpus.length,
+      mark('complete', '记忆检索完成');
+      return { ok: true, memorySearchTimings: timings, ...(observedModes ? { memoryRetrievalModes: observedModes } : {}), memoryRetrieval: projectCompanionMemoryRetrieval({ mode, observedAt: capturedAt, documentCount: corpus.length,
         result, hits: page, contextText, contextReferences: references }), memoryContext: { text: contextText, revision: snapshot.revision, profileKey: runtime.profileKey,
         evidence }, memoryPage: { items: page, hasMore: end < hits.length,
         ...(end < hits.length ? { nextCursor: end } : {}) } };
@@ -562,7 +579,7 @@ export class CompanionMemoryService {
   }
 
   async recall(input: { companion: Companion; conversation: CompanionConversation; messages: readonly CompanionMessage[];
-    currentMessage: CompanionMessage; referencedMessage?: CompanionMessage; beforeSequence?: number; query?: string; config: CompanionModelConfig; signal?: AbortSignal }): Promise<CompanionMemoryRecall> {
+    currentMessage: CompanionMessage; referencedMessage?: CompanionMessage; beforeSequence?: number; query?: string; config: CompanionModelConfig; signal?: AbortSignal; onProgress?: (stage: string) => void }): Promise<CompanionMemoryRecall> {
     const scope = { companionId: input.companion.id, conversationId: input.conversation.id,
       beforeSequence: input.beforeSequence ?? input.currentMessage.sequence };
     const allowed = (await this.options.request({ type: 'memory.sources.filter', ...scope,
@@ -581,10 +598,11 @@ export class CompanionMemoryService {
     const status = (await this.options.request({ type: 'memory.status', companionId: input.companion.id })).memoryStatus;
     this.schedule();
     try {
-      const result = await this.searchScoped({ ...query, ...scope }, 'passive', history, input.signal);
+      const result = await this.searchScoped({ ...query, ...scope }, 'passive', history, input.signal, input.onProgress);
       input.signal?.throwIfAborted();
       const hits = result.memoryPage?.items ?? [];
       return { memories: hits.map(hit => hit.memory), sources: [], reasons: hits.map(hit => ({ id: hit.memory.id, version: hit.memory.version, reasons: hit.reasons, path: hit.path })),
+        timings: result.memorySearchTimings,
         pending: !!status && (status.captureWatermark < input.currentMessage.sequence || status.pendingIndex > 0),
         degraded: hits.some(hit => hit.reasons.includes('原生召回已降级')), context: result.memoryContext,
         continuation: { query, memoryCursor: result.memoryPage?.nextCursor, memoryHasMore: result.memoryPage?.hasMore ?? false, sourceHasMore: false } };

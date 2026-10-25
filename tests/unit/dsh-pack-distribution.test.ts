@@ -15,12 +15,13 @@ async function fixture() {
   const rootPath = await mkdtemp(path.join(os.tmpdir(), 'worldlinebox-pack-distribution-')); roots.push(rootPath);
   const source = path.join(rootPath, 'data'); await mkdir(path.join(source, 'agents', 'skills', 'fixture'), { recursive: true });
   await writeFile(path.join(source, 'agents', 'skills', 'fixture', 'SKILL.md'), '---\nname: fixture\ndescription: Test\n---\nFixture\n');
+  await mkdir(path.join(source, 'runtime-lock')); await writeFile(path.join(source, 'runtime-lock/package-lock.json'), '{}');
   const archivePath = path.join(rootPath, 'fixture.dshpack');
   const network: DshMarketplaceNetwork = { fetch: vi.fn(async () => new Response(null, { status: 404 })), json: vi.fn(), githubCandidates: url => [url] };
   const importArchive = vi.fn(async () => ({ id: 'imported' }));
   const exportArchive = async (_packId: string, file: string, signal: AbortSignal) => writeSealedArchive(source, file, {
-    format: 'worldlinebox-dshpack-v1', name: 'Fixture pack', version: '1.0.0', createdAt: '2026-10-12T00:00:00Z',
-    runtime: { version: '0.2.0-rc.2', platform: 'win32-x64', adapter: 'node-cli-web-v1', contentSha256: 'f'.repeat(64) },
+    format: 'worldlinebox-dshpack-v2', name: 'Fixture pack', version: '1.0.0', createdAt: '2026-10-12T00:00:00Z',
+    runtime: { version: '0.2.0-rc.2', platform: 'win32-x64', adapter: 'node-cli-web-v1', contentSha256: 'f'.repeat(64), sourceSha256: 'a'.repeat(64), npmIntegrity: 'sha512-' + Buffer.alloc(64).toString('base64'), dependencyLockSha256: 'b'.repeat(64), nodeVersion: '24.15.0', npmVersion: '11.12.1', nodeExecutableSha256: 'c'.repeat(64), payloadSha256: 'd'.repeat(64) },
   }, signal);
   const messages: string[] = [];
   const op: OperationContext = { id: 'operation-test', signal: new AbortController().signal, update: vi.fn(async () => undefined), log: async message => { messages.push(message); } };
@@ -32,7 +33,7 @@ describe('Public version-locked pack distribution', () => {
     const exported = await service.createDistribution('pack-test', test.archivePath, 'https://example.invalid/fixture.dshpack');
     const bytes = await readFile(test.archivePath); expect(exported.manifest.archive.sha256).toBe(createHash('sha256').update(bytes).digest('hex'));
     expect(await readFile(exported.checksumPath, 'utf8')).toContain(exported.manifest.archive.sha256);
-    expect(exported.manifest.lock.files.map(file => file.path)).toEqual(['agents/skills/fixture/SKILL.md']);
+    expect(exported.manifest.lock.files.map(file => file.path)).toEqual(['agents/skills/fixture/SKILL.md', 'runtime-lock/package-lock.json']);
     test.network.fetch = vi.fn(async url => url.endsWith('.manifest.json') ? new Response(JSON.stringify(exported.manifest)) : new Response(new Uint8Array(bytes), { headers: { 'content-length': String(bytes.length) } }));
     expect(await service.importDistribution('https://example.invalid/fixture.dshpack.manifest.json', test.op)).toEqual({ id: 'imported' });
     expect(test.importArchive).toHaveBeenCalledOnce();
@@ -49,8 +50,8 @@ describe('Public version-locked pack distribution', () => {
   it('refuses credential-bearing manifest paths and insecure download URLs', async () => {
     const test = await fixture(); const service = new PackDistributionService(test);
     const exported = await service.createDistribution('pack-test', test.archivePath, 'https://example.invalid/fixture.dshpack');
-    const files = [{ path: 'home/.credentials.yaml', sha256: 'f'.repeat(64), size: 1 }];
-    test.network.fetch = vi.fn(async () => new Response(JSON.stringify({ ...exported.manifest, lock: { files, contentSha256: createHash('sha256').update(JSON.stringify(files)).digest('hex'), fileCount: 1, byteLength: 1 } })));
+    const files = [...exported.manifest.lock.files.filter(file => file.path === 'runtime-lock/package-lock.json'), { path: 'home/.credentials.yaml', sha256: 'f'.repeat(64), size: 1 }];
+    test.network.fetch = vi.fn(async () => new Response(JSON.stringify({ ...exported.manifest, lock: { files, contentSha256: createHash('sha256').update(JSON.stringify(files)).digest('hex'), fileCount: files.length, byteLength: files.reduce((total, file) => total + file.size, 0) } })));
     await expect(service.inspectManifest('https://example.invalid/manifest.json')).rejects.toThrow('private or unexpected');
     await expect(service.inspectManifest('http://example.invalid/manifest.json')).rejects.toThrow('HTTPS');
   });

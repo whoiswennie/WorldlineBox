@@ -37,8 +37,8 @@ it.skipIf(process.env.WORLDLINEBOX_ACTIVITY_THOUGHT_REAL !== '1')('returns one r
   const output = path.resolve(process.env.WORLDLINEBOX_ACTIVITY_THOUGHT_REAL_RESULT ?? '.tools/test-output/companion-activity-thought-real-acceptance.json');
   const sourcePaths = ['src/main/companions/service.ts', 'src/main/companions/activity-task-service.ts', 'src/main/companions/structured-agent.ts',
     'src/main/companions/model.ts', 'src/companions/activity-task-store.ts', 'src/companions/store.ts', 'src/shared/companion-activity-thought.ts',
-    'src/shared/dsh-task-record.ts', 'src/main/dsh/task-execution.ts', 'src/main/dsh/task-runtime-policy.ts', 'src/main/dsh/task-broker.ts',
-    'src/main/dsh/task-scope.ts', 'src/main/dsh/companion-runtime-source.ts'];
+    'src/shared/dsh-task-record.ts', 'src/main/dsh/task-execution.ts', 'src/main/dsh/task-broker.ts', 'src/main/dsh/native-host-client.ts', 'resources/dsh-bridge/index.js',
+    'src/main/dsh/task-scope.ts', 'resources/dsh-bridge/index.js'];
   const fingerprint = async () => Object.fromEntries(await Promise.all(sourcePaths.map(async file => [file,
     createHash('sha256').update(await readFile(path.resolve(file))).digest('hex')])));
   const before = await fingerprint(), failures: string[] = [];
@@ -145,9 +145,8 @@ it.skipIf(process.env.WORLDLINEBOX_PEER_THOUGHT_REAL !== '1')('returns real isol
     'src/main/companions/structured-agent.ts', 'src/main/companions/model.ts', 'src/main/companions/context.ts',
     'src/main/companions/thought-source-material.ts', 'src/main/companions/execution-evidence.ts', 'src/companions/social-store.ts', 'src/companions/store.ts',
     'src/companions/experience-store.ts', 'src/shared/companion-activity-thought.ts', 'src/shared/companion-storage.ts',
-    'src/shared/companions.ts', 'src/shared/dsh-task-record.ts', 'src/main/dsh/task-execution.ts', 'src/main/dsh/task-runtime-policy.ts',
-    'src/main/dsh/task-broker.ts', 'src/main/dsh/task-scope.ts', 'src/main/dsh/companion-runtime-source.ts',
-    'src/main/dsh/warm-cli-pool.ts', 'src/main/dsh/launcher.ts'];
+    'src/shared/companions.ts', 'src/shared/dsh-task-record.ts', 'src/main/dsh/task-execution.ts',
+    'src/main/dsh/task-broker.ts', 'src/main/dsh/native-host-client.ts', 'resources/dsh-bridge/index.js', 'src/main/dsh/task-scope.ts', 'src/main/dsh/launcher.ts'];
   const fingerprint = async () => Object.fromEntries(await Promise.all(sourcePaths.map(async file => [file,
     createHash('sha256').update(await readFile(path.resolve(file))).digest('hex')])));
   const before = await fingerprint(), failures: string[] = [];
@@ -209,17 +208,11 @@ it.skipIf(process.env.WORLDLINEBOX_PEER_THOUGHT_REAL !== '1')('returns real isol
     room = store.request({ type: 'social.conversation.ensure', companionId: sender.id, memberIds: roles.map(role => role.id), title: '顺序约束讨论' }).socialConversation!;
     if (verifyPrewarm) {
       const began = performance.now(), instanceId = installed.sourceProfile.instance.id;
-      native.broker.setStandbyInstance(instanceId);
-      await Promise.all([native.broker.discover(instanceId, { access: { mode: 'danger-full-access' } }), native.broker.prewarmThought(instanceId)]);
-      await native.broker.discover(instanceId, { access: { mode: 'danger-full-access' } });
-      const full = await native.broker.readRecord({ recordId: native.broker.state()[0]!.id });
-      await native.broker.prewarmThought(instanceId);
-      const thought = await native.broker.readRecord({ recordId: native.broker.state()[0]!.id });
-      expect(full.overview.startup).toMatchObject({ reusedWorker: true });
-      expect(thought.overview.startup).toMatchObject({ reusedWorker: true });
-      expect(full.overview.startup!.bootMs).toBeLessThan(5000);
-      expect(thought.overview.startup!.bootMs).toBeLessThan(5000);
-      prewarmObservation = { durationMs: performance.now() - began, full: full.overview, thought: thought.overview };
+      const full = await native.broker.discover(instanceId);
+      const again = await native.broker.discover(instanceId);
+      expect(again.tools).toEqual(full.tools);
+      expect(native.broker.state()).toEqual([]);
+      prewarmObservation = { durationMs: performance.now() - began, full, thought: { sharedHost: true } };
     }
     store.request({ type: 'social.send', companionId: sender.id, conversationId: room.id, channel: 'phone', clientId: sourceClientId, content: instruction });
     service = new CompanionService({ userData: path.join(root, 'profile'), dataRoot, workerPath: 'in-process-port', window: () => undefined,

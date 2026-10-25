@@ -5,7 +5,7 @@ import type { DshRuntime } from '../../../src/shared/dsh-launcher';
 /** Read-only SDK fixture: link immutable sealed files, never user saves or credentials. */
 export async function seedNativeRuntime(manager: string, runtime: DshRuntime, profile: string): Promise<void> {
   const source = path.join(manager, 'runtimes', runtime.id);
-  const target = path.join(profile, 'dsh-launcher/runtimes', runtime.id);
+  const target = path.join(profile, 'dsh/runtimes', runtime.id);
   const seal = JSON.parse(await readFile(path.join(source, 'seal.json'), 'utf8')) as { files: Array<{ path: string }> };
   await mkdir(path.join(target, 'program'), { recursive: true });
   let next = 0;
@@ -20,5 +20,5 @@ export async function seedNativeRuntime(manager: string, runtime: DshRuntime, pr
     }
   }));
   await copyFile(path.join(source, 'seal.json'), path.join(target, 'seal.json'));
-  await writeFile(path.join(profile, 'dsh-launcher/runtimes.json'), JSON.stringify([runtime]));
+  await writeFile(path.join(profile, 'dsh/runtimes.json'), JSON.stringify([runtime]));
 }

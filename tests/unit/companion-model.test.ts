@@ -299,7 +299,7 @@ describe('native memory tools across provider formats', () => {
     const registered = format === 'dashscope_native' ? request.parameters.tools : request.tools;
     const definitions = format === 'gemini_native' ? registered[0].function_declarations
       : registered.map((tool: { function?: unknown }) => tool.function ?? tool);
-    expect(definitions.map((tool: { name: string }) => tool.name)).toEqual(['dsh', 'memory', 'world']);
+    expect(definitions.map((tool: { name: string }) => tool.name)).toEqual(['dsh', 'memory', 'world', 'wait']);
     const worldTool = definitions.find((tool: { name: string }) => tool.name === 'world');
     expect(worldTool.description).toContain('统一世界入口');
     expect(JSON.stringify(worldTool)).toContain('work');

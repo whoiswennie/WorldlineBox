@@ -4,10 +4,31 @@ import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, expect, it, vi } from 'vitest';
 import { CompanionTaskMonitor } from '../../src/renderer/companions/CompanionTaskMonitor';
 import { companionTimestamp, companionTimezone } from '../../src/shared/companion-time';
-import type { Companion, CompanionAction, CompanionsRequest } from '../../src/shared/companions';
+import type { Companion, CompanionAction, CompanionsRequest, CompanionsResponse } from '../../src/shared/companions';
 let root: Root | undefined, container: HTMLDivElement | undefined;
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
-afterEach(async () => { await act(() => root?.unmount()); container?.remove(); root = undefined; container = undefined; });
+afterEach(async () => { await act(() => root?.unmount()); container?.remove(); root = undefined; container = undefined; vi.useRealTimers(); });
+
+it('coalesces slow task polls and accepts completion while the parent still holds an older queued snapshot', async () => {
+  vi.useFakeTimers();
+  const queued: CompanionAction = { id: 'slow_task', companionId: 'role', conversationId: 'group', title: '等待状态同步的任务',
+    status: 'queued', createdAt: '2026-10-25T10:46:25.161Z', updatedAt: '2026-10-25T10:46:25.161Z' };
+  const completed: CompanionAction = { ...queued, status: 'succeeded', updatedAt: '2026-10-25T10:48:56.556Z', result: '真实执行结果已经返回。' };
+  let finish!: (value: CompanionsResponse) => void;
+  const pending = new Promise<CompanionsResponse>(resolve => { finish = resolve; });
+  const request = vi.fn<(input: CompanionsRequest) => Promise<CompanionsResponse>>().mockResolvedValue({ ok: true, action: completed });
+  request.mockImplementationOnce(() => pending);
+  container = document.createElement('div'); document.body.append(container); root = createRoot(container);
+  await act(async () => root!.render(<CompanionTaskMonitor actions={[queued]} companions={[]} conversationId="group"
+    initialActionId={queued.id} initialView="active" request={request} now={Date.now()} onClose={vi.fn()} onStop={vi.fn()} onGuide={vi.fn()} onOpenUrl={vi.fn()} />));
+  await act(async () => { await vi.advanceTimersByTimeAsync(5000); });
+  expect(request).toHaveBeenCalledOnce();
+  await act(async () => { finish({ ok: true, action: completed }); });
+  expect(container.querySelector('main')!.textContent).toContain('真实执行结果已经返回');
+  const reads = request.mock.calls.length;
+  await act(async () => { await vi.advanceTimersByTimeAsync(5000); });
+  expect(request.mock.calls).toHaveLength(reads);
+});
 it('switches durable history pages and roles, preserves the live selected stream, and shows exact timestamps', async () => {
   const roles: Companion[] = ['姐姐', '妹妹'].map((name, index) => ({ id: 'role' + index, name, avatar: 'custom', description: '', persona: '伙伴', model: '', builtin: false, proactive: false, createdAt: '2026-10-13T02:00:00.123Z' }));
   const tasks: CompanionAction[] = Array.from({ length: 45 }, (_, index) => ({ id: 'task' + index, conversationId: 'group', companionId: 'role' + index % 2, sourceMessageId: 'source', title: '任务' + index, status: index === 0 ? 'running' : 'succeeded', createdAt: new Date(Date.UTC(2026, 9, 13, 2, 45 - index, 0, 123)).toISOString(), updatedAt: '2026-10-13T03:00:00.456Z', result: '历史结果' + index }));

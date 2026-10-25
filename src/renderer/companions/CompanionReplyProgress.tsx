@@ -22,7 +22,7 @@ export function CompanionReplyProgress({ progress, now, scope, onCancel, onRetry
   return <div className={'companions-bubble-progress' + (terminal ? ' is-terminal' : '') + (failure ? ' is-failed' : '')} data-reply-stage={progress.phase}>
     <div className="companions-bubble-progress-row" role="status" aria-label="本条回复进度">
       <Icon name={failure ? 'alert-circle' : progress.phase === 'completed' ? 'check' : progress.phase === 'queued' || progress.phase === 'waiting' ? 'clock' : terminal ? 'pause' : 'activity'} size={13} />
-      <strong>{labels[progress.phase]}</strong>{!terminal && <time>{elapsedTime(progress.startedAt, now)}</time>}
+      <strong>{labels[progress.phase]}</strong>{!terminal && <time title={'本轮累计 ' + elapsedTime(progress.startedAt, now)}>{elapsedTime(progress.phaseStartedAt ?? progress.startedAt, now)}</time>}
       {progress.phase === 'queued' && onGuide && <button onClick={onGuide}>立即引导</button>}
       {!terminal && onCancel && <button aria-label="取消这条回复" onClick={onCancel}>取消</button>}
       {terminal && progress.phase !== 'completed' && onRetry && <button aria-label="重试这条回复" onClick={onRetry}>重试</button>}

@@ -264,9 +264,6 @@
 .launcher-proxy-profile-list strong { font-weight: 550; overflow-wrap: anywhere; }
 .launcher-proxy-profile-list code { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--ui-content-secondary); font-family: var(--ui-font-family-mono); font-size: var(--ui-font-size-caption); }
 .launcher-network-test .launcher-command-output { min-height: 150px; max-height: 360px; }
-.launcher-desktop-runtime { margin-top: var(--ui-space-4); color: var(--ui-content-secondary); font-size: var(--ui-font-size-caption); }
-.launcher-desktop-runtime > summary { cursor: pointer; }
-.launcher-desktop-runtime .launcher-actions { margin-top: var(--ui-space-3); }
 .launcher-market-target { display: grid; grid-template-columns: minmax(250px, 1fr) minmax(0, 1.3fr); align-items: center; gap: var(--ui-space-4); padding: var(--ui-space-4); }
 .launcher-market-target .launcher-help { margin: 0; }
 .launcher-market-search { display: flex; align-items: center; gap: var(--ui-space-4); margin: var(--ui-space-4) 0 var(--ui-space-5); }

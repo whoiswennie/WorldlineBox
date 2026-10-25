@@ -1,4 +1,6 @@
 import { z } from 'zod';
+import { companionWaitArgumentsSchema } from './companion-wait';
+import { companionBrowserArgumentsSchema } from './companion-browser';
 import { companionMemoryToolArgumentsSchemas } from './companion-memory-tool';
 import { companionWorldArgumentsSchema, COMPANION_WORLD_TOOL } from './companion-world-tool';
 import { activityArgumentsSchema } from './companion-activity-task';
@@ -53,10 +55,12 @@ export const COMPANION_DSH_CAPABILITY_TOOL = { name: 'dsh',
   description: COMPANION_DSH_TOOL.description + '\noperation=run以tasks提交执行目标；operation=record以query渐进核查任务存档；operation=capabilities以query.kind=overview/tool/skill/commands读取当前选中实例的真实能力资料，tool/skill需name，skill正文可textOffset/maxChars续读；operation=read_file/read_image/send_file以parameters只读查看当前允许的资料或交付已有本机文件。这些只读感知和附件交付不是执行session，也不运行或修改文件。所有实际生成、修改、网络或终端行动仍用run。',
   parameters: parameters(companionDshCapabilitySchema) } as const;
 
-/** Dispatch only the three public capability roots to their private domain implementations. */
+/** Dispatch the public capability roots to their private domain implementations. */
 export function normalizeCompanionCapabilityCall(call: CompanionLoopCall): CompanionLoopCall {
-  if (!['world', 'memory', 'dsh'].includes(call.name)) throw new Error('伙伴能力只接受world、memory和dsh三个统一入口。');
+  if (!['world', 'memory', 'dsh', 'browser', 'wait'].includes(call.name)) throw new Error('伙伴能力名称无效。');
   const value: unknown = JSON.parse(call.arguments);
+  if (call.name === 'wait') return { ...call, arguments: JSON.stringify(companionWaitArgumentsSchema.parse(value)) };
+  if (call.name === 'browser') return { ...call, arguments: JSON.stringify(companionBrowserArgumentsSchema.parse(value)) };
   if (call.name === 'dsh') {
     const parsed = companionDshCapabilitySchema.parse(value);
     if ('tasks' in parsed) return { ...call, arguments: JSON.stringify({ tasks: parsed.tasks }) };

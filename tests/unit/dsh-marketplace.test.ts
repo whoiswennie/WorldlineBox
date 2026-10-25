@@ -57,6 +57,7 @@ describe('DSH catalogs', () => {
     ] })));
     network.json = vi.fn(async () => ({ 'dist-tags': { latest: '1.2.3' }, versions: { '1.2.3': { name: '@acme/fixture', version: '1.2.3' } } }));
     const market = new MarketplaceService({ rootPath, network }); const page = await market.search({ kind: 'plugin', query: '' });
+    expect((await market.search({ kind: 'plugin', query: '@acme/fixture' })).entries.map(entry => entry.npmName)).toEqual(['@acme/fixture']);
     expect(await market.pluginInstallSpec(page.entries.find(entry => entry.name === 'fixture')!.id)).toBe('@acme/fixture@1.2.3');
     await expect(market.pluginInstallSpec(page.entries.find(entry => entry.name === 'core')!.id)).rejects.toThrow('installable npm');
     network.json = vi.fn(async () => ({ 'dist-tags': { latest: 'latest;calc.exe' }, versions: {} }));

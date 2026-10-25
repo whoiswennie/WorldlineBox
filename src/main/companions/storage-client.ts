@@ -10,7 +10,9 @@ import {
 interface Pending {
   resolve(value: CompanionStorageResponse): void;
   reject(error: Error): void;
+  timer: ReturnType<typeof setTimeout>;
 }
+const REQUEST_TIMEOUT_MS = 30_000;
 export interface CompanionStorageChange {
   memoryInvalidatedCompanionIds?: string[];
   memoryInvalidatedScopeIds?: string[];
@@ -98,7 +100,7 @@ export class CompanionStorageClient {
           return;
         }
         const pending = this.#pending.get(reply.data.requestId);
-        if (pending) { this.#pending.delete(reply.data.requestId); pending.resolve(reply.data.response); }
+        if (pending) { this.#pending.delete(reply.data.requestId); clearTimeout(pending.timer); pending.resolve(reply.data.response); }
       });
     });
   }
@@ -110,16 +112,24 @@ export class CompanionStorageClient {
     const child = this.#child;
     return new Promise<CompanionStorageResponse>((resolve, reject) => {
       const requestId = randomUUID();
-      this.#pending.set(requestId, { resolve, reject });
+      const timer = setTimeout(() => {
+        if (!this.#pending.delete(requestId)) return;
+        const error = new Error(`伙伴存储请求 ${command.type} 等待超过 30 秒，执行状态尚未确认，请勿重复提交。`);
+        reject(error);
+        try { this.onIndexError(error); } catch { /* Diagnostics cannot prevent request settlement. */ }
+      }, REQUEST_TIMEOUT_MS);
+      timer.unref();
+      this.#pending.set(requestId, { resolve, reject, timer });
       try { child.postMessage({ requestId, command }); } catch (error) {
         this.#pending.delete(requestId);
+        clearTimeout(timer);
         reject(error instanceof Error ? error : new Error('伙伴存储请求失败。'));
       }
     });
   }
 
   #rejectPending(error: Error): void {
-    for (const pending of this.#pending.values()) pending.reject(error);
+    for (const pending of this.#pending.values()) { clearTimeout(pending.timer); pending.reject(error); }
     this.#pending.clear();
   }
 

@@ -44,6 +44,8 @@ describe('DSH operation history cleanup', () => {
   });
 
   it('accepts only the typed terminal cleanup command, never arbitrary ids, paths or running-status selectors', () => {
+    expect(dshLauncherRequestSchema.safeParse({ type: 'runtime.download' }).success).toBe(false);
+    expect(dshLauncherRequestSchema.safeParse({ type: 'instance.switch-start', instanceId: 'native' }).success).toBe(false);
     expect(dshLauncherRequestSchema.safeParse({ type: 'operation.clear-finished' }).success).toBe(true);
     for (const extra of [{ operationId: 'running' }, { path: '../instances' }, { status: 'running' }]) {
       expect(dshLauncherRequestSchema.safeParse({ type: 'operation.clear-finished', ...extra }).success).toBe(false);

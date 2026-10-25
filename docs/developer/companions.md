@@ -14,11 +14,11 @@
 
 `public-profile-context.ts` 将公开资料、身份和当前图像交付状态投影到本次推理，旧 checkpoint 中的资料不能覆盖现状。完整图片经 Sharp 校验与有界转换，三视图最长边 1536、头像 512，单图最多 1 MiB。图像在内存中转换为各 provider 的原生内容块，不写入 checkpoint 或聊天正文；本轮最多四图、总计 4 MiB，最近实际工具图片优先于公开形象。`visionManifest` 与 `toolVisionManifest` 区分 `image_provided`、`path_only` 和不可用原因。模型能力未知时保留路径；明确不支持图像的 400/415 仅同模型重试一次纯文本，其他请求错误照常处理。
 
-主脑只读能力由 `shared/companion-file-tool.ts` 定义：`read_file` 使用 0 基行 offset（默认 0）与 limit（默认 200、最多 2000）返回有行号的真实文本窗口和 nextOffset；`read_image` 返回管理快照引用；`send_file` 只把已有文件复制为当前回复附件。执行和文件修改仍由 DSH CLI 承担。`file-reader.ts` 限制普通绝对路径文件、输入字节和图片像素，验证读取过程与持久快照校验和；结果只保存文本和附件引用。每次推理按仍有效的来源重新加载工具图片；撤回的来源不会借旧工具结果恢复。自主闲聊和伙伴社交不能借此读取任意本机文件。
+主脑只读能力由 `shared/companion-file-tool.ts` 定义：`read_file` 使用 0 基行 offset（默认 0）与 limit（默认 200、最多 2000）返回有行号的真实文本窗口和 nextOffset；`read_image` 返回管理快照引用；`send_file` 将已有文件作为当前回复附件，小文件保存不可变副本，大文件登记受控原文件引用。执行和文件修改由共享的 DSH 原生 Web Host 承担。`file-reader.ts` 限制普通绝对路径文件、输入字节和图片像素，验证读取过程与持久快照校验和；结果只保存文本和附件引用。每次推理按仍有效的来源重新加载工具图片；撤回的来源不会借旧工具结果恢复。自主闲聊和伙伴社交不能借此读取任意本机文件。
 
 文件调用用来源、伙伴、步骤和 call ID 的稳定哈希标识。`file.result.commit` 在同一 SQLite 事务中登记管理快照与完整工具结果；恢复同一调用直接读取已保存结果，不重新读取已经变化或删除的原文件。该内部协议不向 Renderer 开放。成功遗忘会推进 Main 的来源修订标记，加载图片后及模型结果提交前检查变化，丢弃并重新生成受影响的推理；文件读取完成后也重新核查来源。
 
-循环结果中明确的 `attachmentIds` 同步到同一个回复气泡，`images` 保留真正视觉所需的快照引用。每条回复最多展示十个附件；超过后只读仍可继续但工具结果明确说明未新增卡片，`send_file` 则明确返回限制，存储层拒绝静默截断。`worldlinebox-companion` 只服务已登记附件，支持 GET、HEAD 与单段 Range；媒体使用文件流、正确 MIME 和 206/416，不把视频整体读进内存。Renderer 的附件组件复用图片预览、原生音视频播放与类型文件卡；切换会话释放媒体资源，HTML/SVG 等未知文件不作为可执行文档展示。
+循环结果中明确的 `attachmentIds` 同步到同一个回复气泡，`images` 保留真正视觉所需的快照引用。每条回复最多展示十个附件；超过后只读仍可继续但工具结果明确说明未新增卡片，`send_file` 则明确返回限制，存储层拒绝静默截断。`worldlinebox-companion` 只服务已登记附件，支持 GET、HEAD 与单段 Range；媒体使用文件流、正确 MIME 和 206/416，不把视频整体读进内存。音视频由应用级播放器持有同一个媒体元素，切换会话或模块后继续播放；超出 256 MiB 的媒体提供系统打开。图片/GIF、文本和 PDF 使用各自的有界预览，HTML/SVG 等文件不作为可执行文档展示。实现边界与实测见[伙伴核心交互验收](companion-core-acceptance-2026-10-26.md)。
 
 设计参考本机 `C:/Users/hp/Desktop/project/deepseek-harness` 的 `packages/fs/tool-fs/src/read.ts`、`read-image.ts` 与 `packages/llm/llm-deepseek/src/images.ts`：分页读真实文本、完整解码图片、持久附件引用、provider 真正像素传递。本项目没有复制其执行 Agent 或再造一层任务框架。原 DSH standard 已挂载 tool-fs；新增能力解决的是主脑直接查看与前端展示，DSH 原生工具仍可正常使用。
 
@@ -60,23 +60,19 @@ SQLite 使用 WAL、外键、事务迁移和 FTS5。私聊身份由角色 ID 确
 
 loop/<source>/<role> 与 message-loop/<message> 保存完整决策、结果与段落；一个来源和角色使用稳定 clientId，恢复不产生第二个气泡。决策先提交再开始外部操作，重启按父消息、步骤、toolCallId 找回已登记行动。有结果的不重做，没有结果的同一原生会话核对后继续。
 
-companion_work_queue 是 UtilityProcess 独占的 SQLite FIFO 队列，事务 claim 限制全局20、单角色5。消息与待调度标记原子保存，启动时补齐提交后尚未 enqueue 的消息。尚未开始的 queued 自动调度；running 转 interrupted，等待用户明确恢复。原生 CLI 能力还有独立20/5容量队列，超过上限等待，不通过失败丢弃目标。引导从队列摘取是原子事务，避免与 claim 竞争。
+companion_work_queue 是 UtilityProcess 独占的 SQLite FIFO 队列，事务 claim 限制全局20、单角色5。消息与待调度标记原子保存，启动时补齐提交后尚未 enqueue 的消息。尚未开始的 queued 自动调度；running 转 interrupted，等待用户明确恢复。DSH 能力还有独立20/5容量队列，超过上限等待，不通过失败丢弃目标。引导从队列摘取是原子事务，避免与 claim 竞争。
 
-companion-runtime-source.ts 是已安装官方 SDK 的薄适配器。它在 create/resume 的 unpublished setup 中通过 agentPresets.mount(scope, 'standard') 挂载实例的标准预设，不另造精简工具名单，不覆盖用户预设的插件或技能。tools 使用 native 呈现，新的伙伴能力显式采用 danger-full-access。headless 仅提供进程与输入输出载体，模型/工具循环、收件箱、上下文压缩、子代理与原生 session 仍属于 DSH。
+伙伴任务通过 DshTaskBroker 连接所选实例的常驻原生 Web Host。用户工作台与伙伴共享账号、模型、插件和技能，通过原生 Session Controller 创建或恢复独立会话。默认继承原生预设与权限；显式选择的工具和技能只在对应 Agent scope 生效，不改用户配置。没有伙伴专用 CLI 或临时模型凭据覆盖。
 
-官方 DeepSeek 临时连接同时设置 llm-deepseek 和 web-search-deepseek 的凭据引用；实际密钥只在子进程环境。公开 token、工具参数草稿、调用与返回通过带序号 NDJSON 流投影到前端，私有推理与凭据不进入进度。Main 记录真实启动、退出与原生会话，手动结束只针对自己拥有的进程树。
+公开工具输入输出、状态与正文经认证 loopback NDJSON 流投影到前端。Main 保留来源审计和交付校验，推理链和凭据不进入进度。原生模型循环、审批、子代理和会话存档均由 DSH 负责。详见 [DSH 原生接入](dsh-launcher.md)。
 
 附件登记绝对路径，不读取字节进入主脑请求；头像单独缓存。原文件引用通过主进程的受控协议预览，原路径由文件选择器登记。正文、附件与能力结果均为数据，不可覆盖角色身份或扩大用户任务。
 
 ## 参考机制
 
-中断恢复通过官方 `agents.resume({resumeSessionId})` 接回原生持久会话，由原生工厂修复缺失的工具结果与 turn/step 结束事件，并取得独占写入权。Main 仅保管恢复所需的任务目标、原实例/版本/工作目录/权限、输入标识及排队依赖，存于消息 SQLite 的 metadata；密钥不进入 checkpoint。原版本通过临时 CLI selection 选择，不改实例的长期默认版本。
+恢复通过原生 Session Controller 采用已授权的原生 Session，固定原实例、运行版本、目录、预设和权限。Main 验证伙伴及原始来源的所有权；切换默认实例不会改变正在进行或恢复中的会话。稳定 requestId 用于补充输入去重，初始 prompt 尚未受理时先等待再发送。
 
-恢复输入在原生工厂 maintenance 阶段安排：原任务继续要求放在 next-turn 队列前端，未完成补充按原 next-step/next-turn 位置恢复；随后用公开 steer 入口唤醒，避免私自调用驱动内部方法。已完成 turn 的输入以及现有收件箱输入按稳定来源 ID 去重。每次恢复沿用同一领域任务 ID，归档前一次可见进度，增加 attempt 并记录本次时间。
-
-普通角色回复通过与用户消息同事务的 reply checkpoint 保存 delivery 与 completedIds；角色发言与完成标记同事务提交。重启后只恢复未完成发言，明确取消的回复保留 cancelled。`task.terminate` 仅调用 broker 当前持有的进程能力，终止选中 CLI 树，不接受任意 PID。
-
-维护者指定的本机 `C:/Users/hp/Desktop/project/deepseek-harness` 调研快照为 `639ed01539`。研究了 Agent.followup/steer/cancel/whenIdle、原生工具并发调度和公开流事件。SDK JSON-RPC 不提供 steer，一次性 headless 驱动也不保留 stdin，因此以官方 Agent API 构建 CLI 传输适配器，执行行为仍由原生 loop 管理。
+普通角色回复通过与用户消息同事务的 reply checkpoint 保存 delivery 与 completedIds；角色发言与完成标记同事务提交。重启后只恢复未完成发言，明确取消的回复保留 cancelled。`task.terminate` 只取消所属原生 Session 并等待停止确认，不终止供用户和其他伙伴使用的 Host。取消无法确认时保持 interrupted 并阻止冒险恢复。
 
 参考 [Generative Agents](https://arxiv.org/abs/2304.03442) 的经历、检索与反思，以及 [MemGPT](https://arxiv.org/abs/2310.08560) 的分层上下文思路。实现为本项目独立代码，不采用外部聊天框架来持有角色身份。
 

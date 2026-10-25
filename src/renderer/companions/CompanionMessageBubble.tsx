@@ -43,6 +43,6 @@ export const CompanionMessageBubble = memo(function CompanionMessageBubble({ mes
     </div> : message.content && (message.authorId === 'user' ? <p>{message.content}</p> : <MessageContent content={message.content} onOpenUrl={onOpenUrl} />)}
     {progress && <CompanionReplyProgress progress={progress} now={now} scope={{ companionId: message.authorId, conversationId: message.conversationId, messageId: message.id }} onCancel={progress.workId && onCancelReply ? () => onCancelReply(progress.workId!) : undefined} onRetry={progress.workId && onRetryReply ? () => onRetryReply(progress.workId!) : undefined} onGuide={progress.sourceMessageId && onGuideReply ? () => onGuideReply(progress.sourceMessageId!) : undefined} />}
     {partial && !progress && <small className="companions-reply-stream-status">回复已中断</small>}
-    {!!message.attachments.length && <CompanionAttachments attachments={message.attachments} onOpen={onOpenAttachment} />}
+    {!!message.attachments.length && <CompanionAttachments ownerId={message.authorId} conversationId={message.conversationId} attachments={message.attachments} onOpen={onOpenAttachment} />}
   </div>;
 });

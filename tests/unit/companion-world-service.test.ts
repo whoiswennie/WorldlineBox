@@ -447,7 +447,7 @@ describe('semantic world background service with actual SQLite sources', () => {
       expect(data.purpose).toBe('world_social'); expect(data.identity.self.id).toBe('bob');
       expect(data.invocation.topicId).toBe(topicId); expect(JSON.stringify(data)).not.toContain('OTHER_TOPIC_B');
       expect(JSON.stringify(data)).not.toContain('ALICE_PRIVATE_ONLY');
-      expect(wire.tools.map((tool: { function: { name: string } }) => tool.function.name)).toEqual(['memory', 'world', COMPANION_SUBMIT_RESULT_TOOL]);
+      expect(wire.tools.map((tool: { function: { name: string } }) => tool.function.name)).toEqual(['memory', 'world', 'wait', COMPANION_SUBMIT_RESULT_TOOL]);
       if (++calls === 1) {
         expect(JSON.stringify(data)).not.toContain('PREVIOUS_TOPIC_A'); expect(data.topicState).toBeUndefined();
         return new Response(JSON.stringify({ choices: [{ message: { content: '', tool_calls: [{ id: 'self_join', type: 'function',
@@ -651,7 +651,7 @@ describe('semantic world background service with actual SQLite sources', () => {
   it('lets a resident make a real semantic visit response without granting player tools or leaking private chat', async () => {
     const fetchFn = vi.fn<typeof fetch>().mockImplementation(async (_url, init) => {
       const request = JSON.parse(String(init?.body)), data = JSON.parse(request.messages[1].content);
-      expect(data.purpose).toBe('world_decision'); expect(request.tools.map((tool: { function: { name: string } }) => tool.function.name)).toEqual(['memory', 'world', COMPANION_SUBMIT_RESULT_TOOL]);
+      expect(data.purpose).toBe('world_decision'); expect(request.tools.map((tool: { function: { name: string } }) => tool.function.name)).toEqual(['memory', 'world', 'wait', COMPANION_SUBMIT_RESULT_TOOL]);
       // The second root is the existing owner-scoped experience catalog, not
       // unrestricted world mutations or the player's external DSH tools.
       expect(request.tools[1].function.parameters.properties.action.const).toBe('experience');

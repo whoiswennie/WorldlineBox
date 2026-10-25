@@ -26,8 +26,9 @@ async function mount(element: React.ReactNode) {
 async function render(element: React.ReactNode) { await act(() => root!.render(<LocaleProvider initialPreference="zh-CN">{element}</LocaleProvider>)); }
 async function settle() { await act(async () => { await new Promise(resolve => setTimeout(resolve, 5)); }); }
 async function chooseTarget(id: string) {
-  const select = container!.querySelector<HTMLSelectElement>('select')!;
-  await act(() => { select.value = id; select.dispatchEvent(new Event('change', { bubbles: true })); }); await settle();
+  const select = container!.querySelector<HTMLButtonElement>('[role="combobox"]')!;
+  await act(() => select.click());
+  await act(() => document.querySelector<HTMLButtonElement>(`[role="option"][data-value="${id}"]`)!.click()); await settle();
 }
 function button(label: string, scope: ParentNode = container!): HTMLButtonElement {
   const found = [...scope.querySelectorAll<HTMLButtonElement>('button')].find(item => item.textContent === label || item.getAttribute('aria-label') === label);
@@ -41,7 +42,7 @@ function field(label: string): HTMLInputElement {
   return labelElement!.querySelector('input') ?? container!.querySelector<HTMLInputElement>(`#${labelElement!.htmlFor}`)!;
 }
 
-it('uses cached plugin entries, keeps source-only resources read-only and installs only into the chosen stopped instance', async () => {
+it('uses cached plugin entries and installs into the chosen stopped or running native instance', async () => {
   const run = vi.fn<LauncherRunRequest>().mockResolvedValue({ ok: true, installedPlugins: [] });
   const value = { ...state(), marketplace: { plugins: catalog('plugin', [entry('plugin', 'npm-plugin', '@test/plugin'), entry('plugin', 'source-only')]) } };
   await mount(<LauncherMarketplace kind="plugin" state={value} run={run} />);
@@ -52,10 +53,10 @@ it('uses cached plugin entries, keeps source-only resources read-only and instal
   await chooseTarget('instance-a'); expect(container!.textContent).toContain('管理目标：环境 A');
   await act(() => button('安装到实例').click());
   expect(run).toHaveBeenCalledWith({ type: 'market.plugin.install', instanceId: 'instance-a', entryId: 'npm-plugin' });
-  const select = container!.querySelector<HTMLSelectElement>('select')!;
-  await act(() => { select.value = 'instance-b'; select.dispatchEvent(new Event('change', { bubbles: true })); }); await settle();
-  expect(button('安装到实例').disabled).toBe(true);
-  expect(container!.textContent).toContain('停止所选实例');
+  await chooseTarget('instance-b'); await settle();
+  expect(button('安装到实例').disabled).toBe(false);
+  await act(() => button('安装到实例').click());
+  expect(run).toHaveBeenLastCalledWith({ type: 'market.plugin.install', instanceId: 'instance-b', entryId: 'npm-plugin' });
 });
 
 it('requests a paged catalog without repeating the accepted page on unrelated state changes', async () => {
@@ -98,7 +99,7 @@ it('shows skill source revisions and sends management changes to the displayed i
   expect(container!.textContent).toContain('管理目标：环境 A'); expect(container!.textContent).toContain('acme/writer'); expect(container!.textContent).toContain('aaaaaaaaaaaa');
   await act(() => button('停用').click()); expect(run).toHaveBeenCalledWith({ type: 'skill.toggle', instanceId: 'instance-a', name: 'writer', enabled: false });
   await render(<InstanceSkillControls state={state()} instanceId="instance-b" run={run} />); await settle();
-  expect(button('停用').disabled).toBe(true); expect(container!.textContent).toContain('管理目标：环境 B');
+  expect(button('停用').disabled).toBe(false); expect(container!.textContent).toContain('管理目标：环境 B');
 });
 
 it('discards a skill inspection when its installation target changes, without adopting a later CLI selection', async () => {
@@ -111,7 +112,7 @@ it('discards a skill inspection when its installation target changes, without ad
   await act(() => finish!({ ok: true, skillInspection: { repository: target.repository, commit: target.commit, archiveSha256: target.archiveSha256, targets: [target] } }));
   expect(container!.querySelector('.launcher-skill-inspection')).toBeNull();
   await render(<LauncherMarketplace kind="skill" state={{ ...value, cli: { selectedInstanceId: 'instance-a', commandPath: '', binPath: '', pathEnabled: false, output: '' } }} run={run} />);
-  expect(container!.querySelector<HTMLSelectElement>('select')!.value).toBe('instance-b');
+  expect(container!.querySelector<HTMLButtonElement>('[role="combobox"]')!.textContent).toContain('环境 B');
   expect(run.mock.calls.some(([request]) => request.type === 'skill.install')).toBe(false);
 });
 
@@ -141,7 +142,7 @@ it('offers third-party bundle toggles while protecting core components and avoid
   await act(() => button('停用').click());
   expect(run).toHaveBeenCalledWith({ type: 'instance.plugin-toggle', instanceId: 'instance-a', name: '@test/bundle', enabled: false });
   await render(<InstancePluginControls state={{ ...state(), instances: state().instances.map(item => ({ ...item, status: 'running' })) }} instanceId="instance-a" run={run} />);
-  expect(button('停用').disabled).toBe(true);
+  expect(button('停用').disabled).toBe(false);
 });
 
 it('requires manifest inspection before URL import and discards an inspection from a changed URL', async () => {
@@ -170,8 +171,8 @@ it('publishes a draft by default and clears the transient token when the operati
   await act(() => button('创建 Release 草稿').click());
   expect(run).toHaveBeenCalledWith(expect.objectContaining({ type: 'pack.publish', packId: 'pack-a', repository: 'test-owner/test-repository', token: 'fake-test-token', draft: true }));
   expect(token.value).toBe('');
-  const select = container!.querySelector<HTMLSelectElement>('select')!;
-  await act(() => { select.value = 'published'; select.dispatchEvent(new Event('change', { bubbles: true })); });
+  await act(() => container!.querySelector<HTMLButtonElement>('[role="combobox"]')!.click());
+  await act(() => document.querySelector<HTMLButtonElement>('[role="option"][data-value="published"]')!.click());
   expect(button('公开发布 Release').disabled).toBe(true);
 });
 

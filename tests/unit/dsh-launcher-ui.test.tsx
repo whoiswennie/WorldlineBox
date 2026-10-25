@@ -6,7 +6,6 @@ import { afterEach, expect, it, vi } from 'vitest';
 import type { DshInstance, DshLauncherRequest, DshLauncherResponse, DshLauncherState, DshRuntime, DshOperation, WorldlineBoxDshLauncherApi } from '../../src/shared/dsh-launcher';
 import { DshLauncher } from '../../src/renderer/launcher/DshLauncher';
 import { LocaleProvider } from '../../src/renderer/i18n';
-import { dshCompatibilityCheckIds } from '../../src/shared/dsh-runtime-compatibility';
 
 let root: Root | undefined;
 let container: HTMLDivElement | undefined;
@@ -20,7 +19,7 @@ afterEach(async () => {
 });
 
 function runtime(id: string, version: string): DshRuntime {
-  return { id, version, nodeVersion: '24.15.0', electronVersion: '42.2.0', platform: 'win32-x64', adapter: 'desktop-cli-web-v1', source: 'official', sourceSha256: 'a'.repeat(64), contentSha256: 'b'.repeat(64), installedAt: '2026-10-12T00:00:00Z', fileCount: 500, byteLength: 5000 };
+  return { id, version, nodeVersion: '24.15.0', platform: 'win32-x64', adapter: 'node-cli-web-v1', source: 'official', sourceSha256: 'a'.repeat(64), contentSha256: 'b'.repeat(64), installedAt: '2026-10-12T00:00:00Z', fileCount: 500, byteLength: 5000 };
 }
 
 function instance(id: string, name: string): DshInstance {
@@ -95,10 +94,10 @@ it('shows the selected instance immediately, coalesces preparation and keeps nav
   expect(itemA.disabled).toBe(false); expect(itemB.disabled).toBe(false);
   expect(button('启动实例').disabled).toBe(false);
   expect(subject.request.mock.calls.filter(([request]) => request.type === 'cli.select')).toHaveLength(0);
-  const selectCli = button('设为当前 CLI');
+  const selectCli = button('设为执行实例');
   await act(() => { selectCli.click(); selectCli.click(); });
   expect(subject.request.mock.calls.filter(([request]) => request.type === 'cli.select')).toHaveLength(1);
-  expect(container!.querySelector('[data-dsh-notification]')!.textContent).toContain('正在准备 CLI 环境');
+  expect(container!.querySelector('[data-dsh-notification]')!.textContent).toContain('正在选择执行实例');
   await click('运行版本', container!.querySelector('.launcher-navigation')!);
   expect(container!.querySelector('[data-dsh-official-versions]')).toBeNull();
   expect(container!.querySelector('[data-dsh-notification]')).toBeNull();
@@ -147,8 +146,8 @@ it('creates a named instance with an explicit pinned runtime', async () => {
   const f = fixture();
   await mount(f.api);
   await click('创建实例');
-  expect(document.querySelectorAll('[role="dialog"] select')).toHaveLength(1);
-  expect(document.querySelector('[role="dialog"]')?.textContent).toContain('共享会话');
+  expect(document.querySelectorAll('[role="dialog"] [role="combobox"]')).toHaveLength(1);
+  expect(document.querySelector('[role="dialog"]')?.textContent).toContain('共用同一个 Web Host');
   await fill('新的共享实例');
   await click('保存', document.querySelector('[role="dialog"]')!);
   expect(f.request).toHaveBeenCalledWith({ type: 'instance.create', name: '新的共享实例', runtimeId: 'runtime-a' });
@@ -158,31 +157,31 @@ it('creates a named instance with an explicit pinned runtime', async () => {
 
 it('has no save-mode switch for either verified or unchecked versions', async () => {
   const verified = runtime('runtime-a', '0.2.0-rc.2');
-  verified.compatibility = { runtimeId: verified.id, contentSha256: verified.contentSha256, contract: 'fixture', status: 'passed', startedAt: '', peers: [], checks: dshCompatibilityCheckIds.map(id => ({ id, status: 'passed', detail: 'fixture' })) };
   const f = fixture([], { runtimes: [verified, runtime('runtime-b', '0.2.0-rc.1')] });
   await mount(f.api); await click('创建实例');
-  expect(document.querySelectorAll('[role="dialog"] select')).toHaveLength(1);
+  expect(document.querySelectorAll('[role="dialog"] [role="combobox"]')).toHaveLength(1);
   await click('保存', document.querySelector('[role="dialog"]')!);
   expect(f.request).toHaveBeenCalledWith(expect.objectContaining({ type: 'instance.create', runtimeId: 'runtime-a' }));
   await click('创建实例');
-  const runtimeField = document.querySelector<HTMLSelectElement>('[role="dialog"] select')!;
-  await act(() => { runtimeField.value = 'runtime-b'; runtimeField.dispatchEvent(new Event('change', { bubbles: true })); });
-  expect(document.querySelectorAll('[role="dialog"] select')).toHaveLength(1);
+  const runtimeField = document.querySelector<HTMLButtonElement>('[role="dialog"] [role="combobox"]')!;
+  await act(() => runtimeField.click());
+  await act(() => document.querySelector<HTMLButtonElement>('[role="option"][data-value="runtime-b"]')!.click());
+  expect(document.querySelectorAll('[role="dialog"] [role="combobox"]')).toHaveLength(1);
   expect(document.querySelector('[role="dialog"]')?.textContent).not.toContain('独立存档');
 });
 
-it('selects a new default CLI context immediately and requires an explicit Web workbench switch', async () => {
+it('selects the default instance and starts a second Web Host without switching away from the first', async () => {
   const a = { ...instance('instance-a', '环境 A'), status: 'running' as const };
   const f = fixture([], { instances: [a, instance('instance-b', '环境 B')], cli: cliFixture() });
   await mount(f.api);
   await act(() => container!.querySelector<HTMLButtonElement>('[data-dsh-instance="instance-b"]')!.click());
   expect(f.request.mock.calls.some(([request]) => request.type === 'cli.select')).toBe(false);
-  await click('设为当前 CLI');
+  await click('设为执行实例');
   expect(f.request).toHaveBeenCalledWith({ type: 'cli.select', instanceId: 'instance-b' });
-  expect(f.request.mock.calls.some(([request]) => request.type === 'instance.stop' || request.type === 'instance.switch-start')).toBe(false);
-  expect(button('切换并启动').disabled).toBe(false);
-  await click('切换并启动');
-  expect(f.request).toHaveBeenCalledWith({ type: 'instance.switch-start', instanceId: 'instance-b' });
+  expect(f.request.mock.calls.some(([request]) => request.type === 'instance.stop' || request.type === 'instance.start')).toBe(false);
+  expect(button('启动实例').disabled).toBe(false);
+  await click('启动实例');
+  expect(f.request).toHaveBeenCalledWith({ type: 'instance.start', instanceId: 'instance-b' });
 });
 
 it('requests an upgrade copy without changing the source runtime', async () => {
@@ -190,8 +189,9 @@ it('requests an upgrade copy without changing the source runtime', async () => {
   await mount(f.api);
   await click('创建升级副本');
   await fill('升级验证');
-  const select = document.querySelector<HTMLSelectElement>('[role="dialog"] select')!;
-  await act(() => { select.value = 'runtime-b'; select.dispatchEvent(new Event('change', { bubbles: true })); });
+  const select = document.querySelector<HTMLButtonElement>('[role="dialog"] [role="combobox"]')!;
+  await act(() => select.click());
+  await act(() => document.querySelector<HTMLButtonElement>('[role="option"][data-value="runtime-b"]')!.click());
   await click('保存', document.querySelector('[role="dialog"]')!);
   expect(f.request).toHaveBeenCalledWith({ type: 'instance.clone', instanceId: 'instance-a', name: '升级验证', runtimeId: 'runtime-b' });
   expect(f.state().instances[0]!.runtimeId).toBe('runtime-a');

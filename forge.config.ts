@@ -147,6 +147,7 @@ const config: ForgeConfig = {
     // platform bundle before packaging; `verify:package` repeats the same
     // checks against this copied directory.
     extraResource: [
+      path.join(projectRoot, 'resources', 'dsh-bridge'),
       path.join(projectRoot, '.tools', 'vcp-memory-release', 'vcp-memory'),
       path.join(projectRoot, '.tools', 'vcp-memory-release', 'vcp-memory-host'),
       path.join(projectRoot, 'resources', 'embedding-models'),

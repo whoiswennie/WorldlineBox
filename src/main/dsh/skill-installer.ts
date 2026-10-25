@@ -173,7 +173,7 @@ export class SkillInstaller {
     } finally { zip.close(); }
   }
   async installSkill(instance: DshInstance, targetValue: DshSkillTarget, op?: OperationContext): Promise<DshInstalledSkill> {
-    this.assertStopped(instance);
+    this.assertMutable(instance);
     const target = dshSkillTargetSchema.parse(targetValue); const signal = boundedSignal(op?.signal);
     const sourcePath = target.sourcePath === '.' ? '' : safeRelative(target.sourcePath);
     const locations = await this.instancePaths(instance); const receipts = await this.receipts(locations.receipt);
@@ -223,7 +223,7 @@ export class SkillInstaller {
     return results;
   }
   async setSkillEnabled(instance: DshInstance, nameValue: string, enabled: boolean): Promise<void> {
-    this.assertStopped(instance);
+    this.assertMutable(instance);
     const name = dshSkillNameSchema.parse(nameValue); const locations = await this.instancePaths(instance); const receipts = await this.receipts(locations.receipt);
     const receipt = await this.ownedSkill(locations, name, receipts);
     if (receipt.enabled === enabled) return;
@@ -234,7 +234,7 @@ export class SkillInstaller {
     catch (error) { await rename(destination, source); throw error; }
   }
   async removeSkill(instance: DshInstance, nameValue: string): Promise<void> {
-    this.assertStopped(instance);
+    this.assertMutable(instance);
     const name = dshSkillNameSchema.parse(nameValue); const locations = await this.instancePaths(instance); const receipts = await this.receipts(locations.receipt);
     const receipt = await this.ownedSkill(locations, name, receipts);
     const source = contained(receipt.enabled ? locations.active : locations.disabled, name); await inventoryTree(source);
@@ -258,8 +258,8 @@ export class SkillInstaller {
     const inventory = await inventoryTree(directory);
     return { ...recorded, ...skill, enabled: activeExists, managed: true, path: directory, inventory };
   }
-  private assertStopped(instance: DshInstance): void {
-    if (['running', 'starting', 'stopping'].includes(instance.status)) throw new Error('Stop this DSH instance before modifying its private skills.');
+  private assertMutable(instance: DshInstance): void {
+    if (['starting', 'stopping'].includes(instance.status)) throw new Error('Wait for the native DSH Host to finish starting or stopping.');
   }
 }
 function boundedSignal(signal?: AbortSignal): AbortSignal { return signal ? AbortSignal.any([signal, AbortSignal.timeout(5 * 60_000)]) : AbortSignal.timeout(5 * 60_000); }

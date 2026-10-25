@@ -10,7 +10,7 @@ test('saved operation, download and browsing histories search all records while 
   test.setTimeout(90_000);
   const root = await mkdtemp(path.join(tmpdir(), 'worldlinebox-record-pagination-'));
   const profile = path.join(root, 'profile');
-  const journal = path.join(profile, 'dsh-launcher', 'operations');
+  const journal = path.join(profile, 'dsh', 'operations');
   await mkdir(journal, { recursive: true });
   const startedAt = '2026-10-18T00:00:00Z';
   await writeFile(path.join(journal, 'operations.json'), JSON.stringify(Array.from({ length: 55 }, (_, index) => ({

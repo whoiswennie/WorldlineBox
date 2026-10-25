@@ -60,7 +60,14 @@ port.on('message', (event: { data: unknown }) => {
     process.exit(0);
   }
   const request = companionStorageRequestSchema.safeParse(input);
-  if (!request.success) return;
+  if (!request.success) {
+    // A stale Main/worker pair must settle its pending request rather than
+    // silently leave task execution and progress waiting indefinitely.
+    const requestId = companionStorageRequestSchema.shape.requestId.safeParse('requestId' in input ? input.requestId : undefined);
+    if (requestId.success) port.postMessage({ requestId: requestId.data,
+      response: { ok: false, error: '伙伴存储请求格式不匹配，请重启应用后重试。' } });
+    return;
+  }
   const { requestId, command } = request.data;
   try {
     if (!store) throw new Error('伙伴存储尚未启动。');

@@ -1,13 +1,12 @@
+import { writeNativeRuntimeFixture } from '../helpers/dsh-runtime-fixture';
 import { afterEach, describe, expect, it } from 'vitest';
 import { mkdtemp, mkdir, readFile, readdir, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { createPackage } from '@electron/asar';
-import { path7za } from '7zip-bin';
 import * as koffi from 'koffi';
 import { inventoryTree, removeManaged } from '../../src/main/dsh/files';
 import { publishSealedArtifact, retryFileOperation } from '../../src/main/dsh/runtime-commit';
-import { RuntimeService, runTool } from '../../src/main/dsh/runtime-service';
+import { RuntimeService } from '../../src/main/dsh/runtime-service';
 import type { OperationContext } from '../../src/main/dsh/operations';
 
 const roots: string[] = [];
@@ -88,41 +87,28 @@ describe.skipIf(process.platform !== 'win32')('Windows native file sharing durin
   });
 
   it('retains a sealed failed installer, keeps the index empty and safely resumes after the lock is released', async () => {
-    const root = await temporary(); const input = path.join(root, 'input'); const packageRoot = path.join(root, 'package');
-    const host = path.join(packageRoot, 'dsh', 'node_modules', '@deepseek-ai', 'dsh-desktop-host');
-    await mkdir(path.join(host, 'lib'), { recursive: true });
-    await mkdir(path.join(packageRoot, 'dsh', 'node_modules', '@deepseek-ai', 'dsh'), { recursive: true });
-    await mkdir(path.join(input, 'resources'), { recursive: true });
-    await writeFile(path.join(input, 'DeepSeek Harness.exe'), 'fixture executable');
-    await writeFile(path.join(packageRoot, 'package.json'), JSON.stringify({ name: '@deepseek-ai/dsh-desktop', version: '0.2.0-rc.2' }));
-    await writeFile(path.join(packageRoot, 'dsh', 'desktop-runtime.json'), JSON.stringify({ platform: 'win32', arch: 'x64' }));
-    await writeFile(path.join(host, 'package.json'), JSON.stringify({ version: '0.2.0-rc.2' }));
-    await writeFile(path.join(host, 'lib', 'cli.js'), '// fixture');
-    await writeFile(path.join(packageRoot, 'dsh', 'node_modules', '@deepseek-ai', 'dsh', 'package.json'), '{}');
-    await createPackage(packageRoot, path.join(input, 'resources', 'app.asar'));
-    const installer = path.join(root, 'fixture.exe');
-    await runTool(path7za, ['a', '-t7z', installer, path.join(input, '*')]);
+    const root = await temporary(); const input = path.join(root, 'input'); await writeNativeRuntimeFixture(input, '0.2.0-rc.2');
     const manager = path.join(root, 'manager'); const logs: string[] = [];
-    const service = new RuntimeService({ rootPath: manager, sevenZipPath: path7za, onChanged: () => undefined }); await service.init();
+    const service = new RuntimeService({ rootPath: manager, onChanged: () => undefined }); await service.init();
     let release: (() => void) | undefined; let lockEnabled = true;
     const operation: OperationContext = { id: 'controlled-commit', signal: new AbortController().signal,
       log: async line => { logs.push(line); }, update: async phase => {
         if (phase !== 'committing' || !lockEnabled) return;
         const stage = (await readdir(path.join(manager, 'staging')))[0]!;
-        release = holdFile(path.join(manager, 'staging', stage, 'artifact', 'program', 'DeepSeek Harness.exe'), false);
+        release = holdFile(path.join(manager, 'staging', stage, 'artifact', 'program', 'bin/node.exe'), false);
       } };
     try {
-      await expect(service.import(installer, 'installer', 'fixture', operation)).rejects.toBeTruthy();
+      await expect(service.import(input, 'directory', 'fixture', operation)).rejects.toBeTruthy();
       expect(service.list()).toEqual([]);
       expect(JSON.parse(await readFile(path.join(manager, 'runtimes.json'), 'utf8'))).toEqual([]);
       const stage = (await readdir(path.join(manager, 'staging')))[0]!;
       expect(JSON.parse(await readFile(path.join(manager, 'staging', stage, 'artifact', 'artifact.json'), 'utf8'))).toMatchObject({ version: '0.2.0-rc.2' });
     } finally { release?.(); lockEnabled = false; }
-    const restored = await service.import(installer, 'installer', 'fixture', operation);
+    const restored = await service.import(input, 'directory', 'fixture', operation);
     await service.verify(restored.id);
-    expect(logs.some(line => line.includes('without downloading or extracting again'))).toBe(true);
+    expect(logs.some(line => line.includes('without copying or resolving again'))).toBe(true);
     expect(await readdir(path.join(manager, 'staging'))).toEqual([]);
     expect((await readdir(path.join(manager, 'quarantine'))).length).toBe(1);
-    expect((await inventoryTree(input)).fileCount).toBe(2);
+    expect((await inventoryTree(input)).fileCount).toBeGreaterThan(4);
   });
 });

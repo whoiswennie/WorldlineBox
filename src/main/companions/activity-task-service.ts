@@ -24,7 +24,9 @@ import { captureCompanionExecutionReadset, verifyCompanionExecutionReadset } fro
 import { reviewCompanionSocialProgress } from './social-progress-review';
 import { companionThoughtCapabilities } from './thought-capabilities';
 import type { DshRecordQuery } from '../../shared/dsh-task-record';
+import type { CompanionBrowserExtension } from './browser-capabilities';
 interface Options {
+  browserCapabilities?: CompanionBrowserExtension;
   request(input: CompanionStorageCommand): Promise<CompanionStorageResponse>;
   configFor(companion: Companion): Promise<CompanionModelConfig>;
   profiles(input: { companionId: string; conversation: Pick<CompanionConversation, 'id' | 'memberIds'>; audience: 'peers' }): Promise<CompanionProfileInput>;
@@ -155,7 +157,7 @@ export class CompanionActivityTaskService {
       let executionReadset: CompanionExecutionReadset | undefined;
       let topicModeratorTransferApproval: CompanionTopicModeratorTransferApproval | undefined;
       const recalledCapabilities = { ...recall, tools: recall.tools.filter(tool => !emptyMemoryCorpus || tool.name !== 'memory') };
-      const capabilities = this.options.think ? companionThoughtCapabilities(recalledCapabilities, {
+      let capabilities = this.options.think ? companionThoughtCapabilities(recalledCapabilities, {
         run: async (proposal, effectId, nativeSignal) => {
           if (!executionReadset) throw new Error('当前思考实际读集不可用。');
           return this.options.think!({ taskId: task.id, leaseToken, expectedStep, effectId,
@@ -164,6 +166,7 @@ export class CompanionActivityTaskService {
         }, ...(this.options.readThought ? { read: (query: DshRecordQuery, nativeSignal?: AbortSignal) => this.options.readThought!({
           taskId: task.id, companionId: companion.id, conversationId: conversation.id, query }, nativeSignal) } : {}),
       }) : recalledCapabilities;
+      capabilities = this.options.browserCapabilities?.({ companionId: companion.id, conversationId: conversation.id }, capabilities) ?? capabilities;
       const output = await runCompanionStructuredAgent({
         finalSchema: activityDecisionJsonSchema(),
         evidenceScope: {},

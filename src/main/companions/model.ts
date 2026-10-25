@@ -21,6 +21,8 @@ import { type ToolVisualInput } from '../../shared/companion-file-tool';
 import { companionToolResultText, prepareCompanionLoopVisuals, type CompanionToolImageDelivery } from './tool-image-context';
 import { prepareTopicContinuityFocus, projectTopicContinuityFocus, type TopicContinuityFocusFrame } from './topic-continuity-focus';
 import type { CompanionHostObservationChange } from '../../shared/companion-agent-run';
+import { COMPANION_BROWSER_CAPABILITY_TOOL } from '../../shared/companion-browser';
+import { COMPANION_WAIT_TOOL } from '../../shared/companion-wait';
 
 export type { CompanionReplyInput } from './context';
 /** Included in the memory focus generation profile as well as actual requests. */
@@ -34,6 +36,7 @@ export interface CompanionModelConfig {
 export interface CompanionReply { text: string; memories?: string[]; topic?: string; turn?: CompanionLoopTurn }
 export interface CompanionNativeTool { name: string; description: string; parameters: object }
 export interface CompanionModelOptions { fetchFn?: typeof fetch; timeoutMs?: number; loop?: boolean; context?: ReturnType<typeof buildCompanionContext>; turns?: readonly CompanionLoopTurn[]; supplements?: readonly { id: string; content: string }[];
+  browser?: boolean;
   /** Trusted host validation of an unexecuted proposal, never new user authority. */
   hostValidationFeedback?: { rejectedProposalChecksum: string; error: string; instruction: string;
     kind?: 'validation_rejection' | 'host_observation_changed'; hostObservation?: CompanionHostObservationChange };
@@ -120,7 +123,9 @@ export async function generateCompanionReply(
     const operation = async (): Promise<CompanionReply> => {
       const response = await fetchCompanionProvider(controller.signal, fetchFn, rejected => {
         const current = prepareCompanionLoopVisuals(context, input.visualInputs ?? options.visualInputs, options.loop ? options.toolImages : undefined, options.loop ? turns : [], config, rejected);
-        const request = providerRequest({ ...config, model }, current.context, controller.signal, options.loop === true, options.loop === true, true, current.images, true, options.tools);
+        const request = providerRequest({ ...config, model }, current.context, controller.signal, options.loop === true, options.loop === true, true, current.images, true,
+          options.tools ?? (options.loop ? [COMPANION_DSH_CAPABILITY_TOOL, COMPANION_MEMORY_CAPABILITY_TOOL, COMPANION_WORLD_CAPABILITY_TOOL, COMPANION_WAIT_TOOL,
+            ...(options.browser ? [COMPANION_BROWSER_CAPABILITY_TOOL] : [])] : undefined));
         if (options.loop) appendLoopHistory(request, config, turns, options.supplements ?? [], current.tools, options.hostValidationFeedback);
         return { request, hasImages: current.images.length > 0 || current.tools.some(tool => !!tool.image) };
       });

@@ -105,40 +105,13 @@ export async function stopOwnedWindowsTree(tree: OwnedWindowsProcess[], tools: W
   throw new Error(`Owned Harness processes did not stop: ${alive.map(process => process.pid).join(', ')}. Instance data remains locked.`);
 }
 
-/** Environment variables are an isolation boundary, not an operating-system sandbox. */
+/** Native DSH namespaces isolate instances; tools retain the real user's environment. */
 export async function instanceEnvironment(root: string, instance: DshInstance, plan: RuntimeLaunchPlan): Promise<NodeJS.ProcessEnv> {
-  const user = path.join(root, 'user');
-  const cache = path.join(root, 'cache');
-  const directories = [instance.homePath, instance.agentsPath, instance.workspacePath, user,
-    path.join(user, 'AppData', 'Roaming'), path.join(user, 'AppData', 'Local'),
-    path.join(cache, 'tmp'), path.join(cache, 'pnpm-store'), path.join(cache, 'pnpm-cache'), path.join(user, '.pnpm-state'), path.join(cache, 'npm'), path.join(cache, 'xdg'), path.join(cache, 'run'), path.join(user, 'python-userbase')];
-  await Promise.all(directories.map(directory => mkdir(directory, { recursive: true })));
+  await Promise.all([instance.homePath, instance.agentsPath, instance.workspacePath, path.join(root, 'logs')]
+    .map(directory => mkdir(directory, { recursive: true })));
   const env = { ...process.env };
-  // Never inherit another Harness instance's boot controls, Node loaders or profile credentials.
-  for (const key of Object.keys(env)) if (/^(DSH_|NODE_OPTIONS$|NODE_PATH$|ELECTRON_|DEEPSEEK_|OPENAI_|ANTHROPIC_|GEMINI_|GOOGLE_API_KEY$|AZURE_OPENAI_|AWS_(?:ACCESS_KEY_ID|SECRET_ACCESS_KEY|SESSION_TOKEN)$|NPM_TOKEN$|NPM_CONFIG_|PNPM_)/i.test(key)) delete env[key];
-  Object.assign(env, plan.env, {
-    DSH_HOME: instance.homePath, DSH_AGENTS_HOME: instance.agentsPath,
-    DSH_DESKTOP_NODE_EXECUTABLE: plan.executable,
-    HOME: user, USERPROFILE: user, HOMEDRIVE: path.parse(user).root.replace(/[\\/]$/, ''),
-    HOMEPATH: user.slice(path.parse(user).root.length - 1),
-    APPDATA: path.join(user, 'AppData', 'Roaming'), LOCALAPPDATA: path.join(user, 'AppData', 'Local'),
-    TEMP: path.join(cache, 'tmp'), TMP: path.join(cache, 'tmp'), TMPDIR: path.join(cache, 'tmp'),
-    XDG_CONFIG_HOME: path.join(user, '.config'), XDG_DATA_HOME: path.join(user, '.local', 'share'),
-    XDG_CACHE_HOME: path.join(cache, 'xdg'), npm_config_cache: path.join(cache, 'npm'),
-    npm_config_store_dir: path.join(cache, 'pnpm-store'),
-    pnpm_config_store_dir: path.join(cache, 'pnpm-store'), pnpm_config_cache_dir: path.join(cache, 'pnpm-cache'),
-    pnpm_config_state_dir: path.join(user, '.pnpm-state'), PNPM_HOME: path.join(cache, 'pnpm'),
-    XDG_RUNTIME_DIR: path.join(cache, 'run'), PYTHONPYCACHEPREFIX: path.join(cache, 'python'),
-    PIP_CACHE_DIR: path.join(cache, 'pip'), UV_CACHE_DIR: path.join(cache, 'uv'),
-    PYTHONUSERBASE: path.join(user, 'python-userbase'), PIP_USER: '1', PYTHONDONTWRITEBYTECODE: '1', PYTHONUTF8: '1',
-    PSModulePath: path.join(process.env.SystemRoot ?? 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'Modules'),
-    PLAYWRIGHT_BROWSERS_PATH: path.join(cache, 'ms-playwright'), PUPPETEER_CACHE_DIR: path.join(cache, 'puppeteer'),
-    GIT_CONFIG_GLOBAL: path.join(user, '.gitconfig'), HISTFILE: path.join(user, '.shell-history'),
-    NODE_REPL_HISTORY: path.join(user, '.node_repl_history'),
-    NO_COLOR: '1', FORCE_COLOR: '0',
-  });
-  delete env.PYTHONHOME; delete env.PYTHONPATH; delete env.PYTHONNOUSERSITE;
-  return env;
+  for (const key of Object.keys(env)) if (/^(DSH_HOME$|DSH_AGENTS_HOME$|DSH_DESKTOP_|WORLDLINEBOX_DSH_|ELECTRON_RUN_AS_NODE$)/i.test(key)) delete env[key];
+  return { ...env, ...plan.env, DSH_HOME: instance.homePath, DSH_AGENTS_HOME: instance.agentsPath, NO_COLOR: '1', FORCE_COLOR: '0' };
 }
 
 export async function launchCli(plan: RuntimeLaunchPlan, args: string[], env: NodeJS.ProcessEnv, cwd: string, options?: { ipc?: boolean }): Promise<ChildProcessWithoutNullStreams> {

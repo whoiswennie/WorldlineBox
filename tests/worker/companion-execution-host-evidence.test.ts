@@ -15,12 +15,14 @@ vi.mock('electron', () => ({ net: { fetch }, dialog: {}, protocol: {}, ipcMain: 
 
 let root: string, store: CompanionsStore, service: {
   call(command: CompanionStorageCommand): Promise<CompanionStorageResponse>;
+  publishActionProgress(id: string, patch: { stage: string }): Promise<void>;
   captureExecutionEvidence(checkpoint: CompanionLoopCheckpoint, scope: { companionId: string; conversationId: string; beforeSequence: number }): Promise<CompanionExecutionReadset>;
   readDshRecord(query: DshRecordQuery, scope: { companionId: string; conversationId: string }): Promise<unknown>;
 };
 let ownerScope: { companionId: string; conversationId: string };
 let nativeScope: DshRecordScope;
 let corpusCurrent: boolean;
+let rawCommands: CompanionStorageCommand[];
 const readNative = vi.fn(async () => ({ overview: { finalReply: 'DERIVED_PRIVATE_CONTENT', artifacts: [{ path: 'private-result.json' }] } }));
 beforeEach(() => {
   root = mkdtempSync(path.join(tmpdir(), 'companion-execution-host-'));
@@ -28,9 +30,10 @@ beforeEach(() => {
   ownerScope = { companionId: 'alice', conversationId: store.openPrivate('alice').id };
   const instance = Object.create(CompanionService.prototype);
   corpusCurrent = true;
-  Object.assign(instance, { storage: { request: async (command: CompanionStorageCommand) => store.request(command) },
+  rawCommands = [];
+  Object.assign(instance, { storage: { request: async (command: CompanionStorageCommand) => { rawCommands.push(command); return store.request(command); } },
     memory: { contextValid: async () => corpusCurrent, schedule: () => undefined, invalidate: async () => undefined }, evidenceRevision: 0, resettingCompanions: new Set(),
-    options: { dsh: () => ({ taskRecordScope: async () => nativeScope, readTaskRecord: readNative } as unknown as DshLauncher) } });
+    options: { window: () => undefined, dsh: () => ({ taskRecordScope: async () => nativeScope, readTaskRecord: readNative } as unknown as DshLauncher) } });
   service = instance; readNative.mockClear();
 });
 afterEach(() => {
@@ -51,6 +54,17 @@ function completedAction() {
   store.request({ type: 'action.update', id: action.id, patch: { status: 'succeeded', taskId: recordId, result: 'DERIVED_PRIVATE_CONTENT' } });
   return { action, source, recordId };
 }
+it('persists lifecycle progress without expanding discarded history while still withholding withdrawn content on public reads', async () => {
+  const { action, source } = completedAction();
+  store.request({ type: 'memory.forget', ...ownerScope, sourceMessageIds: [source.id] });
+  rawCommands = [];
+  await expect(service.publishActionProgress(action.id, { stage: 'DSH 已结束，正在核验交付结果' })).resolves.toBeUndefined();
+  expect(rawCommands.map(command => command.type)).toEqual(['action.update']);
+  expect(store.getAction(action.id).stage).toBe('DSH 已结束，正在核验交付结果');
+  const guarded = (await service.call({ type: 'action.get', id: action.id })).action!;
+  expect(guarded).toMatchObject({ status: 'succeeded', contentAvailable: false });
+  expect(guarded.result).toBeUndefined();
+});
 it('preserves actual success while withholding stale derived action content through both direct and paged Main reads', async () => {
   const { action, source } = completedAction();
   expect((await service.call({ type: 'action.get', id: action.id })).action?.result).toBe('DERIVED_PRIVATE_CONTENT');

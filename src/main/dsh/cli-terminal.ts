@@ -2,47 +2,32 @@ import { spawn, execFile, type ChildProcessWithoutNullStreams } from 'node:child
 import { randomUUID } from 'node:crypto';
 import { promisify, stripVTControlCharacters } from 'node:util';
 import path from 'node:path';
-import { rmdir } from 'node:fs/promises';
-import { lstat, mkdir, readFile, readdir, rm, writeFile } from './disk';
+import { lstat, mkdir, readFile, rm, writeFile } from './disk';
 import { atomicJson } from './files';
-import { inspectProcess, sanitizeOutput, terminateOwnedProcess, type RuntimeLaunchPlan } from './instance-process';
+import { sanitizeOutput, terminateOwnedProcess, type RuntimeLaunchPlan } from './instance-process';
 import { attachProcessJob, type WindowsProcessJob } from './windows-job';
 import type { DshInstance, DshRuntime } from '../../shared/dsh-launcher';
 import type * as Koffi from 'koffi';
 import { PTY_WORKER_MARKER, terminalPtyWorkerSource } from './terminal-pty-worker';
-import { CLI_MODEL_OVERLAY_MARKER,cliModelOverlaySource } from './cli-model-overlay';
-import { supportsSharedDataRuntime } from '../../shared/dsh-runtime-compatibility';
-import { compatibilityContract, readRuntimeCompatibility } from './runtime-compatibility';
-import { CliAdmission } from './cli-admission';
 
 const execute = promisify(execFile);
 const OUTPUT_LIMIT = 64 * 1024;
-const CONTEXT_FORMAT = 'worldlinebox-dsh-cli-context-v1';
+const CONTEXT_FORMAT = 'worldlinebox-native-dsh-cli-v1';
 const CMD_MARKER = ':: WorldlineBox managed DSH command v1';
 const SHIM_MARKER = '// WorldlineBox managed DSH shim v1';
-const ENV_KEYS = new Set(['DSH_HOME', 'DSH_AGENTS_HOME', 'DSH_DESKTOP_NODE_EXECUTABLE', 'DSH_DESKTOP_RUNTIME_ROOT',
-  'HOME', 'USERPROFILE', 'HOMEDRIVE', 'HOMEPATH', 'APPDATA', 'LOCALAPPDATA', 'TEMP', 'TMP', 'TMPDIR',
-  'XDG_CONFIG_HOME', 'XDG_DATA_HOME', 'XDG_CACHE_HOME', 'XDG_RUNTIME_DIR', 'PNPM_HOME',
-  'npm_config_cache', 'npm_config_store_dir', 'pnpm_config_store_dir', 'pnpm_config_cache_dir', 'pnpm_config_state_dir',
-  'PYTHONPYCACHEPREFIX', 'PIP_CACHE_DIR', 'UV_CACHE_DIR', 'PLAYWRIGHT_BROWSERS_PATH', 'PUPPETEER_CACHE_DIR',
-  'GIT_CONFIG_GLOBAL', 'HISTFILE', 'NODE_REPL_HISTORY', 'NO_COLOR', 'FORCE_COLOR']);
-
 /** ConPTY receives this plain object directly; Windows aliases must not compete. */
 export function managedTerminalEnvironment(base: NodeJS.ProcessEnv, commandDirectory: string): NodeJS.ProcessEnv {
   const inheritedPath = Object.entries(base).find(([key]) => key.toUpperCase() === 'PATH')?.[1] ?? '';
   const env = { ...base };
-  for (const key of Object.keys(env)) if (/^(PATH$|ELECTRON_|PSModulePath$|WORLDLINEBOX_DSH_CLI_CONTEXT$)/i.test(key)) delete env[key];
+  for (const key of Object.keys(env)) if (/^(PATH$|ELECTRON_RUN_AS_NODE$|WORLDLINEBOX_DSH_CLI_CONTEXT$)/i.test(key)) delete env[key];
   env.PATH = `${commandDirectory}${path.delimiter}${inheritedPath}`;
-  env.PSModulePath = path.join(env.SystemRoot ?? process.env.SystemRoot ?? 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'Modules');
   return env;
 }
 
 export interface DshCliSelection {
   instance: DshInstance; plan: RuntimeLaunchPlan; env: NodeJS.ProcessEnv; workspacePath: string;
-  routingPatch: string; runtimeVersion?: string; nativeCli?: string; nativeArgs?: string[];
+  runtimeVersion?: string; nativeArgs?: string[];
   runtime?: DshRuntime;
-  /** Main-authorized task directory root, admitted only in pinned task contexts. */
-  taskWorkspaceRoot?: string;
 }
 export interface DshTerminalSummary {
   id: string; instanceId: string; runtimeVersion: string; status: 'running' | 'stopped'; cwd: string;
@@ -59,75 +44,10 @@ interface TerminalSession extends DshTerminalSummary {
   closing?: Promise<void>;
   pendingInputBytes?: number;
 }
-export interface DshCliUseJournal {
-  format: 'worldlinebox-dsh-cli-use-v1'; instanceId: string; pid: number; executable: string; createdAt: string;
-  childPid?: number; childExecutable?: string; childCreatedAt?: string;
-}
-/** Only exact recorded process identities count; reused PIDs never block or get killed. */
-export async function activeDshCliUses(rootPath: string, instanceId?: string): Promise<DshCliUseJournal[]> {
-  const directory = path.join(path.resolve(rootPath), 'shared', '.cli-users');
-  const stats = await lstat(directory).catch((error: NodeJS.ErrnoException) => { if (error.code === 'ENOENT') return undefined; throw error; });
-  if (!stats) return [];
-  if (!stats.isDirectory() || stats.isSymbolicLink()) throw new Error('CLI activity directory is not managed.');
-  const entries = (await readdir(directory)).filter(name => /^[1-9][0-9]*\.json$/.test(name));
-  if (entries.length > 1000) throw new Error('Too many CLI activity records to safely inspect.');
-  const active: DshCliUseJournal[] = [];
-  for (const name of entries) {
-    const file = path.join(directory, name); const stat = await lstat(file).catch((error: NodeJS.ErrnoException) => { if (error.code === 'ENOENT') return undefined; throw error; });
-    if (!stat) continue;
-    if (!stat.isFile() || stat.isSymbolicLink() || stat.size > 64 * 1024) throw new Error('Invalid CLI activity record.');
-    const bytes = await readFile(file, 'utf8').catch((error: NodeJS.ErrnoException) => { if (error.code === 'ENOENT') return undefined; throw error; });
-    if (bytes === undefined) continue;
-    const journal = JSON.parse(bytes) as DshCliUseJournal;
-    if (journal.format !== 'worldlinebox-dsh-cli-use-v1' || !/^[a-z0-9-]{1,80}$/.test(journal.instanceId)
-      || !Number.isSafeInteger(journal.pid) || journal.pid < 1 || `${journal.pid}.json` !== name
-      || typeof journal.executable !== 'string' || !path.isAbsolute(journal.executable) || typeof journal.createdAt !== 'string' || !Number.isFinite(Date.parse(journal.createdAt))) throw new Error('Unsupported CLI activity identity.');
-    if (instanceId && journal.instanceId !== instanceId) continue;
-    const owner = await inspectProcess(journal.pid);
-    if (owner && samePath(owner.executable, journal.executable) && owner.createdAt === journal.createdAt) { active.push(journal); continue; }
-    if (journal.childPid !== undefined) {
-      if (!Number.isSafeInteger(journal.childPid) || journal.childPid < 1 || typeof journal.childExecutable !== 'string'
-        || !path.isAbsolute(journal.childExecutable) || typeof journal.childCreatedAt !== 'string' || !Number.isFinite(Date.parse(journal.childCreatedAt))) throw new Error('Unsupported CLI child identity.');
-      const child = await inspectProcess(journal.childPid);
-      if (child && samePath(child.executable, journal.childExecutable) && child.createdAt === journal.childCreatedAt) active.push(journal);
-    }
-  }
-  return active;
-}
-/** Exclude .cli-users and .cli-exclusive.lock from shared-data archive inventories. */
-export async function withDshCliExclusive<T>(rootPath: string, operation: () => Promise<T>, instanceId?: string): Promise<T> {
-  const shared = path.join(path.resolve(rootPath), 'shared'); const stats = await lstat(shared);
-  if (!stats.isDirectory() || stats.isSymbolicLink()) throw new Error('Shared CLI data root is not managed.');
-  const barrier = path.join(shared, '.cli-exclusive.lock');
-  const ownerFile = path.join(barrier, 'owner.json');
-  const acquire = async (): Promise<void> => {
-    try { await mkdir(barrier); }
-    catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
-      const metadata = await lstat(ownerFile).catch(() => undefined);
-      if (!metadata?.isFile() || metadata.isSymbolicLink() || metadata.size > 64 * 1024) throw new Error('An exclusive shared-data operation has an unverifiable lock; retain it for recovery.', { cause: error });
-      const owner = JSON.parse(await readFile(ownerFile, 'utf8')) as { format: string; pid: number; executable: string; createdAt: string };
-      if (owner.format !== 'worldlinebox-dsh-cli-exclusive-v1' || !Number.isSafeInteger(owner.pid) || owner.pid < 1 || typeof owner.executable !== 'string' || typeof owner.createdAt !== 'string') throw new Error('Unsupported exclusive-operation identity.', { cause: error });
-      const current = await inspectProcess(owner.pid);
-      if (current && samePath(current.executable, owner.executable) && current.createdAt === owner.createdAt) throw new Error('Another exclusive shared-data operation is in progress.', { cause: error });
-      if ((await readdir(barrier)).some(entry => entry !== 'owner.json')) throw new Error('Interrupted CLI admission metadata needs inspection.', { cause: error });
-      await rm(ownerFile); await rmdir(barrier); await mkdir(barrier);
-    }
-  };
-  await acquire();
-  try {
-    const owner = await inspectProcess(process.pid);
-    await atomicJson(ownerFile, { format: 'worldlinebox-dsh-cli-exclusive-v1', pid: process.pid, executable: owner?.executable ?? process.execPath, createdAt: owner?.createdAt ?? new Date().toISOString() });
-    const active = await activeDshCliUses(rootPath, instanceId);
-    if (active.length) throw new Error(`CLI tasks still own instance data: ${active.map(use => use.instanceId).join(', ')}. Stop those CLI tasks before this operation.`);
-    return await operation();
-  } finally { await rm(ownerFile, { force: true }); await rmdir(barrier); }
-}
 interface PersistedCliContext {
-  format: typeof CONTEXT_FORMAT; instanceId: string; runtimeId: string; runtimeVersion: string;
-  runtimeContentSha256: string; executable: string; nativeCli: string; nativeArgs: string[];
-  routingPatch: string; workspacePath: string; env: Record<string, string>;
-  taskWorkspaceRoot?: string;
+  format: string; instanceId: string; runtimeId: string; runtimeVersion: string;
+  executable: string; nativeCli: string; nativeArgs: string[]; workspacePath: string;
+  env: Record<string, string>;
 }
 function powershellPath(): string {
   return path.join(process.env.SystemRoot ?? 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
@@ -162,15 +82,12 @@ export class DshCliTerminal {
   private readonly opening = new Set<string>();
   private pathEnabled = false;
   private notification?: NodeJS.Timeout;
-  private admission?: CliAdmission;
   constructor(private readonly options: {
     rootPath: string; onChanged: () => void; onOutput?: (output: DshTerminalOutput) => void;
     resolveSelection: () => Promise<DshCliSelection>;
-    toolchain?: () => Promise<{ pathDirectories: string[]; gitCaBundle?: string }>;
-    verifyRuntime?: (id: string, digest: string) => Promise<void>;
   }) {
     this.root = path.resolve(options.rootPath); this.directory = path.join(this.root, 'cli');
-    this.contextFile = path.join(this.directory, 'context.json'); this.bin = path.join(this.directory, 'bin');
+    this.contextFile = path.join(this.directory, 'native-selection.json'); this.bin = path.join(this.directory, 'bin');
     this.command = path.join(this.bin, process.platform === 'win32' ? 'dsh.cmd' : 'dsh');
   }
   state(): DshCliTerminalState {
@@ -198,25 +115,8 @@ export class DshCliTerminal {
   }
   async init(): Promise<void> {
     await this.ensureOwnedDirectory(this.bin);
-    if (this.options.verifyRuntime) { this.admission = new CliAdmission(this.root, this.options.verifyRuntime); await this.admission.start(); }
     const shim = path.join(this.directory, 'shim.cjs');
-    // This pinned dependency path belongs to the application, not the selected
-    // runtime/context. Packaged Electron resolves its unpacked native addon.
-    const koffiModule = require.resolve('koffi');
-    const toolchain = await this.options.toolchain?.();
-    if (toolchain) {
-      if (toolchain.pathDirectories.length > 32) throw new Error('Invalid bundled tool PATH.');
-      for (const directory of toolchain.pathDirectories) {
-        const info = await lstat(directory);
-        if (!path.isAbsolute(directory) || !info.isDirectory() || info.isSymbolicLink()) throw new Error('Bundled tools require ordinary absolute directories.');
-      }
-      if (toolchain.gitCaBundle) {
-        const info = await lstat(toolchain.gitCaBundle);
-        if (!path.isAbsolute(toolchain.gitCaBundle) || !info.isFile() || info.isSymbolicLink()) throw new Error('Bundled Git CA data is invalid.');
-      }
-    }
-    await this.writeManaged(shim, SHIM_MARKER, externalShimSource(this.root, this.contextFile, koffiModule, toolchain));
-    await this.writeManaged(path.join(this.directory,'cli-model-overlay.mjs'),CLI_MODEL_OVERLAY_MARKER,cliModelOverlaySource());
+    await this.writeManaged(shim, SHIM_MARKER, externalShimSource(this.root, this.contextFile));
     await this.writeManaged(path.join(this.directory, 'pty-worker.cjs'), PTY_WORKER_MARKER,
       terminalPtyWorkerSource(require.resolve('node-pty')));
     if (process.platform === 'win32') {
@@ -234,7 +134,7 @@ export class DshCliTerminal {
       if (raw && typeof raw === 'object' && (raw as PersistedCliContext).format === CONTEXT_FORMAT
         && /^[a-z0-9-]{1,80}$/.test((raw as PersistedCliContext).instanceId)
         && typeof (raw as PersistedCliContext).workspacePath === 'string'
-        && within(path.join(this.root, 'shared'), (raw as PersistedCliContext).workspacePath)) this.selected = raw as PersistedCliContext;
+        && within(path.join(this.root, 'instances'), (raw as PersistedCliContext).workspacePath)) this.selected = raw as PersistedCliContext;
     } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') this.emit('system', 'The previous CLI selection was invalid; select an instance again.\n'); }
   }
   private async ensureOwnedDirectory(directory: string): Promise<void> {
@@ -259,37 +159,15 @@ export class DshCliTerminal {
     await this.ensureOwnedDirectory(this.directory); await atomicJson(this.contextFile, next); this.selected = next;
     this.options.onChanged(); return this.state();
   }
-  async pinContext(selection:DshCliSelection):Promise<{contextFile:string;dispose:()=>Promise<void>}>{
-    const context=await this.persistedContext(selection);const directory=path.join(this.directory,'sessions',randomUUID());
-    await this.ensureOwnedDirectory(directory);const contextFile=path.join(directory,'context.json');await atomicJson(contextFile,context);
-    let disposed=false;return{contextFile,dispose:async()=>{if(disposed)return;const info=await lstat(contextFile).catch((error:NodeJS.ErrnoException)=>{if(error.code==='ENOENT')return undefined;throw error;});if(info&&(!info.isFile()||info.isSymbolicLink()))throw new Error('Pinned CLI context is not an owned ordinary file.');await rm(contextFile,{force:true});await rmdir(directory);disposed=true;}};
-  }
   private async persistedContext(selection: DshCliSelection): Promise<PersistedCliContext> {
     const instance = selection.instance;
-    if (!/^[a-z0-9-]{1,80}$/.test(instance.id) || !/^[a-z0-9-]{1,80}$/.test(instance.runtimeId)) throw new Error('Invalid CLI instance/runtime identity.');
-    const instanceRoot = path.join(this.root, 'instances', instance.id);
-    const program = path.join(this.root, 'runtimes', instance.runtimeId, 'program');
-    const records: unknown = JSON.parse(await readFile(path.join(this.root, 'runtimes.json'), 'utf8'));
-    const runtime = Array.isArray(records) ? records.find((record: DshRuntime) => record.id === instance.runtimeId) as DshRuntime | undefined : undefined;
-    if (!runtime || !/^[a-f0-9]{64}$/.test(runtime.contentSha256)) throw new Error('Selected CLI runtime is not registered.');
-    if(selection.runtimeVersion!==undefined&&selection.runtimeVersion!==runtime.version)throw new Error('Selected CLI runtime version does not match its registered identity.');
-    if(!supportsSharedDataRuntime({...runtime,compatibility:await readRuntimeCompatibility(this.root,runtime)}))throw new Error('共享存档兼容性检测尚未通过，请先在运行版本页执行检测。');
-    const executable = runtime.adapter === 'node-cli-web-v1' ? path.join(program, 'bin', 'node.exe')
-      : runtime.adapter === 'desktop-cli-web-v1' ? path.join(program, 'DeepSeek Harness.exe') : undefined;
-    if (!samePath(instance.homePath, path.join(instanceRoot, 'home')) || !samePath(instance.agentsPath, path.join(instanceRoot, 'agents'))
-      || !executable || !samePath(selection.plan.executable, executable)
-      || !within(program, selection.nativeCli ?? selection.plan.cli) || !within(instanceRoot, selection.routingPatch)
-       || !(selection.taskWorkspaceRoot && path.isAbsolute(selection.taskWorkspaceRoot) && within(selection.taskWorkspaceRoot, selection.workspacePath)
-         || within(path.join(this.root, 'shared'), selection.workspacePath))) throw new Error('CLI selection contains an unmanaged path.');
-    const env = Object.fromEntries(Object.entries(selection.env).filter((entry): entry is [string, string] => ENV_KEYS.has(entry[0]) && typeof entry[1] === 'string'));
-    env.DSH_HOME = instance.homePath; env.DSH_AGENTS_HOME = instance.agentsPath; env.DSH_DESKTOP_NODE_EXECUTABLE = selection.plan.executable;
-    const next: PersistedCliContext = { format: CONTEXT_FORMAT, instanceId: instance.id, runtimeId: instance.runtimeId,
-      runtimeVersion: selection.runtimeVersion ?? runtime.version, runtimeContentSha256: runtime.contentSha256,
-      executable: selection.plan.executable, nativeCli: selection.nativeCli ?? selection.plan.cli,
-      nativeArgs: selection.nativeArgs ?? ['web', '--patch', selection.routingPatch], routingPatch: selection.routingPatch,
-      workspacePath: selection.workspacePath, ...(selection.taskWorkspaceRoot ? { taskWorkspaceRoot: selection.taskWorkspaceRoot } : {}), env };
-    if (next.nativeArgs.length > 128 || next.nativeArgs.some(argument => typeof argument !== 'string' || argument.length > 16_384 || argument.includes('\0'))) throw new Error('Invalid native CLI routing arguments.');
-    return next;
+    if (!within(path.join(this.root, 'instances', instance.id), instance.homePath)
+      || !within(path.join(this.root, 'instances', instance.id), instance.workspacePath)
+      || !within(path.join(this.root, 'runtimes', instance.runtimeId), selection.plan.cli)) throw new Error('Unmanaged native CLI selection.');
+    return { format: CONTEXT_FORMAT, instanceId: instance.id, runtimeId: instance.runtimeId,
+      runtimeVersion: selection.runtimeVersion ?? '', executable: selection.plan.executable, nativeCli: selection.plan.cli,
+      nativeArgs: ['--profile', 'web'], workspacePath: selection.workspacePath,
+      env: { DSH_HOME: instance.homePath, DSH_AGENTS_HOME: instance.agentsPath } };
   }
   private async readPersistentPath(scope: 'User' | 'Machine'): Promise<string> {
     const script = `[Console]::OutputEncoding=[Text.UTF8Encoding]::new($false); [Console]::Write([Environment]::GetEnvironmentVariable('Path','${scope}'))`;
@@ -421,7 +299,7 @@ export class DshCliTerminal {
       session.closing??=this.closeOwned(session).finally(()=>{session.closing=undefined;});return session.closing;
     }));
   }
-  async shutdown(): Promise<void> { await this.close(); await this.admission?.close(); }
+  async shutdown(): Promise<void> { await this.close(); }
   private async closeOwned(session:TerminalSession):Promise<void> {
     const child=session.worker;if(!child)return;
     if(child.connected)try{child.send({type:'close'},()=>undefined);}catch{/* A racing worker exit is verified through the Job below. */}
@@ -431,114 +309,24 @@ export class DshCliTerminal {
   }
 }
 
-/** Standalone Node shim: no account data or executable location comes from PATH. */
-export function externalShimSource(rootPath: string, contextFile: string, koffiModule: string,
-  toolchain?: {pathDirectories: string[];gitCaBundle?: string}): string {
+/** Thin native CLI dispatch. DSH owns plugin resolution and all configuration. */
+export function externalShimSource(rootPath: string, contextFile: string): string {
   return `${SHIM_MARKER}\n` + String.raw`
 'use strict';
-let fs;try{fs=require('original-fs')}catch{fs=require('node:fs')}
-const path=require('node:path'),crypto=require('node:crypto'),{spawn,execFileSync}=require('node:child_process'),readline=require('node:readline');
-const ROOT=${JSON.stringify(rootPath)},CONTEXT=${JSON.stringify(contextFile)},KOFFI=${JSON.stringify(koffiModule)};
-const POWERSHELL=${JSON.stringify(powershellPath())};
-const TOOLCHAIN=${JSON.stringify(toolchain ?? {pathDirectories:[]})};
-function sharedCompatible(record){const file=path.join(ROOT,'compatibility',record.id+'.json');if(!fs.existsSync(file))return false;const r=json(file);return r.contract===${JSON.stringify(compatibilityContract())}&&r.runtimeId===record.id&&r.contentSha256===record.contentSha256&&r.status==='passed'&&${JSON.stringify(['integrity','native-api','session-roundtrip','writer-lock','workspace','attachments','credentials','model-settings','native-cli','cross-runtime','cleanup'])}.every(id=>r.checks?.some(c=>c.id===id&&c.status==='passed'));}
-const ENV_KEYS=new Set(${JSON.stringify([...ENV_KEYS])});
-const inside=(root,file)=>{const r=path.relative(path.resolve(root),path.resolve(file));return r!=='..'&&!r.startsWith('..'+path.sep)&&!path.isAbsolute(r)};
-const same=(a,b)=>path.resolve(a).toLowerCase()===path.resolve(b).toLowerCase();
-const json=file=>{const s=fs.lstatSync(file);if(!s.isFile()||s.isSymbolicLink()||s.size>32*1024*1024)throw Error('Invalid CLI metadata');return JSON.parse(fs.readFileSync(file,'utf8'))};
-const ordinary=file=>{const s=fs.lstatSync(file);if(s.isSymbolicLink())throw Error('CLI refuses linked metadata/code');return s};
-const hash=file=>{const h=crypto.createHash('sha256'),f=fs.openSync(file,'r'),b=Buffer.alloc(256*1024);try{for(;;){const n=fs.readSync(f,b,0,b.length,null);if(!n)break;h.update(b.subarray(0,n))}return h.digest('hex')}finally{fs.closeSync(f)}};
-async function admission(c){
- const file=path.join(ROOT,'cli','admission.json');if(!fs.existsSync(file))return false;
- const endpoint=json(file);if(!Number.isInteger(endpoint.port)||endpoint.port<1||endpoint.port>65535||!/^[a-f0-9]{64}$/.test(endpoint.token))throw Error('Invalid launcher admission endpoint');
- return new Promise((resolve,reject)=>{let connected=false,reply='';const socket=require('node:net').connect({host:'127.0.0.1',port:endpoint.port});socket.setTimeout(360000,()=>socket.destroy(Error('CLI integrity verification timed out')));socket.once('connect',()=>{connected=true;socket.write(JSON.stringify({token:endpoint.token,runtimeId:c.runtimeId,digest:c.runtimeContentSha256})+'\n')});socket.on('data',bytes=>{reply+=String(bytes);if(reply.length>4096)socket.destroy(Error('Invalid CLI admission response'))});socket.once('end',()=>{try{if(JSON.parse(reply).ok!==true)throw Error('The selected runtime failed launcher integrity verification');resolve(true)}catch(error){reject(error)}});socket.once('error',error=>{if(!connected&&['ECONNREFUSED','ENOENT'].includes(error.code))resolve(false);else reject(error)})});
-}
-async function context(){
- let selectedContext=CONTEXT;const override=process.env.WORLDLINEBOX_DSH_CLI_CONTEXT;
- if(override){const sessions=path.join(ROOT,'cli','sessions'),relative=path.relative(sessions,path.resolve(override)),parts=relative.split(path.sep);if(!inside(sessions,override)||parts.length!==2||!/^[a-f0-9-]{36}$/.test(parts[0])||parts[1]!=='context.json')throw Error('Invalid pinned terminal context');let current=ROOT;for(const part of path.relative(ROOT,path.resolve(override)).split(path.sep)){current=path.join(current,part);ordinary(current)}selectedContext=path.resolve(override)}
- const c=json(selectedContext);if(c.format!=='worldlinebox-dsh-cli-context-v1'||!/^[a-z0-9-]{1,80}$/.test(c.instanceId)||!/^[a-z0-9-]{1,80}$/.test(c.runtimeId))throw Error('Select a valid CLI instance in WorldlineBox first');
- const instance=path.join(ROOT,'instances',c.instanceId),artifact=path.join(ROOT,'runtimes',c.runtimeId),program=path.join(artifact,'program');
- ordinary(instance);ordinary(artifact);ordinary(program);
- const registry=json(path.join(ROOT,'runtimes.json')),record=registry.find(r=>r.id===c.runtimeId),seal=json(path.join(artifact,'seal.json'));
- const executable=record?.adapter==='node-cli-web-v1'?path.join(program,'bin','node.exe'):record?.adapter==='desktop-cli-web-v1'?path.join(program,'DeepSeek Harness.exe'):undefined;
- const taskWorkspace=override&&typeof c.taskWorkspaceRoot==='string'&&path.isAbsolute(c.taskWorkspaceRoot)&&inside(c.taskWorkspaceRoot,c.workspacePath)&&same(fs.realpathSync(c.taskWorkspaceRoot),c.taskWorkspaceRoot)&&same(fs.realpathSync(c.workspacePath),c.workspacePath);
- if(!executable||!same(c.executable,executable)||!inside(program,c.nativeCli)||!inside(instance,c.routingPatch)||!(taskWorkspace||inside(path.join(ROOT,'shared'),c.workspacePath))||!same(c.env.DSH_HOME,path.join(instance,'home'))||!same(c.env.DSH_AGENTS_HOME,path.join(instance,'agents')))throw Error('CLI context paths are not managed');
- ordinary(c.routingPatch);if(!ordinary(c.workspacePath).isDirectory())throw Error('Shared workspace is missing');
- if(!record||record.version!==c.runtimeVersion||record.contentSha256!==c.runtimeContentSha256||seal.contentSha256!==c.runtimeContentSha256||c.runtimeId!=='runtime-'+c.runtimeContentSha256.slice(0,24)||!Array.isArray(seal.files)||seal.files.length>150000)throw Error('CLI runtime seal does not match its selected version');
- if(!sharedCompatible(record))throw Error('This DSH version has no verified shared-data adapter');
- if(crypto.createHash('sha256').update(JSON.stringify(seal.files)).digest('hex')!==seal.contentSha256)throw Error('CLI runtime inventory identity changed');
- if(!await admission(c)){
- const expected=new Set();let bytes=0;
- for(const entry of seal.files){if(typeof entry.path!=='string'||entry.path.split(/[\/]/).some(x=>!x||x==='.'||x==='..'||/[:<>"|?*]/.test(x))||!Number.isSafeInteger(entry.size)||entry.size<0||!/^[a-f0-9]{64}$/.test(entry.sha256))throw Error('Invalid sealed runtime entry');const file=path.join(program,entry.path);if(!inside(program,file))throw Error('Runtime path escapes its version');const stats=ordinary(file);if(!stats.isFile()||stats.size!==entry.size||hash(file)!==entry.sha256)throw Error('Selected DSH runtime changed; import a clean version before running CLI');expected.add(path.relative(program,file).toLowerCase());bytes+=entry.size;if(bytes>6*1024**3)throw Error('CLI runtime inventory is too large')}
- const walk=directory=>{for(const name of fs.readdirSync(directory)){const file=path.join(directory,name),stats=ordinary(file);if(stats.isDirectory())walk(file);else if(!stats.isFile()||!expected.has(path.relative(program,file).toLowerCase()))throw Error('Selected DSH runtime contains unsealed files')}};walk(program);
- }
- if(!Array.isArray(c.nativeArgs)||c.nativeArgs.length>128||c.nativeArgs.some(a=>typeof a!=='string'||a.length>16384||a.includes('\0')))throw Error('Invalid CLI routing arguments');
- if(!c.env||Object.keys(c.env).some(key=>!ENV_KEYS.has(key)||typeof c.env[key]!=='string'))throw Error('CLI context contains unsupported environment overrides');
- for(const [key,value]of Object.entries(c.env)){if(['NO_COLOR','FORCE_COLOR','HOMEDRIVE','HOMEPATH'].includes(key))continue;if(!inside(instance,value)&&!inside(program,value))throw Error('CLI environment escapes the selected private instance/runtime')}
- for(let index=0;index<c.nativeArgs.length;index++)if(c.nativeArgs[index]==='--patch'){const file=c.nativeArgs[++index];if(typeof file!=='string'||(!inside(instance,file)&&!inside(program,file)))throw Error('CLI patch escapes the selected environment');if(inside(instance,file))ordinary(file)}
- c.runtimeAdapter=record.adapter;return c;
-}
-function guardPluginMutation(c,input){if(input[0]!=='plugin')return;const action=input.find(value=>['add','remove','install','update','link','unlink','import','deploy','prune','rebuild'].includes(value));if(!action)return;const journal=path.join(ROOT,'instances',c.instanceId,'process.json');if(fs.existsSync(journal))throw Error('Stop this instance Host before changing its private plugins');const instances=json(path.join(ROOT,'instances.json'));if(Array.isArray(instances)&&instances.some(instance=>instance.id===c.instanceId&&['starting','running','stopping'].includes(instance.status)))throw Error('Stop this instance Host before changing its private plugins')}
-function endpoint(value,protocols){let url;try{url=new URL(value)}catch{throw Error('Invalid launcher network settings')}if(!protocols.includes(url.protocol)||!url.hostname||url.username||url.password||url.hash||url.search)throw Error('Invalid launcher network settings');return url.href.replace(/\/$/,'')}
-function network(){const file=path.join(ROOT,'network.json');const value=fs.existsSync(file)?json(file):{proxyMode:'system',npmRegistry:'https://registry.npmjs.org',pythonIndex:'https://pypi.org/simple'};if(!['system','direct','custom'].includes(value.proxyMode))throw Error('Invalid launcher network mode');const registry=endpoint(value.npmRegistry,['https:']),pythonIndex=endpoint(value.pythonIndex,['https:']);let proxy='';if(value.proxyMode==='custom')proxy=endpoint(value.proxyUrl,['http:','https:','socks5:']);else if(value.proxyMode==='system'&&process.platform==='win32'){const address=registry.replaceAll("'","''"),script="$ErrorActionPreference='Stop'; $uri=[Uri]'"+address+"'; $proxy=[Net.WebRequest]::GetSystemWebProxy().GetProxy($uri); [Console]::Write($proxy.AbsoluteUri)";try{const resolved=execFileSync(POWERSHELL,['-NoLogo','-NoProfile','-NonInteractive','-EncodedCommand',Buffer.from(script,'utf16le').toString('base64')],{encoding:'utf8',windowsHide:true,timeout:10000}).trim();if(resolved&&new URL(resolved).href!==new URL(registry).href)proxy=endpoint(resolved,['http:','https:','socks5:'])}catch{throw Error('The current system proxy could not be resolved')}}return{registry,pythonIndex,proxy}}
-function managedRelay(){const value=process.env.WORLDLINEBOX_CHILD_NETWORK_RELAY;if(!value)return;const url=new URL(value);if(url.protocol!=='http:'||url.hostname!=='127.0.0.1'||url.username!=='worldlinebox'||!/^[a-f0-9]{64}$/.test(url.password)||!url.port||url.pathname!=='/'||url.search||url.hash)throw Error('Invalid managed process network relay');return value}
-function environment(c){const env={...process.env};let inheritedPath='';for(const key of Object.keys(env)){if(key.toUpperCase()==='PATH'){inheritedPath=env[key]??'';delete env[key]}else if(/^(DSH_|NODE_OPTIONS$|NODE_PATH$|ELECTRON_|DEEPSEEK_|OPENAI_|ANTHROPIC_|GEMINI_|GOOGLE_API_KEY$|AZURE_OPENAI_|AWS_(?:ACCESS_KEY_ID|SECRET_ACCESS_KEY|SESSION_TOKEN)$|NPM_TOKEN$|NPM_CONFIG_|PNPM_|HTTP_PROXY$|HTTPS_PROXY$|ALL_PROXY$|NO_PROXY$|PIP_INDEX_URL$|PYTHONHOME$|PYTHONPATH$|PYTHONUSERBASE$|PYTHONNOUSERSITE$|PIP_USER$|PSModulePath$|GIT_EXEC_PATH$|GIT_SSL_CAINFO$)/i.test(key))delete env[key]}Object.assign(env,c.env);env.PATH=[path.dirname(c.executable),...TOOLCHAIN.pathDirectories,inheritedPath].filter(Boolean).join(path.delimiter);env.PYTHONUSERBASE=path.join(ROOT,'instances',c.instanceId,'user','python-userbase');env.PIP_USER='1';env.PSModulePath=path.join(process.env.SystemRoot??'C:\\Windows','System32','WindowsPowerShell','v1.0','Modules');if(TOOLCHAIN.gitCaBundle)env.GIT_SSL_CAINFO=TOOLCHAIN.gitCaBundle;if(c.runtimeAdapter==='desktop-cli-web-v1')env.ELECTRON_RUN_AS_NODE='1';const current=network();const relay=managedRelay();if(relay)current.proxy=relay;c.registry=current.registry;if(current.proxy)Object.assign(env,{HTTP_PROXY:current.proxy,HTTPS_PROXY:current.proxy,ALL_PROXY:current.proxy,npm_config_proxy:current.proxy,npm_config_https_proxy:current.proxy});Object.assign(env,{NO_PROXY:'localhost,127.0.0.1,::1',npm_config_registry:current.registry,PIP_INDEX_URL:current.pythonIndex,NODE_USE_ENV_PROXY:'1'});return env}
-function job(child){
- if(process.platform!=='win32')return{close(){},terminate(){child.kill('SIGTERM')},async finish(){this.terminate()}};
- const koffi=require(KOFFI),k=koffi.load('kernel32.dll');
- const create=k.func('uintptr_t CreateJobObjectW(uintptr_t,uintptr_t)'),set=k.func('int SetInformationJobObject(uintptr_t,int,uint8_t*,uint32_t)'),open=k.func('uintptr_t OpenProcess(uint32_t,int,uint32_t)'),assign=k.func('int AssignProcessToJobObject(uintptr_t,uintptr_t)'),close=k.func('int CloseHandle(uintptr_t)'),terminate=k.func('int TerminateJobObject(uintptr_t,uint32_t)'),query=k.func('int QueryInformationJobObject(uintptr_t,int,uint8_t*,uint32_t,uintptr_t)');
- const h=create(0,0),limits=Buffer.alloc(144);limits.writeUInt32LE(0x2000,16);let closed=false,p=0;
- try{if(!h||!set(h,9,limits,144))throw Error('Could not supervise the DSH CLI job');p=open(0x101,0,child.pid);if(!p||!assign(h,p))throw Error('Could not assign the DSH CLI job')}catch(e){if(h)close(h);child.kill();throw e}finally{if(p)close(p)}
- const result={close(){if(!closed){close(h);closed=true}},terminate(){if(!closed)terminate(h,1)},async finish(){if(closed)return;this.terminate();const accounting=Buffer.alloc(48);for(let attempt=0;attempt<500;attempt++){if(!query(h,1,accounting,48,0))throw Error('Cannot verify the CLI process tree has stopped');if(accounting.readUInt32LE(40)===0){this.close();return}await new Promise(resolve=>setTimeout(resolve,20))}throw Error('CLI descendants still own instance data')}};
- child.once('exit',()=>result.terminate());return result;
-}
-function args(c,input,modelPatch){if(input[0]==='plugin'){const rest=input.slice(1),operation=rest.find(value=>['add','remove','install','update','link','unlink','import','deploy','prune','rebuild'].includes(value));return ['plugin',...(rest.includes('--profile')?[]:['--profile','web']),...rest,...(operation&&!rest.some(value=>value==='--registry'||value.startsWith('--registry='))?['--registry',c.registry]:[])]}if(input[0]==='--version'||input[0]==='-V')return input;const models=modelPatch?['--patch',modelPatch]:[];if(input[0]==='web'||input[0]==='--profile')return [...input.slice(0,input[0]==='web'?1:2),'--patch',c.routingPatch,...models,...input.slice(input[0]==='web'?1:2)];if(input[0]==='headless')input=input.slice(1);return [...c.nativeArgs,...models,...input]}
-function createdAt(pid){const code="[Console]::OutputEncoding=[Text.UTF8Encoding]::new($false); $p=Get-CimInstance Win32_Process -Filter 'ProcessId = "+pid+"'; if (!$p) { throw 'CLI owner process was not found' }; [Console]::Write($p.CreationDate.ToUniversalTime().ToString('o'))";return execFileSync(POWERSHELL,['-NoLogo','-NoProfile','-NonInteractive','-EncodedCommand',Buffer.from(code,'utf16le').toString('base64')],{encoding:'utf8',windowsHide:true,timeout:10000}).trim()}
-function registration(c){const barrier=path.join(ROOT,'shared','.cli-exclusive.lock'),directory=path.join(ROOT,'shared','.cli-users'),file=path.join(directory,process.pid+'.json');if(fs.existsSync(barrier))throw Error('Shared saves are being backed up or migrated; retry after the operation finishes');fs.mkdirSync(directory,{recursive:true});ordinary(directory);const stamp=createdAt(process.pid);if(fs.existsSync(file)){const old=json(file);if(old.pid!==process.pid||old.createdAt!==stamp)fs.unlinkSync(file);else throw Error('This CLI process already owns a running task')}const temporary=file+'.'+crypto.randomUUID()+'.tmp';const record={format:'worldlinebox-dsh-cli-use-v1',instanceId:c.instanceId,pid:process.pid,executable:process.execPath,createdAt:stamp};const publish=()=>{fs.writeFileSync(temporary,JSON.stringify(record),{flag:'wx',mode:0o600});fs.renameSync(temporary,file)};publish();if(fs.existsSync(barrier)){fs.unlinkSync(file);throw Error('Shared saves are being backed up or migrated; retry after the operation finishes')}return{child(child){record.childPid=child.pid;record.childExecutable=c.executable;record.childCreatedAt=createdAt(child.pid);publish()},close(){if(fs.existsSync(file))fs.unlinkSync(file)}}}
-function modelPlan(c,input){
- const canonical=path.join(ROOT,'shared','model-settings.json');
- if(!sharedCompatible({id:c.runtimeId,contentSha256:c.runtimeContentSha256})||!fs.existsSync(canonical)||['plugin','--version','-V'].includes(input[0]))return;
- const file=ordinary(canonical);if(!file.isFile()||file.size>8*1024*1024)throw Error('Shared CLI model settings are not readable');
- const explicit=input[0]==='web'||input[0]==='--profile',profile=explicit?(input[0]==='web'?'web':input[1]):'web';
- if(typeof profile!=='string'||!/^[a-zA-Z0-9_-]{1,80}$/.test(profile))throw Error('Invalid CLI profile name');
- const patches=explicit?[c.routingPatch]:c.nativeArgs.flatMap((value,index,all)=>value==='--patch'?[all[index+1]]:[]);
- const helper=path.join(ROOT,'cli','cli-model-overlay.mjs');if(!ordinary(helper).isFile())throw Error('Native CLI model composer is missing');
- const instance=path.join(ROOT,'instances',c.instanceId),directory=path.join(instance,'launcher','cli-model-overlays');fs.mkdirSync(directory,{recursive:true});let current=instance;for(const part of path.relative(instance,directory).split(path.sep)){current=path.join(current,part);if(!ordinary(current).isDirectory())throw Error('CLI model overlay directory is not managed')}
- const output=path.join(directory,crypto.randomUUID()+'.json');return{helper,output,arguments:[path.join(ROOT,'runtimes',c.runtimeId,'program'),profile,canonical,c.instanceId,JSON.stringify(patches),output]};
-}
-async function prepareModels(c,input,env,use){
- const plan=modelPlan(c,input);if(!plan)return;
- const child=spawn(c.executable,['--expose-internals',plan.helper,...plan.arguments],{cwd:c.workspacePath,env,windowsHide:true,shell:false,stdio:['ignore','pipe','pipe']});
- child.stdout.resume();child.stderr.resume();let owned;
- const result=new Promise((resolve,reject)=>{child.once('error',()=>reject(Error('Native CLI model settings could not be composed')));child.once('close',resolve)});
- try{owned=job(child);use.active=true;try{use.child(child)}catch{/* The wrapper identity still owns a fast helper. */}}catch(error){await result.catch(()=>undefined);throw error}
- const interrupt=()=>owned.terminate(),timer=setTimeout(interrupt,30000);process.once('SIGINT',interrupt);process.once('SIGTERM',interrupt);
- try{const code=await result;await owned.finish();use.active=false;if(code!==0)throw Error('Native CLI model settings could not be composed');return plan.output}
- catch(error){if(fs.existsSync(plan.output))fs.unlinkSync(plan.output);throw error}
- finally{clearTimeout(timer);process.removeListener('SIGINT',interrupt);process.removeListener('SIGTERM',interrupt)}
-}
-async function invoke(c,input,task){
- if(input[0]==='web'&&!input.some(value=>['--help','--dump-config'].includes(value)))throw Error('WebUI is managed by WorldlineBox. Start or switch the single workbench in the launcher; use dsh for CLI tasks.');
- if(input[0]==='--profile'&&!input.some(value=>['--help','--dump-config'].includes(value)))throw Error('Use the selected instance profile through dsh or dsh headless. WebUI profiles are managed by the launcher.');
- guardPluginMutation(c,input);const use=registration(c);let modelPatch,admitted=false;
- try{
-  const env=environment(c);modelPatch=await prepareModels(c,input,env,use);
-  const child=spawn(c.executable,['--expose-internals',c.nativeCli,...args(c,input,modelPatch)],{cwd:c.workspacePath,env,windowsHide:true,shell:false,stdio:task===undefined?'inherit':['pipe','pipe','pipe']});
-  const completion=new Promise((resolve,reject)=>{child.once('error',reject);child.once('close',resolve)});let owned;
-  try{owned=job(child);admitted=true;try{use.child(child)}catch{/* Fast help/version processes can exit before the identity query. */}}catch(error){await completion.catch(()=>undefined);throw error}
-  let sessionId,buffer='';if(task!==undefined){child.stdin.end(task);child.stderr.pipe(process.stderr);const decoder=new(require('node:string_decoder').StringDecoder)('utf8');child.stdout.on('data',chunk=>{buffer+=decoder.write(chunk);if(buffer.length>1024*1024){process.stdout.write(buffer);buffer='';return}let at=buffer.indexOf('\n');while(at>=0){const line=buffer.slice(0,at);buffer=buffer.slice(at+1);try{const event=JSON.parse(line);if(event.type==='session'&&typeof event.sessionId==='string'){sessionId=event.sessionId;process.stdout.write('[Session '+sessionId+']\n')}else if(event.type==='final'&&typeof event.text==='string')process.stdout.write(event.text+'\n');else process.stdout.write(line+'\n')}catch{process.stdout.write(line+'\n')}at=buffer.indexOf('\n')}})}
-  const interrupt=()=>owned.terminate();process.once('SIGINT',interrupt);process.once('SIGTERM',interrupt);
-  try{const code=await completion;await owned.finish();admitted=false;if(buffer)process.stdout.write(buffer);return{code:code??1,sessionId}}
-  finally{process.removeListener('SIGINT',interrupt);process.removeListener('SIGTERM',interrupt)}
- }finally{if(!admitted&&!use.active)use.close();if(modelPatch&&fs.existsSync(modelPatch))fs.unlinkSync(modelPatch)}
-}
-async function main(){
- const input=process.argv.slice(2);if(input.length){const result=await invoke(await context(),input);process.exitCode=result.code;return}
- const lines=readline.createInterface({input:process.stdin,output:process.stdout,terminal:process.stdin.isTTY&&process.stdout.isTTY});let sessionId;
- const prompt=()=>{if(!lines.closed)process.stdout.write('DSH> '+(process.stdout.isTTY?'':'\n'))};
- process.stdout.write('WorldlineBox DSH CLI — private instance plugins, shared session history.\nEnter a task; /new starts a new session; /exit closes the CLI.\n');prompt();
- for await(const raw of lines){const text=raw.trim();if(text==='/exit'||text==='exit'){lines.close();break}if(text==='/new'){sessionId=undefined;process.stdout.write('[New session]\n');prompt();continue}if(!text){prompt();continue}try{const c=await context(),result=await invoke(c,['--json',...(sessionId?['--session-id',sessionId]:[]),'-'],raw);if(result.sessionId)sessionId=result.sessionId;if(result.code)process.stdout.write('[DSH task exited '+result.code+']\n')}catch(error){process.stderr.write('DSH CLI: '+error.message+'\n')}prompt()}
-}
-main().catch(error=>{process.stderr.write('WorldlineBox DSH CLI: '+error.message+'\n');process.exitCode=1});
+const fs = require('node:fs'), path = require('node:path'), cp = require('node:child_process');
+const root = ${JSON.stringify(rootPath)}, selected = process.env.WORLDLINEBOX_DSH_CLI_CONTEXT || ${JSON.stringify(contextFile)};
+const inside = (base, value) => { const relative = path.relative(base, value); return relative && !relative.startsWith('..') && !path.isAbsolute(relative); };
+try {
+ if (!inside(path.join(root, 'cli'), selected) || fs.lstatSync(selected).isSymbolicLink()) throw Error('Invalid CLI selection.');
+ const context = JSON.parse(fs.readFileSync(selected, 'utf8'));
+ if (context.format !== ${JSON.stringify(CONTEXT_FORMAT)} || !/^[a-z0-9-]{1,80}$/.test(context.instanceId) || !/^[a-z0-9-]{1,80}$/.test(context.runtimeId)) throw Error('Select a native DSH instance.');
+ const program = path.join(root, 'runtimes', context.runtimeId, 'program');
+ if (!inside(program, context.executable) || !inside(program, context.nativeCli)) throw Error('Unmanaged DSH runtime.');
+ const env = { ...process.env, DSH_HOME: path.join(root, 'instances', context.instanceId, 'home'), DSH_AGENTS_HOME: path.join(root, 'instances', context.instanceId, 'agents') };
+ delete env.ELECTRON_RUN_AS_NODE; delete env.WORLDLINEBOX_DSH_CLI_CONTEXT;
+ const args = process.argv.slice(2);
+ const result = cp.spawnSync(context.executable, ['--expose-internals', context.nativeCli, '--profile', 'web', ...args], { stdio: 'inherit', env, windowsHide: true });
+ if (result.error) throw result.error; process.exitCode = result.status ?? 1;
+} catch (error) { process.stderr.write(String(error.message) + '\n'); process.exitCode = 1; }
 `;
 }

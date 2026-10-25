@@ -45,43 +45,55 @@ export function parseOfficialNpmVersions(value: unknown): { rows: DshOfficialVer
   rows.sort((a, b) => compare(b.version, a.version)); return { rows, packages };
 }
 
-/** GitHub provides release notes; official npm integrity identifies the executable distribution. */
+function publishedRelease(value: unknown): { version: string; body?: string; date?: string; url: string } | undefined {
+  if (!record(value) || value.draft === true || typeof value.tag_name !== 'string' || !value.tag_name.startsWith('dsh-v')) return;
+  const version = value.tag_name.slice(5);
+  const url = `https://github.com/deepseek-ai/deepseek-harness/releases/tag/dsh-v${version}`;
+  if (!VERSION.test(version) || value.html_url !== url) return;
+  return { version, url, ...(typeof value.body === 'string' ? { body: value.body.slice(0, 30000) } : {}),
+    ...(typeof value.published_at === 'string' ? { date: value.published_at } : {}) };
+}
+
+/** GitHub Release selects the version; the matching official npm package supplies the native Web distribution. */
 export class OfficialVersionCatalogue {
   private value: DshVersionsState = { entries: [], source: 'cache', stale: true };
-  private packages: Record<string, OfficialNodeRelease> = {};
   private refreshing?: Promise<void>;
   constructor(private readonly options: { rootPath: string; json(url: string, signal?: AbortSignal): Promise<unknown>; onChanged(): void }) {}
   state(): DshVersionsState { return structuredClone(this.value); }
   async init(): Promise<void> {
-    const cache = await readJson<{ state?: unknown; packages?: Record<string, OfficialNodeRelease> }>(path.join(this.options.rootPath, 'official-versions.json')).catch(() => undefined);
+    const cache = await readJson<{ state?: unknown }>(path.join(this.options.rootPath, 'official-versions.json')).catch(() => undefined);
     const parsed = dshVersionsStateSchema.safeParse(cache?.state);
-    if (parsed.success && record(cache?.packages)) { this.value = { ...parsed.data, source: 'cache', stale: true }; this.packages = cache.packages; }
+    if (parsed.success && parsed.data.source === 'github-npm') this.value = { ...parsed.data, source: 'cache', stale: true };
   }
   refresh(signal?: AbortSignal): Promise<void> {
     this.refreshing ??= this.refreshNow(signal).finally(() => { this.refreshing = undefined; }); return this.refreshing;
   }
   private async refreshNow(signal?: AbortSignal): Promise<void> {
-    const results = await Promise.allSettled([this.options.json(DSH_NPM_METADATA, signal), this.options.json(DSH_GITHUB_RELEASES, signal)]);
-    if (results[0].status !== 'fulfilled') {
-      this.value = { ...this.value, stale: true, error: '版本目录暂时不可用，保留已缓存版本。请检查代理与镜像。' }; this.options.onChanged();
-      if (!this.value.entries.length) throw new Error(this.value.error); return;
+    try {
+      const results = await Promise.allSettled([this.options.json(DSH_NPM_METADATA, signal), this.options.json(DSH_GITHUB_RELEASES, signal)]);
+      for (const result of results) if (result.status === 'rejected') throw result.reason;
+      const npm = parseOfficialNpmVersions((results[0] as PromiseFulfilledResult<unknown>).value);
+      const releases = (results[1] as PromiseFulfilledResult<unknown>).value;
+      if (!Array.isArray(releases)) throw new Error('GitHub Release catalogue is invalid.');
+      const notes = new Map(releases.flatMap(value => { const release = publishedRelease(value); return release ? [[release.version, release] as const] : []; }));
+      const entries = npm.rows.filter(row => notes.has(row.version)).map(row => {
+        const info = notes.get(row.version)!;
+        return { ...row, ...(info.body ? { notes: info.body } : {}), ...(info.date ? { publishedAt: info.date } : {}), releaseUrl: info.url };
+      });
+      if (!entries.length) throw new Error('No GitHub Release matches an official Web package.');
+      const next: DshVersionsState = { entries, source: 'github-npm', stale: false, fetchedAt: new Date().toISOString() };
+      await atomicJson(path.join(this.options.rootPath, 'official-versions.json'), { state: next });
+      this.value = next;
+    } catch {
+      this.value = { ...this.value, stale: true, error: 'GitHub Release 或官方 Web 包目录暂时不可用，保留已核对的缓存。请检查代理与镜像。' };
+      if (!this.value.entries.length) { this.options.onChanged(); throw new Error(this.value.error); }
     }
-    const npm = parseOfficialNpmVersions(results[0].value);
-    const notes = new Map<string, { body?: string; date?: string; url?: string }>();
-    if (results[1].status === 'fulfilled' && Array.isArray(results[1].value)) for (const release of results[1].value) {
-      if (!record(release) || release.draft === true || typeof release.tag_name !== 'string') continue;
-      const version = release.tag_name.replace(/^(?:dsh-)?v/, ''); if (!VERSION.test(version)) continue;
-      notes.set(version, { ...(typeof release.body === 'string' ? { body: release.body.slice(0, 30000) } : {}), ...(typeof release.published_at === 'string' ? { date: release.published_at } : {}),
-        ...(typeof release.html_url === 'string' && release.html_url.startsWith('https://github.com/deepseek-ai/deepseek-harness/releases/') ? { url: release.html_url } : {}) });
-    }
-    this.value = { entries: npm.rows.map(row => { const info = notes.get(row.version); return { ...row, ...(info?.body ? { notes: info.body } : {}), ...(info?.date ? { publishedAt: info.date } : {}), ...(info?.url ? { releaseUrl: info.url } : {}) }; }),
-      source: notes.size ? 'github-npm' : 'npm', stale: false, fetchedAt: new Date().toISOString(),
-      ...(!notes.size ? { error: 'GitHub 发行说明暂时不可用；版本与安装校验来自官方 npm。' } : {}) };
-    this.packages = npm.packages;
-    await atomicJson(path.join(this.options.rootPath, 'official-versions.json'), { state: this.value, packages: this.packages }); this.options.onChanged();
+    this.options.onChanged();
   }
   async release(version: string, signal?: AbortSignal): Promise<OfficialNodeRelease> {
     if (!VERSION.test(version)) throw new Error('发行版本号无效。');
+    const release = publishedRelease(await this.options.json(`https://api.github.com/repos/deepseek-ai/deepseek-harness/releases/tags/dsh-v${version}`, signal));
+    if (!release || release.version !== version) throw new Error('所选版本没有匹配的官方 GitHub Release。');
     const value = await this.options.json(`${DSH_NPM_METADATA}/${encodeURIComponent(version)}`, signal);
     if (!record(value) || value.name !== PACKAGE || value.version !== version) throw new Error('官方版本身份校验失败。');
     const parsed = parseOfficialNpmVersions({ name: PACKAGE, versions: { [version]: value }, 'dist-tags': {}, time: {} });

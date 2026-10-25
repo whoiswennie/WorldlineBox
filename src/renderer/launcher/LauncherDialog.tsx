@@ -105,7 +105,7 @@ export function LauncherDialog({ dialog, runtimes, busy, onClose, onSubmit }: {
       {naming ? <TextField autoFocus data-dialog-initial-focus="true" label={t(dialog.kind === 'snapshot' ? 'launcher.snapshotName' : dialog.kind === 'pack-create' ? 'launcher.packName' : 'launcher.name')} maxLength={100} onChange={(event) => setName(event.target.value)} placeholder={t('launcher.namePlaceholder')} required value={name} /> : null}
       {dialog.kind === 'pack-create' ? <TextField label={t('launcher.packVersion')} maxLength={100} onChange={(event) => setVersion(event.target.value)} required value={version} /> : null}
       {runtimeSelection ? <Select label={t('launcher.chooseRuntime')} onValueChange={setRuntimeId} options={runtimes.map((runtime) => ({ value: runtime.id, label: `DSH ${runtime.version} · Node ${runtime.nodeVersion} · ${runtime.contentSha256.slice(0, 12)}` }))} required value={runtimeId} /> : null}
-      {dialog.kind === 'create' ? <p className="launcher-help">{t('launcher.sharedDataScopeNote')}</p> : null}
+      {dialog.kind === 'create' ? <p className="launcher-help">{t('launcher.nativeInstanceNote')}</p> : null}
       {error ? <p className="launcher-dialog-error" role="alert">{error}</p> : null}
     </DialogShell>
   </div>, document.body);

@@ -3,7 +3,6 @@ import { mkdtemp, mkdir, readFile, rm, symlink, writeFile } from 'node:fs/promis
 import { readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { createPackage } from '@electron/asar';
 import type { NativeImage } from 'electron';
 
 const icons = vi.hoisted(() => ({ fromPath: vi.fn(), fromBuffer: vi.fn(), fallback: vi.fn() }));
@@ -42,16 +41,6 @@ describe('selected DSH workbench icon', () => {
     expect(icons.fromPath.mock.calls.map(call => call[0])).toEqual([aIcon, bIcon]);
     expect(await readFile(aIcon, 'utf8')).toBe('official-a'); expect(await readFile(bIcon, 'utf8')).toBe('official-b');
     expect(icons.fallback).not.toHaveBeenCalled();
-  });
-
-  it('uses a bounded PNG entry in the selected ASAR without extracting or modifying it', async () => {
-    const root = await temporary(); const source = path.join(root, 'source'); const program = path.join(root, 'program');
-    await writeIcon(source, 'assets/icon.png', 'official-asar-image'); await mkdir(path.join(program, 'resources'), { recursive: true });
-    const archive = path.join(program, 'resources', 'app.asar'); await createPackage(source, archive);
-    const before = await readFile(archive); const official = image();
-    icons.fromBuffer.mockImplementation((buffer: Buffer) => buffer.toString() === 'official-asar-image' ? official : image(true));
-    expect(await resolveDshWorkbenchIcon(program)).toBe(official);
-    expect(await readFile(archive)).toEqual(before); expect(icons.fromPath).not.toHaveBeenCalled(); expect(icons.fallback).not.toHaveBeenCalled();
   });
 
   it('skips oversized images and can decode a version-specific Windows ICO by its real path', async () => {

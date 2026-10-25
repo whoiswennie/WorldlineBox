@@ -21,8 +21,8 @@ test('launcher notices do not shift headings, cards or scroll positions', async 
   const launcherRoot = path.join(profile, 'dsh-launcher');
   await mkdir(path.join(launcherRoot, 'operations'), { recursive: true });
   const runtimes: DshRuntime[] = Array.from({ length: 10 }, (_, index) => ({
-    id: randomUUID(), version: `0.2.0-layout-${index}`, nodeVersion: '24.18.1', electronVersion: '44.0.0',
-    platform: 'win32-x64', adapter: 'desktop-cli-web-v1', source: 'layout-test-fixture',
+    id: randomUUID(), version: `0.2.0-layout-${index}`, nodeVersion: '24.18.1',
+    platform: 'win32-x64', adapter: 'node-cli-web-v1', source: 'layout-test-fixture',
     sourceSha256: 'a'.repeat(64), contentSha256: 'b'.repeat(64), installedAt: '2026-10-12T00:00:00Z', fileCount: 1, byteLength: 1,
   }));
   // Valid registry entries with absent programs intentionally exercise the real

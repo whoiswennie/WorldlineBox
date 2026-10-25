@@ -23,9 +23,12 @@ export async function realDshAcceptanceRoute(root: string) {
 export async function installedDshAcceptanceProgram(): Promise<string> {
   if (process.env.WORLDLINEBOX_DSH_NATIVE_PROGRAM) return path.resolve(process.env.WORLDLINEBOX_DSH_NATIVE_PROGRAM);
   const userData = process.env.WORLDLINEBOX_USER_DATA_PATH ?? path.join(process.env.APPDATA!, 'WorldlineBox');
-  const root = path.join(userData, 'dsh-launcher');
+  const root = path.join(userData, 'dsh');
   const records: Array<{ id: string; version: string; adapter: string }> = JSON.parse(await readFile(path.join(root, 'runtimes.json'), 'utf8'));
-  const target = records.find(record => record.version === '0.2.1-rc.2' && record.adapter === 'node-cli-web-v1');
-  if (!target || !/^runtime-[a-f0-9]{24}$/.test(target.id)) throw new Error('DSH_ACCEPTANCE_INSTALLED_0_2_1_RC_2_NOT_FOUND');
+  const instances: Array<{ runtimeId: string; isDefault: boolean }> = JSON.parse(await readFile(path.join(root, 'native-instances.json'), 'utf8'));
+  const selected = await readFile(path.join(root, 'cli/native-selection.json'), 'utf8').then(text => JSON.parse(text) as { instanceId: string }).catch(() => undefined);
+  const instance = (instances as Array<{ id: string; runtimeId: string; isDefault: boolean }>).find(value => value.id === selected?.instanceId) ?? instances.find(value => value.isDefault);
+  const target = records.find(record => record.id === instance?.runtimeId && record.adapter === 'node-cli-web-v1');
+  if (!target || !/^runtime-[a-f0-9]{24}$/.test(target.id)) throw new Error('DSH_ACCEPTANCE_SELECTED_NATIVE_RUNTIME_NOT_FOUND');
   return path.join(root, 'runtimes', target.id, 'program');
 }

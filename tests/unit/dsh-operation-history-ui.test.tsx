@@ -35,8 +35,9 @@ async function search(value: string) {
   await act(() => { Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!.call(field, value); field.dispatchEvent(new Event('input', { bubbles: true })); });
 }
 async function filter(value: string) {
-  const field = container!.querySelector<HTMLSelectElement>('select[aria-label="操作状态"]')!;
-  await act(() => { field.value = value; field.dispatchEvent(new Event('change', { bubbles: true })); });
+  const field = container!.querySelector<HTMLButtonElement>('[role="combobox"][aria-label="操作状态"]')!;
+  await act(() => field.click());
+  await act(() => document.querySelector<HTMLButtonElement>(`[role="option"][data-value="${value}"]`)!.click());
 }
 
 it('renders a bounded page of history and navigates every retained operation', async () => {
@@ -59,7 +60,7 @@ it('searches title, raw type, instance, error and translated status across all p
   await click('清除筛选'); expect(rows()).toHaveLength(20); expect(rows()[0]!.dataset.dshOperation).toBe('operation-0');
   await filter('failed'); expect(rows()).toHaveLength(1); expect(rows()[0]!.dataset.dshOperation).toBe(needle.id);
   await search('runtime'); expect(rows()).toHaveLength(0);
-  await click('清除筛选'); expect(container!.querySelector<HTMLSelectElement>('select')!.value).toBe('all'); expect(rows()).toHaveLength(20);
+  await click('清除筛选'); expect(container!.querySelector<HTMLButtonElement>('[role="combobox"]')!.textContent).toContain('所有状态'); expect(rows()).toHaveLength(20);
 });
 
 it('corrects removed last pages and resets the page when filters change', async () => {

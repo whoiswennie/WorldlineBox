@@ -1,3 +1,5 @@
+import { setTimeout as waitFor } from 'node:timers/promises';
+import { COMPANION_WAIT_TOOL, companionWaitArgumentsSchema } from '../../shared/companion-wait';
 import type { Companion, CompanionConversation, CompanionMessage } from '../../shared/companions';
 import type { CompanionLoopCall, CompanionLoopCheckpoint, CompanionLoopTurn } from '../../shared/companion-loop';
 import { companionFinalValidationFailures, type CompanionAgentRun, type CompanionHostObservationChange } from '../../shared/companion-agent-run';
@@ -18,6 +20,7 @@ import { CompanionAgentNoProgressError, type CompanionAgentNoProgressProof } fro
 import type { CompanionExecutionReadset } from '../../shared/companion-execution-evidence';
 import { captureCompanionExecutionReadset } from './execution-evidence';
 import { companionBoundCapabilityContext } from './capability-availability';
+import { companionToolImageReferenceSchema, type ToolVisualInput } from '../../shared/companion-file-tool';
 import { COMPANION_SUBMIT_RESULT_TOOL, companionFinalProposalBytes, companionFinalProposalReceipt, isCompanionFinalTurn,
   companionFinalProposalReceiptSchema, companionFinalProposalJsonText } from '../../shared/companion-final-proposal';
 
@@ -28,6 +31,7 @@ export interface CompanionStructuredAgentCapabilities {
   /** Host-declared meaning of the bound DSH schema, never inferred from its name. */
   dshContext?: 'thought' | 'execution';
   execute(call: CompanionLoopCall, signal?: AbortSignal): Promise<unknown>;
+  toolImages?(turns: readonly CompanionLoopTurn[]): Promise<ToolVisualInput[]>;
   journal?: CompanionAgentJournal;
   /** Only read operations or effects backed by a stable host receipt may replay. */
   replaySafe?: boolean;
@@ -206,7 +210,7 @@ export async function runCompanionStructuredAgent(input: CompanionStructuredAgen
   let emptyCorpusRecovery: CompanionAgentNoProgressProof | undefined;
   // Empty VCP recall cannot disable independent actions (for example, a peer's
   // native topic.join). Only the structured corpus-reading capability is muted.
-  const availableAuxiliaryTools = () => (input.capabilities?.tools ?? []).filter(tool => !emptyCorpusRecovery || tool.name !== 'memory');
+  const availableAuxiliaryTools = () => [...(input.capabilities?.tools ?? []).filter(tool => !emptyCorpusRecovery || tool.name !== 'memory'), COMPANION_WAIT_TOOL];
   const acceptedOutputs = new WeakMap<CompanionLoopTurn, unknown>();
   const progressFingerprint = () => JSON.stringify({ companionId: refreshedFrame.companion.id, conversationId: refreshedFrame.conversation.id,
     invocationId: refreshedFrame.invocation?.id, sourceId: refreshedFrame.sourceMessage?.id,
@@ -320,6 +324,7 @@ export async function runCompanionStructuredAgent(input: CompanionStructuredAgen
     try {
       result = await generateCompanionReply(frame, config, signal, { ...options, loop: true, identityCorrection,
       context: inference.context, tools: effectiveTools, turns: inference.turns,
+      toolImages: await input.capabilities?.toolImages?.(inference.turns),
       ...(outputCorrection ? { hostValidationFeedback: {
         rejectedProposalChecksum: createHash('sha256').update(outputCorrection.rejectedProposal).digest('hex'), error: outputCorrection.error,
         kind: feedbackKind(outputCorrection), ...(outputCorrection.hostObservation ? { hostObservation: outputCorrection.hostObservation } : {}),
@@ -379,16 +384,30 @@ export async function runCompanionStructuredAgent(input: CompanionStructuredAgen
   } },
   execute: async (turn, step) => {
     const results: NonNullable<CompanionLoopTurn['results']> = [];
-    const allowed = new Set((input.capabilities?.tools ?? []).map(tool => tool.name));
+    const receipt = (call: CompanionLoopCall, content: string) => {
+      let images;
+      if (call.name === 'browser') {
+        try { images = z.object({ images: z.array(companionToolImageReferenceSchema).max(4).optional() }).parse(JSON.parse(content)).images; } catch { /* An ordinary error has no pixels. */ }
+      }
+      return { callId: call.id, content, ...(images ? { images } : {}) };
+    };
+    const allowed = new Set(availableAuxiliaryTools().map(tool => tool.name));
     for (const [slot, call] of turn.calls.entries()) {
       signal?.throwIfAborted();
       await captureEvidence();
       let effect = run.effects.find(item => item.step === step && item.callId === call.id);
-      if (effect?.state === 'confirmed') { results.push({ callId: call.id, content: effect.result! }); continue; }
+      if (effect?.state === 'confirmed') { results.push(receipt(call, effect.result!)); continue; }
       if (effect && !input.capabilities?.replaySafe) throw new Error('能力执行结果尚未确认，须核对实际作用，不能盲目重放。');
       if (!effect) { effect = { step, callId: call.id, state: 'dispatched' }; run.effects.push(effect); await save(); }
       let content: string;
       try {
+        if (call.name === 'wait') {
+          if (turn.calls.length !== 1) throw new Error('wait 应单独调用，等待后重新观察真实状态。');
+          const args = companionWaitArgumentsSchema.parse(JSON.parse(call.arguments));
+          await waitFor(args.ms, undefined, { signal });
+          content = JSON.stringify({ ok: true, waitedMs: args.ms, reason: args.reason, instruction: '等待结束，请重新观察操作结果。' });
+          effect.state = 'confirmed'; effect.result = content; await save(); results.push(receipt(call, content)); continue;
+        }
         if (!input.capabilities || !allowed.has(call.name)) throw new Error('当前调用未提供此能力。');
         const effectId = createHash('sha256').update(JSON.stringify([run.id, step, slot])).digest('hex');
         const value = await input.capabilities.execute({ ...call, id: effectId }, signal);
@@ -399,7 +418,7 @@ export async function runCompanionStructuredAgent(input: CompanionStructuredAgen
         content = JSON.stringify({ ok: false, error: error instanceof Error ? error.message : '能力执行失败。' });
       }
       effect.state = 'confirmed'; effect.result = content; await save();
-      results.push({ callId: call.id, content });
+      results.push(receipt(call, content));
       await captureEvidence([...turns.slice(0, -1), { ...turn, results: [...results] }]);
     }
     return results;

@@ -1,3 +1,4 @@
+import { companionAttentionCanClaim } from './attention-queue';
 import { createHash } from 'node:crypto';
 import type { CompanionConnection } from './store';
 import type { CompanionMessage } from '../shared/companions';
@@ -318,7 +319,7 @@ export class CompanionSocialContinuityStore {
         const notice = parse<Notice>(value.data);
         if (!this.db.prepare("SELECT 1 FROM companions WHERE id=? AND json_extract(data,'$.active')=1").get(notice.companionId)) continue;
         if (!this.validNotice(notice)) { notice.status = 'cancelled'; delete notice.leaseToken; this.save(notice); continue; }
-        if (!this.ready(notice.companionId) || companionPlayerPhoneBusy(this.db, notice.companionId) || this.db.prepare("SELECT 1 FROM companion_social_jobs WHERE companion_id=? AND status='running' AND lease_until>? LIMIT 1").get(notice.companionId, iso())
+        if (!companionAttentionCanClaim(this.db, notice.companionId, notice.sourceMessageId) || !this.ready(notice.companionId) || companionPlayerPhoneBusy(this.db, notice.companionId) || this.db.prepare("SELECT 1 FROM companion_social_jobs WHERE companion_id=? AND status='running' AND lease_until>? LIMIT 1").get(notice.companionId, iso())
           || this.db.prepare("SELECT 1 FROM companion_activity_tasks WHERE companion_id=? AND report_pending=1 AND json_extract(data,'$.reportLeaseUntil')>? LIMIT 1").get(notice.companionId, Date.now())
           || this.db.prepare("SELECT 1 FROM companion_social_communication WHERE companion_id=? AND until_real>? AND json_extract(data,'$.phase')='typing'").get(notice.companionId, iso())
           || this.db.prepare("SELECT 1 FROM companion_social_notifications WHERE companion_id=? AND status='running' AND lease_until>? LIMIT 1").get(notice.companionId, iso())) continue;
@@ -398,5 +399,5 @@ export class CompanionSocialContinuityStore {
 
 /** Waiting player messages do not reserve the phone; an actual ready chat does. */
 export function companionPlayerPhoneBusy(db: CompanionConnection, companionId: string): boolean {
-  return !!db.prepare("SELECT 1 FROM companion_world_work_records WHERE companion_id=? AND status='ready' AND json_extract(data,'$.kind')='chat' LIMIT 1").get(companionId);
+  return !!db.prepare("SELECT 1 FROM companion_work_queue WHERE companion_id=? AND status='running' LIMIT 1").get(companionId) || !!db.prepare("SELECT 1 FROM companion_world_work_records WHERE companion_id=? AND status='ready' AND json_extract(data,'$.kind')='chat' LIMIT 1").get(companionId);
 }

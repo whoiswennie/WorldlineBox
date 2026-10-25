@@ -1,0 +1,3 @@
+- insert:
+    - id: worldlinebox-bridge
+      name: '@worldlinebox/dsh-bridge'

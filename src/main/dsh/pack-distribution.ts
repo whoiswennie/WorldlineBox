@@ -27,9 +27,9 @@ function validateDistribution(value: unknown): DshPackDistribution {
   if (parsed.archive.fileName.includes('/') || !parsed.archive.fileName.endsWith('.dshpack')) throw new Error('The distribution requires a .dshpack archive filename.');
   if (parsed.archive.url) httpsDownloadUrl(parsed.archive.url);
   parseSealedManifest(parsed.lock);
-  if (parsed.format === 'worldlinebox-dshpack-distribution-v2' && !parsed.lock.files.some(file => file.path === 'runtime-lock/package-lock.json')) throw new Error('The public Node pack requires its sealed replay dependency lock.');
+  if (!parsed.lock.files.some(file => file.path === 'runtime-lock/package-lock.json')) throw new Error('The public Node pack requires its sealed replay dependency lock.');
   for (const file of parsed.lock.files) {
-    if (file.path !== 'home/cordis.patch.yml' && !(parsed.format === 'worldlinebox-dshpack-distribution-v2' && file.path === 'runtime-lock/package-lock.json')
+    if (file.path !== 'home/cordis.patch.yml' && !(file.path === 'runtime-lock/package-lock.json')
       && !/^(?:home\/(?:profiles|skills|skills-disabled)|agents\/skills)\//.test(file.path)) throw new Error('The public pack lock contains a private or unexpected path.');
     if (file.path.split('/').some(segment => /^\.credentials(?:\.|$)|^\.env(?:\.|$)|^(?:sessions|attachments|storages)$/i.test(segment))) throw new Error('The public pack lock contains private data.');
   }
@@ -47,7 +47,7 @@ export class PackDistributionService {
     const exported = await this.options.exportArchive(packId, archivePath, signal);
     const seal = parseSealedManifest(exported); const metadata = exported as Record<string, unknown>;
     const info = await lstat(archivePath); if (!info.isFile() || info.isSymbolicLink()) throw new Error('The exported pack is not a regular archive file.');
-    const manifest = validateDistribution({ format: metadata.format === 'worldlinebox-dshpack-v2' ? 'worldlinebox-dshpack-distribution-v2' : 'worldlinebox-dshpack-distribution-v1', name: metadata.name, version: metadata.version,
+    const manifest = validateDistribution({ format: 'worldlinebox-dshpack-distribution-v2', name: metadata.name, version: metadata.version,
       createdAt: metadata.createdAt, runtime: metadata.runtime,
       archive: { fileName: path.basename(archivePath), byteLength: info.size, sha256: await hashFile(archivePath, signal), url: downloadUrl },
       lock: { files: seal.files, contentSha256: seal.contentSha256, fileCount: seal.fileCount, byteLength: seal.byteLength } });

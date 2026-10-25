@@ -46,10 +46,32 @@ const rereadable = new Set(['messages', 'message.get', 'message.search', 'memory
   'memory.sources.search', 'memory.read', 'memory.inspect', 'memory.browse', 'memory.list', 'memory.library.read', 'memory.library.page',
   'memory.library.index-page', 'memory.library.changes', 'topic.read', 'topic.sources.valid', 'topic.compaction.sources', 'social.messages', 'social.conversations', 'social.flow', 'activity.progress']);
 const validationReads = new Set([...rereadable, 'execution.sources', 'action.get', 'checkpoint.get', 'collaboration.read',
-  'memory.prohibitions', 'memory.corpus.stamp', 'memory.documents.get', 'memory.document.get', 'social.job.game_context', 'activity.handoff']);
+  'memory.prohibitions', 'memory.corpus.stamp', 'memory.documents.get', 'memory.document.get', 'social.job.game_context', 'activity.handoff', 'state', 'world.clock', 'world.state', 'runtime.read', 'character.development.read',
+  'actions', 'actions.invocation', 'loop.get', 'work.list', 'memory.status']);
 /** Anything not explicitly read-only advances Main's validation generation.
  * This is only a request-local memo boundary, never a permanent proof epoch. */
 export function companionExecutionSourceReadOnly(command: CompanionStorageCommand): boolean { return validationReads.has(command.type); }
+
+/** Share a dependency DAG only within one host read/preparation operation.
+ * Every storage mutation still changes the revision and invalidates its keys. */
+export function withCompanionExecutionValidation<T>(operation: () => Promise<T>): Promise<T> {
+  return validationFrame.getStore() ? operation()
+    : validationFrame.run({ path: new Set(), completed: new Map(), identities: new Map() }, operation);
+}
+
+/** Shared action dependencies are verified once in this read operation only.
+ * Any overlapping write invalidates the result before it can be reused. */
+export function memoCompanionExecutionValidation(key: string, revision: () => number, operation: () => Promise<boolean>): Promise<boolean> {
+  return withCompanionExecutionValidation(async () => {
+    const frame = validationFrame.getStore()!, captured = revision(), identity = `action:${key}:${captured}`;
+    if (frame.path.has(identity)) return false;
+    const cached = frame.completed.get(identity);
+    if (cached !== undefined) return cached;
+    const valid = await validationFrame.run({ ...frame, path: new Set([...frame.path, identity]) }, operation);
+    if (captured === revision()) frame.completed.set(identity, valid);
+    return valid;
+  });
+}
 
 /** One Main boundary for snapshots, source reads and derived journals. The
  * storage port must be raw (not recursively routed through this function).

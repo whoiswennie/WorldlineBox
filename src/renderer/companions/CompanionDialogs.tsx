@@ -41,7 +41,7 @@ export function CompanionDialogs({ dialog, companions, request, onClose, onOpen,
   const [catalogueQuery, setCatalogueQuery] = useState('');
   const [catalogueCategory, setCatalogueCategory] = useState('全部');
   const initial = dialog.kind === 'companion' ? dialog.companion : undefined;
-  const [draft, setDraft] = useState<CompanionDraft>(() => ({ name: initial?.name ?? '', description: initial?.description ?? '', persona: initial?.persona ?? '', model: '', avatar: initial?.avatar ?? 'custom', proactive: initial?.proactive ?? true, ...(initial?.avatarAttachmentId ? { avatarAttachmentId: initial.avatarAttachmentId } : {}), ...(initial?.appearanceAttachmentId ? { appearanceAttachmentId: initial.appearanceAttachmentId } : {}) }));
+  const [draft, setDraft] = useState<CompanionDraft>(() => ({ name: initial?.name ?? '', description: initial?.description ?? '', persona: initial?.persona ?? '', model: '', avatar: initial?.avatar ?? 'custom', proactive: initial?.proactive ?? true, inputMode: initial?.inputMode ?? 'steer', ...(initial?.avatarAttachmentId ? { avatarAttachmentId: initial.avatarAttachmentId } : {}), ...(initial?.appearanceAttachmentId ? { appearanceAttachmentId: initial.appearanceAttachmentId } : {}) }));
   const [connectionMode, setConnectionMode] = useState<'global' | 'independent'>(initial?.llm ? 'independent' : 'global');
   const [connection, setConnection] = useState<NonNullable<CompanionDraft['llm']>>(() => ({ apiFormat: initial?.llm?.apiFormat ?? 'openai_chat', baseUrl: initial?.llm?.baseUrl ?? '', model: initial?.llm?.model ?? '' }));
   const [apiKey, setApiKey] = useState('');

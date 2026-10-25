@@ -1,11 +1,14 @@
 import type { BrowserRequest, BrowserTab } from '../../shared/browser';
 import { Icon } from '../Icons';
 import { useLocale } from '../i18n';
+import type { BrowserCompanionActivity } from '../../shared/companion-browser';
 
-export function BrowserTabStrip({ tabs, activeId, run, b }: {
+export function BrowserTabStrip({ tabs, activeId, run, b, activities = [] }: {
   tabs: readonly BrowserTab[]; activeId?: string; run(request: BrowserRequest): unknown; b(key: string): string;
+  activities?: readonly BrowserCompanionActivity[];
 }) {
   const { locale } = useLocale();
+  const namesFor = (id: string) => [...new Map(activities.filter(item => item.tabId === id).map(item => [item.companionId, item.companionName] as const)).values()].join('、');
   return <div className="browser-tabs" role="tablist" aria-label={b('title')}>
     {tabs.map((tab, index) => <div className={'browser-tab' + (tab.id === activeId ? ' is-active' : '')} key={tab.id} data-tab-id={tab.id}
       onContextMenu={event => { event.preventDefault(); void run({ type: 'tab.contextMenu', id: tab.id, locale }); }}
@@ -22,6 +25,8 @@ export function BrowserTabStrip({ tabs, activeId, run, b }: {
           strip?.querySelectorAll<HTMLButtonElement>('[role="tab"]')[target]?.focus();
         }}>
         <Icon name={tab.loading ? 'loader' : tab.pinned ? 'pin' : 'globe'} size={14} /><span>{tab.title}</span>
+        {activities.some(item => item.tabId === tab.id) ? <span className="browser-tab-companions" role="img" aria-label={b('companionViewing') + ' · ' + namesFor(tab.id)}
+          title={b('companionViewing') + ' · ' + namesFor(tab.id)}><Icon name="sparkles" size={13} /></span> : null}
       </button>
       {tab.audible || tab.muted ? <button type="button" className={'browser-tab-audio' + (tab.muted ? ' is-muted' : '')}
         aria-label={b(tab.muted ? 'unmuteTab' : 'muteTab') + ' · ' + tab.title} aria-pressed={tab.muted}

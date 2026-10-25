@@ -11,6 +11,7 @@ import { companionProgressEvent, mergeCompanionProgress } from '../../shared/com
 import type { CompanionActionEvent } from '../../shared/companions';
 import { COMPANION_WORK_PHASE_LABELS, companionWorkOverview, companionWorkPhase } from './companion-work-overview';
 import { dshRecordQuerySchema } from '../../shared/dsh-task-record';
+import { createCoalescedRefresh } from './coalesced-refresh';
 
 type Cursor = NonNullable<CompanionActionPage['nextCursor']>;
 const PAGE_SIZE = 20;
@@ -36,7 +37,10 @@ export function CompanionTaskMonitor({ actions, companions, conversationId, requ
   const [detail, setDetail] = useState<CompanionAction>();
   const [detailError, setDetailError] = useState('');
   const streams = useRef(new Map<string, CompanionActionEvent[]>());
-  const selectedStatus = actions.find(action => action.id === selectedId)?.status ?? (detail?.id === selectedId ? detail?.status : page?.items.find(action => action.id === selectedId)?.status);
+  const live = actions.find(action => action.id === selectedId);
+  const stored = detail?.id === selectedId ? detail : undefined;
+  const selected = live && stored ? { ...(live.updatedAt >= stored.updatedAt ? live : stored), events: mergeCompanionProgress(stored.events ?? [], live.events ?? []) } : live ?? stored;
+  const selectedStatus = selected?.status ?? page?.items.find(action => action.id === selectedId)?.status;
   useEffect(() => dshApi?.onTaskEvent?.(event => {
     const progress = companionProgressEvent(event);
     if (!progress) return;
@@ -76,19 +80,17 @@ export function CompanionTaskMonitor({ actions, companions, conversationId, requ
   useEffect(() => {
     let cancelled = false;
     if (!selectedId) return;
-    const load = () => { void request({ type: 'action.get', id: selectedId }).then(response => {
+    const reads = createCoalescedRefresh(async () => {
+      const response = await request({ type: 'action.get', id: selectedId });
       if (cancelled) return;
       if (response?.action?.conversationId === conversationId) { const action = response.action; setDetail({ ...action, events: mergeCompanionProgress(action.events ?? [], streams.current.get(action.taskId ?? '') ?? []) }); setDetailError(''); }
       else setDetailError('任务详情读取失败，请重试。');
-    }); };
-    load();
-    const timer = selectedStatus && ['queued', 'running'].includes(selectedStatus) ? setInterval(load, 1000) : undefined;
-    return () => { cancelled = true; if (timer) clearInterval(timer); };
+    }, () => { if (!cancelled) setDetailError('任务详情读取超时或失败，请重试。'); }, 1000);
+    void reads.trigger();
+    const timer = selectedStatus && ['queued', 'running'].includes(selectedStatus) ? setInterval(() => void reads.trigger(), 1000) : undefined;
+    return () => { cancelled = true; reads.dispose(); if (timer) clearInterval(timer); };
   }, [selectedId, conversationId, request, revision, refresh, selectedStatus]);
   useEffect(() => { const handle = (event: KeyboardEvent) => { if (event.key === 'Escape') onClose(); }; document.addEventListener('keydown', handle); return () => document.removeEventListener('keydown', handle); }, [onClose]);
-  const live = actions.find(action => action.id === selectedId);
-  const stored = detail?.id === selectedId ? detail : undefined;
-  const selected = live && stored ? { ...(live.updatedAt >= stored.updatedAt ? live : stored), events: mergeCompanionProgress(stored.events ?? [], live.events ?? []) } : live ?? stored;
   const owners = view === 'history' && page?.owners.length ? page.owners : companions.map(role => ({ companionId: role.id, name: role.name, count: companionWorkOverview(actions, role.id).total }));
   function reset(nextOwner = owner) { linkedSelection.current = undefined; setSelectedId(undefined); setLoading(true); setOwner(nextOwner); setCursors([undefined]); setPageNumber(0); setRefresh(value => value + 1); }
   return <div className="companions-task-backdrop" onMouseDown={event => { if (event.target === event.currentTarget) onClose(); }}><section className="companions-task-monitor" role="dialog" aria-modal="true" aria-label="伙伴实时任务">

@@ -149,12 +149,13 @@ it('finishes peer internal work with the configured model, no external tools or 
   f.store.updatePlayerProfile({ name: 'PRIVATE_PLAYER', description: 'PRIVATE_PLAYER_DESCRIPTION' }, 1);
   f.fetchFn.mockImplementation(async (_url, init) => {
     const body = JSON.parse(String(init?.body)), input = JSON.parse(body.messages[1].content);
-    expect(body.tools.map((tool: { function: { name: string } }) => tool.function.name)).toEqual(['memory']);
+    expect(body.tools.map((tool: { function: { name: string } }) => tool.function.name)).toEqual(['memory', 'world', 'wait']);
     expect(input).toMatchObject({ orderId: order.id, assigneeId: 'alice', publisherId: 'bob', source: { id: source.id, authorId: 'bob' } });
     expect(String(init?.body)).not.toContain('PRIVATE_PLAYER'); expect(String(init?.body)).toContain('不能调用现实工具');
     return response({ orderId: order.id, result: '依据共同讨论整理出的有限提纲。' });
   });
-  f.service.tick(); await until(() => f.orders(owner)[0]?.status === 'completed');
+  f.service.tick(); await until(() => ['completed', 'failed'].includes(f.orders(owner)[0]?.status ?? ''));
+  expect(f.report).not.toHaveBeenCalled();
   const actual = f.orders(owner)[0]!, message = f.store.getMessage(actual.completionMessageId!);
   expect(message).toMatchObject({ authorId: 'alice', conversationId: owner.conversationId, replyToId: source.id, content: '依据共同讨论整理出的有限提纲。' });
   expect(f.launch).not.toHaveBeenCalled(); expect(f.resume).not.toHaveBeenCalled(); expect(f.wait).not.toHaveBeenCalled();
@@ -196,7 +197,7 @@ it('uses accumulated world-time life probability to send one authored spontaneou
   const rule = f.store.request({ type: 'life-rule.create', companionId: 'alice', rule: { title: '向玩家问候', action: 'message', targetId: 'user', startMinute: 600, endMinute: 610, probability: 1, checkIntervalMinutes: 1 } }).lifeRule!;
   f.fetchFn.mockImplementation(async (_url, init) => {
     const body = JSON.parse(String(init?.body)), input = JSON.parse(body.messages[1].content);
-    expect(body.tools.map((tool: { function: { name: string } }) => tool.function.name)).toEqual(['memory']);
+    expect(body.tools.map((tool: { function: { name: string } }) => tool.function.name)).toEqual(['memory', 'world', 'wait']);
     expect(input).toMatchObject({ speakerId: 'alice', target: { id: 'user', kind: 'human_player' }, action: 'message' });
     return response({ eventId: input.eventId, speakerId: 'alice', targetId: 'user', text: '想和你打个招呼，现在方便聊聊吗？' });
   });

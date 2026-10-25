@@ -650,7 +650,7 @@ let mainWindow: BrowserWindow | undefined;
 let dshLauncher: DshLauncher | undefined;
 let closeGlobalNetwork: (() => Promise<void>) | undefined;
 let disposeGlobalNetworkIpc: (() => void) | undefined;
-let browserService: Pick<BrowserService, 'shutdown' | 'closeLibrary' | 'captureViewport' | 'selectedText' | 'saveScreenshot'> | undefined;
+let browserService: Pick<BrowserService, 'shutdown' | 'closeLibrary' | 'captureViewport' | 'selectedText' | 'saveScreenshot' | 'companionTool'> | undefined;
 let captureToolsService: CaptureToolsService | undefined;
 let musicService: MusicService | undefined;
 let companionService: CompanionService | undefined;
@@ -4886,20 +4886,6 @@ async function startApplication(): Promise<void> {
   await startupWindow.open();
   logger.info('main.portable-tools.deferred', 'Bundled tools will be verified when an execution feature requests them.');
   startupWindow?.set("services", "准备首页与按需服务入口");
-  if (applicationUserData.mode === "shared" || applicationUserData.mode === "override") {
-    try {
-      const { migrateLegacyDshStorage } = await import("./legacy-dsh-storage");
-      const migration = await migrateLegacyDshStorage({
-        projectRoot: app.getAppPath(), userDataPath: app.getPath("userData"),
-        legacyUserDataPath: process.env.WORLDLINEBOX_DEV_USER_DATA_PATH,
-      });
-      if (migration.status !== "missing" && migration.status !== "target-exists") {
-        logger.info("dsh.legacy-storage", migration.message, { ...migration });
-      }
-    } catch (error) {
-      logger.error("dsh.legacy-storage", error);
-    }
-  }
   let applicationNetwork: LauncherNetwork | undefined;
   try {
     const { getApplicationNetwork, setApplicationNetworkFailureReporter, closeApplicationNetwork } = await import('./application-network');
@@ -5008,6 +4994,17 @@ async function startApplication(): Promise<void> {
       await phase('open-library', () => ensureCompanionLibrary(workspace));
       if (applicationClosing) throw new Error('应用正在关闭。');
       companionService = new CompanionService({
+        purgeMemoryAssets: async owner => {
+          if (!/^[A-Za-z0-9_-]{1,100}$/.test(owner) || !workerClient) throw new Error('伙伴资产库尚未就绪。');
+          const roots = await workerClient.request({ type: 'linked-folder.list', libraryId: workspace.libraryId });
+          if (!roots.ok || roots.type !== 'linked-folder.list') throw new Error('无法读取伙伴记忆目录映射。');
+          for (const folder of roots.folders.filter(folder => folder.relativePath === ''
+            && folder.folderId === folder.linkedFolderId && path.resolve(folder.absoluteRootPath) === path.resolve(workspace.memoryRoot))) {
+            const result = await workerClient.request({ type: 'linked-folder.delete-subtree', libraryId: workspace.libraryId,
+              linkedFolderId: folder.folderId, relativePath: owner, deleteFromDisk: false, includeDeleted: true });
+            if (!result.ok) throw new Error('伙伴文件已清理，但资产索引清理失败：' + JSON.stringify(result.error));
+          }
+        },
         memoryDeviceStatus: () => embeddingDevice().snapshot(),
         learningAssets: companionLearningAssets({ memoryRoot: workspace.memoryRoot, request: command => {
           if (!workerClient) throw new Error('资产服务尚未就绪。'); return workerClient.request(command);
@@ -5036,6 +5033,7 @@ async function startApplication(): Promise<void> {
           const config = loadAiConfig();
           return { apiFormat: config.apiFormat, model: config.model, baseUrl: config.baseUrl, apiKey: getDecryptedApiKey() };
         },
+        browser: (scope, input, signal) => { if (!browserService) throw Error('内置浏览器尚未就绪。'); return browserService.companionTool(scope, input, signal); },
         dsh: () => dshLauncher, report: error => logger?.error('companions.service', error), onChanged: () => companionWorldWindows?.changed(),
       });
       companionService.registerIpc({ requests: false, attachments: false });

@@ -42,11 +42,12 @@ export class CompanionMemoryViewCache {
     const target = fingerprints(notes);
     const reusable = previous && !previous.dirty && previous.profileKey === profileKey && previous.projectionSignature === projectionSignature
       && Object.entries(previous.notes).every(([id, fingerprint]) => target[id] === fingerprint);
+    const unchanged = !!reusable && Object.keys(previous!.notes).length === notes.length;
     const scopeId = reusable && previous ? previous.scopeId : `view_${randomUUID().replaceAll('-', '')}`;
     const view: View = { scopeId, identity, profileKey, dirty: true, notes: target, projectionSignature };
-    await this.save(key, view);
-    return { scopeId, replacedScopeId: previous && previous.scopeId !== scopeId ? previous.scopeId : undefined,
-      commit: async () => { await this.save(key, { ...view, dirty: false }); } };
+    if (!unchanged) await this.save(key, view);
+    return { scopeId, unchanged, replacedScopeId: previous && previous.scopeId !== scopeId ? previous.scopeId : undefined,
+      commit: async () => { if (!unchanged) await this.save(key, { ...view, dirty: false }); } };
   }
   async loadArtifacts(identity: string, profileKey: string): Promise<VcpMemoryTimelineArtifacts | undefined> {
     const key = `${identity}\n${profileKey}`;

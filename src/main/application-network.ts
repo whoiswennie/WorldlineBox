@@ -46,8 +46,8 @@ export function onNetworkEnvironment(listener: (value: NetworkEnvironment) => vo
 }
 export function getApplicationNetwork(): Promise<LauncherNetwork> {
   return initialized ??= (async () => {
-    // Retain the existing location so the selected DSH CLI reads the exact same saved settings.
-    const network = new LauncherNetwork(path.join(app.getPath('userData'), 'dsh-launcher'), () => undefined);
+    // All application and DSH children use one network configuration.
+    const network = new LauncherNetwork(path.join(app.getPath('userData'), 'network'), () => undefined);
     await network.init(); await network.attachSession(session.defaultSession);
     observeFailures(session.defaultSession);
     observeFailures(session.fromPartition('persist:worldlinebox-dsh-network'));

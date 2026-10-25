@@ -29,7 +29,7 @@ describe('same role Agent kernel across independent invocation ports', () => {
     const run = vi.fn(), capabilities = companionThoughtCapabilities({ tools: [], execute: vi.fn() }, { run });
     const fetchFn = vi.fn<typeof fetch>(async (_url, init) => {
       const wire = JSON.parse(String(init?.body)), system = wire.messages[0].content;
-      expect(wire.tools.map((tool: { function: { name: string } }) => tool.function.name)).toEqual(['dsh']);
+      expect(wire.tools.map((tool: { function: { name: string } }) => tool.function.name)).toEqual(['dsh', 'wait']);
       expect(system).toContain('当前dsh是独立纯思考扩展');
       expect(system).not.toContain(COMPANION_DSH_TOOL.description);
       expect(system).not.toContain('dsh(operation=read_file/read_image)');
@@ -48,8 +48,8 @@ describe('same role Agent kernel across independent invocation ports', () => {
     const validateOutput = vi.fn((value: unknown) => activityDecisionSchema.parse(value));
     const fetchFn = vi.fn<typeof fetch>(async (_url, init) => {
       const wire = JSON.parse(String(init?.body)), data = JSON.parse(wire.messages[1].content);
-      expect(wire.tools.map((tool: { function: { name: string } }) => tool.function.name)).toEqual(['memory']);
-      expect(data.capabilityAvailability).toMatchObject({ companionId: 'a', conversationId: 'group', boundToolNames: ['memory'] });
+      expect(wire.tools.map((tool: { function: { name: string } }) => tool.function.name)).toEqual(['memory', 'wait']);
+      expect(data.capabilityAvailability).toMatchObject({ companionId: 'a', conversationId: 'group', boundToolNames: ['memory', 'wait'] });
       expect(data.identity.self.id).toBe('a'); expect(data.source.content).toBe(source.content);
       expect(data.executionContract).toEqual({ finalProposalIsNotExecution: true });
       expect(data.outputSchema).toEqual(z.toJSONSchema(activityDecisionSchema, { io: 'input' }));
@@ -143,7 +143,7 @@ describe('same role Agent kernel across independent invocation ports', () => {
       inference++;
       if (inference <= 6) return new Response(JSON.stringify({ choices: [{ message: { content: '', tool_calls: [{ id: `search_${inference}`,
         type: 'function', function: { name: 'memory', arguments: JSON.stringify({ action: 'search', query: `换词${inference}` }) } }] } }] }));
-      expect(inference).toBe(7); expect(wire.tools ?? []).toEqual([]);
+      expect(inference).toBe(7); expect(wire.tools.map((tool: { function: { name: string } }) => tool.function.name)).toEqual(['wait']);
       expect(data.observationCorrection.proof).toMatchObject({ kind: 'empty_authorized_memory', repetitions: 6 });
       expect(wire.messages.filter((item: { role: string }) => item.role === 'tool')).toHaveLength(6);
       return new Response(JSON.stringify({ choices: [{ message: { content: JSON.stringify({ status: 'continue',
@@ -175,8 +175,8 @@ describe('same role Agent kernel across independent invocation ports', () => {
       inference++;
       if (inference <= 6) return new Response(JSON.stringify({ choices: [{ message: { content: '', tool_calls: [{ id: `recall_${inference}`,
         type: 'function', function: { name: 'memory', arguments: JSON.stringify({ action: 'search', query: `讨论经历${inference}` }) } }] } }] }));
-      expect(wire.tools.map((tool: { function: { name: string } }) => tool.function.name)).toEqual(['world']);
-      expect(data.capabilityAvailability.boundToolNames).toEqual(['world']);
+      expect(wire.tools.map((tool: { function: { name: string } }) => tool.function.name)).toEqual(['world', 'wait']);
+      expect(data.capabilityAvailability.boundToolNames).toEqual(['world', 'wait']);
       expect(data.observationCorrection.proof.kind).toBe('empty_authorized_memory');
       if (inference === 7) return new Response(JSON.stringify({ choices: [{ message: { content: '', tool_calls: [{ id: 'own_join',
         type: 'function', function: { name: 'world', arguments: '{"action":"topic","parameters":{"action":"join","topicId":"discussion"}}' } }] } }] }));
@@ -320,7 +320,7 @@ describe('same role Agent kernel across independent invocation ports', () => {
     expect(result).toEqual({ answer: '按本人记忆核对，没有执行外部动作。' });
     expect(request).toHaveBeenCalledExactlyOnceWith({ type: 'memory.search', companionId: 'a', conversationId: 'peer_b', beforeSequence: 1, query: '约定', limit: 8, tags: [] });
     const body = JSON.parse(String(fetchFn.mock.calls[2]![1]?.body));
-    expect(body.tools.map((tool: { function: { name: string } }) => tool.function.name)).toEqual(['memory', 'world']);
+    expect(body.tools.map((tool: { function: { name: string } }) => tool.function.name)).toEqual(['memory', 'world', 'wait']);
     expect(body.messages.some((row: { role: string; content: string }) => row.role === 'tool' && row.content.includes('未提供此能力'))).toBe(true);
   });
 });

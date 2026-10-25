@@ -97,7 +97,10 @@ export class CompanionExecutionSourceStore {
       const owner = reference.kind === 'action'
         ? this.db.prepare('SELECT companion_id AS owner FROM actions WHERE id=?').get(reference.id)
         : this.db.prepare('SELECT author_id AS owner FROM messages WHERE id=?').get(reference.id);
-      if (!owner || (owner as { owner: string }).owner !== reference.companionId) throw new Error('失效来源不属于该伙伴。');
+      // Reset can remove a source after Main captured its proof. Withdrawal is
+      // already complete in that case; the caller still rereads and redacts it.
+      if (!owner) return;
+      if ((owner as { owner: string }).owner !== reference.companionId) throw new Error('失效来源不属于该伙伴。');
       const key = executionSourceInvalidKey(reference.kind, reference.id);
       if (this.db.prepare('SELECT 1 FROM metadata WHERE key=?').get(key)) return;
       this.db.prepare('INSERT INTO metadata(key,value) VALUES(?,?)').run(key, JSON.stringify({ invalidatedAt: new Date().toISOString() }));

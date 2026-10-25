@@ -7,7 +7,7 @@ import { build } from 'vite';
 import { electronLaunchEnv, resolveElectronExecutablePath } from './electron-test-helpers';
 
 test('real Electron download transport follows HTTPS redirects, rejects downgrades and cleans failed transfers', async () => {
-  test.setTimeout(process.env.WORLDLINEBOX_DSH_REAL_DOWNLOAD === '1' ? 900_000 : 90_000);
+  test.setTimeout(90_000);
   const root = await mkdtemp(path.join(os.tmpdir(), 'worldlinebox-dsh-network-'));
   const output = path.join(root, 'fixture'); await mkdir(output);
   await mkdir(path.join(root, 'electron-data'));
@@ -22,11 +22,10 @@ test('real Electron download transport follows HTTPS redirects, rejects downgrad
   let stdout = ''; let stderr = '';
   child.stdout.on('data', chunk => { stdout += String(chunk); if (String(chunk).includes('DSH_DOWNLOAD_')) console.log(String(chunk).trim()); });
   child.stderr.on('data', chunk => { stderr += String(chunk); console.log(String(chunk).trim()); });
-  const timeout = setTimeout(() => child.kill(), process.env.WORLDLINEBOX_DSH_REAL_DOWNLOAD === '1' ? 890_000 : 80_000);
+  const timeout = setTimeout(() => child.kill(), 80_000);
   const code = await new Promise<number | null>((resolve, reject) => { child.once('error', reject); child.once('exit', resolve); }).finally(() => clearTimeout(timeout));
   expect(code, `${stdout}\n${stderr}\nFixture retained at ${root}`).toBe(0);
   const result = JSON.parse(/^DSH_DOWNLOAD_RESULT (.+)$/m.exec(stdout)?.[1] ?? '{}') as Record<string, unknown>;
   expect(result).toMatchObject({ emptyFetchUrlReproduced: true, httpsRedirect: true, downgradeBlocked: true, digestMismatch: true, cancellation: true, incompleteCleanup: true });
-  if (process.env.WORLDLINEBOX_DSH_REAL_DOWNLOAD === '1') expect(result.official).toMatchObject({ version: expect.any(String), sha256: expect.stringMatching(/^[a-f0-9]{64}$/), files: expect.any(Number) });
   await test.info().attach('electron-download-result', { body: stdout, contentType: 'text/plain' });
 });

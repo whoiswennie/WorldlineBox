@@ -15,11 +15,12 @@
 - [Serpent 0.3.2 增量升级](serpent-032-upgrade/README.md)——来源清单、自有功能适配、配置迁移和验收
 - [Serpent 0.3.3 资产管理升级](serpent-033-upgrade/README.md)——模型双面与透明贴图、浏览刷新、路径快捷键及自有功能边界
 - [伙伴消息系统](companions.md)——独立 SQLite owner、角色模型连接、记忆与 DSH 行动回流
+- [伙伴核心交互验收](companion-core-acceptance-2026-10-26.md)——回忆分段测速、单一注意力队列、后台浏览器、媒体与完整重置
 - [VCP 记忆实施说明](companion-memory-implementation.md)——统一资产库、自然文本日记、原版检索、持续生活及内置多模态向量
 - [伙伴系统验收](companion-system-acceptance.md)——三伙伴、持续生活、授权学习、消息气泡与安装包的实际验证边界
 - [VCP 记忆内容审计](vcp-memory-content-audit.md)——原版源码信息流、真实模型内容测试、修复和额外调用成本
 - [VCP 记忆完整替换调研](research-vcp-memory-replacement.md)——以 VCP 替换无 Embedding 占位方案的源码清单、宿主边界及验证
-- [DSH 启动器](dsh-launcher.md)——固定运行时、实例隔离、进程监督、快照与离线备份
+- [DSH 启动器](dsh-launcher.md)——官方版本管理、原生 Web Host、用户与伙伴共享生态、快照与备份
 - [DSH 整合包格式](dsh-packs-format.md)——依赖封存、来源锁与导入校验
 - [测试](testing.md)——测试体系与运行方式
 - [新增媒体格式支持](media-format-support.md)——从共享注册表到导入、预览、过滤、协议和验收

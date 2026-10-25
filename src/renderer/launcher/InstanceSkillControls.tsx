@@ -13,7 +13,7 @@ export function InstanceSkillControls({ state, instanceId, run, disabled = false
   const skills = inventory.instanceId === instanceId ? inventory.skills : [];
   const ticket = useRef(0); const instance = state.instances.find(item => item.id === instanceId);
   const revision = state.operations.filter(operation => operation.instanceId === instanceId && operation.kind.startsWith('skill.') && operation.status !== 'running').map(operation => `${operation.id}:${operation.status}`).join('|');
-  const locked = disabled || !instance || !['stopped', 'failed'].includes(instance.status) || state.operations.some(operation => operation.status === 'running' && operation.instanceId === instanceId);
+  const locked = disabled || !instance || ['starting', 'stopping'].includes(instance.status) || state.operations.some(operation => operation.status === 'running' && operation.instanceId === instanceId);
   const load = useCallback(async () => {
     const request = ++ticket.current; setLoading(true);
     try {

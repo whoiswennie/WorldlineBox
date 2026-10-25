@@ -1,3 +1,4 @@
+import { assertCompanionInboxCapacity, companionAttentionCanClaim } from './attention-queue';
 import { createHash, randomUUID } from 'node:crypto';
 import type { CompanionContactState } from '../shared/companion-contact';
 import type { CompanionConnection } from './store';
@@ -591,6 +592,7 @@ export class CompanionSocialStore {
   }
   private queue(source: CompanionSocialMessage, owner: string, chainId: string, remainingTurns: number, channel: Send['channel'], urgent = false, round: StoredJob['round'] = 'pair', replyOpportunity?: ActivityReplyProof): void {
     if (remainingTurns <= 0) { this.db.prepare("UPDATE companion_social_chains SET status='done' WHERE id=?").run(chainId); return; }
+    assertCompanionInboxCapacity(this.db, owner);
     const job: StoredJob = { urgent, round, id: randomUUID(), companionId: owner, conversationId: source.message.conversationId, sourceMessageId: source.message.id, throughSequence: source.message.sequence, chainId, remainingTurns, memberIds: this.members(source.message.conversationId), channel, status: 'pending', attempts: 0, typingNotBefore: iso(), createdAt: iso(), ...(replyOpportunity ? { replyOpportunity } : {}) };
     this.db.prepare('INSERT INTO companion_social_jobs(id,companion_id,conversation_id,status,created_at,data) VALUES(?,?,?,?,?,?)').run(job.id, owner, job.conversationId, job.status, job.createdAt, JSON.stringify(job));
   }
@@ -735,8 +737,7 @@ export class CompanionSocialStore {
       origin: this.continuity.forChain(job.chainId) };
   }
   private phoneBusy(owner: string, leaseId: string, allowedLeaseId = ''): boolean {
-    // Player work/reply lanes do not reserve this peer conversation. Keep only
-    // the explicit peer delivery lane, not the actor's whole daily routine.
+    // Actual reply and delivery leases reserve attention; virtual routines do not.
     return !!this.db.prepare("SELECT 1 FROM companion_social_communication WHERE companion_id=? AND until_real>? AND json_extract(data,'$.phase')='typing' AND json_extract(data,'$.leaseId') NOT IN(?,?)").get(owner, iso(), leaseId, allowedLeaseId)
       || !!this.db.prepare("SELECT 1 FROM companion_social_notifications WHERE companion_id=? AND status='running' AND lease_until>?").get(owner, iso());
   }
@@ -881,6 +882,7 @@ export class CompanionSocialStore {
         const job = parse<StoredJob>(value.data);
         if (job.replyOpportunity && !this.activityReplyValid(job.replyOpportunity)) { job.status = 'cancelled'; this.saveJob(job); this.endChain(job.chainId); continue; }
         if (!this.participantsActivated(job.memberIds)) { for (const id of job.memberIds.filter(id => !this.activated(id))) this.stopInactive(id); continue; }
+        if (!companionAttentionCanClaim(this.db, job.companionId, job.sourceMessageId)) continue;
         if (this.phoneBusy(job.companionId, 'job:' + job.id)) continue;
         if (this.db.prepare("SELECT 1 FROM companion_social_jobs WHERE companion_id=? AND status='running' AND lease_until>? LIMIT 1").get(job.companionId, iso())) continue;
         try { this.requireRoom(job.conversationId, job.companionId); } catch { job.status = 'cancelled'; this.saveJob(job); continue; }

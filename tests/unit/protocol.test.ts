@@ -3157,7 +3157,7 @@ describe('library deletion deferred-cleanup protocol (WorldlineBox-65d837)', () 
     } }).command).toMatchObject({ type: 'semantic.index.prepare', kind: 'video' });
     expect(parseWorkerResponse({ requestId: 'semantic-video-prepared', result: {
       ok: true, type: 'semantic.index.prepared', assetId: 'asset-1', sourceRevision: 'revision-1',
-      kind: 'video', mimeType: 'video/mp4', bytesBase64: Buffer.from('mp4').toString('base64'),
+      kind: 'video', mimeType: 'video/mp4', videoWindows: [{ bytesBase64: Buffer.from('mp4').toString('base64') }],
     } }).result).toMatchObject({ type: 'semantic.index.prepared', kind: 'video', mimeType: 'video/mp4' });
   });
 });

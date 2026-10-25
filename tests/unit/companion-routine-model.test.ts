@@ -36,7 +36,7 @@ describe('native virtual routine capability', () => {
       const request = JSON.parse(String(fetchFn.mock.calls[0]?.[1]?.body));
       const registry = format === 'dashscope_native' ? request.parameters.tools : request.tools;
       const tools = format === 'gemini_native' ? registry[0].function_declarations : registry.map((tool: { function?: unknown }) => tool.function ?? tool);
-      expect(tools.map((tool: { name: string }) => tool.name).sort()).toEqual(['dsh', 'memory', 'world']);
+      expect(tools.map((tool: { name: string }) => tool.name).sort()).toEqual(['dsh', 'memory', 'wait', 'world']);
       const data = JSON.parse(format === 'openai_responses' ? request.input[0].content : format === 'gemini_native' ? request.contents[0].parts[0].text
         : format === 'dashscope_native' ? request.input.messages[1].content[0].text : request.messages[format === 'anthropic' ? 0 : 1].content);
       expect(data.runtimeState.routine).toMatchObject(runtimeState.routine!);

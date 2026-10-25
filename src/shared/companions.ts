@@ -55,6 +55,7 @@ export const companionSchema = z.object({
   model: z.string().max(160), avatar: z.enum(COMPANION_AVATAR_IDS),
   builtin: z.boolean(), proactive: z.boolean(), active: z.boolean().optional(), createdAt: z.string(),
   llm: companionLlmSchema.optional(),
+  inputMode: z.enum(['steer', 'queue']).optional(),
   avatarAttachmentId: companionIdSchema.optional(),
   appearanceAttachmentId: companionIdSchema.optional(), revision: z.number().int().positive().optional(),
   availability: z.enum(['ready', 'working', 'waiting', 'offline', 'dormant']).optional(), availabilityReason: z.string().max(500).optional(), activeCount: z.number().int().nonnegative().optional(), queuedCount: z.number().int().nonnegative().optional(),
@@ -157,7 +158,7 @@ export const companionStateSchema = z.object({ companions: z.array(companionSche
   activities: z.array(companionActivitySchema), configured: z.boolean(), recoveries: z.array(companionReplyRecoverySchema).optional(), queue: z.array(companionWorkSchema).optional(), playerProfile: playerProfileSchema.optional() });
 export type CompanionState = z.infer<typeof companionStateSchema>;
 
-export const companionDraftSchema = companionSchema.pick({ name: true, description: true, persona: true, model: true, avatar: true, proactive: true, avatarAttachmentId: true, appearanceAttachmentId: true })
+export const companionDraftSchema = companionSchema.pick({ name: true, description: true, persona: true, model: true, avatar: true, proactive: true, avatarAttachmentId: true, appearanceAttachmentId: true, inputMode: true })
   .extend({ llm: companionLlmSchema.omit({ hasKey: true }).optional() });
 export type CompanionDraft = z.infer<typeof companionDraftSchema>;
 export const companionsRequestSchema = z.discriminatedUnion('type', [
@@ -219,6 +220,7 @@ export const companionsRequestSchema = z.discriminatedUnion('type', [
   z.strictObject({ type: z.literal('attachment.import'), paths: z.array(z.string().min(1).max(32768)).min(1).max(10) }),
   z.strictObject({ type: z.literal('attachment.clipboard') }),
   z.strictObject({ type: z.literal('attachment.open'), id: companionIdSchema }),
+  z.strictObject({ type: z.literal('attachment.launch'), id: companionIdSchema }),
 ]);
 export type CompanionsRequest = z.infer<typeof companionsRequestSchema>;
 export const companionsResponseSchema = z.object({

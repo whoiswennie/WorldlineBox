@@ -567,7 +567,7 @@ it('omits only useless memory recall for an empty corpus, keeps actual experienc
     const wire = JSON.parse(String(init?.body)), data = JSON.parse(wire.messages[1].content);
     toolMenus.push(wire.tools.map((tool: { function: { name: string } }) => tool.function.name));
     if (empty) {
-      expect(wire.tools.map((tool: { function: { name: string } }) => tool.function.name)).toEqual(['world', COMPANION_SUBMIT_RESULT_TOOL]);
+      expect(wire.tools.map((tool: { function: { name: string } }) => tool.function.name)).toEqual(['world', 'wait', COMPANION_SUBMIT_RESULT_TOOL]);
       expect(data.memoryAvailability).toMatchObject({ authorizedCorpusEmpty: true, revision: 'empty-now' });
       if (fetchFn.mock.calls.length === 1) return new Response(JSON.stringify({ choices: [{ message: { content: '', tool_calls: [{
         id: 'empty_corpus_experience_days', type: 'function', function: { name: 'world',
@@ -577,7 +577,7 @@ it('omits only useless memory recall for an empty corpus, keeps actual experienc
         && message.tool_call_id === 'empty_corpus_experience_days' && message.content.includes('"experienceDays"'))).toBe(true);
       expect(calls.filter(command => command.type === 'experience.days')).toEqual([{ type: 'experience.days', companionId: 'alice', limit: 20 }]);
     }
-    else { expect(wire.tools).toHaveLength(3); expect(wire.tools.map((tool: { function: { name: string } }) => tool.function.name)).toEqual(['memory', 'world', COMPANION_SUBMIT_RESULT_TOOL]); expect(data.memoryAvailability).toBeUndefined(); }
+    else { expect(wire.tools).toHaveLength(4); expect(wire.tools.map((tool: { function: { name: string } }) => tool.function.name)).toEqual(['memory', 'world', 'wait', COMPANION_SUBMIT_RESULT_TOOL]); expect(data.memoryAvailability).toBeUndefined(); }
     return response({ status: 'continue', action: { action: 'query', category: 'scenes', limit: 1 }, wait: null, summary: '用当前真实上下文继续，回忆可用性每步核实。' });
   });
   const base = setup(fetchFn); await service!.close();
@@ -588,7 +588,7 @@ it('omits only useless memory recall for an empty corpus, keeps actual experienc
     profiles: async () => ({ publicProfiles: [], visualInputs: [] }), excludedIds: () => [], changed: vi.fn(), report: error => { throw error; } });
   const get = () => store.request({ type: 'activity.get', companionId: base.companionId, conversationId: base.conversationId, id: base.task.id }).activityTask!;
   await service.tick(); await vi.waitFor(() => expect(toolMenus.length).toBeGreaterThan(0));
-  expect(toolMenus[0]).toEqual(['world', COMPANION_SUBMIT_RESULT_TOOL]);
+  expect(toolMenus[0]).toEqual(['world', 'wait', COMPANION_SUBMIT_RESULT_TOOL]);
   await vi.waitFor(() => expect(get().step).toBe(1));
   empty = false; vi.setSystemTime(Date.now() + 3000); await service.tick(); await vi.waitFor(() => expect(get().step, JSON.stringify(get())).toBe(2));
   expect(fetchFn).toHaveBeenCalledTimes(3);

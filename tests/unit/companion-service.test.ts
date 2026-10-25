@@ -13,7 +13,7 @@ import type { DshTaskEvent, DshTaskRecord } from '../../src/shared/dsh-tasks';
 import type { DshTaskSpec } from '../../src/shared/dsh-task-spec';
 import type { DshLauncher } from '../../src/main/dsh/launcher';
 import type { DshRecordScope } from '../../src/shared/dsh-task-record';
-import { CompanionService } from '../../src/main/companions/service';
+import { CompanionService, type CompanionServiceOptions } from '../../src/main/companions/service';
 import type { CompanionFileReader } from '../../src/main/companions/file-reader';
 import type { CompanionMemoryService } from '../../src/main/companions/memory-service';
 import type { CompanionMemoryTagService } from '../../src/main/companions/memory-tags-service';
@@ -38,10 +38,18 @@ vi.mock('electron', () => ({
   net: { fetch: ((input: Parameters<typeof fetch>[0], init?: RequestInit) => {
     let purpose: unknown;
     try { purpose = JSON.parse(JSON.parse(String(init?.body)).messages[1].content).purpose; } catch { /* Ordinary replies need no purpose. */ }
-    return purpose === 'vcp_experience_journal' || purpose === 'vcp_sleep_reflection' || purpose === 'vcp_sleep_memory_maintenance'
+    const pending = purpose === 'vcp_experience_journal' || purpose === 'vcp_sleep_reflection' || purpose === 'vcp_sleep_memory_maintenance'
       ? transport.memoryFetch(input, init) : purpose === 'world_decision' || purpose === 'world_attention'
         ? transport.worldFetch(input, init) : purpose === 'companion_social_progress_review'
           ? transport.socialReviewFetch(input, init) : transport.fetch(input, init);
+    const signal = init?.signal;
+    if (!signal) return pending;
+    return new Promise<Response>((resolve, reject) => {
+      const abort = () => reject(signal.reason ?? new Error('Aborted'));
+      if (signal.aborted) { abort(); return; }
+      signal.addEventListener('abort', abort, { once: true });
+      void pending.then(resolve, reject).finally(() => signal.removeEventListener('abort', abort));
+    });
   }) }, dialog: { showOpenDialog: vi.fn() }, ipcMain: { handle: vi.fn() },
   protocol: { handle: vi.fn() }, shell: { showItemInFolder: vi.fn() },
   safeStorage: { isEncryptionAvailable: () => true, encryptString: (value: string) => Buffer.from(value),
@@ -143,7 +151,7 @@ function fakeDsh(state: () => { tasks: DshTaskRecord[]; operations: Array<{ id: 
     if (request.type === 'task.run' && result.ok && result.operationId && execution?.recordScope) scopes.set(result.operationId, execution.recordScope);
     return result;
   });
-  return { state, requestTask: invoke, taskRecordScope: async (recordId: string) => {
+  return { state: () => ({ instances: [], runtimes: [], ...state() }), requestTask: invoke, taskRecordScope: async (recordId: string) => {
     if (scopes.has(recordId)) return scopes.get(recordId);
     const action = (await transport.request({ type: 'actions' })).actions?.find(action => action.taskId === recordId);
     if (!action) return undefined;
@@ -163,7 +171,7 @@ function verifiedAction(store: CompanionsStore, input: CreateCompanionAction) {
     checkpoint: { prompt: '按夹具明确来源执行。', executionReadset: readset, supplements: [], waitForActionIds: [] } }).action!;
   return store.request({ type: 'action.update', id: action.id, patch: { status: input.status, result: input.result } }).action!;
 }
-function fixture(dsh: DshLauncher, publish = false, prepareComputer = true) {
+function fixture(dsh: DshLauncher, publish = false, prepareComputer = true, browser?: CompanionServiceOptions['browser']) {
   const testNow = Date.now(); if (prepareComputer) vi.setSystemTime(testNow - 10_000);
   const root = mkdtempSync(path.join(tmpdir(), 'worldlinebox-companion-service-'));
   roots.push(root);
@@ -183,9 +191,35 @@ function fixture(dsh: DshLauncher, publish = false, prepareComputer = true) {
     vi.setSystemTime(testNow); store.request({ type: 'world.tick' });
   }
   bindStorage(store);
-  const service = startService(root, dsh, publish);
+  const service = startService(root, dsh, publish, browser);
   return { root, databasePath, store, service, conversation, source };
 }
+it('dispatches native browser calls with the real companion identity without DSH or a virtual computer', async () => {
+  const requestTask = vi.fn(async () => ({ ok: true as const }));
+  const browser = vi.fn<NonNullable<CompanionServiceOptions['browser']>>(async (_scope, args) => ({ value: args.action === 'tabs'
+    ? { tabs: [{ id: 'actual-page', title: '登录后的页面', url: 'https://example.test/' }] } : { tabId: 'actual-page', text: '真实网页内容：蓝色卡片。' } }));
+  const f = fixture(fakeDsh(() => ({ tasks: [], operations: [] }), requestTask), false, false, browser);
+  await f.service.handle({ type: 'state' });
+  let steps = 0;
+  transport.fetch.mockImplementation(async (_url, init) => {
+    const wire = JSON.parse(String(init?.body)), data = JSON.parse(wire.messages[1].content);
+    expect(wire.tools.some((tool: { function: { name: string } }) => tool.function.name === 'browser')).toBe(true);
+    expect(data.capabilityAvailability.boundToolNames).toContain('browser');
+    steps++;
+    if (steps <= 2) return new Response(JSON.stringify({ choices: [{ message: { content: '', tool_calls: [{ id: 'browse_' + steps,
+      type: 'function', function: { name: 'browser', arguments: JSON.stringify(steps === 1 ? { action: 'tabs' } : { action: 'read', tabId: 'actual-page' }) } }] } }] }),
+      { headers: { 'content-type': 'application/json' } });
+    expect(JSON.stringify(wire)).toContain('蓝色卡片'); return modelResponse('网页上的文字是：蓝色卡片。');
+  });
+  const sent = await f.service.handle({ type: 'message.send', conversationId: f.conversation.id, content: '用内置浏览器看看页面上的文字。', clientId: 'native-browser-source', delivery: 'chat' });
+  await vi.waitFor(() => expect(f.store.request({ type: 'loop.get', sourceMessageId: sent.message!.id, companionId: 'sister' }).loop?.status).toBe('done'), { timeout: 5000 });
+  expect(browser.mock.calls.filter(([, args]) => args.action === 'read')).toHaveLength(1);
+  expect(browser.mock.calls.filter(([, args]) => args.action === 'tabs').length).toBeGreaterThanOrEqual(3);
+  expect(browser.mock.calls[0]![0]).toEqual({ companionId: 'sister', companionName: '大肥鱼', conversationId: f.conversation.id });
+  expect(browser.mock.calls.find(([, args]) => args.action === 'read')![1]).toMatchObject({ action: 'read', tabId: 'actual-page' });
+  expect(requestTask).not.toHaveBeenCalled();
+});
+
 function keepAwake(store: CompanionsStore, companionId: string, conversationId: string) {
   const scope = { companionId, conversationId }, routine = store.request({ type: 'routine.get', ...scope }).routine!;
   store.request({ type: 'routine.configure', ...scope, expectedRevision: routine.revision, patch: { timeZone: 'UTC', sleepAt: '23:00', wakeAt: '01:00', meals: [], habits: [] } });
@@ -194,11 +228,11 @@ function bindStorage(store: CompanionsStore) {
   transport.request.mockImplementation(async command => store.request(command));
   transport.close.mockImplementation(async () => { store.close(); stores.delete(store); });
 }
-function startService(root: string, dsh: DshLauncher, publish = false): CompanionService {
+function startService(root: string, dsh: DshLauncher, publish = false, browser?: CompanionServiceOptions['browser']): CompanionService {
   const service = new CompanionService({ userData: root, workerPath: 'mocked-worker', window: () => publish
     ? { isDestroyed: () => false, webContents: { send: transport.send } } as unknown as BrowserWindow : undefined,
     getConfig: () => ({ apiFormat: 'openai_chat', model: 'selected-model', baseUrl: 'https://provider.invalid', apiKey: 'test-key' }),
-    hasConfig: () => true, dsh: () => dsh, report: vi.fn() });
+    hasConfig: () => true, dsh: () => dsh, browser, report: vi.fn() });
   services.add(service);
   return service;
 }
@@ -964,6 +998,7 @@ it('reads an exact owner schedule through the public service without publishing 
   expect(transport.request).toHaveBeenCalledWith({ type: 'schedule.get', ...scope, id: schedule.id });
 });
 async function finishReset(store: CompanionsStore, id = 'sister') {
+  await vi.waitFor(() => expect(store.request({ type: 'companion.reset.status', id }).reset?.phase).not.toBe('stopping'), { timeout: 5000 });
   for (let batch = 0; batch < 500; batch++) {
     const job = store.request({ type: 'companion.reset.status', id }).reset;
     if (job?.status !== 'running') { expect(job?.status, job?.error).toBe('completed'); return; }
@@ -1006,7 +1041,7 @@ describe('CompanionService durable factory reset', () => {
     await vi.waitFor(() => expect(read).toHaveBeenCalledOnce(), { timeout: 5000 });
     let finished = false; const resetting = f.service.handle({ type: 'companion.reset', id: 'sister', scope: 'all' }).then(result => { finished = true; return result; });
     await vi.waitFor(() => expect(f.store.request({ type: 'companion.reset.status', id: 'sister' }).reset?.phase).toBe('stopping'));
-    await vi.advanceTimersByTimeAsync(100); expect(finished).toBe(false);
+    await vi.advanceTimersByTimeAsync(100); expect(finished).toBe(true);
     expect(transport.request.mock.calls.some(([command]) => command.type === 'companion.reset.cleanup')).toBe(false);
     gate.resolve(); await resetting; await finishReset(f.store);
     const committed = transport.request.mock.calls.map(([command]) => command).find(command => command.type === 'file.result.commit');
@@ -1028,9 +1063,10 @@ describe('CompanionService durable factory reset', () => {
       companionId: 'sister', sourceMessageId: expect.any(String), status: 'thinking', stage: '正在生成回复', startedAt: expect.any(String),
     }));
     const started = await f.service.handle({ type: 'companion.reset', id: 'sister', scope: 'all' });
-    expect(started.reset?.phase).toBe('rooms'); expect('resetTaskIds' in started).toBe(false);
+    expect(started.reset?.phase).toBe('stopping'); expect('resetTaskIds' in started).toBe(false);
     pending.resolve(modelResponse('旧的迟到回复绝不能复活。')); await vi.advanceTimersByTimeAsync(100);
     await finishReset(f.store);
+    expect((f.service as unknown as { activeLoops: Map<string, unknown> }).activeLoops.size).toBe(0);
     const restored = (await f.service.handle({ type: 'state' })).state!.companions[0]!;
     expect(restored).toMatchObject({ id: 'sister', name: seeds[0]!.name, persona: seeds[0]!.persona, avatar: 'sister', builtin: true });
     expect(restored.llm).toBeUndefined(); expect(restored.avatarAttachmentId).toBeUndefined();
@@ -1047,14 +1083,15 @@ describe('CompanionService durable factory reset', () => {
     await f.service.handle({ type: 'state' });
     f.store.createAction({ companionId: 'sister', conversationId: f.conversation.id, sourceMessageId: f.source.id,
       title: '必须先停止的旧工作', status: 'running', taskId: 'dsh-task' });
-    await expect(f.service.handle({ type: 'companion.reset', id: 'sister', scope: 'all' })).rejects.toThrow();
+    await f.service.handle({ type: 'companion.reset', id: 'sister', scope: 'all' });
+    await vi.waitFor(() => expect(f.store.request({ type: 'companion.reset.status', id: 'sister' }).reset?.status).toBe('failed'));
     const failed = f.store.request({ type: 'companion.reset.status', id: 'sister' });
     expect(failed.reset).toMatchObject({ status: 'failed', phase: 'stopping' }); expect(failed.resetTaskIds).toEqual(['dsh-task']);
     expect(f.store.getMessage(f.source.id).content).toBe('帮我整理这些文件。');
     shouldFail = false;
     const resumed = await f.service.handle({ type: 'companion.reset', id: 'sister', scope: 'all' });
-    expect(resumed.reset?.id).toBe(failed.reset?.id); expect(status).toBe('cancelled'); expect(resumed.reset?.phase).toBe('rooms');
-    await finishReset(f.store); await closeService(f.service);
+    expect(resumed.reset?.id).toBe(failed.reset?.id);
+    await finishReset(f.store); expect(status).toBe('cancelled'); await closeService(f.service);
   });
 });
 describe('CompanionService owner process stop boundary', () => {
@@ -1069,11 +1106,11 @@ describe('CompanionService owner process stop boundary', () => {
     let resetSettled = false;
     const resetting = f.service.handle({ type: 'companion.reset', id: 'sister', scope: 'all' }).then(result => { resetSettled = true; return result; });
     await vi.waitFor(() => expect(f.store.request({ type: 'companion.reset.status', id: 'sister' }).reset?.phase).toBe('stopping'));
-    expect(resetSettled).toBe(false);
+    expect(resetSettled).toBe(true);
     run.resolve({ ok: true, operationId: 'late-owner-process' });
     await vi.waitFor(() => expect(requestTask.mock.calls.some(([input]) => input.type === 'task.terminate' && input.taskId === 'late-owner-process')).toBe(true));
     expect(f.store.request({ type: 'companion.task-ids', id: 'sister' }).companionTaskIds).toContain('late-owner-process');
-    expect(resetSettled).toBe(false);
+    expect(resetSettled).toBe(true);
     expect(transport.request.mock.calls.some(([input]) => input.type === 'companion.reset.cleanup')).toBe(false);
     const stopBoundary = transport.request.mock.calls.findIndex(([input]) => input.type === 'companion.reset');
     termination.resolve({ ok: true }); await resetting; await finishReset(f.store);
@@ -1145,9 +1182,10 @@ describe('CompanionService owner process stop boundary', () => {
     let settled = false;
     const resetting = f.service.handle({ type: 'companion.reset', id: 'sister', scope: 'all' }).then(() => undefined, error => error as Error).then(result => { settled = true; return result; });
     await vi.waitFor(() => expect(requestTask.mock.calls.filter(([input]) => input.type === 'task.terminate')).toHaveLength(2));
-    await vi.advanceTimersByTimeAsync(100); expect(settled).toBe(false);
+    await vi.advanceTimersByTimeAsync(100); expect(settled).toBe(true);
     expect(f.store.getMessage(f.source.id).content).toBe(f.source.content);
-    slow.resolve({ ok: true }); expect(await resetting).toBeInstanceOf(Error);
+    slow.resolve({ ok: true }); await resetting;
+    await vi.waitFor(() => expect(f.store.request({ type: 'companion.reset.status', id: 'sister' }).reset?.status).toBe('failed'));
     expect(requestTask.mock.calls.some(([input]) => input.type === 'task.terminate' && input.taskId === 'different-owner')).toBe(false);
     expect(f.store.getAction(otherAction.id)).toMatchObject({ status: 'running', taskId: 'different-owner' });
     expect(f.store.request({ type: 'companion.reset.status', id: 'sister' }).reset).toMatchObject({ phase: 'stopping', status: 'failed' });
@@ -1195,7 +1233,8 @@ describe('CompanionService owner process stop boundary', () => {
     await vi.waitFor(() => expect(f.store.listAction()[0]?.status).toBe('failed'), { timeout: 5000 });
     expect(requestTask.mock.calls.some(([input]) => input.type === 'task.terminate' && input.taskId === 'untracked-owner-process')).toBe(true);
     expect(f.store.request({ type: 'companion.task-ids', id: 'sister' }).companionTaskIds).toEqual([]);
-    await expect(f.service.handle({ type: 'companion.reset', id: 'sister', scope: 'all' })).rejects.toThrow('尚未确认停止');
+    await f.service.handle({ type: 'companion.reset', id: 'sister', scope: 'all' });
+    await vi.waitFor(() => expect(f.store.request({ type: 'companion.reset.status', id: 'sister' }).reset?.status).toBe('failed'));
     expect(f.store.getMessage(f.source.id).content).toBe(f.source.content);
     canStop = true;
     await f.service.handle({ type: 'companion.reset', id: 'sister', scope: 'all' }); await finishReset(f.store);
@@ -1470,7 +1509,7 @@ describe('CompanionService DSH action lifecycle with real SQLite', () => {
       return modelResponseForJson({ action: null, reason: '没有需要执行的世界动作。', appraisals: [] });
     });
     const ordinary = [];
-    for (const [index, content] of ordinaryTexts.entries()) ordinary.push((await f.service.handle({ type: 'message.send', conversationId: f.conversation.id, content, clientId: 'ordinary-notification-' + index })).message!);
+    for (const [index, content] of ordinaryTexts.entries()) ordinary.push((await f.service.handle({ type: 'message.send', conversationId: f.conversation.id, content, clientId: 'ordinary-notification-' + index, delivery: 'queue' })).message!);
     await vi.advanceTimersByTimeAsync(1000);
     await vi.waitFor(() => expect(transport.fetch).toHaveBeenCalledTimes(ordinaryTexts.length), { timeout: 5000 });
     expect(f.store.request({ type: 'world.snapshot' }).world!.actors[0]!.activity).toBe('sleeping');
@@ -1855,7 +1894,7 @@ describe('CompanionService DSH action lifecycle with real SQLite', () => {
     await vi.waitFor(() => expect(f.store.listAction()[0]).toMatchObject({ status: 'failed', taskId: 'dsh-task' }), { timeout: 5000 });
     expect(f.store.listAction()[0]?.error).toContain('失败检查：model-settings');
     const options = requestTask.mock.calls.find(([request]) => request.type === 'task.run')?.[1];
-    expect(options).toMatchObject({ toolkit: true, interactive: true });
+    expect(options).toMatchObject({ toolkit: true, interactive: true, companionName: '大肥鱼' });
     expect(options).not.toHaveProperty('connection');
     expect(transport.fetch).not.toHaveBeenCalled();
     await closeService(f.service);
@@ -2020,7 +2059,7 @@ describe('CompanionService DSH action lifecycle with real SQLite', () => {
     const reopened = new CompanionsStore(f.databasePath, seeds.map(seed => ({ ...seed, active: true }))); stores.add(reopened); bindStorage(reopened);
     const restarted = startService(f.root, dsh);
     const persisted = await restarted.handle({ type: 'actions', conversationId: f.conversation.id });
-    expect(persisted.actions?.[0]).toMatchObject({ status: 'succeeded', stage: '图片查看结束', events: [
+    expect(persisted.actions?.[0]).toMatchObject({ status: 'succeeded', stage: '执行已完成', events: [
       { sequence: 0, summary: '执行环境已准备' }, { sequence: 2, toolName: 'read_image' }, { sequence: 3, summary: '图片查看结束' },
     ] });
     expect(JSON.stringify(persisted)).not.toContain('PRIVATE');
@@ -2153,7 +2192,7 @@ describe('one durable bubble per source and native multi-step main loop', () => 
     const related = f.store.messages({ conversationId: f.conversation.id }).messages.filter(message => message.authorId === 'sister' && message.replyToId === first.id);
     expect(related).toHaveLength(1); expect(transport.fetch).toHaveBeenCalledOnce(); await closeService(f.service);
   });
-  it('runs weather and clock requests concurrently while preserving each source, result and bubble', async () => {
+  it('queues weather and clock requests in source order while preserving each source, result and bubble', async () => {
     const jobs: DshTaskRecord[] = [];
     const requestTask = vi.fn<DshLauncher['requestTask']>().mockImplementation(async request => {
       if (request.type === 'task.run') {
@@ -2176,15 +2215,12 @@ describe('one durable bubble per source and native multi-step main loop', () => 
     });
     const weather = (await f.service.handle({ type: 'message.send', conversationId: f.conversation.id, content: '上海天气如何', clientId: 'weather-source' })).message!;
     await vi.waitFor(() => expect(jobs).toHaveLength(1), { timeout: 5000 });
-    const clock = (await f.service.handle({ type: 'message.send', conversationId: f.conversation.id, content: '现在几点了', clientId: 'clock-source' })).message!;
+    const clock = (await f.service.handle({ type: 'message.send', conversationId: f.conversation.id, content: '现在几点了', clientId: 'clock-source', delivery: 'queue' })).message!;
     await vi.advanceTimersByTimeAsync(1000);
-    await vi.waitFor(() => expect(jobs).toHaveLength(2), { timeout: 5000 });
+    expect(jobs).toHaveLength(1);
+    expect(f.store.request({ type: 'work.list', sourceMessageId: clock.id }).works?.[0]?.status).toBe('queued');
     const weatherSnapshot = f.store.request({ type: 'loop.get', sourceMessageId: weather.id, companionId: 'sister' }).loop!.context!;
     expect(weatherSnapshot.user).not.toContain('现在几点了');
-    expect(f.store.request({ type: 'loop.get', sourceMessageId: weather.id, companionId: 'sister' }).loop?.status).toBe('running');
-    // A newer task may finish first without completing or replacing the first.
-    jobs[1]!.status = 'succeeded'; await vi.advanceTimersByTimeAsync(1000);
-    await vi.waitFor(() => expect(f.store.request({ type: 'loop.get', sourceMessageId: clock.id, companionId: 'sister' }).loop?.status).toBe('done'), { timeout: 5000 });
     expect(f.store.request({ type: 'loop.get', sourceMessageId: weather.id, companionId: 'sister' }).loop?.status).toBe('running');
     jobs[0]!.status = 'succeeded'; await vi.advanceTimersByTimeAsync(1000);
     await vi.waitFor(() => expect(f.store.request({ type: 'loop.get', sourceMessageId: weather.id, companionId: 'sister' }).loop?.status).toBe('done'), { timeout: 5000 });
@@ -2289,7 +2325,7 @@ describe('one durable bubble per source and native multi-step main loop', () => 
     expect(bubble.content).toBe('我查到三个来源。');
     const body = JSON.parse(String(transport.fetch.mock.calls[0]![1]?.body));
     expect(body.tools.map((item: { function: { name: string } }) => item.function.name)).toEqual([
-      'dsh', 'memory', 'world',
+      'dsh', 'memory', 'world', 'wait',
     ]);
   });
   it('admits independent DSH calls concurrently and waits for all of them', async () => {
@@ -2309,7 +2345,38 @@ describe('one durable bubble per source and native multi-step main loop', () => 
     expect(bubble.segments?.[0]?.actionIds).toHaveLength(2);
     expect(f.store.listAction().every(item => item.parentMessageId === bubble.id)).toBe(true);
   });
-  it('admits five independent messages in source order and queues the sixth without losing it', async () => {
+  it('recalls afresh for every new task while a tool continuation keeps its original recall', async () => {
+    const f = fixture(fakeDsh(() => ({ tasks: [], operations: [] }), vi.fn(async () => ({ ok: true as const }))), false, false);
+    const memory = (f.service as unknown as { memory: CompanionMemoryService }).memory;
+    const recall = vi.spyOn(memory, 'recall'); let calls = 0;
+    transport.fetch.mockImplementation(async () => ++calls === 1 ? new Response(JSON.stringify({ choices: [{ message: { content: '', tool_calls: [{ id: 'brief-wait', type: 'function', function: { name: 'wait', arguments: JSON.stringify({ ms: 100, reason: '等候本轮更新' }) } }] } }] }), { headers: { 'Content-Type': 'application/json' } }) : modelResponse('本轮已完成。'));
+    for (const [index, content] of ['第一项独立任务', '第二项独立任务'].entries()) {
+      const source = (await f.service.handle({ type: 'message.send', conversationId: f.conversation.id, content, clientId: 'fresh-recall-' + index, delivery: 'queue' })).message!;
+      await vi.waitFor(() => expect(f.store.request({ type: 'loop.get', sourceMessageId: source.id, companionId: 'sister' }).loop?.status).toBe('done'), { timeout: 5000 });
+      expect(recall).toHaveBeenCalledTimes(index + 1); expect(recall.mock.calls[index]![0].currentMessage.id).toBe(source.id);
+    }
+    expect(calls).toBe(3);
+  });
+  it('wakes a waiting loop on default steering without starting another loop or repeating an action', async () => {
+    let calls = 0;
+    transport.fetch.mockImplementation(async (_url, init) => {
+      calls++;
+      if (calls === 1) return new Response(JSON.stringify({ choices: [{ message: { content: '', tool_calls: [{ id: 'wait-load', type: 'function',
+        function: { name: 'wait', arguments: JSON.stringify({ ms: 60000, reason: '等候页面加载完成' }) } }] } }] }), { headers: { 'Content-Type': 'application/json' } });
+      expect(String(init?.body)).toContain('改看第二页');
+      return modelResponse('收到补充，已检查新的页面。');
+    });
+    const f = fixture(fakeDsh(() => ({ tasks: [], operations: [] }), vi.fn(async () => ({ ok: true as const }))), false, false);
+    const source = (await f.service.handle({ type: 'message.send', conversationId: f.conversation.id, content: '等一下页面加载', clientId: 'wait-request' })).message!;
+    await vi.waitFor(() => expect(f.store.request({ type: 'loop.get', sourceMessageId: source.id, companionId: 'sister' }).loop?.turns).toHaveLength(1));
+    await f.service.handle({ type: 'message.send', conversationId: f.conversation.id, content: '改看第二页', clientId: 'wait-guidance' });
+    await vi.waitFor(() => expect(f.store.request({ type: 'loop.get', sourceMessageId: source.id, companionId: 'sister' }).loop?.status).toBe('done'), { timeout: 5000 });
+    const loop = f.store.request({ type: 'loop.get', sourceMessageId: source.id, companionId: 'sister' }).loop!;
+    expect(JSON.parse(loop.turns[0]!.results![0]!.content).interruptedByInput).toBe(true);
+    expect(calls).toBe(2); expect(loop.supplements).toHaveLength(1);
+    expect(f.store.request({ type: 'work.list' }).works?.filter(work => work.status === 'running' || work.status === 'queued')).toHaveLength(0);
+  });
+  it('admits one message per companion and drains the remaining messages in FIFO order', async () => {
     const replies = Array.from({ length: 6 }, () => deferred<Response>());
     transport.fetch.mockImplementation(async (_url, init) => {
       const context = JSON.parse(JSON.parse(String(init?.body)).messages[1].content);
@@ -2318,13 +2385,16 @@ describe('one durable bubble per source and native multi-step main loop', () => 
     });
     const f = fixture(fakeDsh(() => ({ tasks: [], operations: [] }), vi.fn<DshLauncher['requestTask']>().mockResolvedValue({ ok: true })));
     const sources: string[] = [];
-    for (let index = 1; index <= 6; index++) sources.push((await f.service.handle({ type: 'message.send', conversationId: f.conversation.id, content: '第' + index + '条', clientId: 'burst-' + index })).message!.id);
-    await vi.waitFor(() => expect(transport.fetch).toHaveBeenCalledTimes(5), { timeout: 5000 });
+    for (let index = 1; index <= 6; index++) sources.push((await f.service.handle({ type: 'message.send', conversationId: f.conversation.id, content: '第' + index + '条', clientId: 'burst-' + index, delivery: 'queue' })).message!.id);
+    await vi.waitFor(() => expect(transport.fetch).toHaveBeenCalledTimes(1), { timeout: 5000 });
     const state = (await f.service.handle({ type: 'state' })).state!;
-    expect(state.queue?.filter(item => item.status === 'running')).toHaveLength(5);
-    expect(state.queue?.filter(item => item.status === 'queued').map(item => item.sourceMessageId)).toEqual([sources[5]]);
-    replies[0]!.resolve(modelResponse('第一项完成。'));
-    await vi.waitFor(() => expect(transport.fetch).toHaveBeenCalledTimes(6), { timeout: 5000 });
+    expect(state.queue?.filter(item => item.status === 'running')).toHaveLength(1);
+    expect(state.queue?.filter(item => item.status === 'queued').map(item => item.sourceMessageId)).toEqual(sources.slice(1));
+    for (let index = 0; index < replies.length; index++) {
+      await vi.waitFor(() => expect(transport.fetch).toHaveBeenCalledTimes(index + 1), { timeout: 5000 });
+      replies[index]!.resolve(modelResponse('第' + (index + 1) + '项完成。'));
+      await vi.waitFor(() => expect(f.store.request({ type: 'work.list', sourceMessageId: sources[index] }).works?.[0]?.status).toBe('done'), { timeout: 5000 });
+    }
     const bubbles = f.store.messages({ conversationId: f.conversation.id }).messages.filter(item => item.authorId === 'sister' && item.kind === 'text');
     expect(bubbles.map(item => item.replyToId)).toEqual(sources);
     expect(state.companions[0]?.availability).toBe('working');
@@ -2339,9 +2409,9 @@ describe('one durable bubble per source and native multi-step main loop', () => 
     });
     const f = fixture(fakeDsh(() => ({ tasks: [], operations: [] }), vi.fn<DshLauncher['requestTask']>().mockResolvedValue({ ok: true })));
     const sources: string[] = [];
-    for (let index = 0; index < 5; index++) sources.push((await f.service.handle({ type: 'message.send', conversationId: f.conversation.id, content: '独立任务' + index, clientId: 'guide-slot-' + index })).message!.id);
-    await vi.waitFor(() => expect(transport.fetch).toHaveBeenCalledTimes(5), { timeout: 5000 });
-    const queued = await f.service.handle({ type: 'message.send', conversationId: f.conversation.id, content: '补充：改成蓝色', clientId: 'guide-queued' });
+    for (let index = 0; index < 5; index++) sources.push((await f.service.handle({ type: 'message.send', conversationId: f.conversation.id, content: '独立任务' + index, clientId: 'guide-slot-' + index, delivery: 'queue' })).message!.id);
+    await vi.waitFor(() => expect(transport.fetch).toHaveBeenCalledTimes(1), { timeout: 5000 });
+    const queued = await f.service.handle({ type: 'message.send', conversationId: f.conversation.id, content: '补充：改成蓝色', clientId: 'guide-queued', delivery: 'queue' });
     await f.service.handle({ type: 'message.guide', id: queued.message!.id, targetSourceMessageId: sources[0] });
     pending[0]!.resolve(modelResponse('这个旧决定必须被重新考虑。'));
     await vi.waitFor(() => expect(f.store.messages({ conversationId: f.conversation.id }).messages.some(item => item.content === '我已按补充改成蓝色。')).toBe(true), { timeout: 5000 });
@@ -2356,8 +2426,8 @@ describe('one durable bubble per source and native multi-step main loop', () => 
     transport.fetch.mockImplementation(() => new Promise<Response>(() => undefined));
     const dsh = fakeDsh(() => ({ tasks: [], operations: [] }), vi.fn<DshLauncher['requestTask']>().mockResolvedValue({ ok: true }));
     const f = fixture(dsh); const ids: string[] = [];
-    for (let index = 0; index < 7; index++) ids.push((await f.service.handle({ type: 'message.send', conversationId: f.conversation.id, content: '重启队列' + index, clientId: 'restart-queue-' + index })).message!.id);
-    await vi.waitFor(() => expect(transport.fetch).toHaveBeenCalledTimes(5), { timeout: 5000 });
+    for (let index = 0; index < 7; index++) ids.push((await f.service.handle({ type: 'message.send', conversationId: f.conversation.id, content: '重启队列' + index, clientId: 'restart-queue-' + index, delivery: 'queue' })).message!.id);
+    await vi.waitFor(() => expect(transport.fetch).toHaveBeenCalledTimes(1), { timeout: 5000 });
     await closeService(f.service);
     const reopened = new CompanionsStore(f.databasePath, seeds.map(seed => ({ ...seed, active: true }))); stores.add(reopened); bindStorage(reopened);
     transport.fetch.mockReset(); transport.fetch.mockImplementation(async () => modelResponse('自动继续尚未正式完成的消息。'));

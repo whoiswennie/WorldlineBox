@@ -1,9 +1,9 @@
+import { writeNativeRuntimeFixture } from '../helpers/dsh-runtime-fixture';
 import { afterEach, describe, expect, it } from 'vitest';
 import { mkdtemp, mkdir, readFile, readdir, rename, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { createPackage } from '@electron/asar';
-import { RuntimeService, validate7zListing } from '../../src/main/dsh/runtime-service';
+import { RuntimeService } from '../../src/main/dsh/runtime-service';
 import { copyTree, inventoryTree, redact, removeManaged, safeRelative } from '../../src/main/dsh/files';
 import { OperationStore } from '../../src/main/dsh/operations';
 
@@ -12,24 +12,14 @@ afterEach(async () => { for (const root of roots.splice(0)) await removeManaged(
 async function temporary() { const root = await mkdtemp(path.join(tmpdir(), 'worldlinebox-dsh-runtime-')); roots.push(root); return root; }
 
 async function fixture(root: string, version: string) {
-  const program = path.join(root, `program-${version}`); const source = path.join(root, `asar-${version}`);
-  await mkdir(path.join(source, 'dsh', 'node_modules', '@deepseek-ai', 'dsh-desktop-host'), { recursive: true });
-  await mkdir(path.join(source, 'dsh', 'node_modules', '@deepseek-ai', 'dsh-desktop-host', 'lib'), { recursive: true });
-  await writeFile(path.join(source, 'dsh', 'node_modules', '@deepseek-ai', 'dsh-desktop-host', 'lib', 'cli.js'), '// fixture');
-  await mkdir(path.join(source, 'dsh', 'node_modules', '@deepseek-ai', 'dsh'), { recursive: true });
-  await mkdir(path.join(program, 'resources'), { recursive: true });
-  await writeFile(path.join(program, 'DeepSeek Harness.exe'), 'fixture executable');
-  await writeFile(path.join(source, 'package.json'), JSON.stringify({ name: '@deepseek-ai/dsh-desktop', version, dependencies: { electron: '44.0.0' } }));
-  await writeFile(path.join(source, 'dsh', 'desktop-runtime.json'), JSON.stringify({ platform: 'win32', arch: 'x64', release: { nodeVersion: '24.18.1' } }));
-  for (const name of ['dsh', 'dsh-desktop-host']) await writeFile(path.join(source, 'dsh', 'node_modules', '@deepseek-ai', name, 'package.json'), JSON.stringify({ name, version }));
-  await createPackage(source, path.join(program, 'resources', 'app.asar'));
+  const program = path.join(root, `program-${version}`); await writeNativeRuntimeFixture(program, version);
   return program;
 }
 
 describe('fixed DSH runtime inventory', () => {
   it('deletes installed bytes without resurrection, cleans only runtime scratch, and recovers an interrupted removal before the index commit', async () => {
     const root = await temporary(); const manager = path.join(root, 'manager');
-    const service = new RuntimeService({ rootPath: manager, sevenZipPath: 'unused', onChanged() {} });
+    const service = new RuntimeService({ rootPath: manager, onChanged() {} });
     const operations = new OperationStore(path.join(manager, 'operations'), () => undefined);
     await service.init(); await operations.init();
     await operations.run('import', 'fixture', undefined, async op => { await service.import(await fixture(root, '0.9.0-delete'), 'directory', 'fixture', op); });
@@ -37,21 +27,21 @@ describe('fixed DSH runtime inventory', () => {
     await mkdir(path.join(manager, 'shared'), { recursive: true }); await writeFile(path.join(manager, 'shared', 'precious-save'), 'preserve');
     await mkdir(path.join(manager, 'runtime-trash'), { recursive: true });
     await rename(path.dirname(service.directory(runtime.id)), path.join(manager, 'runtime-trash', `${runtime.id}-crash`));
-    const recovered = new RuntimeService({ rootPath: manager, sevenZipPath: 'unused', onChanged() {} }); await recovered.init();
+    const recovered = new RuntimeService({ rootPath: manager, onChanged() {} }); await recovered.init();
     expect(recovered.list()).toHaveLength(1); await recovered.verify(runtime.id);
     await recovered.delete(runtime.id, false); expect(recovered.list()).toHaveLength(0);
-    const restarted = new RuntimeService({ rootPath: manager, sevenZipPath: 'unused', onChanged() {} }); await restarted.init(); expect(restarted.list()).toHaveLength(0);
-    for (const name of ['staging', 'quarantine', 'runtime-trash', 'compatibility-scratch']) { await mkdir(path.join(manager, name, 'unused'), { recursive: true }); await writeFile(path.join(manager, name, 'unused', 'scratch'), 'discard'); }
+    const restarted = new RuntimeService({ rootPath: manager, onChanged() {} }); await restarted.init(); expect(restarted.list()).toHaveLength(0);
+    for (const name of ['staging', 'quarantine', 'runtime-trash']) { await mkdir(path.join(manager, name, 'unused'), { recursive: true }); await writeFile(path.join(manager, name, 'unused', 'scratch'), 'discard'); }
     await mkdir(path.join(manager, 'cache'), { recursive: true }); await writeFile(path.join(manager, 'cache', `${'a'.repeat(64)}.exe`), 'installer'); await writeFile(path.join(manager, 'cache', 'unknown-user-file'), 'preserve');
     await operations.run('runtime.cleanup', 'fixture', undefined, op => restarted.cleanup(op)); await operations.settle();
     expect(operations.list()[0]?.status).toBe('succeeded');
     expect(await readdir(path.join(manager, 'cache'))).toEqual(['unknown-user-file']);
     expect(await readFile(path.join(manager, 'shared', 'precious-save'), 'utf8')).toBe('preserve');
-    for (const name of ['staging', 'quarantine', 'runtime-trash', 'compatibility-scratch']) expect(await readdir(path.join(manager, name))).toEqual([]);
+    for (const name of ['staging', 'quarantine', 'runtime-trash']) expect(await readdir(path.join(manager, name))).toEqual([]);
   });
   it('keeps two exact releases independently, deduplicates content, detects drift and preserves source installs', async () => {
     const root = await temporary();
-    const service = new RuntimeService({ rootPath: path.join(root, 'manager'), sevenZipPath: 'unused', onChanged: () => undefined });
+    const service = new RuntimeService({ rootPath: path.join(root, 'manager'), onChanged: () => undefined });
     const operations = new OperationStore(path.join(root, 'manager', 'operations'), () => undefined);
     await service.init(); await operations.init();
     const a = await fixture(root, '0.2.0-rc.2'); const b = await fixture(root, '0.3.0-test');
@@ -64,20 +54,12 @@ describe('fixed DSH runtime inventory', () => {
     const runtime = service.list()[0]!;
     await service.verify(runtime.id);
     const sourceSeal = await inventoryTree(a);
-    await writeFile(path.join(service.directory(runtime.id), 'DeepSeek Harness.exe'), 'modified');
+    await writeFile(path.join(service.directory(runtime.id), 'bin/node.exe'), 'modified');
     await expect(service.verify(runtime.id)).rejects.toThrow('changed');
     expect((await inventoryTree(a)).contentSha256).toBe(sourceSeal.contentSha256);
     await expect(service.delete(runtime.id, true)).rejects.toThrow('引用');
-    const relaunched = new RuntimeService({ rootPath: path.join(root, 'manager'), sevenZipPath: 'unused', onChanged: () => undefined });
+    const relaunched = new RuntimeService({ rootPath: path.join(root, 'manager'), onChanged: () => undefined });
     await relaunched.init(); expect(relaunched.list()).toEqual(service.list());
-  });
-
-  it('rejects installer traversal, links and case collisions before extraction', () => {
-    const listing = (entries: string) => `Path = installer.exe\nType = 7z\n\n----------\n${entries}`;
-    expect(() => validate7zListing(listing('Path = resources/app.asar\nSize = 100\n'))).not.toThrow();
-    for (const name of ['../escape', 'C:/outside', 'foo:stream', 'CON', 'folder/trailing.']) expect(() => validate7zListing(listing(`Path = ${name}\nSize = 1\n`))).toThrow();
-    expect(() => validate7zListing(listing('Path = A\nSize = 1\n\nPath = a\nSize = 1\n'))).toThrow('colliding');
-    expect(() => validate7zListing(listing('Path = link\nSymbolic Link = ../../outside\n'))).toThrow('links');
   });
 
   it('does not interpret launch URLs or filesystem identities as harmless display text', async () => {

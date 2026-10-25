@@ -108,7 +108,7 @@ export class MarketplaceService {
       catch (reason) { if (signal?.aborted) throw reason; error = 'Catalog refresh failed. Saved catalog entries remain available; check the launcher network settings.'; }
     }
     const terms = query.toLowerCase().split(/\s+/).filter(Boolean);
-    const entries = (cache?.entries ?? []).filter(entry => input.kind === 'skill' || terms.every(term => `${entry.name} ${entry.description} ${entry.repository ?? ''} ${entry.category}`.toLowerCase().includes(term)));
+    const entries = (cache?.entries ?? []).filter(entry => input.kind === 'skill' || terms.every(term => `${entry.name} ${entry.npmName ?? ''} ${entry.description} ${entry.repository ?? ''} ${entry.category}`.toLowerCase().includes(term)));
     const result = dshMarketPageSchema.parse({ kind: input.kind, query, page, pageSize, total: entries.length,
       entries: entries.slice((page - 1) * pageSize, page * pageSize), fetchedAt: cache?.fetchedAt, stale: !!error || !cache,
       error });

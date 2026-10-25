@@ -256,7 +256,7 @@ export async function runNodeInstall(tools: NodeInstallTools, args: string[], cw
   }
 }
 
-async function downloadOfficialPackage(release: OfficialNodeRelease, file: string,
+export async function downloadOfficialPackage(release: OfficialNodeRelease, file: string,
   fetcher: HttpsDownloadFetch, operation: OperationContext): Promise<string> {
   const signal = AbortSignal.any([operation.signal, AbortSignal.timeout(10 * 60_000)]);
   const response = await fetchHttpsDownload(release.tarball, fetcher, signal);

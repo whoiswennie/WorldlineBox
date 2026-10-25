@@ -9,6 +9,7 @@ import { dependencyLockSha256, nodeInstallEnvironment, supportsDshNode, validate
 import { RuntimeService } from '../../src/main/dsh/runtime-service';
 import { OperationStore } from '../../src/main/dsh/operations';
 import { copyTree, inventoryTree, removeManaged } from '../../src/main/dsh/files';
+import { TEST_NODE_EXECUTABLE, TEST_NODE_VERSION } from '../helpers/node-executable';
 
 const roots: string[] = [];
 afterEach(async () => { for (const root of roots.splice(0)) await removeManaged(tmpdir(), root); });
@@ -46,13 +47,13 @@ fs.writeFileSync('package.json',JSON.stringify(manifest));
 fs.writeFileSync('package-lock.json',JSON.stringify({lockfileVersion:3,packages:{'':{dependencies:manifest.dependencies},'node_modules/@deepseek-ai/dsh':{version,resolved:'file:'+archive,integrity}}}));
 console.log('fixture dependency closure installed');
 `);
-  return { nodeExecutable: process.execPath, npmCli, nodeVersion: process.versions.node, npmVersion: '11.0.0-fixture' };
+  return { nodeExecutable: TEST_NODE_EXECUTABLE, npmCli, nodeVersion: TEST_NODE_VERSION, npmVersion: '11.0.0-fixture' };
 }
 
 describe('official Node DSH runtime adapter', () => {
   it.each(['E404','EINTEGRITY'])('retries a metadata outage once, but never retries an integrity failure (%s)', async code => {
     const root=await temporary(); const manager=path.join(root,'manager');const tools=await fixture(root,code);
-    const service=new RuntimeService({rootPath:manager,sevenZipPath:'unused',onChanged:()=>undefined,nodeTools:async()=>tools,
+    const service=new RuntimeService({rootPath:manager,onChanged:()=>undefined,nodeTools:async()=>tools,
       nodeInstallNetwork:async()=>({registry:'https://registry.npmmirror.com',env:{...process.env,HTTPS_PROXY:'http://mirror-proxy:18081'},fallback:{registry:'https://registry.npmjs.org',env:{...process.env,HTTPS_PROXY:'http://official-proxy:18082'}}}),
       fetch:async()=>new Response(tarball('0.2.1-rc.2'))});await service.init();
     const operations=new OperationStore(path.join(manager,'operations'),()=>undefined);await operations.init();
@@ -72,7 +73,7 @@ describe('official Node DSH runtime adapter', () => {
   it.skipIf(process.platform !== 'win32' || process.arch !== 'x64')('registers two concurrent releases without losing either index record', async () => {
     const root = await temporary(); const tools = await fixture(root);
     const manager = path.join(root, 'manager');
-    const service = new RuntimeService({ rootPath: manager, sevenZipPath: 'unused', onChanged: () => undefined,
+    const service = new RuntimeService({ rootPath: manager, onChanged: () => undefined,
       nodeTools: async () => tools, nodeInstallNetwork: async () => ({registry:'https://registry.npmjs.org/',env:process.env}),
       fetch: async url => new Response(tarball(/dsh-([^/]+)\.tgz$/.exec(String(url))![1]!),{status:200}),
     }); await service.init();
@@ -129,7 +130,7 @@ describe('official Node DSH runtime adapter', () => {
   it.skipIf(process.platform !== 'win32' || process.arch !== 'x64')('seals two real Node executable plans with separate exact package closures, reloads and detects drift', async () => {
     const root=await temporary(); const manager=path.join(root,'manager'); const tools=await fixture(root);
     let selectedProxy='http://127.0.0.1:18081'; let networkCalls=0;
-    const options={rootPath:manager,sevenZipPath:'unused',onChanged:()=>undefined,
+    const options={rootPath:manager,onChanged:()=>undefined,
       nodeTools:async()=>tools,
       nodeInstallNetwork:async()=>{networkCalls++;return {registry:'https://registry.npmjs.org/',env:{...process.env,HTTPS_PROXY:selectedProxy,NPM_CONFIG_CACHE:'bad-cache',OPENAI_API_KEY:'fixture-inherit-refused'}};},
       fetch:async(url: string|URL|Request)=>new Response(tarball(/dsh-([^/]+)\.tgz$/.exec(String(url))![1]!),{status:200}),
@@ -143,10 +144,10 @@ describe('official Node DSH runtime adapter', () => {
     }
     expect(networkCalls).toBe(2); expect(service.list().map(item=>item.version)).toEqual(['0.2.0-rc.2','0.2.1-alpha.2']);
     for (const [index,runtime] of service.list().entries()) {
-      const plan=service.plan(runtime.id); expect(runtime.adapter).toBe('node-cli-web-v1'); expect(runtime.electronVersion).toBeUndefined();
+      const plan=service.plan(runtime.id); expect(runtime.adapter).toBe('node-cli-web-v1');
       expect(plan.executable).toBe(path.join(service.directory(runtime.id),'bin','node.exe'));
       expect(plan.cli).toBe(path.join(service.directory(runtime.id),'dsh','node_modules','@deepseek-ai','dsh','lib','bin.js'));
-      expect(plan.env.ELECTRON_RUN_AS_NODE).toBeUndefined();
+      expect(plan.env).toEqual({});
       const actual=await run(plan.executable,[plan.cli,'--version'],{windowsHide:true}); expect(actual.stdout.trim()).toBe(`native fixture ${runtime.version}`);
       await service.verify(runtime.id);
       const saved=JSON.parse(await readFile(path.join(service.directory(runtime.id),'dsh','installer-env.json'),'utf8'));
@@ -195,7 +196,7 @@ describe('official Node DSH runtime adapter', () => {
   it.skipIf(process.platform !== 'win32' || process.arch !== 'x64')('rejects a changed upstream archive before executing the package manager or registering a runtime', async () => {
     const root=await temporary(); const manager=path.join(root,'manager'); const tools=await fixture(root);
     let networkCalls=0;
-    const service=new RuntimeService({rootPath:manager,sevenZipPath:'unused',onChanged:()=>undefined,
+    const service=new RuntimeService({rootPath:manager,onChanged:()=>undefined,
       nodeTools:async()=>tools,nodeInstallNetwork:async()=>{networkCalls++;return {registry:'https://registry.npmjs.org/',env:process.env};},
       fetch:async()=>new Response('different-package-bytes',{status:200}),
     }); await service.init();

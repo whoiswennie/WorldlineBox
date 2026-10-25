@@ -8,7 +8,7 @@ import type { DshInstance, DshRuntime } from '../../src/shared/dsh-launcher';
 import { extractSealedArchive, writeSealedArchive } from '../../src/main/dsh/archive';
 import { inventoryTree } from '../../src/main/dsh/files';
 import { OperationStore } from '../../src/main/dsh/operations';
-import { instanceEnvironment, launchCli, parseReadyUrl, terminateOwnedProcess, verifyReadyUrl } from '../../src/main/dsh/instance-process';
+import { writeNativeRuntimeFixture } from '../helpers/dsh-runtime-fixture';
 import { auditPortableConfiguration, PackService, type PackInstanceService } from '../../src/main/dsh/packs';
 import type { RuntimeServiceLike } from '../../src/main/dsh/runtime-service';
 import { dependencyLockSha256 } from '../../src/main/dsh/node-runtime-service';
@@ -18,14 +18,15 @@ async function temporary(): Promise<string> { const root = await mkdtemp(path.jo
 afterEach(async () => { for (const root of temporaryRoots.splice(0)) await rm(root, { recursive: true, force: true }); });
 async function put(root: string, relative: string, text: string): Promise<void> { const file = path.join(root, relative); await mkdir(path.dirname(file), { recursive: true }); await writeFile(file, text); }
 
-async function fixture(programDirectory?: string) {
+async function fixture() {
   const root = await temporary(); const records: DshInstance[] = [];
-  const runtime: DshRuntime = { id: 'runtime-one', version: '0.2.0-rc.2', nodeVersion: '24.18.1', electronVersion: '44.0.0', platform: 'win32-x64', adapter: 'desktop-cli-web-v1',
+  const runtime: DshRuntime = { id: 'runtime-one', version: '0.2.0-rc.2', nodeVersion: '24.18.1', platform: 'win32-x64', adapter: 'node-cli-web-v1',
     source: 'test', sourceSha256: 'a'.repeat(64), contentSha256: 'b'.repeat(64), installedAt: new Date().toISOString(), fileCount: 1, byteLength: 1 };
-  const program = programDirectory ?? path.join(root, 'program'); await mkdir(program, { recursive: true });
+  const program = path.join(root, 'program'); const receipt = await writeNativeRuntimeFixture(program, runtime.version);
+  Object.assign(runtime, { nodeVersion: receipt.nodeVersion, npmVersion: receipt.npmVersion, sourceSha256: receipt.sourceSha256, npmIntegrity: receipt.npmIntegrity, dependencyLockSha256: receipt.dependencyLockSha256 });
   let installed = [runtime];
   const runtimes: RuntimeServiceLike = { list: () => installed, get: id => { const record = installed.find(item => item.id === id); if (!record) throw new Error('Runtime unavailable'); return record; }, directory: () => program, plan: () => ({
-    executable: path.join(program, 'DeepSeek Harness.exe'), cli: path.join(program, 'resources/app.asar/dsh/node_modules/@deepseek-ai/dsh-desktop-host/lib/cli.js'), env: { ELECTRON_RUN_AS_NODE: '1' },
+    executable: path.join(program, 'bin/node.exe'), cli: path.join(program, 'dsh/node_modules/@deepseek-ai/dsh/lib/bin.js'), env: {},
   }), verify: async () => undefined };
   const instances: PackInstanceService = {
     list: () => records.map(record => ({ ...record })), getRoot: id => path.join(root, 'instances', id),
@@ -37,6 +38,7 @@ async function fixture(programDirectory?: string) {
       records.push(instance); return instance;
     },
     async withStoppedInstance(id, work) { if (records.find(record => record.id === id)?.status !== 'stopped') throw new Error('Stop instance'); return work(); },
+    async installDependencies() {},
     async remove(id) { const index = records.findIndex(record => record.id === id); if (index >= 0) records.splice(index, 1); await rm(this.getRoot(id), { recursive: true, force: true }); },
   };
   const operations = new OperationStore(path.join(root, 'operations'), () => undefined); await operations.init();
@@ -91,50 +93,6 @@ describe('sealed DSH archives', () => {
   });
 });
 
-describe.skipIf(!process.env.WORLDLINEBOX_DSH_REAL_DIRECTORY || process.platform !== 'win32')('official DSH portable pack smoke', () => {
-  it('boots an official isolated profile, packages it offline and boots the installed copy', async () => {
-    const { root, packs, operations, source, instances, runtimes } = await fixture(process.env.WORLDLINEBOX_DSH_REAL_DIRECTORY);
-    await rm(path.join(source.homePath, '.credentials.yaml'));
-    await rm(path.join(source.homePath, 'sessions'), { recursive: true });
-    await put(source.homePath, 'profiles/web/cordis.patch.yml', '[]\n');
-    const boot = async (instance: DshInstance) => {
-      const plan = runtimes.plan(instance.runtimeId);
-      const environment = await instanceEnvironment(instances.getRoot(instance.id), instance, plan);
-      const child = await launchCli(plan, ['web', '--no-open', '--port', '0'], environment, instance.workspacePath);
-      try {
-        const url = await new Promise<string>((resolve, reject) => {
-          let output = '';
-          const timer = setTimeout(() => reject(new Error('Official DSH readiness timed out.')), 20_000);
-          const processOutput = (chunk: Buffer) => {
-            output += chunk.toString();
-            for (const line of output.split(/\r?\n/)) {
-              const url = parseReadyUrl(line);
-              if (url) { clearTimeout(timer); resolve(url); return; }
-            }
-          };
-          child.stdout.on('data', processOutput); child.stderr.on('data', processOutput);
-          child.once('error', error => { clearTimeout(timer); reject(error); });
-          child.once('exit', code => { clearTimeout(timer); reject(new Error(`Official DSH exited before ready: ${code}`)); });
-        });
-        await verifyReadyUrl(url, AbortSignal.timeout(10_000));
-        return new URL(url).port;
-      } finally { await terminateOwnedProcess(child); }
-    };
-    await boot(source);
-    await packs.handle({ type: 'pack.create', instanceId: source.id, name: 'Official offline', version: '1' }); await operations.settle();
-    expect(operations.list()[0]?.status, operations.list()[0]?.error).toBe('succeeded');
-    const pack = packs.list()[0]!;
-    const inventory = await inventoryTree(path.join(root, 'packs', pack.id, 'data'));
-    expect(inventory.files.some(file => file.path.endsWith('cordis.yml'))).toBe(false);
-    await packs.handle({ type: 'pack.install', packId: pack.id, name: 'Official copy' }); await operations.settle();
-    expect(operations.list()[0]?.status, operations.list()[0]?.error).toBe('succeeded');
-    const installed = instances.list().find(record => record.name === 'Official copy')!;
-    await boot(installed);
-    expect(await readdir(installed.homePath)).toContain('.credentials.yaml');
-    expect(installed.browserPartition).not.toBe(source.browserPartition);
-  }, 90_000);
-});
-
 describe('portable DSH packs', () => {
   it('reuses a v2 Node runtime with different generated artifact bytes only when its source, interpreter and entire dependency graph match', async () => {
     const test = await fixture(); const version = test.runtime.version; const sri = `sha512-${Buffer.alloc(64, 1).toString('base64')}`;
@@ -177,30 +135,27 @@ describe('portable DSH packs', () => {
     await test.packs.handle({ type: 'pack.import' }, archive); await test.operations.settle(); expect(test.operations.list()[0]?.status).toBe('failed');
     expect(test.operations.list()[0]?.error).toContain('exact DSH runtime');
   });
-  it('installs older packs without replacing shared models while preserving private plugin options', async () => {
-    const { root, packs, operations, instances, runtime } = await fixture();
-    const data = path.join(root, 'legacy-pack');
-    await put(data, 'home/profiles/web/cordis.patch.yml', '- id: agent-default-model\n  config:\n    provider: old-provider\n    model: old-model\n- id: harmless\n  config:\n    label: private-plugin-setting\n');
-    const archive = path.join(root, 'legacy.dshpack');
-    await writeSealedArchive(data, archive, { format: 'worldlinebox-dshpack-v1', name: 'Legacy', version: '1', createdAt: new Date().toISOString(), runtime: {
-      version: runtime.version, contentSha256: runtime.contentSha256, platform: runtime.platform, adapter: runtime.adapter,
-    } });
+  it('restores native model configuration together with plugin options', async () => {
+    const { root, packs, operations, instances, source } = await fixture();
+    await put(source.homePath, 'profiles/web/cordis.patch.yml', '- id: agent-default-model\n  config:\n    provider: native-provider\n    model: native-model\n- id: harmless\n  config:\n    label: private-plugin-setting\n');
+    await packs.handle({ type: 'pack.create', instanceId: source.id, name: 'Native', version: '1' }); await operations.settle();
+    const archive = path.join(root, 'native.dshpack'); await packs.exportArchive(packs.list()[0]!.id, archive, AbortSignal.timeout(10000));
     await packs.handle({ type: 'pack.import' }, archive); await operations.settle();
     expect(operations.list()[0]?.status, operations.list()[0]?.error).toBe('succeeded');
-    await packs.handle({ type: 'pack.install', packId: packs.list()[0]!.id, name: 'Legacy copy' }); await operations.settle();
+    await packs.handle({ type: 'pack.install', packId: packs.list()[0]!.id, name: 'Native copy' }); await operations.settle();
     expect(operations.list()[0]?.status, operations.list()[0]?.error).toBe('succeeded');
-    const copy = instances.list().find(record => record.name === 'Legacy copy')!;
+    const copy = instances.list().find(record => record.name === 'Native copy')!;
     const patch = await readFile(path.join(copy.homePath, 'profiles/web/cordis.patch.yml'), 'utf8');
-    expect(patch).not.toMatch(/old-provider|old-model/);
+    expect(patch).toMatch(/native-provider|native-model/);
     expect(patch).toContain('private-plugin-setting');
   });
-  it('preserves offline plugins and skills while excluding sessions, credentials and environment files', async () => {
+  it('preserves native plugin declarations and skills while excluding installed dependencies and credentials', async () => {
     const { root, packs, operations, source, instances } = await fixture();
     await packs.handle({ type: 'pack.create', instanceId: source.id, name: 'Development', version: '1.0' }); await operations.settle();
     expect(operations.list()[0]?.status).toBe('succeeded');
     const pack = packs.list()[0]!; expect(pack.runtimeVersion).toBe('0.2.0-rc.2');
     const inventory = await inventoryTree(path.join(root, 'packs', pack.id, 'data'));
-    expect(inventory.files.map(file => file.path)).toContain('home/profiles/web/node_modules/example-plugin/index.js');
+    expect(inventory.files.map(file => file.path)).not.toContain('home/profiles/web/node_modules/example-plugin/index.js');
     expect(inventory.files.some(file => /credentials|sessions|\.env/.test(file.path))).toBe(false);
     const archive = path.join(root, 'development.dshpack'); await packs.handle({ type: 'pack.export', packId: pack.id }, archive); await operations.settle();
     await packs.handle({ type: 'pack.import' }, archive); await operations.settle(); expect(packs.list()).toHaveLength(2);
@@ -211,6 +166,20 @@ describe('portable DSH packs', () => {
     expect(await readFile(path.join(installed.homePath, 'skills/example/SKILL.md'), 'utf8')).toBe('# Example skill\n');
     expect(await readdir(installed.workspacePath)).toEqual([]);
     expect(await readdir(installed.homePath)).not.toContain('.credentials.yaml');
+  });
+  it('excludes the launcher-owned local bridge while preserving native third-party dependency locks', async () => {
+    const f = await fixture();
+    const original = JSON.stringify({ dependencies: { '@worldlinebox/dsh-bridge': 'file:C:/private/home/.worldlinebox/bridge/hash', 'dsh-example': '1.2.3' },
+      dsh: { profile: { bundles: ['@worldlinebox/dsh-bridge', 'dsh-example'] } } });
+    await put(f.source.homePath, 'profiles/web/package.json', original);
+    await put(f.source.homePath, 'profiles/web/pnpm-lock.yaml', "lockfileVersion: '9.0'\nimporters:\n  .:\n    dependencies:\n      '@worldlinebox/dsh-bridge':\n        specifier: file:C:/private/home/.worldlinebox/bridge/hash\n        version: file:../../.worldlinebox/bridge/hash\n      dsh-example:\n        specifier: 1.2.3\n        version: 1.2.3\npackages:\n  '@worldlinebox/dsh-bridge@file:../../.worldlinebox/bridge/hash': {}\n  dsh-example@1.2.3: {}\nsnapshots:\n  '@worldlinebox/dsh-bridge@file:../../.worldlinebox/bridge/hash': {}\n");
+    await f.packs.handle({ type: 'pack.create', instanceId: f.source.id, name: 'Native pack', version: '1' }); await f.operations.settle();
+    expect(f.operations.list()[0]?.status, f.operations.list()[0]?.error).toBe('succeeded');
+    const profile = path.join(f.root, 'packs', f.packs.list()[0]!.id, 'data/home/profiles/web');
+    expect(await readFile(path.join(profile, 'package.json'), 'utf8')).not.toContain('worldlinebox');
+    const lock = await readFile(path.join(profile, 'pnpm-lock.yaml'), 'utf8');
+    expect(lock).toContain('dsh-example@1.2.3'); expect(lock).not.toContain('worldlinebox'); expect(lock).not.toContain('C:/private');
+    expect(await readFile(path.join(f.source.homePath, 'profiles/web/package.json'), 'utf8')).toBe(original);
   });
   it('requires the exact runtime content and retains the existing pack when importing fails', async () => {
     const { root, packs, operations, source, dropRuntime } = await fixture();
@@ -229,14 +198,13 @@ describe('portable DSH packs', () => {
     await recovered.init(); expect(recovered.list()).toEqual(expected);
   });
   it('rejects portable packs that attempt to restore private session data', async () => {
-    const { root, packs, operations, runtime } = await fixture(); const data = path.join(root, 'malicious');
-    await put(data, 'home/sessions/private.jsonl', '{}');
-    const archive = path.join(root, 'private.zip');
-    await writeSealedArchive(data, archive, { format: 'worldlinebox-dshpack-v1', name: 'Private', version: '1', createdAt: new Date().toISOString(), runtime: {
-      version: runtime.version, contentSha256: runtime.contentSha256, platform: runtime.platform, adapter: runtime.adapter,
-    } });
+    const { root, packs, operations, source } = await fixture();
+    await packs.handle({ type: 'pack.create', instanceId: source.id, name: 'Valid', version: '1' }); await operations.settle();
+    const manifest = JSON.parse(await readFile(path.join(root, 'packs', packs.list()[0]!.id, 'manifest.json'), 'utf8'));
+    const data = path.join(root, 'malicious'); await put(data, 'home/sessions/private.jsonl', '{}');
+    const archive = path.join(root, 'private.zip'); await writeSealedArchive(data, archive, manifest);
     await packs.handle({ type: 'pack.import' }, archive); await operations.settle();
-    expect(operations.list()[0]?.status).toBe('failed'); expect(packs.list()).toHaveLength(0);
+    expect(operations.list()[0]?.status).toBe('failed'); expect(operations.list()[0]?.error).toContain('private instance data'); expect(packs.list()).toHaveLength(1);
   });
   it('rejects external configuration paths, explicit credentials and links leaving the profile', async () => {
     expect(() => auditPortableConfiguration('path: C:\\shared\\sessions', 'patch.yml')).toThrow('absolute filesystem');
