@@ -29,6 +29,8 @@ import type { CompanionReplyInput } from './context';
 import type { CompanionExecutionReadset } from '../../shared/companion-execution-evidence';
 import { verifyCompanionExecutionReadset } from './execution-evidence';
 import { companionRoleResourceBounds } from './role-resource-context';
+import { companionThoughtCapabilities } from './thought-capabilities';
+import type { DshRecordQuery } from '../../shared/dsh-task-record';
 
 interface WorldServiceOptions {
   request(command: CompanionStorageCommand): Promise<CompanionStorageResponse>;
@@ -46,6 +48,8 @@ interface WorldServiceOptions {
   memoryContextValid?(scope: CompanionWorldScope, context?: { revision: string; profileKey: string }): Promise<boolean>;
   recall?(input: Parameters<CompanionMemoryService['recall']>[0]): Promise<CompanionMemoryRecall>;
   dreamWave?(input: CompanionWorldScope & { now: string; clockDomain: VcpMemoryDreamClock }): Promise<VcpMemoryDreamWaveResult>;
+  think?(input: Omit<Extract<CompanionStorageCommand, { type: 'peer.thought.create' }>, 'type'>, signal?: AbortSignal): Promise<unknown>;
+  readThought?(input: { jobId: string; companionId: string; conversationId: string; query: DshRecordQuery }, signal?: AbortSignal): Promise<unknown>;
 }
 
 /** Physics and reservations keep ticking while semantic decisions run separately. */
@@ -210,6 +214,30 @@ export class CompanionWorldService {
       ]);
       const runtime = stateResponse.runtimeState;
       if (!latestWorld) throw new Error('伙伴最新世界状态不可访问。');
+      const socialCapabilities = companionSocialCapabilities(this.options.request, { ...scope, sourceMessageId: source.id },
+        companionTopicCapabilities(this.options.request, scope, companionRecallCapabilities(this.options.request, scope), {
+          reviewUpdate: (command, actionSignal) => reviewCompanionGameSharedUpdate({ command, request: this.options.request, source },
+            config, actionSignal, { fetchFn: this.options.fetchFn, timeoutMs: 30_000 }),
+          reviewTransfer: (command, actionSignal) => reviewCompanionTopicModeratorTransfer({ command, request: this.options.request },
+            config, actionSignal, { fetchFn: this.options.fetchFn, timeoutMs: 30_000 }),
+        }), async (proposed, actionSignal) => {
+          const recipients = state!.companions.filter(role => proposed.recipientIds.includes(role.id));
+          if (recipients.length !== proposed.recipientIds.length) return false;
+          const game = proposed.action === 'message' ? await resolveCompanionGameInitiativeContext(this.options.request, {
+            scope, source, recipientIds: proposed.recipientIds, job,
+          }) : undefined;
+          return authorizeCompanionSocialInitiative({ companion, recipients, text: proposed.text, privateSources: sources, game }, config, actionSignal, { fetchFn: this.options.fetchFn });
+        }, { ...(gameCommunication ? { gamePort: gameCommunication.gamePort }
+          : port.topic?.kind === 'game' ? { gamePort: { conversationId: port.topic.conversationId, topicId: port.topic.id } } : {}),
+        executionReadset: () => executionReadset });
+      const capabilities = this.options.think ? companionThoughtCapabilities(socialCapabilities, {
+        run: async (proposal, effectId, thoughtSignal) => {
+          if (!executionReadset) throw new Error('伙伴思考实际读集不可用。');
+          return this.options.think!({ companionId: companion.id, conversationId: conversation.id, jobId: job.id, leaseToken,
+            effectId, executionReadset, ...proposal }, thoughtSignal);
+        }, ...(this.options.readThought ? { read: (query: DshRecordQuery, thoughtSignal?: AbortSignal) => this.options.readThought!({
+          companionId: companion.id, conversationId: conversation.id, jobId: job.id, query }, thoughtSignal) } : {}),
+      }) : socialCapabilities;
       const result = await generateCompanionSocialReply({ companion, conversation, source, messages: sources, job, world: latestWorld, routine, ...profiles,
         topic: port.topic, topicState: port.topicState, gameCommunication, resourceBounds,
         memoryRecall: { ...recalled, reasons: recalled?.reasons ?? [], pending: recalled?.pending ?? false, degraded: recalled?.degraded ?? false },
@@ -218,23 +246,7 @@ export class CompanionWorldService {
         ...(runtime ? { selfState: { energy: runtime.energy, mood: runtime.mood, expression: runtime.expression, affect: runtime.affect } } : {}),
         members: state!.companions.filter(member => conversation.memberIds.includes(member.id)).map(member => ({ id: member.id, name: member.name, description: member.description })) },
       config, signal, { fetchFn: this.options.fetchFn,
-        capabilities: companionSocialCapabilities(this.options.request, { ...scope, sourceMessageId: source.id },
-          companionTopicCapabilities(this.options.request, scope, companionRecallCapabilities(this.options.request, scope), {
-            reviewUpdate: (command, actionSignal) => reviewCompanionGameSharedUpdate({ command, request: this.options.request, source },
-              config, actionSignal, { fetchFn: this.options.fetchFn, timeoutMs: 30_000 }),
-            reviewTransfer: (command, actionSignal) => reviewCompanionTopicModeratorTransfer({ command, request: this.options.request },
-              config, actionSignal, { fetchFn: this.options.fetchFn, timeoutMs: 30_000 }),
-          }),
-          async (proposed, actionSignal) => {
-            const recipients = state!.companions.filter(role => proposed.recipientIds.includes(role.id));
-            if (recipients.length !== proposed.recipientIds.length) return false;
-            const game = proposed.action === 'message' ? await resolveCompanionGameInitiativeContext(this.options.request, {
-              scope, source, recipientIds: proposed.recipientIds, job,
-            }) : undefined;
-            return authorizeCompanionSocialInitiative({ companion, recipients, text: proposed.text, privateSources: sources, game }, config, actionSignal, { fetchFn: this.options.fetchFn });
-          }, { ...(gameCommunication ? { gamePort: gameCommunication.gamePort }
-            : port.topic?.kind === 'game' ? { gamePort: { conversationId: port.topic.conversationId, topicId: port.topic.id } } : {}),
-          executionReadset: () => executionReadset }),
+        capabilities,
         observeReadset: async readset => {
           if (!await verifyCompanionExecutionReadset(readset, scope, { request: this.options.request,
             contextValid: this.options.memoryContextValid })) throw new Error('伙伴本轮实际读取的来源、游戏私态或记忆已撤回，不能发布或继续行动。');

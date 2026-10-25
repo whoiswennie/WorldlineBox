@@ -1304,3 +1304,15 @@ f0c3228上的native-world-tools-five-quantity-continuation.json保持原source�
 当前结论：原生工具和持续回复已在实际同局恢复中证明改善；自主整局尚未通过，不能把它宣布为完整验收。当前不再追加新实模、重开一局或启动打包，避免将失败的内容审核层交付给用户。新安装器仍待最终验证完成后统一构建；旧source002c4a5的安装器不代表最新修复已入包。原失败报告及本节结果均保留，后续针对范式的工作须从这个真实边界继续，不能复活已失败原任务。
 
 撤回后原feasibility/privacy两个完整文件28/28、实际child exit0，main/extension类型检查均退出0；src与tests/unit再次确认和已验证的0bd0d82一致，没有实验审核残留引用。此项只证明恢复后代码合同完好，不抵消上述真实整局未完成的结果。
+
+### 16.85 补齐实际群聊思考入口与空库经历读取（2026-10-25）
+
+只读原局审计发现，旧peer主脑根本没有DSH工具；旧activity虽已提供纯思考，但原三段场景均未实际调用。两者不能混称模型主动放弃同一能力。现把受限思考接入实际peer job，沿用原Main action/native broker、新独立会话和记录流程；不造持续任务或外部授权，不占虚拟电脑。凭证绑定真实job、owner、room、来源、读取集合和存活租约，执行时续租并重核；过期、终态或来源撤回均不能恢复旧执行。历史记录只读不续租。原activity凭证兼容保留，独审发现的JSON键序比较问题已用原schema规范化修正。
+
+两入口共享run/record工具适配器，保留旧tasks-only调用，并允许按真实recordId和分页参数读取长结果；只接收title/prompt，模型不能选择工具、技能、权限或已有会话。record还须属于当前task/job，随后再走原owner/room/来源与依赖前后双校验。工具schema声明object并保留严格分支，没有绑定特定供应商或思考模式。社交提示中的旧“只能memory与world”限制已同步修正。持续任务空VCP只移除memory，保留world(experience)，避免有真实经历却查不到。
+
+最终后端两个完整worker34/34、空库与活动服务36/36、适配器2/2通过，真实SQLite覆盖旧activity与新peer。main/extension类型检查及目标lint通过。扩展主进程集合首轮189通过/7失败：5项旧测试仍向已清理的项目artifacts目录写报告，改写到本测试临时目录后5/5；另2项仍断言旧工具菜单，补上早已存在的最终提交工具后world服务完整45/45。原报告均保留，不把分段修复冒充首轮全绿；没有为这些夹具改产品等待、权限或输出合同。首次误用Node ABI的检查也保留，正式SQLite检查使用项目Electron runner。
+
+真实peer验收首次在夹具发信前即因sender proactive=false拒绝，没有调用模型；修正发送者真实主动聊天配置并补前置失败清理后，native-peer-thought-wired-real.json通过，actual child exit0。实际84.574秒、10次Main HTTP、1个native任务/1个native turn；CLI内部HTTP不在Main计数覆盖内。真实接收者deepseek-flash按请求调用DSH，取得环形先后关系的分析后正式回复原peer消息，原job done、独立Agent run done、真实action succeeded；有效工具/技能均0，新增持续任务0，无外部grant。经历记录owner、现实日期目录、详情读取和跨角色拒读通过，source及已选native配置守卫true，failures为空。该案例是明确请求下的真实能力接线验收，不冒充自然对局中模型主动选择了思考。
+
+原自主失败任务保持终态，不复活。针对本次明确缺失能力的修复，仅再做一次五伙伴自然自主验收，20分钟/600次Main非judge观察上限；结果另记，不反复重开抽样。遵从用户补充，至此未再打包，最终当前源码安装器仍待必要场景验证完成后统一构建。

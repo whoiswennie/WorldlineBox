@@ -144,6 +144,7 @@ it.skipIf(process.env.WORLDLINEBOX_NATURAL_GAME_ACCEPTANCE !== '1')('finishes a 
     : ['deepseek-sister', 'deepseek-flash', 'gugugaga', 'kimi', 'qwen', 'grok'];
   const sourcePaths = ['src/main/companions/service.ts', 'src/main/companions/activity-task-service.ts', 'src/main/companions/world-service.ts',
     'src/main/companions/social-model.ts', 'src/main/companions/social-capabilities.ts', 'src/main/companions/topic-capabilities.ts',
+    'src/main/companions/thought-capabilities.ts',
     'src/main/companions/topic-moderator-transfer.ts',
     'src/main/companions/game-contact-context.ts', 'src/main/companions/game-topic-privacy.ts', 'src/main/companions/game-goal-completion.ts',
     'src/main/companions/structured-agent.ts', 'src/main/companions/agent-kernel.ts', 'src/main/companions/agent-progress.ts',

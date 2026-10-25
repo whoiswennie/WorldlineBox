@@ -1,4 +1,3 @@
-import { z } from 'zod';
 import { createHash } from 'node:crypto';
 import type { Companion, CompanionConversation, CompanionMessage } from '../../shared/companions';
 import type { CompanionStorageCommand, CompanionStorageResponse } from '../../shared/companion-storage';
@@ -23,6 +22,8 @@ import type { CompanionTopicModeratorTransferApproval } from '../../shared/compa
 import type { CompanionExecutionReadset } from '../../shared/companion-execution-evidence';
 import { captureCompanionExecutionReadset, verifyCompanionExecutionReadset } from './execution-evidence';
 import { reviewCompanionSocialProgress } from './social-progress-review';
+import { companionThoughtCapabilities } from './thought-capabilities';
+import type { DshRecordQuery } from '../../shared/dsh-task-record';
 interface Options {
   request(input: CompanionStorageCommand): Promise<CompanionStorageResponse>;
   configFor(companion: Companion): Promise<CompanionModelConfig>;
@@ -31,9 +32,8 @@ interface Options {
   memoryContextValid?(scope: { companionId: string; conversationId: string; beforeSequence?: number }, context: { revision: string; profileKey: string }): Promise<boolean>;
   think?(input: { taskId: string; leaseToken: string; expectedStep: number; effectId: string; observationFingerprint: string;
     executionReadset: CompanionExecutionReadset; title: string; prompt: string }, signal?: AbortSignal): Promise<unknown>;
+  readThought?(input: { taskId: string; companionId: string; conversationId: string; query: DshRecordQuery }, signal?: AbortSignal): Promise<unknown>;
 }
-const thoughtArguments = z.strictObject({ tasks: z.array(z.strictObject({ title: z.string().trim().min(1).max(100),
-  prompt: z.string().trim().min(1).max(16000) })).length(1) });
 /** Actual reply identity and bytes, never wall-clock passage or a model plan. */
 export function companionActivitySocialObservationFingerprint(messages: readonly CompanionMessage[]): string {
   return JSON.stringify(messages.map(message => [message.id, message.conversationId, message.sequence,
@@ -154,17 +154,16 @@ export class CompanionActivityTaskService {
         && !!memory.memoryRetrieval.authorizedCorpusRevision && memory.memoryPage?.items.length === 0 && !memory.memoryPage.hasMore;
       let executionReadset: CompanionExecutionReadset | undefined;
       let topicModeratorTransferApproval: CompanionTopicModeratorTransferApproval | undefined;
-      const capabilities = { ...recall, tools: [...(emptyMemoryCorpus ? [] : recall.tools), ...(this.options.think ? [{ name: 'dsh',
-        description: '委托一次独立DSH会话分析当前目标。这里只能深度思考：宿主禁止所有实际工具、文件、网络、技能和代码执行；只提交title与prompt，不能选择工具或会话。仅传本人当前已获权资料，不传他人秘密。返回的是分析资料，不是任何行为已经完成的证据；收到后仍由本人按原目标选择下一步。',
-        parameters: z.toJSONSchema(thoughtArguments, { io: 'input' }) }] : [])],
-        execute: async (call: Parameters<typeof recall.execute>[0], nativeSignal?: AbortSignal) => {
-          if (call.name !== 'dsh') return recall.execute(call);
-          if (!this.options.think || !executionReadset) throw new Error('当前思考入口或实际读集不可用。');
-          const [proposal] = thoughtArguments.parse(JSON.parse(call.arguments)).tasks;
-          return this.options.think({ taskId: task.id, leaseToken, expectedStep, effectId: call.id,
+      const recalledCapabilities = { ...recall, tools: recall.tools.filter(tool => !emptyMemoryCorpus || tool.name !== 'memory') };
+      const capabilities = this.options.think ? companionThoughtCapabilities(recalledCapabilities, {
+        run: async (proposal, effectId, nativeSignal) => {
+          if (!executionReadset) throw new Error('当前思考实际读集不可用。');
+          return this.options.think!({ taskId: task.id, leaseToken, expectedStep, effectId,
             observationFingerprint: companionActivitySocialObservationFingerprint(observed.activityMessages ?? []),
-            executionReadset, ...proposal! }, nativeSignal);
-        } };
+            executionReadset, ...proposal }, nativeSignal);
+        }, ...(this.options.readThought ? { read: (query: DshRecordQuery, nativeSignal?: AbortSignal) => this.options.readThought!({
+          taskId: task.id, companionId: companion.id, conversationId: conversation.id, query }, nativeSignal) } : {}),
+      }) : recalledCapabilities;
       const output = await runCompanionStructuredAgent({
         finalSchema: activityDecisionJsonSchema(),
         evidenceScope: {},

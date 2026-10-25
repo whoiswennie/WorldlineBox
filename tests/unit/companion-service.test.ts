@@ -788,7 +788,7 @@ it.each(['private_final', 'public_final', 'tool_body_empty_repair', 'source_with
   }, { timeout: 5000 });
   const final = store.request({ type: 'loop.get', sourceMessageId: source.id, companionId: 'sister' }).loop!;
   const finalMessage = store.getMessage(final.messageId!);
-  writeFileSync(path.resolve('artifacts/vcp-validation/legacy-game-startup-' + mode + '-evidence-2026-10-24.json'), JSON.stringify({
+  writeFileSync(path.join(f.root, 'legacy-game-startup-' + mode + '-evidence.json'), JSON.stringify({
     writes, privacyChecks, finalMessage, final, streamEvents: replyEvents(), actualSourceId: source.id,
     commitWithdrawalReached, interceptedFormalReadset,
     actualPrivateCheckpointId: frame.topicState?.workingState?.sourceEventId,
@@ -2875,7 +2875,7 @@ it('returns restricted DSH thought to a source-free activity through the real Ma
   for (let i = 0; i < 30 && current().step === 0; i++) await vi.advanceTimersByTimeAsync(1000);
   expect(current(), JSON.stringify({ task: current(), fixtureErrors, thoughtReceipts })).toMatchObject({ step: 1, history: [expect.objectContaining({ action: 'query', ok: true })] });
   expect(authors).toBe(2); expect(requestTask.mock.calls.filter(([request]) => request.type === 'task.run')).toHaveLength(1);
-  const actions = f.store.request({ type: 'actions', conversationId: scope.conversationId }).actions!.filter(action => action.thought?.taskId === task.id);
+  const actions = f.store.request({ type: 'actions', conversationId: scope.conversationId }).actions!.filter(action => action.thought && !('kind' in action.thought) && action.thought.taskId === task.id);
   expect(actions).toHaveLength(1); expect(actions[0]).toMatchObject({ status: 'succeeded', result: analysis }); expect(actions[0]!.sourceMessageId).toBeUndefined();
   expect(f.store.messages({ conversationId: scope.conversationId, limit: 100 }).messages.some(message => message.content.includes(analysis))).toBe(false);
   expect(f.store.messages({ conversationId: f.conversation.id }).messages.filter(message => message.authorId === 'user')).toHaveLength(oldUserMessages);

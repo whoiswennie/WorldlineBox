@@ -52,7 +52,7 @@ import { CompanionCollaborationStore } from './collaboration-store';
 import { CompanionExecutionSourceStore } from './execution-source-store';
 import { executionSourceInvalidKey, companionExecutionReadsetValidSync } from './execution-source-access';
 import type { CompanionExecutionReadset } from '../shared/companion-execution-evidence';
-import type { CompanionActivityThoughtAuthorization } from '../shared/companion-activity-thought';
+import { companionThoughtAuthorizationSchema, type CompanionThoughtAuthorization } from '../shared/companion-activity-thought';
 
 interface Statement {
   all(...args: unknown[]): unknown[];
@@ -376,6 +376,7 @@ export class CompanionsStore {
       this.#db.exec("CREATE INDEX IF NOT EXISTS actions_live_status ON actions(status,conversation_id)");
       this.#db.exec("CREATE INDEX IF NOT EXISTS actions_parent_message ON actions(json_extract(data,'$.parentMessageId'))");
       this.#db.exec("CREATE UNIQUE INDEX IF NOT EXISTS actions_activity_thought ON actions(companion_id,json_extract(data,'$.thought.taskId'),json_extract(data,'$.thought.step'),json_extract(data,'$.thought.effectId')) WHERE json_type(data,'$.thought')='object'");
+      this.#db.exec("CREATE UNIQUE INDEX IF NOT EXISTS actions_peer_thought ON actions(companion_id,json_extract(data,'$.thought.jobId'),json_extract(data,'$.thought.effectId')) WHERE json_extract(data,'$.thought.kind')='peer'");
       this.#db.exec("CREATE TABLE IF NOT EXISTS companion_work_queue(ordinal INTEGER PRIMARY KEY AUTOINCREMENT,id TEXT NOT NULL UNIQUE,status TEXT NOT NULL,companion_id TEXT NOT NULL,data TEXT NOT NULL)");
       this.#db.exec("CREATE INDEX IF NOT EXISTS companion_work_status ON companion_work_queue(status,ordinal)");
       this.#db.exec("CREATE INDEX IF NOT EXISTS companion_work_source ON companion_work_queue(json_extract(data,'$.sourceMessageId'))");
@@ -1542,21 +1543,26 @@ export class CompanionsStore {
       topicSourcesValid: (owner, conversationId, ids) => this.#memory.sources.checkpointSourcesValid({ companionId: owner, conversationId }, ids),
     });
   }
-  #thoughtAction(authorization: CompanionActivityThoughtAuthorization): CompanionAction | undefined {
-    const found = this.#db.prepare("SELECT data FROM actions WHERE json_type(data,'$.thought')='object' AND companion_id=? AND json_extract(data,'$.thought.taskId')=? AND json_extract(data,'$.thought.step')=? AND json_extract(data,'$.thought.effectId')=?")
-      .get(authorization.companionId, authorization.taskId, authorization.step, authorization.effectId);
+  #thoughtAction(authorization: CompanionThoughtAuthorization): CompanionAction | undefined {
+    const found = 'kind' in authorization
+      ? this.#db.prepare("SELECT data FROM actions WHERE json_extract(data,'$.thought.kind')='peer' AND companion_id=? AND json_extract(data,'$.thought.jobId')=? AND json_extract(data,'$.thought.effectId')=?")
+        .get(authorization.companionId, authorization.jobId, authorization.effectId)
+      : this.#db.prepare("SELECT data FROM actions WHERE json_type(data,'$.thought')='object' AND companion_id=? AND json_extract(data,'$.thought.taskId')=? AND json_extract(data,'$.thought.step')=? AND json_extract(data,'$.thought.effectId')=?")
+        .get(authorization.companionId, authorization.taskId, authorization.step, authorization.effectId);
     return found ? this.#recoverableAction(decode<CompanionAction>(row(found).data)) : undefined;
   }
-  #createActivityThought(command: Extract<CompanionStorageCommand, { type: 'activity.thought.create' }>): CompanionStorageResponse {
+  #createActivityThought(command: Extract<CompanionStorageCommand, { type: 'activity.thought.create' | 'peer.thought.create' }>): CompanionStorageResponse {
     return this.#db.transaction(() => {
-      const prepared = this.#activity.prepareThought(command), { authorization, executionReadset } = prepared;
+      const prepared = command.type === 'peer.thought.create' ? this.#social.prepareThought(command) : this.#activity.prepareThought(command);
+      const { authorization, executionReadset } = prepared;
       if (!this.#thoughtReadsetValid(executionReadset)) throw new Error('持续活动思考引用的真实来源、记忆或授权已变化。');
       const existing = this.#thoughtAction(authorization);
       if (existing) {
         const checkpoint = this.checkpoint(existing.id);
+        const stableProof = (proof: CompanionThoughtAuthorization) => JSON.stringify({ ...companionThoughtAuthorizationSchema.parse(proof), leaseToken: '' });
         if (!checkpoint?.activityThought || existing.title !== command.title || checkpoint.prompt !== command.prompt
           || JSON.stringify(checkpoint.executionReadset) !== JSON.stringify(executionReadset)
-          || checkpoint.activityThought.observationFingerprint !== authorization.observationFingerprint) throw new Error('持续活动思考幂等标识与原提案或读集冲突。');
+          || stableProof(checkpoint.activityThought) !== stableProof(authorization)) throw new Error('伙伴思考幂等标识与原提案或读集冲突。');
         // A crash before dispatch may replace only the lease of a still-queued
         // action. Started/confirmed work and its immutable proof stay intact.
         if (existing.status === 'queued' && !existing.startedAt && !existing.taskId && !checkpoint.execution) {
@@ -1566,7 +1572,8 @@ export class CompanionsStore {
         return { ok: true, action: existing, checkpoint };
       }
       const checkpoint: CompanionTaskCheckpoint = { prompt: command.prompt, activityThought: authorization, executionReadset, waitForActionIds: [], supplements: [] };
-      const thought = { taskId: authorization.taskId, step: authorization.step, effectId: authorization.effectId };
+      const thought = 'kind' in authorization ? { kind: authorization.kind, jobId: authorization.jobId, effectId: authorization.effectId }
+        : { taskId: authorization.taskId, step: authorization.step, effectId: authorization.effectId };
       const action = this.#insertAction({ companionId: authorization.companionId, conversationId: authorization.conversationId,
         ...(prepared.sourceMessageId ? { sourceMessageId: prepared.sourceMessageId } : {}), thought, title: command.title, status: 'queued' }, checkpoint, authorization);
       return { ok: true, action, checkpoint };
@@ -1576,14 +1583,15 @@ export class CompanionsStore {
     return this.#db.transaction(() => {
       const action = this.#thoughtAction(command.authorization), checkpoint = action && this.checkpoint(action.id);
       const valid = !!action && action.contentAvailable !== false && !!checkpoint?.activityThought
-        && JSON.stringify(checkpoint.activityThought) === JSON.stringify(command.authorization)
+        && JSON.stringify(companionThoughtAuthorizationSchema.parse(checkpoint.activityThought)) === JSON.stringify(companionThoughtAuthorizationSchema.parse(command.authorization))
         && JSON.stringify(checkpoint.executionReadset) === JSON.stringify(command.executionReadset)
         && this.#thoughtReadsetValid(command.executionReadset)
-        && this.#activity.thoughtValid(command.authorization, command.mode, command.mode === 'execute' && command.renew === true);
+        && ('kind' in command.authorization ? this.#social.thoughtValid(command.authorization, command.mode, command.mode === 'execute' && command.renew === true)
+          : this.#activity.thoughtValid(command.authorization, command.mode, command.mode === 'execute' && command.renew === true));
       return { ok: true, activityThoughtValid: valid };
     }).immediate();
   }
-  #insertAction(input: CreateCompanionAction, checkpoint?: CompanionTaskCheckpoint, thoughtAuthorization?: CompanionActivityThoughtAuthorization): CompanionAction {
+  #insertAction(input: CreateCompanionAction, checkpoint?: CompanionTaskCheckpoint, thoughtAuthorization?: CompanionThoughtAuthorization): CompanionAction {
     const action = createCompanionActionSchema.parse(input);
     action.conversationId = this.#conversationId(action.conversationId);
     return this.#db.transaction(() => {
@@ -1846,6 +1854,7 @@ export class CompanionsStore {
       case 'action.get': return { ok: true, action: this.getAction(command.id) };
       case 'action.create': return { ok: true, action: this.createAction(command.action, command.checkpoint) };
       case 'activity.thought.create': return this.#createActivityThought(command);
+      case 'peer.thought.create': return this.#createActivityThought(command);
       case 'activity.thought.validate': return this.#validateActivityThought(command);
       case 'checkpoint.get': return { ok: true, checkpoint: this.checkpoint(command.id) };
       case 'checkpoint.save': this.saveCheckpoint(command.id, command.checkpoint); return { ok: true };

@@ -14,7 +14,7 @@ import { companionsRequestSchema } from '../../src/shared/companions';
 import { companionWorkspaceRequestSchema } from '../../src/shared/companion-workspace';
 import { companionRecallCapabilities, companionTaskInvocation, runCompanionStructuredAgent } from '../../src/main/companions/structured-agent';
 import type { CompanionReplyInput } from '../../src/main/companions/context';
-import { activityArgumentsSchema, activityDecisionSchema } from '../../src/shared/companion-activity-task';
+import { activityArgumentsSchema, activityDecisionSchema, type CompanionActivityTask } from '../../src/shared/companion-activity-task';
 const seeds: CompanionSeed[] = [{ id: 'alice', name: 'Alice', persona: '尊重实际结果', description: '', model: '', avatar: 'sister', active: true, proactive: true }];
 let worldService: CompanionWorldService | undefined;
 let root: string, store: CompanionsStore, service: CompanionActivityTaskService | undefined;
@@ -46,6 +46,31 @@ function withProgressReview(fetchFn: typeof fetch, forwardFeasibilityReview = fa
     }
     return data.purpose === 'companion_social_progress_review' ? response({ supported: true, correction: '' }) : fetchFn(input, init);
   };
+}
+function replyToBoundGroupInvitation(task: CompanionActivityTask, topicId: string) {
+  const conversationId = task.peerConversationId!, authorId = task.wait!.kind === 'reply' ? task.wait!.targetCompanionId : undefined;
+  expect(authorId).toBeDefined();
+  for (let attempt = 0; attempt < 8; attempt++) {
+    const job = store.request({ type: 'social.job.claim' }).socialJob;
+    if (!job) {
+      vi.setSystemTime(Date.now() + 60000);
+      for (let tick = 0; tick < 1000; tick++) if (!store.request({ type: 'world.tick' }).world?.backlog) break;
+      continue;
+    }
+    vi.setSystemTime(Math.max(Date.now(), Date.parse(job.typingNotBefore)) + 1);
+    if (job.conversationId !== conversationId || job.companionId !== authorId) {
+      store.request({ type: 'social.job.complete', id: job.id, leaseToken: job.leaseToken!, text: null });
+      continue;
+    }
+    const invitation = store.messages({ conversationId, topicId }).messages.find(message => message.id === job.sourceMessageId);
+    expect(invitation).toMatchObject({ authorId: task.companionId, topicId });
+    store.request({ type: 'topic.join', conversationId, topicId, readerId: authorId! });
+    const reply = store.request({ type: 'social.job.complete', id: job.id, leaseToken: job.leaseToken!,
+      text: '已收到这条邀请，我愿意继续讨论；具体方案仍需另行确认。' }).socialMessage!.message;
+    expect(reply.replyToId).toBe(job.sourceMessageId);
+    return reply;
+  }
+  throw new Error('本目标的真实群邀请未产生指定伙伴的实际回复机会。');
 }
 it('keeps all three report lease commands internal to storage, outside renderer, workspace and actor argument schemas', () => {
   const readset = { schema: 'worldlinebox.companion-execution-readset-v1', companionId: 'alice', conversationId: 'private_alice', complete: true,
@@ -321,6 +346,7 @@ it.each(['string', 'native-wrapper', 'topic-patch-field', 'topic-revision'] as c
     sourceMessageId: scope.task.sourceMessageId!, deliveryClientId, operation: 'create_group' }).activityTask!;
   vi.setSystemTime(Date.now() + 310000);
   for (let tick = 0; tick < 1000; tick++) if (!store.request({ type: 'world.tick' }).world?.backlog) break;
+  replyToBoundGroupInvitation(bound, group.topic!.id);
   await service!.tick();
   const get = () => store.request({ type: 'activity.get', companionId: 'alice', conversationId: scope.conversationId, id: bound.id }).activityTask!;
   await vi.waitFor(() => expect(get().step, JSON.stringify({ actorCalls, task: get() })).toBe(bound.step + 1));
@@ -374,6 +400,7 @@ it('hands the same live topic to its consenting participant through the activity
     sourceMessageId: scope.task.sourceMessageId!, deliveryClientId: clientId, operation: 'create_group' }).activityTask!;
   vi.setSystemTime(Date.now() + 310000);
   for (let tick = 0; tick < 1000; tick++) if (!store.request({ type: 'world.tick' }).world?.backlog) break;
+  replyToBoundGroupInvitation(bound, topicId);
   await service!.tick();
   const get = () => store.request({ type: 'activity.get', companionId: 'alice', conversationId: scope.conversationId, id: bound.id }).activityTask!;
   await vi.waitFor(() => expect(get().step, JSON.stringify(get())).toBe(bound.step + 1));
@@ -432,10 +459,11 @@ it.each([false, true])('uses the real human goal for feasibility, corrects self-
   const group = store.request({ type: 'world.tool', companionId: 'alice', conversationId: scope.conversationId,
     sourceMessageId: scope.task.sourceMessageId, clientId: 'real_feasibility_game', arguments: { action: 'create_group', recipientIds: targetIds,
       title: '实际游戏群', text: '愿意一起玩吗？', topic: { kind: 'game', title: '真实筹备' } } });
-  store.request({ type: 'activity.social.ensure', companionId: 'alice', conversationId: scope.conversationId,
-    sourceMessageId: scope.task.sourceMessageId!, deliveryClientId: 'real_feasibility_game', operation: 'create_group' });
+  const bound = store.request({ type: 'activity.social.ensure', companionId: 'alice', conversationId: scope.conversationId,
+    sourceMessageId: scope.task.sourceMessageId!, deliveryClientId: 'real_feasibility_game', operation: 'create_group' }).activityTask!;
   vi.setSystemTime(Date.now() + 310000);
   for (let tick = 0; tick < 1000; tick++) if (!store.request({ type: 'world.tick' }).world?.backlog) break;
+  replyToBoundGroupInvitation(bound, group.topic!.id);
   await service!.tick();
   const get = () => store.request({ type: 'activity.get', companionId: 'alice', conversationId: scope.conversationId, id: scope.task.id }).activityTask!;
   await vi.waitFor(() => fixedEight ? expect(get().status).toBe('failed') : expect(get().step,
@@ -531,24 +559,39 @@ it('requires the exact source, current lease/step and a real completed inference
   expect(store.request({ type: 'activity.get', companionId: scope.companionId, conversationId: scope.conversationId,
     id: leased.id }).activityTask).toMatchObject({ status: 'running', step: 0, history: [] });
 });
-it('omits useless recall only for a current whole-corpus-empty host receipt and checks availability again on the next step', async () => {
+it('omits only useless memory recall for an empty corpus, keeps actual experience reads and checks availability again on the next step', async () => {
   let empty = true;
+  const calls: CompanionStorageCommand[] = [];
+  const toolMenus: string[][] = [];
   const fetchFn = vi.fn<typeof fetch>(async (_url, init) => {
     const wire = JSON.parse(String(init?.body)), data = JSON.parse(wire.messages[1].content);
-    if (empty) { expect(wire.tools.map((tool: { function: { name: string } }) => tool.function.name)).toEqual([COMPANION_SUBMIT_RESULT_TOOL]); expect(data.memoryAvailability).toMatchObject({ authorizedCorpusEmpty: true, revision: 'empty-now' }); }
+    toolMenus.push(wire.tools.map((tool: { function: { name: string } }) => tool.function.name));
+    if (empty) {
+      expect(wire.tools.map((tool: { function: { name: string } }) => tool.function.name)).toEqual(['world', COMPANION_SUBMIT_RESULT_TOOL]);
+      expect(data.memoryAvailability).toMatchObject({ authorizedCorpusEmpty: true, revision: 'empty-now' });
+      if (fetchFn.mock.calls.length === 1) return new Response(JSON.stringify({ choices: [{ message: { content: '', tool_calls: [{
+        id: 'empty_corpus_experience_days', type: 'function', function: { name: 'world',
+          arguments: JSON.stringify({ action: 'experience', parameters: { action: 'days' } }) },
+      }] } }] }));
+      expect(wire.messages.some((message: { role: string; tool_call_id?: string; content: string }) => message.role === 'tool'
+        && message.tool_call_id === 'empty_corpus_experience_days' && message.content.includes('"experienceDays"'))).toBe(true);
+      expect(calls.filter(command => command.type === 'experience.days')).toEqual([{ type: 'experience.days', companionId: 'alice', limit: 20 }]);
+    }
     else { expect(wire.tools).toHaveLength(3); expect(wire.tools.map((tool: { function: { name: string } }) => tool.function.name)).toEqual(['memory', 'world', COMPANION_SUBMIT_RESULT_TOOL]); expect(data.memoryAvailability).toBeUndefined(); }
     return response({ status: 'continue', action: { action: 'query', category: 'scenes', limit: 1 }, wait: null, summary: '用当前真实上下文继续，回忆可用性每步核实。' });
   });
   const base = setup(fetchFn); await service!.close();
-  service = new CompanionActivityTaskService({ request: async input => input.type === 'memory.search' ? { ok: true,
+  service = new CompanionActivityTaskService({ request: async input => { calls.push(input); return input.type === 'memory.search' ? { ok: true,
     memoryPage: { items: [], hasMore: false }, ...(empty ? { memoryRetrieval: { mode: 'active', engine: 'none', observedAt: new Date().toISOString(),
-      resultCount: 0, candidateQuerySeparateFromContext: true, stages: [], authorizedCorpusEmpty: true, authorizedCorpusRevision: 'empty-now' } } : {}) } : store.request(input),
+      resultCount: 0, candidateQuerySeparateFromContext: true, stages: [], authorizedCorpusEmpty: true, authorizedCorpusRevision: 'empty-now' } } : {}) } : store.request(input); },
     fetchFn: withProgressReview(fetchFn), configFor: async () => ({ apiFormat: 'openai_chat', model: 'fixture', apiKey: 'fake', baseUrl: 'https://fixture.invalid' }),
     profiles: async () => ({ publicProfiles: [], visualInputs: [] }), excludedIds: () => [], changed: vi.fn(), report: error => { throw error; } });
   const get = () => store.request({ type: 'activity.get', companionId: base.companionId, conversationId: base.conversationId, id: base.task.id }).activityTask!;
-  await service.tick(); await vi.waitFor(() => expect(get().step).toBe(1));
+  await service.tick(); await vi.waitFor(() => expect(toolMenus.length).toBeGreaterThan(0));
+  expect(toolMenus[0]).toEqual(['world', COMPANION_SUBMIT_RESULT_TOOL]);
+  await vi.waitFor(() => expect(get().step).toBe(1));
   empty = false; vi.setSystemTime(Date.now() + 3000); await service.tick(); await vi.waitFor(() => expect(get().step, JSON.stringify(get())).toBe(2));
-  expect(fetchFn).toHaveBeenCalledTimes(2);
+  expect(fetchFn).toHaveBeenCalledTimes(3);
 });
 it('binds the native initial recall actually consumed by the plan, excludes candidates, and withdraws the plan with its material source', async () => {
   const fetchFn = vi.fn<typeof fetch>(async (_url, init) => {

@@ -1,7 +1,7 @@
 import { companionInterruptionCommands, companionInterruptionSchema } from './companion-interruption';
 import { companionAgentRunCommands, companionAgentRunSchema } from './companion-agent-run';
 import { companionExecutionReadsetSchema } from './companion-execution-evidence';
-import { companionActivityThoughtAuthorizationSchema } from './companion-activity-thought';
+import { companionThoughtAuthorizationSchema } from './companion-activity-thought';
 import { companionExperienceCommands, companionExperiencePublishSchema } from './companion-experience';
 import { companionKnowledgeCommandSchema } from './companion-knowledge-store';
 import { companionSocialReplyReceiptSchema } from './companion-social-reply';
@@ -84,7 +84,7 @@ export const createCompanionActionSchema = actionSchema.omit({ id: true, created
 export type CreateCompanionAction = z.infer<typeof createCompanionActionSchema>;
 export const companionTaskCheckpointSchema = z.strictObject({ prompt: z.string().min(1).max(65536),
   dshTask: dshTaskSpecSchema.optional(),
-  activityThought: companionActivityThoughtAuthorizationSchema.optional(),
+  activityThought: companionThoughtAuthorizationSchema.optional(),
   executionReadset: companionExecutionReadsetSchema.optional(),
   waitForActionIds: z.array(companionIdSchema).max(100).default([]),
   execution: dshTaskRecordSchema.optional(), supplements: z.array(z.object({ id: companionIdSchema, content: z.string().max(16000), mode: z.enum(['steer', 'queue']) })).max(100).default([]) });
@@ -163,7 +163,10 @@ export const companionStorageCommandSchema = z.discriminatedUnion('type', [
     expectedStep: z.number().int().nonnegative().safe(), effectId: z.string().min(1).max(200),
     observationFingerprint: z.string().min(2).max(65536), executionReadset: companionExecutionReadsetSchema,
     prompt: z.string().trim().min(1).max(65536), title: z.string().trim().min(1).max(120) }),
-  z.strictObject({ type: z.literal('activity.thought.validate'), authorization: companionActivityThoughtAuthorizationSchema,
+  z.strictObject({ type: z.literal('peer.thought.create'), companionId: companionIdSchema, conversationId: companionIdSchema,
+    jobId: companionIdSchema, leaseToken: companionIdSchema, effectId: z.string().min(1).max(200), executionReadset: companionExecutionReadsetSchema,
+    prompt: z.string().trim().min(1).max(65536), title: z.string().trim().min(1).max(120) }),
+  z.strictObject({ type: z.literal('activity.thought.validate'), authorization: companionThoughtAuthorizationSchema,
     executionReadset: companionExecutionReadsetSchema, mode: z.enum(['execute', 'read']), renew: z.boolean().optional() }),
   z.strictObject({ type: z.literal('action.update'), id: companionIdSchema, patch: updateCompanionActionSchema }),
   z.strictObject({ type: z.literal('action.interrupt-pending') }),

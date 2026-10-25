@@ -16,6 +16,7 @@ import { companionSocialGoalOrigin, companionSocialDelegatedPortOrigin } from '.
 import type { CompanionExecutionReadset } from '../shared/companion-execution-evidence';
 import { companionAcceptedPeerActivitySchema, type CompanionAcceptedPeerActivity, type CompanionPeerActivityAcceptanceInput } from '../shared/companion-peer-activity';
 import { companionPeerActivitySourceChecksum } from './peer-activity-source';
+import type { CompanionPeerThoughtAuthorization } from '../shared/companion-activity-thought';
 
 type Row = Record<string, string | number | null>;
 type Calendar = { timeZone: string; virtualNow: string; observedDay: string; backlog: boolean };
@@ -789,6 +790,52 @@ export class CompanionSocialStore {
   private validRead(job: StoredJob): boolean {
     const sources = this.readSet(job), present = new Map(sources.map(source => [source.id, source.checksum]));
     return !!present.get(job.sourceMessageId) && (job.readSet ?? []).every(source => present.get(source.id) === source.checksum);
+  }
+  /** A peer's own live brain may analyse its actual inbound material. The
+   * sender supplies no execution grant and no synthetic activity is created. */
+  prepareThought(command: Extract<CompanionStorageCommand, { type: 'peer.thought.create' }>): {
+    authorization: CompanionPeerThoughtAuthorization; executionReadset: CompanionExecutionReadset; sourceMessageId: string;
+  } {
+    const found = this.db.prepare('SELECT data FROM companion_social_jobs WHERE id=?').get(command.jobId);
+    if (!found) throw new Error('当前伙伴来信任务不存在，未委托思考。');
+    const job = parse<StoredJob>(row(found).data), source = this.message(job.sourceMessageId);
+    const authorization: CompanionPeerThoughtAuthorization = { kind: 'peer', jobId: job.id, effectId: command.effectId,
+      companionId: command.companionId, conversationId: command.conversationId, leaseToken: command.leaseToken,
+      sourceMessageId: source.id, sourceChecksum: checksum(source), throughSequence: job.throughSequence,
+      observationFingerprint: hash(job.readSet ?? []) };
+    if (!this.thoughtValid(authorization, 'execute')) throw new Error('伙伴来信的主体、来源、读集或实际租约已变化，未委托旧思考。');
+    const executionReadset = this.executionSources(job.companionId, job.conversationId, (job.readSet ?? []).map(read => read.id),
+      command.executionReadset, job.throughSequence)!;
+    return { authorization, executionReadset, sourceMessageId: source.id };
+  }
+  thoughtValid(authorization: CompanionPeerThoughtAuthorization, mode: 'execute' | 'read', renew = false): boolean {
+    try {
+      const found = this.db.prepare('SELECT data,lease_until FROM companion_social_jobs WHERE id=?').get(authorization.jobId);
+      if (!found) return false;
+      const job = parse<StoredJob>(row(found).data), source = this.message(job.sourceMessageId);
+      if (job.companionId !== authorization.companionId || job.conversationId !== authorization.conversationId
+        || job.sourceMessageId !== authorization.sourceMessageId || job.throughSequence !== authorization.throughSequence
+        || source.authorId === 'user' || source.authorId === job.companionId || !job.memberIds.includes(source.authorId)
+        || source.conversationId !== job.conversationId || source.status !== 'sent' || source.isReplyDraft || source.replyDraft
+        || checksum(source) !== authorization.sourceChecksum || hash(job.readSet ?? []) !== authorization.observationFingerprint
+        || !this.validRead(job) || !this.continuity.chainValid(job.chainId)
+        || job.replyOpportunity && !this.activityReplyValid(job.replyOpportunity)) return false;
+      const members = this.requireRoom(job.conversationId, job.companionId);
+      if (!members.includes(source.authorId)) return false;
+      // Historical access preserves the real source/readset proof without
+      // renewing or reviving an already settled job.
+      if (mode === 'read') return true;
+      const chain = this.chain(job.chainId), expires = Date.parse(String(row(found).lease_until));
+      if (job.status !== 'running' || job.terminal || job.leaseToken !== authorization.leaseToken || !Number.isFinite(expires) || expires <= Date.now()
+        || !chain || chain.used >= chain.data.maxMessages || !this.participantsActivated(job.memberIds)
+        || this.jobTopicAdmission(job) !== 'active' || this.calendar().backlog || this.phoneBusy(job.companionId, 'job:' + job.id)
+        || !this.available(job.companionId, job.channel, job.memberIds.filter(id => id !== job.companionId))) return false;
+      if (renew) {
+        this.saveJob(job, iso(Date.now() + 180000));
+        if (job.channel === 'phone') this.communicate(job.companionId, job.conversationId, job.memberIds.filter(id => id !== job.companionId), 'typing', 180000, 'job:' + job.id);
+      }
+      return true;
+    } catch { return false; }
   }
   private candidates(table: 'companion_social_outbox' | 'companion_social_jobs', owner: string, predicate: string, args: unknown[]): Row[] {
     const saved = this.db.prepare('SELECT value FROM metadata WHERE key=?').get('social-scan/' + table + '/' + owner), after = saved ? Number(row(saved).value) : 0;

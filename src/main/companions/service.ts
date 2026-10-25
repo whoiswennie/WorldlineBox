@@ -228,6 +228,8 @@ export class CompanionService {
       fetchFn: (input, init) => net.fetch(input instanceof URL ? input.toString() : input, { ...init, credentials: 'omit' }),
       changed: () => this.changed(), report: options.report, busy: () => [...this.activities.values()].some(activity => activity.status === 'thinking') });
     this.world = new CompanionWorldService({ request: command => this.call(command), configFor: companion => this.configFor(companion),
+      think: (input, signal) => this.thinkForPeer(input, signal),
+      readThought: (input, signal) => this.readThoughtRecord(input.query, input, { kind: 'peer', id: input.jobId }, signal),
       recall: input => this.memory.recall(input),
       dreamWave: input => this.memory.dreamWave(input),
       profiles: input => this.profiles.prepare(input),
@@ -280,6 +282,7 @@ export class CompanionService {
     this.activityTasks = new CompanionActivityTaskService({ request: command => this.call(command), configFor: role => this.configFor(role),
       profiles: input => this.profiles.prepare(input), fetchFn: (url, init) => net.fetch(url instanceof URL ? url.toString() : url, { ...init, credentials: 'omit' }),
       think: (input, signal) => this.thinkForActivity(input, signal),
+      readThought: (input, signal) => this.readThoughtRecord(input.query, input, { kind: 'activity', id: input.taskId }, signal),
       memoryContextValid: (scope, context) => this.memory.contextValid(scope, context),
       excludedIds: () => [...new Set([...this.resettingCompanions, ...[...this.activities.values()].map(activity => activity.companionId)])],
       changed: () => this.changed(), report: options.report });
@@ -2864,25 +2867,44 @@ export class CompanionService {
     return this.queueAction(action, request.prompt, signal, queuedBehind);
   }
   /** The activity lease grants only computation, never player execution authority. */
-  private async thinkForActivity(input: Omit<Extract<CompanionStorageCommand, { type: 'activity.thought.create' }>, 'type'>, signal?: AbortSignal): Promise<unknown> {
+  private thinkForActivity(input: Omit<Extract<CompanionStorageCommand, { type: 'activity.thought.create' }>, 'type'>, signal?: AbortSignal): Promise<unknown> {
+    return this.think({ type: 'activity.thought.create', ...input }, signal);
+  }
+  private thinkForPeer(input: Omit<Extract<CompanionStorageCommand, { type: 'peer.thought.create' }>, 'type'>, signal?: AbortSignal): Promise<unknown> {
+    return this.think({ type: 'peer.thought.create', ...input }, signal);
+  }
+  private async think(input: Extract<CompanionStorageCommand, { type: 'activity.thought.create' | 'peer.thought.create' }>, signal?: AbortSignal): Promise<unknown> {
     this.assertReplyActive(signal);
-    const created = await this.call({ type: 'activity.thought.create', ...input });
+    const created = await this.call(input);
     const action = created.action, proof = created.checkpoint?.activityThought;
     const readset = created.checkpoint?.executionReadset;
-    if (!created.ok || !action?.thought || !proof || !readset) throw new Error(created.error ?? '思考任务没有取得当前活动的真实授权。');
+    if (!created.ok || !action?.thought || !proof || !readset) throw new Error(created.error ?? '思考任务没有取得当前推理的真实来源。');
     if (!await this.executionEvidenceValid(action, readset)) throw new Error('思考所读资料已经变化，未执行。');
     await this.queueAction(action, input.prompt, signal);
     await this.actionJobs.get(action.id);
     this.assertReplyActive(signal);
     const current = (await this.call({ type: 'activity.thought.validate', authorization: proof, executionReadset: readset, mode: 'execute' })).activityThoughtValid;
     if (!current || !await verifyCompanionKnowledgeReads(readset.knowledgeReads, action, command => this.call(command)))
-      throw new Error('思考期间当前活动或所读资料已经变化，旧分析没有交给当前提案。');
+      throw new Error('思考期间当前推理来源或所读资料已经变化，旧分析没有交给当前提案。');
     const final = (await this.call({ type: 'action.get', id: action.id })).action!;
     if (final.status === 'succeeded' && (!final.executionSummary?.effective || final.executionSummary.effective.mode !== 'native'
       || final.executionSummary.effective.toolCount !== 0 || final.executionSummary.effective.skillCount !== 0))
       throw new Error('思考回执缺少原生零工具/零技能能力证明，未采用分析。');
     return { tasks: [companionDshReceipt(final)], trust: 'cognitive_analysis_not_execution_fact',
       instruction: '仅为本人本目标的分析资料；不证明工具执行、他人决定或世界状态改变。按当前真实回执自行继续原目标。' };
+  }
+  private async readThoughtRecord(query: DshRecordQuery, scope: { companionId: string; conversationId: string },
+    origin: { kind: 'activity' | 'peer'; id: string }, signal?: AbortSignal) {
+    this.assertReplyActive(signal);
+    const owner = await this.options.dsh()?.taskRecordScope(query.recordId);
+    const thought = owner?.activityThought;
+    const sameOrigin = thought && (origin.kind === 'peer'
+      ? 'kind' in thought && thought.kind === 'peer' && thought.jobId === origin.id
+      : !('kind' in thought) && thought.taskId === origin.id);
+    if (!sameOrigin) throw new Error('思考记录不属于当前任务或这次伙伴回应，不能导入其他推理上下文。');
+    const result = await this.readDshRecord(query, scope);
+    this.assertReplyActive(signal);
+    return result;
   }
   /** One existing capacity/job/session pipeline for external execution and restricted thought. */
   private async queueAction(action: CompanionAction, prompt: string, signal?: AbortSignal, queuedBehind?: Promise<unknown>): Promise<CompanionsResponse> {
