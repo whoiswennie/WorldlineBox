@@ -8,6 +8,7 @@ it('routes isolated thought and bounded record reads without replacing the exist
   const read = vi.fn(async () => ({ record: true }));
   const base = { tools: [{ name: 'world', description: 'existing', parameters: { type: 'object' } }], execute };
   const capabilities = companionThoughtCapabilities(base, { run, read });
+  expect(capabilities.dshContext).toBe('thought');
   expect(capabilities.tools.map(tool => tool.name)).toEqual(['world', 'dsh']);
   expect(capabilities.tools[1]!.parameters).toMatchObject({ type: 'object', anyOf: expect.any(Array) });
   const signal = new AbortController().signal;

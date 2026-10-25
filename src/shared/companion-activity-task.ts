@@ -58,6 +58,18 @@ export function activityDecisionJsonSchema(): Record<string, unknown> {
     { anyOf: [{ properties: { topic: empty } }, { properties: { action: empty, wait: empty } }] },
   ] };
 }
+export const activityHistoryEntrySchema = z.object({ step: z.number().int().positive(), at: z.iso.datetime(), action: z.string(),
+  arguments: companionWorldArgumentsSchema.optional(), topicArguments: companionTopicArgumentsSchema.optional(),
+  result: z.string().max(16000), ok: z.boolean(),
+  resultProvenance: z.enum(['host_receipt', 'model_summary_not_execution_fact']).optional(),
+  modelSummary: z.strictObject({ text: z.string().max(2000), trust: z.literal('model_summary_not_execution_fact') }).optional() });
+export type CompanionActivityHistoryEntry = z.infer<typeof activityHistoryEntrySchema>;
+/** Old observe rows stored the actor's summary, rather than a host receipt.
+ * Project their provenance without rewriting the original history bytes. */
+export function projectCompanionActivityHistoryEntry(entry: CompanionActivityHistoryEntry): CompanionActivityHistoryEntry {
+  return entry.resultProvenance === undefined
+    ? { ...entry, resultProvenance: entry.action === 'observe' ? 'model_summary_not_execution_fact' : 'host_receipt' } : entry;
+}
 export const activityTaskSchema = z.object({ id, companionId: id, conversationId: id, sourceMessageId: id.optional(),
   peerResponsibility: companionPeerResponsibilitySchema.optional(),
   title: z.string().min(1).max(120), goal: z.string().min(1).max(16000),
@@ -69,7 +81,7 @@ export const activityTaskSchema = z.object({ id, companionId: id, conversationId
   gamePort: z.strictObject({ conversationId: id, topicId: id, deliveryClientId: id, peerOriginId: id.optional(), delegatedCandidateId: id.optional() }).optional(),
   visitTargetId: id.optional(), visitArrivedAt: z.iso.datetime().optional(), visitInteractionAt: z.iso.datetime().optional(), visitRequestId: id.optional(),
   historyAvailable: z.boolean().optional(),
-  history: z.array(z.object({ step: z.number().int().positive(), at: z.iso.datetime(), action: z.string(), arguments: companionWorldArgumentsSchema.optional(), topicArguments: companionTopicArgumentsSchema.optional(), result: z.string().max(16000), ok: z.boolean() })) });
+  history: z.array(activityHistoryEntrySchema) });
 export type CompanionActivityTask = z.infer<typeof activityTaskSchema>;
 export const COMPANION_ACTIVITY_HANDOFF_NOTICE = '原目标已交持久执行器；当前聊天应查进展、如实汇报并结束本轮以释放沟通通道，不重复副作用，不把等待当完成。新的真人消息须重新核对来源。' as const;
 export const activityHandoffSchema = z.strictObject({ task: activityTaskSchema, existingEffect: z.boolean(),

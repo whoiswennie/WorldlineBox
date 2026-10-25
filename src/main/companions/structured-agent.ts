@@ -25,6 +25,8 @@ type RoleOptions = Pick<CompanionModelOptions, 'fetchFn' | 'timeoutMs' | 'visual
 type Scope = { companionId: string; conversationId: string; beforeSequence?: number };
 export interface CompanionStructuredAgentCapabilities {
   tools: NonNullable<CompanionModelOptions['tools']>;
+  /** Host-declared meaning of the bound DSH schema, never inferred from its name. */
+  dshContext?: 'thought' | 'execution';
   execute(call: CompanionLoopCall, signal?: AbortSignal): Promise<unknown>;
   journal?: CompanionAgentJournal;
   /** Only read operations or effects backed by a stable host receipt may replay. */
@@ -76,7 +78,7 @@ export function companionTaskInvocation(input: { companion: Pick<Companion, 'id'
 
 export function assembleCompanionRoleContext(frame: CompanionReplyInput, domain: { system: string; user: string }) {
   const scopedFrame = assembleCompanionInvocation(frame);
-  const base = buildCompanionContext({ ...frame, agentLoop: true });
+  const base = buildCompanionContext({ ...frame, agentLoop: true, dshContext: frame.dshContext ?? 'unavailable' });
   const common = JSON.parse(base.user) as Record<string, unknown>;
   const data: unknown = JSON.parse(domain.user);
   if (!data || typeof data !== 'object' || Array.isArray(data)) throw new Error('伙伴领域上下文必须为宿主对象。');
@@ -111,9 +113,15 @@ export function assembleCompanionRoleContext(frame: CompanionReplyInput, domain:
 /** Same native tool protocol as player chat. Only host-bound capabilities can execute. */
 class CompanionAgentObservationChangedError extends Error {
   constructor(readonly hostObservation: CompanionHostObservationChange) {
-    super('本活动尚未执行的最终提案所依据的真实回信观察已变化。请读取本轮 recentPeerMessages 的实际最新回信，依据当前事实重新选择下一步；未执行的旧等待不代表这些回信已经处理，不重发已确认消息。');
+    super('本活动尚未执行的最终提案所依据的真实回信观察已变化，需要重新核验。宿主没有判定旧结论错误；新回信只证明作者说过这些话。对照原始来源与真实回执后，可保留仍正确的方案，不因回信更晚或多人附和就改写事实；不重发已确认消息。');
   }
 }
+
+type FinalFeedback = { rejectedProposal: string; error: string; hostObservation?: CompanionHostObservationChange };
+const feedbackKind = (feedback: FinalFeedback) => feedback.hostObservation ? 'host_observation_changed' as const : 'validation_rejection' as const;
+const feedbackInstruction = (feedback: FinalFeedback) => feedback.hostObservation
+  ? '宿主只确认本轮资料已变化，旧提案尚未执行并须重新核验；这不是格式或语义错误判定，也不是新目标或授权。新消息是各作者的说法，更晚或重复不代表更真。对照当前原始来源、已确认回执与仍有效的约束，可重新提交仍正确的原方案，不为迎合反馈改变事实；保留已确认作用，不重复执行。'
+  : '上一个提案未通过宿主验证，没有产生行动。依据当前真实状态修正后重新交付；不能沿用被拒绝提案当作已发生的事实。';
 
 /** V8 diagnostics may quote private response bytes. Publish only a syntax class
  * and numeric UTF-16 location; never repair or extract an embedded proposal. */
@@ -187,8 +195,9 @@ export async function runCompanionStructuredAgent(input: CompanionStructuredAgen
     } catch { return; }
   };
   const priorNativeRejection = turns.at(-1) ? nativeRejection(turns.at(-1)!) : undefined;
-  let outputCorrection: { rejectedProposal: string; error: string } | undefined = previousRejection
-    ? { rejectedProposal: companionFinalProposalBytes(turns[previousRejection.step]!), error: previousRejection.reason }
+  let outputCorrection: FinalFeedback | undefined = previousRejection
+    ? { rejectedProposal: companionFinalProposalBytes(turns[previousRejection.step]!), error: previousRejection.reason,
+      ...(previousRejection.hostObservation ? { hostObservation: previousRejection.hostObservation } : {}) }
     : priorNativeRejection ? { rejectedProposal: companionFinalProposalBytes(turns.at(-1)!), error: priorNativeRejection.reason! } : undefined;
   let invalidOutputs = companionFinalValidationFailures(run), observationChanges = 0;
   let identityCorrection: string | undefined, identityAttempts = 0;
@@ -258,7 +267,8 @@ export async function runCompanionStructuredAgent(input: CompanionStructuredAgen
       throw new Error('宿主改写了已提交最终提案的原始调用，停止恢复。');
     turn.results = revisedTurn.results;
     run.revision = revised.revision; run.status = revised.status; run.rejectedFinals = revised.rejectedFinals;
-    outputCorrection = { rejectedProposal: companionFinalProposalBytes(turn), error: reason }; invalidOutputs = companionFinalValidationFailures(run);
+    outputCorrection = { rejectedProposal: companionFinalProposalBytes(turn), error: reason, ...(hostObservation ? { hostObservation } : {}) };
+    invalidOutputs = companionFinalValidationFailures(run);
     if (invalidOutputs >= 3) throw new CompanionAgentFinalValidationError(reason);
     return true;
   };
@@ -273,7 +283,7 @@ export async function runCompanionStructuredAgent(input: CompanionStructuredAgen
       if (companionFinalValidationFailures(run) >= 3) throw new CompanionAgentFinalValidationError(outputCorrection?.error ?? '最终提案已达到三次校验失败上限。');
       if (journal && !await journal.valid(run)) throw new Error('本轮推理来源或检查点已变化，不能继续发布。');
       refreshedFrame = input.refresh ? await input.refresh() : input.frame;
-      refreshedFrame = { ...refreshedFrame, capabilityAvailability: companionBoundCapabilityContext(refreshedFrame.companion.id,
+      refreshedFrame = { ...refreshedFrame, dshContext: input.capabilities?.dshContext ?? 'unavailable', capabilityAvailability: companionBoundCapabilityContext(refreshedFrame.companion.id,
         refreshedFrame.conversation.id, availableAuxiliaryTools().map(tool => tool.name)) };
       evidenceContext = assembleCompanionRoleContext(refreshedFrame, input.context);
       await captureEvidence();
@@ -283,14 +293,14 @@ export async function runCompanionStructuredAgent(input: CompanionStructuredAgen
     signal?.throwIfAborted();
     let frame = capacityFeedback && input.refresh ? await input.refresh() : refreshedFrame;
     const effectiveTools = [...availableAuxiliaryTools(), ...(finalTool ? [finalTool] : [])];
-    frame = { ...frame, capabilityAvailability: companionBoundCapabilityContext(frame.companion.id, frame.conversation.id,
+    frame = { ...frame, dshContext: input.capabilities?.dshContext ?? 'unavailable', capabilityAvailability: companionBoundCapabilityContext(frame.companion.id, frame.conversation.id,
       effectiveTools.map(tool => tool.name)) };
     const capacityBefore = capacityFeedback ? JSON.stringify({ messages: frame.messages, topicState: frame.topicState }).length : 0;
     if (capacityFeedback && frame.topic && input.capabilities?.continuityRequest) frame = await ensureTopicContinuity({ frame,
       request: input.capabilities.continuityRequest, config, signal, fetchFn: options.fetchFn, capacityFeedback: true });
     const topicCapacityReduced = capacityFeedback && JSON.stringify({ messages: frame.messages, topicState: frame.topicState }).length < capacityBefore;
     const context = outputCorrection ? { ...input.context, user: JSON.stringify({ ...JSON.parse(input.context.user),
-      outputCorrection: { ...outputCorrection, instruction: '上一个提案未通过宿主验证，没有产生行动。依据当前真实状态修正后重新交付；不能沿用被拒绝提案当作已发生的事实。' } }) } : input.context;
+      outputCorrection: { ...outputCorrection, kind: feedbackKind(outputCorrection), instruction: feedbackInstruction(outputCorrection) } }) } : input.context;
     const assembled = assembleCompanionRoleContext(frame, emptyCorpusRecovery ? { ...context, user: JSON.stringify({ ...JSON.parse(context.user),
       observationCorrection: { proof: emptyCorpusRecovery,
         instruction: '宿主已连续确认当前整个获权VCP日记语料为空，同一版本换检索措辞不能找到实时对话、当前话题或未写入日记的状态。这不是资料缺失的新用户条件。不再重复调用memory检索；其他原生能力仍以本轮实际工具schema为准，可以执行必要的下一步，再按本次outputSchema交付。依据真实当前上下文、历史回执与持续计划选择行动或有真实条件的等待。最终提案仍由原领域校验后执行，不能编造已发生行为或把空日记当成任务已完成。' } }) } : context);
@@ -312,7 +322,8 @@ export async function runCompanionStructuredAgent(input: CompanionStructuredAgen
       context: inference.context, tools: effectiveTools, turns: inference.turns,
       ...(outputCorrection ? { hostValidationFeedback: {
         rejectedProposalChecksum: createHash('sha256').update(outputCorrection.rejectedProposal).digest('hex'), error: outputCorrection.error,
-        instruction: '这是宿主对上一份未执行提案的校验反馈，不是新的用户目标或授权。依据当前真实资料重新生成本次outputSchema的单个完整JSON对象；旧提案没有产生行动，保留此前已确认工具回执，不重复执行。' } } : {}),
+        kind: feedbackKind(outputCorrection), ...(outputCorrection.hostObservation ? { hostObservation: outputCorrection.hostObservation } : {}),
+        instruction: feedbackInstruction(outputCorrection) } } : {}),
       // Domain facts were just read and narrowed by that entry's host. Applying
       // the generic historical world replay projection again loses current
       // observations and can restore fields deliberately excluded for peers.

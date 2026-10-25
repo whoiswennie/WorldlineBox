@@ -65,6 +65,7 @@ import { companionGameContactExecutionReadset, resolveCompanionGameContactContex
 import { companionGamePublicReplyEvidence, reviewCompanionGamePublicReply, reviewCompanionGameSharedUpdate } from './game-topic-privacy';
 import { reviewCompanionTopicModeratorTransfer } from './topic-moderator-transfer';
 import { captureCompanionExecutionReadset, companionExecutionReadsetDigest, companionWorldReadSources, verifyCompanionExecutionReadset, projectCompanionExecutionReceipt } from './execution-evidence';
+import { buildCompanionThoughtPrompt } from './thought-source-material';
 import type { CompanionExecutionReadset } from '../../shared/companion-execution-evidence';
 import { companionExecutionSourceReadOnly, guardCompanionExecutionSources } from './source-execution-evidence';
 import { CompanionPublicProfiles } from './public-profiles';
@@ -2875,12 +2876,14 @@ export class CompanionService {
   }
   private async think(input: Extract<CompanionStorageCommand, { type: 'activity.thought.create' | 'peer.thought.create' }>, signal?: AbortSignal): Promise<unknown> {
     this.assertReplyActive(signal);
-    const created = await this.call(input);
+    const prompt = await buildCompanionThoughtPrompt(input, { request: command => this.call(command),
+      contextValid: (scope, context) => this.memory.contextValid(scope, context) }, signal);
+    const created = await this.call({ ...input, prompt });
     const action = created.action, proof = created.checkpoint?.activityThought;
     const readset = created.checkpoint?.executionReadset;
     if (!created.ok || !action?.thought || !proof || !readset) throw new Error(created.error ?? '思考任务没有取得当前推理的真实来源。');
     if (!await this.executionEvidenceValid(action, readset)) throw new Error('思考所读资料已经变化，未执行。');
-    await this.queueAction(action, input.prompt, signal);
+    await this.queueAction(action, prompt, signal);
     await this.actionJobs.get(action.id);
     this.assertReplyActive(signal);
     const current = (await this.call({ type: 'activity.thought.validate', authorization: proof, executionReadset: readset, mode: 'execute' })).activityThoughtValid;
@@ -3138,7 +3141,7 @@ export class CompanionService {
           ...(source ? { sourceDigest: createHash('sha256').update(source.content).digest('hex') } : {}), authorizationGrantId: action.authorizationGrantId,
           executionReadsetDigest: companionExecutionReadsetDigest(checkpoint!.executionReadset!),
           domain: topic?.kind ?? 'reality' },
-        resumeScope, constraints: companionExecutionConstraintLedger([...(source ? [source] : []), ...supplements]),
+        resumeScope, constraints: thought ? undefined : companionExecutionConstraintLedger([...(source ? [source] : []), ...supplements]),
           ...(resume?.sessionId ? { resume, access: { mode: resume.accessMode! } } : {}) });
       if (!started.ok || !started.operationId) throw new Error('任务未能启动，请检查启动器中的执行实例。');
       taskId = started.operationId;

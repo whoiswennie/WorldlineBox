@@ -2270,6 +2270,10 @@ describe('one durable bubble per source and native multi-step main loop', () => 
     expect(run).toMatchObject({ prompt: '仅统计A.csv的数量。' });
     expect(execution?.task?.context).toEqual({ text: '本步骤显式资料', files: ['C:\\synthetic-input\\A.csv'] });
     expect(execution?.task?.instructions).toContain('禁止改写原文件');
+    const original = f.store.messages({ conversationId: f.conversation.id }).messages.find(message => message.authorId === 'user'
+      && message.content === '请先统计A.csv，另外请周岚独立写review。禁止改写原文件。')!;
+    expect(execution?.constraints).toEqual([expect.objectContaining({ kind: 'source_requirements', sourceMessageId: original.id,
+      sourceDigest: createHash('sha256').update(original.content).digest('hex'), text: original.content })]);
     expect(JSON.stringify([run, execution?.task])).not.toMatch(/周岚|review/);
   });
   it('preserves tool-only steps without inventing a text message', async () => {
@@ -2836,6 +2840,7 @@ it('returns restricted DSH thought to a source-free activity through the real Ma
   const requestTask = vi.fn<DshLauncher['requestTask']>(async (request, execution) => {
     if (request.type === 'task.run') {
       expect(execution).toMatchObject({ cognitiveOnly: true, task: { mode: 'native', tools: [], skills: [], session: { mode: 'new' }, workspace: { mode: 'managed' } } });
+      expect(execution?.constraints).toBeUndefined();
       expect(request).not.toHaveProperty('sessionId'); expect(execution?.recordScope?.sourceMessageId).toBeUndefined();
       expect(execution?.recordScope?.activityThought).toBeDefined();
       dispatched = true; return { ok: true, operationId: recordId };
@@ -2877,6 +2882,12 @@ it('returns restricted DSH thought to a source-free activity through the real Ma
   expect(authors).toBe(2); expect(requestTask.mock.calls.filter(([request]) => request.type === 'task.run')).toHaveLength(1);
   const actions = f.store.request({ type: 'actions', conversationId: scope.conversationId }).actions!.filter(action => action.thought && !('kind' in action.thought) && action.thought.taskId === task.id);
   expect(actions).toHaveLength(1); expect(actions[0]).toMatchObject({ status: 'succeeded', result: analysis }); expect(actions[0]!.sourceMessageId).toBeUndefined();
+  const actualThoughtPrompt = requestTask.mock.calls.find(([request]) => request.type === 'task.run')![0];
+  expect(actualThoughtPrompt.type).toBe('task.run');
+  if (actualThoughtPrompt.type !== 'task.run') throw new Error('Missing actual thought run');
+  expect(f.store.request({ type: 'checkpoint.get', id: actions[0]!.id }).checkpoint!.prompt).toBe(actualThoughtPrompt.prompt);
+  expect(JSON.parse(actualThoughtPrompt.prompt)).toMatchObject({ question: '仅分析当前已提供的目标，不读取其他资料或执行行为。',
+    hostSourceMaterial: { schema: 'worldlinebox.companion-thought-source-material-v1', companionId: scope.companionId, conversationId: scope.conversationId } });
   expect(f.store.messages({ conversationId: scope.conversationId, limit: 100 }).messages.some(message => message.content.includes(analysis))).toBe(false);
   expect(f.store.messages({ conversationId: f.conversation.id }).messages.filter(message => message.authorId === 'user')).toHaveLength(oldUserMessages);
   const days = f.store.request({ type: 'experience.days', companionId: scope.companionId, limit: 10 }).experienceDays!.days;
@@ -2890,4 +2901,53 @@ it('returns restricted DSH thought to a source-free activity through the real Ma
   expect(reopened.request({ type: 'action.get', id: actions[0]!.id }).action).toMatchObject({ status: 'succeeded', result: analysis });
   expect(requestTask.mock.calls.filter(([request]) => request.type === 'task.run')).toHaveLength(1);
   await closeService(restored);
+});
+
+it('binds actual source material to the Main thought checkpoint and native prompt without replaying the confirmed effect', async () => {
+  const recordId = randomUUID(), analysis = '独立分析仍不是事实或行动。';
+  let dispatched = false;
+  const record: DshTaskRecord = { ...taskRecord('succeeded'), id: recordId, operationId: recordId, sessionId: 'source-thought-session' };
+  const requestTask = vi.fn<DshLauncher['requestTask']>(async (request, execution) => {
+    if (request.type === 'task.run') {
+      expect(execution?.cognitiveOnly).toBe(true); expect(execution?.constraints).toBeUndefined();
+      dispatched = true; return { ok: true, operationId: recordId };
+    }
+    if (request.type === 'task.result') return { ok: true, taskResult: { taskId: recordId, instanceId: record.instanceId,
+      runtimeId: record.runtimeId, runtimeVersion: record.runtimeVersion, text: analysis, sessionId: record.sessionId } };
+    if (request.type === 'task.events') return { ok: true, taskEvents: [] };
+    return { ok: true };
+  });
+  const dsh = fakeDsh(() => ({ tasks: dispatched ? [record] : [], operations: [] }), requestTask);
+  Object.assign(dsh, { readTaskRecord: vi.fn(async () => ({ overview: { recordId, title: '来源核对', status: 'succeeded', createdAt: fixedTime,
+    durationMs: 1, turns: 1, steps: 1, toolCalls: 0, recordCount: 1, storedBytes: analysis.length, finalReply: analysis,
+    finalReplyChars: analysis.length, finalReplyTruncated: false, complete: true, storageLimited: false, mode: 'native', sessionId: record.sessionId,
+    effective: { digest: 'a'.repeat(64), mode: 'native', preset: 'standard', toolCount: 0, skillCount: 0 } }, entries: [], snapshot: 1, hasMore: false })) });
+  const f = fixture(dsh), scope = { companionId: 'sister', conversationId: 'world_sister' };
+  await f.service.handle({ type: 'state' });
+  const task = f.store.request({ type: 'activity.start', ...scope, clientId: 'source_cognitive_goal', title: '核对已读资料', goal: '分析本人已合法读过的消息，不执行外部操作。' }).activityTask!;
+  vi.setSystemTime(Date.now() + 10000);
+  const leased = f.store.request({ type: 'activity.claim' }).activityTask!;
+  expect(leased.id).toBe(task.id);
+  const observed = f.store.request({ type: 'activity.observe', id: task.id, leaseToken: leased.leaseToken! });
+  const input = { taskId: task.id, leaseToken: leased.leaseToken!, expectedStep: leased.step, effectId: 'source_material_effect',
+    observationFingerprint: JSON.stringify((observed.activityMessages ?? []).map(message => [message.id, message.conversationId, message.sequence,
+      createHash('sha256').update(message.content).digest('hex')])), title: '来源核对', prompt: '独立分析原文，不预设任何结论。',
+    executionReadset: captureCompanionExecutionReadset(scope, { sources: [{ id: f.source.id, conversationId: f.source.conversationId,
+      checksum: createHash('sha256').update(f.source.content).digest('hex') }] }) };
+  const think = (f.service as unknown as { thinkForActivity(proposal: typeof input): Promise<unknown> }).thinkForActivity.bind(f.service);
+  const result = think(input); void result.catch(() => undefined);
+  await vi.advanceTimersByTimeAsync(2000); await result;
+  const runs = () => requestTask.mock.calls.filter(([request]) => request.type === 'task.run');
+  expect(runs()).toHaveLength(1);
+  const request = runs()[0]![0]; if (request.type !== 'task.run') throw new Error('Missing native run');
+  const sourceMaterial = JSON.parse(request.prompt).hostSourceMaterial;
+  expect(sourceMaterial.materials).toEqual([expect.objectContaining({ id: f.source.id, conversationId: f.source.conversationId,
+    text: f.source.content, checksum: createHash('sha256').update(f.source.content).digest('hex'), truncated: false })]);
+  const action = f.store.request({ type: 'actions', conversationId: scope.conversationId }).actions!.find(value => value.thought)!;
+  expect(f.store.request({ type: 'checkpoint.get', id: action.id }).checkpoint!.prompt).toBe(request.prompt);
+  expect(action).toMatchObject({ status: 'succeeded', result: analysis });
+  expect(await think(input)).toMatchObject({ trust: 'cognitive_analysis_not_execution_fact' });
+  expect(runs()).toHaveLength(1);
+  f.store.request({ type: 'activity.cancel', ...scope, id: task.id });
+  await closeService(f.service);
 });

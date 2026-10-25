@@ -1380,3 +1380,25 @@ f0c3228上的native-world-tools-five-quantity-continuation.json保持原source�
 上述末轮改动与8a7f614实际对局证据分开登记：当前自主整局与推理一致性仍未验收通过，长期目标保持进行中，无再次打包；最新修正只作必要类型、lint与小范围机械确认，不重开对局、不写固定胜负或替角色决定。
 
 末轮冻结产品的main类型检查、四个变更TS文件lint及diff-check均实际退出0；extension使用此前同字节共享层的检查结果，不重复无变化的集合。最新凭据peer-source-cleanup-final-main-types-exit.json与peer-source-cleanup-final-eslint-exit.json。验证文件及失败原件继续放在项目外归档，仓库仅保留源码、必要回归与开发记录；提交推送不代表自主验收通过。
+
+### 16.91 原话、观察变化与等待历史的来源合同（2026-10-25）
+
+本轮没有启动真实模型、恢复对局或打包。继续按用户要求，必要流程跑通后才最终统一打包；现有旧安装器不包含本节修正。只读原局材料与源码追踪确认三个通用缺口，不把它们断言为错误计票的唯一根因，也不新增游戏规则、数量审核或替演员决策的代码。
+
+第一，纯等待原先把演员summary保存为ok=true的observe结果，后续system又把history统称已提交原子事实。现在新纯等待只保存事务实际登记的wait_registered回执，演员summary独立保存并明确标为model_summary_not_execution_fact；宿主回执也只证明相应操作，不核准正文中人物的说法。旧observe在任务投影和历史分页中统一加来源标记，不重写原始数据库字节；其他原子动作与VCP操作的真实结果保留。Main实际输入再作同一幂等投影，不能把本人或多人的复述当作已核实事实。
+
+第二，持久journal原本已区分hostObservation变化与最终提案语义拒绝，但恢复输出和provider末尾反馈丢失了类型。现在首次拒绝与重启恢复都向两个真实输入位置传递kind与原hostObservation：资料变化只要求重新核对，允许再次提交仍正确的原方案；不暗示旧结论必错或新消息更真。普通格式、权限和语义拒绝仍使用原纠错槽与失败计数。离线重启例确实经历观察变化、持久拒绝、取消与恢复，重新提交相同结论并通过，没有代执行效果。
+
+第三，旧DSH纯思考只收到演员重述的问题，读集哈希没有提供原文。新Main材料包只捕获当前读集正常校验返回的真实memory.sources.filter消息，不遍历群、不从topic checkpoint依赖借取未读原文、不装入其他记忆正文。所有来源仍完整验证；材料目录最多32条、正文最多8条，有限选择按当前入口与实际时间稳定排序，目录及摘录均有来源ID、正文/摘录校验值、长度、范围及明确省略数。正文只是作者说过的话，不能充当宿主指令或事实。材料包最多24000 UTF-8字节，最终序列化问题与材料最多65536 UTF-8字节；原问题不被静默截断。构造后及真实执行前后仍走原来源、ACL、租约和版本核验。
+
+同一最终prompt保存到action checkpoint并送进真实task.run，已经确认的同效果重调不重启native任务。纯思考不再在broker末尾把peer来信包装成Host-verified original requirement evidence；其输入只有本次问题和明确标为资料的来源包，仍强制独立新会话、native零工具/零技能，父循环的目标、执行权限与来源校验保留。普通现实执行继续传递完整原始source ledger，未截断或放宽限制。该容量合同只覆盖目前纯思考实际提供的task字段；未来若追加instructions/context/delivery，必须连同编译后的总输入重新核预算。原文当前可从checkpoint追溯，本节没有增加report.md或经历正文的输入材料展示，不能声称已完成该投影。
+
+主脑提示同步绑定实际DSH域：普通聊天保留完整委托能力，纯思考入口不再提示read_file/read_image/send_file或先坐电脑；容量拒绝后refresh重装配也保留同一宿主绑定，没有按供应商或模型名称分支。删除base context中已失效的可压缩时间及20分钟一天说明，明确世界始终现实同步、倍率1。此修正只对齐现有真实世界时钟合同，不新增调整流速入口。
+
+验证证据均在项目外WorldlineBox-validation-archive-2026-10-25。四个相关完整文件首轮81通过/1失败，实际child exit1；原普通聊天断言发现重写提示时漏掉通用DSH能力说明，已在execution域恢复，原失败项单独确认1/1、child exit0，55项未选择。随后activity-service、activity-task与变更后的structured-agent三个完整文件86/86、0skip、child exit0，覆盖旧任务恢复、分页、等待与真实查询回执及容量刷新能力绑定。不能把首轮改写成82/82。
+
+材料包、适配器及Main接线小范围scope执行6/6、118项明确未选择；最终ledger边界执行3/3、117项明确未选择，实际child均exit0，两个scope有重叠，不累计成全量通过。Main真实SQLite用例确认实际source正文进入task.run，checkpoint.prompt逐字一致，同效果只一次native；最大中文问题、105条实际来源、转义文本、明确省略与UTF-8总容量及外来行/改字节/撤回拒绝有离线凭据。报告thought-source-material-final-offline-tests.json、thought-source-material-ledger-final-tests.json；完整相关流程报告evidence-trust-activity-and-capacity-final.json。最终main与extension类型检查、15个变更TS文件lint及diff-check实际退出0；不重复未变化的模型、UI、通知、VCP性能或打包集合。
+
+只读owner-activity-frame-readonly/report.json还限定了实局证据：原测试只保存输入元数据，没有完整模型wire；visibleMessageIds为空不能推断领域recentPeerMessages为空，不能声称精确复原当时完整请求。新复制审计期间原main DB哈希保持，审计结束见原目录新增0字节WAL/SHM，其来源未能确定，不能把main文件守卫扩写为整个原目录逐字未变。该边界不回写以前单独执行的哈希守卫结果。
+
+当前仍未通过自主狼人杀整局验收。本节证明通用来源/恢复/思考接线合同得到修复，不证明实际所选模型已改善算票或能自行结束活动；不延长已用完的原局预算，不重开抽样、不伪造终局，不以离线绿灯宣布长期目标完成。

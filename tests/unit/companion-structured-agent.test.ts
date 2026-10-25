@@ -7,6 +7,9 @@ import type { CompanionReplyInput } from '../../src/main/companions/context';
 import type { CompanionTopic } from '../../src/shared/companion-topic';
 import { CompanionAgentNoProgressError } from '../../src/main/companions/agent-progress';
 import { createHash } from 'node:crypto';
+import { companionThoughtCapabilities } from '../../src/main/companions/thought-capabilities';
+import { buildCompanionContext } from '../../src/main/companions/context';
+import { COMPANION_DSH_TOOL } from '../../src/shared/companion-dsh-tool';
 
 const companion: Companion = { id: 'a', name: '小澄', description: '妹妹', persona: '平静，认真核对事实。你是小澄，姐姐是小岚，用户是独立真人。',
   model: '', avatar: 'sister', builtin: false, proactive: false, active: true, createdAt: '2026-10-22T00:00:00Z' };
@@ -18,6 +21,25 @@ const config = { apiFormat: 'openai_chat' as const, model: 'test-model', baseUrl
 const domain = { system: '只输出JSON {answer:string}。', user: JSON.stringify({ purpose: 'isolation_test', messages: [{ content: 'DOMAIN_WINDOW_MUST_NOT_OVERRIDE' }] }) };
 
 describe('same role Agent kernel across independent invocation ports', () => {
+  it('projects the actual cognitive DSH binding without chat file operations or a virtual computer prerequisite', async () => {
+    const baseFrame = { companion, conversation: conversation('group'), messages: [], memories: [] };
+    const ordinary = buildCompanionContext(baseFrame).system;
+    expect(ordinary).toContain(COMPANION_DSH_TOOL.description);
+    expect(ordinary).not.toContain('可选择压缩时间'); expect(ordinary).not.toContain('现实20分钟对应世界一天');
+    const run = vi.fn(), capabilities = companionThoughtCapabilities({ tools: [], execute: vi.fn() }, { run });
+    const fetchFn = vi.fn<typeof fetch>(async (_url, init) => {
+      const wire = JSON.parse(String(init?.body)), system = wire.messages[0].content;
+      expect(wire.tools.map((tool: { function: { name: string } }) => tool.function.name)).toEqual(['dsh']);
+      expect(system).toContain('当前dsh是独立纯思考扩展');
+      expect(system).not.toContain(COMPANION_DSH_TOOL.description);
+      expect(system).not.toContain('dsh(operation=read_file/read_image)');
+      expect(system).not.toContain('仍须先可见移动到有使用权的空电脑并坐稳');
+      return new Response(JSON.stringify({ choices: [{ message: { content: '{"answer":"依据本入口资料决定下一步"}' } }] }));
+    });
+    await expect(runCompanionStructuredAgent({ context: domain, frame: baseFrame, capabilities }, config, undefined, { fetchFn }))
+      .resolves.toEqual({ answer: '依据本入口资料决定下一步' });
+    expect(run).not.toHaveBeenCalled();
+  });
   it('distinguishes host-validated final action proposals from the unchanged native recall tool list', async () => {
     const source = message('source', 'group', 'user', '请和认识的伙伴一起组织活动。');
     const proposed = { status: 'continue', action: { action: 'create_group', recipientIds: ['b', 'c'],
@@ -174,6 +196,7 @@ describe('same role Agent kernel across independent invocation ports', () => {
   });
   it('compresses an actual rejected work pair and retries the same inference without replaying its effect or shrinking identity and goal', async () => {
     const source = message('source', 'group', 'user', '保留这个完整目标：核验record_701，完成后只汇报真实结论。');
+    const frame = (): CompanionReplyInput => ({ companion, conversation: conversation('group'), messages: [source], sourceMessage: source, memories: [] });
     const execute = vi.fn(async () => ({ ok: true, recordId: 'record_701', output: 'large real result '.repeat(600) }));
     const purposes: string[] = [], wires: unknown[] = [];
     let inference = 0;
@@ -185,6 +208,8 @@ describe('same role Agent kernel across independent invocation ports', () => {
       }
       inference++;
       expect(wire.messages[0].content).toContain(companion.persona);
+      expect(wire.messages[0].content).toContain('当前dsh是独立纯思考扩展');
+      expect(wire.tools.some((tool: { function: { name: string } }) => tool.function.name === 'dsh')).toBe(true);
       expect(JSON.stringify(data)).toContain(source.content);
       if (inference === 1) return new Response(JSON.stringify({ choices: [{ message: { content: '', tool_calls: [{ id: 'effect', type: 'function',
         function: { name: 'memory', arguments: '{"action":"read","id":"note"}' } }] } }] }));
@@ -193,9 +218,9 @@ describe('same role Agent kernel across independent invocation ports', () => {
       expect(wire.messages.filter((row: { role: string }) => row.role === 'tool')).toEqual([]);
       return new Response(JSON.stringify({ choices: [{ message: { content: '{"answer":"已依据真实record_701核验。"}' } }] }));
     };
-    const result = await runCompanionStructuredAgent({ context: domain, frame: { companion, conversation: conversation('group'),
-      messages: [source], sourceMessage: source, memories: [] }, capabilities: { replaySafe: true,
-      tools: [{ name: 'memory', description: 'fixture read', parameters: { type: 'object' } }], execute } }, config, undefined, { fetchFn });
+    const result = await runCompanionStructuredAgent({ context: domain, frame: frame(), refresh: async () => frame(),
+      capabilities: companionThoughtCapabilities({ replaySafe: true,
+        tools: [{ name: 'memory', description: 'fixture read', parameters: { type: 'object' } }], execute }, { run: vi.fn() }) }, config, undefined, { fetchFn });
     expect(result).toEqual({ answer: '已依据真实record_701核验。' }); expect(execute).toHaveBeenCalledOnce();
     expect(purposes).toEqual(['isolation_test', 'isolation_test', 'companion_loop_compaction', 'isolation_test']); expect(wires).toHaveLength(4);
   });

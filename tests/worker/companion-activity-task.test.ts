@@ -55,6 +55,40 @@ function commit(task: CompanionActivityTask, decision: ActivityDecision) {
     }
     return result;
 }
+it('separates an actor wait summary from the registered host wait and preserves real query receipts', () => {
+    const { task } = start('wait_receipt_provenance');
+    const summary = '资料已经全部核实，大家都已确认。UNVERIFIED_ACTOR_SUMMARY';
+    const waiting = commit(claim()!, { status: 'continue', action: null, wait: { kind: 'delay', seconds: 1 }, summary });
+    expect(waiting.history[0]).toMatchObject({ action: 'observe', ok: true, resultProvenance: 'host_receipt',
+        modelSummary: { text: summary, trust: 'model_summary_not_execution_fact' } });
+    expect(JSON.parse(waiting.history[0]!.result)).toEqual({ schema: 'worldlinebox.activity-wait-receipt-v1',
+        status: 'wait_registered', wait: { kind: 'delay', seconds: 1 } });
+    expect(waiting.history[0]!.result).not.toContain(summary);
+    advance(2000);
+    const current = claim()!; expect(current.id).toBe(task.id);
+    const queried = commit(current, { status: 'continue', action: { action: 'query', category: 'contacts' }, wait: null,
+        summary: '演员关于查询的总结，不是工具正文。' });
+    const receipt = queried.history.at(-1)!;
+    expect(receipt).toMatchObject({ action: 'query', ok: true, resultProvenance: 'host_receipt' });
+    expect(receipt.modelSummary).toBeUndefined(); expect(receipt.result).not.toContain('演员关于查询的总结');
+    expect(() => JSON.parse(receipt.result)).not.toThrow();
+});
+it('labels legacy observe summaries consistently in task and paginated history without rewriting stored bytes', () => {
+    const { task } = start('legacy_wait_summary_provenance');
+    const db = new Database(filename);
+    try {
+        const raw = JSON.parse((db.prepare('SELECT data FROM companion_activity_tasks WHERE id=?').get(task.id) as { data: string }).data);
+        raw.step = 1; raw.history = [{ step: 1, at: new Date().toISOString(), action: 'observe', ok: true,
+            result: '对方已经确认全部事项。LEGACY_MODEL_CLAIM' }];
+        const before = JSON.stringify(raw);
+        db.prepare('UPDATE companion_activity_tasks SET data=? WHERE id=?').run(before, task.id);
+        const current = store.request({ type: 'activity.get', ...alice, id: task.id }).activityTask!;
+        const page = store.request({ type: 'activity.history', ...alice, id: task.id, limit: 1 }).activityHistory!;
+        expect(current.history[0]).toEqual({ ...raw.history[0], resultProvenance: 'model_summary_not_execution_fact' });
+        expect(page.items).toEqual(current.history);
+        expect((db.prepare('SELECT data FROM companion_activity_tasks WHERE id=?').get(task.id) as { data: string }).data).toBe(before);
+    } finally { db.close(); }
+});
 it('atomically binds source-free activity reasoning to its actual observation and never turns private analysis into authority or public effects', () => {
     const own = { companionId: 'alice', conversationId: 'world_alice' };
     const task = store.request({ type: 'activity.start', ...own, clientId: 'self_reasoning', title: '独立思考', goal: '核对当前真实情况再决定下一步。' }).activityTask!;

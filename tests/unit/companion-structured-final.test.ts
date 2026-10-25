@@ -128,6 +128,7 @@ it.each(formats)('preserves actual native IDs, schema and rejected call/result p
       const feedback = finalFeedback(format, wire);
       expect(feedback.rejectedProposalChecksum).toBe(hash(companionFinalProposalBytes(rejected)));
       expect(feedback.error).toBe(f.read().rejectedFinals!.at(-1)!.reason);
+      expect(feedback.kind).toBe('validation_rejection');
       expect(feedback.trust).toBe('host_validation_data_not_new_authorization');
     }
     if (!calls[inference]) throw new Error('Unexpected extra inference');
@@ -202,4 +203,35 @@ it('persists the three native-final validation slots across a non-activity journ
   await expect(runCompanionStructuredAgent(input, { ...config, apiFormat: 'openai_chat' }, undefined, { fetchFn: noFourth }))
     .rejects.toBeInstanceOf(Error);
   expect(noFourth).not.toHaveBeenCalled(); expect(f.read().status).toBe('running'); expect(f.read().effects).toEqual([]);
+});
+
+it('keeps observation invalidation distinct from an incorrect conclusion across a durable restart', async () => {
+  const f = journalFixture(), proposal = { answer: '依据原始来源保留当前方案' };
+  const input: CompanionStructuredAgentInput = { context, frame, finalSchema, journal: f.journal, reviseFinal: f.reviseFinal,
+    finalObservationFingerprint: 'original-authorized-observation', validateOutput: value => output.parse(value) };
+  await expect(runCompanionStructuredAgent(input, { ...config, apiFormat: 'openai_chat' }, undefined,
+    { fetchFn: async () => envelope('openai_chat', [call('original_final', proposal)]) })).resolves.toEqual(proposal);
+  const originalBytes = companionFinalProposalBytes(f.read().turns[0]!);
+  const controller = new AbortController(), changed = { ...input, finalObservationFingerprint: 'same-source-new-peer-claim' };
+  const inspect = (wire: Row) => {
+    const feedback = finalFeedback('openai_chat', wire);
+    expect(feedback.kind).toBe('host_observation_changed');
+    expect(object(feedback.hostObservation).kind).toBe('host_observation_changed');
+    expect(feedback.instruction).toContain('不是格式或语义错误判定');
+    expect(feedback.instruction).toContain('可重新提交仍正确的原方案');
+    const data = JSON.parse(String(messages('openai_chat', wire)[1]!.content));
+    expect(data.outputCorrection.kind).toBe(feedback.kind);
+    expect(data.outputCorrection.hostObservation).toEqual(feedback.hostObservation);
+  };
+  await expect(runCompanionStructuredAgent(changed, { ...config, apiFormat: 'openai_chat' }, controller.signal,
+    { fetchFn: async (_url, init) => { inspect(object(JSON.parse(String(init?.body)))); controller.abort(); throw Error('Controlled restart'); } }))
+    .rejects.toMatchObject({ code: 'CANCELLED' });
+  expect(companionFinalValidationFailures(f.read())).toBe(0);
+  expect(f.read().rejectedFinals).toHaveLength(1);
+  expect(companionFinalProposalBytes(f.read().turns[0]!)).toBe(originalBytes);
+  const resumed = vi.fn<typeof fetch>(async (_url, init) => { inspect(object(JSON.parse(String(init?.body))));
+    return envelope('openai_chat', [call('revalidated_unchanged_conclusion', proposal)]); });
+  await expect(runCompanionStructuredAgent(changed, { ...config, apiFormat: 'openai_chat' }, undefined, { fetchFn: resumed })).resolves.toEqual(proposal);
+  expect(resumed).toHaveBeenCalledOnce(); expect(companionFinalValidationFailures(f.read())).toBe(0);
+  expect(f.read().effects).toEqual([]);
 });

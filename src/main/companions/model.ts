@@ -20,6 +20,7 @@ import { companionUnsupportedImageError, prepareCompanionVisualContext, refreshC
 import { type ToolVisualInput } from '../../shared/companion-file-tool';
 import { companionToolResultText, prepareCompanionLoopVisuals, type CompanionToolImageDelivery } from './tool-image-context';
 import { prepareTopicContinuityFocus, projectTopicContinuityFocus, type TopicContinuityFocusFrame } from './topic-continuity-focus';
+import type { CompanionHostObservationChange } from '../../shared/companion-agent-run';
 
 export type { CompanionReplyInput } from './context';
 /** Included in the memory focus generation profile as well as actual requests. */
@@ -34,7 +35,8 @@ export interface CompanionReply { text: string; memories?: string[]; topic?: str
 export interface CompanionNativeTool { name: string; description: string; parameters: object }
 export interface CompanionModelOptions { fetchFn?: typeof fetch; timeoutMs?: number; loop?: boolean; context?: ReturnType<typeof buildCompanionContext>; turns?: readonly CompanionLoopTurn[]; supplements?: readonly { id: string; content: string }[];
   /** Trusted host validation of an unexecuted proposal, never new user authority. */
-  hostValidationFeedback?: { rejectedProposalChecksum: string; error: string; instruction: string };
+  hostValidationFeedback?: { rejectedProposalChecksum: string; error: string; instruction: string;
+    kind?: 'validation_rejection' | 'host_observation_changed'; hostObservation?: CompanionHostObservationChange };
   /** Main's already source-validated typed topic frame, never model JSON. */
   topicReviewFrame?: TopicContinuityFocusFrame;
   tools?: readonly CompanionNativeTool[];

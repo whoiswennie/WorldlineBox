@@ -4,7 +4,7 @@ import type { CompanionConnection } from './store';
 import type { AppendCompanionMessage, CompanionStorageCommand, CompanionStorageResponse } from '../shared/companion-storage';
 import { companionExecutionReadsetSchema, type CompanionExecutionReadset } from '../shared/companion-execution-evidence';
 import type { CompanionMessage } from '../shared/companions';
-import { activityTaskSchema, activityMemorySchema, activityDecisionSchema, COMPANION_ACTIVITY_HANDOFF_NOTICE, type ActivityDecision, type CompanionActivityTask } from '../shared/companion-activity-task';
+import { activityTaskSchema, activityMemorySchema, activityDecisionSchema, projectCompanionActivityHistoryEntry, COMPANION_ACTIVITY_HANDOFF_NOTICE, type ActivityDecision, type CompanionActivityTask } from '../shared/companion-activity-task';
 import type { CompanionWorldStore } from './world-store';
 import type { CompanionSocialStore } from './social-store';
 import { companionTimeInZone } from '../shared/companion-schedule-time';
@@ -89,7 +89,7 @@ export class CompanionActivityTaskStore {
     if (!row) throw new Error('行动任务不存在。'); return JSON.parse(row.data) as Stored;
   }
   private public(task: Stored): CompanionActivityTask {
-    const parsed = activityTaskSchema.parse({ ...task, historyAvailable: true, history: task.history.slice(-32) });
+    const parsed = activityTaskSchema.parse({ ...task, historyAvailable: true, history: task.history.slice(-32).map(projectCompanionActivityHistoryEntry) });
     if (this.valid(task)) {
       if (terminal(task) && task.reportRejected) return { ...parsed, stage: '这条任务记录已结束，实际结果尚未核验。' };
       if (task.seededSocialClientIds?.length && !terminal(task)) {
@@ -1010,7 +1010,9 @@ export class CompanionActivityTaskStore {
       // newer replies must remain eligible to wake the newly committed wait.
       const afterSequence = observedMessages ? Math.max(0, ...peerMessages.filter(message => observedMessages.some(observed =>
         observed.id === message.id && observed.checksum === checksum(message))).map(message => message.sequence)) : peerMessages.at(-1)?.sequence ?? 0;
-      let result = decision.summary, ok = true, topicReceipt: CompanionStorageResponse | undefined;
+      const pureWait = !action && !decision.topic && !decision.memory && !!decision.wait;
+      let result = pureWait ? JSON.stringify({ schema: 'worldlinebox.activity-wait-receipt-v1', status: 'wait_registered', wait: decision.wait })
+        : decision.summary, ok = true, topicReceipt: CompanionStorageResponse | undefined;
       // Nested savepoint keeps a rejected world action from leaking partial physics changes.
       if (decision.memory) {
         const intentId = 'intent_' + createHash('sha256').update(task.id + '/' + task.step).digest('hex').slice(0, 48);
@@ -1092,7 +1094,8 @@ export class CompanionActivityTaskStore {
           : { hint: '这里只是截取的外部回执；缩小查询范围或结果数量后重新读取，不得把截取内容当作完整记录。' }),
         excerpt: result.slice(0, 12000) });
       const actionName = decision.topic ? `topic.${(decision.topic as { action: string }).action}` : action?.action ?? 'observe';
-      task.step++; task.attempts = 0; task.history.push({ step: task.step, at: iso(), action: actionName, ...(action ? { arguments: action } : {}), ...(decision.topic ? { topicArguments: decision.topic } : {}), result: boundedResult, ok });
+      task.step++; task.attempts = 0; task.history.push({ step: task.step, at: iso(), action: actionName, ...(action ? { arguments: action } : {}), ...(decision.topic ? { topicArguments: decision.topic } : {}), result: boundedResult, ok,
+        ...(pureWait ? { resultProvenance: 'host_receipt' as const, modelSummary: { text: decision.summary, trust: 'model_summary_not_execution_fact' as const } } : {}) });
       if (ok) this.consumeSocialInbox(task, token);
       if (!ok && task.history.slice(-3).length === 3 && task.history.slice(-3).every(item => !item.ok && item.action === actionName && item.result === result)) {
         const failedStage = '同一原子行为连续失败三次，已停止重试。最后原因：' + result;
@@ -1197,7 +1200,7 @@ export class CompanionActivityTaskStore {
         const task = this.get(command.id);
         if (task.companionId !== command.companionId || task.conversationId !== command.conversationId || !this.valid(task)) throw new Error('行动来源或历史范围不可访问。');
         const remaining = task.history.filter(item => item.step < (command.beforeStep ?? Number.MAX_SAFE_INTEGER));
-        const items = remaining.slice(-(command.limit ?? 32));
+        const items = remaining.slice(-(command.limit ?? 32)).map(projectCompanionActivityHistoryEntry);
         return { ok: true, activityHistory: { items, total: task.history.length, hasMore: remaining.length > items.length,
           ...(remaining.length > items.length ? { beforeStep: items[0]!.step } : {}) } };
       }
