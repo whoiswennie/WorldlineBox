@@ -246,7 +246,7 @@ describe('model asset pipeline (slice A, WorldlineBox-fu2i)', () => {
         relativeFilePath: 'robot.glb',
       });
 
-      // The artifact is the standard thumbnail kind, PNG, tagged offscreen-webgl-1.
+      // The artifact is the standard thumbnail kind, PNG, tagged offscreen-webgl-2.
       const db = new TestDatabase(path.join(created.libraryPath, '.worldlinebox', 'library.db'));
       const artifact = db.prepare(
         `SELECT kind, mime_type, byte_size, width, height, status, generator_version
@@ -259,7 +259,7 @@ describe('model asset pipeline (slice A, WorldlineBox-fu2i)', () => {
         width: 512,
         height: 512,
         status: 'ready',
-        generator_version: 'offscreen-webgl-1',
+        generator_version: 'offscreen-webgl-2',
       });
       db.close();
 
@@ -275,6 +275,33 @@ describe('model asset pipeline (slice A, WorldlineBox-fu2i)', () => {
       expect(listed.thumbnailArtifactId).toBeTruthy();
 
       service.closeAll();
+    });
+
+    it('regenerates pre-alpha model cards when their visible window is admitted', async () => {
+      const root = temporaryRoot();
+      const service = new LibraryService();
+      const created = service.createLibrary({ displayName: 'Alpha upgrade', selectedParentPath: root });
+      try {
+        importNoConflict(service, created.libraryId, createSourceFile(root, 'leaf.glb'));
+        const asset = service.listAssets({ libraryId: created.libraryId, recursive: true })[0]!;
+        service.enqueueThumbnailJobs(created.libraryId, { assetIds: [asset.assetId] });
+        await service.processThumbnailQueue(created.libraryId, {
+          maxJobs: 1,
+          modelThumbnailRenderer: async () => ({ status: 'ok', pngBytes: PNG_BYTES, width: 512, height: 512 }),
+        });
+        const db = new TestDatabase(path.join(created.libraryPath, '.worldlinebox', 'library.db'));
+        try {
+          db.prepare("UPDATE revision_artifacts SET generator_version = 'offscreen-webgl-1' WHERE revision_id = ? AND kind = 'thumbnail'")
+            .run(asset.currentRevisionId);
+          expect(service.enqueueThumbnailJobs(created.libraryId, { assetIds: [asset.assetId] })).toBe(1);
+          expect(db.prepare("SELECT invalidated_at FROM revision_artifacts WHERE revision_id = ? AND kind = 'thumbnail'")
+            .get(asset.currentRevisionId)).toMatchObject({ invalidated_at: expect.any(String) });
+        } finally {
+          db.close();
+        }
+      } finally {
+        service.closeAll();
+      }
     });
 
     it('does not re-enqueue a model whose thumbnail is already ready', async () => {

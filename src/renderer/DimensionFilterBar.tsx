@@ -7,6 +7,7 @@ import {
 } from "react";
 
 import { Icon, type IconName } from "./Icons";
+import { Select } from "./ui/primitives";
 import { FilterTagPicker } from "./FilterTagPicker";
 import { FilterPresetChips } from "./FilterPresetChips";
 import {
@@ -1045,57 +1046,54 @@ export function DimensionFilterBar(props: DimensionFilterBarProps) {
             >
               <label>
                 {t("filter.favoriteField")}
-                <select
+                <Select
                   aria-label={t("filter.favorite")}
                   className="text-field"
                   disabled={controlsDisabled}
-                  onChange={(event) =>
-                    setFavoriteFilter(
-                      event.target.value as typeof favoriteFilter,
-                    )
+                  onValueChange={(value) =>
+                    setFavoriteFilter(value as typeof favoriteFilter)
                   }
+                  options={[
+                    { value: "any", label: t("common.none") },
+                    { value: "yes", label: t("filter.favoriteOnly") },
+                    { value: "no", label: t("filter.notFavorite") },
+                  ]}
                   value={favoriteFilter}
-                >
-                  <option value="any">{t("common.none")}</option>
-                  <option value="yes">{t("filter.favoriteOnly")}</option>
-                  <option value="no">{t("filter.notFavorite")}</option>
-                </select>
+                />
               </label>
               <label>
                 {t("filter.sourceUrlField")}
-                <select
+                <Select
                   aria-label={t("filter.sourceUrl")}
                   className="text-field"
                   disabled={controlsDisabled}
-                  onChange={(event) =>
-                    setSourceUrlFilter(
-                      event.target.value as typeof sourceUrlFilter,
-                    )
+                  onValueChange={(value) =>
+                    setSourceUrlFilter(value as typeof sourceUrlFilter)
                   }
+                  options={[
+                    { value: "any", label: t("common.none") },
+                    { value: "yes", label: t("filter.hasSourceUrl") },
+                    { value: "no", label: t("filter.noSourceUrl") },
+                  ]}
                   value={sourceUrlFilter}
-                >
-                  <option value="any">{t("common.none")}</option>
-                  <option value="yes">{t("filter.hasSourceUrl")}</option>
-                  <option value="no">{t("filter.noSourceUrl")}</option>
-                </select>
+                />
               </label>
               <label>
                 {t("filter.availabilityField")}
-                <select
+                <Select
                   aria-label={t("filter.availability")}
                   className="text-field"
                   disabled={controlsDisabled}
-                  onChange={(event) =>
-                    setAvailabilityFilter(
-                      event.target.value as typeof availabilityFilter,
-                    )
+                  onValueChange={(value) =>
+                    setAvailabilityFilter(value as typeof availabilityFilter)
                   }
+                  options={[
+                    { value: "any", label: t("common.all") },
+                    { value: "available", label: t("filter.available") },
+                    { value: "missing", label: t("filter.missing") },
+                  ]}
                   value={availabilityFilter}
-                >
-                  <option value="any">{t("common.all")}</option>
-                  <option value="available">{t("filter.available")}</option>
-                  <option value="missing">{t("filter.missing")}</option>
-                </select>
+                />
               </label>
               <label className="dimension-filter-check">
                 <input

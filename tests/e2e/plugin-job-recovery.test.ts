@@ -6,7 +6,7 @@ import { once } from 'node:events';
 
 import { _electron as electron, expect, test, type ElectronApplication, type Page } from '@playwright/test';
 
-import { electronLaunchEnv, openAppSettingsDialog, openPluginAdvancedInstallDialog, openPluginSettingsTab, resolveElectronExecutablePath } from './electron-test-helpers';
+import { chooseStandardOption, electronLaunchEnv, openAppSettingsDialog, openPluginAdvancedInstallDialog, openPluginSettingsTab, resolveElectronExecutablePath } from './electron-test-helpers';
 import { PLUGIN_LIBRARY_DATA_DIRECTORY } from '../../src/plugins/plugin-package';
 
 test.describe.configure({ timeout: 180_000 });
@@ -120,7 +120,7 @@ test('does not resume a plugin job after the whole Electron process restarts', a
     await openPluginSettingsTab(dialog);
     await expect(dialog.getByText('暂未安装插件。', { exact: true }).first()).toBeVisible();
     const installDialog = await openPluginAdvancedInstallDialog(window, dialog);
-    await installDialog.getByLabel('安装范围').selectOption('library');
+    await chooseStandardOption(installDialog.getByLabel('安装范围'), 'library');
     await installDialog.getByRole('button', { name: '安装文件夹' }).click();
     await expect(dialog.getByText(/Job Probe\s*-\s*v1\.0\.0/)).toBeVisible({ timeout: 30_000 });
     window.once('dialog', (browserDialog) => browserDialog.accept());

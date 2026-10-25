@@ -305,7 +305,14 @@ describe('Linked folder import', () => {
       created.libraryId,
       [cataloged[0]!.assetId],
     );
-    expect(probed).toEqual([{ assetId: cataloged[0]!.assetId, width: 1, height: 1 }]);
+    expect(probed).toEqual([{
+      assetId: cataloged[0]!.assetId,
+      width: 1,
+      height: 1,
+      revisionId: cataloged[0]!.currentRevisionId,
+      previewKind: 'source',
+      previewRevisionId: cataloged[0]!.currentRevisionId,
+    }]);
     const assets = service.listAssets({
       libraryId: created.libraryId,
       folderId: linked.folderId,

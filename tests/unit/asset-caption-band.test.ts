@@ -80,8 +80,8 @@ describe("masonry caption band (WorldlineBox-b1b0f2)", () => {
     expect(
       resolveMasonryCaptionBandPx({ dimensions: true, name: true, secondary: true }),
     ).toBe(MASONRY_DIMENSIONS_CAPTION_BAND_PX);
-    expect(MASONRY_CAPTION_BAND_PX).toBe(52);
-    expect(MASONRY_DIMENSIONS_CAPTION_BAND_PX).toBe(70);
+    expect(MASONRY_CAPTION_BAND_PX).toBe(42);
+    expect(MASONRY_DIMENSIONS_CAPTION_BAND_PX).toBe(60);
   });
 
   it("returns no band when every caption line is off", () => {

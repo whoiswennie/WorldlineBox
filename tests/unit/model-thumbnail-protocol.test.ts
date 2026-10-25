@@ -107,6 +107,6 @@ describe('model-thumbnail render protocol (slice E)', () => {
 
   it('exposes slice constants used by the queue and renderer', () => {
     expect(MODEL_THUMBNAIL_DEFAULT_EDGE).toBe(512);
-    expect(MODEL_THUMBNAIL_GENERATOR_VERSION).toBe('offscreen-webgl-1');
+    expect(MODEL_THUMBNAIL_GENERATOR_VERSION).toBe('offscreen-webgl-2');
   });
 });

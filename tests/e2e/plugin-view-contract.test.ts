@@ -4,7 +4,7 @@ import path from 'node:path';
 
 import { _electron as electron, expect, test, type Frame } from '@playwright/test';
 
-import { electronLaunchEnv, openAppSettingsDialog, openPluginAdvancedInstallDialog, openPluginSettingsTab, resolveElectronExecutablePath, resolveSessionLogPath } from './electron-test-helpers';
+import { chooseStandardOption, electronLaunchEnv, openAppSettingsDialog, openPluginAdvancedInstallDialog, openPluginSettingsTab, resolveElectronExecutablePath, resolveSessionLogPath } from './electron-test-helpers';
 
 test.describe.configure({ timeout: 120_000 });
 
@@ -103,7 +103,7 @@ test('plugin view contract: mount, theme-without-reload, reload, unmount, librar
     const settingsDialog = await openAppSettingsDialog(application, window);
     await openPluginSettingsTab(settingsDialog);
     const installDialog = await openPluginAdvancedInstallDialog(window, settingsDialog);
-    await installDialog.getByLabel('安装范围').selectOption('library');
+    await chooseStandardOption(installDialog.getByLabel('安装范围'), 'library');
     const installButton = installDialog.getByRole('button', { name: '安装文件夹' });
     await expect(installButton).toBeEnabled();
     await installButton.click();

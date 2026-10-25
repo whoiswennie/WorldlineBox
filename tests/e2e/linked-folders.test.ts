@@ -63,6 +63,7 @@ test('imports a linked folder, reconciles external changes, and relinks after th
 
   try {
     const window = await application.firstWindow();
+    await window.locator('[data-application-module="assets"]').click();
     await window.getByRole('button', { name: '创建资源库' }).click();
     await window.getByRole("textbox", { name: "名称" }).fill(libraryName);
     await window.getByRole('button', { name: '创建', exact: true }).click();
@@ -86,13 +87,18 @@ test('imports a linked folder, reconciles external changes, and relinks after th
     await assetCard(window, 'a.png').click({ button: 'right' });
     // 2026-09-15 用户决定：链接资产没有「移入回收站」，只有「强制从硬盘删除…」。
     await expect(window.getByRole('menuitem', { name: '移入回收站' })).toHaveCount(0);
-    await expect(window.getByRole('menuitem', { name: '强制从硬盘删除' })).toBeVisible();
+    const forceDeleteMenuItem = window.getByRole('menuitem', { name: '强制从硬盘删除' });
+    await expect(forceDeleteMenuItem).toBeVisible();
+    await expect(forceDeleteMenuItem).toContainText(
+      process.platform === 'darwin' ? '⌥⌘Delete' : 'Shift+Delete',
+    );
     await window.keyboard.press('Escape');
 
-    await assetCard(window, 'delete-me.png').click({ button: 'right' });
-    await window.getByRole('menuitem', { name: '强制从硬盘删除' }).click();
-    // 「强制从硬盘删除」在 Main 进程弹出危险操作确认窗（不可记住、不可绕过），
-    // 链接资产的文案必须点明「源文件被永久删除」，而不是沿用托管资产的通用说法。
+    await assetCard(window, 'delete-me.png').click();
+    await window.keyboard.press(
+      process.platform === 'darwin' ? 'Alt+Meta+Delete' : 'Shift+Delete',
+    );
+    // 链接资产的确认窗应点明源文件会被永久删除，而不是沿用托管资产的通用说法。
     await confirmAssetDiskDelete(application);
     await expect(window.getByText('delete-me.png', { exact: true })).toHaveCount(0);
     expect(existsSync(path.join(sourceRoot, 'delete-me.png'))).toBe(false);
@@ -172,7 +178,7 @@ test('imports a linked folder, reconciles external changes, and relinks after th
       .locator('button.nav-row[data-nav-folder-kind="linked"]')
       .filter({ hasText: 'source' })
       .first();
-    await expect(offlineSource).toHaveAttribute('title', /离线/);
+    await expect(offlineSource).toHaveAttribute('data-hover-tip', /离线/);
     await offlineSource.click();
     const afterRelink = await listAllAssets(window);
     const aAfterRelink = afterRelink.find((asset) => asset.displayName === 'a.png');
@@ -375,9 +381,7 @@ function linkedFolderRow(window: Page, label: string) {
 }
 
 /**
- * 「强制从硬盘删除」由 Main 进程的危险操作确认窗把关（每次都要确认，不能记住或
- * 通过 MCP 权限绕过）。E2E 点完菜单项后必须显式确认，否则删除根本不会发生。
- * 同时断言链接资产的文案：源文件会被永久删除。
+ * Main 的确认窗要求测试明确选择“强制删除”，并验证链接资产文案点明源文件会被永久删除。
  */
 async function confirmAssetDiskDelete(
   application: ElectronApplication,
@@ -385,6 +389,9 @@ async function confirmAssetDiskDelete(
   const window = await application.firstWindow();
   const dialog = window.getByRole('dialog', { name: '从磁盘删除这些链接资产的源文件？' });
   await expect(dialog).toBeVisible({ timeout: 10_000 });
+  await expect(dialog.locator('.dialog-body-copy')).toHaveText(
+    '此操作无法撤销：链接文件夹中的源文件会被直接删除，不会进入系统回收站。',
+  );
   await dialog
     .getByRole('button', { name: '强制删除', exact: true })
     .click();
@@ -400,6 +407,9 @@ async function confirmLinkedFolderDiskDelete(
   const window = await application.firstWindow();
   const dialog = window.getByRole('dialog', { name: '从磁盘删除链接文件夹内容？' });
   await expect(dialog).toBeVisible({ timeout: 10_000 });
+  await expect(dialog.locator('.dialog-body-copy')).toHaveText(
+    '此操作无法撤销，文件不会进入应用回收站。',
+  );
   await dialog
     .getByRole('button', { name: '强制删除', exact: true })
     .click();

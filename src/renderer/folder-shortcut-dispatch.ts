@@ -11,6 +11,7 @@ export type FolderShortcutCommandId =
   | "folder.open-in-file-manager"
   | "folder.rename"
   | "folder.copy"
+  | "folder.copy-path"
   | "folder.paste"
   | "folder.move-to-trash"
   | "folder.delete-from-disk";
@@ -24,6 +25,7 @@ export type FolderShortcutAction =
   | { readonly type: "create-subfolder"; readonly parentFolderId: string | null }
   | { readonly type: "open-in-file-manager"; readonly folderId: string }
   | { readonly type: "copy-folder"; readonly folderId: string }
+  | { readonly type: "copy-folder-path"; readonly folderId: string }
   | { readonly type: "paste-into-folder"; readonly folderId: string | null }
   | {
       readonly type: "rename";
@@ -128,6 +130,10 @@ export function resolveFolderShortcutAction(
         : null;
     if (!folderId) return { type: "none" };
     return { type: "copy-folder", folderId };
+  }
+
+  if (commandId === "folder.copy-path") {
+    return resolveCopyFolderPathShortcut(input);
   }
 
   if (commandId === "folder.paste") {
@@ -268,6 +274,25 @@ export function resolveFolderShortcutAction(
  * A selected asset keeps the asset reveal chord. One focused row or one
  * selected folder card wins over the folder currently open in browse.
  */
+/**
+ * Copy the path of the focused folder, the single selected folder card, or
+ * the folder open in browse. A multi-selection has no single path. Callers
+ * skip this when the same chord also copies a selected asset.
+ */
+function resolveCopyFolderPathShortcut(
+  input: FolderShortcutResolveInput,
+): FolderShortcutAction {
+  const folderId = input.focusedNav
+    ? input.focusedNav.folderId
+    : input.selectedFolderCardIds.length === 1
+      ? input.selectedFolderCardIds[0]
+      : input.selectedFolderCardIds.length === 0
+        ? input.browseManagedFolderId
+        : null;
+  if (!folderId) return { type: "none" };
+  return { type: "copy-folder-path", folderId };
+}
+
 function resolveOpenFolderShortcut(
   input: FolderShortcutResolveInput,
   canOpenFolder: ((folderId: string) => boolean) | undefined,

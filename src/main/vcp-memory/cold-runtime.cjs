@@ -5,6 +5,7 @@ const path = require('node:path');
 const { createHash, randomUUID } = require('node:crypto');
 const { createRequire } = require('node:module');
 const { tmpdir } = require('node:os');
+const { bindRuntimeDependencies, unlinkRuntimeDependency } = require('./runtime.cjs');
 const hash = value => createHash('sha256').update(value).digest('hex');
 function key(value, generation = false) { if (typeof value !== 'string' || !(generation ? /^[a-f0-9-]{36}$/ : /^[a-f0-9]{64}$/).test(value)) throw Error('Invalid cold storage identity.'); return value; }
 async function json(file) { return JSON.parse(await fs.readFile(file, 'utf8')); }
@@ -24,10 +25,8 @@ class ColdKnowledgeRuntime {
     let tokenizer = path.dirname(vendorLoad.resolve('@dqbd/tiktoken'));
     while ((await json(path.join(tokenizer,'package.json')).catch(()=>({}))).name !== '@dqbd/tiktoken') { const parent=path.dirname(tokenizer); if(parent===tokenizer)throw Error('Cold tokenizer dependency unavailable.');tokenizer=parent; }
     const dependencies = path.dirname(path.dirname(tokenizer)), link=path.join(runtime,'node_modules');
-    const existing=await fs.lstat(link).catch(error=>{if(error.code!=='ENOENT')throw error;});
-    if(existing) { if(!existing.isSymbolicLink() || await fs.realpath(link)!==await fs.realpath(dependencies))throw Error('Cold dependency link changed.'); }
-    else await fs.symlink(dependencies,link,process.platform==='win32'?'junction':'dir');
-    this.dependencyLink={target:link,source:dependencies};
+    await unlinkRuntimeDependency(runtime,link,dependencies);
+    this.dependencyBinding=bindRuntimeDependencies(runtime,path.resolve(configuration.vendorRoot));
     this.cwd = await fs.mkdtemp(path.join(tmpdir(),'worldline-cold-cwd-')); process.chdir(this.cwd);
     for(const name of Object.keys(process.env))if(/^TDB_KNOWLEDGE_/u.test(name))delete process.env[name];
     Object.assign(process.env,{ API_URL:url.toString().replace(/\/+$/u,'').replace(/\/v1$/u,''),API_Key:embedding.apiKey,
@@ -100,11 +99,7 @@ class ColdKnowledgeRuntime {
     return results.sort((a,b)=>b.score-a.score).slice(0,command.topK);
   }
   async close(){
-    if(this.dependencyLink){const {target,source}=this.dependencyLink;
-      const entry=await fs.lstat(target).catch(error=>{if(error.code!=='ENOENT')throw error;});
-      if(entry){if(!entry.isSymbolicLink()||await fs.realpath(target)!==await fs.realpath(source))throw Error('Cold dependency target changed.');await fs.unlink(target);}
-      this.dependencyLink=undefined;
-    }
+    this.dependencyBinding?.deregister();this.dependencyBinding=undefined;
     if(this.cwd){process.chdir(tmpdir());await fs.rmdir(this.cwd);this.cwd=undefined;}return{closed:true};
   }
 }

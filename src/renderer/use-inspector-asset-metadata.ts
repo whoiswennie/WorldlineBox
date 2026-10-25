@@ -16,6 +16,7 @@ import {
 } from "react";
 
 import type { AssetMetadataResult, AssetSummary } from "../shared/asset-types";
+import type { BrowseMembershipChange } from "./browse-filter-membership";
 import type { WorldlineBoxLibraryApi } from "../shared/library-api";
 import type { RendererLibrarySummary } from "../shared/protocol/responses";
 import { LibraryOperationError, toMessage } from "./error-utils";
@@ -53,6 +54,10 @@ export type UseInspectorAssetMetadataParams = {
   setTrashedAssets: Dispatch<SetStateAction<AssetSummary[]>>;
   setNotice: (message: string | null, historyEntryId?: string) => void;
   setError: (message: string | null) => void;
+  /** Drops assets that no longer match the active browse filters. */
+  syncBrowseFilterMembershipRef?: MutableRefObject<
+    (change: BrowseMembershipChange) => void
+  >;
 };
 
 export type MetadataSaveFields = {
@@ -97,6 +102,7 @@ export function useInspectorAssetMetadata({
   setTrashedAssets,
   setNotice,
   setError,
+  syncBrowseFilterMembershipRef,
 }: UseInspectorAssetMetadataParams): UseInspectorAssetMetadataResult {
   const t = useT();
   const { locale } = useLocale();
@@ -337,6 +343,12 @@ export function useInspectorAssetMetadata({
               : asset;
           setAssets((current) => current.map(updateSummary));
           setTrashedAssets((current) => current.map(updateSummary));
+          notifyBrowseFilterMembership(
+            syncBrowseFilterMembershipRef,
+            [targetAssetId],
+            fields,
+            result.value,
+          );
           if (selectedAssetIdRef.current === targetAssetId) {
             setAssetMetadata(result.value);
           }
@@ -363,6 +375,7 @@ export function useInspectorAssetMetadata({
       setNotice,
       setTrashedAssets,
       setVersionConflict,
+      syncBrowseFilterMembershipRef,
       t,
     ],
   );
@@ -373,4 +386,27 @@ export function useInspectorAssetMetadata({
     saveMetadata,
     applyLoadedMetadata,
   };
+}
+
+export function notifyBrowseFilterMembership(
+  ref: MutableRefObject<(change: BrowseMembershipChange) => void> | undefined,
+  assetIds: readonly string[],
+  fields: MetadataSaveFields,
+  saved: { favorite: boolean; rating: number },
+): void {
+  const notify = ref?.current;
+  if (!notify || assetIds.length === 0) return;
+  if (fields.favorite !== undefined) {
+    notify({ kind: "favorite", assetIds, favorite: saved.favorite });
+  }
+  if (fields.rating !== undefined) {
+    notify({ kind: "rating", assetIds, rating: saved.rating });
+  }
+  if (fields.sourcePageUrl !== undefined) {
+    notify({
+      kind: "source-url",
+      assetIds,
+      hasSourceUrl: fields.sourcePageUrl.trim().length > 0,
+    });
+  }
 }

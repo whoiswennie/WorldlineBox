@@ -42,6 +42,8 @@ import type {
   FbxConversionResult,
   FbxConvertErrorCode,
 } from '../../shared/fbx-conversion';
+import { applyBaseColorTextureAlpha } from './base-color-alpha';
+import { applyDecodedRgbaTextures } from './rgba-texture-chunk';
 import {
   mapPhongToStandard,
   stlDefaultMaterial,
@@ -176,11 +178,24 @@ async function loadFbx(input: LoadModelSceneInput): Promise<LoadedModelScene> {
         // The cached GLB carries embedded textures; point GLTFLoader at the
         // artifact URL.
         const loader = input.deps?.gltf ?? new GLTFLoader();
-        const gltf = await loader.loadAsync(
-          worldlineboxPreviewUrl(input.libraryId, result.glbArtifactId),
+        const artifactUrl = worldlineboxPreviewUrl(input.libraryId, result.glbArtifactId);
+        const response = await fetch(artifactUrl);
+        if (!response.ok) {
+          throw new Error(`FBX scene fetch failed (${response.status})`);
+        }
+        const file = await response.arrayBuffer();
+        const gltf = await new Promise<{ scene?: Group; animations?: AnimationClip[] }>(
+          (resolve, reject) => {
+            loader.parse(file, '', resolve, reject);
+          },
         );
         const scene = gltf.scene ?? new Group();
+        applyDecodedRgbaTextures(scene, file);
         enableShadowCasting(scene);
+        // Cached scenes keep alphaMode OPAQUE when the FBX factor is 1 and
+        // there is no separate opacity map. The basecolor image can still
+        // carry coverage.
+        applyBaseColorTextureAlpha(scene);
         return {
           scene,
           animations: gltf.animations ?? [],
@@ -200,6 +215,7 @@ async function loadFbx(input: LoadModelSceneInput): Promise<LoadedModelScene> {
   const animations =
     (root as Group & { animations?: AnimationClip[] }).animations ?? [];
   upgradeFallbackMaterials(root, input);
+  applyBaseColorTextureAlpha(root);
   enableShadowCasting(root);
   return {
     scene: root,

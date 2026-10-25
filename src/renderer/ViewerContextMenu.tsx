@@ -19,6 +19,8 @@ export interface ViewerContextMenuPosition {
 
 interface ViewerContextMenuProps {
   copyShortcut: string;
+  copyPathShortcut?: string | null;
+  onCopyFilePath?: () => void;
   flipHorizontal: boolean;
   flipVertical: boolean;
   fitShortcut?: string;
@@ -51,6 +53,8 @@ interface ViewerContextMenuProps {
  */
 export function ViewerContextMenu({
   copyShortcut,
+  copyPathShortcut,
+  onCopyFilePath,
   flipHorizontal,
   flipVertical,
   fitShortcut,
@@ -243,6 +247,24 @@ export function ViewerContextMenu({
           </span>
           <span className="context-menu-item-shortcut">{copyShortcut}</span>
         </button>
+        {onCopyFilePath ? (
+          <button
+            className="context-menu-item"
+            onClick={action(onCopyFilePath)}
+            tabIndex={VIEWER_CHROME_TAB_INDEX}
+            type="button"
+          >
+            <span className="context-menu-item-icon">
+              <Icon name="file" size={14} />
+            </span>
+            <span className="context-menu-item-label">
+              {t("command.asset.copyFilePath")}
+            </span>
+            {copyPathShortcut ? (
+              <span className="context-menu-item-shortcut">{copyPathShortcut}</span>
+            ) : null}
+          </button>
+        ) : null}
         {transformable ? (
           <button
             className="context-menu-item"

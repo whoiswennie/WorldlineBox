@@ -2,6 +2,7 @@ import { Icon } from "./Icons";
 import { iconActionAttrs } from "./icon-action-attrs";
 import { useT } from "./i18n";
 import { DialogShell } from "./ui/patterns";
+import { Select } from "./ui/primitives";
 
 export interface RestoreDialogProps {
   assetIds: string[];
@@ -49,44 +50,39 @@ export function RestoreDialog({
         <label className="field-label" htmlFor="restore-target">
           {t("dialog.restore.location")}
         </label>
-        <select
+        <Select
           className="text-field"
           id="restore-target"
-          onChange={(event) =>
-            onTargetChange(
-              event.target.value as "original" | "root" | string,
-            )
-          }
+          onValueChange={(value) => onTargetChange(value)}
+          options={[
+            { value: "original", label: t("dialog.restore.original") },
+            { value: "root", label: t("scope.rootFolder") },
+            ...folders.map((folder) => ({
+              value: folder.folderId,
+              label: folder.relativePath,
+            })),
+          ]}
           value={target}
-        >
-          <option value="original">{t("dialog.restore.original")}</option>
-          <option value="root">{t("scope.rootFolder")}</option>
-          {folders.map((folder) => (
-            <option key={folder.folderId} value={folder.folderId}>
-              {folder.relativePath}
-            </option>
-          ))}
-        </select>
+        />
         <label
           className="field-label field-label-spaced"
           htmlFor="restore-conflict"
         >
           {t("dialog.restore.nameConflict")}
         </label>
-        <select
+        <Select
           className="text-field"
           id="restore-conflict"
-          onChange={(event) =>
-            onStrategyChange(
-              event.target.value as "keep-both" | "replace" | "skip",
-            )
+          onValueChange={(value) =>
+            onStrategyChange(value as "keep-both" | "replace" | "skip")
           }
+          options={[
+            { value: "keep-both", label: t("dialog.restore.keepBoth") },
+            { value: "replace", label: t("dialog.restore.replace") },
+            { value: "skip", label: t("dialog.restore.skip") },
+          ]}
           value={conflictStrategy}
-        >
-          <option value="keep-both">{t("dialog.restore.keepBoth")}</option>
-          <option value="replace">{t("dialog.restore.replace")}</option>
-          <option value="skip">{t("dialog.restore.skip")}</option>
-        </select>
+        />
         {conflictStrategy === "replace" && (
           <p className="field-help">{t("dialog.restore.replaceHelp")}</p>
         )}

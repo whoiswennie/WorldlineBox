@@ -101,7 +101,7 @@ test('primitives emit semantic control roles and accessible relationships', () =
       label: 'Mode',
       value: 'fast',
       options: [{ value: 'fast', label: 'Fast' }],
-      onChange: () => undefined,
+      onValueChange: () => undefined,
     }),
     createElement(Progress, {
       label: 'Import',

@@ -2,7 +2,7 @@ import { cpSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { _electron as electron, expect, test } from '@playwright/test';
-import { electronLaunchEnv, openAppSettingsDialog, openPluginAdvancedInstallDialog, openPluginSettingsTab, resolveElectronExecutablePath, waitForLibraryLoadingToFinish } from './electron-test-helpers';
+import { chooseStandardOption, electronLaunchEnv, openAppSettingsDialog, openPluginAdvancedInstallDialog, openPluginSettingsTab, resolveElectronExecutablePath, waitForLibraryLoadingToFinish } from './electron-test-helpers';
 
 // The official plugin is maintained in its own repository. Supply an unpacked
 // package explicitly; never install into the developer's real userData/library.
@@ -43,7 +43,7 @@ test('renamer first input and repeated parameter changes retain state', async ()
     const settings = await openAppSettingsDialog(app, page);
     await openPluginSettingsTab(settings);
     const install = await openPluginAdvancedInstallDialog(page, settings);
-    await install.getByLabel('安装范围').selectOption('library');
+    await chooseStandardOption(install.getByLabel('安装范围'), 'library');
     await install.getByRole('button', { name: '安装文件夹' }).click();
     await expect(settings.getByRole('checkbox', { name: '启用插件' })).toBeEnabled({ timeout: 30_000 });
     page.once('dialog', (dialog) => {

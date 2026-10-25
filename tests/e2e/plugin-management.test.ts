@@ -4,7 +4,7 @@ import path from 'node:path';
 
 import { _electron as electron, expect, test } from '@playwright/test';
 
-import { electronLaunchEnv, openAppSettingsDialog, openPluginAdvancedInstallDialog, openPluginSettingsTab, resolveElectronExecutablePath } from './electron-test-helpers';
+import { chooseStandardOption, electronLaunchEnv, openAppSettingsDialog, openPluginAdvancedInstallDialog, openPluginSettingsTab, resolveElectronExecutablePath } from './electron-test-helpers';
 import manifestFixture from '../fixtures/plugin-manifests/palette-tools.worldlinebox-plugin.json';
 
 test.describe.configure({ timeout: 120_000 });
@@ -63,7 +63,7 @@ test('installs a library plugin through the settings bridge, then trusts and Saf
     await githubDialog.getByRole('button', { name: '开始安装' }).click();
     await expect(githubDialog.getByText('请输入有效的 GitHub HTTPS 仓库地址、owner/repository 或 Release 链接。', { exact: true })).toBeVisible();
     await githubDialog.getByRole('button', { name: '返回' }).click();
-    await installDialog.getByLabel('安装范围').selectOption('library');
+    await chooseStandardOption(installDialog.getByLabel('安装范围'), 'library');
     await installDialog.getByRole('button', { name: '安装文件夹' }).click();
 
     const libraryCard = dialog.locator('.plugin-settings-scope-card').filter({ hasText: '资源库插件' });

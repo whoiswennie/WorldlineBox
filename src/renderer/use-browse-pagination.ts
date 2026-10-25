@@ -448,6 +448,13 @@ export type UseBrowsePaginationResult = {
   applyGeometryPatches: (
     patches: ReadonlyMap<string, { width: number; height: number }>,
   ) => void;
+  /** Apply source/artifact route changes without restarting the browse session. */
+  applyPreviewPatches: (
+    patches: ReadonlyMap<string, {
+      previewKind: 'source' | null;
+      previewRevisionId: string | null;
+    }>,
+  ) => void;
   /** Drop the current definition (library close / navigation to non-browse views). */
   reset: () => void;
   hasMorePages: boolean;
@@ -526,6 +533,7 @@ export function useBrowsePagination(
     getLoadedSummaryAssetIds,
     removeEntries: removeVirtualLayoutEntries,
     applyGeometryPatches: applyVirtualGeometryPatches,
+    applyPreviewPatches: applyVirtualPreviewPatches,
     isVirtualized: isVirtualBrowseSession,
     reset: resetVirtualBrowseSession,
     restoreLocalState: restoreVirtualBrowseLocalState,
@@ -1130,6 +1138,43 @@ export function useBrowsePagination(
     setBrowseLayout,
   ]);
 
+  const applyPreviewPatches = useCallback((
+    patches: ReadonlyMap<string, {
+      previewKind: 'source' | null;
+      previewRevisionId: string | null;
+    }>,
+  ) => {
+    if (patches.size === 0) return;
+    if (isVirtualBrowseSession()) {
+      applyVirtualPreviewPatches(patches);
+      layoutRef.current = getLoadedBrowseLayout();
+      return;
+    }
+    let changed = false;
+    const next = layoutRef.current.map((entry) => {
+      const patch = patches.get(entry.assetId);
+      if (!patch) return entry;
+      if (
+        entry.previewKind === patch.previewKind
+        && entry.previewRevisionId === patch.previewRevisionId
+      ) return entry;
+      changed = true;
+      return {
+        ...entry,
+        previewKind: patch.previewKind,
+        previewRevisionId: patch.previewRevisionId,
+      };
+    });
+    if (!changed) return;
+    layoutRef.current = next;
+    setBrowseLayout(next);
+  }, [
+    applyVirtualPreviewPatches,
+    getLoadedBrowseLayout,
+    isVirtualBrowseSession,
+    setBrowseLayout,
+  ]);
+
   const reset = useCallback(() => {
     const previous = definitionRef.current;
     if (api && previous?.kind === "search" && previous.sessionId) {
@@ -1190,6 +1235,7 @@ export function useBrowsePagination(
     fetchScopeAssetIds,
     removeLocally,
     applyGeometryPatches,
+    applyPreviewPatches,
     reset,
     hasMorePages,
     loadingMore,

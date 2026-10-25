@@ -9,6 +9,7 @@
 
 import { translateForLocale } from '../i18n';
 import type { CommandContext, CommandDefinition } from './command-types';
+import { DELETE_FROM_DISK_SHORTCUT } from './asset-shortcuts';
 
 /**
  * App 层注入的动作回调包。签名与 AssetContextMenu 的相关 props 一一对应，
@@ -294,15 +295,7 @@ export const assetCommandDefinitions: readonly AssetCommandDefinition[] = [
         : 'command.asset.deleteFromDisk',
     ),
     group: 'delete',
-    shortcut: {
-      mac: {
-        label: '⌥⌘Delete',
-        key: 'Delete',
-        metaKey: true,
-        altKey: true,
-      },
-      windows: { label: 'Shift+Delete', key: 'Delete', shiftKey: true },
-    },
+    shortcut: DELETE_FROM_DISK_SHORTCUT,
     visible: (ctx) =>
       !ctx.assetDeleted
       && (ctx.locationKind === 'managed' || ctx.locationKind === 'linked'),

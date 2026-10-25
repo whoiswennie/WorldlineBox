@@ -12,13 +12,15 @@ export const SOURCE_DIRECT_MAX_LONG_EDGE_PX = 2048;
 export const SOURCE_DIRECT_MAX_PIXELS = 2_000_000;
 export const SOURCE_DIRECT_MAX_BYTES = 2 * 1024 * 1024;
 
-const SOURCE_DIRECT_EXTENSIONS = new Set([
+export const SOURCE_DIRECT_IMAGE_EXTENSIONS = [
   ...JPEG_IMAGE_EXTENSIONS,
   ".png",
   ".webp",
   ".avif",
   ".gif",
-]);
+] as const;
+
+const SOURCE_DIRECT_EXTENSIONS = new Set<string>(SOURCE_DIRECT_IMAGE_EXTENSIONS);
 
 function extensionFor(fileName: string): string {
   const lower = fileName.toLowerCase();

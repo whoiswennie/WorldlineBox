@@ -75,6 +75,7 @@ import {
   setApplicationMenuCommandLabel,
 } from "./application-menu";
 import { applyDevAppIcon, appIconImage, withAppWindowIcon } from "./app-icon";
+import { mcpFullAccessConfirmationCopy } from "./mcp-full-access-confirmation-copy";
 import { ArtifactPathCache } from "./artifact-path-cache";
 import { SourcePathCache, type SourcePathResolution } from "./source-path-cache";
 import {
@@ -2438,7 +2439,7 @@ async function createMainWindow(): Promise<void> {
         if (appAction) forwardApplicationShortcutToWindow(window, appAction, 'before-input');
         return;
       }
-      const browseAction = matchBrowseKeyboardShortcut({
+      const browseInput = {
         type: input.type,
         code: input.code,
         key: input.key,
@@ -2447,9 +2448,25 @@ async function createMainWindow(): Promise<void> {
         meta: input.meta,
         alt: input.alt,
         shift: input.shift,
+      };
+      const browseAction = matchBrowseKeyboardShortcut(browseInput, {
+        bindings: readShortcutBindingsSnapshot(),
+        platform: shortcutPlatformFromProcess(process.platform),
       });
       if (browseAction) {
-        forwardBrowseShortcut(window.webContents, browseAction);
+        if (browseAction === "copy-path") {
+          event.preventDefault();
+          forwardBrowseShortcut(window.webContents, browseAction, {
+            key: input.key,
+            code: input.code,
+            ctrlKey: input.control,
+            metaKey: input.meta,
+            altKey: input.alt,
+            shiftKey: input.shift,
+          });
+        } else {
+          forwardBrowseShortcut(window.webContents, browseAction);
+        }
       }
     }
     if (!isViewerVideoShortcutContentsActive(window.webContents.id)) {
@@ -4440,8 +4457,8 @@ async function confirmCriticalLibraryDeletion(libraryId: string): Promise<boolea
       ? `The library “${library.displayName}” and its WorldlineBox-managed directory will be permanently deleted.`
       : `资源库“${library.displayName}”及其 WorldlineBox 管理的目录将被永久删除。`,
     detail: english
-      ? 'This cannot be undone. Linked-folder source directories are not included. This confirmation is required every time and cannot be remembered or bypassed by MCP permissions.'
-      : '此操作无法撤销。关联文件夹的源目录不会被删除。每次操作都必须确认；不能记住此决定，也不能通过 MCP 权限或“开启所有权限”绕过。',
+      ? 'This cannot be undone. Linked-folder source directories are not included.'
+      : '此操作无法撤销。关联文件夹的源目录不会被删除。',
     cancelLabel: english ? 'Cancel' : '取消',
     confirmLabel: english ? 'Delete from disk' : '从磁盘删除',
     initialFocus: 'cancel',
@@ -4449,18 +4466,13 @@ async function confirmCriticalLibraryDeletion(libraryId: string): Promise<boolea
 }
 
 async function confirmEnableAllMcpPermissions(label: string): Promise<boolean> {
-  const english = appLocale === 'en';
+  const copy = mcpFullAccessConfirmationCopy(
+    label,
+    appLocale === 'en' ? 'en' : 'zh-CN',
+  );
   return askCriticalConfirmation({
-    title: english ? 'Confirm full access' : '确认开启完全权限',
-    heading: english ? 'Enable Full Access for this MCP client?' : '为这个 MCP 客户端开启完全权限？',
-    message: english
-      ? `“${label}” will be allowed to execute every MCP operation, including dangerous operations, without asking again.`
-      : `客户端“${label}”将可以直接执行所有 MCP 操作，包括永久删除等危险操作，之后不再询问。`,
-    detail: english
-      ? 'This applies only to this client credential. WorldlineBox still enforces exact targets, path boundaries, version checks, idempotency and worker safety checks. Disable Full Access or revoke the credential to stop it immediately.'
-      : '此设置只作用于当前客户端凭据。WorldlineBox 仍会执行精确目标、路径边界、版本校验、幂等和 Worker 安全检查。关闭完全权限或删除凭据即可立即停止。',
-    cancelLabel: english ? 'Cancel' : '取消',
-    confirmLabel: english ? 'Enable Full Access' : '开启完全权限',
+    ...copy,
+    cancelLabel: appLocale === 'en' ? 'Cancel' : '取消',
     initialFocus: 'cancel',
   });
 }
@@ -4511,9 +4523,6 @@ function criticalRendererCopy(
   count: number,
   english: boolean,
 ): { heading: string; message: string; detail: string } {
-  const confirmationPolicy = english
-    ? 'This confirmation is required every time; it cannot be remembered or bypassed by MCP permissions.'
-    : '每次操作都必须确认；不能记住此决定，也不能通过 MCP 权限绕过。';
   switch (operation) {
     case 'folder':
       return {
@@ -4522,8 +4531,8 @@ function criticalRendererCopy(
           ? 'The selected folder and its managed assets will be permanently deleted.'
           : '选定文件夹及其中的托管资产将被永久删除。',
         detail: english
-          ? `This cannot be undone and the files will not go to the application trash. ${confirmationPolicy}`
-          : `此操作无法撤销，文件不会进入应用回收站。${confirmationPolicy}`,
+          ? 'This cannot be undone and the files will not go to the application trash.'
+          : '此操作无法撤销，文件不会进入应用回收站。',
       };
     case 'linked-folder':
       return {
@@ -4532,8 +4541,8 @@ function criticalRendererCopy(
           ? 'The selected linked-folder source files will be permanently deleted.'
           : '选定链接文件夹中的源文件将被永久删除。',
         detail: english
-          ? `This cannot be undone and the files will not go to the application trash. ${confirmationPolicy}`
-          : `此操作无法撤销，文件不会进入应用回收站。${confirmationPolicy}`,
+          ? 'This cannot be undone and the files will not go to the application trash.'
+          : '此操作无法撤销，文件不会进入应用回收站。',
       };
     case 'linked-asset':
       return {
@@ -4542,8 +4551,8 @@ function criticalRendererCopy(
           ? `The source files of ${count} selected linked asset(s) will be permanently deleted, and their library link records with them.`
           : `选定 ${count} 个链接资产的源文件将被永久删除，库内的链接记录也会一并移除。`,
         detail: english
-          ? `This cannot be undone; the source files are deleted from the linked folder and do not go to the recycle bin. ${confirmationPolicy}`
-          : `此操作无法撤销：链接文件夹中的源文件会被直接删除，不会进入系统回收站。${confirmationPolicy}`,
+          ? 'This cannot be undone; the source files are deleted from the linked folder and do not go to the recycle bin.'
+          : '此操作无法撤销：链接文件夹中的源文件会被直接删除，不会进入系统回收站。',
       };
     case 'asset-permanent':
       return {
@@ -4552,8 +4561,8 @@ function criticalRendererCopy(
           ? `${count} selected trash asset(s) will be permanently deleted.`
           : `选定的 ${count} 项回收站资产将被永久删除。`,
         detail: english
-          ? `This cannot be undone and the files will not go to the application trash. ${confirmationPolicy}`
-          : `此操作无法撤销，文件不会进入应用回收站。${confirmationPolicy}`,
+          ? 'This cannot be undone and the files will not go to the application trash.'
+          : '此操作无法撤销，文件不会进入应用回收站。',
       };
     case 'trash-purge':
       return {
@@ -4562,8 +4571,8 @@ function criticalRendererCopy(
           ? 'All assets currently in the WorldlineBox trash will be permanently deleted.'
           : 'WorldlineBox 回收站中的全部资产将被永久删除。',
         detail: english
-          ? `This cannot be undone and the files will not go to the application trash. ${confirmationPolicy}`
-          : `此操作无法撤销，文件不会进入应用回收站。${confirmationPolicy}`,
+          ? 'This cannot be undone and the files will not go to the application trash.'
+          : '此操作无法撤销，文件不会进入应用回收站。',
       };
     case 'asset':
       return {
@@ -4572,8 +4581,8 @@ function criticalRendererCopy(
           ? `${count} selected asset(s) will be permanently deleted.`
           : `选定的 ${count} 项资产将被永久删除。`,
         detail: english
-          ? `This cannot be undone and the files will not go to the application trash. ${confirmationPolicy}`
-          : `此操作无法撤销，文件不会进入应用回收站。${confirmationPolicy}`,
+          ? 'This cannot be undone and the files will not go to the application trash.'
+          : '此操作无法撤销，文件不会进入应用回收站。',
       };
   }
 }

@@ -2,6 +2,7 @@ import { Icon } from "./Icons";
 import { iconActionAttrs } from "./icon-action-attrs";
 import { useT } from "./i18n";
 import { DialogShell } from "./ui/patterns";
+import { Select } from "./ui/primitives";
 
 export interface CollectionEditorDialogProps {
   open: boolean;
@@ -62,25 +63,22 @@ export function CollectionEditorDialog({
         >
           {t("dialog.collectionEditor.cover")}
         </label>
-        <select
+        <Select
           className="text-field"
           id="collection-cover"
-          onChange={(event) => onCoverAssetChange(event.target.value)}
+          onValueChange={onCoverAssetChange}
+          options={[
+            { value: "", label: t("dialog.collectionEditor.noCover") },
+            ...(coverAssetId && !assetOptions.some((asset) => asset.assetId === coverAssetId)
+              ? [{ value: coverAssetId, label: t("dialog.collectionEditor.currentCoverOffPage") }]
+              : []),
+            ...assetOptions.map((asset) => ({
+              value: asset.assetId,
+              label: asset.displayName,
+            })),
+          ]}
           value={coverAssetId}
-        >
-          <option value="">{t("dialog.collectionEditor.noCover")}</option>
-          {coverAssetId &&
-            !assetOptions.some((a) => a.assetId === coverAssetId) && (
-              <option value={coverAssetId}>
-                {t("dialog.collectionEditor.currentCoverOffPage")}
-              </option>
-            )}
-          {assetOptions.map((asset) => (
-            <option key={asset.assetId} value={asset.assetId}>
-              {asset.displayName}
-            </option>
-          ))}
-        </select>
+        />
         <p className="field-help">{t("dialog.collectionEditor.help")}</p>
         <div className="dialog-actions">
           <button

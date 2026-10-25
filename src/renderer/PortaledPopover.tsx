@@ -15,26 +15,17 @@ import { createShellPortal } from "./ui/ShellStyleScope";
 
 import { layerCssVar, type UiLayerName } from "./ui/foundation";
 import { PopoverSurface, type PopoverSurfaceProps } from "./ui/patterns";
+import {
+  placeOverlayInViewport,
+  readOverlayViewport,
+  type PlacedOverlay,
+} from "./place-overlay";
 
 type PortaledPopoverLayer = Extract<UiLayerName, "popover" | "modal" | "tooltip">;
 
-type AnchorRect = {
-  top: number;
-  left: number;
-  width: number;
-  inModal: boolean;
+type PopoverPlacement = PlacedOverlay & {
+  readonly inModal: boolean;
 };
-
-function readAnchorRect(anchor: HTMLElement | null): AnchorRect | null {
-  if (!anchor) return null;
-  const rect = anchor.getBoundingClientRect();
-  return {
-    top: rect.bottom + 6,
-    left: rect.left,
-    width: rect.width,
-    inModal: Boolean(anchor.closest?.('[role="dialog"]')),
-  };
-}
 
 export type PortaledPopoverProps = PopoverSurfaceProps & {
   /** Element that owns the popover (usually the dimension button host). */
@@ -59,24 +50,35 @@ export function PortaledPopover({
   ...rest
 }: PortaledPopoverProps): ReactNode {
   const surfaceRef = useRef<HTMLDivElement>(null);
-  // Reading anchorRef inside the useState initializer violates
-  // react-hooks/refs (refs must not be read during render); the layout
-  // effect below performs the first measure instead.
-  const [coords, setCoords] = useState<AnchorRect | null>(null);
+  const [placement, setPlacement] = useState<PopoverPlacement | null>(null);
 
   useLayoutEffect(() => {
     const update = () => {
-      const next = readAnchorRect(anchorRef.current);
-      if (!next) return;
-      // Flip horizontally when the panel would clip past the right edge.
-      const surfaceWidth = surfaceRef.current?.offsetWidth ?? 320;
-      const maxLeft = Math.max(8, window.innerWidth - surfaceWidth - 8);
-      let left = preferRight
-        ? (anchorRef.current?.getBoundingClientRect().right ?? next.left) -
-          surfaceWidth
-        : next.left;
-      left = Math.min(Math.max(8, left), maxLeft);
-      setCoords({ ...next, left });
+      const anchor = anchorRef.current;
+      const surface = surfaceRef.current;
+      if (!anchor || !surface) return;
+      const rect = anchor.getBoundingClientRect();
+      const placed = placeOverlayInViewport({
+        anchor: rect,
+        size: { width: surface.offsetWidth, height: surface.offsetHeight },
+        viewport: readOverlayViewport(),
+        align: preferRight ? "end" : "start",
+      });
+      const next: PopoverPlacement = {
+        ...placed,
+        inModal: anchor.closest('[role="dialog"]') != null,
+      };
+      setPlacement((current) => (
+        current
+        && current.left === next.left
+        && current.top === next.top
+        && current.maxWidth === next.maxWidth
+        && current.maxHeight === next.maxHeight
+        && current.side === next.side
+        && current.inModal === next.inModal
+          ? current
+          : next
+      ));
     };
     update();
     window.addEventListener("resize", update);
@@ -87,22 +89,26 @@ export function PortaledPopover({
     };
   }, [anchorRef, preferRight]);
 
-  if (!coords || typeof document === "undefined") return null;
+  if (typeof document === "undefined") return null;
 
   return createShellPortal(
     <PopoverSurface
       {...rest}
       className={className}
       data-dimension-filter-popover=""
-      data-modal-popover={coords.inModal || undefined}
+      data-modal-popover={placement?.inModal || undefined}
       ref={surfaceRef}
       style={{
         ...style,
         position: "fixed",
-        top: coords.top,
-        left: coords.left,
+        top: placement?.top ?? 0,
+        left: placement?.left ?? 0,
         right: "auto",
-        zIndex: coords.inModal ? 'var(--ui-layer-modal-backdrop)' : layerCssVar(layer),
+        maxWidth: placement?.maxWidth,
+        maxHeight: placement?.maxHeight,
+        overflowY: "auto",
+        visibility: placement ? "visible" : "hidden",
+        zIndex: placement?.inModal ? "var(--ui-layer-modal-backdrop)" : layerCssVar(layer),
       }}
     >
       {children}

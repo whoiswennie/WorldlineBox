@@ -6,7 +6,7 @@ import { Icon } from "./Icons";
 import { iconActionAttrs } from "./icon-action-attrs";
 import { useT } from "./i18n";
 import { DialogShell } from "./ui/patterns";
-import { Switch } from "./ui/primitives";
+import { Select, Switch } from "./ui/primitives";
 import { formatBytes } from "./format-file-meta";
 import { GitignorePreviewPanel } from "./GitignorePreviewPanel";
 import type { SyncServerSummary } from "./sync-settings-types";
@@ -211,20 +211,19 @@ function SyncSettingsSection({
           {servers.length === 0 ? (
             <p className="app-settings-help-note">{t("settings.sync.noServer")}</p>
           ) : (
-            <select
-              className="text-field"
+            <Select
               aria-label={t("settings.sync.server")}
-              value={serverId}
-              onChange={(event) => {
-                const next = event.target.value;
+              className="text-field"
+              onValueChange={(next) => {
                 setServerId(next);
                 void probeSelected(next);
               }}
-            >
-              {servers.map((server) => (
-                <option key={server.id} value={server.id}>{server.baseUrl}</option>
-              ))}
-            </select>
+              options={servers.map((server) => ({
+                value: server.id,
+                label: server.baseUrl,
+              }))}
+              value={serverId}
+            />
           )}
         </div>
         <div className="app-settings-row app-settings-row-stack">

@@ -57,6 +57,7 @@ test("a font asset renders a card sample and a viewer preview with real glyphs",
 
   try {
     const window = await application.firstWindow();
+    await window.locator('[data-application-module="assets"]').click();
     await window.getByRole("button", { name: "创建资源库" }).click();
     await window.getByRole("textbox", { name: "名称" }).fill(libraryName);
     await window.getByRole("button", { name: "创建", exact: true }).click();
@@ -227,23 +228,26 @@ test("a font asset renders a card sample and a viewer preview with real glyphs",
       .locator(".font-viewer-controls > *")
       .last()
       .evaluate((element) =>
-        Boolean(element.querySelector('select[aria-label="语言"]')),
+        Boolean(element.querySelector('button[aria-label="语言"]')),
       );
     expect(lastControlIsLanguage).toBe(true);
 
     // 预览语言：默认按字体判定（DejaVu 是拉丁字体 → 英文），下拉直接显示语言，
     // 可手动切到德文/日文等；静态字体（只有一套字形）不显示字重控件。
-    const languageSelect = window.getByLabel("语言");
+    const languageSelect = window.getByRole("button", { name: "语言" });
     await expect(languageSelect).toBeVisible();
-    await expect(languageSelect).toHaveValue("en");
-    await expect(languageSelect.locator("option")).toHaveCount(18);
-    await languageSelect.selectOption("de");
+    await expect(languageSelect).toHaveText("英文");
+    await languageSelect.click();
+    await expect(window.getByRole("option")).toHaveCount(18);
+    await window.getByRole("option", { name: "德文" }).click();
     await expect(specimenRows.first()).toContainText("Schrift Vorschau");
-    await languageSelect.selectOption("ja");
+    await languageSelect.click();
+    await window.getByRole("option", { name: "日文" }).click();
     await expect(specimenRows.first()).toContainText("フォント文字プレビュー");
-    await languageSelect.selectOption("en");
+    await languageSelect.click();
+    await window.getByRole("option", { name: "英文" }).click();
     await expect(specimenRows.first()).toContainText("AaBbCc");
-    await expect(window.getByLabel("字重")).toHaveCount(0);
+    await expect(window.getByRole("button", { name: "字重" })).toHaveCount(0);
 
     // 自定义预览文字：按语言记住（换回该语言/换字体时沿用），可撤回（图标按钮）。
     const textField = window.getByLabel("预览文字");
@@ -253,9 +257,11 @@ test("a font asset renders a card sample and a viewer preview with real glyphs",
     await expect(specimenRows.first()).toHaveText("WorldlineBox 字体");
     await expect(resetButton).toBeEnabled();
     // 切到德文是德文默认文案，切回英文仍是刚才输入的文字（按语言持久化）。
-    await languageSelect.selectOption("de");
+    await languageSelect.click();
+    await window.getByRole("option", { name: "德文" }).click();
     await expect(specimenRows.first()).toContainText("Schrift Vorschau");
-    await languageSelect.selectOption("en");
+    await languageSelect.click();
+    await window.getByRole("option", { name: "英文" }).click();
     await expect(specimenRows.first()).toHaveText("WorldlineBox 字体");
     // 撤回：回到该语言的默认文字。
     await resetButton.click();

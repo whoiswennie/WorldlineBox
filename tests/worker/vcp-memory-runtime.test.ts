@@ -17,10 +17,11 @@ const roots: string[] = [], clients: VcpMemoryClient[] = [], servers: Server[] =
 const workerPath = path.resolve('src/main/vcp-memory/worker.cjs');
 const vendorRoot = path.resolve('vendor/vcp-memory');
 
-function launch(file: string): VcpMemoryTransport {
+function launch(file: string, withoutDirectoryLinks = false): VcpMemoryTransport {
   const environment: NodeJS.ProcessEnv = { ...process.env, ELECTRON_RUN_AS_NODE: '1' };
   delete environment.NODE_PATH;
-  const child = fork(file, [], { execPath: process.execPath, env: environment, stdio: ['ignore', 'ignore', 'pipe', 'ipc'] });
+  const child = fork(file, [], { execPath: process.execPath, env: environment, stdio: ['ignore', 'ignore', 'pipe', 'ipc'],
+    execArgv: withoutDirectoryLinks ? ['--require', path.resolve('tests/fixtures/vcp-no-directory-links.cjs')] : process.execArgv });
   child.stderr?.resume();
   return { postMessage: message => { child.send(message as object); }, on: child.on.bind(child), kill: () => { child.kill(); } };
 }
@@ -251,13 +252,13 @@ describe('unchanged VCP core behind isolated worker processes', () => {
     }
     expect(wave.stages.deep.recalls.every(item => ['dream-note-5', 'dream-note-6'].includes(item.id))).toBe(true);
   });
-  it('detaches its own dependency junctions on close and safely purges an interrupted worker without touching their sources', async () => {
+  it('keeps dependencies outside the private runtime across close, interruption and purge without touching their sources', async () => {
     const { root, createClient } = await fixture(), client = createClient(), scope = { scopeId: 'dependency-link-cleanup' };
     const directory = path.join(root, createHash('sha256').update(scope.scopeId).digest('hex'));
     const sources = [path.resolve('node_modules/@dqbd/tiktoken/package.json'), path.join(vendorRoot, 'rust-vexus-lite/index.js')];
     const hashes = await Promise.all(sources.map(file => readFile(file).then(data => createHash('sha256').update(data).digest('hex'))));
     await client.remember(scope, { id: 'source', content: 'alpha dependency ownership', tags: ['alpha'] });
-    for (const name of ['node_modules', 'rust-vexus-lite']) expect((await lstat(path.join(directory, 'runtime', name))).isSymbolicLink()).toBe(true);
+    for (const name of ['node_modules', 'rust-vexus-lite']) await expect(lstat(path.join(directory, 'runtime', name))).rejects.toMatchObject({ code: 'ENOENT' });
     await client.closeScope(scope);
     for (const name of ['node_modules', 'rust-vexus-lite']) await expect(lstat(path.join(directory, 'runtime', name))).rejects.toMatchObject({ code: 'ENOENT' });
     expect((await client.list(scope))[0]?.id).toBe('source');
@@ -266,6 +267,23 @@ describe('unchanged VCP core behind isolated worker processes', () => {
     await client.purgeScope(scope);
     await expect(lstat(directory)).rejects.toMatchObject({ code: 'ENOENT' });
     expect(await Promise.all(sources.map(file => readFile(file).then(data => createHash('sha256').update(data).digest('hex'))))).toEqual(hashes);
+  });
+  it('indexes, recalls and generates timelines when the library cannot create dependency directory links', async () => {
+    const { root, embedding, chatRequests } = await fixture();
+    const dataRoot = path.join(root, '伙伴记忆', 'generation', 'a'.repeat(64), 'b'.repeat(64));
+    const client = new VcpMemoryClient({ dataRoot, vendorRoot, workerPath, embedding,
+      launch: file => launch(file, true), requestTimeoutMs: 30_000,
+      plugins: { chat: { baseUrl: embedding.baseUrl.replace('/document', '/chat'), model: 'fixture-chat', apiKey: 'fixture' } } });
+    clients.push(client);
+    const scope = { scopeId: 'library-without-directory-links' };
+    const note = { id: 'no-links-note', content: 'alpha borrowed the blue umbrella', tags: ['alpha', 'umbrella'], occurredAt: '2026-10-21T12:00:00Z' };
+    await expect(client.remember(scope, note)).resolves.toEqual({ id: note.id, indexed: true });
+    expect((await client.search(scope, { text: 'alpha umbrella' })).results[0]?.id).toBe(note.id);
+    await expect(client.timeline(scope, { operation: 'generateTimelines', agentName: 'WorldlineBox',
+      options: { startMonth: '2026-10', endMonth: '2026-10' } })).resolves.toMatchObject({ generated: ['2026-10'] });
+    expect(chatRequests.join('\n')).toContain(note.content);
+    await client.closeScope(scope);
+    expect(await client.read(scope, note.id)).toEqual(note);
   });
   it('routes real host notebooks through original DailyNote, RAG, LightMemo and timeline, then safely rehomes and deletes them', async () => {
     const { root, embedding, chatRequests } = await fixture();
@@ -438,7 +456,10 @@ describe('unchanged VCP core behind isolated worker processes', () => {
     const resources = path.join(root, 'resources');
     const packagedVendor = path.join(resources, 'vcp-memory'), packagedHost = path.join(resources, 'vcp-memory-host');
     await cp(path.resolve('.tools/vcp-memory-release/vcp-memory'), packagedVendor, { recursive: true });
-    await cp(path.resolve('.tools/vcp-memory-release/vcp-memory-host'), packagedHost, { recursive: true });
+    // Test the current host source; an old release stage can hide a runtime fix.
+    for (const file of ['runtime.cjs', 'worker.cjs', 'peripherals.cjs', 'cold-runtime.cjs', 'cold-worker.cjs', 'dream-runtime.cjs']) {
+      await cp(path.resolve('src/main/vcp-memory', file), path.join(packagedHost, file));
+    }
     const environment: NodeJS.ProcessEnv = { ...process.env, ELECTRON_RUN_AS_NODE: '1' };
     delete environment.NODE_PATH;
     const modules = spawnSync(process.execPath, ['--input-type=module', '-e', `

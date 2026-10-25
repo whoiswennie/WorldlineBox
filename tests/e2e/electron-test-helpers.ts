@@ -354,3 +354,18 @@ export async function closeLibraryViaSwitcher(
   // of racing operation-directory cleanup.
   await switcher.waitFor({ state: 'hidden' });
 }
+
+/** Open a standard menu and choose an option by value or exact label. */
+export async function chooseStandardOption(
+  control: Locator,
+  option: string | { readonly label?: string; readonly value?: string },
+): Promise<void> {
+  await control.click();
+  const menu = control.page().getByRole('listbox').last();
+  if (typeof option === 'object' && option.label !== undefined && option.value === undefined) {
+    await menu.getByRole('option', { name: option.label, exact: true }).click();
+    return;
+  }
+  const value = typeof option === 'string' ? option : option.value ?? '';
+  await menu.locator(`[data-value="${value}"]`).click();
+}

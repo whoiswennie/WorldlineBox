@@ -6,7 +6,6 @@ import {
   useMemo,
   useRef,
   useState,
-  type ChangeEvent,
   type RefObject,
   type SyntheticEvent,
 } from "react";
@@ -29,6 +28,7 @@ import {
 } from "./preview-poll";
 import { waitForMediaArtifactRetry } from "./media-retry";
 import { Icon } from "./Icons";
+import { Select } from "./ui/primitives";
 import type { ViewerChromeActivitySource } from "./viewer-chrome-idle";
 import {
   INITIAL_VIEWER_DRAWER_STATE,
@@ -78,6 +78,8 @@ import {
   shouldShowProxyPlaybackNotice,
 } from "./ProxyPlaybackNotice";
 import { shouldCopyAssetOnShortcut } from "./viewer-copy-shortcut";
+import { matchAssetActionKeyboardCommand } from "./asset-action-keyboard";
+import { formatRuntimeShortcut } from "./shortcut-runtime";
 import {
   ViewerSessionController,
   type ViewerSessionIdentity,
@@ -743,8 +745,8 @@ const AssetPreviewModalContent = forwardRef<
     }
   }
 
-  function selectExrPlane(event: ChangeEvent<HTMLSelectElement>) {
-    const plane = Number(event.currentTarget.value);
+  function selectExrPlane(value: string) {
+    const plane = Number(value);
     if (!Number.isSafeInteger(plane) || plane < 0) return;
     setSelectedExrPlane(plane);
     void resolvePreview(false, "client", plane);
@@ -954,7 +956,9 @@ const AssetPreviewModalContent = forwardRef<
     asset.mediaType === "video" ||
     illustratorPdfPreview;
   const fitShortcut = viewerTransformable ? "Numpad ." : undefined;
-  const copyShortcut = isMacPlatform(navigator.userAgent) ? "⌘C" : "Ctrl+C";
+  const shortcutPlatform = isMacPlatform(navigator.userAgent) ? "mac" : "windows";
+  const copyShortcut = shortcutPlatform === "mac" ? "⌘C" : "Ctrl+C";
+  const copyPathShortcut = formatRuntimeShortcut("asset.copy-file-path", shortcutPlatform);
 
   // A preloading viewer must not leave the old viewer waiting forever when
   // the target is unsupported or its preview request has failed. In those
@@ -1080,6 +1084,19 @@ const AssetPreviewModalContent = forwardRef<
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [handleTextSave, isTextViewer, preloadOnly]);
 
+  const copyViewerFilePath = useCallback(async () => {
+    if (asset.deletedAt || asset.availability !== "available") return;
+    const result = await api.copyFilePath({
+      libraryId,
+      assetId: asset.assetId,
+    });
+    if (!result.ok) {
+      setError(requestFailureMessage(t("toast.copyPathFailed"), result.error, t));
+      return;
+    }
+    onInfoNotice?.(t("toast.copyPathDone"));
+  }, [api, asset.assetId, asset.availability, asset.deletedAt, libraryId, onInfoNotice, setError, t]);
+
   const copyViewerAsset = useCallback(async () => {
     // WorldlineBox-f8e175: 与右键「复制」一致，把当前资产源文件复制到剪贴板。
     const result = await api.copyAssetFiles({
@@ -1100,6 +1117,15 @@ const AssetPreviewModalContent = forwardRef<
     const onKeyDown = (event: KeyboardEvent) => {
       const target = event.target as HTMLElement | null;
       if (
+        matchAssetActionKeyboardCommand(
+          "asset.copy-file-path",
+          event,
+          shortcutPlatform,
+        )
+      ) {
+        return;
+      }
+      if (
         !shouldCopyAssetOnShortcut({
           isTextViewer,
           metaOrCtrl: event.metaKey || event.ctrlKey,
@@ -1115,7 +1141,7 @@ const AssetPreviewModalContent = forwardRef<
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [copyViewerAsset, isTextViewer, preloadOnly]);
+  }, [copyViewerAsset, isTextViewer, preloadOnly, shortcutPlatform]);
 
   useEffect(() => {
     setViewerContextMenu(null);
@@ -1520,18 +1546,16 @@ const AssetPreviewModalContent = forwardRef<
           {resolution?.exrPlanes && resolution.exrPlanes.length > 1 ? (
             <label className="preview-exr-plane-selector">
               <span>{t("preview.exrPlane")}</span>
-              <select
+              <Select
+                appearance="inline"
                 aria-label={t("preview.exrPlane")}
-                onChange={selectExrPlane}
-                tabIndex={VIEWER_CHROME_TAB_INDEX}
-                value={resolution.selectedExrPlane ?? selectedExrPlane}
-              >
-                {resolution.exrPlanes.map((plane) => (
-                  <option key={plane.index} value={plane.index}>
-                    {plane.label}
-                  </option>
-                ))}
-              </select>
+                onValueChange={selectExrPlane}
+                options={resolution.exrPlanes.map((plane) => ({
+                  value: String(plane.index),
+                  label: plane.label,
+                }))}
+                value={String(resolution.selectedExrPlane ?? selectedExrPlane)}
+              />
             </label>
           ) : null}
           <PluginViewerActionButtons
@@ -1575,6 +1599,12 @@ const AssetPreviewModalContent = forwardRef<
         {viewerContextMenu && viewerContextMenuAvailable ? (
           <ViewerContextMenu
             copyShortcut={copyShortcut}
+            copyPathShortcut={copyPathShortcut}
+            onCopyFilePath={
+              asset.deletedAt || asset.availability !== "available"
+                ? undefined
+                : () => void copyViewerFilePath()
+            }
             flipHorizontal={displayTransform.flipHorizontal}
             flipVertical={displayTransform.flipVertical}
             fitShortcut={fitShortcut}

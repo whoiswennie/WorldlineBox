@@ -833,6 +833,44 @@ describe('getThumbnailArtifact', () => {
 });
 
 describe('preview availability while derivatives are generated', () => {
+  it('skips known source-direct images before applying the bounded catalog limit', async () => {
+    const root = temporaryRoot();
+    const service = new LibraryService();
+    const created = service.createLibrary({
+      displayName: 'SourceDirectCatalogAdmission',
+      selectedParentPath: root,
+    });
+    const directPath = path.join(root, 'a-direct.png');
+    const derivedPath = path.join(root, 'z-derived.png');
+    writeFileSync(directPath, VALID_1X1_PNG);
+    writeFileSync(derivedPath, await createPngBytes(2049, 1));
+    importNoConflict(service, created.libraryId, directPath);
+    importNoConflict(service, created.libraryId, derivedPath);
+    const assets = service.listAssets({ libraryId: created.libraryId, recursive: true });
+    const direct = assets.find((asset) => asset.displayName === 'a-direct.png')!;
+    const derived = assets.find((asset) => asset.displayName === 'z-derived.png')!;
+    expect(direct.previewKind).toBe('source');
+
+    const db = new TestDatabase(path.join(created.libraryPath, '.worldlinebox', 'library.db'));
+    db.prepare('UPDATE assets SET created_at = ? WHERE asset_id = ?')
+      .run('2026-01-02T00:00:00.000Z', direct.assetId);
+    db.prepare('UPDATE assets SET created_at = ? WHERE asset_id = ?')
+      .run('2026-01-01T00:00:00.000Z', derived.assetId);
+    db.close();
+
+    expect(service.enqueueThumbnailJobs(created.libraryId, {
+      limit: 1,
+      priority: 50,
+      skipStaleRepair: true,
+    })).toBe(1);
+    const verify = new TestDatabase(path.join(created.libraryPath, '.worldlinebox', 'library.db'));
+    expect(verify.prepare(
+      "SELECT asset_id FROM jobs WHERE kind = 'generate_thumbnail' AND status = 'queued'",
+    ).all()).toEqual([{ asset_id: derived.assetId }]);
+    verify.close();
+    service.closeAll();
+  });
+
   it('serves a low-pixel source just above 1 MiB without queuing a thumbnail', async () => {
     const root = temporaryRoot();
     const service = new LibraryService();
@@ -1303,11 +1341,30 @@ describe('processThumbnailQueue', () => {
     );
     db.close();
 
+    const directResults: Array<{
+      assetId: string;
+      errorCode?: string;
+      width?: number;
+      height?: number;
+      revisionId?: string;
+      previewKind?: 'source' | null;
+      previewRevisionId?: string | null;
+    }> = [];
     expect(await service.processThumbnailQueue(created.libraryId, {
       maxJobs: 2,
       jobKinds: ['generate_thumbnail'],
       assetIds: [sourceDirect.assetId, derived.assetId],
+      onResult: (result) => directResults.push(result),
     })).toBe(0);
+    expect(directResults).toContainEqual({
+      assetId: sourceDirect.assetId,
+      errorCode: 'SOURCE_DIRECT',
+      width: 1,
+      height: 1,
+      revisionId: sourceDirect.currentRevisionId,
+      previewKind: 'source',
+      previewRevisionId: sourceDirect.currentRevisionId,
+    });
 
     const verify = new TestDatabase(path.join(created.libraryPath, '.worldlinebox', 'library.db'));
     expect(verify.prepare(
@@ -3016,7 +3073,14 @@ describe('visible-window header probe (WorldlineBox-visible-window)', () => {
         'missing-asset',
       ],
     );
-    expect(asyncDimensions).toEqual([{ assetId: jpegAsset.assetId, width: 32, height: 24 }]);
+    expect(asyncDimensions).toEqual([{
+      assetId: jpegAsset.assetId,
+      width: 32,
+      height: 24,
+      revisionId: revision.current_revision_id,
+      previewKind: 'source',
+      previewRevisionId: revision.current_revision_id,
+    }]);
 
     // The synchronous helper remains covered for direct maintenance callers,
     // but the Worker visible-window path uses the async variant above.
@@ -3028,7 +3092,14 @@ describe('visible-window header probe (WorldlineBox-visible-window)', () => {
       textAsset.assetId,
       'missing-asset',
     ]);
-    expect(dimensions).toEqual([{ assetId: jpegAsset.assetId, width: 32, height: 24 }]);
+    expect(dimensions).toEqual([{
+      assetId: jpegAsset.assetId,
+      width: 32,
+      height: 24,
+      revisionId: revision.current_revision_id,
+      previewKind: 'source',
+      previewRevisionId: revision.current_revision_id,
+    }]);
 
     // The probe must leave a ready extracted_metadata artifact so summaries
     // and masonry placeholders read the dimensions without waiting for the

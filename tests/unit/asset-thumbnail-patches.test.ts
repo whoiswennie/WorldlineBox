@@ -64,4 +64,35 @@ describe("applyAssetThumbnailPatches", () => {
       height: 1440,
     });
   });
+
+  it("projects a newly discovered source-direct route and can clear a stale one", () => {
+    const assets = [asset("small", { width: null, height: null })];
+    const direct = applyAssetThumbnailPatches(
+      assets,
+      new Map([[
+        "small",
+        {
+          width: 480,
+          height: 480,
+          previewKind: "source",
+          previewRevisionId: "rev-small",
+        },
+      ]]),
+    );
+    expect(direct[0]).toMatchObject({
+      width: 480,
+      height: 480,
+      previewKind: "source",
+      previewRevisionId: "rev-small",
+    });
+
+    const cleared = applyAssetThumbnailPatches(
+      direct,
+      new Map([[
+        "small",
+        { previewKind: null, previewRevisionId: null },
+      ]]),
+    );
+    expect(cleared[0]).toMatchObject({ previewKind: null, previewRevisionId: null });
+  });
 });

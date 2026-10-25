@@ -14,7 +14,23 @@ import {
   buildMasonryGeometry,
   variableWindow,
   virtualJustifiedRowStyle,
+  virtualJustifiedSlotStyle,
 } from "../../src/renderer/browse/virtual-browse-canvas";
+
+describe("justified thumbnail rounding", () => {
+  it("fills a one-pixel rounding band without cropping the source", () => {
+    for (const width of [193, 194, 195]) {
+      expect(virtualJustifiedSlotStyle({ id: "square", width, height: 194, sourceAspect: 1 }))
+        .toHaveProperty("--justified-thumbnail-fit", "fill");
+    }
+  });
+  it("preserves genuine letterboxing and unknown source ratios", () => {
+    for (const sourceAspect of [0.25, 2, undefined]) {
+      expect(virtualJustifiedSlotStyle({ id: "portrait", width: 194, height: 194, sourceAspect }))
+        .toHaveProperty("--justified-thumbnail-fit", "contain");
+    }
+  });
+});
 
 function entry(assetId: string, width: number | null, height: number | null) {
   return { assetId, width, height };

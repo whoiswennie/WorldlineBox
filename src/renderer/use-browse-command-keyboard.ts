@@ -99,6 +99,15 @@ export function useBrowseCommandKeyboard(
       if (previewOpen) {
         const viewed = selectedAsset;
         if (!viewed || viewed.deletedAt) return;
+        if (
+          matchAssetActionKeyboardCommand("asset.copy-file-path", shortcutInput, platform) &&
+          !showTrash &&
+          viewed.availability === "available"
+        ) {
+          event.preventDefault();
+          onCopyFilePath(viewed.assetId);
+          return;
+        }
         const bareDelete = shortcutInput.kind !== "mouse"
           && (shortcutInput.key === "Delete" || shortcutInput.key === "Backspace")
           && !event.metaKey

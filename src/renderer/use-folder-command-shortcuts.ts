@@ -17,6 +17,7 @@ import {
   type SidebarCommandDefinition,
 } from "./commands/sidebar-commands";
 import { shouldForwardBrowseShortcut } from "../shared/browse-shortcut-dedupe";
+import { matchAssetActionKeyboardCommand } from "./asset-action-keyboard";
 import {
   readFocusedNavFolder,
   resolveFolderShortcutAction,
@@ -32,6 +33,7 @@ const FOLDER_SHORTCUT_COMMAND_IDS = [
   "folder.create-subfolder",
   "folder.rename",
   "folder.copy",
+  "folder.copy-path",
   "folder.paste",
   "folder.move-to-trash",
   "folder.delete-from-disk",
@@ -72,6 +74,7 @@ export type UseFolderCommandShortcutsArgs = {
   readonly openFolderInFileManager: (folderId: string) => void;
   readonly createSubfolder: (parentFolderId: string | null) => void;
   readonly copyFolder: (folderId: string) => void;
+  readonly copyFolderPath: (folderId: string) => void;
   readonly pasteIntoFolder: (folderId: string | null) => void;
   readonly renameFolder: (folderId: string, currentName: string) => void;
   readonly trashManagedFolder: (folderId: string, name: string) => void;
@@ -99,6 +102,7 @@ export function useFolderCommandShortcuts(
     canRenameFolder,
     createSubfolder,
     copyFolder,
+    copyFolderPath,
     pasteIntoFolder,
     renameFolder,
     canOpenFolder,
@@ -121,10 +125,19 @@ export function useFolderCommandShortcuts(
 
       for (const commandId of FOLDER_SHORTCUT_COMMAND_IDS) {
         if (!matchFolderCommandShortcut(commandId, shortcutInput, platform)) continue;
+        const focusedNav = readFocusedNavFolder(document.activeElement);
+        if (
+          commandId === "folder.copy-path" &&
+          !focusedNav &&
+          selectedAssetCount > 0 &&
+          matchAssetActionKeyboardCommand("asset.copy-file-path", shortcutInput, platform)
+        ) {
+          continue;
+        }
 
         const action = resolveFolderShortcutAction({
           commandId,
-          focusedNav: readFocusedNavFolder(document.activeElement),
+          focusedNav,
           browseManagedFolderId,
           selectedFolderCardIds,
           selectedAssetCount,
@@ -156,6 +169,10 @@ export function useFolderCommandShortcuts(
         }
         if (action.type === "copy-folder") {
           copyFolder(action.folderId);
+          return;
+        }
+        if (action.type === "copy-folder-path") {
+          copyFolderPath(action.folderId);
           return;
         }
         if (action.type === "paste-into-folder") {
@@ -210,6 +227,7 @@ export function useFolderCommandShortcuts(
     canRenameFolder,
     createSubfolder,
     copyFolder,
+    copyFolderPath,
     pasteIntoFolder,
     renameFolder,
     canOpenFolder,

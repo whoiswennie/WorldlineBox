@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import sharp from 'sharp';
 
 import { LibraryService } from '../../src/worker/library-service';
 import { importNoConflict } from './import-no-conflict';
@@ -36,23 +37,52 @@ describe('thumbnail Worker scheduler reconciliation handoff', () => {
     const ordinaryPath = path.join(root, 'ordinary.png');
     const missingPath = path.join(root, 'missing.png');
     const nextVisiblePath = path.join(root, 'next-visible.png');
+    const backgroundPath = path.join(root, 'background.png');
+    const retryPath = path.join(root, 'retry.png');
     const png = Buffer.from(
       'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwnwEIAgEBAQAAAABJRU5ErkJggg==',
       'base64',
     );
+    const derivedPng = await sharp({
+      create: {
+        width: 2049,
+        height: 4,
+        channels: 3,
+        background: { r: 90, g: 120, b: 150 },
+      },
+    }).png().toBuffer();
     writeFileSync(ordinaryPath, png);
     writeFileSync(missingPath, png);
     writeFileSync(nextVisiblePath, png);
+    writeFileSync(backgroundPath, derivedPng);
+    writeFileSync(retryPath, derivedPng);
     importNoConflict(fixtureService, created.libraryId, ordinaryPath);
     importNoConflict(fixtureService, created.libraryId, missingPath);
     importNoConflict(fixtureService, created.libraryId, nextVisiblePath);
+    importNoConflict(fixtureService, created.libraryId, backgroundPath);
     const assets = fixtureService.listAssets({ libraryId: created.libraryId, recursive: true });
     const ordinaryAsset = assets.find((asset) => asset.displayName === 'ordinary.png')!;
     const missingAsset = assets.find((asset) => asset.displayName === 'missing.png')!;
     const nextVisibleAsset = assets.find((asset) => asset.displayName === 'next-visible.png')!;
+    const backgroundAsset = assets.find((asset) => asset.displayName === 'background.png')!;
+    expect(fixtureService.enqueueThumbnailJobs(created.libraryId, {
+      assetIds: [backgroundAsset.assetId],
+      limit: 1,
+    })).toBe(1);
+    expect(fixtureService.listMediaJobs(created.libraryId).jobs).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        assetId: backgroundAsset.assetId,
+        kind: 'generate_thumbnail',
+        status: 'queued',
+      }),
+    ]));
     fixtureService.closeAll();
 
-    const processCalls: Array<{ assetIds: string[] }> = [];
+    const processCalls: Array<{
+      assetIds: string[];
+      interactive?: boolean;
+      processed?: number;
+    }> = [];
     let ordinaryWaveStarted!: () => void;
     const ordinaryWaveStartedPromise = new Promise<void>((resolve) => {
       ordinaryWaveStarted = resolve;
@@ -71,16 +101,64 @@ describe('thumbnail Worker scheduler reconciliation handoff', () => {
     });
     let reconciliationCallback!: (assetIds: string[]) => void;
     let exactWaveCalls = 0;
+    let failNextBackgroundQueue = false;
+    let backgroundFailureStarted!: () => void;
+    let releaseBackgroundFailure!: () => void;
+    const backgroundFailureRelease = new Promise<void>((resolve) => {
+      releaseBackgroundFailure = resolve;
+    });
+    const backgroundFailureStartedPromise = new Promise<void>((resolve) => {
+      backgroundFailureStarted = resolve;
+    });
+    let holdRetryVisibleWave = false;
+    let retryVisibleWaveStarted!: () => void;
+    const retryVisibleWaveStartedPromise = new Promise<void>((resolve) => {
+      retryVisibleWaveStarted = resolve;
+    });
+    let releaseRetryVisibleWave!: () => void;
+    const retryVisibleWaveRelease = new Promise<void>((resolve) => {
+      releaseRetryVisibleWave = resolve;
+    });
+    let skipNextBackgroundAfterFailure = false;
+    const realProcessThumbnailQueue = LibraryService.prototype.processThumbnailQueue;
 
     const processSpy = vi.spyOn(LibraryService.prototype, 'processThumbnailQueue')
-      .mockImplementation(async (_libraryId, options) => {
+      .mockImplementation(async function (this: LibraryService, _libraryId, options) {
         const queueOptions = options ?? {};
         const assetIds = [...(queueOptions.assetIds ?? [])];
-        processCalls.push({ assetIds });
+        const call: (typeof processCalls)[number] = {
+          assetIds,
+          interactive: queueOptions.interactive,
+        };
+        processCalls.push(call);
         if (processCalls.length === 1) {
           ordinaryWaveStarted();
           await ordinaryWaveRelease;
           return queueOptions.maxJobs ?? 1;
+        }
+        if (
+          holdRetryVisibleWave
+          && queueOptions.interactive === true
+          && assetIds.includes(ordinaryAsset.assetId)
+        ) {
+          retryVisibleWaveStarted();
+          await retryVisibleWaveRelease;
+          return 1;
+        }
+        if (queueOptions.interactive === false && assetIds.length === 0) {
+          if (failNextBackgroundQueue) {
+            failNextBackgroundQueue = false;
+            backgroundFailureStarted();
+            await backgroundFailureRelease;
+            throw new Error('Transient preview queue failure fixture.');
+          }
+          if (skipNextBackgroundAfterFailure) {
+            skipNextBackgroundAfterFailure = false;
+            call.processed = 0;
+            return 0;
+          }
+          call.processed = await realProcessThumbnailQueue.call(this, _libraryId, queueOptions);
+          return call.processed;
         }
         if (assetIds.includes(missingAsset.assetId)) {
           exactWaveCalls += 1;
@@ -195,7 +273,10 @@ describe('thumbnail Worker scheduler reconciliation handoff', () => {
 
       const exactIndex = processCalls.findIndex((call) => call.assetIds.includes(missingAsset.assetId));
       expect(exactIndex).toBeGreaterThan(0);
-      expect(processCalls[0]?.assetIds).toEqual([ordinaryAsset.assetId]);
+      const firstViewportIndex = processCalls.findIndex((call) => (
+        call.assetIds.includes(ordinaryAsset.assetId) && call.interactive === true
+      ));
+      expect(firstViewportIndex).toBeGreaterThanOrEqual(0);
       expect(reconciliationCallback).toBeTypeOf('function');
 
       // A visible wave arriving while exact reconciliation is active owns the
@@ -238,6 +319,70 @@ describe('thumbnail Worker scheduler reconciliation handoff', () => {
       expect(replayExactIndex).toBeGreaterThan(visibleIndex);
       expect(processCalls[replayExactIndex + 1]?.assetIds).toEqual([ordinaryAsset.assetId]);
       expect(processCalls[processCalls.length - 1]?.assetIds).toEqual([]);
+      await vi.waitFor(() => {
+        expect(processCalls.some((call) => (
+          call.interactive === false && call.assetIds.length === 0
+        ))).toBe(true);
+      }, { timeout: 10_000 });
+      await vi.waitFor(() => {
+        expect(processCalls.some((call) => (
+          call.interactive === false
+          && call.assetIds.length === 0
+          && (call.processed ?? 0) > 0
+        ))).toBe(true);
+      }, { timeout: 10_000 });
+
+      const backgroundCallsBeforeFailure = processCalls.filter((call) => (
+        call.interactive === false && call.assetIds.length === 0
+      )).length;
+      await send('scheduler-close-before-retry', {
+        type: 'library.close',
+        libraryId: created.libraryId,
+      });
+      fixtureService.openLibrary(created.libraryPath);
+      importNoConflict(fixtureService, created.libraryId, retryPath);
+      const retryAsset = fixtureService.listAssets({
+        libraryId: created.libraryId,
+        recursive: true,
+      }).find((asset) => asset.displayName === 'retry.png')!;
+      expect(fixtureService.enqueueThumbnailJobs(created.libraryId, {
+        assetIds: [retryAsset.assetId],
+        limit: 1,
+      })).toBe(1);
+      fixtureService.closeAll();
+      failNextBackgroundQueue = true;
+      await send('scheduler-reopen-before-retry', {
+        type: 'library.open',
+        selectedLibraryPath: created.libraryPath,
+      });
+      await send('scheduler-admit-retry-task', {
+        type: 'media.enqueue-thumbnail-jobs',
+        libraryId: created.libraryId,
+      });
+      await backgroundFailureStartedPromise;
+      // Let the failure backoff expire while a visible queue owns the library.
+      // Its wake must survive that narrow queue and the next zero-progress
+      // background continuation until the real durable job is claimed.
+      holdRetryVisibleWave = true;
+      skipNextBackgroundAfterFailure = true;
+      await send('scheduler-visible-overlapping-retry', {
+        type: 'asset.thumbnail.visible-window',
+        libraryId: created.libraryId,
+        assetIds: [ordinaryAsset.assetId],
+      });
+      releaseBackgroundFailure();
+      await retryVisibleWaveStartedPromise;
+      await new Promise<void>((resolve) => setTimeout(resolve, 1_100));
+      releaseRetryVisibleWave();
+      await vi.waitFor(() => {
+        const calls = processCalls.filter((call) => (
+          call.interactive === false && call.assetIds.length === 0
+        ));
+        expect(calls.length).toBeGreaterThan(backgroundCallsBeforeFailure + 2);
+        expect(calls.slice(backgroundCallsBeforeFailure).some((call) => (
+          (call.processed ?? 0) > 0
+        ))).toBe(true);
+      }, { timeout: 10_000 });
 
       await receive({ data: { type: 'worker.shutdown' } });
       await vi.waitFor(() => {
@@ -248,6 +393,24 @@ describe('thumbnail Worker scheduler reconciliation handoff', () => {
           && message.type === 'worker.shutdown.ack'
         ))).toBe(true);
       });
+      fixtureService.openLibrary(created.libraryPath);
+      expect(fixtureService.getCurrentArtifact(created.libraryId, backgroundAsset.assetId, 'thumbnail'))
+        .toMatchObject({ status: 'ready', artifactId: expect.any(String) });
+      expect(fixtureService.getCurrentArtifact(created.libraryId, retryAsset.assetId, 'thumbnail'))
+        .toMatchObject({ status: 'ready', artifactId: expect.any(String) });
+      expect(fixtureService.listMediaJobs(created.libraryId).jobs).toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          assetId: backgroundAsset.assetId,
+          kind: 'generate_thumbnail',
+          status: 'succeeded',
+        }),
+        expect.objectContaining({
+          assetId: retryAsset.assetId,
+          kind: 'generate_thumbnail',
+          status: 'succeeded',
+        }),
+      ]));
+      fixtureService.closeAll();
     } finally {
       processSpy.mockRestore();
       reconciliationSpy.mockRestore();

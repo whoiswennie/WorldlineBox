@@ -26,7 +26,7 @@ export const FBX_CONVERT_ERROR_CODES: ReadonlySet<string> = new Set(
 export const FBX_GLB_ARTIFACT_KIND = 'model_glb';
 
 /** Bump when converter semantics change; part of the artifact cache key. */
-export const FBX_GLB_GENERATOR_VERSION = 'ufbx-wasm-1';
+export const FBX_GLB_GENERATOR_VERSION = 'ufbx-wasm-3';
 
 /**
  * Conversion has no source-size, triangle-count, or wall-clock product cap.

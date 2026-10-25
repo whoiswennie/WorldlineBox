@@ -104,16 +104,16 @@ export function ModelViewerSurface(props: ModelViewerSurfaceProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const [phase, setPhase] = useState<ViewPhase>('loading');
   const [viewError, setViewError] = useState<ViewError | null>(null);
-  const [stats, setStats] = useState<ModelStats | null>(null);
-  const [statsVisible, setStatsVisible] = useState(false);
-  const [warnings, setWarnings] = useState<ModelRenderWarning[]>([]);
-  const [notices, setNotices] = useState<string[]>([]);
-  const [loadEpoch, setLoadEpoch] = useState(0);
   const [preferences, setPreferences] = useState(() =>
     loadViewer3dPreferences(
       typeof window !== 'undefined' ? window.localStorage : undefined,
     ),
   );
+  const [stats, setStats] = useState<ModelStats | null>(null);
+  const [statsVisible, setStatsVisible] = useState(preferences.statsVisible === true);
+  const [warnings, setWarnings] = useState<ModelRenderWarning[]>([]);
+  const [notices, setNotices] = useState<string[]>([]);
+  const [loadEpoch, setLoadEpoch] = useState(0);
 
   // Effect-owned handles (refs, not state — no re-renders).
   const composerRef = useRef<SceneComposer | null>(null);
@@ -147,6 +147,7 @@ export function ModelViewerSurface(props: ModelViewerSurfaceProps) {
   const [displayMode, setDisplayMode] = useState<ModelDisplayMode>(
     preferences.displayMode ?? DEFAULT_DISPLAY_MODE,
   );
+  const [doubleSided, setDoubleSided] = useState(preferences.doubleSided === true);
 
   const persistPreferences = useCallback((next: typeof preferences) => {
     setPreferences(next);
@@ -174,6 +175,20 @@ export function ModelViewerSurface(props: ModelViewerSurfaceProps) {
     },
     [persistPreferences, preferences],
   );
+
+  const handleDoubleSidedChange = useCallback(
+    (enabled: boolean) => {
+      setDoubleSided(enabled);
+      persistPreferences({ ...preferences, doubleSided: enabled });
+    },
+    [persistPreferences, preferences],
+  );
+
+  const handleToggleStats = useCallback(() => {
+    const next = !statsVisible;
+    setStatsVisible(next);
+    persistPreferences({ ...preferences, statsVisible: next });
+  }, [persistPreferences, preferences, statsVisible]);
 
   /** Read the effective app background from the theme tokens (3D-06). */
   const applyThemeBackground = useCallback(() => {
@@ -371,6 +386,10 @@ export function ModelViewerSurface(props: ModelViewerSurfaceProps) {
       controls.saveState();
 
       setupGroundShadow(composer.scene, sphere, bounds.min.y);
+      // Preferences are applied when the composer is created, before this
+      // model exists. Re-apply so a saved double-sided (or wireframe) choice
+      // is on the materials for the first frame.
+      composer.reapplyDisplay();
 
       // Stats (3D-13, loaded result is the source of truth) + limits (3D-14).
       const computedStats = countSceneStats(loaded.scene);
@@ -470,6 +489,10 @@ export function ModelViewerSurface(props: ModelViewerSurfaceProps) {
   useEffect(() => {
     composerRef.current?.setDisplayMode(displayMode);
   }, [displayMode, loadEpoch]);
+
+  useEffect(() => {
+    composerRef.current?.setDoubleSided(doubleSided);
+  }, [doubleSided, loadEpoch]);
 
   // HDRI environment swap (3D-09). The old handle is disposed only after the
   // new one is ready so the view never goes dark between presets. `loadEpoch`
@@ -583,14 +606,16 @@ export function ModelViewerSurface(props: ModelViewerSurfaceProps) {
         <>
           <ModelViewerToolbar
             displayMode={displayMode}
+            doubleSided={doubleSided}
             lightIntensity={lightIntensity}
             isFullscreen={props.isFullscreen}
             onDisplayModeChange={handleDisplayModeChange}
+            onDoubleSidedChange={handleDoubleSidedChange}
             onLightIntensityChange={handleLightIntensityChange}
             onFullscreen={props.onFullscreen}
             onPresetChange={handlePresetChange}
             onResetView={resetView}
-            onToggleStats={() => setStatsVisible((visible) => !visible)}
+            onToggleStats={handleToggleStats}
             presetId={presetId}
             statsVisible={statsVisible}
           />

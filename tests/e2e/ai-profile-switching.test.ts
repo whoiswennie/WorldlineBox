@@ -50,13 +50,12 @@ async function saveProfile(
     .getByRole("button", { name: /保存配置|Save configuration/ })
     .click();
   await expect(settings.locator("#ai-config-profile-name")).toHaveValue(input.name);
-  const savedOption = settings.locator("#ai-config-profile option").filter({ hasText: input.name });
-  await expect(savedOption).toHaveCount(1);
-  const profileId = await savedOption.getAttribute("value");
+  const selector = settings.locator("#ai-config-profile");
+  const profileId = await selector.getAttribute("data-value");
   if (!profileId) throw new Error(`Expected a saved profile named ${input.name}.`);
-  await expect(settings.locator("#ai-config-profile")).toHaveValue(profileId);
+  await expect(selector).toContainText(input.name);
   if (input.apiKey !== undefined) {
-    await expect(savedOption).not.toContainText(/需要 API Key|API key needed/u);
+    await expect(selector).not.toContainText(/需要 API Key|API key needed/u);
   }
 }
 
@@ -84,20 +83,33 @@ async function activateSelectedProfile(settings: Locator, name: string): Promise
   await settings
     .getByRole("button", { name: /设为当前|Set as current/ })
     .click();
-  await expect(settings.locator("#ai-config-profile option:checked")).toContainText(name);
-  await expect(settings.locator("#ai-config-profile option:checked")).toContainText(/当前使用|In use/);
+  const selected = settings.locator("#ai-config-profile");
+  await expect(selected).toContainText(name);
+  await expect(selected).toContainText(/当前使用|In use/);
 }
 
 async function selectProfile(settings: Locator, name: string): Promise<string> {
   const selector = settings.locator("#ai-config-profile");
-  const option = selector.locator("option").filter({ hasText: name });
+  await selector.click();
+  const option = settings.page().getByRole("listbox").getByRole("option").filter({ hasText: name });
   await expect(option).toHaveCount(1);
-  const profileId = await option.getAttribute("value");
+  const profileId = await option.getAttribute("data-value");
   if (!profileId) throw new Error(`Expected a saved profile named ${name}.`);
-  await selector.selectOption(profileId);
-  await expect(selector).toHaveValue(profileId);
+  await option.click();
+  await expect(selector).toHaveAttribute("data-value", profileId);
   await expect(settings.locator("#ai-config-profile-name")).toHaveValue(name);
   return profileId;
+}
+
+async function expectOpenProfileOption(
+  settings: Locator,
+  profileId: string,
+  pattern: RegExp,
+): Promise<void> {
+  const selector = settings.locator("#ai-config-profile");
+  await selector.click();
+  await expect(settings.page().getByRole("listbox").locator(`[data-value="${profileId}"]`)).toContainText(pattern);
+  await selector.click();
 }
 
 test("switches AI profiles for analysis and restores the active profile after restart", async () => {
@@ -236,23 +248,22 @@ test("switches AI profiles for analysis and restores the active profile after re
     const firstProfile = { name: "Profile One", model: "profile-model-one", apiKey: "profile-key-one", baseUrl: endpoint };
     const secondProfile = { name: "Profile Two", model: "profile-model-two", apiKey: "profile-key-two", baseUrl: endpoint };
     const profileSelector = settings.locator("#ai-config-profile");
-    const originalActiveProfileId = await profileSelector.locator("option:checked").getAttribute("value");
+    const originalActiveProfileId = await profileSelector.getAttribute("data-value");
     if (!originalActiveProfileId) throw new Error("Expected the migrated profile to be selected.");
-    const originalActiveOption = profileSelector.locator(`option[value="${originalActiveProfileId}"]`);
     await settings.getByRole("button", { name: /^新建$|^Add$/ }).click();
     await saveProfile(settings, {
       name: firstProfile.name,
       model: firstProfile.model,
       baseUrl: firstProfile.baseUrl,
     });
-    await expect(originalActiveOption).toContainText(/当前使用|In use/);
+    await expectOpenProfileOption(settings, originalActiveProfileId, /当前使用|In use/);
     expect(requests).toHaveLength(0);
     await expect(settings.getByRole("button", { name: /设为当前|Set as current/ })).toBeDisabled();
 
     await settings.locator("#ai-config-api-key").fill(firstProfile.apiKey);
     await saveProfile(settings, firstProfile);
     expect(requests.some((request) => request.isProbe)).toBe(false);
-    await expect(originalActiveOption).toContainText(/当前使用|In use/);
+    await expectOpenProfileOption(settings, originalActiveProfileId, /当前使用|In use/);
     await expect(settings.getByRole("button", { name: /设为当前|Set as current/ })).toBeEnabled();
     const draftBaseUrl = `http://127.0.0.1:${port}/draft/v1`;
     await settings.locator("#ai-config-base-url").fill(draftBaseUrl);
@@ -277,7 +288,6 @@ test("switches AI profiles for analysis and restores the active profile after re
       baseUrl: draftBaseUrl,
     });
     await activateSelectedProfile(settings, firstProfile.name);
-    const firstProfileOption = profileSelector.locator("option").filter({ hasText: firstProfile.name });
 
     await settings.getByRole("button", { name: /^新建$|^Add$/ }).click();
     await saveProfile(settings, secondProfile);
@@ -296,13 +306,19 @@ test("switches AI profiles for analysis and restores the active profile after re
     await expect(settings.locator(".ai-config-test-cluster")).not.toContainText(/连接成功|Connection successful/);
     // Selecting a saved profile edits its draft; the active marker must stay
     // on the first profile until the user explicitly activates the second.
+    await profileSelector.click();
+    const firstProfileOption = settings.page().getByRole("listbox").getByRole("option").filter({ hasText: firstProfile.name });
     await expect(firstProfileOption).toContainText(/当前使用|In use/);
+    await profileSelector.click();
     await testProfile(settings, secondProfile, requests);
     await activateSelectedProfile(settings, secondProfile.name);
 
     await selectProfile(settings, firstProfile.name);
-    await expect(profileSelector.locator("option:checked")).not.toContainText(/当前使用|In use/);
-    await expect(profileSelector.locator("option").filter({ hasText: secondProfile.name })).toContainText(/当前使用|In use/);
+    await profileSelector.click();
+    const openProfiles = settings.page().getByRole("listbox");
+    await expect(openProfiles.locator('[aria-selected="true"]')).not.toContainText(/当前使用|In use/);
+    await expect(openProfiles.getByRole("option").filter({ hasText: secondProfile.name })).toContainText(/当前使用|In use/);
+    await profileSelector.click();
     await activateSelectedProfile(settings, firstProfile.name);
     await selectProfile(settings, secondProfile.name);
     await activateSelectedProfile(settings, secondProfile.name);
@@ -339,7 +355,7 @@ test("switches AI profiles for analysis and restores the active profile after re
     ).toBeVisible({ timeout: 30_000 });
     await waitForLibraryLoadingToFinish(restartedWindow);
     const restartedSettings = await openAiSettings(restartedWindow);
-    const selectedProfile = restartedSettings.locator("#ai-config-profile option:checked");
+    const selectedProfile = restartedSettings.locator("#ai-config-profile");
     await expect(selectedProfile).toContainText(secondProfile.name);
     await expect(selectedProfile).toContainText("当前使用");
     await expect(restartedSettings.locator("#ai-config-model")).toHaveValue(secondProfile.model);

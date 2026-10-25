@@ -33,6 +33,11 @@ export interface UseBatchActionsParams {
   clearAssetSelection: () => void;
   activeTagId: string | null;
   activeCollectionId: string | null;
+  onTagsChanged?: (
+    action: "assign" | "remove",
+    tagId: string,
+    assetIds: readonly string[],
+  ) => void;
 }
 
 export interface UseBatchActionsResult {
@@ -67,6 +72,7 @@ export function useBatchActions({
   clearAssetSelection,
   activeTagId,
   activeCollectionId,
+  onTagsChanged,
 }: UseBatchActionsParams): UseBatchActionsResult {
   const { locale } = useLocale();
 
@@ -89,6 +95,12 @@ export function useBatchActions({
       if (!result.ok) throw new LibraryOperationError(result.error);
       const tagResult = await api.listTags({ libraryId: library.libraryId });
       if (tagResult.ok) setTags(tagResult.value);
+      const skipped = new Set(result.value.skipped.map((item) => item.assetId));
+      onTagsChanged?.(
+        "assign",
+        tagId,
+        assetIds.filter((assetId) => !skipped.has(assetId)),
+      );
       setNotice(
         formatBatchTagNotice(
           "assign",
@@ -123,6 +135,12 @@ export function useBatchActions({
       if (!result.ok) throw new LibraryOperationError(result.error);
       const tagResult = await api.listTags({ libraryId: library.libraryId });
       if (tagResult.ok) setTags(tagResult.value);
+      const skipped = new Set(result.value.skipped.map((item) => item.assetId));
+      onTagsChanged?.(
+        "remove",
+        tagId,
+        assetIds.filter((assetId) => !skipped.has(assetId)),
+      );
       if (activeTagId === tagId) {
         await chooseTag(tagId);
       }

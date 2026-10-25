@@ -93,7 +93,7 @@ test('enables real bundled asset semantics through the UI and reuses SQLite vect
     await expect(assetCard(page, '红色方块.png')).toBeVisible();
     await assetCard(page, '红色方块.png').click({ button: 'right' });
     await page.getByRole('menu').getByRole('menuitem', { name: '找相似', exact: true }).click();
-    await expect(page.locator('.find-similar-banner')).toContainText('红色方块.png');
+    await expect(page.locator('.find-similar-banner')).toContainText('红色方块.png', { timeout: 60_000 });
     await expect(page.locator('.asset-card').first()).toHaveAttribute('data-asset-name', '相近红色方块.png', { timeout: 60_000 });
     await page.screenshot({ path: path.join(evidence, 'bundled-assets-similar.png') });
     await expect.poll(() => persistedVectors(application!, libraryPath)).toEqual(before);

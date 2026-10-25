@@ -218,6 +218,34 @@ export function patchVirtualLayoutGeometry(
   return mergeLayoutEntries(current, updates);
 }
 
+/** Preview route changes do not affect slot geometry or scrollbar identity. */
+export function patchVirtualLayoutPreviews(
+  current: VirtualBrowseLayout,
+  patches: ReadonlyMap<string, {
+    previewKind: 'source' | null;
+    previewRevisionId: string | null;
+  }>,
+): VirtualBrowseLayout {
+  if (patches.size === 0) return current;
+  let entries: Map<number, BrowseLayoutEntry> | undefined;
+  for (const [assetId, preview] of patches) {
+    const index = current.indexByAssetId.get(assetId);
+    if (index === undefined) continue;
+    const previous = (entries ?? current.entries).get(index);
+    if (!previous) continue;
+    if (
+      previous.previewKind === preview.previewKind
+      && previous.previewRevisionId === preview.previewRevisionId
+    ) continue;
+    (entries ??= new Map(current.entries)).set(index, {
+      ...previous,
+      previewKind: preview.previewKind,
+      previewRevisionId: preview.previewRevisionId,
+    });
+  }
+  return entries ? { ...current, entries } : current;
+}
+
 export function createVirtualBrowseLayout(input: {
   total: number;
   firstPage: { items: readonly AssetSummary[]; offset: number };

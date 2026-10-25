@@ -82,6 +82,9 @@ test("uses the in-app dialog for library disk deletion", async () => {
     };
 
     const first = await openCriticalDialog();
+    await expect(first.dialog.locator(".dialog-body-copy")).toHaveText(
+      "此操作无法撤销。关联文件夹的源目录不会被删除。",
+    );
     await expect(first.dialog.getByRole("button", { name: "从磁盘删除", exact: true })).toBeVisible();
     await expect(
       first.dialog.getByRole("button", { name: /不再显示|总是/ }),

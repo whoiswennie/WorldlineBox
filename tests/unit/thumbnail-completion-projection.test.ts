@@ -58,6 +58,29 @@ describe("thumbnail completion projection", () => {
     expect(actions.layoutArtifacts.has("other-library-asset")).toBe(false);
   });
 
+  it("projects source-direct availability when dimensions become known", () => {
+    const actions = projectThumbnailEvent(
+      {
+        type: "asset.dimensions.ready",
+        libraryId: "lib-1",
+        assetId: "visible-1",
+        width: 480,
+        height: 480,
+        revisionId: "revision-1",
+        previewKind: "source",
+        previewRevisionId: "revision-1",
+      },
+      subscriptions,
+    );
+    expect(actions.patches.get("visible-1")).toEqual({
+      width: 480,
+      height: 480,
+      previewKind: "source",
+      previewRevisionId: "revision-1",
+    });
+    expect(actions.patches.has("loaded-1")).toBe(false);
+  });
+
   it("matches viewer assets inside a batch event", () => {
     expect(
       thumbnailEventConcernsAsset(

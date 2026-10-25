@@ -96,12 +96,12 @@ it('withdraws sources while query I/O is running and rejects incomplete chunk ge
     test.current.delete('alice:long'); expect((await test.service().search('alice', 'alpha')).results).toEqual([]);
   } finally { await test.close(); }
 }, 120000);
-it('detaches the dependency junction after both normal shutdown and cancellation during blocked query I/O', async () => {
+it('needs no dependency junction across normal shutdown and cancellation during blocked query I/O', async () => {
   const test = await fixture(), dependency = path.resolve('node_modules/@dqbd/tiktoken/package.json'), original = await readFile(dependency);
   try {
     await test.service().ingest('alice', test.document('shutdown-proof', 'alpha shutdown source'));
     const link = path.join(test.root, 'runtime/node_modules');
-    expect((await lstat(link)).isSymbolicLink()).toBe(true);
+    await expect(lstat(link)).rejects.toMatchObject({ code: 'ENOENT' });
     await test.restart(); await expect(lstat(link)).rejects.toMatchObject({ code: 'ENOENT' });
     let start!: () => void; const started = new Promise<void>(resolve => { start = resolve; }); test.controls.queryStarted = start;
     const pending = test.service().search('alice', 'alpha shutdown'); await started;

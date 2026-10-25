@@ -25,6 +25,7 @@ import {
 } from "./font-viewer-settings";
 import { Icon } from "./Icons";
 import { iconActionAttrs } from "./icon-action-attrs";
+import { FontViewerMenu } from "./font-viewer-menu";
 import { useT } from "./i18n";
 
 export type FontViewerSurfaceProps = {
@@ -279,26 +280,24 @@ export function FontViewerSurface({
           </span>
         </label>
         {weightOptions.length > 0 ? (
-          <label
+          <div
             className="preview-color-space-control font-viewer-control"
             data-hover-tip={t("viewer.fontPreviewWeight")}
           >
             <Icon name="sliders" size={14} />
-            <select
-              aria-label={t("viewer.fontPreviewWeight")}
-              onChange={(event) => {
-                const value = Number(event.currentTarget.value);
-                if (Number.isFinite(value)) update({ weight: value });
+            <FontViewerMenu
+              label={t("viewer.fontPreviewWeight")}
+              onChange={(next) => {
+                const weight = Number(next);
+                if (Number.isFinite(weight)) update({ weight });
               }}
-              value={settings.weight}
-            >
-              {weightOptions.map((weight) => (
-                <option key={weight} value={weight}>
-                  {t("viewer.fontPreviewWeightValue", { weight })}
-                </option>
-              ))}
-            </select>
-          </label>
+              options={weightOptions.map((weight) => ({
+                value: String(weight),
+                label: t("viewer.fontPreviewWeightValue", { weight }),
+              }))}
+              value={String(settings.weight)}
+            />
+          </div>
         ) : null}
         <button
           aria-label={t("viewer.fontPreviewBold")}
@@ -337,28 +336,25 @@ export function FontViewerSurface({
           </span>
         </button>
         {/* 语言放在工具条最后（用户口径）。 */}
-        <label
+        <div
           className="preview-color-space-control font-viewer-control"
           data-hover-tip={t("viewer.fontPreviewLanguage")}
         >
           <Icon name="globe" size={14} />
-          <select
-            aria-label={t("viewer.fontPreviewLanguage")}
-            onChange={(event) => {
-              const value = event.currentTarget.value;
-              if (!isFontPreviewLanguage(value)) return;
+          <FontViewerMenu
+            label={t("viewer.fontPreviewLanguage")}
+            onChange={(next) => {
+              if (!isFontPreviewLanguage(next)) return;
               setLanguageTouched(true);
-              update({ language: value });
+              update({ language: next });
             }}
+            options={FONT_PREVIEW_LANGUAGES.map((language) => ({
+              value: language,
+              label: t(languageLabelKey(language)),
+            }))}
             value={settings.language}
-          >
-            {FONT_PREVIEW_LANGUAGES.map((language) => (
-              <option key={language} value={language}>
-                {t(languageLabelKey(language))}
-              </option>
-            ))}
-          </select>
-        </label>
+          />
+        </div>
       </div>
     </div>
   );

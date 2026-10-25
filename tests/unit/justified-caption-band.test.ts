@@ -32,10 +32,10 @@ describe("resolveJustifiedCaptionBandPx (WorldlineBox-omn)", () => {
         JUSTIFIED_CAPTION_DIMENSIONS_LINE_PX +
         JUSTIFIED_CAPTION_PAD_BOTTOM_PX,
     );
-    expect(band).toBe(36);
+    expect(band).toBe(26);
   });
 
-  it("matches the compact ~54px default (dimensions + name + meta)", () => {
+  it("matches the compact three-line card caption (dimensions + name + meta)", () => {
     const band = resolveJustifiedCaptionBandPx({
       dimensions: true,
       name: true,
@@ -50,10 +50,9 @@ describe("resolveJustifiedCaptionBandPx (WorldlineBox-omn)", () => {
         JUSTIFIED_CAPTION_SECONDARY_LINE_PX +
         JUSTIFIED_CAPTION_PAD_BOTTOM_PX,
     );
-    // The compact caption keeps the measured three-line content while trimming
-    // the bottom breathing room.
-    expect(band).toBeGreaterThanOrEqual(70);
-    expect(band).toBe(70);
+    // The compact caption keeps the measured three-line content with a tighter
+    // top and bottom inset.
+    expect(band).toBe(60);
   });
 
   it("grows when more lines are enabled", () => {
@@ -82,6 +81,6 @@ describe("resolveJustifiedCaptionBandPx (WorldlineBox-omn)", () => {
     const large = resolveJustifiedCaptionBandPx(lines, 1.12);
 
     expect(large).toBeGreaterThan(base);
-    expect(large).toBe(81);
+    expect(large).toBe(69);
   });
 });

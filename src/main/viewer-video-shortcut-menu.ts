@@ -42,7 +42,10 @@ import {
   type ViewerVideoShortcutAction,
 } from "../shared/viewer-video-shortcuts";
 import { shouldHideApplicationMenuBar } from "../shared/window-controls";
-import { forwardBrowseShortcutToWindow } from "./browse-shortcut-forward";
+import {
+  forwardBrowseShortcutToWindow,
+  type BrowseShortcutChord,
+} from "./browse-shortcut-forward";
 import { forwardViewerVideoShortcutToWindow } from "./viewer-video-shortcut-forward";
 
 const BROWSE_ACCELERATOR_ITEMS: ReadonlyArray<{
@@ -65,6 +68,11 @@ const BROWSE_ACCELERATOR_ITEMS: ReadonlyArray<{
     action: "disk-delete",
   },
 ];
+
+const COPY_PATH_ACCELERATOR_ACTIONS = [
+  "asset.copy-file-path",
+  "folder.copy-path",
+] as const;
 
 const activeViewerScopes = new Set<ViewerShortcutScope>();
 let browseEnabled = true;
@@ -219,6 +227,49 @@ function hideMenuBarOnAllWindows(): void {
   }
 }
 
+function browseCopyPathAcceleratorItems(): Electron.MenuItemConstructorOptions[] {
+  const platform = shortcutPlatform();
+  const seen = new Set<string>();
+  const items: Electron.MenuItemConstructorOptions[] = [];
+  for (const actionId of COPY_PATH_ACCELERATOR_ACTIONS) {
+    resolveActionChords(actionId, platform, activeBindings).forEach((chord, index) => {
+      const accelerator = formatElectronAccelerator(chord, platform);
+      if (
+        accelerator === null
+        || seen.has(accelerator)
+        || accelerator === "F2"
+        || accelerator === "Delete"
+        || accelerator === "Shift+Delete"
+      ) return;
+      seen.add(accelerator);
+      const id = `browse.copy-path.${actionId}.${index}`;
+      const forwarded: BrowseShortcutChord = {
+        key: chord.key,
+        ...(chord.code === undefined ? {} : { code: chord.code }),
+        ctrlKey: chord.ctrlKey === true,
+        metaKey: chord.metaKey === true,
+        altKey: chord.altKey === true,
+        shiftKey: chord.shiftKey === true,
+      };
+      items.push({
+        id,
+        label: "Copy Path",
+        accelerator,
+        acceleratorWorksWhenHidden: true,
+        enabled: true,
+        click: (_menuItem: MenuItem, window: BaseWindow | undefined) => {
+          forwardBrowseShortcutToWindow(
+            window as BrowserWindow | undefined,
+            "copy-path",
+            forwarded,
+          );
+        },
+      });
+    });
+  }
+  return items;
+}
+
 function rebuildWindowsAcceleratorMenu(): void {
   if (!shouldHideApplicationMenuBar(process.platform)) {
     return;
@@ -235,6 +286,7 @@ function rebuildWindowsAcceleratorMenu(): void {
         forwardBrowseShortcutToWindow(window as BrowserWindow | undefined, item.action);
       },
     })),
+    ...browseCopyPathAcceleratorItems(),
     ...applicationMenuShortcutItems(),
     ...(activeViewerScopes.size > 0 ? viewerAcceleratorItems() : []),
   ];

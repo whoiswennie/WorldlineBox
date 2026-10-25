@@ -3,6 +3,8 @@ import type { AssetSummary } from "../shared/asset-types";
 export type AssetThumbnailPatch = {
   thumbnailStatus?: AssetSummary["thumbnailStatus"];
   thumbnailArtifactId?: string | null;
+  previewKind?: "source" | null;
+  previewRevisionId?: string | null;
   width?: number;
   height?: number;
   durationMs?: number;
@@ -28,6 +30,12 @@ export function applyAssetThumbnailPatches(
         ...(direct.thumbnailArtifactId === undefined
           ? {}
           : { thumbnailArtifactId: direct.thumbnailArtifactId }),
+        ...(direct.previewKind === undefined
+          ? {}
+          : { previewKind: direct.previewKind }),
+        ...(direct.previewRevisionId === undefined
+          ? {}
+          : { previewRevisionId: direct.previewRevisionId }),
         ...(direct.width === undefined ? {} : { width: direct.width }),
         ...(direct.height === undefined ? {} : { height: direct.height }),
         ...(direct.durationMs === undefined

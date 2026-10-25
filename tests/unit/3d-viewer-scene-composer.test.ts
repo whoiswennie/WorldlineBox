@@ -1,6 +1,8 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
+  BoxGeometry,
   BufferGeometry,
+  DoubleSide,
   Mesh,
   MeshStandardMaterial,
   PerspectiveCamera,
@@ -83,6 +85,17 @@ describe('scene-composer (WorldlineBox-qvc6 / shared render core)', () => {
     composer.setEnvironment(null);
     expect(() => composer.setEnvironmentRotation(0.5)).not.toThrow();
     expect(composer.scene.environmentRotation.y).toBe(0.5);
+  });
+
+  it('applies a double-sided preference to a model added afterwards', () => {
+    const renderer = fakeRenderer();
+    const composer = createSceneComposer({ renderer });
+    composer.setDoubleSided(true);
+    const material = new MeshStandardMaterial();
+    composer.scene.add(new Mesh(new BoxGeometry(), material));
+    expect(material.side).not.toBe(DoubleSide);
+    composer.reapplyDisplay();
+    expect(material.side).toBe(DoubleSide);
   });
 
   it('renders exactly one frame per renderOnce call', () => {

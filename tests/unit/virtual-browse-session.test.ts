@@ -13,6 +13,7 @@ import {
   evictVirtualSummaryPage,
   mergeVirtualSummaryPage,
   patchVirtualLayoutGeometry,
+  patchVirtualLayoutPreviews,
   permuteVirtualBrowseLayout,
   virtualIndexMatchesFirstPage,
   virtualLayoutEntryAt,
@@ -302,6 +303,37 @@ describe("virtual browse geometry", () => {
     expect(patchVirtualLayoutGeometry(
       patched,
       new Map([["asset-0", { width: 1920, height: 1080 }]]),
+    )).toBe(patched);
+  });
+
+  it("patches source preview routes without changing virtual slot geometry", () => {
+    const current = createVirtualBrowseLayout({
+      total: 2_100,
+      firstPage: {
+        items: [{ ...asset("asset-0"), width: null, height: null }],
+        offset: 0,
+      },
+    });
+    const patched = patchVirtualLayoutPreviews(
+      current,
+      new Map([[
+        "asset-0",
+        { previewKind: "source", previewRevisionId: "revision-asset-0" },
+      ]]),
+    );
+    expect(patched).not.toBe(current);
+    expect(patched.geometryRevision).toBe(current.geometryRevision);
+    expect(patched.geometryEntries).toBe(current.geometryEntries);
+    expect(virtualLayoutEntryAt(patched, 0)).toMatchObject({
+      previewKind: "source",
+      previewRevisionId: "revision-asset-0",
+    });
+    expect(patchVirtualLayoutPreviews(
+      patched,
+      new Map([[
+        "asset-0",
+        { previewKind: "source", previewRevisionId: "revision-asset-0" },
+      ]]),
     )).toBe(patched);
   });
 });

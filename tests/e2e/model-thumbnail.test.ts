@@ -1,8 +1,9 @@
-import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
 import { _electron as electron, expect, test } from "@playwright/test";
+import sharp from "sharp";
 
 import { resolveElectronExecutablePath } from "./electron-test-helpers";
 
@@ -73,30 +74,41 @@ async function assertDecodedModelThumbnail(input: {
   libraryName: string;
   modelFiles: string[];
   assetName: string;
+  sourceDirectAssetName?: string;
 }): Promise<void> {
-  const { temporaryRoot, libraryName, modelFiles, assetName } = input;
+  const {
+    temporaryRoot,
+    libraryName,
+    modelFiles,
+    assetName,
+    sourceDirectAssetName,
+  } = input;
   const libraryPath = path.join(temporaryRoot, libraryName);
   const applicationDirectory =
     process.env.WORLDLINEBOX_E2E_APP_DIRECTORY ?? process.cwd();
-  const application = await electron.launch({
-    args: [applicationDirectory],
-    cwd: applicationDirectory,
-    executablePath: resolveElectronExecutablePath(),
-    env: {
-      ...process.env,
-      WORLDLINEBOX_E2E: "1",
-      WORLDLINEBOX_E2E_CREATE_PARENT_PATH: temporaryRoot,
-      WORLDLINEBOX_E2E_OPEN_LIBRARY_PATH: libraryPath,
-      WORLDLINEBOX_E2E_USER_DATA_PATH: path.join(temporaryRoot, "user-data"),
-      // CI/agent hosts may disable hardware WebGL. This opt-in keeps the
-      // thumbnail contract testable through Chromium's software renderer.
-      WORLDLINEBOX_E2E_ENABLE_SWIFTSHADER: "1",
-      WORLDLINEBOX_E2E_IMPORT_FILES: modelFiles.join(path.delimiter),
-    },
-  });
-
+  const showWindowInactive = process.env.WORLDLINEBOX_E2E_SHOW_INACTIVE === "1";
+  let application: Awaited<ReturnType<typeof electron.launch>> | undefined;
   try {
+    application = await electron.launch({
+      args: [applicationDirectory],
+      cwd: applicationDirectory,
+      executablePath: resolveElectronExecutablePath(),
+      env: {
+        ...process.env,
+        WORLDLINEBOX_E2E: "1",
+        WORLDLINEBOX_E2E_HIDE_WINDOW: showWindowInactive ? "0" : "1",
+        WORLDLINEBOX_E2E_SHOW_INACTIVE: showWindowInactive ? "1" : "0",
+        WORLDLINEBOX_E2E_CREATE_PARENT_PATH: temporaryRoot,
+        WORLDLINEBOX_E2E_OPEN_LIBRARY_PATH: libraryPath,
+        WORLDLINEBOX_E2E_USER_DATA_PATH: path.join(temporaryRoot, "user-data"),
+        // CI/agent hosts may disable hardware WebGL. This opt-in keeps the
+        // thumbnail contract testable through Chromium's software renderer.
+        WORLDLINEBOX_E2E_ENABLE_SWIFTSHADER: "1",
+        WORLDLINEBOX_E2E_IMPORT_FILES: modelFiles.join(path.delimiter),
+      },
+    });
     const window = await application.firstWindow();
+    await window.locator('[data-application-module="assets"]').click();
     await window.getByRole("button", { name: "创建资源库" }).click();
     await window.getByRole("textbox", { name: "名称" }).fill(libraryName);
     await window.getByRole("button", { name: "创建", exact: true }).click();
@@ -104,6 +116,28 @@ async function assertDecodedModelThumbnail(input: {
       .getByRole("button", { name: "导入文件", exact: true })
       .first()
       .click();
+
+    if (sourceDirectAssetName) {
+      const sourceDirectCard = window
+        .locator(".asset-card")
+        .filter({ hasText: sourceDirectAssetName });
+      await expect(sourceDirectCard).toBeVisible({ timeout: 15_000 });
+      const sourceImage = sourceDirectCard.locator("img.asset-thumbnail");
+      await expect
+        .poll(
+          async () =>
+            sourceImage.evaluate((element) => {
+              const image = element as HTMLImageElement;
+              return {
+                complete: image.complete,
+                naturalWidth: image.naturalWidth,
+                naturalHeight: image.naturalHeight,
+              };
+            }),
+          { timeout: 45_000 },
+        )
+        .toEqual({ complete: true, naturalWidth: 480, naturalHeight: 480 });
+    }
 
     const assetCard = window
       .locator(".asset-card")
@@ -117,7 +151,7 @@ async function assertDecodedModelThumbnail(input: {
           thumbnail.evaluate((element) => {
             const image = element as HTMLImageElement;
             return {
-              complete: image.complete,
+              complete: image.complete && image.naturalWidth > 0 && image.naturalHeight > 0,
               naturalWidth: image.naturalWidth,
               naturalHeight: image.naturalHeight,
             };
@@ -134,8 +168,18 @@ async function assertDecodedModelThumbnail(input: {
         thumbnail.evaluate((element) => (element as HTMLImageElement).naturalWidth > 0),
       )
       .toBe(true);
+    const computerUseHoldMs = Number(
+      process.env.WORLDLINEBOX_E2E_COMPUTER_USE_HOLD_MS ?? 0,
+    );
+    if (Number.isFinite(computerUseHoldMs) && computerUseHoldMs > 0) {
+      await window.waitForTimeout(Math.min(computerUseHoldMs, 60_000));
+    }
   } finally {
-    await application.close();
+    try {
+      if (application) await application.close();
+    } finally {
+      rmSync(temporaryRoot, { recursive: true, force: true });
+    }
   }
 }
 
@@ -143,16 +187,30 @@ test("renders and decodes a model thumbnail after import", async () => {
   const temporaryRoot = mkdtempSync(
     path.join(tmpdir(), "worldlinebox-model-thumbnail-e2e-"),
   );
-  console.log(`[model-thumbnail-e2e-root] ${temporaryRoot}`);
-  await assertDecodedModelThumbnail({
-    temporaryRoot,
-    libraryName: "模型缩略图验收",
-    modelFiles: [
-      fixtureModels("cube.obj"),
-      fixtureModels("cube.mtl"),
-    ],
-    assetName: "cube.obj",
-  });
+  try {
+    const sourceDirectPath = path.join(temporaryRoot, "small-source-direct.png");
+    await sharp({
+      create: {
+        width: 480,
+        height: 480,
+        channels: 4,
+        background: { r: 35, g: 125, b: 210, alpha: 1 },
+      },
+    }).png().toFile(sourceDirectPath);
+    await assertDecodedModelThumbnail({
+      temporaryRoot,
+      libraryName: "模型缩略图验收",
+      modelFiles: [
+        fixtureModels("cube.obj"),
+        fixtureModels("cube.mtl"),
+        sourceDirectPath,
+      ],
+      assetName: "cube.obj",
+      sourceDirectAssetName: "small-source-direct.png",
+    });
+  } finally {
+    rmSync(temporaryRoot, { recursive: true, force: true });
+  }
 });
 
 const modelThumbnailCases: readonly {

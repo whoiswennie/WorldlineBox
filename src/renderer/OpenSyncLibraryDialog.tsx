@@ -5,6 +5,7 @@ import { Icon } from "./Icons";
 import { iconActionAttrs } from "./icon-action-attrs";
 import { useT } from "./i18n";
 import { DialogShell } from "./ui/patterns";
+import { Select } from "./ui/primitives";
 import type { SyncServerSummary } from "./sync-settings-types";
 
 export interface RemoteLibrarySummary {
@@ -131,19 +132,19 @@ export function OpenSyncLibraryDialog({
             {servers.length === 0 ? (
               <p className="app-settings-help-note">{t("settings.sync.noServer")}</p>
             ) : (
-              <select
-                className="text-field"
+              <Select
                 aria-label={t("settings.sync.server")}
-                value={serverId}
-                onChange={(event) => {
-                  setServerId(event.target.value);
+                className="text-field"
+                onValueChange={(value) => {
+                  setServerId(value);
                   setRemoteLibraries(null);
                 }}
-              >
-                {servers.map((server) => (
-                  <option key={server.id} value={server.id}>{server.baseUrl}</option>
-                ))}
-              </select>
+                options={servers.map((server) => ({
+                  value: server.id,
+                  label: server.baseUrl,
+                }))}
+                value={serverId}
+              />
             )}
           </div>
           <div className="app-settings-action-row">

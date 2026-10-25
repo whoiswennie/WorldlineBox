@@ -89,7 +89,26 @@ export function projectThumbnailEvent(
     layoutArtifacts: new Map(),
   };
 
-  if (event.type === "asset.dimensions.ready" || event.type === "asset.derived.ready") {
+  if (event.type === "asset.dimensions.ready") {
+    if (
+      event.previewKind === undefined
+      && event.previewRevisionId === undefined
+    ) return actions;
+    if (shouldProjectThumbnailCompletion(event.assetId, subscriptions)) {
+      actions.patches.set(event.assetId, {
+        width: event.width,
+        height: event.height,
+        ...(event.previewKind === undefined
+          ? {}
+          : { previewKind: event.previewKind }),
+        ...(event.previewRevisionId === undefined
+          ? {}
+          : { previewRevisionId: event.previewRevisionId }),
+      });
+    }
+    return actions;
+  }
+  if (event.type === "asset.derived.ready") {
     return actions;
   }
 

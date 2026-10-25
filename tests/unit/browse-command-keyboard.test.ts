@@ -9,6 +9,7 @@ import {
   type ShortcutEvent,
 } from "../../src/renderer/commands/command-types";
 import { assetCommandDefinitions } from "../../src/renderer/commands/asset-commands";
+import { canDeleteAssetFromDiskWithShortcut } from "../../src/renderer/browse-key-command";
 
 const event = (overrides: Partial<ShortcutEvent>): ShortcutEvent => ({
   key: "",
@@ -154,5 +155,15 @@ describe("REQ-COMMAND-004 asset shortcuts", () => {
         "mac",
       ),
     ).toBe(true);
+  });
+});
+
+describe("linked asset disk-delete shortcut eligibility", () => {
+  it("includes linked files alongside managed files and in-scope unloaded selections", () => {
+    expect(canDeleteAssetFromDiskWithShortcut({ locationKind: "managed" })).toBe(true);
+    expect(
+      canDeleteAssetFromDiskWithShortcut({ locationKind: "linked" }),
+    ).toBe(true);
+    expect(canDeleteAssetFromDiskWithShortcut(undefined)).toBe(true);
   });
 });

@@ -10,7 +10,7 @@ import { Icon } from "./Icons";
 import { useT } from "./i18n";
 import { formatMcpSettingsFailure } from "./mcp-settings-error";
 import { SettingsCard, SettingsDisclosure } from "./ui/patterns";
-import { Switch } from "./ui/primitives";
+import { Select, Switch } from "./ui/primitives";
 
 function CredentialLabel({
   label,
@@ -222,18 +222,19 @@ export function McpSettingsPage({
               <strong>{t("settings.mcpConfigFormat")}</strong>
               <span>{t("settings.mcpConfigFormatHint")}</span>
             </div>
-            <select
+            <Select
               aria-label={t("settings.mcpConfigFormat")}
-              className="settings-select"
-              onChange={(event) => setFormat(event.target.value as McpConfigFormat)}
+              onValueChange={(value) => setFormat(value as McpConfigFormat)}
+              options={[
+                { value: "generic-json", label: t("settings.mcpConfigGeneric") },
+                { value: "claude", label: t("settings.mcpConfigClaude") },
+                { value: "cursor", label: t("settings.mcpConfigCursor") },
+                { value: "codex", label: t("settings.mcpConfigCodex") },
+                { value: "endpoint-and-token", label: t("settings.mcpConfigEndpoint") },
+              ]}
               value={format}
-            >
-              <option value="generic-json">{t("settings.mcpConfigGeneric")}</option>
-              <option value="claude">{t("settings.mcpConfigClaude")}</option>
-              <option value="cursor">{t("settings.mcpConfigCursor")}</option>
-              <option value="codex">{t("settings.mcpConfigCodex")}</option>
-              <option value="endpoint-and-token">{t("settings.mcpConfigEndpoint")}</option>
-            </select>
+              wrapperClassName="settings-select"
+            />
           </div>
         </SettingsDisclosure>
         {onOpenAppLog ? (
@@ -298,18 +299,23 @@ export function McpSettingsPage({
                     </span>
                   </div>
                   <div className="app-settings-option-group">
-                    <select
+                    <Select
                       aria-label={`${credential.label} ${t("settings.mcpAccessMode")}`}
-                      className="settings-select"
                       disabled={busy}
-                      onChange={(event) => {
-                        void request({ type: "set-access-mode", credentialId: credential.credentialId, mode: event.target.value as "auto" | "full-access" });
+                      onValueChange={(value) => {
+                        void request({
+                          type: "set-access-mode",
+                          credentialId: credential.credentialId,
+                          mode: value as "auto" | "full-access",
+                        });
                       }}
+                      options={[
+                        { value: "auto", label: t("settings.mcpAccessModeAuto") },
+                        { value: "full-access", label: t("settings.mcpAccessModeFull") },
+                      ]}
                       value={mode}
-                    >
-                      <option value="auto">{t("settings.mcpAccessModeAuto")}</option>
-                      <option value="full-access">{t("settings.mcpAccessModeFull")}</option>
-                    </select>
+                      wrapperClassName="settings-select"
+                    />
                     <button
                       aria-label={t("settings.mcpCopyCredential")}
                       className="mcp-client-action"

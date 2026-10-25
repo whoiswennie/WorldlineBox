@@ -10,6 +10,7 @@ import {
 } from '../../shared/linked-folder-tree';
 import { translateForLocale } from '../i18n';
 import type { CommandContext, CommandDefinition } from './command-types';
+import { DELETE_FROM_DISK_SHORTCUT } from './asset-shortcuts';
 
 function revealFolderId(ctx: SidebarCommandContext): string {
   if (ctx.locationKind === 'linked') {
@@ -193,6 +194,10 @@ export const sidebarCommandDefinitions: readonly SidebarCommandDefinition[] = [
     id: 'folder.copy-path',
     title: (ctx) => translateForLocale(ctx.locale, 'command.folder.copyPath'),
     group: 'organize',
+    shortcut: {
+      mac: { label: '⌥⌘C', key: 'c', metaKey: true, altKey: true },
+      windows: { label: 'Ctrl+Shift+C', key: 'c', ctrlKey: true, shiftKey: true },
+    },
     visible: (ctx) => ctx.menuKind === 'folder',
     disabledReason: offlineReason,
     run: (ctx) => ctx.actions.copyFolderPath(revealFolderId(ctx)),
@@ -273,15 +278,7 @@ export const sidebarCommandDefinitions: readonly SidebarCommandDefinition[] = [
           : 'command.folder.deleteFromDisk',
       ),
     group: 'delete',
-    shortcut: {
-      mac: {
-        label: '⌥⌘Delete',
-        key: 'Delete',
-        metaKey: true,
-        altKey: true,
-      },
-      windows: { label: 'Shift+Delete', key: 'Delete', shiftKey: true },
-    },
+    shortcut: DELETE_FROM_DISK_SHORTCUT,
     visible: (ctx) =>
       ctx.menuKind === 'folder' &&
       !ctx.isLibraryRoot &&

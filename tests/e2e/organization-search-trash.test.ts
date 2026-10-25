@@ -6,6 +6,7 @@ import { _electron as electron, expect, test, type Page } from '@playwright/test
 
 import {
   assetCard as locateAssetCard,
+  chooseStandardOption,
   resolveElectronExecutablePath,
 } from './electron-test-helpers';
 
@@ -167,7 +168,7 @@ test('organizes, finds, trashes, and restores an imported asset through the UI',
     await window.getByRole('button', { name: /收藏/ }).click({ button: 'right' });
     await window.getByRole('menuitem', { name: '编辑合集详情' }).click();
     await window.getByLabel('描述').fill('主要角色精选资产');
-    await window.getByLabel('封面资产').selectOption({ label: 'hero.png' });
+    await chooseStandardOption(window.getByLabel('封面资产'), { label: 'hero.png' });
     await window.getByRole('button', { name: '保存详情' }).click();
     await expect(window.locator('.workspace-notice')).toContainText('合集详情已更新');
     const collectionDetails = await window.evaluate(async () => {
@@ -254,7 +255,7 @@ test('organizes, finds, trashes, and restores an imported asset through the UI',
     // context instead of duplicating the primary display name.
     await window.getByLabel('搜索资源库').fill('快速连续');
     await window.getByRole('button', { name: '更多', exact: true }).click();
-    await window.getByLabel('喜欢过滤').selectOption('yes');
+    await chooseStandardOption(window.getByLabel('喜欢过滤'), 'yes');
     await window.getByRole('button', { name: '标签', exact: true }).click();
     await window.getByRole('textbox', { name: '标签过滤' }).fill('临时');
     await window.getByRole("option", { name: /临时/ }).click();
@@ -328,8 +329,8 @@ test('organizes, finds, trashes, and restores an imported asset through the UI',
     await window.waitForFunction(() => Boolean(document.querySelector('[role="dialog"]'))
       || document.querySelector('.workspace-notice')?.textContent?.includes('已恢复'));
     if (await restoreDialog.count()) {
-      await restoreDialog.getByLabel('恢复位置').selectOption('original');
-      await restoreDialog.getByLabel('同名冲突').selectOption('keep-both');
+      await chooseStandardOption(restoreDialog.getByLabel('恢复位置'), 'original');
+      await chooseStandardOption(restoreDialog.getByLabel('同名冲突'), 'keep-both');
       await restoreDialog.getByRole('button', { name: '确认恢复' }).click();
     }
     await expect(window.locator('.workspace-notice')).toContainText('已恢复 1 项资产');
@@ -536,8 +537,8 @@ test('multi-select performs batch organization, trash, restore, and permanent de
     await window.waitForFunction(() => Boolean(document.querySelector('[role="dialog"]'))
       || document.querySelector('.workspace-notice')?.textContent?.includes('已恢复'));
     if (await batchRestoreDialog.count()) {
-      await batchRestoreDialog.getByLabel('恢复位置').selectOption('root');
-      await batchRestoreDialog.getByLabel('同名冲突').selectOption('skip');
+      await chooseStandardOption(batchRestoreDialog.getByLabel('恢复位置'), 'root');
+      await chooseStandardOption(batchRestoreDialog.getByLabel('同名冲突'), 'skip');
       await batchRestoreDialog.getByRole('button', { name: '确认恢复' }).click();
     }
     await expect(window.locator('.workspace-notice')).toContainText('已恢复 2 项资产');

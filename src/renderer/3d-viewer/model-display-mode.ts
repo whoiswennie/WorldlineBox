@@ -1,8 +1,11 @@
 import {
+  DoubleSide,
+  FrontSide,
   MeshBasicMaterial,
   MeshStandardMaterial,
   type Material,
   type Scene,
+  type Side,
 } from 'three';
 
 /**
@@ -28,6 +31,13 @@ export const MODEL_DISPLAY_MODES = [
 export type ModelDisplayMode = (typeof MODEL_DISPLAY_MODES)[number];
 
 export const DEFAULT_DISPLAY_MODE: ModelDisplayMode = 'pbr';
+
+export interface DisplayModeOptions {
+  /** Draw both faces. The material's own side is restored when this is off. */
+  readonly doubleSided?: boolean;
+}
+
+const originalSides = new WeakMap<Material, Side>();
 
 /** Neutral gray used by the shaded (gray) modes. */
 export const SHADED_GRAY = 0x9aa0a6;
@@ -57,9 +67,45 @@ function resetScene(scene: Scene): void {
   });
 }
 
+function applySide(material: Material, doubleSided: boolean): void {
+  if (doubleSided) {
+    if (!originalSides.has(material)) originalSides.set(material, material.side);
+    if (material.side !== DoubleSide) {
+      material.side = DoubleSide;
+      material.needsUpdate = true;
+    }
+    return;
+  }
+  const original = originalSides.get(material);
+  if (original === undefined) return;
+  originalSides.delete(material);
+  if (material.side !== original) {
+    material.side = original;
+    material.needsUpdate = true;
+  }
+}
+
+function applySideToAll(material: Material | Material[], doubleSided: boolean): void {
+  if (Array.isArray(material)) {
+    for (const entry of material) applySide(entry, doubleSided);
+  } else {
+    applySide(material, doubleSided);
+  }
+}
+
 /** Apply a display mode; always idempotent and safe to call repeatedly. */
-export function applyDisplayMode(scene: Scene, mode: ModelDisplayMode): void {
+export function applyDisplayMode(
+  scene: Scene,
+  mode: ModelDisplayMode,
+  options: DisplayModeOptions = {},
+): void {
+  const doubleSided = options.doubleSided === true;
   resetScene(scene);
+  scene.traverse((object) => {
+    const mesh = object as { material?: Material | Material[] };
+    if (mesh.material !== undefined) applySideToAll(mesh.material, doubleSided);
+  });
+  const side: Side = doubleSided ? DoubleSide : FrontSide;
   switch (mode) {
     case 'pbr':
       return;
@@ -74,6 +120,7 @@ export function applyDisplayMode(scene: Scene, mode: ModelDisplayMode): void {
         color: SHADED_GRAY,
         roughness: 0.85,
         metalness: 0,
+        side,
       });
       return;
     case 'shaded-wireframe':
@@ -82,12 +129,14 @@ export function applyDisplayMode(scene: Scene, mode: ModelDisplayMode): void {
         roughness: 0.85,
         metalness: 0,
         wireframe: true,
+        side,
       });
       return;
     case 'wireframe':
       scene.overrideMaterial = new MeshBasicMaterial({
         color: WIREFRAME_GRAY,
         wireframe: true,
+        side,
       });
       return;
   }

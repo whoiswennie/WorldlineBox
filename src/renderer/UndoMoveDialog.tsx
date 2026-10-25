@@ -2,6 +2,7 @@ import { Icon } from "./Icons";
 import { iconActionAttrs } from "./icon-action-attrs";
 import { useT } from "./i18n";
 import { DialogShell } from "./ui/patterns";
+import { Select } from "./ui/primitives";
 
 export interface UndoMoveDialogProps {
   open: boolean;
@@ -45,20 +46,19 @@ export function UndoMoveDialog({
         <label className="field-label" htmlFor="undo-move-conflict">
           {t("dialog.undoMove.conflictLabel")}
         </label>
-        <select
+        <Select
           className="text-field"
           id="undo-move-conflict"
-          onChange={(event) =>
-            onConflictStrategyChange(
-              event.target.value as "keep-both" | "replace" | "skip",
-            )
+          onValueChange={(value) =>
+            onConflictStrategyChange(value as "keep-both" | "replace" | "skip")
           }
+          options={[
+            { value: "keep-both", label: t("dialog.undoMove.keepBoth") },
+            { value: "replace", label: t("dialog.undoMove.replace") },
+            { value: "skip", label: t("dialog.undoMove.skip") },
+          ]}
           value={conflictStrategy}
-        >
-          <option value="keep-both">{t("dialog.undoMove.keepBoth")}</option>
-          <option value="replace">{t("dialog.undoMove.replace")}</option>
-          <option value="skip">{t("dialog.undoMove.skip")}</option>
-        </select>
+        />
         <div className="dialog-actions">
           <button
             className="secondary-button"

@@ -4,6 +4,7 @@ import { useT } from "./i18n";
 import type { ImportConflictPlan } from "../shared/protocol/responses";
 import type { RememberedNameConflictDecision } from "./import-conflict-preferences";
 import { ImportConflictDialogShell } from "./ImportConflictDialogShell";
+import { Select } from "./ui/primitives";
 
 export interface NameConflictDialogProps {
   conflicts: ImportConflictPlan;
@@ -91,21 +92,21 @@ export function NameConflictDialog({
       confirmLabel={confirmLabel}
       examplesContent={examplesContent}
       decision={
-        <select
+        <Select
+          appearance="inline"
           autoFocus
           disabled={submitting}
           id="name-conflict-decision"
-          value={decision}
-          onChange={(event) =>
-            onDecisionChange(
-              event.target.value as RememberedNameConflictDecision,
-            )
+          onValueChange={(value) =>
+            onDecisionChange(value as RememberedNameConflictDecision)
           }
-        >
-          <option value="keep-both">{t("dialog.conflicts.autoRename")}</option>
-          <option value="replace">{t("dialog.conflicts.replace")}</option>
-          <option value="skip">{t("dialog.conflicts.skip")}</option>
-        </select>
+          options={[
+            { value: "keep-both", label: t("dialog.conflicts.autoRename") },
+            { value: "replace", label: t("dialog.conflicts.replace") },
+            { value: "skip", label: t("dialog.conflicts.skip") },
+          ]}
+          value={decision}
+        />
       }
       decisionControlId="name-conflict-decision"
       decisionLabel={t("dialog.nameConflict.actionLabel")}

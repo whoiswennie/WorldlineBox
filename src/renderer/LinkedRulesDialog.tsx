@@ -4,6 +4,7 @@ import { iconActionAttrs } from "./icon-action-attrs";
 import { useT } from "./i18n";
 import type { LinkedFolderRule } from "../shared/asset-types";
 import { DialogShell } from "./ui/patterns";
+import { Select } from "./ui/primitives";
 
 export interface LinkedRulesDialogProps {
   name: string;
@@ -66,46 +67,42 @@ export function LinkedRulesDialog({
               }
               type="checkbox"
             />
-            <select
+            <Select
               className="text-field"
-              onChange={(event) =>
+              onValueChange={(value) =>
                 setRules((current) =>
                   current.map((item, i) =>
                     i === index
-                      ? {
-                          ...item,
-                          action: event.target.value as LinkedFolderRule["action"],
-                        }
+                      ? { ...item, action: value as LinkedFolderRule["action"] }
                       : item,
                   ),
                 )
               }
+              options={[
+                { value: "exclude", label: t("dialog.linkedRules.exclude") },
+                { value: "include", label: t("dialog.linkedRules.include") },
+              ]}
               value={rule.action}
-            >
-              <option value="exclude">{t("dialog.linkedRules.exclude")}</option>
-              <option value="include">{t("dialog.linkedRules.include")}</option>
-            </select>
-            <select
+            />
+            <Select
               className="text-field"
-              onChange={(event) =>
+              onValueChange={(value) =>
                 setRules((current) =>
                   current.map((item, i) =>
                     i === index
-                      ? {
-                          ...item,
-                          target: event.target.value as LinkedFolderRule["target"],
-                        }
+                      ? { ...item, target: value as LinkedFolderRule["target"] }
                       : item,
                   ),
                 )
               }
+              options={[
+                { value: "folder", label: t("dialog.linkedRules.folder") },
+                { value: "filename", label: t("dialog.linkedRules.filename") },
+                { value: "extension", label: t("dialog.linkedRules.extension") },
+                { value: "path", label: t("dialog.linkedRules.path") },
+              ]}
               value={rule.target}
-            >
-              <option value="folder">{t("dialog.linkedRules.folder")}</option>
-              <option value="filename">{t("dialog.linkedRules.filename")}</option>
-              <option value="extension">{t("dialog.linkedRules.extension")}</option>
-              <option value="path">{t("dialog.linkedRules.path")}</option>
-            </select>
+            />
             <input
               className="text-field"
               maxLength={512}

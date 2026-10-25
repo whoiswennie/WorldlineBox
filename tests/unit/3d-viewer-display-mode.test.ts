@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import {
   BoxGeometry,
+  DoubleSide,
+  FrontSide,
   Mesh,
   MeshBasicMaterial,
   MeshStandardMaterial,
@@ -81,5 +83,29 @@ describe('model display modes (WorldlineBox-fkhe)', () => {
     applyDisplayMode(scene, 'pbr-wireframe');
     expect(first.wireframe).toBe(true);
     expect(second.wireframe).toBe(true);
+  });
+
+  it('draws both faces and restores a material that was already double-sided', () => {
+    const { scene, material } = sceneWithMaterials();
+    const authored = new MeshStandardMaterial();
+    authored.side = DoubleSide;
+    scene.add(new Mesh(new BoxGeometry(), authored));
+
+    applyDisplayMode(scene, 'pbr', { doubleSided: true });
+    expect(material.side).toBe(DoubleSide);
+    expect(authored.side).toBe(DoubleSide);
+
+    applyDisplayMode(scene, 'shaded', { doubleSided: true });
+    expect(material.wireframe).toBe(false);
+    expect((scene.overrideMaterial as MeshStandardMaterial).side).toBe(DoubleSide);
+
+    applyDisplayMode(scene, 'pbr-wireframe', { doubleSided: true });
+    expect(material.wireframe).toBe(true);
+    expect(material.side).toBe(DoubleSide);
+
+    applyDisplayMode(scene, 'pbr', { doubleSided: false });
+    expect(material.side).toBe(FrontSide);
+    expect(authored.side).toBe(DoubleSide);
+    expect(material.wireframe).toBe(false);
   });
 });

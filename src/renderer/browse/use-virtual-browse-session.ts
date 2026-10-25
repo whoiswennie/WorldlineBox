@@ -13,6 +13,7 @@ import {
   materializeVirtualLoadedEntries,
   mergeVirtualSummaryPage,
   patchVirtualLayoutGeometry,
+  patchVirtualLayoutPreviews,
   removeVirtualLayoutEntries,
   virtualIndexMatchesFirstPage,
   virtualSummaryAssetIds,
@@ -329,6 +330,24 @@ export function useVirtualBrowseSession({
     setBrowseLayout(layoutRef.current);
   }, [setBrowseLayout, setVirtualBrowseLayout]);
 
+  const applyPreviewPatches = useCallback((
+    patches: ReadonlyMap<string, {
+      previewKind: 'source' | null;
+      previewRevisionId: string | null;
+    }>,
+  ) => {
+    if (patches.size === 0) return;
+    const current = virtualLayoutRef.current;
+    if (!current || sessionRef.current?.virtualized !== true) return;
+    const next = patchVirtualLayoutPreviews(current, patches);
+    if (next === current) return;
+    virtualLayoutRef.current = next;
+    layoutRef.current = materializeVirtualLoadedEntries(next);
+    layoutDirtyRef.current = false;
+    setVirtualBrowseLayout(next);
+    setBrowseLayout(layoutRef.current);
+  }, [setBrowseLayout, setVirtualBrowseLayout]);
+
   const reset = useCallback(() => {
     sessionRef.current = null;
     summaryPagesRef.current.clear();
@@ -351,6 +370,7 @@ export function useVirtualBrowseSession({
     getLoadedSummaryAssetIds,
     removeEntries,
     applyGeometryPatches,
+    applyPreviewPatches,
     isVirtualized,
     reset,
   };

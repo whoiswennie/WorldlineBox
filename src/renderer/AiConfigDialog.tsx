@@ -29,6 +29,7 @@ import { iconActionAttrs } from "./icon-action-attrs";
 import { isImeKeyboardEvent } from "./ime-safe-dismiss";
 import { useT } from "./i18n";
 import { DialogShell } from "./ui/patterns";
+import { Select } from "./ui/primitives/Select";
 
 export type AiConnectionState =
   | "idle"
@@ -463,21 +464,19 @@ export function AiConfigDialog({
               <label className="micro-label" htmlFor="ai-config-profile">
                 {t("aiConfig.savedProfiles")}
               </label>
-              <select
+              <Select
                 className="text-field ai-config-input"
                 id="ai-config-profile"
-                onChange={(event) => {
-                  onSelectProfile(event.target.value);
-                }}
+                onValueChange={onSelectProfile}
+                options={[
+                  { value: "", label: t("aiConfig.newProfileOption") },
+                  ...profiles.map((profile) => ({
+                    value: profile.id,
+                    label: `${profile.name}${profile.id === activeProfileId ? ` · ${t("aiConfig.activeProfile")}` : ""}${!profile.hasCredential ? ` · ${t("aiConfig.missingCredential")}` : ""}`,
+                  })),
+                ]}
                 value={profileDraftId ?? ""}
-              >
-                <option value="">{t("aiConfig.newProfileOption")}</option>
-                {profiles.map((profile) => (
-                  <option key={profile.id} value={profile.id}>
-                    {profile.name}{profile.id === activeProfileId ? ` · ${t("aiConfig.activeProfile")}` : ""}{!profile.hasCredential ? ` · ${t("aiConfig.missingCredential")}` : ""}
-                  </option>
-                ))}
-              </select>
+              />
             </div>
             <button className="secondary-button" onClick={onNewProfile} type="button">
               {t("aiConfig.addProfile")}
@@ -526,20 +525,16 @@ export function AiConfigDialog({
             <label className="micro-label" htmlFor="ai-config-api-format">
               {t("aiConfig.apiFormat")}
             </label>
-            <select
+            <Select
               className="text-field ai-config-input"
               id="ai-config-api-format"
-              onChange={(e) =>
-                handleApiFormatChange(e.target.value as AiApiFormat)
-              }
+              onValueChange={(value) => handleApiFormatChange(value as AiApiFormat)}
+              options={AI_API_FORMATS.map((id) => ({
+                value: id,
+                label: AI_API_FORMAT_LABELS[id],
+              }))}
               value={apiFormat}
-            >
-              {AI_API_FORMATS.map((id) => (
-                <option key={id} value={id}>
-                  {AI_API_FORMAT_LABELS[id]}
-                </option>
-              ))}
-            </select>
+            />
             <p className="ai-config-hint">{t("aiConfig.apiFormatHint")}</p>
           </div>
           <div className="editor-field ai-config-field">
@@ -713,22 +708,18 @@ export function AiConfigDialog({
             <label className="micro-label" htmlFor="ai-config-language">
               {t("aiConfig.language")}
             </label>
-            <select
+            <Select
               className="text-field ai-config-input"
               id="ai-config-language"
-              onChange={(e) =>
-                onLanguagesChange([e.target.value as AiLanguageId])
-              }
+              onValueChange={(value) => onLanguagesChange([value as AiLanguageId])}
+              options={AI_LANGUAGE_OPTIONS.map((option) => ({
+                value: option.id,
+                label: option.labelZh === option.labelEn
+                  ? option.labelEn
+                  : `${option.labelZh} / ${option.labelEn}`,
+              }))}
               value={language}
-            >
-              {AI_LANGUAGE_OPTIONS.map((option) => (
-                <option key={option.id} value={option.id}>
-                  {option.labelZh === option.labelEn
-                    ? option.labelEn
-                    : `${option.labelZh} / ${option.labelEn}`}
-                </option>
-              ))}
-            </select>
+            />
             <p className="ai-config-hint">{t("aiConfig.languageHint")}</p>
           </div>
           <div className="ai-config-switches">
@@ -881,22 +872,18 @@ export function AiConfigDialog({
                 <label className="micro-label" htmlFor="ai-config-output-style">
                   {t("aiConfig.outputStyle")}
                 </label>
-                <select
+                <Select
                   className="text-field ai-config-input"
                   id="ai-config-output-style"
-                  onChange={(e) =>
-                    patchSettings({
-                      outputStyle: e.target.value as AiOutputStyle,
-                    })
-                  }
+                  onValueChange={(value) => patchSettings({
+                    outputStyle: value as AiOutputStyle,
+                  })}
+                  options={AI_OUTPUT_STYLES.map((style) => ({
+                    value: style,
+                    label: t(OUTPUT_STYLE_LABEL_KEY[style]),
+                  }))}
                   value={analysisSettings.outputStyle}
-                >
-                  {AI_OUTPUT_STYLES.map((style) => (
-                    <option key={style} value={style}>
-                      {t(OUTPUT_STYLE_LABEL_KEY[style])}
-                    </option>
-                  ))}
-                </select>
+                />
               </div>
               <div
                 className={`editor-field ai-config-field${ratingEnabled ? "" : " is-disabled"}`}

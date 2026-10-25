@@ -360,14 +360,49 @@ export const shell: WorldlineBoxShellApi = Object.freeze({
   setApplicationShortcutAcceleratorsEnabled(enabled: boolean, fullscreenOnly = false): void {
     ipcRenderer.send(APPLICATION_SHORTCUTS_ENABLED_CHANNEL, { enabled: Boolean(enabled), fullscreenOnly });
   },
-  onBrowseShortcut(listener: (action: BrowseKeyboardAction) => void): () => void {
+  onBrowseShortcut(
+    listener: (
+      action: BrowseKeyboardAction,
+      chord?: {
+        key: string;
+        code?: string;
+        ctrlKey?: boolean;
+        metaKey?: boolean;
+        altKey?: boolean;
+        shiftKey?: boolean;
+      },
+    ) => void,
+  ): () => void {
     const handler = (
       _event: Electron.IpcRendererEvent,
-      payload: { action?: string },
+      payload: {
+        action?: string;
+        chord?: {
+          key?: string;
+          code?: string;
+          ctrlKey?: boolean;
+          metaKey?: boolean;
+          altKey?: boolean;
+          shiftKey?: boolean;
+        };
+      },
     ) => {
       const action = payload?.action;
-      if (action === 'rename' || action === 'trash' || action === 'disk-delete') {
-        listener(action);
+      if (action === 'rename' || action === 'trash' || action === 'disk-delete' || action === 'copy-path') {
+        const chord = payload.chord;
+        listener(
+          action,
+          chord && typeof chord.key === 'string'
+            ? {
+                key: chord.key,
+                ...(typeof chord.code === 'string' ? { code: chord.code } : {}),
+                ctrlKey: chord.ctrlKey === true,
+                metaKey: chord.metaKey === true,
+                altKey: chord.altKey === true,
+                shiftKey: chord.shiftKey === true,
+              }
+            : undefined,
+        );
       }
     };
     ipcRenderer.on(BROWSE_SHORTCUT_CHANNEL, handler);

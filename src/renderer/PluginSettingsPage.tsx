@@ -25,6 +25,7 @@ import { pluginRequiresTrustedCssDisclosure } from '../plugins/plugin-themes';
 import { resolvePluginDisplayCopy } from '../plugins/plugin-localized-copy';
 import { PluginUninstallDialog } from './PluginUninstallDialog';
 import { DialogShell } from './ui/patterns';
+import { Select } from './ui/primitives';
 import { useLocale, useT } from './i18n';
 
 type PluginSettingsPageProps = {
@@ -921,23 +922,21 @@ export function PluginSettingsPage({
           >
             <label className="plugin-install-scope-field">
               <span className="micro-label">{t('settings.pluginInstallScope')}</span>
-              <select
+              <Select
                 className="text-field"
-                disabled={busy}
-                onChange={(event) => setInstallScope(event.target.value as InstallScope)}
                 data-hover-tip={canUseLibraryScope ? scopeHoverTip(installScope) : t('settings.pluginLibraryClosedHint')}
+                disabled={busy}
+                onValueChange={(value) => setInstallScope(value as InstallScope)}
+                options={[
+                  { value: 'user', label: t('settings.pluginScopeUser') },
+                  {
+                    value: 'library',
+                    label: t('settings.pluginScopeLibrary'),
+                    disabled: !canUseLibraryScope,
+                  },
+                ]}
                 value={installScope}
-              >
-                <option value="user">
-                  {t('settings.pluginScopeUser')}
-                </option>
-                <option
-                  disabled={!canUseLibraryScope}
-                  value="library"
-                >
-                  {t('settings.pluginScopeLibrary')}
-                </option>
-              </select>
+              />
             </label>
             {scopeHoverTip(installScope) ? <p className="app-settings-hint">{scopeHoverTip(installScope)}</p> : null}
             {!canUseLibraryScope ? <p className="app-settings-hint">{t('settings.pluginLibraryClosedHint')}</p> : null}

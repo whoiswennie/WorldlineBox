@@ -2,6 +2,7 @@ import { Icon } from "./Icons";
 import { iconActionAttrs } from "./icon-action-attrs";
 import { useT } from "./i18n";
 import { DialogShell } from "./ui/patterns";
+import { Select } from "./ui/primitives";
 
 export interface ConvertLinkedDialogProps {
   folderName: string;
@@ -40,18 +41,18 @@ export function ConvertLinkedDialog({
         title={t("dialog.convertLinked.title", { name: folderName })}
       >
         <p className="field-help">{t("dialog.convertLinked.help")}</p>
-        <select
+        <Select
           className="text-field"
-          onChange={(event) => onTargetChange(event.target.value)}
+          onValueChange={onTargetChange}
+          options={[
+            { value: "", label: t("scope.rootFolder") },
+            ...folders.map((folder) => ({
+              value: folder.folderId,
+              label: folder.relativePath,
+            })),
+          ]}
           value={targetFolderId}
-        >
-          <option value="">{t("scope.rootFolder")}</option>
-          {folders.map((folder) => (
-            <option key={folder.folderId} value={folder.folderId}>
-              {folder.relativePath}
-            </option>
-          ))}
-        </select>
+        />
         <div className="dialog-actions">
           <button
             className="secondary-button"

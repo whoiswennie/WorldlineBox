@@ -5,7 +5,7 @@ import path from 'node:path';
 import { _electron as electron, expect, test, type ElectronApplication, type Page } from '@playwright/test';
 import sharp from 'sharp';
 
-import { electronLaunchEnv, openAppSettingsDialog, openPluginAdvancedInstallDialog, openPluginSettingsTab, resolveElectronExecutablePath } from './electron-test-helpers';
+import { chooseStandardOption, electronLaunchEnv, openAppSettingsDialog, openPluginAdvancedInstallDialog, openPluginSettingsTab, resolveElectronExecutablePath } from './electron-test-helpers';
 import { PLUGIN_LIBRARY_DATA_DIRECTORY } from '../../src/plugins/plugin-package';
 
 test.describe.configure({ timeout: 180_000 });
@@ -144,8 +144,8 @@ async function expectContributionsAndSettingsIframe(window: Page, libraryId: str
   }
   await expect(enabledSetting).toBeChecked();
   const quality = hostSettings.getByRole('combobox', { name: 'Probe quality' });
-  await quality.selectOption('high');
-  await expect(quality).toHaveValue('high');
+  await chooseStandardOption(quality, 'high');
+  await expect(quality).toHaveAttribute('data-value', 'high');
   await expect(hostSettings.locator('[data-hover-tip="Choose the probe processing quality."]')).toBeVisible();
   await hostSettings.locator('[data-hover-tip="Choose the probe processing quality."]').hover();
   await expect(window.locator('.hover-tip')).toHaveText('Choose the probe processing quality.');
@@ -204,7 +204,7 @@ test('lists menus.asset and settings.pages after enable, and after recent-librar
     await expect(dialog.getByText('暂未安装插件。', { exact: true }).first()).toBeVisible();
     const installDialog = await openPluginAdvancedInstallDialog(window, dialog);
     await expect(installDialog).toBeVisible();
-    await installDialog.getByLabel('安装范围').selectOption('user');
+    await chooseStandardOption(installDialog.getByLabel('安装范围'), 'user');
     await installDialog.getByRole('button', { name: '安装文件夹' }).click();
     await expect(dialog.getByText(/Unrestricted Settings Probe\s*-\s*v/)).toBeVisible({ timeout: 30_000 });
 

@@ -4,7 +4,7 @@ import path from 'node:path';
 
 import { _electron as electron, expect, test } from '@playwright/test';
 
-import { assetCard, resolveElectronExecutablePath } from './electron-test-helpers';
+import { assetCard, chooseStandardOption, resolveElectronExecutablePath } from './electron-test-helpers';
 
 test('moves a managed asset to a real folder and exposes one visible undo', async () => {
   test.setTimeout(120_000);
@@ -45,7 +45,7 @@ test('moves a managed asset to a real folder and exposes one visible undo', asyn
     await expect(asset).toBeVisible();
     await asset.click({ button: 'right' });
     await window.getByRole('menuitem', { name: '移动到文件夹…' }).click();
-    await window.getByLabel('目标文件夹').selectOption({ label: 'Target (0)' });
+    await chooseStandardOption(window.getByLabel('目标文件夹'), { label: 'Target (0)' });
     await window.getByRole('button', { name: '确认移动' }).click();
     await expect(window.locator('.workspace-notice')).toContainText('已移动 1 项资产');
     await expect(window.getByRole('button', { name: '撤销' })).toBeVisible();

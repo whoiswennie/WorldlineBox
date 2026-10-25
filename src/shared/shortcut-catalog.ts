@@ -212,7 +212,7 @@ export const SHORTCUT_ACTIONS: readonly ShortcutActionDefinition[] = Object.free
       windows: [assetCopyPathWin],
     },
     customizable: true,
-    surfaces: rendererAndContext,
+    surfaces: ["renderer", "context-menu", "hidden-accelerator", "before-input"],
   },
   {
     id: "asset.rename",
@@ -240,6 +240,18 @@ export const SHORTCUT_ACTIONS: readonly ShortcutActionDefinition[] = Object.free
     defaults: sharedDiskDeleteDefaults,
     customizable: true,
     surfaces: rendererContextAndHidden,
+  },
+  {
+    id: "folder.copy-path",
+    labelKey: "shortcuts.action.folder.copyPath",
+    category: "folder",
+    scopes: ["sidebar.folder"],
+    defaults: {
+      mac: [assetCopyPathMac],
+      windows: [assetCopyPathWin],
+    },
+    customizable: true,
+    surfaces: ["renderer", "context-menu", "hidden-accelerator", "before-input"],
   },
   {
     id: "folder.open-in-file-manager",

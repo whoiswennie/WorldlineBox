@@ -7,6 +7,8 @@ import type {
   FbxMeshDescriptor,
   FbxTextureDescriptor,
 } from './descriptor';
+import { decodeTextureToRgba } from './oiio-texture';
+import { appendRgbaTextureChunk } from '../../shared/fbx-rgba-chunk';
 
 /**
  * glTF 2.0 GLB builder for the ufbx bridge descriptor.
@@ -253,25 +255,43 @@ export async function buildGlb(input: GlbBuildInput): Promise<GlbBuildOutput> {
   gltf.textures = [];
   gltf.images = [];
   const gltfTextureByDescriptorIndex = new Map<number, number>();
+  const rgbaTextures = new Map<number, { width: number; height: number; rgba: Buffer }>();
   const imageSlots: Array<{ tex: FbxTextureDescriptor; bytes: Buffer; offset: number }> = [];
   {
     let cursor = align4(geometryEnd);
     for (const tex of descriptor.textures) {
       let bytes: Buffer | null = null;
       let mime: 'image/png' | 'image/jpeg' | null = null;
+      let keepEmbeddedBytes = false;
       if (tex.embedded && tex.contentSize > 0) {
         const start = blobBase + tex.contentOffset;
         if (start + tex.contentSize <= packed.length) {
           bytes = packed.subarray(start, start + tex.contentSize);
           mime = detectImageMime(bytes);
+          keepEmbeddedBytes = mime !== null;
+          if (bytes && !mime) {
+            const decoded = await decodeTextureToRgba(bytes, tex.relativeFilename || tex.name);
+            if (decoded) {
+              rgbaTextures.set(tex.index, decoded);
+              bytes = null;
+            }
+          }
         }
       } else {
         const resolved = textures.get(tex.index);
         if (resolved) {
           bytes = resolved.bytes;
           mime = detectImageMime(resolved.bytes);
+          if (bytes && !mime) {
+            const decoded = await decodeTextureToRgba(bytes, tex.relativeFilename || tex.name);
+            if (decoded) {
+              rgbaTextures.set(tex.index, decoded);
+              bytes = null;
+            }
+          }
         }
       }
+      if (rgbaTextures.has(tex.index)) continue;
       if (!bytes || !mime) {
         unresolvedTextures.push(tex.relativeFilename || tex.name);
         warnings.push(
@@ -281,7 +301,7 @@ export async function buildGlb(input: GlbBuildInput): Promise<GlbBuildOutput> {
         );
         continue;
       }
-      if (tex.embedded) {
+      if (keepEmbeddedBytes) {
         // Stays in the bridge region; no extra BIN bytes needed.
         gltf.textures.push({ source: gltf.images.length });
         gltf.images.push({
@@ -309,20 +329,25 @@ export async function buildGlb(input: GlbBuildInput): Promise<GlbBuildOutput> {
       metallicFactor: clamp01(mat.metallic),
       roughnessFactor: clamp01(mat.roughness),
     };
-    const tex = (descriptorIndex: number): number | undefined => {
+    const rgbaSlots: Record<string, number> = {};
+    const tex = (slot: string, descriptorIndex: number): number | undefined => {
       if (descriptorIndex < 0) return undefined;
+      if (rgbaTextures.has(descriptorIndex)) {
+        rgbaSlots[slot] = descriptorIndex;
+        return undefined;
+      }
       return gltfTextureByDescriptorIndex.get(descriptorIndex);
     };
-    const baseTex = tex(mat.baseColorTexture);
+    const baseTex = tex('baseColor', mat.baseColorTexture);
     if (baseTex !== undefined) pbr.baseColorTexture = { index: baseTex };
-    const mrTex = tex(mat.metallicRoughnessTexture);
+    const mrTex = tex('metallicRoughness', mat.metallicRoughnessTexture);
     if (mrTex !== undefined) pbr.metallicRoughnessTexture = { index: mrTex };
     const gltfMat: Record<string, unknown> = { pbrMetallicRoughness: pbr };
-    const normalTex = tex(mat.normalTexture);
+    const normalTex = tex('normal', mat.normalTexture);
     if (normalTex !== undefined) {
       gltfMat.normalTexture = { index: normalTex, scale: mat.normalScale || 1 };
     }
-    const occlusionTex = tex(mat.occlusionTexture);
+    const occlusionTex = tex('occlusion', mat.occlusionTexture);
     if (occlusionTex !== undefined) {
       gltfMat.occlusionTexture = { index: occlusionTex, strength: 1 };
     }
@@ -330,8 +355,14 @@ export async function buildGlb(input: GlbBuildInput): Promise<GlbBuildOutput> {
     if (emissive[0]! > 0 || emissive[1]! > 0 || emissive[2]! > 0) {
       gltfMat.emissiveFactor = emissive;
     }
-    const emissiveTex = tex(mat.emissiveTexture);
+    const emissiveTex = tex('emissive', mat.emissiveTexture);
     if (emissiveTex !== undefined) gltfMat.emissiveTexture = { index: emissiveTex };
+    if (Object.keys(rgbaSlots).length > 0) {
+      gltfMat.extras = {
+        serpentRgbaTextures: rgbaSlots,
+        ...(rgbaSlots.normal === undefined ? {} : { serpentNormalScale: mat.normalScale || 1 }),
+      };
+    }
     if (mat.alphaMode === 'blend') gltfMat.alphaMode = 'BLEND';
     if (mat.doubleSided) gltfMat.doubleSided = true;
     if (mat.name) gltfMat.name = mat.name;
@@ -431,23 +462,32 @@ export async function buildGlb(input: GlbBuildInput): Promise<GlbBuildOutput> {
   const jsonBytes = Buffer.from(JSON.stringify(gltf), 'utf8');
   const jsonPaddedLength = align4(jsonBytes.length);
 
-  const glb = Buffer.alloc(12 + 8 + jsonPaddedLength + 8 + binChunk.length);
+  const meshGlb = Buffer.alloc(12 + 8 + jsonPaddedLength + 8 + binChunk.length);
   let offset = 0;
-  glb.writeUInt32LE(0x46546c67, offset); // magic "glTF"
-  glb.writeUInt32LE(2, offset + 4); // version
-  glb.writeUInt32LE(glb.length, offset + 8); // total length
+  meshGlb.writeUInt32LE(0x46546c67, offset); // magic "glTF"
+  meshGlb.writeUInt32LE(2, offset + 4); // version
+  meshGlb.writeUInt32LE(meshGlb.length, offset + 8); // total length
   offset += 12;
   // GLB chunk header is [chunkLength u32][chunkType u32]; writing them in the
   // wrong order makes GLTFLoader reject the file with "JSON content not found"
   // (caught by the real-app E2E, not by the magic-bytes-only unit test).
-  glb.writeUInt32LE(jsonPaddedLength, offset); // chunk length
-  glb.writeUInt32LE(0x4e4f534a, offset + 4); // chunk type "JSON"
-  jsonBytes.copy(glb, offset + 8);
-  glb.fill(0x20, offset + 8 + jsonBytes.length, offset + 8 + jsonPaddedLength);
+  meshGlb.writeUInt32LE(jsonPaddedLength, offset); // chunk length
+  meshGlb.writeUInt32LE(0x4e4f534a, offset + 4); // chunk type "JSON"
+  jsonBytes.copy(meshGlb, offset + 8);
+  meshGlb.fill(0x20, offset + 8 + jsonBytes.length, offset + 8 + jsonPaddedLength);
   offset += 8 + jsonPaddedLength;
-  glb.writeUInt32LE(binChunk.length, offset); // chunk length
-  glb.writeUInt32LE(0x004e4942, offset + 4); // chunk type "BIN\0"
-  binChunk.copy(glb, offset + 8);
+  meshGlb.writeUInt32LE(binChunk.length, offset); // chunk length
+  meshGlb.writeUInt32LE(0x004e4942, offset + 4); // chunk type "BIN\0"
+  binChunk.copy(meshGlb, offset + 8);
+  const glb = appendRgbaTextureChunk(
+    meshGlb,
+    [...rgbaTextures.entries()].map(([textureIndex, image]) => ({
+      textureIndex,
+      width: image.width,
+      height: image.height,
+      rgba: image.rgba,
+    })),
+  );
 
   let triangles = 0;
   let vertices = 0;

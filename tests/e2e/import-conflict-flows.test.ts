@@ -80,12 +80,14 @@ test('name conflicts and content duplicates surface separate dialogs with the ri
       throw error;
     }
     const nameSelect = nameDialog.locator('#name-conflict-decision');
-    expect(await nameSelect.locator('option').allTextContents()).toEqual([
+    await nameSelect.click();
+    const nameMenu = window.getByRole('listbox');
+    expect(await nameMenu.getByRole('option').allTextContents()).toEqual([
       '自动重命名',
       '覆盖',
       '跳过',
     ]);
-    await nameSelect.selectOption({ label: '跳过' });
+    await nameMenu.getByRole('option', { name: '跳过', exact: true }).click();
     await nameDialog.getByRole('button', { name: '跳过并继续' }).click();
     await expect(nameDialog).toBeHidden({ timeout: 15_000 });
 
@@ -93,11 +95,13 @@ test('name conflicts and content duplicates surface separate dialogs with the ri
     const duplicateDialog = window.getByRole('dialog', { name: '内容重复' });
     await expect(duplicateDialog).toBeVisible({ timeout: 15_000 });
     const duplicateSelect = duplicateDialog.locator('#content-duplicate-decision');
-    expect(await duplicateSelect.locator('option').allTextContents()).toEqual([
+    await duplicateSelect.click();
+    const duplicateMenu = window.getByRole('listbox');
+    expect(await duplicateMenu.getByRole('option').allTextContents()).toEqual([
       '跳过',
       '仍然导入',
     ]);
-    await duplicateSelect.selectOption({ label: '跳过' });
+    await duplicateMenu.getByRole('option', { name: '跳过', exact: true }).click();
     await duplicateDialog.getByRole('button', { name: '跳过并继续' }).click();
     await expect(duplicateDialog).toBeHidden({ timeout: 15_000 });
   } finally {

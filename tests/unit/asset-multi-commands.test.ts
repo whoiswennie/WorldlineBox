@@ -311,6 +311,20 @@ describe('快捷键标签按平台解析', () => {
     ).toBe(expected);
   });
 
+  it.each([
+    ['mac', '⌥⌘Delete'],
+    ['windows', 'Shift+Delete'],
+  ] as const)(
+    'assets.delete-from-disk 在 %s 显示「%s」',
+    (platform, expected) => {
+      const { ctx } = makeCtx({ platform });
+      expect(
+        findItem(registry.resolveMenu(ctx), 'assets.delete-from-disk')
+          .shortcutLabel,
+      ).toBe(expected);
+    },
+  );
+
   it('未声明快捷键的项 shortcutLabel 为 null', () => {
     const { ctx } = makeCtx();
     const menu = registry.resolveMenu(ctx);

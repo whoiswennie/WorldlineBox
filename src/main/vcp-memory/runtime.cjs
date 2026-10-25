@@ -4,8 +4,8 @@
 const fs = require('node:fs/promises');
 const path = require('node:path');
 const { createHash, randomUUID } = require('node:crypto');
-const { URL } = require('node:url');
-const { createRequire } = require('node:module');
+const { URL, fileURLToPath, pathToFileURL } = require('node:url');
+const { createRequire, isBuiltin, registerHooks } = require('node:module');
 const { tmpdir } = require('node:os');
 
 function failure(code, message) { return Object.assign(new Error(message), { code }); }
@@ -85,15 +85,32 @@ async function jsonOrNull(file) {
   try { return JSON.parse(await fs.readFile(file, 'utf8')); }
   catch (error) { if (error.code === 'ENOENT') return null; throw error; }
 }
-async function linkedDirectory(target, source) {
-  let current;
-  try { current = await fs.lstat(target); } catch (error) { if (error.code !== 'ENOENT') throw error; }
-  if (current) {
-    if (!current.isSymbolicLink()) throw failure('VCP_MEMORY_RUNTIME_LAYOUT', 'Expected an isolated runtime dependency link.');
-    if (await fs.realpath(target) === await fs.realpath(source)) return;
-    await fs.unlink(target);
-  }
-  await fs.symlink(source, target, process.platform === 'win32' ? 'junction' : 'dir');
+/** Bind the private upstream copy to the shipped dependencies directly. Windows
+ * junction traversal can fail in user libraries even when the package exists.
+ * Preserve relative JS/assets and all package export/import conditions; only
+ * requests originating in this runtime use the vendor's dependency boundary.
+ */
+function bindRuntimeDependencies(runtimeRoot, vendorRoot) {
+  const vendorParent = pathToFileURL(path.join(vendorRoot, 'package.json')).href;
+  const vendorRequire = createRequire(vendorParent);
+  return registerHooks({ resolve(specifier, context, nextResolve) {
+    if (context.parentURL?.startsWith('file:')) {
+      const parent = fileURLToPath(context.parentURL), relative = path.relative(runtimeRoot, parent);
+      if (relative && relative !== '..' && !relative.startsWith('..' + path.sep) && !path.isAbsolute(relative)) {
+        if (isBuiltin(specifier)) return nextResolve(specifier, context);
+        if (!specifier.startsWith('.') && !path.isAbsolute(specifier) && !/^[a-z][a-z\d+.-]*:/iu.test(specifier)) {
+          // CommonJS retains its parent Module's search paths inside nextResolve;
+          // resolve it with the explicit vendor require rather than just a URL.
+          if (context.conditions.includes('require')) return { url: pathToFileURL(vendorRequire.resolve(specifier)).href, shortCircuit: true };
+          return nextResolve(specifier, { ...context, parentURL: vendorParent });
+        }
+        if (specifier.startsWith('.') && path.resolve(path.dirname(parent), specifier) === path.join(runtimeRoot, 'rust-vexus-lite')) {
+          return { url: pathToFileURL(vendorRequire.resolve('./rust-vexus-lite')).href, shortCircuit: true };
+        }
+      }
+    }
+    return nextResolve(specifier, context);
+  } });
 }
 async function removeOwnedDirectory(root) {
   if (!path.isAbsolute(root) || path.parse(root).root === path.resolve(root)) throw failure('VCP_MEMORY_UNSAFE_SOURCE', 'Unsafe VCP directory removal.');
@@ -151,8 +168,8 @@ class VcpMemoryRuntime {
     const vendorRoot = path.resolve(identity(configuration.vendorRoot, 'VCP vendor root'));
     this.runtimeRoot = path.join(this.scopeRoot, 'runtime');
     // Unchanged upstream peripherals store caches beside their modules. Give each
-    // physical scope its own byte-identical JS/assets; share only immutable native
-    // binaries and installed packages through directory links.
+    // physical scope its own byte-identical JS/assets; resolve immutable native
+    // binaries and installed packages from the vendor without directory links.
     await fs.cp(vendorRoot, this.runtimeRoot, { recursive: true, dereference: true,
       filter: source => !['node_modules', 'rust-vexus-lite'].includes(path.basename(source)) });
     // Near-identical text can contain a materially different negation, identity
@@ -190,9 +207,10 @@ class VcpMemoryRuntime {
     const dependencyRoot = path.dirname(path.dirname(tokenDirectory));
     for (const [name, source] of [['node_modules', dependencyRoot], ['rust-vexus-lite', path.join(vendorRoot, 'rust-vexus-lite')]]) {
       const target = path.join(this.runtimeRoot, name);
-      await linkedDirectory(target, source);
-      this.dependencyLinks.push({ target, source });
+      // Retire links left by earlier versions without following their targets.
+      await unlinkRuntimeDependency(this.runtimeRoot, target, source);
     }
+    this.dependencyBinding = bindRuntimeDependencies(this.runtimeRoot, vendorRoot);
     // libuv chdir still rejects >MAX_PATH even with a namespaced argument. This
     // empty private cwd also prevents upstream TextChunker loading a host config.env.
     this.cwdRoot = await fs.mkdtemp(path.join(tmpdir(), 'vcp-cwd-'));
@@ -533,6 +551,7 @@ class VcpMemoryRuntime {
       for (const link of this.dependencyLinks) {
         try { await unlinkRuntimeDependency(this.runtimeRoot, link.target, link.source); } catch (error) { errors.push(error); }
       }
+      this.dependencyBinding?.deregister(); this.dependencyBinding = null;
       if (this.cwdRoot) {
         process.chdir(tmpdir());
         try { await fs.rmdir(this.cwdRoot); this.cwdRoot = null; } catch (error) { errors.push(error); }
@@ -543,4 +562,4 @@ class VcpMemoryRuntime {
   }
 }
 
-module.exports = { VcpMemoryRuntime, embeddingConfiguration, normalizeNote, projectNativeScoreDetails, notebookFolder, unlinkRuntimeDependency, removeOwnedDirectory };
+module.exports = { VcpMemoryRuntime, embeddingConfiguration, normalizeNote, projectNativeScoreDetails, notebookFolder, unlinkRuntimeDependency, removeOwnedDirectory, bindRuntimeDependencies };

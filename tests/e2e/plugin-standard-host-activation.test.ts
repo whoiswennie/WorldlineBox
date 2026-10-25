@@ -4,7 +4,7 @@ import path from 'node:path';
 
 import { _electron as electron, expect, test } from '@playwright/test';
 
-import { closeLibraryViaSwitcher, electronLaunchEnv, openAppSettingsDialog, openPluginAdvancedInstallDialog, openPluginSettingsTab, resolveElectronExecutablePath } from './electron-test-helpers';
+import { chooseStandardOption, closeLibraryViaSwitcher, electronLaunchEnv, openAppSettingsDialog, openPluginAdvancedInstallDialog, openPluginSettingsTab, resolveElectronExecutablePath } from './electron-test-helpers';
 import { PLUGIN_LIBRARY_DATA_DIRECTORY } from '../../src/plugins/plugin-package';
 
 test.describe.configure({ timeout: 180_000 });
@@ -41,7 +41,7 @@ test('activates the fixed standard Host probe and writes library storage', async
     await openPluginSettingsTab(dialog);
     await expect(dialog.getByText('暂未安装插件。', { exact: true }).first()).toBeVisible();
     const installDialog = await openPluginAdvancedInstallDialog(window, dialog);
-    await installDialog.getByLabel('安装范围').selectOption('library');
+    await chooseStandardOption(installDialog.getByLabel('安装范围'), 'library');
     await installDialog.getByRole('button', { name: '安装文件夹' }).click();
     await expect(dialog.getByText(/Standard Host Probe\s*-\s*v1\.0\.0/)).toBeVisible({ timeout: 30_000 });
     // Trust is now granted as part of enabling a library-scoped plugin; the

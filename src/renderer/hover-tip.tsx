@@ -1,6 +1,7 @@
 import {
   Fragment,
   useEffect,
+  useLayoutEffect,
   useRef,
   useState,
   type CSSProperties,
@@ -8,16 +9,32 @@ import {
 } from 'react';
 import { createPortal } from 'react-dom';
 import { isImeKeyboardEvent } from './ime-safe-dismiss';
+import { placeOverlayInViewport, readOverlayViewport } from './place-overlay';
 
 /** Quiet delay before a hover tip appears (REQ-SHELL-013 follow-up). */
 export const HOVER_TIP_SHOW_DELAY_MS = 420;
 
+type TipAnchor = {
+  readonly left: number;
+  readonly top: number;
+  readonly right: number;
+  readonly bottom: number;
+  readonly width: number;
+  readonly height: number;
+};
+
 type TipState = {
   readonly id?: string;
   readonly text: string;
+  readonly anchor: TipAnchor;
+  readonly variant: "default" | "search-syntax";
+};
+
+type TipBox = {
   readonly left: number;
   readonly top: number;
-  readonly variant: "default" | "search-syntax";
+  readonly maxWidth: number;
+  readonly maxHeight: number;
 };
 
 function renderSearchSyntaxTip(text: string): ReactNode {
@@ -42,8 +59,10 @@ function renderSearchSyntaxTip(text: string): ReactNode {
  */
 export function HoverTipHost() {
   const [tip, setTip] = useState<TipState | null>(null);
+  const [box, setBox] = useState<TipBox | null>(null);
   const showTimerRef = useRef<number | null>(null);
   const activeElRef = useRef<Element | null>(null);
+  const tipRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     const clearTimer = () => {
@@ -77,26 +96,18 @@ export function HoverTipHost() {
           el.getAttribute('data-hover-tip-variant') === 'search-syntax'
             ? 'search-syntax'
             : 'default';
-        // The search guide has a fixed, readable width. Clamp its centre by
-        // half that width so the right-hand toolbar control cannot make it
-        // overflow off the edge of the window.
-        const searchGuideHalfWidth = Math.min(
-          156,
-          Math.max(0, (window.innerWidth - 24) / 2),
-        );
-        const edgeInset = variant === 'search-syntax'
-          ? 12 + searchGuideHalfWidth
-          : 12;
-        const left = Math.min(
-          window.innerWidth - edgeInset,
-          Math.max(edgeInset, rect.left + rect.width / 2),
-        );
-        const top = Math.min(window.innerHeight - 8, rect.bottom + 6);
+        setBox(null);
         setTip({
           id,
           text,
-          left,
-          top,
+          anchor: {
+            left: rect.left,
+            top: rect.top,
+            right: rect.right,
+            bottom: rect.bottom,
+            width: rect.width,
+            height: rect.height,
+          },
           variant,
         });
         showTimerRef.current = null;
@@ -185,18 +196,48 @@ export function HoverTipHost() {
     };
   }, []);
 
+  useLayoutEffect(() => {
+    if (!tip) return;
+    const measure = () => {
+      const node = tipRef.current;
+      if (!node) return;
+      const placed = placeOverlayInViewport({
+        anchor: tip.anchor,
+        size: { width: node.offsetWidth, height: node.offsetHeight },
+        viewport: readOverlayViewport(),
+        align: 'center',
+      });
+      setBox((current) => (
+        current
+        && current.left === placed.left
+        && current.top === placed.top
+        && current.maxWidth === placed.maxWidth
+        && current.maxHeight === placed.maxHeight
+          ? current
+          : placed
+      ));
+    };
+    measure();
+    window.addEventListener('resize', measure);
+    return () => window.removeEventListener('resize', measure);
+  }, [tip]);
+
   if (!tip || typeof document === 'undefined') return null;
 
-  const style: CSSProperties = {
-    left: tip.left,
-    top: tip.top,
-    transform: 'translateX(-50%)',
-  };
+  const style: CSSProperties = box
+    ? {
+        left: box.left,
+        top: box.top,
+        maxHeight: box.maxHeight,
+        visibility: 'visible',
+      }
+    : { left: 0, top: 0, visibility: 'hidden' };
 
   return createPortal(
     <div
       className={`hover-tip${tip.variant === 'search-syntax' ? ' is-search-syntax' : ''}`}
       id={tip.id}
+      ref={tipRef}
       role="tooltip"
       style={style}
     >

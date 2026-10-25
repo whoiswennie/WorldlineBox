@@ -17,7 +17,17 @@ import {
 
 export type BrowseShortcutShell = {
   readonly onBrowseShortcut?: (
-    listener: (action: BrowseKeyboardAction) => void,
+    listener: (
+      action: BrowseKeyboardAction,
+      chord?: {
+        readonly key: string;
+        readonly code?: string;
+        readonly ctrlKey?: boolean;
+        readonly metaKey?: boolean;
+        readonly altKey?: boolean;
+        readonly shiftKey?: boolean;
+      },
+    ) => void,
   ) => () => void;
   readonly setBrowseShortcutAcceleratorsEnabled?: (enabled: boolean) => void;
   readonly setApplicationShortcutAcceleratorsEnabled?: (enabled: boolean) => void;
@@ -94,22 +104,31 @@ export function useWindowsBrowseShortcutBridge(args: {
   useEffect(() => {
     if (!enabled || !shell?.onBrowseShortcut) return;
 
-    return shell.onBrowseShortcut((action) => {
+    return shell.onBrowseShortcut((action, chord) => {
       if (!isBrowseKeyboardAction(action)) return;
-      if (browseAcceleratorsBlocked) return;
+      if (browseAcceleratorsBlocked && action !== "copy-path") return;
       if (isEditableKeyboardTarget(document.activeElement)) return;
       if (hasActiveModalDialog()) return;
 
-      const init = browseKeyboardActionToDomInit(action);
+      const init = chord
+        ? {
+            key: chord.key,
+            code: chord.code ?? "",
+            ctrlKey: chord.ctrlKey === true,
+            metaKey: chord.metaKey === true,
+            altKey: chord.altKey === true,
+            shiftKey: chord.shiftKey === true,
+          }
+        : browseKeyboardActionToDomInit(action);
       document.dispatchEvent(
         new KeyboardEvent("keydown", {
           key: init.key,
           code: init.code,
           bubbles: true,
           cancelable: true,
-          ctrlKey: false,
-          metaKey: false,
-          altKey: false,
+          ctrlKey: init.ctrlKey,
+          metaKey: init.metaKey,
+          altKey: init.altKey,
           shiftKey: init.shiftKey,
         }),
       );

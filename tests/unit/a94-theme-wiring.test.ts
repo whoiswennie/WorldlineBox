@@ -19,10 +19,10 @@ describe("a94 window background wiring", () => {
     expect(css).toMatch(/:root\[data-bg-image="on"\] \.app-shell\[data-shell-layout="islands"\] \{[^}]*var\(--island-backdrop\)/);
   });
 
-  it("pins the selection wash and card caption when overridden", () => {
+  it("pins the selection wash and card preview when the card color is overridden", () => {
     expect(CUSTOM_THEME_ISLAND_TOKENS).toContain("--ui-island-select");
     expect(css).toContain("--island-select: var(--ui-island-select);");
-    expect(css).toMatch(/\.asset-card \.asset-caption:is\(\*, #a93-island\)/);
+    expect(css).toMatch(/\.asset-card \.asset-preview:is\(\*, #a93-island\)/);
   });
 
   it("keeps twelve editor fields with accent-soft as the selection wash", () => {

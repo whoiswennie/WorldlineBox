@@ -314,6 +314,10 @@ describe('文件夹分支：快捷键展示（WorldlineBox-vf8x）', () => {
     expect(findItem(winMenu, 'folder.move-to-trash').shortcutLabel).toBe(
       'Delete',
     );
+    expect(findItem(winMenu, 'folder.copy-path').shortcutLabel).toBe(
+      'Ctrl+Shift+C',
+    );
+    expect(findItem(macMenu, 'folder.copy-path').shortcutLabel).toBe('⌥⌘C');
   });
 
   it('linked 子文件夹的操作使用虚拟目录 id（删除走强制删除，不再有系统回收站）', () => {

@@ -9,6 +9,7 @@ import {
 } from "react";
 
 import { Icon } from "./Icons";
+import { Select } from "./ui/primitives/Select";
 import { iconActionAttrs } from "./icon-action-attrs";
 import { useT } from "./i18n";
 import { useViewerZoomPan } from "./use-viewer-zoom-pan";
@@ -421,17 +422,16 @@ export const ZoomableImage = forwardRef<
         {colorSpaceOptions && colorSpaceOptions.length > 1 && onColorSpaceChange ? (
           <label className="preview-color-space-control">
             <span>{t("preview.colorSpace")}</span>
-            <select
+            <Select
+              appearance="inline"
               aria-label={t("preview.colorSpace")}
-              onChange={(event) => onColorSpaceChange(event.currentTarget.value)}
+              onValueChange={onColorSpaceChange}
+              options={colorSpaceOptions.map((option) => ({
+                value: option.id,
+                label: option.label,
+              }))}
               value={colorSpaceValue}
-            >
-              {colorSpaceOptions.map((option) => (
-                <option key={option.id} value={option.id}>
-                  {option.label}
-                </option>
-              ))}
-            </select>
+            />
           </label>
         ) : null}
         <input

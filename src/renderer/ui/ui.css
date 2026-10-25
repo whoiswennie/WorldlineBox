@@ -285,10 +285,12 @@ textarea.ui-field__control {
 
 .ui-select {
   position: relative;
+  width: 100%;
 }
 
 .ui-select::after {
   position: absolute;
+  top: 50%;
   right: var(--ui-space-2);
   width: 0;
   height: 0;
@@ -297,11 +299,96 @@ textarea.ui-field__control {
   border-top: 5px solid var(--ui-content-tertiary);
   content: '';
   pointer-events: none;
+  transform: translateY(-50%);
+}
+
+.ui-select .ui-field__control,
+.ui-select-text-field {
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  text-align: left;
 }
 
 .ui-select .ui-field__control {
   padding-right: var(--ui-space-5);
   appearance: none;
+}
+
+.ui-select-value {
+  min-width: 0;
+  overflow: hidden;
+  text-align: left;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ui-select .ui-field__control .ui-select-value,
+.ui-select-text-field .ui-select-value {
+  flex: 1 1 auto;
+}
+
+.ui-select-trigger .ui-select-value {
+  flex: 0 0 auto;
+}
+
+.ui-select .ui-select-text-field,
+.ui-select .ui-field__control,
+.ui-select-menu,
+.ui-select-menu [role="option"] {
+  font-family: var(--font-ui);
+  font-style: normal;
+  font-weight: 400;
+  letter-spacing: normal;
+}
+
+.ui-select .ui-select-text-field {
+  padding-right: 28px;
+  font-size: calc(12px * var(--ui-font-scale));
+  line-height: normal;
+  text-align: left;
+  cursor: pointer;
+}
+
+.ui-select.is-inline {
+  display: inline-flex;
+  align-items: center;
+  width: auto;
+}
+
+.ui-select-trigger {
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  min-width: 0;
+  padding-right: var(--ui-space-4);
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.ui-select-menu {
+  min-width: 10rem;
+}
+
+.ui-select.settings-select {
+  width: auto;
+  min-width: 7rem;
+}
+
+.mcp-permission-client .ui-select.settings-select {
+  width: 7rem;
+}
+
+.ui-select.semantic-default-model-select {
+  width: min(280px, 100%);
+}
+
+.ui-select.library-semantic-select {
+  width: min(100%, 420px);
 }
 
 .ui-slider {

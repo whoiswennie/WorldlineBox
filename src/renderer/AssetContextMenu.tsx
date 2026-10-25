@@ -1406,6 +1406,7 @@ export function AssetContextMenu(props: AssetContextMenuProps) {
                   <ContextMenuItem
                     icon={<Icon name="file" size={14} />}
                     label={copyPathItem.label}
+                    shortcut={copyPathItem.shortcutLabel ?? undefined}
                     disabled={copyPathItem.disabled}
                     disabledReason={copyPathItem.disabledReason ?? undefined}
                     onAction={() => runSidebarCommand("folder.copy-path")}
@@ -2374,6 +2375,7 @@ export function AssetContextMenu(props: AssetContextMenuProps) {
                     <ContextMenuItem
                       icon={<Icon name="file" size={14} />}
                       label={copyFilePathItem.label}
+                      shortcut={copyFilePathItem.shortcutLabel ?? undefined}
                       disabled={copyFilePathItem.disabled}
                       disabledReason={
                         copyFilePathItem.disabledReason ?? undefined

@@ -55,7 +55,7 @@ body.worldlinebox-modal-open .ui-shell-style-scope > [data-modal-popover="true"]
 .app-shell[data-shell-layout="islands"] .folder-card.is-selected:hover {
   box-shadow: var(--card-shadow-hover);
 }
-.app-shell[data-shell-layout="islands"] :is(.asset-card, .folder-card).is-selected {
+.app-shell[data-shell-layout="islands"] .folder-card.is-selected {
   outline: var(--ui-border-width-hairline) solid var(--island-accent-loud);
   outline-offset: 0;
 }

@@ -41,7 +41,7 @@ export function modelThumbnailFormatForFileName(fileName: string): ModelThumbnai
 /** Fixed render size (square, long edge); DPR is forced to 1 by the page. */
 export const MODEL_THUMBNAIL_DEFAULT_EDGE = 512;
 /** generator_version tag for model thumbnail artifacts (cache/invalidation key). */
-export const MODEL_THUMBNAIL_GENERATOR_VERSION = 'offscreen-webgl-1';
+export const MODEL_THUMBNAIL_GENERATOR_VERSION = 'offscreen-webgl-2';
 
 /** Typed render failure codes (see also benign suppression in thumbnail-support.ts). */
 export const modelThumbnailErrorCodeSchema = z.enum([

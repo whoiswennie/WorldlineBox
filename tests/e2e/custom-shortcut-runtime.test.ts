@@ -502,9 +502,15 @@ test("custom menu accelerators sync, yield to text inputs, and viewer keys run o
       await expect.poll(() => menuItemState(application!, nativeUndoId))
         .toMatchObject({ enabled: true });
     }
+    // Pause through the player's action so its user-paused intent survives
+    // the canplay/seeked events caused by seeking below.
+    if (!await video.evaluate((element) => (element as HTMLVideoElement).paused)) {
+      await viewer.getByRole("button", { name: "暂停", exact: true })
+        .evaluate((button) => (button as HTMLButtonElement).click());
+    }
+    await expect.poll(() => video.evaluate((element) => (element as HTMLVideoElement).paused)).toBe(true);
     await video.evaluate((element) => {
       const media = element as HTMLVideoElement;
-      media.pause();
       media.currentTime = 2.5;
       media.playbackRate = 1;
     });

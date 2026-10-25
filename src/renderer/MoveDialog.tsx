@@ -2,6 +2,7 @@ import { Icon } from "./Icons";
 import { iconActionAttrs } from "./icon-action-attrs";
 import { useT } from "./i18n";
 import { DialogShell } from "./ui/patterns";
+import { Select } from "./ui/primitives";
 
 export interface MoveDialogProps {
   assetIds: string[];
@@ -79,56 +80,46 @@ export function MoveDialog({
         <label className="field-label" htmlFor="move-target">
           {t("dialog.move.targetFolder")}
         </label>
-        <select
+        <Select
           className="text-field"
           id="move-target"
-          onChange={(event) =>
-            onTargetChange(event.target.value || null)
-          }
+          onValueChange={(value) => onTargetChange(value || null)}
+          options={[
+            { value: "", label: t("scope.rootFolder") },
+            ...destinationFolders.map((folder) => ({
+              value: folder.folderId,
+              label: `${folder.relativePath} (${folder.directAssetCount})`,
+            })),
+            ...linkedFolders.map((folder) => ({
+              value: folder.folderId,
+              label: `${t("dialog.move.linkedFolders")} / ${folder.relativePath} (${folder.assetCount})`,
+            })),
+          ]}
           value={targetFolderId ?? ""}
-        >
-          <option value="">{t("scope.rootFolder")}</option>
-          {destinationFolders.map((folder) => (
-            <option key={folder.folderId} value={folder.folderId}>
-              {folder.relativePath} ({folder.directAssetCount})
-            </option>
-          ))}
-          {linkedFolders.length > 0 && (
-            <optgroup label={t("dialog.move.linkedFolders")}>
-              {linkedFolders.map((folder) => (
-                <option key={folder.folderId} value={folder.folderId}>
-                  {folder.relativePath} ({folder.assetCount})
-                </option>
-              ))}
-            </optgroup>
-          )}
-        </select>
+        />
         <label
           className="field-label field-label-spaced"
           htmlFor="move-conflict"
         >
           {t("dialog.move.nameConflict")}
         </label>
-        <select
+        <Select
           className="text-field"
           id="move-conflict"
-          onChange={(event) =>
-            onStrategyChange(
-              event.target.value as MoveDialogProps["conflictStrategy"],
-            )
+          onValueChange={(value) =>
+            onStrategyChange(value as MoveDialogProps["conflictStrategy"])
           }
+          options={[
+            { value: "keep-both", label: t("dialog.move.keepBoth") },
+            ...(folderOnly ? [] : [{ value: "replace", label: t("dialog.move.replace") }]),
+            { value: "skip", label: t("dialog.move.skip") },
+          ]}
           value={
             folderOnly && conflictStrategy === "replace"
               ? "keep-both"
               : conflictStrategy
           }
-        >
-          <option value="keep-both">{t("dialog.move.keepBoth")}</option>
-          {!folderOnly && (
-            <option value="replace">{t("dialog.move.replace")}</option>
-          )}
-          <option value="skip">{t("dialog.move.skip")}</option>
-        </select>
+        />
         <p className="field-help">{t("dialog.move.help")}</p>
         <div className="dialog-actions">
           <button

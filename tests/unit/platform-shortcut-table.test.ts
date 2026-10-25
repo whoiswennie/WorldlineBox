@@ -21,7 +21,11 @@ describe("PLATFORM_SHORTCUT_TABLE (WorldlineBox-4ojz / WorldlineBox-vf8x)", () =
       // reserves Ctrl+Shift+C for copying a path. Both are intentional
       // platform-native modifier choices rather than a mechanical Cmd→Ctrl
       // translation.
-      if (row.id !== "asset.delete-from-disk" && row.id !== "asset.copy-file-path") {
+      if (
+        row.id !== "asset.delete-from-disk" &&
+        row.id !== "asset.copy-file-path" &&
+        row.id !== "folder.copy-path"
+      ) {
         expect(Boolean(row.mac.shiftKey)).toBe(Boolean(row.windows.shiftKey));
         expect(Boolean(row.mac.altKey)).toBe(Boolean(row.windows.altKey));
       }

@@ -18,6 +18,17 @@ export function canRenameAssetWithShortcut(
   );
 }
 
+/** Keep keyboard delete eligibility aligned with single and multi-asset menus. */
+export function canDeleteAssetFromDiskWithShortcut(
+  asset: Pick<AssetSummary, "locationKind"> | undefined,
+): boolean {
+  return (
+    asset === undefined ||
+    asset.locationKind === "managed" ||
+    asset.locationKind === "linked"
+  );
+}
+
 export type AssetDeleteShortcutPlan =
   | { readonly type: "permanent-delete"; readonly assetIds: readonly string[] }
   | {

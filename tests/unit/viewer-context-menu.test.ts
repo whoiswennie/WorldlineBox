@@ -67,4 +67,52 @@ describe("ViewerContextMenu", () => {
     expect(onCopy).toHaveBeenCalledOnce();
     expect(onClose).toHaveBeenCalledOnce();
   });
+
+  it("offers copy file path with the current shortcut label", async () => {
+    const onCopyFilePath = vi.fn();
+    const onClose = vi.fn();
+    container = document.createElement("div");
+    document.body.append(container);
+    root = createRoot(container);
+
+    await act(async () => {
+      root?.render(
+        createElement(
+          LocaleProvider,
+          {
+            initialPreference: "zh-CN",
+            children: createElement(ViewerContextMenu, {
+              copyShortcut: "Ctrl+C",
+              copyPathShortcut: "Ctrl+Alt+P",
+              flipHorizontal: false,
+              flipVertical: false,
+              isFullscreen: false,
+              onCopy: () => undefined,
+              onCopyFilePath,
+              onClose,
+              onFit: () => undefined,
+              onFlipHorizontal: () => undefined,
+              onFlipVertical: () => undefined,
+              onFullscreen: () => undefined,
+              onRotate: () => undefined,
+              onRotateCounterClockwise: () => undefined,
+              position: { x: 20, y: 20 },
+              transformable: false,
+            }),
+          },
+        ),
+      );
+    });
+
+    const copyPathItem = Array.from(
+      container.querySelectorAll<HTMLButtonElement>("button"),
+    ).find((button) => button.textContent?.includes("复制文件路径"));
+
+    expect(copyPathItem?.textContent).toContain("Ctrl+Alt+P");
+    await act(async () => {
+      copyPathItem?.click();
+    });
+    expect(onCopyFilePath).toHaveBeenCalledOnce();
+    expect(onClose).toHaveBeenCalledOnce();
+  });
 });

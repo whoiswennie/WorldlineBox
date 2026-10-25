@@ -30,6 +30,7 @@ import {
   clampLightIntensity,
 } from './light-intensity';
 import {
+  DEFAULT_DISPLAY_MODE,
   applyDisplayMode,
   type ModelDisplayMode,
 } from './model-display-mode';
@@ -66,6 +67,14 @@ export interface SceneComposer {
   setEnvironmentRotation(yaw: number): void;
   /** Display mode (PBR / wireframe / gray-shaded…, WorldlineBox-fkhe). */
   setDisplayMode(mode: ModelDisplayMode): void;
+  /** Draw both faces of the current display mode. */
+  setDoubleSided(enabled: boolean): void;
+  /**
+   * Re-apply the current display mode and double-sided flag. Model materials
+   * arrive after the toolbar preferences are stored, so the first application
+   * walks an empty scene.
+   */
+  reapplyDisplay(): void;
   /** Update camera aspect + renderer size (drawing buffer only). */
   resize(width: number, height: number): void;
   /** Render exactly one frame — the offscreen thumbnail path's only call. */
@@ -81,6 +90,8 @@ export function createSceneComposer(options: SceneComposerOptions): SceneCompose
     new PerspectiveCamera(CAMERA_FOV_DEGREES, 1, 0.1, 5_000);
   const renderer = options.renderer;
   let lightIntensity = DEFAULT_LIGHT_INTENSITY;
+  let displayMode: ModelDisplayMode = DEFAULT_DISPLAY_MODE;
+  let doubleSided = false;
 
   // Slice D policy: neutral tone mapping (color-faithful under IBL) with the
   // tone-mapping exposure pinned at its neutral default — the user-facing
@@ -109,7 +120,15 @@ export function createSceneComposer(options: SceneComposerOptions): SceneCompose
       scene.environmentRotation.y = yaw;
     },
     setDisplayMode(mode) {
-      applyDisplayMode(scene, mode);
+      displayMode = mode;
+      applyDisplayMode(scene, displayMode, { doubleSided });
+    },
+    setDoubleSided(enabled) {
+      doubleSided = enabled;
+      applyDisplayMode(scene, displayMode, { doubleSided });
+    },
+    reapplyDisplay() {
+      applyDisplayMode(scene, displayMode, { doubleSided });
     },
     resize(width, height) {
       const safeWidth = Math.max(1, width);

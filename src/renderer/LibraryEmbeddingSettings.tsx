@@ -9,6 +9,7 @@ import { notifyEmbeddingCatalogChanged, subscribeEmbeddingCatalog } from "./embe
 import { useT } from "./i18n";
 import { loadSemanticSearchPreferences } from "./semantic-search-preferences";
 import { embeddingIndexCopyKey } from "./semantic-index-copy";
+import { Select } from "./ui/primitives";
 
 const MODEL_LABEL_KEYS = {
   "embeddinggemma-2-compact": "settings.semanticSearch.modelCompact",
@@ -170,20 +171,20 @@ export function LibraryEmbeddingSettings({
             <strong>{t("settings.librarySemantic.model")}</strong>
             <span>{t("settings.librarySemantic.inheritHint", { model: defaultLabel })}</span>
           </div>
-          <select
+          <Select
             aria-label={t("settings.librarySemantic.model")}
-            className="text-field library-semantic-select"
-            onChange={(event) => {
-              setSelectionValue(event.target.value);
+            className="text-field"
+            onValueChange={(value) => {
+              setSelectionValue(value);
               setNotice(null);
             }}
+            options={[
+              { value: INHERIT_VALUE, label: t("settings.librarySemantic.inherit", { model: defaultLabel }) },
+              { value: OFF_VALUE, label: t("settings.librarySemantic.off") },
+            ]}
             value={selectionValue}
-          >
-            <option value={INHERIT_VALUE}>
-              {t("settings.librarySemantic.inherit", { model: defaultLabel })}
-            </option>
-            <option value={OFF_VALUE}>{t("settings.librarySemantic.off")}</option>
-          </select>
+            wrapperClassName="library-semantic-select"
+          />
           {!globalPrefs.enabled ? (
             <p className="app-settings-help-note">{t("settings.librarySemantic.globalOff")}</p>
           ) : null}

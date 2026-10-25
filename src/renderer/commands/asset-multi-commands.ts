@@ -13,6 +13,7 @@ import { translateForLocale } from '../i18n';
 import type { EntityAppearance } from '../../shared/entity-appearance';
 import type { FolderBatchTarget } from '../folder-batch-actions';
 import type { CommandContext, CommandDefinition } from './command-types';
+import { DELETE_FROM_DISK_SHORTCUT } from './asset-shortcuts';
 
 /**
  * App 层注入的动作回调包。签名与 AssetContextMenu 多资产分支实际使用的
@@ -310,6 +311,7 @@ export const assetMultiCommandDefinitions: readonly AssetMultiCommandDefinition[
           { count: ctx.managedCount + ctx.folderCount + ctx.linkedCount },
         ),
       group: 'delete',
+      shortcut: DELETE_FROM_DISK_SHORTCUT,
       visible: (ctx) => !ctx.trashedAll,
       disabledReason: (ctx) =>
         ctx.managedCount + ctx.folderCount + ctx.linkedCount === 0

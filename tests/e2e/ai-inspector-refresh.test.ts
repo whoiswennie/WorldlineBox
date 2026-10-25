@@ -27,7 +27,7 @@ async function configureAndTestAiProfile(
   // Saving and checking a connection are separate actions in the current UI.
   // The save callback is fire-and-forget, so wait until Main's profile summary
   // confirms the credential reached persistent storage before testing it.
-  await expect(dialog.locator("#ai-config-profile option:checked"))
+  await expect(dialog.locator("#ai-config-profile"))
     .not.toContainText(/需要 API Key|API key needed/u);
   await dialog.getByRole("button", { name: /测试连接|Test connection/ }).click();
   await expect
@@ -37,7 +37,7 @@ async function configureAndTestAiProfile(
       { timeout: 30_000 },
     )
     .toBe(true);
-  const selectedProfile = dialog.locator("#ai-config-profile option:checked");
+  const selectedProfile = dialog.locator("#ai-config-profile");
   if (!/当前使用|In use/u.test((await selectedProfile.textContent()) ?? "")) {
     await dialog.getByRole("button", { name: /设为当前|Set as current/ }).click();
   }

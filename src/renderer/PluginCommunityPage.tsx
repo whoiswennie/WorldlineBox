@@ -13,6 +13,7 @@ import { iconActionAttrs } from './icon-action-attrs';
 import { useLocale, useT } from './i18n';
 import { PluginCommunityDetailPage } from './PluginCommunityDetailPage';
 import { DialogShell } from './ui/patterns';
+import { Select } from './ui/primitives';
 
 type PluginCommunityPageProps = {
   readonly api: WorldlineBoxPluginManagerApi | undefined;
@@ -317,17 +318,20 @@ export function PluginCommunityPage({
           >
             <label className="plugin-install-scope-field">
               <span className="micro-label">{t('settings.pluginInstallScope')}</span>
-              <select
+              <Select
                 className="text-field"
                 disabled={busy || progressActive}
-                onChange={(event) => setInstallScope(event.target.value as InstallScope)}
+                onValueChange={(value) => setInstallScope(value as InstallScope)}
+                options={[
+                  { value: 'user', label: t('settings.pluginScopeUser') },
+                  {
+                    value: 'library',
+                    label: t('settings.pluginScopeLibrary'),
+                    disabled: !canUseLibraryScope,
+                  },
+                ]}
                 value={installScope}
-              >
-                <option value="user">{t('settings.pluginScopeUser')}</option>
-                <option disabled={!canUseLibraryScope} value="library">
-                  {t('settings.pluginScopeLibrary')}
-                </option>
-              </select>
+              />
             </label>
             {installScope === 'library' && !canUseLibraryScope ? (
               <p className="app-settings-hint">{t('settings.pluginLibraryClosedHint')}</p>

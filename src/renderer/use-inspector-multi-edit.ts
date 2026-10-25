@@ -17,6 +17,8 @@ import {
 } from "react";
 
 import type { AssetMetadataResult, AssetSummary } from "../shared/asset-types";
+import type { BrowseMembershipChange } from "./browse-filter-membership";
+import { notifyBrowseFilterMembership } from "./use-inspector-asset-metadata";
 import type { WorldlineBoxLibraryApi } from "../shared/library-api";
 import type { RendererLibrarySummary } from "../shared/protocol/responses";
 import { formatBatchRatingNotice } from "./batch-tag-notice";
@@ -45,6 +47,9 @@ export type UseInspectorMultiEditParams = {
   setTrashedAssets: Dispatch<SetStateAction<AssetSummary[]>>;
   setNotice: (message: string | null, historyEntryId?: string) => void;
   setError: (message: string | null) => void;
+  syncBrowseFilterMembershipRef?: MutableRefObject<
+    (change: BrowseMembershipChange) => void
+  >;
 };
 
 export type UseInspectorMultiEditResult = {
@@ -84,6 +89,7 @@ export function useInspectorMultiEdit({
   setTrashedAssets,
   setNotice,
   setError,
+  syncBrowseFilterMembershipRef,
 }: UseInspectorMultiEditParams): UseInspectorMultiEditResult {
   const t = useT();
   const { locale } = useLocale();
@@ -187,6 +193,7 @@ export function useInspectorMultiEdit({
       let updated = 0;
       let conflicts = 0;
       let lastHistoryEntryId: string | undefined;
+      const appliedIds: string[] = [];
       for (const assetId of assetIds) {
         let current = metadataByAssetRef.current.get(assetId);
         if (!current) {
@@ -219,6 +226,7 @@ export function useInspectorMultiEdit({
           }
           metadataByAssetRef.current.set(assetId, result.value);
           updated += 1;
+          appliedIds.push(assetId);
           lastHistoryEntryId = result.value.historyEntryId;
           if ("favorite" in fields && fields.favorite !== undefined) {
             const favorite = fields.favorite;
@@ -237,6 +245,12 @@ export function useInspectorMultiEdit({
           return;
         }
       }
+      notifyBrowseFilterMembership(
+        syncBrowseFilterMembershipRef,
+        appliedIds,
+        fields,
+        { favorite: fields.favorite ?? false, rating: 0 },
+      );
       rebuildAndApplyMultiEdit([...assetIds]);
       if (conflicts > 0) {
         setNotice(t("toast.metadataVersionConflict"));
@@ -257,6 +271,7 @@ export function useInspectorMultiEdit({
       setError,
       setNotice,
       setTrashedAssets,
+      syncBrowseFilterMembershipRef,
       t,
     ],
   );
@@ -296,6 +311,11 @@ export function useInspectorMultiEdit({
           );
         }
         rebuildAndApplyMultiEdit(assetIds);
+        syncBrowseFilterMembershipRef?.current({
+          kind: "rating",
+          assetIds: [...appliedIds],
+          rating,
+        });
         setNotice(
           formatBatchRatingNotice(
             rating,
@@ -321,6 +341,7 @@ export function useInspectorMultiEdit({
       setError,
       setNotice,
       setTrashedAssets,
+      syncBrowseFilterMembershipRef,
       t,
     ],
   );

@@ -54,15 +54,26 @@ function virtualMasonryCardSlotStyle(input: {
   };
 }
 
-function virtualJustifiedSlotStyle(input: {
+export function virtualJustifiedSlotStyle(input: {
   id: string;
   width: number;
   height: number;
+  sourceAspect?: number;
 }): CSSProperties {
   void input.id;
+  const width = Math.max(1, Math.round(input.width));
+  const height = Math.max(1, Math.round(input.height));
+  const aspect = input.sourceAspect;
+  // Integer row allocation can give square media a 193 × 194 frame. Fill
+  // only that rounding discrepancy, preserving every source pixel; genuine
+  // letterboxing (including clamped portrait frames) still uses contain.
+  const roundingOnly = aspect !== undefined && aspect > 0 &&
+    Math.abs(width - height * aspect) <= 1 &&
+    Math.abs(height - width / aspect) <= 1;
   return {
-    width: Math.max(1, Math.round(input.width)),
-    ["--justified-preview-height" as string]: `${Math.max(1, Math.round(input.height))}px`,
+    width,
+    ["--justified-preview-height" as string]: `${height}px`,
+    ["--justified-thumbnail-fit" as string]: roundingOnly ? "fill" : "contain",
   };
 }
 
@@ -1135,6 +1146,9 @@ export function VirtualJustifiedAssetRows({
                     id: entry.assetId,
                     width: rowGeometry?.widths[itemOffset] ?? 1,
                     height: rowGeometry?.previewHeight ?? 1,
+                    sourceAspect: entry.width && entry.height
+                      ? aspectRatioForAsset(entry.width, entry.height, entry.mediaType)
+                      : undefined,
                   })}
                 >
                   {asset

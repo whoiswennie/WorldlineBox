@@ -843,6 +843,7 @@ import {
 } from '../shared/media-formats';
 import {
   isSourceDirectPreview,
+  SOURCE_DIRECT_IMAGE_EXTENSIONS,
   SOURCE_DIRECT_MAX_BYTES,
   SOURCE_DIRECT_MAX_LONG_EDGE_PX,
   SOURCE_DIRECT_MAX_PIXELS,
@@ -23111,6 +23112,16 @@ export class LibraryService {
     return mediaJobCountsFromRows(rows);
   }
 
+  hasQueuedPrimaryPreviewJobs(libraryId: string): boolean {
+    const openLibrary = this.requireOpenLibrary(libraryId);
+    return openLibrary.connection.prepare(
+      `SELECT 1 FROM jobs
+        WHERE library_id = ? AND status = 'queued'
+          AND kind IN ('generate_thumbnail', 'generate_video_poster')
+        LIMIT 1`,
+    ).get(libraryId) !== undefined;
+  }
+
   listMediaJobs(libraryId: string, options: {
     summaryOnly?: boolean;
     cursor?: MediaJobListCursor;
@@ -25518,7 +25529,14 @@ export class LibraryService {
   backfillMissingImageDimensions(
     libraryId: string,
     limit = 32,
-  ): Array<{ assetId: string; width: number; height: number }> {
+  ): Array<{
+    assetId: string;
+    width: number;
+    height: number;
+    revisionId: string;
+    previewKind: 'source' | null;
+    previewRevisionId: string | null;
+  }> {
     const openLibrary = this.requireOpenLibrary(libraryId);
     const imageSql = IMAGE_EXTENSIONS
       .map(() => 'LOWER(a.relative_file_path) LIKE ?')
@@ -25526,8 +25544,10 @@ export class LibraryService {
     const rows = openLibrary.connection
       .prepare(
         `SELECT a.asset_id, a.relative_file_path, a.location_kind, a.linked_folder_id,
-                a.current_revision_id
+                a.current_revision_id, source_revision.byte_size AS source_byte_size
            FROM assets a
+           JOIN revisions source_revision
+             ON source_revision.revision_id = a.current_revision_id
           WHERE a.deleted_at IS NULL
             AND a.availability = 'available'
             AND a.current_revision_id IS NOT NULL
@@ -25551,8 +25571,16 @@ export class LibraryService {
         location_kind: 'managed' | 'linked';
         linked_folder_id: string | null;
         current_revision_id: string | null;
+      source_byte_size: number;
       }>;
-    const out: Array<{ assetId: string; width: number; height: number }> = [];
+    const out: Array<{
+      assetId: string;
+      width: number;
+      height: number;
+      revisionId: string;
+      previewKind: 'source' | null;
+      previewRevisionId: string | null;
+    }> = [];
     for (const row of rows) {
       if (!row.current_revision_id) continue;
       const size = this.persistSourceImageDimensions(
@@ -25561,7 +25589,21 @@ export class LibraryService {
         row,
       );
       if (size) {
-        out.push({ assetId: row.asset_id, width: size.width, height: size.height });
+        const sourceDirect = isSourceDirectPreview({
+          fileName: row.relative_file_path,
+          mediaType: 'image',
+          byteSize: row.source_byte_size,
+          width: size.width,
+          height: size.height,
+        });
+        out.push({
+          assetId: row.asset_id,
+          width: size.width,
+          height: size.height,
+          revisionId: row.current_revision_id,
+          previewKind: sourceDirect ? 'source' : null,
+          previewRevisionId: sourceDirect ? row.current_revision_id : null,
+        });
       }
     }
     return out;
@@ -25576,16 +25618,27 @@ export class LibraryService {
   persistVisibleWindowImageDimensions(
     libraryId: string,
     assetIds: string[],
-  ): Array<{ assetId: string; width: number; height: number }> {
+  ): Array<{
+    assetId: string;
+    width: number;
+    height: number;
+    revisionId: string;
+    previewKind: 'source' | null;
+    previewRevisionId: string | null;
+  }> {
     const openLibrary = this.requireOpenLibrary(libraryId);
     if (assetIds.length === 0) return [];
     const capped = assetIds.slice(0, 64);
     const placeholders = capped.map(() => '?').join(',');
     const rows = openLibrary.connection
       .prepare(
-        `SELECT asset_id, relative_file_path, location_kind, linked_folder_id, current_revision_id
+        `SELECT assets.asset_id, assets.relative_file_path, assets.location_kind,
+                assets.linked_folder_id, assets.current_revision_id,
+                source_revision.byte_size AS source_byte_size
            FROM assets
-          WHERE asset_id IN (${placeholders})
+           JOIN revisions source_revision
+             ON source_revision.revision_id = assets.current_revision_id
+          WHERE assets.asset_id IN (${placeholders})
             AND NOT EXISTS (
               SELECT 1 FROM revision_artifacts ra
                WHERE ra.revision_id = assets.current_revision_id
@@ -25600,8 +25653,16 @@ export class LibraryService {
         location_kind: 'managed' | 'linked';
         linked_folder_id: string | null;
         current_revision_id: string | null;
+        source_byte_size: number;
       }>;
-    const out: Array<{ assetId: string; width: number; height: number }> = [];
+    const out: Array<{
+      assetId: string;
+      width: number;
+      height: number;
+      revisionId: string;
+      previewKind: 'source' | null;
+      previewRevisionId: string | null;
+    }> = [];
     for (const row of rows) {
       if (!row.current_revision_id) continue;
       const size = this.persistSourceImageDimensions(
@@ -25610,7 +25671,21 @@ export class LibraryService {
         row,
       );
       if (size) {
-        out.push({ assetId: row.asset_id, width: size.width, height: size.height });
+        const sourceDirect = isSourceDirectPreview({
+          fileName: row.relative_file_path,
+          mediaType: 'image',
+          byteSize: row.source_byte_size,
+          width: size.width,
+          height: size.height,
+        });
+        out.push({
+          assetId: row.asset_id,
+          width: size.width,
+          height: size.height,
+          revisionId: row.current_revision_id,
+          previewKind: sourceDirect ? 'source' : null,
+          previewRevisionId: sourceDirect ? row.current_revision_id : null,
+        });
       }
     }
     return out;
@@ -25630,16 +25705,27 @@ export class LibraryService {
     libraryId: string,
     assetIds: string[],
     signal?: AbortSignal,
-  ): Promise<Array<{ assetId: string; width: number; height: number }>> {
+  ): Promise<Array<{
+    assetId: string;
+    width: number;
+    height: number;
+    revisionId: string;
+    previewKind: 'source' | null;
+    previewRevisionId: string | null;
+  }>> {
     const openLibrary = this.requireOpenLibrary(libraryId);
     if (assetIds.length === 0) return [];
     const capped = assetIds.slice(0, 64);
     const placeholders = capped.map(() => '?').join(',');
     const rows = openLibrary.connection
       .prepare(
-        `SELECT asset_id, relative_file_path, location_kind, linked_folder_id, current_revision_id
+        `SELECT assets.asset_id, assets.relative_file_path, assets.location_kind,
+                assets.linked_folder_id, assets.current_revision_id,
+                source_revision.byte_size AS source_byte_size
            FROM assets
-          WHERE asset_id IN (${placeholders})
+           JOIN revisions source_revision
+             ON source_revision.revision_id = assets.current_revision_id
+          WHERE assets.asset_id IN (${placeholders})
             AND NOT EXISTS (
               SELECT 1 FROM revision_artifacts ra
                WHERE ra.revision_id = assets.current_revision_id
@@ -25654,8 +25740,16 @@ export class LibraryService {
         location_kind: 'managed' | 'linked';
         linked_folder_id: string | null;
         current_revision_id: string | null;
+        source_byte_size: number;
       }>;
-    const out: Array<{ assetId: string; width: number; height: number }> = [];
+    const out: Array<{
+      assetId: string;
+      width: number;
+      height: number;
+      revisionId: string;
+      previewKind: 'source' | null;
+      previewRevisionId: string | null;
+    }> = [];
     for (const row of rows) {
       if (signal?.aborted) {
         throw new DOMException('Visible-window probe aborted.', 'AbortError');
@@ -25667,7 +25761,21 @@ export class LibraryService {
       }
       if (!size) continue;
       this.persistExtractedImageDimensions(openLibrary, row.current_revision_id, size);
-      out.push({ assetId: row.asset_id, width: size.width, height: size.height });
+      const sourceDirect = isSourceDirectPreview({
+        fileName: row.relative_file_path,
+        mediaType: 'image',
+        byteSize: row.source_byte_size,
+        width: size.width,
+        height: size.height,
+      });
+      out.push({
+        assetId: row.asset_id,
+        width: size.width,
+        height: size.height,
+        revisionId: row.current_revision_id,
+        previewKind: sourceDirect ? 'source' : null,
+        previewRevisionId: sourceDirect ? row.current_revision_id : null,
+      });
     }
     return out;
   }
@@ -32895,6 +33003,30 @@ export class LibraryService {
            ORDER BY source_metadata.generated_at DESC
            LIMIT 1) AS source_height`
       : ', NULL AS source_width, NULL AS source_height';
+    const sourceDirectExtensionSql = SOURCE_DIRECT_IMAGE_EXTENSIONS
+      .map(() => 'LOWER(a.relative_file_path) LIKE ?')
+      .join(' OR ');
+    const sourceDirectCandidateSql = artifactColumns.has('width') && artifactColumns.has('height')
+      ? `
+            AND NOT (
+              (${sourceDirectExtensionSql})
+              AND source_revision.byte_size BETWEEN 1 AND ${SOURCE_DIRECT_MAX_BYTES}
+              AND EXISTS (
+                SELECT 1 FROM revision_artifacts source_metadata
+                 WHERE source_metadata.revision_id = a.current_revision_id
+                   AND source_metadata.kind = 'extracted_metadata'
+                   AND source_metadata.status = 'ready'
+                   AND source_metadata.invalidated_at IS NULL
+                   AND source_metadata.width > 0
+                   AND source_metadata.height > 0
+                   AND source_metadata.width <= ${SOURCE_DIRECT_MAX_LONG_EDGE_PX}
+                   AND source_metadata.height <= ${SOURCE_DIRECT_MAX_LONG_EDGE_PX}
+                   AND source_metadata.width * source_metadata.height <= ${SOURCE_DIRECT_MAX_PIXELS}
+                 ORDER BY source_metadata.generated_at DESC
+                 LIMIT 1
+              )
+            )`
+      : '';
     const queryLimit = limit === undefined ? '' : 'LIMIT ?';
     // WorldlineBox-xoaz: background fill (no assetIds) drains most-recently
     // imported assets first (created_at DESC, path as a deterministic
@@ -32920,6 +33052,7 @@ export class LibraryService {
             ${notOfflineLinkedFolderSql}
             ${hiddenSequenceMemberSql}
             AND (${extensionSql})
+            ${sourceDirectCandidateSql}
             AND NOT EXISTS (
               SELECT 1 FROM revision_artifacts ra
               WHERE ra.revision_id = a.current_revision_id
@@ -32960,6 +33093,9 @@ export class LibraryService {
       .all(
         ...selectedIds,
         ...supportedExtensions.map((extension) => `%.${extension}`),
+        ...(artifactColumns.has('width') && artifactColumns.has('height')
+          ? SOURCE_DIRECT_IMAGE_EXTENSIONS.map((extension) => `%${extension}`)
+          : []),
         ...(limit === undefined ? [] : [limit]),
       ) as Array<{
         asset_id: string;
@@ -33214,6 +33350,9 @@ export class LibraryService {
         width?: number;
         height?: number;
         durationMs?: number;
+        revisionId?: string;
+        previewKind?: 'source' | null;
+        previewRevisionId?: string | null;
       }) => void;
       /** Fired once a durable visual input is ready for automatic AI. */
       onAiInputReady?: (event: { assetId: string; artifactId: string }) => void;
@@ -33224,6 +33363,9 @@ export class LibraryService {
         width?: number;
         height?: number;
         durationMs?: number;
+        revisionId?: string;
+        previewKind?: 'source' | null;
+        previewRevisionId?: string | null;
       }) => void;
       pluginMediaProvider?: (input: {
         assetId: string;
@@ -33360,14 +33502,51 @@ export class LibraryService {
     // bound the JOIN work over a large history.
     if (jobKinds.some((kind) => primaryPreviewKinds.has(kind))) {
       const now = new Date().toISOString();
-      const sourceDirectExtensionSql = ['jpg', 'jpeg', 'jfif', 'png', 'webp', 'gif']
-        .map((extension) => `LOWER(source_asset.relative_file_path) LIKE '%.${extension}'`)
+      const sourceDirectExtensionSql = SOURCE_DIRECT_IMAGE_EXTENSIONS
+        .map((extension) => `LOWER(source_asset.relative_file_path) LIKE '%${extension}'`)
         .join(' OR ');
       if (
         pumpAssetIds !== undefined
         && processArtifactColumns.has('width')
         && processArtifactColumns.has('height')
       ) {
+        const sourceDirectRows = pumpAssetIds.length === 0
+          ? []
+          : openLibrary.connection
+          .prepare(
+            `SELECT jobs.asset_id, jobs.revision_id, source_metadata.width, source_metadata.height
+               FROM jobs
+               JOIN assets source_asset
+                 ON source_asset.asset_id = jobs.asset_id
+                AND source_asset.current_revision_id = jobs.revision_id
+               JOIN revisions source_revision
+                 ON source_revision.revision_id = jobs.revision_id
+               JOIN revision_artifacts source_metadata
+                 ON source_metadata.revision_id = jobs.revision_id
+                AND source_metadata.kind = 'extracted_metadata'
+                AND source_metadata.status = 'ready'
+                AND source_metadata.invalidated_at IS NULL
+                AND source_metadata.width > 0
+                AND source_metadata.height > 0
+                AND source_metadata.width <= ${SOURCE_DIRECT_MAX_LONG_EDGE_PX}
+                AND source_metadata.height <= ${SOURCE_DIRECT_MAX_LONG_EDGE_PX}
+                AND source_metadata.width * source_metadata.height <= ${SOURCE_DIRECT_MAX_PIXELS}
+              WHERE jobs.library_id = ?
+                AND jobs.status = 'queued'
+                AND jobs.kind = 'generate_thumbnail'
+                AND COALESCE(jobs.error_code, '') <> '${IMPORTED_THUMBNAIL_NORMALIZATION_JOB}'
+                AND jobs.asset_id IN (${pumpAssetIds.map(() => '?').join(',')})
+                AND source_asset.deleted_at IS NULL
+                AND source_asset.availability = 'available'
+                AND source_revision.byte_size BETWEEN 1 AND ${SOURCE_DIRECT_MAX_BYTES}
+                AND (${sourceDirectExtensionSql})`,
+          )
+          .all(libraryId, ...pumpAssetIds) as Array<{
+            asset_id: string;
+            revision_id: string;
+            width: number;
+            height: number;
+          }>;
         openLibrary.connection
           .prepare(
             `UPDATE jobs
@@ -33405,6 +33584,17 @@ export class LibraryService {
                 )`,
           )
           .run(now, libraryId, ...(pumpAssetIds ?? []));
+        for (const row of sourceDirectRows) {
+          options.onResult?.({
+            assetId: row.asset_id,
+            errorCode: 'SOURCE_DIRECT',
+            width: row.width,
+            height: row.height,
+            revisionId: row.revision_id,
+            previewKind: 'source',
+            previewRevisionId: row.revision_id,
+          });
+        }
       }
       // Use the same media-aware policy as claim-time admission for both
       // thumbnail and video-poster jobs. `generate_thumbnail` produces
@@ -33855,6 +34045,22 @@ export class LibraryService {
             "UPDATE jobs SET status = 'cancelled', error_code = ?, updated_at = ? WHERE job_id = ? AND status = 'running'",
           )
           .run(errorCode, new Date().toISOString(), job.job_id);
+        if (
+          claimAdmission.reason === 'source-direct'
+          && claimAsset?.current_revision_id === job.revision_id
+          && claimAsset.source_width != null
+          && claimAsset.source_height != null
+        ) {
+          options.onResult?.({
+            assetId: job.asset_id,
+            errorCode: 'SOURCE_DIRECT',
+            width: claimAsset.source_width,
+            height: claimAsset.source_height,
+            revisionId: job.revision_id,
+            previewKind: 'source',
+            previewRevisionId: job.revision_id,
+          });
+        }
         processed += 1;
         continue;
       }
@@ -34122,6 +34328,10 @@ export class LibraryService {
           let derivedWidth: number | undefined;
           let derivedHeight: number | undefined;
           let derivedDurationMs: number | undefined;
+          let sourceDirectRoute: {
+            previewKind: 'source' | null;
+            previewRevisionId: string | null;
+          } | undefined;
           if (job.kind === 'extract_metadata' && processArtifactColumns.has('width')) {
             const durationSelect = processArtifactColumns.has('duration_ms')
               ? ', duration_ms'
@@ -34147,6 +34357,19 @@ export class LibraryService {
             if (extracted?.duration_ms != null && extracted.duration_ms >= 0) {
               derivedDurationMs = extracted.duration_ms;
             }
+            if (claimAsset) {
+              const sourceDirect = isSourceDirectPreview({
+                fileName: claimAsset.relative_file_path,
+                mediaType: LibraryService.toSummaryMediaType(claimMediaType),
+                byteSize: claimAsset.source_byte_size ?? 0,
+                width: extracted?.width,
+                height: extracted?.height,
+              });
+              sourceDirectRoute = {
+                previewKind: sourceDirect ? 'source' : null,
+                previewRevisionId: sourceDirect ? job.revision_id : null,
+              };
+            }
           }
           options.onDerivedReady?.({
             assetId: job.asset_id,
@@ -34154,6 +34377,13 @@ export class LibraryService {
             ...(derivedWidth === undefined ? {} : { width: derivedWidth }),
             ...(derivedHeight === undefined ? {} : { height: derivedHeight }),
             ...(derivedDurationMs === undefined ? {} : { durationMs: derivedDurationMs }),
+            ...(job.kind !== 'extract_metadata'
+              ? {}
+              : {
+                revisionId: job.revision_id,
+                previewKind: sourceDirectRoute?.previewKind ?? null,
+                previewRevisionId: sourceDirectRoute?.previewRevisionId ?? null,
+              }),
           });
         }
         // WorldlineBox-xoaz: deferred to the worker's batched flush (see

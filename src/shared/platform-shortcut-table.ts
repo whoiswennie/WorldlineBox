@@ -64,6 +64,12 @@ export const PLATFORM_SHORTCUT_TABLE: readonly PlatformShortcutRow[] = [
     windows: { label: "Ctrl+Shift+C", key: "c", ctrlKey: true, shiftKey: true },
   },
   {
+    id: "folder.copy-path",
+    purpose: "Copy the focused or open folder's absolute path as text",
+    mac: { label: "⌥⌘C", key: "c", metaKey: true, altKey: true },
+    windows: { label: "Ctrl+Shift+C", key: "c", ctrlKey: true, shiftKey: true },
+  },
+  {
     id: "asset.reveal-in-folder",
     purpose: "Reveal selected asset in Finder / File Explorer",
     mac: { label: "⌘⇧S", key: "s", metaKey: true, shiftKey: true },

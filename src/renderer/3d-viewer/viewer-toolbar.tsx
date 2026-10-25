@@ -9,6 +9,7 @@
 
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { createShellPortal } from '../ui/ShellStyleScope';
+import { Select } from '../ui/primitives/Select';
 import { useLocale } from '../i18n';
 import { isImeKeyboardEvent } from '../ime-safe-dismiss';
 import { Icon } from '../Icons';
@@ -25,11 +26,13 @@ export interface ModelViewerToolbarProps {
   readonly presetId: HdriPresetId;
   readonly lightIntensity: number;
   readonly displayMode: ModelDisplayMode;
+  readonly doubleSided: boolean;
   readonly statsVisible: boolean;
   readonly isFullscreen: boolean;
   onPresetChange(presetId: HdriPresetId): void;
   onLightIntensityChange(intensity: number): void;
   onDisplayModeChange(mode: ModelDisplayMode): void;
+  onDoubleSidedChange(enabled: boolean): void;
   onToggleStats(): void;
   onResetView(): void;
   onFullscreen(): void;
@@ -41,6 +44,7 @@ export function ModelViewerToolbar(props: ModelViewerToolbarProps) {
   const [pickerRect, setPickerRect] = useState<{
     bottom: number;
     right: number;
+    maxHeight: number;
     inModal: boolean;
   } | null>(null);
   const hdriPickerRef = useRef<HTMLDivElement>(null);
@@ -55,9 +59,13 @@ export function ModelViewerToolbar(props: ModelViewerToolbarProps) {
     const update = () => {
       const rect = hdriTriggerRef.current?.getBoundingClientRect();
       if (!rect) return;
+      const menuWidth = Math.min(300, Math.max(0, window.innerWidth - 16));
+      const maxRight = Math.max(8, window.innerWidth - menuWidth - 8);
+      const right = Math.min(Math.max(8, window.innerWidth - rect.right), maxRight);
       setPickerRect({
         bottom: window.innerHeight - rect.top + 8,
-        right: window.innerWidth - rect.right,
+        right,
+        maxHeight: Math.max(0, rect.top - 16),
         inModal: hdriTriggerRef.current?.closest('[role="dialog"]') != null,
       });
     };
@@ -105,6 +113,7 @@ export function ModelViewerToolbar(props: ModelViewerToolbarProps) {
             style={{
               bottom: pickerRect.bottom,
               right: pickerRect.right,
+              maxHeight: pickerRect.maxHeight,
             }}
           >
             {HDRI_PRESETS.map((preset) => {
@@ -158,24 +167,32 @@ export function ModelViewerToolbar(props: ModelViewerToolbarProps) {
         </button>
         {hdriPicker}
       </div>
-      <label className="model-viewer-toolbar-item is-display-mode">
+      <div className="model-viewer-toolbar-item is-display-mode">
         <span className="model-viewer-toolbar-label">{t('viewer3d.displayMode')}</span>
-        <select
+        <Select
+          appearance="inline"
           aria-label={t('viewer3d.displayMode')}
-          value={props.displayMode}
-          onChange={(event) => {
-            const value = event.currentTarget.value as ModelDisplayMode;
-            if (value !== props.displayMode) props.onDisplayModeChange(value);
+          onValueChange={(value) => {
+            if (value !== props.displayMode) props.onDisplayModeChange(value as ModelDisplayMode);
           }}
-          tabIndex={0}
-        >
-          {MODEL_DISPLAY_MODES.map((mode) => (
-            <option key={mode} value={mode}>
-              {t(`viewer3d.displayModes.${mode}`)}
-            </option>
-          ))}
-        </select>
-      </label>
+          options={MODEL_DISPLAY_MODES.map((mode) => ({
+            value: mode,
+            label: t(`viewer3d.displayModes.${mode}`),
+          }))}
+          value={props.displayMode}
+        />
+      </div>
+      <button
+        aria-label={t('viewer3d.doubleSided')}
+        aria-pressed={props.doubleSided}
+        className={`model-viewer-toolbar-button is-labeled${props.doubleSided ? ' is-active' : ''}`}
+        data-hover-tip={t('viewer3d.doubleSided')}
+        onClick={() => props.onDoubleSidedChange(!props.doubleSided)}
+        tabIndex={0}
+        type="button"
+      >
+        {t('viewer3d.doubleSided')}
+      </button>
       <label className="model-viewer-toolbar-item is-light-intensity">
         <span className="model-viewer-toolbar-label">{t('viewer3d.lightIntensity')}</span>
         <input

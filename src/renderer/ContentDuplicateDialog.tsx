@@ -4,6 +4,7 @@ import { useT } from "./i18n";
 import type { ImportConflictPlan } from "../shared/protocol/responses";
 import type { RememberedDuplicateDecision } from "./import-conflict-preferences";
 import { ImportConflictDialogShell } from "./ImportConflictDialogShell";
+import { Select } from "./ui/primitives";
 
 export interface ContentDuplicateDialogProps {
   conflicts: ImportConflictPlan;
@@ -87,22 +88,20 @@ export function ContentDuplicateDialog({
     <ImportConflictDialogShell
       confirmLabel={confirmLabel}
       decision={
-        <select
+        <Select
+          appearance="inline"
           autoFocus
           disabled={submitting}
           id="content-duplicate-decision"
-          value={decision}
-          onChange={(event) =>
-            onDecisionChange(
-              event.target.value as RememberedDuplicateDecision,
-            )
+          onValueChange={(value) =>
+            onDecisionChange(value as RememberedDuplicateDecision)
           }
-        >
-          <option value="skip">{t("dialog.conflicts.skip")}</option>
-          <option value="create-copy">
-            {t("dialog.conflicts.importAnyway")}
-          </option>
-        </select>
+          options={[
+            { value: "skip", label: t("dialog.conflicts.skip") },
+            { value: "create-copy", label: t("dialog.conflicts.importAnyway") },
+          ]}
+          value={decision}
+        />
       }
       decisionControlId="content-duplicate-decision"
       decisionLabel={t("dialog.contentDuplicate.actionLabel")}

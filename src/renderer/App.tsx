@@ -74,6 +74,7 @@ import { ConvertLinkedDialog } from "./ConvertLinkedDialog";
 import { LinkedRulesDialog } from "./LinkedRulesDialog";
 import { TagManagementWorkspace } from "./TagManagementWorkspace";
 import { useFolderDeleteActions } from "./use-folder-delete-actions";
+import { canDeleteAssetFromDiskWithShortcut } from "./browse-key-command";
 import { useFolderOrganizeActions } from "./use-folder-organize-actions";
 import { useFolderCommandShortcuts } from "./use-folder-command-shortcuts";
 import { SearchHistoryPopover } from "./SearchHistoryPopover";
@@ -512,6 +513,11 @@ import type {
   TagSummary,
   TrashedFolderSummary,
 } from "../shared/asset-types";
+import { smartCollectionQueryDefinitionSchema } from "../shared/asset-types";
+import {
+  assetsRemainingAfterMembership,
+  type BrowseMembershipChange,
+} from "./browse-filter-membership";
 import type { FolderNavigationCover, LibraryNavigationSummary } from "../shared/library-navigation";
 import { LIBRARY_ROOT_FOLDER_ID, isLibraryRootFolderId } from "../shared/library-root-folder";
 import { DEFAULT_COLOR_SIMILARITY } from "../shared/color-filter-presets";
@@ -930,6 +936,9 @@ export function AssetManager({
   const [findSimilarSource, setFindSimilarSource] = useState<FindSimilarSource | null>(null);
   const findSimilarTokenRef = useRef(0);
   const assetsRef = useRef<AssetSummary[]>([]);
+  const syncBrowseFilterMembershipRef = useRef<
+    (change: BrowseMembershipChange) => void
+  >(() => undefined);
   useEffect(() => {
     assetsRef.current = assets;
   }, [assets]);
@@ -1717,6 +1726,7 @@ export function AssetManager({
     fetchScopeAssetIds: fetchBrowseScopeAssetIds,
     removeLocally: removeLocallyFromBrowse,
     applyGeometryPatches: applyBrowseGeometryPatches,
+    applyPreviewPatches: applyBrowsePreviewPatches,
     reset: resetBrowsePagination,
   } = browsePagination;
   function resetBrowsePaginationPreservingVisibleLayout() {
@@ -1728,6 +1738,8 @@ export function AssetManager({
   }
   const applyBrowseGeometryPatchesRef = useRef(applyBrowseGeometryPatches);
   applyBrowseGeometryPatchesRef.current = applyBrowseGeometryPatches;
+  const applyBrowsePreviewPatchesRef = useRef(applyBrowsePreviewPatches);
+  applyBrowsePreviewPatchesRef.current = applyBrowsePreviewPatches;
 
   const {
     multiEdit,
@@ -1751,6 +1763,7 @@ export function AssetManager({
     setTrashedAssets,
     setNotice,
     setError,
+    syncBrowseFilterMembershipRef,
   });
   // WorldlineBox-c9r3: bridge the multi-edit rebuilder into the ai.content.cleared
   // event effect (whose deps intentionally exclude it) via a ref, matching the
@@ -2348,6 +2361,7 @@ export function AssetManager({
     setTrashedAssets,
     setNotice,
     setError,
+    syncBrowseFilterMembershipRef,
   });
 
   const analyzingAssetIdRef = useRef<string | null>(null);
@@ -3993,7 +4007,7 @@ export function AssetManager({
     return {
       assetIds: report.trash.processAssetIds.filter((assetId) => {
         const asset = visibleById.get(assetId);
-        return !asset || asset.locationKind === "managed";
+        return canDeleteAssetFromDiskWithShortcut(asset);
       }),
       folderIds: [...report.trash.processFolderIds],
     };
@@ -5227,6 +5241,10 @@ export function AssetManager({
       if (batch.size > 0) {
         setAssets((current) => applyAssetThumbnailPatches(current, batch));
         const geometryPatches = new Map<string, { width: number; height: number }>();
+        const previewPatches = new Map<string, {
+          previewKind: 'source' | null;
+          previewRevisionId: string | null;
+        }>();
         for (const [assetId, patch] of batch) {
           if (
             typeof patch.width === "number" &&
@@ -5239,9 +5257,43 @@ export function AssetManager({
               height: patch.height,
             });
           }
+          if (
+            patch.previewKind !== undefined
+            && patch.previewRevisionId !== undefined
+          ) {
+            previewPatches.set(assetId, {
+              previewKind: patch.previewKind,
+              previewRevisionId: patch.previewRevisionId,
+            });
+          }
         }
         if (geometryPatches.size > 0) {
           applyBrowseGeometryPatchesRef.current(geometryPatches);
+          const measured: Array<{
+            assetId: string;
+            width: number;
+            height: number;
+            mediaType: AssetSummary["mediaType"];
+          }> = [];
+          for (const [assetId, size] of geometryPatches) {
+            const current = assetsRef.current.find((asset) => asset.assetId === assetId);
+            if (!current) continue;
+            measured.push({
+              assetId,
+              width: size.width,
+              height: size.height,
+              mediaType: current.mediaType,
+            });
+          }
+          if (measured.length > 0) {
+            syncBrowseFilterMembershipRef.current({
+              kind: "dimensions",
+              assets: measured,
+            });
+          }
+        }
+        if (previewPatches.size > 0) {
+          applyBrowsePreviewPatchesRef.current(previewPatches);
         }
       }
       if (pendingLayoutArtifactIds.size > 0) {
@@ -5301,10 +5353,24 @@ export function AssetManager({
       const subscriptions = thumbnailSubscriptions();
       if (event.type === "asset.dimensions.ready") {
         if (!shouldProjectThumbnailCompletion(event.assetId, subscriptions)) return;
+        const currentAsset = assetsRef.current.find(
+          (asset) => asset.assetId === event.assetId,
+        );
+        if (
+          event.revisionId !== undefined
+          && currentAsset
+          && currentAsset.currentRevisionId !== event.revisionId
+        ) return;
         jobStatusCoordinatorRef.current?.noteActivity("media");
         queuePatch(event.assetId, {
           width: event.width,
           height: event.height,
+          ...(event.previewKind === undefined
+            ? {}
+            : { previewKind: event.previewKind }),
+          ...(event.previewRevisionId === undefined
+            ? {}
+            : { previewRevisionId: event.previewRevisionId }),
           ...(event.durationMs === undefined
             ? {}
             : { durationMs: event.durationMs }),
@@ -7065,6 +7131,15 @@ export function AssetManager({
       });
       if (!result.ok) throw new LibraryOperationError(result.error);
       await refreshTagAndMetadataState(assetId);
+      const tagName = tags.find((tag) => tag.tagId === tagId)?.name;
+      if (tagName) {
+        syncBrowseFilterMembershipRef.current({
+          kind: "tags",
+          assetIds: [assetId],
+          addedTagNames: [tagName],
+          removedTagNames: [],
+        });
+      }
       setNotice(t("toast.tagAdded"), result.value.historyEntryId);
     } catch (caught) {
       setError(toMessage(caught, t("toast.addTagFailed"), locale));
@@ -7082,6 +7157,15 @@ export function AssetManager({
       });
       if (!result.ok) throw new LibraryOperationError(result.error);
       await refreshTagAndMetadataState(targetAssetId);
+      const tagName = tags.find((tag) => tag.tagId === tagId)?.name;
+      if (tagName) {
+        syncBrowseFilterMembershipRef.current({
+          kind: "tags",
+          assetIds: [targetAssetId],
+          addedTagNames: [],
+          removedTagNames: [tagName],
+        });
+      }
       setNotice(t("toast.tagRemoved"), result.value.historyEntryId);
     } catch (caught) {
       setError(toMessage(caught, t("toast.removeTagFailed"), locale));
@@ -7104,6 +7188,12 @@ export function AssetManager({
       });
       if (!assignResult.ok) throw new LibraryOperationError(assignResult.error);
       await refreshTagAndMetadataState(targetAssetId);
+      syncBrowseFilterMembershipRef.current({
+        kind: "tags",
+        assetIds: [targetAssetId],
+        addedTagNames: [tagName.trim()],
+        removedTagNames: [],
+      });
       setNotice(
         t("toast.tagCreatedAssigned", { name: tagName.trim() }),
         assignResult.value.historyEntryId,
@@ -8355,6 +8445,90 @@ export function AssetManager({
     reloadCurrentContentRef.current = reloadCurrentContent;
   });
 
+  function visibleBrowseFilters(): FilterClause[] | null {
+    if (activeSmartCollectionId) {
+      const found = smartCollections.find(
+        (collection) => collection.collectionId === activeSmartCollectionId,
+      );
+      if (!found) return null;
+      try {
+        const parsed = smartCollectionQueryDefinitionSchema.parse(
+          JSON.parse(found.queryDefinition),
+        );
+        return parsed.filters ?? [];
+      } catch {
+        return null;
+      }
+    }
+    const activeTagName = activeTagId
+      ? tags.find((tag) => tag.tagId === activeTagId)?.name
+      : undefined;
+    const definition = activeTagName
+      ? currentQueryDefinition({ tagFilter: activeTagName })
+      : currentQueryDefinition();
+    return definition.filters ?? [];
+  }
+
+  function scheduleFilteredBrowseReconcile(delayMs: number): void {
+    const operationLibraryId = libraryRef.current?.libraryId;
+    if (deferredReconcileTimerRef.current !== undefined) {
+      window.clearTimeout(deferredReconcileTimerRef.current);
+    }
+    deferredReconcileTimerRef.current = window.setTimeout(() => {
+      deferredReconcileTimerRef.current = undefined;
+      if (
+        operationLibraryId !== undefined
+        && libraryRef.current?.libraryId !== operationLibraryId
+      ) return;
+      const canvas = workspaceCanvasRef.current;
+      const scrollTopBefore = canvas?.scrollTop ?? 0;
+      void reloadCurrentContentRef.current()
+        .catch(() => undefined)
+        .finally(() => {
+          if (
+            operationLibraryId !== undefined
+            && libraryRef.current?.libraryId !== operationLibraryId
+          ) return;
+          const nextCanvas = workspaceCanvasRef.current;
+          if (nextCanvas && nextCanvas.scrollTop !== scrollTopBefore) {
+            nextCanvas.scrollTo({ top: scrollTopBefore });
+          }
+        });
+    }, delayMs);
+  }
+
+  function dropAssetsFromFilteredBrowse(assetIds: readonly string[]): void {
+    const removed = new Set(assetIds);
+    const visible = showTrash ? trashedAssets : assets;
+    const removedCount = visible.filter((asset) => removed.has(asset.assetId)).length;
+    if (removedCount === 0) return;
+    if (showTrash) {
+      setTrashedAssets((current) => removeAssetIdsLocally(current, removed));
+    } else {
+      setAssets((current) => removeAssetIdsLocally(current, removed));
+    }
+    setSearchTotal((current) => decrementScopeCount(current, removedCount));
+    removeLocallyFromBrowse([...assetIds], removedCount);
+    scheduleFilteredBrowseReconcile(1500);
+  }
+
+  function syncBrowseFilterMembership(change: BrowseMembershipChange): void {
+    if (change.kind === "dimensions" && showTrash) return;
+    const visible = showTrash ? trashedAssets : assets;
+    const next = assetsRemainingAfterMembership(visible, visibleBrowseFilters(), change);
+    if (next.assets.length < visible.length) {
+      const kept = new Set(next.assets.map((asset) => asset.assetId));
+      dropAssetsFromFilteredBrowse(
+        visible
+          .filter((asset) => !kept.has(asset.assetId))
+          .map((asset) => asset.assetId),
+      );
+      return;
+    }
+    if (next.reload) scheduleFilteredBrowseReconcile(0);
+  }
+  syncBrowseFilterMembershipRef.current = syncBrowseFilterMembership;
+
   async function refreshAfterAutomationScript() {
     try {
       // A script may issue hundreds of write commands. Refresh once after the
@@ -8395,6 +8569,16 @@ export function AssetManager({
     clearAssetSelection,
     activeTagId,
     activeCollectionId,
+    onTagsChanged: (action, tagId, assetIds) => {
+      const tagName = tags.find((tag) => tag.tagId === tagId)?.name;
+      if (!tagName) return;
+      syncBrowseFilterMembershipRef.current({
+        kind: "tags",
+        assetIds,
+        addedTagNames: action === "assign" ? [tagName] : [],
+        removedTagNames: action === "remove" ? [tagName] : [],
+      });
+    },
   });
 
   const removeDeletedManagedFoldersFromSidebar = useCallback(
@@ -8894,6 +9078,9 @@ export function AssetManager({
     },
     copyFolder: (folderId) => {
       void handleCopyFolder(folderId);
+    },
+    copyFolderPath: (folderId) => {
+      void handleCopyFolderPath(folderId);
     },
     pasteIntoFolder: (folderId) => {
       dispatchClipboardPaste(folderId);

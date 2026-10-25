@@ -229,7 +229,17 @@ export interface WorldlineBoxShellApi {
   setApplicationShortcutAcceleratorsEnabled?(enabled: boolean, fullscreenOnly?: boolean): void;
   /** Main-forwarded browse F2 / Delete / Shift+Delete. */
   onBrowseShortcut?(
-    listener: (action: BrowseKeyboardAction) => void,
+    listener: (
+      action: BrowseKeyboardAction,
+      chord?: {
+        readonly key: string;
+        readonly code?: string;
+        readonly ctrlKey?: boolean;
+        readonly metaKey?: boolean;
+        readonly altKey?: boolean;
+        readonly shiftKey?: boolean;
+      },
+    ) => void,
   ): () => void;
   /** Main → renderer: themed critical confirmation inside the app window. */
   onCriticalConfirmationPrompt(

@@ -9,7 +9,12 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { afterEach, describe, expect, it } from 'vitest';
+import type { Group, Mesh } from 'three';
+import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 
+import { applyBaseColorTextureAlpha } from '../../src/renderer/3d-viewer/base-color-alpha';
+import { applyDecodedRgbaTextures } from '../../src/renderer/3d-viewer/rgba-texture-chunk';
+import { readRgbaTextureChunk } from '../../src/shared/fbx-rgba-chunk';
 import { LibraryService } from '../../src/worker/library-service';
 import { convertFbxBuffer } from '../../src/worker/fbx/converter';
 import { buildGlb } from '../../src/worker/fbx/glb-builder';
@@ -181,6 +186,25 @@ function materialByName(glb: ParsedGlb, name: string): GltfMaterialJson | undefi
   return glb.json.materials.find((m) => m.name === name);
 }
 
+function topOriginTga(rgba: Buffer, width: number, height: number): Buffer {
+  const header = Buffer.alloc(18);
+  header[2] = 2;
+  header.writeUInt16LE(width, 12);
+  header.writeUInt16LE(height, 14);
+  header[16] = 32;
+  header[17] = 0x28;
+  const pixels = Buffer.alloc(width * height * 4);
+  for (let pixel = 0; pixel < width * height; pixel += 1) {
+    const source = pixel * 4;
+    const dest = pixel * 4;
+    pixels[dest] = rgba[source + 2] ?? 0;
+    pixels[dest + 1] = rgba[source + 1] ?? 0;
+    pixels[dest + 2] = rgba[source] ?? 0;
+    pixels[dest + 3] = rgba[source + 3] ?? 255;
+  }
+  return Buffer.concat([header, pixels]);
+}
+
 /* ------------------------------------------------------------------ */
 /* Converter (pure pipeline)                                           */
 /* ------------------------------------------------------------------ */
@@ -311,6 +335,46 @@ describe('fbx converter — hand-written ASCII fixture', () => {
     const view = parsed.json.bufferViews?.[image?.bufferView ?? -1];
     const embedded = parsed.bin.subarray(view?.byteOffset ?? 0, (view?.byteOffset ?? 0) + (view?.byteLength ?? 0));
     expect(embedded).toEqual(ONE_PX_RED_PNG);
+  });
+
+  it('keeps embedded 32-bit TGA coverage and cuts those texels out', async () => {
+    const source = buildAsciiFbx({
+      texture: {
+        relativeFilename: 'leaf.tga',
+        embeddedBytes: topOriginTga(Buffer.from([
+          10, 180, 40, 0,
+          10, 180, 40, 255,
+          240, 200, 20, 255,
+          240, 200, 20, 255,
+        ]), 2, 2),
+      },
+    });
+    const result = await convertFbxBuffer(source, {
+      sourcePath: path.join(temporaryRoot(), 'leaf.fbx'),
+    });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.output.missingTextures).toEqual([]);
+    const file = Uint8Array.from(result.output.glb).buffer;
+    const images = readRgbaTextureChunk(file);
+    expect(images).toHaveLength(1);
+    expect(images[0]).toMatchObject({ width: 2, height: 2 });
+    expect(images[0]?.rgba[3]).toBe(0);
+    expect(images[0]?.rgba[7]).toBe(255);
+
+    const loader = new GLTFLoader();
+    const gltf = await new Promise<{ scene: Group }>((resolve, reject) => {
+      loader.parse(file, '', resolve, reject);
+    });
+    expect(applyDecodedRgbaTextures(gltf.scene, file)).toBe(1);
+    expect(applyBaseColorTextureAlpha(gltf.scene)).toBe(1);
+    const alphaTests: number[] = [];
+    gltf.scene.traverse((object) => {
+      const material = (object as Mesh).material;
+      const current = Array.isArray(material) ? material[0] : material;
+      if (current && 'alphaTest' in current) alphaTests.push(current.alphaTest);
+    });
+    expect(alphaTests).toContain(0.5);
   });
 
   it('composites separate metalness/roughness maps into metallicRoughnessTexture (WorldlineBox-a5ic)', async () => {
@@ -568,7 +632,7 @@ describe('fbx worker command — model.convert-fbx', () => {
     expect(artifact).toMatchObject({
       status: 'ready',
       mimeType: 'model/gltf-binary',
-      generatorVersion: 'ufbx-wasm-1',
+      generatorVersion: 'ufbx-wasm-3',
       artifactId: first.glbArtifactId,
     });
     const glb = readFileSync(service.getArtifactAbsolutePath(
