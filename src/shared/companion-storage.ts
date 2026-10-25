@@ -106,6 +106,8 @@ export const companionProactiveStateSchema = z.strictObject({
 export type CompanionProactiveState = z.infer<typeof companionProactiveStateSchema>;
 
 export const companionStorageCommandSchema = z.discriminatedUnion('type', [
+  z.strictObject({ type: z.literal('activity.port.adopt_candidate'), companionId: companionIdSchema,
+    conversationId: companionIdSchema, topicId: companionIdSchema }),
   ...companionExperienceCommands,
   companionExperiencePublishSchema,
   ...companionAgentRunCommands,
@@ -269,6 +271,8 @@ export const companionStorageResponseSchema = companionsResponseSchema.extend({
   activityReport: z.strictObject({ id: companionIdSchema, leaseToken: companionIdSchema,
     executionReadset: companionExecutionReadsetSchema }).optional(),
   socialDeliveryClientId: companionIdSchema.optional(), socialDeliveryReused: z.boolean().optional(),
+  activityPortCandidate: z.strictObject({ id: companionIdSchema, conversationId: companionIdSchema, topicId: companionIdSchema,
+    creatorCompanionId: companionIdSchema, requiresJoin: z.literal(true), notice: z.string().max(1000) }).optional(),
   topicDelivery: z.strictObject({ stateStored: z.literal(true), messageSent: z.literal(false), recipientAwakened: z.literal(false), notice: z.string().max(1000) }).optional(),
   gameStateHandoff: z.strictObject({ automaticTopicStateTransfer: z.literal(false), gamePort: z.strictObject({ conversationId: companionIdSchema, topicId: companionIdSchema }), notice: z.string().max(2000) }).optional(),
   socialDelivery: z.strictObject({ socialOnly: z.literal(true), operation: z.enum(['message', 'introduce', 'create_group', 'social']),

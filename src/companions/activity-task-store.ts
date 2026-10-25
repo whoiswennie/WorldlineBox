@@ -14,6 +14,8 @@ import { companionTopicOperationSchema, COMPANION_TOPIC_STATE_WRITE_RECEIPT, com
 import { companionSocialGoalOrigin } from './social-goal-origin';
 import type { CompanionActivityThoughtAuthorization } from '../shared/companion-activity-thought';
 import { companionFinalProposalJsonText } from '../shared/companion-final-proposal';
+import { companionPeerActivitySourceValid } from './peer-activity-source';
+import { findCompanionActivityPortCandidate, findJoinedCompanionActivityPortCandidate, publicCompanionActivityPortCandidate } from './activity-port-candidates';
 type Row = { data: string };
 type GoalSocialOrigin = { messageId: string; sourceMessageId: string; deliveryClientId: string; conversationId: string; topicId?: string; chainId: string };
 type Stored = CompanionActivityTask & { clientId: string; sourceChecksum?: string; nextAt: number; leaseUntil?: number;
@@ -135,11 +137,19 @@ export class CompanionActivityTaskStore {
     }
     if (!task.sourceMessageId) return true;
     const source = this.visible(task, [task.sourceMessageId])[0];
-    return !!source && source.authorId === 'user' && checksum(source) === task.sourceChecksum;
+    return !!source && checksum(source) === task.sourceChecksum && (source.authorId === 'user'
+      ? !task.peerResponsibility : companionPeerActivitySourceValid(this.db, this.visible, task));
   }
   private gamePortValid(task: Stored): boolean {
     const port = task.gamePort;
     if (!port || !task.sourceMessageId) return false;
+    if (port.delegatedCandidateId) {
+      const candidate = findJoinedCompanionActivityPortCandidate(this.db, this.social, this.visible, { companionId: task.companionId,
+        conversationId: port.conversationId, topicId: port.topicId }, { includeClosed: true });
+      return !!candidate && candidate.id === port.delegatedCandidateId && candidate.rootConversationId === task.conversationId
+        && candidate.rootSourceMessageId === task.sourceMessageId && candidate.rootSourceChecksum === task.sourceChecksum
+        && candidate.deliveryClientId === port.deliveryClientId;
+    }
     const found = this.db.prepare('SELECT data FROM companion_topics WHERE id=? AND conversation_id=?').get(port.topicId, port.conversationId) as Row | undefined;
     const topic = found ? JSON.parse(found.data) as { kind: string; deletedAt?: string; participantIds: string[] } : undefined;
     if (!topic || topic.kind !== 'game' || topic.deletedAt || !topic.participantIds.includes(task.companionId)
@@ -220,6 +230,32 @@ export class CompanionActivityTaskStore {
       if (!(task.seededSocialClientIds ??= []).includes(input.deliveryClientId)) task.seededSocialClientIds.push(input.deliveryClientId);
       task.peerConversationId = sent.conversationId; task.peerTopicId = sent.topicId;
       task.stage = '本人的真实原目标通信产生了游戏端口，已关联回同一持续目标；仍须依据真实加入和回执推进。';
+      this.save(task); return { ok: true, activityTask: this.public(task) };
+    }).immediate();
+  }
+  private portCandidate(task: Stored) {
+    return task.sourceMessageId && !task.peerResponsibility ? findCompanionActivityPortCandidate(this.db, this.social, this.visible,
+      { companionId: task.companionId, conversationId: task.conversationId, sourceMessageId: task.sourceMessageId }) : undefined;
+  }
+  private adoptCandidate(input: Extract<CompanionStorageCommand, { type: 'activity.port.adopt_candidate' }>): CompanionStorageResponse {
+    return this.db.transaction(() => {
+      const candidate = findJoinedCompanionActivityPortCandidate(this.db, this.social, this.visible, input);
+      if (!candidate) return { ok: true };
+      const rows = this.db.prepare("SELECT data FROM companion_activity_tasks WHERE companion_id=? AND conversation_id=? AND source_message_id=? AND status IN('queued','running','waiting')")
+        .all(input.companionId, candidate.rootConversationId, candidate.rootSourceMessageId) as Row[];
+      if (rows.length !== 1) return { ok: true };
+      const task = JSON.parse(rows[0]!.data) as Stored;
+      if (!this.valid(task) || task.sourceChecksum !== candidate.rootSourceChecksum) return { ok: true };
+      if (task.gamePort && (task.gamePort.conversationId !== input.conversationId || task.gamePort.topicId !== input.topicId)) {
+        const previous = this.topicExecute?.({ type: 'topic.read', readerId: task.companionId,
+          conversationId: task.gamePort.conversationId, topicId: task.gamePort.topicId })?.topic;
+        if (!previous || previous.deletedAt || previous.status !== 'closed') return { ok: true };
+      }
+      task.gamePort = { conversationId: candidate.conversationId, topicId: candidate.topicId,
+        deliveryClientId: candidate.deliveryClientId, delegatedCandidateId: candidate.id };
+      if (!this.gamePortValid(task)) throw new Error('原目标候选端口的真实来源已变化，未采纳。');
+      task.peerConversationId = candidate.conversationId; task.peerTopicId = candidate.topicId;
+      task.targetId ??= candidate.memberIds.find(id => id !== task.companionId);
       this.save(task); return { ok: true, activityTask: this.public(task) };
     }).immediate();
   }
@@ -307,6 +343,7 @@ export class CompanionActivityTaskStore {
         : task.status === 'cancelled' ? '这项持续任务已取消，停止后续步骤；已发生的实际行为保留。' : '这项持续任务未完成，已停止自动后续步骤；已发生的实际行为保留。';
       const readset = this.reportEvidence(task, task.reportReadset);
       this.append({ conversationId: task.conversationId, authorId: task.companionId,
+        ...(task.peerResponsibility && task.sourceMessageId ? { topicId: this.visible(task, [task.sourceMessageId])[0]?.topicId ?? null } : {}),
         content: `持续任务 · ${task.status === 'succeeded' ? task.reportReadset ? '已完成' : '记录已结束' : task.status === 'cancelled' ? '已取消' : '暂时受阻'}\n\n${description}`,
         executionReadset: readset,
         clientId: 'activity_result_' + task.id + (task.reportVersion ? '_resumed_' + task.reportVersion : ''), replyToId: task.sourceMessageId, replyDirective: 'none' });
@@ -394,7 +431,7 @@ export class CompanionActivityTaskStore {
         task.reportObservation = this.reportObservation(task); task.reportAttempts = (task.reportAttempts ?? 0) + 1; this.save(task);
         return { ok: true, activityTask: this.public(task), activityReport: { id: task.id, leaseToken: task.reportLeaseToken, executionReadset: task.reportReadset },
           activityProgressEvidence: this.social.continuity.progressForGoal({ ...task, sourceMessageId: task.sourceMessageId! }),
-          activityMessages: this.goalSocialMessages(task).messages.slice(-100) };
+          activityMessages: this.peerMessages(task).slice(-100) };
       }
       return { ok: true };
     }).immediate();
@@ -418,6 +455,7 @@ export class CompanionActivityTaskStore {
       }
       task.reportReadset = this.bindExecutionEvidence(task, input.executionReadset);
       const message = this.append({ conversationId: task.conversationId, authorId: task.companionId,
+        ...(task.peerResponsibility && task.sourceMessageId ? { topicId: this.visible(task, [task.sourceMessageId])[0]?.topicId ?? null } : {}),
         content: `持续任务 · ${task.status === 'succeeded' ? '已完成' : task.status === 'cancelled' ? '已取消' : '暂时受阻'}\n\n${task.stage}`,
         executionReadset: task.reportReadset, clientId, replyToId: task.sourceMessageId, replyDirective: 'none' }) as CompanionMessage;
       task.reportPending = false; delete task.reportLeaseToken; delete task.reportLeaseUntil; this.save(task); return { ok: true, message };
@@ -460,18 +498,58 @@ export class CompanionActivityTaskStore {
       return this.public(task);
     }).immediate();
   }
+  /** Only social.complete calls this inside its transaction, with the exact
+   * running peer job. Its accepted marker is committed with the real reply;
+   * public activity.start continues to require the original human source. */
+  acceptPeerResponsibility(input: { companionId: string; conversationId: string; sourceMessageId: string; title: string;
+    instruction: string; clientId: string; jobId: string; publisherId: string; leaseToken: string }): CompanionActivityTask {
+    return this.db.transaction(() => {
+      const source = this.visible(input, [input.sourceMessageId])[0];
+      if (!source || source.authorId !== input.publisherId || ['user', 'system', input.companionId].includes(source.authorId)
+        || source.status !== 'sent' || source.isReplyDraft || source.replyDraft) throw new Error('持续责任缺少当前真实伙伴来信。');
+      const prior = this.db.prepare('SELECT data FROM companion_activity_tasks WHERE client_id=?').get(input.clientId) as Row | undefined;
+      if (prior) {
+        const task = JSON.parse(prior.data) as Stored;
+        if (task.companionId !== input.companionId || task.conversationId !== input.conversationId || task.sourceMessageId !== input.sourceMessageId
+          || task.title !== input.title || task.goal !== input.instruction || task.peerResponsibility?.jobId !== input.jobId
+          || task.peerResponsibility.publisherId !== input.publisherId) throw new Error('伙伴持续责任幂等标识冲突。');
+        return this.public(task);
+      }
+      if (Number((this.db.prepare("SELECT count(*) AS n FROM companion_activity_tasks WHERE companion_id=? AND status IN('queued','running','waiting')")
+        .get(input.companionId) as { n: number }).n) >= 3) throw new Error('已有三份未完成行动任务，请先完成或取消。');
+      const task: Stored = { id: randomUUID(), companionId: input.companionId, conversationId: input.conversationId,
+        sourceMessageId: source.id, sourceChecksum: checksum(source), clientId: input.clientId, title: input.title, goal: input.instruction,
+        peerResponsibility: { jobId: input.jobId, publisherId: input.publisherId }, status: 'queued', step: 0, attempts: 0,
+        createdAt: iso(), updatedAt: iso(), deadline: iso(Date.now() + 3600_000), nextAt: Date.now(), history: [],
+        targetId: input.publisherId, peerConversationId: source.conversationId, peerTopicId: source.topicId ?? null,
+        evidence: [{ id: source.id, conversationId: source.conversationId, checksum: checksum(source) }], stage: '已明确接受伙伴持续责任，等待本人下一步行动。' };
+      activityTaskSchema.parse(task);
+      if (!companionPeerActivitySourceValid(this.db, this.visible, task, { leaseToken: input.leaseToken })) throw new Error('伙伴持续责任的当前读取、任务归属或实际执行租约已经失效。');
+      this.db.prepare('INSERT INTO companion_activity_tasks(id,companion_id,conversation_id,source_message_id,status,next_at,client_id,data) VALUES(?,?,?,?,?,?,?,?)')
+        .run(task.id, task.companionId, task.conversationId, source.id, task.status, task.nextAt, task.clientId, JSON.stringify(task));
+      return activityTaskSchema.parse(task);
+    }).immediate();
+  }
+  private boundPort(task: Stored): { conversationId: string; topicId: string } | undefined {
+    if (task.gamePort) return task.gamePort;
+    if (!task.peerResponsibility || !task.sourceMessageId) return;
+    const source = this.visible(task, [task.sourceMessageId])[0];
+    return source?.topicId ? { conversationId: source.conversationId, topicId: source.topicId } : undefined;
+  }
   private peerMessages(task: Stored): CompanionMessage[] {
-    if (!task.targetId) return [];
-    const group = task.peerConversationId && this.db.prepare('SELECT 1 FROM conversation_members WHERE conversation_id=? AND companion_id=?').get(task.peerConversationId, task.targetId);
-    const conversationId = group ? task.peerConversationId! : this.social.ensure(task.companionId, [task.companionId, task.targetId]).id;
-    const ids = (this.db.prepare(`SELECT id FROM messages WHERE conversation_id=?${task.peerTopicId === undefined ? '' : task.peerTopicId === null
+    const port = this.boundPort(task);
+    if (!task.targetId && !port) return [];
+    const group = task.targetId && task.peerConversationId && this.db.prepare('SELECT 1 FROM conversation_members WHERE conversation_id=? AND companion_id=?').get(task.peerConversationId, task.targetId);
+    const conversationId = port?.conversationId ?? (group ? task.peerConversationId! : this.social.ensure(task.companionId, [task.companionId, task.targetId!]).id);
+    const topicId = port?.topicId ?? task.peerTopicId;
+    const ids = (this.db.prepare(`SELECT id FROM messages WHERE conversation_id=?${topicId === undefined ? '' : topicId === null
       ? ' AND NOT EXISTS(SELECT 1 FROM companion_message_topics WHERE message_id=messages.id)'
       : ' AND EXISTS(SELECT 1 FROM companion_message_topics WHERE message_id=messages.id AND topic_id=?)'} ORDER BY sequence DESC LIMIT 20`)
-      .all(conversationId, ...(task.peerTopicId ? [task.peerTopicId] : [])) as { id: string }[]).map(row => row.id);
+      .all(conversationId, ...(topicId ? [topicId] : [])) as { id: string }[]).map(row => row.id);
     // A dedicated game/story port may carry that topic's live flow. An ordinary
     // private room is reusable: only this goal's anchored job chains may cross
     // into task cognition, never that room's unrelated earlier conversation.
-    const current = (task.sourceMessageId || task.seededSocialClientIds?.length) && !task.peerTopicId ? []
+    const current = (task.sourceMessageId || task.seededSocialClientIds?.length) && !topicId ? []
       : this.visible({ companionId: task.companionId, conversationId }, ids).reverse();
     return [...new Map([...this.goalSocialMessages(task).messages, ...current].map(message => [message.id, message])).values()]
       .sort((a, b) => a.sequence - b.sequence).slice(-100);
@@ -714,7 +792,10 @@ export class CompanionActivityTaskStore {
     if (!schema) throw new Error('话题操作不存在。');
     const parsed = schema.parse(input) as Record<string, unknown>;
     const source = task.sourceMessageId ? this.visible(task, [task.sourceMessageId])[0] : undefined;
+    const candidate = this.portCandidate(task);
+    const candidatePort = candidate ? { conversationId: candidate.conversationId, topicId: candidate.topicId } : undefined;
     const ports = [task.gamePort ? { conversationId: task.gamePort.conversationId, topicId: task.gamePort.topicId } : undefined,
+      candidatePort,
       task.peerConversationId && task.peerTopicId ? { conversationId: task.peerConversationId, topicId: task.peerTopicId } : undefined,
       source?.topicId ? { conversationId: source.conversationId, topicId: source.topicId } : undefined]
       .filter((port): port is { conversationId: string; topicId: string } => !!port);
@@ -723,7 +804,27 @@ export class CompanionActivityTaskStore {
     if (matching.length !== 1) throw new Error('话题操作必须指定本任务实际已绑定的唯一 roomId/topicId，不能管理其他会话或旧局。');
     const port = matching[0]!;
     if (['create', 'fork'].includes(operation.action)) throw new Error('新活动须由主脑创建并绑定真实新端口；当前持续任务只操作本目标已绑定的话题，不能隐式切换到新局。');
+    if (candidate && port.topicId === candidate.topicId && operation.action === 'join') {
+      if (task.gamePort && task.gamePort.topicId !== port.topicId) {
+        const old = this.topicExecute({ type: 'topic.read', readerId: task.companionId,
+          conversationId: task.gamePort.conversationId, topicId: task.gamePort.topicId })?.topic;
+        if (!old || old.deletedAt || old.status !== 'closed') throw new Error('旧活动端口尚未明确关闭，不能加入后切换持续目标。');
+      }
+      const joined = this.topicExecute({ type: 'topic.join', readerId: task.companionId, conversationId: port.conversationId, topicId: port.topicId });
+      if (!joined?.ok || !joined.topic?.participantIds.includes(task.companionId)) throw new Error('本人尚未实际加入候选话题，未采纳端口。');
+      const adopted = this.adoptCandidate({ type: 'activity.port.adopt_candidate', companionId: task.companionId,
+        conversationId: port.conversationId, topicId: port.topicId });
+      if (adopted.activityTask?.id !== task.id) throw new Error('实际加入后原目标尚无唯一有效接力，未绑定。');
+      // Preserve this lease's newly captured execution dependencies; adopting
+      // routing must not replace the live object with an older DB readset.
+      task.gamePort = adopted.activityTask.gamePort;
+      task.peerConversationId = adopted.activityTask.peerConversationId;
+      task.peerTopicId = adopted.activityTask.peerTopicId;
+      task.targetId ??= adopted.activityTask.targetId;
+      return { ...joined, activityTask: adopted.activityTask };
+    }
     const read = this.topicExecute({ type: 'topic.read', conversationId: port.conversationId, topicId: port.topicId, readerId: task.companionId });
+    if (candidate && port.topicId === candidate.topicId && operation.action === 'read') return read ?? { ok: false, error: '候选话题不可读取。' };
     if (!read?.ok || read.topic?.deletedAt || read.topic?.id !== port.topicId || !read.topic.participantIds.includes(task.companionId)) throw new Error('本任务话题参与资格已变化，未执行。');
     if (operation.action === 'list') return { ok: true, topics: [read.topic], hasMore: false };
     const { action, roomId: _roomId, ...parameters } = parsed; void _roomId;
@@ -817,7 +918,8 @@ export class CompanionActivityTaskStore {
               ...(action.action === 'message' && action.topicId !== undefined ? { topicId: action.topicId }
                 : currentRoom && task.peerTopicId !== undefined ? { topicId: task.peerTopicId } : {}),
               channel: action.action === 'social' ? 'face_to_face' : 'phone', ...(action.action === 'message' ? { urgent: action.urgent } : {}), clientId: `activity_${task.id}_${task.step}`,
-              ...(task.sourceMessageId ? { agentSource: { conversationId: task.conversationId, messageId: task.sourceMessageId }, authorizationMessageId: task.sourceMessageId } : {}) });
+              ...(task.sourceMessageId ? { agentSource: { conversationId: task.conversationId, messageId: task.sourceMessageId },
+                ...(!task.peerResponsibility ? { authorizationMessageId: task.sourceMessageId } : {}) } : {}) });
             const queued = this.db.prepare('SELECT data FROM companion_social_outbox WHERE client_id=?').get(`activity_${task.id}_${task.step}`) as Row | undefined;
             task.peerConversationId = roomId;
             task.peerTopicId = sent.socialMessage?.message.topicId ?? (queued ? (JSON.parse(queued.data) as { topicId?: string | null }).topicId : null) ?? null;
@@ -829,6 +931,10 @@ export class CompanionActivityTaskStore {
             const sent = this.world.execute({ type: 'world.tool', companionId: task.companionId, conversationId: task.conversationId,
               sourceMessageId: task.sourceMessageId, clientId: `activity_${task.id}_${task.step}`, arguments: action });
             if (!sent?.socialConversation) throw new Error('社交动作没有产生真实会话回执。');
+            if (sent.activityPortCandidate) {
+              result = JSON.stringify(sent);
+              return;
+            }
             const queued = this.db.prepare('SELECT data FROM companion_social_outbox WHERE client_id=?').get(`activity_${task.id}_${task.step}`) as Row | undefined;
             task.peerConversationId = sent.socialConversation.id;
             task.peerTopicId = sent.topic?.id ?? sent.socialMessage?.message.topicId ?? (queued ? (JSON.parse(queued.data) as { topicId?: string | null }).topicId : null) ?? null;
@@ -843,7 +949,7 @@ export class CompanionActivityTaskStore {
             for (const source of queried.memorySources ?? []) (task.evidence ??= []).push({ id: source.id, conversationId: source.conversationId, checksum: checksum(source) });
           } else {
             const acted = this.world.tool(task, action, task.sourceMessageId);
-            if (action.action === 'visit' && task.sourceMessageId) {
+            if (action.action === 'visit' && task.sourceMessageId && !task.peerResponsibility) {
               const visit = acted.visits.find(visit => visit.guestId === task.companionId && visit.hostId === action.targetCompanionId
                 && ['requested', 'allowed'].includes(visit.status));
               if (visit) task.visitRequestId = visit.id;
@@ -955,6 +1061,7 @@ export class CompanionActivityTaskStore {
     switch (command.type) {
       case 'activity.handoff': return this.handoff(command);
       case 'activity.social.bind_peer_port': return this.bindPeerPort(command);
+      case 'activity.port.adopt_candidate': return this.adoptCandidate(command);
       case 'activity.memory.claim': return this.claimMemory();
       case 'activity.memory.complete': case 'activity.memory.fail': return this.completeMemory(command);
       case 'activity.motion.ensure': return this.ensureMotion(command);
@@ -1011,14 +1118,16 @@ export class CompanionActivityTaskStore {
         this.save(task);
         const progress = task.sourceMessageId ? this.social.continuity.progressForGoal({ ...task, sourceMessageId: task.sourceMessageId }) : undefined;
         task.observedProgressEvidence = progress ? { leaseToken: command.leaseToken, observationChecksum: progress.observationChecksum } : undefined;
-        const port = task.gamePort;
+        const port = this.boundPort(task);
         const game = port ? this.topicExecute?.({ type: 'topic.read', conversationId: port.conversationId, topicId: port.topicId, readerId: task.companionId }) : undefined;
         if (port && game?.ok) this.captureTopicReceipt(task, port, game);
         this.save(task);
         const shown = new Set(messages.map(message => message.id));
+        const candidate = this.portCandidate(task);
         return { ok: true, activityTask: this.public(task), world, activityMessages: messages, ...(progress ? { activityProgressEvidence: progress } : {}),
+          ...(candidate && candidate.topicId !== task.gamePort?.topicId ? { activityPortCandidate: publicCompanionActivityPortCandidate(candidate) } : {}),
           ...(task.wholeGoalPlan ? { activityPlanningState: task.wholeGoalPlan } : {}),
-          ...(port && game?.ok ? { activityGameRoom: { conversationId: port.conversationId,
+          ...(port && game?.ok && game.topic?.kind === 'game' ? { activityGameRoom: { conversationId: port.conversationId,
             memberIds: (this.db.prepare('SELECT companion_id FROM conversation_members WHERE conversation_id=? ORDER BY companion_id')
               .all(port.conversationId) as Array<{ companion_id: string }>).map(member => member.companion_id) } } : {}),
           ...(game?.ok ? { topic: game.topic, topicState: game.topicState } : {}),

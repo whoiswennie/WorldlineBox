@@ -60,6 +60,8 @@ it('retains only a source-backed actual game port across private messages and mo
   expect(store.request({ type: 'activity.get', ...scope, id: task.id }).activityTask?.gamePort?.topicId).toBe(old.id);
   for (const readerId of ['b', 'c']) store.request({ type: 'topic.join', conversationId: group.socialConversation!.id,
     topicId: group.topic!.id, readerId });
+  const livePublicReply = store.appendMessage({ conversationId: group.socialConversation!.id, topicId: group.topic!.id,
+    authorId: 'b', content: '我已阅读本局公共规则，接下来会按真实阶段行动。', replyDirective: 'none' });
   const beforeLongCheckpoint = store.request({ type: 'topic.read', conversationId: group.socialConversation!.id, topicId: group.topic!.id, readerId: 'a' }).topic!;
   const actualLongPublicSummary = '已经实际公开的本局规则与准备信息。'.repeat(180);
   store.request({ type: 'topic.update', conversationId: group.socialConversation!.id, topicId: group.topic!.id, readerId: 'a',
@@ -74,6 +76,7 @@ it('retains only a source-backed actual game port across private messages and mo
     const observed = store.request({ type: 'activity.observe', id: leased.id, leaseToken: leased.leaseToken! });
     expect(observed.activityGameRoom).toEqual({ conversationId: group.socialConversation!.id, memberIds: ['a', 'b', 'c'] });
     expect(observed.topic?.participantIds.slice().sort()).toEqual(['a', 'b', 'c']);
+    if (task.step === 36) expect(observed.activityMessages?.some(message => message.id === livePublicReply.id)).toBe(true);
     task = store.request({ type: 'activity.commit', id: leased.id, leaseToken: leased.leaseToken!,
       decision: { status: 'continue', topic, action: null, wait: null, summary: '本局真实话题操作。' } }).activityTask!;
     return task.history.at(-1)!;

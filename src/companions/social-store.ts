@@ -14,15 +14,17 @@ import { COMPANION_CHARACTER_RELATIONS } from '../shared/companion-character-rel
 import { companionSocialGameContext } from './social-game-context';
 import { companionSocialGoalOrigin } from './social-goal-origin';
 import type { CompanionExecutionReadset } from '../shared/companion-execution-evidence';
+import { companionAcceptedPeerActivitySchema, type CompanionAcceptedPeerActivity, type CompanionPeerActivityAcceptanceInput } from '../shared/companion-peer-activity';
+import { companionPeerActivitySourceChecksum } from './peer-activity-source';
 
 type Row = Record<string, string | number | null>;
 type Calendar = { timeZone: string; virtualNow: string; observedDay: string; backlog: boolean };
 type Send = { urgent?: boolean; companionId: string; conversationId: string; content: string; channel: 'phone' | 'face_to_face'; sourceMessageId?: string; authorizationMessageId?: string; replyToId?: string; clientId: string; shareAddress?: boolean; topicId?: string | null; agentSource?: { conversationId: string; messageId: string }; executionReadset?: CompanionExecutionReadset };
 type PendingSend = Send & { fingerprint: string; authorizationChecksum?: string; sourceChecksum?: string; agentChecksum?: string; typingNotBefore?: string; originId?: string; originFromAgentSource?: boolean };
 type Read = { id: string; checksum: string };
-type StoredJob = CompanionSocialJob & { readSet?: Read[]; resultMessageId?: string; round: 'pair' | 'first' | 'summary' | 'followup' };
+type StoredJob = CompanionSocialJob & { readSet?: Read[]; resultMessageId?: string; acceptedActivity?: CompanionAcceptedPeerActivity; round: 'pair' | 'first' | 'summary' | 'followup' };
 type ChainData = { kind: 'pair' | 'group'; initiatorId: string; recipientIds: string[]; phase: 'first' | 'summary' | 'followup' | 'done'; maxMessages: number };
-export type CompanionPeerWorkInput = { companionId: string; conversationId: string; sourceMessageId: string; title: string; instruction: string; clientId: string; accept: boolean };
+export type CompanionPeerWorkInput = CompanionPeerActivityAcceptanceInput & { accept: boolean; mode?: 'activity' };
 const iso = (at = Date.now()) => new Date(at).toISOString();
 const row = (value: unknown) => value as Row;
 const parse = <T>(value: unknown): T => JSON.parse(String(value)) as T;
@@ -42,7 +44,7 @@ export class CompanionSocialStore {
     private readonly available: (owner: string, channel: Send['channel'], recipients: string[]) => boolean,
     private readonly speech: (message: CompanionSocialMessage, channel: Send['channel']) => void,
     private readonly clock: { elapsedVirtual(from: number, to: number): number } = { elapsedVirtual: (from, to) => to - from },
-    private readonly options: { observationCalendar?(): Calendar; memoryRevision?(scope: { companionId: string; conversationId: string; beforeSequence: number }): string; interrupt?(owner: string, source: CompanionSocialMessage): void; endInterrupt?(owner: string, sourceId: string): void; contactState?(owner: string): CompanionContactState; createPeerWork?(input: CompanionPeerWorkInput): void; addressText?(owner: string): string; shareHome?(owner: string, recipients: string[], source: CompanionMessage): void; createPlayerGroup?(title: string, members: string[]): { id: string }; topicExecute?(command: Extract<CompanionStorageCommand, { type: `topic.${string}` }>): CompanionStorageResponse | undefined; activityTaskValid?(id: string, owner: string, conversationId: string): boolean } = {}) {
+    private readonly options: { observationCalendar?(): Calendar; memoryRevision?(scope: { companionId: string; conversationId: string; beforeSequence: number }): string; interrupt?(owner: string, source: CompanionSocialMessage): void; endInterrupt?(owner: string, sourceId: string): void; contactState?(owner: string): CompanionContactState; createPeerWork?(input: CompanionPeerWorkInput): { activityTaskId: string } | void; addressText?(owner: string): string; shareHome?(owner: string, recipients: string[], source: CompanionMessage): void; createPlayerGroup?(title: string, members: string[]): { id: string }; topicExecute?(command: Extract<CompanionStorageCommand, { type: `topic.${string}` }>): CompanionStorageResponse | undefined; activityTaskValid?(id: string, owner: string, conversationId: string): boolean } = {}) {
     this.continuity = new CompanionSocialContinuityStore(db, append, message, visible,
       owner => available(owner, 'phone', []), () => calendar().backlog);
     this.replies = new CompanionSocialReplyStore(db);
@@ -765,8 +767,14 @@ export class CompanionSocialStore {
         if (!input.text?.trim() || offer.sourceMessageId !== source.id || source.authorId === 'user' || source.authorId === job.companionId
           || !job.memberIds.includes(source.authorId) || !offer.evidence.every(quote => source.content.includes(quote))) throw new Error('伙伴工作必须来自当前真实来信的明确委托。');
         if (!this.options.createPeerWork) throw new Error('伙伴工作暂时不可用。');
-        this.options.createPeerWork({ companionId: job.companionId, conversationId: job.conversationId, sourceMessageId: source.id,
-          title: offer.title, instruction: offer.instruction, clientId: 'peerwork_' + job.id, accept: offer.accept });
+        const created = this.options.createPeerWork({ companionId: job.companionId, conversationId: job.conversationId, sourceMessageId: source.id,
+          title: offer.title, instruction: offer.instruction, clientId: 'peerwork_' + job.id, accept: offer.accept, mode: offer.mode,
+          jobId: job.id, publisherId: source.authorId, leaseToken: input.leaseToken });
+        if (offer.mode === 'activity' && offer.accept) {
+          if (!created?.activityTaskId || job.acceptedActivity) throw new Error('持续责任尚未创建真实本人任务，或已存在不可变接受凭证。');
+          job.acceptedActivity = companionAcceptedPeerActivitySchema.parse({ taskId: created.activityTaskId, sourceMessageId: source.id,
+            publisherId: source.authorId, title: offer.title, instruction: offer.instruction, sourceChecksum: companionPeerActivitySourceChecksum(source) });
+        }
       }
       job.status = 'done'; delete job.leaseToken;
       if (job.urgent) this.options.endInterrupt?.(job.companionId, job.sourceMessageId);

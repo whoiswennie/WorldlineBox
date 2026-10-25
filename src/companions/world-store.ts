@@ -34,7 +34,8 @@ import { COMPANION_WORLD_PERCEPTION_INTERVAL_MS, sampleCompanionWorldPerception,
 import { COMPANION_SLEEP_DREAM_PROBABILITY, COMPANION_SLEEP_DREAM_COOLDOWN_MS, COMPANION_SLEEP_MINIMUM_REAL_MS,
   COMPANION_SLEEP_MAX_ATTEMPTS, COMPANION_SLEEP_SEED_LIMIT } from '../shared/companion-sleep';
 import { companionAutomaticConsolidationHasNovelty } from '../shared/companion-memory-novelty';
-import { companionSocialGoalOrigin } from './social-goal-origin';
+import { companionSocialGoalOrigin, companionSocialDelegatedPortOrigin } from './social-goal-origin';
+import { findCompanionActivityPortCandidate, listCompanionActivityPortCandidates, publicCompanionActivityPortCandidate, registerCompanionActivityPortCandidate } from './activity-port-candidates';
 
 type Row = Record<string, string | number | null>;
 type GoalGamePort = { companionId: string; sourceChecksum: string; topicId: string; conversationId: string; recipientIds: string[];
@@ -1792,6 +1793,27 @@ export class CompanionWorldStore {
       } else this.social.requireAcquaintances(scope.companionId, recipients);
       const goal = args.action === 'create_group' && args.topic?.kind === 'game' && source
         ? companionSocialGoalOrigin(this.db, this.social, (port, ids) => this.visibleSources(port, ids), scope.companionId, source) : undefined;
+      const delegated = args.action === 'create_group' && args.topic?.kind === 'game' && source
+        ? companionSocialDelegatedPortOrigin(this.db, this.social, (port, ids) => this.visibleSources(port, ids), scope.companionId, source) : undefined;
+      const candidateRoot = goal ?? delegated;
+      if (candidateRoot) {
+        const candidates = listCompanionActivityPortCandidates(this.db, this.social, (port, ids) => this.visibleSources(port, ids), candidateRoot);
+        if (new Set(candidates.map(candidate => JSON.stringify([candidate.conversationId, candidate.topicId]))).size > 1)
+          throw new Error('同一原目标有多个有效候选话题，须先明确选择或关闭，不能自动选一个或另建话题。');
+        const candidate = findCompanionActivityPortCandidate(this.db, this.social, (port, ids) => this.visibleSources(port, ids), candidateRoot);
+        // Replaying the creator's exact call still returns its actual delivery.
+        // Other proposals receive an invitation to adopt, never a fabricated send.
+        if (candidate && !(candidate.creatorCompanionId === scope.companionId && candidate.deliveryClientId === clientId)) {
+          if (JSON.stringify([...candidate.memberIds].sort()) !== JSON.stringify([scope.companionId, ...recipients].sort())
+            || (args.action === 'create_group' && !!args.includePlayer) !== candidate.includePlayer) throw new Error('原目标已有真实候选话题，本次受众不一致；不能隐式扩大或缩小群成员。');
+          const current = this.topicCommand?.({ type: 'topic.read', conversationId: candidate.conversationId,
+            topicId: candidate.topicId, readerId: scope.companionId });
+          if (!current?.topic) throw new Error('原目标的候选话题当前不可读取，未另建话题。');
+          return { ok: true, socialPending: false, socialConversation: this.social.resolveRoom(scope.companionId, [scope.companionId, ...recipients], candidate.conversationId),
+            topic: current.topic, topicState: current.topicState, activityPortCandidate: publicCompanionActivityPortCandidate(candidate),
+            world: this.snapshotValue(this.load(), Date.now(), scope) };
+        }
+      }
       const goalKey = goal ? `world-goal-game-port/${goal.companionId}/${goal.sourceMessageId}` : undefined;
       const replayKey = goal ? `world-goal-game-replay/${goal.companionId}/${goal.sourceMessageId}/${clientId}` : undefined;
       const requestFingerprint = createHash('sha256').update(JSON.stringify([scope.conversationId, sourceMessageId, args])).digest('hex');
@@ -1861,6 +1883,10 @@ export class CompanionWorldStore {
         ...(source ? { agentSource: { conversationId: scope.conversationId, messageId: source.id } } : {}),
         ...(source?.authorId === 'user' ? { authorizationMessageId: source.id } : {}) };
       const delivery = this.social.send(send);
+      if (delegated && source && topicResult?.topic && members.includes(delegated.companionId)) registerCompanionActivityPortCandidate(this.db, this.social,
+        (port, ids) => this.visibleSources(port, ids), { origin: delegated, creatorCompanionId: scope.companionId, source,
+          deliveryClientId: clientId, conversationId: room.id, topicId: topicResult.topic.id, memberIds: members,
+          includePlayer: args.action === 'create_group' && !!args.includePlayer });
       if (goalKey && goal && topicResult?.topic) {
         const port: GoalGamePort = { companionId: scope.companionId, sourceChecksum: goal.checksum, topicId: topicResult.topic.id,
           conversationId: room.id, recipientIds: recipients, includePlayer: args.action === 'create_group' && !!args.includePlayer, send };

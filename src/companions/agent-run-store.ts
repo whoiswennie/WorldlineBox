@@ -6,6 +6,9 @@ import type { CompanionMessage } from '../shared/companions';
 import type { CompanionActivityTask, activityPlanningStateSchema } from '../shared/companion-activity-task';
 import type { z } from 'zod';
 import { companionFinalProposalBytes, companionFinalProposalReceiptSchema, companionFinalProposalResults, isCompanionFinalTurn } from '../shared/companion-final-proposal';
+import { companionPeerActivitySourceValid } from './peer-activity-source';
+import { findJoinedCompanionActivityPortCandidate } from './activity-port-candidates';
+import type { CompanionSocialStore } from './social-store';
 
 /** Domain job IDs are durable inference ports, including synthetic learning
  * rooms. These records never create a chat message or enlarge source access. */
@@ -13,7 +16,8 @@ export class CompanionAgentRunStore {
   constructor(private readonly db: CompanionConnection,
     private readonly visible: (scope: { companionId: string; conversationId: string }, ids: string[]) => CompanionMessage[],
     private readonly memoryValid: (owner: string, id: string, version: number) => boolean,
-    private readonly topicExecute?: (command: CompanionStorageCommand) => CompanionStorageResponse | undefined) {}
+    private readonly topicExecute?: (command: CompanionStorageCommand) => CompanionStorageResponse | undefined,
+    private readonly social?: CompanionSocialStore) {}
   private assertValid(run: CompanionAgentRun): void {
     for (const rejected of run.rejectedFinals ?? []) if (createHash('sha256').update(companionFinalProposalBytes(run.turns[rejected.step]!)).digest('hex') !== rejected.proposalChecksum)
       throw new Error('被拒最终提案的不可变原文校验不匹配。');
@@ -75,7 +79,11 @@ export class CompanionAgentRunStore {
           throw new Error('原活动来源已经撤回或更新，不能重开旧最终提案。');
         return source;
       };
-      if (task.sourceMessageId && checkedSource(task.conversationId, task.sourceMessageId, task.sourceChecksum).authorId !== 'user') throw new Error('原活动真人来源归属不一致。');
+      if (task.sourceMessageId) {
+        const source = checkedSource(task.conversationId, task.sourceMessageId, task.sourceChecksum);
+        const valid = source.authorId === 'user' ? !task.peerResponsibility : companionPeerActivitySourceValid(this.db, this.visible, task);
+        if (!valid) throw new Error('原活动真人来源或本人已接受的伙伴责任来源归属不一致。');
+      }
       if (task.targetId && !this.db.prepare('SELECT 1 FROM companions WHERE id=? AND deleted_at IS NULL').get(task.targetId)) throw new Error('原活动联系人已经不可访问。');
       for (const source of task.evidence ?? []) checkedSource(source.conversationId, source.id, source.checksum);
       for (const memory of task.memoryVersions ?? []) if (!this.memoryValid(task.companionId, memory.id, memory.version)) throw new Error('活动引用的记忆已经失效。');
@@ -92,6 +100,13 @@ export class CompanionAgentRunStore {
       if (task.gamePort) {
         const current = this.topicExecute?.({ type: 'topic.read', readerId: task.companionId, conversationId: task.gamePort.conversationId, topicId: task.gamePort.topicId });
         if (!current?.topic || current.topic.deletedAt || current.topic.kind !== 'game' || !current.topic.participantIds.includes(task.companionId)) throw new Error('原活动游戏端口已失效。');
+        if (task.gamePort.delegatedCandidateId) {
+          const candidate = this.social && findJoinedCompanionActivityPortCandidate(this.db, this.social, this.visible,
+            { companionId: task.companionId, conversationId: task.gamePort.conversationId, topicId: task.gamePort.topicId }, { includeClosed: true });
+          if (!candidate || candidate.id !== task.gamePort.delegatedCandidateId || candidate.rootConversationId !== task.conversationId
+            || candidate.rootSourceMessageId !== task.sourceMessageId || candidate.rootSourceChecksum !== task.sourceChecksum
+            || candidate.deliveryClientId !== task.gamePort.deliveryClientId) throw new Error('原游戏端口的真实接力来源已失效。');
+        } else {
         const delivery = this.db.prepare('SELECT companion_id,conversation_id,status,data FROM companion_social_outbox WHERE client_id=?')
           .get(task.gamePort.deliveryClientId) as { companion_id: string; conversation_id: string; status: string; data: string } | undefined;
         const sent = delivery ? JSON.parse(delivery.data) as { companionId: string; conversationId: string; topicId?: string;
@@ -110,6 +125,7 @@ export class CompanionAgentRunStore {
         }
         if (sent.agentSource && checkedSource(sent.agentSource.conversationId, sent.agentSource.messageId, sent.agentChecksum, 'social').kind !== 'text')
           throw new Error('原游戏入口来源不是实际文本消息。');
+        }
       }
       const turns = run.turns.map((saved, step) => step === command.turnStep && saved.finalProposal ? { ...saved,
         results: companionFinalProposalResults(saved, command.proposalChecksum, 'rejected_before_execution', command.reason) } : saved);

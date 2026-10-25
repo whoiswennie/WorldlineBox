@@ -2675,7 +2675,7 @@ export class CompanionService {
             delivery: { channel: args.action === 'social' ? 'face_to_face' : 'phone',
               ...(args.action === 'message' ? { roomId: args.roomId, topicId: args.topicId } : {}) },
           }) : undefined;
-          const contact = source ? await authorizeCompanionContact({ source, recipients, text: args.text, ...(game ? { game } : {}) }, await this.configFor(owner), signal, { fetchFn })
+          const contact = source ? await authorizeCompanionContact({ source, actor: { id: owner.id, name: owner.name }, recipients, text: args.text, ...(game ? { game } : {}) }, await this.configFor(owner), signal, { fetchFn })
             : { allowed: await authorizeCompanionSocialInitiative({ companion: owner, recipients, text: args.text, privateSources },
               await this.configFor(owner), signal, { fetchFn }), intent: 'message' as const, requiresContinuation: false };
           if (!contact.allowed) throw new Error('拟发内容或收件人超出了本次联系目标。'
@@ -2723,7 +2723,7 @@ export class CompanionService {
           const state = (await this.call({ type: 'state' })).state;
           const owner = state?.companions.find(member => member.id === scope.companionId), target = state?.companions.find(member => member.id === args.targetCompanionId);
           if (!source || !owner || !target || target.id === owner.id) throw new Error('拜访需要本轮真实原委托和另一位有效伙伴。');
-          const contact = await authorizeCompanionContact({ source, recipients: [{ id: target.id, name: target.name }], text: args.reason }, await this.configFor(owner), signal,
+          const contact = await authorizeCompanionContact({ source, actor: { id: scope.companionId, name: owner.name }, recipients: [{ id: target.id, name: target.name }], text: args.reason }, await this.configFor(owner), signal,
             { fetchFn: (input, init) => net.fetch(input instanceof URL ? input.toString() : input, { ...init, credentials: 'omit' }) });
           if (!contact.allowed || contact.intent !== 'visit') throw new Error('原请求没有要求本人到场拜访，不能把普通消息扩大为出行。');
           this.assertReplyActive(signal);

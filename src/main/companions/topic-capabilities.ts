@@ -64,6 +64,11 @@ export function companionTopicCapabilities(request: (command: CompanionStorageCo
         command = { ...command, moderatorTransferApproval };
       }
       const result = await request(command);
+      if (action === 'join' && result.ok && result.topic?.participantIds.includes(scope.companionId)) {
+        const adopted = await request({ type: 'activity.port.adopt_candidate', companionId: scope.companionId,
+          conversationId: result.topic.conversationId, topicId: result.topic.id });
+        if (adopted.activityTask) return { ...result, activityTask: adopted.activityTask };
+      }
       return action === 'update' && result.ok ? { ...result, topicDelivery: COMPANION_TOPIC_STATE_WRITE_RECEIPT } : result;
     } };
 }

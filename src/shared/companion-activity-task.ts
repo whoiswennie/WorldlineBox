@@ -4,6 +4,7 @@ import { companionWorldArgumentsSchema } from './companion-world-tool';
 import { companionTopicArgumentsSchema, companionTopicModeratorTransferApprovalSchema } from './companion-topic';
 import { companionKnowledgeReadSchema } from './companion-agent-run';
 import { companionExecutionReadsetSchema } from './companion-execution-evidence';
+import { companionPeerResponsibilitySchema } from './companion-peer-activity';
 const id = z.string().regex(/^[a-zA-Z0-9_-]{1,100}$/);
 export const activityPlanSchema = z.strictObject({ summary: z.string().trim().min(1).max(6000),
   nextSteps: z.array(z.string().trim().min(1).max(1000)).max(16),
@@ -58,13 +59,14 @@ export function activityDecisionJsonSchema(): Record<string, unknown> {
   ] };
 }
 export const activityTaskSchema = z.object({ id, companionId: id, conversationId: id, sourceMessageId: id.optional(),
+  peerResponsibility: companionPeerResponsibilitySchema.optional(),
   title: z.string().min(1).max(120), goal: z.string().min(1).max(16000),
   status: z.enum(['queued', 'running', 'waiting', 'succeeded', 'failed', 'cancelled']),
   step: z.number().int().nonnegative().safe(), attempts: z.number().int().nonnegative().max(3),
   createdAt: z.iso.datetime(), updatedAt: z.iso.datetime(), deadline: z.iso.datetime(), leaseToken: id.optional(),
   stage: z.string().max(2000), targetId: id.optional(), wait: activityWaitSchema.optional(),
   peerConversationId: id.optional(), peerTopicId: id.nullable().optional(),
-  gamePort: z.strictObject({ conversationId: id, topicId: id, deliveryClientId: id, peerOriginId: id.optional() }).optional(),
+  gamePort: z.strictObject({ conversationId: id, topicId: id, deliveryClientId: id, peerOriginId: id.optional(), delegatedCandidateId: id.optional() }).optional(),
   visitTargetId: id.optional(), visitArrivedAt: z.iso.datetime().optional(), visitInteractionAt: z.iso.datetime().optional(), visitRequestId: id.optional(),
   historyAvailable: z.boolean().optional(),
   history: z.array(z.object({ step: z.number().int().positive(), at: z.iso.datetime(), action: z.string(), arguments: companionWorldArgumentsSchema.optional(), topicArguments: companionTopicArgumentsSchema.optional(), result: z.string().max(16000), ok: z.boolean() })) });

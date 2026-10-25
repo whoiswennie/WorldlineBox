@@ -10,7 +10,7 @@ import { runCompanionStructuredAgent, companionTaskInvocation, companionRecallCa
 import { companionModelWorld, companionModelPhoneReceipt, COMPANION_WORLD_PERCEPTION_RULES } from './world-perception-context';
 import { authorizeCompanionContact, authorizeCompanionSocialInitiative } from './social-model';
 import { generateCompanionVisitSpeech } from './visit-speech-model';
-import { resolveCompanionGameContactContext } from './game-contact-context';
+import { resolveCompanionGameContactContext, resolveCompanionGameInitiativeContext } from './game-contact-context';
 import { companionRuntimeBehavior, companionVisibleRuntimeState, currentCompanionCharacterDevelopment } from './context';
 import { verifyCompanionKnowledgeReads } from './knowledge-evidence';
 import { reviewCompanionGameSharedUpdate, type CompanionGameTopicUpdate } from './game-topic-privacy';
@@ -212,7 +212,7 @@ export class CompanionActivityTaskService {
             if (!review.allowed) throw new Error('共享话题提案未写入：' + (review.reason ?? '公开字段含未获准共享的游戏秘密，请修订并把秘密留在正确私态。'));
           }
         }
-        if (decision.status === 'complete' && observed.activityTask!.gamePort) {
+        if (decision.status === 'complete' && (observed.activityTask!.gamePort || task.peerResponsibility && observed.topic?.kind === 'game')) {
           const review = await reviewCompanionGameGoalCompletion({ task: observed.activityTask!, originalSource: source,
             topic: observed.topic, topicState: observed.topicState, messages: observed.activityMessages ?? [], planningState },
             await this.options.configFor(companion), signal, { fetchFn: this.options.fetchFn, timeoutMs: 30_000 });
@@ -238,6 +238,8 @@ export class CompanionActivityTaskService {
         context: { system: `你是${companion.name}，只控制自己。稳定人格：\n${companion.persona}\n${COMPANION_WORLD_PERCEPTION_RULES}
 每轮决策无论status是continue、complete还是blocked，都必须按outputSchema填写summary，包括本轮选择action、topic、memory或wait的情况；summary简述本步计划或已核实的进展，不能把尚未提交的提案写成已经执行。
 现有topic.create可在创建时指定moderatorId；现有话题不必重建。当前主持可用topic.action=transfer_moderator、targetCompanionId和本话题公开sourceMessageIds移交同一话题，须先read取得最新expectedRevision，并有目标本人真实明确愿意主持的发言。本人提出移交即表示本人同意；join或被提名不代表对方同意主持。移交只改主持，不复制旧主持或其他人的私人工作状态，接任者只能依据其原本获权可见资料继续。
+peerResponsibility存在表示你在真实伙伴来信中自主明确接受了本人的持续责任，不是真人电脑授权；task.goal是你当时明确接受的职责，originalRequest保留真实伙伴作者，不能冒充玩家。你负责自己的职责而非整个群的所有决定。来源话题仍是同一职责端口，临时私聊不能把你切到另一局；通过原有行动、话题操作和wait等待真实新事件持续推进，不只发一句承诺后停下。
+activityPortCandidate存在表示原目标的真实通信中已有另一位伙伴建立的话题。它是可读取和自主join的候选，尚未自动成为本人参与或当前端口；用其真实conversationId/topicId执行topic read或join，成功join后宿主才核验采纳。已有不同活动端口时须先明确close，不能按人数、标题或最新时间另选一局；不要重复create_group。
 原始请求可能只是“天气怎样”等需要现场核实的简单问题，先前聊天发起的移动已经登记在history里。wait arrival唤醒后，使用本轮world中的最新有限感知回答原问题；若天气weatherStatus=current，直接以weatherLabel给出本次实见结果并complete，不再发起同一移动、不重复“还要去看”。weatherStatus=remembered或unknown时仍不可声称已核实当前天气；可走近本场景门口观察或如实blocked。天气观察不需要前往另一个场景，也不需要拜访别人。室内temperature不能报告成室外温度，不编造风速、风向。只汇报完成原请求必要的事实，不叙述执行器机制或没有发生的身体行动。
 runtimeState/runtimeBehavior仅为本轮最新属性、情绪与表达；characterDevelopment是自己有效VCP笔记中的有条件自我认识，指导喜好、边界与语气，不将教材或别人的偏好当自己的，不改稳定人格或权限。历史回执中的状态不是当前状态。
 你已经在执行宿主持久保存的完整目标，不需要再次创建日程才能继续。只控制自己，指不能替其他角色作决定，并不限制你向原目标中的多个收件人邀请、认识伙伴、建群或在原群发言。executionContract列出真实可用能力；resourceBounds来自本次宿主真实激活角色名单，是当前可用角色的容量上界，不是熟人证明、已经答应参加的人数或抽牌人数；包含你本人，主持不抽牌时必须把本人从抽牌容量扣除。boundGameRoomMemberIds/memberCount是本局真实固定群成员上界；topicInvitedIds只是受邀名单，joinedTopicParticipantIds只是已自行加入话题名单，三者都不证明愿意抽牌。已在别处回复、别的群或别的话题join的人不属于当前局；群外的人不能直接加入此局或列入本群消息收件人。应依据当前实际群和自愿参与者改可行方案。确需扩大实际群时，先合法结束当前筹备话题，再按真实新成员建立下一独立活动端口，不能把外部私态或旧局牌继承进去。原目标未指定人数或规模时，你自己提出的8人、12人、某套复杂角色表只是可以修改的方案，不能变成用户必须补齐的新条件。持续目标应在当前已知可用资源内调整为可行方案，征求真实参与者同意；不能在已见资料没有变化时反复寻找不存在的额外角色，不能把主持不抽牌又计作玩家，不能用同一人的分身凑数。原目标明确要求的人数、规则或其他约束不能暗自降低；实际容量不足时如实说明所缺真实条件并等待变化或blocked，不能捏造报名、代玩家激活角色或自称已完成。wait reply/delay是此任务自有的持久等待，不是修改玩家日程，也不需要用户再次确认。只有实际工具拒绝、真实条件不足或你明确不愿继续时才能如实blocked，不能凭空说宿主没有已经提供的能力。
@@ -258,6 +260,7 @@ planningState是同一完整目标跨步骤持久保存的工作计划，独立�
           notice: '本步宿主已核实整个获权VCP日记为空；不再提供无用的重复检索。实时话题、回信、历史和持续计划仍在当前上下文。直接交付下一实际步骤提案；下一步宿主会重新检查语料。' } : undefined,
         planningState, runtimeState, runtimeBehavior: runtimeState ? companionRuntimeBehavior(runtimeState) : undefined, characterDevelopment,
           gameTopic: observed.topic ? { topic: observed.topic, ownState: observed.topicState } : undefined,
+          activityPortCandidate: observed.activityPortCandidate,
           task: { ...observed.activityTask, history: observed.activityTask?.history.slice(-12).map(item => {
             if (!['message', 'introduce', 'create_group'].includes(item.action)) return item;
             try { const receipt: unknown = JSON.parse(item.result); return { ...item, result: JSON.stringify(companionModelPhoneReceipt(receipt) ?? receipt) }; }
@@ -276,17 +279,20 @@ planningState是同一完整目标跨步骤持久保存的工作计划，独立�
       if (!savedPlan.ok || !savedPlan.activityPlanningState) throw new Error(savedPlan.error ?? '完整目标计划未保存，未执行提案。');
       if (!await verifyCompanionKnowledgeReads(savedPlan.activityPlanningState.knowledgeReads, task, command => this.options.request(command)))
         throw new Error('本步计划使用的资料或文件已变化，未执行提案。');
-      if (!source && decision.action && ['message', 'social', 'introduce', 'create_group'].includes(decision.action.action)) {
+      if ((!source || task.peerResponsibility) && decision.action && ['message', 'social', 'introduce', 'create_group'].includes(decision.action.action)) {
         const action = decision.action;
         if (action.action !== 'message' && action.action !== 'social' && action.action !== 'introduce' && action.action !== 'create_group') throw new Error('联系动作无效。');
         const recipientIds = action.action === 'introduce' ? [action.targetCompanionId] : action.action === 'social' ? action.recipientIds ?? [action.targetCompanionId!] : action.recipientIds;
+        const game = source && task.peerResponsibility ? await resolveCompanionGameInitiativeContext(command => this.options.request(command), {
+          scope: task, source, recipientIds }) : undefined;
         const allowed = await authorizeCompanionSocialInitiative({ companion, text: action.text,
-          recipients: state!.companions.filter(role => recipientIds.includes(role.id)), privateSources: observed.activityMessages ?? [] },
+          recipients: state!.companions.filter(role => recipientIds.includes(role.id)), privateSources: [...source ? [source] : [], ...observed.activityMessages ?? []],
+          ...(game ? { game } : {}), ...(source && task.peerResponsibility ? { acceptedResponsibility: { source, goal: task.goal } } : {}) },
         await this.options.configFor(companion), signal, { fetchFn: this.options.fetchFn, timeoutMs: 30_000 });
         if (!allowed) { await this.options.request({ type: 'activity.reject', id: task.id, leaseToken, expectedStep, action,
           reason: '这一步没有发送：自主社交只能使用自己的虚拟问候和邀约，不能转发私聊或扩大现实权限。' }); return; }
       }
-      if (source && decision.action && ['message', 'social', 'visit', 'introduce', 'create_group'].includes(decision.action.action)) {
+      if (source && !task.peerResponsibility && decision.action && ['message', 'social', 'visit', 'introduce', 'create_group'].includes(decision.action.action)) {
         const action = decision.action;
         if (action.action !== 'message' && action.action !== 'social' && action.action !== 'visit' && action.action !== 'introduce' && action.action !== 'create_group') throw new Error('联系动作无效。');
         const recipients = action.action === 'message' || action.action === 'create_group' ? action.recipientIds : action.action === 'visit' || action.action === 'introduce' ? [action.targetCompanionId] : action.recipientIds ?? [action.targetCompanionId!];
@@ -323,7 +329,7 @@ planningState是同一完整目标跨步骤持久保存的工作计划，独立�
             delivery: { channel: action.action === 'social' ? 'face_to_face' : 'phone',
               ...(action.action === 'message' ? { roomId: action.roomId, topicId: action.topicId } : {}) },
           });
-          const contact = await authorizeCompanionContact({ source, text: action.action === 'visit' ? action.reason : action.text,
+          const contact = await authorizeCompanionContact({ source, actor: { id: companion.id, name: companion.name }, text: action.action === 'visit' ? action.reason : action.text,
             recipients: state!.companions.filter(role => recipients.includes(role.id)).map(role => ({ id: role.id, name: role.name, active: role.active })),
             ...(game ? { game } : {}) },
           await this.options.configFor(companion), signal, { fetchFn: this.options.fetchFn, timeoutMs: 30_000 });

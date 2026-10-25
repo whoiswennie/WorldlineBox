@@ -243,6 +243,11 @@ export class CompanionsStore {
         addressText: owner => this.#world.addressText(owner), shareHome: (owner, recipients, source) => this.#world.shareHome(owner, recipients, source), createPeerWork: input => {
         const source = this.getMessage(input.sourceMessageId);
         if (source.conversationId !== input.conversationId || ['user', 'system', input.companionId].includes(source.authorId)) throw new Error('伙伴工作必须来自这段交流中实际其它伙伴的正式发布。');
+        if (input.mode === 'activity') {
+          if (!input.accept) return;
+          const task = this.#activity.acceptPeerResponsibility(input);
+          return { activityTaskId: task.id };
+        }
         const order = this.#workOrders.create(input, input.title, input.instruction, input.sourceMessageId, input.clientId);
         if (order.execution !== 'internal') throw new Error('伙伴交流不能创建现实执行授权。');
         if (input.accept && order.status === 'offered') this.#workOrders.execute({ type: 'work-order.accept', companionId: input.companionId, conversationId: input.conversationId, id: order.id, expectedRevision: order.revision });
@@ -295,7 +300,7 @@ export class CompanionsStore {
       } catch { return false; }
     };
     this.#agentRuns = new CompanionAgentRunStore(this.#db, (scope, ids) => this.#memory.sourcesFilter(scope, ids), activityMemoryValid,
-      command => this.#topics.execute(command));
+      command => this.#topics.execute(command), this.#social);
     this.#activity = new CompanionActivityTaskStore(this.#db, this.#world, this.#social,
       (scope, ids) => this.#memory.sourcesFilter(scope, ids), input => this.appendMessage(input),
       (task, source) => this.#runtimeState.experience(task, 'world-task:' + task.id, [source]), command => this.#topics.execute(command),

@@ -356,3 +356,22 @@ it('corrects a notification false delivery claim in its original slot using the 
   expect(proof?.sources.some(source => source.id === human.id)).toBe(false);
   expect(proof?.sources.some(source => source.checksum === createHash('sha256').update('').digest('hex'))).toBe(false);
 });
+
+it('keeps the actual speaking actor separate from the player and preserves source/privacy review refusals', async () => {
+  const human = { ...source, authorId: 'user', content: '请你本人到指定群话题独立公开发言；私牌继续保密。' };
+  const actor = { id: companion.id, name: companion.name }, recipients = [{ id: 'deepseek-sister', name: '大肥鱼' }];
+  const fetchFn = vi.fn<typeof fetch>(async (_url, init) => {
+    const request = JSON.parse(String(init?.body)), data = JSON.parse(request.messages[1].content);
+    expect(data.actor).toEqual(actor); expect(data.source).toMatchObject({ id: human.id, authorId: 'user', content: human.content });
+    expect(request.messages[0].content).toContain('不能误解成玩家自己发言');
+    expect(request.messages[0].content).toContain('读取话题只提供上下文，不产生发送授权');
+    const allowed = data.proposedText === '我先按当前公开信息发言。';
+    return response({ allowed, confidence: .99, evidence: [human.content], intent: 'message', requiresContinuation: false,
+      reason: allowed ? '当前真人要求这个actor公开发言。' : '当前source明确要求私牌保密，不能公开。' });
+  });
+  expect(await authorizeCompanionContact({ source: human, actor, recipients, text: '我先按当前公开信息发言。' }, config, undefined, { fetchFn }))
+    .toMatchObject({ allowed: true });
+  expect(await authorizeCompanionContact({ source: human, actor, recipients, text: '公开本人的私牌。' }, config, undefined, { fetchFn }))
+    .toMatchObject({ allowed: false, reason: '当前source明确要求私牌保密，不能公开。' });
+  expect(fetchFn).toHaveBeenCalledTimes(2);
+});

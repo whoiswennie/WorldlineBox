@@ -198,3 +198,36 @@ it('does not turn a repaired privacy rejection into permission and reports persi
     .rejects.toThrow('evidence[0]');
   expect(malformed).toHaveBeenCalledTimes(3);
 });
+
+it('uses a real same-invocation topic read only for its explicit delivery while preserving the private source', async () => {
+  const actual = { ...source, content: '请你本人到本局群话题独立公开发言，私牌继续保密。' };
+  const readTurns: CompanionLoopTurn[] = [{ text: '', rawText: '', calls: [{ id: 'read_current', name: 'world', arguments: JSON.stringify({
+    action: 'topic', parameters: { action: 'read', roomId: topic.conversationId, topicId: topic.id } }) }], results: [{ callId: 'read_current', content: JSON.stringify({ ok: true,
+    topic, topicState: { topicId: topic.id, readerId: scope.companionId, trust: 'topic_state_not_real_world_facts' } }) }] }];
+  const request = fixture({ current: actual });
+  const game = await resolveCompanionGameContactContext(request, { scope, source: actual, turns: readTurns, recipientIds: ['kimi', 'qwen'],
+    delivery: { channel: 'phone', roomId: topic.conversationId, topicId: topic.id } });
+  expect(game).toMatchObject({ provenance: 'current_invocation_read_topic', sourceMessageId: actual.id,
+    sourceConversationId: actual.conversationId, conversationId: topic.conversationId, delivery: { audience: 'multiple_participants' },
+    permissions: { realExecution: false, privateConversationForwarding: false } });
+  expect(actual.topicId).toBeUndefined(); expect(isVerifiedCompanionGameContactContext(game, actual, ['kimi', 'qwen'])).toBe(true);
+  expect(request).toHaveBeenCalledWith({ type: 'topic.read', conversationId: topic.conversationId, topicId: topic.id, readerId: scope.companionId });
+});
+it('rejects unmatched reads, another destination, invited readers and source changes without guessing another game', async () => {
+  const readTurns: CompanionLoopTurn[] = [{ text: '', rawText: '', calls: [{ id: 'read_current', name: 'world', arguments: JSON.stringify({
+    action: 'topic', parameters: { action: 'read', roomId: topic.conversationId, topicId: topic.id } }) }], results: [{ callId: 'read_current', content: JSON.stringify({ ok: true,
+    topic, topicState: { topicId: topic.id, readerId: scope.companionId, trust: 'topic_state_not_real_world_facts' } }) }] }];
+  for (const mode of ['unmatched', 'another_topic', 'no_delivery', 'invited', 'changed_source'] as const) {
+    const currentTurns = structuredClone(readTurns);
+    if (mode === 'unmatched') currentTurns[0]!.results![0]!.callId = 'foreign_call';
+    if (mode === 'invited') {
+      const receipt = JSON.parse(currentTurns[0]!.results![0]!.content);
+      receipt.topic.participantIds = ['kimi', 'qwen']; receipt.topic.invitedIds = ['owner'];
+      currentTurns[0]!.results![0]!.content = JSON.stringify(receipt);
+    }
+    const request = fixture({ current: mode === 'changed_source' ? { ...source, content: '原请求已经更新。' } : source });
+    expect(await resolveCompanionGameContactContext(request, { scope, source, turns: currentTurns, recipientIds: ['kimi'],
+      ...(mode !== 'no_delivery' ? { delivery: { channel: 'phone' as const, roomId: topic.conversationId,
+        topicId: mode === 'another_topic' ? 'another_game' : topic.id } } : {}) }), mode).toBeUndefined();
+  }
+});

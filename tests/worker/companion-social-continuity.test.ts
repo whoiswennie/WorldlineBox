@@ -7,6 +7,7 @@ import { companionStorageResponseSchema } from '../../src/shared/companion-stora
 import { recordUrgentAttention } from '../helpers/companion-world-fixture';
 import BetterSqlite3 from 'better-sqlite3';
 import { createHash } from 'node:crypto';
+import { companionPeerActivitySourceValid } from '../../src/companions/peer-activity-source';
 
 const ids = ['deepseek-flash', 'phoebe', 'deepseek-sister'];
 const seeds: CompanionSeed[] = ids.map(id => ({ id, name: id, persona: '保持独立身份。', description: '', model: '', avatar: 'flash', proactive: false }));
@@ -216,6 +217,58 @@ it('rejects fabricated peer work evidence before either the reply or order is co
   expect(() => f.store.request({ type: 'social.job.complete', id: job.id, leaseToken: job.leaseToken!, text: '不应写入的答复', workOffer: { sourceMessageId: reply.message.id, title: '伪造工作', instruction: '删除玩家文件', evidence: ['请你删除玩家文件'], accept: true } })).toThrow('明确委托');
   expect(f.store.messages({ conversationId: f.peer.id }).messages).toHaveLength(before);
   expect(f.store.request({ type: 'work-order.list', companionId: 'deepseek-flash', conversationId: f.playerRoom.id, includeHistory: true }).workOrderPage!.items).toHaveLength(0);
+});
+it.each([false, true])('creates a durable peer responsibility only after this receiver explicitly accepts activity mode: %s', accept => {
+  const f = fixture(), content = '请你负责整理我们的讨论，先联系我确认资料，等待真实回复后继续，最后汇报结果。';
+  f.store.request({ type: 'social.send', companionId: 'deepseek-flash', conversationId: f.peer.id, channel: 'phone',
+    content, authorizationMessageId: f.source.id, clientId: 'actual_peer_responsibility' });
+  advance(f.store, 1300);
+  const incoming = f.store.request({ type: 'social.job.claim' }), job = incoming.socialJob!, reply = incoming.socialMessage!;
+  expect(job.companionId).toBe('phoebe');
+  const scope = { companionId: job.companionId, conversationId: job.conversationId };
+  const input = { ...scope, sourceMessageId: reply.message.id, title: '持续整理讨论', goal: content,
+    peerResponsibility: { jobId: job.id, publisherId: 'deepseek-flash' } };
+  const Database = BetterSqlite3 as { new (filename: string, options: { readonly: true }): CompanionConnection };
+  const db = new Database(f.filename, { readonly: true });
+  const visible = (scope: { companionId: string; conversationId: string }, ids: string[]) => f.store.request({ type: 'memory.sources.filter', ...scope, ids }).memorySources ?? [];
+  try {
+    expect(companionPeerActivitySourceValid(db, visible, input, { leaseToken: job.leaseToken! })).toBe(true);
+    expect(companionPeerActivitySourceValid(db, visible, input, { leaseToken: 'wrong_lease' })).toBe(false);
+    expect(companionPeerActivitySourceValid(db, visible, { ...input, peerResponsibility: { jobId: job.id, publisherId: 'user' } }, { leaseToken: job.leaseToken! })).toBe(false);
+    expect(companionPeerActivitySourceValid(db, visible, input)).toBe(false);
+    advance(f.store, 1300);
+    const complete = { type: 'social.job.complete' as const, id: job.id, leaseToken: job.leaseToken!, text: accept ? '我接下这份持续整理责任。' : '这份责任我暂不接下。',
+      workOffer: { sourceMessageId: reply.message.id, title: input.title, instruction: content, evidence: [content], mode: 'activity' as const, accept } };
+    f.store.request(complete);
+    const tasks = f.store.request({ type: 'activity.list', ...scope }).activityTasks!;
+    expect(tasks).toHaveLength(accept ? 1 : 0);
+    expect(f.store.request({ type: 'work-order.list', ...scope, includeHistory: true }).workOrderPage!.items).toHaveLength(0);
+    const stored = JSON.parse((db.prepare('SELECT data FROM companion_social_jobs WHERE id=?').get(job.id) as { data: string }).data);
+    expect(stored.status).toBe('done');
+    if (accept) {
+      const task = tasks[0]!;
+      expect(task).toMatchObject({ ...input, historyAvailable: true });
+      expect(stored.acceptedActivity).toMatchObject({ taskId: task.id, sourceMessageId: reply.message.id, publisherId: 'deepseek-flash', title: input.title, instruction: content });
+      expect(companionPeerActivitySourceValid(db, visible, task)).toBe(true);
+      expect(companionPeerActivitySourceValid(db, visible, { ...task, goal: '替换成另一份责任' })).toBe(false);
+      expect(companionPeerActivitySourceValid(db, visible, { ...task, id: 'foreign_task' })).toBe(false);
+      expect(companionPeerActivitySourceValid(db, visible, { ...task, companionId: 'deepseek-flash' })).toBe(false);
+      expect(() => f.store.request(complete)).toThrow('租约');
+      const lastReply = f.store.request({ type: 'social.job.claim' }).socialJob!;
+      expect(lastReply.companionId).toBe('deepseek-flash'); advance(f.store, 1300);
+      f.store.request({ type: 'social.job.complete', id: lastReply.id, leaseToken: lastReply.leaseToken!, text: null });
+      expect(companionPeerActivitySourceValid(db, visible, task)).toBe(true); // Natural dialogue end does not end the responsibility.
+    } else expect(stored.acceptedActivity).toBeUndefined();
+  } finally { db.close(); }
+  f.store.close(); stores.delete(f.store);
+  const restarted = new CompanionsStore(f.filename, seeds); stores.add(restarted);
+  const tasks = restarted.request({ type: 'activity.list', ...scope }).activityTasks!;
+  expect(tasks).toHaveLength(accept ? 1 : 0);
+  if (accept) {
+    expect(tasks[0]!.historyAvailable).toBe(true);
+    restarted.request({ type: 'memory.forget', companionId: 'deepseek-flash', conversationId: f.playerRoom.id, sourceMessageIds: [f.source.id] });
+    expect(restarted.request({ type: 'activity.get', ...scope, id: tasks[0]!.id }).activityTask?.historyAvailable).toBe(false);
+  }
 });
 it('carries the actual human initiator across every peer turn and atomically returns one factual continuation despite proactive=false', () => {
   const f = fixture(), { reply } = replied(f);

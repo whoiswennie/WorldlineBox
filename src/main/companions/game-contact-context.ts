@@ -66,7 +66,7 @@ export interface CompanionGameContactContext {
   kind: 'game'; topicId: string; conversationId: string; topicRevision: number; status: CompanionTopic['status'];
   ownerId: string; ownerRole: 'moderator' | 'participant'; moderatorId: string; participantIds: string[];
   sourceMessageId: string; sourceConversationId: string; sourceChecksum: string;
-  provenance: 'current_source_topic' | 'current_invocation_created_group' | 'current_source_activity_port';
+  provenance: 'current_source_topic' | 'current_invocation_created_group' | 'current_source_activity_port' | 'current_invocation_read_topic';
   scope: 'only_necessary_communication_with_actual_participants_of_this_game';
   permissions: { realExecution: false; privateConversationForwarding: false };
   sharedStage?: string; sharedSummary?: string;
@@ -93,6 +93,27 @@ export function createdInvocationTopicPorts(turns: readonly CompanionLoopTurn[],
     } catch { /* Unsuccessful, external or malformed lookalikes are not host ports. */ }
   }
   return [...ports.values()];
+}
+
+/** A successful read supplies context only. Its explicit destination must
+ * match this send; the current source still supplies all semantic authority. */
+function readInvocationTopicPort(turns: readonly CompanionLoopTurn[], scope: Scope,
+  delivery: { roomId?: string; topicId?: string | null } | undefined) {
+  if (!delivery?.roomId || !delivery.topicId) return;
+  for (const turn of turns) for (const call of turn.calls) {
+    try {
+      const normalized = normalizeCompanionCapabilityCall(call), args = JSON.parse(normalized.arguments);
+      if (normalized.name !== 'topic' || args.action !== 'read' || args.roomId !== delivery.roomId || args.topicId !== delivery.topicId) continue;
+      const result = turn.results?.find(result => result.callId === call.id);
+      const parsed = result && companionStorageResponseSchema.safeParse(JSON.parse(result.content));
+      if (!parsed?.success || !parsed.data.ok) continue;
+      const topic = parsed.data.topic, state = parsed.data.topicState;
+      if (topic?.id === delivery.topicId && topic.conversationId === delivery.roomId && topic.kind === 'game'
+        && topic.status === 'active' && !topic.deletedAt && topic.participantIds.includes(scope.companionId)
+        && state?.readerId === scope.companionId && state.topicId === topic.id)
+        return { roomId: topic.conversationId, topicId: topic.id };
+    } catch { /* An unmatched, textual or foreign tool result confers no context. */ }
+  }
 }
 
 /** Resolve only an already proven source port; this is routing, never an ACL grant. */
@@ -136,6 +157,8 @@ export async function resolveCompanionGameContactContext(request: (command: Comp
       if (task.gamePort) candidates.push({ roomId: task.gamePort.conversationId, topicId: task.gamePort.topicId, provenance: 'current_source_activity_port' });
       else if (task.peerConversationId && task.peerTopicId) candidates.push({ roomId: task.peerConversationId, topicId: task.peerTopicId, provenance: 'current_source_activity_port' });
     }
+  const readPort = readInvocationTopicPort(input.turns, scope, input.delivery);
+  if (readPort) candidates.push({ ...readPort, provenance: 'current_invocation_read_topic' });
   const contexts: CompanionGameContactContext[] = [];
   for (const candidate of candidates) {
     if (contexts.some(context => context.topicId === candidate.topicId)) continue;

@@ -50,7 +50,7 @@ export function companionSocialCapabilities(request: (command: CompanionStorageC
         await new Promise(resolve => setTimeout(resolve, 150)); signal?.throwIfAborted();
         await request({ type: 'world.tick' }); result = await request(command);
       }
-      if (args.action === 'create_group' && result.ok && result.topic?.kind === 'game' && scope.sourceMessageId) {
+      if (args.action === 'create_group' && result.ok && result.topic?.kind === 'game' && scope.sourceMessageId && !result.activityPortCandidate) {
         const bound = await request({ type: 'activity.social.bind_peer_port', companionId: scope.companionId,
           conversationId: scope.conversationId, sourceMessageId: scope.sourceMessageId, deliveryClientId: result.socialDeliveryClientId ?? clientId });
         return { ...result, ...(bound.activityTask ? { activityTask: bound.activityTask } : { activityBinding: { bound: false, reason: bound.error } }),

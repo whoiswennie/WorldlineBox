@@ -12,11 +12,13 @@ export async function reviewCompanionGameGoalCompletion(input: { task: Companion
   topic: CompanionStorageResponse['topic']; topicState: CompanionStorageResponse['topicState']; messages: readonly CompanionMessage[];
   planningState?: CompanionStorageResponse['activityPlanningState'] }, config: CompanionModelConfig, signal?: AbortSignal,
 options: Pick<CompanionModelOptions, 'fetchFn' | 'timeoutMs'> = {}): Promise<{ allowed: boolean; reason?: string }> {
-  if (!input.task.gamePort) return { allowed: true };
-  if (input.topic?.id !== input.task.gamePort.topicId || input.topic.conversationId !== input.task.gamePort.conversationId
+  const port = input.task.gamePort ?? (input.task.peerResponsibility && input.originalSource?.topicId
+    ? { topicId: input.originalSource.topicId, conversationId: input.originalSource.conversationId } : undefined);
+  if (!port) return { allowed: true };
+  if (input.topic?.id !== port.topicId || input.topic.conversationId !== port.conversationId
     || input.topicState && (input.topicState.readerId !== input.task.companionId || input.topicState.topicId !== input.topic.id))
     return { allowed: false, reason: '完成核验缺少本任务实际绑定的游戏端口与本人状态，不能借其他话题或他人私态认定结束。' };
-  const evidence = { purpose: 'game_goal_completion', originalGoal: input.originalSource?.content ?? input.task.goal,
+  const evidence = { purpose: 'game_goal_completion', originalGoal: input.task.peerResponsibility ? input.task.goal : input.originalSource?.content ?? input.task.goal,
     sourceId: input.originalSource?.id, actualTask: input.task, actualTopic: input.topic, currentOwnTopicState: input.topicState,
     actualMessages: input.messages, planningState: input.planningState, planningTrust: 'model_plan_not_execution_fact_or_authority', outputSchema: z.toJSONSchema(schema) };
   let correction: { error: string; rejectedReview?: unknown } | undefined;

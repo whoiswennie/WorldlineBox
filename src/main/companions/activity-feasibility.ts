@@ -22,9 +22,11 @@ export async function reviewCompanionActivityFeasibility(input: {
   const readOnly = !decision.planningState && decision.status === 'continue' && !decision.wait && !decision.memory
     && (typeof topicAction === 'string' && ['read', 'list'].includes(topicAction) || decision.action && ['inspect', 'query'].includes(decision.action.action));
   if (readOnly || decision.memory) return { allowed: true };
-  const hasBoundPort = !!task.gamePort || resourceBounds.hasVerifiedGameRoom;
-  if (hasBoundPort && (!task.gamePort || !resourceBounds.hasVerifiedGameRoom
-    || topic?.id !== task.gamePort.topicId || topic.conversationId !== task.gamePort.conversationId
+  const port = task.gamePort ?? (task.peerResponsibility && topic?.kind === 'game' && input.originalSource?.topicId
+    ? { topicId: input.originalSource.topicId, conversationId: input.originalSource.conversationId } : undefined);
+  const hasBoundPort = !!port || resourceBounds.hasVerifiedGameRoom;
+  if (hasBoundPort && (!port || !resourceBounds.hasVerifiedGameRoom
+    || topic?.id !== port.topicId || topic.conversationId !== port.conversationId
     || resourceBounds.boundGameTopicId !== topic.id || resourceBounds.boundGameRoomId !== topic.conversationId))
     return { allowed: false, reason: '可行性核验缺少本任务当前真实绑定的游戏端口，不能拿其他群或私聊的成员规划本局。' };
   if (!hasBoundPort && !decision.action && !decision.topic && !decision.planningState && !input.previousPlan) return { allowed: true };
