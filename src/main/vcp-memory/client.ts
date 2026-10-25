@@ -36,6 +36,7 @@ export interface VcpMemoryClientOptions {
 }
 
 interface Pending {
+  commandType: VcpMemoryCommand['type'];
   resolve(value: unknown): void;
   reject(error: Error): void;
   timer: ReturnType<typeof setTimeout>;
@@ -60,6 +61,7 @@ interface ScopeProcess {
   detachStartedAt?: number;
   detachCompletedAt?: number;
   closeAcknowledgedAt?: number;
+  workerCleanupAcknowledged?: boolean;
 }
 
 function launchUtility(workerPath: string): VcpMemoryTransport {
@@ -122,9 +124,14 @@ export class VcpMemoryClient {
   private async waitForExitOperation(child: ScopeProcess): Promise<void> {
     child.retirementStartedAt ??= Date.now();
     child.finalized ??= child.exited.then(async () => {
-      child.detachStartedAt ??= Date.now();
-      child.detached ??= detachRuntimeDependencyLinks(path.join(path.resolve(this.options.dataRoot), child.key));
-      await child.detached;
+      // The owned worker acknowledges close only after runtime.close has
+      // removed its dependency links. Trust that proof only with actual exit 0;
+      // crashes, kills without the proof and legacy replies retain parent cleanup.
+      if (!child.workerCleanupAcknowledged || child.exitCode !== 0) {
+        child.detachStartedAt ??= Date.now();
+        child.detached ??= detachRuntimeDependencyLinks(path.join(path.resolve(this.options.dataRoot), child.key));
+        await child.detached;
+      }
       child.detachCompletedAt = Date.now();
       this.broker.retired(`${this.brokerNamespace}:${child.key}`, child.brokerIdentity);
     });
@@ -153,7 +160,7 @@ export class VcpMemoryClient {
         const error = new Error('VCP memory request timed out.');
         reject(error); this.failProcess(child, error);
       }, Math.max(1, deadline - Date.now()));
-      child.pending.set(requestId, { resolve, reject, timer });
+      child.pending.set(requestId, { commandType: command.type, resolve, reject, timer });
       // The worker contract is JSON. Electron uses structured clone while Node's
       // test fork serializes implicitly; use the same plain payload for both.
       try { child.transport.postMessage(JSON.parse(JSON.stringify({ requestId, command }))); }
@@ -191,7 +198,17 @@ export class VcpMemoryClient {
         const pending = child.pending.get(message.requestId);
         if (!pending) return;
         clearTimeout(pending.timer); child.pending.delete(message.requestId);
-        if ('ok' in message && message.ok === true) pending.resolve('value' in message ? message.value : undefined);
+        if ('ok' in message && message.ok === true) {
+          const value = 'value' in message ? message.value : undefined;
+          if (pending.commandType === 'close') {
+            child.closeAcknowledgedAt = Date.now();
+            // Publish before resolving: transport exit may arrive in this tick,
+            // before the awaiting stopScope continuation has resumed.
+            child.workerCleanupAcknowledged = !!value && typeof value === 'object' && !Array.isArray(value)
+              && 'closed' in value && value.closed === true;
+          }
+          pending.resolve(value);
+        }
         else {
           const detail = 'error' in message && message.error && typeof message.error === 'object' ? message.error : {};
           pending.reject(Object.assign(new Error('message' in detail ? String(detail.message) : 'VCP memory operation failed.'),
@@ -270,7 +287,7 @@ export class VcpMemoryClient {
     }
     try {
       await child.ready;
-      if (!child.failed) { await this.send(child, { type: 'close' }); child.closeAcknowledgedAt = Date.now(); }
+      if (!child.failed) await this.send(child, { type: 'close' });
     }
     finally {
       child.transport.kill();

@@ -323,15 +323,20 @@ export class CompanionActivityTaskStore {
     return { job, source };
   }
   private socialRouteMatches(task: Stored, source: CompanionMessage, chainId: string): boolean {
-    // Other source kinds retain their existing social path until equally exact lineage is available.
-    if (!task.sourceMessageId || task.peerResponsibility || terminal(task) || !this.valid(task)) return false;
+    if (terminal(task) || !this.valid(task)) return false;
+    const port = this.boundPort(task);
+    if (port?.conversationId === source.conversationId && port.topicId === source.topicId) {
+      const topic = this.topicExecute?.({ type: 'topic.read', conversationId: port.conversationId, topicId: port.topicId, readerId: task.companionId })?.topic;
+      return !!topic && !topic.deletedAt && topic.status !== 'closed'
+        && topic.participantIds.includes(task.companionId) && topic.participantIds.includes(source.authorId);
+    }
+    // Reusable ordinary rooms still require the exact original human goal and outbound chain.
+    if (!task.sourceMessageId || task.peerResponsibility) return false;
     const origin = this.social.continuity.forChain(chainId);
     if (!origin || origin.initiatorKind !== 'human_player' || origin.initiatorId !== 'user' || origin.ownerId !== task.companionId) return false;
     const row = this.db.prepare("SELECT data FROM companion_social_delegations WHERE id=? AND companion_id=? AND status='active'").get(origin.id, task.companionId) as Row | undefined;
     const root = row ? JSON.parse(row.data) as { conversationId: string; sourceMessageId: string } : undefined;
     if (!root || root.conversationId !== task.conversationId || root.sourceMessageId !== task.sourceMessageId) return false;
-    const port = this.boundPort(task);
-    if (port?.conversationId === source.conversationId && port.topicId === source.topicId) return true;
     // An ordinary room is reusable; only this goal's actual outbound reply chain qualifies.
     return this.goalSocialMessages(task).origins.some(ref => ref.messageId === source.id && ref.chainId === chainId
       && ref.conversationId === source.conversationId && (ref.topicId ?? null) === (source.topicId ?? null));
@@ -492,7 +497,7 @@ export class CompanionActivityTaskStore {
     const observed = messages.map(message => ({ id: message.id, checksum: checksum(message) }));
     const fingerprint = JSON.stringify(messages.map(message => [message.id, message.conversationId, message.sequence, checksum(message)]));
     if (authorization.observationFingerprint !== fingerprint || JSON.stringify(task.observedSocialEvidence.messages) !== JSON.stringify(observed)) return false;
-    if (task.sourceMessageId && task.observedProgressEvidence?.leaseToken === authorization.leaseToken
+    if (task.sourceMessageId && !task.peerResponsibility && task.observedProgressEvidence?.leaseToken === authorization.leaseToken
       && task.observedProgressEvidence.observationChecksum !== this.social.continuity.progressForGoal({ ...task, sourceMessageId: task.sourceMessageId }).observationChecksum) return false;
     if (renew) { task.leaseUntil = Date.now() + PLANNING_LEASE_MS; task.nextAt = task.leaseUntil; this.save(task); }
     return true;
@@ -500,7 +505,7 @@ export class CompanionActivityTaskStore {
   private reportObservation(task: Stored): string {
     return createHash('sha256').update(JSON.stringify({ id: task.id, status: task.status, step: task.step, stage: task.stage,
       version: task.reportVersion, readset: task.reportReadset,
-      progress: task.sourceMessageId ? this.social.continuity.progressForGoal({ ...task, sourceMessageId: task.sourceMessageId }).observationChecksum : undefined })).digest('hex');
+      progress: task.sourceMessageId && !task.peerResponsibility ? this.social.continuity.progressForGoal({ ...task, sourceMessageId: task.sourceMessageId }).observationChecksum : undefined })).digest('hex');
   }
   private claimReport(excluded: string[], id?: string): CompanionStorageResponse {
     return this.db.transaction(() => {
@@ -514,7 +519,7 @@ export class CompanionActivityTaskStore {
         task.reportLeaseToken = randomUUID(); task.reportLeaseUntil = Date.now() + PLANNING_LEASE_MS;
         task.reportObservation = this.reportObservation(task); task.reportAttempts = (task.reportAttempts ?? 0) + 1; this.save(task);
         return { ok: true, activityTask: this.public(task), activityReport: { id: task.id, leaseToken: task.reportLeaseToken, executionReadset: task.reportReadset },
-          activityProgressEvidence: this.social.continuity.progressForGoal({ ...task, sourceMessageId: task.sourceMessageId! }),
+          activityProgressEvidence: task.sourceMessageId && !task.peerResponsibility ? this.social.continuity.progressForGoal({ ...task, sourceMessageId: task.sourceMessageId }) : undefined,
           activityMessages: this.peerMessages(task).slice(-100) };
       }
       return { ok: true };
@@ -864,7 +869,7 @@ export class CompanionActivityTaskStore {
         if (task.deferredDecision) {
           const deferred = task.deferredDecision;
           const socialEvidence = this.peerMessages(task).map(message => ({ id: message.id, checksum: checksum(message) }));
-          const progressChanged = task.sourceMessageId && task.observedProgressEvidence
+          const progressChanged = task.sourceMessageId && !task.peerResponsibility && task.observedProgressEvidence
             && task.observedProgressEvidence.observationChecksum !== this.social.continuity.progressForGoal({ ...task, sourceMessageId: task.sourceMessageId }).observationChecksum;
           if (deferred.step !== task.step || JSON.stringify(deferred.socialEvidence) !== JSON.stringify(socialEvidence) || progressChanged
             || deferred.decision.status !== 'continue') {
@@ -974,7 +979,7 @@ export class CompanionActivityTaskStore {
         || !task.observedSocialEvidence.messages.some(ref => ref.id === message.id && ref.checksum === checksum(message))))
         throw new Error('本目标收到本租约尚未观察的新来信，不能提交旧终态；请在原任务中重新观察。');
       if (executionReadset) this.bindExecutionEvidence(task, executionReadset);
-      if (decision.status !== 'continue' && task.sourceMessageId && task.observedProgressEvidence?.leaseToken === token
+      if (decision.status !== 'continue' && task.sourceMessageId && !task.peerResponsibility && task.observedProgressEvidence?.leaseToken === token
         && task.observedProgressEvidence.observationChecksum !== this.social.continuity.progressForGoal({ ...task, sourceMessageId: task.sourceMessageId }).observationChecksum)
         throw new Error('行动报告核验后本目标真实发送或步骤已变化，未发布旧报告。');
       this.chargePlanning(task);
@@ -1184,7 +1189,7 @@ export class CompanionActivityTaskStore {
         const task = this.get(command.id);
         if (task.companionId !== command.companionId || task.conversationId !== command.conversationId) throw new Error('行动任务范围不可访问。');
         const valid = this.valid(task), evidence = valid ? this.goalSocialMessages(task) : { messages: [], origins: [] };
-        const progress = valid && task.sourceMessageId ? this.social.continuity.progressForGoal({ ...task, sourceMessageId: task.sourceMessageId }) : undefined;
+        const progress = valid && task.sourceMessageId && !task.peerResponsibility ? this.social.continuity.progressForGoal({ ...task, sourceMessageId: task.sourceMessageId }) : undefined;
         return { ok: true, activityTask: this.public(task), activityMessages: evidence.messages.slice(-100), activityMessageOrigins: evidence.origins.slice(-100),
           ...(progress ? { activityProgressEvidence: progress } : {}) };
       }
@@ -1232,7 +1237,7 @@ export class CompanionActivityTaskStore {
         // noteArrival can append an actual history fact. The observation CAS
         // must describe those saved bytes, not the row before that update.
         this.save(task);
-        const progress = task.sourceMessageId ? this.social.continuity.progressForGoal({ ...task, sourceMessageId: task.sourceMessageId }) : undefined;
+        const progress = task.sourceMessageId && !task.peerResponsibility ? this.social.continuity.progressForGoal({ ...task, sourceMessageId: task.sourceMessageId }) : undefined;
         task.observedProgressEvidence = progress ? { leaseToken: command.leaseToken, observationChecksum: progress.observationChecksum } : undefined;
         const port = this.boundPort(task);
         const game = port ? this.topicExecute?.({ type: 'topic.read', conversationId: port.conversationId, topicId: port.topicId, readerId: task.companionId }) : undefined;

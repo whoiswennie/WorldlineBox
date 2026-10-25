@@ -6,6 +6,7 @@ import Database from 'better-sqlite3';
 import { afterEach, expect, it, vi } from 'vitest';
 import { companionsRequestSchema } from '../../src/shared/companions';
 import { CompanionWorldService } from '../../src/main/companions/world-service';
+import { captureCompanionExecutionReadset } from '../../src/main/companions/execution-evidence';
 import { CompanionsStore, type CompanionConnection } from '../../src/companions/store';
 import { companionSearchFacet, companionSearchTokens } from '../../src/shared/companion-search';
 import { removeOwnedDirectorySync } from '../../src/main/vcp-memory/filesystem';
@@ -151,4 +152,53 @@ it('rejects an old terminal proposal when another exact goal event arrives after
   expect(rows(f).filter(row => row.status === 'pending').map(row => row.message_id)).toEqual([newMessage.id]);
   expect(f.store.request({ type: 'activity.observe', id: running.id, leaseToken: running.leaseToken! }).activityMessages)
     .toContainEqual(expect.objectContaining({ id: newMessage.id }));
+});
+
+it('routes a peer-accepted discussion topic event from an independent companion chain, while leaving a different topic on its normal social path', () => {
+  const f = fixture();
+  f.store.request({ type: 'companion.update', id: 'b', companion: { name: 'b', persona: '尊重边界', description: '', avatar: 'sister', model: '', proactive: true } });
+  const room = f.store.request({ type: 'social.conversation.ensure', companionId: 'b', memberIds: ['b', 'a'] }).socialConversation!;
+  const topic = f.store.request({ type: 'topic.create', conversationId: room.id, readerId: 'b', title: '持续读书讨论', kind: 'discussion', participantIds: ['a'] }).topic!;
+  f.store.request({ type: 'topic.join', conversationId: room.id, readerId: 'a', topicId: topic.id });
+  const instruction = '请你接下这个读书话题的持续整理，逐步核实大家的问题，最后汇报真实结果。';
+  const sourceSend = { type: 'social.send' as const, companionId: 'b', conversationId: room.id, topicId: topic.id,
+    channel: 'phone' as const, content: instruction, clientId: 'discussion_peer_responsibility' };
+  f.store.request(sourceSend); f.advance(); const source = f.store.request(sourceSend).socialMessage!.message;
+  const accepting = f.store.request({ type: 'social.job.claim' }).socialJob!; expect(accepting.companionId).toBe('a');
+  f.advance(); const acceptance = f.store.request({ type: 'social.job.complete', id: accepting.id, leaseToken: accepting.leaseToken!,
+    text: '我愿意接下持续整理责任。', workOffer: { mode: 'activity', sourceMessageId: source.id, title: '持续整理读书讨论', instruction,
+      evidence: [instruction], accept: true } }).socialMessage!.message;
+  const task = f.store.request({ type: 'activity.list', companionId: 'a', conversationId: room.id }).activityTasks![0]!;
+  expect(task.peerResponsibility).toEqual({ jobId: accepting.id, publisherId: 'b' });
+  f.advance(); const acknowledge = f.store.request({ type: 'social.job.claim' }).socialJob!; expect(acknowledge.companionId).toBe('b');
+  f.advance(); f.store.request({ type: 'social.job.complete', id: acknowledge.id, leaseToken: acknowledge.leaseToken!, text: null });
+  const sendNewChain = (topicId: string, clientId: string) => {
+    const command = { ...sourceSend, topicId, clientId, content: '补充一个真实问题，请在这个话题继续核对出处。',
+      agentSource: { conversationId: room.id, messageId: acceptance.id } };
+    f.store.request(command); f.advance(); const message = f.store.request(command).socialMessage!.message;
+    const job = f.store.request({ type: 'social.job.claim' }).socialJob!;
+    expect(job.companionId).toBe('a'); expect(job.origin?.initiatorKind).toBe('companion'); expect(job.chainId).not.toBe(accepting.chainId);
+    return { job, message, route: { type: 'activity.social.route' as const, companionId: 'a', conversationId: room.id, jobId: job.id, leaseToken: job.leaseToken! } };
+  };
+  const actual = sendNewChain(topic.id, 'independent_same_discussion');
+  expect(f.store.request(actual.route).activitySocialRoute).toEqual({ taskId: task.id, sourceMessageId: actual.message.id });
+  f.advance(); f.store.request({ type: 'social.job.complete', id: actual.job.id, leaseToken: actual.job.leaseToken!, text: null });
+  const other = f.store.request({ type: 'topic.create', conversationId: room.id, readerId: 'b', title: '另一份独立讨论', kind: 'discussion', participantIds: ['a'] }).topic!;
+  f.store.request({ type: 'topic.join', conversationId: room.id, readerId: 'a', topicId: other.id });
+  const unrelated = sendNewChain(other.id, 'independent_other_discussion');
+  expect(f.store.request(unrelated.route).activitySocialRoute).toBeUndefined();
+  expect(rows(f).map(row => row.message_id)).toEqual([actual.message.id]);
+  f.advance(); f.store.request({ type: 'social.job.complete', id: unrelated.job.id, leaseToken: unrelated.job.leaseToken!, text: null });
+  const claimed = f.store.request({ type: 'activity.claim' }).activityTask!; expect(claimed.id).toBe(task.id);
+  const observed = f.store.request({ type: 'activity.observe', id: claimed.id, leaseToken: claimed.leaseToken! });
+  expect(observed.activityMessages).toContainEqual(expect.objectContaining({ id: actual.message.id }));
+  expect(observed.activityMessages?.some(message => message.id === unrelated.message.id)).toBe(false);
+  expect(observed.activityProgressEvidence).toBeUndefined();
+  expect(f.store.request({ type: 'activity.progress', companionId: 'a', conversationId: room.id, id: task.id }).activityProgressEvidence).toBeUndefined();
+  const executionReadset = captureCompanionExecutionReadset({ companionId: 'a', conversationId: room.id }, {
+    sources: [source, ...observed.activityMessages ?? []].map(message => ({ id: message.id, conversationId: message.conversationId, checksum: sha(message.content) })) });
+  expect(f.store.request({ type: 'activity.commit', id: claimed.id, leaseToken: claimed.leaseToken!, expectedStep: claimed.step, executionReadset,
+    decision: { status: 'complete', action: null, wait: null, summary: '已按本人实际接受的责任核对这条讨论补充。' } }).activityTask?.status).toBe('succeeded');
+  const report = f.store.request({ type: 'activity.report.claim', id: task.id });
+  expect(report.activityReport?.id).toBe(task.id); expect(report.activityProgressEvidence).toBeUndefined();
 });

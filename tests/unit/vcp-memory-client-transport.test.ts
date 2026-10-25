@@ -13,6 +13,50 @@ import * as memoryFilesystem from '../../src/main/vcp-memory/filesystem';
 vi.mock('electron', () => ({ utilityProcess: { fork: vi.fn() } }));
 
 describe('VCP worker transport serialization', () => {
+  it('uses a matched strict worker cleanup acknowledgement only after an actual zero exit in the same transport tick', async () => {
+    const detach = vi.spyOn(memoryFilesystem, 'detachRuntimeDependencyLinks').mockRejectedValue(new Error('Parent cleanup must not repeat an acknowledged worker cleanup.'));
+    const broker = new VcpMemoryProcessBroker(1), events = new EventEmitter(); let exited = false, heldBeforeExit = false;
+    const client = new VcpMemoryClient({ dataRoot: 'unused-clean-close', vendorRoot: 'unused', workerPath: 'unused',
+      embedding: { baseUrl: 'http://127.0.0.1', apiKey: 'fixture', model: 'fixture', dimension: 4 }, processBroker: broker,
+      launch: () => ({ on: events.on.bind(events), kill() {}, postMessage(message: unknown) {
+        const request = message as { requestId: string; command: VcpMemoryCommand };
+        events.emit('message', { requestId: request.requestId, ok: true, value: request.command.type === 'close' ? { closed: true } : {} });
+        if (request.command.type === 'close') {
+          heldBeforeExit = broker.snapshot().processes === 1; exited = true; events.emit('exit', 0);
+        }
+      } }) });
+    try {
+      await client.list({ scopeId: 'clean' }); await client.closeScope({ scopeId: 'clean' });
+      expect(heldBeforeExit).toBe(true); expect(exited).toBe(true); expect(detach).not.toHaveBeenCalled();
+      expect(broker.snapshot().processes).toBe(0);
+    } finally { detach.mockRestore(); await client.close(); await broker.close(); }
+  });
+  it('keeps parent detachment and the permit for incomplete close receipts or an abnormal exit', async () => {
+    const detach = vi.spyOn(memoryFilesystem, 'detachRuntimeDependencyLinks');
+    try {
+      for (const [index, result] of [{ value: {}, exit: 0 }, { value: { closed: false }, exit: 0 },
+        { value: undefined, exit: 0 }, { value: { closed: true }, exit: 7 }].entries()) {
+        let finishDetach!: () => void;
+        const detaching = new Promise<void>(resolve => { finishDetach = resolve; }); detach.mockImplementationOnce(() => detaching);
+        const broker = new VcpMemoryProcessBroker(1), events = new EventEmitter();
+        const client = new VcpMemoryClient({ dataRoot: 'unused-proof-fallback', vendorRoot: 'unused', workerPath: 'unused',
+          embedding: { baseUrl: 'http://127.0.0.1', apiKey: 'fixture', model: 'fixture', dimension: 4 }, processBroker: broker,
+          launch: () => ({ on: events.on.bind(events), kill() {}, postMessage(message: unknown) {
+            const request = message as { requestId: string; command: VcpMemoryCommand };
+            // A different successful command cannot establish close authority.
+            events.emit('message', { requestId: request.requestId, ok: true,
+              value: request.command.type === 'close' ? result.value : { closed: true } });
+            if (request.command.type === 'close') events.emit('exit', result.exit);
+          } }) });
+        try {
+          await client.list({ scopeId: 'fallback' }); const closing = client.closeScope({ scopeId: 'fallback' });
+          await vi.waitFor(() => expect(detach).toHaveBeenCalledTimes(index + 1));
+          expect(broker.snapshot().processes).toBe(1);
+          finishDetach(); await closing; expect(broker.snapshot().processes).toBe(0);
+        } finally { finishDetach(); await client.close(); await broker.close(); }
+      }
+    } finally { detach.mockRestore(); }
+  });
   it('detaches dependencies after an idle worker exits unexpectedly and preserves their external target', async () => {
     const root = await mkdtemp(path.join(tmpdir(), 'worldline-vcp-idle-exit-'));
     const source = path.join(root, 'external-source'), dataRoot = path.join(root, 'owned'), scope = { scopeId: 'idle-worker-crash' };

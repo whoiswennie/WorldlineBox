@@ -1364,3 +1364,19 @@ f0c3228上的native-world-tools-five-quantity-continuation.json保持原source�
 只读复核发现的typingNotBefore、满100条的slice(-0)、晚到来信与暂态readSet清理问题均已在冻结前修正；未以游戏专用规则或替角色决策处理。该修复不能自行证明角色算票、阶段或整局已完成。最后仅沿同一仍运行的原source，在原fixture已支持的35分钟累计上限内使用最后约295秒/47次非judge请求；既有30分钟与553次非judge继续扣除，不增加600次调用上限、不新建用户目标、角色、群或对局。真实结果随后如实登记，在必要验证跑通前仍不打包。
 
 冻结后的main/extension类型检查、目标lint和diff-check实际退出0。原world-service/activity-service/activity-task三个完整文件首轮112通过、1项测试名称大小写错误（fixture真实name为bob，新增断言误写Bob）；只纠正该断言，针对原失败项确认1/1、child exit0，产品未为此改动。首轮lint的两个未使用测试import已删除并确认退出0；原失败日志全部保留。没有为机械通过重复运行通知63项、route3项或既有DSH性能集合。对应凭据owner-inbox-main-worker-regressions.json、owner-inbox-notification-wiring-confirmed.json与owner-inbox-*-exit.json；独立最终只读复核无未解决P1/P2。
+
+### 16.90 最后同源窗口结果与关闭清理边界（2026-10-25）
+
+8a7f614已提交推送。owner-inbox-five-same-source-real.json沿原source27e1c2d5…、原任务28797cc0…恢复，newUserTaskMessages=0。实际316181ms（包括关闭）、28次Main HTTP、0次judge，累计581次非judge，源码及所选native配置守卫true。观察结束仍failed/acceptance_deadline，任务running/step35；没有终局回执或独立judge结果，actor DSH任务/turn仍0。原20/30分钟失败保持，不追加新局、模型调用预算或将退出码1改判通过。
+
+随后对原DB只作带main/WAL/SHM哈希守卫的复制审计，确认新收件路由在实际流程确已命中：Qwen seq120/source8aa5…已由原任务观察并consumed；seq129/source6927…仍pending。owner本段四次决策均activity_task_step，没有world_social第二planner；全部15个owner peer job都是原human委托链。错误“2+2+1”及平票重投由原activity自己在seq128发出，其他伙伴继续附和；不能再把这次错误归因于路由没命中。实际2/1/1与模型错误说法的原件仍保留，不能写固定游戏算票代码替代伙伴推理。证据owner-inbox-miss-readonly/report.json；原DB哈希全过程不变。
+
+本次还记录VCP关闭异常：子runtime已完成close、收到回执并exit0，父client重复detach时报告dependency_cleanup未完成；固定5秒timer实际33042ms才触发。子runtime.close会逐项等待插件、kb与两依赖link清理，有错误就不返回closed:true；父detach仅检查固定路径，不递归依赖源。审计时27个scope的两link均已missing。现有日志不能确定是哪次系统调用或Main同步负载导致约28秒调度滞后，不能断言新inbox逻辑、Windows慢删或自锁是根因。必要修正只采用严格匹配close请求的closed:true与真实exit0作为成功清理证明；异常退出或缺少严格回执仍须父清理完成才释放permit，不增加超时。后续小范围机械结果另记，不为该修正重开对局。
+
+关闭修正的原transport完整文件9/9、0skip、child exit0：严格回执标记在匹配close的响应handler中、早于resolve发布，覆盖同tick exit；其他命令伪closed、缺失/false/undefined值及exit7均仍等待真实父detach，实际退出前不释放permit。凭据vcp-graceful-cleanup-transport-final-tests.json。这里只证明新成功路径不再重复清理及异常兜底合同，不改写原真实33秒失败，也没有再运行模型。
+
+另修独立、未在上述同局触发的精确话题边界：同一实际已绑定topic的合法新companion链现交回唯一有效owner任务，不再先要求incoming human origin；双方实际joined、话题未删除/关闭、任务根及当前source/readSet/ACL继续校验，普通复用room仍要求原human目标与出站链闭包。真实discussion的peer-accepted回归进一步暴露既有产品错误：observe把伙伴来源交给human-only progressForGoal而抛错。七处human进度读取（含report、thought与deferred）现仅用于真人来源任务，伙伴责任保留自己的accepted源、topic、inbox与读集，不伪造真人进度。该新增第四例首轮3/4的RED保留；最终四例生命周期集合4/4、child exit0，覆盖独立新链、错误topic拒绝、原任务observe/progress、真实源读集下complete与report.claim，未伪造report.complete。source-free当前没有可被valid接受的boundPort，未宣称新增这种支持。凭据activity-social-route-topic-lifecycle-final.json及activity-social-route-topic-implementation.json。
+
+上述末轮改动与8a7f614实际对局证据分开登记：当前自主整局与推理一致性仍未验收通过，长期目标保持进行中，无再次打包；最新修正只作必要类型、lint与小范围机械确认，不重开对局、不写固定胜负或替角色决定。
+
+末轮冻结产品的main类型检查、四个变更TS文件lint及diff-check均实际退出0；extension使用此前同字节共享层的检查结果，不重复无变化的集合。最新凭据peer-source-cleanup-final-main-types-exit.json与peer-source-cleanup-final-eslint-exit.json。验证文件及失败原件继续放在项目外归档，仓库仅保留源码、必要回归与开发记录；提交推送不代表自主验收通过。
