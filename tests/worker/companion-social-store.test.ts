@@ -161,7 +161,9 @@ it('cancels a queued message and typing when its recipient is deactivated, witho
   store.setCompanionActive('bob', true); advance(store, 1500);
   expect(store.request({ type: 'social.job.claim' }).socialMessage).toBeUndefined();
   expect(store.request({ type: 'social.messages', conversationId: pair.id }).socialMessagePage!.total).toBe(0);
-  expect(() => store.request(command)).toThrow('取消');
+  const cancelled = store.request(command);
+  expect(cancelled).toMatchObject({ ok: false, error: expect.stringContaining('取消') });
+  expect(cancelled.socialPending).toBeUndefined(); expect(cancelled.socialMessage).toBeUndefined();
   const db = new Database(filename); try { expect(db.prepare('SELECT status FROM companion_social_outbox WHERE client_id=?').get(command.clientId)).toMatchObject({ status: 'cancelled' }); } finally { db.close(); }
 });
 
@@ -220,7 +222,10 @@ it('recovers the phone outbox during virtual sleep after restart and still cance
   advance(store, 1300); const delivered = store.request(input).socialMessage!;
   expect(delivered.message.authorId).toBe('alice'); expect(JSON.stringify(delivered)).not.toContain(source.id);
   const next = { ...input, clientId: 'withdrawn' }; expect(store.request(next).socialPending).toBe(true); store.request({ type: 'memory.forget', ...scope, sourceMessageIds: [source.id] }); advance(store, 1300); store.request({ type: 'social.job.claim' });
-  expect(() => store.request(next)).toThrow('撤回'); expect(store.request({ type: 'social.messages', conversationId: pair.id }).socialMessagePage!.total).toBe(1);
+  const cancelled = store.request(next);
+  expect(cancelled).toMatchObject({ ok: false, error: expect.stringContaining('取消') });
+  expect(cancelled.socialPending).toBeUndefined(); expect(cancelled.socialMessage).toBeUndefined();
+  expect(store.request({ type: 'social.messages', conversationId: pair.id }).socialMessagePage!.total).toBe(1);
 });
 it('holds a single live owner lease, clears failed typing, limits retries, and targets every actual group recipient', () => {
   const { store, filename } = fixture(), group = room(store, ['alice', 'bob', 'carol']), first = initial(store, group.id);

@@ -19,7 +19,7 @@ export function companionSocialCapabilities(request: (command: CompanionStorageC
   const parameters = worldTools.length ? { type: 'object', anyOf: [...worldTools.map(tool => tool.parameters), ownParameters] } : { type: 'object', ...ownParameters };
   return { journal: other.journal, replaySafe: other.replaySafe, continuityRequest: other.continuityRequest,
     tools: [...other.tools.filter(tool => tool.name !== 'world'), { name: 'world', parameters,
-    description: `${worldTools.map(tool => tool.description).join('\n')}\n还可inspect/query(contacts熟人、people公开世界居民、social本人社交)。introduce(targetCompanionId,text)主动自我介绍，message(recipientIds,text)联系熟人，create_group(recipientIds,title,text,includePlayer)与至少两位熟人建群；includePlayer=true邀请真人入群。只发自己的问候或本次公开讨论中的必要邀约；宿主已核验的同局game reference允许本人必要游戏通信，仍按实际收件人保护秘密。不转发无关私聊，不替他人接受，不授现实操作权限。待发不等于送达，不能重复创建相同邀请。` }],
+    description: `${worldTools.map(tool => tool.description).join('\n')}\n还可inspect/query(contacts熟人、people公开世界居民、social本人社交)。introduce(targetCompanionId,text)主动自我介绍，message(recipientIds,text)联系熟人，create_group(recipientIds,title,text,includePlayer)与至少两位熟人建群；includePlayer=true邀请真人入群。message不填roomId时按收件人解析目的会话；topicId只属于目的会话，来源话题不会随私信转移。私人普通消息可显式topicId=null；在原群话题发言应提供该群roomId和topicId。只发自己的问候或本次公开讨论中的必要邀约；宿主已核验的同局game reference允许本人必要游戏通信，仍按实际收件人保护秘密。不转发无关私聊，不替他人接受，不授现实操作权限。待发不等于送达，不能重复创建相同邀请。` }],
     execute: async (call, signal) => {
       signal?.throwIfAborted();
       if (call.name !== 'world') return other.execute(call, signal);

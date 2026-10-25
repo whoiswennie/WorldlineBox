@@ -34,6 +34,7 @@ const parse = <T>(value: unknown): T => JSON.parse(String(value)) as T;
 const hash = (value: unknown) => createHash('sha256').update(JSON.stringify(value)).digest('hex');
 const checksum = (message: CompanionMessage) => hash([message.id, message.conversationId, message.topicId, message.authorId, message.content, message.status, message.replyToId]);
 const dayAt = (at: number, zone: string) => { const date = companionTimeInZone(at, zone); return `${date.year}-${String(date.month).padStart(2, '0')}-${String(date.day).padStart(2, '0')}`; };
+const invalidSendPort = '本次未发送：目标会话或话题端口对本人无效，请核对目标入口后重新发送。';
 
 /** Peer rooms use the existing formal message authority; scheduling drafts never become evidence. */
 export class CompanionSocialStore {
@@ -505,11 +506,19 @@ export class CompanionSocialStore {
     const context = this.calendar();
     const result: CompanionStorageResponse = this.db.transaction(() => {
       const members = this.requireRoom(input.conversationId, input.companionId); const fingerprint = hash(input), existing = this.db.prepare('SELECT * FROM companion_social_outbox WHERE client_id=?').get(input.clientId);
-      if (existing && row(existing).message_id) { const pending = parse<PendingSend>(row(existing).data); if (pending.fingerprint !== fingerprint) throw new Error('社交发送的重试标识已经被其他内容使用。'); return { ok: true, socialMessage: this.wrap(String(row(existing).message_id)) }; }
+      const previous = existing ? parse<PendingSend>(row(existing).data) : undefined;
+      if (previous && previous.fingerprint !== fingerprint) throw new Error('社交发送的重试标识已经被其他内容使用。');
+      if (existing && row(existing).message_id) return { ok: true, socialMessage: this.wrap(String(row(existing).message_id)) };
+      if (existing && previous && row(existing).status === 'cancelled') return this.sendOutcome(previous);
       if (!this.participantsActivated(members)) throw new Error('发起联系前，所有参与伙伴都需要由玩家手动激活；休眠伙伴不会收到新消息。');
-      if (existing) { const value = row(existing), pending = parse<PendingSend>(value.data); if (pending.fingerprint !== fingerprint) throw new Error('社交发送的重试标识已经被其他内容使用。'); if (value.status === 'cancelled') throw new Error('参与伙伴已休眠或待发来源已修改、撤回，消息已取消，请重新发起。'); const delivered = this.deliver(pending, context); return { ok: true, ...(delivered ? { socialMessage: delivered } : { socialPending: true }) }; }
+      if (previous) return this.sendOutcome(previous, this.deliver(previous, context));
       if (input.urgent && this.db.prepare("SELECT 1 FROM companion_social_outbox WHERE companion_id=? AND json_extract(data,'$.urgent')=1 AND status IN('pending','sent') AND created_at>? LIMIT 1").get(input.companionId, iso(Date.now() - 120000))) throw new Error('刚刚已经发起紧急联系，请等待对方处理，不要重复打扰。');
       const sourceChecksums = this.sources(input), recipients = this.requireRoom(input.conversationId, input.companionId).filter(id => id !== input.companionId);
+      const chosen = this.db.prepare('SELECT topic_id FROM companion_topic_current WHERE conversation_id=? AND reader_id=?').get(input.conversationId, input.companionId);
+      // Freeze and validate the destination before creating an outbox or origin.
+      // A source topic never becomes a port in a different destination room.
+      const topicId = input.replyToId ? this.message(input.replyToId).topicId ?? null : input.topicId ?? (input.topicId === undefined && chosen ? String(row(chosen).topic_id) : null);
+      if (this.topicAdmission(input.companionId, input.conversationId, topicId) === 'cancelled') throw new Error(invalidSendPort);
       const authorization = input.authorizationMessageId ? this.message(input.authorizationMessageId) : undefined;
       const inheritedOrigin = !authorization ? this.agentSourceOrigin(input) : undefined;
       const originId = authorization ? this.continuity.record({ type: 'social.delegation.record', companionId: input.companionId,
@@ -519,16 +528,21 @@ export class CompanionSocialStore {
       const channel = !input.sourceMessageId && !input.agentSource && this.available(input.companionId, 'face_to_face', recipients) ? 'face_to_face' : input.channel;
       if (channel === 'face_to_face' && !this.available(input.companionId, channel, recipients)) throw new Error('所有参与者需要在同一现场、彼此5格内且方便交流。');
       if (channel === 'face_to_face' && !originId && !input.authorizationMessageId && !this.budget(input.companionId, 'initial', context)) throw new Error('此刻的主动社交配额或冷却尚未恢复，本次现场机会结束。');
-      const chosen = this.db.prepare('SELECT topic_id FROM companion_topic_current WHERE conversation_id=? AND reader_id=?').get(input.conversationId, input.companionId);
-      // Freeze the sender's chosen port at enqueue time. A later switch must
-      // never retarget an already composed or delayed message.
-      const topicId = input.replyToId ? this.message(input.replyToId).topicId ?? null : input.topicId ?? (input.topicId === undefined && chosen ? String(row(chosen).topic_id) : null);
       const send: PendingSend = { ...input, topicId, channel, ...sourceChecksums, fingerprint, ...(originId ? { originId } : {}), ...(inheritedOrigin ? { originFromAgentSource: true } : {}) };
       this.db.prepare("INSERT INTO companion_social_outbox(client_id,companion_id,conversation_id,status,created_at,data) VALUES(?,?,?,'pending',?,?)").run(input.clientId, input.companionId, input.conversationId, iso(), JSON.stringify(send));
-      const delivered = this.deliver(send, context); return { ok: true, ...(delivered ? { socialMessage: delivered } : { socialPending: true }) };
+      return this.sendOutcome(send, this.deliver(send, context));
     }).immediate();
     result.socialRecipients = this.members(input.conversationId).filter(id => id !== input.companionId).map(companionId => ({ companionId, state: this.options.contactState?.(companionId) ?? 'available' }));
     return result;
+  }
+  /** Retirement must commit even when the caller receives a failed receipt. */
+  private sendOutcome(send: PendingSend, delivered?: CompanionSocialMessage): CompanionStorageResponse {
+    if (delivered) return { ok: true, socialMessage: delivered };
+    const stored = this.db.prepare('SELECT status FROM companion_social_outbox WHERE client_id=?').get(send.clientId);
+    if (stored && row(stored).status === 'cancelled') return { ok: false,
+      error: this.topicAdmission(send.companionId, send.conversationId, send.topicId) === 'cancelled' ? invalidSendPort
+        : '本次未发送：该待发记录已取消，不能继续复用。请核对目标会话及话题入口，确认仍需发送后重新发起。' };
+    return { ok: true, socialPending: true };
   }
   private deliver(send: PendingSend, context: Calendar): CompanionSocialMessage | undefined {
     const members = this.requireRoom(send.conversationId, send.companionId), recipients = members.filter(id => id !== send.companionId);

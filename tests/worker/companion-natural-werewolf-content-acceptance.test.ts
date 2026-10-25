@@ -19,7 +19,9 @@ import { createNativeAcceptanceBroker, createNativeAcceptanceLauncher, installed
 const transport = vi.hoisted(() => ({ request: undefined as ((command: CompanionStorageCommand) => Promise<CompanionStorageResponse>) | undefined,
   requests: 0, maxRequests: 600, budgetExceeded: false, judging: false, judgeRequests: 0,
   inference: [] as Array<{ at: string; self?: string; purpose?: string; invocationId?: string; topicId?: string; visibleMessageIds: string[]; toolResults: number;
-    outputCorrection?: string;
+    outputCorrection?: string; correctionKind?: string;
+    observedPeerMessages?: Array<{ id: string; conversationId?: string; checksum: string }>;
+    historyProvenance?: Array<{ step: number; action: string; ok: boolean; provenance?: string; resultChecksum: string }>;
     resourceBounds?: unknown; activityHandoff?: { taskId?: string; executor?: string };
     review?: { allowed?: boolean; reason?: string } }> }));
 vi.mock('../../src/main/companions/storage-client', () => ({ CompanionStorageClient: class {
@@ -45,6 +47,14 @@ vi.mock('electron', () => ({ net: { fetch: async (url: string, init?: RequestIni
     inference = { at: new Date().toISOString(), self: frame?.identity?.self?.id ?? frame?.companion?.id,
       purpose: frame?.purpose, invocationId: frame?.invocation?.id, topicId: frame?.topic?.id,
       ...(typeof correctionError === 'string' ? { outputCorrection: correctionError.slice(0, 1500) } : {}),
+      ...(typeof frame?.outputCorrection?.kind === 'string' ? { correctionKind: frame.outputCorrection.kind } : {}),
+      ...(Array.isArray(frame?.recentPeerMessages) ? { observedPeerMessages: frame.recentPeerMessages
+        .filter((message: { id?: unknown; content?: unknown }) => typeof message.id === 'string' && typeof message.content === 'string')
+        .map((message: { id: string; conversationId?: string; content: string }) => ({ id: message.id, conversationId: message.conversationId,
+          checksum: createHash('sha256').update(message.content).digest('hex') })) } : {}),
+      ...(Array.isArray(frame?.task?.history) ? { historyProvenance: frame.task.history.map((entry: { step: number; action: string; ok: boolean; resultProvenance?: string; result: string }) => ({
+        step: entry.step, action: entry.action, ok: entry.ok, provenance: entry.resultProvenance,
+        resultChecksum: createHash('sha256').update(entry.result).digest('hex') })) } : {}),
       visibleMessageIds: frame?.messages?.map((message: { id: string }) => message.id) ?? [],
       resourceBounds: frame?.resourceBounds,
       ...(frame?.activityHandoff ? { activityHandoff: { taskId: frame.activityHandoff.task?.id, executor: frame.activityHandoff.executor } } : {}),
@@ -145,7 +155,7 @@ it.skipIf(process.env.WORLDLINEBOX_NATURAL_GAME_ACCEPTANCE !== '1')('finishes a 
   const sourcePaths = ['src/main/companions/service.ts', 'src/main/companions/activity-task-service.ts', 'src/main/companions/world-service.ts',
     'src/main/companions/social-model.ts', 'src/main/companions/social-notification-model.ts',
     'src/main/companions/social-capabilities.ts', 'src/main/companions/topic-capabilities.ts',
-    'src/main/companions/thought-capabilities.ts',
+    'src/main/companions/thought-capabilities.ts', 'src/main/companions/thought-source-material.ts',
     'src/main/companions/topic-moderator-transfer.ts',
     'src/main/companions/game-contact-context.ts', 'src/main/companions/game-topic-privacy.ts', 'src/main/companions/game-goal-completion.ts',
     'src/main/companions/structured-agent.ts', 'src/main/companions/agent-kernel.ts', 'src/main/companions/agent-progress.ts',

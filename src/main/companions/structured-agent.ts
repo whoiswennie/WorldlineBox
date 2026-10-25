@@ -44,7 +44,7 @@ export interface CompanionStructuredAgentInput {
   /** Refresh host facts and source visibility before every model inference. */
   refresh?: () => Promise<CompanionReplyInput>;
   /** The caller validates proposed output before any domain effect commits. */
-  validateOutput?: (value: unknown) => unknown;
+  validateOutput?: (value: unknown, evidence: Readonly<{ turns: readonly CompanionLoopTurn[] }>) => unknown;
   /** Trusted caller's existing output contract. Never read from model/context JSON. */
   finalSchema?: Record<string, unknown>;
   /** Host-only live-domain observation. A changed input supersedes only a saved,
@@ -231,7 +231,7 @@ export async function runCompanionStructuredAgent(input: CompanionStructuredAgen
     const json = companionFinalProposalJsonText(turn);
     try { value = JSON.parse(json); }
     catch (error) { throw new CompanionModelError('INVALID_RESPONSE', finalJsonSyntaxFeedback(json, error)); }
-    const accepted = input.validateOutput ? await input.validateOutput(value) : value;
+    const accepted = input.validateOutput ? await input.validateOutput(value, { turns }) : value;
     acceptedOutputs.set(turn, accepted); return accepted;
   };
   const rejectFinal = async (turn: CompanionLoopTurn, step: number, error: unknown, persisted: boolean): Promise<boolean> => {

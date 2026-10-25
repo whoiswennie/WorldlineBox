@@ -18,6 +18,7 @@ import type { CompanionTopic, CompanionTopicState } from '../../shared/companion
 import { isVerifiedCompanionGameContactContext, type CompanionGameContactContext, isVerifiedCompanionGameInitiativeContext, type CompanionGameInitiativeContext } from './game-contact-context';
 import { reviewCompanionGamePublicReply } from './game-topic-privacy';
 import type { CompanionExecutionReadset } from '../../shared/companion-execution-evidence';
+import { reviewCompanionSocialProgress } from './social-progress-review';
 
 const replySchema = z.strictObject({ text: z.string().trim().min(1).max(2000).nullable(),
   nextRecipientId: z.string().optional(), reason: z.string().trim().min(1).max(500), workOffer: companionSocialWorkOfferSchema.optional(), shareAddress: z.boolean().optional() });
@@ -116,7 +117,7 @@ phone是远程手机文字通信，不代表同一地点、拜访许可或电脑
   const result = replySchema.safeParse(await runCompanionStructuredAgent({ context, frame: currentFrame,
     finalSchema: z.toJSONSchema(replySchema, { io: 'input' }),
     refresh: options.prepareFrame ? async () => { currentFrame = await options.prepareFrame!(currentFrame); return currentFrame; } : undefined,
-    validateOutput: async raw => {
+    validateOutput: async (raw, evidence) => {
       const proposal = replySchema.parse(raw);
       if (proposal.nextRecipientId && (!memberIds.has(proposal.nextRecipientId) || proposal.nextRecipientId === input.companion.id)) throw invalid();
       if (proposal.text && input.source.topicId && !currentFrame.topic?.participantIds.includes(input.companion.id)) throw new Error(`你尚未加入这个话题。愿意参加时必须先调用原生world工具，参数${JSON.stringify({ action: 'topic', parameters: { action: 'join', topicId: input.source.topicId } })}，收到成功回执后再正式交付text。只说“加入”不产生效果；不参加可返回text=null。`);
@@ -125,6 +126,9 @@ phone是远程手机文字通信，不代表同一地点、拜访许可或电脑
         const review = await reviewCompanionGamePublicReply({ frame: currentFrame, text: proposal.text }, config, signal, options);
         if (!review.allowed) throw new Error('本条群公开正文未发布：' + (review.reason ?? '包含本局秘密或不符合实际受众。')
           + ' 正文自称私发不会改变实际群投递；需私下行动时，使用已开放的message能力向该真实有资格成员单独送达，然后公共text只给不含秘密的回执，或text=null。');
+        const correction = await reviewCompanionSocialProgress(proposal.text, [], config, signal,
+          { fetchFn: options.fetchFn, timeoutMs: options.timeoutMs, turns: evidence.turns, names: input.members });
+        if (correction) throw new Error('本条回复未发布：' + correction);
       }
       return proposal;
     },

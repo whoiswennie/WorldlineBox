@@ -27,15 +27,76 @@ const input = () => ({ companion, conversation, source, messages: [source], job,
     people: [], objects: [], visibleObjectIds: [], visibleCompanionIds: [] },
 } as CompanionWorldSnapshot });
 const response = (value: unknown) => new Response(JSON.stringify({ choices: [{ message: { content: JSON.stringify(value) } }] }), { headers: { 'Content-Type': 'application/json' } });
+const toolResponse = (id: string, name: string, args: unknown) => new Response(JSON.stringify({ choices: [{ message: { content: '',
+  tool_calls: [{ id, type: 'function', function: { name, arguments: JSON.stringify(args) } }] } }] }), { headers: { 'Content-Type': 'application/json' } });
+const sentReceipt = (id: string, recipientIds: string[], content: string) => ({ ok: true, socialMessage: {
+  message: { ...source, id, conversationId: 'actual_pair', authorId: companion.id, content }, virtualCreatedAt: source.createdAt, recipientIds } });
+
+it('rejects a peer native final claiming a failed discussion message was sent and lets the same author correct it', async () => {
+  const request = '请把读书讨论的开始时间单独告诉朋友，再告诉我实际结果。';
+  const actualSource = { ...source, content: request };
+  const claimed = '开始时间已单独告诉朋友。', corrected = '这次发信失败，我尚未把开始时间送达朋友。';
+  let authors = 0, reviews = 0;
+  const execute = vi.fn(async () => ({ ok: false, error: '目标话题与目的会话不匹配。' }));
+  const fetchFn = vi.fn<typeof fetch>(async (_url, init) => {
+    const wire = JSON.parse(String(init?.body)), data = JSON.parse(wire.messages[1].content);
+    if (data.purpose === 'companion_social_progress_review') {
+      reviews++; expect(data.facts).toEqual([]);
+      expect(data.nativeActions).toEqual([expect.objectContaining({ callId: 'discussion_send', action: 'message', delivery: 'failed', proposedRecipientIds: ['friend'] })]);
+      expect(data.nativeActions[0]).not.toHaveProperty('sentContent');
+      expect(data.identities).toEqual([{ id: 'friend', name: '朋友' }]);
+      expect(wire.messages[0].content).toContain('给真实收件人');
+      return response({ supported: data.proposedText === corrected, correction: data.proposedText === corrected ? '' : '实际发送回执是失败，不能说开始时间已送达朋友。' });
+    }
+    expect(data.purpose).toBe('world_social'); authors++;
+    if (authors === 1) return toolResponse('discussion_send', 'world', { action: 'message', recipientIds: ['friend'], text: '讨论周六十点开始。' });
+    if (authors === 2) {
+      const result = wire.messages.find((message: { role: string; tool_call_id?: string }) => message.role === 'tool' && message.tool_call_id === 'discussion_send');
+      expect(JSON.parse(result.content)).toMatchObject({ ok: false, error: '目标话题与目的会话不匹配。' });
+      return toolResponse('failed_send_claim', COMPANION_SUBMIT_RESULT_TOOL, { text: claimed, reason: '拟汇报发送结果。' });
+    }
+    expect(data.outputCorrection.error).toContain('实际发送回执是失败');
+    expect(wire.messages.some((message: { role: string; content: string }) => message.role === 'tool'
+      && message.content.includes('rejected_before_execution'))).toBe(true);
+    return toolResponse('honest_send_result', COMPANION_SUBMIT_RESULT_TOOL, { text: corrected, reason: '依据真实失败回执修正。' });
+  });
+  const result = await generateCompanionSocialReply({ ...input(), source: actualSource, messages: [actualSource] }, config, undefined,
+    { fetchFn, capabilities: { replaySafe: true, tools: [{ name: 'world', description: '正常伙伴发信', parameters: { type: 'object' } }], execute } });
+  expect(result.text).toBe(corrected); expect(authors).toBe(3); expect(reviews).toBe(2); expect(execute).toHaveBeenCalledOnce();
+});
+
+it('accepts a peer delivery report only with the exact successful native discussion receipt', async () => {
+  const text = '讨论周六十点开始。';
+  let authors = 0, reviews = 0;
+  const execute = vi.fn(async () => sentReceipt('actual_discussion_send', ['friend'], text));
+  const fetchFn = vi.fn<typeof fetch>(async (_url, init) => {
+    const wire = JSON.parse(String(init?.body)), data = JSON.parse(wire.messages[1].content);
+    if (data.purpose === 'companion_social_progress_review') {
+      reviews++; expect(data.nativeActions).toEqual([expect.objectContaining({ delivery: 'sent', messageId: 'actual_discussion_send', recipientIds: ['friend'], sentContent: text })]);
+      expect(data.proposedText).toBe('我已把讨论开始时间单独告诉朋友。');
+      return response({ supported: true, correction: '' });
+    }
+    expect(data.purpose).toBe('world_social'); authors++;
+    if (authors === 1) return toolResponse('discussion_send', 'world', { action: 'message', recipientIds: ['friend'], text });
+    return toolResponse('successful_send_claim', COMPANION_SUBMIT_RESULT_TOOL, { text: '我已把讨论开始时间单独告诉朋友。', reason: '真实发送回执已确认。' });
+  });
+  const result = await generateCompanionSocialReply(input(), config, undefined,
+    { fetchFn, capabilities: { replaySafe: true, tools: [{ name: 'world', description: '正常伙伴发信', parameters: { type: 'object' } }], execute } });
+  expect(result.text).toBe('我已把讨论开始时间单独告诉朋友。'); expect(authors).toBe(2); expect(reviews).toBe(1); expect(execute).toHaveBeenCalledOnce();
+});
 it('corrects a public game final containing a private night action, sends an actual single-recipient tool message, then publishes only a safe acknowledgement', async () => {
   const gameSource = { ...source, topicId: 'actual_game', content: '第二夜，有行动的角色请真实单独联系主持，群里不要报目标。' };
   let authorCalls = 0, reviewCalls = 0;
   const execute = vi.fn(async (call: { arguments: string }) => {
     expect(JSON.parse(call.arguments)).toEqual({ action: 'message', recipientIds: ['deepseek-sister'], text: '我第二夜的私密目标是friend。' });
-    return { ok: true, socialConversation: { id: 'actual_pair', memberIds: [companion.id, 'deepseek-sister'] }, socialMessage: { message: { id: 'actual_private_send' } } };
+    return sentReceipt('actual_private_send', ['deepseek-sister'], '我第二夜的私密目标是friend。');
   });
   const fetchFn = vi.fn<typeof fetch>(async (_url, init) => {
     const wire = JSON.parse(String(init?.body)), data = JSON.parse(wire.messages[1].content);
+    if (data.purpose === 'companion_social_progress_review') {
+      expect(data.nativeActions).toEqual([expect.objectContaining({ delivery: 'sent', messageId: 'actual_private_send', recipientIds: ['deepseek-sister'] })]);
+      return response({ supported: true, correction: '' });
+    }
     if (data.purpose === 'game_public_reply_privacy') {
       reviewCalls++; expect(data.actualAudience.memberIds).toEqual(conversation.memberIds);
       const allowed = data.exactProposedText === '收到，已按要求单独联系主持。';

@@ -1427,3 +1427,24 @@ thought-source-material-peer-real.json实际passed，原peer job、Agent run及a
 | P6最终交付 | 现有安装器仍为002c4a5，不含523d283；当前源码最终官方构建及必要包内确认尚未执行。用户要求关键流程跑通后最终统一打包，本轮仍不打包。 |
 
 用户后续明确收口为升级后大体跑通、完成所述狼人杀和经历界面验证，避免过分细碎验收；三篇fresh长篇的未完成原件继续保留，不能标绿，也不重新把它们设为当前对局/交付前置。当前最小必要未满足项仍是自主主持完整终局及其后最终新包，而不是再次移植已有VCP模块或复测全部旧门。原同source对局累计预算已经耗尽；本轮没有延长、恢复或另开对局。长期目标保持active，未作全部完成声明。
+
+### 16.94 新输入合同后的唯一完整自主局与实际通信缺口（2026-10-25）
+
+c1166a3上的产品源码冻结后，对523d283已变更的来源/恢复/思考合同执行一次fresh-five-autonomous-host完整验收，不恢复旧source或改写原失败。事前source-trust-five-final-c1166a3-preflight.json记录唯一新输出路径、observer SHA、20分钟/600次Main非judge请求及最多1次独立judge；实际所选native配置保持，最多5个native任务、每任务120秒，CLI内部HTTP不属于Main计数。只给原五伙伴自然目标，不指定主持、身份、票或具体工具步骤。观察器仅补实际recentPeer消息ID/正文SHA、history来源及correctionKind的记录，并将thought-source-material纳入列举源码守卫，没有修改目标或通过阈值。
+
+该唯一运行actual child exit1，报告source-trust-five-final-c1166a3-real.json为failed/acceptance_deadline，1204420ms（含收尾）、249次Main HTTP，其中1次judge、248次非judge。没有预算延长或后继重抽。实际五位自行建群并全部加入，主持不抽牌，四位分别取得1狼/1预言家/1女巫/1平民，第一夜已有真实狼人目标及女巫私信，但没有夜间结算、白天投票和终局。原任务5772ebe7…仍waiting/step27，非伪造failed或succeeded；source与native配置守卫true，正常关闭，failures为空。演员DSH taskRuns/nativeTurns均0；native任务目录中的能力发现记录不能冒充演员用过思考。
+
+只读新临时存档发现精确停滞点，原快照source-trust-five-live-readonly.json保留。预言家Flash的真实私态先于群通知保存；随后它确实调用world.message，向主持私聊发送查验Kimi的内容，但显式附带了群话题eb03…。该topic不属于目的私聊，出站peer_f810…未形成正式消息。source-trust-five-outbox-state-readonly.json于06:09:26Z直接读取该行，确认status=cancelled、message_id=null，不再只凭源码推断。模型输入的六条来源正文校验均匹配，未见改文或先通知后保存私态的竞争；Kimi/Gugu也尝试过错误端口，但随后另用null话题发送成功，Flash没有完成这一步。
+
+必须区分宿主缺口和模型实际所见：send第一次确实把deliver的undefined统一当ok:true/socialPending:true，但peer adapter内部会轮询同client，遇cancelled再抛错。终态后仅复制原库到外部source-trust-five-final-readonly，main/WAL/SHM在复制前后保持；精确metadata journal的flash-journal.json证明Flash最终收到的是ok:false，旧错误文案误称休眠或来源撤回。它随后仍把“已私信”写入自己的workingState并正式发出seq56“已经悄悄回信”。因此不能声称模型最终只见到成功回执，也不能归为没有调用工具、纯PASS或主持算错。主持step27按真实可见内容等待具体查验目标，其本身没有将群自述当成目标。
+
+原独立judge正确判gameCompleted=false，身份隔离/参与者/无重复为true；但progressClaimsSupported=true漏掉seq56这条无已送达依据的声明。该原始judge与整局RED保持，不把其这一个布尔值当作进度真实的证明。既有机械roster审计本次识别到的显式列表/牌表字段数均0，不能由空issues冒称它已验算本局配牌。
+
+据此修复两个通用合同，没有新游戏引擎、数学审查器或自动补发：
+
+1. social-store在创建origin/outbox之前，复用原topicAdmission校验实际目标会话的本人话题资格；foreign/关闭/退出等不可用端口明确失败，不把显式topic悄悄改为null。合法暂停仍pending。sendOutcome只将真实socialMessage作为送达，已取消项返回ok:false，取消状态在原事务中提交；同client重试不复活，内容fingerprint、来源与ACL保持。错误说明本次未发送及需核对入口，不再冒称另一种未经证实的原因。原replyTo端口语义未改。peer工具说明补清目的会话/话题与来源reference的区别，普通私信可显式null，原群话题需准确roomId/topicId。
+2. structured领域最终校验取得同一循环实际turns的只读视图；peer最终回复复用既有reviewCompanionSocialProgress，按原生call/result与typed送达正文/收件人判实际发送进展。没有另造审核模型层或权限。发生社交调用时按原条件核验，普通无动作闲聊沿原早退，不增加审核请求。失败声明被拒后由作者在原有限native循环中自行纠正，不代发、不自动重放已确认作用；游戏身份、策略性诈称和引用的既有豁免保持，实际工具完成声明仍须凭据。已确认私态不由审核器自动改写成新事实。
+
+回归：新增普通讨论组→私聊错误端口、旧错端口outbox持久取消与同client退休，完整topic-admission worker9/9、child0。既有social store/continuity/acquaintance三个完整worker首轮76通过/2失败，两个旧断言仍期待取消抛异常；仅将它们更新为新合同的明确ok:false/error且无pending/消息，实际取消、撤回与不重放断言保留，原两项确认2/2、19项明确未选择、child0，不将首轮改写成78/78。原新增peer讨论负控修复前RED已保存；修复后social-model、social-progress-review、structured-agent、structured-final四个完整文件77/77、0skip、child0，覆盖失败自纠、受控wire下的完整typed送达回执正控及普通闲聊无额外调用。另world-service与social-capabilities两个完整文件52/52、0skip、child0。新peer入口在本轮有社交调用时，正常每个最终提案多一次既有进度审核请求；格式失败沿用原有上限，普通无动作回复不增加调用。
+
+这些小范围结果只证明新通用端口/回执/最终回复接线，不代表这次自主局后来已经结束，也未在修复后再次运行模型、恢复或重开对局。相关凭据为source-trust-destination-*、source-trust-cancelled-receipt-contract-confirmed*、source-trust-peer-final-*及source-trust-peer-routing-main-regressions*；失败原件均保留在项目外。冻结后main类型检查、九个变更TS文件lint及diff-check实际退出0；extension共享层没有变更，不重复同字节检查。两个通用修正均经独立只读复核，无未解决实质问题。本轮仍未打包，长期目标保持active。

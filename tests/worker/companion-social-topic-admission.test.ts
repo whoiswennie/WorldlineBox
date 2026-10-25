@@ -41,6 +41,40 @@ function pause(f: ReturnType<typeof fixture>, readerId: string) { const topic = 
 function resume(f: ReturnType<typeof fixture>, readerId: string) { const topic = f.store.request({ type: 'topic.read', conversationId: f.room.id, readerId, topicId: f.topic.id }).topic!; f.store.request({ type: 'topic.resume', conversationId: f.room.id, readerId, topicId: f.topic.id, expectedRevision: topic.revision }); }
 function finish(store: CompanionsStore, job: CompanionSocialJob) { advance(store, 1300); store.request({ type: 'social.job.complete', id: job.id, leaseToken: job.leaseToken!, text: null }); }
 
+it('rejects a discussion group topic on a private destination before persisting a send', () => {
+  const f = fixture();
+  const group = f.store.request({ type: 'social.conversation.ensure', companionId: 'alice', memberIds: ['alice', 'bob', 'carol'] }).socialConversation!;
+  const topic = f.store.request({ type: 'topic.create', conversationId: group.id, readerId: 'alice', title: '小组讨论', kind: 'discussion', participantIds: ['carol'] }).topic!;
+  f.store.request({ type: 'topic.join', conversationId: group.id, readerId: 'carol', topicId: topic.id });
+  const source = f.store.appendMessage({ conversationId: group.id, topicId: topic.id, authorId: 'carol', content: '请给 bob 单独回复讨论结果。', replyDirective: 'none' });
+  const command = { type: 'social.send' as const, conversationId: f.room.id, companionId: 'alice', clientId: 'foreign-destination',
+    channel: 'phone' as const, content: '单独回复讨论结果。', topicId: topic.id, agentSource: { conversationId: group.id, messageId: source.id } };
+  expect(() => f.store.request(command)).toThrow('本次未发送：目标会话或话题端口对本人无效');
+  const db = new Database(f.filename);
+  try {
+    expect(db.prepare("SELECT (SELECT COUNT(*) FROM companion_social_outbox WHERE client_id=?) AS queued,(SELECT COUNT(*) FROM messages WHERE client_id=?) AS sent")
+      .get(command.clientId, command.clientId)).toEqual({ queued: 0, sent: 0 });
+  } finally { db.close(); }
+});
+
+it('reports a legacy foreign-topic outbox as cancelled and keeps same-client retries retired', () => {
+  const f = fixture(), command = pending(f.store, f.room.id, 'alice', 'legacy-destination', f.topic.id);
+  const otherRoom = f.store.request({ type: 'social.conversation.ensure', companionId: 'alice', memberIds: ['alice', 'carol'] }).socialConversation!;
+  const otherTopic = f.store.request({ type: 'topic.create', conversationId: otherRoom.id, readerId: 'alice', title: '另一讨论入口', kind: 'discussion' }).topic!;
+  const db = new Database(f.filename);
+  try { db.prepare("UPDATE companion_social_outbox SET data=json_set(data,'$.topicId',?) WHERE client_id=?").run(otherTopic.id, command.clientId); }
+  finally { db.close(); }
+  const result = f.store.request(command);
+  expect(result).toMatchObject({ ok: false, error: '本次未发送：目标会话或话题端口对本人无效，请核对目标入口后重新发送。' });
+  expect({ pending: result.socialPending, message: result.socialMessage, retry: f.store.request(command) })
+    .toEqual({ pending: undefined, message: undefined, retry: result });
+  const reopened = new Database(f.filename);
+  try {
+    expect(reopened.prepare('SELECT status,message_id FROM companion_social_outbox WHERE client_id=?').get(command.clientId))
+      .toEqual({ status: 'cancelled', message_id: null });
+  } finally { reopened.close(); }
+});
+
 it.each(['reader', 'global'] as const)('does not claim or exhaust a %s-paused peer source and resumes the exact pending job', mode => {
   const f = fixture(), original = source(f);
   if (mode === 'reader') pause(f, 'bob');
