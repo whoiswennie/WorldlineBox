@@ -3,8 +3,6 @@ import type { ActivityDecision, CompanionActivityTask } from '../../src/shared/c
 import type { CompanionTopic } from '../../src/shared/companion-topic';
 import { reviewCompanionActivityFeasibility } from '../../src/main/companions/activity-feasibility';
 import { companionRoleResourceBounds } from '../../src/main/companions/role-resource-context';
-import { reviewCompanionProposalQuantities } from '../../src/main/companions/proposal-quantity-review';
-vi.mock('../../src/main/companions/proposal-quantity-review', () => ({ reviewCompanionProposalQuantities: vi.fn(async () => ({ allowed: true })) }));
 
 const now = '2026-10-24T00:00:00Z';
 const topic: CompanionTopic = { id: 'game', conversationId: 'room', title: '筹备', kind: 'game', status: 'active', moderatorId: 'a',
@@ -107,19 +105,5 @@ describe('activity resource feasibility proposal review', () => {
       summary: '等待真实意见' }), config, undefined, { fetchFn });
     expect(calls).toBe(rechecked ? 2 : 3); expect(result.allowed).toBe(rechecked);
     if (!rechecked) expect(result.reason).toContain('置信不足（0.86）');
-  });
-  it('honors the quantity rejection before an effect adopts a public plan even when feasibility approved and the new text has no numbers', async () => {
-    const quantities = vi.mocked(reviewCompanionProposalQuantities); quantities.mockClear();
-    quantities.mockResolvedValueOnce({ allowed: false, reason: '5 与 4' });
-    const fetchFn = vi.fn<typeof fetch>(async () => response({ allowed: true, confidence: .99, reason: '语义审核已允许。' }));
-    const result = await reviewCompanionActivityFeasibility({ ...input({ status: 'continue', wait: null,
-      action: { action: 'message', recipientIds: ['b'], text: '开始按此前安排处理。' }, summary: '现在按此前安排完整分配。' }),
-    shared: { summary: '五份完整一对一分给四位接收者，全部分完。', state: { total: 5, recipients: ['a', 'b', 'c', 'd'] },
-      sourceMessageIds: [], sourceEventId: 'public_source', authorId: 'a', updatedAt: now, revision: 1 } }, config, undefined, { fetchFn });
-    expect(result).toMatchObject({ allowed: false, reason: expect.stringContaining('5 与 4') });
-    expect(fetchFn).toHaveBeenCalledTimes(1);
-    expect(quantities).toHaveBeenCalledOnce(); expect(quantities.mock.calls[0]![0]).toMatchObject({
-      proposal: { summary: '现在按此前安排完整分配。', action: { text: '开始按此前安排处理。' } },
-      adoptedPlan: { state: { total: 5, recipients: ['a', 'b', 'c', 'd'] } } });
   });
 });

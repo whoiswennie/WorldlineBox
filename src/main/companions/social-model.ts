@@ -124,7 +124,7 @@ phone是远程手机文字通信，不代表同一地点、拜访许可或电脑
       if (proposal.text) {
         const review = await reviewCompanionGamePublicReply({ frame: currentFrame, text: proposal.text }, config, signal, options);
         if (!review.allowed) throw new Error('本条群公开正文未发布：' + (review.reason ?? '包含本局秘密或不符合实际受众。')
-          + ' 依据具体核验意见自行修订原提案，不能复述错误关系当成事实。正文自称私发不会改变实际群投递；需私下行动时，使用已开放的message能力向该真实有资格成员单独送达，然后公共text只给不含秘密的回执，或text=null。');
+          + ' 正文自称私发不会改变实际群投递；需私下行动时，使用已开放的message能力向该真实有资格成员单独送达，然后公共text只给不含秘密的回执，或text=null。');
       }
       return proposal;
     },

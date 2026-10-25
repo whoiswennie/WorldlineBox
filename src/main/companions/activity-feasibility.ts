@@ -4,7 +4,6 @@ import type { CompanionMessage } from '../../shared/companions';
 import type { CompanionStorageResponse } from '../../shared/companion-storage';
 import type { CompanionRoleResourceBounds } from './role-resource-context';
 import { CompanionModelError, generateCompanionStructured, type CompanionModelConfig, type CompanionModelOptions } from './model';
-import { reviewCompanionProposalQuantities } from './proposal-quantity-review';
 
 const reviewSchema = z.strictObject({ allowed: z.boolean(), confidence: z.number().min(0).max(1)
   .describe('仅表示核验当前这一步与已知事实相符的把握，不是后续报名或完整活动成功概率；公开征询方案无需先取得未来同意。'), reason: z.string().trim().min(1).max(1500) });
@@ -55,20 +54,7 @@ export async function reviewCompanionActivityFeasibility(input: {
       }
       return { allowed: false, reason: `当前步骤可行性核验置信不足（${parsed.data.confidence}），未提交：${parsed.data.reason}` };
     }
-    if (!parsed.data.allowed) return { allowed: false, reason: parsed.data.reason };
-    // The semantic feasibility vote is not an arithmetic receipt. Check only
-    // the author's content and any public plan this effect actually adopts;
-    // transport IDs, revisions and private state are not quantity premises.
-    const effectful = !!decision.action && !['inspect', 'query'].includes(decision.action.action)
-      || typeof topicAction === 'string' && !['read', 'list'].includes(topicAction);
-    const action = decision.action as { text?: string; title?: string } | null;
-    return reviewCompanionProposalQuantities({ proposal: { summary: decision.summary,
-      planningState: decision.planningState ? [decision.planningState.summary,
-        ...(decision.planningState.constraints ?? []), ...decision.planningState.nextSteps].join('\n') : undefined,
-      action: action ? { text: action.text, title: action.title } : undefined,
-      topicPatch: (decision.topic as { patch?: unknown } | undefined)?.patch },
-    adoptedPlan: effectful && input.shared ? { stage: input.shared.stage, summary: input.shared.summary, state: input.shared.state } : undefined },
-    config, signal, options);
+    return parsed.data.allowed ? { allowed: true } : { allowed: false, reason: parsed.data.reason };
   }
   throw new Error('活动可行性核验格式连续无效，提案没有执行。' + (correction?.error ?? ''));
 }
