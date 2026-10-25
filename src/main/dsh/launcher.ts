@@ -254,7 +254,12 @@ export class DshLauncher {
         const runtimeId = this.instances.get(instanceId).runtimeId;
         await this.runtimes.assertSharedCompatible(runtimeId);
         if (this.closed || revision !== this.prewarmRevision) return;
-        await this.tasks.discover(instanceId, { access: this.taskAccess.state() });
+        const outcomes = await Promise.allSettled([
+          this.tasks.discover(instanceId, { access: this.taskAccess.state() }),
+          this.tasks.prewarmThought(instanceId),
+        ]);
+        const failure = outcomes.find(outcome => outcome.status === 'rejected');
+        if (failure?.status === 'rejected') throw failure.reason;
       })().then(() => {
         if (revision === this.prewarmRevision) this.executionReadiness = { instanceId, status: 'ready', updatedAt: new Date().toISOString() };
       }, () => {

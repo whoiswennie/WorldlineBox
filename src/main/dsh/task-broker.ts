@@ -11,7 +11,7 @@ import { dshTaskExecutionPatch, snapshotDshTaskExecution, type DshTaskExecutionO
 import { createHash, randomUUID } from 'node:crypto';
 import { companionRuntimeSource } from './companion-runtime-source';
 import { companionWorkerSource } from './companion-worker-source';
-import { DshWarmCliPool, dshWorkerGeneration, type DshWarmLease } from './warm-cli-pool';
+import { DshWarmCliPool, dshWorkerIdentity, type DshWarmLease, type DshWorkerIdentity } from './warm-cli-pool';
 import { runtimeSdkRoot } from './runtime-sdk';
 import { DshTaskPreparationError } from './task-preparation';
 import { DshTaskInput as DshTaskInbox } from './task-input';
@@ -26,6 +26,19 @@ const LINE_LIMIT = 1024 * 1024;
 const EVENT_LIMIT = 1000;
 const RETAIN_LIMIT = 16 * 1024 ** 2;
 const MAX_TASKS = 100;
+type HostAdmission = { order: number; discover: boolean; requestedInstanceId?: string; identity?: DshWorkerIdentity & { instanceId: string };
+  identityReady: Promise<void>; resolveIdentity(): void; hostReady: Promise<void>; hostReadySettled: boolean; resolveHostReady(): void; finished: Promise<void> };
+async function waitForHostPreparation(pending: Promise<void>, signal: AbortSignal): Promise<void> {
+  signal.throwIfAborted();
+  let abort!: () => void;
+  try {
+    await new Promise<void>((resolve, reject) => {
+      abort = () => reject(signal.reason); signal.addEventListener('abort', abort, { once: true });
+      pending.then(resolve, reject);
+    });
+    signal.throwIfAborted();
+  } finally { signal.removeEventListener('abort', abort); }
+}
 async function realpathResumeWorkspace(value: string): Promise<string> {
   if (!path.isAbsolute(value)) throw new Error('The original task workspace is not absolute.');
   const resolved = await realpath(value);
@@ -113,6 +126,9 @@ export class DshTaskBroker {
   private writes = Promise.resolve();
   private closed = false;
   private readonly workers: DshWarmCliPool;
+  private readonly hostAdmissions = new Map<string, HostAdmission>();
+  private hostAdmissionOrder = 0;
+  private readonly thoughtPrewarms = new Set<string>();
   constructor(private readonly options: DshTaskBrokerOptions) {
     this.workers = new DshWarmCliPool(options.onWorkerReadyChanged);
     this.archive = new DshTaskRecordStore(path.join(options.rootPath, 'task-records'), (id, error) => this.active.get(id)?.abort.abort(error),
@@ -202,6 +218,15 @@ export class DshTaskBroker {
     const abort = new AbortController(); let resolveFinished!: () => void; const finished = new Promise<void>(resolve => { resolveFinished = resolve; });
     const taskInput = execution.interactive ? new DshTaskInbox() : undefined;
     this.active.set(operation.id, { abort, finished, input: taskInput });
+    let hostAdmission: HostAdmission | undefined;
+    if (execution.interactive) {
+      let resolveIdentity!: () => void, resolveHostReady!: () => void;
+      hostAdmission = { order: this.hostAdmissionOrder++, discover: execution.discover === true, requestedInstanceId: input.instanceId,
+        identityReady: new Promise<void>(resolve => { resolveIdentity = resolve; }), resolveIdentity: () => resolveIdentity(),
+        hostReady: new Promise<void>(resolve => { resolveHostReady = resolve; }), hostReadySettled: false,
+        resolveHostReady() { this.hostReadySettled = true; resolveHostReady(); }, finished };
+      this.hostAdmissions.set(operation.id, hostAdmission);
+    }
     let pin: DshTaskPin | undefined; let record: DshTaskRecord | undefined; let child: Awaited<ReturnType<typeof launchCli>> | undefined;
     let taskPatch: string | undefined;
     let runtimePlugin: string | undefined;
@@ -247,6 +272,7 @@ export class DshTaskBroker {
         progress: summary => preparation('preparing', summary),
       }); signal.throwIfAborted();
       const captured: DshCliSelection = { ...selection, instance: { ...selection.instance }, plan: { ...selection.plan, env: { ...selection.plan.env } }, env: { ...selection.env }, nativeArgs: selection.nativeArgs ? [...selection.nativeArgs] : undefined };
+      if (this.thoughtPrewarms.has(operation.id)) captured.workspacePath = await this.thoughtPrewarmWorkspace();
       secrets = Object.entries(captured.env).filter(([name, value]) => /(?:key|token|secret|password|authorization)/i.test(name) && value && value.length >= 6).map(([, value]) => value!);
       if (input.instanceId && captured.instance.id !== input.instanceId) throw new Error('The task selection differs from its requested instance binding.');
       const version = captured.runtimeVersion ?? ''; if (!version) throw new Error('The selected CLI context has no recorded runtime version.');
@@ -308,7 +334,30 @@ export class DshTaskBroker {
         { ...captured.env, ELECTRON_RUN_AS_NODE: '1', WORLDLINEBOX_DSH_CLI_CONTEXT: pin!.contextFile }, captured.workspacePath);
       const bootStarted = performance.now();
       if (execution.interactive) {
-        const key = await dshWorkerGeneration(this.options.rootPath, captured, execution.access);
+        let identity = await dshWorkerIdentity(this.options.rootPath, captured, execution.access);
+        if (hostAdmission) { hostAdmission.identity = { ...identity, instanceId: captured.instance.id }; hostAdmission.resolveIdentity(); }
+        let waited = false;
+        // An idle discovery and a real request share their cold preparation in
+        // either arrival order. Real tasks remain concurrent and exclusive.
+        for (const previous of this.hostAdmissions.values()) {
+          if (!hostAdmission || previous.order >= hostAdmission.order || !previous.discover && !hostAdmission.discover) continue;
+          if (previous.requestedInstanceId && previous.requestedInstanceId !== captured.instance.id) continue;
+          await waitForHostPreparation(previous.identityReady, signal);
+          if (previous.identity?.instanceId !== captured.instance.id || previous.identity.policyKey !== identity.policyKey) continue;
+          if (previous.identity.cohort !== identity.cohort && !previous.hostReadySettled) {
+            // A cold loader may normalize the profile before publishing its loaded identity.
+            await waitForHostPreparation(previous.hostReady, signal);
+            identity = await dshWorkerIdentity(this.options.rootPath, captured, execution.access);
+            hostAdmission.identity = { ...identity, instanceId: captured.instance.id };
+          }
+          if (previous.identity.policyKey !== identity.policyKey || previous.identity.cohort !== identity.cohort) continue;
+          await waitForHostPreparation(previous.finished, signal); waited = true;
+        }
+        // Profile normalization or an explicit config change during prewarm
+        // cannot authorize the old key or a historical session continuation.
+        if (waited) identity = await dshWorkerIdentity(this.options.rootPath, captured, execution.access);
+        if (hostAdmission) hostAdmission.identity = { ...identity, instanceId: captured.instance.id };
+        const key = identity.key;
         if (resume?.configurationDigest && resume.configurationDigest !== key) {
           outputError = new Error('The continued session capabilities changed with the instance configuration; start a new session with explicit handoff.');
           throw outputError;
@@ -318,10 +367,15 @@ export class DshTaskBroker {
           const owned = await launch();
           pin = undefined; taskPatch = undefined; runtimePlugin = undefined; workerPlugin = undefined;
           return { child: owned, disposeContext: async () => { for (const file of files) await rm(file, { force: true }); await ownedPin.dispose(); } };
-        }, signal);
+        }, signal, identity.cohort, execution.discover === true);
         // Official boot can normalize its shipped profile manifest on first use.
         // Retain the generation actually loaded, excluding durable session output.
-        if (!lease.reused) lease.worker.key = await dshWorkerGeneration(this.options.rootPath, captured, execution.access);
+        if (!lease.reused) {
+          identity = await dshWorkerIdentity(this.options.rootPath, captured, execution.access);
+          this.workers.updateIdentity(lease.worker, identity, execution.discover === true);
+          if (hostAdmission) hostAdmission.identity = { ...identity, instanceId: captured.instance.id };
+        }
+        hostAdmission?.resolveHostReady();
         child = lease.worker.child;
         preparation('starting', lease.reused ? '已复用就绪的官方 CLI，正在创建独立任务 Agent' : '官方 CLI 已完成冷启动，正在创建独立任务 Agent');
       } else { child = await launch(); preparation('starting', '能力进程已启动，正在加载任务环境'); }
@@ -479,16 +533,39 @@ export class DshTaskBroker {
     } finally {
       if (archiveStarted) await this.archive.finish(operation.id, signal.aborted ? 'cancelled' : 'failed', record?.startedAt, outputError?.message ?? '任务在 CLI 启动前失败，请查看已保存的准备阶段记录。').catch(() => undefined);
       try { if (lease && keepWorker) lease.release(); if (!stopUnconfirmed) await releaseContext(); }
-      finally { taskInput?.close(); this.active.delete(operation.id); this.reservations--; if (resume?.sessionId) this.resumedSessions.delete(resume.sessionId); resolveFinished(); }
+      finally { hostAdmission?.resolveIdentity(); hostAdmission?.resolveHostReady(); this.hostAdmissions.delete(operation.id); taskInput?.close(); this.active.delete(operation.id); this.reservations--; if (resume?.sessionId) this.resumedSessions.delete(resume.sessionId); resolveFinished(); }
     }
   }
   async discover(instanceId?: string, execution?: DshTaskExecutionOptions): Promise<DshTaskCapabilities> {
+    return this.discoverHost(instanceId, execution);
+  }
+  /** Host-only zero-model readiness for the empty managed thought environment.
+   * This never weakens cognitiveOnly admission or creates an actor's task. */
+  async prewarmThought(instanceId: string): Promise<DshTaskCapabilities> {
+    return this.discoverHost(instanceId, { access: { mode: 'read-only' } }, true);
+  }
+  private async thoughtPrewarmWorkspace(): Promise<string> {
+    let directory = await realpath(this.options.rootPath);
+    for (const part of ['cli', 'thought-prewarm']) {
+      directory = path.join(directory, part);
+      await mkdir(directory).catch((error: NodeJS.ErrnoException) => { if (error.code !== 'EEXIST') throw error; });
+      const info = await lstat(directory);
+      if (!info.isDirectory() || info.isSymbolicLink()) throw new Error('The thought prewarm directory cannot be linked.');
+    }
+    const dotenv = await lstat(path.join(directory, '.env')).catch((error: NodeJS.ErrnoException) => { if (error.code === 'ENOENT') return undefined; throw error; });
+    if (dotenv && (!dotenv.isFile() || dotenv.isSymbolicLink() || dotenv.size !== 0)) throw new Error('The thought prewarm workspace must have an empty environment.');
+    return directory;
+  }
+  private async discoverHost(instanceId?: string, execution?: DshTaskExecutionOptions, thought = false): Promise<DshTaskCapabilities> {
     const id = randomUUID();
-    const result = await this.execute({ prompt: 'Discover the runtime capability catalog without running a model turn.', title: 'DSH capability discovery', instanceId, timeoutMs: 120_000 },
-      { id, signal: new AbortController().signal, log: async () => undefined, update: async () => undefined },
-      { ...execution, recordScope: undefined, workspaceRootPath: undefined, resume: undefined, toolkit: true, interactive: true, discover: true, task: {} });
-    if (!result.capabilities) throw new Error('This DSH runtime did not return its native capability catalog.');
-    return result.capabilities;
+    if (thought) this.thoughtPrewarms.add(id);
+    try {
+      const result = await this.execute({ prompt: 'Discover the runtime capability catalog without running a model turn.', title: 'DSH capability discovery', instanceId, timeoutMs: 120_000 },
+        { id, signal: new AbortController().signal, log: async () => undefined, update: async () => undefined },
+        { ...execution, recordScope: undefined, workspaceRootPath: undefined, resume: undefined, toolkit: true, interactive: true, discover: true, task: {} });
+      if (!result.capabilities) throw new Error('This DSH runtime did not return its native capability catalog.');
+      return result.capabilities;
+    } finally { this.thoughtPrewarms.delete(id); }
   }
   private prune(): void {
     while (this.records.length > MAX_TASKS) {

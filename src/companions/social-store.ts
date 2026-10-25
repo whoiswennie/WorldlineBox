@@ -592,6 +592,8 @@ export class CompanionSocialStore {
       || (task.gamePort?.topicId ?? task.peerTopicId ?? null) !== (proof.topicId ?? null)) return false;
     try {
       if (!proof.parentChainId || !this.continuity.chainValid(proof.parentChainId)) return false;
+      if (this.db.prepare("SELECT 1 FROM companion_social_jobs WHERE json_extract(data,'$.chainId')=? AND json_extract(data,'$.replyOpportunity') IS NOT NULL LIMIT 1")
+        .get(proof.parentChainId)) return false;
       const origin = this.continuity.forChain(proof.parentChainId);
       const rootSource = task.sourceMessageId ? this.visible({ companionId: proof.ownerId, conversationId: proof.taskConversationId }, [task.sourceMessageId])[0] : undefined;
       let causal = false;
@@ -624,7 +626,7 @@ export class CompanionSocialStore {
         && this.visible({ companionId: proof.targetId, conversationId: proof.conversationId }, [proof.sourceMessageId]).length === 1;
     } catch { return false; }
   }
-  /** Only a persisted activity wait may reserve one unused parent-chain slot.
+  /** Only a persisted activity wait may authorize one independent bounded turn.
    * This schedules the recipient's own decision, never another message or reply. */
   ensureActivityReplyOpportunity(input: { taskId: string; ownerId: string; taskConversationId: string; targetId: string; sourceMessageId: string }): void {
     this.db.transaction(() => {
@@ -653,20 +655,20 @@ export class CompanionSocialStore {
       const previous = this.db.prepare("SELECT 1 FROM companion_social_jobs WHERE companion_id=? AND conversation_id=? AND json_extract(data,'$.throughSequence')>=? AND EXISTS(SELECT 1 FROM json_each(companion_social_jobs.data,'$.readSet') r WHERE json_extract(r.value,'$.id')=? AND json_extract(r.value,'$.checksum')=?) LIMIT 1")
           .get(proof.targetId, proof.conversationId, source.message.sequence, proof.sourceMessageId, proof.sourceChecksum);
       if (previous || this.db.prepare("SELECT 1 FROM messages WHERE author_id=? AND reply_to_id=? AND status='sent' LIMIT 1").get(proof.targetId, proof.sourceMessageId)) return;
-      let parents = this.db.prepare("SELECT DISTINCT c.id,c.used,c.status,c.data FROM companion_social_chains c JOIN companion_social_jobs j ON json_extract(j.data,'$.chainId')=c.id WHERE j.companion_id=? AND j.conversation_id=? AND json_extract(j.data,'$.resultMessageId')=? AND j.status='done'")
+      let parents = this.db.prepare("SELECT DISTINCT c.id,c.used,c.status,c.data FROM companion_social_chains c JOIN companion_social_jobs j ON json_extract(j.data,'$.chainId')=c.id WHERE j.companion_id=? AND j.conversation_id=? AND json_extract(j.data,'$.resultMessageId')=? AND j.status='done' AND json_extract(j.data,'$.replyOpportunity') IS NULL")
         .all(proof.ownerId, proof.conversationId, proof.sourceMessageId) as Row[];
       if (!parents.length) parents = this.db.prepare("SELECT DISTINCT c.id,c.used,c.status,c.data FROM companion_social_chains c JOIN companion_social_jobs j ON json_extract(j.data,'$.chainId')=c.id WHERE j.conversation_id=? AND json_extract(j.data,'$.sourceMessageId')=? AND json_extract(j.data,'$.replyOpportunity') IS NULL")
         .all(proof.conversationId, proof.sourceMessageId) as Row[];
       if (parents.length !== 1) return;
-      const parent = parents[0]!, data = parse<ChainData>(parent.data), reservations = data.replyReservations ?? {};
+      const parent = parents[0]!, data = parse<ChainData>(parent.data);
       proof.parentChainId = String(parent.id);
       if (!this.activityReplyValid(proof)) return;
       if (parent.status !== 'done' || !Number.isInteger(data.maxMessages) || !Number.isInteger(parent.used)
-        || !this.continuity.chainValid(String(parent.id)) || Number(parent.used) + Object.keys(reservations).length >= data.maxMessages) return;
-      const key = hash([proof.ownerId, proof.targetId, proof.sourceMessageId]), childId = 'reply_wait_' + key.slice(0, 48);
-      if (reservations[key] || this.db.prepare('SELECT 1 FROM companion_social_chains WHERE id=?').get(childId)) return;
-      data.replyReservations = { ...reservations, [key]: childId };
-      this.db.prepare('UPDATE companion_social_chains SET data=? WHERE id=?').run(JSON.stringify(data), parent.id);
+        || !this.continuity.chainValid(String(parent.id))) return;
+      // The live task's explicit wait supplies this one processing opportunity;
+      // the settled ordinary chain is provenance, never a budget to reopen.
+      const key = hash([proof.taskId, proof.ownerId, proof.targetId, proof.sourceMessageId]), childId = 'reply_wait_' + key.slice(0, 48);
+      if (this.db.prepare('SELECT 1 FROM companion_social_chains WHERE id=?').get(childId)) return;
       const child: ChainData = { kind: 'group', initiatorId: proof.ownerId, recipientIds: [proof.targetId], phase: 'followup', maxMessages: 2 };
       this.db.prepare("INSERT INTO companion_social_chains(id,used,status,data) VALUES(?,1,'active',?)").run(childId, JSON.stringify(child));
       const origin = this.continuity.forChain(String(parent.id));

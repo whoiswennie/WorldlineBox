@@ -144,7 +144,7 @@ it('offers one bounded actual summary-source processing turn after an explicit o
     expect(job?.companionId).toBe('bob'); expect(job?.sourceMessageId).toBe(f.question.message.id);
     expect(job?.chainId).not.toBe(f.summary.chainId); expect(messages().n).toBe(beforeCount);
     expect(parent()).toMatchObject({ status: 'done', used: 4 }); expect(JSON.parse(parent().data).maxMessages).toBe(5);
-    expect(Object.values(JSON.parse(parent().data).replyReservations)).toEqual([job!.chainId]);
+    expect(JSON.parse(parent().data).replyReservations).toBeUndefined();
     complete(f.store, job!, response);
     expect(messages().n).toBe(beforeCount + Number(response !== null));
     f.store.close(); stores.delete(f.store); const restarted = new CompanionsStore(f.filename, seeds); stores.add(restarted);
@@ -164,4 +164,60 @@ it('rechecks the original activity source before publishing a pending summary-so
   f.store.request({ type: 'memory.forget', companionId: 'alice', conversationId: f.playerRoom.id, sourceMessageIds: [f.source.id] });
   expect(() => complete(f.store, job, '撤回后不得发布')).toThrow();
   expect(f.store.request({ type: 'social.messages', conversationId: f.room.id }).socialMessagePage!.items.some(item => item.message.content === '撤回后不得发布')).toBe(false);
+});
+
+function exhaustedSummary() {
+  const f = fixture(['alice', 'bob', 'carol'], true);
+  for (let index = 0; index < 2; index++) { const job = claim(f.store)!; complete(f.store, job, `本人${job.companionId}已给出露营建议。`); }
+  const summary = claim(f.store)!; expect(summary.companionId).toBe('alice');
+  const question = complete(f.store, summary, 'Bob，请你自己决定是否愿意核对路线；Carol也可以补充装备建议。', 'carol').socialMessage!;
+  const last = claim(f.store)!; expect(last.companionId).toBe('carol');
+  complete(f.store, last, '我建议带备用照明，路线由Bob自己判断。');
+  expect(claim(f.store)).toBeUndefined();
+  const read = new Database(f.filename, { readonly: true }); readers.add(read);
+  const parent = () => read.prepare('SELECT used,status,data FROM companion_social_chains WHERE id=?').get(summary.chainId) as { used: number; status: string; data: string };
+  expect(parent()).toMatchObject({ used: 5, status: 'done' }); expect(JSON.parse(parent().data).maxMessages).toBe(5);
+  return { ...f, summary, question, read, parent };
+}
+function waitForUnprocessedSummary(f: ReturnType<typeof exhaustedSummary>) {
+  const task = f.store.request({ type: 'activity.social.ensure', companionId: 'alice', conversationId: f.playerRoom.id,
+    sourceMessageId: f.source.id, deliveryClientId: 'group-seed', operation: 'message' }).activityTask!;
+  advance(f.store);
+  const leased = f.store.request({ type: 'activity.claim' }).activityTask!; expect(leased.id).toBe(task.id);
+  const observed = f.store.request({ type: 'activity.observe', id: leased.id, leaseToken: leased.leaseToken! });
+  expect(observed.activityMessages?.some(message => message.id === f.question.message.id)).toBe(true);
+  return f.store.request({ type: 'activity.commit', id: leased.id, leaseToken: leased.leaseToken!, expectedStep: leased.step,
+    decision: { status: 'continue', action: null, wait: { kind: 'reply', targetCompanionId: 'bob' }, summary: '已读本人实际问题，等待Bob自主回应，不重复发问。' } }).activityTask!;
+}
+
+it('offers one task-authorized reply after an exhausted ordinary chain without changing that parent or adding a message', () => {
+  const f = exhaustedSummary(), before = f.parent();
+  const count = () => (f.read.prepare('SELECT COUNT(*) AS n FROM messages WHERE conversation_id=?').get(f.room.id) as { n: number }).n;
+  const beforeMessages = count(), task = waitForUnprocessedSummary(f);
+  expect(f.parent()).toEqual(before); expect(count()).toBe(beforeMessages);
+  const job = claim(f.store)!;
+  expect(job).toMatchObject({ companionId: 'bob', sourceMessageId: f.question.message.id, remainingTurns: 1 });
+  expect(job.chainId).not.toBe(f.summary.chainId);
+  complete(f.store, job, '我愿意自己核对路线。');
+  expect(f.parent()).toEqual(before); expect(count()).toBe(beforeMessages + 1);
+  f.store.close(); stores.delete(f.store); const restarted = new CompanionsStore(f.filename, seeds); stores.add(restarted);
+  for (let tick = 0; tick < 3; tick++) { advance(restarted); restarted.request({ type: 'activity.claim' }); expect(claim(restarted)).toBeUndefined(); }
+  expect(f.parent()).toEqual(before);
+  const jobs = f.read.prepare("SELECT data FROM companion_social_jobs WHERE companion_id='bob' AND json_extract(data,'$.sourceMessageId')=?").all(f.question.message.id) as { data: string }[];
+  expect(jobs).toHaveLength(1); expect(JSON.parse(jobs[0]!.data).replyOpportunity.taskId).toBe(task.id);
+  const child = f.read.prepare('SELECT used,status,data FROM companion_social_chains WHERE id=?').get(job.chainId) as { used: number; status: string; data: string };
+  expect(child).toMatchObject({ used: 2, status: 'done' }); expect(JSON.parse(child.data).maxMessages).toBe(2);
+});
+
+it('does not extend an exhausted ordinary chain without a task wait and cancels its new ticket when that task is cancelled', () => {
+  const f = exhaustedSummary(), before = f.parent();
+  expect(f.store.request({ type: 'activity.list', companionId: 'alice', conversationId: f.playerRoom.id }).activityTasks).toEqual([]);
+  for (let tick = 0; tick < 3; tick++) { advance(f.store); expect(claim(f.store)).toBeUndefined(); }
+  const task = waitForUnprocessedSummary(f);
+  const pending = f.read.prepare("SELECT id FROM companion_social_jobs WHERE companion_id='bob' AND json_extract(data,'$.sourceMessageId')=? AND status='pending'").all(f.question.message.id);
+  expect(pending).toHaveLength(1);
+  f.store.request({ type: 'activity.cancel', companionId: 'alice', conversationId: f.playerRoom.id, id: task.id });
+  advance(f.store); expect(claim(f.store)).toBeUndefined(); expect(f.parent()).toEqual(before);
+  expect(f.store.request({ type: 'social.messages', conversationId: f.room.id }).socialMessagePage!.items.filter(item => item.message.replyToId === f.question.message.id))
+    .toHaveLength(1); // Only Carol's original independent reply, never an invented Bob answer.
 });

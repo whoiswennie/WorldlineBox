@@ -1316,3 +1316,27 @@ f0c3228上的native-world-tools-five-quantity-continuation.json保持原source�
 真实peer验收首次在夹具发信前即因sender proactive=false拒绝，没有调用模型；修正发送者真实主动聊天配置并补前置失败清理后，native-peer-thought-wired-real.json通过，actual child exit0。实际84.574秒、10次Main HTTP、1个native任务/1个native turn；CLI内部HTTP不在Main计数覆盖内。真实接收者deepseek-flash按请求调用DSH，取得环形先后关系的分析后正式回复原peer消息，原job done、独立Agent run done、真实action succeeded；有效工具/技能均0，新增持续任务0，无外部grant。经历记录owner、现实日期目录、详情读取和跨角色拒读通过，source及已选native配置守卫true，failures为空。该案例是明确请求下的真实能力接线验收，不冒充自然对局中模型主动选择了思考。
 
 原自主失败任务保持终态，不复活。针对本次明确缺失能力的修复，仅再做一次五伙伴自然自主验收，20分钟/600次Main非judge观察上限；结果另记，不反复重开抽样。遵从用户补充，至此未再打包，最终当前源码安装器仍待必要场景验证完成后统一构建。
+
+### 16.86 五伙伴实际推进与耗尽闲聊链后的真实等待（2026-10-25）
+
+1b2b74c上的唯一新自主场peer-thought-five-autonomous-real.json在20分钟观察上限结束，failed/acceptance_deadline，实际child exit1、1204690ms、434次Main HTTP（含1次judge），源码与所选native配置守卫均true。source27e1c2d5…、任务28797cc0…、话题0fc140c5…未改写、恢复或另开抽样。任务本身最终waiting/step29，观察失败不等于伪造任务failed。五位均真实加入，大肥鱼自愿不抽牌主持，四位各得1狼/1预言家/1女巫/1村民之一；数量对应正确，真实私态与私聊完成第一夜，正式宣布平安夜，随后四位白天发言。最后只有Qwen正式投kimi，未统一报票、放逐或结算，故整局未通过。场内演员DSH调用0，零模型catalog discovery不能冒充演员使用；明确请求下的16.85接线通过不能填补这个自然选择边界。
+
+原judge的privateIdentityProtected=false也照留，但其具体归因须区分：私聊seq86/88中救kimi、保留毒药未出现在主持公开句中；Flash先在群seq94（386177c3…）本人公开“夜里动手、药已用掉”，Qwen在seq98还明确区分本人说法与上帝验证。主持seq100（47ce4b89…）明确引用已公开自述，未公开救谁或是否用毒。单据该引用判定新增泄露此前未公开的夜间信息，证据不足；主持给自述增加可信度、影响投票属于另一个可能偏袒的问题。此来源核对没有调用第二个模型或把整局RED改成通过。
+
+末尾有确定的一般范式缺口，不能只归因于窗口不够：seq100之后只有Qwen的followup job2147371a…完成并产生seq101；其他三位没有该source的job，也没在旧job readSet中读过它。原父链78dbdf02…已done/used7/max7，task step29明确等待Flash，但无pending/running票可继续。16.81的补机会机制要求父链仍有剩余槽，导致持久任务的真实等待无法唤起已经实际收到消息的目标。
+
+现由已持久保存的本任务wait提供独立、一次、有界的处理授权；原普通父链status/used/max/data保持原字节，不再借剩额或写replyReservations。仍须准确观察本人真实已送消息、目标确为实际受众、来源和委托闭包有效、任务非终态与原社交准入；同source/target任意既有job、已读或实际回复均不重排。child只计2条、1个followup，不能再作为补机会的父链；无真实任务不能续普通闲聊。没有新增消息、代投、指定答案或恢复五分钟轮询。
+
+普通露营SQLite两项新增回归先RED（actual child exit1），确认耗尽父链后没有目标job；修后原group-participation与activity-task两个完整worker43/43、0skip、child exit0，lint通过。覆盖父链原字节、真实自主回应、重启幂等、无task不续、取消后不claim及既有撤源禁止发布与R06事件等待。原自主局没有恢复或重跑；上述机械衔接通过不能冒充修后整局已实测结算。
+
+### 16.87 纯思考所需权限与空环境的实际暖启动（2026-10-25）
+
+16.85通过案例的startup记录另揭示真实性能边界：preparation41.644ms、boot72511.087ms、reusedWorker=false。事件显示冷host就绪后才提交模型输入，模型阶段约4.2秒；boot计时还包含配置指纹扫描，不能直接说全部72秒都是官方loader。该夹具未走DshLauncher后台预热，但源码也有确定产品缺口：默认预热danger-full-access，纯思考强制read-only，两者完整key不同，原池会销毁同实例不同key的idle host，因而互相淘汰。
+
+现保持旧完整generation的JSON/路径/字节顺序，单次扫描另算配置cohort与access/工作区.env策略。完整key仍隔离权限和dotenv；相同配置的两个策略host可以共存，配置变化退休旧host，selected的双策略standby计入全局4/单实例2的idle上限。原独占、取消、32次轮换保留，少任一预期host都会触发补位。broker新增宿主零模型prewarmThought，匹配纯思考的受管空环境，不放宽cognitiveOnly规则、不新增模型权限。Launcher用allSettled等普通和只读两路预热完成后才宣告ready。
+
+预热与真实请求的准备按单向admission order协调，只有至少一方为零模型discover时才合流，同策略实际任务仍可独立并发。已知不同实例不互等；配置代际不同只在前驱尚cold时等其hostReady，取得官方首启规范化后的identity再比较，已就绪旧代际长任务不阻塞新配置。等待发生于broker已登记active后，取消只结束本请求，不取消共享预热，随后重新完整核key，避免双冷启或旧配置复用。
+
+最终四个相关文件23/23、0skip、child exit0，包含真实官方CLI的本地协议隔离检查；main与extension官方tsc检查均0，目标lint与diff-check0，独立只读审查无P1/P2。native-peer-thought-warm-real.json为一次真实已选profile性能闭环，通过且child exit0：两路初始预热合计8688.211ms，随后普通/只读probe分别boot5.001ms/5.344ms并均reusedWorker=true；伙伴实际思考preparation99.149ms、boot6.180ms，也真正复用。9次Main HTTP、1个native任务/1个turn，最终正式回复与本人经历可读、原配置/源码守卫true、failures为空。初始冷准备与模型推理耗时仍存在，不把6ms说成完整答案延迟或承诺任何冷配置均即时启动。
+
+16.86核到的缺票是已耗尽普通链导致的确定调度缺口。尽管此前计划在20分钟收口，为验证这处必要修复，最后只沿同一仍waiting的原任务继续一次，显式使用30分钟累计观察窗口；已用1204690ms与433次非judge请求继续扣除，原20分钟失败保留，不新增用户目标、角色或洗牌，也不复活终态。后续真实结果另记，在其完成前仍未启动打包。

@@ -134,6 +134,7 @@ it.skipIf(process.env.WORLDLINEBOX_ACTIVITY_THOUGHT_REAL !== '1')('returns one r
  * social job. The fixture supplies a request, never an analysis or fake task. */
 it.skipIf(process.env.WORLDLINEBOX_PEER_THOUGHT_REAL !== '1')('returns real isolated CLI thought to the original peer job and records its own experience', async () => {
   const requestedOutput = process.env.WORLDLINEBOX_PEER_THOUGHT_REAL_RESULT;
+  const verifyPrewarm = process.env.WORLDLINEBOX_PEER_THOUGHT_PREWARM === '1';
   if (!requestedOutput || !path.isAbsolute(requestedOutput)) throw new Error('Set WORLDLINEBOX_PEER_THOUGHT_REAL_RESULT to an absolute report path outside the project.');
   const output = path.resolve(requestedOutput), relativeOutput = path.relative(process.cwd(), output);
   if (!relativeOutput || !path.isAbsolute(relativeOutput) && relativeOutput !== '..' && !relativeOutput.startsWith('..' + path.sep))
@@ -144,7 +145,8 @@ it.skipIf(process.env.WORLDLINEBOX_PEER_THOUGHT_REAL !== '1')('returns real isol
     'src/main/companions/structured-agent.ts', 'src/main/companions/model.ts', 'src/companions/social-store.ts', 'src/companions/store.ts',
     'src/companions/experience-store.ts', 'src/shared/companion-activity-thought.ts', 'src/shared/companion-storage.ts',
     'src/shared/companions.ts', 'src/shared/dsh-task-record.ts', 'src/main/dsh/task-execution.ts', 'src/main/dsh/task-runtime-policy.ts',
-    'src/main/dsh/task-broker.ts', 'src/main/dsh/task-scope.ts', 'src/main/dsh/companion-runtime-source.ts'];
+    'src/main/dsh/task-broker.ts', 'src/main/dsh/task-scope.ts', 'src/main/dsh/companion-runtime-source.ts',
+    'src/main/dsh/warm-cli-pool.ts', 'src/main/dsh/launcher.ts'];
   const fingerprint = async () => Object.fromEntries(await Promise.all(sourcePaths.map(async file => [file,
     createHash('sha256').update(await readFile(path.resolve(file))).digest('hex')])));
   const before = await fingerprint(), failures: string[] = [];
@@ -171,6 +173,7 @@ it.skipIf(process.env.WORLDLINEBOX_PEER_THOUGHT_REAL !== '1')('returns real isol
   const thoughtRecords: Array<{ record: DshTaskRecord; scope: DshRecordScope }> = [];
   let experiences: CompanionExperienceEntry[] = [];
   let status = 'failed', stopReason = 'not_started', teardownFailure: unknown;
+  let prewarmObservation: { durationMs: number; full: unknown; thought: unknown } | undefined;
   const startedAt = new Date().toISOString(), deadline = Date.now() + 240000;
   const actualPeer = () => {
     if (!room) return;
@@ -193,6 +196,20 @@ it.skipIf(process.env.WORLDLINEBOX_PEER_THOUGHT_REAL !== '1')('returns real isol
         patch: { timeZone: 'UTC', sleepAt: '23:59', wakeAt: '00:01', meals: [], habits: [] } });
     }
     room = store.request({ type: 'social.conversation.ensure', companionId: sender.id, memberIds: roles.map(role => role.id), title: '顺序约束讨论' }).socialConversation!;
+    if (verifyPrewarm) {
+      const began = performance.now(), instanceId = installed.sourceProfile.instance.id;
+      native.broker.setStandbyInstance(instanceId);
+      await Promise.all([native.broker.discover(instanceId, { access: { mode: 'danger-full-access' } }), native.broker.prewarmThought(instanceId)]);
+      await native.broker.discover(instanceId, { access: { mode: 'danger-full-access' } });
+      const full = await native.broker.readRecord({ recordId: native.broker.state()[0]!.id });
+      await native.broker.prewarmThought(instanceId);
+      const thought = await native.broker.readRecord({ recordId: native.broker.state()[0]!.id });
+      expect(full.overview.startup).toMatchObject({ reusedWorker: true });
+      expect(thought.overview.startup).toMatchObject({ reusedWorker: true });
+      expect(full.overview.startup!.bootMs).toBeLessThan(5000);
+      expect(thought.overview.startup!.bootMs).toBeLessThan(5000);
+      prewarmObservation = { durationMs: performance.now() - began, full: full.overview, thought: thought.overview };
+    }
     store.request({ type: 'social.send', companionId: sender.id, conversationId: room.id, channel: 'phone', clientId: sourceClientId, content: instruction });
     service = new CompanionService({ userData: path.join(root, 'profile'), dataRoot, workerPath: 'in-process-port', window: () => undefined,
       memoryRuntime: memory.runtime, getConfig: () => config, hasConfig: () => true, dsh: () => bridge.launcher,
@@ -224,6 +241,10 @@ it.skipIf(process.env.WORLDLINEBOX_PEER_THOUGHT_REAL !== '1')('returns real isol
       const action = store.getAction(thought.scope.actionId);
       expect(action).toMatchObject({ companionId: receiver.id, sourceMessageId: source!.id, thought: { kind: 'peer', jobId: job!.id }, status: 'succeeded' });
       expect(action.authorizationGrantId).toBeUndefined();
+      if (verifyPrewarm) {
+        expect(action.executionSummary?.startup).toMatchObject({ reusedWorker: true });
+        expect(action.executionSummary!.startup!.bootMs).toBeLessThan(5000);
+      }
     }
     expect(new Set(successful.map(thought => thought.record.sessionId)).size).toBe(successful.length);
     expect(new Set(successful.map(thought => thought.record.workspacePath)).size).toBe(successful.length);
@@ -260,6 +281,7 @@ it.skipIf(process.env.WORLDLINEBOX_PEER_THOUGHT_REAL !== '1')('returns real isol
       await mkdir(path.dirname(output), { recursive: true });
       await writeFile(output, JSON.stringify({ status, root, startedAt, finishedAt: new Date().toISOString(), deadlineMs: 240000, stopReason,
         roles: roles.map(role => ({ id: role.id, name: role.name })), sourceClientId, source, peerJob: job, formalReply, agentRun, thoughtRecords, experiences,
+        verifyPrewarm, prewarmObservation,
         persistentActivityCount: Number((reportMessages.prepare('SELECT COUNT(*) AS count FROM companion_activity_tasks').get() as { count: number }).count),
         sourceFingerprints: before, finishedSourceFingerprints: after, sourceConfigurationUnchanged,
         mainHttpRequests: port.mainHttp, mainHttpBudget: 50, mainHttpBudgetExceeded: port.budgetExceeded, nativeDsh: bridge.telemetry(),

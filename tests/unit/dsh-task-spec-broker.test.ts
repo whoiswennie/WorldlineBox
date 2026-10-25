@@ -9,7 +9,7 @@ import type { DshTaskExecutionOptions } from '../../src/main/dsh/task-execution'
 
 const roots: string[] = [];
 afterEach(async () => { for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true }); });
-async function fixture() {
+async function fixture(stableProfile = false) {
   const root = await mkdtemp(path.join(os.tmpdir(), 'worldlinebox-task-spec-')); roots.push(root);
   const cli = path.join(root, 'cli'); await mkdir(cli);
   await writeFile(path.join(cli, 'shim.cjs'), String.raw`
@@ -31,8 +31,10 @@ lines.on('line',line=>{
  emit({type:'status',phase:'turn_start'});emit({type:'status',phase:'turn_end',reason:{kind:'completed'}});
  emit({type:'final',text:input.content.includes('bad-json')?'bad':input.content.includes('Delivery format: json')?JSON.stringify({done:true}):'done'});emit({type:'task_finished',code:0});opened=undefined;
 });lines.on('close',()=>process.exit(0));`);
-  const selected: DshCliSelection = { instance: { id: 'fixture', name: 'fixture', runtimeId: 'runtime-fixture', profile: 'web', status: 'stopped', homePath: root,
-    agentsPath: root, workspacePath: root, browserPartition: 'temporary:fixture', isDefault: true, createdAt: '', updatedAt: '' },
+  const home = stableProfile ? path.join(root, 'home') : root, agents = stableProfile ? path.join(root, 'agents') : root;
+  if (stableProfile) { await mkdir(home); await mkdir(agents); }
+  const selected: DshCliSelection = { instance: { id: 'fixture', name: 'fixture', runtimeId: 'runtime-fixture', profile: 'web', status: 'stopped', homePath: home,
+    agentsPath: agents, workspacePath: root, browserPartition: 'temporary:fixture', isDefault: true, createdAt: '', updatedAt: '' },
     plan: { executable: process.execPath, cli: 'fixture', env: {} }, env: { ...process.env }, workspacePath: root, routingPatch: '', runtimeVersion: 'fixture', runtime: { id: 'runtime-fixture' } as DshCliSelection['runtime'] };
   const captured: DshCliSelection[] = [];
   const broker = new DshTaskBroker({ rootPath: root, getSelection: async () => selected, pin: async selection => {
@@ -80,6 +82,34 @@ describe('DSH TaskSpec execution and receipts', () => {
       expect(catalog).toMatchObject({ instanceId: 'fixture', runtimeId: 'runtime-fixture', modes: ['native'], tools: [{ name: 'read', description: 'read' }] });
       expect(test.broker.state()[0]?.status).toBe('succeeded');
     } finally { await test.broker.shutdown(); }
+  }, 30000);
+
+  it('coalesces thought prewarm with the real managed request in either order without importing the source workspace dotenv', async () => {
+    for (const prewarmFirst of [true, false]) {
+      const test = await fixture(true);
+      await writeFile(path.join(test.root, '.env'), 'SOURCE_WORKSPACE_ONLY=must-not-enter-thought-host');
+      try {
+        const operation = test.operation();
+        const execute = () => test.broker.execute({ prompt: 'An independent request.' }, operation, { ...test.execution, cognitiveOnly: true });
+        let warm: ReturnType<typeof test.broker.prewarmThought>, actual: ReturnType<typeof execute>;
+        if (prewarmFirst) { warm = test.broker.prewarmThought('fixture'); actual = execute(); }
+        else { actual = execute(); warm = test.broker.prewarmThought('fixture'); }
+        const [catalog, result] = await Promise.all([warm, actual]);
+        expect(catalog.workspacePath).toBe(path.join(test.root, 'cli', 'thought-prewarm'));
+        const records = test.broker.state(); expect(records).toHaveLength(2);
+        expect(new Set(records.map(record => record.pid)).size).toBe(1);
+        expect(test.captured.every(selection => selection.workspacePath !== test.root)).toBe(true);
+        expect(records.find(record => record.id === result.taskId)?.profile).toEqual({ mode: 'native', tools: [], skills: [] });
+        const startups = await Promise.all(records.map(async record => (await test.broker.readRecord({ recordId: record.id })).overview.startup));
+        expect(startups.filter(startup => startup?.reusedWorker)).toHaveLength(1);
+        await expect(readFile(path.join(catalog.workspacePath!, '.env'))).rejects.toMatchObject({ code: 'ENOENT' });
+        const full = await test.broker.discover('fixture', { access: { mode: 'danger-full-access' } });
+        expect(full.workspacePath).toBe(test.root);
+        const fullPid = test.broker.state()[0]!.pid; expect(fullPid).not.toBe(records[0]!.pid);
+        const next = await test.broker.execute({ prompt: 'Another independent request.' }, test.operation(), { ...test.execution, cognitiveOnly: true });
+        expect(test.broker.state().find(record => record.id === next.taskId)?.pid).toBe(records[0]!.pid);
+      } finally { await test.broker.shutdown(); }
+    }
   }, 30000);
 
   it('requires current source proof and the same topic/domain when continuing a scoped task', async () => {
