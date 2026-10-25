@@ -195,6 +195,9 @@ export async function runCompanionStructuredAgent(input: CompanionStructuredAgen
   let capacityFeedback = false, capacityAttempts = 0;
   let nativeResponseFailures = 0;
   let emptyCorpusRecovery: CompanionAgentNoProgressProof | undefined;
+  // Empty VCP recall cannot disable independent actions (for example, a peer's
+  // native topic.join). Only the structured corpus-reading capability is muted.
+  const availableAuxiliaryTools = () => (input.capabilities?.tools ?? []).filter(tool => !emptyCorpusRecovery || tool.name !== 'memory');
   const acceptedOutputs = new WeakMap<CompanionLoopTurn, unknown>();
   const progressFingerprint = () => JSON.stringify({ companionId: refreshedFrame.companion.id, conversationId: refreshedFrame.conversation.id,
     invocationId: refreshedFrame.invocation?.id, sourceId: refreshedFrame.sourceMessage?.id,
@@ -271,7 +274,7 @@ export async function runCompanionStructuredAgent(input: CompanionStructuredAgen
       if (journal && !await journal.valid(run)) throw new Error('本轮推理来源或检查点已变化，不能继续发布。');
       refreshedFrame = input.refresh ? await input.refresh() : input.frame;
       refreshedFrame = { ...refreshedFrame, capabilityAvailability: companionBoundCapabilityContext(refreshedFrame.companion.id,
-        refreshedFrame.conversation.id, (emptyCorpusRecovery ? [] : input.capabilities?.tools ?? []).map(tool => tool.name)) };
+        refreshedFrame.conversation.id, availableAuxiliaryTools().map(tool => tool.name)) };
       evidenceContext = assembleCompanionRoleContext(refreshedFrame, input.context);
       await captureEvidence();
     },
@@ -279,7 +282,7 @@ export async function runCompanionStructuredAgent(input: CompanionStructuredAgen
   infer: async step => { for (;;) {
     signal?.throwIfAborted();
     let frame = capacityFeedback && input.refresh ? await input.refresh() : refreshedFrame;
-    const effectiveTools = [...(emptyCorpusRecovery ? [] : input.capabilities?.tools ?? []), ...(finalTool ? [finalTool] : [])];
+    const effectiveTools = [...availableAuxiliaryTools(), ...(finalTool ? [finalTool] : [])];
     frame = { ...frame, capabilityAvailability: companionBoundCapabilityContext(frame.companion.id, frame.conversation.id,
       effectiveTools.map(tool => tool.name)) };
     const capacityBefore = capacityFeedback ? JSON.stringify({ messages: frame.messages, topicState: frame.topicState }).length : 0;
@@ -290,7 +293,7 @@ export async function runCompanionStructuredAgent(input: CompanionStructuredAgen
       outputCorrection: { ...outputCorrection, instruction: '上一个提案未通过宿主验证，没有产生行动。依据当前真实状态修正后重新交付；不能沿用被拒绝提案当作已发生的事实。' } }) } : input.context;
     const assembled = assembleCompanionRoleContext(frame, emptyCorpusRecovery ? { ...context, user: JSON.stringify({ ...JSON.parse(context.user),
       observationCorrection: { proof: emptyCorpusRecovery,
-        instruction: '宿主已连续确认当前整个获权VCP日记语料为空，同一版本换检索措辞不能找到实时对话、当前话题或未写入日记的状态。这不是资料缺失的新用户条件。此纠错槽只交付本次outputSchema最终提案，不再调用检索；依据已提供的真实当前上下文、历史回执与持续计划，选择实际下一步或有真实条件的等待。提案仍由原领域校验后执行，不能编造已发生行为或把空日记当成任务已完成。' } }) } : context);
+        instruction: '宿主已连续确认当前整个获权VCP日记语料为空，同一版本换检索措辞不能找到实时对话、当前话题或未写入日记的状态。这不是资料缺失的新用户条件。不再重复调用memory检索；其他原生能力仍以本轮实际工具schema为准，可以执行必要的下一步，再按本次outputSchema交付。依据真实当前上下文、历史回执与持续计划选择行动或有真实条件的等待。最终提案仍由原领域校验后执行，不能编造已发生行为或把空日记当成任务已完成。' } }) } : context);
     if (finalTool) assembled.system += `\n【宿主最终提案通道】\n本次已注册 ${COMPANION_SUBMIT_RESULT_TOOL}。完成必要的辅助查询后，优先单独调用它并直接以原领域outputSchema作为参数，不输出正文或再次包裹JSON字符串；不能与其他工具同轮调用。提交仅接受原提案，原领域仍校验来源、语义与权限后才执行；回执中的accepted_for_domain_commit不代表行动已经完成。若服务返回文本最终JSON，仍使用原严格校验，不能以口头声称完成代替提案。`;
     evidenceContext = assembled;
     await captureEvidence();
@@ -338,14 +341,13 @@ export async function runCompanionStructuredAgent(input: CompanionStructuredAgen
         identityCorrection = error.message;
         continue;
       }
-      if (emptyCorpusRecovery) throw new CompanionAgentNoProgressError(emptyCorpusRecovery);
       throw error;
     }
     const turn = result.turn;
     if (!turn) throw new CompanionModelError('INVALID_RESPONSE', '伙伴领域调用缺少原生循环结果。');
     const submission = finalTool && turn.calls.find(call => call.name === COMPANION_SUBMIT_RESULT_TOOL);
     if (submission) turn.finalProposal = { callId: submission.id, schemaDigest: finalSchemaDigest! };
-    if (emptyCorpusRecovery && turn.calls.length && !turn.finalProposal) throw new CompanionAgentNoProgressError(emptyCorpusRecovery);
+    if (emptyCorpusRecovery && turn.calls.some(call => call.name === 'memory')) throw new CompanionAgentNoProgressError(emptyCorpusRecovery);
     if (!turn.calls.length) {
       await captureEvidence();
       try {

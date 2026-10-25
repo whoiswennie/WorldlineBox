@@ -14,9 +14,11 @@ export function companionTopicCapabilities(request: (command: CompanionStorageCo
     reviewTransfer?(command: CompanionTopicModeratorTransfer, signal?: AbortSignal): Promise<CompanionTopicModeratorTransferApproval> } = {}): CompanionStructuredAgentCapabilities {
   const schema = z.strictObject({ action: z.literal('topic'), parameters: companionTopicArgumentsSchema });
   const parameters = z.toJSONSchema(schema, { io: 'input' }) as Record<string, unknown>; delete parameters.$schema;
+  const worldTools = (other?.tools ?? []).filter(tool => tool.name === 'world');
+  const combinedParameters = worldTools.length ? { type: 'object', anyOf: [...worldTools.map(tool => tool.parameters), parameters] } : { type: 'object', ...parameters };
   return { journal: other?.journal, replaySafe: other?.replaySafe ?? true, continuityRequest: request,
-    tools: [...(other?.tools ?? []), { name: 'world', parameters: { type: 'object', ...parameters },
-    description: '管理本人在当前真实会话的话题。action=topic，parameters.action=create/list/read/join/leave/activate/update/transfer_moderator/pause/resume/close/reopen/fork/delete。topic.create可在创建时指定moderatorId；创建只代表本人加入，其他成员必须自愿join；当前主持可用transfer_moderator向本话题已加入且公开自愿主持的成员交接，sourceMessageIds填写对方本人真实同意的本话题公开发言，先read使用真实expectedRevision；移交不复制任何私态。activate与pause仅替换本人上下文。update先read取得真实topicId和最新revision；parameters.roomId/topicId/expectedRevision与parameters.patch同级，绝不能塞进patch。patch只含title/shared/workingState/privateRecipientId/tags/invitedIds；活动自定义字段放patch.shared.state或patch.workingState.state，来源ID放相应sourceMessageIds。update只能更新本人workingState，主持人可管理shared与分发私态；不能越过宿主ACL。话题是可持续压缩的工作上下文，游戏/小说不写成全局现实事实。' + COMPANION_TOPIC_CONTINUITY_RULES }],
+    tools: [...(other?.tools ?? []).filter(tool => tool.name !== 'world'), { name: 'world', parameters: combinedParameters,
+    description: worldTools.map(tool => tool.description).join('\n') + '\n管理本人在当前真实会话的话题。action=topic，parameters.action=create/list/read/join/leave/activate/update/transfer_moderator/pause/resume/close/reopen/fork/delete。topic.create可在创建时指定moderatorId；创建只代表本人加入，其他成员必须自愿join；当前主持可用transfer_moderator向本话题已加入且公开自愿主持的成员交接，sourceMessageIds填写对方本人真实同意的本话题公开发言，先read使用真实expectedRevision；移交不复制任何私态。activate与pause仅替换本人上下文。update先read取得真实topicId和最新revision；parameters.roomId/topicId/expectedRevision与parameters.patch同级，绝不能塞进patch。patch只含title/shared/workingState/privateRecipientId/tags/invitedIds；活动自定义字段放patch.shared.state或patch.workingState.state，来源ID放相应sourceMessageIds。update只能更新本人workingState，主持人可管理shared与分发私态；不能越过宿主ACL。话题是可持续压缩的工作上下文，游戏/小说不写成全局现实事实。' + COMPANION_TOPIC_CONTINUITY_RULES }],
     execute: async (call, signal) => {
       signal?.throwIfAborted();
       if (call.name !== 'world') { if (!other) throw new Error('当前没有该能力。'); return other.execute(call, signal); }
@@ -24,7 +26,10 @@ export function companionTopicCapabilities(request: (command: CompanionStorageCo
       try { body = JSON.parse(call.arguments); }
       catch { return { ok: false, error: '话题调用必须是合法JSON，外层action=topic，具体操作放parameters.action。',
         argumentIssues: [{ path: '$', code: 'invalid_json', message: '请修正JSON语法后重试。' }] }; }
-      if (body && typeof body === 'object' && 'action' in body && body.action !== 'topic') throw new Error('当前入口没有提供此世界能力。');
+      if (body && typeof body === 'object' && 'action' in body && body.action !== 'topic') {
+        if (other) return other.execute(call, signal);
+        throw new Error('当前入口没有提供此世界能力。');
+      }
       const envelope = z.strictObject({ action: z.literal('topic'), parameters: z.record(z.string(), z.unknown()) }).safeParse(body);
       const feedback = (issues: readonly z.core.$ZodIssue[], action?: string, prefix: string[] = []) => {
         const argumentIssues = issues.flatMap(issue => {

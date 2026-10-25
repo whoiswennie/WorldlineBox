@@ -708,7 +708,9 @@ export class CompanionActivityTaskStore {
     else if (wait.kind === 'permission') { ready = world.visits.some(visit => visit.id === (condition.visitId ?? task.visitRequestId) && visit.guestId === task.companionId && visit.hostId === wait.targetCompanionId && visit.status !== 'requested'); reason = '拜访许可已有实际结果，请核对允许、拒绝或过期。'; }
     else { ready = Date.parse(world.clock.virtualNow) >= condition.virtualAt!; reason = '世界时间等待已结束。'; }
     if (!ready) {
-      if (wait.kind === 'delay' || Date.now() < condition.until) return false;
+      // Checking again is cheap; elapsed time alone is not a new reply. The
+      // exact formal visit result above still wakes this same reply wait.
+      if (wait.kind === 'reply' || wait.kind === 'delay' || Date.now() < condition.until) return false;
       // A sleeping/dormant/busy peer or an unanswered formal request is an
       // external dependency, not a reason to spend another model planning step.
       if ('targetCompanionId' in wait && (!this.world.socialAvailable(wait.targetCompanionId, 'phone', [])

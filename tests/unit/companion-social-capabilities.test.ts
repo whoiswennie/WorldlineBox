@@ -1,9 +1,11 @@
+import { createRequire } from 'node:module';
 import { expect, it, vi } from 'vitest';
 import { companionSocialCapabilities } from '../../src/main/companions/social-capabilities';
 import { companionTopicCapabilities } from '../../src/main/companions/topic-capabilities';
 import type { CompanionLoopCall } from '../../src/shared/companion-loop';
 import type { CompanionStorageCommand, CompanionStorageResponse } from '../../src/shared/companion-storage';
 import { captureCompanionExecutionReadset } from '../../src/main/companions/execution-evidence';
+import { companionRecallCapabilities } from '../../src/main/companions/structured-agent';
 
 const call = (args: unknown, id = 'tool_call'): CompanionLoopCall => ({ id, name: 'world', arguments: JSON.stringify(args) });
 function fixture(allowed = true) {
@@ -37,6 +39,37 @@ it('retains per-reader topic actions alongside social agency without letting cal
   const f = fixture();
   await f.capabilities.execute(call({ action: 'topic', parameters: { action: 'join', topicId: 'werewolf_topic' } }));
   expect(f.request).toHaveBeenCalledWith({ type: 'topic.join', conversationId: 'peer_room', readerId: 'alice', topicId: 'werewolf_topic', operationId: 'brain_tool_call' });
+});
+it('retains native topic and experience schemas and dispatch through the actual recall-topic-social composition', async () => {
+  const f = fixture();
+  const capabilities = companionSocialCapabilities(f.request, f.scope,
+    companionTopicCapabilities(f.request, f.scope, companionRecallCapabilities(f.request, f.scope)), f.authorize);
+  const worldTools = capabilities.tools.filter(tool => tool.name === 'world');
+  expect(worldTools).toHaveLength(1);
+  const require = createRequire(import.meta.url);
+  const requireAjv8 = createRequire(require.resolve('ajv-formats/package.json'));
+  const Ajv2020 = requireAjv8('ajv/dist/2020').default as new (options: { strict: boolean; allErrors: boolean; validateFormats: boolean }) => {
+    compile(schema: object): (data: unknown) => boolean;
+  };
+  const validate = new Ajv2020({ strict: false, allErrors: true, validateFormats: false }).compile(worldTools[0]!.parameters);
+  const join = { action: 'topic', parameters: { action: 'join', topicId: 'actual_topic' } };
+  const read = { action: 'topic', parameters: { action: 'read', topicId: 'actual_topic' } };
+  const experience = { action: 'experience', parameters: { action: 'list', day: '2026-10-25' } };
+  const query = { action: 'query', category: 'contacts' };
+  for (const example of [join, read, experience, query]) expect.soft(validate(example), JSON.stringify(example)).toBe(true);
+  const forbidden = { action: 'move', destinationId: 'computer' };
+  expect(validate(forbidden)).toBe(false);
+  expect(validate({ ...join, companionId: 'foreign' })).toBe(false);
+  await capabilities.execute(call(join, 'join_actual'));
+  expect(f.request).toHaveBeenCalledWith({ type: 'topic.join', conversationId: f.scope.conversationId,
+    readerId: f.scope.companionId, topicId: 'actual_topic', operationId: 'brain_join_actual' });
+  await capabilities.execute(call(experience, 'experience_actual'));
+  expect(f.request).toHaveBeenCalledWith({ type: 'experience.list', companionId: f.scope.companionId, day: '2026-10-25', limit: 20 });
+  await capabilities.execute(call(query, 'query_actual'));
+  expect(f.request).toHaveBeenCalledWith(expect.objectContaining({ type: 'world.tool', ...f.scope, arguments: query }));
+  const requestCount = f.request.mock.calls.length;
+  await expect(capabilities.execute(call(forbidden, 'move_forbidden'))).rejects.toThrow();
+  expect(f.request).toHaveBeenCalledTimes(requestCount);
 });
 it('reports peer social delivery without implying a collaboration or computer execution grant', async () => {
   const f = fixture();

@@ -538,7 +538,7 @@ it('cancels withdrawn sources, rejects foreign owners, caps repeated failures an
     expect(commit(empty, { status: 'continue', action: null, wait: { kind: 'delay', seconds: 1 }, memory: null, topic: null, planningState: null,
       summary: '如实等待下一实际时刻。' }).status).toBe('waiting');
 });
-it('stops only its own pending route on cancellation and times out waits without endless polling', () => {
+it('stops only its own pending route on cancellation and keeps reply waits dormant until one actual new reply', () => {
     shareAddress();
     invite();
     const { task } = start();
@@ -549,17 +549,35 @@ it('stops only its own pending route on cancellation and times out waits without
     const actor = store.request({ type: 'world.observe', ...alice }).world!.actors[0]!;
     expect(actor.route).toHaveLength(0);
     expect(actor.position).toEqual(position);
-    start('waiting_goal');
-    commit(claim()!, { status: 'continue', action: null, wait: { kind: 'reply', targetCompanionId: 'bob' }, summary: '等待来信' });
+    const waiting = start('waiting_goal').task;
+    commit(claim()!, { status: 'continue', action: { action: 'message', recipientIds: ['bob'], text: '方便时回我一声就好。' },
+        wait: { kind: 'reply', targetCompanionId: 'bob' }, summary: '留言后等待真实来信，不重复催促。' });
     advance(1600);
+    const delivered = store.request({ type: 'social.job.claim' });
+    expect(delivered.socialMessage?.message.content).toBe('方便时回我一声就好。');
+    expect(delivered.socialJob?.companionId).toBe('bob');
     expect(claim()).toBeUndefined();
     advance(300001);
-    const expired = claim()!;
-    expect(expired.stage).toContain('超时');
-    expect(expired.status).toBe('running');
-    commit(expired, { status: 'blocked', action: null, wait: null, summary: '没有等到回复，先不打扰。' });
-    advance(5000);
     expect(claim()).toBeUndefined();
+    expect(store.request({ type: 'activity.get', ...alice, id: waiting.id }).activityTask).toMatchObject({ status: 'waiting', step: 1, attempts: 0 });
+    store.close(); store = new CompanionsStore(filename, seeds.map(seed => ({ ...seed, active: true })));
+    store.request({ type: 'activity.recover' });
+    advance(300001);
+    expect(claim()).toBeUndefined();
+    const replyJob = store.request({ type: 'social.job.claim' }).socialJob!;
+    expect(replyJob.id).toBe(delivered.socialJob!.id);
+    advance(1600);
+    const reply = store.request({ type: 'social.job.complete', id: replyJob.id, leaseToken: replyJob.leaseToken!, text: '现在有空，我收到你的留言了。' }).socialMessage!.message;
+    advance(6000);
+    const resumed = claim()!;
+    expect(resumed).toMatchObject({ id: waiting.id, status: 'running', step: 1 });
+    expect(claim()).toBeUndefined();
+    const observed = store.request({ type: 'activity.observe', id: resumed.id, leaseToken: resumed.leaseToken! });
+    expect(observed.activityMessages?.map(message => message.id)).toContain(reply.id);
+    commit(resumed, { status: 'continue', action: null, wait: { kind: 'reply', targetCompanionId: 'bob' }, summary: '已读这条真实来信，继续等待下一条。' });
+    advance(300001);
+    expect(claim()).toBeUndefined();
+    expect(store.request({ type: 'activity.get', ...alice, id: waiting.id }).activityTask).toMatchObject({ status: 'waiting', step: 2, attempts: 0 });
 });
 it('continues a newly issued route when a just-received phone conversation releases its pose', () => {
     store.request({ type: 'world.tool', ...bob, arguments: { action: 'share_entrance', recipientIds: ['alice'] } });

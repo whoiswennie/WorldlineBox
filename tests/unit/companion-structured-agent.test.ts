@@ -133,6 +133,45 @@ describe('same role Agent kernel across independent invocation ports', () => {
     expect(result).toMatchObject({ status: 'continue', action: { action: 'query' } });
     expect(execute).toHaveBeenCalledTimes(6); expect(fetchFn).toHaveBeenCalledTimes(7);
   });
+  it('retains offered world actions after empty recall so an invited reader can actually join before final delivery', async () => {
+    const source = { ...message('invitation', 'group', 'b', '愿意的话加入共同讨论。'), topicId: 'discussion' };
+    let topic: CompanionTopic = { id: 'discussion', conversationId: 'group', title: '共同讨论', kind: 'discussion', status: 'active',
+      participantIds: ['b'], invitedIds: ['a'], moderatorId: 'b', tags: [], revision: 1, createdAt: source.createdAt, updatedAt: source.createdAt };
+    const frame = (): CompanionReplyInput => ({ companion, conversation: conversation('group'), sourceMessage: source,
+      messages: [source], memories: [], topic, audience: 'peers' });
+    let inference = 0;
+    const execute = vi.fn(async (call: { name: string; arguments: string }) => {
+      if (call.name === 'memory') return { ok: true, memoryPage: { items: [], hasMore: false }, memoryRetrieval: {
+        authorizedCorpusEmpty: true, authorizedCorpusRevision: 'empty-discussion-owner', engine: 'none', resultCount: 0 } };
+      expect(call.name).toBe('world');
+      expect(JSON.parse(call.arguments)).toEqual({ action: 'topic', parameters: { action: 'join', topicId: 'discussion' } });
+      topic = { ...topic, participantIds: ['a', 'b'], invitedIds: [], revision: 2 };
+      return { ok: true, topic };
+    });
+    const fetchFn = vi.fn<typeof fetch>(async (_url, init) => {
+      const wire = JSON.parse(String(init?.body)), data = JSON.parse(wire.messages[1].content);
+      inference++;
+      if (inference <= 6) return new Response(JSON.stringify({ choices: [{ message: { content: '', tool_calls: [{ id: `recall_${inference}`,
+        type: 'function', function: { name: 'memory', arguments: JSON.stringify({ action: 'search', query: `讨论经历${inference}` }) } }] } }] }));
+      expect(wire.tools.map((tool: { function: { name: string } }) => tool.function.name)).toEqual(['world']);
+      expect(data.capabilityAvailability.boundToolNames).toEqual(['world']);
+      expect(data.observationCorrection.proof.kind).toBe('empty_authorized_memory');
+      if (inference === 7) return new Response(JSON.stringify({ choices: [{ message: { content: '', tool_calls: [{ id: 'own_join',
+        type: 'function', function: { name: 'world', arguments: '{"action":"topic","parameters":{"action":"join","topicId":"discussion"}}' } }] } }] }));
+      expect(inference).toBe(8);
+      expect(data.topic.participantIds).toContain('a');
+      expect(wire.messages.filter((row: { role: string }) => row.role === 'tool')).toHaveLength(7);
+      return new Response(JSON.stringify({ choices: [{ message: { content: '{"answer":"我已加入讨论。"}' } }] }));
+    });
+    const result = await runCompanionStructuredAgent({ context: domain, frame: frame(), refresh: async () => frame(),
+      capabilities: { replaySafe: true, tools: [{ name: 'memory', description: '本人记忆', parameters: { type: 'object' } },
+        { name: 'world', description: '本人实际加入话题', parameters: { type: 'object' } }], execute },
+      validateOutput: value => { expect(topic.participantIds).toContain('a'); return value; } }, config, undefined, { fetchFn });
+    expect(result).toEqual({ answer: '我已加入讨论。' });
+    expect(execute.mock.calls.filter(([call]) => call.name === 'memory')).toHaveLength(6);
+    expect(execute.mock.calls.filter(([call]) => call.name === 'world')).toHaveLength(1);
+    expect(fetchFn).toHaveBeenCalledTimes(8);
+  });
   it('compresses an actual rejected work pair and retries the same inference without replaying its effect or shrinking identity and goal', async () => {
     const source = message('source', 'group', 'user', '保留这个完整目标：核验record_701，完成后只汇报真实结论。');
     const execute = vi.fn(async () => ({ ok: true, recordId: 'record_701', output: 'large real result '.repeat(600) }));

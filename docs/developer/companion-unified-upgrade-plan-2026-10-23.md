@@ -1238,3 +1238,15 @@ e01cbfc实际构建的测试包位于out/WorldlineBox-win32-x64/WorldlineBox.exe
 前两次RED均保留：首次检查遗漏点击懒加载的“记录范围”，仅补正确展开操作，未改应用；第二次在等待真实日程时页面意外关闭，原记录不足以确定原因，不能归咎并行构建或声称已修复崩溃。增加仅限测试的退出诊断，在安装器结束后单独检查通过；两次原始trace分别存于peer-activity-experience-ui-first-red-playwright、peer-activity-experience-ui-second-red-playwright，不覆盖历史失败。
 
 无关验证输出及六份旧Inno临时构建目录移至项目外归档，失败和中断原件完整保留，当前运行时、内置模型、构建输入及最终安装器保留。映射和构建凭据见peer-activity-cleanup-index.json、peer-activity-old-inno-cleanup.json及peer-activity-delivery-binary.json，最后文档与测试检查提交和远程一致性另记peer-activity-delivery-git.json。16.75的真人主持整局通过；自主局仍未开局、未结算，原任务保持真实waiting，不将后续补丁或界面通过冒充再次整局验证。overallAcceptanceComplete仍为false，长期目标不标为全部验收完成；本轮不再新开对局或追加细碎测试。
+
+### 16.79 自主入场失败的实际工具装配原因与依赖等待修复（2026-10-25）
+
+继续审查原自主fixture，发现16.75中“明确反馈后仍未join”的直接产品原因。recall已注册world(action=experience)，topic包装又追加同名world，social包装只find第一个world并删除其余world，因此实际提供的schema丢失所有topic操作。原Kimi两份话题run没有memory调用，实际仍用过world查询与消息；原最终提案明确报告“这个入口没有给我join话题的能力”。既有测试未包含真实recall→topic→social三层，漏掉此装配。原报告未保存完整HTTP wire；这里依据原run、当时源码守卫及新组合回归确认，不冒充抓到了原请求。只读数据库/WAL/SHM前后哈希一致，审计native-world-tool-composition-kimi-readonly-audit-2026-10-25.json的SHA256为c788998719b6b5774ac5ef398324ee78e33b3ce76e296525b4f0a2cab40b90df。
+
+现topic/social把已提供的同名world全部schema及说明合并成唯一入口，保留各分支原strict约束；topic对非本域操作交还原能力，修复原先experience虽可见却被topic执行器拒绝的问题。没有替角色加入、改写提案或添加权限。组合回归修复前真实child exit1：join/read schema缺失、experience分发被拒；修复后social/topic两个完整文件25/25、child exit0，Ajv验证实际schema和三类真实接口分发，并保留外国身份、非法move等负控。原RED与新GREEN均在项目外归档。
+
+另修一处独立通用缺陷：structured空语料纠错曾撤掉全部辅助工具、强制最终交付，可能让仍需原生行动的领域无法继续。现在只暂停重复memory读取，保留本轮原已提供的其他工具、真实领域错误和原最终校验。普通discussion回归证明六次空检索后仍能本人调用join，取得真实工具回执后再交付；重复第七次memory仍不执行。structured/kernel两完整文件28/28、child exit0。此分支没有发生于上述Kimi原run，不能把它当作旧局根因。
+
+R06还确认一项真实付费空转：原step15在23:57:00.757等待Kimi，00:02:08.314仅因300秒到期重新规划，期间没有新peer消息或入场事件。现reply等待保留，廉价检查继续，仅真实回信或关联正式拜访结果唤醒；任务deadline、来源撤回、取消和其他等待不变。原worker的旧超时合同原地升级，修复前单例child exit1，修复后完整32/32、child exit0，覆盖超过300秒、关库重开仍等待、真实回信只claim一次、同条回信不重复唤醒，原拜访允许/拒绝与取消覆盖保留。凭据见外部r06-reply-wait-change-summary.json。后续实模、重新打包和推送只按实际结果补记，旧自主失败原件不改判。
+
+冻结前main/extension类型检查及全部8个修改TS文件lint均实际退出0，独立只读复核未发现权限或回执放宽。遵从用户最新补充，后续必须先跑通实际验证，再在最终收尾统一打包；当前不启动打包，不把此前安装器当作本节修复已入包。

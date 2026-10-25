@@ -14,12 +14,12 @@ export function companionSocialCapabilities(request: (command: CompanionStorageC
   options: { gamePort?: { conversationId: string; topicId: string }; executionReadset?(): CompanionExecutionReadset | undefined } = {}): CompanionStructuredAgentCapabilities {
   const actions = new Set(['query', 'inspect', 'introduce', 'message', 'create_group']);
   const schema = z.union(companionWorldArgumentsSchema.options.filter(option => actions.has(option.shape.action.value)));
-  const worldTool = other.tools.find(tool => tool.name === 'world');
+  const worldTools = other.tools.filter(tool => tool.name === 'world');
   const ownParameters = z.toJSONSchema(schema, { io: 'input' }) as Record<string, unknown>; delete ownParameters.$schema;
-  const parameters = worldTool ? { type: 'object', anyOf: [worldTool.parameters, ownParameters] } : { type: 'object', ...ownParameters };
+  const parameters = worldTools.length ? { type: 'object', anyOf: [...worldTools.map(tool => tool.parameters), ownParameters] } : { type: 'object', ...ownParameters };
   return { journal: other.journal, replaySafe: other.replaySafe, continuityRequest: other.continuityRequest,
     tools: [...other.tools.filter(tool => tool.name !== 'world'), { name: 'world', parameters,
-    description: `${worldTool?.description ?? ''}\n还可inspect/query(contacts熟人、people公开世界居民、social本人社交)。introduce(targetCompanionId,text)主动自我介绍，message(recipientIds,text)联系熟人，create_group(recipientIds,title,text,includePlayer)与至少两位熟人建群；includePlayer=true邀请真人入群。只发自己的问候或本次公开讨论中的必要邀约；宿主已核验的同局game reference允许本人必要游戏通信，仍按实际收件人保护秘密。不转发无关私聊，不替他人接受，不授现实操作权限。待发不等于送达，不能重复创建相同邀请。` }],
+    description: `${worldTools.map(tool => tool.description).join('\n')}\n还可inspect/query(contacts熟人、people公开世界居民、social本人社交)。introduce(targetCompanionId,text)主动自我介绍，message(recipientIds,text)联系熟人，create_group(recipientIds,title,text,includePlayer)与至少两位熟人建群；includePlayer=true邀请真人入群。只发自己的问候或本次公开讨论中的必要邀约；宿主已核验的同局game reference允许本人必要游戏通信，仍按实际收件人保护秘密。不转发无关私聊，不替他人接受，不授现实操作权限。待发不等于送达，不能重复创建相同邀请。` }],
     execute: async (call, signal) => {
       signal?.throwIfAborted();
       if (call.name !== 'world') return other.execute(call, signal);
