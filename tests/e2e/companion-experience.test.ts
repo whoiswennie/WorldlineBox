@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { mkdirSync, mkdtempSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { _electron as electron, expect, test, type ElectronApplication, type Page } from '@playwright/test';
@@ -45,14 +45,20 @@ test('archives real daily experiences, opens details, preserves names and isolat
   const directory = mkdtempSync(path.join(tmpdir(), 'worldlinebox-experience-e2e-')), profile = path.join(directory, 'profile');
   let application: ElectronApplication | undefined;
   const errors: string[] = [];
+  const lifecycle: Array<{ at: string; event: string; detail?: unknown }> = [];
+  let stderr = '';
   const evidence = process.env.WORLDLINEBOX_EXPERIENCE_UI_EVIDENCE_DIR;
   if (evidence) mkdirSync(evidence, { recursive: true });
   try {
     application = await electron.launch({ ...resolveElectronLaunchOptions(), env: electronLaunchEnv({
       WORLDLINEBOX_E2E: '1', WORLDLINEBOX_E2E_USER_DATA_PATH: profile, WORLDLINEBOX_E2E_CREATE_PARENT_PATH: directory,
     }, { gpu: 'software' }) });
+    application.process().on('exit', (code, signal) => lifecycle.push({ at: new Date().toISOString(), event: 'process-exit', detail: { code, signal } }));
+    application.process().stderr?.on('data', data => { stderr = (stderr + String(data)).slice(-32_768); });
     await preparePackagedCompanionLaunch(application, profile);
     const page = await application.firstWindow(), native = await application.browserWindow(page);
+    page.on('close', () => lifecycle.push({ at: new Date().toISOString(), event: 'page-close' }));
+    page.on('crash', () => lifecycle.push({ at: new Date().toISOString(), event: 'page-crash' }));
     await native.evaluate(win => {
       win.unmaximize(); win.setSize(1440, 960); win.setFocusable(false); win.setOpacity(0);
       win.webContents.setBackgroundThrottling(false); win.showInactive();
@@ -110,6 +116,7 @@ test('archives real daily experiences, opens details, preserves names and isolat
     await dialog.getByLabel('经历日期', { exact: true }).fill(first!.entry.day);
     await dialog.locator(`[data-experience-id="${first!.speech.id}"]`).getByRole('button').click();
     await expect(dialog.getByRole('complementary', { name: '经历详情', exact: true })).toContainText(first!.prompt);
+    await dialog.getByRole('complementary', { name: '经历详情', exact: true }).getByText('记录范围', { exact: true }).click();
     await expect(dialog.getByRole('complementary', { name: '经历详情', exact: true })).toContainText('本人在原会话正式发布');
     const row = dialog.locator(`[data-experience-id="${first!.entry.id}"]`);
     await expect(row).toBeVisible();
@@ -162,7 +169,11 @@ test('archives real daily experiences, opens details, preserves names and isolat
     await expect(settings).not.toContainText('加速');
     expect(errors).toEqual([]);
   } finally {
+    lifecycle.push({ at: new Date().toISOString(), event: 'test-cleanup' });
     await application?.close().catch(() => undefined);
+    const diagnostics = JSON.stringify({ lifecycle, stderr, errors }, null, 2);
+    await testInfo.attach('application-lifecycle', { body: diagnostics, contentType: 'application/json' });
+    if (evidence) writeFileSync(path.join(evidence, 'application-lifecycle.json'), diagnostics);
     cleanup(directory);
   }
 });

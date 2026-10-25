@@ -1228,3 +1228,13 @@ e01cbfc实际构建的测试包位于out/WorldlineBox-win32-x64/WorldlineBox.exe
 对真人原数据库仅作只读一致性备份，在独立副本打开正常CompanionsStore并运行7次有界自动回填后排空。四张实际正式投票均有message来源经历，本人、2026-10-25日期、版本1、原文哈希与实际index/detail文件一致；未完成消息没有投影，归档及投影队列均0。原数据库、WAL及SHM哈希全过程未变，副本的VCP笔记及capture表哈希未变，group capture仍0，不能把经历回填说成写了新的真实知识。首观察脚本误把旧记录的发布时间当必有而报错，原RED保留；随后仅只读同一已回填副本，按生产回退规则核对，没有重新运行回填或新开对局。凭据见外部peer-activity-human-five-message-backfill.json，实际对局原件保持16.75的冻结版本。
 
 原经历worker完整7/7通过（原5项及新增2项），真实Vitest子进程退出0；当前生产字节的main/extension类型检查与目标lint退出0。隔离负控连接采用生产搜索函数，外部改版在未运行主连接TEMP投影时必须保持旧正文不可见，未为了测试伪造v2投影。已存在的实际包界面用例仅增加真实提醒消息也进入本人时间线并可读正文的断言，不增加模型或对局用例，最终新包将按此检查。
+
+### 16.78 本轮最终安装器、经历界面及交付边界（2026-10-25）
+
+本轮产品源码提交为002c4a5844adb1d26b4b7c5aa24d8e691126c1bf（包含a1b1727），已推送当前codex/companion-unified-upgrade-2026-10-23分支。此后仅修界面检查操作、增加退出诊断和补本文，没有再修改产品。官方npm run release:package及npm run make:inno均实际退出0；原版129个VCP文件、164项依赖绑定、原内置EmbeddingGemma及运行时校验通过，没有更换嵌入模型。Inno编译990.531秒。新安装器out/make/inno/WorldlineBoxSetup.exe为1198694034字节，SHA256为dfe3993f1928f9e2e59d57307ab38771bf50ba41a4a4d258d31cf42109fae67c；app.asar为607388703字节，SHA256为071220e261a8df157c33ab3adb9b75726fa2ff8af7c55643d2abede7c5527e30，实际界面检查完成后核对与打包时一致。
+
+该实际应用包的经历界面最终1/1通过、35.9秒，Playwright子进程退出0，应用仅在测试清理阶段关闭且进程退出0，pageerror为空。使用真实日程、世界事件及实际发布消息，检查本人归档、现实日期、正式发言正文与记录范围、详情、改名及页面重载持久化、伙伴隔离和世界实时设置；没有预写经历行或调用模型。Root查看明暗两截图，三栏大弹窗、同秒多条、时间、中文标题与详情显示正常，无横向溢出；仍使用每页最多30条和详情按需展开，不宣称未执行的大数据压力测试。截图及生命周期记录见外部peer-activity-experience-ui-solo，原始检查报告见peer-activity-experience-ui-solo-result.json。
+
+前两次RED均保留：首次检查遗漏点击懒加载的“记录范围”，仅补正确展开操作，未改应用；第二次在等待真实日程时页面意外关闭，原记录不足以确定原因，不能归咎并行构建或声称已修复崩溃。增加仅限测试的退出诊断，在安装器结束后单独检查通过；两次原始trace分别存于peer-activity-experience-ui-first-red-playwright、peer-activity-experience-ui-second-red-playwright，不覆盖历史失败。
+
+无关验证输出及六份旧Inno临时构建目录移至项目外归档，失败和中断原件完整保留，当前运行时、内置模型、构建输入及最终安装器保留。映射和构建凭据见peer-activity-cleanup-index.json、peer-activity-old-inno-cleanup.json及peer-activity-delivery-binary.json，最后文档与测试检查提交和远程一致性另记peer-activity-delivery-git.json。16.75的真人主持整局通过；自主局仍未开局、未结算，原任务保持真实waiting，不将后续补丁或界面通过冒充再次整局验证。overallAcceptanceComplete仍为false，长期目标不标为全部验收完成；本轮不再新开对局或追加细碎测试。
