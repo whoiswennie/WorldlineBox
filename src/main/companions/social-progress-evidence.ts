@@ -4,7 +4,6 @@ import { companionStorageResponseSchema } from '../../shared/companion-storage';
 import type { CompanionLoopCall, CompanionLoopTurn } from '../../shared/companion-loop';
 import { normalizeCompanionCapabilityCall } from '../../shared/companion-capability-tools';
 import type { CompanionSocialNotification } from '../../shared/companion-social';
-import type { CompanionActivityTask } from '../../shared/companion-activity-task';
 
 export function socialProgressFingerprint(message: CompanionMessage): string {
   return createHash('sha256').update(JSON.stringify([message.id, message.conversationId, message.topicId ?? null,
@@ -19,8 +18,7 @@ export function socialProgressFingerprint(message: CompanionMessage): string {
 export function socialProgressActions(turns: readonly CompanionLoopTurn[], proposedCalls: readonly CompanionLoopCall[] = []) {
   const actions: Array<{ callId: string; action: string; proposedRecipientIds: string[];
     delivery: 'proposed' | 'not_dispatched' | 'sent' | 'queued' | 'failed' | 'unconfirmed';
-    recipientIds?: string[]; messageId?: string; conversationId?: string; topicId?: string; taskId?: string;
-    taskStatus?: CompanionActivityTask['status']; sentContent?: string }> = [];
+    recipientIds?: string[]; messageId?: string; conversationId?: string; topicId?: string; taskId?: string; sentContent?: string }> = [];
   const collect = (call: CompanionLoopCall, result?: string, proposed = false) => {
     try {
       const normalized = normalizeCompanionCapabilityCall(call), args = JSON.parse(normalized.arguments);
@@ -37,7 +35,7 @@ export function socialProgressActions(turns: readonly CompanionLoopTurn[], propo
           : sent ? 'sent' : receipt?.socialPending === true ? 'queued' : 'unconfirmed',
         ...(sent && !notDispatched ? { messageId: sent.message.id, recipientIds: sent.recipientIds,
           conversationId: sent.message.conversationId, sentContent: sent.message.content, ...(sent.message.topicId ? { topicId: sent.message.topicId } : {}) } : {}),
-        ...(handoff ? { taskId: handoff.task.id, taskStatus: handoff.task.status } : {}) });
+        ...(handoff ? { taskId: handoff.task.id } : {}) });
     } catch { /* Malformed/external results cannot manufacture native effects. */ }
   };
   for (const turn of turns) for (const call of turn.calls) collect(call, turn.results?.find(result => result.callId === call.id)?.content);
