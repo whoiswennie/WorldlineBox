@@ -142,7 +142,8 @@ it.skipIf(process.env.WORLDLINEBOX_PEER_THOUGHT_REAL !== '1')('returns real isol
   const root = await mkdtemp(path.join(tmpdir(), 'worldlinebox-peer-thought-real-'));
   const sourcePaths = ['src/main/companions/service.ts', 'src/main/companions/world-service.ts', 'src/main/companions/social-model.ts',
     'src/main/companions/social-capabilities.ts', 'src/main/companions/topic-capabilities.ts', 'src/main/companions/thought-capabilities.ts',
-    'src/main/companions/structured-agent.ts', 'src/main/companions/model.ts', 'src/companions/social-store.ts', 'src/companions/store.ts',
+    'src/main/companions/structured-agent.ts', 'src/main/companions/model.ts', 'src/main/companions/context.ts',
+    'src/main/companions/thought-source-material.ts', 'src/main/companions/execution-evidence.ts', 'src/companions/social-store.ts', 'src/companions/store.ts',
     'src/companions/experience-store.ts', 'src/shared/companion-activity-thought.ts', 'src/shared/companion-storage.ts',
     'src/shared/companions.ts', 'src/shared/dsh-task-record.ts', 'src/main/dsh/task-execution.ts', 'src/main/dsh/task-runtime-policy.ts',
     'src/main/dsh/task-broker.ts', 'src/main/dsh/task-scope.ts', 'src/main/dsh/companion-runtime-source.ts',
@@ -154,6 +155,16 @@ it.skipIf(process.env.WORLDLINEBOX_PEER_THOUGHT_REAL !== '1')('returns real isol
   const config = await realGlobalChatConfig(path.join(root, 'profile'));
   const installed = await installedNativeAcceptanceSource(), native = await createNativeAcceptanceBroker(installed);
   const bridge = await createNativeAcceptanceLauncher(native, { maxTaskRuns: 3, timeoutMs: 120000 });
+  const thoughtInputs: Array<{ actionId: string; prompt: string }> = [];
+  const requestTask = bridge.launcher.requestTask.bind(bridge.launcher);
+  bridge.launcher.requestTask = async (request, execution) => {
+    if (request.type === 'task.run' && execution?.cognitiveOnly) {
+      expect(execution.constraints).toBeUndefined();
+      expect(execution.task).toEqual({ mode: 'native', tools: [], skills: [], session: { mode: 'new' }, workspace: { mode: 'managed' } });
+      thoughtInputs.push({ actionId: execution.recordScope!.actionId, prompt: request.prompt });
+    }
+    return requestTask(request, execution);
+  };
   const memory = await realMemoryRuntime(root, undefined, { modelFetch: async (url, init) => {
     if (port.mainHttp >= port.maxMainHttp) { port.budgetExceeded = true; throw new Error('PEER_THOUGHT_MAIN_HTTP_BUDGET'); }
     port.mainHttp++; return fetch(url, init);
@@ -241,6 +252,17 @@ it.skipIf(process.env.WORLDLINEBOX_PEER_THOUGHT_REAL !== '1')('returns real isol
       const action = store.getAction(thought.scope.actionId);
       expect(action).toMatchObject({ companionId: receiver.id, sourceMessageId: source!.id, thought: { kind: 'peer', jobId: job!.id }, status: 'succeeded' });
       expect(action.authorizationGrantId).toBeUndefined();
+      const delivered = thoughtInputs.find(input => input.actionId === action.id);
+      expect(delivered, 'The real Main-to-native dispatch must contain the source material, not just a synthetic checkpoint.').toBeDefined();
+      const checkpoint = store.request({ type: 'checkpoint.get', id: action.id }).checkpoint!;
+      expect(checkpoint.prompt).toBe(delivered!.prompt);
+      const packet = JSON.parse(delivered!.prompt).hostSourceMaterial;
+      expect(packet).toMatchObject({ schema: 'worldlinebox.companion-thought-source-material-v1', companionId: receiver.id,
+        conversationId: room.id });
+      expect(packet.materials).toContainEqual(expect.objectContaining({ id: source!.id, conversationId: room.id,
+        text: instruction, checksum: createHash('sha256').update(instruction).digest('hex'), truncated: false }));
+      expect(packet.directory).toContainEqual(expect.objectContaining({ id: source!.id, authorId: sender.id }));
+      expect(Buffer.byteLength(delivered!.prompt, 'utf8')).toBeLessThanOrEqual(65536);
       if (verifyPrewarm) {
         expect(action.executionSummary?.startup).toMatchObject({ reusedWorker: true });
         expect(action.executionSummary!.startup!.bootMs).toBeLessThan(5000);
@@ -280,7 +302,7 @@ it.skipIf(process.env.WORLDLINEBOX_PEER_THOUGHT_REAL !== '1')('returns real isol
     try {
       await mkdir(path.dirname(output), { recursive: true });
       await writeFile(output, JSON.stringify({ status, root, startedAt, finishedAt: new Date().toISOString(), deadlineMs: 240000, stopReason,
-        roles: roles.map(role => ({ id: role.id, name: role.name })), sourceClientId, source, peerJob: job, formalReply, agentRun, thoughtRecords, experiences,
+        roles: roles.map(role => ({ id: role.id, name: role.name })), sourceClientId, source, peerJob: job, formalReply, agentRun, thoughtRecords, thoughtInputs, experiences,
         verifyPrewarm, prewarmObservation,
         persistentActivityCount: Number((reportMessages.prepare('SELECT COUNT(*) AS count FROM companion_activity_tasks').get() as { count: number }).count),
         sourceFingerprints: before, finishedSourceFingerprints: after, sourceConfigurationUnchanged,
