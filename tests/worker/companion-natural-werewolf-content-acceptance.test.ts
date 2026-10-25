@@ -63,6 +63,10 @@ safeStorage: { isEncryptionAvailable: () => true, encryptString: (value: string)
 /** A real game chosen and played by the actual brains. The fixture establishes
  * only a temporary awake world; no player, role, vote, action or reply is scripted. */
 it.skipIf(process.env.WORLDLINEBOX_NATURAL_GAME_ACCEPTANCE !== '1')('finishes a natural werewolf game through autonomous Main, topic and activity loops from one human request', async () => {
+  const acceptanceMinutes = Number(process.env.WORLDLINEBOX_NATURAL_GAME_ACCEPTANCE_MINUTES ?? '20');
+  if (!Number.isSafeInteger(acceptanceMinutes) || acceptanceMinutes < 20 || acceptanceMinutes > 35) {
+    throw new Error('WORLDLINEBOX_NATURAL_GAME_ACCEPTANCE_MINUTES must be a safe integer from 20 through 35.');
+  }
   const resumeFrom = process.env.WORLDLINEBOX_NATURAL_GAME_RESUME_FROM;
   const scenario = process.env.WORLDLINEBOX_NATURAL_GAME_SCENARIO ?? 'legacy-six';
   if (!['legacy-six', 'fresh-five-autonomous-host'].includes(scenario)) throw new Error('Unknown natural game fixture scenario.');
@@ -106,8 +110,9 @@ it.skipIf(process.env.WORLDLINEBOX_NATURAL_GAME_ACCEPTANCE !== '1')('finishes a 
   }
   // Recovery observes the same original source after a normal app restart. It
   // cannot obtain a fresh game, another user request or another full budget.
+  // An explicit 20–35 minute cumulative window still deducts all prior time.
   transport.maxRequests = 600 - priorSourceNonJudgeRequests;
-  const remainingAcceptanceMs = 20 * 60000 - priorSourceDurationMs;
+  const remainingAcceptanceMs = acceptanceMinutes * 60000 - priorSourceDurationMs;
   if (transport.maxRequests < 1 || remainingAcceptanceMs < 1000) throw new Error('The original natural-game acceptance budget is exhausted.');
   const root = prior ? path.resolve(prior.root) : await mkdtemp(path.join(tmpdir(), 'worldlinebox-natural-werewolf-'));
   const evidenceRiskPath = process.env.WORLDLINEBOX_NATURAL_GAME_EVIDENCE_RISKS;
@@ -346,7 +351,7 @@ it.skipIf(process.env.WORLDLINEBOX_NATURAL_GAME_ACCEPTANCE !== '1')('finishes a 
       if (Date.now() >= nextProgress) {
         nextProgress = Date.now() + 30000;
         await save({ status: 'running', fixtureScenario: scenario, awakeScenario: roles, startedAt, observedAt: new Date().toISOString(), sourceFingerprints,
-          acceptanceBudget: { totalMinutes: 20, totalNonJudgeModelCalls: 600, remainingMs: remainingAcceptanceMs, modelCalls: transport.maxRequests, priorSourceDurationMs },
+          acceptanceBudget: { totalMinutes: acceptanceMinutes, totalNonJudgeModelCalls: 600, remainingMs: remainingAcceptanceMs, modelCalls: transport.maxRequests, priorSourceDurationMs },
           modelRequests: transport.requests, priorSourceModelRequests, cumulativeSourceModelRequests: priorSourceModelRequests + transport.requests,
           failures: [...failures],
           inferenceMetrics: inferenceMetrics(), sourceId, continuedExistingSource: !!prior, resumePreflight,
@@ -413,7 +418,7 @@ it.skipIf(process.env.WORLDLINEBOX_NATURAL_GAME_ACCEPTANCE !== '1')('finishes a 
     await save({ status, fixtureScenario: scenario, awakeScenario: roles, startedAt, finishedAt: new Date().toISOString(), durationMs: Math.round(performance.now() - started),
       sourceFingerprints, finishedSourceFingerprints, sourceFilesUnchanged,
       model: config.model, modelRequests: transport.requests, priorSourceModelRequests, cumulativeSourceModelRequests: priorSourceModelRequests + transport.requests,
-      inferenceMetrics: inferenceMetrics(), acceptanceBudget: { totalMinutes: 20, totalNonJudgeModelCalls: 600, remainingMs: remainingAcceptanceMs,
+      inferenceMetrics: inferenceMetrics(), acceptanceBudget: { totalMinutes: acceptanceMinutes, totalNonJudgeModelCalls: 600, remainingMs: remainingAcceptanceMs,
         modelCalls: transport.maxRequests, priorSourceDurationMs, cumulativeDurationMs: priorSourceDurationMs + Math.round(performance.now() - started), productLifetimeLimit: false },
       independentJudgeRequests: transport.judgeRequests, maxIndependentJudgeRequests: 1,
       nativeDsh: dshBridge ? { ...dshBridge.telemetry(), sourceConfigurationUnchanged: dshSourceConfigurationUnchanged,
@@ -436,4 +441,4 @@ it.skipIf(process.env.WORLDLINEBOX_NATURAL_GAME_ACCEPTANCE !== '1')('finishes a 
     expect(sourceFilesUnchanged, 'production source must stay frozen across the actual natural trajectory').toBe(true);
     expect(teardownFailure, 'native acceptance teardown must complete').toBeUndefined();
   }
-}, 1350000);
+}, 35 * 60000 + 150000);

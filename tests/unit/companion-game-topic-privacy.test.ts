@@ -4,6 +4,8 @@ import type { CompanionStorageCommand, CompanionStorageResponse } from '../../sr
 import { companionTopicCapabilities } from '../../src/main/companions/topic-capabilities';
 import type { CompanionReplyInput } from '../../src/main/companions/context';
 import { reviewCompanionTopicModeratorTransfer } from '../../src/main/companions/topic-moderator-transfer';
+import { reviewCompanionProposalQuantities } from '../../src/main/companions/proposal-quantity-review';
+vi.mock('../../src/main/companions/proposal-quantity-review', () => ({ reviewCompanionProposalQuantities: vi.fn(async () => ({ allowed: true })) }));
 
 const config = { apiFormat: 'openai_chat' as const, model: 'fixture', apiKey: 'fake', baseUrl: 'https://fixture.invalid' };
 const command: CompanionGameTopicUpdate = { type: 'topic.update', conversationId: 'actual_group', topicId: 'actual_game', readerId: 'host',
@@ -107,12 +109,12 @@ it.each(['summary', 'state', 'title', 'tags', 'shared_and_private'] as const)('r
   expect(fetchFn).toHaveBeenCalledOnce(); expect(request.mock.calls.map(([input]) => input.type)).toEqual(['topic.read']);
   expect(command.patch.shared!.summary).toBe('实际公开规则和阶段');
 });
-it('leaves private-only and ordinary non-game updates under their existing ACL without extra inference', async () => {
+it('leaves ordinary non-game public and private updates under their existing ACL without extra inference', async () => {
   const request = vi.fn<(command: CompanionStorageCommand) => Promise<CompanionStorageResponse>>(async () => current('discussion')), fetchFn = vi.fn<typeof fetch>();
   expect(await reviewCompanionGameSharedUpdate({ command: { ...command, patch: { workingState: { summary: '自己的秘密', sourceMessageIds: [] } } }, request }, config, undefined, { fetchFn })).toEqual({ allowed: true });
-  expect(request).not.toHaveBeenCalled();
+  expect(request).toHaveBeenCalledOnce();
   expect(await reviewCompanionGameSharedUpdate({ command, request }, config, undefined, { fetchFn })).toEqual({ allowed: true });
-  expect(request).toHaveBeenCalledOnce(); expect(fetchFn).not.toHaveBeenCalled();
+  expect(request).toHaveBeenCalledTimes(2); expect(fetchFn).not.toHaveBeenCalled();
 });
 it('repairs reviewer format in the same read-only slot without changing the original patch or audience', async () => {
   const request = vi.fn<(command: CompanionStorageCommand) => Promise<CompanionStorageResponse>>(async () => current()), payloads: unknown[] = [];
@@ -135,4 +137,32 @@ it('lets the native author correct a rejected patch under the same real reader w
     action: 'update', topicId: 'actual_game', expectedRevision: 7, patch: command.patch } }) });
   expect(result).toMatchObject({ ok: false, error: expect.stringContaining('共享summary') }); expect(request).not.toHaveBeenCalled();
   expect(reviewUpdate).toHaveBeenCalledWith(expect.objectContaining({ readerId: 'host', conversationId: 'actual_group', patch: command.patch }), undefined);
+});
+
+it('checks adopted public quantities in speech and in a stage-only checkpoint update without exposing private state', async () => {
+  const frame = publicFrame();
+  frame.topicState!.shared = { summary: '五份材料完整一对一分给四位接收者，全部分完。',
+    state: { recipients: ['a', 'b', 'c', 'd'], total: 5 }, sourceMessageIds: [],
+    sourceEventId: 'public_source', updatedAt: '2026-10-25T00:00:00Z', authorId: 'host', revision: 7 };
+  const quantities = vi.mocked(reviewCompanionProposalQuantities); quantities.mockClear();
+  quantities.mockResolvedValueOnce({ allowed: false, reason: '5 与 4' }).mockResolvedValueOnce({ allowed: false, reason: '5 与 4' })
+    .mockResolvedValueOnce({ allowed: false, reason: '5 与 4' });
+  const fetchFn = vi.fn<typeof fetch>(async () => response({ allowed: true, confidence: .99, reason: '公开内容无秘密。' }));
+  expect(await reviewCompanionGamePublicReply({ frame, text: '现在按这份安排完整分配。' }, config, undefined, { fetchFn }))
+    .toMatchObject({ allowed: false, reason: expect.stringContaining('5 与 4') });
+  const request = vi.fn<(command: CompanionStorageCommand) => Promise<CompanionStorageResponse>>(async () => ({ ...current(), topicState: frame.topicState }));
+  expect(await reviewCompanionGameSharedUpdate({ command: { ...command, patch: { shared: { stage: '准备分配', sourceMessageIds: [] } } },
+    request }, config, undefined, { fetchFn })).toMatchObject({ allowed: false, reason: expect.stringContaining('5 与 4') });
+  expect(await reviewCompanionGameSharedUpdate({ command: { ...command, patch: { workingState: {
+    summary: '现在按此前公共安排完整分配。', sourceMessageIds: [] } } }, request }, config, undefined, { fetchFn }))
+    .toMatchObject({ allowed: false, reason: expect.stringContaining('5 与 4') });
+  expect(quantities).toHaveBeenCalledTimes(3);
+  expect(JSON.stringify(quantities.mock.calls)).not.toContain('opaqueRecord');
+  expect(quantities.mock.calls[0]![0]).toMatchObject({ proposal: '现在按这份安排完整分配。', adoptedPlan: { state: frame.topicState!.shared!.state } });
+  expect(quantities.mock.calls[1]![0].proposal).toMatchObject({ shared: {
+    stage: '准备分配', summary: frame.topicState!.shared!.summary, state: frame.topicState!.shared!.state } });
+  expect(quantities.mock.calls[2]![0]).toMatchObject({ proposal: { privateUpdate: { summary: '现在按此前公共安排完整分配。' } },
+    adoptedPlan: { state: frame.topicState!.shared!.state } });
+  expect(fetchFn).toHaveBeenCalledTimes(2); // Private state never goes through the public-privacy reviewer.
+  expect(request.mock.calls.map(([value]) => value.type)).toEqual(['topic.read', 'topic.read']);
 });

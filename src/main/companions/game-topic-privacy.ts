@@ -3,6 +3,7 @@ import type { CompanionStorageCommand, CompanionStorageResponse } from '../../sh
 import type { CompanionMessage } from '../../shared/companions';
 import { CompanionModelError, generateCompanionStructured, type CompanionModelConfig, type CompanionModelOptions } from './model';
 import type { CompanionReplyInput } from './context';
+import { reviewCompanionProposalQuantities } from './proposal-quantity-review';
 
 export type CompanionGameTopicUpdate = Extract<CompanionStorageCommand, { type: 'topic.update' }>;
 export type CompanionGameTopicPrivacyReview = { allowed: boolean; reason?: string };
@@ -15,18 +16,34 @@ export async function reviewCompanionGameSharedUpdate(input: { command: Companio
   request(command: CompanionStorageCommand): Promise<CompanionStorageResponse>; source?: CompanionMessage },
 config: CompanionModelConfig, signal?: AbortSignal, options: Pick<CompanionModelOptions, 'fetchFn' | 'timeoutMs'> = {}): Promise<CompanionGameTopicPrivacyReview> {
   const { command } = input, patch = command.patch;
-  if (!patch.shared && patch.title === undefined && patch.tags === undefined && patch.invitedIds === undefined) return { allowed: true };
+  const publishes = !!patch.shared || patch.title !== undefined || patch.tags !== undefined || patch.invitedIds !== undefined;
+  if (!publishes && !patch.workingState) return { allowed: true };
   const current = await input.request({ type: 'topic.read', conversationId: command.conversationId, topicId: command.topicId, readerId: command.readerId });
   if (!current.ok || !current.topic || current.topicState?.readerId !== command.readerId) throw new Error(current.error ?? '无法读取本次真实话题及本人状态，未提交共享修改。');
   if (current.topic.kind !== 'game') return { allowed: true };
   if (current.topic.revision !== command.expectedRevision) return { allowed: false,
     reason: `话题expectedRevision=${command.expectedRevision}与已获权读取的currentRevision=${current.topic.revision}不一致；本次未写入。不要自行+1或猜测版本，可先通过topic.read读取最新话题，再依据实际回执修订完整提案。` };
-  return reviewPublicGamePayload({ purpose: 'game_shared_state_privacy', actorId: command.readerId,
+  if (!publishes) {
+    // A private state write can also implement an adopted public plan. It is
+    // still private: do not apply public-audience rules or fetch other states.
+    const shared = current.topicState?.shared;
+    return reviewCompanionProposalQuantities({ proposal: { operation: command.type, privateUpdate: { stage: patch.workingState?.stage,
+      summary: patch.workingState?.summary, state: patch.workingState?.state } },
+    adoptedPlan: shared ? { stage: shared.stage, summary: shared.summary, state: shared.state } : undefined }, config, signal, options);
+  }
+  const privacy = await reviewPublicGamePayload({ purpose: 'game_shared_state_privacy', actorId: command.readerId,
     actualAudience: { conversationId: current.topic.conversationId, topicId: current.topic.id,
       participantIds: current.topic.participantIds, invitedIds: current.topic.invitedIds, sharedVisibleToJoinedParticipants: true },
     currentTopic: current.topic, currentOwnState: current.topicState,
     source: input.source ? { id: input.source.id, conversationId: input.source.conversationId, authorId: input.source.authorId, content: input.source.content } : undefined,
     exactProposedPatch: patch }, config, signal, options);
+  if (!privacy.allowed) return privacy;
+  // The store retains omitted checkpoint fields; state, when present, replaces
+  // the old state. Review that same resulting public content, not just delta.
+  const previous = current.topicState?.shared;
+  const shared = patch.shared ? { stage: patch.shared.stage ?? previous?.stage,
+    summary: patch.shared.summary ?? previous?.summary, state: patch.shared.state ?? previous?.state } : undefined;
+  return reviewCompanionProposalQuantities({ proposal: { title: patch.title, tags: patch.tags, shared } }, config, signal, options);
 }
 
 /** Speech is delivered to the actual room even when its body says "private".
@@ -39,7 +56,11 @@ config: CompanionModelConfig, signal?: AbortSignal, options: Pick<CompanionModel
   if (topic.conversationId !== frame.conversation.id || !frame.conversation.memberIds.includes(frame.companion.id)
     || frame.topicState && (frame.topicState.readerId !== frame.companion.id || frame.topicState.topicId !== topic.id))
     return { allowed: false, reason: '当前公开话题端口或本人私态归属不一致，未发布正文。请重新读取真实端口。' };
-  return reviewPublicGamePayload(companionGamePublicReplyEvidence(frame, input.text), config, signal, options);
+  const privacy = await reviewPublicGamePayload(companionGamePublicReplyEvidence(frame, input.text), config, signal, options);
+  if (!privacy.allowed) return privacy;
+  const shared = frame.topicState?.shared;
+  return reviewCompanionProposalQuantities({ proposal: input.text,
+    adoptedPlan: shared ? { stage: shared.stage, summary: shared.summary, state: shared.state } : undefined }, config, signal, options);
 }
 
 /** Exact current audience and authorized evidence used by the public reviewer.

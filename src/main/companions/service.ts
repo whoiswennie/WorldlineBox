@@ -1529,9 +1529,9 @@ export class CompanionService {
                     { fetchFn: (input, init) => net.fetch(input instanceof URL ? input.toString() : input, { ...init, credentials: 'omit' }) });
                   if (!privacy.allowed) {
                     await stream.stop('discarded');
-                    if (retry === 2) throw new CompanionModelError('INVALID_RESPONSE', '本次游戏正文仍含当前受众不应读取的私密信息，原进度已保留，正文未发布。');
+                    if (retry === 2) throw new CompanionModelError('INVALID_RESPONSE', '本次游戏正文仍未通过公开内容核验，原进度已保留，正文未发布：' + privacy.reason);
                     topicCorrections.push(privacy.reason ?? '实际公开端口的正文含未公开游戏信息。');
-                    topicCorrection = '本槽位先前草稿没有发布。回复正文会投递到当前实际会话，写“私信”或点名某人不会改变收件人。私牌、夜间秘密行动和秘密角色对应关系应通过真实单独消息工具发给正确成员；公开正文只保留实际可公开的信息。已确认成功的工具不重发。请按核验意见自行修订，不复述被拒的秘密值或修订过程。\n'
+                    topicCorrection = '本槽位先前草稿没有发布。请按核验意见自行修订原提案；共享草案和多人复述不证明内容正确，数量关系须按实际资料核对。回复正文会投递到当前实际会话，写“私信”或点名某人不会改变收件人。私牌、夜间秘密行动和秘密角色对应关系应通过真实单独消息工具发给正确成员；公开正文只保留实际可公开的信息。已确认成功的工具不重发，不复述被拒的秘密值或修订过程。\n'
                       + JSON.stringify({ topicCorrections });
                     continue;
                   }
