@@ -14,9 +14,10 @@ import { companionTopicOperationSchema, COMPANION_TOPIC_STATE_WRITE_RECEIPT, com
 import { companionSocialGoalOrigin } from './social-goal-origin';
 import type { CompanionActivityThoughtAuthorization } from '../shared/companion-activity-thought';
 import { companionFinalProposalJsonText } from '../shared/companion-final-proposal';
-import { companionPeerActivitySourceValid } from './peer-activity-source';
+import { companionPeerActivitySourceValid, companionPeerActivitySourceChecksum } from './peer-activity-source';
 import { findCompanionActivityPortCandidate, findJoinedCompanionActivityPortCandidate, publicCompanionActivityPortCandidate } from './activity-port-candidates';
 type Row = { data: string };
+type SocialRouteProof = { sourceMessageId: string; throughSequence: number; chainId: string; memberIds: string[]; readSet?: Array<{ id: string; checksum: string }> };
 type GoalSocialOrigin = { messageId: string; sourceMessageId: string; deliveryClientId: string; conversationId: string; topicId?: string; chainId: string };
 type Stored = CompanionActivityTask & { clientId: string; sourceChecksum?: string; nextAt: number; leaseUntil?: number;
   planningMs?: number; planningStartedAt?: number; reportVersion?: number;
@@ -68,6 +69,10 @@ export class CompanionActivityTaskStore {
     this.db.exec("CREATE INDEX IF NOT EXISTS companion_activity_recovery ON companion_activity_tasks(status,json_extract(data,'$.createdAt'))");
     if (!(this.db.prepare('PRAGMA table_info(companion_activity_tasks)').all() as { name: string }[]).some(column => column.name === 'report_pending')) this.db.exec('ALTER TABLE companion_activity_tasks ADD COLUMN report_pending INTEGER NOT NULL DEFAULT 0');
     this.db.exec('CREATE INDEX IF NOT EXISTS companion_activity_reports ON companion_activity_tasks(report_pending,next_at)');
+    this.db.exec(`CREATE TABLE IF NOT EXISTS companion_activity_social_inbox(task_id TEXT NOT NULL REFERENCES companion_activity_tasks(id) ON DELETE CASCADE,
+      message_id TEXT NOT NULL,job_id TEXT NOT NULL,conversation_id TEXT NOT NULL,checksum TEXT NOT NULL,proof TEXT NOT NULL,status TEXT NOT NULL DEFAULT 'pending',observed_lease TEXT,
+      PRIMARY KEY(task_id,message_id));
+      CREATE INDEX IF NOT EXISTS companion_activity_social_inbox_pending ON companion_activity_social_inbox(task_id,status)`);
   }
   private save(task: Stored): void { task.updatedAt = iso(); this.db.prepare('UPDATE companion_activity_tasks SET status=?,next_at=?,report_pending=?,data=? WHERE id=?').run(task.status, task.nextAt, Number(!!task.reportPending), JSON.stringify(task), task.id); }
   /** Only leased planning consumes the budget. Offline time and durable waits do not. */
@@ -294,6 +299,85 @@ export class CompanionActivityTaskStore {
       return { ok: true, activityHandoff: { task: published, existingEffect: !!input.clientId && this.handoffEffect(task, source, input.clientId),
         executor: 'background_activity', newVirtualActionDispatched: false, notice: COMPANION_ACTIVITY_HANDOFF_NOTICE } };
     } catch { return missing; }
+  }
+  /** A live peer lease can submit only its exact, still-readable event. */
+  private socialRouteSource(input: { companionId: string; conversationId: string; jobId: string; leaseToken?: string }, recorded?: SocialRouteProof) {
+    const row = this.db.prepare('SELECT companion_id,conversation_id,status,lease_until,data FROM companion_social_jobs WHERE id=?').get(input.jobId) as
+      { companion_id: string; conversation_id: string; status: string; lease_until?: string; data: string } | undefined;
+    if (!row || row.companion_id !== input.companionId || row.conversation_id !== input.conversationId) return;
+    const current = JSON.parse(row.data) as SocialRouteProof & { id: string; companionId: string; conversationId: string; status: string; leaseToken?: string };
+    if (recorded && (recorded.sourceMessageId !== current.sourceMessageId || recorded.chainId !== current.chainId)) return;
+    // A settled/deferred social job may clear its live readSet. The accepted event retains its exact original proof.
+    const job = { ...current, ...recorded };
+    if (job.id !== input.jobId || job.companionId !== input.companionId || job.conversationId !== input.conversationId || job.status !== row.status
+      || input.leaseToken && (row.status !== 'running' || job.leaseToken !== input.leaseToken || !row.lease_until || !Number.isFinite(Date.parse(row.lease_until)) || Date.parse(row.lease_until) <= Date.now())
+      || !job.readSet?.length || !this.social.continuity.chainValid(job.chainId)) return;
+    const sources = this.visible(input, job.readSet.map(ref => ref.id));
+    if (job.readSet.some(ref => !sources.some(source => source.id === ref.id && source.sequence <= job.throughSequence
+      && companionPeerActivitySourceChecksum(source) === ref.checksum))) return;
+    const source = sources.find(message => message.id === job.sourceMessageId);
+    if (!source || source.status !== 'sent' || source.isReplyDraft || source.replyDraft || source.conversationId !== input.conversationId
+      || ['user', 'system', input.companionId].includes(source.authorId) || !job.memberIds.includes(source.authorId)
+      || !this.db.prepare('SELECT 1 FROM conversation_members WHERE conversation_id=? AND companion_id=?').get(input.conversationId, input.companionId)
+      || !this.db.prepare('SELECT 1 FROM conversation_members WHERE conversation_id=? AND companion_id=?').get(input.conversationId, source.authorId)) return;
+    return { job, source };
+  }
+  private socialRouteMatches(task: Stored, source: CompanionMessage, chainId: string): boolean {
+    // Other source kinds retain their existing social path until equally exact lineage is available.
+    if (!task.sourceMessageId || task.peerResponsibility || terminal(task) || !this.valid(task)) return false;
+    const origin = this.social.continuity.forChain(chainId);
+    if (!origin || origin.initiatorKind !== 'human_player' || origin.initiatorId !== 'user' || origin.ownerId !== task.companionId) return false;
+    const row = this.db.prepare("SELECT data FROM companion_social_delegations WHERE id=? AND companion_id=? AND status='active'").get(origin.id, task.companionId) as Row | undefined;
+    const root = row ? JSON.parse(row.data) as { conversationId: string; sourceMessageId: string } : undefined;
+    if (!root || root.conversationId !== task.conversationId || root.sourceMessageId !== task.sourceMessageId) return false;
+    const port = this.boundPort(task);
+    if (port?.conversationId === source.conversationId && port.topicId === source.topicId) return true;
+    // An ordinary room is reusable; only this goal's actual outbound reply chain qualifies.
+    return this.goalSocialMessages(task).origins.some(ref => ref.messageId === source.id && ref.chainId === chainId
+      && ref.conversationId === source.conversationId && (ref.topicId ?? null) === (source.topicId ?? null));
+  }
+  private routeSocial(input: Extract<CompanionStorageCommand, { type: 'activity.social.route' }>): CompanionStorageResponse {
+    return this.db.transaction(() => {
+      const missing = { ok: true };
+      if (!this.db.prepare("SELECT 1 FROM companions WHERE id=? AND deleted_at IS NULL AND json_extract(data,'$.active')=1").get(input.companionId)) return missing;
+      const event = this.socialRouteSource(input);
+      if (!event) return missing;
+      const tasks = (this.db.prepare("SELECT data FROM companion_activity_tasks WHERE companion_id=? AND status IN('queued','running','waiting')")
+        .all(input.companionId) as Row[]).map(row => JSON.parse(row.data) as Stored).filter(task => { try { return this.socialRouteMatches(task, event.source, event.job.chainId); } catch { return false; } });
+      if (tasks.length !== 1) return missing;
+      const task = tasks[0]!, previous = this.db.prepare('SELECT status FROM companion_activity_social_inbox WHERE task_id=? AND message_id=?').get(task.id, event.source.id) as { status: string } | undefined;
+      if (previous?.status === 'cancelled') return missing;
+      if (!previous) {
+        this.inboxMessages(task); // Retain cancelled evidence without letting invalid rows occupy pending capacity.
+        if (Number((this.db.prepare("SELECT count(*) AS n FROM companion_activity_social_inbox WHERE task_id=? AND status='pending'").get(task.id) as { n: number }).n) >= 100) return missing;
+        const proof: SocialRouteProof = { sourceMessageId: event.job.sourceMessageId, throughSequence: event.job.throughSequence,
+          chainId: event.job.chainId, memberIds: event.job.memberIds, readSet: event.job.readSet };
+        this.db.prepare('INSERT INTO companion_activity_social_inbox(task_id,message_id,job_id,conversation_id,checksum,proof) VALUES(?,?,?,?,?,?)')
+          .run(task.id, event.source.id, event.job.id, event.source.conversationId, companionPeerActivitySourceChecksum(event.source), JSON.stringify(proof));
+        // Keep a running task's lease, step and budget intact. Its next observation sees the event.
+        if (task.status !== 'running') { task.nextAt = Date.now(); this.save(task); }
+      }
+      return { ok: true, activitySocialRoute: { taskId: task.id, sourceMessageId: event.source.id } };
+    }).immediate();
+  }
+  private inboxMessages(task: Stored): CompanionMessage[] {
+    const rows = this.db.prepare("SELECT message_id,job_id,conversation_id,checksum,proof FROM companion_activity_social_inbox WHERE task_id=? AND status='pending' ORDER BY rowid LIMIT 100")
+      .all(task.id) as Array<{ message_id: string; job_id: string; conversation_id: string; checksum: string; proof: string }>;
+    return rows.flatMap(row => {
+      try {
+        const event = this.socialRouteSource({ companionId: task.companionId, conversationId: row.conversation_id, jobId: row.job_id }, JSON.parse(row.proof) as SocialRouteProof);
+        if (event && event.source.id === row.message_id && companionPeerActivitySourceChecksum(event.source) === row.checksum
+          && this.socialRouteMatches(task, event.source, event.job.chainId)) return [event.source];
+      } catch { /* A revoked event cannot enter task cognition. */ }
+      this.db.prepare("UPDATE companion_activity_social_inbox SET status='cancelled',observed_lease=NULL WHERE task_id=? AND message_id=? AND status='pending'").run(task.id, row.message_id);
+      return [];
+    });
+  }
+  private consumeSocialInbox(task: Stored, token: string): void {
+    const observed = task.observedSocialEvidence?.leaseToken === token ? task.observedSocialEvidence.messages : [];
+    for (const message of this.inboxMessages(task)) if (observed.some(ref => ref.id === message.id && ref.checksum === checksum(message)))
+      this.db.prepare("UPDATE companion_activity_social_inbox SET status='consumed' WHERE task_id=? AND message_id=? AND checksum=? AND status='pending' AND observed_lease=?")
+        .run(task.id, message.id, companionPeerActivitySourceChecksum(message), token);
   }
   private handoffEffect(task: Stored, original: CompanionMessage, clientId: string): boolean {
     if (!task.seededSocialClientIds?.includes(clientId)) return false;
@@ -551,8 +635,10 @@ export class CompanionActivityTaskStore {
     // into task cognition, never that room's unrelated earlier conversation.
     const current = (task.sourceMessageId || task.seededSocialClientIds?.length) && !topicId ? []
       : this.visible({ companionId: task.companionId, conversationId }, ids).reverse();
-    return [...new Map([...this.goalSocialMessages(task).messages, ...current].map(message => [message.id, message])).values()]
-      .sort((a, b) => a.sequence - b.sequence).slice(-100);
+    const inbox = this.inboxMessages(task), inboxIds = new Set(inbox.map(message => message.id)), remaining = 100 - inbox.length;
+    const recent = remaining > 0 ? [...new Map([...this.goalSocialMessages(task).messages, ...current].map(message => [message.id, message])).values()]
+      .filter(message => !inboxIds.has(message.id)).sort((a, b) => a.sequence - b.sequence).slice(-remaining) : [];
+    return [...recent, ...inbox].sort((a, b) => a.sequence - b.sequence);
   }
   private goalSocialMessages(task: Stored): { messages: CompanionMessage[]; origins: GoalSocialOrigin[] } {
     const messages = new Map<string, CompanionMessage>(), origins = new Map<string, GoalSocialOrigin>();
@@ -708,6 +794,9 @@ export class CompanionActivityTaskStore {
       taskConversationId: task.conversationId, targetId, sourceMessageId: source.id });
   }
   private wake(task: Stored): boolean {
+    if (this.inboxMessages(task).length) {
+      task.stage = '同一目标收到真实新来信，继续在原任务中核对。'; delete task.wait; delete task.condition; return true;
+    }
     if (!task.wait || !task.condition) return true;
     const world = this.world.snapshot(task), actor = world.actors.find(actor => actor.companionId === task.companionId), wait = task.wait, condition = task.condition;
     let ready: boolean, reason: string;
@@ -881,6 +970,9 @@ export class CompanionActivityTaskStore {
     return this.db.transaction(() => {
       const task = this.leased(id, token);
       if (expectedStep !== undefined && task.step !== expectedStep) throw new Error('行动步骤已有真实进展，旧提案未执行；须重新观察。');
+      if (decision.status !== 'continue' && this.inboxMessages(task).some(message => task.observedSocialEvidence?.leaseToken !== token
+        || !task.observedSocialEvidence.messages.some(ref => ref.id === message.id && ref.checksum === checksum(message))))
+        throw new Error('本目标收到本租约尚未观察的新来信，不能提交旧终态；请在原任务中重新观察。');
       if (executionReadset) this.bindExecutionEvidence(task, executionReadset);
       if (decision.status !== 'continue' && task.sourceMessageId && task.observedProgressEvidence?.leaseToken === token
         && task.observedProgressEvidence.observationChecksum !== this.social.continuity.progressForGoal({ ...task, sourceMessageId: task.sourceMessageId }).observationChecksum)
@@ -900,6 +992,7 @@ export class CompanionActivityTaskStore {
         task.status = 'queued'; task.nextAt = Date.now() + 1500; task.attempts = 0; delete task.leaseToken; delete task.leaseUntil; this.save(task); return this.public(task);
       }
       if (decision.status !== 'continue') { if (executionReadset) task.reportReadset = this.reportEvidence(task, executionReadset); else delete task.reportReadset;
+        if (decision.status === 'complete') this.consumeSocialInbox(task, token);
         this.finish(task, decision.status === 'complete' ? 'succeeded' : 'failed', decision.summary); return this.public(task); }
       const action = decision.action;
       if (action && 'targetCompanionId' in action) task.targetId = action.targetCompanionId;
@@ -995,6 +1088,7 @@ export class CompanionActivityTaskStore {
         excerpt: result.slice(0, 12000) });
       const actionName = decision.topic ? `topic.${(decision.topic as { action: string }).action}` : action?.action ?? 'observe';
       task.step++; task.attempts = 0; task.history.push({ step: task.step, at: iso(), action: actionName, ...(action ? { arguments: action } : {}), ...(decision.topic ? { topicArguments: decision.topic } : {}), result: boundedResult, ok });
+      if (ok) this.consumeSocialInbox(task, token);
       if (!ok && task.history.slice(-3).length === 3 && task.history.slice(-3).every(item => !item.ok && item.action === actionName && item.result === result)) {
         const failedStage = '同一原子行为连续失败三次，已停止重试。最后原因：' + result;
         // The failed status and three original history entries already record
@@ -1078,6 +1172,7 @@ export class CompanionActivityTaskStore {
   }
   execute(command: CompanionStorageCommand): CompanionStorageResponse | undefined {
     switch (command.type) {
+      case 'activity.social.route': return this.routeSocial(command);
       case 'activity.handoff': return this.handoff(command);
       case 'activity.social.bind_peer_port': return this.bindPeerPort(command);
       case 'activity.port.adopt_candidate': return this.adoptCandidate(command);
@@ -1129,6 +1224,8 @@ export class CompanionActivityTaskStore {
       case 'activity.observe': {
         const task = this.leased(command.id, command.leaseToken), messages = this.peerMessages(task);
         task.observedSocialEvidence = { leaseToken: command.leaseToken, messages: messages.map(message => ({ id: message.id, checksum: checksum(message) })) };
+        for (const message of this.inboxMessages(task)) if (messages.some(read => read.id === message.id))
+          this.db.prepare("UPDATE companion_activity_social_inbox SET observed_lease=? WHERE task_id=? AND message_id=? AND status='pending'").run(command.leaseToken, task.id, message.id);
         const evidence = new Map((task.evidence ?? []).map(item => [item.id, item]));
         for (const message of messages) evidence.set(message.id, { id: message.id, conversationId: message.conversationId, checksum: checksum(message) });
         task.evidence = [...evidence.values()]; const world = this.world.snapshot(task); this.noteArrival(task, world);

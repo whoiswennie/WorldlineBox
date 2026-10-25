@@ -1352,3 +1352,15 @@ f0c3228上的native-world-tools-five-quantity-continuation.json保持原source�
 原独立judge RED保持：gameCompleted=false、privateIdentityProtected=true、rosterConsistent=true，但它将真实2/1/1说成“四票平票”，并把主持正确放逐当作算票错误，这部分理由与原件不符；私人进度声明与公开记录矛盾、整局未完成则有原件支持。没有另叫judge抽样改判，也未把机械调度已修复冒充整体验收通过。
 
 本阶段实际完成并推送了群聊DSH思考/渐进记录入口、空库经历读取、耗尽链真实等待及权限隔离的双策略预热，必要机械回归和真实DSH性能闭环已通过。自主完整结算仍未通过，长期目标保持进行中；当前没有再次打包，旧source002c4a5安装器仍不代表这些最新修复。后续先基于同一原件核源码因果，不追加游戏或数学审核实验，也不把未完成状态宣布为交付完成。
+
+### 16.89 同一角色的任务收件与真实通知（2026-10-25）
+
+原库只读因果审计确认seq119来自activity、123来自独立peer social、125来自notification。123固定through114，未读稍后的119，也未接续原任务计划；125却确已读正确119/123，仍把Flash的错误来信变成本人“已在群内认错”。持久wholeGoalPlan仍为2/1/1与等待Kimi遗言，没有被通知改写。故不能只归因于缺少群史，也不再加算术、语义审核层。原库main/WAL/SHM复制前后哈希一致，原RED不改判；凭据见外部owner-topic-causal-audit/report.json。
+
+自动通知现直接引用已核验的真实回信或已释放拜访许可，显示实际作者、消息/许可ID及必要节选；他人说法保持引用，不生成本人的行动、阶段或任务状态叙事，不再调用通知模型及随后语义review。新批次最多4条，旧16条均保留逐项来源且总长不超过2000；原租约、撤源、幂等、原子commit与本人经历投影保持。不同实际消息不作关键词或语义去重；许可不代表抵达。两个原相关文件63/63、0skip、child exit0，凭据deterministic-social-notification-final-tests.json。
+
+新增宿主专用activity.social.route：以真实运行social job的lease/readSet、准确owner、唯一仍有效原真人目标与已绑定topic或实际出站链匹配持续任务。匹配后只把实际来信存入原任务收件箱，原job正常静默完成，不启动第二planner；普通社交、歧义、未建立等价精确闭包的peer-accepted/source-free任务仍走原通路。收件持久证明只存原source/chain/through/memberIds/readSet，不复制正文或私聊目标；重启、暂态job/readSet清理不丢事件，源/ACL/原root与端口继续核验。running任务lease保持，真正observe且成功commit才消费；新来信不能被旧终态提案吞掉。新增三个SQLite检查3/3、child exit0，覆盖正常Main路由零模型、原任务观察/恢复/消费、错误owner/lease/撤源、运行lease保留与晚到来信的终态竞争；报告activity-social-route-final.json与activity-social-route-implementation.json。
+
+只读复核发现的typingNotBefore、满100条的slice(-0)、晚到来信与暂态readSet清理问题均已在冻结前修正；未以游戏专用规则或替角色决策处理。该修复不能自行证明角色算票、阶段或整局已完成。最后仅沿同一仍运行的原source，在原fixture已支持的35分钟累计上限内使用最后约295秒/47次非judge请求；既有30分钟与553次非judge继续扣除，不增加600次调用上限、不新建用户目标、角色、群或对局。真实结果随后如实登记，在必要验证跑通前仍不打包。
+
+冻结后的main/extension类型检查、目标lint和diff-check实际退出0。原world-service/activity-service/activity-task三个完整文件首轮112通过、1项测试名称大小写错误（fixture真实name为bob，新增断言误写Bob）；只纠正该断言，针对原失败项确认1/1、child exit0，产品未为此改动。首轮lint的两个未使用测试import已删除并确认退出0；原失败日志全部保留。没有为机械通过重复运行通知63项、route3项或既有DSH性能集合。对应凭据owner-inbox-main-worker-regressions.json、owner-inbox-notification-wiring-confirmed.json与owner-inbox-*-exit.json；独立最终只读复核无未解决P1/P2。

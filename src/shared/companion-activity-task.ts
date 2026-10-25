@@ -87,6 +87,8 @@ export const activityPublicCommands = [
   scope.extend({ type: z.literal('activity.history'), id, beforeStep: z.number().int().positive().optional(), limit: z.number().int().min(1).max(100).default(32) }).strict(),
 ] as const;
 export const activityStorageCommands = [...activityPublicCommands,
+  // Host-only admission of a real peer event into an already-owned goal.
+  scope.extend({ type: z.literal('activity.social.route'), jobId: id, leaseToken: id }).strict(),
   scope.extend({ type: z.literal('activity.handoff'), sourceMessageId: id, sourceChecksum: z.string().regex(/^[a-f0-9]{64}$/), clientId: id.optional() }).strict(),
   scope.extend({ type: z.literal('activity.social.ensure'), sourceMessageId: id, deliveryClientId: id,
     operation: z.enum(['message', 'introduce', 'create_group']) }).strict(),

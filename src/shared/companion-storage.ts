@@ -255,6 +255,7 @@ export const companionStorageResponseSchema = companionsResponseSchema.extend({
   activityMemoryIntent: activityMemoryIntentSchema.optional(),
   activityPlanningState: activityPlanningStateSchema.optional(),
   activityHandoff: activityHandoffSchema.optional(),
+  activitySocialRoute: z.strictObject({ taskId: companionIdSchema, sourceMessageId: companionIdSchema }).optional(),
   activityGameRoom: z.strictObject({ conversationId: companionIdSchema, memberIds: z.array(companionIdSchema).min(2).max(20) }).optional(),
   documentCatalog: companionDocumentCatalogPageSchema.optional(),
   documentCatalogUnchanged: z.boolean().optional(),

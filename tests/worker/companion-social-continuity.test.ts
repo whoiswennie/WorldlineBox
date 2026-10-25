@@ -8,6 +8,7 @@ import { recordUrgentAttention } from '../helpers/companion-world-fixture';
 import BetterSqlite3 from 'better-sqlite3';
 import { createHash } from 'node:crypto';
 import { companionPeerActivitySourceValid } from '../../src/companions/peer-activity-source';
+import { buildCompanionSocialNotification } from '../../src/main/companions/social-notification-model';
 
 const ids = ['deepseek-flash', 'phoebe', 'deepseek-sister'];
 const seeds: CompanionSeed[] = ids.map(id => ({ id, name: id, persona: '保持独立身份。', description: '', model: '', avatar: 'flash', proactive: false }));
@@ -37,9 +38,9 @@ function fixture() {
   const peer = store.request({ type: 'social.conversation.ensure', companionId: 'deepseek-flash', memberIds: ['deepseek-flash', 'phoebe'] }).socialConversation!;
   return { root, filename, store, playerRoom, source, peer };
 }
-function replied(f: ReturnType<typeof fixture>, content = '好呀，等你过来一起玩。') {
+function replied(f: ReturnType<typeof fixture>, content = '好呀，等你过来一起玩。', clientId = 'player_delegated_invitation') {
   const send = { type: 'social.send', companionId: 'deepseek-flash', conversationId: f.peer.id, channel: 'phone',
-    content: '菲比，可以一起玩吗？', authorizationMessageId: f.source.id, clientId: 'player_delegated_invitation' } as const;
+    content: '菲比，可以一起玩吗？', authorizationMessageId: f.source.id, clientId } as const;
   expect(f.store.request(send).socialPending).toBe(true); advance(f.store, 1300);
   const incoming = f.store.request({ type: 'social.job.claim' });
   expect(incoming.socialMessage!.message.authorId).toBe('deepseek-flash');
@@ -69,6 +70,31 @@ it('coalesces waiting replies from one delegation, commits one bubble and consum
   expect(f.store.request(command).message!.id).toBe(sent.id);
   expect(f.store.request({ type: 'social.notification.claim' }).socialNotification).toBeUndefined();
   expect(f.store.messages({ conversationId: f.playerRoom.id }).messages.filter(message => message.authorId === 'deepseek-flash')).toHaveLength(1);
+});
+it('delivers at most four exact quotations per batch and leaves the fifth real event available for its own delivery', () => {
+  const f = fixture(), sourceIds: string[] = [];
+  for (let index = 0; index < 5; index++) {
+    sourceIds.push(replied(f, '这是第' + index + '条真实回复。', 'bounded_notice_' + index).reply.message.id);
+    const followup = f.store.request({ type: 'social.job.claim' }).socialJob!;
+    expect(followup.companionId).toBe('deepseek-flash'); advance(f.store, 1300);
+    f.store.request({ type: 'social.job.complete', id: followup.id, leaseToken: followup.leaseToken!, text: null });
+  }
+  const deliver = (notice: NonNullable<ReturnType<typeof f.store.request>['socialNotification']>) => {
+    const text = buildCompanionSocialNotification({ companion: { id: 'deepseek-flash' }, conversation: f.playerRoom, source: f.source,
+      notification: notice, members: seeds, eventMessages: f.store.request({ type: 'social.messages', conversationId: f.peer.id }).socialMessagePage!.items.map(item => item.message) });
+    const command = { type: 'social.notification.complete' as const, id: notice.id, leaseToken: notice.leaseToken!, text };
+    const message = f.store.request(command).message!;
+    expect(f.store.request(command).message!.id).toBe(message.id);
+    expect(message.replyToId).toBe(f.source.id); return message;
+  };
+  const first = f.store.request({ type: 'social.notification.claim' }).socialNotification!;
+  expect(first.events?.map(event => event.eventId)).toEqual(sourceIds.slice(0, 4));
+  const firstMessage = deliver(first); expect(firstMessage.content).not.toContain(sourceIds[4]);
+  const second = f.store.request({ type: 'social.notification.claim' }).socialNotification!;
+  expect(second.events?.map(event => event.eventId)).toEqual(sourceIds.slice(4));
+  expect(deliver(second).content).toContain(sourceIds[4]);
+  expect(f.store.request({ type: 'social.notification.claim' }).socialNotification).toBeUndefined();
+  expect(f.store.messages({ conversationId: f.playerRoom.id }).messages.filter(message => message.authorId === 'deepseek-flash')).toHaveLength(2);
 });
 it('claims only this human goal actual sent bodies and binds authority and real reads atomically without unrelated raw rooms', () => {
   const f = fixture(), { reply } = replied(f);

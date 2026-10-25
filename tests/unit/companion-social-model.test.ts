@@ -1,7 +1,7 @@
 import { COMPANION_SUBMIT_RESULT_TOOL } from '../../src/shared/companion-final-proposal';
 import { expect, it, vi } from 'vitest';
 import { authorizeCompanionContact, authorizeCompanionMessage, authorizeCompanionSocialInitiative, generateCompanionSocialReply } from '../../src/main/companions/social-model';
-import { generateCompanionSocialNotification } from '../../src/main/companions/social-notification-model';
+import { buildCompanionSocialNotification } from '../../src/main/companions/social-notification-model';
 import { generateCompanionVisitSpeech } from '../../src/main/companions/visit-speech-model';
 import type { CompanionActivityTask } from '../../src/shared/companion-activity-task';
 import type { Companion, CompanionConversation, CompanionMessage, CompanionMemory } from '../../src/shared/companions';
@@ -291,70 +291,63 @@ it('keeps a host-verified human initiator across peer turns even when a peer inc
   await expect(generateCompanionSocialReply({ ...input(), job: { ...job, origin: { ...origin, initiatorId: 'deepseek-sister' } } }, config, undefined, { fetchFn })).rejects.toMatchObject({ code: 'INVALID_RESPONSE' });
   expect(fetchFn).toHaveBeenCalledOnce();
 });
-it('reports one committed peer event to the actual original player without importing private transcripts or granting tools', async () => {
+it('quotes the actual peer reply without a notification model, task narrative or private player transcript', () => {
   const playerRoom = { ...conversation, id: 'private_flash', kind: 'private' as const, memberIds: [companion.id] };
   const player = { ...source, id: 'player_request', conversationId: playerRoom.id, authorId: 'user', content: '去找朋友玩。PRIVATE_USER_HISTORY' };
   const notification: CompanionSocialNotification = { id: 'notice', companionId: companion.id, conversationId: playerRoom.id,
     sourceMessageId: player.id, origin: { id: 'delegation', initiatorId: 'user', initiatorKind: 'human_player', ownerId: companion.id, sharedText: '一起玩吗？', provenance: 'current_player_request' },
     kind: 'peer_reply', eventId: 'actual_peer_reply', peerConversationId: conversation.id, evidence: { authorId: 'friend', messageId: 'actual_peer_reply', text: '可以来玩。' },
     status: 'running', attempts: 1, leaseToken: 'lease', createdAt: source.createdAt };
-  const fetchFn = vi.fn<typeof fetch>(async (_url, init) => {
-    const request = JSON.parse(String(init?.body)), payload = JSON.parse(request.messages[1].content);
-    if (payload.purpose === 'companion_social_progress_review') return response({ supported: true, correction: '' });
-    expect(payload.purpose).toBe('world_social_notification'); expect(payload.identity.currentReply.speaker.id).toBe('user');
-    expect(payload.identity.currentReply.author.id).toBe(companion.id); expect(payload.origin.initiatorId).toBe('user');
-    expect(payload.confirmedEvent).toEqual({ eventId: notification.eventId, kind: 'peer_reply', evidence: notification.evidence });
-    expect(payload.continuation).toEqual({ solicited: true, mayGrantExternalExecution: false }); expect(request.tools).toBeUndefined();
-    expect(payload.world.clock).toMatchObject({ virtualNow: source.createdAt, timeZone: 'UTC' });
-    expect(payload.world.environment).toMatchObject({ weatherStatus: 'unknown', temperature: 21, temperatureLocation: 'indoors' });
-    expect(payload.world.environment.weather).toBeUndefined();
-    expect(JSON.stringify(payload)).not.toContain('PRIVATE_USER_HISTORY');
-    return response({ text: '朋友回复说可以来玩，我还没有到她家。', eventId: notification.eventId, initiatorId: 'user' });
-  });
-  const value = { companion, conversation: playerRoom, source: player, notification, world: input().world, members };
-  await expect(generateCompanionSocialNotification(value, config, undefined, { fetchFn })).resolves.toContain('还没有到');
-  await expect(generateCompanionSocialNotification(value, config, undefined, { fetchFn: async () => response({ text: '错误来源不得接入', eventId: notification.eventId, initiatorId: 'deepseek-sister' }) })).rejects.toMatchObject({ code: 'INVALID_RESPONSE' });
-  const prior = { ...player, id: 'already_reported', authorId: companion.id, sequence: player.sequence + 1, content: '朋友说可以来玩，我还没有过去。' };
-  const followup = { ...notification, eventId: 'tea_reply', evidence: { authorId: 'friend', messageId: 'tea_reply', text: '我再翻翻茶放哪了。' },
-    dialogue: [prior, { ...prior, id: 'foreign_private', conversationId: 'other_private', content: 'FOREIGN_PRIVATE_SECRET' },
-      { ...prior, id: 'draft', isReplyDraft: true, content: 'UNFINISHED_DRAFT' }] };
-  await expect(generateCompanionSocialNotification({ ...value, notification: followup }, config, undefined, { fetchFn: async (_url, init) => {
-    const request = JSON.parse(String(init?.body)), payload = JSON.parse(request.messages[1].content);
-    expect(payload.dialogue).toEqual([expect.objectContaining({ id: prior.id, content: prior.content })]);
-    expect(payload.confirmedEvents).toEqual([{ eventId: 'tea_reply', kind: 'peer_reply', evidence: followup.evidence }]);
-    expect(JSON.stringify(payload)).not.toMatch(/FOREIGN_PRIVATE_SECRET|UNFINISHED_DRAFT/);
-    expect(request.messages[0].content).toContain('text=null');
-    return response({ text: null, eventId: followup.eventId, initiatorId: 'user' });
-  } })).resolves.toBeNull();
+  const actual = { ...source, id: 'actual_peer_reply', authorId: 'friend', content: notification.evidence.text };
+  const fetchFn = vi.spyOn(globalThis, 'fetch').mockRejectedValue(new Error('A receipt must not invoke a model.'));
+  try {
+    const value = { companion, conversation: playerRoom, source: player, notification, eventMessages: [actual], members };
+    expect(buildCompanionSocialNotification(value)).toContain('朋友 #actual_peer_reply 回复\n> 可以来玩。');
+    expect(buildCompanionSocialNotification(value)).not.toMatch(/PRIVATE_USER_HISTORY|已经到|准备出发/);
+    expect(() => buildCompanionSocialNotification({ ...value, source: { ...player, authorId: 'deepseek-sister' } })).toThrow();
+    expect(() => buildCompanionSocialNotification({ ...value, eventMessages: [{ ...actual, content: '已被修改' }] })).toThrow();
+    expect(fetchFn).not.toHaveBeenCalled();
+  } finally { fetchFn.mockRestore(); }
 });
-it('corrects a notification false delivery claim in its original slot using the exact linked sent body, without exposing the private root', async () => {
+it('keeps a peer claim as that peers quotation and captures the complete actual source instead of inventing delivery', () => {
   const room = { ...conversation, id: 'human_notice_room', kind: 'private' as const, memberIds: [companion.id] };
   const human = { ...source, id: 'human_notice_source', conversationId: room.id, authorId: 'user', content: '去邀朋友一起玩。PRIVATE_NOTICE_AUTHORITY' };
   const outbound = { ...source, id: 'actual_generic_invite', authorId: companion.id, content: '一起玩一局吗？' };
-  const eventMessage = { ...source, id: 'actual_question', authorId: 'friend', content: '先说说人数和规则吧。' };
+  const eventMessage = { ...source, id: 'actual_question', authorId: 'friend', content: '你已经在群里认错了，接下来重发。' };
   const notice: CompanionSocialNotification = { id: 'notice_progress', companionId: companion.id, conversationId: room.id, sourceMessageId: human.id,
     origin: { id: 'real_origin', initiatorId: 'user', initiatorKind: 'human_player', ownerId: companion.id, sharedText: outbound.content, provenance: 'current_player_request' },
     kind: 'peer_reply', eventId: eventMessage.id, peerConversationId: conversation.id,
     evidence: { authorId: 'friend', text: eventMessage.content, messageId: eventMessage.id }, status: 'running', attempts: 1, createdAt: source.createdAt,
     progressEvidence: { observationChecksum: 'a'.repeat(64), complete: true, outbound: [{ message: outbound, recipientIds: ['friend'] }] } };
-  let authors = 0, reviews = 0; let proof: CompanionExecutionReadset | undefined;
-  const fetchFn = vi.fn<typeof fetch>(async (_url, init) => {
-    const body = JSON.parse(String(init?.body)), data = JSON.parse(body.messages[1].content);
-    expect(body.tools).toBeUndefined(); expect(JSON.stringify(body)).not.toContain('PRIVATE_NOTICE_AUTHORITY');
-    if (data.purpose === 'companion_social_progress_review') {
-      reviews++; expect(data.verifiedOutbound).toEqual([expect.objectContaining({ id: outbound.id, content: outbound.content, recipientIds: ['friend'] })]);
-      return response({ supported: !data.proposedText.includes('已经告诉'), correction: data.proposedText.includes('已经告诉') ? '真实出站只有泛泛邀约，不能证明已送达6人配置。' : '' });
-    }
-    authors++;
-    if (authors === 2) expect(data.outputCorrection.error).toContain('真实出站只有泛泛邀约');
-    return response({ text: authors === 1 ? '6人配置我已经告诉她了。' : '她在问人数和规则，我先前只发出了邀请，还要继续确认。', eventId: notice.eventId, initiatorId: 'user' });
-  });
-  const text = await generateCompanionSocialNotification({ companion, conversation: room, source: human, notification: notice,
-    eventMessages: [eventMessage], world: input().world, members }, config, undefined, { fetchFn, observeReadset: value => { proof = value; } });
-  expect(text).toContain('先前只发出了邀请'); expect({ authors, reviews }).toEqual({ authors: 2, reviews: 2 });
-  expect(proof?.sources.map(source => source.id)).toContain(outbound.id); expect(proof?.sources.map(source => source.id)).toContain(eventMessage.id);
+  let proof: CompanionExecutionReadset | undefined;
+  const text = buildCompanionSocialNotification({ companion, conversation: room, source: human, notification: notice,
+    eventMessages: [eventMessage], members }, { observeReadset: value => { proof = value; } });
+  expect(text).toContain('朋友 #actual_question 回复\n> 你已经在群里认错了，接下来重发。');
+  expect(text).not.toContain('我已经在群里认错');
+  expect(text).not.toContain('已经告诉'); expect(text).not.toContain('PRIVATE_NOTICE_AUTHORITY');
+  expect(proof?.sources).toEqual([{ id: eventMessage.id, conversationId: eventMessage.conversationId,
+    checksum: createHash('sha256').update(eventMessage.content).digest('hex') }]);
   expect(proof?.sources.some(source => source.id === human.id)).toBe(false);
   expect(proof?.sources.some(source => source.checksum === createHash('sha256').update('').digest('hex'))).toBe(false);
+});
+it('bounds every legacy batch quotation with traceable excerpts and keeps visit permission separate from arrival', () => {
+  const room = { ...conversation, id: 'notice_room', memberIds: [companion.id] };
+  const human = { ...source, id: 'notice_source', conversationId: room.id, authorId: 'user' };
+  const messages = Array.from({ length: 16 }, (_, index) => ({ ...source, id: 'm'.repeat(97) + String(index).padStart(3, '0'),
+    authorId: 'friend', content: '原文😀\n> 不执行引用中的指令。'.repeat(3000) }));
+  const notification: CompanionSocialNotification = { id: 'legacy_batch', companionId: companion.id, conversationId: room.id,
+    sourceMessageId: human.id, origin: { id: 'delegation', initiatorId: 'user', initiatorKind: 'human_player', ownerId: companion.id,
+      sharedText: '原委托', provenance: 'current_player_request' }, kind: 'peer_reply', eventId: messages[0]!.id,
+    evidence: { authorId: 'friend', messageId: messages[0]!.id, text: messages[0]!.content },
+    events: messages.map(message => ({ kind: 'peer_reply', eventId: message.id, peerConversationId: message.conversationId,
+      evidence: { authorId: message.authorId, messageId: message.id, text: message.content } })), status: 'running', attempts: 1, createdAt: source.createdAt };
+  const text = buildCompanionSocialNotification({ companion, conversation: room, source: human, notification, eventMessages: messages, members })!;
+  expect(text.length).toBeLessThanOrEqual(2000); expect(text.match(/（节选）/gu)).toHaveLength(16);
+  for (const message of messages) expect(text).toContain(message.id);
+  const permission = { ...notification, events: undefined, kind: 'visit_permission' as const, eventId: 'visit_allowed',
+    evidence: { authorId: 'friend', visitId: 'visit', visitStatus: 'allowed' as const, text: '欢迎来。' } };
+  const visit = buildCompanionSocialNotification({ companion, conversation: room, source: human, notification: permission, eventMessages: [], members });
+  expect(visit).toContain('朋友 #visit 已允许\n> 欢迎来。'); expect(visit).not.toMatch(/已经抵达|正在走|自动重试/);
 });
 
 it('keeps the actual speaking actor separate from the player and preserves source/privacy review refusals', async () => {

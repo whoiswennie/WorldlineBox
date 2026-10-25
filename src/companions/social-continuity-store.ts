@@ -18,6 +18,7 @@ const parse = <T>(value: unknown): T => JSON.parse(String(value)) as T;
 const iso = () => new Date().toISOString();
 const hash = (value: unknown) => createHash('sha256').update(JSON.stringify(value)).digest('hex');
 const checksum = (message: CompanionMessage) => hash([message.id, message.conversationId, message.authorId, message.content, message.status, message.replyToId]);
+const NOTIFICATION_BATCH_LIMIT = 4;
 
 /** Durable causal links and event continuations; never imports a player's room into a peer prompt. */
 export class CompanionSocialContinuityStore {
@@ -322,8 +323,8 @@ export class CompanionSocialContinuityStore {
           || this.db.prepare("SELECT 1 FROM companion_social_communication WHERE companion_id=? AND until_real>? AND json_extract(data,'$.phase')='typing'").get(notice.companionId, iso())
           || this.db.prepare("SELECT 1 FROM companion_social_notifications WHERE companion_id=? AND status='running' AND lease_until>? LIMIT 1").get(notice.companionId, iso())) continue;
         // Collapse already waiting facts for the same delegation into one coherent report.
-        const siblings = this.db.prepare("SELECT data FROM companion_social_notifications WHERE origin_id=? AND id!=? AND COALESCE(json_extract(data,'$.terminal'),0)=0 AND (status='pending' OR status IN('running','failed') AND lease_until<=?) ORDER BY created_at,rowid LIMIT 15")
-          .all(notice.origin.id, notice.id, iso()) as Row[];
+        const siblings = this.db.prepare("SELECT data FROM companion_social_notifications WHERE origin_id=? AND id!=? AND COALESCE(json_extract(data,'$.terminal'),0)=0 AND (status='pending' OR status IN('running','failed') AND lease_until<=?) ORDER BY created_at,rowid LIMIT ?")
+          .all(notice.origin.id, notice.id, iso(), NOTIFICATION_BATCH_LIMIT - 1) as Row[];
         const batch = [notice];
         for (const sibling of siblings) {
           const candidate = parse<Notice>(sibling.data);

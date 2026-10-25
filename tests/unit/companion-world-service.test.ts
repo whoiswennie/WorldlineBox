@@ -630,12 +630,7 @@ describe('semantic world background service with actual SQLite sources', () => {
         expect(JSON.stringify(data)).not.toContain('PRIVATE_REQUEST_DETAIL'); expect(data.identity.currentReply.author.id).toBe(data.identity.self.id);
         return response({ text: data.identity.self.id === 'bob' ? '可以，等你一起看书。' : null, reason: '依据原玩家委托和实际来信。' });
       }
-      if (data.purpose === 'world_social_notification') {
-        expect(data.identity.currentReply.speaker.id).toBe('user'); expect(data.identity.currentReply.author.id).toBe('alice');
-        expect(data.origin.initiatorId).toBe('user'); expect(data.confirmedEvent.evidence).toMatchObject({ authorId: 'bob', text: '可以，等你一起看书。' });
-        expect(request.tools).toBeUndefined(); expect(JSON.stringify(data)).not.toContain('PRIVATE_REQUEST_DETAIL');
-        return response({ text: 'Bob 回复说可以一起看书，我还没到他那里。', eventId: data.confirmedEvent.eventId, initiatorId: 'user' });
-      }
+      if (data.purpose === 'world_social_notification') throw new Error('真实回信通知不应启动第二次模型叙事。');
       return response({ action: null, reason: '没有新的世界事项。', appraisals: [] });
     });
     const f = fixture(fetchFn, false); advance(f.store, 30000);
@@ -646,9 +641,11 @@ describe('semantic world background service with actual SQLite sources', () => {
     advance(f.store, 1300); await f.service.tick(); await vi.advanceTimersByTimeAsync(1300);
     await vi.waitFor(() => expect(f.store.request({ type: 'social.messages', conversationId: peer.id }).socialMessagePage!.items.some(item => item.message.authorId === 'bob'), JSON.stringify({ purposes, lastRequests: f.request.mock.calls.slice(-5).map(([command]) => command.type) })).toBe(true));
     await f.service.tick();
-    await vi.waitFor(() => expect(f.store.messages({ conversationId: f.alice.conversationId }).messages.some(message => message.content === 'Bob 回复说可以一起看书，我还没到他那里。')).toBe(true));
-    const result = f.store.messages({ conversationId: f.alice.conversationId }).messages.find(message => message.content === 'Bob 回复说可以一起看书，我还没到他那里。')!;
-    expect(result).toMatchObject({ authorId: 'alice', replyToId: source.id }); expect(purposes).toContain('world_social_notification');
+    await vi.waitFor(() => expect(f.store.messages({ conversationId: f.alice.conversationId }).messages.some(message => message.authorId === 'alice'
+      && message.replyToId === source.id && message.content.includes('可以，等你一起看书。'))).toBe(true));
+    const result = f.store.messages({ conversationId: f.alice.conversationId }).messages.find(message => message.authorId === 'alice' && message.replyToId === source.id)!;
+    expect(result.content).toContain('bob'); expect(result.content).not.toContain('PRIVATE_REQUEST_DETAIL');
+    expect(result.content).not.toContain('已经到'); expect(purposes).not.toContain('world_social_notification');
     expect(f.store.request({ type: 'actions' }).actions).toEqual([]);
   });
   it('lets a resident make a real semantic visit response without granting player tools or leaking private chat', async () => {

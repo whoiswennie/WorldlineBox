@@ -14,7 +14,7 @@ import type { VcpMemoryDreamWaveResult, VcpMemoryDreamClock } from '../vcp-memor
 import { CompanionAgentNoProgressError } from './agent-kernel';
 import type { CompanionSocialJob, CompanionSocialNotification } from '../../shared/companion-social';
 import { authorizeCompanionSocialInitiative, generateCompanionSocialReply } from './social-model';
-import { generateCompanionSocialNotification } from './social-notification-model';
+import { buildCompanionSocialNotification } from './social-notification-model';
 import type { CompanionProfileInput } from '../../shared/companion-public-profile';
 import { COMPANION_SLEEP_DREAM_CONCURRENCY } from '../../shared/companion-sleep';
 import { companionRecallCapabilities } from './structured-agent';
@@ -153,6 +153,16 @@ export class CompanionWorldService {
       this.options.changed();
     };
     try {
+      const routed = await this.options.request({ type: 'activity.social.route', companionId: job.companionId,
+        conversationId: job.conversationId, jobId: job.id, leaseToken });
+      if (routed.activitySocialRoute) {
+        // The durable owner task consumes this exact event. Do not start a second planner.
+        const wait = Date.parse(job.typingNotBefore) - Date.now();
+        if (wait > 0) await delay(wait, signal);
+        if (signal.aborted || this.closed) throw cancelled();
+        await this.options.request({ type: 'social.job.complete', id: job.id, leaseToken, text: null });
+        this.options.wakeWaiting(); this.options.changed(); return;
+      }
       await progress('context', '正在核验这条来信与实际参与者');
       if (job.urgent) interruptionId = await this.options.beginPriority?.(job.companionId, job.conversationId, job.sourceMessageId);
       const state = (await this.options.request({ type: 'state', includeHidden: true, conversationId: job.conversationId })).state;
@@ -308,10 +318,7 @@ export class CompanionWorldService {
       if (!companion || !conversation) throw cancelled();
       const scope = { companionId: companion.id, conversationId: conversation.id };
       const source = (await this.options.request({ type: 'memory.sources.filter', ...scope, ids: [notification.sourceMessageId] })).memorySources?.[0];
-      const world = await this.observe(scope);
-      if (!source || source.authorId !== 'user' || !world) throw cancelled();
-      const activityTask = (await this.options.request({ type: 'activity.list', ...scope, limit: 20 })).activityTasks?.find(task => task.sourceMessageId === source.id);
-      const profiles = await this.options.profiles?.({ companionId: companion.id, conversation, audience: 'player', sourceAuthorId: 'user' });
+      if (!source || source.authorId !== 'user') throw cancelled();
       const participants = new Set([companion.id, notification.origin.initiatorId, notification.evidence.authorId, ...(notification.events?.map(event => event.evidence.authorId) ?? [])]);
       const eventMessages: CompanionMessage[] = [];
       for (const event of notification.events ?? [notification]) if (event.peerConversationId && event.evidence.messageId) {
@@ -321,9 +328,9 @@ export class CompanionWorldService {
         eventMessages.push(message);
       }
       let executionReadset: CompanionExecutionReadset | undefined;
-      const text = await generateCompanionSocialNotification({ companion, conversation, source, notification, world, activityTask, eventMessages, ...profiles,
-        members: state!.companions.filter(member => participants.has(member.id)).map(member => ({ id: member.id, name: member.name })) }, await this.options.configFor(companion), signal,
-      { fetchFn: this.options.fetchFn, observeReadset: readset => { executionReadset = readset; } });
+      const text = buildCompanionSocialNotification({ companion, conversation, source, notification, eventMessages,
+        members: state!.companions.filter(member => participants.has(member.id)).map(member => ({ id: member.id, name: member.name })) },
+      { observeReadset: readset => { executionReadset = readset; } });
       if (signal.aborted || this.closed) throw cancelled();
       if (!executionReadset || !await verifyCompanionExecutionReadset(executionReadset, scope,
         { request: this.options.request, contextValid: this.options.memoryContextValid })) throw new Error('后续回报使用的实际来源已经变化，未发送。');
