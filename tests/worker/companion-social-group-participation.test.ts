@@ -2,15 +2,20 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
-import { CompanionsStore, type CompanionSeed } from '../../src/companions/store';
+import { CompanionsStore, type CompanionConnection, type CompanionSeed } from '../../src/companions/store';
 import type { CompanionSocialJob } from '../../src/shared/companion-social';
 import { companionStorageResponseSchema } from '../../src/shared/companion-storage';
+import BetterSqlite3 from 'better-sqlite3';
+
+const Database = BetterSqlite3 as { new (filename: string, options: { readonly: true }): CompanionConnection };
 
 const members = ['alice', 'bob', 'carol', 'daria', 'erin', 'fran', 'gale', 'hana'];
 const seeds: CompanionSeed[] = [...members, 'observer'].map(id => ({ id, name: id, description: '', persona: '保持本人身份，自主决定是否回应。', avatar: 'sister', model: '', active: true, proactive: false }));
 const roots: string[] = [], stores = new Set<CompanionsStore>();
+const readers = new Set<CompanionConnection>();
 beforeEach(() => { vi.useFakeTimers({ toFake: ['Date'] }); vi.setSystemTime('2026-10-15T10:00:00Z'); });
 afterEach(() => {
+  for (const reader of readers) reader.close(); readers.clear();
   for (const store of stores) store.close(); stores.clear();
   for (const root of roots.splice(0)) { if (path.dirname(root) !== tmpdir() || !path.basename(root).startsWith('companion-group-participation-')) throw Error('Unexpected fixture path'); rmSync(root, { recursive: true, force: true }); }
   vi.useRealTimers();
@@ -108,4 +113,55 @@ it('settles an exhausted eight-attempt first recipient without stranding the six
   expect(jobs.filter(job => job.companionId === 'alice')).toHaveLength(1);
   expect(f.store.request({ type: 'social.messages', conversationId: f.room.id }).socialMessagePage!.items.some(item => item.message.authorId === 'bob')).toBe(false);
   expect(f.store.request({ type: 'social.job.claim' }).socialJob).toBeUndefined();
+});
+
+function waitingSummary() {
+  const f = fixture(['alice', 'bob', 'carol'], true);
+  const task = f.store.request({ type: 'activity.social.ensure', companionId: 'alice', conversationId: f.playerRoom.id,
+    sourceMessageId: f.source.id, deliveryClientId: 'group-seed', operation: 'message' }).activityTask!;
+  for (let index = 0; index < 2; index++) { const job = claim(f.store)!; expect(job.companionId).not.toBe('alice'); complete(f.store, job, `我是${job.companionId}，愿意讨论露营计划。`); }
+  const summary = claim(f.store)!; expect(summary.companionId).toBe('alice');
+  const question = complete(f.store, summary, 'Bob，请你自己决定是否愿意核对路线；不想回应也可以。').socialMessage!;
+  advance(f.store);
+  const leased = f.store.request({ type: 'activity.claim' }).activityTask!; expect(leased.id).toBe(task.id);
+  const observed = f.store.request({ type: 'activity.observe', id: leased.id, leaseToken: leased.leaseToken! });
+  expect(observed.activityMessages?.some(message => message.id === question.message.id)).toBe(true);
+  const waiting = f.store.request({ type: 'activity.commit', id: leased.id, leaseToken: leased.leaseToken!, expectedStep: leased.step,
+    decision: { status: 'continue', action: null, wait: { kind: 'reply', targetCompanionId: 'bob' }, summary: '已实际询问本人意见，等待真实回应。' } }).activityTask!;
+  expect(waiting.status).toBe('waiting');
+  return { ...f, task: waiting, summary, question };
+}
+
+it('offers one bounded actual summary-source processing turn after an explicit observed reply wait, including silence and restart', () => {
+  for (const response of ['我自己愿意核对路线。', null]) {
+    const f = waitingSummary();
+    const read = new Database(f.filename, { readonly: true }); readers.add(read);
+    const parent = () => read.prepare('SELECT used,status,data FROM companion_social_chains WHERE id=?').get(f.summary.chainId) as { used: number; status: string; data: string };
+    const messages = () => read.prepare('SELECT COUNT(*) AS n FROM messages WHERE conversation_id=?').get(f.room.id) as { n: number };
+    const beforeCount = messages().n;
+    advance(f.store); expect(f.store.request({ type: 'activity.claim' }).activityTask).toBeUndefined();
+    const job = claim(f.store);
+    expect(job?.companionId).toBe('bob'); expect(job?.sourceMessageId).toBe(f.question.message.id);
+    expect(job?.chainId).not.toBe(f.summary.chainId); expect(messages().n).toBe(beforeCount);
+    expect(parent()).toMatchObject({ status: 'done', used: 4 }); expect(JSON.parse(parent().data).maxMessages).toBe(5);
+    expect(Object.values(JSON.parse(parent().data).replyReservations)).toEqual([job!.chainId]);
+    complete(f.store, job!, response);
+    expect(messages().n).toBe(beforeCount + Number(response !== null));
+    f.store.close(); stores.delete(f.store); const restarted = new CompanionsStore(f.filename, seeds); stores.add(restarted);
+    for (let tick = 0; tick < 3; tick++) { advance(restarted); restarted.request({ type: 'activity.claim' }); expect(claim(restarted)).toBeUndefined(); }
+    expect(parent()).toMatchObject({ status: 'done', used: 4 });
+    const jobs = read.prepare("SELECT COUNT(*) AS n FROM companion_social_jobs WHERE companion_id='bob' AND json_extract(data,'$.sourceMessageId')=?").get(f.question.message.id) as { n: number };
+    expect(jobs.n).toBe(1);
+    const child = read.prepare('SELECT data,status FROM companion_social_chains WHERE id=?').get(job!.chainId) as { data: string; status: string };
+    expect(JSON.parse(child.data).maxMessages).toBe(2); expect(child.status).toBe('done');
+    read.close(); readers.delete(read);
+  }
+});
+
+it('rechecks the original activity source before publishing a pending summary-source response', () => {
+  const f = waitingSummary(); advance(f.store); const job = claim(f.store)!;
+  expect(job?.sourceMessageId).toBe(f.question.message.id);
+  f.store.request({ type: 'memory.forget', companionId: 'alice', conversationId: f.playerRoom.id, sourceMessageIds: [f.source.id] });
+  expect(() => complete(f.store, job, '撤回后不得发布')).toThrow();
+  expect(f.store.request({ type: 'social.messages', conversationId: f.room.id }).socialMessagePage!.items.some(item => item.message.content === '撤回后不得发布')).toBe(false);
 });

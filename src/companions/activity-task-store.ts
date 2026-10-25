@@ -691,6 +691,22 @@ export class CompanionActivityTaskStore {
       this.save(task); return { ok: true, activityTask: this.public(task) };
     }).immediate();
   }
+  private ensureWaitReplyOpportunity(task: Stored): void {
+    if (task.status !== 'waiting' || task.wait?.kind !== 'reply') return;
+    const targetId = task.wait.targetCompanionId, port = this.boundPort(task);
+    const conversationId = port?.conversationId ?? task.peerConversationId;
+    if (!conversationId) return;
+    const topicId = port?.topicId ?? task.peerTopicId ?? null;
+    const ids = new Set((task.observedSocialEvidence?.messages ?? []).map(ref => ref.id));
+    const candidates = this.visible({ companionId: task.companionId, conversationId }, [...ids])
+      .filter(message => message.authorId === task.companionId && message.status === 'sent' && !message.isReplyDraft && !message.replyDraft
+        && (message.topicId ?? null) === topicId)
+      .sort((a, b) => b.sequence - a.sequence);
+    const source = candidates.find(message => this.db.prepare("SELECT 1 FROM companion_social_messages WHERE message_id=? AND EXISTS(SELECT 1 FROM json_each(recipient_ids) WHERE value=?)")
+      .get(message.id, targetId));
+    if (source) this.social.ensureActivityReplyOpportunity({ taskId: task.id, ownerId: task.companionId,
+      taskConversationId: task.conversationId, targetId, sourceMessageId: source.id });
+  }
   private wake(task: Stored): boolean {
     if (!task.wait || !task.condition) return true;
     const world = this.world.snapshot(task), actor = world.actors.find(actor => actor.companionId === task.companionId), wait = task.wait, condition = task.condition;
@@ -703,6 +719,7 @@ export class CompanionActivityTaskStore {
         visit.guestId === task.companionId && visit.hostId === wait.targetCompanionId && visit.id === (condition.visitId ?? task.visitRequestId));
       ready = !!permission && permission.status !== 'requested' || this.peerMessages(task).some(message => (task.seededSocialClientIds?.length
         ? message.authorId !== task.companionId && message.authorId !== 'system' : message.authorId === wait.targetCompanionId) && message.sequence > condition.afterSequence);
+      if (!ready) this.ensureWaitReplyOpportunity(task);
       reason = permission && permission.status !== 'requested' ? '拜访许可已有实际结果，不再等待重复的手机确认；核对许可与当前位置后继续。' : '收到目标伙伴的真实新回复。';
     }
     else if (wait.kind === 'permission') { ready = world.visits.some(visit => visit.id === (condition.visitId ?? task.visitRequestId) && visit.guestId === task.companionId && visit.hostId === wait.targetCompanionId && visit.status !== 'requested'); reason = '拜访许可已有实际结果，请核对允许、拒绝或过期。'; }
@@ -1001,7 +1018,7 @@ export class CompanionActivityTaskStore {
           ...(wait.kind === 'arrival' && point ? { sceneId: point.sceneId, x: point.x, y: point.y } : {}),
           ...(wait.kind === 'delay' ? { virtualAt: Date.parse(world.clock.virtualNow) + wait.seconds * 1000 } : {}) };
       }
-      this.save(task); return this.public(task);
+      this.save(task); this.ensureWaitReplyOpportunity(task); return this.public(task);
     }).immediate();
   }
   private claimMemory(): CompanionStorageResponse {

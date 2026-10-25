@@ -12,7 +12,7 @@ import { initializeSocialFlowIndex, recentSocialFacts, recentSocialMessageCounts
 import { CompanionSocialReplyStore } from './social-reply-store';
 import { COMPANION_CHARACTER_RELATIONS } from '../shared/companion-character-relations';
 import { companionSocialGameContext } from './social-game-context';
-import { companionSocialGoalOrigin } from './social-goal-origin';
+import { companionSocialGoalOrigin, companionSocialDelegatedPortOrigin } from './social-goal-origin';
 import type { CompanionExecutionReadset } from '../shared/companion-execution-evidence';
 import { companionAcceptedPeerActivitySchema, type CompanionAcceptedPeerActivity, type CompanionPeerActivityAcceptanceInput } from '../shared/companion-peer-activity';
 import { companionPeerActivitySourceChecksum } from './peer-activity-source';
@@ -22,8 +22,10 @@ type Calendar = { timeZone: string; virtualNow: string; observedDay: string; bac
 type Send = { urgent?: boolean; companionId: string; conversationId: string; content: string; channel: 'phone' | 'face_to_face'; sourceMessageId?: string; authorizationMessageId?: string; replyToId?: string; clientId: string; shareAddress?: boolean; topicId?: string | null; agentSource?: { conversationId: string; messageId: string }; executionReadset?: CompanionExecutionReadset };
 type PendingSend = Send & { fingerprint: string; authorizationChecksum?: string; sourceChecksum?: string; agentChecksum?: string; typingNotBefore?: string; originId?: string; originFromAgentSource?: boolean };
 type Read = { id: string; checksum: string };
-type StoredJob = CompanionSocialJob & { readSet?: Read[]; resultMessageId?: string; acceptedActivity?: CompanionAcceptedPeerActivity; round: 'pair' | 'first' | 'summary' | 'followup' };
-type ChainData = { kind: 'pair' | 'group'; initiatorId: string; recipientIds: string[]; phase: 'first' | 'summary' | 'followup' | 'done'; maxMessages: number };
+type ActivityReplyProof = { taskId: string; ownerId: string; taskConversationId: string; taskSourceMessageId?: string; taskSourceChecksum?: string;
+  sourceMessageId: string; sourceChecksum: string; conversationId: string; topicId?: string; targetId: string; parentChainId?: string };
+type StoredJob = CompanionSocialJob & { readSet?: Read[]; resultMessageId?: string; acceptedActivity?: CompanionAcceptedPeerActivity; replyOpportunity?: ActivityReplyProof; round: 'pair' | 'first' | 'summary' | 'followup' };
+type ChainData = { kind: 'pair' | 'group'; initiatorId: string; recipientIds: string[]; phase: 'first' | 'summary' | 'followup' | 'done'; maxMessages: number; replyReservations?: Record<string, string> };
 export type CompanionPeerWorkInput = CompanionPeerActivityAcceptanceInput & { accept: boolean; mode?: 'activity' };
 const iso = (at = Date.now()) => new Date(at).toISOString();
 const row = (value: unknown) => value as Row;
@@ -94,6 +96,7 @@ export class CompanionSocialStore {
     this.replies.initialize();
     if (!(this.db.prepare('PRAGMA table_info(companion_social_chains)').all() as Row[]).some(column => column.name === 'data')) this.db.exec("ALTER TABLE companion_social_chains ADD COLUMN data TEXT NOT NULL DEFAULT '{}'");
     this.db.exec("CREATE INDEX IF NOT EXISTS companion_social_job_chain_round ON companion_social_jobs(json_extract(data,'$.chainId'),json_extract(data,'$.round'),status)");
+    this.db.exec("CREATE INDEX IF NOT EXISTS companion_social_job_source ON companion_social_jobs(conversation_id,json_extract(data,'$.sourceMessageId'),companion_id); CREATE INDEX IF NOT EXISTS companion_social_job_result ON companion_social_jobs(json_extract(data,'$.resultMessageId')); CREATE INDEX IF NOT EXISTS companion_social_job_reader_sequence ON companion_social_jobs(companion_id,conversation_id,json_extract(data,'$.throughSequence'))");
     if (!(this.db.prepare('PRAGMA table_info(companion_social_messages)').all() as Row[]).some(column => column.name === 'channel')) this.db.exec('ALTER TABLE companion_social_messages ADD COLUMN channel TEXT');
     this.db.exec('CREATE INDEX IF NOT EXISTS companion_social_member_owner ON conversation_members(companion_id,conversation_id); CREATE INDEX IF NOT EXISTS companion_social_room_virtual ON companion_social_messages(conversation_id,virtual_at DESC,message_id)');
     this.db.exec('CREATE TABLE IF NOT EXISTS companion_social_communication(companion_id TEXT PRIMARY KEY,until_real TEXT NOT NULL,data TEXT NOT NULL)');
@@ -571,10 +574,104 @@ export class CompanionSocialStore {
     if (send.channel === 'phone') for (const recipient of recipients) this.communicate(recipient, send.conversationId, [send.companionId], 'notification', 5000, 'notification:' + source.id);
     return message;
   }
-  private queue(source: CompanionSocialMessage, owner: string, chainId: string, remainingTurns: number, channel: Send['channel'], urgent = false, round: StoredJob['round'] = 'pair'): void {
+  private queue(source: CompanionSocialMessage, owner: string, chainId: string, remainingTurns: number, channel: Send['channel'], urgent = false, round: StoredJob['round'] = 'pair', replyOpportunity?: ActivityReplyProof): void {
     if (remainingTurns <= 0) { this.db.prepare("UPDATE companion_social_chains SET status='done' WHERE id=?").run(chainId); return; }
-    const job: StoredJob = { urgent, round, id: randomUUID(), companionId: owner, conversationId: source.message.conversationId, sourceMessageId: source.message.id, throughSequence: source.message.sequence, chainId, remainingTurns, memberIds: this.members(source.message.conversationId), channel, status: 'pending', attempts: 0, typingNotBefore: iso(), createdAt: iso() };
+    const job: StoredJob = { urgent, round, id: randomUUID(), companionId: owner, conversationId: source.message.conversationId, sourceMessageId: source.message.id, throughSequence: source.message.sequence, chainId, remainingTurns, memberIds: this.members(source.message.conversationId), channel, status: 'pending', attempts: 0, typingNotBefore: iso(), createdAt: iso(), ...(replyOpportunity ? { replyOpportunity } : {}) };
     this.db.prepare('INSERT INTO companion_social_jobs(id,companion_id,conversation_id,status,created_at,data) VALUES(?,?,?,?,?,?)').run(job.id, owner, job.conversationId, job.status, job.createdAt, JSON.stringify(job));
+  }
+  private activityReplyValid(proof: ActivityReplyProof): boolean {
+    if (!this.options.activityTaskValid?.(proof.taskId, proof.ownerId, proof.taskConversationId)) return false;
+    const found = this.db.prepare('SELECT data FROM companion_activity_tasks WHERE id=? AND companion_id=? AND conversation_id=?')
+      .get(proof.taskId, proof.ownerId, proof.taskConversationId);
+    if (!found) return false;
+    const task = parse<{ status: string; step: number; history: Array<{ step: number; action: string; ok: boolean }>; sourceMessageId?: string; sourceChecksum?: string; peerResponsibility?: { jobId: string }; gamePort?: { conversationId: string; topicId: string };
+      peerConversationId?: string; peerTopicId?: string | null }>(row(found).data);
+    if (['succeeded', 'failed', 'cancelled'].includes(task.status) || task.sourceMessageId !== proof.taskSourceMessageId || task.sourceChecksum !== proof.taskSourceChecksum
+      || (task.gamePort?.conversationId ?? task.peerConversationId) !== proof.conversationId
+      || (task.gamePort?.topicId ?? task.peerTopicId ?? null) !== (proof.topicId ?? null)) return false;
+    try {
+      if (!proof.parentChainId || !this.continuity.chainValid(proof.parentChainId)) return false;
+      const origin = this.continuity.forChain(proof.parentChainId);
+      const rootSource = task.sourceMessageId ? this.visible({ companionId: proof.ownerId, conversationId: proof.taskConversationId }, [task.sourceMessageId])[0] : undefined;
+      let causal = false;
+      const root = rootSource?.authorId === 'user' ? { companionId: proof.ownerId, conversationId: proof.taskConversationId, sourceMessageId: rootSource.id }
+        : rootSource ? companionSocialDelegatedPortOrigin(this.db, this, this.visible, proof.ownerId, rootSource)
+          ?? companionSocialGoalOrigin(this.db, this, this.visible, proof.ownerId, rootSource) : undefined;
+      if (root && origin?.initiatorKind === 'human_player') {
+        const saved = this.db.prepare("SELECT data FROM companion_social_delegations WHERE id=? AND companion_id=? AND status='active'").get(origin.id, root.companionId);
+        const delegation = saved ? parse<{ conversationId: string; sourceMessageId: string }>(row(saved).data) : undefined;
+        causal = delegation?.conversationId === root.conversationId && delegation.sourceMessageId === root.sourceMessageId;
+      } else if (!root && origin?.initiatorKind === 'companion') {
+        const accepted = task.peerResponsibility && this.db.prepare("SELECT 1 FROM companion_social_jobs WHERE id=? AND companion_id=? AND status='done' AND json_extract(data,'$.chainId')=? AND json_extract(data,'$.acceptedActivity.taskId')=?")
+          .get(task.peerResponsibility.jobId, proof.ownerId, proof.parentChainId, proof.taskId);
+        causal = !!accepted || (this.db.prepare("SELECT o.data FROM companion_social_outbox o WHERE o.companion_id=? AND o.status='sent' AND o.message_id IN(SELECT json_extract(j.data,'$.sourceMessageId') FROM companion_social_jobs j WHERE json_extract(j.data,'$.chainId')=?)")
+          .all(proof.ownerId, proof.parentChainId) as Row[]).some(value => {
+            const sent = parse<{ clientId: string; agentSource?: { conversationId: string; messageId: string } }>(value.data);
+            if (task.sourceMessageId) return sent.agentSource?.conversationId === proof.taskConversationId && sent.agentSource.messageId === task.sourceMessageId;
+            const prefix = `activity_${proof.taskId}_`, suffix = sent.clientId.startsWith(prefix) ? sent.clientId.slice(prefix.length) : '';
+            const step = Number(suffix);
+            return /^\d+$/u.test(suffix) && step < task.step && task.history.some(item => item.step === step + 1 && item.ok
+              && ['message', 'social', 'introduce', 'create_group'].includes(item.action));
+          });
+      }
+      if (!causal) return false;
+      const source = this.wrap(proof.sourceMessageId);
+      return source.message.authorId === proof.ownerId && source.message.conversationId === proof.conversationId
+        && source.message.topicId === proof.topicId && source.message.status === 'sent' && !source.message.isReplyDraft && !source.message.replyDraft
+        && checksum(source.message) === proof.sourceChecksum && source.recipientIds.includes(proof.targetId)
+        && this.visible({ companionId: proof.ownerId, conversationId: proof.conversationId }, [proof.sourceMessageId]).length === 1
+        && this.visible({ companionId: proof.targetId, conversationId: proof.conversationId }, [proof.sourceMessageId]).length === 1;
+    } catch { return false; }
+  }
+  /** Only a persisted activity wait may reserve one unused parent-chain slot.
+   * This schedules the recipient's own decision, never another message or reply. */
+  ensureActivityReplyOpportunity(input: { taskId: string; ownerId: string; taskConversationId: string; targetId: string; sourceMessageId: string }): void {
+    this.db.transaction(() => {
+      // Existing opportunities, including silence and failure, are immutable.
+      // This indexed no-op is not an authority cache: new work is fully checked below.
+      if (this.db.prepare("SELECT 1 FROM companion_social_jobs WHERE companion_id=? AND conversation_id=(SELECT conversation_id FROM messages WHERE id=?) AND json_extract(data,'$.sourceMessageId')=? LIMIT 1")
+        .get(input.targetId, input.sourceMessageId, input.sourceMessageId)) return;
+      const found = this.db.prepare('SELECT data FROM companion_activity_tasks WHERE id=? AND companion_id=? AND conversation_id=?')
+        .get(input.taskId, input.ownerId, input.taskConversationId);
+      if (!found) return;
+      const task = parse<{ status: string; sourceMessageId?: string; sourceChecksum?: string; wait?: { kind: string; targetCompanionId?: string };
+        observedSocialEvidence?: { messages: Read[] } }>(row(found).data);
+      if (task.status !== 'waiting' || task.wait?.kind !== 'reply' || task.wait.targetCompanionId !== input.targetId || input.ownerId === input.targetId) return;
+      let source: CompanionSocialMessage;
+      try { source = this.wrap(input.sourceMessageId); } catch { return; }
+      const bodyHash = createHash('sha256').update(source.message.content).digest('hex');
+      if (!task.observedSocialEvidence?.messages.some(ref => ref.id === source.message.id && ref.checksum === bodyHash)) return;
+      const proof: ActivityReplyProof = { ...input, taskSourceMessageId: task.sourceMessageId, taskSourceChecksum: task.sourceChecksum,
+        sourceChecksum: checksum(source.message), conversationId: source.message.conversationId, topicId: source.message.topicId };
+      if (!source.channel) return;
+      let members: string[];
+      try { members = this.requireRoom(proof.conversationId, proof.ownerId); } catch { return; }
+      if (!members.includes(proof.targetId) || !this.participantsActivated(members)
+        || this.topicAdmission(proof.ownerId, proof.conversationId, proof.topicId) !== 'active'
+        || this.topicAdmission(proof.targetId, proof.conversationId, proof.topicId, true) !== 'active') return;
+      const previous = this.db.prepare("SELECT 1 FROM companion_social_jobs WHERE companion_id=? AND conversation_id=? AND json_extract(data,'$.throughSequence')>=? AND EXISTS(SELECT 1 FROM json_each(companion_social_jobs.data,'$.readSet') r WHERE json_extract(r.value,'$.id')=? AND json_extract(r.value,'$.checksum')=?) LIMIT 1")
+          .get(proof.targetId, proof.conversationId, source.message.sequence, proof.sourceMessageId, proof.sourceChecksum);
+      if (previous || this.db.prepare("SELECT 1 FROM messages WHERE author_id=? AND reply_to_id=? AND status='sent' LIMIT 1").get(proof.targetId, proof.sourceMessageId)) return;
+      let parents = this.db.prepare("SELECT DISTINCT c.id,c.used,c.status,c.data FROM companion_social_chains c JOIN companion_social_jobs j ON json_extract(j.data,'$.chainId')=c.id WHERE j.companion_id=? AND j.conversation_id=? AND json_extract(j.data,'$.resultMessageId')=? AND j.status='done'")
+        .all(proof.ownerId, proof.conversationId, proof.sourceMessageId) as Row[];
+      if (!parents.length) parents = this.db.prepare("SELECT DISTINCT c.id,c.used,c.status,c.data FROM companion_social_chains c JOIN companion_social_jobs j ON json_extract(j.data,'$.chainId')=c.id WHERE j.conversation_id=? AND json_extract(j.data,'$.sourceMessageId')=? AND json_extract(j.data,'$.replyOpportunity') IS NULL")
+        .all(proof.conversationId, proof.sourceMessageId) as Row[];
+      if (parents.length !== 1) return;
+      const parent = parents[0]!, data = parse<ChainData>(parent.data), reservations = data.replyReservations ?? {};
+      proof.parentChainId = String(parent.id);
+      if (!this.activityReplyValid(proof)) return;
+      if (parent.status !== 'done' || !Number.isInteger(data.maxMessages) || !Number.isInteger(parent.used)
+        || !this.continuity.chainValid(String(parent.id)) || Number(parent.used) + Object.keys(reservations).length >= data.maxMessages) return;
+      const key = hash([proof.ownerId, proof.targetId, proof.sourceMessageId]), childId = 'reply_wait_' + key.slice(0, 48);
+      if (reservations[key] || this.db.prepare('SELECT 1 FROM companion_social_chains WHERE id=?').get(childId)) return;
+      data.replyReservations = { ...reservations, [key]: childId };
+      this.db.prepare('UPDATE companion_social_chains SET data=? WHERE id=?').run(JSON.stringify(data), parent.id);
+      const child: ChainData = { kind: 'group', initiatorId: proof.ownerId, recipientIds: [proof.targetId], phase: 'followup', maxMessages: 2 };
+      this.db.prepare("INSERT INTO companion_social_chains(id,used,status,data) VALUES(?,1,'active',?)").run(childId, JSON.stringify(child));
+      const origin = this.continuity.forChain(String(parent.id));
+      this.continuity.bind(childId, proof.ownerId, source.message.content, origin?.initiatorKind === 'human_player' ? origin.id : undefined, true);
+      this.queue(source, proof.targetId, childId, 1, source.channel, false, 'followup', proof);
+    }).immediate();
   }
   private saveJob(job: StoredJob, leaseUntil?: string): void {
     this.db.prepare('UPDATE companion_social_jobs SET status=?,lease_until=?,data=? WHERE id=?').run(job.status, leaseUntil ?? null, JSON.stringify(job), job.id);
@@ -719,6 +816,7 @@ export class CompanionSocialStore {
       for (const owner of jobOwners) for (const value of this.candidates('companion_social_jobs', String(owner.companion_id), jobPredicate, [now])) {
         this.scanned('companion_social_jobs', String(owner.companion_id), Number(value.ordinal));
         const job = parse<StoredJob>(value.data);
+        if (job.replyOpportunity && !this.activityReplyValid(job.replyOpportunity)) { job.status = 'cancelled'; this.saveJob(job); this.endChain(job.chainId); continue; }
         if (!this.participantsActivated(job.memberIds)) { for (const id of job.memberIds.filter(id => !this.activated(id))) this.stopInactive(id); continue; }
         if (this.phoneBusy(job.companionId, 'job:' + job.id)) continue;
         if (this.db.prepare("SELECT 1 FROM companion_social_jobs WHERE companion_id=? AND status='running' AND lease_until>? LIMIT 1").get(job.companionId, iso())) continue;
@@ -752,6 +850,7 @@ export class CompanionSocialStore {
     const context = this.calendar(); return this.db.transaction(() => {
       const existing = this.db.prepare('SELECT * FROM companion_social_jobs WHERE id=?').get(input.id); if (!existing) throw new Error('社交回复任务不存在。'); const job = parse<StoredJob>(row(existing).data);
       if (job.status !== 'running' || job.leaseToken !== input.leaseToken || Date.parse(String(row(existing).lease_until)) < Date.now()) throw new Error('这次社交回复的租约已经失效。');
+      if (job.replyOpportunity && !this.activityReplyValid(job.replyOpportunity)) throw new Error('持续任务的原始来源或本次真实回复机会已失效，未发布。');
       if (!this.participantsActivated(job.memberIds)) { for (const id of job.memberIds.filter(id => !this.activated(id))) this.stopInactive(id); return { ok: true }; }
       const admission = this.jobTopicAdmission(job);
       if (admission !== 'active') { this.holdOrCancelTopicJob(job, admission); return { ok: true, ...(admission === 'paused' ? { socialPending: true } : {}) }; }

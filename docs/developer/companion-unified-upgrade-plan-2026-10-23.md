@@ -1250,3 +1250,21 @@ e01cbfc实际构建的测试包位于out/WorldlineBox-win32-x64/WorldlineBox.exe
 R06还确认一项真实付费空转：原step15在23:57:00.757等待Kimi，00:02:08.314仅因300秒到期重新规划，期间没有新peer消息或入场事件。现reply等待保留，廉价检查继续，仅真实回信或关联正式拜访结果唤醒；任务deadline、来源撤回、取消和其他等待不变。原worker的旧超时合同原地升级，修复前单例child exit1，修复后完整32/32、child exit0，覆盖超过300秒、关库重开仍等待、真实回信只claim一次、同条回信不重复唤醒，原拜访允许/拒绝与取消覆盖保留。凭据见外部r06-reply-wait-change-summary.json。后续实模、重新打包和推送只按实际结果补记，旧自主失败原件不改判。
 
 冻结前main/extension类型检查及全部8个修改TS文件lint均实际退出0，独立只读复核未发现权限或回执放宽。遵从用户最新补充，后续必须先跑通实际验证，再在最终收尾统一打包；当前不启动打包，不把此前安装器当作本节修复已入包。
+
+### 16.80 同一自主目标的入场实证与回复处理断点（2026-10-25）
+
+16.79修复以eb28ffb提交并推送。唯一新复验native-world-tools-five-autonomous.json在冻结源码上真实运行：五位实际完成认识、邀约，建立同一个群和话题06ccd162…，Kimi及其余四位均本人成功join。没有代填加入或角色；原先工具装配导致的入场障碍已有本次实际改善证据。随后仍未发牌，不能算完整对局通过。
+
+只读原SQLite确认另一一般衔接缺陷：本人最后公开消息41e02401…（sequence54）要求其他人表态，但该group summary未选择nextRecipientId，原chain按既有有界规则结束（used6/max7），这条实际已送给四位成员的消息没有任何对应回复job。持续任务e82f1da8…已观察该准确消息，并在step15明确wait.reply(qwen)，却没有给Qwen处理这条请求的机会。当前确实还缺自愿主持和规则一致，不能靠宿主直接发牌或替人答应。问题是处理机会缺失，不是再次无法join，也不能恢复五分钟空转来掩盖它。
+
+核实断点后通过正常研究stop保存原目标2c0476f3…、原任务、原群/话题与全部消息。报告interrupted/research_stop_requested，861.173秒、271次Main HTTP、源码守卫true，测试0通过/1失败；原任务仍waiting/step15，没有复活终态或改判通过。后续修复应只补已持久明确等待目标、本人准确已送且被本次wait观察的真实来源的一次正常处理机会，保持对方自主选择、原链结束、来源与角色隔离、幂等和有界额度。计划在同一原source正常恢复时核验，不重建人物或重新洗牌，也不重获一整套测试预算。
+
+### 16.81 持续等待的单次真实回复处理机会（2026-10-25）
+
+现由持久wait.reply所明确选定的target，在正常保存等待与廉价wake时，为本人本任务端口内最新、实际已送给该target且本轮准确观察过的消息补一次正常social处理机会。只认真实observed ID和正文哈希；不从模型summary里的JSON提取伪发送回执，不倒查已处理来源以外的更旧问题。使用原真实source、reader、话题准入与模型循环，不新增聊天消息，不代答、不代join、不授予DSH或任何外部权限。对方仍可以返回text/null。
+
+同source/target跨链已有pending/running或任何终态job、准确readSet处理、实际replyTo回复均不新建。父done链保持结束，原used/max不改，只能在原剩余额度中同事务持久预留一槽；独立child最大2条计数、只允许一个followup，结束后不递归续链。新处理在claim和complete重核原活动非终态、实际source、端口及当前可见性。human/peer沿真实委托与接受来源闭包核任务因果，source-free自主活动只认真实sent outbox及精确activity_<taskId>_<数字step>对应的成功发送history。没有新来源时仍不因五分钟或tick重复请求模型；精确已有job采用索引前置短路，不缓存权限。
+
+普通露营讨论的真实SQLite新回归修复前child exit1，两例均确认原summary已正式提问却无目标job；首RED的清理句柄错误也保留。最终源码上的group与activity两个完整worker41/41、child exit0，目标3文件lint退出0，覆盖正常自主回复、null、不新增消息、原父结束与额度、重启/重复tick无重复处理、原来源撤回后禁止发布及R06真实等待交互。独立只读审核确认上述界限，没有游戏专用分支。原局只读证据native-world-tools-five-autonomous-reply-gap-readonly.json的SHA256为02afa1e0eec1257587cf131ce7de17f7e89d2e05caab1b8da859a82fdbb9f950；新机制通过不能冒充原对局已结算。冻结后的类型检查及同源恢复结果随后据实补记；测试跑通前不打包。
+
+最终main/extension类型检查退出0；首次仅新增测试观察器误引用本仓库未提供的Database命名空间及unknown构造器而退出2，原件保留，随后仅改用已有CompanionConnection类型，产品与断言未改，确认检查及该测试lint均退出0。下一段沿用原source/群/话题/任务，原观察已用861173ms和271次HTTP，仍只使用原20分钟、600次Main请求的剩余额度；不因恢复清零，也不在原失败记录上写成功。
