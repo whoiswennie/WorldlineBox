@@ -1340,3 +1340,15 @@ f0c3228上的native-world-tools-five-quantity-continuation.json保持原source�
 最终四个相关文件23/23、0skip、child exit0，包含真实官方CLI的本地协议隔离检查；main与extension官方tsc检查均0，目标lint与diff-check0，独立只读审查无P1/P2。native-peer-thought-warm-real.json为一次真实已选profile性能闭环，通过且child exit0：两路初始预热合计8688.211ms，随后普通/只读probe分别boot5.001ms/5.344ms并均reusedWorker=true；伙伴实际思考preparation99.149ms、boot6.180ms，也真正复用。9次Main HTTP、1个native任务/1个turn，最终正式回复与本人经历可读、原配置/源码守卫true、failures为空。初始冷准备与模型推理耗时仍存在，不把6ms说成完整答案延迟或承诺任何冷配置均即时启动。
 
 16.86核到的缺票是已耗尽普通链导致的确定调度缺口。尽管此前计划在20分钟收口，为验证这处必要修复，最后只沿同一仍waiting的原任务继续一次，显式使用30分钟累计观察窗口；已用1204690ms与433次非judge请求继续扣除，原20分钟失败保留，不新增用户目标、角色或洗牌，也不复活终态。后续真实结果另记，在其完成前仍未启动打包。
+
+### 16.88 同局补齐真实投票，整局结算仍未验收（2026-10-25）
+
+98a06c8的exhausted-wait-five-same-source-real.json沿原source27e1c2d5…、同一任务/群/话题继续，newUserTaskMessages=0、continuedExistingSource=true。本段600139ms、121次Main HTTP（含1judge）、actual child exit1，原source累计1804829ms、555次Main（含2judge，即553非judge），源码及所选native配置守卫true。最终failed/acceptance_deadline，任务实际仍running/step33，未改成成功或恢复任何终态。场内DSH实际调用仍0；16.87的明确请求性能闭环不能替代自然对局中的自主使用。
+
+耗尽链修复已有同源实证：Flash对原seq100的新child dcc64d6f…真实claim并done，seq103（95c72aa8…）投Kimi；gugu的child2bc168ad…处理同一通知后在seq108（76b45b12…）投Flash；Kimi正常job42670d41…在seq111（7c362058…）投gugu。连同原Qwen投Kimi，四票齐为Kimi2/Flash1/gugu1。父链78dbdf02…仍done/used7/max7，没有新增reservation。后续仍存在正常pending/running社交处理，没有观察到新的无job回复缺口。
+
+主持在群seq119（cf31738d…）正确报2/1/1并宣布放逐Kimi，seq123（a966c550…）再次坚持正确票数；其他角色在若干发言中误称2比2，Kimi最后seq126仍在抗议，未完成遗言/翻牌和最终胜负结算。主持私人seq125（f9fb929b…）却声称已在群中认错、将按平票重投，与实际公开话语不一致。当前需要继续核实活跃任务、直接伙伴回复与通知的目标/上下文衔接，不能仅凭这次现象断言又缺工具或擅自写入胜负。
+
+原独立judge RED保持：gameCompleted=false、privateIdentityProtected=true、rosterConsistent=true，但它将真实2/1/1说成“四票平票”，并把主持正确放逐当作算票错误，这部分理由与原件不符；私人进度声明与公开记录矛盾、整局未完成则有原件支持。没有另叫judge抽样改判，也未把机械调度已修复冒充整体验收通过。
+
+本阶段实际完成并推送了群聊DSH思考/渐进记录入口、空库经历读取、耗尽链真实等待及权限隔离的双策略预热，必要机械回归和真实DSH性能闭环已通过。自主完整结算仍未通过，长期目标保持进行中；当前没有再次打包，旧source002c4a5安装器仍不代表这些最新修复。后续先基于同一原件核源码因果，不追加游戏或数学审核实验，也不把未完成状态宣布为交付完成。
