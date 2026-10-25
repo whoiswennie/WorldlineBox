@@ -33,6 +33,33 @@ it('skips non-social tasks, empty task sets and empty reports without a provider
   expect(fetchFn).not.toHaveBeenCalled();
 });
 
+it('reviews a terminating peer promise even without tools and keeps proposed acceptance distinct from a saved task', async () => {
+  const source = { id: 'actual_book_request', authorId: 'bob', content: '请你主持今天的读书讨论，收集大家意见并跟进到结束。' };
+  const peerFinal = { actor: { id: 'alice', name: '林澄' }, source };
+  const proposedWorkOffer = { sourceMessageId: source.id, mode: 'activity' as const, accept: true,
+    title: '主持读书讨论', instruction: source.content, evidence: [source.content] };
+  let calls = 0;
+  const fetchFn = vi.fn<typeof fetch>(async (_url, init) => {
+    const wire = JSON.parse(String(init?.body)), data = JSON.parse(wire.messages[1].content);
+    expect(data.facts).toEqual([]); expect(data.nativeActions).toBeUndefined();
+    expect(data.peerFinal.source).toEqual(source);
+    expect(wire.messages[0].content).toContain('正文发布后本job就结束');
+    expect(wire.messages[0].content).toContain('同一事务');
+    expect(wire.messages[0].content).toContain('一次性内部工作，不支持持续主持');
+    if (calls++ === 0) {
+      expect(data.peerFinal).not.toHaveProperty('proposedWorkOffer');
+      return response({ supported: false, correction: '本条结束后没有本人持续任务；请当场执行、明确接受持续责任，或如实限定。' });
+    }
+    expect(data.peerFinal.proposedWorkOffer).toEqual(proposedWorkOffer);
+    expect(data.facts).not.toContainEqual(expect.objectContaining({ status: 'queued' }));
+    return response({ supported: true, correction: '' });
+  });
+  expect(await reviewCompanionSocialProgress('我这就收集意见，之后持续主持到结束。', [], config, undefined, { peerFinal, fetchFn })).toContain('没有本人持续任务');
+  expect(await reviewCompanionSocialProgress('我接下这份主持职责，接下来继续跟进。', [], config, undefined,
+    { peerFinal: { ...peerFinal, proposedWorkOffer }, fetchFn })).toBeUndefined();
+  expect(fetchFn).toHaveBeenCalledTimes(2);
+});
+
 it('returns only an unsupported report correction and sends host progress plus bounded receipt metadata instead of private bodies', async () => {
   const correction = '已有3位实际回信，未读正文不能断言没有谁明确答应；只说明还在核实参加意愿。';
   const original = task(), originalJson = JSON.stringify(original);

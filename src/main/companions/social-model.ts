@@ -127,7 +127,10 @@ phone是远程手机文字通信，不代表同一地点、拜访许可或电脑
         if (!review.allowed) throw new Error('本条群公开正文未发布：' + (review.reason ?? '包含本局秘密或不符合实际受众。')
           + ' 正文自称私发不会改变实际群投递；需私下行动时，使用已开放的message能力向该真实有资格成员单独送达，然后公共text只给不含秘密的回执，或text=null。');
         const correction = await reviewCompanionSocialProgress(proposal.text, [], config, signal,
-          { fetchFn: options.fetchFn, timeoutMs: options.timeoutMs, turns: evidence.turns, names: input.members });
+          { fetchFn: options.fetchFn, timeoutMs: options.timeoutMs, turns: evidence.turns, names: input.members,
+            peerFinal: { actor: { id: input.companion.id, name: input.companion.name },
+              source: { id: input.source.id, authorId: input.source.authorId, content: input.source.content },
+              ...(proposal.workOffer ? { proposedWorkOffer: proposal.workOffer } : {}) } });
         if (correction) throw new Error('本条回复未发布：' + correction);
       }
       return proposal;

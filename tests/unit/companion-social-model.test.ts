@@ -32,6 +32,60 @@ const toolResponse = (id: string, name: string, args: unknown) => new Response(J
 const sentReceipt = (id: string, recipientIds: string[], content: string) => ({ ok: true, socialMessage: {
   message: { ...source, id, conversationId: 'actual_pair', authorId: companion.id, content }, virtualCreatedAt: source.createdAt, recipientIds } });
 
+it('corrects an unregistered book-discussion hosting promise into a source-bound activity offer in the same peer loop', async () => {
+  const request = '请你主持这次读书讨论，分别联系朋友并持续跟进，等讨论结束后向我汇总。';
+  const actualSource = { ...source, content: request };
+  const promised = '好，我来主持，稍后我会分别联系朋友、持续跟进讨论，最后通知你结果。';
+  const accepted = '我愿意主持这次读书讨论，登记持续任务后继续联系和跟进，实际进度以回执为准。';
+  const offer = { mode: 'activity' as const, sourceMessageId: actualSource.id, title: '主持读书讨论', instruction: request,
+    evidence: [request], accept: true };
+  let authors = 0, reviews = 0;
+  const fetchFn = vi.fn<typeof fetch>(async (_url, init) => {
+    const wire = JSON.parse(String(init?.body)), data = JSON.parse(wire.messages[1].content);
+    if (data.purpose === 'companion_social_progress_review') {
+      reviews++; expect(data.facts).toEqual([]); expect(data.nativeActions).toBeUndefined();
+      expect(data.peerFinal.source).toEqual({ id: actualSource.id, authorId: actualSource.authorId, content: request });
+      expect(data.peerFinal.actor).toEqual({ id: companion.id, name: companion.name });
+      if (reviews === 1) {
+        expect(data.proposedText).toBe(promised); expect(data.peerFinal).not.toHaveProperty('proposedWorkOffer');
+        return response({ supported: false, correction: '当前回复结束后没有持续任务，不能只承诺稍后主持并自动联系；应先实际行动或登记本人接受的持续责任。' });
+      }
+      expect(data.proposedText).toBe(accepted); expect(data.peerFinal.proposedWorkOffer).toEqual(offer);
+      return response({ supported: true, correction: '' });
+    }
+    expect(data.purpose).toBe('world_social'); authors++;
+    expect(data.source).toMatchObject({ id: actualSource.id, authorId: actualSource.authorId, content: request });
+    if (authors === 1) return toolResponse('unregistered_hosting', COMPANION_SUBMIT_RESULT_TOOL, { text: promised, reason: '愿意接受主持责任。' });
+    expect(data.outputCorrection.error).toContain('当前回复结束后没有持续任务');
+    expect(wire.messages.some((message: { role: string; content: string }) => message.role === 'tool'
+      && message.content.includes('rejected_before_execution'))).toBe(true);
+    return toolResponse('registered_hosting', COMPANION_SUBMIT_RESULT_TOOL, { text: accepted, reason: '接受本条真实委托并登记持续责任。', workOffer: offer });
+  });
+  const result = await generateCompanionSocialReply({ ...input(), source: actualSource, messages: [actualSource] }, config, undefined, { fetchFn });
+  expect(result).toMatchObject({ text: accepted, workOffer: offer });
+  expect(authors).toBe(2); expect(reviews).toBe(2); expect(fetchFn).toHaveBeenCalledTimes(4);
+});
+
+it('passes ordinary peer wishes and conditional suggestions through one existing progress review without creating work', async () => {
+  const text = '姐姐，我想听轻快一点的。如果你也喜欢，我们可以边听边聊。';
+  let authors = 0, reviews = 0;
+  const fetchFn = vi.fn<typeof fetch>(async (_url, init) => {
+    const wire = JSON.parse(String(init?.body)), data = JSON.parse(wire.messages[1].content);
+    if (data.purpose === 'companion_social_progress_review') {
+      reviews++; expect(data.proposedText).toBe(text); expect(data.facts).toEqual([]); expect(data.nativeActions).toBeUndefined();
+      expect(data.peerFinal).toMatchObject({ actor: { id: companion.id, name: companion.name },
+        source: { id: source.id, authorId: source.authorId, content: source.content } });
+      expect(data.peerFinal).not.toHaveProperty('proposedWorkOffer');
+      return response({ supported: true, correction: '' });
+    }
+    authors++; expect(data.purpose).toBe('world_social');
+    return toolResponse('ordinary_reply', COMPANION_SUBMIT_RESULT_TOOL, { text, reason: '表达自己的喜好与条件性建议，不承担后续工作。' });
+  });
+  const result = await generateCompanionSocialReply(input(), config, undefined, { fetchFn });
+  expect(result.text).toBe(text); expect(result.workOffer).toBeUndefined();
+  expect(authors).toBe(1); expect(reviews).toBe(1); expect(fetchFn).toHaveBeenCalledTimes(2);
+});
+
 it('rejects a peer native final claiming a failed discussion message was sent and lets the same author correct it', async () => {
   const request = '请把读书讨论的开始时间单独告诉朋友，再告诉我实际结果。';
   const actualSource = { ...source, content: request };
@@ -44,7 +98,7 @@ it('rejects a peer native final claiming a failed discussion message was sent an
       reviews++; expect(data.facts).toEqual([]);
       expect(data.nativeActions).toEqual([expect.objectContaining({ callId: 'discussion_send', action: 'message', delivery: 'failed', proposedRecipientIds: ['friend'] })]);
       expect(data.nativeActions[0]).not.toHaveProperty('sentContent');
-      expect(data.identities).toEqual([{ id: 'friend', name: '朋友' }]);
+      expect(data.identities).toEqual([{ id: 'deepseek-flash', name: '小肥鱼' }, { id: 'deepseek-sister', name: '大肥鱼' }, { id: 'friend', name: '朋友' }]);
       expect(wire.messages[0].content).toContain('给真实收件人');
       return response({ supported: data.proposedText === corrected, correction: data.proposedText === corrected ? '' : '实际发送回执是失败，不能说开始时间已送达朋友。' });
     }
@@ -147,6 +201,7 @@ it('distinguishes a real independently executed subtask from social continuation
 it('preserves human presence and distinct speaker identity in companion-created player groups', async () => {
   const fetchFn = vi.fn<typeof fetch>(async (_url, init) => {
     const request = JSON.parse(String(init?.body)), data = JSON.parse(request.messages[1].content);
+    if (data.purpose === 'companion_social_progress_review') return response({ supported: true, correction: '' });
     expect(data.identity.audience).toBe('player');
     expect(data.identity.participants.map((person: { id: string }) => person.id)).toContain('user');
     expect(data.identity.self.id).toBe(companion.id);
@@ -159,7 +214,7 @@ it('preserves human presence and distinct speaker identity in companion-created 
   await generateCompanionSocialReply({ ...input(), conversation: { ...conversation, peerOnly: false }, messages: [
     { ...source, id: 'human_group_message', sequence: 9, authorId: 'user', content: '我是真人，等我一起玩。' }, source,
   ] }, config, undefined, { fetchFn });
-  expect(fetchFn).toHaveBeenCalledOnce();
+  expect(fetchFn).toHaveBeenCalledTimes(2);
 });
 it.each([{ allowed: true, confidence: .98, expected: true }, { allowed: true, confidence: .5, expected: false }, { allowed: false, confidence: .99, expected: false }])('checks autonomous social content without inventing human authorization: $expected', async proposal => {
   const fetchFn = vi.fn<typeof fetch>(async (_url, init) => {
@@ -178,7 +233,11 @@ it('uses only the currently verified own-scope self-understanding and retains it
     items: [{ memoryId: 'self_note', memoryVersion: 2, kind: 'voice' as const, topic: '讨论节奏', statement: '我愿意先核实出处再慢慢讨论。', basis: 'reflection' as const,
       qualification: '仅是这次共同阅读形成的暂定认识。', updatedAt: source.createdAt, sourceMessageIds: [source.id] }] };
   const bodies: Array<Record<string, unknown>> = [];
-  const fetchFn = vi.fn<typeof fetch>(async (_url, init) => { const request = JSON.parse(String(init?.body)); bodies.push(JSON.parse(request.messages[1].content)); return response({ text: '姐姐，我想先核对出处。', reason: '保留自己的有条件判断。' }); });
+  const fetchFn = vi.fn<typeof fetch>(async (_url, init) => {
+    const request = JSON.parse(String(init?.body)), data = JSON.parse(request.messages[1].content);
+    if (data.purpose === 'companion_social_progress_review') return response({ supported: true, correction: '' });
+    bodies.push(data); return response({ text: '姐姐，我想先核对出处。', reason: '保留自己的有条件判断。' });
+  });
   await generateCompanionSocialReply({ ...input(), characterDevelopment }, config, undefined, { fetchFn });
   expect(bodies[0]!.characterDevelopment).toEqual(characterDevelopment);
   for (const invalid of [{ ...characterDevelopment, companionId: 'other' }, { ...characterDevelopment, conversationId: 'private_flash' }]) {
@@ -223,6 +282,7 @@ it.each(['phone', 'face_to_face'] as const)('composes ordinary %s visit speech f
 it('provides actual peer identity and bounded turn budget without execution tools or later/user messages', async () => {
   const fetchFn = vi.fn<typeof fetch>(async (_url, init) => {
     const request = JSON.parse(String(init?.body)), data = JSON.parse(request.messages[1].content);
+    if (data.purpose === 'companion_social_progress_review') return response({ supported: true, correction: '' });
     expect(request.tools.map((tool: { function: { name: string } }) => tool.function.name)).toEqual([COMPANION_SUBMIT_RESULT_TOOL]); expect(data.purpose).toBe('world_social');
     expect(data.identity.currentReply).toMatchObject({ sourceMessageId: source.id, speaker: { id: source.authorId }, addressee: { id: source.authorId } });
     expect(data.identity.participants.some((member: { id: string }) => member.id === 'user')).toBe(false);
@@ -241,6 +301,7 @@ it('uses focused owner-wide VCP context without injecting raw candidates or anot
   const fetchFn: typeof fetch = async (_url, init) => {
     const body = JSON.parse(String(init?.body));
     const data = JSON.parse(body.messages[1].content);
+    if (data.purpose === 'companion_social_progress_review') return response({ supported: true, correction: '' });
     expect(data.memories).toEqual([]); expect(data.memoryContext).toBe('宿主已核验的本人VCP资料。');
     expect(body.messages[0].content).toContain('旧记录中的维修、天气、位置、权限或约定不能仅因被召回就改写成此刻仍有效');
     expect(body.messages[0].content).toContain('引用和转述按实际来源作者归因');
@@ -264,6 +325,7 @@ it('retains the same characters source-verified private and other-group memories
     { ...own, id: 'other', companionId: 'friend' }, { ...own, id: 'forgotten', status: 'forgotten' }, { ...own, id: 'future', sourceSequence: 11 }] }, config,
   undefined, { fetchFn: async (_url, init) => {
     const body = JSON.parse(String(init?.body)), data = JSON.parse(body.messages[1].content);
+    if (data.purpose === 'companion_social_progress_review') return response({ supported: true, correction: '' });
     expect(data.memories.map((note: { id: string }) => note.id)).toEqual(['own_name', 'group']);
     expect(body.messages[0].content).toContain('不因换入口忘记自己知道的事');
     expect(data.identity.currentReply.speaker.id).toBe(source.authorId);
@@ -294,6 +356,7 @@ it('binds a peer work offer to the current actual sender and preserves the recip
   const offer = { sourceMessageId: source.id, title: '阅读文章并建议', instruction: content, evidence: [content], accept: true };
   const result = await generateCompanionSocialReply(value, config, undefined, { fetchFn: async (_url, init) => {
     const body = JSON.parse(String(init?.body)), data = JSON.parse(body.messages[1].content);
+    if (data.purpose === 'companion_social_progress_review') return response({ supported: true, correction: '' });
     expect(data.identity.self.id).toBe(companion.id); expect(data.identity.currentReply.speaker.id).toBe(source.authorId);
     expect(data.source).toMatchObject({ id: source.id, authorId: source.authorId, content }); expect(data.turnBudget.mayGrantPlayerAuthority).toBe(false); expect(body.tools.map((tool: { function: { name: string } }) => tool.function.name)).toEqual([COMPANION_SUBMIT_RESULT_TOOL]);
     return response({ text: '好，我会读完后给你三点建议。', reason: '来信者明确请求阅读工作，我决定接受。', workOffer: offer });
@@ -340,6 +403,7 @@ it('keeps a host-verified human initiator across peer turns even when a peer inc
   const incoming = { ...source, authorId: 'friend', content: '是姐姐让你来找我的吗？' };
   const fetchFn = vi.fn<typeof fetch>(async (_url, init) => {
     const request = JSON.parse(String(init?.body)), payload = JSON.parse(request.messages[1].content);
+    if (payload.purpose === 'companion_social_progress_review') return response({ supported: true, correction: '' });
     expect(payload.identity.self.id).toBe(companion.id); expect(payload.identity.currentReply.author.id).toBe(companion.id);
     expect(payload.identity.currentReply.speaker.id).toBe('friend'); expect(payload.origin).toEqual(origin);
     expect(payload.identity.origin.initiatorId).toBe('user'); expect(payload.identity.characterRelations[0].targetId).toBe('deepseek-sister');
@@ -350,7 +414,7 @@ it('keeps a host-verified human initiator across peer turns even when a peer inc
   const result = await generateCompanionSocialReply({ ...input(), source: incoming, messages: [incoming, { ...source, authorId: 'user', content: 'PRIVATE_PLAYER_DATA' }], job: { ...job, origin } }, config, undefined, { fetchFn });
   expect(result.text).toBe('是玩家让我来找你玩的。');
   await expect(generateCompanionSocialReply({ ...input(), job: { ...job, origin: { ...origin, initiatorId: 'deepseek-sister' } } }, config, undefined, { fetchFn })).rejects.toMatchObject({ code: 'INVALID_RESPONSE' });
-  expect(fetchFn).toHaveBeenCalledOnce();
+  expect(fetchFn).toHaveBeenCalledTimes(2);
 });
 it('quotes the actual peer reply without a notification model, task narrative or private player transcript', () => {
   const playerRoom = { ...conversation, id: 'private_flash', kind: 'private' as const, memberIds: [companion.id] };

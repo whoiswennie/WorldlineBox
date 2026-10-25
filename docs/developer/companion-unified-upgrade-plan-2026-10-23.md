@@ -1448,3 +1448,15 @@ c1166a3上的产品源码冻结后，对523d283已变更的来源/恢复/思考�
 回归：新增普通讨论组→私聊错误端口、旧错端口outbox持久取消与同client退休，完整topic-admission worker9/9、child0。既有social store/continuity/acquaintance三个完整worker首轮76通过/2失败，两个旧断言仍期待取消抛异常；仅将它们更新为新合同的明确ok:false/error且无pending/消息，实际取消、撤回与不重放断言保留，原两项确认2/2、19项明确未选择、child0，不将首轮改写成78/78。原新增peer讨论负控修复前RED已保存；修复后social-model、social-progress-review、structured-agent、structured-final四个完整文件77/77、0skip、child0，覆盖失败自纠、受控wire下的完整typed送达回执正控及普通闲聊无额外调用。另world-service与social-capabilities两个完整文件52/52、0skip、child0。新peer入口在本轮有社交调用时，正常每个最终提案多一次既有进度审核请求；格式失败沿用原有上限，普通无动作回复不增加调用。
 
 这些小范围结果只证明新通用端口/回执/最终回复接线，不代表这次自主局后来已经结束，也未在修复后再次运行模型、恢复或重开对局。相关凭据为source-trust-destination-*、source-trust-cancelled-receipt-contract-confirmed*、source-trust-peer-final-*及source-trust-peer-routing-main-regressions*；失败原件均保留在项目外。冻结后main类型检查、九个变更TS文件lint及diff-check实际退出0；extension共享层没有变更，不重复同字节检查。两个通用修正均经独立只读复核，无未解决实质问题。本轮仍未打包，长期目标保持active。
+
+### 16.95 无续行执行者的未来承诺（2026-10-25）
+
+3a3ad06冻结后，message-port-peer-progress-five-3a3ad06-*记录一次20分钟、600次Main非judge/最多1次judge、5个native任务各120秒的完整自主局。实际06:31:58至06:52:01Z，exit1、acceptance_deadline、202次Main请求（含1次judge），源码和所选native配置守卫true，failures为空，演员native调用0。本局自行推选Flash为上帝，五位已加入、规则已讨论，但没有实际发牌、夜间或终局，原owner任务仍waiting/step23。不能以judge的progressClaimsSupported=true表示行动已经执行。
+
+唯一只读快照message-port-peer-progress-five-live-readonly.json（06:44:18Z）中，7条outbox全部sent、23个peer job全部done；没有peer实际发送调用，因此本局未实际触发16.94的错误目的话题门或发送失败后虚报校验。源49明确请求Flash报抽牌名单并私下发牌；Flash正式52只承诺“这就私下单独发…发完我开第一夜”。其真实journal只有topic.read成功后提交final，没有发送、workOffer或相关acceptedActivity，所有Flash journal无持续activity调用。原owner真实等待牌信，未把未来承诺当身份内容。快照未枚举全部活动表，不能扩大成已查询证明全库绝无另一任务。实际topic moderator仍Sister且未移交，但尚无Flash写他人私态的拒绝回执，不能把权限拒绝说成已经触发的原因。
+
+据此把一次性回复生命周期交给既有reviewCompanionSocialProgress核验：所有非空peer final携带实际actor、当前source和原workOffer候选，覆盖没有发送调用、也未填候选却承诺回复后继续执行的情况。普通喜好、条件建议、报名不创建任务；确定承担后续工作时，由原作者在同一有限循环中选择实际执行、合规接受持续责任或如实限定。没有关键词、游戏步骤、代发或按台词自动建任务。候选不能假装已登记；activity接受与正式回复仍沿原social.complete同一事务，失败整体回滚。省略mode且accept=true的一次性内部工作也保留其合法分析/创作续行，不能冒充持续主持。原生交接额外携真实taskStatus，活动终态不当作仍能继续。该接线客观增加此前无动作peer final的一次既有review请求；语义核验仍可能出错，不承诺任意模型零漏检。
+
+对应四个unit文件首轮78通过/2失败/0skip，失败是两个新增mock误把原合同省略的空nativeActions期待为[]；仅校正这两处期待为undefined，其余断言不动，确认2/2通过、35项明确未选择，原始报告均保留。新增普通读书讨论负控覆盖无执行者承诺被拒后原作者提交同源activity候选；普通聊天正控不会制造任务；候选与真实queued事实严格分开。凭据peer-continuation-contract-unit-*与peer-continuation-contract-confirmed-*保存在项目外，不把受控mock当作真实模型已改善的证明。本轮仍未打包，最终官方构建继续以关键流程跑通为前提。
+
+main类型检查、五个变更TS文件lint及diff-check实际退出0；共享extension层未变，不重复检查。只读复核指出一次性内部工作也有合法后续执行者，已在同一合同补清，不把它误当持续主持。原子提交实现未改，不重跑已有存储矩阵。修复版本冻结后才另行开始一次新合同完整自主局，原3a3ad06失败源不续时、不改写。

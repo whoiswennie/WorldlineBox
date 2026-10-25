@@ -1,10 +1,11 @@
 import { z } from 'zod';
 import type { CompanionActivityTask } from '../../shared/companion-activity-task';
-import type { CompanionMessage } from '../../shared/companions';
+import type { Companion, CompanionMessage } from '../../shared/companions';
 import type { CompanionLoopCall, CompanionLoopTurn } from '../../shared/companion-loop';
 import { socialProgressActions } from './social-progress-evidence';
 import { CompanionModelError, generateCompanionStructured, type CompanionModelConfig, type CompanionModelOptions } from './model';
 import type { CompanionSocialNotification } from '../../shared/companion-social';
+import type { companionSocialWorkOfferSchema } from '../../shared/companion-social-work';
 
 const active = new Set(['queued', 'running', 'waiting']);
 const social = new Set(['message', 'social', 'introduce', 'create_group']);
@@ -39,10 +40,12 @@ function actionReceipt(item: CompanionActivityTask['history'][number], related: 
 export async function reviewCompanionSocialProgress(text: string, tasks: readonly CompanionActivityTask[], config: CompanionModelConfig,
   signal?: AbortSignal, options: Pick<CompanionModelOptions, 'fetchFn' | 'timeoutMs'> & { names?: readonly { id: string; name: string }[]; replies?: readonly CompanionMessage[];
     turns?: readonly CompanionLoopTurn[]; proposedCalls?: readonly CompanionLoopCall[];
-    outbound?: NonNullable<CompanionSocialNotification['progressEvidence']>; requireReview?: boolean; includeTerminal?: boolean } = {}): Promise<string | undefined> {
+    outbound?: NonNullable<CompanionSocialNotification['progressEvidence']>; requireReview?: boolean; includeTerminal?: boolean;
+    peerFinal?: { actor: Pick<Companion, 'id' | 'name'>; source: Pick<CompanionMessage, 'id' | 'authorId' | 'content'>;
+      proposedWorkOffer?: z.infer<typeof companionSocialWorkOfferSchema> } } = {}): Promise<string | undefined> {
   const relevant = tasks.filter(task => (options.includeTerminal || active.has(task.status)) && task.history.some(item => social.has(item.action)));
   const nativeActions = socialProgressActions(options.turns ?? [], options.proposedCalls);
-  if (!text.trim() || !options.requireReview && !relevant.length && !nativeActions.length) return undefined;
+  if (!text.trim() || !options.peerFinal && !options.requireReview && !relevant.length && !nativeActions.length) return undefined;
   const related = new Set<string>();
   for (const action of nativeActions) for (const person of [...action.proposedRecipientIds, ...action.recipientIds ?? []]) related.add(person);
   const facts = relevant.map(task => {
@@ -55,9 +58,10 @@ export async function reviewCompanionSocialProgress(text: string, tasks: readonl
       ...(id(task.peerConversationId) ? { currentPort: { conversationId: id(task.peerConversationId), topicId: id(task.peerTopicId) ?? null } } : {}),
       actions: task.history.filter(item => social.has(item.action)).map(item => actionReceipt(item, related, task.companionId)) };
   });
-  const { names, replies, outbound, requireReview: _required, includeTerminal: _terminal, turns: _turns, proposedCalls: _proposedCalls, ...modelOptions } = options;
+  const { names, replies, outbound, peerFinal, requireReview: _required, includeTerminal: _terminal, turns: _turns, proposedCalls: _proposedCalls, ...modelOptions } = options;
   void _required; void _terminal;
   for (const item of outbound?.outbound ?? []) { related.add(item.message.authorId); for (const person of item.recipientIds) related.add(person); }
+  if (peerFinal) { related.add(peerFinal.source.authorId); related.add(peerFinal.actor.id); }
   void _turns; void _proposedCalls;
   const identities = [...new Map((names ?? []).filter(person => related.has(person.id)).map(person => [person.id, { id: person.id, name: person.name }])).values()];
   const result = reviewSchema.safeParse(await generateCompanionStructured({
@@ -74,10 +78,15 @@ nativeActions.sentContent只在本次真实已送达回执中出现，是该mess
 这里没有远端身体观察。通信可达、待发或没读到回复不能支持“她正在睡觉/吃饭/工作/必须醒来才能看信”等当前身体断言；已激活伙伴能够独立处理手机消息。只审这种实际事实声明，不把普通人设语气、自身情绪、感叹、比喻、明确假设、愿望或建议判为失败。
 只核验伙伴本人声称已经实施的真实社交作用与实际进度。明确小说情节、角色对白、游戏策略发言、假设和引用不是伙伴真实发信回执；“旧记录写着已发送，但我本轮尚未核实”仅报告记录与证据边界，不能改读成其本人保证已送达。普通聊天即使没有facts/nativeActions也可通过；没有凭据只表示具体完成声明尚未证实，不能反推真实动作绝未发生。不要因本次没有活动任务而认证“配置已经发给她们”等真实完成声明。
 queued/running/waiting都是真实已保存且能由后台自动推进的持久任务，因此它们支持“我会继续确认/组织、等实际回复后继续推进”的承诺；不能误判queued为“没有自动执行证据”，也不能要求用户再说一句才允许继续。它们不支持已经完成、必然成功或精确未来时间的保证。与社交进展无关的普通聊天不要过度拦截。
+peerFinal若提供，表示本次正在结束一个一次性伙伴回复；正文发布后本job就结束，没有隐含的后台轮次。source是本次实际读到的真实来信，不是新的玩家授权。此时还要核验本人确定承担的后续执行承诺：例如承诺回复后持续组织讨论、协调共同计划、私下发出尚未发出的通知或继续执行多步工作，不能只有未来式台词却没有实际执行者。没有有效持续任务或拟原子接受时，应在本次原生循环内实际执行所承诺的行动，或明确提交合法workOffer接受持续责任；否则只能如实表达建议、尚未承担或尚未开始。只把“已发”改成“这就发、发完再推进”仍是确定承担后续行动，不会自动产生执行轮次。已经发过一条消息也不证明余下多步职责将继续；nextRecipientId、工具提案、失败调用和他人的承诺不是本人的持久责任。
+nativeActions的taskId/taskStatus来自本次真实宿主后台交接回执；queued/running/waiting证明已有执行者，可支持该交接范围内继续推进，不能把它当成本次已经发信。终态任务、缺少状态或拟调用不证明仍会继续执行。
+peerFinal.proposedWorkOffer是actor本轮提交且已核对当前source与逐字evidence的候选，尚未提交，不是假造的既有queued任务。还须按source语义核对它确实直接请求actor承担候选所述职责，title/instruction忠实保留请求范围；逐字摘录引用、转述、设想或普通参加意愿也不构成真实委托。只有合规mode=activity且accept=true才会在宿主正式发布此回复的同一事务中建立本人持续任务；任务创建、租约或来源核验失败时本条回复不会发布。因此该候选支持“我接下这份职责，接下来继续跟进”的承诺，但不支持“任务已经登记”“已完成发信”或已经产生其他效果。mode省略是一次性内部工作，不支持持续主持；accept=false不建立持续任务。不要要求普通报名、表达兴趣、情绪、个人愿望、条件性提议、等待对方提供信息或本条已经给出的分析答复登记持续任务，不按主题关键词判断，也不自动替作者建立任务。只有正文确实保证本条结束后本人仍会执行具体工作且无有效续行凭据时才纠错；correction应让原作者自己选择当场执行、明确接受或如实限定，不能逼其接受。
+mode省略且accept=true的合规候选，会在同一发布事务创建并接受一次性内部工作，支持其instruction范围内稍后完成分析或创作的承诺；它不是activity，不支持持续组织、现实工具权限或候选以外的工作。accept=false仅是未接受的提议，不支持保证之后执行。
 同时核验汇报自身明确的数量矛盾，例如同时断言“这局6人就是12人局”不成立；可以说参考某规则缩减为6人，但不能把6人与12人说成同一数量。这里只用明确数值关系，不推断外部游戏通常人数或额外规则知识。
 按完整句段的限定词审查：“规则初稿/提案/目前倾向/尚未定下”已经限定后续规则为草案，不得仅因草案内写了具体人数或牌型便说成“已确定规则”。同一句段明确区分六人板与八人板不属于混称。不要要求每个分句重复相同限定词，不把表述风格的改进当成事实错误。correction只能指出proposedText实际存在且由所给事实支持的问题，不能另造群标题、报名者、规则或事实。
 有实质事实矛盾或无依据断言时supported=false，correction简短指出哪项声明超出哪些事实、需要怎样保持事实边界，不生成替代最终台词、不引用私人对话、不要求额外用户授权。没有实质问题时supported=true且correction为空。`,
     user: JSON.stringify({ purpose: 'companion_social_progress_review', proposedText: text, facts, identities,
+      ...(peerFinal ? { peerFinal } : {}),
       ...(outbound ? { verifiedOutbound: outbound.outbound.map(({ message, recipientIds }) => ({ id: message.id, conversationId: message.conversationId,
         authorId: message.authorId, content: message.content, createdAt: message.createdAt, recipientIds })), outboundCoverageComplete: outbound.complete } : {}),
       ...(nativeActions.length ? { nativeActions } : {}),
