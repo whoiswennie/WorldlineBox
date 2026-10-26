@@ -52,7 +52,7 @@ flowchart TD
 | MemorySourceLog | 保存正式来源、作者、事件时间、见证和撤销记录 | 不用模型改写原始证据 |
 | MemoryEpisodeBuffer | 把消息和回执聚成仍在发生的一件事，保存处理游标 | 不把每次工具调用当成独立生活经历 |
 | MemoryEncoder | 判断 skip、create、append、correct、link、uncertain，并核对旧记忆 | 不直接写文件、删除来源或自行授予权限 |
-| MemoryLedger | 权威自然文本修订、来源与依赖、操作回执 | 不等待模型和 embedding 才提交事务 |
+| MemoryLedger | 不可变修订及来源依赖、操作回执、伙伴正文文件的耐久发布凭证 | 不等待模型和 embedding 才提交事务；不在文件缺失时替模型回退SQL正文 |
 | MemoryIndexCoordinator | 增量更新原版 VCP 索引，公布可读代次 | 不把索引重建当作新的个人经历 |
 | MemoryRecallService | 原版 VCP 召回、固定候选聚焦、来源凭证和任务快照 | 不因每次工具续接重跑整套被动回忆 |
 | MemoryMaintenanceController | 每伙伴欠账、节律、检查点和维护计划 | 不依赖身体 sleeping 或占用现实工作授权 |

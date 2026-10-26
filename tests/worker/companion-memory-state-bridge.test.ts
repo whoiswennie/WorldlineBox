@@ -17,7 +17,9 @@ it('atomically ties a capture integration to a formal diary and withdraws only t
   const { store, scope, persona } = fixture();
   const source = store.appendMessage({ conversationId: scope.conversationId, authorId: 'alice', content: '我这次先核验备份，再实际完成了恢复检查。' });
   const before = store.request({ type: 'state.get', ...scope }).runtimeState!;
-  const job = store.request({ type: 'memory.jobs.claim', companionId: scope.companionId }).memoryJob!;
+  // Host-only flush isolates the capture/state transaction from admission time.
+  const job = store.request({ type: 'memory.jobs.claim', companionId: scope.companionId, force: true }).memoryJob!;
+  expect(job.sourceMessageIds).toEqual([source.id]);
   const candidate = { content: '这次先核验备份，再完成恢复检查；下一次仍需要重新核实适用情况。', diaryName: '自我认识', tags: ['恢复检查'], sourceMessageIds: [source.id], evidence: [{ sourceMessageId: source.id, quote: source.content }] };
   const note = store.request({ type: 'memory.jobs.complete', id: job.id, leaseToken: job.leaseToken, notes: [candidate], expectedStateRevision: before.revision,
     stateProposal: { expression: 'direct', focus: '下次先核验备份的适用范围', reason: '这次整理后形成暂定的下一步关注。', sourceMessageIds: [source.id], evidence: candidate.evidence,
@@ -39,7 +41,8 @@ it('atomically ties a capture integration to a formal diary and withdraws only t
 it('keeps an authored newer state when a slow capture completes, while preserving the committed diary', () => {
   const { store, scope } = fixture();
   const source = store.appendMessage({ conversationId: scope.conversationId, authorId: 'alice', content: '我想稍后整理读书时留下的问题。' });
-  const previous = store.request({ type: 'state.get', ...scope }).runtimeState!, job = store.request({ type: 'memory.jobs.claim', companionId: scope.companionId }).memoryJob!;
+  const previous = store.request({ type: 'state.get', ...scope }).runtimeState!, job = store.request({ type: 'memory.jobs.claim', companionId: scope.companionId, force: true }).memoryJob!;
+  expect(job.sourceMessageIds).toEqual([source.id]);
   const newer = store.appendMessage({ conversationId: scope.conversationId, authorId: 'user', content: '现在请先关注这次正在发生的讨论。' });
   store.request({ type: 'state.update', ...scope, proposal: { focus: '眼前讨论', reason: '实际较新来信', sourceMessageIds: [newer.id], evidence: [{ sourceMessageId: newer.id, quote: newer.content }], appraisals: [] } });
   const candidate = { content: '我留下过一个待读问题，尚未实际解决。', sourceMessageIds: [source.id], evidence: [{ sourceMessageId: source.id, quote: source.content }] };
@@ -51,6 +54,11 @@ it.each(['A', 'B'] as const)('withdraws only the merged memory impulse while kee
   const { store, scope } = fixture();
   const a = store.appendMessage({ conversationId: scope.conversationId, authorId: 'user', content: '我支持你，也尊重你。先核验备份再操作，尚未完成。', replyDirective: 'none' });
   const b = store.appendMessage({ conversationId: scope.conversationId, authorId: 'user', content: '我支持你，也尊重你。恢复后还需核对日志，当前未核实。', replyDirective: 'none' });
+  // Claim before the proactive full-source writes below settle coverage. The
+  // in-flight capture can then commit its state effect against that same real
+  // source cohort without inventing another extraction after full coverage.
+  const capture = store.request({ type: 'memory.jobs.claim', companionId: scope.companionId, force: true }).memoryJob!;
+  expect([...capture.sourceMessageIds].sort()).toEqual([a.id, b.id].sort());
   const forgotten = forgottenSide === 'A' ? a : b, survivor = forgottenSide === 'A' ? b : a;
   const proposalFor = (source: typeof a) => ({ content: source.content, tags: ['核验'], sourceMessageIds: [source.id], evidence: [{ sourceMessageId: source.id, quote: source.content }] });
   const originals = [a, b].map(source => store.request({ type: 'memory.record', ...scope, candidate: proposalFor(source) }).memories![0]!);
@@ -70,8 +78,6 @@ it.each(['A', 'B'] as const)('withdraws only the merged memory impulse while kee
   expect(independent.relationship.affinity).toBeGreaterThan(before.relationship.affinity);
   const independentChange = independent.recentChanges!.find(change => change.kind === 'appraisal' && change.sourceMessageIds.length === 1 && change.sourceMessageIds[0] === survivor.id)!;
   expect(independentChange).toBeDefined();
-  const capture = store.request({ type: 'memory.jobs.claim', companionId: scope.companionId }).memoryJob!;
-  expect([...capture.sourceMessageIds].sort()).toEqual([a.id, b.id].sort());
   const integrated = store.request({ type: 'memory.jobs.complete', id: capture.id, leaseToken: capture.leaseToken, notes: [mergeCandidate],
     stateProposal: { expression: 'playful', focus: '依赖两条来源的整合关注', reason: '这次合并记忆带来的暂定状态。',
       sourceMessageIds: [a.id, b.id], evidence: mergeCandidate.evidence, appraisals: [{ type: 'shared_success', target: 'task', intensity: .2, confidence: 1 }] } }).memories![0]!;

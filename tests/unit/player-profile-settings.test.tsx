@@ -50,7 +50,7 @@ it('keeps saved images when the native picker is cancelled or returns an invalid
   await click('更换三视图'); expect(container!.querySelector<HTMLImageElement>('.public-appearance-thumbnail img')!.src).toContain('/saved-sheet');
   f.request.mockImplementation(input => input.type === 'attachment.pick' ? Promise.resolve({ ok: true, attachments: [{ id: 'bad', mime: 'text/plain', name: 'notes.txt', size: 12 }] }) : original(input));
   await click('选择头像'); expect(container!.querySelector('[role="alert"]')!.textContent).toContain('请选择图片文件');
-  expect(container!.querySelector<HTMLElement>('.companion-avatar')!.style.backgroundImage).toContain('/saved-avatar');
+  expect(container!.querySelector<HTMLImageElement>('.companion-avatar img')!.src).toContain('/saved-avatar');
   await click('移除头像'); await click('移除三视图'); await save();
   expect(f.current().avatarAttachmentId).toBeUndefined(); expect(f.current().appearanceAttachmentId).toBeUndefined();
 });

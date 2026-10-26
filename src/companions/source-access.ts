@@ -90,7 +90,39 @@ export class CompanionSourceAccess {
                 const found = this.statement('SELECT data FROM vcp_memory_notes WHERE id=? AND companion_id=?').get(memory.id, scope.companionId);
                 if (!found) return false;
                 const note = json<{ status: string }>(row(found).data);
-                if (note.status === 'forgotten' || !memory.sources.length) return false;
+                if (!memory.sources.length) return false;
+                if (memory.version !== undefined) {
+                    const captured = this.statement('SELECT content_revision FROM companion_memory_version_revisions WHERE note_id=? AND version=?').get(memory.id, memory.version);
+                    if (memory.contentRevision === undefined || !captured || Number(row(captured).content_revision) !== memory.contentRevision) return false;
+                }
+                if (note.status === 'forgotten') {
+                    // A source selector retires the latest mixed note, while
+                    // an older body using only unrelated lawful sources may
+                    // remain a valid fixed task input. Explicit note/tag forget
+                    // retracts every revision in the history authority table.
+                    const historical = memory.contentRevision === undefined ? undefined : this.statement(
+                        "SELECT state FROM companion_memory_history_files WHERE companion_id=? AND note_id=? AND content_revision=?")
+                        .get(scope.companionId, memory.id, memory.contentRevision);
+                    if (!historical || row(historical).state === 'retracted') return false;
+                }
+                if (memory.contentRevision !== undefined) {
+                    const saved = this.statement('SELECT data FROM companion_memory_content_revisions WHERE note_id=? AND companion_id=? AND content_revision=?')
+                        .get(memory.id, scope.companionId, memory.contentRevision);
+                    if (!saved) return false;
+                    const revision = json<{ memory: CompanionMemory; dependencies: Array<{ id: string; contentRevision: number }> }>(row(saved).data);
+                    const refs = revision.memory.sources;
+                    if (refs.length !== memory.sources.length || refs.some(source => !memory.sources.some(reference => reference.id === source.messageId
+                        && reference.conversationId === source.conversationId && reference.checksum === source.checksum))) return false;
+                    for (const dependency of revision.dependencies) {
+                        const stored = this.statement('SELECT data FROM companion_memory_content_revisions WHERE note_id=? AND companion_id=? AND content_revision=?')
+                            .get(dependency.id, scope.companionId, dependency.contentRevision);
+                        if (!stored) return false;
+                        const historical = json<{ memory: CompanionMemory }>(row(stored).data).memory;
+                        if (!this.frozenMemoryValid(scope, { id: dependency.id, contentRevision: dependency.contentRevision,
+                            sources: historical.sources.map(source => ({ id: source.messageId, conversationId: source.conversationId, checksum: source.checksum,
+                                ...(memory.sources.some(reference => reference.revision !== undefined) ? { revision: source.revision } : {}) })) })) return false;
+                    }
+                }
                 for (const reference of memory.sources) {
                     if (!this.statement('SELECT 1 FROM vcp_note_source_history WHERE note_id=? AND message_id=?').get(memory.id, reference.id)) return false;
                     const source = this.statement('SELECT * FROM messages WHERE id=?').get(reference.id);
@@ -150,7 +182,9 @@ export class CompanionSourceAccess {
                 if (!this.visible(scope, row(current))) return false;
             }
             const memoryScope = { companionId: readset.companionId, conversationId: readset.conversationId, beforeSequence: readset.beforeSequence };
-            if (readset.memories.some(note => this.memoryValid?.(readset.companionId, note.id, note.version, memoryScope) !== true)) return false;
+            if (readset.memoryReads?.some(memory => !this.frozenMemoryValid(memoryScope, memory))) return false;
+            if (readset.memories.some(note => !readset.memoryReads?.some(read => read.id === note.id && read.version === note.version)
+              && this.memoryValid?.(readset.companionId, note.id, note.version, memoryScope) !== true)) return false;
             if (readset.frozenMemories?.some(memory => !this.frozenMemoryValid(memoryScope, memory))) return false;
             for (const reference of readset.topics) {
                 const scope = { companionId: readset.companionId, conversationId: reference.conversationId };
@@ -441,8 +475,11 @@ export class CompanionSourceAccess {
         });
     }
     block(companionId: string, ids: readonly string[]): void {
-        for (const id of ids)
-            this.statement('INSERT OR IGNORE INTO vcp_source_blocks(message_id,companion_id,created_at) VALUES(?,?,?)').run(id, companionId, new Date().toISOString());
-        if (ids.length) this.sourcesBlocked?.(companionId, ids);
+      this.db.transaction(() => {
+        const changed: string[] = [];
+        for (const id of new Set(ids))
+            if (this.statement('INSERT OR IGNORE INTO vcp_source_blocks(message_id,companion_id,created_at) VALUES(?,?,?)').run(id, companionId, new Date().toISOString()).changes) changed.push(id);
+        if (changed.length) this.sourcesBlocked?.(companionId, changed);
+      }).immediate();
     }
 }

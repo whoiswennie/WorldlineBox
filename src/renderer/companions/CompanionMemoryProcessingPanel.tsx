@@ -4,6 +4,7 @@ import type { CompanionMemoryJobSchedule, CompanionMemoryProcessing, CompanionMe
 import type { ScheduleRequest } from './companion-schedules';
 import { Icon } from '../Icons';
 import { createCoalescedRefresh } from './coalesced-refresh';
+import { CompanionModelResourcesPanel } from './CompanionModelResourcesPanel';
 import './companion-memory-processing.css';
 
 type Props = { companionId: string; companionName?: string; api?: WorldlineBoxCompanionsApi; request: ScheduleRequest };
@@ -109,6 +110,8 @@ export function CompanionMemoryProcessingPanel({ onClose, onOpenDocument, ...pro
       <main className={'memory-processing-content' + (detailOwner === props.companionId ? ' is-detail-open' : '')}>
         <div className="memory-processing-toolbar"><div><strong>{filters.find(([value]) => value === filter)?.[1]}</strong><span>{data ? `${jobs.length} 项记录` : '正在读取'}</span></div><div><details className="memory-processing-rules"><summary aria-label="处理规则" title="处理规则"><Icon name="info" size={15} /></summary><p>“已处理”表示对应后台步骤结束。来源整理可能判断无需写日记；向量收录和自动标签是各自独立的步骤。</p></details><button type="button" onClick={() => void refresh()} aria-label="刷新处理记录"><Icon name="refresh" size={14} /><span>刷新</span></button>{needsRetry && <button type="button" className="memory-processing-retry" disabled={retrying} onClick={() => void retry()}>{retrying ? '正在重试…' : data?.summary.failed ? '重试失败的整理' : '重试待处理任务'}</button>}</div></div>
         {(error || retryError) && <p className="memory-processing-error" role="alert">{retryError || error}</p>}
+        {data?.metrics && <p className="memory-processing-counts" aria-label="当前伙伴来源与条目统计">当前账本：{data.metrics.sourceVersions.toLocaleString('zh-CN')} 个整理来源版本 · {data.metrics.originalEntries.toLocaleString('zh-CN')} 条原始记录 · {data.metrics.derivedEntries.toLocaleString('zh-CN')} 条派生记录。来源和条目数都不等于模型调用数。</p>}
+        <CompanionModelResourcesPanel companionId={props.companionId} api={props.api} />
         {data?.schedule && <section className="memory-processing-next-check" aria-label="当前伙伴后台检查安排"><Icon name="clock" size={15} /><div><p>{data.schedule.condition}</p>{data.schedule.nextCheckAt && <ScheduleMoment at={data.schedule.nextCheckAt} label="下次检查" basis={data.schedule.timeBasis} />}</div><details className="memory-processing-rules memory-processing-schedule-info"><summary aria-label="后台检查时间说明" title="后台检查时间说明"><Icon name="info" size={14} /></summary><p>{data.schedule.explanation}</p></details></section>}
         {!data && !error ? <p className="memory-processing-empty" role="status">正在读取实际处理记录…</p> : !jobs.length ? <div className="memory-processing-empty"><Icon name="check" size={25} /><p>{filter === 'all' ? '还没有记忆处理任务。产生正式交流或提供资料后，处理记录会出现在这里。' : '暂无此状态的记忆处理任务。'}</p></div> : <div className="memory-processing-board">
           <ol className="memory-processing-jobs" aria-label="处理任务">{jobs.map(job => <li key={job.kind + ':' + job.id} data-processing-kind={job.kind} data-processing-status={job.status}><button type="button" className="memory-processing-job" aria-pressed={selected?.kind === job.kind && selected.id === job.id} onClick={() => { setSelection({ owner: props.companionId, key: job.kind + ':' + job.id }); setDetailOwner(props.companionId); }}>

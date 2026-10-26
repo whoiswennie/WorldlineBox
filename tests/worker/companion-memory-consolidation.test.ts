@@ -57,6 +57,21 @@ it('publishes the new index before archiving originals, preserves evidence versi
   store.close(); store = new CompanionsStore(path.join(root, 'state.sqlite'), seeds);
   expect(active().map(note => note.id)).toEqual([merged.id]); expect(read(b.memory.id).sources[0]?.messageId).toBe(b.source.id);
 });
+it('resumes a complete new pending plan after restart using its original body receipts while allowing annotation changes', () => {
+  const a = note('A 尚未合并发布的实际来源。'), b = note('B 仍需保留的条件。'); index();
+  const merged = fullMerge([a, b], 'new_pending_restart')!;
+  store.request({ type: 'memory.organize', ...scope, ids: [a.memory.id], tags: ['仅调整标签'] });
+  store.close(); store = new CompanionsStore(path.join(root, 'state.sqlite'), seeds);
+  expect(read(a.memory.id).archivedAt).toBeUndefined(); expect(read(b.memory.id).archivedAt).toBeUndefined();
+  index();
+  expect(active().map(note => note.id)).toEqual([merged.id]);
+  expect(read(a.memory.id)).toMatchObject({ content: a.source.content, contentRevision: a.memory.contentRevision, supersededBy: merged.id, tags: ['仅调整标签'] });
+  expect(read(b.memory.id).supersededBy).toBe(merged.id);
+  const changes = store.request({ type: 'memory.lifecycle.changes', companionId: 'alice' }).memoryLifecycleChanges!.changes;
+  for (const original of [a, b]) expect(changes.find(change => change.noteId === original.memory.id && change.kind === 'archive'))
+    .toMatchObject({ causeEventId: 'consolidation-publish/' + merged.id, cause: { operation: 'archive', planId: merged.id, noteIds: [original.memory.id] },
+      changeKind: 'archive', evidenceDelta: { newSourceVersions: [] } });
+});
 it('withdraws the derivative when a source reached only through the dependency graph is forgotten', () => {
   const a = note('昨日不适合运动。'), b = note('今天天气允许时可以散步。'); index();
   const merged = consolidate([read(a.memory.id), read(b.memory.id)], a.source); index();
@@ -176,40 +191,27 @@ it('reserves original sources across distinct note ids and releases the pending 
   expect(active().map(note => note.id).sort()).toEqual([first.id, next.id].sort());
 });
 
-it('recovers a legacy overlapping eight-attempt pending plan after restart without erasing valid historical content or a published winner', () => {
-  const a = note('A 原始事实。'), b = note('B 原始事实。'), c = note('C 新的原始事实。'); index();
-  const winner = fullMerge([a, b], 'legacy_winner')!;
+it('does not reconstruct or publish a persisted plan missing its original body-version receipts after restart', () => {
+  const a = note('A 原始事实。'), b = note('B 原始事实。'); index();
+  const merged = fullMerge([a, b], 'incomplete_persisted_plan')!;
   const db = new Database(path.join(root, 'state.sqlite'));
-  let obsolete: CompanionMemory;
+  let unsupported: string;
   try {
-    const key = 'memory-consolidation/' + winner.id;
-    const saved = db.prepare('SELECT value FROM metadata WHERE key=?').get(key) as { value: string };
-    // Simulate a pre-fix ledger that admitted two overlapping pending plans.
-    db.prepare('UPDATE metadata SET value=? WHERE key=?').run(JSON.stringify({ ...JSON.parse(saved.value), state: 'legacy_fixture' }), key);
-    obsolete = fullMerge([a, c], 'legacy_obsolete')!;
-    db.prepare('UPDATE metadata SET value=? WHERE key=?').run(saved.value, key);
-    const dispatch = store.request({ type: 'memory.outbox.claim' }).memoryOutbox!;
-    expect(dispatch.noteId).toBe(winner.id);
-    store.request({ type: 'memory.outbox.complete', id: dispatch.id, leaseToken: dispatch.leaseToken, indexed: true });
-    db.prepare("UPDATE vcp_memory_outbox SET status='failed',attempts=8,error='整合索引完成前读集已变化，不归档原文。' WHERE note_id=? AND operation='remember'").run(obsolete.id);
+    db.prepare("UPDATE metadata SET value=json_remove(value,'$.mergedVersion','$.mergedContentRevision','$.inputs[0].contentRevision') WHERE key=?").run('memory-consolidation/' + merged.id);
+    unsupported = (db.prepare('SELECT value FROM metadata WHERE key=?').get('memory-consolidation/' + merged.id) as { value: string }).value;
   } finally { db.close(); }
-  store.close(); store = new CompanionsStore(path.join(root, 'state.sqlite'), seeds); index();
-  expect(active().map(note => note.id).sort()).toEqual([winner.id, c.memory.id].sort());
-  const retired = read(obsolete!.id);
-  expect(retired).toMatchObject({ content: obsolete!.content, version: 1, sources: obsolete!.sources });
-  expect(retired.archivedAt).toBeDefined(); expect(read(a.memory.id).supersededBy).toBe(winner.id); expect(read(b.memory.id).supersededBy).toBe(winner.id);
-  const report = store.request({ type: 'memory.processing.status', companionId: 'alice', limit: 30 }).memoryProcessing!;
-  expect(report.summary.failed).toBe(0);
-  expect(report.jobs.find(job => job.noteId === obsolete!.id && job.status === 'stale')).toMatchObject({ attempts: 8, error: expect.stringContaining('另一项有效整合') });
-  expect(store.request({ type: 'memory.status', companionId: 'alice' }).memoryStatus?.pendingIndex).toBe(0);
+  store.close(); store = new CompanionsStore(path.join(root, 'state.sqlite'), seeds);
+  const dispatch = store.request({ type: 'memory.outbox.claim' }).memoryOutbox!;
+  expect(() => store.request({ type: 'memory.outbox.complete', id: dispatch.id, leaseToken: dispatch.leaseToken, indexed: true })).toThrow('完整正文版本');
+  expect(read(a.memory.id).archivedAt).toBeUndefined(); expect(read(b.memory.id).archivedAt).toBeUndefined();
+  const check = new Database(path.join(root, 'state.sqlite'));
+  try { expect((check.prepare('SELECT value FROM metadata WHERE key=?').get('memory-consolidation/' + merged.id) as { value: string }).value).toBe(unsupported); }
+  finally { check.close(); }
 });
 
-it.each([false, true])('retires an invalid old read set and accepts a newly generated plan from the current corrected sources (legacy=%s)', legacy => {
+it('retires an invalid current read set and accepts a newly generated plan from the current corrected sources', () => {
   const a = note('A 待更正原文。'), b = note('B 当前仍有效的原文。'); index();
   const obsolete = fullMerge([a, b], 'before_correction')!;
-  if (legacy) { const db = new Database(path.join(root, 'state.sqlite')); try {
-    db.prepare("UPDATE metadata SET value=json_remove(value,'$.mergedVersion') WHERE key=?").run('memory-consolidation/' + obsolete.id);
-  } finally { db.close(); } }
   const corrected = store.appendMessage({ conversationId: scope.conversationId, authorId: 'user', content: 'A 明确更正后的当前原文。', replyDirective: 'none' });
   store.request({ type: 'memory.revise', ...scope, id: a.memory.id, expectedVersion: 1, candidate: candidate(corrected) }); index();
   expect(() => read(obsolete.id)).toThrow(); expect(read(b.memory.id).archivedAt).toBeUndefined();
@@ -249,12 +251,9 @@ it('keeps real native failures retryable while source-snapshot deferrals do not 
   } finally { clock.mockRestore(); }
 });
 
-it.each([false, true])('preserves a separately revised candidate and its new delivery while retiring the old archive plan (legacy=%s)', legacy => {
+it('preserves a separately revised candidate and its new delivery while retiring the earlier archive plan', () => {
   const a = note('A 保留的原始事实。'), b = note('B 保留的原始事实。'); index();
   const merged = fullMerge([a, b], 'candidate_before_revision')!;
-  if (legacy) { const db = new Database(path.join(root, 'state.sqlite')); try {
-    db.prepare("UPDATE metadata SET value=json_remove(value,'$.mergedVersion') WHERE key=?").run('memory-consolidation/' + merged.id);
-  } finally { db.close(); } }
   const delivery = store.request({ type: 'memory.outbox.claim' }).memoryOutbox!;
   expect(delivery.noteId).toBe(merged.id);
   const correction = store.appendMessage({ conversationId: scope.conversationId, authorId: 'user', content: '独立校订后的候选正文与新出处。', replyDirective: 'none' });
@@ -284,9 +283,9 @@ it('replays a deferred operation receipt with the same explicit fresh-read requi
   expect(() => store.request({ ...command, candidate: { ...command.candidate, content: '使用同一操作号提交另一种语义正文。' } })).toThrow('不同请求');
 });
 
-it('retires a missing legacy candidate without retrying its outbox or archiving its original sources', () => {
+it('retires a missing current candidate without retrying its outbox or archiving its original sources', () => {
   const a = note('A 仍在的原文。'), b = note('B 仍在的原文。'); index();
-  const merged = fullMerge([a, b], 'missing_legacy_candidate')!;
+  const merged = fullMerge([a, b], 'missing_current_candidate')!;
   const db = new Database(path.join(root, 'state.sqlite'));
   try { db.prepare('DELETE FROM vcp_memory_notes WHERE id=?').run(merged.id); } finally { db.close(); }
   expect(() => index()).not.toThrow();
@@ -309,14 +308,16 @@ it('bounds each indexed recovery pass and eventually reaches old pending plans b
     // Ordinary metadata does not have to be JSON and is excluded by the index.
     db.prepare('INSERT INTO metadata VALUES(?,?)').run('ordinary-setting', 'plain text'); recovery.initialize();
     for (let index = 0; index < 40; index++) {
-      const mergedId = 'pending_' + String(index).padStart(2, '0'), sourceId = 'source_' + index;
+      const mergedId = 'pending_' + String(index).padStart(2, '0'), sourceId = 'source_' + index, secondId = 'second_source_' + index;
       notes.set(mergedId, { ...template, id: mergedId });
       notes.set(sourceId, { ...template, id: sourceId, ...(index === 39 ? { archivedAt: '2026-10-26T00:00:00Z', supersededBy: 'published_winner' } : {}) });
+      notes.set(secondId, { ...template, id: secondId });
       db.prepare('INSERT INTO metadata VALUES(?,?)').run('memory-consolidation/' + mergedId, JSON.stringify({ companionId: 'alice', mergedId,
-        mergedVersion: 1, state: 'pending', inputs: [{ id: sourceId, version: 1 }] }));
+        mergedVersion: 1, mergedContentRevision: template.contentRevision, state: 'pending',
+        inputs: [{ id: sourceId, version: 1, contentRevision: template.contentRevision }, { id: secondId, version: 1, contentRevision: template.contentRevision }] }));
     }
-    for (let batch = 0; batch < 9; batch++) { const before = loads.length; expect(recovery.reconcilePending(4)).toBe(0); expect(loads.length - before).toBe(8); }
-    const before = loads.length; expect(recovery.reconcilePending(4)).toBe(1); expect(loads.length - before).toBe(9);
+    for (let batch = 0; batch < 9; batch++) { const before = loads.length; expect(recovery.reconcilePending(4)).toBe(0); expect(loads.length - before).toBe(12); }
+    const before = loads.length; expect(recovery.reconcilePending(4)).toBe(1); expect(loads.length - before).toBe(12);
     const retired = db.prepare('SELECT value FROM metadata WHERE key=?').get('memory-consolidation/pending_39') as { value: string };
     expect(JSON.parse(retired.value)).toMatchObject({ state: 'stale', staleReason: expect.stringContaining('另一项有效整合') });
     expect(notes.get('source_39')?.supersededBy).toBe('published_winner');

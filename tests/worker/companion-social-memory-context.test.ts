@@ -10,6 +10,9 @@ import { removeOwnedDirectorySync } from '../../src/main/vcp-memory/filesystem';
 import { companionStorageCommandSchema, type CompanionStorageCommand } from '../../src/shared/companion-storage';
 import { companionsResponseSchema } from '../../src/shared/companions';
 import { companionExecutionReadsetSchema } from '../../src/shared/companion-execution-evidence';
+import { companionAgentRunSchema } from '../../src/shared/companion-agent-run';
+import { activityPassiveRecallSchema } from '../../src/shared/companion-activity-task';
+import { companionSocialRecallSchema } from '../../src/shared/companion-social-reply';
 import { controlledMemoryRuntime } from '../fixtures/controlled-memory-runtime';
 import { nativeManagementHarness } from '../fixtures/vcp-management-native';
 
@@ -53,7 +56,20 @@ it('roundtrips the complete production VCP context through live social storage a
     expect(context.text.length).toBeGreaterThan(0);
     expect(context.evidence).toMatchObject({ queryClock: { domain: 'world', timeZone: 'UTC' }, recallPolicy: { schema: 'episodic-v1' },
       queryCorpusHash: expect.any(String), pageMemoryIds: [parent.id], dependencies: [{ id: parent.id, version: parent.version }], dependencyCoverage: 'complete',
-      references: expect.any(Array), referenceCoverage: expect.any(String), candidateOrder: 'independent_native_query', contextOrder: 'original_context_pipeline' });
+      references: expect.any(Array), referenceCoverage: expect.any(String), candidateOrder: 'context_observation', contextOrder: 'original_context_pipeline' });
+    // Every durable inference entrance must retain the same strict host
+    // coverage receipt; none may silently strip it or reject actual recall.
+    const entrances = [
+      (value: unknown) => companionAgentRunSchema.shape.passiveRecall.unwrap().parse({ prepared: true, context: value }),
+      (value: unknown) => activityPassiveRecallSchema.parse({ prepared: true, context: value }),
+      (value: unknown) => companionSocialRecallSchema.parse({ reasons: [], pending: false, degraded: false, context: value }),
+    ];
+    expect(context.selection).toMatchObject({ kind: 'ranked_candidates', exhaustive: false });
+    for (const parse of entrances) {
+      expect(parse(context).context).toEqual(context);
+      expect(() => parse({ ...context, selection: { ...context.selection, exhaustive: true } })).toThrow();
+      expect(() => parse({ ...context, inventedAuthority: true })).toThrow();
+    }
     const recall = { reasons: [], pending: false, degraded: false, context };
     const progress = { type: 'social.job.progress', id: job.id, leaseToken: job.leaseToken!, phase: 'thinking', detail: '核验后的真实聚焦上下文', memoryRecall: recall } as const;
     // This is the actual failing storage boundary, before any receipt is saved.
@@ -64,7 +80,9 @@ it('roundtrips the complete production VCP context through live social storage a
     const source = current.getMessage(job.sourceMessageId), frame = buildCompanionContext({ companion: current.state().companions.find(companion => companion.id === 'bob')!,
       conversation: current.state(true).conversations.find(conversation => conversation.id === pair.id)!, sourceMessage: source, messages: [source], memories: [], memoryRecall: recall });
     const readset = captureCompanionExecutionReadset(scope, { context: frame });
-    expect(readset).toMatchObject({ complete: true, memories: [{ id: parent.id, version: parent.version }], contexts: [] });
+    expect(readset).toMatchObject({ complete: true, memories: [], contexts: [],
+      frozenMemories: [{ id: parent.id, contentRevision: parent.contentRevision }] });
+    expect(readset.frozenMemories).toEqual(context.evidence!.frozenDependencies);
     expect(companionExecutionReadsetSchema.parse(JSON.parse(JSON.stringify(readset)))).toEqual(readset);
     advance(Math.max(1, Date.parse(job.typingNotBefore) - Date.now() + 1));
     const reply = current.request({ type: 'social.job.complete', id: job.id, leaseToken: job.leaseToken!, text: '核验后，棉线在第二层抽屉。', memoryRecall: recall,

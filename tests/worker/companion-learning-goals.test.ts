@@ -1,5 +1,6 @@
-import { createHash } from 'node:crypto';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { createHash, randomUUID } from 'node:crypto';
+import { mkdtempSync, rmSync, mkdirSync, writeFileSync } from 'node:fs';
+import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
@@ -12,6 +13,10 @@ import type { CompanionLearningAssets } from '../../src/main/companions/learning
 import type { AssetSummary } from '../../src/shared/asset-types';
 import type { CompanionStorageCommand } from '../../src/shared/companion-storage';
 import type { CompanionModelConfig } from '../../src/main/companions/model';
+import { CompanionModelAdmissionError } from '../../src/main/companions/model-quota';
+import { canonicalMemoryFiles } from '../fixtures/canonical-memory-files';
+import { learningTestInput } from '../../src/companions/learning-goal-test-protocol';
+import type { CompanionMemoryFileReceipt } from '../../src/shared/companion-memory-files';
 
 const model = vi.hoisted(() => ({ structured: vi.fn() }));
 const roots: string[] = [], stores = new Set<CompanionsStore>(), services = new Set<CompanionLearningGoalService>();
@@ -21,15 +26,16 @@ const sha = (text: string) => createHash('sha256').update(text).digest('hex');
 function fixture() {
   const root = mkdtempSync(path.join(tmpdir(), 'worldlinebox-learning-goals-')); roots.push(root);
   const seeds: CompanionSeed[] = ['alice', 'bob'].map(id => ({ id, name: id, description: '', persona: '核对来源后再学习。', model: '', avatar: 'sister', proactive: false, active: true }));
-  const file = path.join(root, 'state.sqlite'); const store = new CompanionsStore(file, seeds); stores.add(store);
+  const file = path.join(root, 'state.sqlite'); let store = new CompanionsStore(file, seeds); stores.add(store);
   const grant = store.request({ type: 'learning.grant', companionId: 'alice', libraryId: 'library', libraryName: '获准教材', libraryPath: root, autonomous: false, intervalMinutes: 30 }).learning!.grants[0]!;
   const create = (text = '持续研究核实资料的方法，逐轮练习并复盘，不要自动结束。', companionId = 'alice', windows: CompanionLearningGoal['schedule']['windows'] = []) => store.request({ type: 'learning.goals.create', companionId, text,
     materials: companionId === 'alice' ? [{ kind: 'library', grantId: grant.id }] : [], allowWeb: false, schedule: { intervalMinutes: 5, windows, timeZone: 'UTC' } }).learningGoal!;
   const rounds = (id: string, cursor = 0, limit = 20) => store.request({ type: 'learning.goals.rounds', companionId: 'alice', id, cursor, limit }).learningRounds!;
   const claim = () => store.request({ type: 'learning.goals.claim' }).learningGoalJob;
-  return { root, file, seeds, store, grant, create, rounds, claim };
+  return { root, file, seeds, get store() { return store; }, grant, create, rounds, claim,
+    reopen() { store.close(); stores.delete(store); store = new CompanionsStore(file, seeds); stores.add(store); } };
 }
-function build(f: ReturnType<typeof fixture>, overrides: Pick<CompanionLearningGoalIntegrationOptions, 'validateWrite'> = {}, resolveAssetContext?: CompanionModelConfig['resolveAssetContext']) {
+function build(f: ReturnType<typeof fixture>, overrides: Partial<Pick<CompanionLearningGoalIntegrationOptions, 'validateWrite' | 'request' | 'configFor' | 'fetchFn'>> = {}, resolveAssetContext?: CompanionModelConfig['resolveAssetContext']) {
   const material = { text: '先核对资料出处，再记录结论。', claim: '先核对资料出处。', badEvidence: false, unknownAnswer: false };
   const asset = { assetId: 'asset-one', displayName: '教材.md', currentRevisionId: 'revision', relativeFilePath: '教材.md', mediaType: 'text' } as AssetSummary;
   const assets: CompanionLearningAssets = { catalog: async () => [], grant: async () => ({ libraryName: '获准教材', libraryPath: f.root }),
@@ -37,9 +43,13 @@ function build(f: ReturnType<typeof fixture>, overrides: Pick<CompanionLearningG
   const request = vi.fn(async (command: CompanionStorageCommand) => f.store.request(command));
   // This is a deterministic adapter unit test. The opt-in real-model fixture uses actual VCP.
   const memory = { schedule: vi.fn(() => { let outbox; while ((outbox = f.store.request({ type: 'memory.outbox.claim' }).memoryOutbox)) f.store.request({ type: 'memory.outbox.complete', id: outbox.id, leaseToken: outbox.leaseToken, indexed: true }); }),
+    contextValid: vi.fn(async () => true),
     search: vi.fn(async (query: { companionId: string; conversationId: string }) => {
     const page = f.store.request({ type: 'memory.browse', companionId: query.companionId, conversationId: query.conversationId }).memoryPage!;
-    return { ok: true, memoryPage: page, memoryContext: { text: page.items.map(hit => hit.memory.content).join('\n'), revision: 'fixture', profileKey: 'fixture' } };
+    return { ok: true, memoryPage: page, memoryContext: { text: page.items.map(hit => hit.memory.content).join('\n'), revision: 'fixture', profileKey: 'fixture',
+      evidence: { capturedAt: new Date().toISOString(), corpusHash: sha(JSON.stringify(page.items)), dependencyCoverage: 'complete' as const, dependencies: page.items.map(({ memory }) => ({ id: memory.id, version: memory.version })),
+        frozenDependencies: page.items.map(({ memory }) => ({ id: memory.id, contentRevision: memory.contentRevision,
+          sources: memory.sources.map(source => ({ id: source.messageId, conversationId: source.conversationId, checksum: source.checksum })) })) } } };
   }) };
   model.structured.mockImplementation(async (input: { system: string; user: string }) => {
     const data = JSON.parse(input.user).data;
@@ -66,6 +76,110 @@ async function completed(f: ReturnType<typeof fixture>, service: CompanionLearni
   await service.tick(); await vi.waitFor(() => expect(f.rounds(goal.id).items[0]).toMatchObject({ ordinal, status: 'completed' }));
 }
 
+it.each(['complete', 'external_edit', 'source_withdrawal'] as const)('makes durable progress with one actual HTTP request per UTC day across restart without repaying successful self-test stages (%s)', async outcome => {
+  const f = fixture(), goal = f.create(), httpStages: string[] = [], days: Array<Record<string, unknown>> = [];
+  const server = createServer((incoming, outgoing) => { void (async () => {
+    const chunks: Buffer[] = []; for await (const chunk of incoming) chunks.push(Buffer.from(chunk));
+    const wire = JSON.parse(Buffer.concat(chunks).toString('utf8')), input = { system: wire.messages[0].content, user: wire.messages[1].content };
+    httpStages.push(/阶段=(\w+)/u.exec(input.system)?.[1] ?? 'unknown');
+    const value = await model.structured(input);
+    outgoing.writeHead(200, { 'Content-Type': 'application/json' }); outgoing.end(JSON.stringify({ choices: [{ message: { content: JSON.stringify(value) } }] }));
+  })().catch(error => { outgoing.writeHead(500); outgoing.end(String(error)); }); });
+  await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
+  const address = server.address(); if (!address || typeof address === 'string') throw new Error('Missing local HTTP fixture address.');
+  const config: CompanionModelConfig = { apiFormat: 'openai_chat', model: 'deterministic-learning-budget-fixture', baseUrl: 'http://127.0.0.1:' + address.port, apiKey: 'synthetic-fixture-only' };
+  let actual = await canonicalMemoryFiles(f.root, f.store, config), failure: unknown;
+  const artifact = { status: 'running', outcome, actualHttp: true, actualSqliteAccounting: true, actualCanonicalOwnerFiles: true,
+    nativeRecall: 'controlled orchestration fixture; not Rust ranking or encoder quality', realPaidProvider: false, httpStages, days };
+  try {
+    const initial = await actual.resources.load(), policy = JSON.parse(initial.content); policy.defaultConnection.requestsPerUtcDay = 1;
+    await actual.resources.save(initial.revision, JSON.stringify(policy));
+    let roundId = '', memoryId = '', recalls = 0;
+    for (let day = 0; day < 5; day++) {
+      const withdrawn = day === 3 && outcome !== 'complete';
+      if (withdrawn && outcome === 'external_edit') {
+        const receipt = f.rounds(goal.id).items[0]!.selfTestProgress!.recall!.value.executionReadset.contexts.flatMap(context => context.fileReceipts ?? [])[0]!;
+        writeFileSync(path.join(f.root, 'owner-assets', 'alice', receipt.path), 'OUTSIDE_EDIT_NOT_THE_FIXED_RECALL');
+      }
+      if (withdrawn && outcome === 'source_withdrawal') f.store.request({ type: 'memory.forget', companionId: 'alice', conversationId: 'world_alice',
+        sourceMessageIds: [f.rounds(goal.id).items[0]!.reads[0]!.sourceMessageId!] });
+      const b = build(f, { request: actual.request, configFor: owner => actual.configFor(owner), fetchFn: fetch });
+      b.memory.search.mockImplementation(async query => {
+        const page = (await actual.request({ type: 'memory.browse', companionId: query.companionId, conversationId: query.conversationId })).memoryPage!;
+        const materialized = await actual.live.materialize(query.companionId, page.items.map(item => item.memory));
+        return { ok: true, memoryPage: page, memoryContext: { text: materialized.notes.map(note => note.content).join('\n'), revision: 'controlled-canonical-recall', profileKey: 'controlled-canonical',
+          fileReceipts: materialized.receipts, evidence: { capturedAt: new Date().toISOString(), corpusHash: sha(JSON.stringify(materialized.notes)), dependencyCoverage: 'complete',
+            dependencies: materialized.notes.map(memory => ({ id: memory.id, version: memory.version })),
+            frozenDependencies: materialized.notes.map(memory => ({ id: memory.id, contentRevision: memory.contentRevision,
+              sources: memory.sources.map(source => ({ id: source.messageId, conversationId: source.conversationId, checksum: source.checksum })) })) } } };
+      });
+      b.memory.contextValid.mockImplementation(async (_scope?: unknown, context?: { fileReceipts?: readonly CompanionMemoryFileReceipt[] }) =>
+        !context?.fileReceipts?.length || await actual.live.validate('alice', context.fileReceipts));
+      await b.service.tick();
+      await vi.waitFor(() => expect((b.service as unknown as { jobs: Map<string, unknown> }).jobs.size).toBe(0), { timeout: 10000 });
+      expect(f.rounds(goal.id).items[0]!.status, f.rounds(goal.id).items[0]!.error).toBe(withdrawn ? outcome === 'external_edit' ? 'cancelled' : 'failed' : day < 4 ? 'deferred' : 'completed');
+      const round = f.rounds(goal.id).items[0]!; if (!roundId) roundId = round.id; expect(round.id).toBe(roundId);
+      if (round.memoryIds.length) { if (!memoryId) memoryId = round.memoryIds[0]!; expect(round.memoryIds).toEqual([memoryId]); }
+      const usage = f.store.request({ type: 'model.resources.usage', companionId: 'alice' }).modelResourceUsage!;
+      expect(usage).toMatchObject({ requests: withdrawn ? 0 : 1, responses: withdrawn ? 0 : 1, networkErrors: 0, unfinished: 0 });
+      if (!withdrawn) expect(usage.purposes).toEqual([expect.objectContaining({ purpose: 'learning', requests: 1 })]);
+      days.push({ day, status: round.status, roundId, memoryIds: round.memoryIds, completedTestStages: Object.keys(round.selfTestProgress ?? {}).filter(key => ['questions', 'recall', 'answer', 'assess'].includes(key)), usage });
+      expect(httpStages).toEqual(['plan', 'learn', 'questions', 'answer', 'assess'].slice(0, withdrawn ? 3 : day + 1));
+      recalls += b.memory.search.mock.calls.filter(([query]) => (query as { query?: string }).query === '本轮材料建议怎么做？').length;
+      if (!withdrawn) expect(b.report).not.toHaveBeenCalled();
+      await b.service.close(); services.delete(b.service); await actual.close();
+      if (withdrawn) { expect(round.selfTest).toBeUndefined(); artifact.status = 'passed'; return; }
+      if (day < 4) { f.reopen(); vi.setSystemTime(Date.now() + 24 * 3600000); actual = await canonicalMemoryFiles(f.root, f.store, config); }
+    }
+    const final = f.rounds(goal.id).items[0]!;
+    expect(final.selfTest?.questions[0]).toMatchObject({ answer: '先核对资料出处。', evaluation: 'supported' });
+    expect(final.selfTestProgress).toMatchObject({ questions: {}, recall: {}, answer: {}, assess: {} });
+    expect(recalls).toBe(1); expect(f.store.listMemory('alice')).toHaveLength(1); artifact.status = 'passed';
+    f.store.request({ type: 'learning.goals.update', companionId: 'alice', id: goal.id, expectedRevision: goal.revision, text: '后来明确指定的新学习目标。' });
+    const originalReceipt = f.rounds(goal.id).items.find(round => round.id === roundId)!;
+    expect(originalReceipt.selfTest).toEqual(final.selfTest); expect(originalReceipt.selfTestProgress?.goalInput.text).toBe(goal.text);
+  } catch (error) { failure = error; artifact.status = 'failed'; throw error; }
+  finally {
+    const directory = path.resolve('artifacts/vcp-validation'); mkdirSync(directory, { recursive: true });
+    writeFileSync(path.join(directory, 'learning-paid-checkpoints-' + outcome + '-' + new Date().toISOString().replaceAll(':', '-') + '-' + randomUUID().slice(0, 8) + '.json'), JSON.stringify({ ...artifact, ...(failure ? { error: failure instanceof Error ? failure.stack : String(failure), round: f.rounds(goal.id).items[0] } : {}) }, null, 2));
+    await actual.close(); server.closeAllConnections(); await new Promise<void>(resolve => server.close(() => resolve()));
+  }
+}, 60000);
+
+it('rejects forged, reordered, rebound or foreign-lease self-test receipts and cancels a deferred prefix when its goal changes', async () => {
+  const f = fixture(), goal = f.create(), deadline = Date.now() + 3600000;
+  const b = build(f, {}, async context => {
+    if (JSON.parse(context.user).purpose === 'companion_learning_answer') throw new CompanionModelAdmissionError('budget', 'Unsent answer', new Date(deadline).toISOString());
+    return context;
+  });
+  await b.service.tick(); await vi.waitFor(() => expect(f.rounds(goal.id).items[0]?.status).toBe('deferred'));
+  await b.service.drain('alice'); vi.setSystemTime(deadline + 1);
+  const job = f.claim()!, progress = job.round.selfTestProgress!;
+  expect(progress).toMatchObject({ questions: {}, recall: {} }); expect(progress.answer).toBeUndefined();
+  const answer = { stage: 'answer' as const, inputHash: learningTestInput(progress.basisHash, job.round, 'answer'), value: { answers: ['未经模型实际完成的答案'] } };
+  const write = (step: Parameters<CompanionsStore['request']>[0] & { type: 'learning.goals.test.checkpoint' }) => f.store.request(step);
+  expect(() => f.store.request({ type: 'learning.goals.checkpoint', id: goal.id, leaseToken: job.leaseToken,
+    round: { ...job.round, selfTestProgress: { ...progress, answer: { inputHash: answer.inputHash, value: answer.value } } } })).toThrow('宿主逐步回执');
+  expect(() => write({ type: 'learning.goals.test.checkpoint', id: goal.id, leaseToken: job.leaseToken + '_foreign', sourceChecksums: progress.sourceChecksums, step: answer })).toThrow('取消');
+  expect(() => write({ type: 'learning.goals.test.checkpoint', id: goal.id, leaseToken: job.leaseToken, sourceChecksums: {}, step: answer })).toThrow('已登记来源');
+  expect(() => write({ type: 'learning.goals.test.checkpoint', id: goal.id, leaseToken: job.leaseToken, sourceChecksums: progress.sourceChecksums,
+    step: { ...answer, inputHash: 'f'.repeat(64) } })).toThrow('输入签名');
+  expect(() => write({ type: 'learning.goals.test.checkpoint', id: goal.id, leaseToken: job.leaseToken, sourceChecksums: progress.sourceChecksums,
+    step: { stage: 'assess', inputHash: 'f'.repeat(64), value: { review: { evaluations: [], gaps: [], nextPlan: ['不能跳过答题'] } } } })).toThrow('前序回执');
+  expect(() => write({ type: 'learning.goals.test.checkpoint', id: goal.id, leaseToken: job.leaseToken, sourceChecksums: progress.sourceChecksums,
+    step: { stage: 'questions', inputHash: progress.questions!.inputHash, value: { questions: ['换绑成另一个问题'] } } })).toThrow('不能覆盖');
+  expect(() => write({ type: 'learning.goals.test.checkpoint', id: goal.id, leaseToken: job.leaseToken, sourceChecksums: progress.sourceChecksums,
+    step: { stage: 'recall', inputHash: progress.recall!.inputHash, value: { text: '伪造有回忆却没有任何来源', candidateMemoryIds: [],
+      executionReadset: { schema: 'worldlinebox.companion-execution-readset-v1', companionId: 'alice', conversationId: 'world_alice', complete: true,
+        memories: [], sources: [], contexts: [], knowledgeReads: [], topics: [] } } } })).toThrow('真实来源凭证');
+  expect(f.rounds(goal.id).items[0]!.selfTestProgress?.answer).toBeUndefined();
+  f.store.request({ type: 'learning.goals.finish', id: goal.id, leaseToken: job.leaseToken, round: { ...job.round, status: 'deferred' }, retryAfterMs: 1000 });
+  f.store.request({ type: 'learning.goals.update', companionId: 'alice', id: goal.id, expectedRevision: goal.revision, text: '新的明确学习目标不能沿用旧自测输入。' });
+  const next = f.claim()!; expect(next.round.id).not.toBe(job.round.id); expect(next.round.selfTestProgress).toBeUndefined();
+  const cancelled = f.rounds(goal.id).items.find(round => round.id === job.round.id)!;
+  expect(cancelled.status).toBe('cancelled'); expect(cancelled.selfTestProgress).toBeUndefined();
+});
+
 it('routes every learning role stage to its canonical purpose and leaves behavior to the actual owner resolver', async () => {
   const f = fixture(), goal = f.create(), purposes = new Set<string>();
   const b = build(f, {}, async context => {
@@ -80,6 +194,25 @@ it('routes every learning role stage to its canonical purpose and leaves behavio
   vi.setSystemTime(Date.now() + 5 * 60000); await completed(f, b.service, goal, 2);
   expect([...purposes].sort()).toEqual(['answer', 'assess', 'consolidate', 'learn', 'plan', 'questions'].map(stage => 'companion_learning_' + stage).sort());
   expect(model.structured.mock.calls.every(([input]) => input.system.includes('FILE_ONLY_LEARNING_BEHAVIOR'))).toBe(true);
+});
+it('defers unsent host budget refusal until its deadline and resumes a real goal round without fabricated reading or self-test', async () => {
+  const f = fixture(), goal = f.create(), deadline = Date.parse('2026-10-23T00:00:00Z');
+  let available = false;
+  const b = build(f, {}, async context => {
+    if (!available) throw new CompanionModelAdmissionError('budget', '本地模型预算待恢复。', new Date(deadline).toISOString());
+    return context;
+  });
+  await b.service.tick();
+  await vi.waitFor(() => expect(f.rounds(goal.id).items[0]).toMatchObject({ status: 'deferred', reads: [], memoryIds: [], error: '本地模型预算待恢复。' }));
+  expect(f.rounds(goal.id).items[0]!.selfTest).toBeUndefined(); expect(b.report).not.toHaveBeenCalled();
+  expect(model.structured).not.toHaveBeenCalled(); expect(b.assets.read).not.toHaveBeenCalled();
+  const current = f.store.request({ type: 'learning.goals.list', companionId: 'alice' }).learningGoals!.items[0]!;
+  expect(Date.parse(current.nextAt)).toBe(deadline);
+  for (let tick = 0; tick < 10; tick++) { vi.setSystemTime(Date.now() + 60_000); await b.service.tick(); }
+  expect(f.rounds(goal.id).items).toHaveLength(1);
+  available = true; vi.setSystemTime(deadline); await completed(f, b.service, current, 1);
+  expect(f.rounds(goal.id).items).toHaveLength(1);
+  expect(f.rounds(goal.id).items[0]!.reads).toHaveLength(1);
 });
 
 it('runs persistently, reuses unchanged knowledge, revises changed same-goal knowledge with preserved source history, and self-tests through VCP recall', async () => {

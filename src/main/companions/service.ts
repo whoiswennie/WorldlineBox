@@ -16,7 +16,8 @@ import { COMPANIONS_CHANNEL, COMPANIONS_CHANGED_CHANNEL, COMPANION_REPLY_STREAM_
   type CompanionsResponse, type CompanionReplyStreamEvent } from '../../shared/companions';
 import { builtinCompanionId } from '../../shared/companion-personas';
 import type { CompanionStorageCommand, CompanionStorageResponse } from '../../shared/companion-storage';
-import type { CompanionMemoryRecall } from './memory-service';
+import type { CompanionMemoryRecall, CompanionRecallRecovery } from './memory-service';
+import { canonicalProjectionInputs } from './canonical-projection-inputs';
 import type { DshLauncher } from '../dsh/launcher';
 import { CompanionStorageClient } from './storage-client';
 import { CompanionCredentials } from './credentials';
@@ -57,6 +58,8 @@ import { companionMemoryIdentity, sameCompanionMemoryIdentity } from './memory-i
 import { renderCompanionNativeMemoryPrompt, validateCompanionNativeMemoryPrompt, type CompanionNativeMemoryPrompt } from '../../shared/companion-native-memory-prompt';
 import { CompanionMemoryLiveFiles } from './memory-live-files';
 import { CompanionMemorySourceFiles } from './memory-source-files';
+import { CompanionMemoryHistoryFiles } from './memory-history-files';
+import { CompanionModelResources } from './model-resources';
 import { loadInitialTimelinePrompts } from '../vcp-memory/owner-prompts';
 import type { CompanionLearningAssetValidation } from '../../shared/companion-learning';
 import type { CompanionLearningWorkspaceCommand } from '../../shared/companion-learning';
@@ -86,6 +89,7 @@ import type { CompanionExecutionReadset } from '../../shared/companion-execution
 import { companionExecutionSourceReadOnly, guardCompanionExecutionSources, withCompanionExecutionValidation, memoCompanionExecutionValidation } from './source-execution-evidence';
 import { CompanionPublicProfiles } from './public-profiles';
 import { companionAttachmentResponse } from './attachment-response';
+import { companionPortraitResponse } from './portrait-response';
 import { cropCompanionAvatar } from './avatar-crop';
 import { CompanionFileReader } from './file-reader';
 import { companionFileToolArgumentsSchemas, type CompanionFileToolName, type ToolVisualInput } from '../../shared/companion-file-tool';
@@ -158,13 +162,16 @@ export class CompanionService {
   private readonly assetProfiles?: CompanionAssetProfileStore;
   private readonly liveFiles?: CompanionMemoryLiveFiles;
   private readonly sourceFiles?: CompanionMemorySourceFiles;
+  private readonly historyFiles?: CompanionMemoryHistoryFiles;
   private readonly sourcePublications = new Map<string, Promise<void>>();
+  private readonly historyPublications = new Map<string, Promise<void>>();
   private readonly memoryDocuments?: CompanionMemoryDocuments;
   private readonly memoryManagement: CompanionMemoryManagementSearch;
   private readonly memoryDocumentJobs = new Set<Promise<CompanionWorkspaceResponse>>();
   private readonly assetValidations = new Map<string, Promise<CompanionLearningAssetValidation>>();
   private readonly assetProfileFailures = new Map<string, string>();
   private readonly assetIo = new CompanionAssetIo();
+  private readonly modelResources?: CompanionModelResources;
   private readonly schedules: CompanionScheduleService;
   private readonly world: CompanionWorldService;
   private readonly autonomy: CompanionAutonomyService;
@@ -212,6 +219,7 @@ export class CompanionService {
   private shuttingDown?: Promise<void>;
   private proactiveBusy = false;
   private timer: ReturnType<typeof setInterval> | undefined;
+  private portraitRefreshTimer: ReturnType<typeof setTimeout> | undefined;
   private readonly initialization: Promise<void>;
 
   constructor(private readonly options: CompanionServiceOptions) {
@@ -232,7 +240,7 @@ export class CompanionService {
     this.credentials = new CompanionCredentials(this.root);
     this.storage = new CompanionStorageClient(options.workerPath, path.join(this.root, 'messages.sqlite'), event => {
       for (const owner of event?.memoryChangedCompanionIds ?? []) this.memory.changed(owner);
-      for (const owner of event?.memorySourceChangedCompanionIds ?? []) void this.flushSourceFiles(owner).catch(options.report);
+      for (const owner of event?.memorySourceChangedCompanionIds ?? []) void this.flushSourceFiles(owner).then(() => this.flushHistoryFiles(owner)).catch(options.report);
       if (event?.memoryInvalidatedCompanionIds?.length) {
         this.evidenceRevision++;
         for (const owner of event.memoryInvalidatedCompanionIds) {
@@ -243,6 +251,8 @@ export class CompanionService {
       }
       this.changed();
     }, options.report);
+    if (options.memoryLibraryRoot) this.modelResources = new CompanionModelResources({ directory: this.root,
+      request: command => this.storage.request(command), report: options.report });
     this.profiles = new CompanionPublicProfiles({ root: this.root, appPath: options.appPath ?? process.cwd(), libraryDirectory: options.memoryLibraryRoot,
       portraitInitialized: async (companionId, role) => {
         const response = await this.storage.request({ type: 'companion.assets.portrait.initialized', companionId, role });
@@ -259,7 +269,8 @@ export class CompanionService {
         : { cacheRoot: path.join(this.root, 'vcp-management') }), report: options.report, changed: () => this.changed() });
     if (options.memoryLibraryRoot) this.memoryLibrary = new CompanionMemoryLibrary({ libraryDirectory: options.memoryLibraryRoot, profileStore: this.assetProfiles,
       request: command => this.call(command, undefined, 'memory-files'), report: options.report });
-    if (this.memoryLibrary) this.liveFiles = new CompanionMemoryLiveFiles({ library: this.memoryLibrary });
+    if (this.memoryLibrary) this.historyFiles = new CompanionMemoryHistoryFiles({ library: this.memoryLibrary, report: options.report });
+    if (this.memoryLibrary) this.liveFiles = new CompanionMemoryLiveFiles({ library: this.memoryLibrary, history: this.historyFiles });
     if (this.memoryLibrary) this.sourceFiles = new CompanionMemorySourceFiles({ library: this.memoryLibrary, report: options.report });
     if (this.memoryLibrary && options.memoryLibraryRoot) this.memoryDocuments = new CompanionMemoryDocuments({
       library: this.memoryLibrary, libraryDirectory: options.memoryLibraryRoot, requestStorage: command => this.call(command),
@@ -277,17 +288,25 @@ export class CompanionService {
         status: job.status, summary: [job.stage, job.error].filter(Boolean).join('；').slice(0, 1000), ...(job.conversationId ? { conversationId: job.conversationId } : {}) }).catch(options.report); },
       configFor: companion => this.configFor(companion),
       validateAssets: owner => this.requireCurrentAssets(owner),
-      validateFiles: (owner, receipts) => this.liveFiles?.validate(owner, receipts) ?? Promise.resolve(false),
+      prepareFiles: owner => this.prepareOwnerMemoryFiles(owner),
+      validateFiles: (owner, receipts, window) => this.liveFiles?.validate(owner, receipts, window) ?? Promise.resolve(false),
+      ...(this.liveFiles && this.historyFiles ? { materializeNotes: (owner: string, notes: readonly CompanionMemory[]) => this.liveFiles!.projectionNotes(owner, notes),
+        canonicalInputs: (scope: { companionId: string; conversationId: string; beforeSequence?: number }, notes: Parameters<typeof canonicalProjectionInputs>[2]) =>
+          canonicalProjectionInputs(this.historyFiles!, scope, notes, this.memoryLibrary) } : {}),
       flushSourceFiles: async () => {
         if (!this.sourceFiles) return;
         await this.sourceFiles.flushPending(command => this.call(command, undefined, 'memory-files'), { limitOwners: 4 });
+        if (this.historyFiles && !this.closed) await this.assetIo.run(() => this.historyFiles!.flushPending(command => this.call(command, undefined, 'memory-files'), 4));
       },
       fetchFn: (input, init) => net.fetch(input instanceof URL ? input.toString() : input, { ...init, credentials: 'omit' }),
       changed: () => this.changed(), report: options.report,
       busy: () => this.foregroundContextBusy(), blocked: id => this.resettingCompanions.has(id) || this.dormantCompanions.has(id) });
     let tagPrompt: Promise<string> | undefined;
-    this.memoryTags = new CompanionMemoryTagService({ request: command => this.call(command), config: async owner => ({ ...this.options.getConfig(), workPriority: 'background', ownerId: owner,
-      ...(owner && this.assetProfiles ? { resolveAssetContext: context => this.assetIo.run(async () => ({ ...context, system: (await this.assetProfiles!.load(owner)).tagMasterTemplate })) } : {}) }),
+    this.memoryTags = new CompanionMemoryTagService({ request: command => this.call(command), config: async owner => {
+      const config: CompanionModelConfig = { ...this.options.getConfig(), workPriority: 'background', ownerId: owner,
+        ...(owner && this.assetProfiles ? { resolveAssetContext: context => this.assetIo.run(async () => ({ ...context, system: (await this.assetProfiles!.load(owner)).tagMasterTemplate })) } : {}) };
+      return owner && this.modelResources ? this.modelResources.bind(config, owner) : config;
+    },
       validate: async (job, tags, signal) => {
         const note = (await this.call({ type: 'memory.library.read', companionId: job.companionId, id: job.noteId, sourceLimit: 1 })).memoryRead?.memory;
         if (!note || note.version !== job.version) throw new Error('自动标签引用的文档已变化。');
@@ -401,6 +420,7 @@ export class CompanionService {
       }, changed: () => this.changed(), report: options.report,
     });
     this.initialization = this.storage.start().then(async () => {
+      if (options.memoryLibraryRoot) await this.call({ type: 'world.maintenance.bind-policy-root', root: options.memoryLibraryRoot });
       for (const type of ['action.interrupt-pending', 'work-order.interrupt-pending', 'interruption.recover',
         'work.interrupt-running', 'activity.recover', 'schedule.recover-activities'] as const) {
         if (this.closed) return;
@@ -429,12 +449,21 @@ export class CompanionService {
     if (command.type === 'memory.knowledge') return { ok: true, memoryKnowledge: await this.knowledge.execute(command) };
     if (command.type === 'memory.retrieval_modes') return this.memory.retrievalModes(command);
     if (command.type === 'memory.search') return this.memory.search(command);
+    if (command.type === 'memory.revision.read') {
+      if (!this.historyFiles) throw new Error('历史记忆尚未绑定伙伴资产目录，不能使用SQL正文代替。');
+      return this.assetIo.run(async () => {
+        signal?.throwIfAborted(); await this.flushSourceFiles(command.companionId);
+        const memory = await this.historyFiles!.read({ companionId: command.companionId, conversationId: command.conversationId,
+          ...(command.beforeSequence !== undefined ? { beforeSequence: command.beforeSequence } : {}) }, command.id, command.contentRevision); signal?.throwIfAborted();
+        return { ok: true, memories: [memory] };
+      });
+    }
     if (command.type === 'memory.record' || command.type === 'memory.revise' || command.type === 'memory.consolidate' || command.type === 'memory.save' || command.type === 'memory.library.organize') {
       await this.checkedMemoryWrite(command, signal, origin);
     }
     const fileOwner = 'companionId' in command && typeof command.companionId === 'string' ? command.companionId : undefined;
     const fileRead = origin !== 'memory-files' && this.liveFiles && !!fileOwner
-      && ['memory.snapshot', 'memory.browse', 'memory.list', 'memory.read', 'memory.library.read'].includes(command.type);
+      && ['memory.snapshot', 'memory.browse', 'memory.list', 'memory.read', 'memory.library.read', 'memory.jobs.contributions'].includes(command.type);
     if (fileRead) await this.liveFiles!.flush(fileOwner!, { reconcile: true });
     const mutating = !companionExecutionSourceReadOnly(command)
       && command.type !== 'learning.assets.snapshot' && command.type !== 'learning.assets.validate';
@@ -456,14 +485,15 @@ export class CompanionService {
     if (!response.ok) throw new Error(response.error ?? '伙伴存储暂时不可用。');
     if (fileRead) {
       for (let attempt = 0; attempt < 3; attempt++) {
-        const notes = response.memorySnapshot?.notes ?? response.memoryPage?.items.map(hit => hit.memory)
-          ?? (response.memoryRead ? [response.memoryRead.memory] : response.memories);
+        const notes = response.memorySnapshot?.notes ?? response.memoryCaptureContributions?.items ?? response.memoryPage?.items.map(hit => hit.memory)
+          ?? (response.memoryRead ? [response.memoryRead.memory, ...response.memoryRead.related] : response.memories);
         if (!notes?.length) break;
         try {
           const actual = await this.liveFiles!.materialize(fileOwner!, notes);
           if (response.memorySnapshot) response.memorySnapshot = { ...response.memorySnapshot, notes: actual.notes, fileReceipts: actual.receipts };
+          else if (response.memoryCaptureContributions) response.memoryCaptureContributions.items = actual.notes;
           else if (response.memoryPage) response.memoryPage.items = response.memoryPage.items.map((hit, index) => ({ ...hit, memory: actual.notes[index]! }));
-          else if (response.memoryRead) response.memoryRead.memory = actual.notes[0]!;
+          else if (response.memoryRead) response.memoryRead = { ...response.memoryRead, memory: actual.notes[0]!, related: actual.notes.slice(1), fileReceipts: actual.receipts };
           else response.memories = actual.notes;
           break;
         } catch (error) {
@@ -526,6 +556,8 @@ export class CompanionService {
       }
     }
     if (origin !== 'memory-files') for (const owner of response.memorySourceChangedCompanionIds ?? []) await this.flushSourceFiles(owner);
+    if (origin !== 'memory-files') for (const owner of new Set([...(response.memoryChangedCompanionIds ?? []), ...(response.memoryInvalidatedCompanionIds ?? [])]))
+      await this.flushHistoryFiles(owner);
     if (fileRead && response.memoryRead && this.sourceFiles) {
       // Reconciliation can create a new manual-source revision through the
       // internal file port. Its notification is consumed inside that port;
@@ -615,6 +647,12 @@ export class CompanionService {
   async assetsChanged(libraryId: string): Promise<void> {
     const result = await this.validateAssets({ libraryId });
     await Promise.all(result.changedCompanionIds.map(owner => this.memory.waitForInvalidation(owner)));
+    // Real owner image/profile edits are visible to open contacts as well as
+    // model inputs. Coalesce the asset batch instead of inventing render URLs.
+    if (!this.closed && !this.portraitRefreshTimer) {
+      this.portraitRefreshTimer = setTimeout(() => { this.portraitRefreshTimer = undefined; this.changed(); }, 100);
+      this.portraitRefreshTimer.unref();
+    }
   }
   async validateAssetsForModel(owner: string): Promise<void> { await this.requireCurrentAssets(owner); }
   private flushSourceFiles(owner: string): Promise<void> {
@@ -628,7 +666,24 @@ export class CompanionService {
     void publication.finally(() => { if (this.sourcePublications.get(owner) === publication) this.sourcePublications.delete(owner); }).catch(() => undefined);
     return publication;
   }
+  private flushHistoryFiles(owner: string): Promise<void> {
+    if (!this.historyFiles || this.closed) return Promise.resolve();
+    const existing = this.historyPublications.get(owner); if (existing) return existing;
+    const publication = this.assetIo.run(async () => {
+      let pending = true;
+      while (pending && !this.closed) pending = (await this.historyFiles!.flush(owner, { limit: 64 })).pending;
+    });
+    this.historyPublications.set(owner, publication);
+    void publication.finally(() => { if (this.historyPublications.get(owner) === publication) this.historyPublications.delete(owner); }).catch(() => undefined);
+    return publication;
+  }
   async prepareModelAssetContext(owner: string, context: { system: string; user: string }, kind: 'reply' | 'structured' | 'text', nativePrompt?: CompanionNativeMemoryPrompt): Promise<{ system: string; user: string }> {
+    try { await this.prepareOwnerMemoryFiles(owner); }
+    catch (error) {
+      if (error && typeof error === 'object' && 'code' in error && error.code === 'MEMORY_FILES_PENDING')
+        throw new CompanionModelError('RATE_LIMIT', error instanceof Error ? error.message : '伙伴资料仍在核对，本次尚未发送模型。', undefined, { reason: 'files_pending' });
+      throw error;
+    }
     if (!this.assetProfiles) {
       if (nativePrompt) throw new CompanionModelError('CONFIG', '原生记忆提示词的伙伴资产目录尚不可用。');
       return context;
@@ -647,6 +702,17 @@ export class CompanionService {
       }
       catch (error) { throw new CompanionModelError('CONFIG', publicError(error)); }
     });
+  }
+  private async prepareOwnerMemoryFiles(owner: string): Promise<void> {
+    const library = this.memoryLibrary;
+    // The internal checker is already reading the exact document under this
+    // frame's owner queue. Other asynchronous callers still await its drain.
+    if (!library || library.isPreparingOwnerFiles(owner)) return;
+    // Drain outside assetIo: an external edit may itself need a live role for
+    // semantic policy validation, and must not await its own asset read queue.
+    await library.prepareOwnerFiles(owner);
+    await this.flushSourceFiles(owner);
+    await this.flushHistoryFiles(owner);
   }
   async resolveOwnerStorage(ownerId: string) {
     return this.assetIo.run(async () => {
@@ -684,7 +750,29 @@ export class CompanionService {
       : initialSnapshot;
     if (command.type === 'companion.assets.prompt.save') this.changed();
     return { ok: true, companionAssets: { companionId: owner.id, profileRevision: snapshot.profileRevision,
-      promptRevision: snapshot.promptRevision, prompts: snapshot.modules } };
+      promptRevision: snapshot.promptRevision, prompts: snapshot.modules, ...(snapshot.memoryPolicyError ? { memoryPolicyError: snapshot.memoryPolicyError } : {}) } };
+  }
+  async manageModelResources(command: Extract<CompanionWorkspaceRequest, { type: 'model.resources.read' | 'model.resources.save' }>): Promise<CompanionWorkspaceResponse> {
+    await this.initialization;
+    if (!this.modelResources) throw new Error('请先选择伙伴资产库。');
+    const owner = (await this.storage.request({ type: 'state', companionId: command.companionId, includeConversations: false, includeHidden: true })).state?.companions.find(owner => owner.id === command.companionId);
+    if (!owner || this.resettingCompanions.has(owner.id)) throw new Error('伙伴不存在或正在重置。');
+    const status = await this.storage.request({ type: 'model.resources.usage', companionId: command.companionId });
+    if (!status.ok || !status.modelResourceUsage) throw new Error('模型资源统计暂不可用。');
+    const snapshot = command.type === 'model.resources.save' ? await this.modelResources.save(command.expectedRevision, command.content) : await this.modelResources.load();
+    if (command.type === 'model.resources.save') {
+      // A shared policy edit rechecks unsent admission debt only. Each eventual
+      // HTTP attempt still reads its actual connection's current file limits.
+      await this.call({ type: 'memory.jobs.retry-admission' });
+      await this.call({ type: 'memory.tags.retry-admission' });
+      await this.call({ type: 'world.job.retry-admission' });
+      this.memory.schedule(0);
+      void this.memoryTags.tick().catch(this.options.report);
+      void this.world.tick().catch(this.options.report);
+      this.changed();
+    }
+    return { ok: true, modelResources: { companionId: command.companionId, path: path.basename(this.modelResources.file),
+      revision: snapshot.revision, content: snapshot.content, usage: status.modelResourceUsage } };
   }
   private async executionEvidenceValidUncached(action: Pick<CompanionAction, 'id' | 'companionId' | 'conversationId'>, readset?: CompanionExecutionReadset, sqliteSourcesValidated = false): Promise<boolean> {
     try {
@@ -913,6 +1001,12 @@ export class CompanionService {
   async attachmentResponse(request: Request): Promise<Response> {
     try {
       const url = new URL(request.url);
+      if (url.hostname === 'portrait') return companionPortraitResponse(request, (ownerId, role) => this.assetIo.run(async () => {
+        await this.initialization;
+        if (this.closed || this.resettingCompanions.has(ownerId)) return undefined;
+        const owner = (await this.storage.request({ type: 'state', companionId: ownerId })).state?.companions.find(owner => owner.id === ownerId);
+        return owner ? this.profiles.readOwnerImage(ownerId, role) : undefined;
+      }));
       if (url.hostname !== 'attachment' || url.search || url.hash) return new Response(null, { status: 404 });
       const id = companionIdSchema.parse(url.pathname.slice(1));
       const stored = await this.call({ type: 'attachment.get', id });
@@ -1033,15 +1127,21 @@ export class CompanionService {
         return { ok: true, task: (await this.call({ ...request, type: 'tasks.resolve' })).task };
       }
       case 'memory.recall.state': return { ok: true, memoryCorpusStamp: (await this.call({ type: 'memory.corpus.stamp', companionId: request.companionId })).memoryCorpusStamp };
-      case 'memory.recall.test': return { ok: true, memoryProbe: await probeCompanionMemory(request, {
-        request: command => this.call(command), search: (query, mode, onProgress) => this.memory.search(query, mode, undefined, onProgress),
-        onProgressError: error => this.options.report(error),
-        ...(request.requestId ? { onProgress: event => {
-          const window = this.options.window();
-          if (window && !window.isDestroyed() && !window.webContents.isDestroyed())
-            window.webContents.send(COMPANION_MEMORY_PROBE_PROGRESS_CHANNEL, event);
-        } } : {}),
-      }) };
+      case 'memory.recall.test': {
+        // A diagnostic baseline begins after its own pending file/index work,
+        // so those real commits do not look like an unrelated mid-query edit.
+        await this.prepareOwnerMemoryFiles(request.companionId);
+        await this.memory.drainOwnerDeliveries(request.companionId);
+        return { ok: true, memoryProbe: await probeCompanionMemory(request, {
+          request: command => this.call(command), search: (query, mode, onProgress) => this.memory.search(query, mode, undefined, onProgress),
+          onProgressError: error => this.options.report(error),
+          ...(request.requestId ? { onProgress: event => {
+            const window = this.options.window();
+            if (window && !window.isDestroyed() && !window.webContents.isDestroyed())
+              window.webContents.send(COMPANION_MEMORY_PROBE_PROGRESS_CHANNEL, event);
+          } } : {}),
+        }) };
+      }
       case 'activity.cancel': {
         return this.cancelActivity(request, manual);
       }
@@ -1081,7 +1181,9 @@ export class CompanionService {
               } catch { /* A missing/invalid connection is represented as offline. */ }
             }
             const offline = !connected || !!companion.assetProfileError || !!unavailable && !companion.activeCount;
-            return { ...companion, ...(companion.llm ? { llm: { ...companion.llm, hasKey: connected } } : {}),
+            const assetImages = !reset && !companion.assetProfileError
+              ? await this.assetIo.run(() => this.profiles.runtimeImages(companion)).catch(() => ({})) : {};
+            return { ...companion, assetImages, ...(companion.llm ? { llm: { ...companion.llm, hasKey: connected } } : {}),
               availability: companion.assetProfileError ? 'offline' as const : companion.active === false ? 'dormant' as const : reset ? 'waiting' as const : offline ? 'offline' as const : companion.availability,
               availabilityReason: companion.assetProfileError ?? (companion.active === false ? '伙伴已休眠，虚拟生活与后台活动已暂停；请手动激活。' : reset ? reset.status === 'failed' ? '伙伴重置已暂停，请查看进度' : '伙伴正在重置' : offline ? unavailable?.reason ?? (companion.llm ? '此伙伴尚未保存模型服务密钥' : '尚未配置全局模型服务') : companion.availabilityReason) };
           }));
@@ -1759,12 +1861,32 @@ export class CompanionService {
     const resolveAssetContext: CompanionModelConfig['resolveAssetContext'] = this.assetProfiles
       ? (context, kind) => this.prepareModelAssetContext(companion.id, context, kind) : undefined;
     if (companion.active === false || this.dormantCompanions.has(companion.id)) throw new CompanionModelError('CONFIG', '伙伴已休眠，请在联系人资料中手动激活。');
+    let config: CompanionModelConfig;
     if (companion.llm) {
-      try { return { ...companion.llm, apiKey: await this.credentials.get(companion.id), ownerId: companion.id, workPriority, resolveAssetContext }; }
+      try { config = { ...companion.llm, apiKey: await this.credentials.get(companion.id), ownerId: companion.id, workPriority, resolveAssetContext }; }
       catch (error) { throw new CompanionModelError('CONFIG', publicError(error)); }
+    } else {
+      try { config = { ...this.options.getConfig(), ownerId: companion.id, workPriority, resolveAssetContext }; }
+      catch { throw new CompanionModelError('CONFIG', '请先在「设置 → 全局模型」配置 LLM 服务。消息已保存在本地，可以稍后重试。'); }
     }
-    try { return { ...this.options.getConfig(), ownerId: companion.id, workPriority, resolveAssetContext }; }
-    catch { throw new CompanionModelError('CONFIG', '请先在「设置 → 全局模型」配置 LLM 服务。消息已保存在本地，可以稍后重试。'); }
+    return this.modelResources ? this.modelResources.bind(config, companion.id) : config;
+  }
+  private loopRecallRecovery(checkpoint: CompanionLoopCheckpoint, signal: AbortSignal | undefined,
+    authority?: () => Promise<boolean>): CompanionRecallRecovery {
+    const isCurrent = async () => {
+      if (signal?.aborted || this.closed || this.resettingCompanions.has(checkpoint.companionId) || this.dormantCompanions.has(checkpoint.companionId)) return false;
+      const current = (await this.storage.request({ type: 'loop.get', companionId: checkpoint.companionId, sourceMessageId: checkpoint.sourceMessageId,
+        invocationKey: checkpoint.invocationKey })).loop;
+      if (current?.status === 'done' || checkpoint.memoryPreparation && !current) return false;
+      return authority ? authority() : true;
+    };
+    return { taskKey: createHash('sha256').update(JSON.stringify([checkpoint.companionId, checkpoint.conversationId, checkpoint.sourceMessageId,
+      checkpoint.invocationKey ?? null])).digest('hex'), reference: checkpoint.memoryPreparation, isCurrent,
+      onPrepared: async reference => {
+        if (!await isCurrent()) throw new CompanionModelError('CANCELLED', '任务已停止，未保存或恢复旧回忆。');
+        if (reference) checkpoint.memoryPreparation = reference; else delete checkpoint.memoryPreparation;
+        await this.call({ type: 'loop.save', checkpoint });
+      } };
   }
   /** Claimed dialogue owns foreground priority before its first expensive
    * history read. Later tool/phone waits retain their existing idle policy. */
@@ -1881,7 +2003,13 @@ export class CompanionService {
         updateActivity('thinking', '被动记忆召回：正在检索获权来源', 'memory', { status: 'running' });
         const recalled = await this.memory.recall({ companion, conversation, messages: replyMessages, currentMessage: userMessage,
           beforeSequence: checkpoint.contextThroughSequence,
-          referencedMessage: reference?.conversationId === conversationId ? reference : undefined, config, signal: controller.signal, onProgress: stage => updateActivity('thinking', stage, 'memory', { status: 'running' }) });
+          referencedMessage: reference?.conversationId === conversationId ? reference : undefined, config, signal: controller.signal,
+          recovery: this.loopRecallRecovery(checkpoint, controller.signal, async () => {
+            if (workId) { const task = (await this.storage.request({ type: 'tasks.resolve', companionId: id, kind: 'reply', id: workId })).task;
+              if (!task || task.stoppedByUser || ['cancelled', 'completed', 'failed', 'paused'].includes(task.status)) return false; }
+            const current = (await this.storage.request({ type: 'reply.checkpoint.get', conversationId, sourceMessageId: userMessage.id })).replyRecovery;
+            return current?.status !== 'cancelled';
+          }), onProgress: stage => updateActivity('thinking', stage, 'memory', { status: 'running' }) });
         memories = recalled.memories;
         updateActivity('thinking', recalled.degraded ? '被动记忆召回暂不可用，正在准备对话上下文' : '被动记忆召回已完成，正在准备对话上下文', 'context',
           { status: recalled.degraded ? 'unavailable' : 'completed', count: memories.length, injected: !!recalled.context?.text, pending: recalled.pending });
@@ -1892,9 +2020,15 @@ export class CompanionService {
               ...(reference?.conversationId === conversationId ? { replyReference: { id: reference.id, authorId: reference.authorId, content: reference.content, conversationId, topicId: reference.topicId } } : {}) },
             members: state?.companions.filter(role => conversation.memberIds.includes(role.id)).map(role => ({ id: role.id, name: role.name, description: role.description })) });
           checkpoint.context = (await this.memoryInference(checkpoint, id, conversationId, userMessage.sequence, controller.signal)).context;
+          const preparedRecall = checkpoint.memoryPreparation; delete checkpoint.memoryPreparation;
           // Freeze mutable older bubbles before inference, including their empty/in-progress contents.
           await this.call({ type: 'loop.save', checkpoint });
+          await this.memory.acknowledgeTaskRecall(preparedRecall);
         } else updateActivity('thinking', '正在核验工具结果与当前上下文', 'context');
+        if (checkpoint.context && checkpoint.memoryPreparation) {
+          const prepared = checkpoint.memoryPreparation; delete checkpoint.memoryPreparation;
+          await this.call({ type: 'loop.save', checkpoint }); await this.memory.acknowledgeTaskRecall(prepared);
+        }
         let pendingStream: CompanionReplyStream | undefined;
         await runCompanionAgentKernel({ state: checkpoint, signal: controller.signal,
           progressFingerprint: () => this.kernelProgressFingerprint(checkpoint),
@@ -2184,7 +2318,7 @@ export class CompanionService {
         });
       } catch (error) {
         updateActivity('thinking', this.closed ? '应用关闭，回复进度已保存' : controller.signal.aborted ? '这次回复已取消' : publicError(error).slice(0, 500), this.closed ? 'interrupted' : controller.signal.aborted ? 'cancelled' : 'failed');
-        if (!controller.signal.aborted && error instanceof CompanionModelError && ['CONFIG', 'AUTH', 'NETWORK', 'TIMEOUT', 'RATE_LIMIT'].includes(error.code)) {
+        if (!controller.signal.aborted && error instanceof CompanionModelError && !error.admission && ['CONFIG', 'AUTH', 'NETWORK', 'TIMEOUT', 'RATE_LIMIT'].includes(error.code)) {
           this.unavailableCompanions.set(id, { connection, reason: publicError(error).slice(0, 500) });
         }
         if (!controller.signal.aborted && !this.closed) await this.call({ type: 'message.append', message: { conversationId, authorId: 'system', kind: 'notice', status: 'failed', content: publicError(error) } });
@@ -2242,10 +2376,29 @@ export class CompanionService {
           messagePort: { kind: 'invocation', messageIds: [checkpoint.messageId!] },
           authorization: { kind: 'player', sourceMessageIds: authorizations.map(message => message.id), externalActions: true, grantId: input.authorizationGrantId } };
         const config = await this.configFor(companion);
-        const recalled = restoredCompanionTaskRecall(checkpoint) ?? (grant ? await this.memory.search({ ...scope, query: input.goal.slice(0, 16000), limit: 12 }, 'passive').then(result => ({
+        const recallRecovery = this.loopRecallRecovery(checkpoint, signal, async () => {
+          if (grant) {
+            const current = (await this.storage.request({ type: 'collaboration.read', id: grant.id, companionId: input.companionId })).collaboration;
+            if (!current || current.status !== 'running' || !current.participants.some(participant => participant.companionId === input.companionId
+              && participant.invocationId === input.id && participant.status === 'running')) return false;
+          } else {
+            const kind = input.kind === 'work' ? 'work_order' as const : 'schedule_occurrence' as const;
+            const task = (await this.storage.request({ type: 'tasks.resolve', companionId: input.companionId, kind, id: input.id })).task;
+            if (!task || task.stoppedByUser || ['cancelled', 'completed', 'failed', 'paused'].includes(task.status)) return false;
+            if (kind === 'schedule_occurrence' && task.parentId) {
+              const parent = (await this.storage.request({ type: 'tasks.resolve', companionId: input.companionId, kind: 'schedule', id: task.parentId })).task;
+              if (!parent || parent.stoppedByUser || parent.rawStatus !== 'active') return false;
+            }
+          }
+          const current = (await this.storage.request({ type: 'memory.sources.filter', ...authorityScope, ids: authorizations.map(source => source.id) })).memorySources ?? [];
+          return authorizations.every(source => current.some(actual => actual.id === source.id && actual.content === source.content && actual.authorId === 'user'));
+        });
+        recallRecovery.rawSources = authorizations.map(source => ({ id: source.id, conversationId: source.conversationId, readerId: authorityScope.companionId,
+          checksum: createHash('sha256').update(source.content).digest('hex') }));
+        const recalled = restoredCompanionTaskRecall(checkpoint) ?? (grant ? await this.memory.search({ ...scope, query: input.goal.slice(0, 16000), limit: 12 }, 'passive', signal, undefined, recallRecovery).then(result => ({
           memories: result.memoryPage?.items.map(hit => hit.memory) ?? [], sources: [], reasons: result.memoryPage?.items.map(hit => ({ id: hit.memory.id, version: hit.memory.version, reasons: hit.reasons, path: hit.path })) ?? [],
           context: result.memoryContext, pending: false, degraded: false })) : await this.memory.recall({ companion, conversation, messages: [], currentMessage: source,
-          beforeSequence, query: input.goal.slice(0, 16000), config, signal }));
+          beforeSequence, query: input.goal.slice(0, 16000), config, signal, recovery: recallRecovery }));
         if (!recalled) throw new Error('任务回忆检查点暂不可恢复。');
         const [observed, runtime, development, profiles, dshCapabilities] = await Promise.all([
           this.world.observe({ ...scope, beforeSequence }), this.call({ type: 'state.get', ...scope }),
@@ -2278,6 +2431,10 @@ export class CompanionService {
         // unfinished task from another entrance. Keep this exact current goal.
         inference.context.user = JSON.stringify({ ...JSON.parse(inference.context.user), ongoingGoals: frame.ongoingGoals });
         checkpoint.context = inference.context;
+        if (checkpoint.memoryPreparation) {
+          const prepared = checkpoint.memoryPreparation; delete checkpoint.memoryPreparation;
+          await this.call({ type: 'loop.save', checkpoint }); await this.memory.acknowledgeTaskRecall(prepared);
+        }
         return { frame, config, inference, source, authorizations, authorityScope, beforeSequence, profiles };
       };
       let current!: Awaited<ReturnType<typeof prepare>>;
@@ -2505,7 +2662,7 @@ export class CompanionService {
           this.assertReplyActive(signal);
           return this.executeMemoryTool(plan.memory!, plan.call.arguments, { companionId: id, conversationId, beforeSequence },
             [...authorizationSourceIds, ...checkpoint.supplements.map(item => item.id)], signal,
-            createHash('sha256').update(`${loopKey}:${step}:${plan.call.id}`).digest('hex'));
+            createHash('sha256').update(`${loopKey}:${step}:${plan.call.id}`).digest('hex'), checkpoint);
         });
         memoryChain = result.catch(() => undefined);
         return { callId: plan.call.id, content: JSON.stringify(await result) };
@@ -2664,17 +2821,14 @@ export class CompanionService {
     // A successful write can supersede a note read earlier in this very loop.
     // Rebuild inference from the current version rather than certifying stale
     // bodies at final publication, or replaying the already committed write.
-    const readMemories = captureCompanionExecutionReadset(scope, { turns: currentTurns }).memories;
+    const explicitReads = captureCompanionExecutionReadset(scope, { turns: currentTurns });
     const experienceTurns = currentTurns.map(turn => ({ ...turn, calls: turn.calls.filter(call => capabilityOperation(call) === 'experience') }));
     const changedExperience = experienceTurns.some(turn => turn.calls.length) && !await verifyCompanionExecutionReadset(
       captureCompanionExecutionReadset(scope, { turns: experienceTurns }), scope,
       { request: command => this.call(command), contextValid: (scope, context) => this.memory.contextValid(scope, context) });
-    let changedNote = false;
-    for (let offset = 0; offset < readMemories.length; offset += 100) {
-      const expected = readMemories.slice(offset, offset + 100);
-      const current = await this.call({ type: 'memory.records.filter', ...scope, ids: [...new Set(expected.map(note => note.id))] });
-      if (expected.some(note => !current.memories?.some(value => value.id === note.id && value.version === note.version))) changedNote = true;
-    }
+    const changedNote = !await verifyCompanionExecutionReadset({ ...explicitReads, sources: [], knowledgeReads: [], topics: [],
+      contexts: explicitReads.contexts.filter(context => context.fileReceiptOnly) }, scope,
+      { request: command => this.call(command), contextValid: (scope, context) => this.memory.contextValid(scope, context) });
     const fingerprints = [...toolProvenance.contexts, ...(data.memoryRecall?.context ? [data.memoryRecall.context] : [])];
     // Each host receipt names its own actual input closure. Separate explicit
     // recalls may legitimately use different corpus revisions or dates; neither
@@ -3384,7 +3538,8 @@ export class CompanionService {
   }
 
   private async executeMemoryTool(name: CompanionMemoryToolName, serialized: string,
-    scope: { companionId: string; conversationId: string; beforeSequence: number }, requestMessageIds: readonly string[], signal?: AbortSignal, operationId?: string): Promise<CompanionStorageResponse> {
+    scope: { companionId: string; conversationId: string; beforeSequence: number }, requestMessageIds: readonly string[], signal?: AbortSignal, operationId?: string,
+    inference?: Pick<CompanionLoopCheckpoint, 'context' | 'turns'>): Promise<CompanionStorageResponse> {
     try {
       this.assertReplyActive(signal);
       const args = JSON.parse(serialized);
@@ -3411,6 +3566,17 @@ export class CompanionService {
         }
       }
       if (command.type === 'memory.record' || command.type === 'memory.revise' || command.type === 'memory.consolidate' || command.type === 'memory.organize') command.operationId = operationId;
+      if (command.type === 'memory.record' || command.type === 'memory.revise') {
+        const cutoffs = JSON.parse(inference?.context?.user ?? '{}') as { memoryEvidenceThroughStep?: number; withdrawnEvidenceThroughStep?: number };
+        // These are the host's actual completed inputs, not IDs/versions claimed
+        // in candidate arguments or results of other calls in this same step.
+        const readset = captureCompanionExecutionReadset(scope, { context: inference?.context, memoryReferencePolicy: 'observed',
+          turns: projectCompanionEvidenceHistory(inference?.turns ?? [], { memoryThroughStep: cutoffs.memoryEvidenceThroughStep ?? 0,
+            withdrawnThroughStep: cutoffs.withdrawnEvidenceThroughStep ?? 0 }) });
+        const used = new Set(command.candidate.relatedMemoryIds ?? []);
+        command.readMemories = [...readset.memories, ...(readset.frozenMemories ?? []).flatMap(reference => reference.contentRevision
+          ? [{ id: reference.id, contentRevision: reference.contentRevision }] : [])].filter(reference => used.has(reference.id));
+      }
       const response = await this.call(command, signal);
       if (!['memory.search', 'memory.read', 'memory.retrieval_modes'].includes(name)) this.changed();
       return response;
@@ -3903,13 +4069,32 @@ export class CompanionService {
         const messages = (await visible(recent.map(message => message.id))).filter(message => message.sequence <= source.sequence);
         const config = await this.configFor(companion);
         if (!taskRecall) {
-          const preparedRecall = await this.memory.recall({ companion, conversation, messages, currentMessage: source, config, signal });
+          const isCurrent = async () => {
+            if (blocked()) return false;
+            const current = (await this.storage.request({ type: 'action.get', id: action.id })).action;
+            const task = (await this.storage.request({ type: 'tasks.resolve', companionId: action.companionId, kind: 'action', id: action.id })).task;
+            const actualSource = await sourceNow();
+            return !!current && current.companionId === action.companionId && current.conversationId === action.conversationId
+              && !task?.stoppedByUser && !!actualSource && fingerprint(actualSource) === sourceFingerprint;
+          };
+          const preparedRecall = await this.memory.recall({ companion, conversation, messages, currentMessage: source, config, signal,
+            recovery: { taskKey: createHash('sha256').update(JSON.stringify(['feedback', action.companionId, action.conversationId, action.id])).digest('hex'),
+              reference: taskCheckpoint.memoryPreparation, isCurrent, onPrepared: async reference => {
+                if (!await isCurrent()) throw new CompanionModelError('CANCELLED', '任务反馈已经停止，不能恢复旧回忆。');
+                const current = (await this.storage.request({ type: 'checkpoint.get', id: action.id, includeFeedbackRecall: true })).checkpoint;
+                if (!current) throw new Error('任务反馈的持久检查点已经不可用。');
+                if (reference) { current.memoryPreparation = reference; taskCheckpoint.memoryPreparation = reference; }
+                else { delete current.memoryPreparation; delete taskCheckpoint.memoryPreparation; }
+                await this.call({ type: 'checkpoint.save', id: action.id, checkpoint: current });
+              } } });
           taskRecall = { ...preparedRecall, memories: preparedRecall.context ? [] : preparedRecall.memories };
           const currentCheckpoint = (await this.storage.request({ type: 'checkpoint.get', id: action.id })).checkpoint;
           if (!currentCheckpoint) return;
+          const prepared = currentCheckpoint.memoryPreparation; delete currentCheckpoint.memoryPreparation;
           await this.call({ type: 'checkpoint.save', id: action.id, checkpoint: { ...currentCheckpoint,
             feedbackRecall: { prepared: true, memories: taskRecall.memories, sources: taskRecall.sources,
               ...(taskRecall.context ? { context: taskRecall.context } : {}) } } });
+          await this.memory.acknowledgeTaskRecall(prepared);
         }
         if (!await this.memory.contextValid({ ...scope, beforeSequence: source.sequence }, taskRecall.context))
           taskRecall = { memories: [], sources: [], reasons: [], pending: false, degraded: false };
@@ -4076,12 +4261,14 @@ export class CompanionService {
   private async shutdownOnce(): Promise<void> {
     this.closed = true;
     const assetIoClosing = this.assetIo.close();
+    const modelResourcesClosing = this.modelResources?.close();
     const learningClosing = this.learning?.close();
     const learningGoalsClosing = this.learningGoals?.close();
     this.attentionController.abort();
     for (const controller of this.memoryValidationControllers.keys()) controller.abort();
     const managementClosing = this.memoryManagement.close();
     if (this.timer) clearInterval(this.timer);
+    if (this.portraitRefreshTimer) clearTimeout(this.portraitRefreshTimer);
     for (const controller of this.replyControllers.keys()) controller.abort();
     for (const controller of this.actionControllers.values()) controller.abort();
     try { await this.initialization; }
@@ -4093,12 +4280,14 @@ export class CompanionService {
       await learningClosing;
       await learningGoalsClosing;
       await assetIoClosing;
+      await modelResourcesClosing;
       await Promise.allSettled([this.memoryLibrary?.close(), this.memory.close(), this.storage.close(), this.credentials.flush()]);
       return;
     }
     await Promise.allSettled([...this.memoryDocumentJobs]);
     await this.memoryDocuments?.close();
     await managementClosing;
+    await assetIoClosing;
     await this.memoryLibrary?.close();
     await this.memoryTags.close();
     await this.schedules.close();
@@ -4126,7 +4315,9 @@ export class CompanionService {
     await Promise.allSettled([...this.memoryValidationJobs]);
     await Promise.allSettled([...this.assetValidations.values()]);
     await assetIoClosing;
+    await modelResourcesClosing;
     await Promise.allSettled([...this.sourcePublications.values()]);
+    await Promise.allSettled([...this.historyPublications.values()]);
     await this.schedules.drain();
     await this.call({ type: 'action.interrupt-pending' });
     await this.credentials.flush();

@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { companionMemoryPolicySchema } from './companion-memory-policy';
 import { companionRoutineConfigSchema } from './companion-routine';
 import { companionLearningGrantSchema } from './companion-learning';
 
@@ -23,7 +24,8 @@ export const companionWorldSleepPlanSchema = z.object({ companionId: id, checked
   routine: companionRoutineConfigSchema,
   actor: z.object({ activity: z.string(), routinePhase: z.string(), activityStartedAtReal: instant, moving: z.boolean(), working: z.boolean() }).optional(),
   hasUnconsolidated: z.boolean(), admission: z.enum(['unchecked', 'admitted', 'not_admitted']),
-  maintenance: z.object({ eligible: z.boolean().optional(), lastDecisionAt: instant.optional(), nextDeepEligibleAt: instant.optional(), lastDreamSuccessAt: instant.optional(),
+  maintenance: z.object({ eligible: z.boolean().optional(), policy: companionMemoryPolicySchema.optional(), policyError: z.string().max(1000).optional(), lastDecisionAt: instant.optional(), nextDeepEligibleAt: instant.optional(), lastDreamSuccessAt: instant.optional(),
+    investigations: z.object({ waiting: z.number().int().nonnegative(), observed: z.number().int().nonnegative(), reason: z.string().max(1000).optional() }).optional(),
     mode: z.enum(['sleep', 'background']).optional(), reflectionCompletedAt: instant.optional(), realCompletedAt: instant.optional(),
     narrativeAttempts: z.number().int().min(0).max(3).optional(), narrativeStatus: z.enum(['pending', 'skipped', 'completed', 'failed']).optional() }).optional(),
   dreamCooldownUntilWorld: instant.optional(),

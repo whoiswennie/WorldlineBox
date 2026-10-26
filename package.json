@@ -140,7 +140,7 @@
     "@types/three": "^0.185.4",
     "@types/yauzl": "3.4.0",
     "@vitejs/plugin-react": "6.0.3",
-    "electron": "43.1.0",
+    "electron": "43.8.3",
     "eslint": "10.7.0",
     "eslint-plugin-react-hooks": "7.1.1",
     "globals": "17.7.0",

@@ -8,7 +8,7 @@ export function companionMemoryClockBucket(clock: { now: string; timeZone: strin
 
 /** Host activation policy only. Upstream keeps its exponential formula and
  * explicit-time branch; it never forgets a note or treats its age as falsehood. */
-export function companionAutomaticRecallDecay(notes: readonly CompanionMemory[], worldMode: 'realtime' | 'compressed'): VcpMemoryAutomaticDecayPolicy {
+export function companionAutomaticRecallDecay(notes: readonly Pick<CompanionMemory, 'id' | 'captureMethod' | 'diaryName' | 'metadata' | 'tags' | 'sources'>[], worldMode: 'realtime' | 'compressed'): VcpMemoryAutomaticDecayPolicy {
   const episodic = new Set(['日记', '经历', '活动体验']);
   const important = new Set(['重要', '长期', '重要约定']);
   return { schema: 'episodic-v1', halfLifeDays: 180, minScore: 0, protectedNoteIds: notes.filter(note => note.captureMethod !== 'automatic'

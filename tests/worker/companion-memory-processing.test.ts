@@ -13,6 +13,30 @@ function fixture() { const root = mkdtempSync(path.join(tmpdir(), 'worldlinebox-
 afterEach(() => { for (const item of fixtures.splice(0)) { item.store.close(); if (path.dirname(item.root) !== tmpdir() || !path.basename(item.root).startsWith('worldlinebox-memory-processing-')) throw new Error('Unexpected fixture.'); removeOwnedDirectorySync(item.root); } });
 const status = (store: CompanionsStore, companionId = 'alice', limit = 30) => store.request({ type: 'memory.processing.status', companionId, limit }).memoryProcessing!;
 
+it('counts source versions, original records and derived records independently of attempts, revisions and annotation updates', () => {
+  const { store, room, peerRoom, file } = fixture(), scope = { companionId: 'alice', conversationId: room };
+  const a = store.appendMessage({ conversationId: room, authorId: 'user', content: '修伞的上半部已完成，下半部仍未完成。' });
+  const b = store.appendMessage({ conversationId: room, authorId: 'user', content: '下次修伞时需要第二层抽屉里的棉线。' });
+  store.appendMessage({ conversationId: peerRoom, authorId: 'user', content: 'Bob自己的整理来源。' });
+  const original = [a, b].map(raw => store.request({ type: 'memory.record', ...scope, candidate: { content: raw.content, tags: ['修伞'],
+    sourceMessageIds: [raw.id], evidence: [{ sourceMessageId: raw.id, quote: raw.content }] } }).memories![0]!);
+  expect(status(store).metrics).toEqual({ sourceVersions: 2, originalEntries: 2, derivedEntries: 0 });
+  expect(status(store, 'bob').metrics).toEqual({ sourceVersions: 1, originalEntries: 0, derivedEntries: 0 });
+  const annotate = store.request({ type: 'memory.organize', ...scope, ids: [original[0]!.id], tags: ['待完成'] }).memories![0]!;
+  store.request({ type: 'memory.revise', ...scope, id: annotate.id, expectedVersion: annotate.version,
+    candidate: { content: a.content + ' 仍需继续。', tags: ['修伞'], sourceMessageIds: [a.id], evidence: [{ sourceMessageId: a.id, quote: a.content }] } });
+  for (let i = 0; i < 10; i++) { const outbox = store.request({ type: 'memory.outbox.claim' }).memoryOutbox;
+    if (outbox) store.request({ type: 'memory.outbox.complete', id: outbox.id, leaseToken: outbox.leaseToken, indexed: true }); }
+  const merged = store.request({ type: 'memory.consolidate', ...scope, operationId: 'processing_actual_merge',
+    inputs: original.map(note => ({ id: note.id, version: store.request({ type: 'memory.read', ...scope, id: note.id }).memoryRead!.memory.version })),
+    candidate: { content: a.content + b.content, tags: ['修伞'], sourceMessageIds: [a.id, b.id], evidence: [a, b].map(raw => ({ sourceMessageId: raw.id, quote: raw.content })) } }).memories![0]!;
+  expect(merged).toBeDefined(); expect(status(store).metrics).toEqual({ sourceVersions: 2, originalEntries: 2, derivedEntries: 1 });
+  const reopened = new CompanionsStore(file, seeds);
+  try { expect(status(reopened).metrics).toEqual(status(store).metrics); } finally { reopened.close(); }
+  store.request({ type: 'memory.forget', ...scope, sourceMessageIds: [a.id] });
+  expect(status(store).metrics).toMatchObject({ originalEntries: 1, derivedEntries: 0 });
+});
+
 it('shows real source queue admission, claimed work and completed checks without claiming every message became a diary', () => {
   const { store, room, peerRoom } = fixture();
   const source = store.appendMessage({ conversationId: room, authorId: 'user', content: '今天想去海边。' });

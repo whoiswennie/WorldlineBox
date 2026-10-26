@@ -18,6 +18,7 @@ vi.mock('../../src/main/vcp-memory/client', () => ({ VcpMemoryClient: class {
   interruptScope = vi.fn(async () => undefined);
   purgeScope = vi.fn(async () => undefined);
   retire = vi.fn(async () => { await this.close(); });
+  forget = vi.fn(async () => undefined);
   constructor(readonly options: VcpMemoryClientOptions) { mocks.clients.push(this); }
 } }));
 vi.mock('../../src/main/vcp-memory/cold-service', () => ({ ColdKnowledgeService: class {
@@ -43,6 +44,39 @@ function runtime(resolveEmbedding: () => Promise<VcpMemoryEmbeddingConfig>, reso
 beforeEach(() => { mocks.clients.length = 0; coldMocks.services.length = 0; });
 
 describe('VCP semantic space and shutdown boundaries', () => {
+  it('allows trusted index withdrawal with a missing live prompt while queries reject, then rereads repaired prompts without index clearing them', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'worldline-index-prompt-')), prompt = path.join(root, 'live-focus.md');
+    if (path.dirname(path.resolve(root)) !== path.resolve(tmpdir()) || !path.basename(root).startsWith('worldline-index-prompt-')) throw new Error('Unsafe index prompt fixture cleanup.');
+    await writeFile(prompt, 'OLD {{knowledge_base}}');
+    const resolveOwnerStorage = vi.fn(async (owner: string) => ({ ...await storage(root)(owner), ownerPrompts: {
+      ...(await storage(root)(owner)).ownerPrompts, aimemoTemplate: await readFile(prompt, 'utf8') } }));
+    const service = new CompanionVcpRuntime({ resolveOwnerStorage, resolveOwnerCleanupStorage: storage(root), vendorRoot: 'unused', workerPath: 'unused', resolveEmbedding: async () => configuration() });
+    try {
+      const query = await service.get({ ownerId: 'alice' }), setPrompts = query.client.setOwnerPrompts as ReturnType<typeof vi.fn>;
+      await query.release?.(); const before = setPrompts.mock.calls.length; await rm(prompt);
+      const index = await service.get({ ownerId: 'alice', purpose: 'index' });
+      await index.client.forget({ scopeId: 'synthetic-index' }, 'withdrawn_note'); await index.release?.();
+      expect(index.client).toBe(query.client); expect(setPrompts.mock.calls).toHaveLength(before);
+      await expect(service.get({ ownerId: 'alice' })).rejects.toMatchObject({ code: 'ENOENT' });
+      await writeFile(prompt, 'REPAIRED live {{knowledge_base}}'); const repaired = await service.get({ ownerId: 'alice' });
+      expect(repaired.client).toBe(query.client); expect(setPrompts.mock.calls.at(-1)![0].aimemoTemplate).toBe('REPAIRED live {{knowledge_base}}');
+      await repaired.release?.();
+    } finally { await service.close(); await rm(root, { recursive: true, force: true }); }
+  });
+  it('bounds core and cold admission before resolving another owner or creating a client', async () => {
+    let finish!: (value: VcpMemoryEmbeddingConfig) => void;
+    const resolveEmbedding = vi.fn(() => new Promise<VcpMemoryEmbeddingConfig>(resolve => { finish = resolve; }));
+    const service = new CompanionVcpRuntime({ resolveOwnerStorage: storage('unused'), resolveOwnerCleanupStorage: storage('unused'), vendorRoot: 'unused', workerPath: 'unused',
+      resolveEmbedding, maxPendingAdmissions: 1 });
+    const first = service.get({ ownerId: 'alice' });
+    try {
+      await vi.waitFor(() => expect(resolveEmbedding).toHaveBeenCalledOnce());
+      await expect(service.getCold({ ownerId: 'bob' }, async () => true)).rejects.toMatchObject({ code: 'VCP_MEMORY_NATIVE_CAPACITY' });
+      expect(service.resourceSnapshot().admissions.coreAndCold).toBe(1); expect(resolveEmbedding).toHaveBeenCalledOnce();
+      finish(configuration()); const lease = await first; await lease.release?.();
+      expect(service.resourceSnapshot().admissions.coreAndCold).toBe(0);
+    } finally { finish(configuration()); await service.close(); }
+  });
   it('binds every hot, generating and cold client to the trusted owner asset tree', async () => {
     const root = path.resolve('synthetic-owner-assets'), service = new CompanionVcpRuntime({ resolveOwnerStorage: storage(root), resolveOwnerCleanupStorage: storage(root),
       vendorRoot: 'unused', workerPath: 'unused', resolveEmbedding: async () => configuration(),
@@ -56,6 +90,7 @@ describe('VCP semantic space and shutdown boundaries', () => {
       expect(mocks.clients[2]!.options.dataRoot).toContain(path.join(root, 'alice', '.认知索引', 'generation'));
       expect(coldMocks.services[0]!.options.dataRoot).toContain(path.join(root, 'alice', '.认知索引', 'cold'));
       expect(coldMocks.services[0]!.options.boundOwnerId).toBe('alice');
+      expect(coldMocks.services[0]!.options.processBroker).toBe(mocks.clients[0]!.options.processBroker);
       expect(mocks.clients.every(client => client.options.preparedRecallBudget?.workspaceRoot === root)).toBe(true);
       expect(new Set(mocks.clients.map(client => client.options.processBroker)).size).toBe(1);
     } finally { await alice.release?.(); await bob.release?.(); await generation.release(); await cold.release?.(); await service.close(); }
@@ -139,6 +174,23 @@ describe('VCP semantic space and shutdown boundaries', () => {
       expect(mocks.clients[0]!.close).toHaveBeenCalledOnce(); expect(disposed).toHaveBeenCalledOnce();
       expect(mocks.clients[1]!.options.dataRoot).toBe(mocks.clients[0]!.options.dataRoot);
       expect(mocks.clients[2]!.options.dataRoot).not.toBe(mocks.clients[0]!.options.dataRoot);
+    } finally { await service.close(); }
+  });
+  it('preserves host live-file and provider-budget callbacks on the owner generation route without adding them to semantic identities', async () => {
+    const resolved: CompanionModelConfig[] = [], beforeRequest = vi.fn(async () => async () => undefined);
+    const resolveAssetContext = vi.fn(async (context: { system: string; user: string }) => context);
+    const service = new CompanionVcpRuntime({ resolveOwnerStorage: storage('unused-data'), resolveOwnerCleanupStorage: storage('unused-data'), vendorRoot: 'unused', workerPath: 'unused',
+      resolveEmbedding: async () => configuration(), resolveGenerationPlugins: async input => { resolved.push(input.config); return { plugins: {}, dispose: async () => undefined }; } });
+    try {
+      const plain = await service.describeGeneration({ ownerId: 'alice', config: chat() });
+      const config = { ...chat(), providerBudget: { beforeRequest }, resolveAssetContext };
+      const lease = await service.acquireGeneration({ ownerId: 'alice', config });
+      expect(lease.profileKey).toBe(plain.profileKey); expect(resolved[0]!.providerBudget?.beforeRequest).toBe(beforeRequest);
+      expect(resolved[0]!.resolveAssetContext).toBe(resolveAssetContext);
+      await resolved[0]!.providerBudget!.beforeRequest(12, 8192, 'timeline'); expect(beforeRequest).toHaveBeenCalledWith(12, 8192, 'timeline');
+      await lease.release();
+      const anotherCallback = await service.acquireGeneration({ ownerId: 'alice', config: { ...chat(), providerBudget: { beforeRequest: async () => async () => undefined } } });
+      expect(anotherCallback.client).toBe(lease.client); await anotherCallback.release();
     } finally { await service.close(); }
   });
   it('does not construct a client when closed during plugin configuration resolution', async () => {

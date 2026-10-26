@@ -26,7 +26,12 @@ it('limits journal inference to two owners and cancellation releases only that o
     configFor: async () => ({ model: 'test', apiFormat: 'openai_chat', baseUrl: 'https://fixture.invalid', apiKey: 'test' }), fetchFn,
     changed: () => undefined, busy: () => false, report: error => { throw error; } });
   try {
+    // Only the host clock is controlled: provider promises, aborts and service
+    // timers remain real throughout this concurrency/cancellation experiment.
+    vi.useFakeTimers({ toFake: ['Date'] }); vi.setSystemTime(Date.now());
     for (const id of owners) store.appendMessage({ conversationId: store.openPrivate(id).id, authorId: 'user', content: `和${id}约定周六带雨伞。`, replyDirective: 'none' });
+    expect(store.request({ type: 'memory.jobs.claim' }).memoryJob).toBeUndefined();
+    vi.setSystemTime(Date.now() + 60_001);
     service.schedule(0);
     await vi.waitFor(() => expect(started).toHaveLength(2));
     expect(maximum).toBe(2);
@@ -37,5 +42,5 @@ it('limits journal inference to two owners and cancellation releases only that o
     expect(active).toBe(2); // beta is still pending while charlie has started.
     releases.get('beta')!(); releases.get('charlie')!();
     await vi.waitFor(() => expect(active).toBe(0));
-  } finally { await service.close(); store.close(); await removeOwnedDirectory(root); }
+  } finally { await service.close(); vi.useRealTimers(); store.close(); await removeOwnedDirectory(root); }
 });

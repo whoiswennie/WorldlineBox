@@ -11,7 +11,7 @@ export function fixtureOwnerRuntimePaths(workspaceRoot: string): (ownerId: strin
     return { ownerId, workspaceRoot: path.resolve(workspaceRoot), ownerRoot, indexRoot: path.join(ownerRoot, '.认知索引') };
   };
 }
-export function fixtureOwnerRuntimeStorage(workspaceRoot: string): (ownerId: string) => Promise<CompanionOwnerRuntimeStorage> {
+export function fixtureOwnerRuntimeStorage(workspaceRoot: string, options: { vendorRoot?: string } = {}): (ownerId: string) => Promise<CompanionOwnerRuntimeStorage> {
   return async ownerId => {
     if (!/^[a-zA-Z0-9_-]{1,100}$/u.test(ownerId)) throw new Error('Invalid fixture owner.');
     const ownerRoot = path.join(path.resolve(workspaceRoot), ownerId), indexRoot = path.join(ownerRoot, '.认知索引');
@@ -20,8 +20,9 @@ export function fixtureOwnerRuntimeStorage(workspaceRoot: string): (ownerId: str
     try { await readFile(marker, 'utf8'); }
     catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
       await mkdir(indexRoot, { recursive: true }); await mkdir(promptsRoot, { recursive: true });
-      const initial = await loadInitialTimelinePrompts(path.resolve('vendor/vcp-memory'));
-      const aimemo = await readFile(path.resolve('vendor/vcp-memory/Plugin/RAGDiaryPlugin/AIMemoPrompt.txt'), 'utf8');
+      const vendor = options.vendorRoot ?? path.resolve('vendor/vcp-memory');
+      const initial = await loadInitialTimelinePrompts(vendor);
+      const aimemo = await readFile(path.join(vendor, 'Plugin/RAGDiaryPlugin/AIMemoPrompt.txt'), 'utf8');
       for (const [file, content] of [['记忆聚焦.md', aimemo], ['月度时间线.md', initial.timeline], ['月度摘要.md', initial.summary]]) {
         await writeFile(path.join(promptsRoot, file!), content!, { flag: 'wx' }).catch(error => { if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error; });
       }

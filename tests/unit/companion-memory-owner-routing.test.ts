@@ -14,6 +14,7 @@ vi.mock('electron', () => ({ utilityProcess: { fork: vi.fn() } }));
 const cleanup: Array<() => Promise<void>> = [];
 afterEach(async () => { for (const close of cleanup.splice(0).reverse()) await close(); });
 class RoutedClient extends VcpMemoryClient {
+  override readonly supportsDetachedRecall = false;
   notes = new Map<string, VcpMemoryNote[]>();
   constructor() { super({ dataRoot: 'unused', vendorRoot: 'unused', workerPath: 'unused', embedding: { baseUrl: 'unused', model: 'local', dimension: 4, apiKey: '' } }); }
   override replace = vi.fn(async (scope: VcpMemoryScope, notes: VcpMemoryNote[]) => { this.notes.set(scope.scopeId, notes); return { count: notes.length, replaced: true as const }; });

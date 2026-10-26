@@ -48,6 +48,22 @@ it('preserves an unsaved draft after a concurrent file conflict and does not rep
   await act(() => button('使用最新文件替换草稿').click()); expect(node!.querySelector('textarea')!.value).toBe('外部编辑的新文件。');
 });
 
+it('exposes the real owner policy JSON in the same file editor and saves its actual path and hash', async () => {
+  const policy = { path: '记忆策略.json', revision: 'f'.repeat(64), content: '{"mode":"balanced"}', purposes: ['host_policy'] };
+  const workspace = vi.fn<NonNullable<WorldlineBoxCompanionsApi['workspace']>>(async request => ({ ok: true, companionAssets: { ...initial,
+    ...(request.type !== 'companion.assets.prompt.save' ? { memoryPolicyError: '策略JSON损坏，维护暂停；请修复文件。' } : {}),
+    prompts: [initial.prompts[0]!, request.type === 'companion.assets.prompt.save' ? { ...policy, revision: '1'.repeat(64), content: request.content } : policy] } }));
+  await mount(workspace);
+  const select = node!.querySelector('select')!;
+  await act(() => { select.value = policy.path; select.dispatchEvent(new Event('change', { bubbles: true })); });
+  expect(node!.querySelector('textarea')!.value).toBe(policy.content); expect(node!.textContent).toContain('它不作为提示词发送给模型');
+  expect(node!.querySelector('[role="alert"]')!.textContent).toContain('策略JSON损坏');
+  await edit('{"mode":"quiet"}'); await act(async () => button('保存到伙伴文件').click());
+  expect(workspace).toHaveBeenLastCalledWith({ type: 'companion.assets.prompt.save', companionId: 'alice', path: policy.path,
+    expectedRevision: policy.revision, content: '{"mode":"quiet"}' });
+  expect(node!.querySelector('[role="alert"]')).toBeNull();
+});
+
 it('does not show a previous owner or publish a late response after the selected companion changes', async () => {
   let finish!: (value: CompanionWorkspaceResponse) => void;
   const workspace = vi.fn<NonNullable<WorldlineBoxCompanionsApi['workspace']>>(async request => 'companionId' in request && request.companionId === 'alice'

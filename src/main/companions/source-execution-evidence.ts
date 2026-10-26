@@ -19,6 +19,7 @@ export function companionExecutionSourceReferences(response: CompanionStorageRes
   response.topicCompactionPage?.items.forEach(item => message(item.message));
   response.searchPage?.items.forEach(hit => sources.add(hit.id));
   response.memories?.forEach(note); response.memoryPage?.items.forEach(hit => note(hit.memory)); response.memorySnapshot?.notes.forEach(note);
+  response.memoryCaptureContributions?.items.forEach(note);
   note(response.memoryRead?.memory); response.memoryRead?.related.forEach(note); response.memoryRead?.sources.forEach(message);
   if (response.memoryOutbox?.operation === 'remember') note(response.memoryOutbox.note);
   response.memoryLibraryIndexPage?.notes.forEach(note); response.memoryLibraryChanges?.changes.forEach(change => note(change.note));
@@ -45,11 +46,13 @@ export function companionExecutionSourceReferences(response: CompanionStorageRes
 
 const rereadable = new Set(['messages', 'message.get', 'message.search', 'memory.snapshot', 'memory.records.filter', 'memory.sources.filter',
   'memory.sources.search', 'memory.read', 'memory.inspect', 'memory.browse', 'memory.list', 'memory.library.read', 'memory.library.page',
-  'memory.library.index-page', 'memory.library.changes', 'topic.read', 'topic.sources.valid', 'topic.compaction.sources', 'social.messages', 'social.conversations', 'social.flow', 'activity.progress']);
+  'memory.library.index-page', 'memory.library.changes', 'memory.jobs.contributions', 'topic.read', 'topic.sources.valid', 'topic.compaction.sources', 'social.messages', 'social.conversations', 'social.flow', 'activity.progress']);
 const validationReads = new Set([...rereadable, 'execution.sources', 'action.get', 'checkpoint.get', 'collaboration.read',
   'memory.prohibitions', 'memory.corpus.stamp', 'memory.documents.get', 'memory.document.get', 'social.job.game_context', 'activity.handoff', 'state', 'world.clock', 'world.state', 'runtime.read', 'character.development.read',
   'actions', 'actions.invocation', 'actions.page', 'loop.get', 'work.list', 'memory.status', 'memory.frozen.valid',
-  'memory.tags.status', 'memory.processing.status', 'memory.policy.list', 'memory.library.index-state',
+  'memory.revision.read', 'memory.revision.describe', 'memory.history.outbox.check',
+  'memory.projection.state', 'memory.projection.page', 'memory.projection.delta',
+  'memory.tags.status', 'memory.processing.status', 'memory.policy.list', 'memory.library.index-state', 'memory.outbox.pending',
   'document.catalog.query', 'world.clock.peek', 'routine.get', 'schedule.list', 'schedule.get', 'activity.list', 'social.days', 'social.graph', 'social.reply.progress', 'task-stop.list', 'tasks.page', 'tasks.resolve', 'tasks.concurrency.get']);
 // tags.status may discover pending tag jobs, but cannot edit a note. In
 // contrast memory.library.scope can create a hidden private conversation and
@@ -62,7 +65,15 @@ const validationReads = new Set([...rereadable, 'execution.sources', 'action.get
 // an existing source, indexed note, execution readset, membership or grant.
 // Its observational polling must not discard a foreground history DAG memo.
 const derivedCatalogWrites = new Set(['document.catalog.touch', 'document.catalog.put', 'document.catalog.drop', 'document.catalog.finish',
+  // Capture scheduling may release/retry a lease; it cannot change the raw
+  // evidence or any published task/note body. Completion remains a mutation.
+  'memory.jobs.defer', 'memory.jobs.fail',
+  'memory.jobs.retry-admission', 'memory.tags.retry-admission', 'world.job.retry-admission',
+  'memory.jobs.proposal.read', 'memory.jobs.proposal.save',
+  'memory.projection.release',
+  'model.resources.config.status', 'model.resources.config.initialized', 'model.resources.admit', 'model.resources.finish', 'model.resources.usage',
   'memory.sources.outbox.owners', 'memory.sources.outbox.claim', 'memory.sources.outbox.complete', 'memory.sources.outbox.fail',
+  'memory.history.outbox.owners', 'memory.history.outbox.claim', 'memory.history.outbox.complete', 'memory.history.outbox.fail',
   'companion.assets.initialized', 'companion.assets.mark-initialized', 'companion.assets.portrait.initialized', 'companion.assets.portrait.mark-initialized']);
 /** Anything not explicitly authority-neutral advances Main's validation generation.
  * This is only a request-local memo boundary, never a permanent proof epoch. */

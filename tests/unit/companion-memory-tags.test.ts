@@ -7,6 +7,7 @@ import { CompanionMemoryTagService, parseVcpTagMasterOutput } from '../../src/ma
 import { CompanionMemoryLibrary } from '../../src/main/companions/memory-library';
 import { CompanionMemoryDocuments } from '../../src/main/companions/memory-documents';
 import type { AiApiFormat } from '../../src/shared/ai-endpoints';
+import { CompanionModelAdmissionError } from '../../src/main/companions/model-quota';
 const seeds = [{ id: 'alice', name: 'Alice', persona: '谨慎区分经历和推测。', model: '', description: '', avatar: 'sister' as const, active: true, proactive: false }];
 const prompt = readFileSync(path.resolve('vendor/vcp-memory/Plugin/DailyNote/TagMaster.txt'), 'utf8');
 const roots: string[] = [], stores = new Set<CompanionsStore>(), services = new Set<CompanionMemoryTagService>();
@@ -112,6 +113,17 @@ it('persists waiting-model status without a request and resumes after restart us
   const reopened = new CompanionsStore(f.filename, seeds); stores.add(reopened); await tagger(reopened, fetchFn).tick();
   expect(read(reopened, note.id)?.tags).toEqual(['资料保存', '后台处理']); expect(status(reopened, note.id).completed).toBe(1);
 });
+it('does not spend genuine tag failures while repeatedly waiting for model configuration', async () => {
+  const f = fixture(), note = f.store.saveMemory({ ...f.scope, content: '未配置模型的等待不是一次已发送标签失败。' });
+  const fetchFn = vi.fn<typeof fetch>(async () => new Response('{}', { status: 429 }));
+  const waiting = tagger(f.store, fetchFn, 'openai_chat', { config: () => { throw Error('No configured model.'); } });
+  for (let attempt = 0; attempt < 10; attempt++) { await waiting.tick(); vi.setSystemTime(Date.now() + 31_000); }
+  expect(fetchFn).not.toHaveBeenCalled(); expect(status(f.store, note.id).waitingModel).toBe(1);
+  await tagger(f.store, fetchFn).tick(); expect(fetchFn).toHaveBeenCalledTimes(1);
+  expect(status(f.store, note.id).failed).toBe(1);
+  vi.setSystemTime(Date.now() + 10_001);
+  expect(f.store.request({ type: 'memory.tags.claim' }).memoryTagJob?.attempts).toBe(2);
+});
 
 it('recovers a crashed tag lease and accepts a completion only once', () => {
   const f = fixture(), note = f.store.saveMemory({ ...f.scope, content: '需要持久处理的资料。' });
@@ -123,6 +135,45 @@ it('recovers a crashed tag lease and accepts a completion only once', () => {
   reopened.request({ type: 'memory.tags.complete', id: retry.id, leaseToken: retry.leaseToken, tags: ['实际标签'] });
   reopened.request({ type: 'memory.tags.complete', id: retry.id, leaseToken: retry.leaseToken, tags: ['重复结果'] });
   expect(read(reopened, note.id)).toMatchObject({ version: 2, tags: ['实际标签'] });
+});
+
+it('keeps tag attempts intact through repeated durable host admission deferrals and a SQLite restart', async () => {
+  const f = fixture(), note = f.store.saveMemory({ ...f.scope, content: '只有正式发送模型请求失败才占用标签重试次数。' });
+  let store = f.store, refused = true;
+  const fetchFn = vi.fn<typeof fetch>(async () => response('openai_chat', '[[Tag: 预算恢复, 真实资料]]'));
+  const service = new CompanionMemoryTagService({ request: async command => store.request(command), fetchFn, prompt: async () => prompt,
+    config: async () => ({ apiFormat: 'openai_chat', model: 'budgeted-tags', apiKey: 'synthetic', baseUrl: 'https://fixture.invalid', providerBudget: {
+      beforeRequest: async () => { if (refused) throw new CompanionModelAdmissionError('budget', 'Actual local budget admission.', new Date(Date.now() + 86400000).toISOString()); return async () => undefined; },
+    } }), changed: vi.fn(), report: vi.fn() }); services.add(service);
+  for (let attempt = 0; attempt < 10; attempt++) {
+    await service.tick(); expect(status(store, note.id)).toMatchObject({ failed: 0, pending: 1, note: { state: 'pending' } });
+    expect(store.request({ type: 'memory.tags.claim' }).memoryTagJob).toBeUndefined();
+    if (attempt === 4) { store.close(); stores.delete(store); store = new CompanionsStore(f.filename, seeds); stores.add(store); }
+    vi.setSystemTime(Date.now() + 86400001);
+  }
+  expect(fetchFn).not.toHaveBeenCalled(); refused = false; await service.tick();
+  expect(fetchFn).toHaveBeenCalledOnce(); expect(status(store, note.id).note?.state).toBe('completed');
+});
+
+it('counts an actual provider HTTP 429 as a tag failure rather than a host admission deferral', async () => {
+  const f = fixture(), note = f.store.saveMemory({ ...f.scope, content: '提供方响应与本地未发送准入拒绝有不同的重试语义。' });
+  const fetchFn = vi.fn<typeof fetch>(async () => new Response('{"error":"provider rate limit"}', { status: 429 }));
+  await tagger(f.store, fetchFn).tick(); expect(fetchFn).toHaveBeenCalledOnce(); expect(status(f.store, note.id).note?.state).toBe('failed');
+  vi.setSystemTime(Date.now() + 10001); expect(f.store.request({ type: 'memory.tags.claim' }).memoryTagJob?.attempts).toBe(2);
+});
+
+it('wakes only typed deferred tags without erasing real failures, another owner or a running lease', () => {
+  const f = fixture(), note = f.store.saveMemory({ ...f.scope, content: '预算调整仅重新核验宿主延期，不覆盖真实失败计数。' });
+  const first = f.store.request({ type: 'memory.tags.claim' }).memoryTagJob!;
+  f.store.request({ type: 'memory.tags.defer', id: first.id, leaseToken: first.leaseToken, reason: 'retry', error: 'Actual HTTP failure.', retryAfterMs: 1000 });
+  vi.setSystemTime(Date.now() + 1001); const second = f.store.request({ type: 'memory.tags.claim' }).memoryTagJob!; expect(second.attempts).toBe(2);
+  f.store.request({ type: 'memory.tags.defer', id: second.id, leaseToken: second.leaseToken, reason: 'admission', error: 'Typed host admission.', retryAfterMs: 86400000 });
+  f.store.request({ type: 'memory.tags.retry-admission', companionId: 'bob' }); expect(f.store.request({ type: 'memory.tags.claim' }).memoryTagJob).toBeUndefined();
+  f.store.request({ type: 'memory.tags.retry-admission' }); const awakened = f.store.request({ type: 'memory.tags.claim' }).memoryTagJob!;
+  expect(awakened).toMatchObject({ id: second.id, attempts: 2 });
+  f.store.request({ type: 'memory.tags.retry-admission' });
+  f.store.request({ type: 'memory.tags.complete', id: awakened.id, leaseToken: awakened.leaseToken, tags: ['真实标签'] });
+  expect(status(f.store, note.id).note?.state).toBe('completed');
 });
 
 it('imports a real natural file, exposes human tag status/retry/cancel and respects an explicit tag clear', async () => {

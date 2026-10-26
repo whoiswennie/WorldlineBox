@@ -31,17 +31,27 @@ export class CompanionMemorySourceOutboxStore {
     }
   }
   retract(owner: string, ids: readonly string[]): void {
+    this.retractVersions(owner, ids);
+  }
+  private retractVersions(owner: string, ids: readonly string[], retainedChecksum?: string): void {
     for (const id of new Set(ids)) {
       const known = this.db.prepare("SELECT DISTINCT source_revision,source_checksum FROM companion_memory_source_outbox WHERE companion_id=? AND source_id=? AND operation='publish'")
         .all(owner, id) as Array<{ source_revision: number; source_checksum: string }>;
-      for (const previous of known) this.enqueue(owner, { messageId: id, revision: previous.source_revision, checksum: previous.source_checksum }, 'retract');
-      this.db.prepare("UPDATE companion_memory_source_outbox SET status='done' WHERE companion_id=? AND source_id=? AND operation='publish' AND status IN('pending','failed')").run(owner, id);
+      for (const previous of known) if (previous.source_checksum !== retainedChecksum)
+        this.enqueue(owner, { messageId: id, revision: previous.source_revision, checksum: previous.source_checksum }, 'retract');
+      this.db.prepare("UPDATE companion_memory_source_outbox SET status='done' WHERE companion_id=? AND source_id=? AND operation='publish' AND status IN('pending','failed') AND (? IS NULL OR source_checksum!=?)")
+        .run(owner, id, retainedChecksum ?? null, retainedChecksum ?? null);
     }
   }
   changedSource(owner: string, id: string): void {
     const known = this.db.prepare("SELECT 1 FROM companion_memory_source_outbox WHERE companion_id=? AND source_id=? AND operation='publish' LIMIT 1").get(owner, id);
     if (!known) return;
-    this.retract(owner, [id]); const actual = this.resolve(owner, id); if (actual) this.enqueue(owner, actual, 'publish');
+    const actual = this.resolve(owner, id);
+    // Passive task receipts attest bytes and ACL, rather than an incidental
+    // source revision. Keep already published identical copies for those
+    // immutable histories; strict native readsets still check the raw revision.
+    this.retractVersions(owner, [id], actual?.checksum);
+    if (actual) this.enqueue(owner, actual, 'publish');
   }
   execute(command: CompanionStorageCommand): CompanionStorageResponse | undefined {
     if (command.type === 'memory.sources.outbox.owners') {
@@ -78,7 +88,7 @@ export class CompanionMemorySourceOutboxStore {
       const current = operation === 'publish' ? this.resolve(found.companion_id, found.source_id) : undefined;
       const accepted = operation === 'retract' || current?.revision === found.source_revision && current.checksum === found.source_checksum;
       this.db.prepare("UPDATE companion_memory_source_outbox SET status='done',lease_token=NULL,lease_until=NULL,error=NULL WHERE id=?").run(found.id);
-      if (!accepted) this.retract(found.companion_id, [found.source_id]);
+      if (!accepted) this.retractVersions(found.companion_id, [found.source_id], current?.checksum);
       return { ok: true, memorySourceOutboxAccepted: accepted };
     }).immediate();
   }

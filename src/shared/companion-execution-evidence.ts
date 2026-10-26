@@ -11,6 +11,10 @@ export const companionExecutionReadsetSchema = z.strictObject({
   /** False means legacy/untyped inputs were consumed and cannot be replayed. */
   complete: z.boolean(),
   memories: z.array(z.strictObject({ id, version: z.number().int().positive().safe() })),
+  /** Complete bodies actually returned to the main brain. Candidate ranks and
+   * a passive physical-corpus superset never introduce these read witnesses. */
+  memoryReads: z.array(companionFrozenMemoryDependencySchema.extend({ version: z.number().int().positive().safe(),
+    contentRevision: z.number().int().positive().safe() })).optional(),
   frozenMemories: z.array(companionFrozenMemoryDependencySchema).optional(),
   sources: z.array(companionExecutionSourceReferenceSchema),
   knowledgeReads: z.array(companionKnowledgeReadSchema),

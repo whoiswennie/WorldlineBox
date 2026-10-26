@@ -45,7 +45,10 @@ describe('durable companion reply streaming drafts', () => {
 
   it('keeps partial text out of FTS, extraction, source fallback and source revisions, then indexes an identical final body once', () => {
     const { store, filename, scope, checkpoint, source, bubble } = fixture();
-    const job = store.request({ type: 'memory.jobs.claim' }).memoryJob!;
+    // Explicit internal flush isolates formal-publication and draft exclusion
+    // from the separately tested episode quiet interval.
+    const job = store.request({ type: 'memory.jobs.claim', companionId: scope.companionId, force: true }).memoryJob!;
+    expect(job.sourceMessageIds).toEqual([source.id]);
     for (const text of ['杭州', '杭州的地址是未核实的草稿']) store.request({ type: 'loop.save', checkpoint: { ...checkpoint, draft: { step: 0, attemptId: 'active_attempt', text } } });
     const Database = BetterSqlite3 as { new(filename: string, options: { readonly: boolean }): CompanionConnection };
     const read = new Database(filename, { readonly: true });
@@ -65,7 +68,7 @@ describe('durable companion reply streaming drafts', () => {
     const next = store.appendMessage({ conversationId: scope.conversationId, authorId: 'user', content: '下一条请求' });
     expect(store.request({ type: 'memory.sources.filter', ...scope, beforeSequence: next.sequence, ids: [bubble.id] }).memorySources?.map(message => message.id)).toEqual([bubble.id]);
     store.request({ type: 'loop.save', checkpoint: final });
-    expect(store.request({ type: 'memory.jobs.claim' }).memoryJob?.sourceMessageIds.filter(id => id === bubble.id)).toEqual([bubble.id]);
+    expect(store.request({ type: 'memory.jobs.claim', companionId: scope.companionId, force: true }).memoryJob?.sourceMessageIds.filter(id => id === bubble.id)).toEqual([bubble.id]);
     expect(() => store.request({ type: 'loop.save', checkpoint })).toThrow('迟到草稿');
     expect(store.getMessage(source.id).content).toBe('请继续回答。');
   });

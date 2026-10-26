@@ -1,13 +1,13 @@
 import { randomUUID } from 'node:crypto';
 import type { CompanionConnection } from './store';
 import type { CompanionMemory } from '../shared/companions';
-import { COMPANION_MEMORY_DEEP_INTERVAL_MS, COMPANION_MEMORY_DEEP_MAX_AGE_MS, COMPANION_MEMORY_DEEP_MIN_EPISODES,
-  COMPANION_SLEEP_DREAM_COOLDOWN_MS, COMPANION_SLEEP_DREAM_PROBABILITY, COMPANION_SLEEP_MAX_ATTEMPTS } from '../shared/companion-sleep';
+import { initialCompanionMemoryPolicy, type CompanionMemoryPolicy } from '../shared/companion-memory-policy';
+import type { CompanionMemoryPolicyReceipt } from './memory-policy-files';
 
 export type MaintenanceMode = 'sleep' | 'background';
 export type MaintenanceSession = { id: string; companionId: string; mode: MaintenanceMode; startedAt: number;
   roll: number; dreamAllowed: boolean; dreamJobId?: string; narrativeAttempts: number; narrativeStatus: 'pending' | 'skipped' | 'completed' | 'failed';
-  closedAt?: number };
+  policy: CompanionMemoryPolicy; policyRevision: string; closedAt?: number };
 type OwnerState = { companionId: string; lastDecisionAt?: number; lastDreamSuccessAt?: number; activeSessionId?: string; lastServiceAt?: number };
 
 /** Cognitive maintenance state belongs to an owner, never to physical work or a
@@ -48,24 +48,40 @@ export class CompanionMemoryMaintenanceStore {
       AND covered.source_id=json_extract(source.value,'$.messageId')
       AND covered.source_revision=json_extract(source.value,'$.revision') AND covered.source_checksum=json_extract(source.value,'$.checksum')))`;
   }
-  eligible(companionId: string, notes: readonly CompanionMemory[], now: number, mode: MaintenanceMode): boolean {
+  /** A model may write several notes for one event. Count actual capture
+   * episodes or independent source receipts, never the number of prose rows. */
+  episodeKeys(companionId: string, notes: readonly CompanionMemory[]): string[] {
+    const keys = new Set<string>();
+    for (const note of notes) for (const source of note.sources) {
+      if (this.db.prepare(`SELECT 1 FROM companion_memory_maintenance_sources WHERE companion_id=? AND source_id=? AND source_revision=? AND source_checksum=?`)
+        .get(companionId, source.messageId, source.revision, source.checksum)) continue;
+      const episode = this.db.prepare(`SELECT s.episode_id FROM companion_memory_episode_sources s JOIN vcp_capture_jobs j ON j.id=s.job_id
+        WHERE j.companion_id=? AND j.message_id=? ORDER BY j.ordinal DESC LIMIT 1`).get(companionId, source.messageId) as { episode_id: string } | undefined;
+      const captured = episode?.episode_id ?? (typeof note.metadata?.captureEpisodeId === 'string' ? note.metadata.captureEpisodeId : undefined);
+      const action = captured ? undefined : this.db.prepare('SELECT action_id FROM messages WHERE id=? AND conversation_id=?').get(source.messageId, source.conversationId) as { action_id?: string } | undefined;
+      keys.add(captured ? 'capture:' + captured : action?.action_id ? 'action:' + action.action_id
+        : JSON.stringify(['receipt', source.conversationId, source.messageId, source.revision, source.checksum]));
+    }
+    return [...keys];
+  }
+  eligible(companionId: string, notes: readonly CompanionMemory[], now: number, mode: MaintenanceMode, policy = initialCompanionMemoryPolicy()): boolean {
     if (!notes.length) return false;
     const owner = this.owner(companionId), active = this.session(owner.activeSessionId);
     if (active && active.closedAt === undefined) return true;
-    if (owner.lastDecisionAt !== undefined && now - owner.lastDecisionAt < COMPANION_MEMORY_DEEP_INTERVAL_MS) return false;
+    if (owner.lastDecisionAt !== undefined && now - owner.lastDecisionAt < policy.deep.intervalMs) return false;
     const oldest = Math.min(...notes.map(note => Date.parse(note.createdAt)).filter(Number.isFinite));
-    return mode === 'sleep' || notes.length >= COMPANION_MEMORY_DEEP_MIN_EPISODES
+    return mode === 'sleep' || this.episodeKeys(companionId, notes).length >= policy.deep.minEpisodes
       || notes.some(note => note.tags.some(tag => ['重要', '重要约定', '更正', '冲突'].includes(tag)))
-      || Number.isFinite(oldest) && now - oldest >= COMPANION_MEMORY_DEEP_MAX_AGE_MS;
+      || Number.isFinite(oldest) && now - oldest >= policy.deep.maxDebtAgeMs;
   }
-  begin(companionId: string, mode: MaintenanceMode, now: number): MaintenanceSession {
+  begin(companionId: string, mode: MaintenanceMode, now: number, receipt: Pick<CompanionMemoryPolicyReceipt, 'policy' | 'revision'> = { policy: initialCompanionMemoryPolicy(), revision: 'noncanonical-fixture' }): MaintenanceSession {
     const owner = this.owner(companionId), existing = this.session(owner.activeSessionId);
     if (existing && existing.closedAt === undefined) return existing;
-    const roll = Math.random();
-    const allowed = (owner.lastDreamSuccessAt === undefined || now - owner.lastDreamSuccessAt >= COMPANION_SLEEP_DREAM_COOLDOWN_MS)
-      && roll < COMPANION_SLEEP_DREAM_PROBABILITY;
+    const roll = Math.random(), policy = structuredClone(receipt.policy);
+    const allowed = (owner.lastDreamSuccessAt === undefined || now - owner.lastDreamSuccessAt >= policy.dream.cooldownMs)
+      && roll < policy.dream.probability;
     const session: MaintenanceSession = { id: randomUUID(), companionId, mode, startedAt: now, roll, dreamAllowed: allowed,
-      narrativeAttempts: 0, narrativeStatus: allowed ? 'pending' : 'skipped' };
+      policy, policyRevision: receipt.revision, narrativeAttempts: 0, narrativeStatus: allowed ? 'pending' : 'skipped' };
     owner.activeSessionId = session.id; this.saveOwner(owner); this.saveSession(session); return session;
   }
   bindDream(sessionId: string, jobId: string): boolean {
@@ -100,13 +116,19 @@ export class CompanionMemoryMaintenanceStore {
   narrativeAttempt(sessionId: string, jobId: string): number {
     const session = this.session(sessionId);
     if (!session || session.dreamJobId !== jobId || session.narrativeStatus !== 'pending'
-      || session.narrativeAttempts >= COMPANION_SLEEP_MAX_ATTEMPTS) throw new Error('联想叙述阶段已结束或重试预算已用尽。');
+      || session.narrativeAttempts >= session.policy.dream.maxAttempts) throw new Error('联想叙述阶段已结束或重试预算已用尽。');
     session.narrativeAttempts++; this.saveSession(session); return session.narrativeAttempts;
+  }
+  refundNarrativeAttempt(sessionId: string, jobId: string, attempt: number): number {
+    const session = this.session(sessionId);
+    if (!session || session.dreamJobId !== jobId || session.narrativeStatus !== 'pending'
+      || session.narrativeAttempts !== attempt || attempt < 1) throw new Error('联想准入延期不属于当前尚未完成的尝试。');
+    session.narrativeAttempts--; this.saveSession(session); return session.narrativeAttempts;
   }
   finishNarrative(sessionId: string, jobId: string, success: boolean, now: number): void {
     const session = this.session(sessionId);
     if (!session || session.dreamJobId !== jobId) throw new Error('联想叙述不属于当前维护会话。');
-    session.narrativeStatus = success ? 'completed' : session.narrativeAttempts >= COMPANION_SLEEP_MAX_ATTEMPTS ? 'failed' : 'pending';
+    session.narrativeStatus = success ? 'completed' : session.narrativeAttempts >= session.policy.dream.maxAttempts ? 'failed' : 'pending';
     if (success) { const owner = this.owner(session.companionId); owner.lastDreamSuccessAt = now; this.saveOwner(owner); }
     this.saveSession(session);
   }

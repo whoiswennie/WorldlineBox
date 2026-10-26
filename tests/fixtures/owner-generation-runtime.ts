@@ -6,15 +6,20 @@ import type { VcpMemoryClientOptions } from '../../src/main/vcp-memory/client';
 import path from 'node:path';
 import { fixtureOwnerRuntimeStorage, fixtureOwnerRuntimePaths } from './owner-runtime-storage';
 import { renderCompanionNativeMemoryPrompt, validateCompanionNativeMemoryPrompt } from '../../src/shared/companion-native-memory-prompt';
+import type { VcpMemoryProcessBroker } from '../../src/main/vcp-memory/process-broker';
 
 /** Real production owner routing over a fixture's existing encoder transport. */
 export function ownerGenerationRuntime(dataRoot: string, embedding: VcpMemoryEmbeddingConfig,
-  launch: VcpMemoryClientOptions['launch'], fetchFn?: typeof fetch) {
+  launch: VcpMemoryClientOptions['launch'], fetchFn?: typeof fetch, options: { workerPath?: string; vendorRoot?: string;
+    nativeProcessLimit?: number; processBroker?: VcpMemoryProcessBroker } = {}) {
   const gateway = new VcpChatGateway();
-  const resolveOwnerStorage = fixtureOwnerRuntimeStorage(path.join(dataRoot, '伙伴记忆'));
+  const vendorRoot = options.vendorRoot ?? path.resolve('vendor/vcp-memory');
+  const resolveOwnerStorage = fixtureOwnerRuntimeStorage(path.join(dataRoot, '伙伴记忆'), { vendorRoot });
   const runtime = new CompanionVcpRuntime({ resolveOwnerStorage,
     resolveOwnerCleanupStorage: fixtureOwnerRuntimePaths(path.join(dataRoot, '伙伴记忆')),
-    vendorRoot: path.resolve('vendor/vcp-memory'), workerPath: path.resolve('src/main/vcp-memory/worker.cjs'),
+    vendorRoot, workerPath: options.workerPath ?? path.resolve('src/main/vcp-memory/worker.cjs'),
+    ...(options.nativeProcessLimit !== undefined ? { nativeProcessLimit: options.nativeProcessLimit } : {}),
+    ...(options.processBroker ? { processBroker: options.processBroker } : {}),
     resolveEmbedding: async () => embedding, launch, generationProfile: COMPANION_TEXT_GENERATION_PROFILE,
     resolveGenerationPlugins: async input => {
       const config = Object.freeze({ ...input.config });

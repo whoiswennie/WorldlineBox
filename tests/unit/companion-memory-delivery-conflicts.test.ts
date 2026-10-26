@@ -26,7 +26,7 @@ function fixture(error?: Error, disposition: 'completed' | 'stale' = 'completed'
   const service = new CompanionMemoryService({ request, runtime: { get: async () => ({ client, profileKey: 'fixture' }), close: async () => undefined },
     configFor: async () => ({ apiFormat: 'openai_chat', model: 'fixture', apiKey: 'fixture' }), fetchFn: async () => { throw Error('No model requests expected.'); },
     busy: () => false, changed: () => undefined, report: () => undefined });
-  const deliver = () => (service as unknown as { deliver(): Promise<void> }).deliver();
+  const deliver = async () => { await (service as unknown as { deliver(): Promise<void> }).deliver(); await service.drainDeliveries(); };
   const continuity = vi.spyOn(service as unknown as { queueContinuity(scope: { companionId: string; conversationId: string }): void }, 'queueContinuity');
   return { service, client, request, deliver, continuity };
 }

@@ -50,7 +50,9 @@ it('automatically proposes an optional exact-seed same-domain consolidation duri
   const fetchFn = vi.fn<typeof fetch>(async (_url, init) => {
     const wire = JSON.parse(String(init?.body)), payload = JSON.parse(wire.messages[1].content);
     expect(payload.purpose).toBe('vcp_sleep_reflection'); expect(payload.relevantMemories.map((note: { id: string; version: number }) => [note.id, note.version])).toEqual([['note_first', 1], ['note_second', 1]]);
-    expect(payload.outputSchema.properties).toHaveProperty('consolidations'); expect(wire.messages[0].content).toContain('不得为了有产出强行合并');
+    expect(payload.outputSchema.properties).toHaveProperty('consolidations');
+    expect(payload.outputSchema.required ?? []).not.toContain('consolidations');
+    expect(payload.automaticConsolidationPolicy).toEqual({ originalJournalIds: notes.map(note => note.id), requiresNewOriginalSourceBeyondSelectedPriorMerges: true });
     return response({ notes: [], dream: null, consolidations: [plan()] });
   });
   const result = await generateCompanionMemoryDream(input, config, undefined, { fetchFn });

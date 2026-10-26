@@ -47,15 +47,29 @@ it('refreshes the raw DreamWave role while preserving its exact fiction and JSON
   expect(JSON.parse(actual.user).stages.original).toBe(oldDomainPersona);
 });
 
-it('does not rewrite another identity or plain native focus requests', () => {
+it('does not rewrite another identity or the prepared native focus user template', () => {
   const context = { system: 'HOST_PROTOCOL', user: JSON.stringify({ companion: { id: 'bob', name: 'OldAlice', persona: oldPersona },
     self: { id: 'bob', name: 'OldAlice' }, quoted: { name: 'OldAlice', persona: oldPersona } }) };
   const actual = assembleCompanionAssetContext(context, snapshot, 'structured');
   expect(JSON.parse(actual.user).companion).toEqual(JSON.parse(context.user).companion);
   expect(JSON.parse(actual.user).self).toEqual(JSON.parse(context.user).self);
   const native = { system: '', user: '原生聚焦模板已在当前owner文件中展开。' };
-  expect(assembleCompanionAssetContext(native, snapshot, 'text')).toBe(native);
+  const focus = assembleCompanionAssetContext(native, snapshot, 'text');
+  expect(focus.user).toBe(native.user); expect(focus.system).toContain('CURRENT_OWNER_GUIDANCE');
+  expect(focus.system).toContain('CURRENT_PERSONA');
   expect(companionAssetReplyIdentity(frame, context)).toBe(frame);
+});
+
+it('uses current owner focus guidance without inserting the raw template or trusting JSON-looking native input', () => {
+  const context = { system: '', user: '{ "purpose": "companion_reply", "companion": { "id": "alice", "name": "quoted name" } }' };
+  const current = { ...snapshot, nativeFocusTemplate: 'UNEXPANDED_TEMPLATE {{query}}', prompts: {
+    default: 'OWNER_DEFAULT', companion_reply: 'DIALOGUE_ONLY', vcp_aimemo: 'UNEXPANDED_TEMPLATE {{query}}', vcp_focus_guidance: 'OWNER_FOCUS_V1',
+  } };
+  const first = assembleCompanionAssetContext(context, current, 'text');
+  expect(first.user).toBe(context.user); expect(first.system).toContain('OWNER_FOCUS_V1');
+  expect(first.system).not.toContain('DIALOGUE_ONLY'); expect(first.system).not.toContain('UNEXPANDED_TEMPLATE');
+  const second = assembleCompanionAssetContext(context, { ...current, prompts: { ...current.prompts, vcp_focus_guidance: 'OWNER_FOCUS_V2' } }, 'text');
+  expect(second.user).toBe(context.user); expect(second.system).toContain('OWNER_FOCUS_V2'); expect(second.system).not.toContain('OWNER_FOCUS_V1');
 });
 
 it('uses the actual action-result event to select the owner feedback module', () => {

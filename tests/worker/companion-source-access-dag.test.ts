@@ -112,13 +112,17 @@ function noteFixture(count: number) {
   f.store.request({ type: 'memory.outbox.complete', id: outbox.id, leaseToken: outbox.leaseToken, indexed: true });
   const noteIds = [original.id];
   for (let index = 0; index < count; index++) {
-    const id = 'note_probe_' + index;
-    f.db.prepare('INSERT INTO vcp_memory_notes(id,companion_id,conversation_id,scope_id,identity_key,data) VALUES(?,?,?,?,?,?)')
-      .run(id, 'alice', f.alice.conversationId, original.scopeId, id, JSON.stringify({ ...original, id, status: 'indexed', content: 'DERIVED_NOTE_' + index }));
-    for (const parent of noteIds.slice(-2)) f.db.prepare('INSERT INTO vcp_note_dependencies(note_id,source_note_id,version) VALUES(?,?,1)').run(id, parent);
-    for (const reference of original.sources) f.db.prepare('INSERT INTO vcp_note_sources(note_id,message_id,revision,checksum) VALUES(?,?,?,?)')
-      .run(id, reference.messageId, reference.revision, reference.checksum);
-    noteIds.push(id);
+    // Construct the shared Fibonacci DAG through the real write protocol so
+    // its immutable body, dependency closure and publication receipts exist.
+    const parents = noteIds.slice(-2).map(id => f.store.request({ type: 'memory.read', ...f.alice, id }).memoryRead!.memory);
+    const note = f.store.request({ type: 'memory.record', ...f.alice,
+      readMemories: parents.map(parent => ({ id: parent.id, version: parent.version, contentRevision: parent.contentRevision! })),
+      candidate: { content: 'DERIVED_NOTE_' + index, sourceMessageIds: [source.id],
+        evidence: [{ sourceMessageId: source.id, quote: source.content }], relatedMemoryIds: parents.map(parent => parent.id) } }).memories![0]!;
+    const publication = f.store.request({ type: 'memory.outbox.claim', companionId: f.alice.companionId }).memoryOutbox!;
+    expect(publication.note.id).toBe(note.id);
+    f.store.request({ type: 'memory.outbox.complete', id: publication.id, leaseToken: publication.leaseToken, indexed: true });
+    noteIds.push(note.id);
   }
   return { ...f, original, noteIds, read: () => f.store.request({ type: 'memory.read', ...f.alice, id: noteIds.at(-1)! }).memoryRead!.memory };
 }
@@ -221,9 +225,20 @@ it('keeps note DAG reads bound to owner, cursor and original source bytes', () =
   f.db.prepare('UPDATE messages SET content=?,revision=revision+1 WHERE id=?').run('CHANGED_NOTE_SOURCE_631', f.base.id);
   expect(() => f.read()).toThrow('日记来源失效');
 });
-it('rechecks exact ancestor versions even when every original message still matches', () => {
+it('keeps annotation changes legal but rechecks exact ancestor body revisions even when every original message still matches', () => {
   const f = noteFixture(16); expect(f.read()).toBeDefined();
-  f.db.prepare("UPDATE vcp_memory_notes SET data=json_set(data,'$.version',2) WHERE id=?").run(f.original.id);
+  const dependency = () => f.db.prepare('SELECT version FROM vcp_note_dependencies WHERE note_id=? AND source_note_id=?')
+    .get(f.noteIds[1]!, f.original.id) as { version: number };
+  expect(dependency().version).toBe(f.original.contentRevision);
+  f.store.request({ type: 'memory.organize', ...f.alice, ids: [f.original.id], tags: ['合法注释'] });
+  const annotated = f.store.request({ type: 'memory.read', ...f.alice, id: f.original.id }).memoryRead!.memory;
+  expect(annotated.version).toBeGreaterThan(f.original.version);
+  expect(annotated.contentRevision).toBe(f.original.contentRevision);
+  expect(f.read()).toBeDefined();
+  f.store.request({ type: 'memory.revise', ...f.alice, id: annotated.id, expectedVersion: annotated.version,
+    candidate: { content: 'REVISED_ANCESTOR_BODY_427', sourceMessageIds: [f.base.id], evidence: [{ sourceMessageId: f.base.id, quote: f.base.content }] } });
+  expect(f.store.request({ type: 'memory.read', ...f.alice, id: annotated.id }).memoryRead!.memory.contentRevision).toBe(f.original.contentRevision! + 1);
+  expect(dependency().version).toBe(f.original.contentRevision);
   expect(() => f.read()).toThrow('日记来源失效');
 });
 it('withdraws shared note descendants through the actual memory forget command', () => {

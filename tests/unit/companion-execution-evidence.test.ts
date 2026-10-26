@@ -16,6 +16,15 @@ const turn = (name = 'memory'): CompanionLoopTurn => ({ text: '', rawText: '', c
   arguments: JSON.stringify({ action: 'knowledge', operation: 'read', id: cold().id }) }], results: [{ callId: 'call_one', content: JSON.stringify(receipt()) }] });
 
 describe('derived DSH content keeps its exact host dependency closure', () => {
+  it('grants memory write dependencies only to observed inputs while retaining the full task withdrawal closure', () => {
+    const context = { user: JSON.stringify({ memoryRecall: { context: { text: 'Only the observed method was returned.', revision: 'revision', profileKey: 'profile', evidence: {
+      dependencyCoverage: 'complete', snapshotPolicy: 'task_passive_v1', dependencies: [{ id: 'observed', version: 1 }, { id: 'physical_only', version: 2 }],
+      frozenDependencies: ['observed', 'physical_only'].map(id => ({ id, contentRevision: 1, sources: [{ id: 'source_' + id, conversationId: scope.conversationId, checksum: hash(id) }] })),
+      references: [{ id: 'observed', version: 1, role: 'returned' }], referenceCoverage: 'observed' } } } }) };
+    expect(captureCompanionExecutionReadset(scope, { context }).frozenMemories?.map(note => note.id)).toEqual(['observed', 'physical_only']);
+    expect(captureCompanionExecutionReadset(scope, { context, memoryReferencePolicy: 'observed' }).frozenMemories?.map(note => note.id)).toEqual(['observed']);
+    expect(captureCompanionExecutionReadset(scope, { context }).memoryReads).toBeUndefined();
+  });
   it('distinguishes unavailable storage or cold-file verification from a proven source change', async () => {
     const unavailable = new Error('Verification storage temporarily unavailable');
     const request = vi.fn(async (): Promise<CompanionStorageResponse> => { throw unavailable; });

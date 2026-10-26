@@ -1,6 +1,7 @@
 import type { CompanionLoopTurn } from '../../shared/companion-loop';
 import { companionMemoryProcedureContextListSchema } from '../../shared/companion-procedure';
 import { companionProcedureContextSources } from './memory-procedure-context';
+import { companionMemorySelectionSchema } from '../../shared/companion-memory-selection';
 
 const object = (value: unknown): Record<string, unknown> | undefined => value && typeof value === 'object' && !Array.isArray(value)
   ? value as Record<string, unknown> : undefined;
@@ -13,6 +14,7 @@ function memoryReceipt(value: unknown): unknown {
   const receipt = object(value);
   if (!receipt || typeof receipt.text !== 'string' || typeof receipt.revision !== 'string' || typeof receipt.profileKey !== 'string') return value;
   const evidence = object(receipt.evidence);
+  const selection = companionMemorySelectionSchema.safeParse(receipt.selection);
   const procedures = companionMemoryProcedureContextListSchema.safeParse(receipt.proceduralStatus);
   const proceduralStatus = procedures.success && companionProcedureContextSources(receipt).valid ? procedures.data.map(({ memoryId, contentRevision, state, successes, failures }) =>
     ({ memoryId, contentRevision, state, successes, failures })) : undefined;
@@ -27,7 +29,7 @@ function memoryReceipt(value: unknown): unknown {
     return [{ id: reference.id, ...(typeof reference.version === 'number' ? { version: reference.version } : {}), role: reference.role,
       ...(sources ? { sources } : {}) }];
   }) : undefined;
-  return { text: receipt.text, ...(proceduralStatus?.length ? { proceduralStatus,
+  return { text: receipt.text, ...(selection.success ? { selection: selection.data } : {}), ...(proceduralStatus?.length ? { proceduralStatus,
     proceduralStatusMeaning: '宿主核验的方法状态：unverified只代表读过、尚无客观试验证据；validated只支持相应适用条件下的实际交付验证，不代表全面熟练；disabled表示有实际失败反证。需要方法步骤和适用限制时用memory.read核查。' } : {}), ...(evidence ? { evidence: {
     ...(evidence.queryClock ? { queryClock: evidence.queryClock } : {}),
     ...(references ? { references } : {}),
@@ -40,6 +42,11 @@ function memoryReceipt(value: unknown): unknown {
 function projectPayload(data: Record<string, unknown>): Record<string, unknown> {
   const recall = object(data.memoryRecall);
   const projected = { ...data };
+  if (data.memorySelection !== undefined) {
+    const selection = companionMemorySelectionSchema.safeParse(data.memorySelection);
+    if (selection.success) projected.memorySelection = selection.data;
+    else delete projected.memorySelection;
+  }
   if (recall) {
     const { timings: _timings, ...visible } = recall; void _timings;
     projected.memoryRecall = { ...visible, ...(recall.context ? { context: memoryReceipt(recall.context) } : {}) };
@@ -53,7 +60,7 @@ export function projectCompanionMemoryContextForModel(context: { system: string;
   let data: unknown;
   try { data = JSON.parse(context.user); } catch { return context; }
   const payload = object(data);
-  if (!payload || !payload.memoryRecall && payload.memoryContext === undefined && payload.memorySearchTimings === undefined) return context;
+  if (!payload || !payload.memoryRecall && payload.memoryContext === undefined && payload.memorySearchTimings === undefined && payload.memorySelection === undefined) return context;
   return { system: context.system, user: JSON.stringify(projectPayload(payload)) };
 }
 
@@ -69,7 +76,7 @@ export function projectCompanionMemoryToolTurnsForModel(turns: readonly Companio
       let value: unknown;
       try { value = JSON.parse(result.content); } catch { return result; }
       const payload = object(value);
-      if (!payload || payload.memoryContext === undefined && payload.memoryRecall === undefined && payload.memorySearchTimings === undefined) return result;
+      if (!payload || payload.memoryContext === undefined && payload.memoryRecall === undefined && payload.memorySearchTimings === undefined && payload.memorySelection === undefined) return result;
       return { ...result, content: JSON.stringify(projectPayload(payload)) };
     }) };
   });

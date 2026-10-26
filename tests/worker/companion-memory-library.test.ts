@@ -183,6 +183,7 @@ it('publishes original native timelines as readable revision-bound projections w
 });
 it('removes an in-flight timeline projection if its authorization changes before publication finishes', async () => {
   const f = fixture(), library = f.make(); let checks = 0;
+  await library.sync();
   await library.publishTimelines(f.scope, timeline('revision'), async () => ++checks < 3);
   const file = path.join(f.directory, 'alice', '时间线', `VCP-${f.scope.companionId}-2026-10.md`);
   expect(checks).toBe(3); expect(existsSync(file)).toBe(false); expect(existsSync(file + '.meta.json')).toBe(false);
@@ -214,7 +215,8 @@ it('cleans stale automatic timelines from their source revision after restart', 
   const f = fixture(), note = f.store.saveMemory({ ...f.scope, content: '真实时间线来源。' });
   const delivery = f.store.request({ type: 'memory.outbox.claim' }).memoryOutbox!;
   f.store.request({ type: 'memory.outbox.complete', id: delivery.id, leaseToken: delivery.leaseToken, indexed: true });
-  const library = f.make(), revision = f.store.request({ type: 'memory.snapshot', ...f.scope }).memorySnapshot!.semanticRevision!;
+  const library = f.make(); await library.sync();
+  const revision = f.store.request({ type: 'memory.snapshot', ...f.scope }).memorySnapshot!.semanticRevision!;
   await library.publishTimelines(f.scope, timeline(revision), async () => true); await library.close();
   f.store.request({ type: 'memory.forget', ...f.scope, id: note.id });
   const restarted = f.make(); await restarted.sync();

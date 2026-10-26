@@ -1,9 +1,12 @@
 import { z } from 'zod';
 import { createHash } from 'node:crypto';
+import { companionModelAdmissionRetryAfter } from './model';
 import type { CompanionStorageCommand, CompanionStorageResponse } from '../../shared/companion-storage';
 import type { CompanionWorkspaceResponse } from '../../shared/companion-workspace';
-import { companionLearningGoalPlanSchema, type CompanionLearningGoal, type CompanionLearningGoalJob, type CompanionLearningGoalRead,
+import { companionLearningGoalPlanSchema, companionLearningAssessmentSchema, type CompanionLearningGoal, type CompanionLearningGoalJob, type CompanionLearningGoalRead,
   type CompanionLearningGoalRound, type CompanionLearningGoalWorkspaceCommand } from '../../shared/companion-learning-goals';
+import type { CompanionExecutionReadset } from '../../shared/companion-execution-evidence';
+import { learningTestBasis, learningTestInput, learningSelfTestResult, type CompanionLearningTestStep } from '../../companions/learning-goal-test-protocol';
 
 export type GoalInferenceStage = 'plan' | 'learn' | 'consolidate' | 'questions' | 'answer' | 'assess';
 export interface CompanionLearningGoalServiceOptions {
@@ -11,7 +14,8 @@ export interface CompanionLearningGoalServiceOptions {
   infer(input: { stage: GoalInferenceStage; goal: CompanionLearningGoal; round: CompanionLearningGoalRound; data: unknown; signal: AbortSignal }): Promise<unknown>;
   read(job: CompanionLearningGoalJob, signal: AbortSignal): Promise<{ reads: CompanionLearningGoalRead[]; issues: string[] }>;
   integrate(job: CompanionLearningGoalJob, signal: AbortSignal): Promise<{ memoryIds: string[]; integration?: CompanionLearningGoalRound['integration'] }>;
-  recall(job: CompanionLearningGoalJob, questions: string[], signal: AbortSignal): Promise<{ text: string; candidateMemoryIds: string[] }>;
+  recall(job: CompanionLearningGoalJob, questions: string[], signal: AbortSignal): Promise<{ text: string; candidateMemoryIds: string[]; executionReadset: CompanionExecutionReadset }>;
+  validateRecall(job: CompanionLearningGoalJob, recall: NonNullable<NonNullable<CompanionLearningGoalRound['selfTestProgress']>['recall']>['value'], signal: AbortSignal): Promise<boolean>;
   ready?(goal: CompanionLearningGoal, signal: AbortSignal): Promise<{ ready: boolean; reason?: string; retryAfterMs?: number }>;
   blocked?(owner: string): boolean;
   changed(): void; report(error: unknown): void;
@@ -20,9 +24,6 @@ const evidence = z.object({ sourceId: z.string(), quote: z.string().min(1).max(1
 const learning = z.object({ summary: z.string().min(1).max(6000), claims: z.array(z.object({ text: z.string().min(1).max(2000), evidence: z.array(evidence).min(1).max(4) })).min(1).max(12) });
 const questionsSchema = z.object({ questions: z.array(z.string().min(1).max(1500)).min(1).max(3) });
 const answerSchema = z.object({ answers: z.array(z.string().max(3000)).max(5) });
-const assessmentSchema = z.object({ evaluations: z.array(z.object({ evaluation: z.enum(['supported', 'partial', 'unsupported', 'unassessed']), rationale: z.string().max(2000), evidence: z.array(evidence).max(4) })).max(5),
-  gaps: z.array(z.string().max(1500)).max(10), nextPlan: z.array(z.string().max(1500)).min(1).max(10),
-  stateReflection: z.object({ focus: z.string().trim().min(1).max(300), reason: z.string().trim().min(1).max(1000), evidence: z.array(evidence).min(1).max(6) }).optional() });
 class WaitForLearning extends Error { constructor(message: string, readonly retryAfterMs = 30000) { super(message); } }
 
 /** Two bounded background rounds may coexist with chat; no whole-companion work lease. */
@@ -74,6 +75,7 @@ export class CompanionLearningGoalService {
     try {
       if (!job.goal.materials.length && !job.goal.allowWeb) throw new WaitForLearning('请添加学习材料，或允许探索公开网页；本轮尚未调用模型或读取资料。', 5 * 60000);
       await checkpoint('planning');
+      if (round.reads.some(read => !read.sourceMessageId || !read.excerpt)) throw new Error('本轮原始资料已经撤回，不能恢复旧模型阶段。');
       if (!round.plan) round.plan = companionLearningGoalPlanSchema.parse(await infer('plan', { lastRound: job.previousRound }));
       await checkpoint('reading');
       if (!round.reads.length) {
@@ -96,39 +98,62 @@ export class CompanionLearningGoalService {
       if (!round.memoryIds.length) { const integrated = await this.options.integrate(current(), signal); round.memoryIds = integrated.memoryIds; round.integration = integrated.integration; if (!round.memoryIds.length) throw new Error('学习结论尚未进入正式 VCP 记忆账本。'); }
       await checkpoint('testing');
       if (!round.selfTest) {
-        const questions = questionsSchema.parse(await infer('questions', { reads: round.reads, claims: round.claims })).questions;
-        const recalled = await this.options.recall(current(), questions, signal); signal.throwIfAborted();
-        // Answers receive only the exact original goal, the questions and actual VCP recall.
-        // No current round source text, summary, claims or rubric is supplied to this call.
-        const answers = answerSchema.parse(await infer('answer', { questions, recalled: recalled.text })).answers;
-        const currentState = (await this.request({ type: 'state.get', companionId: job.goal.companionId, conversationId: 'world_' + job.goal.companionId })).runtimeState;
-        const review = assessmentSchema.parse(await infer('assess', { questions, answers, reads: round.reads,
-          currentFocus: currentState?.focus, nextPlanPurpose: '可选择提出基于真实资料及不足的下一关注点，不把自评分数当成掌握，也不产生关系或固定情绪奖励。' }));
-        const assessed = questions.map((question, index) => {
-          const item = review.evaluations[index], citations = verified(item?.evidence ?? []), answer = answers[index] ?? '';
-          const notAnswered = !answer.trim() || /^(?:我)?(?:不(?:知道|清楚|了解|确定)|无法(?:回答|确定|确认)|没有(?:足够|可用|实际|获得)|未(?:获取|获|得到|读))/u.test(answer.trim());
-          return { question, answer, evaluation: !notAnswered && item && citations.length ? item.evaluation : 'unassessed' as const,
-            rationale: notAnswered ? '本题未作答或明确表示未知，不能把材料中存在答案当作已经答对。' : item?.rationale ?? '模型没有提供本题评估。', evidence: citations };
-        });
-        round.selfTest = { kind: 'self_test', questions: assessed, supportedAnswers: assessed.filter(item => item.evaluation === 'supported').length,
-          assessedQuestions: assessed.filter(item => item.evaluation !== 'unassessed').length,
-          recall: { query: questions.join('\n').slice(0, 16000), contextHash: createHash('sha256').update(recalled.text).digest('hex'), contextCharacters: recalled.text.length, candidateMemoryIds: recalled.candidateMemoryIds.slice(0, 20) },
-          disclaimer: '模型自测与自评，仅核验引用来自本轮实际读取材料，不代表客观考试正确率或已经掌握。' };
+        const ids = round.reads.map(read => read.sourceMessageId).filter((id): id is string => !!id);
+        const actual = (await this.request({ type: 'memory.sources.filter', companionId: job.goal.companionId, conversationId: 'world_' + job.goal.companionId, ids })).memorySources ?? [];
+        if (actual.length !== ids.length) throw new Error('自测真实资料来源已经撤回。');
+        const sourceChecksums = round.selfTestProgress?.sourceChecksums ?? Object.fromEntries(actual.map(source => [source.id, createHash('sha256').update(source.content).digest('hex')]));
+        const basis = learningTestBasis(job.goal, round, sourceChecksums);
+        const saveStep = async (step: CompanionLearningTestStep) => {
+          signal.throwIfAborted();
+          const saved = (await this.request({ type: 'learning.goals.test.checkpoint', id: job.goal.id, leaseToken: job.leaseToken, sourceChecksums, step })).learningGoal?.lastRound;
+          if (!saved || saved.id !== round.id || saved.status !== 'running' || !saved.selfTestProgress) throw new Error('本轮自测成功阶段没有形成可恢复回执。');
+          round = saved; this.options.changed();
+        };
+        if (!round.selfTestProgress?.questions) await saveStep({ stage: 'questions', inputHash: learningTestInput(basis, round, 'questions'),
+          value: questionsSchema.parse(await infer('questions', { reads: round.reads, claims: round.claims })) });
+        const questions = round.selfTestProgress!.questions!.value.questions;
+        if (!round.selfTestProgress!.recall) {
+          const recalled = await this.options.recall(current(), questions, signal); signal.throwIfAborted();
+          if (!await this.options.validateRecall(current(), recalled, signal)) throw new Error('自测实际回忆来源或文件已经变化。');
+          await saveStep({ stage: 'recall', inputHash: learningTestInput(basis, round, 'recall'), value: recalled });
+        }
+        const recalled = round.selfTestProgress!.recall!.value;
+        const validateRecall = async () => {
+          signal.throwIfAborted(); await checkpoint('testing');
+          if (!await this.options.validateRecall(current(), recalled, signal)) throw new Error('自测固定回忆的来源或实际文件已经撤回。');
+        };
+        await validateRecall();
+        // Answers consume only actual fixed recall, never the read rubric.
+        if (!round.selfTestProgress!.answer) await saveStep({ stage: 'answer', inputHash: learningTestInput(basis, round, 'answer'),
+          value: answerSchema.parse(await infer('answer', { questions, recalled: recalled.text })) });
+        await validateRecall();
+        const answers = round.selfTestProgress!.answer!.value.answers;
+        if (!round.selfTestProgress!.assess) {
+          const currentState = (await this.request({ type: 'state.get', companionId: job.goal.companionId, conversationId: 'world_' + job.goal.companionId })).runtimeState;
+          const state = { expectedStateRevision: currentState?.revision, currentFocus: currentState?.focus };
+          const review = companionLearningAssessmentSchema.parse(await infer('assess', { questions, answers, reads: round.reads,
+            currentFocus: state.currentFocus, nextPlanPurpose: '可选择提出基于真实资料及不足的下一关注点，不把自评分数当成掌握，也不产生关系或固定情绪奖励。' }));
+          await validateRecall();
+          await saveStep({ stage: 'assess', inputHash: learningTestInput(basis, round, 'assess', state), value: { review, ...state } });
+        }
+        round.selfTest = learningSelfTestResult(round);
+        const { review, expectedStateRevision } = round.selfTestProgress!.assess!.value;
         round.gaps = review.gaps; round.nextPlan = review.nextPlan;
-        if (review.stateReflection && currentState) {
+        if (review.stateReflection && expectedStateRevision) {
           const citations = verified(review.stateReflection.evidence);
-          if (citations.length === review.stateReflection.evidence.length) round.stateReflection = { ...review.stateReflection, evidence: citations, expectedRevision: currentState.revision };
+          if (citations.length === review.stateReflection.evidence.length) round.stateReflection = { ...review.stateReflection, evidence: citations, expectedRevision: expectedStateRevision };
         }
       }
       await checkpoint('reflecting');
       round = { ...round, status: 'completed', updatedAt: new Date().toISOString(), endedAt: new Date().toISOString() };
       await this.request({ type: 'learning.goals.finish', id: job.goal.id, leaseToken: job.leaseToken, round });
     } catch (error) {
-      round = { ...round, status: signal.aborted || error instanceof WaitForLearning ? 'deferred' : 'failed', phase: 'waiting', updatedAt: new Date().toISOString(), endedAt: new Date().toISOString(),
+      const admissionRetry = companionModelAdmissionRetryAfter(error);
+      round = { ...round, status: signal.aborted || error instanceof WaitForLearning || admissionRetry !== undefined ? 'deferred' : 'failed', phase: 'waiting', updatedAt: new Date().toISOString(), endedAt: new Date().toISOString(),
         error: signal.aborted ? '本轮已停止，已完成的读取与正式记忆保留，未提交结果不再生效。' : error instanceof Error ? error.message.slice(0, 2000) : '本轮学习尚未完成。' };
       await this.request({ type: 'learning.goals.finish', id: job.goal.id, leaseToken: job.leaseToken, round,
-        retryAfterMs: error instanceof WaitForLearning ? error.retryAfterMs : 60000 }).catch(() => undefined);
-      if (!signal.aborted && !(error instanceof WaitForLearning)) this.options.report(error);
+        retryAfterMs: admissionRetry ?? (error instanceof WaitForLearning ? error.retryAfterMs : 60000) }).catch(() => undefined);
+      if (!signal.aborted && !(error instanceof WaitForLearning) && admissionRetry === undefined) this.options.report(error);
     } finally { clearInterval(heartbeat); }
   }
   async handle(command: CompanionLearningGoalWorkspaceCommand): Promise<CompanionWorkspaceResponse> {

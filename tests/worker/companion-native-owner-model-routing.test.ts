@@ -85,7 +85,7 @@ it('routes actual concurrent native focus through each owner selection and cance
   const configFor = (companion: Companion): Promise<CompanionModelConfig> => Reflect.apply(
     Reflect.get(CompanionService.prototype, 'configFor'), { resettingCompanions: new Set(), dormantCompanions: new Set(), credentials, options: { getConfig: globalConfig } }, [companion]);
   const gateway = new VcpChatGateway(); cleanups.push(() => gateway.close());
-  const calls: Array<{ owner: string; context: { system: string; user: string }; model: string; url: string; headerKey: string }> = [];
+  const calls: Array<{ owner: string; nativeKind: 'focus' | 'timeline'; context: { system: string; user: string }; model: string; url: string; headerKey: string }> = [];
   const disposedOwners: string[] = [];
   const workspaceRoot = path.join(root, 'owner-assets'), vendorRoot = path.resolve('vendor/vcp-memory');
   const profiles = new CompanionAssetProfileStore(workspaceRoot, {
@@ -93,8 +93,9 @@ it('routes actual concurrent native focus through each owner selection and cance
     loadInitialTimelinePrompts: () => loadInitialTimelinePrompts(vendorRoot), loadInitialTagPrompt: async () => 'Synthetic fixture tag instructions.',
   });
   const assetIo = new CompanionAssetIo(); cleanups.push(() => assetIo.close());
+  const assetHost = Object.assign(Object.create(CompanionService.prototype), { assetProfiles: profiles, assetIo });
   const prepareAssetContext: CompanionService['prepareModelAssetContext'] = (ownerId, ...args) => Reflect.apply(
-    CompanionService.prototype.prepareModelAssetContext, { assetProfiles: profiles, assetIo }, [ownerId, ...args]);
+    CompanionService.prototype.prepareModelAssetContext, assetHost, [ownerId, ...args]);
   let blockNextAlphaFocus = false, blockedSignal: AbortSignal | undefined;
   let onProvider: ((context: { system: string; user: string }) => Promise<void>) | undefined;
   const runtime = new CompanionVcpRuntime({ resolveOwnerStorage: async ownerId => {
@@ -113,15 +114,18 @@ it('routes actual concurrent native focus through each owner selection and cance
           { ...snapshot, ownerId, workPriority: work?.priority ?? 'foreground',
             resolveAssetContext: (context, kind) => prepareAssetContext(ownerId, context, kind, work?.nativePrompt) }, signal, { timeoutMs: 15000,
           fetchFn: async (url, init) => {
+            // Classify the authenticated native envelope before the live owner
+            // resolver fills its empty system slot; template text is editable.
+            const nativeFocus = !context.system.trim() && work?.priority === 'foreground';
             const headers = new Headers(init?.headers), body = JSON.parse(String(init?.body));
             const actualContext = snapshot.apiFormat === 'anthropic' ? { system: body.system, user: body.messages[0].content }
               : { system: body.system_instruction.parts[0].text, user: body.contents[0].parts[0].text };
             expect(body.nativePrompt).toBeUndefined();
-            calls.push({ owner: ownerId, context: actualContext, model: body.model ?? decodeURIComponent(String(url)), url: String(url),
+            calls.push({ owner: ownerId, nativeKind: nativeFocus ? 'focus' : 'timeline', context: actualContext, model: body.model ?? decodeURIComponent(String(url)), url: String(url),
               headerKey: headers.get(snapshot.apiFormat === 'anthropic' ? 'x-api-key' : 'x-goog-api-key') ?? '' });
             if (calls.length > 20) throw Error('Controlled native route request budget exceeded.');
             await onProvider?.(actualContext);
-            if (ownerId === 'alpha' && blockNextAlphaFocus && context.system.startsWith('你是 VCP 记忆处理单元')) {
+            if (ownerId === 'alpha' && blockNextAlphaFocus && nativeFocus) {
               blockedSignal = signal;
               return new Promise<Response>((_resolve, reject) => {
                 const cancel = () => reject(new Error('Fixture provider operation cancelled.'));
@@ -129,7 +133,7 @@ it('routes actual concurrent native focus through each owner selection and cance
               });
             }
             const own = rows.find(row => row.owner === ownerId)!;
-            const text = context.system.startsWith('你是 VCP 记忆处理单元')
+            const text = nativeFocus
               ? `这是我获取的所有相关知识/记忆[[${own.content}]]` : `${own.content}\nTag: ${ownerId}, routing`;
             return new Response(JSON.stringify(snapshot.apiFormat === 'anthropic' ? { content: [{ type: 'text', text }] }
               : { candidates: [{ content: { parts: [{ text }] } }] }), { status: 200, headers: { 'content-type': 'application/json' } });
@@ -155,8 +159,11 @@ it('routes actual concurrent native focus through each owner selection and cance
     expect(result.memoryContext!.text).toContain(rows[index]!.content);
     expect(result.memoryContext!.text).not.toContain(rows[1 - index]!.content);
   }
-  expect(calls.some(call => call.owner === 'alpha' && call.context.system.startsWith('你是 VCP 记忆处理单元'))).toBe(true);
-  expect(calls.some(call => call.owner === 'beta' && call.context.system.startsWith('你是 VCP 记忆处理单元'))).toBe(true);
+  for (const owner of ['alpha', 'beta']) {
+    const guidance = (await profiles.load(owner)).prompts.vcp_focus_guidance!;
+    expect(guidance.trim()).not.toBe('');
+    expect(calls.some(call => call.owner === owner && call.nativeKind === 'focus' && call.context.system.includes(guidance))).toBe(true);
+  }
   for (const call of calls) {
     expect(call.url).toContain(`${call.owner}.invalid`); expect(call.model).toContain(`owner-selected-${call.owner}`);
     expect(call.headerKey).toBe(`${call.owner}-local-fixture-key`);
@@ -226,6 +233,22 @@ it('routes actual concurrent native focus through each owner selection and cance
     }
     await generation.client.timeline(scope, { operation: 'generateSummaries', agentName: identity.agentName, owner: identity });
     expect(calls.at(-1)!.context.system).toContain(`PROFILE_SUMMARY_HOT_ALPHA ${identity.agentName} 2026-10`);
+    // The task already captured valid files; actual model admission must still
+    // reject a role deleted while the request waits in the shared quota.
+    await vi.waitFor(() => expect(companionModelQuota.snapshot().active).toBe(0));
+    let unblock!: () => void; const held = new Promise<void>(resolve => { unblock = resolve; });
+    const queuedBlockers = Array.from({ length: 4 }, (_, index) => companionModelQuota.run({ ownerId: `role-file-blocker-${index}`,
+      connectionId: `role-file-provider-${index}`, priority: 'foreground' }, () => held));
+    await vi.waitFor(() => expect(companionModelQuota.snapshot().active).toBe(4));
+    const beforeMissingRole = calls.length, commonRole = path.join((await profiles.load('alpha')).root, '提示词', '共同.md'), originalRole = await readFile(commonRole, 'utf8');
+    const queuedRole = generation.client.timeline(scope, { operation: 'generateTimelines', agentName: identity.agentName, owner: identity,
+      options: { startMonth: '2026-10', endMonth: '2026-10', overwrite: true } });
+    const rejectedRole = expect(queuedRole).rejects.toThrow();
+    try {
+      await vi.waitFor(() => expect(companionModelQuota.snapshot().queued).toBe(1), { timeout: 15000 });
+      await unlink(commonRole); unblock(); await Promise.all(queuedBlockers); await rejectedRole;
+      expect(calls).toHaveLength(beforeMissingRole);
+    } finally { unblock(); await Promise.all(queuedBlockers); await writeFile(commonRole, originalRole); await queuedRole.catch(() => undefined); }
   } finally { await generation.release(); }
   expect(disposedOwners).toEqual([]);
   blockNextAlphaFocus = true;

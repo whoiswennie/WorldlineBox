@@ -39,6 +39,7 @@ import { companionGroupTitle } from '../shared/companion-titles';
 import { companionLoopCheckpointSchema, companionLoopCheckpointPublishedText, companionWorkSchema, type CompanionWork, type CompanionLoopCheckpoint } from '../shared/companion-loop';
 import { companionSearchTokens, companionSearchMatch, companionSearchExcerpt, companionSearchFacet } from '../shared/companion-search';
 import { CompanionMemoryStore } from './memory-store';
+import { initializeCompanionModelResources, executeCompanionModelResources } from './model-resource-store';
 import { CompanionScheduleStore } from './schedule-store';
 import { CompanionStateStore } from './state-store';
 import { CompanionRoutineStore } from './routine-store';
@@ -230,6 +231,7 @@ export class CompanionsStore {
       return before.revision !== after.revision && before.focus !== after.focus ? { outcome: 'applied', detail: '基于本轮真实资料与正式记忆，已更新当前关注；未增加关系值或固定情绪。' }
         : { outcome: 'skipped', detail: before.revision !== reflection.expectedRevision ? '期间伙伴有更新的互动或状态，保留最新关注；本轮正式笔记仍然有效。' : '正式记忆已整合或当前关注没有变化，不重复产生状态奖励。' };
     });
+    this.#learningGoals.connectReadsetValidation(proof => this.#thoughtReadsetValid(proof));
     this.#memoryTags = new CompanionMemoryTagStore(this.#db, command => this.#memory.execute(command));
     const humanSource = (scope: { conversationId: string }, content: string, clientId?: string) => {
       const message = this.appendMessage({ conversationId: scope.conversationId, authorId: 'user', content, clientId });
@@ -404,6 +406,7 @@ export class CompanionsStore {
       this.#db.exec("UPDATE companions SET data=json_set(data,'$.active',json(CASE WHEN id='deepseek-flash' THEN 'true' ELSE 'false' END)) WHERE json_type(data,'$.active') IS NULL");
       this.backfillSearchIndex();
       this.#memory.initialize();
+      initializeCompanionModelResources(this.#db);
       this.#documents.initialize();
       this.#learning.initialize();
       this.#learningGoals.initialize();
@@ -1851,6 +1854,11 @@ export class CompanionsStore {
   }
   private dispatch(input: CompanionStorageCommand): CompanionStorageResponse {
     const command = companionStorageCommandSchema.parse(input);
+    if (command.type.startsWith('model.resources.')) {
+      if ('companionId' in command && command.companionId) this.#requireCompanion(command.companionId);
+      if (command.type === 'model.resources.admit') this.#reset.assertCommand(command);
+      const result = executeCompanionModelResources(this.#db, command); if (result) return result;
+    }
     if (command.type === 'companion.assets.initialized') {
       this.#requireCompanion(command.companionId);
       return { ok: true, assetProfileInitialized: !!this.#db.prepare('SELECT 1 FROM metadata WHERE key=?').get('companion-assets-initialized/' + command.companionId) };

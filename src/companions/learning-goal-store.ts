@@ -5,10 +5,14 @@ import type { CompanionStorageCommand, CompanionStorageResponse } from '../share
 import { companionLearningGoalRoundSchema, companionLearningGoalStorageCommandSchema, type CompanionLearningGoal, type CompanionLearningGoalRound, type CompanionLearningGoalRead } from '../shared/companion-learning-goals';
 import { nextCompanionLearningGoalAt } from '../shared/companion-learning-goal-schedule';
 import { registerCompanionLearningAssetSource } from './learning-asset-store';
+import type { CompanionExecutionReadset } from '../shared/companion-execution-evidence';
+import { learningTestBasis, learningTestInput, learningTestHash, learningSelfTestResult } from './learning-goal-test-protocol';
 
 type Row = { id: string; companion_id: string; data: string; state: CompanionLearningGoal['state']; revision: number; next_at: number; lease_token: string | null; lease_until: number; round_id: string | null; rounds: number };
 /** Private additive tables in the selected companion library; history is retained and read in bounded pages. */
 export class CompanionLearningGoalStore {
+  private readsetValid?: (proof: CompanionExecutionReadset) => boolean;
+  connectReadsetValidation(validate: (proof: CompanionExecutionReadset) => boolean): void { this.readsetValid = validate; }
   constructor(private readonly db: CompanionConnection, private readonly record: (goal: CompanionLearningGoal, round: CompanionLearningGoalRound, read: CompanionLearningGoalRead) => string,
     private readonly integrate: (goal: CompanionLearningGoal, round: CompanionLearningGoalRound, content: string, evidence: Array<{ sourceMessageId: string; quote: string }>,
       claimHash: string, target: { id: string; expectedVersion: number; action: 'reuse' | 'revise' } | undefined, expectedProhibitionRevision: string) => CompanionStorageResponse,
@@ -40,14 +44,42 @@ export class CompanionLearningGoalStore {
     const round = companionLearningGoalRoundSchema.parse(JSON.parse(row.data));
     const revoked = round.reads.some(read => read.grantId && !this.db.prepare('SELECT 1 FROM companion_learning_grants WHERE id=? AND companion_id=? AND enabled=1').get(read.grantId, round.companionId)
       || read.sourceMessageId && !this.sourceVisible(round.companionId, read.sourceMessageId));
-    return revoked ? { ...round, plan: undefined, summary: undefined, claims: [], memoryIds: [], integration: undefined, selfTest: undefined, stateReflection: undefined, gaps: [], nextPlan: [], readingIssues: [],
-      reads: round.reads.map(read => ({ ...read, title: '已撤回的学习资料', uri: '', excerpt: '', sourceMessageId: undefined })), error: '本轮来源已撤回、修订或受禁记限制，旧正文、结论与自测不再提供。' } : round;
+    if (revoked) return { ...round, plan: undefined, summary: undefined, claims: [], memoryIds: [], integration: undefined, selfTest: undefined, selfTestProgress: undefined, stateReflection: undefined, gaps: [], nextPlan: [], readingIssues: [],
+      reads: round.reads.map(read => ({ ...read, title: '已撤回的学习资料', uri: '', excerpt: '', sourceMessageId: undefined })), error: '本轮来源已撤回、修订或受禁记限制，旧正文、结论与自测不再提供。' };
+    if (round.selfTestProgress) {
+      try { this.assertTestBasis(JSON.parse(this.load(round.goalId).data), round, round.selfTestProgress.sourceChecksums);
+        if (round.selfTestProgress.recall && !this.readsetValid?.(round.selfTestProgress.recall.value.executionReadset)) throw new Error('自测回忆来源已撤回。'); }
+      catch { return { ...round, status: ['running', 'deferred'].includes(round.status) ? 'cancelled' : round.status,
+        selfTestProgress: undefined, selfTest: undefined, stateReflection: undefined, gaps: [], nextPlan: [], error: '自测原输入、目标或召回来源已变化，旧阶段回执不可复用。' }; }
+    }
+    return round;
+  }
+  private assertTestBasis(goal: CompanionLearningGoal, round: CompanionLearningGoalRound, checksums: Record<string, string>): string {
+    const ids = round.reads.map(read => read.sourceMessageId);
+    if (!round.summary || !round.claims.length || !round.memoryIds.length || !round.integration || !ids.length
+      || ids.some(id => !id) || JSON.stringify([...new Set(ids)].sort()) !== JSON.stringify(Object.keys(checksums).sort())) throw new Error('自测缺少本轮已登记来源与正式记忆。');
+    for (const read of round.reads) {
+      const source = this.db.prepare('SELECT content FROM messages WHERE id=?').get(read.sourceMessageId!) as { content: string } | undefined;
+      if (!source || !this.sourceVisible(goal.companionId, read.sourceMessageId!) || createHash('sha256').update(source.content).digest('hex') !== checksums[read.sourceMessageId!]
+        || createHash('sha256').update(read.excerpt).digest('hex') !== read.contentHash
+        || read.grantId && !this.db.prepare('SELECT 1 FROM companion_learning_grants WHERE id=? AND companion_id=? AND enabled=1').get(read.grantId, goal.companionId))
+        throw new Error('自测原始资料正文或授权已变化。');
+    }
+    const originalGoal = round.selfTestProgress?.goalInput;
+    if (originalGoal && ['running', 'deferred'].includes(round.status)
+      && learningTestHash(originalGoal) !== learningTestHash({ revision: goal.revision, text: goal.text, materials: goal.materials, allowWeb: goal.allowWeb }))
+      throw new Error('自测原目标已变化，不能复用旧阶段。');
+    // A completed historic test remains a receipt of its original goal. Its
+    // source/grant/file authority is still checked, never replaced by new text.
+    const basis = learningTestBasis(originalGoal ? { ...goal, ...originalGoal } : goal, round, checksums);
+    if (round.selfTestProgress && round.selfTestProgress.basisHash !== basis) throw new Error('自测原始输入签名已变化。');
+    return basis;
   }
   private serializeGoal(goal: CompanionLearningGoal): string { const data = { ...goal }; delete data.lastRound; return JSON.stringify(data); }
   private goal(row: Row, overview = false): CompanionLearningGoal {
     const data = JSON.parse(row.data) as CompanionLearningGoal;
     const full = row.round_id ? this.round(row.round_id) : undefined;
-    const last = full && overview ? { ...full, plan: undefined, reads: [], claims: [], selfTest: undefined, stateReflection: undefined, summary: full.summary?.slice(0, 600), gaps: full.gaps.slice(0, 3).map(item => item.slice(0, 200)), nextPlan: full.nextPlan.slice(0, 3).map(item => item.slice(0, 200)) } : full;
+    const last = full && overview ? { ...full, plan: undefined, reads: [], claims: [], selfTest: undefined, selfTestProgress: undefined, stateReflection: undefined, summary: full.summary?.slice(0, 600), gaps: full.gaps.slice(0, 3).map(item => item.slice(0, 200)), nextPlan: full.nextPlan.slice(0, 3).map(item => item.slice(0, 200)) } : full;
     return { ...data, state: row.state, revision: row.revision, nextAt: new Date(row.next_at).toISOString(), totalRounds: row.rounds,
       ...(last ? { lastRound: last, phase: row.lease_token && row.lease_until > this.clock() ? last.phase : data.phase } : {}) };
   }
@@ -84,7 +116,7 @@ export class CompanionLearningGoalStore {
         case 'learning.goals.update': {
           const row = this.expected(command.companionId, command.id, command.expectedRevision), goal = this.goal(row);
           const current = row.round_id ? this.round(row.round_id) : undefined;
-          if (current?.status === 'running') this.saveRound({ ...current, updatedAt: stamp, endedAt: stamp, status: 'cancelled', error: '用户修改或暂停了目标，本轮未提交的工作已取消。' });
+          if (current && ['running', 'deferred'].includes(current.status)) this.saveRound({ ...current, updatedAt: stamp, endedAt: stamp, status: 'cancelled', selfTestProgress: undefined, error: '用户修改或暂停了目标，本轮未提交的工作已取消。' });
           const next = { ...goal, ...(command.text !== undefined ? { text: command.text } : {}), ...(command.materials !== undefined ? { materials: command.materials } : {}),
             ...(command.schedule ? { schedule: command.schedule } : {}), ...(command.allowWeb !== undefined ? { allowWeb: command.allowWeb } : {}),
             ...(command.state ? { state: command.state } : {}), revision: row.revision + 1, updatedAt: stamp, phase: 'idle' as const, waitReason: undefined };
@@ -152,10 +184,34 @@ export class CompanionLearningGoalStore {
             integration: { action: command.target?.action === 'reuse' ? 'reused' : command.target ? 'revised' : 'recorded', noteId: note.id, version: note.version, reason: command.reason } });
           return { ...response, learningGoal: this.goal(this.load(row.id)) };
         }
+        case 'learning.goals.test.checkpoint': {
+          const row = this.leased(command.id, command.leaseToken), goal = this.goal(row), round = this.round(row.round_id!)!;
+          if (round.status !== 'running') throw new Error('本轮自测阶段已经失效。');
+          const basis = this.assertTestBasis(goal, round, command.sourceChecksums), step = command.step;
+          const progress = round.selfTestProgress ?? { basisHash: basis, sourceChecksums: command.sourceChecksums,
+            goalInput: { revision: goal.revision, text: goal.text, materials: goal.materials, allowWeb: goal.allowWeb } };
+          if (step.stage !== 'questions' && !progress.questions || ['answer', 'assess'].includes(step.stage) && !progress.recall
+            || step.stage === 'assess' && !progress.answer) throw new Error('自测阶段缺少真实前序回执。');
+          const assessment = step.stage === 'assess' ? { expectedStateRevision: step.value.expectedStateRevision, currentFocus: step.value.currentFocus } : undefined;
+          if (learningTestInput(basis, round, step.stage, assessment) !== step.inputHash) throw new Error('自测阶段输入签名不匹配。');
+          if (step.stage === 'recall' && (step.value.executionReadset.companionId !== goal.companionId
+            || step.value.executionReadset.conversationId !== 'world_' + goal.companionId || !this.readsetValid?.(step.value.executionReadset)
+            || step.value.text && !(step.value.executionReadset.memories.length || step.value.executionReadset.frozenMemories?.length
+              || step.value.executionReadset.memoryReads?.length || step.value.executionReadset.contexts.length))) throw new Error('自测召回缺少仍授权的真实来源凭证。');
+          const old = progress[step.stage], next = { inputHash: step.inputHash, value: step.value };
+          if (old && learningTestHash(old) !== learningTestHash(next)) throw new Error('已完成的自测阶段不能覆盖或换绑输入。');
+          const updated = { ...round, selfTestProgress: { ...progress, [step.stage]: next }, updatedAt: stamp };
+          this.saveRound(companionLearningGoalRoundSchema.parse(updated));
+          return { ok: true, learningGoal: this.goal(this.load(row.id)) };
+        }
         case 'learning.goals.checkpoint': case 'learning.goals.finish': {
           const row = this.leased(command.id, command.leaseToken), goal = this.goal(row), round = command.round;
           if (round.id !== row.round_id || round.goalId !== row.id || round.companionId !== row.companion_id || round.ordinal !== row.rounds) throw new Error('学习轮次归属不匹配。');
           if (command.type === 'learning.goals.checkpoint' && round.status !== 'running' || command.type === 'learning.goals.finish' && round.status === 'running') throw new Error('学习轮次状态无效。');
+          const storedProgress = this.round(row.round_id!)?.selfTestProgress;
+          if (learningTestHash(round.selfTestProgress ?? null) !== learningTestHash(storedProgress ?? null)) throw new Error('自测阶段只能通过宿主逐步回执提交。');
+          if (round.selfTestProgress) this.assertTestBasis(goal, round, round.selfTestProgress.sourceChecksums);
+          if (round.selfTest && learningTestHash(round.selfTest) !== learningTestHash(learningSelfTestResult(round))) throw new Error('自测结果不能脱离已完成阶段伪造。');
           if (command.type === 'learning.goals.finish' && round.status === 'completed' && round.stateReflection) {
             const stored = this.round(row.round_id!)!;
             if (!stored.integration || !stored.memoryIds.length || stored.integration.noteId !== round.integration?.noteId || stored.integration.version !== round.integration?.version

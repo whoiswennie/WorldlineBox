@@ -1,24 +1,31 @@
-/** One process budget shared by every hot VCP client. A permit stays occupied
+/** One process budget shared by hot and cold VCP clients. A permit stays occupied
  * until the actual child has exited; active children are never LRU victims. */
 export class VcpMemoryProcessBroker {
   private readonly entries = new Map<string, { identity: symbol; busy: number; used: number; retiring: boolean; stop(): Promise<void> }>();
   private tail: Promise<unknown> = Promise.resolve();
   private closed = false;
-  constructor(private readonly limit = 4) {
+  private outstanding = 0;
+  private waiting = 0;
+  constructor(private readonly limit = 4, private readonly maxOutstanding = 128) {
     if (!Number.isSafeInteger(limit) || limit < 1) throw new Error('Invalid VCP process budget.');
+    if (!Number.isSafeInteger(maxOutstanding) || maxOutstanding < limit) throw new Error('Invalid VCP process admission capacity.');
   }
   acquire(key: string, input: { assertCurrent(): void; deadline: number; open(identity: symbol): { stop(): Promise<void> } }): Promise<{ release(): void }> {
     // Opening a new scope can wait minutes for an occupied slot. Reusing an
     // existing scope consumes no additional process, so it must not join that
     // admission tail. The synchronous check/reservation also excludes LRU
     // retirement before its stop callback can run.
+    let admitted = false;
     try {
       if (this.closed) throw new Error('VCP process broker is closed.');
       input.assertCurrent();
       if (Date.now() >= input.deadline) throw new Error('VCP memory process pool remained busy.');
+      if (this.outstanding >= this.maxOutstanding) throw Object.assign(new Error('The native memory admission queue is at capacity.'), { code: 'VCP_MEMORY_NATIVE_CAPACITY' });
+      this.outstanding++; admitted = true;
       const ready = this.entries.get(key);
       if (ready && !ready.retiring) return Promise.resolve(this.reserve(ready));
-    } catch (error) { return Promise.reject(error); }
+    } catch (error) { if (admitted) this.outstanding--; return Promise.reject(error); }
+    this.waiting++;
     const pending = this.tail.then(async () => {
       const current = () => { if (this.closed) throw new Error('VCP process broker is closed.'); input.assertCurrent();
         if (Date.now() >= input.deadline) throw new Error('VCP memory process pool remained busy.'); };
@@ -50,12 +57,13 @@ export class VcpMemoryProcessBroker {
       if (entry.retiring) throw new Error('VCP process is retiring.');
       return this.reserve(entry);
     });
-    this.tail = pending.catch(() => undefined); return pending;
+    const settled = pending.then(value => { this.waiting--; return value; }, error => { this.waiting--; this.outstanding--; throw error; });
+    this.tail = settled.catch(() => undefined); return settled;
   }
   private reserve(entry: { busy: number; used: number }): { release(): void } {
     entry.busy++; entry.used = Date.now();
     let released = false;
-    return { release: () => { if (released) return; released = true; entry.busy--; entry.used = Date.now(); } };
+    return { release: () => { if (released) return; released = true; entry.busy--; this.outstanding--; entry.used = Date.now(); } };
   }
   /** Synchronous exclusion precedes sending close/kill. */
   beginRetirement(key: string, identity: symbol): void {
@@ -63,6 +71,7 @@ export class VcpMemoryProcessBroker {
   }
   /** Called only after exit/dependency detachment, never when kill is sent. */
   retired(key: string, identity: symbol): void { if (this.entries.get(key)?.identity === identity) this.entries.delete(key); }
-  snapshot() { return { processes: this.entries.size, active: [...this.entries.values()].filter(value => value.busy > 0).length, limit: this.limit }; }
+  snapshot() { return { processes: this.entries.size, active: [...this.entries.values()].filter(value => value.busy > 0).length, limit: this.limit,
+    outstanding: this.outstanding, waiting: this.waiting, maxOutstanding: this.maxOutstanding }; }
   async close(): Promise<void> { this.closed = true; await this.tail; }
 }

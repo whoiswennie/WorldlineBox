@@ -13,6 +13,7 @@ import type { CompanionStorageCommand, CompanionStorageResponse } from '../../sr
 import type { CompanionMessage } from '../../src/shared/companions';
 import { nativeManagementHarness } from '../fixtures/vcp-management-native';
 import { CompanionMemoryService } from '../../src/main/companions/memory-service';
+import { canonicalMemoryFiles } from '../fixtures/canonical-memory-files';
 
 vi.mock('electron', () => ({ utilityProcess: { fork: vi.fn() } }));
 
@@ -96,13 +97,19 @@ it('binds the final loop proof atomically and follows it when a derived ordinary
   expect(store.request({ type: 'memory.sources.filter', ...scope, ids: [published.id] }).memorySources).toEqual([]);
 });
 
-it.each(['revise', 'forget'] as const)('retains an actual focused reply and its indexed diary after additions/profile changes, then withdraws a real parent %s', async change => {
+it.each(['revise', 'forget'] as const)('retains an actual focused file-backed reply through soft changes, then honors the real source withdrawal after %s', async change => {
   const parentSource = store.appendMessage({ conversationId: scope.conversationId, authorId: 'user', content: 'group0 PARENT_FACT', replyDirective: 'none' });
   const parent = store.request({ type: 'memory.record', ...scope, candidate: { content: parentSource.content, tags: ['group0'], sourceMessageIds: [parentSource.id], evidence: [{ sourceMessageId: parentSource.id, quote: parentSource.content }] } }).memories![0]!;
-  index(); const native = await nativeManagementHarness(root, request, { chatReply: '核验后的 PARENT_FACT。' });
+  const parentRevision = parent.contentRevision;
+  if (parentRevision === undefined) throw new Error('The canonical parent fixture requires its real content revision.');
+  index();
+  const canonical = await canonicalMemoryFiles(root, store, { apiFormat: 'openai_chat', model: 'controlled-local-focusing', apiKey: 'controlled-key', baseUrl: 'https://fixture.invalid' });
+  const fileRequest = canonical.request, native = await nativeManagementHarness(root, fileRequest, { chatReply: '核验后的 PARENT_FACT。' });
   let profileKey = 'profile-one';
-  const service = new CompanionMemoryService({ request, runtime: controlledMemoryRuntime({ get: async () => ({ client: native.client, profileKey }), close: () => native.client.close() }),
-    configFor: async () => ({ apiFormat: 'openai_chat', model: 'controlled-local-focusing', apiKey: 'controlled-key', baseUrl: 'https://fixture.invalid' }), fetchFn: fetch, busy: () => true, changed: () => undefined, report: () => undefined });
+  const service = new CompanionMemoryService({ request: fileRequest, runtime: controlledMemoryRuntime({ get: async () => ({ client: native.client, profileKey }), close: () => native.client.close() }),
+    configFor: canonical.configFor, fetchFn: fetch, busy: () => true, changed: () => undefined, report: () => undefined,
+    prepareFiles: owner => canonical.library.prepareOwnerFiles(owner), validateFiles: (owner, receipts, window) => canonical.live.validate(owner, receipts, window),
+    ...canonical.projection });
   try {
     const actual = await service.search({ ...scope, query: 'group0 parent fact' }, 'passive');
     expect(actual.memoryContext?.evidence?.dependencies).toEqual([{ id: parent.id, version: parent.version }]);
@@ -110,27 +117,55 @@ it.each(['revise', 'forget'] as const)('retains an actual focused reply and its 
     const source = store.appendMessage({ conversationId: scope.conversationId, authorId: 'user', content: '请核对 parent fact。', replyDirective: 'none' });
     const context = buildCompanionContext({ companion: store.state().companions[0]!, conversation: store.openPrivate('alice'), sourceMessage: source, messages: [source], memories: [],
       memoryRecall: { context: actual.memoryContext, reasons: [], pending: false, degraded: false } });
-    const readset = captureCompanionExecutionReadset(scope, { context }); expect(readset.contexts).toEqual([]);
+    const readset = captureCompanionExecutionReadset(scope, { context });
+    expect(actual.memoryContext!.fileReceipts?.length).toBeGreaterThan(0);
+    expect(readset.contexts).toEqual([expect.objectContaining({ fileReceiptOnly: true, fileReceipts: actual.memoryContext!.fileReceipts })]);
+    expect(readset.frozenMemories).toEqual([expect.objectContaining({ id: parent.id, contentRevision: parentRevision })]);
     const bubble = store.appendMessage({ conversationId: scope.conversationId, authorId: 'alice', content: '', loopStep: 0 });
     store.request({ type: 'loop.save', checkpoint: { ...scope, sourceMessageId: source.id, messageId: bubble.id, status: 'done', turns: [{ text: 'group0 PARENT_FACT', rawText: 'group0 PARENT_FACT', calls: [] }] }, executionReadset: readset });
     const published = store.getMessage(bubble.id);
-    const derived = store.request({ type: 'memory.record', ...scope, candidate: { content: published.content, tags: ['derived'], sourceMessageIds: [published.id], evidence: [{ sourceMessageId: published.id, quote: published.content }] } }).memories![0]!;
+    const derived = store.request({ type: 'memory.record', ...scope, candidate: { content: published.content, tags: ['derived'], relatedMemoryIds: [parent.id], sourceMessageIds: [published.id], evidence: [{ sourceMessageId: published.id, quote: published.content }] } }).memories![0]!;
+    const derivedRevision = derived.contentRevision;
+    if (derivedRevision === undefined) throw new Error('The derived fixture requires its real immutable content revision.');
     const unrelated = store.appendMessage({ conversationId: scope.conversationId, authorId: 'user', content: 'A genuinely unrelated garden entry.', replyDirective: 'none' });
     store.request({ type: 'memory.record', ...scope, candidate: { content: unrelated.content, sourceMessageIds: [unrelated.id], evidence: [{ sourceMessageId: unrelated.id, quote: unrelated.content }] } });
     index(); profileKey = 'profile-two';
-    expect(await service.contextFresh(scope, actual.memoryContext)).toBe(false);
-    const valid = (proof: CompanionExecutionSourceProof) => verifyCompanionExecutionReadset(proof.executionReadset, proof, { request, contextValid: (scope, context) => service.contextValid(scope, context) });
+    await canonical.publish(scope.companionId);
+    const historicalDerivedFiles = (await canonical.live.materialize(scope.companionId, [derived])).receipts;
+    // This is the immutable prepared task, not a demand to rerun RAG after
+    // unrelated additions or an embedding/model route change.
+    expect(await service.contextFresh(scope, actual.memoryContext)).toBe(true);
+    const valid = (proof: CompanionExecutionSourceProof) => verifyCompanionExecutionReadset(proof.executionReadset, proof, { request: fileRequest, contextValid: (scope, context) => service.contextValid(scope, context) });
     const read = () => guardCompanionExecutionSources({ type: 'memory.snapshot', ...scope }, store.request({ type: 'memory.snapshot', ...scope }), { storage: request, valid });
     expect((await read()).memorySnapshot!.notes.some(note => note.id === derived.id)).toBe(true);
     expect((await guardCompanionExecutionSources({ type: 'memory.sources.filter', ...scope, ids: [published.id] }, store.request({ type: 'memory.sources.filter', ...scope, ids: [published.id] }), { storage: request, valid })).memorySources?.map(source => source.id)).toContain(published.id);
     if (change === 'forget') store.request({ type: 'memory.forget', ...scope, sourceMessageIds: [parentSource.id] });
     else {
       const revised = store.appendMessage({ conversationId: scope.conversationId, authorId: 'user', content: 'group0 REVISED_PARENT_FACT', replyDirective: 'none' });
-      store.request({ type: 'memory.revise', ...scope, id: parent.id, expectedVersion: parent.version, candidate: { content: revised.content, sourceMessageIds: [revised.id], evidence: [{ sourceMessageId: revised.id, quote: revised.content }] } });
+      const revisedParent = store.request({ type: 'memory.revise', ...scope, id: parent.id, expectedVersion: parent.version, candidate: { content: revised.content, sourceMessageIds: [revised.id], evidence: [{ sourceMessageId: revised.id, quote: revised.content }] } }).memories![0]!;
+      expect((await canonical.history.read(scope, parent.id, parentRevision)).content).toBe(parent.content);
+      // A latest derived entry tied to the superseded body is retired from
+      // current views. Its genuine old task/history receipts still survive.
+      expect((await read()).memorySnapshot!.notes.some(note => note.id === derived.id)).toBe(false);
+      expect(() => store.request({ type: 'memory.read', ...scope, id: derived.id })).toThrow('来源失效');
+      expect((await canonical.history.read(scope, derived.id, derivedRevision)).content).toBe(derived.content);
+      expect(await canonical.live.validate(scope.companionId, historicalDerivedFiles)).toBe(true);
+      expect(await service.contextValid(scope, actual.memoryContext)).toBe(true);
+      index();
+      const fresh = await service.search({ ...scope, query: 'group0 parent fact' }, 'passive');
+      expect(fresh.memoryContext?.evidence?.dependencyCoverage).toBe('complete');
+      expect(fresh.memoryContext?.evidence?.dependencies).toContainEqual({ id: parent.id, version: revisedParent.version });
+      expect(fresh.memoryContext?.evidence?.dependencies?.map(note => note.id)).not.toContain(derived.id);
+      store.request({ type: 'memory.forget', ...scope, sourceMessageIds: [parentSource.id] });
     }
     expect((await read()).memorySnapshot!.notes.some(note => note.id === derived.id)).toBe(false);
     expect(store.request({ type: 'memory.sources.filter', ...scope, ids: [published.id] }).memorySources).toEqual([]);
-  } finally { await service.close(); await native.close(); }
+    expect(await service.contextValid(scope, actual.memoryContext)).toBe(false);
+    expect(await canonical.live.validate(scope.companionId, historicalDerivedFiles)).toBe(false);
+    expect(() => store.request({ type: 'memory.read', ...scope, id: derived.id })).toThrow('来源失效');
+    await expect(canonical.history.read(scope, parent.id, parentRevision)).rejects.toThrow();
+    await expect(canonical.history.read(scope, derived.id, derivedRevision)).rejects.toThrow();
+  } finally { await service.close(); await native.close(); await canonical.close(); }
 }, 120000);
 
 it('rejects an obsolete proof at final publication and reports malformed legacy checkpoint proof without pretending to verify it', () => {

@@ -155,7 +155,9 @@ it('archives the original schedule title and prompt together with actual deliver
 
 it('records capture and index processing separately, and withholds withdrawn memory bodies', () => {
   const current = scope(), source = store.appendMessage({ conversationId: current.conversationId, authorId: 'user', content: '撤回前的真实事实。', replyDirective: 'none' });
-  const job = store.request({ type: 'memory.jobs.claim', companionId: 'alice' }).memoryJob!;
+  // This case inspects durable processing receipts, not quiet admission.
+  const job = store.request({ type: 'memory.jobs.claim', companionId: 'alice', force: true }).memoryJob!;
+  expect(job.sourceMessageIds).toEqual([source.id]);
   const note = store.request({ type: 'memory.jobs.complete', id: job.id, leaseToken: job.leaseToken, notes: [{ content: source.content, sourceMessageIds: [source.id], evidence: [{ sourceMessageId: source.id, quote: source.content }], tags: [], relatedMemoryIds: [], sourceChecksums: job.sourceChecksums }] }).memories![0]!;
   const outbox = store.request({ type: 'memory.outbox.claim', companionId: 'alice' }).memoryOutbox!;
   store.request({ type: 'memory.outbox.complete', id: outbox.id, leaseToken: outbox.leaseToken, indexed: true });

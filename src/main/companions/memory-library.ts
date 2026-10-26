@@ -1,13 +1,16 @@
 import { createHash, randomUUID } from 'node:crypto';
+import { AsyncLocalStorage } from 'node:async_hooks';
 import type { Dir } from 'node:fs';
 import { lstat, mkdir, opendir, readFile, realpath, rename, unlink, writeFile } from 'node:fs/promises';
 import path from 'node:path';
+import { setImmediate as yieldTurn } from 'node:timers/promises';
 import type { Companion, CompanionMemory } from '../../shared/companions';
 import type { CompanionStorageCommand, CompanionStorageResponse } from '../../shared/companion-storage';
 import type { VcpMemoryOwnerIdentity, VcpMemoryTimelineArtifacts } from '../vcp-memory/contracts';
 import { removeOwnedDirectory } from './owned-directory-cleanup';
 import { companionMemoryIdentity, sameCompanionMemoryIdentity } from './memory-identity';
 import { CompanionAssetProfileStore } from './asset-profile';
+import { CompanionMemoryDirtyFiles, type MemoryLibraryDirtyBatch, type MemoryLibraryDirtyOptions } from './memory-library-dirty';
 
 export const companionMemoryLibraryCategories = ['日记', '资料', '自我认识', '世界经历', '时间线'] as const;
 const categories = companionMemoryLibraryCategories;
@@ -40,6 +43,8 @@ export interface CompanionMemoryLibraryOptions {
   request(command: CompanionStorageCommand): Promise<CompanionStorageResponse>;
   report?(error: unknown): void;
   maxOwnersPerSync?: number; maxFilesPerOwner?: number;
+  /** Injectable notification source / bounded foreground wait for isolated tests. */
+  fileNotifications?: Pick<MemoryLibraryDirtyOptions, 'watch' | 'waitMs'>;
 }
 const digest = (text: string) => createHash('sha256').update(text).digest('hex');
 const empty = (): Manifest => ({ version: 1, files: {}, hostCursor: 0, fileCursor: 0, scanCycle: 0 });
@@ -96,9 +101,14 @@ export class CompanionMemoryLibrary {
   private readonly layoutTails = new Map<string, Promise<unknown>>();
   private readonly fileVersions = new Map<string, { revision: number; publishing: boolean }>();
   private readonly publications = new Map<string, Set<string>>();
+  private readonly notebooks = new Map<string, Set<string>>();
+  private readonly reconciliation = new AsyncLocalStorage<{ owner: string; active: boolean }>();
+  private readonly dirty: CompanionMemoryDirtyFiles;
   constructor(private readonly options: CompanionMemoryLibraryOptions) {
     if (!path.isAbsolute(options.libraryDirectory)) throw new Error('伙伴记忆目录必须是绝对路径。');
     this.profiles = options.profileStore ?? new CompanionAssetProfileStore(options.libraryDirectory);
+    this.dirty = new CompanionMemoryDirtyFiles({ directory: options.libraryDirectory, ...options.fileNotifications,
+      reconcile: (owner, batch) => this.reconcileDirty(owner, batch), report: options.report });
   }
   start(intervalMs = 5000): void {
     if (this.timer || this.closed) return;
@@ -120,7 +130,8 @@ export class CompanionMemoryLibrary {
   private serial<T>(owner: string, work: () => Promise<T>): Promise<T> {
     const pending = (this.fileTails.get(owner) ?? Promise.resolve()).catch(() => undefined).then(() => {
       if (this.closed || this.resetting.has(owner)) throw new Error('伙伴记忆目录正在关闭或重置。');
-      return work();
+      const frame = { owner, active: true };
+      return this.reconciliation.run(frame, async () => { try { return await work(); } finally { frame.active = false; } });
     });
     this.fileTails.set(owner, pending);
     void pending.finally(() => { if (this.fileTails.get(owner) === pending) this.fileTails.delete(owner); }).catch(() => undefined);
@@ -163,20 +174,21 @@ export class CompanionMemoryLibrary {
     await rejectRootLink();
     if (!this.root) this.root = await realpath(this.options.libraryDirectory);
     if (await realpath(this.options.libraryDirectory) !== this.root) throw new Error('资产库目录指向已经改变，同步已停止。');
+    this.dirty.start();
   }
   private conflict(report: MemoryLibrarySyncReport, owner: string, file: string, message: string): void {
     report.conflicts.push({ companionId: owner, file, message });
     const key = JSON.stringify([owner, file, message]);
     if (!this.conflicts.has(key)) { this.conflicts.add(key); this.options.report?.(new Error(`伙伴记忆文件 ${owner}/${file}：${message}`)); }
   }
-  private async directory(parent: string, name: string): Promise<string> {
+  private async directory(parent: string, name: string, create = true): Promise<string> {
     const target = path.join(parent, name);
     if (!inside(this.root!, target)) throw new Error('目录超出所选资产库。');
     try {
       const stat = await lstat(target);
       if (stat.isSymbolicLink() || !stat.isDirectory()) throw new Error('记忆目录不能是符号链接、目录联接或普通文件。');
     } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+      if (!create || (error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
       try { await mkdir(target); }
       catch (creating) {
         if ((creating as NodeJS.ErrnoException).code !== 'EEXIST') throw creating;
@@ -293,16 +305,20 @@ export class CompanionMemoryLibrary {
         for (const frame of scan?.directories ?? []) await frame.directory.close();
         this.scans.delete(companionId);
       }
-      const root = await this.directory(this.root!, companionId);
+      // Validate the durable factory receipt before creating any owner layout.
+      // Cleanup/index delivery uses existing directories without requiring
+      // healthy prompts, and must never recreate an absent owner namespace.
+      const snapshot = !options?.sourceDelivery && !prepared ? await this.profiles.bootstrap(owner) : undefined;
+      const root = await this.directory(this.root!, companionId, false);
       // Opening a notebook needs its local layout, not an import/reconciliation
       // pass (which may wait for a model-backed write policy).
-      if (!options?.sourceDelivery && options?.readOnly && await this.text(path.join(root, '.伙伴配置.json'), true) === undefined) {
+      if (!options?.sourceDelivery && options?.readOnly && (await this.load(root)).profileHash === undefined) {
         await this.layout(companionId, async () => {
           const initial = await this.load(root);
-          await this.prepareOwnerFiles(owner, root, initial);
+          await this.prepareOwnerLayout(owner, root, initial, undefined, snapshot?.profileRevision);
           await this.save(root, initial);
         });
-      } else if (options?.readOnly && !options.sourceDelivery) await this.profiles.load(owner.id);
+      }
       let manifest = await this.load(root);
       if (options?.readOnly && !options.sourceDelivery && manifest.move) {
         await this.serial(companionId, async () => { const latest = await this.load(root); await this.recoverMove(root, latest); });
@@ -313,7 +329,7 @@ export class CompanionMemoryLibrary {
       // here repeats the complete role read without adding a new operation.
       if (!options?.readOnly && !options?.sourceDelivery && !prepared) {
         const previousProfileHash = manifest.profileHash;
-        await this.prepareOwner(owner, root, manifest);
+        await this.prepareOwner(owner, root, manifest, undefined, snapshot?.profileRevision);
         if (manifest.profileHash !== previousProfileHash) await this.save(root, manifest);
         await this.recoverMove(root, manifest);
       }
@@ -388,7 +404,7 @@ export class CompanionMemoryLibrary {
     return pending;
   }
   private async statusFile(owner: string, conflicts: MemoryLibrarySyncReport['conflicts']): Promise<void> {
-    const root = await this.directory(this.root!, owner), file = path.join(root, '同步状态.md');
+    const root = await this.directory(this.root!, owner, false), file = path.join(root, '同步状态.md');
     const messages = [...new Set(conflicts.map(conflict => `- ${conflict.file}：${conflict.message}`))];
     const body = `状态：${messages.length ? '需要核对' : '已同步'}\n\n${messages.length ? messages.join('\n') : '已完成本轮有界核对，未发现待处理冲突。'}\n\n处理方式：版本冲突时，在记忆管理中查看宿主版本，保留需要的正文后再保存；移动无法确认时，可恢复原文件名，或明确遗忘旧条目后再将新文件作为资料导入。profile.md与提示词目录是本伙伴当前资料的权威文件，修改后会用于后续上下文；缺失或损坏不会回退内置设定。VCP-前缀时间线是自动产物，需要学习时请另存到资料或自我认识。\n`;
     const previous = await this.text(file, true), last = previous?.match(/最近核对：([^\n]+)/)?.[1];
@@ -401,20 +417,174 @@ export class CompanionMemoryLibrary {
     void pending.finally(() => { if (this.layoutTails.get(owner) === pending) this.layoutTails.delete(owner); }).catch(() => undefined);
     return pending;
   }
-  private prepareOwner(owner: Companion, root: string, manifest: Manifest, report?: MemoryLibrarySyncReport): Promise<void> {
-    return this.layout(owner.id, () => this.prepareOwnerFiles(owner, root, manifest, report));
+  private prepareOwner(owner: Companion, root: string, manifest: Manifest, report?: MemoryLibrarySyncReport, profileRevision?: string): Promise<void> {
+    return this.layout(owner.id, () => this.prepareOwnerLayout(owner, root, manifest, report, profileRevision));
   }
-  private async prepareOwnerFiles(owner: Companion, root: string, manifest: Manifest, report?: MemoryLibrarySyncReport): Promise<void> {
+  private async prepareOwnerLayout(owner: Companion, root: string, manifest: Manifest, report?: MemoryLibrarySyncReport, profileRevision?: string): Promise<void> {
+    const revision = profileRevision ?? (await this.profiles.bootstrap(owner)).profileRevision;
     for (const name of categories) await this.directory(root, name);
-    const snapshot = await this.profiles.bootstrap(owner);
-    manifest.profileHash = snapshot.profileRevision;
+    manifest.profileHash = revision;
     void report;
   }
+  /** Only a validator descended from this owner's current writer frame may
+   * bypass its own gate. Another request for the same owner must still wait. */
+  isPreparingOwnerFiles(owner: string): boolean {
+    const frame = this.reconciliation.getStore(); return frame?.active === true && frame.owner === owner;
+  }
+  ownerFilePreparationStatus(owner: string) { return this.dirty.snapshot(owner); }
+  async prepareOwnerFiles(owner: string): Promise<void> {
+    if (this.isPreparingOwnerFiles(owner)) return;
+    if (this.closed || this.resetting.has(owner)) throw new Error('伙伴记忆目录正在关闭或重置。');
+    await this.initializeRoot();
+    await this.dirty.prepare(owner);
+  }
+  private async reconcileDirty(ownerId: string, batch: MemoryLibraryDirtyBatch): Promise<void> {
+    await this.serial(ownerId, () => this.reconcileDirtyLocked(ownerId, batch));
+  }
+  private async reconcileDirtyLocked(ownerId: string, batch: MemoryLibraryDirtyBatch): Promise<void> {
+    const result: MemoryLibrarySyncReport = { exported: 0, imported: 0, forgotten: 0, conflicts: [] };
+    const limit = Math.max(1, Math.min(256, this.options.maxFilesPerOwner ?? 32));
+    await this.initializeRoot();
+    const state = (await this.call({ type: 'state', companionId: ownerId, includeConversations: false })).state;
+    const owner = state?.companions.find(value => value.id === ownerId);
+    if (!owner || state?.resetJobs?.some(job => job.companionId === ownerId && job.status !== 'completed')) throw new Error('伙伴不存在或正在重置，文件核对已停止。');
+    const snapshot = await this.profiles.bootstrap(owner), root = await this.directory(this.root!, ownerId, false), manifest = await this.load(root);
+    await this.recoverMove(root, manifest); await this.prepareOwner(owner, root, manifest, undefined, snapshot.profileRevision);
+    const known = Object.keys(manifest.files);
+    const continuing = () => { if (this.closed || this.resetting.has(ownerId)) throw new Error('伙伴记忆目录正在关闭或重置。'); };
+    const update = async (paths: readonly string[], discover: boolean) => {
+      for (let offset = 0; offset < paths.length; offset += limit) {
+        batch.progress(discover ? 'discover' : 'registered', offset, paths.length);
+        continuing();
+        for (const relative of paths.slice(offset, offset + limit)) {
+          if (discover && !manifest.files[relative]) await this.discoverDocument(owner, root, manifest, relative, result);
+          else if (manifest.files[relative] && !(full && discover)) {
+            const entry = manifest.files[relative]!;
+            // This pass reconciles human file changes. A fully published,
+            // byte-identical tracked file has no new human contribution.
+            // Host updates/revocations still cross their ledger/outbox gates,
+            // and actual candidates independently validate current ACL/files.
+            if (entry.state === 'tracked' && !entry.pending && !entry.conflict && !entry.withdrawn
+              && entry.missingCycle === undefined && entry.hash
+              && digest(await this.text(this.file(root, relative), true) ?? '') === entry.hash) continue;
+            await this.reconcile(owner, root, manifest, relative, result);
+          }
+        }
+        await yieldTurn();
+      }
+    };
+    let full = batch.full;
+    const subtrees = new Set<string>();
+    if (!full && batch.directories.includes('')) {
+      const names = new Set<string>(), directory = await opendir(root);
+      try {
+        for (;;) {
+          const entry = await directory.read(); if (!entry) break;
+          if (entry.name.startsWith('.') || ['提示词', '形象', '来源', '记忆历史'].includes(entry.name)) continue;
+          if (entry.isSymbolicLink()) throw new Error('伙伴目录出现链接，已暂停文件核对。');
+          if (entry.isDirectory()) { memoryLibraryPathParts(entry.name); names.add(entry.name); }
+        }
+      } finally { await directory.close(); }
+      const previous = this.notebooks.get(ownerId);
+      if (!previous || previous.size !== names.size || [...names].some(name => !previous.has(name))) { batch.escalate('notebook-set-changed'); full = true; }
+    }
+    if (!full) for (const relative of batch.directories.filter(Boolean)) {
+      memoryLibraryPathParts(relative);
+      try {
+        const file = path.join(root, ...relative.split('/')), info = await lstat(file);
+        if (info.isSymbolicLink()) throw new Error('日记本目录不能是链接。');
+        if (!info.isDirectory()) continue;
+        if (!inside(root, await realpath(file))) throw new Error('日记本目录指向伙伴目录外。');
+        subtrees.add(relative);
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+        batch.escalate('directory-missing', relative); full = true; break;
+      }
+    }
+    if (!full) {
+      // Missing/unknown rename paths require a whole inventory before deciding
+      // that a registered document was deleted rather than moved.
+      for (const relative of batch.paths) {
+        memoryLibraryPathParts(relative);
+        if (!manifest.files[relative]) { batch.escalate('unregistered', relative); full = true; break; }
+        if (await this.text(this.file(root, relative), true) === undefined) { batch.escalate('missing', relative); full = true; break; }
+      }
+    }
+    if (full || subtrees.size) {
+      const roots = full ? [''] : [...subtrees].filter(relative => ![...subtrees].some(parent => parent !== relative && relative.startsWith(parent + '/')));
+      const inventory: string[] = [], names = new Set<string>(), stack: Array<{ relative: string; directory: Dir }> = [];
+      for (const relative of roots) stack.push({ relative, directory: await opendir(path.join(root, ...relative.split('/').filter(Boolean))) });
+      let visited = 0;
+      try {
+        while (stack.length) {
+          batch.progress('inventory', visited);
+          continuing();
+            for (let count = 0; count < limit && stack.length; count++) {
+              const frame = stack.at(-1)!, entry = await frame.directory.read();
+              if (!entry) { await frame.directory.close(); stack.pop(); continue; }
+              if (++visited > 1000000) throw new Error('伙伴文件目录超过核对上限，已暂停查询；请拆分资料目录。');
+              if (entry.name.startsWith('.') || entry.isSymbolicLink()) continue;
+              if (!frame.relative && ['提示词', '形象', '来源', '记忆历史'].includes(entry.name)) continue;
+              const relative = frame.relative ? frame.relative + '/' + entry.name : entry.name;
+              if (entry.isDirectory()) {
+                memoryLibraryPathParts(relative);
+                if (!frame.relative) names.add(entry.name);
+                // Do not create a directory that disappeared while enumerating,
+                // or follow a replacement junction outside the owner root.
+                const directory = path.join(root, ...relative.split('/')), info = await lstat(directory);
+                if (info.isSymbolicLink() || !info.isDirectory() || !inside(root, await realpath(directory))) throw new Error('日记本路径变化或包含链接，已暂停文件核对。');
+                stack.push({ relative, directory: await opendir(directory) });
+              } else if (frame.relative && entry.isFile() && /\.(?:md|txt)$/iu.test(entry.name)
+                && !(relative.startsWith('时间线/') && entry.name.startsWith('VCP-'))) {
+                memoryLibraryPathParts(relative); inventory.push(relative);
+                if (inventory.length > 100000) throw new Error('伙伴文档超过单次完整核对上限，已暂停查询；请拆分资料目录。');
+              }
+            }
+          await yieldTurn();
+        }
+      } finally { await Promise.allSettled(stack.map(frame => frame.directory.close())); }
+      if (!full && inventory.some(relative => !manifest.files[relative])) {
+        // An aggregate directory event can be a move from another notebook.
+        // Establish the complete missing/moved set before importing a new path.
+        batch.escalate('unregistered-subtree-document'); batch.rescan(); return;
+      }
+      // Missing old entries must be marked before new paths are considered,
+      // so an unambiguous move preserves the original note and source identity.
+      const relevant = (relative: string) => full || roots.some(parent => relative.startsWith(parent + '/'));
+      await update(known.filter(relevant), false);
+      // Registered files were checked above, once. Process only new paths from
+      // this subtree inventory, rather than repeating the complete read pass.
+      await update(inventory.filter(relative => !manifest.files[relative]), true);
+      const allMissing = Object.entries(manifest.files).filter(([relative, entry]) => relevant(relative) && entry.state !== 'forgotten' && entry.missingCycle !== undefined);
+      if (allMissing.length && !batch.current()) batch.rescan();
+      const missing = batch.current() ? allMissing : [];
+      for (let offset = 0; offset < missing.length; offset += limit) {
+        batch.progress('deletions', offset, missing.length);
+        continuing();
+        for (const [relative, entry] of missing.slice(offset, offset + limit)) {
+          if (entry.state === 'forgotten' || entry.missingCycle === undefined) continue;
+          if (await this.text(this.file(root, relative), true) !== undefined) { delete entry.missingCycle; continue; }
+          if (entry.moveConflict) { this.conflict(result, ownerId, relative, '文件移动身份存在冲突，完成明确核对前已暂停查询。'); continue; }
+          const note = await this.current(ownerId, entry);
+          if (note) { await this.call({ type: 'memory.delete', id: note.id }); result.forgotten++; }
+          entry.state = 'forgotten'; delete entry.missingCycle;
+          await unlink(this.file(root, relative) + '.meta.json').catch(error => { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; });
+        }
+        await yieldTurn();
+      }
+      if (full) this.notebooks.set(ownerId, names);
+      // Concrete paths outside an aggregated directory still require checks.
+      await update(batch.paths.filter(relative => !relevant(relative)), true);
+    } else await update(batch.paths, true);
+    batch.progress('publish-manifest', 0);
+    await this.save(root, manifest);
+    if (result.conflicts.length) throw Object.assign(new Error(result.conflicts.map(conflict => conflict.message).join('\n')), { code: 'MEMORY_FILES_CONFLICT' });
+  }
   private async owner(owner: Companion, result: MemoryLibrarySyncReport): Promise<void> {
-    const root = await this.directory(this.root!, owner.id);
+    const snapshot = await this.profiles.bootstrap(owner), root = await this.directory(this.root!, owner.id, false);
     const manifest = await this.load(root), limit = Math.max(1, Math.min(256, this.options.maxFilesPerOwner ?? 32));
     await this.recoverMove(root, manifest);
-    await this.prepareOwner(owner, root, manifest, result);
+    await this.prepareOwner(owner, root, manifest, result, snapshot.profileRevision);
     await this.pruneTimelines(owner, root, limit);
 
     const keys = Object.keys(manifest.files);
@@ -468,7 +638,7 @@ export class CompanionMemoryLibrary {
     if (actual !== undefined && actual !== note.content && digest(actual) !== (entry?.pending?.hash ?? entry?.hash))
       throw new Error('文件在同步期间再次修改，保留外部内容，未覆盖。');
     this.publishing(root, relative);
-    await this.atomic(this.file(root, relative), note.content);
+    if (actual !== note.content) await this.atomic(this.file(root, relative), note.content);
     await this.atomic(this.file(root, relative) + '.meta.json', JSON.stringify({ id: note.id, companionId: note.companionId, version: note.version,
       contentRevision: note.contentRevision, annotationRevision: note.annotationRevision, semanticRevision: note.semanticRevision, procedure: note.procedure,
       diaryName: note.diaryName, tags: note.tags, occurredAt: note.occurredAt, status: note.status,
@@ -505,6 +675,12 @@ export class CompanionMemoryLibrary {
     }
     delete entry.missingCycle; delete entry.moveConflict;
     const actualHash = digest(actual);
+    // A crash can leave the already written body behind its persisted batch
+    // intent. Re-authorize and finish the body/sidecar pair before admitting it
+    // as tracked; identical bytes alone do not complete the publication.
+    if (entry.state === 'projecting' && note && actual === note.content && !entry.pending) {
+      await this.project(root, manifest, relative, note); result.exported++; return;
+    }
     if (entry.conflict && note && actual !== note.content) {
       this.conflict(result, owner.id, relative, '未登记文本存在冲突，请在记忆管理中核对后再同步。'); return;
     }
@@ -548,7 +724,7 @@ export class CompanionMemoryLibrary {
         try {
           for (;;) {
             const entry = await iterator.read(); if (!entry) break;
-            if (entry.isDirectory() && !entry.isSymbolicLink() && !entry.name.startsWith('.') && !['提示词', '形象', '来源'].includes(entry.name)) {
+            if (entry.isDirectory() && !entry.isSymbolicLink() && !entry.name.startsWith('.') && !['提示词', '形象', '来源', '记忆历史'].includes(entry.name)) {
               memoryLibraryPathParts(entry.name); notebooks.push(entry.name);
               if (notebooks.length > 512) throw new Error('日记本目录数量超过单次扫描上限。');
             }
@@ -579,54 +755,59 @@ export class CompanionMemoryLibrary {
       if (notebook === '时间线' && file.name.startsWith('VCP-')) continue;
       const relative = `${frame.relative}/${file.name}`;
       if (manifest.files[relative]) continue;
-      const actual = await this.text(this.file(root, relative));
-      const missing = Object.entries(manifest.files).filter(([, entry]) => entry.state !== 'forgotten' && entry.noteId && entry.missingCycle !== undefined);
-      const newSidecar = await this.text(this.file(root, relative) + '.meta.json', true);
-      let metadataId: string | undefined;
-      if (newSidecar) { try { const metadata = JSON.parse(newSidecar) as { id?: unknown }; if (typeof metadata.id === 'string') metadataId = metadata.id; } catch { /* No identity can be granted by malformed metadata. */ } }
-      const matches = missing.filter(([, entry]) => metadataId ? entry.noteId === metadataId : entry.hash === digest(actual!));
-      if (matches.length === 1) {
-        const [previous, entry] = matches[0]!, note = await this.current(owner.id, entry);
-        if (note && entry.version === note.version && note.content === actual) {
-          manifest.files[relative] = { ...entry }; entry.state = 'forgotten';
-          await this.project(root, manifest, relative, note);
-          await unlink(this.file(root, previous) + '.meta.json').catch(error => { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; });
-          result.exported++; continue;
-        }
-      }
-      if (missing.length) {
-        for (const [, entry] of missing) entry.moveConflict = true;
-        this.conflict(result, owner.id, relative, '存在缺失的旧日记，无法安全判断此文件是否为移动修订；未静默遗忘或重复导入。'); continue;
-      }
-      if (/^note_[a-f0-9]{48}\.md$/i.test(file.name)) { this.conflict(result, owner.id, relative, '未登记的旧日记导出不会自动恢复；请作为新资料明确导入。'); continue; }
-      const sidecar = await this.text(this.file(root, relative) + '.meta.json', true);
-      if (sidecar) {
-        try {
-          const metadata = JSON.parse(sidecar) as { id?: unknown; authority?: unknown };
-          if (typeof metadata.id === 'string' && typeof metadata.authority === 'string') {
-            this.conflict(result, owner.id, relative, '未登记的日记导出说明不会授予重新导入权限。'); continue;
-          }
-        } catch { /* A document's unrelated sidecar grants no authority. */ }
-      }
-      manifest.files[relative] = { state: 'tracked' };
-      await this.reconcile(owner, root, manifest, relative, result);
+      await this.discoverDocument(owner, root, manifest, relative, result);
     }
+  }
+  private async discoverDocument(owner: Companion, root: string, manifest: Manifest, relative: string, result: MemoryLibrarySyncReport): Promise<void> {
+    const actual = await this.text(this.file(root, relative));
+    const missing = Object.entries(manifest.files).filter(([, entry]) => entry.state !== 'forgotten' && entry.noteId && entry.missingCycle !== undefined);
+    const newSidecar = await this.text(this.file(root, relative) + '.meta.json', true);
+    let metadataId: string | undefined;
+    if (newSidecar) { try { const metadata = JSON.parse(newSidecar) as { id?: unknown }; if (typeof metadata.id === 'string') metadataId = metadata.id; } catch { /* No identity can be granted by malformed metadata. */ } }
+    const matches = missing.filter(([, entry]) => metadataId ? entry.noteId === metadataId : entry.hash === digest(actual!));
+    if (matches.length === 1) {
+      const [previous, entry] = matches[0]!, note = await this.current(owner.id, entry);
+      if (note && entry.version === note.version && note.content === actual) {
+        manifest.files[relative] = { ...entry }; entry.state = 'forgotten'; delete entry.missingCycle; delete entry.moveConflict;
+        await this.project(root, manifest, relative, note);
+        await unlink(this.file(root, previous) + '.meta.json').catch(error => { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; });
+        result.exported++; return;
+      }
+    }
+    if (missing.length) {
+      for (const [, entry] of missing) entry.moveConflict = true;
+      this.conflict(result, owner.id, relative, '存在缺失的旧日记，无法安全判断此文件是否为移动修订；未静默遗忘或重复导入。'); return;
+    }
+    if (/^note_[a-f0-9]{48}\.md$/iu.test(path.basename(relative))) { this.conflict(result, owner.id, relative, '未登记的旧日记导出不会自动恢复；请作为新资料明确导入。'); return; }
+    if (newSidecar) {
+      try {
+        const metadata = JSON.parse(newSidecar) as { id?: unknown; authority?: unknown };
+        if (typeof metadata.id === 'string' && typeof metadata.authority === 'string') {
+          this.conflict(result, owner.id, relative, '未登记的日记导出说明不会授予重新导入权限。'); return;
+        }
+      } catch { /* A document's unrelated sidecar grants no authority. */ }
+    }
+    manifest.files[relative] = { state: 'tracked' };
+    await this.reconcile(owner, root, manifest, relative, result);
   }
   async reset(owner: string, jobId: string): Promise<void> {
     if (!id.test(owner)) throw new Error('伙伴归属无效。');
     this.resetting.add(owner);
     this.timelineGenerations.set(owner, (this.timelineGenerations.get(owner) ?? 0) + 1);
     try {
+      await this.dirty.forget(owner);
       await this.running?.catch(() => undefined);
       await Promise.allSettled([this.timelineTails.get(owner), this.fileTails.get(owner), ...this.readers, ...this.layoutTails.values()]);
       const scan = this.scans.get(owner);
       for (const frame of scan?.directories ?? []) await frame.directory.close();
       this.scans.delete(owner);
+      this.notebooks.delete(owner);
       await removeOwnedDirectory(this.options.libraryDirectory, owner, jobId);
     } finally { this.resetting.delete(owner); }
   }
   async close(): Promise<void> {
     this.closed = true; if (this.timer) clearTimeout(this.timer);
+    await this.dirty.close();
     await this.running?.catch(() => undefined);
     await Promise.allSettled(this.timelineTails.values());
     await Promise.allSettled(this.fileTails.values());
@@ -634,6 +815,7 @@ export class CompanionMemoryLibrary {
     await Promise.allSettled(this.layoutTails.values());
     for (const scan of this.scans.values()) for (const frame of scan.directories ?? []) await frame.directory.close();
     this.scans.clear();
+    this.notebooks.clear();
   }
   private timelineSerial(owner: string, work: () => Promise<void>): Promise<void> {
     const pending = (this.timelineTails.get(owner) ?? Promise.resolve()).catch(() => undefined).then(() => this.serial(owner, work));
@@ -693,7 +875,7 @@ export class CompanionMemoryLibrary {
       if (!owner || !sameCompanionMemoryIdentity(artifacts.owner, companionMemoryIdentity(owner))
         || artifacts.agents.some(agent => agent.agentName !== artifacts.owner!.agentName)) throw new Error('时间线归属身份已变化，需要基于该伙伴的原始日记重新整理。');
       await this.initializeRoot();
-      const root = await this.directory(this.root!, scope.companionId); await this.directory(root, '时间线');
+      const root = await this.directory(this.root!, scope.companionId, false); await this.directory(root, '时间线');
       const manifest = await this.timelineManifest(root), output = new Map<string, string>();
       for (const agent of artifacts.agents) for (const month of agent.months) {
         if (!/^\d{4}-(?:0[1-9]|1[0-2])$/.test(month.month)) throw new Error('时间线月份无效。');
@@ -725,7 +907,10 @@ export class CompanionMemoryLibrary {
     if (!id.test(owner) || this.closed || this.resetting.has(owner)) return;
     this.timelineGenerations.set(owner, (this.timelineGenerations.get(owner) ?? 0) + 1);
     await this.timelineSerial(owner, async () => {
-      await this.initializeRoot(); const root = await this.directory(this.root!, owner), directory = await this.directory(root, '时间线');
+      await this.initializeRoot();
+      let root: string, directory: string;
+      try { root = await this.directory(this.root!, owner, false); directory = await this.directory(root, '时间线', false); }
+      catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') return; throw error; }
       const iterator = await opendir(directory);
       try {
         for (;;) {

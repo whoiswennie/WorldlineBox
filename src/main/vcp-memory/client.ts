@@ -2,11 +2,13 @@ import { createHash, randomUUID } from 'node:crypto';
 import path from 'node:path';
 import { EventEmitter } from 'node:events';
 import { createRequire } from 'node:module';
-import { readdir } from 'node:fs/promises';
+import { readdir, readFile } from 'node:fs/promises';
 import { utilityProcess } from 'electron';
 import { detachRuntimeDependencyLinks, inspectVcpOwnedDirectory, removeOwnedDirectory } from './filesystem';
 import { VcpMemoryProcessBroker } from './process-broker';
 import { VcpPreparedRecallStore } from './prepared-recall-store';
+import { preparedRecallReference, recoveryFromPayload, type PreparedRecallRecovery } from './prepared-recall-recovery';
+import type { CompanionPreparedRecallReference } from '../../shared/companion-prepared-recall';
 import type { VcpMemoryDreamWaveRequest, VcpMemoryDreamWaveResult } from './dream-contracts';
 import type {
   VcpMemoryCommand, VcpMemoryDeleteReceipt, VcpMemoryEmbeddingConfig, VcpMemoryNote,
@@ -38,6 +40,7 @@ export interface VcpMemoryClientOptions {
   /** Trusted host root shared by every owner/profile in the same workspace. */
   preparedRecallBudget?: { workspaceRoot: string; maxPackages?: number; maxBytes?: number };
   boundOwnerId?: string;
+  semanticProfileKey?: string;
   /** Tests can launch the identical CJS worker with Node's fork transport. */
   launch?: (workerPath: string) => VcpMemoryTransport;
 }
@@ -104,6 +107,7 @@ export class VcpMemoryClient {
   private focusedReceiptBytes = 0;
   readonly supportsDetachedRecall: boolean = true;
   private ownerPrompts?: VcpMemoryOwnerPrompts;
+  private algorithmIdentity?: Promise<string>;
 
   constructor(private readonly options: VcpMemoryClientOptions) {
     if (!Number.isInteger(options.embedding.dimension) || options.embedding.dimension < 1 || options.embedding.dimension > 4096) throw new Error('VCP embedding dimension must be between 1 and 4096.');
@@ -121,6 +125,16 @@ export class VcpMemoryClient {
   hasOpenScope(scope: VcpMemoryScope): boolean {
     const child = this.scopes.get(scopeKey(scope)); return Boolean(child && !child.failed && !child.stopping);
   }
+  preparedResourceSnapshot() { return this.prepared.snapshot(); }
+  algorithmSignature(): Promise<string> { return this.algorithmIdentity ??= (async () => {
+    const files = [path.join(this.options.vendorRoot, 'upstream-manifest.json'), path.join(this.options.vendorRoot, 'Plugin/RAGDiaryPlugin/AIMemoHandler.js'),
+      path.join(this.options.vendorRoot, 'Plugin/RAGDiaryPlugin/RAGDiaryPlugin.js'), path.join(path.dirname(this.options.workerPath), 'peripherals.cjs'),
+      path.join(path.dirname(this.options.workerPath), 'prepared-focus.cjs'), path.join(path.dirname(this.options.workerPath), 'runtime.cjs'),
+      path.join(path.dirname(this.options.workerPath), 'record-catalog.cjs')];
+    const values = await Promise.all(files.map(file => readFile(file)));
+    const digest = createHash('sha256'); for (let index = 0; index < values.length; index++) { digest.update(String(index)); digest.update(values[index]!); }
+    return digest.digest('hex');
+  })(); }
 
   private rejectAll(child: ScopeProcess, error: Error): void {
     for (const pending of child.pending.values()) { clearTimeout(pending.timer); pending.reject(error); }
@@ -289,6 +303,9 @@ export class VcpMemoryClient {
   }
   remember(scope: VcpMemoryScope, note: VcpMemoryNote): Promise<VcpMemoryWriteReceipt> { return this.request(scope, { type: 'remember', note }); }
   replace(scope: VcpMemoryScope, notes: VcpMemoryNote[]): Promise<{ replaced: true; count: number }> { return this.request(scope, { type: 'replace', notes }); }
+  applyProjectionDelta(scope: VcpMemoryScope, notes: VcpMemoryNote[], removedIds: string[]): Promise<{ changed: number; removed: number }> {
+    return this.request(scope, { type: 'projection-delta', notes, removedIds });
+  }
   prepare(scope: VcpMemoryScope): Promise<VcpMemoryPreparationReceipt> { return this.request(scope, { type: 'prepare' }); }
   search(scope: VcpMemoryScope, query: { text: string; topK?: number }): Promise<VcpMemorySearchResult> { return this.request(scope, { type: 'search', text: query.text, topK: query.topK }); }
   read(scope: VcpMemoryScope, id: string): Promise<VcpMemoryNote | null> { return this.request(scope, { type: 'read', id }); }
@@ -326,26 +343,34 @@ export class VcpMemoryClient {
     if (this.focusing.has(handle.id)) return Promise.reject(new Error('Prepared recall is already being focused.'));
     const controller = new AbortController();
     const signal = options.signal ? AbortSignal.any([options.signal, controller.signal]) : controller.signal;
-    const validate = async () => {
+    const validate = async (reason: Parameters<NonNullable<VcpMemoryFocusOptions['validate']>>[0] = 'fence') => {
       signal.throwIfAborted();
       if (this.closed || (this.recallGenerations.get(key) ?? 0) !== generation) throw new Error('Prepared recall was withdrawn.');
-      await options.validate?.(); signal.throwIfAborted();
+      await options.validate?.(reason); signal.throwIfAborted();
     };
     const pending = (async () => {
       let lease: Awaited<ReturnType<VcpPreparedRecallStore['acquire']>> | undefined, discard = false;
       try {
         try { await validate(); } catch (error) { discard = true; throw error; }
-        lease = await this.prepared.acquire(handle, signal); discard = true;
+        lease = await this.prepared.acquire(handle, signal); discard = !lease.payload.hostEvidence?.recovery;
+        const finish = async (receipt: VcpMemoryPreprocessResult) => {
+          if (lease!.payload.hostEvidence?.recovery) {
+            if (!options.onFocused) throw new Error('Durable focusing requires its task checkpoint callback.');
+            await validate('publication'); const hash = await this.prepared.completeFocus(lease!.handle, receipt);
+            await options.onFocused(preparedRecallReference(lease!.handle, recoveryFromPayload(lease!.payload), hash)); await validate();
+          }
+          return receipt;
+        };
         await validate();
         const cacheKey = this.focusCacheKey(handle.scopeId, lease.payload);
         const cached = this.focusedReceipts.get(cacheKey);
         if (cached && Date.now() - cached.createdAt < 60000) {
           this.focusedReceipts.delete(cacheKey); this.focusedReceipts.set(cacheKey, cached);
           const receipt = JSON.parse(cached.serialized) as VcpMemoryPreprocessResult;
-          await validate();
-          return { ...receipt, queryClock: lease.payload.receipt.queryClock,
+          await validate('publication');
+          return await finish({ ...receipt, queryClock: lease.payload.receipt.queryClock,
             receiptCache: { hit: true, corpusEpoch: handle.corpusEpoch,
-              ...(receipt.queryClock ? { sourceQueryClock: receipt.queryClock } : {}) } };
+              ...(receipt.queryClock ? { sourceQueryClock: receipt.queryClock } : {}) } });
         }
         const implementation = createRequire(path.join(this.options.vendorRoot, 'package.json'))(
           path.join(path.dirname(this.options.workerPath), 'prepared-focus.cjs')) as {
@@ -353,7 +378,7 @@ export class VcpMemoryClient {
           };
         const result = await implementation.focusPreparedRecall(lease.payload,
           { vendorRoot: this.options.vendorRoot, chat: this.options.plugins?.chat }, { ...options, signal, validate });
-        await validate(); this.cacheFocusedReceipt(cacheKey, handle.scopeId, result); return result;
+        await validate(); const completed = await finish(result); this.cacheFocusedReceipt(cacheKey, handle.scopeId, result); return completed;
       } finally {
         try { if (discard || signal.aborted) await this.prepared.remove(handle); }
         finally { lease?.release(); }
@@ -362,6 +387,69 @@ export class VcpMemoryClient {
     this.focusing.set(handle.id, { scopeId: handle.scopeId, controller, settled: pending });
     void pending.finally(() => this.focusing.delete(handle.id)).catch(() => undefined);
     return pending;
+  }
+  /** Validate exactly the unchanged upstream candidate bytes against actual
+   * owner canonical inputs before anchoring a task checkpoint or calling AI.
+   * This does not rank, trim, expand or rewrite a candidate. */
+  async verifyPreparedCanonicalNotes(handle: VcpMemoryPreparedRecall, inputs: readonly VcpMemoryNote[], signal?: AbortSignal): Promise<void> {
+    if (this.closed || this.options.boundOwnerId && handle.hostEvidence?.ownerId !== this.options.boundOwnerId) throw new Error('Canonical preparation belongs to another owner or closed runtime.');
+    const lease = await this.prepared.acquire(handle, signal);
+    try {
+      const payload = lease.payload;
+      if (payload.receipt.contextReferenceCoverage !== 'observed') throw Object.assign(new Error('Native candidate source observations are incomplete.'), { code: 'VCP_MEMORY_CANONICAL_PROVENANCE_UNAVAILABLE' });
+      const renderer = createRequire(path.join(this.options.vendorRoot, 'package.json'))(path.join(path.dirname(this.options.workerPath), 'runtime.cjs')) as { renderNativeDiaryText(note: VcpMemoryNote): string };
+      const normalize = (text: string) => text.replaceAll('\r\n', '\n').trim();
+      const expected = new Map(inputs.map(note => [note.id, normalize(renderer.renderNativeDiaryText(note))]));
+      const verified = new Set<string>();
+      for (const group of payload.groups) for (const file of group.options.sourceFiles) {
+        signal?.throwIfAborted(); const text = String(file.content || file.text || '').trim(), digest = createHash('sha256').update(text).digest('hex');
+        const references = payload.receipt.contextReferences?.filter(reference => reference.textHash === digest) ?? [];
+        if (!references.length || references.some(reference => !expected.get(reference.id)?.includes(normalize(text))))
+          throw Object.assign(new Error('The original native candidate does not match its actual canonical source bytes.'), { code: 'VCP_MEMORY_CANONICAL_SOURCE_CHANGED' });
+        for (const reference of references) verified.add(reference.id + ':' + reference.textHash);
+      }
+      if (payload.receipt.contextReferences?.some(reference => !verified.has(reference.id + ':' + reference.textHash)
+        && createHash('sha256').update(expected.get(reference.id) ?? '').digest('hex') !== reference.textHash))
+        throw Object.assign(new Error('Native returned source bytes cannot be matched to their canonical inputs.'), { code: 'VCP_MEMORY_CANONICAL_PROVENANCE_UNAVAILABLE' });
+      signal?.throwIfAborted();
+    } finally { lease.release(); }
+  }
+  /** Recover the same task package without opening or querying a native graph. */
+  async resumeRecall(reference: CompanionPreparedRecallReference, options: VcpMemoryFocusOptions & {
+    validateRecovery(recovery: PreparedRecallRecovery, observed: Pick<VcpMemoryPreprocessResult, 'contextReferences' | 'contextReferenceCoverage'>): Promise<void>;
+  }): Promise<{ processed: VcpMemoryPreprocessResult; recovery: PreparedRecallRecovery }> {
+    if (this.closed || this.options.boundOwnerId !== reference.ownerId || options.ownerId !== reference.ownerId)
+      throw new Error('Prepared recall recovery belongs to another owner or closed runtime.');
+    const controller = new AbortController(), signal = options.signal ? AbortSignal.any([options.signal, controller.signal]) : controller.signal;
+    if (this.focusing.has(reference.id)) throw new Error('Prepared recall is already being focused.');
+    const operation = (async () => {
+      const lease = await this.prepared.acquireReference(reference, signal);
+      try {
+        const recovery = recoveryFromPayload(lease.payload);
+        if (this.options.semanticProfileKey !== recovery.profileKey || await this.algorithmSignature() !== recovery.algorithmSignature)
+          throw new Error('Prepared recall semantic model or algorithm has changed.');
+        const validate = async () => { signal.throwIfAborted(); if (this.closed) throw new Error('Prepared recall was withdrawn.');
+          await options.validate?.(); await options.validateRecovery(recovery, lease.payload.receipt); signal.throwIfAborted(); };
+        await validate();
+        if (lease.focused) { await validate(); return { processed: lease.focused.receipt, recovery }; }
+        if (!options.onFocused) throw new Error('Durable recovery requires its task checkpoint callback.');
+        const implementation = createRequire(path.join(this.options.vendorRoot, 'package.json'))(path.join(path.dirname(this.options.workerPath), 'prepared-focus.cjs')) as {
+          modelIdentity(chat: VcpMemoryPluginConfiguration['chat']): string;
+          focusPreparedRecall(payload: VcpMemoryPreparedPayload, configuration: { vendorRoot: string; chat?: VcpMemoryPluginConfiguration['chat'] }, options: VcpMemoryFocusOptions): Promise<VcpMemoryPreprocessResult>;
+        };
+        // A restart changes the authenticated loopback port/token. Only this
+        // verified semantic owner/profile recovery route may rebind transport;
+        // the captured source order, template, clock and native inputs stay fixed.
+        const rebound = { ...lease.payload, modelIdentity: implementation.modelIdentity(this.options.plugins?.chat) };
+        const processed = await implementation.focusPreparedRecall(rebound, { vendorRoot: this.options.vendorRoot, chat: this.options.plugins?.chat },
+          { ...options, signal, validate });
+        await validate(); const hash = await this.prepared.completeFocus(lease.handle, processed);
+        await options.onFocused(preparedRecallReference(lease.handle, recovery, hash)); await validate();
+        return { processed, recovery };
+      } finally { try { if (signal.aborted) await this.prepared.remove(lease.handle); } finally { lease.release(); } }
+    })();
+    this.focusing.set(reference.id, { scopeId: reference.scopeId, controller, settled: operation });
+    try { return await operation; } finally { this.focusing.delete(reference.id); }
   }
   /** Explicitly cancel one immutable packet, including before focusing starts. */
   async discardRecall(handle: VcpMemoryPreparedRecall): Promise<void> {

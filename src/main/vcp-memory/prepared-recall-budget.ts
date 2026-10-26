@@ -18,7 +18,7 @@ interface Entry { file: string; bytes: number; modified: number; quarantined?: b
 interface Workspace { root: string; maxPackages: number; maxBytes: number; references: number; initialized: boolean;
   tail: Promise<unknown>; files: Map<string, Entry>; bytes: number }
 const workspaces = new Map<string, Workspace>();
-export interface PreparedRecallDiskTurn { admit(bytes: number): void; committed(file: string, bytes: number): void; removed(file: string): void }
+export interface PreparedRecallDiskTurn { admit(bytes: number): void; grow(file: string, bytes: number): void; committed(file: string, bytes: number): void; removed(file: string): void }
 
 /** One explicit disk budget per actual workspace, shared by all its owner and
  * generation clients. Only owned prepared folders are inspected, never native
@@ -120,6 +120,11 @@ export class VcpPreparedRecallDiskBudget {
       return operation({ admit: bytes => {
         if (this.state.files.size + 1 > this.state.maxPackages || this.state.bytes + bytes > this.state.maxBytes)
           throw Object.assign(new Error('Prepared recall workspace disk capacity is busy.'), { code: 'VCP_MEMORY_PREPARED_CAPACITY' });
+      }, grow: (file, bytes) => {
+        const previous = this.state.files.get(preparedBudgetPathKey(file));
+        if (!previous || !Number.isSafeInteger(bytes) || bytes < 0) throw new Error('Invalid prepared recall append reservation.');
+        if (this.state.bytes + bytes > this.state.maxBytes) throw Object.assign(new Error('Prepared recall workspace disk capacity is busy.'), { code: 'VCP_MEMORY_PREPARED_CAPACITY' });
+        this.addEntry(file, previous.bytes + bytes, Date.now());
       }, committed: (file, bytes) => this.addEntry(file, bytes, Date.now()), removed: file => this.removeEntry(file) });
     });
     this.state.tail = pending.catch(() => undefined); return pending;

@@ -80,18 +80,21 @@ export function projectCompanionMemoryLifePlan(input: CompanionMemoryLifePlanInp
       : retryAt || notBefore ? 'scheduled' : maintenance?.eligible === false ? 'waiting' : 'eligible',
     timing: realTerminalFailure ? realConditional() : retryAt && !realCompleted ? { kind: 'retry', clock: 'real', at: retryAt }
       : notBefore && sleep.hasUnconsolidated ? { kind: 'eligibility', clock: 'real', at: notBefore } : { kind: 'event_driven', clock: 'real' },
-    reason: blocked ?? (realTerminalFailure ? (job?.error ?? '本批真实回顾未完成，等待新资料或明确处理后再试。').slice(0, 1000)
+    reason: blocked ?? maintenance?.policyError ?? (realTerminalFailure ? (job?.error ?? '本批真实回顾未完成，等待新资料或明确处理后再试。').slice(0, 1000)
       : realRunning ? maintenance?.reflectionCompletedAt ? '真实反思已保存，正在独立整理原始记忆；整合重试不重新生成反思。'
         : '正在独立回顾有来源的真实经历；身体醒来或正在做任务都可以继续。'
         : !sleep.hasUnconsolidated ? '暂无新的真实经历需要深度回顾；已处理来源与标签变动不会反复触发。'
           : retryAt && !realCompleted ? '本批真实回顾等待有界重试；不会重新抽签或换入运行期间的新资料。'
-            : notBefore ? '本轮深度回顾已结算，后续新经历等待至少6小时的下一轮资格；即时记录和回忆仍可继续。'
-              : maintenance?.eligible === false ? '新经历正在累计；达到3个新事件、最长24小时或重要变更后检查，真实睡眠也可提供一次整理机会。'
+            : notBefore ? '本轮深度回顾已结算，后续新经历等待本伙伴策略规定的下一轮资格；即时记录和回忆仍可继续。'
+              : maintenance?.eligible === false ? '新经历正在累计；达到本伙伴策略的新事件门槛、最老欠账期限或重要变更后检查，真实睡眠也可提供一次整理机会。'
                 : '已有真实来源满足回顾条件，等待独立后台空位；不会占用普通任务额度，也不要求电脑开到晚上。') });
-  let dreamReason = '每轮深度回顾固定评估一次60%联想机会；成功叙述后间隔至少8现实小时，不保证产生梦境。';
+  let dreamReason = maintenance?.policy
+    ? `每轮深度回顾固定评估一次${Math.round(maintenance.policy.dream.probability * 100)}%联想机会；成功叙述后间隔至少${maintenance.policy.dream.cooldownMs / 3600000}现实小时，不保证产生梦境。`
+    : '每轮深度回顾按本伙伴策略固定评估一次联想机会；不保证产生梦境。';
   let dreamState: CompanionMemoryLifePlanItem['state'] = 'idle', dreamTiming: Timing = { kind: 'event_driven', clock: 'real' };
-  if (terminalFailure) { dreamState = 'waiting'; dreamReason = (job?.error ?? '本轮联想尚未完成，需要新资料或明确处理；不会原样自动重试。').slice(0, 1000); dreamTiming = realConditional(); }
-  else if (maintenance?.narrativeStatus === 'failed') { dreamState = 'waiting'; dreamReason = '本轮虚构叙述最多3次尝试已经结束；已完成的真实回顾保持有效。'; }
+  if (maintenance?.policyError) { dreamState = 'waiting'; dreamReason = maintenance.policyError; dreamTiming = realConditional(); }
+  else if (terminalFailure) { dreamState = 'waiting'; dreamReason = (job?.error ?? '本轮联想尚未完成，需要新资料或明确处理；不会原样自动重试。').slice(0, 1000); dreamTiming = realConditional(); }
+  else if (maintenance?.narrativeStatus === 'failed') { dreamState = 'waiting'; dreamReason = '本轮虚构叙述的有界尝试已经结束；已完成的真实回顾保持有效。'; }
   else if (maintenance?.narrativeStatus === 'skipped' || sleep.admission === 'not_admitted') dreamReason = '本轮维护未通过联想条件，已持久记录跳过，不会反复抽签；真实回顾仍独立完成。';
   else if (maintenance?.narrativeStatus === 'completed') dreamReason = '本轮联想已经完成；后续整理不会自动增加一个梦境。';
   else if (job?.dreamAllowed) {
@@ -101,11 +104,13 @@ export function projectCompanionMemoryLifePlan(input: CompanionMemoryLifePlanInp
     if (retryAt) dreamTiming = { kind: 'retry', clock: 'real', at: retryAt };
   } else if (sleep.admission === 'admitted') dreamReason = '本轮联想机会已经使用；不会把后续整合自动当作新的梦境。';
   else if (sleep.dreamCooldownUntilWorld) {
-    dreamReason = '距上次成功叙述尚未满8现实小时；之后仍需新的回顾会话与一次概率判断。';
+    dreamReason = '仍处于本伙伴策略规定的成功冷却期；之后仍需新的回顾会话与一次概率判断。';
     dreamTiming = { kind: 'conditional', clock: 'real', at: sleep.dreamCooldownUntilWorld };
   } else if (!sleep.hasUnconsolidated) dreamReason = '暂无新的真实素材需要联想；不会补造离线期间的梦境。';
   else dreamState = 'waiting';
+  if (maintenance?.investigations?.waiting) dreamReason += ` 另有${maintenance.investigations.waiting}项问题待核查：${maintenance.investigations.reason ?? '等待现有授权范围内的真实阅读，不把梦当事实。'}`;
   items.push({ id: 'dream', kind: 'dream', title: '梦境与联想', state: blocked ? 'waiting' : dreamState,
-    timing: dreamTiming, reason: blocked ?? dreamReason, probability: COMPANION_SLEEP_DREAM_PROBABILITY });
+    timing: dreamTiming, reason: blocked ?? dreamReason,
+    ...(!maintenance?.policyError ? { probability: maintenance?.policy?.dream.probability ?? COMPANION_SLEEP_DREAM_PROBABILITY } : {}) });
   return { companionId: companion.id, checkedAt: sleep.checkedAt, items, hasMore: sleep.learningHasMore };
 }

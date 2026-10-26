@@ -1,3 +1,6 @@
+import type { PreparedRecallRecovery } from './prepared-recall-recovery';
+import type { CompanionPreparedRecallReference } from '../../shared/companion-prepared-recall';
+
 export interface VcpMemoryEmbeddingConfig {
   /** OpenAI compatible service root, with an optional trailing /v1. */
   baseUrl: string;
@@ -125,15 +128,18 @@ export interface VcpMemoryPreprocessResult {
 }
 /** Opaque workspace-scoped handle. Candidate bodies remain in the owned host store. */
 export interface VcpMemoryPreparedRecall {
-  schema: 'worldlinebox.prepared-recall'; id: string; scopeId: string; contentHash: string;
+  schema: 'worldlinebox.prepared-recall-v2'; id: string; scopeId: string; contentHash: string;
   createdAt: string; expiresAt: string; corpusEpoch: number;
   contextReferences: VcpMemoryContextReference[]; contextReferenceCoverage: 'observed' | 'partial';
   queryClock?: VcpMemoryQueryClock;
-  hostEvidence?: VcpMemoryPreparedHostEvidence;
+  /** Identity projection only. The complete recovery authority is loaded from
+   * the verified, contentHash-bound owner packet, never inferred here. */
+  hostEvidence?: Omit<VcpMemoryPreparedHostEvidence, 'recovery'>;
 }
 export interface VcpMemoryPreparedHostEvidence {
   schema: 'worldlinebox.prepared-recall-host-evidence';
   ownerId: string; revocationEpoch: number; capturedAt: string; sourceClosureDigest: string;
+  recovery?: PreparedRecallRecovery;
 }
 export interface VcpMemoryPreparedFocusGroup {
   token: string; dbNames: string[]; userContent: string; aiContent: string | null;
@@ -147,13 +153,16 @@ export interface VcpMemoryPreparedPayload {
   groups: VcpMemoryPreparedFocusGroup[]; modelIdentity: string;
   hostEvidence?: VcpMemoryPreparedHostEvidence;
 }
+export type VcpMemoryFocusValidationReason = 'fence' | 'model_admission' | 'publication';
 export interface VcpMemoryFocusOptions {
   signal?: AbortSignal;
   /** Called before every actual model request and before publishing, including cache reuse. */
-  validate?(): Promise<void>;
+  validate?(reason?: VcpMemoryFocusValidationReason): Promise<void>;
   fetchFn?: typeof fetch;
   /** Required for an owner-bound host package, never inferred from a caller-supplied scope string. */
   ownerId?: string;
+  /** Persist the receipt hash through the existing durable task checkpoint. */
+  onFocused?(reference: CompanionPreparedRecallReference): Promise<void>;
   /** Shared host model quota; does not hold an original graph/worker permit. */
   runModel?<T>(operation: () => Promise<T>): Promise<T>;
 }
@@ -192,6 +201,7 @@ export type VcpMemoryCommand = (
   | { type: 'initialize'; configuration: VcpMemoryWorkerConfiguration }
   | { type: 'remember'; note: VcpMemoryNote }
   | { type: 'replace'; notes: VcpMemoryNote[] }
+  | { type: 'projection-delta'; notes: VcpMemoryNote[]; removedIds: string[] }
   | { type: 'prepare' }
   | { type: 'search'; text: string; topK?: number }
   | { type: 'read'; id: string }

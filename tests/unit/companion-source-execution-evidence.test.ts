@@ -12,12 +12,15 @@ const message = (id: string): CompanionMessage => ({ id, conversationId: scope.c
 const proof = (id: string): CompanionExecutionSourceProof => ({ kind: 'message', id, ...scope, sourceMessageIds: [id], executionReadset: captureCompanionExecutionReadset(scope) });
 
 it('does not invalidate source proofs for pure status reads or disposable catalogue maintenance', () => {
-  for (const type of ['memory.tags.status', 'memory.processing.status', 'memory.policy.list', 'memory.library.index-state',
+  for (const type of ['memory.tags.status', 'memory.processing.status', 'memory.policy.list', 'memory.library.index-state', 'memory.outbox.pending',
     'actions.page', 'document.catalog.query', 'document.catalog.touch', 'document.catalog.put', 'document.catalog.drop', 'document.catalog.finish', 'world.clock.peek',
-    'routine.get', 'schedule.list', 'schedule.get', 'activity.list', 'social.reply.progress', 'social.days', 'social.graph']) {
+    'routine.get', 'schedule.list', 'schedule.get', 'activity.list', 'social.reply.progress', 'social.days', 'social.graph',
+    'memory.revision.read', 'memory.revision.describe', 'memory.history.outbox.check', 'memory.history.outbox.owners',
+    'memory.history.outbox.claim', 'memory.history.outbox.complete', 'memory.history.outbox.fail', 'memory.jobs.defer', 'memory.jobs.fail',
+    'memory.jobs.retry-admission', 'memory.tags.retry-admission', 'world.job.retry-admission', 'memory.jobs.proposal.read', 'memory.jobs.proposal.save']) {
     expect(companionExecutionSourceReadOnly({ type } as CompanionStorageCommand), type).toBe(true);
   }
-  for (const type of ['memory.forget', 'memory.revise', 'memory.library.delete', 'memory.library.scope', 'memory.tags.complete', 'conversation.update', 'execution.invalidate', 'loop.save']) {
+  for (const type of ['memory.forget', 'memory.revise', 'memory.library.delete', 'memory.library.scope', 'memory.tags.complete', 'memory.jobs.complete', 'conversation.update', 'execution.invalidate', 'loop.save']) {
     expect(companionExecutionSourceReadOnly({ type } as CompanionStorageCommand), type).toBe(false);
   }
 });

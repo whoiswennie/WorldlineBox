@@ -1,6 +1,6 @@
 import type { CompanionStorageCommand, CompanionStorageResponse } from '../../shared/companion-storage';
 import type { CompanionMemoryTagJob } from '../../shared/companion-memory-tags';
-import { CompanionModelError, generateCompanionText, type CompanionModelConfig } from './model';
+import { CompanionModelError, companionModelAdmissionRetryAfter, generateCompanionText, type CompanionModelConfig } from './model';
 import type { CompanionMemoryJobSchedule } from '../../shared/companion-memory-processing';
 import { memorySchedule } from './memory-processing-schedule';
 
@@ -80,9 +80,15 @@ export class CompanionMemoryTagService {
         try { config = await this.options.config(job.companionId); }
         catch { await this.defer(job, 'needs_model'); return; }
         const tags = parseVcpTagMasterOutput(await generateCompanionText({ system: await this.options.prompt(job.companionId), user: job.content },
-          { ...config, ownerId: job.companionId, workPriority: 'background' }, this.controller.signal, { fetchFn: this.options.fetchFn, timeoutMs: 45000 }));
+            { ...config, ownerId: job.companionId, workPriority: 'background', accountingPurpose: 'tags' }, this.controller.signal, { fetchFn: this.options.fetchFn, timeoutMs: 45000 }));
         await this.publish(job, tags, this.controller.signal);
       } catch (error) {
+        const admission = companionModelAdmissionRetryAfter(error);
+        if (admission !== undefined) {
+          await this.options.request({ type: 'memory.tags.defer', id: job.id, leaseToken: job.leaseToken, reason: 'admission',
+            error: '模型请求尚未发送，等待宿主预算或队列恢复；正文和标签任务已保留。', retryAfterMs: admission }).catch(this.options.report);
+          this.options.changed(); return;
+        }
         await this.defer(job, error instanceof CompanionModelError && error.code === 'CONFIG' ? 'needs_model' : 'retry');
         if (!(error instanceof CompanionModelError) && !this.controller.signal.aborted) this.options.report(error);
       } finally { this.controller = undefined; this.owner = undefined; this.noteId = undefined; this.options.changed(); }

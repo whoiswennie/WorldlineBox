@@ -40,6 +40,21 @@ function request(fetchFn: ReturnType<typeof fetchFor>) {
 }
 
 describe('source-grounded VCP experience journals', () => {
+  it('compares complete addressable source text with actual saved bodies without claiming semantic full coverage', async () => {
+    const raw = message('partial_source', 7, ('这条未完成事项保留🙂真实条件。\n').repeat(5000) + '剩余棉线在第二层抽屉。');
+    const prior = memory({ content: '这是未完成的修复事项。', contentRevision: 3,
+      sources: [{ messageId: raw.id, conversationId: raw.conversationId, sequence: raw.sequence, authorId: raw.authorId, revision: 1, checksum: 'actual-host-reference', createdAt: at }] });
+    const fetchFn = fetchFor({ notes: [] });
+    await generateCompanionJournal({ ...input, messages: [raw], relevantMemories: [prior], sourceContributions: [prior] }, config, undefined, { fetchFn });
+    const contract = request(fetchFn).payload.sourceContract;
+    expect(contract.savedContributions[0]).toMatchObject({ memoryId: prior.id, contentRevision: 3, currentContent: prior.content, coverage: 'partial' });
+    const comparison = contract.contributionComparison[0];
+    expect(comparison.offsetEncoding).toBe('utf16_code_units'); expect(comparison.rawSpans.length).toBeLessThanOrEqual(128);
+    expect(comparison.rawSpans.map((span: { text: string }) => span.text).join('')).toBe(raw.content);
+    for (const span of comparison.rawSpans) expect(raw.content.slice(span.start, span.end)).toBe(span.text);
+    expect(comparison.savedBodies).toEqual([{ memoryId: prior.id, contentRevision: 3, content: prior.content }]);
+    expect(request(fetchFn).system).toContain('来源ID或整段evidence曾被引用不等于其中全部事实已表达');
+  });
   it('can propose a sourced procedure candidate while exposing only host-owned validation on read methods', async () => {
     const source = message('method_source', 6, '保存output.txt后，再检查文件是否包含已核验结果。');
     const procedure = { applicability: '生成当前约定的文本文件时', steps: ['保存output.txt。', '检查是否包含已核验结果。'], limitations: ['仅适用当前约定'],

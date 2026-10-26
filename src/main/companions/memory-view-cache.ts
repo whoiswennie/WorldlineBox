@@ -5,7 +5,7 @@ import { Buffer } from 'node:buffer';
 import type { CompanionMemory } from '../../shared/companions';
 import type { VcpMemoryTimelineArtifacts } from '../vcp-memory/contracts';
 
-type View = { scopeId: string; identity: string; profileKey: string; dirty: boolean; notes: Record<string, string>; projectionSignature?: string; needsSync?: boolean };
+type View = { scopeId: string; identity: string; profileKey: string; dirty: boolean; notes: Record<string, string>; projectionSignature?: string; needsSync?: boolean; sourceToken?: string };
 export interface CompanionMemoryViewCacheLimits { maxViews?: number; maxViewBytes?: number; maxArtifacts?: number; maxArtifactBytes?: number }
 export interface CompanionMemoryViewCacheDirectory { directoryForOwner(owner: string): Promise<string> }
 const boundedLimit = (value: number | undefined, fallback: number, minimum: number) => {
@@ -22,7 +22,8 @@ function validView(value: unknown): value is View {
     && !!view.notes && typeof view.notes === 'object' && !Array.isArray(view.notes)
     && Object.values(view.notes).every(value => typeof value === 'string' && /^[a-f0-9]{64}$/u.test(value))
     && (view.projectionSignature === undefined || typeof view.projectionSignature === 'string')
-    && (view.needsSync === undefined || typeof view.needsSync === 'boolean');
+    && (view.needsSync === undefined || typeof view.needsSync === 'boolean')
+    && (view.sourceToken === undefined || typeof view.sourceToken === 'string' && /^[a-f0-9]{64}$/u.test(view.sourceToken));
 }
 function fingerprints(notes: readonly CompanionMemory[]) {
   return Object.fromEntries(notes.map(note => [note.id, hash(JSON.stringify([note.version, note.content, note.tags, note.occurredAt,
@@ -130,6 +131,13 @@ export class CompanionMemoryViewCache {
     }
   }
   async prepare(identity: string, profileKey: string, notes: readonly CompanionMemory[], projectionSignature?: string, options: { incremental?: boolean } = {}) {
+    return this.prepareTarget(identity, profileKey, () => fingerprints(notes), projectionSignature, options);
+  }
+  async prepareMetadata(identity: string, profileKey: string, target: Readonly<Record<string, string>>, sourceToken: string, projectionSignature?: string) {
+    return this.prepareTarget(identity, profileKey, () => target, projectionSignature, { incremental: true, sourceToken });
+  }
+  private async prepareTarget(identity: string, profileKey: string, createTarget: () => Readonly<Record<string, string>>, projectionSignature?: string,
+    options: { incremental?: boolean; sourceToken?: string } = {}) {
     this.owner(identity);
     const key = `${identity}\n${profileKey}`;
     let previous = this.memory.get(key);
@@ -142,15 +150,20 @@ export class CompanionMemoryViewCache {
         }
       } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT' && !(error instanceof SyntaxError)) throw error; }
     }
-    const target = fingerprints(notes);
+    if (previous && !previous.dirty && !previous.needsSync && previous.projectionSignature === projectionSignature
+      && options.sourceToken && previous.sourceToken === options.sourceToken)
+      return { scopeId: previous.scopeId, unchanged: true, upsertIds: [] as string[], removedIds: [] as string[], commit: async () => undefined };
+    const target = createTarget();
     const reusable = previous && !previous.dirty && previous.profileKey === profileKey && previous.projectionSignature === projectionSignature
       && (options.incremental || Object.entries(previous.notes).every(([id, fingerprint]) => target[id] === fingerprint));
-    const unchanged = !!reusable && !previous!.needsSync && Object.keys(previous!.notes).length === notes.length
+    const unchanged = !!reusable && !previous!.needsSync && Object.keys(previous!.notes).length === Object.keys(target).length
       && Object.entries(previous!.notes).every(([id, fingerprint]) => target[id] === fingerprint);
     const scopeId = reusable && previous ? previous.scopeId : `view_${randomUUID().replaceAll('-', '')}`;
-    const view: View = { scopeId, identity, profileKey, dirty: true, notes: target, projectionSignature };
+    const view: View = { scopeId, identity, profileKey, dirty: true, notes: target, projectionSignature, ...(options.sourceToken ? { sourceToken: options.sourceToken } : {}) };
     if (!unchanged) await this.save(key, view);
-    return { scopeId, unchanged, replacedScopeId: previous && previous.scopeId !== scopeId ? previous.scopeId : undefined,
+    return { scopeId, unchanged, upsertIds: Object.keys(target).filter(id => !reusable || previous!.notes[id] !== target[id]),
+      removedIds: reusable ? Object.keys(previous!.notes).filter(id => !(id in target)) : [],
+      replacedScopeId: previous && previous.scopeId !== scopeId ? previous.scopeId : undefined,
       commit: async () => { if (!unchanged) await this.save(key, { ...view, dirty: false }); } };
   }
   async loadArtifacts(identity: string, profileKey: string): Promise<VcpMemoryTimelineArtifacts | undefined> {

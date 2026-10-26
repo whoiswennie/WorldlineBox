@@ -5,6 +5,7 @@ import { companionFrozenMemoryDependencySchema } from './companion-frozen-memory
 import { companionMemoryContextEvidenceSchema } from './companion-memory-context-evidence';
 import { companionMemoryProcedureContextListSchema } from './companion-procedure';
 import { companionMemoryFileReceiptsSchema } from './companion-memory-files';
+import { companionMemorySelectionSchema } from './companion-memory-selection';
 
 const id = z.string().regex(/^[a-zA-Z0-9_-]{1,100}$/);
 const digest = z.string().regex(/^[a-f0-9]{64}$/);
@@ -47,6 +48,7 @@ export const companionAgentRunSchema = z.object({
   /** One passive preparation per durable invocation, including an empty result.
    * Saved host bytes retain source receipts; active tool reads are separate. */
   passiveRecall: z.strictObject({ prepared: z.literal(true), context: z.strictObject({ text: z.string(), revision: z.string(),
+    selection: companionMemorySelectionSchema.optional(),
     profileKey: z.string(), proceduralStatus: companionMemoryProcedureContextListSchema.optional(), fileReceipts: companionMemoryFileReceiptsSchema.optional(), evidence: companionMemoryContextEvidenceSchema.optional() }).optional() }).optional(),
   knowledgeReads: z.array(companionKnowledgeReadSchema).optional(),
   /** Immutable authorized checkpoint references, including secondary game ports. */

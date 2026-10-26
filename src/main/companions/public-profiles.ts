@@ -1,8 +1,8 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { lstat, mkdir, readFile, readdir, realpath, rename, unlink, writeFile } from 'node:fs/promises';
+import { lstat, mkdir, open, readFile, readdir, realpath, rename, unlink, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import sharp from 'sharp';
-import type { Companion, CompanionConversation } from '../../shared/companions';
+import type { Companion, CompanionAssetImages, CompanionConversation } from '../../shared/companions';
 import type { CompanionStorageCommand, CompanionStorageResponse, StoredCompanionAttachment } from '../../shared/companion-storage';
 import type { CompanionProfileInput, CompanionPublicImage, CompanionPublicProfile, CompanionVisualInput } from '../../shared/companion-public-profile';
 import { CompanionAssetProfileStore } from './asset-profile';
@@ -11,12 +11,18 @@ import { COMPANION_APPEARANCE_FILES, COMPANION_PORTRAIT_FILES } from '../../shar
 const MAX_IMAGE_BYTES = 20 * 1024 * 1024;
 const MAX_VISUAL_BYTES = 1024 * 1024;
 const sha = (bytes: Buffer) => createHash('sha256').update(bytes).digest('hex');
+type PortraitRole = 'avatar' | 'orthographic';
+export interface CompanionOwnerImage { bytes: Buffer; mime: string; sha256: string; fileRevision: string }
+const imageStamp = (info: Awaited<ReturnType<typeof lstat>>) => [info.dev, info.ino, info.size, info.mtimeMs, info.ctimeMs].join(':');
 
 /** Resolve only host-owned portrait IDs, and keep pixels out of durable chat checkpoints. */
 export class CompanionPublicProfiles {
   private readonly portraits = new Map<string, Promise<string | undefined>>();
   private readonly assetProfiles?: CompanionAssetProfileStore;
   private readonly imageChecks = new Map<string, Promise<boolean>>();
+  // Metadata only: one current signature per owner/role. The bound covers
+  // 1,000 residents with two images without retaining any decoded pixels.
+  private readonly runtimeImageChecks = new Map<string, { signature: string; sha256: string; fileRevision: string }>();
   private readonly visuals = new Map<string, Promise<{ base64: string; sha256: string; originalHash: string } | undefined>>();
   constructor(private readonly options: { root: string; appPath: string; libraryDirectory?: string; profileStore?: CompanionAssetProfileStore;
     portraitInitialized?(ownerId: string, role: 'avatar' | 'orthographic'): Promise<boolean>;
@@ -53,6 +59,109 @@ export class CompanionPublicProfiles {
         await this.materializePortrait(current, role, file, true);
       }
     }
+  }
+
+  /** Saved contacts expose only their editable owner copy. Template/source
+   * materialization is a one-time factory guarded by the durable role receipt. */
+  async runtimeImages(owner: Companion): Promise<CompanionAssetImages> {
+    if (!this.assetProfiles || owner.assetProfileError) return {};
+    const images: CompanionAssetImages = {};
+    for (const role of ['avatar', 'orthographic'] as const) {
+      const key = owner.id + '/' + role;
+      try {
+        const selected = role === 'avatar' ? owner.avatarAttachmentId : owner.appearanceAttachmentId;
+        if (!selected && (role === 'avatar' ? owner.avatar === 'custom' : !owner.builtin || !COMPANION_APPEARANCE_FILES[owner.id])) { this.runtimeImageChecks.delete(key); continue; }
+        let file;
+        try { file = await this.runtimeOwnerImageFile(owner, role); }
+        catch (error) {
+          // A missing body/receipt after durable initialization is an empty
+          // state. Only a genuinely new role may enter the copy factory.
+          if ((error as NodeJS.ErrnoException).code !== 'ENOENT' || await this.options.portraitInitialized?.(owner.id, role)) throw error;
+          const receipt = path.join(this.assetProfiles.libraryDirectory, owner.id, '形象', '.' + role + '-initialized.json');
+          try { await lstat(receipt); throw new Error('The initialized owner image is missing.', { cause: error }); }
+          catch (receiptError) { if ((receiptError as NodeJS.ErrnoException).code !== 'ENOENT') throw receiptError; }
+          if (selected) {
+            const stored = (await this.options.request({ type: 'attachment.get', id: selected })).storedAttachment;
+            if (!stored || !/^image\/(?:png|jpeg|webp|gif)$/u.test(stored.attachment.mime)) throw new Error('Invalid initial owner image.', { cause: error });
+            await this.materializeAttachment(owner, role, stored, false);
+          } else {
+            const initial = role === 'avatar' && owner.avatar !== 'custom' ? COMPANION_PORTRAIT_FILES[owner.avatar] : COMPANION_APPEARANCE_FILES[owner.id];
+            if (!initial) continue;
+            await this.materializePortrait(owner, role, initial);
+          }
+          file = await this.ownerImageFile(owner.id, role);
+        }
+        if (!file) { this.runtimeImageChecks.delete(key); continue; }
+        const signature = sha(Buffer.from([file.path, file.stamp, file.proof].join('\0')));
+        let metadata = this.runtimeImageChecks.get(key);
+        if (metadata?.signature !== signature) {
+          const image = await this.readOwnerImage(owner.id, role);
+          if (!image) { this.runtimeImageChecks.delete(key); continue; }
+          // Recover the narrow crash window after receipt publication but
+          // before its durable lifecycle acknowledgement, once per cache load.
+          if (!metadata && this.options.portraitInitialized && !await this.options.portraitInitialized(owner.id, role)) await this.options.markPortraitInitialized?.(owner.id, role);
+          metadata = { signature: image.fileRevision, sha256: image.sha256, fileRevision: image.fileRevision };
+          this.runtimeImageChecks.set(key, metadata);
+          while (this.runtimeImageChecks.size > 4096) this.runtimeImageChecks.delete(this.runtimeImageChecks.keys().next().value!);
+        } else {
+          this.runtimeImageChecks.delete(key); this.runtimeImageChecks.set(key, metadata);
+        }
+        // The filesystem revision also retries a restored identical image
+        // after an earlier 404, without generating a timestamp per render.
+        images[role] = { url: `worldlinebox-companion://portrait/${encodeURIComponent(owner.id)}/${role}?v=${metadata.sha256}&r=${metadata.fileRevision}`, sha256: metadata.sha256 };
+      } catch { this.runtimeImageChecks.delete(key); /* Never cache an unavailable image or use its seed/source. */ }
+    }
+    return images;
+  }
+
+  private async runtimeOwnerImageFile(owner: Companion, role: PortraitRole) {
+    try { return await this.ownerImageFile(owner.id, role); }
+    catch (error) {
+      if ((error as { code?: string }).code !== 'MISSING') throw error;
+      // Only the profile factory may decide whether this is a new owner.
+      // A durable receipt makes missing profile/namespace strictly fail here.
+      await this.assetProfiles!.bootstrapProfile(owner);
+      return this.ownerImageFile(owner.id, role);
+    }
+  }
+
+  private async ownerImageFile(ownerId: string, role: PortraitRole): Promise<{ path: string; stamp: string; proof: string } | undefined> {
+    if (!this.assetProfiles) return undefined;
+    const snapshot = await this.assetProfiles.loadProfile(ownerId), profile = snapshot.profile;
+    const selected = role === 'avatar' ? profile.avatarAttachmentId : profile.appearanceAttachmentId;
+    if (!selected && (role === 'avatar' ? profile.avatar === 'custom' : !COMPANION_APPEARANCE_FILES[ownerId])) return undefined;
+    const directory = path.join(snapshot.root, '形象'), actualOwner = await realpath(snapshot.root);
+    const parent = await lstat(directory);
+    if (!parent.isDirectory() || parent.isSymbolicLink() || path.dirname(await realpath(directory)) !== actualOwner) throw new Error('Invalid owner portrait directory.');
+    const receipt = path.join(directory, '.' + role + '-initialized.json'), before = await lstat(receipt);
+    if (!before.isFile() || before.isSymbolicLink() || before.nlink !== 1 || before.size > 4096) throw new Error('Invalid owner portrait receipt.');
+    const text = await readFile(receipt, 'utf8'), after = await lstat(receipt);
+    if (imageStamp(before) !== imageStamp(after)) throw new Error('Owner portrait receipt changed.');
+    const proof = JSON.parse(text) as { companionId?: string; role?: string; attachmentId?: string; path?: string };
+    if (proof.companionId !== ownerId || proof.role !== role || (proof.attachmentId ?? null) !== (selected ?? null)) throw new Error('Owner portrait selection changed.');
+    const name = proof.path ?? role + '.png';
+    if (!new RegExp('^' + role + '\\.(?:png|jpg|webp|gif)$', 'u').test(name)) throw new Error('Invalid owner portrait path.');
+    const file = path.join(directory, name), stat = await lstat(file);
+    if (!stat.isFile() || stat.isSymbolicLink() || stat.nlink !== 1 || stat.size <= 0 || stat.size > MAX_IMAGE_BYTES
+      || path.dirname(await realpath(file)) !== await realpath(directory)) throw new Error('Invalid owner portrait file.');
+    return { path: file, stamp: imageStamp(stat), proof: snapshot.profileRevision + '\0' + sha(Buffer.from(text)) };
+  }
+
+  /** Protocol reads are fresh, bounded and never initialize or repair files. */
+  async readOwnerImage(ownerId: string, role: PortraitRole): Promise<CompanionOwnerImage | undefined> {
+    const file = await this.ownerImageFile(ownerId, role); if (!file) return undefined;
+    const handle = await open(file.path, 'r');
+    try {
+      const stat = await handle.stat();
+      if (!stat.isFile() || stat.nlink !== 1 || imageStamp(stat) !== file.stamp) throw new Error('Owner portrait changed before read.');
+      const bytes = Buffer.alloc(stat.size); let offset = 0;
+      while (offset < bytes.length) { const read = await handle.read(bytes, offset, bytes.length - offset, offset); if (!read.bytesRead) throw new Error('Owner portrait truncated.'); offset += read.bytesRead; }
+      const metadata = await sharp(bytes, { limitInputPixels: 64 * 1024 * 1024 }).metadata();
+      if (!metadata.width || !metadata.height || !['png', 'jpeg', 'webp', 'gif'].includes(metadata.format)) throw new Error('Invalid owner portrait pixels.');
+      const current = await this.ownerImageFile(ownerId, role);
+      if (!current || current.path !== file.path || current.stamp !== file.stamp || current.proof !== file.proof || imageStamp(await handle.stat()) !== file.stamp) throw new Error('Owner portrait changed during read.');
+      return { bytes, mime: 'image/' + metadata.format, sha256: sha(bytes), fileRevision: sha(Buffer.from([file.path, file.stamp, file.proof].join('\0'))) };
+    } finally { await handle.close(); }
   }
 
   async prepare(input: { companionId: string; conversation: Pick<CompanionConversation, 'id' | 'memberIds'>;

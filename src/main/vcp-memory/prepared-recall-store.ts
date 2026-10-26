@@ -1,28 +1,37 @@
 import { createHash, randomUUID } from 'node:crypto';
 import path from 'node:path';
-import { lstat, mkdir, readFile, readdir, rename, unlink, writeFile } from 'node:fs/promises';
+import { lstat, mkdir, open, readFile, readdir, unlink } from 'node:fs/promises';
 import { z } from 'zod';
-import type { VcpMemoryPreparedPayload, VcpMemoryPreparedRecall } from './contracts';
+import type { VcpMemoryPreparedPayload, VcpMemoryPreparedRecall, VcpMemoryPreprocessResult } from './contracts';
 import { VcpPreparedRecallDiskBudget, type PreparedRecallDiskLimits, type PreparedRecallDiskTurn } from './prepared-recall-budget';
+import { writeDurablePreparedFile } from './durable-prepared-write';
+import { preparedRecallRecoverySchema, recoveryFromPayload } from './prepared-recall-recovery';
+import { companionPreparedRecallReferenceSchema, type CompanionPreparedRecallReference } from '../../shared/companion-prepared-recall';
 
 const TTL_MS = 10 * 60 * 1000;
 const MAX_RESIDENT_BYTES = 32 * 1024 * 1024;
 const MAX_PACKAGE_BYTES = 128 * 1024 * 1024;
-// JSON escaping can double the serialized body, and the immutable handle
-// repeats its reference manifest. Do not reject a legal body at that boundary.
-const MAX_ENVELOPE_BYTES = MAX_PACKAGE_BYTES * 3 + 1024 * 1024;
+// JSON escaping can double the serialized body. Candidate references remain
+// in the immutable handle, while the full recovery proof occurs once in body.
+const MAX_ENVELOPE_BYTES = MAX_PACKAGE_BYTES * 4 + 1024 * 1024;
 const MAX_PACKAGES_PER_SCOPE = 64;
 const digestSchema = z.string().regex(/^[a-f0-9]{64}$/u);
 export const preparedRecallHostEvidenceSchema = z.strictObject({
   schema: z.literal('worldlinebox.prepared-recall-host-evidence'), ownerId: z.string().min(1).max(4096),
   revocationEpoch: z.number().int().nonnegative().safe(), capturedAt: z.string().datetime({ offset: true }), sourceClosureDigest: digestSchema,
+  recovery: preparedRecallRecoverySchema.optional(),
 });
-const preparedHandleSchema = z.strictObject({ schema: z.literal('worldlinebox.prepared-recall'),
+const preparedHandleHostEvidenceSchema = preparedRecallHostEvidenceSchema.omit({ recovery: true });
+function projectPreparedHostEvidence(evidence: z.infer<typeof preparedRecallHostEvidenceSchema>) {
+  return preparedHandleHostEvidenceSchema.parse({ schema: evidence.schema, ownerId: evidence.ownerId, revocationEpoch: evidence.revocationEpoch,
+    capturedAt: evidence.capturedAt, sourceClosureDigest: evidence.sourceClosureDigest });
+}
+const preparedHandleSchema = z.strictObject({ schema: z.literal('worldlinebox.prepared-recall-v2'),
   id: z.string().regex(/^prepared_[a-f0-9]{32}$/u), scopeId: z.string().min(1).max(4096), contentHash: digestSchema,
   createdAt: z.string().datetime({ offset: true }), expiresAt: z.string().datetime({ offset: true }), corpusEpoch: z.number().int().nonnegative().safe(),
   contextReferences: z.array(z.strictObject({ id: z.string().min(1), role: z.enum(['returned', 'focus_input']), sourceFile: z.string().optional(), textHash: digestSchema })),
   contextReferenceCoverage: z.enum(['observed', 'partial']), queryClock: z.strictObject({ now: z.string().datetime({ offset: true }), timeZone: z.string().min(1) }).optional(),
-  hostEvidence: preparedRecallHostEvidenceSchema.optional(),
+  hostEvidence: preparedHandleHostEvidenceSchema.optional(),
 });
 // Shared accounting across generation clients, not 32 MiB per companion.
 const resident = new Map<string, { value: string; bytes: number }>();
@@ -56,7 +65,10 @@ function reserveBody(bytes: number, signal?: AbortSignal): Promise<() => void> {
   });
 }
 const hash = (value: string) => createHash('sha256').update(value).digest('hex');
-type Envelope = { handle: VcpMemoryPreparedRecall; serialized: string };
+type Envelope = { schema: 'worldlinebox.prepared-recall-envelope-v3'; handle: VcpMemoryPreparedRecall; serialized: string };
+const preparedEnvelopeSchema = z.strictObject({ schema: z.literal('worldlinebox.prepared-recall-envelope-v3'), handle: preparedHandleSchema, serialized: z.string() });
+const focusRecordSchema = z.strictObject({ schema: z.literal('worldlinebox.prepared-focus-result-v1'), hash: digestSchema, serialized: z.string() });
+interface PreparedLease { payload: VcpMemoryPreparedPayload; handle: VcpMemoryPreparedRecall; focused?: { hash: string; receipt: VcpMemoryPreprocessResult }; release(): void }
 function forgetResident(file: string): void {
   const value = resident.get(file); if (value) residentBytes -= value.bytes;
   resident.delete(file);
@@ -86,7 +98,7 @@ export class VcpPreparedRecallStore {
     if (!scopeId.trim() || scopeId.length > 4096) throw new Error('Invalid prepared scope.');
     return path.join(this.dataRoot, hash(scopeId), 'prepared-recalls');
   }
-  private file(handle: VcpMemoryPreparedRecall): string {
+  private file(handle: Pick<VcpMemoryPreparedRecall, 'id' | 'scopeId'>): string {
     if (!/^prepared_[a-f0-9]{32}$/u.test(handle.id)) throw new Error('Invalid prepared recall ID.');
     return path.join(this.directory(handle.scopeId), handle.id + '.json');
   }
@@ -126,23 +138,24 @@ export class VcpPreparedRecallStore {
     const serialized = JSON.stringify(payload);
     if (Buffer.byteLength(serialized) > MAX_PACKAGE_BYTES) throw Object.assign(new Error('Prepared recall exceeds the transport package limit; use bounded source stages.'), { code: 'VCP_MEMORY_PREPARED_CAPACITY' });
     const created = Date.now();
-    const handle: VcpMemoryPreparedRecall = { schema: 'worldlinebox.prepared-recall',
+    const handle: VcpMemoryPreparedRecall = { schema: 'worldlinebox.prepared-recall-v2',
       id: 'prepared_' + randomUUID().replaceAll('-', ''), scopeId, contentHash: hash(serialized),
       createdAt: new Date(created).toISOString(), expiresAt: new Date(created + TTL_MS).toISOString(),
       corpusEpoch: payload.receipt.receiptCache?.corpusEpoch ?? 0,
       contextReferences: structuredClone(payload.receipt.contextReferences ?? []),
       contextReferenceCoverage: payload.receipt.contextReferenceCoverage ?? 'partial',
-      ...(payload.hostEvidence ? { hostEvidence: structuredClone(payload.hostEvidence) } : {}),
+      ...(payload.hostEvidence ? { hostEvidence: projectPreparedHostEvidence(payload.hostEvidence) } : {}),
       ...(payload.receipt.queryClock ? { queryClock: { ...payload.receipt.queryClock } } : {}) };
     preparedHandleSchema.parse(handle);
     const file = this.file(handle), temporary = file + '.tmp';
-    const envelope = JSON.stringify({ handle, serialized } satisfies Envelope), bytes = Buffer.byteLength(envelope);
+    const envelope = JSON.stringify({ schema: 'worldlinebox.prepared-recall-envelope-v3', handle, serialized } satisfies Envelope) + '\n', bytes = Buffer.byteLength(envelope);
+    if (bytes > MAX_ENVELOPE_BYTES) throw Object.assign(new Error('Prepared recall envelope exceeds its transport capacity.'), { code: 'VCP_MEMORY_PREPARED_CAPACITY' });
     turn.admit(bytes);
     // Reserve disk before I/O. If a failed write cannot clean its temporary
     // file, the reservation remains charged until verified TTL recovery.
     turn.committed(temporary, bytes);
     try {
-      await writeFile(temporary, envelope, { encoding: 'utf8', flag: 'wx', mode: 0o600 }); await rename(temporary, file);
+      await writeDurablePreparedFile(temporary, file, envelope);
       turn.removed(temporary); turn.committed(file, bytes);
     } finally {
       await unlink(temporary).catch(error => { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; });
@@ -152,27 +165,38 @@ export class VcpPreparedRecallStore {
     return handle;
     });
   }
-  async acquire(handle: VcpMemoryPreparedRecall, signal?: AbortSignal): Promise<{ payload: VcpMemoryPreparedPayload; release(): void }> {
+  acquire(handle: VcpMemoryPreparedRecall, signal?: AbortSignal): Promise<PreparedLease> { return this.acquireFile(handle, false, signal); }
+  acquireReference(reference: CompanionPreparedRecallReference, signal?: AbortSignal): Promise<PreparedLease> {
+    companionPreparedRecallReferenceSchema.parse(reference); return this.acquireFile(reference, true, signal);
+  }
+  private async acquireFile(selector: VcpMemoryPreparedRecall | CompanionPreparedRecallReference, reference: boolean, signal?: AbortSignal): Promise<PreparedLease> {
     if (this.closing) throw new Error('Prepared recall store is closed.');
-    preparedHandleSchema.parse(handle);
-    if (handle.schema !== 'worldlinebox.prepared-recall' || !/^[a-f0-9]{64}$/u.test(handle.contentHash)
-      || !Number.isFinite(Date.parse(handle.expiresAt)) || Date.parse(handle.expiresAt) <= Date.now()) throw new Error('Prepared recall has expired.');
-    await this.checkDirectory(handle.scopeId, false); this.knownScopes.add(handle.scopeId);
-    const file = this.file(handle);
+    const selectedHandle = reference ? undefined : preparedHandleSchema.parse(selector);
+    if (!Number.isFinite(Date.parse(selector.expiresAt)) || Date.parse(selector.expiresAt) <= Date.now()) throw new Error('Prepared recall has expired.');
+    await this.checkDirectory(selector.scopeId, false); this.knownScopes.add(selector.scopeId);
+    const file = this.file(selector);
     const claim = fileIdentity(file);
     if (claimedFiles.has(claim)) throw Object.assign(new Error('Prepared recall is already being focused.'), { code: 'VCP_MEMORY_PREPARED_BUSY' });
     this.active.add(file); claimedFiles.add(claim);
     let releaseBody: (() => void) | undefined;
     try {
+      // A restarted host must reconstruct all workspace bytes, including an
+      // interrupted result tail, before admitting or extending this package.
+      await this.diskTurn(async () => undefined);
       // The disk envelope binds the caller's handle even when the body is in LRU.
       const info = await lstat(file);
       if (!info.isFile() || info.isSymbolicLink() || info.size > MAX_ENVELOPE_BYTES) throw new Error('Invalid prepared recall package.');
       releaseBody = await reserveBody(info.size, signal);
       signal?.throwIfAborted();
-      const envelope = JSON.parse(await readFile(file, 'utf8')) as Envelope;
+      const raw = await readFile(file, 'utf8'), end = raw.indexOf('\n'), header = end < 0 ? raw : raw.slice(0, end);
+      const envelope = preparedEnvelopeSchema.parse(JSON.parse(header));
       signal?.throwIfAborted();
+      if (envelope.schema !== 'worldlinebox.prepared-recall-envelope-v3') throw new Error('Invalid prepared recall envelope schema.');
+      const handle = preparedHandleSchema.parse(envelope.handle);
       if (typeof envelope.serialized !== 'string' || Buffer.byteLength(envelope.serialized) > MAX_PACKAGE_BYTES) throw new Error('Invalid prepared recall body size.');
-      if (JSON.stringify(envelope.handle) !== JSON.stringify(handle) || hash(envelope.serialized) !== handle.contentHash) throw new Error('Prepared recall fingerprint has changed.');
+      if (reference ? handle.id !== selector.id || handle.scopeId !== selector.scopeId || handle.contentHash !== selector.contentHash || handle.expiresAt !== selector.expiresAt
+        : JSON.stringify(handle) !== JSON.stringify(selectedHandle)) throw new Error('Prepared recall handle fingerprint has changed.');
+      if (hash(envelope.serialized) !== handle.contentHash) throw new Error('Prepared recall fingerprint has changed.');
       const cached = resident.get(file)?.value;
       const serialized = cached && hash(cached) === handle.contentHash ? cached : envelope.serialized;
       // The active body owns its accounting until release. Keeping a second
@@ -180,12 +204,60 @@ export class VcpPreparedRecallStore {
       forgetResident(file);
       const payload = JSON.parse(serialized) as VcpMemoryPreparedPayload;
       if (payload.schema !== 'worldlinebox.prepared-recall-payload') throw new Error('Invalid prepared recall schema.');
-      if (JSON.stringify(payload.hostEvidence) !== JSON.stringify(handle.hostEvidence)) throw new Error('Prepared recall owner evidence has changed.');
+      if (JSON.stringify(payload.hostEvidence ? projectPreparedHostEvidence(preparedRecallHostEvidenceSchema.parse(payload.hostEvidence)) : undefined) !== JSON.stringify(handle.hostEvidence))
+        throw new Error('Prepared recall owner evidence has changed.');
+      if (reference) {
+        const locator = selector as CompanionPreparedRecallReference, recovery = recoveryFromPayload(payload);
+        if (locator.ownerId !== payload.hostEvidence?.ownerId || locator.taskKey !== recovery.taskKey || locator.profileKey !== recovery.profileKey)
+          throw new Error('Prepared recall task or owner evidence has changed.');
+      }
+      let focused: PreparedLease['focused'];
+      const expectedFocusHash = reference ? (selector as CompanionPreparedRecallReference).focusHash : undefined;
+      // Only a checksum anchored in the trusted task checkpoint authorizes
+      // reuse. An unanchored or interrupted tail is never a model receipt.
+      if (expectedFocusHash) {
+        const tail = end < 0 ? '' : raw.slice(end + 1);
+        if (!tail.endsWith('\n') || tail.slice(0, -1).includes('\n')) throw new Error('Prepared focus result has an incomplete tail.');
+        const record = focusRecordSchema.parse(JSON.parse(tail.slice(0, -1)));
+        if (record.hash !== expectedFocusHash || hash(record.serialized) !== expectedFocusHash) throw new Error('Prepared focus result fingerprint has changed.');
+        const receipt = JSON.parse(record.serialized) as VcpMemoryPreprocessResult;
+        if (!receipt || !Array.isArray(receipt.messages) || !Array.isArray(receipt.events)
+          || receipt.messages.some(message => !message || typeof message.role !== 'string' || !(typeof message.content === 'string' || Array.isArray(message.content))))
+          throw new Error('Prepared focus result schema is invalid.');
+        focused = { hash: record.hash, receipt };
+      }
       let released = false;
-      return { payload, release: () => { if (!released) { released = true; this.active.delete(file); claimedFiles.delete(claim); releaseBody?.(); } } };
+      return { payload, handle, ...(focused ? { focused } : {}), release: () => { if (!released) { released = true; this.active.delete(file); claimedFiles.delete(claim); releaseBody?.(); } } };
     } catch (error) { releaseBody?.(); this.active.delete(file); claimedFiles.delete(claim); throw error; }
   }
-  async remove(handle: VcpMemoryPreparedRecall): Promise<void> {
+  async completeFocus(handle: VcpMemoryPreparedRecall, receipt: VcpMemoryPreprocessResult): Promise<string> {
+    if (this.closing) throw new Error('Prepared recall store is closed.');
+    const directory = await this.checkDirectory(handle.scopeId, false), file = this.file(handle);
+    if (path.dirname(file) !== directory || !this.active.has(file)) throw new Error('Prepared focus completion requires its active package lease.');
+    const serialized = JSON.stringify(receipt), resultHash = hash(serialized);
+    if (Buffer.byteLength(serialized) > MAX_PACKAGE_BYTES) throw Object.assign(new Error('Prepared focus result exceeds its transport capacity.'), { code: 'VCP_MEMORY_PREPARED_CAPACITY' });
+    const record = JSON.stringify({ schema: 'worldlinebox.prepared-focus-result-v1', hash: resultHash, serialized }) + '\n';
+    await this.diskTurn(async turn => {
+      const info = await lstat(file); if (!info.isFile() || info.isSymbolicLink()) throw new Error('Prepared focus file is not owned.');
+      const raw = await readFile(file, 'utf8'), end = raw.indexOf('\n');
+      if (end < 0) throw new Error('Prepared focus package has no durable header boundary.');
+      const header = raw.slice(0, end + 1), bytes = Buffer.byteLength(header) + Buffer.byteLength(record);
+      if (bytes > MAX_ENVELOPE_BYTES) throw Object.assign(new Error('Prepared focus envelope exceeds its transport capacity.'), { code: 'VCP_MEMORY_PREPARED_CAPACITY' });
+      turn.grow(file, Math.max(0, bytes - info.size));
+      const output = await open(file, 'r+');
+      try {
+        const position = Buffer.byteLength(header), buffer = Buffer.from(record, 'utf8'); await output.truncate(position);
+        for (let offset = 0; offset < buffer.length;) {
+          const written = await output.write(buffer, offset, buffer.length - offset, position + offset);
+          if (!written.bytesWritten) throw new Error('Prepared focus receipt write made no progress.'); offset += written.bytesWritten;
+        }
+        await output.sync();
+      }
+      finally { await output.close(); const actual = await lstat(file); turn.committed(file, actual.size); }
+    });
+    return resultHash;
+  }
+  async remove(handle: Pick<VcpMemoryPreparedRecall, 'id' | 'scopeId'>): Promise<void> {
     if (this.closing) { await this.closing; return; }
     const file = this.file(handle);
     // A duplicate caller which failed admission cannot discard another store's

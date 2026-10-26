@@ -27,7 +27,7 @@ it.each([{ diaryName: 'missing' }, { tags: ['missing'] }, { from: '2027-01-01', 
     expect(result.memoryRetrieval?.authorizedCorpusRevision).toBeUndefined();
   } finally { await f.service.close(); }
 });
-function fixture(notes: CompanionMemory[]) {
+function fixture(notes: CompanionMemory[], options: Pick<ConstructorParameters<typeof CompanionMemoryService>[0], 'maxPendingRecalls' | 'maxPendingRecallsPerOwner' | 'validateAssets'> = {}) {
   let corpus = notes, revision = 'stable', revocationEpoch = 0;
   const scopes = new Map<string, VcpMemoryNote[]>();
   const client = {
@@ -52,6 +52,7 @@ function fixture(notes: CompanionMemory[]) {
     purgeScope: vi.fn(async (scope: VcpMemoryScope) => { scopes.delete(scope.scopeId); }),
   };
   const request = vi.fn(async (command: CompanionStorageCommand) => {
+    if (command.type === 'memory.outbox.pending') return { ok: true, memoryOutboxPending: false };
     if (command.type === 'world.clock') return { ok: true, worldClock: { realNow: '2026-10-23T04:00:00Z', virtualNow: '2026-10-23T04:00:00Z', timeZone: 'Asia/Shanghai', mode: 'realtime', speed: 1, backlog: false } };
     if (command.type === 'memory.snapshot') return { ok: true, memorySnapshot: { scopeId: 'original', revision, revocationEpoch, notes: corpus } };
     if (command.type === 'memory.lifecycle.state') return { ok: true, memoryLifecycleState: { revocationEpoch } };
@@ -65,12 +66,27 @@ function fixture(notes: CompanionMemory[]) {
   const get = vi.fn(async () => ({ client: client as unknown as VcpMemoryClient, profileKey: 'fixture' }));
   const service = new CompanionMemoryService({ request: request as never, runtime: controlledMemoryRuntime({ get, close: async () => undefined }),
     configFor: async () => ({ apiFormat: 'openai_chat', model: 'controlled-generation', apiKey: 'controlled-key', baseUrl: 'https://fixture.invalid' }), fetchFn: async () => { throw new Error('No network'); },
-    changed: () => undefined, report: () => undefined, busy: () => false });
+    changed: () => undefined, report: () => undefined, busy: () => false, ...options });
   return { service, client, scopes, get, request, setRevocationEpoch: (next: number) => { revocationEpoch = next; },
     setCorpus: (notes: CompanionMemory[], nextRevision: string) => { corpus = notes; revision = nextRevision; } };
 }
 
 describe('one physical corpus for memory filters, context and citation pages', () => {
+  it('reserves bounded queued and running recalls before the asset gate and releases capacity on cancellation', async () => {
+    let release!: () => void;
+    const gate = vi.fn(async () => new Promise<void>(resolve => { release = resolve; }));
+    const f = fixture([], { maxPendingRecalls: 2, maxPendingRecallsPerOwner: 1, validateAssets: gate });
+    const query = { companionId: 'owner', conversationId: 'private', query: 'facts' }, controller = new AbortController();
+    const first = f.service.search(query, 'passive', controller.signal), rejected = expect(first).rejects.toThrow();
+    try {
+      expect(gate).toHaveBeenCalledOnce(); expect(f.service.resourceSnapshot().recallAdmissions).toBe(1);
+      await expect(f.service.search(query)).rejects.toMatchObject({ code: 'VCP_MEMORY_NATIVE_CAPACITY' });
+      expect(gate).toHaveBeenCalledOnce(); expect(f.request).not.toHaveBeenCalled();
+      controller.abort(); release(); await rejected;
+      expect(f.service.resourceSnapshot()).toMatchObject({ recallAdmissions: 0, recallOwners: 0 });
+      gate.mockResolvedValue(); expect((await f.service.search(query)).ok).toBe(true);
+    } finally { release?.(); await f.service.close(); }
+  });
   it('reprojects a changed query timezone while reusing same-zone clocks and retaining immutable provenance', async () => {
     const original = note('actual', { occurredAt: '2035-03-10T23:30:00Z' }), f = fixture([original]), request = f.request.getMockImplementation()!;
     let timeZone = 'Asia/Shanghai', now = '2035-03-11T00:30:00Z';

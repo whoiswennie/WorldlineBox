@@ -5038,7 +5038,7 @@ async function startApplication(): Promise<void> {
               credential: config.apiKey, generate: async (context, signal, work) => {
                 await workspaceCompanionService?.validateAssetsForModel(input.ownerId);
                 const { generateCompanionText } = await import('./companions/model');
-                return generateCompanionText(context, { ...config, ownerId: input.ownerId, workPriority: work?.priority ?? 'foreground',
+                return generateCompanionText(context, { ...config, ownerId: input.ownerId, workPriority: work?.priority ?? 'foreground', accountingPurpose: work?.nativePrompt ? 'timeline' : 'other',
                   resolveAssetContext: (context, kind) => workspaceCompanionService!.prepareModelAssetContext(input.ownerId, context, kind, work?.nativePrompt) }, signal,
                   { fetchFn: (input, init) => net.fetch(input instanceof URL ? input.toString() : input, { ...init, credentials: 'omit' }), timeoutMs: 120000 });
               } });
@@ -5067,6 +5067,7 @@ async function startApplication(): Promise<void> {
     const command = parsed.data;
     const operation = workspaceTail.then(async () => {
       if (command.type === 'companion.assets.read' || command.type === 'companion.assets.prompt.save') return (await ensureCompanionService()).manageCompanionAssets(command);
+      if (command.type === 'model.resources.read' || command.type === 'model.resources.save') return (await ensureCompanionService()).manageModelResources(command);
       if (command.type.startsWith('memory.learning.')) return (await ensureCompanionService()).manageLearningSources(command as CompanionLearningWorkspaceCommand);
       if (command.type.startsWith('memory.documents.')) {
         const started = performance.now();

@@ -33,6 +33,7 @@ export const companionMemoryProcessingJobSchema = z.object({ id, kind: z.enum(['
   error: z.string().max(1000).optional(), preview: z.string().max(160).optional(), noteId: id.optional(), sourceMessageId: id.optional(), conversationId: id.optional(),
 });
 export const companionMemoryProcessingSchema = z.object({ companionId: id,
+  metrics: z.object({ sourceVersions: z.number().int().nonnegative(), originalEntries: z.number().int().nonnegative(), derivedEntries: z.number().int().nonnegative() }).optional(),
   schedule: companionMemoryOwnerScheduleSchema.optional(),
   summary: z.object({ pending: z.number().int().nonnegative(), running: z.number().int().nonnegative(),
     failed: z.number().int().nonnegative(), completed: z.number().int().nonnegative(), cancelled: z.number().int().nonnegative() }),

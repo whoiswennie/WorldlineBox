@@ -17,8 +17,10 @@ export function companionExecutionReadsetValidSync(db: CompanionConnection, valu
     if (!parsed.success || !parsed.data.complete || parsed.data.companionId !== owner || parsed.data.conversationId !== room) return false;
     const readset = parsed.data;
     if (!db.prepare('SELECT 1 FROM conversation_members WHERE conversation_id=? AND companion_id=?').get(room, owner)) return false;
+    if (readset.memoryReads?.some(memory => ports.frozenMemoryValid?.(owner, memory) !== true)) return false;
     if (readset.sources.some(source => !ports.sourceValid(owner, source.conversationId, source.id, source.checksum))
-      || readset.memories.some(note => !ports.memoryValid(owner, note.id, note.version))) return false;
+      || readset.memories.some(note => !readset.memoryReads?.some(read => read.id === note.id && read.version === note.version)
+        && !ports.memoryValid(owner, note.id, note.version))) return false;
     if (readset.frozenMemories?.some(memory => ports.frozenMemoryValid?.(owner, memory) !== true)) return false;
     for (const reference of readset.topics) {
       const found = db.prepare('SELECT data FROM companion_topics WHERE id=? AND conversation_id=?').get(reference.topicId, reference.conversationId) as { data: string } | undefined;

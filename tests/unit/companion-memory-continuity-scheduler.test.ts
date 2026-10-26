@@ -9,11 +9,14 @@ import { CompanionMemoryViewCache } from '../../src/main/companions/memory-view-
 import { VcpMemoryClient } from '../../src/main/vcp-memory/client';
 import type { VcpMemoryNote, VcpMemoryScope, VcpMemoryTimelineArtifacts, VcpMemoryTimelineRequest, VcpMemoryMessage } from '../../src/main/vcp-memory/contracts';
 import type { CompanionStorageCommand } from '../../src/shared/companion-storage';
+import { canonicalMemoryFiles } from '../fixtures/canonical-memory-files';
 
 vi.mock('electron', () => ({ utilityProcess: { fork: vi.fn() } }));
 const cleanups: Array<() => Promise<void>> = [];
 afterEach(async () => { for (const cleanup of cleanups.splice(0).reverse()) await cleanup(); vi.useRealTimers(); });
 class SchedulerClient extends VcpMemoryClient {
+  override readonly supportsDetachedRecall = false;
+  draining = false;
   readonly notes = new Map<string, VcpMemoryNote[]>();
   readonly artifacts = new Map<string, VcpMemoryTimelineArtifacts['agents']>();
   readonly pending = new Map<string, { resolve(): void; reject(error: Error): void }>();
@@ -26,7 +29,7 @@ class SchedulerClient extends VcpMemoryClient {
   override preprocess = vi.fn(async (_scope: VcpMemoryScope, messages: VcpMemoryMessage[]) => ({ messages, events: [] }));
   override timeline = vi.fn(async (scope: VcpMemoryScope, request: VcpMemoryTimelineRequest) => {
     if (request.operation === 'generateTimelines') {
-      await new Promise<void>((resolve, reject) => this.pending.set(scope.scopeId, { resolve, reject }));
+      if (!this.draining) await new Promise<void>((resolve, reject) => this.pending.set(scope.scopeId, { resolve, reject }));
       this.pending.delete(scope.scopeId);
       this.artifacts.set(scope.scopeId, [{ agentName: 'WorldlineBox', months: [{ month: String(request.options?.startMonth), sourceDigest: 'a'.repeat(64), content: 'old timeline', summary: 'old summary' }] }]);
     }
@@ -40,7 +43,7 @@ class SchedulerClient extends VcpMemoryClient {
   override purgeScope = vi.fn(async (scope: VcpMemoryScope) => { this.notes.delete(scope.scopeId); this.artifacts.delete(scope.scopeId); });
   override close = vi.fn(async () => undefined);
 }
-async function fixture(busy = false) {
+async function fixture(busy = false, options: { canonicalFiles?: boolean } = {}) {
   vi.useFakeTimers(); vi.setSystemTime(new Date('2026-10-21T00:00:00Z'));
   const root = await mkdtemp(path.join(tmpdir(), 'worldline-continuity-scheduler-'));
   cleanups.push(async () => {
@@ -60,16 +63,48 @@ async function fixture(busy = false) {
       store.request({ type: 'memory.outbox.complete', id: outbox.id, leaseToken: outbox.leaseToken, indexed: true });
     }
   }; index();
+  const config = { model: 'fixture', apiFormat: 'openai_chat' as const, baseUrl: 'http://fixture.invalid', apiKey: 'fixture-key' };
+  const files = options.canonicalFiles ? await canonicalMemoryFiles(root, store, config) : undefined;
+  if (files) cleanups.push(files.close);
   const client = new SchedulerClient(), report = vi.fn(), changed = vi.fn(), profile = { value: 'local-profile' };
   const request = vi.fn(async (command: CompanionStorageCommand) => {
-    const response = store.request(command); if (response.worldClock) response.worldClock.backlog = false; return response;
+    const response = files ? await files.request(command) : store.request(command);
+    if (response.worldClock) response.worldClock.backlog = false; return response;
   });
+  const modelFetch = vi.fn<typeof fetch>(async () => new Response(JSON.stringify({ choices: [{ message: { content: '{"notes":[]}' } }] })));
   const service = new CompanionMemoryService({ cacheRoot: path.join(root, 'views'), request, runtime: controlledMemoryRuntime({ get: async () => ({ client, profileKey: profile.value }), close: () => client.close() }),
-    configFor: async () => ({ model: 'fixture', apiFormat: 'openai_chat', baseUrl: 'http://fixture.invalid', apiKey: 'fixture-key' }),
-    fetchFn: vi.fn(async () => new Response(JSON.stringify({ choices: [{ message: { content: '{"notes":[]}' } }] }))), busy: () => busy, report, changed });
-  cleanups.push(() => service.close());
-  return { store, note, room, source, index, service, client, report, request, profile, root };
+    configFor: async () => ({ ...config }),
+    fetchFn: modelFetch, busy: () => busy, report, changed });
+  cleanups.push(async () => { client.draining = true; for (const pending of client.pending.values()) pending.resolve(); await service.close(); });
+  return { store, note, room, source, index, service, client, report, request, profile, root, modelFetch };
 }
+
+it('keeps two completed months intact across one hundred real annotation writes without fresh timeline generation', async () => {
+  const f = await fixture(), scope = { companionId: 'alpha', conversationId: f.room.id };
+  const earlier = f.store.appendMessage({ conversationId: f.room.id, authorId: 'user', content: '2026年9月12日，雨伞尚未归还。', replyDirective: 'none' });
+  f.store.request({ type: 'memory.record', ...scope, candidate: { content: earlier.content, occurredAt: '2026-09-12T10:00:00Z', tags: ['雨伞'],
+    sourceMessageIds: [earlier.id], evidence: [{ sourceMessageId: earlier.id, quote: earlier.content }] } }); f.index();
+  f.client.timeline.mockImplementation(async (view, request) => {
+    const agentName = request.agentName!, prior = f.client.artifacts.get(view.scopeId) ?? [{ agentName, months: [] }];
+    const agent = prior.find(agent => agent.agentName === agentName)!;
+    if (request.operation === 'generateTimelines') agent.months.push({ month: String(request.options?.startMonth), sourceDigest: 'a'.repeat(64), content: 'Controlled generated month', summary: 'Controlled summary' });
+    f.client.artifacts.set(view.scopeId, prior); return {};
+  });
+  const run = () => (f.service as unknown as { runContinuity(entrance: { companionId: string; conversationId: string }, generation: number): Promise<boolean> }).runContinuity(scope, 0);
+  await run(); await run();
+  expect(f.client.timeline.mock.calls.filter(([, request]) => request.operation === 'generateTimelines')).toHaveLength(2);
+  const before = f.store.request({ type: 'memory.snapshot', ...scope }).memorySnapshot!;
+  const nativeCalls = f.client.timeline.mock.calls.length, replacements = f.client.replace.mock.calls.length;
+  for (let index = 0; index < 100; index++) {
+    f.store.request({ type: 'memory.organize', ...scope, ids: [f.note.id], tags: ['雨伞', '标签' + index] }); f.index();
+    f.service.changed('alpha'); vi.setSystemTime(Date.now() + 301000); await run();
+  }
+  const after = f.store.request({ type: 'memory.snapshot', ...scope }).memorySnapshot!;
+  expect(after.semanticRevision).toBe(before.semanticRevision); expect(after.revocationEpoch).toBe(before.revocationEpoch);
+  expect(after.revision).not.toBe(before.revision);
+  expect(f.client.timeline.mock.calls.length - nativeCalls).toBe(0); expect(f.client.replace.mock.calls.length - replacements).toBe(0);
+  expect(f.client.purgeScope).not.toHaveBeenCalled(); expect(f.report).not.toHaveBeenCalled();
+});
 
 it('gives original passive RAG only authorized recent dialogue, preserves self role and neutralizes pasted marker declarations', async () => {
   const f = await fixture();
@@ -109,33 +144,47 @@ it.each([{ zone: 'Asia/Shanghai', month: '2035-01' }, { zone: 'UTC', month: '203
   expect(await cache.loadArtifacts('alpha:owner-v2', 'local-profile')).toMatchObject({ calendarTimeZone: test.zone });
 });
 
-it.each(['revision', 'profile'] as const)('does not publish a completed original model result after its %s changes', async change => {
+it.each(['source', 'profile'] as const)('does not publish a completed original model result after its %s is withdrawn', async change => {
   const f = await fixture(); f.service.schedule(0);
   await vi.waitFor(() => expect(f.client.pending.size, JSON.stringify({ errors: f.report.mock.calls.map(([error]) => String(error)), requests: f.request.mock.calls.slice(-8).map(([command]) => command.type) })).toBe(1), { timeout: 5000 });
   if (change === 'profile') f.profile.value = 'new-local-profile';
-  else {
-    const correction = f.store.appendMessage({ conversationId: f.room.id, authorId: 'user', content: 'alpha returned the umbrella.', replyDirective: 'none' });
-    f.store.request({ type: 'memory.revise', companionId: 'alpha', conversationId: f.room.id, id: f.note.id, expectedVersion: f.note.version,
-      candidate: { content: correction.content, tags: ['alpha'], sourceMessageIds: [correction.id], evidence: [{ sourceMessageId: correction.id, quote: correction.content }] } }); f.index();
-  }
+  else f.store.request({ type: 'memory.forget', companionId: 'alpha', conversationId: f.room.id, sourceMessageIds: [f.source.id] });
   [...f.client.pending.values()][0]!.resolve();
   await vi.waitFor(() => expect(f.report).toHaveBeenCalledWith(expect.objectContaining({ message: expect.stringContaining('不予发布') })));
   const cache = new CompanionMemoryViewCache(path.join(f.root, 'views'));
-  expect(await cache.loadArtifacts(`alpha:${f.room.id}`, 'local-profile')).toBeUndefined();
+  expect(await cache.loadArtifacts('alpha:owner-v2', 'local-profile')).toBeUndefined();
   expect(f.client.timeline.mock.calls.filter(([, request]) => request.operation === 'generateSummaries')).toHaveLength(0);
 });
 
-it('allows one capture job at the 15-second deadline during sustained foreground work', async () => {
-  const f = await fixture(true); f.service.schedule(0);
-  await vi.advanceTimersByTimeAsync(14999);
-  expect(f.request.mock.calls.filter(([command]) => command.type === 'memory.jobs.claim')).toHaveLength(0);
-  await vi.advanceTimersByTimeAsync(1);
-  await vi.waitFor(() => expect(f.store.request({ type: 'memory.status', companionId: 'alpha' }).memoryStatus?.completed).toBeGreaterThan(0));
-  expect(f.request.mock.calls.filter(([command]) => command.type === 'memory.jobs.claim')).toHaveLength(1);
-  expect(f.client.timeline).not.toHaveBeenCalled();
-  await vi.advanceTimersByTimeAsync(15000);
-  await vi.waitFor(() => expect(f.store.request({ type: 'memory.status', companionId: 'beta' }).memoryStatus?.completed).toBeGreaterThan(0));
-  expect(f.request.mock.calls.flatMap(([command]) => command.type === 'memory.jobs.claim' ? [command.companionId] : [])).toEqual(['alpha', 'beta']);
+it('finishes an already fixed lawful month when a newer ordinary body is recorded during generation', async () => {
+  const f = await fixture(); f.service.schedule(0);
+  await vi.waitFor(() => expect(f.client.pending.size).toBe(1));
+  const correction = f.store.appendMessage({ conversationId: f.room.id, authorId: 'user', content: 'alpha returned the umbrella later.', replyDirective: 'none' });
+  f.store.request({ type: 'memory.revise', companionId: 'alpha', conversationId: f.room.id, id: f.note.id, expectedVersion: f.note.version,
+    candidate: { content: correction.content, tags: ['alpha'], sourceMessageIds: [correction.id], evidence: [{ sourceMessageId: correction.id, quote: correction.content }] } }); f.index();
+  [...f.client.pending.values()][0]!.resolve();
+  await vi.waitFor(() => expect(f.service.processingFor('alpha').some(job => job.status === 'completed')).toBe(true));
+  expect(f.client.timeline.mock.calls.filter(([, request]) => request.operation === 'generateSummaries')).toHaveLength(1);
+  expect(f.report).not.toHaveBeenCalled();
+  expect(await new CompanionMemoryViewCache(path.join(f.root, 'views')).loadArtifacts('alpha:owner-v2', 'local-profile')).toBeDefined();
+});
+
+it('captures a quiet eligible episode during sustained foreground work without using a busy-work delay', async () => {
+  const f = await fixture(true, { canonicalFiles: true });
+  const fresh = f.store.appendMessage({ conversationId: f.room.id, authorId: 'user', content: '本次新约定仍需核对真实结果。', replyDirective: 'none' });
+  f.service.schedule(0); await vi.advanceTimersByTimeAsync(59000);
+  expect(f.modelFetch).not.toHaveBeenCalled();
+  await vi.advanceTimersByTimeAsync(3000);
+  const alphaCalls = () => f.modelFetch.mock.calls.flatMap(([, init]) => {
+    const data = JSON.parse(JSON.parse(String(init?.body)).messages[1].content) as { companion: { id: string }; messages: Array<{ id: string }> };
+    return data.companion.id === 'alpha' ? [data] : [];
+  });
+  await vi.waitFor(() => expect(alphaCalls().some(data => data.messages.some(message => message.id === fresh.id)), JSON.stringify({
+    captureFailures: f.request.mock.calls.flatMap(([command]) => command.type === 'memory.jobs.fail' ? [command.error] : []),
+    recentCommands: f.request.mock.calls.slice(-20).map(([command]) => command.type),
+  })).toBe(true));
+  expect(alphaCalls()).toHaveLength(1);
+  expect(f.store.request({ type: 'memory.status', companionId: 'alpha' }).memoryStatus?.running).toBe(0);
 });
 
 it('deduplicates native chunks into one journal hit', async () => {
@@ -164,13 +213,14 @@ it('does not report a passive injection when the native preprocessor returned on
 
 it('settles cancellation during capture before recall without waiting on its own invalidation', async () => {
   const f = await fixture(true), originalRequest = f.request.getMockImplementation()!;
+  f.store.appendMessage({ conversationId: f.room.id, authorId: 'user', content: '这条新来源等待本次可取消的捕获。', replyDirective: 'none' });
   let held = false, release!: () => void;
   const gate = new Promise<void>(resolve => { release = resolve; });
   f.request.mockImplementation(async command => {
     if (command.type === 'messages' && !held) { held = true; await gate; }
     return originalRequest(command);
   });
-  f.service.schedule(0); await vi.advanceTimersByTimeAsync(15000);
+  f.service.schedule(0); await vi.advanceTimersByTimeAsync(61000);
   await vi.waitFor(() => expect(held).toBe(true));
   const canceled = f.service.invalidate('alpha'); release(); await canceled;
   expect(f.client.search).not.toHaveBeenCalled();

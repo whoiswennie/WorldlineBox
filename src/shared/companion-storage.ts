@@ -6,11 +6,17 @@ import { companionTaskPageStorageCommand, companionTaskResolveStorageCommand } f
 import { companionTaskInspectCommand, companionTaskContentCommand, companionTaskTimelineRecordCommand } from './companion-task-detail';
 import { companionAgentRunCommands, companionAgentRunSchema } from './companion-agent-run';
 import { companionExecutionReadsetSchema, companionFrozenMemoryDependencySchema } from './companion-execution-evidence';
+import { companionPreparedRecallReferenceSchema } from './companion-prepared-recall';
 import { companionThoughtAuthorizationSchema } from './companion-activity-thought';
 import { companionExperienceCommands, companionExperiencePublishSchema } from './companion-experience';
 import { companionKnowledgeCommandSchema } from './companion-knowledge-store';
 import { companionSocialReplyReceiptSchema } from './companion-social-reply';
 import { z } from 'zod';
+import { companionMemoryInvestigationSchema } from './companion-memory-investigation';
+import { companionMemoryHistoryDescriptorSchema, companionMemoryHistoryOutboxSchema } from './companion-memory-history';
+import { companionWorldProposalSchema } from './companion-world-proposals';
+import { companionMemoryProjectionCommands, companionMemoryProjectionStateSchema, companionMemoryProjectionPageSchema } from './companion-memory-projection';
+import { companionModelResourceCommands, companionModelResourceAdmissionSchema, companionModelResourceUsageSchema } from './companion-model-resources';
 import { companionLearningStorageCommands, companionLearningStatusSchema, companionLearningJobSchema,
   companionLearningAssetSnapshotSchema, companionLearningAssetValidationSchema } from './companion-learning';
 import { companionLearningGoalStorageCommands, companionLearningGoalSchema, companionLearningGoalPageSchema, companionLearningGoalRoundPageSchema, companionLearningGoalJobSchema } from './companion-learning-goals';
@@ -30,7 +36,7 @@ import { dshTaskSpecSchema } from './dsh-task-spec';
 import { companionLoopCheckpointSchema, companionWorkSchema } from './companion-loop';
 import { companionMemoryStorageCommands, companionMemoryJobSchema, companionMemoryDomainSchema, companionMemoryOutboxSchema, companionMemorySourceOutboxSchema, companionMemorySnapshotSchema, companionMemoryPolicySchema, companionMemoryProhibitionSchema } from './companion-memory';
 import { companionMemoryLibraryIndexStateSchema, companionMemoryLibraryIndexPageSchema, companionMemoryLibraryChangesSchema,
-  companionMemoryLifecycleStateSchema, companionMemoryLifecycleChangesSchema } from './companion-memory';
+  companionMemoryLifecycleStateSchema, companionMemoryLifecycleChangesSchema, companionMemoryCaptureContributionsSchema, companionCaptureProposalSchema } from './companion-memory';
 import { companionScheduleStorageCommands, companionScheduleOccurrenceSchema, companionScheduleSchema } from './companion-schedule';
 import { companionStateStorageCommands, companionRuntimeStateSchema } from './companion-state';
 import { companionRoutineStorageCommands } from './companion-routine';
@@ -90,6 +96,7 @@ const fileToolAttachmentSchema = storedCompanionAttachmentSchema.refine(value =>
 export const createCompanionActionSchema = actionSchema.omit({ id: true, createdAt: true, updatedAt: true });
 export type CreateCompanionAction = z.infer<typeof createCompanionActionSchema>;
 export const companionTaskCheckpointSchema = z.strictObject({ prompt: z.string().min(1).max(65536),
+  memoryPreparation: companionPreparedRecallReferenceSchema.optional(),
   feedbackRecall: activityPassiveRecallSchema.extend({ memories: z.array(memorySchema).max(100), sources: z.array(messageSchema).max(100) }).optional(),
   dshTask: dshTaskSpecSchema.optional(),
   activityThought: companionThoughtAuthorizationSchema.optional(),
@@ -114,6 +121,8 @@ export const companionProactiveStateSchema = z.strictObject({
 export type CompanionProactiveState = z.infer<typeof companionProactiveStateSchema>;
 
 export const companionStorageCommandSchema = z.discriminatedUnion('type', [
+  ...companionMemoryProjectionCommands,
+  ...companionModelResourceCommands,
   companionTaskControlStopCommand,
   companionTaskPageStorageCommand, companionTaskResolveStorageCommand, companionTaskInspectCommand, companionTaskContentCommand, companionTaskTimelineRecordCommand,
   ...companionTaskStopStorageCommands,
@@ -263,10 +272,14 @@ export const companionStorageResponseSchema = companionsResponseSchema.extend({
   loop: companionLoopCheckpointSchema.optional(), memoryCorpusStamp: z.string().optional(),
   work: companionWorkSchema.optional(), works: z.array(companionWorkSchema).optional(),
   memoryJob: companionMemoryJobSchema.optional(),
+  memoryCaptureContributions: companionMemoryCaptureContributionsSchema.optional(),
+  memoryCaptureProposal: companionCaptureProposalSchema.optional(),
+  memoryOutboxPending: z.boolean().optional(),
   memorySourceOutbox: companionMemorySourceOutboxSchema.optional(), memorySourceOutboxAccepted: z.boolean().optional(),
   memorySourceChangedCompanionIds: z.array(companionIdSchema).optional(), memorySourcePendingOwners: z.array(companionIdSchema).optional(),
   assetProfileInitialized: z.boolean().optional(),
   assetPortraitInitialized: z.boolean().optional(),
+  modelResourcesInitialized: z.boolean().optional(), modelResourceAdmission: companionModelResourceAdmissionSchema.optional(), modelResourceUsage: companionModelResourceUsageSchema.optional(),
   memoryTagJob: companionMemoryTagJobSchema.optional(), memoryTagStatus: companionMemoryTagStatusSchema.optional(),
   memoryDomains: z.array(companionMemoryDomainSchema).optional(), memoryOutbox: companionMemoryOutboxSchema.optional(),
   memoryOutboxDisposition: z.strictObject({ state: z.enum(['completed', 'stale']), reason: z.string().max(1000).optional() }).optional(),
@@ -274,6 +287,9 @@ export const companionStorageResponseSchema = companionsResponseSchema.extend({
   memorySnapshot: companionMemorySnapshotSchema.optional(),
   memorySearchTimings: z.record(z.string(), z.number().nonnegative()).optional(),
   memoryLibraryIndexState: companionMemoryLibraryIndexStateSchema.optional(),
+  memoryProjectionState: companionMemoryProjectionStateSchema.optional(),
+  memoryProjectionPage: companionMemoryProjectionPageSchema.optional(),
+  memoryProjectionDisposition: z.enum(['capacity', 'reset_required']).optional(),
   memoryLibraryIndexPage: companionMemoryLibraryIndexPageSchema.optional(),
   memoryLibraryChanges: companionMemoryLibraryChangesSchema.optional(),
   memoryPolicies: z.array(companionMemoryPolicySchema).optional(),
@@ -302,6 +318,10 @@ export const companionStorageResponseSchema = companionsResponseSchema.extend({
   scheduleOccurrence: companionScheduleOccurrenceSchema.optional(), scheduleOccurrences: z.array(companionScheduleOccurrenceSchema).optional(),
   runtimeState: companionRuntimeStateSchema.optional(),
   world: companionWorldSnapshotSchema.optional(), worldWork: companionWorldWorkSchema.optional(), worldJob: companionWorldJobSchema.optional(),
+  worldProposal: companionWorldProposalSchema.optional(),
+  memoryInvestigations: z.array(companionMemoryInvestigationSchema).optional(), memoryInvestigation: companionMemoryInvestigationSchema.optional(),
+  memoryHistoryDescriptor: companionMemoryHistoryDescriptorSchema.optional(), memoryHistoryOutbox: companionMemoryHistoryOutboxSchema.optional(),
+  memoryHistoryPendingOwners: z.array(z.string()).optional(), memoryHistoryOutboxAccepted: z.boolean().optional(),
   socialConversation: companionSocialConversationSchema.optional(), socialMessage: companionSocialMessageSchema.optional(), socialJob: companionSocialJobSchema.optional(),
   socialReplyReceipt: companionSocialReplyReceiptSchema.optional(),
   socialGameContext: companionSocialGameContextSchema.optional(),

@@ -11,7 +11,7 @@ describe('shared VCP process permits', () => {
     const rejected = expect(waiting).rejects.toThrow('cancel background');
     await new Promise(resolve => setTimeout(resolve, 25));
     const reused = await broker.acquire('foreground', { deadline: Date.now() + 100, assertCurrent() {}, open: vi.fn() });
-    expect(broker.snapshot()).toEqual({ processes: 1, active: 1, limit: 1 });
+    expect(broker.snapshot()).toMatchObject({ processes: 1, active: 1, limit: 1, outstanding: 3, waiting: 1 });
     expect(open).not.toHaveBeenCalled();
     reused.release(); cancelled = true; await rejected;
     first.release(); broker.retired('foreground', identity); await broker.close();

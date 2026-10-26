@@ -41,7 +41,12 @@ class TimelinePort extends VcpMemoryClient {
 }
 
 const fixtures: Array<{ root: string; store: CompanionsStore; service: CompanionMemoryService }> = [];
-beforeEach(() => vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] }));
+beforeEach(() => {
+  // Capture eligibility uses real host timestamps as well as scheduler timers.
+  // Keep them on the same isolated clock and pass the natural quiet interval.
+  vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] });
+  vi.setSystemTime('2026-10-27T10:00:00Z');
+});
 afterEach(async () => {
   for (const fixture of fixtures.splice(0)) {
     await fixture.service.close(); fixture.store.close();
@@ -99,8 +104,10 @@ function indexed(f: ReturnType<typeof fixture>, ownerIndex: number, occurredAt?:
       tags: [], ...(occurredAt ? { occurredAt } : {}) } }).memories![0]!;
   const outbox = f.store.request({ type: 'memory.outbox.claim', companionId: f.seeds[ownerIndex]!.id }).memoryOutbox!;
   f.store.request({ type: 'memory.outbox.complete', id: outbox.id, leaseToken: outbox.leaseToken, indexed: true });
-  const capture = f.store.request({ type: 'memory.jobs.claim', companionId: f.seeds[ownerIndex]!.id }).memoryJob!;
-  f.store.request({ type: 'memory.jobs.complete', id: capture.id, leaseToken: capture.leaseToken, notes: [] });
+  // This exact source body and full quotation were proactively recorded. The
+  // host settles coverage without leasing or paying for duplicate extraction.
+  expect(f.store.request({ type: 'memory.jobs.claim', companionId: f.seeds[ownerIndex]!.id }).memoryJob).toBeUndefined();
+  expect(f.store.request({ type: 'memory.status', companionId: f.seeds[ownerIndex]!.id }).memoryStatus).toMatchObject({ pending: 0, running: 0 });
   return note;
 }
 
@@ -129,38 +136,58 @@ describe('automatic memory fairness across the complete active owner directory',
     expect(f.fetchFn).toHaveBeenCalledTimes(1);
   });
 
-  it('retains one capture per busy admission while reaching later owners on subsequent automatic timers', async () => {
-    vi.useRealTimers(); vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] });
+  it('maintains busy foreground work with bounded capture concurrency and no duplicate or starved later owner', async () => {
     const f = fixture(65); f.setBusy(true);
-    for (const index of [62, 63, 64]) source(f, index);
+    const messages = [62, 63, 64].map(index => source(f, index));
+    const respond = f.fetchFn.getMockImplementation()!;
+    let live = 0, maximum = 0;
+    f.fetchFn.mockImplementation(async (...args) => {
+      live++; maximum = Math.max(maximum, live);
+      try { return await respond(...args); } finally { live--; }
+    });
     f.service.schedule(0); await pass(f.service, 1);
     expect(f.fetchFn).not.toHaveBeenCalled();
     for (let round = 0; round < 8 && f.fetchFn.mock.calls.length < 3; round++) {
-      const before = f.fetchFn.mock.calls.length;
       await pass(f.service, 15_001);
-      expect(f.fetchFn.mock.calls.length - before).toBeLessThanOrEqual(1);
+      expect(maximum).toBeLessThanOrEqual(2);
     }
     expect(f.fetchFn).toHaveBeenCalledTimes(3);
+    expect(live).toBe(0); expect(maximum).toBeGreaterThan(0);
+    expect(f.requests.filter(command => command.type === 'memory.jobs.complete')).toHaveLength(3);
+    for (const message of messages) expect(f.fetchFn.mock.calls.filter(call => JSON.stringify(call).includes(message.content))).toHaveLength(1);
     for (const index of [62, 63, 64]) expect(f.store.request({ type: 'memory.status', companionId: f.seeds[index]!.id }).memoryStatus).toMatchObject({ pending: 0, completed: 1 });
   });
 
   it('preserves the two-owner capture concurrency limit with actual leased SQLite jobs', async () => {
     const f = fixture(3), releases: Array<() => void> = [];
-    let live = 0, maximum = 0;
+    let live = 0, maximum = 0, releasing = false;
     f.fetchFn.mockImplementation(async () => {
       live++; maximum = Math.max(maximum, live);
-      await new Promise<void>(resolve => releases.push(resolve)); live--;
+      if (!releasing) await new Promise<void>(resolve => releases.push(resolve)); live--;
       return new Response(JSON.stringify({ choices: [{ message: { content: '{"notes":[]}' } }] }));
     });
-    for (let index = 0; index < 3; index++) source(f, index);
-    f.service.schedule(0); await vi.advanceTimersByTimeAsync(1);
-    expect(f.fetchFn).toHaveBeenCalledTimes(2);
-    expect(f.requests.filter(command => command.type === 'memory.jobs.claim')).toHaveLength(2);
-    releases.splice(0).forEach(release => release());
-    await vi.waitFor(() => expect(f.fetchFn).toHaveBeenCalledTimes(3));
-    releases.splice(0).forEach(release => release()); await pass(f.service, 1);
-    expect(maximum).toBe(2);
-    for (let index = 0; index < 3; index++) expect(f.store.request({ type: 'memory.status', companionId: f.seeds[index]!.id }).memoryStatus).toMatchObject({ pending: 0, completed: 1 });
+    try {
+      for (let index = 0; index < 3; index++) source(f, index);
+      f.service.schedule(0); await vi.advanceTimersByTimeAsync(1);
+      expect(f.fetchFn).not.toHaveBeenCalled();
+      // The pre-quiet poll legitimately checks pending work but cannot lease
+      // it. Count only the next admission after the natural quiet deadline.
+      await vi.advanceTimersByTimeAsync(59_998);
+      expect(f.fetchFn).not.toHaveBeenCalled();
+      const beforeEligible = f.requests.length;
+      await vi.advanceTimersByTimeAsync(2);
+      await vi.waitFor(() => expect(f.fetchFn).toHaveBeenCalledTimes(2));
+      expect(f.requests.slice(beforeEligible).filter(command => command.type === 'memory.jobs.claim')).toHaveLength(2);
+      releases.splice(0).forEach(release => release());
+      await vi.waitFor(() => expect(f.fetchFn).toHaveBeenCalledTimes(3));
+      releases.splice(0).forEach(release => release()); await pass(f.service, 1);
+      expect(maximum).toBe(2);
+      for (let index = 0; index < 3; index++) expect(f.store.request({ type: 'memory.status', companionId: f.seeds[index]!.id }).memoryStatus).toMatchObject({ pending: 0, completed: 1 });
+    } finally {
+      // Failure must not strand this deliberately held provider and poison all
+      // later fixtures while service.close waits for the real leased work.
+      releasing = true; releases.splice(0).forEach(release => release());
+    }
   });
 
   it('uses the current active directory after removals and a newly activated owner', async () => {

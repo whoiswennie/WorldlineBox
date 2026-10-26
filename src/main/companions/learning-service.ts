@@ -2,13 +2,16 @@ import type { AssetSummary } from '../../shared/asset-types';
 import type { CompanionLearningGrant, CompanionLearningJob, CompanionLearningStatus, CompanionLearningWorkspaceCommand } from '../../shared/companion-learning';
 import type { CompanionStorageCommand, CompanionStorageResponse } from '../../shared/companion-storage';
 import type { CompanionWorkspaceResponse } from '../../shared/companion-workspace';
+import type { CompanionMemoryInvestigation } from '../../shared/companion-memory-investigation';
+
+export type CompanionLearningPendingQuestion = Pick<CompanionMemoryInvestigation, 'id'> & { question: string; hypothesis: string; nonFactual: true };
 
 export interface CompanionLearningAssets {
   catalog(): Promise<NonNullable<CompanionLearningStatus['libraries']>>;
   grant(input: { libraryId: string; folderId?: string }): Promise<{ libraryName: string; libraryPath: string; folderName?: string }>;
   /** Existing authorization metadata only; may reopen its exact persisted library. */
   describe?(grant: CompanionLearningGrant): Promise<{ libraryName: string; libraryPath: string; folderName?: string }>;
-  page(grant: CompanionLearningGrant, afterId?: string): Promise<{ assets: AssetSummary[]; hasMore: boolean; nextCursor?: string }>;
+  page(grant: CompanionLearningGrant, afterId?: string, focus?: { pendingQuestions: CompanionLearningPendingQuestion[] }): Promise<{ assets: AssetSummary[]; hasMore: boolean; nextCursor?: string }>;
   asset?(grant: CompanionLearningGrant, assetId: string): Promise<AssetSummary | undefined>;
   read(grant: CompanionLearningGrant, asset: AssetSummary): Promise<{ content: string; revisionId: string; truncated: boolean }>;
 }
@@ -67,9 +70,17 @@ export class CompanionLearningService {
       signal.throwIfAborted();
       if (this.options.blocked?.(owner) || this.options.ready && !await this.options.ready(owner, workId, signal, job)) throw new CompanionLearningWaitingError('等待伙伴醒来或完成手头的事情。');
       signal.throwIfAborted();
-      const page = await this.options.assets.page(job.grant, job.afterAssetId);
+      const queued = job.grant.autonomous ? (await this.request({ type: 'world.investigations.list', companionId: owner, limit: 20 })).memoryInvestigations ?? [] : [];
+      const pendingQuestions: CompanionLearningPendingQuestion[] = queued.filter(item => item.status === 'pending').slice(0, 3)
+        .map(item => ({ id: item.id, question: item.proposal.question, hypothesis: item.proposal.hypothesis, nonFactual: true }));
+      const page = await this.options.assets.page(job.grant, job.afterAssetId, { pendingQuestions });
       signal.throwIfAborted();
-      const asset = job.assetId ? page.assets.find(asset => asset.assetId === job.assetId) : page.assets[0];
+      // Questions can prioritize a matching title within the already authorized
+      // bounded page. They cannot choose a new root, grant or network source,
+      // interrupt a partial read, or replace an explicit learning goal.
+      const focused = page.assets.find(asset => { const title = asset.displayName.replace(/\.[^.]+$/u, '').trim();
+        return title.length >= 2 && pendingQuestions.some(item => item.question.includes(title)); });
+      const asset = job.assetId ? page.assets.find(asset => asset.assetId === job.assetId) : focused ?? page.assets[0];
       if (!asset) {
         await this.request({ type: 'learning.advance', id: job.id, leaseToken: job.leaseToken, afterAssetId: job.assetId ?? page.nextCursor, more: !!job.assetId || page.hasMore,
           ...(page.assets.length ? { reason: '上次阅读的资料已经移动或删除，正在继续核对。' } : {}) }); return;

@@ -9,6 +9,7 @@ import { companionPeerResponsibilitySchema } from './companion-peer-activity';
 import { companionMemoryContextEvidenceSchema } from './companion-memory-context-evidence';
 import { companionMemoryProcedureContextListSchema } from './companion-procedure';
 import { companionMemoryFileReceiptsSchema } from './companion-memory-files';
+import { companionMemorySelectionSchema } from './companion-memory-selection';
 const id = z.string().regex(/^[a-zA-Z0-9_-]{1,100}$/);
 export const activityPlanSchema = z.strictObject({ summary: z.string().trim().min(1).max(6000),
   nextSteps: z.array(z.string().trim().min(1).max(1000)).max(16),
@@ -40,6 +41,7 @@ export type CompanionActivityMemoryIntent = z.infer<typeof activityMemoryIntentS
 /** Private host receipt scoped to the whole sustained task, including an empty
  * result. Per-step observations and explicit memory tools remain independent. */
 export const activityPassiveRecallSchema = z.strictObject({ prepared: z.literal(true), context: z.strictObject({ text: z.string(), revision: z.string(),
+  selection: companionMemorySelectionSchema.optional(),
   profileKey: z.string(), proceduralStatus: companionMemoryProcedureContextListSchema.optional(), fileReceipts: companionMemoryFileReceiptsSchema.optional(), evidence: companionMemoryContextEvidenceSchema.optional() }).optional(),
   authorizedCorpusEmpty: z.boolean().optional(), authorizedCorpusRevision: z.string().optional() });
 export type CompanionActivityPassiveRecall = z.infer<typeof activityPassiveRecallSchema>;

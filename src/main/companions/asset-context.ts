@@ -59,12 +59,14 @@ export function companionAssetReplyIdentity(input: CompanionReplyInput, context:
  * actual tool authority remain enforced by the host. No built-in role fallback. */
 export function assembleCompanionAssetContext(context: { system: string; user: string }, snapshot: CompanionAssetProfileSnapshot,
   kind: 'reply' | 'structured' | 'text'): { system: string; user: string } {
+  // Only the authenticated native transport sends an empty system slot. Its
+  // already rendered user template stays byte-for-byte opaque, even if an
+  // editable template happens to produce JSON. Guidance is a separate live
+  // owner module, not another copy of the unexpanded native template.
+  const nativeFocus = kind === 'text' && !context.system.trim();
   let data: Record<string, unknown> | undefined;
-  try { const parsed: unknown = JSON.parse(context.user); if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) data = parsed as Record<string, unknown>; } catch { /* Native VCP focus is plain text. */ }
-  // Native focusing has already rendered the live owner template into its
-  // immutable prepared package. Do not append an unexpanded template again.
-  if (kind === 'text' && !data && !context.system.trim()) return context;
-  const purpose = typeof data?.purpose === 'string' ? data.purpose : kind === 'reply'
+  if (!nativeFocus) try { const parsed: unknown = JSON.parse(context.user); if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) data = parsed as Record<string, unknown>; } catch { /* Some text contracts use plain input. */ }
+  const purpose = nativeFocus ? 'vcp_focus_guidance' : typeof data?.purpose === 'string' ? data.purpose : kind === 'reply'
     ? data?.event === 'action_result' ? 'companion_action_feedback' : 'companion_reply' : 'default';
   const promptTemplate = snapshot.prompts[purpose] ?? snapshot.prompts.default;
   const prompt = promptTemplate && renderCompanionBehavior(promptTemplate, { ...snapshot.profile, id: snapshot.companionId,

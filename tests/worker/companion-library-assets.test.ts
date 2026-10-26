@@ -49,7 +49,7 @@ it('maps only the fixed companion text directory into its owning asset library',
 
 it('prunes only the canonical owner cognition tree and host sidecars while retaining real profile, prompt, diary and source assets', () => {
   const f = observedFixture();
-  const visible = ['alice/profile.md', 'alice/提示词/manifest.json', 'alice/提示词/对话.md', 'alice/日记/day.md', 'alice/来源/source.md',
+  const visible = ['alice/profile.md', 'alice/提示词/manifest.json', 'alice/提示词/对话.md', 'alice/日记/day.md', 'alice/来源/source.md', 'alice/记忆历史/note-one/r1-history.md',
     'alice/日记/.认知索引/user-authored.md', 'alice/日记/同步状态.md', 'alice/日记/.同步状态.json'];
   const technical = ['alice/.认知索引/hot/index.sqlite', 'alice/.认知索引/cold/tmp/chunk.bin', 'alice/.同步状态.json', 'alice/.时间线索引.json',
     'alice/同步状态.md', 'alice/日记/day.md.meta.json', 'alice/来源/source.md.meta.json', 'alice/profile.md.12345678-1234-4234-8234-123456789abc.tmp'];
@@ -82,7 +82,7 @@ it('silences internal change and rename storms for an existing root even without
   const reconcile = vi.spyOn(f.service as unknown as { runWatcherReconciliation(...args: unknown[]): Promise<void> }, 'runWatcherReconciliation');
   const enumerate = vi.spyOn(f.service as unknown as { enumerateSourcesAsync(...args: unknown[]): Promise<unknown> }, 'enumerateSourcesAsync');
   f.changes.length = 0;
-  const generated = ['alice/.认知索引/hot/index.sqlite', 'alice/.认知索引/hot/index.sqlite-wal', 'alice/.同步状态.json', 'alice/.时间线索引.json',
+  const generated = ['alice/.认知索引/hot/index.sqlite', 'alice/.认知索引/hot/index.sqlite-wal', 'alice/.认知索引/历史发布/durable-job.tmp', 'alice/.同步状态.json', 'alice/.时间线索引.json',
     'alice/同步状态.md', 'alice/日记/real.md.meta.json', 'alice/来源/original.md.meta.json',
     'alice/.同步状态.json.12345678-1234-4234-8234-123456789abc.tmp', 'alice/提示词/对话.md.12345678-1234-4234-8234-123456789abc.tmp'];
   for (const relative of generated) put(f.memoryRoot, relative);

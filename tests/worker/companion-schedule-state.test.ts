@@ -183,7 +183,9 @@ describe('sourced companion runtime state', () => {
 
   it('validates exact evidence and commits an automatic state proposal with its leased extraction', () => {
     const { store, scope } = fixture(), message = store.appendMessage({ conversationId: scope.conversationId, authorId: 'user', content: '我支持你，也尊重你的选择。' });
-    const job = store.request({ type: 'memory.jobs.claim' }).memoryJob!;
+    // Exercise the leased state/evidence transaction, independently of quiet.
+    const job = store.request({ type: 'memory.jobs.claim', companionId: scope.companionId, force: true }).memoryJob!;
+    expect(job.sourceMessageIds).toEqual([message.id]);
     expect(() => store.request({ type: 'memory.jobs.complete', id: job.id, leaseToken: job.leaseToken, notes: [], stateProposal: proposal(message, { evidence: [{ sourceMessageId: message.id, quote: '捏造来源' }] }) })).toThrow('原文');
     expect(store.request({ type: 'memory.status', ...scope }).memoryStatus?.running).toBe(1);
     store.request({ type: 'memory.jobs.complete', id: job.id, leaseToken: job.leaseToken, notes: [], stateProposal: proposal(message, { expression: 'playful', focus: '讨论选择', appraisals: [{ type: 'support', target: 'user', intensity: 1, confidence: 1 }] }) });
@@ -250,7 +252,8 @@ describe('sourced companion runtime state', () => {
 
   it('completes a leased state extraction harmlessly when its source is withdrawn mid-flight', () => {
     const { store, scope } = fixture(), source = store.appendMessage({ conversationId: scope.conversationId, authorId: 'user', content: '我支持你，暂时的私密计划。' });
-    const job = store.request({ type: 'memory.jobs.claim' }).memoryJob!;
+    const job = store.request({ type: 'memory.jobs.claim', companionId: scope.companionId, force: true }).memoryJob!;
+    expect(job.sourceMessageIds).toEqual([source.id]);
     store.request({ type: 'memory.forget', ...scope, sourceMessageIds: [source.id] });
     expect(() => store.request({ type: 'memory.jobs.complete', id: job.id, leaseToken: job.leaseToken, notes: [],
       stateProposal: proposal(source, { focus: source.content, appraisals: [{ type: 'support', target: 'user', intensity: 1, confidence: 1 }] }) })).not.toThrow();

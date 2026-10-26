@@ -154,7 +154,15 @@ export class CompanionResetStore {
   private ownerSteps(job: Job): Array<[string, string, unknown[], ((items: Row[]) => void)?]> {
     const id = job.companionId;
     return [
-      ...['companion_memory_source_outbox', 'companion_memory_procedure_outcomes', 'companion_memory_lifecycle_state', 'companion_memory_changes', 'companion_memory_capture_episodes',
+      ...['companion_memory_history_outbox', 'companion_memory_history_dependencies', 'companion_memory_history_sources', 'companion_memory_history_files']
+        .map(table => [table, 'companion_id=?', [id]] as [string, string, unknown[]]),
+      // Reset's durable boundary already blocks this owner. After withdrawal,
+      // remove its actual revision rows through the note FK, not just its live
+      // text. Otherwise forgotten SQL bodies and old tags survive forever.
+      ['vcp_note_dependencies', 'note_id IN(SELECT id FROM vcp_memory_notes WHERE companion_id=?)', [id]],
+      ['vcp_memory_notes', 'companion_id=?', [id]],
+      ...['companion_memory_projection_mutations', 'companion_memory_projection_state', 'vcp_memory_outbox', 'vcp_memory_scopes', 'vcp_memory_management_epochs', 'vcp_memory_management_totals',
+        'companion_memory_investigations', 'companion_memory_evidence_versions', 'companion_memory_delivery_owners', 'companion_memory_source_outbox', 'companion_memory_procedure_outcomes', 'companion_memory_lifecycle_state', 'companion_memory_changes', 'companion_memory_capture_episodes',
         'companion_memory_maintenance_owners', 'companion_memory_maintenance_sessions', 'companion_memory_maintenance_sources']
         .map(table => [table, 'companion_id=?', [id]] as [string, string, unknown[]]),
       ['companion_document_catalog', 'companion_id=?', [id]],
@@ -175,8 +183,8 @@ export class CompanionResetStore {
       ['companion_learning_observed_assets', 'companion_id=?', [id]],
       ['companion_learning_reads', 'companion_id=?', [id]],
       ['companion_learning_grants', 'companion_id=?', [id]],
-      ['vcp_note_source_history', 'note_id IN(SELECT id FROM vcp_memory_notes WHERE companion_id=?)', [id]],
       ...['vcp_capture_jobs', 'vcp_source_observers', 'vcp_source_blocks', 'vcp_source_prohibitions', 'vcp_operation_receipts'].map(table => [table, 'companion_id=?', [id]] as [string, string, unknown[]]),
+      ['companion_memory_statistics', 'companion_id=?', [id]],
       ['companion_schedule_occurrences', 'schedule_id IN(SELECT id FROM companion_schedules WHERE companion_id=?)', [id]],
       ['companion_work_order_audit', 'order_id IN(SELECT id FROM companion_work_orders WHERE companion_id=?)', [id]],
       ['companion_work_orders', 'companion_id=?', [id]],
@@ -355,11 +363,11 @@ export class CompanionResetStore {
         if (job.phase === 'rooms') { count = this.rooms(job, limit); if (!count) job.phase = 'journals'; }
         // Each note also removes source, vector and history links. Keep this
         // denser phase smaller so one owner does not monopolize the Worker.
-        else if (job.phase === 'journals') { count = this.memoryBatch(job, Math.min(limit, 100)); if (!count) job.phase = 'owner-records'; }
+        else if (job.phase === 'journals') { count = this.memoryBatch(job, Math.min(limit, 32)); if (!count) job.phase = 'owner-records'; }
         else if (job.phase === 'owner-records') {
           const step = this.ownerSteps(job)[job.progress.step];
           if (!step) job.phase = 'metadata';
-          else { count = this.removeRows(step[0], step[1], step[2], limit, step[3]); if (!count) job.progress.step++; }
+          else { count = this.removeRows(step[0], step[1], step[2], step[0] === 'vcp_memory_notes' ? Math.min(limit, 32) : limit, step[3]); if (!count) job.progress.step++; }
         } else if (job.phase === 'metadata') { count = this.metadata(job, limit); if (!count) job.phase = 'select-messages'; }
         else if (job.phase === 'select-messages') { count = this.selectMessages(job, limit); job.phase = count ? 'message-links' : 'social-rooms'; }
         else if (job.phase === 'social-rooms') { count = this.socialRooms(job, limit); if (!count) job.phase = 'actions'; }

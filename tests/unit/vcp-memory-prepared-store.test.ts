@@ -122,6 +122,32 @@ it('keeps focus claims exclusive and asset closure purges all owned packages', a
     expect(store.snapshot().residentBytes).toBeLessThanOrEqual(store.snapshot().maxResidentBytes);
   } finally { await removeOwnedDirectory(root); }
 });
+
+it('stores full recovery authority once behind a small versioned handle and rejects incompatible envelopes', async () => {
+  const root = await mkdtemp(path.join(tmpdir(), 'worldline-prepared-small-handle-')), store = new VcpPreparedRecallStore(root);
+  const now = new Date().toISOString(), hash = (value: unknown) => createHash('sha256').update(JSON.stringify(value)).digest('hex');
+  const frozen = [{ id: 'note', contentRevision: 1, sources: [{ id: 'raw', conversationId: 'room', checksum: 'a'.repeat(64) }] }];
+  const recovery = { schema: 'worldlinebox.prepared-recall-recovery-v1' as const, taskKey: 'a'.repeat(64), requestHash: 'b'.repeat(64), revocationEpoch: 0,
+    scope: { companionId: 'alice', conversationId: 'room' }, profileKey: 'synthetic-profile', algorithmSignature: 'c'.repeat(64),
+    owner: { version: 2 as const, companionId: 'alice', name: 'Alice', agentName: 'Alice' }, frozen, rawSources: [], fileReceipts: [],
+    contextSeed: { revision: 'captured', corpusHash: 'd'.repeat(64), queryCorpusHash: 'e'.repeat(64), capturedAt: now, queryClock: { now, timeZone: 'Asia/Shanghai' },
+      notes: [{ id: 'note', version: 2, contentRevision: 1, sources: [{ messageId: 'raw', revision: 1, checksum: 'a'.repeat(64) }], procedure: false,
+        annotations: { tags: ['captured'], updatedAt: now, metadata: { proof: 'complete-proof-exclusive-marker' } } }], cursor: 0, limit: 20 } };
+  const hostEvidence = { schema: 'worldlinebox.prepared-recall-host-evidence' as const, ownerId: 'alice', revocationEpoch: 0, capturedAt: now, sourceClosureDigest: hash(frozen), recovery };
+  try {
+    const handle = await store.save('alice', { ...payload, hostEvidence });
+    expect(handle.schema).toBe('worldlinebox.prepared-recall-v2'); expect(handle.hostEvidence).not.toHaveProperty('recovery');
+    expect(JSON.stringify(handle)).not.toContain('complete-proof-exclusive-marker');
+    const folder = path.join(root, createHash('sha256').update('alice').digest('hex'), 'prepared-recalls'), file = path.join(folder, handle.id + '.json');
+    const original = await readFile(file, 'utf8'); expect(original.match(/complete-proof-exclusive-marker/gu)).toHaveLength(1);
+    const loaded = await store.acquire(handle); expect(loaded.payload.hostEvidence?.recovery).toEqual(recovery); loaded.release();
+    await expect(store.acquire({ ...handle, schema: 'worldlinebox.prepared-recall' } as never)).rejects.toThrow();
+    const envelope = JSON.parse(original); envelope.schema = 'worldlinebox.prepared-recall-envelope-v2'; await writeFile(file, JSON.stringify(envelope) + '\n');
+    await expect(store.acquire(handle)).rejects.toThrow();
+    envelope.schema = 'worldlinebox.prepared-recall-envelope-v3'; envelope.untrustedCompatibility = true; await writeFile(file, JSON.stringify(envelope) + '\n');
+    await expect(store.acquire(handle)).rejects.toThrow();
+  } finally { await store.close(); await removeOwnedDirectory(root); }
+});
 it('rejects an ancestor junction before creating anything in its target', async () => {
   const root = await mkdtemp(path.join(tmpdir(), 'worldline-prepared-link-'));
   const external = await mkdtemp(path.join(tmpdir(), 'worldline-prepared-link-target-'));

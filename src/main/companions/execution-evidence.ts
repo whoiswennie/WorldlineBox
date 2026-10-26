@@ -13,7 +13,7 @@ import { companionWorldSourceReadSchema } from '../../shared/companion-world';
 import { companionSocialGameContextSchema } from '../../shared/companion-social';
 
 type Scope = Pick<CompanionExecutionReadset, 'companionId' | 'conversationId' | 'beforeSequence'>;
-type Fields = Pick<CompanionExecutionReadset, 'memories' | 'frozenMemories' | 'sources' | 'knowledgeReads' | 'contexts' | 'topics'>;
+type Fields = Pick<CompanionExecutionReadset, 'memories' | 'memoryReads' | 'frozenMemories' | 'sources' | 'knowledgeReads' | 'contexts' | 'topics'>;
 const hash = (value: string) => createHash('sha256').update(value).digest('hex');
 const row = (value: unknown): Record<string, unknown> | undefined => value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : undefined;
 const entries = (value: unknown): unknown[] => Array.isArray(value) ? value : [];
@@ -90,9 +90,13 @@ export function companionWorldReadSources(input: { context?: { user: string }; t
  * nested source JSON never introduce evidence or authorization. */
 export function captureCompanionExecutionReadset(scope: Scope, input: Partial<Fields> & {
   context?: { user: string }; turns?: readonly CompanionLoopTurn[]; readsets?: readonly CompanionExecutionReadset[];
+  /** Writes require observed model inputs; a task's physical corpus closure
+   * remains a withdrawal guard and confers no read authority by itself. */
+  memoryReferencePolicy?: 'observed';
 } = {}): CompanionExecutionReadset {
   const result: CompanionExecutionReadset = { schema: 'worldlinebox.companion-execution-readset-v1', ...scope, complete: true,
     memories: [...input.memories ?? []], ...(input.frozenMemories ? { frozenMemories: [...input.frozenMemories] } : {}),
+    ...(input.memoryReads ? { memoryReads: [...input.memoryReads] } : {}),
     sources: [...input.sources ?? []], knowledgeReads: [...input.knowledgeReads ?? []], contexts: [...input.contexts ?? []], topics: [...input.topics ?? []] };
   const source = (value: unknown, fallbackRoom?: string) => {
     if (value === undefined) return;
@@ -108,6 +112,9 @@ export function captureCompanionExecutionReadset(scope: Scope, input: Partial<Fi
     const reference = companionExecutionReadsetSchema.shape.memories.element.safeParse({ id: note.id, version: note.version });
     if (reference.success) result.memories.push(reference.data);
     else result.complete = false;
+    const body = companionExecutionReadsetSchema.shape.memoryReads.unwrap().element.safeParse({ id: note.id, version: note.version, contentRevision: note.contentRevision,
+      sources: entries(note.sources).map(value => { const source = row(value); return { id: source?.messageId, conversationId: source?.conversationId, checksum: source?.checksum }; }) });
+    if (body.success) (result.memoryReads ??= []).push(body.data);
     const procedure = row(note.procedure);
     if (procedure) {
       const checked = companionProcedureValidationSources(procedure.validation, typeof note.contentRevision === 'number' ? note.contentRevision : undefined);
@@ -130,8 +137,15 @@ export function captureCompanionExecutionReadset(scope: Scope, input: Partial<Fi
         if (!guard.success) result.complete = false; else result.contexts.push(guard.data);
       }
     }
-    if (passive && dependencies.frozenMemories) (result.frozenMemories ??= []).push(...dependencies.frozenMemories);
-    else result.memories.push(...dependencies.memories);
+    const observed = input.memoryReferencePolicy === 'observed' ? entries(row(native.evidence)?.references).flatMap(value => {
+      const reference = row(value);
+      const parsed = ['returned', 'focus_input'].includes(String(reference?.role))
+        ? companionExecutionReadsetSchema.shape.memories.element.safeParse({ id: reference?.id, version: reference?.version }) : undefined;
+      return parsed?.success ? [parsed.data] : [];
+    }) : undefined;
+    const memories = observed ? dependencies.memories.filter(memory => observed.some(reference => reference.id === memory.id && reference.version === memory.version)) : dependencies.memories;
+    if (passive && dependencies.frozenMemories) (result.frozenMemories ??= []).push(...dependencies.frozenMemories.filter(memory => !observed || memories.some(reference => reference.id === memory.id)));
+    else result.memories.push(...memories);
     if (dependencies.malformed) result.complete = false;
     if (dependencies.complete) return;
     const evidence = row(native.evidence);
@@ -230,6 +244,7 @@ export function captureCompanionExecutionReadset(scope: Scope, input: Partial<Fi
           else { const proof = parsed.data; result.complete &&= proof.complete;
             result.memories.push(...proof.memories); result.sources.push(...proof.sources); result.knowledgeReads.push(...proof.knowledgeReads);
             if (proof.frozenMemories) (result.frozenMemories ??= []).push(...proof.frozenMemories);
+            if (proof.memoryReads) (result.memoryReads ??= []).push(...proof.memoryReads);
             result.contexts.push(...proof.contexts); result.topics.push(...proof.topics); }
         }
       }
@@ -240,6 +255,12 @@ export function captureCompanionExecutionReadset(scope: Scope, input: Partial<Fi
         for (const item of entries(row(data.memoryPage)?.items)) memory(row(item)?.memory);
         const read = row(data.memoryRead);
         memory(read?.memory); entries(read?.related).forEach(memory); entries(read?.sources).forEach(value => source(value));
+        if (read?.fileReceipts !== undefined) {
+          const parsed = companionMemoryFileReceiptsSchema.safeParse(read.fileReceipts);
+          if (!parsed.success || parsed.data.some(receipt => receipt.companionId !== scope.companionId)) result.complete = false;
+          else if (parsed.data.length) result.contexts.push({ revision: 'explicit-memory-files/' + hash(JSON.stringify(parsed.data)), profileKey: 'canonical-memory-files',
+            fileReceiptOnly: true, fileReceipts: parsed.data, ...(scope.beforeSequence !== undefined ? { beforeSequence: scope.beforeSequence } : {}) });
+        }
         entries(data.memories).forEach(memory); entries(data.memorySources).forEach(value => source(value));
         result.knowledgeReads.push(...companionKnowledgeReads(data));
       }
@@ -254,11 +275,13 @@ export function captureCompanionExecutionReadset(scope: Scope, input: Partial<Fi
     result.complete &&= previous.complete;
     result.memories.push(...previous.memories); result.sources.push(...previous.sources);
     if (previous.frozenMemories) (result.frozenMemories ??= []).push(...previous.frozenMemories);
+    if (previous.memoryReads) (result.memoryReads ??= []).push(...previous.memoryReads);
     result.knowledgeReads.push(...previous.knowledgeReads); result.contexts.push(...previous.contexts);
     result.topics.push(...previous.topics);
   }
   return companionExecutionReadsetSchema.parse({ ...result, memories: unique(result.memories), sources: unique(result.sources),
     ...(result.frozenMemories ? { frozenMemories: unique(result.frozenMemories) } : {}),
+    ...(result.memoryReads ? { memoryReads: unique(result.memoryReads) } : {}),
     knowledgeReads: unique(result.knowledgeReads), contexts: unique(result.contexts), topics: unique(result.topics) });
 }
 
@@ -268,6 +291,7 @@ export function companionExecutionReadsetDigest(value: CompanionExecutionReadset
   const parsed = companionExecutionReadsetSchema.parse(value);
   return hash(JSON.stringify({ ...parsed, memories: unique(parsed.memories), sources: unique(parsed.sources),
     ...(parsed.frozenMemories ? { frozenMemories: unique(parsed.frozenMemories) } : {}),
+    ...(parsed.memoryReads ? { memoryReads: unique(parsed.memoryReads) } : {}),
     knowledgeReads: unique(parsed.knowledgeReads), contexts: unique(parsed.contexts), topics: unique(parsed.topics) }));
 }
 
@@ -289,6 +313,10 @@ export async function verifyCompanionExecutionReadset(value: CompanionExecutionR
         memories: readset.frozenMemories!.slice(offset, offset + 100) });
       if (!checked.ok || !checked.memoryFrozenValid) return false;
     }
+    for (let offset = 0; offset < (readset.memoryReads?.length ?? 0); offset += 100) {
+      const checked = await ports.request({ type: 'memory.frozen.valid', ...memoryScope, memories: readset.memoryReads!.slice(offset, offset + 100) });
+      if (!checked.ok || !checked.memoryFrozenValid) return false;
+    }
     for (const reference of readset.topics) {
       for (let offset = 0; offset < Math.max(1, reference.sourceMessageIds.length); offset += 256) {
         const checked = await ports.request({ type: 'topic.sources.valid', conversationId: reference.conversationId, topicId: reference.topicId,
@@ -297,7 +325,8 @@ export async function verifyCompanionExecutionReadset(value: CompanionExecutionR
       }
     }
     for (let offset = 0; offset < readset.memories.length; offset += 100) {
-      const expected = readset.memories.slice(offset, offset + 100);
+      const expected = readset.memories.slice(offset, offset + 100).filter(memory => !readset.memoryReads?.some(read => read.id === memory.id && read.version === memory.version));
+      if (!expected.length) continue;
       const response = await ports.request({ type: 'memory.records.filter', ...memoryScope, ids: [...new Set(expected.map(memory => memory.id))] });
       if (!response.ok || expected.some(memory => !response.memories?.some(current => current.id === memory.id && current.companionId === scope.companionId && current.version === memory.version))) return false;
     }

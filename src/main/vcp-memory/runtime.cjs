@@ -27,6 +27,20 @@ function notebookFolder(diaryName) {
   const label = Array.from(name.replaceAll('日记本', '日记').replace(/[^\p{L}\p{N}-]/gu, '_').replace(/_+/gu, '_').replace(/^_+|_+$/gu, '')).slice(0, 24).join('') || 'notebook';
   return `nb-${label}-${digest(name).slice(0, 32)}`;
 }
+function formattedNativeDiary(note, recordedAt) {
+  const timeZone = note.hostProjection?.timeZone || 'Asia/Shanghai';
+  const day = new Intl.DateTimeFormat('en-CA', { timeZone, year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date(note.occurredAt || recordedAt));
+  const time = new Intl.DateTimeFormat('en-GB', { timeZone, hourCycle: 'h23', hour: '2-digit', minute: '2-digit', second: '2-digit' }).format(new Date(note.occurredAt || recordedAt));
+  const key = digest(note.id), folder = notebookFolder(note.diaryName), header = `[${day}] - ${note.author || 'WorldlineBox'}\n`;
+  const content = `[${time}]\n<!-- WorldlineBoxMemory:${key} -->\n${note.content}`;
+  const tags = note.tags.length ? note.tags : [note.author || 'WorldlineBox'];
+  return { day, time, key, folder, content, tags, text: `${header}${content}\nTag: ${tags.join(', ')}` };
+}
+function renderNativeDiaryText(input) {
+  const note = normalizeNote(input);
+  if (!note.occurredAt) throw failure('VCP_MEMORY_CANONICAL_PROVENANCE_UNAVAILABLE', 'Canonical source rendering requires its captured occurrence.');
+  return formattedNativeDiary(note, note.occurredAt).text;
+}
 function embeddingConfiguration(input) {
   const dimension = input?.dimension;
   if (!Number.isInteger(dimension) || dimension < 1 || dimension > 4096) throw failure('VCP_MEMORY_INVALID_DIMENSION', 'Embedding dimension must be between 1 and 4096.');
@@ -322,21 +336,11 @@ class VcpMemoryRuntime {
     this.artifactsDirty = true;
   }
   async writeRecordNote(note, recordedAt) {
-    const timeZone = note.hostProjection?.timeZone || 'Asia/Shanghai';
-    const day = new Intl.DateTimeFormat('en-CA', { timeZone, year: 'numeric', month: '2-digit', day: '2-digit' })
-      .format(new Date(note.occurredAt || recordedAt));
-    const time = new Intl.DateTimeFormat('en-GB', { timeZone, hourCycle: 'h23', hour: '2-digit', minute: '2-digit', second: '2-digit' })
-      .format(new Date(note.occurredAt || recordedAt));
-    const key = digest(note.id);
-    const folder = notebookFolder(note.diaryName);
+    const { day, time, key, folder, content, tags, text } = formattedNativeDiary(note, recordedAt);
     if (!this.notePaths.has(note.id)) this.bindNotePath(note.id, path.join(this.notesRoot, folder, `${day}-${time.replaceAll(':', '_')}-${key}.md`));
     const files = this.paths(note.id);
-    const header = `[${day}] - ${note.author || 'WorldlineBox'}\n`;
     // DailyNote.update searches exact text rather than an ID. A stable host ID
     // anchor makes identical diary bodies safe to update independently.
-    const content = `[${time}]\n<!-- WorldlineBoxMemory:${key} -->\n${note.content}`;
-    const tags = note.tags.length ? note.tags : [note.author || 'WorldlineBox'];
-    const text = `${header}${content}\nTag: ${tags.join(', ')}`;
     let previous;
     try { previous = await fs.readFile(files.note, 'utf8'); } catch (error) { if (error.code !== 'ENOENT') throw error; }
     if (previous !== undefined && !previous.includes(`<!-- WorldlineBoxMemory:${key} -->`)) throw failure('VCP_MEMORY_SOURCE_ID_MISMATCH', 'The diary no longer contains its host memory ID anchor.');
@@ -393,6 +397,19 @@ class VcpMemoryRuntime {
     for (const id of this.records.keys()) if (!next.has(id)) await this.forget(id);
     for (const note of notes) if (this.records.get(note.id)?.noteFingerprint !== fingerprintNote(note)) await this.remember(note);
     return { replaced: true, count: notes.length };
+  }
+  async applyProjectionDelta(inputs, removedIds) {
+    this.requireReady();
+    if (!Array.isArray(inputs) || !Array.isArray(removedIds)) throw failure('VCP_MEMORY_INVALID_INPUT', 'Projection delta must contain complete changed notes and removal IDs.');
+    const notes = inputs.map(normalizeNote), removed = new Set(removedIds.map(id => identity(id, 'memory ID')));
+    if (new Set(notes.map(note => note.id)).size !== notes.length || notes.some(note => removed.has(note.id))) throw failure('VCP_MEMORY_INVALID_INPUT', 'Projection delta has conflicting identities.');
+    // Preserve the exact original replace() mutation order: existing records
+    // retire in their original catalogue order; changed SQL snapshot notes are
+    // applied in binary ID order. Upstream ingestion/graph maths stay intact.
+    if (removed.size) for (const id of this.records.keys()) if (removed.has(id)) await this.forget(id);
+    for (const note of notes.sort((a, b) => a.id < b.id ? -1 : a.id > b.id ? 1 : 0))
+      if (this.records.get(note.id)?.noteFingerprint !== fingerprintNote(note)) await this.remember(note);
+    return { changed: notes.length, removed: removed.size };
   }
   async read(id) {
     this.requireReady();
@@ -593,4 +610,4 @@ class VcpMemoryRuntime {
   }
 }
 
-module.exports = { VcpMemoryRuntime, embeddingConfiguration, normalizeNote, projectNativeScoreDetails, notebookFolder, unlinkRuntimeDependency, removeOwnedDirectory, bindRuntimeDependencies };
+module.exports = { VcpMemoryRuntime, embeddingConfiguration, normalizeNote, renderNativeDiaryText, projectNativeScoreDetails, notebookFolder, unlinkRuntimeDependency, removeOwnedDirectory, bindRuntimeDependencies };

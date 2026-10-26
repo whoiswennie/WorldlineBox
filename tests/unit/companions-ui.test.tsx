@@ -34,7 +34,7 @@ function fixture(extra: Partial<CompanionState> = {}, initialMessages = [message
   const unsubscribe = vi.fn();
   const request = vi.fn(async (input: CompanionsRequest): Promise<CompanionsResponse> => {
     switch (input.type) {
-      case 'state': return { ok: true, state };
+      case 'state': return { ok: true, state: { ...state, companions: state.companions.map(item => ({ ...item, assetImages: item.assetImages ?? { ...(item.avatarAttachmentId || item.avatar !== 'custom' ? { avatar: { url: 'worldlinebox-companion://portrait/' + item.id + '/avatar?v=' + 'a'.repeat(64), sha256: 'a'.repeat(64) } } : {}), ...(item.appearanceAttachmentId || item.builtin ? { orthographic: { url: 'worldlinebox-companion://portrait/' + item.id + '/orthographic?v=' + 'b'.repeat(64), sha256: 'b'.repeat(64) } } : {}) } })) } };
       case 'messages': {
         const all = messages.filter(item => item.conversationId === input.conversationId);
         const anchor = input.around ? all.find(item => item.id === input.around) : undefined;
@@ -288,7 +288,7 @@ it('searches and filters the full built-in catalogue and restores the selected r
 it('keeps private and group conversations in the message list and opens the same private conversation from contacts', async () => {
   const f = fixture(); await mount(f.api);
   const navigation = container!.querySelector('nav[aria-label="伙伴导航"]')!;
-  expect([...navigation.querySelectorAll('button')].map(item => item.textContent)).toEqual(['消息', '联系人', '生活', '记忆', '世界', '社交']);
+  expect([...navigation.querySelectorAll('button')].map(item => item.textContent)).toEqual(['消息', '联系人', '任务', '生活', '记忆', '世界', '社交']);
   expect(container!.querySelector('[aria-label="伙伴设置"]')).toBeNull();
   expect(container!.querySelectorAll('[data-companion-conversation]')).toHaveLength(2);
   expect(container!.querySelector('[data-companion-conversation]')!.getAttribute('data-companion-conversation')).toBe('private-sister');
@@ -465,7 +465,9 @@ it('opens the actual source conversation when inspecting a tool task from anothe
   ], total: 1, current: 0, history: 1, hasMore: false, observedAt: date, owners: [{ companionId: 'deepseek-sister', name: '大肥鱼', current: 0, history: 1 }], coverage: ['action'] } })
     : input.type === 'action.get' ? Promise.resolve({ ok: true, action }) : input.type === 'actions.page' ? Promise.resolve({ ok: true, actionPage: { items: [action], hasMore: false, total: 1, owners: [{ companionId: action.companionId, name: '大肥鱼', count: 1 }] } }) : original(input));
   await mount(f.api); await click('查看伙伴任务'); expect(f.request.mock.calls.some(([input]) => input.type === 'action.get')).toBe(false);
-  await click('查看工具执行过程');
+  await act(() => container!.querySelector<HTMLButtonElement>('[aria-label="已结束记录"]')!.click());
+  expect(f.request).toHaveBeenCalledWith(expect.objectContaining({ type: 'tasks.list', view: 'history' }));
+  await click('工具执行过程');
   expect(f.request).toHaveBeenCalledWith({ type: 'actions.page', conversationId: 'other-group', companionId: 'deepseek-sister', limit: 20 });
   expect(container!.querySelector('[aria-label="伙伴实时任务"]')?.textContent).toContain('跨房间的真实执行记录');
 });
@@ -594,7 +596,7 @@ it('adds a custom contact with the complete global connection inherited by defau
 it('shows a readable biography with the full editable role setting collapsed by default', async () => {
   const f = fixture(); await mount(f.api); await click('联系人');
   const introduction = container!.querySelector('.companions-introduction')!;
-  expect(introduction.textContent).toContain('温柔沉稳'); expect(introduction.textContent).toContain('白米饭');
+  expect(introduction.textContent).toBe(f.state().companions[0]!.description); expect(introduction.textContent).not.toContain('白米饭');
   expect(introduction.textContent).not.toContain('工具凭据');
   const details = container!.querySelector<HTMLDetailsElement>('.companions-persona-details')!;
   expect(details.open).toBe(false); expect(details.querySelector('summary')!.textContent).toBe('查看角色设定');
@@ -613,16 +615,16 @@ it('selects a local image avatar, preserves it when contact settings change, and
   await fill('[role="dialog"] input', '海盐'); await fill('[role="dialog"] textarea', '喜欢记录生活中的小事。');
   await click('选择本地头像');
   const source = document.querySelector<HTMLImageElement>('[alt="待调整的头像原图"]')!; Object.defineProperties(source, { naturalWidth: { value: 1200 }, naturalHeight: { value: 800 } }); await act(() => source.dispatchEvent(new Event('load'))); await act(() => document.querySelector<HTMLButtonElement>('.avatar-crop-dialog .companion-primary-button')!.click());
-  expect(container!.querySelector<HTMLElement>('.companions-avatar-editor .companion-avatar')!.style.backgroundImage).toContain('worldlinebox-companion://attachment/cropped-photo');
+  expect(container!.querySelector<HTMLImageElement>('.companions-avatar-editor .companion-avatar img')!.src).toContain('worldlinebox-companion://attachment/cropped-photo');
   await submitDialog();
   expect(f.request).toHaveBeenCalledWith(expect.objectContaining({ type: 'companion.create', companion: expect.objectContaining({ avatar: 'custom', avatarAttachmentId: 'cropped-photo' }) }));
   await click('联系人'); await act(() => container!.querySelector<HTMLButtonElement>('[data-companion-contact="new-companion"]')!.click());
-  expect(container!.querySelector<HTMLElement>('.companions-profile-heading .companion-avatar')!.style.backgroundImage).toContain('worldlinebox-companion://attachment/cropped-photo');
+  expect(container!.querySelector<HTMLImageElement>('.companions-profile-heading .companion-avatar img')!.src).toContain('worldlinebox-companion://portrait/new-companion/avatar?v=');
   await act(() => container!.querySelector<HTMLInputElement>('.companions-contact-profile input[type="checkbox"]')!.click());
   expect(f.request.mock.calls.filter(([input]) => input.type === 'companion.update').at(-1)![0]).toEqual(expect.objectContaining({ companion: expect.objectContaining({ proactive: false, avatarAttachmentId: 'cropped-photo' }) }));
   await click('编辑资料'); await click('恢复名字头像');
   const restored = container!.querySelector<HTMLElement>('.companions-avatar-editor .companion-avatar')!;
-  expect(restored.style.backgroundImage).toBe(''); expect(restored.textContent).toBe('海');
+  expect(restored.querySelector('img')).toBeNull(); expect(restored.textContent).toBe('海');
   await submitDialog();
   expect(f.state().companions.find(item => item.id === 'new-companion')!.avatarAttachmentId).toBeUndefined();
 });
@@ -633,12 +635,12 @@ it('rejects a non-image avatar without clearing the previously selected image', 
   f.request.mockImplementation(input => input.type === 'attachment.pick' ? Promise.resolve({ ok: true, attachments: [{ id: 'not-image', name: 'notes.txt', mime: 'text/plain', size: 120 }] }) : original(input));
   await mount(f.api); await click('联系人'); await click('编辑资料'); await click('选择本地头像');
   expect(container!.querySelector('[role="dialog"] [role="alert"]')!.textContent).toBe('请选择图片文件作为头像。');
-  expect(container!.querySelector<HTMLElement>('.companions-avatar-editor .companion-avatar')!.style.backgroundImage).toContain('worldlinebox-companion://attachment/saved-avatar');
+  expect(container!.querySelector<HTMLImageElement>('.companions-avatar-editor .companion-avatar img')!.src).toContain('worldlinebox-companion://portrait/deepseek-sister/avatar?v=');
 });
 it('keeps public appearance references and the loaded revision across contact shortcuts, cancelled edits and explicit removal', async () => {
   const contact = { ...sisters[0]!, appearanceAttachmentId: 'saved-board', revision: 3 };
   const f = fixture({ companions: [contact, sisters[1]!] }); await mount(f.api); await click('联系人');
-  expect(container!.querySelector<HTMLImageElement>('.public-appearance-thumbnail img')!.src).toContain('/saved-board');
+  expect(container!.querySelector<HTMLImageElement>('.public-appearance-thumbnail img')!.src).toContain('worldlinebox-companion://portrait/deepseek-sister/orthographic?v=');
   await act(() => container!.querySelector<HTMLInputElement>('.companions-contact-profile input[type="checkbox"]')!.click());
   expect(f.request).toHaveBeenCalledWith(expect.objectContaining({ type: 'companion.update', expectedRevision: 3, companion: expect.objectContaining({ appearanceAttachmentId: 'saved-board' }) }));
   await click('编辑资料'); await click('更换三视图', container!.querySelector('[role="dialog"]')!);
@@ -654,7 +656,7 @@ it('shows the public player nickname and avatar while keeping the user message s
   const f = fixture({ playerProfile }); await mount(f.api);
   const own = container!.querySelector('.companions-message.is-own')!;
   expect(own.querySelector('.companions-message-author')!.textContent).toContain('林澈');
-  expect(own.querySelector<HTMLElement>('.companion-avatar')!.style.backgroundImage).toContain('/player-avatar');
+  expect(own.querySelector<HTMLImageElement>('.companion-avatar img')!.src).toContain('/player-avatar');
   await fill('[aria-label="输入消息"]', '今天一起看海吧。'); await click('发送');
   const sent = f.request.mock.calls.find(([input]) => input.type === 'message.send')![0];
   expect(sent).toMatchObject({ type: 'message.send', conversationId: 'private-sister', content: '今天一起看海吧。' }); expect(sent).not.toHaveProperty('authorId');

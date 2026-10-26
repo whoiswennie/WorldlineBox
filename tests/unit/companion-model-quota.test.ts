@@ -53,6 +53,28 @@ it('removes cancelled queued work without making a provider request', async () =
   finish.resolve(); await first; expect(invoked).toBe(false); await flush(); expect(quota.snapshot().queued).toBe(0);
 });
 
+it('bounds waiting memory globally, per connection and per owner without starting rejected operations', async () => {
+  const quota = new CompanionModelQuota({ active: 1, connection: 1, background: 1, foregroundBurst: 2,
+    pending: 3, pendingPerConnection: 2, pendingPerOwner: 1 });
+  const hold = deferred(), order: string[] = [], controller = new AbortController();
+  const first = quota.run(work('running'), () => hold.promise); await flush();
+  const alice = quota.run(work('alice'), async () => { order.push('alice'); }, controller.signal);
+  await expect(quota.run(work('alice'), async () => { throw Error('Rejected owner must never execute.'); }))
+    .rejects.toMatchObject({ reason: 'owner_full', code: 'RATE_LIMIT' });
+  const bob = quota.run(work('bob'), async () => { order.push('bob'); });
+  await expect(quota.run(work('cara'), async () => { throw Error('Rejected connection must never execute.'); }))
+    .rejects.toMatchObject({ reason: 'connection_full' });
+  const dora = quota.run(work('dora', 'foreground', 'independent'), async () => { order.push('dora'); });
+  await expect(quota.run(work('erin', 'foreground', 'another'), async () => { throw Error('Rejected global queue must never execute.'); }))
+    .rejects.toMatchObject({ reason: 'queue_full' });
+  expect(quota.snapshot().queued).toBe(3);
+  const cancelled = expect(alice).rejects.toThrow('cancelled'); controller.abort(new Error('cancelled')); await cancelled;
+  const replacement = quota.run(work('erin', 'foreground', 'another'), async () => { order.push('erin'); });
+  hold.resolve(); await Promise.all([first, bob, dora, replacement]);
+  expect(order).toEqual(['bob', 'dora', 'erin']);
+  await flush(); expect(quota.snapshot()).toMatchObject({ active: 0, queued: 0 });
+});
+
 it('serves every queued owner before returning to heavily queued residents', async () => {
   const quota = new CompanionModelQuota({ active: 1, connection: 1, background: 1, foregroundBurst: 8 });
   const order: string[] = [], jobs: Promise<void>[] = [];
@@ -68,4 +90,16 @@ it('keeps connection identities opaque and shares one credential across model na
   const identity = companionModelConnection(config); expect(identity).toMatch(/^[a-f0-9]{64}$/u);
   expect(identity).not.toContain(config.apiKey); expect(companionModelConnection({ ...config })).toBe(identity);
   expect(companionModelConnection({ ...config, apiKey: 'another' })).not.toBe(identity);
+});
+
+it('keeps the strictest live connection policy until its owning resource manager releases it', async () => {
+  const quota = new CompanionModelQuota({ active: 2, connection: 2, background: 2, foregroundBurst: 2 });
+  quota.configureConnection('provider', 1, 'first-library'); quota.configureConnection('provider', 2, 'second-library');
+  const hold = deferred(), started: string[] = [];
+  const a = quota.run(work('alice'), async () => { started.push('alice'); await hold.promise; });
+  const b = quota.run(work('bob'), async () => { started.push('bob'); await hold.promise; });
+  await flush(); expect(started).toEqual(['alice']);
+  quota.releaseConnectionPolicy('provider', 'second-library'); await flush(); expect(started).toEqual(['alice']);
+  quota.releaseConnectionPolicy('provider', 'first-library'); await flush(); expect(started).toEqual(['alice', 'bob']);
+  hold.resolve(); await Promise.all([a, b]);
 });

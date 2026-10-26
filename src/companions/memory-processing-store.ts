@@ -1,4 +1,5 @@
 import type { CompanionConnection } from './store';
+import { companionMemoryStatistics, initializeCompanionMemoryStatistics } from './memory-statistics-store';
 import { MEMORY_PROCESSING_TRIGGERS, MEMORY_SCHEDULE_EXPLANATION,
   type CompanionMemoryJobSchedule, type CompanionMemoryProcessing, type CompanionMemoryProcessingFilter, type CompanionMemoryProcessingJob } from '../shared/companion-memory-processing';
 
@@ -9,6 +10,7 @@ type Row = { id: string; status: string; attempts: number; ordinal: number; crea
 
 /** Record real queue creation/transitions in the current queue schema. */
 export function initializeMemoryProcessingJournal(db: CompanionConnection, kinds: readonly Kind[]): void {
+  if (kinds.includes('capture')) initializeCompanionMemoryStatistics(db);
   for (const kind of kinds) {
     const table = tables[kind];
     db.exec(`CREATE INDEX IF NOT EXISTS ${table}_processing_owner ON ${table}(companion_id,status,ordinal);
@@ -98,7 +100,7 @@ export function memoryProcessingStatus(db: CompanionConnection, companionId: str
   }
   const priority = (value: CompanionMemoryProcessingJob) => value.status === 'running' ? 0 : ['pending', 'waiting_model', 'failed'].includes(value.status) ? 1 : 2;
   candidates.sort((a, b) => priority(a.item) - priority(b.item) || (b.item.updatedAt ?? b.item.createdAt ?? '').localeCompare(a.item.updatedAt ?? a.item.createdAt ?? '') || b.ordinal - a.ordinal || a.item.id.localeCompare(b.item.id));
-  return { companionId, summary, jobs: candidates.slice(0, bound).map(entry => {
+  return { companionId, summary, metrics: companionMemoryStatistics(db, companionId), jobs: candidates.slice(0, bound).map(entry => {
     const text = preview?.(entry.item)?.replace(/\s+/gu, ' ').trim().slice(0, 160);
     return text ? { ...entry.item, preview: text } : entry.item;
   }), hasMore: matching > bound };

@@ -24,8 +24,9 @@ import type { CompanionHostObservationChange } from '../../shared/companion-agen
 import { COMPANION_BROWSER_CAPABILITY_TOOL } from '../../shared/companion-browser';
 import { COMPANION_WAIT_TOOL } from '../../shared/companion-wait';
 import { projectCompanionMemoryContextForModel, projectCompanionMemoryToolTurnsForModel } from './memory-model-context';
-import { companionModelQuota, companionModelConnection, type CompanionModelPriority } from './model-quota';
+import { companionModelQuota, companionModelConnection, CompanionModelAdmissionError, type CompanionModelPriority } from './model-quota';
 import { companionAssetReplyIdentity } from './asset-context';
+import type { CompanionModelRequestPurpose } from '../../shared/companion-model-resources';
 
 export type { CompanionReplyInput } from './context';
 /** Included in the memory focus generation profile as well as actual requests. */
@@ -34,9 +35,13 @@ export interface CompanionModelConfig {
   /** Host-only scheduling metadata; never serialized as provider parameters. */
   ownerId?: string;
   workPriority?: CompanionModelPriority;
+  accountingPurpose?: CompanionModelRequestPurpose;
   /** Live owner assets are resolved inside provider admission, including after
    * a queue wait. The host callback is never a provider parameter. */
   resolveAssetContext?(context: { system: string; user: string }, kind: 'reply' | 'structured' | 'text'): Promise<{ system: string; user: string }>;
+  /** Host accounting runs once for each actual HTTP attempt, including a
+   * provider image fallback. It is never serialized into provider arguments. */
+  providerBudget?: { beforeRequest(inputBytes: number, reservedOutputTokens: number, purpose?: CompanionModelRequestPurpose): Promise<(outcome: 'response' | 'network_error' | 'cancelled_before_send', durationMs: number, httpStatus?: number) => Promise<void>> };
   apiFormat: AiApiFormat;
   model: string;
   baseUrl?: string;
@@ -63,10 +68,20 @@ export interface CompanionModelOptions { fetchFn?: typeof fetch; timeoutMs?: num
   onTextDelta?: (text: string) => void }
 export type CompanionModelErrorCode = 'CONFIG' | 'AUTH' | 'RATE_LIMIT' | 'NETWORK' | 'TIMEOUT' | 'CANCELLED' | 'INVALID_RESPONSE' | 'REFUSED' | 'IDENTITY' | 'CONTEXT_CAPACITY';
 export class CompanionModelError extends Error {
-  constructor(readonly code: CompanionModelErrorCode, message: string, readonly diagnostic?: string) {
+  constructor(readonly code: CompanionModelErrorCode, message: string, readonly diagnostic?: string,
+    readonly admission?: Pick<CompanionModelAdmissionError, 'reason' | 'retryAt'>) {
     super(message);
     this.name = 'CompanionModelError';
   }
+}
+
+/** Only a trusted host refusal before HTTP is deferrable without consuming a
+ * semantic attempt. A provider HTTP 429 has no admission receipt. */
+export function companionModelAdmissionRetryAfter(error: unknown, now = Date.now()): number | undefined {
+  const admission = error instanceof CompanionModelAdmissionError ? error : error instanceof CompanionModelError ? error.admission : undefined;
+  if (!admission) return undefined;
+  const until = admission.retryAt ? Date.parse(admission.retryAt) : NaN;
+  return Math.max(1000, Math.min(86_400_000, Number.isFinite(until) ? until - now : 30_000));
 }
 
 const RESPONSE_LIMIT = 256 * 1_024;
@@ -88,7 +103,7 @@ export async function generateCompanionReply(
   assembleCompanionInvocation(input);
   validateConfig(config);
   const model = resolveCompanionModel(input.companion, config);
-  if (!model || model.length > 160) throw new CompanionModelError('CONFIG', '请在模型设置中配置有效的聊天模型。');
+  if (!model || model.length > 160) throw configurationError('请在模型设置中配置有效的聊天模型。');
   const assembledContext = refreshCompanionContextClock(refreshCompanionFilesContext(refreshCompanionPublicProfileContext(refreshCompanionIdentityContext(refreshCompanionCharacterDevelopmentContext(refreshCompanionRuntimeStateContext(
     options.context ?? buildCompanionContext({ ...input, agentLoop: options.loop }), input.runtimeState, input.companion.id, input.conversation), input.characterDevelopment, input.companion.id, input.conversation.id), input),
   { companionId: input.companion.id, memberIds: input.conversation.memberIds, publicProfileIds: input.publicProfileIds, audience: input.audience, publicProfiles: input.publicProfiles }), input.fileInputs), input.world, input.companion.id);
@@ -112,40 +127,46 @@ export async function generateCompanionReply(
   if (repeatedObservation) context.system += '\n【宿主进展检查】\n' + JSON.stringify(repeatedObservation)
     + '：最近多次查询已返回相同世界资料，完整结果仍在原生tool回执中。查询不是联系、邀约或建群。请使用已有真实标识执行当前目标的下一步，或说明实际阻碍后结束；不要继续用同样查询搭配“我先看看”来代替行动。新证据与真实行动会重新计算此提示。这不是任务轮数上限，也不改变你的身份、目标或权限。';
   const controller = new AbortController();
-  let rejectAbort: (error: CompanionModelError) => void = () => undefined;
+  let httpStarted = false, operationStarted = false;
+  let rejectAbort: (error: CompanionModelError | CompanionModelAdmissionError) => void = () => undefined;
   const aborted = new Promise<never>((_resolve, reject) => { rejectAbort = reject; });
   const cancel = () => {
-    controller.abort();
-    rejectAbort(new CompanionModelError('CANCELLED', '这次回复已取消。'));
+    const error = new CompanionModelError('CANCELLED', '这次回复已取消。'); rejectAbort(error); controller.abort(error);
   };
   signal?.addEventListener('abort', cancel, { once: true });
   const expire = () => {
-    controller.abort();
-    rejectAbort(new CompanionModelError('TIMEOUT', '伙伴回复超时，请稍后重试。'));
+    const error = httpStarted ? new CompanionModelError('TIMEOUT', '伙伴回复超时，请稍后重试。')
+      : new CompanionModelAdmissionError(operationStarted ? 'preflight_timeout' : 'queue_timeout', '模型尚未发送请求，等待资源后继续。');
+    rejectAbort(error); controller.abort(error);
   };
   const idleMs = Math.max(1, Math.min(options.timeoutMs ?? 45_000, 120_000));
   let timer = setTimeout(expire, idleMs), streamDeadline: ReturnType<typeof setTimeout> | undefined;
   const streamActivity = () => { if (!controller.signal.aborted) { clearTimeout(timer); timer = setTimeout(expire, idleMs); } };
-  const fetchFn = options.fetchFn ?? globalThis.fetch.bind(globalThis);
+  const providerFetch = options.fetchFn ?? globalThis.fetch.bind(globalThis);
+  const fetchFn: typeof fetch = (...args) => { httpStarted = true; return providerFetch(...args); };
   try {
     if (signal?.aborted) cancel();
     const operation = async (): Promise<CompanionReply> => {
+      operationStarted = true;
       if (config.resolveAssetContext) context = await config.resolveAssetContext(context, 'reply');
       controller.signal.throwIfAborted();
-      const response = await fetchCompanionProvider(controller.signal, fetchFn, rejected => {
+      const transport = await fetchCompanionProvider(controller.signal, fetchFn, rejected => {
         const current = prepareCompanionLoopVisuals(context, input.visualInputs ?? options.visualInputs, options.loop ? options.toolImages : undefined, options.loop ? turns : [], config, rejected);
         const request = providerRequest({ ...config, model }, projectCompanionMemoryContextForModel(current.context), controller.signal, options.loop === true, options.loop === true, true, current.images, true,
           options.tools ?? (options.loop ? [COMPANION_DSH_CAPABILITY_TOOL, COMPANION_MEMORY_CAPABILITY_TOOL, COMPANION_WORLD_CAPABILITY_TOOL, COMPANION_WAIT_TOOL,
             ...(options.browser ? [COMPANION_BROWSER_CAPABILITY_TOOL] : [])] : undefined));
         if (options.loop) appendLoopHistory(request, config, projectCompanionMemoryToolTurnsForModel(turns), options.supplements ?? [], current.tools, options.hostValidationFeedback);
         return { request, hasImages: current.images.length > 0 || current.tools.some(tool => !!tool.image) };
-      });
+      }, config.providerBudget, config.accountingPurpose ?? 'reply');
+      const response = transport.response;
       let body: unknown;
-      if (response.headers.get('content-type')?.toLowerCase().includes('text/event-stream')) {
-        streamActivity(); streamDeadline = setTimeout(expire, 10 * 60_000);
-        body = await readCompanionProviderStream(response, config.apiFormat, { signal: controller.signal,
-          onText: text => { if (!controller.signal.aborted) options.onTextDelta?.(text); }, onActivity: streamActivity });
-      } else body = await readBoundedJson(response);
+      try {
+        if (response.headers.get('content-type')?.toLowerCase().includes('text/event-stream')) {
+          streamActivity(); streamDeadline = setTimeout(expire, 10 * 60_000);
+          body = await readCompanionProviderStream(response, config.apiFormat, { signal: controller.signal,
+            onText: text => { if (!controller.signal.aborted) options.onTextDelta?.(text); }, onActivity: streamActivity });
+        } else body = await readBoundedJson(response);
+      } finally { await transport.complete(); }
       const loopCalls = options.loop ? extractLoopCalls(config.apiFormat, body) : [];
       const raw = extractProviderText(config.apiFormat, body, loopCalls.length > 0);
       const result = options.loop ? parseLoopText(raw, loopCalls.length > 0) : parseCompanionReply(raw, input.proactive === true || input.conversation.kind === 'group');
@@ -181,6 +202,7 @@ export async function generateCompanionReply(
       priority: config.workPriority ?? 'foreground', estimatedInputTokens: Math.ceil((context.system.length + context.user.length) / 4) }, operation, controller.signal), aborted]);
   } catch (error) {
     if (error instanceof CompanionModelError) throw error;
+    if (error instanceof CompanionModelAdmissionError) throw new CompanionModelError('RATE_LIMIT', error.message, undefined, { reason: error.reason, retryAt: error.retryAt });
     if (error instanceof CompanionProviderStreamError) throw new CompanionModelError(error.code, error.message, error.diagnostic);
     // Never propagate raw network errors: providers can include URLs, headers or credentials.
     throw new CompanionModelError('NETWORK', '无法连接聊天模型，请检查网络和模型设置。');
@@ -217,23 +239,32 @@ async function generateCompanionContent(
   if (signal?.aborted) throw new CompanionModelError('CANCELLED', '记忆处理已取消。');
   validateConfig(config);
   const model = config.model.trim();
-  if (!model || model.length > 160) throw new CompanionModelError('CONFIG', '请在模型设置中配置有效的聊天模型。');
+  if (!model || model.length > 160) throw configurationError('请在模型设置中配置有效的聊天模型。');
   const controller = new AbortController();
-  let rejectAbort: (error: CompanionModelError) => void = () => undefined;
+  let httpStarted = false, operationStarted = false;
+  let rejectAbort: (error: CompanionModelError | CompanionModelAdmissionError) => void = () => undefined;
   const aborted = new Promise<never>((_resolve, reject) => { rejectAbort = reject; });
-  const cancel = () => { controller.abort(); rejectAbort(new CompanionModelError('CANCELLED', '记忆处理已取消。')); };
+  const cancel = () => { const error = new CompanionModelError('CANCELLED', '记忆处理已取消。'); rejectAbort(error); controller.abort(error); };
   signal?.addEventListener('abort', cancel, { once: true });
-  const timer = setTimeout(() => { controller.abort(); rejectAbort(new CompanionModelError('TIMEOUT', '记忆处理超时，请稍后重试。')); }, Math.max(1, Math.min(options.timeoutMs ?? 45_000, 120_000)));
+  const timer = setTimeout(() => {
+    const error = httpStarted ? new CompanionModelError('TIMEOUT', '记忆处理超时，请稍后重试。')
+      : new CompanionModelAdmissionError(operationStarted ? 'preflight_timeout' : 'queue_timeout', '模型尚未发送请求，等待资源后继续。');
+    rejectAbort(error); controller.abort(error);
+  }, Math.max(1, Math.min(options.timeoutMs ?? 45_000, 120_000)));
+  const providerFetch = options.fetchFn ?? globalThis.fetch.bind(globalThis);
+  const fetchFn: typeof fetch = (...args) => { httpStarted = true; return providerFetch(...args); };
   try {
     if (signal?.aborted) cancel();
     const operation = async () => {
+      operationStarted = true;
       if (config.resolveAssetContext) context = await config.resolveAssetContext(context, structured ? 'structured' : 'text');
       controller.signal.throwIfAborted();
-      const response = await fetchCompanionProvider(controller.signal, options.fetchFn ?? globalThis.fetch.bind(globalThis), rejected => {
+      const transport = await fetchCompanionProvider(controller.signal, fetchFn, rejected => {
         const current = prepareCompanionVisualContext(context, options.visualInputs, config, rejected);
         return { request: providerRequest({ ...config, model }, current.context, controller.signal, false, false, false, current.images, structured), hasImages: current.images.length > 0 };
-      });
-      const envelope = await readBoundedJson(response);
+      }, config.providerBudget, config.accountingPurpose ?? companionModelAccountingPurpose(context));
+      let envelope: unknown;
+      try { envelope = await readBoundedJson(transport.response); } finally { await transport.complete(); }
       if (extractLoopCalls(config.apiFormat, envelope).length) throw new CompanionModelError('INVALID_RESPONSE', '记忆模型不应调用工具。');
       const raw = extractProviderText(config.apiFormat, envelope).trim();
       return stripCompanionThoughts(raw);
@@ -242,41 +273,79 @@ async function generateCompanionContent(
       priority: config.workPriority ?? 'foreground', estimatedInputTokens: Math.ceil((context.system.length + context.user.length) / 4) }, operation, controller.signal), aborted]);
   } catch (error) {
     if (error instanceof CompanionModelError) throw error;
+    if (error instanceof CompanionModelAdmissionError) throw new CompanionModelError('RATE_LIMIT', error.message, undefined, { reason: error.reason, retryAt: error.retryAt });
     throw new CompanionModelError('NETWORK', '无法连接聊天模型，请检查网络和模型设置。');
   } finally { clearTimeout(timer); signal?.removeEventListener('abort', cancel); }
 }
 
 function validateConfig(config: CompanionModelConfig): void {
   if (!(AI_API_FORMATS as readonly string[]).includes(config.apiFormat)) {
-    throw new CompanionModelError('CONFIG', '当前模型接口格式不受支持，请重新选择。');
+    throw configurationError('当前模型接口格式不受支持，请重新选择。');
   }
-  if (!config.apiKey.trim()) throw new CompanionModelError('CONFIG', '请先在模型设置中配置 API 密钥。');
+  if (!config.apiKey.trim()) throw configurationError('请先在模型设置中配置 API 密钥。');
   if (!config.baseUrl?.trim()) return;
   try {
     const url = new URL(config.baseUrl);
     if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password || url.search || url.hash) throw new Error();
   } catch {
-    throw new CompanionModelError('CONFIG', '模型接口地址无效，请填写不含凭据和查询参数的 HTTP 地址。');
+    throw configurationError('模型接口地址无效，请填写不含凭据和查询参数的 HTTP 地址。');
   }
 }
+function configurationError(message: string): CompanionModelError {
+  return new CompanionModelError('CONFIG', message, undefined, { reason: 'configuration_unavailable' });
+}
 
+type CompanionProviderResponse = { response: Response; complete(): Promise<void> };
+/** Only exact host envelope discriminators classify usage; source text is never traversed. */
+function companionModelAccountingPurpose(context: { user: string }): CompanionModelRequestPurpose {
+  try {
+    const purpose: unknown = JSON.parse(context.user)?.purpose;
+    if (purpose === 'vcp_experience_journal') return 'journal';
+    if (purpose === 'vcp_sleep_reflection') return 'reflection';
+    if (purpose === 'vcp_sleep_memory_maintenance') return 'consolidation';
+    if (purpose === 'companion_dream_wave_narrative') return 'dream';
+    if (typeof purpose === 'string' && purpose.startsWith('companion_learning_')) return 'learning';
+    if (typeof purpose === 'string' && purpose.startsWith('world_')) return 'world';
+  } catch { /* Native plain-text calls have no JSON purpose envelope. */ }
+  return 'other';
+}
 async function fetchCompanionProvider(signal: AbortSignal, fetchFn: typeof fetch,
-  build: (rejected: boolean) => { request: Parameters<typeof fetch>; hasImages: boolean }): Promise<Response> {
+  build: (rejected: boolean) => { request: Parameters<typeof fetch>; hasImages: boolean }, budget?: CompanionModelConfig['providerBudget'], purpose: CompanionModelRequestPurpose = 'other'): Promise<CompanionProviderResponse> {
+  const send = async (request: Parameters<typeof fetch>): Promise<CompanionProviderResponse> => {
+    if (signal.aborted) throw new CompanionModelError('CANCELLED', '这次模型请求已取消。');
+    const body = request[1]?.body;
+    if (budget && typeof body !== 'string') throw new CompanionModelError('CONFIG', '模型请求未提供可计量的正文。');
+    const finish = await budget?.beforeRequest(typeof body === 'string' ? Buffer.byteLength(body, 'utf8') : 0, COMPANION_TEXT_GENERATION_PROFILE.maxOutputTokens, purpose);
+    const started = performance.now();
+    if (signal.aborted) { await finish?.('cancelled_before_send', 0); throw new CompanionModelError('CANCELLED', '这次模型请求已取消。'); }
+    let response: Response;
+    try { response = await fetchFn(...request); }
+    catch (error) { await finish?.('network_error', performance.now() - started); throw error; }
+    let completed = false;
+    return { response, complete: async () => {
+      if (completed) return; completed = true;
+      await finish?.('response', performance.now() - started, response.status);
+    } };
+  };
+  const readError = async (value: CompanionProviderResponse) => {
+    try { return await readBoundedJson(value.response); } finally { await value.complete(); }
+  };
   const current = build(false);
-  let response = await fetchFn(...current.request);
-  if (!response.ok && current.hasImages && [400, 415].includes(response.status)) {
-    const status = response.status;
-    let error: unknown; try { error = await readBoundedJson(response); } catch { throw httpError(status); }
+  let transport = await send(current.request);
+  if (!transport.response.ok && current.hasImages && [400, 415].includes(transport.response.status)) {
+    const status = transport.response.status;
+    let error: unknown; try { error = await readError(transport); } catch { throw httpError(status); }
     if (!companionUnsupportedImageError(error)) throw companionContextCapacityError(error) ?? httpError(status);
     if (signal.aborted) throw new CompanionModelError('CANCELLED', '这次模型请求已取消。');
-    response = await fetchFn(...build(true).request);
+    transport = await send(build(true).request);
   }
-  if (!response.ok) {
+  if (!transport.response.ok) {
+    const response = transport.response;
     let error: unknown;
-    try { error = await readBoundedJson(response); } catch { throw httpError(response.status); }
+    try { error = await readError(transport); } catch { throw httpError(response.status); }
     throw ([400, 413, 422].includes(response.status) ? companionContextCapacityError(error) : undefined) ?? httpError(response.status);
   }
-  return response;
+  return transport;
 }
 function companionImageParts(format: AiApiFormat, images: readonly CompanionVisualInput[]): Array<Record<string, unknown>> {
   return images.flatMap<Record<string, unknown>>(image => {

@@ -154,11 +154,12 @@ export class CompanionTaskOverviewStore {
         const stage = source.kind === 'reply' ? "''" : source.stage?.includes('p.') || source.stage?.includes('sp.') ? "''" : (source.stage ?? "''").replaceAll('t.', 'NEW.');
         const snapshot = source.source && source.room && !/[ps]\./u.test(source.room) ? `INSERT OR IGNORE INTO companion_task_payloads(kind,task_id,companion_id,section,record_key,title,body,at)
           SELECT '${source.kind}',NEW.id,NEW.companion_id,'input','trigger','开始处理时的来源消息',m.content,strftime('%Y-%m-%dT%H:%M:%fZ','now') FROM messages m
-          WHERE NEW.status IN('running','reading','dispatching') AND m.id=${source.source.replaceAll('t.', 'NEW.')} AND m.conversation_id=${source.room.replaceAll('t.', 'NEW.')} AND m.status='sent';` : '';
+          WHERE NEW.status IN('running','reading','dispatching') AND m.id=${source.source.replaceAll('t.', 'NEW.')} AND m.conversation_id=${source.room.replaceAll('t.', 'NEW.')} AND m.status='sent'
+          AND NOT EXISTS(SELECT 1 FROM companion_task_payloads saved WHERE saved.kind='${source.kind}' AND saved.task_id=NEW.id AND saved.companion_id=NEW.companion_id AND saved.record_key='trigger');` : '';
         for (const operation of ['INSERT', 'UPDATE'] as const) this.db.exec(`CREATE TRIGGER IF NOT EXISTS task_observe_${source.kind}_${operation.toLowerCase()} AFTER ${operation} ON ${source.table}
           ${operation === 'UPDATE' ? 'WHEN NEW.status IS NOT OLD.status' : ''} BEGIN
           INSERT INTO companion_task_observations(kind,task_id,companion_id,phase,title,at) VALUES('${source.kind}',NEW.id,NEW.companion_id,NEW.status,SUBSTR(COALESCE(${stage},''),1,500),strftime('%Y-%m-%dT%H:%M:%fZ','now')); END;`);
-        if (snapshot) for (const operation of ['INSERT', 'UPDATE'] as const) this.db.exec(`CREATE TRIGGER IF NOT EXISTS task_input_${source.kind}_${operation.toLowerCase()} AFTER ${operation} ON ${source.table}
+        if (snapshot) for (const operation of ['INSERT', 'UPDATE'] as const) this.db.exec(`DROP TRIGGER IF EXISTS task_input_${source.kind}_${operation.toLowerCase()}; CREATE TRIGGER task_input_${source.kind}_${operation.toLowerCase()} AFTER ${operation} ON ${source.table}
           ${operation === 'UPDATE' ? 'WHEN NEW.status IS NOT OLD.status' : ''} BEGIN ${snapshot} END;`);
       }
     }
@@ -168,10 +169,13 @@ export class CompanionTaskOverviewStore {
       BEGIN INSERT INTO companion_task_observations(kind,task_id,companion_id,phase,title,at)
         VALUES('reply',json_extract(NEW.value,'$.progress.workId'),json_extract(NEW.value,'$.companionId'),json_extract(NEW.value,'$.progress.phase'),SUBSTR(COALESCE(json_extract(NEW.value,'$.progress.detail'),''),1,500),json_extract(NEW.value,'$.progress.updatedAt')); END;`);
     this.db.exec('DROP TRIGGER IF EXISTS task_world_transition_time');
-    this.db.exec(`CREATE TRIGGER IF NOT EXISTS task_input_occurrence AFTER UPDATE OF status ON companion_schedule_occurrences WHEN NEW.status IN('dispatching','running') AND NEW.status IS NOT OLD.status BEGIN
+    // An outer UPSERT can override a trigger's OR IGNORE conflict policy.
+    // Avoid the duplicate row explicitly and preserve the first captured input.
+    this.db.exec(`DROP TRIGGER IF EXISTS task_input_occurrence; CREATE TRIGGER task_input_occurrence AFTER UPDATE OF status ON companion_schedule_occurrences WHEN NEW.status IN('dispatching','running') AND NEW.status IS NOT OLD.status BEGIN
       INSERT OR IGNORE INTO companion_task_payloads(kind,task_id,companion_id,section,record_key,title,body,at)
       SELECT 'schedule_occurrence',NEW.id,p.companion_id,'input','schedule_prompt','本次执行的计划要求',json_extract(p.data,'$.prompt'),strftime('%Y-%m-%dT%H:%M:%fZ','now')
-      FROM companion_schedules p WHERE p.id=NEW.schedule_id AND json_extract(p.data,'$.prompt') IS NOT NULL; END;`);
+      FROM companion_schedules p WHERE p.id=NEW.schedule_id AND json_extract(p.data,'$.prompt') IS NOT NULL
+      AND NOT EXISTS(SELECT 1 FROM companion_task_payloads saved WHERE saved.kind='schedule_occurrence' AND saved.task_id=NEW.id AND saved.companion_id=p.companion_id AND saved.record_key='schedule_prompt'); END;`);
   }
   private at(source: Source): string { return `COALESCE(${source.updated ?? source.created ?? "''"},${source.created ?? "''"},'')`; }
   private columns(source: Source): string {

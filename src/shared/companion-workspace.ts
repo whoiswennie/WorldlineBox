@@ -2,6 +2,7 @@ import { z } from 'zod';
 import { companionLearningWorkspaceCommands, companionLearningStatusSchema } from './companion-learning';
 import { companionLearningGoalWorkspaceCommands, companionLearningGoalSchema, companionLearningGoalPageSchema, companionLearningGoalRoundPageSchema } from './companion-learning-goals';
 import { companionMemoryDocumentCommands, companionMemoryDocumentReadSchema, companionMemoryDocumentsPageSchema } from './companion-memory-documents';
+import { companionModelResourceUsageSchema } from './companion-model-resources';
 
 export const COMPANION_WORKSPACE_CHANNEL = 'worldlinebox:companion-workspace';
 export const companionWorkspaceRequestSchema = z.discriminatedUnion('type', [
@@ -11,6 +12,9 @@ export const companionWorkspaceRequestSchema = z.discriminatedUnion('type', [
   z.strictObject({ type: z.literal('choose') }),
   z.strictObject({ type: z.literal('select'), libraryId: z.string().min(1).max(4096) }),
   z.strictObject({ type: z.literal('reveal') }),
+  z.strictObject({ type: z.literal('model.resources.read'), companionId: z.string().regex(/^[a-zA-Z0-9_-]{1,100}$/u) }),
+  z.strictObject({ type: z.literal('model.resources.save'), companionId: z.string().regex(/^[a-zA-Z0-9_-]{1,100}$/u),
+    expectedRevision: z.string().regex(/^[a-f0-9]{64}$/u), content: z.string().min(1).max(65536) }),
   z.strictObject({ type: z.literal('companion.assets.read'), companionId: z.string().regex(/^[a-zA-Z0-9_-]{1,100}$/u) }),
   z.strictObject({ type: z.literal('companion.assets.prompt.save'), companionId: z.string().regex(/^[a-zA-Z0-9_-]{1,100}$/u),
     path: z.string().min(1).max(768), expectedRevision: z.string().regex(/^[a-f0-9]{64}$/u), content: z.string().min(1).max(128 * 1024).refine(value => !!value.trim()) }),
@@ -21,7 +25,9 @@ export const companionWorkspaceResponseSchema = z.object({ ok: z.boolean(), erro
   selected: companionWorkspaceLibrarySchema.extend({ dataRoot: z.string(), memoryRoot: z.string() }).optional(),
   libraries: z.array(companionWorkspaceLibrarySchema).optional(),
   documents: companionMemoryDocumentsPageSchema.optional(), document: companionMemoryDocumentReadSchema.optional(),
+  modelResources: z.object({ companionId: z.string(), path: z.string(), revision: z.string(), content: z.string(), usage: companionModelResourceUsageSchema }).optional(),
   companionAssets: z.object({ companionId: z.string(), profileRevision: z.string(), promptRevision: z.string(),
+    memoryPolicyError: z.string().optional(),
     prompts: z.array(z.object({ path: z.string(), revision: z.string(), content: z.string(), purposes: z.array(z.string()) })).max(256) }).optional(),
   learning: companionLearningStatusSchema.optional(),
   learningGoal: companionLearningGoalSchema.optional(), learningGoals: companionLearningGoalPageSchema.optional(), learningRounds: companionLearningGoalRoundPageSchema.optional(),

@@ -98,12 +98,16 @@ export async function realMemoryRuntime(root: string, generate?: (context: { sys
       const route = await ownerChat.registerOwnerRoute({ ownerId: input.ownerId, credential: snapshot.apiKey,
         semanticProfile: { ownerId: input.ownerId, profileKey: input.profileKey, generation: COMPANION_TEXT_GENERATION_PROFILE },
         generate: (context, signal, work) => generateCompanionText(context, { ...snapshot, ownerId: input.ownerId,
-          workPriority: work?.priority ?? 'background', resolveAssetContext: async context => {
-            if (!work?.nativePrompt) return context;
-            const native = validateCompanionNativeMemoryPrompt(work.nativePrompt, input.ownerId, context.system);
-            const storage = await resolveOwnerStorage(input.ownerId);
-            return { ...context, system: renderCompanionNativeMemoryPrompt(native.kind === 'timeline'
-              ? storage.ownerPrompts.timelineTemplate : storage.ownerPrompts.summaryTemplate, native) };
+          workPriority: work?.priority ?? 'background', accountingPurpose: work?.nativePrompt ? 'timeline' : 'other', resolveAssetContext: async (context, kind) => {
+            if (work?.nativePrompt) {
+              const native = validateCompanionNativeMemoryPrompt(work.nativePrompt, input.ownerId, context.system);
+              const storage = await resolveOwnerStorage(input.ownerId);
+              context = { ...context, system: renderCompanionNativeMemoryPrompt(native.kind === 'timeline'
+                ? storage.ownerPrompts.timelineTemplate : storage.ownerPrompts.summaryTemplate, native) };
+            }
+            // Preserve the same actual owner-file resolver supplied by Main's
+            // configuration. The loopback route must not bypass it for focus.
+            return snapshot.resolveAssetContext ? snapshot.resolveAssetContext(context, kind) : context;
           } }, signal, { fetchFn: options.modelFetch, timeoutMs: 120000 }) });
       return { plugins: { chat: route.chat }, dispose: route.dispose };
     } });

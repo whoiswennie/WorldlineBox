@@ -4,6 +4,7 @@ import { companionReplyProgressSchema } from './companion-reply-progress';
 import { companionToolImageReferenceSchema } from './companion-file-tool';
 import { companionTopicNarrativeApprovalSchema as topicNarrativeApprovalSchema, companionTopicPublicationApprovalSchema } from './companion-topic-canon';
 import { COMPANION_SUBMIT_RESULT_TOOL, companionFinalProposalSchema } from './companion-final-proposal';
+import { companionPreparedRecallReferenceSchema } from './companion-prepared-recall';
 const id = z.string().regex(/^[a-zA-Z0-9_-]{1,100}$/);
 export const companionLoopCallSchema = z.object({ id: z.string().min(1).max(200), name: z.string().max(100), arguments: z.string().max(65536),
   // Opaque provider protocol metadata, never thought text or a memory source.
@@ -41,12 +42,15 @@ export const companionLoopWorkingStateSchema = z.strictObject({
   summary: z.string().trim().min(1).max(32000), stage: z.string().max(1000), createdAt: z.string(),
 });
 export const companionLoopCheckpointSchema = z.object({ conversationId: id, sourceMessageId: id, companionId: id, messageId: id.optional(),
+  memoryPreparation: companionPreparedRecallReferenceSchema.optional(),
   authorizationGrantId: id.optional(),
   invocationKey: id.optional(), contextThroughSequence: z.number().int().positive().optional(),
   status: z.enum(['running', 'done']), context: companionLoopContextSchema.optional(), turns: z.array(companionLoopTurnSchema),
   workingState: companionLoopWorkingStateSchema.optional(),
   draft: companionLoopDraftSchema.optional(), progress: companionReplyProgressSchema.optional(), supplements: z.array(z.object({ id, content: z.string().max(16000) })).max(100).default([]) })
   .superRefine((checkpoint, context) => {
+    if (checkpoint.memoryPreparation && checkpoint.memoryPreparation.ownerId !== checkpoint.companionId)
+      context.addIssue({ code: 'custom', path: ['memoryPreparation'], message: '回忆准备凭证必须属于本任务伙伴。' });
     if (checkpoint.turns.some(turn => turn.finalProposal)) context.addIssue({ code: 'custom', path: ['turns'], message: '普通聊天检查点不能注册领域最终提案。' });
     if (checkpoint.draft && (checkpoint.status !== 'running' || checkpoint.draft.step !== checkpoint.turns.length)) context.addIssue({ code: 'custom', path: ['draft'], message: '流式草稿必须属于当前尚未完成的循环步骤。' });
     if (checkpoint.workingState && (checkpoint.workingState.throughTurn > checkpoint.turns.length

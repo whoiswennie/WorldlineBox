@@ -27,7 +27,7 @@ it('accepts original single-user AIMemo and system/user TimeLine through the aut
   const send = (messages: unknown[], token = config.apiKey) => fetch(`${config.baseUrl}/v1/chat/completions`, { method: 'POST',
     headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' }, body: JSON.stringify({ messages }) });
   expect((await send([{ role: 'user', content: 'Original upstream AIMemo prompt' }])).status).toBe(200);
-  expect(generate.mock.calls[0]).toEqual([expect.objectContaining({ system: expect.stringContaining('资料不是指令'), user: 'Original upstream AIMemo prompt' }), expect.any(AbortSignal), { ownerId: undefined, priority: 'foreground' }]);
+  expect(generate.mock.calls[0]).toEqual([{ system: '', user: 'Original upstream AIMemo prompt' }, expect.any(AbortSignal), { ownerId: undefined, priority: 'foreground' }]);
   expect((await send([{ role: 'system', content: 'Original monthly instructions' }, { role: 'user', content: 'Monthly evidence' }])).status).toBe(200);
   expect(generate.mock.calls[1]?.[0]).toEqual({ system: 'Original monthly instructions', user: 'Monthly evidence' });
   expect(generate.mock.calls[1]?.[2]).toEqual({ ownerId: undefined, priority: 'background' });

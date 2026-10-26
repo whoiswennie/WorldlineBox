@@ -51,14 +51,16 @@ export function CompanionPromptAssetsEditor({ companionId, api, disabled = false
       const saved = response.companionAssets.prompts.find(item => item.path === path);
       if (!saved) throw new Error('保存后的文件清单发生变化；本地草稿已保留。');
       setSnapshot(response.companionAssets); setDrafts(previous => ({ ...previous, [requestOwner + '/' + path]: { revision: saved.revision, content: saved.content } }));
-      setNotice('已保存到此伙伴的 ' + path + '，后续上下文会实时读取。');
+      setNotice('已保存到此伙伴的 ' + path + '，后续调用与新维护会话会实时读取。');
     } catch (cause) { if (alive.current && owner.current === requestOwner && sequence === serial.current) setError(cause instanceof Error ? cause.message : '保存失败；本地草稿已保留。'); }
     finally { if (alive.current && owner.current === requestOwner && sequence === serial.current) setSaving(false); }
   };
   return <section className="companion-prompt-assets"><details open={open} onToggle={event => setOpen(event.currentTarget.open)}>
-    <summary>本伙伴的提示词文件</summary>
+    <summary>本伙伴的提示词与记忆策略文件</summary>
     {open && <div className="companion-prompt-assets-body">
       <p className="companions-subtle">初始模板只用于首次创建。这里的修改会写入当前伙伴目录，影响后续上下文；不会改动内置模板或其他伙伴。</p>
+      <p className="companions-subtle">记忆策略.json管理静默窗口、批次、深度维护与梦境频率；它不作为提示词发送给模型。现有维护会话保留开始时的策略，新会话使用当前文件。</p>
+      {current?.memoryPolicyError && <p role="alert">{current.memoryPolicyError}</p>}
       {error && <p role="alert">{error} 本地草稿会保留；可重读文件后核对。</p>}
       {notice && <p role="status">{notice}</p>}
       <div className="companion-prompt-assets-controls"><label>提示词文件<select aria-label="提示词文件" disabled={loading || saving} value={file?.path ?? ''}

@@ -1,5 +1,5 @@
 import { fork } from 'node:child_process';
-import { mkdtemp, readdir } from 'node:fs/promises';
+import { mkdir, mkdtemp, readdir, writeFile } from 'node:fs/promises';
 import { createServer, type ServerResponse } from 'node:http';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -21,7 +21,7 @@ function launch(file: string): VcpMemoryTransport {
   const child = fork(file, [], { execPath: process.execPath, env: environment, stdio: ['ignore', 'ignore', 'ignore', 'ipc'] });
   return { postMessage: message => { child.send(message as object); }, on: child.on.bind(child), kill: () => { child.kill(); } };
 }
-async function fixture() {
+async function fixture(vectorDimension = 4) {
   const root = await mkdtemp(path.join(tmpdir(), 'worldline-vcp-continuity-'));
   cleanups.push(async () => {
     if (path.dirname(root) !== path.resolve(tmpdir()) || !path.basename(root).startsWith('worldline-vcp-continuity-')) throw new Error('Unsafe continuity cleanup.');
@@ -39,8 +39,11 @@ async function fixture() {
       if (JSON.stringify(body).includes('vcp_experience_journal')) {
         response.end(JSON.stringify({ choices: [{ message: { content: '{"notes":[]}' } }] })); return;
       }
-      if (body.messages?.length === 1 && body.messages[0]?.role === 'user' || body.messages?.[0]?.content?.startsWith('你是 VCP 记忆处理单元')) {
-        const prompt = body.messages.at(-1).content;
+      const prompt = body.messages?.at(-1)?.content;
+      // The provider serializer adds an empty system message for this isolated
+      // host fixture. Identify the original AIMemo user template instead of
+      // relying on the removed built-in gateway system instruction.
+      if (typeof prompt === 'string' && prompt.startsWith('### 角色与核心使命 ###')) {
         controls.focusCalls++; controls.focusPrompts.push(prompt);
         const content = `这是我获取的所有相关知识/记忆[[alpha borrowed the blue umbrella.${prompt.includes('TIMELINE_ONLY_VALIDATED_MONTH') ? ' TIMELINE_ONLY_VALIDATED_MONTH.' : ''}]]`;
         response.end(JSON.stringify({ choices: [{ message: { content } }] })); return;
@@ -54,7 +57,7 @@ async function fixture() {
       }
       response.end(JSON.stringify({ choices: [{ message: { content: '2026-10-14: alpha borrowed the blue umbrella. TIMELINE_ONLY_VALIDATED_MONTH.\nTag: alpha, umbrella' } }] })); return;
     }
-    response.end(JSON.stringify({ data: body.input.map((_input: string, index: number) => ({ index, embedding: [1, 0, 0, 0] })) }));
+    response.end(JSON.stringify({ data: body.input.map((_input: string, index: number) => ({ index, embedding: Array.from({ length: vectorDimension }, (_, position) => position === 0 ? 1 : 0) })) }));
   });
   await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
   cleanups.push(() => new Promise<void>(resolve => { server.close(() => resolve()); server.closeAllConnections(); }));
@@ -77,7 +80,7 @@ async function fixture() {
   cleanups.push(async () => { for (const service of services) await service.close(); });
   async function createService() {
     const native = ownerGenerationRuntime(path.join(root, 'runtime'),
-      { baseUrl: `${baseUrl}/document`, queryBaseUrl: `${baseUrl}/query`, model: 'fixture', modelSignature: 'continuity-test', dimension: 4, apiKey: 'fixture-key' }, launch);
+      { baseUrl: `${baseUrl}/document`, queryBaseUrl: `${baseUrl}/query`, model: 'fixture', modelSignature: 'continuity-test', dimension: vectorDimension, apiKey: 'fixture-key' }, launch);
     cleanups.push(native.close);
     // An explicitly acquired/released handle observes the actual generation
     // client; it does not replace Main's own lease or select a global model.
@@ -100,6 +103,78 @@ async function fixture() {
 }
 
 describe('original monthly VCP continuity behind the main memory service', () => {
+  it('reuses both actual Rust monthly digests after one hundred tag writes and native publications', async () => {
+    const f = await fixture(16), scope = { companionId: 'alpha', conversationId: f.conversation.id };
+    for (const [day, fact] of [['2026-09-12', '雨伞在九月借出，仍未归还。'], ['2026-09-18', '保留九月雨伞的归还条件。'], ['2026-10-19', '十月仍须先核对借还记录。']]) {
+      const raw = f.store.appendMessage({ conversationId: f.conversation.id, authorId: 'user', content: day + ' ' + fact, replyDirective: 'none' });
+      f.store.request({ type: 'memory.record', ...scope, candidate: { content: raw.content, occurredAt: day + 'T10:00:00Z', tags: ['雨伞'],
+        sourceMessageIds: [raw.id], evidence: [{ sourceMessageId: raw.id, quote: raw.content }] } });
+    }
+    for (;;) { const job = f.store.request({ type: 'memory.outbox.claim', companionId: 'alpha' }).memoryOutbox; if (!job) break;
+      f.store.request({ type: 'memory.outbox.complete', id: job.id, leaseToken: job.leaseToken, indexed: true }); }
+    const { service, client, runtime, profileKey, report } = await f.createService(); service.schedule = () => undefined;
+    const core = await runtime.get({ ownerId: 'alpha' }), nativeRemember = vi.spyOn(core.client, 'remember');
+    let clock = Date.now(); const time = vi.spyOn(Date, 'now').mockImplementation(() => clock);
+    const run = () => (service as unknown as { runContinuity(scope: { companionId: string; conversationId: string }, generation: number): Promise<boolean> }).runContinuity(scope, 0);
+    const receipt: Record<string, unknown> = { status: 'failed', actualVendoredRust: true, actualEncoder: false, actualPaidProvider: false, syntheticFixtureOnly: true,
+      model: 'local deterministic HTTP', vectorDimension: 16, limitations: ['monthly digest and request reuse only; no semantic-quality or real encoder claim'] };
+    try {
+      await run(); await run();
+      const cache = new CompanionMemoryViewCache(f.cacheRoot), artifacts = await cache.loadArtifacts('alpha:owner-v2', profileKey);
+      receipt.initialArtifacts = artifacts; receipt.initialModelCalls = f.controls.timelineCalls;
+      expect(artifacts?.agents.flatMap(agent => agent.months)).toHaveLength(2); expect(f.controls.timelineCalls).toBe(4);
+      const before = f.store.request({ type: 'memory.snapshot', ...scope }).memorySnapshot!;
+      for (let index = 0; index < 100; index++) {
+        f.store.request({ type: 'memory.organize', ...scope, ids: [f.note.id], tags: ['alpha', 'tag_' + index] });
+        await service.drainDeliveries(); service.changed('alpha'); clock += 301000; await run();
+      }
+      const after = f.store.request({ type: 'memory.snapshot', ...scope }).memorySnapshot!, owner = companionMemoryIdentity(f.store.state(false).companions.find(owner => owner.id === 'alpha')!);
+      receipt.nativeRememberCalls = nativeRemember.mock.calls.length; receipt.modelCallsAfterAnnotations = f.controls.timelineCalls;
+      expect(nativeRemember).toHaveBeenCalledTimes(100); expect(after.semanticRevision).toBe(before.semanticRevision);
+      expect(f.controls.timelineCalls).toBe(4);
+      const freshView = { scopeId: 'actual_tag_reuse_fresh_view' };
+      const timeZone = f.store.request({ type: 'world.clock' }).worldClock!.timeZone;
+      await client.replace(freshView, after.notes.map(note => ({ id: note.id, content: note.content, tags: note.tags, diaryName: note.diaryName, occurredAt: note.occurredAt,
+        author: owner.agentName, metadata: { ...note.metadata, hostMemoryOwner: owner, hostMemoryVersion: note.version }, hostProjection: { timeZone } })));
+      const imported = await client.importTimelineArtifacts(freshView, after.semanticRevision!, artifacts!);
+      receipt.imported = imported;
+      expect(imported).toEqual({ acceptedMonths: 2, skippedMonths: 0 });
+      await client.timeline(freshView, { operation: 'generateTimelines', agentName: owner.agentName, owner, options: { overwrite: false } });
+      await client.timeline(freshView, { operation: 'generateSummaries', agentName: owner.agentName, owner, options: { overwrite: false } });
+      const final = await client.exportTimelineArtifacts(freshView, after.semanticRevision!);
+      receipt.finalArtifacts = final; receipt.finalModelCalls = f.controls.timelineCalls; receipt.errors = report.mock.calls.map(([error]) => String(error));
+      expect(final.agents.flatMap(agent => agent.months).every(month => month.content && month.summary)).toBe(true);
+      expect(final.agents.flatMap(agent => agent.months)).toHaveLength(2); expect(f.controls.timelineCalls).toBe(4);
+      // A real changed body is the negative control: normalization must not
+      // turn genuine October evidence changes into a reusable old digest.
+      const original = after.notes.find(note => note.id === f.note.id)!;
+      const changedSource = f.store.appendMessage({ conversationId: f.conversation.id, authorId: 'user', content: '2026-10-14 alpha confirmed the umbrella was returned, correcting the earlier unfinished status.', replyDirective: 'none' });
+      f.store.request({ type: 'memory.revise', ...scope, id: original.id, expectedVersion: original.version, candidate: { content: changedSource.content,
+        occurredAt: original.occurredAt, tags: original.tags, sourceMessageIds: [changedSource.id], evidence: [{ sourceMessageId: changedSource.id, quote: changedSource.content }] } });
+      await service.drainDeliveries();
+      const changed = f.store.request({ type: 'memory.snapshot', ...scope }).memorySnapshot!, changedView = { scopeId: 'actual_body_changed_control_view' };
+      expect(changed.semanticRevision).not.toBe(after.semanticRevision);
+      await client.replace(changedView, changed.notes.map(note => ({ id: note.id, content: note.content, tags: note.tags, diaryName: note.diaryName, occurredAt: note.occurredAt,
+        author: owner.agentName, metadata: { ...note.metadata, hostMemoryOwner: owner, hostMemoryVersion: note.version }, hostProjection: { timeZone } })));
+      const negativeImport = await client.importTimelineArtifacts(changedView, changed.semanticRevision!, artifacts!);
+      receipt.changedBodyImport = negativeImport; expect(negativeImport).toEqual({ acceptedMonths: 1, skippedMonths: 1 });
+      await client.timeline(changedView, { operation: 'generateTimelines', agentName: owner.agentName, owner, options: { overwrite: false } });
+      await client.timeline(changedView, { operation: 'generateSummaries', agentName: owner.agentName, owner, options: { overwrite: false } });
+      receipt.modelCallsAfterRealBodyChange = f.controls.timelineCalls; expect(f.controls.timelineCalls).toBe(6);
+      const changedArtifacts = await client.exportTimelineArtifacts(changedView, changed.semanticRevision!);
+      receipt.changedBodyArtifacts = changedArtifacts;
+      const months = changedArtifacts.agents.flatMap(agent => agent.months), initial = artifacts!.agents.flatMap(agent => agent.months);
+      expect(months.find(month => month.month === '2026-09')?.sourceDigest).toBe(initial.find(month => month.month === '2026-09')?.sourceDigest);
+      expect(months.find(month => month.month === '2026-10')?.sourceDigest).not.toBe(initial.find(month => month.month === '2026-10')?.sourceDigest);
+      expect(report).not.toHaveBeenCalled(); receipt.status = 'passed';
+    } catch (error) { receipt.failure = error instanceof Error ? error.message : String(error); throw error; }
+    finally {
+      receipt.timelinePrompts = f.controls.timelinePrompts; receipt.modelCalls = f.controls.timelineCalls;
+      const output = path.resolve(`artifacts/vcp-validation/memory-100tag-native-reuse-${new Date().toISOString().replace(/[:.]/gu, '-')}.json`);
+      await mkdir(path.dirname(output), { recursive: true }); await writeFile(output, JSON.stringify(receipt, null, 2));
+      time.mockRestore(); nativeRemember.mockRestore(); await core.release?.();
+    }
+  });
   it('reports actual future checks without blocking maintenance on foreground work', async () => {
     const { createService, controls } = await fixture();
     const { service, client, changed } = await createService();

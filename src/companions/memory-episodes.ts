@@ -1,11 +1,11 @@
 import { createHash, randomUUID } from 'node:crypto';
 import type { CompanionConnection } from './store';
+import { resolveCompanionMemoryPolicy, CompanionMemoryPolicyUnavailableError } from './memory-policy-files';
+import type { CompanionMemoryPolicy } from '../shared/companion-memory-policy';
 
 type Capture = { id: string; companion_id: string; conversation_id: string; message_id: string };
 type Episode = { id: string; first_at: number; last_at: number; source_count: number; immediate: number; sealed: number };
-export const MEMORY_CAPTURE_QUIET_MS = 60_000;
-export const MEMORY_CAPTURE_MAX_WAIT_MS = 300_000;
-export const MEMORY_CAPTURE_BATCH_SIZE = 12;
+type CapturePolicy = CompanionMemoryPolicy['capture'];
 
 /** Durable event windows. Continued traffic never moves the first deadline,
  * and claiming a stable prefix closes its window before newer input arrives. */
@@ -19,7 +19,7 @@ export class CompanionMemoryEpisodes {
       CREATE INDEX IF NOT EXISTS companion_memory_episode_jobs ON companion_memory_episode_sources(episode_id,job_id);
     `);
   }
-  observe(job: Capture, observedAt?: number): Episode {
+  observe(job: Capture, observedAt?: number, policy = resolveCompanionMemoryPolicy(this.db, job.companion_id).policy.capture): Episode {
     const existing = this.db.prepare('SELECT e.* FROM companion_memory_episode_sources s JOIN companion_memory_capture_episodes e ON e.id=s.episode_id WHERE s.job_id=?').get(job.id) as Episode | undefined;
     if (existing) return existing;
     const source = this.db.prepare('SELECT kind,content,created_at,author_id,action_id FROM messages WHERE id=?').get(job.message_id) as { kind: string; content: string; created_at: string; author_id: string; action_id?: string } | undefined;
@@ -32,8 +32,8 @@ export class CompanionMemoryEpisodes {
     const immediate = source.kind === 'action' || !!source.action_id || source.author_id === 'system'
       || source.author_id === 'user' && /(?:我叫|我的名字是|请叫我|叫我|请记住|记住这|更正一下|之前说错|纠正一下)/u.test(source.content);
     let episode = this.db.prepare(`SELECT * FROM companion_memory_capture_episodes WHERE companion_id=? AND conversation_id=? AND topic_key=? AND sealed=0
-      AND last_at>? AND first_at>? AND source_count<? ORDER BY rowid DESC LIMIT 1`)
-      .get(job.companion_id, job.conversation_id, topicKey, at - MEMORY_CAPTURE_QUIET_MS, at - MEMORY_CAPTURE_MAX_WAIT_MS, MEMORY_CAPTURE_BATCH_SIZE) as Episode | undefined;
+      AND last_at>? AND last_at<=? AND first_at>? AND source_count<? ORDER BY rowid DESC LIMIT 1`)
+      .get(job.companion_id, job.conversation_id, topicKey, at - policy.quietMs, at, at - policy.maxWaitMs, policy.batchSize) as Episode | undefined;
     if (!episode) {
       const id = 'episode_' + randomUUID().replaceAll('-', '');
       this.db.prepare('INSERT INTO companion_memory_capture_episodes(id,companion_id,conversation_id,topic_key,first_at,last_at) VALUES(?,?,?,?,?,?)')
@@ -45,20 +45,26 @@ export class CompanionMemoryEpisodes {
       .run(at, Number(immediate), episode.id);
     return { ...episode, last_at: Math.max(episode.last_at, at), source_count: episode.source_count + 1, immediate: Number(immediate || episode.immediate) };
   }
-  due(episode: Episode): number {
-    return episode.sealed || episode.immediate || episode.source_count >= MEMORY_CAPTURE_BATCH_SIZE ? episode.first_at
-      : Math.min(episode.first_at + MEMORY_CAPTURE_MAX_WAIT_MS, episode.last_at + MEMORY_CAPTURE_QUIET_MS);
+  due(episode: Episode, policy: CapturePolicy): number {
+    return episode.sealed || episode.immediate || episode.source_count >= policy.batchSize ? episode.first_at
+      : Math.min(episode.first_at + policy.maxWaitMs, episode.last_at + policy.quietMs);
   }
   seal(id: string): void { this.db.prepare('UPDATE companion_memory_capture_episodes SET sealed=1 WHERE id=?').run(id); }
   nextAt(owner: string): number | undefined {
+    let policy: CapturePolicy;
+    try { policy = resolveCompanionMemoryPolicy(this.db, owner).policy.capture; }
+    catch (error) { if (error instanceof CompanionMemoryPolicyUnavailableError) return; throw error; }
     const value = this.db.prepare(`SELECT MIN(MAX(j.next_attempt,CASE WHEN e.sealed=1 OR e.immediate=1 OR e.source_count>=? THEN e.first_at ELSE MIN(e.first_at+?,e.last_at+?) END)) AS at
       FROM vcp_capture_jobs j JOIN companion_memory_episode_sources s ON s.job_id=j.id JOIN companion_memory_capture_episodes e ON e.id=s.episode_id
       WHERE j.companion_id=? AND j.status IN('pending','failed') AND j.attempts<8`)
-      .get(MEMORY_CAPTURE_BATCH_SIZE, MEMORY_CAPTURE_MAX_WAIT_MS, MEMORY_CAPTURE_QUIET_MS, owner) as { at?: number };
+      .get(policy.batchSize, policy.maxWaitMs, policy.quietMs, owner) as { at?: number };
     return value.at ?? undefined;
   }
   /** Management projection is pure: polling never seals or backfills episodes. */
   eligibility(owner: string, now = Date.now()): { eligible: number; nextAt?: string } {
+    let policy: CapturePolicy;
+    try { policy = resolveCompanionMemoryPolicy(this.db, owner).policy.capture; }
+    catch (error) { if (error instanceof CompanionMemoryPolicyUnavailableError) return { eligible: 0 }; throw error; }
     const result = this.db.prepare(`WITH due AS (
       SELECT MAX(j.next_attempt,CASE
         WHEN EXISTS(SELECT 1 FROM metadata r WHERE r.key='vcp-capture-reconsideration/'||j.companion_id||'/'||j.id) THEN 0
@@ -70,7 +76,7 @@ export class CompanionMemoryEpisodes {
       WHERE j.companion_id=? AND j.status IN('pending','failed') AND j.attempts<8 AND c.deleted_at IS NULL AND json_extract(c.data,'$.active')=1
         AND NOT EXISTS(SELECT 1 FROM companion_reset_jobs r WHERE r.companion_id=j.companion_id AND r.status!='completed')
     ) SELECT COALESCE(SUM(at<=?),0) AS eligible,MIN(at) AS next_at FROM due`)
-      .get(MEMORY_CAPTURE_BATCH_SIZE, MEMORY_CAPTURE_MAX_WAIT_MS, MEMORY_CAPTURE_QUIET_MS, MEMORY_CAPTURE_QUIET_MS, owner, now) as { eligible: number; next_at: number | null };
+      .get(policy.batchSize, policy.maxWaitMs, policy.quietMs, policy.quietMs, owner, now) as { eligible: number; next_at: number | null };
     return { eligible: Number(result.eligible), ...(result.next_at !== null ? { nextAt: new Date(result.next_at).toISOString() } : {}) };
   }
 }

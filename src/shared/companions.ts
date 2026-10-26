@@ -11,6 +11,7 @@ import { companionReplyMemoryCommand, companionReplyMemorySchema } from './compa
 import { companionMemoryCorpusStateCommand, companionMemoryProbeCommand, companionMemoryProbeSchema } from './companion-memory-probe';
 import type { CompanionMemoryProbeProgressEvent } from './companion-memory-probe-progress';
 import { companionMemoryRetrievalSchema } from './companion-memory-retrieval';
+import { companionMemorySelectionSchema } from './companion-memory-selection';
 import { companionMemoryContextEvidenceSchema } from './companion-memory-context-evidence';
 import { companionMemoryProcedureContextListSchema } from './companion-procedure';
 import { companionMemoryFileReceiptsSchema } from './companion-memory-files';
@@ -59,6 +60,9 @@ export const companionLlmSchema = z.object({
   apiFormat: z.enum(['openai_chat', 'openai_responses', 'anthropic', 'gemini_native', 'dashscope_native']),
   baseUrl: z.string().trim().max(4096), model: z.string().trim().min(1).max(160), hasKey: z.boolean().optional(),
 });
+export const companionAssetImageSchema = z.object({ url: z.string().max(1024), sha256: z.string().regex(/^[a-f0-9]{64}$/u) });
+export const companionAssetImagesSchema = z.object({ avatar: companionAssetImageSchema.optional(), orthographic: companionAssetImageSchema.optional() });
+export type CompanionAssetImages = z.infer<typeof companionAssetImagesSchema>;
 export const companionSchema = z.object({
   id: companionIdSchema, name: z.string().trim().min(1).max(60),
   description: z.string().max(500), persona: z.string().min(1).max(12000),
@@ -70,6 +74,7 @@ export const companionSchema = z.object({
   appearanceAttachmentId: companionIdSchema.optional(), revision: z.number().int().positive().optional(),
   assetProfileRevision: z.string().regex(/^[a-f0-9]{64}$/u).optional(), assetPromptRevision: z.string().regex(/^[a-f0-9]{64}$/u).optional(),
   assetProfileError: z.string().max(500).optional(),
+  assetImages: companionAssetImagesSchema.optional(),
   availability: z.enum(['ready', 'working', 'waiting', 'offline', 'dormant']).optional(), availabilityReason: z.string().max(500).optional(), activeCount: z.number().int().nonnegative().optional(), queuedCount: z.number().int().nonnegative().optional(),
 });
 export type Companion = z.infer<typeof companionSchema>;
@@ -263,16 +268,19 @@ export const companionsResponseSchema = z.object({
   taskRecord: dshRecordPageSchema.optional(),
   message: messageSchema.optional(), companion: companionSchema.optional(),
   memoryPage: companionMemoryPageSchema.optional(), memoryStatus: companionMemoryStatusSchema.optional(), memoryRetrieval: companionMemoryRetrievalSchema.optional(), memoryRetrievalModes: companionMemoryRetrievalModesSchema.optional(),
+  memorySelection: companionMemorySelectionSchema.optional(),
   memoryProcessing: companionMemoryProcessingSchema.optional(),
   memoryLifePlan: companionMemoryLifePlanSchema.optional(),
   lifeOverview: companionLifeOverviewSchema.optional(),
   memoryTracePage: companionMemoryTracePageSchema.optional(), memoryTrace: companionMemoryTraceSchema.optional(),
   memoryContext: z.object({ text: z.string().max(1024 * 1024), revision: z.string(), profileKey: z.string(),
+    selection: companionMemorySelectionSchema.optional(),
     proceduralStatus: companionMemoryProcedureContextListSchema.optional(),
     fileReceipts: companionMemoryFileReceiptsSchema.optional(),
     evidence: companionMemoryContextEvidenceSchema.optional() }).optional(),
   memoryPolicies: z.array(companionMemoryPolicySchema).optional(),
-  memoryRead: z.object({ memory: memorySchema, sources: z.array(messageSchema), related: z.array(memorySchema), hasMore: z.boolean(), nextSourceCursor: z.number().int().nonnegative().optional() }).optional(),
+  memoryRead: z.object({ memory: memorySchema, sources: z.array(messageSchema), related: z.array(memorySchema), hasMore: z.boolean(), nextSourceCursor: z.number().int().nonnegative().optional(),
+    fileReceipts: companionMemoryFileReceiptsSchema.optional() }).optional(),
   memorySources: z.array(messageSchema).optional(), forgottenCount: z.number().int().nonnegative().optional(),
   sourceHasMore: z.boolean().optional(), sourceNextCursor: z.number().int().nonnegative().optional(),
   schedule: companionScheduleSchema.optional(), schedules: z.array(companionScheduleSchema).optional(),

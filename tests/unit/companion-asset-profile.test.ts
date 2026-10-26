@@ -1,9 +1,14 @@
 import { mkdtemp, readFile, writeFile, rm, unlink, mkdir, link, access } from 'node:fs/promises';
+import { randomUUID } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterEach, expect, it, vi } from 'vitest';
 import { CompanionAssetProfileStore, renderCompanionAssetProfile } from '../../src/main/companions/asset-profile';
 import type { Companion } from '../../src/shared/companions';
+import { COMPANION_MEMORY_POLICY_FILE, initialCompanionMemoryPolicy } from '../../src/shared/companion-memory-policy';
+import { assembleCompanionAssetContext } from '../../src/main/companions/asset-context';
+import { generateCompanionStructured, generateCompanionText } from '../../src/main/companions/model';
+import { companionModelConnection, companionModelQuota } from '../../src/main/companions/model-quota';
 
 const roots: string[] = [];
 afterEach(async () => { for (const root of roots.splice(0)) {
@@ -21,6 +26,8 @@ async function fixture() {
 it('initializes owner-local assets once, then hydrates live files without overwriting authored profile or prompt edits', async () => {
   const f = await fixture(), profileFile = path.join(f.initial.root, 'profile.md');
   expect(f.initial.profile.persona).toBe(owner.persona);
+  expect(f.initial.prompts.companion_reply).toContain('摘要没有提到某事，不证明全库不存在');
+  expect(f.initial.prompts.vcp_experience_journal).toContain('原文引用只证明来源，不等于其中事实已经在正文表达');
   const edited = { ...f.initial.profile, name: '海岚', description: '外部文件中的当前简介', persona: '我现在的完整设定来自这个文件。' };
   await writeFile(profileFile, renderCompanionAssetProfile(owner.id, edited), 'utf8');
   await writeFile(path.join(f.initial.root, '提示词', '对话.md'), '按此文件中的新交流习惯回应。', 'utf8');
@@ -32,7 +39,73 @@ it('initializes owner-local assets once, then hydrates live files without overwr
   expect(await readFile(profileFile, 'utf8')).toBe(renderCompanionAssetProfile(owner.id, edited));
 });
 
-it.each(['profile.md', '提示词/对话.md', '.伙伴配置.json'])('fails visibly when initialized %s is removed and never silently restores seeds', async relative => {
+it('initializes editable focus guidance and reads its actual current file for every provider admission', async () => {
+  const f = await fixture(), module = f.initial.modules.find(item => item.purposes.includes('vcp_focus_guidance'))!;
+  expect(module.path).toBe('提示词/记忆聚焦指导.md');
+  expect(module.content).toContain('当前明确换话题');
+  const file = path.join(f.initial.root, ...module.path.split('/'));
+  const fetchFn = vi.fn<typeof fetch>().mockImplementation(async () => new Response(JSON.stringify({ choices: [{ message: { content: 'focused result' } }] })));
+  const native = { system: '', user: 'PREPARED_NATIVE_TEMPLATE_WITH_FIXED_SOURCES' };
+  const config = { apiFormat: 'openai_chat' as const, model: 'fixture-model', apiKey: 'fixture', baseUrl: 'https://provider.invalid', ownerId: owner.id,
+    resolveAssetContext: async (context: typeof native, kind: 'reply' | 'structured' | 'text') => assembleCompanionAssetContext(context, await f.profiles.load(owner.id), kind) };
+  await writeFile(file, 'OWNER_FILE_FOCUS_V1', 'utf8');
+  await generateCompanionText(native, config, undefined, { fetchFn });
+  await writeFile(file, 'OWNER_FILE_FOCUS_V2', 'utf8');
+  await generateCompanionText(native, config, undefined, { fetchFn });
+  const wires = fetchFn.mock.calls.map(call => JSON.parse(String(call[1]?.body)) as { messages: Array<{ role: string; content: string }> });
+  expect(wires[0]!.messages[0]!.content).toContain('OWNER_FILE_FOCUS_V1');
+  expect(wires[1]!.messages[0]!.content).toContain('OWNER_FILE_FOCUS_V2');
+  expect(wires[1]!.messages[0]!.content).not.toContain('OWNER_FILE_FOCUS_V1');
+  expect(wires.every(wire => wire.messages.at(-1)!.content === native.user)).toBe(true);
+  expect(wires.every(wire => !wire.messages[0]!.content.includes('当前明确换话题'))).toBe(true);
+  await unlink(file);
+  await expect(generateCompanionText(native, config, undefined, { fetchFn })).rejects.toThrow();
+  expect(fetchFn).toHaveBeenCalledTimes(2);
+  await expect(f.profiles.bootstrap(owner)).rejects.toMatchObject({ code: 'MISSING' });
+  await expect(access(file)).rejects.toMatchObject({ code: 'ENOENT' });
+});
+
+it('honors an authored manifest default for focus without adding an undeclared initialization module', async () => {
+  const f = await fixture(), manifestFile = path.join(f.initial.root, '提示词', 'manifest.json');
+  const manifest = JSON.parse(await readFile(manifestFile, 'utf8')) as { purposes: Record<string, string[]> };
+  delete manifest.purposes.vcp_focus_guidance;
+  await writeFile(manifestFile, JSON.stringify(manifest), 'utf8');
+  await writeFile(path.join(f.initial.root, '提示词', '默认.md'), 'AUTHORED_OWNER_DEFAULT_FOR_UNMAPPED_PURPOSES', 'utf8');
+  const guide = path.join(f.initial.root, '提示词', '记忆聚焦指导.md'); await unlink(guide);
+  const current = await f.profiles.bootstrap(owner);
+  const assembled = assembleCompanionAssetContext({ system: '', user: 'immutable prepared input' }, current, 'text');
+  expect(assembled.system).toContain('AUTHORED_OWNER_DEFAULT_FOR_UNMAPPED_PURPOSES');
+  expect(assembled.system).not.toContain('当前明确换话题');
+  expect(assembled.user).toBe('immutable prepared input');
+  await expect(access(guide)).rejects.toMatchObject({ code: 'ENOENT' });
+  expect(JSON.parse(await readFile(manifestFile, 'utf8'))).toEqual(manifest);
+});
+
+it('reads a queued native focus guidance edit after its connection slot is granted', async () => {
+  const f = await fixture(), file = path.join(f.initial.root, '提示词', '记忆聚焦指导.md');
+  await writeFile(file, 'BEFORE_QUEUE_GUIDANCE', 'utf8');
+  const fetchFn = vi.fn<typeof fetch>().mockImplementation(async () => new Response(JSON.stringify({ choices: [{ message: { content: 'focused result' } }] })));
+  const config = { apiFormat: 'openai_chat' as const, model: randomUUID(), apiKey: 'fixture', baseUrl: 'https://provider.invalid', ownerId: owner.id,
+    resolveAssetContext: async (context: { system: string; user: string }, kind: 'reply' | 'structured' | 'text') => assembleCompanionAssetContext(context, await f.profiles.load(owner.id), kind) };
+  const connection = companionModelConnection(config), policy = randomUUID();
+  let release!: () => void; const hold = new Promise<void>(resolve => { release = resolve; });
+  companionModelQuota.configureConnection(connection, 1, policy);
+  const blocker = companionModelQuota.run({ ownerId: 'different-owner', connectionId: connection, priority: 'foreground' }, () => hold);
+  let pending: Promise<string> | undefined;
+  try {
+    pending = generateCompanionText({ system: '', user: 'FIXED_PREPARED_NATIVE_INPUT' }, config, undefined, { fetchFn });
+    await vi.waitFor(() => expect(companionModelQuota.snapshot().queued).toBe(1));
+    expect(fetchFn).not.toHaveBeenCalled();
+    await writeFile(file, 'EDITED_WHILE_WAITING_GUIDANCE', 'utf8');
+    release(); await blocker; await pending;
+    const wire = JSON.parse(String(fetchFn.mock.calls[0]![1]?.body)) as { messages: Array<{ content: string }> };
+    expect(wire.messages[0]!.content).toContain('EDITED_WHILE_WAITING_GUIDANCE');
+    expect(wire.messages[0]!.content).not.toContain('BEFORE_QUEUE_GUIDANCE');
+    expect(wire.messages.at(-1)!.content).toBe('FIXED_PREPARED_NATIVE_INPUT');
+  } finally { release(); await blocker; await pending?.catch(() => undefined); companionModelQuota.releaseConnectionPolicy(connection, policy); }
+});
+
+it.each(['profile.md', '提示词/对话.md', '.伙伴配置.json', COMPANION_MEMORY_POLICY_FILE])('fails visibly when initialized %s is removed and never silently restores seeds', async relative => {
   const f = await fixture(), file = path.join(f.initial.root, ...relative.split('/')); await unlink(file);
   await expect(f.profiles.load(owner.id)).rejects.toMatchObject({ code: 'MISSING' });
   await expect(f.profiles.bootstrap(owner)).rejects.toMatchObject({ code: relative === '.伙伴配置.json' ? 'CONFLICT' : 'MISSING' });
@@ -90,6 +163,32 @@ it('writes software profile and prompt edits to their canonical files with confl
   await writeFile(path.join(updated.root, '提示词', '对话.md'), '随后外部编辑的对话指导。', 'utf8');
   await expect(f.profiles.writePrompt({ companionId: owner.id, relativePath: prompt, expectedRevision: changed.fileRevisions[prompt]!, content: '旧编辑器内容' })).rejects.toMatchObject({ code: 'CONFLICT' });
   expect((await f.profiles.load(owner.id)).prompts.chat).toContain('随后外部编辑');
+});
+
+it('stores owner maintenance policy as editable JSON with live validation and file CAS, outside model prompts', async () => {
+  const f = await fixture(), module = f.initial.modules.find(item => item.path === COMPANION_MEMORY_POLICY_FILE)!;
+  expect(module.purposes).toEqual(['host_policy']); expect(f.initial.memoryPolicy).toEqual(initialCompanionMemoryPolicy());
+  const policy = { schema: 'worldlinebox.companion-memory-policy-v1', companionId: 'alice', policy: initialCompanionMemoryPolicy('quiet') };
+  const changed = await f.profiles.writePrompt({ companionId: 'alice', relativePath: module.path, expectedRevision: module.revision, content: JSON.stringify(policy) });
+  expect(changed.memoryPolicy?.mode).toBe('quiet'); expect(changed.memoryPolicyRevision).not.toBe(module.revision);
+  expect(JSON.parse(await readFile(path.join(changed.root, module.path), 'utf8'))).toEqual(policy);
+  expect(Object.values(changed.prompts).join('\n')).not.toContain('worldlinebox.companion-memory-policy-v1');
+  await expect(f.profiles.writePrompt({ companionId: 'alice', relativePath: module.path, expectedRevision: module.revision, content: JSON.stringify(policy) })).rejects.toMatchObject({ code: 'CONFLICT' });
+  policy.policy.capture.batchSize = 13;
+  await expect(f.profiles.writePrompt({ companionId: 'alice', relativePath: module.path, expectedRevision: changed.memoryPolicyRevision, content: JSON.stringify(policy) })).rejects.toBeDefined();
+  await writeFile(path.join(changed.root, module.path), '{invalid', 'utf8');
+  const invalid = await f.profiles.load('alice'); expect(invalid.memoryPolicy).toBeUndefined(); expect(invalid.memoryPolicyError).toContain('暂停');
+  expect(invalid.modules.find(module => module.path === COMPANION_MEMORY_POLICY_FILE)?.content).toBe('{invalid');
+  expect(invalid.profile.persona).toBe(owner.persona); expect(invalid.prompts.chat).toContain('自然交流');
+  const fetchFn = vi.fn<typeof fetch>(async () => new Response(JSON.stringify({ choices: [{ message: { content: '{"ordinaryTaskStillWorks":true}' } }] })));
+  expect(await generateCompanionStructured({ system: 'HOST_TECHNICAL_CONTRACT', user: JSON.stringify({ purpose: 'companion_reply', companion: owner }) }, {
+    apiFormat: 'openai_chat', model: 'policy-isolation-fixture', baseUrl: 'https://fixture.invalid', apiKey: 'synthetic-only',
+    resolveAssetContext: async (context, kind) => assembleCompanionAssetContext(context, await f.profiles.load('alice'), kind),
+  }, undefined, { fetchFn })).toEqual({ ordinaryTaskStillWorks: true });
+  expect(JSON.parse(String(fetchFn.mock.calls[0]![1]!.body)).messages[0].content).not.toContain('{invalid');
+  policy.policy.capture.batchSize = 2;
+  const repaired = await f.profiles.writePrompt({ companionId: 'alice', relativePath: module.path, expectedRevision: invalid.memoryPolicyRevision, content: JSON.stringify(policy) });
+  expect(repaired.memoryPolicy?.capture.batchSize).toBe(2); expect(repaired.memoryPolicyError).toBeUndefined();
 });
 
 it('isolates owners and serializes stale writes even across two adapters for the same directory', async () => {

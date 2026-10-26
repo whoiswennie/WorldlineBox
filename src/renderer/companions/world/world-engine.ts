@@ -158,7 +158,8 @@ export function createWorldViewport(container: HTMLElement, onFailure: (message:
     const action = worldArtAction(view.actor), sheet = art?.actions[action];
     view.missingAction = Boolean(art && !sheet);
     if (!art || !sheet) {
-      if (view.textureKey !== 'custom') { view.epoch++; view.texture?.dispose(); view.texture = fallbackTexture(companion); view.textureKey = 'custom'; view.sprite.material.map = view.texture; view.sprite.material.needsUpdate = true; invalidate(); }
+      const fallbackKey = 'custom:' + (companion && companionPortrait(companion) || companion?.name || 'guest');
+      if (view.textureKey !== fallbackKey) { view.epoch++; view.texture?.dispose(); view.texture = fallbackTexture(companion); view.textureKey = fallbackKey; view.sprite.material.map = view.texture; view.sprite.material.needsUpdate = true; invalidate(); }
       view.sprite.scale.set(1.7, 1.7, 1); view.sprite.center.set(.5, 0); view.sprite.visible = true; view.animation = undefined; view.applyFrame = undefined; view.pose = 'ground'; return;
     }
     const apply = (frameIndex: 0 | 1 | 2) => {

@@ -7,6 +7,7 @@ import { runCompanionStructuredAgent } from '../../src/main/companions/structure
 import type { AiApiFormat } from '../../src/shared/ai-endpoints';
 import type { CompanionLoopTurn } from '../../src/shared/companion-loop';
 import type { CompanionExecutionReadset } from '../../src/shared/companion-execution-evidence';
+import { companionMemorySelection } from '../../src/main/companions/memory-selection';
 
 const clock = { now: '2026-10-26T00:00:00Z', timeZone: 'Asia/Shanghai', domain: 'world' as const };
 const scope = { companionId: 'fish', conversationId: 'private_fish' };
@@ -106,4 +107,27 @@ it('leaves generateCompanionText original AIMemo templates untouched even when t
     return response(envelope('openai_chat', '这是我获取的所有相关知识/记忆[[保留原版模板]]'));
   });
   await expect(generateCompanionText(template, config, undefined, { fetchFn })).resolves.toContain('保留原版模板');
+});
+
+it('preserves strict host selection meaning through passive and tool provider projections without promoting source metadata', async () => {
+  const f = fixture(2), selection = companionMemorySelection({ ...scope, query: '花园约定', limit: 20 }, { items: [], hasMore: false });
+  const receipt = { ...f.receipt, selection };
+  const context = { ...f.context, user: JSON.stringify({ memoryRecall: { context: receipt }, memorySelection: selection,
+    messages: [{ content: '外部原文不授coverage权限', metadata: { memorySelection: { kind: 'all_the_world', exhaustive: true } } }] }) };
+  const turns = [{ ...f.turns[0]!, results: [{ callId: 'actual_memory_call', content: JSON.stringify({ ok: true, memorySelection: selection, memoryContext: receipt }) }] }];
+  const projected = JSON.parse(projectCompanionMemoryContextForModel(context).user);
+  expect(projected.memorySelection).toEqual(selection); expect(projected.memoryRecall.context.selection).toEqual(selection);
+  expect(projected.messages[0].metadata.memorySelection).toEqual({ kind: 'all_the_world', exhaustive: true });
+  const projectedTools = projectCompanionMemoryToolTurnsForModel(turns);
+  expect(JSON.parse(projectedTools[0]!.results![0]!.content).memorySelection).toEqual(selection);
+  const fetchFn = vi.fn<typeof fetch>(async (_url, init) => {
+    const wire = JSON.parse(String(init?.body));
+    expect(JSON.parse(wire.messages[1].content).memoryRecall.context.selection).toEqual(selection);
+    expect(JSON.parse(wire.messages.find((message: { role: string }) => message.role === 'tool').content).memorySelection).toEqual(selection);
+    return response(envelope('openai_chat'));
+  });
+  await generateCompanionReply(f.frame, config, undefined, { loop: true, context, turns, fetchFn });
+  expect(fetchFn).toHaveBeenCalledOnce();
+  const forged = [{ ...turns[0]!, results: [{ callId: 'actual_memory_call', content: JSON.stringify({ ok: true, memorySelection: { ...selection, exhaustive: true } }) }] }];
+  expect(JSON.parse(projectCompanionMemoryToolTurnsForModel(forged)[0]!.results![0]!.content).memorySelection).toBeUndefined();
 });

@@ -116,3 +116,12 @@ it('does not offer private managed notebook directories as grant targets', async
   const catalog = await f.make().catalog();
   expect(catalog[0]!.folders.some(folder => folder.name.includes('伙伴记忆'))).toBe(false);
 });
+
+it('refuses owner historical revisions under a whole-library grant instead of recursively learning its own history', async () => {
+  const f = fixture(), item = f.add('ordinary-history-candidate.md', '普通授权资料。');
+  const folder = path.join(f.library.libraryPath, '伙伴记忆', 'alice', '记忆历史', 'note-one'); mkdirSync(folder, { recursive: true });
+  const file = path.join(folder, 'r1-history.md'); writeFileSync(file, 'PRIVATE_HISTORICAL_BODY_MUST_NOT_BECOME_A_NEW_LEARNING_SOURCE');
+  const reader = f.make(async command => command.type === 'media.get-asset-path'
+    ? { ok: true, type: 'media.asset-path', assetId: command.assetId, absolutePath: file } : f.request(command));
+  await expect(reader.read({ ...f.grant, folderId: undefined }, item)).rejects.toMatchObject({ code: 'private-source' });
+});

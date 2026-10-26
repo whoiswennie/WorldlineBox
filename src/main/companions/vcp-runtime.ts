@@ -9,9 +9,11 @@ import { removeOwnedDirectory } from '../vcp-memory/filesystem';
 import { VcpMemoryProcessBroker } from '../vcp-memory/process-broker';
 import type { CompanionModelConfig } from './model';
 import { companionRuntimeOwner, companionOwnerRuntimePaths, companionOwnerRuntimeStorage, type CompanionOwnerRuntimeStorage, type CompanionOwnerRuntimePaths } from './owner-runtime-storage';
+import { companionPreparedRecallReferenceSchema, type CompanionPreparedRecallReference } from '../../shared/companion-prepared-recall';
+import { VcpPreparedRecallStore } from '../vcp-memory/prepared-recall-store';
 
 export type { CompanionOwnerRuntimeStorage, CompanionOwnerRuntimePaths } from './owner-runtime-storage';
-export interface CompanionMemoryOwnerScope { ownerId: string; signal?: AbortSignal }
+export interface CompanionMemoryOwnerScope { ownerId: string; signal?: AbortSignal; purpose?: 'index' }
 export interface CompanionEmbeddingLease { client: VcpMemoryClient; profileKey: string; release?(): Promise<void> }
 export type CompanionColdLease = ColdKnowledgeService & { release?(): Promise<void> };
 
@@ -32,6 +34,7 @@ export interface CompanionProjectionCleanup {
 export interface CompanionMemoryRuntime {
   /** Production runtimes can prepare plugins/graphs without a query or model call. */
   readonly supportsPreparation?: boolean;
+  readonly supportsProjectionDelta?: boolean;
   get(scope: CompanionMemoryOwnerScope): Promise<CompanionEmbeddingLease>;
   describeEmbedding?(): Promise<{ profileKey: string }>;
   describeGeneration?(input: CompanionGenerationSelection): Promise<CompanionGenerationDescriptor>;
@@ -40,13 +43,21 @@ export interface CompanionMemoryRuntime {
   purgeOwner?(ownerId: string, scopes?: CompanionProjectionCleanup): Promise<void>;
   getCold?(scope: CompanionMemoryOwnerScope, authorize: ColdKnowledgeServiceOptions['authorize']): Promise<CompanionColdLease>;
   resetCold?(owner: string): Promise<void>;
+  resourceSnapshot?(): CompanionMemoryRuntimeResources;
+  acknowledgePreparedRecall?(reference: CompanionPreparedRecallReference): Promise<void>;
   close(): Promise<void>;
+}
+export interface CompanionMemoryRuntimeResources {
+  native: ReturnType<VcpMemoryProcessBroker['snapshot']>;
+  pools: { hot: number; generation: number; cold: number; references: number };
+  admissions: { coreAndCold: number; generation: number; maxPerWindow: number };
+  prepared?: ReturnType<VcpMemoryClient['preparedResourceSnapshot']>;
 }
 
 const digest = (value: string) => createHash('sha256').update(value).digest('hex');
 const delay = () => new Promise<void>(resolve => setTimeout(resolve, 20));
 const ownerIdentity = companionRuntimeOwner;
-interface CoreEntry { key: string; ownerId: string; profileKey: string; connection: string; storage: CompanionOwnerRuntimeStorage;
+interface CoreEntry { key: string; ownerId: string; profileKey: string; connection: string; storage: CompanionOwnerRuntimePaths & { ownerPrompts?: CompanionOwnerRuntimeStorage['ownerPrompts'] };
   client: VcpMemoryClient; references: number; used: number; retiring?: Promise<void> }
 interface ColdEntry { key: string; ownerId: string; profileKey: string; space: string; connection: string; storage: CompanionOwnerRuntimeStorage;
   service: ColdKnowledgeService; references: number; used: number; authorize: ColdKnowledgeServiceOptions['authorize']; retiring?: Promise<void> }
@@ -65,17 +76,25 @@ export interface CompanionVcpRuntimeOptions {
   generationProfile?: unknown;
   resolveGenerationPlugins?(input: CompanionGenerationSelection & CompanionGenerationDescriptor): Promise<{ plugins: VcpMemoryPluginConfiguration; dispose(): Promise<void> }>;
   launch?: VcpMemoryClientOptions['launch'];
+  nativeProcessLimit?: number;
+  /** Shared by a host's auxiliary native oracle and production runtime. The
+   * caller owns its final close; hot/cold still use the same exact permits. */
+  processBroker?: VcpMemoryProcessBroker;
+  nativeMaxOutstanding?: number;
+  maxPendingAdmissions?: number;
 }
 
 /** Embedding operations and trusted owner-generation leases have separate
  * identities. Every hot client shares one actual child-process budget. */
 export class CompanionVcpRuntime implements CompanionMemoryRuntime {
   readonly supportsPreparation = true;
+  readonly supportsProjectionDelta = true;
   private readonly cores = new Map<string, CoreEntry>();
   private readonly spaces = new Map<string, string>();
   private readonly generations = new Map<string, GenerationEntry>();
   private readonly ownerEpochs = new Map<string, number>();
-  private readonly broker = new VcpMemoryProcessBroker(4);
+  private readonly broker: VcpMemoryProcessBroker;
+  private readonly maxPendingAdmissions: number;
   private connectionEpoch = 0;
   private readonly sensitiveEndpoints = new Map<string, string>();
   private readonly colds = new Map<string, ColdEntry>();
@@ -85,7 +104,25 @@ export class CompanionVcpRuntime implements CompanionMemoryRuntime {
   private readonly coreAdmissions = new Set<Promise<unknown>>();
   private readonly ownerPurges = new Map<string, Promise<void>>();
   private closed = false;
-  constructor(private readonly options: CompanionVcpRuntimeOptions) {}
+  constructor(private readonly options: CompanionVcpRuntimeOptions) {
+    this.broker = options.processBroker ?? new VcpMemoryProcessBroker(options.nativeProcessLimit ?? 4, options.nativeMaxOutstanding ?? 128);
+    this.maxPendingAdmissions = options.maxPendingAdmissions ?? 128;
+    if (!Number.isSafeInteger(this.maxPendingAdmissions) || this.maxPendingAdmissions < 1) throw new Error('Invalid native runtime admission capacity.');
+  }
+  resourceSnapshot(): CompanionMemoryRuntimeResources { return { native: this.broker.snapshot(),
+    pools: { hot: this.cores.size, generation: this.generations.size, cold: this.colds.size,
+      references: [...this.cores.values(), ...this.generations.values(), ...this.colds.values()].reduce((sum, entry) => sum + entry.references, 0) },
+    admissions: { coreAndCold: this.coreAdmissions.size, generation: this.generationAdmissions.size, maxPerWindow: this.maxPendingAdmissions },
+    ...([...this.generations.values(), ...this.cores.values()][0]?.client.preparedResourceSnapshot ? {
+      prepared: [...this.generations.values(), ...this.cores.values()][0]!.client.preparedResourceSnapshot() } : {}) }; }
+  private capacityError(): Error { return Object.assign(new Error('The native memory runtime admission queue is at capacity.'), { code: 'VCP_MEMORY_NATIVE_CAPACITY' }); }
+  async acknowledgePreparedRecall(reference: CompanionPreparedRecallReference): Promise<void> {
+    companionPreparedRecallReferenceSchema.parse(reference);
+    const storage = await this.cleanupStorage(reference.ownerId), root = path.join(storage.indexRoot, 'generation', digest(reference.profileKey));
+    if (!await this.directory(storage, root)) return;
+    const store = new VcpPreparedRecallStore(root, { workspaceRoot: storage.workspaceRoot });
+    try { await store.remove(reference); } finally { await store.close(); }
+  }
   private async storage(ownerId: string): Promise<CompanionOwnerRuntimeStorage> {
     return companionOwnerRuntimeStorage(ownerId, await this.options.resolveOwnerStorage(ownerId));
   }
@@ -110,7 +147,9 @@ export class CompanionVcpRuntime implements CompanionMemoryRuntime {
   }
   private snapshot(input: CompanionGenerationSelection): CompanionGenerationSelection {
     return { ownerId: ownerIdentity(input.ownerId), config: Object.freeze({ apiFormat: input.config.apiFormat,
-      model: input.config.model, baseUrl: input.config.baseUrl, apiKey: input.config.apiKey }) };
+      model: input.config.model, baseUrl: input.config.baseUrl, apiKey: input.config.apiKey,
+      ownerId: input.ownerId, workPriority: input.config.workPriority, accountingPurpose: input.config.accountingPurpose,
+      providerBudget: input.config.providerBudget, resolveAssetContext: input.config.resolveAssetContext }) };
   }
   private semanticEndpoint(raw: string | undefined): string | null {
     if (!raw) return null;
@@ -129,7 +168,11 @@ export class CompanionVcpRuntime implements CompanionMemoryRuntime {
     const semantic = { adapter: 'owner-generation-v1', apiFormat: selection.config.apiFormat, model: selection.config.model,
       endpoint: this.semanticEndpoint(selection.config.baseUrl), generation: this.options.generationProfile ?? null };
     const profileKey = core.profileKey + ':owner-generation-v1-' + digest(JSON.stringify(semantic)).slice(0, 20);
-    return { ...core, selection, profileKey, connection: digest(JSON.stringify({ embedding: core.embedding, config: selection.config })) };
+    // Host callbacks enforce live files and real-request accounting. They must
+    // survive routing, but are neither provider semantics nor transport keys.
+    const config = selection.config;
+    return { ...core, selection, profileKey, connection: digest(JSON.stringify({ embedding: core.embedding,
+      config: { apiFormat: config.apiFormat, model: config.model, baseUrl: config.baseUrl, apiKey: config.apiKey } })) };
   }
   async describeGeneration(input: CompanionGenerationSelection): Promise<CompanionGenerationDescriptor> {
     if (this.closed) throw new Error('记忆服务已关闭。');
@@ -144,15 +187,21 @@ export class CompanionVcpRuntime implements CompanionMemoryRuntime {
     return { client: entry.client, profileKey: entry.profileKey, release: async () => { if (!released) { released = true; entry.references--; entry.used = Date.now(); } } };
   }
   get(scope: CompanionMemoryOwnerScope): Promise<CompanionEmbeddingLease> {
+    if (this.coreAdmissions.size >= this.maxPendingAdmissions) return Promise.reject(this.capacityError());
     const ownerId = ownerIdentity(scope.ownerId), epoch = this.ownerEpochs.get(ownerId) ?? 0, deadline = Date.now() + 180_000;
     const current = () => { scope.signal?.throwIfAborted(); if (this.closed) throw new Error('记忆服务已关闭。');
       if ((this.ownerEpochs.get(ownerId) ?? 0) !== epoch) throw new Error('伙伴记忆已取消。'); if (Date.now() >= deadline) throw new Error('伙伴记忆连接池仍然繁忙。'); };
     return this.track(Promise.resolve().then(async () => {
-      current(); const { embedding, profileKey } = await this.embedding(), storage = await this.storage(ownerId); current();
+      current(); const { embedding, profileKey } = await this.embedding();
+      // This trusted host-only purpose is used exclusively by ledger outbox
+      // remember/forget. It neither reads nor changes query prompt snapshots.
+      const coreStorage = () => scope.purpose === 'index' ? this.cleanupStorage(ownerId) : this.storage(ownerId);
+      const storage: CoreEntry['storage'] = await coreStorage(); current();
       const connection = digest(JSON.stringify(embedding)), key = ownerId + ':' + profileKey;
       const existing = this.cores.get(key);
       if (existing && !existing.retiring && existing.connection === connection && existing.storage.indexRoot === storage.indexRoot && !this.ownerPurges.has(ownerId)) {
-        existing.client.setOwnerPrompts(storage.ownerPrompts); existing.storage = storage; return this.coreLease(existing);
+        if (storage.ownerPrompts) existing.client.setOwnerPrompts(storage.ownerPrompts);
+        existing.storage = { ...storage, ownerPrompts: storage.ownerPrompts ?? existing.storage.ownerPrompts }; return this.coreLease(existing);
       }
       const pending = this.tail.then(async () => {
         while (this.ownerPurges.has(ownerId)) { current(); await delay(); } current();
@@ -167,15 +216,16 @@ export class CompanionVcpRuntime implements CompanionMemoryRuntime {
             current(); const idle = [...this.cores.values()].filter(value => !value.references && !value.retiring).sort((a,b) => a.used-b.used)[0];
             if (idle) { await this.retireCore(idle); continue; } await delay();
           }
-          current(); const actual = await this.storage(ownerId); current();
+          current(); const actual = await coreStorage(); current();
           if (actual.indexRoot !== storage.indexRoot) throw new Error('伙伴资产目录在连接期间发生变化。');
           const client = new VcpMemoryClient({ dataRoot: path.join(storage.indexRoot, 'hot', digest(profileKey)), vendorRoot: this.options.vendorRoot,
             boundOwnerId: ownerId,
             preparedRecallBudget: { workspaceRoot: storage.workspaceRoot }, workerPath: this.options.workerPath, embedding,
-            plugins: { ownerPrompts: storage.ownerPrompts }, processBroker: this.broker, launch: this.options.launch, maxOpenScopes: 4 });
+            plugins: { ownerPrompts: storage.ownerPrompts }, semanticProfileKey: profileKey, processBroker: this.broker, launch: this.options.launch, maxOpenScopes: 4 });
           entry = { key, ownerId, profileKey, connection, storage, client, references: 0, used: Date.now() }; this.cores.set(key, entry);
         }
-        current(); entry.client.setOwnerPrompts(storage.ownerPrompts); entry.storage = storage; return this.coreLease(entry);
+        current(); if (storage.ownerPrompts) entry.client.setOwnerPrompts(storage.ownerPrompts);
+        entry.storage = { ...storage, ownerPrompts: storage.ownerPrompts ?? entry.storage.ownerPrompts }; return this.coreLease(entry);
       }); this.tail = pending.catch(() => undefined); return pending;
     }));
   }
@@ -193,6 +243,7 @@ export class CompanionVcpRuntime implements CompanionMemoryRuntime {
       release: async () => { if (released) return; released = true; entry.references--; entry.used = Date.now(); } };
   }
   acquireGeneration(input: CompanionGenerationSelection & { signal?: AbortSignal }): Promise<CompanionGenerationLease> {
+    if (this.generationAdmissions.size >= this.maxPendingAdmissions) return Promise.reject(this.capacityError());
     const selection = this.snapshot(input), epoch = this.ownerEpochs.get(selection.ownerId) ?? 0, deadline = Date.now() + 180_000;
     const current = () => { input.signal?.throwIfAborted();
       if (this.closed) throw new Error('记忆服务已关闭。');
@@ -235,7 +286,7 @@ export class CompanionVcpRuntime implements CompanionMemoryRuntime {
               boundOwnerId: selection.ownerId,
               preparedRecallBudget: { workspaceRoot: storage.workspaceRoot },
               vendorRoot: this.options.vendorRoot, workerPath: this.options.workerPath, embedding: description.embedding,
-              plugins: { ...route.plugins, ownerPrompts: storage.ownerPrompts }, processBroker: this.broker, launch: this.options.launch, maxOpenScopes: 4 });
+              plugins: { ...route.plugins, ownerPrompts: storage.ownerPrompts }, semanticProfileKey: description.profileKey, processBroker: this.broker, launch: this.options.launch, maxOpenScopes: 4 });
             entry = { key, ownerId: selection.ownerId, profileKey: description.profileKey, connection: description.connection,
               connectionEpoch: ++this.connectionEpoch, client, references: 0, used: Date.now(), dispose: route.dispose, storage };
             this.generations.set(key, entry);
@@ -306,6 +357,7 @@ export class CompanionVcpRuntime implements CompanionMemoryRuntime {
     } });
   }
   getCold(scope: CompanionMemoryOwnerScope, authorize: ColdKnowledgeServiceOptions['authorize']): Promise<CompanionColdLease> {
+    if (this.coreAdmissions.size >= this.maxPendingAdmissions) return Promise.reject(this.capacityError());
     const ownerId = ownerIdentity(scope.ownerId), epoch = this.ownerEpochs.get(ownerId) ?? 0, deadline = Date.now() + 180_000;
     const current = () => { scope.signal?.throwIfAborted(); if (this.closed) throw new Error('冷知识服务已关闭。');
       if ((this.ownerEpochs.get(ownerId) ?? 0) !== epoch) throw new Error('伙伴知识已取消。'); if (Date.now() >= deadline) throw new Error('伙伴知识连接池仍然繁忙。'); };
@@ -329,6 +381,7 @@ export class CompanionVcpRuntime implements CompanionMemoryRuntime {
           const local: ColdEntry = { key, ownerId, profileKey, space, connection, storage, references: 0, used: Date.now(), authorize, service: undefined! };
           local.service = new ColdKnowledgeService({ dataRoot: path.join(storage.indexRoot, 'cold', digest(space)), boundOwnerId: ownerId,
             vendorRoot: this.options.vendorRoot, workerPath: path.join(path.dirname(this.options.workerPath), 'cold-worker.cjs'), embedding, launch: this.options.launch,
+            processBroker: this.broker,
             authorize: (...args) => local.authorize(...args) });
           this.colds.set(key, local); entry = local;
         }
@@ -364,7 +417,7 @@ export class CompanionVcpRuntime implements CompanionMemoryRuntime {
       ...[...this.cores.values()].map(entry => this.retireCore(entry)), ...[...this.colds.values()].map(entry => this.retireCold(entry)),
       ...[...this.generations.values()].map(entry => this.retireEntry(entry)),
     ]);
-    await this.broker.close();
+    if (!this.options.processBroker) await this.broker.close();
     const failure = results.find(result => result.status === 'rejected'); if (failure?.status === 'rejected') throw failure.reason;
   }
 }

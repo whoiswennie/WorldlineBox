@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { companionExecutionReadsetSchema } from './companion-execution-evidence';
 
 const id = z.string().regex(/^[a-zA-Z0-9_-]{1,100}$/u);
 const text = z.string().trim().min(1).max(12000);
@@ -23,6 +24,29 @@ export const companionLearningGoalReadSchema = z.object({ id, kind: z.enum(['lib
   readAt: z.string(), characters: z.number().int().nonnegative(), excerpt: z.string().max(12000), truncated: z.boolean() });
 export const companionLearningGoalPlanSchema = z.object({ focus: z.string().min(1).max(2000),
   questions: z.array(z.string().min(1).max(1000)).max(5), searchQueries: z.array(z.string().min(1).max(500)).max(3) });
+const digest = z.string().regex(/^[a-f0-9]{64}$/u);
+export const companionLearningAssessmentSchema = z.object({ evaluations: z.array(z.object({ evaluation: z.enum(['supported', 'partial', 'unsupported', 'unassessed']),
+  rationale: z.string().max(2000), evidence: z.array(evidence).max(4) })).max(5), gaps: z.array(z.string().max(1500)).max(10),
+  nextPlan: z.array(z.string().max(1500)).min(1).max(10),
+  stateReflection: z.object({ focus: z.string().trim().min(1).max(300), reason: z.string().trim().min(1).max(1000), evidence: z.array(evidence).min(1).max(6) }).optional() });
+const testQuestions = z.object({ questions: z.array(z.string().min(1).max(1500)).min(1).max(3) });
+const testRecall = z.object({ text: z.string().max(24000), candidateMemoryIds: z.array(id).max(20), executionReadset: companionExecutionReadsetSchema });
+const testAnswer = z.object({ answers: z.array(z.string().max(3000)).max(5) });
+const testAssessment = z.object({ review: companionLearningAssessmentSchema, expectedStateRevision: z.number().int().positive().optional(), currentFocus: z.string().max(300).optional() });
+export const companionLearningTestStepSchema = z.discriminatedUnion('stage', [
+  z.strictObject({ stage: z.literal('questions'), inputHash: digest, value: testQuestions }),
+  z.strictObject({ stage: z.literal('recall'), inputHash: digest, value: testRecall }),
+  z.strictObject({ stage: z.literal('answer'), inputHash: digest, value: testAnswer }),
+  z.strictObject({ stage: z.literal('assess'), inputHash: digest, value: testAssessment }),
+]);
+export const companionLearningTestProgressSchema = z.object({ basisHash: digest, sourceChecksums: z.record(id, digest),
+  goalInput: z.object({ revision: z.number().int().positive(), text, materials: z.array(companionLearningGoalMaterialSchema).max(20), allowWeb: z.boolean() }),
+  questions: z.object({ inputHash: digest, value: testQuestions }).optional(), recall: z.object({ inputHash: digest, value: testRecall }).optional(),
+  answer: z.object({ inputHash: digest, value: testAnswer }).optional(), assess: z.object({ inputHash: digest, value: testAssessment }).optional(),
+}).superRefine((value, context) => {
+  if (value.recall && !value.questions || value.answer && !value.recall || value.assess && !value.answer)
+    context.addIssue({ code: 'custom', message: 'Self-test checkpoints must form a complete ordered prefix.' });
+});
 export const companionLearningGoalRoundSchema = z.object({
   id, goalId: id, companionId: id, ordinal: z.number().int().positive(), startedAt: z.string(), updatedAt: z.string(), endedAt: z.string().optional(),
   status: z.enum(['running', 'completed', 'deferred', 'failed', 'cancelled']), phase: companionLearningGoalPhaseSchema,
@@ -31,6 +55,8 @@ export const companionLearningGoalRoundSchema = z.object({
   summary: z.string().max(6000).optional(), claims: z.array(z.object({ text: z.string().max(2000), evidence: z.array(evidence).max(4) })).max(12).default([]),
   memoryIds: z.array(id).max(20).default([]),
   integration: z.object({ action: z.enum(['recorded', 'reused', 'revised']), noteId: id, version: z.number().int().positive(), reason: z.string().max(2000) }).optional(),
+  /** Host-only successful stage receipts; never supplied by a model proposal. */
+  selfTestProgress: companionLearningTestProgressSchema.optional(),
   selfTest: z.object({ kind: z.literal('self_test'), questions: z.array(z.object({ question: z.string().max(1500), answer: z.string().max(3000),
     evaluation: z.enum(['supported', 'partial', 'unsupported', 'unassessed']), rationale: z.string().max(2000), evidence: z.array(evidence).max(4) })).max(5),
     supportedAnswers: z.number().int().nonnegative(), assessedQuestions: z.number().int().nonnegative(),
@@ -70,6 +96,7 @@ export const companionLearningGoalStorageCommands = [
   z.strictObject({ type: z.literal('learning.goals.claim'), excludedOwners: z.array(id).max(100).default([]), leaseMs: z.number().int().min(1000).max(600000).default(120000) }),
   z.strictObject({ type: z.literal('learning.goals.heartbeat'), id, leaseToken: id, leaseMs: z.number().int().min(1000).max(600000).default(120000), phase: companionLearningGoalPhaseSchema }),
   z.strictObject({ type: z.literal('learning.goals.checkpoint'), id, leaseToken: id, round: companionLearningGoalRoundSchema }),
+  z.strictObject({ type: z.literal('learning.goals.test.checkpoint'), id, leaseToken: id, sourceChecksums: z.record(id, digest), step: companionLearningTestStepSchema }),
   z.strictObject({ type: z.literal('learning.goals.source'), id, leaseToken: id, read: companionLearningGoalReadSchema }),
   z.strictObject({ type: z.literal('learning.goals.integrate'), id, leaseToken: id, content: z.string().min(1).max(65536),
     expectedProhibitionRevision: z.string().min(1).max(128),

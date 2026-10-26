@@ -71,6 +71,7 @@ function fixture(options: { cacheRoot?: string; scopes?: Map<string, VcpMemoryNo
       else { scopes.clear(); openScopes.clear(); }
     }), close: vi.fn(async () => { openScopes.clear(); }) };
   const request = vi.fn(async (command: CompanionStorageCommand) => {
+    if (command.type === 'memory.outbox.pending') return { ok: true, memoryOutboxPending: false };
     if (command.type === 'memory.snapshot') return { ok: true, memorySnapshot: { scopeId: 'original', revision, notes: structuredClone(corpus) } };
     if (command.type === 'memory.records.filter') return { ok: true, memories: structuredClone(corpus.filter(note => command.ids.includes(note.id))) };
     if (command.type === 'memory.frozen.valid') return { ok: true, memoryFrozenValid: command.memories.every(expected => corpus.some(note => note.id === expected.id && note.status !== 'forgotten')) };

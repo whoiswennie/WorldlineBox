@@ -18,6 +18,7 @@ function receive(message) {
         case 'initialize': value = await runtime.initialize(command.configuration); break;
         case 'remember': value = await runtime.remember(command.note); break;
         case 'replace': value = await runtime.replace(command.notes); break;
+        case 'projection-delta': value = await runtime.applyProjectionDelta(command.notes, command.removedIds); break;
         case 'prepare': value = await runtime.prepare(); break;
         case 'search': value = await runtime.search(command); break;
         case 'read': value = await runtime.read(command.id); break;
@@ -44,4 +45,10 @@ function receive(message) {
 }
 if (parentPort) parentPort.on('message', receive);
 else process.on('message', receive);
+// Node IPC is also the isolated host-crash verification transport. A lost
+// parent must not leave an orphan graph holding the owner's SQLite/files.
+process.once('disconnect', () => {
+  const forced = setTimeout(() => process.exit(1), 5000); forced.unref();
+  void tail.catch(() => undefined).then(() => runtime.close()).catch(() => undefined).finally(() => process.exit(0));
+});
 send({ type: 'booted' });

@@ -1,16 +1,17 @@
 import { createHash } from 'node:crypto';
-import { access, mkdtemp, mkdir, readFile, realpath, rm, unlink, writeFile } from 'node:fs/promises';
+import { access, link, mkdtemp, mkdir, readFile, realpath, rm, unlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import sharp from 'sharp';
-import { afterEach, expect, it } from 'vitest';
+import { afterEach, expect, it, vi } from 'vitest';
 import { CompanionsStore, type CompanionSeed } from '../../src/companions/store';
 import { CompanionPublicProfiles } from '../../src/main/companions/public-profiles';
 import type { CompanionStorageCommand, CompanionStorageResponse } from '../../src/shared/companion-storage';
 import type { CompanionPublicProfile } from '../../src/shared/companion-public-profile';
 import { BUILTIN_COMPANIONS } from '../../src/shared/companion-personas';
 import { COMPANION_APPEARANCE_FILES } from '../../src/shared/companion-portrait-files';
-import { CompanionAssetProfileStore } from '../../src/main/companions/asset-profile';
+import { CompanionAssetProfileStore, renderCompanionAssetProfile } from '../../src/main/companions/asset-profile';
+import { companionPortraitResponse } from '../../src/main/companions/portrait-response';
 
 const roots: string[] = [], stores = new Set<CompanionsStore>();
 const seeds: CompanionSeed[] = ['alice', 'bob', 'carol'].map(id => ({ id, name: id, description: '公开的伙伴介绍 ' + id, persona: '独立且尊重边界。', model: '', avatar: id === 'alice' ? 'sister' : 'custom', proactive: false }));
@@ -52,7 +53,89 @@ async function managedImage(f: Awaited<ReturnType<typeof fixture>>, id: string, 
   const relativePath = 'attachments/' + id + '.png', file = path.join(f.managed, relativePath), bytes = await picture(file, color, width, height);
   f.store.registerAttachment({ attachment: { id, name: id + '.png', mime: 'image/png', size: bytes.length }, relativePath }); return { id, file, bytes };
 }
+it('serves live owner pixels to saved UI URLs, refreshes hashes on external edits, and never restores deleted images after restart', async () => {
+  const f = await fixture(), initialized = new Set<string>(), profiles = new CompanionAssetProfileStore(f.libraryDirectory);
+  const options = { root: f.managed, appPath: f.appPath, profileStore: profiles, request: f.request,
+    portraitInitialized: async (id: string, role: string) => initialized.has(id + '/' + role),
+    markPortraitInitialized: async (id: string, role: string) => { initialized.add(id + '/' + role); } };
+  const original = await picture(path.join(f.appPath, 'assets', 'companions', 'portraits', 'deepseek-sister.png'));
+  const owner = f.store.request({ type: 'state' }).state!.companions.find(owner => owner.id === 'alice')!;
+  const loader = new CompanionPublicProfiles(options);
+  // The protocol is a read-only endpoint: it cannot bootstrap a new owner.
+  const unknown = await companionPortraitResponse(new Request('worldlinebox-companion://portrait/bob/avatar?v=' + sha(original)), (id, role) => loader.readOwnerImage(id, role));
+  expect(unknown.status).toBe(404); await expect(access(path.join(f.libraryDirectory, 'bob'))).rejects.toMatchObject({ code: 'ENOENT' });
+  const first = (await loader.runtimeImages(owner)).avatar!;
+  expect(first.sha256).toBe(sha(original)); expect(first.url).toContain('/portrait/alice/avatar?v=' + sha(original));
+  const serve = (url: string, method = 'GET') => companionPortraitResponse(new Request(url, { method }), (id, role) => loader.readOwnerImage(id, role));
+  const response = await serve(first.url);
+  expect(response.status).toBe(200); expect(response.headers.get('cache-control')).toBe('no-store'); expect(response.headers.get('content-type')).toBe('image/png');
+  expect(Buffer.from(await response.arrayBuffer())).toEqual(original);
+  const directory = path.join(f.libraryDirectory, 'alice', '形象'), file = path.join(directory, 'avatar.png');
+  const changed = await picture(file, '#174ed0');
+  const second = (await loader.runtimeImages(owner)).avatar!;
+  expect(second.sha256).toBe(sha(changed)); expect(second.url).not.toBe(first.url); expect((await serve(first.url)).status).toBe(404);
+  expect(Buffer.from(await (await serve(second.url)).arrayBuffer())).toEqual(changed);
+  const head = await serve(second.url, 'HEAD'); expect(head.headers.get('content-length')).toBe(String(changed.length)); expect(await head.text()).toBe('');
+  expect((await serve(second.url + '&path=../../bob/avatar.png')).status).toBe(404);
+  expect((await serve(second.url.replace('/alice/', '/bob/'))).status).toBe(404);
+  const alias = path.join(f.managed, 'forbidden-image-link.png'); await link(file, alias);
+  expect((await serve(second.url)).status).toBe(404); expect((await loader.runtimeImages(owner)).avatar).toBeUndefined(); await unlink(alias);
+  await unlink(file); expect((await loader.runtimeImages(owner)).avatar).toBeUndefined();
+  await writeFile(file, changed);
+  const restored = (await loader.runtimeImages(owner)).avatar!;
+  expect(restored.sha256).toBe(second.sha256); expect(restored.url).not.toBe(second.url);
+  expect((await serve(second.url)).status).toBe(404); expect((await serve(restored.url)).status).toBe(200);
+  await rm(directory, { recursive: true });
+  const restarted = new CompanionPublicProfiles(options);
+  expect((await restarted.runtimeImages(owner)).avatar).toBeUndefined();
+  expect((await companionPortraitResponse(new Request(second.url), (id, role) => restarted.readOwnerImage(id, role))).status).toBe(404);
+  await expect(access(directory)).rejects.toMatchObject({ code: 'ENOENT' });
+});
+
+it('renders the owner custom copy even when its original attachment disappears, with a fresh physical-image hash', async () => {
+  const f = await fixture(), profiles = new CompanionAssetProfileStore(f.libraryDirectory), image = await managedImage(f, 'chosen-avatar', '#32a050');
+  const seed = f.store.request({ type: 'state' }).state!.companions.find(owner => owner.id === 'alice')!, initial = await profiles.bootstrap(seed);
+  const next = await profiles.writeProfile({ companionId: seed.id, expectedRevision: initial.profileRevision, profile: { ...initial.profile, avatar: 'custom', avatarAttachmentId: image.id } });
+  const owner = profiles.hydrateFromSnapshot(seed, next), loader = new CompanionPublicProfiles({ root: f.managed, appPath: f.appPath, profileStore: profiles, request: f.request });
+  await loader.applyImageSelection(seed, owner); await unlink(image.file);
+  const own = (await loader.runtimeImages(owner)).avatar!; expect(own.sha256).toBe(sha(image.bytes));
+  expect((await loader.readOwnerImage(owner.id, 'avatar'))!.bytes).toEqual(image.bytes);
+});
 function person(profiles: readonly CompanionPublicProfile[], id: string) { const profile = profiles.find(item => item.id === id); expect(profile).toBeDefined(); return profile!; }
+
+it('keeps only current owner/role metadata for 72 real two-image residents, without warm pixel reads or a sequential 64-entry cache thrash', async () => {
+  const root = await mkdtemp(path.join(tmpdir(), 'companion-public-profiles-')); roots.push(root);
+  const libraryDirectory = path.join(root, '伙伴记忆'), store = new CompanionsStore(path.join(root, 'state.sqlite'), Array.from({ length: 72 }, (_, n) => ({
+    id: 'resident-' + n, name: '伙伴' + n, persona: '根据本人文件生活。', description: '', model: '', avatar: 'custom' as const, proactive: false,
+  }))); stores.add(store);
+  const owners = store.request({ type: 'state' }).state!.companions.map(owner => ({ ...owner, avatarAttachmentId: 'initial-selection', appearanceAttachmentId: 'initial-selection' }));
+  const bytes = await sharp({ create: { width: 8, height: 8, channels: 4, background: '#3178a0' } }).png().toBuffer();
+  for (const owner of owners) {
+    const directory = path.join(libraryDirectory, owner.id); await mkdir(path.join(directory, '形象'), { recursive: true });
+    await writeFile(path.join(directory, 'profile.md'), renderCompanionAssetProfile(owner.id, { name: owner.name, description: owner.description, persona: owner.persona,
+      avatar: owner.avatar, proactive: owner.proactive, inputMode: 'steer', avatarAttachmentId: owner.avatarAttachmentId, appearanceAttachmentId: owner.appearanceAttachmentId }));
+    await writeFile(path.join(directory, '.伙伴配置.json'), JSON.stringify({ schema: 'worldlinebox.companion-assets-v1', companionId: owner.id, initializedAt: new Date().toISOString() }));
+    for (const role of ['avatar', 'orthographic']) {
+      await writeFile(path.join(directory, '形象', role + '.png'), bytes);
+      await writeFile(path.join(directory, '形象', '.' + role + '-initialized.json'), JSON.stringify({ companionId: owner.id, role, path: role + '.png', attachmentId: 'initial-selection' }));
+    }
+  }
+  const request = vi.fn(async () => { throw new Error('Warm metadata must not fetch or copy the original attachment.'); });
+  const loader = new CompanionPublicProfiles({ root, appPath: root, profileStore: new CompanionAssetProfileStore(libraryDirectory), request, portraitInitialized: async () => true });
+  // This spy calls the real bounded fd read, real pixel decoder and real hash.
+  const bodyReads = vi.spyOn(loader, 'readOwnerImage');
+  const state = () => Promise.all(owners.map(owner => loader.runtimeImages(owner)));
+  const cold = await state(); expect(cold.every(images => images.avatar && images.orthographic)).toBe(true); expect(bodyReads).toHaveBeenCalledTimes(144);
+  bodyReads.mockClear(); const warm = await state(); expect(warm).toEqual(cold); expect(bodyReads).not.toHaveBeenCalled(); expect(request).not.toHaveBeenCalled();
+  const changedFile = path.join(libraryDirectory, owners[3]!.id, '形象', 'avatar.png'), deletedFile = path.join(libraryDirectory, owners[5]!.id, '形象', 'orthographic.png');
+  const changed = await sharp({ create: { width: 8, height: 8, channels: 4, background: '#d05030' } }).png().toBuffer();
+  await writeFile(changedFile, changed); await unlink(deletedFile);
+  bodyReads.mockClear(); const refreshed = await state();
+  expect(bodyReads.mock.calls).toEqual([[owners[3]!.id, 'avatar']]); expect(refreshed[3]!.avatar!.sha256).toBe(sha(changed)); expect(refreshed[3]!.orthographic).toEqual(cold[3]!.orthographic);
+  expect(refreshed[5]!.orthographic).toBeUndefined(); await expect(access(deletedFile)).rejects.toMatchObject({ code: 'ENOENT' }); expect(request).not.toHaveBeenCalled();
+  for (let n = 0; n < owners.length; n++) if (n !== 3 && n !== 5) expect(refreshed[n]).toEqual(cold[n]);
+  bodyReads.mockClear(); expect(await state()).toEqual(refreshed); expect(bodyReads).not.toHaveBeenCalled();
+});
 
 it('keeps a healthy owner available when another group member has damaged files, while its own files remain mandatory', async () => {
   const f = await fixture(), profiles = new CompanionAssetProfileStore(f.libraryDirectory);

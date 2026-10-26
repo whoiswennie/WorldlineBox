@@ -9,6 +9,8 @@ import type { CompanionsRequest, WorldlineBoxCompanionsApi } from '../../src/sha
 import type { WorldlineBoxLlmApi } from '../../src/shared/llm';
 import type { CompanionPublicProfile } from '../../src/shared/companion-public-profile';
 import { BUILTIN_COMPANIONS } from '../../src/shared/companion-personas';
+import { companionMemoryPolicyFileSchema } from '../../src/shared/companion-memory-policy';
+import { companionModelResourcePolicySchema } from '../../src/shared/companion-model-resources';
 import { removeCompanionTestDirectory, ensureCompanionTestWorkspace, electronLaunchEnv, resolveElectronAppPath, resolveElectronExecutablePath } from './electron-test-helpers';
 
 type Bridge = Window & { worldlinebox: { companions: WorldlineBoxCompanionsApi; llm: WorldlineBoxLlmApi } };
@@ -16,6 +18,13 @@ type ImageProof = { personId: string; role: string; sha256: string; mime: string
 type Capture = { context: { publicProfiles: CompanionPublicProfile[]; identity: { currentReply: { speaker: { id: string; name: string } } }; visionManifest: Array<{ personId: string; role: string; delivery: string }> }; images: ImageProof[] };
 async function request(page: Page, input: CompanionsRequest) { const result = await page.evaluate(value => (window as unknown as Bridge).worldlinebox.companions.request(value), input); expect(result.ok, result.error).toBe(true); return result; }
 function cleanup(root: string) { const resolved = path.resolve(root); if (path.dirname(resolved) !== path.resolve(tmpdir()) || !path.basename(resolved).startsWith('worldlinebox-profile-e2e-')) throw new Error('Unexpected profile fixture cleanup path.'); removeCompanionTestDirectory(resolved); }
+function compiledProfileFixtureHashes() {
+  const directory = path.join(resolveElectronAppPath(), '.vite'), hashes: Record<string, string> = {};
+  const visit = (parent: string) => { for (const entry of readdirSync(parent, { withFileTypes: true })) {
+    const file = path.join(parent, entry.name); if (entry.isDirectory()) visit(file);
+    else if (/\.(?:js|cjs|css|html)$/u.test(entry.name)) hashes[path.relative(directory, file).replaceAll('\\', '/')] = createHash('sha256').update(readFileSync(file)).digest('hex');
+  } }; visit(directory); return hashes;
+}
 async function launch(profile: string) {
   const packaged = process.env.WORLDLINEBOX_E2E_PACKAGED_EXECUTABLE;
   const application = await electron.launch({ executablePath: packaged ?? resolveElectronExecutablePath(), args: packaged ? [] : [resolveElectronAppPath()], cwd: resolveElectronAppPath(), env: electronLaunchEnv({ WORLDLINEBOX_E2E: '1', WORLDLINEBOX_E2E_USER_DATA_PATH: profile }, { gpu: 'software' }) });
@@ -50,10 +59,62 @@ async function awake(page: Page, companionId: string, conversationId: string) {
   await request(page, { type: 'routine.configure', companionId, conversationId, expectedRevision: routine.revision, patch: { timeZone: world.settings.timeZone, wakeAt: clock(-8), sleepAt: clock(8), meals: [], habits: [] } });
 }
 
+test('uses editable owner image files in saved contacts and preserves missing-image empty states across restart', async ({ browserName: _browserName }, testInfo) => {
+  void _browserName;
+  test.setTimeout(120000);
+  const root = mkdtempSync(path.join(tmpdir(), 'worldlinebox-profile-e2e-')), profile = path.join(root, 'profile'), owner = 'deepseek-sister';
+  const compiledHashes = compiledProfileFixtureHashes(), artifact = path.resolve('.tools/test-output/companions'); mkdirSync(artifact, { recursive: true });
+  let application: ElectronApplication | undefined;
+  try {
+    let started = await launch(profile); application = started.application; let page = started.page;
+    const selectContact = async () => { await page.locator('[data-application-module="companions"]').click(); await page.getByRole('button', { name: '联系人', exact: true }).click(); await page.locator(`[data-companion-contact="${owner}"]`).click(); };
+    await selectContact();
+    const status = await page.evaluate(() => (window as unknown as Bridge).worldlinebox.companions.workspace!({ type: 'status' }));
+    const relative = path.relative(root, status.selected!.memoryRoot);
+    expect(path.isAbsolute(relative) || relative === '..' || relative.startsWith('..' + path.sep)).toBe(false);
+    const images = path.join(status.selected!.memoryRoot, owner, '形象'), avatarFile = path.join(images, 'avatar.png'), boardFile = path.join(images, 'orthographic.png');
+    const avatar = () => page.locator('.companions-profile-heading .companion-avatar > img'), board = () => page.locator('.companions-contact-profile .public-appearance-thumbnail img');
+    await expect(avatar()).toHaveAttribute('src', new RegExp(`^worldlinebox-companion://portrait/${owner}/avatar\\?v=`));
+    await expect(board()).toHaveAttribute('src', new RegExp(`^worldlinebox-companion://portrait/${owner}/orthographic\\?v=`));
+    await expect.poll(() => avatar().evaluate((image: HTMLImageElement) => image.complete && image.naturalWidth > 0)).toBe(true);
+    const firstURL = (await avatar().getAttribute('src'))!;
+    // WebGL's TextureLoader uses anonymous CORS; ordinary <img> success alone
+    // cannot establish this separate renderer integration boundary.
+    const cors = await page.evaluate(async url => { const document = { origin: location.origin, documentURL: location.href, referrer: globalThis.document.referrer };
+      try { const response = await fetch(url, { mode: 'cors', signal: AbortSignal.timeout(5000) }); return { ...document, ok: response.ok, status: response.status, bytes: (await response.arrayBuffer()).byteLength }; }
+      catch (error) { return { ...document, ok: false, error: error instanceof Error ? error.message : String(error) }; } }, firstURL);
+    const avatarBytes = await sharp({ create: { width: 64, height: 64, channels: 4, background: '#3878c7' } }).png().toBuffer();
+    const boardBytes = await sharp({ create: { width: 960, height: 320, channels: 4, background: '#75ad8e' } }).png().toBuffer();
+    writeFileSync(avatarFile, avatarBytes); writeFileSync(boardFile, boardBytes);
+    const avatarHash = createHash('sha256').update(avatarBytes).digest('hex'), boardHash = createHash('sha256').update(boardBytes).digest('hex');
+    // No state request, navigation or manual refresh drives this update.
+    await expect(avatar()).toHaveAttribute('src', new RegExp(`\\?v=${avatarHash}&r=`), { timeout: 20000 });
+    await expect(board()).toHaveAttribute('src', new RegExp(`\\?v=${boardHash}&r=`), { timeout: 20000 });
+    await expect.poll(() => avatar().evaluate((image: HTMLImageElement) => image.naturalWidth)).toBe(64);
+    await expect.poll(() => board().evaluate((image: HTMLImageElement) => image.naturalWidth)).toBe(960);
+    const editedScreenshot = path.join(artifact, 'verified-owner-image-file-edit.png'); await page.screenshot({ path: editedScreenshot });
+    rmSync(images, { recursive: true });
+    await expect(avatar()).toHaveCount(0, { timeout: 20000 }); await expect(board()).toHaveCount(0, { timeout: 20000 });
+    await expect(page.locator('.companions-profile-heading .companion-avatar-letter')).toHaveText('大');
+    await expect(page.locator('.companions-contact-profile .public-appearance-empty')).toContainText('还没有添加三视图'); expect(existsSync(images)).toBe(false);
+    await application.close(); application = undefined;
+    started = await launch(profile); application = started.application; page = started.page; await selectContact();
+    await expect(avatar()).toHaveCount(0); await expect(board()).toHaveCount(0); expect(existsSync(images)).toBe(false);
+    const missingScreenshot = path.join(artifact, 'verified-owner-image-missing-after-restart.png'); await page.screenshot({ path: missingScreenshot });
+    const report = { actualElectron: true, realOwnerFiles: true, originalURL: firstURL, avatarHash, boardHash,
+      externalChangesUpdatedUIWithoutManualRefresh: true, deletedDirectoryNotReseededAfterRestart: true, rendererAnonymousCORS: cors,
+      screenshots: { edited: editedScreenshot, missing: missingScreenshot }, compiledHashes };
+    writeFileSync(path.join(artifact, 'verified-owner-image-file-authority.json'), JSON.stringify(report, null, 2));
+    await testInfo.attach('owner-image-file-authority', { body: JSON.stringify(report, null, 2), contentType: 'application/json' });
+    expect(compiledProfileFixtureHashes()).toEqual(compiledHashes); expect(cors.ok, JSON.stringify(cors)).toBe(true);
+  } finally { await application?.close().catch(() => undefined); cleanup(root); }
+});
+
 test('keeps owner profile and prompt files authoritative through UI saves, external edits and real provider requests', async ({ browserName: _browserName }, testInfo) => {
   void _browserName;
-  test.setTimeout(180000);
+  test.setTimeout(240000);
   const root = mkdtempSync(path.join(tmpdir(), 'worldlinebox-profile-e2e-')), captures: string[] = [], failures: string[] = [];
+  const compiledHashes = compiledProfileFixtureHashes();
   let application: ElectronApplication | undefined;
   const server = createServer((incoming, outgoing) => {
     let raw = ''; incoming.setEncoding('utf8'); incoming.on('data', chunk => { raw += chunk; }); incoming.on('end', () => {
@@ -83,8 +144,9 @@ test('keeps owner profile and prompt files authoritative through UI saves, exter
     const address = server.address(); if (!address || typeof address === 'string') throw new Error('Missing isolated provider.');
     await page.evaluate(baseUrl => (window as unknown as Bridge).worldlinebox.llm.setConfig({ apiFormat: 'openai_chat', baseUrl, model: 'gpt-4o', apiKey: 'fixture-asset-file-key' }), 'http://127.0.0.1:' + address.port);
     const location = await page.evaluate(() => (window as unknown as Bridge).worldlinebox.companions.workspace!({ type: 'status' }));
-    const memoryRoot = location.selected!.memoryRoot, relative = path.relative(root, memoryRoot);
-    expect(path.isAbsolute(relative) || relative === '..' || relative.startsWith('..' + path.sep)).toBe(false);
+    const memoryRoot = location.selected!.memoryRoot, dataRoot = location.selected!.dataRoot;
+    for (const directory of [memoryRoot, dataRoot]) { const relative = path.relative(root, directory);
+      expect(path.isAbsolute(relative) || relative === '..' || relative.startsWith('..' + path.sep)).toBe(false); }
     const owner = 'deepseek-sister', conversationId = 'private-' + owner, profileFile = path.join(memoryRoot, owner, 'profile.md');
     const savedPersona = 'PERSONA_UI_FILE_AUTHORITY：我是保持独立判断、喜欢核验资料的伙伴。';
     const filePersona = 'PERSONA_EXTERNAL_FILE_AUTHORITY：我当前的人格必须从此文件实时读取。';
@@ -114,7 +176,7 @@ test('keeps owner profile and prompt files authoritative through UI saves, exter
     };
     await send('ASSET_FILE_FIRST：按当前设定自然回应。', 1); expect(captures[0]).toContain(filePersona); expect(captures[0]).not.toContain(savedPersona);
     await page.getByRole('button', { name: '联系人', exact: true }).click(); await page.locator(`[data-companion-contact="${owner}"]`).click();
-    await page.getByText('本伙伴的提示词文件', { exact: true }).click();
+    await page.getByText('本伙伴的提示词与记忆策略文件', { exact: true }).click();
     await page.getByRole('combobox', { name: '提示词文件', exact: true }).selectOption('提示词/对话.md');
     await page.getByRole('textbox', { name: '提示词正文', exact: true }).fill(promptSaved);
     await page.getByRole('button', { name: '保存到伙伴文件', exact: true }).click();
@@ -124,11 +186,73 @@ test('keeps owner profile and prompt files authoritative through UI saves, exter
     expect(captures[1]).toContain(filePersona); expect(captures[1]).toContain(promptSaved);
     writeFileSync(promptFile, promptExternal, 'utf8'); await send('ASSET_FILE_THIRD：再按照最新指导回应。', 3);
     expect(captures[2]).toContain(promptExternal); expect(captures[2]).not.toContain(promptSaved); expect(failures).toEqual([]);
+    const artifact = path.resolve('.tools/test-output/companions'); mkdirSync(artifact, { recursive: true });
+    const openOwnerFiles = async () => {
+      await page.getByRole('button', { name: '联系人', exact: true }).click(); await page.locator(`[data-companion-contact="${owner}"]`).click();
+      const section = page.locator('.companion-prompt-assets').filter({ has: page.getByText('本伙伴的提示词与记忆策略文件', { exact: true }) });
+      if (!await section.locator('details').evaluate((details: HTMLDetailsElement) => details.open))
+        await section.getByText('本伙伴的提示词与记忆策略文件', { exact: true }).click();
+      return section;
+    };
+    let ownerFiles = await openOwnerFiles();
+    await ownerFiles.getByRole('combobox', { name: '提示词文件', exact: true }).selectOption('记忆策略.json');
+    const policyField = ownerFiles.getByRole('textbox', { name: '提示词正文', exact: true });
+    const policy = companionMemoryPolicyFileSchema.parse(JSON.parse(await policyField.inputValue()));
+    policy.policy.mode = 'quiet'; policy.policy.capture.quietMs = 90_000; policy.policy.capture.maxWaitMs = 180_000; policy.policy.capture.batchSize = 6;
+    const policyContent = JSON.stringify(policy, null, 2), policyFile = path.join(memoryRoot, owner, '记忆策略.json');
+    await policyField.fill(policyContent); await ownerFiles.getByRole('button', { name: '保存到伙伴文件', exact: true }).click();
+    await expect(ownerFiles.getByRole('status')).toContainText('已保存到此伙伴'); expect(JSON.parse(readFileSync(policyFile, 'utf8'))).toEqual(policy);
+    const brokenPolicy = '{BROKEN_POLICY_JSON_UI_REPAIR'; writeFileSync(policyFile, brokenPolicy, 'utf8');
+    await ownerFiles.getByRole('button', { name: '重读文件', exact: true }).click();
+    await expect(ownerFiles.getByRole('alert').first()).toContainText('记忆策略JSON或约束无效');
+    const replacePolicyDraft = ownerFiles.getByRole('button', { name: '使用最新文件替换草稿', exact: true });
+    if (await replacePolicyDraft.isVisible()) await replacePolicyDraft.click();
+    await expect(policyField).toHaveValue(brokenPolicy);
+    await page.getByRole('button', { name: '发消息', exact: true }).click(); await send('ASSET_FILE_BAD_POLICY：日常交流仍应正常。', 4);
+    expect(captures[3]).toContain(filePersona); expect(captures[3]).toContain(promptExternal); expect(captures[3]).not.toContain('BROKEN_POLICY_JSON_UI_REPAIR');
+    ownerFiles = await openOwnerFiles();
+    await ownerFiles.getByRole('combobox', { name: '提示词文件', exact: true }).selectOption('记忆策略.json');
+    await ownerFiles.getByRole('textbox', { name: '提示词正文', exact: true }).fill(policyContent);
+    await ownerFiles.getByRole('button', { name: '保存到伙伴文件', exact: true }).click();
+    await expect(ownerFiles.getByRole('status')).toContainText('已保存到此伙伴'); await expect(ownerFiles.getByRole('alert')).toHaveCount(0);
+    expect(JSON.parse(readFileSync(policyFile, 'utf8'))).toEqual(policy);
+    await ownerFiles.scrollIntoViewIfNeeded(); const policyScreenshot = path.join(artifact, 'verified-owner-memory-policy-ui.png');
+    await page.screenshot({ path: policyScreenshot });
+
+    await page.getByRole('button', { name: '打开伙伴记忆库', exact: true }).click();
+    const memoryLibrary = page.getByRole('region', { name: '伙伴记忆库', exact: true });
+    await memoryLibrary.getByRole('combobox', { name: '记忆所属伙伴', exact: true }).selectOption(owner);
+    await memoryLibrary.getByRole('button', { name: '查看记忆处理进度', exact: true }).click();
+    const processing = page.getByRole('region', { name: '记忆处理进度', exact: true }), budget = processing.locator('.companion-model-resources');
+    await expect(processing).toBeVisible(); await expect(budget.getByRole('textbox', { name: '资源预算文件内容', exact: true })).toHaveCount(0);
+    await budget.getByText('模型资源与预算', { exact: true }).click();
+    const budgetField = budget.getByRole('textbox', { name: '资源预算文件内容', exact: true }); await expect(budgetField).toBeVisible();
+    const budgetPolicy = companionModelResourcePolicySchema.parse(JSON.parse(await budgetField.inputValue()));
+    budgetPolicy.defaultConnection.concurrency = 2; budgetPolicy.defaultConnection.requestsPerMinute = 240;
+    const sharedBudgetFile = path.join(dataRoot, '模型资源预算.json'), budgetContent = JSON.stringify(budgetPolicy, null, 2);
+    await budgetField.fill(budgetContent); await budget.getByRole('button', { name: '保存预算文件', exact: true }).click();
+    await expect(budget.getByRole('status')).toContainText('已写入 模型资源预算.json'); expect(JSON.parse(readFileSync(sharedBudgetFile, 'utf8'))).toEqual(budgetPolicy);
+    const unsavedBudget = { ...budgetPolicy, defaultConnection: { ...budgetPolicy.defaultConnection, requestsPerMinute: 241 } };
+    const externalBudget = { ...budgetPolicy, defaultConnection: { ...budgetPolicy.defaultConnection, requestsPerMinute: 242 } };
+    const unsavedBudgetContent = JSON.stringify(unsavedBudget, null, 2), externalBudgetContent = JSON.stringify(externalBudget, null, 2);
+    await budgetField.fill(unsavedBudgetContent); writeFileSync(sharedBudgetFile, externalBudgetContent, 'utf8');
+    await budget.getByRole('button', { name: '保存预算文件', exact: true }).click();
+    await expect(budget.getByRole('alert')).toContainText('外部修改'); await expect(budgetField).toHaveValue(unsavedBudgetContent);
+    expect(readFileSync(sharedBudgetFile, 'utf8')).toBe(externalBudgetContent);
+    await budget.scrollIntoViewIfNeeded(); const budgetScreenshot = path.join(artifact, 'verified-model-resource-budget-ui.png');
+    await page.screenshot({ path: budgetScreenshot });
+    await budget.getByRole('button', { name: '重读预算与统计', exact: true }).click(); await expect(budgetField).toHaveValue(unsavedBudgetContent);
+    await budget.getByRole('button', { name: '用最新文件替换草稿', exact: true }).click(); await expect(budgetField).toHaveValue(externalBudgetContent);
+    await expect(budget.getByLabel('当前伙伴当日模型请求统计')).toBeVisible(); expect(failures).toEqual([]);
     const evidence = { actualElectron: true, isolatedLibrary: true, providerBoundary: 'Local deterministic provider; real UI, file authority, CAS and app scheduling.',
       softwarePersonaSavedToOwnerFile: true, externalPersonaWonCAS: true, conflictDraftPreserved: true, promptUISavedToOwnerFile: true,
-      externalProfileUsedInNextProviderRequest: true, externalPromptUsedInNextProviderRequest: true, providerRequests: captures.length };
+      externalProfileUsedInNextProviderRequest: true, externalPromptUsedInNextProviderRequest: true, providerRequests: captures.length,
+      policyUISavedToRealOwnerJSON: true, brokenPolicyReadAndRepairedInUI: true, ordinaryReplyWithBrokenPolicy: true,
+      sharedResourceBudgetUISavedToRealJSON: true, budgetConflictPreservedDraftAndExternalFile: true,
+      screenshots: { policy: policyScreenshot, budget: budgetScreenshot }, compiledHashes,
+      compiledBoundary: 'API/UI baseline before the final projection-delta search integration; dynamic native host is not exercised by this deterministic UI case.' };
+    expect(compiledProfileFixtureHashes()).toEqual(compiledHashes);
     await testInfo.attach('owner-asset-file-authority', { body: JSON.stringify(evidence, null, 2), contentType: 'application/json' });
-    const artifact = path.resolve('.tools/test-output/companions'); mkdirSync(artifact, { recursive: true });
     writeFileSync(path.join(artifact, 'verified-owner-asset-file-authority.json'), JSON.stringify(evidence, null, 2));
   } finally { await application?.close().catch(() => undefined); await new Promise<void>(resolve => { server.close(() => resolve()); server.closeAllConnections(); }); cleanup(root); }
 });

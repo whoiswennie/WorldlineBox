@@ -15,6 +15,7 @@ import { COMPANION_SUBMIT_RESULT_TOOL } from '../../src/shared/companion-final-p
 import { companionAgentJournal } from '../../src/main/companions/agent-journal';
 import type { CompanionReplyInput } from '../../src/main/companions/context';
 import { companionMemoryContextDependencies } from '../../src/main/companions/memory-context-evidence';
+import { CompanionModelAdmissionError } from '../../src/main/companions/model-quota';
 
 const seeds: CompanionSeed[] = ['alice', 'bob'].map(id => ({ id, name: id, persona: id === 'alice' ? '安静友好，喜欢阅读。' : '坦率，尊重彼此边界。', description: '', model: '', avatar: 'sister', proactive: true }));
 const stores = new Set<CompanionsStore>(), services = new Set<CompanionWorldService>(), roots: string[] = [];
@@ -999,5 +1000,33 @@ describe('semantic world background service with actual SQLite sources', () => {
     }
     expect(f.store.request({ type: 'world.job.claim', kind: 'dream' }).worldJob).toBeUndefined();
     expect(vi.mocked(Math.random)).toHaveBeenCalledOnce();
+  });
+
+  it.each(['reflection', 'narrative'] as const)('durably defers a local admission before %s instead of charging a model failure', async phase => {
+    const fetchFn = vi.fn<typeof fetch>(async () => response({ notes: [], dream: null }));
+    const f = fixture(fetchFn, true, seeds, true); prepareDream(f);
+    const retryAt = new Date(Date.now() + 24 * 3600000).toISOString();
+    const service = new CompanionWorldService({ request: f.request, fetchFn, dreamWave: f.dreamWave,
+      configFor: async () => ({ apiFormat: 'openai_chat', model: 'budgeted', apiKey: 'synthetic', baseUrl: 'https://provider.invalid',
+        providerBudget: { beforeRequest: async () => { throw new CompanionModelAdmissionError('budget', 'Local budget is not admission.', retryAt); } } }),
+      changed: vi.fn(), wakeWaiting: vi.fn(), report: vi.fn() }); services.add(service);
+    const job = f.store.request({ type: 'world.job.claim', kind: 'dream' }).worldJob!;
+    if (phase === 'narrative') {
+      f.store.request({ type: 'world.job.bind-memories', id: job.id, leaseToken: job.leaseToken!, memoryVersions: job.sourceMemoryIds.map(id => {
+        const memory = f.store.request({ type: 'memory.read', ...f.alice, id }).memoryRead!.memory; return { id, version: memory.version }; }) });
+      f.store.request({ type: 'world.job.complete', id: job.id, leaseToken: job.leaseToken!, stage: 'reflection' });
+      f.store.request({ type: 'world.job.complete', id: job.id, leaseToken: job.leaseToken!, stage: 'real', sourceMemoryIds: job.sourceMemoryIds });
+    }
+    const current = f.store.request({ type: 'world.job.check', id: job.id, leaseToken: job.leaseToken! }).worldJob!;
+    await (service as unknown as { process(job: CompanionWorldJob, signal: AbortSignal): Promise<void> }).process(current, new AbortController().signal);
+    expect(fetchFn).not.toHaveBeenCalled();
+    expect(f.request.mock.calls.filter(([command]) => command.type === 'world.job.fail')).toEqual([]);
+    expect(f.request.mock.calls.find(([command]) => command.type === 'world.job.defer')?.[0]).toMatchObject({ retryAfterMs: 86_400_000 });
+    const db = new (Database as { new(file: string): CompanionConnection })(path.join(f.root, 'messages.sqlite'));
+    try {
+      const saved = JSON.parse((db.prepare('SELECT data FROM companion_world_jobs WHERE id=?').get(job.id) as { data: string }).data);
+      expect(saved).toMatchObject({ status: 'pending', attempts: 0, nextAttemptAt: retryAt });
+      if (phase === 'narrative') expect(saved).toMatchObject({ realCompletedAt: expect.any(String), reflectionCompletedAt: expect.any(String), narrativeAttempts: 0 });
+    } finally { db.close(); }
   });
 });

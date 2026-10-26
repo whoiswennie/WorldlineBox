@@ -14,12 +14,12 @@
 | 阶段 | 状态 | 完成门 |
 | --- | --- | --- |
 | P0 基线 | 已提交 | 完整工作区 Git 检查点和源码基准 |
-| P1 存储版本与统一提交 | 已实现，回归通过 | 正文/注释/撤销分离，准确 CAS、覆盖及硬撤销 |
+| P1 存储版本与统一提交 | 已实现，文件、来源和强杀恢复回归通过 | 正文/注释/撤销分离、依赖闭包版本、同源贡献及真实读版本 |
 | P2 事件编码 | 已实现，真实模型复验通过 | quiet/稳定前缀门控，及时重要事件，同事件延续 |
-| P3 独立维护 | 已实现，重启及任务并行验证通过 | 白天、任务期间、启动欠账公平推进，阶段恢复 |
-| P4 回忆并发 | 已实现，原生对照及真实质量验证通过 | 固定候选和锁外原版聚焦、真实原生同输入对照 |
-| P5 学习与梦 | 已实现，边界回归通过 | 分阶段提交、无自我回流、有据方法验证 |
-| P6 资产与验证 | 代码与隔离验收通过；物理清理未完成 | 文件权威、文档/资产/授权联动；物理旧文件清理受工具拒绝限制 |
+| P3 独立维护 | 个体策略、公平和阶段恢复通过；最终冻结长时程待运行 | 白天、任务期间、启动欠账公平推进、真实episode门槛、阶段恢复 |
+| P4 回忆并发 | 原生对照、热冷进程预算及20项宿主恢复通过；最终规模待运行 | 固定候选和锁外原版聚焦、真实原生同输入对照 |
+| P5 学习与梦 | 待核查问题、真实阅读、逐付费阶段恢复边界已补齐并通过 | 分阶段提交、无自我回流、有据方法验证 |
+| P6 资产与验证 | 文件联动通过；完整规模/恢复/可观察性门未完成 | 不将小样本质量或短时回归当作全部架构验收；物理清理仍受拒绝限制 |
 
 ## 旧数据清理记录
 
@@ -68,7 +68,7 @@
 
 这些数字是当前默认准入参数，不代表完成期限，也不表示每条输入都值得保存。模型行为来自伙伴文件，宿主继续强制来源权限、输出结构、资源准入与事务规则。
 
-内置角色资料和提示词是不可变的初始化模板。软件中的“编辑伙伴”和“提示词文件”编辑当前伙伴的副本，不能修改仓库或ASAR中的模板。17个职能（包含7个学习/社交职能）的具体行为均在首次初始化时写入用途文件；实际提供方请求按当前manifest组装，不将代码默认行为再次叠加到文件内容上。
+内置角色资料和提示词是不可变的初始化模板。软件中的“编辑伙伴”和“提示词文件”编辑当前伙伴的副本，不能修改仓库或ASAR中的模板。各项职能（包含学习、社交及独立聚焦指导）的具体行为均在首次初始化时写入用途文件；实际提供方请求按当前manifest组装，不将代码默认行为再次叠加到文件内容上。
 
 当前可读正文从伙伴文件读取；SQLite保存归属、权限、事务、不可变历史修订、租约及初始化凭证，不作为文件缺失时的正文或设定回退。来源撤销的文件投递可在伙伴休眠或资料损坏时继续。持久初始化凭证位于宿主账本，整个伙伴目录意外丢失后也不能以初始模板静默重建。形象另有每伙伴、每角色的耐久初始化凭证，删除整个形象目录也不会自动从内置图片补回；软件中的明确重新选择或恢复操作才可重新写入。明确重置只清除该伙伴的凭证。
 
@@ -86,4 +86,64 @@
 - 最终回忆、原生模板与并发边界：21文件232项通过。包含固定梦境来源闭包、原始来源revision变化、关闭与撤销并发、实际native排队后模板编辑和同次多月第二次调用模板编辑。AIMemo聚焦保留准备时读取的伙伴模板快照；新prepare读取当前文件。原生时间线/摘要在每次模型配额准入时重读当前用途文件，排队期间身份变化则在提供方调用前拒绝。传输凭证不进入实际提供方请求。
 - 最终`npm run typecheck`通过（主项目及extension）；`npm run lint`退出码0、0错误，7项原有React依赖警告位于非本次修改的界面文件；`git diff --check`通过。多个回归批次重叠，不把它们的数量相加冒充独立总用例数。
 
-代码及隔离验证完成后，Goal仍不能标为全部完成：用户要求的实际旧目录物理清理尚未成功。2026-10-27再次只读核验，旧伙伴记忆目录仍有98个文件；未再次尝试被自动审批拒绝的删除，也未用其他机制绕过。新系统不会自动迁移旧存档；这些旧目录在清理完成前不能视为可用的新标准伙伴目录。
+上述核心回归通过，不证明完整架构已经全部通过。2026-10-27逐项完成审计发现，除物理清理外，还有同源贡献必读、不可变依赖闭包与实际读版本、真正episode门槛、伙伴文件策略、全热冷进程预算、速率及成本预算、未发布聚焦的宿主强杀恢复、梦后独立核查和完整规模/长时程门需要补强。上一轮“仅物理清理阻止全部完成”的表述范围过宽，本台账已更正，Goal保持active。
+
+2026-10-27只读核验，旧伙伴记忆目录仍有98个文件；未再次尝试被自动审批拒绝的删除，也未用其他机制绕过。新系统不会自动迁移旧存档；这些旧目录在清理完成前不能视为可用的新标准伙伴目录。
+
+## 完成审计补强（2026-10-27，在途）
+
+- 已补同源实际已存正文的lease绑定贡献页，保留partial/full区别；模型输入按实际读取的来源与文件构造，不能靠VCP恰好top8召回。完整source覆盖在cohort追加时也核验。真实globalchat+Rust的全摘要与原抽屉遗漏两case均通过：前者notes=[]且原ID v1不变；后者同ID v2补第二层抽屉且保留未完成下半部。16维确定性向量，actualEncoder=false。保留原失败收据，最终收据`artifacts/vcp-validation/memory-contribution-real-2026-10-26T17-20-49-222Z.json`；真实原生仅返回1个干扰hit，不虚称8条。
+- 依赖闭包属于正文不可变身份；新frozen凭证精确绑定contentRevision并递归当时的依赖。主脑/编码只绑定真实已读版本，不能在提交时换成更晚正文。typed cause/evidence delta/lineage用于真实宿主因果审计，不自证语义新颖。
+- 索引投递改为有界独立owner工作，耐久轮转服务；慢owner不会阻断其他owner或来源编码。新增真实SQLite公平/重启/排除/作用域租约验收，相关32项通过。
+- 每伙伴的记忆策略是初始化一次的真实JSON文件，事件门槛按实际episode归一；已开会话固定policy receipt。周模拟验收须区分sessions、batches、sources，不能将分批数误当重复深会话数。
+- 模型待处理队列增加全局、连接和owner容量背压。文件`模型资源预算.json`与持久HTTP attempt账本已接入；每次真正聊天HTTP尝试包含视觉fallback，未知远端结果保守保留请求/输入/输出及可选用户价格成本预留。准入在发送前持久化；连接槽保留到正文或流读取结束，关闭等待实际完成，已知发送前取消不记远端用量。预算与原子CAS编辑的真实文件一致，已发布后删文件不补默认。Processing面板提供共享预算文件编辑和当前owner UTC日统计；journal模型请求独立分类。价格不是宿主猜测，预留也不是提供方实际账单；这份账本不计编码器请求。
+- 热/冷原生进程共享broker并实测单槽hot+cold；未发布prepared真实fork→SIGKILL→重启的正负13例通过，收据`artifacts/vcp-validation/prepared-host-restart.json`。覆盖固定准备包、已锚定focus复用、stop/来源/ACL/文件/身份/model/算法/TTL/伪造及断尾，确定性模型/向量，不是GUI崩溃或真实付费提供方验收。历史文件权威补强后须复跑；完整1k/10k/100k测量在进行。
+- 初版两小时真实wall clock阶段soak已结束：7207633ms、26次阅读、120个检查点、6次真实维护提交，runner exit0。它使用开始时的在途代码，源文件运行中仍有变化；普通任务只是运行行及busy标记，且native声明上限2却实际观察为4，因此只记partial，不能当作最终Main任务或资源门通过。新的真实Main loop短测已通过（87秒，实际DSH/read_file、wait、checkpoint、显式reply.resume及最终回复，native峰值2且关闭0），完整两小时须在统一提交和冻结源码后重新运行。
+
+- 本轮广回归实际暴露：schedule的外层UPSERT覆盖输入trigger中OR IGNORE的冲突策略，导致同一计划的dispatching→running输入重复时失败。改为按真实复合主键NOT EXISTS后，主服务/任务总览/详情3文件152项通过。stream测试改显式force检查已发布源，避免把quiet门控误当草稿漏收。
+- 十万消息/十万记忆重置初轮max batch 1311ms超过1000ms门；保留失败，未放宽门。撤回在note边界按25ms让出且每批至多32条，复验12项通过：begin3.26ms、max648ms、p9546ms、p99445ms、总197s（SQLite worker，无renderer/GPU）。单条依赖撤回仍原子，不保证任意系统负载下硬实时期限。
+- 历史正文补强已落地：`记忆历史/<noteId>/r<contentRevision>-<bodyHash>.md`同时保存不可变旧正文、来源及依赖元数据。SQL只负责事务暂存、授权和发布凭证，storage旧revision.read拒绝直接给模型SQL正文，Main从实际历史文件读取并校验源副本。首次发布采用fd.sync+atomic no-replace link；精确耐久job的双link崩溃窗口可恢复，普通读者仍拒绝硬链接。已发布文件缺失不从SQL再生。
+- 历史集成实际发现并修正：完整scope.type覆盖describe分派、历史根目录自动重新摄取、source-only撤回误伤旧合法修订、同bytes原始revision增长误删旧源副本。目录根/技术文件学习回流与实际文件权限分别验证；特殊历史桥接仍在随Main真实读集一起回归。
+- 五个实际宿主SIGKILL阶段已接入真实当前/历史/原始文件：领取后、模型返回后、事务提交后、部分原生索引后、合并发布前。最终收据`memory-lifecycle-host-kill-2026-10-26T18-11-09-604Z.json`恢复后capture/native/source/history四表均无pending/running/failed。模型返回而未提交时真实请求会重算（2次）；不承诺远端计费exactly-once。之后撤权的合法剩余源重提取另列，不误称后续全队列为空。
+- 真正VCP/Rust月产物复用验证：两个月4条合成记忆，月报/摘要初始4次HTTP；100次实际标签更新、native remember和后台通知后仍4次，fresh view导入2个月成功。实际改写October正文后只重生成该月，两次调用变6，September digest保持、October变化。确定性768以外本轮为16维、模型为HTTP夹具，不冒称真实语义质量。最终收据`memory-100tag-native-reuse-2026-10-26T18-28-09-526Z.json`；时区夹具不一致导致的原失败仍保留。
+- 成对调用基线直接加载`918baf4`归档的真实旧Store/MemoryService：24条每2秒连续来源，旧24次编码/24条记录，新2次编码/2条记录，24条逐字原文均保留；姓名、更正、明确约定3条仍3次及时编码。两者10次无变化检查均0额外调用。确定性本地HTTP且两者均未连接native检索，只证明合批/原文覆盖，不将24→2宣传为真实语义或费用整体提升。收据`memory-capture-paired.json`。
+- 实际已配置模型+本机Gemma编码器增强验收：6个小语料场景同时核验聚焦上下文和最终原生loop协议回答，全部通过、runner exit0；真实owner当前/历史/来源文件和后续live prompt修改生效，跨owner canary未泄露。实际提供方12请求与耐久账本12一致，本机gateway另6次单列。此前空正文、fixture源副本范围和gateway计数错误的失败均保留。最终日志`current-canonical-native-final-reply-quality-metered.log`；小样本不代替大语料重复率或规模SLA。
+- 真实Electron新增UI验收1/1 exit0：策略JSON软件保存、坏JSON可读并原文件CAS修复、坏策略期间普通回复可用；预算文件软件保存、外部并发冲突保留草稿及外部内容。`.tools/test-output/companions/verified-owner-asset-file-authority.json`记录4次确定性提供方回复及实际编译bundle hash。测试前于新增search差量快路，是UI/API基线。
+- 进一步reset审计发现仅清live正文不足：旧不可变SQL正文及注释仍残留。已增加owner依赖→note行的有界实际删除，通过FK清正文/注释，并清索引outbox、scope及新projection元数据。新audit直接查旧secret正文/注释均0，另一伙伴历史保留；叠加十万消息/十万记忆的2文件13项exit0，184秒、9705批、max327ms、p9541ms、p9947ms（SQLite worker，不是UI/GPU或磁盘取证擦除）。
+- 1k全文件/原生探索揭露性能尚未达标：初版发布1000文件22秒且大量重复manifest写入，warm新任务15–23秒；首轮还有same-task夹具schema失败，未称全矩阵通过。批量manifest、8路有界实际文件读取、同查询短期正文memo和真实引用集缩小后，下一版1k warm p504.75秒/p956.65秒，同任务p500.787秒/p950.881秒。仅10个warm样本、16维确定性向量，不能代表p99或默认768维RSS。当前继续实施durable mutation驱动的差量投影、真实候选文件读取及有界metadata缓存；1k/10k/100k与100/1000owner最终资源门尚未完成。
+- 本地模型准入拒绝与真实提供方失败分开：durable预算deadline经host-only admission receipt传回，capture整批准确lease延期且退还本次未发送尝试；HTTP429仍计真实请求及失败。实际Main日预算用完后10轮检查保留pending/attempts0，次日正常done/attempts1；实际软件提高预算也会清typed本地延期并重新检查，运行lease和真实失败次数不动。World/tags同类耐久延期和跨owner唤醒3文件94项通过；叙述占位只按本lease退还，旧lease不能双退。首轮夹具失败保留，capture最终4case日志`current-local-admission-deferral-with-policy-edit.log`。
+- 小预算逐阶段活性审计发现：writer成功后checker无额度，以及学习questions/answer/assess中途停顿，若只延期整job，会每天重付相同前缀。capture现以准确租约/批次来源版本、实际owner文件/model及禁记revision绑定未发布提案，逐checker落盘回执；恢复时重跑本地来源/结构验证，实际历史正文从伙伴文件读取，旧state提议保留原CAS。真实Main、生产计费账本和确定性HTTP在daily1下跨重启完成writer→checker，两天各1请求且writer不重复；5个文件/旧租约/伪造摘要/角色prompt变化/来源撤回反例通过，含模型规则共50项。源/权限在实际发送前复核，原始来源改动连无draft的准入也拒绝；writer提案没有记忆、覆盖水位或发布权限。最终日志`current-capture-paid-prefix-restart.log`、`current-capture-proposal-boundaries-3.log`、`current-capture-proposal-admission-fences.log`。World/learning的独立付费中间检查点继续收敛；排队及preflight超时的明确未发送延期已实现，专项回归待性能采样窗口后执行。
+- 规模差量快路审计发现候选外文件实时性缺口：旧library仅5秒每owner32文件轮询，不能把它当作目录全部改动立即生效。正在补单根dirty watcher、owner查询前有界reconcile以及unknown rename/overflow显式阻断；该门未完成前，差量性能结果均为探索结果。
+- 后续补强实测：capture旧文件/来源在预算预留前后撤回均HTTP0、requests0/unfinished0；排队/发送前检查超时的明确未发送延期、用户取消和已调用提供方后真实超时4文件78项通过。资源策略缺失或本地准入账本不可用也有明确未发送延期，原文件不补默认，修复后恢复。Main实际请求gate加入owner dirty drain，并在assetIo外完成source/history发布；同owner内部语义checker用ALS跳过自身队列，外部并发仍等待。新gate三项smoke及最新类型检查通过；此前完整memory-service66项通过，不能冒称完整66已在watcher后重跑。
+- World真实SQL/计费、确定性模型的9项paid-prefix回归通过：daily1跨日与重启、逐checker前缀、角色/正文/遗忘失效、排队撤回HTTP0、真实429计失败且不重付已存writer。Learning单请求/日的五阶段经四次实际Store重启后同round完成，另有文件修改/源撤回/假顺序和goal变化反例；22项及后续tiny patch4项分别通过。均非真实wall clock、非真实提供方语义质量。
+- 首轮768维规模探索：1k本人记忆、100个warm样本，cold45.3秒、warm p50/95/99为790.7/951.0/1027.6ms，同任务64,377字节检查点及4条实际文件/来源依赖，续接27.3/31.8/33.4ms；树工作集峰值1,040,392,192B、磁盘107,218,269B、353次OS采样。全阶段360秒exit0但300ms目标未达；维护期间前台17.5秒的放大仍在修复。真实确定性768维向量，不是Gemma推理；代码运行中有变化且该轮无watcher，收据`native-memory-resources-2026-10-26T19-57-37-166Z-10000/report.json`仅探索证据。
+- 扩展真实Gemma/提供方质量新增12项首轮11过1红：三个分别保存的故事片段只在native候选选入中段，实际focus输入没有第一/三段，最终诚实说明缺失，仍未达到完整回忆目标。delta复验仍保留此真实红例；另一个主观认识检查器未接受语义等价的“个人感受”，将保留旧失败并加正反例纠正判分，不能改事实检查。原六项小语料基线保持，扩展独立收据记录24次真实提供方=24次耐久计费；不把机制或最终诚实回答当作候选覆盖完整。
+- 后续真实故事链保留红例并收紧事实判据：生产编码链在实际quiet门后完成3份独立记录，原始7项事实经writer、native、focus和最终回答保留（`memory-story-capture-real-2026-10-26T20-47-06.001Z-fb0e5d92.json`，7次提供方=7次账本）；不声称模型自动合并了记录。实际Main链将276条其他消息推入近期窗口，在原始故事不泄漏进近期输入的前提下，`memory-story-main-real-2026-10-26T21-14-35.112Z-e26605d6.json`通过严格11项事实检查：被动首轮只得中段后，模型依据明确的`ranked_candidates/exhaustive:false`覆盖标记主动做两次语义检索补齐，5次提供方=5次账本。该模型没有选择空查询目录浏览，也有工具过程叙述不准确的局限；单次完整事实成功不代表候选完整率或叙述真实性统计达标。原先宽松7项误判为绿的收据和后续独立hash审计均保留，见`memory-story-product-audit-2026-10-26T21-17-18.091Z.json`。
+- 当前检索结果有严格typed覆盖说明：语义候选的翻页结束不代表全库穷尽；空查询元数据目录有独立过滤范围、游标及本页终点，不能伪称先前页已经读过。目录的owner、日期、标签、来源撤销、分页、5000字以上真实文件尾部、外部编辑与删除6项专项通过；现存目录存储实现仍会加载owner全部有效SQL正文后过滤，不能称为O(page)分页。
+- 候选包/宿主恢复最新20项真实跨进程SIGKILL验收通过（`recall-prepared-canonical-host-restart-final.log`）：合法当前文件r2不撤回仍可核验的历史r1；不可变历史或来源文件篡改、来源撤回、权限和owner不匹配仍拒绝。small handle v2及envelope v3避免重复完整proof，旧/未知协议拒绝；所有模型前恢复均校验真实伙伴历史/来源文件。另4文件21项原生、连续性及handle验证通过；不承诺远端费用exactly-once。
+- 新Main真实native文件差量验收通过：外部修改候选外文档后新主题可检索，原任务旧快照仍有效；截止序号51绑定旧来源序号50的r2，排除晚到序号53，真实普通任务与回复完成。native峰值2、违规0、关闭后0；主题探测阶段约17.54秒，整个case26.97秒，两者不混淆。收据`memory-main-native-file-delta-2026-10-26T21-13-25-691Z-5104.json`保留两个受控后台诊断，不能冒称所有世界后台语义均绿。
+- 文件实时性门已接单根OS watcher及有界owner同步；Windows目录聚合事件改为核对目录清单，避免真实1000文件发布后反复全扫描。修复前实际768维watcher资源测量仍因`MEMORY_FILES_PENDING`退出1，失败收据保留；文件专项修复后1000文件case101.75秒通过，warm gate由4196.1ms降到1238.2ms，仍不能当作完整资源矩阵通过。全局FIFO4个owner、有限批次让出、冷热公平及watch9项通过。下一轮真实native规模测量待执行。
+- 非空新检索在owner文件登记后，额外通过有界owner native投递门推进该owner的新版本；元数据pending查询不加载全部正文，4个全局/每owner1个投递限制与后台公平泵共用。超过有限等待明确`MEMORY_INDEX_PENDING`，耐久后台继续，不能把旧索引作为新版本的完整结果。真实SQLite公平和截止反例2文件14项通过；空查询目录不依赖native已入索引。
+- 未发送的无模型配置也属于本地准入延期，capture/world/tags的真实失败次数保留；真实HTTP401/429及发送后超时仍算提供方失败。model专项3文件74项通过；tags连续10次无配置轮询后首次真实429及下次claim精确计数，25项通过。Learning五阶段和World逐checker付费前缀均有持久恢复及来源/角色失效验证，不靠天天重复writer耗尽daily1。
+- 本轮完整Main回归初次出现停滞，已保存`memory-full-regression-stall-2026-10-26T21-22-53.340Z.json`，未把正确最终回复视为关闭成功；首现场仍有forget pending及capture pending。撤回单例和false/true连续pair复验均通过，关闭stage均settled；完整verbose回归仍在执行，未冻结提交，也未开始最终两小时验收。
+- 该轮完整verbose复验已实际exit0：4文件112项，101.84秒，`memory-complete-regression-current.log`；测试临时close trace已移除，runner/worker均退出。原停滞目前为未再复现，未找到确定修因，不能称为已定位修复。
+- 最新实际watcher、768维与完整1000本人图诊断exit0：209.18秒、无停止门触发。暖新任务总p50/p95为502.1/551.8ms；本地query-entry到第一次focus HTTP前p50/p95为311.5/353.5ms，同查询新任务445.8/500.8ms、同任务47.7/51.0ms；维护并发前台2.043秒和实际DreamWave31.289秒各仅1样本分列，不能将后台全耗时当作前台阻塞。树工作集实测峰983,252,992B，磁盘91,354,256B。收据`native-memory-resources-2026-10-26T21-34-01-356Z-31112/report.json`前后源码hash相同，但HEAD仍dirty且仅10个样本，属于探索；10k的300ms本地准备目标尚未验收。
+- 最后资产审计发现网关还运行时追加了一段内置聚焦行为，已移为首次写入的`提示词/记忆聚焦指导.md`及`vcp_focus_guidance`用途。网关只负责认证与传输，实际HTTP准入由Main读取当前owner指导与人格；原版prepared AIMemo用户模板保持字节不变，不重复插入未展开模板。实际文件两次编辑、删除后HTTP0、已作者化manifest的default及真实quota排队时修改后生效，与网关/超时4文件43项exit0。不存在purpose的已发布清单按其声明的owner default执行，不自动追加模块。UI形象仍有直接builtin/attachment显示路径，及删除整owner后Library空目录/技术状态复生的边界，已定位并在修复；不能将其称为已全部完成的文件权威。
+- 聚焦指导移文件后的真实固定6case首轮4/6，完整失败见`passive-recall-quality-real-before-live-guidance-fixture-fix-20261027-0546.json`。已确认质量fixture的owner route覆盖了原`resolveAssetContext`并直接返回focus context，导致该夹具未走伙伴指导；生产Main原本始终load+assemble，不是同一缺陷。修正fixture委托原resolver、按Main绑定other/timeline purpose，并增加实际提供方focus文件标记后，一次必要复验6/6事实通过、6次focus标记全真、12实际提供方=12账本、errors[]，见`passive-recall-quality-real-live-owner-guidance-20261027-0550.json`。但runner在Vitest通过后实际exit1，尾部`PostQueuedCompletionStatus:(6)`；不能记退出成功。另一个不启动Gemma的namespace/watch/history文件批次也发生同错误，原生关闭或测试宿主归因仍在排查，不凭猜测认定是编码器或产品故障。
+- 目录浏览的顶层正文放大已修：deferred一致只读事务、rowid倒序元数据流、获权limit+1判断及只加载返回页正文；128条约13.44MB实际SQLite语料返回3条时顶层正文get恒3，all正文0。cursor0/5/125分别扫描4/9/128条metadata及原始来源核验，依赖仍可能读取更多正文，因此不称整体O(page)。多过滤、ACL、撤回、cutoff、两连接WAL并发改版与旧full oracle对照3项及后续4文件68项通过；最新完整类型和相关lint exit0。成对旧/新编码基线也已在当前源码复验exit0，仍仅说明合批与逐字保留。
+- 运行时关闭异常定位没有捕获原fatal PID：原两次exit1保留；同组文件测试直接Electron及分流内外stderr的wrapper两次20/20均exit0，上游最小脚本在3种runtime共9次也未复现。官方[Electron 43.5.0发布说明](https://releases.electronjs.org/release/v43.5.0)确认修复同症状的Windows delayed-worker关闭竞态。因此同一major内将43.1.0更新为43.8.3，package/lock仅1包变化；实际binary为Node24.22.0/ABI148，SQLite/FTS5及terminal探针通过。官方GitHub二进制直连超时后用镜像下载，仍按npm Electron包内置官方SHA256校验，不关闭校验。更新后独立FS4文件20项及inner/outer真实exit0、stderr空，见`artifacts/iocp-diagnostic/electron43.8.3/`；这不能反推原fatal确切来自哪个PID。后续runner外层统一使用已验证Node24.19，符合项目engine要求，主/extension完整类型与全lint均exit0；7项现有React hook警告单列保留。
+- 新图片权威链实际Electron43.8.3验收1/1、11.4秒正常退出：联系人和资料页均从owner受管图片URL读取；外部PNG编辑无需手动state或刷新即更新实际hash/fileRevision与真实图片尺寸；删除整个形象目录后为名字首字/空板，重启目录仍不存在，其余伙伴正常。真实renderer `fetch(mode:cors)`返回200/2,015,157字节，不需要新增ACAO；不把先前的潜在CORS疑点当作产品故障。两张截图已实际目视检查，收据`.tools/test-output/companions/verified-owner-image-file-authority.json`记录编译hash、URL/尺寸、CORS与重启边界。
+- Library完整owner目录删除后的命名空间复生已修：先正常身份初始化授权再建普通布局，失败状态与source/history清理只用已有owner目录；已删namespace不被后台status、dirty/readOnly/sourceDelivery/invalidate造回，损坏提示词仍允许合法来源撤回清理。单独2项耐久删除/重启、健康Bob继续、单空category可补且删正文不补测试exit0；较早4文件20断言绿但IOCP退出1仍按失败保留，后续新runtime同组20/20退出0另列。
+
+## 合并前联合收敛（2026-10-27）
+
+一次广范围检查在在途源码上运行1201.67秒：390文件中297通过、37失败、56跳过；3817项中3637通过、113失败、67跳过，另有1个未处理夹具异常。原始`current-unified-memory-broad-regression.log`保留，不把它称为冻结验收或全绿。本次关联的23个失败文件全部修正后，在稳定源码上统一复跑：**23文件358项，exit0、238.68秒**，`current-unified-related-23-files-final.log`；选择清单单列其余14个基线失败文件，没有将排除等同通过。
+
+- 10个world测试文件与918baf4逐字相同：8个文件26项仍请求已禁止的compressed设置，另2项仍预期观察保留旧物化时间，基线代码本就返回现实时间。`current-broad-world-baseline-classification.json`是静态合同及实际当前栈对照，不冒称旧版本全部实跑。
+- 另外4个未改文件进行了真正隔离基线复跑：49项41通过/8失败、28.75秒、exit1，与当前相同8条断言完全匹配。14个关键归档文件的SHA及Git对象逐项匹配918baf4，实际测试运行时Electron43.8.3/Node24.22.0；外层启动器Node22.19明确单列。记录在`baseline-918baf4-eight-red-20261027/actual-baseline-verification.json`。没有修改这些产品行为或放宽断言来消掉基线失败。
+- 新准入和不可变修订需要同步测试夹具：显式metadata pending布尔端口、真实quiet时间、完整来源coverage、真实read witness及canonical history/source；不让生产接受缺失凭证。独立公平/DAG34项、六组capture38项、query/owner/native路由等71项、来源/实际派生闭包15项分别exit0。所有相关实际撤回、候选完整性、SQL数量门和两owner并发原约束保留。
+- 广回归实际找到三处生产问题并修复：资料首屏被提示词目录耗尽扫描批次，冷首批现在先扫描实际请求的安全子目录，后台仍完成全owner目录；72伙伴144图的64项缓存环扫放大，改为每owner/role当前signature的4096项有界纯metadata，冷144次body读、暖0、改单图1；typed selection未进入social/agent-run/activity严格context，现精确共享同一schema字段，未知字段和伪造exhaustive仍拒绝。
+- 另一个实际回复问题：首次新任务尚无prepared reference时，pending索引原本把普通来信也拦住。现在只对发送/准备前的本地`MEMORY_INDEX_PENDING`返回明确pending+degraded、无旧图、无上下文、无提供方调用；主动检索仍报pending，已有prepared任务恢复仍严格拒绝无效结果。真实SQLite专项与6个原Main失败场景通过，随后Main服务/记忆服务/投递3文件**208项exit0**、151.21秒。临时story诊断代码已移除，原失败追踪仍留存。
+- 模型/社交context合同22项通过：候选顺序如实标为context observation；社交、持续任务及agent checkpoint保留实际严格selection与frozen body读集，不把public annotation版本当正文变更。可选合并检查实际可选schema及精确原始seed，替代依赖已移出运行时的内置行为字面量。
+
+当前主/extension完整类型与全lint均exit0，7个既有React hook警告单列；仍未将这些重叠批次数量相加成独立总数。最新实际Electron六场景全部通过，5.1分钟、runner及观察器exit0，覆盖真实bundled Gemma、资产库、普通记忆/遗忘/重启、文件编辑、图片/CORS和只读ASAR模板；194个编译文件哈希复核一致。按PID及创建时间观察到85个后代、其中5个实际Gemma进程，结束后两次核验残留0，付费模型请求0。收据为`artifacts/vcp-validation/final-electron-memory-20261027-071222/summary.json`，这是当前precommit bundle验收。最终clean提交后的1k/10k/100k 100样本及100/1000owner资源矩阵、两小时真实Main任务并行验收尚未运行，Goal保持active。旧物理文件删除仍受前述自动审批拒绝限制。

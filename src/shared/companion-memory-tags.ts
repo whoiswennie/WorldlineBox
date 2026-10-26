@@ -11,9 +11,10 @@ export const companionMemoryTagStatusSchema = z.object({ pending: z.number().int
 export const companionMemoryTagCommands = [
   z.strictObject({ type: z.literal('memory.tags.claim'), leaseMs: z.number().int().min(1000).max(600000).default(120000) }),
   z.strictObject({ type: z.literal('memory.tags.complete'), id, leaseToken: id, tags: z.array(companionMemoryTagSchema).min(1).max(50) }),
-  z.strictObject({ type: z.literal('memory.tags.defer'), id, leaseToken: id, reason: z.enum(['needs_model', 'retry']),
-    error: z.string().max(1000), retryAfterMs: z.number().int().min(1000).max(3600000).default(30000) }),
+  z.strictObject({ type: z.literal('memory.tags.defer'), id, leaseToken: id, reason: z.enum(['needs_model', 'retry', 'admission']),
+    error: z.string().max(1000), retryAfterMs: z.number().int().min(1000).max(86_400_000).default(30000) }),
   z.strictObject({ type: z.literal('memory.tags.status'), companionId: id, noteId: id.optional() }),
   z.strictObject({ type: z.literal('memory.tags.cancel'), companionId: id, noteId: id }),
   z.strictObject({ type: z.literal('memory.tags.retry'), companionId: id, noteId: id.optional() }),
+  z.strictObject({ type: z.literal('memory.tags.retry-admission'), companionId: id.optional() }),
 ] as const;

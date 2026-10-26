@@ -13,3 +13,4 @@ function receive(value){const request=port?value.data:value;tail=tail.then(async
   }catch(error){send({requestId:request.requestId,ok:false,error:{message:String(error.message||error)}});}
 }).catch(()=>send({type:'fatal'}));}
 if(port)port.on('message',receive);else process.on('message',receive);
+process.once('disconnect',()=>{const forced=setTimeout(()=>process.exit(1),5000);forced.unref();void tail.catch(()=>undefined).then(()=>runtime.close()).catch(()=>undefined).finally(()=>process.exit(0));});

@@ -2,11 +2,13 @@ import type { Companion, CompanionConversation, CompanionMemory, CompanionMessag
 import type { CompanionMemorySearch } from '../../shared/companion-memory';
 import type { CompanionStorageCommand, CompanionStorageResponse } from '../../shared/companion-storage';
 import type { CompanionModelConfig } from './model';
+import { companionModelAdmissionRetryAfter } from './model';
+import { CompanionCaptureProposalCheckpoint } from './memory-capture-proposal';
 import type { CompanionMemoryRuntime } from './vcp-runtime';
 import { generateCompanionJournal } from './memory-model';
 import { CompanionMemoryViewCache } from './memory-view-cache';
 import type { VcpMemoryClient } from '../vcp-memory/client';
-import type { VcpMemoryMessage, VcpMemoryNote, VcpMemoryOwnerIdentity, VcpMemoryTimelineArtifacts, VcpMemoryQueryClock, VcpMemoryPreparedHostEvidence } from '../vcp-memory/contracts';
+import type { VcpMemoryMessage, VcpMemoryNote, VcpMemoryOwnerIdentity, VcpMemoryTimelineArtifacts, VcpMemoryQueryClock, VcpMemoryPreparedHostEvidence, VcpMemoryFocusValidationReason, VcpMemoryPreprocessResult } from '../vcp-memory/contracts';
 import { vcpMemoryNotebookFolder } from '../vcp-memory/contracts';
 import { companionMemoryIdentity, companionMemoryIdentitySignature, sameCompanionMemoryIdentity } from './memory-identity';
 import type { CompanionMemoryJobSchedule, CompanionMemoryOwnerSchedule, CompanionMemoryProcessingJob } from '../../shared/companion-memory-processing';
@@ -26,11 +28,21 @@ import { companionMemoryContextDependencies } from './memory-context-evidence';
 import type { CompanionMemoryFileReceipt } from '../../shared/companion-memory-files';
 import { companionMemoryProcedureContextListSchema, type CompanionMemoryProcedureContext } from '../../shared/companion-procedure';
 import { companionProcedureContextSources } from './memory-procedure-context';
+import type { CompanionPreparedRecallReference } from '../../shared/companion-prepared-recall';
+import { preparedRecallRecoverySchema, preparedRecallReference, preparedRecoveryContext, preparedObservedFileReceipts, type PreparedRecallRecovery } from '../vcp-memory/prepared-recall-recovery';
+import { companionFrozenMemoryDependencySchema } from '../../shared/companion-frozen-memory';
+import { CompanionMemoryProjectionCache, type CompanionMemoryProjectionLease } from './memory-projection-cache';
+import type { CompanionMemoryProjectionNote } from '../../shared/companion-memory-projection';
+import { companionMemorySelection } from './memory-selection';
 
 type MemoryScope = { companionId: string; conversationId: string };
 // One character owns one cognitive corpus. Entrances stay on source receipts;
 // they must not fork native graph learning or monthly continuity into rooms.
 const identityFor = (scope: MemoryScope) => `${scope.companionId}:owner-v2`;
+const preparedRecallRequestHash = (query: CompanionMemorySearch, history: readonly VcpMemoryMessage[]) => createHash('sha256').update(JSON.stringify([
+  query.companionId, query.conversationId, query.beforeSequence ?? null, query.query ?? '', query.diaryName ?? null, query.tags ?? [], query.from ?? null,
+  query.to ?? null, query.cursor ?? 0, query.limit ?? 20, query.retrievalOptions ?? null, history.map(message => [message.role, message.content]),
+])).digest('hex');
 const passiveDataText = (text: string) => text.replace(/\[\[|\{\{|<<|《《/gu, marker => ({ '[[': '［［', '{{': '｛｛', '<<': '＜＜', '《《': '〈〈' })[marker]!);
 const occurrenceFor = (note: CompanionMemory) => note.occurredAt ?? note.sources.at(-1)?.worldCreatedAt ?? note.sources.at(-1)?.createdAt ?? note.createdAt;
 function searchCorpus(query: CompanionMemorySearch, notes: readonly CompanionMemory[], timeZone: string): CompanionMemory[] {
@@ -59,10 +71,15 @@ interface MemoryServiceOptions {
   runtimeAvailability?: () => Pick<EmbeddingDeviceCapability, 'state' | 'message'>;
   cacheRoot?: string;
   cacheRootFor?(owner: string): Promise<string>;
+  maxPendingRecalls?: number;
+  maxPendingRecallsPerOwner?: number;
   fetchFn: typeof fetch; changed(): void; report(error: unknown): void; busy(): boolean;
   /** Public-entry asset gate; may withdraw/drain old queries, so call before registering this query. */
   validateAssets?(companionId: string): Promise<void>;
-  validateFiles?(companionId: string, receipts: readonly CompanionMemoryFileReceipt[]): Promise<boolean>;
+  prepareFiles?(companionId: string): Promise<void>;
+  validateFiles?(companionId: string, receipts: readonly CompanionMemoryFileReceipt[], validationWindow?: object): Promise<boolean>;
+  materializeNotes?(owner: string, notes: readonly CompanionMemory[]): Promise<{ notes: CompanionMemory[]; receipts: CompanionMemoryFileReceipt[] }>;
+  canonicalInputs?(scope: MemoryScope & { beforeSequence?: number }, notes: readonly CompanionMemoryProjectionNote[]): Promise<CompanionMemory[]>;
   flushSourceFiles?(): Promise<void>;
   blocked?(companionId: string): boolean;
   onTiming?(event: { operation: string; durationMs: number }): void;
@@ -78,6 +95,14 @@ export interface CompanionMemoryRecall {
   continuation?: { query: Omit<CompanionMemorySearch, 'companionId' | 'conversationId' | 'beforeSequence'>;
     memoryCursor?: number; sourceCursor?: number; memoryHasMore: boolean; sourceHasMore: boolean };
 }
+export interface CompanionRecallRecovery {
+  taskKey: string;
+  reference?: CompanionPreparedRecallReference;
+  rawSources?: Array<{ id: string; conversationId: string; checksum: string; readerId: string }>;
+  /** Uses the existing durable task checkpoint; called before any model send. */
+  onPrepared(reference?: CompanionPreparedRecallReference): Promise<void>;
+  isCurrent(): Promise<boolean>;
+}
 
 /** Durable source capture and delivery; all semantic retrieval runs in original VCP. */
 export class CompanionMemoryService {
@@ -89,8 +114,11 @@ export class CompanionMemoryService {
   private closed = false;
   private again = false;
   private readonly queryTails = new Map<string, Promise<unknown>>();
+  private recallAdmissions = 0;
+  private readonly recallOwnerAdmissions = new Map<string, number>();
   private readonly invalidations = new Map<string, Promise<void>>();
   private readonly views: CompanionMemoryViewCache;
+  private readonly projections: CompanionMemoryProjectionCache;
   private readonly generations = new Map<string, number>();
   private readonly generationSignals = new Map<string, AbortController>();
   private readonly registeredScopes = new Map<string, Map<string, VcpMemoryClient>>();
@@ -113,10 +141,14 @@ export class CompanionMemoryService {
   private continuity?: { owner: string; promise: Promise<void> };
   private captureCursor = 0;
   private continuityCursor = 0;
-  private deliveringOwner?: string;
+  private readonly deliveries = new Map<string, Promise<void>>();
+  private deliveryPump?: Promise<void>;
+  private deliveryClaims: Promise<void> = Promise.resolve();
+  private deliveryTimer?: ReturnType<typeof setTimeout>;
   private warmup?: Promise<void>;
   private readonly warmedViews = new Map<string, string>();
-  constructor(private readonly options: MemoryServiceOptions) { this.views = new CompanionMemoryViewCache(options.cacheRootFor ? { directoryForOwner: options.cacheRootFor } : options.cacheRoot); }
+  constructor(private readonly options: MemoryServiceOptions) { this.views = new CompanionMemoryViewCache(options.cacheRootFor ? { directoryForOwner: options.cacheRootFor } : options.cacheRoot);
+    this.projections = new CompanionMemoryProjectionCache(options.request); }
 
   /** Ordinary ledger changes affect future reads. They never revoke a task's
    * already authorized input, interrupt a graph operation or reset cooldowns. */
@@ -163,7 +195,7 @@ export class CompanionMemoryService {
           ? '正在执行真实本机模型检测，向量与时间线操作等待同一次检测完成；查看此页面不会重新加载模型。'
           : `本地向量设备检测尚不可用：${availability.message.slice(0, 350)} 请到“设置 → 设备检测”检查或重新检测。`, true);
       else if (kind === 'capture' && this.captures.has(companionId)) plan = { ...plan, scheduleKind: 'running', nextCheckAt: undefined, waitingReason: undefined, condition: '正在根据这位伙伴实际见过的来源判断并整理日记；是否产出日记由内容价值决定。' };
-      else if (kind === 'index' && this.deliveringOwner === companionId) plan = { ...plan, scheduleKind: 'running', nextCheckAt: undefined, waitingReason: undefined, condition: '正在投递这位伙伴的实际记忆版本，核验本地向量与 VCP 索引。' };
+      else if (kind === 'index' && this.deliveries.has(companionId)) plan = { ...plan, scheduleKind: 'running', nextCheckAt: undefined, waitingReason: undefined, condition: '正在投递这位伙伴的实际记忆版本，核验本地向量与 VCP 索引。' };
       else if (kind === 'timeline' && this.continuity?.owner === companionId) plan = { ...plan, scheduleKind: 'running', nextCheckAt: undefined, waitingReason: undefined, condition: '正在核验这位伙伴的来源或执行月度时间线与摘要整理。' };
       else if (kind !== 'index' && (reset || this.options.blocked?.(companionId) || companion?.active === false)) condition(reset ? 'reset_in_progress' : companion?.active === false ? 'companion_inactive' : 'companion_paused',
         reset ? '伙伴重置尚未完成，来源与时间线整理暂停；请先查看重置进度。' : '此伙伴未启用或已暂停活动；请在联系人资料启用伙伴后继续来源与时间线整理。夜间睡眠不会触发这项暂停。', true);
@@ -330,8 +362,15 @@ export class CompanionMemoryService {
     this.options.changed();
   }
 
-  async search(query: CompanionMemorySearch, mode: 'active' | 'passive' = 'active', signal?: AbortSignal, onProgress?: (stage: string) => void): Promise<CompanionStorageResponse> {
-    return this.searchScoped(query, mode, [], signal, onProgress);
+  async search(query: CompanionMemorySearch, mode: 'active' | 'passive' = 'active', signal?: AbortSignal, onProgress?: (stage: string) => void,
+    recovery?: CompanionRecallRecovery): Promise<CompanionStorageResponse> {
+    return this.searchScoped(query, mode, [], signal, onProgress, 'foreground', recovery);
+  }
+  resourceSnapshot() { return { recallAdmissions: this.recallAdmissions, recallOwners: this.recallOwnerAdmissions.size,
+    maxPendingRecalls: this.options.maxPendingRecalls ?? 128, maxPendingRecallsPerOwner: this.options.maxPendingRecallsPerOwner ?? 32,
+    trackedQueries: this.queryTails.size, projections: this.projections.snapshot(), native: this.options.runtime?.resourceSnapshot?.() }; }
+  async acknowledgeTaskRecall(reference?: CompanionPreparedRecallReference): Promise<void> {
+    if (reference) await this.options.runtime?.acknowledgePreparedRecall?.(reference);
   }
   /** Background sleep uses the owner's complete witnessed corpus, across entrances. */
   async dreamWave(input: MemoryScope & { now: string; clockDomain: VcpMemoryDreamClock }): Promise<VcpMemoryDreamWaveResult> {
@@ -343,7 +382,7 @@ export class CompanionMemoryService {
       const snapshot = (await this.options.request({ type: 'memory.snapshot', companionId: input.companionId, conversationId: input.conversationId })).memorySnapshot;
       if (!snapshot || !this.options.runtime) throw new Error('梦境联想的授权记忆尚不可用。');
       const owner = await this.ownerIdentity(input.companionId);
-      const frozen = snapshot.notes.map(note => ({ id: note.id, sources: note.sources.map(source => ({ id: source.messageId,
+      const frozen = snapshot.notes.map(note => ({ id: note.id, contentRevision: note.contentRevision, sources: note.sources.map(source => ({ id: source.messageId,
         conversationId: source.conversationId, checksum: source.checksum, revision: source.revision })) }));
       const verifySource = async () => {
         this.assertCurrent(input.companionId, generation);
@@ -421,7 +460,9 @@ export class CompanionMemoryService {
     this.assertCurrent(scope.companionId, generation);
     // The storage authority verifies this owner/conversation even though mode
     // discovery does not need journal bodies in its physical runtime view.
-    if (!(await this.options.request({ type: 'memory.snapshot', ...scope })).memorySnapshot) throw new Error('记忆授权视图尚不可用。');
+    const authorizationScope = { companionId: scope.companionId, conversationId: scope.conversationId,
+      ...(scope.beforeSequence !== undefined ? { beforeSequence: scope.beforeSequence } : {}) };
+    if (!(await this.options.request({ type: 'memory.snapshot', ...authorizationScope })).memorySnapshot) throw new Error('记忆授权视图尚不可用。');
     const owner = await this.ownerIdentity(scope.companionId);
     if (!this.options.runtime) throw new Error('内置向量服务尚未就绪。');
     const runtime = await this.options.runtime.get({ ownerId: scope.companionId });
@@ -451,10 +492,33 @@ export class CompanionMemoryService {
     } finally { await runtime.release?.(); }
   }
   private async searchScoped(query: CompanionMemorySearch, mode: 'active' | 'passive', history: readonly VcpMemoryMessage[] = [], signal?: AbortSignal, onProgress?: (stage: string) => void,
-    priority: CompanionMemoryQueryPriority = 'foreground'): Promise<CompanionStorageResponse> {
+    priority: CompanionMemoryQueryPriority = 'foreground', recovery?: CompanionRecallRecovery): Promise<CompanionStorageResponse> {
+    const max = this.options.maxPendingRecalls ?? 128, ownerMax = this.options.maxPendingRecallsPerOwner ?? 32;
+    if (![max, ownerMax].every(value => Number.isSafeInteger(value) && value > 0)) throw new Error('Invalid memory recall admission capacity.');
+    signal?.throwIfAborted();
+    const ownerPending = this.recallOwnerAdmissions.get(query.companionId) ?? 0;
+    if (this.recallAdmissions >= max || ownerPending >= ownerMax) throw Object.assign(new Error('The memory recall admission queue is at capacity.'), { code: 'VCP_MEMORY_NATIVE_CAPACITY' });
+    this.recallAdmissions++; this.recallOwnerAdmissions.set(query.companionId, ownerPending + 1);
+    try {
+      const response = await this.searchAdmitted(query, mode, history, signal, onProgress, priority, recovery);
+      if (!response.memoryPage) return response;
+      const selection = companionMemorySelection(query, response.memoryPage);
+      return { ...response, memorySelection: selection,
+        ...(response.memoryContext ? { memoryContext: { ...response.memoryContext, selection } } : {}) };
+    }
+    finally { this.recallAdmissions--; const remaining = (this.recallOwnerAdmissions.get(query.companionId) ?? 1) - 1;
+      if (remaining) this.recallOwnerAdmissions.set(query.companionId, remaining); else this.recallOwnerAdmissions.delete(query.companionId); }
+  }
+  private async searchAdmitted(query: CompanionMemorySearch, mode: 'active' | 'passive', history: readonly VcpMemoryMessage[], signal: AbortSignal | undefined,
+    onProgress: ((stage: string) => void) | undefined, priority: CompanionMemoryQueryPriority, recovery?: CompanionRecallRecovery): Promise<CompanionStorageResponse> {
+    if (recovery && !await recovery.isCurrent()) throw new Error('任务已停止，不能恢复或准备记忆。');
     await this.options.validateAssets?.(query.companionId);
+    await this.options.prepareFiles?.(query.companionId);
     if (query.retrievalOptions && !query.query?.trim()) throw new Error('可选检索模式需要非空查询；按日期浏览请使用 from/to。');
     if (!query.query?.trim()) return this.options.request({ ...query, type: 'memory.browse' });
+    // Restoring an immutable packet does not use a live native graph and must
+    // not launch indexing before its task/source proofs have been validated.
+    if (!recovery?.reference) await this.drainOwnerDeliveries(query.companionId);
     const key = identityFor(query), trackedKey = key + ':' + randomUUID();
     const generation = this.generation(query.companionId), queuedAt = performance.now();
     onProgress?.('等待本伙伴的记忆查询');
@@ -465,18 +529,116 @@ export class CompanionMemoryService {
     const pending = Promise.resolve(this.invalidations.get(query.companionId)).catch(() => undefined).then(() => {
       signal?.throwIfAborted(); this.assertCurrent(query.companionId, generation);
       clearInterval(waiting);
-      return this.searchView(query, mode, generation, history, signal, onProgress, performance.now() - queuedAt, priority);
+      return recovery?.reference ? this.recoverSearch(query, mode, generation, history, recovery, signal)
+        : this.searchView(query, mode, generation, history, signal, onProgress, performance.now() - queuedAt, priority, recovery);
     });
     this.queryTails.set(trackedKey, pending);
     try { return await pending; } finally { clearInterval(waiting); this.queryTails.delete(trackedKey); }
+  }
+  private async recoverSearch(query: CompanionMemorySearch, mode: 'active' | 'passive', generation: number, history: readonly VcpMemoryMessage[],
+    task: CompanionRecallRecovery, signal?: AbortSignal): Promise<CompanionStorageResponse> {
+    if (mode !== 'passive' || !task.reference || !this.options.runtime?.acquireGeneration) throw new Error('当前任务没有可恢复的原生被动回忆凭证。');
+    if (!await task.isCurrent() || this.options.blocked?.(query.companionId)) throw new Error('任务已停止，不能恢复记忆。');
+    if (Date.parse(task.reference.expiresAt) <= Date.now()) {
+      await task.onPrepared(); await this.acknowledgeTaskRecall(task.reference);
+      await this.drainOwnerDeliveries(query.companionId);
+      return this.searchView(query, mode, generation, history, signal, undefined, 0, 'foreground', { ...task, reference: undefined });
+    }
+    const selection = await this.generationSelection(query.companionId, generation), generationSignal = this.generationSignal(query.companionId, signal);
+    this.assertCurrent(query.companionId, generation);
+    const lease = await this.options.runtime.acquireGeneration({ ...selection, signal: generationSignal });
+    try {
+      if (task.reference.profileKey !== lease.profileKey) throw new Error('恢复任务的语义模型已经变化。');
+      const validate = async (recovery: PreparedRecallRecovery, observed: Pick<VcpMemoryPreprocessResult, 'contextReferences' | 'contextReferenceCoverage'>) => {
+        generationSignal.throwIfAborted(); this.assertCurrent(query.companionId, generation);
+        if (!await task.isCurrent() || this.options.blocked?.(query.companionId)) throw new Error('任务已停止，不能恢复记忆。');
+        if (recovery.taskKey !== task.taskKey || recovery.requestHash !== preparedRecallRequestHash(query, history)
+          || recovery.scope.companionId !== query.companionId || recovery.scope.conversationId !== query.conversationId
+          || recovery.scope.beforeSequence !== query.beforeSequence || lease.profileKey !== recovery.profileKey)
+          throw new Error('恢复凭证与当前任务、范围或模型不一致。');
+        await this.options.validateAssets?.(query.companionId);
+        const state = (await this.options.request({ type: 'memory.lifecycle.state', companionId: query.companionId })).memoryLifecycleState;
+        if (!state || state.revocationEpoch !== recovery.revocationEpoch) throw new Error('恢复回忆的来源或授权已经撤回。');
+        for (let offset = 0; offset < recovery.frozen.length; offset += 100) {
+          const checked = await this.options.request({ type: 'memory.frozen.valid', ...recovery.scope, memories: recovery.frozen.slice(offset, offset + 100) });
+          if (!checked.ok || !checked.memoryFrozenValid) throw new Error('恢复回忆的原始正文修订或权限已经变化。');
+        }
+        const groups = new Map<string, typeof recovery.rawSources>();
+        for (const source of recovery.rawSources) { const key = JSON.stringify([source.readerId, source.conversationId]); groups.set(key, [...(groups.get(key) ?? []), source]); }
+        for (const sources of groups.values()) for (let offset = 0; offset < sources.length; offset += 100) {
+          const batch = sources.slice(offset, offset + 100), current = await this.options.request({ type: 'memory.sources.filter', companionId: batch[0]!.readerId,
+            conversationId: batch[0]!.conversationId, beforeSequence: recovery.scope.beforeSequence, ids: batch.map(source => source.id) });
+          if (!current.ok || batch.some(source => !current.memorySources?.some(actual => actual.id === source.id && actual.conversationId === source.conversationId
+            && createHash('sha256').update(actual.content).digest('hex') === source.checksum))) throw new Error('恢复回忆的查询或对话来源已经撤回。');
+        }
+        const actualFiles = preparedObservedFileReceipts(observed, recovery.fileReceipts);
+        if (actualFiles.length && (!this.options.validateFiles || !await this.options.validateFiles(query.companionId, actualFiles)))
+          throw new Error('恢复回忆的实际来源文件已经改变或撤回。');
+        const captured = new Map(recovery.frozen.map(note => [note.id, note]));
+        const witnessed = observed.contextReferenceCoverage === 'observed' && Array.isArray(observed.contextReferences)
+          && observed.contextReferences.every(reference => captured.has(reference.id));
+        const ids = witnessed ? [...new Set(observed.contextReferences!.map(reference => reference.id))] : [...captured.keys()];
+        // The verified packet identifies original inputs, while owner history
+        // and source files prove that their canonical bytes still exist. This
+        // happens before every provider batch, including focused receipt reuse.
+        for (const id of ids) {
+          const expected = captured.get(id); if (!expected?.contentRevision) throw new Error('恢复候选的正文修订凭证缺失。');
+          const actual = (await this.options.request({ type: 'memory.revision.read', ...recovery.scope, id, contentRevision: expected.contentRevision })).memories?.[0];
+          const receipt = recovery.fileReceipts.find(file => file.noteId === id);
+          if (!actual || actual.id !== id || actual.companionId !== query.companionId || actual.contentRevision !== expected.contentRevision
+            || receipt && createHash('sha256').update(actual.content).digest('hex') !== receipt.contentHash
+            || actual.sources.length !== expected.sources.length || expected.sources.some(source => !actual.sources.some(reference =>
+              reference.messageId === source.id && reference.conversationId === source.conversationId && reference.checksum === source.checksum
+              && (source.revision === undefined || reference.revision === source.revision)))) throw new Error('恢复候选的实际历史正文或来源文件已经改变。');
+        }
+        if (!sameCompanionMemoryIdentity(await this.ownerIdentity(query.companionId), recovery.owner)) throw new Error('恢复回忆的伙伴身份已经变化。');
+        const currentSelection = await this.generationSelection(query.companionId, generation), descriptor = await this.options.runtime!.describeGeneration?.(currentSelection);
+        if (descriptor?.profileKey !== recovery.profileKey || (await this.options.request({ type: 'world.clock' })).worldClock?.timeZone !== recovery.contextSeed.queryClock.timeZone)
+          throw new Error('恢复回忆的模型或日历配置已经变化。');
+        if ((await this.options.request({ type: 'memory.lifecycle.state', companionId: query.companionId })).memoryLifecycleState?.revocationEpoch !== recovery.revocationEpoch)
+          throw new Error('恢复回忆的来源或授权已经撤回。');
+        if (!await task.isCurrent()) throw new Error('任务已停止，不能发布恢复回忆。');
+        generationSignal.throwIfAborted(); this.assertCurrent(query.companionId, generation);
+      };
+      const recovered = await lease.client.resumeRecall(task.reference, { ownerId: query.companionId, signal: generationSignal, fetchFn: this.options.fetchFn,
+        onFocused: task.onPrepared, validateRecovery: validate });
+      await validate(recovered.recovery, recovered.processed);
+      const context = preparedRecoveryContext(recovered.recovery, recovered.processed);
+      const notes = new Map(recovered.recovery.contextSeed.notes.map(note => [note.id, note]));
+      const methodIds = (recovered.processed.contextReferences?.length ? [...new Set(recovered.processed.contextReferences.map(reference => reference.id))]
+        : recovered.processed.contextReferenceCoverage === 'observed' ? [] : [...notes.keys()]).filter(id => notes.get(id)?.procedure).slice(0, 100);
+      const proceduralStatus: CompanionMemoryProcedureContext[] = [];
+      if (methodIds.length) {
+        const current = await this.options.request({ type: 'memory.records.filter', ...recovered.recovery.scope, ids: methodIds });
+        if (!current.ok) throw new Error('恢复任务的方法验证状态暂不可用。');
+        for (const actual of current.memories ?? []) if (actual.procedure && actual.contentRevision !== undefined && actual.contentRevision === notes.get(actual.id)?.contentRevision)
+          proceduralStatus.push({ memoryId: actual.id, contentRevision: actual.contentRevision, ...actual.procedure.validation });
+      }
+      const items: CompanionMemoryPage['items'] = [];
+      for (const id of context.evidence.pageMemoryIds ?? []) {
+        const expected = notes.get(id); if (!expected?.contentRevision) throw new Error('恢复任务的正文修订凭证缺失。');
+        const memory = (await this.options.request({ type: 'memory.revision.read', ...recovered.recovery.scope, id, contentRevision: expected.contentRevision })).memories?.[0];
+        if (!memory || memory.id !== id || memory.companionId !== query.companionId) throw new Error('恢复任务的历史正文暂不可用。');
+        items.push({ memory: { ...memory, ...expected.annotations, version: expected.version }, reasons: ['VCP 聚焦模型实际输入'], path: [id] });
+      }
+      await validate(recovered.recovery, recovered.processed);
+      return { ok: true, memoryContext: { ...context, ...(proceduralStatus.length ? { proceduralStatus } : {}) }, memoryPage: { items, hasMore: false }, memoryRetrieval: projectCompanionMemoryRetrieval({ mode,
+        observedAt: recovered.recovery.contextSeed.capturedAt, documentCount: recovered.recovery.contextSeed.notes.length, hits: items,
+        contextText: context.text, contextReferences: context.evidence.references, samePipeline: true }) };
+    } finally { await lease.release(); }
   }
   private timing(operation: string, durationMs: number): void {
     if (durationMs < 500) return;
     try { this.options.onTiming?.({ operation, durationMs }); } catch { /* Diagnostics cannot block recall. */ }
   }
   private async searchView(query: CompanionMemorySearch, mode: 'active' | 'passive', generation: number, history: readonly VcpMemoryMessage[], signal?: AbortSignal, onProgress?: (stage: string) => void, queuedMs = 0,
-    priority: CompanionMemoryQueryPriority = 'foreground'): Promise<CompanionStorageResponse> {
+    priority: CompanionMemoryQueryPriority = 'foreground', recovery?: CompanionRecallRecovery, useProjection = true): Promise<CompanionStorageResponse> {
     const timings: Record<string, number> = { queue: queuedMs };
+    const measured = async <T>(operation: string, work: () => Promise<T>): Promise<T> => {
+      const started = performance.now(); try { return await work(); } finally {
+        try { this.options.onTiming?.({ operation, durationMs: performance.now() - started }); } catch { /* Diagnostics cannot block recall. */ }
+      }
+    };
     let stage = 'sources', stageAt = performance.now();
     const mark = (next: string, label: string) => { const now = performance.now(); this.timing(`memory.search.${stage}`, now - stageAt); timings[stage] = (timings[stage] ?? 0) + now - stageAt; stage = next; stageAt = now; onProgress?.(label); signal?.throwIfAborted(); };
     const stalled = setInterval(() => this.timing(`memory.search.${stage}.wait`, performance.now() - stageAt), 10000);
@@ -496,10 +658,19 @@ export class CompanionMemoryService {
       timings.queue = (timings.queue ?? 0) + performance.now() - queuedAt;
       let graphReleased = false;
       const releaseGraph = async () => { if (!graphReleased) { graphReleased = true; finish(); } await graphTurn; };
+      let projection: CompanionMemoryProjectionLease | undefined;
       try {
       if (attempt > 0) mark('sources', '核验记忆来源');
       const capturedAt = new Date().toISOString();
-      const snapshot = (await this.options.request({ type: 'memory.snapshot', ...scope })).memorySnapshot;
+      const eligibleProjection = useProjection && mode === 'passive' && !query.retrievalOptions && !query.diaryName && !query.tags?.length && !query.from && !query.to
+        && this.options.runtime?.supportsProjectionDelta && this.options.materializeNotes && this.options.canonicalInputs;
+      if (eligibleProjection) projection = await this.projections.acquire(scope, signal);
+      const snapshot = projection ? { scopeId: 'metadata_projection', revision: createHash('sha256').update(JSON.stringify(['native-projection-view-v1', scope.companionId,
+        scope.beforeSequence ?? null, projection.value.corpusHash])).digest('hex'), semanticRevision: projection.value.semanticHash,
+        revocationEpoch: projection.value.state.revocationEpoch, notes: projection.value.notes.map(note => new Proxy(note, {
+          get(target, property, receiver) { if (property === 'content') throw new Error('Projection metadata cannot supply model prose.'); return Reflect.get(target, property, receiver); },
+        }) as unknown as CompanionMemory), fileReceipts: [...projection.value.receipts.values()] }
+        : (await this.options.request({ type: 'memory.snapshot', ...scope })).memorySnapshot;
       if (!snapshot) throw new Error('记忆授权视图尚不可用。');
       this.assertCurrent(scope.companionId, generation);
       // An empty authorized corpus cannot yield a memory. In particular, a
@@ -508,7 +679,7 @@ export class CompanionMemoryService {
       const worldClock = (await this.options.request({ type: 'world.clock' })).worldClock;
       if (!worldClock) throw new Error('本次记忆查询的宿主世界时钟暂不可用。');
       const clock = { now: worldClock.virtualNow, timeZone: worldClock.timeZone };
-      const corpus = searchCorpus(query, snapshot.notes, clock.timeZone);
+      const corpus = projection ? snapshot.notes : searchCorpus(query, snapshot.notes, clock.timeZone);
       // Explicit modes must not silently look successful against an empty
       // library when their original dependencies are missing.
       if (!corpus.length && query.retrievalOptions) planCompanionMemoryRetrieval(query.retrievalOptions, (await this.retrievalModes(scope)).memoryRetrievalModes!);
@@ -518,7 +689,7 @@ export class CompanionMemoryService {
       const owner = await this.ownerIdentity(scope.companionId);
       // Calendar projection changes only when the query timezone changes. A new
       // day refreshes volatile answers, never the physical corpus or provenance.
-      const projectionSignature = JSON.stringify([companionMemoryIdentitySignature(owner), clock.timeZone, 'civil-projection-v1']);
+      const projectionSignature = JSON.stringify([companionMemoryIdentitySignature(owner), clock.timeZone, useProjection ? 'civil-projection-v1' : 'civil-projection-full-source-v1']);
       if (!this.options.runtime) throw new Error('内置向量服务尚未就绪，请在全局模型页面查看运行状态或修复。');
       // Passive AIMemo generates; explicit suffixes and the raw LightMemo call
       // below do not. The latter explicitly disables its optional AI bridge.
@@ -534,11 +705,17 @@ export class CompanionMemoryService {
         && !query.retrievalOptions?.rerank && !query.retrievalOptions?.metaThinking;
       const lifecycle = detached ? (await this.options.request({ type: 'memory.lifecycle.state', companionId: scope.companionId })).memoryLifecycleState : undefined;
       if (detached && !lifecycle) throw new Error('本次记忆的撤销屏障暂不可用。');
-      const validateDetached = async () => {
+      let focusFileReceipts: readonly CompanionMemoryFileReceipt[] = snapshot.fileReceipts ?? [];
+      let observedInputs: CompanionMemoryProjectionNote[] = [];
+      const fileValidationWindow = {};
+      const validateDetached = async (reason: VcpMemoryFocusValidationReason = 'publication') => {
         generationSignal?.throwIfAborted(); this.assertCurrent(scope.companionId, generation);
+        if (recovery && !await recovery.isCurrent()) throw new Error('任务已停止，不能继续聚焦回忆。');
         const current = (await this.options.request({ type: 'memory.lifecycle.state', companionId: scope.companionId })).memoryLifecycleState;
         if (!current || current.revocationEpoch !== lifecycle!.revocationEpoch) throw new Error('本次记忆候选的来源或授权已撤回。');
-          if (snapshot.fileReceipts?.length && this.options.validateFiles && !await this.options.validateFiles(scope.companionId, snapshot.fileReceipts)) throw new Error('本次回忆实际使用的伙伴文件已被修改、删除或撤回。');
+        if (reason !== 'fence' && focusFileReceipts.length && this.options.validateFiles
+          && !await measured('memory.search.validate_files', () => this.options.validateFiles!(scope.companionId, focusFileReceipts, fileValidationWindow))) throw new Error('本次回忆实际使用的伙伴文件已被修改、删除或撤回。');
+        if (reason !== 'fence' && projection && observedInputs.length) await measured('memory.search.canonical_inputs', () => this.options.canonicalInputs!(scope, observedInputs));
         generationSignal?.throwIfAborted(); this.assertCurrent(scope.companionId, generation);
       };
       let hostEvidence: VcpMemoryPreparedHostEvidence | undefined;
@@ -546,15 +723,15 @@ export class CompanionMemoryService {
         // Establish the original source closure once. Thereafter the durable
         // hard-revocation fence protects this immutable package without making
         // ordinary new notes restart the whole query.
-        const frozen = corpus.map(note => ({ id: note.id, sources: note.sources.map(source => ({ id: source.messageId,
-          conversationId: source.conversationId, checksum: source.checksum })) }));
+        const frozen = companionFrozenMemoryDependencySchema.array().parse(corpus.map(note => ({ id: note.id, contentRevision: note.contentRevision,
+          sources: note.sources.map(source => ({ id: source.messageId, conversationId: source.conversationId, checksum: source.checksum })) })));
         hostEvidence = { schema: 'worldlinebox.prepared-recall-host-evidence', ownerId: scope.companionId,
           revocationEpoch: lifecycle!.revocationEpoch, capturedAt, sourceClosureDigest: createHash('sha256').update(JSON.stringify(frozen)).digest('hex') };
-        for (let offset = 0; offset < frozen.length; offset += 100) {
+        for (let offset = 0; !projection && offset < frozen.length; offset += 100) {
           const checked = await this.options.request({ type: 'memory.frozen.valid', ...scope, memories: frozen.slice(offset, offset + 100) });
           if (!checked.ok || !checked.memoryFrozenValid) throw new Error('本次记忆候选的原始来源已变化。');
         }
-        await validateDetached();
+        await validateDetached('fence');
       }
       const project = async (notes: readonly CompanionMemory[], lane: 'filtered' | 'context') => {
         // Exactly two bounded projection lanes per owner/profile. Repeating a
@@ -570,7 +747,7 @@ export class CompanionMemoryService {
         if (!projected.unchanged || !runtime.client.hasOpenScope(projected)) await runtime.client.replace(projected, notes.map(note => runtimeNote(note, owner, clock.timeZone)));
         this.assertCurrent(scope.companionId, generation);
         await projected.commit();
-        return { scopeId: projected.scopeId, replacedScopeId: undefined, commit: async () => undefined };
+        return { scopeId: projected.scopeId, replacedScopeId: undefined, unchanged: true, upsertIds: [] as string[], removedIds: [] as string[], commit: async () => undefined };
       };
       // Filter the physical corpus before graph construction and native top-K.
       // A post-search list filter would leave out-of-range text in LightMemo,
@@ -578,7 +755,8 @@ export class CompanionMemoryService {
       mark('projection', '同步本轮记忆索引');
       const filtered = !!(query.diaryName || query.tags?.length || query.from || query.to);
       const view = filtered ? await project(corpus, 'filtered')
-        : await this.views.prepare(identityFor(scope), runtime.profileKey, corpus, projectionSignature, { incremental: true });
+        : projection ? await this.views.prepareMetadata(identityFor(scope), runtime.profileKey, projection.value.fingerprints, projection.value.corpusHash, projectionSignature)
+          : await this.views.prepare(identityFor(scope), runtime.profileKey, corpus, projectionSignature, { incremental: true });
       this.assertCurrent(scope.companionId, generation);
       this.register(scope.companionId, view.scopeId, runtime.client);
       if (view.replacedScopeId) {
@@ -586,7 +764,33 @@ export class CompanionMemoryService {
         await runtime.client.purgeScope({ scopeId: view.replacedScopeId });
         this.registeredScopes.get(scope.companionId)?.delete(view.replacedScopeId);
       }
-      if (!filtered && (!('unchanged' in view) || !view.unchanged || !runtime.client.hasOpenScope(view))) await runtime.client.replace(view, corpus.map(note => runtimeNote(note, owner, clock.timeZone)));
+      if (projection) {
+        const pendingUpserts = new Set(view.upsertIds);
+        // A changed descriptor intentionally drops its old file receipt. That
+        // is an incremental upsert, not evidence that the entire native graph
+        // was lost. Missing receipts outside this delta still require a full
+        // authorized rebuild.
+        const cold = !runtime.client.hasOpenScope(view) || projection.value.receipts.size !== projection.value.notes.length
+          && projection.value.notes.some(note => !projection!.value.receipts.has(note.id) && !pendingUpserts.has(note.id));
+        if (cold) {
+          const bodies = await this.options.canonicalInputs!(scope, projection.value.notes), actual = await this.options.materializeNotes!(scope.companionId, bodies);
+          if (actual.notes.length !== corpus.length || actual.receipts.length !== corpus.length) throw new Error('完整canonical冷投影缺少实际正文或文件凭证。');
+          projection.setReceipts(actual.receipts); await runtime.client.replace(view, actual.notes.map(note => runtimeNote(note, owner, clock.timeZone)));
+        } else if (!view.unchanged) {
+          const upserts: CompanionMemory[] = [], receipts: CompanionMemoryFileReceipt[] = [];
+          for (let offset = 0; offset < view.upsertIds.length; offset += 100) {
+            const ids = view.upsertIds.slice(offset, offset + 100), captured = ids.map(id => projection!.value.byId.get(id)!);
+            const bodies = await this.options.canonicalInputs!(scope, captured), actual = await this.options.materializeNotes!(scope.companionId, bodies);
+            upserts.push(...actual.notes); receipts.push(...actual.receipts);
+          }
+          projection.setReceipts(receipts); await runtime.client.applyProjectionDelta(view, upserts.map(note => runtimeNote(note, owner, clock.timeZone)), view.removedIds);
+        }
+        snapshot.fileReceipts = [...projection.value.receipts.values()]; focusFileReceipts = snapshot.fileReceipts;
+        const state = (await this.options.request({ type: 'memory.projection.state', ...scope })).memoryProjectionState;
+        const captured = projection.value.state;
+        if (!state || state.revocationEpoch !== captured.revocationEpoch || state.resetRevision !== captured.resetRevision || state.externalVersion !== captured.externalVersion || state.generation !== captured.generation)
+          throw Object.assign(new Error('本次原生图的完整来源授权在准备期间变化。'), { code: 'MEMORY_PROJECTION_CHANGED' });
+      } else if (!filtered && (!('unchanged' in view) || !view.unchanged || !runtime.client.hasOpenScope(view))) await runtime.client.replace(view, corpus.map(note => runtimeNote(note, owner, clock.timeZone)));
       this.assertCurrent(scope.companionId, generation);
       await view.commit();
       const plan: ReturnType<typeof planCompanionMemoryRetrieval> = query.retrievalOptions ? planCompanionMemoryRetrieval(query.retrievalOptions, projectCompanionMemoryRetrievalModes(await runtime.client.capabilities(view)))
@@ -643,14 +847,43 @@ export class CompanionMemoryService {
           ...(plan.metaMarker ? [{ role: 'system', content: plan.metaMarker }] : []),
           { role: 'user', content: `当前获权话题资料：\n${passiveDataText(query.query!)}` }];
         const processed = detached ? await (async () => {
-          const prepared = await runtime.client.prepareRecall(contextView, inputMessages, clock, automaticDecay, hostEvidence);
+          if (recovery) {
+            hostEvidence!.recovery = preparedRecallRecoverySchema.parse({ schema: 'worldlinebox.prepared-recall-recovery-v1', taskKey: recovery.taskKey,
+              requestHash: preparedRecallRequestHash(query, history), revocationEpoch: lifecycle!.revocationEpoch, scope, profileKey: runtime.profileKey,
+              algorithmSignature: await runtime.client.algorithmSignature(), owner,
+              frozen: contextNotes.map(note => ({ id: note.id, contentRevision: note.contentRevision,
+                sources: note.sources.map(source => ({ id: source.messageId, conversationId: source.conversationId, checksum: source.checksum })) })),
+              rawSources: recovery.rawSources ?? [], fileReceipts: snapshot.fileReceipts ?? [],
+              contextSeed: { revision: snapshot.revision, capturedAt, queryClock: clock, corpusHash: projection?.value.corpusHash ?? recallCorpusHash(snapshot.notes), queryCorpusHash: projection?.value.corpusHash ?? recallCorpusHash(corpus),
+                notes: contextNotes.map(note => ({ id: note.id, version: note.version, contentRevision: note.contentRevision, procedure: !!note.procedure,
+                  annotations: { tags: note.tags, diaryName: note.diaryName, metadata: note.metadata, updatedAt: note.updatedAt, annotationRevision: note.annotationRevision },
+                  sources: note.sources.map(source => ({ messageId: source.messageId, revision: source.revision, checksum: source.checksum })) })),
+                cursor: query.cursor ?? 0, limit: query.limit ?? 20, ...(automaticDecay ? { automaticDecay } : {}) } });
+          }
+          const prepared = await measured('memory.search.prepare_native', () => runtime.client.prepareRecall(contextView, inputMessages, clock, automaticDecay, hostEvidence));
+          focusFileReceipts = preparedObservedFileReceipts(prepared, snapshot.fileReceipts ?? []);
+          let checkpointed = false;
           try {
+            if (projection) {
+              if (prepared.contextReferenceCoverage !== 'observed') throw Object.assign(new Error('原版候选来源映射不完整，改用完整canonical重建。'), { code: 'VCP_MEMORY_CANONICAL_PROVENANCE_UNAVAILABLE' });
+              observedInputs = [...new Set(prepared.contextReferences.map(reference => reference.id))].map(id => {
+                const note = projection!.value.byId.get(id); if (!note) throw Object.assign(new Error('原版候选来源不能映射到授权canonical目录。'), { code: 'VCP_MEMORY_CANONICAL_PROVENANCE_UNAVAILABLE' }); return note;
+              });
+              // Filesystem/candidate proof may wait behind another large body.
+              // Release the graph lane before it, just as before network focus.
+              detachedFocusing = true; await releaseGraph();
+              const actual = await measured('memory.search.canonical_inputs', () => this.options.canonicalInputs!(scope, observedInputs));
+              await measured('memory.search.verify_candidate_bytes', () => runtime.client.verifyPreparedCanonicalNotes(prepared, actual.map(note => runtimeNote(note, owner, clock.timeZone)), generationSignal));
+              for (const note of actual) notes.set(note.id, note);
+            }
+            if (recovery) { await recovery.onPrepared(preparedRecallReference(prepared, hostEvidence!.recovery!)); checkpointed = true; }
             await validateDetached();
             if (query.retrievalOptions) detachedModes = projectCompanionMemoryRetrievalModes(await runtime.client.capabilities(contextView));
             detachedFocusing = true;
             await releaseGraph();
-            return await runtime.client.focusRecall(prepared, { ownerId: scope.companionId, signal: generationSignal, validate: validateDetached, fetchFn: this.options.fetchFn });
-          } catch (error) { await runtime.client.discardRecall(prepared); throw error; }
+            return await measured('memory.search.focus_native', () => runtime.client.focusRecall(prepared, { ownerId: scope.companionId, signal: generationSignal, validate: validateDetached, fetchFn: this.options.fetchFn,
+              ...(recovery ? { onFocused: recovery.onPrepared } : {}) }));
+          } catch (error) { if (!recovery || !checkpointed || generationSignal?.aborted) await runtime.client.discardRecall(prepared); throw error; }
         })() : await runtime.client.preprocess(contextView, inputMessages, clock, automaticDecay);
         queryClock = processed.queryClock ?? clock;
         if (automaticDecay) recallPolicy = { schema: automaticDecay.schema, halfLifeDays: automaticDecay.halfLifeDays, minScore: automaticDecay.minScore,
@@ -705,7 +938,7 @@ export class CompanionMemoryService {
       generationSignal?.throwIfAborted();
       this.queueContinuity(scope);
       const references = (contextReferences ?? []).flatMap(reference => {
-        const note = contextNotes.find(note => note.id === reference.id);
+        const note = notes.get(reference.id);
         return note ? [{ ...reference, version: note.version, sources: note.sources.map(source => ({ messageId: source.messageId, revision: source.revision, checksum: source.checksum })) }] : [];
       });
       // Native focus text and host practice verification are separate data.
@@ -713,7 +946,7 @@ export class CompanionMemoryService {
       // provenance may conservatively use that context's physical closure.
       const methodInputs = (contextReferences?.length ? [...new Set(contextReferences.map(reference => reference.id))]
         : referenceCoverage === 'observed' ? [] : contextNotes.map(note => note.id))
-        .map(id => contextNotes.find(note => note.id === id)).filter((note): note is CompanionMemory => !!note?.procedure).slice(0, 100);
+        .map(id => notes.get(id)).filter((note): note is CompanionMemory => !!note?.procedure).slice(0, 100);
       const proceduralStatus: CompanionMemoryProcedureContext[] = [];
       for (let offset = 0; offset < methodInputs.length; offset += 100) {
         const expected = methodInputs.slice(offset, offset + 100);
@@ -726,32 +959,43 @@ export class CompanionMemoryService {
         }
       }
       if (detached) await validateDetached();
-      const evidence = { capturedAt, corpusHash: recallCorpusHash(snapshot.notes), ...(queryClock ? { queryClock: { ...queryClock, domain: 'world' as const } } : {}), ...(recallPolicy ? { recallPolicy } : {}),
+      const witnessed = mode === 'passive' && referenceCoverage === 'observed' && (contextReferences ?? []).every(reference => notes.has(reference.id));
+      const readNotes = witnessed ? [...new Set((contextReferences ?? []).map(reference => reference.id))].map(id => notes.get(id)!) : contextNotes;
+      const evidence = { capturedAt, corpusHash: projection?.value.corpusHash ?? recallCorpusHash(snapshot.notes), ...(queryClock ? { queryClock: { ...queryClock, domain: 'world' as const } } : {}), ...(recallPolicy ? { recallPolicy } : {}),
         ...(scope.beforeSequence !== undefined ? { beforeSequence: scope.beforeSequence } : {}),
-        queryCorpusHash: recallCorpusHash(corpus), pageMemoryIds: page.map(hit => hit.memory.id),
-        // The physical input graph is a conservative, complete dependency
-        // closure (including monthly sources when a full-corpus page imports
-        // them). It is not an assertion that every input was quoted/returned.
-        dependencies: contextNotes.map(note => ({ id: note.id, version: note.version })), dependencyCoverage: 'complete' as const,
+        queryCorpusHash: projection?.value.corpusHash ?? recallCorpusHash(corpus), pageMemoryIds: page.map(hit => hit.memory.id),
+        // The prepared owner package retains full graph authority. A long task
+        // records the original pipeline's actual observed inputs and their
+        // recursively authorized source lineage, never unread physical notes.
+        dependencies: readNotes.map(note => ({ id: note.id, version: note.version })), dependencyCoverage: 'complete' as const,
         ...(mode === 'passive' ? { snapshotPolicy: 'task_passive_v1' as const,
-          frozenDependencies: contextNotes.map(note => ({ id: note.id, sources: note.sources.map(source => ({ id: source.messageId,
+          frozenDependencies: readNotes.map(note => ({ id: note.id, contentRevision: note.contentRevision, sources: note.sources.map(source => ({ id: source.messageId,
             conversationId: source.conversationId, checksum: source.checksum })) })) } : {}),
         references, referenceCoverage: references.length < (contextReferences?.length ?? 0) ? 'partial' as const : referenceCoverage,
         candidateOrder: direct ? 'context_observation' as const : 'independent_native_query' as const, contextOrder: 'original_context_pipeline' as const };
       mark('complete', '记忆检索完成');
       return { ok: true, memorySearchTimings: timings, ...(observedModes ? { memoryRetrievalModes: observedModes } : {}), memoryRetrieval: projectCompanionMemoryRetrieval({ mode, observedAt: capturedAt, documentCount: corpus.length,
         result, hits: page, contextText, contextReferences: references, samePipeline: direct }), memoryContext: { text: contextText, revision: snapshot.revision, profileKey: runtime.profileKey,
-        evidence, ...(snapshot.fileReceipts ? { fileReceipts: snapshot.fileReceipts } : {}), ...(proceduralStatus.length ? { proceduralStatus } : {}) }, memoryPage: { items: page, hasMore: end < hits.length,
+        evidence, ...(snapshot.fileReceipts ? { fileReceipts: [...focusFileReceipts] } : {}), ...(proceduralStatus.length ? { proceduralStatus } : {}) }, memoryPage: { items: page, hasMore: end < hits.length,
         ...(end < hits.length ? { nextCursor: end } : {}) } };
       } finally { await runtime.release?.(); }
-      } finally { await releaseGraph(); }
+      } catch (error) {
+        if (error && typeof error === 'object' && 'code' in error && error.code === 'MEMORY_PROJECTION_RESET_REQUIRED' && attempt < 2) { this.projections.invalidate(scope.companionId); continue; }
+        if (error && typeof error === 'object' && 'code' in error && error.code === 'MEMORY_PROJECTION_CHANGED' && attempt < 2) continue;
+        throw error;
+      } finally { projection?.release(); await releaseGraph(); }
     }
     throw new Error('记忆来源在查询期间发生变化，请重试。');
+    } catch (error) {
+      if (useProjection && error && typeof error === 'object' && 'code' in error && error.code === 'VCP_MEMORY_CANONICAL_PROVENANCE_UNAVAILABLE')
+        return await this.searchView(query, mode, generation, history, signal, onProgress, queuedMs, priority, recovery, false);
+      throw error;
     } finally { clearInterval(stalled); this.timing(`memory.search.${stage}`, performance.now() - stageAt); }
   }
 
   async recall(input: { companion: Companion; conversation: CompanionConversation; messages: readonly CompanionMessage[];
-    currentMessage: CompanionMessage; referencedMessage?: CompanionMessage; beforeSequence?: number; query?: string; config: CompanionModelConfig; signal?: AbortSignal; onProgress?: (stage: string) => void }): Promise<CompanionMemoryRecall> {
+    currentMessage: CompanionMessage; referencedMessage?: CompanionMessage; beforeSequence?: number; query?: string; config: CompanionModelConfig; signal?: AbortSignal;
+    recovery?: CompanionRecallRecovery; onProgress?: (stage: string) => void }): Promise<CompanionMemoryRecall> {
     const scope = { companionId: input.companion.id, conversationId: input.conversation.id,
       beforeSequence: input.beforeSequence ?? input.currentMessage.sequence };
     const allowed = (await this.options.request({ type: 'memory.sources.filter', ...scope,
@@ -770,7 +1014,9 @@ export class CompanionMemoryService {
     const status = (await this.options.request({ type: 'memory.status', companionId: input.companion.id })).memoryStatus;
     this.schedule();
     try {
-      const result = await this.searchScoped({ ...query, ...scope }, 'passive', history, input.signal, input.onProgress);
+      const result = await this.searchScoped({ ...query, ...scope }, 'passive', history, input.signal, input.onProgress, 'foreground', input.recovery ? { ...input.recovery,
+        rawSources: [...allowed.map(source => ({ id: source.id, conversationId: source.conversationId, readerId: input.companion.id,
+          checksum: createHash('sha256').update(source.content).digest('hex') })), ...(input.recovery.rawSources ?? [])] } : undefined);
       input.signal?.throwIfAborted();
       const hits = result.memoryPage?.items ?? [];
       return { memories: hits.map(hit => hit.memory), sources: [], reasons: hits.map(hit => ({ id: hit.memory.id, version: hit.memory.version, reasons: hit.reasons, path: hit.path })),
@@ -783,6 +1029,17 @@ export class CompanionMemoryService {
         continuation: { query, memoryHasMore: false, sourceHasMore: false } };
     } catch (error) {
       if (input.signal?.aborted) throw error;
+      // A new invocation has not prepared or paid for any focus when the
+      // durable index admission gate refuses it. Continue its current input
+      // with explicit pending memory, never an old graph or a fabricated empty
+      // corpus receipt. Existing prepared task recovery remains fail-closed.
+      if (!input.recovery?.reference && error && typeof error === 'object' && 'code' in error && error.code === 'MEMORY_INDEX_PENDING') {
+        if (input.recovery && !await input.recovery.isCurrent()) throw error;
+        input.signal?.throwIfAborted();
+        return { memories: [], sources: [], reasons: [], pending: true, degraded: true };
+      }
+      if (input.recovery) throw error;
+      if (error && typeof error === 'object' && 'code' in error && error.code === 'VCP_MEMORY_NATIVE_CAPACITY') throw error;
       this.options.report(error);
       return { memories: [], sources: [], reasons: [], pending: true, degraded: true };
     }
@@ -791,6 +1048,7 @@ export class CompanionMemoryService {
   async contextValid(scope: { companionId: string; conversationId: string; beforeSequence?: number }, context?: { revision: string; profileKey: string; text?: string; evidence?: unknown; proceduralStatus?: unknown;
     fileReceipts?: readonly CompanionMemoryFileReceipt[]; fileReceiptOnly?: true }): Promise<boolean> {
     await this.options.validateAssets?.(scope.companionId);
+    await this.options.prepareFiles?.(scope.companionId);
     if (!context) return true;
     if (context.fileReceipts?.length && (!this.options.validateFiles || !await this.options.validateFiles(scope.companionId, context.fileReceipts))) return false;
     if (context.fileReceiptOnly) return !!context.fileReceipts?.length;
@@ -864,6 +1122,7 @@ export class CompanionMemoryService {
   }
   invalidate(owner: string, canonicalScopes: readonly string[] = [], options: { preserveIndexes?: boolean } = {}): Promise<void> {
     if (this.closed) return Promise.resolve();
+    this.projections.invalidate(owner);
     this.generations.set(owner, this.generation(owner) + 1);
     this.generationSignals.get(owner)?.abort(); this.generationSignals.delete(owner);
     const capture = this.captures.get(owner);
@@ -964,6 +1223,16 @@ export class CompanionMemoryService {
     this.options.changed();
   }
   private async runContinuity(scope: MemoryScope, generation: number): Promise<boolean> {
+    try { await this.options.prepareFiles?.(scope.companionId); await this.drainOwnerDeliveries(scope.companionId); }
+    catch (error) {
+      if (!error || typeof error !== 'object' || !('code' in error) || error.code !== 'MEMORY_INDEX_PENDING') throw error;
+      // No snapshot has been selected or revision marked as processed. Keep
+      // the durable index work and timeline retry pending rather than treating
+      // the previous indexed revision as this new maintenance attempt.
+      for (const job of this.timelineProcessing.get(scope.companionId) ?? []) if (job.conversationId === scope.conversationId && job.status === 'pending')
+        this.updateTimelineProcessing(job, { stage: '等待当前来源的记忆索引完成', nextAttemptAt: new Date(Date.now() + 1000).toISOString() });
+      this.schedule(1000); return false;
+    }
     const identity = identityFor(scope), previous = this.continuityAttempts.get(identity);
     const snapshot = (await this.options.request({ type: 'memory.snapshot', ...scope })).memorySnapshot;
     if (!snapshot?.notes.length) return false;
@@ -1076,16 +1345,87 @@ export class CompanionMemoryService {
     } finally { await runtime.release(); }
   }
 
-  private async deliver(): Promise<void> {
-    if (!this.options.runtime) return;
-    for (let index = 0; index < 20 && !this.closed; index++) {
-      const outbox = (await this.options.request({ type: 'memory.outbox.claim', leaseMs: 600000 })).memoryOutbox;
+  private deliver(): Promise<void> {
+    if (!this.options.runtime || this.closed) return Promise.resolve();
+    if (this.deliveryPump) return this.deliveryPump;
+    const pump = (async () => {
+      // One unresolved owner cannot occupy the only delivery loop. Scope
+      // leases still serialize each graph, and the shared native broker owns
+      // the process budget; this window only bounds independent owner work.
+      for (let admitted = 0; admitted < 4 && this.deliveries.size < 4 && !this.closed; admitted++) {
+        if (!await this.admitDelivery()) return;
+      }
+    })();
+    this.deliveryPump = pump;
+    void pump.finally(() => { if (this.deliveryPump === pump) this.deliveryPump = undefined; }).catch(() => undefined);
+    return pump;
+  }
+  private admitDelivery(owner?: string): Promise<{ owner: string; job: Promise<void> } | undefined> {
+    // Only claim+registration is serialized. No native operation holds this
+    // lane, and foreground readiness uses the same owner/capacity bookkeeping.
+    const admission = this.deliveryClaims.then(async () => {
+      if (owner && this.deliveries.has(owner)) return { owner, job: this.deliveries.get(owner)! };
+      if (this.closed || !this.options.runtime || this.deliveries.size >= 4) return;
+      const outbox = (await this.options.request({ type: 'memory.outbox.claim', ...(owner ? { companionId: owner } : {}), leaseMs: 600000,
+        excludedOwners: [...this.deliveries.keys()] })).memoryOutbox;
       if (!outbox) return;
+      if (this.closed) { await this.options.request({ type: 'memory.outbox.defer', id: outbox.id, leaseToken: outbox.leaseToken, retryAfterMs: 100 }); return; }
+      if (this.deliveries.has(outbox.companionId)) throw Error('投递领取返回了仍有在途作业的伙伴。');
+      const job = this.deliverOne(outbox).catch(this.options.report).finally(() => {
+        if (this.deliveries.get(outbox.companionId) === job) this.deliveries.delete(outbox.companionId);
+        this.options.changed();
+        if (!this.closed && !this.deliveryTimer) {
+          this.deliveryTimer = setTimeout(() => { this.deliveryTimer = undefined; void this.deliver().catch(this.options.report); }, 0);
+          this.deliveryTimer.unref();
+        }
+      });
+      this.deliveries.set(outbox.companionId, job); this.options.changed(); return { owner: outbox.companionId, job };
+    });
+    this.deliveryClaims = admission.then(() => undefined, () => undefined); return admission;
+  }
+  /** A new query must not silently omit a just-edited queued body. This bounded
+   * admission advances only its owner; the durable background pump keeps going
+   * if the foreground's finite wait expires. */
+  async drainOwnerDeliveries(owner: string, options: { budgetMs?: number; maxJobs?: number } = {}): Promise<void> {
+    const budgetMs = Math.max(1, Math.min(30_000, options.budgetMs ?? 10_000)), maxJobs = Math.max(1, Math.min(64, options.maxJobs ?? 64));
+    const deadline = performance.now() + budgetMs;
+    const pending = () => Object.assign(Error('伙伴记忆新版本仍在建立索引，本次未将旧索引当作完整的新结果；后台继续处理，请稍后重试。'), { code: 'MEMORY_INDEX_PENDING', companionId: owner });
+    const wait = async (operation: Promise<unknown>) => {
+      const remaining = deadline - performance.now(); if (remaining <= 0) throw pending();
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      try { await Promise.race([operation, new Promise<never>((_resolve, reject) => { timer = setTimeout(() => reject(pending()), remaining); timer.unref(); })]); }
+      finally { if (timer) clearTimeout(timer); }
+    };
+    for (let admitted = 0; admitted < maxJobs && !this.closed; admitted++) {
+      const state = await this.options.request({ type: 'memory.outbox.pending', companionId: owner });
+      if (!state.ok || state.memoryOutboxPending === undefined) throw Error(state.error ?? '伙伴记忆索引准入状态暂不可核验。');
+      if (!state.memoryOutboxPending) return;
+      if (!this.options.runtime) throw pending();
+      if (this.invalidations.has(owner)) await wait(this.invalidations.get(owner)!);
+      const delivery = this.deliveries.get(owner) ?? (await this.admitDelivery(owner))?.job;
+      if (delivery) await wait(delivery);
+      else if (this.deliveries.size) await wait(Promise.race([...this.deliveries.values()]));
+      else throw pending();
+      if (performance.now() >= deadline) throw pending();
+    }
+    const state = await this.options.request({ type: 'memory.outbox.pending', companionId: owner });
+    if (!state.ok || state.memoryOutboxPending !== false) throw pending();
+  }
+  /** Explicit flush/close waits on owned operations, never just HTTP headers. */
+  async drainDeliveries(): Promise<void> {
+    do {
+      await this.deliveryClaims;
+      await this.deliveryPump;
+      await Promise.allSettled([...this.deliveries.values()]);
+      if (this.deliveryTimer) { clearTimeout(this.deliveryTimer); this.deliveryTimer = undefined; }
+      if (!this.closed) await this.deliver();
+    } while (this.deliveryPump || this.deliveries.size);
+  }
+  private async deliverOne(outbox: NonNullable<CompanionStorageResponse['memoryOutbox']>): Promise<void> {
       const generation = this.generation(outbox.companionId);
-      this.deliveringOwner = outbox.companionId; this.options.changed();
       try {
         if (this.invalidations.has(outbox.companionId)) throw new Error('记忆可见域正在重建，稍后重试投递。');
-        const runtime = await this.options.runtime.get({ ownerId: outbox.companionId });
+        const runtime = await this.options.runtime!.get({ ownerId: outbox.companionId, purpose: 'index' });
         try {
         const { client } = runtime;
         this.assertCurrent(outbox.companionId, generation);
@@ -1109,10 +1449,8 @@ export class CompanionMemoryService {
           this.again = true;
         } else await this.options.request({ type: 'memory.outbox.fail', id: outbox.id, leaseToken: outbox.leaseToken,
           error: error instanceof Error ? error.message : 'VCP 记忆投递失败。', retryAfterMs: 30000 });
-        this.options.changed(); return;
-      } finally { this.deliveringOwner = undefined; this.options.changed(); }
-    }
-    this.again = true;
+        this.options.changed();
+      }
   }
 
   private async process(): Promise<void> {
@@ -1141,6 +1479,7 @@ export class CompanionMemoryService {
       const controller = new AbortController();
       let settle!: () => void;
       const capture = { controller, settled: new Promise<void>(resolve => { settle = resolve; }) };
+      let captureStage: 'preparing' | 'validating' | 'committing' = 'preparing';
       this.captures.set(companion.id, capture);
       this.options.changed();
       if (this.closed) controller.abort();
@@ -1162,22 +1501,59 @@ export class CompanionMemoryService {
         try { relevantMemories = (await this.searchScoped({ ...scope, query: sources.map(source => source.content).join('\n').slice(0, 16000), limit: 8 }, 'active', [], controller.signal, undefined, 'background')).memoryPage?.items.map(hit => hit.memory) ?? []; }
         catch { /* Capture remains queued for indexing while a model is unavailable. */ }
         controller.signal.throwIfAborted();
+        // Exact source-family context cannot depend on a semantic top-eight
+        // hit, or on whether the foreground write has reached VCP yet. The
+        // Main request port reads these notes from their canonical files.
+        let sourceContributions: CompanionMemory[] = [];
+        let afterId: string | undefined, completeContributions = false, contributionCharacters = 0;
+        for (let pageIndex = 0; pageIndex < 4; pageIndex++) {
+          const response = await this.options.request({ type: 'memory.jobs.contributions', companionId: companion.id,
+            id: job.id, leaseToken: job.leaseToken, afterId, limit: 32 });
+          const page = response.memoryCaptureContributions;
+          if (!response.ok || !page) throw new Error(response.error ?? '同源已存记录暂不可核验，原始来源保留待处理。');
+          for (const note of page.items) {
+            contributionCharacters += note.content.length;
+            if (contributionCharacters > 262144) throw new Error('同源已存记录超过本轮完整读取预算，原始来源保留等待分批整理。');
+            sourceContributions.push(note);
+          }
+          if (!page.hasMore) { completeContributions = true; break; }
+          if (!page.nextId || page.nextId === afterId) throw new Error('同源记录分页不完整，尚未完成编码。');
+          afterId = page.nextId;
+        }
+        if (!completeContributions) throw new Error('同源记录尚有未读取页，保留来源等待后续整理。');
+        relevantMemories = [...new Map([...relevantMemories, ...sourceContributions].map(note => [note.id, note])).values()];
+        controller.signal.throwIfAborted();
         const prohibitions = await this.options.request({ type: 'memory.prohibitions', ...scope, sourceMessageIds: job.sourceMessageIds });
+        const proposalCheckpoint = await CompanionCaptureProposalCheckpoint.open(this.options.request, job, config, companion, before, sourceContributions, prohibitions.memoryProhibitionRevision);
+        const resumed = await proposalCheckpoint.restore();
+        if (resumed) { relevantMemories = resumed.memories; sourceContributions = resumed.sourceContributions; }
         const runtimeState = (await this.options.request({ type: 'state.get', ...scope })).runtimeState;
         const characterDevelopment = (await this.options.request({ type: 'character.development', companionId: companion.id, conversationId: conversation.id, limit: 12 })).characterDevelopment;
-        const journal = await generateCompanionJournal({ companion, conversation, messages: sources, contextMessages: before, relevantMemories,
+        captureStage = 'validating';
+        const journal = await generateCompanionJournal({ companion, conversation, messages: sources, contextMessages: before, relevantMemories, sourceContributions,
           participants: state?.companions.map(peer => ({ id: peer.id, name: peer.name })),
           prohibitions: prohibitions.memoryProhibitions,
-          runtimeState, characterDevelopment }, config, controller.signal, { fetchFn: this.options.fetchFn });
+          runtimeState, characterDevelopment }, proposalCheckpoint.modelConfig(config), controller.signal, { fetchFn: this.options.fetchFn,
+            ...proposalCheckpoint.options(relevantMemories, sourceContributions, runtimeState?.revision) });
         controller.signal.throwIfAborted();
+        captureStage = 'committing';
         await this.options.request({ type: 'memory.jobs.complete', id: job.id, leaseToken: job.leaseToken,
           expectedProhibitionRevision: prohibitions.memoryProhibitionRevision,
+          readMemories: relevantMemories.map(note => {
+            if (note.contentRevision === undefined) throw new Error('编码关联正文缺少宿主不可变修订，尚未提交。');
+            return { id: note.id, version: note.version, contentRevision: note.contentRevision };
+          }),
           notes: journal.notes.map(note => ({ ...note, sourceChecksums: job.sourceChecksums })),
-          ...(journal.stateProposal ? { stateProposal: journal.stateProposal, expectedStateRevision: runtimeState?.revision } : {}) });
+          ...(journal.stateProposal ? { stateProposal: journal.stateProposal, expectedStateRevision: proposalCheckpoint.expectedStateRevision(runtimeState?.revision) } : {}) });
         this.options.changed(); this.again = true;
       } catch (error) {
-        await this.options.request({ type: 'memory.jobs.fail', id: job.id, leaseToken: job.leaseToken,
-          error: error instanceof Error ? error.message : '日记处理失败。', retryAfterMs: this.closed ? 0 : Math.min(300000, 5000 * 2 ** Math.min(job.attempts - 1, 6)) });
+        const deferred = companionModelAdmissionRetryAfter(error);
+        await this.options.request(deferred === undefined
+          ? { type: 'memory.jobs.fail', id: job.id, leaseToken: job.leaseToken,
+            preserveProposal: captureStage === 'validating',
+            error: error instanceof Error ? error.message : '日记处理失败。', retryAfterMs: this.closed ? 0 : Math.min(300000, 5000 * 2 ** Math.min(job.attempts - 1, 6)) }
+          : { type: 'memory.jobs.defer', id: job.id, leaseToken: job.leaseToken,
+            error: error instanceof Error ? error.message : '模型资源暂不可用，来源保留待处理。', retryAfterMs: deferred });
         this.options.changed();
       } finally { settle(); if (this.captures.get(companion.id) === capture) this.captures.delete(companion.id); this.options.changed(); }
       })().catch(this.options.report);
@@ -1194,13 +1570,16 @@ export class CompanionMemoryService {
   }
   async close(): Promise<void> {
     this.closed = true;
+    this.projections.clear();
     for (const controller of this.generationSignals.values()) controller.abort();
     this.generationSignals.clear();
     if (this.timer) clearTimeout(this.timer);
+    if (this.deliveryTimer) { clearTimeout(this.deliveryTimer); this.deliveryTimer = undefined; }
     for (const capture of this.captures.values()) capture.controller.abort();
     for (const owner of this.registeredScopes.keys()) this.generations.set(owner, this.generation(owner) + 1);
     await Promise.allSettled([...this.registeredScopes.values()].flatMap(scopes => [...scopes].map(([scopeId, client]) => client.interruptScope({ scopeId }))));
     await this.running;
+    await this.drainDeliveries();
     await this.continuity?.promise;
     await this.warmup?.catch(() => undefined);
     await Promise.allSettled([...this.queryTails.values()]);

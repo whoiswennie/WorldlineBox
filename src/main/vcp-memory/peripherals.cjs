@@ -119,6 +119,7 @@ class VcpMemoryPeripherals {
     this.events = [];
     this.contextReferences = [];
     this.contextSourceRows = new Map();
+    this.contextSourceRowsByName = new Map();
     this.observedCalls = Object.create(null);
     this.corpusEpoch = 0;
     this.preprocessReceipts = new Map();
@@ -128,13 +129,7 @@ class VcpMemoryPeripherals {
       const original = runtime.kb[name];
       if (typeof original !== 'function') continue;
       const observe = result => {
-        for (const row of result?.results || []) {
-          const text = typeof row.text === 'string' ? row.text.trim() : '';
-          if (!text) continue;
-          const key = createHash('sha256').update(text).digest('hex');
-          const rows = this.contextSourceRows.get(key) || [];
-          rows.push(row); this.contextSourceRows.set(key, rows);
-        }
+        this.observeCandidateRows(result?.results || []);
       };
       runtime.kb[name] = async function (...args) {
         // Preserve a scoped facade's `this`, including its pre-query file ACL.
@@ -175,7 +170,22 @@ class VcpMemoryPeripherals {
     this.preprocessReceipts.set(key, { serialized, bytes });
     this.preprocessReceiptBytes += bytes;
   }
-  beginContext() { this.contextReferences = []; this.contextSourceRows = new Map(); this.unmappedContextSources = 0; this.observeRawContextOutput = false; }
+  beginContext() { this.contextReferences = []; this.contextSourceRows = new Map(); this.contextSourceRowsByName = new Map(); this.unmappedContextSources = 0; this.observeRawContextOutput = false; }
+  observeCandidateRows(values, dbName) {
+    for (const [index, row] of (values || []).entries()) {
+      const text = typeof row.text === 'string' ? row.text.trim() : '';
+      if (!text) continue;
+      const key = createHash('sha256').update(text).digest('hex'), rows = this.contextSourceRows.get(key) || [];
+      const source = value => String(value.fullPath || value.sourceFile || value.path || '').replaceAll('\\', '/');
+      if (!rows.some(previous => source(previous) === source(row) && previous.text === row.text)) rows.push(row);
+      this.contextSourceRows.set(key, rows);
+      if (typeof dbName === 'string') {
+        const name = `${dbName}_aimemo_plus_${index}`, named = this.contextSourceRowsByName.get(name) || [];
+        if (!named.some(previous => source(previous) === source(row) && previous.text === row.text)) named.push(row);
+        this.contextSourceRowsByName.set(name, named);
+      }
+    }
+  }
   observeContextRows(rows, role) {
     for (const row of rows || []) {
       const sourceFile = String(row.fullPath || row.sourceFile || row.path || '').replaceAll('\\', '/');
@@ -189,7 +199,10 @@ class VcpMemoryPeripherals {
     for (const file of files || []) {
       const text = String(file.content || file.text || '').trim();
       const key = createHash('sha256').update(text).digest('hex');
-      const rows = this.contextSourceRows.get(key);
+      const named = (this.contextSourceRowsByName.get(file.name) || []).filter(row => typeof row.text === 'string' && row.text.trim() === text);
+      const rows = named.length ? named : this.contextSourceRows.get(key);
+      if (rows?.length > 1 && new Set(rows.map(row => this.runtime.fileIds.get(path.basename(String(row.fullPath || row.sourceFile || row.path || '').replaceAll('\\', '/'))))).size > 1)
+        this.unmappedContextSources++;
       if (!rows?.length) this.unmappedContextSources++;
       this.observeContextRows(rows, 'focus_input');
     }
@@ -251,6 +264,18 @@ class VcpMemoryPeripherals {
       // an AIMemo model prompt. This observes inputs, never claims sentence-level
       // attribution of its generated answer.
       const handler = plugin.aiMemoHandler;
+      // Raw native query rows precede the original expansion/association/time
+      // suffix pipeline. Observe its *final* raw-result boundary as well, before
+      // the unchanged collector intentionally discards paths into sourceFiles.
+      // Otherwise expanded full files cannot map to their original chunk hash
+      // and valid production recall is incorrectly marked partial forever.
+      const placeholder = plugin._processRAGPlaceholder;
+      const observeFinalCandidates = (rows, dbName) => this.observeCandidateRows(rows, dbName);
+      plugin._processRAGPlaceholder = async function (...args) {
+        const output = await placeholder.apply(this, args);
+        if (args[0]?.returnRawResults && Array.isArray(output)) observeFinalCandidates(output, args[0]?.dbName);
+        return output;
+      };
       if (this.ownerPrompts) handler.promptTemplate = this.ownerPrompts.aimemoTemplate;
       const combine = handler._combineFiles;
       handler._combineFiles = files => { this.observeFocusFiles(files); return combine.call(handler, files); };

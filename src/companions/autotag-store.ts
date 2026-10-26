@@ -19,7 +19,7 @@ export class CompanionMemoryTagStore {
     this.db.exec(`CREATE TABLE IF NOT EXISTS companion_memory_tag_jobs(
       ordinal INTEGER PRIMARY KEY AUTOINCREMENT,id TEXT NOT NULL UNIQUE,companion_id TEXT NOT NULL,note_id TEXT NOT NULL REFERENCES vcp_memory_notes(id) ON DELETE CASCADE,
       note_version INTEGER NOT NULL,content_hash TEXT NOT NULL,status TEXT NOT NULL DEFAULT 'pending',attempts INTEGER NOT NULL DEFAULT 0,
-      next_attempt INTEGER NOT NULL DEFAULT 0,lease_token TEXT,lease_until INTEGER,prohibition_revision TEXT,error TEXT,created_at TEXT,updated_at TEXT,
+      next_attempt INTEGER NOT NULL DEFAULT 0,lease_token TEXT,lease_until INTEGER,prohibition_revision TEXT,error TEXT,created_at TEXT,updated_at TEXT,admission_deferred INTEGER NOT NULL DEFAULT 0,
       UNIQUE(note_id,note_version));
       CREATE INDEX IF NOT EXISTS companion_memory_tag_pending ON companion_memory_tag_jobs(status,next_attempt,ordinal);
       CREATE INDEX IF NOT EXISTS companion_memory_tag_owner ON companion_memory_tag_jobs(companion_id,note_id,ordinal);
@@ -51,7 +51,7 @@ export class CompanionMemoryTagStore {
     return !!note && note.companionId === job.companion_id && note.version === job.note_version && eligible(note) && checksum(note.content) === job.content_hash;
   }
   private finish(id: string, status: string, error?: string): void {
-    this.db.prepare('UPDATE companion_memory_tag_jobs SET status=?,error=?,lease_token=NULL,lease_until=NULL WHERE id=?').run(status, error ?? null, id);
+    this.db.prepare('UPDATE companion_memory_tag_jobs SET status=?,error=?,lease_token=NULL,lease_until=NULL,admission_deferred=0 WHERE id=?').run(status, error ?? null, id);
   }
   private policy(note: CompanionMemory): string {
     return this.memory({ type: 'memory.prohibitions', companionId: note.companionId, conversationId: note.sourceConversationId, noteId: note.id })?.memoryProhibitionRevision ?? '';
@@ -68,7 +68,7 @@ export class CompanionMemoryTagStore {
       for (const job of jobs) {
         const note = this.current(job); if (!this.valid(job, note)) { this.finish(job.id, 'stale', '文档已修订、遗忘或已有手工标签。'); continue; }
         const token = randomUUID(), policy = this.policy(note);
-        this.db.prepare("UPDATE companion_memory_tag_jobs SET status='running',attempts=attempts+1,lease_token=?,lease_until=?,prohibition_revision=?,error=NULL WHERE id=?")
+        this.db.prepare("UPDATE companion_memory_tag_jobs SET status='running',attempts=attempts+1,lease_token=?,lease_until=?,prohibition_revision=?,error=NULL,admission_deferred=0 WHERE id=?")
           .run(token, now + leaseMs, policy, job.id);
         return { id: job.id, leaseToken: token, companionId: note.companionId, noteId: note.id, version: note.version, content: note.content, attempts: job.attempts + 1 };
       }
@@ -113,16 +113,19 @@ export class CompanionMemoryTagStore {
       case 'memory.tags.complete': return this.complete(command);
       case 'memory.tags.defer': {
         const job = this.leased(command.id, command.leaseToken); if (!job) return { ok: true };
-        this.db.prepare('UPDATE companion_memory_tag_jobs SET status=?,next_attempt=?,error=?,lease_token=NULL,lease_until=NULL WHERE id=?')
-          .run(command.reason === 'needs_model' ? 'waiting_model' : 'failed', Date.now() + (command.retryAfterMs ?? 30000), command.error, job.id);
+        this.db.prepare('UPDATE companion_memory_tag_jobs SET status=?,next_attempt=?,error=?,attempts=MAX(0,attempts-?),lease_token=NULL,lease_until=NULL,admission_deferred=? WHERE id=?')
+          .run(command.reason === 'needs_model' ? 'waiting_model' : command.reason === 'admission' ? 'pending' : 'failed',
+            Date.now() + (command.retryAfterMs ?? 30000), command.error, Number(command.reason === 'admission' || command.reason === 'needs_model'), Number(command.reason === 'admission'), job.id);
         return { ok: true };
       }
       case 'memory.tags.status': return { ok: true, memoryTagStatus: this.status(command.companionId, command.noteId) };
       case 'memory.tags.cancel': this.enable(command.companionId, command.noteId, false); this.db.prepare("UPDATE companion_memory_tag_jobs SET status='cancelled',lease_token=NULL,lease_until=NULL,error=NULL WHERE companion_id=? AND note_id=? AND status NOT IN('completed','stale')")
         .run(command.companionId, command.noteId); return { ok: true };
-      case 'memory.tags.retry': if (command.noteId) this.enable(command.companionId, command.noteId, true); this.db.prepare(`UPDATE companion_memory_tag_jobs SET status='pending',attempts=0,next_attempt=0,error=NULL,lease_token=NULL,lease_until=NULL WHERE companion_id=?
+      case 'memory.tags.retry-admission': this.db.prepare(`UPDATE companion_memory_tag_jobs SET next_attempt=0,error=NULL,admission_deferred=0 WHERE status='pending' AND admission_deferred=1 ${command.companionId ? 'AND companion_id=?' : ''}`)
+        .run(...(command.companionId ? [command.companionId] : [])); return { ok: true };
+      case 'memory.tags.retry': if (command.noteId) this.enable(command.companionId, command.noteId, true); this.db.prepare(`UPDATE companion_memory_tag_jobs SET status='pending',attempts=CASE WHEN admission_deferred=1 THEN attempts ELSE 0 END,next_attempt=0,error=NULL,lease_token=NULL,lease_until=NULL,admission_deferred=0 WHERE companion_id=?
         AND (status IN('waiting_model','failed'${command.noteId ? ",'cancelled','stale'" : ''}) OR status='pending' AND attempts>=8
-          OR status='running' AND attempts>=8 AND lease_until<=?) ${command.noteId ? 'AND note_id=?' : ''}`)
+          OR status='running' AND attempts>=8 AND lease_until<=? OR status='pending' AND admission_deferred=1) ${command.noteId ? 'AND note_id=?' : ''}`)
         .run(command.companionId, Date.now(), ...(command.noteId ? [command.noteId] : [])); return { ok: true };
     }
   }

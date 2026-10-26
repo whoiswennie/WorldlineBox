@@ -13,7 +13,7 @@ async function focusPreparedRecall(payload, configuration, options = {}) {
     throw new Error('Invalid prepared recall payload.');
   const chat = configuration.chat;
   if (payload.modelIdentity !== modelIdentity(chat)) throw new Error('Prepared recall model route has changed.');
-  const assertCurrent = async () => { options.signal?.throwIfAborted(); await options.validate?.(); options.signal?.throwIfAborted(); };
+  const assertCurrent = async (reason = 'fence') => { options.signal?.throwIfAborted(); await options.validate?.(reason); options.signal?.throwIfAborted(); };
   await assertCurrent();
   if (!payload.groups.length) return structuredClone(payload.receipt);
   if (!chat?.baseUrl || !chat.model || !chat.apiKey) throw new Error('Prepared focusing model is unavailable.');
@@ -23,7 +23,7 @@ async function focusPreparedRecall(payload, configuration, options = {}) {
     const timeout = AbortSignal.timeout(requestOptions?.timeout || 120000);
     const signal = options.signal ? AbortSignal.any([options.signal, timeout]) : timeout;
     const operation = async () => {
-      await assertCurrent();
+      await assertCurrent('model_admission');
       let response, raw;
       try { response = await (options.fetchFn || fetch)(url, { method: 'POST', headers: requestOptions.headers,
         body: JSON.stringify(body), signal });
@@ -74,7 +74,7 @@ async function focusPreparedRecall(payload, configuration, options = {}) {
       return values.get(token);
     }) : message.content }));
   receipt.events.push(...events);
-  await assertCurrent();
+  await assertCurrent('publication');
   return receipt;
 }
 

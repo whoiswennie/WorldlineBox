@@ -6,7 +6,7 @@ import type { CompanionMemoryDocument, CompanionMemoryDocumentRead } from '../..
 import type { CompanionStorageCommand, CompanionStorageResponse } from '../../shared/companion-storage';
 import { memoryLibraryPathParts, type CompanionMemoryLibrary, type MemoryLibraryDocumentSession } from './memory-library';
 
-type State = { generation: string; frames: Array<{ relative: string; dir: Dir }>; started: boolean; complete: boolean; indexed: number; dirty: Set<string>; watcher?: FSWatcher; job?: Promise<void>; error?: string; lastScan: number };
+type State = { generation: string; frames: Array<{ relative: string; dir: Dir }>; prioritizedDirectory?: string; started: boolean; complete: boolean; indexed: number; dirty: Set<string>; watcher?: FSWatcher; job?: Promise<void>; error?: string; lastScan: number };
 interface Options {
   library: CompanionMemoryLibrary;
   request(command: CompanionStorageCommand): Promise<CompanionStorageResponse>;
@@ -17,7 +17,7 @@ export class CompanionMemoryDocumentCatalog {
   private closed = false;
   private readonly states = new Map<string, State>();
   constructor(private readonly options: Options) {}
-  async ensure(session: MemoryLibraryDocumentSession): Promise<State> {
+  async ensure(session: MemoryLibraryDocumentSession, requestedDirectory?: string): Promise<State> {
     let state = this.states.get(session.owner.id);
     if (!state) {
       state = { generation: randomUUID(), frames: [], started: false, complete: false, indexed: 0, dirty: new Set(), lastScan: Date.now() };
@@ -46,7 +46,7 @@ export class CompanionMemoryDocumentCatalog {
         if (!persisted?.total) {
           // A truly new library gets a bounded seed batch and an explicit building
           // state rather than presenting a transient empty catalogue as complete.
-          await this.batch(session, state!, 16);
+          await this.batch(session, state!, 16, requestedDirectory);
         }
       })();
       // Register the entire initialization before yielding to filesystem events;
@@ -56,7 +56,7 @@ export class CompanionMemoryDocumentCatalog {
     } else if (state.job) return state;
     if (state.complete && Date.now() - state.lastScan > 60_000) {
       for (const frame of state.frames) await frame.dir.close().catch(() => undefined);
-      state.frames = []; state.error = undefined;
+      state.frames = []; state.error = undefined; state.prioritizedDirectory = undefined;
       state.generation = randomUUID(); state.started = false; state.complete = false; state.indexed = 0; state.lastScan = Date.now();
     }
     this.schedule(session.owner.id, state);
@@ -87,8 +87,22 @@ export class CompanionMemoryDocumentCatalog {
   private async refresh(session: MemoryLibraryDocumentSession, state: State, limit: number): Promise<void> {
     for (const relative of [...state.dirty].slice(0, limit)) { state.dirty.delete(relative); await this.one(session, relative, state, true); }
   }
-  private async batch(session: MemoryLibraryDocumentSession, state: State, limit: number): Promise<void> {
-    if (!state.started) { state.frames.push({ relative: '', dir: await opendir(session.root) }); state.started = true; }
+  private async batch(session: MemoryLibraryDocumentSession, state: State, limit: number, requestedDirectory?: string): Promise<void> {
+    if (!state.started) {
+      state.frames.push({ relative: '', dir: await opendir(session.root) }); state.started = true;
+      if (requestedDirectory) {
+        memoryLibraryPathParts(requestedDirectory);
+        // The cold seed should serve the actual requested notebook instead of
+        // spending its complete budget on unrelated role-prompt modules.
+        await session.text(requestedDirectory + '/worldlinebox-validation-placeholder', true);
+        try {
+          const directory = await opendir(session.file(requestedDirectory));
+          state.prioritizedDirectory = requestedDirectory;
+          state.frames.push({ relative: requestedDirectory, dir: directory });
+          await this.options.request({ type: 'document.catalog.put', companionId: session.owner.id, generation: state.generation, entries: [], folders: [requestedDirectory] });
+        } catch (error) { if (!['ENOENT', 'ENOTDIR'].includes((error as NodeJS.ErrnoException).code ?? '')) throw error; }
+      }
+    }
     let visited = 0;
     while (state.frames.length && visited < limit && !this.closed) {
       const frame = state.frames.at(-1)!, entry = await frame.dir.read();
@@ -99,6 +113,10 @@ export class CompanionMemoryDocumentCatalog {
       memoryLibraryPathParts(relative);
       if (entry.isSymbolicLink()) throw new Error(`记忆目录包含链接，已停止索引：${relative}`);
       if (entry.isDirectory()) {
+        // The preferred DFS frame finishes before its root ancestor resumes.
+        // Skip exactly that completed subtree, keeping the rest of the owner
+        // inventory and its final generation fence intact.
+        if (relative === state.prioritizedDirectory) continue;
         // Resolve every ancestor through the library's path checks before opening it.
         await session.text(relative + '/worldlinebox-validation-placeholder', true);
         await this.options.request({ type: 'document.catalog.put', companionId: session.owner.id, generation: state.generation, entries: [], folders: [relative] });

@@ -1,4 +1,5 @@
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import sharp from 'sharp';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
@@ -173,7 +174,7 @@ function verifiedAction(store: CompanionsStore, input: CreateCompanionAction) {
     checkpoint: { prompt: '按夹具明确来源执行。', executionReadset: readset, supplements: [], waitForActionIds: [] } }).action!;
   return store.request({ type: 'action.update', id: action.id, patch: { status: input.status, result: input.result } }).action!;
 }
-function fixture(dsh: DshLauncher, publish = false, prepareComputer = true, browser?: CompanionServiceOptions['browser']) {
+function fixture(dsh: DshLauncher, publish = false, prepareComputer = true, browser?: CompanionServiceOptions['browser'], canonicalPortraits = false) {
   const testNow = Date.now(); if (prepareComputer) vi.setSystemTime(testNow - 10_000);
   const root = mkdtempSync(path.join(tmpdir(), 'worldlinebox-companion-service-'));
   roots.push(root);
@@ -193,7 +194,7 @@ function fixture(dsh: DshLauncher, publish = false, prepareComputer = true, brow
     vi.setSystemTime(testNow); store.request({ type: 'world.tick' });
   }
   bindStorage(store);
-  const service = startService(root, dsh, publish, browser);
+  const service = startService(root, dsh, publish, browser, canonicalPortraits);
   return { root, databasePath, store, service, conversation, source };
 }
 it('dispatches native browser calls with the real companion identity without DSH or a virtual computer', async () => {
@@ -241,11 +242,12 @@ function bindStorage(store: CompanionsStore) {
   transport.request.mockImplementation(async command => store.request(command));
   transport.close.mockImplementation(async () => { store.close(); stores.delete(store); });
 }
-function startService(root: string, dsh: DshLauncher, publish = false, browser?: CompanionServiceOptions['browser']): CompanionService {
+function startService(root: string, dsh: DshLauncher, publish = false, browser?: CompanionServiceOptions['browser'], canonicalPortraits = false): CompanionService {
   const service = new CompanionService({ userData: root, workerPath: 'mocked-worker', window: () => publish
     ? { isDestroyed: () => false, webContents: { send: transport.send } } as unknown as BrowserWindow : undefined,
     getConfig: () => ({ apiFormat: 'openai_chat', model: 'selected-model', baseUrl: 'https://provider.invalid', apiKey: 'test-key' }),
-    hasConfig: () => true, dsh: () => dsh, browser, report: vi.fn() });
+    hasConfig: () => true, dsh: () => dsh, browser, report: vi.fn(),
+    ...(canonicalPortraits ? { memoryLibraryRoot: path.join(root, 'library', '伙伴记忆') } : {}) });
   services.add(service);
   return service;
 }
@@ -260,6 +262,29 @@ async function closeService(service: CompanionService) {
 function replyEvents(): CompanionReplyStreamEvent[] {
   return transport.send.mock.calls.filter(([channel]) => channel === COMPANION_REPLY_STREAM_CHANNEL).map(([, value]) => value as CompanionReplyStreamEvent);
 }
+
+it('publishes live owner portrait URLs through public state and the actual protocol, refreshes asset edits and keeps a deleted image namespace absent', async () => {
+  const dsh = fakeDsh(() => ({ tasks: [], operations: [] }), vi.fn(async () => ({ ok: true as const })));
+  const f = fixture(dsh, true, false, undefined, true);
+  const first = (await f.service.handle({ type: 'state' })).state!.companions.find(owner => owner.id === 'sister')!;
+  expect(first.assetImages?.avatar?.url).toContain('worldlinebox-companion://portrait/sister/avatar?v=');
+  const initial = await f.service.attachmentResponse(new Request(first.assetImages!.avatar!.url)); expect(initial.status).toBe(200);
+  const directory = path.join(f.root, 'library', '伙伴记忆', 'sister', '形象'), file = path.join(directory, 'avatar.png');
+  expect(Buffer.from(await initial.arrayBuffer())).toEqual(readFileSync(file)); expect(initial.headers.get('cache-control')).toBe('no-store');
+  const changed = await sharp({ create: { width: 64, height: 64, channels: 4, background: '#3171ce' } }).png().toBuffer(); writeFileSync(file, changed);
+  transport.send.mockClear(); await f.service.assetsChanged('selected-library'); await vi.advanceTimersByTimeAsync(100);
+  expect(transport.send.mock.calls.some(([channel]) => channel === 'worldlinebox:companions-changed')).toBe(true);
+  const updated = (await f.service.handle({ type: 'state' })).state!.companions.find(owner => owner.id === 'sister')!;
+  expect(updated.assetImages!.avatar!.sha256).toBe(createHash('sha256').update(changed).digest('hex'));
+  expect((await f.service.attachmentResponse(new Request(first.assetImages!.avatar!.url))).status).toBe(404);
+  expect(Buffer.from(await (await f.service.attachmentResponse(new Request(updated.assetImages!.avatar!.url))).arrayBuffer())).toEqual(changed);
+  await closeService(f.service); rmSync(directory, { recursive: true });
+  const store = new CompanionsStore(f.databasePath, seeds); stores.add(store); bindStorage(store);
+  const restarted = startService(f.root, dsh, false, undefined, true), after = (await restarted.handle({ type: 'state' })).state!.companions.find(owner => owner.id === 'sister')!;
+  expect(after.assetImages).toEqual({}); expect(existsSync(directory)).toBe(false);
+  expect((await restarted.attachmentResponse(new Request(updated.assetImages!.avatar!.url))).status).toBe(404);
+  expect(existsSync(directory)).toBe(false);
+});
 
 it.each(['unrelated_note', 'ordinary_revision', 'withdrawn_source'] as const)('restores one passive task receipt across restart without a semantic replay: %s', async change => {
   const { buildCompanionContext } = await import('../../src/main/companions/context');
@@ -1531,7 +1556,9 @@ describe('CompanionService actual streaming with SQLite and renderer events', ()
     expect(f.store.getMessage(event.messageId).isReplyDraft).toBeUndefined();
     expect(f.store.request({ type: 'memory.sources.filter', ...scope, ids: [event.messageId] }).memorySources?.map(message => message.id)).toEqual([event.messageId]);
     expect(f.store.request({ type: 'message.search', conversationId: f.conversation.id, query: '流式标记' }).messages?.map(message => message.id)).toEqual([event.messageId]);
-    expect(f.store.request({ type: 'memory.jobs.claim' }).memoryJob?.sourceMessageIds).toContain(event.messageId);
+    // Publication makes the source eligible; the ordinary encoder still waits
+    // for its quiet window. This test inspects the draft exclusion boundary.
+    expect(f.store.request({ type: 'memory.jobs.claim', force: true }).memoryJob?.sourceMessageIds).toContain(event.messageId);
     expect(JSON.stringify(replyEvents())).not.toContain('PRIVATE_STREAM_THOUGHT'); expect(stream.cancel).toHaveBeenCalled();
   });
 
