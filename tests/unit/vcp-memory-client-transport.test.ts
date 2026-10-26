@@ -4,15 +4,67 @@ import { VcpMemoryProcessBroker } from '../../src/main/vcp-memory/process-broker
 import { VcpMemoryClient, type VcpMemoryTransport } from '../../src/main/vcp-memory/client';
 import type { VcpMemoryCommand } from '../../src/main/vcp-memory/contracts';
 import { createHash } from 'node:crypto';
-import { lstat, mkdir, mkdtemp, readFile, symlink, writeFile } from 'node:fs/promises';
+import { lstat, mkdir, mkdtemp, readFile, readdir, symlink, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { tmpdir } from 'node:os';
 import { removeOwnedDirectory } from '../../src/main/vcp-memory/filesystem';
 import * as memoryFilesystem from '../../src/main/vcp-memory/filesystem';
+import { VcpPreparedRecallStore } from '../../src/main/vcp-memory/prepared-recall-store';
 
 vi.mock('electron', () => ({ utilityProcess: { fork: vi.fn() } }));
 
 describe('VCP worker transport serialization', () => {
+  it('rejects an owner index junction before launching native code or creating files outside the owner tree', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'worldline-owner-native-link-'));
+    const external = await mkdtemp(path.join(tmpdir(), 'worldline-owner-native-external-')), launch = vi.fn();
+    const linked = path.join(root, 'owner-index');
+    await symlink(external, linked, process.platform === 'win32' ? 'junction' : 'dir');
+    const client = new VcpMemoryClient({ dataRoot: linked, boundOwnerId: 'alice', vendorRoot: 'unused', workerPath: 'unused',
+      embedding: { baseUrl: 'http://127.0.0.1', apiKey: 'fixture', model: 'fixture', dimension: 4 }, launch });
+    try {
+      await expect(client.list({ scopeId: 'alice-owner' })).rejects.toThrow('unlinked');
+      expect(launch).not.toHaveBeenCalled(); expect(await readdir(external)).toEqual([]);
+    } finally { await client.close(); await removeOwnedDirectory(root); await removeOwnedDirectory(external); }
+  });
+  it('discards packets cancelled during initial validation or while awaiting the shared body budget', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'worldline-detached-cancel-'));
+    const store = new VcpPreparedRecallStore(root), launch = vi.fn();
+    const client = new VcpMemoryClient({ dataRoot: root, vendorRoot: path.resolve('vendor/vcp-memory'), workerPath: path.resolve('src/main/vcp-memory/worker.cjs'),
+      embedding: { baseUrl: 'http://127.0.0.1', apiKey: 'fixture', model: 'fixture', dimension: 4 }, launch });
+    const payload = { schema: 'worldlinebox.prepared-recall-payload' as const, groups: [], modelIdentity: 'not-sent',
+      receipt: { messages: [{ role: 'system', content: 'x'.repeat(18 * 1024 * 1024) }], events: [] } };
+    let lease: Awaited<ReturnType<VcpPreparedRecallStore['acquire']>> | undefined;
+    try {
+      const invalid = await store.save('initial-revoked', { ...payload, receipt: { messages: [], events: [] } });
+      await expect(client.focusRecall(invalid, { validate: async () => { throw new Error('revoked'); } })).rejects.toThrow('revoked');
+      expect(await readdir(path.join(root, createHash('sha256').update(invalid.scopeId).digest('hex'), 'prepared-recalls'))).toEqual([]);
+      const held = await store.save('held', payload), queued = await store.save('queued', payload);
+      lease = await store.acquire(held);
+      const controller = new AbortController(), focusing = client.focusRecall(queued, { signal: controller.signal });
+      const rejected = expect(focusing).rejects.toThrow('cancelled');
+      for (let attempt = 0; attempt < 100 && !store.snapshot().bodyWaiters; attempt++) await new Promise(resolve => setTimeout(resolve, 1));
+      expect(store.snapshot().bodyWaiters).toBe(1); controller.abort(new Error('cancelled')); await rejected;
+      expect(await readdir(path.join(root, createHash('sha256').update(queued.scopeId).digest('hex'), 'prepared-recalls'))).toEqual([]);
+      expect(launch).not.toHaveBeenCalled();
+    } finally { lease?.release(); await client.close(); await store.close(); await removeOwnedDirectory(root); }
+  });
+  it('rejects a detached host handle across owners without launching a worker or consuming its package', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'worldline-detached-owner-')), launch = vi.fn();
+    const store = new VcpPreparedRecallStore(root);
+    const client = new VcpMemoryClient({ dataRoot: root, vendorRoot: path.resolve('vendor/vcp-memory'), workerPath: path.resolve('src/main/vcp-memory/worker.cjs'),
+      embedding: { baseUrl: 'http://127.0.0.1', apiKey: 'fixture', model: 'fixture', dimension: 4 }, launch });
+    try {
+      const handle = await store.save('alice-view', { schema: 'worldlinebox.prepared-recall-payload', groups: [],
+        modelIdentity: createHash('sha256').update(JSON.stringify([null, null, null, null])).digest('hex'),
+        receipt: { messages: [{ role: 'system', content: 'owner-only' }], events: [] },
+        hostEvidence: { schema: 'worldlinebox.prepared-recall-host-evidence', ownerId: 'alice', revocationEpoch: 7,
+          capturedAt: '2026-10-26T03:04:05Z', sourceClosureDigest: 'a'.repeat(64) } });
+      await expect(client.focusRecall(handle, { ownerId: 'bob' })).rejects.toThrow('another owner');
+      await expect(client.focusRecall(handle)).rejects.toThrow('another owner');
+      const result = await client.focusRecall(handle, { ownerId: 'alice', validate: async () => undefined });
+      expect(result.messages).toEqual([{ role: 'system', content: 'owner-only' }]); expect(launch).not.toHaveBeenCalled();
+    } finally { await client.close(); await store.close(); await removeOwnedDirectory(root); }
+  });
   it('uses one absolute timeout across worker initialization and the following command', async () => {
     vi.useFakeTimers(); const events = new EventEmitter(), commands: string[] = [];
     const client = new VcpMemoryClient({ dataRoot: 'unused-single-deadline', vendorRoot: 'unused', workerPath: 'unused', requestTimeoutMs: 100,

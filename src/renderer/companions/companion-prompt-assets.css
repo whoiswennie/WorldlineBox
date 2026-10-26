@@ -1,0 +1,8 @@
+.companion-prompt-assets summary { cursor: pointer; font-weight: 600; }
+.companion-prompt-assets-body { display: grid; gap: 12px; padding-top: 12px; }
+.companion-prompt-assets-body > p { margin: 0; overflow-wrap: anywhere; }
+.companion-prompt-assets-controls { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
+.companion-prompt-assets-controls label { display: grid; gap: 6px; min-width: 0; flex: 1; }
+.companion-prompt-assets select { max-width: 100%; min-height: 34px; }
+.companion-prompt-assets textarea { width: 100%; box-sizing: border-box; min-height: 260px; resize: vertical; padding: 12px; font: inherit; line-height: 1.65; }
+.companion-prompt-assets [role="alert"] { color: var(--danger, #c04444); }

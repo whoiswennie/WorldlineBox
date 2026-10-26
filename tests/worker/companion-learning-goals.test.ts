@@ -11,6 +11,7 @@ import type { CompanionLearningGoalService } from '../../src/main/companions/lea
 import type { CompanionLearningAssets } from '../../src/main/companions/learning-service';
 import type { AssetSummary } from '../../src/shared/asset-types';
 import type { CompanionStorageCommand } from '../../src/shared/companion-storage';
+import type { CompanionModelConfig } from '../../src/main/companions/model';
 
 const model = vi.hoisted(() => ({ structured: vi.fn() }));
 const roots: string[] = [], stores = new Set<CompanionsStore>(), services = new Set<CompanionLearningGoalService>();
@@ -28,7 +29,7 @@ function fixture() {
   const claim = () => store.request({ type: 'learning.goals.claim' }).learningGoalJob;
   return { root, file, seeds, store, grant, create, rounds, claim };
 }
-function build(f: ReturnType<typeof fixture>, overrides: Pick<CompanionLearningGoalIntegrationOptions, 'validateWrite'> = {}) {
+function build(f: ReturnType<typeof fixture>, overrides: Pick<CompanionLearningGoalIntegrationOptions, 'validateWrite'> = {}, resolveAssetContext?: CompanionModelConfig['resolveAssetContext']) {
   const material = { text: '先核对资料出处，再记录结论。', claim: '先核对资料出处。', badEvidence: false, unknownAnswer: false };
   const asset = { assetId: 'asset-one', displayName: '教材.md', currentRevisionId: 'revision', relativeFilePath: '教材.md', mediaType: 'text' } as AssetSummary;
   const assets: CompanionLearningAssets = { catalog: async () => [], grant: async () => ({ libraryName: '获准教材', libraryPath: f.root }),
@@ -53,7 +54,7 @@ function build(f: ReturnType<typeof fixture>, overrides: Pick<CompanionLearningG
   });
   const report = vi.fn();
   const service = createCompanionLearningGoalService({ request, assets, files: { readFile: vi.fn() }, attachmentPath: vi.fn(), memory,
-    configFor: async () => ({ apiFormat: 'openai_chat', model: 'unit-only', apiKey: 'unit-only' }),
+    configFor: async () => ({ apiFormat: 'openai_chat', model: 'unit-only', apiKey: 'unit-only', ...(resolveAssetContext ? { resolveAssetContext } : {}) }),
     fetchFn: async (_url, init) => {
       const wire = JSON.parse(String(init?.body));
       const value = await model.structured({ system: wire.messages[0].content, user: wire.messages[1].content });
@@ -64,6 +65,22 @@ function build(f: ReturnType<typeof fixture>, overrides: Pick<CompanionLearningG
 async function completed(f: ReturnType<typeof fixture>, service: CompanionLearningGoalService, goal: CompanionLearningGoal, ordinal: number) {
   await service.tick(); await vi.waitFor(() => expect(f.rounds(goal.id).items[0]).toMatchObject({ ordinal, status: 'completed' }));
 }
+
+it('routes every learning role stage to its canonical purpose and leaves behavior to the actual owner resolver', async () => {
+  const f = fixture(), goal = f.create(), purposes = new Set<string>();
+  const b = build(f, {}, async context => {
+    const data = JSON.parse(context.user); purposes.add(data.purpose);
+    expect(data.purpose).toMatch(/^companion_learning_/u);
+    expect(context.system).toContain('学习执行合同'); expect(context.system).toContain('evidence必须逐字引用真实sourceId');
+    expect(context.system).not.toContain('耐心理解本轮实际读到的材料');
+    return { ...context, system: 'FILE_ONLY_LEARNING_BEHAVIOR_本轮按我的方式开展学习。\n' + context.system };
+  });
+  await completed(f, b.service, goal, 1);
+  b.material.text = '新材料要求按条件交叉核实第二个出处。'; b.material.claim = '按条件交叉核实第二个出处。';
+  vi.setSystemTime(Date.now() + 5 * 60000); await completed(f, b.service, goal, 2);
+  expect([...purposes].sort()).toEqual(['answer', 'assess', 'consolidate', 'learn', 'plan', 'questions'].map(stage => 'companion_learning_' + stage).sort());
+  expect(model.structured.mock.calls.every(([input]) => input.system.includes('FILE_ONLY_LEARNING_BEHAVIOR'))).toBe(true);
+});
 
 it('runs persistently, reuses unchanged knowledge, revises changed same-goal knowledge with preserved source history, and self-tests through VCP recall', async () => {
   const f = fixture(), goal = f.create(), b = build(f); await completed(f, b.service, goal, 1);

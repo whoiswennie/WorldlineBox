@@ -128,12 +128,12 @@ export async function realMainFixture(label: string, seeds: CompanionSeed[], use
   // closes it once, after every Main owner and pending request has stopped.
   let cold: ColdKnowledgeService | undefined;
   let coldAuthorize: ColdKnowledgeServiceOptions['authorize'] | undefined;
-  const runtime: CompanionMemoryRuntime | undefined = native ? { get: () => native.runtime.get(), close: async () => undefined,
+  const runtime: CompanionMemoryRuntime | undefined = native ? { get: scope => native.runtime.get(scope), close: async () => undefined,
     describeEmbedding: () => native.runtime.describeEmbedding(), describeGeneration: input => native.runtime.describeGeneration(input),
     acquireGeneration: input => native.runtime.acquireGeneration(input), interruptOwner: owner => native.runtime.interruptOwner(owner),
     purgeOwner: (owner, scopes) => native.runtime.purgeOwner(owner, scopes),
     ...(options.enableCold ? {
-      getCold: async (authorize: ColdKnowledgeServiceOptions['authorize']) => {
+      getCold: async (_scope, authorize: ColdKnowledgeServiceOptions['authorize']) => {
         // Match production's rebinding on every actual caller, including after
         // Main restart; a closed old service never remains the ACL authority.
         coldAuthorize = authorize;

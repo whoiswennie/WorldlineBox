@@ -3,9 +3,11 @@ import { createHash, randomUUID } from 'node:crypto';
 import { mkdir, lstat, open, readFile, rename } from 'node:fs/promises';
 import { ColdKnowledgeClient, type ColdKnowledgeClientOptions } from './cold-client';
 import type { ColdKnowledgeDocument, ColdKnowledgeHit, ColdKnowledgeRecord, ColdKnowledgeState } from './cold-contracts';
-import { removeOwnedDirectory } from './filesystem';
+import { inspectVcpOwnedDirectory, removeOwnedDirectory } from './filesystem';
 
 export interface ColdKnowledgeServiceOptions extends ColdKnowledgeClientOptions {
+  /** Production owner-specific services cannot address another owner's tree. */
+  boundOwnerId?: string;
   /** Recheck actual source ACL and version on every read, including after worker I/O. */
   authorize(ownerId: string, sourceId: string, sourceDigest: string,
     source: Pick<ColdKnowledgeDocument, 'sourceVersion' | 'sourceType' | 'metadata'>): Promise<boolean>;
@@ -30,9 +32,14 @@ export class ColdKnowledgeService {
     this.client = new ColdKnowledgeClient(options);
     this.embeddingKey = digest(JSON.stringify({ dimension: options.embedding.dimension, model: options.embedding.modelSignature || options.embedding.model }));
   }
-  private ownerRoot(owner: string): string { return path.join(path.resolve(this.options.dataRoot), 'owners', digest(validId(owner))); }
+  private ownerRoot(owner: string): string {
+    validId(owner);
+    if (this.options.boundOwnerId && owner !== this.options.boundOwnerId) throw new Error('Cold knowledge belongs to another owner.');
+    return path.join(path.resolve(this.options.dataRoot), 'owners', digest(owner));
+  }
   private async state(owner: string): Promise<ColdKnowledgeState> {
     if (this.closed) throw new Error('Cold knowledge has closed.');
+    if (this.options.boundOwnerId) await inspectVcpOwnedDirectory(path.join(this.ownerRoot(owner), 'snapshots'));
     let pending = this.states.get(owner);
     if (!pending) {
       pending = (async () => {

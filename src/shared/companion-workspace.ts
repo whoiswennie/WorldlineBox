@@ -11,6 +11,9 @@ export const companionWorkspaceRequestSchema = z.discriminatedUnion('type', [
   z.strictObject({ type: z.literal('choose') }),
   z.strictObject({ type: z.literal('select'), libraryId: z.string().min(1).max(4096) }),
   z.strictObject({ type: z.literal('reveal') }),
+  z.strictObject({ type: z.literal('companion.assets.read'), companionId: z.string().regex(/^[a-zA-Z0-9_-]{1,100}$/u) }),
+  z.strictObject({ type: z.literal('companion.assets.prompt.save'), companionId: z.string().regex(/^[a-zA-Z0-9_-]{1,100}$/u),
+    path: z.string().min(1).max(768), expectedRevision: z.string().regex(/^[a-f0-9]{64}$/u), content: z.string().min(1).max(128 * 1024).refine(value => !!value.trim()) }),
   ...companionMemoryDocumentCommands,
 ]);
 export const companionWorkspaceLibrarySchema = z.object({ libraryId: z.string(), displayName: z.string(), libraryPath: z.string() });
@@ -18,6 +21,8 @@ export const companionWorkspaceResponseSchema = z.object({ ok: z.boolean(), erro
   selected: companionWorkspaceLibrarySchema.extend({ dataRoot: z.string(), memoryRoot: z.string() }).optional(),
   libraries: z.array(companionWorkspaceLibrarySchema).optional(),
   documents: companionMemoryDocumentsPageSchema.optional(), document: companionMemoryDocumentReadSchema.optional(),
+  companionAssets: z.object({ companionId: z.string(), profileRevision: z.string(), promptRevision: z.string(),
+    prompts: z.array(z.object({ path: z.string(), revision: z.string(), content: z.string(), purposes: z.array(z.string()) })).max(256) }).optional(),
   learning: companionLearningStatusSchema.optional(),
   learningGoal: companionLearningGoalSchema.optional(), learningGoals: companionLearningGoalPageSchema.optional(), learningRounds: companionLearningGoalRoundPageSchema.optional(),
   deletedPath: z.string().optional(), createdDirectory: z.string().optional() });

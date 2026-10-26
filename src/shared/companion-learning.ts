@@ -16,6 +16,12 @@ export const companionLearningReadSchema = z.object({ id: owner, companionId: ow
 export const companionLearningStatusSchema = z.object({ grants: z.array(companionLearningGrantSchema), reads: z.array(companionLearningReadSchema),
   libraries: z.array(z.object({ libraryId: identifier, displayName: z.string(), folders: z.array(z.object({ id: z.string(), name: z.string() })) })).optional(),
 });
+/** Host-only evidence pages. Native tools and renderer commands cannot submit asset validation. */
+export const companionLearningAssetSnapshotSchema = z.object({ token: owner, expiresAt: z.string(), entries: z.array(z.object({
+  grant: companionLearningGrantSchema, asset: z.object({ assetId: identifier, assetRevisionId: identifier }).optional(),
+})).max(128), nextCursor: z.string().max(4096).optional() });
+export const companionLearningAssetValidationSchema = z.object({ changedCompanionIds: z.array(owner), unavailableCompanionIds: z.array(owner),
+  revokedSourceCount: z.number().int().nonnegative() });
 export const companionLearningWorkspaceCommands = [
   z.strictObject({ type: z.literal('memory.learning.status'), companionId: owner }),
   z.strictObject({ type: z.literal('memory.learning.grant'), companionId: owner, libraryId: identifier, folderId: z.string().max(4096).optional(), autonomous: z.boolean().default(true), intervalMinutes: z.number().int().min(5).max(1440).default(30) }),
@@ -24,6 +30,9 @@ export const companionLearningWorkspaceCommands = [
   z.strictObject({ type: z.literal('memory.learning.run'), companionId: owner, id: owner, expectedRevision: z.number().int().positive() }),
 ] as const;
 export const companionLearningStorageCommands = [
+  z.strictObject({ type: z.literal('learning.assets.observe'), grantId: owner, expectedRevision: z.number().int().positive(), assetId: identifier, assetRevisionId: identifier }),
+  z.strictObject({ type: z.literal('learning.assets.snapshot'), libraryId: identifier.optional(), companionId: owner.optional(), cursor: z.string().max(4096).optional(), limit: z.number().int().min(1).max(128).default(64) }),
+  z.strictObject({ type: z.literal('learning.assets.validate'), token: owner, checks: z.array(z.strictObject({ index: z.number().int().min(0).max(127), state: z.enum(['valid', 'revoked', 'unavailable']) })).max(128) }),
   z.strictObject({ type: z.literal('learning.status'), companionId: owner }),
   z.strictObject({ type: z.literal('learning.grant'), companionId: owner, libraryId: identifier, libraryName: z.string().max(255), libraryPath: z.string().max(4096), folderId: z.string().max(4096).optional(), folderName: z.string().max(255).optional(), autonomous: z.boolean(), intervalMinutes: z.number().int().min(5).max(1440) }),
   z.strictObject({ type: z.literal('learning.update'), companionId: owner, id: owner, expectedRevision: z.number().int().positive(), autonomous: z.boolean(), intervalMinutes: z.number().int().min(5).max(1440) }),
@@ -40,4 +49,6 @@ export type CompanionLearningGrant = z.infer<typeof companionLearningGrantSchema
 export type CompanionLearningRead = z.infer<typeof companionLearningReadSchema>;
 export type CompanionLearningJob = z.infer<typeof companionLearningJobSchema>;
 export type CompanionLearningStatus = z.infer<typeof companionLearningStatusSchema>;
+export type CompanionLearningAssetSnapshot = z.infer<typeof companionLearningAssetSnapshotSchema>;
+export type CompanionLearningAssetValidation = z.infer<typeof companionLearningAssetValidationSchema>;
 export type CompanionLearningWorkspaceCommand = z.infer<(typeof companionLearningWorkspaceCommands)[number]>;

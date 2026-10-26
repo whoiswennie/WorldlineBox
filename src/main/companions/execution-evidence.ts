@@ -7,6 +7,8 @@ import { normalizeCompanionCapabilityCall } from '../../shared/companion-capabil
 import { companionKnowledgeReads, verifyCompanionKnowledgeReads } from './knowledge-evidence';
 import { socialProgressReads } from './social-progress-evidence';
 import { companionMemoryContextDependencies } from './memory-context-evidence';
+import { companionProcedureContextSources, companionProcedureValidationSources } from './memory-procedure-context';
+import { companionMemoryFileReceiptsSchema } from '../../shared/companion-memory-files';
 import { companionWorldSourceReadSchema } from '../../shared/companion-world';
 import { companionSocialGameContextSchema } from '../../shared/companion-social';
 
@@ -106,11 +108,28 @@ export function captureCompanionExecutionReadset(scope: Scope, input: Partial<Fi
     const reference = companionExecutionReadsetSchema.shape.memories.element.safeParse({ id: note.id, version: note.version });
     if (reference.success) result.memories.push(reference.data);
     else result.complete = false;
+    const procedure = row(note.procedure);
+    if (procedure) {
+      const checked = companionProcedureValidationSources(procedure.validation, typeof note.contentRevision === 'number' ? note.contentRevision : undefined);
+      if (!checked.valid) result.complete = false; else result.sources.push(...checked.sources);
+    }
   };
   const context = (value: unknown, passive = false) => {
     const native = row(value);
     if (!native || typeof native.text !== 'string') return;
+    const procedures = companionProcedureContextSources(native);
+    if (!procedures.valid) result.complete = false; else result.sources.push(...procedures.sources);
     const dependencies = companionMemoryContextDependencies(native);
+    if (native.fileReceipts !== undefined) {
+      const files = companionMemoryFileReceiptsSchema.safeParse(native.fileReceipts), evidence = row(native.evidence);
+      if (!files.success || files.data.some(receipt => receipt.companionId !== scope.companionId)) result.complete = false;
+      else if (files.data.length) {
+        const guard = companionExecutionReadsetSchema.shape.contexts.element.safeParse({ revision: native.revision, profileKey: native.profileKey,
+          fileReceiptOnly: true, fileReceipts: files.data,
+          ...(evidence?.beforeSequence !== undefined ? { beforeSequence: evidence.beforeSequence } : scope.beforeSequence !== undefined ? { beforeSequence: scope.beforeSequence } : {}) });
+        if (!guard.success) result.complete = false; else result.contexts.push(guard.data);
+      }
+    }
     if (passive && dependencies.frozenMemories) (result.frozenMemories ??= []).push(...dependencies.frozenMemories);
     else result.memories.push(...dependencies.memories);
     if (dependencies.malformed) result.complete = false;

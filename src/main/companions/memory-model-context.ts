@@ -1,4 +1,6 @@
 import type { CompanionLoopTurn } from '../../shared/companion-loop';
+import { companionMemoryProcedureContextListSchema } from '../../shared/companion-procedure';
+import { companionProcedureContextSources } from './memory-procedure-context';
 
 const object = (value: unknown): Record<string, unknown> | undefined => value && typeof value === 'object' && !Array.isArray(value)
   ? value as Record<string, unknown> : undefined;
@@ -11,6 +13,9 @@ function memoryReceipt(value: unknown): unknown {
   const receipt = object(value);
   if (!receipt || typeof receipt.text !== 'string' || typeof receipt.revision !== 'string' || typeof receipt.profileKey !== 'string') return value;
   const evidence = object(receipt.evidence);
+  const procedures = companionMemoryProcedureContextListSchema.safeParse(receipt.proceduralStatus);
+  const proceduralStatus = procedures.success && companionProcedureContextSources(receipt).valid ? procedures.data.map(({ memoryId, contentRevision, state, successes, failures }) =>
+    ({ memoryId, contentRevision, state, successes, failures })) : undefined;
   const references = Array.isArray(evidence?.references) ? evidence.references.flatMap(value => {
     const reference = object(value);
     if (!reference || typeof reference.id !== 'string' || !['returned', 'focus_input'].includes(String(reference.role))) return [];
@@ -22,7 +27,8 @@ function memoryReceipt(value: unknown): unknown {
     return [{ id: reference.id, ...(typeof reference.version === 'number' ? { version: reference.version } : {}), role: reference.role,
       ...(sources ? { sources } : {}) }];
   }) : undefined;
-  return { text: receipt.text, ...(evidence ? { evidence: {
+  return { text: receipt.text, ...(proceduralStatus?.length ? { proceduralStatus,
+    proceduralStatusMeaning: '宿主核验的方法状态：unverified只代表读过、尚无客观试验证据；validated只支持相应适用条件下的实际交付验证，不代表全面熟练；disabled表示有实际失败反证。需要方法步骤和适用限制时用memory.read核查。' } : {}), ...(evidence ? { evidence: {
     ...(evidence.queryClock ? { queryClock: evidence.queryClock } : {}),
     ...(references ? { references } : {}),
     ...(evidence.referenceCoverage ? { referenceCoverage: evidence.referenceCoverage } : {}),

@@ -16,7 +16,9 @@ function sql<T>(run: (db: CompanionConnection) => T): T { const db = new (Databa
 const intents = () => sql(db => db.prepare("SELECT key,value FROM metadata WHERE key GLOB 'vcp-capture-reconsideration/*'").all()) as Array<{ key: string; value: string }>;
 const source = (content: string) => store.appendMessage({ conversationId: scope.conversationId, authorId: 'user', content, replyDirective: 'none' });
 const draft = (message: CompanionMessage, relatedMemoryIds: string[] = []): CompanionMemoryCandidate => ({ content: message.content, tags: ['原始事实'], sourceMessageIds: [message.id], evidence: [{ sourceMessageId: message.id, quote: message.content }], relatedMemoryIds });
-const claim = () => store.request({ type: 'memory.jobs.claim', companionId: scope.companionId }).memoryJob;
+// These cases exercise withdrawal/retry invariants after an admitted episode;
+// the normal quiet/count/deadline admission is tested in its lifecycle suite.
+const claim = () => store.request({ type: 'memory.jobs.claim', force: true, companionId: scope.companionId }).memoryJob;
 const complete = (job: CompanionMemoryJob, notes: CompanionMemoryCandidate[]) => store.request({ type: 'memory.jobs.complete', id: job.id, leaseToken: job.leaseToken, notes: notes.map(note => ({ ...note, sourceChecksums: job.sourceChecksums })) }).memories!;
 function indexed() { const receipts = []; for (let n = 0; n < 100; n++) { const outbox = store.request({ type: 'memory.outbox.claim', companionId: scope.companionId }).memoryOutbox; if (!outbox) return receipts; receipts.push(outbox); store.request({ type: 'memory.outbox.complete', id: outbox.id, leaseToken: outbox.leaseToken, indexed: true }); } throw Error('Unbounded actual outbox'); }
 function originals(derivedReply = false) {
@@ -176,11 +178,11 @@ it('supersedes every in-flight descendant when a second ancestor is withdrawn', 
   const b = source('B：米色棉线在第二层。'), middle = complete(claim()!, [draft(b, [parent.id, other.id])])[0]!; indexed();
   const d = source('D：剪刀在工具盒中。'); complete(claim()!, [draft(d, [middle.id])]); indexed();
   store.request({ type: 'memory.revise', ...scope, id: other.id, expectedVersion: other.version, candidate: { ...draft(c), content: c.content + ' 按原文核对。' } });
-  const stale = claim()!; expect(stale.sourceMessageIds).toEqual([b.id, d.id]);
+  const stale = [claim()!, claim()!]; expect(stale.flatMap(job => job.sourceMessageIds)).toEqual([b.id, d.id]);
   store.request({ type: 'memory.forget', ...scope, sourceMessageIds: [a.id] });
-  expect(intents().every(entry => JSON.parse(entry.value).blockedLeaseToken === stale.leaseToken)).toBe(true);
-  expect(complete(stale, [])).toEqual([]);
-  expect(claim()?.sourceMessageIds).toEqual([b.id, d.id]);
+  expect(new Set(intents().map(entry => JSON.parse(entry.value).blockedLeaseToken))).toEqual(new Set(stale.map(job => job.leaseToken)));
+  for (const job of stale) expect(complete(job, [])).toEqual([]);
+  expect([claim()!, claim()!].flatMap(job => job.sourceMessageIds)).toEqual([b.id, d.id]);
 });
 
 it('does not replay historical state or consume new C state processing in the same batch', () => {
@@ -211,11 +213,11 @@ it('preserves the normal backoff and eight-attempt ceiling across repeated paren
   expect(claim()).toBeUndefined(); expect(intents()).toHaveLength(1);
 });
 
-it('holds an otherwise valid source durably and resumes after the existing policy hold is released', () => {
+it('preserves current reconsideration while its owner is inactive and resumes after explicit activation', () => {
   const { a, b } = originals(); store.request({ type: 'memory.forget', ...scope, sourceMessageIds: [a.id] });
-  sql(db => db.prepare('INSERT INTO vcp_source_policy_holds VALUES(?,?,?,?,?,?,NULL)').run('old-policy', 'alice', scope.conversationId, null, '旧禁记限制', new Date().toISOString()));
+  store.setCompanionActive('alice', false);
   expect(claim()).toBeUndefined(); expect(intents()).toHaveLength(1);
-  sql(db => db.prepare('UPDATE vcp_source_policy_holds SET released_at=? WHERE id=?').run(new Date().toISOString(), 'old-policy'));
+  store.setCompanionActive('alice', true);
   expect(claim()?.sourceMessageIds).toEqual([b.id]);
 });
 

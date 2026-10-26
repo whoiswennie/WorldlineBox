@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
+import { readFile, rename, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import type { CompanionMemory } from '../../shared/companions';
 import type { CompanionStorageCommand, CompanionStorageResponse } from '../../shared/companion-storage';
@@ -7,6 +7,7 @@ import type { VcpMemoryClient } from '../vcp-memory/client';
 import type { VcpMemoryNote, VcpMemoryOwnerIdentity } from '../vcp-memory/contracts';
 import type { CompanionMemoryRuntime } from './vcp-runtime';
 import { companionMemoryIdentity, companionMemoryIdentitySignature } from './memory-identity';
+import { companionRuntimeDirectory } from './owner-runtime-storage';
 
 export interface CompanionMemoryManagementSearchResult {
   hits: Array<{ noteId: string; version: number }>;
@@ -17,6 +18,7 @@ export interface CompanionMemoryManagementSearchOptions {
   runtime?: CompanionMemoryRuntime;
   requestStorage(command: CompanionStorageCommand): Promise<CompanionStorageResponse>;
   cacheRoot?: string;
+  cacheRootFor?(ownerId: string): Promise<string>;
   report?(error: unknown): void;
   changed?(): void;
   batchSize?: number;
@@ -58,13 +60,17 @@ export class CompanionMemoryManagementSearch {
     if (!companion) throw new Error('记忆所属伙伴不存在。');
     return companionMemoryIdentity(companion);
   }
-  private file(owner: string): string { return path.join(this.options.cacheRoot!, `${digest(owner)}.json`); }
+  private async directory(owner: string, create = false): Promise<string | undefined> {
+    const directory = this.options.cacheRootFor ? await this.options.cacheRootFor(owner) : this.options.cacheRoot;
+    if (directory) await companionRuntimeDirectory(directory, create); return directory;
+  }
+  private async file(owner: string): Promise<string> { return path.join((await this.directory(owner))!, `${digest(owner)}.json`); }
   private scopePrefix(owner: string): string { return `management_${digest(owner).slice(0, 16)}_`; }
   private async load(local: Owner): Promise<void> {
     if (local.loaded) return; local.loaded = true;
-    if (!this.options.cacheRoot) return;
+    if (!this.options.cacheRoot && !this.options.cacheRootFor) return;
     try {
-      const value: Manifest = JSON.parse(await readFile(this.file(local.owner), 'utf8'));
+      const value: Manifest = JSON.parse(await readFile(await this.file(local.owner), 'utf8'));
       if (value && typeof value === 'object' && !Array.isArray(value) && value.schema === 1 && value.owner === local.owner && typeof value.profileKey === 'string' && typeof value.scopeId === 'string'
         && value.scopeId.startsWith(this.scopePrefix(local.owner)) && /^[a-f0-9]{32}$/u.test(value.scopeId.slice(this.scopePrefix(local.owner).length))
         && [value.resetRevision, value.throughOrdinal, value.baseThrough, value.indexed].every(value => Number.isSafeInteger(value) && value >= 0)
@@ -73,9 +79,9 @@ export class CompanionMemoryManagementSearch {
     } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT' && !(error instanceof SyntaxError)) throw error; }
   }
   private async save(local: Owner): Promise<void> {
-    if (!this.options.cacheRoot || !local.manifest) return;
-    await mkdir(this.options.cacheRoot, { recursive: true });
-    const file = this.file(local.owner), temporary = `${file}.${randomUUID()}.tmp`;
+    if ((!this.options.cacheRoot && !this.options.cacheRootFor) || !local.manifest) return;
+    await this.directory(local.owner, true);
+    const file = await this.file(local.owner), temporary = `${file}.${randomUUID()}.tmp`;
     try { await writeFile(temporary, JSON.stringify(local.manifest), { encoding: 'utf8', mode: 0o600 }); await rename(temporary, file); }
     finally { await rm(temporary, { force: true }); }
   }
@@ -125,16 +131,19 @@ export class CompanionMemoryManagementSearch {
   private async discard(local: Owner): Promise<void> {
     const previous = local.manifest; local.manifest = undefined; local.warmed = false;
     if (previous) {
-      if (this.options.runtime?.purgeOwner) await this.options.runtime.purgeOwner(local.owner, { historicalViews: [{ scopeId: previous.scopeId, profileKey: previous.profileKey }] });
+      if (this.options.runtime?.purgeOwner) await this.options.runtime.purgeOwner(local.owner, { projectionOnly: true, preserveIndexes: true,
+        historicalViews: [{ scopeId: previous.scopeId, profileKey: previous.profileKey }] });
       else if (local.runtime?.profileKey === previous.profileKey) { await local.runtime.client.interruptScope(previous); await local.runtime.client.purgeScope(previous); }
       else throw new Error('管理索引未连接历史投影清理接口。');
     }
-    if (this.options.cacheRoot) await rm(this.file(local.owner), { force: true });
+    if (this.options.cacheRoot || this.options.cacheRootFor) await rm(await this.file(local.owner), { force: true });
   }
   private async advance(local: Owner, generation: number): Promise<void> {
     if (!this.options.runtime) throw new Error('内置向量服务尚未就绪。');
     await this.load(local);
-    const runtime = await this.options.runtime.get(); this.assertCurrent(local, generation);
+    const runtime = await this.options.runtime.get({ ownerId: local.owner });
+    try {
+    this.assertCurrent(local, generation);
     if (local.runtime && local.runtime.profileKey !== runtime.profileKey) await this.discard(local);
     local.runtime = runtime;
     const state = await this.state(local.owner); local.total = state.total;
@@ -174,6 +183,7 @@ export class CompanionMemoryManagementSearch {
     }
     if (manifest.indexed && !client.hasOpenScope(manifest)) await client.read(manifest, 'management-warmup');
     this.assertCurrent(local, generation); local.warmed = true; local.state = 'ready'; local.retryAt = 0;
+    } finally { await runtime.release?.(); }
   }
   search(owner: string, query: string, limit = 30, cursor?: string): Promise<CompanionMemoryManagementSearchResult> {
     const pending = this.query(owner, query, limit, cursor); this.searches.add(pending);
@@ -202,7 +212,12 @@ export class CompanionMemoryManagementSearch {
         if (value.fingerprint !== fingerprint || !Number.isSafeInteger(value.offset) || value.offset < 0 || value.offset > 100) throw new Error(); offset = value.offset;
       } catch { throw new Error('搜索来源或条件已经变化，请从第一页重新搜索。'); }
     }
-    const generation = local.generation, found = await local.runtime.client.search(manifest, { text: query, topK: 100 });
+    const runtime = await this.options.runtime!.get({ ownerId: owner });
+    try {
+    if (runtime.client !== local.runtime.client || runtime.profileKey !== manifest.profileKey) {
+      local.runtime = runtime; local.warmed = false; local.state = 'building'; this.schedule(local); return this.result(local);
+    }
+    const generation = local.generation, found = await runtime.client.search(manifest, { text: query, topK: 100 });
     this.assertCurrent(local, generation);
     const hits: CompanionMemoryManagementSearchResult['hits'] = [], seen = new Set<string>();
     for (const hit of found.results) {
@@ -217,6 +232,7 @@ export class CompanionMemoryManagementSearch {
     }
     const end = offset + limit;
     return { ...this.result(local), hits: hits.slice(offset, end), ...(end < hits.length ? { nextCursor: Buffer.from(JSON.stringify({ fingerprint, offset: end })).toString('base64url') } : {}) };
+    } finally { await runtime.release?.(); }
   }
   async invalidate(owner: string): Promise<void> {
     const local = this.owners.get(owner); if (!local) return;

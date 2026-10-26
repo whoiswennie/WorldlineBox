@@ -33,7 +33,7 @@ function active(db: CompanionConnection, owner: string): Entry[] {
     UNION ALL SELECT 'schedule_occurrence',id FROM live_occurrences
     UNION ALL SELECT 'social',id FROM companion_social_jobs WHERE companion_id=@owner AND status='running' AND lease_until>@iso
     UNION ALL SELECT 'notification',id FROM companion_social_notifications WHERE companion_id=@owner AND status='running' AND lease_until>@iso
-    UNION ALL SELECT 'world',id FROM companion_world_jobs WHERE companion_id=@owner AND status='running' AND lease_until>@iso
+    UNION ALL SELECT 'world',id FROM companion_world_jobs WHERE companion_id=@owner AND kind!='dream' AND status='running' AND lease_until>@iso
     UNION ALL SELECT 'life',id FROM companion_life_occurrences WHERE companion_id=@owner AND status='running' AND lease_until>@iso
     UNION ALL SELECT 'learning',id FROM companion_learning_grants WHERE companion_id=@owner AND enabled=1 AND lease_token IS NOT NULL AND lease_until>@now
     UNION ALL SELECT 'learning_goal',id FROM companion_learning_goals WHERE companion_id=@owner AND state='active' AND lease_token IS NOT NULL AND lease_until>@now
@@ -73,7 +73,7 @@ export class CompanionTaskConcurrencyStore {
           UNION ALL SELECT o.id FROM companion_schedule_occurrences o JOIN companion_schedules s ON s.id=o.schedule_id WHERE s.companion_id=@owner AND o.status='pending'
           UNION ALL SELECT id FROM companion_social_jobs WHERE companion_id=@owner AND status IN('pending','failed') AND COALESCE(json_extract(data,'$.terminal'),0)=0
           UNION ALL SELECT id FROM companion_social_notifications WHERE companion_id=@owner AND status IN('pending','failed') AND COALESCE(json_extract(data,'$.terminal'),0)=0
-          UNION ALL SELECT id FROM companion_world_jobs WHERE companion_id=@owner AND status IN('pending','failed') AND COALESCE(json_extract(data,'$.terminal'),0)=0
+          UNION ALL SELECT id FROM companion_world_jobs WHERE companion_id=@owner AND kind!='dream' AND status IN('pending','failed') AND COALESCE(json_extract(data,'$.terminal'),0)=0
           UNION ALL SELECT id FROM companion_life_occurrences WHERE companion_id=@owner AND status='pending'
           UNION ALL SELECT id FROM companion_learning_grants WHERE companion_id=@owner AND enabled=1 AND (autonomous=1 OR manual=1) AND next_at<=@now AND lease_until<=@now
           UNION ALL SELECT id FROM companion_learning_goals WHERE companion_id=@owner AND state='active' AND next_at<=@now AND lease_until<=@now

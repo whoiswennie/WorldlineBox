@@ -48,12 +48,23 @@ import { CompanionMemoryLibrary } from './memory-library';
 import { CompanionMemoryManagementSearch } from './memory-management-search';
 import { CompanionMemoryDocuments } from './memory-documents';
 import { CompanionLearningService, type CompanionLearningAssets } from './learning-service';
+import type { CompanionCanonicalLearningAssets } from './learning-assets';
+import { CompanionAssetProfileStore } from './asset-profile';
+import { assembleCompanionAssetContext } from './asset-context';
+import { CompanionAssetIo } from './asset-io';
+import { companionRuntimeDirectory } from './owner-runtime-storage';
+import { companionMemoryIdentity, sameCompanionMemoryIdentity } from './memory-identity';
+import { renderCompanionNativeMemoryPrompt, validateCompanionNativeMemoryPrompt, type CompanionNativeMemoryPrompt } from '../../shared/companion-native-memory-prompt';
+import { CompanionMemoryLiveFiles } from './memory-live-files';
+import { CompanionMemorySourceFiles } from './memory-source-files';
+import { loadInitialTimelinePrompts } from '../vcp-memory/owner-prompts';
+import type { CompanionLearningAssetValidation } from '../../shared/companion-learning';
 import type { CompanionLearningWorkspaceCommand } from '../../shared/companion-learning';
 import type { CompanionLearningGoalWorkspaceCommand } from '../../shared/companion-learning-goals';
 import type { CompanionLearningGoalService } from './learning-goal-service';
 import { createCompanionLearningGoalService } from './learning-goal-integration';
 import type { CompanionMemoryDocumentCommand } from '../../shared/companion-memory-documents';
-import type { CompanionWorkspaceResponse } from '../../shared/companion-workspace';
+import type { CompanionWorkspaceResponse, CompanionWorkspaceRequest } from '../../shared/companion-workspace';
 import type { CompanionMemoryRuntime } from './vcp-runtime';
 import { CompanionScheduleService } from './schedule-service';
 import { CompanionReplyStream } from './reply-stream';
@@ -125,6 +136,7 @@ export interface CompanionServiceOptions {
   memoryDeviceStatus?: () => Pick<EmbeddingDeviceCapability, 'state' | 'message'>;
   dataRoot?: string;
   memoryLibraryRoot?: string;
+  vcpMemoryVendorRoot?: string;
   purgeMemoryAssets?: (companionId: string) => Promise<void>;
   userData: string; workerPath: string; appPath?: string; window: () => BrowserWindow | undefined;
   getConfig: () => CompanionModelConfig; hasConfig: () => boolean;
@@ -143,9 +155,16 @@ export class CompanionService {
   private readonly knowledge: CompanionKnowledgeService;
   private readonly memoryTags: CompanionMemoryTagService;
   private readonly memoryLibrary?: CompanionMemoryLibrary;
+  private readonly assetProfiles?: CompanionAssetProfileStore;
+  private readonly liveFiles?: CompanionMemoryLiveFiles;
+  private readonly sourceFiles?: CompanionMemorySourceFiles;
+  private readonly sourcePublications = new Map<string, Promise<void>>();
   private readonly memoryDocuments?: CompanionMemoryDocuments;
   private readonly memoryManagement: CompanionMemoryManagementSearch;
   private readonly memoryDocumentJobs = new Set<Promise<CompanionWorkspaceResponse>>();
+  private readonly assetValidations = new Map<string, Promise<CompanionLearningAssetValidation>>();
+  private readonly assetProfileFailures = new Map<string, string>();
+  private readonly assetIo = new CompanionAssetIo();
   private readonly schedules: CompanionScheduleService;
   private readonly world: CompanionWorldService;
   private readonly autonomy: CompanionAutonomyService;
@@ -178,6 +197,7 @@ export class CompanionService {
   private readonly resetCleanupJobs = new Map<string, Promise<void>>();
   private readonly fileReadJobs = new Map<string, Set<Promise<unknown>>>();
   private readonly assessedAttention = new Set<string>();
+  private readonly automaticallyResumedSources = new Map<string, Set<string>>();
   private readonly attentionController = new AbortController();
   private readonly memoryValidationControllers = new Map<AbortController, string>();
   private readonly memoryValidationJobs = new Set<Promise<void>>();
@@ -196,8 +216,23 @@ export class CompanionService {
 
   constructor(private readonly options: CompanionServiceOptions) {
     this.root = options.dataRoot ?? path.join(options.userData, 'companions');
+    if (options.memoryLibraryRoot) this.assetProfiles = new CompanionAssetProfileStore(options.memoryLibraryRoot, {
+      initialized: async companionId => {
+        const response = await this.storage.request({ type: 'companion.assets.initialized', companionId });
+        if (!response.ok) throw new Error(response.error ?? '无法核验伙伴目录初始化记录。'); return response.assetProfileInitialized === true;
+      },
+      markInitialized: async companionId => {
+        const response = await this.storage.request({ type: 'companion.assets.mark-initialized', companionId });
+        if (!response.ok) throw new Error(response.error ?? '无法登记伙伴目录初始化完成。');
+      },
+      loadInitialFocusPrompt: () => readFile(path.join(options.vcpMemoryVendorRoot ?? path.join(options.appPath ?? process.cwd(), 'vendor', 'vcp-memory'), 'Plugin', 'RAGDiaryPlugin', 'AIMemoPrompt.txt'), 'utf8'),
+      loadInitialTagPrompt: () => readFile(path.join(options.vcpMemoryVendorRoot ?? path.join(options.appPath ?? process.cwd(), 'vendor', 'vcp-memory'), 'Plugin', 'DailyNote', 'TagMaster.txt'), 'utf8'),
+      loadInitialTimelinePrompts: () => loadInitialTimelinePrompts(options.vcpMemoryVendorRoot ?? path.join(options.appPath ?? process.cwd(), 'vendor', 'vcp-memory')),
+    });
     this.credentials = new CompanionCredentials(this.root);
     this.storage = new CompanionStorageClient(options.workerPath, path.join(this.root, 'messages.sqlite'), event => {
+      for (const owner of event?.memoryChangedCompanionIds ?? []) this.memory.changed(owner);
+      for (const owner of event?.memorySourceChangedCompanionIds ?? []) void this.flushSourceFiles(owner).catch(options.report);
       if (event?.memoryInvalidatedCompanionIds?.length) {
         this.evidenceRevision++;
         for (const owner of event.memoryInvalidatedCompanionIds) {
@@ -208,12 +243,24 @@ export class CompanionService {
       }
       this.changed();
     }, options.report);
-    this.profiles = new CompanionPublicProfiles({ root: this.root, appPath: options.appPath ?? process.cwd(), request: command => this.call(command) });
+    this.profiles = new CompanionPublicProfiles({ root: this.root, appPath: options.appPath ?? process.cwd(), libraryDirectory: options.memoryLibraryRoot,
+      portraitInitialized: async (companionId, role) => {
+        const response = await this.storage.request({ type: 'companion.assets.portrait.initialized', companionId, role });
+        if (!response.ok) throw new Error(response.error ?? '无法核验伙伴形象初始化记录。'); return response.assetPortraitInitialized === true;
+      },
+      markPortraitInitialized: async (companionId, role) => {
+        const response = await this.storage.request({ type: 'companion.assets.portrait.mark-initialized', companionId, role });
+        if (!response.ok) throw new Error(response.error ?? '无法登记伙伴形象初始化完成。');
+      },
+      profileStore: this.assetProfiles, request: command => this.call(command) });
     this.files = new CompanionFileReader({ root: this.root, request: command => this.call(command) });
     this.memoryManagement = new CompanionMemoryManagementSearch({ runtime: options.memoryRuntime, requestStorage: command => this.call(command),
-      cacheRoot: path.join(this.root, 'vcp-management'), report: options.report, changed: () => this.changed() });
-    if (options.memoryLibraryRoot) this.memoryLibrary = new CompanionMemoryLibrary({ libraryDirectory: options.memoryLibraryRoot,
-      request: command => this.call(command), report: options.report });
+      ...(options.memoryLibraryRoot ? { cacheRootFor: async owner => path.join((await this.resolveOwnerCleanupStorage(owner)).indexRoot, 'management') }
+        : { cacheRoot: path.join(this.root, 'vcp-management') }), report: options.report, changed: () => this.changed() });
+    if (options.memoryLibraryRoot) this.memoryLibrary = new CompanionMemoryLibrary({ libraryDirectory: options.memoryLibraryRoot, profileStore: this.assetProfiles,
+      request: command => this.call(command, undefined, 'memory-files'), report: options.report });
+    if (this.memoryLibrary) this.liveFiles = new CompanionMemoryLiveFiles({ library: this.memoryLibrary });
+    if (this.memoryLibrary) this.sourceFiles = new CompanionMemorySourceFiles({ library: this.memoryLibrary, report: options.report });
     if (this.memoryLibrary && options.memoryLibraryRoot) this.memoryDocuments = new CompanionMemoryDocuments({
       library: this.memoryLibrary, libraryDirectory: options.memoryLibraryRoot, requestStorage: command => this.call(command),
       search: (owner, query, limit, cursor) => this.memoryManagement.search(owner, query, limit, cursor) });
@@ -223,30 +270,39 @@ export class CompanionService {
       onTiming: options.onTiming,
       runtime: options.memoryRuntime,
       runtimeAvailability: options.memoryDeviceStatus,
-      cacheRoot: path.join(this.root, 'vcp-context'),
+      ...(options.memoryLibraryRoot ? { cacheRootFor: async owner => path.join((await this.resolveOwnerCleanupStorage(owner)).indexRoot, 'views') }
+        : { cacheRoot: path.join(this.root, 'vcp-context') }),
       onTimelineArtifacts: (scope, artifacts, valid) => this.memoryLibrary?.publishTimelines(scope, artifacts, valid) ?? Promise.resolve(),
       onProcessing: (companionId, job) => { void this.call({ type: 'experience.publish', companionId, id: job.id, title: job.title ?? '时间线整理',
         status: job.status, summary: [job.stage, job.error].filter(Boolean).join('；').slice(0, 1000), ...(job.conversationId ? { conversationId: job.conversationId } : {}) }).catch(options.report); },
       configFor: companion => this.configFor(companion),
+      validateAssets: owner => this.requireCurrentAssets(owner),
+      validateFiles: (owner, receipts) => this.liveFiles?.validate(owner, receipts) ?? Promise.resolve(false),
+      flushSourceFiles: async () => {
+        if (!this.sourceFiles) return;
+        await this.sourceFiles.flushPending(command => this.call(command, undefined, 'memory-files'), { limitOwners: 4 });
+      },
       fetchFn: (input, init) => net.fetch(input instanceof URL ? input.toString() : input, { ...init, credentials: 'omit' }),
       changed: () => this.changed(), report: options.report,
       busy: () => this.foregroundContextBusy(), blocked: id => this.resettingCompanions.has(id) || this.dormantCompanions.has(id) });
     let tagPrompt: Promise<string> | undefined;
-    this.memoryTags = new CompanionMemoryTagService({ request: command => this.call(command), config: async () => this.options.getConfig(),
+    this.memoryTags = new CompanionMemoryTagService({ request: command => this.call(command), config: async owner => ({ ...this.options.getConfig(), workPriority: 'background', ownerId: owner,
+      ...(owner && this.assetProfiles ? { resolveAssetContext: context => this.assetIo.run(async () => ({ ...context, system: (await this.assetProfiles!.load(owner)).tagMasterTemplate })) } : {}) }),
       validate: async (job, tags, signal) => {
         const note = (await this.call({ type: 'memory.library.read', companionId: job.companionId, id: job.noteId, sourceLimit: 1 })).memoryRead?.memory;
         if (!note || note.version !== job.version) throw new Error('自动标签引用的文档已变化。');
         await this.validateMemoryWrite({ type: 'memory.library.organize', companionId: job.companionId, id: job.noteId,
           expectedVersion: job.version, tags: [...tags], diaryName: note.diaryName ?? '日记' }, signal);
       },
-      prompt: () => {
+      prompt: async owner => {
+        if (owner && this.assetProfiles) return (await this.assetProfiles.load(owner)).tagMasterTemplate;
         const resource = typeof process.resourcesPath === 'string' ? path.join(process.resourcesPath, 'vcp-memory', 'Plugin', 'DailyNote', 'TagMaster.txt') : undefined;
         return tagPrompt ??= readFile(resource && existsSync(resource) ? resource
           : path.join(options.appPath ?? process.cwd(), 'vendor', 'vcp-memory', 'Plugin', 'DailyNote', 'TagMaster.txt'), 'utf8');
       },
       fetchFn: (input, init) => net.fetch(input instanceof URL ? input.toString() : input, { ...init, credentials: 'omit' }),
       changed: () => this.changed(), report: options.report, busy: () => this.foregroundContextBusy() });
-    this.world = new CompanionWorldService({ request: command => this.call(command), configFor: companion => this.configFor(companion),
+    this.world = new CompanionWorldService({ request: command => this.call(command), configFor: companion => this.configFor(companion, 'background'),
       browserCapabilities: (scope, base) => this.browserCapabilities(scope, base),
       think: (input, signal) => this.thinkForPeer(input, signal),
       readThought: (input, signal) => this.readThoughtRecord(input.query, input, { kind: 'peer', id: input.jobId }, signal),
@@ -330,7 +386,7 @@ export class CompanionService {
         await this.world.ready({ ...scope, workId, kind: 'learning', learningGrantId: job.id, learningLeaseToken: job.leaseToken, fixed: false }, AbortSignal.any([signal, AbortSignal.timeout(10000)])); return true;
       }, end: (owner, workId) => this.world.end(owner, workId), changed: () => this.changed(), report: options.report });
     if (options.learningAssets) this.learningGoals = createCompanionLearningGoalService({
-      request: command => this.call(command), configFor: companion => this.configFor(companion), assets: options.learningAssets,
+      request: command => this.call(command), configFor: companion => this.configFor(companion, 'background'), assets: options.learningAssets,
       files: this.files, attachmentPath: (relative, source) => this.attachmentPath(relative, source), memory: this.memory,
       validateWrite: (command, signal) => this.checkedMemoryWrite(command, signal),
       fetchFn: (input, init) => net.fetch(input instanceof URL ? input.toString() : input, { ...init, credentials: 'omit' }),
@@ -366,17 +422,22 @@ export class CompanionService {
     void this.initialization.then(() => { if (!this.closed) this.learning?.start(); }).catch(options.report);
     void this.initialization.then(() => { if (!this.closed) this.learningGoals?.start(); }).catch(options.report);
   }
-  private call(command: CompanionStorageCommand, signal?: AbortSignal): Promise<CompanionStorageResponse> {
-    return withCompanionExecutionValidation(() => this.callInValidation(command, signal));
+  private call(command: CompanionStorageCommand, signal?: AbortSignal, origin?: 'memory-files'): Promise<CompanionStorageResponse> {
+    return withCompanionExecutionValidation(() => this.callInValidation(command, signal, origin));
   }
-  private async callInValidation(command: CompanionStorageCommand, signal?: AbortSignal): Promise<CompanionStorageResponse> {
+  private async callInValidation(command: CompanionStorageCommand, signal?: AbortSignal, origin?: 'memory-files'): Promise<CompanionStorageResponse> {
     if (command.type === 'memory.knowledge') return { ok: true, memoryKnowledge: await this.knowledge.execute(command) };
     if (command.type === 'memory.retrieval_modes') return this.memory.retrievalModes(command);
     if (command.type === 'memory.search') return this.memory.search(command);
     if (command.type === 'memory.record' || command.type === 'memory.revise' || command.type === 'memory.consolidate' || command.type === 'memory.save' || command.type === 'memory.library.organize') {
-      await this.checkedMemoryWrite(command, signal);
+      await this.checkedMemoryWrite(command, signal, origin);
     }
-    const mutating = !companionExecutionSourceReadOnly(command);
+    const fileOwner = 'companionId' in command && typeof command.companionId === 'string' ? command.companionId : undefined;
+    const fileRead = origin !== 'memory-files' && this.liveFiles && !!fileOwner
+      && ['memory.snapshot', 'memory.browse', 'memory.list', 'memory.read', 'memory.library.read'].includes(command.type);
+    if (fileRead) await this.liveFiles!.flush(fileOwner!, { reconcile: true });
+    const mutating = !companionExecutionSourceReadOnly(command)
+      && command.type !== 'learning.assets.snapshot' && command.type !== 'learning.assets.validate';
     const started = performance.now();
     let storageMs: number | undefined;
     const waiting = this.options.onTiming ? setInterval(() => {
@@ -393,12 +454,52 @@ export class CompanionService {
     finally { if (mutating) this.sourceValidationRevision++; }
     storageMs = performance.now() - started;
     if (!response.ok) throw new Error(response.error ?? '伙伴存储暂时不可用。');
+    if (fileRead) {
+      for (let attempt = 0; attempt < 3; attempt++) {
+        const notes = response.memorySnapshot?.notes ?? response.memoryPage?.items.map(hit => hit.memory)
+          ?? (response.memoryRead ? [response.memoryRead.memory] : response.memories);
+        if (!notes?.length) break;
+        try {
+          const actual = await this.liveFiles!.materialize(fileOwner!, notes);
+          if (response.memorySnapshot) response.memorySnapshot = { ...response.memorySnapshot, notes: actual.notes, fileReceipts: actual.receipts };
+          else if (response.memoryPage) response.memoryPage.items = response.memoryPage.items.map((hit, index) => ({ ...hit, memory: actual.notes[index]! }));
+          else if (response.memoryRead) response.memoryRead.memory = actual.notes[0]!;
+          else response.memories = actual.notes;
+          break;
+        } catch (error) {
+          const changed = error as { code?: string; noteIds?: readonly string[] };
+          if (attempt >= 2 || changed.code !== 'MEMORY_FILE_CHANGED' || !changed.noteIds?.length) throw error;
+          let cursor: number | undefined;
+          do { const result = await this.liveFiles!.flush(fileOwner!, { noteIds: changed.noteIds, cursor, reconcile: true }); cursor = result.nextCursor; } while (cursor !== undefined);
+          response = await this.storage.request(command);
+          if (!response.ok) throw new Error(response.error ?? '文件修改后来源已不可访问。', { cause: error });
+        }
+      }
+    }
+    if (this.assetProfiles) {
+      if (response.state) response.state.companions = await Promise.all(response.state.companions.map(async owner => {
+        if (this.resettingCompanions.has(owner.id) || response.state?.resetJobs?.some(job => job.companionId === owner.id && job.status !== 'completed')) return owner;
+        try { const current = this.assetProfiles!.hydrateProfileFromSnapshot(owner, await this.assetProfiles!.bootstrapProfile(owner)); this.assetProfileFailures.delete(owner.id); return current; }
+        catch (error) {
+          const message = publicError(error).slice(0, 500);
+          if (this.assetProfileFailures.get(owner.id) !== message) { this.assetProfileFailures.set(owner.id, message); this.options.report(error); }
+          // Management can display the last index label to repair this owner.
+          // configFor/actual provider admission always load strictly and stop.
+          return { ...owner, assetProfileError: message, availability: 'offline' as const, availabilityReason: message };
+        }
+      }));
+      if (response.companion && !this.resettingCompanions.has(response.companion.id)
+        && !response.state?.resetJobs?.some(job => job.companionId === response.companion!.id && job.status !== 'completed')) {
+        response.companion = this.assetProfiles.hydrateProfileFromSnapshot(response.companion, await this.assetProfiles.bootstrapProfile(response.companion));
+      }
+    }
     response = await guardCompanionExecutionSources(command, response, { storage: request => this.storage.request(request),
       identity: this.storage, revision: () => this.sourceValidationRevision,
       valid: (proof, sqliteSourcesValidated) => proof.kind === 'action' ? this.executionEvidenceValid(proof, proof.executionReadset, sqliteSourcesValidated)
         : verifyCompanionExecutionReadset(proof.executionReadset, proof, { sqliteSourcesValidated, request: request => this.call(request), contextValid: (scope, context) => this.memoryContextValid(scope, context) }),
       invalidated: () => { this.sourceValidationRevision++; this.evidenceRevision++; this.memory.schedule(); } });
     if (response.memoryInvalidatedCompanionIds?.length) {
+      this.sourceValidationRevision++;
       this.evidenceRevision++;
       for (const owner of response.memoryInvalidatedCompanionIds) {
         void this.memoryLibrary?.invalidate(owner).catch(this.options.report);
@@ -409,6 +510,34 @@ export class CompanionService {
           || command.type === 'memory.save' && !!command.memory.id;
         void this.memory.invalidate(owner, response.memoryInvalidatedScopeIds, { preserveIndexes }).catch(this.options.report);
       }
+    }
+    for (const owner of response.memoryChangedCompanionIds ?? []) {
+      this.memory.changed(owner);
+      void this.memoryManagement.invalidate(owner).catch(this.options.report);
+    }
+    if (origin !== 'memory-files' && this.liveFiles && mutating) {
+      for (const owner of response.memoryChangedCompanionIds ?? []) {
+        const noteIds = response.memories?.filter(note => note.companionId === owner).map(note => note.id);
+        let cursor: number | undefined;
+        do {
+          const result = await this.liveFiles.flush(owner, { ...(noteIds?.length ? { noteIds } : {}), cursor, reconcile: false });
+          cursor = noteIds?.length ? result.nextCursor : undefined;
+        } while (cursor !== undefined);
+      }
+    }
+    if (origin !== 'memory-files') for (const owner of response.memorySourceChangedCompanionIds ?? []) await this.flushSourceFiles(owner);
+    if (fileRead && response.memoryRead && this.sourceFiles) {
+      // Reconciliation can create a new manual-source revision through the
+      // internal file port. Its notification is consumed inside that port;
+      // finish its exact source publication after releasing the document queue.
+      await this.flushSourceFiles(fileOwner!);
+      const note = response.memoryRead.memory;
+      response.memoryRead.sources = await Promise.all(response.memoryRead.sources.map(async source => {
+        const reference = note.sources.find(reference => reference.messageId === source.id);
+        return reference ? { ...source, content: await this.sourceFiles!.read({ companionId: fileOwner!, conversationId: note.sourceConversationId,
+          ...('beforeSequence' in command && command.beforeSequence !== undefined ? { beforeSequence: command.beforeSequence } : {}) }, reference) } : source;
+      }));
+      if (response.memoryRead.related.length) response.memoryRead.related = (await this.liveFiles!.materialize(fileOwner!, response.memoryRead.related)).notes;
     }
     if (command.type === 'memory.forget' || command.type === 'companion.reset') this.evidenceRevision++;
     if (command.type === 'message.append' || command.type === 'loop.save' && command.checkpoint.status === 'done'
@@ -446,6 +575,7 @@ export class CompanionService {
     } finally { if (waiting) clearInterval(waiting); }
   }
   private async executionEvidenceValid(action: Pick<CompanionAction, 'id' | 'companionId' | 'conversationId'>, readset?: CompanionExecutionReadset, sqliteSourcesValidated = false): Promise<boolean> {
+    await this.requireCurrentAssets(action.companionId);
     const key = createHash('sha256').update(JSON.stringify([action.id, action.companionId, action.conversationId, readset, sqliteSourcesValidated])).digest('hex');
     return memoCompanionExecutionValidation(key, () => this.sourceValidationRevision,
       () => this.executionEvidenceValidUncached(action, readset, sqliteSourcesValidated));
@@ -453,6 +583,108 @@ export class CompanionService {
   private memoryContextValid(scope: Parameters<CompanionMemoryService['contextValid']>[0], context: Parameters<CompanionMemoryService['contextValid']>[1]): Promise<boolean> {
     const key = 'memory-context:' + createHash('sha256').update(JSON.stringify([scope, context])).digest('hex');
     return memoCompanionExecutionValidation(key, () => this.sourceValidationRevision, () => this.memory.contextValid(scope, context));
+  }
+  /** Internal canonical adapter port. It cannot forward an arbitrary storage mutation. */
+  requestAssetValidation(command: CompanionStorageCommand): Promise<CompanionStorageResponse> {
+    if (command.type !== 'learning.assets.snapshot' && command.type !== 'learning.assets.validate' && command.type !== 'learning.assets.observe') throw new Error('无效的资产验证请求。');
+    return this.call(command);
+  }
+  private validateAssets(filter: { libraryId?: string; companionId?: string } = {}): Promise<CompanionLearningAssetValidation> {
+    const assets = this.options.learningAssets as Partial<CompanionCanonicalLearningAssets> | undefined;
+    if (!assets?.revalidate) return Promise.resolve({ changedCompanionIds: [], unavailableCompanionIds: [], revokedSourceCount: 0 });
+    const key = JSON.stringify([filter.libraryId, filter.companionId]);
+    const previous = this.assetValidations.get(key); if (previous) return previous;
+    const validation = assets.revalidate(filter).then(result => {
+      // validate commits hard source epochs through the ordinary storage port.
+      // Do not await graph drains here: a context validator may itself own a
+      // query. The synchronous epoch/abort is sufficient to fence its result.
+      for (const owner of result.changedCompanionIds) {
+        this.memory.changed(owner);
+        void this.knowledge.reset(owner).catch(this.options.report);
+      }
+      return result;
+    });
+    this.assetValidations.set(key, validation);
+    void validation.finally(() => { if (this.assetValidations.get(key) === validation) this.assetValidations.delete(key); }).catch(() => undefined);
+    return validation;
+  }
+  private async requireCurrentAssets(owner: string): Promise<void> {
+    if ((await this.validateAssets({ companionId: owner })).unavailableCompanionIds.includes(owner)) throw new CompanionModelError('NETWORK', '授权资料暂时无法核验，本轮等待资产管理器恢复后继续。');
+  }
+  /** Asset/library events finish source invalidation before being published. */
+  async assetsChanged(libraryId: string): Promise<void> {
+    const result = await this.validateAssets({ libraryId });
+    await Promise.all(result.changedCompanionIds.map(owner => this.memory.waitForInvalidation(owner)));
+  }
+  async validateAssetsForModel(owner: string): Promise<void> { await this.requireCurrentAssets(owner); }
+  private flushSourceFiles(owner: string): Promise<void> {
+    if (!this.sourceFiles || this.closed) return Promise.resolve();
+    const existing = this.sourcePublications.get(owner); if (existing) return existing;
+    const publication = (async () => {
+      let pending = true;
+      while (pending && !this.closed) pending = (await this.sourceFiles!.flush(owner, { limit: 64 })).pending;
+    })();
+    this.sourcePublications.set(owner, publication);
+    void publication.finally(() => { if (this.sourcePublications.get(owner) === publication) this.sourcePublications.delete(owner); }).catch(() => undefined);
+    return publication;
+  }
+  async prepareModelAssetContext(owner: string, context: { system: string; user: string }, kind: 'reply' | 'structured' | 'text', nativePrompt?: CompanionNativeMemoryPrompt): Promise<{ system: string; user: string }> {
+    if (!this.assetProfiles) {
+      if (nativePrompt) throw new CompanionModelError('CONFIG', '原生记忆提示词的伙伴资产目录尚不可用。');
+      return context;
+    }
+    return this.assetIo.run(async () => {
+      try {
+        const snapshot = await this.assetProfiles!.load(owner);
+        if (nativePrompt) {
+          const native = validateCompanionNativeMemoryPrompt(nativePrompt, owner, context.system);
+          if (!sameCompanionMemoryIdentity(native.owner, companionMemoryIdentity({ id: owner, name: snapshot.profile.name })))
+            throw new Error('伙伴身份在原生整理排队期间发生变化，请按当前身份重新准备任务。');
+          context = { ...context, system: renderCompanionNativeMemoryPrompt(native.kind === 'timeline'
+            ? snapshot.nativeTimelineTemplate : snapshot.nativeSummaryTemplate, native) };
+        }
+        return assembleCompanionAssetContext(context, snapshot, kind);
+      }
+      catch (error) { throw new CompanionModelError('CONFIG', publicError(error)); }
+    });
+  }
+  async resolveOwnerStorage(ownerId: string) {
+    return this.assetIo.run(async () => {
+    companionIdSchema.parse(ownerId);
+    if (!this.assetProfiles) throw new Error('伙伴资产目录尚未绑定。');
+    const stored = (await this.storage.request({ type: 'state', companionId: ownerId, includeConversations: false, includeHidden: true })).state?.companions.find(owner => owner.id === ownerId);
+    if (!stored || this.resettingCompanions.has(ownerId)) throw new Error('伙伴不存在或正在重置。');
+    const snapshot = await this.assetProfiles.bootstrap(stored), ownerRoot = await realpath(snapshot.root);
+    const indexRoot = path.join(ownerRoot, '.认知索引');
+    try { await mkdir(indexRoot); } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error; }
+    const info = await lstat(indexRoot), actual = await realpath(indexRoot);
+    if (!info.isDirectory() || info.isSymbolicLink() || actual !== indexRoot) throw new Error('伙伴认知索引目录缺失或指向已改变。');
+    return { ownerId, ownerRoot, indexRoot: actual, workspaceRoot: await realpath(this.assetProfiles.libraryDirectory),
+      ownerPrompts: { aimemoTemplate: snapshot.nativeFocusTemplate, timelineTemplate: snapshot.nativeTimelineTemplate, summaryTemplate: snapshot.nativeSummaryTemplate } };
+    });
+  }
+  async resolveOwnerCleanupStorage(ownerId: string) {
+    companionIdSchema.parse(ownerId);
+    if (!this.assetProfiles) throw new Error('伙伴资产目录尚未绑定。');
+    const workspaceRoot = path.resolve(this.assetProfiles.libraryDirectory), ownerRoot = path.join(workspaceRoot, ownerId);
+    const indexRoot = path.join(ownerRoot, '.认知索引');
+    // Cleanup must survive missing or malformed role files. Validate existing
+    // ancestors without initializing an owner or creating any directory.
+    await companionRuntimeDirectory(indexRoot);
+    return { ownerId, workspaceRoot, ownerRoot, indexRoot };
+  }
+  async manageCompanionAssets(command: Extract<CompanionWorkspaceRequest, { type: 'companion.assets.read' | 'companion.assets.prompt.save' }>): Promise<CompanionWorkspaceResponse> {
+    await this.initialization;
+    if (!this.assetProfiles) throw new Error('请先选择伙伴资产库。');
+    const owner = (await this.storage.request({ type: 'state', companionId: command.companionId, includeConversations: false, includeHidden: true })).state?.companions.find(owner => owner.id === command.companionId);
+    if (!owner || this.resettingCompanions.has(owner.id)) throw new Error('伙伴不存在或正在重置。');
+    const initialSnapshot = await this.assetProfiles.bootstrap(owner);
+    const snapshot = command.type === 'companion.assets.prompt.save'
+      ? await this.assetProfiles.writePrompt({ companionId: owner.id, relativePath: command.path, expectedRevision: command.expectedRevision, content: command.content })
+      : initialSnapshot;
+    if (command.type === 'companion.assets.prompt.save') this.changed();
+    return { ok: true, companionAssets: { companionId: owner.id, profileRevision: snapshot.profileRevision,
+      promptRevision: snapshot.promptRevision, prompts: snapshot.modules } };
   }
   private async executionEvidenceValidUncached(action: Pick<CompanionAction, 'id' | 'companionId' | 'conversationId'>, readset?: CompanionExecutionReadset, sqliteSourcesValidated = false): Promise<boolean> {
     try {
@@ -535,6 +767,7 @@ export class CompanionService {
    * changed. Revalidate the frozen inference's exact dependencies before
    * discarding work; unrelated new notes must not reopen the same decision. */
   private async taskEvidenceCurrent(revision: number, evidence: CompanionExecutionReadset): Promise<boolean> {
+    await this.requireCurrentAssets(evidence.companionId);
     if (revision === this.evidenceRevision) return true;
     return verifyCompanionExecutionReadset(evidence, evidence, { request: command => this.call(command),
       contextValid: (scope, context) => this.memoryContextValid(scope, context) });
@@ -558,20 +791,20 @@ export class CompanionService {
     const receipts = await Promise.all(tasks.map(task => this.call({ type: 'activity.progress', ...scope, id: task.id })));
     return { tasks, receipts };
   }
-  private async checkedMemoryWrite(command: Extract<CompanionStorageCommand, { type: 'memory.record' | 'memory.revise' | 'memory.consolidate' | 'memory.save' | 'memory.library.organize' }>, signal?: AbortSignal): Promise<void> {
+  private async checkedMemoryWrite(command: Extract<CompanionStorageCommand, { type: 'memory.record' | 'memory.revise' | 'memory.consolidate' | 'memory.save' | 'memory.library.organize' }>, signal?: AbortSignal, origin?: 'memory-files'): Promise<void> {
     const controller = new AbortController();
     const owner = command.type === 'memory.save' ? command.memory.companionId : command.companionId;
     this.memoryValidationControllers.set(controller, owner);
-    const checking = this.validateMemoryWrite(command, AbortSignal.any([controller.signal, this.attentionController.signal, ...(signal ? [signal] : [])]));
+    const checking = this.validateMemoryWrite(command, AbortSignal.any([controller.signal, this.attentionController.signal, ...(signal ? [signal] : [])]), origin);
     this.memoryValidationJobs.add(checking);
     try { await checking; }
     finally { this.memoryValidationJobs.delete(checking); this.memoryValidationControllers.delete(controller); }
   }
   /** Every new diary entrance shares the same policy gate, including UI and file imports. */
-  private async validateMemoryWrite(command: Extract<CompanionStorageCommand, { type: 'memory.record' | 'memory.revise' | 'memory.consolidate' | 'memory.save' | 'memory.library.organize' }>, signal: AbortSignal): Promise<void> {
+  private async validateMemoryWrite(command: Extract<CompanionStorageCommand, { type: 'memory.record' | 'memory.revise' | 'memory.consolidate' | 'memory.save' | 'memory.library.organize' }>, signal: AbortSignal, origin?: 'memory-files'): Promise<void> {
     signal.throwIfAborted();
     const libraryNote = command.type === 'memory.library.organize'
-      ? (await this.call({ type: 'memory.library.read', companionId: command.companionId, id: command.id, sourceLimit: 1 })).memoryRead?.memory : undefined;
+      ? (await this.call({ type: 'memory.library.read', companionId: command.companionId, id: command.id, sourceLimit: 1 }, signal, origin)).memoryRead?.memory : undefined;
     if (command.type === 'memory.library.organize' && (!libraryNote || libraryNote.version !== command.expectedVersion)) throw new Error('这篇文档已经变化，请重新读取后再保存。');
     const draft = command.type === 'memory.save' ? command.memory : command;
     const scope = { companionId: draft.companionId, conversationId: command.type === 'memory.library.organize' ? libraryNote!.sourceConversationId : ('conversationId' in draft ? draft.conversationId : ''),
@@ -593,7 +826,7 @@ export class CompanionService {
       return;
     }
     if (!rules.some(rule => rule.persistent && rule.tags.length)) return;
-    if ('id' in draft && draft.id) await this.call({ type: 'memory.read', ...scope, id: draft.id });
+    if ('id' in draft && draft.id) await this.call({ type: 'memory.read', ...scope, id: draft.id }, signal, origin);
     const candidate = command.type === 'memory.library.organize' ? { content: libraryNote!.content, tags: command.tags }
       : command.type === 'memory.save' ? command.memory : command.candidate;
     const owner = (await this.call({ type: 'state', includeConversations: false })).state?.companions.find(companion => companion.id === scope.companionId);
@@ -847,10 +1080,10 @@ export class CompanionService {
                 }
               } catch { /* A missing/invalid connection is represented as offline. */ }
             }
-            const offline = !connected || !!unavailable && !companion.activeCount;
+            const offline = !connected || !!companion.assetProfileError || !!unavailable && !companion.activeCount;
             return { ...companion, ...(companion.llm ? { llm: { ...companion.llm, hasKey: connected } } : {}),
-              availability: companion.active === false ? 'dormant' as const : reset ? 'waiting' as const : offline ? 'offline' as const : companion.availability,
-              availabilityReason: companion.active === false ? '伙伴已休眠，虚拟生活与后台活动已暂停；请手动激活。' : reset ? reset.status === 'failed' ? '伙伴重置已暂停，请查看进度' : '伙伴正在重置' : offline ? unavailable?.reason ?? (companion.llm ? '此伙伴尚未保存模型服务密钥' : '尚未配置全局模型服务') : companion.availabilityReason };
+              availability: companion.assetProfileError ? 'offline' as const : companion.active === false ? 'dormant' as const : reset ? 'waiting' as const : offline ? 'offline' as const : companion.availability,
+              availabilityReason: companion.assetProfileError ?? (companion.active === false ? '伙伴已休眠，虚拟生活与后台活动已暂停；请手动激活。' : reset ? reset.status === 'failed' ? '伙伴重置已暂停，请查看进度' : '伙伴正在重置' : offline ? unavailable?.reason ?? (companion.llm ? '此伙伴尚未保存模型服务密钥' : '尚未配置全局模型服务') : companion.availabilityReason) };
           }));
         }
         return response;
@@ -876,6 +1109,15 @@ export class CompanionService {
         await this.profiles.validateImage(companion.avatarAttachmentId);
         await this.profiles.validateImage(companion.appearanceAttachmentId);
         const previous = request.type === 'companion.update' ? (await this.call({ type: 'state' })).state : undefined;
+        if (request.type === 'companion.update' && this.assetProfiles) {
+          const old = previous?.companions.find(owner => owner.id === request.id);
+          if (!old || request.expectedRevision !== undefined && old.revision !== request.expectedRevision) throw new Error('伙伴资料索引已变化，请重新读取后保存。');
+          const snapshot = await this.assetProfiles.load(request.id);
+          await this.assetProfiles.writeProfile({ companionId: request.id, expectedRevision: request.expectedAssetProfileRevision ?? snapshot.profileRevision,
+            profile: { ...snapshot.profile, name: companion.name, description: companion.description, persona: companion.persona,
+              avatar: companion.avatar, proactive: companion.proactive, inputMode: companion.inputMode ?? 'steer',
+              avatarAttachmentId: companion.avatarAttachmentId ?? null, appearanceAttachmentId: companion.appearanceAttachmentId ?? null } });
+        }
         // The worker receives provider metadata only. API keys never enter SQLite or message events.
         const result = await this.call(request.type === 'companion.create'
           ? { type: 'companion.create', companion } : { type: 'companion.update', id: request.id, companion, expectedRevision: request.expectedRevision });
@@ -883,6 +1125,7 @@ export class CompanionService {
         if (result.companion?.active === false && id) this.dormantCompanions.add(id);
         if (id && companion.llm && request.apiKey !== undefined) await this.credentials.save(id, request.apiKey.trim());
         const old = previous?.companions.find(role => role.id === id);
+        if (result.companion) await this.profiles.applyImageSelection(old, result.companion);
         if (old && (old.persona !== companion.persona || JSON.stringify(old.llm) !== JSON.stringify(companion.llm) || request.apiKey !== undefined)) {
           if (JSON.stringify(old.llm) !== JSON.stringify(companion.llm) || request.apiKey !== undefined) await this.memory.generationConfigurationChanged(id);
           const rooms = new Set(previous!.conversations.filter(room => room.memberIds.includes(id!)).map(room => room.id));
@@ -1007,6 +1250,14 @@ export class CompanionService {
       }
       case 'reply.resume': {
         const checkpoint = (await this.call({ type: 'reply.checkpoint.get', conversationId: request.conversationId })).replyRecovery;
+        if (!checkpoint || checkpoint.status !== 'interrupted') {
+          const automatic = this.automaticallyResumedSources.get(request.conversationId);
+          if (automatic?.size) {
+            const works = (await this.call({ type: 'work.list' })).works ?? [];
+            if (works.some(work => work.conversationId === request.conversationId && automatic.has(work.sourceMessageId)
+              && (!checkpoint || checkpoint.sourceMessageId === work.sourceMessageId) && !work.stop && ['queued', 'running', 'done'].includes(work.status))) return { ok: true };
+          }
+        }
         if (!checkpoint || checkpoint.status !== 'interrupted' || this.replies.has(request.conversationId)) throw new Error('当前没有需要恢复的回复。');
         await this.call({ type: 'reply.checkpoint.status', conversationId: request.conversationId, sourceMessageId: checkpoint.sourceMessageId, status: 'pending' });
         const state = (await this.call({ type: 'state' })).state;
@@ -1407,7 +1658,12 @@ export class CompanionService {
           let originalPrompt: unknown;
           let contextReadable = true;
           try { originalPrompt = (JSON.parse(loop.context?.user ?? '{}') as { taskRequest?: { prompt?: unknown } }).taskRequest?.prompt; } catch { contextReadable = false; }
-          if (source && contextReadable && (originalPrompt === undefined || originalPrompt === source.content)) await this.call({ type: 'work.enqueue', work, resume: true });
+          if (source && contextReadable && (originalPrompt === undefined || originalPrompt === source.content)) {
+            const resumed = this.automaticallyResumedSources.get(work.conversationId) ?? new Set<string>();
+            resumed.add(work.sourceMessageId); this.automaticallyResumedSources.set(work.conversationId, resumed);
+            try { await this.call({ type: 'work.enqueue', work, resume: true }); }
+            catch (error) { resumed.delete(work.sourceMessageId); throw error; }
+          }
         }
       }
       if (!work.proactive && work.status === 'queued') void this.assessAttention(work.companionId, work.sourceMessageId);
@@ -1497,13 +1753,17 @@ export class CompanionService {
     } catch (error) { if (!this.closed) this.options.report(error); }
     finally { this.pumping = false; resolveIdle(); if (this.pumpAgain && !this.closed) void this.pumpQueue(); }
   }
-  private async configFor(companion: Companion): Promise<CompanionModelConfig> {
+  private async configFor(companion: Companion, workPriority: 'foreground' | 'background' = 'foreground'): Promise<CompanionModelConfig> {
+    if (this.resettingCompanions.has(companion.id)) throw new CompanionModelError('CONFIG', '伙伴正在重置，暂不读取角色上下文。');
+    if (this.assetProfiles) companion = this.assetProfiles.hydrateFromSnapshot(companion, await this.assetProfiles.bootstrap(companion));
+    const resolveAssetContext: CompanionModelConfig['resolveAssetContext'] = this.assetProfiles
+      ? (context, kind) => this.prepareModelAssetContext(companion.id, context, kind) : undefined;
     if (companion.active === false || this.dormantCompanions.has(companion.id)) throw new CompanionModelError('CONFIG', '伙伴已休眠，请在联系人资料中手动激活。');
     if (companion.llm) {
-      try { return { ...companion.llm, apiKey: await this.credentials.get(companion.id) }; }
+      try { return { ...companion.llm, apiKey: await this.credentials.get(companion.id), ownerId: companion.id, workPriority, resolveAssetContext }; }
       catch (error) { throw new CompanionModelError('CONFIG', publicError(error)); }
     }
-    try { return this.options.getConfig(); }
+    try { return { ...this.options.getConfig(), ownerId: companion.id, workPriority, resolveAssetContext }; }
     catch { throw new CompanionModelError('CONFIG', '请先在「设置 → 全局模型」配置 LLM 服务。消息已保存在本地，可以稍后重试。'); }
   }
   /** Claimed dialogue owns foreground priority before its first expensive
@@ -2356,6 +2616,7 @@ export class CompanionService {
     knowledgeReads: CompanionKnowledgeRead[];
     topicReviewFrame?: Pick<CompanionReplyInput, 'companion' | 'conversation' | 'topic' | 'topicState' | 'messages' | 'sourceMessage' | 'topicPublicationReference' | 'topicUncompactedSources'>;
   }> {
+    await this.requireCurrentAssets(companionId);
     if (!checkpoint.context) throw new Error('伙伴上下文尚未保存。');
     const scope = { companionId, conversationId, beforeSequence: await this.memoryBoundary(checkpoint, sourceSequence) };
     const data = JSON.parse(checkpoint.context.user) as {
@@ -3574,6 +3835,7 @@ export class CompanionService {
           const patch = { status: record.status, stage: record.status === 'succeeded' ? '执行已完成' : '执行已结束', sessionId: output?.sessionId,
             result: output?.text?.slice(0, 65536), error: record.error, executionSummary };
           await this.call({ type: 'action.update', id: action.id, patch });
+          await this.call({ type: 'memory.procedure.observe-action', actionId: action.id }).catch(this.options.report);
           settled = true;
           this.changed();
           if (!action.thought && !action.parentMessageId && (record.status === 'succeeded' || record.status === 'failed')) await this.feedbackAction(action, record.status, output?.text ?? record.error ?? '执行器未返回详细结果。');
@@ -3596,6 +3858,7 @@ export class CompanionService {
         const executionSummary = taskId ? await this.options.dsh()?.readTaskRecord({ recordId: taskId }).then(value => value.overview).catch(() => undefined) : undefined;
         await this.call({ type: 'action.update', id: action.id,
           patch: { status: this.cancelledActions.has(action.id) ? 'cancelled' : 'failed', error: publicError(error), executionSummary } });
+        if (executionSummary) await this.call({ type: 'memory.procedure.observe-action', actionId: action.id }).catch(this.options.report);
       }
     } finally { if (!action.thought) await this.world.end(action.companionId, worldWorkId('action', action.id)); this.activities.delete(`action:${action.id}`); this.actionControllers.delete(action.id); }
   }
@@ -3812,6 +4075,7 @@ export class CompanionService {
   shutdown(): Promise<void> { return this.shuttingDown ??= this.shutdownOnce(); }
   private async shutdownOnce(): Promise<void> {
     this.closed = true;
+    const assetIoClosing = this.assetIo.close();
     const learningClosing = this.learning?.close();
     const learningGoalsClosing = this.learningGoals?.close();
     this.attentionController.abort();
@@ -3828,6 +4092,7 @@ export class CompanionService {
       await this.memoryTags.close();
       await learningClosing;
       await learningGoalsClosing;
+      await assetIoClosing;
       await Promise.allSettled([this.memoryLibrary?.close(), this.memory.close(), this.storage.close(), this.credentials.flush()]);
       return;
     }
@@ -3859,6 +4124,9 @@ export class CompanionService {
     await Promise.allSettled([...this.resetCleanupJobs.values()]);
     await Promise.allSettled([...this.fileReadJobs.values()].flatMap(jobs => [...jobs]));
     await Promise.allSettled([...this.memoryValidationJobs]);
+    await Promise.allSettled([...this.assetValidations.values()]);
+    await assetIoClosing;
+    await Promise.allSettled([...this.sourcePublications.values()]);
     await this.schedules.drain();
     await this.call({ type: 'action.interrupt-pending' });
     await this.credentials.flush();

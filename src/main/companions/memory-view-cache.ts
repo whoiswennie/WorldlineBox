@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { mkdir, readFile, readdir, rename, rm, writeFile } from 'node:fs/promises';
+import { lstat, mkdir, readFile, readdir, realpath, rename, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { Buffer } from 'node:buffer';
 import type { CompanionMemory } from '../../shared/companions';
@@ -7,6 +7,7 @@ import type { VcpMemoryTimelineArtifacts } from '../vcp-memory/contracts';
 
 type View = { scopeId: string; identity: string; profileKey: string; dirty: boolean; notes: Record<string, string>; projectionSignature?: string; needsSync?: boolean };
 export interface CompanionMemoryViewCacheLimits { maxViews?: number; maxViewBytes?: number; maxArtifacts?: number; maxArtifactBytes?: number }
+export interface CompanionMemoryViewCacheDirectory { directoryForOwner(owner: string): Promise<string> }
 const boundedLimit = (value: number | undefined, fallback: number, minimum: number) => {
   const limit = value ?? fallback;
   if (!Number.isSafeInteger(limit) || limit < minimum) throw new RangeError('Invalid memory view cache limit.');
@@ -17,7 +18,7 @@ function validView(value: unknown): value is View {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
   const view = value as Partial<View>;
   return typeof view.scopeId === 'string' && /^view_[a-f0-9]{32}$/u.test(view.scopeId)
-    && typeof view.identity === 'string' && typeof view.profileKey === 'string' && typeof view.dirty === 'boolean'
+    && typeof view.identity === 'string' && /^[a-zA-Z0-9_-]{1,100}:[^\r\n]+$/u.test(view.identity) && typeof view.profileKey === 'string' && typeof view.dirty === 'boolean'
     && !!view.notes && typeof view.notes === 'object' && !Array.isArray(view.notes)
     && Object.values(view.notes).every(value => typeof value === 'string' && /^[a-f0-9]{64}$/u.test(value))
     && (view.projectionSignature === undefined || typeof view.projectionSignature === 'string')
@@ -41,18 +42,37 @@ export class CompanionMemoryViewCache {
   private readonly maxViewBytes: number;
   private readonly maxArtifacts: number;
   private readonly maxArtifactBytes: number;
-  constructor(private readonly directory?: string, limits: CompanionMemoryViewCacheLimits = {}) {
+  private readonly directory?: string;
+  private readonly directoryForOwner?: CompanionMemoryViewCacheDirectory['directoryForOwner'];
+  constructor(location?: string | CompanionMemoryViewCacheDirectory, limits: CompanionMemoryViewCacheLimits = {}) {
+    if (typeof location === 'string') this.directory = location;
+    else this.directoryForOwner = location?.directoryForOwner;
     this.maxViews = boundedLimit(limits.maxViews, 16, 1);
     this.maxViewBytes = boundedLimit(limits.maxViewBytes, 16 * 1024 * 1024, 0);
     this.maxArtifacts = boundedLimit(limits.maxArtifacts, 8, 0);
     this.maxArtifactBytes = boundedLimit(limits.maxArtifactBytes, 8 * 1024 * 1024, 0);
+  }
+  private get persistent(): boolean { return !!this.directory || !!this.directoryForOwner; }
+  private owner(identity: string): string {
+    const parsed = /^([a-zA-Z0-9_-]{1,100}):[^\r\n]+$/u.exec(identity);
+    if (!parsed) throw new Error('记忆视图缺少宿主伙伴身份。'); return parsed[1]!;
+  }
+  private async ownerDirectory(owner: string, create = false): Promise<string | undefined> {
+    if (!/^[a-zA-Z0-9_-]{1,100}$/u.test(owner)) throw new Error('记忆视图伙伴标识无效。');
+    const directory = this.directoryForOwner ? await this.directoryForOwner(owner) : this.directory;
+    if (!directory) return;
+    if (!path.isAbsolute(directory)) throw new Error('记忆视图目录必须是伙伴资产中的绝对目录。');
+    if (create) await mkdir(directory, { recursive: true });
+    const info = await lstat(directory);
+    if (!info.isDirectory() || info.isSymbolicLink() || path.relative(path.resolve(directory), await realpath(directory)) !== '') throw new Error('记忆视图目录不能是链接或目录联接。');
+    return directory;
   }
   /** Serialized residency estimates only, not total process RSS. Atomic saves
    * stay pinned briefly; persisted dirty manifests can safely leave the LRU. */
   snapshot() {
     return { views: this.memory.size, dirtyViews: [...this.memory.values()].filter(view => view.dirty).length,
       viewBytes: this.viewBytes, activeSaves: this.saving.size, maxViewBytes: this.maxViewBytes,
-      artifacts: this.artifacts.size, artifactBytes: this.artifactBytes, persistent: !!this.directory,
+      artifacts: this.artifacts.size, artifactBytes: this.artifactBytes, persistent: this.persistent,
       maxViews: this.maxViews, maxArtifacts: this.maxArtifacts, maxArtifactBytes: this.maxArtifactBytes };
   }
   private removeView(key: string): void {
@@ -61,7 +81,7 @@ export class CompanionMemoryViewCache {
   private trimViews(): void {
     // A memory-only fixture has no disk authority from which to restore a
     // dropped view. Its retention semantics deliberately remain unchanged.
-    if (!this.directory) return;
+    if (!this.persistent) return;
     while (this.memory.size > this.maxViews || this.viewBytes > this.maxViewBytes) {
       const victim = [...this.memory.keys()].find(key => !this.saving.has(key));
       if (!victim) break;
@@ -70,7 +90,7 @@ export class CompanionMemoryViewCache {
   }
   private cacheView(key: string, view: View, bytes = Buffer.byteLength(JSON.stringify(view), 'utf8') + Buffer.byteLength(key, 'utf8') + 128): void {
     this.removeView(key);
-    if (this.directory && bytes > this.maxViewBytes && !this.saving.has(key)) return;
+    if (this.persistent && bytes > this.maxViewBytes && !this.saving.has(key)) return;
     this.memory.set(key, view); this.viewSizes.set(key, bytes); this.viewBytes += bytes; this.trimViews();
   }
   private removeArtifact(key: string): void {
@@ -80,8 +100,8 @@ export class CompanionMemoryViewCache {
   }
   private cacheArtifact(key: string, value: VcpMemoryTimelineArtifacts, bytes: number): boolean {
     this.removeArtifact(key);
-    if (this.directory && (!this.maxArtifacts || bytes > this.maxArtifactBytes)) return false;
-    if (this.directory) while (this.artifacts.size >= this.maxArtifacts || this.artifactBytes + bytes > this.maxArtifactBytes) {
+    if (this.persistent && (!this.maxArtifacts || bytes > this.maxArtifactBytes)) return false;
+    if (this.persistent) while (this.artifacts.size >= this.maxArtifacts || this.artifactBytes + bytes > this.maxArtifactBytes) {
       const oldest = this.artifacts.keys().next().value;
       if (oldest === undefined) break;
       this.removeArtifact(oldest);
@@ -89,9 +109,9 @@ export class CompanionMemoryViewCache {
     this.artifacts.set(key, { value, bytes }); this.artifactBytes += bytes;
     return true;
   }
-  private file(key: string) { return path.join(this.directory!, `${hash(key)}.json`); }
+  private async file(key: string, create = false) { return path.join((await this.ownerDirectory(this.owner(key.split('\n')[0]!), create))!, `${hash(key)}.json`); }
   private async save(key: string, view: View): Promise<void> {
-    if (!this.directory) { this.cacheView(key, view); return; }
+    if (!this.persistent) { this.cacheView(key, view); return; }
     const serialized = JSON.stringify(view), bytes = Buffer.byteLength(serialized, 'utf8') + Buffer.byteLength(key, 'utf8') + 128;
     // Only an unfinished atomic save needs a pin. After prepare resolves, disk
     // already records dirty=true; restoring that entry must create a fresh
@@ -99,8 +119,7 @@ export class CompanionMemoryViewCache {
     this.saving.set(key, (this.saving.get(key) ?? 0) + 1);
     if (view.dirty) this.cacheView(key, view, bytes);
     try {
-      await mkdir(this.directory, { recursive: true });
-      const file = this.file(key), temporary = `${file}.${randomUUID()}.tmp`;
+      const file = await this.file(key, true), temporary = `${file}.${randomUUID()}.tmp`;
       await writeFile(temporary, serialized, { encoding: 'utf8', mode: 0o600 });
       await rename(temporary, file); this.cacheView(key, view, bytes);
     } finally {
@@ -111,12 +130,13 @@ export class CompanionMemoryViewCache {
     }
   }
   async prepare(identity: string, profileKey: string, notes: readonly CompanionMemory[], projectionSignature?: string, options: { incremental?: boolean } = {}) {
+    this.owner(identity);
     const key = `${identity}\n${profileKey}`;
     let previous = this.memory.get(key);
     if (previous) { this.memory.delete(key); this.memory.set(key, previous); }
-    if (!previous && this.directory) {
+    if (!previous && this.persistent) {
       try {
-        const parsed: unknown = JSON.parse(await readFile(this.file(key), 'utf8'));
+        const parsed: unknown = JSON.parse(await readFile(await this.file(key), 'utf8'));
         if (validView(parsed) && parsed.profileKey === profileKey && parsed.identity === identity) {
           previous = parsed; this.cacheView(key, parsed);
         }
@@ -134,12 +154,13 @@ export class CompanionMemoryViewCache {
       commit: async () => { if (!unchanged) await this.save(key, { ...view, dirty: false }); } };
   }
   async loadArtifacts(identity: string, profileKey: string): Promise<VcpMemoryTimelineArtifacts | undefined> {
+    this.owner(identity);
     const key = `${identity}\n${profileKey}`;
     const cached = this.artifacts.get(key);
     if (cached) { this.artifacts.delete(key); this.artifacts.set(key, cached); return structuredClone(cached.value); }
-    if (!this.directory) return undefined;
+    if (!this.persistent) return undefined;
     try {
-      const stored = JSON.parse(await readFile(`${this.file(key)}.timeline`, 'utf8'));
+      const stored = JSON.parse(await readFile(`${await this.file(key)}.timeline`, 'utf8'));
       if (!stored || typeof stored !== 'object' || Array.isArray(stored)) return undefined;
       const artifacts = ('artifacts' in stored ? stored.identity === identity && stored.profileKey === profileKey && stored.artifacts : stored) as VcpMemoryTimelineArtifacts;
       if (!artifacts) return undefined;
@@ -150,22 +171,24 @@ export class CompanionMemoryViewCache {
     catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT' || error instanceof SyntaxError) return undefined; throw error; }
   }
   async saveArtifacts(identity: string, profileKey: string, artifacts: VcpMemoryTimelineArtifacts): Promise<void> {
+    this.owner(identity);
     const key = `${identity}\n${profileKey}`, serialized = JSON.stringify({ identity, profileKey, artifacts });
     const bytes = Buffer.byteLength(serialized, 'utf8') + Buffer.byteLength(key, 'utf8') + 128;
-    if (this.directory) {
-      await mkdir(this.directory, { recursive: true });
-      const file = `${this.file(key)}.timeline`, temporary = `${file}.${randomUUID()}.tmp`;
+    if (this.persistent) {
+      const file = `${await this.file(key, true)}.timeline`, temporary = `${file}.${randomUUID()}.tmp`;
       await writeFile(temporary, serialized, { encoding: 'utf8', mode: 0o600 }); await rename(temporary, file);
     }
-    if (this.directory && (!this.maxArtifacts || bytes > this.maxArtifactBytes)) { this.removeArtifact(key); return; }
+    if (this.persistent && (!this.maxArtifacts || bytes > this.maxArtifactBytes)) { this.removeArtifact(key); return; }
     this.cacheArtifact(key, (JSON.parse(serialized) as { artifacts: VcpMemoryTimelineArtifacts }).artifacts, bytes);
   }
   async clearArtifacts(identity: string, profileKey: string): Promise<void> {
+    this.owner(identity);
     const key = `${identity}\n${profileKey}`;
     this.removeArtifact(key);
-    if (this.directory) await rm(`${this.file(key)}.timeline`, { force: true });
+    if (this.persistent) { try { await rm(`${await this.file(key)}.timeline`, { force: true }); } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; } }
   }
   async invalidateOwner(owner: string, options: { preserveIndexes?: boolean } = {}): Promise<Array<{ scopeId: string; profileKey: string }>> {
+    if (!/^[a-zA-Z0-9_-]{1,100}$/u.test(owner)) throw new Error('记忆视图伙伴标识无效。');
     const invalidated = new Map<string, View>();
     const handled = new Map<string, { scopeId: string; dirty: boolean }>();
     for (const [key, view] of [...this.memory]) if (view.identity.startsWith(`${owner}:`)) {
@@ -175,20 +198,21 @@ export class CompanionMemoryViewCache {
     }
     for (const key of this.artifacts.keys()) if (key.startsWith(`${owner}:`)) {
       this.removeArtifact(key);
-      if (this.directory) await rm(`${this.file(key)}.timeline`, { force: true });
+      if (this.persistent) { try { await rm(`${await this.file(key)}.timeline`, { force: true }); } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; } }
     }
-    if (this.directory) {
+    if (this.persistent) {
       let files: string[] = [];
-      try { files = await readdir(this.directory); } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
+      let directory: string | undefined;
+      try { directory = await this.ownerDirectory(owner); files = await readdir(directory!); } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
       for (const file of files.filter(file => /^[a-f0-9]{64}\.json$/u.test(file))) {
-        const target = path.join(this.directory, file);
+        const target = path.join(directory!, file);
         let view: View;
         try { view = JSON.parse(await readFile(target, 'utf8')) as View; } catch { continue; }
         if (!view || typeof view.identity !== 'string' || !view.identity.startsWith(`${owner}:`)) continue;
         const key = `${view.identity}\n${view.profileKey}`;
         // Do not resurrect an older clean on-disk receipt if this process has
         // already observed a dirty write for the same projection identity.
-        if (options.preserveIndexes && validView(view) && !view.dirty && target === this.file(key)
+        if (options.preserveIndexes && validView(view) && !view.dirty && target === await this.file(key)
           && (!handled.has(key) || !handled.get(key)!.dirty && handled.get(key)!.scopeId === view.scopeId)) {
           if (!handled.has(key)) await this.save(key, { ...view, needsSync: true });
           await rm(`${target}.timeline`, { force: true }); continue;
@@ -197,7 +221,7 @@ export class CompanionMemoryViewCache {
         await rm(target, { force: true }); await rm(`${target}.timeline`, { force: true });
       }
       for (const file of files.filter(file => /^[a-f0-9]{64}\.json\.timeline$/u.test(file))) {
-        const target = path.join(this.directory, file);
+        const target = path.join(directory!, file);
         let artifactOwner: unknown;
         try { artifactOwner = JSON.parse(await readFile(target, 'utf8')).identity; }
         catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT' || error instanceof SyntaxError) continue; throw error; }

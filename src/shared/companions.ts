@@ -12,6 +12,8 @@ import { companionMemoryCorpusStateCommand, companionMemoryProbeCommand, compani
 import type { CompanionMemoryProbeProgressEvent } from './companion-memory-probe-progress';
 import { companionMemoryRetrievalSchema } from './companion-memory-retrieval';
 import { companionMemoryContextEvidenceSchema } from './companion-memory-context-evidence';
+import { companionMemoryProcedureContextListSchema } from './companion-procedure';
+import { companionMemoryFileReceiptsSchema } from './companion-memory-files';
 import { companionExperienceCommands, companionExperienceDayPageSchema, companionExperienceEntryPageSchema, companionExperienceDetailSchema, companionExperienceEntrySchema } from './companion-experience';
 import { companionMemoryRetrievalModesSchema } from './companion-memory-modes';
 import type { CompanionWorkspaceRequest, CompanionWorkspaceResponse } from './companion-workspace';
@@ -66,6 +68,8 @@ export const companionSchema = z.object({
   inputMode: z.enum(['steer', 'queue']).optional(),
   avatarAttachmentId: companionIdSchema.optional(),
   appearanceAttachmentId: companionIdSchema.optional(), revision: z.number().int().positive().optional(),
+  assetProfileRevision: z.string().regex(/^[a-f0-9]{64}$/u).optional(), assetPromptRevision: z.string().regex(/^[a-f0-9]{64}$/u).optional(),
+  assetProfileError: z.string().max(500).optional(),
   availability: z.enum(['ready', 'working', 'waiting', 'offline', 'dormant']).optional(), availabilityReason: z.string().max(500).optional(), activeCount: z.number().int().nonnegative().optional(), queuedCount: z.number().int().nonnegative().optional(),
 });
 export type Companion = z.infer<typeof companionSchema>;
@@ -186,7 +190,7 @@ export const companionsRequestSchema = z.discriminatedUnion('type', [
   companionAvatarCropRequestSchema,
   z.strictObject({ type: z.literal('companion.add-builtin'), templateId: z.enum(COMPANION_TEMPLATE_IDS) }),
   z.strictObject({ type: z.literal('companion.create'), companion: companionDraftSchema, apiKey: z.string().max(8192).optional() }),
-  z.strictObject({ type: z.literal('companion.update'), id: companionIdSchema, companion: companionDraftSchema, expectedRevision: z.number().int().positive().optional(), apiKey: z.string().max(8192).optional() }),
+  z.strictObject({ type: z.literal('companion.update'), id: companionIdSchema, companion: companionDraftSchema, expectedRevision: z.number().int().positive().optional(), expectedAssetProfileRevision: z.string().regex(/^[a-f0-9]{64}$/u).optional(), apiKey: z.string().max(8192).optional() }),
   z.strictObject({ type: z.literal('companion.set-active'), id: companionIdSchema, active: z.boolean(), expectedRevision: z.number().int().positive().optional() }),
   z.strictObject({ type: z.literal('companion.delete'), id: companionIdSchema }),
   z.strictObject({ type: z.literal('conversation.open'), companionId: companionIdSchema }),
@@ -264,6 +268,8 @@ export const companionsResponseSchema = z.object({
   lifeOverview: companionLifeOverviewSchema.optional(),
   memoryTracePage: companionMemoryTracePageSchema.optional(), memoryTrace: companionMemoryTraceSchema.optional(),
   memoryContext: z.object({ text: z.string().max(1024 * 1024), revision: z.string(), profileKey: z.string(),
+    proceduralStatus: companionMemoryProcedureContextListSchema.optional(),
+    fileReceipts: companionMemoryFileReceiptsSchema.optional(),
     evidence: companionMemoryContextEvidenceSchema.optional() }).optional(),
   memoryPolicies: z.array(companionMemoryPolicySchema).optional(),
   memoryRead: z.object({ memory: memorySchema, sources: z.array(messageSchema), related: z.array(memorySchema), hasMore: z.boolean(), nextSourceCursor: z.number().int().nonnegative().optional() }).optional(),

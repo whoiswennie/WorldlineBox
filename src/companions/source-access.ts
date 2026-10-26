@@ -22,7 +22,8 @@ export class CompanionSourceAccess {
     private readonly statements = new Map<string, ReturnType<CompanionConnection['prepare']>>();
     private validation?: { stamp: string; values: Map<string, boolean>; active: Set<string> };
     constructor(private readonly db: CompanionConnection, private readonly getMessage: (id: string) => CompanionMessage,
-      private readonly memoryValid?: (owner: string, id: string, version: number, scope?: CompanionSourceScope) => boolean) { }
+      private readonly memoryValid?: (owner: string, id: string, version: number, scope?: CompanionSourceScope) => boolean,
+      private readonly sourcesBlocked?: (owner: string, ids: readonly string[]) => void) { }
     /** Reuse only compiled static SQL on this connection. Statement results,
      * bindings and authorization proofs are never retained by this cache. */
     private statement(sql: string): ReturnType<CompanionConnection['prepare']> {
@@ -94,6 +95,7 @@ export class CompanionSourceAccess {
                     if (!this.statement('SELECT 1 FROM vcp_note_source_history WHERE note_id=? AND message_id=?').get(memory.id, reference.id)) return false;
                     const source = this.statement('SELECT * FROM messages WHERE id=?').get(reference.id);
                     if (!source || row(source).conversation_id !== reference.conversationId
+                        || (reference.revision !== undefined && Number(row(source).revision ?? 1) !== reference.revision)
                         || companionSourceChecksum(String(row(source).content)) !== reference.checksum) return false;
                     const entrance = { ...scope, conversationId: reference.conversationId };
                     this.requireScope(entrance);
@@ -181,9 +183,6 @@ export class CompanionSourceAccess {
       CREATE TABLE IF NOT EXISTS vcp_source_observers(message_id TEXT NOT NULL REFERENCES messages(id),companion_id TEXT NOT NULL REFERENCES companions(id),PRIMARY KEY(message_id,companion_id));
       CREATE TABLE IF NOT EXISTS vcp_source_blocks(message_id TEXT NOT NULL REFERENCES messages(id),companion_id TEXT NOT NULL REFERENCES companions(id),created_at TEXT NOT NULL,PRIMARY KEY(message_id,companion_id));
       CREATE TABLE IF NOT EXISTS vcp_source_prohibitions(id TEXT PRIMARY KEY,companion_id TEXT NOT NULL,conversation_id TEXT NOT NULL,tag TEXT NOT NULL,through_sequence INTEGER NOT NULL,persistent INTEGER NOT NULL);
-      CREATE TABLE IF NOT EXISTS vcp_source_policy_holds(id TEXT PRIMARY KEY,companion_id TEXT NOT NULL,conversation_id TEXT NOT NULL,request_message_id TEXT,request_snippet TEXT NOT NULL,created_at TEXT NOT NULL,released_at TEXT);
-      CREATE INDEX IF NOT EXISTS vcp_source_policy_owner ON vcp_source_policy_holds(companion_id,conversation_id,released_at);
-      CREATE TABLE IF NOT EXISTS vcp_source_policy_tags(policy_id TEXT NOT NULL REFERENCES vcp_source_policy_holds(id) ON DELETE CASCADE,prohibition_id TEXT NOT NULL REFERENCES vcp_source_prohibitions(id) ON DELETE CASCADE,PRIMARY KEY(policy_id,prohibition_id));
       CREATE TABLE IF NOT EXISTS vcp_source_prohibition_requests(prohibition_id TEXT NOT NULL REFERENCES vcp_source_prohibitions(id) ON DELETE CASCADE,message_id TEXT NOT NULL REFERENCES messages(id),PRIMARY KEY(prohibition_id,message_id));
       CREATE TABLE IF NOT EXISTS vcp_source_prohibition_releases(prohibition_id TEXT PRIMARY KEY REFERENCES vcp_source_prohibitions(id) ON DELETE CASCADE,released_at TEXT NOT NULL);
       CREATE INDEX IF NOT EXISTS vcp_source_management_message ON vcp_source_prohibition_requests(message_id);
@@ -208,9 +207,6 @@ export class CompanionSourceAccess {
     }
     observe(messageId: string, companionId: string): void {
         this.statement('INSERT OR IGNORE INTO vcp_source_observers(message_id,companion_id) VALUES(?,?)').run(messageId, companionId);
-    }
-    captureHeld(companionId: string, conversationId: string): boolean {
-        return !!this.statement("SELECT 1 FROM vcp_source_policy_holds WHERE companion_id=? AND conversation_id IN(?,'*') AND released_at IS NULL LIMIT 1").get(companionId, conversationId);
     }
     worldScope(conversationId: string): boolean { return !!this.statement('SELECT 1 FROM metadata WHERE key=?').get('world-room/' + conversationId); }
     managementSource(messageId: string): boolean { return !!this.statement('SELECT 1 FROM vcp_source_prohibition_requests WHERE message_id=? LIMIT 1').get(messageId); }
@@ -447,5 +443,6 @@ export class CompanionSourceAccess {
     block(companionId: string, ids: readonly string[]): void {
         for (const id of ids)
             this.statement('INSERT OR IGNORE INTO vcp_source_blocks(message_id,companion_id,created_at) VALUES(?,?,?)').run(id, companionId, new Date().toISOString());
+        if (ids.length) this.sourcesBlocked?.(companionId, ids);
     }
 }

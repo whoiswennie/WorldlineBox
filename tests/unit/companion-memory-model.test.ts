@@ -40,6 +40,19 @@ function request(fetchFn: ReturnType<typeof fetchFor>) {
 }
 
 describe('source-grounded VCP experience journals', () => {
+  it('can propose a sourced procedure candidate while exposing only host-owned validation on read methods', async () => {
+    const source = message('method_source', 6, '保存output.txt后，再检查文件是否包含已核验结果。');
+    const procedure = { applicability: '生成当前约定的文本文件时', steps: ['保存output.txt。', '检查是否包含已核验结果。'], limitations: ['仅适用当前约定'],
+      verification: { kind: 'artifact_delivery' as const, artifactRequirements: [{ path: 'output.txt', containsText: '已核验结果' }] } };
+    const draft = { content: source.content, tags: ['方法候选'], procedure, sourceMessageIds: [source.id], evidence: [{ sourceMessageId: source.id, quote: source.content }] };
+    const fetchFn = fetchFor({ notes: [draft] });
+    const old = memory({ procedure: { ...procedure, validation: { state: 'disabled', successes: 0, failures: 1, evidence: [] } } });
+    const result = await generateCompanionJournal({ ...input, messages: [source], relevantMemories: [old] }, config, undefined, { fetchFn });
+    expect(result.notes[0]?.procedure).toEqual(procedure); expect(request(fetchFn).payload.relevantMemories[0].procedure.validation.state).toBe('disabled');
+    expect(request(fetchFn).system).toContain('方法一律先是未验证候选');
+    await expect(generateCompanionJournal({ ...input, messages: [source] }, config, undefined,
+      { fetchFn: fetchFor({ notes: [{ ...draft, procedure: { ...procedure, validation: { state: 'validated' } } }] }) })).rejects.toMatchObject({ code: 'INVALID_RESPONSE' });
+  });
   it('distinguishes a new peer enquiry episode from repeating the already-known name fact', async () => {
     const peerRoom = { ...conversation, id: 'peer_sisters', kind: 'group' as const, memberIds: ['sister', 'younger'] };
     const question = message('peer_question', 5, '姐姐，那位玩家让我来问，你还记得他叫什么吗？', { conversationId: peerRoom.id, authorId: 'younger' });
@@ -168,6 +181,18 @@ describe('source-grounded VCP experience journals', () => {
       { fetchFn: fetchFor({ notes: [linked] }) })).notes[0]?.relatedMemoryIds).toEqual([old.id]);
     await expect(generateCompanionJournal({ ...input, relevantMemories: [memory({ companionId: 'another_owner' })] }, config, undefined,
       { fetchFn: fetchFor({ notes: [linked] }) })).rejects.toMatchObject({ code: 'INVALID_RESPONSE' });
+  });
+  it('removes a redundant target self-link from a verified correction while rejecting unread, stale or cross-domain targets', async () => {
+    const target = memory(), other = memory({ id: 'another_read_note' });
+    const corrected = { ...note, encoding: { action: 'correct' as const, targetId: target.id, expectedVersion: target.version }, relatedMemoryIds: [target.id, other.id] };
+    const result = await generateCompanionJournal({ ...input, relevantMemories: [target, other] }, config, undefined,
+      { fetchFn: fetchFor({ notes: [corrected] }) });
+    expect(result.notes[0]?.relatedMemoryIds).toEqual([other.id]);
+    expect(result.notes[0]?.encoding).toEqual(corrected.encoding);
+    for (const relevantMemories of [[other], [{ ...target, version: target.version + 1 }, other], [{ ...target, sourceConversationId: 'other_domain' }, other]]) {
+      await expect(generateCompanionJournal({ ...input, relevantMemories }, config, undefined,
+        { fetchFn: fetchFor({ notes: [corrected] }) })).rejects.toMatchObject({ code: 'INVALID_RESPONSE' });
+    }
   });
   it('uses each source historical world time zone without replacing event time by the current wall clock', async () => {
     const fetchFn = fetchFor({ notes: [] });

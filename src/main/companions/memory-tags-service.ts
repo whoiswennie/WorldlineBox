@@ -7,9 +7,9 @@ import { memorySchedule } from './memory-processing-schedule';
 interface Options {
   request(command: CompanionStorageCommand): Promise<CompanionStorageResponse>;
   /** Global chat policy; no per-resident credential or separate tagging model. */
-  config(): Promise<CompanionModelConfig>;
+  config(companionId?: string): Promise<CompanionModelConfig>;
   /** Original vendored Plugin/DailyNote/TagMaster.txt, loaded once by the host. */
-  prompt(): Promise<string>;
+  prompt(companionId?: string): Promise<string>;
   validate?(job: CompanionMemoryTagJob, tags: readonly string[], signal: AbortSignal): Promise<void>;
   fetchFn: typeof fetch; changed(): void; report(error: unknown): void; busy?(): boolean;
 }
@@ -37,7 +37,7 @@ export class CompanionMemoryTagService {
   constructor(private readonly options: Options) {}
   async schedulingFor(companionId?: string): Promise<CompanionMemoryJobSchedule> {
     let configured = false;
-    try { const config = await this.options.config(); configured = !!config.model?.trim() && !!config.apiKey?.trim(); } catch { /* Read-only configuration check; never an API request. */ }
+    try { const config = await this.options.config(companionId); configured = !!config.model?.trim() && !!config.apiKey?.trim(); } catch { /* Read-only configuration check; never an API request. */ }
     const nextCheckAt = this.timer && this.scheduledAt && this.scheduledAt > Date.now() && !this.running ? new Date(this.scheduledAt).toISOString() : undefined;
     const base = memorySchedule('tags', { ...(nextCheckAt ? { nextCheckAt, scheduleKind: 'timer' as const } : {}),
       condition: nextCheckAt ? '已安排下一轮标签队列检查，每轮按原文版本依次核验。' : '尚未登记下一轮标签检查；手工导入、文档操作或当前后台轮次结束后继续核验。' });
@@ -45,7 +45,6 @@ export class CompanionMemoryTagService {
     if (this.running) return { ...base, scheduleKind: this.owner === companionId ? 'running' : 'condition', nextCheckAt: undefined,
       waitingReason: this.owner === companionId ? undefined : 'worker_busy', condition: this.owner === companionId ? '正在整理这位伙伴实际文档的标签。'
         : '标签后台当前轮次尚未结束，正在核验或处理已领取文档；空出资源后继续。' };
-    if (this.options.busy?.()) return { ...base, scheduleKind: 'condition', waitingReason: 'foreground_busy', condition: '前台正在生成回复，标签后台本轮让出资源；下一次实际检查时再次核验忙闲。' };
     if (!configured) return { ...base, scheduleKind: 'condition', waitingReason: 'model_unconfigured',
       condition: '无明确 Tag 行的文档需要“设置 → 全局模型”中的可用聊天模型；已有明确 Tag 行的文档仍可直接核验。正文会保留。' };
     return base;
@@ -58,7 +57,7 @@ export class CompanionMemoryTagService {
     this.scheduledAt = Date.now() + 1000; this.timer = setTimeout(next, 1000); this.timer.unref(); this.options.changed();
   }
   tick(): Promise<void> {
-    if (this.closed || this.options.busy?.()) return Promise.resolve();
+    if (this.closed) return Promise.resolve();
     if (this.running) return this.running;
     const run = this.process(); this.running = run;
     this.options.changed();
@@ -66,7 +65,7 @@ export class CompanionMemoryTagService {
     return run;
   }
   private async process(): Promise<void> {
-    for (let count = 0; count < 4 && !this.closed && !this.options.busy?.(); count++) {
+    for (let count = 0; count < 4 && !this.closed; count++) {
       const job = (await this.options.request({ type: 'memory.tags.claim' })).memoryTagJob;
       if (!job) return;
       this.controller = new AbortController(); this.owner = job.companionId; this.noteId = job.noteId;
@@ -78,10 +77,10 @@ export class CompanionMemoryTagService {
           await this.publish(job, parseVcpTagMasterOutput(`[[Tag: ${explicit[1]}]]`), this.controller.signal); continue;
         }
         let config: CompanionModelConfig;
-        try { config = await this.options.config(); }
+        try { config = await this.options.config(job.companionId); }
         catch { await this.defer(job, 'needs_model'); return; }
-        const tags = parseVcpTagMasterOutput(await generateCompanionText({ system: await this.options.prompt(), user: job.content },
-          config, this.controller.signal, { fetchFn: this.options.fetchFn, timeoutMs: 45000 }));
+        const tags = parseVcpTagMasterOutput(await generateCompanionText({ system: await this.options.prompt(job.companionId), user: job.content },
+          { ...config, ownerId: job.companionId, workPriority: 'background' }, this.controller.signal, { fetchFn: this.options.fetchFn, timeoutMs: 45000 }));
         await this.publish(job, tags, this.controller.signal);
       } catch (error) {
         await this.defer(job, error instanceof CompanionModelError && error.code === 'CONFIG' ? 'needs_model' : 'retry');

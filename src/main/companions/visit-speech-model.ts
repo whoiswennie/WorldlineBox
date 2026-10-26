@@ -1,3 +1,4 @@
+import { companionBehaviorSystem } from './asset-behavior-defaults';
 import { z } from 'zod';
 import type { Companion, CompanionMessage } from '../../shared/companions';
 import type { CompanionWorldSnapshot } from '../../shared/companion-world';
@@ -37,10 +38,9 @@ options: Pick<CompanionModelOptions, 'fetchFn' | 'timeoutMs'> = {}): Promise<str
     invocation: { id: input.task.id + ':speech', kind: 'peer', companionId: input.companion.id, conversationId,
       goal: '根据实际拜访状态与对方自然交流。', status: 'running', createdAt: input.task.createdAt,
       messagePort: { kind: 'conversation' }, authorization: { kind: 'peer', sourceMessageIds: source ? [source.id] : [], externalActions: false } } }, context: {
-    system: `你是${input.companion.name}，稳定人格：\n${input.companion.persona}\n${COMPANION_WORLD_PERCEPTION_RULES}
-你正在与已经获准联系的拜访对象自然交流。此通道只提供你们的实际来往和有限感知，没有玩家私聊、私人委托、其他人的记忆或拟发送草稿。基础问候、询问方便与否、获准后的见面和后续寒暄属于同一次联系，不需要重新要求玩家授权或重复询问已经明确的许可。只说你自己的话，直接回应最新的真实来往，不替对方发话、不转述玩家。不创造外部任务、不要求对方操作系统或点按钮。phone是远程文字，face_to_face是现场交谈；宿主仍会复核实际位置、距离和忙闲，写出话不代表已经发送成功。
-runtimeState/runtimeBehavior是本轮最新的公开情绪、精力与表达方式；characterDevelopment是从自己当前有效VCP记忆投影的有条件喜好、边界、价值看法与表达习惯，遵守qualification，不把他人的偏好或教材直接当作自己的人格。它们只指导自然交流，不覆盖稳定人格、事实或权限，旧回执中的状态不代表此刻。
-位置、到达、交流是否发生只按实际状态；收到邀请不等于进屋，曾到过也不等于现在仍在那里，对方来家里不等于你完成了尚未发生的出发。只说自己实际已做的事，不凭空添加烧水、做饭、茶、风、天气或场景物件。对方已给出的明确答复不反复询问，已告别、双方已经说过或没有新内容时text=null，避免无意义的寒暄循环。只输出text或null，不输出思考、授权判断或工具。`,
+    system: companionBehaviorSystem(config, 'visit_peer_speech', `【宿主拜访通信合同】只说当前self的话，仅使用这个peer入口的获权来往和本轮有限感知；不引用玩家私聊或其他人的私态，不替对方发言/许可或创造外部任务。
+${COMPANION_WORLD_PERCEPTION_RULES}
+phone/face_to_face的实际发送、位置、距离和许可仍由宿主核验，提案不能代替身体行动。只按schema返回{text:string|null}，不输出思考或工具。`, input.companion),
     user: JSON.stringify({ purpose: 'visit_peer_speech', self: { id: input.companion.id, name: input.companion.name }, target: { id: input.target.id, name: input.target.name },
       channel: input.channel, runtimeState, runtimeBehavior: runtimeState ? companionRuntimeBehavior(runtimeState) : undefined,
       characterDevelopment: input.peerConversationId ? currentCompanionCharacterDevelopment(input.characterDevelopment, input.companion.id, input.peerConversationId) : undefined,

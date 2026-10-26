@@ -20,17 +20,6 @@ export class CompanionCharacterDevelopmentStore {
         companion_id TEXT NOT NULL,topic_key TEXT NOT NULL,source_sequence INTEGER NOT NULL,
         note_id TEXT NOT NULL REFERENCES vcp_memory_notes(id) ON DELETE CASCADE,PRIMARY KEY(companion_id,topic_key));
     `);
-    this.db.transaction(() => {
-      if (this.db.prepare("SELECT 1 FROM metadata WHERE key='character-retirement-watermarks/v1'").get()) return;
-      // Bootstrap only already-verified host metadata. A watermark preserves no
-      // statement or private topic text, and never makes a retired note readable.
-      const verified = this.db.prepare("SELECT data FROM vcp_memory_notes WHERE json_extract(data,'$.metadata.characterDevelopment.topic') IS NOT NULL") as unknown as { iterate(): Iterable<{ data: string }> };
-      for (const entry of verified.iterate()) {
-        const note = JSON.parse(entry.data) as CompanionMemory, parsed = companionCharacterDevelopmentDraftSchema.safeParse(note.metadata?.characterDevelopment);
-        if (parsed.success) this.remember(note, parsed.data.topic);
-      }
-      this.db.prepare("INSERT INTO metadata(key,value) VALUES('character-retirement-watermarks/v1','done')").run();
-    }).immediate();
   }
   private topicKey(topic: string): string { return createHash('sha256').update(companionCharacterTopic(topic)).digest('hex'); }
   private remember(note: CompanionMemory, topic: string): void {

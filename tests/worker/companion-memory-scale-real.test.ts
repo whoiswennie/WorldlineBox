@@ -112,7 +112,7 @@ it.skipIf(process.env.WORLDLINEBOX_MEMORY_SCALE_REAL !== '1')('measures the real
       '刚才关于名字和晚间咖啡的说法都不变，不是新约定。',
     ].map(content => store.appendMessage({ conversationId: autoRoom.id, authorId: 'user', content, replyDirective: 'none' }));
     const capture = new CompanionMemoryService({ request, configFor: async () => config,
-      runtime: { get: () => native.runtime.get(), describeEmbedding: () => native.runtime.describeEmbedding(),
+      runtime: { get: scope => native.runtime.get(scope), describeEmbedding: () => native.runtime.describeEmbedding(),
         describeGeneration: selection => native.runtime.describeGeneration(selection),
         acquireGeneration: selection => native.runtime.acquireGeneration(selection),
         interruptOwner: ownerId => native.runtime.interruptOwner(ownerId),

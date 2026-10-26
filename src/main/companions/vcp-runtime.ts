@@ -8,6 +8,12 @@ import { ColdKnowledgeService, type ColdKnowledgeServiceOptions } from '../vcp-m
 import { removeOwnedDirectory } from '../vcp-memory/filesystem';
 import { VcpMemoryProcessBroker } from '../vcp-memory/process-broker';
 import type { CompanionModelConfig } from './model';
+import { companionRuntimeOwner, companionOwnerRuntimePaths, companionOwnerRuntimeStorage, type CompanionOwnerRuntimeStorage, type CompanionOwnerRuntimePaths } from './owner-runtime-storage';
+
+export type { CompanionOwnerRuntimeStorage, CompanionOwnerRuntimePaths } from './owner-runtime-storage';
+export interface CompanionMemoryOwnerScope { ownerId: string; signal?: AbortSignal }
+export interface CompanionEmbeddingLease { client: VcpMemoryClient; profileKey: string; release?(): Promise<void> }
+export type CompanionColdLease = ColdKnowledgeService & { release?(): Promise<void> };
 
 export interface CompanionGenerationSelection { ownerId: string; config: Readonly<CompanionModelConfig> }
 export interface CompanionGenerationDescriptor { ownerId: string; profileKey: string }
@@ -15,6 +21,8 @@ export interface CompanionGenerationLease extends CompanionGenerationDescriptor 
   client: VcpMemoryClient; connectionEpoch: number; release(): Promise<void>;
 }
 export interface CompanionProjectionCleanup {
+  /** Maintenance of one projection does not revoke other task snapshots. */
+  projectionOnly?: boolean;
   /** Retire readers after ordinary revisions without deleting clean indexes. */
   preserveIndexes?: boolean;
   canonicalScopes?: readonly string[];
@@ -24,29 +32,33 @@ export interface CompanionProjectionCleanup {
 export interface CompanionMemoryRuntime {
   /** Production runtimes can prepare plugins/graphs without a query or model call. */
   readonly supportsPreparation?: boolean;
-  get(): Promise<{ client: VcpMemoryClient; profileKey: string }>;
+  get(scope: CompanionMemoryOwnerScope): Promise<CompanionEmbeddingLease>;
   describeEmbedding?(): Promise<{ profileKey: string }>;
   describeGeneration?(input: CompanionGenerationSelection): Promise<CompanionGenerationDescriptor>;
   acquireGeneration?(input: CompanionGenerationSelection & { signal?: AbortSignal }): Promise<CompanionGenerationLease>;
   interruptOwner?(ownerId: string): Promise<void>;
   purgeOwner?(ownerId: string, scopes?: CompanionProjectionCleanup): Promise<void>;
-  getCold?(authorize: ColdKnowledgeServiceOptions['authorize']): Promise<ColdKnowledgeService>;
+  getCold?(scope: CompanionMemoryOwnerScope, authorize: ColdKnowledgeServiceOptions['authorize']): Promise<CompanionColdLease>;
   resetCold?(owner: string): Promise<void>;
   close(): Promise<void>;
 }
 
 const digest = (value: string) => createHash('sha256').update(value).digest('hex');
 const delay = () => new Promise<void>(resolve => setTimeout(resolve, 20));
-function ownerIdentity(owner: string): string {
-  if (typeof owner !== 'string' || !owner.trim() || owner.length > 100) throw new Error('生成所属伙伴无效。');
-  return owner;
-}
+const ownerIdentity = companionRuntimeOwner;
+interface CoreEntry { key: string; ownerId: string; profileKey: string; connection: string; storage: CompanionOwnerRuntimeStorage;
+  client: VcpMemoryClient; references: number; used: number; retiring?: Promise<void> }
+interface ColdEntry { key: string; ownerId: string; profileKey: string; space: string; connection: string; storage: CompanionOwnerRuntimeStorage;
+  service: ColdKnowledgeService; references: number; used: number; authorize: ColdKnowledgeServiceOptions['authorize']; retiring?: Promise<void> }
 interface GenerationEntry {
   key: string; ownerId: string; profileKey: string; connection: string; connectionEpoch: number;
   client: VcpMemoryClient; references: number; used: number; dispose(): Promise<void>; retiring?: Promise<void>;
+  storage: CompanionOwnerRuntimeStorage;
 }
 export interface CompanionVcpRuntimeOptions {
-  dataRoot: string; vendorRoot: string; workerPath: string;
+  vendorRoot: string; workerPath: string;
+  resolveOwnerStorage(ownerId: string): Promise<CompanionOwnerRuntimeStorage>;
+  resolveOwnerCleanupStorage(ownerId: string): Promise<CompanionOwnerRuntimePaths>;
   resolveEmbedding(): Promise<VcpMemoryEmbeddingConfig>;
   /** Retained only for source compatibility. Core operations never acquire chat. */
   resolvePlugins?(): Promise<VcpMemoryPluginConfiguration>;
@@ -59,22 +71,30 @@ export interface CompanionVcpRuntimeOptions {
  * identities. Every hot client shares one actual child-process budget. */
 export class CompanionVcpRuntime implements CompanionMemoryRuntime {
   readonly supportsPreparation = true;
-  private current?: { client: VcpMemoryClient; profileKey: string };
-  private currentConnectionSignature?: string;
+  private readonly cores = new Map<string, CoreEntry>();
   private readonly spaces = new Map<string, string>();
   private readonly generations = new Map<string, GenerationEntry>();
   private readonly ownerEpochs = new Map<string, number>();
   private readonly broker = new VcpMemoryProcessBroker(4);
   private connectionEpoch = 0;
   private readonly sensitiveEndpoints = new Map<string, string>();
-  private cold?: { service: ColdKnowledgeService; embeddingProfile: string; space: string; connectionSignature: string };
-  private coldAuthorize?: ColdKnowledgeServiceOptions['authorize'];
+  private readonly colds = new Map<string, ColdEntry>();
   private tail: Promise<unknown> = Promise.resolve();
   private generationTail: Promise<unknown> = Promise.resolve();
   private readonly generationAdmissions = new Set<Promise<unknown>>();
+  private readonly coreAdmissions = new Set<Promise<unknown>>();
   private readonly ownerPurges = new Map<string, Promise<void>>();
   private closed = false;
   constructor(private readonly options: CompanionVcpRuntimeOptions) {}
+  private async storage(ownerId: string): Promise<CompanionOwnerRuntimeStorage> {
+    return companionOwnerRuntimeStorage(ownerId, await this.options.resolveOwnerStorage(ownerId));
+  }
+  private async cleanupStorage(ownerId: string): Promise<CompanionOwnerRuntimePaths> {
+    return companionOwnerRuntimePaths(ownerId, await this.options.resolveOwnerCleanupStorage(ownerId));
+  }
+  private track<T>(pending: Promise<T>, set = this.coreAdmissions): Promise<T> {
+    set.add(pending); void pending.finally(() => set.delete(pending)).catch(() => undefined); return pending;
+  }
   private async embedding() {
     const embedding = { ...await this.options.resolveEmbedding() };
     if (this.closed) throw new Error('记忆服务已关闭。');
@@ -116,21 +136,48 @@ export class CompanionVcpRuntime implements CompanionMemoryRuntime {
     const description = await this.generationDescription(input);
     return { ownerId: description.selection.ownerId, profileKey: description.profileKey };
   }
-  get(): Promise<{ client: VcpMemoryClient; profileKey: string }> {
-    const pending = this.tail.then(async () => {
-      if (this.closed) throw new Error('记忆服务已关闭。');
-      const { embedding, profileKey } = await this.embedding();
-      const signature = digest(JSON.stringify(embedding));
-      if (this.current?.profileKey === profileKey && this.currentConnectionSignature === signature) return this.current;
-      // Transport refresh drains the old writer; it never erases historical
-      // projections merely because a credential or loopback port changed.
-      await this.current?.client.close(); this.current = undefined;
-      if (this.closed) throw new Error('记忆服务已关闭。');
-      const client = new VcpMemoryClient({ dataRoot: path.join(this.options.dataRoot, digest(profileKey)), vendorRoot: this.options.vendorRoot,
-        workerPath: this.options.workerPath, embedding, processBroker: this.broker, launch: this.options.launch, maxOpenScopes: 4 });
-      this.currentConnectionSignature = signature; return this.current = { client, profileKey };
-    });
-    this.tail = pending.catch(() => undefined); return pending;
+  private retireCore(entry: CoreEntry): Promise<void> { return entry.retiring ??= entry.client.close().then(() => {
+    if (this.cores.get(entry.key) === entry) this.cores.delete(entry.key);
+  }); }
+  private coreLease(entry: CoreEntry): CompanionEmbeddingLease {
+    entry.references++; entry.used = Date.now(); let released = false;
+    return { client: entry.client, profileKey: entry.profileKey, release: async () => { if (!released) { released = true; entry.references--; entry.used = Date.now(); } } };
+  }
+  get(scope: CompanionMemoryOwnerScope): Promise<CompanionEmbeddingLease> {
+    const ownerId = ownerIdentity(scope.ownerId), epoch = this.ownerEpochs.get(ownerId) ?? 0, deadline = Date.now() + 180_000;
+    const current = () => { scope.signal?.throwIfAborted(); if (this.closed) throw new Error('记忆服务已关闭。');
+      if ((this.ownerEpochs.get(ownerId) ?? 0) !== epoch) throw new Error('伙伴记忆已取消。'); if (Date.now() >= deadline) throw new Error('伙伴记忆连接池仍然繁忙。'); };
+    return this.track(Promise.resolve().then(async () => {
+      current(); const { embedding, profileKey } = await this.embedding(), storage = await this.storage(ownerId); current();
+      const connection = digest(JSON.stringify(embedding)), key = ownerId + ':' + profileKey;
+      const existing = this.cores.get(key);
+      if (existing && !existing.retiring && existing.connection === connection && existing.storage.indexRoot === storage.indexRoot && !this.ownerPurges.has(ownerId)) {
+        existing.client.setOwnerPrompts(storage.ownerPrompts); existing.storage = storage; return this.coreLease(existing);
+      }
+      const pending = this.tail.then(async () => {
+        while (this.ownerPurges.has(ownerId)) { current(); await delay(); } current();
+        let entry = this.cores.get(key);
+        if (entry && (entry.retiring || entry.connection !== connection || entry.storage.indexRoot !== storage.indexRoot)) {
+          await this.retireCore(entry); while (entry.references) { current(); await delay(); } entry = undefined;
+        }
+        if (!entry) {
+          for (const idle of [...this.cores.values()].filter(value => value.ownerId === ownerId && value.profileKey !== profileKey && !value.references && !value.retiring))
+            await this.retireCore(idle);
+          while (this.cores.size >= 4) {
+            current(); const idle = [...this.cores.values()].filter(value => !value.references && !value.retiring).sort((a,b) => a.used-b.used)[0];
+            if (idle) { await this.retireCore(idle); continue; } await delay();
+          }
+          current(); const actual = await this.storage(ownerId); current();
+          if (actual.indexRoot !== storage.indexRoot) throw new Error('伙伴资产目录在连接期间发生变化。');
+          const client = new VcpMemoryClient({ dataRoot: path.join(storage.indexRoot, 'hot', digest(profileKey)), vendorRoot: this.options.vendorRoot,
+            boundOwnerId: ownerId,
+            preparedRecallBudget: { workspaceRoot: storage.workspaceRoot }, workerPath: this.options.workerPath, embedding,
+            plugins: { ownerPrompts: storage.ownerPrompts }, processBroker: this.broker, launch: this.options.launch, maxOpenScopes: 4 });
+          entry = { key, ownerId, profileKey, connection, storage, client, references: 0, used: Date.now() }; this.cores.set(key, entry);
+        }
+        current(); entry.client.setOwnerPrompts(storage.ownerPrompts); entry.storage = storage; return this.coreLease(entry);
+      }); this.tail = pending.catch(() => undefined); return pending;
+    }));
   }
   private retireEntry(entry: GenerationEntry): Promise<void> {
     return entry.retiring ??= (async () => {
@@ -152,20 +199,21 @@ export class CompanionVcpRuntime implements CompanionMemoryRuntime {
       if ((this.ownerEpochs.get(selection.ownerId) ?? 0) !== epoch) throw new Error('伙伴生成已取消。');
       if (Date.now() >= deadline) throw new Error('伙伴生成连接池仍然繁忙。'); };
     const pending = Promise.resolve().then(async () => {
-      current(); const description = await this.generationDescription(selection); current();
+      current(); const description = await this.generationDescription(selection), storage = await this.storage(selection.ownerId); current();
       const existing = this.generations.get(selection.ownerId + ':' + description.profileKey);
       // A fifth owner waiting for a free generation slot must not stop an
       // already configured owner from reusing its route. Only new/rotated
       // routes join the exclusive admission tail; their writer exclusion is
       // unchanged, including retirement and outstanding old leases.
-      if (existing && !existing.retiring && existing.connection === description.connection && !this.ownerPurges.has(selection.ownerId))
-        return this.leaseEntry(existing);
+      if (existing && !existing.retiring && existing.connection === description.connection && existing.storage.indexRoot === storage.indexRoot && !this.ownerPurges.has(selection.ownerId)) {
+        existing.client.setOwnerPrompts(storage.ownerPrompts); existing.storage = storage; return this.leaseEntry(existing);
+      }
       const queued = this.generationTail.then(async () => {
         while (this.ownerPurges.has(selection.ownerId)) { current(); await delay(); }
-        current(); const description = await this.generationDescription(selection); current();
+        current(); const description = await this.generationDescription(selection), storage = await this.storage(selection.ownerId); current();
         const key = selection.ownerId + ':' + description.profileKey;
         let entry = this.generations.get(key);
-        if (entry && (entry.connection !== description.connection || entry.retiring)) {
+        if (entry && (entry.connection !== description.connection || entry.retiring || entry.storage.indexRoot !== storage.indexRoot)) {
           await this.retireEntry(entry);
           // Old lease holders cannot use the closed client. Wait for their
           // finally/release before admitting a new writer to the same root.
@@ -183,15 +231,17 @@ export class CompanionVcpRuntime implements CompanionMemoryRuntime {
           const route = await this.options.resolveGenerationPlugins({ ...selection, profileKey: description.profileKey });
           try {
             current();
-            const client = new VcpMemoryClient({ dataRoot: path.join(this.options.dataRoot, 'generation', digest(selection.ownerId), digest(description.profileKey)),
+            const client = new VcpMemoryClient({ dataRoot: path.join(storage.indexRoot, 'generation', digest(description.profileKey)),
+              boundOwnerId: selection.ownerId,
+              preparedRecallBudget: { workspaceRoot: storage.workspaceRoot },
               vendorRoot: this.options.vendorRoot, workerPath: this.options.workerPath, embedding: description.embedding,
-              plugins: route.plugins, processBroker: this.broker, launch: this.options.launch, maxOpenScopes: 4 });
+              plugins: { ...route.plugins, ownerPrompts: storage.ownerPrompts }, processBroker: this.broker, launch: this.options.launch, maxOpenScopes: 4 });
             entry = { key, ownerId: selection.ownerId, profileKey: description.profileKey, connection: description.connection,
-              connectionEpoch: ++this.connectionEpoch, client, references: 0, used: Date.now(), dispose: route.dispose };
+              connectionEpoch: ++this.connectionEpoch, client, references: 0, used: Date.now(), dispose: route.dispose, storage };
             this.generations.set(key, entry);
           } catch (error) { await route.dispose(); throw error; }
         }
-        current(); return this.leaseEntry(entry);
+        current(); entry.client.setOwnerPrompts(storage.ownerPrompts); entry.storage = storage; return this.leaseEntry(entry);
       });
       this.generationTail = queued.catch(() => undefined); return queued;
     });
@@ -201,49 +251,41 @@ export class CompanionVcpRuntime implements CompanionMemoryRuntime {
   }
   async interruptOwner(ownerId: string): Promise<void> {
     ownerIdentity(ownerId); this.ownerEpochs.set(ownerId, (this.ownerEpochs.get(ownerId) ?? 0) + 1);
-    const results = await Promise.allSettled([...this.generations.values()].filter(entry => entry.ownerId === ownerId).map(entry => this.retireEntry(entry)));
+    const results = await Promise.allSettled([
+      ...[...this.generations.values()].filter(entry => entry.ownerId === ownerId).map(entry => this.retireEntry(entry)),
+      ...[...this.cores.values()].filter(entry => entry.ownerId === ownerId).map(entry => this.retireCore(entry)),
+      ...[...this.colds.values()].filter(entry => entry.ownerId === ownerId).map(entry => this.retireCold(entry)),
+    ]);
     const failure = results.find(result => result.status === 'rejected'); if (failure?.status === 'rejected') throw failure.reason;
   }
   purgeOwner(ownerId: string, scopes: CompanionProjectionCleanup = {}): Promise<void> {
     ownerIdentity(ownerId);
-    const interrupt = this.interruptOwner(ownerId);
+    const interrupt = scopes.projectionOnly ? (async () => {
+      for (const entry of [...this.cores.values(), ...this.generations.values()].filter(entry => entry.ownerId === ownerId)) {
+        const scopeIds = new Set(scopes.canonicalScopes ?? []);
+        for (const pair of scopes.historicalViews ?? []) if (pair.profileKey === entry.profileKey) scopeIds.add(pair.scopeId);
+        for (const scopeId of scopeIds) { await entry.client.interruptScope({ scopeId }); await entry.client.purgeScope({ scopeId }); }
+      }
+    })() : this.interruptOwner(ownerId);
     const pending = this.tail.then(async () => {
       await interrupt;
-      const base = path.resolve(this.options.dataRoot);
-      const directory = async (file: string) => {
-        try { const entry = await lstat(file); if (entry.isSymbolicLink() || !entry.isDirectory()) throw new Error('记忆清理目录必须为实际拥有的文件夹。'); return true; }
-        catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') return false; throw error; }
-      };
-      if (!await directory(base)) return;
-      const generations = path.join(base, 'generation');
-      if (await directory(generations)) {
-        const target = path.join(generations, digest(ownerId));
-        if (!scopes.preserveIndexes) { if (await directory(target)) await removeOwnedDirectory(target); }
-        else if (await directory(target)) for (const pair of scopes.historicalViews ?? []) {
-          const profile = path.join(target, digest(pair.profileKey));
-          if (await directory(profile)) { const dirty = path.join(profile, digest(pair.scopeId)); if (await directory(dirty)) await removeOwnedDirectory(dirty); }
-        }
-      }
-      const targets = new Map<string, { profileKey: string; scopeId: string }>();
+      const storage = await this.cleanupStorage(ownerId);
       for (const pair of scopes.historicalViews ?? []) {
         if (!pair.profileKey || !pair.scopeId || pair.scopeId.length > 4096) throw new Error('历史记忆范围无效。');
-        targets.set(digest(pair.profileKey) + '/' + digest(pair.scopeId), pair);
       }
       const canonical = scopes.canonicalScopes ?? [];
-      const currentScopes = new Set(canonical);
-      for (const pair of scopes.historicalViews ?? []) if (pair.profileKey === this.current?.profileKey) currentScopes.add(pair.scopeId);
-      for (const scopeId of currentScopes) {
-        if (!scopeId || scopeId.length > 4096) throw new Error('记忆范围无效。');
-        await this.current?.client.interruptScope({ scopeId });
-        await this.current?.client.purgeScope({ scopeId });
-      }
-      for (const name of await readdir(base)) {
-        if (!/^[a-f0-9]{64}$/u.test(name)) continue;
-        const profile = path.join(base, name); if (!await directory(profile)) continue;
-        const scopeHashes = new Set(canonical.map(value => digest(value)));
-        for (const [target] of targets) if (target.startsWith(name + '/')) scopeHashes.add(target.slice(65));
-        for (const scopeHash of scopeHashes) {
-          const target = path.join(profile, scopeHash); if (await directory(target)) await removeOwnedDirectory(target);
+      if (canonical.some(value => !value || value.length > 4096)) throw new Error('记忆范围无效。');
+      for (const lane of ['hot', 'generation']) {
+        const base = path.join(storage.indexRoot, lane);
+        if (!await this.directory(storage, base)) continue;
+        if (!scopes.preserveIndexes && !scopes.projectionOnly) { await removeOwnedDirectory(base); continue; }
+        for (const profileHash of await readdir(base)) {
+          if (!/^[a-f0-9]{64}$/u.test(profileHash)) continue;
+          const profile = path.join(base, profileHash); if (!await this.directory(storage, profile)) continue;
+          const scopeHashes = new Set(canonical.map(value => digest(value)));
+          for (const pair of scopes.historicalViews ?? []) if (digest(pair.profileKey) === profileHash) scopeHashes.add(digest(pair.scopeId));
+          for (const scopeHash of scopeHashes) { const target = path.join(profile, scopeHash);
+            if (await this.directory(storage, target)) await removeOwnedDirectory(target); }
         }
       }
     });
@@ -252,61 +294,76 @@ export class CompanionVcpRuntime implements CompanionMemoryRuntime {
       () => { if (this.ownerPurges.get(ownerId) === pending) this.ownerPurges.delete(ownerId); });
     this.tail = pending.catch(() => undefined); return pending;
   }
-  getCold(authorize: ColdKnowledgeServiceOptions['authorize']): Promise<ColdKnowledgeService> {
-    const pending = this.tail.then(async () => {
-      if (this.closed) throw new Error('冷知识服务已关闭。');
-      const embedding = await this.options.resolveEmbedding();
-      if (this.closed) throw new Error('冷知识服务已关闭。');
-      const embeddingProfile = embedding.modelSignature ?? `${embedding.model}:${embedding.dimension}`;
-      const space = JSON.stringify([embedding.model, embedding.dimension, embedding.modelSignature ?? null]);
-      if (this.cold?.embeddingProfile === embeddingProfile && this.cold.space !== space) throw new Error('冷知识向量模型或维度已变化，语义空间签名必须同步更新。');
-      this.coldAuthorize = authorize;
-      const connectionSignature = createHash('sha256').update(JSON.stringify(embedding)).digest('hex');
-      if (this.cold?.embeddingProfile === embeddingProfile && this.cold.connectionSignature === connectionSignature) return this.cold.service;
-      await this.cold?.service.close(); this.cold = undefined;
-      if (this.closed) throw new Error('冷知识服务已关闭。');
-      const root = createHash('sha256').update(space).digest('hex');
-      const service = new ColdKnowledgeService({ dataRoot: path.join(this.options.dataRoot, 'cold-knowledge', root), vendorRoot: this.options.vendorRoot,
-        workerPath: path.join(path.dirname(this.options.workerPath), 'cold-worker.cjs'), embedding, launch: this.options.launch,
-        authorize: (...args) => this.coldAuthorize!(...args) });
-      this.cold = { service, embeddingProfile, space, connectionSignature };
-      return service;
-    });
-    this.tail = pending.catch(() => undefined);
-    return pending;
+  private retireCold(entry: ColdEntry): Promise<void> { return entry.retiring ??= entry.service.close().then(() => {
+    if (this.colds.get(entry.key) === entry) this.colds.delete(entry.key);
+  }); }
+  private coldLease(entry: ColdEntry): CompanionColdLease {
+    entry.references++; entry.used = Date.now(); let released = false;
+    const release = async () => { if (!released) { released = true; entry.references--; entry.used = Date.now(); } };
+    return new Proxy(entry.service, { get(target, property) {
+      if (property === 'release') return release;
+      const value = Reflect.get(target, property, target); return typeof value === 'function' ? value.bind(target) : value;
+    } });
+  }
+  getCold(scope: CompanionMemoryOwnerScope, authorize: ColdKnowledgeServiceOptions['authorize']): Promise<CompanionColdLease> {
+    const ownerId = ownerIdentity(scope.ownerId), epoch = this.ownerEpochs.get(ownerId) ?? 0, deadline = Date.now() + 180_000;
+    const current = () => { scope.signal?.throwIfAborted(); if (this.closed) throw new Error('冷知识服务已关闭。');
+      if ((this.ownerEpochs.get(ownerId) ?? 0) !== epoch) throw new Error('伙伴知识已取消。'); if (Date.now() >= deadline) throw new Error('伙伴知识连接池仍然繁忙。'); };
+    return this.track(Promise.resolve().then(async () => {
+      current(); const { embedding, profileKey } = await this.embedding(), storage = await this.storage(ownerId); current();
+      const space = JSON.stringify([embedding.model, embedding.dimension, embedding.modelSignature ?? null]), connection = digest(JSON.stringify(embedding));
+      const key = ownerId + ':' + profileKey, existing = this.colds.get(key);
+      if (existing && !existing.retiring && existing.connection === connection && existing.storage.indexRoot === storage.indexRoot && !this.ownerPurges.has(ownerId)) {
+        existing.authorize = authorize; return this.coldLease(existing);
+      }
+      const pending = this.tail.then(async () => {
+        while (this.ownerPurges.has(ownerId)) { current(); await delay(); } current(); let entry = this.colds.get(key);
+        if (entry && (entry.retiring || entry.connection !== connection || entry.storage.indexRoot !== storage.indexRoot)) {
+          await this.retireCold(entry); while (entry.references) { current(); await delay(); } entry = undefined;
+        }
+        if (!entry) {
+          while (this.colds.size >= 4) { current(); const idle = [...this.colds.values()].filter(value => !value.references && !value.retiring).sort((a,b) => a.used-b.used)[0];
+            if (idle) { await this.retireCold(idle); continue; } await delay(); }
+          current(); const actual = await this.storage(ownerId); current();
+          if (actual.indexRoot !== storage.indexRoot) throw new Error('伙伴知识资产目录在连接期间发生变化。');
+          const local: ColdEntry = { key, ownerId, profileKey, space, connection, storage, references: 0, used: Date.now(), authorize, service: undefined! };
+          local.service = new ColdKnowledgeService({ dataRoot: path.join(storage.indexRoot, 'cold', digest(space)), boundOwnerId: ownerId,
+            vendorRoot: this.options.vendorRoot, workerPath: path.join(path.dirname(this.options.workerPath), 'cold-worker.cjs'), embedding, launch: this.options.launch,
+            authorize: (...args) => local.authorize(...args) });
+          this.colds.set(key, local); entry = local;
+        }
+        current(); entry.authorize = authorize; return this.coldLease(entry);
+      }); this.tail = pending.catch(() => undefined); return pending;
+    }));
+  }
+  private async directory(storage: CompanionOwnerRuntimePaths, target: string): Promise<boolean> {
+    const relative = path.relative(storage.indexRoot, target);
+    if (path.isAbsolute(relative) || relative === '..' || relative.startsWith('..' + path.sep)) throw new Error('记忆清理路径超出伙伴目录。');
+    for (const file of [storage.workspaceRoot, storage.ownerRoot, storage.indexRoot,
+      ...relative.split(path.sep).filter(Boolean).map((_, index, parts) => path.join(storage.indexRoot, ...parts.slice(0, index + 1)))]) {
+      try { const entry = await lstat(file); if (!entry.isDirectory() || entry.isSymbolicLink()) throw new Error('记忆清理目录必须为实际拥有的文件夹。'); }
+      catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') return false; throw error; }
+    } return true;
   }
   /** Owner reset spans every historical embedding profile and works without a
    * configured encoder. The root and each ancestor must be owned real folders. */
   resetCold(owner: string): Promise<void> {
+    ownerIdentity(owner);
     const pending = this.tail.then(async () => {
-      if (typeof owner !== 'string' || !owner.trim() || owner.length > 100) throw new Error('冷知识所属伙伴无效。');
-      await this.cold?.service.close(); this.cold = undefined;
-      const base = path.resolve(this.options.dataRoot, 'cold-knowledge'), ownerHash = createHash('sha256').update(owner).digest('hex');
-      const directory = async (file: string) => {
-        try {
-          const entry = await lstat(file);
-          if (entry.isSymbolicLink() || !entry.isDirectory()) throw new Error('冷知识清理目录必须为实际拥有的文件夹。');
-          return true;
-        } catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') return false; throw error; }
-      };
-      if (!await directory(base)) return;
-      for (const profile of await readdir(base)) {
-        if (!/^[a-f0-9]{64}$/u.test(profile)) continue;
-        const profileRoot = path.resolve(base, profile), owners = path.join(profileRoot, 'owners'), target = path.resolve(owners, ownerHash);
-        if (path.dirname(profileRoot) !== base || path.dirname(target) !== owners) throw new Error('冷知识清理路径超出所属范围。');
-        if (!await directory(profileRoot) || !await directory(owners) || !await directory(target)) continue;
-        await removeOwnedDirectory(target);
-      }
+      await Promise.all([...this.colds.values()].filter(entry => entry.ownerId === owner).map(entry => this.retireCold(entry)));
+      const storage = await this.cleanupStorage(owner), target = path.join(storage.indexRoot, 'cold');
+      if (await this.directory(storage, target)) await removeOwnedDirectory(target);
     });
     this.tail = pending.catch(() => undefined);
     return pending;
   }
   async close(): Promise<void> {
     this.closed = true;
-    await Promise.all([this.tail, this.generationTail, ...[...this.generationAdmissions].map(pending => pending.catch(() => undefined))]);
-    const results = await Promise.allSettled([this.current?.client.close(), this.cold?.service.close(),
-      ...[...this.generations.values()].map(entry => this.retireEntry(entry))]);
-    this.current = undefined; this.cold = undefined; this.coldAuthorize = undefined;
+    await Promise.all([this.tail, this.generationTail, ...[...this.generationAdmissions, ...this.coreAdmissions].map(pending => pending.catch(() => undefined))]);
+    const results = await Promise.allSettled([
+      ...[...this.cores.values()].map(entry => this.retireCore(entry)), ...[...this.colds.values()].map(entry => this.retireCold(entry)),
+      ...[...this.generations.values()].map(entry => this.retireEntry(entry)),
+    ]);
     await this.broker.close();
     const failure = results.find(result => result.status === 'rejected'); if (failure?.status === 'rejected') throw failure.reason;
   }

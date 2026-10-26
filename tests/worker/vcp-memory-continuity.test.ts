@@ -1,5 +1,4 @@
 import { fork } from 'node:child_process';
-import { createHash } from 'node:crypto';
 import { mkdtemp, readdir } from 'node:fs/promises';
 import { createServer, type ServerResponse } from 'node:http';
 import { tmpdir } from 'node:os';
@@ -101,7 +100,7 @@ async function fixture() {
 }
 
 describe('original monthly VCP continuity behind the main memory service', () => {
-  it('reports only registered future host checks and explains busy and unconfigured conditions without loading a worker', async () => {
+  it('reports actual future checks without blocking maintenance on foreground work', async () => {
     const { createService, controls } = await fixture();
     const { service, client, changed } = await createService();
     const replace = vi.spyOn(client, 'replace'), before = Date.now();
@@ -112,9 +111,8 @@ describe('original monthly VCP continuity behind the main memory service', () =>
     expect((await service.schedulingFor('alpha')).schedulers.find(item => item.kind === 'capture')?.nextCheckAt).toBe(at);
     controls.foregroundBusy = true;
     const busy = await service.schedulingFor('alpha');
-    expect(busy.schedulers.find(item => item.kind === 'capture')).toMatchObject({ waitingReason: 'foreground_busy', nextCheckAt: at });
-    expect(busy.schedulers.find(item => item.kind === 'timeline')?.waitingReason).toBe('foreground_busy');
-    expect(busy.schedulers.find(item => item.kind === 'index')?.waitingReason).not.toBe('foreground_busy');
+    expect(busy.schedulers.find(item => item.kind === 'capture')).toMatchObject({ nextCheckAt: at });
+    expect(busy.schedulers.every(item => item.waitingReason !== 'foreground_busy')).toBe(true);
     controls.foregroundBusy = false; controls.modelConfigured = false;
     expect((await service.schedulingFor('alpha')).schedulers.find(item => item.kind === 'capture')?.waitingReason).toBe('model_unconfigured');
     controls.modelConfigured = true;
@@ -139,8 +137,8 @@ describe('original monthly VCP continuity behind the main memory service', () =>
     expect((await service.schedulingFor('alpha')).schedulers.every(item => item.waitingReason === 'app_stopped' && !item.nextCheckAt)).toBe(true);
   });
 
-  it('generates and persists a real monthly timeline and summary, then reuses them after restart in passive RAG context', async () => {
-    const { createService, cacheRoot, controls, conversation } = await fixture();
+  it('generates a real timeline and reuses it after a tag change and restart in passive RAG context', async () => {
+    const { createService, cacheRoot, controls, conversation, store, note } = await fixture();
     const first = await createService(); first.service.schedule(0);
     const cache = new CompanionMemoryViewCache(cacheRoot);
     const identity = 'alpha:owner-v2';
@@ -163,6 +161,12 @@ describe('original monthly VCP continuity behind the main memory service', () =>
     expect(first.published).toHaveBeenCalledWith(expect.objectContaining({ scope: { companionId: 'alpha', conversationId: conversation.id }, artifacts: expect.objectContaining({ sourceRevision: expect.any(String) }) }));
     expect(await first.published.mock.calls[0]![0].stillValid()).toBe(true);
     await first.service.close();
+    store.request({ type: 'memory.organize', companionId: 'alpha', conversationId: conversation.id, ids: [note.id], tags: ['annotated', 'umbrella'] });
+    for (;;) {
+      const outbox = store.request({ type: 'memory.outbox.claim' }).memoryOutbox; if (!outbox) break;
+      store.request({ type: 'memory.outbox.complete', id: outbox.id, leaseToken: outbox.leaseToken, indexed: true });
+    }
+    expect(store.request({ type: 'memory.snapshot', companionId: 'alpha', conversationId: conversation.id }).memorySnapshot?.semanticRevision).toBe(artifacts?.sourceRevision);
     const restarted = await createService();
     expect(restarted.service.processingFor('alpha')).toEqual([]);
     const replayed = await restarted.service.search({ companionId: 'alpha', conversationId: conversation.id, query: 'alpha umbrella' }, 'passive');
@@ -212,7 +216,7 @@ describe('original monthly VCP continuity behind the main memory service', () =>
     expect(service.processingFor('alpha')[0]).toMatchObject({ kind: 'timeline', status: 'running', stage: '整理2026-10的月度时间线' });
     const front = await service.search({ companionId: 'alpha', conversationId: conversation.id, query: 'alpha umbrella' }, 'passive');
     expect(front.memoryPage?.items[0]?.memory.id).toBe(note.id);
-    const ownerProjection = path.join(root, 'runtime', 'generation', createHash('sha256').update('alpha').digest('hex'));
+    const ownerProjection = path.join(root, 'runtime', '伙伴记忆', 'alpha', '.认知索引', 'generation');
     expect((await readdir(ownerProjection)).length).toBeGreaterThan(0);
     store.request({ type: 'memory.forget', companionId: 'alpha', conversationId: conversation.id, id: note.id });
     const interrupted = vi.spyOn(client, 'interruptScope'), purged = vi.spyOn(runtime, 'purgeOwner');

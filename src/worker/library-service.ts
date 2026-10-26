@@ -5223,6 +5223,7 @@ interface LinkedFolderWatch extends LibraryWatch {
   folderId: string;
   libraryId: string;
   rootPath: string;
+  companionMemoryRoot?: boolean;
 }
 
 const DEFAULT_DEBOUNCE_SCHEDULER: DebounceScheduler = {
@@ -7425,6 +7426,7 @@ export class LibraryService {
       if (!folder || folder.status !== 'available' || this.linkedRootIsGone(folder.absolute_root_path)) {
         return null;
       }
+      const companionMemoryRoot = this.isCompanionMemoryRoot(openLibrary, folder.absolute_root_path);
       const rules = this.getLinkedFolderRules({ libraryId: task.libraryId, folderId });
       const entries: DiscoveredSourceEntry[] = [];
       const existingByIdentity = new Map<string, string>();
@@ -7437,6 +7439,7 @@ export class LibraryService {
         } catch {
           return null;
         }
+        if (companionMemoryRoot && this.isCompanionMemoryTechnicalPath(normalizedPath)) continue;
         const absolutePath = path.resolve(folder.absolute_root_path, ...normalizedPath.split('/'));
         if (!pathIsWithin(folder.absolute_root_path, absolutePath)) return null;
         const pathIdentity = portablePathIdentity(normalizedPath);
@@ -8279,6 +8282,29 @@ export class LibraryService {
     return `${libraryId}:${folderId}`;
   }
 
+  /** Only the fixed owner-memory root in this asset library has derived
+   * cognition state. An unrelated user folder with this name stays visible. */
+  private isCompanionMemoryRoot(openLibrary: OpenLibrary, rootPath: string): boolean {
+    const rootKey = (value: string) => process.platform === 'win32' ? path.resolve(value).toLocaleLowerCase('en-US') : path.resolve(value);
+    const root = rootKey(rootPath);
+    if (root === rootKey(path.join(openLibrary.summary.libraryPath, '伙伴记忆'))) return true;
+    try { return root === rootKey(path.join(realpathSync(openLibrary.summary.libraryPath), '伙伴记忆')); }
+    catch { return false; }
+  }
+
+  private isCompanionMemoryTechnicalPath(relativePath: string): boolean {
+    const parts = relativePath.split('/');
+    if (parts.length < 2 || !/^[a-zA-Z0-9_-]{1,100}$/u.test(parts[0]!)) return false;
+    if (parts[1] === '.认知索引') return true;
+    const filename = parts.at(-1)!;
+    if (parts.length === 2 && ['.同步状态.json', '.时间线索引.json', '同步状态.md'].includes(filename)) return true;
+    if (filename.endsWith('.meta.json')) return true;
+    // memory-library, asset-profile and public-profiles all publish with an
+    // exact <real-file>.<randomUUID>.tmp sibling and then rename to real-file.
+    // Only the final real file is an asset; short-lived siblings are not.
+    return /\.(?:md|txt|json|png|jpg|webp|gif)\.[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}\.tmp$/iu.test(filename);
+  }
+
   private startLinkedWatcher(
     openLibrary: OpenLibrary,
     folder: { folder_id: string; absolute_root_path: string },
@@ -8309,6 +8335,7 @@ export class LibraryService {
         libraryId,
         observer,
         rootPath: folder.absolute_root_path,
+        companionMemoryRoot: this.isCompanionMemoryRoot(openLibrary, folder.absolute_root_path),
       });
     } catch (error) {
       this.diagnose('linked-watcher.start', error, {
@@ -8327,8 +8354,10 @@ export class LibraryService {
     const key = this.linkedWatchKey(libraryId, folderId);
     const linkedWatch = this.linkedWatchByKey.get(key);
     if (!linkedWatch || !this.openById.has(libraryId)) return;
+    const eventPath = normalizeWatcherRelativePath(event?.filename ?? null);
+    if (linkedWatch.companionMemoryRoot && eventPath && this.isCompanionMemoryTechnicalPath(eventPath)) return;
     const relativePath = event?.eventType === 'change'
-      ? normalizeWatcherRelativePath(event.filename ?? null)
+      ? eventPath
       : undefined;
     const linkedChanges: LinkedWatcherChanges = relativePath === undefined
       ? { kind: 'scope' }
@@ -18472,7 +18501,7 @@ export class LibraryService {
     }
 
     const rules = this.getLinkedFolderRules({ libraryId: input.libraryId, folderId: input.folderId });
-      const entries = this.enumerateLinkedSources(
+      const entries = this.enumerateLinkedSources(openLibrary,
         linked.absolute_root_path,
         input.folderId,
         rules,
@@ -19417,8 +19446,12 @@ export class LibraryService {
     const folderId = randomUUID();
     const importId = randomUUID();
     const defaultRules = DEFAULT_LINKED_FOLDER_RULES.map((rule) => ({ ...rule, ruleId: randomUUID() }));
-    if (ownedCompanionMemory) for (const pattern of ['.同步状态.json', '.时间线索引.json', '*.meta.json']) {
-      defaultRules.push({ ruleId: randomUUID(), action: 'exclude', target: 'filename', pattern, enabled: true });
+    if (ownedCompanionMemory) for (const owner of readdirSync(canonicalRoot, { withFileTypes: true })) {
+      if (owner.isDirectory() && !owner.isSymbolicLink() && /^[a-zA-Z0-9_-]{1,100}$/u.test(owner.name)) {
+        for (const basename of ['.认知索引', '.同步状态.json', '.时间线索引.json', '同步状态.md']) {
+          defaultRules.push({ ruleId: randomUUID(), action: 'exclude', target: 'path', pattern: owner.name + '/' + basename, enabled: true });
+        }
+      }
     }
     let lastProgressAt = 0;
     const emitLinkedProgress = (
@@ -19445,7 +19478,7 @@ export class LibraryService {
     try {
       emitLinkedProgress('validate', 0, 0, 0, 0, true);
       let scannedBytes = 0;
-      const entries = this.enumerateLinkedSources(
+      const entries = this.enumerateLinkedSources(openLibrary,
         canonicalRoot,
         folderId,
         defaultRules,
@@ -42672,6 +42705,7 @@ export class LibraryService {
   }
 
   private enumerateLinkedSources(
+    openLibrary: OpenLibrary,
     rootPath: string,
     linkedFolderId?: string,
     suppliedRules?: LinkedFolderRule[],
@@ -42695,12 +42729,11 @@ export class LibraryService {
     }> = [];
     const rules = suppliedRules ?? (linkedFolderId
       ? this.getLinkedFolderRules({
-          libraryId: [...this.openById.values()].find((open) => open.connection.prepare(
-            'SELECT folder_id FROM linked_folders WHERE folder_id = ?',
-          ).get(linkedFolderId))?.summary.libraryId ?? '',
+          libraryId: openLibrary.summary.libraryId,
           folderId: linkedFolderId,
         })
       : []);
+    const companionMemoryRoot = this.isCompanionMemoryRoot(openLibrary, rootPath);
     const visit = (directoryPath: string, relativeDirectory: string): void => {
       let children;
       try {
@@ -42715,6 +42748,7 @@ export class LibraryService {
           relativeDirectory === ''
             ? child.name
             : path.posix.join(relativeDirectory, child.name);
+        if (companionMemoryRoot && this.isCompanionMemoryTechnicalPath(childRelative)) continue;
         // Symlinks are neither followed nor registered; this prevents a linked
         // root from pulling in bytes outside itself via a hostile link.
         if (child.isSymbolicLink()) {
@@ -46395,7 +46429,7 @@ export class LibraryService {
       });
       linkedEntriesByFolder.set(
         folder.folder_id,
-        this.enumerateLinkedSources(
+        this.enumerateLinkedSources(openLibrary,
           folder.absolute_root_path,
           folder.folder_id,
           rules,
@@ -46526,6 +46560,7 @@ export class LibraryService {
     task: OpenReconciliationTask;
   }): Promise<DiscoveredSourceEntry[]> {
     const entries: DiscoveredSourceEntry[] = [];
+    const companionMemoryRoot = input.locationKind === 'linked' && this.isCompanionMemoryRoot(input.task.openLibrary, input.rootPath);
     const pendingDirectories: Array<{ absolutePath: string; relativePath: string }> = [
       { absolutePath: input.rootPath, relativePath: '' },
     ];
@@ -46551,6 +46586,7 @@ export class LibraryService {
           const relativePath = directory.relativePath === ''
             ? child.name
             : path.posix.join(directory.relativePath, child.name);
+          if (companionMemoryRoot && this.isCompanionMemoryTechnicalPath(relativePath)) continue;
           const absolutePath = path.join(directory.absolutePath, child.name);
           if (child.isSymbolicLink()) {
             this.diagnose(

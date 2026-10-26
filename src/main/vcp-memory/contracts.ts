@@ -79,6 +79,8 @@ export interface VcpMemoryWorkerConfiguration {
 }
 
 export interface VcpMemoryPluginConfiguration {
+  /** Trusted live owner-file snapshot; never inferred from retrieval text. */
+  ownerPrompts?: VcpMemoryOwnerPrompts;
   chat?: { baseUrl: string; model: string; apiKey: string;
     /** Non-secret signature of the provider behind a loopback facade. */
     sourceSignature?: string;
@@ -121,6 +123,40 @@ export interface VcpMemoryPreprocessResult {
   cacheClock?: { bucket: string; invalidated: boolean };
   receiptCache?: { hit: boolean; corpusEpoch: number; sourceQueryClock?: VcpMemoryQueryClock };
 }
+/** Opaque workspace-scoped handle. Candidate bodies remain in the owned host store. */
+export interface VcpMemoryPreparedRecall {
+  schema: 'worldlinebox.prepared-recall'; id: string; scopeId: string; contentHash: string;
+  createdAt: string; expiresAt: string; corpusEpoch: number;
+  contextReferences: VcpMemoryContextReference[]; contextReferenceCoverage: 'observed' | 'partial';
+  queryClock?: VcpMemoryQueryClock;
+  hostEvidence?: VcpMemoryPreparedHostEvidence;
+}
+export interface VcpMemoryPreparedHostEvidence {
+  schema: 'worldlinebox.prepared-recall-host-evidence';
+  ownerId: string; revocationEpoch: number; capturedAt: string; sourceClosureDigest: string;
+}
+export interface VcpMemoryPreparedFocusGroup {
+  token: string; dbNames: string[]; userContent: string; aiContent: string | null;
+  combinedQueryForDisplay: string; promptTemplate: string;
+  config: { model: string; batchSize: number; maxTokensPerBatch: number; promptFile: string };
+  options: { sourceFiles: Array<Record<string, unknown>>; [key: string]: unknown };
+}
+/** Trusted worker transport only; no credentials, native pointers or mutable file references. */
+export interface VcpMemoryPreparedPayload {
+  schema: 'worldlinebox.prepared-recall-payload'; receipt: VcpMemoryPreprocessResult;
+  groups: VcpMemoryPreparedFocusGroup[]; modelIdentity: string;
+  hostEvidence?: VcpMemoryPreparedHostEvidence;
+}
+export interface VcpMemoryFocusOptions {
+  signal?: AbortSignal;
+  /** Called before every actual model request and before publishing, including cache reuse. */
+  validate?(): Promise<void>;
+  fetchFn?: typeof fetch;
+  /** Required for an owner-bound host package, never inferred from a caller-supplied scope string. */
+  ownerId?: string;
+  /** Shared host model quota; does not hold an original graph/worker permit. */
+  runModel?<T>(operation: () => Promise<T>): Promise<T>;
+}
 export interface VcpMemoryAutomaticDecayPolicy { schema: 'episodic-v1'; halfLifeDays: 180; minScore: 0; protectedNoteIds: string[] }
 export interface VcpMemoryDecayObservation {
   policy: 'episodic-v1'; halfLifeDays: 180; minScore: 0; eligibleCount: number; protectedCount: number;
@@ -151,7 +187,8 @@ export interface VcpMemoryTimelineArtifacts {
   agents: Array<{ agentName: string; months: Array<{ month: string; sourceDigest: string; content?: string; summary?: string }> }>;
 }
 
-export type VcpMemoryCommand =
+export interface VcpMemoryOwnerPrompts { aimemoTemplate: string; timelineTemplate?: string; summaryTemplate?: string }
+export type VcpMemoryCommand = (
   | { type: 'initialize'; configuration: VcpMemoryWorkerConfiguration }
   | { type: 'remember'; note: VcpMemoryNote }
   | { type: 'replace'; notes: VcpMemoryNote[] }
@@ -162,13 +199,14 @@ export type VcpMemoryCommand =
   | { type: 'forget'; id: string }
   | { type: 'plugin'; plugin: VcpMemoryPluginName; arguments: Record<string, unknown> }
   | { type: 'preprocess'; messages: VcpMemoryMessage[]; clock?: VcpMemoryQueryClock; automaticDecay?: VcpMemoryAutomaticDecayPolicy }
+  | { type: 'prepare-recall'; messages: VcpMemoryMessage[]; clock?: VcpMemoryQueryClock; automaticDecay?: VcpMemoryAutomaticDecayPolicy }
   | { type: 'dream-wave'; request: VcpMemoryDreamWaveRequest }
   | { type: 'timeline'; request: VcpMemoryTimelineRequest }
   | { type: 'capabilities' }
   | { type: 'export-notes' }
   | { type: 'export-timelines'; sourceRevision: string }
   | { type: 'import-timelines'; sourceRevision: string; artifacts: VcpMemoryTimelineArtifacts }
-  | { type: 'close' };
+  | { type: 'close' }) & { ownerPrompts?: VcpMemoryOwnerPrompts };
 
 export interface VcpMemoryWriteReceipt { id: string; indexed: true }
 export interface VcpMemoryDeleteReceipt { id: string; deleted: true }

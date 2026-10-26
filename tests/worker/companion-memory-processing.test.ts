@@ -21,7 +21,7 @@ it('shows real source queue admission, claimed work and completed checks without
   expect(report.summary).toMatchObject({ pending: 1, running: 0, completed: 0 });
   expect(report.jobs).toHaveLength(1); expect(report.jobs[0]).toMatchObject({ kind: 'capture', status: 'pending', sourceMessageId: source.id, preview: source.content, attempts: 0 });
   expect(report.jobs[0]!.createdAt).toMatch(/^\d{4}-\d{2}-\d{2}T/u);
-  const job = store.request({ type: 'memory.jobs.claim', companionId: 'alice' }).memoryJob!;
+  const job = store.request({ type: 'memory.jobs.claim', force: true, companionId: 'alice' }).memoryJob!;
   report = status(store); expect(report.jobs[0]).toMatchObject({ id: job.id, status: 'running', attempts: 1 });
   store.request({ type: 'memory.jobs.complete', id: job.id, leaseToken: job.leaseToken, notes: [] });
   report = status(store); expect(report.summary).toMatchObject({ completed: 1, pending: 0, running: 0 });
@@ -51,11 +51,11 @@ it('bounds the owner report before returning records, includes older active work
   const { store, room, peerRoom } = fixture();
   for (let n = 0; n < 80; n++) store.appendMessage({ conversationId: room, authorId: 'user', content: '本人的来源 ' + n });
   for (let n = 0; n < 8; n++) store.appendMessage({ conversationId: peerRoom, authorId: 'user', content: '其他角色 ' + n });
-  const running = store.request({ type: 'memory.jobs.claim', companionId: 'alice' }).memoryJob!;
+  const running = store.request({ type: 'memory.jobs.claim', force: true, companionId: 'alice' }).memoryJob!;
   const report = status(store, 'alice', 7); expect(report.jobs).toHaveLength(7); expect(report.hasMore).toBe(true);
-  expect(report.jobs.every(job => job.status === 'running')).toBe(true); expect(report.summary.running).toBe(8);
+  expect(report.jobs.every(job => job.status === 'running')).toBe(true); expect(report.summary.running).toBe(12);
   expect(report.jobs.some(job => running.sourceMessageIds.includes(job.sourceMessageId!))).toBe(true);
-  expect(report.summary.pending).toBe(72); expect(JSON.stringify(report)).not.toContain('其他角色');
+  expect(report.summary.pending).toBe(68); expect(JSON.stringify(report)).not.toContain('其他角色');
   expect(() => status(store, 'missing')).toThrow('伙伴不存在');
   expect(() => status(store, 'alice', 51)).toThrow();
 });
@@ -65,7 +65,7 @@ it('does not fabricate creation dates for legacy jobs and records subsequent rea
   const db = new (Database as { new(file: string): CompanionConnection })(file);
   try { db.prepare('UPDATE vcp_capture_jobs SET created_at=NULL,updated_at=NULL WHERE companion_id=?').run('alice'); } finally { db.close(); }
   expect(status(store).jobs[0]).not.toHaveProperty('createdAt'); expect(status(store).jobs[0]).not.toHaveProperty('updatedAt');
-  store.request({ type: 'memory.jobs.claim', companionId: 'alice' });
+  store.request({ type: 'memory.jobs.claim', force: true, companionId: 'alice' });
   expect(status(store).jobs[0]).not.toHaveProperty('createdAt'); expect(status(store).jobs[0]!.updatedAt).toBeTruthy();
 });
 
@@ -81,7 +81,7 @@ it('uses a matching index for bounded per-state history instead of sorting all o
 it('filters completed tasks in SQLite even when pending tasks fill the default page', () => {
   const { store, room } = fixture();
   for (let n = 0; n < 8; n++) store.appendMessage({ conversationId: room, authorId: 'user', content: '已经检查过的来源 ' + n });
-  const claimed = store.request({ type: 'memory.jobs.claim', companionId: 'alice' }).memoryJob!;
+  const claimed = store.request({ type: 'memory.jobs.claim', force: true, companionId: 'alice' }).memoryJob!;
   store.request({ type: 'memory.jobs.complete', id: claimed.id, leaseToken: claimed.leaseToken, notes: [] });
   for (let n = 0; n < 40; n++) store.appendMessage({ conversationId: room, authorId: 'user', content: '新的待处理来源 ' + n });
   expect(status(store).jobs.every(job => job.status === 'pending')).toBe(true);
@@ -95,7 +95,7 @@ it('reports durable retry floors and manual exhaustion without inventing a host 
   const pending = status(store).jobs[0]!;
   expect(pending.schedule).toMatchObject({ scheduleKind: 'condition', timeBasis: 'real', waitingReason: 'queue' });
   expect(pending.schedule?.nextCheckAt).toBeUndefined(); expect(pending.schedule?.explanation).toContain('不保证');
-  const claimed = store.request({ type: 'memory.jobs.claim', companionId: 'alice' }).memoryJob!;
+  const claimed = store.request({ type: 'memory.jobs.claim', force: true, companionId: 'alice' }).memoryJob!;
   const before = Date.now();
   store.request({ type: 'memory.jobs.fail', id: claimed.id, leaseToken: claimed.leaseToken, error: '真实模型请求失败。', retryAfterMs: 5000 });
   const retry = status(store).jobs[0]!;
@@ -118,7 +118,7 @@ it('distinguishes capture activation requirements from document tag and index wo
   expect(jobs.find(job => job.kind === 'capture')?.schedule).toMatchObject({ waitingReason: 'companion_inactive' });
   expect(jobs.find(job => job.kind === 'tags')?.schedule?.waitingReason).not.toBe('companion_inactive');
   expect(jobs.find(job => job.kind === 'index')?.schedule?.waitingReason).not.toBe('companion_inactive');
-  expect(store.request({ type: 'memory.jobs.claim', companionId: 'alice' }).memoryJob).toBeUndefined();
+  expect(store.request({ type: 'memory.jobs.claim', force: true, companionId: 'alice' }).memoryJob).toBeUndefined();
 });
 
 it('shows actual same-scope index contention and never calls a lease expiry an execution time', () => {
@@ -147,7 +147,7 @@ it('manual retry recovers exhausted pending work for its owner while preserving 
       expect(db.prepare(`SELECT status,attempts FROM ${table} WHERE companion_id='alice'`).get()).toMatchObject({ status: 'pending', attempts: 0 });
       expect(db.prepare(`SELECT status,attempts FROM ${table} WHERE companion_id='bob'`).get()).toMatchObject({ status: 'pending', attempts: 8 });
     }
-    expect(store.request({ type: 'memory.jobs.claim', companionId: 'alice' }).memoryJob?.attempts).toBe(1);
+    expect(store.request({ type: 'memory.jobs.claim', force: true, companionId: 'alice' }).memoryJob?.attempts).toBe(1);
     expect(store.request({ type: 'memory.outbox.claim', companionId: 'alice' }).memoryOutbox?.attempts).toBe(1);
     expect(store.request({ type: 'memory.tags.claim' }).memoryTagJob?.companionId).toBe('alice');
   } finally { db.close(); }
@@ -157,7 +157,7 @@ it('retries exhausted expired leases but never resets a valid running lease', ()
   const { store, room, file } = fixture();
   store.appendMessage({ conversationId: room, authorId: 'user', content: '有效租约保护的来源。' });
   store.saveMemory({ companionId: 'alice', conversationId: room, content: '有效租约保护的文档。' });
-  store.request({ type: 'memory.jobs.claim', companionId: 'alice' }); store.request({ type: 'memory.outbox.claim', companionId: 'alice' }); store.request({ type: 'memory.tags.claim' });
+  store.request({ type: 'memory.jobs.claim', force: true, companionId: 'alice' }); store.request({ type: 'memory.outbox.claim', companionId: 'alice' }); store.request({ type: 'memory.tags.claim' });
   const db = new (Database as { new(file: string): CompanionConnection })(file);
   try {
     for (const table of ['vcp_capture_jobs', 'vcp_memory_outbox', 'companion_memory_tag_jobs']) db.prepare(`UPDATE ${table} SET attempts=8,lease_until=? WHERE companion_id='alice'`).run(Date.now() + 60000);

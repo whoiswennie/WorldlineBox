@@ -2,8 +2,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSy
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterEach, expect, it } from 'vitest';
-import BetterSqlite3 from 'better-sqlite3';
-import { CompanionsStore, type CompanionSeed, type CompanionConnection } from '../../src/companions/store';
+import { CompanionsStore, type CompanionSeed } from '../../src/companions/store';
 import { CompanionMemoryLibrary } from '../../src/main/companions/memory-library';
 import { companionMemoryIdentity } from '../../src/main/companions/memory-identity';
 import type { CompanionStorageCommand } from '../../src/shared/companion-storage';
@@ -137,21 +136,6 @@ it('withdraws an existing readable projection after its host source is forgotten
   expect(f.store.request({ type: 'memory.list', companionId: 'alice' }).memories).toEqual([]);
 });
 
-it('restores a temporarily held projection only after the host authorizes that same note again', async () => {
-  const f = fixture(), note = f.store.saveMemory({ ...f.scope, content: '仍受宿主授权的日记。' }), library = f.make();
-  await library.sync();
-  const file = path.join(f.directory, 'alice', '日记', note.id + '.md');
-  const db = new (BetterSqlite3 as { new(filename: string): CompanionConnection })(path.join(f.root, 'runtime', 'state.sqlite'));
-  try {
-    db.prepare('INSERT INTO vcp_source_policy_holds VALUES(?,?,?,?,?,?,?)').run('temporary_hold', 'alice', f.scope.conversationId, null, '用户需确认的旧限制', '2026-10-01', null);
-  } finally { db.close(); }
-  await library.sync(); expect(existsSync(file)).toBe(false);
-  f.store.request({ type: 'memory.policy.release', companionId: 'alice', id: 'temporary_hold' });
-  await library.sync();
-  expect(readFileSync(file, 'utf8')).toBe(note.content);
-  expect(f.store.request({ type: 'memory.read', ...f.scope, id: note.id }).memoryRead?.memory.version).toBe(note.version);
-});
-
 it('rejects a directory junction and reports it without importing files outside the selected library', async () => {
   const f = fixture(), library = f.make(); await library.sync();
   const outside = path.join(f.root, 'outside'); mkdirSync(outside); writeFileSync(path.join(outside, '外部.md'), '不可自动导入的外部资料。');
@@ -185,7 +169,7 @@ function timeline(revision: string): VcpMemoryTimelineArtifacts {
 }
 it('publishes original native timelines as readable revision-bound projections without recapturing its own output', async () => {
   const f = fixture(), library = f.make(); await library.sync();
-  const revision = f.store.request({ type: 'memory.snapshot', ...f.scope }).memorySnapshot!.revision;
+  const revision = f.store.request({ type: 'memory.snapshot', ...f.scope }).memorySnapshot!.semanticRevision!;
   await library.publishTimelines(f.scope, timeline(revision), async () => true);
   const file = path.join(f.directory, 'alice', '时间线', `VCP-${f.scope.companionId}-2026-10.md`);
   expect(readFileSync(file, 'utf8')).toBe(timeline(revision).agents[0]!.months[0]!.content);
@@ -205,7 +189,7 @@ it('removes an in-flight timeline projection if its authorization changes before
 });
 it('publishes one owner monthly timeline across entrances and replaces only its managed legacy copies', async () => {
   const f = fixture(), library = f.make(); await library.sync();
-  const revision = f.store.request({ type: 'memory.snapshot', ...f.scope }).memorySnapshot!.revision;
+  const revision = f.store.request({ type: 'memory.snapshot', ...f.scope }).memorySnapshot!.semanticRevision!;
   await library.publishTimelines(f.scope, timeline(revision), async () => true);
   const folder = path.join(f.directory, 'alice', '时间线'), stable = 'VCP-alice-2026-10.md';
   const legacy = `VCP-${f.scope.conversationId}-2026-10.md`, manifestFile = path.join(f.directory, 'alice', '.时间线索引.json');
@@ -216,7 +200,7 @@ it('publishes one owner monthly timeline across entrances and replaces only its 
   writeFileSync(manifestFile, JSON.stringify(manifest));
   const unmanaged = path.join(folder, '用户自己留存的旧日记.md'); writeFileSync(unmanaged, '用户自留文本');
   const group = f.store.createConversation('另一个入口', ['alice']), second = { companionId: 'alice', conversationId: group.id };
-  expect(f.store.request({ type: 'memory.snapshot', ...second }).memorySnapshot!.revision).toBe(revision);
+  expect(f.store.request({ type: 'memory.snapshot', ...second }).memorySnapshot!.semanticRevision!).toBe(revision);
   await library.publishTimelines(second, timeline(revision), async () => true);
   expect(readdirSync(folder).filter(name => /^VCP-.*\.md$/u.test(name)).sort()).toEqual(['VCP-alice-2026-10.md', 'VCP-alice-2026-10.summary.md']);
   expect(existsSync(path.join(folder, legacy))).toBe(false);
@@ -230,7 +214,7 @@ it('cleans stale automatic timelines from their source revision after restart', 
   const f = fixture(), note = f.store.saveMemory({ ...f.scope, content: '真实时间线来源。' });
   const delivery = f.store.request({ type: 'memory.outbox.claim' }).memoryOutbox!;
   f.store.request({ type: 'memory.outbox.complete', id: delivery.id, leaseToken: delivery.leaseToken, indexed: true });
-  const library = f.make(), revision = f.store.request({ type: 'memory.snapshot', ...f.scope }).memorySnapshot!.revision;
+  const library = f.make(), revision = f.store.request({ type: 'memory.snapshot', ...f.scope }).memorySnapshot!.semanticRevision!;
   await library.publishTimelines(f.scope, timeline(revision), async () => true); await library.close();
   f.store.request({ type: 'memory.forget', ...f.scope, id: note.id });
   const restarted = f.make(); await restarted.sync();
@@ -241,7 +225,7 @@ it('cleans stale automatic timelines from their source revision after restart', 
 it('withdraws legacy brand-authored projections without modifying their authoritative diaries', async () => {
   const f = fixture(), note = f.store.saveMemory({ ...f.scope, content: '我想起和伙伴一起看海的经历。' }), library = f.make();
   await library.sync();
-  const revision = f.store.request({ type: 'memory.snapshot', ...f.scope }).memorySnapshot!.revision;
+  const revision = f.store.request({ type: 'memory.snapshot', ...f.scope }).memorySnapshot!.semanticRevision!;
   await library.publishTimelines(f.scope, timeline(revision), async () => true);
   const root = path.join(f.directory, 'alice'), file = path.join(root, '时间线', `VCP-${f.scope.companionId}-2026-10.md`);
   const manifestPath = path.join(root, '.时间线索引.json'), manifest = JSON.parse(readFileSync(manifestPath, 'utf8'));
@@ -256,7 +240,7 @@ it('withdraws legacy brand-authored projections without modifying their authorit
 
 it('rejects another resident identity even if its display name matches, and invalidates renamed derived timelines', async () => {
   const f = fixture(), library = f.make(); await library.sync();
-  const revision = f.store.request({ type: 'memory.snapshot', ...f.scope }).memorySnapshot!.revision;
+  const revision = f.store.request({ type: 'memory.snapshot', ...f.scope }).memorySnapshot!.semanticRevision!;
   const wrong = timeline(revision); wrong.owner = companionMemoryIdentity({ id: 'other', name: 'Alice' });
   await expect(library.publishTimelines(f.scope, wrong, async () => true)).rejects.toThrow('归属身份');
   const legacy = timeline(revision); delete legacy.owner;

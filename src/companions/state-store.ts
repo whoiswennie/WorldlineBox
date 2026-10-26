@@ -56,19 +56,6 @@ export class CompanionStateStore {
       CREATE TABLE IF NOT EXISTS companion_appraisal_sources (companion_id TEXT NOT NULL,message_id TEXT NOT NULL REFERENCES messages(id),appraisal_id TEXT NOT NULL REFERENCES companion_state_appraisals(id),PRIMARY KEY(companion_id,message_id));
     `);
     this.changes.initialize();
-    this.db.transaction(() => {
-      const key = 'vcp-memory-replacement/retired-fact-events';
-      if (!this.db.prepare("SELECT 1 FROM metadata WHERE key=? AND value='pending'").get(key)) return;
-      // Old inferred facts cannot substantiate a host experience receipt.
-      this.db.prepare("DELETE FROM companion_state_events WHERE event_key NOT GLOB 'world:*' AND event_key NOT GLOB 'experience:*'").run();
-      for (const entry of rows(this.db.prepare('SELECT companion_id,data FROM companion_runtime_states').all())) {
-        const state = decode<CompanionRuntimeState>(entry.data);
-        state.familiarity.sharedEventCount = Number(row(this.db.prepare("SELECT count(*) AS n FROM companion_state_events WHERE companion_id=? AND event_key GLOB 'experience:*'").get(entry.companion_id)).n);
-        state.familiarity.stage = stage(state.familiarity.interactionCount, state.familiarity.sharedEventCount);
-        this.db.prepare('UPDATE companion_runtime_states SET data=? WHERE companion_id=?').run(JSON.stringify(state), entry.companion_id);
-      }
-      this.db.prepare("UPDATE metadata SET value='done' WHERE key=?").run(key);
-    }).immediate();
   }
 
   private requireCompanion(id: string): void {

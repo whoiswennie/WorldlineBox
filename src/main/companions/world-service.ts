@@ -117,7 +117,7 @@ export class CompanionWorldService {
         if (kind === 'decision' ? ordinaryCount() >= 2
           : [...this.jobs.values()].filter(job => job.kind === 'dream').length >= COMPANION_SLEEP_DREAM_CONCURRENCY) continue;
         const job = (await this.options.request({ type: 'world.job.claim', kind,
-          excludedCompanionIds: [...new Set([...this.jobs.values()].map(job => job.companionId))] })).worldJob;
+          excludedCompanionIds: [...new Set([...this.jobs.values()].filter(job => kind === 'dream' ? job.kind === 'dream' : job.kind === 'other').map(job => job.companionId))] })).worldJob;
         if (!job?.leaseToken || this.options.blocked?.(job.companionId)) continue;
         const controller = new AbortController();
         const promise = this.process(job, controller.signal)
@@ -431,96 +431,112 @@ export class CompanionWorldService {
   private async dream(job: CompanionWorldJob, leaseToken: string, companion: Companion, conversation: CompanionConversation,
     config: CompanionModelConfig, signal: AbortSignal): Promise<void> {
     const scope = { companionId: companion.id, conversationId: conversation.id };
-    const seedIds = new Set(job.sourceMemoryIds), maintenanceIds = new Set(job.maintenanceMemoryIds ?? job.sourceMemoryIds);
-    const initialIds = [...new Set([...seedIds, ...maintenanceIds])];
-    const reads = await Promise.all(initialIds.map(id => this.options.request({ type: 'memory.read', ...scope, id, sourceLimit: 100 })));
-    const atoms = reads.flatMap(read => read.memoryRead?.memory ? [read.memoryRead.memory] : []).filter(memory => memory.status === 'indexed');
-    if (atoms.length !== initialIds.length || reads.some(read => read.memoryRead?.hasMore)) throw new Error('本次睡眠整理的实际记忆已经变化或尚未完整读取。');
-    const seedAtoms = atoms.filter(note => seedIds.has(note.id)), seedReads = reads.filter(read => seedIds.has(read.memoryRead!.memory.id));
-    const maintenanceAtoms = atoms.filter(note => maintenanceIds.has(note.id)), maintenanceReads = reads.filter(read => maintenanceIds.has(read.memoryRead!.memory.id));
+    const readAtoms = async (ids: readonly string[]) => {
+      const reads = await Promise.all([...new Set(ids)].map(id => this.options.request({ type: 'memory.read', ...scope, id, sourceLimit: 100 })));
+      const notes = reads.flatMap(read => read.memoryRead?.memory ? [read.memoryRead.memory] : []);
+      if (notes.length !== new Set(ids).size || notes.some(note => !['indexed', 'queued'].includes(note.status))
+        || reads.some(read => read.memoryRead?.hasMore)) throw new Error('本次维护的记忆已撤回或尚未完整读取。');
+      const sources = new Map(reads.flatMap(read => read.memoryRead?.sources ?? []).map(source => [source.id, source]));
+      return { reads, notes, sources };
+    };
+    const initialIds = [...new Set([...job.sourceMemoryIds, ...(job.maintenanceMemoryIds ?? [])])];
+    if (!job.realCompletedAt) {
+      const { reads, notes: atoms, sources } = await readAtoms(initialIds);
+      await this.options.request({ type: 'world.job.bind-memories', id: job.id, leaseToken,
+        memoryVersions: atoms.map(note => ({ id: note.id, version: note.version })) });
+      const seedIds = new Set(job.sourceMemoryIds), maintenanceIds = new Set(job.maintenanceMemoryIds ?? job.sourceMemoryIds);
+      const seedAtoms = atoms.filter(note => seedIds.has(note.id));
+      const seedSources = new Map(reads.filter(read => seedIds.has(read.memoryRead!.memory.id))
+        .flatMap(read => read.memoryRead?.sources ?? []).map(source => [source.id, source]));
+      const maintenanceAtoms = companionAutomaticMaintenanceSeeds(atoms.filter(note => maintenanceIds.has(note.id)));
+      const maintenanceSources = new Map(reads.filter(read => maintenanceIds.has(read.memoryRead!.memory.id))
+        .flatMap(read => read.memoryRead?.sources ?? []).map(source => [source.id, source]));
+      const prohibitions = await this.options.request({ type: 'memory.prohibitions', ...scope, worldJobId: job.id });
+      const runtimeState = (await this.options.request({ type: 'state.get', ...scope })).runtimeState;
+      const characterDevelopment = (await this.options.request({ type: 'character.development', ...scope, limit: 12 })).characterDevelopment;
+      // Reflection, integration and fiction have separate durable failure
+      // boundaries. A retry resumes the first unfinished stage only.
+      if (!job.reflectionCompletedAt) {
+        const result = await generateCompanionMemoryDream({ companion, conversation, messages: [...seedSources.values()], relevantMemories: seedAtoms,
+        runtimeState, characterDevelopment, maintenanceMode: job.maintenanceMode ?? 'background',
+        dreamAllowed: job.dreamAllowed, reflectionOnly: true, maintenanceSeparated: true, prohibitions: prohibitions.memoryProhibitions,
+        intent: '根据本批真实经历与实际学习资料进行独立后台回顾，不要求身体睡眠。没有新的具体认识时notes=[]；旧总结的改写、同源反思和梦不能成为新的经历。保持来源原本的作者、时间和可见域。' },
+        config, signal, { fetchFn: this.options.fetchFn });
+        signal.throwIfAborted();
+        await this.options.request({ type: 'world.job.complete', id: job.id, leaseToken, stage: 'reflection',
+          expectedProhibitionRevision: prohibitions.memoryProhibitionRevision,
+          ...(result.stateProposal ? { stateProposal: result.stateProposal, expectedStateRevision: runtimeState?.revision } : {}),
+          sourceMemoryIds: [...new Set(result.notes.flatMap(note => note.relatedMemoryIds ?? []))],
+          memoryCandidates: result.notes.map(candidate => ({ ...candidate,
+            sourceChecksums: Object.fromEntries(candidate.sourceMessageIds.map(id => [id, createHash('sha256').update(sources.get(id)!.content).digest('hex')])) })) });
+      }
+      const maintenance = maintenanceAtoms.length ? await generateCompanionMemoryMaintenance({ companion, conversation,
+        messages: [...maintenanceSources.values()], relevantMemories: maintenanceAtoms, maintenanceMode: job.maintenanceMode ?? 'background',
+        prohibitions: prohibitions.memoryProhibitions }, config, signal, { fetchFn: this.options.fetchFn }) : undefined;
+      signal.throwIfAborted();
+      await this.options.request({ type: 'world.job.complete', id: job.id, leaseToken, stage: 'real',
+        expectedProhibitionRevision: prohibitions.memoryProhibitionRevision,
+        sourceMemoryIds: maintenanceAtoms.map(note => note.id),
+        ...(maintenance ? { maintenance: { decision: maintenance.decision, reason: maintenance.reason,
+          reviewedMemoryVersions: maintenanceAtoms.map(note => ({ id: note.id, version: note.version })) },
+          ...(maintenance.consolidations.length ? { consolidations: maintenance.consolidations } : {}) } : {}) });
+    }
+    if (!job.dreamAllowed) return;
+    signal.throwIfAborted();
+    await this.options.request({ type: 'world.job.narrative.begin', id: job.id, leaseToken });
+    const { reads, notes: atoms, sources } = await readAtoms(initialIds);
     let wave: VcpMemoryDreamWaveResult | undefined;
     let dreamComponentFailure: CompanionWorldJob['dreamComponentFailure'];
     const optionalFailure = (error: CompanionOptionalDreamError) => {
       if (signal.aborted || this.closed) throw cancelled();
-      dreamComponentFailure = error.diagnostic;
-      this.options.report(error);
+      dreamComponentFailure = error.diagnostic; this.options.report(error);
     };
-    if (job.dreamAllowed) {
-      if (!this.options.dreamWave) optionalFailure(new CompanionOptionalDreamError('runtime_unavailable'));
-      const world = await this.observe(scope);
-      if (!world) throw new Error('睡眠的实际世界时钟不可访问。');
-      if (this.options.dreamWave) try { wave = await this.options.dreamWave({ ...scope, now: world.clock.virtualNow, clockDomain: 'world' }); }
-      catch (error) {
-        if (!(error instanceof CompanionOptionalDreamError)) throw error;
-        optionalFailure(error);
-      }
-      const stages = wave?.stages;
-      const items = stages ? [...new Map([...stages.recent.seeds, ...stages.recent.resonanceL1, ...stages.recent.cascadeL2,
-        ...stages.mid.seeds, ...stages.mid.cascadeL1, ...stages.deep.recalls].map(item => [item.id, item])).values()] : [];
-      for (const item of items) {
-        const read = await this.options.request({ type: 'memory.library.read', companionId: companion.id, id: item.id, sourceLimit: 100 });
-        const note = read.memoryRead?.memory;
-        if (!note || note.companionId !== companion.id || note.status !== 'indexed' || note.version !== item.version || read.memoryRead?.hasMore) throw new Error('梦境浪潮的真实来源已变化或尚未完整读取。');
-        if (!atoms.some(seed => seed.id === note.id)) { reads.push(read); atoms.push(note); }
-      }
+    if (!this.options.dreamWave) optionalFailure(new CompanionOptionalDreamError('runtime_unavailable'));
+    const world = await this.observe(scope);
+    if (!world) throw new Error('记忆联想的实际时钟不可访问。');
+    if (this.options.dreamWave) try { wave = await this.options.dreamWave({ ...scope, now: world.clock.virtualNow, clockDomain: 'world' }); }
+    catch (error) { if (!(error instanceof CompanionOptionalDreamError)) throw error; optionalFailure(error); }
+    const stages = wave?.stages;
+    const items = stages ? [...new Map([...stages.recent.seeds, ...stages.recent.resonanceL1, ...stages.recent.cascadeL2,
+      ...stages.mid.seeds, ...stages.mid.cascadeL1, ...stages.deep.recalls].map(item => [item.id, item])).values()] : [];
+    for (const item of items) {
+      const read = await this.options.request({ type: 'memory.library.read', companionId: companion.id, id: item.id, sourceLimit: 100 });
+      const note = read.memoryRead?.memory;
+      if (!note || note.companionId !== companion.id || note.status !== 'indexed' || note.version !== item.version || read.memoryRead?.hasMore)
+        throw new Error('梦境浪潮的真实来源已变化或尚未完整读取。');
+      if (!atoms.some(seed => seed.id === note.id)) { reads.push(read); atoms.push(note); }
+      for (const source of read.memoryRead?.sources ?? []) sources.set(source.id, source);
     }
-    if (signal.aborted || this.closed) throw cancelled();
     await this.options.request({ type: 'world.job.bind-memories', id: job.id, leaseToken,
       memoryVersions: atoms.map(note => ({ id: note.id, version: note.version })) });
-    const sources = new Map<string, NonNullable<CompanionStorageResponse['message']>>();
-    for (const read of reads) for (const message of read.memoryRead?.sources ?? []) sources.set(message.id, message);
-    if (!atoms.length || !sources.size) {
-      await this.options.request({ type: 'world.job.complete', id: job.id, leaseToken, sourceMemoryIds: [] }); return;
-    }
     const prohibitions = await this.options.request({ type: 'memory.prohibitions', ...scope, worldJobId: job.id });
-    const runtimeState = (await this.options.request({ type: 'state.get', ...scope })).runtimeState;
-    const characterDevelopment = (await this.options.request({ type: 'character.development', ...scope, limit: 12 })).characterDevelopment;
-    const realSeedSources = new Map(seedReads.flatMap(read => read.memoryRead?.sources ?? []).map(source => [source.id, source]));
-    // Real reflections see only their actual seed evidence. The invented dream
-    // is generated separately and never becomes the reflection's input.
-    const result = await generateCompanionMemoryDream({ companion, conversation, messages: [...realSeedSources.values()], relevantMemories: seedAtoms,
-      runtimeState, characterDevelopment,
-      dreamAllowed: job.dreamAllowed, reflectionOnly: true, maintenanceSeparated: true,
-      prohibitions: prohibitions.memoryProhibitions,
-      intent: '睡眠中只对本批真实种子经历、实际学习资料与有据主观认识作可追溯反思。不同入口的来源各保留实际域；无新反思时notes=[]。本调用不生成梦，任何虚构联想都不是本批知识或经历证据。' }, config, signal, { fetchFn: this.options.fetchFn });
     let dream: { text: string; relatedMemoryIds: string[]; sourceMessageIds: string[]; evidence: Array<{ sourceMessageId: string; quote: string }> } | undefined;
     if (wave) {
       let imagined: Awaited<ReturnType<typeof generateCompanionDreamNarrative>>;
       try {
-        imagined = await generateCompanionDreamNarrative({ companion, wave }, config, signal, { fetchFn: this.options.fetchFn });
-        if (imagined && !await validateCompanionMemoryProhibitions({ content: imagined.text, tags: ['梦境'], prohibitions: prohibitions.memoryProhibitions ?? [] }, config, signal, { fetchFn: this.options.fetchFn })) imagined = null;
+        imagined = await generateCompanionDreamNarrative({ companion, wave,
+          mode: job.maintenanceMode === 'sleep' && world.actors.some(actor => actor.companionId === companion.id && actor.activity === 'sleeping')
+            ? 'sleep_dream' : 'rehearsal_dream' }, config, signal, { fetchFn: this.options.fetchFn });
+        if (imagined && !await validateCompanionMemoryProhibitions({ content: imagined.text, tags: ['梦境'],
+          prohibitions: prohibitions.memoryProhibitions ?? [] }, config, signal, { fetchFn: this.options.fetchFn })) imagined = null;
       } catch (error) {
         if (!(error instanceof CompanionModelError) || error.code === 'CANCELLED' || signal.aborted || this.closed) throw error;
-        imagined = null;
-        optionalFailure(new CompanionOptionalDreamError('narrative_generation_failed'));
+        imagined = null; optionalFailure(new CompanionOptionalDreamError('narrative_generation_failed'));
       }
       if (imagined) {
         const evidence = imagined.relatedMemoryIds.map(id => {
           const note = atoms.find(note => note.id === id)!;
           const source = note.sources.map(source => sources.get(source.messageId)).find(Boolean);
-          if (!source) throw new Error('梦境依赖缺少可核验的本人真实来源。');
+          if (!source) throw new Error('联想依赖缺少可核验的本人真实来源。');
           return { sourceMessageId: source.id, quote: source.content.slice(0, 300) };
         });
         dream = { ...imagined, sourceMessageIds: [...new Set(evidence.map(item => item.sourceMessageId))], evidence };
       }
     }
-    const maintenanceSeeds = companionAutomaticMaintenanceSeeds(maintenanceAtoms);
-    const maintenanceSources = new Map(maintenanceReads.flatMap(read => read.memoryRead?.sources ?? []).map(source => [source.id, source]));
-    const maintenance = maintenanceSeeds.length ? await generateCompanionMemoryMaintenance({ companion, conversation,
-      messages: [...maintenanceSources.values()], relevantMemories: maintenanceSeeds, prohibitions: prohibitions.memoryProhibitions },
-      config, signal, { fetchFn: this.options.fetchFn }) : undefined;
-    if (signal.aborted || this.closed) throw cancelled();
-    await this.options.request({ type: 'world.job.complete', id: job.id, leaseToken, ...(dream ? { dream } : {}),
-      ...(dreamComponentFailure ? { dreamComponentFailure } : {}),
-      expectedProhibitionRevision: prohibitions.memoryProhibitionRevision,
-      ...(result.stateProposal ? { stateProposal: result.stateProposal, expectedStateRevision: runtimeState?.revision } : {}),
-      sourceMemoryIds: [...new Set([...(dream?.relatedMemoryIds ?? []), ...result.notes.flatMap(note => note.relatedMemoryIds ?? []),
-        ...maintenanceSeeds.map(note => note.id)])],
-      ...(maintenance ? { maintenance: { decision: maintenance.decision, reason: maintenance.reason,
-        reviewedMemoryVersions: maintenanceSeeds.map(note => ({ id: note.id, version: note.version })) },
-        ...(maintenance.consolidations.length ? { consolidations: maintenance.consolidations } : {}) } : {}),
-      memoryCandidates: result.notes.map(candidate => ({ ...candidate,
-        sourceChecksums: Object.fromEntries(candidate.sourceMessageIds.map(id => [id, createHash('sha256').update(sources.get(id)!.content).digest('hex')])) })) });
+    signal.throwIfAborted();
+    await this.options.request({ type: 'world.job.complete', id: job.id, leaseToken, stage: 'dream', ...(dream ? { dream } : {}),
+      ...(dreamComponentFailure ? { dreamComponentFailure } : {}), expectedProhibitionRevision: prohibitions.memoryProhibitionRevision,
+      sourceMemoryIds: dream?.relatedMemoryIds ?? [] });
   }
   async close(): Promise<void> {
     this.closed = true; if (this.timer) clearInterval(this.timer);

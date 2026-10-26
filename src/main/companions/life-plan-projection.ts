@@ -1,7 +1,6 @@
 import type { Companion } from '../../shared/companions';
 import type { CompanionMemoryLifePlan, CompanionMemoryLifePlanItem, CompanionWorldSleepPlan } from '../../shared/companion-life-plan';
-import { companionCivilInstantInZone, companionTimeInZone, resolveCompanionScheduleTimeZone } from '../../shared/companion-schedule-time';
-import { COMPANION_SLEEP_DREAM_PROBABILITY, COMPANION_SLEEP_MINIMUM_REAL_MS } from '../../shared/companion-sleep';
+import { COMPANION_SLEEP_DREAM_PROBABILITY } from '../../shared/companion-sleep';
 
 export interface CompanionMemoryCapturePlan {
   pending: number; running: number; failed: number;
@@ -22,26 +21,6 @@ const future = (value: string | undefined, now: number): string | undefined => {
   const at = value ? Date.parse(value) : NaN;
   return Number.isFinite(at) && at > now ? new Date(at).toISOString() : undefined;
 };
-
-/** Civil sleep window, matching routine evaluation across midnight and DST. */
-function sleepWindow(sleep: CompanionWorldSleepPlan): Timing {
-  const zone = resolveCompanionScheduleTimeZone(sleep.clock.timeZone), now = Date.parse(sleep.clock.virtualNow);
-  const local = companionTimeInZone(now, zone), day = Date.UTC(local.year, local.month - 1, local.day), windows: Array<{ start: number; end: number }> = [];
-  const atClock = (civilDay: number, clock: string) => {
-    const date = new Date(civilDay), [hour, minute] = clock.split(':').map(Number);
-    return companionCivilInstantInZone({ year: date.getUTCFullYear(), month: date.getUTCMonth() + 1, day: date.getUTCDate(),
-      hour: hour!, minute: minute!, second: 0, millisecond: 0 }, zone, 'next_valid');
-  };
-  for (let offset = -1; offset <= 2; offset++) {
-    const civilDay = day + offset * 86400000, start = atClock(civilDay, sleep.routine.sleepAt),
-      end = atClock(civilDay + (sleep.routine.wakeAt <= sleep.routine.sleepAt ? 86400000 : 0), sleep.routine.wakeAt);
-    if (start !== undefined && end !== undefined && end > now && end > start) windows.push({ start, end });
-  }
-  windows.sort((a, b) => a.start - b.start);
-  const window = windows[0];
-  return { kind: window ? 'window' : 'conditional', clock: 'world', timeZone: zone,
-    ...(window ? { windowStart: new Date(window.start).toISOString(), windowEnd: new Date(window.end).toISOString() } : {}) };
-}
 
 /** Read model only: future times describe checks or eligibility, never promised execution. */
 export function projectCompanionMemoryLifePlan(input: CompanionMemoryLifePlanInput): CompanionMemoryLifePlan {
@@ -76,7 +55,7 @@ export function projectCompanionMemoryLifePlan(input: CompanionMemoryLifePlanInp
   }
   const captureActive = Boolean(capture && (capture.pending || capture.running || capture.failed));
   const captureRunning = (capture.liveRunning ?? capture.running) > 0;
-  const captureBlocked = !captureRunning && capture.eligible === 0 && (capture.held || capture.retryExhausted);
+  const captureBlocked = !captureRunning && capture.eligible === 0 && capture.retryExhausted;
   const captureCheck = future(capture?.nextCheckAt, realNow), captureRetry = future(capture?.nextAttemptAt, realNow);
   const captureAt = captureCheck ?? captureRetry;
   items.push({ id: 'journal', kind: 'journal', title: '日记与记忆整理',
@@ -84,44 +63,49 @@ export function projectCompanionMemoryLifePlan(input: CompanionMemoryLifePlanInp
       : captureActive ? captureAt ? 'scheduled' : 'eligible' : 'idle',
     timing: captureActive && captureAt ? { kind: captureCheck ? 'next_check' : 'retry', clock: 'real', at: captureAt } : { kind: 'event_driven', clock: 'real' },
     reason: blocked ?? (capture?.waitingForModel ? '等待全局聊天模型恢复后检查来源。'
-      : captureBlocked ? capture.held ? '当前来源被收录规则暂停保护；解除对应限制后才会继续检查。' : '自动重试已达到上限，检查错误后需手动重试。'
+      : captureBlocked ? '自动重试已达到上限，检查错误后需手动重试。'
       : capture.expiredLeases ? '上次处理的租约已失效，等待后台回收并重新核验来源；没有正在处理的保证。'
       : captureActive ? (capture?.condition ?? capture?.explanation ?? '有真实来源等待整理；检查后也可能无需新增日记。')
         : '新的聊天、伙伴互动、真实阅读或世界经历产生后检查；只收录值得保留的内容，没有每日必写任务。') });
 
-  const window = sleepWindow(sleep), actor = sleep.actor, job = sleep.job;
-  const actuallySleeping = actor?.activity === 'sleeping' && !actor.moving && !actor.working;
-  const minimumAt = actuallySleeping ? Date.parse(actor.activityStartedAtReal) + COMPANION_SLEEP_MINIMUM_REAL_MS : undefined;
-  const sleepReady = minimumAt !== undefined && Date.parse(sleep.clock.observedRealAt) >= minimumAt;
-  const minTiming: Timing = minimumAt !== undefined && minimumAt > realNow
-    ? { kind: 'eligibility', clock: 'real', at: new Date(minimumAt).toISOString() } : realConditional();
-  const retryAt = future(job?.nextAttemptAt, realNow);
+  const job = sleep.job, maintenance = sleep.maintenance;
+  const retryAt = future(job?.nextAttemptAt, realNow), notBefore = future(maintenance?.nextDeepEligibleAt, realNow);
   const running = job?.status === 'running' && job.leaseActive;
+  const realCompleted = !!maintenance?.realCompletedAt;
   const terminalFailure = job?.terminal === true;
-  items.push({ id: 'sleep-consolidation', kind: 'sleep_consolidation', title: '睡眠记忆整合',
-    state: blocked || terminalFailure ? 'waiting' : running ? 'running' : !sleep.hasUnconsolidated ? 'idle'
-      : actuallySleeping ? sleepReady && !retryAt ? 'eligible' : 'waiting' : 'scheduled',
-    timing: terminalFailure ? realConditional() : retryAt ? { kind: 'retry', clock: 'real', at: retryAt } : actuallySleeping ? minTiming : window,
-    reason: blocked ?? (terminalFailure ? (job.error ?? '本次整合未完成，等待新资料或明确处理后再试。').slice(0, 1000) : running ? '正在本次真实睡眠中回顾有来源的记忆；醒来会停止。'
-      : !sleep.hasUnconsolidated ? '暂无待整合的已收录记忆；有新记忆并真正入睡后才检查。'
-        : retryAt ? '本次整合失败后等待重试资格；仍须保持实际睡眠。'
-          : actuallySleeping ? sleepReady ? '已达到实际睡眠与记忆条件，等待后台空位检查。' : '真正入睡满5秒后才可检查；醒来或占用工作会停止。'
-            : '作息窗口是可检查时间；还须真正躺下入睡、拥有待整合记忆，并且没有工作占用。') });
-  let dreamReason = '有待整合记忆并真正入睡后才评估；每段睡眠一次60%准入，且相隔至少8世界小时，不保证产生梦境。';
-  let dreamState: CompanionMemoryLifePlanItem['state'] = 'idle', dreamTiming: Timing = actuallySleeping ? minTiming : window;
-  if (terminalFailure) { dreamState = 'waiting'; dreamReason = (job.error ?? '本次梦境尚未完成，需要新资料或明确处理；不会原样自动重试。').slice(0, 1000); dreamTiming = realConditional(); }
-  else if (sleep.admission === 'not_admitted') dreamReason = '本次睡眠未通过入梦条件，不会反复抽签；仍可进行记忆整合。';
+  const realTerminalFailure = terminalFailure && !realCompleted;
+  const realRunning = running && !realCompleted;
+  items.push({ id: 'sleep-consolidation', kind: 'sleep_consolidation', title: '记忆回顾与整合',
+    state: blocked || realTerminalFailure ? 'waiting' : realRunning ? 'running' : !sleep.hasUnconsolidated ? 'idle'
+      : retryAt || notBefore ? 'scheduled' : maintenance?.eligible === false ? 'waiting' : 'eligible',
+    timing: realTerminalFailure ? realConditional() : retryAt && !realCompleted ? { kind: 'retry', clock: 'real', at: retryAt }
+      : notBefore && sleep.hasUnconsolidated ? { kind: 'eligibility', clock: 'real', at: notBefore } : { kind: 'event_driven', clock: 'real' },
+    reason: blocked ?? (realTerminalFailure ? (job?.error ?? '本批真实回顾未完成，等待新资料或明确处理后再试。').slice(0, 1000)
+      : realRunning ? maintenance?.reflectionCompletedAt ? '真实反思已保存，正在独立整理原始记忆；整合重试不重新生成反思。'
+        : '正在独立回顾有来源的真实经历；身体醒来或正在做任务都可以继续。'
+        : !sleep.hasUnconsolidated ? '暂无新的真实经历需要深度回顾；已处理来源与标签变动不会反复触发。'
+          : retryAt && !realCompleted ? '本批真实回顾等待有界重试；不会重新抽签或换入运行期间的新资料。'
+            : notBefore ? '本轮深度回顾已结算，后续新经历等待至少6小时的下一轮资格；即时记录和回忆仍可继续。'
+              : maintenance?.eligible === false ? '新经历正在累计；达到3个新事件、最长24小时或重要变更后检查，真实睡眠也可提供一次整理机会。'
+                : '已有真实来源满足回顾条件，等待独立后台空位；不会占用普通任务额度，也不要求电脑开到晚上。') });
+  let dreamReason = '每轮深度回顾固定评估一次60%联想机会；成功叙述后间隔至少8现实小时，不保证产生梦境。';
+  let dreamState: CompanionMemoryLifePlanItem['state'] = 'idle', dreamTiming: Timing = { kind: 'event_driven', clock: 'real' };
+  if (terminalFailure) { dreamState = 'waiting'; dreamReason = (job?.error ?? '本轮联想尚未完成，需要新资料或明确处理；不会原样自动重试。').slice(0, 1000); dreamTiming = realConditional(); }
+  else if (maintenance?.narrativeStatus === 'failed') { dreamState = 'waiting'; dreamReason = '本轮虚构叙述最多3次尝试已经结束；已完成的真实回顾保持有效。'; }
+  else if (maintenance?.narrativeStatus === 'skipped' || sleep.admission === 'not_admitted') dreamReason = '本轮维护未通过联想条件，已持久记录跳过，不会反复抽签；真实回顾仍独立完成。';
+  else if (maintenance?.narrativeStatus === 'completed') dreamReason = '本轮联想已经完成；后续整理不会自动增加一个梦境。';
   else if (job?.dreamAllowed) {
-    dreamState = running ? 'running' : sleepReady && !retryAt ? 'eligible' : 'waiting';
-    dreamReason = running ? '本次已获入梦资格，正在尝试联想；模型仍可不产出梦境。' : '本次已获入梦资格，等待睡眠整合执行；不保证梦境产出。';
+    dreamState = running && realCompleted ? 'running' : retryAt ? 'scheduled' : 'waiting';
+    dreamReason = running && realCompleted ? '真实回顾已保存，正在尝试独立虚构联想；模型仍可不产出梦境。'
+      : realCompleted ? '真实回顾已保存，等待剩余联想阶段；失败最多3次，不重做真实回顾。' : '本轮已获联想机会，先完成真实回顾，再尝试可选虚构叙述。';
     if (retryAt) dreamTiming = { kind: 'retry', clock: 'real', at: retryAt };
-  } else if (sleep.admission === 'admitted') dreamReason = '本次入梦机会已经使用；不会把后续整合自动当作新的梦境。';
+  } else if (sleep.admission === 'admitted') dreamReason = '本轮联想机会已经使用；不会把后续整合自动当作新的梦境。';
   else if (sleep.dreamCooldownUntilWorld) {
-    dreamReason = '仍在8世界小时入梦冷却内；冷却后还需新的实际睡眠段与概率判断。';
-    dreamTiming = { kind: 'conditional', clock: 'world', timeZone: sleep.clock.timeZone, at: sleep.dreamCooldownUntilWorld };
-  } else if (!sleep.hasUnconsolidated) dreamReason = '暂无可供联想的待整合记忆；入梦还需实际睡眠与概率条件。';
+    dreamReason = '距上次成功叙述尚未满8现实小时；之后仍需新的回顾会话与一次概率判断。';
+    dreamTiming = { kind: 'conditional', clock: 'real', at: sleep.dreamCooldownUntilWorld };
+  } else if (!sleep.hasUnconsolidated) dreamReason = '暂无新的真实素材需要联想；不会补造离线期间的梦境。';
   else dreamState = 'waiting';
-  items.push({ id: 'dream', kind: 'dream', title: '概率梦境', state: blocked ? 'waiting' : dreamState,
+  items.push({ id: 'dream', kind: 'dream', title: '梦境与联想', state: blocked ? 'waiting' : dreamState,
     timing: dreamTiming, reason: blocked ?? dreamReason, probability: COMPANION_SLEEP_DREAM_PROBABILITY });
   return { companionId: companion.id, checkedAt: sleep.checkedAt, items, hasMore: sleep.learningHasMore };
 }

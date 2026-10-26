@@ -16,6 +16,8 @@ const REQUEST_TIMEOUT_MS = 30_000;
 export interface CompanionStorageChange {
   memoryInvalidatedCompanionIds?: string[];
   memoryInvalidatedScopeIds?: string[];
+  memoryChangedCompanionIds?: string[];
+  memorySourceChangedCompanionIds?: string[];
 }
 function invalidatedIds(value: unknown): string[] | undefined {
   if (!Array.isArray(value)) return undefined;
@@ -86,6 +88,8 @@ export class CompanionStorageClient {
             this.onIndexChanged({
               memoryInvalidatedCompanionIds: invalidatedIds('memoryInvalidatedCompanionIds' in message ? message.memoryInvalidatedCompanionIds : undefined),
               memoryInvalidatedScopeIds: invalidatedIds('memoryInvalidatedScopeIds' in message ? message.memoryInvalidatedScopeIds : undefined),
+              memoryChangedCompanionIds: invalidatedIds('memoryChangedCompanionIds' in message ? message.memoryChangedCompanionIds : undefined),
+              memorySourceChangedCompanionIds: invalidatedIds('memorySourceChangedCompanionIds' in message ? message.memorySourceChangedCompanionIds : undefined),
             });
           } else if (message.type === 'storage.index-changed') {
             this.onIndexChanged();

@@ -172,7 +172,7 @@ export class CompanionsStore {
       },
       capture: (companionId, messageId) => {
         const source = this.getMessage(messageId), scope = { companionId, conversationId: source.conversationId };
-        if (this.#memory.sources.captureHeld(companionId, source.conversationId) || !this.#memory.sourcesFilter(scope, [source.id]).length) return;
+        if (!this.#memory.sourcesFilter(scope, [source.id]).length) return;
         this.#db.prepare('INSERT OR IGNORE INTO vcp_capture_jobs(id,companion_id,conversation_id,message_id,source_sequence,through_sequence,source_checksum,source_revision) VALUES(?,?,?,?,?,?,?,?)')
           .run(randomUUID(), companionId, source.conversationId, source.id, source.sequence, source.sequence, createHash('sha256').update(source.content).digest('hex'), Number(row(this.#db.prepare('SELECT revision FROM messages WHERE id=?').get(source.id)).revision ?? 1));
       },
@@ -245,7 +245,8 @@ export class CompanionsStore {
       scope => this.#memory.snapshot(scope).revision, (scope, noteIds) => noteIds ? this.#memory.prohibitionPolicyForNotes(scope, noteIds).memoryProhibitionRevision! : this.#memory.sources.prohibitionRevision(scope),
       (scope, notes, proposal, event) => this.#memory.integrateState(scope, notes, proposal, event),
       (scope, candidate, jobId, leaseToken) => this.#memory.recordPrivateConsolidation(scope, candidate, jobId, leaseToken),
-      (scope, plan, jobId, leaseToken) => this.#memory.recordSleepConsolidation(scope, plan, jobId, leaseToken));
+      (scope, plan, jobId, leaseToken) => this.#memory.recordSleepConsolidation(scope, plan, jobId, leaseToken),
+      (owner, now) => this.#memory.captureEligibility(owner, now));
     this.#social = new CompanionSocialStore(this.#db, input => this.appendMessage(input), id => this.getMessage(id),
       (scope, ids) => this.#memory.sourcesFilter(scope, ids), () => this.#world.socialContext(),
       (id, channel, recipients) => this.#world.socialAvailable(id, channel, recipients), (message, channel) => this.#world.recordSocialSpeech(message, channel),
@@ -421,7 +422,6 @@ export class CompanionsStore {
       this.#experience.initialize();
       this.#taskOverview.initialize();
       this.#reset.prepareIndexes();
-      this.#memory.backfill();
       this.#experience.backfill(64); this.#experience.flush();
     } catch (error) {
       this.#db.close();
@@ -590,7 +590,7 @@ export class CompanionsStore {
    * Editing the audience must never rewrite those scopes or delete their room. */
   #hasDurableConversationScope(id: string): boolean {
     const scopedTables = ['companion_topics', 'companion_topic_current', 'companion_activity_tasks', 'companion_activity_memory_intents',
-      'companion_work_orders', 'companion_schedules', 'actions', 'vcp_memory_notes', 'vcp_source_prohibitions', 'vcp_source_policy_holds', 'vcp_operation_receipts'];
+      'companion_work_orders', 'companion_schedules', 'actions', 'vcp_memory_notes', 'vcp_source_prohibitions', 'vcp_operation_receipts'];
     for (const table of scopedTables) if (this.#db.prepare(`SELECT 1 FROM ${table} WHERE conversation_id=? LIMIT 1`).get(id)) return true;
     for (const table of ['vcp_note_sources', 'vcp_note_source_history']) {
       if (this.#db.prepare(`SELECT 1 FROM ${table} source JOIN messages message ON message.id=source.message_id WHERE message.conversation_id=? LIMIT 1`).get(id)) return true;
@@ -679,8 +679,8 @@ export class CompanionsStore {
     }));
   }
 
-  state(includeHidden = false, scope: { includeConversations?: boolean; activeOnly?: boolean; conversationId?: string } = {}): CompanionState {
-    return { companions: rows(this.#db.prepare(`SELECT data FROM companions WHERE deleted_at IS NULL ${scope.activeOnly ? "AND json_extract(data,'$.active')=1" : ''} ORDER BY rowid`).all()).map((item) => ({ revision: 1, ...decode<Companion>(item.data) })), playerProfile: this.getPlayerProfile(), resetJobs: this.#reset.list(),
+  state(includeHidden = false, scope: { includeConversations?: boolean; activeOnly?: boolean; conversationId?: string; companionId?: string } = {}): CompanionState {
+    return { companions: rows(this.#db.prepare(`SELECT data FROM companions WHERE deleted_at IS NULL ${scope.activeOnly ? "AND json_extract(data,'$.active')=1" : ''} ${scope.companionId ? 'AND id=?' : ''} ORDER BY rowid`).all(...(scope.companionId ? [scope.companionId] : []))).map((item) => ({ revision: 1, ...decode<Companion>(item.data) })), playerProfile: this.getPlayerProfile(), resetJobs: this.#reset.list(),
       conversations: scope.includeConversations === false ? [] : rows(this.#db.prepare(`SELECT * FROM conversations WHERE dissolved_at IS NULL ${includeHidden ? '' : 'AND hidden_at IS NULL'} ${scope.conversationId ? 'AND id=?' : ''} ORDER BY pinned DESC,updated_at DESC,rowid DESC`).all(...(scope.conversationId ? [scope.conversationId] : []))).map((item) => this.#conversation(item)),
       activities: [], configured: false, recoveries: this.replyRecoveries() };
   }
@@ -1829,10 +1829,13 @@ export class CompanionsStore {
     }).immediate();
   }
 
-  takeMemoryInvalidations(): Pick<CompanionStorageResponse, 'memoryInvalidatedCompanionIds' | 'memoryInvalidatedScopeIds'> {
+  takeMemoryInvalidations(): Pick<CompanionStorageResponse, 'memoryInvalidatedCompanionIds' | 'memoryInvalidatedScopeIds' | 'memoryChangedCompanionIds' | 'memorySourceChangedCompanionIds'> {
     const owners = this.#memory.takeInvalidatedOwners();
     const scopes = this.#memory.takeInvalidatedScopes();
-    return owners.length || scopes.length ? { memoryInvalidatedCompanionIds: owners, memoryInvalidatedScopeIds: scopes } : {};
+    const changed = this.#memory.takeChangedOwners().filter(owner => !owners.includes(owner));
+    const sourceChanged = this.#memory.takeSourceOutboxOwners();
+    return { ...(owners.length || scopes.length ? { memoryInvalidatedCompanionIds: owners, memoryInvalidatedScopeIds: scopes } : {}),
+      ...(changed.length ? { memoryChangedCompanionIds: changed } : {}), ...(sourceChanged.length ? { memorySourceChangedCompanionIds: sourceChanged } : {}) };
   }
   request(input: CompanionStorageCommand): CompanionStorageResponse {
     return this.#memory.sources.withValidation(() => {
@@ -1848,8 +1851,26 @@ export class CompanionsStore {
   }
   private dispatch(input: CompanionStorageCommand): CompanionStorageResponse {
     const command = companionStorageCommandSchema.parse(input);
+    if (command.type === 'companion.assets.initialized') {
+      this.#requireCompanion(command.companionId);
+      return { ok: true, assetProfileInitialized: !!this.#db.prepare('SELECT 1 FROM metadata WHERE key=?').get('companion-assets-initialized/' + command.companionId) };
+    }
+    if (command.type === 'companion.assets.portrait.initialized') {
+      this.#requireCompanion(command.companionId);
+      return { ok: true, assetPortraitInitialized: !!this.#db.prepare('SELECT 1 FROM metadata WHERE key=?').get('companion-portrait-initialized/' + command.companionId + '/' + command.role) };
+    }
     if (command.type === 'companion.reset') this.#memory.invalidateOwner(command.id);
     this.#reset.assertCommand(command);
+    if (command.type === 'companion.assets.mark-initialized') {
+      this.#requireCompanion(command.companionId);
+      this.#db.prepare('INSERT OR IGNORE INTO metadata(key,value) VALUES(?,?)').run('companion-assets-initialized/' + command.companionId, new Date().toISOString());
+      return { ok: true, assetProfileInitialized: true };
+    }
+    if (command.type === 'companion.assets.portrait.mark-initialized') {
+      this.#requireCompanion(command.companionId);
+      this.#db.prepare('INSERT OR IGNORE INTO metadata(key,value) VALUES(?,?)').run('companion-portrait-initialized/' + command.companionId + '/' + command.role, new Date().toISOString());
+      return { ok: true, assetPortraitInitialized: true };
+    }
     if (command.type === 'tasks.page') return { ok: true, taskPage: this.#taskOverview.page(command) };
     if (command.type === 'tasks.resolve') return { ok: true, task: this.#taskOverview.resolve(command) };
     if (command.type === 'task.inspect') return { ok: true, taskDetail: this.#taskDetails.inspect(command) };

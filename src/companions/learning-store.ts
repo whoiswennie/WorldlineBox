@@ -3,6 +3,7 @@ import { companionTaskCanClaim } from './task-concurrency-store';
 import type { CompanionLearningGrant, CompanionLearningJob, CompanionLearningRead, CompanionLearningStatus } from '../shared/companion-learning';
 import type { CompanionStorageCommand, CompanionStorageResponse } from '../shared/companion-storage';
 import type { CompanionConnection } from './store';
+import { CompanionLearningAssetStore, registerCompanionLearningAssetSource } from './learning-asset-store';
 
 type GrantRow = { id: string; companion_id: string; data: string; enabled: number; autonomous: number; revision: number; lease_token: string | null; lease_until: number; next_at: number; cursor: string; manual: number };
 type Cursor = { afterAssetId?: string; assetId?: string; assetRevisionId?: string; offset?: number };
@@ -14,15 +15,20 @@ export interface CompanionLearningStoreOptions {
 }
 /** Explicit read grants and durable delivery. A file is not knowledge until a real read receipt is captured. */
 export class CompanionLearningStore {
-  constructor(private readonly db: CompanionConnection, private readonly options: CompanionLearningStoreOptions) {}
+  private readonly assets: CompanionLearningAssetStore;
+  constructor(private readonly db: CompanionConnection, private readonly options: CompanionLearningStoreOptions) {
+    this.assets = new CompanionLearningAssetStore(db, id => this.grant(this.load(id)), options.withdraw);
+  }
   initialize(): void {
     this.db.exec(`CREATE TABLE IF NOT EXISTS companion_learning_grants(id TEXT PRIMARY KEY,companion_id TEXT NOT NULL,library_id TEXT NOT NULL,folder_id TEXT NOT NULL DEFAULT '',enabled INTEGER NOT NULL,autonomous INTEGER NOT NULL,revision INTEGER NOT NULL,data TEXT NOT NULL,next_at INTEGER NOT NULL DEFAULT 0,manual INTEGER NOT NULL DEFAULT 0,lease_token TEXT,lease_until INTEGER NOT NULL DEFAULT 0,cursor TEXT NOT NULL DEFAULT '{}');
       CREATE UNIQUE INDEX IF NOT EXISTS companion_learning_active_grant ON companion_learning_grants(companion_id,library_id,folder_id) WHERE enabled=1;
       CREATE INDEX IF NOT EXISTS companion_learning_due ON companion_learning_grants(enabled,next_at);
-      CREATE TABLE IF NOT EXISTS companion_learning_reads(id TEXT PRIMARY KEY,companion_id TEXT NOT NULL,grant_id TEXT NOT NULL REFERENCES companion_learning_grants(id),asset_id TEXT NOT NULL,asset_revision TEXT NOT NULL,offset INTEGER NOT NULL,source_message_id TEXT NOT NULL,data TEXT NOT NULL,status TEXT NOT NULL,UNIQUE(grant_id,asset_id,asset_revision,offset));
+      CREATE TABLE IF NOT EXISTS companion_learning_reads(id TEXT PRIMARY KEY,companion_id TEXT NOT NULL,grant_id TEXT NOT NULL REFERENCES companion_learning_grants(id),asset_id TEXT NOT NULL,asset_revision TEXT NOT NULL,offset INTEGER NOT NULL,source_message_id TEXT NOT NULL,data TEXT NOT NULL,status TEXT NOT NULL);
+      CREATE UNIQUE INDEX IF NOT EXISTS companion_learning_read_active_receipt ON companion_learning_reads(grant_id,asset_id,asset_revision,offset) WHERE status='read';
       CREATE INDEX IF NOT EXISTS companion_learning_read_owner ON companion_learning_reads(companion_id,grant_id);
       CREATE INDEX IF NOT EXISTS companion_learning_read_source ON companion_learning_reads(source_message_id);
     `);
+    this.assets.initialize();
     // This database has one owned utility process. Its previous leases cannot
     // still be running after a restart; retain the cursor but resume promptly.
     this.db.prepare(`UPDATE companion_learning_grants SET lease_token=NULL,lease_until=0,next_at=0,
@@ -61,6 +67,7 @@ export class CompanionLearningStore {
       .run(JSON.stringify(value), JSON.stringify(more ? cursor : {}), next, row.manual && more ? 1 : 0, row.id);
   }
   execute(command: CompanionStorageCommand): CompanionStorageResponse | undefined {
+    const assets = this.assets.execute(command); if (assets) return assets;
     switch (command.type) {
       case 'learning.status': return { ok: true, learning: this.status(command.companionId) };
       case 'learning.grant': return this.db.transaction(() => {
@@ -84,6 +91,8 @@ export class CompanionLearningStore {
         const sourceIds = (this.db.prepare("SELECT source_message_id FROM companion_learning_reads WHERE grant_id=? AND status='read' UNION SELECT source_message_id FROM companion_learning_goal_sources WHERE grant_id=?").all(row.id, row.id) as Array<{ source_message_id: string }>).map(row => row.source_message_id);
         this.db.prepare('UPDATE companion_learning_grants SET enabled=0,revision=revision+1,manual=0,lease_token=NULL,lease_until=0 WHERE id=?').run(row.id);
         this.db.prepare("UPDATE companion_learning_reads SET status='withdrawn' WHERE grant_id=?").run(row.id);
+        this.db.prepare("UPDATE companion_learning_asset_sources SET status='withdrawn' WHERE grant_id=?").run(row.id);
+        this.db.prepare("UPDATE companion_learning_observed_assets SET status='withdrawn' WHERE grant_id=?").run(row.id);
         this.options.withdraw(command.companionId, sourceIds);
         return { ok: true, learning: this.status(command.companionId) };
       }).immediate();
@@ -112,7 +121,7 @@ export class CompanionLearningStore {
         if (cursor.assetId && cursor.assetId !== command.assetId || command.offset !== expectedOffset
           || command.nextOffset !== undefined && command.nextOffset !== command.offset + command.content.length)
           throw new Error('学习片段顺序已经变化，不能跳过或伪造未读取的内容。');
-        const previous = this.db.prepare('SELECT id FROM companion_learning_reads WHERE grant_id=? AND asset_id=? AND asset_revision=? AND offset=?').get(row.id, command.assetId, command.assetRevisionId, command.offset);
+        const previous = this.db.prepare("SELECT id FROM companion_learning_reads WHERE grant_id=? AND asset_id=? AND asset_revision=? AND offset=? AND status='read'").get(row.id, command.assetId, command.assetRevisionId, command.offset);
         if (!previous) {
           const receipt: Omit<CompanionLearningRead, 'sourceMessageId'> = { id: randomUUID(), companionId: row.companion_id, grantId: row.id, libraryId: grant.libraryId,
             assetId: command.assetId, assetRevisionId: command.assetRevisionId, assetName: command.assetName, offset: command.offset, characters: command.content.length,
@@ -120,6 +129,7 @@ export class CompanionLearningStore {
           const sourceMessageId = this.options.record(grant, receipt, command.content);
           this.db.prepare('INSERT INTO companion_learning_reads(id,companion_id,grant_id,asset_id,asset_revision,offset,source_message_id,data,status) VALUES(?,?,?,?,?,?,?,?,\'read\')')
             .run(receipt.id, row.companion_id, row.id, command.assetId, command.assetRevisionId, command.offset, sourceMessageId, JSON.stringify({ ...receipt, sourceMessageId }));
+          registerCompanionLearningAssetSource(this.db, row.companion_id, row.id, command.assetId, command.assetRevisionId, sourceMessageId);
           this.options.capture(row.companion_id, sourceMessageId);
         }
         this.release(row, command.nextOffset !== undefined ? { assetId: command.assetId, assetRevisionId: command.assetRevisionId, offset: command.nextOffset, afterAssetId: command.afterAssetId }

@@ -32,6 +32,28 @@ const toolResponse = (id: string, name: string, args: unknown) => new Response(J
 const sentReceipt = (id: string, recipientIds: string[], content: string) => ({ ok: true, socialMessage: {
   message: { ...source, id, conversationId: 'actual_pair', authorId: companion.id, content }, virtualCreatedAt: source.createdAt, recipientIds } });
 
+it('takes social behavior only from the canonical owner purpose while keeping its host source and output contract', async () => {
+  let observedRoleSystem = '';
+  const resolveAssetContext = vi.fn(async (context: { system: string; user: string }) => {
+    const data = JSON.parse(context.user);
+    if (data.purpose === 'world_social') {
+      observedRoleSystem = context.system;
+      expect(context.system).not.toContain('保持自然简短');
+      expect(context.system).toContain('sourceMessageId必须等于source.id');
+      return { ...context, system: 'FILE_ONLY_SOCIAL_BEHAVIOR_选择自己的详细叙述方式。\n' + context.system };
+    }
+    return context;
+  });
+  const fetchFn = vi.fn<typeof fetch>(async (_url, init) => {
+    const wire = JSON.parse(String(init?.body)), data = JSON.parse(wire.messages[1].content);
+    if (data.purpose === 'companion_social_progress_review') return response({ supported: true, correction: '' });
+    expect(wire.messages[0].content).toContain('FILE_ONLY_SOCIAL_BEHAVIOR');
+    return response({ text: '我愿意听听你的想法。', reason: '回应这条实际来信。' });
+  });
+  const result = await generateCompanionSocialReply(input(), { ...config, resolveAssetContext }, undefined, { fetchFn });
+  expect(result.text).toBe('我愿意听听你的想法。'); expect(observedRoleSystem).toContain('社交交付合同'); expect(resolveAssetContext).toHaveBeenCalled();
+});
+
 it('rejects a peer native final claiming a failed discussion message was sent and lets the same author correct it', async () => {
   const request = '请把读书讨论的开始时间单独告诉朋友，再告诉我实际结果。';
   const actualSource = { ...source, content: request };

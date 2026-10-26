@@ -161,7 +161,6 @@ export class CompanionExecutionSourceStore {
       // path to retire consolidation/state/index dependencies atomically.
       for (const row of this.db.prepare("SELECT data FROM vcp_memory_notes WHERE json_extract(data,'$.status') NOT IN('forgotten','invalid')").all() as Array<{ data: string }>) {
         const note = JSON.parse(row.data) as CompanionMemory;
-        if (this.memory.sources.captureHeld(note.companionId, note.sourceConversationId)) continue;
         const visible = this.memory.execute({ type: 'memory.records.filter', ...this.memory.sources.ownerScope(note.companionId), ids: [note.id] })?.memories?.length;
         if (!visible) this.memory.withdrawNote(note.id, 'invalid');
       }

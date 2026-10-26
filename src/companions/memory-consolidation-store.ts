@@ -3,7 +3,7 @@ import type { CompanionMemory } from '../shared/companions';
 import type { CompanionStorageCommand } from '../shared/companion-storage';
 
 type Consolidation = { companionId: string; mergedId: string; state: 'pending' | 'published' | 'restored' | 'stale';
-  inputs: Array<{ id: string; version: number }>; mergedVersion?: number; staleReason?: string };
+  inputs: Array<{ id: string; version: number; contentRevision?: number }>; mergedVersion?: number; mergedContentRevision?: number; staleReason?: string };
 type AutomaticClassification = { automaticConsolidation: true; sleepWorldJobId: string };
 interface Port {
   load(id: string): CompanionMemory;
@@ -38,14 +38,15 @@ export class CompanionMemoryConsolidationStore {
     let merged: CompanionMemory;
     try { merged = this.port.load(record.mergedId); }
     catch { return '整合候选已经不存在，旧计划不再发布。'; }
-    if (record.mergedVersion !== undefined && merged.version !== record.mergedVersion) return '整合候选正文已经修订，旧归档计划停止，保留当前候选版本。';
+    if (record.mergedContentRevision !== undefined ? merged.contentRevision !== record.mergedContentRevision
+      : record.mergedVersion !== undefined && merged.version !== record.mergedVersion) return '整合候选正文已经修订，旧归档计划停止，保留当前候选版本。';
     if (record.mergedVersion === undefined && merged.version > 1) return '旧整合计划未记录候选版本，当前候选已有更新，停止旧归档计划并保留当前版本。';
     if (!this.port.valid(merged)) return '整合的实际来源或授权已经变化，旧计划不再发布。';
     for (const input of record.inputs) {
       let source: CompanionMemory;
       try { source = this.port.load(input.id); }
       catch { return '整合读过的原文已经不存在，旧计划不再发布。'; }
-      if (!this.port.valid(source) || source.version !== input.version) return '整合读过的具体原文或授权已更新，保留当前版本，等待后续维护重新读取。';
+      if (!this.port.valid(source) || (input.contentRevision !== undefined ? source.contentRevision !== input.contentRevision : source.version !== input.version)) return '整合读过的具体原文或授权已更新，保留当前版本，等待后续维护重新读取。';
       if (source.archivedAt && source.supersededBy !== record.mergedId) return '原文已由另一项有效整合归档，旧整合计划已被替代，保留现有归档与来源。';
     }
     return undefined;
@@ -53,12 +54,13 @@ export class CompanionMemoryConsolidationStore {
   private retire(record: Consolidation, reason: string): void {
     if (record.state !== 'pending') return;
     let note: CompanionMemory | undefined;
-    try { note = this.port.load(record.mergedId); } catch { /* A deleted legacy candidate has nothing left to archive. */ }
+    try { note = this.port.load(record.mergedId); } catch { /* A deleted candidate has nothing left to archive. */ }
     record.state = 'stale'; record.staleReason = reason; this.save(record);
     if (!note) {
       // The durable plan may outlive a deleted candidate. Its originals remain
       // untouched and its obsolete delivery must not be claimed again.
-    } else if (record.mergedVersion !== undefined ? record.mergedVersion !== note.version : note.version > 1) {
+    } else if (record.mergedContentRevision !== undefined ? record.mergedContentRevision !== note.contentRevision
+      : record.mergedVersion !== undefined ? record.mergedVersion !== note.version : note.version > 1) {
       // A separately revised candidate has its own delivery. Retiring the old
       // archive plan must not withdraw that newer valid body or its index.
     } else if (this.port.valid(note)) {
@@ -93,7 +95,7 @@ export class CompanionMemoryConsolidationStore {
   }
   private waitFor(owner: string, originals: readonly CompanionMemory[], blockers: readonly string[]): void {
     for (const note of originals) this.db.prepare('INSERT INTO metadata(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value')
-      .run(`memory-consolidation-wait/${owner}/${note.id}`, JSON.stringify({ version: note.version, blockers }));
+      .run(`memory-consolidation-wait/${owner}/${note.id}`, JSON.stringify({ version: note.version, contentRevision: note.contentRevision, blockers }));
   }
   private pendingOverlap(owner: string, originals: readonly CompanionMemory[]): string[] {
     const ids = originals.map(note => note.id), sources = [...new Set(originals.flatMap(note => note.sources.map(source => source.messageId)))];
@@ -109,6 +111,7 @@ export class CompanionMemoryConsolidationStore {
   }
   prepare(command: Extract<CompanionStorageCommand, { type: 'memory.consolidate' }>, automatic?: AutomaticClassification): CompanionMemory | undefined {
     const originals = command.inputs.map(input => this.port.load(input.id));
+    if (originals.some(note => note.procedure)) throw new Error('方法记忆使用自身的修订与实践验证流程维护，不能并入摘要后归档。');
     if (originals.some((note, index) => note.companionId !== command.companionId || note.version !== command.inputs[index]!.version
       || note.archivedAt || note.status !== 'indexed' || !this.port.valid(note))) throw new Error('整合前须重新读取本人尚未归档且已就绪的准确记忆版本。');
     const domain = originals[0]!.sourceConversationId;
@@ -123,8 +126,9 @@ export class CompanionMemoryConsolidationStore {
       relatedMemoryIds: command.inputs.map(input => input.id) } }, automatic);
     if (!note || note.sourceConversationId !== domain || originals.some(source => source.id === note.id)) throw new Error('整合未形成相同可见域的新日记。');
     const previous = this.get(note.id);
-    if (previous && JSON.stringify(previous.inputs) !== JSON.stringify(command.inputs)) throw new Error('相同整合身份不能替换读集。');
-    if (!previous) this.save({ companionId: command.companionId, mergedId: note.id, mergedVersion: note.version, state: 'pending', inputs: command.inputs });
+    if (previous && JSON.stringify(previous.inputs.map(input => ({ id: input.id, version: input.version }))) !== JSON.stringify(command.inputs)) throw new Error('相同整合身份不能替换读集。');
+    if (!previous) this.save({ companionId: command.companionId, mergedId: note.id, mergedVersion: note.version, mergedContentRevision: note.contentRevision,
+      state: 'pending', inputs: command.inputs.map((input, index) => ({ ...input, contentRevision: originals[index]!.contentRevision })) });
     this.waitFor(command.companionId, originals, [note.id]);
     // A previously indexed identical proposal can safely publish immediately.
     if (note.status === 'indexed') this.publish(note);
@@ -132,14 +136,16 @@ export class CompanionMemoryConsolidationStore {
   }
   publish(note: CompanionMemory): { state: 'completed' | 'stale'; reason?: string } {
     const record = this.get(note.id);
-    if (record?.state === 'stale') return (record.mergedVersion !== undefined ? record.mergedVersion !== note.version : note.version > 1)
+    if (record?.state === 'stale') return (record.mergedContentRevision !== undefined ? record.mergedContentRevision !== note.contentRevision
+      : record.mergedVersion !== undefined ? record.mergedVersion !== note.version : note.version > 1)
       ? { state: 'completed' } : { state: 'stale', reason: record.staleReason };
     if (!record || record.state !== 'pending') return { state: 'completed' };
     const reason = this.staleReason(record);
     if (reason) { this.retire(record, reason); return { state: 'stale', reason }; }
     const originals = record.inputs.map(input => this.port.load(input.id));
     if (note.status !== 'indexed' || !this.port.valid(note) || originals.some((source, index) => !this.port.valid(source)
-      || source.version !== record.inputs[index]!.version || source.archivedAt && source.supersededBy !== note.id)) throw new Error('整合发布条件未通过最终核验。');
+      || (record.inputs[index]!.contentRevision !== undefined ? source.contentRevision !== record.inputs[index]!.contentRevision : source.version !== record.inputs[index]!.version)
+      || source.archivedAt && source.supersededBy !== note.id)) throw new Error('整合发布条件未通过最终核验。');
     this.port.invalidate(note.companionId);
     for (const source of originals) {
       source.archivedAt = new Date().toISOString(); source.supersededBy = note.id;

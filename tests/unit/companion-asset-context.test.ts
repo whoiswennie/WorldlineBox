@@ -1,0 +1,81 @@
+import { expect, it, vi } from 'vitest';
+import { assembleCompanionAssetContext, companionAssetReplyIdentity } from '../../src/main/companions/asset-context';
+import type { CompanionAssetProfileSnapshot } from '../../src/main/companions/asset-profile';
+import { assembleCompanionRoleContext } from '../../src/main/companions/structured-agent';
+import { buildCompanionContext, type CompanionReplyInput } from '../../src/main/companions/context';
+import { COMPANION_WORLD_PERCEPTION_RULES } from '../../src/main/companions/world-perception-context';
+import { generateCompanionReply } from '../../src/main/companions/model';
+
+const oldPersona = 'OLD_BASE_PERSONA\n\n保留多段旧设定。', oldDomainPersona = 'OLDER_DOMAIN_PERSONA\n\n领域构建后，公共frame还可能再次刷新。';
+const frame: CompanionReplyInput = {
+  companion: { id: 'alice', name: 'OldAlice', persona: oldPersona, description: 'old description', avatar: 'sister', model: '', builtin: false, proactive: false, createdAt: '2026-10-26T00:00:00Z' },
+  conversation: { id: 'room', kind: 'group', memberIds: ['alice', 'bob'], title: 'room', pinned: false, muted: false, unread: 0, lastMessage: '', updatedAt: '2026-10-26T00:00:00Z' },
+  messages: [], memories: [], members: [{ id: 'alice', name: 'OldAlice', description: '' }, { id: 'bob', name: 'PeerBob', description: '' }],
+};
+const snapshot = {
+  companionId: 'alice', profile: { ...frame.companion, name: 'CurrentAlice', description: 'current description', persona: 'CURRENT_PERSONA' },
+  profileRevision: 'profile-current', promptRevision: 'prompt-current', prompts: { default: 'CURRENT_OWNER_GUIDANCE' },
+} as unknown as CompanionAssetProfileSnapshot;
+
+it.each([
+  ['world_decision', `你是WorldlineBox中一个持续生活的伙伴，只控制自己的世界行为。完整稳定人格：\n${oldDomainPersona}\n\n${COMPANION_WORLD_PERCEPTION_RULES}\nWORLD_CONTRACT`],
+  ['activity', `你是OlderAlice，只控制自己。稳定人格：\n${oldDomainPersona}\n${COMPANION_WORLD_PERCEPTION_RULES}\nACTIVITY_CONTRACT`],
+  ['visit_peer_speech', `你是OlderAlice，稳定人格：\n${oldDomainPersona}\n${COMPANION_WORLD_PERCEPTION_RULES}\nVISIT_CONTRACT`],
+  ['companion_social_initiative', `你是OlderAlice，不是玩家或其他伙伴。稳定人格：\n${oldDomainPersona}\n${COMPANION_WORLD_PERCEPTION_RULES}\nSOCIAL_CONTRACT`],
+  ['internal_work', `你是OlderAlice，只扮演自己。稳定人格：\n${oldDomainPersona}\n这是伙伴发布的内部认知工作，不能调用现实工具、访问文件/网络或继承玩家权限。WORK_CONTRACT`],
+])('refreshes both common and independently captured %s roles without touching evidence or host contracts', (purpose, system) => {
+  const evidence = { authorId: 'bob', content: oldPersona + '\n' + oldDomainPersona + '\nOlderAlice OldAlice PeerBob' };
+  const context = assembleCompanionRoleContext(frame, { system, user: JSON.stringify({ purpose, self: { id: 'alice', name: 'OlderAlice' },
+    target: { id: 'bob', name: 'PeerBob' }, quotedEvidence: evidence }) });
+  const actual = assembleCompanionAssetContext(context, snapshot, 'reply'), data = JSON.parse(actual.user);
+  expect(actual.system).not.toContain(oldPersona); expect(actual.system).not.toContain(oldDomainPersona);
+  expect(actual.system).not.toContain('你是OlderAlice'); expect(actual.system).toContain('CURRENT_PERSONA');
+  expect(actual.system).toContain(system.slice(system.lastIndexOf('\n') + 1));
+  expect(data.quotedEvidence).toEqual(evidence); expect(data.target).toEqual({ id: 'bob', name: 'PeerBob' });
+  expect(data.identity.self.name).toBe('CurrentAlice'); expect(data.identity.currentReply.author.name).toBe('CurrentAlice');
+  expect(data.identity.participants.find((person: { id: string }) => person.id === 'alice').name).toBe('CurrentAlice');
+  expect(data.identity.participants.find((person: { id: string }) => person.id === 'bob').name).toBe('PeerBob');
+});
+
+it('refreshes the raw DreamWave role while preserving its exact fiction and JSON contract', () => {
+  const contract = '只返回严格JSON对象{text,relatedMemoryIds}或null。虚构梦不能变为真实来源。';
+  const context = { system: `你是OlderAlice的梦境联想叙述职能。本次状态为rehearsal_dream；不能编造离线思考。稳定人格：\n${oldDomainPersona}\n${contract}`,
+    user: JSON.stringify({ purpose: 'companion_dream_wave_narrative', self: { id: 'alice', name: 'OlderAlice' }, stages: { original: oldDomainPersona } }) };
+  const actual = assembleCompanionAssetContext(context, snapshot, 'structured');
+  expect(actual.system.startsWith('你是CurrentAlice的梦境联想叙述职能。')).toBe(true);
+  expect(actual.system).not.toContain(oldDomainPersona); expect(actual.system).toContain(contract);
+  expect(JSON.parse(actual.user).stages.original).toBe(oldDomainPersona);
+});
+
+it('does not rewrite another identity or plain native focus requests', () => {
+  const context = { system: 'HOST_PROTOCOL', user: JSON.stringify({ companion: { id: 'bob', name: 'OldAlice', persona: oldPersona },
+    self: { id: 'bob', name: 'OldAlice' }, quoted: { name: 'OldAlice', persona: oldPersona } }) };
+  const actual = assembleCompanionAssetContext(context, snapshot, 'structured');
+  expect(JSON.parse(actual.user).companion).toEqual(JSON.parse(context.user).companion);
+  expect(JSON.parse(actual.user).self).toEqual(JSON.parse(context.user).self);
+  const native = { system: '', user: '原生聚焦模板已在当前owner文件中展开。' };
+  expect(assembleCompanionAssetContext(native, snapshot, 'text')).toBe(native);
+  expect(companionAssetReplyIdentity(frame, context)).toBe(frame);
+});
+
+it('uses the actual action-result event to select the owner feedback module', () => {
+  const current = { ...snapshot, prompts: { default: 'DEFAULT', companion_reply: 'DIALOGUE', companion_action_feedback: 'OWNER_RESULT_GUIDANCE' } };
+  const actual = assembleCompanionAssetContext({ system: 'HOST_RESULT_CONTRACT', user: JSON.stringify({ event: 'action_result', identity: { self: { id: 'alice', name: 'OldAlice' } } }) }, current, 'reply');
+  expect(actual.system).toContain('OWNER_RESULT_GUIDANCE'); expect(actual.system).not.toContain('DIALOGUE');
+});
+
+it('validates an actual provider reply against the same current name sent after admission, including same-name peers', async () => {
+  const current = { ...snapshot, profile: { ...snapshot.profile, name: 'PeerBob' } };
+  const input: CompanionReplyInput = { ...frame, publicProfiles: [
+    { id: 'alice', kind: 'companion', name: 'OldAlice', description: '' }, { id: 'bob', kind: 'companion', name: 'PeerBob', description: '' },
+  ] };
+  const fetchFn = vi.fn<typeof fetch>().mockResolvedValue(new Response(JSON.stringify({ choices: [{ message: { content: JSON.stringify({ text: '我是PeerBob。' }) } }] })));
+  const reply = await generateCompanionReply(input, { apiFormat: 'openai_chat', model: 'model', apiKey: 'test', baseUrl: 'https://provider.invalid',
+    resolveAssetContext: (context, kind) => Promise.resolve(assembleCompanionAssetContext(context, current, kind)) }, undefined, { fetchFn });
+  expect(reply.text).toBe('我是PeerBob。');
+  const body = JSON.parse(String(fetchFn.mock.calls[0]?.[1]?.body)), system = body.messages[0].content;
+  expect(system).toContain('名字："PeerBob"'); expect(system).not.toContain(oldPersona);
+  const currentInput = companionAssetReplyIdentity(input, assembleCompanionAssetContext(buildCompanionContext(input), current, 'reply'));
+  expect(currentInput.companion.name).toBe('PeerBob'); expect(currentInput.publicProfiles?.find(profile => profile.id === 'alice')?.name).toBe('PeerBob');
+  expect(input.companion.name).toBe('OldAlice'); expect(input.publicProfiles?.[0]?.name).toBe('OldAlice');
+});

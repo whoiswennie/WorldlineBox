@@ -345,7 +345,10 @@ class VcpMemoryRuntime {
       return;
     }
     const response = await this.peripherals.call('DailyNote', previous === undefined
-      ? { command: 'create', folder, maid: note.author || 'WorldlineBox', Date: day, fileName: key, Content: content, Tag: tags.join(', ') }
+      ? { command: 'create', folder, maid: note.author || 'WorldlineBox', Date: day, fileName: key,
+        // Upstream removes one trailing Tag line when external Tag is present.
+        // Give it our own suffix so a literal final Tag in note.content survives.
+        Content: `${content}\nTag: ${tags.join(', ')}`, Tag: tags.join(', ') }
       : { command: 'update', folder, maid: note.author || 'WorldlineBox', target: previous, replace: text });
     if (response.result?.status !== 'success') throw failure('VCP_MEMORY_DIARY_WRITE_FAILED', String(response.result?.error || 'DailyNote rejected the memory write.'));
     const actualPath = path.join(this.notesRoot, response.result.result.folder, response.result.result.fileName);

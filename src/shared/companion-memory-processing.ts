@@ -20,7 +20,7 @@ export const MEMORY_PROCESSING_TRIGGERS = {
   capture: '正式发布且允许记忆的聊天、伙伴互动及实际经历进入来源队列；后台检查后判断是否值得写成日记，不是每句话都记录。',
   index: '日记或资料保存、修订、标签变更和撤回后进入投递队列；同一记忆范围依次提交到本地向量与 VCP 索引。',
   tags: '允许自动标签且没有手工标签的资料进入队列；正文末尾明确的 Tag 行优先，否则使用全局聊天模型整理。',
-  timeline: '有可用来源日记且全局聊天模型可用时，在前台空闲的后台轮次整理月时间线与摘要；同一身份与模型的同月自动重整至少间隔五分钟，手动失败重试可解除该冷却。',
+  timeline: '有可用来源日记且此伙伴聊天模型可用时，经公平资源准入在后台整理月时间线与摘要，普通任务期间也可推进；同一身份与模型的同月自动重整至少间隔五分钟，手动失败重试可解除该冷却。',
 } as const;
 export const companionMemoryProcessingCommand = z.strictObject({ type: z.literal('memory.processing.status'), companionId: id,
   filter: companionMemoryProcessingFilterSchema.optional(), limit: z.number().int().min(1).max(50).default(30) });

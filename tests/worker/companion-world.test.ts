@@ -17,7 +17,7 @@ beforeEach(() => { vi.useFakeTimers({ toFake: ['Date'] }); vi.setSystemTime('202
 afterEach(() => { vi.restoreAllMocks(); for (const store of stores)
     store.close(); stores.clear(); for (const root of roots.splice(0))
     rmSync(root, { recursive: true, force: true }); vi.useRealTimers(); });
-function fixture(mode: 'compressed' | 'realtime' = 'compressed') {
+function fixture(mode: 'realtime' = 'realtime') {
     const root = mkdtempSync(path.join(tmpdir(), 'companion-world-'));
     roots.push(root);
     const filename = path.join(root, 'messages.sqlite');
@@ -99,16 +99,17 @@ describe('one authoritative companion world', () => {
         f.store.request({ type: 'life-event.tick' });
         expect(f.store.request({ type: 'life-rule.list', companionId: 'alice' }).lifeOccurrences!.some(occ => occ.rule.title === '正常观察散步机会')).toBe(true);
     });
-    it('defaults to the computer date, optionally compresses twenty minutes into a day, and realigns to wall time when restored', () => {
+    it('keeps the virtual world synchronized with real time across timezone changes and restart', () => {
         const f = fixture('realtime'), first = f.store.request({ type: 'world.snapshot' }).world!;
         expect(f.initial.settings.mode).toBe('realtime');
         expect(first.clock.speed).toBe(1);
         expect(first.clock.virtualNow).toBe(new Date().toISOString());
-        const compressed = f.store.request({ type: 'world.configure', expectedRevision: first.settings.revision, patch: { mode: 'compressed' } }).world!;
-        expect(compressed.clock.virtualNow).toBe(first.clock.virtualNow);
+        expect(() => f.store.request({ type: 'world.configure', expectedRevision: first.settings.revision, patch: { mode: 'compressed' } })).toThrow('现实时间');
+        const configured = f.store.request({ type: 'world.configure', expectedRevision: first.settings.revision, patch: { timeZone: 'Asia/Shanghai' } }).world!;
+        expect(configured.clock.virtualNow).toBe(first.clock.virtualNow);
         const later = advance(f.store, 20 * 60000);
-        expect(Date.parse(later.clock.virtualNow) - Date.parse(first.clock.virtualNow)).toBe(86400000);
-        const changed = f.store.request({ type: 'world.configure', expectedRevision: compressed.settings.revision, patch: { mode: 'realtime' } }).world!;
+        expect(Date.parse(later.clock.virtualNow) - Date.parse(first.clock.virtualNow)).toBe(20 * 60000);
+        const changed = f.store.request({ type: 'world.configure', expectedRevision: configured.settings.revision, patch: { timeZone: 'UTC' } }).world!;
         expect(changed.clock.virtualNow).toBe(new Date().toISOString());
         const real = advance(f.store, 60000);
         expect(Date.parse(real.clock.virtualNow) - Date.parse(changed.clock.virtualNow)).toBe(60000);
@@ -220,11 +221,11 @@ describe('one authoritative companion world', () => {
         expect(asleep.actors.find(actor => actor.companionId === 'alice')).toMatchObject({ activity: 'sleeping', furnitureId: 'alice_bed' });
         const configured = f.store.request({ type: 'routine.configure', ...f.alice, expectedRevision: before.revision, patch: { meals: [{ name: '午饭', at: '12:00', durationMinutes: 40 }] } }).routine!;
         expect(configured.config.meals[0]!.at).toBe('12:00');
-        const target = Date.parse(asleep.clock.realNow) + (Date.parse('2026-10-14T12:05:00Z') - Date.parse(asleep.clock.virtualNow)) / 72;
+        const target = Date.parse('2026-10-14T12:05:00Z');
         vi.setSystemTime(target);
         const lunch = f.store.request({ type: 'world.tick', snapshot: true }).world!;
-        expect(f.store.request({ type: 'routine.get', ...f.alice }).routine!.runtime).toMatchObject({ phase: 'awake', plannedPhase: 'eating', canRespond: true });
-        expect(lunch.actors.find(actor => actor.companionId === 'alice')!.destinationId).toBe('alice_dining');
+        expect(f.store.request({ type: 'routine.get', ...f.alice }).routine!.runtime).toMatchObject({ phase: 'eating', plannedPhase: 'eating', canRespond: true });
+        expect(lunch.actors.find(actor => actor.companionId === 'alice')).toMatchObject({ activity: 'eating', furnitureId: 'alice_dining' });
         advance(f.store, 10000);
         expect(f.store.request({ type: 'routine.get', ...f.alice }).routine!.runtime.phase).toBe('eating');
     });
@@ -314,13 +315,15 @@ describe('one authoritative companion world', () => {
         advance(f.store, 6000);
         const job = f.store.request({ type: 'world.job.claim', kind: 'dream' }).worldJob!;
         expect(job.companionId).toBe('alice');
-        const complete = { type: 'world.job.complete', id: job.id, leaseToken: job.leaseToken!, dream: { text: '梦中回顾读书的经历。', sourceMessageIds: [source.id], relatedMemoryIds: [memory.id], evidence: [{ sourceMessageId: source.id, quote: source.content }] } } as const;
+        f.store.request({ type: 'world.job.complete', stage: 'real', id: job.id, leaseToken: job.leaseToken!, sourceMemoryIds: [memory.id] });
+        f.store.request({ type: 'world.job.narrative.begin', id: job.id, leaseToken: job.leaseToken! });
+        const complete = { type: 'world.job.complete', stage: 'dream', id: job.id, leaseToken: job.leaseToken!, dream: { text: '梦中回顾读书的经历。', sourceMessageIds: [source.id], relatedMemoryIds: [memory.id], evidence: [{ sourceMessageId: source.id, quote: source.content }] } } as const;
         f.store.request({ ...complete, dream: { ...complete.dream, sourceMessageIds: [...complete.dream.sourceMessageIds], relatedMemoryIds: [...complete.dream.relatedMemoryIds], evidence: [...complete.dream.evidence] } });
         expect(f.store.request({ type: 'world.observe', ...f.alice }).world!.events.some(event => event.kind === 'dream')).toBe(true);
         f.store.request({ type: 'memory.forget', ...f.alice, sourceMessageIds: [source.id] });
         expect(f.store.request({ type: 'world.observe', ...f.alice }).world!.events.some(event => event.kind === 'dream')).toBe(false);
     });
-    it('keeps a terminal sleep failure unfinished while allowing a new actual sleep episode to review its unprocessed sources', () => {
+    it('keeps a terminal maintenance failure fenced across later body sleep episodes', () => {
         vi.setSystemTime('2026-10-14T02:00:00Z');
         const f = fixture('realtime');
         const source = f.store.appendMessage({ conversationId: f.alice.conversationId, authorId: 'alice', content: '一次真实读书经历，尚未反思整理。', replyDirective: 'none' });
@@ -340,7 +343,7 @@ describe('one authoritative companion world', () => {
         f.store.request({ type: 'routine.configure', ...f.alice, expectedRevision: routine.revision, patch: { sleepAt: '01:00', wakeAt: '03:00' } });
         advance(f.store, 20000); advance(f.store, 6000);
         const next = f.store.request({ type: 'world.job.claim', kind: 'dream' }).worldJob!;
-        expect(next).toBeDefined(); expect(next.id).not.toBe(failed.id); expect(next.sourceMemoryIds).toEqual(failed.sourceMemoryIds);
+        expect(next).toBeUndefined();
         expect(inspect()).toMatchObject({ status: 'failed', terminal: true });
     });
     it('checks the dream job policies across every owned source domain before committing its private review', () => {
@@ -359,7 +362,11 @@ describe('one authoritative companion world', () => {
         const current = f.store.request({ type: 'memory.prohibitions', ...scope, worldJobId: job.id });
         expect(current.memoryProhibitions).toMatchObject([{ tags: ['另一个持续禁记主题'], conversationId: group.id }]);
         expect(current.memoryProhibitionRevision).not.toBe(before.memoryProhibitionRevision);
-        const complete = { type: 'world.job.complete' as const, id: job.id, leaseToken: job.leaseToken!, sourceMemoryIds: [note.id], dream: {
+        const real = { type: 'world.job.complete' as const, stage: 'real' as const, id: job.id, leaseToken: job.leaseToken!, sourceMemoryIds: [note.id] };
+        expect(() => f.store.request({ ...real, expectedProhibitionRevision: before.memoryProhibitionRevision })).toThrow('禁记规则');
+        f.store.request({ ...real, expectedProhibitionRevision: current.memoryProhibitionRevision });
+        f.store.request({ type: 'world.job.narrative.begin', id: job.id, leaseToken: job.leaseToken! });
+        const complete = { type: 'world.job.complete' as const, stage: 'dream' as const, id: job.id, leaseToken: job.leaseToken!, sourceMemoryIds: [note.id], dream: {
             text: '私下回顾自己在群里见证的读书约定。', sourceMessageIds: [source.id], relatedMemoryIds: [note.id], evidence: [{ sourceMessageId: source.id, quote: source.content }] } };
         expect(() => f.store.request({ ...complete, expectedProhibitionRevision: before.memoryProhibitionRevision })).toThrow('禁记规则');
         expect(f.store.request({ type: 'world.observe', ...f.alice }).world!.events.some(event => event.kind === 'dream')).toBe(false);
@@ -402,6 +409,7 @@ describe('one authoritative companion world', () => {
         expect(advance(f.store, 500).actors.find(actor => actor.companionId === 'alice')!.position).not.toEqual(position);
     });
     it('watermarks every reviewed atom in stable batches and does not repeat unchanged nightly reflection', () => {
+        vi.spyOn(Math, 'random').mockReturnValue(.99);
         vi.setSystemTime('2026-10-14T02:00:00Z');
         const f = fixture();
         const ids: string[] = [];
@@ -417,7 +425,7 @@ describe('one authoritative companion world', () => {
             const job = f.store.request({ type: 'world.job.claim', kind: 'dream' }).worldJob!;
             expect(job.sourceMemoryIds).toEqual(ids.slice(offset, offset + COMPANION_SLEEP_SEED_LIMIT));
             reviewed.push(...job.sourceMemoryIds!);
-            f.store.request({ type: 'world.job.complete', id: job.id, leaseToken: job.leaseToken! });
+            f.store.request({ type: 'world.job.complete', stage: 'real', id: job.id, leaseToken: job.leaseToken! });
             advance(f.store, 1000);
         }
         expect(reviewed).toEqual(ids);

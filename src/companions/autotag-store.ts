@@ -19,7 +19,7 @@ export class CompanionMemoryTagStore {
     this.db.exec(`CREATE TABLE IF NOT EXISTS companion_memory_tag_jobs(
       ordinal INTEGER PRIMARY KEY AUTOINCREMENT,id TEXT NOT NULL UNIQUE,companion_id TEXT NOT NULL,note_id TEXT NOT NULL REFERENCES vcp_memory_notes(id) ON DELETE CASCADE,
       note_version INTEGER NOT NULL,content_hash TEXT NOT NULL,status TEXT NOT NULL DEFAULT 'pending',attempts INTEGER NOT NULL DEFAULT 0,
-      next_attempt INTEGER NOT NULL DEFAULT 0,lease_token TEXT,lease_until INTEGER,prohibition_revision TEXT,error TEXT,
+      next_attempt INTEGER NOT NULL DEFAULT 0,lease_token TEXT,lease_until INTEGER,prohibition_revision TEXT,error TEXT,created_at TEXT,updated_at TEXT,
       UNIQUE(note_id,note_version));
       CREATE INDEX IF NOT EXISTS companion_memory_tag_pending ON companion_memory_tag_jobs(status,next_attempt,ordinal);
       CREATE INDEX IF NOT EXISTS companion_memory_tag_owner ON companion_memory_tag_jobs(companion_id,note_id,ordinal);
@@ -102,9 +102,10 @@ export class CompanionMemoryTagStore {
   private enable(owner: string, noteId: string, enabled: boolean): void {
     const note = this.memory({ type: 'memory.library.read', companionId: owner, id: noteId, sourceLimit: 1 })?.memoryRead?.memory;
     if (!note) throw new Error('实际日记已经变化或不可访问。');
-    this.db.prepare("UPDATE vcp_memory_notes SET data=json_set(data,'$.metadata.autoTags',json(?)) WHERE id=? AND companion_id=?")
-      .run(enabled ? 'true' : 'false', noteId, owner);
-    if (enabled) this.observe({ ...note, metadata: { ...note.metadata, autoTags: true } });
+    const changed = this.memory({ type: 'memory.library.organize', companionId: owner, id: note.id, expectedVersion: note.version,
+      tags: note.tags, diaryName: note.diaryName ?? '日记', autoTags: enabled })?.memories?.[0];
+    if (!changed) throw new Error('文档自动标签设置尚未提交。');
+    if (enabled) this.observe(changed);
   }
   execute(command: CompanionStorageCommand): CompanionStorageResponse | undefined {
     switch (command.type) {

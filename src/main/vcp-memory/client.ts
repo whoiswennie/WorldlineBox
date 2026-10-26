@@ -1,10 +1,12 @@
 import { createHash, randomUUID } from 'node:crypto';
 import path from 'node:path';
 import { EventEmitter } from 'node:events';
+import { createRequire } from 'node:module';
 import { readdir } from 'node:fs/promises';
 import { utilityProcess } from 'electron';
-import { detachRuntimeDependencyLinks, removeOwnedDirectory } from './filesystem';
+import { detachRuntimeDependencyLinks, inspectVcpOwnedDirectory, removeOwnedDirectory } from './filesystem';
 import { VcpMemoryProcessBroker } from './process-broker';
+import { VcpPreparedRecallStore } from './prepared-recall-store';
 import type { VcpMemoryDreamWaveRequest, VcpMemoryDreamWaveResult } from './dream-contracts';
 import type {
   VcpMemoryCommand, VcpMemoryDeleteReceipt, VcpMemoryEmbeddingConfig, VcpMemoryNote,
@@ -13,6 +15,7 @@ import type {
   VcpMemoryTimelineArtifacts,
   VcpMemoryContextReference, VcpMemoryCapabilities, VcpMemoryQueryClock, VcpMemoryAutomaticDecayPolicy,
   VcpMemoryPreparationReceipt, VcpMemoryPreprocessResult,
+  VcpMemoryPreparedRecall, VcpMemoryPreparedPayload, VcpMemoryPreparedHostEvidence, VcpMemoryFocusOptions, VcpMemoryOwnerPrompts,
 } from './contracts';
 
 export interface VcpMemoryTransport {
@@ -32,6 +35,9 @@ export interface VcpMemoryClientOptions {
   maxOpenScopes?: number;
   plugins?: VcpMemoryPluginConfiguration;
   processBroker?: VcpMemoryProcessBroker;
+  /** Trusted host root shared by every owner/profile in the same workspace. */
+  preparedRecallBudget?: { workspaceRoot: string; maxPackages?: number; maxBytes?: number };
+  boundOwnerId?: string;
   /** Tests can launch the identical CJS worker with Node's fork transport. */
   launch?: (workerPath: string) => VcpMemoryTransport;
 }
@@ -86,14 +92,31 @@ export class VcpMemoryClient {
   private scopes = new Map<string, ScopeProcess>();
   private retiring = new Map<string, Promise<void>>();
   private scopeGenerations = new Map<string, number>();
+  private recallGenerations = new Map<string, number>();
   private closed = false;
   private poolTail: Promise<unknown> = Promise.resolve();
   private readonly broker: VcpMemoryProcessBroker;
   private readonly brokerNamespace = randomUUID();
+  private readonly prepared: VcpPreparedRecallStore;
+  private readonly preparations = new Map<Promise<unknown>, string>();
+  private readonly focusing = new Map<string, { scopeId: string; controller: AbortController; settled: Promise<unknown> }>();
+  private readonly focusedReceipts = new Map<string, { scopeId: string; serialized: string; bytes: number; createdAt: number }>();
+  private focusedReceiptBytes = 0;
+  readonly supportsDetachedRecall: boolean = true;
+  private ownerPrompts?: VcpMemoryOwnerPrompts;
 
   constructor(private readonly options: VcpMemoryClientOptions) {
     if (!Number.isInteger(options.embedding.dimension) || options.embedding.dimension < 1 || options.embedding.dimension > 4096) throw new Error('VCP embedding dimension must be between 1 and 4096.');
     this.broker = options.processBroker ?? new VcpMemoryProcessBroker(Math.max(1, Math.floor(options.maxOpenScopes ?? 4)));
+    this.prepared = new VcpPreparedRecallStore(path.resolve(options.dataRoot), options.preparedRecallBudget);
+    if (options.plugins?.ownerPrompts) this.setOwnerPrompts(options.plugins.ownerPrompts);
+  }
+  setOwnerPrompts(prompts: VcpMemoryOwnerPrompts): void {
+    if (!prompts || typeof prompts.aimemoTemplate !== 'string' || !prompts.aimemoTemplate.trim()) throw new Error('Owner memory focus template is unavailable.');
+    for (const value of [prompts.timelineTemplate, prompts.summaryTemplate]) if (value !== undefined && (typeof value !== 'string' || !value.trim())) throw new Error('Owner timeline template is unavailable.');
+    this.ownerPrompts = { aimemoTemplate: prompts.aimemoTemplate,
+      ...(prompts.timelineTemplate !== undefined ? { timelineTemplate: prompts.timelineTemplate } : {}),
+      ...(prompts.summaryTemplate !== undefined ? { summaryTemplate: prompts.summaryTemplate } : {}) };
   }
   hasOpenScope(scope: VcpMemoryScope): boolean {
     const child = this.scopes.get(scopeKey(scope)); return Boolean(child && !child.failed && !child.stopping);
@@ -256,6 +279,9 @@ export class VcpMemoryClient {
     return result;
   }
   private async request<T>(scope: VcpMemoryScope, command: VcpMemoryCommand): Promise<T> {
+    if (this.closed) throw new Error('VCP memory client is closed.');
+    if (this.options.boundOwnerId) await inspectVcpOwnedDirectory(path.join(path.resolve(this.options.dataRoot), scopeKey(scope)));
+    if (this.ownerPrompts && ['preprocess', 'prepare-recall', 'plugin', 'timeline'].includes(command.type)) command = { ...command, ownerPrompts: { ...this.ownerPrompts } };
     const deadline = Date.now() + (this.options.requestTimeoutMs ?? 180_000);
     const { child, release } = await this.ensureScope(scope, deadline);
     try { await child.ready; return await this.send(child, command, deadline) as T; }
@@ -272,6 +298,109 @@ export class VcpMemoryClient {
     return this.request(scope, { type: 'plugin', plugin, arguments: arguments_ });
   }
   preprocess(scope: VcpMemoryScope, messages: VcpMemoryMessage[], clock?: VcpMemoryQueryClock, automaticDecay?: VcpMemoryAutomaticDecayPolicy): Promise<VcpMemoryPreprocessResult> { return this.request(scope, { type: 'preprocess', messages, ...(clock ? { clock } : {}), ...(automaticDecay ? { automaticDecay } : {}) }); }
+  /** Candidate preparation consumes a physical graph permit; focusing below never does. */
+  prepareRecall(scope: VcpMemoryScope, messages: VcpMemoryMessage[], clock?: VcpMemoryQueryClock,
+    automaticDecay?: VcpMemoryAutomaticDecayPolicy, hostEvidence?: VcpMemoryPreparedHostEvidence): Promise<VcpMemoryPreparedRecall> {
+    if (this.options.boundOwnerId && hostEvidence?.ownerId !== this.options.boundOwnerId) return Promise.reject(new Error('Prepared recall belongs to another owner.'));
+    const key = scopeKey(scope), generation = this.scopeGenerations.get(key) ?? 0;
+    const immutableEvidence = hostEvidence ? structuredClone(hostEvidence) : undefined;
+    const current = () => { if (this.closed || (this.scopeGenerations.get(key) ?? 0) !== generation) throw new Error('Prepared recall was withdrawn.'); };
+    const pending = (async () => {
+      current();
+      const payload = await this.request<VcpMemoryPreparedPayload>(scope, { type: 'prepare-recall', messages,
+        ...(clock ? { clock } : {}), ...(automaticDecay ? { automaticDecay } : {}) });
+      current();
+      const handle = await this.prepared.save(scope.scopeId, { ...payload, ...(immutableEvidence ? { hostEvidence: immutableEvidence } : {}) });
+      try { current(); return handle; } catch (error) { await this.prepared.remove(handle); throw error; }
+    })();
+    this.preparations.set(pending, scope.scopeId);
+    void pending.finally(() => this.preparations.delete(pending)).catch(() => undefined);
+    return pending;
+  }
+  focusRecall(handle: VcpMemoryPreparedRecall, options: VcpMemoryFocusOptions = {}): Promise<VcpMemoryPreprocessResult> {
+    const key = scopeKey(handle), generation = this.recallGenerations.get(key) ?? 0;
+    if (this.closed) return Promise.reject(new Error('VCP memory client is closed.'));
+    if (this.options.boundOwnerId && (options.ownerId !== this.options.boundOwnerId || handle.hostEvidence?.ownerId !== this.options.boundOwnerId))
+      return Promise.reject(new Error('Prepared recall belongs to another owner.'));
+    if (handle.hostEvidence && options.ownerId !== handle.hostEvidence.ownerId) return Promise.reject(new Error('Prepared recall belongs to another owner.'));
+    if (this.focusing.has(handle.id)) return Promise.reject(new Error('Prepared recall is already being focused.'));
+    const controller = new AbortController();
+    const signal = options.signal ? AbortSignal.any([options.signal, controller.signal]) : controller.signal;
+    const validate = async () => {
+      signal.throwIfAborted();
+      if (this.closed || (this.recallGenerations.get(key) ?? 0) !== generation) throw new Error('Prepared recall was withdrawn.');
+      await options.validate?.(); signal.throwIfAborted();
+    };
+    const pending = (async () => {
+      let lease: Awaited<ReturnType<VcpPreparedRecallStore['acquire']>> | undefined, discard = false;
+      try {
+        try { await validate(); } catch (error) { discard = true; throw error; }
+        lease = await this.prepared.acquire(handle, signal); discard = true;
+        await validate();
+        const cacheKey = this.focusCacheKey(handle.scopeId, lease.payload);
+        const cached = this.focusedReceipts.get(cacheKey);
+        if (cached && Date.now() - cached.createdAt < 60000) {
+          this.focusedReceipts.delete(cacheKey); this.focusedReceipts.set(cacheKey, cached);
+          const receipt = JSON.parse(cached.serialized) as VcpMemoryPreprocessResult;
+          await validate();
+          return { ...receipt, queryClock: lease.payload.receipt.queryClock,
+            receiptCache: { hit: true, corpusEpoch: handle.corpusEpoch,
+              ...(receipt.queryClock ? { sourceQueryClock: receipt.queryClock } : {}) } };
+        }
+        const implementation = createRequire(path.join(this.options.vendorRoot, 'package.json'))(
+          path.join(path.dirname(this.options.workerPath), 'prepared-focus.cjs')) as {
+            focusPreparedRecall(payload: VcpMemoryPreparedPayload, configuration: { vendorRoot: string; chat?: VcpMemoryPluginConfiguration['chat'] }, options: VcpMemoryFocusOptions): Promise<VcpMemoryPreprocessResult>;
+          };
+        const result = await implementation.focusPreparedRecall(lease.payload,
+          { vendorRoot: this.options.vendorRoot, chat: this.options.plugins?.chat }, { ...options, signal, validate });
+        await validate(); this.cacheFocusedReceipt(cacheKey, handle.scopeId, result); return result;
+      } finally {
+        try { if (discard || signal.aborted) await this.prepared.remove(handle); }
+        finally { lease?.release(); }
+      }
+    })();
+    this.focusing.set(handle.id, { scopeId: handle.scopeId, controller, settled: pending });
+    void pending.finally(() => this.focusing.delete(handle.id)).catch(() => undefined);
+    return pending;
+  }
+  /** Explicitly cancel one immutable packet, including before focusing starts. */
+  async discardRecall(handle: VcpMemoryPreparedRecall): Promise<void> {
+    const active = this.focusing.get(handle.id);
+    if (active && active.scopeId !== handle.scopeId) throw new Error('Prepared recall belongs to another scope.');
+    active?.controller.abort(new Error('Prepared recall was cancelled.'));
+    if (active) await Promise.allSettled([active.settled]);
+    await this.prepared.remove(handle);
+  }
+  private focusCacheKey(scopeId: string, payload: VcpMemoryPreparedPayload): string {
+    const groups = payload.groups.map(({ token: _token, ...input }) => { void _token; return input; });
+    const tokenIndexes = new Map(payload.groups.map((group, index) => [group.token, 'prepared-group-' + index]));
+    const messages = payload.receipt.messages.map(message => ({ ...message, content: typeof message.content === 'string'
+      ? message.content.replace(/WORLDLINE_PREPARED_FOCUS_[a-f0-9]{32}/gu, token => tokenIndexes.get(token) ?? token) : message.content }));
+    return createHash('sha256').update(JSON.stringify([scopeId, payload.modelIdentity, groups, messages,
+      payload.receipt.cacheClock?.bucket, payload.receipt.receiptCache?.corpusEpoch,
+      payload.hostEvidence ? [payload.hostEvidence.ownerId, payload.hostEvidence.revocationEpoch, payload.hostEvidence.sourceClosureDigest] : null])).digest('hex');
+  }
+  private cacheFocusedReceipt(key: string, scopeId: string, receipt: VcpMemoryPreprocessResult): void {
+    const serialized = JSON.stringify(receipt), bytes = Buffer.byteLength(serialized) + key.length + 128;
+    if (bytes > 4 * 1024 * 1024) return;
+    const prior = this.focusedReceipts.get(key);
+    if (prior) { this.focusedReceiptBytes -= prior.bytes; this.focusedReceipts.delete(key); }
+    while (this.focusedReceipts.size >= 32 || this.focusedReceiptBytes + bytes > 4 * 1024 * 1024) {
+      const oldest = this.focusedReceipts.keys().next().value!;
+      this.focusedReceiptBytes -= this.focusedReceipts.get(oldest)!.bytes; this.focusedReceipts.delete(oldest);
+    }
+    this.focusedReceipts.set(key, { scopeId, serialized, bytes, createdAt: Date.now() }); this.focusedReceiptBytes += bytes;
+  }
+  private async withdrawPrepared(scopeId?: string): Promise<void> {
+    for (const [key, receipt] of this.focusedReceipts) if (!scopeId || receipt.scopeId === scopeId) {
+      this.focusedReceiptBytes -= receipt.bytes; this.focusedReceipts.delete(key);
+    }
+    const focus = [...this.focusing.values()].filter(entry => !scopeId || entry.scopeId === scopeId);
+    for (const entry of focus) entry.controller.abort(new Error('Prepared recall was withdrawn.'));
+    await Promise.allSettled([...focus.map(entry => entry.settled),
+      ...[...this.preparations].filter(([, owner]) => !scopeId || owner === scopeId).map(([pending]) => pending)]);
+    if (scopeId) await this.prepared.purgeScope(scopeId); else await this.prepared.close();
+  }
   dreamWave(scope: VcpMemoryScope, request: VcpMemoryDreamWaveRequest): Promise<VcpMemoryDreamWaveResult> { return this.request(scope, { type: 'dream-wave', request }); }
   timeline(scope: VcpMemoryScope, request: VcpMemoryTimelineRequest): Promise<unknown> { return this.request(scope, { type: 'timeline', request }); }
   capabilities(scope: VcpMemoryScope): Promise<VcpMemoryCapabilities> { return this.request(scope, { type: 'capabilities' }); }
@@ -317,15 +446,17 @@ export class VcpMemoryClient {
     return result;
   }
   /** Cancel active and already-queued work without waiting for a busy pool slot. */
-  async interruptScope(scope: VcpMemoryScope): Promise<void> {
+  async interruptScope(scope: VcpMemoryScope, options: { preservePrepared?: boolean } = {}): Promise<void> {
     const key = scopeKey(scope);
     this.scopeGenerations.set(key, (this.scopeGenerations.get(key) ?? 0) + 1);
+    if (!options.preservePrepared) this.recallGenerations.set(key, (this.recallGenerations.get(key) ?? 0) + 1);
     const child = this.scopes.get(key);
     if (child) this.failProcess(child, new Error('VCP memory scope was interrupted.'));
-    await this.retiring.get(key);
+    await Promise.all([this.retiring.get(key), options.preservePrepared ? undefined : this.withdrawPrepared(scope.scopeId)]);
   }
   async purgeScope(scope: VcpMemoryScope): Promise<void> {
     const closing = this.closeScope(scope);
+    await this.withdrawPrepared(scope.scopeId);
     const result = this.poolTail.then(async () => {
       const key = scopeKey(scope); await closing;
       const base = path.resolve(this.options.dataRoot), target = path.resolve(base, key);
@@ -338,6 +469,7 @@ export class VcpMemoryClient {
   async close(): Promise<void> {
     this.closed = true;
     for (const child of this.scopes.values()) if (child.busy > 0) this.failProcess(child, new Error('VCP memory client is closing.'));
+    await this.withdrawPrepared();
     await this.poolTail;
     const results = await Promise.allSettled([...this.scopes].map(([key, child]) => this.stopScope(key, child)));
     await Promise.all(this.retiring.values());

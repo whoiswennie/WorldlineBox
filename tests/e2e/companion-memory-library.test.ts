@@ -61,7 +61,10 @@ test('binds the first companion entry to a real asset library and keeps readable
     const owner = path.join(selected.memoryRoot, companionId), folder = path.join(owner, '资料');
     await expect.poll(() => existsSync(folder), { timeout: 30_000 }).toBe(true);
     for (const category of ['日记', '资料', '自我认识', '时间线']) expect(existsSync(path.join(owner, category))).toBe(true);
-    expect(readFileSync(path.join(owner, 'profile.md'), 'utf8')).toContain('稳定人格');
+    const profileContent = readFileSync(path.join(owner, 'profile.md'), 'utf8');
+    expect(profileContent).toContain('"schema": "worldlinebox.companion-profile-v1"');
+    expect(profileContent).toContain('"companionId": "' + companionId + '"');
+    expect(profileContent).toContain(state.companions.find(companion => companion.id === companionId)!.persona);
 
     const originalText = '这份真实学习资料记录：海獭会把最喜欢的石头藏在腋下的皮褶里，用来敲开贝壳。';
     const revisedText = originalText + '\n用户补充：海獭在海藻间休息时会牵住同伴，避免被海流冲散。';

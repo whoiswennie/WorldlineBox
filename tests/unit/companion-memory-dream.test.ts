@@ -21,6 +21,14 @@ function request(fetchFn: ReturnType<typeof fetchFor>) {
 }
 
 describe('source-based VCP sleep reflection', () => {
+  it('proposes only an unvalidated procedure from real reflection and never from fictional dream text', async () => {
+    const procedure = { applicability: '此次约定的备份文件检查', steps: ['先形成backup.txt。', '核对备份文件。'], limitations: ['后续仍需真实实践'],
+      verification: { kind: 'artifact_delivery', artifactRequirements: [{ path: 'backup.txt', minBytes: 1 }] } };
+    const fetchFn = fetchFor({ notes: [{ ...reflection, procedure }], dream: null });
+    const result = await generateCompanionMemoryDream({ ...input, maintenanceMode: 'background', reflectionOnly: true }, config, undefined, { fetchFn });
+    expect(result.notes[0]?.procedure).toEqual(procedure); expect(result.dream).toBeNull();
+    expect(request(fetchFn).payload.maintenanceMode).toBe('background'); expect(request(fetchFn).system).toContain('procedure不会增加工具权限');
+  });
   it('keeps a missed host admission dreamless without preventing source-based insight', async () => {
     const fetchFn = fetchFor({ notes: [reflection], dream: null });
     expect((await generateCompanionMemoryDream({ ...input, dreamAllowed: false }, config, undefined, { fetchFn })).notes).toEqual([reflection]);

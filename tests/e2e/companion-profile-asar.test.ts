@@ -49,7 +49,7 @@ app.whenReady().then(async () => {
   const member = { id: 'deepseek-flash', name: 'Synthetic Flash', description: 'Isolated generated test image.', persona: 'Synthetic fixture.', model: '', avatar: 'flash', builtin: true, proactive: false, createdAt: new Date().toISOString(), revision: 1 };
   const room = { id: 'fixture-room', kind: 'group', title: 'Isolated verification', memberIds: [member.id], pinned: false, muted: false, unread: 0, updatedAt: new Date().toISOString(), lastMessage: '' };
   const state = { companions: [member], conversations: [room], activities: [], configured: false };
-  const loader = new CompanionPublicProfiles({ root: fixture.managed, appPath: fixture.archive, request: async command => {
+  const loader = new CompanionPublicProfiles({ root: fixture.managed, libraryDirectory: fixture.managed + '/伙伴记忆', appPath: fixture.archive, request: async command => {
     if (command.type !== 'state') throw new Error('Unexpected fixture storage operation: ' + command.type);
     return { ok: true, state };
   } });
@@ -86,7 +86,7 @@ try { require(${JSON.stringify(path.join(buildPath, 'fixture-main.cjs'))}); } ca
     expect(outcome, report.error ?? diagnostics).toBe(0); expect(report.error).toBeUndefined();
     expect(report.electronVersion).toBeTruthy(); expect(report.ready).toBe(true); expect(report.runAsNode).toBe(false); expect(report.windows).toBe(0);
     expect(report.personId).toBe('deepseek-flash'); expect(report.available).toBe(true); expect(path.isAbsolute(report.absolutePath)).toBe(true);
-    expect(report.absolutePath).not.toContain('app.asar'); expect(path.relative(managed, report.absolutePath)).toMatch(/^portraits[/\\]/u);
+    expect(report.absolutePath).not.toContain('app.asar'); expect(path.relative(managed, report.absolutePath)).toMatch(/^伙伴记忆[/\\]deepseek-flash[/\\]形象[/\\]/u);
     // This is ordinary Node after the Electron child has exited, so ASAR-only virtual paths cannot pass.
     const externalBytes = await readFile(report.absolutePath);
     expect(sha(externalBytes)).toBe(sha(original)); expect(externalBytes).toEqual(original); expect(report.originalHash).toBe(sha(original)); expect(report.copiedHash).toBe(sha(original));

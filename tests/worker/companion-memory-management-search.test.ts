@@ -138,7 +138,10 @@ it('rejects stale source epochs during bootstrap and immediately interrupts an i
   const f = fixture(), note = f.store.saveMemory({ ...f.scope, content: '待建立的记录。' });
   const state = f.store.request({ type: 'memory.library.index-state', companionId: 'alice' }).memoryLibraryIndexState!;
   f.store.saveMemory({ ...f.scope, id: note.id, expectedVersion: 1, content: '变更后的记录。' });
+  expect(() => f.store.request({ type: 'memory.library.index-page', companionId: 'alice', resetRevision: state.resetRevision, throughOrdinal: state.throughOrdinal, limit: 8 })).not.toThrow();
+  f.store.request({ type: 'memory.forget', ...f.scope, id: note.id });
   expect(() => f.store.request({ type: 'memory.library.index-page', companionId: 'alice', resetRevision: state.resetRevision, throughOrdinal: state.throughOrdinal, limit: 8 })).toThrow(/来源或权限/u);
+  f.store.saveMemory({ ...f.scope, content: '另一条合法待建立的记录。' });
   let started = false;
   f.client.hold = { started: () => { started = true; }, reject: () => undefined };
   const manager = f.make(); await manager.search('alice', '记录', 10);

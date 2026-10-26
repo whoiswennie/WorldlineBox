@@ -3,11 +3,24 @@ import { lstat, open, realpath } from 'node:fs/promises';
 import path from 'node:path';
 import type { WorkerCommand } from '../../shared/protocol/requests';
 import type { WorkerResult } from '../../shared/protocol/responses';
-import type { CompanionLearningGrant } from '../../shared/companion-learning';
+import type { CompanionLearningAssetSnapshot, CompanionLearningAssetValidation, CompanionLearningGrant } from '../../shared/companion-learning';
+import type { CompanionStorageCommand, CompanionStorageResponse } from '../../shared/companion-storage';
+import type { AssetSummary } from '../../shared/asset-types';
 import { CompanionLearningReadError, type CompanionLearningAssets } from './learning-service';
 
+export interface CompanionCanonicalLearningAssets extends CompanionLearningAssets {
+  /** Only Main supplies canonical verification; never exposed as a model capability. */
+  revalidate(filter?: { libraryId?: string; companionId?: string }): Promise<CompanionLearningAssetValidation>;
+}
 /** Reads existing libraries through their canonical Worker; never searches arbitrary folders. */
-export function companionLearningAssets(options: { request(command: WorkerCommand): Promise<WorkerResult>; memoryRoot: string }): CompanionLearningAssets {
+export function companionLearningAssets(options: { request(command: WorkerCommand): Promise<WorkerResult>; memoryRoot: string;
+  storageRequest?(command: CompanionStorageCommand): Promise<CompanionStorageResponse> }): CompanionCanonicalLearningAssets {
+  const stamps = new Map<string, { fingerprint: string; contentDigest: string }>();
+  const fingerprint = (info: { dev: bigint; ino: bigint; size: bigint; mtimeNs: bigint; ctimeNs: bigint }) => [info.dev, info.ino, info.size, info.mtimeNs, info.ctimeNs].join(':');
+  const cacheRead = (file: string, info: Parameters<typeof fingerprint>[0], revisionId: string) => {
+    if (stamps.size >= 1024) stamps.delete(stamps.keys().next().value!);
+    stamps.set(file, { fingerprint: fingerprint(info), contentDigest: revisionId.slice(-20) });
+  };
   const request = async (command: WorkerCommand) => { const result = await options.request(command); if (!result.ok) throw new Error('学习资料库暂不可用，请在资产管理中检查来源。'); return result; };
   const libraries = async () => { const result = await request({ type: 'library.list' }); if (result.type !== 'library.list') throw new Error('无法列出学习资料库。'); return result.libraries; };
   const inside = (root: string, file: string) => { const relative = path.relative(root, file); return !relative || !path.isAbsolute(relative) && relative !== '..' && !relative.startsWith('..' + path.sep); };
@@ -23,33 +36,17 @@ export function companionLearningAssets(options: { request(command: WorkerComman
   };
   const ensure = async (grant: CompanionLearningGrant) => {
     const existing = (await libraries()).find(library => library.libraryId === grant.libraryId);
-    if (existing) { if (path.resolve(existing.libraryPath) !== path.resolve(grant.libraryPath)) throw new Error('学习资料库的位置已变化，请重新授予来源。'); return; }
+    if (existing) { if (path.resolve(existing.libraryPath) !== path.resolve(grant.libraryPath)) throw new CompanionLearningReadError('source-moved', '学习资料库的位置已变化，请重新授予来源。'); return; }
     const opened = await request({ type: 'library.open', selectedLibraryPath: grant.libraryPath });
-    if (opened.type !== 'library.opened' || opened.library.libraryId !== grant.libraryId) throw new Error('学习资料库身份已变化，请重新选择来源。');
+    if (opened.type !== 'library.opened' || opened.library.libraryId !== grant.libraryId) throw new CompanionLearningReadError('source-moved', '学习资料库身份已变化，请重新选择来源。');
   };
   const describe = async (input: { libraryId: string; folderId?: string }) => {
     const library = (await libraries()).find(library => library.libraryId === input.libraryId); if (!library) throw new Error('请先在资产管理中打开要授予的资料库。');
     const folder = input.folderId ? (await folders(input.libraryId)).find(folder => folder.id === input.folderId) : undefined;
-    if (input.folderId && !folder) throw new Error('学习目录不存在或属于伙伴私有存档。');
+    if (input.folderId && !folder) throw new CompanionLearningReadError('source-moved', '学习目录不存在或属于伙伴私有存档。');
     return { libraryName: library.displayName, libraryPath: library.libraryPath, ...(folder ? { folderName: folder.name } : {}) };
   };
-  return {
-    catalog: async () => Promise.all((await libraries()).map(async library => ({ libraryId: library.libraryId, displayName: library.displayName, folders: await folders(library.libraryId) }))),
-    grant: describe,
-    describe: async grant => { await ensure(grant); return describe(grant); },
-    page: async (grant, afterId) => {
-      await ensure(grant);
-      const result = await request({ type: 'asset.learning.page', libraryId: grant.libraryId, folderId: grant.folderId, afterId, limit: 32 });
-      if (result.type !== 'asset.learning.page') throw new Error('无法分页读取授权资料。');
-      return { ...result, assets: result.assets.filter(asset => asset.mediaType === 'text' && !asset.deletedAt && !reserved(asset.relativeFilePath)) };
-    },
-    asset: async (grant, assetId) => {
-      await ensure(grant);
-      const result = await request({ type: 'asset.learning.page', libraryId: grant.libraryId, folderId: grant.folderId, assetId, limit: 1 });
-      if (result.type !== 'asset.learning.page') throw new Error('无法核对学习资产。');
-      return result.assets.find(asset => asset.assetId === assetId && asset.mediaType === 'text' && !asset.deletedAt && !reserved(asset.relativeFilePath));
-    },
-    read: async (grant, asset) => {
+  const read = async (grant: CompanionLearningGrant, asset: AssetSummary, observe: boolean) => {
       await ensure(grant);
       // Membership is checked again immediately before the actual read.
       const verifyMembership = async () => {
@@ -87,8 +84,82 @@ export function companionLearningAssets(options: { request(command: WorkerComman
             throw new CompanionLearningReadError('unsupported-text', '学习资料包含二进制数据，不作为纯文本阅读。');
         }
         await verifyMembership();
-        return { content, revisionId: asset.currentRevisionId + '_' + createHash('sha256').update(bytes).digest('hex').slice(0, 20), truncated: false };
+        const revisionId = asset.currentRevisionId + '_' + createHash('sha256').update(bytes).digest('hex').slice(0, 20);
+        if (observe && options.storageRequest) {
+          const accepted = await options.storageRequest({ type: 'learning.assets.observe', grantId: grant.id, expectedRevision: grant.revision, assetId: asset.assetId, assetRevisionId: revisionId });
+          if (!accepted.ok) throw new CompanionLearningReadError('source-moved', accepted.error ?? '实际读取的资料授权已变化。');
+        }
+        cacheRead(resolved, current, revisionId);
+        return { content, revisionId, truncated: false };
       } finally { await handle.close(); }
+    };
+  const api: CompanionCanonicalLearningAssets = {
+    catalog: async () => Promise.all((await libraries()).map(async library => ({ libraryId: library.libraryId, displayName: library.displayName, folders: await folders(library.libraryId) }))),
+    grant: describe,
+    describe: async grant => { await ensure(grant); return describe(grant); },
+    page: async (grant, afterId) => {
+      await ensure(grant);
+      const result = await request({ type: 'asset.learning.page', libraryId: grant.libraryId, folderId: grant.folderId, afterId, limit: 32 });
+      if (result.type !== 'asset.learning.page') throw new Error('无法分页读取授权资料。');
+      return { ...result, assets: result.assets.filter(asset => asset.mediaType === 'text' && !asset.deletedAt && !reserved(asset.relativeFilePath)) };
+    },
+    asset: async (grant, assetId) => {
+      await ensure(grant);
+      const result = await request({ type: 'asset.learning.page', libraryId: grant.libraryId, folderId: grant.folderId, assetId, limit: 1 });
+      if (result.type !== 'asset.learning.page') throw new Error('无法核对学习资产。');
+      return result.assets.find(asset => asset.assetId === assetId && asset.mediaType === 'text' && !asset.deletedAt && !reserved(asset.relativeFilePath));
+    },
+    read: (grant, asset) => read(grant, asset, true),
+    revalidate: async (filter = {}) => {
+      if (!options.storageRequest) throw new Error('学习资料授权验证存储尚未连接。');
+      const changed = new Set<string>(), unavailable = new Set<string>(); let cursor: string | undefined, revokedSourceCount = 0;
+      do {
+        const response = await options.storageRequest({ type: 'learning.assets.snapshot', ...filter, cursor, limit: 64 });
+        if (!response.ok || !response.learningAssetSnapshot) throw new Error(response.error ?? '无法读取学习资料验证快照。');
+        const page: CompanionLearningAssetSnapshot = response.learningAssetSnapshot;
+        const grants = new Map<string, 'valid' | 'revoked' | 'unavailable'>();
+        const checked = new Map<string, Promise<'valid' | 'revoked' | 'unavailable'>>();
+        const classify = (error: unknown): 'revoked' | 'unavailable' => error instanceof CompanionLearningReadError
+          && (error.code === 'source-moved' || error.code === 'private-source' || error.code === 'unsupported-text') ? 'revoked' : 'unavailable';
+        for (const entry of page.entries) if (!grants.has(entry.grant.id)) {
+          try { await ensure(entry.grant); await describe(entry.grant); grants.set(entry.grant.id, 'valid'); }
+          catch (error) { grants.set(entry.grant.id, classify(error)); }
+        }
+        const checks = [];
+        for (const [index, entry] of page.entries.entries()) {
+          let state = grants.get(entry.grant.id)!;
+          if (state === 'valid' && entry.asset) {
+            const asset = entry.asset, key = JSON.stringify([entry.grant.id, asset.assetId, asset.assetRevisionId]);
+            let operation = checked.get(key);
+            if (!operation) {
+              operation = (async () => {
+                try {
+                  const current = await api.asset!(entry.grant, asset.assetId);
+                  if (!current || !asset.assetRevisionId.startsWith(current.currentRevisionId + '_')) return 'revoked' as const;
+                  const source = await request({ type: 'media.get-asset-path', libraryId: entry.grant.libraryId, assetId: asset.assetId });
+                  if (source.type !== 'media.asset-path') return 'unavailable' as const;
+                  const resolved = await realpath(source.absolutePath), info = await lstat(source.absolutePath, { bigint: true });
+                  if (!info.isFile() || info.isSymbolicLink() || await protectedPath(resolved, entry.grant.libraryPath)) return 'revoked' as const;
+                  const cached = stamps.get(resolved);
+                  if (cached?.fingerprint === fingerprint(info)) return current.currentRevisionId + '_' + cached.contentDigest === asset.assetRevisionId ? 'valid' as const : 'revoked' as const;
+                  const verified = await read(entry.grant, current, false);
+                  return !verified.truncated && verified.revisionId === asset.assetRevisionId ? 'valid' as const : 'revoked' as const;
+                } catch (error) { return classify(error); }
+              })();
+              checked.set(key, operation);
+            }
+            state = await operation;
+          }
+          checks.push({ index, state });
+        }
+        const applied = await options.storageRequest({ type: 'learning.assets.validate', token: page.token, checks });
+        if (!applied.ok || !applied.learningAssetValidation) throw new Error(applied.error ?? '无法保存学习资料验证结果。');
+        for (const owner of applied.learningAssetValidation.changedCompanionIds) changed.add(owner);
+        for (const owner of applied.learningAssetValidation.unavailableCompanionIds) unavailable.add(owner);
+        revokedSourceCount += applied.learningAssetValidation.revokedSourceCount; cursor = page.nextCursor;
+      } while (cursor);
+      return { changedCompanionIds: [...changed], unavailableCompanionIds: [...unavailable], revokedSourceCount };
     },
   };
+  return api;
 }

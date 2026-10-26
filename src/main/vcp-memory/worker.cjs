@@ -12,6 +12,7 @@ function receive(message) {
     if (!request || typeof request.requestId !== 'string' || !request.command) return;
     const { requestId, command } = request;
     try {
+      if (command.ownerPrompts && runtime.peripherals) runtime.peripherals.setOwnerPrompts(command.ownerPrompts);
       let value;
       switch (command.type) {
         case 'initialize': value = await runtime.initialize(command.configuration); break;
@@ -24,6 +25,7 @@ function receive(message) {
         case 'forget': value = await runtime.forget(command.id); break;
         case 'plugin': value = await runtime.peripherals.call(command.plugin, command.arguments); break;
         case 'preprocess': value = await runtime.peripherals.preprocess(command.messages, command.clock, command.automaticDecay); break;
+        case 'prepare-recall': value = await runtime.peripherals.prepareRecall(command.messages, command.clock, command.automaticDecay); break;
         case 'dream-wave': value = await require('./dream-runtime.cjs').generateDreamWave(runtime, command.request); break;
         case 'timeline': value = await runtime.peripherals.timeline(command.request); break;
         case 'capabilities': value = await runtime.peripherals.capabilities(); break;

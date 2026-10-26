@@ -7,12 +7,10 @@ type Kind = keyof typeof tables;
 type Row = { id: string; status: string; attempts: number; ordinal: number; created_at?: string; updated_at?: string;
   next_attempt: number; lease_until?: number; scope_id?: string; error?: string; note_id?: string; note_version?: number; message_id?: string; conversation_id?: string; operation?: string; source_revision?: number; source_checksum?: string };
 
-/** Record real queue creation/transitions. Existing historical times remain unknown. */
+/** Record real queue creation/transitions in the current queue schema. */
 export function initializeMemoryProcessingJournal(db: CompanionConnection, kinds: readonly Kind[]): void {
   for (const kind of kinds) {
     const table = tables[kind];
-    const columns = db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>;
-    for (const column of ['created_at', 'updated_at']) if (!columns.some(item => item.name === column)) db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} TEXT`);
     db.exec(`CREATE INDEX IF NOT EXISTS ${table}_processing_owner ON ${table}(companion_id,status,ordinal);
       CREATE INDEX IF NOT EXISTS ${table}_processing_recent ON ${table}(companion_id,status,updated_at DESC,ordinal DESC);
       CREATE TRIGGER IF NOT EXISTS ${table}_processing_created AFTER INSERT ON ${table}
@@ -23,7 +21,7 @@ export function initializeMemoryProcessingJournal(db: CompanionConnection, kinds
   }
 }
 
-type QueueContext = { now: number; active: boolean; resetting: boolean; holds: Set<string>;
+type QueueContext = { now: number; active: boolean; resetting: boolean;
   scopeBusy(scope: string, id: string): boolean };
 function queueSchedule(kind: Kind, item: Row, status: CompanionMemoryProcessingJob['status'], context: QueueContext): CompanionMemoryJobSchedule {
   const base: CompanionMemoryJobSchedule = { scheduleKind: 'condition', timeBasis: 'real', observedAt: new Date(context.now).toISOString(),
@@ -42,8 +40,6 @@ function queueSchedule(kind: Kind, item: Row, status: CompanionMemoryProcessingJ
   const eligible = { ...base, ...(nextAttemptAt ? { nextAttemptAt } : {}) };
   if ((kind === 'capture' || kind === 'tags') && context.resetting) return { ...eligible, waitingReason: 'reset_in_progress', condition: '伙伴正在重置，队列不会领取新任务。请先完成或重试伙伴重置。' };
   if (kind === 'capture' && !context.active) return { ...eligible, waitingReason: 'companion_inactive', condition: '此伙伴未启用或已暂停活动，来源整理暂停。请到联系人资料启用伙伴后继续检查；这与夜间睡眠不同。' };
-  if (kind === 'capture' && (context.holds.has('*') || context.holds.has(item.conversation_id!))) return { ...eligible, waitingReason: 'source_policy_hold',
-    condition: '这段来源受到记忆规则暂停保护。请先检查并解除对应的收录限制；不会绕过禁记规则处理。' };
   if (kind === 'index' && item.scope_id && context.scopeBusy(item.scope_id, item.id)) return { ...eligible, waitingReason: 'scope_busy',
     condition: '同一记忆范围已有索引投递进行中，等待它释放租约后再领取，保持版本顺序。' };
   if (status === 'waiting_model') return { ...eligible, waitingReason: 'model_unconfigured',
@@ -77,7 +73,6 @@ export function memoryProcessingStatus(db: CompanionConnection, companionId: str
   if (!owner) throw new Error('伙伴不存在。');
   const context: QueueContext = { now: Date.now(), active: JSON.parse(owner.data).active !== false,
     resetting: !!db.prepare("SELECT 1 FROM companion_reset_jobs WHERE companion_id=? AND status!='completed'").get(companionId),
-    holds: new Set((db.prepare('SELECT conversation_id FROM vcp_source_policy_holds WHERE companion_id=? AND released_at IS NULL').all(companionId) as Array<{ conversation_id: string }>).map(item => item.conversation_id)),
     scopeBusy: (scope, id) => !!db.prepare("SELECT 1 FROM vcp_memory_outbox WHERE scope_id=? AND id!=? AND status='running' AND lease_until>? LIMIT 1").get(scope, id, Date.now()) };
   const bound = Math.min(50, Math.max(1, Math.floor(limit)));
   const summary = { pending: 0, running: 0, failed: 0, completed: 0, cancelled: 0 };

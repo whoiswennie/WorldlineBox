@@ -11,7 +11,7 @@ function context(patch: Partial<CompanionWorldSleepPlan> = {}): CompanionWorldSl
     routine: companionRoutineConfigSchema.parse({ timeZone: 'Asia/Shanghai', sleepAt: '23:00', wakeAt: '07:00' }),
     actor: { activity: 'idle', routinePhase: 'awake', activityStartedAtReal: checkedAt, moving: false, working: false },
     hasUnconsolidated: false, admission: 'unchecked', learning: [], learningHasMore: false,
-    captureQueue: { pending: 0, running: 0, failed: 0, liveRunning: 0, expiredLeases: 0, held: 0, retryExhausted: 0, eligible: 0 }, ...patch };
+    captureQueue: { pending: 0, running: 0, failed: 0, liveRunning: 0, expiredLeases: 0, retryExhausted: 0, eligible: 0 }, ...patch };
 }
 function grant(patch: Partial<CompanionLearningGrant> = {}): CompanionLearningGrant {
   return { id: 'grant_alice', companionId: 'alice', libraryId: 'library', libraryName: '海边书架', libraryPath: 'D:/资料', enabled: true, autonomous: true,
@@ -40,15 +40,17 @@ describe('truthful owner memory and learning plans', () => {
     expect(plan.items[3]).toMatchObject({ kind: 'dream', state: 'idle', probability: .6 });
     expect(plan.items.every(item => !item.timing.at)).toBe(true);
   });
-  it('uses world civil sleep windows without turning a compressed world hour into a real appointment', () => {
+  it('offers daytime cognitive maintenance without publishing a nightly appointment', () => {
     const sleep = context({ hasUnconsolidated: true }), item = row(sleep, 'sleep_consolidation');
-    expect(item).toMatchObject({ state: 'scheduled', timing: { kind: 'window', clock: 'world', timeZone: 'Asia/Shanghai',
-      windowStart: '2026-10-22T15:00:00.000Z', windowEnd: '2026-10-22T23:00:00.000Z' } });
-    expect(item.reason).toContain('真正躺下入睡');
+    expect(item).toMatchObject({ state: 'eligible', title: '记忆回顾与整合', timing: { kind: 'event_driven', clock: 'real' } });
+    expect(item.reason).toContain('不要求电脑开到晚上');
   });
-  it('keeps a currently open midnight/DST sleep window and the actual future wake boundary', () => {
-    const sleep = context({ clock: { ...context().clock, virtualNow: '2026-11-01T06:30:00.000Z', timeZone: 'America/New_York' } });
-    expect(row(sleep, 'sleep_consolidation').timing).toMatchObject({ windowStart: '2026-11-01T03:00:00.000Z', windowEnd: '2026-11-01T12:00:00.000Z' });
+  it('keeps real maintenance admission independent of civil-time daylight saving boundaries', () => {
+    const sleep = context({ hasUnconsolidated: true, maintenance: { eligible: true },
+      clock: { ...context().clock, virtualNow: '2026-11-01T06:30:00.000Z', timeZone: 'America/New_York' } });
+    expect(row(sleep, 'sleep_consolidation')).toMatchObject({ state: 'eligible', timing: { kind: 'event_driven', clock: 'real' } });
+    sleep.maintenance = { eligible: false, nextDeepEligibleAt: '2026-10-22T11:00:00.000Z' };
+    expect(row(sleep, 'sleep_consolidation')).toMatchObject({ state: 'scheduled', timing: { kind: 'eligibility', clock: 'real', at: '2026-10-22T11:00:00.000Z' } });
   });
   it('does not publish the 1970 immediate sentinel and distinguishes manual grants from real manual runs', () => {
     let sleep = context({ learning: [{ grant: grant(), manualPending: false }] });
@@ -61,13 +63,13 @@ describe('truthful owner memory and learning plans', () => {
     sleep.learning[0]!.grant.nextAt = '2026-10-22T10:30:00.000Z';
     expect(row(sleep, 'learning')).toMatchObject({ state: 'scheduled', timing: { kind: 'eligibility', clock: 'real', at: '2026-10-22T10:30:00.000Z' } });
   });
-  it('requires actual sleep duration and unprocessed indexed evidence instead of a document count', () => {
-    const sleep = context({ hasUnconsolidated: true, actor: { activity: 'sleeping', routinePhase: 'sleeping', activityStartedAtReal: '2026-10-22T09:59:57.000Z', moving: false, working: false } });
-    expect(row(sleep, 'sleep_consolidation')).toMatchObject({ state: 'waiting', timing: { kind: 'eligibility', clock: 'real', at: '2026-10-22T10:00:02.000Z' } });
-    sleep.actor!.activityStartedAtReal = '2026-10-22T09:59:50.000Z';
+  it('projects persisted semantic-debt eligibility and permits maintenance during physical work', () => {
+    const sleep = context({ hasUnconsolidated: true, maintenance: { eligible: false }, actor: { activity: 'sleeping', routinePhase: 'sleeping', activityStartedAtReal: '2026-10-22T09:59:57.000Z', moving: false, working: false } });
+    expect(row(sleep, 'sleep_consolidation')).toMatchObject({ state: 'waiting', timing: { kind: 'event_driven', clock: 'real' } });
+    sleep.maintenance!.eligible = true;
     expect(row(sleep, 'sleep_consolidation').state).toBe('eligible');
     sleep.actor!.working = true;
-    expect(row(sleep, 'sleep_consolidation').state).toBe('scheduled');
+    expect(row(sleep, 'sleep_consolidation').state).toBe('eligible');
     sleep.hasUnconsolidated = false;
     expect(row(sleep, 'sleep_consolidation').state).toBe('idle');
   });
@@ -75,18 +77,19 @@ describe('truthful owner memory and learning plans', () => {
     expect(row(context({ hasUnconsolidated: true, admission: 'not_admitted' }), 'dream')).toMatchObject({ state: 'idle', probability: .6 });
     expect(row(context({ hasUnconsolidated: true, admission: 'not_admitted' }), 'dream').reason).toContain('不会反复抽签');
     expect(row(context({ hasUnconsolidated: true, admission: 'admitted' }), 'dream').reason).toContain('机会已经使用');
-    expect(row(context({ dreamCooldownUntilWorld: '2026-10-22T20:00:00.000Z' }), 'dream')).toMatchObject({ timing: { kind: 'conditional', clock: 'world', at: '2026-10-22T20:00:00.000Z' } });
+    expect(row(context({ dreamCooldownUntilWorld: '2026-10-22T20:00:00.000Z' }), 'dream')).toMatchObject({ timing: { kind: 'conditional', clock: 'real', at: '2026-10-22T20:00:00.000Z' } });
   });
   it('separates retry eligibility from an actual registered main-process check and keeps a dream output optional', () => {
     const sleep = context({ hasUnconsolidated: true, admission: 'admitted', actor: { activity: 'sleeping', routinePhase: 'sleeping', activityStartedAtReal: '2026-10-22T09:00:00.000Z', moving: false, working: false },
       job: { status: 'failed', attempts: 1, leaseActive: false, dreamAllowed: true, nextAttemptAt: '2026-10-22T10:00:30.000Z' },
-      captureQueue: { pending: 0, running: 0, failed: 2, liveRunning: 0, expiredLeases: 0, held: 0, retryExhausted: 0, eligible: 0, nextAttemptAt: '2026-10-22T10:00:30.000Z' } });
+      captureQueue: { pending: 0, running: 0, failed: 2, liveRunning: 0, expiredLeases: 0, retryExhausted: 0, eligible: 0, nextAttemptAt: '2026-10-22T10:00:30.000Z' } });
     expect(row(sleep, 'sleep_consolidation').timing).toMatchObject({ kind: 'retry', clock: 'real' });
     expect(row(sleep, 'journal').timing).toMatchObject({ kind: 'retry', clock: 'real' });
     const plan = projectCompanionMemoryLifePlan({ companion: { id: 'alice', name: '小肥鱼' }, sleep, chatModelConfigured: true,
       capture: { ...sleep.captureQueue, nextCheckAt: '2026-10-22T10:00:02.000Z', condition: '等待当前来源允许被收录' } });
     expect(plan.items.find(item => item.kind === 'journal')).toMatchObject({ timing: { kind: 'next_check', at: '2026-10-22T10:00:02.000Z' }, reason: '等待当前来源允许被收录' });
     sleep.job!.status = 'running'; sleep.job!.leaseActive = true;
+    sleep.maintenance = { realCompletedAt: '2026-10-22T09:59:59.000Z', narrativeStatus: 'pending', narrativeAttempts: 1 };
     expect(row(sleep, 'dream')).toMatchObject({ state: 'running' });
     expect(row(sleep, 'dream').reason).toContain('仍可不产出');
   });
@@ -98,10 +101,7 @@ describe('truthful owner memory and learning plans', () => {
     sleep.resetting = true;
     expect(row(sleep, 'journal').reason).toContain('重建');
     sleep.active = true; sleep.resetting = false;
-    sleep.captureQueue = { pending: 3, running: 0, failed: 0, liveRunning: 0, expiredLeases: 0, eligible: 0, held: 3, retryExhausted: 0 };
-    expect(row(sleep, 'journal')).toMatchObject({ state: 'waiting' });
-    expect(row(sleep, 'journal').reason).toContain('收录规则暂停');
-    sleep.captureQueue = { ...sleep.captureQueue, pending: 0, failed: 3, held: 0, retryExhausted: 3 };
+    sleep.captureQueue = { pending: 0, running: 0, failed: 3, liveRunning: 0, expiredLeases: 0, eligible: 0, retryExhausted: 3 };
     expect(row(sleep, 'journal').reason).toContain('手动重试');
     sleep.captureQueue = { ...sleep.captureQueue, running: 3, failed: 0, retryExhausted: 0, expiredLeases: 3 };
     expect(row(sleep, 'journal')).toMatchObject({ state: 'waiting' });
@@ -121,7 +121,7 @@ describe('truthful owner memory and learning plans', () => {
     expect(dedicated.items.find(item => item.kind === 'learning')).toMatchObject({ state: 'waiting' });
     expect(dedicated.items.find(item => item.kind === 'learning')?.reason).toContain('全局聊天模型');
     expect(dedicated.items.find(item => item.kind === 'journal')?.reason).not.toContain('尚未配置');
-    expect(dedicated.items.find(item => item.kind === 'sleep_consolidation')?.state).toBe('scheduled');
+    expect(dedicated.items.find(item => item.kind === 'sleep_consolidation')?.state).toBe('eligible');
     const missing = projectCompanionMemoryLifePlan({ companion: { id: 'alice', name: '小肥鱼' }, sleep, chatModelConfigured: true, companionChatModelConfigured: false });
     expect(missing.items.find(item => item.kind === 'learning')?.state).toBe('eligible');
     expect(missing.items.find(item => item.kind === 'journal')).toMatchObject({ state: 'waiting' });

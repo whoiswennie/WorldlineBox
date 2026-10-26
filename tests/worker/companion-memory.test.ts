@@ -36,8 +36,8 @@ describe('VCP journal host ledger', () => {
     finally {
         db.close();
     } });
-    it('atomically captures formal sources, batches delivery and resumes after restart', () => { const { store, filename, scope } = fixture(); const messages = Array.from({ length: 9 }, (_, i) => source(store, scope.conversationId, '正式消息' + i)); const job = store.request({ type: 'memory.jobs.claim' }).memoryJob!; expect(job.sourceMessageIds).toEqual(messages.slice(0, 8).map(message => message.id)); store.request({ type: 'memory.jobs.complete', id: job.id, leaseToken: job.leaseToken, notes: [] }); expect(() => store.appendMessage({ conversationId: scope.conversationId, authorId: 'user', content: '不能提交', attachmentIds: ['missing'] })).toThrow(); close(store); const reopened = open(filename); expect(reopened.request({ type: 'memory.status', companionId: 'alice' }).memoryStatus).toMatchObject({ pending: 1, completed: 8 }); expect(reopened.request({ type: 'memory.jobs.claim' }).memoryJob?.sourceMessageIds).toEqual([messages[8]!.id]); });
-    it('rejects invented evidence and rolls back the complete journal batch', () => { const { store, scope } = fixture(); const message = source(store, scope.conversationId, '今天一起在花园躲雨。'); const job = store.request({ type: 'memory.jobs.claim' }).memoryJob!; expect(() => store.request({ type: 'memory.jobs.complete', id: job.id, leaseToken: job.leaseToken, notes: [candidate(message), candidate(message, { content: '捏造', evidence: [{ sourceMessageId: message.id, quote: '并未说过' }] })] })).toThrow(); expect(store.request({ type: 'memory.browse', ...scope }).memoryPage?.items).toHaveLength(0); expect(store.request({ type: 'memory.outbox.claim' }).memoryOutbox).toBeUndefined(); });
+    it('atomically captures formal sources, batches delivery and resumes after restart', () => { const { store, filename, scope } = fixture(); const messages = Array.from({ length: 13 }, (_, i) => source(store, scope.conversationId, '正式消息' + i)); const job = store.request({ type: 'memory.jobs.claim', force: true }).memoryJob!; expect(job.sourceMessageIds).toEqual(messages.slice(0, 12).map(message => message.id)); store.request({ type: 'memory.jobs.complete', id: job.id, leaseToken: job.leaseToken, notes: [] }); expect(() => store.appendMessage({ conversationId: scope.conversationId, authorId: 'user', content: '不能提交', attachmentIds: ['missing'] })).toThrow(); close(store); const reopened = open(filename); expect(reopened.request({ type: 'memory.status', companionId: 'alice' }).memoryStatus).toMatchObject({ pending: 1, completed: 12 }); expect(reopened.request({ type: 'memory.jobs.claim', force: true }).memoryJob?.sourceMessageIds).toEqual([messages[12]!.id]); });
+    it('rejects invented evidence and rolls back the complete journal batch', () => { const { store, scope } = fixture(); const message = source(store, scope.conversationId, '今天一起在花园躲雨。'); const job = store.request({ type: 'memory.jobs.claim', force: true }).memoryJob!; expect(() => store.request({ type: 'memory.jobs.complete', id: job.id, leaseToken: job.leaseToken, notes: [candidate(message), candidate(message, { content: '捏造', evidence: [{ sourceMessageId: message.id, quote: '并未说过' }] })] })).toThrow(); expect(store.request({ type: 'memory.browse', ...scope }).memoryPage?.items).toHaveLength(0); expect(store.request({ type: 'memory.outbox.claim' }).memoryOutbox).toBeUndefined(); });
     it('preserves tag order, journals idempotently and publishes only after VCP index acknowledgement', () => { const { store, scope } = fixture(); const message = source(store, scope.conversationId, '花园里的雨和借伞约定。'); const draft = candidate(message, { tags: ['花园', '雨', '借伞', '归还约定'] }); const note = store.request({ type: 'memory.record', ...scope, candidate: draft }).memories![0]!; expect(note.tags).toEqual(draft.tags); expect(note.status).toBe('queued'); expect(store.request({ type: 'memory.snapshot', ...scope }).memorySnapshot?.notes).toHaveLength(0); expect(store.request({ type: 'memory.record', ...scope, candidate: draft }).memories?.[0]?.id).toBe(note.id); const outbox = store.request({ type: 'memory.outbox.claim' }).memoryOutbox!; expect(() => store.request({ type: 'memory.outbox.complete', id: outbox.id, leaseToken: outbox.leaseToken, indexed: false })).toThrow('索引'); store.request({ type: 'memory.outbox.complete', id: outbox.id, leaseToken: outbox.leaseToken, indexed: true }); expect(store.request({ type: 'memory.snapshot', ...scope }).memorySnapshot?.notes.map(note => note.id)).toEqual([note.id]); expect(store.request({ type: 'memory.outbox.claim' }).memoryOutbox).toBeUndefined(); });
     it('does not provide a hidden text, tag or raw-history retrieval fallback', () => { const { store, scope } = fixture(); expect(() => store.request({ type: 'memory.search', ...scope, query: '雨' })).toThrow('VCP'); expect(() => store.request({ type: 'memory.browse', ...scope, query: '雨' })).toThrow('VCP'); });
     it('shares one cognitive snapshot across the same owners entrances while preserving other owners and source cutoffs', () => {
@@ -117,7 +117,6 @@ it('uses historical observer receipts rather than todays membership when recalli
     const bob = { companionId: 'bob', conversationId: group.id };
     expect(store.request({ type: 'memory.sources.filter', ...bob, ids: [witnessed.id] }).memorySources).toEqual([]);
     expect(() => store.request({ type: 'memory.record', ...bob, candidate: candidate(witnessed) })).toThrow('来源不可见');
-    store.request({ type: 'memory.jobs.backfill' });
     expect(store.request({ type: 'memory.sources.filter', ...bob, ids: [witnessed.id] }).memorySources).toEqual([]);
 });
 it('persists idempotent journal edit receipts across a crash before the activity acknowledgement', () => {
@@ -220,7 +219,6 @@ it('releases a group topic for future input without reviving old forgotten or su
     expect(store.request({ type: 'memory.record', ...scope, candidate: candidate(fresh, { tags: ['饮料偏好'] }) }).memories).toHaveLength(1);
     expect(() => store.request({ type: 'memory.read', ...scope, id: note.id })).toThrow();
     close(store); const reopened = open(filename);
-    reopened.request({ type: 'memory.jobs.backfill' });
     expect(reopened.request({ type: 'memory.sources.filter', ...scope, ids: [original.id, suppressed.id] }).memorySources).toEqual([]);
     expect(reopened.request({ type: 'memory.prohibitions', ...scope }).memoryProhibitions).toMatchObject([{ persistent: false, throughSequence: suppressed.sequence }]);
 });
@@ -228,7 +226,8 @@ it('rejects stale semantic policy checks atomically for every journal mutation a
     const { store, scope, filename } = fixture();
     const message = source(store, scope.conversationId, '周末散步的普通经历。');
     const draft = candidate(message), note = store.request({ type: 'memory.record', ...scope, candidate: draft }).memories![0]!;
-    const job = store.request({ type: 'memory.jobs.claim', companionId: 'alice' }).memoryJob!;
+    const pending = source(store, scope.conversationId, '尚未编码且需要新规则检查的另一段经历。');
+    const job = store.request({ type: 'memory.jobs.claim', force: true, companionId: 'alice' }).memoryJob!;
     const before = store.request({ type: 'memory.prohibitions', ...scope }).memoryProhibitionRevision!;
     const request = source(store, scope.conversationId, '今后不要记录家庭住址。');
     store.request({ type: 'memory.forget', ...scope, tag: '家庭住址', persistent: true, requestMessageId: request.id });
@@ -239,11 +238,11 @@ it('rejects stale semantic policy checks atomically for every journal mutation a
     expect(() => store.request({ type: 'memory.revise', ...scope, id: note.id, expectedVersion: note.version, candidate: { ...draft, content: '未经新规则复核的修订' }, expectedProhibitionRevision: before })).toThrow('禁记规则');
     expect(() => store.request({ type: 'memory.organize', ...scope, ids: [note.id], tags: ['新标签'], expectedProhibitionRevision: before })).toThrow('禁记规则');
     expect(() => store.request({ type: 'memory.save', memory: { ...scope, content: '不能生成手工输入副作用', expectedProhibitionRevision: before, operationId: 'stale_manual' } })).toThrow('禁记规则');
-    expect(() => store.request({ type: 'memory.jobs.complete', id: job.id, leaseToken: job.leaseToken, notes: [draft], expectedProhibitionRevision: before })).toThrow('禁记规则');
+    expect(() => store.request({ type: 'memory.jobs.complete', id: job.id, leaseToken: job.leaseToken, notes: [candidate(pending)], expectedProhibitionRevision: before })).toThrow('禁记规则');
     const db = new Database(filename);
     try { expect(db.prepare("SELECT 1 FROM messages WHERE content='不能生成手工输入副作用'").get()).toBeUndefined(); } finally { db.close(); }
     expect(store.request({ type: 'memory.read', ...scope, id: note.id }).memoryRead?.memory).toMatchObject({ version: note.version, tags: note.tags });
-    expect(store.request({ type: 'memory.jobs.complete', id: job.id, leaseToken: job.leaseToken, notes: [draft], expectedProhibitionRevision: after }).memories?.[0]?.id).toBe(note.id);
+    expect(store.request({ type: 'memory.jobs.complete', id: job.id, leaseToken: job.leaseToken, notes: [candidate(pending)], expectedProhibitionRevision: after }).memories?.[0]?.sources.some(item => item.messageId === pending.id)).toBe(true);
     const operation = { type: 'memory.organize' as const, ...scope, ids: [note.id], tags: ['已核对'], expectedProhibitionRevision: after, operationId: 'policy_retry' };
     const organized = store.request(operation).memories![0]!;
     const policy = store.request({ type: 'memory.policy.list', companionId: 'alice' }).memoryPolicies!.find(rule => rule.reason === 'persistent-topic')!;
@@ -278,10 +277,9 @@ it('preserves the exact user prohibition receipt for its completion reply while 
     expect(store.request({ type: 'memory.sources.filter', ...scope, ids: [old.id] }).memorySources).toEqual([]);
     const different = source(store, scope.conversationId, '这条饮料偏好不是管理指令。');
     expect(store.request({ type: 'memory.sources.filter', ...scope, ids: [different.id] }).memorySources).toEqual([]);
-    store.request({ type: 'memory.jobs.backfill' });
     const captured: string[] = [];
     for (let n = 0; n < 10; n++) {
-        const job = store.request({ type: 'memory.jobs.claim', companionId: 'alice' }).memoryJob;
+        const job = store.request({ type: 'memory.jobs.claim', force: true, companionId: 'alice' }).memoryJob;
         if (!job) break;
         captured.push(...job.sourceMessageIds);
         store.request({ type: 'memory.jobs.complete', id: job.id, leaseToken: job.leaseToken, notes: [] });
@@ -308,7 +306,7 @@ it('keeps the same owners evidence available in its world cognition including a 
     expect(store.request({ type: 'memory.sources.filter', ...worldScope, ids: [secret.id, observation.id] }).memorySources).toHaveLength(2);
     expect(store.request({ type: 'memory.snapshot', ...worldScope }).memorySnapshot?.notes).toHaveLength(2);
 });
-it('forgets every historical source of a manually revised journal across restart and backfill', () => {
+it('forgets every historical source of a manually revised journal across restart', () => {
     const { store, scope, filename } = fixture();
     const original = source(store, scope.conversationId, '最初的共同经历');
     const note = store.request({ type: 'memory.record', ...scope, candidate: candidate(original) }).memories![0]!;
@@ -319,7 +317,6 @@ it('forgets every historical source of a manually revised journal across restart
     close(store);
     const reopened = open(filename);
     expect(reopened.request({ type: 'memory.sources.filter', ...scope, ids: [original.id, first.sourceMessageId!, second.sourceMessageId!] }).memorySources).toEqual([]);
-    reopened.request({ type: 'memory.jobs.backfill' });
     expect(() => reopened.request({ type: 'memory.record', ...scope, candidate: candidate(original) })).toThrow('撤回');
 });
 it('preserves a full 65536-character manual diary with an auditable source checksum', () => {

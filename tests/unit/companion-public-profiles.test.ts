@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { mkdtemp, mkdir, readFile, realpath, rm, unlink, writeFile } from 'node:fs/promises';
+import { access, mkdtemp, mkdir, readFile, realpath, rm, unlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import sharp from 'sharp';
@@ -10,6 +10,7 @@ import type { CompanionStorageCommand, CompanionStorageResponse } from '../../sr
 import type { CompanionPublicProfile } from '../../src/shared/companion-public-profile';
 import { BUILTIN_COMPANIONS } from '../../src/shared/companion-personas';
 import { COMPANION_APPEARANCE_FILES } from '../../src/shared/companion-portrait-files';
+import { CompanionAssetProfileStore } from '../../src/main/companions/asset-profile';
 
 const roots: string[] = [], stores = new Set<CompanionsStore>();
 const seeds: CompanionSeed[] = ['alice', 'bob', 'carol'].map(id => ({ id, name: id, description: '公开的伙伴介绍 ' + id, persona: '独立且尊重边界。', model: '', avatar: id === 'alice' ? 'sister' : 'custom', proactive: false }));
@@ -18,7 +19,7 @@ const sha = (bytes: Buffer) => createHash('sha256').update(bytes).digest('hex');
 it('every built-in companion has a packaged default reference and receives its own real readable orthographic path', async () => {
   const root = await mkdtemp(path.join(tmpdir(), 'companion-public-profiles-')); roots.push(root);
   const store = new CompanionsStore(path.join(root, 'messages.sqlite'), BUILTIN_COMPANIONS); stores.add(store);
-  const loader = new CompanionPublicProfiles({ root, appPath: process.cwd(), request: async command => store.request(command) });
+  const loader = new CompanionPublicProfiles({ root, libraryDirectory: path.join(root, '伙伴记忆'), appPath: process.cwd(), request: async command => store.request(command) });
   expect(Object.keys(COMPANION_APPEARANCE_FILES).sort()).toEqual(BUILTIN_COMPANIONS.map(item => item.id).sort());
   for (const companion of BUILTIN_COMPANIONS) {
     const original = await readFile(path.resolve(COMPANION_APPEARANCE_FILES[companion.id]!));
@@ -38,8 +39,9 @@ async function fixture() {
   const managed = path.join(root, 'profile'), appPath = path.join(root, 'app'); await mkdir(managed); await mkdir(appPath);
   const store = new CompanionsStore(path.join(managed, 'messages.sqlite'), seeds.map(seed => ({ ...seed, active: true }))); stores.add(store);
   const request = async (command: CompanionStorageCommand): Promise<CompanionStorageResponse> => store.request(command);
-  const loader = new CompanionPublicProfiles({ root: managed, appPath, request });
-  return { root, managed, appPath, store, request, loader, conversation: store.openPrivate('alice') };
+  const libraryDirectory = path.join(managed, '伙伴记忆');
+  const loader = new CompanionPublicProfiles({ root: managed, libraryDirectory, appPath, request });
+  return { root, managed, libraryDirectory, appPath, store, request, loader, conversation: store.openPrivate('alice') };
 }
 async function picture(file: string, color = '#b05030', width = 64, height = 96): Promise<Buffer> {
   await mkdir(path.dirname(file), { recursive: true });
@@ -52,19 +54,78 @@ async function managedImage(f: Awaited<ReturnType<typeof fixture>>, id: string, 
 }
 function person(profiles: readonly CompanionPublicProfile[], id: string) { const profile = profiles.find(item => item.id === id); expect(profile).toBeDefined(); return profile!; }
 
+it('keeps a healthy owner available when another group member has damaged files, while its own files remain mandatory', async () => {
+  const f = await fixture(), profiles = new CompanionAssetProfileStore(f.libraryDirectory);
+  const owners = f.store.request({ type: 'state' }).state!.companions;
+  for (const owner of owners) await profiles.bootstrap(owner);
+  const group = f.store.request({ type: 'conversation.create-group', title: 'isolated profiles', memberIds: ['alice', 'bob'] }).conversation!;
+  await writeFile(path.join(f.libraryDirectory, 'bob', 'profile.md'), 'damaged owner profile', 'utf8');
+  const actual = await f.loader.prepare({ companionId: 'alice', conversation: group, sourceAuthorId: 'bob' });
+  expect(actual.publicProfiles.map(profile => profile.id)).toContain('alice');
+  expect(actual.publicProfiles.map(profile => profile.id)).not.toContain('bob');
+  await expect(f.loader.prepare({ companionId: 'bob', conversation: group, sourceAuthorId: 'alice' })).rejects.toMatchObject({ code: 'INVALID' });
+  expect(await readFile(path.join(f.libraryDirectory, 'bob', 'profile.md'), 'utf8')).toBe('damaged owner profile');
+});
+
+it('does not reseed a deleted portrait directory after restart, but an explicit built-in image selection can recreate it', async () => {
+  const f = await fixture(), initialized = new Set<string>(), profiles = new CompanionAssetProfileStore(f.libraryDirectory);
+  const options = { root: f.managed, libraryDirectory: f.libraryDirectory, profileStore: profiles, appPath: f.appPath, request: f.request,
+    portraitInitialized: async (id: string, role: string) => initialized.has(id + '/' + role),
+    markPortraitInitialized: async (id: string, role: string) => { initialized.add(id + '/' + role); } };
+  const bytes = await picture(path.join(f.appPath, 'assets', 'companions', 'portraits', 'deepseek-sister.png'));
+  const loader = new CompanionPublicProfiles(options), initial = await loader.prepare({ companionId: 'alice', conversation: f.conversation });
+  const directory = path.dirname(person(initial.publicProfiles, 'alice').avatar!.absolutePath);
+  expect(initialized.has('alice/avatar')).toBe(true);
+  await rm(directory, { recursive: true });
+  const restarted = new CompanionPublicProfiles(options), unavailable = await restarted.prepare({ companionId: 'alice', conversation: f.conversation });
+  expect(person(unavailable.publicProfiles, 'alice').avatar).toBeUndefined();
+  await expect(access(directory)).rejects.toMatchObject({ code: 'ENOENT' });
+  const owner = f.store.request({ type: 'state' }).state!.companions.find(owner => owner.id === 'alice')!;
+  await restarted.applyImageSelection({ ...owner, avatar: 'custom' }, owner);
+  const explicit = await restarted.prepare({ companionId: 'alice', conversation: f.conversation });
+  expect(await readFile(person(explicit.publicProfiles, 'alice').avatar!.absolutePath)).toEqual(bytes);
+});
+
+it('keeps an initialized custom portrait unavailable after its directory is removed until an explicit new selection is saved', async () => {
+  const f = await fixture(), initialized = new Set<string>(), profiles = new CompanionAssetProfileStore(f.libraryDirectory);
+  const options = { root: f.managed, libraryDirectory: f.libraryDirectory, profileStore: profiles, appPath: f.appPath, request: f.request,
+    portraitInitialized: async (id: string, role: string) => initialized.has(id + '/' + role),
+    markPortraitInitialized: async (id: string, role: string) => { initialized.add(id + '/' + role); } };
+  const oldImage = await managedImage(f, 'avatar-first', '#c03020'), newImage = await managedImage(f, 'avatar-second', '#2040c0');
+  const seed = f.store.request({ type: 'state' }).state!.companions.find(owner => owner.id === 'alice')!, first = await profiles.bootstrap(seed);
+  let snapshot = await profiles.writeProfile({ companionId: 'alice', expectedRevision: first.profileRevision,
+    profile: { ...first.profile, avatar: 'custom', avatarAttachmentId: oldImage.id } });
+  const oldOwner = profiles.hydrateFromSnapshot(seed, snapshot), loader = new CompanionPublicProfiles(options);
+  await loader.applyImageSelection(seed, oldOwner);
+  const prepared = await loader.prepare({ companionId: 'alice', conversation: f.conversation }), directory = path.dirname(person(prepared.publicProfiles, 'alice').avatar!.absolutePath);
+  await rm(directory, { recursive: true });
+  const restarted = new CompanionPublicProfiles(options);
+  expect(person((await restarted.prepare({ companionId: 'alice', conversation: f.conversation })).publicProfiles, 'alice').avatar?.available).toBe(false);
+  await expect(access(directory)).rejects.toMatchObject({ code: 'ENOENT' });
+  snapshot = await profiles.writeProfile({ companionId: 'alice', expectedRevision: snapshot.profileRevision,
+    profile: { ...snapshot.profile, avatarAttachmentId: newImage.id } });
+  const newOwner = profiles.hydrateFromSnapshot(seed, snapshot);
+  expect(person((await restarted.prepare({ companionId: 'alice', conversation: f.conversation })).publicProfiles, 'alice').avatar?.available).toBe(false);
+  await expect(access(directory)).rejects.toMatchObject({ code: 'ENOENT' });
+  await restarted.applyImageSelection(oldOwner, newOwner);
+  expect(await readFile(person((await restarted.prepare({ companionId: 'alice', conversation: f.conversation })).publicProfiles, 'alice').avatar!.absolutePath)).toEqual(newImage.bytes);
+});
+
 it('materializes a dev built-in portrait into a real absolute OS file, with pixels bound to the actual companion ID', async () => {
   const f = await fixture(), original = await picture(path.join(f.appPath, 'assets', 'companions', 'portraits', 'deepseek-sister.png'));
   const prepared = await f.loader.prepare({ companionId: 'alice', conversation: f.conversation, sourceAuthorId: 'user' });
   const alice = person(prepared.publicProfiles, 'alice'), file = alice.avatar!.absolutePath;
-  expect(path.isAbsolute(file)).toBe(true); expect(path.relative(f.managed, file)).toMatch(/^portraits[/\\]/u); expect(file).not.toContain('app.asar');
+  expect(path.isAbsolute(file)).toBe(true); expect(path.relative(f.libraryDirectory, file)).toMatch(/^alice[/\\]形象[/\\]/u); expect(file).not.toContain('app.asar');
   expect(await readFile(file)).toEqual(original); expect(alice.avatar).toMatchObject({ available: true, mime: 'image/png', sha256: sha(original) });
   expect(prepared.visualInputs.map(image => [image.personId, image.role])).toEqual([['alice', 'avatar']]);
   const pixels = Buffer.from(prepared.visualInputs[0]!.base64, 'base64'); expect((await sharp(pixels).metadata()).format).toBe('jpeg'); expect(prepared.visualInputs[0]!.sha256).toBe(sha(pixels));
   expect(await readFile(path.join(f.appPath, 'assets', 'companions', 'portraits', 'deepseek-sister.png'))).toEqual(original);
   await unlink(file); const restored = await f.loader.prepare({ companionId: 'alice', conversation: f.conversation });
-  expect(person(restored.publicProfiles, 'alice').avatar!.available).toBe(true); expect(await readFile(file)).toEqual(original);
+  expect(person(restored.publicProfiles, 'alice').avatar!.available).toBe(false); await expect(readFile(file)).rejects.toMatchObject({ code: 'ENOENT' });
   await writeFile(file, 'corrupt materialized copy'); const repaired = await f.loader.prepare({ companionId: 'alice', conversation: f.conversation });
-  expect(person(repaired.publicProfiles, 'alice').avatar!.available).toBe(true); expect(await readFile(file)).toEqual(original);
+  expect(person(repaired.publicProfiles, 'alice').avatar!.available).toBe(false); expect(await readFile(file, 'utf8')).toBe('corrupt materialized copy');
+  const edited = await picture(file, '#104080'); const live = await f.loader.prepare({ companionId: 'alice', conversation: f.conversation });
+  expect(person(live.publicProfiles, 'alice').avatar).toMatchObject({ available: true, sha256: sha(edited) });
 });
 it('finds emitted hashed portraits in the packaged renderer layout and materializes an absolute path outside app.asar', async () => {
   const f = await fixture(), appPath = path.join(f.root, 'program', 'resources', 'app.asar');
@@ -73,11 +134,11 @@ it('finds emitted hashed portraits in the packaged renderer layout and materiali
   const runtime = process as NodeJS.Process & { noAsar?: boolean }, previous = runtime.noAsar; runtime.noAsar = true;
   try {
     const source = path.join(appPath, '.vite', 'renderer', 'main_window', 'assets', 'deepseek-sister-syntheticHash.png'), original = await picture(source, '#4050c0');
-    const loader = new CompanionPublicProfiles({ root: f.managed, appPath, request: f.request });
+    const loader = new CompanionPublicProfiles({ root: f.managed, libraryDirectory: f.libraryDirectory, appPath, request: f.request });
     const prepared = await loader.prepare({ companionId: 'alice', conversation: f.conversation, sourceAuthorId: 'user' });
     const avatar = person(prepared.publicProfiles, 'alice').avatar!;
     expect(avatar.available).toBe(true); expect(avatar.absolutePath).not.toContain('app.asar'); expect(await realpath(avatar.absolutePath)).toBe(avatar.absolutePath);
-    expect(await readFile(avatar.absolutePath)).toEqual(original); expect(await readFile(source)).toEqual(original); expect(path.basename(avatar.absolutePath)).toBe(sha(original) + '.png');
+    expect(await readFile(avatar.absolutePath)).toEqual(original); expect(await readFile(source)).toEqual(original); expect(path.basename(avatar.absolutePath)).toBe('avatar.png');
   } finally { await rm(path.join(f.root, 'program'), { recursive: true, force: true }); runtime.noAsar = previous; }
 });
 it('binds real managed player/companion avatar and board pixels to their owners, selecting at most four bounded current-speaker images', async () => {
@@ -109,16 +170,28 @@ it('keeps the public player identity and images out of peer-only conversations, 
 it('refreshes names, revisions and replacement/removal files on every prepare instead of retaining an earlier public profile', async () => {
   const f = await fixture(), old = await managedImage(f, 'old-avatar', '#d04040'), next = await managedImage(f, 'new-avatar', '#40b0d0'), board = await managedImage(f, 'board', '#60d060');
   const player = f.store.updatePlayerProfile({ name: '旧姓名', description: '旧公开介绍', avatarAttachmentId: old.id, appearanceAttachmentId: board.id }, f.store.getPlayerProfile().revision);
-  f.store.updateCompanion('alice', { ...seeds[0]!, avatar: 'custom', avatarAttachmentId: old.id, appearanceAttachmentId: board.id });
+  const oldCompanion = f.store.updateCompanion('alice', { ...seeds[0]!, avatar: 'custom', avatarAttachmentId: old.id, appearanceAttachmentId: board.id });
   const first = await f.loader.prepare({ companionId: 'alice', conversation: f.conversation, sourceAuthorId: 'user' }); expect(first.visualInputs).toHaveLength(4);
   f.store.updatePlayerProfile({ name: '新姓名', description: '新的公开介绍', avatarAttachmentId: next.id }, player.revision);
-  f.store.updateCompanion('alice', { ...seeds[0]!, name: '当前Alice', avatar: 'custom', avatarAttachmentId: next.id });
+  const nextCompanion = f.store.updateCompanion('alice', { ...seeds[0]!, name: '当前Alice', avatar: 'custom', avatarAttachmentId: next.id });
+  const files = new CompanionAssetProfileStore(f.libraryDirectory), current = await files.load('alice');
+  await files.writeProfile({ companionId: 'alice', expectedRevision: current.profileRevision,
+    profile: { name: '当前Alice', description: current.profile.description, persona: current.profile.persona, avatar: 'custom',
+      avatarAttachmentId: next.id, appearanceAttachmentId: undefined } });
+  await f.loader.applyImageSelection(oldCompanion, nextCompanion);
   const second = await f.loader.prepare({ companionId: 'alice', conversation: f.conversation, sourceAuthorId: 'user' });
   expect(person(second.publicProfiles, 'user')).toMatchObject({ name: '新姓名', description: '新的公开介绍', revision: player.revision + 1 });
   expect(person(second.publicProfiles, 'alice').name).toBe('当前Alice'); expect(second.visualInputs).toHaveLength(2); expect(second.publicProfiles.every(profile => !profile.orthographic)).toBe(true);
   expect(JSON.stringify(second)).not.toContain(old.file); expect(second.publicProfiles.every(profile => profile.avatar?.sha256 === sha(next.bytes))).toBe(true);
+  const ownerImage = person(second.publicProfiles, 'alice').avatar!.absolutePath;
+  expect(path.relative(f.libraryDirectory, ownerImage)).toMatch(/^alice[/\\]形象[/\\]/u);
+  expect(ownerImage).not.toBe(next.file); expect(await readFile(ownerImage)).toEqual(next.bytes);
+  await unlink(ownerImage); const missingOwner = await f.loader.prepare({ companionId: 'alice', conversation: f.conversation, sourceAuthorId: 'user' });
+  expect(person(missingOwner.publicProfiles, 'alice').avatar?.available).toBe(false); expect(await readFile(next.file)).toEqual(next.bytes);
   await unlink(next.file); const deleted = await f.loader.prepare({ companionId: 'alice', conversation: f.conversation, sourceAuthorId: 'user' }); expect(deleted.visualInputs).toEqual([]); expect(deleted.publicProfiles.every(profile => profile.avatar?.available === false)).toBe(true);
   f.store.updatePlayerProfile({ name: '新姓名', description: '' }, f.store.getPlayerProfile().revision); f.store.updateCompanion('alice', { ...seeds[0]!, avatar: 'custom' });
+  const latest = await files.load('alice'); await files.writeProfile({ companionId: 'alice', expectedRevision: latest.profileRevision,
+    profile: { name: latest.profile.name, description: latest.profile.description, persona: latest.profile.persona, avatarAttachmentId: undefined, appearanceAttachmentId: undefined } });
   const cleared = await f.loader.prepare({ companionId: 'alice', conversation: f.conversation, sourceAuthorId: 'user' }); expect(cleared.publicProfiles.every(profile => !profile.avatar && !profile.orthographic)).toBe(true); expect(cleared.visualInputs).toEqual([]);
 });
 it('rejects invalid, linked, missing and corrupt images, including corrupt non-speaker directory entries', async () => {
@@ -130,7 +203,7 @@ it('rejects invalid, linked, missing and corrupt images, including corrupt non-s
   for (const id of ['linked', 'corrupt', 'missing', 'pdf', 'not-registered']) await expect(f.loader.validateImage(id)).rejects.toThrow('可读取');
   const valid = await managedImage(f, 'valid', '#70a060'); await expect(f.loader.validateImage(valid.id)).resolves.toBeUndefined();
   const room = f.store.createConversation('损坏资料的隔离验收', ['alice', 'bob', 'carol']);
-  const loader = new CompanionPublicProfiles({ root: f.managed, appPath: f.appPath, request: async command => {
+  const loader = new CompanionPublicProfiles({ root: f.managed, libraryDirectory: f.libraryDirectory, appPath: f.appPath, request: async command => {
     const result = await f.request(command); if (command.type !== 'state' || !result.state) return result;
     return { ...result, state: { ...result.state, companions: result.state.companions.map(companion => ({ ...companion, avatar: 'custom' as const, avatarAttachmentId: companion.id === 'alice' ? 'linked' : companion.id === 'bob' ? 'missing' : 'corrupt', appearanceAttachmentId: companion.id === 'alice' ? 'corrupt' : undefined })) } };
   } });

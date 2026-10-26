@@ -99,19 +99,17 @@ it('preserves a peer reply exact recall during its live lease and after formal p
   expect(await inspectCompanionReplyMemory(completedInput, request)).toMatchObject({ state: 'withdrawn', candidates: [], contextCharacters: 0 });
 });
 
-it.each(['skipped', 'exhausted-scope-failure'] as const)('reconsiders old %s peer episodes once without inventing observers or reviving forgotten sources', mode => {
+it.each(['skipped', 'exhausted-scope-failure'] as const)('does not automatically replay old %s peer episodes after restart', mode => {
   const { store, filename } = fixture(), pair = room(store), source = append(store, pair.id, 0, '2026-10-15T10:00:00Z', '姐姐专门来问我玩家的名字。');
-  for (;;) { const job = store.request({ type: 'memory.jobs.claim' }).memoryJob; if (!job) break;
+  for (;;) { const job = store.request({ type: 'memory.jobs.claim', force: true }).memoryJob; if (!job) break;
     store.request({ type: 'memory.jobs.complete', id: job.id, leaseToken: job.leaseToken, notes: [] }); }
   store.request({ type: 'memory.forget', companionId: 'bob', conversationId: pair.id, sourceMessageIds: [source.message.id] });
   store.close(); stores.delete(store);
-  const db = new Database(filename); db.prepare("DELETE FROM metadata WHERE key LIKE 'vcp-peer-episode-backfill-%'").run();
+  const db = new Database(filename);
   if (mode === 'exhausted-scope-failure') db.prepare("UPDATE vcp_capture_jobs SET status='failed',attempts=8,error='新日记不能关联其他来源域的旧记忆。' WHERE companion_id='alice'").run();
   db.close();
   const reopened = new CompanionsStore(filename, seeds); stores.add(reopened);
-  const retried = reopened.request({ type: 'memory.jobs.claim', companionId: 'alice' }).memoryJob!;
-  expect(retried.sourceMessageIds).toEqual([source.message.id]);
-  reopened.request({ type: 'memory.jobs.complete', id: retried.id, leaseToken: retried.leaseToken, notes: [] });
+  expect(reopened.request({ type: 'memory.jobs.claim', force: true, companionId: 'alice' }).memoryJob).toBeUndefined();
   expect(reopened.request({ type: 'memory.jobs.claim', companionId: 'bob' }).memoryJob).toBeUndefined();
   expect(reopened.request({ type: 'memory.sources.filter', companionId: 'carol', conversationId: reopened.openPrivate('carol').id, ids: [source.message.id] }).memorySources).toEqual([]);
   reopened.close(); stores.delete(reopened);

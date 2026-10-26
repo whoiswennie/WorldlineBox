@@ -10,6 +10,8 @@ import type { VcpMemoryPluginConfiguration } from '../../src/main/vcp-memory/con
 import { ColdKnowledgeService, type ColdKnowledgeServiceOptions } from '../../src/main/vcp-memory/cold-service';
 import { CompanionVcpRuntime } from '../../src/main/companions/vcp-runtime';
 import { generateCompanionText, COMPANION_TEXT_GENERATION_PROFILE } from '../../src/main/companions/model';
+import { fixtureOwnerRuntimeStorage, fixtureOwnerRuntimePaths } from './owner-runtime-storage';
+import { renderCompanionNativeMemoryPrompt, validateCompanionNativeMemoryPrompt } from '../../src/shared/companion-native-memory-prompt';
 
 export interface RealColdWorkerObservation {
   direction: 'request' | 'response'; requestId: string; commandType: string; ok?: boolean;
@@ -87,13 +89,22 @@ export async function realMemoryRuntime(root: string, generate?: (context: { sys
   // Direct parity clients above retain their explicit test callback. Main's
   // generation path uses the production runtime and the actual owner snapshot.
   const ownerChat = new VcpChatGateway();
-  const runtime = new CompanionVcpRuntime({ dataRoot: path.join(root, 'owner-runtime'), vendorRoot: path.resolve('vendor/vcp-memory'),
+  const resolveOwnerStorage = fixtureOwnerRuntimeStorage(path.join(root, 'owner-assets'));
+  const runtime = new CompanionVcpRuntime({ resolveOwnerStorage, vendorRoot: path.resolve('vendor/vcp-memory'),
+    resolveOwnerCleanupStorage: fixtureOwnerRuntimePaths(path.join(root, 'owner-assets')),
     workerPath: path.resolve('src/main/vcp-memory/worker.cjs'), resolveEmbedding: async () => configuration, launch: childLaunch,
     generationProfile: COMPANION_TEXT_GENERATION_PROFILE, resolveGenerationPlugins: async input => {
       const snapshot = Object.freeze({ ...input.config });
       const route = await ownerChat.registerOwnerRoute({ ownerId: input.ownerId, credential: snapshot.apiKey,
         semanticProfile: { ownerId: input.ownerId, profileKey: input.profileKey, generation: COMPANION_TEXT_GENERATION_PROFILE },
-        generate: (context, signal) => generateCompanionText(context, snapshot, signal, { fetchFn: options.modelFetch, timeoutMs: 120000 }) });
+        generate: (context, signal, work) => generateCompanionText(context, { ...snapshot, ownerId: input.ownerId,
+          workPriority: work?.priority ?? 'background', resolveAssetContext: async context => {
+            if (!work?.nativePrompt) return context;
+            const native = validateCompanionNativeMemoryPrompt(work.nativePrompt, input.ownerId, context.system);
+            const storage = await resolveOwnerStorage(input.ownerId);
+            return { ...context, system: renderCompanionNativeMemoryPrompt(native.kind === 'timeline'
+              ? storage.ownerPrompts.timelineTemplate : storage.ownerPrompts.summaryTemplate, native) };
+          } }, signal, { fetchFn: options.modelFetch, timeoutMs: 120000 }) });
       return { plugins: { chat: route.chat }, dispose: route.dispose };
     } });
   return { client, encoder, gateway, runtime, profile, profileClient, cold, close: async () => { await runtime.close(); await ownerChat.close(); await Promise.all(coldServices.map(service => service.close())); await Promise.all(extraClients.map(client => client.close())); await client.close(); await chat?.close(); await gateway.close(); await encoder.close(); } };

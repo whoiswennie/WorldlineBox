@@ -21,7 +21,7 @@ function readFixture(item = doc, content = '# 海边散步\n\n今天与朋友去
   return { document: item, content, sources: item.kind === 'note' ? [source] : [], hasMoreSources: false,
     ...(item.noteId ? { memory: { id: item.noteId, companionId: 'role', scopeId: 'scope', content, tags: item.tags, diaryName: '生活札记', sourceConversationId: 'other-room', sources: [{ sourceType: 'message' as const, messageId: source.id, conversationId: source.conversationId, sequence: 5, authorId: source.authorId, revision: 1, checksum: 'checksum', createdAt: at }], sourceSequence: 5, createdAt: at, updatedAt: at, origin: 'companion' as const, status: 'indexed' as const, version: item.version ?? 2, captureMethod: 'automatic' as const } } : {}) };
 }
-const processing = { pending: 1, running: 0, failed: 1, completed: 4, memories: 2, forgotten: 0, indexed: 1, pendingIndex: 1, messageWatermark: 5, captureWatermark: 4, backfillThrough: 5, backfillTarget: 5, lastError: '收录服务暂不可用' };
+const processing = { pending: 1, running: 0, failed: 1, completed: 4, memories: 2, forgotten: 0, indexed: 1, pendingIndex: 1, messageWatermark: 5, captureWatermark: 4, lastError: '收录服务暂不可用' };
 function fixture() {
   let documents = [readFixture(), readFixture({ ...doc, path: '资料/灯塔路线.md', name: '灯塔路线.md', title: '灯塔路线', directory: '资料', category: 'material', noteId: 'memory-b' }, '从旧灯塔出发，沿着防波堤步行。'), readFixture({ ...doc, path: '时间线/VCP-2026-10.md', name: 'VCP-2026-10.md', title: '十月时间线', directory: '时间线', category: 'timeline', kind: 'timeline', noteId: undefined, version: undefined, readOnly: true, tags: [], syncState: 'generated' }, '## 十月\n\n自动整理的生活时间线。')];
   const changed = new Set<() => void>();

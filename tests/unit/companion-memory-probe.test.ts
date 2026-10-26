@@ -11,7 +11,7 @@ describe('human validation uses the actual companion memory tool', () => {
     const request = vi.fn(async (command: CompanionStorageCommand): Promise<CompanionStorageResponse> => command.type === 'memory.library.scope'
       ? { ok: true, conversation: { id: 'private_alice', kind: 'private', title: 'Alice', memberIds: ['alice'], muted: false, pinned: false, unread: 0, updatedAt: '', lastMessage: '' } }
       : command.type === 'memory.corpus.stamp' ? { ok: true, memoryCorpusStamp: 'corpus_alice_1' }
-        : { ok: true, memoryStatus: { pending: 1, running: 0, completed: 0, failed: 0, memories: 0, forgotten: 0, indexed: 0, pendingIndex: 0, messageWatermark: 0, captureWatermark: 0, backfillTarget: 0, backfillThrough: 0 } });
+        : { ok: true, memoryStatus: { pending: 1, running: 0, completed: 0, failed: 0, memories: 0, forgotten: 0, indexed: 0, pendingIndex: 0, messageWatermark: 0, captureWatermark: 0 } });
     const memoryRetrieval = projectCompanionMemoryRetrieval({ mode, observedAt: '', documentCount: 1, hits: [], contextText: '原版 VCP 实际返回原文' });
     const search = vi.fn(async (): Promise<CompanionStorageResponse> => ({ ok: true, memoryPage: { items: [], hasMore: false }, memoryRetrieval, memoryContext: { text: '原版 VCP 实际返回原文', revision: 'revision', profileKey: 'bundled' } }));
     const result = await probeCompanionMemory(companionMemoryProbeCommand.parse({ type: 'memory.recall.test', companionId: 'alice', query: '我叫什么名字？', mode, requestId: `probe-${mode}` }), { request, search });

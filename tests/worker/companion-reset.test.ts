@@ -50,6 +50,27 @@ it('rejects deletion of built-ins, resumes a tombstoned built-in without overwri
     const reopened = open(f.file);
     expect(reopened.state().companions.find(item => item.id === 'alice')!.name).toBe('已编辑的名字');
 });
+it('scopes internal owner lookups and clears only the explicitly reset owner initialization receipt', async () => {
+    const f = fixture();
+    for (const companionId of ['alice', 'bob']) {
+        expect(f.store.request({ type: 'companion.assets.initialized', companionId }).assetProfileInitialized).toBe(false);
+        f.store.request({ type: 'companion.assets.mark-initialized', companionId });
+        for (const role of ['avatar', 'orthographic'] as const) f.store.request({ type: 'companion.assets.portrait.mark-initialized', companionId, role });
+    }
+    expect(f.store.request({ type: 'state', companionId: 'alice', includeConversations: false }).state!.companions.map(owner => owner.id)).toEqual(['alice']);
+    expect(f.store.request({ type: 'state', companionId: 'missing', includeConversations: false }).state!.companions).toEqual([]);
+    close(f.store); const reopened = open(f.file);
+    expect(reopened.request({ type: 'companion.assets.initialized', companionId: 'alice' }).assetProfileInitialized).toBe(true);
+    const reset = reopened.request({ type: 'companion.reset', id: 'alice', scope: 'all' }).reset!;
+    expect(() => reopened.request({ type: 'companion.assets.mark-initialized', companionId: 'alice' })).toThrow('重置');
+    reopened.request({ type: 'companion.reset.cleanup', id: 'alice', jobId: reset.id }); await finish(reopened);
+    expect(reopened.request({ type: 'companion.assets.initialized', companionId: 'alice' }).assetProfileInitialized).toBe(false);
+    expect(reopened.request({ type: 'companion.assets.initialized', companionId: 'bob' }).assetProfileInitialized).toBe(true);
+    for (const role of ['avatar', 'orthographic'] as const) {
+        expect(reopened.request({ type: 'companion.assets.portrait.initialized', companionId: 'alice', role }).assetPortraitInitialized).toBe(false);
+        expect(reopened.request({ type: 'companion.assets.portrait.initialized', companionId: 'bob', role }).assetPortraitInitialized).toBe(true);
+    }
+});
 it('persists the stopping barrier and cancellation IDs, retries failed cleanup, and rejects old work throughout reset', async () => {
     const f = fixture(), source = f.store.appendMessage({ conversationId: f.room.id, authorId: 'user', content: '旧任务来源' });
     const action = f.store.request({ type: 'action.create', action: { conversationId: f.room.id, companionId: 'alice', sourceMessageId: source.id, title: '旧任务', status: 'running', accessMode: 'danger-full-access', taskId: 'external-task' } }).action!;

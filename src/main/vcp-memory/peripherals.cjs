@@ -14,10 +14,18 @@ const { Buffer } = require('node:buffer');
 const PREPROCESS_CACHE_MAX_ENTRIES = 32;
 const PREPROCESS_CACHE_MAX_BYTES = 4 * 1024 * 1024;
 
+function recallModelIdentity(chat) {
+  return createHash('sha256').update(JSON.stringify([chat?.model, chat?.baseUrl?.replace(/\/+$/u, ''),
+    chat?.sourceSignature, chat?.connectionGeneration])).digest('hex');
+}
+function recallMarkers(messages) {
+  return (messages || []).flatMap(message => (typeof message.content === 'string' ? message.content : JSON.stringify(message.content)).match(/\[\[[^[\]]*\]\]/gu) || []);
+}
+
 /** Compile the clock-consuming frozen upstream modules without altering their bytes. Only
  * their module-local dayjs dependency reads this request's host clock; timers,
  * Date, other plugins and concurrent requests retain their own real clocks. */
-function createRagQueryClock() {
+function createRagQueryClock(overrides = {}) {
   const context = new AsyncLocalStorage(), modules = new Map();
   const load = filename => {
     if (modules.has(filename)) return modules.get(filename).exports;
@@ -73,7 +81,7 @@ function createRagQueryClock() {
         return Reflect.apply(timezone, receiver_, args);
       } });
     } });
-    const localRequire = request => request === 'dayjs' ? clockedDayjs
+    const localRequire = request => Object.prototype.hasOwnProperty.call(overrides, request) ? overrides[request] : request === 'dayjs' ? clockedDayjs
       : ['./TimeExpressionParser.js', './AIMemoHandler.js'].includes(request) ? load(path.resolve(path.dirname(filename), request)) : nativeRequire(request);
     Object.assign(localRequire, nativeRequire);
     const module_ = { exports: {} }; modules.set(filename, module_);
@@ -103,9 +111,11 @@ class VcpMemoryPeripherals {
     this.configuration = configuration;
     this.ragClock = createRagQueryClock();
     this.decayPolicy = new AsyncLocalStorage();
+    this.timelinePromptContext = new AsyncLocalStorage();
     this.decayObservations = [];
     this.parsedTimeRanges = [];
     this.plugins = new Map();
+    this.ownerPrompts = configuration.ownerPrompts;
     this.events = [];
     this.contextReferences = [];
     this.contextSourceRows = new Map();
@@ -206,6 +216,8 @@ class VcpMemoryPeripherals {
     const config = { PROJECT_BASE_PATH: this.runtime.runtimeRoot };
     const dependencies = { knowledgeBaseManager: this.runtime.kb, vectorDBManager: this.runtime.kb };
     if (name === 'RAGDiaryPlugin') {
+      if (this.ownerPrompts && this.configuration.riverThinkingEnabled)
+        throw Object.assign(new Error('This owner has no managed prompt for optional River thinking.'), { code: 'VCP_MEMORY_OWNER_PROMPT_UNAVAILABLE' });
       // This is an upstream configuration switch: its formatted/raw query cache
       // has no source revision key. Embedding caches and all retrieval logic stay upstream.
       process.env.RAG_QUERY_CACHE_ENABLED = 'false';
@@ -239,6 +251,7 @@ class VcpMemoryPeripherals {
       // an AIMemo model prompt. This observes inputs, never claims sentence-level
       // attribution of its generated answer.
       const handler = plugin.aiMemoHandler;
+      if (this.ownerPrompts) handler.promptTemplate = this.ownerPrompts.aimemoTemplate;
       const combine = handler._combineFiles;
       handler._combineFiles = files => { this.observeFocusFiles(files); return combine.call(handler, files); };
       const plus = handler.processAIMemoPlusAggregated;
@@ -297,6 +310,10 @@ class VcpMemoryPeripherals {
     } else if (name === 'VCPTimeLine') {
       const rag = await this.load('RAGDiaryPlugin');
       await plugin.initialize(config, { contextBridge: rag.getContextBridge() });
+      for (const [method, kind] of [['summarizeMonth', 'timeline'], ['generateOneLineSummary', 'summary']]) {
+        const original = plugin[method];
+        plugin[method] = (...args) => this.timelinePromptContext.run({ kind, agentName: args[0], month: args[1] }, () => original.apply(plugin, args));
+      }
       if (this.configuration.chat) {
         const chat = this.configuration.chat;
         const url = new URL(chat.baseUrl);
@@ -305,13 +322,27 @@ class VcpMemoryPeripherals {
         // Only the HTTP transport changes. Upstream owns prompts, monthly
         // grouping, chunking, summary publication and timeline injection.
         plugin.callModel = async (systemPrompt, userPrompt, maxTokens = plugin.config.maxOutputTokens) => {
+          const current = this.timelinePromptContext.getStore();
+          if (this.ownerPrompts) {
+            const template = current?.kind === 'timeline' ? this.ownerPrompts.timelineTemplate : current?.kind === 'summary' ? this.ownerPrompts.summaryTemplate : undefined;
+            if (typeof template !== 'string' || !template.trim() || typeof current?.agentName !== 'string' || !/^\d{4}-(0[1-9]|1[0-2])$/u.test(current?.month || ''))
+              throw new Error('This owner has no managed template for the native timeline operation.');
+            plugin.safeAgentName(current.agentName);
+            systemPrompt = template.replace(/\{\{(agentName|month)\}\}/gu, (_match, name) => current[name]);
+          }
+          const systemSuffix = this.timelineOwner
+            ? `\n\n宿主核验的记忆归属：${JSON.stringify(this.timelineOwner)}。当前整理对象和日记叙述者是伙伴「${this.timelineOwner.name}」；正文明确引用的用户发言、其他伙伴的经历和资料作者观点仍须保留原归属，不能把所有人物都改成这位伙伴。应用名称不是日记作者。日期作者行是来源中实际提供的经历日期，可能是虚拟世界日期，不得换成现实文件修改日期；月度归档的月末头也不是事件发生日期。资料只是阅读所得时，不得写成已经亲历的事件或掌握的技能。`
+            : '';
+          // This authenticated transport declaration is host-generated. The
+          // gateway verifies the exact suffix and owner before admission-time
+          // replacement of only the live template, never the source payload.
+          const nativePrompt = this.ownerPrompts && this.timelineOwner ? { kind: current.kind, agentName: current.agentName,
+            month: current.month, owner: this.timelineOwner, systemSuffix } : undefined;
           const base = url.toString().replace(/\/+$/u, '').replace(/\/v1$/u, '');
           const response = await fetch(`${base}/v1/chat/completions`, { method: 'POST',
             headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${chat.apiKey}` },
-            body: JSON.stringify({ model: chat.model, stream: false, max_tokens: maxTokens,
-              messages: [{ role: 'system', content: this.timelineOwner
-                ? `${systemPrompt}\n\n宿主核验的记忆归属：${JSON.stringify(this.timelineOwner)}。当前整理对象和日记叙述者是伙伴「${this.timelineOwner.name}」；正文明确引用的用户发言、其他伙伴的经历和资料作者观点仍须保留原归属，不能把所有人物都改成这位伙伴。应用名称不是日记作者。日期作者行是来源中实际提供的经历日期，可能是虚拟世界日期，不得换成现实文件修改日期；月度归档的月末头也不是事件发生日期。资料只是阅读所得时，不得写成已经亲历的事件或掌握的技能。`
-                : systemPrompt }, { role: 'user', content: userPrompt }] }) });
+            body: JSON.stringify({ model: chat.model, stream: false, max_tokens: maxTokens, ...(nativePrompt ? { nativePrompt } : {}),
+              messages: [{ role: 'system', content: systemPrompt + systemSuffix }, { role: 'user', content: userPrompt }] }) });
           if (!response.ok) throw new Error(`Timeline chat model returned ${response.status}.`);
           const payload = await response.json();
           const content = payload?.choices?.[0]?.message?.content;
@@ -355,7 +386,8 @@ class VcpMemoryPeripherals {
       time: mode(typeof rag._getTimeRangeFilePathsCached === 'function', false, 'preprocess_suffix_only', 'additional_temporal_candidates', 'time', '原版时间候选接口不可用。'),
       time_decay: mode(typeof rag._applyTimeDecay === 'function', true, 'passive_context_policy_or_explicit_suffix', 'local_candidate_postprocessing', 'time_decay', '原版时间衰减接口不可用。'),
       semantic_group: mode(groupNames.length > 0, false, 'preprocess_suffix_only', 'configured_group_vectors_and_query_enhancement', 'semantic_group', '尚无内容与当前向量空间均已就绪的语义组。', groupNames),
-      meta_thinking: mode(chainNames.length > 0, false, 'preprocess_marker_only', 'multiple_native_queries_and_theme_vectors', 'meta_thinking', '尚无阶段日记本及 K 序列完整的元思考链。', chainNames),
+      meta_thinking: mode(!this.ownerPrompts && chainNames.length > 0, false, 'preprocess_marker_only', 'multiple_native_queries_and_theme_vectors', 'meta_thinking',
+        this.ownerPrompts ? '当前伙伴未登记受管元思考提示词模块。' : '尚无阶段日记本及 K 序列完整的元思考链。', this.ownerPrompts ? [] : chainNames),
       expand: mode(typeof rag._expandChunksToFullDocuments === 'function', false, 'preprocess_suffix_only', 'full_source_documents_and_larger_context', 'expand', '原版全文展开接口不可用。'),
       associate: mode(typeof rag._applyAssociativeDiscovery === 'function', false, 'preprocess_suffix_only', 'additional_native_queries_per_seed', 'associate', '原版跨种子共现接口不可用。'),
       external_rerank: mode(external, false, 'preprocess_suffix_or_LightMemo_argument', 'external_reranker_requests', 'external_rerank', '尚未配置原版外部重排服务，或当前选用其他重排引擎。'),
@@ -364,6 +396,15 @@ class VcpMemoryPeripherals {
     };
     return { plugins: result, timelineGenerationConfigured: Boolean(this.configuration.chat), coldKnowledge: false, modes,
       behavior: this.runtime.behavior };
+  }
+  setOwnerPrompts(prompts) {
+    if (!prompts || typeof prompts.aimemoTemplate !== 'string' || !prompts.aimemoTemplate.trim()) throw new Error('Owner memory focus template is unavailable.');
+    for (const value of [prompts.timelineTemplate, prompts.summaryTemplate]) if (value !== undefined && (typeof value !== 'string' || !value.trim())) throw new Error('Owner timeline template is unavailable.');
+    this.ownerPrompts = { aimemoTemplate: prompts.aimemoTemplate,
+      ...(prompts.timelineTemplate !== undefined ? { timelineTemplate: prompts.timelineTemplate } : {}),
+      ...(prompts.summaryTemplate !== undefined ? { summaryTemplate: prompts.summaryTemplate } : {}) };
+    const handler = this.plugins.get('RAGDiaryPlugin')?.aiMemoHandler;
+    if (handler) handler.promptTemplate = prompts.aimemoTemplate;
   }
   async call(name, arguments_) {
     if (!['DailyNote', 'DailyNoteManager', 'LightMemo'].includes(name) || !arguments_ || typeof arguments_ !== 'object' || Array.isArray(arguments_)) throw new Error('Invalid VCP memory plugin call.');
@@ -384,12 +425,46 @@ class VcpMemoryPeripherals {
       contextReferenceCoverage: this.unmappedContextSources ? 'partial' : 'observed' };
   }
   async preprocess(messages, clock, automaticDecay) {
+    if (this.ownerPrompts && recallMarkers(messages).some(marker => /\[\[VCP元思考|::AIMemo(?!\+)|::AIMemo\+:/iu.test(marker)))
+      throw Object.assign(new Error('The owner has no managed prompt for this optional memory mode.'), { code: 'VCP_MEMORY_OWNER_PROMPT_UNAVAILABLE' });
     if (automaticDecay !== undefined && (!automaticDecay || automaticDecay.schema !== 'episodic-v1' || automaticDecay.halfLifeDays !== 180 || automaticDecay.minScore !== 0
       || !Array.isArray(automaticDecay.protectedNoteIds) || automaticDecay.protectedNoteIds.length > this.runtime.records.size
       || new Set(automaticDecay.protectedNoteIds).size !== automaticDecay.protectedNoteIds.length
       || automaticDecay.protectedNoteIds.some(id => typeof id !== 'string' || !id.trim() || id.length > 4096
         || this.runtime.records.get(id)?.indexState !== 'indexed' || this.runtime.records.get(id)?.deleted))) throw new Error('Invalid VCP automatic decay policy.');
     return this.decayPolicy.run(automaticDecay, () => this.ragClock.run(clock, () => this.preprocessWithClock(messages)));
+  }
+  /** The original collector runs unchanged. Its sourceFiles boundary is copied
+   * before the original AIMemo network stage, so no generated text or worker
+   * pointer is needed after this command releases the physical graph lane. */
+  async prepareRecall(messages, clock, automaticDecay) {
+    if (recallMarkers(messages).some(marker => /::Rerank|\[\[VCP元思考|::AIMemo(?!\+)|::AIMemo\+:/iu.test(marker)))
+      throw Object.assign(new Error('This optional retrieval stage requires isolated preprocessing.'), { code: 'VCP_MEMORY_DETACHED_UNSUPPORTED' });
+    const rag = await this.load('RAGDiaryPlugin'), handler = rag.aiMemoHandler;
+    const original = handler.processAIMemoPlusAggregated;
+    const groups = []; let captureFailure;
+    handler.processAIMemoPlusAggregated = async (dbNames, userContent, aiContent, combinedQueryForDisplay, presetName, options) => {
+      if (presetName || !Array.isArray(options?.sourceFiles)) {
+        captureFailure = Object.assign(new Error('Detached focusing requires the original fixed sourceFiles branch.'), { code: 'VCP_MEMORY_DETACHED_UNSUPPORTED' });
+        throw captureFailure;
+      }
+      this.observeFocusFiles(options.sourceFiles);
+      const token = 'WORLDLINE_PREPARED_FOCUS_' + randomUUID().replaceAll('-', '');
+      const { model, batchSize, maxTokensPerBatch, promptFile } = handler.config;
+      const { baseK, tagWeight, tagTruncationRatio, metrics, ghostTags, cacheSalt, sourceFiles } = options;
+      groups.push(JSON.parse(JSON.stringify({ token, dbNames, userContent, aiContent, combinedQueryForDisplay,
+        config: { model, batchSize, maxTokensPerBatch, promptFile }, promptTemplate: handler.promptTemplate,
+        options: { baseK, tagWeight, tagTruncationRatio, metrics, ghostTags, cacheSalt, sourceFiles } })));
+      return token;
+    };
+    this.preparingDetachedRecall = true;
+    try {
+      const receipt = await this.preprocess(messages, clock, automaticDecay);
+      if (captureFailure) throw captureFailure;
+      const chat = this.configuration.chat;
+      return { schema: 'worldlinebox.prepared-recall-payload', receipt, groups,
+        modelIdentity: recallModelIdentity(chat) };
+    } finally { handler.processAIMemoPlusAggregated = original; this.preparingDetachedRecall = false; }
   }
   async preprocessWithClock(messages) {
     if (!Array.isArray(messages) || messages.some(message => !message || typeof message.role !== 'string' || !(typeof message.content === 'string' || Array.isArray(message.content)))) throw new Error('Invalid VCP message input.');
@@ -418,12 +493,13 @@ class VcpMemoryPeripherals {
         timeIdentity = [['unparsed-explicit-time', clock?.now || new Date().toISOString()]];
     }
     const clockBucket = JSON.stringify([clock ? 'world' : 'real', new Intl.DateTimeFormat('sv', { timeZone, year: 'numeric', month: '2-digit', day: '2-digit' })
-      .format(new Date(clock?.now || Date.now())), timeZone, policy?.schema || null, [...policy?.protectedNoteIds || []].sort(), timeIdentity]);
+      .format(new Date(clock?.now || Date.now())), timeZone, policy?.schema || null, [...policy?.protectedNoteIds || []].sort(), timeIdentity,
+      this.ownerPrompts ? createHash('sha256').update(this.ownerPrompts.aimemoTemplate).digest('hex') : null]);
     const cacheClockInvalidated = this.cacheClockBucket !== clockBucket;
     if (cacheClockInvalidated) { rag.cacheManager.clear('aimemo'); rag.cacheManager.clear('query'); this.cacheClockBucket = clockBucket; }
     const epoch = this.corpusEpoch;
     const cacheKey = createHash('sha256').update(JSON.stringify({ messages, clockBucket, automaticDecay: policy || null, corpusEpoch: epoch })).digest('hex');
-    const cached = this.preprocessReceipts.get(cacheKey);
+    const cached = !this.preparingDetachedRecall && this.preprocessReceipts.get(cacheKey);
     if (cached) {
       this.preprocessReceipts.delete(cacheKey); this.preprocessReceipts.set(cacheKey, cached);
       const receipt = JSON.parse(cached.serialized);
@@ -444,7 +520,7 @@ class VcpMemoryPeripherals {
     const receipt = { messages: output, events: this.events, contextReferences: this.contextReferences, queryClock: this.ragClock.current(), automaticDecay: this.decayObservations, parsedTimeRanges: this.parsedTimeRanges,
       cacheClock: { bucket: clockBucket, invalidated: cacheClockInvalidated },
       contextReferenceCoverage: this.unmappedContextSources ? 'partial' : 'observed', receiptCache: { hit: false, corpusEpoch: epoch } };
-    this.cacheReceipt(cacheKey, receipt, epoch);
+    if (!this.preparingDetachedRecall) this.cacheReceipt(cacheKey, receipt, epoch);
     return receipt;
   }
   async validateExistingTimelines() {
@@ -497,7 +573,10 @@ class VcpMemoryPeripherals {
     plugin.config.agentFolders[agentName] = [...new Set(folders.filter(folder => typeof folder === 'string' && !/timeline$/iu.test(folder)))];
   }
   sourcesDigest(agentName, month, sources) {
-    return createHash('sha256').update(JSON.stringify({ agentName, month, sources })).digest('hex');
+    // The final Tag line is a host annotation. Changing tags or the folder's
+    // traversal order does not create a new experience or invalidate a month.
+    const semanticSources = sources.map(source => source.replace(/\r\n/gu, '\n').replace(/\nTag:[^\n]*\s*$/iu, '').trimEnd()).sort();
+    return createHash('sha256').update(JSON.stringify({ schema: 'semantic-month-v1', agentName, month, sources: semanticSources })).digest('hex');
   }
   async monthDigest(plugin, agentName, month) {
     await this.bindTimelineAgent(plugin, agentName);
@@ -611,4 +690,4 @@ class VcpMemoryPeripherals {
   }
 }
 
-module.exports = { VcpMemoryPeripherals, createRagQueryClock };
+module.exports = { VcpMemoryPeripherals, createRagQueryClock, recallModelIdentity };

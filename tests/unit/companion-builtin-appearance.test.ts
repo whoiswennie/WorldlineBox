@@ -5,6 +5,7 @@ import path from 'node:path';
 import sharp from 'sharp';
 import { afterEach, expect, it } from 'vitest';
 import { CompanionPublicProfiles } from '../../src/main/companions/public-profiles';
+import { CompanionAssetProfileStore } from '../../src/main/companions/asset-profile';
 import { COMPANION_APPEARANCE_FILES, COMPANION_PORTRAIT_FILES } from '../../src/shared/companion-portrait-files';
 import type { Companion, CompanionConversation, CompanionState } from '../../src/shared/companions';
 import type { CompanionStorageCommand, CompanionStorageResponse, StoredCompanionAttachment } from '../../src/shared/companion-storage';
@@ -31,9 +32,10 @@ async function fixture(packaged = false) {
     if (command.type === 'attachment.get') return { ok: true, storedAttachment: attachments.get(command.id) };
     throw new Error('Unexpected storage mutation: ' + command.type);
   };
-  const loader = new CompanionPublicProfiles({ root: managed, appPath, request });
+  const libraryDirectory = path.join(managed, '伙伴记忆'), profiles = new CompanionAssetProfileStore(libraryDirectory);
+  const loader = new CompanionPublicProfiles({ root: managed, libraryDirectory, profileStore: profiles, appPath, request });
   const prepare = () => loader.prepare({ companionId: companions[0]!.id, sourceAuthorId: companions[1]!.id, conversation, audience: 'peers' });
-  return { root, managed, appPath, companions, attachments, commands, loader, prepare };
+  return { root, managed, libraryDirectory, profiles, appPath, companions, attachments, commands, loader, prepare };
 }
 async function image(file: string, color: string, board = false) {
   await mkdir(path.dirname(file), { recursive: true });
@@ -72,7 +74,7 @@ it('binds the default board to the stable built-in identity independently of its
   owner.builtin = false; owner.avatar = 'sister';
   expect((await f.prepare()).publicProfiles.find(person => person.id === owner.id)?.orthographic).toBeUndefined();
 });
-it('keeps both imported overrides authoritative and restores built-ins only after explicit removal', async () => {
+it('keeps imported owner-local overrides authoritative and restores a template only on an explicit selection command', async () => {
   const f = await fixture(), originals = await builtins(f), owner = f.companions[0]!;
   for (const [id, color] of [['personal-avatar', '#ee11cc'], ['personal-board', '#11ccee']] as const) {
     const relativePath = 'attachments/' + id + '.png', bytes = await image(path.join(f.managed, relativePath), color, id.endsWith('board'));
@@ -80,15 +82,21 @@ it('keeps both imported overrides authoritative and restores built-ins only afte
   }
   owner.avatarAttachmentId = 'personal-avatar'; owner.appearanceAttachmentId = 'personal-board';
   const first = (await f.prepare()).publicProfiles[0]!;
-  expect(first.avatar!.absolutePath).toContain('personal-avatar.png'); expect(first.orthographic!.absolutePath).toContain('personal-board.png');
+  expect(path.relative(f.libraryDirectory, first.avatar!.absolutePath)).toMatch(/^deepseek-sister[/\\]形象[/\\]avatar\.png$/u);
+  expect(path.relative(f.libraryDirectory, first.orthographic!.absolutePath)).toMatch(/^deepseek-sister[/\\]形象[/\\]orthographic\.png$/u);
   await unlink(first.orthographic!.absolutePath);
   const missing = (await f.prepare()).publicProfiles[0]!; expect(missing.orthographic).toMatchObject({ absolutePath: first.orthographic!.absolutePath, available: false });
   expect(owner.appearanceAttachmentId).toBe('personal-board');
   delete owner.avatarAttachmentId; delete owner.appearanceAttachmentId;
+  const current = await f.profiles.load(owner.id); await f.profiles.writeProfile({ companionId: owner.id, expectedRevision: current.profileRevision,
+    profile: { name: owner.name, description: owner.description, persona: owner.persona, avatarAttachmentId: undefined, appearanceAttachmentId: undefined } });
+  const cleared = (await f.prepare()).publicProfiles[0]!;
+  expect(cleared.avatar).toBeUndefined(); expect(cleared.orthographic).toBeUndefined();
+  await f.loader.applyImageSelection({ ...owner, avatarAttachmentId: 'personal-avatar', appearanceAttachmentId: 'personal-board' }, owner);
   const restored = (await f.prepare()).publicProfiles[0]!;
-  expect(restored.avatar!.sha256).toBe(sha(originals.get('sister/avatar')!)); expect(restored.orthographic!.sha256).toBe(sha(originals.get('sister/orthographic')!));
+  expect(restored.avatar?.sha256).toBe(sha(originals.get('sister/avatar')!)); expect(restored.orthographic?.sha256).toBe(sha(originals.get('sister/orthographic')!));
   await unlink(restored.orthographic!.absolutePath);
-  expect((await f.prepare()).publicProfiles[0]!.orthographic!.sha256).toBe(restored.orthographic!.sha256);
+  expect((await f.prepare()).publicProfiles[0]!.orthographic?.available).toBe(false);
 });
 it('does not substitute an obsolete sheet when a new built-in portrait or board is unavailable', async () => {
   const f = await fixture(); await image(path.join(f.appPath, 'assets/companions/deepseek-sister.jpg'), '#ccaa44');

@@ -10,7 +10,7 @@ export function memoryOwnerSchedule(schedulers: CompanionMemoryOwnerSchedule['sc
   const now = Date.now(), checks = schedulers.map(item => item.nextCheckAt).filter((value): value is string => !!value && Date.parse(value) > now).sort();
   return { observedAt: new Date(now).toISOString(), timeBasis: 'real', ...(checks[0] ? { nextCheckAt: checks[0] } : {}),
     condition: schedulers.some(item => item.scheduleKind === 'running') ? '有实际整理任务正在处理；其他任务按各自条件等待。'
-      : '按来源、模型、队列和前台忙闲条件推进；各流水线的后续安排见下方。',
+      : '按来源、模型和公平资源准入条件推进；各流水线的后续安排见下方。',
     explanation: MEMORY_SCHEDULE_EXPLANATION, schedulers };
 }
 
@@ -25,7 +25,7 @@ export function memoryProcessingJobSchedule(job: CompanionMemoryProcessingJob, h
   if (job.status === 'running' && stored.waitingReason !== 'lease_expired' && stored.scheduleKind !== 'manual') return { ...job, nextAttemptAt: undefined,
     schedule: memorySchedule(job.kind, { scheduleKind: 'running', waitingReason: undefined, condition: `实际任务正在处理：${job.stage}。完成时间由模型与实际内容决定。` }) };
   const nextAttemptAt = stored.nextAttemptAt ?? job.nextAttemptAt;
-  const strongCondition = ['retry_limit', 'reset_in_progress', 'companion_inactive', 'source_policy_hold', 'scope_busy', 'lease_expired'].includes(stored.waitingReason ?? '');
+  const strongCondition = ['retry_limit', 'reset_in_progress', 'companion_inactive', 'scope_busy', 'lease_expired'].includes(stored.waitingReason ?? '');
   if (strongCondition) return { ...job, schedule: { ...stored, observedAt: host.observedAt,
     ...(stored.scheduleKind !== 'manual' && !['reset_in_progress', 'companion_inactive'].includes(stored.waitingReason ?? '') && host.nextCheckAt ? { nextCheckAt: host.nextCheckAt } : {}),
     explanation: MEMORY_SCHEDULE_EXPLANATION } };
@@ -36,7 +36,7 @@ export function memoryProcessingJobSchedule(job: CompanionMemoryProcessingJob, h
     ...(host.nextCheckAt ? { nextCheckAt: host.nextCheckAt } : {}), explanation: MEMORY_SCHEDULE_EXPLANATION } };
   if (nextAttemptAt && Date.parse(nextAttemptAt) > Date.now()) return { ...job,
     schedule: { ...stored, observedAt: host.observedAt, scheduleKind: 'retry', waitingReason: stored.waitingReason === 'cooldown' ? 'cooldown' : 'retry_backoff', nextAttemptAt,
-      condition: '最早重试下限尚未到达；冷却结束后仍需等待后台检查、前台空闲和模型条件。', ...(host.nextCheckAt ? { nextCheckAt: host.nextCheckAt } : {}) } };
+      condition: '最早重试下限尚未到达；冷却结束后仍需等待后台检查、资源准入和模型条件。', ...(host.nextCheckAt ? { nextCheckAt: host.nextCheckAt } : {}) } };
   // A running host may still be handling another owner or earlier item; it is not proof this queued job started.
   return { ...job, schedule: { ...host, ...(nextAttemptAt ? { nextAttemptAt } : {}),
     ...(host.scheduleKind === 'running' ? { scheduleKind: 'condition' as const, waitingReason: 'worker_busy',

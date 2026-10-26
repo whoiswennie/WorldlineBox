@@ -4,6 +4,7 @@ import type { CompanionConnection } from './store';
 import type { CompanionStorageCommand, CompanionStorageResponse } from '../shared/companion-storage';
 import { companionLearningGoalRoundSchema, companionLearningGoalStorageCommandSchema, type CompanionLearningGoal, type CompanionLearningGoalRound, type CompanionLearningGoalRead } from '../shared/companion-learning-goals';
 import { nextCompanionLearningGoalAt } from '../shared/companion-learning-goal-schedule';
+import { registerCompanionLearningAssetSource } from './learning-asset-store';
 
 type Row = { id: string; companion_id: string; data: string; state: CompanionLearningGoal['state']; revision: number; next_at: number; lease_token: string | null; lease_until: number; round_id: string | null; rounds: number };
 /** Private additive tables in the selected companion library; history is retained and read in bounded pages. */
@@ -135,6 +136,7 @@ export class CompanionLearningGoalStore {
           const existing = this.db.prepare('SELECT source_message_id FROM companion_learning_goal_sources WHERE goal_id=? AND read_id=?').get(row.id, read.id) as { source_message_id: string } | undefined;
           const sourceMessageId = existing?.source_message_id ?? this.record(goal, round, read);
           if (!existing) this.db.prepare('INSERT INTO companion_learning_goal_sources(goal_id,read_id,grant_id,source_message_id) VALUES(?,?,?,?)').run(row.id, read.id, read.grantId ?? null, sourceMessageId);
+          registerCompanionLearningAssetSource(this.db, row.companion_id, read.grantId, read.assetId, read.revision, sourceMessageId);
           const reads = round.reads.filter(item => item.id !== read.id); reads.push({ ...read, sourceMessageId });
           this.saveRound({ ...round, reads, updatedAt: stamp });
           return { ok: true, learningGoal: this.goal(this.load(row.id)) };

@@ -7,6 +7,7 @@ import type { CompanionStorageCommand, CompanionStorageResponse } from '../../sh
 import type { VcpMemoryOwnerIdentity, VcpMemoryTimelineArtifacts } from '../vcp-memory/contracts';
 import { removeOwnedDirectory } from './owned-directory-cleanup';
 import { companionMemoryIdentity, sameCompanionMemoryIdentity } from './memory-identity';
+import { CompanionAssetProfileStore } from './asset-profile';
 
 export const companionMemoryLibraryCategories = ['日记', '资料', '自我认识', '世界经历', '时间线'] as const;
 const categories = companionMemoryLibraryCategories;
@@ -33,6 +34,7 @@ export interface MemoryLibrarySyncReport {
   conflicts: Array<{ companionId: string; file: string; message: string }>;
 }
 export interface CompanionMemoryLibraryOptions {
+  profileStore?: CompanionAssetProfileStore;
   /** The selected library's absolute 伙伴记忆 directory, with no extra nesting. */
   libraryDirectory: string;
   request(command: CompanionStorageCommand): Promise<CompanionStorageResponse>;
@@ -78,6 +80,7 @@ export interface MemoryLibraryDocumentSession {
 
 /** Human-readable projections and explicit manual input; files never confer source permissions. */
 export class CompanionMemoryLibrary {
+  private readonly profiles: CompanionAssetProfileStore;
   private timer?: ReturnType<typeof setTimeout>;
   private running?: Promise<MemoryLibrarySyncReport>;
   private closed = false;
@@ -95,6 +98,7 @@ export class CompanionMemoryLibrary {
   private readonly publications = new Map<string, Set<string>>();
   constructor(private readonly options: CompanionMemoryLibraryOptions) {
     if (!path.isAbsolute(options.libraryDirectory)) throw new Error('伙伴记忆目录必须是绝对路径。');
+    this.profiles = options.profileStore ?? new CompanionAssetProfileStore(options.libraryDirectory);
   }
   start(intervalMs = 5000): void {
     if (this.timer || this.closed) return;
@@ -273,16 +277,18 @@ export class CompanionMemoryLibrary {
   }
   /** Human file operations share the watcher/publication queue and the same ledger. */
   documentsWriting(companionId: string): boolean { return this.fileTails.has(companionId); }
-  withDocuments<T>(companionId: string, work: (session: MemoryLibraryDocumentSession) => Promise<T>, options?: { synchronize?: boolean; readOnly?: boolean }): Promise<T> {
+  withDocuments<T>(companionId: string, work: (session: MemoryLibraryDocumentSession) => Promise<T>, options?: { synchronize?: boolean; readOnly?: boolean; sourceDelivery?: boolean }): Promise<T> {
     if (!id.test(companionId)) return Promise.reject(new Error('伙伴标识无效。'));
     const open = async () => {
       if (this.closed || this.resetting.has(companionId)) throw new Error('伙伴记忆目录正在关闭或重置。');
       await this.initializeRoot();
-      const state = await this.call({ type: 'state', includeConversations: false });
+      const state = await this.call({ type: 'state', companionId, includeConversations: false });
       const owner = state.state?.companions.find(owner => owner.id === companionId);
       if (!owner) throw new Error('伙伴不存在或已经移除。');
-      if (!options?.readOnly && options?.synchronize !== false) {
+      let prepared = false;
+      if (!options?.sourceDelivery && !options?.readOnly && options?.synchronize !== false) {
         await this.owner(owner, { exported: 0, imported: 0, forgotten: 0, conflicts: [] });
+        prepared = true;
         const scan = this.scans.get(companionId);
         for (const frame of scan?.directories ?? []) await frame.directory.close();
         this.scans.delete(companionId);
@@ -290,20 +296,22 @@ export class CompanionMemoryLibrary {
       const root = await this.directory(this.root!, companionId);
       // Opening a notebook needs its local layout, not an import/reconciliation
       // pass (which may wait for a model-backed write policy).
-      if (options?.readOnly && await this.text(path.join(root, 'profile.md'), true) === undefined) {
+      if (!options?.sourceDelivery && options?.readOnly && await this.text(path.join(root, '.伙伴配置.json'), true) === undefined) {
         await this.layout(companionId, async () => {
-          if (await this.text(path.join(root, 'profile.md'), true) !== undefined) return;
           const initial = await this.load(root);
           await this.prepareOwnerFiles(owner, root, initial);
           await this.save(root, initial);
         });
-      }
+      } else if (options?.readOnly && !options.sourceDelivery) await this.profiles.load(owner.id);
       let manifest = await this.load(root);
-      if (options?.readOnly && manifest.move) {
+      if (options?.readOnly && !options.sourceDelivery && manifest.move) {
         await this.serial(companionId, async () => { const latest = await this.load(root); await this.recoverMove(root, latest); });
         manifest = await this.load(root);
       }
-      if (!options?.readOnly) {
+      // owner() has already prepared, recovered and saved this same owner's
+      // layout while holding the writer queue. Reopening every prompt module
+      // here repeats the complete role read without adding a new operation.
+      if (!options?.readOnly && !options?.sourceDelivery && !prepared) {
         const previousProfileHash = manifest.profileHash;
         await this.prepareOwner(owner, root, manifest);
         if (manifest.profileHash !== previousProfileHash) await this.save(root, manifest);
@@ -365,7 +373,8 @@ export class CompanionMemoryLibrary {
             || !sameCompanionMemoryIdentity(entry.ownerIdentity, companionMemoryIdentity(owner))) return false;
           const content = contentHash ?? digest(await this.text(target(relative), true) ?? '');
           if (!entry.contentHash || entry.contentHash !== content) return false;
-          const revision = (await this.call({ type: 'memory.snapshot', ...entry.scope })).memorySnapshot?.revision;
+          const snapshot = (await this.call({ type: 'memory.snapshot', ...entry.scope })).memorySnapshot;
+          const revision = snapshot?.semanticRevision ?? snapshot?.revision;
           return revision === entry.sourceRevision;
         },
         save: () => { writable(); return this.save(root, manifest); }, request: command => this.call(command),
@@ -381,7 +390,7 @@ export class CompanionMemoryLibrary {
   private async statusFile(owner: string, conflicts: MemoryLibrarySyncReport['conflicts']): Promise<void> {
     const root = await this.directory(this.root!, owner), file = path.join(root, '同步状态.md');
     const messages = [...new Set(conflicts.map(conflict => `- ${conflict.file}：${conflict.message}`))];
-    const body = `状态：${messages.length ? '需要核对' : '已同步'}\n\n${messages.length ? messages.join('\n') : '已完成本轮有界核对，未发现待处理冲突。'}\n\n处理方式：版本冲突时，在记忆管理中查看宿主版本，保留需要的正文后再保存；移动无法确认时，可恢复原文件名，或明确遗忘旧条目后再将新文件作为资料导入。profile.md不会自动修改稳定人格。VCP-前缀时间线是自动产物，需要学习时请另存到资料或自我认识。\n`;
+    const body = `状态：${messages.length ? '需要核对' : '已同步'}\n\n${messages.length ? messages.join('\n') : '已完成本轮有界核对，未发现待处理冲突。'}\n\n处理方式：版本冲突时，在记忆管理中查看宿主版本，保留需要的正文后再保存；移动无法确认时，可恢复原文件名，或明确遗忘旧条目后再将新文件作为资料导入。profile.md与提示词目录是本伙伴当前资料的权威文件，修改后会用于后续上下文；缺失或损坏不会回退内置设定。VCP-前缀时间线是自动产物，需要学习时请另存到资料或自我认识。\n`;
     const previous = await this.text(file, true), last = previous?.match(/最近核对：([^\n]+)/)?.[1];
     if (previous?.endsWith(body) && last && Date.now() - Date.parse(last) < 3600000) return;
     await this.atomic(file, `# 伙伴记忆同步状态\n\n最近核对：${new Date().toISOString()}\n\n${body}`);
@@ -397,12 +406,9 @@ export class CompanionMemoryLibrary {
   }
   private async prepareOwnerFiles(owner: Companion, root: string, manifest: Manifest, report?: MemoryLibrarySyncReport): Promise<void> {
     for (const name of categories) await this.directory(root, name);
-    const profile = `# ${owner.name}\n\n伙伴标识：${owner.id}\n\n## 稳定人格\n\n${owner.persona}\n\n此文件供查阅；日记、学习资料和自我认识不会自动改写稳定人格。请在伙伴资料管理中修改人格。\n`;
-    const profileFile = path.join(root, 'profile.md'), currentProfile = await this.text(profileFile, true);
-    if (currentProfile === undefined || currentProfile === profile || manifest.profileHash === digest(currentProfile)) {
-      if (currentProfile !== profile) await this.atomic(profileFile, profile);
-      manifest.profileHash = digest(profile);
-    } else if (currentProfile !== profile && report) this.conflict(report, owner.id, 'profile.md', '资料文件有外部修改，未自动覆盖，也未自动修改稳定人格。');
+    const snapshot = await this.profiles.bootstrap(owner);
+    manifest.profileHash = snapshot.profileRevision;
+    void report;
   }
   private async owner(owner: Companion, result: MemoryLibrarySyncReport): Promise<void> {
     const root = await this.directory(this.root!, owner.id);
@@ -464,6 +470,7 @@ export class CompanionMemoryLibrary {
     this.publishing(root, relative);
     await this.atomic(this.file(root, relative), note.content);
     await this.atomic(this.file(root, relative) + '.meta.json', JSON.stringify({ id: note.id, companionId: note.companionId, version: note.version,
+      contentRevision: note.contentRevision, annotationRevision: note.annotationRevision, semanticRevision: note.semanticRevision, procedure: note.procedure,
       diaryName: note.diaryName, tags: note.tags, occurredAt: note.occurredAt, status: note.status,
       conversationId: note.sourceConversationId, captureMethod: note.captureMethod, sources: note.sources,
       authority: '正文可编辑；此说明文件不授予来源、身份或可见范围权限。' }, null, 2) + '\n');
@@ -541,7 +548,7 @@ export class CompanionMemoryLibrary {
         try {
           for (;;) {
             const entry = await iterator.read(); if (!entry) break;
-            if (entry.isDirectory() && !entry.isSymbolicLink() && !entry.name.startsWith('.')) {
+            if (entry.isDirectory() && !entry.isSymbolicLink() && !entry.name.startsWith('.') && !['提示词', '形象', '来源'].includes(entry.name)) {
               memoryLibraryPathParts(entry.name); notebooks.push(entry.name);
               if (notebooks.length > 512) throw new Error('日记本目录数量超过单次扫描上限。');
             }
@@ -661,7 +668,10 @@ export class CompanionMemoryLibrary {
         await this.removeTimeline(root, file); delete manifest.files[file]; continue;
       }
       const key = JSON.stringify(entry.scope);
-      if (!revisions.has(key)) revisions.set(key, (await this.call({ type: 'memory.snapshot', ...entry.scope })).memorySnapshot?.revision);
+      if (!revisions.has(key)) {
+        const snapshot = (await this.call({ type: 'memory.snapshot', ...entry.scope })).memorySnapshot;
+        revisions.set(key, snapshot?.semanticRevision ?? snapshot?.revision);
+      }
       if (revisions.get(key) !== entry.sourceRevision) { await this.removeTimeline(root, file); delete manifest.files[file]; }
     }
     if (files.length) {
@@ -678,7 +688,7 @@ export class CompanionMemoryLibrary {
     if (!await stillValid()) return;
     await this.timelineSerial(scope.companionId, async () => {
       if (this.closed || !await stillValid() || generation !== (this.timelineGenerations.get(scope.companionId) ?? 0)) return;
-      const state = (await this.call({ type: 'state', includeConversations: false, includeHidden: true })).state;
+      const state = (await this.call({ type: 'state', companionId: scope.companionId, includeConversations: false, includeHidden: true })).state;
       const owner = state?.companions.find(companion => companion.id === scope.companionId);
       if (!owner || !sameCompanionMemoryIdentity(artifacts.owner, companionMemoryIdentity(owner))
         || artifacts.agents.some(agent => agent.agentName !== artifacts.owner!.agentName)) throw new Error('时间线归属身份已变化，需要基于该伙伴的原始日记重新整理。');

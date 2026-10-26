@@ -115,19 +115,19 @@ it('shows the actual next check and retry eligibility separately from the automa
   expect(node!.textContent).not.toContain('预计完成');
 });
 
-it('shows a condition rather than a fabricated deadline and stops timer polling for a manual hold', async () => {
+it('shows the actual retry ceiling and stops timer polling when manual retry is required', async () => {
   vi.useFakeTimers();
-  const held: CompanionMemoryProcessing = { ...report, summary: { pending: 1, running: 0, failed: 0, completed: 0, cancelled: 0 },
-    schedule: { observedAt: '2026-10-22T01:09:00Z', timeBasis: 'real', condition: '等待用户恢复此伙伴的记忆授权', explanation: '当前没有可登记的下一次执行时间。', schedulers: [] },
-    jobs: [{ id: 'held', kind: 'capture', status: 'pending', attempts: 0, title: '已暂停的来源', stage: '授权暂停', schedule: {
-      scheduleKind: 'manual', timeBasis: 'real', observedAt: '2026-10-22T01:09:00Z', condition: '等待恢复当前伙伴的记忆授权', waitingReason: 'policy_hold',
-      triggerRule: '恢复授权后重新核验可用来源。', explanation: '没有承诺开始或完成时间。',
+  const held: CompanionMemoryProcessing = { ...report, summary: { pending: 0, running: 0, failed: 1, completed: 0, cancelled: 0 },
+    schedule: { observedAt: '2026-10-22T01:09:00Z', timeBasis: 'real', condition: '重试已达上限，等待用户检查后手动重试', explanation: '当前没有可登记的下一次执行时间。', schedulers: [] },
+    jobs: [{ id: 'exhausted', kind: 'capture', status: 'failed', attempts: 8, title: '需要人工检查的来源', stage: '自动重试已用尽', schedule: {
+      scheduleKind: 'manual', timeBasis: 'real', observedAt: '2026-10-22T01:09:00Z', condition: '等待检查错误后手动重试', waitingReason: 'retry_limit',
+      triggerRule: '手动重试后重新核验可用来源。', explanation: '没有承诺开始或完成时间。',
     } }],
   };
   const request = vi.fn<ScheduleRequest>(async () => ({ ok: true, memoryProcessing: held }));
   await mount(<CompanionMemoryProcessingPanel companionId="alice" request={request} onClose={vi.fn()} />);
   const plan = node!.querySelector('[aria-label="任务后续执行安排"]')!;
-  expect(plan.textContent).toContain('等待恢复当前伙伴的记忆授权'); expect(plan.querySelector('time')).toBeNull();
+  expect(plan.textContent).toContain('等待检查错误后手动重试'); expect(plan.querySelector('time')).toBeNull();
   await act(() => vi.advanceTimersByTimeAsync(15_000)); expect(request).toHaveBeenCalledOnce();
 });
 

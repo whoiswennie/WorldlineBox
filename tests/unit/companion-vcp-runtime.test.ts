@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import type { ColdKnowledgeServiceOptions as ColdOptions } from '../../src/main/vcp-memory/cold-service';
 import { CompanionVcpRuntime } from '../../src/main/companions/vcp-runtime';
 import type { VcpMemoryEmbeddingConfig, VcpMemoryPluginConfiguration } from '../../src/main/vcp-memory/contracts';
 import type { CompanionModelConfig } from '../../src/main/companions/model';
@@ -12,6 +13,7 @@ import path from 'node:path';
 const mocks = vi.hoisted(() => ({ clients: [] as Array<{ close: ReturnType<typeof vi.fn>; options: VcpMemoryClientOptions }> }));
 const coldMocks = vi.hoisted(() => ({ services: [] as Array<{ close: ReturnType<typeof vi.fn>; options: ColdKnowledgeServiceOptions }> }));
 vi.mock('../../src/main/vcp-memory/client', () => ({ VcpMemoryClient: class {
+  setOwnerPrompts = vi.fn();
   close = vi.fn(async () => undefined);
   interruptScope = vi.fn(async () => undefined);
   purgeScope = vi.fn(async () => undefined);
@@ -22,29 +24,86 @@ vi.mock('../../src/main/vcp-memory/cold-service', () => ({ ColdKnowledgeService:
   close = vi.fn(async () => undefined);
   constructor(readonly options: ColdKnowledgeServiceOptions) { coldMocks.services.push(this); }
 } }));
+const storage = (base: string) => async (ownerId: string) => {
+  const workspaceRoot = path.resolve(base), ownerRoot = path.join(workspaceRoot, ownerId);
+  return { ownerId, workspaceRoot, ownerRoot, indexRoot: path.join(ownerRoot, '.认知索引'), ownerPrompts: { aimemoTemplate: 'fixture {{knowledge_base}}', timelineTemplate: 'fixture {{agentName}} {{month}}', summaryTemplate: 'fixture summary {{agentName}} {{month}}' } };
+};
+async function getCore(service: CompanionVcpRuntime) {
+  const lease = await service.get({ ownerId: 'alice' }); await lease.release?.(); return lease;
+}
+async function getCold(service: CompanionVcpRuntime, authorize: ColdOptions['authorize']) {
+  const lease = await service.getCold({ ownerId: 'alice' }, authorize); await lease.release?.(); return lease;
+}
 const chat = (model = 'focus-one', apiKey = 'secret-one', baseUrl = 'https://focus.invalid'): CompanionModelConfig => ({ apiFormat: 'openai_chat', model, apiKey, baseUrl });
 const configuration = (): VcpMemoryEmbeddingConfig => ({ baseUrl: 'http://127.0.0.1/internal', model: 'gemma',
   dimension: 768, apiKey: 'internal', modelSignature: 'verified-space' });
 function runtime(resolveEmbedding: () => Promise<VcpMemoryEmbeddingConfig>, resolvePlugins?: () => Promise<VcpMemoryPluginConfiguration>) {
-  return new CompanionVcpRuntime({ dataRoot: 'unused-data', vendorRoot: 'unused-vendor', workerPath: 'unused-worker', resolveEmbedding, resolvePlugins });
+  return new CompanionVcpRuntime({ resolveOwnerStorage: storage('unused-data'), resolveOwnerCleanupStorage: storage('unused-data'), vendorRoot: 'unused-vendor', workerPath: 'unused-worker', resolveEmbedding, resolvePlugins });
 }
 beforeEach(() => { mocks.clients.length = 0; coldMocks.services.length = 0; });
 
 describe('VCP semantic space and shutdown boundaries', () => {
+  it('binds every hot, generating and cold client to the trusted owner asset tree', async () => {
+    const root = path.resolve('synthetic-owner-assets'), service = new CompanionVcpRuntime({ resolveOwnerStorage: storage(root), resolveOwnerCleanupStorage: storage(root),
+      vendorRoot: 'unused', workerPath: 'unused', resolveEmbedding: async () => configuration(),
+      resolveGenerationPlugins: async () => ({ plugins: {}, dispose: async () => undefined }) });
+    const alice = await service.get({ ownerId: 'alice' }), bob = await service.get({ ownerId: 'bob' });
+    const generation = await service.acquireGeneration({ ownerId: 'alice', config: chat() });
+    const cold = await service.getCold({ ownerId: 'alice' }, async () => true);
+    try {
+      expect(mocks.clients[0]!.options.dataRoot).toContain(path.join(root, 'alice', '.认知索引', 'hot'));
+      expect(mocks.clients[1]!.options.dataRoot).toContain(path.join(root, 'bob', '.认知索引', 'hot'));
+      expect(mocks.clients[2]!.options.dataRoot).toContain(path.join(root, 'alice', '.认知索引', 'generation'));
+      expect(coldMocks.services[0]!.options.dataRoot).toContain(path.join(root, 'alice', '.认知索引', 'cold'));
+      expect(coldMocks.services[0]!.options.boundOwnerId).toBe('alice');
+      expect(mocks.clients.every(client => client.options.preparedRecallBudget?.workspaceRoot === root)).toBe(true);
+      expect(new Set(mocks.clients.map(client => client.options.processBroker)).size).toBe(1);
+    } finally { await alice.release?.(); await bob.release?.(); await generation.release(); await cold.release?.(); await service.close(); }
+    const wrong = new CompanionVcpRuntime({ resolveOwnerStorage: async () => storage(root)('bob'), resolveOwnerCleanupStorage: storage(root), vendorRoot: 'unused', workerPath: 'unused', resolveEmbedding: async () => configuration() });
+    try { await expect(wrong.get({ ownerId: 'alice' })).rejects.toThrow('可信伙伴'); }
+    finally { await wrong.close(); }
+  });
+  it('does not evict a referenced core client and reuses an existing owner while a fifth waits', async () => {
+    const service = new CompanionVcpRuntime({ resolveOwnerStorage: storage(path.resolve('synthetic-bounded-assets')), resolveOwnerCleanupStorage: storage(path.resolve('synthetic-bounded-assets')), vendorRoot: 'unused', workerPath: 'unused',
+      resolveEmbedding: async () => configuration() });
+    const leases = [];
+    try {
+      for (const ownerId of ['alice', 'bob', 'carol', 'dave']) leases.push(await service.get({ ownerId }));
+      const controller = new AbortController(), waiting = service.get({ ownerId: 'erin', signal: controller.signal });
+      const rejected = expect(waiting).rejects.toThrow(); await new Promise(resolve => setTimeout(resolve, 30));
+      expect(mocks.clients).toHaveLength(4); expect(mocks.clients.every(client => !client.close.mock.calls.length)).toBe(true);
+      const same = await service.get({ ownerId: 'alice' }); expect(same.client).toBe(leases[0]!.client); await same.release?.();
+      controller.abort(); await rejected; await leases[0]!.release?.();
+      const fifth = await service.get({ ownerId: 'erin' }); expect(mocks.clients).toHaveLength(5); expect(mocks.clients[0]!.close).toHaveBeenCalledOnce();
+      expect(mocks.clients[1]!.close).not.toHaveBeenCalled(); await fifth.release?.();
+    } finally { await Promise.all(leases.map(lease => lease.release?.())); await service.close(); }
+  });
+  it('refreshes a live owner template without retiring a valid generation lease or changing its profile', async () => {
+    let template = 'OLD {{knowledge_base}}';
+    const service = new CompanionVcpRuntime({ resolveOwnerCleanupStorage: storage(path.resolve('synthetic-live-prompts')), resolveOwnerStorage: async owner => ({ ...await storage(path.resolve('synthetic-live-prompts'))(owner), ownerPrompts: { ...((await storage(path.resolve('synthetic-live-prompts'))(owner)).ownerPrompts), aimemoTemplate: template } }),
+      vendorRoot: 'unused', workerPath: 'unused', resolveEmbedding: async () => configuration(), resolveGenerationPlugins: async () => ({ plugins: {}, dispose: async () => undefined }) });
+    const first = await service.acquireGeneration({ ownerId: 'alice', config: chat() });
+    try {
+      template = 'NEW {{knowledge_base}}'; const second = await service.acquireGeneration({ ownerId: 'alice', config: chat() });
+      try { expect(second.client).toBe(first.client); expect(second.profileKey).toBe(first.profileKey);
+        expect(mocks.clients[0]!.close).not.toHaveBeenCalled(); expect(Reflect.get(first.client, 'setOwnerPrompts')).toHaveBeenCalledWith(expect.objectContaining({ aimemoTemplate: template })); }
+      finally { await second.release(); }
+    } finally { await first.release(); await service.close(); }
+  });
   it('preserves the global profile key and refuses a changed model or width under the same signature', async () => {
     let embedding = configuration();
     const service = runtime(async () => embedding);
     try {
-      const original = await service.get();
+      const original = await getCore(service);
       expect(original.profileKey).toBe(embedding.modelSignature);
-      expect((await service.get()).client).toBe(original.client);
+      expect((await getCore(service)).client).toBe(original.client);
       embedding = { ...embedding, dimension: 1024 };
-      await expect(service.get()).rejects.toThrow('签名');
+      await expect(getCore(service)).rejects.toThrow('签名');
       embedding = { ...configuration(), model: 'changed-model' };
-      await expect(service.get()).rejects.toThrow('签名');
+      await expect(getCore(service)).rejects.toThrow('签名');
       expect(mocks.clients).toHaveLength(1);
       embedding = { ...embedding, modelSignature: 'new-verified-space' };
-      const changed = await service.get();
+      const changed = await getCore(service);
       expect(changed.client).not.toBe(original.client);
       expect(changed.profileKey).toBe(embedding.modelSignature);
       expect(mocks.clients[0]!.close).toHaveBeenCalledTimes(1);
@@ -55,7 +114,7 @@ describe('VCP semantic space and shutdown boundaries', () => {
   it('does not construct a client when closed during embedding resolution', async () => {
     let finish!: (value: VcpMemoryEmbeddingConfig) => void;
     const embedding = new Promise<VcpMemoryEmbeddingConfig>(resolve => { finish = resolve; });
-    const service = runtime(() => embedding), getting = service.get();
+    const service = runtime(() => embedding), getting = getCore(service);
     await Promise.resolve();
     const closing = service.close(), rejected = expect(getting).rejects.toThrow('关闭');
     finish(configuration()); await rejected; await closing;
@@ -65,7 +124,7 @@ describe('VCP semantic space and shutdown boundaries', () => {
   // deliberately no longer means the old global chat+embedding singleton.
   it('rotates the behavior/focus profile during a session and keeps secret changes out of its public identity', async () => {
     const resolved: CompanionModelConfig[] = [], disposed = vi.fn(async () => undefined);
-    const service = new CompanionVcpRuntime({ dataRoot: 'unused-data', vendorRoot: 'unused', workerPath: 'unused', resolveEmbedding: async () => configuration(),
+    const service = new CompanionVcpRuntime({ resolveOwnerStorage: storage('unused-data'), resolveOwnerCleanupStorage: storage('unused-data'), vendorRoot: 'unused', workerPath: 'unused', resolveEmbedding: async () => configuration(),
       generationProfile: { maxOutputTokens: 8192 }, resolveGenerationPlugins: async input => { resolved.push(input.config); return { plugins: {}, dispose: disposed }; } });
     try {
       const original = await service.acquireGeneration({ ownerId: 'alice', config: chat() });
@@ -87,7 +146,7 @@ describe('VCP semantic space and shutdown boundaries', () => {
     const configuring = new Promise<void>(resolve => { started = resolve; });
     const plugins = new Promise<{ plugins: VcpMemoryPluginConfiguration; dispose(): Promise<void> }>(resolve => { finish = resolve; });
     const dispose = vi.fn(async () => undefined);
-    const service = new CompanionVcpRuntime({ dataRoot: 'unused-data', vendorRoot: 'unused', workerPath: 'unused', resolveEmbedding: async () => configuration(),
+    const service = new CompanionVcpRuntime({ resolveOwnerStorage: storage('unused-data'), resolveOwnerCleanupStorage: storage('unused-data'), vendorRoot: 'unused', workerPath: 'unused', resolveEmbedding: async () => configuration(),
       resolveGenerationPlugins: () => { started(); return plugins; } });
     const getting = service.acquireGeneration({ ownerId: 'alice', config: chat() }); await configuring;
     const closing = service.close(), rejected = expect(getting).rejects.toThrow('关闭');
@@ -96,7 +155,7 @@ describe('VCP semantic space and shutdown boundaries', () => {
   });
   it('keeps a signed gateway semantic space across port and credential changes while refreshing its transport', async () => {
     let port = 14001;
-    const service = new CompanionVcpRuntime({ dataRoot: 'unused-data', vendorRoot: 'unused', workerPath: 'unused', resolveEmbedding: async () => configuration(),
+    const service = new CompanionVcpRuntime({ resolveOwnerStorage: storage('unused-data'), resolveOwnerCleanupStorage: storage('unused-data'), vendorRoot: 'unused', workerPath: 'unused', resolveEmbedding: async () => configuration(),
       resolveGenerationPlugins: async () => ({ plugins: { chat: { baseUrl: 'http://127.0.0.1:' + port, model: 'owner-chat', apiKey: 'opaque-local-token' } }, dispose: async () => undefined }) });
     try {
       const first = await service.acquireGeneration({ ownerId: 'alice', config: chat() }); await first.release(); port = 24002;
@@ -105,12 +164,12 @@ describe('VCP semantic space and shutdown boundaries', () => {
       expect(mocks.clients[1]!.options.dataRoot).toBe(mocks.clients[0]!.options.dataRoot);
       const model = await service.acquireGeneration({ ownerId: 'alice', config: chat('focus-two', 'new-key') }); await model.release();
       expect(model.profileKey).not.toBe(first.profileKey); expect(mocks.clients[2]!.options.dataRoot).not.toBe(mocks.clients[0]!.options.dataRoot);
-      expect((await service.get()).profileKey).toBe('verified-space');
+      expect((await getCore(service)).profileKey).toBe('verified-space');
     } finally { await service.close(); }
   });
   it.each([undefined, ''])('still rotates an external focus semantic space when its unsigned endpoint changes (%s)', async _sourceSignature => {
     expect(_sourceSignature || undefined).toBeUndefined();
-    const service = new CompanionVcpRuntime({ dataRoot: 'unused', vendorRoot: 'unused', workerPath: 'unused', resolveEmbedding: async () => configuration(),
+    const service = new CompanionVcpRuntime({ resolveOwnerStorage: storage('unused'), resolveOwnerCleanupStorage: storage('unused'), vendorRoot: 'unused', workerPath: 'unused', resolveEmbedding: async () => configuration(),
       resolveGenerationPlugins: async () => ({ plugins: {}, dispose: async () => undefined }) });
     try {
       const first = await service.acquireGeneration({ ownerId: 'alice', config: chat('focus', 'token', 'https://first-focus.invalid') }); await first.release();
@@ -122,21 +181,21 @@ describe('VCP semantic space and shutdown boundaries', () => {
     let embedding = configuration(), plugins: VcpMemoryPluginConfiguration = { chat: { baseUrl: 'https://focus.invalid', model: 'one', apiKey: 'secret' } };
     const service = runtime(async () => embedding, async () => plugins), authorize = vi.fn(async () => true);
     try {
-      const cold = await service.getCold(authorize); await service.get();
+      const cold = await getCold(service, authorize); await getCore(service);
       plugins = { ...plugins, chat: { ...plugins.chat!, model: 'two' }, behaviorProfile: 'upstream' };
-      await service.get(); expect(await service.getCold(authorize)).toBe(cold);
+      await getCore(service); expect(await getCold(service, authorize)).toBeDefined();
       expect(coldMocks.services).toHaveLength(1);
       const deny = vi.fn(async () => false);
-      expect(await service.getCold(deny)).toBe(cold);
+      expect(await getCold(service, deny)).toBeDefined();
       expect(await coldMocks.services[0]!.options.authorize('owner', 'source', 'digest', {})).toBe(false);
       embedding = { ...embedding, queryBaseUrl: 'http://127.0.0.1/refreshed-query' };
-      expect(await service.getCold(authorize)).not.toBe(cold);
+      expect(await getCold(service, authorize)).not.toBe(cold);
       expect(coldMocks.services[1]!.options.dataRoot).toBe(coldMocks.services[0]!.options.dataRoot);
       expect(coldMocks.services[0]!.close).toHaveBeenCalledTimes(1);
       embedding = { ...embedding, dimension: 1024 };
-      await expect(service.getCold(authorize)).rejects.toThrow('签名');
+      await expect(getCold(service, authorize)).rejects.toThrow('签名');
       embedding = { ...embedding, modelSignature: 'new-space' };
-      await service.getCold(authorize);
+      await getCold(service, authorize);
       expect(coldMocks.services[2]!.options.dataRoot).not.toBe(coldMocks.services[1]!.options.dataRoot);
     } finally { await service.close(); }
   });
@@ -144,21 +203,21 @@ describe('VCP semantic space and shutdown boundaries', () => {
     const root = await mkdtemp(path.join(tmpdir(), 'worldline-cold-reset-'));
     const ownerHash = (owner: string) => createHash('sha256').update(owner).digest('hex');
     const resolveEmbedding = vi.fn(async (): Promise<VcpMemoryEmbeddingConfig> => { throw new Error('No encoder configured'); });
-    const service = new CompanionVcpRuntime({ dataRoot: root, vendorRoot: 'unused', workerPath: 'unused', resolveEmbedding });
+    const service = new CompanionVcpRuntime({ resolveOwnerStorage: storage(root), resolveOwnerCleanupStorage: storage(root), vendorRoot: 'unused', workerPath: 'unused', resolveEmbedding });
     const cleanup = async () => {
       if (path.dirname(path.resolve(root)) !== path.resolve(tmpdir()) || !path.basename(root).startsWith('worldline-cold-reset-')) throw new Error('Unsafe test cleanup');
       await rm(root, { recursive: true, force: true });
     };
     try {
       for (const profile of ['a'.repeat(64), 'b'.repeat(64)]) for (const owner of ['alice', 'bob']) {
-        const directory = path.join(root, 'cold-knowledge', profile, 'owners', ownerHash(owner));
+        const directory = path.join(root, owner, '.认知索引', 'cold', profile, 'owners', ownerHash(owner));
         await mkdir(directory, { recursive: true }); await writeFile(path.join(directory, 'receipt'), owner);
       }
       await service.close(); await service.resetCold('alice');
       expect(resolveEmbedding).not.toHaveBeenCalled();
       for (const profile of ['a'.repeat(64), 'b'.repeat(64)]) {
-        await expect(lstat(path.join(root, 'cold-knowledge', profile, 'owners', ownerHash('alice')))).rejects.toMatchObject({ code: 'ENOENT' });
-        expect(await readFile(path.join(root, 'cold-knowledge', profile, 'owners', ownerHash('bob'), 'receipt'), 'utf8')).toBe('bob');
+        await expect(lstat(path.join(root, 'alice', '.认知索引', 'cold', profile, 'owners', ownerHash('alice')))).rejects.toMatchObject({ code: 'ENOENT' });
+        expect(await readFile(path.join(root, 'bob', '.认知索引', 'cold', profile, 'owners', ownerHash('bob'), 'receipt'), 'utf8')).toBe('bob');
       }
     } finally {
       await service.close();
@@ -168,20 +227,20 @@ describe('VCP semantic space and shutdown boundaries', () => {
   it('describes owner and embedding profiles without acquiring chat, a client, or a worker', async () => {
     const resolvePlugins = vi.fn(async () => ({ plugins: {}, dispose: async () => undefined }));
     const legacy = vi.fn(async () => ({}));
-    const service = new CompanionVcpRuntime({ dataRoot: 'unused', vendorRoot: 'unused', workerPath: 'unused', resolveEmbedding: async () => configuration(),
+    const service = new CompanionVcpRuntime({ resolveOwnerStorage: storage('unused'), resolveOwnerCleanupStorage: storage('unused'), vendorRoot: 'unused', workerPath: 'unused', resolveEmbedding: async () => configuration(),
       resolvePlugins: legacy, resolveGenerationPlugins: resolvePlugins });
     try {
       expect(await service.describeEmbedding()).toEqual({ profileKey: 'verified-space' });
       const description = await service.describeGeneration({ ownerId: 'alice', config: chat() }); expect(description.ownerId).toBe('alice');
       expect(mocks.clients).toHaveLength(0); expect(resolvePlugins).not.toHaveBeenCalled();
-      const core = await service.get(); expect(core.profileKey).toBe('verified-space'); expect(mocks.clients[0]!.options.plugins).toBeUndefined(); expect(legacy).not.toHaveBeenCalled();
+      const core = await getCore(service); expect(core.profileKey).toBe('verified-space'); expect(mocks.clients[0]!.options.plugins?.chat).toBeUndefined(); expect(legacy).not.toHaveBeenCalled();
       const withoutRoute = runtime(async () => configuration());
       await expect(withoutRoute.acquireGeneration({ ownerId: 'alice', config: chat() })).rejects.toThrow('路由'); await withoutRoute.close();
     } finally { await service.close(); }
   });
   it('keeps parallel owners independent and cancels an over-capacity waiter without late route acquisition', async () => {
     const route = vi.fn(async () => ({ plugins: {}, dispose: vi.fn(async () => undefined) }));
-    const service = new CompanionVcpRuntime({ dataRoot: 'unused', vendorRoot: 'unused', workerPath: 'unused', resolveEmbedding: async () => configuration(), resolveGenerationPlugins: route });
+    const service = new CompanionVcpRuntime({ resolveOwnerStorage: storage('unused'), resolveOwnerCleanupStorage: storage('unused'), vendorRoot: 'unused', workerPath: 'unused', resolveEmbedding: async () => configuration(), resolveGenerationPlugins: route });
     const leases = [];
     try {
       for (const ownerId of ['alice','bob','carol','dave']) leases.push(await service.acquireGeneration({ ownerId, config: chat() }));
@@ -194,7 +253,7 @@ describe('VCP semantic space and shutdown boundaries', () => {
       const resumed = await service.acquireGeneration({ ownerId: 'alice', config: chat() });
       expect(resumed.client).toBe(leases[0]!.client); await resumed.release();
       expect(route).toHaveBeenCalledTimes(4);
-      const core = await service.get(), cold = await service.getCold(async () => true);
+      const core = await getCore(service), cold = await getCold(service, async () => true);
       expect(core.profileKey).toBe('verified-space'); expect(cold).toBeDefined();
       expect(await service.describeEmbedding()).toEqual({ profileKey: 'verified-space' });
       expect(route).toHaveBeenCalledTimes(4);
@@ -206,7 +265,7 @@ describe('VCP semantic space and shutdown boundaries', () => {
   });
   it('drains a credential-rotated same-root lease before constructing its replacement writer', async () => {
     let finish!: () => void;
-    const service = new CompanionVcpRuntime({ dataRoot: 'unused', vendorRoot: 'unused', workerPath: 'unused', resolveEmbedding: async () => configuration(),
+    const service = new CompanionVcpRuntime({ resolveOwnerStorage: storage('unused'), resolveOwnerCleanupStorage: storage('unused'), vendorRoot: 'unused', workerPath: 'unused', resolveEmbedding: async () => configuration(),
       resolveGenerationPlugins: async () => ({ plugins: {}, dispose: async () => undefined }) });
     try {
       const first = await service.acquireGeneration({ ownerId: 'alice', config: chat() });
@@ -218,21 +277,29 @@ describe('VCP semantic space and shutdown boundaries', () => {
       expect(mocks.clients[1]!.options.dataRoot).toBe(mocks.clients[0]!.options.dataRoot); await next.release();
     } finally { await service.close(); }
   });
-  it('purges exact legacy profile/scope pairs and owner generations without resolving any deleted owner configuration', async () => {
+  it('purges exact owner profile views and generations without resolving any model configuration', async () => {
     const root = await mkdtemp(path.join(tmpdir(),'worldline-vcp-owner-cleanup-'));
     const hash = (value: string) => createHash('sha256').update(value).digest('hex');
     const resolveEmbedding = vi.fn(async (): Promise<VcpMemoryEmbeddingConfig> => { throw new Error('no encoder'); });
-    const service = new CompanionVcpRuntime({ dataRoot: root, vendorRoot: 'unused', workerPath: 'unused', resolveEmbedding });
+    const resolveOwnerStorage = vi.fn(async (): Promise<never> => { throw new Error('owner prompt file was removed'); });
+    const resolveOwnerCleanupStorage = vi.fn(storage(root));
+    const service = new CompanionVcpRuntime({ resolveOwnerStorage, resolveOwnerCleanupStorage, vendorRoot: 'unused', workerPath: 'unused', resolveEmbedding });
     const pair = { profileKey: 'historical-global-chat', scopeId: 'exact-old-view' };
     try {
-      for (const owner of ['alice','bob']) { const target = path.join(root,'generation',hash(owner),'old'); await mkdir(target,{recursive:true}); await writeFile(path.join(target,'sentinel'),owner); }
-      const old = path.join(root,hash(pair.profileKey),hash(pair.scopeId)), peer = path.join(root,hash(pair.profileKey),hash('peer-view'));
+      for (const owner of ['alice','bob']) { const target = path.join(root,owner,'.认知索引','generation','old'); await mkdir(target,{recursive:true}); await writeFile(path.join(target,'sentinel'),owner); }
+      const old = path.join(root,'alice','.认知索引','hot',hash(pair.profileKey),hash(pair.scopeId)), peer = path.join(root,'bob','.认知索引','hot',hash(pair.profileKey),hash('peer-view'));
       await mkdir(old,{recursive:true}); await mkdir(peer,{recursive:true}); await writeFile(path.join(peer,'sentinel'),'peer');
       await service.close(); await service.purgeOwner('alice',{historicalViews:[pair]});
       expect(resolveEmbedding).not.toHaveBeenCalled(); await expect(lstat(old)).rejects.toMatchObject({code:'ENOENT'});
-      await expect(lstat(path.join(root,'generation',hash('alice')))).rejects.toMatchObject({code:'ENOENT'});
-      expect(await readFile(path.join(root,'generation',hash('bob'),'old','sentinel'),'utf8')).toBe('bob');
+      await expect(lstat(path.join(root,'alice','.认知索引','generation'))).rejects.toMatchObject({code:'ENOENT'});
+      expect(await readFile(path.join(root,'bob','.认知索引','generation','old','sentinel'),'utf8')).toBe('bob');
       expect(await readFile(path.join(peer,'sentinel'),'utf8')).toBe('peer');
+      const cold = path.join(root, 'alice', '.认知索引', 'cold', 'historical-encoder');
+      await mkdir(cold, { recursive: true }); await writeFile(path.join(cold, 'sentinel'), 'cold derived material');
+      await service.resetCold('alice'); await expect(lstat(cold)).rejects.toMatchObject({ code: 'ENOENT' });
+      await service.purgeOwner('absent'); await service.resetCold('absent');
+      await expect(lstat(path.join(root, 'absent'))).rejects.toMatchObject({ code: 'ENOENT' });
+      expect(resolveOwnerStorage).not.toHaveBeenCalled(); expect(resolveOwnerCleanupStorage).toHaveBeenCalledTimes(4);
     } finally { await service.close(); await rm(root,{recursive:true,force:true}); }
   });
 
@@ -241,19 +308,19 @@ describe('VCP semantic space and shutdown boundaries', () => {
     if (path.dirname(path.resolve(root)) !== path.resolve(tmpdir()) || !path.basename(root).startsWith('worldline-vcp-revision-preserve-')) throw new Error('Unexpected revision test cleanup target.');
     const hash = (value: string) => createHash('sha256').update(value).digest('hex');
     const disposed = vi.fn(async () => undefined), resolveEmbedding = vi.fn(async () => configuration());
-    const service = new CompanionVcpRuntime({ dataRoot: root, vendorRoot: 'unused', workerPath: 'unused', resolveEmbedding,
+    const service = new CompanionVcpRuntime({ resolveOwnerStorage: storage(root), resolveOwnerCleanupStorage: storage(root), vendorRoot: 'unused', workerPath: 'unused', resolveEmbedding,
       resolveGenerationPlugins: async () => ({ plugins: {}, dispose: disposed }) });
     const sentinel = async (directory: string, value: string) => { await mkdir(directory, { recursive: true }); await writeFile(path.join(directory, 'vectors'), value); };
     try {
       const before = await service.acquireGeneration({ ownerId: 'alice', config: chat() }); await before.release();
-      const ownerRoot = path.join(root, 'generation', hash('alice'));
+      const ownerRoot = path.join(root, 'alice', '.认知索引', 'generation');
       const clean = path.join(mocks.clients[0]!.options.dataRoot, hash('clean-view'));
       const dirty = path.join(mocks.clients[0]!.options.dataRoot, hash('dirty-view'));
       const oldProfile = 'historical-profile', oldClean = path.join(ownerRoot, hash(oldProfile), hash('old-clean'));
       const oldDirty = path.join(ownerRoot, hash(oldProfile), hash('old-dirty'));
-      const bob = path.join(root, 'generation', hash('bob'), hash(oldProfile), hash('bob-clean'));
-      const canonical = path.join(root, hash('verified-space'), hash('canonical-owner'));
-      const peerCanonical = path.join(root, hash('verified-space'), hash('peer-canonical'));
+      const bob = path.join(root, 'bob', '.认知索引', 'generation', hash(oldProfile), hash('bob-clean'));
+      const canonical = path.join(root, 'alice', '.认知索引', 'hot', hash('verified-space'), hash('canonical-owner'));
+      const peerCanonical = path.join(root, 'bob', '.认知索引', 'hot', hash('verified-space'), hash('peer-canonical'));
       for (const [directory, value] of [[clean, 'CURRENT_CLEAN_VECTORS'], [dirty, 'UNSAFE_INTERRUPTED_WRITE'],
         [oldClean, 'HISTORICAL_CLEAN_VECTORS'], [oldDirty, 'OLD_UNSAFE_WRITE'], [bob, 'BOB_VECTORS'],
         [canonical, 'CANONICAL_VECTORS'], [peerCanonical, 'PEER_CANONICAL']] as const) await sentinel(directory, value);

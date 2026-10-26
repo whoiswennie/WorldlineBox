@@ -2,6 +2,19 @@ import { lstat, readdir, readlink, realpath, rmdir, unlink } from 'node:fs/promi
 import { lstatSync, readdirSync, rmdirSync, unlinkSync } from 'node:fs';
 import path from 'node:path';
 
+/** Inspect every existing ancestor before a trusted owner client sends file
+ * work to native code. Missing descendants are created by the owned runtime. */
+export async function inspectVcpOwnedDirectory(directory: string): Promise<boolean> {
+  if (!path.isAbsolute(directory)) throw new Error('VCP owned directory must be absolute.');
+  let current = path.parse(directory).root;
+  for (const part of path.relative(current, directory).split(path.sep)) {
+    current = path.join(current, part); let info;
+    try { info = await lstat(current); }
+    catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') return false; throw error; }
+    if (!info.isDirectory() || info.isSymbolicLink()) throw new Error('VCP owner directory must remain real and unlinked.');
+  } return true;
+}
+
 /** A killed worker cannot run its own close; detach its two dependency links
  * after process exit without opening or enumerating either external target.
  */

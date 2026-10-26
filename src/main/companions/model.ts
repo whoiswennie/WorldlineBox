@@ -24,11 +24,19 @@ import type { CompanionHostObservationChange } from '../../shared/companion-agen
 import { COMPANION_BROWSER_CAPABILITY_TOOL } from '../../shared/companion-browser';
 import { COMPANION_WAIT_TOOL } from '../../shared/companion-wait';
 import { projectCompanionMemoryContextForModel, projectCompanionMemoryToolTurnsForModel } from './memory-model-context';
+import { companionModelQuota, companionModelConnection, type CompanionModelPriority } from './model-quota';
+import { companionAssetReplyIdentity } from './asset-context';
 
 export type { CompanionReplyInput } from './context';
 /** Included in the memory focus generation profile as well as actual requests. */
 export const COMPANION_TEXT_GENERATION_PROFILE = Object.freeze({ maxOutputTokens: 8_192, providerAdapterVersion: 1, sampling: 'provider-default' });
 export interface CompanionModelConfig {
+  /** Host-only scheduling metadata; never serialized as provider parameters. */
+  ownerId?: string;
+  workPriority?: CompanionModelPriority;
+  /** Live owner assets are resolved inside provider admission, including after
+   * a queue wait. The host callback is never a provider parameter. */
+  resolveAssetContext?(context: { system: string; user: string }, kind: 'reply' | 'structured' | 'text'): Promise<{ system: string; user: string }>;
   apiFormat: AiApiFormat;
   model: string;
   baseUrl?: string;
@@ -122,6 +130,8 @@ export async function generateCompanionReply(
   try {
     if (signal?.aborted) cancel();
     const operation = async (): Promise<CompanionReply> => {
+      if (config.resolveAssetContext) context = await config.resolveAssetContext(context, 'reply');
+      controller.signal.throwIfAborted();
       const response = await fetchCompanionProvider(controller.signal, fetchFn, rejected => {
         const current = prepareCompanionLoopVisuals(context, input.visualInputs ?? options.visualInputs, options.loop ? options.toolImages : undefined, options.loop ? turns : [], config, rejected);
         const request = providerRequest({ ...config, model }, projectCompanionMemoryContextForModel(current.context), controller.signal, options.loop === true, options.loop === true, true, current.images, true,
@@ -149,7 +159,7 @@ export async function generateCompanionReply(
           + JSON.stringify({ action: 'topic', parameters: { action: 'join', topicId: topic.id } })
           + '，收到成功回执后再正式发言。不参加时按本入口约定返回空text/null/PASS；不代其他伙伴加入。');
       }
-      const identityIssue = companionReplyIdentityIssue(result.text, input);
+      const identityIssue = companionReplyIdentityIssue(result.text, companionAssetReplyIdentity(input, context));
       if (identityIssue) throw new CompanionModelError('IDENTITY', identityIssue);
       if (options.loop) {
         if (!raw.trim() && !loopCalls.length) throw new CompanionModelError('INVALID_RESPONSE', '模型没有返回正文或能力调用。');
@@ -167,7 +177,8 @@ export async function generateCompanionReply(
       }
       return result;
     };
-    return await Promise.race([operation(), aborted]);
+    return await Promise.race([companionModelQuota.run({ ownerId: input.companion.id, connectionId: companionModelConnection(config),
+      priority: config.workPriority ?? 'foreground', estimatedInputTokens: Math.ceil((context.system.length + context.user.length) / 4) }, operation, controller.signal), aborted]);
   } catch (error) {
     if (error instanceof CompanionModelError) throw error;
     if (error instanceof CompanionProviderStreamError) throw new CompanionModelError(error.code, error.message, error.diagnostic);
@@ -216,6 +227,8 @@ async function generateCompanionContent(
   try {
     if (signal?.aborted) cancel();
     const operation = async () => {
+      if (config.resolveAssetContext) context = await config.resolveAssetContext(context, structured ? 'structured' : 'text');
+      controller.signal.throwIfAborted();
       const response = await fetchCompanionProvider(controller.signal, options.fetchFn ?? globalThis.fetch.bind(globalThis), rejected => {
         const current = prepareCompanionVisualContext(context, options.visualInputs, config, rejected);
         return { request: providerRequest({ ...config, model }, current.context, controller.signal, false, false, false, current.images, structured), hasImages: current.images.length > 0 };
@@ -225,7 +238,8 @@ async function generateCompanionContent(
       const raw = extractProviderText(config.apiFormat, envelope).trim();
       return stripCompanionThoughts(raw);
     };
-    return await Promise.race([operation(), aborted]);
+    return await Promise.race([companionModelQuota.run({ ownerId: config.ownerId ?? 'host', connectionId: companionModelConnection(config),
+      priority: config.workPriority ?? 'foreground', estimatedInputTokens: Math.ceil((context.system.length + context.user.length) / 4) }, operation, controller.signal), aborted]);
   } catch (error) {
     if (error instanceof CompanionModelError) throw error;
     throw new CompanionModelError('NETWORK', '无法连接聊天模型，请检查网络和模型设置。');

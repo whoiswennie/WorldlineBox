@@ -50,6 +50,89 @@ async function awake(page: Page, companionId: string, conversationId: string) {
   await request(page, { type: 'routine.configure', companionId, conversationId, expectedRevision: routine.revision, patch: { timeZone: world.settings.timeZone, wakeAt: clock(-8), sleepAt: clock(8), meals: [], habits: [] } });
 }
 
+test('keeps owner profile and prompt files authoritative through UI saves, external edits and real provider requests', async ({ browserName: _browserName }, testInfo) => {
+  void _browserName;
+  test.setTimeout(180000);
+  const root = mkdtempSync(path.join(tmpdir(), 'worldlinebox-profile-e2e-')), captures: string[] = [], failures: string[] = [];
+  let application: ElectronApplication | undefined;
+  const server = createServer((incoming, outgoing) => {
+    let raw = ''; incoming.setEncoding('utf8'); incoming.on('data', chunk => { raw += chunk; }); incoming.on('end', () => {
+      try {
+        const payload = JSON.parse(raw), base = payload.messages?.[1]?.content;
+        if (payload.messages?.length === 1 && payload.messages[0]?.content === 'Reply with the single word OK.') {
+          outgoing.writeHead(200, { 'Content-Type': 'application/json' }); outgoing.end(JSON.stringify({ choices: [{ message: { content: 'OK' } }] })); return;
+        }
+        const context = typeof base === 'string' ? JSON.parse(base) : {};
+        let result: unknown;
+        if (context.purpose === 'companion_social_progress_review') result = { supported: true, correction: '' };
+        else if (context.purpose === 'vcp_experience_journal') result = { notes: [] };
+        else if (context.purpose === 'vcp_sleep_reflection') result = { notes: [], dream: null };
+        else if (context.purpose === 'vcp_sleep_memory_maintenance') result = { decision: 'defer', reason: '本轮保留原始资料。', consolidations: [] };
+        else if (context.purpose === 'world_decision') result = { action: null, reason: '保持当前生活状态。', appraisals: [] };
+        else if (context.purpose === 'world_attention') result = { urgency: 'ordinary', confidence: .99, evidence: [context.source.content], reason: '普通交流。' };
+        else if (context.purpose === 'vcp_memory_prohibition_check') result = { allowed: true, matchedPolicyIds: [] };
+        else if (context.purpose) result = { text: null, reason: '没有其他任务需要处理。' };
+        else { captures.push(JSON.stringify(payload.messages)); result = '文件设定验证完成。'; }
+        outgoing.writeHead(200, { 'Content-Type': 'application/json' }); outgoing.end(JSON.stringify({ choices: [{ message: { content: typeof result === 'string' ? result : JSON.stringify(result) }, finish_reason: 'stop' }] }));
+      } catch (error) { failures.push(error instanceof Error ? error.message : String(error)); outgoing.writeHead(400); outgoing.end(); }
+    });
+  });
+  await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
+  try {
+    const started = await launch(path.join(root, 'profile')); application = started.application; const page = started.page;
+    const address = server.address(); if (!address || typeof address === 'string') throw new Error('Missing isolated provider.');
+    await page.evaluate(baseUrl => (window as unknown as Bridge).worldlinebox.llm.setConfig({ apiFormat: 'openai_chat', baseUrl, model: 'gpt-4o', apiKey: 'fixture-asset-file-key' }), 'http://127.0.0.1:' + address.port);
+    const location = await page.evaluate(() => (window as unknown as Bridge).worldlinebox.companions.workspace!({ type: 'status' }));
+    const memoryRoot = location.selected!.memoryRoot, relative = path.relative(root, memoryRoot);
+    expect(path.isAbsolute(relative) || relative === '..' || relative.startsWith('..' + path.sep)).toBe(false);
+    const owner = 'deepseek-sister', conversationId = 'private-' + owner, profileFile = path.join(memoryRoot, owner, 'profile.md');
+    const savedPersona = 'PERSONA_UI_FILE_AUTHORITY：我是保持独立判断、喜欢核验资料的伙伴。';
+    const filePersona = 'PERSONA_EXTERNAL_FILE_AUTHORITY：我当前的人格必须从此文件实时读取。';
+    const promptSaved = 'PROMPT_UI_FILE_AUTHORITY：根据本伙伴当前文件中的交流指导，保持自然与简洁。';
+    const promptExternal = 'PROMPT_EXTERNAL_FILE_AUTHORITY：现在的交流指导来自后续直接文件编辑。';
+    await page.locator('[data-application-module="companions"]').click(); await page.getByRole('button', { name: '联系人', exact: true }).click();
+    await page.locator(`[data-companion-contact="${owner}"]`).click(); await page.getByRole('button', { name: '编辑资料', exact: true }).click();
+    let editor = page.getByRole('dialog', { name: '编辑伙伴资料', exact: true });
+    await editor.getByRole('textbox', { name: '人设', exact: true }).fill(savedPersona);
+    await editor.getByRole('checkbox', { name: '允许空闲时主动联系我和其他伙伴' }).uncheck();
+    await editor.getByRole('button', { name: '保存资料', exact: true }).click(); await expect(editor).toHaveCount(0);
+    expect(readFileSync(profileFile, 'utf8')).toContain(savedPersona);
+    await page.getByRole('button', { name: '编辑资料', exact: true }).click(); editor = page.getByRole('dialog', { name: '编辑伙伴资料', exact: true });
+    await editor.getByRole('textbox', { name: '人设', exact: true }).fill('UNSAVED_CONFLICT_DRAFT：不能覆盖外部文件。');
+    writeFileSync(profileFile, readFileSync(profileFile, 'utf8').replace(savedPersona, filePersona), 'utf8');
+    await editor.getByRole('button', { name: '保存资料', exact: true }).click();
+    await expect(editor.getByRole('alert')).toContainText(/修改|变化|重新读取/u);
+    await expect(editor.getByRole('textbox', { name: '人设', exact: true })).toHaveValue('UNSAVED_CONFLICT_DRAFT：不能覆盖外部文件。');
+    expect(readFileSync(profileFile, 'utf8')).toContain(filePersona);
+    await editor.getByRole('button', { name: '取消', exact: true }).click();
+    await page.getByRole('button', { name: '发消息', exact: true }).click(); await awake(page, owner, conversationId);
+    const send = async (text: string, count: number) => {
+      await page.getByRole('textbox', { name: '输入消息', exact: true }).fill(text); await page.getByRole('button', { name: '发送', exact: true }).click();
+      await expect.poll(() => captures.length, { timeout: 35000 }).toBe(count);
+      await expect.poll(async () => (await request(page, { type: 'messages', conversationId, limit: 50 })).messages?.filter(message => message.authorId === owner
+        && !message.isReplyDraft && message.content.includes('文件设定验证完成')).length ?? 0, { timeout: 20000 }).toBe(count);
+    };
+    await send('ASSET_FILE_FIRST：按当前设定自然回应。', 1); expect(captures[0]).toContain(filePersona); expect(captures[0]).not.toContain(savedPersona);
+    await page.getByRole('button', { name: '联系人', exact: true }).click(); await page.locator(`[data-companion-contact="${owner}"]`).click();
+    await page.getByText('本伙伴的提示词文件', { exact: true }).click();
+    await page.getByRole('combobox', { name: '提示词文件', exact: true }).selectOption('提示词/对话.md');
+    await page.getByRole('textbox', { name: '提示词正文', exact: true }).fill(promptSaved);
+    await page.getByRole('button', { name: '保存到伙伴文件', exact: true }).click();
+    await expect(page.locator('.companion-prompt-assets [role="status"]')).toContainText('已保存到此伙伴');
+    const promptFile = path.join(memoryRoot, owner, '提示词', '对话.md'); expect(readFileSync(promptFile, 'utf8')).toBe(promptSaved);
+    await page.getByRole('button', { name: '发消息', exact: true }).click(); await send('ASSET_FILE_SECOND：继续正常交流。', 2);
+    expect(captures[1]).toContain(filePersona); expect(captures[1]).toContain(promptSaved);
+    writeFileSync(promptFile, promptExternal, 'utf8'); await send('ASSET_FILE_THIRD：再按照最新指导回应。', 3);
+    expect(captures[2]).toContain(promptExternal); expect(captures[2]).not.toContain(promptSaved); expect(failures).toEqual([]);
+    const evidence = { actualElectron: true, isolatedLibrary: true, providerBoundary: 'Local deterministic provider; real UI, file authority, CAS and app scheduling.',
+      softwarePersonaSavedToOwnerFile: true, externalPersonaWonCAS: true, conflictDraftPreserved: true, promptUISavedToOwnerFile: true,
+      externalProfileUsedInNextProviderRequest: true, externalPromptUsedInNextProviderRequest: true, providerRequests: captures.length };
+    await testInfo.attach('owner-asset-file-authority', { body: JSON.stringify(evidence, null, 2), contentType: 'application/json' });
+    const artifact = path.resolve('.tools/test-output/companions'); mkdirSync(artifact, { recursive: true });
+    writeFileSync(path.join(artifact, 'verified-owner-asset-file-authority.json'), JSON.stringify(evidence, null, 2));
+  } finally { await application?.close().catch(() => undefined); await new Promise<void>(resolve => { server.close(() => resolve()); server.closeAllConnections(); }); cleanup(root); }
+});
+
 // Only the OS chooser is replaced. Main still copies/validates real files,
 // persists references, serves them through its protocol and sends actual JPEG pixels.
 // eslint-disable-next-line no-empty-pattern
@@ -139,7 +222,10 @@ test('persists public player and companion references, displays the real user id
     await page.locator('[data-application-module="companions"]').click(); await page.getByRole('button', { name: '联系人', exact: true }).click(); await page.locator('[data-companion-contact="deepseek-sister"]').click(); await page.getByRole('button', { name: '编辑资料', exact: true }).click(); edit = page.getByRole('dialog', { name: '编辑伙伴资料', exact: true }); await edit.getByRole('button', { name: '恢复内置三视图', exact: true }).click(); await edit.getByRole('button', { name: '保存资料', exact: true }).click(); await page.getByRole('button', { name: '发消息', exact: true }).click();
     await send('我们继续聊，公开设定板现在已经移除了。', 3);
     expect(captures[2]!.images.map(image => image.personId + '/' + image.role).sort()).toEqual(['deepseek-sister/avatar', 'deepseek-sister/orthographic', 'user/avatar']);
-    expect(JSON.stringify(captures[2]!.context)).not.toContain(user.orthographic!.absolutePath!); expect(JSON.stringify(captures[2]!.context)).not.toContain(self.orthographic!.absolutePath!);
+    expect(JSON.stringify(captures[2]!.context)).not.toContain(user.orthographic!.absolutePath!);
+    const restoredBoard = captures[2]!.context.publicProfiles.find(profile => profile.id === companionId)?.orthographic;
+    expect(restoredBoard?.absolutePath).toBe(self.orthographic!.absolutePath);
+    expect(restoredBoard?.sha256).toBeTruthy(); expect(restoredBoard?.sha256).not.toBe(self.orthographic!.sha256);
     settings = await openSettings(page); await settings.getByRole('button', { name: '移除头像', exact: true }).click(); await settings.getByRole('button', { name: '保存用户信息', exact: true }).click(); await expect(settings).toContainText('用户信息已保存'); expect((await request(page, { type: 'player.profile.get' })).playerProfile!.avatarAttachmentId).toBeUndefined();
     expect(providerErrors).toEqual([]);
     expect(socialReviews.length).toBeGreaterThan(0);

@@ -16,7 +16,7 @@ it('peeks persisted world time without advancing or rolling jobs while preservin
     store.request({ type: 'world.tick' });
     const initial = store.request({ type: 'world.clock.peek' }).worldClock!;
     const state = db.prepare('SELECT data FROM companion_world WHERE id=1').get(), version = db.prepare('PRAGMA data_version').get();
-    const jobs = db.prepare('SELECT COUNT(*) AS n FROM companion_world_jobs').get(), admission = db.prepare('SELECT COUNT(*) AS n FROM companion_world_sleep_episodes').get();
+    const jobs = db.prepare('SELECT COUNT(*) AS n FROM companion_world_jobs').get(), admission = db.prepare('SELECT COUNT(*) AS n FROM companion_memory_maintenance_sessions').get();
     const base = Date.now();
     for (const lag of [500, 4_900, 5_000]) {
       vi.setSystemTime(base + lag);
@@ -38,7 +38,7 @@ it('peeks persisted world time without advancing or rolling jobs while preservin
     expect(db.prepare('SELECT data FROM companion_world WHERE id=1').get()).toEqual(state);
     expect(db.prepare('PRAGMA data_version').get()).toEqual(version);
     expect(db.prepare('SELECT COUNT(*) AS n FROM companion_world_jobs').get()).toEqual(jobs);
-    expect(db.prepare('SELECT COUNT(*) AS n FROM companion_world_sleep_episodes').get()).toEqual(admission);
+    expect(db.prepare('SELECT COUNT(*) AS n FROM companion_memory_maintenance_sessions').get()).toEqual(admission);
     store.request({ type: 'world.clock' });
     expect(db.prepare('SELECT data FROM companion_world WHERE id=1').get()).not.toEqual(state);
   } finally {

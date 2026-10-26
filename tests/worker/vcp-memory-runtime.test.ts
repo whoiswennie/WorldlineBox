@@ -72,6 +72,44 @@ afterEach(async () => {
 });
 
 describe('unchanged VCP core behind isolated worker processes', () => {
+  it('uses the current owner timeline and summary templates and fails closed instead of reverting to vendor prompts', async () => {
+    const { root, embedding, chatRequests } = await fixture();
+    const prompts = { aimemoTemplate: 'OWNER_FOCUS {{knowledge_base}}', timelineTemplate: 'OWNER_TIMELINE_V1 {{agentName}} / {{month}}',
+      summaryTemplate: 'OWNER_SUMMARY_V1 {{agentName}} / {{month}}' };
+    const client = new VcpMemoryClient({ dataRoot: root, vendorRoot, workerPath, embedding, launch,
+      plugins: { chat: { baseUrl: embedding.baseUrl.replace('/document', '/chat'), model: 'fixture-chat', apiKey: 'fixture-key' }, ownerPrompts: prompts } });
+    clients.push(client); const scope = { scopeId: 'owned-timeline-prompts' };
+    await client.remember(scope, { id: 'owned-source', content: 'alpha borrowed a blue umbrella', tags: ['alpha'], author: 'WorldlineBox', occurredAt: '2026-10-21T12:00:00Z' });
+    await client.timeline(scope, { operation: 'generateTimelines', agentName: 'WorldlineBox', options: { startMonth: '2026-10', endMonth: '2026-10' } });
+    expect(JSON.parse(chatRequests.at(-1)!).messages[0].content).toBe('OWNER_TIMELINE_V1 WorldlineBox / 2026-10');
+    client.setOwnerPrompts({ ...prompts, timelineTemplate: 'OWNER_TIMELINE_V2 {{agentName}} / {{month}}', summaryTemplate: 'OWNER_SUMMARY_V2 {{agentName}} / {{month}}' });
+    await client.timeline(scope, { operation: 'generateTimelines', agentName: 'WorldlineBox', options: { startMonth: '2026-10', endMonth: '2026-10', overwrite: true } });
+    expect(JSON.parse(chatRequests.at(-1)!).messages[0].content).toBe('OWNER_TIMELINE_V2 WorldlineBox / 2026-10');
+    await client.timeline(scope, { operation: 'generateSummaries', agentName: 'WorldlineBox', options: { overwrite: true } });
+    expect(JSON.parse(chatRequests.at(-1)!).messages[0].content).toBe('OWNER_SUMMARY_V2 WorldlineBox / 2026-10');
+    const count = chatRequests.length; client.setOwnerPrompts({ aimemoTemplate: prompts.aimemoTemplate });
+    await expect(client.timeline(scope, { operation: 'generateTimelines', agentName: 'WorldlineBox', options: { overwrite: true } })).rejects.toThrow('managed template');
+    expect(chatRequests).toHaveLength(count);
+  });
+  it('preserves a literal final Tag body line through original diary creation and monthly source discovery', async () => {
+    const { root, embedding, chatRequests } = await fixture();
+    const client = new VcpMemoryClient({ dataRoot: root, vendorRoot, workerPath, embedding, launch,
+      plugins: { chat: { baseUrl: embedding.baseUrl.replace('/document', '/chat'), model: 'fixture-chat', apiKey: 'fixture-key' } } });
+    clients.push(client);
+    const scope = { scopeId: 'literal-final-tag' }, note = { id: 'literal-tag-note', author: 'WorldlineBox', tags: ['alpha'],
+      occurredAt: '2026-10-21T12:00:00Z', content: 'alpha recorded a literal code example.\nTag: USER_BODY_MUST_SURVIVE' };
+    await client.remember(scope, note);
+    const folder = path.join(root, createHash('sha256').update(scope.scopeId).digest('hex'), 'notes', 'memories');
+    const file = path.join(folder, (await readdir(folder)).find(file => file.endsWith('.md'))!);
+    expect(await readFile(file, 'utf8')).toContain(note.content + '\nTag: alpha');
+    await client.timeline(scope, { operation: 'generateTimelines', agentName: 'WorldlineBox', options: { startMonth: '2026-10', endMonth: '2026-10' } });
+    expect(chatRequests.join('\n')).toContain('USER_BODY_MUST_SURVIVE');
+    const corrected = { ...note, content: note.content.replace('MUST_SURVIVE', 'CORRECTED_BODY') };
+    await client.remember(scope, corrected);
+    expect(await readFile(file, 'utf8')).toContain(corrected.content + '\nTag: alpha');
+    const oldArtifact = await client.exportTimelineArtifacts(scope, 'revision-after-body-correction');
+    expect(oldArtifact.agents.flatMap(agent => agent.months).some(month => month.month === '2026-10' && !!month.content)).toBe(false);
+  });
   it('indexes a full-length diary across chunks, recalls its tail with a legal long query and reopens it intact', async () => {
     const { createClient, requests } = await fixture(), client = createClient(), scope = { scopeId: 'public-length-contract' };
     const tail = '\n\ncocoa tail evidence beyond the first embedding chunk';

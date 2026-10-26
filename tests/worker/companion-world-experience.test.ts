@@ -18,14 +18,14 @@ function fixture() {
   const root = mkdtempSync(path.join(tmpdir(), 'companion-world-experience-')); roots.push(root);
   const filename = path.join(root, 'messages.sqlite'), store = new CompanionsStore(filename, seeds); stores.add(store);
   const world = store.request({ type: 'world.snapshot' }).world!;
-  store.request({ type: 'world.configure', expectedRevision: world.settings.revision, patch: { mode: 'compressed', timeZone: 'UTC' } });
+  store.request({ type: 'world.configure', expectedRevision: world.settings.revision, patch: { mode: 'realtime', timeZone: 'UTC' } });
   for (const companionId of ['alice', 'bob']) {
     const conversationId = store.openPrivate(companionId).id, routine = store.request({ type: 'routine.get', companionId, conversationId }).routine!;
     store.request({ type: 'routine.configure', companionId, conversationId, expectedRevision: routine.revision,
       patch: { timeZone: 'UTC', sleepAt: '23:00', wakeAt: '07:00', meals: [], habits: [] } });
     for (const rule of store.request({ type: 'life-rule.list', companionId }).lifeRules!) store.request({ type: 'life-rule.remove', companionId, id: rule.id, expectedRevision: rule.revision });
   }
-  for (;;) { const job = store.request({ type: 'memory.jobs.claim' }).memoryJob; if (!job) break;
+  for (;;) { const job = store.request({ type: 'memory.jobs.claim', force: true }).memoryJob; if (!job) break;
     store.request({ type: 'memory.jobs.complete', id: job.id, leaseToken: job.leaseToken, notes: [] }); }
   return { store, filename, scope: { companionId: 'alice', conversationId: store.openPrivate('alice').id },
     bob: { companionId: 'bob', conversationId: store.openPrivate('bob').id }, worldScope: { companionId: 'alice', conversationId: 'world_alice' } };
@@ -34,12 +34,13 @@ function advance(store: CompanionsStore, ms = 1000) { vi.setSystemTime(Date.now(
 function startWalk(store: CompanionsStore) {
   store.request({ type: 'life-rule.create', companionId: 'alice', rule: { title: '实际散步经历', enabled: true, startMinute: 600, endMinute: 610,
     probability: 1, checkIntervalMinutes: 1, action: 'park_walk', durationMinutes: 35 } });
+  advance(store, 61000);
   store.request({ type: 'life-event.tick' }); let occurrence: CompanionLifeOccurrence | undefined;
-  for (let i = 0; i < 4 && !occurrence; i++) { advance(store); occurrence = store.request({ type: 'life-event.claim' }).lifeOccurrence; }
-  expect(occurrence).toBeDefined(); store.request({ type: 'life-event.complete', id: occurrence!.id, leaseToken: occurrence!.leaseToken! });
+  for (let i = 0; i < 4 && !occurrence; i++) { advance(store, 61000); occurrence = store.request({ type: 'life-event.claim' }).lifeOccurrence; }
+  expect(occurrence, JSON.stringify({ rules: store.request({ type: 'life-rule.list', companionId: 'alice' }), world: store.request({ type: 'world.snapshot' }).world?.actors })).toBeDefined(); store.request({ type: 'life-event.complete', id: occurrence!.id, leaseToken: occurrence!.leaseToken! });
 }
 function finishWalk(store: CompanionsStore) {
-  for (let i = 0; i < 160; i++) { const world = advance(store); const completed = world.events.find(event => event.kind === 'park_walk_complete'); if (completed) return completed; }
+  for (let i = 0; i < 160; i++) { const world = advance(store, 15000); const completed = world.events.find(event => event.kind === 'park_walk_complete'); if (completed) return completed; }
   throw new Error('Actual park walk did not complete');
 }
 function counts(filename: string) {
@@ -69,7 +70,7 @@ it('durably captures one completed walk in its world domain, survives restart, f
   expect(counts(f.filename)).toMatchObject({ receipts: { n: 1 }, jobs: { n: 1 } });
   f.store.close(); stores.delete(f.store);
   const reopened = new CompanionsStore(f.filename, seeds); stores.add(reopened);
-  const job = reopened.request({ type: 'memory.jobs.claim', companionId: 'alice' }).memoryJob!;
+  const job = reopened.request({ type: 'memory.jobs.claim', force: true, companionId: 'alice' }).memoryJob!;
   expect(job).toMatchObject({ companionId: 'alice', conversationId: 'world_alice' }); expect(job.sourceMessageIds).toHaveLength(1);
   const source = reopened.getMessage(job.sourceMessageIds[0]!);
   expect(source).toMatchObject({ authorId: 'system', kind: 'notice', memoryEvidenceOnly: true });
@@ -89,7 +90,7 @@ it('durably captures one completed walk in its world domain, survives restart, f
     memory.enqueueWorldExperience(source.id, 'alice'); expect(counts(f.filename).jobs).toEqual({ n: 1 });
     reopened.request({ type: 'memory.forget', ...f.worldScope, sourceMessageIds: [source.id] });
     memory.enqueueWorldExperience(source.id, 'alice');
-    expect(reopened.request({ type: 'memory.jobs.claim', companionId: 'alice' }).memoryJob).toBeUndefined();
+    expect(reopened.request({ type: 'memory.jobs.claim', force: true, companionId: 'alice' }).memoryJob).toBeUndefined();
     expect(reopened.request({ type: 'memory.snapshot', ...f.worldScope }).memorySnapshot!.notes).toEqual([]);
   } finally { db.close(); }
 });
@@ -107,7 +108,7 @@ it('does not auto-learn queries, movement, visit plans or interrupted walks', ()
   const world = f.store.request({ type: 'world.snapshot' }).world!;
   expect(world.events.some(event => event.kind === 'park_walk_interrupted')).toBe(true);
   expect(counts(f.filename).receipts).toEqual({ n: 0 });
-  const jobs = f.store.request({ type: 'memory.jobs.claim', companionId: 'alice' }).memoryJob;
+  const jobs = f.store.request({ type: 'memory.jobs.claim', force: true, companionId: 'alice' }).memoryJob;
   expect(jobs?.sourceMessageIds).not.toContain(query.id);
 });
 
@@ -115,13 +116,14 @@ it('never treats a reading pose as proof that external material was actually rea
   const f = fixture();
   f.store.request({ type: 'life-rule.create', companionId: 'alice', rule: { title: '读书姿态', enabled: true, startMinute: 600,
     endMinute: 610, probability: 1, checkIntervalMinutes: 1, action: 'study' } });
+  advance(f.store, 61000);
   f.store.request({ type: 'life-event.tick' }); let occurrence: CompanionLifeOccurrence | undefined;
-  for (let i = 0; i < 4 && !occurrence; i++) { advance(f.store); occurrence = f.store.request({ type: 'life-event.claim' }).lifeOccurrence; }
+  for (let i = 0; i < 4 && !occurrence; i++) { advance(f.store, 61000); occurrence = f.store.request({ type: 'life-event.claim' }).lifeOccurrence; }
   f.store.request({ type: 'life-event.complete', id: occurrence!.id, leaseToken: occurrence!.leaseToken! });
   const world = advance(f.store, 20000);
   expect(world.events.some(event => event.kind === 'life_activity' && event.text.endsWith('study'))).toBe(true);
   expect(counts(f.filename).receipts).toEqual({ n: 0 });
-  expect(f.store.request({ type: 'memory.jobs.claim', companionId: 'alice' }).memoryJob).toBeUndefined();
+  expect(f.store.request({ type: 'memory.jobs.claim', force: true, companionId: 'alice' }).memoryJob).toBeUndefined();
 });
 
 it('captures an actual permitted cross-door arrival and excludes the request, consent and return home', () => {
@@ -142,15 +144,17 @@ it('rolls back the completed experience, hidden receipt and capture job together
   for (let i = 0; i < 150; i++) {
     const world = f.store.request({ type: 'world.snapshot' }).world!, walk = world.actors.find(actor => actor.companionId === 'alice')!.parkWalk;
     if (walk?.stage === 'strolling' && walk.participatedMinutes >= 33) break;
-    advance(f.store);
+    advance(f.store, 15000);
   }
   const before = counts(f.filename);
+  expect(before.receipts, JSON.stringify(f.store.request({ type: 'world.snapshot' }).world?.actors)).toEqual({ n: 0 });
   const prototype = CompanionWorldStore.prototype as unknown as { save(state: { actors: Array<{ parkWalk?: { stage: string } }> }): void }, save = prototype.save;
   const fault = vi.spyOn(prototype, 'save').mockImplementation(function (this: typeof prototype, state) {
-    if (state.actors.some(actor => actor.parkWalk?.stage === 'returning')) throw new Error('injected world persistence failure');
+    const connection = (this as unknown as { db: CompanionConnection }).db;
+    if (connection.prepare("SELECT 1 FROM companion_world_events WHERE json_extract(data,'$.kind')='park_walk_complete' LIMIT 1").get()) throw new Error('injected world persistence failure');
     return save.call(this, state);
   });
-  expect(() => advance(f.store, 5000)).toThrow('injected world persistence failure'); fault.mockRestore();
+  expect(() => advance(f.store, 3 * 60000)).toThrow('injected world persistence failure'); fault.mockRestore();
   expect(counts(f.filename)).toEqual(before);
   const retried = f.store.request({ type: 'world.tick', snapshot: true }).world!;
   expect(retried.events.filter(event => event.kind === 'park_walk_complete')).toHaveLength(1);

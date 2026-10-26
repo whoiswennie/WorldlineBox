@@ -1,5 +1,5 @@
 import { controlledMemoryRuntime } from '../fixtures/controlled-memory-runtime';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, readFileSync, readdirSync, rmSync, unlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import Database from 'better-sqlite3';
@@ -64,6 +64,7 @@ function journal(source: { id: string; content: string }, content = '用户喜�
 
 /** Host orchestration fake only. Original indexing/River behavior is tested in the worker suite. */
 class FakeVcpClient extends VcpMemoryClient {
+  override readonly supportsDetachedRecall = false;
   readonly notes = new Map<string, Map<string, VcpMemoryNote>>();
   constructor(root: string) {
     super({ dataRoot: root, vendorRoot: 'unused-vendor', workerPath: 'unused-worker',
@@ -110,16 +111,17 @@ function bindStorage(store: CompanionsStore) {
   transport.request.mockImplementation(async command => store.request(command));
   transport.close.mockImplementation(async () => { store.close(); stores.delete(store); });
 }
-function startService(root: string): CompanionService {
+function startService(root: string, memoryLibrary = false): CompanionService {
   const dsh = { state: () => ({ tasks: [], operations: [] }), requestTask: vi.fn(async () => ({ ok: true })) } as unknown as DshLauncher;
   const client = new FakeVcpClient(root); clients.set(root, client);
   const runtime: CompanionMemoryRuntime = controlledMemoryRuntime({ get: async () => ({ client, profileKey: 'bundled-gemma2:768' }), close: async () => client.close() });
   const service = new CompanionService({ userData: root, workerPath: 'mocked-worker', window: () => undefined, memoryRuntime: runtime,
+    ...(memoryLibrary ? { memoryLibraryRoot: path.join(root, 'assets', '伙伴记忆') } : {}),
     getConfig: () => ({ apiFormat: 'openai_chat', model: 'memory-test-chat-model', baseUrl: 'https://provider.invalid', apiKey: 'private-test-key' }),
     hasConfig: () => true, dsh: () => dsh, report: vi.fn() });
   services.add(service); return service;
 }
-function fixture(customSeeds = seeds) {
+function fixture(customSeeds = seeds, memoryLibrary = false) {
   const testNow = Date.now(); vi.setSystemTime(testNow - 10_000);
   const root = mkdtempSync(path.join(tmpdir(), 'worldlinebox-memory-service-')); roots.push(root);
   const databasePath = path.join(root, 'companions', 'messages.sqlite');
@@ -133,7 +135,7 @@ function fixture(customSeeds = seeds) {
     store.request({ type: 'world.tool', companionId: seed.id, conversationId: room.id, arguments: { action: 'move', destinationId: computer.id } });
   }
   vi.setSystemTime(testNow); store.request({ type: 'world.tick' }); bindStorage(store);
-  return { root, databasePath, store, conversation, service: startService(root) };
+  return { root, databasePath, store, conversation, service: startService(root, memoryLibrary) };
 }
 async function closeService(service: CompanionService) {
   const done = service.shutdown(); await vi.advanceTimersByTimeAsync(1_000); await done; services.delete(service);
@@ -201,6 +203,59 @@ afterEach(async () => {
 });
 
 describe('VCP companion memory through the main service and real SQLite', () => {
+  it('writes app saves to canonical owner files and immediately imports external edits through the same checked policy gate', async () => {
+    const f = fixture(seeds, true), scope = { companionId: 'sister', conversationId: f.conversation.id };
+    const saved = (await f.service.handle({ type: 'memory.save', ...scope, content: 'APP_WRITE_THROUGH_ACTUAL_TEXT' })).memories![0]!;
+    const notebook = path.join(f.root, 'assets', '伙伴记忆', 'sister', '日记');
+    const file = path.join(notebook, saved.id + '.md'); expect(readFileSync(file, 'utf8')).toBe(saved.content);
+    const blocked = f.store.saveMemory({ ...scope, content: '另一个禁止今后记录的主题。', tags: ['禁止项'] });
+    f.store.request({ type: 'memory.forget', ...scope, id: blocked.id, tag: '禁止项', persistent: true });
+    writeFileSync(file, 'EXTERNAL_EDIT_READ_IMMEDIATELY_WITH_POLICY');
+    const actual = await f.service.handle({ type: 'memory.read', ...scope, id: saved.id, sourceLimit: 10 });
+    expect(actual.memoryRead!.memory).toMatchObject({ content: 'EXTERNAL_EDIT_READ_IMMEDIATELY_WITH_POLICY', contentRevision: 2 });
+    expect(f.store.request({ type: 'memory.read', ...scope, id: saved.id }).memoryRead!.memory.content).toBe('EXTERNAL_EDIT_READ_IMMEDIATELY_WITH_POLICY');
+    expect(transport.prohibitionFetch).toHaveBeenCalled();
+  }, 20000);
+
+  it('fails closed when the actual canonical file was removed instead of answering from cached SQL', async () => {
+    const f = fixture(seeds, true), scope = { companionId: 'sister', conversationId: f.conversation.id };
+    const saved = (await f.service.handle({ type: 'memory.save', ...scope, content: 'REMOVED_FILE_MUST_NOT_FALL_BACK_TO_SQL' })).memories![0]!;
+    const file = path.join(f.root, 'assets', '伙伴记忆', 'sister', '日记', saved.id + '.md');
+    unlinkSync(file);
+    await expect(f.service.handle({ type: 'memory.read', ...scope, id: saved.id, sourceLimit: 10 })).rejects.toThrow();
+    expect(() => readFileSync(file, 'utf8')).toThrow();
+  }, 20000);
+
+  it('uses edited asset profile text in the actual provider request while another malformed owner remains isolated', async () => {
+    const f = fixture([...seeds, { ...seeds[0]!, id: 'flash', name: '另一位伙伴', avatar: 'flash', persona: '另一位伙伴自己的稳定设置。' }], true);
+    await f.service.handle({ type: 'state' });
+    const ownerRoot = path.join(f.root, 'assets', '伙伴记忆', 'sister'), profile = path.join(ownerRoot, 'profile.md');
+    writeFileSync(profile, readFileSync(profile, 'utf8').replace(/(\r?\n---\r?\n)[\s\S]*$/u, '$1\nCURRENT_FILE_PERSONA_MUST_REACH_PROVIDER\n'));
+    writeFileSync(path.join(f.root, 'assets', '伙伴记忆', 'flash', 'profile.md'), 'malformed profile must not replace another owner');
+    const state = (await f.service.handle({ type: 'state' })).state!;
+    expect(state.companions.find(owner => owner.id === 'flash')?.availability).toBe('offline');
+    expect(state.companions.find(owner => owner.id === 'sister')?.persona).toBe('CURRENT_FILE_PERSONA_MUST_REACH_PROVIDER');
+    await sent(f.service, f.store, f.conversation.id, '请简短说明你现在依据的角色资料。', 'live_profile_provider');
+    expect(transport.fetch.mock.calls.some(([, init]) => String(init?.body).includes('CURRENT_FILE_PERSONA_MUST_REACH_PROVIDER'))).toBe(true);
+    expect(transport.fetch.mock.calls.every(([, init]) => !String(init?.body).includes('温柔沉稳'))).toBe(true);
+    expect(readdirSync(ownerRoot)).toContain('提示词');
+  }, 20000);
+  it('persists initialization outside the owner directory and never restores a deleted owner from seed settings after restart', async () => {
+    const f = fixture(seeds, true);
+    await f.service.handle({ type: 'state' });
+    expect(f.store.request({ type: 'companion.assets.initialized', companionId: 'sister' }).assetProfileInitialized).toBe(true);
+    await closeService(f.service);
+    const ownerRoot = path.join(f.root, 'assets', '伙伴记忆', 'sister');
+    rmSync(ownerRoot, { recursive: true });
+    const reopened = new CompanionsStore(f.databasePath, seeds); stores.add(reopened); bindStorage(reopened);
+    const restarted = startService(f.root, true), state = (await restarted.handle({ type: 'state' })).state!;
+    expect(state.companions.find(owner => owner.id === 'sister')).toMatchObject({ availability: 'offline', assetProfileError: expect.any(String) });
+    await expect(restarted.resolveOwnerStorage('sister')).rejects.toThrow();
+    const cleanup = await restarted.resolveOwnerCleanupStorage('sister');
+    expect(cleanup).toMatchObject({ ownerId: 'sister', ownerRoot, indexRoot: path.join(ownerRoot, '.认知索引') });
+    expect(() => readdirSync(ownerRoot)).toThrow();
+    expect(reopened.request({ type: 'companion.assets.initialized', companionId: 'sister' }).assetProfileInitialized).toBe(true);
+  }, 20000);
   it.each(['runtime', 'native', 'source_revision', 'owner', 'generation', 'native_integrity', 'native_abort', 'returned_owner', 'returned_time', 'returned_revision',
     'VCP_MEMORY_CLOSED', 'VCP_MEMORY_DERIVED_TIMEOUT', 'VCP_MEMORY_DERIVED_FAILED', 'VCP_MEMORY_EMBEDDING_RESPONSE_INVALID', 'VCP_MEMORY_PACKAGE_MISSING', 'VCP_MEMORY_ERROR',
     'VCP_MEMORY_UNSAFE_SOURCE', 'VCP_MEMORY_SOURCE_ID_MISMATCH', 'VCP_MEMORY_DIARY_ID_CONFLICT', 'VCP_MEMORY_EMBEDDING_SPACE_MISMATCH',
@@ -209,6 +264,7 @@ describe('VCP companion memory through the main service and real SQLite', () => 
     const f = fixture(), scope = { companionId: 'sister', conversationId: f.conversation.id };
     const source = f.store.appendMessage({ conversationId: f.conversation.id, authorId: 'user', content: '梦境服务故障不改变这一真实来源。', replyDirective: 'none' });
     f.store.request({ type: 'memory.record', ...scope, candidate: journal(source, source.content) }); markIndexed(f.store);
+    const captured = f.store.request({ type: 'memory.snapshot', ...scope }).memorySnapshot!;
     const client = new FakeVcpClient(path.join(f.root, 'optional-dream'));
     let cancelDuringOwnerCheck = false;
     const get = vi.fn(async () => {
@@ -227,6 +283,14 @@ describe('VCP companion memory through the main service and real SQLite', () => 
         const db = new (Database as { new(file: string): CompanionConnection })(f.databasePath);
         try { db.prepare('UPDATE messages SET revision=revision+1 WHERE id=?').run(source.id); }
         finally { db.close(); }
+        const frozen = captured.notes.map(note => ({ id: note.id, sources: note.sources.map(receipt => ({
+          id: receipt.messageId, conversationId: receipt.conversationId, checksum: receipt.checksum,
+        })) }));
+        expect(f.store.request({ type: 'memory.lifecycle.state', companionId: scope.companionId }).memoryLifecycleState!.revocationEpoch).toBe(captured.revocationEpoch);
+        expect(f.store.request({ type: 'memory.frozen.valid', ...scope, memories: frozen }).memoryFrozenValid).toBe(true);
+        expect(f.store.request({ type: 'memory.frozen.valid', ...scope, memories: frozen.map(note => ({ ...note,
+          sources: note.sources.map(receipt => ({ ...receipt, revision: captured.notes.find(original => original.id === note.id)!.sources.find(original => original.messageId === receipt.id)!.revision })),
+        })) }).memoryFrozenValid).toBe(false);
       } else if (failure === 'owner') f.store.updateCompanion('sister', { name: '改名后的真实伙伴', description: '姐姐', persona: '温柔沉稳', model: '', avatar: 'sister', proactive: false });
       else if (failure === 'generation') cancelDuringOwnerCheck = true;
       else if (failure === 'native_integrity') throw Object.assign(Error('Native owner/version/content evidence is invalid.'), { code: 'VCP_MEMORY_DREAM_INVALID' });
@@ -263,7 +327,7 @@ describe('VCP companion memory through the main service and real SQLite', () => 
     const db = new (Database as { new(file: string): CompanionConnection })(f.databasePath);
     const capture = () => ({ world: db.prepare('SELECT data FROM companion_world WHERE id=1').get(),
       conversations: db.prepare('SELECT COUNT(*) AS n FROM conversations').get(), jobs: db.prepare('SELECT COUNT(*) AS n FROM companion_world_jobs').get(),
-      admissions: db.prepare('SELECT COUNT(*) AS n FROM companion_world_sleep_episodes').get(), version: db.prepare('PRAGMA data_version').get() });
+      admissions: db.prepare('SELECT COUNT(*) AS n FROM companion_memory_maintenance_sessions').get(), version: db.prepare('PRAGMA data_version').get() });
     try {
       const before = capture();
       transport.request.mockClear();
@@ -282,7 +346,7 @@ describe('VCP companion memory through the main service and real SQLite', () => 
           // remains unchanged, including when the background world is behind.
           expect(overview.lifeOverview?.clock.virtualNow).toBe(new Date(base + lag).toISOString());
           expect(overview.lifeOverview?.clock.backlog, `persisted observation lag ${lag}ms`).toBe(lag > 5_000);
-          expect(processing.memoryProcessing?.schedule?.schedulers.some(item => item.waitingReason === 'world_backlog'), `memory schedule lag ${lag}ms`).toBe(lag > 5_000);
+          expect(processing.memoryProcessing?.schedule?.schedulers.some(item => item.waitingReason === 'world_backlog'), `memory maintenance remains independent of observation lag ${lag}ms`).toBe(false);
         }
       }
       expect(capture()).toEqual(before);
@@ -327,6 +391,8 @@ describe('VCP companion memory through the main service and real SQLite', () => 
     expect(payload(transport.progressFetch.mock.calls[0]![1])).toMatchObject({ purpose: 'companion_social_progress_review', proposedText: '好，慢慢聊。' });
     expect(active(f.store, f.conversation.id)).toHaveLength(0);
     await background();
+    expect(transport.memoryFetch).not.toHaveBeenCalled();
+    await background(60_000);
     expect(active(f.store, f.conversation.id)).toHaveLength(1);
     const note = active(f.store, f.conversation.id)[0]!;
     expect(note).toMatchObject({ content: '用户喜欢茶。', tags: ['饮料偏好'], sourceMessageId: source.id, status: 'indexed', captureMethod: 'automatic' });
@@ -351,7 +417,7 @@ describe('VCP companion memory through the main service and real SQLite', () => 
       return structuredResponse({ notes: source ? [{ ...journal(source), ...(attempts === 2 ? { evidence: [{ sourceMessageId: source.id, quote: '这句原文并不存在' }] } : {}) }] : [] });
     });
     const source = await sent(f.service, f.store, f.conversation.id, '我一直喜欢茶。', 'retry-preference');
-    await background();
+    await background(62_100);
     expect(status(f.store).failed).toBeGreaterThan(0);
     expect(status(f.store).captureWatermark).toBeLessThan(source.sequence);
     expect(status(f.store).lastError).not.toContain('private-test-key');
@@ -373,7 +439,7 @@ describe('VCP companion memory through the main service and real SQLite', () => 
     });
     client.remember.mockRejectedValueOnce(new Error('Local encoder temporarily unavailable.'));
     await sent(f.service, f.store, f.conversation.id, '记住周六带伞。', 'pending-embedding');
-    await background();
+    await background(62_100);
     expect(active(f.store, f.conversation.id)[0]?.status).toBe('queued');
     expect(status(f.store).pendingIndex).toBe(1);
     expect(f.store.request({ type: 'memory.snapshot', companionId: 'sister', conversationId: f.conversation.id }).memorySnapshot?.notes).toHaveLength(0);
@@ -390,7 +456,8 @@ describe('VCP companion memory through the main service and real SQLite', () => 
       return structuredResponse({ notes: source ? [journal(source, '用户的生日是4月9日。', ['生日'])] : [] });
     });
     const birthday = await sent(f.service, f.store, f.conversation.id, '我的生日是4月9日。', 'old-birthday');
-    await background();
+    await background(62_100);
+    expect(active(f.store, f.conversation.id)).toEqual(expect.arrayContaining([expect.objectContaining({ content: '用户的生日是4月9日。', status: 'indexed' })]));
     for (let i = 0; i < COMPANION_DIALOGUE_WINDOW.maxMessages + 20; i++) f.store.appendMessage({ conversationId: f.conversation.id, authorId: 'user', content: `无关的天气闲聊第${i}次`, replyDirective: 'none' });
     let brainPayload: Payload | undefined;
     transport.fetch.mockImplementation(async (_input, init) => {
@@ -668,7 +735,7 @@ describe('VCP companion memory through the main service and real SQLite', () => 
     });
     const source = await sent(f.service, f.store, group.id, '@大肥鱼，大家周六十点在东门集合。', 'group-agreement');
     expect(f.store.messages({ conversationId: group.id }).messages.some(message => message.authorId === 'flash')).toBe(false);
-    await background();
+    await background(62_100);
     expect(active(f.store, group.id, 'flash')[0]).toMatchObject({ sourceMessageId: source.id, sourceConversationId: group.id, content: expect.stringContaining('东门'), status: 'indexed' });
     const other = f.store.createConversation('另一个群', ['sister', 'flash', 'comet']);
     expect(active(f.store, other.id, 'flash')).toHaveLength(1);

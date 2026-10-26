@@ -16,6 +16,8 @@ export interface CompanionMemoryDocumentsOptions {
 }
 const hash = (value: string) => createHash('sha256').update(value).digest('hex');
 const automatic = (relative: string) => relative === 'profile.md' || relative === '同步状态.md'
+  || relative.startsWith('来源/')
+  || ['提示词', '形象'].includes(relative.split('/')[0]!)
   || relative.startsWith('时间线/') && path.posix.basename(relative).startsWith('VCP-');
 const categories: Record<string, CompanionMemoryDocument['category']> = { 日记: 'diary', 资料: 'material', 自我认识: 'self', 世界经历: 'world', 时间线: 'timeline' };
 const category = (relative: string): CompanionMemoryDocument['category'] => categories[relative.split('/')[0]!] ?? (relative === 'profile.md' ? 'profile' : 'other');
@@ -84,7 +86,7 @@ export class CompanionMemoryDocuments {
   }
   private editableFile(relative: string): void {
     if (memoryLibraryPathParts(relative).length < 2 || !isDocument(path.posix.basename(relative))) throw new Error('请在日记本目录内使用 .md 或 .txt 文本文件。');
-    if (automatic(relative)) throw new Error('稳定人格和 VCP 自动时间线只供查阅；需要学习时请另存到资料。');
+    if (automatic(relative)) throw new Error('伙伴资料与提示词请在对应配置管理中编辑；自动时间线需要学习时请另存到资料。');
   }
   private async remove(session: MemoryLibraryDocumentSession, relative: string): Promise<void> {
     if (session.readOnly) {

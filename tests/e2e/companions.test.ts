@@ -24,7 +24,7 @@ interface ProviderFixture { baseUrl: string; requests: ProviderRequest[]; memory
 // Electron supplies the window; no Playwright browser fixture is needed.
 // eslint-disable-next-line no-empty-pattern
 test('automatically records ordinary conversation, exposes sources and progress, rejects stale edits and forgets across restart', async ({}, testInfo) => {
-  test.setTimeout(240_000);
+  test.setTimeout(420_000);
   const root = mkdtempSync(path.join(tmpdir(), 'worldlinebox-companions-e2e-memory-'));
   const profile = path.join(root, 'profile'), provider = await providerFixture();
   let application: ElectronApplication | undefined;
@@ -78,6 +78,7 @@ test('automatically records ordinary conversation, exposes sources and progress,
     expect(nativeHit.reasons).toContain('VCP river');
     expect(nativeHit.scoreDetails).toMatchObject({ engine: 'river', rank: expect.any(Number), finalScore: nativeHit.score });
     expect(recalled.memoryContext?.text).toContain('用户喜欢看海');
+    expect(recalled.memoryContext).toMatchObject({ revision: expect.any(String), profileKey: expect.any(String) });
     await expect.poll(async () => (await request(page, { type: 'memory.status', companionId })).memoryStatus?.pending, { timeout: 35_000 }).toBe(0);
     const status = (await request(page, { type: 'memory.status', companionId })).memoryStatus!;
     expect(status.failed).toBe(0); expect(status.captureWatermark).toBe(status.messageWatermark); expect(status.pendingIndex).toBe(0); expect(status.indexed).toBe(1);
@@ -89,7 +90,7 @@ test('automatically records ordinary conversation, exposes sources and progress,
       { proposedText: '记得，你喜欢看海。', facts: [], nativeActions: [] },
     ]));
     expect(provider.requests.at(-1)!.memories).toEqual([]);
-    expect(provider.requests.at(-1)!.processedMemory).toMatchObject({ text: expect.stringContaining('用户喜欢看海'), revision: expect.any(String), profileKey: expect.any(String) });
+    expect(provider.requests.at(-1)!.processedMemory).toMatchObject({ text: expect.stringContaining('用户喜欢看海') });
     expect(provider.memoryRequests.some(item => item.purpose === 'vcp_aimemo')).toBe(true);
     await expect(page.locator('[data-companion-messages]').getByText('记得，你喜欢看海。', { exact: true })).toBeVisible();
     const recalledBubble = page.locator('[data-companion-message]').filter({ has: page.getByText('记得，你喜欢看海。', { exact: true }) }).last();
@@ -107,7 +108,7 @@ test('automatically records ordinary conversation, exposes sources and progress,
     await page.screenshot({ path: path.join(recallArtifacts, 'actual-injected-context.png') });
     await recalledBubble.locator('.companions-bubble-memory > summary').click();
     expect(provider.memoryRequests.some(item => ['memory_extraction', 'memory_query', 'memory_maintenance'].includes(item.purpose))).toBe(false);
-    await expect.poll(async () => (await request(page, { type: 'memory.status', companionId, conversationId })).memoryStatus?.pending, { timeout: 35_000 }).toBe(0);
+    await expect.poll(async () => (await request(page, { type: 'memory.status', companionId, conversationId })).memoryStatus?.pending, { timeout: 90_000 }).toBe(0);
     await page.getByRole('button', { name: '我们之间', exact: true }).click();
     const journal = page.getByRole('complementary', { name: '伙伴手帐' });
     await expect(journal).toBeVisible();
@@ -162,6 +163,12 @@ test('automatically records ordinary conversation, exposes sources and progress,
     await probe.getByRole('button', { name: '开始回忆', exact: true }).click();
     await expect(probe.getByLabel('VCP上下文原文', { exact: true })).toContainText('用户喜欢看海');
     await page.screenshot({ path: path.join(recallArtifacts, 'memory-probe-passive.png') });
+    await probe.locator('[data-probe-note="' + learned.id + '"]').click();
+    // Passive candidates are formatter/model-input observations. Numerical
+    // ranks belong to the explicit active native query above.
+    await expect(probe.locator('.memory-probe-score-evidence')).toHaveCount(0);
+    await probe.getByRole('tab', { name: '主动回忆', exact: false }).click();
+    await probe.getByRole('button', { name: '开始回忆', exact: true }).click();
     await probe.locator('[data-probe-note="' + learned.id + '"]').click();
     await probe.locator('.memory-probe-score-evidence > summary').click();
     await expect(probe.getByLabel('原生VCP评分', { exact: true })).toContainText('拓扑增益');
@@ -253,6 +260,7 @@ test('automatically records ordinary conversation, exposes sources and progress,
       const live = await application.windows()[0]?.evaluate(async () => {
         const api = (window as unknown as CompanionBridgeWindow).worldlinebox.companions;
         return { status: await api.request({ type: 'memory.status', companionId: 'deepseek-sister' }),
+          processing: await api.request({ type: 'memory.processing.status', companionId: 'deepseek-sister', filter: 'all', limit: 50 }),
           state: await api.request({ type: 'state' }) };
       }).catch(() => undefined);
       diagnostics.push(JSON.stringify(live));

@@ -14,7 +14,7 @@ vi.mock('electron', () => ({ utilityProcess: { fork: vi.fn() } }));
 const note = (id: string, patch: Partial<CompanionMemory> = {}): CompanionMemory => ({
   id, companionId: 'owner', scopeId: 'source', content: `FACT_${id}`, tags: ['flower'], diaryName: 'journal',
   sourceConversationId: 'private', sourceSequence: 1, sources: [{ messageId: `source_${id}`, conversationId: 'private',
-    authorId: 'user', sequence: 1, revision: 1, checksum: `hash_${id}`, createdAt: '2026-10-23T00:00:00Z' }],
+    authorId: 'user', sequence: 1, revision: 1, checksum: createHash('sha256').update(id).digest('hex'), createdAt: '2026-10-23T00:00:00Z' }],
   occurredAt: '2026-10-23T12:00:00+08:00', createdAt: '2026-10-23T00:00:00Z', updatedAt: '2026-10-23T00:00:00Z',
   origin: 'companion', status: 'indexed', captureMethod: 'automatic', version: 1, ...patch,
 });
@@ -28,7 +28,7 @@ it.each([{ diaryName: 'missing' }, { tags: ['missing'] }, { from: '2027-01-01', 
   } finally { await f.service.close(); }
 });
 function fixture(notes: CompanionMemory[]) {
-  let corpus = notes, revision = 'stable';
+  let corpus = notes, revision = 'stable', revocationEpoch = 0;
   const scopes = new Map<string, VcpMemoryNote[]>();
   const client = {
     hasOpenScope: (scope: VcpMemoryScope) => scopes.has(scope.scopeId),
@@ -53,7 +53,12 @@ function fixture(notes: CompanionMemory[]) {
   };
   const request = vi.fn(async (command: CompanionStorageCommand) => {
     if (command.type === 'world.clock') return { ok: true, worldClock: { realNow: '2026-10-23T04:00:00Z', virtualNow: '2026-10-23T04:00:00Z', timeZone: 'Asia/Shanghai', mode: 'realtime', speed: 1, backlog: false } };
-    if (command.type === 'memory.snapshot') return { ok: true, memorySnapshot: { scopeId: 'original', revision, notes: corpus } };
+    if (command.type === 'memory.snapshot') return { ok: true, memorySnapshot: { scopeId: 'original', revision, revocationEpoch, notes: corpus } };
+    if (command.type === 'memory.lifecycle.state') return { ok: true, memoryLifecycleState: { revocationEpoch } };
+    if (command.type === 'memory.records.filter') return { ok: true, memories: corpus.filter(note => command.ids.includes(note.id)) };
+    if (command.type === 'memory.frozen.valid') return { ok: true, memoryFrozenValid: command.memories.every(expected => corpus.some(note => note.id === expected.id
+      && expected.sources.every(source => note.sources.some(actual => actual.messageId === source.id && actual.conversationId === source.conversationId
+        && actual.checksum === source.checksum && (source.revision === undefined || source.revision === actual.revision))))) };
     if (command.type === 'state') return { ok: true, state: { companions: [{ id: 'owner', name: 'Owner' }] } };
     throw new Error('Unexpected request: ' + command.type);
   });
@@ -61,7 +66,8 @@ function fixture(notes: CompanionMemory[]) {
   const service = new CompanionMemoryService({ request: request as never, runtime: controlledMemoryRuntime({ get, close: async () => undefined }),
     configFor: async () => ({ apiFormat: 'openai_chat', model: 'controlled-generation', apiKey: 'controlled-key', baseUrl: 'https://fixture.invalid' }), fetchFn: async () => { throw new Error('No network'); },
     changed: () => undefined, report: () => undefined, busy: () => false });
-  return { service, client, scopes, get, request, setCorpus: (notes: CompanionMemory[], nextRevision: string) => { corpus = notes; revision = nextRevision; } };
+  return { service, client, scopes, get, request, setRevocationEpoch: (next: number) => { revocationEpoch = next; },
+    setCorpus: (notes: CompanionMemory[], nextRevision: string) => { corpus = notes; revision = nextRevision; } };
 }
 
 describe('one physical corpus for memory filters, context and citation pages', () => {
@@ -188,7 +194,7 @@ describe('one physical corpus for memory filters, context and citation pages', (
       const previous = await f.service.search({ ...scope, query: 'facts', limit: 1 }, 'passive');
       const previousScope = f.client.replace.mock.calls[0]![0];
       const corrected = note('second', { content: 'CORRECTED_second', version: 2,
-        sources: [{ ...original[1]!.sources[0]!, revision: 2, checksum: 'corrected_source_hash' }] });
+        sources: [{ ...original[1]!.sources[0]!, revision: 2, checksum: createHash('sha256').update('corrected_source_hash').digest('hex') }] });
       const next = change === 'withdrawal' ? [original[0]!, original[2]!] : [original[0]!, corrected, original[2]!];
       f.setCorpus(next, `source_${change}`);
       expect(await f.service.contextValid(scope, previous.memoryContext!)).toBe(false);
@@ -202,7 +208,7 @@ describe('one physical corpus for memory filters, context and citation pages', (
       expect(current.memoryContext?.text).not.toContain('FACT_second');
       expect(current.memoryContext?.evidence?.dependencies).toEqual(next.map(note => ({ id: note.id, version: note.version })));
       if (change === 'revision') expect(current.memoryContext?.evidence?.references).toEqual(expect.arrayContaining([
-        expect.objectContaining({ id: 'second', version: 2, sources: [expect.objectContaining({ revision: 2, checksum: 'corrected_source_hash' })] }),
+        expect.objectContaining({ id: 'second', version: 2, sources: [expect.objectContaining({ revision: 2, checksum: createHash('sha256').update('corrected_source_hash').digest('hex') })] }),
       ]));
       expect(f.client.search).not.toHaveBeenCalled();
       await f.service.invalidate('owner');
@@ -218,15 +224,16 @@ describe('one physical corpus for memory filters, context and citation pages', (
       expect(result.memoryPage?.items).toEqual([]); expect(f.get).not.toHaveBeenCalled();
     } finally { await f.service.close(); }
   });
-  it('rebuilds a bounded filter lane when a new filter removes earlier notes and clears every lane on owner withdrawal', async () => {
+  it('replaces a bounded filter graph without invalidating detached candidates and clears it on owner withdrawal', async () => {
     const f = fixture([note('flower'), note('train', { tags: ['train'] })]);
     try {
       await f.service.search({ companionId: 'owner', conversationId: 'private', query: 'facts', tags: ['flower'] });
       const first = f.client.replace.mock.calls[0]![0];
       const train = await f.service.search({ companionId: 'owner', conversationId: 'private', query: 'facts', tags: ['train'] });
       expect(train.memoryContext?.text).toBe('FACT_train');
-      expect(f.client.replace.mock.calls[1]?.[0].scopeId).not.toBe(first.scopeId);
-      expect(f.client.purgeScope).toHaveBeenCalledWith({ scopeId: first.scopeId });
+      expect(f.client.replace.mock.calls[1]?.[0].scopeId).toBe(first.scopeId);
+      expect(f.client.replace.mock.calls[1]?.[1].map(note => note.id)).toEqual(['train']);
+      expect(f.client.purgeScope).not.toHaveBeenCalled();
       expect(f.scopes.size).toBe(1);
       await f.service.invalidate('owner'); expect(f.scopes.size).toBe(0);
     } finally { await f.service.close(); }
@@ -281,13 +288,32 @@ describe('one physical corpus for memory filters, context and citation pages', (
       expect(result.sourceRevision).toBe('stable');
     } finally { await f.service.close(); }
   });
-  it.each(['source', 'profile', 'clock'] as const)('rejects dream publication when the %s receipt changes during native work', async changed => {
+  it('keeps a fixed dream input while tags and unrelated notes advance the owner corpus', async () => {
+    const originalNote = note('dream'), f = fixture([originalNote]), original = f.client.dreamWave.getMockImplementation()!;
+    f.client.dreamWave.mockImplementation(async (scope, input) => {
+      f.setCorpus([note('dream', { tags: ['new_annotation'], version: 2 }), note('later')], 'changed_soft');
+      return original(scope, input);
+    });
+    try {
+      const result = await f.service.dreamWave({ companionId: 'owner', conversationId: 'private', now: '2026-10-23T12:00:00Z', clockDomain: 'world' });
+      expect(result.sourceRevision).toBe('stable');
+      expect(f.client.dreamWave.mock.calls[0]?.[1].notes).toEqual([{ id: 'dream', version: 1, eventTime: originalNote.sources[0]!.createdAt,
+        clockDomain: 'real', contentHash: createHash('sha256').update(originalNote.content).digest('hex') }]);
+      expect(f.client.replace.mock.calls[0]?.[1].map(note => note.id)).toEqual(['dream']);
+      expect(f.client.dreamWave).toHaveBeenCalledOnce();
+    } finally { await f.service.close(); }
+  });
+  it.each(['source', 'source_revision', 'withdrawal', 'profile', 'clock'] as const)('rejects dream publication when the %s receipt changes during native work', async changed => {
     const f = fixture([note('dream')]), original = f.client.dreamWave.getMockImplementation()!;
     f.client.dreamWave.mockImplementation(async (scope, input) => {
       const result = await original(scope, input);
-      if (changed === 'source') f.request.mockImplementation(async command => command.type === 'memory.snapshot'
-        ? { ok: true, memorySnapshot: { scopeId: 'original', revision: 'changed', notes: [note('dream', { version: 2 })] } }
-        : { ok: true, state: { companions: [{ id: 'owner', name: 'Owner' }] } } as never);
+      if (changed === 'source' || changed === 'source_revision') {
+        const corrected = note('dream');
+        corrected.sources[0]!.revision++;
+        if (changed === 'source') corrected.sources[0]!.checksum = createHash('sha256').update('corrected').digest('hex');
+        f.setCorpus([corrected], 'changed');
+      }
+      if (changed === 'withdrawal') f.setRevocationEpoch(1);
       if (changed === 'profile') f.get.mockResolvedValue({ client: f.client as unknown as VcpMemoryClient, profileKey: 'changed' });
       return changed === 'clock' ? { ...result, clockDomain: 'real' } : result;
     });

@@ -3053,8 +3053,9 @@ async function reopenLibrariesAfterFailedReplacement(
   }
 }
 
-function publishAssetChange(event: AssetChangeEvent): void {
+async function publishAssetChange(event: AssetChangeEvent): Promise<void> {
   const parsed = parseAssetChangeEvent(event);
+  await companionService?.assetsChanged(parsed.libraryId);
   // Asset changes can invalidate a cached source path (delete, relink, move,
   // or replacement). Artifact-only library changes use the separate
   // library.changed channel and do not evict the viewer's hot path.
@@ -3078,8 +3079,9 @@ function publishAssetChange(event: AssetChangeEvent): void {
   );
 }
 
-function publishLibraryChanged(event: LibraryChangedEvent): void {
+async function publishLibraryChanged(event: LibraryChangedEvent): Promise<void> {
   const parsed = parseLibraryChangedEvent(event);
+  await companionService?.assetsChanged(parsed.libraryId);
   // `library.changed` is also emitted for immutable derived-artifact writes.
   // Advancing the Main-side path-cache generation here races a thumbnail
   // response that is already resolving: the path lookup returns a valid new
@@ -4993,8 +4995,10 @@ async function startApplication(): Promise<void> {
       if (!workspace) throw new Error('请先为伙伴选择一个资产库。');
       await phase('open-library', () => ensureCompanionLibrary(workspace));
       if (applicationClosing) throw new Error('应用正在关闭。');
-      companionService = new CompanionService({
+      let workspaceCompanionService: CompanionService | undefined;
+      companionService = workspaceCompanionService = new CompanionService({
         onTiming: timing => logger?.info('companions.context.slow', 'Companion preparation or source validation exceeded 500 ms.', timing),
+        vcpMemoryVendorRoot: app.isPackaged ? path.join(process.resourcesPath, 'vcp-memory') : path.join(app.getAppPath(), 'vendor', 'vcp-memory'),
         purgeMemoryAssets: async owner => {
           if (!/^[A-Za-z0-9_-]{1,100}$/.test(owner) || !workerClient) throw new Error('伙伴资产库尚未就绪。');
           const roots = await workerClient.request({ type: 'linked-folder.list', libraryId: workspace.libraryId });
@@ -5007,10 +5011,21 @@ async function startApplication(): Promise<void> {
           }
         },
         memoryDeviceStatus: () => embeddingDevice().snapshot(),
-        learningAssets: companionLearningAssets({ memoryRoot: workspace.memoryRoot, request: command => {
+        learningAssets: companionLearningAssets({ memoryRoot: workspace.memoryRoot, storageRequest: command => {
+          if (!workspaceCompanionService) throw new Error('伙伴资产验证服务尚未就绪。');
+          return workspaceCompanionService.requestAssetValidation(command);
+        }, request: command => {
           if (!workerClient) throw new Error('资产服务尚未就绪。'); return workerClient.request(command);
         } }),
-        memoryRuntime: new CompanionVcpRuntime({ dataRoot: path.join(workspace.dataRoot, 'vcp'),
+        memoryRuntime: new CompanionVcpRuntime({
+          resolveOwnerCleanupStorage: async ownerId => {
+            if (!workspaceCompanionService) throw new Error('伙伴目录服务尚未就绪。');
+            return workspaceCompanionService.resolveOwnerCleanupStorage(ownerId);
+          },
+          resolveOwnerStorage: async ownerId => {
+            if (!workspaceCompanionService) throw new Error('伙伴目录服务尚未就绪。');
+            return workspaceCompanionService.resolveOwnerStorage(ownerId);
+          },
           vendorRoot: app.isPackaged ? path.join(process.resourcesPath, 'vcp-memory') : path.join(app.getAppPath(), 'vendor', 'vcp-memory'),
           workerPath: app.isPackaged ? path.join(process.resourcesPath, 'vcp-memory-host', 'worker.cjs') : path.join(app.getAppPath(), 'src', 'main', 'vcp-memory', 'worker.cjs'),
           resolveEmbedding: vcpEmbeddingConfiguration,
@@ -5020,9 +5035,11 @@ async function startApplication(): Promise<void> {
             vcpChatGateway ??= new VcpChatGateway();
             const route = await vcpChatGateway.registerOwnerRoute({ ownerId: input.ownerId,
               semanticProfile: { ownerId: input.ownerId, profileKey: input.profileKey, generation: COMPANION_TEXT_GENERATION_PROFILE },
-              credential: config.apiKey, generate: async (context, signal) => {
+              credential: config.apiKey, generate: async (context, signal, work) => {
+                await workspaceCompanionService?.validateAssetsForModel(input.ownerId);
                 const { generateCompanionText } = await import('./companions/model');
-                return generateCompanionText(context, config, signal,
+                return generateCompanionText(context, { ...config, ownerId: input.ownerId, workPriority: work?.priority ?? 'foreground',
+                  resolveAssetContext: (context, kind) => workspaceCompanionService!.prepareModelAssetContext(input.ownerId, context, kind, work?.nativePrompt) }, signal,
                   { fetchFn: (input, init) => net.fetch(input instanceof URL ? input.toString() : input, { ...init, credentials: 'omit' }), timeoutMs: 120000 });
               } });
             return { plugins: { chat: route.chat }, dispose: route.dispose };
@@ -5049,6 +5066,7 @@ async function startApplication(): Promise<void> {
     if (!parsed.success) return { ok: false, error: '伙伴资产库请求格式不正确。' };
     const command = parsed.data;
     const operation = workspaceTail.then(async () => {
+      if (command.type === 'companion.assets.read' || command.type === 'companion.assets.prompt.save') return (await ensureCompanionService()).manageCompanionAssets(command);
       if (command.type.startsWith('memory.learning.')) return (await ensureCompanionService()).manageLearningSources(command as CompanionLearningWorkspaceCommand);
       if (command.type.startsWith('memory.documents.')) {
         const started = performance.now();
@@ -6467,8 +6485,8 @@ async function startApplication(): Promise<void> {
   // Global user-scoped plugins have an application lifetime and must be set up
   // before recent-library restore, including when no library can be reopened.
   await pluginActivationCoordinator?.refreshGlobal();
-  workerClient.onAssetsChanged(publishAssetChange);
-  workerClient.onLibraryChanged(publishLibraryChanged);
+  workerClient.onAssetsChanged(event => { void publishAssetChange(event).catch(error => logger?.error('companions.assets.source-validation', error)); });
+  workerClient.onLibraryChanged(event => { void publishLibraryChanged(event).catch(error => logger?.error('companions.library.source-validation', error)); });
   workerClient.onProgress(publishProgress);
   workerClient.onAiProgress(publishAiProgress);
   workerClient.onAiAnalysisCompleted(publishAiCompleted);

@@ -35,7 +35,7 @@ it('uses actual owner sources/full memory bodies, enforces sequence/source filte
   await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve)); const port = (server.address() as { port: number }).port;
   let cold: ColdKnowledgeService | undefined;
   const runtime: CompanionMemoryRuntime = { get: async () => { throw Error('No hot model needed.'); }, close: async () => { await cold?.close(); },
-    getCold: async authorize => cold ??= new ColdKnowledgeService({ dataRoot: path.join(root,'cold'), vendorRoot: path.resolve('vendor/vcp-memory'), workerPath: path.resolve('src/main/vcp-memory/cold-worker.cjs'),
+    getCold: async (_scope, authorize) => cold ??= new ColdKnowledgeService({ dataRoot: path.join(root,'cold'), vendorRoot: path.resolve('vendor/vcp-memory'), workerPath: path.resolve('src/main/vcp-memory/cold-worker.cjs'),
       embedding: { baseUrl: `http://127.0.0.1:${port}`, model: 'fixture', modelSignature: 'fixture-space', apiKey: 'synthetic', dimension: 4 }, authorize, launch }) };
   const bridge = new CompanionKnowledgeService({ request: async command => store.request(command), runtime, blocked: () => blocked });
   try {
@@ -46,6 +46,9 @@ it('uses actual owner sources/full memory bodies, enforces sequence/source filte
     expect(receipt.indexed).toBe(true); expect(receipt.result?.sourceVersion).toBe(String(note.version));
     const read = await bridge.execute({ type: 'memory.knowledge', ...scope, operation: 'read', id: receipt.result!.id, version: receipt.result!.version });
     expect(read.result?.text).toBe(note.content); expect(read.result?.metadata?.sources).toEqual(note.sources);
+    store.request({ type: 'memory.organize', ...scope, ids: [note.id], tags: ['更新后的标签'] });
+    const annotated = await bridge.execute({ type: 'memory.knowledge', ...scope, operation: 'read', id: receipt.result!.id, version: receipt.result!.version });
+    expect(annotated.result?.text).toBe(note.content); expect(annotated.result?.sourceVersion).toBe(String(note.contentRevision));
     const count = inputs.length;
     const past = await bridge.execute({ type: 'memory.knowledge', ...scope, beforeSequence: source.sequence - 1, operation: 'search', query: 'canary' });
     expect(past.items).toEqual([]); expect(inputs).toHaveLength(count);
@@ -99,7 +102,7 @@ it('ingests complete granted real library assets and immediately rejects changed
     response.setHeader('content-type','application/json');response.end(JSON.stringify({data:body.input.map((_,index)=>({index,embedding:[1,0,0,0]}))}));});
   await new Promise<void>(resolve=>server.listen(0,'127.0.0.1',resolve));const port=(server.address() as {port:number}).port;
   let cold:ColdKnowledgeService|undefined;
-  const runtime:CompanionMemoryRuntime={get:async()=>{throw Error('No hot model.');},close:async()=>{await cold?.close();},getCold:async authorize=>cold??=new ColdKnowledgeService({dataRoot:path.join(root,'cold'),vendorRoot:path.resolve('vendor/vcp-memory'),workerPath:path.resolve('src/main/vcp-memory/cold-worker.cjs'),embedding:{baseUrl:`http://127.0.0.1:${port}`,model:'fixture',modelSignature:'fixture',apiKey:'synthetic',dimension:4},authorize,launch})};
+  const runtime:CompanionMemoryRuntime={get:async()=>{throw Error('No hot model.');},close:async()=>{await cold?.close();},getCold:async (_scope,authorize)=>cold??=new ColdKnowledgeService({dataRoot:path.join(root,'cold'),vendorRoot:path.resolve('vendor/vcp-memory'),workerPath:path.resolve('src/main/vcp-memory/cold-worker.cjs'),embedding:{baseUrl:`http://127.0.0.1:${port}`,model:'fixture',modelSignature:'fixture',apiKey:'synthetic',dimension:4},authorize,launch})};
   const bridge=new CompanionKnowledgeService({request:async command=>store.request(command),runtime,assets});
   try {
     const content='完整授权资料。\n'+'Long factual material sentence with evidence.\n'.repeat(4000)+'FULL_SOURCE_FINAL_TAIL_CANARY';

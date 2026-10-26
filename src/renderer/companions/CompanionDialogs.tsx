@@ -111,7 +111,7 @@ export function CompanionDialogs({ dialog, companions, request, onClose, onOpen,
         event.preventDefault();
         const companion: CompanionDraft = { ...draft, model: '', ...(connectionMode === 'independent' ? { llm: connection } : {}) };
         const credential = apiKey.trim() && connectionMode === 'independent' ? { apiKey: apiKey.trim() } : {};
-        void submit(initial ? { type: 'companion.update', id: initial.id, expectedRevision: initial.revision, companion, ...credential } : { type: 'companion.create', companion, ...credential });
+        void submit(initial ? { type: 'companion.update', id: initial.id, expectedRevision: initial.revision, expectedAssetProfileRevision: initial.assetProfileRevision, companion, ...credential } : { type: 'companion.create', companion, ...credential });
       }}>
         <label>名字<input data-dialog-initial-focus="true" required maxLength={60} value={draft.name} onChange={event => setDraft({ ...draft, name: event.target.value })} placeholder="她希望你如何称呼她？" /></label>
         <div className="companions-avatar-editor"><Avatar companion={draft} large /><div><button ref={avatarTrigger} type="button" className="companion-secondary-button" disabled={busy} onClick={() => void chooseAvatar()}>选择本地头像</button><button type="button" className="companions-avatar-reset" disabled={busy} onClick={() => setDraft({ ...draft, avatar: 'custom', avatarAttachmentId: undefined })}>恢复名字头像</button><p className="companions-subtle">选择一张图片，作为她在聊天中的头像。</p></div></div>

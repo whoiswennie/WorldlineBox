@@ -61,7 +61,9 @@ const validationReads = new Set([...rereadable, 'execution.sources', 'action.get
 // clocks or new experience receipts (as world.clock already does). None edits
 // an existing source, indexed note, execution readset, membership or grant.
 // Its observational polling must not discard a foreground history DAG memo.
-const derivedCatalogWrites = new Set(['document.catalog.touch', 'document.catalog.put', 'document.catalog.drop', 'document.catalog.finish']);
+const derivedCatalogWrites = new Set(['document.catalog.touch', 'document.catalog.put', 'document.catalog.drop', 'document.catalog.finish',
+  'memory.sources.outbox.owners', 'memory.sources.outbox.claim', 'memory.sources.outbox.complete', 'memory.sources.outbox.fail',
+  'companion.assets.initialized', 'companion.assets.mark-initialized', 'companion.assets.portrait.initialized', 'companion.assets.portrait.mark-initialized']);
 /** Anything not explicitly authority-neutral advances Main's validation generation.
  * This is only a request-local memo boundary, never a permanent proof epoch. */
 export function companionExecutionSourceReadOnly(command: CompanionStorageCommand): boolean {

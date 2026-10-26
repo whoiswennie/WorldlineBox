@@ -5,7 +5,6 @@ import type { CompanionStorageCommand, CompanionStorageResponse, SaveCompanionMe
 import type { CompanionStateProposal } from '../shared/companion-state';
 import type { CompanionConnection } from './store';
 import { CompanionSourceAccess, companionSourceChecksum, type CompanionSourceScope as Scope } from './source-access';
-import { retireFactMemory } from './memory-migration';
 import { initializeMemoryProcessingJournal, memoryProcessingStatus } from './memory-processing-store';
 import { CompanionCharacterDevelopmentStore } from './character-development-store';
 import { CompanionMemoryConsolidationStore } from './memory-consolidation-store';
@@ -15,14 +14,20 @@ import { initializeTopicParticipationReceipts, topicParticipationMemoryContent, 
 import { companionAutomaticConsolidationHasNovelty } from '../shared/companion-memory-novelty';
 import { companionMemoryDateRange } from '../shared/companion-memory-time';
 import { companionMessageFictionalLineage } from './fictional-source';
+import { CompanionMemoryLedger } from './memory-ledger';
+import { CompanionMemoryEpisodes, MEMORY_CAPTURE_BATCH_SIZE } from './memory-episodes';
+import { CompanionMemoryProcedureStore } from './memory-procedure-store';
+import { unverifiedCompanionMemoryProcedure, type CompanionMemoryProcedureValidation } from '../shared/companion-procedure';
+import { CompanionMemorySourceOutboxStore } from './memory-source-outbox';
 type Row = Record<string, string | number | null>;
 type HostClassification = { consolidation?: true | 'source_version_graph'; automaticConsolidation?: true; sleepReflection?: true;
-  sleepWorldJobId?: string; worldJobId?: string; sleepEpisodeId?: string };
+  sleepWorldJobId?: string; worldJobId?: string; sleepEpisodeId?: string; maintenanceMode?: 'sleep' | 'background'; maintenanceSessionId?: string;
+  dreamMode?: 'sleep_dream' | 'rehearsal_dream'; captureEpisodeId?: string };
 /** Host-only, body-free authority for one fresh extraction of a retired derivative. */
 type CaptureReconsideration = { sourceRevision: number; sourceChecksum: string; invalidNotes: Array<{ id: string; version: number }>;
   retiredNotes?: Array<{ id: string; version: number }>;
   causes: string[]; blockedLeaseToken?: string };
-const hostClassificationKeys = ['consolidation', 'automaticConsolidation', 'sleepReflection', 'sleepWorldJobId', 'worldJobId', 'sleepEpisodeId'] as const;
+const hostClassificationKeys = ['consolidation', 'automaticConsolidation', 'sleepReflection', 'sleepWorldJobId', 'worldJobId', 'sleepEpisodeId', 'maintenanceMode', 'maintenanceSessionId', 'dreamMode', 'captureEpisodeId'] as const;
 const row = (value: unknown) => value as Row;
 const rows = (value: unknown[]) => value.map(row);
 const json = <T>(value: unknown) => JSON.parse(String(value)) as T;
@@ -68,27 +73,63 @@ export class CompanionMemoryStore {
     }
     private readonly invalidatedOwners = new Set<string>();
     private readonly invalidatedScopes = new Set<string>();
+    private readonly changedOwners = new Set<string>();
     invalidateOwner(id: string): void {
         if (this.invalidatedOwners.has(id)) return;
         this.invalidatedOwners.add(id);
+        this.ledger.change(id, 'revoke');
         this.db.prepare('INSERT INTO vcp_memory_management_epochs VALUES(?,1) ON CONFLICT(companion_id) DO UPDATE SET revision=revision+1').run(id);
         for (const scope of rows(this.db.prepare('SELECT scope_id FROM vcp_memory_scopes WHERE companion_id=?').all(id))) this.invalidatedScopes.add(String(scope.scope_id));
     }
     takeInvalidatedOwners(): string[] { const ids = [...this.invalidatedOwners]; this.invalidatedOwners.clear(); return ids; }
     takeInvalidatedScopes(): string[] { const ids = [...this.invalidatedScopes]; this.invalidatedScopes.clear(); return ids; }
+    takeChangedOwners(): string[] { const ids = [...this.changedOwners]; this.changedOwners.clear(); return ids; }
+    takeSourceOutboxOwners(): string[] { return this.sourceOutbox.takeChangedOwners(); }
+    lifecycleState(companionId: string) {
+        const state = this.ledger.state(companionId), next = this.episodes.nextAt(companionId);
+        return { ...state, ...(next !== undefined ? { nextCaptureAt: new Date(next).toISOString() } : {}) };
+    }
+    lifecycleChanges(companionId: string, afterSequence: number, limit: number) { return this.ledger.changes(companionId, afterSequence, limit); }
+    private readRevision(scope: Scope, id: string, contentRevision: number, visited = new Set<string>()): CompanionMemory {
+        this.sources.requireScope(scope);
+        const key = id + ':' + contentRevision;
+        if (visited.has(key) || visited.size >= 10_000) throw new Error('历史记忆依赖无法核验。');
+        visited.add(key);
+        const revision = this.ledger.readBody(scope.companionId, id, contentRevision);
+        if (!revision || revision.memory.sources.some(source => this.fictionalSource(source.messageId))
+          || !this.sources.frozenMemoryValid(scope, { id, sources: revision.memory.sources.map(source => ({ id: source.messageId, conversationId: source.conversationId, checksum: source.checksum })) }))
+            throw new Error('历史记忆已遗忘、来源撤回或不属于当前伙伴。');
+        for (const dependency of revision.dependencies) this.readRevision(scope, dependency.id, dependency.contentRevision, new Set(visited));
+        return revision.memory;
+    }
     readonly sources: CompanionSourceAccess;
     private readonly development: CompanionCharacterDevelopmentStore;
     private readonly consolidation: CompanionMemoryConsolidationStore;
+    private readonly ledger: CompanionMemoryLedger;
+    private readonly episodes: CompanionMemoryEpisodes;
+    private readonly procedures: CompanionMemoryProcedureStore;
+    private readonly sourceOutbox: CompanionMemorySourceOutboxStore;
     constructor(private readonly db: CompanionConnection, private readonly getMessage: (id: string) => CompanionMessage, private readonly applyState?: (scope: Scope, proposal: CompanionStateProposal) => void, private readonly observeNote?: (note: CompanionMemory) => void, private readonly withdrawStateSources?: (companionId: string, sourceIds: string[]) => void,
       private readonly applyIntegration?: (scope: Scope, input: CompanionMemoryStateIntegration) => void,
       private readonly withdrawStateMemories?: (companionId: string, versions: Array<{ id: string; version: number }>) => void,
       private readonly memoryTimeZone: () => string = () => Intl.DateTimeFormat().resolvedOptions().timeZone) {
+        this.ledger = new CompanionMemoryLedger(db);
+        this.episodes = new CompanionMemoryEpisodes(db);
         this.sources = new CompanionSourceAccess(db, getMessage, (owner, id, version, scope) => {
-          try { const note = this.load(id); return note.version === version && this.visible(scope ?? this.sources.ownerScope(owner), note); } catch { return false; }
-        }); this.development = new CompanionCharacterDevelopmentStore(db, (scope, note) => this.visible(scope, note));
+          try { const note = this.load(id); return note.companionId === owner && (note.version === version || this.ledger.versionRevision(id, version) === note.contentRevision)
+            && this.visible(scope ?? this.sources.ownerScope(owner), note); } catch { return false; }
+        }, (owner, ids) => { this.sourceOutbox.retract(owner, ids); this.refreshProcedures(owner, ids); }); this.development = new CompanionCharacterDevelopmentStore(db, (scope, note) => this.visible(scope, note));
+        this.sourceOutbox = new CompanionMemorySourceOutboxStore(db, (owner, id) => {
+          const source = this.sources.filter(this.sources.ownerScope(owner), [id])[0];
+          if (!source) return;
+          const current = this.db.prepare('SELECT * FROM messages WHERE id=?').get(id);
+          return current ? { ...this.sources.reference(row(current)), content: source.content } : undefined;
+        });
+        this.procedures = new CompanionMemoryProcedureStore(db, { load: (owner, id, version) => this.capturedMemory(owner, id, version),
+          visibleSources: (scope, ids) => this.sourcesFilter(scope, ids) });
         this.consolidation = new CompanionMemoryConsolidationStore(db, {
           load: id => this.load(id), valid: note => this.visible(this.sources.ownerScope(note.companionId), note),
-          persist: note => this.persist(note), enqueue: (note, operation) => this.enqueue(note, operation), invalidate: owner => this.invalidateOwner(owner),
+          persist: note => this.persist(note), enqueue: (note, operation) => this.enqueue(note, operation), invalidate: owner => this.changedOwners.add(owner),
           withdraw: id => this.withdrawNote(id, 'invalid'),
           record: (command, automatic) => this.recordJournal(command, command.candidate, undefined, 'automatic', command.expectedProhibitionRevision,
             false, { consolidation: 'source_version_graph', ...automatic }),
@@ -108,12 +149,11 @@ export class CompanionMemoryStore {
       CREATE INDEX IF NOT EXISTS vcp_note_source_message ON vcp_note_sources(message_id,note_id);
       CREATE TABLE IF NOT EXISTS vcp_note_source_history(note_id TEXT NOT NULL REFERENCES vcp_memory_notes(id) ON DELETE CASCADE,message_id TEXT NOT NULL REFERENCES messages(id),PRIMARY KEY(note_id,message_id));
       CREATE INDEX IF NOT EXISTS vcp_note_history_message ON vcp_note_source_history(message_id,note_id);
-      INSERT OR IGNORE INTO vcp_note_source_history SELECT note_id,message_id FROM vcp_note_sources;
       CREATE TABLE IF NOT EXISTS vcp_note_dependencies(note_id TEXT NOT NULL REFERENCES vcp_memory_notes(id) ON DELETE CASCADE,source_note_id TEXT NOT NULL REFERENCES vcp_memory_notes(id),version INTEGER NOT NULL,PRIMARY KEY(note_id,source_note_id));
       CREATE INDEX IF NOT EXISTS vcp_note_dependency_source ON vcp_note_dependencies(source_note_id,note_id);
-      CREATE TABLE IF NOT EXISTS vcp_capture_jobs(ordinal INTEGER PRIMARY KEY AUTOINCREMENT,id TEXT NOT NULL UNIQUE,companion_id TEXT NOT NULL,conversation_id TEXT NOT NULL,message_id TEXT NOT NULL REFERENCES messages(id),source_sequence INTEGER NOT NULL,through_sequence INTEGER NOT NULL,source_checksum TEXT NOT NULL,source_revision INTEGER NOT NULL,status TEXT NOT NULL DEFAULT 'pending',attempts INTEGER NOT NULL DEFAULT 0,lease_token TEXT,lease_until INTEGER,next_attempt INTEGER NOT NULL DEFAULT 0,error TEXT,UNIQUE(companion_id,message_id,source_revision,source_checksum));
+      CREATE TABLE IF NOT EXISTS vcp_capture_jobs(ordinal INTEGER PRIMARY KEY AUTOINCREMENT,id TEXT NOT NULL UNIQUE,companion_id TEXT NOT NULL,conversation_id TEXT NOT NULL,message_id TEXT NOT NULL REFERENCES messages(id),source_sequence INTEGER NOT NULL,through_sequence INTEGER NOT NULL,source_checksum TEXT NOT NULL,source_revision INTEGER NOT NULL,status TEXT NOT NULL DEFAULT 'pending',attempts INTEGER NOT NULL DEFAULT 0,lease_token TEXT,lease_until INTEGER,next_attempt INTEGER NOT NULL DEFAULT 0,error TEXT,completed_batch_id TEXT,output_note_versions TEXT,created_at TEXT,updated_at TEXT,UNIQUE(companion_id,message_id,source_revision,source_checksum));
       CREATE INDEX IF NOT EXISTS vcp_capture_claim ON vcp_capture_jobs(status,next_attempt,ordinal);
-      CREATE TABLE IF NOT EXISTS vcp_memory_outbox(ordinal INTEGER PRIMARY KEY AUTOINCREMENT,id TEXT NOT NULL UNIQUE,companion_id TEXT NOT NULL,scope_id TEXT NOT NULL,note_id TEXT NOT NULL,note_version INTEGER NOT NULL,operation TEXT NOT NULL,data TEXT NOT NULL,status TEXT NOT NULL DEFAULT 'pending',attempts INTEGER NOT NULL DEFAULT 0,lease_token TEXT,lease_until INTEGER,next_attempt INTEGER NOT NULL DEFAULT 0,error TEXT,UNIQUE(note_id,note_version,operation));
+      CREATE TABLE IF NOT EXISTS vcp_memory_outbox(ordinal INTEGER PRIMARY KEY AUTOINCREMENT,id TEXT NOT NULL UNIQUE,companion_id TEXT NOT NULL,scope_id TEXT NOT NULL,note_id TEXT NOT NULL,note_version INTEGER NOT NULL,operation TEXT NOT NULL,data TEXT NOT NULL,status TEXT NOT NULL DEFAULT 'pending',attempts INTEGER NOT NULL DEFAULT 0,lease_token TEXT,lease_until INTEGER,next_attempt INTEGER NOT NULL DEFAULT 0,error TEXT,created_at TEXT,updated_at TEXT,UNIQUE(note_id,note_version,operation));
       CREATE INDEX IF NOT EXISTS vcp_memory_outbox_claim ON vcp_memory_outbox(status,next_attempt,ordinal);
       CREATE INDEX IF NOT EXISTS vcp_memory_outbox_owner_ordinal ON vcp_memory_outbox(companion_id,ordinal);
       CREATE INDEX IF NOT EXISTS vcp_note_library_key ON vcp_memory_notes(companion_id,id);
@@ -141,18 +181,15 @@ export class CompanionMemoryStore {
           ON CONFLICT(companion_id) DO UPDATE SET revision=revision+1;
       END;
       CREATE TABLE IF NOT EXISTS vcp_operation_receipts(id TEXT PRIMARY KEY,companion_id TEXT NOT NULL,conversation_id TEXT NOT NULL,payload_hash TEXT NOT NULL,response TEXT NOT NULL);
-      INSERT OR IGNORE INTO metadata(key,value) VALUES('vcp-capture-backfill-through','0');
-      INSERT OR IGNORE INTO metadata(key,value) VALUES('vcp-peer-episode-backfill-v2-through','0');
-      INSERT OR IGNORE INTO metadata(key,value) SELECT 'vcp-peer-episode-backfill-v2-target',CAST(COALESCE(MAX(ordinal),0) AS TEXT) FROM vcp_capture_jobs;
-      INSERT OR IGNORE INTO metadata(key,value) SELECT 'vcp-capture-backfill-target',CAST(COALESCE(MAX(sequence),0) AS TEXT) FROM messages;
     `);
-        const captureColumns = this.db.prepare('PRAGMA table_info(vcp_capture_jobs)').all() as Array<{ name: string }>;
-        for (const name of ['completed_batch_id', 'output_note_versions']) if (!captureColumns.some(column => column.name === name)) this.db.exec(`ALTER TABLE vcp_capture_jobs ADD COLUMN ${name} TEXT`);
+        this.ledger.initialize();
+        this.procedures.initialize();
+        this.sourceOutbox.initialize();
+        this.episodes.initialize();
         if (!this.db.prepare("SELECT 1 FROM metadata WHERE key='vcp-management-totals-ready'").get()) this.db.transaction(() => {
             this.db.prepare("INSERT OR REPLACE INTO vcp_memory_management_totals SELECT companion_id,COUNT(*) FROM vcp_memory_notes WHERE json_extract(data,'$.status') IN('queued','indexed') GROUP BY companion_id").run();
             this.db.prepare("INSERT OR REPLACE INTO metadata VALUES('vcp-management-totals-ready','1')").run();
         }).immediate();
-        retireFactMemory(this.db);
         this.development.initialize();
         initializeMemoryProcessingJournal(this.db, ['capture', 'index']);
     }
@@ -168,15 +205,40 @@ export class CompanionMemoryStore {
         return json<CompanionMemory>(row(found).data);
     }
     private persist(note: CompanionMemory, identity?: string): void {
+        const previousValue = this.db.prepare('SELECT data FROM vcp_memory_notes WHERE id=?').get(note.id);
+        const previous = previousValue ? json<CompanionMemory>(row(previousValue).data) : undefined;
+        const kind = this.ledger.stamp(note, previous);
         if (identity)
             this.db.prepare('INSERT INTO vcp_memory_notes VALUES(?,?,?,?,?,?)').run(note.id, note.companionId, note.sourceConversationId, note.scopeId, identity, JSON.stringify(note));
         else
             this.db.prepare('UPDATE vcp_memory_notes SET data=? WHERE id=?').run(JSON.stringify(note), note.id);
+        this.ledger.recordVersion(note);
+        this.sourceOutbox.publish(note);
         this.db.prepare('DELETE FROM vcp_note_sources WHERE note_id=?').run(note.id);
         for (const source of note.sources) {
             this.db.prepare('INSERT INTO vcp_note_sources VALUES(?,?,?,?)').run(note.id, source.messageId, source.revision, source.checksum);
             this.db.prepare('INSERT OR IGNORE INTO vcp_note_source_history VALUES(?,?)').run(note.id, source.messageId);
         }
+        if (kind) { this.ledger.change(note.companionId, kind, note); this.changedOwners.add(note.companionId); }
+    }
+    /** Captured CAS versions survive annotation-only revisions; content changes
+     * still require a fresh explicit read before validating a new practice. */
+    capturedMemory(owner: string, id: string, version: number): CompanionMemory | undefined {
+        try { const note = this.load(id); return note.companionId === owner && (note.version === version || this.ledger.versionRevision(id, version) === note.contentRevision)
+          && this.visible(this.sources.ownerScope(owner), note) ? note : undefined; } catch { return undefined; }
+    }
+    private project(note: CompanionMemory, scope: Scope): CompanionMemory {
+        return note.procedure ? { ...note, procedure: { ...note.procedure, validation: this.procedures.validation(note, scope) } } : note;
+    }
+    private annotateProcedure(id: string, contentRevision: number, validation: CompanionMemoryProcedureValidation): CompanionMemory | undefined {
+        const note = this.load(id);
+        if (!note.procedure || note.contentRevision !== contentRevision || !this.visible(this.sources.ownerScope(note.companionId), note)) return;
+        if (JSON.stringify(note.procedure.validation) === JSON.stringify(validation)) return note;
+        note.procedure = { ...note.procedure, validation }; note.version++; note.updatedAt = stamp(); note.status = 'queued';
+        this.persist(note); this.enqueue(note, 'remember'); return note;
+    }
+    private refreshProcedures(owner: string, sourceIds: readonly string[]): void {
+        for (const changed of this.procedures.refresh(owner, sourceIds)) this.annotateProcedure(changed.noteId, changed.contentRevision, changed.validation);
     }
     private enqueue(note: CompanionMemory, operation: 'remember' | 'forget'): void {
         if (operation === 'remember') {
@@ -201,13 +263,13 @@ export class CompanionMemoryStore {
         this.sources.requireScope(scope);
         visited.add(note.id);
         if (note.companionId !== scope.companionId || ['forgotten', 'invalid'].includes(note.status) || !note.sources.length
-            || note.sources.some(source => this.fictionalSource(source.messageId)) || this.sources.captureHeld(note.companionId, note.sourceConversationId))
+            || note.sources.some(source => this.fictionalSource(source.messageId)))
             return false;
         if (this.sources.blockedTag({ ...scope, conversationId: note.sourceConversationId }, note.tags, note.sourceSequence))
             return false;
         if (!note.sources.every(reference => { const source = this.db.prepare('SELECT * FROM messages WHERE id=?').get(reference.messageId); return source && Number(row(source).revision ?? 1) === reference.revision && companionSourceChecksum(String(row(source).content)) === reference.checksum && this.sources.visible(scope, row(source)); }))
             return false;
-        return rows(this.db.prepare('SELECT source_note_id,version FROM vcp_note_dependencies WHERE note_id=?').all(note.id)).every(dependency => { const source = this.load(String(dependency.source_note_id)); return source.version === Number(dependency.version) && this.visible(scope, source, new Set(visited)); });
+        return rows(this.db.prepare('SELECT source_note_id,version FROM vcp_note_dependencies WHERE note_id=?').all(note.id)).every(dependency => { const source = this.load(String(dependency.source_note_id)); return source.contentRevision === Number(dependency.version) && this.visible(scope, source, new Set(visited)); });
     }
     sourcesFilter(scope: Scope, ids: string[]): CompanionMessage[] { return this.sources.filter(scope, ids); }
     observeSource(messageId: string, companionId: string): void { this.sources.observe(messageId, companionId); }
@@ -222,7 +284,7 @@ export class CompanionMemoryStore {
         if(!receipt||receipt.trust!=='actual_participation_only'||proof.companionId!==companionId||proof.forConversationId!==worldRoom||source.conversation_id!==worldRoom||source.author_id!=='system'||source.kind!=='notice'||source.status!=='sent'
           ||proof.checksum!==companionSourceChecksum(String(source.content))||JSON.stringify(payload.items?.[0])!==JSON.stringify(receipt)) throw Error('话题参与体验与实际事件不一致。');
         const scope={companionId,conversationId:worldRoom},tags=topicParticipationMemoryTags(receipt);
-        if(this.sources.captureHeld(companionId,worldRoom)||this.sources.blockedTag(scope,tags,Number(source.sequence))||!this.sources.visible(scope,source)) return;
+        if(this.sources.blockedTag(scope,tags,Number(source.sequence))||!this.sources.visible(scope,source)) return;
         return this.record(scope,{content:topicParticipationMemoryContent(receipt),tags,diaryName:'活动体验',occurredAt:receipt.occurredAt,
           sourceMessageIds:[messageId],evidence:[{sourceMessageId:messageId,quote:String(source.content)}],metadata:{topicParticipation:receipt.id,topicId:receipt.topicId,participationAction:receipt.action,trust:receipt.trust}});
     }
@@ -245,11 +307,12 @@ export class CompanionMemoryStore {
                 || event.kind === 'scene_enter' && event.targetId && event.targetId !== companionId)
             || JSON.stringify(content.items?.[0]) !== String(row(saved!).data)) throw new Error('实际生活经历与世界已发生事件不一致。');
         const scope = { companionId, conversationId: worldRoom };
-        if (this.sources.captureHeld(companionId, worldRoom) || !this.sources.visible(scope, source)) return;
+        if (!this.sources.visible(scope, source)) return;
         this.db.prepare('INSERT OR IGNORE INTO vcp_capture_jobs(id,companion_id,conversation_id,message_id,source_sequence,through_sequence,source_checksum,source_revision) VALUES(?,?,?,?,?,?,?,?)')
             .run(randomUUID(), companionId, worldRoom, messageId, source.sequence, source.sequence, receipt.checksum, source.revision ?? 1);
+        this.observeCapture(companionId, worldRoom, messageId, Date.now());
     }
-    enqueueMessage(messageId: string, finalizedLoop = false, historical = false): void {
+    enqueueMessage(messageId: string, finalizedLoop = false): void {
         if (this.fictionalSource(messageId) || this.deletedTopicSource(messageId)) return;
         if (this.sources.managementSource(messageId)) return;
         if (this.db.prepare('SELECT 1 FROM metadata WHERE key=?').get('memory-world-observation/' + messageId))
@@ -264,65 +327,32 @@ export class CompanionMemoryStore {
         if (Number(source.revision ?? 1) > 1) for (const observer of rows(this.db.prepare('SELECT companion_id FROM vcp_source_observers WHERE message_id=?').all(messageId))) {
             const owner = String(observer.companion_id);
             this.invalidateOwner(owner); this.withdrawStateSources?.(owner, [messageId]);
+            this.sourceOutbox.changedSource(owner, messageId);
+            this.refreshProcedures(owner, [messageId]);
         }
         this.db.prepare("UPDATE vcp_capture_jobs SET status='done',lease_token=NULL,lease_until=NULL WHERE message_id=? AND (source_checksum!=? OR source_revision!=?)").run(messageId, checksum, source.revision ?? 1);
         for (const reference of rows(this.db.prepare('SELECT note_id,checksum,revision FROM vcp_note_sources WHERE message_id=?').all(messageId)))
             if (reference.checksum !== checksum || Number(reference.revision) !== Number(source.revision ?? 1))
                 this.withdrawNote(String(reference.note_id), 'invalid');
-        const room = row(this.db.prepare('SELECT * FROM conversations WHERE id=?').get(source.conversation_id));
         const publication = this.db.prepare('SELECT value FROM metadata WHERE key=?').get('message-published-after/' + messageId);
         for (const member of rows(this.db.prepare('SELECT companion_id FROM conversation_members WHERE conversation_id=?').all(source.conversation_id))) {
             const owner = String(member.companion_id);
-            // History cannot assert that today's group member witnessed an earlier message.
-            if (historical && room.kind !== 'private' && !this.db.prepare('SELECT 1 FROM vcp_source_observers WHERE message_id=? AND companion_id=?').get(messageId, owner))
-                continue;
             if (this.db.prepare("SELECT 1 FROM companion_reset_jobs WHERE companion_id=? AND status!='completed'").get(owner))
                 continue;
             const boundary = this.db.prepare('SELECT through_sequence FROM companion_reset_boundaries WHERE companion_id=?').get(owner);
             if (boundary && Number(source.sequence) <= Number(row(boundary).through_sequence))
                 continue;
             this.sources.observe(messageId, owner);
-            if (this.sources.captureHeld(owner, String(source.conversation_id))) continue;
             if (this.sources.forgotten({ companionId: owner, conversationId: String(source.conversation_id) }, source))
                 continue;
             this.db.prepare('INSERT OR IGNORE INTO vcp_capture_jobs(id,companion_id,conversation_id,message_id,source_sequence,through_sequence,source_checksum,source_revision) VALUES(?,?,?,?,?,?,?,?)').run(randomUUID(), owner, source.conversation_id, messageId, source.sequence, publication ? Math.max(Number(source.sequence), Number(row(publication).value) + 1) : source.sequence, checksum, source.revision ?? 1);
+            this.observeCapture(owner, String(source.conversation_id), messageId, Date.now());
         }
     }
-    backfill(limit = 200): boolean {
-        return this.db.transaction(() => {
-            const through = Number(row(this.db.prepare("SELECT value FROM metadata WHERE key='vcp-capture-backfill-through'").get()).value), target = Number(row(this.db.prepare("SELECT value FROM metadata WHERE key='vcp-capture-backfill-target'").get()).value);
-            const batch = rows(this.db.prepare('SELECT id,sequence FROM messages WHERE sequence>? AND sequence<=? ORDER BY sequence LIMIT ?').all(through, target, limit));
-            for (const source of batch)
-                this.enqueueMessage(String(source.id), false, true);
-            const next = batch.length === limit ? Number(batch.at(-1)!.sequence) : target;
-            this.db.prepare("UPDATE metadata SET value=? WHERE key='vcp-capture-backfill-through'").run(String(next));
-            return this.backfillPeerEpisodes(limit) && next >= target;
-        }).immediate();
-    }
-    /** Reconsider previously skipped peer episodes once after the capture-policy
-     * upgrade. Existing observer receipts, source versions and forget barriers
-     * remain authoritative; this never invents historical room participation. */
-    private backfillPeerEpisodes(limit: number): boolean {
-        const through = Number(row(this.db.prepare("SELECT value FROM metadata WHERE key='vcp-peer-episode-backfill-v2-through'").get()).value);
-        const target = Number(row(this.db.prepare("SELECT value FROM metadata WHERE key='vcp-peer-episode-backfill-v2-target'").get()).value);
-        const batch = rows(this.db.prepare(`SELECT j.* FROM vcp_capture_jobs j JOIN companion_social_conversations s ON s.id=j.conversation_id
-          WHERE j.ordinal>? AND j.ordinal<=? ORDER BY j.ordinal LIMIT ?`).all(through, target, limit));
-        for (const job of batch) {
-            const oldScopeFailure = job.status === 'failed' && /新日记不能关联其他来源域|整理来源不属于同一可见域/u.test(String(job.error ?? ''));
-            if (!oldScopeFailure && (job.status !== 'done' || job.output_note_versions !== '[]')) continue;
-            // Historical note dependencies include forgotten/invalid notes and
-            // prevent re-creating a deliberately withdrawn episode.
-            if (this.db.prepare('SELECT 1 FROM vcp_note_source_history h JOIN vcp_memory_notes n ON n.id=h.note_id WHERE h.message_id=? AND n.companion_id=? LIMIT 1').get(job.message_id, job.companion_id)) continue;
-            const found = this.db.prepare('SELECT * FROM messages WHERE id=?').get(job.message_id);
-            if (!found) continue;
-            const source = row(found), scope = { companionId: String(job.companion_id), conversationId: String(job.conversation_id) };
-            if (Number(source.revision ?? 1) !== Number(job.source_revision) || companionSourceChecksum(String(source.content)) !== job.source_checksum) continue;
-            try { if (!this.sources.visible(scope, source)) continue; } catch { continue; }
-            this.db.prepare("UPDATE vcp_capture_jobs SET status='pending',attempts=0,next_attempt=0,error=NULL,lease_token=NULL,lease_until=NULL,completed_batch_id=NULL,output_note_versions=NULL WHERE id=? AND status IN('done','failed')").run(job.id);
-        }
-        const next = batch.length ? Number(batch.at(-1)!.ordinal) : target;
-        this.db.prepare("UPDATE metadata SET value=? WHERE key='vcp-peer-episode-backfill-v2-through'").run(String(next));
-        return next >= target;
+    private observeCapture(owner: string, room: string, messageId: string, at?: number): void {
+        const source = this.db.prepare(`SELECT id,companion_id,conversation_id,message_id FROM vcp_capture_jobs WHERE companion_id=? AND conversation_id=? AND message_id=?
+          ORDER BY ordinal DESC LIMIT 1`).get(owner, room, messageId) as { id: string; companion_id: string; conversation_id: string; message_id: string } | undefined;
+        if (source) this.episodes.observe(source, at);
     }
     private reconsiderationKey(job: Row): string { return 'vcp-capture-reconsideration/' + job.companion_id + '/' + job.id; }
     private reconsideration(job: Row): CaptureReconsideration | undefined {
@@ -351,8 +381,7 @@ export class CompanionMemoryStore {
         // in which the ordinary capture pipeline could execute that job.
         if (!this.db.prepare(`SELECT 1 FROM companions p JOIN conversation_members m ON m.companion_id=p.id
           JOIN conversations c ON c.id=m.conversation_id WHERE p.id=? AND p.deleted_at IS NULL AND c.id=?`).get(job.companion_id, job.conversation_id)) return false;
-        return !this.sources.captureHeld(String(job.companion_id), String(job.conversation_id))
-          && !this.sources.captureHeld(String(job.companion_id), this.sources.logicalDomain(String(job.message_id)));
+        return true;
     }
     private liveReconsideration(job: Row, intent: CaptureReconsideration): boolean {
         return this.reconsiderationSourceValid(job) && (intent.invalidNotes.some(reference => {
@@ -419,7 +448,7 @@ export class CompanionMemoryStore {
             this.db.prepare('DELETE FROM metadata WHERE key=?').run(entry.key);
         }
     }
-    claim(companionId?: string, leaseMs = 120000): CompanionMemoryJob | undefined {
+    claim(companionId?: string, leaseMs = 120000, force = false): CompanionMemoryJob | undefined {
         return this.db.transaction(() => {
             const now = Date.now();
             this.retireFictionalCaptureJobs();
@@ -428,35 +457,52 @@ export class CompanionMemoryStore {
                 if (intent && (intent.blockedLeaseToken === job.lease_token || !this.liveReconsideration(job, intent))) this.releaseSupersededCapture(String(job.lease_token));
             }
             this.db.prepare("UPDATE vcp_capture_jobs SET status='pending',lease_token=NULL,lease_until=NULL WHERE status='running' AND lease_until<=?").run(now);
-            const candidates = this.db.prepare(`SELECT j.* FROM vcp_capture_jobs j JOIN companions c ON c.id=j.companion_id WHERE j.status IN('pending','failed') AND j.next_attempt<=? AND j.attempts<8 AND c.deleted_at IS NULL AND json_extract(c.data,'$.active')=1 AND NOT EXISTS(SELECT 1 FROM companion_reset_jobs r WHERE r.companion_id=j.companion_id AND r.status!='completed') AND NOT EXISTS(SELECT 1 FROM vcp_source_policy_holds h WHERE h.companion_id=j.companion_id AND h.conversation_id IN(j.conversation_id,'*') AND h.released_at IS NULL) ${companionId ? 'AND j.companion_id=?' : ''} AND j.ordinal>? ORDER BY j.ordinal LIMIT 8`);
+            const candidates = this.db.prepare(`SELECT j.* FROM vcp_capture_jobs j JOIN companions c ON c.id=j.companion_id WHERE j.status IN('pending','failed') AND j.next_attempt<=? AND j.attempts<8 AND c.deleted_at IS NULL AND json_extract(c.data,'$.active')=1 AND NOT EXISTS(SELECT 1 FROM companion_reset_jobs r WHERE r.companion_id=j.companion_id AND r.status!='completed') ${companionId ? 'AND j.companion_id=?' : ''} AND j.ordinal>? ORDER BY j.ordinal LIMIT 8`);
             let found: Row | undefined, after = 0;
             for (;;) {
                 const page = rows(candidates.all(now, ...(companionId ? [companionId] : []), after));
-                found = page.find(job => this.captureReady(job));
+                found = page.find(job => {
+                    if (!this.captureReady(job)) return false;
+                    const coverage = this.ledger.coverage(String(job.companion_id), { message_id: String(job.message_id), source_revision: Number(job.source_revision), source_checksum: String(job.source_checksum) });
+                    if (coverage && !this.reconsideration(job)) {
+                        const note = this.load(coverage.noteId);
+                        if (note.contentRevision === coverage.contentRevision && this.visible(this.sources.ownerScope(note.companionId), note)) {
+                            this.db.prepare("UPDATE vcp_capture_jobs SET status='done',output_note_versions=?,completed_batch_id=id WHERE id=?")
+                              .run(JSON.stringify([{ id: note.id, version: note.version }]), job.id);
+                            return false;
+                        }
+                    }
+                    const episode = this.episodes.observe({ id: String(job.id), companion_id: String(job.companion_id), conversation_id: String(job.conversation_id), message_id: String(job.message_id) });
+                    return force || !!this.reconsideration(job) || this.episodes.due(episode) <= now;
+                });
                 if (found || page.length < 8) break;
                 after = Number(page.at(-1)!.ordinal);
             }
             if (!found)
                 return;
             const job = found, token = randomUUID(), reconsidering = !!this.reconsideration(job);
+            const episode = this.episodes.observe({ id: String(job.id), companion_id: String(job.companion_id), conversation_id: String(job.conversation_id), message_id: String(job.message_id) });
             // A historical extraction cannot replay state, while a fresh source
             // must retain its normal state processing. Never mix those batches.
             const cohort = this.db.prepare(`SELECT * FROM vcp_capture_jobs j WHERE companion_id=? AND conversation_id=? AND status IN('pending','failed')
               AND next_attempt<=? AND attempts<8 AND EXISTS(SELECT 1 FROM metadata m WHERE m.key='vcp-capture-reconsideration/'||j.companion_id||'/'||j.id)=?
-              AND id!=? AND (source_sequence>? OR source_sequence=? AND ordinal>?) ORDER BY source_sequence,ordinal LIMIT 8`);
+              AND id IN(SELECT job_id FROM companion_memory_episode_sources WHERE episode_id=?)
+              AND id!=? AND (source_sequence>? OR source_sequence=? AND ordinal>?) ORDER BY source_sequence,ordinal LIMIT 12`);
             const batch = [job]; let sequence = -1, ordinal = 0;
-            while (batch.length < 8) {
-                const page = rows(cohort.all(job.companion_id, job.conversation_id, now, Number(reconsidering), job.id, sequence, sequence, ordinal));
-                for (const source of page) if (batch.length < 8 && this.captureReady(source)) batch.push(source);
-                if (page.length < 8) break;
+            while (batch.length < MEMORY_CAPTURE_BATCH_SIZE) {
+                const page = rows(cohort.all(job.companion_id, job.conversation_id, now, Number(reconsidering), episode.id, job.id, sequence, sequence, ordinal));
+                for (const source of page) if (batch.length < MEMORY_CAPTURE_BATCH_SIZE && this.captureReady(source)) batch.push(source);
+                if (page.length < MEMORY_CAPTURE_BATCH_SIZE) break;
                 sequence = Number(page.at(-1)!.source_sequence); ordinal = Number(page.at(-1)!.ordinal);
             }
             batch.sort((a, b) => Number(a.source_sequence) - Number(b.source_sequence) || Number(a.ordinal) - Number(b.ordinal));
+            this.episodes.seal(episode.id);
             for (const source of batch)
                 this.db.prepare("UPDATE vcp_capture_jobs SET status='running',lease_token=?,lease_until=?,attempts=attempts+1 WHERE id=?").run(token, now + leaseMs, source.id);
-            return { id: String(job.id), companionId: String(job.companion_id), conversationId: String(job.conversation_id), sourceMessageIds: batch.map(source => String(source.message_id)), throughSequence: Math.max(...batch.map(source => Number(source.through_sequence))), leaseToken: token, attempts: Number(job.attempts) + 1, sourceChecksums: Object.fromEntries(batch.map(source => [String(source.message_id), String(source.source_checksum)])), sourceRevisions: Object.fromEntries(batch.map(source => [String(source.message_id), Number(source.source_revision)])) };
+            return { id: String(job.id), companionId: String(job.companion_id), conversationId: String(job.conversation_id), episodeId: episode.id, sourceMessageIds: batch.map(source => String(source.message_id)), throughSequence: Math.max(...batch.map(source => Number(source.through_sequence))), leaseToken: token, attempts: Number(job.attempts) + 1, sourceChecksums: Object.fromEntries(batch.map(source => [String(source.message_id), String(source.source_checksum)])), sourceRevisions: Object.fromEntries(batch.map(source => [String(source.message_id), Number(source.source_revision)])) };
         }).immediate();
     }
+    captureEligibility(companionId: string, now = Date.now()): { eligible: number; nextAt?: string } { return this.episodes.eligibility(companionId, now); }
     private leased(table: 'vcp_capture_jobs' | 'vcp_memory_outbox', id: string, token: string): Row { const found = this.db.prepare(`SELECT * FROM ${table} WHERE id=? AND status='running' AND lease_token=? AND lease_until>?`).get(id, token, Date.now()); if (!found)
         throw new Error('VCP 投递租约已失效。'); return row(found); }
     complete(id: string, token: string, notes: CompanionMemoryCandidate[], stateProposal?: CompanionStateProposal, expectedProhibitionRevision?: string, expectedStateRevision?: number): CompanionMemory[] {
@@ -489,14 +535,42 @@ export class CompanionMemoryStore {
             for (const note of notes) {
                 if (note.sourceMessageIds.some(source => !sourceIds.has(source)))
                     throw new Error('日记只能使用本批来源。');
-                const saved = this.recordJournal(scope, note, undefined, 'automatic', undefined, false, undefined,
+                let candidate = note;
+                let target: { id: string; expectedVersion: number } | undefined;
+                if (note.encoding && note.encoding.action !== 'create') {
+                    const previous = this.load(note.encoding.targetId!);
+                    const capturedVersion = note.encoding.expectedVersion!, sameBody = previous.version === capturedVersion
+                      || this.ledger.versionRevision(previous.id, capturedVersion) === previous.contentRevision;
+                    if (!this.visible(scope, previous) || !sameBody || previous.sourceConversationId !== scope.conversationId
+                      || previous.metadata?.consolidation || previous.metadata?.dream || previous.metadata?.simulation) throw new Error('延续或纠正的原始日记版本已变化，请重新读取。');
+                    const annotations = this.ledger.versionAnnotations(previous.id, capturedVersion), rebased = previous.version !== capturedVersion;
+                    const retained = this.sources.filter(scope, previous.sources.map(source => source.messageId));
+                    if (retained.length !== previous.sources.length) throw new Error('延续日记的历史来源已失效。');
+                    const dependencies = rows(this.db.prepare('SELECT source_note_id FROM vcp_note_dependencies WHERE note_id=?').all(previous.id)).map(value => String(value.source_note_id));
+                    const allIds = [...new Set([...previous.sources.map(source => source.messageId), ...note.sourceMessageIds])];
+                    if (allIds.length > 100) throw new Error('事件来源超过单篇上限，请保留原文并建立有据后续日记。');
+                    candidate = { ...note, encoding: { ...note.encoding, expectedVersion: previous.version }, sourceMessageIds: allIds, sourceChecksums: { ...Object.fromEntries(retained.map(source => [source.id, companionSourceChecksum(source.content)])), ...note.sourceChecksums },
+                      evidence: [...retained.filter(source => !note.sourceMessageIds.includes(source.id)).map(source => ({ sourceMessageId: source.id, quote: source.content.slice(0, 16000) })), ...note.evidence],
+                      relatedMemoryIds: [...new Set([...dependencies, ...(note.relatedMemoryIds ?? []).filter(id => id !== previous.id)])] };
+                    if (rebased && annotations) candidate = { ...candidate,
+                      tags: [...new Set([...previous.tags, ...(note.tags ?? []).filter(tag => !annotations.tags.includes(tag))])],
+                      diaryName: note.diaryName === undefined || note.diaryName === annotations.diaryName ? previous.diaryName : note.diaryName,
+                      metadata: { ...note.metadata, ...(note.metadata?.autoTags === undefined || note.metadata.autoTags === annotations.autoTags
+                        ? { autoTags: previous.metadata?.autoTags } : {}) } };
+                    target = { id: previous.id, expectedVersion: previous.version };
+                }
+                const saved = this.recordJournal(scope, candidate, target, 'automatic', undefined, false, undefined,
                   new Map(reconsiderations.flatMap(({ intent }) => intent.invalidNotes.map(reference => [reference.id, reference.version] as const))));
                 if (saved)
                     result.push(saved);
             }
             if (!reconsiderations.length && stateProposal && !stateProposal.sourceMessageIds.every(source => sourceIds.has(source))) throw new Error('状态提议只能使用本批正式来源。');
             if (!reconsiderations.length && stateProposal && this.sources.filter(scope, stateProposal.sourceMessageIds).length === stateProposal.sourceMessageIds.length) {
-                if (result.length && !(stateProposal.appraisals ?? []).some(appraisal => appraisal.target === 'user'))
+                const current = this.db.prepare("SELECT json_extract(data,'$.revision') AS revision FROM companion_runtime_states WHERE companion_id=?").get(scope.companionId) as { revision: number } | undefined;
+                const skipped = expectedStateRevision !== undefined && (current?.revision ?? 1) !== expectedStateRevision;
+                if (skipped) this.db.prepare('INSERT OR REPLACE INTO metadata(key,value) VALUES(?,?)').run('vcp-capture-state-skipped/' + id,
+                  JSON.stringify({ reason: 'state_revision_changed', expectedRevision: expectedStateRevision, currentRevision: current?.revision ?? 1, at: stamp() }));
+                else if (result.length && !(stateProposal.appraisals ?? []).some(appraisal => appraisal.target === 'user'))
                     this.integrateState(scope, result, stateProposal, { eventKey: 'capture:' + id, kind: 'capture', expectedRevision: expectedStateRevision });
                 else this.applyState?.(scope, stateProposal);
             }
@@ -536,20 +610,27 @@ export class CompanionMemoryStore {
         return this.db.transaction(() => {
             const found = this.db.prepare("SELECT data,lease_until FROM companion_world_jobs WHERE id=? AND companion_id=? AND kind='dream' AND status='running'").get(worldJobId, scope.companionId);
             if (!found) throw new Error('私人睡眠整理必须属于当前真实梦任务。');
-            const job = json<{ companionId: string; conversationId: string; leaseToken?: string; sleepEpisodeId?: string; memoryVersions?: Array<{ id: string; version: number }> }>(row(found).data);
+            const job = json<{ companionId: string; conversationId: string; leaseToken?: string; sleepEpisodeId?: string;
+              maintenanceMode?: 'sleep' | 'background'; maintenanceSessionId?: string; dreamMode?: 'sleep_dream' | 'rehearsal_dream';
+              memoryVersions?: Array<{ id: string; version: number; contentRevision?: number }> }>(row(found).data);
             if (job.leaseToken !== leaseToken || String(row(found).lease_until) < stamp() || job.conversationId !== scope.conversationId) throw new Error('私人睡眠整理租约或消息入口已变化。');
             const room = this.sources.requireScope(scope);
             if (room.kind !== 'private' && scope.conversationId !== 'world_' + scope.companionId) throw new Error('跨经历反思只能发布到本人私人入口。');
-            const versions = new Map(job.memoryVersions?.map(memory => [memory.id, memory.version]));
+            const versions = new Map(job.memoryVersions?.map(memory => [memory.id, memory]));
             const related = candidate.relatedMemoryIds ?? [];
             if (!related.length || related.some(id => !versions.has(id))) throw new Error('私人整理缺少本轮实际读取的记忆版本。');
             const seeds = related.map(id => this.load(id));
             const ownerScope = this.sources.ownerScope(scope.companionId);
-            if (seeds.some(seed => seed.companionId !== scope.companionId || seed.version !== versions.get(seed.id) || !this.visible(ownerScope, seed))) throw new Error('私人整理的种子已经变化。');
+            if (seeds.some(seed => { const expected = versions.get(seed.id)!; return seed.companionId !== scope.companionId
+              || (expected.contentRevision !== undefined ? seed.contentRevision !== expected.contentRevision : seed.version !== expected.version)
+              || !this.visible(ownerScope, seed); })) throw new Error('私人整理的种子已经变化。');
             const sourceIds = new Set(seeds.flatMap(seed => seed.sources.map(source => source.messageId)));
             if (candidate.sourceMessageIds.some(id => !sourceIds.has(id))) throw new Error('私人整理不能引入本轮未读取的来源。');
             return this.recordJournal(scope, candidate, undefined, 'automatic', undefined, true,
-              { consolidation: true, sleepReflection: true, sleepWorldJobId: worldJobId, worldJobId, ...(job.sleepEpisodeId ? { sleepEpisodeId: job.sleepEpisodeId } : {}) });
+              { consolidation: true, sleepReflection: candidate.metadata?.dream !== true ? true : undefined, sleepWorldJobId: worldJobId, worldJobId,
+                ...(job.sleepEpisodeId ? { sleepEpisodeId: job.sleepEpisodeId } : {}), ...(job.maintenanceMode ? { maintenanceMode: job.maintenanceMode } : {}),
+                ...(job.maintenanceSessionId ? { maintenanceSessionId: job.maintenanceSessionId } : {}),
+                ...(candidate.metadata?.dream === true ? { dreamMode: job.dreamMode ?? (job.maintenanceMode === 'background' ? 'rehearsal_dream' : 'sleep_dream') } : {}) });
         }).immediate();
     }
     /** Automatic merges are admitted only by the current real sleep lease and
@@ -561,11 +642,14 @@ export class CompanionMemoryStore {
             const plan = companionMemoryConsolidateSchema.parse(input);
             const found = this.db.prepare("SELECT data,lease_until FROM companion_world_jobs WHERE id=? AND companion_id=? AND kind='dream' AND status='running'").get(worldJobId, scope.companionId);
             if (!found) throw new Error('自动记忆整合必须属于当前真实睡眠任务。');
-            const job = json<{ conversationId: string; leaseToken?: string; seedMemoryVersions?: Array<{ id: string; version: number }>; maintenanceMemoryVersions?: Array<{ id: string; version: number }> }>(row(found).data);
+            const job = json<{ conversationId: string; leaseToken?: string; maintenanceMode?: 'sleep' | 'background'; maintenanceSessionId?: string; seedMemoryVersions?: Array<{ id: string; version: number; contentRevision?: number }>; maintenanceMemoryVersions?: Array<{ id: string; version: number; contentRevision?: number }> }>(row(found).data);
             if (job.leaseToken !== leaseToken || String(row(found).lease_until) < stamp() || job.conversationId !== scope.conversationId) throw new Error('自动记忆整合的睡眠租约或入口已变化。');
-            const versions = new Map((job.maintenanceMemoryVersions ?? job.seedMemoryVersions)?.map(note => [note.id, note.version]));
-            if (plan.inputs.some(note => versions.get(note.id) !== note.version)) throw new Error('自动整合只能使用本轮准确读取的真实种子版本。');
+            const versions = new Map((job.maintenanceMemoryVersions ?? job.seedMemoryVersions)?.map(note => [note.id, note]));
+            if (plan.inputs.some(note => { const expected = versions.get(note.id), actual = this.load(note.id); return !expected
+              || (expected.contentRevision !== undefined ? actual.contentRevision !== expected.contentRevision : note.version !== expected.version);
+            })) throw new Error('自动整合只能使用本轮准确读取的真实种子版本。');
             const originals = plan.inputs.map(note => this.load(note.id)), ownerScope = this.sources.ownerScope(scope.companionId);
+            if (originals.some(note => note.procedure)) throw new Error('方法记忆保留独立的修订与实践验证，不参与自动摘要归档。');
             if (originals.some((note, index) => note.companionId !== scope.companionId || note.version !== plan.inputs[index]!.version
               || note.status !== 'indexed' || note.archivedAt || note.metadata?.dream || note.metadata?.simulation
               || note.metadata?.characterDevelopment !== undefined || !this.visible(ownerScope, note))) throw new Error('自动整合的原始记忆已经变化或不是可整合的实际经历。');
@@ -580,7 +664,8 @@ export class CompanionMemoryStore {
               metadata: plan.candidate.metadata };
             return this.operation({ ...scope, operationId: 'sleep_merge_' + hash([worldJobId, plan]).slice(0, 48) }, () => {
                 const note = this.consolidation.prepare({ type: 'memory.consolidate', ...scope, inputs: plan.inputs, candidate },
-                  { automaticConsolidation: true, sleepWorldJobId: worldJobId });
+                  { automaticConsolidation: true, sleepWorldJobId: worldJobId, ...(job.maintenanceMode ? { maintenanceMode: job.maintenanceMode } : {}),
+                    ...(job.maintenanceSessionId ? { maintenanceSessionId: job.maintenanceSessionId } : {}) });
                 return { ok: true, memories: note ? [note] : [] };
             }).memories?.[0];
         }).immediate();
@@ -596,6 +681,8 @@ export class CompanionMemoryStore {
       reconsideredInvalidNotes?: ReadonlyMap<string, number>): CompanionMemory | undefined {
         return this.db.transaction(() => {
             const draft = companionMemoryCandidateSchema.parse(normalizeCompanionCharacterDiary(input));
+            if (draft.encoding && draft.encoding.action !== 'create' && (!revision || revision.id !== draft.encoding.targetId || revision.expectedVersion !== draft.encoding.expectedVersion))
+                throw new Error('延续或纠正必须通过固定目标版本的编码提交。');
             // Free metadata is not an alternate host authority. Only the
             // verified sleep lease and actual consolidation path below may
             // classify a note as processed/derived or associate a sleep job.
@@ -603,6 +690,7 @@ export class CompanionMemoryStore {
             // never turns it into an original factual source.
             const metadata = { ...draft.metadata };
             for (const key of hostClassificationKeys) delete metadata[key];
+            delete metadata.procedure; delete metadata.validation; delete metadata.procedureValidation;
             draft.metadata = { ...metadata, ...hostClassification };
             this.sources.requireScope(scope);
             const available = this.sources.filter(privateConsolidation ? this.sources.ownerScope(scope.companionId) : scope, draft.sourceMessageIds);
@@ -610,6 +698,11 @@ export class CompanionMemoryStore {
                 throw new Error('日记来源不可见、已撤回或尚未正式发送。');
             this.rejectFictionalSources(available.map(source => source.id));
             this.validateParticipationCandidate(scope.companionId,available,draft);
+            if (!privateConsolidation && !hostClassification) {
+                const episodeIds = rows(this.db.prepare(`SELECT DISTINCT s.episode_id FROM companion_memory_episode_sources s JOIN vcp_capture_jobs j ON j.id=s.job_id
+                  WHERE j.companion_id=? AND j.message_id IN(${available.map(() => '?').join(',')})`).all(scope.companionId, ...available.map(source => source.id))).map(value => String(value.episode_id));
+                if (episodeIds.length === 1) draft.metadata = { ...draft.metadata, captureEpisodeId: episodeIds[0] };
+            }
             const references = available.map(source => this.sources.reference(row(this.db.prepare('SELECT * FROM messages WHERE id=?').get(source.id))));
             const domains = references.map(source => this.sources.logicalDomain(source.messageId));
             if (new Set(domains).size !== 1 && !privateConsolidation)
@@ -624,19 +717,22 @@ export class CompanionMemoryStore {
                 throw new Error('日记证据不是来源原文。');
             const conversationId = privateConsolidation ? scope.conversationId : domains[0]!, sourceSequence = Math.max(...references.map(source => source.sequence));
             if (privateConsolidation) for (const domain of new Set(domains)) {
-                if (this.sources.captureHeld(scope.companionId, domain) || this.sources.blockedTag({ ...scope, conversationId: domain }, draft.tags, sourceSequence)) throw new Error('私人整理的真实来源域仍有禁记限制。');
+                if (this.sources.blockedTag({ ...scope, conversationId: domain }, draft.tags, sourceSequence)) throw new Error('私人整理的真实来源域仍有禁记限制。');
             }
             this.sources.assertProhibitionRevision({ ...scope, conversationId }, expectedProhibitionRevision);
-            if (this.sources.captureHeld(scope.companionId, conversationId)) throw new Error('此可见域仍有旧版持续遗忘限制，请先在记忆管理中确认处理。');
             if (this.sources.blockedTag({ ...scope, conversationId }, draft.tags, sourceSequence))
                 throw new Error('该日记涉及已禁止记录的内容。');
             const previous = revision ? this.load(revision.id) : undefined;
             if (previous && (!this.visible(scope, previous) || previous.version !== revision!.expectedVersion || previous.sourceConversationId !== conversationId))
                 throw new Error('日记版本或可见域已变化，请重新读取。');
+            if (previous && !hostClassification && typeof previous.metadata?.captureEpisodeId === 'string')
+                draft.metadata = { ...draft.metadata, captureEpisodeId: previous.metadata.captureEpisodeId };
             const dependencies = draft.relatedMemoryIds.map(id => this.load(id));
             if (dependencies.some(source => !this.visible(scope, source) || source.id === previous?.id)) throw new Error('整理来源不属于此伙伴当前可读的本人记忆。');
             this.development.validate(scope, draft, available, dependencies, previous?.id);
-            const scopeId = this.scope(scope.companionId, conversationId), identity = hash([scopeId, draft.content, draft.tags, references.map(source => [source.messageId, source.revision, source.checksum]), draft.occurredAt ?? '', draft.relatedMemoryIds, ...(draft.selfDevelopment ? [draft.selfDevelopment] : [])]);
+            const method = draft.procedure ?? (previous?.procedure ? { applicability: previous.procedure.applicability, steps: previous.procedure.steps,
+              limitations: previous.procedure.limitations, verification: previous.procedure.verification } : undefined);
+            const scopeId = this.scope(scope.companionId, conversationId), identity = hash([scopeId, draft.content, references.map(source => [source.messageId, source.revision, source.checksum]), draft.occurredAt ?? '', draft.relatedMemoryIds, ...(draft.selfDevelopment ? [draft.selfDevelopment] : []), method]);
             const existing = !previous && this.db.prepare('SELECT data FROM vcp_memory_notes WHERE companion_id=? AND identity_key=?').get(scope.companionId, identity);
             let restored: CompanionMemory | undefined;
             if (existing) {
@@ -660,18 +756,30 @@ export class CompanionMemoryStore {
                 restored = note;
             }
             const note: CompanionMemory = { id: previous?.id ?? restored?.id ?? 'note_' + identity.slice(0, 48), companionId: scope.companionId, scopeId, content: draft.content, tags: draft.tags, occurredAt: draft.occurredAt ?? references.at(-1)?.worldCreatedAt ?? references.at(-1)?.createdAt, diaryName: draft.diaryName ?? '经历', metadata: { ...draft.metadata, ...(draft.selfDevelopment ? { characterDevelopment: draft.selfDevelopment } : {}), learnedEntranceSourceId: draft.learnedEntranceSourceId, sourceMessageIds: references.map(source => source.messageId) }, sourceMessageId: references[0]!.messageId, sourceConversationId: conversationId, sources: references, sourceSequence, createdAt: previous?.createdAt ?? restored?.createdAt ?? stamp(), updatedAt: stamp(), origin: references.some(source => source.authorId === 'user') ? 'user' : 'companion', status: 'queued', version: (previous?.version ?? restored?.version ?? 0) + 1, captureMethod };
+            if (method) {
+                note.procedure = unverifiedCompanionMemoryProcedure(method);
+                if (previous?.procedure && previous.content === note.content && previous.occurredAt === note.occurredAt
+                  && hash(previous.sources) === hash(note.sources)
+                  && hash([previous.procedure.applicability, previous.procedure.steps, previous.procedure.limitations, previous.procedure.verification])
+                    === hash([method.applicability, method.steps, method.limitations, method.verification]))
+                    note.procedure.validation = previous.procedure.validation;
+            }
             if (dependencies.some(source => !this.visible(scope, source) || source.id === note.id))
                 throw new Error('整理来源不属于此伙伴当前可读的本人记忆。');
             this.persist(note, previous || restored ? undefined : identity);
             this.development.saved(note);
             this.db.prepare('DELETE FROM vcp_note_dependencies WHERE note_id=?').run(note.id);
             for (const source of dependencies)
-                this.db.prepare('INSERT INTO vcp_note_dependencies VALUES(?,?,?)').run(note.id, source.id, source.version);
+                this.db.prepare('INSERT INTO vcp_note_dependencies VALUES(?,?,?)').run(note.id, source.id, source.contentRevision);
+            this.ledger.recordBody(note, dependencies.map(source => ({ id: source.id, contentRevision: source.contentRevision! })));
+            // Exact full-source writes can safely settle duplicate extraction.
+            // Partial quotations never claim that all facts in a message were encoded.
+            this.ledger.cover(note, available.filter(source => draft.content.trim() === source.content.trim()
+              && draft.evidence.some(evidence => evidence.sourceMessageId === source.id && evidence.quote.trim() === source.content.trim())).map(source => source.id));
             this.enqueue(note, 'remember');
             if (previous) {
                 this.withdrawStateMemories?.(previous.companionId, [{ id: previous.id, version: previous.version }]);
-                this.invalidateOwner(note.companionId);
-                this.invalidateDependents(note.id);
+                if (note.contentRevision !== previous.contentRevision) this.invalidateDependents(note.id);
             }
             this.observeNote?.(note);
             return note;
@@ -692,7 +800,7 @@ export class CompanionMemoryStore {
             }
             const sourceIds = note.sources.map(source => source.messageId);
             this.withdrawStateMemories?.(note.companionId, [{ id: note.id, version: note.version }]);
-            this.invalidateOwner(note.companionId);
+            if (status === 'forgotten' || !dependencyCause) this.invalidateOwner(note.companionId);
             note.status = status;
             this.consolidation.restore(note.id);
             note.version++;
@@ -726,14 +834,14 @@ export class CompanionMemoryStore {
         this.withdrawNote(String(note.id), 'forgotten'); return notes.length; }
     rebuildIndex(companionId?: string): number { return this.db.transaction(() => { const found = rows(this.db.prepare("SELECT data FROM vcp_memory_notes WHERE json_extract(data,'$.status') IN('queued','indexed') AND json_extract(data,'$.archivedAt') IS NULL" + (companionId ? ' AND companion_id=?' : '')).all(...(companionId ? [companionId] : []))); for (const entry of found) {
         const note = json<CompanionMemory>(entry.data);
-        this.invalidateOwner(note.companionId);
+        this.changedOwners.add(note.companionId);
         note.status = 'queued';
         this.persist(note);
         this.enqueue(note, 'remember');
         this.db.prepare("UPDATE vcp_memory_outbox SET status='pending',attempts=0,next_attempt=0,error=NULL,lease_token=NULL,lease_until=NULL WHERE note_id=? AND note_version=? AND operation='remember' AND status!='running'").run(note.id, note.version);
     } return found.length; }).immediate(); }
     read(scope: Scope, id: string, limit = 30, cursor = 0): NonNullable<CompanionStorageResponse['memoryRead']> { const note = this.load(id); if (!this.visible(scope, note))
-        throw new Error('日记来源失效或不属于当前可见范围。'); const next = cursor + limit; return { memory: note, sources: this.sources.filter(scope, note.sources.slice(cursor, next).map(source => source.messageId)), related: [], hasMore: next < note.sources.length, nextSourceCursor: next < note.sources.length ? next : undefined }; }
+        throw new Error('日记来源失效或不属于当前可见范围。'); const next = cursor + limit; return { memory: this.project(note, scope), sources: this.sources.filter(scope, note.sources.slice(cursor, next).map(source => source.messageId)), related: [], hasMore: next < note.sources.length, nextSourceCursor: next < note.sources.length ? next : undefined }; }
     inspect(scope: Scope, id: string, limit = 30, cursor = 0) { return this.read(scope, id, limit, cursor); }
     list(companionId: string, includeArchived = false): CompanionMemory[] { return rows(this.db.prepare("SELECT data FROM vcp_memory_notes WHERE companion_id=? AND json_extract(data,'$.status') NOT IN('forgotten','invalid') ORDER BY rowid DESC").all(companionId)).map(found => json<CompanionMemory>(found.data)).filter(note => includeArchived || !note.archivedAt); }
     browse(input: CompanionMemorySearch): CompanionMemoryPage {
@@ -746,10 +854,18 @@ export class CompanionMemoryStore {
               && (start === undefined || at >= start) && (end === undefined || at <= end);
         });
         const cursor = query.cursor ?? 0;
-        return { items: available.slice(cursor, cursor + query.limit).map(memory => ({ memory, reasons: ['journal-list'], path: [memory.id] })),
+        return { items: available.slice(cursor, cursor + query.limit).map(memory => ({ memory: this.project(memory, query), reasons: ['journal-list'], path: [memory.id] })),
             hasMore: available.length > cursor + query.limit, nextCursor: available.length > cursor + query.limit ? cursor + query.limit : undefined };
     }
-    snapshot(scope: Scope): NonNullable<CompanionStorageResponse['memorySnapshot']> { this.sources.requireScope(scope); const notes = rows(this.db.prepare("SELECT data FROM vcp_memory_notes WHERE companion_id=? AND json_extract(data,'$.status')='indexed' ORDER BY id").all(scope.companionId)).map(found => json<CompanionMemory>(found.data)).filter(note => !note.archivedAt && this.visible(scope, note)); const revision = hash(['owner-memory-v2', scope.companionId, scope.beforeSequence ?? null, notes.map(note => [note.id, note.version, note.sources.map(source => [source.messageId, source.revision, source.checksum])])]); return { scopeId: 'view_' + revision.slice(0, 48), revision, notes }; }
+    snapshot(scope: Scope): NonNullable<CompanionStorageResponse['memorySnapshot']> {
+        this.sources.requireScope(scope);
+        const notes = rows(this.db.prepare("SELECT data FROM vcp_memory_notes WHERE companion_id=? AND json_extract(data,'$.status')='indexed' ORDER BY id").all(scope.companionId))
+          .map(found => json<CompanionMemory>(found.data)).filter(note => !note.archivedAt && this.visible(scope, note));
+        const revision = hash(['owner-memory-v2', scope.companionId, scope.beforeSequence ?? null, notes.map(note => [note.id, note.version, note.sources.map(source => [source.messageId, source.revision, source.checksum])])]);
+        const semanticRevision = hash(['owner-memory-content-v1', scope.companionId, scope.beforeSequence ?? null,
+          notes.map(note => [note.id, note.contentRevision, note.occurredAt, note.content, note.sources.map(source => [source.messageId, source.revision, source.checksum])])]);
+        return { scopeId: 'view_' + revision.slice(0, 48), revision, semanticRevision, revocationEpoch: this.ledger.state(scope.companionId).revocationEpoch, notes: notes.map(note => this.project(note, scope)) };
+    }
     domains(scope: Scope): NonNullable<CompanionStorageResponse['memoryDomains']> { this.sources.requireScope(scope); return rows(this.db.prepare('SELECT * FROM vcp_memory_scopes WHERE companion_id=? ORDER BY scope_id').all(scope.companionId)).map(domain => ({ scopeId: String(domain.scope_id), companionId: String(domain.companion_id), conversationId: String(domain.conversation_id), revision: Number(domain.revision), state: domain.state as 'dirty' | 'ready', updatedAt: String(domain.updated_at) })); }
     private transitiveSourceIds(note: CompanionMemory): string[] {
         const ids = new Set<string>(), visited = new Set<string>(), pending = [note.id];
@@ -820,7 +936,8 @@ export class CompanionMemoryStore {
     delete(id: string): void { const note = this.load(id); this.forget({ type: 'memory.forget', ...this.sources.ownerScope(note.companionId), id }); }
     organize(scope: Scope, ids: string[], tags: string[], expectedProhibitionRevision?: string): CompanionMemory[] { return this.db.transaction(() => ids.map(id => { const note = this.load(id); this.sources.assertProhibitionRevision({ ...scope, conversationId: note.sourceConversationId }, expectedProhibitionRevision); if (!this.visible(scope, note))
         throw new Error('日记不可见。'); if (this.sources.blockedTag({ ...scope, conversationId: note.sourceConversationId }, tags, note.sourceSequence))
-        throw new Error('禁止记录该标签。'); this.invalidateOwner(note.companionId); note.tags = [...tags]; note.version++; note.status = 'queued'; note.updatedAt = stamp(); this.persist(note); this.enqueue(note, 'remember'); this.invalidateDependents(note.id); return note; })).immediate(); }
+        throw new Error('禁止记录该标签。'); if (JSON.stringify(note.tags) === JSON.stringify(tags)) return note;
+        note.tags = [...tags]; note.version++; note.status = 'queued'; note.updatedAt = stamp(); this.persist(note); this.enqueue(note, 'remember'); return note; })).immediate(); }
     rehomeConversation(oldId: string, newId: string): void { this.db.prepare('UPDATE vcp_capture_jobs SET conversation_id=? WHERE conversation_id=?').run(newId, oldId); for (const entry of rows(this.db.prepare('SELECT data FROM vcp_memory_notes WHERE conversation_id=?').all(oldId)))
         this.withdrawNote(json<CompanionMemory>(entry.data).id, 'invalid'); }
     claimOutbox(companionId?: string, leaseMs = 120000): NonNullable<CompanionStorageResponse['memoryOutbox']> | undefined {
@@ -876,42 +993,27 @@ export class CompanionMemoryStore {
     deferOutbox(id: string, token: string, retryAfterMs = 1000): void { this.leased('vcp_memory_outbox', id, token); this.db.prepare("UPDATE vcp_memory_outbox SET status='pending',attempts=MAX(0,attempts-1),error=NULL,next_attempt=?,lease_token=NULL,lease_until=NULL WHERE id=?").run(Date.now() + retryAfterMs, id); }
     policies(companionId: string): NonNullable<CompanionStorageResponse['memoryPolicies']> {
         if (!this.db.prepare('SELECT 1 FROM companions WHERE id=? AND deleted_at IS NULL').get(companionId)) throw new Error('伙伴不存在。');
-        const legacy: NonNullable<CompanionStorageResponse['memoryPolicies']> = rows(this.db.prepare('SELECT * FROM vcp_source_policy_holds WHERE companion_id=? ORDER BY created_at,id').all(companionId)).map(rule => ({
-            id: String(rule.id), companionId, conversationId: String(rule.conversation_id), reason: 'legacy-selector',
-            requestMessageId: rule.request_message_id ? String(rule.request_message_id) : undefined,
-            requestSnippet: String(rule.request_snippet), blocked: rule.released_at === null, createdAt: String(rule.created_at),
-            releasedAt: rule.released_at ? String(rule.released_at) : undefined,
-        }));
         const topics: NonNullable<CompanionStorageResponse['memoryPolicies']> = rows(this.db.prepare(`SELECT p.*,r.released_at,
           (SELECT q.message_id FROM vcp_source_prohibition_requests q WHERE q.prohibition_id=p.id ORDER BY q.message_id LIMIT 1) AS request_message_id,
           COALESCE((SELECT m.created_at FROM messages m JOIN vcp_source_prohibition_requests q ON q.message_id=m.id WHERE q.prohibition_id=p.id ORDER BY m.sequence LIMIT 1),
             (SELECT m.created_at FROM messages m WHERE m.sequence=p.through_sequence)) AS created_at
           FROM vcp_source_prohibitions p LEFT JOIN vcp_source_prohibition_releases r ON r.prohibition_id=p.id
-          WHERE p.companion_id=? AND (p.persistent=1 OR r.prohibition_id IS NOT NULL)
-          AND NOT EXISTS(SELECT 1 FROM vcp_source_policy_tags t WHERE t.prohibition_id=p.id) ORDER BY p.id`).all(companionId)).map(rule => ({
+          WHERE p.companion_id=? AND (p.persistent=1 OR r.prohibition_id IS NOT NULL) ORDER BY p.id`).all(companionId)).map(rule => ({
             id: String(rule.id), companionId, conversationId: String(rule.conversation_id), reason: 'persistent-topic', tags: [String(rule.tag)],
             requestMessageId: rule.request_message_id ? String(rule.request_message_id) : undefined, requestSnippet: '',
             blocked: !!rule.persistent, createdAt: rule.created_at ? String(rule.created_at) : new Date(0).toISOString(),
             releasedAt: rule.released_at ? String(rule.released_at) : undefined,
         }));
-        return [...legacy, ...topics];
+        return topics;
     }
     releasePolicy(companionId: string, id: string): NonNullable<CompanionStorageResponse['memoryPolicies']> {
         return this.db.transaction(() => {
             const policy = this.policies(companionId).find(rule => rule.id === id);
             if (!policy) throw new Error('遗忘限制不属于该伙伴。');
-            if (policy.reason === 'persistent-topic') {
-                // Retain the old topic boundary. Release authorizes future inputs, not restoration of old evidence.
-                if (policy.blocked) {
-                    this.db.prepare('UPDATE vcp_source_prohibitions SET persistent=0,through_sequence=(SELECT COALESCE(MAX(sequence),0) FROM messages) WHERE companion_id=? AND id=?').run(companionId, id);
-                    this.db.prepare('INSERT INTO vcp_source_prohibition_releases VALUES(?,?)').run(id, stamp());
-                }
-            } else {
-                this.db.prepare('UPDATE vcp_source_policy_holds SET released_at=COALESCE(released_at,?) WHERE companion_id=? AND id=?').run(stamp(), companionId, id);
-                this.db.prepare('DELETE FROM vcp_source_prohibitions WHERE id IN(SELECT prohibition_id FROM vcp_source_policy_tags WHERE policy_id=?)').run(id);
-                // Revisit history under the new policy. Individual forgotten sources remain permanently blocked.
-                this.db.prepare("UPDATE metadata SET value='0' WHERE key='vcp-capture-backfill-through'").run();
-                this.db.prepare("UPDATE metadata SET value=(SELECT CAST(COALESCE(MAX(sequence),0) AS TEXT) FROM messages) WHERE key='vcp-capture-backfill-target'").run();
+            // Release authorizes future inputs; it never replays old messages.
+            if (policy.blocked) {
+                this.db.prepare('UPDATE vcp_source_prohibitions SET persistent=0,through_sequence=(SELECT COALESCE(MAX(sequence),0) FROM messages) WHERE companion_id=? AND id=?').run(companionId, id);
+                this.db.prepare('INSERT INTO vcp_source_prohibition_releases VALUES(?,?)').run(id, stamp());
             }
             this.invalidateOwner(companionId);
             return this.policies(companionId);
@@ -935,8 +1037,6 @@ export class CompanionMemoryStore {
             forgotten: notes.filter(note => note.status === 'forgotten').length,
             indexed: notes.filter(note => note.status === 'indexed').length, pendingIndex: notes.filter(note => note.status === 'queued' && !note.archivedAt).length,
             messageWatermark, captureWatermark: pending === null ? messageWatermark : Math.max(0, Number(pending) - 1),
-            backfillThrough: Number(row(this.db.prepare("SELECT value FROM metadata WHERE key='vcp-capture-backfill-through'").get()).value),
-            backfillTarget: Number(row(this.db.prepare("SELECT value FROM metadata WHERE key='vcp-capture-backfill-target'").get()).value),
             ...(last ? { lastError: String(row(last).error) } : {}),
         };
     }
@@ -1024,7 +1124,16 @@ export class CompanionMemoryStore {
         if (current.resetRevision !== revision || throughOrdinal > current.throughOrdinal) throw new Error('管理索引来源或权限已变化，请重建授权索引。');
     }
     execute(command: CompanionStorageCommand): CompanionStorageResponse | undefined {
+        const sourceDelivery = this.sourceOutbox.execute(command); if (sourceDelivery) return sourceDelivery;
         switch (command.type) {
+            case 'memory.procedure.observe-action': return this.db.transaction(() => ({ ok: true,
+                memories: this.procedures.observeAction(command.actionId).flatMap(observation => {
+                    const note = this.annotateProcedure(observation.noteId, observation.contentRevision, observation.validation);
+                    return note ? [this.project(note, this.sources.ownerScope(note.companionId))] : [];
+                }) })).immediate();
+            case 'memory.lifecycle.state': return { ok: true, memoryLifecycleState: this.lifecycleState(command.companionId) };
+            case 'memory.lifecycle.changes': return { ok: true, memoryLifecycleChanges: this.lifecycleChanges(command.companionId, command.afterSequence ?? 0, command.limit ?? 64) };
+            case 'memory.revision.read': return { ok: true, memories: [this.project(this.readRevision(command, command.id, command.contentRevision), command)] };
             case 'memory.search': throw new Error('记忆检索只能由 VCP 执行。');
             case 'memory.operation.inspect': {
                 const receipt = this.db.prepare('SELECT response FROM vcp_operation_receipts WHERE id=? AND companion_id=?').get(command.operationId, command.companionId);
@@ -1032,10 +1141,10 @@ export class CompanionMemoryStore {
                 const notes = references.map(reference => this.load(reference.id));
                 return { ok: true, memories: notes.map(note => {
                     if (this.visible(this.sources.ownerScope(command.companionId), note)) return note;
-                    if (!['forgotten', 'invalid'].includes(note.status) && !this.sources.captureHeld(command.companionId, note.sourceConversationId)) this.withdrawNote(note.id, 'invalid');
+                    if (!['forgotten', 'invalid'].includes(note.status)) this.withdrawNote(note.id, 'invalid');
                     // A durable receipt must still identify an old export for removal without disclosing revoked text.
                     return { ...this.load(note.id), content: '[来源已撤回]', tags: [], sources: [], sourceMessageId: undefined,
-                        sourceSequence: 0, metadata: undefined, diaryName: undefined, occurredAt: undefined,
+                        sourceSequence: 0, metadata: undefined, diaryName: undefined, occurredAt: undefined, procedure: undefined,
                         status: note.status === 'forgotten' ? 'forgotten' as const : 'invalid' as const };
                 }) };
             }
@@ -1043,7 +1152,7 @@ export class CompanionMemoryStore {
                 const limit = command.limit ?? 64, cursor = command.cursor ?? 0;
                 const found = rows(this.db.prepare("SELECT data FROM vcp_memory_notes WHERE companion_id=? AND json_extract(data,'$.status') IN('queued','indexed') ORDER BY id LIMIT ? OFFSET ?").all(command.companionId, limit + 1, cursor));
                 const notes = found.slice(0, limit).map(entry => json<CompanionMemory>(entry.data)).filter(note => this.libraryVisible(command.companionId, note));
-                return { ok: true, memoryPage: { items: notes.map(memory => ({ memory, reasons: ['library-projection'], path: [memory.id] })), hasMore: found.length > limit, ...(found.length > limit ? { nextCursor: cursor + limit } : {}) } };
+                return { ok: true, memoryPage: { items: notes.map(memory => ({ memory: this.project(memory, this.sources.ownerScope(command.companionId)), reasons: ['library-projection'], path: [memory.id] })), hasMore: found.length > limit, ...(found.length > limit ? { nextCursor: cursor + limit } : {}) } };
             }
             case 'memory.library.index-state': return { ok: true, memoryLibraryIndexState: this.libraryIndexState(command.companionId) };
             case 'memory.library.index-page': return this.db.transaction(() => {
@@ -1087,10 +1196,11 @@ export class CompanionMemoryStore {
                 const expected = 'expectedProhibitionRevision' in command && typeof command.expectedProhibitionRevision === 'string' ? command.expectedProhibitionRevision : undefined;
                 this.sources.assertProhibitionRevision(policyScope, expected);
                 if (this.sources.blockedTag(policyScope, command.tags, note.sourceSequence)) throw new Error('禁止记录该标签。');
-                this.invalidateOwner(note.companionId);
+                if (JSON.stringify(note.tags) === JSON.stringify(command.tags) && note.diaryName === command.diaryName
+                  && (command.autoTags === undefined || command.autoTags === (note.metadata?.autoTags !== false))) return { ok: true, memories: [note] };
                 note.tags = [...command.tags]; note.diaryName = command.diaryName; note.version++; note.updatedAt = stamp(); note.status = 'queued';
                 if (command.autoTags !== undefined) note.metadata = { ...note.metadata, autoTags: command.autoTags };
-                this.persist(note); this.enqueue(note, 'remember'); this.invalidateDependents(note.id);
+                this.persist(note); this.enqueue(note, 'remember');
                 return { ok: true, memories: [note] };
             }).immediate();
             case 'memory.browse': return { ok: true, memoryPage: this.browse(command) };
@@ -1100,7 +1210,7 @@ export class CompanionMemoryStore {
                 }
                 catch {
                     return undefined;
-                } }).filter((note): note is CompanionMemory => !!note && this.visible(command, note)) };
+                } }).filter((note): note is CompanionMemory => !!note && this.visible(command, note)).map(note => this.project(note, command)) };
             case 'memory.read':
             case 'memory.inspect': return { ok: true, memoryRead: this.read(command, command.id, command.sourceLimit, command.sourceCursor) };
             case 'memory.domains': return { ok: true, memoryDomains: this.domains(command) };
@@ -1134,9 +1244,8 @@ export class CompanionMemoryStore {
             }) };
             case 'memory.policy.list': return { ok: true, memoryPolicies: this.policies(command.companionId) };
             case 'memory.policy.release': return { ok: true, memoryPolicies: this.releasePolicy(command.companionId, command.id) };
-            case 'memory.jobs.backfill': return { ok: true, backfillComplete: this.backfill(command.limit) };
             case 'memory.index.rebuild': return { ok: true, rebuiltCount: this.rebuildIndex(command.companionId) };
-            case 'memory.jobs.claim': return { ok: true, memoryJob: this.claim(command.companionId, command.leaseMs) };
+            case 'memory.jobs.claim': return { ok: true, memoryJob: this.claim(command.companionId, command.leaseMs, command.force) };
             case 'memory.jobs.complete': return { ok: true, memories: this.complete(command.id, command.leaseToken, command.notes, command.stateProposal, command.expectedProhibitionRevision, command.expectedStateRevision) };
             case 'memory.jobs.fail':
                 this.fail(command.id, command.leaseToken, command.error, command.retryAfterMs);

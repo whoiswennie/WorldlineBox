@@ -92,9 +92,10 @@ export class CompanionKnowledgeService {
     }
     const library = (await this.options.request({ type: 'memory.library.read', companionId: scope.companionId, id, sourceLimit: 100 })).memoryRead?.memory;
     const scoped = (await this.options.request({ type: 'memory.read', ...scope, id, sourceLimit: 100 })).memoryRead?.memory;
-    if (!library || !scoped || library.version !== scoped.version || library.content !== scoped.content) throw new Error('资料笔记已变化或不属于当前可见来源。');
+    if (!library || !scoped || (library.contentRevision ?? library.version) !== (scoped.contentRevision ?? scoped.version) || library.content !== scoped.content) throw new Error('资料笔记已变化或不属于当前可见来源。');
+    const contentRevision = library.contentRevision ?? library.version;
     return { id: `cold_memory_${hash(id).slice(0, 48)}`, sourceId: id, sourceType: type,
-      sourceDigest: hash(JSON.stringify({ content: library.content, version: library.version, sources: library.sources })), sourceVersion: String(library.version),
+      sourceDigest: hash(JSON.stringify({ content: library.content, contentRevision, sources: library.sources })), sourceVersion: String(contentRevision),
       text: library.content, title: library.diaryName || `资料笔记 ${id}`, metadata: { conversationId: library.sourceConversationId, sourceSequence: library.sourceSequence, sources: library.sources } };
   }
   readonly authorize: ColdKnowledgeServiceOptions['authorize'] = async (owner, sourceId, sourceDigest, source) => {
@@ -109,7 +110,8 @@ export class CompanionKnowledgeService {
   };
   async reset(owner: string): Promise<void> {
     if (this.options.runtime?.resetCold) return this.options.runtime.resetCold(owner);
-    const cold = await this.options.runtime?.getCold?.(this.authorize); await cold?.reset(owner);
+    const cold = await this.options.runtime?.getCold?.({ ownerId: owner }, this.authorize);
+    try { await cold?.reset(owner); } finally { await cold?.release?.(); }
   }
   private async eligible(scope: Scope, record: ColdKnowledgeRecord): Promise<boolean> {
     if (!['memory', 'message', 'learning'].includes(record.sourceType ?? '')) return false;
@@ -139,7 +141,8 @@ export class CompanionKnowledgeService {
         assetId: asset.assetId, assetName: asset.displayName, assetRevisionId: asset.currentRevisionId })),
         hasMore: page.hasMore, nextCursor: page.nextCursor, total: page.assets.length });
     }
-    const cold = await this.options.runtime.getCold(this.authorize);
+    const cold = await this.options.runtime.getCold({ ownerId: scope.companionId }, this.authorize);
+    try {
     if (command.operation === 'ingest') {
       const document = await this.source(scope, command.sourceType!, command.sourceId!, command.assetId);
       const receipt = await cold.ingest(scope.companionId, document); this.options.changed?.();
@@ -171,5 +174,6 @@ export class CompanionKnowledgeService {
       if (record && await this.eligible(scope, record)) items.push(hit);
     }
     return companionKnowledgeResponseSchema.parse({ ...base, available: true, generation: searched.generation, degraded: searched.degraded, items, total: items.length });
+    } finally { await cold.release?.(); }
   }
 }

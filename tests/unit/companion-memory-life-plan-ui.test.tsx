@@ -16,15 +16,15 @@ function item(patch: Partial<CompanionMemoryLifePlanItem>): CompanionMemoryLifeP
 const plan: LifePlan = { companionId: 'alice', checkedAt: at, hasMore: false, items: [
   item({}),
   item({ id: 'learning-none', kind: 'learning', title: '资料学习', state: 'unconfigured', timing: { kind: 'conditional', clock: 'real' }, reason: '尚未授权学习来源，不会自行读取资产库。' }),
-  item({ id: 'sleep', kind: 'sleep_consolidation', title: '睡眠记忆整合', state: 'scheduled', timing: { kind: 'window', clock: 'world', timeZone: 'Asia/Shanghai', windowStart: '2026-10-22T15:00:00Z', windowEnd: '2026-10-22T23:00:00Z' }, reason: '真正入睡且存在可整合记忆后检查。' }),
-  item({ id: 'dream', kind: 'dream', title: '梦境', state: 'waiting', probability: .6, timing: { kind: 'conditional', clock: 'world', timeZone: 'Asia/Shanghai', at: '2026-10-22T20:00:00Z' }, reason: '冷却结束后，在睡眠候选中再判断概率；本次不保证产生梦境。' }),
+  item({ id: 'sleep', kind: 'sleep_consolidation', title: '记忆回顾与整合', state: 'eligible', timing: { kind: 'event_driven', clock: 'real' }, reason: '真实经历满足条件后独立整理，不要求用户开电脑到晚上。' }),
+  item({ id: 'dream', kind: 'dream', title: '梦境与联想', state: 'waiting', probability: .6, timing: { kind: 'conditional', clock: 'real', at: '2026-10-22T20:00:00Z' }, reason: '冷却结束后在新回顾会话中评估一次；本次不保证产生梦境。' }),
 ] };
 async function mount(request: ScheduleRequest, extra: { active?: boolean } = {}) {
   node = document.createElement('div'); document.body.append(node); root = createRoot(node);
   await act(async () => root!.render(<CompanionMemoryLifePlan companionId="alice" request={request} {...extra} />));
 }
 
-it('separates real source-triggered journals, unauthorized learning, sleep windows and probabilistic dreams', async () => {
+it('shows event-driven journals, unauthorized learning and independent maintenance with optional dreams', async () => {
   const request = vi.fn<ScheduleRequest>(async () => ({ ok: true, memoryLifePlan: plan }));
   await mount(request);
   expect(request).toHaveBeenCalledWith({ type: 'memory.life-plan.status', companionId: 'alice' });
@@ -33,8 +33,8 @@ it('separates real source-triggered journals, unauthorized learning, sleep windo
   const journal = node!.querySelector('[data-memory-plan-kind="journal"]')!;
   expect(journal.textContent).toContain('事件触发'); expect(journal.textContent).toContain('现实时间'); expect(journal.textContent).toContain('并非每天固定写日记');
   const sleep = node!.querySelector('[data-memory-plan-kind="sleep_consolidation"]')!;
-  expect(sleep.textContent).toContain('可整理窗口'); expect(sleep.textContent).toContain('世界时间');
-  expect(sleep.querySelector('time')?.textContent).toContain('23:00');
+  expect(sleep.textContent).toContain('事件触发'); expect(sleep.textContent).toContain('现实时间');
+  expect(sleep.querySelector('time')).toBeNull(); expect(sleep.textContent).toContain('不要求用户开电脑到晚上');
   const dream = node!.querySelector('[data-memory-plan-kind="dream"]')!;
   expect(dream.textContent).toContain('60%'); expect(dream.textContent).toContain('冷却至'); expect(dream.textContent).toContain('不保证产生梦境');
   expect(dream.textContent).not.toContain('下次检查'); expect(dream.textContent).not.toContain('待执行');

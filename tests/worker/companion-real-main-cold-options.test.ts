@@ -55,11 +55,11 @@ it('keeps the fixture-owned cold service alive across Main shutdown and rebinds 
   let closed = false;
   try {
     const first = vi.fn(async () => true), second = vi.fn(async () => false);
-    const cold = await f.runtime!.getCold!(first);
+    const cold = await f.runtime!.getCold!({ ownerId: 'reader' }, first);
     expect(await nativeProbe.authorize!('reader', 'source', 'a'.repeat(64), { sourceType: 'memory', sourceVersion: '1', metadata: {} })).toBe(true);
     await f.runtime!.close(); await f.restart();
     expect(nativeProbe.closed).toBe(before.closed); expect(nativeProbe.coldClosed).toBe(before.coldClosed);
-    expect(await f.runtime!.getCold!(second)).toBe(cold);
+    expect(await f.runtime!.getCold!({ ownerId: 'reader' }, second)).toBe(cold);
     expect(await nativeProbe.authorize!('reader', 'source', 'a'.repeat(64), { sourceType: 'memory', sourceVersion: '1', metadata: {} })).toBe(false);
     expect(first).toHaveBeenCalledOnce(); expect(second).toHaveBeenCalledOnce();
     expect(nativeProbe.coldCreated - before.coldCreated).toBe(1); expect(fetch).not.toHaveBeenCalled(); expect(f.calls).toEqual([]);

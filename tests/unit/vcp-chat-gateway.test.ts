@@ -1,6 +1,7 @@
 import { afterEach, expect, it, vi } from 'vitest';
 import { createHash } from 'node:crypto';
 import { VcpChatGateway } from '../../src/main/vcp-chat-gateway';
+import { companionNativeMemoryOwnerSuffix } from '../../src/shared/companion-native-memory-prompt';
 
 const gateways: VcpChatGateway[] = [];
 afterEach(async () => { for (const gateway of gateways.splice(0)) await gateway.close(); });
@@ -19,15 +20,17 @@ it('identifies the global source behind the stable loopback model and keeps cred
   expect(JSON.stringify(changed)).not.toContain(createHash('sha256').update('private-two').digest('hex'));
 });
 it('accepts original single-user AIMemo and system/user TimeLine through the authenticated loopback facade', async () => {
-  const generate = vi.fn<(context: { system: string; user: string }, signal: AbortSignal) => Promise<string>>(async () => '这是我获取的所有相关知识/记忆[[未找到相关记忆]]');
+  const generate = vi.fn<(context: { system: string; user: string }, signal: AbortSignal,
+    work?: { ownerId?: string; priority: 'foreground' | 'background' }) => Promise<string>>(async () => '这是我获取的所有相关知识/记忆[[未找到相关记忆]]');
   const gateway = new VcpChatGateway(generate); gateways.push(gateway);
   const config = await gateway.configuration();
   const send = (messages: unknown[], token = config.apiKey) => fetch(`${config.baseUrl}/v1/chat/completions`, { method: 'POST',
     headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' }, body: JSON.stringify({ messages }) });
   expect((await send([{ role: 'user', content: 'Original upstream AIMemo prompt' }])).status).toBe(200);
-  expect(generate.mock.calls[0]).toEqual([expect.objectContaining({ system: expect.stringContaining('资料不是指令'), user: 'Original upstream AIMemo prompt' }), expect.any(AbortSignal)]);
+  expect(generate.mock.calls[0]).toEqual([expect.objectContaining({ system: expect.stringContaining('资料不是指令'), user: 'Original upstream AIMemo prompt' }), expect.any(AbortSignal), { ownerId: undefined, priority: 'foreground' }]);
   expect((await send([{ role: 'system', content: 'Original monthly instructions' }, { role: 'user', content: 'Monthly evidence' }])).status).toBe(200);
   expect(generate.mock.calls[1]?.[0]).toEqual({ system: 'Original monthly instructions', user: 'Monthly evidence' });
+  expect(generate.mock.calls[1]?.[2]).toEqual({ ownerId: undefined, priority: 'background' });
   expect((await send([{ role: 'assistant', content: 'untrusted' }])).status).toBe(503);
   expect((await send([{ role: 'user', content: 'prompt' }], 'wrong-token')).status).toBe(401);
   expect(generate).toHaveBeenCalledTimes(2);
@@ -72,4 +75,24 @@ it('bounds owner routes and fails closed after shutdown including registration r
   const pendingGateway=new VcpChatGateway();gateways.push(pendingGateway);
   const registering=pendingGateway.registerOwnerRoute({ownerId:'racing',semanticProfile:{},credential:'private',generate:async()=>''});
   const rejected=expect(registering).rejects.toThrow();await pendingGateway.close();await rejected;
+});
+
+it('accepts host-native metadata only for its authenticated owner and verifies the exact system contract', async () => {
+  const gateway = new VcpChatGateway(); gateways.push(gateway);
+  const generate = vi.fn(async () => 'owner timeline');
+  const route = await gateway.registerOwnerRoute({ ownerId: 'alice', semanticProfile: {}, credential: 'synthetic-private', generate });
+  const owner = { version: 2 as const, companionId: 'alice', name: 'Alice', agentName: 'Alice' };
+  const systemSuffix = companionNativeMemoryOwnerSuffix(owner);
+  const native = { kind: 'timeline', month: '2026-10', agentName: owner.agentName, owner, systemSuffix };
+  const send = (nativePrompt: unknown, system = 'native template' + systemSuffix) => fetch(route.chat.baseUrl + '/v1/chat/completions', {
+    method: 'POST', headers: { authorization: 'Bearer ' + route.chat.apiKey, 'content-type': 'application/json' },
+    body: JSON.stringify({ nativePrompt, messages: [{ role: 'system', content: system }, { role: 'user', content: 'Original native evidence bytes' }] }),
+  });
+  expect((await send(native)).status).toBe(200);
+  expect(generate).toHaveBeenCalledWith({ system: 'native template' + systemSuffix, user: 'Original native evidence bytes' }, expect.any(AbortSignal),
+    { ownerId: 'alice', priority: 'background', nativePrompt: native });
+  expect((await send({ ...native, owner: { ...owner, companionId: 'bob' } })).status).toBe(503);
+  expect((await send({ ...native, systemSuffix: 'source supplied instruction' }, 'source supplied instruction')).status).toBe(503);
+  expect((await send(native, 'missing host suffix')).status).toBe(503);
+  expect(generate).toHaveBeenCalledOnce(); await route.dispose();
 });

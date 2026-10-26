@@ -58,7 +58,7 @@ it('preserves explicit tags and never tags automatic experience journals or disa
   const f = fixture(), manual = f.store.saveMemory({ ...f.scope, content: '手工选定的阅读锚点。', tags: ['我选的标签'] });
   f.store.saveMemory({ ...f.scope, content: '用户明确暂不加标签。', autoTags: false });
   const source = f.store.appendMessage({ conversationId: f.scope.conversationId, authorId: 'alice', content: '真实交流来源。', replyDirective: 'none' });
-  const job = f.store.request({ type: 'memory.jobs.claim', companionId: 'alice' }).memoryJob!;
+  const job = f.store.request({ type: 'memory.jobs.claim', companionId: 'alice', force: true }).memoryJob!;
   f.store.request({ type: 'memory.jobs.complete', id: job.id, leaseToken: job.leaseToken, notes: [{ content: '有实际来源的自动日记', tags: [],
     sourceMessageIds: [source.id], evidence: [{ sourceMessageId: source.id, quote: source.content }] }] });
   const fetchFn = vi.fn<typeof fetch>(); await tagger(f.store, fetchFn).tick(); expect(fetchFn).not.toHaveBeenCalled(); expect(read(f.store, manual.id)?.tags).toEqual(['我选的标签']);
@@ -70,7 +70,7 @@ it('honors an imported original final Tag line before asking any model', async (
   expect(fetchFn).not.toHaveBeenCalled(); expect(read(f.store, note.id)?.tags).toEqual(['手工原标签', '[项目甲]']);
 });
 
-it('reports the actual tag timer and foreground or model conditions without running the queue', async () => {
+it('reports the tag timer and model condition while foreground work remains independent', async () => {
   const f = fixture(), fetchFn = vi.fn<typeof fetch>(); let busy = false;
   const service = tagger(f.store, fetchFn, 'openai_chat', { busy: () => busy, config: () => { throw new Error('No model'); } });
   service.start();
@@ -78,7 +78,7 @@ it('reports the actual tag timer and foreground or model conditions without runn
   expect(initial).toMatchObject({ scheduleKind: 'condition', waitingReason: 'model_unconfigured', nextCheckAt: new Date(Date.now() + 1000).toISOString() });
   expect(initial.condition).toContain('明确 Tag 行');
   busy = true;
-  expect(await service.schedulingFor('alice')).toMatchObject({ waitingReason: 'foreground_busy', nextCheckAt: initial.nextCheckAt });
+  expect(await service.schedulingFor('alice')).toMatchObject({ waitingReason: 'model_unconfigured', nextCheckAt: initial.nextCheckAt });
   vi.setSystemTime(Date.now() + 2000);
   expect((await service.schedulingFor('alice')).nextCheckAt).toBeUndefined();
   expect(fetchFn).not.toHaveBeenCalled();

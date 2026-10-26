@@ -107,14 +107,18 @@ it.skipIf(process.env.WORLDLINEBOX_AUTOMATIC_MEMORY_ACCEPTANCE !== '1')('automat
       user: JSON.stringify({ purpose: 'automatic_memory_content_judge', originalMessages: sourceMessages.filter(message => originalSourceIds.has(message.id)),
         originalNotes: inputs.map(note => note.content), mergedNote: merged.content }) }, config, undefined, { fetchFn: modelFetch });
     expect(judgment).toMatchObject({ passed: true, lostFacts: [], fabricatedFacts: [] });
-    nativePublished = !!await (await ownerRuntime.runtime.get()).client.read({ scopeId: merged.scopeId }, merged.id);
+    const publishedLease = await ownerRuntime.runtime.get({ ownerId: scope.companionId });
+    try { nativePublished = !!await publishedLease.client.read({ scopeId: merged.scopeId }, merged.id); }
+    finally { await publishedLease.release?.(); }
     expect(nativePublished).toBe(true);
     await world.close(); world = undefined;
     const forgotten = sourceMessages.find(message => originalSourceIds.has(message.id))!;
     store.request({ type: 'memory.forget', ...scope, sourceMessageIds: [forgotten.id] }); memory.schedule(0);
     expect(snapshot().some(note => note.id === merged!.id)).toBe(false);
     await waitFor(async () => {
-      nativeWithdrawn = await (await ownerRuntime.runtime.get()).client.read({ scopeId: merged!.scopeId }, merged!.id) === null;
+      const withdrawnLease = await ownerRuntime.runtime.get({ ownerId: scope.companionId });
+      try { nativeWithdrawn = await withdrawnLease.client.read({ scopeId: merged!.scopeId }, merged!.id) === null; }
+      finally { await withdrawnLease.release?.(); }
       return nativeWithdrawn;
     }, 'native_withdrawal', 120000);
     status = 'passed';

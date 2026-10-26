@@ -46,7 +46,7 @@ it('revokes deleted discussion bodies, their derived index receipts and in-fligh
   expect(f.store.request({type:'memory.jobs.claim',companionId:'alice'}).memoryJob).toBeUndefined();
 });
 
-it.each(['game','story'] as const)('isolates %s sources from active writes, finalized loops and historical capture while preserving explicit topic source access',kind=>{
+it.each(['game','story'] as const)('isolates %s sources from active writes and finalized loops while preserving explicit topic source access',kind=>{
   const f=fixture(),topic=f.topic(kind);
   f.store.request({type:'topic.join',conversationId:f.room,topicId:topic.id,readerId:'alice'});
   const source=f.store.appendMessage({conversationId:f.room,authorId:'user',content:'这一局我的身份是凶手，密钥是月光。'});
@@ -54,7 +54,6 @@ it.each(['game','story'] as const)('isolates %s sources from active writes, fina
   expect(()=>f.store.request({type:'memory.record',...f.scope,candidate:candidate(source)})).toThrow('不能写入全局记忆');
   const reply=f.store.appendMessage({conversationId:f.room,authorId:'alice',replyToId:source.id,content:'这只是故事设定。'});
   f.store.request({type:'loop.save',checkpoint:{...f.scope,sourceMessageId:source.id,messageId:reply.id,status:'done',supplements:[],turns:[{text:reply.content,rawText:reply.content,calls:[],results:[]}]}});
-  f.store.request({type:'memory.jobs.backfill'});
   expect(f.store.request({type:'memory.jobs.claim',companionId:'alice'}).memoryJob).toBeUndefined();
   const actualParticipation=f.store.request({type:'memory.outbox.claim',companionId:'alice'}).memoryOutbox;
   expect(actualParticipation?.note.metadata?.trust).toBe('actual_participation_only');
@@ -120,7 +119,7 @@ it('recalls only actual participation experiences through the real VCP engine wi
 
 it('discards previously queued or leased fictional capture and its state proposal after topic association is restored',()=>{
   const f=fixture();const source=f.store.appendMessage({conversationId:f.room,authorId:'user',content:'角色秘密仅属于对局。'});
-  const job=f.store.request({type:'memory.jobs.claim',companionId:'alice'}).memoryJob!;expect(job).toBeTruthy();
+  const job=f.store.request({type:'memory.jobs.claim',force:true,companionId:'alice'}).memoryJob!;expect(job).toBeTruthy();
   const topic=f.topic('game');f.bind(source.id,topic.id);
   expect(f.store.request({type:'memory.jobs.complete',id:job.id,leaseToken:job.leaseToken,notes:[candidate(source)]}).memories).toEqual([]);
   expect(f.store.request({type:'memory.jobs.claim',companionId:'alice'}).memoryJob).toBeUndefined();
