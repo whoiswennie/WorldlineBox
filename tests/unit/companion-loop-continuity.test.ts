@@ -36,6 +36,30 @@ it('resumes a saved summary without replaying its old prefix or summarizing it a
   expect(summarize).not.toHaveBeenCalled(); expect(result.turns[0]?.calls[0]?.id).toBe('step_64');
 });
 
+it('keeps role and passive memory outside the temporary step window and clears another task\'s working summary', async () => {
+  const f = fixture(), persona = '本任务当前角色与稳定人格', passive = '本任务开始时独立被动回忆得到的资料';
+  const context = { system: persona, user: JSON.stringify({ invocation: { id: 'same_goal', goal: '完成真实目标' },
+    memoryRecall: { context: { text: passive, revision: 'current-corpus' } }, messages: [{ id: 'current-source', content: '本轮新任务' }] }) };
+  const compacted = await ensureCompanionLoopContinuity({ ...f.input, context });
+  expect(compacted.context.system).toBe(persona);
+  expect(JSON.parse(compacted.context.user)).toMatchObject({ memoryRecall: { context: { text: passive } },
+    messages: [{ id: 'current-source', content: '本轮新任务' }], loopContinuity: { sourceMessageId: f.checkpoint.sourceMessageId } });
+  expect(compacted.turns.length).toBeLessThanOrEqual(LOOP_CONTINUITY_POLICY.maxTurns);
+  expect(f.checkpoint.turns).toHaveLength(80);
+
+  // Even a stale caller-supplied summary cannot attach to a different source.
+  // A new invocation begins with no native append history of the previous one.
+  const next = { ...structuredClone(f.checkpoint), sourceMessageId: 'next-source', invocationKey: 'next-goal', turns: [] };
+  const nextContext = { system: '下一任务重新读取的角色', user: JSON.stringify({ invocation: { id: 'next-goal', goal: '新的独立目标' },
+    memoryRecall: { context: { text: '下一任务重新被动回忆' } }, loopContinuity: f.checkpoint.workingState }) };
+  const summarize = vi.fn(async () => ({ summary: '不应为了新任务空历史而压缩', stage: '' }));
+  const rebuilt = await ensureCompanionLoopContinuity({ ...f.input, checkpoint: next, turns: next.turns, context: nextContext, summarize });
+  expect(summarize).not.toHaveBeenCalled(); expect(rebuilt.turns).toEqual([]);
+  expect(next.workingState).toBeUndefined(); expect(JSON.parse(rebuilt.context.user).loopContinuity).toBeUndefined();
+  expect(rebuilt.context.system).toBe(nextContext.system);
+  expect(JSON.parse(rebuilt.context.user).memoryRecall.context.text).toBe('下一任务重新被动回忆');
+});
+
 it('keeps an unfinished signed native call and its absolute position outside the compacted prefix', async () => {
   const f = fixture(50); delete f.turns[49]!.results;
   const result = await ensureCompanionLoopContinuity(f.input);

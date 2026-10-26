@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { companionUserStopSchema } from './companion-task-stop';
 import { companionReplyProgressSchema } from './companion-reply-progress';
 import { companionToolImageReferenceSchema } from './companion-file-tool';
 import { companionTopicNarrativeApprovalSchema as topicNarrativeApprovalSchema, companionTopicPublicationApprovalSchema } from './companion-topic-canon';
@@ -61,9 +62,22 @@ export type CompanionLoopCheckpoint = z.infer<typeof companionLoopCheckpointSche
 export function companionLoopPublishedText(turns: readonly Pick<CompanionLoopTurn, 'text' | 'topicPublicationRejection'>[], draft?: Pick<z.infer<typeof companionLoopDraftSchema>, 'text'>): string {
   return [...turns.filter(turn => !turn.topicPublicationRejection).map(turn => turn.text), ...(draft ? [draft.text] : [])].filter(Boolean).join('\n\n');
 }
+/** Withdrawal changes the visible/model projection, never the append-only
+ * audit. Text accepted before a proven evidence cutoff cannot be published
+ * again merely because its original turn also contains a completed tool. */
+export function companionLoopCheckpointPublishedText(checkpoint: Pick<CompanionLoopCheckpoint, 'turns' | 'context' | 'draft'>): string {
+  let state: { memoryEvidenceThroughStep?: unknown; withdrawnEvidenceThroughStep?: unknown } = {};
+  if (checkpoint.context) {
+    try { state = JSON.parse(checkpoint.context.user) ?? {}; }
+    catch { /* Legacy opaque input has no host-issued withdrawal cutoff. */ }
+  }
+  const boundary = (value: unknown) => typeof value === 'number' && Number.isSafeInteger(value) && value >= 0 && value <= checkpoint.turns.length ? value : 0;
+  const through = Math.max(boundary(state.memoryEvidenceThroughStep), boundary(state.withdrawnEvidenceThroughStep));
+  return companionLoopPublishedText(checkpoint.turns.map((turn, index) => index < through ? { ...turn, text: '' } : turn), checkpoint.draft);
+}
 export const companionWorkSchema = z.object({ id, conversationId: id, sourceMessageId: id, companionId: id,
   inputMode: z.enum(['steer', 'queue']).optional(),
   messageId: id.optional(), status: z.enum(['queued', 'running', 'interrupted', 'done', 'cancelled']), ordinal: z.number().int().positive().optional(), proactive: z.boolean().default(false),
-  resumeOnRestart: z.boolean().optional(),
-  createdAt: z.string(), updatedAt: z.string() });
+  resumeOnRestart: z.boolean().optional(), stop: companionUserStopSchema.optional(),
+  startedAt: z.string().optional(), createdAt: z.string(), updatedAt: z.string() });
 export type CompanionWork = z.infer<typeof companionWorkSchema>;

@@ -7,6 +7,7 @@ import type { VcpMemoryNote, VcpMemoryScope } from '../../src/main/vcp-memory/co
 import type { CompanionStorageCommand } from '../../src/shared/companion-storage';
 import type { VcpMemoryDreamWaveRequest, VcpMemoryDreamWaveResult } from '../../src/main/vcp-memory/dream-contracts';
 import { createHash } from 'node:crypto';
+import { companionMemoryContextEvidenceSchema } from '../../src/shared/companion-memory-context-evidence';
 
 vi.mock('electron', () => ({ utilityProcess: { fork: vi.fn() } }));
 
@@ -27,6 +28,7 @@ it.each([{ diaryName: 'missing' }, { tags: ['missing'] }, { from: '2027-01-01', 
   } finally { await f.service.close(); }
 });
 function fixture(notes: CompanionMemory[]) {
+  let corpus = notes, revision = 'stable';
   const scopes = new Map<string, VcpMemoryNote[]>();
   const client = {
     hasOpenScope: (scope: VcpMemoryScope) => scopes.has(scope.scopeId),
@@ -37,8 +39,11 @@ function fixture(notes: CompanionMemory[]) {
     })),
     pluginCall: vi.fn(async (scope: VcpMemoryScope) => ({ result: scopes.get(scope.scopeId)?.map(note => note.content).join('\n'), indexed: false,
       contextReferences: scopes.get(scope.scopeId)?.map(note => ({ id: note.id, role: 'returned' as const, textHash: 'text_hash' })) })),
-    preprocess: vi.fn(async (scope: VcpMemoryScope) => ({ messages: [{ role: 'system', content: scopes.get(scope.scopeId)?.map(note => note.content).join('\n') ?? '' }], events: [],
-      contextReferences: scopes.get(scope.scopeId)?.map(note => ({ id: note.id, role: 'focus_input' as const, textHash: 'text_hash' })) })),
+    preprocess: vi.fn(async (scope: VcpMemoryScope, ...input: unknown[]) => {
+      void input; // Retain complete recorded arguments for the policy assertions below.
+      return { messages: [{ role: 'system', content: scopes.get(scope.scopeId)?.map(note => note.content).join('\n') ?? '' }], events: [],
+        contextReferences: scopes.get(scope.scopeId)?.map(note => ({ id: note.id, role: 'focus_input' as const, textHash: 'text_hash' })) };
+    }),
     dreamWave: vi.fn(async (scope: VcpMemoryScope, input: VcpMemoryDreamWaveRequest): Promise<VcpMemoryDreamWaveResult> => ({ ...input,
       schema: 'worldlinebox.vcp-dream-wave', boundaries: { recentDays: 7, midDays: 90 },
       stages: { recent: { seeds: [], resonanceL1: [], cascadeL2: [] }, mid: { seeds: [], cascadeL1: [] }, deep: { recalls: [] } },
@@ -48,7 +53,7 @@ function fixture(notes: CompanionMemory[]) {
   };
   const request = vi.fn(async (command: CompanionStorageCommand) => {
     if (command.type === 'world.clock') return { ok: true, worldClock: { realNow: '2026-10-23T04:00:00Z', virtualNow: '2026-10-23T04:00:00Z', timeZone: 'Asia/Shanghai', mode: 'realtime', speed: 1, backlog: false } };
-    if (command.type === 'memory.snapshot') return { ok: true, memorySnapshot: { scopeId: 'original', revision: 'stable', notes } };
+    if (command.type === 'memory.snapshot') return { ok: true, memorySnapshot: { scopeId: 'original', revision, notes: corpus } };
     if (command.type === 'state') return { ok: true, state: { companions: [{ id: 'owner', name: 'Owner' }] } };
     throw new Error('Unexpected request: ' + command.type);
   });
@@ -56,7 +61,7 @@ function fixture(notes: CompanionMemory[]) {
   const service = new CompanionMemoryService({ request: request as never, runtime: controlledMemoryRuntime({ get, close: async () => undefined }),
     configFor: async () => ({ apiFormat: 'openai_chat', model: 'controlled-generation', apiKey: 'controlled-key', baseUrl: 'https://fixture.invalid' }), fetchFn: async () => { throw new Error('No network'); },
     changed: () => undefined, report: () => undefined, busy: () => false });
-  return { service, client, scopes, get, request };
+  return { service, client, scopes, get, request, setCorpus: (notes: CompanionMemory[], nextRevision: string) => { corpus = notes; revision = nextRevision; } };
 }
 
 describe('one physical corpus for memory filters, context and citation pages', () => {
@@ -93,7 +98,7 @@ describe('one physical corpus for memory filters, context and citation pages', (
       expect(await f.service.contextValid(scope, context)).toBe(true);
     } finally { await f.service.close(); }
   });
-  it.each(['active', 'passive'] as const)('applies all filters before native top-K and %s context', async mode => {
+  it.each(['active', 'passive'] as const)('applies all filters before the original %s pipeline', async mode => {
     const f = fixture([...Array.from({ length: 110 }, (_, i) => note('excluded' + i, { tags: ['train'] })),
       note('old', { occurredAt: '2025-01-01T00:00:00Z' }), note('wrongbook', { diaryName: 'other' }), note('wanted')]);
     try {
@@ -104,6 +109,8 @@ describe('one physical corpus for memory filters, context and citation pages', (
       expect(f.client.replace.mock.calls.every(([, notes]) => notes.map(note => note.id).join(',') === 'wanted')).toBe(true);
       expect(result.memoryContext?.evidence).toMatchObject({ pageMemoryIds: ['wanted'], referenceCoverage: 'observed',
         references: [{ id: 'wanted', version: 1, role: mode === 'active' ? 'returned' : 'focus_input', sources: [{ messageId: 'source_wanted', revision: 1 }] }] });
+      if (mode === 'passive') { expect(f.client.search).not.toHaveBeenCalled(); expect(f.client.preprocess).toHaveBeenCalledOnce(); }
+      else { expect(f.client.search).toHaveBeenCalledOnce(); expect(f.client.pluginCall).toHaveBeenCalledOnce(); }
       const originalScope = f.client.replace.mock.calls[0]?.[0].scopeId;
       await f.service.search({ companionId: 'owner', conversationId: 'private', query: 'facts',
         tags: ['flower'], diaryName: 'journal', from: '2026-10-23', to: '2026-10-23', limit: 20 }, mode);
@@ -113,10 +120,10 @@ describe('one physical corpus for memory filters, context and citation pages', (
     } finally { await f.service.close(); }
   });
 
-  it.each(['active', 'passive'] as const)('limits %s text and provenance to the requested page', async mode => {
+  it('limits active tool text and provenance to the requested page', async () => {
     const f = fixture([note('first'), note('second'), note('third')]);
     try {
-      const result = await f.service.search({ companionId: 'owner', conversationId: 'private', query: 'facts', cursor: 1, limit: 1 }, mode);
+      const result = await f.service.search({ companionId: 'owner', conversationId: 'private', query: 'facts', cursor: 1, limit: 1 }, 'active');
       expect(result.memoryPage).toMatchObject({ items: [{ memory: { id: 'second' } }], hasMore: true, nextCursor: 2 });
       expect(result.memoryContext?.text).toBe('FACT_second');
       expect(JSON.stringify(result.memoryContext)).not.toContain('FACT_first');
@@ -124,6 +131,83 @@ describe('one physical corpus for memory filters, context and citation pages', (
       expect(result.memoryContext?.evidence).toMatchObject({ candidateOrder: 'independent_native_query', contextOrder: 'original_context_pipeline' });
       expect(f.client.replace.mock.calls[0]?.[1]).toHaveLength(3); expect(f.client.replace.mock.calls[1]?.[1].map(note => note.id)).toEqual(['second']);
       expect(f.scopes.size).toBe(2);
+    } finally { await f.service.close(); }
+  });
+
+  it('paginates passive observations without rebuilding or pruning the graph when query, limit or cursor changes', async () => {
+    const f = fixture([note('first'), note('second'), note('third')]);
+    try {
+      const scope = { companionId: 'owner', conversationId: 'private' };
+      const first = await f.service.search({ ...scope, query: 'facts about flowers', limit: 1 }, 'passive');
+      const second = await f.service.search({ ...scope, query: 'another topic', cursor: 1, limit: 1 }, 'passive');
+      const third = await f.service.search({ ...scope, query: 'a third topic', cursor: 2, limit: 2 }, 'passive');
+      expect(first.memoryPage).toMatchObject({ items: [{ memory: { id: 'first' } }], hasMore: true, nextCursor: 1 });
+      expect(second.memoryPage).toMatchObject({ items: [{ memory: { id: 'second' } }], hasMore: true, nextCursor: 2 });
+      expect(third.memoryPage).toMatchObject({ items: [{ memory: { id: 'third' } }], hasMore: false });
+      for (const result of [first, second, third]) {
+        expect(result.memoryContext?.text).toBe('FACT_first\nFACT_second\nFACT_third');
+        expect(result.memoryContext?.evidence?.references?.map(reference => reference.id)).toEqual(['first', 'second', 'third']);
+        expect(result.memoryContext?.evidence).toMatchObject({ candidateOrder: 'context_observation', contextOrder: 'original_context_pipeline',
+          dependencies: [{ id: 'first', version: 1 }, { id: 'second', version: 1 }, { id: 'third', version: 1 }], dependencyCoverage: 'complete' });
+        expect(result.memoryRetrieval?.candidateQuerySeparateFromContext).toBe(false);
+      }
+      expect(second.memoryContext?.evidence?.pageMemoryIds).toEqual(['second']);
+      expect(f.client.replace).toHaveBeenCalledOnce();
+      expect(f.client.replace.mock.calls[0]![1]).toHaveLength(3);
+      expect(f.client.preprocess).toHaveBeenCalledTimes(3);
+      expect(new Set(f.client.preprocess.mock.calls.map(([scope]) => scope.scopeId)).size).toBe(1);
+      expect(f.client.search).not.toHaveBeenCalled();
+      expect(f.client.purgeScope).not.toHaveBeenCalled();
+      expect(f.scopes.size).toBe(1);
+    } finally { await f.service.close(); }
+  });
+
+  it('retains more than one hundred passive graph dependencies and protected notes beyond the diagnostic page', async () => {
+    const notes = Array.from({ length: 125 }, (_, index) => note(`protected_${index}`, { diaryName: '日记', captureMethod: 'manual' }));
+    const f = fixture(notes), scope = { companionId: 'owner', conversationId: 'private' };
+    try {
+      const result = await f.service.search({ ...scope, query: 'facts', cursor: 120, limit: 5 }, 'passive');
+      expect(result.memoryPage?.items.map(hit => hit.memory.id)).toEqual(notes.slice(120).map(note => note.id));
+      expect(result.memoryPage?.hasMore).toBe(false);
+      expect(result.memoryContext?.text).toBe(notes.map(note => note.content).join('\n'));
+      const evidence = companionMemoryContextEvidenceSchema.parse(result.memoryContext?.evidence);
+      expect(evidence.dependencies).toEqual(notes.map(note => ({ id: note.id, version: 1 })));
+      expect(evidence.references?.map(reference => reference.id)).toEqual(notes.map(note => note.id));
+      expect(evidence.recallPolicy?.protectedNoteIds).toEqual(notes.map(note => note.id));
+      expect(evidence.pageMemoryIds).toEqual(notes.slice(120).map(note => note.id));
+      expect(f.client.preprocess.mock.calls[0]?.[3]).toMatchObject({ protectedNoteIds: notes.map(note => note.id) });
+      expect(f.client.replace.mock.calls[0]?.[1]).toHaveLength(125);
+      expect(f.client.search).not.toHaveBeenCalled();
+    } finally { await f.service.close(); }
+  });
+
+  it.each(['withdrawal', 'revision'] as const)('differentially updates the passive graph on source %s while rejecting old provenance', async change => {
+    const original = [note('first'), note('second'), note('third')], f = fixture(original);
+    const scope = { companionId: 'owner', conversationId: 'private' };
+    try {
+      const previous = await f.service.search({ ...scope, query: 'facts', limit: 1 }, 'passive');
+      const previousScope = f.client.replace.mock.calls[0]![0];
+      const corrected = note('second', { content: 'CORRECTED_second', version: 2,
+        sources: [{ ...original[1]!.sources[0]!, revision: 2, checksum: 'corrected_source_hash' }] });
+      const next = change === 'withdrawal' ? [original[0]!, original[2]!] : [original[0]!, corrected, original[2]!];
+      f.setCorpus(next, `source_${change}`);
+      expect(await f.service.contextValid(scope, previous.memoryContext!)).toBe(false);
+      const current = await f.service.search({ ...scope, query: 'facts', limit: 1 }, 'passive');
+      expect(f.client.replace).toHaveBeenCalledTimes(2);
+      expect(f.client.replace.mock.calls[1]![0].scopeId).toBe(previousScope.scopeId);
+      expect(f.client.replace.mock.calls[1]![1].map(note => note.id)).toEqual(next.map(note => note.id));
+      expect(f.client.purgeScope).not.toHaveBeenCalled();
+      expect(f.scopes.size).toBe(1);
+      expect(current.memoryContext?.text).toBe(next.map(note => note.content).join('\n'));
+      expect(current.memoryContext?.text).not.toContain('FACT_second');
+      expect(current.memoryContext?.evidence?.dependencies).toEqual(next.map(note => ({ id: note.id, version: note.version })));
+      if (change === 'revision') expect(current.memoryContext?.evidence?.references).toEqual(expect.arrayContaining([
+        expect.objectContaining({ id: 'second', version: 2, sources: [expect.objectContaining({ revision: 2, checksum: 'corrected_source_hash' })] }),
+      ]));
+      expect(f.client.search).not.toHaveBeenCalled();
+      await f.service.invalidate('owner');
+      expect(f.client.purgeScope).toHaveBeenCalledWith({ scopeId: previousScope.scopeId });
+      expect(f.scopes.size).toBe(0);
     } finally { await f.service.close(); }
   });
 

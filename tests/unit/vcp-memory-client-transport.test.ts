@@ -13,6 +13,43 @@ import * as memoryFilesystem from '../../src/main/vcp-memory/filesystem';
 vi.mock('electron', () => ({ utilityProcess: { fork: vi.fn() } }));
 
 describe('VCP worker transport serialization', () => {
+  it('uses one absolute timeout across worker initialization and the following command', async () => {
+    vi.useFakeTimers(); const events = new EventEmitter(), commands: string[] = [];
+    const client = new VcpMemoryClient({ dataRoot: 'unused-single-deadline', vendorRoot: 'unused', workerPath: 'unused', requestTimeoutMs: 100,
+      embedding: { baseUrl: 'http://127.0.0.1', apiKey: 'fixture', model: 'fixture', dimension: 4 },
+      launch: () => ({ on: events.on.bind(events), kill() { events.emit('exit', 0); }, postMessage(message: unknown) {
+        const { requestId, command } = message as { requestId: string; command: VcpMemoryCommand }; commands.push(command.type);
+        if (command.type === 'initialize') setTimeout(() => events.emit('message', { requestId, ok: true, value: {} }), 60);
+      } }) });
+    try {
+      const pending = client.list({ scopeId: 'single-deadline' }), rejected = expect(pending).rejects.toThrow('timed out');
+      await vi.advanceTimersByTimeAsync(60); expect(commands).toEqual(['initialize', 'list']);
+      await vi.advanceTimersByTimeAsync(41); await rejected;
+    } finally { await client.close(); vi.useRealTimers(); }
+  });
+  it('dispatches an existing scope without waiting behind another scope admission in the same client', async () => {
+    const broker = new VcpMemoryProcessBroker(1), events = new EventEmitter();
+    let releaseHeld!: () => void, lists = 0, launches = 0;
+    const client = new VcpMemoryClient({ dataRoot: 'unused-admission-bypass', vendorRoot: 'unused', workerPath: 'unused',
+      embedding: { baseUrl: 'http://127.0.0.1', apiKey: 'fixture', model: 'fixture', dimension: 4 }, processBroker: broker,
+      launch: () => { launches++; return { on: events.on.bind(events), kill() { events.emit('exit', 0); }, postMessage(message: unknown) {
+        const { requestId, command } = message as { requestId: string; command: VcpMemoryCommand };
+        const reply = () => events.emit('message', { requestId, ok: true, value: command.type === 'close' ? { closed: true } : {} });
+        if (command.type === 'search') releaseHeld = reply;
+        else { if (command.type === 'list') lists++; reply(); if (command.type === 'close') events.emit('exit', 0); }
+      } }; } });
+    try {
+      const held = client.search({ scopeId: 'foreground' }, { text: 'hold' });
+      await vi.waitFor(() => expect(releaseHeld).toBeDefined());
+      const waiting = client.list({ scopeId: 'new-background' });
+      const rejected = expect(waiting).rejects.toThrow('interrupted');
+      await new Promise(resolve => setTimeout(resolve, 25));
+      await client.list({ scopeId: 'foreground' });
+      expect(lists).toBe(1); expect(launches).toBe(1);
+      await client.interruptScope({ scopeId: 'new-background' }); await rejected;
+      releaseHeld(); await held;
+    } finally { await client.close(); await broker.close(); }
+  });
   it('uses a matched strict worker cleanup acknowledgement only after an actual zero exit in the same transport tick', async () => {
     const detach = vi.spyOn(memoryFilesystem, 'detachRuntimeDependencyLinks').mockRejectedValue(new Error('Parent cleanup must not repeat an acknowledged worker cleanup.'));
     const broker = new VcpMemoryProcessBroker(1), events = new EventEmitter(); let exited = false, heldBeforeExit = false;

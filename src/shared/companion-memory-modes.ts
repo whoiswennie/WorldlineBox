@@ -15,7 +15,7 @@ export const companionMemoryRetrievalModeIds = ['river', 'active', 'passive', 't
 export type CompanionMemoryRetrievalModeId = typeof companionMemoryRetrievalModeIds[number];
 export const companionMemoryRetrievalModesSchema = z.object({
   engine: z.literal('original-VCP'),
-  queryScope: z.literal('current_authorized_candidate_page'),
+  queryScope: z.enum(['current_authorized_candidate_page', 'current_authorized_corpus']),
   modes: z.array(z.object({ id: z.enum(companionMemoryRetrievalModeIds), label: z.string(), description: z.string(), available: z.boolean(), configured: z.boolean(),
     enabledByDefault: z.boolean(), exposure: z.string(), cost: z.string(), observedCalls: z.number().int().nonnegative(), reason: z.string().optional(), configurations: z.array(z.string()).optional() })).max(12),
   coldKnowledge: z.object({ tool: z.literal('memory.knowledge'), separatePipeline: z.literal(true) }),
@@ -26,7 +26,7 @@ export interface CompanionMemoryModeRegistration { available: boolean; configure
 const descriptions: Record<CompanionMemoryRetrievalModeId, [string, string]> = {
   river: ['RiverMemo', '原版语义网、拓扑与引力检索。'],
   active: ['主动回忆', '默认 LightMemo 主动检索。'],
-  passive: ['上下文回忆', '原版 RAG 与 AIMemo+ 聚焦；需要聊天模型。'],
+  passive: ['上下文回忆', '原版 RAG 在完整获权记忆图上按当前语境检索，再由 AIMemo+ 聚焦；与聊天前自动回忆使用同一入口。'],
   time: ['时间感知检索', '::Time 的语义/时间双路配额；按本次查询传入的宿主世界时钟与时区识别“昨天”等相对词，独立原生调用未传时钟时沿用现实日历。精确日期范围先用 from/to，不是月度时间线生成。'],
   time_decay: ['时间衰减', '原版半衰期和最低分后处理；日常被动上下文默认180天、最低分0并保护资料/重要条目，显式选择时沿用本次参数。显式时间路按原逻辑豁免。原版将 TimeDecay 后缀也识别为 Time，含相对时间词时可联动时间候选。'],
   semantic_group: ['语义组', '原版已配置语义组向量增强查询；不会从模型参数创建新组。'],
@@ -40,7 +40,7 @@ const descriptions: Record<CompanionMemoryRetrievalModeId, [string, string]> = {
 
 /** Projection of actual worker registrations. Missing configuration is never presented as usable. */
 export function projectCompanionMemoryRetrievalModes(capabilities: { modes?: Record<string, CompanionMemoryModeRegistration> }): CompanionMemoryRetrievalModes {
-  return { engine: 'original-VCP', queryScope: 'current_authorized_candidate_page', modes: companionMemoryRetrievalModeIds.map(id => {
+  return { engine: 'original-VCP', queryScope: 'current_authorized_corpus', modes: companionMemoryRetrievalModeIds.map(id => {
     const registration = capabilities.modes?.[id], [label, description] = descriptions[id];
     const available = !!registration?.available && !!registration?.configured;
     return { id, label, description, available, configured: !!registration?.configured, enabledByDefault: !!registration?.enabledByDefault,

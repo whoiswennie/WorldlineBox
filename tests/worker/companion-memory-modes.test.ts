@@ -24,7 +24,7 @@ it('discovers actual original modes, rejects missing dependencies, and executes 
     fetchFn: fetch, busy: () => true, changed: () => undefined, report: () => undefined });
   try {
     const catalog = (await service.retrievalModes(scope)).memoryRetrievalModes!;
-    expect(catalog.queryScope).toBe('current_authorized_candidate_page');
+    expect(catalog.queryScope).toBe('current_authorized_corpus');
     expect(catalog.modes.find(mode => mode.id === 'time')).toMatchObject({ available: true, enabledByDefault: false });
     for (const mode of ['external_rerank', 'jev_rerank', 'meta_thinking', 'semantic_group']) expect(catalog.modes.find(item => item.id === mode)).toMatchObject({ available: false, reason: expect.any(String) });
     const before = native.embeddingRequests.filter(request => request.path.startsWith('/query/')).length;

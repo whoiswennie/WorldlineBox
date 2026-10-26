@@ -1,6 +1,8 @@
 import { z } from 'zod';
 import { companionLoopTurnSchema, companionLoopWorkingStateSchema } from './companion-loop';
 import { companionFinalProposalReceiptStatus, isCompanionFinalTurn, type CompanionFinalProposalTurn } from './companion-final-proposal';
+import { companionFrozenMemoryDependencySchema } from './companion-frozen-memory';
+import { companionMemoryContextEvidenceSchema } from './companion-memory-context-evidence';
 
 const id = z.string().regex(/^[a-zA-Z0-9_-]{1,100}$/);
 const digest = z.string().regex(/^[a-f0-9]{64}$/);
@@ -39,6 +41,11 @@ export const companionAgentRunSchema = z.object({
   rejectedFinals: z.array(companionRejectedFinalSchema).optional(),
   sources: z.array(z.object({ id, conversationId: id, checksum: digest })),
   memories: z.array(z.object({ id, version: z.number().int().positive() })),
+  frozenMemories: z.array(companionFrozenMemoryDependencySchema).optional(),
+  /** One passive preparation per durable invocation, including an empty result.
+   * Saved host bytes retain source receipts; active tool reads are separate. */
+  passiveRecall: z.strictObject({ prepared: z.literal(true), context: z.strictObject({ text: z.string(), revision: z.string(),
+    profileKey: z.string(), evidence: companionMemoryContextEvidenceSchema.optional() }).optional() }).optional(),
   knowledgeReads: z.array(companionKnowledgeReadSchema).optional(),
   /** Immutable authorized checkpoint references, including secondary game ports. */
   topics: z.array(z.strictObject({ conversationId: id, topicId: id, checkpointEventIds: z.array(id).min(1).max(2), sourceMessageIds: z.array(id).max(512) })).optional(),

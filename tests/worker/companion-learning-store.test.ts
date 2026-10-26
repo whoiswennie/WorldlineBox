@@ -26,6 +26,7 @@ function commit(store: CompanionsStore, job: CompanionLearningJob, content = 'åŽ
 
 it('has no implicit grants, supports many-to-many sources and requires explicit autonomous or manual permission', () => {
   const f = fixture(); expect(f.claim()).toBeUndefined();
+  f.store.request({ type: 'tasks.concurrency.set', companionId: 'alice', limit: 1 }); // This case exercises explicitly serial source admission.
   expect(f.store.request({ type: 'learning.status', companionId: 'alice' }).learning!.grants).toEqual([]);
   const a = f.grant(), b = f.grant('bob'), another = f.grant('alice', 'library-two');
   expect(f.claim()).toBeUndefined();

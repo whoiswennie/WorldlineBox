@@ -22,6 +22,8 @@ beforeEach(() => {
 });
 afterEach(() => { store?.close(); if (path.dirname(root) !== path.resolve(tmpdir()) || !path.basename(root).startsWith('companion-attention-')) throw Error('Unexpected cleanup'); rmSync(root, { recursive: true, force: true }); vi.useRealTimers(); });
 it('shares one FIFO between private and group messages while other companions remain independent', () => {
+  store!.request({ type: 'tasks.concurrency.set', companionId: 'alice', limit: 1 });
+  store!.request({ type: 'tasks.concurrency.set', companionId: 'bob', limit: 1 });
   const privateRoom = store!.openPrivate('alice'), group = store!.createConversation('群聊', ['alice', 'bob']);
   const first = store!.appendMessage({ conversationId: privateRoom.id, authorId: 'user', content: '第一个请求', replyDirective: 'queue' });
   const active = store!.request({ type: 'work.claim' }).work!; expect(active.sourceMessageId).toBe(first.id);

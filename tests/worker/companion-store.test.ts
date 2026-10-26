@@ -30,6 +30,45 @@ it('persists immutable host execution dependencies before dispatch without retro
   expect(reopened.checkpoint(action.id)?.executionReadset).toEqual(executionReadset);
 });
 
+it('creates an immediate durable bubble for an idle steering message and reuses it when claimed', () => {
+  vi.useFakeTimers({ toFake: ['Date'] }); vi.setSystemTime('2026-10-14T08:00:00Z');
+  const { store } = fixture(), companionId = 'deepseek-sister', conversationId = 'private-deepseek-sister';
+  const routine = store.request({ type: 'routine.get', companionId, conversationId }).routine!;
+  store.request({ type: 'routine.configure', companionId, conversationId, expectedRevision: routine.revision,
+    patch: { sleepAt: '23:00', wakeAt: '01:00', meals: [], habits: [] } });
+  const source = store.appendMessage({ conversationId, authorId: 'user', content: '请核对这条消息。' });
+  const work = { id: 'steer_idle_reply', companionId, conversationId, sourceMessageId: source.id, inputMode: 'steer' as const,
+    status: 'queued' as const, proactive: false, createdAt: source.createdAt, updatedAt: source.createdAt };
+  store.request({ type: 'work.enqueue', work });
+  const queued = store.request({ type: 'work.list' }).works!.find(item => item.id === work.id)!;
+  expect(queued.messageId).toBeTruthy();
+  expect(store.getMessage(queued.messageId!)).toMatchObject({ isReplyDraft: true, replyToId: source.id,
+    replyProgress: { phase: 'queued', workId: work.id } });
+  const claimed = store.request({ type: 'work.claim' }).work!;
+  expect(claimed).toMatchObject({ id: work.id, messageId: queued.messageId });
+  expect(store.getMessage(claimed.messageId!)).toMatchObject({ replyProgress: { phase: 'context', detail: '正在读取最近对话并核验来源' } });
+});
+
+it('keeps actual same-room steering lazy but mounts its progress before it starts after the first work', () => {
+  vi.useFakeTimers({ toFake: ['Date'] }); vi.setSystemTime('2026-10-14T08:00:00Z');
+  const { store } = fixture(), companionId = 'deepseek-sister', conversationId = 'private-deepseek-sister';
+  const routine = store.request({ type: 'routine.get', companionId, conversationId }).routine!;
+  store.request({ type: 'routine.configure', companionId, conversationId, expectedRevision: routine.revision,
+    patch: { sleepAt: '23:00', wakeAt: '01:00', meals: [], habits: [] } });
+  const enqueue = (id: string) => {
+    const source = store.appendMessage({ conversationId, authorId: 'user', content: id });
+    store.request({ type: 'work.enqueue', work: { id, companionId, conversationId, sourceMessageId: source.id,
+      inputMode: 'steer', status: 'queued', proactive: false, createdAt: source.createdAt, updatedAt: source.createdAt } });
+  };
+  enqueue('first_steer'); expect(store.request({ type: 'work.claim' }).work?.id).toBe('first_steer');
+  enqueue('followup_steer');
+  expect(store.request({ type: 'work.list' }).works!.find(item => item.id === 'followup_steer')?.messageId).toBeUndefined();
+  store.request({ type: 'work.status', id: 'first_steer', status: 'done' });
+  const second = store.request({ type: 'work.claim' }).work!;
+  expect(second.id).toBe('followup_steer'); expect(second.messageId).toBeTruthy();
+  expect(store.getMessage(second.messageId!).replyProgress?.phase).toBe('context');
+});
+
 it('creates one durable queued bubble per group loop, keeps its identity on retry and cancels only the selected work', () => {
   const f = fixture();
   const third = f.store.createCompanion({ name: '第三位', persona: '并行回复验收', description: '', model: '', avatar: 'custom', proactive: false });

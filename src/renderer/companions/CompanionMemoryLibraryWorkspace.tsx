@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type { Companion, CompanionMessage, CompanionsRequest, CompanionsResponse, WorldlineBoxCompanionsApi } from '../../shared/companions';
 import type { CompanionMemoryDocument, CompanionMemoryDocumentCommand, CompanionMemoryDocumentRead, CompanionMemoryDocumentsPage } from '../../shared/companion-memory-documents';
 import type { CompanionWorkspaceResponse } from '../../shared/companion-workspace';
@@ -10,6 +10,8 @@ import { CompanionMemoryProcessingPanel, CompanionMemoryProcessingSummary } from
 import { memoryDocumentTitle, memoryFilterDate } from './companion-memory-presentation';
 import { Icon } from '../Icons';
 import { companionTimestamp } from '../../shared/companion-time';
+import { CompanionRecentReadCache } from './recent-read-cache';
+import { createCoalescedRefresh } from './coalesced-refresh';
 import './companion-memory-library.css';
 
 const categoryLabels: Record<CompanionMemoryDocument['category'], string> = { diary: '日记', material: '学习资料', self: '自我认识', world: '世界经历', timeline: '时间线', profile: '伙伴档案', other: '文本' };
@@ -34,6 +36,7 @@ function excerpt(item: CompanionMemoryDocument) {
 }
 export type CompanionMemoryDocumentDraft = { path: string; content: string; tags: string; diaryName: string; original?: CompanionMemoryDocumentRead; sourceMessageId?: string };
 type Editor = CompanionMemoryDocumentDraft;
+export type CompanionMemoryLibraryRecentRead = { page: CompanionMemoryDocumentsPage; selectedPath?: string; read?: CompanionMemoryDocumentRead };
 type Operation = { kind: 'move' | 'mkdir'; value: string } | { kind: 'delete' };
 function MemoryLibraryFolders({ folders, selected, onSelect }: { folders: CompanionMemoryDocumentsPage['folders']; selected: string; onSelect(path: string): void }) {
   const host = useRef<HTMLElement>(null), [viewport, setViewport] = useState({ top: 0, height: 600 });
@@ -48,7 +51,7 @@ function MemoryLibraryFolders({ folders, selected, onSelect }: { folders: Compan
   return <nav className="memory-library-folders" aria-label="记忆文档目录" ref={host} onScroll={event => { const top = event.currentTarget.scrollTop; setViewport(current => ({ ...current, top })); }}><div style={{ height: rows.length * size, position: 'relative' }}><div style={{ position: 'absolute', top: start * size, left: 0, right: 0 }}>{rows.slice(start, end).map(folder => <button key={folder.path} aria-current={selected === folder.path ? 'page' : undefined} onClick={() => onSelect(folder.path)} style={{ paddingLeft: 14 + Math.min(Math.max(0, folder.path.split('/').length - 1), 5) * 12 }}><Icon name={!folder.path ? 'layers' : folder.path === '时间线' ? 'clock' : folder.path === '自我认识' ? 'heart' : folder.path === '世界经历' ? 'globe' : 'folder'} /><span>{folderLabel(folder.path)}</span>{folder.count >= 0 && <small>{folder.count}</small>}</button>)}</div></div></nav>;
 }
 
-export function CompanionMemoryLibraryWorkspace({ companions, companionId, api, request, draft, onDraftConsumed, onOwnerChange, onLocateSource, authorName, onClose, requestError, onDismissError, initialEditor, onEditorChange, onLearningSources, onMemoryTrace, onMemoryProbe, active = true, processingRequest, onProcessingRequestConsumed, noteRequest, onNoteRequestConsumed }: {
+export function CompanionMemoryLibraryWorkspace({ companions, companionId, api, request, draft, onDraftConsumed, onOwnerChange, onLocateSource, authorName, onClose, requestError, onDismissError, initialEditor, onEditorChange, onLearningSources, onMemoryTrace, onMemoryProbe, active = true, processingRequest, onProcessingRequestConsumed, noteRequest, onNoteRequestConsumed, recentReads }: {
   companions: Companion[]; companionId: string; api?: WorldlineBoxCompanionsApi;
   request: (input: CompanionsRequest) => Promise<CompanionsResponse | undefined>;
   draft?: CompanionMemoryDraft; onDraftConsumed(): void; onOwnerChange(id: string): void;
@@ -57,9 +60,16 @@ export function CompanionMemoryLibraryWorkspace({ companions, companionId, api, 
   initialEditor?: CompanionMemoryDocumentDraft; onEditorChange?(owner: string, editor?: CompanionMemoryDocumentDraft): void;
   active?: boolean; processingRequest?: number; onProcessingRequestConsumed?(): void;
   noteRequest?: { noteId: string; nonce: number }; onNoteRequestConsumed?(): void;
+  recentReads?: CompanionRecentReadCache<CompanionMemoryLibraryRecentRead>;
 }) {
   const owner = companions.find(item => item.id === companionId);
-  const [page, setPage] = useState<CompanionMemoryDocumentsPage>();
+  const recent = useMemo(() => recentReads ?? new CompanionRecentReadCache<CompanionMemoryLibraryRecentRead>(8, 8 * 1024 * 1024, api), [recentReads, api]);
+  const [initialRead] = useState(() => recent.get(companionId));
+  const pageGeneration = useRef(recent.generation);
+  const pageIsBaseline = useRef(!!initialRead);
+  const readGeneration = useRef(recent.generation);
+  const pageCache = useRef(recent), readCache = useRef(recent);
+  const [page, setPage] = useState<CompanionMemoryDocumentsPage | undefined>(initialRead?.page);
   const [directory, setDirectory] = useState(''), [query, setQuery] = useState(''), [tag, setTag] = useState('');
   const [sort, setSort] = useState<'updated_desc' | 'created_desc' | 'created_asc'>('updated_desc');
   const [filters, setFilters] = useState(false), [dateField, setDateField] = useState<'createdAt' | 'updatedAt'>('updatedAt');
@@ -72,7 +82,7 @@ export function CompanionMemoryLibraryWorkspace({ companions, companionId, api, 
     return () => { cancelled = true; };
   }, [processingRequest, onProcessingRequestConsumed]);
   const [cursor, setCursor] = useState<string>(), [previousCursors, setPreviousCursors] = useState<Array<string | undefined>>([]);
-  const [selectedPath, setSelectedPath] = useState<string>(), [read, setRead] = useState<CompanionMemoryDocumentRead>();
+  const [selectedPath, setSelectedPath] = useState<string | undefined>(initialRead?.selectedPath), [read, setRead] = useState<CompanionMemoryDocumentRead | undefined>(initialRead?.read);
   const [editor, setEditor] = useState<Editor | undefined>(initialEditor), [preview, setPreview] = useState(false), [inspector, setInspector] = useState(false);
   const [operation, setOperation] = useState<Operation>(), [busy, setBusy] = useState(false), [loading, setLoading] = useState(false), [reading, setReading] = useState(false);
   const [error, setError] = useState(''), [notice, setNotice] = useState(''), [mobile, setMobile] = useState<'list' | 'document' | 'folders'>(initialEditor ? 'document' : 'list');
@@ -81,16 +91,16 @@ export function CompanionMemoryLibraryWorkspace({ companions, companionId, api, 
   const [policies, setPolicies] = useState<NonNullable<CompanionsResponse['memoryPolicies']>>([]);
   const [libraryName, setLibraryName] = useState(''), [maintenance, setMaintenance] = useState(false);
   const alive = useRef(true), listEpoch = useRef(0), readEpoch = useRef(0), textarea = useRef<HTMLTextAreaElement>(null), fileScroll = useRef<HTMLDivElement>(null), paperScroll = useRef<HTMLDivElement>(null);
-  const firstList = useRef(true);
   const pendingList = useRef<{ key: string; epoch: number; promise: Promise<CompanionMemoryDocumentsPage | undefined> } | undefined>(undefined);
   const locatedNoteRequest = useRef<string | undefined>(undefined);
   const dirty = !!editor && (!editor.original || editor.content !== editor.original.content || editor.tags !== editor.original.document.tags.join('，') || editor.diaryName !== (editor.original.memory?.diaryName ?? ''));
 
   const call = useCallback(async (command: CompanionMemoryDocumentCommand, reportError = true): Promise<CompanionWorkspaceResponse | undefined> => {
     if (!api?.workspace) { setError('记忆文档接口暂不可用，请重新打开伙伴页面。'); return; }
+    if (!['memory.documents.list', 'memory.documents.read', 'memory.documents.locate', 'memory.documents.tags.status'].includes(command.type)) { recent.clear(); ++listEpoch.current; ++readEpoch.current; }
     try { const result = await api.workspace(command); if (!result.ok && reportError && alive.current) setError(result.error || '文档操作未完成。'); return result; }
     catch (cause) { const error = cause instanceof Error ? cause.message : '文档操作未完成，请重试。'; if (reportError && alive.current) setError(error); return { ok: false, error }; }
-  }, [api]);
+  }, [api, recent]);
   const load = useCallback((pageCursor: string | undefined = cursor, preserveSelection = false): Promise<CompanionMemoryDocumentsPage | undefined> => {
     if (parseTags(tag).length > 20) { setError('一次最多按20个标签筛选。'); setLoading(false); return Promise.resolve(undefined); }
     if (fromDate && toDate && fromDate > toDate) { setError('开始日期不能晚于结束日期。'); setLoading(false); return Promise.resolve(undefined); }
@@ -102,11 +112,15 @@ export function CompanionMemoryLibraryWorkspace({ companions, companionId, api, 
     // and invalidate its still-pending result on every refresh tick.
     if (pendingList.current?.key === key && pendingList.current.epoch === listEpoch.current) return pendingList.current.promise;
     const epoch = ++listEpoch.current; setLoading(true);
+    const generation = recent.generation;
     const promise = (async () => {
       const result = await call(command, false);
       if (!alive.current || epoch !== listEpoch.current) return;
       setLoading(false);
       if (result?.documents) {
+        pageGeneration.current = generation;
+        pageCache.current = recent;
+        pageIsBaseline.current = !command.directory && !command.cursor && !command.query && !command.tags?.length && !command.sort && !command.from && !command.to;
         setPage({ ...result.documents, items: result.documents.items.slice(0, 64) });
         setSelectedPath(current => current && (preserveSelection || result.documents!.items.some(item => item.path === current)) ? current : result.documents!.items.find(item => item.category === 'diary')?.path ?? result.documents!.items.find(item => item.kind === 'note')?.path ?? result.documents!.items[0]?.path);
         return result.documents;
@@ -115,22 +129,40 @@ export function CompanionMemoryLibraryWorkspace({ companions, companionId, api, 
     pendingList.current = { key, epoch, promise };
     void promise.finally(() => { if (pendingList.current?.promise === promise) pendingList.current = undefined; });
     return promise;
-  }, [call, companionId, directory, cursor, query, tag, sort, dateField, fromDate, toDate]);
+  }, [call, companionId, directory, cursor, query, tag, sort, dateField, fromDate, toDate, recent]);
   const readDocument = useCallback(async (path: string, sourceCursor?: number) => {
     const epoch = ++readEpoch.current; setReading(true);
+    const generation = recent.generation;
     const result = await call({ type: 'memory.documents.read', companionId, path, sourceLimit: 30, ...(sourceCursor === undefined ? {} : { sourceCursor }) }, false);
     if (!alive.current || epoch !== readEpoch.current) return;
     setReading(false);
+    readGeneration.current = generation;
+    readCache.current = recent;
     if (result?.document) setRead(current => sourceCursor === undefined ? result.document : { ...result.document!, sources: [...new Map([...(current?.sources ?? []), ...result.document!.sources].map(source => [source.id, source])).values()] });
     else { setRead(undefined); setError(result?.error || '文档暂时无法读取。'); }
-  }, [call, companionId]);
+  }, [call, companionId, recent]);
   const status = useCallback(async () => {
     const [result, rules] = await Promise.all([request({ type: 'memory.status', companionId }), request({ type: 'memory.policy.list', companionId })]);
     if (alive.current) { setProcessing(result?.memoryStatus); setPolicies(rules?.memoryPolicies ?? []); }
   }, [request, companionId]);
   useEffect(() => { alive.current = true; return () => { alive.current = false; }; }, []);
   useEffect(() => { onEditorChange?.(companionId, editor); }, [companionId, editor, onEditorChange]);
-  useEffect(() => { if (!active) return; const timer = setTimeout(() => { if (alive.current) { firstList.current = false; void load(); } }, firstList.current ? 0 : 240); return () => clearTimeout(timer); }, [load, active]);
+  const filterKey = JSON.stringify([query, tag, dateField, fromDate, toDate]);
+  const lastFilterKey = useRef(filterKey);
+  useEffect(() => {
+    const editingFilter = lastFilterKey.current !== filterKey; lastFilterKey.current = filterKey;
+    if (!active) return;
+    // First visits, returning to the library, folders and pagination need no
+    // artificial wait. Only text/date filter edits are debounced.
+    const timer = setTimeout(() => { if (alive.current) void load(); }, editingFilter ? 240 : 0);
+    return () => clearTimeout(timer);
+  }, [load, active, filterKey]);
+  useEffect(() => {
+    if (!page || pageCache.current !== recent || !pageIsBaseline.current || page.companionId !== companionId || directory || cursor || query.trim() || tag.trim() || sort !== 'updated_desc' || fromDate || toDate || pageGeneration.current !== recent.generation) return;
+    const selectedDocument = read?.document;
+    const document = readCache.current === recent && readGeneration.current === recent.generation && selectedDocument?.path === selectedPath && page.items.some(item => item.path === selectedPath && item.revision === selectedDocument?.revision) ? read : undefined;
+    recent.set(companionId, { page, selectedPath, ...(document ? { read: document } : {}) }, pageGeneration.current);
+  }, [page, read, selectedPath, companionId, directory, cursor, query, tag, sort, fromDate, toDate, recent]);
   useEffect(() => { if (fileScroll.current) fileScroll.current.scrollTop = 0; }, [cursor, query, tag, directory, sort, dateField, fromDate, toDate]);
   useEffect(() => { if (paperScroll.current) paperScroll.current.scrollTop = 0; }, [selectedPath]);
   useEffect(() => {
@@ -143,24 +175,27 @@ export function CompanionMemoryLibraryWorkspace({ companions, companionId, api, 
   }, [page?.index?.state, editor, cursor, load, active]);
   useEffect(() => { if (!active) return; void Promise.resolve().then(() => { if (!alive.current) return; if (selectedPath) void readDocument(selectedPath); else setRead(undefined); }); }, [selectedPath, readDocument, active]);
   useEffect(() => { if (!active) return; void status(); void api?.workspace?.({ type: 'status' }).then(result => { if (alive.current) setLibraryName(result.selected?.displayName ?? ''); }).catch(() => undefined); }, [api, status, active]);
+  const selection = useRef({ selectedPath, editor, read });
+  useLayoutEffect(() => { selection.current = { selectedPath, editor, read }; }, [selectedPath, editor, read]);
   useEffect(() => {
     if (!active) return;
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    const unsubscribe = api?.onChanged(() => {
-      if (timer) return;
-      timer = setTimeout(() => {
-        timer = undefined;
+    const updates = createCoalescedRefresh(async () => {
+        const generation = recent.generation;
         const selectedEpoch = readEpoch.current;
-        void status();
-        void load(cursor, true).then(next => {
-          if (!next || !alive.current || readEpoch.current !== selectedEpoch || !selectedPath || editor) return;
-          const entry = next.items.find(item => item.path === selectedPath), previous = read?.document;
-          if (!entry || !previous || entry.revision !== previous.revision || entry.syncState !== previous.syncState || entry.updatedAt !== previous.updatedAt || entry.sourceCount !== previous.sourceCount) void readDocument(selectedPath);
-        });
-      }, 350);
+        const previous = selection.current;
+        await Promise.all([status(), load(cursor, true).then(next => {
+          if (!next || !alive.current || readEpoch.current !== selectedEpoch || !previous.selectedPath || selection.current.selectedPath !== previous.selectedPath || selection.current.editor) return;
+          const entry = next.items.find(item => item.path === previous.selectedPath), document = previous.read?.document;
+          if (!entry || !document || entry.revision !== document.revision || entry.syncState !== document.syncState || entry.updatedAt !== document.updatedAt || entry.sourceCount !== document.sourceCount) void readDocument(previous.selectedPath);
+        })]);
+        if (alive.current && recent.generation !== generation) void updates.trigger();
+    }, undefined, 350);
+    const unsubscribe = api?.onChanged(() => {
+      if (!recentReads) recent.clear();
+      void updates.trigger();
     });
-    return () => { clearTimeout(timer); unsubscribe?.(); };
-  }, [api, load, status, selectedPath, editor, readDocument, cursor, read, active]);
+    return () => { updates.dispose(); unsubscribe?.(); };
+  }, [api, load, status, readDocument, cursor, active, recent, recentReads]);
   useEffect(() => {
     if (!active || !processing || !(processing.pending || processing.running || processing.pendingIndex)) return;
     const timer = setInterval(() => { void status(); }, 3000); return () => clearInterval(timer);

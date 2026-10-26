@@ -5,6 +5,7 @@ import { afterEach, expect, it, vi } from 'vitest';
 import { CompanionMemoryProbeWorkspace } from '../../src/renderer/companions/CompanionMemoryProbeWorkspace';
 import { CompanionMemoryManager } from '../../src/renderer/companions/CompanionMemoryManager';
 import { companionMemoryProbeCommand, type CompanionMemoryProbe } from '../../src/shared/companion-memory-probe';
+import type { CompanionMemoryProbeProgressEvent } from '../../src/shared/companion-memory-probe-progress';
 import { BUILTIN_COMPANIONS } from '../../src/shared/companion-personas';
 import type { Companion, CompanionsResponse, WorldlineBoxCompanionsApi } from '../../src/shared/companions';
 import type { ScheduleRequest } from '../../src/renderer/companions/companion-schedules';
@@ -13,7 +14,7 @@ import { memorySourcePathKey, memoryToolPresentation, memoryToolSourceBlocks, na
 
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
 let root: Root | undefined, node: HTMLDivElement | undefined;
-afterEach(async () => { await act(() => root?.unmount()); node?.remove(); root = undefined; node = undefined; vi.restoreAllMocks(); });
+afterEach(async () => { await act(() => root?.unmount()); node?.remove(); root = undefined; node = undefined; vi.useRealTimers(); vi.restoreAllMocks(); });
 const at = '2026-10-22T07:00:00.000Z';
 const owner: Companion = { ...BUILTIN_COMPANIONS[0]!, builtin: true, createdAt: at };
 const second = { ...owner, id: 'another-owner', name: '另一位伙伴' };
@@ -34,8 +35,12 @@ function retrieval(): CompanionMemoryRetrieval {
   ] };
 }
 function events(request: ScheduleRequest) {
-  const listeners = new Set<() => void>(); const api: WorldlineBoxCompanionsApi = { request: async input => (await request(input)) ?? { ok: false }, onChanged: listener => { listeners.add(listener); return () => { listeners.delete(listener); }; }, onReplyStream: () => () => undefined };
-  return { api, emit: () => { for (const listener of listeners) listener(); } };
+  const listeners = new Set<() => void>(), progress = new Set<(event: CompanionMemoryProbeProgressEvent) => void>();
+  const retired: Array<(event: CompanionMemoryProbeProgressEvent) => void> = [];
+  const api: WorldlineBoxCompanionsApi = { request: async input => (await request(input)) ?? { ok: false }, onChanged: listener => { listeners.add(listener); return () => { listeners.delete(listener); }; }, onReplyStream: () => () => undefined,
+    onMemoryProbeProgress: listener => { progress.add(listener); return () => { progress.delete(listener); retired.push(listener); }; } };
+  return { api, emit: () => { for (const listener of listeners) listener(); }, emitProgress: (event: CompanionMemoryProbeProgressEvent) => { for (const listener of progress) listener(event); },
+    progressListeners: progress, retiredProgressListeners: retired };
 }
 async function mount(request: ScheduleRequest, patch: Partial<Props> = {}) {
   node = document.createElement('div'); document.body.append(node); root = createRoot(node);
@@ -45,12 +50,33 @@ function button(label: string) { const result = [...node!.querySelectorAll<HTMLB
 async function fill(text: string) { const input = node!.querySelector<HTMLTextAreaElement>('[aria-label="想回忆的事"]')!; await act(() => { Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')!.set!.call(input, text); input.dispatchEvent(new Event('input', { bubbles: true })); }); }
 async function run() { await act(async () => button('开始回忆').click()); }
 function deferred<T>() { let resolve!: (value: T) => void; const promise = new Promise<T>(done => { resolve = done; }); return { promise, resolve }; }
+function recallCommand(request: ReturnType<typeof vi.fn<ScheduleRequest>>) {
+  const command = request.mock.calls.find(([command]) => command.type === 'memory.recall.test')?.[0];
+  if (command?.type !== 'memory.recall.test' || !command.requestId) throw new Error('Missing correlated memory probe request.');
+  return command;
+}
+function progressFor(command: ReturnType<typeof recallCommand>, patch: Partial<CompanionMemoryProbeProgressEvent> = {}): CompanionMemoryProbeProgressEvent {
+  return { requestId: command.requestId!, companionId: command.companionId, mode: command.mode, state: 'running', sequence: 1,
+    stageId: 'queue', label: '等待记忆查询', elapsedMs: 0, stageElapsedMs: 0, stages: [{ id: 'queue', label: '等待记忆查询', elapsedMs: 0 }], ...patch };
+}
+function outputMs(label: string) {
+  const output = node!.querySelector(`[aria-label="${label}"]`);
+  if (!output) throw new Error('Missing timing output ' + label);
+  const text = output.textContent!;
+  return parseFloat(text) * (/毫秒/u.test(text) ? 1 : 1000);
+}
+function fakeClock() {
+  vi.useFakeTimers(); vi.setSystemTime(new Date('2026-10-26T00:00:00Z'));
+  let now = 0;
+  vi.spyOn(performance, 'now').mockImplementation(() => now);
+  return async (milliseconds: number) => { now += milliseconds; await act(async () => { await vi.advanceTimersByTimeAsync(milliseconds); }); };
+}
 
 it('executes only an explicit manual query through the companion recall API and exposes literal real context', async () => {
   const request = vi.fn<ScheduleRequest>(async () => ({ ok: true, memoryProbe: value() })); await mount(request);
   expect(request).not.toHaveBeenCalled(); expect(button('开始回忆').disabled).toBe(true);
   await fill('  你记得我的名字吗  '); expect(request).not.toHaveBeenCalled(); await run();
-  expect(request).toHaveBeenCalledExactlyOnceWith({ type: 'memory.recall.test', companionId: owner.id, mode: 'active', query: '你记得我的名字吗', limit: 8 });
+  expect(request).toHaveBeenCalledExactlyOnceWith({ type: 'memory.recall.test', companionId: owner.id, mode: 'active', query: '你记得我的名字吗', limit: 8, requestId: expect.any(String) });
   expect(node!.querySelector('[aria-label="VCP上下文原文"]')?.textContent).toBe(value().contextText);
   expect(node!.textContent).toContain('找到的记忆不一定都会出现在这次回忆里'); expect(node!.querySelectorAll('[data-probe-note]')).toHaveLength(1);
 });
@@ -233,6 +259,135 @@ it('reports empty, pending, degraded and failed retrieval truthfully without doc
   await mount(request); await fill('你记得我的名字吗'); await run();
   expect(node!.textContent).toContain('召回已降级'); expect(node!.textContent).toContain('仍在收录或建立索引'); expect(node!.textContent).toContain('没有命中相关记忆'); expect(node!.textContent).toContain('没有返回可注入的记忆原文');
   await run(); expect(node!.textContent).toContain('本地向量模型当前不可用'); expect(node!.querySelector('[aria-label="本次回忆结果"]')).toBeNull(); expect(request.mock.calls.every(([command]) => command.type === 'memory.recall.test')).toBe(true);
+});
+
+it('shows click-to-settle waiting time before progress and keeps backend time separate through completion', async () => {
+  const advance = fakeClock(), pending = deferred<CompanionsResponse>();
+  const request = vi.fn<ScheduleRequest>(async () => pending.promise), source = events(request);
+  await mount(request, { api: source.api }); await fill('你记得我的名字吗'); await run();
+  const command = recallCommand(request);
+  expect(source.progressListeners.size).toBe(1);
+  expect(node!.querySelector('[aria-label="本次回忆耗时"]')?.textContent).toContain('等待回忆服务响应');
+  await advance(3000);
+  expect(outputMs('等待总用时')).toBe(3000);
+  expect(node!.querySelector('[aria-label="后端处理用时"]')).toBeNull();
+  expect(node!.querySelector('[data-memory-probe-stage="projection"]')?.textContent).toContain('未观测');
+  await act(() => source.emitProgress(progressFor(command)));
+  await advance(1000);
+  expect(outputMs('等待总用时')).toBe(4000); expect(outputMs('后端处理用时')).toBe(1000); expect(outputMs('当前阶段用时')).toBe(1000);
+  const focus = progressFor(command, { sequence: 2, stageId: 'focus', label: '原版检索与片段整理', elapsedMs: 1000, stageElapsedMs: 0,
+    stages: [{ id: 'queue', label: '等待记忆查询', elapsedMs: 1000 }, { id: 'focus', label: '原版检索与片段整理', elapsedMs: 0 }] });
+  await act(() => source.emitProgress(focus)); await advance(2000);
+  expect(outputMs('等待总用时')).toBe(6000); expect(outputMs('当前阶段用时')).toBe(2000);
+  await advance(500);
+  const stages: CompanionMemoryProbeProgressEvent['stages'] = [{ id: 'queue', label: '等待记忆查询', elapsedMs: 1000 },
+    { id: 'focus', label: '原版检索与片段整理', elapsedMs: 2400 }, { id: 'verification', label: '核验回忆结果', elapsedMs: 100 }];
+  await act(() => source.emitProgress(progressFor(command, { state: 'completed', sequence: 3, stageId: 'verification', label: '核验回忆结果',
+    elapsedMs: 3500, stageElapsedMs: 100, stages })));
+  await advance(500);
+  expect(outputMs('等待总用时')).toBe(7000); expect(outputMs('后端处理用时')).toBe(3500); expect(outputMs('最后后端环节用时')).toBe(100);
+  expect(node!.querySelector('[aria-label="当前阶段用时"]')).toBeNull(); expect(node!.textContent).toContain('最后后端环节');
+  expect(node!.textContent).toContain('等待结果返回');
+  await act(() => pending.resolve({ ok: true, memoryProbe: value({ timing: { totalMs: 3500, stages }, memoryRetrieval: retrieval() }) }));
+  expect(outputMs('等待总用时')).toBe(7000); expect(outputMs('后端处理用时')).toBe(3500);
+  expect(source.progressListeners.size).toBe(0);
+  const table = node!.querySelector('[aria-label="实际阶段耗时"]')!;
+  expect(table.querySelectorAll('tbody tr')).toHaveLength(8);
+  expect(table.querySelector('[data-memory-probe-stage="focus"]')?.textContent).toContain('2.4 秒');
+  expect(table.querySelector('[aria-label="最慢阶段"]')?.closest('tr')?.getAttribute('data-memory-probe-stage')).toBe('focus');
+  for (const id of ['preparation', 'sources', 'runtime', 'projection', 'retrieval']) {
+    const text = table.querySelector(`[data-memory-probe-stage="${id}"]`)?.textContent;
+    expect(text).toContain('未观测'); expect(text).not.toMatch(/0(?:\.0)?\s*(?:秒|毫秒)/u);
+  }
+  // The six semantic retrieval cards never become fabricated timing phases.
+  expect(table.querySelector('[data-memory-probe-stage="projection"]')?.textContent).toContain('同步记忆索引');
+  expect(table.querySelector('[data-memory-probe-stage="embedding"], [data-memory-probe-stage="sensing"], [data-memory-probe-stage="ranking"]')).toBeNull();
+  const frozen = node!.querySelector('[aria-label="本次回忆耗时"]')!.textContent;
+  await advance(10_000);
+  await act(() => source.retiredProgressListeners[0]!(progressFor(command, { sequence: 99, elapsedMs: 99_999, stageElapsedMs: 99_999 })));
+  expect(node!.querySelector('[aria-label="本次回忆耗时"]')!.textContent).toBe(frozen);
+});
+
+it('keeps failure timing frozen and preserves the original backend error', async () => {
+  const advance = fakeClock(), pending = deferred<CompanionsResponse>();
+  const request = vi.fn<ScheduleRequest>(async () => pending.promise), source = events(request);
+  await mount(request, { api: source.api }); await fill('你记得我的名字吗'); await run();
+  const command = recallCommand(request);
+  await advance(1000); await act(() => source.emitProgress(progressFor(command, { stageId: 'focus', label: '正在聚焦回忆' })));
+  await advance(1200);
+  await act(() => source.emitProgress(progressFor(command, { state: 'failed', sequence: 2, stageId: 'focus', label: '聚焦失败',
+    elapsedMs: 1200, stageElapsedMs: 1200, stages: [{ id: 'focus', label: '正在聚焦回忆', elapsedMs: 1200 }] })));
+  expect(outputMs('最后后端环节用时')).toBe(1200); expect(node!.querySelector('[aria-label="当前阶段用时"]')).toBeNull();
+  await advance(300); expect(outputMs('最后后端环节用时')).toBe(1200);
+  await act(() => pending.resolve({ ok: false, error: '原版记忆模型当前不可用' }));
+  expect(node!.textContent).toContain('原版记忆模型当前不可用'); expect(node!.querySelector('[aria-label="本次回忆结果"]')).toBeNull();
+  expect(outputMs('等待总用时')).toBe(2500); expect(outputMs('后端处理用时')).toBe(1200);
+  expect(node!.querySelector('[data-memory-probe-stage="focus"]')?.textContent).toContain('已停止');
+  const frozen = node!.querySelector('[aria-label="本次回忆耗时"]')!.textContent;
+  await advance(20_000); expect(node!.querySelector('[aria-label="本次回忆耗时"]')!.textContent).toBe(frozen);
+  expect(source.progressListeners.size).toBe(0);
+});
+
+it('does not interpret a backend completion event as a successful request before the response is validated', async () => {
+  const advance = fakeClock(), pending = deferred<CompanionsResponse>();
+  const request = vi.fn<ScheduleRequest>(async () => pending.promise), source = events(request);
+  await mount(request, { api: source.api }); await fill('你记得我的名字吗'); await run();
+  const command = recallCommand(request); await advance(1000);
+  await act(() => source.emitProgress(progressFor(command, { state: 'completed', stageId: 'verification', label: '后端已结束',
+    elapsedMs: 500, stageElapsedMs: 100, stages: [{ id: 'verification', label: '核验回忆结果', elapsedMs: 100 }] })));
+  expect(node!.querySelector('[aria-label="本次回忆结果"]')).toBeNull();
+  await advance(500); await act(() => pending.resolve({ ok: false, error: '最终来源凭证没有通过验证' }));
+  expect(node!.textContent).toContain('最终来源凭证没有通过验证');
+  expect(node!.querySelector('[aria-label="本次回忆耗时"]')?.getAttribute('data-probe-timing-state')).toBe('failed');
+  expect(outputMs('等待总用时')).toBe(1500); expect(outputMs('后端处理用时')).toBe(500);
+});
+
+it('rejects progress from foreign requests, owners, modes and out-of-order sequences', async () => {
+  const advance = fakeClock(), pending = deferred<CompanionsResponse>();
+  const request = vi.fn<ScheduleRequest>(async () => pending.promise), source = events(request);
+  await mount(request, { api: source.api }); await fill('你记得我的名字吗'); await run();
+  const command = recallCommand(request);
+  await act(() => source.emitProgress(progressFor(command, { sequence: 5, stageId: 'sources', label: '当前已核实进度', elapsedMs: 100, stageElapsedMs: 100,
+    stages: [{ id: 'sources', label: '核验记忆来源', elapsedMs: 100 }] })));
+  const snapshot = node!.querySelector('[aria-label="本次回忆耗时"]')!.textContent;
+  for (const patch of [{ requestId: 'other-run' }, { companionId: second.id }, { mode: 'passive' as const }, { sequence: 4 }]) {
+    await act(() => source.emitProgress(progressFor(command, { sequence: 6, label: '应忽略的旧消息', elapsedMs: 99_999, stageElapsedMs: 99_999, ...patch })));
+    expect(node!.querySelector('[aria-label="本次回忆耗时"]')!.textContent).toBe(snapshot);
+  }
+  await advance(100); expect(node!.textContent).not.toContain('应忽略的旧消息');
+  await act(() => pending.resolve({ ok: true, memoryProbe: value() }));
+});
+
+it.each(['owner', 'mode', 'query', 'inactive', 'close', 'unmount'] as const)('disposes live timers and ignores old events and promises after %s changes', async change => {
+  const advance = fakeClock(), pending = deferred<CompanionsResponse>();
+  const request = vi.fn<ScheduleRequest>(async () => pending.promise), source = events(request);
+  const props = await mount(request, { api: source.api }); await fill('你记得我的名字吗'); await run();
+  const command = recallCommand(request); await advance(1000);
+  await act(() => source.emitProgress(progressFor(command, { label: '切换前的旧进度', elapsedMs: 100, stageElapsedMs: 100 })));
+  if (change === 'owner') await act(async () => root!.render(<CompanionMemoryProbeWorkspace {...props} companion={second} />));
+  else if (change === 'mode') await act(() => [...node!.querySelectorAll<HTMLButtonElement>('[aria-label="回忆方式"] button')].find(item => item.textContent?.includes('被动回忆'))!.click());
+  else if (change === 'query') await fill('新的问题');
+  else if (change === 'inactive') await act(async () => root!.render(<CompanionMemoryProbeWorkspace {...props} active={false} />));
+  else if (change === 'close') await act(() => button('返回记忆库').click());
+  else { await act(() => root!.unmount()); root = undefined; }
+  expect(source.progressListeners.size).toBe(0);
+  await act(() => source.retiredProgressListeners[0]!(progressFor(command, { state: 'completed', sequence: 99, elapsedMs: 99_999,
+    stageElapsedMs: 99_999, label: '旧运行迟到事件' })));
+  await act(() => pending.resolve({ ok: true, memoryProbe: value({ contextText: '旧运行迟到回忆正文', timing: { totalMs: 99_999, stages: [] } }) }));
+  await advance(10_000);
+  expect(node!.textContent).not.toContain('旧运行迟到');
+  expect(node!.querySelector('[aria-label="本次回忆耗时"], [aria-label="本次回忆结果"]')).toBeNull();
+  if (change === 'close') expect(props.onClose).toHaveBeenCalledOnce();
+});
+
+it('retains legacy result compatibility while measuring actual UI waiting without backend timing', async () => {
+  const advance = fakeClock(), pending = deferred<CompanionsResponse>();
+  const request = vi.fn<ScheduleRequest>(async () => pending.promise);
+  await mount(request); await fill('你记得我的名字吗'); await run(); await advance(2000);
+  await act(() => pending.resolve({ ok: true, memoryProbe: value() }));
+  expect(outputMs('等待总用时')).toBe(2000); expect(node!.querySelector('[aria-label="后端处理用时"]')).toBeNull();
+  expect(node!.querySelector('[aria-label="本次回忆结果"]')).not.toBeNull();
+  await advance(5000); expect(outputMs('等待总用时')).toBe(2000);
 });
 
 it('opens the probe as a memory child page and returns to the existing library workspace', async () => {

@@ -50,10 +50,26 @@ export function CompanionSocialMonitor({ playerProfile, companions, request, api
   const [listError, setListError] = useState(''), [messageError, setMessageError] = useState('');
   const [notice, setNotice] = useState(''), [revision, setRevision] = useState(0);
   const [newMessages, setNewMessages] = useState(false);
+  const changes = useRef(0), mounted = useRef(false);
+  useEffect(() => { mounted.current = true; return () => { mounted.current = false; }; }, []);
   const [streamStore] = useState(() => new CompanionReplyStreamStore());
   const messageList = useRef<HTMLDivElement>(null);
   const followLatest = useRef(true);
   const loadedMessages = useRef<CompanionSocialMessagePage | undefined>(undefined);
+  const inFlight = useRef(new Map<string, Promise<CompanionsResponse | undefined>>());
+  const read = useCallback((input: CompanionsRequest) => {
+    const key = JSON.stringify(input), existing = inFlight.current.get(key);
+    if (existing) return existing;
+    const reads = inFlight.current, observed = changes.current;
+    const pending = Promise.resolve().then(() => request(input)).catch((error: unknown): CompanionsResponse => ({ ok: false,
+      error: error instanceof Error ? error.message : '社交记录暂时无法读取，请重试。' })).finally(() => {
+      if (reads.get(key) === pending) reads.delete(key);
+      // Publish the pending page, then make one fresh read if a genuine host
+      // change overlapped it. Refreshing itself never advances this counter.
+      if (input.type === 'social.messages' && mounted.current && observed !== changes.current) setRevision(value => value + 1);
+    });
+    reads.set(key, pending); return pending;
+  }, [request]);
   const conversation = conversations?.items.find(item => item.id === conversationId);
   const viewpoint = conversation?.memberIds.includes(perspective) ? perspective : conversation?.memberIds[0];
   const companionName = (id: string) => companions.find(item => item.id === id)?.name ?? '已离开的伙伴';
@@ -65,21 +81,21 @@ export function CompanionSocialMonitor({ playerProfile, companions, request, api
   useEffect(() => { if (firstSearch.current) { firstSearch.current = false; return; } void Promise.resolve().then(() => { resetList(); resetMessages(); }); }, [search, resetList, resetMessages]);
   useEffect(() => { void Promise.resolve().then(resetMessages); }, [messageSearch, conversationId, resetMessages]);
   useEffect(() => { const key = (event: KeyboardEvent) => { if (event.key === 'Escape') onClose(); }; document.addEventListener('keydown', key); return () => document.removeEventListener('keydown', key); }, [onClose]);
-  useEffect(() => { let timer: ReturnType<typeof setTimeout> | undefined; const remove = api?.onChanged(() => { clearTimeout(timer); timer = setTimeout(() => setRevision(value => value + 1), 400); }); return () => { remove?.(); clearTimeout(timer); }; }, [api]);
+  useEffect(() => { let timer: ReturnType<typeof setTimeout> | undefined; const remove = api?.onChanged(() => { changes.current++; clearTimeout(timer); timer = setTimeout(() => setRevision(value => value + 1), 400); }); return () => { remove?.(); clearTimeout(timer); }; }, [api]);
   useEffect(() => {
     if (view !== 'records') return;
     let cancelled = false;
-    void request({ type: 'social.days', ...(owner ? { companionId: owner } : {}), ...(day ? { month: day.slice(0, 7) } : {}), ...(search ? { query: search } : {}) }).then(result => {
+    void read({ type: 'social.days', ...(owner ? { companionId: owner } : {}), ...(day ? { month: day.slice(0, 7) } : {}), ...(search ? { query: search } : {}) }).then(result => {
       if (cancelled) return;
       if (result?.socialDays) { setDays(result.socialDays); setDay(current => current ?? result.socialDays!.observedDay); }
       else { setListError(result?.error ?? '社交日历读取失败。'); setListLoading(false); }
     });
     return () => { cancelled = true; };
-  }, [request, owner, day, search, revision, view]);
+  }, [read, owner, day, search, revision, view]);
   useEffect(() => {
     if (view !== 'records' || day === undefined) return;
     let cancelled = false;
-    void request({ type: 'social.conversations', ...(owner ? { companionId: owner } : {}), ...(day ? { day } : {}), ...(search ? { query: search } : {}), ...(cursor ? { before: cursor } : {}), limit: 20 }).then(result => {
+    void read({ type: 'social.conversations', ...(owner ? { companionId: owner } : {}), ...(day ? { day } : {}), ...(search ? { query: search } : {}), ...(cursor ? { before: cursor } : {}), limit: 20 }).then(result => {
       if (cancelled) return;
       setListLoading(false);
       if (!result?.socialConversationPage) { setListError(result?.error ?? '伙伴会话读取失败。'); return; }
@@ -87,12 +103,12 @@ export function CompanionSocialMonitor({ playerProfile, companions, request, api
       setConversationId(current => result.socialConversationPage!.items.some(item => item.id === current) ? current : result.socialConversationPage!.items[0]?.id);
     });
     return () => { cancelled = true; };
-  }, [request, day, owner, search, cursor, revision, view]);
+  }, [read, day, owner, search, cursor, revision, view]);
   useEffect(() => {
     if (view !== 'records' || !conversationId || day === undefined) return;
     let cancelled = false;
     void Promise.resolve().then(() => { if (!cancelled) setMessageLoading(true); });
-    void request({ type: 'social.messages', conversationId, ...(day ? { day } : {}), ...(messageSearch ? { query: messageSearch } : {}), ...(before ? { before } : {}), ...(around ? { around } : {}), limit: 50 }).then(result => {
+    void read({ type: 'social.messages', conversationId, ...(day ? { day } : {}), ...(messageSearch ? { query: messageSearch } : {}), ...(before ? { before } : {}), ...(around ? { around } : {}), limit: 50 }).then(result => {
       if (cancelled) return;
       setMessageLoading(false);
       if (!result?.socialMessagePage) { setMessageError(result?.error ?? '对话记录读取失败。'); return; }
@@ -106,15 +122,15 @@ export function CompanionSocialMonitor({ playerProfile, companions, request, api
       } else if (!before && !messageSearch) requestAnimationFrame(() => { if (!cancelled && messageList.current) messageList.current.scrollTop = messageList.current.scrollHeight; });
     });
     return () => { cancelled = true; };
-  }, [request, conversationId, day, messageSearch, before, around, revision, view]);
+  }, [read, conversationId, day, messageSearch, before, around, revision, view]);
   useEffect(() => {
     if (view !== 'records' || !conversationId || before || around || messageSearch) return;
     let cancelled = false;
-    void request({ type: 'social.reply.progress', conversationId, limit: 20 }).then(result => {
+    void read({ type: 'social.reply.progress', conversationId, limit: 20 }).then(result => {
       if (!cancelled) setReplyJobs(result?.ok ? result.socialReplyProgress ?? [] : []);
     });
     return () => { cancelled = true; };
-  }, [request, conversationId, before, around, messageSearch, revision, view]);
+  }, [read, conversationId, before, around, messageSearch, revision, view]);
   const visibleReplyJobs = !before && !around && !messageSearch ? replyJobs.filter(job => job.conversationId === conversationId
     && !!conversation?.memberIds.includes(job.companionId)
     && !job.messageId && ['pending', 'running', 'failed'].includes(job.status)
@@ -138,7 +154,7 @@ export function CompanionSocialMonitor({ playerProfile, companions, request, api
       <label className="companions-social-search"><Icon name="search" /><input aria-label="搜索伙伴社交记录" type="search" placeholder="查找会话或聊过的内容" value={query} onChange={event => setQuery(event.target.value)} maxLength={500} /></label>
     </div><nav aria-label="伙伴之间的会话" aria-busy={listLoading}>{listError ? <p role="alert">{listError}<button onClick={() => setRevision(value => value + 1)}>重试</button></p> : !conversations?.items.length ? <p className="companions-social-empty">{listLoading ? '正在翻开社交记录…' : '这一天还没有符合条件的交流。她们会根据自己的生活、关系和话题自主联系。'}</p> : conversations.items.map(item => <button key={item.id} data-social-conversation={item.id} className={conversationId === item.id ? 'is-selected' : ''} aria-pressed={conversationId === item.id} onClick={() => selectConversation(item.id)}><span className="companions-social-avatars">{item.memberIds.slice(0, 3).map(id => <Avatar key={id} companion={companions.find(role => role.id === id) ?? { name: '伙伴', avatar: 'custom' }} showPresence={false} />)}</span><span><strong>{item.title || item.memberIds.map(companionName).join('、')}</strong><small>{item.kind === 'private' ? '伙伴私聊' : `${item.memberIds.length} 位伙伴的群聊`} · {item.messageCount} 条{item.lastMessage?.channel && ` · ${channelLabel(item.lastMessage.channel)}`}</small><p>{item.lastMessage && `${companionName(item.lastMessage.message.authorId)}：`}{preview(item.lastMessage?.message)}</p></span></button>)}</nav>
       <footer className="companions-social-pagination"><button disabled={!conversationPage || listLoading} onClick={() => { setListLoading(true); setConversationPage(value => value - 1); }}>上一页</button><span>{conversationPage + 1} · 共 {conversations?.total ?? 0} 个会话</span><button disabled={!conversations?.hasMore || !conversations.nextCursor || listLoading} onClick={() => { setListLoading(true); setConversationCursors(value => [...value.slice(0, conversationPage + 1), conversations!.nextCursor]); setConversationPage(value => value + 1); }}>下一页</button></footer>
-    </aside><main className="companions-social-chat">{conversation ? <><header><div><strong>{conversation.title || conversation.memberIds.map(companionName).join('、')}</strong><small>{conversation.memberIds.map(companionName).join(' · ')} · 当面与手机交流 · 只读观察</small></div><label>观察视角<select aria-label="社交聊天观察视角" value={viewpoint} onChange={event => setPerspective(event.target.value)}>{conversation.memberIds.map(id => <option key={id} value={id}>{companionName(id)}</option>)}</select></label></header><div className="companions-social-chat-toolbar"><label className="companions-social-search"><Icon name="search" /><input type="search" aria-label="在伙伴对话中查找" placeholder="在这段对话中查找" value={messageQuery} maxLength={500} onChange={event => setMessageQuery(event.target.value)} /></label><span>{messages?.total ?? 0} 条消息</span></div>
+    </aside><main className="companions-social-chat">{conversation ? <><header><div><strong>{conversation.title || conversation.memberIds.map(companionName).join('、')}</strong><small>{conversation.memberIds.map(companionName).join(' · ')} · 当面与手机交流 · 只读观察</small></div><label>观察视角<select aria-label="社交聊天观察视角" value={viewpoint} onChange={event => setPerspective(event.target.value)}>{conversation.memberIds.map(id => <option key={id} value={id}>{companionName(id)}</option>)}</select></label></header><div className="companions-social-chat-toolbar"><label className="companions-social-search"><Icon name="search" /><input type="search" aria-label="在伙伴对话中查找" placeholder="在这段对话中查找" value={messageQuery} maxLength={500} onChange={event => setMessageQuery(event.target.value)} /></label><span>{messages ? `${messages.total} 条消息` : '正在加载消息'}</span></div>
       {days?.backlog && <p className="companions-social-notice">世界正在接续离线生活，日期以已恢复到的时刻为准。</p>}{notice && <p className="companions-social-notice" role="status">{notice}</p>}{newMessages && <button className="companions-social-new-messages" onClick={showLatest}>有新消息，回到最新记录</button>}
       <div className="companions-social-messages" ref={messageList} onScroll={event => { const list = event.currentTarget; followLatest.current = list.scrollHeight - list.clientHeight - list.scrollTop < 48; }} aria-label="伙伴对话记录" aria-busy={messageLoading}>{messageError ? <p role="alert">{messageError}<button onClick={() => setRevision(value => value + 1)}>重试</button></p> : !messages?.items.length ? <p className="companions-social-empty">{messageLoading ? '正在读取对话…' : '这个条件下没有消息。'}</p> : messages.items.map((item, index) => {
         const message = item.message, author = companions.find(role => role.id === message.authorId) ?? { name: '已离开的伙伴', avatar: 'custom' as const };

@@ -11,7 +11,7 @@ import { companionWorldSourceReadSchema } from '../../shared/companion-world';
 import { companionSocialGameContextSchema } from '../../shared/companion-social';
 
 type Scope = Pick<CompanionExecutionReadset, 'companionId' | 'conversationId' | 'beforeSequence'>;
-type Fields = Pick<CompanionExecutionReadset, 'memories' | 'sources' | 'knowledgeReads' | 'contexts' | 'topics'>;
+type Fields = Pick<CompanionExecutionReadset, 'memories' | 'frozenMemories' | 'sources' | 'knowledgeReads' | 'contexts' | 'topics'>;
 const hash = (value: string) => createHash('sha256').update(value).digest('hex');
 const row = (value: unknown): Record<string, unknown> | undefined => value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : undefined;
 const entries = (value: unknown): unknown[] => Array.isArray(value) ? value : [];
@@ -90,7 +90,8 @@ export function captureCompanionExecutionReadset(scope: Scope, input: Partial<Fi
   context?: { user: string }; turns?: readonly CompanionLoopTurn[]; readsets?: readonly CompanionExecutionReadset[];
 } = {}): CompanionExecutionReadset {
   const result: CompanionExecutionReadset = { schema: 'worldlinebox.companion-execution-readset-v1', ...scope, complete: true,
-    memories: [...input.memories ?? []], sources: [...input.sources ?? []], knowledgeReads: [...input.knowledgeReads ?? []], contexts: [...input.contexts ?? []], topics: [...input.topics ?? []] };
+    memories: [...input.memories ?? []], ...(input.frozenMemories ? { frozenMemories: [...input.frozenMemories] } : {}),
+    sources: [...input.sources ?? []], knowledgeReads: [...input.knowledgeReads ?? []], contexts: [...input.contexts ?? []], topics: [...input.topics ?? []] };
   const source = (value: unknown, fallbackRoom?: string) => {
     if (value === undefined) return;
     const item = row(value);
@@ -106,11 +107,12 @@ export function captureCompanionExecutionReadset(scope: Scope, input: Partial<Fi
     if (reference.success) result.memories.push(reference.data);
     else result.complete = false;
   };
-  const context = (value: unknown) => {
+  const context = (value: unknown, passive = false) => {
     const native = row(value);
     if (!native || typeof native.text !== 'string') return;
     const dependencies = companionMemoryContextDependencies(native);
-    result.memories.push(...dependencies.memories);
+    if (passive && dependencies.frozenMemories) (result.frozenMemories ??= []).push(...dependencies.frozenMemories);
+    else result.memories.push(...dependencies.memories);
     if (dependencies.malformed) result.complete = false;
     if (dependencies.complete) return;
     const evidence = row(native.evidence);
@@ -173,7 +175,7 @@ export function captureCompanionExecutionReadset(scope: Scope, input: Partial<Fi
             || reference.contentChecksum !== hash(parsed.data.content)) result.complete = false;
           else source(parsed.data);
         }
-        context(row(data.memoryRecall)?.context); topic(data.topicState, data.topic);
+        context(row(data.memoryRecall)?.context, true); topic(data.topicState, data.topic);
         if (data.gameCommunication !== undefined) {
           const game = companionSocialGameContextSchema.safeParse(data.gameCommunication);
           if (!game.success || game.data.binding.companionId !== scope.companionId
@@ -208,6 +210,7 @@ export function captureCompanionExecutionReadset(scope: Scope, input: Partial<Fi
           if (!parsed.success || parsed.data.companionId !== scope.companionId || parsed.data.conversationId !== scope.conversationId) result.complete = false;
           else { const proof = parsed.data; result.complete &&= proof.complete;
             result.memories.push(...proof.memories); result.sources.push(...proof.sources); result.knowledgeReads.push(...proof.knowledgeReads);
+            if (proof.frozenMemories) (result.frozenMemories ??= []).push(...proof.frozenMemories);
             result.contexts.push(...proof.contexts); result.topics.push(...proof.topics); }
         }
       }
@@ -231,10 +234,12 @@ export function captureCompanionExecutionReadset(scope: Scope, input: Partial<Fi
     if (!parsed.success || previous.companionId !== scope.companionId || previous.conversationId !== scope.conversationId) { result.complete = false; continue; }
     result.complete &&= previous.complete;
     result.memories.push(...previous.memories); result.sources.push(...previous.sources);
+    if (previous.frozenMemories) (result.frozenMemories ??= []).push(...previous.frozenMemories);
     result.knowledgeReads.push(...previous.knowledgeReads); result.contexts.push(...previous.contexts);
     result.topics.push(...previous.topics);
   }
   return companionExecutionReadsetSchema.parse({ ...result, memories: unique(result.memories), sources: unique(result.sources),
+    ...(result.frozenMemories ? { frozenMemories: unique(result.frozenMemories) } : {}),
     knowledgeReads: unique(result.knowledgeReads), contexts: unique(result.contexts), topics: unique(result.topics) });
 }
 
@@ -243,6 +248,7 @@ export function captureCompanionExecutionReadset(scope: Scope, input: Partial<Fi
 export function companionExecutionReadsetDigest(value: CompanionExecutionReadset): string {
   const parsed = companionExecutionReadsetSchema.parse(value);
   return hash(JSON.stringify({ ...parsed, memories: unique(parsed.memories), sources: unique(parsed.sources),
+    ...(parsed.frozenMemories ? { frozenMemories: unique(parsed.frozenMemories) } : {}),
     knowledgeReads: unique(parsed.knowledgeReads), contexts: unique(parsed.contexts), topics: unique(parsed.topics) }));
 }
 
@@ -254,12 +260,16 @@ export async function verifyCompanionExecutionReadset(value: CompanionExecutionR
    * derive it from model/tool JSON or a persisted historical receipt. */
   sqliteSourcesValidated?: boolean;
 }): Promise<boolean> {
-  try {
     const parsed = companionExecutionReadsetSchema.safeParse(value);
     if (!parsed.success || !parsed.data.complete || parsed.data.companionId !== scope.companionId || parsed.data.conversationId !== scope.conversationId
       || scope.beforeSequence !== undefined && parsed.data.beforeSequence !== scope.beforeSequence) return false;
     const readset = parsed.data, memoryScope = { companionId: readset.companionId, conversationId: readset.conversationId, beforeSequence: readset.beforeSequence };
     if (!ports.sqliteSourcesValidated) {
+    for (let offset = 0; offset < (readset.frozenMemories?.length ?? 0); offset += 100) {
+      const checked = await ports.request({ type: 'memory.frozen.valid', ...memoryScope,
+        memories: readset.frozenMemories!.slice(offset, offset + 100) });
+      if (!checked.ok || !checked.memoryFrozenValid) return false;
+    }
     for (const reference of readset.topics) {
       for (let offset = 0; offset < Math.max(1, reference.sourceMessageIds.length); offset += 256) {
         const checked = await ports.request({ type: 'topic.sources.valid', conversationId: reference.conversationId, topicId: reference.topicId,
@@ -287,7 +297,6 @@ export async function verifyCompanionExecutionReadset(value: CompanionExecutionR
     }
     for (const context of readset.contexts) if (!ports.contextValid || !await ports.contextValid({ ...memoryScope, beforeSequence: context.beforeSequence }, context)) return false;
     return await verifyCompanionKnowledgeReads(readset.knowledgeReads, memoryScope, ports.request);
-  } catch { return false; }
 }
 
 /** An invalid derived reply never erases what actually executed. Preserve only

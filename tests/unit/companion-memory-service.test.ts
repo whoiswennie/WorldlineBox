@@ -401,7 +401,7 @@ describe('VCP companion memory through the main service and real SQLite', () => 
     expect(brainPayload?.messages.some(message => message.id === birthday.id)).toBe(false);
     expect(brainPayload?.memories).toEqual([]);
     expect(brainPayload?.memoryRecall?.context?.text).toContain('4月9日');
-    expect(clients.get(f.root)!.search).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ text: expect.stringContaining('出生的那天') }));
+    expect(clients.get(f.root)!.search).not.toHaveBeenCalled();
     expect(clients.get(f.root)!.preprocess).toHaveBeenCalledWith(expect.anything(), expect.arrayContaining([
       expect.objectContaining({ role: 'system', content: expect.stringContaining(`[[${vcpMemoryNotebookFolder('经历')}日记本::RiverMemo::TimeDecay180/0::AIMemo+]]`) }),
     ]), expect.objectContaining({ now: expect.any(String), timeZone: expect.any(String) }), expect.objectContaining({ schema: 'episodic-v1', halfLifeDays: 180, minScore: 0 }));

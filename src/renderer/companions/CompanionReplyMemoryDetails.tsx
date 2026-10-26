@@ -24,10 +24,10 @@ function ContextReading({ text, truncated, total, offset, page, hasPrevious, nex
 
 /** Mounted only after the user opens one reply. No diary bodies are copied into
  * the chat list, and every reopen or storage change revalidates the receipt. */
-export function CompanionReplyMemoryDetails(props: { scope: ReplyMemoryScope; api?: WorldlineBoxCompanionsApi; refreshKey?: string }) {
+export function CompanionReplyMemoryDetails(props: { scope: ReplyMemoryScope; api?: WorldlineBoxCompanionsApi; refreshKey?: string; replyRunning?: boolean }) {
   return <CompanionReplyMemoryBody key={JSON.stringify(props.scope)} {...props} />;
 }
-function CompanionReplyMemoryBody({ scope, refreshKey, api = (window as Window & { worldlinebox?: { companions?: WorldlineBoxCompanionsApi } }).worldlinebox?.companions }: { scope: ReplyMemoryScope; api?: WorldlineBoxCompanionsApi; refreshKey?: string }) {
+function CompanionReplyMemoryBody({ scope, refreshKey, replyRunning, api = (window as Window & { worldlinebox?: { companions?: WorldlineBoxCompanionsApi } }).worldlinebox?.companions }: { scope: ReplyMemoryScope; api?: WorldlineBoxCompanionsApi; refreshKey?: string; replyRunning?: boolean }) {
   const [receipt, setReceipt] = useState<CompanionReplyMemory>(), [loading, setLoading] = useState(true), [error, setError] = useState('');
   const [offsets, setOffsets] = useState<number[]>([0]); const contextOffset = offsets.at(-1)!;
   const [reload, setReload] = useState(0), serial = useRef({ epoch: 0 });
@@ -78,7 +78,7 @@ function CompanionReplyMemoryBody({ scope, refreshKey, api = (window as Window &
   return <div className="companions-reply-memory-details" aria-label="本轮回忆详情" aria-busy={loading}>
     <header><span><Icon name="sparkles" size={15} /><strong>本轮回忆</strong></span><button type="button" aria-label="重新核验本轮回忆" disabled={loading} onClick={() => setReload(value => value + 1)}><Icon name="refresh" size={13} />刷新</button></header>
     {loading ? <p role="status" className="reply-memory-note">正在核对这条回复实际收到的记忆…</p> : error ? <p role="alert" className="reply-memory-note">{error}</p> : current && <>
-      <p className={'reply-memory-note' + (current.state === 'withdrawn' ? ' is-withdrawn' : '')}>{current.explanation}</p>
+      <p className={'reply-memory-note' + (current.state === 'withdrawn' ? ' is-withdrawn' : '')}>{replyRunning && current.state === 'unavailable' ? '本条回复仍在进行，记忆上下文尚未完成保存。完成后可查看实际收到的记忆与来源。' : current.explanation}</p>
       {current.pending && <p className="reply-memory-status"><Icon name="clock" size={13} />部分来源仍在收录或建立索引，本轮回忆可能尚未包含这些内容。</p>}
       {current.degraded && <p className="reply-memory-status"><Icon name="alert-circle" size={13} />本轮召回发生降级，请结合原文核对。</p>}
       {verified && <>

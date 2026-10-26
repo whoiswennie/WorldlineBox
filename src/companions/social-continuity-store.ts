@@ -5,6 +5,8 @@ import type { CompanionMessage } from '../shared/companions';
 import type { AppendCompanionMessage, CompanionStorageCommand, CompanionStorageResponse } from '../shared/companion-storage';
 import type { CompanionSocialNotification, CompanionSocialOrigin } from '../shared/companion-social';
 import type { CompanionExecutionReadset } from '../shared/companion-execution-evidence';
+import type { CompanionUserStop } from '../shared/companion-task-stop';
+import type { CompanionTaskControlResult } from '../shared/companion-task-control';
 
 type Row = Record<string, string | number | null>;
 type Scope = { companionId: string; conversationId: string };
@@ -182,6 +184,34 @@ export class CompanionSocialContinuityStore {
     return responseSource !== null && hash(responseSource ?? null) === hash(notice.responseSource ?? null)
       && visit.guestId === notice.companionId && visit.hostId === notice.evidence.authorId && visit.status === notice.evidence.visitStatus
       && hash([visit.id, visit.guestId, visit.hostId, visit.status, visit.response]) === notice.evidenceChecksum;
+  }
+  stopNotification(companionId: string, id: string, stop: CompanionUserStop): CompanionTaskControlResult {
+    return this.db.transaction(() => {
+      const found = this.db.prepare('SELECT companion_id,data FROM companion_social_notifications WHERE id=?').get(id);
+      if (!found || row(found).companion_id !== companionId) throw new Error('后续回报任务不存在或不属于此伙伴。');
+      const notice = parse<Notice>(row(found).data);
+      if (notice.companionId !== companionId) throw new Error('后续回报任务的伙伴归属不一致。');
+      const result: CompanionTaskControlResult = { companionId, kind: 'social_notification', id, conversationId: notice.conversationId,
+        title: '向用户回报后续进展', sourceMessageId: notice.sourceMessageId, stopped: !!notice.stop, actionIds: [], activityTaskIds: [], runtimeTaskIds: [id] };
+      if (notice.status === 'done' || notice.status === 'cancelled' || notice.terminal) return result;
+      if (notice.leaseToken) {
+        const related = this.db.prepare("SELECT data FROM companion_social_notifications WHERE companion_id=? AND origin_id=? AND status='running' AND json_extract(data,'$.leaseToken')=?").all(companionId, notice.origin.id, notice.leaseToken) as Row[];
+        for (const value of related) {
+          const sibling = parse<Notice>(value.data);
+          if (sibling.id === id) continue;
+          if (sibling.batchIds?.includes(id)) result.runtimeTaskIds!.push(sibling.id);
+          // The stopped item invalidates the shared inference batch. Other
+          // notices return to pending instead of becoming errors or user stops.
+          sibling.status = 'pending'; sibling.attempts = Math.max(0, sibling.attempts - 1);
+          delete sibling.leaseToken; delete sibling.batchIds; delete sibling.dialogue; delete sibling.dialogueChecksum;
+          delete sibling.events; delete sibling.eventWatermark; this.save(sibling);
+        }
+      }
+      notice.status = 'cancelled'; notice.terminal = true; notice.stop = stop; notice.updatedAt = notice.finishedAt = stop.requestedAt;
+      delete notice.leaseToken; delete notice.error; this.save(notice);
+      result.stopped = true; result.runtimeTaskIds = [...new Set(result.runtimeTaskIds)];
+      return result;
+    }).immediate();
   }
   private save(notice: Notice, lease?: string): void {
     this.db.prepare('UPDATE companion_social_notifications SET status=?,lease_until=?,attempts=?,data=? WHERE id=?')

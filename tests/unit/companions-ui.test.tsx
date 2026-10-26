@@ -400,7 +400,7 @@ it('preserves a scrolled history position on new messages and preserves the anch
   await f.publish({}, [...history, message(66, '刚想到一件事。')]);
   expect(scroll.scrollTop).toBe(200); expect(container!.textContent).toContain('有新消息');
   expect(scroll.textContent).toContain('刚想到一件事。');
-  await click('查看更早的消息'); expect(f.request).toHaveBeenCalledWith({ type: 'messages', conversationId: 'private-sister', topicId: null, before: 16, limit: 50 });
+  await click('查看更早的消息'); expect(f.request).toHaveBeenCalledWith({ type: 'messages', conversationId: 'private-sister', topicId: null, before: 17, limit: 50 });
   expect(scroll.textContent).toContain('第 1 条消息'); expect(scroll.scrollTop).toBe(200);
   await click('回到最新消息'); expect(scroll.scrollTop).toBe(1000);
 });
@@ -444,6 +444,30 @@ it('fetches an older capability detail on demand instead of loading every histor
   expect(container!.querySelector('[role="tab"][aria-selected="true"]')!.textContent).toBe('全部记录');
   expect(container!.textContent).toContain('原来的文件处理'); expect(container!.textContent).toContain('原始能力结果已保留');
   await f.publish(); expect(container!.textContent).toContain('原来的文件处理');
+});
+
+it('offers the complete partner task entry even when this chat has no tool actions', async () => {
+  const f = fixture({}, [message(1)]), original = f.request.getMockImplementation()!;
+  f.request.mockImplementation(input => input.type === 'tasks.list' ? Promise.resolve({ ok: true, taskPage: { items: [
+    { id: 'reply-other-room', kind: 'reply', companionId: 'deepseek-sister', conversationId: 'another-room', title: '另一个房间的回复', status: 'running', rawStatus: 'running', stage: '正在整理上下文', createdAt: date, updatedAt: date, canStop: true, stoppedByUser: false },
+  ], total: 1, current: 1, history: 0, hasMore: false, observedAt: date, owners: [{ companionId: 'deepseek-sister', name: '大肥鱼', current: 1, history: 0 }], coverage: ['reply'] } }) : original(input));
+  await mount(f.api); await click('查看伙伴任务');
+  expect(container!.querySelector('[role="dialog"][aria-label="伙伴任务总览"]')).not.toBeNull();
+  expect(f.request).toHaveBeenCalledWith({ type: 'tasks.list', companionId: 'deepseek-sister', view: 'current', limit: 20 });
+  expect(container!.textContent).toContain('另一个房间的回复'); expect(container!.querySelector('[aria-label="停止任务 另一个房间的回复"]')).not.toBeNull();
+});
+
+it('opens the actual source conversation when inspecting a tool task from another room', async () => {
+  const action: CompanionAction = { id: 'cross-room-action', companionId: 'deepseek-sister', conversationId: 'other-group', sourceMessageId: 'message-other', title: '另一个房间的工具执行', status: 'succeeded', result: '跨房间的真实执行记录', createdAt: date, updatedAt: date };
+  const f = fixture({}, [message(1)]), original = f.request.getMockImplementation()!;
+  f.request.mockImplementation(input => input.type === 'tasks.list' ? Promise.resolve({ ok: true, taskPage: { items: [
+    { id: action.id, kind: 'action', companionId: action.companionId, conversationId: action.conversationId, title: action.title, status: 'completed', rawStatus: 'succeeded', stage: '已完成', createdAt: date, updatedAt: date, canStop: false, stoppedByUser: false },
+  ], total: 1, current: 0, history: 1, hasMore: false, observedAt: date, owners: [{ companionId: 'deepseek-sister', name: '大肥鱼', current: 0, history: 1 }], coverage: ['action'] } })
+    : input.type === 'action.get' ? Promise.resolve({ ok: true, action }) : input.type === 'actions.page' ? Promise.resolve({ ok: true, actionPage: { items: [action], hasMore: false, total: 1, owners: [{ companionId: action.companionId, name: '大肥鱼', count: 1 }] } }) : original(input));
+  await mount(f.api); await click('查看伙伴任务'); expect(f.request.mock.calls.some(([input]) => input.type === 'action.get')).toBe(false);
+  await click('查看工具执行过程');
+  expect(f.request).toHaveBeenCalledWith({ type: 'actions.page', conversationId: 'other-group', companionId: 'deepseek-sister', limit: 20 });
+  expect(container!.querySelector('[aria-label="伙伴实时任务"]')?.textContent).toContain('跨房间的真实执行记录');
 });
 
 it('opens the exact parallel capability from a lightweight message entry and keeps logs out of the bubble', async () => {
@@ -799,7 +823,7 @@ it('shows actual action steps and elapsed time, hides private thinking, and keep
 it('tracks real reply elapsed time each second and resumes it accurately after the module is hidden', async () => {
   vi.useFakeTimers(); vi.setSystemTime(new Date('2026-10-13T08:00:05.000Z'));
   const f = fixture({ activities: [{ companionId: 'deepseek-sister', conversationId: 'private-sister', status: 'thinking', startedAt: date }] }, [message(1), pendingReply()]);
-  const settings = await mount(f.api); expect(container!.querySelector('[aria-label="本条回复进度"]')!.textContent).toContain('正在思考5 秒');
+  const settings = await mount(f.api); expect(container!.querySelector('[aria-label="本条回复进度"]')!.textContent).toContain('正在思考总用时 5 秒');
   await act(async () => { await vi.advanceTimersByTimeAsync(2000); });
   expect(container!.querySelector('[aria-label="本条回复进度"]')!.textContent).toContain('7 秒');
   await act(() => root!.render(<Companions api={f.api} isActive={false} onOpenSettings={settings} />));
@@ -865,4 +889,105 @@ it('keeps dormant chat sending available and offers activation beside its compac
   await click('激活大肥鱼');
   expect(f.request).toHaveBeenCalledWith({ type: 'companion.set-active', id: 'deepseek-sister', active: true });
   expect(container!.querySelector('.companions-composer-dormant')).toBeNull();
+});
+
+it('shows a verified recent page immediately on a repeat visit while revalidating it with the host', async () => {
+  const f = fixture({}, [message(1, '刚才看过的日常'), message(2, '群里的新消息', { conversationId: 'group-home' })]);
+  await mount(f.api);
+  const original = f.request.getMockImplementation()!;
+  let finish!: (value: CompanionsResponse) => void;
+  f.request.mockImplementation(input => input.type === 'messages' && input.conversationId === 'private-sister' ? new Promise(resolve => { finish = resolve; }) : original(input));
+  await act(() => container!.querySelector<HTMLButtonElement>('[data-companion-conversation="group-home"]')!.click());
+  await act(() => container!.querySelector<HTMLButtonElement>('[data-companion-conversation="private-sister"]')!.click());
+  expect(container!.querySelector('[data-companion-messages]')!.textContent).toContain('刚才看过的日常');
+  expect(container!.querySelector('[data-companion-messages]')!.textContent).not.toContain('正在读取聊天记录');
+  await act(() => finish({ ok: true, messages: [message(1, '主机核验后的最新正文')], hasMore: false }));
+  expect(container!.querySelector('[data-companion-messages]')!.textContent).toContain('主机核验后的最新正文');
+  expect(container!.querySelector('[data-companion-messages]')!.textContent).not.toContain('刚才看过的日常');
+});
+
+it('keeps paged history out of the repeat-visit latest cache', async () => {
+  const history = Array.from({ length: 75 }, (_, index) => message(index + 1, `日常消息-${index + 1}`));
+  const f = fixture({}, [...history, message(76, '群聊', { conversationId: 'group-home' })]);
+  await mount(f.api); await click('查看更早的消息');
+  expect(container!.querySelector('[data-companion-message="message-1"]')).not.toBeNull();
+  const original = f.request.getMockImplementation()!;
+  let finish!: (value: CompanionsResponse) => void;
+  f.request.mockImplementation(input => input.type === 'messages' && input.conversationId === 'private-sister' ? new Promise(resolve => { finish = resolve; }) : original(input));
+  await act(() => container!.querySelector<HTMLButtonElement>('[data-companion-conversation="group-home"]')!.click());
+  await act(() => container!.querySelector<HTMLButtonElement>('[data-companion-conversation="private-sister"]')!.click());
+  expect(container!.querySelector('[data-companion-message="message-1"]')).toBeNull();
+  expect(container!.querySelector('[data-companion-message="message-75"]')).not.toBeNull();
+  expect(container!.querySelector('[data-companion-messages]')!.getAttribute('data-window-count')).toBe('50');
+  await act(() => finish({ ok: true, messages: history.slice(-50), hasMore: true }));
+});
+
+it('invalidates repeat-visit content on host changes and does not read hidden chat windows', async () => {
+  const f = fixture({}, [message(1, '已经撤回的旧内容'), message(2, '群消息', { conversationId: 'group-home' })]);
+  await mount(f.api);
+  await act(() => container!.querySelector<HTMLButtonElement>('[data-companion-conversation="group-home"]')!.click());
+  await click('联系人'); f.request.mockClear();
+  await f.publish();
+  expect(f.request.mock.calls.filter(([input]) => ['messages', 'actions', 'topic.list'].includes(input.type))).toHaveLength(0);
+  const original = f.request.getMockImplementation()!;
+  let finish!: (value: CompanionsResponse) => void;
+  f.request.mockImplementation(input => input.type === 'messages' && input.conversationId === 'private-sister' ? new Promise(resolve => { finish = resolve; }) : original(input));
+  await click('消息');
+  await act(() => container!.querySelector<HTMLButtonElement>('[data-companion-conversation="private-sister"]')!.click());
+  expect(container!.querySelector('[data-companion-messages]')!.textContent).not.toContain('已经撤回的旧内容');
+  expect(container!.querySelector('[data-companion-messages]')!.textContent).toContain('正在读取聊天记录');
+  await act(() => finish({ ok: true, messages: [], hasMore: false }));
+});
+
+it('mounts real progress before a slow history read returns and keeps it through an older page', async () => {
+  vi.useFakeTimers(); vi.setSystemTime(new Date(new Date(date).getTime() + 1000));
+  const initial = message(1, '前面的日常');
+  const f = fixture({}, [initial]); await mount(f.api);
+  const original = f.request.getMockImplementation()!;
+  let finish!: (value: CompanionsResponse) => void;
+  f.request.mockImplementation(input => input.type === 'messages' ? new Promise(resolve => { finish = resolve; }) : original(input));
+  await fill('textarea[aria-label="输入消息"]', '请打开浏览器'); await click('发送');
+  const sent = f.request.mock.calls.find(([input]) => input.type === 'message.send')![0];
+  if (sent.type !== 'message.send') throw new Error('Missing sent source');
+  const frame: CompanionReplyStreamEvent = { conversationId: 'private-sister', companionId: 'deepseek-sister', sourceMessageId: sent.clientId!, messageId: 'new-live-reply', step: 0, attemptId: 'progress', text: '', phase: 'progress', messageIdentity: { sequence: 3, createdAt: date }, progress: { workId: 'live-work', sourceMessageId: sent.clientId!, revision: 3, phase: 'memory', detail: '正在构建这次回忆', startedAt: date, updatedAt: date } };
+  await f.stream(frame);
+  expect(container!.querySelector('[data-companion-message="new-live-reply"]')!.textContent).toContain('正在构建这次回忆');
+  expect(container!.querySelector('[data-companion-message="new-live-reply"]')!.textContent).toContain('1 秒');
+  await act(async () => { await vi.advanceTimersByTimeAsync(2000); });
+  expect(container!.querySelector('[data-companion-message="new-live-reply"]')!.textContent).toContain('3 秒');
+  await act(() => finish({ ok: true, messages: [initial], hasMore: false }));
+  expect(container!.querySelector('[data-companion-message="new-live-reply"]')!.textContent).toContain('正在构建这次回忆');
+  expect(container!.querySelector('[data-companion-messages]')!.textContent).toContain('请打开浏览器');
+  await f.stream({ ...frame, progress: { ...frame.progress!, revision: 4, phase: 'tools', detail: '浏览器已经开始执行' } });
+  expect(container!.querySelector('[data-companion-message="new-live-reply"]')!.textContent).toContain('浏览器已经开始执行');
+  await f.stream({ ...frame, progress: { ...frame.progress!, revision: 2, phase: 'queued', detail: '过时的排队阶段' } });
+  expect(container!.querySelector('[data-companion-message="new-live-reply"]')!.textContent).not.toContain('过时的排队阶段');
+});
+
+it('buffers progress arriving before the send acknowledgement until its exact source is known', async () => {
+  const f = fixture({}, [message(1)]); await mount(f.api);
+  const original = f.request.getMockImplementation()!;
+  let acknowledge!: (value: CompanionsResponse) => void, finish!: (value: CompanionsResponse) => void;
+  f.request.mockImplementation(input => input.type === 'message.send' ? new Promise(resolve => { acknowledge = resolve; }) : input.type === 'messages' ? new Promise(resolve => { finish = resolve; }) : original(input));
+  await fill('textarea[aria-label="输入消息"]', '新的任务'); await click('发送');
+  const source = message(2, '新的任务', { id: 'accepted-source', authorId: 'user' });
+  const frame: CompanionReplyStreamEvent = { conversationId: 'private-sister', companionId: 'deepseek-sister', sourceMessageId: source.id, messageId: 'early-reply', step: 0, attemptId: 'progress', text: '', phase: 'progress', messageIdentity: { sequence: 3, createdAt: date }, progress: { revision: 1, phase: 'context', detail: '收到任务，正在准备', startedAt: date, updatedAt: date } };
+  await f.stream(frame); expect(container!.querySelector('[data-companion-message="early-reply"]')).toBeNull();
+  await act(() => acknowledge({ ok: true, message: source }));
+  expect(container!.querySelector('[data-companion-message="early-reply"]')!.textContent).toContain('收到任务，正在准备');
+  await act(() => finish({ ok: true, messages: [message(1), source], hasMore: false }));
+  expect(container!.querySelector('[data-companion-message="early-reply"]')).not.toBeNull();
+});
+
+it('does not insert live progress into browsed history or resurrect it after a companion reset', async () => {
+  const history = Array.from({ length: 75 }, (_, index) => message(index + 1));
+  const f = fixture({}, history); await mount(f.api); await click('查看更早的消息');
+  const frame: CompanionReplyStreamEvent = { conversationId: 'private-sister', companionId: 'deepseek-sister', sourceMessageId: 'message-75', messageId: 'reset-live-reply', step: 0, attemptId: 'progress', text: '', phase: 'progress', messageIdentity: { sequence: 76, createdAt: date }, progress: { revision: 1, phase: 'context', detail: '真实执行进度', startedAt: date, updatedAt: date } };
+  await f.stream(frame); expect(container!.querySelector('[data-companion-message="reset-live-reply"]')).toBeNull();
+  await click('回到最新消息'); await f.stream(frame);
+  expect(container!.querySelector('[data-companion-message="reset-live-reply"]')).not.toBeNull();
+  await f.publish({ resetJobs: [{ id: 'reset-done', companionId: 'deepseek-sister', scope: 'all', status: 'completed', phase: 'done', processed: 1, startedAt: date, updatedAt: date }] }, []);
+  expect(container!.querySelector('[data-companion-message="reset-live-reply"]')).toBeNull();
+  await f.stream({ ...frame, progress: { ...frame.progress!, revision: 2 } });
+  expect(container!.querySelector('[data-companion-message="reset-live-reply"]')).toBeNull();
 });

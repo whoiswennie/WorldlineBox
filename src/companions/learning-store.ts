@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto';
+import { companionTaskCanClaim } from './task-concurrency-store';
 import type { CompanionLearningGrant, CompanionLearningJob, CompanionLearningRead, CompanionLearningStatus } from '../shared/companion-learning';
 import type { CompanionStorageCommand, CompanionStorageResponse } from '../shared/companion-storage';
 import type { CompanionConnection } from './store';
@@ -74,8 +75,8 @@ export class CompanionLearningStore {
       case 'learning.update': return this.db.transaction(() => {
         const row = this.expected(command.companionId, command.id, command.expectedRevision), value = this.grant(row);
         value.autonomous = command.autonomous; value.intervalMinutes = command.intervalMinutes; value.updatedAt = now(); value.status = 'idle'; delete value.error;
-        this.db.prepare('UPDATE companion_learning_grants SET autonomous=?,revision=revision+1,data=?,lease_token=NULL,lease_until=0 WHERE id=?')
-          .run(command.autonomous ? 1 : 0, JSON.stringify(value), row.id);
+        this.db.prepare('UPDATE companion_learning_grants SET autonomous=?,revision=revision+1,data=?,manual=CASE WHEN ?=0 THEN 0 ELSE manual END,lease_token=NULL,lease_until=0 WHERE id=?')
+          .run(command.autonomous ? 1 : 0, JSON.stringify(value), command.autonomous ? 1 : 0, row.id);
         return { ok: true, learning: this.status(command.companionId) };
       }).immediate();
       case 'learning.revoke': return this.db.transaction(() => {
@@ -92,13 +93,13 @@ export class CompanionLearningStore {
         return { ok: true, learning: this.status(command.companionId) };
       }
       case 'learning.claim': return this.db.transaction(() => {
-        const found = this.db.prepare(`SELECT g.* FROM companion_learning_grants g JOIN companions c ON c.id=g.companion_id
+        const candidates = this.db.prepare(`SELECT g.* FROM companion_learning_grants g JOIN companions c ON c.id=g.companion_id
           WHERE g.enabled=1 AND (g.autonomous=1 OR g.manual=1) AND g.next_at<=? AND g.lease_until<=? AND c.deleted_at IS NULL
           AND COALESCE(json_extract(c.data,'$.active'),1)=1
           AND g.companion_id NOT IN(SELECT value FROM json_each(?))
           AND NOT EXISTS(SELECT 1 FROM companion_reset_jobs r WHERE r.companion_id=g.companion_id AND r.status!='completed')
-          AND NOT EXISTS(SELECT 1 FROM companion_learning_grants other WHERE other.companion_id=g.companion_id AND other.lease_until>?)
-          ORDER BY g.next_at,g.rowid LIMIT 1`).get(Date.now(), Date.now(), JSON.stringify(command.excludedOwners), Date.now()) as GrantRow | undefined;
+          ORDER BY g.next_at,g.rowid LIMIT 32`).all(Date.now(), Date.now(), JSON.stringify(command.excludedOwners)) as GrantRow[];
+        const found = candidates.find(item => companionTaskCanClaim(this.db, item.companion_id, { kind: 'learning', id: item.id }));
         if (!found) return { ok: true };
         const token = randomUUID(); this.db.prepare('UPDATE companion_learning_grants SET lease_token=?,lease_until=? WHERE id=?').run(token, Date.now() + (command.leaseMs ?? 120000), found.id);
         const job: CompanionLearningJob = { id: found.id, leaseToken: token, grant: this.grant(found), offset: 0, ...JSON.parse(found.cursor) as Cursor };

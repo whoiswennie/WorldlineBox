@@ -13,6 +13,7 @@ export interface CompanionAgentJournal {
   valid(run: CompanionAgentRun): Promise<boolean>;
 }
 const hash = (value: unknown) => createHash('sha256').update(JSON.stringify(value)).digest('hex');
+export const companionAgentRunIdentity = (companionId: string, conversationId: string, invocationId: string): string => hash([companionId, conversationId, invocationId]);
 
 /** Source-bearing job/round IDs stay stable across a lease retry. The journal
  * keeps actual tool decisions and receipts, separate from published speech. */
@@ -27,7 +28,7 @@ export function companionAgentJournal(request: (command: CompanionStorageCommand
     async load(frame, domain) {
       const invocation = frame.invocation;
       if (!invocation) throw new Error('持久推理必须绑定实际任务。');
-      const id = hash([frame.companion.id, frame.conversation.id, invocation.id]);
+      const id = companionAgentRunIdentity(frame.companion.id, frame.conversation.id, invocation.id);
       boundaries.set(id, frame.contextThroughSequence ?? frame.sourceMessage?.sequence);
       const requestDigest = hash([invocation.kind, invocation.goal, invocation.authorization,
         (JSON.parse(domain.user) as { purpose?: string }).purpose]);
@@ -46,10 +47,13 @@ export function companionAgentJournal(request: (command: CompanionStorageCommand
       // only the formatter output / actual focusing input that was observed;
       // the independent candidate ranks are not evidence that a note was read.
       const context = frame.memoryRecall?.context;
-      const memories = context ? companionMemoryContextDependencies(context).memories : frame.memories.map(note => ({ id: note.id, version: note.version }));
+      const dependencies = context ? companionMemoryContextDependencies(context) : undefined;
+      const memories = dependencies?.frozenMemories ? [] : dependencies?.memories ?? frame.memories.map(note => ({ id: note.id, version: note.version }));
       return { id, companionId: frame.companion.id, conversationId: frame.conversation.id, invocationId: invocation.id,
         topicId: invocation.topicId, requestDigest, revision: 0, status: 'running', turns: [], sources,
         memories: [...new Map(memories.map(note => [`${note.id}:${note.version}`, note])).values()], effects: [],
+        ...(dependencies?.frozenMemories ? { frozenMemories: dependencies.frozenMemories } : {}),
+        ...(frame.memoryRecall ? { passiveRecall: { prepared: true as const, ...(context ? { context } : {}) } } : {}),
         topics: captureCompanionExecutionReadset({ companionId: frame.companion.id, conversationId: frame.conversation.id },
           { context: buildCompanionContext(frame) }).topics };
     },

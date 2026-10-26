@@ -1,4 +1,6 @@
 import { z } from 'zod';
+import type { CompanionReplyInput } from './context';
+import type { CompanionExecutionReadset } from '../../shared/companion-execution-evidence';
 import type { Companion, CompanionMessage, CompanionMemory } from '../../shared/companions';
 import type { CompanionWorldJob, CompanionWorldSnapshot } from '../../shared/companion-world';
 import type { CompanionRoutine } from '../../shared/companion-routine';
@@ -43,11 +45,13 @@ urgent需要实际用户本人当前明确要求立即协助，且语义有现�
 export async function generateCompanionWorldDecision(input: { companion: Companion; world: CompanionWorldSnapshot; job: CompanionWorldJob;
   memories?: readonly CompanionMemory[];
   memoryContext?: string;
+  memoryRecall?: CompanionReplyInput['memoryRecall'];
   characterDevelopment?: CompanionCharacterDevelopment;
   routine?: CompanionRoutine;
   selfState?: Pick<CompanionRuntimeState, 'energy' | 'mood' | 'expression' | 'affect' | 'focus'> & { busy: boolean };
   members: Array<Pick<Companion, 'id' | 'name' | 'description'>> } & Partial<CompanionProfileInput>, config: CompanionModelConfig, signal?: AbortSignal,
-options: Pick<CompanionModelOptions, 'fetchFn' | 'timeoutMs'> & { capabilities?: CompanionStructuredAgentCapabilities } = {}): Promise<CompanionWorldDecision> {
+options: Pick<CompanionModelOptions, 'fetchFn' | 'timeoutMs'> & { capabilities?: CompanionStructuredAgentCapabilities;
+  observeReadset?(readset: CompanionExecutionReadset): void | Promise<void> } = {}): Promise<CompanionWorldDecision> {
   const perceivedWorld = companionModelWorld(input.world, input.companion.id)!;
   const events = perceivedWorld.events.filter(event => event.sequence <= input.job.throughEventSequence);
   const knownPeers = new Set([...input.world.actors.map(actor => actor.companionId), ...input.world.residents.map(resident => resident.companionId)]);
@@ -87,10 +91,11 @@ appraisals只能引用单独提供的appraisalEvents列表中的真实社交事�
     },
     frame: { companion: input.companion, conversation: companionTaskConversation(input.job.conversationId, input.companion.id, input.job.createdAt),
       messages: [], memories: input.memoryContext === undefined ? input.memories ?? [] : [], proactive: true, audience: 'peers',
+      memoryRecall: input.memoryRecall,
       characterDevelopment: input.characterDevelopment, publicProfiles: input.publicProfiles, publicProfileIds: [...knownPeers],
       invocation: companionTaskInvocation({ companion: input.companion, conversationId: input.job.conversationId, id: input.job.id,
         kind: 'self', goal: '根据当前世界状态和本人经历决定下一步生活行动。', createdAt: input.job.createdAt }) },
-    capabilities: options.capabilities }, config, signal, { ...options, visualInputs: input.visualInputs }));
+    capabilities: options.capabilities, observeReadset: options.observeReadset }, config, signal, { ...options, visualInputs: input.visualInputs }));
   if (!result.success) throw invalid();
   const decision = result.data;
   if (decision.action) validateAction(decision.action, input.companion.id, input.world);

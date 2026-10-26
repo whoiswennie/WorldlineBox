@@ -5,13 +5,16 @@ import Database from 'better-sqlite3';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { CompanionsStore, type CompanionSeed, type CompanionConnection } from '../../src/companions/store';
 import { CompanionWorldService } from '../../src/main/companions/world-service';
-import type { CompanionMemoryCandidate } from '../../src/shared/companion-memory';
+import type { CompanionMemoryCandidate, CompanionMemorySearch } from '../../src/shared/companion-memory';
 import type { CompanionStorageResponse } from '../../src/shared/companion-storage';
 import type { CompanionMemoryService } from '../../src/main/companions/memory-service';
 import type { VcpMemoryDreamWaveResult } from '../../src/main/vcp-memory/dream-contracts';
 import { CompanionOptionalDreamError } from '../../src/main/companions/optional-dream-error';
-import { companionDreamComponentFailureSchema } from '../../src/shared/companion-world';
+import { companionDreamComponentFailureSchema, type CompanionWorldJob } from '../../src/shared/companion-world';
 import { COMPANION_SUBMIT_RESULT_TOOL } from '../../src/shared/companion-final-proposal';
+import { companionAgentJournal } from '../../src/main/companions/agent-journal';
+import type { CompanionReplyInput } from '../../src/main/companions/context';
+import { companionMemoryContextDependencies } from '../../src/main/companions/memory-context-evidence';
 
 const seeds: CompanionSeed[] = ['alice', 'bob'].map(id => ({ id, name: id, persona: id === 'alice' ? '安静友好，喜欢阅读。' : '坦率，尊重彼此边界。', description: '', model: '', avatar: 'sister', proactive: true }));
 const stores = new Set<CompanionsStore>(), services = new Set<CompanionWorldService>(), roots: string[] = [];
@@ -69,6 +72,124 @@ function indexNotes(store: CompanionsStore) {
     store.request({ type: 'memory.outbox.complete', id: outbox.id, leaseToken: outbox.leaseToken, indexed: true });
   }
 }
+
+function frozenDecisionFixture(fetchFn: typeof fetch, focused: boolean) {
+  const f = fixture(fetchFn, false), scope = { companionId: 'bob', conversationId: 'world_bob' };
+  const source = f.store.request({ type: 'memory.world_query', ...scope, category: 'observations', query: '', limit: 3 }).memorySources![0]!;
+  const note = focused ? f.store.request({ type: 'memory.record', ...scope, candidate: { diaryName: '资料', content: '本任务开始时实际读到的世界资料。', tags: ['阅读'],
+    sourceMessageIds: [source.id], evidence: [{ sourceMessageId: source.id, quote: source.content }] } }).memories![0]! : undefined;
+  if (note) {
+    indexNotes(f.store);
+    expect(f.store.request({ type: 'memory.snapshot', ...scope }).memorySnapshot?.notes.some(current => current.id === note.id)).toBe(true);
+  }
+  const passiveRecall = vi.fn(async (query: CompanionMemorySearch): Promise<CompanionStorageResponse> => {
+    const snapshot = f.store.request({ type: 'memory.snapshot', companionId: query.companionId, conversationId: query.conversationId }).memorySnapshot!;
+    return { ok: true, memoryPage: { items: [], hasMore: false }, memoryContext: { text: snapshot.notes.map(note => note.content).join('\n'),
+      revision: snapshot.revision, profileKey: 'frozen-world-fixture', evidence: { capturedAt: new Date().toISOString(), corpusHash: snapshot.revision,
+        dependencyCoverage: 'complete', dependencies: snapshot.notes.map(note => ({ id: note.id, version: note.version })), snapshotPolicy: 'task_passive_v1',
+        frozenDependencies: snapshot.notes.map(note => ({ id: note.id, sources: note.sources.map(source => ({ id: source.messageId,
+          conversationId: source.conversationId, checksum: source.checksum })) })) } } };
+  });
+  const service = new CompanionWorldService({ request: f.request, fetchFn, passiveRecall,
+    configFor: async () => ({ apiFormat: 'openai_chat', model: 'frozen-world-fixture', apiKey: 'synthetic-key', baseUrl: 'https://provider.invalid' }),
+    changed: vi.fn(), wakeWaiting: vi.fn(), report: vi.fn(), memoryContextValid: async (currentScope, context) => {
+      if (!context) return true;
+      const dependencies = companionMemoryContextDependencies(context);
+      return !dependencies.malformed && dependencies.frozenMemories !== undefined
+        && f.store.request({ type: 'memory.frozen.valid', ...currentScope, memories: dependencies.frozenMemories }).memoryFrozenValid === true;
+    } });
+  services.add(service);
+  f.store.request({ type: 'world.tool', ...f.alice, arguments: { action: 'visit', targetCompanionId: 'bob', reason: '问候原世界任务' } });
+  const job = f.store.request({ type: 'world.job.claim', kind: 'decision', excludedCompanionIds: ['alice'] }).worldJob!;
+  expect(job).toMatchObject({ companionId: 'bob', kind: 'decision', status: 'running' });
+  const process = (service as unknown as { process(job: CompanionWorldJob, signal: AbortSignal): Promise<void> }).process.bind(service);
+  return { ...f, service, scope, source, note, passiveRecall, job, process };
+}
+
+it.each(['focused', 'empty'] as const)('keeps one world decision passive receipt across an interrupted provider and job recovery: %s', async kind => {
+  vi.useRealTimers(); vi.useFakeTimers({ toFake: ['Date'] }); vi.setSystemTime('2026-10-14T02:00:00Z');
+  const controller = new AbortController();
+  const fetchFn = vi.fn<typeof fetch>((_url, init) => new Promise((_resolve, reject) => {
+    init?.signal?.addEventListener('abort', () => reject(new DOMException('Interrupted fixture provider', 'AbortError')), { once: true });
+  }));
+  const f = frozenDecisionFixture(fetchFn, kind === 'focused'), first = f.process(f.job, controller.signal);
+  await vi.waitFor(() => expect(fetchFn).toHaveBeenCalledOnce()); controller.abort(); await first;
+  if (f.note) f.store.request({ type: 'memory.revise', ...f.scope, id: f.note.id, expectedVersion: f.note.version, candidate: {
+    content: '后来的普通整理不替换任务已经读取的旧资料。', tags: ['新标签'], sourceMessageIds: [f.source.id], evidence: [{ sourceMessageId: f.source.id, quote: f.source.content }] } });
+  const extra = f.store.appendMessage({ conversationId: f.bob.conversationId, authorId: 'user', content: '任务中断后新增的无关资料。', replyDirective: 'none' });
+  f.store.request({ type: 'memory.record', ...f.bob, candidate: { content: extra.content, tags: [], sourceMessageIds: [extra.id], evidence: [{ sourceMessageId: extra.id, quote: extra.content }] } });
+  fetchFn.mockImplementation(async (_url, init) => {
+    const input = JSON.parse(JSON.parse(String(init?.body)).messages[1].content);
+    expect(input.memoryContext).toBe(kind === 'focused' ? '本任务开始时实际读到的世界资料。' : '');
+    return response({ action: null, reason: '沿用本任务原回忆，继续当前安静生活。', appraisals: [] });
+  });
+  advance(f.store, 61_000);
+  const recovered = f.store.request({ type: 'world.job.claim', kind: 'decision', excludedCompanionIds: ['alice'] }).worldJob!;
+  expect(recovered.id).toBe(f.job.id); expect(recovered.attempts).toBe(2);
+  await f.process(recovered, new AbortController().signal);
+  expect(f.passiveRecall).toHaveBeenCalledOnce(); expect(fetchFn).toHaveBeenCalledTimes(2);
+  const completion = f.request.mock.calls.find(([command]) => command.type === 'world.job.complete' && command.id === f.job.id)?.[0];
+  expect(completion, JSON.stringify(f.request.mock.calls.slice(-30).map(([command]) => command))).toMatchObject({ type: 'world.job.complete', executionReadset: { complete: true, memories: [],
+    frozenMemories: f.note ? [{ id: f.note.id, sources: expect.any(Array) }] : [] } });
+  expect(completion).not.toHaveProperty('expectedMemoryRevision');
+});
+
+it('blocks recovery of a world decision whose actual frozen note was forgotten without preparing a replacement recall', async () => {
+  vi.useRealTimers(); vi.useFakeTimers({ toFake: ['Date'] }); vi.setSystemTime('2026-10-14T02:00:00Z');
+  const controller = new AbortController();
+  const fetchFn = vi.fn<typeof fetch>((_url, init) => new Promise((_resolve, reject) => {
+    init?.signal?.addEventListener('abort', () => reject(new DOMException('Interrupted fixture provider', 'AbortError')), { once: true });
+  }));
+  const f = frozenDecisionFixture(fetchFn, true), first = f.process(f.job, controller.signal);
+  await vi.waitFor(() => expect(fetchFn).toHaveBeenCalledOnce()); controller.abort(); await first;
+  f.store.request({ type: 'memory.forget', ...f.scope, id: f.note!.id }); advance(f.store, 61_000);
+  fetchFn.mockImplementation(async () => response({ action: null, reason: '撤回后不得继续提交旧资料结论。', appraisals: [] }));
+  const recovered = f.store.request({ type: 'world.job.claim', kind: 'decision', excludedCompanionIds: ['alice'] }).worldJob!;
+  expect(recovered.id).toBe(f.job.id); await f.process(recovered, new AbortController().signal);
+  expect(f.passiveRecall).toHaveBeenCalledOnce();
+  expect(f.request.mock.calls.some(([command]) => command.type === 'world.job.complete' && command.id === f.job.id)).toBe(false);
+  expect(f.request.mock.calls.some(([command]) => command.type === 'world.job.fail' && command.id === f.job.id)).toBe(true);
+});
+
+it.each(['focused', 'empty', 'legacy'] as const)('restores a social invocation journal without repeating passive preparation: %s', async kind => {
+  const fetchFn = vi.fn<typeof fetch>(async (_url, init) => {
+    const data = JSON.parse(JSON.parse(String(init?.body)).messages[1].content);
+    if (data.purpose !== 'world_social') return response({ action: null, reason: '没有新的世界事项。', appraisals: [] });
+    if (kind === 'focused') expect(data.memoryContext).toContain('PREVIOUS_FOCUSED_SOCIAL_TASK');
+    else expect(data.memoryContext ?? '').toBe('');
+    return response({ text: null, reason: '这项既有来信无需继续发言。' });
+  });
+  const f = fixture(fetchFn, false), room = f.store.request({ type: 'social.conversation.ensure', companionId: 'alice', memberIds: ['alice', 'bob'] }).socialConversation!;
+  f.store.request({ type: 'social.send', companionId: 'alice', conversationId: room.id, content: '这项来信请按原任务继续核对。', channel: 'phone', clientId: 'social_frozen_' + kind });
+  advance(f.store, 1300);
+  const job = f.store.request({ type: 'social.job.claim' }).socialJob!;
+  expect(job.companionId).toBe('bob');
+  const source = f.store.getMessage(job.sourceMessageId), state = f.store.request({ type: 'state', includeHidden: true }).state!;
+  const companion = state.companions.find(item => item.id === 'bob')!, conversation = state.conversations.find(item => item.id === room.id)!;
+  const recalled = await f.recall({ companion, conversation, currentMessage: source, messages: [source], beforeSequence: job.throughSequence,
+    config: { apiFormat: 'openai_chat', model: 'fixture', apiKey: 'synthetic' } });
+  const memoryRecall = { reasons: [], pending: false, degraded: false, ...(kind === 'focused' ? { context: { ...recalled.context!, text: 'PREVIOUS_FOCUSED_SOCIAL_TASK' } } : {}) };
+  const frame: CompanionReplyInput = { companion, conversation, sourceMessage: source, messages: [source], memories: [], memoryRecall,
+    contextThroughSequence: job.throughSequence,
+    invocation: { id: job.id, kind: 'peer', companionId: companion.id, conversationId: conversation.id, sourceMessageId: source.id,
+      goal: source.content, status: 'running', createdAt: job.createdAt, participants: conversation.memberIds, messagePort: { kind: 'conversation' },
+      authorization: { kind: 'peer', sourceMessageIds: [source.id], externalActions: false } } };
+  const journal = companionAgentJournal(f.request), run = await journal.load(frame, { system: '', user: '{"purpose":"world_social"}' });
+  if (kind === 'legacy') delete run.passiveRecall;
+  run.turns = [{ text: '', rawText: '', calls: [{ id: 'previous_wait', name: 'wait', arguments: '{"ms":1}' }],
+    results: [{ callId: 'previous_wait', content: '{"ok":true}' }] }];
+  await journal.save(run);
+  f.store.request({ type: 'social.job.fail', id: job.id, leaseToken: job.leaseToken!, error: '模拟此前应用退出后的恢复' });
+  advance(f.store, 40000); await f.service.tick();
+  await vi.waitFor(() => expect(fetchFn).toHaveBeenCalled());
+  await vi.advanceTimersByTimeAsync(1500);
+  try { await vi.waitFor(() => expect(f.request.mock.calls.some(([command]) => command.type === 'social.job.complete' && command.id === job.id)).toBe(true)); }
+  catch (error) { throw new Error(`Social restore did not complete: ${JSON.stringify(f.request.mock.calls.map(([command]) => ({ type: command.type,
+    ...(command.type === 'social.job.fail' ? { error: command.error } : {}) })))}; provider calls=${fetchFn.mock.calls.length}`, { cause: error }); }
+  expect(f.recall).toHaveBeenCalledOnce();
+  const resumed = f.store.request({ type: 'agent.run.get', companionId: companion.id, id: run.id }).agentRun!;
+  expect(resumed.turns[0]).toEqual(run.turns[0]);
+});
 function prepareDream(f: ReturnType<typeof fixture>) {
   const source = f.store.appendMessage({ conversationId: f.alice.conversationId, authorId: 'alice', content: '这次先备份再修改，实际修复了聊天保存问题。', replyDirective: 'none' });
   const journal = f.store.request({ type: 'memory.record', ...f.alice, candidate: { content: source.content, tags: ['聊天保存', '备份'],

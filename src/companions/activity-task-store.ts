@@ -4,11 +4,12 @@ import type { CompanionConnection } from './store';
 import type { AppendCompanionMessage, CompanionStorageCommand, CompanionStorageResponse } from '../shared/companion-storage';
 import { companionExecutionReadsetSchema, type CompanionExecutionReadset } from '../shared/companion-execution-evidence';
 import type { CompanionMessage } from '../shared/companions';
-import { activityTaskSchema, activityMemorySchema, activityDecisionSchema, projectCompanionActivityHistoryEntry, COMPANION_ACTIVITY_HANDOFF_NOTICE, type ActivityDecision, type CompanionActivityTask } from '../shared/companion-activity-task';
+import { activityTaskSchema, activityMemorySchema, activityDecisionSchema, activityPassiveRecallSchema, projectCompanionActivityHistoryEntry, COMPANION_ACTIVITY_HANDOFF_NOTICE, type ActivityDecision, type CompanionActivityTask, type CompanionActivityPassiveRecall } from '../shared/companion-activity-task';
 import type { CompanionWorldStore } from './world-store';
 import type { CompanionSocialStore } from './social-store';
 import { companionTimeInZone } from '../shared/companion-schedule-time';
 import { companionPlayerPhoneBusy } from './social-continuity-store';
+import { companionTaskCanClaim } from './task-concurrency-store';
 import type { CompanionWorldSnapshot } from '../shared/companion-world';
 import { companionTopicOperationSchema, COMPANION_TOPIC_STATE_WRITE_RECEIPT, companionGameStateHandoffReceipt, type CompanionTopicModeratorTransferApproval } from '../shared/companion-topic';
 import { companionSocialGoalOrigin } from './social-goal-origin';
@@ -69,6 +70,9 @@ export class CompanionActivityTaskStore {
     this.db.exec("CREATE INDEX IF NOT EXISTS companion_activity_recovery ON companion_activity_tasks(status,json_extract(data,'$.createdAt'))");
     if (!(this.db.prepare('PRAGMA table_info(companion_activity_tasks)').all() as { name: string }[]).some(column => column.name === 'report_pending')) this.db.exec('ALTER TABLE companion_activity_tasks ADD COLUMN report_pending INTEGER NOT NULL DEFAULT 0');
     this.db.exec('CREATE INDEX IF NOT EXISTS companion_activity_reports ON companion_activity_tasks(report_pending,next_at)');
+    // Large source closures are cold task receipts. Ordinary list/get/claim
+    // polling must not decode them along with the small current task state.
+    this.db.exec('CREATE TABLE IF NOT EXISTS companion_activity_passive_snapshots(task_id TEXT PRIMARY KEY REFERENCES companion_activity_tasks(id) ON DELETE CASCADE,data TEXT NOT NULL)');
     this.db.exec(`CREATE TABLE IF NOT EXISTS companion_activity_social_inbox(task_id TEXT NOT NULL REFERENCES companion_activity_tasks(id) ON DELETE CASCADE,
       message_id TEXT NOT NULL,job_id TEXT NOT NULL,conversation_id TEXT NOT NULL,checksum TEXT NOT NULL,proof TEXT NOT NULL,status TEXT NOT NULL DEFAULT 'pending',observed_lease TEXT,
       PRIMARY KEY(task_id,message_id));
@@ -87,6 +91,10 @@ export class CompanionActivityTaskStore {
   private get(id: string): Stored {
     const row = this.db.prepare('SELECT data FROM companion_activity_tasks WHERE id=?').get(id) as Row | undefined;
     if (!row) throw new Error('行动任务不存在。'); return JSON.parse(row.data) as Stored;
+  }
+  private passiveRecall(id: string): CompanionActivityPassiveRecall | undefined {
+    const found = this.db.prepare('SELECT data FROM companion_activity_passive_snapshots WHERE task_id=?').get(id) as Row | undefined;
+    return found ? activityPassiveRecallSchema.parse(JSON.parse(found.data)) : undefined;
   }
   private public(task: Stored): CompanionActivityTask {
     const parsed = activityTaskSchema.parse({ ...task, historyAvailable: true, history: task.history.slice(-32).map(projectCompanionActivityHistoryEntry) });
@@ -847,7 +855,7 @@ export class CompanionActivityTaskStore {
       for (const row of candidates) {
         const task = JSON.parse(row.data) as Stored;
         if (!this.db.prepare("SELECT 1 FROM companions WHERE id=? AND json_extract(data,'$.active')=1").get(task.companionId)) { task.nextAt = Date.now() + 5000; this.save(task); continue; }
-        if (excluded.includes(task.companionId) || this.db.prepare("SELECT 1 FROM companion_activity_tasks WHERE companion_id=? AND status IN('queued','running') AND rowid<(SELECT rowid FROM companion_activity_tasks WHERE id=?) LIMIT 1").get(task.companionId, task.id)) { task.nextAt = Date.now() + 2000; this.save(task); continue; }
+        if (excluded.includes(task.companionId) || !companionTaskCanClaim(this.db, task.companionId, { kind: 'activity', id: task.id })) { task.nextAt = Date.now() + 2000; this.save(task); continue; }
         if (!this.valid(task)) { this.finish(task, 'cancelled', '来源被撤回、伙伴重置或联系人已移除，停止后续行动。'); continue; }
         if (task.status === 'running' && (task.leaseUntil ?? 0) > Date.now()) continue;
         if (task.status === 'running') this.chargePlanning(task);
@@ -1225,12 +1233,21 @@ export class CompanionActivityTaskStore {
       case 'activity.visit.ensure': return this.ensureVisit(command);
       case 'activity.list': return { ok: true, activityTasks: (this.db.prepare('SELECT data FROM companion_activity_tasks WHERE companion_id=? AND conversation_id=? ORDER BY rowid DESC LIMIT ?').all(command.companionId, command.conversationId, command.limit) as Row[]).map(row => this.public(JSON.parse(row.data) as Stored)) };
       case 'activity.cancel': return this.db.transaction(() => { const task = this.get(command.id); if (task.companionId !== command.companionId || task.conversationId !== command.conversationId) throw new Error('不能控制其他伙伴的任务。'); if (!terminal(task)) this.finish(task, 'cancelled', '已取消行动，停止后续计划；实际位置和已发送消息保留。'); return { ok: true, activityTask: this.public(task) }; }).immediate();
+      case 'activity.resume': return this.db.transaction(() => {
+        const task = this.get(command.id);
+        if (task.companionId !== command.companionId || task.conversationId !== command.conversationId) throw new Error('不能控制其他伙伴的任务。');
+        if (task.status !== 'cancelled' || task.stop?.actor !== 'user' || !this.valid(task)) throw new Error('只有用户停止且来源仍有效的持续任务可以恢复。');
+        task.status = 'queued'; task.stage = '用户已恢复原任务，保留已完成步骤，等待继续'; delete task.stop;
+        delete task.leaseToken; delete task.leaseUntil; task.reportPending = false; task.nextAt = Date.now(); task.deadline = iso(Date.now() + 3600_000);
+        this.save(task); return { ok: true, activityTask: this.public(task) };
+      }).immediate();
       case 'activity.claim': return { ok: true, activityTask: this.claim(command.excludedIds ?? []) };
       case 'activity.report.claim': return this.claimReport(command.excludedIds ?? [], command.id);
       case 'activity.report.complete': return this.completeReport(command);
       case 'activity.report.fail': this.failReport(command); return { ok: true };
       case 'activity.observe': {
         const task = this.leased(command.id, command.leaseToken), messages = this.peerMessages(task);
+        const passiveRecall = this.passiveRecall(task.id);
         task.observedSocialEvidence = { leaseToken: command.leaseToken, messages: messages.map(message => ({ id: message.id, checksum: checksum(message) })) };
         for (const message of this.inboxMessages(task)) if (messages.some(read => read.id === message.id))
           this.db.prepare("UPDATE companion_activity_social_inbox SET observed_lease=? WHERE task_id=? AND message_id=? AND status='pending'").run(command.leaseToken, task.id, message.id);
@@ -1251,12 +1268,22 @@ export class CompanionActivityTaskStore {
         return { ok: true, activityTask: this.public(task), world, activityMessages: messages, ...(progress ? { activityProgressEvidence: progress } : {}),
           ...(candidate && candidate.topicId !== task.gamePort?.topicId ? { activityPortCandidate: publicCompanionActivityPortCandidate(candidate) } : {}),
           ...(task.wholeGoalPlan ? { activityPlanningState: task.wholeGoalPlan } : {}),
+          ...(passiveRecall ? { activityPassiveRecall: passiveRecall } : {}),
           ...(port && game?.ok && game.topic?.kind === 'game' ? { activityGameRoom: { conversationId: port.conversationId,
             memberIds: (this.db.prepare('SELECT companion_id FROM conversation_members WHERE conversation_id=? ORDER BY companion_id')
               .all(port.conversationId) as Array<{ companion_id: string }>).map(member => member.companion_id) } } : {}),
           ...(game?.ok ? { topic: game.topic, topicState: game.topicState } : {}),
           activityMessageOrigins: this.goalSocialMessages(task).origins.filter(origin => shown.has(origin.messageId)) };
       }
+      case 'activity.passive.prepare': return this.db.transaction(() => {
+        const task = this.leased(command.id, command.leaseToken);
+        if (task.step !== command.expectedStep) throw new Error('行动步骤已有真实进展，被动回忆不能绑定到旧步骤。');
+        const snapshot = activityPassiveRecallSchema.parse(command.snapshot);
+        const existing = this.passiveRecall(task.id);
+        if (existing && JSON.stringify(existing) !== JSON.stringify(snapshot)) throw new Error('同一持续任务的被动回忆已准备，不能替换或重新检索。');
+        if (!existing) this.db.prepare('INSERT INTO companion_activity_passive_snapshots(task_id,data) VALUES(?,?)').run(task.id, JSON.stringify(snapshot));
+        return { ok: true, activityPassiveRecall: existing ?? snapshot };
+      }).immediate();
       case 'activity.plan.save': return this.db.transaction(() => {
         const task = this.leased(command.id, command.leaseToken);
         const sourceDigest = task.sourceChecksum ?? createHash('sha256').update(task.goal).digest('hex');

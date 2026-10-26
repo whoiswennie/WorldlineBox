@@ -4994,6 +4994,7 @@ async function startApplication(): Promise<void> {
       await phase('open-library', () => ensureCompanionLibrary(workspace));
       if (applicationClosing) throw new Error('应用正在关闭。');
       companionService = new CompanionService({
+        onTiming: timing => logger?.info('companions.context.slow', 'Companion preparation or source validation exceeded 500 ms.', timing),
         purgeMemoryAssets: async owner => {
           if (!/^[A-Za-z0-9_-]{1,100}$/.test(owner) || !workerClient) throw new Error('伙伴资产库尚未就绪。');
           const roots = await workerClient.request({ type: 'linked-folder.list', libraryId: workspace.libraryId });

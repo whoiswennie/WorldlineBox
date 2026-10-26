@@ -1,0 +1,1363 @@
+{
+  "schema": "worldlinebox.companion-memory-research-evidence",
+  "capturedAtUtc": "2026-10-26T10:30:24.390Z",
+  "date": "2026-10-26",
+  "project": {
+    "root": "C:\\Users\\hp\\Desktop\\project\\new\\WorldlineBox",
+    "head": "c77eb9bcd29361b1b7e40f20dcfbeb62e637a4ba",
+    "hasWorkingTreeChanges": true,
+    "sources": [
+      {
+        "path": "src/companions/memory-store.ts",
+        "sha256": "d9672b9e77ea00f9021b7ce9c99f9b1132d9295f747ad0dd5edd07278d12ce05",
+        "bytes": 114450
+      },
+      {
+        "path": "src/companions/source-access.ts",
+        "sha256": "5b2f78b353052c544b062a0aaa6fa7f5dbbb2c29cea7b1794d5eadc05f90dcd3",
+        "bytes": 34475
+      },
+      {
+        "path": "src/companions/memory-consolidation-store.ts",
+        "sha256": "feae1011ee6f0c42ea80f88dfbe8f6858498bdcb4a6bff30f2fffef8d72de52f",
+        "bytes": 12461
+      },
+      {
+        "path": "src/companions/world-store.ts",
+        "sha256": "6754ba2e6e2f9e9bd471ef24d8bb07fffeb457e17920cf6eae82ed7f43e6451c",
+        "bytes": 222990
+      },
+      {
+        "path": "src/companions/autotag-store.ts",
+        "sha256": "3f716480f71f8d4550545560eac32592ccbb2f6c1a5ebbdab957a153bc927575",
+        "bytes": 11035
+      },
+      {
+        "path": "src/companions/learning-store.ts",
+        "sha256": "2971f939c24a10b461d7682c1e21fe80547e8a842b9083d16ef5276cd9a68a54",
+        "bytes": 13280
+      },
+      {
+        "path": "src/main/companions/memory-service.ts",
+        "sha256": "ec186dd46ac8517d0a3caefe63d54f0039c4fa639f49acb0b355653f84dcb988",
+        "bytes": 88545
+      },
+      {
+        "path": "src/main/companions/memory-model.ts",
+        "sha256": "aa043d04373b1a684fcc3acbc6358fb6f53ad7f672b13ec18e7f4c76d50208ab",
+        "bytes": 35787
+      },
+      {
+        "path": "src/main/companions/memory-view-cache.ts",
+        "sha256": "d36e0d478fa022e3c268981dbbcf49321b6a3b294154822511097c1696a228bd",
+        "bytes": 13918
+      },
+      {
+        "path": "src/main/companions/memory-query-scheduler.ts",
+        "sha256": "71392ee36228f70fdae8b45f871f274b8cae4b2a3a6826eb88e9727968b232f2",
+        "bytes": 5879
+      },
+      {
+        "path": "src/main/companions/task-passive-recall.ts",
+        "sha256": "07fd7a0ad5b5787fb3c07ad4dcbf84f4ea56986dfdc77718c283dc9ff3066eb6",
+        "bytes": 1282
+      },
+      {
+        "path": "src/main/companions/memory-library.ts",
+        "sha256": "948692c539cfb04a81566de84f90b623d24f2d394a51bf8efb7d1cf8c33c454b",
+        "bytes": 51333
+      },
+      {
+        "path": "src/main/companions/knowledge-service.ts",
+        "sha256": "7c143bdee7fbad3db3bdde20058601d9304926bfa53ed56c6a8e65f014f82f92",
+        "bytes": 15799
+      },
+      {
+        "path": "src/main/companions/world-service.ts",
+        "sha256": "19bd3a595de58ae3c557a5fb1200b578cbffeb356b3ae0f057adb494ae95fbed",
+        "bytes": 45812
+      },
+      {
+        "path": "src/main/companions/learning-goal-integration.ts",
+        "sha256": "3d29a841fe0ae769dac8b749d4be2fd614792f5780ea4ceb0a86114ec07cd303",
+        "bytes": 21848
+      },
+      {
+        "path": "src/main/companions/service.ts",
+        "sha256": "f29d4db130478b6a34947f4cdfdb5695b95df251f6241d8596a2c421f3a26619",
+        "bytes": 351969
+      },
+      {
+        "path": "src/main/vcp-memory/process-broker.ts",
+        "sha256": "ef17b5efbc1fb83aa7b47e93629881d88a8c481aa64482328ee77499814b101b",
+        "bytes": 4019
+      },
+      {
+        "path": "src/main/vcp-memory/client.ts",
+        "sha256": "0e21e89dbb8b432a2d8fd027bbe6c453aabe8d29f85d38216d23fbe3e6b54c5d",
+        "bytes": 21032
+      },
+      {
+        "path": "src/main/vcp-memory/worker.cjs",
+        "sha256": "8fa5704fc24c7f3361aa0df2d89b4a684153e2229be2ed13882ffc76b402e2a4",
+        "bytes": 2817
+      },
+      {
+        "path": "src/main/vcp-memory/peripherals.cjs",
+        "sha256": "185d68d56aa4de766eee06e501be6e8761f9908487a123ac78762d7616d1822b",
+        "bytes": 43048
+      },
+      {
+        "path": "src/main/vcp-memory/dream-runtime.cjs",
+        "sha256": "1a283c3b05cd2b733e26cabe252c4f85a85045f14047fb7ae2cc674b1e071a74",
+        "bytes": 11449
+      },
+      {
+        "path": "src/shared/companion-memory.ts",
+        "sha256": "7e55453f120a7a96b5b57a98e14c719e4c7b35ef877db89ba3812f9693e690ce",
+        "bytes": 15463
+      },
+      {
+        "path": "src/shared/companion-frozen-memory.ts",
+        "sha256": "60d9f8742cbb9534efa41d45f7353a14d11ef1b6297fc15698c94d75a3b94a43",
+        "bytes": 534
+      },
+      {
+        "path": "src/shared/companion-sleep.ts",
+        "sha256": "37a870b5680a1e46baf9c8785959d7682d95a48283118c3a4448a45b9aa616a9",
+        "bytes": 690
+      },
+      {
+        "path": "src/shared/companion-task-concurrency.ts",
+        "sha256": "ad0503a1b376ce2c053745eac234edb194d804ced35cff8c8cb7c3aea7790599",
+        "bytes": 858
+      },
+      {
+        "path": "docs/developer/companion-core-acceptance-2026-10-26.md",
+        "sha256": "a4f7b87bda2ef3737f2bd6b3810cf5a4f315cfa07bddf9bf6f78a614790f28f9",
+        "bytes": 42410
+      },
+      {
+        "path": "docs/developer/companion-unified-upgrade-plan-2026-10-23.md",
+        "sha256": "7cd91c06b9e073d1fe7f6da1df8a1bb8d468d8ca10e1ba2379f02f8ae1d866cd",
+        "bytes": 344024
+      }
+    ]
+  },
+  "upstream": {
+    "root": "C:/Users/hp/Desktop/project/VCPToolBox",
+    "head": "213bea48515ed9911a65cbedb876d1636a75b89f",
+    "hasTrackedChanges": false,
+    "sources": [
+      {
+        "path": "AGENTS.md",
+        "sha256": "7e2bde0b0c94e36b1bd849d9d5a7a691cbd30835c39aa310e40d107470579f7c",
+        "bytes": 8697
+      },
+      {
+        "path": "Plugin/AGENTS.md",
+        "sha256": "5aff01a1f89bef9c5c8e97b542bb903ce621407b993f0a32f1fd1bf6ba6a38c7",
+        "bytes": 2998
+      },
+      {
+        "path": "modules/AGENTS.md",
+        "sha256": "1ca7dae3bdc6a5f3e67f3d174b8822155c8607abc0a1a11792ac3e60f12a00ee",
+        "bytes": 3786
+      },
+      {
+        "path": "TVStxt/Dailynote.txt",
+        "sha256": "43149fead67dff25152a405067ce24a0bf48feb23c8e53e87c6ead9820bb7810",
+        "bytes": 7931
+      },
+      {
+        "path": "docs/VCP记忆管理系统.md",
+        "sha256": "2e3b1d592d7c693d55789e2fbccfb7905616e977bfdf8a010fa7529f37519486",
+        "bytes": 45261
+      },
+      {
+        "path": "Plugin/DailyNote/dailynote.js",
+        "sha256": "021e23c975daea121c2ce16a20770fd6a1a3252675e53c1936ab23fcbd231e2e",
+        "bytes": 70721
+      },
+      {
+        "path": "Plugin/DailyNoteManager/daily-note-manager.js",
+        "sha256": "0eb8fee4a6b53664636ba9b8e411d765b165e9a05d4fb457bb1cd9bb400d92bf",
+        "bytes": 28186
+      },
+      {
+        "path": "Plugin/AgentDream/AgentDream.js",
+        "sha256": "76013795e44265dd431accd5b72631c2588dff916901383fb26e804fb6a0eb40",
+        "bytes": 43787
+      },
+      {
+        "path": "Plugin/AgentDream/DreamWaveEngine.js",
+        "sha256": "7a136bbd491323ceff48beaa39a39d9c6b9373ec93b037bae06c0fa41906ef6a",
+        "bytes": 34490
+      },
+      {
+        "path": "Plugin/AgentDream/plugin-manifest.json.block",
+        "sha256": "1c679711dbf4f99009bcc14aea4dbd197abbee2515805f943baa1c0be7fe032b",
+        "bytes": 4410
+      },
+      {
+        "path": "Plugin/AgentDream/config.env.example",
+        "sha256": "c5782bd1af915ce5ca8df74ce7c8d2b40569960fce6c6096e6bdd1f6057db69f",
+        "bytes": 3191
+      },
+      {
+        "path": "Plugin/VCPSleep/VCPSleep.js",
+        "sha256": "6d00c1c33398d41c6e919d782eef2b9433114464abf287d5d498013ecfde5a4c",
+        "bytes": 6003
+      },
+      {
+        "path": "Plugin/VCPSleep/plugin-manifest.json",
+        "sha256": "7b54d8e111bf45db3216f1324733e2b45a33bcb52df2bf18ff60743f6dc88705",
+        "bytes": 4699
+      },
+      {
+        "path": "Plugin.js",
+        "sha256": "6e73e1b6aca8af50e7a8df548e6ea2aac3e723fd865b6e5c61788a3739b347b1",
+        "bytes": 137776
+      },
+      {
+        "path": "routes/admin/dream.js",
+        "sha256": "efb2ae09de236eeb190d89b68e9c7f564f22a60b8c1497c2e09b7fedfaf8e4c3",
+        "bytes": 12225
+      },
+      {
+        "path": "Plugin/RAGDiaryPlugin/RAGDiaryPlugin.js",
+        "sha256": "b1f750fa6341bbbc7955f379b20b56b8aa5d2e5275b69d4681690c9eeec5f325",
+        "bytes": 298497
+      },
+      {
+        "path": "Plugin/RAGDiaryPlugin/AIMemoHandler.js",
+        "sha256": "3fd7a4a3b4a3c48855523ce8cbbce43fbe5a4dd58331b002b3560bd28a3b1901",
+        "bytes": 41838
+      },
+      {
+        "path": "Plugin/RAGDiaryPlugin/CacheManager.js",
+        "sha256": "bd43a14486abe874d9f6372fa4c268965f02242224634d7b1dbc5e126114b2d5",
+        "bytes": 4843
+      },
+      {
+        "path": "Plugin/RAGDiaryPlugin/ContextVectorManager.js",
+        "sha256": "e8f6bdfa4a39bf643f331712abdd778c741992be209790bd795b67885cb52e1c",
+        "bytes": 22436
+      },
+      {
+        "path": "Plugin/VCPTimeLine/VCPTimeLine.js",
+        "sha256": "189e62657002bac19c42742e4f8288ef065defda7cb5308afdc256a416276129",
+        "bytes": 41442
+      },
+      {
+        "path": "Plugin/LightMemo/LightMemo.js",
+        "sha256": "a72f9561708cea7e4fd4e74db270a8de198190063aa56abd4c4dbeb78b204be1",
+        "bytes": 46700
+      },
+      {
+        "path": "TDBKnowledge.js",
+        "sha256": "8016fa552b7291c4b410832285804480c9886fedc378a57156b3c0f9c76463d5",
+        "bytes": 66004
+      },
+      {
+        "path": "KnowledgeBaseManager.js",
+        "sha256": "946edd60ec935f95d3d1e2f537448034a331006fa33a53962479ffa30e83e0bd",
+        "bytes": 168582
+      },
+      {
+        "path": "RiverMemoEngine.js",
+        "sha256": "bb9c6793f7f9eca541c34e979f59479023a523b2a8df9e71bfdcf5899ff4d023",
+        "bytes": 26992
+      },
+      {
+        "path": "modules/knowledgeBase/ingestionPipeline.js",
+        "sha256": "9a2f6da6e858b6682b4399eacdf20b1d6c0d97d6be4d7cf694f31370a7ce2a89",
+        "bytes": 37910
+      },
+      {
+        "path": "modules/knowledgeBase/databaseCoordinator.js",
+        "sha256": "54f4cb318eaf3311ebee2a198f2129c0a93b5d58b33c02a564439a67ac2b894e",
+        "bytes": 15797
+      },
+      {
+        "path": "rust-vexus-lite/src/index_handle.rs",
+        "sha256": "0333a1165f9d98461fa3de2cd9796e68b59282b84e120a59644be0f9653ff813",
+        "bytes": 3444
+      },
+      {
+        "path": "rust-vexus-lite/src/knowledge_runtime.rs",
+        "sha256": "305da4b30dbe2b2b715e82c78f9331594c666c305b3567df220c36b392ae849b",
+        "bytes": 227324
+      },
+      {
+        "path": "rust-vexus-lite/src/memo_workspace.rs",
+        "sha256": "bba9bfc1af608d5e397215895020f314ea8f4f7d291ba304714e4f5104facf77",
+        "bytes": 13731
+      },
+      {
+        "path": "rust-vexus-lite/src/native_rerank.rs",
+        "sha256": "368a05a98e86176c84e26c8df630bc84badaad5e2ec1edf342df8713ecdb0432",
+        "bytes": 21870
+      }
+    ]
+  },
+  "fixedVendorCommit": "7ceecd48c46caac8168b909ade5febbc4a254e42",
+  "supplyComparison": {
+    "uniqueFiles": 129,
+    "fixedManifestMatches": 129,
+    "currentUpstreamMatches": 95,
+    "files": [
+      {
+        "path": "EmbeddingUtils.js",
+        "manifestSha256": "9800fcaaa567c148b9b4f7131e827ae295184e44897484913c52288192f01f9d",
+        "vendoredSha256": "9800fcaaa567c148b9b4f7131e827ae295184e44897484913c52288192f01f9d",
+        "upstreamSha256": "2eb07fd96c20a66d29f507405c51d63ecde3fa38c6eef32b2cd281a8b9784d31",
+        "fixedManifestMatches": true,
+        "currentUpstreamMatches": false
+      },
+      {
+        "path": "KnowledgeBaseManager.js",
+        "manifestSha256": "fd4a41a11ad0cd4d5612f46d72e1780601df128f25aa71d0f5a8e3507b63bd3e",
+        "vendoredSha256": "fd4a41a11ad0cd4d5612f46d72e1780601df128f25aa71d0f5a8e3507b63bd3e",
+        "upstreamSha256": "946edd60ec935f95d3d1e2f537448034a331006fa33a53962479ffa30e83e0bd",
+        "fixedManifestMatches": true,
+        "currentUpstreamMatches": false
+      },
+      {
+        "path": "ResultDeduplicator.js",
+        "manifestSha256": "29c7d3400638cb72b2aaa862ea417a1d2874f65011a5a879c9785a3bee7c243d",
+        "vendoredSha256": "29c7d3400638cb72b2aaa862ea417a1d2874f65011a5a879c9785a3bee7c243d",
+        "upstreamSha256": "db96dbd8c0749cca6bb82b0dd4aae954fde7ecce19d5fedeb8adbed425f93e61",
+        "fixedManifestMatches": true,
+        "currentUpstreamMatches": false
+      },
+      {
+        "path": "RiverMemoEngine.js",
+        "manifestSha256": "2e21813da7adc6012c7bc1d9b05de95cc5f20c05b5efc2d156a05fcbe69f516e",
+        "vendoredSha256": "2e21813da7adc6012c7bc1d9b05de95cc5f20c05b5efc2d156a05fcbe69f516e",
+        "upstreamSha256": "bb9c6793f7f9eca541c34e979f59479023a523b2a8df9e71bfdcf5899ff4d023",
+        "fixedManifestMatches": true,
+        "currentUpstreamMatches": false
+      },
+      {
+        "path": "TagMemoEngine.js",
+        "manifestSha256": "55419c5f5914fece3a35e13c2e054c9637163f5c59e2a3dc73efcde2bf6daa57",
+        "vendoredSha256": "55419c5f5914fece3a35e13c2e054c9637163f5c59e2a3dc73efcde2bf6daa57",
+        "upstreamSha256": "55419c5f5914fece3a35e13c2e054c9637163f5c59e2a3dc73efcde2bf6daa57",
+        "fixedManifestMatches": true,
+        "currentUpstreamMatches": true
+      },
+      {
+        "path": "TagMemoV10Engine.js",
+        "manifestSha256": "2968abfa38123d979cfcd059f79c7aabbeb4fbdac27b81ca4e6190aa02a1d2b7",
+        "vendoredSha256": "2968abfa38123d979cfcd059f79c7aabbeb4fbdac27b81ca4e6190aa02a1d2b7",
+        "upstreamSha256": "2968abfa38123d979cfcd059f79c7aabbeb4fbdac27b81ca4e6190aa02a1d2b7",
+        "fixedManifestMatches": true,
+        "currentUpstreamMatches": true
+      },
+      {
+        "path": "modules/knowledgeBase/databaseCoordinator.js",
+        "manifestSha256": "54f4cb318eaf3311ebee2a198f2129c0a93b5d58b33c02a564439a67ac2b894e",
+        "vendoredSha256": "54f4cb318eaf3311ebee2a198f2129c0a93b5d58b33c02a564439a67ac2b894e",
+        "upstreamSha256": "54f4cb318eaf3311ebee2a198f2129c0a93b5d58b33c02a564439a67ac2b894e",
+        "fixedManifestMatches": true,
+        "currentUpstreamMatches": true
+      },
+      {
+        "path": "modules/knowledgeBase/diaryMetadataCache.js",
+        "manifestSha256": "24e5e362d7a51ce86ee1f7386d9a502c2fa380a4421626955afb96f89589a1a1",
+        "vendoredSha256": "24e5e362d7a51ce86ee1f7386d9a502c2fa380a4421626955afb96f89589a1a1",
+        "upstreamSha256": "24e5e362d7a51ce86ee1f7386d9a502c2fa380a4421626955afb96f89589a1a1",
+        "fixedManifestMatches": true,
+        "currentUpstreamMatches": true
+      },
+      {
+        "path": "modules/knowledgeBase/fileWatcher.js",
+        "manifestSha256": "d17ba552a5831b4af187a501ee04323260e5f96b5f6d671a24128f1e440c02d5",
+        "vendoredSha256": "d17ba552a5831b4af187a501ee04323260e5f96b5f6d671a24128f1e440c02d5",
+        "upstreamSha256": "d17ba552a5831b4af187a501ee04323260e5f96b5f6d671a24128f1e440c02d5",
+        "fixedManifestMatches": true,
+        "currentUpstreamMatches": true
+      },
+      {
+        "path": "modules/knowledgeBase/indexRepository.js",
+        "manifestSha256": "50dcc09089eb42d5d0bb26cefa56019718bf53e2cbef0d752b193b508692e949",
+        "vendoredSha256": "50dcc09089eb42d5d0bb26cefa56019718bf53e2cbef0d752b193b508692e949",
+        "upstreamSha256": "50dcc09089eb42d5d0bb26cefa56019718bf53e2cbef0d752b193b508692e949",
+        "fixedManifestMatches": true,
+        "currentUpstreamMatches": true
+      },
+      {
+        "path": "modules/knowledgeBase/ingestionPipeline.js",
+        "manifestSha256": "9a2f6da6e858b6682b4399eacdf20b1d6c0d97d6be4d7cf694f31370a7ce2a89",
+        "vendoredSha256": "9a2f6da6e858b6682b4399eacdf20b1d6c0d97d6be4d7cf694f31370a7ce2a89",
+        "upstreamSha256": "9a2f6da6e858b6682b4399eacdf20b1d6c0d97d6be4d7cf694f31370a7ce2a89",
+        "fixedManifestMatches": true,
+        "currentUpstreamMatches": true
+      },
+      {
+        "path": "modules/knowledgeBase/memoConfig.js",
+        "manifestSha256": "3763d457d9b942ddc2e8d246a48fb2e2ce1991391ecb3bf6d2cc058be1de8590",
+        "vendoredSha256": "3763d457d9b942ddc2e8d246a48fb2e2ce1991391ecb3bf6d2cc058be1de8590",
+        "upstreamSha256": "3763d457d9b942ddc2e8d246a48fb2e2ce1991391ecb3bf6d2cc058be1de8590",
+        "fixedManifestMatches": true,
+        "currentUpstreamMatches": true
+      },
+      {
+        "path": "modules/knowledgeBase/memoryProfiler.js",
+        "manifestSha256": "7539545d14a7422fc14d36489f4cffc8f5cec981a8a72eeb019a3d821225734b",
+        "vendoredSha256": "7539545d14a7422fc14d36489f4cffc8f5cec981a8a72eeb019a3d821225734b",
+        "upstreamSha256": "7539545d14a7422fc14d36489f4cffc8f5cec981a8a72eeb019a3d821225734b",
+        "fixedManifestMatches": true,
+        "currentUpstreamMatches": true
+      },
+      {
+        "path": "modules/knowledgeBase/searchService.js",
+        "manifestSha256": "d0a613fff293d85f69b544711af8d78d9e43c06aabd7ce2744e9d1d9a4a5ad35",
+        "vendoredSha256": "d0a613fff293d85f69b544711af8d78d9e43c06aabd7ce2744e9d1d9a4a5ad35",
+        "upstreamSha256": "d0a613fff293d85f69b544711af8d78d9e43c06aabd7ce2744e9d1d9a4a5ad35",
+        "fixedManifestMatches": true,
+        "currentUpstreamMatches": true
+      },
+      {
+        "path": "modules/knowledgeBase/tagConsistencyService.js",
+        "manifestSha256": "baba47848ed1489fbda03a04ab5686a0aa853558d54e604923fa404cc8981f75",
+        "vendoredSha256": "baba47848ed1489fbda03a04ab5686a0aa853558d54e604923fa404cc8981f75",
+        "upstreamSha256": "baba47848ed1489fbda03a04ab5686a0aa853558d54e604923fa404cc8981f75",
+        "fixedManifestMatches": true,
+        "currentUpstreamMatches": true
+      },
+      {
+        "path": "modules/knowledgeBase/textPreprocessor.js",
+        "manifestSha256": "d3ce885035f496331143877182a8b455b49a0301591126a9978c0f8613709689",
+        "vendoredSha256": "d3ce885035f496331143877182a8b455b49a0301591126a9978c0f8613709689",
+        "upstreamSha256": "d3ce885035f496331143877182a8b455b49a0301591126a9978c0f8613709689",
+        "fixedManifestMatches": true,
+        "currentUpstreamMatches": true
+      },
+      {
+        "path": "modules/knowledgeBase/vectorCodec.js",
+        "manifestSha256": "6464c17e6a9fff45b0c463f97b686dbc079766193cf007ec4cd140b7d539cdd7",
+        "vendoredSha256": "6464c17e6a9fff45b0c463f97b686dbc079766193cf007ec4cd140b7d539cdd7",
+        "upstreamSha256": "6464c17e6a9fff45b0c463f97b686dbc079766193cf007ec4cd140b7d539cdd7",
+        "fixedManifestMatches": true,
+        "currentUpstreamMatches": true
+      },
+      {
+        "path": "modules/tagmemoV10/immutable.js",
+        "manifestSha256": "94b8b03a9402301d346805962eb51d96447026ff73aade89ab39f6bb6e8ff671",
+        "vendoredSha256": "94b8b03a9402301d346805962eb51d96447026ff73aade89ab39f6bb6e8ff671",
+        "upstreamSha256": "94b8b03a9402301d346805962eb51d96447026ff73aade89ab39f6bb6e8ff671",
+        "fixedManifestMatches": true,
+        "currentUpstreamMatches": true
+      },
+      {
+        "path": "modules/tagmemoV10/riverObservability.js",
+        "manifestSha256": "c5c3a19e9cce06dfa148840cd0cb2f6d2102c4c6b002a8c7c3f316b179015bdd",
+        "vendoredSha256": "c5c3a19e9cce06dfa148840cd0cb2f6d2102c4c6b002a8c7c3f316b179015bdd",
+        "upstreamSha256": "c5c3a19e9cce06dfa148840cd0cb2f6d2102c4c6b002a8c7c3f316b179015bdd",
+        "fixedManifestMatches": true,
+        "currentUpstreamMatches": true
+      },
+      {
+        "path": "rag_params.json",
+        "manifestSha256": "08a10fbf013c1feaf478a1748aead5d3e046c708d6d5acd55f0f94e49e7067a0",
+        "vendoredSha256": "08a10fbf013c1feaf478a1748aead5d3e046c708d6d5acd55f0f94e49e7067a0",
+        "upstreamSha256": "08a10fbf013c1feaf478a1748aead5d3e046c708d6d5acd55f0f94e49e7067a0",
+        "fixedManifestMatches": true,
+        "currentUpstreamMatches": true
+      },
+      {
+        "path": "rust-vexus-lite/.gitignore",
+        "manifestSha256": "093dccb98c44e9a914734aa0d2f18c216be42ccf040eb318fbb235bc112c6e32",
+        "vendoredSha256": "093dccb98c44e9a914734aa0d2f18c216be42ccf040eb318fbb235bc112c6e32",
+        "upstreamSha256": "093dccb98c44e9a914734aa0d2f18c216be42ccf040eb318fbb235bc112c6e32",
+        "fixedManifestMatches": true,
+        "currentUpstreamMatches": true
+      },
+      {
+        "path": "rust-vexus-lite/AGENTS.md",
+        "manifestSha256": "1bf460796ee7541e7d74c2d76387affe1f3c9484c72cc37b210bffacd71993a1",
+        "vendoredSha256": "1bf460796ee7541e7d74c2d76387affe1f3c9484c72cc37b210bffacd71993a1",
+        "upstreamSha256": "1bf460796ee7541e7d74c2d76387affe1f3c9484c72cc37b210bffacd71993a1",
+        "fixedManifestMatches": true,
+        "currentUpstreamMatches": true
+      },
+      {
+        "path": "rust-vexus-lite/Cargo.lock",
+        "manifestSha256": "602c9f4a8b0060ac414004ea4eebde0d9edb7d78c3f5cc1ab0db32d5ae4ae320",
+        "vendoredSha256": "602c9f4a8b0060ac414004ea4eebde0d9edb7d78c3f5cc1ab0db32d5ae4ae320",
+        "upstreamSha256": "a15ed6b57e0cf87ee38f5794d113652bf5df816ff47cb928a793c7031fd41265",
+        "fixedManifestMatches": true,
+        "currentUpstreamMatches": false
+      },
+      {
+        "path": "rust-vexus-lite/Cargo.toml",
+        "manifestSha256": "cd750a158a6aeedd1347a9f9cee135390b095f805a6f25bc06bb8c646b54c0c3",
+        "vendoredSha256": "cd750a158a6aeedd1347a9f9cee135390b095f805a6f25bc06bb8c646b54c0c3",
+        "upstreamSha256": "bf00152df1801297b8f53f104115fee17d388a29de94b9079ea85bbb9fd3b356",
+        "fixedManifestMatches": true,
+        "currentUpstreamMatches": false
+      },
+      {
+        "path": "rust-vexus-lite/README.md",
+        "manifestSha256": "4b1731f30440633cfd68f66042fa55c9fd9e6df08139424cea8746de91f1d060",
+        "vendoredSha256": "4b1731f30440633cfd68f66042fa55c9fd9e6df08139424cea8746de91f1d060",
+        "upstreamSha256": "6be42d8ee5d518776344b4ae326275aee6ef6bf6b4e2bd24359796edf44c3053",
+        "fixedManifestMatches": true,
+        "currentUpstreamMatches": false
+      },
+      {
+        "path": "rust-vexus-lite/build.rs",
+        "manifestSha256": "444164a4265ff424fb52c357377cd7655e7c358bc2d70ce1a990675dd6bbd4ff",
+        "vendoredSha256": "444164a4265ff424fb52c357377cd7655e7c358bc2d70ce1a990675dd6bbd4ff",
+        "upstreamSha256": "444164a4265ff424fb52c357377cd7655e7c358bc2d70ce1a990675dd6bbd4ff",
+        "fixedManifestMatches": true,
+        "currentUpstreamMatches": true
+      },
+      {
+        "path": "rust-vexus-lite/crates/vcp-tdb-index/Cargo.toml",
+        "manifestSha256": "f28b0b3f0a3fb287e05c991d0be89df6544086aa1e1341e5860e3ff275c96399",
+        "vendoredSha256": "f28b0b3f0a3fb287e05c991d0be89df6544086aa1e1341e5860e3ff275c96399",
+        "upstreamSha256": "f28b0b3f0a3fb287e05c991d0be89df6544086aa1e1341e5860e3ff275c96399",
+        "fixedManifestMatches": true,
+        "currentUpstreamMatches": true
+      },
+      {
+        "path": "rust-vexus-lite/crates/vcp-tdb-index/LICENSE",
+        "manifestSha256": "b939133662bcde79d3f1876bfbb9a40ea22b9d14f677a4b663b7b5f1ac7691a3",
+        "vendoredSha256": "b939133662bcde79d3f1876bfbb9a40ea22b9d14f677a4b663b7b5f1ac7691a3",
+        "upstreamSha256": "b939133662bcde79d3f1876bfbb9a40ea22b9d14f677a4b663b7b5f1ac7691a3",
+        "fixedManifestMatches": true,
+        "currentUpstreamMatches": true
+      },
+      {
+        "path": "rust-vexus-lite/crates/vcp-tdb-index/src/asset.rs",
+        "manifestSha256": "8e76a8ba082eff4f14d68f432310c9694fa7ea04a5177aaad0f34653b4f75218",
+        "vendoredSha256": "8e76a8ba082eff4f14d68f432310c9694fa7ea04a5177aaad0f34653b4f75218",
+        "upstreamSha256": "8e76a8ba082eff4f14d68f432310c9694fa7ea04a5177aaad0f34653b4f75218",
+        "fixedManifestMatches": true,
+        "currentUpstreamMatches": true
+      },
+      {
+        "path": "rust-vexus-lite/crates/vcp-tdb-index/src/asset_tests.rs",
+        "manifestSha256": "c73b24c67f4784e0ba2375cdb6ed056974309d50ee2da27d0ebc045e533fc002",
+        "vendoredSha256": "c73b24c67f4784e0ba2375cdb6ed056974309d50ee2da27d0ebc045e533fc002",
+        "upstreamSha256": "c73b24c67f4784e0ba2375cdb6ed056974309d50ee2da27d0ebc045e533fc002",
+        "fixedManifestMatches": true,
+        "currentUpstreamMatches": true
+      },
+      {
+        "path": "rust-vexus-lite/crates/vcp-tdb-index/src/engine.rs",
+        "manifestSha256": "eececd6d9e1c1ff691ed250bd383db7870194cba3d6c1e4a5017dd0f56c8fa6c",
+        "vendoredSha256": "eececd6d9e1c1ff691ed250bd383db7870194cba3d6c1e4a5017dd0f56c8fa6c",
+        "upstreamSha256": "b6ca7331eddff082131c39abde7a95bec4c9a09fa2be543c5826b17d79579853",
+        "fixedManifestMatches": true,
+        "currentUpstreamMatches": false
+      },
+      {
+        "path": "rust-vexus-lite/crates/vcp-tdb-index/src/engine_tests.rs",
+        "manifestSha256": "573a294158b76ccfdd5da98f64c7971abf63640a4aa3fa23a906712d69519b13",
+        "vendoredSha256": "573a294158b76ccfdd5da98f64c7971abf63640a4aa3fa23a906712d69519b13",
+        "upstreamSha256": "573a294158b76ccfdd5da98f64c7971abf63640a4aa3fa23a906712d69519b13",
+        "fixedManifestMatches": true,
+        "currentUpstreamMatches": true
+      },
+      {
+        "path": "rust-vexus-lite/crates/vcp-tdb-index/src/index/bq.rs",
+        "manifestSha256": "cc1ea1b8981350e6fc2828533fa78d362314d3712536382724a4df83a7799216",
+        "vendoredSha256": "cc1ea1b8981350e6fc2828533fa78d362314d3712536382724a4df83a7799216",
+        "upstreamSha256": "cc1ea1b8981350e6fc2828533fa78d362314d3712536382724a4df83a7799216",
+        "fixedManifestMatches": true,
+        "currentUpstreamMatches": true
+      },
+      {
+        "path": "rust-vexus-lite/crates/vcp-tdb-index/src/index/quiver.rs",
+        "manifestSha256": "874918df3ba7aae55fe224d87678a8a46196be46f2610cf12417b39f41e7c55c",
+        "vendoredSha256": "874918df3ba7aae55fe224d87678a8a46196be46f2610cf12417b39f41e7c55c",
+        "upstreamSha256": "12ccea70fdf3d621fa950bb9a80345ba536356dc93e59267f0ad16b6437935fb",
+        "fixedManifestMatches": true,
+        "currentUpstreamMatches": false
+      },
+      {
+        "path": "rust-vexus-lite/crates/vcp-tdb-index/src/index/quiver/corrected_sm.rs",
+        "manifestSha256": "b848c4b76a0c661a09f55a6599249cb076393f2e353218786da98d3890ac0c4f",
+        "vendoredSha256": "b848c4b76a0c661a09f55a6599249cb076393f2e353218786da98d3890ac0c4f",
+        "upstreamSha256": "7858aa1145422a3ce3aca0363582d63034b06a1925bcb30465595cfcaa888013",
+        "fixedManifestMatches": true,
+        "currentUpstreamMatches": false
+      },
+      {
+        "path": "rust-vexus-lite/crates/vcp-tdb-index/src/index/quiver/corrected_sm/build.rs",
+        "manifestSha256": "66772757234e597975ad2a3e6b0a7e7d90e1633b17d1d685855789de7b79a45f",
+        "vendoredSha256": "66772757234e597975ad2a3e6b0a7e7d90e1633b17d1d685855789de7b79a45f",
+        "upstreamSha256": "66772757234e597975ad2a3e6b0a7e7d90e1633b17d1d685855789de7b79a45f",
+        "fixedManifestMatches": true,
+        "currentUpstreamMatches": true
+      },
+      {
+        "path": "rust-vexus-lite/crates/vcp-tdb-index/src/index/quiver/corrected_sm/dynamic.rs",
+        "manifestSha256": "6741b4b60bdc832fbdf2eeb77d04a2ffbb122254856598348bd54a869c541951",
+        "vendoredSha256": "6741b4b60bdc832fbdf2eeb77d04a2ffbb122254856598348bd54a869c541951",
+        "upstreamSha256": "0f16623febe599e5630a8ab235f5aeda99a1997d314c93080a0183ab93db5a36",
+        "fixedManifestMatches": true,
+        "currentUpstreamMatches": false
+      },
+      {
+        "path": "rust-vexus-lite/crates/vcp-tdb-index/src/index/quiver/corrected_sm/dynamic_search.rs",
+        "manifestSha256": "dcb4df986675be7af1da9d163c9171db66395670ca51547c1b3431e041ac0d2c",
+        "vendoredSha256": "dcb4df986675be7af1da9d163c9171db66395670ca51547c1b3431e041ac0d2c",
+        "upstreamSha256": "418c1e67a1249023f9298e1aa4186273d24c616a97d8a1cf3f6629e682907085",
+        "fixedManifestMatches": true,
+        "currentUpstreamMatches": false
+      },
+      {
+        "path": "rust-vexus-lite/crates/vcp-tdb-index/src/index/quiver/corrected_sm/dynamic_tests.rs",
+        "manifestSha256": "c3cdc4fe3275f65e1ff4a5f7114634a5c7bda13195453daeffcd98ac9fc4af80",
+        "vendoredSha256": "c3cdc4fe3275f65e1ff4a5f7114634a5c7bda13195453daeffcd98ac9fc4af80",
+        "upstreamSha256": "c3cdc4fe3275f65e1ff4a5f7114634a5c7bda13195453daeffcd98ac9fc4af80",
+        "fixedManifestMatches": true,
+        "currentUpstreamMatches": true
+      },
+      {
+        "path": "rust-vexus-lite/crates/vcp-tdb-index/src/index/quiver/corrected_sm/l2_tests.rs",
+        "manifestSha256": "ed085c91c06f07610dfa9d822eb4cb6bb826ac4ebdd04601dd307bb57bb72582",
+        "vendoredSha256": "ed085c91c06f07610dfa9d822eb4cb6bb826ac4ebdd04601dd307bb57bb72582",
+        "upstreamSha256": "ed085c91c06f07610dfa9d822eb4cb6bb826ac4ebdd04601dd307bb57bb72582",
+        "fixedManifestMatches": true,
+        "currentUpstreamMatches": true
+      },
+      {
+        "path": "rust-vexus-lite/crates/vcp-tdb-index/src/index/quiver/corrected_sm/native_l2_tests.rs",
+        "manifestSha256": "6f50f6d2a31796ce7721aebedd5d9ee725361335f71c8e2a36389340bf5c5876",
+        "vendoredSha256": "6f50f6d2a31796ce7721aebedd5d9ee725361335f71c8e2a36389340bf5c5876",
+        "upstreamSha256": "6f50f6d2a31796ce7721aebedd5d9ee725361335f71c8e2a36389340bf5c5876",
+        "fixedManifestMatches": true,
+        "currentUpstreamMatches": true
+      },
+      {
+        "path": "rust-vexus-lite/crates/vcp-tdb-index/src/index/quiver/corrected_sm/production.rs",
+        "manifestSha256": "c49c1612e50ea92b923dc5e2ae4497a1817bd9a6022662b97cb9887ba5cc8efb",
+        "vendoredSha256": "c49c1612e50ea92b923dc5e2ae4497a1817bd9a6022662b97cb9887ba5cc8efb",
+        "upstreamSha256": "c49c1612e50ea92b923dc5e2ae4497a1817bd9a6022662b97cb9887ba5cc8efb",
+        "fixedManifestMatches": true,
+        "currentUpstreamMatches": true
+      },
+      {
+        "path": "rust-vexus-lite/crates/vcp-tdb-index/src/index/quiver/corrected_sm/production_tests.rs",
+        "manifestSha256": "923fdbe9239db02586a21dc85e0453af48bac8bdb7c577046886bce321a2c7d2",
+        "vendoredSha256": "923fdbe9239db02586a21dc85e0453af48bac8bdb7c577046886bce321a2c7d2",
+        "upstreamSha256": "923fdbe9239db02586a21dc85e0453af48bac8bdb7c577046886bce321a2c7d2",
+        "fixedManifestMatches": true,
+        "currentUpstreamMatches": true
+      },
+      {
+        "path": "rust-vexus-lite/crates/vcp-tdb-index/src/index/quiver/corrected_sm/routing_snapshot.rs",
+        "manifestSha256": "494adaf9401f8a815ffc14fdfc93c690a7725b9c6757b77d624e9178ebf136c6",
+        "vendoredSha256": "494adaf9401f8a815ffc14fdfc93c690a7725b9c6757b77d624e9178ebf136c6",
+        "upstreamSha256": "494adaf9401f8a815ffc14fdfc93c690a7725b9c6757b77d624e9178ebf136c6",
+        "fixedManifestMatches": true,
+        "currentUpstreamMatches": true
+      },
+      {
+        "path": "rust-vexus-lite/crates/vcp-tdb-index/src/lib.rs",
+        "manifestSha256": "fdc7b24057a0fc345e556c3ea95f6eaa181d589237d958e75f5088be87902ac6",
+        "vendoredSha256": "fdc7b24057a0fc345e556c3ea95f6eaa181d589237d958e75f5088be87902ac6",
+        "upstreamSha256": "fdc7b24057a0fc345e556c3ea95f6eaa181d589237d958e75f5088be87902ac6",
+        "fixedManifestMatches": true,
+        "currentUpstreamMatches": true
+      },
+      {
+        "path": "rust-vexus-lite/crates/vcp-tdb-index/src/vector.rs",
+        "manifestSha256": "a283401a09a0a763a7fc5f96250c5e6adf2fe4ae8e02eda58dce4ee8a291b2ef",
+        "vendoredSha256": "a283401a09a0a763a7fc5f96250c5e6adf2fe4ae8e02eda58dce4ee8a291b2ef",
+        "upstreamSha256": "a283401a09a0a763a7fc5f96250c5e6adf2fe4ae8e02eda58dce4ee8a291b2ef",
+        "fixedManifestMatches": true,
+        "currentUpstreamMatches": true
+      },
+      {
+        "path": "rust-vexus-lite/index.d.ts",
+        "manifestSha256": "03f7b7b5b4fe846188a9a5001214d5216e452399cbf52748b6ed331b891c645c",
+        "vendoredSha256": "03f7b7b5b4fe846188a9a5001214d5216e452399cbf52748b6ed331b891c645c",
+        "upstreamSha256": "56f956886898b7c57b057306acc28d382b93f7f8183a2f8c8d9f8fda9c762011",
+        "fixedManifestMatches": true,
+        "currentUpstreamMatches": false
+      },
+      {
+        "path": "rust-vexus-lite/index.js",
+        "manifestSha256": "2f7d68d1f6b71db1f5adeb4721e8b7ca8c6b7dd43c34d11d1683880f17163be2",
+        "vendoredSha256": "2f7d68d1f6b71db1f5adeb4721e8b7ca8c6b7dd43c34d11d1683880f17163be2",
+        "upstreamSha256": "2f7d68d1f6b71db1f5adeb4721e8b7ca8c6b7dd43c34d11d1683880f17163be2",
+        "fixedManifestMatches": true,
+        "currentUpstreamMatches": true
+      },
+      {
+        "path": "rust-vexus-lite/package.json",
+        "manifestSha256": "135625768206e4e3ba35c2eceac9a2045738c98c9d1cb40ccc5eb5f15451e33c",
+        "vendoredSha256": "135625768206e4e3ba35c2eceac9a2045738c98c9d1cb40ccc5eb5f15451e33c",
+        "upstreamSha256": "135625768206e4e3ba35c2eceac9a2045738c98c9d1cb40ccc5eb5f15451e33c",
+        "fixedManifestMatches": true,
+        "currentUpstreamMatches": true
+      },
+      {
+        "path": "rust-vexus-lite/rust-toolchain.toml",
+        "manifestSha256": "5345848dfcc1171f10672b502d78ee0db32fcadd201747cb79407c5868379d56",
+        "vendoredSha256": "5345848dfcc1171f10672b502d78ee0db32fcadd201747cb79407c5868379d56",
+        "upstreamSha256": "5345848dfcc1171f10672b502d78ee0db32fcadd201747cb79407c5868379d56",
+        "fixedManifestMatches": true,
+        "currentUpstreamMatches": true
+      },
+      {
+        "path": "rust-vexus-lite/src/global_chunks.rs",
+        "manifestSha256": "9802d6a57d9d6da6b879d6a8c3e958efbfc7fea2d15cf632cb1bfd0e89665d29",
+        "vendoredSha256": "9802d6a57d9d6da6b879d6a8c3e958efbfc7fea2d15cf632cb1bfd0e89665d29",
+        "upstreamSha256": "9802d6a57d9d6da6b879d6a8c3e958efbfc7fea2d15cf632cb1bfd0e89665d29",
+        "fixedManifestMatches": true,
+        "currentUpstreamMatches": true
+      },
+      {
+        "path": "rust-vexus-lite/src/index_handle.rs",
+        "manifestSha256": "0333a1165f9d98461fa3de2cd9796e68b59282b84e120a59644be0f9653ff813",
+        "vendoredSha256": "0333a1165f9d98461fa3de2cd9796e68b59282b84e120a59644be0f9653ff813",
+        "upstreamSha256": "0333a1165f9d98461fa3de2cd9796e68b59282b84e120a59644be0f9653ff813",
+        "fixedManifestMatches": true,
+        "currentUpstreamMatches": true
+      },
+      {
+        "path": "rust-vexus-lite/src/index_lifecycle.rs",
+        "manifestSha256": "b3adb471abe26ca00175d83bfcc163fb883759927bacc68c3ce2956e41ffde83",
+        "vendoredSha256": "b3adb471abe26ca00175d83bfcc163fb883759927bacc68c3ce2956e41ffde83",
+        "upstreamSha256": "b3adb471abe26ca00175d83bfcc163fb883759927bacc68c3ce2956e41ffde83",
+        "fixedManifestMatches": true,
+        "currentUpstreamMatches": true
+      },
+      {
+        "path": "rust-vexus-lite/src/index_maintenance.rs",
+        "manifestSha256": "067c9db6eb24f5ed5efe4c1d10267674c401302fdebe2f8fa021421ebc053f7d",
+        "vendoredSha256": "067c9db6eb24f5ed5efe4c1d10267674c401302fdebe2f8fa021421ebc053f7d",
+        "upstreamSha256": "067c9db6eb24f5ed5efe4c1d10267674c401302fdebe2f8fa021421ebc053f7d",
+        "fixedManifestMatches": true,
+        "currentUpstreamMatches": true
+      },
+      {
+        "path": "rust-vexus-lite/src/index_source.rs",
+        "manifestSha256": "0608c6b48b40e78902b40ed4568bbcde08e29e84a3d3f477cc57c43bb53fa098",
+        "vendoredSha256": "0608c6b48b40e78902b40ed4568bbcde08e29e84a3d3f477cc57c43bb53fa098",
+        "upstreamSha256": "0608c6b48b40e78902b40ed4568bbcde08e29e84a3d3f477cc57c43bb53fa098",
+        "fixedManifestMatches": true,
+        "currentUpstreamMatches": true
+      },
+      {
+        "path": "rust-vexus-lite/src/ingestion.rs",
+        "manifestSha256": "c71d8b7c64fa720acae04e4ea68012015367c2e758611b0cbd25a21d9d4fcb2c",
+        "vendoredSha256": "c71d8b7c64fa720acae04e4ea68012015367c2e758611b0cbd25a21d9d4fcb2c",
+        "upstreamSha256": "c71d8b7c64fa720acae04e4ea68012015367c2e758611b0cbd25a21d9d4fcb2c",
+        "fixedManifestMatches": true,
+        "currentUpstreamMatches": true
+      },
+      {
+        "path": "rust-vexus-lite/src/knowledge_runtime.rs",
+        "manifestSha256": "8dd9dbd5df7cc2244bfc3b3c882329d82b58a91efd496a3711e6a69ef1e2283e",
+        "vendoredSha256": "8dd9dbd5df7cc2244bfc3b3c882329d82b58a91efd496a3711e6a69ef1e2283e",
+        "upstreamSha256": "305da4b30dbe2b2b715e82c78f9331594c666c305b3567df220c36b392ae849b",
+        "fixedManifestMatches": true,
+        "currentUpstreamMatches": false
+      },
+      {
+        "path": "rust-vexus-lite/src/lib.rs",
+        "manifestSha256": "4ae03a677cb92b5c377022951270d48fb4d9c839f90bbe8d5be549e39f6d5733",
+        "vendoredSha256": "4ae03a677cb92b5c377022951270d48fb4d9c839f90bbe8d5be549e39f6d5733",
+        "upstreamSha256": "c663749faa3978cf2cae9ca96c0a2989fca8be99fd1a56dbd9c5b07a287e4181",
+        "fixedManifestMatches": true,
+        "currentUpstreamMatches": false
+      },
+      {
+        "path": "rust-vexus-lite/src/light_memo.rs",
+        "manifestSha256": "05fc03107f16a941e2e25f31b82f87f79617851a569937b72268c0cf9ee47163",
+        "vendoredSha256": "05fc03107f16a941e2e25f31b82f87f79617851a569937b72268c0cf9ee47163",
+        "upstreamSha256": "05fc03107f16a941e2e25f31b82f87f79617851a569937b72268c0cf9ee47163",
+        "fixedManifestMatches": true,
+        "currentUpstreamMatches": true
+      },
+      {
+        "path": "rust-vexus-lite/src/memo_artifact_builder.rs",
+        "manifestSha256": "3131304e5ffacf6b4e86876ff3f25ac5b33e26706ed267b53aed831f8e13abcf",
+        "vendoredSha256": "3131304e5ffacf6b4e86876ff3f25ac5b33e26706ed267b53aed831f8e13abcf",
+        "upstreamSha256": "3b913be2e74c185ee7d9bf284891aa962af367984ad86a88ba3485217c8ee8a4",
+        "fixedManifestMatches": true,
+        "currentUpstreamMatches": false
+      },
+      {
+        "path": "rust-vexus-lite/src/memo_geometry.rs",
+        "manifestSha256": "de39506a7865c9b053e061d463730b6cb741546f332734cf6c1f9d8acbf368af",
+        "vendoredSha256": "de39506a7865c9b053e061d463730b6cb741546f332734cf6c1f9d8acbf368af",
+        "upstreamSha256": "58e84f1de998626f0c58becea178fe14f6742b7e5add4833389da5d077ff9c92",
+        "fixedManifestMatches": true,
+        "currentUpstreamMatches": false
+      },
+      {
+        "path": "rust-vexus-lite/src/memo_pipeline.rs",
+        "manifestSha256": "a7a8860e822ef71e4100613449b485b7570c3262ce2ff12a84d25b1a648e8dbd",
+        "vendoredSha256": "a7a8860e822ef71e4100613449b485b7570c3262ce2ff12a84d25b1a648e8dbd",
+        "upstreamSha256": "be592f676878c1414926c64bf3e5cb2158b0b99c1f83399ab6747b611761b5e9",
+        "fixedManifestMatches": true,
+        "currentUpstreamMatches": false
+      },
+      {
+        "path": "rust-vexus-lite/src/memo_projection.rs",
+        "manifestSha256": "4a074ec6c316f070b7d7de7513bead4c59b4c42b0240600aa245d68ab017ce87",
+        "vendoredSha256": "4a074ec6c316f070b7d7de7513bead4c59b4c42b0240600aa245d68ab017ce87",
+        "upstreamSha256": "4a074ec6c316f070b7d7de7513bead4c59b4c42b0240600aa245d68ab017ce87",
+        "fixedManifestMatches": true,
+        "currentUpstreamMatches": true
+      },
+      {
+        "path": "rust-vexus-lite/src/memo_sensing.rs",
+        "manifestSha256": "fbd6132e57e6a2477b151117d803ffceae886dbd6df5d3544ca9e80ba6b05ec5",
+        "vendoredSha256": "fbd6132e57e6a2477b151117d803ffceae886dbd6df5d3544ca9e80ba6b05ec5",
+        "upstreamSha256": "a8ed06ca6c91ca215b788174203bbefaee26aef7ec7babd37ff77b6fe7f9e102",
+        "fixedManifestMatches": true,
+        "currentUpstreamMatches": false
+      },
+      {
+        "path": "rust-vexus-lite/src/memo_thinking.rs",
+        "manifestSha256": "425ac8ea04f2d4ab1ae0946ee5ac1da649e14fcd74c25512754212726a02a019",
+        "vendoredSha256": "425ac8ea04f2d4ab1ae0946ee5ac1da649e14fcd74c25512754212726a02a019",
+        "upstreamSha256": "425ac8ea04f2d4ab1ae0946ee5ac1da649e14fcd74c25512754212726a02a019",
+        "fixedManifestMatches": true,
+        "currentUpstreamMatches": true
+      },
+      {
+        "path": "rust-vexus-lite/src/publication_gate.rs",
+        "manifestSha256": "b72f4913a290e1577a01390814b7d283c493e0c5a908453de418a16841c87db0",
+        "vendoredSha256": "b72f4913a290e1577a01390814b7d283c493e0c5a908453de418a16841c87db0",
+        "upstreamSha256": "b72f4913a290e1577a01390814b7d283c493e0c5a908453de418a16841c87db0",
+        "fixedManifestMatches": true,
+        "currentUpstreamMatches": true
+      },
+      {
+        "path": "rust-vexus-lite/src/result_deduplicator.rs",
+        "manifestSha256": "d64289d010bb65f2e23bd4585371706072506ca4bb8e1875658aedaa7c04cfb5",
+        "vendoredSha256": "d64289d010bb65f2e23bd4585371706072506ca4bb8e1875658aedaa7c04cfb5",
+        "upstreamSha256": "d64289d010bb65f2e23bd4585371706072506ca4bb8e1875658aedaa7c04cfb5",
+        "fixedManifestMatches": true,
+        "currentUpstreamMatches": true
+      },
+      {
+        "path": "rust-vexus-lite/src/retrieval_index.rs",
+        "manifestSha256": "e5dd77854fa7e10a9998ca8dbf1bbab97643408495656759ad8ed5d4b0ab4889",
+        "vendoredSha256": "e5dd77854fa7e10a9998ca8dbf1bbab97643408495656759ad8ed5d4b0ab4889",
+        "upstreamSha256": "cd17e47f9847f95971bbc09c18d80938f6649827307c7d95fb8d48317990528d",
+        "fixedManifestMatches": true,
+        "currentUpstreamMatches": false
+      },
+      {
+        "path": "rust-vexus-lite/src/rivermemo_topology_v3.rs",
+        "manifestSha256": "a302854a965251e58f7dc2b77fa5cd4c55a201d76bb067c71d4857ecce8afa59",
+        "vendoredSha256": "a302854a965251e58f7dc2b77fa5cd4c55a201d76bb067c71d4857ecce8afa59",
+        "upstreamSha256": "3648f674efbadc3247f8455c21c3793676b39ce0ac1606e763477e28d745e3e2",
+        "fixedManifestMatches": true,
+        "currentUpstreamMatches": false
+      },
+      {
+        "path": "rust-vexus-lite/src/schema.rs",
+        "manifestSha256": "c98a5501ebf1d832a8f3f8112fd6db92930e26bb1940a71eaa97956b3c55f51c",
+        "vendoredSha256": "c98a5501ebf1d832a8f3f8112fd6db92930e26bb1940a71eaa97956b3c55f51c",
+        "upstreamSha256": "8c8111b15b2dcef446bd2b79e445c5f8c60c0df5ef8af8fa02fe0568515de50f",
+        "fixedManifestMatches": true,
+        "currentUpstreamMatches": false
+      },
+      {
+        "path": "rust-vexus-lite/src/storage.rs",
+        "manifestSha256": "d57d7bec436c38adb528adb10aa0ca870dfb1e2f3f296296434f69817b0b95a9",
+        "vendoredSha256": "d57d7bec436c38adb528adb10aa0ca870dfb1e2f3f296296434f69817b0b95a9",
+        "upstreamSha256": "1202f0635db28fd83e004daafa3cb8df089ad4490993cfd06cdec1fd33608b2d",
+        "fixedManifestMatches": true,
+        "currentUpstreamMatches": false
+      },
+      {
+        "path": "rust-vexus-lite/src/tag_consistency.rs",
+        "manifestSha256": "f61f951dbeb93c204d4979961791001eb054681b5cdd3ce3826541f6f27e6455",
+        "vendoredSha256": "f61f951dbeb93c204d4979961791001eb054681b5cdd3ce3826541f6f27e6455",
+        "upstreamSha256": "f61f951dbeb93c204d4979961791001eb054681b5cdd3ce3826541f6f27e6455",
+        "fixedManifestMatches": true,
+        "currentUpstreamMatches": true
+      },
+      {
+        "path": "rust-vexus-lite/src/task_lifecycle.rs",
+        "manifestSha256": "d7ce11d2b14de9b40112d0512e5d8db349663897a0508dcf207639b2fb391300",
+        "vendoredSha256": "d7ce11d2b14de9b40112d0512e5d8db349663897a0508dcf207639b2fb391300",
+        "upstreamSha256": "3589c4506de4f1cba5f13a068a021e92cf34a606b3af48c6b2ddd7e65284b7b4",
+        "fixedManifestMatches": true,
+        "currentUpstreamMatches": false
+      },
+      {
+        "path": "rust-vexus-lite/src/text.rs",
+        "manifestSha256": "f72f681626641bc15672505131208226e255ab52e9066b5000d97f942467b77d",
+        "vendoredSha256": "f72f681626641bc15672505131208226e255ab52e9066b5000d97f942467b77d",
+        "upstreamSha256": "f72f681626641bc15672505131208226e255ab52e9066b5000d97f942467b77d",
+        "fixedManifestMatches": true,
+        "currentUpstreamMatches": true
+      },
+      {
+        "path": "rust-vexus-lite/test.js",
+        "manifestSha256": "5e80dd57405dd81abb8c26a93ff2fe9cddbeaa70ee0757550d4e083f30162efe",
+        "vendoredSha256": "5e80dd57405dd81abb8c26a93ff2fe9cddbeaa70ee0757550d4e083f30162efe",
+        "upstreamSha256": "5e80dd57405dd81abb8c26a93ff2fe9cddbeaa70ee0757550d4e083f30162efe",
+        "fixedManifestMatches": true,
+        "currentUpstreamMatches": true
+      },
+      {
+        "path": "rust-vexus-lite/vexus-lite.win32-x64-msvc.node",
+        "manifestSha256": "fa8f89310d75d07683f2bba2f81cffd33786be615fa661a1c72b1d9e2774bae5",
+        "vendoredSha256": "fa8f89310d75d07683f2bba2f81cffd33786be615fa661a1c72b1d9e2774bae5",
+        "upstreamSha256": "db5cdfbd655b79cac65956c5142faa1214a009c5cdc9bf1c017dd40936d03ada",
+        "fixedManifestMatches": true,
+        "currentUpstreamMatches": false
+      },
+      {
+        "path": "LICENSE",
+        "manifestSha256": "5392a8b3f46108fa3494e8c15b57da9e14e9bbd93335590cb5b50364fcf770a8",
+        "vendoredSha256": "5392a8b3f46108fa3494e8c15b57da9e14e9bbd93335590cb5b50364fcf770a8",
+        "upstreamSha256": "5392a8b3f46108fa3494e8c15b57da9e14e9bbd93335590cb5b50364fcf770a8",
+        "fixedManifestMatches": true,
+        "currentUpstreamMatches": true
+      },
+      {
+        "path": "Plugin/DailyNote/dailynote.js",
+        "manifestSha256": "021e23c975daea121c2ce16a20770fd6a1a3252675e53c1936ab23fcbd231e2e",
+        "vendoredSha256": "021e23c975daea121c2ce16a20770fd6a1a3252675e53c1936ab23fcbd231e2e",
+        "upstreamSha256": "021e23c975daea121c2ce16a20770fd6a1a3252675e53c1936ab23fcbd231e2e",
+        "fixedManifestMatches": true,
+        "currentUpstreamMatches": true
+      },
+      {
+        "path": "Plugin/DailyNoteManager/daily-note-manager.js",
+        "manifestSha256": "0eb8fee4a6b53664636ba9b8e411d765b165e9a05d4fb457bb1cd9bb400d92bf",
+        "vendoredSha256": "0eb8fee4a6b53664636ba9b8e411d765b165e9a05d4fb457bb1cd9bb400d92bf",
+        "upstreamSha256": "0eb8fee4a6b53664636ba9b8e411d765b165e9a05d4fb457bb1cd9bb400d92bf",
+        "fixedManifestMatches": true,
+        "currentUpstreamMatches": true
+      },
+      {
+        "path": "modules/associativeDiscovery.js",
+        "manifestSha256": "bd06d17d134ac39061529f8bfac459c9330cdfe1a67eeebf8b5d03da89daa9b6",
+        "vendoredSha256": "bd06d17d134ac39061529f8bfac459c9330cdfe1a67eeebf8b5d03da89daa9b6",
+        "upstreamSha256": "bd06d17d134ac39061529f8bfac459c9330cdfe1a67eeebf8b5d03da89daa9b6",
+        "fixedManifestMatches": true,
+        "currentUpstreamMatches": true
+      },
+      {
+        "path": "Plugin/RAGDiaryPlugin/AIMemoHandler.js",
+        "manifestSha256": "3fd7a4a3b4a3c48855523ce8cbbce43fbe5a4dd58331b002b3560bd28a3b1901",
+        "vendoredSha256": "3fd7a4a3b4a3c48855523ce8cbbce43fbe5a4dd58331b002b3560bd28a3b1901",
+        "upstreamSha256": "3fd7a4a3b4a3c48855523ce8cbbce43fbe5a4dd58331b002b3560bd28a3b1901",
+        "fixedManifestMatches": true,
+        "currentUpstreamMatches": true
+      },
+      {
+        "path": "Plugin/RAGDiaryPlugin/AttachmentMemoUtils.js",
+        "manifestSha256": "dc1860c5abe1c15c3e73db98cca7742891c4d8ef85b1fe3a4cef9b801ceeae52",
+        "vendoredSha256": "dc1860c5abe1c15c3e73db98cca7742891c4d8ef85b1fe3a4cef9b801ceeae52",
+        "upstreamSha256": "dc1860c5abe1c15c3e73db98cca7742891c4d8ef85b1fe3a4cef9b801ceeae52",
+        "fixedManifestMatches": true,
+        "currentUpstreamMatches": true
+      },
+      {
+        "path": "Plugin/RAGDiaryPlugin/BM25QueryOptimizer.js",
+        "manifestSha256": "a95a196251f31a74d2375ffd47ae1ce31257adee544567f54e5ff1ef5af7cd02",
+        "vendoredSha256": "a95a196251f31a74d2375ffd47ae1ce31257adee544567f54e5ff1ef5af7cd02",
+        "upstreamSha256": "a95a196251f31a74d2375ffd47ae1ce31257adee544567f54e5ff1ef5af7cd02",
+        "fixedManifestMatches": true,
+        "currentUpstreamMatches": true
+      },
+      {
+        "path": "Plugin/RAGDiaryPlugin/CacheManager.js",
+        "manifestSha256": "bd43a14486abe874d9f6372fa4c268965f02242224634d7b1dbc5e126114b2d5",
+        "vendoredSha256": "bd43a14486abe874d9f6372fa4c268965f02242224634d7b1dbc5e126114b2d5",
+        "upstreamSha256": "bd43a14486abe874d9f6372fa4c268965f02242224634d7b1dbc5e126114b2d5",
+        "fixedManifestMatches": true,
+        "currentUpstreamMatches": true
+      },
+      {
+        "path": "Plugin/RAGDiaryPlugin/ContextVectorManager.js",
+        "manifestSha256": "24e5a089165dc5d255b5550751a602c2e92863c2c7a7b17f1884b8a02c812049",
+        "vendoredSha256": "24e5a089165dc5d255b5550751a602c2e92863c2c7a7b17f1884b8a02c812049",
+        "upstreamSha256": "e8f6bdfa4a39bf643f331712abdd778c741992be209790bd795b67885cb52e1c",
+        "fixedManifestMatches": true,
+        "currentUpstreamMatches": false
+      },
+      {
+        "path": "Plugin/RAGDiaryPlugin/DirectDiaryTextProcessor.js",
+        "manifestSha256": "a44f0530fddd2bd838d734d7f165d323ea49ef70d796ae73a5190d4498383f7b",
+        "vendoredSha256": "a44f0530fddd2bd838d734d7f165d323ea49ef70d796ae73a5190d4498383f7b",
+        "upstreamSha256": "a44f0530fddd2bd838d734d7f165d323ea49ef70d796ae73a5190d4498383f7b",
+        "fixedManifestMatches": true,
+        "currentUpstreamMatches": true
+      },
+      {
+        "path": "Plugin/RAGDiaryPlugin/FoldingStore.js",
+        "manifestSha256": "60734cdddfa6c2cfcee10461927e9fdabac8b4421fd88dca4c399e42f5b03c29",
+        "vendoredSha256": "60734cdddfa6c2cfcee10461927e9fdabac8b4421fd88dca4c399e42f5b03c29",
+        "upstreamSha256": "60734cdddfa6c2cfcee10461927e9fdabac8b4421fd88dca4c399e42f5b03c29",
+        "fixedManifestMatches": true,
+        "currentUpstreamMatches": true
+      },
+      {
+        "path": "Plugin/RAGDiaryPlugin/MessageContentUtils.js",
+        "manifestSha256": "a18170433e7731be2cc422bc7fd6a140fb09ccb93005929877f63f707d86c1b7",
+        "vendoredSha256": "a18170433e7731be2cc422bc7fd6a140fb09ccb93005929877f63f707d86c1b7",
+        "upstreamSha256": "a18170433e7731be2cc422bc7fd6a140fb09ccb93005929877f63f707d86c1b7",
+        "fixedManifestMatches": true,
+        "currentUpstreamMatches": true
+      },
+      {
+        "path": "Plugin/RAGDiaryPlugin/MetaThinkingManager.js",
+        "manifestSha256": "ab2ed554a31a6c93ce7b5ef2409617306e1732ed5e0bc0ba07e8579bb31a9897",
+        "vendoredSha256": "ab2ed554a31a6c93ce7b5ef2409617306e1732ed5e0bc0ba07e8579bb31a9897",
+        "upstreamSha256": "ab2ed554a31a6c93ce7b5ef2409617306e1732ed5e0bc0ba07e8579bb31a9897",
+        "fixedManifestMatches": true,
+        "currentUpstreamMatches": true
+      },
+      {
+        "path": "Plugin/RAGDiaryPlugin/RAGDiaryPlugin.js",
+        "manifestSha256": "19850ed1b6314b4e2358acda7fb0e67411dd88c42983329c657044642605fece",
+        "vendoredSha256": "19850ed1b6314b4e2358acda7fb0e67411dd88c42983329c657044642605fece",
+        "upstreamSha256": "b1f750fa6341bbbc7955f379b20b56b8aa5d2e5275b69d4681690c9eeec5f325",
+        "fixedManifestMatches": true,
+        "currentUpstreamMatches": false
+      },
+      {
+        "path": "Plugin/RAGDiaryPlugin/RAGResultFormatter.js",
+        "manifestSha256": "34027ece6f6b59b26f5507ec19547259f0dcf9b2f06bd1e7791cd4122cd0e573",
+        "vendoredSha256": "34027ece6f6b59b26f5507ec19547259f0dcf9b2f06bd1e7791cd4122cd0e573",
+        "upstreamSha256": "34027ece6f6b59b26f5507ec19547259f0dcf9b2f06bd1e7791cd4122cd0e573",
+        "fixedManifestMatches": true,
+        "currentUpstreamMatches": true
+      },
+      {
+        "path": "Plugin/RAGDiaryPlugin/SemanticGroupManager.js",
+        "manifestSha256": "f7d312a057f9886c32a48f68f3c39179b60b255e1990bc37b19fc60aacffb552",
+        "vendoredSha256": "f7d312a057f9886c32a48f68f3c39179b60b255e1990bc37b19fc60aacffb552",
+        "upstreamSha256": "f7d312a057f9886c32a48f68f3c39179b60b255e1990bc37b19fc60aacffb552",
+        "fixedManifestMatches": true,
+        "currentUpstreamMatches": true
+      },
+      {
+        "path": "Plugin/RAGDiaryPlugin/TDBPlaceholderProcessor.js",
+        "manifestSha256": "ea8a6d769e69302c6e211a90e642e5fabe7e4031a1a26f022ba2d9a7f2f1fd45",
+        "vendoredSha256": "ea8a6d769e69302c6e211a90e642e5fabe7e4031a1a26f022ba2d9a7f2f1fd45",
+        "upstreamSha256": "ea8a6d769e69302c6e211a90e642e5fabe7e4031a1a26f022ba2d9a7f2f1fd45",
+        "fixedManifestMatches": true,
+        "currentUpstreamMatches": true
+      },
+      {
+        "path": "Plugin/RAGDiaryPlugin/TextSanitizer.js",
+        "manifestSha256": "d0fcba38ba56b36903ee03a328ccaa717c798b786c10f6241ab6ef34f9dbafd0",
+        "vendoredSha256": "d0fcba38ba56b36903ee03a328ccaa717c798b786c10f6241ab6ef34f9dbafd0",
+        "upstreamSha256": "7e77054847a3eb6a6d536d3bf649afff8cfef1745769d799040cfd6a9310ecde",
+        "fixedManifestMatches": true,
+        "currentUpstreamMatches": false
+      },
+      {
+        "path": "Plugin/RAGDiaryPlugin/TimeExpressionParser.js",
+        "manifestSha256": "e97a64fd5b91c6e2c52009198b30f1fb5eac203ee1545b1b2375dac3c76840d8",
+        "vendoredSha256": "e97a64fd5b91c6e2c52009198b30f1fb5eac203ee1545b1b2375dac3c76840d8",
+        "upstreamSha256": "e97a64fd5b91c6e2c52009198b30f1fb5eac203ee1545b1b2375dac3c76840d8",
+        "fixedManifestMatches": true,
+        "currentUpstreamMatches": true
+      },
+      {
+        "path": "Plugin/RAGDiaryPlugin/VectorMathUtils.js",
+        "manifestSha256": "2cb4f04954896d438ac66a26337217c83cabf7cf0d071f1d2b8ca4364ba584f7",
+        "vendoredSha256": "2cb4f04954896d438ac66a26337217c83cabf7cf0d071f1d2b8ca4364ba584f7",
+        "upstreamSha256": "28ec8fd0e409671400ca9d88cb2c85efc7199b742e8a2e56522508763a3ff228",
+        "fixedManifestMatches": true,
+        "currentUpstreamMatches": false
+      },
+      {
+        "path": "Plugin/RAGDiaryPlugin/timeExpressions.config.js",
+        "manifestSha256": "fb329bb8a88b38c9a2cd8d1b505de721e1f6b5367cb81e73c5ed1bab15095e4a",
+        "vendoredSha256": "fb329bb8a88b38c9a2cd8d1b505de721e1f6b5367cb81e73c5ed1bab15095e4a",
+        "upstreamSha256": "fb329bb8a88b38c9a2cd8d1b505de721e1f6b5367cb81e73c5ed1bab15095e4a",
+        "fixedManifestMatches": true,
+        "currentUpstreamMatches": true
+      },
+      {
+        "path": "TextChunker.js",
+        "manifestSha256": "6c2b0f16b4d25f3b87e606bd72b64dc4bb2fe9ed4091dcdec67a520a0eb4a8b4",
+        "vendoredSha256": "6c2b0f16b4d25f3b87e606bd72b64dc4bb2fe9ed4091dcdec67a520a0eb4a8b4",
+        "upstreamSha256": "6cf674a082cda3cbab3d9fb2ee4c641203371ea62ff1f2e428cf0677430da246",
+        "fixedManifestMatches": true,
+        "currentUpstreamMatches": false
+      },
+      {
+        "path": "modules/agentManager.js",
+        "manifestSha256": "6a5ebd7d1eaa82b40a9f8c89c2784504bdd8bcd3fe79ff572ba4c78a21bec540",
+        "vendoredSha256": "6a5ebd7d1eaa82b40a9f8c89c2784504bdd8bcd3fe79ff572ba4c78a21bec540",
+        "upstreamSha256": "6a5ebd7d1eaa82b40a9f8c89c2784504bdd8bcd3fe79ff572ba4c78a21bec540",
+        "fixedManifestMatches": true,
+        "currentUpstreamMatches": true
+      },
+      {
+        "path": "modules/dynamicToolRegistry.js",
+        "manifestSha256": "bddbbbad16f3bc45b880cec65103b5a16d24939d2cea2dc1b0c40198311dbb2f",
+        "vendoredSha256": "bddbbbad16f3bc45b880cec65103b5a16d24939d2cea2dc1b0c40198311dbb2f",
+        "upstreamSha256": "bddbbbad16f3bc45b880cec65103b5a16d24939d2cea2dc1b0c40198311dbb2f",
+        "fixedManifestMatches": true,
+        "currentUpstreamMatches": true
+      },
+      {
+        "path": "modules/foldProtocol.js",
+        "manifestSha256": "ebc26f159480513bf7066943c6dee2f70959336d6593c82f294752428a96faa6",
+        "vendoredSha256": "ebc26f159480513bf7066943c6dee2f70959336d6593c82f294752428a96faa6",
+        "upstreamSha256": "ebc26f159480513bf7066943c6dee2f70959336d6593c82f294752428a96faa6",
+        "fixedManifestMatches": true,
+        "currentUpstreamMatches": true
+      },
+      {
+        "path": "modules/jevClient.js",
+        "manifestSha256": "6da2f3a0ae9d362fd955bb722e02d4576f756cdfc1d63c527855443b4b3ac447",
+        "vendoredSha256": "6da2f3a0ae9d362fd955bb722e02d4576f756cdfc1d63c527855443b4b3ac447",
+        "upstreamSha256": "f88f19d8027280acd195ebaedb635ae713b6c078a0d0e208da8a705c9040e192",
+        "fixedManifestMatches": true,
+        "currentUpstreamMatches": false
+      },
+      {
+        "path": "modules/jevFoldFilter.js",
+        "manifestSha256": "95c139f65e7b190f8e4e95e11de6a7b0acdf44c1da063d919e9bad38f1823431",
+        "vendoredSha256": "95c139f65e7b190f8e4e95e11de6a7b0acdf44c1da063d919e9bad38f1823431",
+        "upstreamSha256": "95c139f65e7b190f8e4e95e11de6a7b0acdf44c1da063d919e9bad38f1823431",
+        "fixedManifestMatches": true,
+        "currentUpstreamMatches": true
+      },
+      {
+        "path": "modules/jevScorer.js",
+        "manifestSha256": "4b5f1efa7bf14d84ee130df422dbdfcfb57449470812632d4b83ba3411973e1d",
+        "vendoredSha256": "4b5f1efa7bf14d84ee130df422dbdfcfb57449470812632d4b83ba3411973e1d",
+        "upstreamSha256": "4b5f1efa7bf14d84ee130df422dbdfcfb57449470812632d4b83ba3411973e1d",
+        "fixedManifestMatches": true,
+        "currentUpstreamMatches": true
+      },
+      {
+        "path": "modules/messageProcessor.js",
+        "manifestSha256": "4093b312e343bd4de51f3363c22639acd48fbee50eeb82fc1936665ec2bd107e",
+        "vendoredSha256": "4093b312e343bd4de51f3363c22639acd48fbee50eeb82fc1936665ec2bd107e",
+        "upstreamSha256": "4093b312e343bd4de51f3363c22639acd48fbee50eeb82fc1936665ec2bd107e",
+        "fixedManifestMatches": true,
+        "currentUpstreamMatches": true
+      },
+      {
+        "path": "modules/sarPromptManager.js",
+        "manifestSha256": "6abc9a29b65af8fb2da5d22109bb792ed045b5f6a39fcfb5639979d1c874731c",
+        "vendoredSha256": "6abc9a29b65af8fb2da5d22109bb792ed045b5f6a39fcfb5639979d1c874731c",
+        "upstreamSha256": "6abc9a29b65af8fb2da5d22109bb792ed045b5f6a39fcfb5639979d1c874731c",
+        "fixedManifestMatches": true,
+        "currentUpstreamMatches": true
+      },
+      {
+        "path": "modules/toolboxManager.js",
+        "manifestSha256": "3a41e0ecce85a51952737432c20e3055f4c4fcfacc4493d5b753238f2a1d036a",
+        "vendoredSha256": "3a41e0ecce85a51952737432c20e3055f4c4fcfacc4493d5b753238f2a1d036a",
+        "upstreamSha256": "3a41e0ecce85a51952737432c20e3055f4c4fcfacc4493d5b753238f2a1d036a",
+        "fixedManifestMatches": true,
+        "currentUpstreamMatches": true
+      },
+      {
+        "path": "modules/tvsManager.js",
+        "manifestSha256": "3102b326bc37699f2fda74e9179cde0d983a0bc8eb901a5ffada7cee19043cdf",
+        "vendoredSha256": "3102b326bc37699f2fda74e9179cde0d983a0bc8eb901a5ffada7cee19043cdf",
+        "upstreamSha256": "3102b326bc37699f2fda74e9179cde0d983a0bc8eb901a5ffada7cee19043cdf",
+        "fixedManifestMatches": true,
+        "currentUpstreamMatches": true
+      },
+      {
+        "path": "Plugin/LightMemo/LightMemo.js",
+        "manifestSha256": "a72f9561708cea7e4fd4e74db270a8de198190063aa56abd4c4dbeb78b204be1",
+        "vendoredSha256": "a72f9561708cea7e4fd4e74db270a8de198190063aa56abd4c4dbeb78b204be1",
+        "upstreamSha256": "a72f9561708cea7e4fd4e74db270a8de198190063aa56abd4c4dbeb78b204be1",
+        "fixedManifestMatches": true,
+        "currentUpstreamMatches": true
+      },
+      {
+        "path": "Plugin/LightMemo/nativeQuery.js",
+        "manifestSha256": "b792a1725ea854d5afccd6d9537e87bc907db78b0af2aab44858a646eccb71fc",
+        "vendoredSha256": "b792a1725ea854d5afccd6d9537e87bc907db78b0af2aab44858a646eccb71fc",
+        "upstreamSha256": "155936b99d2d34218a1895bc70f2a77625e93c6b0adc3eb2045b76c406fa0950",
+        "fixedManifestMatches": true,
+        "currentUpstreamMatches": false
+      },
+      {
+        "path": "Plugin/VCPTimeLine/VCPTimeLine.js",
+        "manifestSha256": "189e62657002bac19c42742e4f8288ef065defda7cb5308afdc256a416276129",
+        "vendoredSha256": "189e62657002bac19c42742e4f8288ef065defda7cb5308afdc256a416276129",
+        "upstreamSha256": "189e62657002bac19c42742e4f8288ef065defda7cb5308afdc256a416276129",
+        "fixedManifestMatches": true,
+        "currentUpstreamMatches": true
+      },
+      {
+        "path": "Plugin/DailyNote/plugin-manifest.json",
+        "manifestSha256": "3d140728c5e43f4a8e0956046265271b226372881ff3d0c80a47415bc2fdccb9",
+        "vendoredSha256": "3d140728c5e43f4a8e0956046265271b226372881ff3d0c80a47415bc2fdccb9",
+        "upstreamSha256": "3d140728c5e43f4a8e0956046265271b226372881ff3d0c80a47415bc2fdccb9",
+        "fixedManifestMatches": true,
+        "currentUpstreamMatches": true
+      },
+      {
+        "path": "Plugin/DailyNoteManager/plugin-manifest.json",
+        "manifestSha256": "00e5f97fe4245fa76920c9ee359578f4daa9c18a1dac9b534cb2c21bfdd2e013",
+        "vendoredSha256": "00e5f97fe4245fa76920c9ee359578f4daa9c18a1dac9b534cb2c21bfdd2e013",
+        "upstreamSha256": "00e5f97fe4245fa76920c9ee359578f4daa9c18a1dac9b534cb2c21bfdd2e013",
+        "fixedManifestMatches": true,
+        "currentUpstreamMatches": true
+      },
+      {
+        "path": "Plugin/RAGDiaryPlugin/plugin-manifest.json",
+        "manifestSha256": "59010d69def2868e0db4b46995014125cb712c79bc5d3f18bdfb2b1743c51452",
+        "vendoredSha256": "59010d69def2868e0db4b46995014125cb712c79bc5d3f18bdfb2b1743c51452",
+        "upstreamSha256": "59010d69def2868e0db4b46995014125cb712c79bc5d3f18bdfb2b1743c51452",
+        "fixedManifestMatches": true,
+        "currentUpstreamMatches": true
+      },
+      {
+        "path": "Plugin/LightMemo/plugin-manifest.json",
+        "manifestSha256": "d5604a59ebc04be23d71e2ba944d3613aa365c1c34c8e207073ed313e86164ed",
+        "vendoredSha256": "d5604a59ebc04be23d71e2ba944d3613aa365c1c34c8e207073ed313e86164ed",
+        "upstreamSha256": "da627209440407d41c8037bdd6c51044de41c063371bfa0ae357a2743b70298f",
+        "fixedManifestMatches": true,
+        "currentUpstreamMatches": false
+      },
+      {
+        "path": "Plugin/VCPTimeLine/plugin-manifest.json",
+        "manifestSha256": "4017ea5229f8fed5da97ce8b0352363f75cad904729d565f3d74b7082136d44b",
+        "vendoredSha256": "4017ea5229f8fed5da97ce8b0352363f75cad904729d565f3d74b7082136d44b",
+        "upstreamSha256": "4017ea5229f8fed5da97ce8b0352363f75cad904729d565f3d74b7082136d44b",
+        "fixedManifestMatches": true,
+        "currentUpstreamMatches": true
+      },
+      {
+        "path": "TDBKnowledge.js",
+        "manifestSha256": "8016fa552b7291c4b410832285804480c9886fedc378a57156b3c0f9c76463d5",
+        "vendoredSha256": "8016fa552b7291c4b410832285804480c9886fedc378a57156b3c0f9c76463d5",
+        "upstreamSha256": "8016fa552b7291c4b410832285804480c9886fedc378a57156b3c0f9c76463d5",
+        "fixedManifestMatches": true,
+        "currentUpstreamMatches": true
+      },
+      {
+        "path": "Plugin/DailyNote/TagMaster.txt",
+        "manifestSha256": "d88ca2d340b639acc6af040c4fc2826e5650eee0f39d0e0a319db9a80d5c246f",
+        "vendoredSha256": "d88ca2d340b639acc6af040c4fc2826e5650eee0f39d0e0a319db9a80d5c246f",
+        "upstreamSha256": "d88ca2d340b639acc6af040c4fc2826e5650eee0f39d0e0a319db9a80d5c246f",
+        "fixedManifestMatches": true,
+        "currentUpstreamMatches": true
+      },
+      {
+        "path": "Plugin/DailyNoteManager/Readme.md",
+        "manifestSha256": "54edfd356f3b249e04d5d6dd05c4ce234fc8d71591a124a028430397039d07b8",
+        "vendoredSha256": "54edfd356f3b249e04d5d6dd05c4ce234fc8d71591a124a028430397039d07b8",
+        "upstreamSha256": "54edfd356f3b249e04d5d6dd05c4ce234fc8d71591a124a028430397039d07b8",
+        "fixedManifestMatches": true,
+        "currentUpstreamMatches": true
+      },
+      {
+        "path": "Plugin/LightMemo/config.env.example",
+        "manifestSha256": "1a44d7a1ec9494001bece92ab00582a7d01c975196b27761af8684d843b59f94",
+        "vendoredSha256": "1a44d7a1ec9494001bece92ab00582a7d01c975196b27761af8684d843b59f94",
+        "upstreamSha256": "1a44d7a1ec9494001bece92ab00582a7d01c975196b27761af8684d843b59f94",
+        "fixedManifestMatches": true,
+        "currentUpstreamMatches": true
+      },
+      {
+        "path": "Plugin/RAGDiaryPlugin/README.md",
+        "manifestSha256": "ddaf207f8e9c50ccb2427ef766c263a8d8569f0a782c93cb2fbf1333e4530e0e",
+        "vendoredSha256": "ddaf207f8e9c50ccb2427ef766c263a8d8569f0a782c93cb2fbf1333e4530e0e",
+        "upstreamSha256": "ddaf207f8e9c50ccb2427ef766c263a8d8569f0a782c93cb2fbf1333e4530e0e",
+        "fixedManifestMatches": true,
+        "currentUpstreamMatches": true
+      },
+      {
+        "path": "Plugin/RAGDiaryPlugin/META_THINKING_GUIDE.md",
+        "manifestSha256": "7ab78d8a5131935b48be78b1bcbfddd99f86439039adf14d30f18a84da5be4dd",
+        "vendoredSha256": "7ab78d8a5131935b48be78b1bcbfddd99f86439039adf14d30f18a84da5be4dd",
+        "upstreamSha256": "7ab78d8a5131935b48be78b1bcbfddd99f86439039adf14d30f18a84da5be4dd",
+        "fixedManifestMatches": true,
+        "currentUpstreamMatches": true
+      },
+      {
+        "path": "Plugin/RAGDiaryPlugin/AIMemoPrompt.txt",
+        "manifestSha256": "8cc4cefc7a8ac6353efa449711ab8db6b09d4b69ddd4036d8b613c1758752864",
+        "vendoredSha256": "8cc4cefc7a8ac6353efa449711ab8db6b09d4b69ddd4036d8b613c1758752864",
+        "upstreamSha256": "8cc4cefc7a8ac6353efa449711ab8db6b09d4b69ddd4036d8b613c1758752864",
+        "fixedManifestMatches": true,
+        "currentUpstreamMatches": true
+      },
+      {
+        "path": "Plugin/RAGDiaryPlugin/MoreAIMemoPresets/AIMemoPromptX.txt",
+        "manifestSha256": "4b8d065ee279420b1012a1a2fe39fc94b8397cfd8f81d4a33f1e1077c0e9e637",
+        "vendoredSha256": "4b8d065ee279420b1012a1a2fe39fc94b8397cfd8f81d4a33f1e1077c0e9e637",
+        "upstreamSha256": "4b8d065ee279420b1012a1a2fe39fc94b8397cfd8f81d4a33f1e1077c0e9e637",
+        "fixedManifestMatches": true,
+        "currentUpstreamMatches": true
+      },
+      {
+        "path": "Plugin/RAGDiaryPlugin/config.env.example",
+        "manifestSha256": "e0f19dc0d1b1044040d0250dcbb9581fa7e1df476eed47187d424d8b435fe92c",
+        "vendoredSha256": "e0f19dc0d1b1044040d0250dcbb9581fa7e1df476eed47187d424d8b435fe92c",
+        "upstreamSha256": "dd0411721821778ed816da7c8217fd7d7e3571248491a721611320c3f39b2c64",
+        "fixedManifestMatches": true,
+        "currentUpstreamMatches": false
+      },
+      {
+        "path": "Plugin/RAGDiaryPlugin/rag_tags.json.example",
+        "manifestSha256": "23ec34dc77fc32b89b53b73bb0d561f953034b7c1bffa3ea44e24ad91e2c89ba",
+        "vendoredSha256": "23ec34dc77fc32b89b53b73bb0d561f953034b7c1bffa3ea44e24ad91e2c89ba",
+        "upstreamSha256": "23ec34dc77fc32b89b53b73bb0d561f953034b7c1bffa3ea44e24ad91e2c89ba",
+        "fixedManifestMatches": true,
+        "currentUpstreamMatches": true
+      },
+      {
+        "path": "Plugin/RAGDiaryPlugin/semantic_groups.json.example",
+        "manifestSha256": "fffdcef65799260c9fb4eb2a975b1edbeb10bcd595d9f723e4035726cdc23542",
+        "vendoredSha256": "fffdcef65799260c9fb4eb2a975b1edbeb10bcd595d9f723e4035726cdc23542",
+        "upstreamSha256": "fffdcef65799260c9fb4eb2a975b1edbeb10bcd595d9f723e4035726cdc23542",
+        "fixedManifestMatches": true,
+        "currentUpstreamMatches": true
+      },
+      {
+        "path": "Plugin/RAGDiaryPlugin/semantic_groups.edit.json.example",
+        "manifestSha256": "fffdcef65799260c9fb4eb2a975b1edbeb10bcd595d9f723e4035726cdc23542",
+        "vendoredSha256": "fffdcef65799260c9fb4eb2a975b1edbeb10bcd595d9f723e4035726cdc23542",
+        "upstreamSha256": "fffdcef65799260c9fb4eb2a975b1edbeb10bcd595d9f723e4035726cdc23542",
+        "fixedManifestMatches": true,
+        "currentUpstreamMatches": true
+      },
+      {
+        "path": "Plugin/AgentDream/DreamWaveEngine.js",
+        "manifestSha256": "7a136bbd491323ceff48beaa39a39d9c6b9373ec93b037bae06c0fa41906ef6a",
+        "vendoredSha256": "7a136bbd491323ceff48beaa39a39d9c6b9373ec93b037bae06c0fa41906ef6a",
+        "upstreamSha256": "7a136bbd491323ceff48beaa39a39d9c6b9373ec93b037bae06c0fa41906ef6a",
+        "fixedManifestMatches": true,
+        "currentUpstreamMatches": true
+      }
+    ]
+  },
+  "verification": {
+    "methods": [
+      "local source and caller inspection",
+      "git revision and diff inspection",
+      "SHA256 comparison"
+    ],
+    "newRuntimeTestsExecuted": false,
+    "newBenchmarksExecuted": false,
+    "realModelCalls": 0,
+    "userMemoryDatabasesRead": false,
+    "privateConfigFilesRead": false,
+    "implementationChanged": false
+  },
+  "primaryExternalReferences": [
+    "https://arxiv.org/abs/2304.03442",
+    "https://arxiv.org/abs/2310.08560",
+    "https://www.sqlite.org/isolation.html",
+    "https://www.sqlite.org/wal.html"
+  ]
+}

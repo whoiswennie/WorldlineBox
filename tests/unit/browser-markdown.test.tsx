@@ -23,6 +23,11 @@ it('uses the bounded diagram renderer only after streaming completes', async () 
   await act(() => root.render(<BrowserMarkdown text={'```mermaid\nflowchart LR\n A-->B\n```'} open={() => undefined} />));
   expect(host.querySelector('[data-safe-mermaid]')?.textContent).toContain('A-->B');
 });
+it('keeps conversational single tildes literal and renders explicit double-tilde deletion', async () => {
+  await mount('稍等~我帮你找~，~~旧内容~~。');
+  expect([...host.querySelectorAll('del')].map(node => node.textContent)).toEqual(['旧内容']);
+  expect(host.querySelector('p')?.textContent).toBe('稍等~我帮你找~，旧内容。');
+});
 it('keeps HTML, script URLs and remote images inert while opening explicit safe links', async () => {
   const open = await mount('<script>window.pwned=1</script>\n\n[unsafe](javascript:alert(1))\n\n[docs](https://example.com/docs)\n\n![remote](https://example.com/track.png)');
   expect(host.querySelector('script')).toBeNull(); expect(host.querySelector('img')).toBeNull(); expect(open).not.toHaveBeenCalled();

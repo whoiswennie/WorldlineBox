@@ -25,15 +25,19 @@ export const CompanionMessageBubble = memo(function CompanionMessageBubble({ mes
   const lastStreamingStep = progress && terminalReplyPhases.has(progress.phase) ? undefined : snapshot.overlays.filter(frame => frame.phase === 'streaming').at(-1)?.step;
   const hasText = segments?.some(segment => segment.text.trim());
   const capabilityOnly = message.kind === 'action' || segments && !hasText && !progress;
-  return <div className={`companions-message-bubble${message.kind === 'action' ? ' is-action' : ''}${capabilityOnly ? ' is-capability-only' : ''}`} data-reply-phase={phase ?? (partial ? 'interrupted' : undefined)} aria-busy={progress ? !terminalReplyPhases.has(progress.phase) : phase === 'streaming'}>
+  const pendingOnly = progress && !terminalReplyPhases.has(progress.phase) && !hasText && !message.content && !message.attachments.length && !segments?.some(segment => segment.actionIds.length);
+  return <div className={`companions-message-bubble${message.kind === 'action' ? ' is-action' : ''}${capabilityOnly ? ' is-capability-only' : ''}${pendingOnly ? ' is-reply-pending' : ''}`} data-reply-phase={phase ?? (partial ? 'interrupted' : undefined)} aria-busy={progress ? !terminalReplyPhases.has(progress.phase) : phase === 'streaming'}>
     {message.replyToId && !segments && !replied?.memoryEvidenceOnly && <button className="companions-reply-quote" aria-label={`查看引用消息 ${message.replyToId}`} onClick={() => onLocateQuote(message.replyToId!)}><span className="companions-reply-quote-heading"><ChatGlyph name="reply" /><strong>{quoteAuthor ?? '引用消息'}</strong></span><span className="companions-reply-quote-excerpt">{replied?.content || (replied ? replied.attachments.map(item => item.name).join('、') : '点击查看引用的消息')}</span></button>}
-    {message.kind === 'action' && message.actionId ? <CompanionCapabilityLink action={actions.find(action => action.id === message.actionId)} actionId={message.actionId} now={now} onOpen={onOpenAction} /> : segments ? <div className="companions-loop-segments">
+    {message.sourceUnavailable ? null : message.kind === 'action' && message.actionId ? <CompanionCapabilityLink action={actions.find(action => action.id === message.actionId)} actionId={message.actionId} now={now} onOpen={onOpenAction} /> : segments ? <div className="companions-loop-segments">
       {!progress && !hasText && !segments.some(segment => segment.actionIds.length) && lastStreamingStep === undefined && <p className="companions-loop-pending">正在回复…</p>}
       {segments.map((segment, step) => {
         const visibleText = !!segment.text.trim(), streaming = lastStreamingStep === step;
         // Native tool-only turns have no chat content. Keep their original step
         // indices for stream reconciliation without allocating empty flex gaps.
-        if (!visibleText && !segment.actionIds.length && !streaming) return null;
+        // Native progress already represents the wait before the first token.
+        // An empty stream-opening frame must not allocate a cursor-only text
+        // row/divider above it, which made silent pending bubbles jump in size.
+        if (!visibleText && !segment.actionIds.length && (!streaming || !!progress)) return null;
         return <section className="companions-loop-segment" key={step} data-loop-step={step}>
           {visibleText && <MessageContent content={segment.text} onOpenUrl={onOpenUrl} />}
           {streaming && <span className="companions-reply-cursor" aria-label="伙伴正在输出" />}
@@ -41,6 +45,7 @@ export const CompanionMessageBubble = memo(function CompanionMessageBubble({ mes
         </section>;
       })}
     </div> : message.content && (message.authorId === 'user' ? <p>{message.content}</p> : <MessageContent content={message.content} onOpenUrl={onOpenUrl} />)}
+    {message.sourceUnavailable && <small className="companions-reply-stream-status" role="status">此消息引用的资料已变化，内容暂不可用。</small>}
     {progress && <CompanionReplyProgress progress={progress} now={now} scope={{ companionId: message.authorId, conversationId: message.conversationId, messageId: message.id }} onCancel={progress.workId && onCancelReply ? () => onCancelReply(progress.workId!) : undefined} onRetry={progress.workId && onRetryReply ? () => onRetryReply(progress.workId!) : undefined} onGuide={progress.sourceMessageId && onGuideReply ? () => onGuideReply(progress.sourceMessageId!) : undefined} />}
     {partial && !progress && <small className="companions-reply-stream-status">回复已中断</small>}
     {!!message.attachments.length && <CompanionAttachments ownerId={message.authorId} conversationId={message.conversationId} attachments={message.attachments} onOpen={onOpenAttachment} />}

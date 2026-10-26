@@ -1,9 +1,12 @@
 import { createHash, randomUUID } from 'node:crypto';
+import { companionTaskCanClaim } from './task-concurrency-store';
 import type { CompanionConnection } from './store';
 import type { CompanionAction, CompanionMessage } from '../shared/companions';
 import type { CompanionStorageCommand, CompanionStorageResponse } from '../shared/companion-storage';
 import { companionWorkOrderSchema, type CompanionWorkOrder } from '../shared/companion-work-order';
 import { verifyCompanionGoalProof } from './goal-proof';
+import type { CompanionExecutionReadset } from '../shared/companion-execution-evidence';
+import { executionMessageReadsetKey } from './execution-source-access';
 
 type Row = Record<string, string | number | null>;
 type Scope = { companionId: string; conversationId: string };
@@ -14,6 +17,8 @@ const terminal = new Set(['completed', 'failed', 'cancelled']);
 
 /** Durable assignments share the same source, action and SQLite authorities. */
 export class CompanionWorkOrderStore {
+  private readsetValid?: (scope: Scope, proof: CompanionExecutionReadset) => boolean;
+  connectReadsetValidation(validate: NonNullable<CompanionWorkOrderStore['readsetValid']>): void { this.readsetValid = validate; }
   constructor(private readonly db: CompanionConnection,
     private readonly visible: (scope: Scope, ids: string[]) => CompanionMessage[],
     private readonly human: (scope: Scope, content: string, clientId?: string) => CompanionMessage,
@@ -124,9 +129,10 @@ export class CompanionWorkOrderStore {
           AND NOT EXISTS(SELECT 1 FROM json_each(o.data,'$.authorizationSourceMessageIds') s WHERE s.value=json_extract(i.data,'$.sourceMessageId')))
         AND NOT EXISTS(SELECT 1 FROM companion_reset_jobs r WHERE r.companion_id=o.companion_id AND r.status!='completed')
         AND EXISTS(SELECT 1 FROM companions p WHERE p.id=o.companion_id AND p.deleted_at IS NULL AND json_extract(p.data,'$.active')=1)
-        AND NOT EXISTS(SELECT 1 FROM companion_work_orders other WHERE other.companion_id=o.companion_id AND other.id!=o.id AND other.status='running' AND other.lease_until>?) ORDER BY ordinal LIMIT 100`).all(...args, at);
+        ORDER BY ordinal LIMIT 100`).all(...args);
       for (const found of candidates) {
         const order = this.reconcile(this.load(String(row(found).id))); if (order.status === 'cancelled') continue;
+        if (!companionTaskCanClaim(this.db, order.companionId, { kind: 'work-order', id: order.id })) continue;
         const leaseToken = randomUUID(), leaseUntil = new Date(Date.now() + leaseMs).toISOString(); order.status = 'running'; this.save(order);
         this.db.prepare('UPDATE companion_work_orders SET lease_token=?,lease_until=? WHERE id=?').run(leaseToken, leaseUntil, order.id);
         return { ok: true, workOrderClaim: { order, leaseToken, leaseUntil } };
@@ -189,6 +195,9 @@ export class CompanionWorkOrderStore {
           const replay = this.db.prepare('SELECT data,lease_token FROM companion_work_orders WHERE id=?').get(command.id);
           if (replay && row(replay).lease_token === command.leaseToken && parse<CompanionWorkOrder>(row(replay).data).status === 'completed') return { ok: true, workOrder: this.projection(this.load(command.id)) };
           const order = this.leased(command.id, command.leaseToken);
+          if (command.executionReadset && (command.executionReadset.companionId !== order.companionId
+            || command.executionReadset.conversationId !== order.conversationId || !this.readsetValid?.(order, command.executionReadset)))
+            throw new Error('内部工作实际使用的来源已撤回或不可访问。');
           if (order.execution === 'external') {
             verifyCompanionGoalProof(this.db, { kind: 'work', ...order, goalInvocationId: command.goalInvocationId,
               goalSlot: command.goalSlot, result: command.result, actionIds: command.actionIds });
@@ -196,6 +205,8 @@ export class CompanionWorkOrderStore {
           }
           if (!command.result) throw new Error('工作需要实际完成的结果正文。');
           const message = this.append(order, command.result, 'order_result_' + order.id, order.sourceMessageId);
+          if (command.executionReadset) this.db.prepare('INSERT OR REPLACE INTO metadata(key,value) VALUES(?,?)')
+            .run(executionMessageReadsetKey(message.id), JSON.stringify(command.executionReadset));
           order.status = 'completed'; order.result = message.content; order.completionMessageId = message.id; this.save(order);
           this.db.prepare('UPDATE companion_work_orders SET lease_until=NULL WHERE id=?').run(order.id);
           return { ok: true, workOrder: order, message };

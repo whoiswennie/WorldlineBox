@@ -9,7 +9,7 @@ const match = z.object({
 /** Observed receipts of this request, not a simulated live progress indicator. */
 export const companionMemoryRetrievalSchema = z.object({
   mode: z.enum(['active', 'passive']), engine: z.enum(['river', 'knn', 'none']), observedAt: z.string(), resultCount: z.number().int().nonnegative(),
-  candidateQuerySeparateFromContext: z.literal(true),
+  candidateQuerySeparateFromContext: z.boolean(),
   /** Only the unfiltered owner authorization snapshot can establish this. */
   authorizedCorpusEmpty: z.literal(true).optional(), authorizedCorpusRevision: z.string().min(1).optional(),
   stages: z.array(z.object({

@@ -1,6 +1,6 @@
 import { createRequire } from 'node:module';
 import path from 'node:path';
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const require = createRequire(import.meta.url);
 interface Clock { now: string; timeZone: string }
@@ -13,9 +13,27 @@ const { createRagQueryClock } = require('../../src/main/vcp-memory/peripherals.c
 };
 const clock = (day: number): Clock => ({ now: `2035-03-${String(day).padStart(2, '0')}T00:00:00+08:00`, timeZone: 'Asia/Shanghai' });
 const pathToRag = path.resolve('vendor/vcp-memory/Plugin/RAGDiaryPlugin/RAGDiaryPlugin.js');
+const { prototype: semanticGroups } = require(path.resolve('vendor/vcp-memory/Plugin/RAGDiaryPlugin/SemanticGroupManager.js')) as {
+  prototype: { initialize(): Promise<void> };
+};
+const initializeSemanticGroups = semanticGroups.initialize;
+const initializations: Promise<void>[] = [];
+beforeEach(() => {
+  // Upstream starts this async operation in its constructor without retaining
+  // the promise. Await the real work before restoring logging or leaving the
+  // fixture, so filesystem errors and late logs cannot escape test teardown.
+  vi.spyOn(semanticGroups, 'initialize').mockImplementation(function (this: typeof semanticGroups) {
+    const pending = initializeSemanticGroups.call(this);
+    initializations.push(pending); return pending;
+  });
+});
+afterEach(() => { vi.restoreAllMocks(); });
+async function settleInitializations(logs: { mockRestore(): void }) {
+  try { await Promise.all(initializations.splice(0)); } finally { logs.mockRestore(); }
+}
 
 describe('request-local dayjs injection into frozen VCP modules', () => {
-  it('keeps yesterday and original exponential decay deterministic when a world pauses or advances rapidly', () => {
+  it('keeps yesterday and original exponential decay deterministic when a world pauses or advances rapidly', async () => {
     const logs = vi.spyOn(console, 'log').mockImplementation(() => undefined);
     try {
       const adapter = createRagQueryClock(), rag = adapter.load(pathToRag), match = '::TimeDecay10/0'.match(/::TimeDecay(\d+)?(?:\/(\d+\.?\d*))?/u)!;
@@ -29,7 +47,7 @@ describe('request-local dayjs injection into frozen VCP modules', () => {
       expect(accelerated.decayed[0]).toMatchObject({ diff_days: 20, decay_factor: .25, score: .25 });
       expect(adapter.run(clock(21), () => rag._applyTimeDecay([{ ...source, source: 'time' }], match, {}))[0]).toEqual({ ...source, source: 'time' });
       expect(source.score).toBe(1);
-    } finally { logs.mockRestore(); }
+    } finally { await settleInitializations(logs); }
   });
   it('isolates overlapping asynchronous request clocks and leaves global Date and native no-clock behavior intact', async () => {
     const logs = vi.spyOn(console, 'log').mockImplementation(() => undefined);
@@ -40,7 +58,7 @@ describe('request-local dayjs injection into frozen VCP modules', () => {
       expect(adapter.run(undefined, () => rag._applyTimeDecay([{ text: '[2035-03-01] alpha', score: 1 }], match, {}))[0]!.diff_days).toBe(0);
       expect(() => adapter.run({ now: 'bad', timeZone: 'Asia/Shanghai' }, () => true)).toThrow('Invalid VCP query clock');
       expect(() => adapter.run({ ...clock(11), timeZone: 'Invalid/Zone' }, () => true)).toThrow('timezone');
-    } finally { logs.mockRestore(); }
+    } finally { await settleInitializations(logs); }
   });
   it('aligns projected civil dates and AIMemo prompt dates with midnight and DST query zones, preserving absolute inputs', async () => {
     const logs = vi.spyOn(console, 'log').mockImplementation(() => undefined);
@@ -66,6 +84,6 @@ describe('request-local dayjs injection into frozen VCP modules', () => {
         expect(actual.decay.diff_days, test.zone).toBe(test.age);
         expect(actual.decay.decay_factor).toBeCloseTo(Math.pow(.5, test.age / 180), 12);
       }
-    } finally { logs.mockRestore(); }
+    } finally { await settleInitializations(logs); }
   });
 });

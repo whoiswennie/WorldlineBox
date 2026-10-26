@@ -9,6 +9,7 @@ import { companionFinalProposalBytes, companionFinalProposalReceiptSchema, compa
 import { companionPeerActivitySourceValid } from './peer-activity-source';
 import { findJoinedCompanionActivityPortCandidate } from './activity-port-candidates';
 import type { CompanionSocialStore } from './social-store';
+import type { CompanionExecutionReadset } from '../shared/companion-execution-evidence';
 
 /** Domain job IDs are durable inference ports, including synthetic learning
  * rooms. These records never create a chat message or enlarge source access. */
@@ -17,7 +18,8 @@ export class CompanionAgentRunStore {
     private readonly visible: (scope: { companionId: string; conversationId: string }, ids: string[]) => CompanionMessage[],
     private readonly memoryValid: (owner: string, id: string, version: number) => boolean,
     private readonly topicExecute?: (command: CompanionStorageCommand) => CompanionStorageResponse | undefined,
-    private readonly social?: CompanionSocialStore) {}
+    private readonly social?: CompanionSocialStore,
+    private readonly frozenMemoryValid?: (scope: { companionId: string; conversationId: string }, memory: NonNullable<CompanionExecutionReadset['frozenMemories']>[number]) => boolean) {}
   private assertValid(run: CompanionAgentRun): void {
     for (const rejected of run.rejectedFinals ?? []) if (createHash('sha256').update(companionFinalProposalBytes(run.turns[rejected.step]!)).digest('hex') !== rejected.proposalChecksum)
       throw new Error('被拒最终提案的不可变原文校验不匹配。');
@@ -35,6 +37,7 @@ export class CompanionAgentRunStore {
       if (!current || createHash('sha256').update(current.content).digest('hex') !== source.checksum) throw new Error('推理来源已撤回或更新，旧步骤不能恢复。');
     }
     for (const memory of run.memories) if (!this.memoryValid(run.companionId, memory.id, memory.version)) throw new Error('推理引用的记忆已失效，旧步骤不能恢复。');
+    for (const memory of run.frozenMemories ?? []) if (!this.frozenMemoryValid?.(run, memory)) throw new Error('推理引用的原始记忆来源已撤回，旧步骤不能恢复。');
     for (const topic of run.topics ?? []) {
       const checked = this.topicExecute?.({ type: 'topic.sources.valid', readerId: run.companionId, ...topic });
       if (!checked?.ok || !checked.topicSourcesValid) throw new Error('推理引用的游戏或话题检查点已撤回或失效，旧步骤不能恢复。');
@@ -158,6 +161,8 @@ export class CompanionAgentRunStore {
         || previous.effects.some(effect => !run.effects.some(next => next.step === effect.step && next.callId === effect.callId
           && (effect.state === 'dispatched' || next.state === 'confirmed' && next.result === effect.result))))) throw new Error('推理不能丢弃已经读取的来源或已确认作用凭证。');
       if (previous?.knowledgeReads?.some(read => !run.knowledgeReads?.some(next => JSON.stringify(next) === JSON.stringify(read)))) throw new Error('推理不能丢弃已经使用的冷资料版本读集。');
+      if (previous?.frozenMemories?.some(read => !run.frozenMemories?.some(next => JSON.stringify(next) === JSON.stringify(read)))) throw new Error('推理不能丢弃已经使用的任务记忆快照来源。');
+      if (previous && JSON.stringify(previous.passiveRecall) !== JSON.stringify(run.passiveRecall)) throw new Error('同一任务已经准备的被动回忆快照不能替换或重新检索。');
       if (previous?.topics?.some(read => !run.topics?.some(next => JSON.stringify(next) === JSON.stringify(read)))) throw new Error('推理不能丢弃已经使用的话题检查点读集。');
       if (JSON.stringify(previous?.rejectedFinals ?? []) !== JSON.stringify(run.rejectedFinals ?? [])) throw new Error('最终提案拒绝凭证只能经原活动实际lease核验追加，不能改写或借普通存档伪造。');
       this.assertValid(run);

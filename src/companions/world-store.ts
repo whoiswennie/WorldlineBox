@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto';
+import { companionTaskCanClaim } from './task-concurrency-store';
 import type { CompanionContactState, CompanionInteraction } from '../shared/companion-contact';
 import { companionHomeAddressSchema, type CompanionHomeAddress } from '../shared/companion-world-address';
 import { COMPANION_WORLD_DEFAULT_SETTINGS, companionWorldSnapshotSchema, type CompanionWorldActor, type CompanionWorldEvent, type CompanionWorldJob, type CompanionWorldRelationship,
@@ -23,6 +24,8 @@ import type { CompanionRuntimeState, CompanionStateProposal } from '../shared/co
 import { companionMemoryConsolidateSchema, type CompanionMemoryCandidate, type CompanionMemoryConsolidation } from '../shared/companion-memory';
 import type { CompanionConnection } from './store';
 import type { CompanionStorageCommand, CompanionStorageResponse } from '../shared/companion-storage';
+import type { CompanionUserStop } from '../shared/companion-task-stop';
+import type { CompanionTaskControlResult } from '../shared/companion-task-control';
 import type { CompanionSocialMessage } from '../shared/companion-social';
 import type { CompanionSocialStore } from './social-store';
 import type { CompanionWorkOrderStore } from './work-order-store';
@@ -36,6 +39,7 @@ import { COMPANION_SLEEP_DREAM_PROBABILITY, COMPANION_SLEEP_DREAM_COOLDOWN_MS, C
 import { companionAutomaticConsolidationHasNovelty } from '../shared/companion-memory-novelty';
 import { companionSocialGoalOrigin, companionSocialDelegatedPortOrigin } from './social-goal-origin';
 import { findCompanionActivityPortCandidate, listCompanionActivityPortCandidates, publicCompanionActivityPortCandidate, registerCompanionActivityPortCandidate } from './activity-port-candidates';
+import type { CompanionExecutionReadset } from '../shared/companion-execution-evidence';
 
 type Row = Record<string, string | number | null>;
 type GoalGamePort = { companionId: string; sourceChecksum: string; topicId: string; conversationId: string; recipientIds: string[];
@@ -65,6 +69,13 @@ type StoredWorld = { sceneVersion?: 2; settings: CompanionWorldSettings; anchors
 const iso = (at = Date.now()) => new Date(at).toISOString();
 const parse = <T>(value: unknown): T => JSON.parse(String(value)) as T;
 const row = (value: unknown) => value as Row;
+// A wait receipt blocks only its exact source version while a referenced
+// consolidation is still pending. Unrelated new logs remain eligible.
+const withoutPendingConsolidation = (alias: 'n' | 'first') => `NOT EXISTS(SELECT 1 FROM metadata waiting
+  WHERE waiting.key='memory-consolidation-wait/'||${alias}.companion_id||'/'||${alias}.id
+  AND json_extract(waiting.value,'$.version')=json_extract(${alias}.data,'$.version')
+  AND EXISTS(SELECT 1 FROM json_each(waiting.value,'$.blockers') blocker JOIN metadata pending
+    ON pending.key='memory-consolidation/'||blocker.value WHERE json_extract(pending.value,'$.state')='pending'))`;
 // The host normally ticks and persists every 500ms. Read-only management views
 // tolerate ten missed cycles before calling a persisted observation a backlog;
 // ordinary time between ticks must not claim the world is still catching up.
@@ -91,6 +102,7 @@ export class CompanionWorldStore {
   private topicCommand?: (command: CompanionStorageCommand) => CompanionStorageResponse | undefined;
   private life?: { completePhysical(id: string, companionId: string, outcome: 'done' | 'cancelled', result: string): void };
   private startActivityTask?: (companionId: string, jobId: string, task: { title: string; goal: string }) => void;
+  private readsetValid?: (scope: CompanionWorldScope, proof: CompanionExecutionReadset) => boolean;
   private captureExperience?: (receipt: CompanionWorldExperienceReceipt) => void;
   private atomic<T>(fn: () => T): T {
     try { return this.db.transaction(fn).immediate(); } catch (error) { this.clockAnchors = undefined; this.actorProjection = []; this.activeWorld = undefined; this.through = 0; this.perceptionNextAt = 0; this.dirty = true; throw error; }
@@ -118,6 +130,7 @@ export class CompanionWorldStore {
   connectCollaboration(validate: NonNullable<CompanionWorldStore['collaborationAllowed']>): void { this.collaborationAllowed = validate; }
   connectLife(life: NonNullable<CompanionWorldStore['life']>): void { this.life = life; }
   connectActivity(start: NonNullable<CompanionWorldStore['startActivityTask']>): void { this.startActivityTask = start; }
+  connectReadsetValidation(validate: NonNullable<CompanionWorldStore['readsetValid']>): void { this.readsetValid = validate; }
   /** Synchronous evidence and capture intent share the world event's SQLite transaction. */
   connectExperience(capture: NonNullable<CompanionWorldStore['captureExperience']>): void { this.captureExperience = capture; }
   private ownAddress(owner: string, state = this.load()): CompanionHomeAddress {
@@ -1269,6 +1282,11 @@ export class CompanionWorldStore {
   private queueJob(state: StoredWorld, companionId: string, kind: CompanionWorldJob['kind'], encounterMemberIds?: string[]): CompanionWorldJob | undefined {
     const unfinished = (this.db.prepare("SELECT data FROM companion_world_jobs WHERE companion_id=? AND kind=? AND status IN ('pending','running','failed')").all(companionId, kind) as Row[])
       .map(value => parse<StoredJob>(value.data));
+    // A manually stopped job uses the existing terminal done enum, but it is
+    // not successful maintenance. Keep the newest user decision as an admission
+    // fence so an unseen-note/encounter tick cannot recreate the same work.
+    const stopped = this.db.prepare("SELECT data FROM companion_world_jobs WHERE companion_id=? AND kind=? AND status='done' AND json_extract(data,'$.stop.actor')='user' ORDER BY rowid DESC LIMIT 1").get(companionId, kind);
+    if (stopped) unfinished.push(parse<StoredJob>(row(stopped).data));
     if (unfinished.some(job => !job.terminal)) return;
     if (unfinished.length) {
       if (kind === 'dream') {
@@ -1344,12 +1362,14 @@ export class CompanionWorldStore {
     return (this.db.prepare(`SELECT n.id,json_extract(n.data,'$.version') AS version FROM vcp_memory_notes n
       WHERE n.companion_id=? AND json_extract(n.data,'$.status')='indexed' AND json_array_length(json_extract(n.data,'$.sources'))>0
       AND json_extract(n.data,'$.archivedAt') IS NULL
+      AND ${withoutPendingConsolidation('n')}
       AND COALESCE(json_extract(n.data,'$.metadata.consolidation'),0)=0
       AND COALESCE(json_extract(n.data,'$.metadata.dream'),0)=0 AND COALESCE(json_extract(n.data,'$.metadata.simulation'),0)=0
       AND NOT EXISTS(SELECT 1 FROM companion_world_dream_watermark w WHERE w.companion_id=n.companion_id AND w.memory_id=n.id AND w.version=json_extract(n.data,'$.version'))
       AND n.conversation_id=(SELECT first.conversation_id FROM vcp_memory_notes first
         WHERE first.companion_id=n.companion_id AND json_extract(first.data,'$.status')='indexed'
         AND json_extract(first.data,'$.archivedAt') IS NULL
+        AND ${withoutPendingConsolidation('first')}
         AND json_array_length(json_extract(first.data,'$.sources'))>0 AND COALESCE(json_extract(first.data,'$.metadata.consolidation'),0)=0
         AND COALESCE(json_extract(first.data,'$.metadata.dream'),0)=0 AND COALESCE(json_extract(first.data,'$.metadata.simulation'),0)=0
         AND NOT EXISTS(SELECT 1 FROM companion_world_dream_watermark done WHERE done.companion_id=first.companion_id AND done.memory_id=first.id AND done.version=json_extract(first.data,'$.version'))
@@ -1380,6 +1400,7 @@ export class CompanionWorldStore {
     const cursor = storedCursor ? Number(row(storedCursor).value) : 0;
     const candidates = this.db.prepare(`SELECT n.rowid AS ordinal,n.data FROM vcp_memory_notes n WHERE n.companion_id=?
       AND json_extract(n.data,'$.status')='indexed' AND json_extract(n.data,'$.archivedAt') IS NULL
+      AND ${withoutPendingConsolidation('n')}
       AND json_extract(n.data,'$.sourceConversationId')=? AND json_array_length(json_extract(n.data,'$.sources'))>0
       AND json_type(n.data,'$.metadata.consolidation') IS NULL
       AND COALESCE(json_extract(n.data,'$.metadata.automaticConsolidation'),0)=0
@@ -1896,6 +1917,24 @@ export class CompanionWorldStore {
       return { ...delivery, socialDeliveryClientId: clientId, ...(topicResult ? { topic: topicResult.topic, topicState: topicResult.topicState } : {}), socialConversation: room, world: this.snapshotValue(this.load(), Date.now(), scope) };
     });
   }
+  stopJob(companionId: string, id: string, stop: CompanionUserStop): CompanionTaskControlResult {
+    return this.atomic(() => {
+      const found = this.db.prepare('SELECT companion_id,data FROM companion_world_jobs WHERE id=?').get(id);
+      if (!found || row(found).companion_id !== companionId) throw new Error('世界任务不存在或不属于此伙伴。');
+      const job = parse<StoredJob>(row(found).data);
+      if (job.companionId !== companionId) throw new Error('世界任务的伙伴归属不一致。');
+      const result = { companionId, kind: 'world' as const, id, conversationId: job.conversationId,
+        title: job.kind === 'dream' ? '睡眠记忆整理' : '世界活动决策', stopped: !!job.stop, actionIds: [], activityTaskIds: [] };
+      if (job.status === 'done' || job.terminal) return result;
+      const state = this.load();
+      for (const actor of state.actors) if (actor.meetingHold?.jobId === job.id) this.releaseMeeting(actor, true);
+      job.status = 'done'; job.terminal = true; job.stop = stop; job.updatedAt = job.finishedAt = stop.requestedAt;
+      delete job.leaseToken; delete job.error;
+      this.db.prepare("UPDATE companion_world_jobs SET status='done',lease_until=NULL,data=? WHERE id=?").run(JSON.stringify(job), id);
+      this.save(state);
+      return { ...result, stopped: true };
+    });
+  }
   private claim(kind: CompanionWorldJob['kind'], excludedCompanionIds: readonly string[] = []): CompanionWorldJob | undefined {
     const claimAt = Date.now(); this.advance(claimAt); return this.db.transaction(() => {
       const candidates = this.db.prepare("SELECT * FROM companion_world_jobs WHERE kind=? AND COALESCE(json_extract(data,'$.terminal'),0)=0 AND (status='pending' OR status IN ('running','failed') AND lease_until<?) ORDER BY rowid").all(kind, iso()) as Row[];
@@ -1904,16 +1943,18 @@ export class CompanionWorldStore {
       const found = candidates.find(candidate => {
         const owner = String(candidate.companion_id), actor = state.actors.find(actor => actor.companionId === owner);
         if (excludedCompanionIds.includes(owner)) return false;
+        if (!companionTaskCanClaim(this.db, owner, { kind: 'world', id: String(candidate.id) })) return false;
         const busy = state.works.some(work => work.companionId === owner && work.status !== 'ended');
         return actor && !busy && (kind === 'dream' ? this.sleepingForJob(state, parse<StoredJob>(candidate.data)) : (parse<StoredJob>(candidate.data).encounterMemberIds ? !['sleeping', 'eating'].includes(actor.routinePhase) : this.phoneAvailable(state, actor) && !this.peerPhoneActive(owner, state.cursor)));
       }); if (!found) return undefined;
       const job = parse<StoredJob>(row(found).data); job.status = 'running'; job.leaseToken = randomUUID(); job.attempts++;
-      if (job.encounterMemberIds && !this.faceGroupAvailable(state, job.encounterMemberIds)) { job.status = 'done'; this.db.prepare("UPDATE companion_world_jobs SET status='done',lease_until=NULL,data=? WHERE id=?").run(JSON.stringify(job), job.id); for (const actor of state.actors) if (actor.meetingHold?.jobId === job.id) this.releaseMeeting(actor, true); this.save(state); return undefined; }
+      job.updatedAt = iso(); job.startedAt ??= job.updatedAt; delete job.finishedAt;
+      if (job.encounterMemberIds && !this.faceGroupAvailable(state, job.encounterMemberIds)) { job.status = 'done'; job.finishedAt = job.updatedAt = iso(); this.db.prepare("UPDATE companion_world_jobs SET status='done',lease_until=NULL,data=? WHERE id=?").run(JSON.stringify(job), job.id); for (const actor of state.actors) if (actor.meetingHold?.jobId === job.id) this.releaseMeeting(actor, true); this.save(state); return undefined; }
       if (kind === 'dream') { job.seedMemoryVersions = this.sleepSeeds(job.companionId); job.sourceMemoryIds = job.seedMemoryVersions.map(memory => memory.id);
         job.maintenanceMemoryVersions = this.maintenanceSeeds(job.companionId, job.seedMemoryVersions);
         job.maintenanceMemoryIds = job.maintenanceMemoryVersions.map(memory => memory.id);
         job.memoryVersions = [...new Map([...job.seedMemoryVersions, ...job.maintenanceMemoryVersions].map(memory => [memory.id, memory])).values()];
-        if (!job.sourceMemoryIds.length) { job.status = 'done'; this.db.prepare("UPDATE companion_world_jobs SET status='done',lease_until=NULL,data=? WHERE id=?").run(JSON.stringify(job), job.id); return undefined; } }
+        if (!job.sourceMemoryIds.length) { job.status = 'done'; job.finishedAt = job.updatedAt = iso(); this.db.prepare("UPDATE companion_world_jobs SET status='done',lease_until=NULL,data=? WHERE id=?").run(JSON.stringify(job), job.id); return undefined; } }
       job.throughEventSequence = Number(row(this.db.prepare('SELECT COALESCE(MAX(sequence),0) AS n FROM companion_world_events').get()).n);
       if (kind === 'decision') {
         const scope = { companionId: job.companionId, conversationId: job.conversationId };
@@ -1938,6 +1979,9 @@ export class CompanionWorldStore {
         job.dreamComponentFailure = command.dreamComponentFailure;
       }
       const scope = { companionId: job.companionId, conversationId: job.conversationId };
+      if (command.executionReadset && (job.kind !== 'decision' || command.executionReadset.companionId !== scope.companionId
+        || command.executionReadset.conversationId !== scope.conversationId || !this.readsetValid?.(scope, command.executionReadset)))
+        throw new Error('世界决策实际使用的来源已撤回或不可访问。');
       if (command.expectedProhibitionRevision !== undefined && this.prohibitionRevision(scope, job.kind === 'dream' ? job.sourceMemoryIds : undefined) !== command.expectedProhibitionRevision)
         throw new Error('世界任务使用的记忆禁记规则已变化，请重新核对主题范围。');
       if (command.activityTask && (job.kind !== 'decision' || command.action || !this.startActivityTask)) throw new Error('只有清醒决策可以创建单一自主行动。');
@@ -1948,7 +1992,7 @@ export class CompanionWorldStore {
       if (job.kind === 'decision' && !job.encounterMemberIds) {
         const state = this.load(), actor = state.actors.find(actor => actor.companionId === job.companionId);
         if (!actor || !this.phoneAvailable(state, actor) || this.peerPhoneActive(job.companionId, state.cursor)) {
-          job.status = 'pending'; delete job.leaseToken;
+          job.status = 'pending'; job.updatedAt = iso(); delete job.leaseToken;
           this.db.prepare("UPDATE companion_world_jobs SET status='pending',lease_until=NULL,data=? WHERE id=?").run(JSON.stringify(job), job.id);
           return;
         }
@@ -1978,13 +2022,18 @@ export class CompanionWorldStore {
           || command.consolidations?.some(plan => plan.inputs.some(note => reviewed.get(note.id) !== note.version))) throw new Error('独立维护决策必须对应本轮准确读取的睡眠种子及实际整合计划。');
         job.maintenance = audit;
       }
+      let deferredConsolidations = 0;
+      const deferredMaintenanceInputs = new Set<string>();
       for (const proposal of command.consolidations ?? []) {
         const plan = companionMemoryConsolidateSchema.parse(proposal);
         if (job.kind !== 'dream' || !this.consolidateMemory || plan.inputs.some(input => !memoryIds.includes(input.id) || usedInputs.has(input.id))
           || plan.candidate.sourceMessageIds.some(id => usedSources.has(id))) throw new Error('自动整合只能在本次真实睡眠中使用未重复的已读种子及原始来源。');
         plan.inputs.forEach(input => usedInputs.add(input.id)); plan.candidate.sourceMessageIds.forEach(id => usedSources.add(id));
-        if (!this.consolidateMemory(scope, plan, job.id, command.leaseToken)) throw new Error('本次自动整合没有通过来源或禁记核验，原文未归档。');
+        if (!this.consolidateMemory(scope, plan, job.id, command.leaseToken)) { deferredConsolidations++; plan.inputs.forEach(input => deferredMaintenanceInputs.add(input.id)); }
       }
+      if (deferredConsolidations && job.maintenance) job.maintenance = { ...job.maintenance,
+        ...(deferredConsolidations === command.consolidations?.length ? { decision: 'defer' as const } : {}),
+        reason: `本轮有 ${deferredConsolidations} 项与待发布整合的具体来源重叠，保留原文，后续维护重新读取。${job.maintenance.reason}`.slice(0, 2000) };
       const savedNotes: CompanionMemory[] = [];
       for (const candidate of command.memoryCandidates ?? []) {
         if (job.kind !== 'dream' || !candidate.relatedMemoryIds?.length || candidate.relatedMemoryIds.some(id => !memoryIds.includes(id))) throw new Error('睡眠整理只能基于本次真实原子记忆形成可追溯回顾。');
@@ -2031,8 +2080,8 @@ export class CompanionWorldStore {
           relationshipDelta: { affinity: relation.affinity - before.affinity, trust: relation.trust - before.trust },
           effect: { type: result.affect.pleasure < 0 ? 'stress' : 'social', intensity: Math.abs(result.affect.pleasure) } });
       }
-      if (job.kind === 'dream') { for (const memory of job.seedMemoryVersions ?? job.memoryVersions ?? []) this.db.prepare('INSERT OR IGNORE INTO companion_world_dream_watermark(companion_id,memory_id,version,processed_at) VALUES(?,?,?,?)').run(job.companionId, memory.id, memory.version, iso()); }
-      job.status = 'done'; this.db.prepare("UPDATE companion_world_jobs SET status='done',lease_until=NULL,data=? WHERE id=?").run(JSON.stringify(job), job.id);
+      if (job.kind === 'dream') { for (const memory of job.seedMemoryVersions ?? job.memoryVersions ?? []) if (!deferredMaintenanceInputs.has(memory.id)) this.db.prepare('INSERT OR IGNORE INTO companion_world_dream_watermark(companion_id,memory_id,version,processed_at) VALUES(?,?,?,?)').run(job.companionId, memory.id, memory.version, iso()); }
+      job.status = 'done'; job.finishedAt = job.updatedAt = iso(); this.db.prepare("UPDATE companion_world_jobs SET status='done',lease_until=NULL,data=? WHERE id=?").run(JSON.stringify(job), job.id);
       this.save(state);
       if (command.activityTask) this.startActivityTask!(job.companionId, job.id, command.activityTask);
       this.flushEffects();
@@ -2102,9 +2151,11 @@ export class CompanionWorldStore {
       case 'world.job.complete': this.complete(command); return { ok: true };
       case 'world.job.fail': return this.atomic(() => {
         const found = this.db.prepare('SELECT data FROM companion_world_jobs WHERE id=?').get(command.id); if (!found) throw new Error('世界任务不存在。'); const job = parse<CompanionWorldJob>(row(found).data);
+        if (job.stop) return { ok: true };
         if (job.status !== 'running' || job.leaseToken !== command.leaseToken) throw new Error('世界任务租约已失效。');
         if (command.terminal) { job.status = 'failed'; job.terminal = true; job.error = command.error; }
         else job.status = job.encounterMemberIds || job.kind === 'dream' && job.attempts >= COMPANION_SLEEP_MAX_ATTEMPTS ? 'done' : 'failed';
+        job.updatedAt = iso(); if (job.status === 'done' || job.terminal) job.finishedAt = job.updatedAt;
         if (job.encounterMemberIds) { const state = this.load(); for (const actor of state.actors) if (actor.meetingHold?.jobId === job.id) this.releaseMeeting(actor, true); this.save(state); }
         this.db.prepare('UPDATE companion_world_jobs SET status=?,lease_until=?,data=? WHERE id=?').run(job.status, job.status === 'done' || job.terminal ? null : iso(Date.now() + Math.min(3600000, 30000 * 2 ** Math.min(job.attempts, 6))), JSON.stringify(job), job.id); return { ok: true };
       });

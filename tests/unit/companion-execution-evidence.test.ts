@@ -16,6 +16,14 @@ const turn = (name = 'memory'): CompanionLoopTurn => ({ text: '', rawText: '', c
   arguments: JSON.stringify({ action: 'knowledge', operation: 'read', id: cold().id }) }], results: [{ callId: 'call_one', content: JSON.stringify(receipt()) }] });
 
 describe('derived DSH content keeps its exact host dependency closure', () => {
+  it('distinguishes unavailable storage or cold-file verification from a proven source change', async () => {
+    const unavailable = new Error('Verification storage temporarily unavailable');
+    const request = vi.fn(async (): Promise<CompanionStorageResponse> => { throw unavailable; });
+    const sources = captureCompanionExecutionReadset(scope, { sources: [{ id: 'source_one', conversationId: scope.conversationId, checksum: hash('Actual source') }] });
+    await expect(verifyCompanionExecutionReadset(sources, scope, { request })).rejects.toBe(unavailable);
+    const knowledge = captureCompanionExecutionReadset(scope, { turns: [turn()] });
+    await expect(verifyCompanionExecutionReadset(knowledge, scope, { request })).rejects.toBe(unavailable);
+  });
   it('accepts only actual world context and matched native world results for source dependencies', () => {
     const input = { context: { user: JSON.stringify({ world: { events: [{ sourceMessageId: 'context_event' }], visits: [{ sourceMessageId: 'context_visit', responseSourceMessageId: 'context_response' }] },
       metadata: { world: { events: [{ sourceMessageId: 'free_metadata' }] } } }) }, turns: [{ text: '', rawText: '',

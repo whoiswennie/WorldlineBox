@@ -19,12 +19,21 @@ export interface RealColdWorkerObservation {
 }
 
 export async function realMemoryRuntime(root: string, generate?: (context: { system: string; user: string }, signal: AbortSignal) => Promise<string>,
-  options: { observeColdWorker?(event: RealColdWorkerObservation): void; modelFetch?: typeof fetch } = {}) {
+  options: { observeColdWorker?(event: RealColdWorkerObservation): void; modelFetch?: typeof fetch;
+    observeHotLatency?(event: { operation: string; elapsedMs: number; count?: number }): void } = {}) {
   const encoder = new GlobalEmbeddingService({ userDataPath: path.join(root, 'encoder'), bundleDirectory: path.resolve('resources/embedding-models'), koffiPath: createRequire(import.meta.url).resolve('koffi') });
   const profile = await encoder.resolveProfile(); const gateway = new VcpEmbeddingGateway(encoder);
   const configuration = await gateway.configuration(profile.selectionId, profile);
   const childLaunch = (file: string): VcpMemoryTransport => {
-    const child = fork(file, [], { execPath: process.execPath, env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' }, stdio: ['ignore', 'ignore', 'ignore', 'ipc'] });
+    const child = fork(file, [], { execPath: process.execPath, env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' }, stdio: ['ignore', 'ignore', 'ignore', 'ipc'],
+      ...(options.observeHotLatency && path.basename(file) === 'worker.cjs'
+        ? { execArgv: ['--require', path.resolve('tests/fixtures/companion-memory-latency-probe.cjs')] } : {}) });
+    if (options.observeHotLatency) child.on('message', value => {
+      const event = value as { type?: unknown; operation?: unknown; elapsedMs?: unknown; count?: unknown } | null;
+      if (event?.type === 'latency-observation' && typeof event.operation === 'string' && typeof event.elapsedMs === 'number')
+        options.observeHotLatency!({ operation: event.operation, elapsedMs: event.elapsedMs,
+          ...(typeof event.count === 'number' ? { count: event.count } : {}) });
+    });
     const isObservedCold = !!options.observeColdWorker && path.basename(file) === 'cold-worker.cjs';
     const coldRequests = new Map<string, string>();
     if (isObservedCold) child.on('message', value => {

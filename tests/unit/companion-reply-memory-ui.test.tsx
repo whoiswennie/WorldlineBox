@@ -2,10 +2,12 @@
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, expect, it, vi } from 'vitest';
-import type { CompanionsResponse, WorldlineBoxCompanionsApi } from '../../src/shared/companions';
+import type { CompanionMessage, CompanionReplyStreamEvent, CompanionsResponse, WorldlineBoxCompanionsApi } from '../../src/shared/companions';
 import type { CompanionReplyMemory } from '../../src/shared/companion-reply-memory';
 import { CompanionReplyProgress } from '../../src/renderer/companions/CompanionReplyProgress';
 import { CompanionReplyMemoryDetails, type ReplyMemoryScope } from '../../src/renderer/companions/CompanionReplyMemoryDetails';
+import { CompanionMessageBubble } from '../../src/renderer/companions/CompanionMessageBubble';
+import { CompanionReplyStreamStore } from '../../src/renderer/companions/reply-stream';
 
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
 let root: Root | undefined, node: HTMLDivElement | undefined;
@@ -118,4 +120,52 @@ it('discards current evidence on a failed revalidation and permits a fresh retry
   await mount(<CompanionReplyMemoryDetails scope={scope} api={api} />);
   await act(async () => button('重新核验本轮回忆').click()); expect(node!.textContent).toContain('资产库已断开'); expect(node!.querySelector('[data-reply-memory-context]')).toBeNull();
   await act(async () => button('重新核验本轮回忆').click()); expect(node!.querySelector('[data-reply-memory-context]')?.textContent).toBe('重新核验后的原文');
+});
+
+it('keeps one pending shell and the open recall details through clock ticks, live stages and delayed history pages', async () => {
+  const request = vi.fn<WorldlineBoxCompanionsApi['request']>(async () => ({ ok: true, replyMemory: receipt() })); const { api } = apiFor(request);
+  Object.defineProperty(window, 'worldlinebox', { configurable: true, value: { companions: api } });
+  const store = new CompanionReplyStreamStore(), sourceMessageId = 'source-fish';
+  const message: CompanionMessage = { id: scope.messageId, conversationId: scope.conversationId, authorId: scope.companionId, replyToId: sourceMessageId, sequence: 2,
+    createdAt: at, kind: 'text', content: '', attachments: [], status: 'sent', isReplyDraft: true, segments: [], replyProgress: { revision: 1, phase: 'context', detail: '正在读取最近对话并核验来源', startedAt: at, updatedAt: at } };
+  const render = (value = message, now = Date.parse(at)) => <CompanionMessageBubble message={value} actions={[]} now={now} streamStore={store} interrupted={false}
+    onOpenAction={() => undefined} onOpenUrl={() => undefined} onOpenAttachment={() => undefined} onLocateQuote={() => undefined} onStreamLayout={() => undefined} />;
+  store.reconcile([message]); await mount(render());
+  const shell = node!.querySelector('.companions-message-bubble')!;
+  expect(shell.classList.contains('is-reply-pending')).toBe(true);
+  await act(() => store.accept({ conversationId: scope.conversationId, companionId: scope.companionId, messageId: scope.messageId, sourceMessageId, step: 0, attemptId: 'empty-opening', phase: 'streaming', text: '' }));
+  expect(shell.querySelector('.companions-loop-segment, .companions-reply-cursor')).toBeNull();
+  const frame = (revision: number, detail: string): CompanionReplyStreamEvent => ({ conversationId: scope.conversationId, companionId: scope.companionId, messageId: scope.messageId,
+    sourceMessageId, step: 0, attemptId: 'progress', phase: 'progress', text: '', progress: { ...message.replyProgress!, revision, phase: 'memory', detail, memory: { status: 'running' } } });
+  await act(() => store.accept(frame(2, '等待本伙伴的记忆查询')));
+  const details = node!.querySelector<HTMLDetailsElement>('.companions-bubble-memory')!;
+  await act(async () => { details.open = true; details.dispatchEvent(new Event('toggle')); });
+  const currentDetails = node!.querySelector('[aria-label="本轮回忆详情"]');
+  expect(node!.textContent).toContain('召回仍在进行'); expect(node!.textContent).not.toContain('历史记录不会补造');
+  expect(request).not.toHaveBeenCalled();
+  for (let revision = 3; revision < 8; revision++) {
+    await act(() => store.accept(frame(revision, revision % 2 ? '核验记忆来源' : '正在检索获权记忆并准备这次召回的完整上下文')));
+    await act(async () => { store.reconcile([message]); root!.render(render(message, Date.parse(at) + revision * 1000)); });
+    expect(node!.querySelector('.companions-message-bubble')).toBe(shell);
+    expect(node!.querySelector('.companions-bubble-memory')).toBe(details); expect(details.open).toBe(true);
+    expect(node!.querySelector('[aria-label="本轮回忆详情"]')).toBe(currentDetails);
+    expect(shell.classList.contains('is-reply-pending')).toBe(true);
+    expect(node!.querySelector('[data-reply-stage]')?.getAttribute('data-reply-stage')).toBe('memory');
+  }
+  expect(request).not.toHaveBeenCalled();
+  // The real completed receipt replaces only the running status, once available.
+  await act(() => store.accept({ ...frame(8, '正在生成回复'), progress: { ...frame(8, '').progress!, phase: 'thinking', memory: { status: 'completed', count: 1, injected: true } } }));
+  expect(request).toHaveBeenCalledTimes(1); expect(details.open).toBe(true);
+  expect(node!.querySelector('[data-reply-memory-context]')?.textContent).toBe(receipt().contextText);
+  await act(async () => { const completed = { ...message, isReplyDraft: false, content: '回复正文', segments: [{ text: '回复正文', actionIds: [] }], replyProgress: { ...frame(9, '').progress!, phase: 'completed' as const } }; store.reconcile([completed]); root!.render(render(completed)); });
+  expect(shell.classList.contains('is-reply-pending')).toBe(false); expect(shell.textContent).toContain('回复正文');
+});
+
+it('labels a not-yet-persisted live receipt as ongoing until the reply finishes', async () => {
+  const historicalExplanation = '这条回复没有保存可查看的召回详情。历史记录不会补造召回内容。';
+  const request = vi.fn<WorldlineBoxCompanionsApi['request']>(async () => ({ ok: true, replyMemory: receipt({ state: 'unavailable', explanation: historicalExplanation }) })); const { api } = apiFor(request);
+  await mount(<CompanionReplyMemoryDetails scope={scope} api={api} replyRunning />);
+  expect(node!.textContent).toContain('记忆上下文尚未完成保存'); expect(node!.textContent).not.toContain(historicalExplanation);
+  await act(async () => root!.render(<CompanionReplyMemoryDetails scope={scope} api={api} replyRunning={false} />));
+  expect(node!.textContent).toContain(historicalExplanation);
 });

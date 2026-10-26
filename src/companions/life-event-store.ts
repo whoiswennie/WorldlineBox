@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto';
+import { companionTaskCanClaim } from './task-concurrency-store';
 import { companionCivilInstantInZone, companionTimeInZone } from '../shared/companion-schedule-time';
 import { companionLifeHazard, companionLifeMultiplier, companionLifeRuleDraftSchema, companionLifeThreshold,
   companionLifeRhythm,
@@ -7,12 +8,14 @@ import type { CompanionStorageCommand, CompanionStorageResponse } from '../share
 import type { CompanionWorldSnapshot } from '../shared/companion-world';
 import type { CompanionWorldPerception } from '../shared/companion-world-perception';
 import type { CompanionConnection } from './store';
+import type { CompanionExecutionReadset } from '../shared/companion-execution-evidence';
 
 type Row = { data: string };
 type LifeOptions = { world(): CompanionWorldSnapshot; perception(id: string): CompanionWorldPerception | undefined; elapsed(from: number, to: number): number;
   acquaintances(id: string): ReadonlySet<string>;
   perform(occurrence: CompanionLifeOccurrence, text?: string): string;
-  memoryRevision?(scope: { companionId: string; conversationId: string }): string };
+  memoryRevision?(scope: { companionId: string; conversationId: string }): string;
+  readsetValid?(scope: { companionId: string; conversationId: string }, proof: CompanionExecutionReadset): boolean };
 const iso = (at = Date.now()) => new Date(at).toISOString();
 const read = <T>(row: unknown): T => JSON.parse((row as Row).data) as T;
 
@@ -213,6 +216,7 @@ export class CompanionLifeEventStore {
           if (command.excludedCompanionIds?.includes(occ.companionId)) continue;
           try { if (!this.owner(occ.companionId).proactive || !this.ownerRuleEnabled(occ.ruleId) || !this.available(world, occ.companionId)
             || !this.targetActivated(occ.rule, occ.targetId) || !this.socialCooldownReady(world, occ)) continue; } catch { continue; }
+          if (!companionTaskCanClaim(this.db, occ.companionId, { kind: 'life', id: occ.id })) continue;
           occ.status = 'running'; occ.leaseToken = randomUUID(); occ.leaseUntil = iso(Date.now() + 120000); occ.attempts++; this.save(occ);
           return { ok: true, lifeOccurrence: occ };
         }
@@ -224,8 +228,13 @@ export class CompanionLifeEventStore {
         if (occ.status === 'done' || occ.status === 'active' || occ.status === 'silent') return { ok: true, lifeOccurrence: occ };
         if (occ.status !== 'running' || occ.leaseToken !== command.leaseToken || Date.parse(occ.leaseUntil!) <= Date.now()) throw new Error('生活事件租约已经失效。');
         if (command.type === 'life-event.complete') {
-          if (command.expectedMemoryRevision !== undefined && this.options.memoryRevision?.({ companionId: occ.companionId, conversationId: 'world_' + occ.companionId }) !== command.expectedMemoryRevision)
-            throw new Error('这次生活发言使用的回忆已经变化。');
+          if (command.executionReadset && !this.options.readsetValid?.({ companionId: occ.companionId, conversationId: 'world_' + occ.companionId }, command.executionReadset))
+            throw new Error('这次生活发言实际使用的来源已撤回或不可访问。');
+          // Compatibility for old callers only. A typed frozen task proof is
+          // independent of unrelated corpus additions or ordinary edits.
+          if (!command.executionReadset && command.expectedMemoryRevision !== undefined
+            && this.options.memoryRevision?.({ companionId: occ.companionId, conversationId: 'world_' + occ.companionId }) !== command.expectedMemoryRevision)
+            throw new Error('这次生活发言使用的旧回忆已经变化。');
           if (!this.owner(occ.companionId).proactive || !this.ownerRuleEnabled(occ.ruleId) || !this.available(world, occ.companionId)
             || !this.targetActivated(occ.rule, occ.targetId) || !this.socialCooldownReady(world, occ)) throw new Error('伙伴此刻无法发起这个生活事件，联系双方需要保持激活。');
           if (command.silent) {

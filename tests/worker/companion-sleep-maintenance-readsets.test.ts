@@ -125,3 +125,34 @@ it('admits a valid same-text source revision above one from persisted messages w
   expect(f.bind(job).find(note => note.id === a.memory.id)?.sources[0]?.revision).toBe(2);
   f.complete(job);
 });
+
+it('waits on exact pending sources without consuming deferred seeds or blocking independent source domains', () => {
+  const f = fixture(), a = f.original('待整合的原始来源A'), b = f.original('待整合的原始来源B'), c = f.original('需要随后维护的来源C');
+  f.cycle(true); const reviewing = f.claim(), memories = f.bind(reviewing);
+  const winner = f.store.request({ type: 'memory.consolidate', ...f.scope, operationId: 'pending_winner',
+    inputs: [a.memory, b.memory].map(note => ({ id: note.id, version: note.version })),
+    candidate: { content: `${a.source.content}\n${b.source.content}`, tags: [], sourceMessageIds: [a.source.id, b.source.id],
+      evidence: [a.source, b.source].map(source => ({ sourceMessageId: source.id, quote: source.content })) } }).memories![0]!;
+  const delivery = f.store.request({ type: 'memory.outbox.claim' }).memoryOutbox!;
+  expect(delivery.noteId).toBe(winner.id);
+  f.store.request({ type: 'world.job.complete', id: reviewing.id, leaseToken: reviewing.leaseToken!, sourceMemoryIds: memories.map(note => note.id),
+    maintenance: { decision: 'merge', reason: '受控夹具：候选A/C在索引确认前与A/B的待发布计划重叠。', reviewedMemoryVersions: memories.map(note => ({ id: note.id, version: note.version })) },
+    consolidations: [{ inputs: [a.memory, c.memory].map(note => ({ id: note.id, version: note.version })), candidate: {
+      content: `${a.source.content}\n${c.source.content}`, tags: [], relatedMemoryIds: [], sourceMessageIds: [a.source.id, c.source.id],
+      evidence: [a.source, c.source].map(source => ({ sourceMessageId: source.id, quote: source.content })) } }] });
+  const db = f.database(); try {
+    expect(db.prepare('SELECT 1 FROM companion_world_dream_watermark WHERE companion_id=? AND memory_id=?').get('alice', c.memory.id)).toBeUndefined();
+    const saved = db.prepare('SELECT data FROM companion_world_jobs WHERE id=?').get(reviewing.id) as { data: string };
+    expect(JSON.parse(saved.data).maintenance).toMatchObject({ decision: 'defer', reason: expect.stringContaining('具体来源重叠') });
+  } finally { db.close(); }
+  expect(f.store.request({ type: 'world.sleep-plan', companionId: 'alice' }).worldSleepPlan?.hasUnconsolidated).toBe(false);
+  const group = f.store.createConversation('独立日志来源域', ['alice', 'bob']);
+  const unrelated = f.original('索引慢任务期间仍可到达和处理的新日志。', group.id);
+  f.cycle(false); f.cycle(true); const independent = f.claim();
+  expect(independent.sourceMemoryIds).toEqual([unrelated.memory.id]);
+  expect(independent.maintenanceMemoryIds).not.toContain(c.memory.id); f.complete(independent);
+  f.store.request({ type: 'memory.outbox.complete', id: delivery.id, leaseToken: delivery.leaseToken, indexed: true });
+  f.cycle(false); f.cycle(true); const refreshed = f.claim();
+  expect(refreshed.sourceMemoryIds).toEqual([c.memory.id]);
+  expect(refreshed.sourceMemoryIds).not.toContain(a.memory.id); f.complete(refreshed);
+});

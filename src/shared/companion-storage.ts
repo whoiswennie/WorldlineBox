@@ -1,6 +1,11 @@
 import { companionInterruptionCommands, companionInterruptionSchema } from './companion-interruption';
+import { companionTaskStopStorageCommands, companionTaskStopReceiptSchema } from './companion-task-stop';
+import { companionTaskConcurrencyCommands } from './companion-task-concurrency';
+import { companionTaskControlStopCommand, companionTaskControlResultSchema } from './companion-task-control';
+import { companionTaskPageStorageCommand, companionTaskResolveStorageCommand } from './companion-task-overview';
+import { companionTaskInspectCommand, companionTaskContentCommand, companionTaskTimelineRecordCommand } from './companion-task-detail';
 import { companionAgentRunCommands, companionAgentRunSchema } from './companion-agent-run';
-import { companionExecutionReadsetSchema } from './companion-execution-evidence';
+import { companionExecutionReadsetSchema, companionFrozenMemoryDependencySchema } from './companion-execution-evidence';
 import { companionThoughtAuthorizationSchema } from './companion-activity-thought';
 import { companionExperienceCommands, companionExperiencePublishSchema } from './companion-experience';
 import { companionKnowledgeCommandSchema } from './companion-knowledge-store';
@@ -12,11 +17,11 @@ import { companionWorldSleepPlanSchema } from './companion-life-plan';
 import { companionLifeOverviewReadCommand, companionLifeOverviewContextSchema } from './companion-life-overview';
 import { companionMemoryTraceListCommand, companionMemoryTraceInspectCommand } from './companion-memory-trace';
 import { companionDocumentCatalogCommands, companionDocumentCatalogPageSchema } from './companion-document-catalog';
-import { activityStorageCommands, activityMemoryIntentSchema, activityPlanningStateSchema, activityHandoffSchema } from './companion-activity-task';
+import { activityStorageCommands, activityMemoryIntentSchema, activityPlanningStateSchema, activityHandoffSchema, activityPassiveRecallSchema } from './companion-activity-task';
 import { companionMemoryTagCommands, companionMemoryTagJobSchema, companionMemoryTagStatusSchema } from './companion-memory-tags';
 
 import {
-  actionSchema, attachmentSchema, companionDraftSchema, companionIdSchema, messageSchema,
+  actionSchema, attachmentSchema, companionDraftSchema, companionIdSchema, messageSchema, memorySchema,
   companionsResponseSchema, companionActionPageQuerySchema, companionReplyRecoverySchema, companionMessagesQuerySchema, companionSearchQuerySchema,
 } from './companions';
 import { dshTaskRecordSchema } from './dsh-tasks';
@@ -83,6 +88,7 @@ const fileToolAttachmentSchema = storedCompanionAttachmentSchema.refine(value =>
 export const createCompanionActionSchema = actionSchema.omit({ id: true, createdAt: true, updatedAt: true });
 export type CreateCompanionAction = z.infer<typeof createCompanionActionSchema>;
 export const companionTaskCheckpointSchema = z.strictObject({ prompt: z.string().min(1).max(65536),
+  feedbackRecall: activityPassiveRecallSchema.extend({ memories: z.array(memorySchema).max(100), sources: z.array(messageSchema).max(100) }).optional(),
   dshTask: dshTaskSpecSchema.optional(),
   activityThought: companionThoughtAuthorizationSchema.optional(),
   executionReadset: companionExecutionReadsetSchema.optional(),
@@ -106,6 +112,13 @@ export const companionProactiveStateSchema = z.strictObject({
 export type CompanionProactiveState = z.infer<typeof companionProactiveStateSchema>;
 
 export const companionStorageCommandSchema = z.discriminatedUnion('type', [
+  companionTaskControlStopCommand,
+  companionTaskPageStorageCommand, companionTaskResolveStorageCommand, companionTaskInspectCommand, companionTaskContentCommand, companionTaskTimelineRecordCommand,
+  ...companionTaskStopStorageCommands,
+  ...companionTaskConcurrencyCommands,
+  z.strictObject({ type: z.literal('memory.frozen.valid'), companionId: companionIdSchema, conversationId: companionIdSchema,
+    beforeSequence: z.number().int().nonnegative().safe().optional(), memories: z.array(companionFrozenMemoryDependencySchema).max(100) }),
+  z.strictObject({ type: z.literal('tasks.capacity.claim-action'), id: companionIdSchema }),
   z.strictObject({ type: z.literal('activity.port.adopt_candidate'), companionId: companionIdSchema,
     conversationId: companionIdSchema, topicId: companionIdSchema }),
   ...companionExperienceCommands,
@@ -170,7 +183,7 @@ export const companionStorageCommandSchema = z.discriminatedUnion('type', [
     executionReadset: companionExecutionReadsetSchema, mode: z.enum(['execute', 'read']), renew: z.boolean().optional() }),
   z.strictObject({ type: z.literal('action.update'), id: companionIdSchema, patch: updateCompanionActionSchema }),
   z.strictObject({ type: z.literal('action.interrupt-pending') }),
-  z.strictObject({ type: z.literal('checkpoint.get'), id: companionIdSchema }),
+  z.strictObject({ type: z.literal('checkpoint.get'), id: companionIdSchema, includeFeedbackRecall: z.boolean().optional() }),
   z.strictObject({ type: z.literal('checkpoint.save'), id: companionIdSchema, checkpoint: companionTaskCheckpointSchema }),
   z.strictObject({ type: z.literal('checkpoint.execution'), id: companionIdSchema, execution: dshTaskRecordSchema }),
   z.strictObject({ type: z.literal('checkpoint.input'), id: companionIdSchema, input: z.strictObject({ id: companionIdSchema, content: z.string().max(16000), mode: z.enum(['steer', 'queue']) }) }),
@@ -215,6 +228,10 @@ export const companionTopicCompactionPageSchema = z.strictObject({
 });
 export type CompanionTopicCompactionPage = z.infer<typeof companionTopicCompactionPageSchema>;
 export const companionStorageResponseSchema = companionsResponseSchema.extend({
+  taskCapacityClaimed: z.boolean().optional(),
+  memoryFrozenValid: z.boolean().optional(),
+  taskControl: companionTaskControlResultSchema.optional(),
+  userTaskStops: z.array(companionTaskStopReceiptSchema).max(20).optional(),
   activityThoughtValid: z.boolean().optional(),
   experienceEvidence: companionExecutionReadsetSchema.optional(),
   agentRun: companionAgentRunSchema.optional(),
@@ -242,6 +259,8 @@ export const companionStorageResponseSchema = companionsResponseSchema.extend({
   memoryJob: companionMemoryJobSchema.optional(), backfillComplete: z.boolean().optional(),
   memoryTagJob: companionMemoryTagJobSchema.optional(), memoryTagStatus: companionMemoryTagStatusSchema.optional(),
   memoryDomains: z.array(companionMemoryDomainSchema).optional(), memoryOutbox: companionMemoryOutboxSchema.optional(),
+  memoryOutboxDisposition: z.strictObject({ state: z.enum(['completed', 'stale']), reason: z.string().max(1000).optional() }).optional(),
+  memoryConsolidationDeferred: z.strictObject({ requiresFreshReadSet: z.literal(true), reason: z.string().max(1000) }).optional(),
   memorySnapshot: companionMemorySnapshotSchema.optional(),
   memorySearchTimings: z.record(z.string(), z.number().nonnegative()).optional(),
   memoryLibraryIndexState: companionMemoryLibraryIndexStateSchema.optional(),
@@ -255,6 +274,7 @@ export const companionStorageResponseSchema = companionsResponseSchema.extend({
   memoryInvalidatedScopeIds: z.array(companionIdSchema).optional(),
   activityMemoryIntent: activityMemoryIntentSchema.optional(),
   activityPlanningState: activityPlanningStateSchema.optional(),
+  activityPassiveRecall: activityPassiveRecallSchema.optional(),
   activityHandoff: activityHandoffSchema.optional(),
   activitySocialRoute: z.strictObject({ taskId: companionIdSchema, sourceMessageId: companionIdSchema }).optional(),
   activityGameRoom: z.strictObject({ conversationId: companionIdSchema, memberIds: z.array(companionIdSchema).min(2).max(20) }).optional(),

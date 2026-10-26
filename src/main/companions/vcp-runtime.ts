@@ -15,11 +15,15 @@ export interface CompanionGenerationLease extends CompanionGenerationDescriptor 
   client: VcpMemoryClient; connectionEpoch: number; release(): Promise<void>;
 }
 export interface CompanionProjectionCleanup {
+  /** Retire readers after ordinary revisions without deleting clean indexes. */
+  preserveIndexes?: boolean;
   canonicalScopes?: readonly string[];
   historicalViews?: readonly { scopeId: string; profileKey: string }[];
 }
 
 export interface CompanionMemoryRuntime {
+  /** Production runtimes can prepare plugins/graphs without a query or model call. */
+  readonly supportsPreparation?: boolean;
   get(): Promise<{ client: VcpMemoryClient; profileKey: string }>;
   describeEmbedding?(): Promise<{ profileKey: string }>;
   describeGeneration?(input: CompanionGenerationSelection): Promise<CompanionGenerationDescriptor>;
@@ -54,6 +58,7 @@ export interface CompanionVcpRuntimeOptions {
 /** Embedding operations and trusted owner-generation leases have separate
  * identities. Every hot client shares one actual child-process budget. */
 export class CompanionVcpRuntime implements CompanionMemoryRuntime {
+  readonly supportsPreparation = true;
   private current?: { client: VcpMemoryClient; profileKey: string };
   private currentConnectionSignature?: string;
   private readonly spaces = new Map<string, string>();
@@ -66,6 +71,7 @@ export class CompanionVcpRuntime implements CompanionMemoryRuntime {
   private coldAuthorize?: ColdKnowledgeServiceOptions['authorize'];
   private tail: Promise<unknown> = Promise.resolve();
   private generationTail: Promise<unknown> = Promise.resolve();
+  private readonly generationAdmissions = new Set<Promise<unknown>>();
   private readonly ownerPurges = new Map<string, Promise<void>>();
   private closed = false;
   constructor(private readonly options: CompanionVcpRuntimeOptions) {}
@@ -134,48 +140,64 @@ export class CompanionVcpRuntime implements CompanionMemoryRuntime {
       if (this.generations.get(entry.key) === entry) this.generations.delete(entry.key);
     })();
   }
+  private leaseEntry(entry: GenerationEntry): CompanionGenerationLease {
+    entry.references++; entry.used = Date.now(); let released = false;
+    return { ownerId: entry.ownerId, profileKey: entry.profileKey, connectionEpoch: entry.connectionEpoch, client: entry.client,
+      release: async () => { if (released) return; released = true; entry.references--; entry.used = Date.now(); } };
+  }
   acquireGeneration(input: CompanionGenerationSelection & { signal?: AbortSignal }): Promise<CompanionGenerationLease> {
     const selection = this.snapshot(input), epoch = this.ownerEpochs.get(selection.ownerId) ?? 0, deadline = Date.now() + 180_000;
     const current = () => { input.signal?.throwIfAborted();
       if (this.closed) throw new Error('记忆服务已关闭。');
       if ((this.ownerEpochs.get(selection.ownerId) ?? 0) !== epoch) throw new Error('伙伴生成已取消。');
       if (Date.now() >= deadline) throw new Error('伙伴生成连接池仍然繁忙。'); };
-    const pending = this.generationTail.then(async () => {
-      while (this.ownerPurges.has(selection.ownerId)) { current(); await delay(); }
+    const pending = Promise.resolve().then(async () => {
       current(); const description = await this.generationDescription(selection); current();
-      const key = selection.ownerId + ':' + description.profileKey;
-      let entry = this.generations.get(key);
-      if (entry && (entry.connection !== description.connection || entry.retiring)) {
-        await this.retireEntry(entry);
-        // Old lease holders cannot use the closed client. Wait for their
-        // finally/release before admitting a new writer to the same root.
-        while (entry.references) { current(); await delay(); }
-        entry = undefined;
-      }
-      if (!entry) {
-        while (this.generations.size >= 4) {
-          current(); const idle = [...this.generations.values()].filter(value => !value.references && !value.retiring).sort((a,b) => a.used-b.used)[0];
-          if (idle) { await this.retireEntry(idle); continue; }
-          await delay();
+      const existing = this.generations.get(selection.ownerId + ':' + description.profileKey);
+      // A fifth owner waiting for a free generation slot must not stop an
+      // already configured owner from reusing its route. Only new/rotated
+      // routes join the exclusive admission tail; their writer exclusion is
+      // unchanged, including retirement and outstanding old leases.
+      if (existing && !existing.retiring && existing.connection === description.connection && !this.ownerPurges.has(selection.ownerId))
+        return this.leaseEntry(existing);
+      const queued = this.generationTail.then(async () => {
+        while (this.ownerPurges.has(selection.ownerId)) { current(); await delay(); }
+        current(); const description = await this.generationDescription(selection); current();
+        const key = selection.ownerId + ':' + description.profileKey;
+        let entry = this.generations.get(key);
+        if (entry && (entry.connection !== description.connection || entry.retiring)) {
+          await this.retireEntry(entry);
+          // Old lease holders cannot use the closed client. Wait for their
+          // finally/release before admitting a new writer to the same root.
+          while (entry.references) { current(); await delay(); }
+          entry = undefined;
         }
-        current();
-        if (!this.options.resolveGenerationPlugins) throw new Error('伙伴生成路由未配置。');
-        const route = await this.options.resolveGenerationPlugins({ ...selection, profileKey: description.profileKey });
-        try {
+        if (!entry) {
+          while (this.generations.size >= 4) {
+            current(); const idle = [...this.generations.values()].filter(value => !value.references && !value.retiring).sort((a,b) => a.used-b.used)[0];
+            if (idle) { await this.retireEntry(idle); continue; }
+            await delay();
+          }
           current();
-          const client = new VcpMemoryClient({ dataRoot: path.join(this.options.dataRoot, 'generation', digest(selection.ownerId), digest(description.profileKey)),
-            vendorRoot: this.options.vendorRoot, workerPath: this.options.workerPath, embedding: description.embedding,
-            plugins: route.plugins, processBroker: this.broker, launch: this.options.launch, maxOpenScopes: 4 });
-          entry = { key, ownerId: selection.ownerId, profileKey: description.profileKey, connection: description.connection,
-            connectionEpoch: ++this.connectionEpoch, client, references: 0, used: Date.now(), dispose: route.dispose };
-          this.generations.set(key, entry);
-        } catch (error) { await route.dispose(); throw error; }
-      }
-      current(); entry.references++; entry.used = Date.now(); const leased = entry; let released = false;
-      return { ownerId: leased.ownerId, profileKey: leased.profileKey, connectionEpoch: leased.connectionEpoch, client: leased.client,
-        release: async () => { if (released) return; released = true; leased.references--; leased.used = Date.now(); } };
+          if (!this.options.resolveGenerationPlugins) throw new Error('伙伴生成路由未配置。');
+          const route = await this.options.resolveGenerationPlugins({ ...selection, profileKey: description.profileKey });
+          try {
+            current();
+            const client = new VcpMemoryClient({ dataRoot: path.join(this.options.dataRoot, 'generation', digest(selection.ownerId), digest(description.profileKey)),
+              vendorRoot: this.options.vendorRoot, workerPath: this.options.workerPath, embedding: description.embedding,
+              plugins: route.plugins, processBroker: this.broker, launch: this.options.launch, maxOpenScopes: 4 });
+            entry = { key, ownerId: selection.ownerId, profileKey: description.profileKey, connection: description.connection,
+              connectionEpoch: ++this.connectionEpoch, client, references: 0, used: Date.now(), dispose: route.dispose };
+            this.generations.set(key, entry);
+          } catch (error) { await route.dispose(); throw error; }
+        }
+        current(); return this.leaseEntry(entry);
+      });
+      this.generationTail = queued.catch(() => undefined); return queued;
     });
-    this.generationTail = pending.catch(() => undefined); return pending;
+    this.generationAdmissions.add(pending);
+    void pending.then(() => this.generationAdmissions.delete(pending), () => this.generationAdmissions.delete(pending));
+    return pending;
   }
   async interruptOwner(ownerId: string): Promise<void> {
     ownerIdentity(ownerId); this.ownerEpochs.set(ownerId, (this.ownerEpochs.get(ownerId) ?? 0) + 1);
@@ -195,7 +217,12 @@ export class CompanionVcpRuntime implements CompanionMemoryRuntime {
       if (!await directory(base)) return;
       const generations = path.join(base, 'generation');
       if (await directory(generations)) {
-        const target = path.join(generations, digest(ownerId)); if (await directory(target)) await removeOwnedDirectory(target);
+        const target = path.join(generations, digest(ownerId));
+        if (!scopes.preserveIndexes) { if (await directory(target)) await removeOwnedDirectory(target); }
+        else if (await directory(target)) for (const pair of scopes.historicalViews ?? []) {
+          const profile = path.join(target, digest(pair.profileKey));
+          if (await directory(profile)) { const dirty = path.join(profile, digest(pair.scopeId)); if (await directory(dirty)) await removeOwnedDirectory(dirty); }
+        }
       }
       const targets = new Map<string, { profileKey: string; scopeId: string }>();
       for (const pair of scopes.historicalViews ?? []) {
@@ -276,7 +303,7 @@ export class CompanionVcpRuntime implements CompanionMemoryRuntime {
   }
   async close(): Promise<void> {
     this.closed = true;
-    await Promise.all([this.tail, this.generationTail]);
+    await Promise.all([this.tail, this.generationTail, ...[...this.generationAdmissions].map(pending => pending.catch(() => undefined))]);
     const results = await Promise.allSettled([this.current?.client.close(), this.cold?.service.close(),
       ...[...this.generations.values()].map(entry => this.retireEntry(entry))]);
     this.current = undefined; this.cold = undefined; this.coldAuthorize = undefined;

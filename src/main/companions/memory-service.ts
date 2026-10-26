@@ -20,6 +20,9 @@ import type { VcpMemoryDreamClock, VcpMemoryDreamWaveRequest, VcpMemoryDreamWave
 import { companionAutomaticRecallDecay, companionMemoryClockBucket } from './memory-recall-policy';
 import { companionMemoryDateRange } from '../../shared/companion-memory-time';
 import { CompanionOptionalDreamError, isOptionalDreamOperationalFailure } from './optional-dream-error';
+import { CompanionMemoryQueryScheduler, type CompanionMemoryQueryPriority } from './memory-query-scheduler';
+import type { CompanionMemoryPage } from '../../shared/companion-memory';
+import { companionMemoryContextDependencies } from './memory-context-evidence';
 
 type MemoryScope = { companionId: string; conversationId: string };
 // One character owns one cognitive corpus. Entrances stay on source receipts;
@@ -54,6 +57,7 @@ interface MemoryServiceOptions {
   cacheRoot?: string;
   fetchFn: typeof fetch; changed(): void; report(error: unknown): void; busy(): boolean;
   blocked?(companionId: string): boolean;
+  onTiming?(event: { operation: string; durationMs: number }): void;
   onTimelineArtifacts?(scope: MemoryScope, artifacts: VcpMemoryTimelineArtifacts, stillValid: () => Promise<boolean>): Promise<void> | void;
   onProcessing?(companionId: string, job: CompanionMemoryProcessingJob): void;
 }
@@ -69,6 +73,7 @@ export interface CompanionMemoryRecall {
 
 /** Durable source capture and delivery; all semantic retrieval runs in original VCP. */
 export class CompanionMemoryService {
+  private readonly queries = new CompanionMemoryQueryScheduler();
   private timer?: ReturnType<typeof setTimeout>;
   private scheduledAt?: number;
   private running?: Promise<void>;
@@ -85,11 +90,25 @@ export class CompanionMemoryService {
   private readonly continuityAttempts = new Map<string, { revision: string; profileKey: string; identitySignature: string; retryAt: number }>();
   private readonly generatedMonths = new Map<string, number>();
   private readonly timelineProcessing = new Map<string, CompanionMemoryProcessingJob[]>();
+  private taskRecordWrites: Promise<unknown> = Promise.resolve();
+  async flushTaskRecords(): Promise<void> { await this.taskRecordWrites; }
+  private saveTaskRecord(companionId: string, job: CompanionMemoryProcessingJob, content?: { input?: string; output?: string }): void {
+    const snapshot = structuredClone(job);
+    this.taskRecordWrites = this.taskRecordWrites.catch(() => undefined).then(async () => {
+      const response = await this.options.request({ type: 'tasks.timeline.record', companionId, job: snapshot, ...content });
+      if (!response.ok) throw new Error(response.error ?? '时间线执行记录保存失败');
+    });
+    // Keep the task's next actual state available to retry persistence. Reading
+    // the dashboard waits only for these short DB writes, never the model job.
+    void this.taskRecordWrites.catch(() => undefined);
+  }
   private continuity?: { owner: string; promise: Promise<void> };
   private busySince?: number;
   private captureCursor = 0;
   private continuityCursor = 0;
   private deliveringOwner?: string;
+  private warmup?: Promise<void>;
+  private readonly warmedViews = new Map<string, string>();
   constructor(private readonly options: MemoryServiceOptions) { this.views = new CompanionMemoryViewCache(options.cacheRoot); }
 
   /** Actual in-process continuity operations; restart does not invent prior history. */
@@ -182,12 +201,13 @@ export class CompanionMemoryService {
       attempts: (previous?.attempts ?? 0) + 1, createdAt: previous?.createdAt ?? now, startedAt: now, updatedAt: now };
     this.timelineProcessing.set(scope.companionId, [job, ...jobs.filter(item => item.id !== id)].slice(0, 10));
     this.options.onProcessing?.(scope.companionId, job);
+    this.saveTaskRecord(scope.companionId, job);
     this.options.changed(); return job;
   }
   private updateTimelineProcessing(job: CompanionMemoryProcessingJob, patch: Partial<CompanionMemoryProcessingJob>): void {
     Object.assign(job, patch, { updatedAt: new Date().toISOString() }); this.options.changed();
     const owner = [...this.timelineProcessing].find(([, jobs]) => jobs.includes(job))?.[0];
-    if (owner) this.options.onProcessing?.(owner, job);
+    if (owner) { this.options.onProcessing?.(owner, job); this.saveTaskRecord(owner, job); }
   }
 
   private async ownerIdentity(companionId: string): Promise<VcpMemoryOwnerIdentity> {
@@ -242,6 +262,13 @@ export class CompanionMemoryService {
     if (this.closed || this.generation(owner) !== generation) throw new Error('记忆工作已取消，授权视图需要重新核验。');
   }
   private register(owner: string, scopeId: string, client: VcpMemoryClient) {
+    // Persistent view manifests remain the cleanup authority. Avoid retaining
+    // retired model clients and evicted view processes through this live registry.
+    for (const [resident, scopes] of this.registeredScopes) {
+      for (const [id, registered] of scopes) if (registered.isClosed
+        || this.options.cacheRoot && /^view_[a-f0-9]{32}$/u.test(id) && !registered.hasOpenScope({ scopeId: id })) scopes.delete(id);
+      if (!scopes.size) this.registeredScopes.delete(resident);
+    }
     const scopes = this.registeredScopes.get(owner) ?? new Map<string, VcpMemoryClient>();
     scopes.set(scopeId, client); this.registeredScopes.set(owner, scopes);
   }
@@ -302,7 +329,7 @@ export class CompanionMemoryService {
   async dreamWave(input: MemoryScope & { now: string; clockDomain: VcpMemoryDreamClock }): Promise<VcpMemoryDreamWaveResult> {
     if (!Number.isFinite(Date.parse(input.now)) || !['world', 'real'].includes(input.clockDomain)) throw new Error('梦境联想的时间域无效。');
     const key = identityFor(input), generation = this.generation(input.companionId);
-    const pending = Promise.all([this.queryTails.get(key), this.invalidations.get(input.companionId)]).catch(() => undefined).then(async () => {
+    const pending = Promise.resolve(this.invalidations.get(input.companionId)).catch(() => undefined).then(() => this.queries.run(key, async () => {
       this.assertCurrent(input.companionId, generation);
       const snapshot = (await this.options.request({ type: 'memory.snapshot', companionId: input.companionId, conversationId: input.conversationId })).memorySnapshot;
       if (!snapshot || !this.options.runtime) throw new Error('梦境联想的授权记忆尚不可用。');
@@ -354,7 +381,7 @@ export class CompanionMemoryService {
       if (result.sourceRevision !== snapshot.revision || !sameCompanionMemoryIdentity(result.owner, owner)
         || result.clockDomain !== input.clockDomain || result.now !== input.now) throw new Error('梦境联想的归属或时间凭证不匹配。');
       return result;
-    });
+    }, { priority: 'background', lane: 'dream' }));
     this.queryTails.set(key, pending);
     try { return await pending; } finally { if (this.queryTails.get(key) === pending) this.queryTails.delete(key); }
   }
@@ -390,24 +417,43 @@ export class CompanionMemoryService {
     await view.commit();
     return { ok: true, memoryRetrievalModes: catalog };
   }
-  private async searchScoped(query: CompanionMemorySearch, mode: 'active' | 'passive', history: readonly VcpMemoryMessage[] = [], signal?: AbortSignal, onProgress?: (stage: string) => void): Promise<CompanionStorageResponse> {
+  private async searchScoped(query: CompanionMemorySearch, mode: 'active' | 'passive', history: readonly VcpMemoryMessage[] = [], signal?: AbortSignal, onProgress?: (stage: string) => void,
+    priority: CompanionMemoryQueryPriority = 'foreground'): Promise<CompanionStorageResponse> {
     if (query.retrievalOptions && !query.query?.trim()) throw new Error('可选检索模式需要非空查询；按日期浏览请使用 from/to。');
     if (!query.query?.trim()) return this.options.request({ ...query, type: 'memory.browse' });
     const key = identityFor(query);
     const generation = this.generation(query.companionId), queuedAt = performance.now();
     onProgress?.('等待本伙伴的记忆查询');
-    const pending = Promise.all([this.queryTails.get(key), this.invalidations.get(query.companionId)])
-      .catch(() => undefined).then(() => { signal?.throwIfAborted(); this.assertCurrent(query.companionId, generation); return this.searchView(query, mode, generation, history, signal, onProgress, performance.now() - queuedAt); });
+    const waiting = setInterval(() => this.timing('memory.search.queue.wait', performance.now() - queuedAt), 10000);
+    waiting.unref();
+    // Wait for an existing withdrawal before entering its queue: a new task
+    // must not occupy the lane while that withdrawal drains older tasks.
+    const pending = Promise.resolve(this.invalidations.get(query.companionId)).catch(() => undefined).then(() => {
+      signal?.throwIfAborted(); this.assertCurrent(query.companionId, generation);
+      return this.queries.run(key, () => {
+        clearInterval(waiting);
+        signal?.throwIfAborted(); this.assertCurrent(query.companionId, generation);
+        return this.searchView(query, mode, generation, history, signal, onProgress, performance.now() - queuedAt);
+      }, { priority, signal });
+    });
     this.queryTails.set(key, pending);
-    try { return await pending; } finally { if (this.queryTails.get(key) === pending) this.queryTails.delete(key); }
+    try { return await pending; } finally { clearInterval(waiting); if (this.queryTails.get(key) === pending) this.queryTails.delete(key); }
+  }
+  private timing(operation: string, durationMs: number): void {
+    if (durationMs < 500) return;
+    try { this.options.onTiming?.({ operation, durationMs }); } catch { /* Diagnostics cannot block recall. */ }
   }
   private async searchView(query: CompanionMemorySearch, mode: 'active' | 'passive', generation: number, history: readonly VcpMemoryMessage[], signal?: AbortSignal, onProgress?: (stage: string) => void, queuedMs = 0): Promise<CompanionStorageResponse> {
     const timings: Record<string, number> = { queue: queuedMs };
     let stage = 'sources', stageAt = performance.now();
-    const mark = (next: string, label: string) => { const now = performance.now(); timings[stage] = (timings[stage] ?? 0) + now - stageAt; stage = next; stageAt = now; onProgress?.(label); signal?.throwIfAborted(); };
+    const mark = (next: string, label: string) => { const now = performance.now(); this.timing(`memory.search.${stage}`, now - stageAt); timings[stage] = (timings[stage] ?? 0) + now - stageAt; stage = next; stageAt = now; onProgress?.(label); signal?.throwIfAborted(); };
+    const stalled = setInterval(() => this.timing(`memory.search.${stage}.wait`, performance.now() - stageAt), 10000);
+    stalled.unref();
+    try {
     onProgress?.('核验记忆来源');
     const scope = { companionId: query.companionId, conversationId: query.conversationId, beforeSequence: query.beforeSequence };
     for (let attempt = 0; attempt < 3; attempt++) {
+      if (attempt > 0) mark('sources', '核验记忆来源');
       const capturedAt = new Date().toISOString();
       const snapshot = (await this.options.request({ type: 'memory.snapshot', ...scope })).memorySnapshot;
       if (!snapshot) throw new Error('记忆授权视图尚不可用。');
@@ -462,7 +508,7 @@ export class CompanionMemoryService {
       mark('projection', '同步本轮记忆索引');
       const filtered = !!(query.diaryName || query.tags?.length || query.from || query.to);
       const view = filtered ? await project(corpus, 'filtered')
-        : await this.views.prepare(identityFor(scope), runtime.profileKey, corpus, projectionSignature);
+        : await this.views.prepare(identityFor(scope), runtime.profileKey, corpus, projectionSignature, { incremental: mode === 'passive' });
       this.assertCurrent(scope.companionId, generation);
       this.register(scope.companionId, view.scopeId, runtime.client);
       if (view.replacedScopeId) {
@@ -475,23 +521,28 @@ export class CompanionMemoryService {
       await view.commit();
       const plan: ReturnType<typeof planCompanionMemoryRetrieval> = query.retrievalOptions ? planCompanionMemoryRetrieval(query.retrievalOptions, projectCompanionMemoryRetrievalModes(await runtime.client.capabilities(view)))
         : { modifierSuffix: '', requestedModes: [] };
-      mark('retrieval', '检索相关记忆');
-      const result = await runtime.client.search(view, { text: query.query!, topK: 100 });
+      // Passive recall runs the original conversation-aware pipeline directly
+      // on the authorized graph. A diagnostic page must never prune that graph
+      // or preselect its inputs with a different (current-text-only) query.
+      const direct = mode === 'passive';
+      mark('retrieval', direct ? '准备原版 VCP 话题检索' : '检索相关记忆');
+      const result = direct ? undefined : await runtime.client.search(view, { text: query.query!, topK: 100 });
       const notes = new Map(corpus.map(note => [note.id, note]));
       const seen = new Set<string>();
-      const hits = result.results.flatMap(hit => {
+      let hits: CompanionMemoryPage['items'] = (result?.results ?? []).flatMap(hit => {
         const note = notes.get(hit.id);
         if (!note || seen.has(hit.id)) return [];
         seen.add(hit.id);
         return [{ memory: note, score: hit.score, ...(hit.scoreDetails ? { scoreDetails: hit.scoreDetails } : {}),
-          reasons: [`VCP ${hit.engine}`, ...(result.degraded ? ['原生召回已降级'] : [])], path: [note.id] }];
+          reasons: [`VCP ${hit.engine}`, ...(result?.degraded ? ['原生召回已降级'] : [])], path: [note.id] }];
       });
-      const start = query.cursor ?? 0, end = start + (query.limit ?? 20), page = hits.slice(start, end);
-      const contextNotes = page.map(hit => hit.memory);
-      // Pagination limits both the citation page and the independent native
-      // context call. Scores on the page remain the first query's observables;
-      // they are never presented as LightMemo/AIMemo output ranks.
-      const contextView = contextNotes.length === corpus.length ? view : contextNotes.length ? await project(contextNotes, 'context') : undefined;
+      const start = query.cursor ?? 0, end = start + (query.limit ?? 20);
+      let page = hits.slice(start, end);
+      const contextNotes = direct ? corpus : page.map(hit => hit.memory);
+      // Explicit active-tool pages bound their returned context. Passive pages
+      // only display observations of the complete conversation-aware pipeline.
+      if (!direct) mark('projection', '同步本轮记忆索引');
+      const contextView = direct || contextNotes.length === corpus.length ? view : contextNotes.length ? await project(contextNotes, 'context') : undefined;
       const savedArtifacts = await this.views.loadArtifacts(identityFor(scope), runtime.profileKey);
       const ownedArtifacts = this.ownedArtifacts(savedArtifacts, owner, clock.timeZone) ? savedArtifacts : undefined;
       if (savedArtifacts && !ownedArtifacts) await this.views.clearArtifacts(identityFor(scope), runtime.profileKey);
@@ -542,6 +593,18 @@ export class CompanionMemoryService {
         }
       }
       } finally { generationSignal?.removeEventListener('abort', interrupt); }
+      if (direct) {
+        const observed = new Set<string>();
+        // These are actual formatter/model-input observations. Do not replace
+        // missing observations with an independent top-K query or invented ranks.
+        hits = (contextReferences ?? []).flatMap(reference => {
+          const note = notes.get(reference.id);
+          if (!note || observed.has(note.id)) return [];
+          observed.add(note.id);
+          return [{ memory: note, reasons: [reference.role === 'focus_input' ? 'VCP 聚焦模型实际输入' : 'VCP 原版正文实际来源'], path: [note.id] }];
+        });
+        page = hits.slice(start, end);
+      }
       mark('verification', '核验本轮回忆');
       const observedModes = query.retrievalOptions && contextView ? projectCompanionMemoryRetrievalModes(await runtime.client.capabilities(contextView)) : undefined;
       const verified = (await this.options.request({ type: 'memory.snapshot', ...scope })).memorySnapshot;
@@ -561,21 +624,25 @@ export class CompanionMemoryService {
       });
       const evidence = { capturedAt, corpusHash: recallCorpusHash(snapshot.notes), ...(queryClock ? { queryClock: { ...queryClock, domain: 'world' as const } } : {}), ...(recallPolicy ? { recallPolicy } : {}),
         ...(scope.beforeSequence !== undefined ? { beforeSequence: scope.beforeSequence } : {}),
-        queryCorpusHash: recallCorpusHash(corpus), pageMemoryIds: contextNotes.map(note => note.id),
+        queryCorpusHash: recallCorpusHash(corpus), pageMemoryIds: page.map(hit => hit.memory.id),
         // The physical input graph is a conservative, complete dependency
         // closure (including monthly sources when a full-corpus page imports
         // them). It is not an assertion that every input was quoted/returned.
         dependencies: contextNotes.map(note => ({ id: note.id, version: note.version })), dependencyCoverage: 'complete' as const,
+        ...(mode === 'passive' ? { snapshotPolicy: 'task_passive_v1' as const,
+          frozenDependencies: contextNotes.map(note => ({ id: note.id, sources: note.sources.map(source => ({ id: source.messageId,
+            conversationId: source.conversationId, checksum: source.checksum })) })) } : {}),
         references, referenceCoverage: references.length < (contextReferences?.length ?? 0) ? 'partial' as const : referenceCoverage,
-        candidateOrder: 'independent_native_query' as const, contextOrder: 'original_context_pipeline' as const };
+        candidateOrder: direct ? 'context_observation' as const : 'independent_native_query' as const, contextOrder: 'original_context_pipeline' as const };
       mark('complete', '记忆检索完成');
       return { ok: true, memorySearchTimings: timings, ...(observedModes ? { memoryRetrievalModes: observedModes } : {}), memoryRetrieval: projectCompanionMemoryRetrieval({ mode, observedAt: capturedAt, documentCount: corpus.length,
-        result, hits: page, contextText, contextReferences: references }), memoryContext: { text: contextText, revision: snapshot.revision, profileKey: runtime.profileKey,
+        result, hits: page, contextText, contextReferences: references, samePipeline: direct }), memoryContext: { text: contextText, revision: snapshot.revision, profileKey: runtime.profileKey,
         evidence }, memoryPage: { items: page, hasMore: end < hits.length,
         ...(end < hits.length ? { nextCursor: end } : {}) } };
       } finally { await lease?.release(); }
     }
     throw new Error('记忆来源在查询期间发生变化，请重试。');
+    } finally { clearInterval(stalled); this.timing(`memory.search.${stage}`, performance.now() - stageAt); }
   }
 
   async recall(input: { companion: Companion; conversation: CompanionConversation; messages: readonly CompanionMessage[];
@@ -605,7 +672,10 @@ export class CompanionMemoryService {
         timings: result.memorySearchTimings,
         pending: !!status && (status.captureWatermark < input.currentMessage.sequence || status.pendingIndex > 0),
         degraded: hits.some(hit => hit.reasons.includes('原生召回已降级')), context: result.memoryContext,
-        continuation: { query, memoryCursor: result.memoryPage?.nextCursor, memoryHasMore: result.memoryPage?.hasMore ?? false, sourceHasMore: false } };
+        // Passive diagnostic pagination does not describe a LightMemo page.
+        // Its whole focused text is already present; additional active recall
+        // starts a fresh explicit search instead of reusing an unrelated rank.
+        continuation: { query, memoryHasMore: false, sourceHasMore: false } };
     } catch (error) {
       if (input.signal?.aborted) throw error;
       this.options.report(error);
@@ -613,8 +683,35 @@ export class CompanionMemoryService {
     }
   }
 
-  async contextValid(scope: { companionId: string; conversationId: string; beforeSequence?: number }, context?: { revision: string; profileKey: string }): Promise<boolean> {
+  async contextValid(scope: { companionId: string; conversationId: string; beforeSequence?: number }, context?: { revision: string; profileKey: string; text?: string; evidence?: unknown }): Promise<boolean> {
     if (!context) return true;
+    const dependencies = companionMemoryContextDependencies(context);
+    if (dependencies.malformed) return false;
+    if (dependencies.frozenMemories) {
+      // Once prepared, passive context is an immutable task snapshot. Only
+      // actual withdrawal/forget/delete or its original source ACL/bytes may
+      // revoke it. Relevance changes and ordinary edits do not restart RAG.
+      for (let offset = 0; offset < Math.max(1, dependencies.frozenMemories.length); offset += 100) {
+        const checked = await this.options.request({ type: 'memory.frozen.valid', ...scope,
+          memories: dependencies.frozenMemories.slice(offset, offset + 100) });
+        if (!checked.ok || !checked.memoryFrozenValid) return false;
+      }
+      return true;
+    }
+    if (dependencies.complete) {
+      // A focused task receipt is historical data. New unrelated notes, a new
+      // world day or a changed model route do not revoke the actual inputs it
+      // consumed. Recheck every captured version through the normal SQL ACL
+      // port; never promote an incomplete/legacy observation to a full closure.
+      for (let offset = 0; offset < dependencies.memories.length; offset += 100) {
+        const expected = dependencies.memories.slice(offset, offset + 100);
+        const current = (await this.options.request({ type: 'memory.records.filter', ...scope,
+          ids: [...new Set(expected.map(note => note.id))] })).memories;
+        if (!current || expected.some(note => !current.some(actual => actual.id === note.id
+          && actual.companionId === scope.companionId && actual.version === note.version))) return false;
+      }
+      return true;
+    }
     const snapshot = (await this.options.request({ type: 'memory.snapshot', ...scope })).memorySnapshot;
     if (snapshot?.revision !== context.revision || !this.options.runtime) return false;
     try {
@@ -629,11 +726,12 @@ export class CompanionMemoryService {
     revision: string; profileKey: string; evidence?: { queryClock?: VcpMemoryQueryClock };
   }): Promise<boolean> {
     if (!await this.contextValid(scope, context)) return false;
+    if (companionMemoryContextDependencies(context).frozenMemories) return true;
     if (!context?.evidence?.queryClock) return true;
     const clock = (await this.options.request({ type: 'world.clock' })).worldClock;
     return !!clock && companionMemoryClockBucket(context.evidence.queryClock) === companionMemoryClockBucket({ now: clock.virtualNow, timeZone: clock.timeZone });
   }
-  invalidate(owner: string, canonicalScopes: readonly string[] = []): Promise<void> {
+  invalidate(owner: string, canonicalScopes: readonly string[] = [], options: { preserveIndexes?: boolean } = {}): Promise<void> {
     if (this.closed) return Promise.resolve();
     this.generations.set(owner, this.generation(owner) + 1);
     this.generationSignals.get(owner)?.abort(); this.generationSignals.delete(owner);
@@ -643,30 +741,78 @@ export class CompanionMemoryService {
     const interruptions = [...scopes].map(([scopeId, client]) => client.interruptScope({ scopeId }));
     if (this.options.runtime?.interruptOwner) interruptions.push(this.options.runtime.interruptOwner(owner));
     const active = [...this.queryTails].filter(([key]) => key.startsWith(`${owner}:`)).map(([, pending]) => pending);
+    const draining = this.queries.drain(identityFor({ companionId: owner, conversationId: '' }));
     const continuity = this.continuity?.owner === owner ? this.continuity.promise : undefined;
     const cleanup = (this.invalidations.get(owner) ?? Promise.resolve()).catch(() => undefined).then(async () => {
       await Promise.all(interruptions);
-      await Promise.allSettled([...active, continuity, capture?.settled]);
-      const views = await this.views.invalidateOwner(owner);
+      await Promise.allSettled([...active, draining, continuity, capture?.settled]);
+      const views = await this.views.invalidateOwner(owner, options);
       if (this.options.runtime?.purgeOwner) await this.options.runtime.purgeOwner(owner, {
-        canonicalScopes: [...new Set([...canonicalScopes, ...scopes.keys()])], historicalViews: views });
+        ...(options.preserveIndexes ? { preserveIndexes: true } : { canonicalScopes: [...new Set([...canonicalScopes, ...scopes.keys()])] }), historicalViews: views });
       else {
         // Old test ports may still own their currently registered scopes. They
         // cannot certify cleanup of an unopened historical projection.
-        if ([...canonicalScopes, ...views.map(view => view.scopeId)].some(scope => !scopes.has(scope))) throw new Error('记忆运行未连接历史投影清理接口。');
-        for (const [scopeId, client] of scopes) await client.purgeScope({ scopeId });
+        const purged = options.preserveIndexes ? views.map(view => view.scopeId) : [...new Set([...canonicalScopes, ...scopes.keys(), ...views.map(view => view.scopeId)])];
+        if (purged.some(scope => !scopes.has(scope))) throw new Error('记忆运行未连接历史投影清理接口。');
+        for (const scopeId of purged) await scopes.get(scopeId)!.purgeScope({ scopeId });
       }
       this.registeredScopes.delete(owner);
       for (const key of this.continuityAttempts.keys()) if (key.startsWith(`${owner}:`)) this.continuityAttempts.delete(key);
       for (const key of this.generatedMonths.keys()) if (key.startsWith(`${owner}:`)) this.generatedMonths.delete(key);
+      this.warmedViews.delete(owner);
     });
     this.invalidations.set(owner, cleanup);
     void cleanup.catch(this.options.report).finally(() => { if (this.invalidations.get(owner) === cleanup) this.invalidations.delete(owner); });
     return cleanup;
   }
 
+  /** Prepare the same passive graph during idle time, without a model query. */
+  private startWarmup(companions: readonly Companion[], conversations: readonly CompanionConversation[]): void {
+    if (this.closed || this.warmup || this.options.busy() || !this.options.runtime?.supportsPreparation) return;
+    // Warm the most recently used entrance only. Eagerly opening every resident
+    // would churn the shared four-process budget before the user talks to one.
+    const active = new Set(companions.map(owner => owner.id));
+    const room = [...conversations].filter(room => room.lastMessage?.trim()).sort((a, b) => Date.parse(b.updatedAt) - Date.parse(a.updatedAt))
+      .find(room => room.memberIds.some(owner => active.has(owner) && !this.options.blocked?.(owner) && !this.invalidations.has(owner)));
+    const companionId = room?.memberIds.find(owner => active.has(owner) && !this.options.blocked?.(owner) && !this.invalidations.has(owner));
+    if (!room || !companionId) return;
+    const scope = { companionId, conversationId: room.id }, generation = this.generation(companionId);
+    const promise = this.queries.run(identityFor(scope), async () => {
+      if (this.closed || this.options.busy()) return;
+      this.assertCurrent(companionId, generation);
+      const snapshot = (await this.options.request({ type: 'memory.snapshot', ...scope })).memorySnapshot;
+      if (!snapshot?.notes.length) return;
+      const clock = (await this.options.request({ type: 'world.clock' })).worldClock;
+      if (!clock) return;
+      const owner = await this.ownerIdentity(companionId), selection = await this.generationSelection(companionId, generation);
+      const lease = await this.options.runtime!.acquireGeneration!({ ...selection, signal: this.generationSignal(companionId) });
+      try {
+        if (this.options.busy()) return;
+        const signature = JSON.stringify([companionMemoryIdentitySignature(owner), clock.timeZone, 'civil-projection-v1']);
+        const view = await this.views.prepare(identityFor(scope), lease.profileKey, snapshot.notes, signature, { incremental: true });
+        this.assertCurrent(companionId, generation); this.register(companionId, view.scopeId, lease.client);
+        if (view.replacedScopeId) {
+          await lease.client.interruptScope({ scopeId: view.replacedScopeId }); await lease.client.purgeScope({ scopeId: view.replacedScopeId });
+          this.registeredScopes.get(companionId)?.delete(view.replacedScopeId);
+        }
+        const wasOpen = lease.client.hasOpenScope(view);
+        if (!view.unchanged || !wasOpen) await lease.client.replace(view, snapshot.notes.map(note => runtimeNote(note, owner, clock.timeZone)));
+        this.assertCurrent(companionId, generation); await view.commit();
+        const key = JSON.stringify([view.scopeId, snapshot.revision, lease.profileKey]);
+        if (!wasOpen || this.warmedViews.get(companionId) !== key) {
+          await lease.client.prepare(view); this.assertCurrent(companionId, generation); this.warmedViews.set(companionId, key);
+        }
+      } finally { await lease.release(); }
+    }, { priority: 'background', signal: this.generationSignal(companionId) });
+    this.warmup = promise;
+    void promise.catch(error => { if (!this.closed && this.generation(companionId) === generation) this.options.report(error); })
+      .finally(() => { if (this.warmup === promise) this.warmup = undefined; if (!this.closed) this.startContinuity(); });
+  }
+
   /** One month per idle pass, in a distinct worker so the foreground never queues behind its LLM. */
   private startContinuity(): void {
+    const cutoff = Date.now() - 300000;
+    for (const [key, generatedAt] of this.generatedMonths) if (generatedAt <= cutoff) this.generatedMonths.delete(key);
     if (this.closed || this.continuity || this.options.busy() || !this.options.runtime) return;
     const candidates = [...this.continuityCandidates].filter(([, scope]) => !this.options.blocked?.(scope.companionId) && !this.invalidations.has(scope.companionId)).slice(0, 4);
     if (!candidates.length) return;
@@ -702,6 +848,8 @@ export class CompanionMemoryService {
     if (previous?.revision === snapshot.revision && previous.profileKey === runtime.profileKey && previous.identitySignature === identitySignature && previous.retryAt > Date.now()) return false;
     if (this.options.blocked?.(scope.companionId)) return false;
     const processing = this.beginTimelineProcessing(scope, owner, snapshot.revision);
+    this.saveTaskRecord(scope.companionId, processing, { input: JSON.stringify({ sourceRevision: snapshot.revision,
+      count: snapshot.notes.length, sources: snapshot.notes.map(note => ({ id: note.id, version: note.version, diaryName: note.diaryName })) }) });
     try {
     this.assertCurrent(scope.companionId, generation);
     this.updateTimelineProcessing(processing, { stage: '准备当前伙伴的VCP记忆视图' });
@@ -775,6 +923,8 @@ export class CompanionMemoryService {
     const complete = months.every(month => artifacts.agents.find(agent => agent.agentName === owner.agentName)?.months.some(entry => entry.month === month && entry.content && entry.summary));
     this.continuityAttempts.set(identity, { revision: snapshot.revision, profileKey: runtime.profileKey, identitySignature, retryAt: complete ? Infinity : 0 });
     this.updateTimelineProcessing(processing, { status: 'completed', stage: complete ? '时间线与摘要已完成核对' : '本月时间线已完成，后续月份继续在后台整理' });
+    this.saveTaskRecord(scope.companionId, processing, { output: JSON.stringify({ month: month ?? '已有时间线核验',
+      documents: artifacts.agents.filter(agent => agent.agentName === owner.agentName).flatMap(agent => agent.months.filter(entry => !month || entry.month === month).map(entry => ({ month: entry.month, content: entry.content, summary: entry.summary }))) }) });
     return !!month;
     } catch (cause) {
       const cancelled = this.closed || this.generation(scope.companionId) !== generation || this.options.blocked?.(scope.companionId);
@@ -803,11 +953,20 @@ export class CompanionMemoryService {
         if (outbox.operation === 'forget') await client.forget(outbox, outbox.noteId);
         else await client.remember(outbox, runtimeNote(outbox.note, await this.ownerIdentity(outbox.companionId)));
         this.assertCurrent(outbox.companionId, generation);
-        await this.options.request({ type: 'memory.outbox.complete', id: outbox.id, leaseToken: outbox.leaseToken, indexed: true });
+        const completed = await this.options.request({ type: 'memory.outbox.complete', id: outbox.id, leaseToken: outbox.leaseToken, indexed: true });
         this.options.changed();
-        if (outbox.operation === 'remember') this.queueContinuity({ companionId: outbox.companionId, conversationId: outbox.note.sourceConversationId });
+        if (outbox.operation === 'remember' && completed.memoryOutboxDisposition?.state !== 'stale') this.queueContinuity({ companionId: outbox.companionId, conversationId: outbox.note.sourceConversationId });
       } catch (error) {
-        await this.options.request({ type: 'memory.outbox.fail', id: outbox.id, leaseToken: outbox.leaseToken,
+        const code = error && typeof error === 'object' && 'code' in error ? String(error.code) : '';
+        const message = error instanceof Error ? error.message : '';
+        const transient = this.closed || this.invalidations.has(outbox.companionId) || this.generation(outbox.companionId) !== generation
+          || ['SQLITE_BUSY', 'SQLITE_LOCKED', 'KNOWLEDGE_STORE_SOURCE_SNAPSHOT_CHANGED', 'KNOWLEDGE_STORE_FILE_VERSION_CONFLICT',
+          'KNOWLEDGE_STORE_BATCH_EXPIRED', 'KNOWLEDGE_STORE_MODEL_CHANGED_DURING_EMBEDDING'].includes(code)
+          || /^KNOWLEDGE_STORE_(?:SOURCE_SNAPSHOT_CHANGED|FILE_VERSION_CONFLICT|BATCH_EXPIRED|MODEL_CHANGED_DURING_EMBEDDING)(?:\b|:)/u.test(message);
+        if (transient) {
+          await this.options.request({ type: 'memory.outbox.defer', id: outbox.id, leaseToken: outbox.leaseToken, retryAfterMs: 1000 });
+          this.again = true;
+        } else await this.options.request({ type: 'memory.outbox.fail', id: outbox.id, leaseToken: outbox.leaseToken,
           error: error instanceof Error ? error.message : 'VCP 记忆投递失败。', retryAfterMs: 30000 });
         this.options.changed(); return;
       } finally { this.deliveringOwner = undefined; this.options.changed(); }
@@ -867,7 +1026,7 @@ export class CompanionMemoryService {
         const before = (await this.options.request({ type: 'memory.sources.filter', ...scope, ids: beforeRows.map(message => message.id) })).memorySources ?? [];
         controller.signal.throwIfAborted();
         let relevantMemories: CompanionMemory[] = [];
-        try { relevantMemories = (await this.search({ ...scope, query: sources.map(source => source.content).join('\n').slice(0, 16000), limit: 8 })).memoryPage?.items.map(hit => hit.memory) ?? []; }
+        try { relevantMemories = (await this.searchScoped({ ...scope, query: sources.map(source => source.content).join('\n').slice(0, 16000), limit: 8 }, 'active', [], controller.signal, undefined, 'background')).memoryPage?.items.map(hit => hit.memory) ?? []; }
         catch { /* Capture remains queued for indexing while a model is unavailable. */ }
         controller.signal.throwIfAborted();
         const prohibitions = await this.options.request({ type: 'memory.prohibitions', ...scope, sourceMessageIds: job.sourceMessageIds });
@@ -898,7 +1057,8 @@ export class CompanionMemoryService {
     await Promise.all(capturing);
     await this.deliver();
     if (busy && !claimed) this.busySince = Date.now();
-    this.startContinuity();
+    this.startWarmup(companions, state?.conversations ?? []);
+    if (!this.warmup) this.startContinuity();
   }
   async close(): Promise<void> {
     this.closed = true;
@@ -910,8 +1070,11 @@ export class CompanionMemoryService {
     await Promise.allSettled([...this.registeredScopes.values()].flatMap(scopes => [...scopes].map(([scopeId, client]) => client.interruptScope({ scopeId }))));
     await this.running;
     await this.continuity?.promise;
+    await this.warmup?.catch(() => undefined);
     await Promise.allSettled([...this.queryTails.values()]);
+    await this.queries.drainAll();
     await Promise.allSettled([...this.invalidations.values()]);
+    await this.taskRecordWrites.catch(this.options.report);
     await this.options.runtime?.close();
   }
 }

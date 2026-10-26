@@ -4,6 +4,13 @@ import type { CompanionMessage, CompanionReplyStreamEvent } from '../../shared/c
 export interface CompanionReplySnapshot { readonly overlays: readonly CompanionReplyStreamEvent[]; readonly discarded: ReadonlySet<string>; readonly progress?: CompanionReplyProgress }
 const EMPTY_SNAPSHOT: CompanionReplySnapshot = { overlays: [], discarded: new Set() };
 interface Entry { frames: Map<number, CompanionReplyStreamEvent>; discarded: Set<string>; snapshot: CompanionReplySnapshot; progress?: CompanionReplyProgress }
+/** A host-cleared completed step can retain real tool identities while its
+ * old prose is no longer publishable. A live cursor at another/later step is
+ * not permission for stale committed IPC to restore that withdrawn prose. */
+function hostClearedStep(message: CompanionMessage | undefined, step: number): boolean {
+  return !!message && message.segments?.[step]?.text === '' && message.replyDraft?.step !== step
+    && (!message.replyDraft || step < message.replyDraft.step);
+}
 
 /** One IPC subscription, with notifications only for the bubble being changed. */
 export class CompanionReplyStreamStore {
@@ -39,6 +46,7 @@ export class CompanionReplyStreamStore {
       if (!event.progress || event.progress.revision <= (entry.progress?.revision ?? message?.replyProgress?.revision ?? 0)) return;
       entry.progress = event.progress; this.publish(event.messageId, entry); return;
     }
+    if (hostClearedStep(message, event.step)) { this.retire(event); return; }
     if (this.finished.has(event.messageId) || this.retired.has(event.messageId + '/' + event.attemptId)) return;
     const previous = entry.frames.get(event.step);
     if (event.phase === 'discarded') {
@@ -69,7 +77,7 @@ export class CompanionReplyStreamStore {
       if (message.replyProgress && message.replyProgress.revision > (entry.progress?.revision ?? 0)) { entry.progress = message.replyProgress; changed = true; }
       for (const [step, frame] of entry.frames) {
         const committed = frame.phase === 'committed' && message.segments?.[step]?.text === frame.text && message.replyDraft?.step !== step;
-        if (committed || finished) { entry.frames.delete(step); this.retire(frame); changed = true; }
+        if (committed || finished || hostClearedStep(message, step)) { entry.frames.delete(step); this.retire(frame); changed = true; }
       }
       if (changed) this.publish(message.id, entry);
     }
@@ -78,12 +86,14 @@ export class CompanionReplyStreamStore {
 }
 
 export function projectCompanionReply(message: CompanionMessage, snapshot: CompanionReplySnapshot) {
+  if (message.sourceUnavailable) return { segments: [], phase: undefined, progress: undefined };
   const progress = snapshot.progress && snapshot.progress.revision > (message.replyProgress?.revision ?? 0) ? snapshot.progress : message.replyProgress;
   const segments = message.segments?.map(segment => ({ ...segment }));
   if (!snapshot.overlays.length && (!message.replyDraft || !snapshot.discarded.has(message.replyDraft.attemptId))) return { segments, phase: undefined, progress };
   const projected = segments ?? (message.content ? [{ text: message.content, actionIds: [] }] : []);
   if (message.replyDraft && snapshot.discarded.has(message.replyDraft.attemptId) && projected[message.replyDraft.step]) projected[message.replyDraft.step] = { ...projected[message.replyDraft.step]!, text: '' };
   for (const frame of snapshot.overlays) {
+    if (hostClearedStep(message, frame.step)) continue;
     while (projected.length <= frame.step) projected.push({ text: '', actionIds: [] });
     projected[frame.step] = { ...projected[frame.step]!, text: frame.text };
   }

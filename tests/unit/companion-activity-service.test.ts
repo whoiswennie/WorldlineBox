@@ -72,10 +72,11 @@ function replyToBoundGroupInvitation(task: CompanionActivityTask, topicId: strin
   }
   throw new Error('本目标的真实群邀请未产生指定伙伴的实际回复机会。');
 }
-it('keeps all three report lease commands internal to storage, outside renderer, workspace and actor argument schemas', () => {
+it('keeps report and passive preparation lease commands internal to storage, outside renderer, workspace and actor argument schemas', () => {
   const readset = { schema: 'worldlinebox.companion-execution-readset-v1', companionId: 'alice', conversationId: 'private_alice', complete: true,
     sources: [], memories: [], contexts: [], topics: [], knowledgeReads: [] };
   for (const command of [{ type: 'activity.report.claim' }, { type: 'activity.report.complete', id: 'actual_task', leaseToken: 'lease', executionReadset: readset },
+    { type: 'activity.passive.prepare', id: 'actual_task', leaseToken: 'lease', expectedStep: 0, snapshot: { prepared: true } },
     { type: 'activity.report.fail', id: 'actual_task', leaseToken: 'lease', error: 'actual current validation rejected', terminal: true }]) {
     expect(companionStorageCommandSchema.safeParse(command).success).toBe(true);
     expect(companionsRequestSchema.safeParse(command).success).toBe(false);
@@ -559,7 +560,7 @@ it('requires the exact source, current lease/step and a real completed inference
   expect(store.request({ type: 'activity.get', companionId: scope.companionId, conversationId: scope.conversationId,
     id: leased.id }).activityTask).toMatchObject({ status: 'running', step: 0, history: [] });
 });
-it('omits only useless memory recall for an empty corpus, keeps actual experience reads and checks availability again on the next step', async () => {
+it('freezes an empty passive preparation across steps while preserving explicit memory and actual experience tools', async () => {
   let empty = true;
   const calls: CompanionStorageCommand[] = [];
   const toolMenus: string[][] = [];
@@ -567,7 +568,7 @@ it('omits only useless memory recall for an empty corpus, keeps actual experienc
     const wire = JSON.parse(String(init?.body)), data = JSON.parse(wire.messages[1].content);
     toolMenus.push(wire.tools.map((tool: { function: { name: string } }) => tool.function.name));
     if (empty) {
-      expect(wire.tools.map((tool: { function: { name: string } }) => tool.function.name)).toEqual(['world', 'wait', COMPANION_SUBMIT_RESULT_TOOL]);
+      expect(wire.tools.map((tool: { function: { name: string } }) => tool.function.name)).toEqual(['memory', 'world', 'wait', COMPANION_SUBMIT_RESULT_TOOL]);
       expect(data.memoryAvailability).toMatchObject({ authorizedCorpusEmpty: true, revision: 'empty-now' });
       if (fetchFn.mock.calls.length === 1) return new Response(JSON.stringify({ choices: [{ message: { content: '', tool_calls: [{
         id: 'empty_corpus_experience_days', type: 'function', function: { name: 'world',
@@ -577,7 +578,7 @@ it('omits only useless memory recall for an empty corpus, keeps actual experienc
         && message.tool_call_id === 'empty_corpus_experience_days' && message.content.includes('"experienceDays"'))).toBe(true);
       expect(calls.filter(command => command.type === 'experience.days')).toEqual([{ type: 'experience.days', companionId: 'alice', limit: 20 }]);
     }
-    else { expect(wire.tools).toHaveLength(4); expect(wire.tools.map((tool: { function: { name: string } }) => tool.function.name)).toEqual(['memory', 'world', 'wait', COMPANION_SUBMIT_RESULT_TOOL]); expect(data.memoryAvailability).toBeUndefined(); }
+    else { expect(wire.tools).toHaveLength(4); expect(wire.tools.map((tool: { function: { name: string } }) => tool.function.name)).toEqual(['memory', 'world', 'wait', COMPANION_SUBMIT_RESULT_TOOL]); expect(data.memoryAvailability).toMatchObject({ authorizedCorpusEmpty: true, revision: 'empty-now' }); }
     return response({ status: 'continue', action: { action: 'query', category: 'scenes', limit: 1 }, wait: null, summary: '用当前真实上下文继续，回忆可用性每步核实。' });
   });
   const base = setup(fetchFn); await service!.close();
@@ -588,10 +589,52 @@ it('omits only useless memory recall for an empty corpus, keeps actual experienc
     profiles: async () => ({ publicProfiles: [], visualInputs: [] }), excludedIds: () => [], changed: vi.fn(), report: error => { throw error; } });
   const get = () => store.request({ type: 'activity.get', companionId: base.companionId, conversationId: base.conversationId, id: base.task.id }).activityTask!;
   await service.tick(); await vi.waitFor(() => expect(toolMenus.length).toBeGreaterThan(0));
-  expect(toolMenus[0]).toEqual(['world', 'wait', COMPANION_SUBMIT_RESULT_TOOL]);
+  expect(toolMenus[0]).toEqual(['memory', 'world', 'wait', COMPANION_SUBMIT_RESULT_TOOL]);
   await vi.waitFor(() => expect(get().step).toBe(1));
   empty = false; vi.setSystemTime(Date.now() + 3000); await service.tick(); await vi.waitFor(() => expect(get().step, JSON.stringify(get())).toBe(2));
   expect(fetchFn).toHaveBeenCalledTimes(3);
+  expect(calls.filter(command => command.type === 'memory.search')).toHaveLength(1);
+});
+it.each(['ordinary_revision', 'withdrawal'] as const)('keeps one task-level passive receipt through a wait, user stop/resume and process restart: %s', async change => {
+  const actorSteps: number[] = [];
+  const fetchFn = vi.fn<typeof fetch>(async (_url, init) => {
+    const data = JSON.parse(JSON.parse(String(init?.body)).messages[1].content);
+    expect(data.purpose).toBe('activity_task_step'); expect(data.memoryContext).toBe('INITIAL_TASK_PASSIVE_FACT');
+    actorSteps.push(data.task.step);
+    return response({ status: 'continue', action: null, wait: { kind: 'delay', seconds: 1 }, summary: '登记下一次实际观察的等待。' });
+  });
+  const base = setup(fetchFn, '分两次观察并核对原有约定。'); await service!.close();
+  const scope = { companionId: base.companionId, conversationId: base.conversationId };
+  const original = store.appendMessage({ conversationId: scope.conversationId, authorId: 'user', content: '原有约定的真实来源。', replyDirective: 'none' });
+  const note = store.request({ type: 'memory.record', ...scope, candidate: { content: original.content, tags: [], sourceMessageIds: [original.id],
+    evidence: [{ sourceMessageId: original.id, quote: original.content }] } }).memories![0]!;
+  const frozenDependencies = [{ id: note.id, sources: note.sources.map(source => ({ id: source.messageId, conversationId: source.conversationId, checksum: source.checksum })) }];
+  const passiveRecall = vi.fn(async () => ({ ok: true, memoryContext: { text: 'INITIAL_TASK_PASSIVE_FACT', revision: 'initial-corpus', profileKey: 'fixture',
+    evidence: { capturedAt: new Date().toISOString(), corpusHash: 'initial', dependencyCoverage: 'complete' as const, dependencies: [{ id: note.id, version: note.version }],
+      snapshotPolicy: 'task_passive_v1' as const, frozenDependencies } }, memoryPage: { items: [], hasMore: false } }));
+  const createService = () => new CompanionActivityTaskService({ request: async input => store.request(input), passiveRecall,
+    memoryContextValid: async (_scope, context) => store.request({ type: 'memory.frozen.valid', ...scope,
+      memories: (context as Awaited<ReturnType<typeof passiveRecall>>['memoryContext']).evidence.frozenDependencies }).memoryFrozenValid === true,
+    fetchFn: withProgressReview(fetchFn), configFor: async () => ({ apiFormat: 'openai_chat', model: 'fixture', apiKey: 'fake', baseUrl: 'https://fixture.invalid' }),
+    profiles: async () => ({ publicProfiles: [], visualInputs: [] }), excludedIds: () => [], changed: vi.fn(), report: error => { throw error; } });
+  service = createService();
+  const get = () => store.request({ type: 'activity.get', ...scope, id: base.task.id }).activityTask!;
+  await service.tick(); await vi.waitFor(() => expect(get()).toMatchObject({ step: 1, status: 'waiting' }));
+  const history = get().history;
+  store.request({ type: 'activity.cancel', ...scope, id: base.task.id });
+  store.request({ type: 'task-stop.record', ...scope, taskId: base.task.id, kind: 'activity', title: base.task.title,
+    stop: { actor: 'user', reason: 'user_requested', requestedAt: new Date().toISOString() } });
+  await service.close(); store.close();
+  store = new CompanionsStore(path.join(root, 'state.sqlite'), seeds.map(seed => ({ ...seed, active: true })));
+  if (change === 'ordinary_revision') store.request({ type: 'memory.revise', ...scope, id: note.id, expectedVersion: note.version,
+    candidate: { content: '普通整理后的另一种表述。', tags: ['整理'], sourceMessageIds: [original.id], evidence: [{ sourceMessageId: original.id, quote: original.content }] } });
+  else store.request({ type: 'memory.forget', ...scope, sourceMessageIds: [original.id], persistent: true });
+  expect(store.request({ type: 'activity.resume', ...scope, id: base.task.id }).activityTask).toMatchObject({ step: 1, history });
+  service = createService(); vi.setSystemTime(Date.now() + 3000); store.request({ type: 'world.tick' }); await service.tick();
+  await vi.waitFor(() => expect(get()).toMatchObject(change === 'withdrawal' ? { step: 1, status: 'failed' } : { step: 2, status: 'waiting' }));
+  expect(passiveRecall).toHaveBeenCalledOnce(); expect(actorSteps).toEqual(change === 'withdrawal' ? [0] : [0, 1]);
+  expect(get().history.slice(0, history.length)).toEqual(history);
+  expect(get()).not.toHaveProperty('passiveRecall');
 });
 it('binds the native initial recall actually consumed by the plan, excludes candidates, and withdraws the plan with its material source', async () => {
   const fetchFn = vi.fn<typeof fetch>(async (_url, init) => {

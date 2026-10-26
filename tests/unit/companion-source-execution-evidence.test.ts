@@ -1,7 +1,8 @@
 import { expect, it, vi } from 'vitest';
 import { createHash } from 'node:crypto';
 import { captureCompanionExecutionReadset } from '../../src/main/companions/execution-evidence';
-import { companionExecutionSourceReadOnly, companionExecutionSourceReferences, guardCompanionExecutionSources, type CompanionExecutionSourceProof } from '../../src/main/companions/source-execution-evidence';
+import { companionExecutionSourceReadOnly, companionExecutionSourceReferences, guardCompanionExecutionSources, memoCompanionExecutionValidation,
+  withCompanionExecutionValidation, type CompanionExecutionSourceProof } from '../../src/main/companions/source-execution-evidence';
 import type { CompanionMessage } from '../../src/shared/companions';
 import type { CompanionStorageCommand, CompanionStorageResponse } from '../../src/shared/companion-storage';
 
@@ -9,6 +10,118 @@ const scope = { companionId: 'alice', conversationId: 'room_one' };
 const message = (id: string): CompanionMessage => ({ id, conversationId: scope.conversationId, authorId: 'alice', content: 'ACTUAL_PRIVATE_BYTES', kind: 'text', status: 'sent',
   sequence: 1, createdAt: '2026-10-23T00:00:00.000Z', attachments: [] });
 const proof = (id: string): CompanionExecutionSourceProof => ({ kind: 'message', id, ...scope, sourceMessageIds: [id], executionReadset: captureCompanionExecutionReadset(scope) });
+
+it('does not invalidate source proofs for pure status reads or disposable catalogue maintenance', () => {
+  for (const type of ['memory.tags.status', 'memory.processing.status', 'memory.policy.list', 'memory.library.index-state',
+    'actions.page', 'document.catalog.query', 'document.catalog.touch', 'document.catalog.put', 'document.catalog.drop', 'document.catalog.finish', 'world.clock.peek',
+    'routine.get', 'schedule.list', 'schedule.get', 'activity.list', 'social.reply.progress', 'social.days', 'social.graph']) {
+    expect(companionExecutionSourceReadOnly({ type } as CompanionStorageCommand), type).toBe(true);
+  }
+  for (const type of ['memory.forget', 'memory.revise', 'memory.library.delete', 'memory.library.scope', 'memory.tags.complete', 'conversation.update', 'execution.invalidate', 'loop.save']) {
+    expect(companionExecutionSourceReadOnly({ type } as CompanionStorageCommand), type).toBe(false);
+  }
+});
+
+it('refreshes a whole attested history batch once under concurrent progress instead of refreshing each ancestor', async () => {
+  let revision = 0;
+  const proofs = Array.from({ length: 16 }, (_, index) => {
+    const actual = proof('history_' + index);
+    return { ...actual, storageValidatedReadsetDigest: createHash('sha256').update(JSON.stringify(actual.executionReadset)).digest('hex') };
+  });
+  const storage = vi.fn(async (command: CompanionStorageCommand): Promise<CompanionStorageResponse> => {
+    if (command.type === 'execution.sources') return { ok: true, executionSources: proofs };
+    throw new Error('An observer read must not dispatch or invalidate effects.');
+  });
+  const valid = vi.fn(async () => { revision++; return true; });
+  const result = await guardCompanionExecutionSources({ type: 'messages', conversationId: scope.conversationId },
+    { ok: true, messages: proofs.map(value => message(value.id)) }, { storage, valid, revision: () => revision });
+  expect(result.messages).toHaveLength(16);
+  expect(storage).toHaveBeenCalledTimes(3);
+  expect(valid).toHaveBeenCalledTimes(32);
+});
+
+it('never persistently withdraws a healthy source because its verification transport temporarily failed', async () => {
+  const storage = vi.fn(async (command: CompanionStorageCommand): Promise<CompanionStorageResponse> => {
+    if (command.type === 'execution.sources') return { ok: true, executionSources: [proof('healthy')] };
+    throw new Error('Temporary verification failure must not invalidate a source.');
+  });
+  await expect(guardCompanionExecutionSources({ type: 'message.get', id: 'healthy' }, { ok: true, message: message('healthy') }, {
+    storage, valid: async () => { throw new Error('The storage transport is temporarily busy.'); },
+  })).rejects.toThrow('temporarily busy');
+  expect(storage.mock.calls.map(([command]) => command.type)).toEqual(['execution.sources']);
+});
+
+it('keeps unfinished progress saves outside the formal-source generation but fences final publication', () => {
+  const checkpoint = { ...scope, sourceMessageId: 'actual_source', status: 'running' as const, turns: [], supplements: [] };
+  expect(companionExecutionSourceReadOnly({ type: 'loop.save', checkpoint })).toBe(true);
+  expect(companionExecutionSourceReadOnly({ type: 'loop.save', checkpoint: { ...checkpoint, status: 'done' } })).toBe(false);
+  expect(companionExecutionSourceReadOnly({ type: 'loop.save', checkpoint, executionReadset: captureCompanionExecutionReadset(scope) })).toBe(false);
+});
+
+it('coalesces concurrent proof checks within one read and rechecks them on the next read', async () => {
+  let release!: () => void;
+  const gate = new Promise<void>(resolve => { release = resolve; });
+  const valid = vi.fn(async () => { await gate; return true; });
+  const storage = async (): Promise<CompanionStorageResponse> => ({ ok: true, executionSources: [proof('shared')] });
+  const read = () => guardCompanionExecutionSources({ type: 'message.get', id: 'shared' }, { ok: true, message: message('shared') }, { storage, valid, revision: () => 0 });
+  const first = withCompanionExecutionValidation(() => Promise.all([read(), read(), read(), read()]));
+  await vi.waitFor(() => expect(valid).toHaveBeenCalledOnce());
+  release();
+  expect((await first).every(result => result.message?.content === 'ACTUAL_PRIVATE_BYTES')).toBe(true);
+  await read();
+  expect(valid).toHaveBeenCalledTimes(2);
+});
+
+it('expires a read frame even in background work that inherited its async context', async () => {
+  let release!: () => void, background!: Promise<boolean>;
+  const gate = new Promise<void>(resolve => { release = resolve; });
+  const check = vi.fn(async () => true);
+  await withCompanionExecutionValidation(async () => {
+    expect(await memoCompanionExecutionValidation('shared', () => 0, check)).toBe(true);
+    background = gate.then(() => memoCompanionExecutionValidation('shared', () => 0, check));
+  });
+  release(); expect(await background).toBe(true);
+  expect(check).toHaveBeenCalledTimes(2);
+});
+
+it('settles concurrent cross-dependent proof roots without an in-flight wait cycle', async () => {
+  let entered = 0, release!: () => void;
+  const bothRoots = new Promise<void>(resolve => { release = resolve; });
+  const response = (id: string): CompanionStorageResponse => ({ ok: true, message: message(id) });
+  const storage = async (command: CompanionStorageCommand): Promise<CompanionStorageResponse> => {
+    if (command.type === 'execution.sources') return { ok: true, executionSources: command.sourceMessageIds.map(proof) };
+    if (command.type === 'execution.invalidate') return { ok: true };
+    if (command.type === 'message.get') return response(command.id);
+    throw new Error('Unexpected command');
+  };
+  const read = (id: string): Promise<CompanionStorageResponse> => guardCompanionExecutionSources({ type: 'message.get', id }, response(id), {
+    storage, revision: () => 0, valid: async source => {
+      if (++entered === 2) release();
+      await bothRoots;
+      return (await read(source.id === 'A' ? 'B' : 'A')).message?.content === 'ACTUAL_PRIVATE_BYTES';
+    },
+  });
+  let timer!: ReturnType<typeof setTimeout>;
+  try {
+    const results = await Promise.race([withCompanionExecutionValidation(() => Promise.all([read('A'), read('B')])),
+      new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error('Concurrent source cycle deadlocked')), 1000); timer.unref(); })]);
+    expect(results.every(result => result.message?.content !== 'ACTUAL_PRIVATE_BYTES')).toBe(true);
+  } finally { clearTimeout(timer); }
+});
+
+it('does not share a pending check across source mutation and retries rejected checks', async () => {
+  let revision = 0, release!: () => void;
+  const gate = new Promise<void>(resolve => { release = resolve; });
+  await withCompanionExecutionValidation(async () => {
+    const before = memoCompanionExecutionValidation('shared', () => revision, async () => { await gate; return true; });
+    revision++;
+    expect(await memoCompanionExecutionValidation('shared', () => revision, async () => false)).toBe(false);
+    release(); expect(await before).toBe(true);
+    expect(await memoCompanionExecutionValidation('shared', () => revision, async () => true)).toBe(false);
+    await expect(memoCompanionExecutionValidation('error', () => revision, async () => { throw new Error('read failed'); })).rejects.toThrow('read failed');
+    expect(await memoCompanionExecutionValidation('error', () => revision, async () => true)).toBe(true);
+  });
+});
 
 it.each([true, false])('keeps exact historical sent progress only while its derived body remains valid (valid=%s)', async available => {
   const actual = message('own_historical_sent');
@@ -71,7 +184,7 @@ it('does not return an old valid result after a concurrent source mutation compl
   const result = await guardCompanionExecutionSources({ type: 'message.get', id: actual.id }, { ok: true, message: message(actual.id) }, {
     revision: () => revision,
     storage: async command => {
-      if (command.type === 'execution.sources') return { ok: true, executionSources: [actual] };
+      if (command.type === 'execution.sources') return { ok: true, executionSources: [{ ...actual, ...(checks ? { invalidated: true, storageValidatedReadsetDigest: undefined } : {}) }] };
       if (command.type === 'execution.invalidate') { invalidations.push(command.id); return { ok: true }; }
       if (command.type === 'message.get') return { ok: true, message: message(actual.id) };
       throw new Error('Unexpected command');
@@ -79,14 +192,14 @@ it('does not return an old valid result after a concurrent source mutation compl
     valid: async (_proof, sqliteSourcesValidated) => {
       checks++;
       if (checks === 1) { expect(sqliteSourcesValidated).toBe(true); revision++; return true; }
-      expect(sqliteSourcesValidated).toBe(false); return false;
+      throw new Error('A revoked worker proof must be rejected before any old async body can be reused');
     },
   });
-  expect(checks).toBe(2); expect(invalidations).toEqual([actual.id]);
+  expect(checks).toBe(1); expect(invalidations).toEqual([actual.id]);
   expect(result.message?.content).not.toBe('ACTUAL_PRIVATE_BYTES');
 });
 
-it('falls back without treating concurrent progress as revocation or replaying an effect', async () => {
+it('refreshes SQL without treating concurrent progress as revocation or replaying an effect', async () => {
   let revision = 0;
   const actual = proof('derived_one');
   actual.storageValidatedReadsetDigest = createHash('sha256').update(JSON.stringify(actual.executionReadset)).digest('hex');
@@ -99,7 +212,76 @@ it('falls back without treating concurrent progress as revocation or replaying a
     storage, revision: () => revision, valid,
   });
   expect(result.message?.content).toBe('ACTUAL_PRIVATE_BYTES'); expect(valid).toHaveBeenCalledTimes(2);
-  expect(storage.mock.calls.map(([command]) => command.type)).toEqual(['execution.sources']);
+  expect(storage.mock.calls.map(([command]) => command.type)).toEqual(['execution.sources', 'execution.sources', 'execution.sources']);
+});
+
+it('refreshes the exact worker SQL attestation instead of recursively re-expanding history after a concurrent routine write', async () => {
+  let revision = 0;
+  const actual = proof('shared_history');
+  actual.storageValidatedReadsetDigest = createHash('sha256').update(JSON.stringify(actual.executionReadset)).digest('hex');
+  const storage = vi.fn(async (command: CompanionStorageCommand): Promise<CompanionStorageResponse> => {
+    if (command.type === 'execution.sources') return { ok: true, executionSources: [actual] };
+    throw new Error('The refresh must read provenance only');
+  });
+  const checks: boolean[] = [];
+  const result = await guardCompanionExecutionSources({ type: 'message.get', id: actual.id }, { ok: true, message: message(actual.id) }, {
+    storage, revision: () => revision,
+    valid: async (_proof, sqlite) => { checks.push(!!sqlite); revision++; return true; },
+  });
+  expect(result.message?.content).toBe('ACTUAL_PRIVATE_BYTES');
+  expect(checks).toEqual([true, true]);
+  expect(storage.mock.calls.map(([command]) => command.type)).toEqual(['execution.sources', 'execution.sources', 'execution.sources']);
+});
+
+it('does not use a refreshed SQL proof with a changed exact readset as the fast path', async () => {
+  let revision = 0, reads = 0;
+  const actual = proof('changed_history');
+  actual.storageValidatedReadsetDigest = createHash('sha256').update(JSON.stringify(actual.executionReadset)).digest('hex');
+  const replacement = { ...actual, executionReadset: captureCompanionExecutionReadset(scope, { sources: [{ id: 'different_source', conversationId: scope.conversationId, checksum: 'a'.repeat(64) }] }) };
+  replacement.storageValidatedReadsetDigest = createHash('sha256').update(JSON.stringify(replacement.executionReadset)).digest('hex');
+  const checks: boolean[] = [], invalidations: string[] = [];
+  await expect(guardCompanionExecutionSources({ type: 'message.get', id: actual.id }, { ok: true, message: message(actual.id) }, {
+    revision: () => revision,
+    storage: async command => {
+      if (command.type === 'execution.sources') return { ok: true, executionSources: [++reads === 1 ? actual : replacement] };
+      if (command.type === 'execution.invalidate') { invalidations.push(command.id); return { ok: true }; }
+      return { ok: true, message: message(actual.id) };
+    },
+    valid: async (_proof, sqlite) => { checks.push(!!sqlite); if (checks.length === 1) { revision++; return true; } return false; },
+  })).rejects.toThrow('暂不可稳定核验');
+  expect(checks).toEqual([true]);
+  expect(invalidations).toEqual([]);
+});
+
+it('treats an indeterminate worker attestation as temporary unavailability without tombstoning healthy content', async () => {
+  let revision = 0, reads = 0;
+  const actual = proof('healthy_external_write'), invalidations: string[] = [];
+  actual.storageValidatedReadsetDigest = createHash('sha256').update(JSON.stringify(actual.executionReadset)).digest('hex');
+  await expect(guardCompanionExecutionSources({ type: 'message.get', id: actual.id }, { ok: true, message: message(actual.id) }, {
+    revision: () => revision,
+    storage: async command => {
+      if (command.type === 'execution.sources') return { ok: true, executionSources: [{ ...actual, ...(reads++ ? { storageValidatedReadsetDigest: undefined } : {}) }] };
+      if (command.type === 'execution.invalidate') invalidations.push(command.id);
+      return { ok: true };
+    }, valid: async () => { revision++; return true; },
+  })).rejects.toThrow('暂不可稳定核验');
+  expect(reads).toBe(2); expect(invalidations).toEqual([]);
+});
+
+it('checks the final SQL state after async external guards and withholds a source revoked during that check', async () => {
+  let revision = 0, checks = 0, withdrawn = false;
+  const actual = proof('revoked_during_async_check'), invalidations: string[] = [];
+  actual.storageValidatedReadsetDigest = createHash('sha256').update(JSON.stringify(actual.executionReadset)).digest('hex');
+  const result = await guardCompanionExecutionSources({ type: 'message.get', id: actual.id }, { ok: true, message: message(actual.id) }, {
+    revision: () => revision,
+    storage: async command => {
+      if (command.type === 'execution.sources') return { ok: true, executionSources: [{ ...actual, ...(withdrawn ? { invalidated: true } : {}) }] };
+      if (command.type === 'execution.invalidate') { invalidations.push(command.id); return { ok: true }; }
+      return { ok: true, message: message(actual.id) };
+    }, valid: async () => { revision++; if (++checks === 2) withdrawn = true; return true; },
+  });
+  expect(checks).toBe(2); expect(invalidations).toEqual([actual.id]);
+  expect(result.message?.content).not.toBe('ACTUAL_PRIVATE_BYTES');
 });
 
 it('collects only real host source fields and ignores prose that resembles a provenance receipt', () => {
@@ -126,6 +308,7 @@ it('rereads a withdrawn source using the real new corpus and redacts historical 
   const invalidated = vi.fn();
   const result = await guardCompanionExecutionSources({ type: 'message.get', id: 'derived_one' }, raw, { storage, valid: async () => false, invalidated });
   expect(JSON.stringify(result)).not.toContain('ACTUAL_PRIVATE_BYTES');
+  expect(result.message?.content).toBe(''); expect(result.message?.sourceUnavailable).toBe('execution_source_changed');
   expect(result.memoryInvalidatedCompanionIds).toEqual(['alice']); expect(invalidated).toHaveBeenCalledOnce();
   expect(commands.map(command => command.type)).toEqual(['execution.sources', 'execution.invalidate', 'message.get']);
   commands.splice(0);

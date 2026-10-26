@@ -80,6 +80,29 @@ export class CompanionSourceAccess {
         return this.memo(JSON.stringify(['memory-visible', scope.companionId, scope.conversationId, scope.beforeSequence ?? null,
           note.id, note.version, note.companionId, note.sourceConversationId]), validate);
     }
+    /** Historical passive input survives ordinary edits; original source
+     * witnesses and explicit withdrawal remain authoritative. */
+    frozenMemoryValid(scope: CompanionSourceScope, memory: NonNullable<CompanionExecutionReadset['frozenMemories']>[number]): boolean {
+        return this.memo(JSON.stringify(['frozen-memory', scope.companionId, scope.conversationId, scope.beforeSequence ?? null, memory]), () => {
+            try {
+                this.requireScope(scope);
+                const found = this.statement('SELECT data FROM vcp_memory_notes WHERE id=? AND companion_id=?').get(memory.id, scope.companionId);
+                if (!found) return false;
+                const note = json<{ status: string }>(row(found).data);
+                if (note.status === 'forgotten' || !memory.sources.length) return false;
+                for (const reference of memory.sources) {
+                    if (!this.statement('SELECT 1 FROM vcp_note_source_history WHERE note_id=? AND message_id=?').get(memory.id, reference.id)) return false;
+                    const source = this.statement('SELECT * FROM messages WHERE id=?').get(reference.id);
+                    if (!source || row(source).conversation_id !== reference.conversationId
+                        || companionSourceChecksum(String(row(source).content)) !== reference.checksum) return false;
+                    const entrance = { ...scope, conversationId: reference.conversationId };
+                    this.requireScope(entrance);
+                    if (!this.visible(entrance, row(source))) return false;
+                }
+                return true;
+            } catch { return false; }
+        });
+    }
     /** Attest only a current stored message's exact typed readset. Main still
      * checks async file/model/context dependencies and its mutation generation. */
     validatedMessageReadsetDigest(id: string, expected: CompanionExecutionReadset): string | undefined {
@@ -91,31 +114,51 @@ export class CompanionSourceAccess {
             const bytes = JSON.stringify(expected);
             if (!source || row(source).author_id !== expected.companionId || row(source).conversation_id !== expected.conversationId
                 || !readset || JSON.stringify(readset) !== bytes || !this.formal(row(source))) return;
-            // Match Main's former exact SQLite ports, including their entrance
-            // and memory cursor. formal() also validates ancestors, but its
-            // owner entrance alone must not certify a departed source room or
-            // a note newer than the captured dialogue boundary.
+            if (!this.readsetScopeValid(readset) || before !== this.validationStamp()) return;
+            return companionSourceChecksum(bytes);
+        });
+    }
+    /** Exact action checkpoint projection, with the same SQL source/cursor
+     * checks as completed messages. Main still validates live collaboration,
+     * thought leases, model/context and external-file dependencies. */
+    validatedActionReadsetDigest(id: string, expected: CompanionExecutionReadset): string | undefined {
+        return this.withValidation(() => {
+            const before = this.validationStamp();
+            const action = this.statement('SELECT companion_id,conversation_id,status FROM actions WHERE id=?').get(id);
+            const stored = this.statement("SELECT CASE WHEN json_valid(value) THEN json_extract(value,'$.executionReadset') END AS value FROM metadata WHERE key=?").get('task-checkpoint/' + id);
+            const readset = stored ? executionReadsetFromJson(row(stored).value == null ? undefined : String(row(stored).value)) : undefined;
+            const bytes = JSON.stringify(expected);
+            if (!action || row(action).companion_id !== expected.companionId || row(action).conversation_id !== expected.conversationId
+                || !['succeeded', 'failed', 'cancelled'].includes(String(row(action).status)) || !readset || JSON.stringify(readset) !== bytes
+                || !this.executionValid('action', id, expected.companionId, expected.conversationId, readset)
+                || !this.readsetScopeValid(readset) || before !== this.validationStamp()) return;
+            return companionSourceChecksum(bytes);
+        });
+    }
+    private readsetScopeValid(readset: CompanionExecutionReadset): boolean {
+            // Match Main's exact SQLite ports, including each room entrance
+            // and the captured memory cursor. An owner entrance alone cannot
+            // certify a departed source room or a note newer than that cursor.
             for (const reference of readset.sources) {
                 const scope = { companionId: readset.companionId, conversationId: reference.conversationId };
                 const current = this.statement('SELECT * FROM messages WHERE id=?').get(reference.id);
                 if (!current || row(current).conversation_id !== reference.conversationId
-                    || companionSourceChecksum(String(row(current).content)) !== reference.checksum) return;
-                try { this.requireScope(scope); } catch { return; }
-                if (!this.visible(scope, row(current))) return;
+                    || companionSourceChecksum(String(row(current).content)) !== reference.checksum) return false;
+                try { this.requireScope(scope); } catch { return false; }
+                if (!this.visible(scope, row(current))) return false;
             }
             const memoryScope = { companionId: readset.companionId, conversationId: readset.conversationId, beforeSequence: readset.beforeSequence };
-            if (readset.memories.some(note => this.memoryValid?.(readset.companionId, note.id, note.version, memoryScope) !== true)) return;
+            if (readset.memories.some(note => this.memoryValid?.(readset.companionId, note.id, note.version, memoryScope) !== true)) return false;
+            if (readset.frozenMemories?.some(memory => !this.frozenMemoryValid(memoryScope, memory))) return false;
             for (const reference of readset.topics) {
                 const scope = { companionId: readset.companionId, conversationId: reference.conversationId };
-                try { this.requireScope(scope); } catch { return; }
+                try { this.requireScope(scope); } catch { return false; }
                 const found = this.statement('SELECT data FROM companion_topics WHERE id=? AND conversation_id=?').get(reference.topicId, reference.conversationId);
                 const topic = found ? json<CompanionTopic>(row(found).data) : undefined;
                 if (!topic || topic.deletedAt || !topic.participantIds.includes(readset.companionId) && !topic.invitedIds.includes(readset.companionId)
-                    || !this.checkpointSourcesValid(scope, reference.sourceMessageIds)) return;
+                    || !this.checkpointSourcesValid(scope, reference.sourceMessageIds)) return false;
             }
-            if (before !== this.validationStamp()) return;
-            return companionSourceChecksum(bytes);
-        });
+            return true;
     }
     private executionValid(kind: 'action' | 'message', id: string, owner: string, room: string, readset: unknown): boolean {
         const key = `${kind}:${id}`;
@@ -127,6 +170,7 @@ export class CompanionSourceAccess {
                 const source = this.statement('SELECT * FROM messages WHERE id=?').get(sourceId);
                 return !!source && String(row(source).conversation_id) === sourceRoom && companionSourceChecksum(String(row(source).content)) === checksum && this.visible(this.ownerScope(owner), row(source));
             }, memoryValid: (owner, id, version) => this.memoryValid?.(owner, id, version) === true,
+            frozenMemoryValid: (owner, memory) => this.frozenMemoryValid({ companionId: owner, conversationId: room }, memory),
             topicSourcesValid: (owner, conversationId, ids) => this.checkpointSourcesValid({ companionId: owner, conversationId }, ids),
         }); } finally { this.executionPath.delete(key); }
         });
@@ -204,15 +248,15 @@ export class CompanionSourceAccess {
                 result?: string;
                 error?: string;
             }>(row(action).data);
-            const checkpoint = this.statement('SELECT value FROM metadata WHERE key=?').get('task-checkpoint/' + result.id);
-            const readset = checkpoint ? json<{ executionReadset?: unknown }>(row(checkpoint).value).executionReadset : undefined;
+            const checkpoint = this.statement("SELECT CASE WHEN json_valid(value) THEN json_extract(value,'$.executionReadset') END AS value FROM metadata WHERE key=?").get('task-checkpoint/' + result.id);
+            const readset = checkpoint ? executionReadsetFromJson(row(checkpoint).value == null ? undefined : String(row(checkpoint).value)) : undefined;
             return !!(result.result || result.error) && this.executionValid('action', result.id, result.companionId, result.conversationId, readset);
         }
-        const loop = this.statement('SELECT value FROM metadata WHERE key=?').get('message-loop/' + source.id);
+        // A completed loop can contain the entire model context and tool log.
+        // Source admission needs its status only, never those historical bytes.
+        const loop = this.statement("SELECT json_extract(value,'$.status') AS status FROM metadata WHERE key=?").get('message-loop/' + source.id);
         if (loop)
-            return json<{
-                status: string;
-            }>(row(loop).value).status === 'done';
+            return row(loop).status === 'done';
         const fingerprint = source.request_fingerprint ? json<{
             loopStep?: number;
         }>(source.request_fingerprint) : undefined;
@@ -283,11 +327,9 @@ export class CompanionSourceAccess {
         if (source.author_id !== 'user' && source.reply_to_id)
             ancestors.add(String(source.reply_to_id));
         if (source.author_id !== 'user') {
-            const loop = this.statement('SELECT value FROM metadata WHERE key=?').get('message-loop/' + id);
+            const loop = this.statement("SELECT json_extract(value,'$.sourceMessageId') AS source_message_id FROM metadata WHERE key=?").get('message-loop/' + id);
             if (loop)
-                ancestors.add(json<{
-                    sourceMessageId: string;
-                }>(row(loop).value).sourceMessageId);
+                if (typeof row(loop).source_message_id === 'string') ancestors.add(String(row(loop).source_message_id));
         }
         if (source.action_id) {
             const action = this.statement('SELECT data FROM actions WHERE id=?').get(source.action_id);

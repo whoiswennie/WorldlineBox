@@ -19,7 +19,7 @@ const AnswerMarkdown = memo(function AnswerMarkdown({ text, onOpenLink, imageLab
   onOpenLink?: (url: string) => void;
   imageLabel: string;
 }) {
-  return <div className="capture-answer-markdown"><Markdown skipHtml remarkPlugins={[remarkGfm]} urlTransform={safeWebUrl} components={{
+  return <div className="capture-answer-markdown"><Markdown skipHtml remarkPlugins={[[remarkGfm, { singleTilde: false }]]} urlTransform={safeWebUrl} components={{
     a: ({ href, children }) => href && onOpenLink
       ? <button type="button" className="capture-answer-link" title={href} onClick={() => onOpenLink(href)}>{children}</button>
       : <span>{children}</span>,

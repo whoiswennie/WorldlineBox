@@ -8,6 +8,17 @@ export class VcpMemoryProcessBroker {
     if (!Number.isSafeInteger(limit) || limit < 1) throw new Error('Invalid VCP process budget.');
   }
   acquire(key: string, input: { assertCurrent(): void; deadline: number; open(identity: symbol): { stop(): Promise<void> } }): Promise<{ release(): void }> {
+    // Opening a new scope can wait minutes for an occupied slot. Reusing an
+    // existing scope consumes no additional process, so it must not join that
+    // admission tail. The synchronous check/reservation also excludes LRU
+    // retirement before its stop callback can run.
+    try {
+      if (this.closed) throw new Error('VCP process broker is closed.');
+      input.assertCurrent();
+      if (Date.now() >= input.deadline) throw new Error('VCP memory process pool remained busy.');
+      const ready = this.entries.get(key);
+      if (ready && !ready.retiring) return Promise.resolve(this.reserve(ready));
+    } catch (error) { return Promise.reject(error); }
     const pending = this.tail.then(async () => {
       const current = () => { if (this.closed) throw new Error('VCP process broker is closed.'); input.assertCurrent();
         if (Date.now() >= input.deadline) throw new Error('VCP memory process pool remained busy.'); };
@@ -37,11 +48,14 @@ export class VcpMemoryProcessBroker {
       }
       current();
       if (entry.retiring) throw new Error('VCP process is retiring.');
-      entry.busy++; entry.used = Date.now();
-      let released = false;
-      return { release: () => { if (released) return; released = true; entry!.busy--; entry!.used = Date.now(); } };
+      return this.reserve(entry);
     });
     this.tail = pending.catch(() => undefined); return pending;
+  }
+  private reserve(entry: { busy: number; used: number }): { release(): void } {
+    entry.busy++; entry.used = Date.now();
+    let released = false;
+    return { release: () => { if (released) return; released = true; entry.busy--; entry.used = Date.now(); } };
   }
   /** Synchronous exclusion precedes sending close/kill. */
   beginRetirement(key: string, identity: symbol): void {

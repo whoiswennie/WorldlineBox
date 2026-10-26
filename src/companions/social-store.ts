@@ -4,6 +4,8 @@ import type { CompanionContactState } from '../shared/companion-contact';
 import type { CompanionConnection } from './store';
 import type { CompanionMessage } from '../shared/companions';
 import type { AppendCompanionMessage, CompanionStorageCommand, CompanionStorageResponse } from '../shared/companion-storage';
+import type { CompanionUserStop } from '../shared/companion-task-stop';
+import type { CompanionTaskControlResult } from '../shared/companion-task-control';
 import type { CompanionWorldScope } from '../shared/companion-world';
 import type { CompanionSocialConversation, CompanionSocialConversationPage, CompanionSocialMessage, CompanionSocialMessagePage, CompanionSocialDays, CompanionSocialJob, CompanionSocialFlowPage, CompanionSocialFlowEvent, CompanionSocialGraph } from '../shared/companion-social';
 import { companionSearchTokens, companionSearchMatch } from '../shared/companion-search';
@@ -692,6 +694,29 @@ export class CompanionSocialStore {
       this.queue(source, proof.targetId, childId, 1, source.channel, false, 'followup', proof);
     }).immediate();
   }
+  stopJob(companionId: string, id: string, stop: CompanionUserStop): CompanionTaskControlResult {
+    return this.db.transaction(() => {
+      const found = this.db.prepare('SELECT companion_id,data FROM companion_social_jobs WHERE id=?').get(id);
+      if (!found || row(found).companion_id !== companionId) throw new Error('伙伴交流任务不存在或不属于此伙伴。');
+      const job = parse<StoredJob>(row(found).data);
+      if (job.companionId !== companionId) throw new Error('伙伴交流任务的归属不一致。');
+      const children = this.db.prepare("SELECT id FROM actions WHERE companion_id=? AND status IN('queued','running','interrupted') AND json_extract(data,'$.thought.kind')='peer' AND json_extract(data,'$.thought.jobId')=?").all(companionId, id) as Row[];
+      const result = { companionId, kind: 'social' as const, id, conversationId: job.conversationId, title: '回应伙伴来信',
+        sourceMessageId: job.sourceMessageId, stopped: !!job.stop, actionIds: children.map(child => String(child.id)), activityTaskIds: [] };
+      if (job.status === 'done' || job.status === 'cancelled' || job.terminal) return result;
+      job.status = 'cancelled'; job.terminal = true; job.stop = stop; job.updatedAt = job.finishedAt = stop.requestedAt;
+      delete job.leaseToken; delete job.error;
+      this.saveJob(job); this.clearCommunication(companionId, 'job:' + id);
+      if (job.urgent) this.options.endInterrupt?.(companionId, job.sourceMessageId);
+      // A shared face-to-face room may still contain unrelated live replies.
+      this.db.prepare("DELETE FROM companion_social_communication WHERE companion_id=? AND json_extract(data,'$.channel')='face_to_face' AND json_extract(data,'$.conversationId')=?").run(companionId, job.conversationId);
+      if (!this.db.prepare("SELECT 1 FROM companion_social_jobs WHERE id!=? AND json_extract(data,'$.chainId')=? AND status IN('pending','running','failed') AND COALESCE(json_extract(data,'$.terminal'),0)=0 LIMIT 1").get(id, job.chainId)) this.endChain(job.chainId);
+      return { ...result, stopped: true };
+    }).immediate();
+  }
+  stopNotification(companionId: string, id: string, stop: CompanionUserStop): CompanionTaskControlResult {
+    return this.continuity.stopNotification(companionId, id, stop);
+  }
   private saveJob(job: StoredJob, leaseUntil?: string): void {
     this.db.prepare('UPDATE companion_social_jobs SET status=?,lease_until=?,data=? WHERE id=?').run(job.status, leaseUntil ?? null, JSON.stringify(job), job.id);
     this.replies.terminal(job);
@@ -734,6 +759,7 @@ export class CompanionSocialStore {
     return { id: job.id, companionId: job.companionId, conversationId: job.conversationId, sourceMessageId: job.sourceMessageId,
       throughSequence: job.throughSequence, chainId: job.chainId, remainingTurns: job.remainingTurns, memberIds: job.memberIds,
       channel: job.channel, urgent: job.urgent, status: job.status, attempts: job.attempts, leaseToken: job.leaseToken, typingNotBefore: job.typingNotBefore, createdAt: job.createdAt,
+      ...(job.stop ? { stop: job.stop } : {}), ...(job.updatedAt ? { updatedAt: job.updatedAt } : {}), ...(job.finishedAt ? { finishedAt: job.finishedAt } : {}),
       origin: this.continuity.forChain(job.chainId) };
   }
   private phoneBusy(owner: string, leaseId: string, allowedLeaseId = ''): boolean {

@@ -35,7 +35,7 @@ for (const output of [stageRoot, hostRoot]) {
 }
 await cp(path.join(projectRoot, 'vendor/vcp-memory'), stageRoot, { recursive: true, dereference: true,
   filter: source => path.basename(source) !== 'node_modules' });
-for (const file of ['runtime.cjs', 'worker.cjs', 'peripherals.cjs', 'cold-runtime.cjs', 'cold-worker.cjs', 'dream-runtime.cjs']) await cp(path.join(projectRoot, 'src/main/vcp-memory', file), path.join(hostRoot, file));
+for (const file of ['runtime.cjs', 'worker.cjs', 'peripherals.cjs', 'record-catalog.cjs', 'cold-runtime.cjs', 'cold-worker.cjs', 'dream-runtime.cjs']) await cp(path.join(projectRoot, 'src/main/vcp-memory', file), path.join(hostRoot, file));
 
 const projectRequire = createRequire(path.join(projectRoot, 'package.json'));
 const stagedPackages = [];

@@ -6,6 +6,8 @@ import Database from 'better-sqlite3';
 import { afterEach, expect, it, vi } from 'vitest';
 import { CompanionsStore, type CompanionConnection } from '../../src/companions/store';
 import { CompanionSourceAccess } from '../../src/companions/source-access';
+import { CompanionExecutionSourceStore } from '../../src/companions/execution-source-store';
+import type { CompanionMemoryStore } from '../../src/companions/memory-store';
 import { captureCompanionExecutionReadset } from '../../src/main/companions/execution-evidence';
 import { executionMessageReadsetKey } from '../../src/companions/execution-source-access';
 import { removeOwnedDirectorySync } from '../../src/main/vcp-memory/filesystem';
@@ -42,6 +44,66 @@ function fixture(count: number) {
   return { root, store, db, alice, bob, base, nodes, bind, access, getQueries: () => queries, resetQueries: () => { queries = 0; },
     onRead: (callback: (id: string) => void) => { onRead = callback; } };
 }
+
+it('projects and shares exact action readsets without parsing a large unrelated checkpoint log', () => {
+  const f = fixture(0), readset = captureCompanionExecutionReadset(f.alice, { context: { user: JSON.stringify({ messages: [f.base] }) } });
+  const action = f.store.request({ type: 'action.create', action: { ...f.alice, sourceMessageId: f.base.id, title: '只核对执行读集', status: 'queued' },
+    checkpoint: { prompt: '真实任务输入', executionReadset: readset } }).action!;
+  f.store.request({ type: 'action.update', id: action.id, patch: { status: 'succeeded', result: '真实动作结果' } });
+  const source = f.store.request({ type: 'messages', conversationId: f.alice.conversationId }).messages!.find(message => message.actionId === action.id)!;
+  const children = Array.from({ length: 4 }, (_, index) => f.store.appendMessage({ conversationId: f.alice.conversationId, authorId: 'alice',
+    content: `已读结果的派生回复 ${index}`, replyDirective: 'none',
+    executionReadset: captureCompanionExecutionReadset(f.alice, { context: { user: JSON.stringify({ messages: [source] }) } }) }));
+  const ids = [source, ...children].map(message => message.id);
+  const expected = f.store.request({ type: 'execution.sources', sourceMessageIds: ids }).executionSources!;
+  // A valid checkpoint can carry 100 large, unrelated execution supplements.
+  // Its source proof must remain byte-for-byte identical and stay a small read.
+  f.store.request({ type: 'checkpoint.save', id: action.id, checkpoint: { prompt: '真实任务输入', executionReadset: readset, waitForActionIds: [],
+    supplements: Array.from({ length: 100 }, (_, index) => ({ id: 'packet_' + index, mode: 'queue' as const, content: 'UNRELATED_DSH_TRACE_'.repeat(800).slice(0, 15000) })) } });
+  let projectedQueries = 0;
+  const counted = { prepare: (sql: string) => {
+    if (sql.includes("json_extract(value,'$.executionReadset')")) projectedQueries++;
+    return f.db.prepare(sql);
+  } } as unknown as CompanionConnection;
+  const resolver = new CompanionExecutionSourceStore(counted, { sources: f.access } as CompanionMemoryStore);
+  const parsed = vi.spyOn(JSON, 'parse');
+  try {
+    const actual = resolver.resolve(ids);
+    expect(actual).toEqual(expected);
+    expect(projectedQueries).toBe(1); // Five roots share the same exact action readset.
+    expect(parsed.mock.calls.some(([value]) => typeof value === 'string' && value.length > 1_000_000)).toBe(false);
+  } finally { parsed.mockRestore(); }
+  f.store.request({ type: 'execution.invalidate', kind: 'action', id: action.id, companionId: 'alice' });
+  expect(resolver.resolve(ids).find(proof => proof.kind === 'action')?.invalidated).toBe(true);
+  expect(projectedQueries).toBe(2); // No metadata or validity cache survives a request.
+});
+
+it('reads status and original request from large completed loops without parsing their saved model contexts', () => {
+  const f = fixture(8), largeContext = 'UNRELATED_FROZEN_MODEL_CONTEXT_'.repeat(50000);
+  for (const message of f.nodes.slice(1)) f.db.prepare('INSERT INTO metadata(key,value) VALUES(?,?)').run('message-loop/' + message.id,
+    JSON.stringify({ status: 'done', sourceMessageId: f.base.id, context: { system: '', user: largeContext } }));
+  const parsed = vi.spyOn(JSON, 'parse');
+  try {
+    expect(f.access.filter(f.alice, f.nodes.slice(-2).map(node => node.id))).toHaveLength(2);
+    const resolver = new CompanionExecutionSourceStore(f.db, { sources: f.access } as CompanionMemoryStore);
+    expect(resolver.resolve(f.nodes.slice(1).map(node => node.id))).toHaveLength(8);
+    expect(parsed.mock.calls.some(([value]) => typeof value === 'string' && value.includes('UNRELATED_FROZEN_MODEL_CONTEXT_'))).toBe(false);
+  } finally { parsed.mockRestore(); }
+});
+
+it('resolves each shared adjacency once for many roots and retains all roots affected by a withdrawn ancestor', () => {
+  const f = fixture(24), roots = f.nodes.slice(1), queries: string[] = [];
+  const counted = { prepare: (sql: string) => { queries.push(sql); return f.db.prepare(sql); } } as unknown as CompanionConnection;
+  const resolver = new CompanionExecutionSourceStore(counted, { sources: f.access } as CompanionMemoryStore);
+  const proofs = resolver.resolve(roots.map(message => message.id));
+  expect(proofs).toHaveLength(24);
+  expect(queries.filter(sql => sql === 'SELECT action_id,author_id,conversation_id FROM messages WHERE id=?')).toHaveLength(25);
+  for (const [index, message] of roots.entries()) {
+    expect(proofs.find(proof => proof.id === message.id)?.sourceMessageIds).toEqual(roots.slice(index).map(root => root.id));
+  }
+  f.store.request({ type: 'execution.invalidate', kind: 'message', id: roots[3]!.id, companionId: 'alice' });
+  expect(resolver.resolve(roots.map(message => message.id)).find(proof => proof.id === roots[3]!.id)?.invalidated).toBe(true);
+});
 function noteFixture(count: number) {
   const f = fixture(0), source = f.base;
   const original = f.store.request({ type: 'memory.record', ...f.alice, candidate: { content: source.content,
@@ -232,6 +294,35 @@ it('attests only current exact stored message readsets in one jointly validated 
   for (const proof of proofs) expect(proof.storageValidatedReadsetDigest).toBe(hash(JSON.stringify(proof.executionReadset)));
   f.db.prepare('UPDATE messages SET content=?,revision=revision+1 WHERE id=?').run('ATTESTATION_CHANGED_ORIGINAL', f.base.id);
   expect(f.store.request({ type: 'execution.sources', sourceMessageIds: [f.nodes.at(-1)!.id] }).executionSources?.every(proof => !proof.storageValidatedReadsetDigest)).toBe(true);
+});
+it('attests only a completed action exact checkpoint and rechecks actual source bytes and ownership', () => {
+  const f = fixture(4), readset = captureCompanionExecutionReadset(f.alice, { context: { user: JSON.stringify({ messages: f.nodes }) } });
+  const action = f.store.request({ type: 'action.create', action: { ...f.alice, sourceMessageId: f.base.id, title: '验证完整动作来源', status: 'queued' },
+    checkpoint: { prompt: '真实请求', executionReadset: readset } }).action!;
+  expect(f.access.validatedActionReadsetDigest(action.id, readset)).toBeUndefined();
+  f.store.request({ type: 'action.update', id: action.id, patch: { status: 'succeeded', result: '完成核验' } });
+  const result = f.store.request({ type: 'messages', conversationId: f.alice.conversationId }).messages!.find(message => message.actionId === action.id)!;
+  const actual = () => f.store.request({ type: 'execution.sources', sourceMessageIds: [result.id] }).executionSources!.find(proof => proof.kind === 'action' && proof.id === action.id)!;
+  expect(actual().storageValidatedReadsetDigest).toBe(hash(JSON.stringify(readset)));
+  expect(f.access.validatedActionReadsetDigest(action.id, { ...readset, companionId: 'bob' })).toBeUndefined();
+  f.db.prepare('UPDATE messages SET content=?,revision=revision+1 WHERE id=?').run('ACTION_SOURCE_CHANGED', f.base.id);
+  expect(actual().storageValidatedReadsetDigest).toBeUndefined();
+});
+it('keeps action attestations bound to the original memory cursor and source-room entrance', () => {
+  const f = noteFixture(0), group = f.store.request({ type: 'conversation.create-group', title: '动作的群聊资料', memberIds: ['alice', 'bob'] }).conversation!;
+  const source = f.store.appendMessage({ conversationId: group.id, authorId: 'user', content: 'ACTION_GROUP_SOURCE', replyDirective: 'none' });
+  const readset = captureCompanionExecutionReadset(f.alice, { context: { user: JSON.stringify({ messages: [source] }) } });
+  const action = f.store.request({ type: 'action.create', action: { ...f.alice, sourceMessageId: f.base.id, title: '保持动作来源范围', status: 'queued' },
+    checkpoint: { prompt: '真实请求', executionReadset: readset } }).action!;
+  f.store.request({ type: 'action.update', id: action.id, patch: { status: 'succeeded', result: '实际结果' } });
+  expect(f.access.validatedActionReadsetDigest(action.id, readset)).toBeDefined();
+  f.store.request({ type: 'conversation.update', id: group.id, memberIds: ['bob'] });
+  expect(f.access.validatedActionReadsetDigest(action.id, readset)).toBeUndefined();
+  const beyond = captureCompanionExecutionReadset({ ...f.alice, beforeSequence: 0 }, { memories: [{ id: f.original.id, version: f.original.version }] });
+  const cursorAction = f.store.request({ type: 'action.create', action: { ...f.alice, sourceMessageId: f.base.id, title: '保持动作记忆游标', status: 'queued' },
+    checkpoint: { prompt: '真实请求', executionReadset: beyond } }).action!;
+  f.store.request({ type: 'action.update', id: cursorAction.id, patch: { status: 'succeeded', result: '实际结果' } });
+  expect(f.access.validatedActionReadsetDigest(cursorAction.id, beyond)).toBeUndefined();
 });
 it('does not attest a forged expected readset or one withdrawn during its synchronous validation', () => {
   const f = fixture(12), leaf = f.nodes.at(-1)!;

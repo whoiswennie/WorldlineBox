@@ -89,12 +89,14 @@ export class CompanionMemoryStore {
         this.consolidation = new CompanionMemoryConsolidationStore(db, {
           load: id => this.load(id), valid: note => this.visible(this.sources.ownerScope(note.companionId), note),
           persist: note => this.persist(note), enqueue: (note, operation) => this.enqueue(note, operation), invalidate: owner => this.invalidateOwner(owner),
+          withdraw: id => this.withdrawNote(id, 'invalid'),
           record: (command, automatic) => this.recordJournal(command, command.candidate, undefined, 'automatic', command.expectedProhibitionRevision,
             false, { consolidation: 'source_version_graph', ...automatic }),
         });
       }
     initialize(): void {
         this.sources.initialize();
+        this.consolidation.initialize();
         initializeTopicParticipationReceipts(this.db);
         this.db.exec(`
       CREATE TABLE IF NOT EXISTS vcp_memory_scopes(scope_id TEXT PRIMARY KEY,companion_id TEXT NOT NULL,conversation_id TEXT NOT NULL,revision INTEGER NOT NULL,state TEXT NOT NULL,updated_at TEXT NOT NULL);
@@ -825,6 +827,7 @@ export class CompanionMemoryStore {
         return this.db.transaction(() => {
             const now = Date.now();
             this.db.prepare("UPDATE vcp_memory_outbox SET status='pending',lease_token=NULL,lease_until=NULL WHERE status='running' AND lease_until<=?").run(now);
+            this.consolidation.reconcilePending();
             const found = this.db.prepare(`SELECT o.* FROM vcp_memory_outbox o WHERE o.status IN('pending','failed') AND o.next_attempt<=? AND o.attempts<8 AND NOT EXISTS(SELECT 1 FROM vcp_memory_outbox active WHERE active.scope_id=o.scope_id AND active.status='running' AND active.lease_until>?) ${companionId ? 'AND o.companion_id=?' : ''} ORDER BY o.ordinal LIMIT 1`).get(...(companionId ? [now, now, companionId] : [now, now]));
             if (!found)
                 return;
@@ -853,7 +856,8 @@ export class CompanionMemoryStore {
             return { id: String(entry.id), companionId: note.companionId, scopeId: note.scopeId, noteId: note.id, noteVersion: note.version, operation: entry.operation as 'remember' | 'forget', note, leaseToken: token, attempts: Number(entry.attempts) + 1 };
         }).immediate();
     }
-    completeOutbox(id: string, token: string, indexed: boolean, sourceFile?: string): void { this.db.transaction(() => { const entry = this.leased('vcp_memory_outbox', id, token), note = this.load(String(entry.note_id));
+    completeOutbox(id: string, token: string, indexed: boolean, sourceFile?: string): { state: 'completed' | 'stale'; reason?: string } { return this.db.transaction(() => { const entry = this.leased('vcp_memory_outbox', id, token), note = this.load(String(entry.note_id));
+      let disposition: { state: 'completed' | 'stale'; reason?: string } = { state: 'completed' };
       if (entry.operation === 'remember' && note.version === Number(entry.note_version) && note.sources.some(source => this.fictionalSource(source.messageId) || this.deletedTopicSource(source.messageId))) this.withdrawNote(note.id, 'invalid');
       if (entry.operation === 'remember' && note.version === Number(entry.note_version) && this.visible(this.sources.ownerScope(note.companionId), note)) {
         if (!indexed)
@@ -862,10 +866,14 @@ export class CompanionMemoryStore {
         note.sourceFile = sourceFile;
         note.updatedAt = stamp();
         this.persist(note);
-        this.consolidation.publish(note);
-    } this.db.prepare("UPDATE vcp_memory_outbox SET status='done',error=NULL,lease_token=NULL,lease_until=NULL WHERE id=?").run(id); if (!this.db.prepare("SELECT 1 FROM vcp_memory_outbox WHERE scope_id=? AND status!='done' LIMIT 1").get(note.scopeId))
-        this.db.prepare("UPDATE vcp_memory_scopes SET state='ready',updated_at=? WHERE scope_id=?").run(stamp(), note.scopeId); }).immediate(); }
+    }
+      if (entry.operation === 'remember') disposition = this.consolidation.publish(note);
+      this.db.prepare("UPDATE vcp_memory_outbox SET status=?,error=?,lease_token=NULL,lease_until=NULL WHERE id=?").run(disposition.state === 'stale' ? 'stale' : 'done', disposition.reason ?? null, id);
+      if (!this.db.prepare("SELECT 1 FROM vcp_memory_outbox WHERE scope_id=? AND status NOT IN('done','stale','cancelled') LIMIT 1").get(note.scopeId))
+        this.db.prepare("UPDATE vcp_memory_scopes SET state='ready',updated_at=? WHERE scope_id=?").run(stamp(), note.scopeId);
+      return disposition; }).immediate(); }
     failOutbox(id: string, token: string, error: string, retryAfterMs = 30000): void { this.leased('vcp_memory_outbox', id, token); this.db.prepare("UPDATE vcp_memory_outbox SET status='failed',error=?,next_attempt=?,lease_token=NULL,lease_until=NULL WHERE id=?").run(error, Date.now() + retryAfterMs, id); }
+    deferOutbox(id: string, token: string, retryAfterMs = 1000): void { this.leased('vcp_memory_outbox', id, token); this.db.prepare("UPDATE vcp_memory_outbox SET status='pending',attempts=MAX(0,attempts-1),error=NULL,next_attempt=?,lease_token=NULL,lease_until=NULL WHERE id=?").run(Date.now() + retryAfterMs, id); }
     policies(companionId: string): NonNullable<CompanionStorageResponse['memoryPolicies']> {
         if (!this.db.prepare('SELECT 1 FROM companions WHERE id=? AND deleted_at IS NULL').get(companionId)) throw new Error('伙伴不存在。');
         const legacy: NonNullable<CompanionStorageResponse['memoryPolicies']> = rows(this.db.prepare('SELECT * FROM vcp_source_policy_holds WHERE companion_id=? ORDER BY created_at,id').all(companionId)).map(rule => ({
@@ -925,7 +933,7 @@ export class CompanionMemoryStore {
             pending: count('pending'), running: count('running'), failed: count('failed') + deliveryFailures, completed: count('done'),
             memories: notes.filter(note => !['invalid', 'forgotten'].includes(note.status)).length,
             forgotten: notes.filter(note => note.status === 'forgotten').length,
-            indexed: notes.filter(note => note.status === 'indexed').length, pendingIndex: notes.filter(note => note.status === 'queued').length,
+            indexed: notes.filter(note => note.status === 'indexed').length, pendingIndex: notes.filter(note => note.status === 'queued' && !note.archivedAt).length,
             messageWatermark, captureWatermark: pending === null ? messageWatermark : Math.max(0, Number(pending) - 1),
             backfillThrough: Number(row(this.db.prepare("SELECT value FROM metadata WHERE key='vcp-capture-backfill-through'").get()).value),
             backfillTarget: Number(row(this.db.prepare("SELECT value FROM metadata WHERE key='vcp-capture-backfill-target'").get()).value),
@@ -984,18 +992,19 @@ export class CompanionMemoryStore {
             if (found) {
                 const receipt = row(found);
                 if (receipt.companion_id !== command.companionId || receipt.conversation_id !== command.conversationId || receipt.payload_hash !== signature) throw new Error('记忆操作身份已被不同请求使用。');
-                const response = json<{ ok: boolean; notes: Array<{ id: string; version: number }> }>(receipt.response);
+                const response = json<{ ok: boolean; notes: Array<{ id: string; version: number }>; deferred?: CompanionStorageResponse['memoryConsolidationDeferred'] }>(receipt.response);
                 const memories = response.notes.map(previous => {
                     const current = this.load(previous.id);
                     this.sources.assertProhibitionRevision({ ...command, conversationId: current.sourceConversationId }, expectedProhibitionRevision);
                     if (current.version !== previous.version || !this.visible(command, current)) throw new Error('记忆操作的已提交结果或来源已变化。');
                     return current;
                 });
-                return { ok: response.ok, memories };
+                return { ok: response.ok, memories, ...(response.deferred ? { memoryConsolidationDeferred: response.deferred } : {}) };
             }
             const response = run();
             this.db.prepare('INSERT INTO vcp_operation_receipts VALUES(?,?,?,?,?)').run(operationId, command.companionId, command.conversationId, signature,
-              JSON.stringify({ ok: response.ok, notes: (response.memories ?? []).map(note => ({ id: note.id, version: note.version })) }));
+              JSON.stringify({ ok: response.ok, notes: (response.memories ?? []).map(note => ({ id: note.id, version: note.version })),
+                ...(response.memoryConsolidationDeferred ? { deferred: response.memoryConsolidationDeferred } : {}) }));
             return response;
         }).immediate();
     }
@@ -1096,6 +1105,7 @@ export class CompanionMemoryStore {
             case 'memory.inspect': return { ok: true, memoryRead: this.read(command, command.id, command.sourceLimit, command.sourceCursor) };
             case 'memory.domains': return { ok: true, memoryDomains: this.domains(command) };
             case 'memory.snapshot': return { ok: true, memorySnapshot: this.snapshot(command) };
+            case 'memory.frozen.valid': return { ok: true, memoryFrozenValid: command.memories.every(memory => this.sources.frozenMemoryValid(command, memory)) };
             case 'character.development': this.sources.requireScope(command); return { ok: true, characterDevelopment: this.development.read(command, command.limit ?? 12) };
             case 'memory.prohibitions': return this.writePolicy(command);
             case 'memory.record': {
@@ -1106,7 +1116,8 @@ export class CompanionMemoryStore {
             }
             case 'memory.organize': return this.operation(command, () => ({ ok: true, memories: this.organize(command, command.ids, command.tags ?? [], command.expectedProhibitionRevision) }));
             case 'memory.consolidate': return this.operation(command, () => {
-                const note = this.consolidation.prepare(command); return { ok: true, memories: note ? [note] : [] };
+                const note = this.consolidation.prepare(command); return { ok: true, memories: note ? [note] : [], ...(!note ? { memoryConsolidationDeferred: {
+                  requiresFreshReadSet: true as const, reason: '本次具体来源正在等待另一项整合发布，原文保留；待其结束后重新读取当前版本再决定。' } } : {}) };
             });
             case 'memory.forget': return { ok: true, forgottenCount: this.forget(command) };
             case 'memory.status': return { ok: true, memoryStatus: this.status(command.companionId, command.conversationId) };
@@ -1136,10 +1147,12 @@ export class CompanionMemoryStore {
                 return { ok: true };
             case 'memory.outbox.claim': return { ok: true, memoryOutbox: this.claimOutbox(command.companionId, command.leaseMs) };
             case 'memory.outbox.complete':
-                this.completeOutbox(command.id, command.leaseToken, command.indexed, command.sourceFile);
-                return { ok: true };
+                return { ok: true, memoryOutboxDisposition: this.completeOutbox(command.id, command.leaseToken, command.indexed, command.sourceFile) };
             case 'memory.outbox.fail':
                 this.failOutbox(command.id, command.leaseToken, command.error, command.retryAfterMs);
+                return { ok: true };
+            case 'memory.outbox.defer':
+                this.deferOutbox(command.id, command.leaseToken, command.retryAfterMs);
                 return { ok: true };
             default: return undefined;
         }

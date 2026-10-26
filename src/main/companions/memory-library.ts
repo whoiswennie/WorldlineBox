@@ -312,8 +312,16 @@ export class CompanionMemoryLibrary {
       const writable = () => { if (options?.readOnly) throw new Error('只读日记本视图不能修改文件或同步登记。'); };
       let latest: { stamp: string; manifest: Manifest } | undefined;
       const manifestStamp = async () => {
-        const info = await lstat(path.join(root, '.同步状态.json'));
-        return `${info.ino}:${info.size}:${info.mtimeMs}:${info.ctimeMs}`;
+        try {
+          const info = await lstat(path.join(root, '.同步状态.json'));
+          return `${info.ino}:${info.size}:${info.mtimeMs}:${info.ctimeMs}`;
+        } catch (error) {
+          // The first writer can have created profile.md before waiting on an
+          // import, without publishing its first manifest yet. A missing ledger
+          // is a real empty snapshot, not evidence that existing files vanished.
+          if ((error as NodeJS.ErrnoException).code === 'ENOENT') return 'missing';
+          throw error;
+        }
       };
       const target = (relative: string) => {
         const file = path.join(root, ...memoryLibraryPathParts(relative));

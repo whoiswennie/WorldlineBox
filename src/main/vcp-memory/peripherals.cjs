@@ -9,6 +9,10 @@ const { AsyncLocalStorage } = require('node:async_hooks');
 const { createRequire } = require('node:module');
 const { readFileSync } = require('node:fs');
 const { compileFunction } = require('node:vm');
+const { Buffer } = require('node:buffer');
+
+const PREPROCESS_CACHE_MAX_ENTRIES = 32;
+const PREPROCESS_CACHE_MAX_BYTES = 4 * 1024 * 1024;
 
 /** Compile the clock-consuming frozen upstream modules without altering their bytes. Only
  * their module-local dayjs dependency reads this request's host clock; timers,
@@ -106,6 +110,9 @@ class VcpMemoryPeripherals {
     this.contextReferences = [];
     this.contextSourceRows = new Map();
     this.observedCalls = Object.create(null);
+    this.corpusEpoch = 0;
+    this.preprocessReceipts = new Map();
+    this.preprocessReceiptBytes = 0;
     // Observe the upstream ABI without changing its inputs, results or ranking.
     for (const name of ['executeNativeRiverQuery', 'executeLightMemoQuery']) {
       const original = runtime.kb[name];
@@ -127,6 +134,36 @@ class VcpMemoryPeripherals {
       };
     }
     this.dependenciesPath = path.join(runtime.scopeRoot, 'timeline-dependencies.json');
+  }
+  invalidateCorpus() {
+    this.corpusEpoch++;
+    this.preprocessReceipts.clear();
+    this.preprocessReceiptBytes = 0;
+    this.cacheClockBucket = undefined;
+    const rag = this.plugins.get('RAGDiaryPlugin');
+    rag?.cacheManager.clear('aimemo');
+    rag?.cacheManager.clear('query');
+  }
+  receiptCacheSnapshot() {
+    return { entries: this.preprocessReceipts.size, bytes: this.preprocessReceiptBytes, corpusEpoch: this.corpusEpoch,
+      maxEntries: PREPROCESS_CACHE_MAX_ENTRIES, maxBytes: PREPROCESS_CACHE_MAX_BYTES };
+  }
+  cacheReceipt(key, receipt, epoch) {
+    if (epoch !== this.corpusEpoch || receipt.messages.some(message => typeof message.content === 'string'
+      && /\[AIMemo[^\]\n]*(?:失败|未配置)|\[AI模型调用失败\]|::AIMemo\+/u.test(message.content))) return;
+    // The worker is a JSON transport. Store that same complete receipt, including
+    // observed references and trace events, instead of a naked generated answer.
+    const serialized = JSON.stringify(receipt), bytes = Buffer.byteLength(serialized, 'utf8') + key.length + 128;
+    if (bytes > PREPROCESS_CACHE_MAX_BYTES) return;
+    const previous = this.preprocessReceipts.get(key);
+    if (previous) { this.preprocessReceiptBytes -= previous.bytes; this.preprocessReceipts.delete(key); }
+    while (this.preprocessReceipts.size >= PREPROCESS_CACHE_MAX_ENTRIES || this.preprocessReceiptBytes + bytes > PREPROCESS_CACHE_MAX_BYTES) {
+      const oldest = this.preprocessReceipts.keys().next().value;
+      this.preprocessReceiptBytes -= this.preprocessReceipts.get(oldest).bytes;
+      this.preprocessReceipts.delete(oldest);
+    }
+    this.preprocessReceipts.set(key, { serialized, bytes });
+    this.preprocessReceiptBytes += bytes;
   }
   beginContext() { this.contextReferences = []; this.contextSourceRows = new Map(); this.unmappedContextSources = 0; this.observeRawContextOutput = false; }
   observeContextRows(rows, role) {
@@ -331,6 +368,7 @@ class VcpMemoryPeripherals {
   async call(name, arguments_) {
     if (!['DailyNote', 'DailyNoteManager', 'LightMemo'].includes(name) || !arguments_ || typeof arguments_ !== 'object' || Array.isArray(arguments_)) throw new Error('Invalid VCP memory plugin call.');
     const plugin = await this.load(name);
+    if (name !== 'LightMemo') this.invalidateCorpus();
     this.beginContext();
     this.observedCalls[name] = (this.observedCalls[name] || 0) + 1;
     if (name === 'LightMemo') { await this.validateExistingTimelines(); await this.runtime.ensureArtifacts(); }
@@ -347,8 +385,10 @@ class VcpMemoryPeripherals {
   }
   async preprocess(messages, clock, automaticDecay) {
     if (automaticDecay !== undefined && (!automaticDecay || automaticDecay.schema !== 'episodic-v1' || automaticDecay.halfLifeDays !== 180 || automaticDecay.minScore !== 0
-      || !Array.isArray(automaticDecay.protectedNoteIds) || automaticDecay.protectedNoteIds.length > 100
-      || automaticDecay.protectedNoteIds.some(id => typeof id !== 'string' || !/^[a-zA-Z0-9_-]{1,100}$/u.test(id)))) throw new Error('Invalid VCP automatic decay policy.');
+      || !Array.isArray(automaticDecay.protectedNoteIds) || automaticDecay.protectedNoteIds.length > this.runtime.records.size
+      || new Set(automaticDecay.protectedNoteIds).size !== automaticDecay.protectedNoteIds.length
+      || automaticDecay.protectedNoteIds.some(id => typeof id !== 'string' || !id.trim() || id.length > 4096
+        || this.runtime.records.get(id)?.indexState !== 'indexed' || this.runtime.records.get(id)?.deleted))) throw new Error('Invalid VCP automatic decay policy.');
     return this.decayPolicy.run(automaticDecay, () => this.ragClock.run(clock, () => this.preprocessWithClock(messages)));
   }
   async preprocessWithClock(messages) {
@@ -358,28 +398,54 @@ class VcpMemoryPeripherals {
     this.decayObservations = [];
     this.parsedTimeRanges = [];
     const rag = await this.load('RAGDiaryPlugin');
+    const timeline = await this.load('VCPTimeLine');
+    await this.validateTimelines(timeline);
     // Source fingerprints omit scores and query-relative time. Keep embedding
     // caches intact, but partition generated/focused answers by civil day,
     // timezone and the actual policy. Half-second realtime queries reuse them.
     const clock = this.ragClock.current(), policy = this.decayPolicy.getStore(), timeZone = clock?.timeZone || rag.timeParser.defaultTimezone;
+    const timeModifiers = messages.map(message => typeof message.content === 'string' ? message.content : JSON.stringify(message.content)).join('\n');
+    let timeIdentity = [];
+    if (/::Time/iu.test(timeModifiers)) {
+      // Use the exact upstream latest-user selection and sanitizer. A relative
+      // range can move within one civil day, so the day alone is not a key.
+      const { findLastRealUserMessage } = require(path.join(this.runtime.runtimeRoot, 'modules/messageProcessor.js'));
+      const user = findLastRealUserMessage(messages, { sanitize: rag.sanitizeForEmbedding.bind(rag) });
+      timeIdentity = rag.timeParser.parse(user.sanitizedContent || '').map(range => [range.start.toISOString(), range.end.toISOString()]);
+      // Unsupported explicit Time syntax must remain conservative. TimeDecay's
+      // original day-based age computation alone does not require this fallback.
+      if (!timeIdentity.length && /::Time(?!Decay)(?:\d*\.?\d+)?(?=$|::|[^\p{L}\p{N}_.])/iu.test(timeModifiers))
+        timeIdentity = [['unparsed-explicit-time', clock?.now || new Date().toISOString()]];
+    }
     const clockBucket = JSON.stringify([clock ? 'world' : 'real', new Intl.DateTimeFormat('sv', { timeZone, year: 'numeric', month: '2-digit', day: '2-digit' })
-      .format(new Date(clock?.now || Date.now())), timeZone, policy?.schema || null, [...policy?.protectedNoteIds || []].sort()]);
+      .format(new Date(clock?.now || Date.now())), timeZone, policy?.schema || null, [...policy?.protectedNoteIds || []].sort(), timeIdentity]);
     const cacheClockInvalidated = this.cacheClockBucket !== clockBucket;
     if (cacheClockInvalidated) { rag.cacheManager.clear('aimemo'); rag.cacheManager.clear('query'); this.cacheClockBucket = clockBucket; }
+    const epoch = this.corpusEpoch;
+    const cacheKey = createHash('sha256').update(JSON.stringify({ messages, clockBucket, automaticDecay: policy || null, corpusEpoch: epoch })).digest('hex');
+    const cached = this.preprocessReceipts.get(cacheKey);
+    if (cached) {
+      this.preprocessReceipts.delete(cacheKey); this.preprocessReceipts.set(cacheKey, cached);
+      const receipt = JSON.parse(cached.serialized);
+      this.events = receipt.events; this.contextReferences = receipt.contextReferences;
+      this.decayObservations = receipt.automaticDecay; this.parsedTimeRanges = receipt.parsedTimeRanges;
+      return { ...receipt, queryClock: clock, cacheClock: { bucket: clockBucket, invalidated: cacheClockInvalidated },
+        receiptCache: { hit: true, corpusEpoch: epoch, ...(receipt.queryClock ? { sourceQueryClock: receipt.queryClock } : {}) } };
+    }
     this.beginContext();
     this.observeRawContextOutput = !messages.some(message => typeof message.content === 'string'
       && /::AIMemo\+|\[\[AIMemo\s*=\s*True\]\]/iu.test(message.content));
     this.observedCalls.RAGDiaryPlugin = (this.observedCalls.RAGDiaryPlugin || 0) + 1;
-    const timeline = await this.load('VCPTimeLine');
-    await this.validateTimelines(timeline);
     if ((await this.runtime.kb.listDistinctDiaries()).length) await this.runtime.ensureArtifacts();
     const output = await this.queryEnvironment(async () => {
       const processed = await rag.processMessages(messages, {});
       return timeline.processMessages(processed);
     });
-    return { messages: output, events: this.events, contextReferences: this.contextReferences, queryClock: this.ragClock.current(), automaticDecay: this.decayObservations, parsedTimeRanges: this.parsedTimeRanges,
+    const receipt = { messages: output, events: this.events, contextReferences: this.contextReferences, queryClock: this.ragClock.current(), automaticDecay: this.decayObservations, parsedTimeRanges: this.parsedTimeRanges,
       cacheClock: { bucket: clockBucket, invalidated: cacheClockInvalidated },
-      contextReferenceCoverage: this.unmappedContextSources ? 'partial' : 'observed' };
+      contextReferenceCoverage: this.unmappedContextSources ? 'partial' : 'observed', receiptCache: { hit: false, corpusEpoch: epoch } };
+    this.cacheReceipt(cacheKey, receipt, epoch);
+    return receipt;
   }
   async validateExistingTimelines() {
     if ((await this.runtime.kb.listDistinctDiaries()).some(folder => /timeline$/iu.test(folder))) {
@@ -398,6 +464,7 @@ class VcpMemoryPeripherals {
     if (request.operation.startsWith('generate') && !this.configuration.chat) throw new Error('Timeline generation requires a configured chat model endpoint.');
     if (request.operation === 'getAgentDetail') return plugin.getAgentDetail(request.agentName);
     if (request.operation === 'generateTimelines' || request.operation === 'generateSummaries') {
+      this.invalidateCorpus();
       await this.validateTimelines(plugin);
       const sources = await plugin.discoverMemories(request.agentName, request.options?.startMonth, request.options?.endMonth);
       const previousOwner = this.timelineOwner;
@@ -413,6 +480,7 @@ class VcpMemoryPeripherals {
       return result;
     }
     if (typeof request.month !== 'string' || !/^\d{4}-\d{2}$/u.test(request.month) || typeof request.content !== 'string') throw new Error('Timeline month and content are required.');
+    this.invalidateCorpus();
     const result = await plugin[request.operation](request.agentName, request.month, request.content);
     const dependencies = await this.readDependencies();
     dependencies[request.agentName] ||= {};
@@ -462,6 +530,7 @@ class VcpMemoryPeripherals {
       const months = new Set([...files.map(file => file.month), ...Object.keys(summaries[agentName] || {})]);
       for (const month of months) {
         if (dependencies[agentName]?.[month] === await this.monthDigest(plugin, agentName, month)) continue;
+        if (!changed) this.invalidateCorpus();
         const file = files.find(candidate => candidate.month === month);
         if (file) { await fs.rm(file.fullPath, { force: true }); deletes.push(file.fullPath); }
         if (summaries[agentName]) delete summaries[agentName][month];
@@ -506,26 +575,37 @@ class VcpMemoryPeripherals {
       skippedMonths: artifacts.agents.reduce((count, agent) => count + (Array.isArray(agent.months) ? agent.months.length : 0), 0) };
     const plugin = await this.load('VCPTimeLine');
     const dependencies = await this.readDependencies();
+    const summaries = await plugin.readSummaryStore();
+    let changed = false;
     let acceptedMonths = 0, skippedMonths = 0;
     for (const agent of artifacts.agents) {
       await this.bindTimelineAgent(plugin, agent.agentName);
       if (!Array.isArray(agent.months)) throw new Error('Invalid VCP timeline months.');
+      const files = new Map((await plugin.listTimelineFiles(agent.agentName)).map(file => [file.month, file.content]));
       for (const artifact of agent.months) {
         if (!/^\d{4}-(0[1-9]|1[0-2])$/u.test(artifact.month) || !/^[a-f0-9]{64}$/u.test(artifact.sourceDigest)) throw new Error('Invalid VCP timeline dependency.');
         if (artifact.sourceDigest !== await this.monthDigest(plugin, agent.agentName, artifact.month)) { skippedMonths++; continue; }
-        if (typeof artifact.content === 'string') await plugin.saveTimelineFile(agent.agentName, artifact.month, artifact.content);
-        if (typeof artifact.summary === 'string') await plugin.saveSummary(agent.agentName, artifact.month, artifact.summary);
+        const contentChanged = typeof artifact.content === 'string' && files.get(artifact.month) !== artifact.content;
+        const summaryChanged = typeof artifact.summary === 'string' && summaries[agent.agentName]?.[artifact.month] !== artifact.summary;
+        const dependencyChanged = dependencies[agent.agentName]?.[artifact.month] !== artifact.sourceDigest;
+        if (contentChanged || summaryChanged || dependencyChanged) {
+          if (!changed) this.invalidateCorpus();
+          changed = true;
+          if (contentChanged) { await plugin.saveTimelineFile(agent.agentName, artifact.month, artifact.content); files.set(artifact.month, artifact.content); }
+          if (summaryChanged) { await plugin.saveSummary(agent.agentName, artifact.month, artifact.summary); summaries[agent.agentName] ||= {}; summaries[agent.agentName][artifact.month] = artifact.summary; }
+        }
         dependencies[agent.agentName] ||= {};
         dependencies[agent.agentName][artifact.month] = artifact.sourceDigest;
-        await this.indexTimelineFiles(plugin, agent.agentName, typeof artifact.content === 'string' ? [artifact.month] : []);
+        if (contentChanged) await this.indexTimelineFiles(plugin, agent.agentName, [artifact.month]);
         acceptedMonths++;
       }
     }
-    await this.writeDependencies(dependencies);
+    if (changed) await this.writeDependencies(dependencies);
     await this.validateTimelines(plugin);
     return { acceptedMonths, skippedMonths };
   }
   async close() {
+    this.preprocessReceipts.clear(); this.preprocessReceiptBytes = 0;
     for (const name of ['LightMemo', 'DailyNote', 'DailyNoteManager', 'RAGDiaryPlugin']) await this.plugins.get(name)?.shutdown?.();
     this.plugins.clear();
   }

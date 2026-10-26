@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { watch, type FSWatcher, type Dir } from 'node:fs';
 import { lstat, opendir } from 'node:fs/promises';
 import type { CompanionMemory } from '../../shared/companions';
-import type { CompanionMemoryDocument } from '../../shared/companion-memory-documents';
+import type { CompanionMemoryDocument, CompanionMemoryDocumentRead } from '../../shared/companion-memory-documents';
 import type { CompanionStorageCommand, CompanionStorageResponse } from '../../shared/companion-storage';
 import { memoryLibraryPathParts, type CompanionMemoryLibrary, type MemoryLibraryDocumentSession } from './memory-library';
 
@@ -37,13 +37,23 @@ export class CompanionMemoryDocumentCatalog {
         });
         state.watcher.on('error', error => { state!.error = error.message; state!.lastScan = 0; });
       } catch (error) { state.error = error instanceof Error ? error.message : String(error); }
-      // A first page must not await scanning the entire initial 128-file batch.
-      // Persisted rows remain candidates; the authoritative reader checks every
-      // returned item while the rest of the catalogue catches up in small turns.
-      const initial = this.batch(session, state, 16); state.job = initial;
+      // A persisted catalogue already provides first-page candidates. Scanning
+      // even a small batch can include slow source verification; perform it in
+      // the background while the reader authorizes the actual requested rows.
+      const initial = (async () => {
+        const persisted = (await this.options.request({ type: 'document.catalog.query', companionId: session.owner.id,
+          directory: '', query: '', tags: [], limit: 1 })).documentCatalog;
+        if (!persisted?.total) {
+          // A truly new library gets a bounded seed batch and an explicit building
+          // state rather than presenting a transient empty catalogue as complete.
+          await this.batch(session, state!, 16);
+        }
+      })();
+      // Register the entire initialization before yielding to filesystem events;
+      // watcher-triggered work must not concurrently advance the scan cursor.
+      state.job = initial;
       try { await initial; } finally { if (state.job === initial) state.job = undefined; }
     } else if (state.job) return state;
-    else if (state.dirty.size) await this.refresh(session, state, 16);
     if (state.complete && Date.now() - state.lastScan > 60_000) {
       for (const frame of state.frames) await frame.dir.close().catch(() => undefined);
       state.frames = []; state.error = undefined;
@@ -107,7 +117,7 @@ export class CompanionMemoryDocumentCatalog {
       await this.options.library.withDocuments(owner, async session => {
         await this.refresh(session, state, 64);
         if (!state.complete) await this.batch(session, state, 64);
-      }, { synchronize: false });
+      }, { synchronize: false, readOnly: true });
     }).catch((error: unknown) => { state.error = error instanceof Error ? error.message : String(error); state.complete = true; }).finally(() => {
       state.job = undefined;
       if (!this.closed && !state.error) this.schedule(owner, state);
@@ -119,6 +129,17 @@ export class CompanionMemoryDocumentCatalog {
     for (const file of files) {
       if (/\.(md|txt)$/iu.test(file)) state.dirty.add(file); else state.lastScan = 0;
     }
+  }
+  async published(owner: string, read: CompanionMemoryDocumentRead): Promise<void> {
+    // A completed, authorized edit already has the current bytes. Publish its
+    // candidate row directly so read-your-writes does not require a foreground
+    // directory scan. Later readers still verify the actual file and authority.
+    await this.options.request({ type: 'document.catalog.put', companionId: owner,
+      generation: this.states.get(owner)?.generation ?? randomUUID(),
+      entries: [{ document: read.document, text: read.content, stamp: 'published:' + read.document.revision }] });
+  }
+  async dropped(owner: string, relative: string): Promise<void> {
+    await this.options.request({ type: 'document.catalog.drop', companionId: owner, paths: [relative] });
   }
   async close(): Promise<void> {
     this.closed = true;

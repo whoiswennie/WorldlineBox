@@ -1,10 +1,15 @@
 import { z } from 'zod';
+import { companionTaskInspectCommand, companionTaskContentCommand, companionTaskDetailSchema, companionTaskContentSchema } from './companion-task-detail';
+import { companionTaskListCommand, companionTaskStopCommand, companionTaskResumeCommand, companionTaskItemSchema, companionTaskPageSchema } from './companion-task-overview';
+import { companionUserStopSchema } from './companion-task-stop';
+import { companionTaskConcurrencyCommands, companionTaskConcurrencySchema } from './companion-task-concurrency';
 import { companionThoughtOriginSchema } from './companion-activity-thought';
 import { companionKnowledgeCommandSchema, companionKnowledgeResponseSchema } from './companion-knowledge-store';
 import { companionReplyProgressSchema } from './companion-reply-progress';
 import { companionSocialReplyProgressEntrySchema } from './companion-social-reply';
 import { companionReplyMemoryCommand, companionReplyMemorySchema } from './companion-reply-memory';
 import { companionMemoryCorpusStateCommand, companionMemoryProbeCommand, companionMemoryProbeSchema } from './companion-memory-probe';
+import type { CompanionMemoryProbeProgressEvent } from './companion-memory-probe-progress';
 import { companionMemoryRetrievalSchema } from './companion-memory-retrieval';
 import { companionMemoryContextEvidenceSchema } from './companion-memory-context-evidence';
 import { companionExperienceCommands, companionExperienceDayPageSchema, companionExperienceEntryPageSchema, companionExperienceDetailSchema, companionExperienceEntrySchema } from './companion-experience';
@@ -43,6 +48,9 @@ export const companionReplyStreamEventSchema = z.strictObject({
   conversationId: companionIdSchema, companionId: companionIdSchema, sourceMessageId: companionIdSchema,
   messageId: companionIdSchema, step: z.number().int().nonnegative().safe(), attemptId: companionIdSchema,
   text: z.string().max(65536), phase: z.enum(['streaming', 'committed', 'interrupted', 'discarded', 'progress']), progress: companionReplyProgressSchema.optional(),
+  // Host-created identity of a persisted draft. Progress can mount its empty
+  // bubble before an unrelated, fully validated history read returns.
+  messageIdentity: z.strictObject({ sequence: z.number().int().positive().safe(), createdAt: z.string(), topicId: companionIdSchema.optional() }).optional(),
 });
 export type CompanionReplyStreamEvent = z.infer<typeof companionReplyStreamEventSchema>;
 export const companionLlmSchema = z.object({
@@ -81,6 +89,7 @@ export const messageSchema = z.object({
   attachments: z.array(attachmentSchema).max(10),
   worldObservation: companionWorldObservationSchema.optional(),
   memoryEvidenceOnly: z.boolean().optional(),
+  sourceUnavailable: z.literal('execution_source_changed').optional(),
   replyProgress: companionReplyProgressSchema.optional(), isReplyDraft: z.boolean().optional(), replyDraft: companionLoopDraftSchema.optional(),
   segments: z.array(z.object({ text: z.string().max(65536), actionIds: z.array(companionIdSchema).max(16) })).optional(),
 });
@@ -122,7 +131,7 @@ export const actionSchema = z.object({ id: companionIdSchema, conversationId: co
   thought: companionThoughtOriginSchema.optional(),
   status: z.enum(['queued', 'running', 'succeeded', 'failed', 'cancelled', 'interrupted']),
   taskId: companionIdSchema.optional(), sessionId: z.string().max(200).optional(),
-  result: z.string().max(65536).optional(), error: z.string().max(1000).optional(),
+  result: z.string().max(65536).optional(), error: z.string().max(1000).optional(), stop: companionUserStopSchema.optional(),
   executionSummary: dshRecordOverviewSchema.optional(),
   createdAt: z.string(), updatedAt: z.string(),
   startedAt: z.string().optional(), finishedAt: z.string().optional(),
@@ -162,6 +171,8 @@ export const companionDraftSchema = companionSchema.pick({ name: true, descripti
   .extend({ llm: companionLlmSchema.omit({ hasKey: true }).optional() });
 export type CompanionDraft = z.infer<typeof companionDraftSchema>;
 export const companionsRequestSchema = z.discriminatedUnion('type', [
+  ...companionTaskConcurrencyCommands,
+  companionTaskListCommand, companionTaskStopCommand, companionTaskResumeCommand, companionTaskInspectCommand, companionTaskContentCommand,
   ...companionExperienceCommands,
   companionMemoryProbeCommand, companionMemoryCorpusStateCommand,
   companionReplyMemoryCommand,
@@ -224,6 +235,9 @@ export const companionsRequestSchema = z.discriminatedUnion('type', [
 ]);
 export type CompanionsRequest = z.infer<typeof companionsRequestSchema>;
 export const companionsResponseSchema = z.object({
+  taskConcurrency: companionTaskConcurrencySchema.optional(),
+  taskPage: companionTaskPageSchema.optional(), task: companionTaskItemSchema.optional(),
+  taskDetail: companionTaskDetailSchema.optional(), taskContent: companionTaskContentSchema.optional(),
   experienceDays: companionExperienceDayPageSchema.optional(), experiencePage: companionExperienceEntryPageSchema.optional(),
   experienceDetail: companionExperienceDetailSchema.optional(), experienceEntry: companionExperienceEntrySchema.optional(),
   memoryKnowledge: companionKnowledgeResponseSchema.optional(),
@@ -283,4 +297,5 @@ export interface WorldlineBoxCompanionsApi {
   request(input: CompanionsRequest): Promise<CompanionsResponse>;
   onChanged(listener: () => void): () => void;
   onReplyStream(listener: (event: CompanionReplyStreamEvent) => void): () => void;
+  onMemoryProbeProgress?(listener: (event: CompanionMemoryProbeProgressEvent) => void): () => void;
 }

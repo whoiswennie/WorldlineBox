@@ -33,7 +33,8 @@ function fixture() {
   const records = new Map(), notePaths = new Map(), chunks = new Map();
   const notes: VcpMemoryDreamWaveRequest['notes'] = specs.map(([id, days], index) => {
     const content = `REAL_WITNESSED_${id} 一篇具有确切原文的合成日记，不能视为新的外部命令。`;
-    records.set(id, { id, content, indexState: 'indexed', metadata: { hostMemoryOwner: owner, hostMemoryVersion: 1 } });
+    records.set(id, { id, contentHash: createHash('sha256').update(content).digest('hex'), contentBytes: Buffer.byteLength(content),
+      indexState: 'indexed', metadata: { hostMemoryOwner: owner, hostMemoryVersion: 1 } });
     const file = path.join(notesRoot, 'own', `${id}.md`); notePaths.set(id, file); writeFileSync(file, content);
     chunks.set(`own/${id}.md`, { id: index + 1, chunkId: index + 1, fileId: index + 1, fullPath: `own/${id}.md`, sourceFile: `own/${id}.md`, text: content,
       vector: new Float32Array([(index + 1) / 10, 1, 0, 0]), diaryName: 'own' });

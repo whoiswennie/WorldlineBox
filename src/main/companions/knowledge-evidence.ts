@@ -52,10 +52,8 @@ export async function verifyCompanionKnowledgeReads(reads: readonly CompanionKno
   scope: { companionId: string; conversationId: string; beforeSequence?: number },
   request: (command: CompanionStorageCommand) => Promise<CompanionStorageResponse>): Promise<boolean> {
   for (const read of reads ?? []) {
-    try {
-      const result = await request({ type: 'memory.knowledge', ...scope, operation: 'read', id: read.id, version: read.version });
-      if (!companionKnowledgeReads(result).some(current => identity(current) === identity(read))) return false;
-    } catch { return false; }
+    const result = await request({ type: 'memory.knowledge', ...scope, operation: 'read', id: read.id, version: read.version });
+    if (!companionKnowledgeReads(result).some(current => identity(current) === identity(read))) return false;
   }
   return true;
 }

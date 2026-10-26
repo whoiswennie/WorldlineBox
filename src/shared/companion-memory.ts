@@ -135,6 +135,7 @@ export const companionMemoryStorageCommands = [
     z.strictObject({ type: z.literal('memory.outbox.claim'), companionId: id.optional(), leaseMs: z.number().int().min(1000).max(600000).default(120000) }),
     z.strictObject({ type: z.literal('memory.outbox.complete'), id, leaseToken: id, sourceFile: z.string().max(4096).optional(), indexed: z.boolean() }),
     z.strictObject({ type: z.literal('memory.outbox.fail'), id, leaseToken: id, error: z.string().max(1000), retryAfterMs: z.number().int().min(0).max(86400000).default(30000) }),
+    z.strictObject({ type: z.literal('memory.outbox.defer'), id, leaseToken: id, retryAfterMs: z.number().int().min(100).max(30000).default(1000) }),
     z.strictObject({ type: z.literal('memory.outbox.retry'), companionId: id.optional() }),
     companionMemoryScopeSchema.extend({ type: z.literal('memory.record'), candidate: companionMemoryCandidateSchema, operationId: id.optional(), expectedProhibitionRevision: z.string().min(1).max(128).optional() }).strict(),
     companionMemoryScopeSchema.extend({ type: z.literal('memory.revise'), id, expectedVersion: z.number().int().positive(), candidate: companionMemoryCandidateSchema, operationId: id.optional(), expectedProhibitionRevision: z.string().min(1).max(128).optional() }).strict(),

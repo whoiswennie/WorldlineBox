@@ -35,6 +35,18 @@ it('reads a bounded owner report, shows source checks separately from memories, 
   await act(() => button('关闭记忆处理进度').click()); expect(close).toHaveBeenCalledOnce();
 });
 
+it('presents a superseded consolidation as a stopped historical plan with a neutral explanation', async () => {
+  const reason = '原文已由另一项有效整合归档，旧整合计划已被替代，保留现有归档与来源。';
+  const value: CompanionMemoryProcessing = { companionId: 'alice', summary: { pending: 0, running: 0, failed: 0, completed: 1, cancelled: 1 }, hasMore: false,
+    jobs: [{ id: 'obsolete-plan', kind: 'index', status: 'stale', stage: '文档或来源已变化，旧任务不再发布', title: '建立记忆索引', attempts: 8, error: reason, noteId: 'historical-note' }] };
+  const request = vi.fn<ScheduleRequest>(async () => ({ ok: true, memoryProcessing: value }));
+  await mount(<CompanionMemoryProcessingPanel companionId="alice" companionName="小肥鱼" request={request} onClose={vi.fn()} />);
+  await act(() => node!.querySelector<HTMLButtonElement>('[data-processing-kind="index"] button')!.click());
+  expect(node!.querySelector('.memory-processing-job-note')?.textContent).toBe(reason);
+  expect(node!.querySelector('.memory-processing-job-error, [role="alert"]')).toBeNull();
+  expect(request.mock.calls.some(([command]) => command.type === 'memory.jobs.retry')).toBe(false);
+});
+
 it('keeps the compact chat entry owner-scoped and reports only actual processing status', async () => {
   const request = vi.fn<ScheduleRequest>(async () => ({ ok: true, memoryProcessing: report })); const open = vi.fn();
   await mount(<CompanionMemoryProcessingSummary companionId="alice" request={request} onOpen={open} />);

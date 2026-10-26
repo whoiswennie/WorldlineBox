@@ -92,6 +92,7 @@
 .companion-memory-processing-panel .memory-processing-open-document { margin-top: 22px; color: var(--ui-content-accent); background: var(--ui-action-accent-soft); }
 .memory-processing-error, .memory-processing-job-error { margin: 0 0 15px; padding: 10px 12px; border-radius: 7px; background: var(--ui-surface-hover); color: var(--ui-status-danger-content); font-size: 12px; line-height: 1.8; overflow-wrap: anywhere; }
 .memory-processing-job-error { margin: 18px 0 0; }
+.memory-processing-job-note { margin: 18px 0 0; font-size: 12px; line-height: 1.8; overflow-wrap: anywhere; color: var(--ui-content-secondary); }
 .memory-processing-footer { flex-shrink: 0; margin-top: 17px; color: var(--ui-content-tertiary); font-size: 10px; line-height: 1.9; }
 .memory-processing-empty { margin: auto; padding: 35px 20px; max-width: 430px; text-align: center; color: var(--ui-content-secondary); font-size: 12px; line-height: 2; }
 .memory-processing-empty > svg { margin-bottom: 14px; color: var(--ui-content-accent); }

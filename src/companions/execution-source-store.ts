@@ -27,19 +27,66 @@ export class CompanionExecutionSourceStore {
   }
   private resolveWithinValidation(ids: readonly string[], memoryIds: readonly string[]): Proof[] {
     const proofs = new Map<string, Proof>();
-    const metadata = (key: string) => (this.db.prepare('SELECT value FROM metadata WHERE key=?').get(key) as { value: string } | undefined)?.value;
+    // One synchronous SQLite request observes one database state. Shared roots
+    // can reuse its precise metadata/proof fields, never a later request's data.
+    const metadataValues = new Map<string, string | undefined>(), decodedMetadata = new Map<string, unknown>();
+    const checkedReadsets = new Map<string, CompanionExecutionReadset | undefined>();
+    // Several roots on one page usually share most of their ancestry. Resolve
+    // each adjacency list once in this synchronous command, while preserving
+    // every root's dependency association for later invalidation/redaction.
+    // The maps die at this command boundary and never cache authorization.
+    const messagesById = new Map<string, { action_id?: string; author_id: string; conversation_id: string } | undefined>();
+    const actionsById = new Map<string, { companion_id: string; conversation_id: string } | undefined>();
+    const noteEdges = new Map<string, { messages: string[]; notes: string[] }>();
+    const eventEdges = new Map<string, { messages: string[]; events: string[] }>();
+    const messageRow = (id: string) => {
+      if (!messagesById.has(id)) messagesById.set(id, this.db.prepare('SELECT action_id,author_id,conversation_id FROM messages WHERE id=?').get(id) as { action_id?: string; author_id: string; conversation_id: string } | undefined);
+      return messagesById.get(id);
+    };
+    const actionRow = (id: string) => {
+      if (!actionsById.has(id)) actionsById.set(id, this.db.prepare('SELECT companion_id,conversation_id FROM actions WHERE id=?').get(id) as { companion_id: string; conversation_id: string } | undefined);
+      return actionsById.get(id);
+    };
+    const noteReferences = (id: string) => {
+      if (!noteEdges.has(id)) noteEdges.set(id, {
+        messages: (this.db.prepare('SELECT message_id FROM vcp_note_sources WHERE note_id=?').all(id) as Array<{ message_id: string }>).map(source => source.message_id),
+        notes: (this.db.prepare('SELECT source_note_id FROM vcp_note_dependencies WHERE note_id=?').all(id) as Array<{ source_note_id: string }>).map(source => source.source_note_id),
+      });
+      return noteEdges.get(id)!;
+    };
+    const metadata = (key: string) => {
+      if (metadataValues.has(key)) return metadataValues.get(key);
+      // Execution logs can contain megabytes of unrelated tool output. Only
+      // the typed dependency readset belongs on this source-validation path.
+      const sql = key.startsWith('task-checkpoint/')
+        ? "SELECT CASE WHEN json_valid(value) THEN json_extract(value,'$.executionReadset') END AS value FROM metadata WHERE key=?"
+        : 'SELECT value FROM metadata WHERE key=?';
+      const value = (this.db.prepare(sql).get(key) as { value?: string } | undefined)?.value;
+      metadataValues.set(key, value); return value;
+    };
+    const decoded = <T>(key: string): T | undefined => {
+      if (!decodedMetadata.has(key)) decodedMetadata.set(key, parse<T>(metadata(key)));
+      return decodedMetadata.get(key) as T | undefined;
+    };
     for (const root of [...new Set(ids)]) {
       const messages = [root], notes: string[] = [], events: string[] = [], seenMessages = new Set<string>(), seenNotes = new Set<string>(), seenEvents = new Set<string>();
       const include = (proof: Omit<Proof, 'sourceMessageIds'>) => {
-        const parsed = companionExecutionReadsetSchema.safeParse(proof.executionReadset);
-        proof.executionReadset = parsed.success ? parsed.data : undefined;
+        const key = `${proof.kind}:${proof.id}`;
+        if (!checkedReadsets.has(key)) {
+          const parsed = companionExecutionReadsetSchema.safeParse(proof.executionReadset);
+          checkedReadsets.set(key, parsed.success ? parsed.data : undefined);
+        }
+        proof.executionReadset = checkedReadsets.get(key);
         if (metadata(executionSourceInvalidKey(proof.kind, proof.id))) proof.invalidated = true;
-        const key = `${proof.kind}:${proof.id}`, previous = proofs.get(key);
+        const previous = proofs.get(key);
         if (previous) { if (!previous.sourceMessageIds.includes(root)) previous.sourceMessageIds.push(root); }
         else proofs.set(key, { ...proof, sourceMessageIds: [root] });
         const readset = proof.executionReadset;
         if (!readset) return;
         messages.push(...readset.sources.map(source => source.id)); notes.push(...readset.memories.map(note => note.id));
+        // Frozen task facts follow their original witnesses, never the note's
+        // newly edited semantic graph.
+        messages.push(...(readset.frozenMemories ?? []).flatMap(note => note.sources.map(source => source.id)));
         for (const read of readset.knowledgeReads) { if (read.sourceType === 'memory') notes.push(read.sourceId); else if (read.sourceType === 'message') messages.push(read.sourceId); }
         for (const topic of readset.topics) events.push(...topic.checkpointEventIds);
       };
@@ -47,19 +94,19 @@ export class CompanionExecutionSourceStore {
         const id = messages.shift();
         if (id && !seenMessages.has(id)) {
           seenMessages.add(id);
-          const message = this.db.prepare('SELECT action_id,author_id,conversation_id FROM messages WHERE id=?').get(id) as { action_id?: string; author_id: string; conversation_id: string } | undefined;
+          const message = messageRow(id);
           if (message) {
             // Pre-upgrade completed conversations had no typed proof. Retain
             // their existing ACL/forget behavior; do not invent retrospective
             // evidence or claim their historical inputs were verified here.
             const derived = metadata(executionMessageReadsetKey(id));
-            if (derived !== undefined) include({ kind: 'message', id, companionId: message.author_id, conversationId: message.conversation_id, executionReadset: parse<CompanionExecutionReadset>(derived) });
+            if (derived !== undefined) include({ kind: 'message', id, companionId: message.author_id, conversationId: message.conversation_id, executionReadset: decoded<CompanionExecutionReadset>(executionMessageReadsetKey(id)) });
             if (message.action_id) {
-              const action = this.db.prepare('SELECT companion_id,conversation_id FROM actions WHERE id=?').get(message.action_id) as { companion_id: string; conversation_id: string } | undefined;
-              const checkpoint = parse<{ executionReadset?: CompanionExecutionReadset }>(metadata('task-checkpoint/' + message.action_id));
-              if (action) include({ kind: 'action', id: message.action_id, companionId: action.companion_id, conversationId: action.conversation_id, executionReadset: checkpoint?.executionReadset });
+              const action = actionRow(message.action_id);
+              const readset = decoded<CompanionExecutionReadset>('task-checkpoint/' + message.action_id);
+              if (action) include({ kind: 'action', id: message.action_id, companionId: action.companion_id, conversationId: action.conversation_id, executionReadset: readset });
             }
-            const observation = parse<{ sources?: Array<{ id: string }>; topicCheckpoints?: Array<{ checkpointEventIds: string[] }> }>(metadata('memory-world-observation/' + id));
+            const observation = decoded<{ sources?: Array<{ id: string }>; topicCheckpoints?: Array<{ checkpointEventIds: string[] }> }>('memory-world-observation/' + id);
             messages.push(...(observation?.sources ?? []).map(source => source.id));
             for (const reference of observation?.topicCheckpoints ?? []) events.push(...reference.checkpointEventIds);
           }
@@ -67,16 +114,20 @@ export class CompanionExecutionSourceStore {
         const noteId = notes.shift();
         if (noteId && !seenNotes.has(noteId)) {
           seenNotes.add(noteId);
-          messages.push(...(this.db.prepare('SELECT message_id FROM vcp_note_sources WHERE note_id=?').all(noteId) as Array<{ message_id: string }>).map(source => source.message_id));
-          notes.push(...(this.db.prepare('SELECT source_note_id FROM vcp_note_dependencies WHERE note_id=?').all(noteId) as Array<{ source_note_id: string }>).map(source => source.source_note_id));
+          const edges = noteReferences(noteId);
+          messages.push(...edges.messages); notes.push(...edges.notes);
         }
         const eventId = events.shift();
         if (eventId && !seenEvents.has(eventId)) {
           seenEvents.add(eventId);
-          const event = this.db.prepare('SELECT data FROM companion_topic_events WHERE id=?').get(eventId) as { data: string } | undefined;
-          const checkpoint = parse<{ sourceMessageIds?: string[]; derivedFromEventIds?: string[]; state?: { __continuity?: { previousCheckpointEventId?: string } } }>(event?.data);
-          messages.push(...checkpoint?.sourceMessageIds ?? []); events.push(...checkpoint?.derivedFromEventIds ?? []);
-          if (checkpoint?.state?.__continuity?.previousCheckpointEventId) events.push(checkpoint.state.__continuity.previousCheckpointEventId);
+          if (!eventEdges.has(eventId)) {
+            const event = this.db.prepare('SELECT data FROM companion_topic_events WHERE id=?').get(eventId) as { data: string } | undefined;
+            const checkpoint = parse<{ sourceMessageIds?: string[]; derivedFromEventIds?: string[]; state?: { __continuity?: { previousCheckpointEventId?: string } } }>(event?.data);
+            eventEdges.set(eventId, { messages: checkpoint?.sourceMessageIds ?? [], events: [...checkpoint?.derivedFromEventIds ?? [],
+              ...(checkpoint?.state?.__continuity?.previousCheckpointEventId ? [checkpoint.state.__continuity.previousCheckpointEventId] : [])] });
+          }
+          const edges = eventEdges.get(eventId)!;
+          messages.push(...edges.messages); events.push(...edges.events);
         }
       }
     }
@@ -87,8 +138,9 @@ export class CompanionExecutionSourceStore {
       for (const proof of this.resolve(sourceIds)) if (!proofs.has(`${proof.kind}:${proof.id}`)) proofs.set(`${proof.kind}:${proof.id}`, proof);
     }
     return [...proofs.values()].map(proof => {
-      if (proof.kind !== 'message' || proof.invalidated || !proof.executionReadset) return proof;
-      const digest = this.memory.sources.validatedMessageReadsetDigest(proof.id, proof.executionReadset);
+      if (proof.invalidated || !proof.executionReadset) return proof;
+      const digest = proof.kind === 'message' ? this.memory.sources.validatedMessageReadsetDigest(proof.id, proof.executionReadset)
+        : this.memory.sources.validatedActionReadsetDigest(proof.id, proof.executionReadset);
       return digest ? { ...proof, storageValidatedReadsetDigest: digest } : proof;
     });
   }

@@ -1,7 +1,8 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { Companion, CompanionConversation, CompanionsRequest, CompanionsResponse, CompanionMessage, WorldlineBoxCompanionsApi } from '../../shared/companions';
 import type { CompanionMemoryDraft } from './companion-memory-draft';
-import { CompanionMemoryLibraryWorkspace, type CompanionMemoryDocumentDraft } from './CompanionMemoryLibraryWorkspace';
+import { CompanionMemoryLibraryWorkspace, type CompanionMemoryDocumentDraft, type CompanionMemoryLibraryRecentRead } from './CompanionMemoryLibraryWorkspace';
+import { CompanionRecentReadCache } from './recent-read-cache';
 import { CompanionLearningGoalsWorkspace } from './CompanionLearningGoalsWorkspace';
 import { CompanionMemoryTraceWorkspace } from './CompanionMemoryTraceWorkspace';
 import { CompanionMemoryProbeWorkspace } from './CompanionMemoryProbeWorkspace';
@@ -18,6 +19,8 @@ export function CompanionMemoryManager({ companions, ownerId, request, api, draf
   readonly memoryNoteRequest?: { owner: string; noteId: string; nonce: number }; readonly onMemoryNoteRequestConsumed?: () => void;
 }) {
   const [drafts, setDrafts] = useState<Record<string, CompanionMemoryDocumentDraft>>({});
+  const recentReads = useMemo(() => new CompanionRecentReadCache<CompanionMemoryLibraryRecentRead>(8, 8 * 1024 * 1024, api), [api]);
+  useEffect(() => api?.onChanged(() => recentReads.clear()), [api, recentReads]);
   const [learningOpen, setLearningOpen] = useState(false);
   const [traceOwner, setTraceOwner] = useState<string>();
   const [probeOwner, setProbeOwner] = useState<string>();
@@ -53,7 +56,7 @@ export function CompanionMemoryManager({ companions, ownerId, request, api, draf
     const next = { ...current }; if (value) next[id] = value; else delete next[id]; return next;
   }), []);
   return <section className="companions-memory-library-manager" role="region" hidden={!active} aria-label="共同记忆管理">
-    <div className="learning-workspace-preserved" hidden={learningOpen || traceOpen || probeOpen}><CompanionMemoryLibraryWorkspace key={ownerId} active={active && !learningOpen && !traceOpen && !probeOpen} processingRequest={processingRequest ?? (localProcessing?.owner === ownerId ? localProcessing.nonce : undefined)} onProcessingRequestConsumed={consumeProcessingRequest} noteRequest={noteRequest?.owner === ownerId ? noteRequest : undefined} onNoteRequestConsumed={() => setNoteRequest(undefined)} companions={companions} companionId={ownerId} request={request} api={api} draft={draft} onDraftConsumed={onDraftConsumed} authorName={authorName} onLocateSource={onLocateSource} onOwnerChange={onOwnerChange} onClose={onClose} requestError={requestError} onDismissError={onDismissError} initialEditor={drafts[ownerId]} onEditorChange={rememberEditor} onMemoryProbe={query => { setProbeQuery(query ?? ''); setProbeOwner(ownerId); setTraceOwner(undefined); setLearningOpen(false); }} onMemoryTrace={() => { setTraceOwner(ownerId); setProbeOwner(undefined); setLearningOpen(false); }} onLearningSources={onLearningSources ?? (() => setLearningOpen(true))} /></div>
+    <div className="learning-workspace-preserved" hidden={learningOpen || traceOpen || probeOpen}><CompanionMemoryLibraryWorkspace recentReads={recentReads} key={ownerId} active={active && !learningOpen && !traceOpen && !probeOpen} processingRequest={processingRequest ?? (localProcessing?.owner === ownerId ? localProcessing.nonce : undefined)} onProcessingRequestConsumed={consumeProcessingRequest} noteRequest={noteRequest?.owner === ownerId ? noteRequest : undefined} onNoteRequestConsumed={() => setNoteRequest(undefined)} companions={companions} companionId={ownerId} request={request} api={api} draft={draft} onDraftConsumed={onDraftConsumed} authorName={authorName} onLocateSource={onLocateSource} onOwnerChange={onOwnerChange} onClose={onClose} requestError={requestError} onDismissError={onDismissError} initialEditor={drafts[ownerId]} onEditorChange={rememberEditor} onMemoryProbe={query => { setProbeQuery(query ?? ''); setProbeOwner(ownerId); setTraceOwner(undefined); setLearningOpen(false); }} onMemoryTrace={() => { setTraceOwner(ownerId); setProbeOwner(undefined); setLearningOpen(false); }} onLearningSources={onLearningSources ?? (() => setLearningOpen(true))} /></div>
     {active && learningOpen && owner && <CompanionLearningGoalsWorkspace key={ownerId} owner={owner} api={api} request={request} onClose={() => setLearningOpen(false)} onOpenNote={noteId => { setLearningOpen(false); setNoteRequest({ owner: ownerId, noteId, nonce: ++localNonce.current }); }} />}
     {probeOpen && owner && <CompanionMemoryProbeWorkspace key={ownerId} initialQuery={probeQuery} companion={owner} request={request} api={api} active={active} onClose={() => setProbeOwner(undefined)} onOpenNote={noteId => { setProbeOwner(undefined); setNoteRequest({ owner: ownerId, noteId, nonce: ++localNonce.current }); }} />}
     {traceOpen && owner && <CompanionMemoryTraceWorkspace key={ownerId} companion={owner} request={request} api={api} active={active} onClose={() => setTraceOwner(undefined)} onLearningSources={() => { setTraceOwner(undefined); setLearningOpen(true); }} onProcessing={() => { setTraceOwner(undefined); setLocalProcessing({ owner: ownerId, nonce: ++localNonce.current }); }} onOpenNote={noteId => { setTraceOwner(undefined); setNoteRequest({ owner: ownerId, noteId, nonce: ++localNonce.current }); }} />}

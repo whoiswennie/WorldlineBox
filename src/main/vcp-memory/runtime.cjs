@@ -7,6 +7,7 @@ const { createHash, randomUUID } = require('node:crypto');
 const { URL, fileURLToPath, pathToFileURL } = require('node:url');
 const { createRequire, isBuiltin, registerHooks } = require('node:module');
 const { tmpdir } = require('node:os');
+const { OwnedMemoryRecordCatalog, fingerprintNote } = require('./record-catalog.cjs');
 
 function failure(code, message) { return Object.assign(new Error(message), { code }); }
 function identity(value, label) {
@@ -142,12 +143,22 @@ async function unlinkRuntimeDependency(runtimeRoot, target, source) {
 
 /** One instance per OS process. No VCP module is imported before initialize(). */
 class VcpMemoryRuntime {
-  constructor() { this.kb = null; this.closed = false; this.dependencyLinks = []; this.notePaths = new Map(); this.records = new Map(); this.sourceIds = new Map(); this.fileIds = new Map(); }
+  constructor() { this.kb = null; this.closed = false; this.dependencyLinks = []; this.notePaths = new Map();
+    this.records = new OwnedMemoryRecordCatalog({ recordPath: id => this.paths(id).record, normalize: normalizeNote });
+    this.sourceIds = new Map(); this.fileIds = new Map(); }
   sourceKey(file) { return path.resolve(file).replace(/^\\\\\?\\UNC\\/u, '\\\\').replace(/^\\\\\?\\/u, '').replaceAll('\\', '/'); }
   bindNotePath(id, file) {
     const previous = this.notePaths.get(id);
     if (previous) { this.sourceIds.delete(this.sourceKey(previous)); this.fileIds.delete(path.basename(previous)); }
     this.notePaths.set(id, file); this.sourceIds.set(this.sourceKey(file), id); this.fileIds.set(path.basename(file), id);
+  }
+  unbindNotePath(id) {
+    const previous = this.notePaths.get(id);
+    if (previous) {
+      this.sourceIds.delete(this.sourceKey(previous));
+      if (this.fileIds.get(path.basename(previous)) === id) this.fileIds.delete(path.basename(previous));
+      this.notePaths.delete(id);
+    }
   }
 
   async initialize(configuration) {
@@ -344,6 +355,9 @@ class VcpMemoryRuntime {
   async remember(input, restoredAt) {
     this.requireReady();
     const note = normalizeNote(input);
+    // A failed write can already have changed upstream files. Revoke focused
+    // answers before the first mutation, including additions to a stable scope.
+    this.peripherals.invalidateCorpus();
     const previousRecord = await jsonOrNull(this.paths(note.id).record);
     const recordedAt = previousRecord?.recordedAt || restoredAt || new Date().toISOString();
     const previousPath = this.notePaths.get(note.id);
@@ -371,34 +385,37 @@ class VcpMemoryRuntime {
     const notes = inputs.map(normalizeNote);
     const next = new Map(notes.map(note => [note.id, note]));
     if (next.size !== notes.length) throw failure('VCP_MEMORY_INVALID_INPUT', 'Snapshot contains duplicate memory IDs.');
-    const existing = await this.list();
     // Publish removals first: a snapshot replacement must never leave revoked
     // source documents participating in the physical scope's graph.
-    for (const note of existing) if (!next.has(note.id)) await this.forget(note.id);
-    const previous = new Map(existing.map(note => [note.id, note]));
-    for (const note of notes) if (JSON.stringify(previous.get(note.id)) !== JSON.stringify(note)) await this.remember(note);
+    for (const id of this.records.keys()) if (!next.has(id)) await this.forget(id);
+    for (const note of notes) if (this.records.get(note.id)?.noteFingerprint !== fingerprintNote(note)) await this.remember(note);
     return { replaced: true, count: notes.length };
   }
   async read(id) {
     this.requireReady();
-    const record = this.records.get(id);
+    const record = await this.records.read(id);
     if (record?.indexState === 'indexed' && !record.deleted) return normalizeNote(record);
     if (!record && id.startsWith('vcp:')) return (await this.exportNotes()).find(note => note.id === id) || null;
     return null;
   }
   async list() {
     this.requireReady();
-    const records = [...this.records.values()].filter(record => record.indexState === 'indexed' && !record.deleted).map(normalizeNote);
+    const records = [];
+    for (const [id, descriptor] of this.records) if (descriptor.indexState === 'indexed' && !descriptor.deleted) {
+      const record = await this.records.read(id);
+      if (record) records.push(normalizeNote(record));
+    }
     return records.sort((left, right) => left.id.localeCompare(right.id));
   }
   async removeRecordNote(id) {
     const files = this.paths(id);
     const record = await jsonOrNull(files.record);
     await this.removeSources([...new Set([files.note, ...(record?.obsoleteRawPaths || []).map(relative => this.sourcePath(relative))])]);
-    this.records.delete(id);
+    this.records.delete(id); this.unbindNotePath(id);
   }
   async forget(id) {
     this.requireReady();
+    this.peripherals.invalidateCorpus();
     if (!this.notePaths.has(id) && id.startsWith('vcp:')) {
       const note = (await this.exportNotes()).find(candidate => candidate.id === id);
       if (note?.metadata?.vcpSourceFile) this.bindNotePath(id, path.resolve(this.notesRoot, note.metadata.vcpSourceFile));
@@ -447,7 +464,7 @@ class VcpMemoryRuntime {
       if (record?.indexState !== 'indexed' || record.deleted) continue;
       if (deleted.has(file)) {
         await atomicJson(recordPath, { id, rawPath: path.relative(this.notesRoot, file), deleted: true });
-        this.records.delete(id);
+        this.records.delete(id); this.unbindNotePath(id);
         continue;
       }
       const content = await fs.readFile(file, 'utf8');
@@ -458,6 +475,14 @@ class VcpMemoryRuntime {
       const updated = { ...record, content: body, tags: this.kb._extractTags(content) };
       await atomicJson(recordPath, updated); this.records.set(id, updated);
     }
+  }
+  async prepare() {
+    this.requireReady();
+    await this.peripherals.load('RAGDiaryPlugin');
+    const timeline = await this.peripherals.load('VCPTimeLine');
+    await this.peripherals.validateTimelines(timeline);
+    if ((await this.kb.listDistinctDiaries()).length) await this.ensureArtifacts();
+    return { ready: true, corpusEpoch: this.peripherals.corpusEpoch };
   }
   async search(input) {
     this.requireReady();
@@ -481,8 +506,10 @@ class VcpMemoryRuntime {
     const traceHits = [];
     for (const [index, hit] of (result.results || []).entries()) {
       const sourceFile = String(hit.fullPath || hit.sourceFile || '').replaceAll('\\', '/');
-      const cached = this.records.get(this.fileIds.get(path.basename(sourceFile)));
-      let record = cached ? normalizeNote(cached) : undefined;
+      const id = this.fileIds.get(path.basename(sourceFile));
+      if (id && seen.has(id)) continue;
+      const cached = this.records.get(id);
+      let record = cached ? await this.read(id) : undefined;
       if (!record && /^[^/]+\/.*[a-f0-9]{64}\.md$/u.test(sourceFile)) continue;
       if (!record) record = { id: `vcp:${sourceFile}`, content: String(hit.text || ''), tags: hit.matchedTags || [], metadata: { vcpDiaryName: hit.diaryName } };
       if (seen.has(record.id)) continue;
@@ -545,6 +572,7 @@ class VcpMemoryRuntime {
       try { await this.peripherals?.close(); } catch (error) { errors.push(error); }
       try { await this.kb?.shutdown(); } catch (error) { errors.push(error); }
       this.kb = null;
+      this.records.clear(); this.notePaths.clear(); this.sourceIds.clear(); this.fileIds.clear();
       // Unlink only our validated link itself, including when shutdown failed.
       // Interrupted workers are also protected by the parent's non-following
       // purge traversal; they cannot execute this finally path after a hard kill.

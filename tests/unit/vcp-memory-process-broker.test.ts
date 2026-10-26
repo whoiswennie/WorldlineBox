@@ -2,6 +2,20 @@ import { describe, expect, it, vi } from 'vitest';
 import { VcpMemoryProcessBroker } from '../../src/main/vcp-memory/process-broker';
 const deadline = () => Date.now() + 2_000;
 describe('shared VCP process permits', () => {
+  it('reuses an occupied child while an earlier new scope waits for capacity', async () => {
+    const broker = new VcpMemoryProcessBroker(1); let identity!: symbol, cancelled = false;
+    const first = await broker.acquire('foreground', { deadline: deadline(), assertCurrent() {},
+      open(id) { identity = id; return { stop: async () => broker.retired('foreground', id) }; } });
+    const open = vi.fn(), waiting = broker.acquire('background-new', { deadline: deadline(),
+      assertCurrent() { if (cancelled) throw new Error('cancel background'); }, open });
+    const rejected = expect(waiting).rejects.toThrow('cancel background');
+    await new Promise(resolve => setTimeout(resolve, 25));
+    const reused = await broker.acquire('foreground', { deadline: Date.now() + 100, assertCurrent() {}, open: vi.fn() });
+    expect(broker.snapshot()).toEqual({ processes: 1, active: 1, limit: 1 });
+    expect(open).not.toHaveBeenCalled();
+    reused.release(); cancelled = true; await rejected;
+    first.release(); broker.retired('foreground', identity); await broker.close();
+  });
   it('holds a retiring permit until its exact child exits and ignores its late duplicate retirement', async () => {
     const broker = new VcpMemoryProcessBroker(1); let first!: symbol, second!: symbol, exit!: () => void;
     const stop = vi.fn(() => new Promise<void>(resolve => { exit = () => { broker.retired('scope', first); resolve(); }; }));

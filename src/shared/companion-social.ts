@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { companionUserStopSchema } from './companion-task-stop';
 import { messageSchema, type CompanionMessage } from './companions';
 import { companionSocialWorkOfferSchema } from './companion-social-work';
 import { COMPANION_AVATAR_IDS } from './companion-template-ids';
@@ -65,6 +66,7 @@ export const companionSocialOriginSchema = z.strictObject({
   sharedText: z.string().max(2000), provenance: z.enum(['current_player_request', 'companion_initiative']),
 });
 export const companionSocialJobSchema = z.strictObject({ id, companionId: id, conversationId: id, sourceMessageId: id,
+  stop: companionUserStopSchema.optional(), updatedAt: z.iso.datetime().optional(), finishedAt: z.iso.datetime().optional(),
   throughSequence: z.number().int().positive(), chainId: id, remainingTurns: z.number().int().min(0).max(4),
   memberIds: z.array(id).min(2).max(20), channel: z.enum(['phone', 'face_to_face']), urgent: z.boolean().optional(),
   status: z.enum(['pending', 'running', 'done', 'failed', 'cancelled']), attempts: z.number().int().nonnegative(),
@@ -91,6 +93,7 @@ export const companionSocialProgressEvidenceSchema = z.strictObject({ observatio
   outbound: z.array(z.strictObject({ message: z.lazy(() => messageSchema), recipientIds: z.array(id).max(19) })).max(100),
   complete: z.boolean() });
 export const companionSocialNotificationSchema = z.strictObject({
+  stop: companionUserStopSchema.optional(), updatedAt: z.iso.datetime().optional(), finishedAt: z.iso.datetime().optional(),
   id, companionId: id, conversationId: id, sourceMessageId: id, origin: companionSocialOriginSchema,
   ...companionSocialNotificationEventSchema.shape,
   events: z.array(companionSocialNotificationEventSchema).min(1).max(16).optional(),

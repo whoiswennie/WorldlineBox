@@ -22,7 +22,7 @@ export const BrowserMarkdown = memo(function BrowserMarkdown({ text, pending = f
     const anchor = (event.target as Element).closest('a[href^="#"]');
     if (!anchor) return; event.preventDefault();
     try { const id = decodeURIComponent(anchor.getAttribute('href')!.slice(1)); event.currentTarget.querySelector('#' + CSS.escape(id))?.scrollIntoView({ block: 'nearest', behavior: 'smooth' }); } catch { /* Invalid fragment is inert. */ }
-  }}><Markdown skipHtml remarkPlugins={[remarkGfm, remarkMath]} remarkRehypeOptions={{ clobberPrefix: prefix }}
+  }}><Markdown skipHtml remarkPlugins={[[remarkGfm, { singleTilde: false }], remarkMath]} remarkRehypeOptions={{ clobberPrefix: prefix }}
     rehypePlugins={[[rehypeKatex, { throwOnError: false, trust: false, maxExpand: 1000 }]]} urlTransform={url} components={{
       pre: ({ children }) => <>{children}</>,
       code: ({ className, children }) => {

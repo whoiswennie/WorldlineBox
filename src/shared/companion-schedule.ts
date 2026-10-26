@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { companionUserStopSchema } from './companion-task-stop';
 
 const id = z.string().regex(/^[a-zA-Z0-9_-]{1,100}$/);
 const timestamp = z.iso.datetime({ offset: true });
@@ -33,13 +34,14 @@ export const companionScheduleSchema = z.object({
   runAt: timestamp, timeZone: z.string(), recurrence: companionScheduleRecurrenceSchema,
   intervalMinutes: z.number().int().positive().optional(), weekDays: z.array(z.number().int().min(0).max(6)).optional(),
   flexible: z.boolean(), blockedReason: z.enum(['resting', 'unavailable']).optional(), deferredUntil: timestamp.optional(),
-  status: companionScheduleStatusSchema, revision: z.number().int().positive(),
+  status: companionScheduleStatusSchema, revision: z.number().int().positive(), stop: companionUserStopSchema.optional(),
   createdAt: timestamp, updatedAt: timestamp, nextRunAt: timestamp.optional(), lastRunAt: timestamp.optional(),
   lastResult: z.string().max(4000).optional(), lastError: z.string().max(1000).optional(),
   lastOccurrenceStatus: z.enum(['pending', 'dispatching', 'running', 'done', 'failed', 'cancelled']).optional(),
 });
 export type CompanionSchedule = z.infer<typeof companionScheduleSchema>;
 export const companionScheduleOccurrenceSchema = z.object({
+  stop: companionUserStopSchema.optional(),
   id, scheduleId: id, companionId: id, conversationId: id, scheduledAt: timestamp,
   status: z.enum(['pending', 'dispatching', 'running', 'done', 'failed', 'cancelled']),
   attempts: z.number().int().nonnegative(), createdAt: timestamp, updatedAt: timestamp,

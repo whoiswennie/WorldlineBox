@@ -9,6 +9,7 @@ import type { CompanionTopic } from '../shared/companion-topic';
 export function companionExecutionReadsetValidSync(db: CompanionConnection, value: unknown, owner: string, room: string, ports: {
   sourceValid(owner: string, room: string, id: string, checksum: string): boolean;
   memoryValid(owner: string, id: string, version: number): boolean;
+  frozenMemoryValid?(owner: string, memory: NonNullable<CompanionExecutionReadset['frozenMemories']>[number]): boolean;
   topicSourcesValid(owner: string, room: string, ids: readonly string[]): boolean;
 }): boolean {
   try {
@@ -18,6 +19,7 @@ export function companionExecutionReadsetValidSync(db: CompanionConnection, valu
     if (!db.prepare('SELECT 1 FROM conversation_members WHERE conversation_id=? AND companion_id=?').get(room, owner)) return false;
     if (readset.sources.some(source => !ports.sourceValid(owner, source.conversationId, source.id, source.checksum))
       || readset.memories.some(note => !ports.memoryValid(owner, note.id, note.version))) return false;
+    if (readset.frozenMemories?.some(memory => ports.frozenMemoryValid?.(owner, memory) !== true)) return false;
     for (const reference of readset.topics) {
       const found = db.prepare('SELECT data FROM companion_topics WHERE id=? AND conversation_id=?').get(reference.topicId, reference.conversationId) as { data: string } | undefined;
       const topic = found ? JSON.parse(found.data) as CompanionTopic : undefined;

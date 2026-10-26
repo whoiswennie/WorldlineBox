@@ -7,6 +7,7 @@ export function projectCompanionMemoryRetrieval(input: {
   mode: 'active' | 'passive'; observedAt: string; documentCount: number;
   result?: VcpMemorySearchResult; hits: CompanionMemoryPage['items']; contextText: string;
   contextReferences?: Array<{ id: string; version: number; role: 'returned' | 'focus_input'; textHash: string }>;
+  samePipeline?: boolean;
 }): CompanionMemoryRetrieval {
   const { result, hits, documentCount, mode } = input, trace = result?.retrieval, counts = trace?.counts;
   const empty = documentCount === 0, degraded = result?.degraded === true;
@@ -28,7 +29,7 @@ export function projectCompanionMemoryRetrieval(input: {
   });
   const stage = (value: CompanionMemoryRetrieval['stages'][number]) => value;
   return { mode, observedAt: input.observedAt, engine: empty ? 'none' : degraded || hits.some(hit => hit.scoreDetails?.engine === 'knn') ? 'knn' : 'river',
-    resultCount: hits.length, candidateQuerySeparateFromContext: true, stages: [
+    resultCount: hits.length, candidateQuerySeparateFromContext: !input.samePipeline, stages: [
       stage({ id: 'scope', title: '确认可用记忆', state: 'completed', description: empty ? '当前没有这位伙伴获权使用的记忆，本次不会启动向量模型。' : '先核对伙伴归属、来源授权和当前修订，再准备本次检索范围。',
         facts: [fact('获权记忆文档', documentCount), ...present('检索日记本', trace?.diaryCount)], tags: [], matches: [] }),
       stage({ id: 'embedding', title: '理解这次提问', state: empty ? 'skipped' : trace ? 'completed' : 'not_observed', description: trace ? '已通过内置模型生成本次查询向量，交给 VCP 原生检索。' : '本次没有返回查询向量的执行凭证。',
@@ -45,7 +46,7 @@ export function projectCompanionMemoryRetrieval(input: {
         description: '沿用 VCP 实际返回顺序，每篇文档保留首先命中的片段。基础分、关系加成和锚点凭证只在引擎确实提供时显示；分数不是记忆真实性的概率。',
         facts: [...present('原生返回片段', counts?.returnedCandidates), fact('本页获权记忆', hits.length)], tags: [], matches }),
       stage({ id: 'context', title: mode === 'passive' ? '聚焦本轮回忆' : '返回主动回忆', state: empty ? 'skipped' : 'completed',
-        description: mode === 'passive' ? '原版 RAGDiary / AIMemo 在本页获权资料内独立聚焦。来源凭证记录聚焦模型实际输入及版本，不把候选分数或输入片段冒充回答的逐句引用。'
+        description: mode === 'passive' ? '原版 RAGDiary / AIMemo 在完整获权记忆图上按当前语境召回。列表来自该管线实际观测，展示数量不裁剪关系图或聚焦正文；模型输入不等于回答的逐句引用。'
           : '原版 LightMemo 在本页获权资料内独立生成正文。来源凭证来自实际输出格式器，正文排序与上方候选查询分别保留。',
         facts: empty ? [] : [fact('实际返回正文字符', input.contextText.length), fact('观测到的正文来源片段', input.contextReferences?.length ?? 0),
           fact('来源含义', mode === 'passive' ? '聚焦模型实际输入；不等于最终逐句引用' : '原版格式器实际输出；排序独立于候选查询')], tags: [], matches: [],

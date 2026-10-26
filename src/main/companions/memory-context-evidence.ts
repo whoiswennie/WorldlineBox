@@ -1,16 +1,25 @@
-import { companionExecutionReadsetSchema } from '../../shared/companion-execution-evidence';
+import { companionExecutionReadsetSchema, type CompanionExecutionReadset } from '../../shared/companion-execution-evidence';
 
 type Dependency = { id: string; version: number };
+type FrozenDependency = NonNullable<CompanionExecutionReadset['frozenMemories']>[number];
 const object = (value: unknown): Record<string, unknown> | undefined => value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : undefined;
 
 /** Only call on a known host memoryContext field. Physical inputs are a safe
  * dependency superset, distinct from actual sentence/output citations. Neither
  * a query's current corpus revision nor its model profile revokes past facts. */
-export function companionMemoryContextDependencies(value: unknown): { complete: boolean; malformed: boolean; memories: Dependency[] } {
+export function companionMemoryContextDependencies(value: unknown): { complete: boolean; malformed: boolean; memories: Dependency[]; frozenMemories?: FrozenDependency[] } {
   const context = object(value), evidence = object(context?.evidence);
   if (!context || typeof context.text !== 'string' || !evidence) return { complete: false, malformed: false, memories: [] };
   if (evidence.dependencyCoverage === 'complete') {
     const parsed = companionExecutionReadsetSchema.shape.memories.safeParse(evidence.dependencies);
+    if (evidence.snapshotPolicy === 'task_passive_v1') {
+      const frozen = companionExecutionReadsetSchema.shape.frozenMemories.unwrap().safeParse(evidence.frozenDependencies);
+      // Missing or truncated physical inputs never become a frozen receipt.
+      const ids = parsed.success ? new Set(parsed.data.map(note => note.id)) : undefined;
+      if (!parsed.success || !frozen.success || new Set(frozen.data.map(note => note.id)).size !== frozen.data.length
+        || ids!.size !== frozen.data.length || frozen.data.some(note => !ids!.has(note.id))) return { complete: false, malformed: true, memories: [] };
+      return { complete: true, malformed: false, memories: parsed.data, frozenMemories: frozen.data };
+    }
     return parsed.success ? { complete: true, malformed: false, memories: parsed.data } : { complete: false, malformed: true, memories: [] };
   }
   const references = Array.isArray(evidence.references) ? evidence.references : [];

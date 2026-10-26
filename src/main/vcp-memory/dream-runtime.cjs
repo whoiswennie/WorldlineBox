@@ -3,9 +3,7 @@
 
 const path = require('node:path');
 const fs = require('node:fs/promises');
-const { createHash } = require('node:crypto');
 const DAY = 86400000;
-const hash = value => createHash('sha256').update(value).digest('hex');
 const normalized = value => String(value || '').replaceAll('\\', '/').replace(/^\/+/, '');
 const failure = message => Object.assign(new Error(message), { code: 'VCP_MEMORY_DREAM_INVALID' });
 
@@ -22,7 +20,7 @@ async function generateDreamWave(runtime, request) {
     if (!record || record.deleted || record.indexState !== 'indexed' || owner?.companionId !== request.owner.companionId
       || owner.agentName !== request.owner.agentName || owner.name !== request.owner.name
       || !Number.isSafeInteger(descriptor.version) || descriptor.version < 1
-      || record.metadata.hostMemoryVersion !== descriptor.version || hash(record.content) !== descriptor.contentHash) throw failure('DreamWave memory owner, version or content has changed.');
+      || record.metadata.hostMemoryVersion !== descriptor.version || record.contentHash !== descriptor.contentHash) throw failure('DreamWave memory owner, version or content has changed.');
     if (!['world', 'real'].includes(descriptor.clockDomain) || !Number.isFinite(Date.parse(descriptor.eventTime))) throw failure('DreamWave memory event time is invalid.');
     if (record.metadata?.dream || descriptor.clockDomain !== request.clockDomain || Date.parse(descriptor.eventTime) > now) continue;
     const filePath = runtime.notePaths.get(descriptor.id);
@@ -100,7 +98,7 @@ async function generateDreamWave(runtime, request) {
       recentBoundary = Math.min(recentBoundary, 30);
       while (count(recentBoundary + 1, midBoundary) < 2 && midBoundary < 180) midBoundary += 30;
       midBoundary = Math.min(midBoundary, 180);
-      const bucket = entries => entries.map(entry => ({ filePath: entry.filePath, mtime: Date.parse(entry.eventTime), size: Buffer.byteLength(entry.record.content), ageDays: entry.ageDays }))
+      const bucket = entries => entries.map(entry => ({ filePath: entry.filePath, mtime: Date.parse(entry.eventTime), size: entry.record.contentBytes, ageDays: entry.ageDays }))
         .sort((a, b) => b.mtime - a.mtime);
       this.buckets = { recent: bucket(all.filter(entry => entry.ageDays <= recentBoundary)),
         mid: bucket(all.filter(entry => entry.ageDays > recentBoundary && entry.ageDays <= midBoundary)),

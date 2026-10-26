@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import { companionWorldParkSuitable } from './companion-world-park';
 import type { CompanionWorldSnapshot } from './companion-world';
+import { companionExecutionReadsetSchema } from './companion-execution-evidence';
 
 const id = z.string().regex(/^[a-zA-Z0-9_-]{1,100}$/);
 export const COMPANION_LIFE_DEFAULT_RHYTHM = { checkIntervalMinutes: 15, actionCooldownMinutes: 90,
@@ -37,7 +38,7 @@ export const companionLifePublicCommands = [
 export const companionLifeStorageCommands = [...companionLifePublicCommands,
   z.strictObject({ type: z.literal('life-event.tick') }),
   z.strictObject({ type: z.literal('life-event.claim'), excludedCompanionIds: z.array(id).max(100).optional() }),
-  z.strictObject({ type: z.literal('life-event.complete'), id, leaseToken: id, text: z.string().max(2000).optional(), silent: z.boolean().optional(), reason: z.string().max(500).optional(), expectedMemoryRevision: z.string().min(1).max(128).optional() }),
+  z.strictObject({ type: z.literal('life-event.complete'), id, leaseToken: id, text: z.string().max(2000).optional(), silent: z.boolean().optional(), reason: z.string().max(500).optional(), executionReadset: companionExecutionReadsetSchema.optional(), expectedMemoryRevision: z.string().min(1).max(128).optional() }),
   z.strictObject({ type: z.literal('life-event.fail'), id, leaseToken: id, error: z.string().max(500) }),
 ] as const;
 

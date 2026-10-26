@@ -1,10 +1,12 @@
 import { z } from 'zod';
+import { companionUserStopSchema } from './companion-task-stop';
 import { companionMemoryCandidateSchema, companionMemoryTagSchema, companionMemoryConsolidateSchema } from './companion-memory';
 import { companionWorldArgumentsSchema } from './companion-world-tool';
 import { companionTopicArgumentsSchema, companionTopicModeratorTransferApprovalSchema } from './companion-topic';
 import { companionKnowledgeReadSchema } from './companion-agent-run';
 import { companionExecutionReadsetSchema } from './companion-execution-evidence';
 import { companionPeerResponsibilitySchema } from './companion-peer-activity';
+import { companionMemoryContextEvidenceSchema } from './companion-memory-context-evidence';
 const id = z.string().regex(/^[a-zA-Z0-9_-]{1,100}$/);
 export const activityPlanSchema = z.strictObject({ summary: z.string().trim().min(1).max(6000),
   nextSteps: z.array(z.string().trim().min(1).max(1000)).max(16),
@@ -33,6 +35,12 @@ export type ActivityMemoryOperation = z.input<typeof activityMemorySchema>;
 export const activityMemoryIntentSchema = z.object({ id, taskId: id, companionId: id, conversationId: id,
   operation: activityMemorySchema, leaseToken: id });
 export type CompanionActivityMemoryIntent = z.infer<typeof activityMemoryIntentSchema>;
+/** Private host receipt scoped to the whole sustained task, including an empty
+ * result. Per-step observations and explicit memory tools remain independent. */
+export const activityPassiveRecallSchema = z.strictObject({ prepared: z.literal(true), context: z.strictObject({ text: z.string(), revision: z.string(),
+  profileKey: z.string(), evidence: companionMemoryContextEvidenceSchema.optional() }).optional(),
+  authorizedCorpusEmpty: z.boolean().optional(), authorizedCorpusRevision: z.string().optional() });
+export type CompanionActivityPassiveRecall = z.infer<typeof activityPassiveRecallSchema>;
 /** A model chooses actions and completion; the host owns admission, effects and wakeups. */
 export const activityDecisionSchema = z.strictObject({ status: z.enum(['continue', 'complete', 'blocked']),
   planningState: activityPlanSchema.nullish().transform(value => value ?? undefined).describe('持续完整目标的独立工作计划，每步保留仍有效的约束与后续步骤；这是可修改提案，不是已执行事实、报名凭证或新授权。不提新计划可省略或null，不会删除已有计划。'),
@@ -80,7 +88,7 @@ export const activityTaskSchema = z.object({ id, companionId: id, conversationId
   peerConversationId: id.optional(), peerTopicId: id.nullable().optional(),
   gamePort: z.strictObject({ conversationId: id, topicId: id, deliveryClientId: id, peerOriginId: id.optional(), delegatedCandidateId: id.optional() }).optional(),
   visitTargetId: id.optional(), visitArrivedAt: z.iso.datetime().optional(), visitInteractionAt: z.iso.datetime().optional(), visitRequestId: id.optional(),
-  historyAvailable: z.boolean().optional(),
+  historyAvailable: z.boolean().optional(), stop: companionUserStopSchema.optional(),
   history: z.array(activityHistoryEntrySchema) });
 export type CompanionActivityTask = z.infer<typeof activityTaskSchema>;
 export const COMPANION_ACTIVITY_HANDOFF_NOTICE = '原目标已交持久执行器；当前聊天应查进展、如实汇报并结束本轮以释放沟通通道，不重复副作用，不把等待当完成。新的真人消息须重新核对来源。' as const;
@@ -94,6 +102,7 @@ export const activityPublicCommands = [
   scope.extend({ type: z.literal('activity.list'), limit: z.number().int().min(1).max(50).default(20) }).strict(),
   scope.extend({ type: z.literal('activity.start'), sourceMessageId: id.optional(), clientId: id, title: z.string().trim().min(1).max(120), goal: z.string().trim().min(1).max(16000) }).strict(),
   scope.extend({ type: z.literal('activity.cancel'), id }).strict(),
+  scope.extend({ type: z.literal('activity.resume'), id }).strict(),
   scope.extend({ type: z.literal('activity.get'), id }).strict(),
   scope.extend({ type: z.literal('activity.progress'), id }).strict(),
   scope.extend({ type: z.literal('activity.history'), id, beforeStep: z.number().int().positive().optional(), limit: z.number().int().min(1).max(100).default(32) }).strict(),
@@ -117,6 +126,7 @@ export const activityStorageCommands = [...activityPublicCommands,
   z.strictObject({ type: z.literal('activity.report.fail'), id, leaseToken: id, error: z.string().max(1000), terminal: z.boolean().optional() }),
   z.strictObject({ type: z.literal('activity.recover') }),
   z.strictObject({ type: z.literal('activity.observe'), id, leaseToken: id }),
+  z.strictObject({ type: z.literal('activity.passive.prepare'), id, leaseToken: id, expectedStep: z.number().int().nonnegative().safe(), snapshot: activityPassiveRecallSchema }),
   z.strictObject({ type: z.literal('activity.plan.save'), id, leaseToken: id, expectedStep: z.number().int().nonnegative().safe(), sourceDigest: z.string().regex(/^[a-f0-9]{64}$/) }),
   z.strictObject({ type: z.literal('activity.commit'), id, leaseToken: id, expectedStep: z.number().int().nonnegative().safe().optional(), decision: activityDecisionSchema,
     executionReadset: companionExecutionReadsetSchema.optional(), topicModeratorTransferApproval: companionTopicModeratorTransferApprovalSchema.optional() }),

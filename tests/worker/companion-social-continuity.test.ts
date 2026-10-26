@@ -89,10 +89,14 @@ it('delivers at most four exact quotations per batch and leaves the fifth real e
   };
   const first = f.store.request({ type: 'social.notification.claim' }).socialNotification!;
   expect(first.events?.map(event => event.eventId)).toEqual(sourceIds.slice(0, 4));
-  const firstMessage = deliver(first); expect(firstMessage.content).not.toContain(sourceIds[4]);
+  const firstMessage = deliver(first);
+  for (let index = 0; index < 4; index++) expect(firstMessage.content).toContain('这是第' + index + '条真实回复。');
+  expect(firstMessage.content).not.toContain('这是第4条真实回复。');
   const second = f.store.request({ type: 'social.notification.claim' }).socialNotification!;
   expect(second.events?.map(event => event.eventId)).toEqual(sourceIds.slice(4));
-  expect(deliver(second).content).toContain(sourceIds[4]);
+  const secondMessage = deliver(second);
+  expect(secondMessage.content).toContain('这是第4条真实回复。');
+  expect(sourceIds.some(id => firstMessage.content.includes(id) || secondMessage.content.includes(id))).toBe(false);
   expect(f.store.request({ type: 'social.notification.claim' }).socialNotification).toBeUndefined();
   expect(f.store.messages({ conversationId: f.playerRoom.id }).messages.filter(message => message.authorId === 'deepseek-flash')).toHaveLength(2);
 });

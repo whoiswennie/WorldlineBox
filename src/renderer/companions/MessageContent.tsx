@@ -14,7 +14,7 @@ export const MessageContent = memo(function MessageContent({ content, onOpenUrl 
     try { const parsed = new URL(value); return ['http:', 'https:'].includes(parsed.protocol) && !parsed.username && !parsed.password ? parsed.href : ''; }
     catch { return ''; }
   };
-  return <div className="companions-message-content"><Markdown skipHtml remarkPlugins={[remarkGfm, remarkMath]}
+  return <div className="companions-message-content"><Markdown skipHtml remarkPlugins={[[remarkGfm, { singleTilde: false }], remarkMath]}
     rehypePlugins={[[rehypeKatex, { throwOnError: false, trust: false, maxExpand: 1000 }]]} urlTransform={url}
     components={{
       pre: ({ children }) => <>{children}</>,

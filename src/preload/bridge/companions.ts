@@ -2,6 +2,8 @@ import { ipcRenderer, webUtils } from 'electron';
 import { COMPANION_WORKSPACE_CHANNEL, companionWorkspaceRequestSchema, companionWorkspaceResponseSchema, type CompanionWorkspaceRequest } from '../../shared/companion-workspace';
 import { COMPANIONS_CHANNEL, COMPANIONS_CHANGED_CHANNEL, COMPANION_REPLY_STREAM_CHANNEL, companionsRequestSchema, companionsResponseSchema, companionReplyStreamEventSchema,
   type CompanionReplyStreamEvent, type CompanionsRequest, type WorldlineBoxCompanionsApi } from '../../shared/companions';
+import { COMPANION_MEMORY_PROBE_PROGRESS_CHANNEL, companionMemoryProbeProgressEventSchema,
+  type CompanionMemoryProbeProgressEvent } from '../../shared/companion-memory-probe-progress';
 
 export const companions: WorldlineBoxCompanionsApi = Object.freeze({
   async workspace(input: CompanionWorkspaceRequest) {
@@ -34,5 +36,13 @@ export const companions: WorldlineBoxCompanionsApi = Object.freeze({
     };
     ipcRenderer.on(COMPANION_REPLY_STREAM_CHANNEL, handler);
     return () => ipcRenderer.removeListener(COMPANION_REPLY_STREAM_CHANNEL, handler);
+  },
+  onMemoryProbeProgress(listener: (event: CompanionMemoryProbeProgressEvent) => void) {
+    const handler = (_event: Electron.IpcRendererEvent, input: unknown) => {
+      const parsed = companionMemoryProbeProgressEventSchema.safeParse(input);
+      if (parsed.success) listener(parsed.data);
+    };
+    ipcRenderer.on(COMPANION_MEMORY_PROBE_PROGRESS_CHANNEL, handler);
+    return () => ipcRenderer.removeListener(COMPANION_MEMORY_PROBE_PROGRESS_CHANNEL, handler);
   },
 });

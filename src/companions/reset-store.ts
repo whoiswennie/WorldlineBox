@@ -177,6 +177,7 @@ export class CompanionResetStore {
       ['companion_work_order_audit', 'order_id IN(SELECT id FROM companion_work_orders WHERE companion_id=?)', [id]],
       ['companion_work_orders', 'companion_id=?', [id]],
       ['companion_life_occurrences', 'companion_id=?', [id]],
+      ...['companion_task_payloads', 'companion_task_observations', 'companion_task_timeline_jobs'].map(table => [table, 'companion_id=?', [id]] as [string, string, unknown[]]),
       ['metadata', "key IN(SELECT 'life-rule-removed/'||id FROM companion_life_rules WHERE companion_id=?)", [id]],
       ['metadata', 'key GLOB ?', ['life-create/' + id + '/*']],
       ['companion_life_rules', 'companion_id=?', [id]],

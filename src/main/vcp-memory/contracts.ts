@@ -109,6 +109,18 @@ export interface VcpMemoryMessage {
   [key: string]: unknown;
 }
 export interface VcpMemoryQueryClock { now: string; timeZone: string }
+export interface VcpMemoryPreparationReceipt { ready: true; corpusEpoch: number }
+export interface VcpMemoryPreprocessResult {
+  messages: VcpMemoryMessage[];
+  events: unknown[];
+  contextReferences?: VcpMemoryContextReference[];
+  contextReferenceCoverage?: 'observed' | 'partial';
+  queryClock?: VcpMemoryQueryClock;
+  automaticDecay?: VcpMemoryDecayObservation[];
+  parsedTimeRanges?: Array<{ start: string; end: string }>;
+  cacheClock?: { bucket: string; invalidated: boolean };
+  receiptCache?: { hit: boolean; corpusEpoch: number; sourceQueryClock?: VcpMemoryQueryClock };
+}
 export interface VcpMemoryAutomaticDecayPolicy { schema: 'episodic-v1'; halfLifeDays: 180; minScore: 0; protectedNoteIds: string[] }
 export interface VcpMemoryDecayObservation {
   policy: 'episodic-v1'; halfLifeDays: 180; minScore: 0; eligibleCount: number; protectedCount: number;
@@ -143,6 +155,7 @@ export type VcpMemoryCommand =
   | { type: 'initialize'; configuration: VcpMemoryWorkerConfiguration }
   | { type: 'remember'; note: VcpMemoryNote }
   | { type: 'replace'; notes: VcpMemoryNote[] }
+  | { type: 'prepare' }
   | { type: 'search'; text: string; topK?: number }
   | { type: 'read'; id: string }
   | { type: 'list' }

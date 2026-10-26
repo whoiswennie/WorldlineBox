@@ -4,7 +4,8 @@ import type { CompanionMemory, CompanionMessage } from '../../shared/companions'
 import type { CompanionStorageCommand, CompanionStorageResponse } from '../../shared/companion-storage';
 
 export type CompanionExecutionSourceProof = NonNullable<CompanionStorageResponse['executionSources']>[number];
-const validationFrame = new AsyncLocalStorage<{ path: ReadonlySet<string>; completed: Map<string, boolean>; identities: Map<object, number> }>();
+const validationFrame = new AsyncLocalStorage<{ path: ReadonlySet<string>; completed: Map<string, boolean>; pending: Map<string, Promise<boolean>>;
+  identities: Map<object, number>; lifetime: { active: boolean } }>();
 
 /** Only known host response fields carry source IDs. Source prose, arbitrary
  * native JSON, filenames and metadata lookalikes are never traversed. */
@@ -47,16 +48,46 @@ const rereadable = new Set(['messages', 'message.get', 'message.search', 'memory
   'memory.library.index-page', 'memory.library.changes', 'topic.read', 'topic.sources.valid', 'topic.compaction.sources', 'social.messages', 'social.conversations', 'social.flow', 'activity.progress']);
 const validationReads = new Set([...rereadable, 'execution.sources', 'action.get', 'checkpoint.get', 'collaboration.read',
   'memory.prohibitions', 'memory.corpus.stamp', 'memory.documents.get', 'memory.document.get', 'social.job.game_context', 'activity.handoff', 'state', 'world.clock', 'world.state', 'runtime.read', 'character.development.read',
-  'actions', 'actions.invocation', 'loop.get', 'work.list', 'memory.status']);
-/** Anything not explicitly read-only advances Main's validation generation.
+  'actions', 'actions.invocation', 'actions.page', 'loop.get', 'work.list', 'memory.status', 'memory.frozen.valid',
+  'memory.tags.status', 'memory.processing.status', 'memory.policy.list', 'memory.library.index-state',
+  'document.catalog.query', 'world.clock.peek', 'routine.get', 'schedule.list', 'schedule.get', 'activity.list', 'social.days', 'social.graph', 'social.reply.progress', 'task-stop.list', 'tasks.page', 'tasks.resolve', 'tasks.concurrency.get']);
+// tags.status may discover pending tag jobs, but cannot edit a note. In
+// contrast memory.library.scope can create a hidden private conversation and
+// its membership, so it deliberately retains the conservative mutation fence.
+// These commands change only the disposable file-search catalogue. Catalogue
+// candidates are re-read and authorized before publication; none can change a
+// message, note, permission, execution proof or context revision.
+// routine.get may initialize/reconcile its routine and advance poses, work
+// clocks or new experience receipts (as world.clock already does). None edits
+// an existing source, indexed note, execution readset, membership or grant.
+// Its observational polling must not discard a foreground history DAG memo.
+const derivedCatalogWrites = new Set(['document.catalog.touch', 'document.catalog.put', 'document.catalog.drop', 'document.catalog.finish']);
+/** Anything not explicitly authority-neutral advances Main's validation generation.
  * This is only a request-local memo boundary, never a permanent proof epoch. */
-export function companionExecutionSourceReadOnly(command: CompanionStorageCommand): boolean { return validationReads.has(command.type); }
+export function companionExecutionSourceReadOnly(command: CompanionStorageCommand): boolean {
+  // In-flight draft/progress saves cannot publish a source or bind an execution
+  // proof. Storage rejects done -> running transitions. Treating every clock
+  // update as a source mutation invalidated all shared historical DAG checks
+  // while a foreground context was still being prepared.
+  if (command.type === 'loop.save' && command.checkpoint?.status === 'running' && !command.executionReadset) return true;
+  return validationReads.has(command.type) || derivedCatalogWrites.has(command.type);
+}
 
 /** Share a dependency DAG only within one host read/preparation operation.
- * Every storage mutation still changes the revision and invalidates its keys. */
+ * Every source-affecting storage mutation changes the revision and invalidates
+ * its keys; observational clocks and unfinished drafts carry no formal proof. */
 export function withCompanionExecutionValidation<T>(operation: () => Promise<T>): Promise<T> {
-  return validationFrame.getStore() ? operation()
-    : validationFrame.run({ path: new Set(), completed: new Map(), identities: new Map() }, operation);
+  if (validationFrame.getStore()?.lifetime.active) return operation();
+  const frame = { path: new Set<string>(), completed: new Map<string, boolean>(), pending: new Map<string, Promise<boolean>>(),
+    identities: new Map<object, number>(), lifetime: { active: true } };
+  return validationFrame.run(frame, async () => {
+    try { return await operation(); }
+    finally {
+      // Background jobs inherit AsyncLocalStorage. They must begin a new read
+      // frame after the originating request has returned, never reuse its proof.
+      frame.lifetime.active = false; frame.completed.clear(); frame.pending.clear(); frame.identities.clear();
+    }
+  });
 }
 
 /** Shared action dependencies are verified once in this read operation only.
@@ -67,9 +98,20 @@ export function memoCompanionExecutionValidation(key: string, revision: () => nu
     if (frame.path.has(identity)) return false;
     const cached = frame.completed.get(identity);
     if (cached !== undefined) return cached;
-    const valid = await validationFrame.run({ ...frame, path: new Set([...frame.path, identity]) }, operation);
-    if (captured === revision()) frame.completed.set(identity, valid);
-    return valid;
+    // Waiting across different dependency paths can deadlock: concurrent A/B
+    // roots may each await the other's pending proof before either local path
+    // sees a cycle. Only siblings with the same ancestors share in-flight work.
+    // Completed proofs still accelerate the entire request's dependency DAG.
+    const pendingIdentity = JSON.stringify([identity, [...frame.path].sort()]);
+    const running = frame.pending.get(pendingIdentity);
+    if (running) return running;
+    const pending = validationFrame.run({ ...frame, path: new Set([...frame.path, identity]) }, async () => operation());
+    frame.pending.set(pendingIdentity, pending);
+    try {
+      const valid = await pending;
+      if (frame.lifetime.active && captured === revision()) frame.completed.set(identity, valid);
+      return valid;
+    } finally { if (frame.pending.get(pendingIdentity) === pending) frame.pending.delete(pendingIdentity); }
   });
 }
 
@@ -87,7 +129,7 @@ export async function guardCompanionExecutionSources(command: CompanionStorageCo
 }): Promise<CompanionStorageResponse> {
   if (command.type.startsWith('execution.') || !response.ok) return response;
   const frame = validationFrame.getStore();
-  if (!frame) return validationFrame.run({ path: new Set(), completed: new Map(), identities: new Map() }, () => guardCompanionExecutionSources(command, response, ports));
+  if (!frame?.lifetime.active) return withCompanionExecutionValidation(() => guardCompanionExecutionSources(command, response, ports));
   if (response.memoryOutbox?.operation === 'forget') {
     const outbox = response.memoryOutbox;
     // Deletion consumes identity/version/lease only. Historical source data is
@@ -107,13 +149,15 @@ export async function guardCompanionExecutionSources(command: CompanionStorageCo
     for (const proof of result.executionSources ?? []) {
       const key = `${proof.kind}:${proof.id}`, previous = proofs.get(key);
       proofs.set(key, previous ? { ...proof, sourceMessageIds: [...new Set([...previous.sourceMessageIds, ...proof.sourceMessageIds])] } : proof);
-      if (revision !== undefined && revision === ports.revision?.() && proof.executionReadset
+      if (revision !== undefined && proof.executionReadset
         && proof.storageValidatedReadsetDigest === createHash('sha256').update(JSON.stringify(proof.executionReadset)).digest('hex')) validatedRevisions.set(key, revision);
       else validatedRevisions.delete(key);
     }
   }
   const invalid = new Set<string>(), owners = new Set<string>(), scopes = new Set<string>();
-  for (const proof of proofs.values()) {
+  const checkedProofs = new Map<string, boolean>();
+  const proofKey = (proof: CompanionExecutionSourceProof) => `${proof.kind}:${proof.id}`;
+  const check = async (proof: CompanionExecutionSourceProof, sqliteSourcesValidated: boolean): Promise<boolean> => {
     if (ports.identity && !frame.identities.has(ports.identity)) frame.identities.set(ports.identity, frame.identities.size + 1);
     const key = JSON.stringify([ports.identity ? frame.identities.get(ports.identity) : 0,
       proof.kind, proof.id, proof.companionId, proof.conversationId]), ancestors = frame.path;
@@ -121,22 +165,43 @@ export async function guardCompanionExecutionSources(command: CompanionStorageCo
     if (!proof.invalidated && proof.executionReadset && !ancestors.has(key)) {
       const revision = ports.revision?.();
       const memoKey = createHash('sha256').update(JSON.stringify([key, proof.executionReadset, revision])).digest('hex');
-      const completed = frame.completed.get(memoKey);
-      if (completed !== undefined) valid = completed;
-      else {
-        const sqliteSourcesValidated = revision !== undefined && validatedRevisions.get(`${proof.kind}:${proof.id}`) === revision;
-        try { valid = await validationFrame.run({ ...frame, path: new Set([...ancestors, key]) }, () => ports.valid(proof, sqliteSourcesValidated)); } catch { valid = false; }
-        // A worker attestation cannot replace fresh SQL reads after a write
-        // overlaps its use. Ordinary concurrent progress is not itself a
-        // revocation: fall back to the original full verifier, without caching
-        // a result across the mutation or replaying any effect.
-        if (sqliteSourcesValidated && revision !== ports.revision?.()) {
-          frame.completed.clear();
-          try { valid = await validationFrame.run({ ...frame, path: new Set([...ancestors, key]) }, () => ports.valid(proof, false)); } catch { valid = false; }
-        }
-        if (revision === ports.revision?.()) frame.completed.set(memoKey, valid);
-      }
+      valid = await memoCompanionExecutionValidation(`source:${memoKey}`, () => ports.revision?.() ?? 0, async () => {
+        const current = validationFrame.getStore()!;
+        // Transport failure is availability, never evidence of withdrawal.
+        return validationFrame.run({ ...current, path: new Set([...current.path, key]) }, () => ports.valid(proof, sqliteSourcesValidated));
+      });
     }
+    return valid;
+  };
+  for (const proof of proofs.values()) checkedProofs.set(proofKey(proof), await check(proof, validatedRevisions.has(proofKey(proof))));
+  const attested = [...proofs.values()].filter(proof => validatedRevisions.has(proofKey(proof)));
+  if (attested.some(proof => validatedRevisions.get(proofKey(proof)) !== ports.revision?.())) {
+    // Two bounded SQL snapshots bracket the whole closure's async checks.
+    // Never refresh every ancestor or wait for a globally idle process.
+    const refresh = async () => {
+      const current = new Map<string, CompanionExecutionSourceProof>();
+      for (let offset = 0; offset < total; offset += 100) {
+        const result = await ports.storage({ type: 'execution.sources', sourceMessageIds: references.sourceMessageIds.slice(offset, offset + 100), memoryIds: references.memoryIds.slice(offset, offset + 100) });
+        if (!result.ok) throw new Error('派生来源的当前执行依赖暂不可核验，请稍后重试。');
+        for (const proof of result.executionSources ?? []) current.set(proofKey(proof), proof);
+      }
+      for (const proof of attested) {
+        const actual = current.get(proofKey(proof));
+        if (actual?.invalidated) { checkedProofs.set(proofKey(proof), false); continue; }
+        if (!actual || actual.companionId !== proof.companionId || actual.conversationId !== proof.conversationId
+          || JSON.stringify(actual.executionReadset) !== JSON.stringify(proof.executionReadset)
+          || actual.storageValidatedReadsetDigest !== createHash('sha256').update(JSON.stringify(proof.executionReadset)).digest('hex')) {
+          throw new Error('派生来源正在变化，当前执行依赖暂不可稳定核验，请稍后重试。');
+        }
+      }
+    };
+    await refresh();
+    frame.completed.clear();
+    for (const proof of attested) if (checkedProofs.get(proofKey(proof))) checkedProofs.set(proofKey(proof), await check(proof, true));
+    await refresh();
+  }
+  for (const proof of proofs.values()) {
+    const valid = checkedProofs.get(proofKey(proof));
     if (valid) continue;
     proof.sourceMessageIds.forEach(id => invalid.add(id));
     // A historical invalid body still needs redaction on every read. Its
@@ -168,7 +233,7 @@ export async function guardCompanionExecutionSources(command: CompanionStorageCo
   const refreshed = await ports.storage(command);
   if (!refreshed.ok) throw new Error('派生资料已撤回，请重新读取当前仍有效的来源。');
   const redact = (message: CompanionMessage): CompanionMessage => invalid.has(message.id)
-    ? { ...message, content: '这条记录的引用来源已经变化，旧正文不可再用。', attachments: [], segments: undefined, replyProgress: undefined, replyDraft: undefined } : message;
+    ? { ...message, content: '', sourceUnavailable: 'execution_source_changed', attachments: [], segments: undefined, replyProgress: undefined, replyDraft: undefined } : message;
   if (refreshed.message) refreshed.message = redact(refreshed.message);
   if (refreshed.messages) refreshed.messages = refreshed.messages.map(redact);
   if (refreshed.memorySources) refreshed.memorySources = refreshed.memorySources.filter(message => !invalid.has(message.id));
@@ -185,7 +250,7 @@ export async function guardCompanionExecutionSources(command: CompanionStorageCo
   refreshed.socialConversationPage?.items.forEach(room => { if (room.lastMessage) room.lastMessage.message = redact(room.lastMessage.message); });
   refreshed.socialFlowPage?.items.forEach(item => {
     if (!item.message) return;
-    if (invalid.has(item.message.message.id)) { item.text = '这条记录的引用来源已经变化，旧正文不可再用。'; item.textTruncated = false; }
+    if (invalid.has(item.message.message.id)) { item.text = ''; item.textTruncated = false; }
     item.message.message = redact(item.message.message);
   });
   return { ...refreshed,

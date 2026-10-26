@@ -2,8 +2,9 @@
 import { act, useState, type ComponentProps } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, expect, it, vi } from 'vitest';
-import { CompanionMemoryLibraryWorkspace } from '../../src/renderer/companions/CompanionMemoryLibraryWorkspace';
+import { CompanionMemoryLibraryWorkspace, type CompanionMemoryLibraryRecentRead } from '../../src/renderer/companions/CompanionMemoryLibraryWorkspace';
 import { CompanionMemoryManager } from '../../src/renderer/companions/CompanionMemoryManager';
+import { CompanionRecentReadCache } from '../../src/renderer/companions/recent-read-cache';
 import type { CompanionMemoryDraft } from '../../src/renderer/companions/companion-memory-draft';
 import type { Companion, CompanionMessage, CompanionsRequest, CompanionsResponse, WorldlineBoxCompanionsApi } from '../../src/shared/companions';
 import type { CompanionMemoryDocument, CompanionMemoryDocumentRead } from '../../src/shared/companion-memory-documents';
@@ -23,7 +24,7 @@ function readFixture(item = doc, content = '# 海边散步\n\n今天与朋友去
 const processing = { pending: 1, running: 0, failed: 1, completed: 4, memories: 2, forgotten: 0, indexed: 1, pendingIndex: 1, messageWatermark: 5, captureWatermark: 4, backfillThrough: 5, backfillTarget: 5, lastError: '收录服务暂不可用' };
 function fixture() {
   let documents = [readFixture(), readFixture({ ...doc, path: '资料/灯塔路线.md', name: '灯塔路线.md', title: '灯塔路线', directory: '资料', category: 'material', noteId: 'memory-b' }, '从旧灯塔出发，沿着防波堤步行。'), readFixture({ ...doc, path: '时间线/VCP-2026-10.md', name: 'VCP-2026-10.md', title: '十月时间线', directory: '时间线', category: 'timeline', kind: 'timeline', noteId: undefined, version: undefined, readOnly: true, tags: [], syncState: 'generated' }, '## 十月\n\n自动整理的生活时间线。')];
-  let changed: (() => void) | undefined;
+  const changed = new Set<() => void>();
   const workspace = vi.fn(async (command: CompanionWorkspaceRequest): Promise<CompanionWorkspaceResponse> => {
     if (command.type === 'status') return { ok: true, selected: { displayName: '生活资产库', libraryId: 'lib', libraryPath: 'D:/library', memoryRoot: 'D:/library/伙伴记忆', dataRoot: 'D:/library/.companions' } };
     if (command.type === 'memory.documents.list') return { ok: true, documents: { companionId: command.companionId, directory: command.directory, folders: [{ path: '日记', name: '日记', count: 1 }, { path: '资料', name: '资料', count: 1 }, { path: '自我认识', name: '自我认识', count: 0 }, { path: '世界经历', name: '世界经历', count: 0 }, { path: '时间线', name: '时间线', count: 1 }], items: documents.filter(item => (!command.directory || item.document.path.startsWith(command.directory + '/')) && (!command.query || [item.document.title, item.content].join(' ').includes(command.query)) && (!command.tags?.length || command.tags.every(tag => item.document.tags.includes(tag)))).map(item => item.document), hasMore: false } };
@@ -42,10 +43,10 @@ function fixture() {
     return { ok: true };
   });
   const request = vi.fn(async (command: CompanionsRequest): Promise<CompanionsResponse> => command.type === 'memory.status' ? { ok: true, memoryStatus: processing } : command.type === 'memory.policy.list' ? { ok: true, memoryPolicies: [{ id: 'rule', companionId: 'role', conversationId: 'other-room', requestSnippet: '', reason: 'persistent-topic', tags: ['饮料偏好'], blocked: true, createdAt: at }] } : { ok: true });
-  const api = { workspace, onChanged: vi.fn((callback: () => void) => { changed = callback; return () => { changed = undefined; }; }) } as unknown as WorldlineBoxCompanionsApi;
-  return { workspace, request, api, emit: () => changed?.() };
+  const api = { workspace, onChanged: vi.fn((callback: () => void) => { changed.add(callback); return () => { changed.delete(callback); }; }) } as unknown as WorldlineBoxCompanionsApi;
+  return { workspace, request, api, emit: () => { for (const listener of changed) listener(); } };
 }
-async function mount(f = fixture(), options: { draft?: CompanionMemoryDraft } = {}) {
+async function mount(f = fixture(), options: { draft?: CompanionMemoryDraft; recentReads?: ComponentProps<typeof CompanionMemoryLibraryWorkspace>['recentReads'] } = {}) {
   vi.useFakeTimers(); container = document.createElement('div'); document.body.append(container); root = createRoot(container);
   const onOwnerChange = vi.fn(), onClose = vi.fn(), onLocateSource = vi.fn(), onDraftConsumed = vi.fn();
   const props: ComponentProps<typeof CompanionMemoryLibraryWorkspace> = { companions: [owner, { ...owner, id: 'other', name: '另一位伙伴' }], companionId: 'role', api: f.api, request: f.request, onDraftConsumed, onOwnerChange, onLocateSource, authorName: id => id === 'user' ? '你' : '伙伴', onClose, onDismissError: vi.fn(), ...options };
@@ -252,6 +253,69 @@ it('keeps one pending first-page read through frequent background events and ren
   expect(container!.textContent).not.toContain('正在打开日记本');
   expect(element('.memory-library-files').textContent).toContain('海边散步');
   expect(element('.memory-library-paper h1').textContent).toBe('海边散步');
+});
+
+it('requests a returning active library immediately while still debouncing typed filters', async () => {
+  const f = await mount();
+  await f.render({ active: false }); f.workspace.mockClear();
+  await f.render({ active: true });
+  await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+  expect(f.workspace.mock.calls.filter(([command]) => command.type === 'memory.documents.list')).toHaveLength(1);
+  f.workspace.mockClear(); await fill('搜索全部记忆文档', '灯塔');
+  await act(async () => { await vi.advanceTimersByTimeAsync(239); });
+  expect(f.workspace.mock.calls.filter(([command]) => command.type === 'memory.documents.list')).toHaveLength(0);
+  await act(async () => { await vi.advanceTimersByTimeAsync(1); });
+  expect(f.workspace).toHaveBeenCalledWith(expect.objectContaining({ type: 'memory.documents.list', query: '灯塔' }));
+});
+
+it('renders a completed current page during continuous unrelated changes without caching the invalidated snapshot', async () => {
+  const f = fixture(), base = f.workspace.getMockImplementation()!;
+  const cache = new CompanionRecentReadCache<CompanionMemoryLibraryRecentRead>();
+  f.api.onChanged(() => cache.clear());
+  const pending: Array<(response: CompanionWorkspaceResponse) => void> = [];
+  f.workspace.mockImplementation(command => command.type === 'memory.documents.list' ? new Promise(resolve => pending.push(resolve)) : base(command));
+  await mount(f, { recentReads: cache });
+  for (let n = 0; n < 8; n++) { await act(() => { f.emit(); }); await advance(); }
+  expect(pending).toHaveLength(1);
+  const snapshot = await base({ type: 'memory.documents.list', companionId: 'role', directory: '', limit: 64 });
+  await act(() => pending.shift()!(snapshot));
+  expect(element('.memory-library-files').textContent).toContain('海边散步');
+  expect(cache.snapshot().entries).toBe(0);
+  await advance(); expect(pending).toHaveLength(1);
+  for (let n = 0; n < 8; n++) { await act(() => { f.emit(); }); await advance(); }
+  expect(element('.memory-library-files').textContent).toContain('海边散步');
+  expect(pending).toHaveLength(1);
+  await act(() => pending.shift()!(snapshot));
+});
+
+it('reuses each owner verified first page immediately and drops it after a host invalidation', async () => {
+  vi.useFakeTimers(); const f = fixture(), base = f.workspace.getMockImplementation()!;
+  const pending: Array<(response: CompanionWorkspaceResponse) => void> = [];
+  let hold = false;
+  f.workspace.mockImplementation(command => {
+    if (hold && command.type === 'memory.documents.list' && command.companionId === 'role') return new Promise(resolve => pending.push(resolve));
+    if (hold && command.type === 'memory.documents.read' && command.companionId === 'role') return new Promise(resolve => pending.push(resolve));
+    return base(command);
+  });
+  container = document.createElement('div'); document.body.append(container); root = createRoot(container);
+  const shared = { companions: [owner, { ...owner, id: 'other', name: '另一位伙伴' }], request: f.request, api: f.api, onDraftConsumed: vi.fn(), onDismissError: vi.fn(), authorName: (id: string) => id, onLocateSource: vi.fn(), onClose: vi.fn() };
+  function Harness() { const [ownerId, setOwnerId] = useState('role'); return <CompanionMemoryManager {...shared} ownerId={ownerId} onOwnerChange={setOwnerId} />; }
+  await act(() => root!.render(<Harness />)); await advance();
+  const changeOwner = async (id: string) => { const select = element<HTMLSelectElement>('[aria-label="记忆所属伙伴"]'); await act(() => { select.value = id; select.dispatchEvent(new Event('change', { bubbles: true })); }); };
+  await changeOwner('other'); await advance(); hold = true;
+  await changeOwner('role');
+  expect(element('.memory-library-files').textContent).toContain('海边散步');
+  expect(element('.memory-library-paper h1').textContent).toBe('海边散步');
+  await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+  await changeOwner('other');
+  await act(() => { f.emit(); });
+  await changeOwner('role');
+  expect(element('.memory-library-files').textContent).not.toContain('海边散步');
+  expect(container!.querySelector('.memory-library-paper h1')).toBeNull();
+  // An old in-flight reply cannot resurrect a withdrawn page after remount.
+  const stale = await base({ type: 'memory.documents.list', companionId: 'role', directory: '', limit: 64 });
+  await act(() => { for (const finish of pending.splice(0)) finish(stale); });
+  expect(element('.memory-library-files').textContent).not.toContain('海边散步');
 });
 
 it('sends explicit time sorting and a complete local date range to the server', async () => {

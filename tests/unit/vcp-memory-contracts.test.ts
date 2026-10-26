@@ -65,6 +65,7 @@ describe('VCP memory host input boundaries', () => {
     const runtime = Object.assign(Object.create(VcpMemoryRuntime.prototype), {
       paths(id: string) { return { note: path.resolve('fixture-notes', id + '.md') }; },
       requireReady() {}, peripherals: { async validateExistingTimelines() {} }, async queryEmbedding() { return [1, 0]; }, async ensureArtifacts() {},
+      async read(id: string) { return normalizeNote(this.records.get(id)); },
       records: new Map(['first', 'second', 'unknown-score'].map(id => [id, { id, content: id + ' fact', tags: [] }])),
       fileIds: new Map(['first', 'second', 'unknown-score'].map(id => [id + '.md', id])),
       kb: { async listDistinctDiaries() { return ['memories']; }, withMemoObservationScope: (callback: () => unknown) => callback(),

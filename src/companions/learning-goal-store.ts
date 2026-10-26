@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto';
+import { companionTaskCanClaim } from './task-concurrency-store';
 import type { CompanionConnection } from './store';
 import type { CompanionStorageCommand, CompanionStorageResponse } from '../shared/companion-storage';
 import { companionLearningGoalRoundSchema, companionLearningGoalStorageCommandSchema, type CompanionLearningGoal, type CompanionLearningGoalRound, type CompanionLearningGoalRead } from '../shared/companion-learning-goals';
@@ -108,6 +109,7 @@ export class CompanionLearningGoalStore {
           const rows = this.db.prepare(`SELECT g.* FROM companion_learning_goals g JOIN companions c ON c.id=g.companion_id WHERE g.state='active' AND g.next_at<=? AND g.lease_until<=? AND c.deleted_at IS NULL AND COALESCE(json_extract(c.data,'$.active'),1)=1
             AND g.companion_id NOT IN(SELECT value FROM json_each(?)) AND NOT EXISTS(SELECT 1 FROM companion_reset_jobs r WHERE r.companion_id=g.companion_id AND r.status!='completed') ORDER BY g.next_at,g.rowid LIMIT 50`).all(now, now, JSON.stringify(command.excludedOwners)) as Row[];
           for (const row of rows) {
+            if (!companionTaskCanClaim(this.db, row.companion_id, { kind: 'learning_goal', id: row.id })) continue;
             const goal = this.goal(row), due = nextCompanionLearningGoalAt(goal.schedule, now);
             if (due > now) { this.db.prepare('UPDATE companion_learning_goals SET next_at=? WHERE id=?').run(due, row.id); continue; }
             const previous = row.round_id ? this.round(row.round_id) : undefined;

@@ -14,7 +14,6 @@ type NotificationInput = {
   members: Array<Pick<Companion, 'id' | 'name'>>;
 };
 const LIMIT = 2000;
-const introduction = '收到实际回信；引文只代表发送者的说法。标有“节选”的内容，请按消息 ID 在社交记录查看原文。\n\n';
 const permission = { allowed: '已允许', denied: '已拒绝', expired: '已过期', left: '已结束' } as const;
 const escape = (text: string) => text.replace(/([\\\x60*_[\]{}()<>#+.!|~$^=-])/gu, '\\$1');
 const label = (text: string, limit: number) => escape(Array.from(text.replace(/[\r\n\t]/gu, ' ')).slice(0, limit).join(''));
@@ -44,30 +43,32 @@ export function buildCompanionSocialNotification(input: NotificationInput,
     || notice.origin.initiatorKind !== 'human_player') throw invalid();
   const sources: CompanionMessage[] = [];
   const entries = (notice.events ?? [notice]).map(event => {
-    let reference: string, status: string;
+    let status: string;
     if (event.kind === 'peer_reply') {
       const actual = input.eventMessages.find(message => message.id === event.evidence.messageId
         && message.conversationId === event.peerConversationId);
       if (!actual || actual.id !== event.eventId || actual.authorId !== event.evidence.authorId
         || actual.authorId === input.companion.id || actual.content !== event.evidence.text || actual.status !== 'sent'
         || actual.isReplyDraft || actual.replyDraft) throw invalid();
-      sources.push(actual); reference = actual.id; status = '回复';
+      sources.push(actual); status = '回复';
     } else {
       if (!event.evidence.visitId || !event.evidence.visitStatus) throw invalid();
-      reference = event.evidence.visitId; status = permission[event.evidence.visitStatus];
+      status = permission[event.evidence.visitStatus];
     }
     const name = input.members.find(member => member.id === event.evidence.authorId)?.name || event.evidence.authorId;
-    return { reference, status, name, body: event.evidence.text };
+    return { status, name, body: event.evidence.text };
   });
   if (!entries.length || entries.length > 16) throw invalid();
   // Normal claims contain at most four events. Old running batches may contain
-  // sixteen; keep every source identifiable instead of silently consuming it.
-  const headers = (nameLimit: number) => entries.map(entry => label(entry.name, nameLimit) + ' #' + entry.reference + ' ' + entry.status + '\n> ');
+  // sixteen; represent every event instead of silently consuming it.
+  // Exact event/message IDs remain in the durable notification and readset.
+  // The visible quotation needs attribution, not internal IDs or host rules.
+  const headers = (nameLimit: number) => entries.map(entry => label(entry.name, nameLimit) + entry.status + '：\n> ');
   let headings = headers(16);
-  if ((LIMIT - introduction.length - headings.reduce((sum, value) => sum + value.length + 7, 0)) / entries.length < 24) headings = headers(1);
-  const budget = Math.floor((LIMIT - introduction.length - headings.reduce((sum, value) => sum + value.length + 7, 0)) / entries.length);
+  if ((LIMIT - headings.reduce((sum, value) => sum + value.length + 7, 0)) / entries.length < 24) headings = headers(1);
+  const budget = Math.floor((LIMIT - headings.reduce((sum, value) => sum + value.length + 7, 0)) / entries.length);
   if (budget < 2) throw invalid();
-  const text = introduction + entries.map((entry, index) => {
+  const text = entries.map((entry, index) => {
     const selected = excerpt(entry.body, budget);
     return headings[index]! + selected.text + (selected.truncated ? '（节选）' : '') + '\n\n';
   }).join('').trimEnd();

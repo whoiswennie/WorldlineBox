@@ -1,6 +1,7 @@
 .companion-workspace-bound { display: flex; flex-direction: column; height: 100%; min-height: 0; }
 .companion-workspace-bound > .companions-app { flex: 1; min-height: 0; height: auto; }
-.companion-workspace-bar { display: flex; align-items: center; justify-content: space-between; gap: 16px; min-height: 38px; padding: 0 18px; border-bottom: 1px solid var(--divider-soft); background: var(--pane); font-size: 11px; color: var(--secondary); }
+.companion-workspace-bar { display: flex; align-items: center; justify-content: space-between; gap: 16px; min-height: 38px; padding: 0 18px; border-bottom: 1px solid var(--divider-soft); background: var(--pane); font-size: 11px; color: var(--secondary); user-select: none; -webkit-app-region: drag; }
+.companion-workspace-bar-actions, .companion-workspace-bar button { -webkit-app-region: no-drag; }
 .companion-workspace-location, .companion-workspace-bar-actions { display: flex; align-items: center; gap: 10px; min-width: 0; }
 .companion-workspace-location { flex: 1; }
 .companion-workspace-location > svg { flex-shrink: 0; color: var(--tertiary); }

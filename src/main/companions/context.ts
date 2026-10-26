@@ -1,6 +1,7 @@
 import type {
   Companion, CompanionConversation, CompanionMemory, CompanionMessage,
 } from '../../shared/companions';
+import { COMPANION_USER_STOP_RULES } from '../../shared/companion-task-stop';
 import { COMPANION_DSH_TOOL } from '../../shared/companion-dsh-tool';
 import { companionScheduleClock } from '../../shared/companion-schedule-time';
 import type { CompanionRuntimeState } from '../../shared/companion-state';
@@ -255,7 +256,7 @@ status=${input.actionResult.status} 是执行器状态：failed、cancelled、in
     memoryEvidenceMessageId: input.proactive || actionResult ? null : input.taskRequest?.sourceMessageId ?? latestUser?.id ?? null,
     event: actionResult ? 'action_result' : input.proactive ? 'proactive_opportunity' : 'new_message',
   });
-  return refreshCompanionFilesContext(refreshCompanionPublicProfileContext({ system, user }, { companionId: companion.id, memberIds: conversation.memberIds,
+  return refreshCompanionFilesContext(refreshCompanionPublicProfileContext({ system: system + '\n' + COMPANION_USER_STOP_RULES, user }, { companionId: companion.id, memberIds: conversation.memberIds,
     audience: input.audience, publicProfiles: input.publicProfiles, publicProfileIds: input.publicProfileIds }), input.fileInputs);
 }
 

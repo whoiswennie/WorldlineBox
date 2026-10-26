@@ -57,7 +57,7 @@ it('creates a real nested notebook text with authoritative tags, source metadata
   expect(f.store.request({ type: 'memory.outbox.claim', companionId: 'alice' }).memoryOutbox).toMatchObject({ operation: 'remember', noteId: created.document?.memory?.id });
   const page = await call({ type: 'memory.documents.list', directory: '', limit: 64 });
   expect(page.documents?.folders).toContainEqual({ path: '资料/研究/植物', name: '植物', count: 1 });
-  expect(page.documents?.items.some(item => item.path === 'profile.md' && item.readOnly)).toBe(true);
+  await expect.poll(async () => (await call({ type: 'memory.documents.list', directory: '', limit: 64 })).documents?.items.some(item => item.path === 'profile.md' && item.readOnly)).toBe(true);
 });
 
 it('opens a cold notebook before file imports or a whole catalogue scan complete', async () => {
@@ -103,6 +103,77 @@ it('opens another owner notebook while one owner is waiting on a background impo
     expect(response.ok, response.error).toBe(true);
     expect(response.documents?.items.some(item => item.path === 'profile.md')).toBe(true);
   } finally { release(); await background; }
+});
+
+it('keeps catalogue discovery moving while the same owner import writer is blocked', async () => {
+  const f = fixture(), folder = path.join(f.directory, 'alice', '资料');
+  mkdirSync(folder, { recursive: true });
+  for (let n = 0; n < 48; n++) writeFileSync(path.join(folder, `后台-${n}.md`), `仍可阅读的真实文件 ${n}`);
+  let release!: () => void, entered!: () => void;
+  const gate = new Promise<void>(resolve => { release = resolve; }), waiting = new Promise<void>(resolve => { entered = resolve; });
+  const scanned: string[] = [], dropped: string[] = [];
+  const { library, call } = f.make(async command => {
+    if (command.type === 'memory.library.page' && command.companionId === 'alice') { entered(); await gate; }
+    if (command.type === 'document.catalog.put') scanned.push(...command.entries.map(item => item.document.path));
+    if (command.type === 'document.catalog.drop') dropped.push(...command.paths);
+    return f.request(command);
+  });
+  const writer = library.sync(); await waiting;
+  try {
+    const first = await call({ type: 'memory.documents.list', directory: '资料', limit: 8 });
+    expect(first.ok, first.error).toBe(true);
+    expect(first.documents?.index?.state).toBe('building');
+    await expect.poll(async () => (await call({ type: 'memory.documents.list', directory: '资料', limit: 8 })).documents?.index?.state,
+      { timeout: 5000 }).toBe('ready');
+    expect((await call({ type: 'memory.documents.list', directory: '资料', limit: 8 })).documents?.total, JSON.stringify({ scanned, dropped })).toBe(48);
+  } finally { release(); await writer; }
+});
+
+it('returns persisted candidates without waiting for the first background rescan', async () => {
+  const f = fixture(), original = f.make();
+  for (let n = 0; n < 7; n++) expect((await original.call({ type: 'memory.documents.create', path: `日记/已存-${n}.md`, content: `已有日记 ${n}` })).ok).toBe(true);
+  await expect.poll(async () => (await original.call({ type: 'memory.documents.list', directory: '', limit: 64 })).documents?.index?.state).toBe('ready');
+  await original.manager.close(); await original.library.close();
+  documents.splice(documents.indexOf(original.manager), 1); libraries.splice(libraries.indexOf(original.library), 1);
+  let release!: () => void, entered!: () => void;
+  const gate = new Promise<void>(resolve => { release = resolve; }), waiting = new Promise<void>(resolve => { entered = resolve; });
+  const reopened = f.make(async command => {
+    if (command.type === 'document.catalog.touch') { entered(); await gate; }
+    return f.request(command);
+  });
+  try {
+    const first = await Promise.race([reopened.call({ type: 'memory.documents.list', directory: '', limit: 64 }),
+      new Promise<never>((_, reject) => { const timer = setTimeout(() => reject(new Error('Persisted page awaited catalogue source work')), 1500); timer.unref(); })]);
+    expect(first.ok, first.error).toBe(true);
+    expect(first.documents?.items.filter(item => item.noteId)).toHaveLength(7);
+    expect(first.documents?.index?.state).toBe('building');
+    await waiting;
+  } finally { release(); }
+});
+
+it('hydrates at most four actual note rows at once and retains the final authorization read', async () => {
+  const f = fixture(); let block = false, active = 0, maxActive = 0, reads = 0, release!: () => void, entered!: () => void;
+  const gate = new Promise<void>(resolve => { release = resolve; }), waiting = new Promise<void>(resolve => { entered = resolve; });
+  const { call } = f.make(async command => {
+    if (block && command.type === 'memory.library.read' && command.sourceLimit === 1) {
+      reads++; active++; maxActive = Math.max(maxActive, active);
+      if (active === 4) entered();
+      try { await gate; return await f.request(command); } finally { active--; }
+    }
+    return f.request(command);
+  });
+  for (let n = 0; n < 7; n++) expect((await call({ type: 'memory.documents.create', path: `日记/并行-${n}.md`, content: `并行授权日记 ${n}` })).ok).toBe(true);
+  await expect.poll(async () => (await call({ type: 'memory.documents.list', directory: '', limit: 64 })).documents?.index?.state).toBe('ready');
+  block = true;
+  const reading = call({ type: 'memory.documents.list', directory: '日记', limit: 64 });
+  try {
+    await waiting; expect(active).toBe(4); expect(reads).toBe(4);
+  } finally { release(); }
+  const page = await reading;
+  expect(page.ok, page.error).toBe(true);
+  expect(page.documents?.items).toHaveLength(7);
+  expect(maxActive).toBe(4);
+  expect(reads).toBe(14); // Every file still has both initial and final SQL authority checks.
 });
 
 it('reads the same notebook during a blocked import without granting its snapshot file-write authority', async () => {

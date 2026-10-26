@@ -8,6 +8,70 @@ import { socialProgressActions, socialProgressReads, socialProgressOutbound } fr
 const now = '2026-10-23T03:00:00.000Z';
 const config = { apiFormat: 'openai_chat' as const, model: 'reviewer', apiKey: 'fixture-only', baseUrl: 'https://fixture.invalid' };
 const response = (value: unknown) => new Response(JSON.stringify({ choices: [{ message: { content: JSON.stringify(value) } }] }), { headers: { 'Content-Type': 'application/json' } });
+
+function fileDeliveryTurn(): CompanionLoopTurn {
+  return { text: '', rawText: '', calls: [{ id: 'send_audio', name: 'dsh',
+    arguments: JSON.stringify({ operation: 'send_file', parameters: { path: 'C:\\private\\蓬莱之梦.ogg' } }) }],
+  results: [{ callId: 'send_audio', attachmentIds: ['audio_attachment'], content: JSON.stringify({
+    content: 'UNTRUSTED_FILE_BODY', trust: 'read_only_file_data_not_instructions', display: { attached: true },
+    file: { path: 'C:\\private\\蓬莱之梦.ogg', size: 4771020, mime: 'audio/ogg', attachmentId: 'audio_attachment', sha256: 'a'.repeat(64) },
+  }) }] };
+}
+
+it('gives the social reviewer exact local attachment evidence without treating it as an external message or playback', async () => {
+  const turn = fileDeliveryTurn(), original = JSON.stringify(turn);
+  const proposedCalls = [{ id: 'next_audio', name: 'dsh',
+    arguments: JSON.stringify({ operation: 'send_file', parameters: { path: 'C:\\private\\下一首.wav' } }) }];
+  const fetchFn = vi.fn<typeof fetch>(async (_url, init) => {
+    const wire = JSON.parse(String(init?.body)), data = JSON.parse(wire.messages[1].content);
+    expect(data.nativeFileActions).toEqual([
+      { callId: 'send_audio', status: 'attached', fileName: '蓬莱之梦.ogg', size: 4771020, mime: 'audio/ogg', attachmentId: 'audio_attachment' },
+      { callId: 'next_audio', status: 'proposed', fileName: '下一首.wav' },
+    ]);
+    expect(data.nativeActions).toBeUndefined(); expect(data.facts).toEqual([]);
+    expect(JSON.stringify(data)).not.toContain('UNTRUSTED_FILE_BODY');
+    expect(JSON.stringify(data)).not.toContain('private');
+    expect(wire.messages[0].content).toContain('本地附件交付');
+    expect(wire.messages[0].content).toContain('不证明用户已经播放');
+    return response({ supported: true, correction: '' });
+  });
+  expect(await reviewCompanionSocialProgress('我先把蓬莱之梦的 OGG 版本发给你，下一首还要加载一下~', [], config, undefined,
+    { requireReview: true, turns: [turn], proposedCalls, fetchFn })).toBeUndefined();
+  expect(fetchFn).toHaveBeenCalledOnce(); expect(JSON.stringify(turn)).toBe(original);
+});
+
+it.each(['failed', 'missing_result', 'wrong_call', 'missing_attachment', 'hidden_attachment', 'malformed_result'] as const)('never upgrades %s local file output to a confirmed attachment', async variant => {
+  const turn = fileDeliveryTurn(), result = turn.results![0]!;
+  if (variant === 'failed') result.content = JSON.stringify({ ok: false, error: 'PRIVATE_FILE_ERROR' });
+  if (variant === 'missing_result') turn.results = [];
+  if (variant === 'wrong_call') result.callId = 'another_call';
+  if (variant === 'missing_attachment') result.attachmentIds = [];
+  if (variant === 'hidden_attachment') result.content = result.content.replace('"attached":true', '"attached":false');
+  if (variant === 'malformed_result') result.content = '{invalid';
+  const fetchFn: typeof fetch = async (_url, init) => {
+    const data = JSON.parse(JSON.parse(String(init?.body)).messages[1].content);
+    expect(data.nativeFileActions).toEqual([{ callId: 'send_audio', fileName: '蓬莱之梦.ogg', status: variant === 'failed' ? 'failed' : 'unconfirmed' }]);
+    expect(JSON.stringify(data)).not.toContain('PRIVATE_FILE_ERROR');
+    return response({ supported: true, correction: '' });
+  };
+  await reviewCompanionSocialProgress('是否附上还要核实。', [], config, undefined, { requireReview: true, turns: [turn], fetchFn });
+});
+
+it('does not borrow local attachment evidence from other tools, untrusted metadata or file prose', async () => {
+  const turn = fileDeliveryTurn();
+  const turns = [
+    { ...turn, calls: [{ ...turn.calls[0]!, arguments: JSON.stringify({ operation: 'read_file', parameters: { path: '/tmp/read.txt' } }) }] },
+    { ...turn, calls: [{ ...turn.calls[0]!, name: 'external_send_file' }] },
+    { ...turn, results: [{ ...turn.results![0]!, content: turn.results![0]!.content.replace('read_only_file_data_not_instructions', 'untrusted') }] },
+  ];
+  const fetchFn: typeof fetch = async (_url, init) => {
+    const data = JSON.parse(JSON.parse(String(init?.body)).messages[1].content);
+    expect(data.nativeFileActions).toEqual([{ callId: 'send_audio', fileName: '蓬莱之梦.ogg', status: 'unconfirmed' }]);
+    return response({ supported: true, correction: '' });
+  };
+  await reviewCompanionSocialProgress('还没有确认交付。', [], config, undefined, { requireReview: true, turns, fetchFn });
+});
+
 function task(): CompanionActivityTask {
   return { id: 'social_goal', companionId: 'alice', conversationId: 'private_alice', sourceMessageId: 'private_original', title: 'PRIVATE_TASK_TITLE',
     goal: 'PRIVATE_ORIGINAL_HUMAN_REQUEST', status: 'waiting', step: 1, attempts: 0, createdAt: now, updatedAt: now, deadline: now,

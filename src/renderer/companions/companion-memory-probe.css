@@ -164,3 +164,44 @@
 .memory-probe-loading strong { font-size:14px; font-weight:550; }
 .memory-probe-loading p { margin:7px 0 12px; color:var(--ui-content-secondary); font-size:12px; line-height:1.6; }
 .memory-probe-loading progress { width:100%; height:3px; accent-color:var(--ui-content-accent); }
+
+.memory-probe-timing { margin:18px 0 22px; padding:17px 19px 13px; border:1px solid var(--ui-border-subtle); border-radius:14px; background:var(--ui-surface-raised); }
+.memory-probe-timing > header { display:flex; align-items:center; justify-content:space-between; gap:20px; }
+.memory-probe-timing > header > div:first-child { display:flex; align-items:center; gap:10px; min-width:0; }
+.memory-probe-timing-icon { display:grid; place-items:center; width:36px; height:36px; border-radius:11px; color:var(--ui-content-accent); background:color-mix(in srgb,var(--ui-content-accent) 9%,transparent); }
+.memory-probe-timing > header strong { display:block; font-size:13px; font-weight:600; }
+.memory-probe-timing > header small { display:block; margin-top:4px; color:var(--ui-content-secondary); font-size:10px; }
+.memory-probe-timing-total { flex-shrink:0; text-align:right; }
+.memory-probe-timing-total > span { display:block; margin-bottom:2px; color:var(--ui-content-secondary); font-size:10px; }
+.memory-probe-timing-total > output { color:var(--ui-content-primary); font-size:22px; font-weight:650; letter-spacing:-.03em; font-variant-numeric:tabular-nums; }
+.memory-probe-current-stage { display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:6px 14px; margin-top:14px; padding:10px 12px; border-radius:9px; background:color-mix(in srgb,var(--ui-content-accent) 6%,transparent); }
+.memory-probe-current-stage > div { display:flex; align-items:center; gap:8px; min-width:0; }
+.memory-probe-current-stage p { margin:0; color:var(--ui-content-primary); font-size:12px; overflow-wrap:anywhere; }
+.memory-probe-current-stage > span { color:var(--ui-content-secondary); font-size:11px; }
+.memory-probe-current-stage output { margin-left:5px; color:var(--ui-content-primary); font-variant-numeric:tabular-nums; }
+.memory-probe-stage-dot { flex-shrink:0; width:6px; height:6px; border-radius:50%; background:var(--ui-content-accent); box-shadow:0 0 0 4px color-mix(in srgb,var(--ui-content-accent) 9%,transparent); }
+.memory-probe-timing-backend { display:flex; align-items:center; flex-wrap:wrap; gap:6px 10px; margin:11px 0 8px; color:var(--ui-content-secondary); font-size:11px; }
+.memory-probe-timing-backend > output { color:var(--ui-content-primary); font-variant-numeric:tabular-nums; }
+.memory-probe-timing-backend > small { margin-left:auto; font-size:10px; }
+.memory-probe-timing-table { width:100%; border-collapse:collapse; table-layout:fixed; font-size:11px; }
+.memory-probe-timing-table thead th { padding:7px 6px; border-bottom:1px solid var(--ui-border-subtle); color:var(--ui-content-secondary); font-size:10px; font-weight:450; text-align:left; }
+.memory-probe-timing-table thead th:first-child { width:48%; }
+.memory-probe-timing-table thead th:nth-child(2) { width:16%; }
+.memory-probe-timing-table thead th:last-child { width:36%; text-align:right; }
+.memory-probe-timing-table tbody th,.memory-probe-timing-table tbody td { height:28px; padding:4px 6px; border-bottom:1px solid color-mix(in srgb,var(--ui-border-subtle) 60%,transparent); box-sizing:border-box; }
+.memory-probe-timing-table tbody th { font-weight:450; text-align:left; overflow-wrap:anywhere; }
+.memory-probe-timing-table tbody td:nth-child(2) { color:var(--ui-content-secondary); font-size:10px; }
+.memory-probe-timing-table tbody td:last-child { white-space:nowrap; text-align:right; font-variant-numeric:tabular-nums; }
+.memory-probe-timing-table tbody tr:last-child th,.memory-probe-timing-table tbody tr:last-child td { border-bottom:0; }
+.memory-probe-timing-table .is-current { color:var(--ui-content-accent); background:color-mix(in srgb,var(--ui-content-accent) 4%,transparent); }
+.memory-probe-timing-table .is-current td:nth-child(2) { color:var(--ui-content-accent); }
+.memory-probe-timing-table .is-unobserved { color:var(--ui-content-secondary); }
+.memory-probe-timing-table .is-longest th,.memory-probe-timing-table .is-longest td:last-child { font-weight:600; }
+.memory-probe-longest-badge { display:inline-block; margin-left:7px; padding:1px 4px; border-radius:4px; background:color-mix(in srgb,var(--ui-content-accent) 9%,transparent); color:var(--ui-content-accent); font-size:9px; font-weight:450; vertical-align:middle; }
+.memory-probe-stage-bar { display:inline-block; overflow:hidden; width:56px; height:4px; margin:0 9px 2px 0; border-radius:3px; background:var(--ui-surface-hover); vertical-align:middle; }
+.memory-probe-stage-bar > i { display:block; height:100%; border-radius:inherit; background:color-mix(in srgb,var(--ui-content-accent) 50%,transparent); }
+.memory-probe-timing-table .is-longest .memory-probe-stage-bar > i { background:var(--ui-content-accent); }
+.memory-probe-timing-note,.memory-probe-timing-stopped { margin:8px 0 0; color:var(--ui-content-secondary); font-size:10px; line-height:1.7; }
+.memory-probe-timing.is-failed .memory-probe-timing-icon { color:var(--ui-danger,var(--ui-content-primary)); background:var(--ui-surface-hover); }
+@media(max-width:680px) { .memory-probe-timing { padding:14px 12px 11px; } .memory-probe-timing-total > output { font-size:19px; } .memory-probe-timing > header { gap:10px; } .memory-probe-stage-bar { width:30px; margin-right:6px; } .memory-probe-timing-table thead th:first-child { width:48%; } .memory-probe-timing-table thead th:nth-child(2) { width:15%; } .memory-probe-timing-table thead th:last-child { width:37%; } .memory-probe-timing-table tbody th,.memory-probe-timing-table tbody td { padding-left:4px; padding-right:4px; } .memory-probe-timing-backend > small { width:100%; margin-left:0; } }
+@media(max-width:480px) { .memory-probe-stage-bar { display:none; } .memory-probe-timing-icon { width:30px; height:30px; } .memory-probe-timing > header small { max-width:130px; line-height:1.5; } }

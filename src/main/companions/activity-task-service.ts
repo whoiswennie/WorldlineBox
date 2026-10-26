@@ -25,9 +25,11 @@ import { reviewCompanionSocialProgress } from './social-progress-review';
 import { companionThoughtCapabilities } from './thought-capabilities';
 import type { DshRecordQuery } from '../../shared/dsh-task-record';
 import type { CompanionBrowserExtension } from './browser-capabilities';
+import type { CompanionMemorySearch } from '../../shared/companion-memory';
 interface Options {
   browserCapabilities?: CompanionBrowserExtension;
   request(input: CompanionStorageCommand): Promise<CompanionStorageResponse>;
+  passiveRecall?(query: CompanionMemorySearch, signal?: AbortSignal): Promise<CompanionStorageResponse>;
   configFor(companion: Companion): Promise<CompanionModelConfig>;
   profiles(input: { companionId: string; conversation: Pick<CompanionConversation, 'id' | 'memberIds'>; audience: 'peers' }): Promise<CompanionProfileInput>;
   fetchFn: typeof fetch; excludedIds(): string[]; changed(): void; report(error: unknown): void;
@@ -36,6 +38,7 @@ interface Options {
     executionReadset: CompanionExecutionReadset; title: string; prompt: string }, signal?: AbortSignal): Promise<unknown>;
   readThought?(input: { taskId: string; companionId: string; conversationId: string; query: DshRecordQuery }, signal?: AbortSignal): Promise<unknown>;
 }
+class ActivityPassiveRecallWithdrawnError extends Error {}
 /** Actual reply identity and bytes, never wall-clock passage or a model plan. */
 export function companionActivitySocialObservationFingerprint(messages: readonly CompanionMessage[]): string {
   return JSON.stringify(messages.map(message => [message.id, message.conversationId, message.sequence,
@@ -52,7 +55,7 @@ export class CompanionActivityTaskService {
   async tick(): Promise<void> {
     if (this.closed || this.ticking) return;
     this.ticking = (async () => {
-      while (!this.closed && this.jobs.size < 2) {
+      while (!this.closed && this.jobs.size < 20) {
         const excludedReports = [...new Set([...this.options.excludedIds(), ...[...this.jobs.values()].map(job => job.companionId)])];
         const reporting = await this.options.request({ type: 'activity.report.claim', excludedIds: excludedReports });
         if (reporting.activityReport && reporting.activityTask) {
@@ -67,7 +70,7 @@ export class CompanionActivityTaskService {
           this.jobs.set(intent.id, { companionId: intent.companionId, controller, promise });
           continue;
         }
-        const excludedIds = [...new Set([...this.options.excludedIds(), ...[...this.jobs.values()].map(job => job.companionId)])];
+        const excludedIds = [...new Set(this.options.excludedIds())];
         const task = (await this.options.request({ type: 'activity.claim', excludedIds })).activityTask;
         if (!task?.leaseToken || this.closed) break;
         const controller = new AbortController();
@@ -149,14 +152,32 @@ export class CompanionActivityTaskService {
         ...(observed.activityGameRoom && observed.topic ? { game: { conversation: { id: observed.activityGameRoom.conversationId,
           memberIds: observed.activityGameRoom.memberIds }, topic: observed.topic } } : {}) });
       const characterDevelopment = currentCompanionCharacterDevelopment(latestCharacter?.characterDevelopment, companion.id, conversation.id);
-      const memory = await this.options.request({ type: 'memory.search', companionId: companion.id, conversationId: conversation.id,
-        query: task.goal, limit: 8 }).catch(error => { this.options.report(error); return undefined; });
+      let snapshot = observed.activityPassiveRecall;
+      let memory: CompanionStorageResponse | undefined;
+      if (!snapshot) {
+        const query = { companionId: companion.id, conversationId: conversation.id, query: task.goal, limit: 8 };
+        memory = await (this.options.passiveRecall ? this.options.passiveRecall(query, signal)
+          : this.options.request({ type: 'memory.search', ...query })).catch(error => {
+          if (signal.aborted) throw error;
+          this.options.report(error); return undefined;
+        });
+        signal.throwIfAborted();
+        const saved = await this.options.request({ type: 'activity.passive.prepare', id: task.id, leaseToken, expectedStep,
+          snapshot: { prepared: true, ...(memory?.memoryContext ? { context: memory.memoryContext } : {}),
+            ...(memory?.memoryRetrieval?.authorizedCorpusEmpty === true && memory.memoryPage?.items.length === 0 && !memory.memoryPage.hasMore
+              ? { authorizedCorpusEmpty: true, authorizedCorpusRevision: memory.memoryRetrieval.authorizedCorpusRevision } : {}) } });
+        if (!saved.ok || !saved.activityPassiveRecall) throw new Error(saved.error ?? '持续任务的被动回忆快照未保存。');
+        snapshot = saved.activityPassiveRecall;
+      }
+      if (snapshot.context && this.options.memoryContextValid && !await this.options.memoryContextValid(task, snapshot.context))
+        throw new ActivityPassiveRecallWithdrawnError('原回忆所用的真实资料已经变化或撤回，本持续任务已停止；实际步骤与回执仍保留。可根据当前获权资料重新建立任务。');
       const recall = companionRecallCapabilities(this.options.request, { companionId: companion.id, conversationId: conversation.id });
-      const emptyMemoryCorpus = memory?.ok === true && memory.memoryRetrieval?.authorizedCorpusEmpty === true
-        && !!memory.memoryRetrieval.authorizedCorpusRevision && memory.memoryPage?.items.length === 0 && !memory.memoryPage.hasMore;
+      const emptyMemoryCorpus = snapshot.authorizedCorpusEmpty === true;
       let executionReadset: CompanionExecutionReadset | undefined;
       let topicModeratorTransferApproval: CompanionTopicModeratorTransferApproval | undefined;
-      const recalledCapabilities = { ...recall, tools: recall.tools.filter(tool => !emptyMemoryCorpus || tool.name !== 'memory') };
+      // A frozen empty snapshot describes task preparation only. Explicit
+      // memory tools stay available for material acquired while the task runs.
+      const recalledCapabilities = recall;
       let capabilities = this.options.think ? companionThoughtCapabilities(recalledCapabilities, {
         run: async (proposal, effectId, nativeSignal) => {
           if (!executionReadset) throw new Error('当前思考实际读集不可用。');
@@ -229,10 +250,10 @@ export class CompanionActivityTaskService {
           if (correction) throw new Error('本任务最终报告尚未发送：' + correction);
         }
         return decision;
-      }, frame: { companion, conversation, messages: [], memories: memory?.memoryContext ? [] : memory?.memoryPage?.items.map(hit => hit.memory) ?? [],
+      }, frame: { companion, conversation, messages: [], memories: snapshot.context ? [] : memory?.memoryPage?.items.map(hit => hit.memory) ?? [],
         resourceBounds,
         sourceMessage: source,
-        ...(memory?.memoryContext ? { memoryRecall: { reasons: [], pending: false, degraded: false, context: memory.memoryContext } } : {}),
+        memoryRecall: { reasons: [], pending: false, degraded: false, ...(snapshot.context ? { context: snapshot.context } : {}) },
         proactive: true, audience: 'peers', runtimeState, characterDevelopment, publicProfiles: profiles.publicProfiles,
         invocation: companionTaskInvocation({ companion, conversationId: conversation.id, id: `${task.id}_${expectedStep}`, kind: 'activity',
           goal: task.goal, createdAt: task.createdAt, source }) },
@@ -257,9 +278,9 @@ planningState是同一完整目标跨步骤持久保存的工作计划，独立�
           resourceBounds,
           actionEffect: 'Only host commit receipts prove execution; proposals and queued retries do not.',
           authority: 'Own virtual character and this original goal only; cannot decide for other members or operate the real computer.' },
-        memoryContext: memory?.memoryContext?.text, memoryAvailability: emptyMemoryCorpus ? {
-          authorizedCorpusEmpty: true, revision: memory.memoryRetrieval!.authorizedCorpusRevision,
-          notice: '本步宿主已核实整个获权VCP日记为空；不再提供无用的重复检索。实时话题、回信、历史和持续计划仍在当前上下文。直接交付下一实际步骤提案；下一步宿主会重新检查语料。' } : undefined,
+        memoryContext: snapshot.context?.text, memoryAvailability: emptyMemoryCorpus ? {
+          authorizedCorpusEmpty: true, revision: snapshot.authorizedCorpusRevision,
+          notice: '本任务首次准备时获权VCP日记为空，这份被动快照在任务内保持固定。实时话题、回信、历史和持续计划仍会更新；确有新资料需要时可额外主动回忆，不重复整轮被动检索。' } : undefined,
         planningState, runtimeState, runtimeBehavior: runtimeState ? companionRuntimeBehavior(runtimeState) : undefined, characterDevelopment,
           gameTopic: observed.topic ? { topic: observed.topic, ownState: observed.topicState } : undefined,
           activityPortCandidate: observed.activityPortCandidate,
@@ -357,7 +378,7 @@ planningState是同一完整目标跨步骤持久保存的工作计划，独立�
       }
     } catch (error) {
       if (!signal.aborted && !this.closed) await this.options.request({ type: 'activity.fail', id: task.id, leaseToken,
-        terminal: error instanceof CompanionAgentNoProgressError || error instanceof CompanionAgentFinalValidationError || error instanceof CompanionModelError && error.code === 'CONTEXT_CAPACITY',
+        terminal: error instanceof ActivityPassiveRecallWithdrawnError || error instanceof CompanionAgentNoProgressError || error instanceof CompanionAgentFinalValidationError || error instanceof CompanionModelError && error.code === 'CONTEXT_CAPACITY',
         error: error instanceof Error ? error.message.slice(0, 1000) : '行动规划暂时不可用。' }).catch(() => undefined);
     }
   }

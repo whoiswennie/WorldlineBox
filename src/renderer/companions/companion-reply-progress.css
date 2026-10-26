@@ -1,8 +1,14 @@
 .companions-bubble-progress { min-width: min(270px, 100%); margin-top: 10px; padding-top: 9px; border-top: 1px solid var(--ui-border-subtle); font-size: 12px; line-height: 1.5; color: var(--ui-content-secondary); }
 .companions-loop-segments:empty + .companions-bubble-progress { margin-top: 0; padding-top: 0; border-top: 0; }
+/* Stage descriptions change often during one recall. Keep the empty live shell
+   independent of their intrinsic width, and reserve its detail/summary rows. */
+.companions-message-bubble.is-reply-pending { width: 420px; max-width: 100%; }
+.is-reply-pending .companions-bubble-progress { min-height: 90px; }
+.is-reply-pending .companions-bubble-progress-detail { min-height: 3em; }
 .companions-bubble-progress-row { display: flex; align-items: center; gap: 6px; min-width: 0; }
 .companions-bubble-progress-row strong { color: var(--ui-content-primary); font-size: 12px; font-weight: 500; }
 .companions-bubble-progress-row time { font-variant-numeric: tabular-nums; margin-left: auto; white-space: nowrap; }
+.companions-bubble-duration-unknown { margin-left: auto; color: var(--ui-content-tertiary, var(--ui-content-secondary)); }
 .companions-bubble-progress-row button { margin-left: auto; border: 0; border-radius: var(--ui-radius-control, 6px); padding: 3px 7px; background: var(--ui-surface-raised); color: var(--ui-content-secondary); font: inherit; cursor: pointer; }
 .companions-bubble-progress-row time + button { margin-left: 2px; }
 .companions-bubble-progress-row button:hover { color: var(--ui-content-primary); background: var(--ui-surface-hover); }

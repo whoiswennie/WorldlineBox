@@ -6,6 +6,7 @@ import { CompanionsStore, type CompanionSeed } from '../../src/companions/store'
 import { CompanionAutonomyService } from '../../src/main/companions/autonomy-service';
 import type { CompanionWorkOrder } from '../../src/shared/companion-work-order';
 import type { CompanionStorageCommand } from '../../src/shared/companion-storage';
+import type { CompanionMemorySearch } from '../../src/shared/companion-memory';
 import { companionGoalProofFixture } from '../helpers/companion-goal-proof-fixture';
 
 const roots: string[] = [], stores = new Set<CompanionsStore>(), services = new Set<CompanionAutonomyService>(), releases: Array<() => void> = [];
@@ -15,6 +16,11 @@ afterEach(async () => { releases.splice(0).forEach(release => release()); for (c
 function deferred<T>() { let resolve!: (value: T) => void; const promise = new Promise<T>(done => { resolve = done; }); return { promise, resolve }; }
 async function until(predicate: () => boolean) { for (let index = 0; index < 100; index++) { if (predicate()) return; await new Promise<void>(resolve => setImmediate(resolve)); } expect(predicate()).toBe(true); }
 function response(value: unknown) { return new Response(JSON.stringify({ choices: [{ message: { content: JSON.stringify(value) } }] }), { headers: { 'Content-Type': 'application/json' } }); }
+function advance(store: CompanionsStore, milliseconds: number) {
+  vi.setSystemTime(Date.now() + milliseconds);
+  for (let index = 0; index < 100; index++) { if (!store.request({ type: 'world.clock' }).worldClock!.backlog) break; store.request({ type: 'world.tick' }); }
+  store.request({ type: 'world.tick' });
+}
 function fixture() {
   const root = mkdtempSync(path.join(tmpdir(), 'companion-autonomy-')); roots.push(root); const store = new CompanionsStore(path.join(root, 'messages.sqlite'), seeds.map(seed => ({ ...seed, active: true }))); stores.add(store);
   const snapshot = store.request({ type: 'world.snapshot' }).world!; store.request({ type: 'world.configure', expectedRevision: snapshot.settings.revision, patch: { timeZone: 'UTC' } });
@@ -23,7 +29,12 @@ function fixture() {
     if (command.type !== 'memory.search') return store.request(command);
     const snapshot = store.request({ type: 'memory.snapshot', companionId: command.companionId, conversationId: command.conversationId }).memorySnapshot!;
     return { ok: true as const, memoryPage: { items: snapshot.notes.map(memory => ({ memory, reasons: ['authorized fixture'], path: [] })), hasMore: false },
-      memoryContext: { text: snapshot.notes.map(note => note.content).join('\n'), revision: snapshot.revision, profileKey: 'fixture-vcp-profile' } };
+      memoryContext: { text: snapshot.notes.map(note => note.content).join('\n'), revision: snapshot.revision, profileKey: 'fixture-vcp-profile', evidence: {
+        capturedAt: new Date().toISOString(), corpusHash: snapshot.revision, dependencyCoverage: 'complete' as const,
+        dependencies: snapshot.notes.map(note => ({ id: note.id, version: note.version })), snapshotPolicy: 'task_passive_v1' as const,
+        frozenDependencies: snapshot.notes.map(note => ({ id: note.id, sources: note.sources.map(source => ({ id: source.messageId,
+          conversationId: source.conversationId, checksum: source.checksum })) })),
+      } } };
   });
   const fetchFn = vi.fn<typeof fetch>(), report = vi.fn(), changed = vi.fn(), launch = vi.fn(), resume = vi.fn(), wait = vi.fn();
   const goals = new Map<string, ReturnType<typeof companionGoalProofFixture>>();
@@ -54,8 +65,13 @@ function fixture() {
     return { status: final?.status === 'succeeded' ? 'succeeded' as const : final?.status === 'cancelled' ? 'cancelled' as const : 'failed' as const,
       result, ...goals.get(assigned.id)!.finish(result, [final!]) };
   });
-  const service = new CompanionAutonomyService({ request, ready, end, fetchFn, report, changed, runGoal, blocked: () => false,
-    configFor: async () => ({ apiFormat: 'openai_chat', model: 'configured-chat-model', baseUrl: 'https://provider.invalid', apiKey: 'synthetic-key' }) }); services.add(service);
+  const passiveRecall = vi.fn(async (query: CompanionMemorySearch) => request({ type: 'memory.search', ...query }));
+  const createService = () => {
+    const service = new CompanionAutonomyService({ request, passiveRecall, ready, end, fetchFn, report, changed, runGoal, blocked: () => false,
+      configFor: async () => ({ apiFormat: 'openai_chat', model: 'configured-chat-model', baseUrl: 'https://provider.invalid', apiKey: 'synthetic-key' }) });
+    services.add(service); return service;
+  };
+  const service = createService();
   const orders = (owner = scope) => store.request({ type: 'work-order.list', ...owner, includeHistory: true }).workOrderPage!.items;
   const peerOrder = () => {
     const room = store.request({ type: 'social.conversation.ensure', companionId: 'alice', memberIds: ['alice', 'bob'] }).socialConversation!;
@@ -63,7 +79,7 @@ function fixture() {
     const owner = { companionId: 'alice', conversationId: room.id }, order = store.request({ type: 'work-order.create', ...owner, title: '整理共同提纲', instruction: source.content, sourceMessageId: source.id }).workOrder!;
     store.request({ type: 'work-order.accept', ...owner, id: order.id, expectedRevision: order.revision }); return { source, order, owner };
   };
-  return { store, service, request, scope, fetchFn, report, changed, launch, resume, wait, ready, end, orders, peerOrder };
+  return { store, service, createService, request, passiveRecall, scope, fetchFn, report, changed, launch, resume, wait, ready, end, orders, peerOrder };
 }
 
 it('dispatches an external order through one actual action, waits for its result and releases the computer', async () => {
@@ -96,11 +112,11 @@ it('keeps another resident life clock advancing while both cognition slots wait 
   f.launch.mockImplementation(async (assigned: CompanionWorkOrder) => f.store.createAction({ companionId: assigned.companionId, conversationId: assigned.conversationId,
     workOrderId: assigned.id, sourceMessageId: assigned.sourceMessageId, title: assigned.title, status: 'running' }));
   f.wait.mockReturnValue(completion.promise);
-  f.service.tick(); await until(() => f.launch.mock.calls.length === 1); await new Promise<void>(resolve => setImmediate(resolve));
+  f.service.tick(); await until(() => f.launch.mock.calls.length >= 1); await new Promise<void>(resolve => setImmediate(resolve));
   f.service.tick(); await until(() => f.launch.mock.calls.length === 2); await new Promise<void>(resolve => setImmediate(resolve));
   const occurrence = () => f.store.request({ type: 'life-rule.list', companionId: carol.id }).lifeOccurrences!.find(occ => occ.ruleId === rule.id)!;
   const previous = occurrence().lastRealAt;
-  vi.setSystemTime(Date.now() + 10000); f.service.tick(); await until(() => occurrence().lastRealAt !== previous);
+  advance(f.store, 16 * 60_000); f.service.tick(); await until(() => occurrence().lastRealAt !== previous);
   expect(occurrence().lastRealAt).toBe(new Date().toISOString());
   expect(f.launch).toHaveBeenCalledTimes(2); expect(f.fetchFn).not.toHaveBeenCalled();
 });
@@ -162,6 +178,26 @@ it('finishes peer internal work with the configured model, no external tools or 
   f.service.tick(); await new Promise<void>(resolve => setImmediate(resolve)); expect(f.fetchFn).toHaveBeenCalledOnce(); expect(f.report).not.toHaveBeenCalled();
 });
 
+it('reuses the internal order empty passive receipt after manual pause and resume despite new unrelated notes', async () => {
+  const f = fixture(), { order, owner } = f.peerOrder(), pending = deferred<Response>();
+  releases.push(() => pending.resolve(response({ orderId: order.id, result: '不应发布的旧推理' })));
+  f.fetchFn.mockImplementation(() => pending.promise); f.service.tick(); await until(() => f.fetchFn.mock.calls.length === 1);
+  const running = f.orders(owner)[0]!;
+  f.store.request({ type: 'work-order.pause', ...owner, id: order.id, expectedRevision: running.revision, paused: true });
+  f.service.cancelOrder(order.id); await f.service.drainOrder(order.id);
+  const unrelated = f.store.appendMessage({ conversationId: f.scope.conversationId, authorId: 'user', content: '这是暂停后新增、与原提纲无关的资料。', replyDirective: 'none' });
+  f.store.request({ type: 'memory.record', ...f.scope, candidate: { content: unrelated.content, tags: [], sourceMessageIds: [unrelated.id], evidence: [{ sourceMessageId: unrelated.id, quote: unrelated.content }] } });
+  const paused = f.orders(owner)[0]!;
+  f.store.request({ type: 'work-order.pause', ...owner, id: order.id, expectedRevision: paused.revision, paused: false });
+  f.fetchFn.mockImplementation(async (_url, init) => {
+    expect(JSON.parse(JSON.parse(String(init?.body)).messages[1].content).memoryContext).toBe('');
+    return response({ orderId: order.id, result: '沿用原任务空回忆，继续完成真实提纲。' });
+  });
+  f.service.tick(); await until(() => f.orders(owner)[0]?.status === 'completed');
+  expect(f.passiveRecall).toHaveBeenCalledOnce(); expect(f.fetchFn).toHaveBeenCalledTimes(2);
+  expect(f.report).not.toHaveBeenCalled();
+});
+
 it('resumes the stopped action of a paused external order instead of stranding or duplicating its checkpoint', async () => {
   const f = fixture(), order = f.store.request({ type: 'work-order.create', ...f.scope, title: '继续只读检查', instruction: '只读核对原清单，不能写入。' }).workOrder!;
   const action = f.store.createAction({ ...f.scope, workOrderId: order.id, sourceMessageId: order.sourceMessageId, title: order.title, status: 'running' }, { prompt: order.instruction, waitForActionIds: [], supplements: [] });
@@ -193,7 +229,7 @@ it('uses accumulated world-time life probability to send one authored spontaneou
   f.store.updateCompanion('alice', { ...companion, proactive: true });
   for (const rule of f.store.request({ type: 'life-rule.list', companionId: 'alice' }).lifeRules!) f.store.request({ type: 'life-rule.remove', companionId: 'alice', id: rule.id, expectedRevision: rule.revision });
   const current = f.store.request({ type: 'world.snapshot' }).world!;
-  f.store.request({ type: 'world.configure', expectedRevision: current.settings.revision, patch: { mode: 'compressed' } });
+  f.store.request({ type: 'world.configure', expectedRevision: current.settings.revision, patch: { timeZone: 'UTC' } });
   const rule = f.store.request({ type: 'life-rule.create', companionId: 'alice', rule: { title: '向玩家问候', action: 'message', targetId: 'user', startMinute: 600, endMinute: 610, probability: 1, checkIntervalMinutes: 1 } }).lifeRule!;
   f.fetchFn.mockImplementation(async (_url, init) => {
     const body = JSON.parse(String(init?.body)), input = JSON.parse(body.messages[1].content);
@@ -202,7 +238,7 @@ it('uses accumulated world-time life probability to send one authored spontaneou
     return response({ eventId: input.eventId, speakerId: 'alice', targetId: 'user', text: '想和你打个招呼，现在方便聊聊吗？' });
   });
   f.service.tick(); await until(() => f.store.request({ type: 'life-rule.list', companionId: 'alice' }).lifeOccurrences!.some(occurrence => occurrence.ruleId === rule.id));
-  vi.setSystemTime(Date.now() + 8000); f.service.tick();
+  advance(f.store, 90_000); f.service.tick();
   await until(() => f.store.messages({ conversationId: f.scope.conversationId }).messages.some(message => message.authorId === 'alice' && message.content.includes('打个招呼')));
   const messages = f.store.messages({ conversationId: f.scope.conversationId }).messages;
   expect(messages.filter(message => message.authorId === 'alice')).toHaveLength(1);
@@ -211,7 +247,30 @@ it('uses accumulated world-time life probability to send one authored spontaneou
   f.service.tick(); await new Promise<void>(resolve => setImmediate(resolve)); expect(f.fetchFn).toHaveBeenCalledOnce(); expect(f.report).not.toHaveBeenCalled();
 });
 
-it('bounds independent life cognition at two owners and respects a real silence decision without blocking the third owner', async () => {
+it('reclaims the same interrupted life occurrence with its saved empty passive receipt rather than querying again', async () => {
+  const f = fixture(), companion = f.store.state().companions.find(role => role.id === 'alice')!, pending = deferred<Response>();
+  f.store.updateCompanion('alice', { ...companion, proactive: true });
+  for (const rule of f.store.request({ type: 'life-rule.list', companionId: 'alice' }).lifeRules!) f.store.request({ type: 'life-rule.remove', companionId: 'alice', id: rule.id, expectedRevision: rule.revision });
+  const rule = f.store.request({ type: 'life-rule.create', companionId: 'alice', rule: { title: '只有新想法才联系', action: 'message', targetId: 'user', startMinute: 600, endMinute: 610, probability: 1, checkIntervalMinutes: 1 } }).lifeRule!;
+  releases.push(() => pending.resolve(response({ eventId: 'obsolete', decision: 'silence', text: null })));
+  f.fetchFn.mockImplementation(() => pending.promise);
+  f.service.tick(); await until(() => f.store.request({ type: 'life-rule.list', companionId: 'alice' }).lifeOccurrences!.some(occ => occ.ruleId === rule.id));
+  advance(f.store, 90_000); f.service.tick(); await until(() => f.fetchFn.mock.calls.length === 1);
+  const original = f.store.request({ type: 'life-rule.list', companionId: 'alice' }).lifeOccurrences!.find(occ => occ.ruleId === rule.id)!;
+  await f.service.close();
+  const unrelated = f.store.appendMessage({ conversationId: f.scope.conversationId, authorId: 'user', content: '中断后新增的无关资料，不属于已准备的生活回忆。', replyDirective: 'none' });
+  f.store.request({ type: 'memory.record', ...f.scope, candidate: { content: unrelated.content, tags: [], sourceMessageIds: [unrelated.id], evidence: [{ sourceMessageId: unrelated.id, quote: unrelated.content }] } });
+  f.fetchFn.mockImplementation(async (_url, init) => {
+    const input = JSON.parse(JSON.parse(String(init?.body)).messages[1].content);
+    expect(input.memoryContext).toBe(''); expect(input.eventId).toBe(original.id);
+    return response({ eventId: original.id, speakerId: 'alice', targetId: 'user', decision: 'silence', text: null, reason: '沿用原任务，没有新的想法需要分享。' });
+  });
+  advance(f.store, 121_000); f.createService().tick();
+  await until(() => f.store.request({ type: 'life-rule.list', companionId: 'alice' }).lifeOccurrences!.find(occ => occ.id === original.id)?.status === 'silent');
+  expect(f.passiveRecall).toHaveBeenCalledOnce(); expect(f.fetchFn).toHaveBeenCalledTimes(2); expect(f.report).not.toHaveBeenCalled();
+});
+
+it('lets independent owners make actual silence decisions while another owner is still thinking', async () => {
   const f = fixture(), pending = deferred<Response>();
   const third = f.store.createCompanion({ name: 'Charlie', persona: '只在有实际资料时交流，喜欢保留安静时间。', description: '', model: '', avatar: 'sister', proactive: true });
   f.store.setCompanionActive(third.id, true);
@@ -220,10 +279,10 @@ it('bounds independent life cognition at two owners and respects a real silence 
     const role = f.store.state().companions.find(role => role.id === owner)!; f.store.updateCompanion(owner, { ...role, proactive: true });
     for (const rule of f.store.request({ type: 'life-rule.list', companionId: owner }).lifeRules!) f.store.request({ type: 'life-rule.remove', companionId: owner, id: rule.id, expectedRevision: rule.revision });
     f.store.request({ type: 'life-rule.create', companionId: owner, rule: { title: '有内容再交流', action: 'message', targetId: owners[(index + 1) % owners.length],
-      startMinute: 0, endMinute: 1440, probability: 1, checkIntervalMinutes: 1, silenceCooldownMinutes: 1 } });
+      startMinute: 600, endMinute: 602, probability: 1, checkIntervalMinutes: 1, silenceCooldownMinutes: 1 } });
   }
   const world = f.store.request({ type: 'world.snapshot' }).world!;
-  f.store.request({ type: 'world.configure', expectedRevision: world.settings.revision, patch: { mode: 'compressed' } });
+  f.store.request({ type: 'world.configure', expectedRevision: world.settings.revision, patch: { timeZone: 'UTC' } });
   let active = 0, maximum = 0; const started: string[] = []; let slowOutput: unknown, slowOwner: string | undefined;
   releases.push(() => pending.resolve(response(slowOutput)));
   f.fetchFn.mockImplementation(async (_url, init) => {
@@ -237,12 +296,10 @@ it('bounds independent life cognition at two owners and respects a real silence 
     active--; return response(value);
   });
   f.service.tick(); await until(() => f.request.mock.calls.some(([command]) => command.type === 'life-event.claim'));
-  await new Promise<void>(resolve => setImmediate(resolve)); vi.setSystemTime(Date.now() + 1000); f.service.tick();
-  await until(() => started.length === 2); expect(maximum).toBe(2);
-  const thirdOwner = owners.find(owner => !started.includes(owner))!;
-  await until(() => f.store.request({ type: 'life-rule.list', companionId: started[1]! }).lifeOccurrences!.some(occ => occ.status === 'silent'));
-  await new Promise<void>(resolve => setImmediate(resolve)); vi.setSystemTime(Date.now() + 1000); f.service.tick();
-  await until(() => started.includes(thirdOwner)); expect(started[0]).toBe(slowOwner); expect(maximum).toBe(2);
+  await new Promise<void>(resolve => setImmediate(resolve)); advance(f.store, 90_000); f.service.tick();
+  await until(() => started.length === owners.length); expect(maximum).toBeLessThanOrEqual(owners.length);
+  expect(new Set(started)).toEqual(new Set(owners));
+  for (const owner of owners.filter(owner => owner !== slowOwner)) await until(() => f.store.request({ type: 'life-rule.list', companionId: owner }).lifeOccurrences!.some(occ => occ.status === 'silent'));
   pending.resolve(response(slowOutput)); await until(() => f.store.request({ type: 'life-rule.list', companionId: slowOwner! }).lifeOccurrences!.some(occ => occ.status === 'silent'));
   for (const owner of owners) expect(f.store.messages({ conversationId: f.store.openPrivate(owner).id }).messages.filter(message => message.authorId === owner)).toHaveLength(0);
   expect(f.launch).not.toHaveBeenCalled(); expect(f.report).not.toHaveBeenCalled();

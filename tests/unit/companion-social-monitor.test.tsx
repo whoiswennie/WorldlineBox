@@ -148,3 +148,33 @@ it('shows actual face-to-face and phone channels on the reused private chat, wit
   await click('更早的消息');
   expect(container!.querySelectorAll('[data-social-channel="unknown"]')).toHaveLength(2);
 });
+
+it('coalesces slow reads across repeated change events and still publishes the pending message page', async () => {
+  const base = fixture(); let release!: (value: CompanionsResponse) => void, changed!: () => void;
+  const pending = new Promise<CompanionsResponse>(resolve => { release = resolve; });
+  const request = vi.fn(async (input: CompanionsRequest) => input.type === 'social.messages' ? pending : base(input));
+  const api = { request, onReplyStream: () => () => undefined, onChanged: (listener: () => void) => { changed = listener; return () => undefined; } } as WorldlineBoxCompanionsApi;
+  vi.useFakeTimers(); container = document.createElement('div'); document.body.append(container); root = createRoot(container);
+  await act(async () => root!.render(<CompanionSocialMonitor companions={companions} request={request} api={api} onClose={vi.fn()} onOpenUrl={vi.fn()} />));
+  await click('往来记录');
+  for (let update = 0; update < 5; update++) await act(async () => { changed(); await vi.advanceTimersByTimeAsync(450); });
+  expect(request.mock.calls.filter(([input]) => input.type === 'social.messages')).toHaveLength(1);
+  expect(container!.textContent).not.toContain('0 条消息');
+  await act(async () => release((await base({ type: 'social.messages', conversationId: 'pair', limit: 50 }))));
+  expect(container!.querySelectorAll('[data-social-message]')).toHaveLength(2);
+  expect(container!.querySelector('[aria-label="伙伴对话记录"]')!.getAttribute('aria-busy')).toBe('false');
+  expect(request.mock.calls.filter(([input]) => input.type === 'social.messages')).toHaveLength(2);
+});
+
+it('settles a rejected message request into a retryable error instead of leaving a permanent loading state', async () => {
+  const base = fixture(); let fail = true;
+  const request = vi.fn(async (input: CompanionsRequest) => {
+    if (input.type === 'social.messages' && fail) throw new Error('读取暂时不可用');
+    return base(input);
+  });
+  await mount(request);
+  expect(container!.textContent).toContain('读取暂时不可用');
+  expect(container!.querySelector('[aria-label="伙伴对话记录"]')!.getAttribute('aria-busy')).toBe('false');
+  fail = false; await click('重试');
+  expect(container!.querySelectorAll('[data-social-message]')).toHaveLength(2);
+});

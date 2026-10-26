@@ -32,7 +32,8 @@ const runtimeNote = (note: CompanionMemory, identity: VcpMemoryOwnerIdentity): V
   author: identity.agentName, occurredAt: note.occurredAt ?? note.sources.at(-1)?.worldCreatedAt ?? note.sources.at(-1)?.createdAt ?? note.createdAt,
   metadata: { ...note.metadata, hostMemoryOwner: identity, worldlineboxManagementVersion: note.version } });
 
-/** Human-only owner corpus. Agent recall continues to use physically scoped conversation views. */
+/** Human-only document management index. Agent recall and its UI probe share
+ * CompanionMemoryService over the owner's witnessed, authorized memory graph. */
 export class CompanionMemoryManagementSearch {
   private readonly owners = new Map<string, Owner>();
   private readonly queued = new Set<string>();

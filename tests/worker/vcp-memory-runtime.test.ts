@@ -439,7 +439,10 @@ describe('unchanged VCP core behind isolated worker processes', () => {
 
   it('terminates timed out and crashed workers, then replays persisted notes on the next request', async () => {
     const { createClient, embedding, controls, transports } = await fixture();
-    const client = createClient(embedding, 1, 1_500), scope = { scopeId: 'recoverable' };
+    // This budget includes cold initialization/replay as well as the command;
+    // it is not renewed after opening a worker. The synthetic hang still
+    // exercises actual process termination and exact journal recovery.
+    const client = createClient(embedding, 1, 8_000), scope = { scopeId: 'recoverable' };
     await client.remember(scope, { id: 'one', content: 'alpha recoverable fact', tags: ['alpha'] });
     controls.hangQuery = true;
     await expect(client.search(scope, { text: 'alpha' })).rejects.toThrow(/timed out/u);
@@ -457,7 +460,7 @@ describe('unchanged VCP core behind isolated worker processes', () => {
     const packagedVendor = path.join(resources, 'vcp-memory'), packagedHost = path.join(resources, 'vcp-memory-host');
     await cp(path.resolve('.tools/vcp-memory-release/vcp-memory'), packagedVendor, { recursive: true });
     // Test the current host source; an old release stage can hide a runtime fix.
-    for (const file of ['runtime.cjs', 'worker.cjs', 'peripherals.cjs', 'cold-runtime.cjs', 'cold-worker.cjs', 'dream-runtime.cjs']) {
+    for (const file of ['runtime.cjs', 'worker.cjs', 'peripherals.cjs', 'record-catalog.cjs', 'cold-runtime.cjs', 'cold-worker.cjs', 'dream-runtime.cjs']) {
       await cp(path.resolve('src/main/vcp-memory', file), path.join(packagedHost, file));
     }
     const environment: NodeJS.ProcessEnv = { ...process.env, ELECTRON_RUN_AS_NODE: '1' };

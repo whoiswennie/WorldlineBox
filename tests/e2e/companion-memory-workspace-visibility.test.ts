@@ -4,6 +4,7 @@ import path from 'node:path';
 import { _electron as electron, expect, test, type ElectronApplication, type Locator, type Page } from '@playwright/test';
 import type { CompanionsRequest, WorldlineBoxCompanionsApi } from '../../src/shared/companions';
 import type { CompanionWorkspaceRequest } from '../../src/shared/companion-workspace';
+import type { CompanionMemoryProbeProgressEvent } from '../../src/shared/companion-memory-probe-progress';
 import type { WorldlineBoxLibraryApi } from '../../src/shared/library-api';
 import { electronLaunchEnv, ensureCompanionTestWorkspace, preparePackagedCompanionLaunch, removeCompanionTestDirectory, resolveElectronLaunchOptions } from './electron-test-helpers';
 import { openCompanionWorldWindow } from './companion-world-window-helpers';
@@ -17,6 +18,59 @@ const rows = (page: Page) => manager(page).locator('[data-memory-document]');
 const reading = (page: Page) => manager(page).locator('[data-reading-characters]');
 
 test.describe.configure({ timeout: 240_000 });
+
+// eslint-disable-next-line no-empty-pattern
+test('keeps the companion titlebar draggable and exposes real recall timings through the native bridge', async ({}, testInfo) => {
+  const root = mkdtempSync(path.join(tmpdir(), 'worldlinebox-memory-visibility-'));
+  let application: ElectronApplication | undefined;
+  try {
+    const launched = await launch(root); application = launched.application; const page = launched.page;
+    await ensureCompanionTestWorkspace(page);
+    for (const id of [small, big]) await request(page, { type: 'companion.set-active', id, active: false });
+    await page.locator('[data-application-module="companions"]').click();
+    const bar = page.locator('.companion-workspace-bar'); await expect(bar).toBeVisible();
+    expect(await bar.evaluate(node => getComputedStyle(node).getPropertyValue('-webkit-app-region'))).toBe('drag');
+    expect(await bar.locator('.companion-workspace-bar-actions').evaluate(node => getComputedStyle(node).getPropertyValue('-webkit-app-region'))).toBe('no-drag');
+    for (const button of await bar.getByRole('button').all())
+      expect(await button.evaluate(node => getComputedStyle(node).getPropertyValue('-webkit-app-region'))).toBe('no-drag');
+    if (process.platform === 'win32') for (const button of await page.locator('.windows-caption-button').all())
+      expect(await button.evaluate(node => getComputedStyle(node).getPropertyValue('-webkit-app-region'))).toBe('no-drag');
+    await bar.getByRole('button', { name: '更换资产库', exact: true }).click();
+    await expect(page.getByRole('dialog', { name: '创建伙伴资产库', exact: true })).toBeVisible();
+    await page.getByRole('button', { name: '关闭伙伴资产库设置', exact: true }).click();
+    await enterMemory(page, small);
+    await manager(page).getByRole('button', { name: '用 VCP 回忆', exact: true }).click();
+    const probe = page.getByRole('region', { name: '伙伴回忆', exact: true });
+    const progressEvents: CompanionMemoryProbeProgressEvent[] = [];
+    await page.exposeFunction('observeMemoryProbeProgress', (event: CompanionMemoryProbeProgressEvent) => progressEvents.push(event));
+    await page.evaluate(() => {
+      const bridge = window as unknown as Bridge & { observeMemoryProbeProgress: (event: CompanionMemoryProbeProgressEvent) => Promise<void> };
+      bridge.worldlinebox.companions.onMemoryProbeProgress!(event => { void bridge.observeMemoryProbeProgress(event); });
+    });
+    await expect(page.getByRole('textbox', { name: '想回忆的事', exact: true })).toBeVisible();
+    await page.getByRole('textbox', { name: '想回忆的事', exact: true }).fill('检查一次空库回忆的真实耗时');
+    await page.getByRole('button', { name: '开始回忆', exact: true }).click();
+    const timing = page.getByRole('region', { name: '本次回忆耗时', exact: true });
+    await expect(timing).toHaveAttribute('data-probe-timing-state', 'completed');
+    const total = Number(await timing.locator('[data-probe-total-ms]').getAttribute('data-probe-total-ms'));
+    const backend = Number(await timing.locator('[data-probe-backend-ms]').getAttribute('data-probe-backend-ms'));
+    expect(total).toBeGreaterThanOrEqual(backend); expect(backend).toBeGreaterThanOrEqual(0);
+    await expect(timing.getByRole('table', { name: '实际阶段耗时', exact: true })).toBeVisible();
+    await expect(timing.locator('[data-memory-probe-stage="sources"]')).toBeVisible();
+    expect(await timing.textContent()).not.toContain('NaN');
+    await expect.poll(() => progressEvents.at(-1)?.state).toBe('completed');
+    expect(new Set(progressEvents.map(event => event.requestId)).size).toBe(1);
+    expect(progressEvents.every(event => event.companionId === small && event.mode === 'active')).toBe(true);
+    expect(progressEvents.some(event => event.stageId === 'sources')).toBe(true);
+    expect(progressEvents.at(-1)!.elapsedMs).toBeLessThanOrEqual(total);
+    const screenshot = path.resolve('artifacts/vcp-validation/recall-timing-titlebar.png');
+    await page.screenshot({ path: screenshot });
+    await testInfo.attach('recall-timing-and-titlebar', { path: screenshot, contentType: 'image/png' });
+    // The screen and bridge use an empty isolated corpus; no encoder or paid
+    // chat model is needed for native event/response and layout verification.
+    await expect(probe).toBeVisible();
+  } finally { await application?.close().catch(() => undefined); cleanup(root); }
+});
 
 // These cases use real isolated Electron, library files and memory/outbox jobs.
 // There is no fake embedding/chat transport and no direct database mutation.

@@ -3,6 +3,12 @@ import { CompanionReplyStreamStore, projectCompanionReply } from '../../src/rend
 import type { CompanionMessage, CompanionReplyStreamEvent } from '../../src/shared/companions';
 import type { CompanionReplyProgress } from '../../src/shared/companion-reply-progress';
 const message: CompanionMessage = { id: 'reply', conversationId: 'room', authorId: 'role', sequence: 2, createdAt: '2026-10-14T08:00:00Z', kind: 'text', status: 'sent', content: '前一步。', attachments: [], replyToId: 'source', isReplyDraft: true, segments: [{ text: '前一步。', actionIds: ['actual-tool'] }] };
+it('keeps an unavailable source outside character prose even when obsolete stream frames arrive', () => {
+  const store = new CompanionReplyStreamStore(); store.reconcile([message]);
+  store.accept(event({ step: 0, phase: 'committed', text: '已撤回的旧正文' }));
+  const result = projectCompanionReply({ ...message, sourceUnavailable: 'execution_source_changed', content: '', segments: undefined }, store.snapshot(message.id));
+  expect(result.segments).toEqual([]); expect(result.progress).toBeUndefined(); expect(result.phase).toBeUndefined();
+});
 function event(patch: Partial<CompanionReplyStreamEvent> = {}): CompanionReplyStreamEvent { return { conversationId: 'room', companionId: 'role', sourceMessageId: 'source', messageId: 'reply', step: 1, attemptId: 'attempt-a', text: '这一段正在输出', phase: 'streaming', ...patch }; }
 it('keeps three parallel loops and a second request by the same companion separate, without progress erasing streamed text', () => {
   const store = new CompanionReplyStreamStore(), at = '2026-10-22T00:00:00Z';
@@ -84,4 +90,18 @@ it('lets a published final snapshot win when terminal IPC is delayed or missing'
   expect(store.snapshot('reply').overlays).toHaveLength(0);
   store.accept(event({ text: '当前前缀更多', attemptId: 'late-unknown-attempt' }));
   expect(store.snapshot('reply').overlays).toHaveLength(0);
+});
+
+it('does not restore host-withdrawn completed prose from old committed frames while the next step keeps streaming', () => {
+  const store = new CompanionReplyStreamStore(); store.reconcile([message]);
+  store.accept(event({ step: 0, phase: 'committed', text: '依赖已撤回记忆的旧正文', attemptId: 'old-committed' }));
+  const withdrawn = { ...message, content: '', isReplyDraft: true, replyDraft: { step: 1, attemptId: 'current-new-context', text: '' },
+    segments: [{ text: '', actionIds: ['actual-tool'] }, { text: '', actionIds: [] }] };
+  // Projection must already respect the new host page before React's later
+  // reconciliation effect can run, avoiding even a one-paint disclosure.
+  expect(projectCompanionReply(withdrawn, store.snapshot('reply')).segments?.[0]).toEqual({ text: '', actionIds: ['actual-tool'] });
+  store.reconcile([withdrawn]); expect(store.snapshot('reply').overlays).toHaveLength(0);
+  store.accept(event({ step: 0, phase: 'committed', text: '迟到的另一份旧正文', attemptId: 'another-old-frame' }));
+  store.accept(event({ step: 1, phase: 'streaming', text: '基于新上下文的当前正文', attemptId: 'current-new-context' }));
+  expect(projectCompanionReply(withdrawn, store.snapshot('reply')).segments).toEqual([{ text: '', actionIds: ['actual-tool'] }, { text: '基于新上下文的当前正文', actionIds: [] }]);
 });

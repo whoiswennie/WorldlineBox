@@ -69,3 +69,10 @@ it('renders external content as text when no open callback is available', async 
   expect(host.textContent).toContain('链接'); expect(host.textContent).toContain('图片');
   expect(host.querySelector('button, img, a')).toBeNull();
 });
+
+it('keeps single tildes literal in answers and reasoning while preserving explicit deletion', async () => {
+  await act(() => root.render(<CaptureAnswerContent text="稍等~我帮你找~，~~旧内容~~。" reasoning="先看看~这里~。" />));
+  expect([...host.querySelectorAll('del')].map(node => node.textContent)).toEqual(['旧内容']);
+  expect(host.textContent).toContain('稍等~我帮你找~');
+  expect(host.querySelector('details')?.textContent).toContain('先看看~这里~');
+});

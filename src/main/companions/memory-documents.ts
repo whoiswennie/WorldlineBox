@@ -61,10 +61,15 @@ export class CompanionMemoryDocuments {
         case 'memory.documents.delete': await this.delete(session, command); return { ok: true, deletedPath: command.path };
         case 'memory.documents.mkdir': this.editableDirectory(command.path); await session.directory(command.path); return { ok: true, createdDirectory: command.path };
       }
-    }, { synchronize, readOnly: !synchronize }).then(response => {
+    }, { synchronize, readOnly: !synchronize }).then(async response => {
       if (!['memory.documents.list', 'memory.documents.read', 'memory.documents.locate', 'memory.documents.tags.status'].includes(command.type)) {
         if ('path' in command) this.catalog.mark(command.companionId, command.path);
         if ('targetPath' in command) this.catalog.mark(command.companionId, command.targetPath);
+        if (response.ok && response.document) {
+          await this.catalog.published(command.companionId, response.document);
+          if (command.type === 'memory.documents.move') await this.catalog.dropped(command.companionId, command.path);
+        }
+        if (response.ok && response.deletedPath) await this.catalog.dropped(command.companionId, response.deletedPath);
       }
       return response;
     }).catch((error: unknown): CompanionWorkspaceResponse => ({ ok: false, error: error instanceof Error ? error.message : '记忆文档操作失败。' }));
@@ -213,30 +218,42 @@ export class CompanionMemoryDocuments {
       const order = (file: string) => semantic.hits.findIndex(hit => hit.noteId === session.manifest.files[file]?.noteId);
       return order(a) - order(b);
     }) : page.paths;
-    const items: CompanionMemoryDocument[] = [];
-    for (const file of paths) {
+    const hydrated: Array<CompanionMemoryDocument | undefined> = new Array(paths.length);
+    const readCandidate = async (file: string): Promise<CompanionMemoryDocument | undefined> => {
       try {
         const read = await this.read(session, file, 1), item = read.document;
         const hit = semantic?.hits.find(hit => hit.noteId === item.noteId);
-        if (semantic && (!hit || item.version !== hit.version)) continue;
+        if (semantic && (!hit || item.version !== hit.version)) return;
         // A persisted catalogue only supplies candidates. Recheck the current file,
         // source visibility, version, keyword and tags before returning any result.
         const searchable = (item.title + '\n' + read.content + '\n' + item.tags.join(' ')).toLowerCase();
-        if (!semantic && query.toLowerCase().split(/\s+/u).some(token => !searchable.includes(token))) { this.catalog.mark(session.owner.id, file); continue; }
-        if (tags.some(tag => !item.tags.includes(tag))) { this.catalog.mark(session.owner.id, file); continue; }
+        if (!semantic && query.toLowerCase().split(/\s+/u).some(token => !searchable.includes(token))) { this.catalog.mark(session.owner.id, file); return; }
+        if (tags.some(tag => !item.tags.includes(tag))) { this.catalog.mark(session.owner.id, file); return; }
         const date = item[dateField];
-        if ((from || to) && (!date || from && Date.parse(date) < Date.parse(from) || to && Date.parse(date) > Date.parse(to))) { this.catalog.mark(session.owner.id, file); continue; }
-        items.push(item);
+        if ((from || to) && (!date || from && Date.parse(date) < Date.parse(from) || to && Date.parse(date) > Date.parse(to))) { this.catalog.mark(session.owner.id, file); return; }
+        return item;
       } catch (error) {
         if (session.manifest.files[file]?.state !== 'forgotten' && (error as NodeJS.ErrnoException).code !== 'ENOENT'
           && !(error instanceof Error && 'code' in error && error.code === 'MEMORY_DOCUMENT_WITHDRAWN')) throw error;
         await session.request({ type: 'document.catalog.drop', companionId: session.owner.id, paths: [file] });
       }
-    }
+    };
+    let next = 0;
+    const workers = await Promise.allSettled(Array.from({ length: Math.min(4, paths.length) }, async () => {
+      while (next < paths.length) {
+        const index = next++;
+        hydrated[index] = await readCandidate(paths[index]!);
+      }
+    }));
+    // Drain every bounded reader before leaving this validation/session frame,
+    // including when another row fails; never leave orphan authority checks.
+    const failure = workers.find((result): result is PromiseRejectedResult => result.status === 'rejected');
+    if (failure) throw failure.reason;
+    const items = hydrated.filter((item): item is CompanionMemoryDocument => item !== undefined);
     const pendingImport = page.pendingImport ?? 0;
     const index = semantic ? { state: semantic.state === 'ready' && (!state.complete || pendingImport > 0) ? 'building' as const : semantic.state,
       indexed: semantic.indexed, total: semantic.total + pendingImport, ...(semantic.error ? { error: semantic.error } : {}) }
-      : { state: state.error ? 'error' as const : state.complete ? 'ready' as const : 'building' as const, indexed: state.indexed, ...(state.error ? { error: state.error } : {}) };
+      : { state: state.error ? 'error' as const : state.complete && !state.dirty.size ? 'ready' as const : 'building' as const, indexed: state.indexed, ...(state.error ? { error: state.error } : {}) };
     const nextCursor = semantic ? semantic.nextCursor ? Buffer.from(JSON.stringify({ kind: 'memory-documents-semantic-v1', fingerprint, inner: semantic.nextCursor })).toString('base64url') : undefined : page.nextCursor;
     return { companionId: session.owner.id, directory: command.directory, folders: page.folders, items,
       // River returns a bounded ranked candidate set, not an exact corpus match

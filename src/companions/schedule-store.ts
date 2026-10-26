@@ -1,8 +1,11 @@
 import { createHash, randomUUID } from 'node:crypto';
+import { companionTaskCanClaim } from './task-concurrency-store';
 import { companionScheduleEntrySchema, type CompanionSchedule, type CompanionScheduleEntry, type CompanionScheduleOccurrence, type CompanionSchedulePatch } from '../shared/companion-schedule';
 import { nextCompanionScheduleRun, resolveCompanionScheduleTimeZone } from '../shared/companion-schedule-time';
 import type { CompanionAction, CompanionMessage } from '../shared/companions';
 import type { CompanionStorageCommand, CompanionStorageResponse } from '../shared/companion-storage';
+import type { CompanionUserStop } from '../shared/companion-task-stop';
+import type { CompanionTaskControlResult } from '../shared/companion-task-control';
 import type { CompanionConnection } from './store';
 import { verifyCompanionGoalProof } from './goal-proof';
 
@@ -146,6 +149,22 @@ export class CompanionScheduleStore {
       this.touch(schedule); return { schedule, scheduleOccurrences };
     }).immediate();
   }
+  stopOccurrence(companionId: string, id: string, stop: CompanionUserStop): { taskControl: CompanionTaskControlResult; scheduleOccurrence: CompanionScheduleOccurrence } {
+    return this.db.transaction(() => {
+      const occurrence = this.occurrence(id), schedule = this.load(occurrence.scheduleId);
+      if (occurrence.companionId !== companionId || schedule.companionId !== companionId || occurrence.conversationId !== schedule.conversationId) throw new Error('定时执行记录不属于此伙伴。');
+      const children = rows(this.db.prepare("SELECT id FROM actions WHERE companion_id=? AND json_extract(data,'$.scheduleOccurrenceId')=? AND status IN('queued','running','interrupted')").all(companionId, id)).map(item => String(item.id));
+      const result = { companionId, kind: 'schedule_occurrence' as const, id, conversationId: occurrence.conversationId,
+        title: schedule.title, sourceMessageId: schedule.sourceMessageId, stopped: !!occurrence.stop,
+        actionIds: [...new Set([...(occurrence.actionId ? [occurrence.actionId] : []), ...children])],
+        activityTaskIds: occurrence.activityTaskId ? [occurrence.activityTaskId] : [] };
+      if (['done', 'failed', 'cancelled'].includes(occurrence.status)) return { taskControl: result, scheduleOccurrence: occurrence };
+      occurrence.status = 'cancelled'; occurrence.stop = stop; occurrence.result = '用户手动停止本次定时执行，后续计划保持不变。';
+      occurrence.updatedAt = occurrence.finishedAt = stop.requestedAt; occurrence.leaseToken = undefined; occurrence.leaseUntil = undefined; delete occurrence.error;
+      this.saveOccurrence(occurrence);
+      return { taskControl: { ...result, stopped: true }, scheduleOccurrence: occurrence };
+    }).immediate();
+  }
   private newOccurrence(schedule: CompanionSchedule, scheduledAt: string, forced = false): CompanionScheduleOccurrence {
     const existing = this.db.prepare('SELECT data FROM companion_schedule_occurrences WHERE schedule_id=? AND scheduled_at=?').get(schedule.id, scheduledAt);
     if (existing) return decode<CompanionScheduleOccurrence>(row(existing).data);
@@ -215,6 +234,7 @@ export class CompanionScheduleStore {
       let occurrence: CompanionScheduleOccurrence | undefined, schedule: CompanionSchedule | undefined;
       for (const item of resumable) {
         const candidate = decode<CompanionScheduleOccurrence>(item.data), owner = this.load(candidate.scheduleId);
+        if (!companionTaskCanClaim(this.db, candidate.companionId, { kind: 'schedule_occurrence', id: candidate.id })) continue;
         if (!candidate.forced && owner.deferredUntil && owner.deferredUntil > now) continue;
         occurrence = candidate; schedule = owner; break;
       }
@@ -224,6 +244,7 @@ export class CompanionScheduleStore {
           AND NOT EXISTS(SELECT 1 FROM companion_schedule_occurrences o WHERE o.schedule_id=s.id AND o.status IN ('pending','dispatching','running')) ORDER BY s.next_run_at,s.id LIMIT 20`).all(worldNow, now));
         for (const item of due) {
           const candidate = decode<CompanionSchedule>(item.data);
+          if (!companionTaskCanClaim(this.db, candidate.companionId)) continue;
           if (!this.valid(candidate)) { candidate.status = 'cancelled'; candidate.nextRunAt = undefined; candidate.lastError = '授权来源或执行范围已经不可用。'; this.touch(candidate); continue; }
           const energy = this.energy(candidate.companionId, time);
           const deferred = candidate.kind !== 'reminder' && candidate.flexible ? this.deferredUntil(candidate.companionId, time, energy) : undefined;
@@ -263,6 +284,7 @@ export class CompanionScheduleStore {
   updateOccurrence(input: Extract<CompanionStorageCommand, { type: 'schedule.occurrence.update' }>): CompanionScheduleOccurrence {
     return this.db.transaction(() => {
       const occurrence = this.occurrence(input.id), schedule = this.load(occurrence.scheduleId);
+      if (occurrence.stop && input.status !== 'cancelled') throw new Error('本次定时执行已由用户停止，旧执行不能覆盖停止结果。');
       if (['done', 'failed', 'cancelled'].includes(occurrence.status) && input.status === occurrence.status && (!input.actionId || occurrence.actionId === input.actionId) && (!input.messageId || occurrence.messageId === input.messageId)) return occurrence;
       if (input.leaseToken && input.leaseToken !== occurrence.leaseToken) throw new Error('定时任务租约已失效。');
       if (input.actionId) {

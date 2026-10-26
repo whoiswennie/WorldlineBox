@@ -2,8 +2,8 @@ import type { CompanionConnection } from './store';
 import type { CompanionMemory } from '../shared/companions';
 import type { CompanionStorageCommand } from '../shared/companion-storage';
 
-type Consolidation = { companionId: string; mergedId: string; state: 'pending' | 'published' | 'restored';
-  inputs: Array<{ id: string; version: number }> };
+type Consolidation = { companionId: string; mergedId: string; state: 'pending' | 'published' | 'restored' | 'stale';
+  inputs: Array<{ id: string; version: number }>; mergedVersion?: number; staleReason?: string };
 type AutomaticClassification = { automaticConsolidation: true; sleepWorldJobId: string };
 interface Port {
   load(id: string): CompanionMemory;
@@ -11,13 +11,21 @@ interface Port {
   persist(note: CompanionMemory): void;
   enqueue(note: CompanionMemory, operation: 'remember' | 'forget'): void;
   invalidate(owner: string): void;
+  withdraw(id: string): void;
   record(command: Extract<CompanionStorageCommand, { type: 'memory.consolidate' }>, automatic?: AutomaticClassification): CompanionMemory | undefined;
 }
 
 /** Archiving changes retrieval visibility, never evidence validity/version.
  * Originals are retained in the same authoritative ledger and dependency DAG. */
 export class CompanionMemoryConsolidationStore {
+  private cursor = '';
   constructor(private readonly db: CompanionConnection, private readonly port: Port) {}
+  initialize(): void {
+    // Only pending consolidation metadata is indexed. Ordinary metadata values
+    // need not be JSON; never evaluate them or deserialize the complete ledger.
+    this.db.exec(`CREATE INDEX IF NOT EXISTS vcp_pending_consolidation_metadata ON metadata(key)
+      WHERE key GLOB 'memory-consolidation/*' AND json_extract(value,'$.state')='pending'`);
+  }
   private get(id: string): Consolidation | undefined {
     const found = this.db.prepare('SELECT value FROM metadata WHERE key=?').get('memory-consolidation/' + id) as { value: string } | undefined;
     return found ? JSON.parse(found.value) as Consolidation : undefined;
@@ -26,12 +34,88 @@ export class CompanionMemoryConsolidationStore {
     this.db.prepare('INSERT INTO metadata(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value')
       .run('memory-consolidation/' + value.mergedId, JSON.stringify(value));
   }
+  private staleReason(record: Consolidation): string | undefined {
+    let merged: CompanionMemory;
+    try { merged = this.port.load(record.mergedId); }
+    catch { return '整合候选已经不存在，旧计划不再发布。'; }
+    if (record.mergedVersion !== undefined && merged.version !== record.mergedVersion) return '整合候选正文已经修订，旧归档计划停止，保留当前候选版本。';
+    if (record.mergedVersion === undefined && merged.version > 1) return '旧整合计划未记录候选版本，当前候选已有更新，停止旧归档计划并保留当前版本。';
+    if (!this.port.valid(merged)) return '整合的实际来源或授权已经变化，旧计划不再发布。';
+    for (const input of record.inputs) {
+      let source: CompanionMemory;
+      try { source = this.port.load(input.id); }
+      catch { return '整合读过的原文已经不存在，旧计划不再发布。'; }
+      if (!this.port.valid(source) || source.version !== input.version) return '整合读过的具体原文或授权已更新，保留当前版本，等待后续维护重新读取。';
+      if (source.archivedAt && source.supersededBy !== record.mergedId) return '原文已由另一项有效整合归档，旧整合计划已被替代，保留现有归档与来源。';
+    }
+    return undefined;
+  }
+  private retire(record: Consolidation, reason: string): void {
+    if (record.state !== 'pending') return;
+    let note: CompanionMemory | undefined;
+    try { note = this.port.load(record.mergedId); } catch { /* A deleted legacy candidate has nothing left to archive. */ }
+    record.state = 'stale'; record.staleReason = reason; this.save(record);
+    if (!note) {
+      // The durable plan may outlive a deleted candidate. Its originals remain
+      // untouched and its obsolete delivery must not be claimed again.
+    } else if (record.mergedVersion !== undefined ? record.mergedVersion !== note.version : note.version > 1) {
+      // A separately revised candidate has its own delivery. Retiring the old
+      // archive plan must not withdraw that newer valid body or its index.
+    } else if (this.port.valid(note)) {
+      // A competing archive does not invalidate the historical content. Keep
+      // it inspectable, but never publish this redundant candidate as active.
+      note.archivedAt ??= new Date().toISOString();
+      this.port.persist(note); this.port.enqueue(note, 'forget'); this.port.invalidate(note.companionId);
+    } else if (!['invalid', 'forgotten'].includes(note.status)) this.port.withdraw(note.id);
+    // Legacy plans did not pin the candidate version. Never cancel a newer
+    // valid delivery; invalid or missing candidates have no safe body to index.
+    const version = record.mergedVersion ?? (note && this.port.valid(note) ? Math.max(1, note.version - Number(note.version > 1)) : undefined);
+    const predicate = version === undefined ? '' : record.mergedVersion === undefined ? ' AND note_version<=?' : ' AND note_version=?';
+    this.db.prepare(`UPDATE vcp_memory_outbox SET status='stale',error=?,lease_token=NULL,lease_until=NULL
+      WHERE note_id=? AND operation='remember' AND status IN('pending','failed')${predicate}`).run(reason, record.mergedId, ...(version === undefined ? [] : [version]));
+  }
+  /** A bounded, fair pass also recovers historical eight-attempt failures.
+   * Native writes with live leases finish their own final read-set check. */
+  reconcilePending(limit = 32): number {
+    const query = this.db.prepare(`SELECT key,value FROM metadata INDEXED BY vcp_pending_consolidation_metadata
+      WHERE key GLOB 'memory-consolidation/*' AND json_extract(value,'$.state')='pending' AND key>? ORDER BY key LIMIT ?`);
+    let values = query.all(this.cursor, limit) as Array<{ key: string; value: string }>;
+    if (!values.length && this.cursor) { this.cursor = ''; values = query.all('', limit) as Array<{ key: string; value: string }>; }
+    let retired = 0;
+    for (const value of values) {
+      this.cursor = value.key;
+      const record = JSON.parse(value.value) as Consolidation;
+      if (this.db.prepare("SELECT 1 FROM vcp_memory_outbox WHERE note_id=? AND operation='remember' AND status='running' AND lease_until>? LIMIT 1").get(record.mergedId, Date.now())) continue;
+      const reason = this.staleReason(record);
+      if (reason) { this.retire(record, reason); retired++; }
+    }
+    return retired;
+  }
+  private waitFor(owner: string, originals: readonly CompanionMemory[], blockers: readonly string[]): void {
+    for (const note of originals) this.db.prepare('INSERT INTO metadata(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value')
+      .run(`memory-consolidation-wait/${owner}/${note.id}`, JSON.stringify({ version: note.version, blockers }));
+  }
+  private pendingOverlap(owner: string, originals: readonly CompanionMemory[]): string[] {
+    const ids = originals.map(note => note.id), sources = [...new Set(originals.flatMap(note => note.sources.map(source => source.messageId)))];
+    // Both paths use existing source-key indexes. Only this proposed read set
+    // competes; unrelated new notes and global corpus revisions do not block it.
+    const values = this.db.prepare(`SELECT m.key FROM metadata m WHERE m.key IN(
+      SELECT 'memory-consolidation/'||d.note_id FROM vcp_note_dependencies d JOIN vcp_memory_notes n ON n.id=d.note_id
+        WHERE n.companion_id=? AND d.source_note_id IN(${ids.map(() => '?').join(',')})
+      UNION SELECT 'memory-consolidation/'||s.note_id FROM vcp_note_sources s JOIN vcp_memory_notes n ON n.id=s.note_id
+        WHERE n.companion_id=? AND s.message_id IN(${sources.map(() => '?').join(',')}))
+      AND json_extract(m.value,'$.state')='pending' ORDER BY m.key LIMIT 32`).all(owner, ...ids, owner, ...sources) as Array<{ key: string }>;
+    return values.map(value => value.key.slice('memory-consolidation/'.length));
+  }
   prepare(command: Extract<CompanionStorageCommand, { type: 'memory.consolidate' }>, automatic?: AutomaticClassification): CompanionMemory | undefined {
     const originals = command.inputs.map(input => this.port.load(input.id));
     if (originals.some((note, index) => note.companionId !== command.companionId || note.version !== command.inputs[index]!.version
       || note.archivedAt || note.status !== 'indexed' || !this.port.valid(note))) throw new Error('整合前须重新读取本人尚未归档且已就绪的准确记忆版本。');
     const domain = originals[0]!.sourceConversationId;
     if (originals.some(note => note.sourceConversationId !== domain)) throw new Error('不同来源可见域的日记不能合并发布。');
+    this.reconcilePending();
+    const blockers = this.pendingOverlap(command.companionId, originals);
+    if (blockers.length) { this.waitFor(command.companionId, originals, blockers); return undefined; }
     const sources = new Set(originals.flatMap(note => note.sources.map(source => source.messageId)));
     if (command.candidate.sourceMessageIds.some(id => !sources.has(id))
       || command.candidate.relatedMemoryIds?.some(id => !originals.some(note => note.id === id))) throw new Error('整合只能引用本次固定读集的真实来源。');
@@ -40,23 +124,28 @@ export class CompanionMemoryConsolidationStore {
     if (!note || note.sourceConversationId !== domain || originals.some(source => source.id === note.id)) throw new Error('整合未形成相同可见域的新日记。');
     const previous = this.get(note.id);
     if (previous && JSON.stringify(previous.inputs) !== JSON.stringify(command.inputs)) throw new Error('相同整合身份不能替换读集。');
-    if (!previous) this.save({ companionId: command.companionId, mergedId: note.id, state: 'pending', inputs: command.inputs });
+    if (!previous) this.save({ companionId: command.companionId, mergedId: note.id, mergedVersion: note.version, state: 'pending', inputs: command.inputs });
+    this.waitFor(command.companionId, originals, [note.id]);
     // A previously indexed identical proposal can safely publish immediately.
     if (note.status === 'indexed') this.publish(note);
     return note;
   }
-  publish(note: CompanionMemory): void {
+  publish(note: CompanionMemory): { state: 'completed' | 'stale'; reason?: string } {
     const record = this.get(note.id);
-    if (!record || record.state !== 'pending') return;
+    if (record?.state === 'stale') return (record.mergedVersion !== undefined ? record.mergedVersion !== note.version : note.version > 1)
+      ? { state: 'completed' } : { state: 'stale', reason: record.staleReason };
+    if (!record || record.state !== 'pending') return { state: 'completed' };
+    const reason = this.staleReason(record);
+    if (reason) { this.retire(record, reason); return { state: 'stale', reason }; }
     const originals = record.inputs.map(input => this.port.load(input.id));
     if (note.status !== 'indexed' || !this.port.valid(note) || originals.some((source, index) => !this.port.valid(source)
-      || source.version !== record.inputs[index]!.version || source.archivedAt)) throw new Error('整合索引完成前读集已变化，不归档原文。');
+      || source.version !== record.inputs[index]!.version || source.archivedAt && source.supersededBy !== note.id)) throw new Error('整合发布条件未通过最终核验。');
     this.port.invalidate(note.companionId);
     for (const source of originals) {
       source.archivedAt = new Date().toISOString(); source.supersededBy = note.id;
       this.port.persist(source); this.port.enqueue(source, 'forget');
     }
-    record.state = 'published'; this.save(record);
+    record.state = 'published'; this.save(record); return { state: 'completed' };
   }
   /** A corrected/invalid merged derivative must not strand unrelated valid
    * originals in an archive. Revoked sources still fail valid() and stay out. */

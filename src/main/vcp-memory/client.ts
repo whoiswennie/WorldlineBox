@@ -11,7 +11,8 @@ import type {
   VcpMemoryScope, VcpMemorySearchResult, VcpMemoryWriteReceipt,
   VcpMemoryMessage, VcpMemoryPluginConfiguration, VcpMemoryPluginName, VcpMemoryTimelineRequest,
   VcpMemoryTimelineArtifacts,
-  VcpMemoryContextReference, VcpMemoryCapabilities, VcpMemoryQueryClock, VcpMemoryAutomaticDecayPolicy, VcpMemoryDecayObservation,
+  VcpMemoryContextReference, VcpMemoryCapabilities, VcpMemoryQueryClock, VcpMemoryAutomaticDecayPolicy,
+  VcpMemoryPreparationReceipt, VcpMemoryPreprocessResult,
 } from './contracts';
 
 export interface VcpMemoryTransport {
@@ -81,6 +82,7 @@ function scopeKey(scope: VcpMemoryScope): string {
 
 /** A bounded process pool; each visibility domain owns its database and graph. */
 export class VcpMemoryClient {
+  get isClosed(): boolean { return this.closed; }
   private scopes = new Map<string, ScopeProcess>();
   private retiring = new Map<string, Promise<void>>();
   private scopeGenerations = new Map<string, number>();
@@ -177,7 +179,13 @@ export class VcpMemoryClient {
       if ((this.scopeGenerations.get(key) ?? 0) !== generation) throw new Error('VCP memory scope was interrupted.');
       if (Date.now() >= deadline) throw new Error('VCP memory request timed out.');
     };
-    const result = this.poolTail.then(async () => {
+    const existing = this.scopes.get(key);
+    // A pending admission for a different scope cannot prevent dispatch to an
+    // already open worker. Worker commands remain serialized by its own lane;
+    // the broker still reserves the exact child before any command is sent.
+    const admission = existing && !existing.failed && !existing.stopping && !this.retiring.has(key)
+      ? Promise.resolve() : this.poolTail;
+    const result = admission.then(async () => {
       if (this.closed) throw new Error('VCP memory client is closed.');
       assertCurrent();
       let retired = !this.retiring.has(key), failure: unknown;
@@ -231,7 +239,7 @@ export class VcpMemoryClient {
         dataRoot: this.options.dataRoot, vendorRoot: this.options.vendorRoot, scope: { scopeId: scope.scopeId },
         embedding: this.options.embedding,
         plugins: this.options.plugins,
-      } }).then(() => undefined).catch(error => {
+      } }, deadline).then(() => undefined).catch(error => {
         this.failProcess(child, error instanceof Error ? error : new Error(String(error))); throw error;
       });
       return { stop: () => this.stopScope(key, child) };
@@ -242,17 +250,20 @@ export class VcpMemoryClient {
         child.busy++; child.used = Date.now(); return { child, release: permit.release };
       } catch (error) { permit.release(); throw error; }
     });
-    this.poolTail = result.catch(() => undefined);
+    // Retain every admission for close/purge, including those that bypassed a
+    // blocked new-scope request. Replacing the tail would lose that drain.
+    this.poolTail = Promise.all([this.poolTail, result]).then(() => undefined, () => undefined);
     return result;
   }
   private async request<T>(scope: VcpMemoryScope, command: VcpMemoryCommand): Promise<T> {
     const deadline = Date.now() + (this.options.requestTimeoutMs ?? 180_000);
     const { child, release } = await this.ensureScope(scope, deadline);
-    try { await child.ready; return await this.send(child, command) as T; }
+    try { await child.ready; return await this.send(child, command, deadline) as T; }
     finally { child.busy--; child.used = Date.now(); release(); }
   }
   remember(scope: VcpMemoryScope, note: VcpMemoryNote): Promise<VcpMemoryWriteReceipt> { return this.request(scope, { type: 'remember', note }); }
   replace(scope: VcpMemoryScope, notes: VcpMemoryNote[]): Promise<{ replaced: true; count: number }> { return this.request(scope, { type: 'replace', notes }); }
+  prepare(scope: VcpMemoryScope): Promise<VcpMemoryPreparationReceipt> { return this.request(scope, { type: 'prepare' }); }
   search(scope: VcpMemoryScope, query: { text: string; topK?: number }): Promise<VcpMemorySearchResult> { return this.request(scope, { type: 'search', text: query.text, topK: query.topK }); }
   read(scope: VcpMemoryScope, id: string): Promise<VcpMemoryNote | null> { return this.request(scope, { type: 'read', id }); }
   list(scope: VcpMemoryScope): Promise<VcpMemoryNote[]> { return this.request(scope, { type: 'list' }); }
@@ -260,7 +271,7 @@ export class VcpMemoryClient {
   pluginCall(scope: VcpMemoryScope, plugin: VcpMemoryPluginName, arguments_: Record<string, unknown>): Promise<{ result: unknown; indexed: boolean; contextReferences?: VcpMemoryContextReference[]; contextReferenceCoverage?: 'observed' | 'partial' }> {
     return this.request(scope, { type: 'plugin', plugin, arguments: arguments_ });
   }
-  preprocess(scope: VcpMemoryScope, messages: VcpMemoryMessage[], clock?: VcpMemoryQueryClock, automaticDecay?: VcpMemoryAutomaticDecayPolicy): Promise<{ messages: VcpMemoryMessage[]; events: unknown[]; contextReferences?: VcpMemoryContextReference[]; contextReferenceCoverage?: 'observed' | 'partial'; queryClock?: VcpMemoryQueryClock; automaticDecay?: VcpMemoryDecayObservation[]; parsedTimeRanges?: Array<{ start: string; end: string }>; cacheClock?: { bucket: string; invalidated: boolean } }> { return this.request(scope, { type: 'preprocess', messages, ...(clock ? { clock } : {}), ...(automaticDecay ? { automaticDecay } : {}) }); }
+  preprocess(scope: VcpMemoryScope, messages: VcpMemoryMessage[], clock?: VcpMemoryQueryClock, automaticDecay?: VcpMemoryAutomaticDecayPolicy): Promise<VcpMemoryPreprocessResult> { return this.request(scope, { type: 'preprocess', messages, ...(clock ? { clock } : {}), ...(automaticDecay ? { automaticDecay } : {}) }); }
   dreamWave(scope: VcpMemoryScope, request: VcpMemoryDreamWaveRequest): Promise<VcpMemoryDreamWaveResult> { return this.request(scope, { type: 'dream-wave', request }); }
   timeline(scope: VcpMemoryScope, request: VcpMemoryTimelineRequest): Promise<unknown> { return this.request(scope, { type: 'timeline', request }); }
   capabilities(scope: VcpMemoryScope): Promise<VcpMemoryCapabilities> { return this.request(scope, { type: 'capabilities' }); }

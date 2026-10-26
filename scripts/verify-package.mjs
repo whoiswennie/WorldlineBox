@@ -145,7 +145,7 @@ for (const entry of expectedVcp.files) {
     throw new Error(`Packaged VCP upstream checksum mismatch: ${entry.path}`);
   }
 }
-for (const name of ['runtime.cjs', 'worker.cjs', 'peripherals.cjs', 'cold-runtime.cjs', 'cold-worker.cjs', 'dream-runtime.cjs']) {
+for (const name of ['runtime.cjs', 'worker.cjs', 'peripherals.cjs', 'record-catalog.cjs', 'cold-runtime.cjs', 'cold-worker.cjs', 'dream-runtime.cjs']) {
   const expected = readFileSync(path.join(projectRoot, 'src', 'main', 'vcp-memory', name));
   const actual = readFileSync(path.join(resourcesPath, 'vcp-memory-host', name));
   if (!expected.equals(actual)) throw new Error(`Packaged VCP host is stale or changed: ${name}`);

@@ -173,6 +173,10 @@ export async function runCompanionStructuredAgent(input: CompanionStructuredAgen
     requestDigest: '0'.repeat(64), revision: 0, status: 'running', turns: [], sources: [], memories: [], effects: [],
   };
   const turns = run.turns;
+  const withTaskPassiveRecall = (frame: CompanionReplyInput): CompanionReplyInput => run.passiveRecall
+    ? { ...frame, memories: [], memorySources: [], memoryRecall: { reasons: [], pending: false, degraded: false,
+      ...(run.passiveRecall.context ? { context: run.passiveRecall.context } : {}) } }
+    : frame;
   let evidenceContext: { user: string } | undefined;
   let evidenceReadset: CompanionExecutionReadset | undefined;
   const captureEvidence = async (actualTurns: readonly CompanionLoopTurn[] = turns) => {
@@ -180,9 +184,10 @@ export async function runCompanionStructuredAgent(input: CompanionStructuredAgen
     const readset = captureCompanionExecutionReadset({ companionId: run.companionId, conversationId: run.conversationId,
       beforeSequence: input.evidenceScope ? input.evidenceScope.beforeSequence : input.frame.contextThroughSequence ?? input.frame.sourceMessage?.sequence }, { context: evidenceContext,
       turns: actualTurns, readsets: evidenceReadset ? [evidenceReadset] : [], sources: run.sources,
-      memories: run.memories, knowledgeReads: run.knowledgeReads, topics: run.topics });
+      memories: run.memories, frozenMemories: run.frozenMemories, knowledgeReads: run.knowledgeReads, topics: run.topics });
     const append = <T>(current: T[], values: readonly T[]) => { for (const value of values) if (!current.some(item => JSON.stringify(item) === JSON.stringify(value))) current.push(value); };
     append(run.sources, readset.sources); append(run.memories, readset.memories);
+    if (readset.frozenMemories) append(run.frozenMemories ??= [], readset.frozenMemories);
     append(run.knowledgeReads ??= [], readset.knowledgeReads); append(run.topics ??= [], readset.topics);
     evidenceReadset = readset;
     await input.observeReadset?.(readset);
@@ -286,7 +291,7 @@ export async function runCompanionStructuredAgent(input: CompanionStructuredAgen
     beforeStep: async () => {
       if (companionFinalValidationFailures(run) >= 3) throw new CompanionAgentFinalValidationError(outputCorrection?.error ?? '最终提案已达到三次校验失败上限。');
       if (journal && !await journal.valid(run)) throw new Error('本轮推理来源或检查点已变化，不能继续发布。');
-      refreshedFrame = input.refresh ? await input.refresh() : input.frame;
+      refreshedFrame = withTaskPassiveRecall(input.refresh ? await input.refresh() : input.frame);
       refreshedFrame = { ...refreshedFrame, dshContext: input.capabilities?.dshContext ?? 'unavailable', capabilityAvailability: companionBoundCapabilityContext(refreshedFrame.companion.id,
         refreshedFrame.conversation.id, availableAuxiliaryTools().map(tool => tool.name)) };
       evidenceContext = assembleCompanionRoleContext(refreshedFrame, input.context);
@@ -295,7 +300,7 @@ export async function runCompanionStructuredAgent(input: CompanionStructuredAgen
     progressFingerprint,
   infer: async step => { for (;;) {
     signal?.throwIfAborted();
-    let frame = capacityFeedback && input.refresh ? await input.refresh() : refreshedFrame;
+    let frame = withTaskPassiveRecall(capacityFeedback && input.refresh ? await input.refresh() : refreshedFrame);
     const effectiveTools = [...availableAuxiliaryTools(), ...(finalTool ? [finalTool] : [])];
     frame = { ...frame, dshContext: input.capabilities?.dshContext ?? 'unavailable', capabilityAvailability: companionBoundCapabilityContext(frame.companion.id, frame.conversation.id,
       effectiveTools.map(tool => tool.name)) };

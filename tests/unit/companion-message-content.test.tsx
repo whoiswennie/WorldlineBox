@@ -47,6 +47,14 @@ it('renders GFM task lists, nested lists, footnotes and mathematical notation', 
   expect(container!.querySelector('section[data-footnotes]')!.textContent).toContain('脚注内容');
 });
 
+it('keeps conversational tildes and filenames literal while preserving explicit double-tilde deletion', async () => {
+  await render('我帮你放~这几个文件里，先发 OGG~\n\n- 东方~Arrange~.ogg\n- 祈愿致那时候的你.wav\n\n想听哪首就说一声~较大的几个可能要加载一会儿。\n\n~~已取消~~，`~文件~.ogg`');
+  expect([...container!.querySelectorAll('del')].map(node => node.textContent)).toEqual(['已取消']);
+  expect(container!.querySelector('p')!.textContent).toBe('我帮你放~这几个文件里，先发 OGG~');
+  expect(container!.querySelector('li')!.textContent).toBe('东方~Arrange~.ogg');
+  expect(container!.querySelector('code')!.textContent).toBe('~文件~.ogg');
+});
+
 it('does not invent an execution permission for old task records, and displays the actual recorded mode', async () => {
   container = document.createElement('div'); document.body.append(container); root = createRoot(container);
   const action: CompanionAction = { id: 'task-a', conversationId: 'chat-a', companionId: 'fish-a', sourceMessageId: 'message-a', title: '检查图片', status: 'running', createdAt: '2026-10-13T08:00:00.000Z', updatedAt: '2026-10-13T08:00:00.000Z' };

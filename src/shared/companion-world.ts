@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { companionUserStopSchema } from './companion-task-stop';
 import { companionInteractionSchema, companionContactReceiptSchema } from './companion-contact';
 import { companionWorldArgumentsSchema } from './companion-world-tool';
 import { companionMemoryCandidateSchema, companionMemoryConsolidateSchema } from './companion-memory';
@@ -6,6 +7,7 @@ import { COMPANION_WORLD_ART_ACTIONS } from './companion-world-actions';
 import { companionWorldPerceptionSchema } from './companion-world-perception';
 import { companionHomeAddressSchema } from './companion-world-address';
 import { companionStateToolProposalSchema } from './companion-state-tool';
+import { companionExecutionReadsetSchema } from './companion-execution-evidence';
 
 const id = z.string().regex(/^[a-zA-Z0-9_-]{1,100}$/);
 const point = z.object({ x: z.number().finite(), y: z.number().finite() });
@@ -70,6 +72,7 @@ export const companionDreamComponentFailureSchema = z.strictObject({ stage: z.en
       context.addIssue({ code: 'custom', message: '梦境组件失败只接受宿主固定阶段、代码与说明。' });
   });
 export const companionWorldJobSchema = z.object({ id, kind: z.enum(['decision', 'dream']), companionId: id, conversationId: id, status: z.enum(['pending', 'running', 'done', 'failed']),
+  stop: companionUserStopSchema.optional(), startedAt: z.iso.datetime().optional(), updatedAt: z.iso.datetime().optional(), finishedAt: z.iso.datetime().optional(),
   terminal: z.boolean().optional(), error: z.string().max(2000).optional(),
   leaseToken: id.optional(), throughEventSequence: z.number().int().nonnegative(), createdAt: z.iso.datetime(), attempts: z.number().int().nonnegative(), sourceMemoryIds: z.array(id).max(128).default([]), encounterMemberIds: z.array(id).min(2).max(4).optional(),
   sleepEpisodeId: id.optional(), dreamAllowed: z.boolean().optional(), maintenanceMemoryIds: z.array(id).max(12).optional(), maintenance: companionMemoryMaintenanceAuditSchema.optional(),
@@ -128,7 +131,7 @@ export const companionWorldStorageCommands = [
   z.strictObject({ type: z.literal('world.job.check'), id, leaseToken: id }),
   z.strictObject({ type: z.literal('world.job.bind-memories'), id, leaseToken: id,
     memoryVersions: z.array(z.strictObject({ id, version: z.number().int().positive() })).min(1).max(128) }),
-  z.strictObject({ type: z.literal('world.job.complete'), id, leaseToken: id, expectedMemoryRevision: z.string().min(1).max(128).optional(), expectedProhibitionRevision: z.string().min(1).max(128).optional(), stateProposal: companionStateToolProposalSchema.optional(), expectedStateRevision: z.number().int().positive().optional(), activityTask: z.strictObject({ title: z.string().trim().min(1).max(120), goal: z.string().trim().min(1).max(16000) }).optional(), action: companionWorldArgumentsSchema.optional(), sourceMemoryIds: z.array(id).max(128).default([]), memoryCandidates: z.array(companionMemoryCandidateSchema).max(40).default([]),
+  z.strictObject({ type: z.literal('world.job.complete'), id, leaseToken: id, executionReadset: companionExecutionReadsetSchema.optional(), expectedMemoryRevision: z.string().min(1).max(128).optional(), expectedProhibitionRevision: z.string().min(1).max(128).optional(), stateProposal: companionStateToolProposalSchema.optional(), expectedStateRevision: z.number().int().positive().optional(), activityTask: z.strictObject({ title: z.string().trim().min(1).max(120), goal: z.string().trim().min(1).max(16000) }).optional(), action: companionWorldArgumentsSchema.optional(), sourceMemoryIds: z.array(id).max(128).default([]), memoryCandidates: z.array(companionMemoryCandidateSchema).max(40).default([]),
     consolidations: z.array(companionMemoryConsolidateSchema).max(4).optional(),
     maintenance: companionMemoryMaintenanceAuditSchema.optional(),
     dreamComponentFailure: companionDreamComponentFailureSchema.optional(),

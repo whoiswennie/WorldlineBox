@@ -17,6 +17,7 @@ function receive(message) {
         case 'initialize': value = await runtime.initialize(command.configuration); break;
         case 'remember': value = await runtime.remember(command.note); break;
         case 'replace': value = await runtime.replace(command.notes); break;
+        case 'prepare': value = await runtime.prepare(); break;
         case 'search': value = await runtime.search(command); break;
         case 'read': value = await runtime.read(command.id); break;
         case 'list': value = await runtime.list(); break;

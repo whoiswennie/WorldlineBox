@@ -189,6 +189,11 @@ describe('VCP semantic space and shutdown boundaries', () => {
       expect(new Set(mocks.clients.map(client => client.options.dataRoot)).size).toBe(4);
       const abort = new AbortController(), waiting = service.acquireGeneration({ ownerId: 'erin', config: chat(), signal: abort.signal });
       const rejected = expect(waiting).rejects.toThrow(); await new Promise(resolve => setTimeout(resolve, 30)); expect(route).toHaveBeenCalledTimes(4);
+      // Capacity is full and erin is ahead in admission order. Alice already
+      // owns a route and can continue recalling without waiting for erin.
+      const resumed = await service.acquireGeneration({ ownerId: 'alice', config: chat() });
+      expect(resumed.client).toBe(leases[0]!.client); await resumed.release();
+      expect(route).toHaveBeenCalledTimes(4);
       const core = await service.get(), cold = await service.getCold(async () => true);
       expect(core.profileKey).toBe('verified-space'); expect(cold).toBeDefined();
       expect(await service.describeEmbedding()).toEqual({ profileKey: 'verified-space' });
@@ -229,6 +234,52 @@ describe('VCP semantic space and shutdown boundaries', () => {
       expect(await readFile(path.join(root,'generation',hash('bob'),'old','sentinel'),'utf8')).toBe('bob');
       expect(await readFile(path.join(peer,'sentinel'),'utf8')).toBe('peer');
     } finally { await service.close(); await rm(root,{recursive:true,force:true}); }
+  });
+
+  it('retires revision readers while preserving clean historical vectors, purges dirty scopes, then fully removes a forgotten owner', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'worldline-vcp-revision-preserve-'));
+    if (path.dirname(path.resolve(root)) !== path.resolve(tmpdir()) || !path.basename(root).startsWith('worldline-vcp-revision-preserve-')) throw new Error('Unexpected revision test cleanup target.');
+    const hash = (value: string) => createHash('sha256').update(value).digest('hex');
+    const disposed = vi.fn(async () => undefined), resolveEmbedding = vi.fn(async () => configuration());
+    const service = new CompanionVcpRuntime({ dataRoot: root, vendorRoot: 'unused', workerPath: 'unused', resolveEmbedding,
+      resolveGenerationPlugins: async () => ({ plugins: {}, dispose: disposed }) });
+    const sentinel = async (directory: string, value: string) => { await mkdir(directory, { recursive: true }); await writeFile(path.join(directory, 'vectors'), value); };
+    try {
+      const before = await service.acquireGeneration({ ownerId: 'alice', config: chat() }); await before.release();
+      const ownerRoot = path.join(root, 'generation', hash('alice'));
+      const clean = path.join(mocks.clients[0]!.options.dataRoot, hash('clean-view'));
+      const dirty = path.join(mocks.clients[0]!.options.dataRoot, hash('dirty-view'));
+      const oldProfile = 'historical-profile', oldClean = path.join(ownerRoot, hash(oldProfile), hash('old-clean'));
+      const oldDirty = path.join(ownerRoot, hash(oldProfile), hash('old-dirty'));
+      const bob = path.join(root, 'generation', hash('bob'), hash(oldProfile), hash('bob-clean'));
+      const canonical = path.join(root, hash('verified-space'), hash('canonical-owner'));
+      const peerCanonical = path.join(root, hash('verified-space'), hash('peer-canonical'));
+      for (const [directory, value] of [[clean, 'CURRENT_CLEAN_VECTORS'], [dirty, 'UNSAFE_INTERRUPTED_WRITE'],
+        [oldClean, 'HISTORICAL_CLEAN_VECTORS'], [oldDirty, 'OLD_UNSAFE_WRITE'], [bob, 'BOB_VECTORS'],
+        [canonical, 'CANONICAL_VECTORS'], [peerCanonical, 'PEER_CANONICAL']] as const) await sentinel(directory, value);
+      await service.purgeOwner('alice', { preserveIndexes: true, historicalViews: [
+        { profileKey: before.profileKey, scopeId: 'dirty-view' }, { profileKey: oldProfile, scopeId: 'old-dirty' },
+      ] });
+      expect(mocks.clients[0]!.close).toHaveBeenCalledOnce(); expect(disposed).toHaveBeenCalledOnce();
+      for (const directory of [dirty, oldDirty]) await expect(lstat(directory)).rejects.toMatchObject({ code: 'ENOENT' });
+      expect(await readFile(path.join(clean, 'vectors'), 'utf8')).toBe('CURRENT_CLEAN_VECTORS');
+      expect(await readFile(path.join(oldClean, 'vectors'), 'utf8')).toBe('HISTORICAL_CLEAN_VECTORS');
+      expect(await readFile(path.join(canonical, 'vectors'), 'utf8')).toBe('CANONICAL_VECTORS');
+      const after = await service.acquireGeneration({ ownerId: 'alice', config: chat() }); await after.release();
+      expect(after.client).not.toBe(before.client); expect(after.profileKey).toBe(before.profileKey);
+      expect(mocks.clients[1]!.options.dataRoot).toBe(mocks.clients[0]!.options.dataRoot);
+      expect(after.connectionEpoch).toBeGreaterThan(before.connectionEpoch);
+
+      // The default forgetting/reset path remains a full physical owner purge.
+      await service.purgeOwner('alice', { canonicalScopes: ['canonical-owner'] });
+      await expect(lstat(ownerRoot)).rejects.toMatchObject({ code: 'ENOENT' });
+      await expect(lstat(canonical)).rejects.toMatchObject({ code: 'ENOENT' });
+      expect(await readFile(path.join(bob, 'vectors'), 'utf8')).toBe('BOB_VECTORS');
+      expect(await readFile(path.join(peerCanonical, 'vectors'), 'utf8')).toBe('PEER_CANONICAL');
+    } finally {
+      await service.close();
+      await rm(root, { recursive: true, force: true });
+    }
   });
 
 });

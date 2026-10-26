@@ -1,4 +1,6 @@
 import { z } from 'zod';
+import { companionUserStopSchema } from './companion-task-stop';
+import { companionExecutionReadsetSchema } from './companion-execution-evidence';
 
 const id = z.string().regex(/^[a-zA-Z0-9_-]{1,100}$/);
 const scope = z.object({ companionId: id, conversationId: id });
@@ -9,7 +11,7 @@ export const companionWorkOrderSchema = z.strictObject({
   title: z.string().min(1).max(200), instruction: z.string().min(1).max(65536),
   execution: z.enum(['external', 'internal']), status: companionWorkOrderStatusSchema,
   revision: z.number().int().positive(), actionId: id.optional(), actionIds: z.array(id).optional(), completionMessageId: id.optional(),
-  result: z.string().max(32000).optional(), error: z.string().max(2000).optional(),
+  result: z.string().max(32000).optional(), error: z.string().max(2000).optional(), stop: companionUserStopSchema.optional(),
   createdAt: z.iso.datetime(), worldCreatedAt: z.iso.datetime(), updatedAt: z.iso.datetime(),
 });
 export type CompanionWorkOrder = z.infer<typeof companionWorkOrderSchema>;
@@ -30,6 +32,7 @@ export const companionWorkOrderStorageCommands = [
   z.strictObject({ type: z.literal('work-order.claim'), companionId: id.optional(), leaseMs: z.number().int().min(1000).max(3600000).default(120000) }),
   z.strictObject({ type: z.literal('work-order.heartbeat'), id, leaseToken: id, leaseMs: z.number().int().min(1000).max(3600000).default(120000) }),
   z.strictObject({ type: z.literal('work-order.complete'), id, leaseToken: id, result: z.string().trim().min(1).max(16000).optional(),
+    executionReadset: companionExecutionReadsetSchema.optional(),
     goalInvocationId: id.optional(), goalSlot: id.optional(), actionIds: z.array(id).optional() }),
   z.strictObject({ type: z.literal('work-order.fail'), id, leaseToken: id, error: z.string().max(2000) }),
   z.strictObject({ type: z.literal('work-order.interrupt-pending') }),

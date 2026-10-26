@@ -29,7 +29,7 @@ interface Options {
 /** Bounded actual reading, independent from the user's asset semantic-search switch. */
 export class CompanionLearningService {
   private timer?: ReturnType<typeof setTimeout>;
-  private readonly active = new Map<string, { controller: AbortController; promise: Promise<void> }>();
+  private readonly active = new Map<string, { controller: AbortController; promise: Promise<void>; grantId: string }>();
   private pumping?: Promise<void>;
   private closed = false;
   constructor(private readonly options: Options) {}
@@ -57,7 +57,7 @@ export class CompanionLearningService {
       const controller = new AbortController();
       const promise = new Promise<void>(resolve => setImmediate(resolve)).then(() => this.process(job, controller.signal))
         .catch(this.options.report).finally(() => { this.active.delete(job.grant.companionId); this.options.changed(); });
-      this.active.set(job.grant.companionId, { controller, promise });
+      this.active.set(job.grant.companionId, { controller, promise, grantId: job.grant.id });
     }
   }
   private async process(job: CompanionLearningJob, signal: AbortSignal): Promise<void> {
@@ -128,6 +128,9 @@ export class CompanionLearningService {
     return { ok: true, learning };
   }
   cancel(owner: string): void { this.active.get(owner)?.controller.abort(); }
+  stopGrant(owner: string, grantId: string): void {
+    const job = this.active.get(owner); if (job?.grantId === grantId) job.controller.abort();
+  }
   async drain(owner: string): Promise<void> {
     // A cancellation can race the asynchronous claim before it enters active.
     await this.pumping;
