@@ -15,6 +15,7 @@ export const dshTaskRecordSchema = z.object({ id, operationId: id, instanceId: i
   effective: dshEffectiveCapabilitiesSchema.optional(), constraintsDigest: z.string().regex(/^[a-f0-9]{64}$/).optional(),
   configurationDigest: z.string().regex(/^[a-f0-9]{64}$/).optional(),
   taskWorkspaceRoot: z.string().max(4096).optional(),
+  sessionWorkspacePath: z.string().max(4096).optional(),
   workspacePath: z.string().max(4096).optional(), pid: z.number().int().positive().optional(),
   sessionId: dshTaskSessionIdSchema.optional(), startedAt: z.string(), finishedAt: z.string().optional(), error: z.string().max(1000).optional(), code: z.number().int().nullable().optional() });
 export type DshTaskRecord = z.infer<typeof dshTaskRecordSchema>;

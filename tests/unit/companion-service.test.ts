@@ -384,6 +384,11 @@ it.each(['launch', 'running'])('delivers guidance across the native %s boundary 
   if (boundary === 'running') await vi.waitFor(() => expect(f.store.listAction().find(action => action.title === '可恢复的检查')?.taskId).toBeDefined(), { timeout: 10000 });
   const amendment = await f.service.handle({ type: 'message.send', conversationId: f.conversation.id, content: '终止原方案，改为展示结果', clientId: 'guide-native-change-' + boundary });
   await vi.waitFor(() => expect(f.store.request({ type: 'loop.get', sourceMessageId: source.id, companionId: 'sister' }).loop?.supplements).toHaveLength(1));
+  transport.socialReviewFetch.mockImplementation(async (_url, init) => {
+    const data = JSON.parse(JSON.parse(String(init?.body)).messages[1].content);
+    expect(data.sourceInputs).toContain('终止原方案，改为展示结果');
+    return modelResponseForJson({ supported: false, correction: '没有社交凭据证明本地检查。', violation: { kind: 'outside_scope', quote: data.proposedText } });
+  });
   launch.resolve();
   await vi.waitFor(() => expect(f.store.request({ type: 'loop.get', sourceMessageId: source.id, companionId: 'sister' }).loop?.status).toBe('done'), { timeout: 10000 });
   expect(f.records).toHaveLength(2);
@@ -790,7 +795,7 @@ it.each(['cached_false_final', 'empty_final', 'bad_tool_prefix'] as const)('revi
     if (data.purpose === 'companion_social_progress_review') {
       reviewedTexts.push(data.proposedText);
       expect(data.nativeActions).toEqual([expect.objectContaining({ delivery: 'sent', recipientIds: [peer.id], messageId: sent.socialMessage!.message.id })]);
-      return modelResponseForJson({ supported: !data.proposedText.includes('另外四人'), correction: data.proposedText.includes('另外四人') ? '只有给实际伙伴的一条真实发信，另外四人没有完成凭据。' : '' });
+      return modelResponseForJson({ supported: !data.proposedText.includes('另外四人'), violation: { kind: 'social_effect', quote: data.proposedText }, correction: data.proposedText.includes('另外四人') ? '只有给实际伙伴的一条真实发信，另外四人没有完成凭据。' : '' });
     }
     writes++;
     expect(wire.messages.some((message: { role: string; tool_call_id?: string }) => message.role === 'tool' && message.tool_call_id === 'real-social-native')).toBe(true);
@@ -850,7 +855,7 @@ it.each(['waiting', 'succeeded'] as const)('reviews a new human follow-up despit
     expect(data.purpose).toBe('companion_social_progress_review'); expect(data.facts).toEqual([]);
     expect(data.nativeActions).toBeUndefined(); expect(data.verifiedOutbound).toBeUndefined();
     reviewed.push(data.proposedText);
-    return modelResponseForJson({ supported: data.proposedText === corrected,
+    return modelResponseForJson({ supported: data.proposedText === corrected, violation: { kind: 'social_effect', quote: data.proposedText },
       correction: data.proposedText === wrong ? '旧汇报不是实际送达凭据；当前没有该具体内容送达的真实凭据。' : '' });
   });
   transport.request.mockClear();
@@ -961,7 +966,7 @@ it('revalidates a tool-free cached human final with no current goal receipts on 
     const data = JSON.parse(JSON.parse(String(init?.body)).messages[1].content);
     expect(data.facts).toEqual([]); expect(data.nativeActions).toBeUndefined();
     reviewed.push(data.proposedText);
-    return modelResponseForJson({ supported: data.proposedText === corrected,
+    return modelResponseForJson({ supported: data.proposedText === corrected, violation: { kind: 'social_effect', quote: data.proposedText },
       correction: data.proposedText === wrong ? '旧汇报不是实际送达凭据；请保留尚未核验的事实边界。' : '' });
   });
   transport.request.mockClear();
@@ -995,7 +1000,7 @@ it('publishes a local audio attachment using its actual file receipt during soci
   transport.socialReviewFetch.mockImplementation(async (_url, init) => {
     const data = JSON.parse(JSON.parse(String(init?.body)).messages[1].content); reviewed.push(data);
     const supported = !data.proposedText.includes('已附上') || data.nativeFileActions?.some((item: { status: string }) => item.status === 'attached');
-    return modelResponseForJson({ supported: !!supported, correction: supported ? '' : '当前核验没有收到该文件的附件回执。' });
+    return modelResponseForJson({ supported: !!supported, violation: { kind: 'attachment_delivery', quote: data.proposedText }, correction: supported ? '' : '当前核验没有收到该文件的附件回执。' });
   });
   const source = (await f.service.handle({ type: 'message.send', conversationId: f.conversation.id,
     content: '把这首音频发给我播放：' + sourcePath, clientId: 'local_audio_delivery_review' })).message!;
@@ -3165,7 +3170,7 @@ describe('CompanionService native work and life management', () => {
         if (reviews === 1) {
           expect(data.proposedText).toBe('我已经给Kimi发出邀请了。');
           expect(data.nativeActions).toEqual([{ callId: 'unexecuted_invitation', action: 'introduce', proposedRecipientIds: ['kimi'], delivery: 'proposed' }]);
-          return modelResponseForJson({ supported: false, correction: '本次邀请只是尚未执行的提案，没有实际发信回执。' });
+          return modelResponseForJson({ supported: false, correction: '本次邀请只是尚未执行的提案，没有实际发信回执。', violation: { kind: 'social_effect', quote: data.proposedText } });
         }
         expect(data.proposedText).toBe('我还没有发出邀请。'); expect(data.nativeActions).toBeUndefined();
         return modelResponseForJson({ supported: true, correction: '' });

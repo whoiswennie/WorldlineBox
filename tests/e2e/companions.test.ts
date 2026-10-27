@@ -187,7 +187,7 @@ test('automatically records ordinary conversation, exposes sources and progress,
     await flow.locator('[data-retrieval-memory="' + learned.id + '"]').getByRole('button', { name: '查看文档', exact: false }).click();
     await expect(panel).toBeVisible();
     await expect(panel.locator('.memory-library-paper')).toContainText('用户喜欢看海');
-    await panel.getByRole('button', { name: `阅读记忆 ${learned.id}`, exact: true }).click();
+    await panel.locator('[data-memory-note="' + learned.id + '"]').click();
     await expect(panel.locator('.memory-library-paper')).toContainText('用户喜欢看海。');
     await expect(panel.locator('.memory-library-document-tags button')).toContainText(['用户', '看海']);
     await panel.getByRole('button', { name: `查看记忆来源 ${learned.id}`, exact: true }).click();
@@ -208,7 +208,7 @@ test('automatically records ordinary conversation, exposes sources and progress,
       await manager.getByRole('button', { name: '关闭共同记忆管理', exact: true }).click();
       await theme(page, mode);
       await journal.getByRole('button', { name: '管理共同记忆', exact: true }).click();
-      await panel.getByRole('button', { name: `阅读记忆 ${learned.id}`, exact: true }).click();
+      await panel.locator('[data-memory-note="' + learned.id + '"]').click();
       const sourceButton = panel.getByRole('button', { name: `查看记忆来源 ${learned.id}`, exact: true });
       if (await sourceButton.getAttribute('aria-expanded') !== 'true') await sourceButton.click();
       if (await panel.locator('.memory-library-source').getAttribute('open') === null) await panel.locator('.memory-library-source summary').click();
@@ -227,7 +227,7 @@ test('automatically records ordinary conversation, exposes sources and progress,
     await expect(panel.getByRole('textbox', { name: '共同记忆内容', exact: true })).toHaveValue('用户现在喜欢看森林。');
     const concurrent = (await browse()).memoryPage!.items.find(hit => hit.memory.id === learned.id)!.memory;
     expect(concurrent.content).toBe('用户现在喜欢看山。');
-    await expect(panel.getByRole('button', { name: `阅读记忆 ${learned.id}`, exact: true })).toContainText('用户现在喜欢看山。');
+    await expect(panel.locator('[data-memory-note="' + learned.id + '"]')).toContainText('用户现在喜欢看山。');
     await panel.getByRole('button', { name: '取消编辑', exact: true }).click();
     await panel.getByRole('button', { name: '放弃修改并离开', exact: true }).click();
     await panel.getByRole('button', { name: `编辑记忆 ${learned.id}`, exact: true }).click();
@@ -240,7 +240,7 @@ test('automatically records ordinary conversation, exposes sources and progress,
     await panel.getByRole('button', { name: '确认遗忘', exact: true }).click();
     await expect.poll(async () => (await browse()).memoryPage?.items.length).toBe(0);
     expect((await request(page, { type: 'memory.status', companionId, conversationId })).memoryStatus?.forgotten).toBeGreaterThan(0);
-    await expect(panel.getByRole('button', { name: `阅读记忆 ${learned.id}`, exact: true })).toHaveCount(0);
+    await expect(panel.locator('[data-memory-note="' + learned.id + '"]')).toHaveCount(0);
     await expect(panel).not.toContainText('用户现在喜欢看森林。');
     expect((await messages(page, conversationId)).some(message => message.id === source.id)).toBe(true);
     await application.close(); application = undefined;

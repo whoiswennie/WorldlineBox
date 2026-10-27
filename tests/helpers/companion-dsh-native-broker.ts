@@ -54,8 +54,9 @@ export async function createNativeAcceptanceBroker(options: NativeAcceptanceOpti
     await writeFile(path.join(instance.homePath, '.credentials.yaml'), await sourceFile(path.join(home, '.credentials.yaml')), { mode: 0o600 });
   } else {
     if (!options.apiKey || !options.model) throw new Error('A real model route is required.');
-    patch = [{ id: 'llm-deepseek', config: { apiKey: options.apiKey, ...(options.baseURL ? { baseURL: options.baseURL } : {}) } },
-      { id: 'agent-default-model', config: { provider: 'deepseek', model: options.model } }];
+    patch = [{ id: 'llm-deepseek', config: { apiKeyEnv: 'DEEPSEEK_API_KEY', ...(options.baseURL ? { baseURL: options.baseURL } : {}) } },
+      { id: 'agent-default-model', config: { provider: 'deepseek-official', model: options.model } }];
+    await writeFile(path.join(instance.homePath, '.credentials.yaml'), stringify({ version: 1, refs: { DEEPSEEK_API_KEY: options.apiKey } }), { mode: 0o600 });
   }
   if (!options.sourceProfile) await writeFile(path.join(instance.homePath, 'cordis.patch.yml'), stringify(patch), { mode: 0o600 });
   const broker = new DshTaskBroker({ rootPath: root, getHost: async () => {

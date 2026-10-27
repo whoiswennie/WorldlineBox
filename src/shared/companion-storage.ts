@@ -1,4 +1,5 @@
 import { companionContactGroupCommands } from './companion-contact-groups';
+import { COMPANION_ATTACHMENT_SNAPSHOT_MAX_BYTES } from './companion-media';
 import { companionInterruptionCommands, companionInterruptionSchema } from './companion-interruption';
 import { companionTaskStopStorageCommands, companionTaskStopReceiptSchema } from './companion-task-stop';
 import { companionTaskConcurrencyCommands } from './companion-task-concurrency';
@@ -91,8 +92,9 @@ const fileToolResultSchema = z.string().max(1024 * 1024).refine(value => {
     return true;
   } catch { return false; }
 }, '文件工具结果必须是最多 1 MiB、不含图像像素的 JSON 元数据。');
-const fileToolAttachmentSchema = storedCompanionAttachmentSchema.refine(value => !value.sourcePath && !value.attachment.path
-  && value.attachment.size <= 100 * 1024 * 1024, '文件工具只能登记最多 100 MiB 的受管快照。');
+const fileToolAttachmentSchema = storedCompanionAttachmentSchema.refine(value => !value.attachment.path && (value.sourcePath
+  ? value.attachment.size <= Number.MAX_SAFE_INTEGER
+  : value.attachment.size <= COMPANION_ATTACHMENT_SNAPSHOT_MAX_BYTES), '文件快照超过 256 MiB 时必须登记原文件引用。');
 
 export const createCompanionActionSchema = actionSchema.omit({ id: true, createdAt: true, updatedAt: true });
 export type CreateCompanionAction = z.infer<typeof createCompanionActionSchema>;

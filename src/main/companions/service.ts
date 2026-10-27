@@ -2196,6 +2196,7 @@ export class CompanionService {
                 replies: current.receipts.flatMap(receipt => receipt.activityMessages?.map(message => [message.id, socialProgressFingerprint(message)]) ?? []) });
                 const reviewedBasis = basis(progress);
                 const correction = await reviewCompanionSocialProgress(pendingProse(), progress.tasks, config, controller.signal, {
+                  sourceInputs: [userMessage.content, ...checkpoint.supplements.map(item => item.content)],
                   requireReview: frame?.topic?.kind !== 'story',
                   turns: inference.turns, replies: progress.receipts.flatMap(receipt => receipt.activityMessages ?? []), outbound: socialProgressOutbound(inference.turns),
                   names: (await this.call({ type: 'state' })).state?.companions.map(role => ({ id: role.id, name: role.name })),
@@ -2371,6 +2372,7 @@ export class CompanionService {
                     retry--; continue;
                   }
                   const correction = await reviewCompanionSocialProgress(pendingProse(reply.turn), tasks, config, inferenceSignal, {
+                    sourceInputs: [userMessage.content, ...checkpoint.supplements.map(item => item.content)],
                     requireReview: inference.topicReviewFrame?.topic?.kind !== 'story',
                     turns: inference.turns, proposedCalls: reply.turn.calls, outbound: socialProgressOutbound(inference.turns),
                     replies: progress.flatMap(receipt => receipt.activityMessages ?? []),

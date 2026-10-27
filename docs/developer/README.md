@@ -17,6 +17,7 @@
 - [伙伴消息系统](companions.md)——独立 SQLite owner、角色模型连接、记忆与 DSH 行动回流
 - [伙伴 Agent 执行流程](companion-agent-flow.md)——角色上下文编译、普通聊天长期接续、原文搜索与宿主能力
 - [伙伴流程验收记录](companion-upgrade-validation-2026-10-27.md)——引导、中断恢复、并发、分页与全量回归的实际结果及限制
+- [伙伴问题修正验收](companion-followup-validation-2026-10-27.md)——DSH 同名分组、运行中引导竞态、大附件与记忆元数据边界
 - [可成长人设与主脑扮演](companion-character-performance.md)——标准字段、15位内置伙伴、实时资料与来源核验的成长
 - [伙伴核心交互验收](companion-core-acceptance-2026-10-26.md)——回忆分段测速、单一注意力队列、后台浏览器、媒体与完整重置
 - [VCP 记忆实施说明](companion-memory-implementation.md)——统一资产库、自然文本日记、原版检索、持续生活及内置多模态向量

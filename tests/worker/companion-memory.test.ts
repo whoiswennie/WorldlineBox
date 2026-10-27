@@ -25,6 +25,16 @@ afterEach(() => { vi.useRealTimers(); for (const store of stores)
     store.close(); stores.clear(); for (const folder of folders.splice(0))
     rmSync(folder, { recursive: true, force: true }); });
 describe('VCP journal host ledger', () => {
+    it('requeues the corrected tag wire-format failure on restart without reopening unrelated failures', () => {
+        const f = fixture(), message = source(f.store, f.scope.conversationId, '我在坐标(10,13)看到餐桌。');
+        f.store.request({ type: 'memory.record', ...f.scope, candidate: candidate(message, { tags: ['坐标(10,13)'] }) });
+        const job = f.store.request({ type: 'memory.outbox.claim' }).memoryOutbox!;
+        close(f.store); const db = new Database(f.filename);
+        db.prepare("UPDATE vcp_memory_outbox SET status='failed',attempts=8,error='Tags must be individual names without separators.' WHERE id=?").run(job.id); db.close();
+        const reopened = open(f.filename), retry = reopened.request({ type: 'memory.outbox.claim' }).memoryOutbox!;
+        expect(retry.id).toBe(job.id); expect(retry.attempts).toBe(1);
+        expect(retry.note?.tags).toEqual(['坐标(10,13)']);
+    });
     it('creates source and delivery tables without a fact engine or a memory FTS index', () => { const { filename } = fixture(); const db = new Database(filename); try {
         const names = db.prepare("SELECT name FROM sqlite_master WHERE type='table'").all() as Array<{
             name: string;

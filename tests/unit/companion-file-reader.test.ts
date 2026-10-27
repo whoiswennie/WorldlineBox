@@ -107,11 +107,17 @@ it('sends existing media and documents as exact managed files without claiming a
     expect(await readFile(attachment.path!)).toEqual(original); expect(await readFile(source)).toEqual(original); expect(result.content).toContain('未分析'); expect(result).not.toHaveProperty('images');
   }
 });
-it('copies a file larger than the reader input cap in bounded chunks, and rejects a file above the send cap', async () => {
+it('copies original audio above 100 MiB and registers larger media as references instead of rejecting them', async () => {
   const f = await fixture(), source = path.join(f.root, 'video.mp4'), handle = await open(source, 'w'); await handle.truncate(21 * 1024 * 1024); await handle.write(Buffer.from('synthetic media payload'), 0, 23, 0); await handle.close();
   const sent = await f.reader.sendFile({ path: source }); expect(sent.file.size).toBe(21 * 1024 * 1024); expect((await f.reader.hydrate([])).images).toEqual([]);
   expect(sha(await readFile(sent.attachments[0]!.path!))).toBe(sha(await readFile(source))); await expect(f.reader.readFile({ path: source })).rejects.toThrow('20 MiB');
-  const tooLarge = path.join(f.root, 'large.bin'), big = await open(tooLarge, 'w'); await big.truncate(100 * 1024 * 1024 + 1); await big.close(); await expect(f.reader.sendFile({ path: tooLarge })).rejects.toThrow('100 MiB');
+  const audio = path.join(f.root, 'original.wav'), big = await open(audio, 'w'); await big.truncate(108 * 1024 * 1024); await big.close();
+  const original = await f.reader.sendFile({ path: audio }); expect(original.file.size).toBe(108 * 1024 * 1024); expect(original.file.sha256).toBeDefined();
+  const larger = path.join(f.root, 'large.mp4'), sparse = await open(larger, 'w'); await sparse.truncate(512 * 1024 * 1024); await sparse.close();
+  const reference = await f.reader.sendFile({ path: larger }, 'd'.repeat(64));
+  expect(reference.file).toMatchObject({ linked: true, size: 512 * 1024 * 1024 });
+  expect(f.store.getAttachment(reference.file.attachmentId).sourcePath).toBe(await realpath(larger));
+  expect(await f.reader.sendFile({ path: larger }, 'd'.repeat(64))).toEqual(reference);
 });
 it('restores each committed file call after source deletion and restart without making duplicate snapshots', async () => {
   const f = await fixture(), text = path.join(f.root, 'durable.txt'), picture = path.join(f.root, 'durable.png'), media = path.join(f.root, 'durable.wav');

@@ -90,7 +90,7 @@ it('reviews a zero-history terminal social claim in-slot before any final report
     const data = JSON.parse(JSON.parse(String(init?.body)).messages[1].content);
     if (data.purpose === 'companion_social_progress_review') {
       reviews++; expect(data.verifiedOutbound).toEqual([]); expect(data.facts).toEqual([]);
-      return response({ supported: !data.proposedText.includes('已经告诉Bob'), correction: data.proposedText.includes('已经告诉Bob') ? '没有任何真实出站正文，不能称已经告诉Bob规则。' : '' });
+      return response({ supported: !data.proposedText.includes('已经告诉Bob'), violation: { kind: 'social_effect', quote: data.proposedText }, correction: data.proposedText.includes('已经告诉Bob') ? '没有任何真实出站正文，不能称已经告诉Bob规则。' : '' });
     }
     expect(data.purpose).toBe('activity_task_step'); actors++;
     if (actors === 2) expect(data.outputCorrection.error).toContain('没有任何真实出站正文');

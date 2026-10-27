@@ -1,4 +1,4 @@
-import { COMPANION_MEDIA_PREVIEW_MAX_BYTES } from '../../shared/companion-media';
+import { COMPANION_ATTACHMENT_SNAPSHOT_MAX_BYTES } from '../../shared/companion-media';
 import { createHash, randomUUID } from 'node:crypto';
 import { lstat, mkdir, open, realpath, rename, unlink } from 'node:fs/promises';
 import path from 'node:path';
@@ -11,7 +11,7 @@ const MAX_FILE_BYTES = 20 * 1024 * 1024;
 const MAX_TEXT_BYTES = 128 * 1024;
 const MAX_IMAGE_BYTES = 1024 * 1024;
 const MAX_PIXELS = 64 * 1024 * 1024;
-const MAX_SEND_BYTES = COMPANION_MEDIA_PREVIEW_MAX_BYTES;
+const MAX_SEND_BYTES = COMPANION_ATTACHMENT_SNAPSHOT_MAX_BYTES;
 const sha = (bytes: Buffer) => createHash('sha256').update(bytes).digest('hex');
 type StableFile = { path: string; bytes: Buffer };
 export interface CompanionReadFileResult {
@@ -166,7 +166,7 @@ export class CompanionFileReader {
       if (first.size > BigInt(Number.MAX_SAFE_INTEGER)) throw new Error('文件大小超出可登记范围。');
       const attachment: CompanionAttachment = { id, name: path.basename(source).slice(0, 240), mime, size: Number(first.size) };
       const file = { path: source, size: attachment.size, mime, attachmentId: id, linked: true };
-      return this.commit({ content: JSON.stringify({ ...file, notice: '已附上本机原文件引用。大文件不复制、不载入内存，在聊天卡片中使用系统应用打开；源文件移动或删除后将不可用。' }),
+      return this.commit({ content: JSON.stringify({ ...file, notice: '已附上本机原文件引用。大文件按需流式预览，不复制、不整体载入内存；超过预览上限可系统打开，源文件移动或删除后将不可用。' }),
         file, attachments: [{ ...attachment, path: source, url: 'worldlinebox-companion://attachment/' + id }] }, [{ attachment, relativePath, sourcePath: source }], key);
     }
     const destination = path.join(directory, id + extension), temporary = destination + '.tmp', original = await open(source, 'r');

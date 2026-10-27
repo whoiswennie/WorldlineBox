@@ -6,6 +6,7 @@ import { CompanionsStore } from '../../src/companions/store';
 import { CompanionMemoryLibrary } from '../../src/main/companions/memory-library';
 import { CompanionMemorySourceFiles } from '../../src/main/companions/memory-source-files';
 import { CompanionMemoryHistoryFiles } from '../../src/main/companions/memory-history-files';
+import { CompanionMemoryDocuments } from '../../src/main/companions/memory-documents';
 import { CompanionAssetIo } from '../../src/main/companions/asset-io';
 import type { CompanionStorageCommand } from '../../src/shared/companion-storage';
 import { removeOwnedDirectorySync } from '../../src/main/vcp-memory/filesystem';
@@ -50,6 +51,14 @@ it('reads real immutable r1 metadata/body while current r2 differs and does not 
   expect((await f.history.read(f.scope, first.id, 2)).content).toBe('后来独立修订的当前正文。');
   expect(readFileSync(f.file(first.id, 1), 'utf8')).toContain('worldlinebox.companion-memory-history-v1');
   expect(readFileSync(f.file(first.id, 1), 'utf8')).toContain('"dependencies"');
+  const manager = new CompanionMemoryDocuments({ library: f.library, libraryDirectory: path.dirname(path.dirname(path.dirname(f.file(first.id, 1)))), requestStorage: async command => f.store.request(command) });
+  try {
+    const relative = f.store.request({ type: 'memory.revision.describe', ...f.scope, id: first.id, contentRevision: 1 }).memoryHistoryDescriptor!.relativePath;
+    const read = await manager.handle({ type: 'memory.documents.read', companionId: 'alice', path: relative, sourceLimit: 30 });
+    expect(read.ok, read.error).toBe(true); expect(read.document?.content).toBe(first.content);
+    expect(read.document?.document.title).toContain('任务最初实际读到的旧正文'); expect(read.document?.document.title).toContain('第 1 版');
+    expect(read.document?.document.excerpt).not.toContain('schema');
+  } finally { await manager.close(); }
   const before = f.store.listMemory('alice').length; await f.library.sync(); expect(f.store.listMemory('alice')).toHaveLength(before);
   await expect(f.history.read({ companionId: 'bob', conversationId: f.store.openPrivate('bob').id }, first.id, 1)).rejects.toThrow();
   expect(() => f.store.request({ type: 'memory.revision.read', ...f.scope, id: first.id, contentRevision: 1 })).toThrow('文件');

@@ -5,6 +5,7 @@ import type { CompanionMemory } from '../../shared/companions';
 import type { CompanionMemoryDocument, CompanionMemoryDocumentRead } from '../../shared/companion-memory-documents';
 import type { CompanionStorageCommand, CompanionStorageResponse } from '../../shared/companion-storage';
 import { memoryLibraryPathParts, type CompanionMemoryLibrary, type MemoryLibraryDocumentSession } from './memory-library';
+import { companionHistoryView, companionNarrativeText } from '../../shared/companion-memory-content';
 
 type State = { generation: string; frames: Array<{ relative: string; dir: Dir }>; prioritizedDirectory?: string; started: boolean; complete: boolean; indexed: number; dirty: Set<string>; watcher?: FSWatcher; job?: Promise<void>; error?: string; lastScan: number };
 interface Options {
@@ -74,7 +75,7 @@ export class CompanionMemoryDocumentCatalog {
     }
     if (!info.isFile() || info.isSymbolicLink() || info.nlink > 1) throw new Error(`记忆目录不能包含链接或目录联接：${relative}`);
     // Version the stat stamp so older derived rows acquire their time columns.
-    const stamp = `v2:${info.mtimeMs}:${info.ctimeMs}:${info.size}:${entry?.version ?? ''}:${entry?.hash ?? ''}:${entry?.state ?? ''}`;
+    const stamp = `v3-narrative:${info.mtimeMs}:${info.ctimeMs}:${info.size}:${entry?.version ?? ''}:${entry?.hash ?? ''}:${entry?.state ?? ''}`;
     if (!force && (await this.options.request({ type: 'document.catalog.touch', companionId: session.owner.id, path: relative, stamp, generation: state.generation })).documentCatalogUnchanged) return;
     if (info.size > 8_000_000) return;
     const content = await session.text(relative, true); if (content === undefined || content.length > 2_000_000) return;
@@ -82,7 +83,7 @@ export class CompanionMemoryDocumentCatalog {
     if (entry?.noteId && !note) { await this.options.request({ type: 'document.catalog.drop', companionId: session.owner.id, paths: [relative] }); return; }
     const document = this.options.describe(relative, content, info.mtime.toISOString(), note, entry, info.birthtimeMs > 0 ? info.birthtime.toISOString() : undefined);
     await this.options.request({ type: 'document.catalog.put', companionId: session.owner.id, generation: state.generation,
-      entries: [{ document, text: content, stamp }] });
+      entries: [{ document, text: relative.startsWith('记忆历史/') ? companionHistoryView(content)?.content ?? '' : companionNarrativeText(content), stamp }] });
   }
   private async refresh(session: MemoryLibraryDocumentSession, state: State, limit: number): Promise<void> {
     for (const relative of [...state.dirty].slice(0, limit)) { state.dirty.delete(relative); await this.one(session, relative, state, true); }

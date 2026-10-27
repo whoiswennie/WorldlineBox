@@ -68,7 +68,7 @@ it('rejects a peer native final claiming a failed discussion message was sent an
       expect(data.nativeActions[0]).not.toHaveProperty('sentContent');
       expect(data.identities).toEqual([{ id: 'friend', name: '朋友' }]);
       expect(wire.messages[0].content).toContain('给真实收件人');
-      return response({ supported: data.proposedText === corrected, correction: data.proposedText === corrected ? '' : '实际发送回执是失败，不能说开始时间已送达朋友。' });
+      return response({ supported: data.proposedText === corrected, violation: { kind: 'social_effect', quote: data.proposedText }, correction: data.proposedText === corrected ? '' : '实际发送回执是失败，不能说开始时间已送达朋友。' });
     }
     expect(data.purpose).toBe('world_social'); authors++;
     if (authors === 1) return toolResponse('discussion_send', 'world', { action: 'message', recipientIds: ['friend'], text: '讨论周六十点开始。' });

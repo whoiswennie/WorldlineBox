@@ -106,6 +106,11 @@ it('isolates concurrent invocations of one partner while reusing the same invoca
   ]);
   expect(first.sessionId).not.toBe(second.sessionId);
   expect(first.workspacePath).not.toBe(second.workspacePath);
+  const sessions = f.calls.filter(call => call.endpoint === '/sessions');
+  expect(sessions.map(call => call.input.cwd)).toEqual([path.join(f.root, 'partners', 'fish'), path.join(f.root, 'partners', 'fish')]);
+  expect(f.calls.filter(call => call.endpoint.endsWith('/prompt')).map(call => call.input.prompt)).toEqual(expect.arrayContaining([
+    expect.stringContaining(first.workspacePath!), expect.stringContaining(second.workspacePath!),
+  ]));
   const nextStep = await f.broker.execute({ prompt: 'verify website a' }, f.operation(), execution);
   expect(nextStep.workspacePath).toBe(first.workspacePath);
 });

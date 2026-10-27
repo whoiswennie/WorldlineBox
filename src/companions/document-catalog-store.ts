@@ -17,6 +17,13 @@ export class CompanionDocumentCatalogStore {
       CREATE TRIGGER IF NOT EXISTS companion_document_search_insert AFTER INSERT ON companion_document_catalog BEGIN INSERT INTO companion_document_search(rowid,text) VALUES(new.id,new.text); END;
       CREATE TRIGGER IF NOT EXISTS companion_document_search_delete AFTER DELETE ON companion_document_catalog BEGIN INSERT INTO companion_document_search(companion_document_search,rowid,text) VALUES('delete',old.id,old.text); END;
       CREATE TRIGGER IF NOT EXISTS companion_document_search_update AFTER UPDATE OF text ON companion_document_catalog BEGIN INSERT INTO companion_document_search(companion_document_search,rowid,text) VALUES('delete',old.id,old.text); INSERT INTO companion_document_search(rowid,text) VALUES(new.id,new.text); END;`);
+    // Derived search rows must not retain the previous provenance envelopes.
+    if ((this.db.prepare("SELECT value FROM metadata WHERE key='document-catalog-projection'").get() as { value: string } | undefined)?.value !== 'narrative-v3') {
+      this.db.transaction(() => {
+        this.db.exec('DELETE FROM companion_document_catalog; DELETE FROM companion_document_folders;');
+        this.db.prepare("INSERT INTO metadata(key,value) VALUES('document-catalog-projection','narrative-v3') ON CONFLICT(key) DO UPDATE SET value=excluded.value").run();
+      }).immediate();
+    }
     if (!(this.db.prepare('PRAGMA table_info(companion_document_catalog)').all() as Row[]).some(column => column.name === 'pending_import')) this.db.exec('ALTER TABLE companion_document_catalog ADD COLUMN pending_import INTEGER NOT NULL DEFAULT 0');
     const columns = this.db.prepare('PRAGMA table_info(companion_document_catalog)').all() as Row[];
     for (const name of ['created_at', 'updated_at']) if (!columns.some(column => column.name === name)) this.db.exec(`ALTER TABLE companion_document_catalog ADD COLUMN ${name} TEXT NOT NULL DEFAULT ''`);

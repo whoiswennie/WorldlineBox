@@ -55,8 +55,14 @@ function embeddingConfiguration(input) {
 function normalizeNote(input) {
   const id = identity(input?.id, 'memory ID');
   const content = memoryText(input?.content, 'memory content', 65536);
-  if (!Array.isArray(input.tags) || input.tags.some(tag => typeof tag !== 'string' || /[\r\n,，、;|｜]/u.test(tag))) throw failure('VCP_MEMORY_INVALID_INPUT', 'Tags must be individual names without separators.');
-  const tags = [...new Set(input.tags.map(tag => tag.trim()).filter(Boolean))];
+  if (/^---\r?\n[\s\S]*?"schema"\s*:\s*"worldlinebox\.companion-memory-history-v1"/u.test(content)
+    || /^<!-- WorldlineBoxMemory:[a-f0-9]{64} -->/mu.test(content))
+    throw failure('VCP_MEMORY_INVALID_INPUT', 'Host provenance envelopes cannot be used as semantic memory prose.');
+  if (!Array.isArray(input.tags) || input.tags.some(tag => typeof tag !== 'string')) throw failure('VCP_MEMORY_INVALID_INPUT', 'Tags must be individual text names.');
+  // Each array item is one label, not a comma-separated list. DailyNote's wire
+  // format uses delimiters between labels; encode punctuation inside a label
+  // without splitting a coordinate such as 坐标(10,13) into unrelated tags.
+  const tags = [...new Set(input.tags.map(tag => tag.trim().replace(/[\r\n,，、;；|｜]+/gu, '·')).filter(Boolean))];
   if (tags.length > 50) throw failure('VCP_MEMORY_INVALID_INPUT', 'A memory may have at most 50 tags.');
   if (input.occurredAt !== undefined && (typeof input.occurredAt !== 'string' || !Number.isFinite(Date.parse(input.occurredAt)))) throw failure('VCP_MEMORY_INVALID_INPUT', 'Invalid memory date.');
   if (input.author !== undefined && (typeof input.author !== 'string' || !input.author.trim() || /[\r\n]/u.test(input.author))) throw failure('VCP_MEMORY_INVALID_INPUT', 'Invalid memory author.');
@@ -283,6 +289,10 @@ class VcpMemoryRuntime {
       IGNORE_FOLDERS: '', IGNORE_PREFIXES: '已整理', IGNORE_SUFFIXES: '',
     });
     this.kb = require(path.join(this.runtimeRoot, 'KnowledgeBaseManager.js'));
+    // The unique anchor belongs to file provenance, not semantic content.
+    // Strip it before native preparation, chunks, tags and embedding requests.
+    const prepareText = this.kb.prepareIngestionText.bind(this.kb);
+    this.kb.prepareIngestionText = text => prepareText(text.replace(/^<!-- WorldlineBoxMemory:[a-f0-9]{64} -->\r?$(?:\r?\n)?/gmu, ''));
     this.getEmbeddingsBatch = require(path.join(this.runtimeRoot, 'EmbeddingUtils.js')).getEmbeddingsBatch;
     this.chunkText = require(path.join(this.runtimeRoot, 'TextChunker.js')).chunkText;
     await this.kb.initialize();

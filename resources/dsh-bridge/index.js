@@ -86,8 +86,12 @@ export async function apply(ctx) {
         if (await ctx.get('subagents')?.waitForChildren?.(record.agent)) continue;
         const sequence = record.agent.session.seq;
         await wait(25);
-        if (revision !== record.revision || record.agent.status !== 'idle' || sequence !== record.agent.session.seq) continue;
+        if (record.admissions || revision !== record.revision || record.agent.status !== 'idle' || sequence !== record.agent.session.seq) continue;
         await ctx.sessions.flush(record.agent.session);
+        // Prompt admission and persistence both yield. A guidance message can
+        // start another native turn while the old turn is being flushed.
+        // Never publish its interrupted/obsolete completion to the broker.
+        if (record.admissions || revision !== record.revision || record.agent.status !== 'idle' || sequence !== record.agent.session.seq) continue;
         record.status = record.cancelled ? 'cancelled' : record.reason?.kind === 'completed' ? 'succeeded' : 'failed';
         emit(record, { type: 'complete', status: record.status, text: record.text, reason: record.reason, artifacts: record.artifacts });
         break;
@@ -160,7 +164,7 @@ export async function apply(ctx) {
     if (workspace) await workspace.attachSession(sessionId);
     const actualPreset = ctx.get('sessionProjections')?.stateOf(found.agent.session, 'agentPreset') ?? preset;
     const record = { id: String(sessionId), cwd: input.cwd, workspace, preset: actualPreset, agent: found.agent, policy: input.policy ?? {}, events: [], clients: new Set(),
-      next: 0, revision: 0, status: 'idle', text: '', stream: '', lastPublish: 0, artifacts: [], disposers: [], eventBytes: 0 };
+      next: 0, revision: 0, admissions: 0, status: 'idle', text: '', stream: '', lastPublish: 0, artifacts: [], disposers: [], eventBytes: 0 };
     sessions.set(record.id, record); requests.set(input.sessionId, record);
     try {
     if (record.policy.cognitiveOnly || record.policy.tools) {
@@ -269,9 +273,13 @@ export async function apply(ctx) {
         if (typeof input.prompt !== 'string' || !input.prompt.trim() || input.prompt.length > 65536) throw new Error('Invalid native prompt.');
         if (record.status !== 'running') { record.text = ''; record.reason = undefined; record.artifacts = []; }
         record.revision++; record.status = 'running'; record.cancelled = false;
-        const accepted = await ctx.sessionController.prompt({ sessionId: record.id, requestId: input.messageId ?? randomUUID(), mode: input.mode ?? 'queue',
-          content: [{ type: 'text', text: input.prompt }], clientTimeZone: 'Asia/Shanghai' }, new AbortController().signal);
-        json(response, accepted); void settle(record); return;
+        record.admissions++;
+        try {
+          const accepted = await ctx.sessionController.prompt({ sessionId: record.id, requestId: input.messageId ?? randomUUID(), mode: input.mode ?? 'queue',
+            content: [{ type: 'text', text: input.prompt }], clientTimeZone: 'Asia/Shanghai' }, new AbortController().signal);
+          json(response, accepted);
+        } finally { record.admissions--; void settle(record); }
+        return;
       }
       if (request.method === 'POST' && match[2] === 'cancel') {
         record.cancelled = true;

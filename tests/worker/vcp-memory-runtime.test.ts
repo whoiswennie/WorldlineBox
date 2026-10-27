@@ -72,6 +72,23 @@ afterEach(async () => {
 });
 
 describe('unchanged VCP core behind isolated worker processes', () => {
+  it('indexes punctuation inside one tag without rejecting or splitting coordinate labels', async () => {
+    const { createClient } = await fixture(), client = createClient(), scope = { scopeId: 'coordinate-tag' };
+    const note = { id: 'coordinate', content: 'alpha saw the table at coordinates (10,13).', tags: ['alpha', '坐标(10,13)', '外貌；环境'] };
+    await client.remember(scope, note);
+    const saved = await client.read(scope, note.id);
+    expect(saved?.content).toBe(note.content); expect(saved?.tags).toEqual(['alpha', '坐标(10·13)', '外貌·环境']);
+    expect((await client.search(scope, { text: 'alpha table coordinates', topK: 5 })).results[0]?.id).toBe(note.id);
+  });
+  it('keeps host provenance out of actual native chunks and embedding requests', async () => {
+    const { createClient, requests } = await fixture(), client = createClient(), scope = { scopeId: 'narrative-only-embedding' };
+    await client.remember(scope, { id: 'INTERNAL_MEMORY_ID_CANARY', content: 'alpha remembers cooking pumpkin soup.', tags: ['alpha', '晚餐'],
+      metadata: { sourceMessageId: 'INTERNAL_SOURCE_ID_CANARY', checksum: 'd'.repeat(64), captureEpisodeId: 'INTERNAL_EPISODE_CANARY' } });
+    const inputs = requests.filter(request => request.path.startsWith('/document/')).flatMap(request => request.input).join('\n');
+    expect(inputs).toContain('pumpkin soup');
+    for (const canary of ['WorldlineBoxMemory', 'INTERNAL_MEMORY_ID_CANARY', 'INTERNAL_SOURCE_ID_CANARY', 'INTERNAL_EPISODE_CANARY', 'd'.repeat(64)]) expect(inputs).not.toContain(canary);
+    expect((await client.search(scope, { text: 'alpha pumpkin soup', topK: 5 })).results.length).toBeGreaterThan(0);
+  });
   it('uses the current owner timeline and summary templates and fails closed instead of reverting to vendor prompts', async () => {
     const { root, embedding, chatRequests } = await fixture();
     const prompts = { aimemoTemplate: 'OWNER_FOCUS {{knowledge_base}}', timelineTemplate: 'OWNER_TIMELINE_V1 {{agentName}} / {{month}}',

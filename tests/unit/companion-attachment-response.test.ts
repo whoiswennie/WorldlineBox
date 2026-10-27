@@ -1,4 +1,4 @@
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, open, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -12,6 +12,13 @@ afterEach(async () => {
 });
 const request = (range?: string, method = 'GET') => new Request('https://attachment.invalid/media', { method, headers: range ? { Range: range } : {} });
 describe('registered companion media response', () => {
+  it('seeks directly to the tail of a large sparse media file without buffering the full video', async () => {
+    const size = 1536 * 1024 * 1024, handle = await open(file, 'w');
+    try { await handle.truncate(size); await handle.write(Buffer.from('tail'), 0, 4, size - 4); } finally { await handle.close(); }
+    const response = await companionAttachmentResponse(file, 'video/mp4', request('bytes=-4'));
+    expect(response.status).toBe(206); expect(response.headers.get('content-range')).toBe(`bytes ${size - 4}-${size - 1}/${size}`);
+    expect(await response.text()).toBe('tail');
+  });
   it('streams the complete file with an accurate MIME type and length', async () => {
     const response = await companionAttachmentResponse(file, 'video/webm', request());
     expect(response.status).toBe(200); expect(response.headers.get('content-type')).toBe('video/webm');

@@ -27,7 +27,7 @@ function MediaAttachment({ attachment, onOpen, ownerId, conversationId }: { atta
   const launch = () => { void (window as unknown as { worldlinebox?: { companions?: { request(input: { type: 'attachment.launch'; id: string }): Promise<{ ok: boolean; error?: string }> } } }).worldlinebox?.companions?.request({ type: 'attachment.launch', id: attachment.id }).then(result => { if (!result.ok) setError(result.error ?? '系统应用暂时无法打开此文件。'); }).catch(() => setError('系统应用暂时无法打开此文件。')); };
   return <section className={`companions-media-attachment is-${kind}`} aria-label={`${labels[kind]}：${attachment.name}`}>
     <header><span className="companions-attachment-format"><Icon name={kind === 'audio' ? 'music' : 'activity'} />{labels[kind]}</span><span>{companionAttachmentSize(attachment.size)}</span></header>
-    {large ? <p className="companions-media-error">文件超过 256 MB 内置播放上限，可使用系统应用播放原文件。</p> : <CompanionInlineMedia attachment={attachment} ownerId={ownerId} conversationId={conversationId} />}
+    {large ? <p className="companions-media-error">文件超过 2 GiB 内置播放上限，可使用系统应用播放原文件。</p> : <CompanionInlineMedia attachment={attachment} ownerId={ownerId} conversationId={conversationId} />}
     {error && <p role="alert">{error}</p>}
     <footer><strong title={attachment.name}>{attachment.name}</strong><button type="button" aria-label={`使用系统应用打开：${attachment.name}`} onClick={launch}><Icon name="arrow-up-right" /><span>系统打开</span></button><button type="button" aria-label={`查看文件位置：${attachment.name}`} onClick={() => onOpen(attachment)}><Icon name="folder" /></button></footer>
   </section>;

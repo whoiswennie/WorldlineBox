@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { companionNarrativeText } from './companion-memory-content';
 import { companionMemoryHistoryCommands } from './companion-memory-history';
 import { companionMemoryFileReceiptsSchema } from './companion-memory-files';
 import { companionWorldQuerySchema } from './companion-knowledge';
@@ -17,7 +18,8 @@ export const companionMemorySourceSchema = z.object({
 });
 /** Journal proposal, not a structured fact or another knowledge representation. */
 export const companionMemoryCandidateSchema = z.strictObject({
-    content: z.string().trim().min(1).max(65536), tags: z.array(companionMemoryTagSchema).max(50).default([]),
+    content: z.string().trim().min(1).max(65536).refine(text => companionNarrativeText(text) === text,
+      '记忆正文只能包含经历或知识；宿主修订头、校验值及索引锚点应保留在元数据中。'), tags: z.array(companionMemoryTagSchema).max(50).default([]),
     occurredAt: z.string().max(100).optional(), diaryName: z.string().trim().min(1).max(160).optional(),
     sourceMessageIds: z.array(id).min(1).max(100), sourceChecksums: z.record(id, z.string().max(128)).optional(),
     evidence: z.array(z.object({ sourceMessageId: id, quote: z.string().min(1).max(16000) })).min(1).max(100),

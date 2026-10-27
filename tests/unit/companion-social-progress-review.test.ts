@@ -9,6 +9,25 @@ const now = '2026-10-23T03:00:00.000Z';
 const config = { apiFormat: 'openai_chat' as const, model: 'reviewer', apiKey: 'fixture-only', baseUrl: 'https://fixture.invalid' };
 const response = (value: unknown) => new Response(JSON.stringify({ choices: [{ message: { content: JSON.stringify(value) } }] }), { headers: { 'Content-Type': 'application/json' } });
 
+it('does not let a social reviewer reject local execution details after guidance', async () => {
+  const text = '已找到原音频，复制没有改变编码，接下来展示文件。';
+  const fetchFn: typeof fetch = async (_url, init) => {
+    const data = JSON.parse(JSON.parse(String(init?.body)).messages[1].content);
+    expect(data.sourceInputs).toEqual(['播放音频', '不要播放，展示原文件']);
+    return response({ supported: false, correction: '没有文件复制的社交回执。', violation: { kind: 'outside_scope', quote: text } });
+  };
+  expect(await reviewCompanionSocialProgress(text, [], config, undefined,
+    { requireReview: true, sourceInputs: ['播放音频', '不要播放，展示原文件'], fetchFn })).toBeUndefined();
+});
+
+it('requires an actual proposed claim for a rejection and still blocks unsupported attachment delivery', async () => {
+  const text = '文件已附上。';
+  await expect(reviewCompanionSocialProgress(text, [], config, undefined, { requireReview: true,
+    fetchFn: async () => response({ supported: false, correction: '未交付', violation: { kind: 'attachment_delivery', quote: '不是拟稿中的文字' } }) })).rejects.toMatchObject({ code: 'INVALID_RESPONSE' });
+  expect(await reviewCompanionSocialProgress(text, [], config, undefined, { requireReview: true,
+    fetchFn: async () => response({ supported: false, correction: '尚无附件交付回执。', violation: { kind: 'attachment_delivery', quote: text } }) })).toContain('尚无附件');
+});
+
 function fileDeliveryTurn(): CompanionLoopTurn {
   return { text: '', rawText: '', calls: [{ id: 'send_audio', name: 'dsh',
     arguments: JSON.stringify({ operation: 'send_file', parameters: { path: 'C:\\private\\蓬莱之梦.ogg' } }) }],
@@ -109,7 +128,7 @@ it('returns only an unsupported report correction and sends host progress plus b
       'OUTGOING_MESSAGE_BODY', 'OTHER_ROOM_LAST_MESSAGE', 'OTHER_ROOM_TOPIC_BODY', 'UNTRUSTED_FREE_JSON_BODY', 'private_original']) expect(JSON.stringify(data)).not.toContain(privateText);
     expect(request).not.toHaveProperty('tools');
     expect(data.outputSchema.required).toEqual(['supported', 'correction']);
-    return response({ supported: false, correction });
+    return response({ supported: false, correction, violation: { kind: 'social_effect', quote: data.proposedText } });
   });
   expect(await reviewCompanionSocialProgress('没有谁明确答应。', [original], config, undefined, { fetchFn })).toBe(correction);
   expect(JSON.stringify(original)).toBe(originalJson); expect(fetchFn).toHaveBeenCalledOnce();
@@ -207,7 +226,7 @@ it('distinguishes four successful handoffs from one actual sent invitation witho
     for (const action of data.nativeActions.slice(1)) { expect(action).not.toHaveProperty('messageId'); expect(action).not.toHaveProperty('recipientIds'); }
     expect(data.nativeActions[0].sentContent).toBe('PRIVATE_OUTGOING_BODY');
     for (const canary of ['PRIVATE_INTRO_BODY', 'PRIVATE_ORIGINAL_HUMAN_REQUEST']) expect(JSON.stringify(data)).not.toContain(canary);
-    return response({ supported: false, correction: '只有妹妹的真实发信回执，另外四次仅交接后台，没有实际发信。' });
+    return response({ supported: false, correction: '只有妹妹的真实发信回执，另外四次仅交接后台，没有实际发信。', violation: { kind: 'social_effect', quote: data.proposedText } });
   });
   expect(await reviewCompanionSocialProgress('我给另外四人都发了邀请。还在等回信。', [], config, undefined, { turns, fetchFn })).toContain('没有实际发信');
   expect(JSON.stringify(turns)).toBe(original);
@@ -219,7 +238,7 @@ it('treats current social calls as proposals before dispatch and never as comple
     const data = JSON.parse(JSON.parse(String(init?.body)).messages[1].content);
     expect(data.nativeActions).toEqual([{ callId: 'current_proposal', action: 'introduce', proposedRecipientIds: ['kimi'], delivery: 'proposed' }]);
     expect(JSON.stringify(data)).not.toContain('PRIVATE_PROPOSAL_BODY');
-    return response({ supported: false, correction: '当前调用尚未执行，不能说已经发出。' });
+    return response({ supported: false, correction: '当前调用尚未执行，不能说已经发出。', violation: { kind: 'social_effect', quote: data.proposedText } });
   });
   expect(await reviewCompanionSocialProgress('我已经发给Kimi了。', [], config, undefined, { proposedCalls: calls, fetchFn })).toContain('尚未执行');
 });
@@ -245,7 +264,7 @@ it('binds only an actually returned sent native body and never borrows a propose
     expect(data.nativeActions[0].sentContent).toBe('PRIVATE_OUTGOING_BODY');
     expect(JSON.stringify(data)).not.toContain('6人配置已经告诉你');
     expect(JSON.stringify(data)).not.toContain('UNDELIVERED_PROPOSAL_CONFIGURATION');
-    return response({ supported: false, correction: '实际已送达正文只有邀请，未告知具体配置。' });
+    return response({ supported: false, correction: '实际已送达正文只有邀请，未告知具体配置。', violation: { kind: 'social_effect', quote: data.proposedText } });
   });
   expect(await reviewCompanionSocialProgress('6人配置已经告诉她们了。', [], config, undefined,
     { turns, proposedCalls: [proposed], fetchFn })).toContain('未告知具体配置');

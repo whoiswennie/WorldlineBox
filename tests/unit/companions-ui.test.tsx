@@ -367,6 +367,29 @@ it('retains a failed message draft, shows the real error, and offers retry for a
   expect(container!.querySelector<HTMLTextAreaElement>('textarea[aria-label="输入消息"]')!.value).toBe('不要丢掉这句话');
   await click('重试这条回复'); expect(f.request).toHaveBeenCalledWith({ type: 'reply.retry', conversationId: 'private-sister', workId: 'work-one' });
 });
+it('binds recovery to its failed message even when a newer reply succeeds and old recovery metadata remains', async () => {
+  const failed = { ...pendingReply(), content: '旧任务的一部分', segments: [{ text: '旧任务的一部分', actionIds: [] }],
+    replyProgress: { ...pendingReply().replyProgress!, sourceMessageId: 'message-1', phase: 'failed' as const, detail: '旧任务发生错误' } };
+  const latest = message(4, '新的请求已成功完成。', { replyToId: 'message-3', replyProgress: { workId: 'work-new', sourceMessageId: 'message-3',
+    phase: 'completed', revision: 2, detail: '回复已完成', startedAt: date, updatedAt: date } });
+  const f = fixture({ recoveries: [{ conversationId: 'private-sister', sourceMessageId: 'message-1', dispatcher: 'queue', status: 'interrupted',
+    delivery: 'auto', completedIds: [], updatedAt: date }] }, [message(1), failed, message(3), latest]);
+  await mount(f.api);
+  const oldBubble = container!.querySelector('[data-companion-message="message-2"]')!;
+  const newBubble = container!.querySelector('[data-companion-message="message-4"]')!;
+  expect(oldBubble.querySelector('[data-reply-stage="failed"]')?.textContent).toContain('旧任务发生错误');
+  expect(newBubble.querySelector('[data-reply-stage]')).toBeNull();
+  expect(container!.querySelectorAll('[aria-label="重试这条回复"]')).toHaveLength(1);
+  expect(container!.querySelector('.companions-recovery-notice')).toBeNull();
+  expect(container!.textContent).not.toContain('继续上次回复');
+  await click('重试这条回复', oldBubble);
+  expect(f.request).toHaveBeenCalledWith({ type: 'reply.retry', conversationId: 'private-sister', workId: 'work-one' });
+  expect(f.request.mock.calls.some(([command]) => command.type === 'reply.resume')).toBe(false);
+  await f.publish({}, [message(1), { ...failed, isReplyDraft: false, replyProgress: { ...failed.replyProgress, phase: 'completed', revision: 3 } }, message(3), latest]);
+  await act(async () => { await new Promise(resolve => setTimeout(resolve, 650)); });
+  expect(container!.querySelector('[data-reply-stage], [aria-label="重试这条回复"], .companions-recovery-notice')).toBeNull();
+});
+
 it('shows the current restored process without repeating system failure messages in chat', async () => {
   const draft = pendingReply(), old = [3, 4, 5].map(sequence => message(sequence, '本次回复已中断，气泡和能力进度已保存，可以继续恢复。', { authorId: 'system', kind: 'notice', status: 'failed' }));
   const f = fixture({}, [message(1), draft, ...old]); await mount(f.api);

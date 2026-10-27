@@ -81,7 +81,8 @@
 .memory-library-file:hover { background: var(--ui-surface-hover); }
 .memory-library-file.is-selected { border-color: color-mix(in srgb,var(--ui-action-accent) 22%,var(--ui-border-subtle)); background: color-mix(in srgb,var(--ui-action-accent) 7%,var(--ui-surface-pane)); }
 .memory-library-file-top { display: flex; justify-content: space-between; gap: 8px; font-size: 12px; color: var(--ui-content-secondary); }
-.memory-library-file-top > span { min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.memory-library-file-top > span { display: inline-flex; align-items: center; gap: 6px; min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.memory-library-file-top > span > svg { flex-shrink: 0; color: var(--ui-content-accent); opacity: .7; }
 .memory-library-file-top time { flex-shrink: 0; white-space: nowrap; font-size: 11px; font-variant-numeric: tabular-nums; }
 .memory-library-file > strong { display: block; margin-top: 7px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; font-weight: 550; line-height: 1.6; }
 .memory-library-file > p { display: -webkit-box; overflow: hidden; -webkit-line-clamp: 2; -webkit-box-orient: vertical; margin-top: 4px; color: var(--ui-content-secondary); font-size: 12px; line-height: 1.6; overflow-wrap: anywhere; white-space: normal; }

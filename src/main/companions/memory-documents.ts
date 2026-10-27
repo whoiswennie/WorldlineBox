@@ -7,6 +7,7 @@ import type { CompanionStorageCommand, CompanionStorageResponse } from '../../sh
 import type { CompanionWorkspaceResponse } from '../../shared/companion-workspace';
 import { memoryLibraryPathParts, type CompanionMemoryLibrary, type MemoryLibraryDocumentSession } from './memory-library';
 import { CompanionMemoryDocumentCatalog } from './memory-document-catalog';
+import { companionHistoryView, companionNarrativeText } from '../../shared/companion-memory-content';
 
 export interface CompanionMemoryDocumentsOptions {
   library: CompanionMemoryLibrary;
@@ -140,21 +141,24 @@ export class CompanionMemoryDocuments {
     return result;
   }
   private describe(relative: string, content: string, updatedAt: string, note?: CompanionMemory, entry?: MemoryLibraryDocumentSession['manifest']['files'][string], fileCreatedAt?: string): CompanionMemoryDocument {
+    const history = relative.startsWith('记忆历史/') ? companionHistoryView(content) : undefined;
+    const readable = relative.startsWith('记忆历史/') ? history?.content ?? '' : companionNarrativeText(content);
     const readOnly = automatic(relative), contentHash = hash(content), name = path.posix.basename(relative);
     const revision = hash(JSON.stringify([relative, contentHash, note?.id, note?.version, note?.tags, note?.diaryName, note?.metadata?.autoTags, readOnly]));
     const naturalTitle = note && /^note_[a-f0-9]{48}\.(?:md|txt)$/iu.test(name)
       ? (note.content.match(/^#{1,6}\s+(.+)$/mu)?.[1] ?? note.content.split('\n').find(line => line.trim()) ?? '').trim().replace(/^[-*>\s]+/u, '').split(/(?<=[。！？.!?])\s*/u)[0]?.slice(0, 80)
       : undefined;
-    return { path: relative, name, title: naturalTitle || name.replace(/\.(?:md|txt)$/iu, ''), directory: path.posix.dirname(relative) === '.' ? '' : path.posix.dirname(relative),
+    const sourceTitle = relative.startsWith('来源/') ? readable.split(/\r?\n/u).find(line => line.trim())?.replace(/^#{1,6}\s+/u, '').slice(0, 80) : undefined;
+    return { path: relative, name, title: history ? `${history.title} · 第 ${history.version} 版` : relative.startsWith('记忆历史/') ? '无法读取的修订记录' : sourceTitle || naturalTitle || name.replace(/\.(?:md|txt)$/iu, ''), directory: path.posix.dirname(relative) === '.' ? '' : path.posix.dirname(relative),
       kind: relative === 'profile.md' ? 'profile' : relative.startsWith('时间线/') && name.startsWith('VCP-') ? 'timeline' : note ? 'note' : 'document',
       category: category(relative), updatedAt: note && Date.parse(note.updatedAt) > Date.parse(updatedAt) ? note.updatedAt : updatedAt,
       ...(note ? { createdAt: note.createdAt, createdAtSource: 'memory' as const, ...(note.occurredAt ? { occurredAt: note.occurredAt } : {}) }
         : fileCreatedAt ? { createdAt: fileCreatedAt, createdAtSource: 'file_birthtime' as const } : {}),
-      bytes: Buffer.byteLength(content), revision, contentHash, readOnly, tags: note?.tags ?? [],
+      bytes: Buffer.byteLength(content), revision, contentHash, readOnly, tags: history?.tags ?? note?.tags ?? [],
       syncState: readOnly ? 'generated' : entry?.conflict || note && entry?.version !== note.version ? 'conflict'
         : entry?.pending || note?.status === 'queued' || note && contentHash !== hash(note.content) ? 'pending' : note?.status === 'indexed' ? 'indexed' : 'untracked',
       ...(note ? { noteId: note.id, version: note.version, sourceConversationId: note.sourceConversationId, sourceCount: note.sources.length, captureMethod: note.captureMethod, autoTagsEnabled: note.metadata?.autoTags !== false } : {}),
-      excerpt: content.replace(/\s+/gu, ' ').slice(0, 600) };
+      excerpt: readable.replace(/\s+/gu, ' ').slice(0, 600) };
   }
   private async read(session: MemoryLibraryDocumentSession, relative: string, sourceLimit = 30, sourceCursor?: number): Promise<CompanionMemoryDocumentRead> {
     memoryLibraryPathParts(relative);
@@ -167,6 +171,7 @@ export class CompanionMemoryDocuments {
     const ledger = await this.authorized(session, relative, sourceLimit, sourceCursor);
     const content = await session.text(relative);
     if (content === undefined) throw new Error('记忆文档不存在。');
+    if (relative.startsWith('记忆历史/') && !companionHistoryView(content)) throw new Error('这份修订记录的正文封装已损坏，请在来源核对中检查；内部数据不会作为正文展示。');
     if (content.length > 2_000_000) throw new Error('文档超过 200 万字符阅读上限，请在系统文件管理器中拆分。');
     const info = await lstat(session.file(relative));
     if (ledger) {
@@ -189,7 +194,7 @@ export class CompanionMemoryDocuments {
     if (session.readOnly && session.readVersion(relative) !== readVersion) {
       throw Object.assign(new Error('文档在读取过程中重新发布，请重新读取。'), { code: 'MEMORY_DOCUMENT_WITHDRAWN' });
     }
-    return { document: this.describe(relative, content, info.mtime.toISOString(), ledger?.memory, session.manifest.files[relative], info.birthtimeMs > 0 ? info.birthtime.toISOString() : undefined), content,
+    return { document: this.describe(relative, content, info.mtime.toISOString(), ledger?.memory, session.manifest.files[relative], info.birthtimeMs > 0 ? info.birthtime.toISOString() : undefined), content: companionNarrativeText(content),
       ...(tagStatus ? { tagStatus } : {}),
       ...(ledger ? { memory: ledger.memory } : {}), sources: ledger?.sources ?? [], hasMoreSources: ledger?.hasMore ?? false,
       ...(ledger?.nextSourceCursor !== undefined ? { nextSourceCursor: ledger.nextSourceCursor } : {}) };

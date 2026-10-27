@@ -57,15 +57,18 @@ export class DshTaskBroker {
     }
     const roots = new Set<string>();
     for (const [instanceId, records] of groups) {
-      const managed = records.filter(record => record.taskWorkspaceRoot && record.workspacePath
-        && path.resolve(record.taskWorkspaceRoot, owner) === path.resolve(record.workspacePath));
+      const managed = records.filter(record => {
+        if (!record.taskWorkspaceRoot || !record.workspacePath) return false;
+        const relative = path.relative(path.resolve(record.taskWorkspaceRoot, owner), path.resolve(record.workspacePath));
+        return !path.isAbsolute(relative) && relative !== '..' && !relative.startsWith(`..${path.sep}`);
+      });
       // The deadline includes host startup/integrity checks, not just HTTP.
       // Keep the durable records for a safe retry when that host is unavailable.
       const signal = AbortSignal.timeout(120000);
       try {
         const { client } = await this.options.getHost(instanceId, signal);
         await client.request('/companions/reset', { sessionIds: [...new Set(records.flatMap(record => record.sessionId ? [record.sessionId] : []))],
-          workspacePaths: [...new Set(managed.map(record => record.workspacePath!))] }, signal);
+          workspacePaths: [...new Set(managed.map(record => record.sessionWorkspacePath ?? record.workspacePath!))] }, signal);
       } catch (error) {
         if (signal.aborted) throw new Error('原生任务记录清理超时，请稍后继续重置。', { cause: error });
         throw error;
@@ -152,9 +155,17 @@ export class DshTaskBroker {
       const relative = ownerRoot ? path.relative(ownerRoot, workspace.workspacePath) : undefined;
       const ownedWorkspace = relative !== undefined && !path.isAbsolute(relative) && relative !== '..' && !relative.startsWith(`..${path.sep}`);
       const workspaceTitle = ownedWorkspace && execution.task?.workspace?.mode !== 'existing' ? execution.companionName : undefined;
+      // Native workspace membership requires an identical stored Session cwd.
+      // Group by the stable owner directory; keep each invocation's output
+      // directory separate and explicitly pass it to the executor and verifier.
+      const sessionWorkspacePath = previous ? previous.sessionWorkspacePath ?? workspace.workspacePath
+        : workspaceTitle ? await realpath(ownerRoot!) : workspace.workspacePath;
+      const taskPrompt = sessionWorkspacePath === workspace.workspacePath ? prompt : prompt + '\n\n本次任务目录：' + workspace.workspacePath
+        + '\n本会话归入该伙伴的统一工作区。先切换到上述任务目录再执行命令；相对路径、输出文件和临时文件均以本次任务目录为基准。其他并行任务使用其他目录，不覆盖或清理它们。返回交付文件的绝对路径。';
+      if (Buffer.byteLength(taskPrompt) > 65536) throw new Error('Compiled DSH task and working directory exceed the input limit.');
       const preparation = performance.now();
       const session = await client.request<{ sessionId: string; cursor: number; capabilities: unknown; accessMode: DshTaskRecord['accessMode'] }>('/sessions', {
-        sessionId, resume: !!previous, cwd: workspace.workspacePath, ...(workspaceTitle ? { workspaceTitle } : {}), ...(execution.task?.mode === 'ptc' ? { preset: 'ptc' } : {}),
+        sessionId, resume: !!previous, cwd: sessionWorkspacePath, ...(workspaceTitle ? { workspaceTitle } : {}), ...(execution.task?.mode === 'ptc' ? { preset: 'ptc' } : {}),
         policy: { tools: execution.task?.tools, skills: execution.task?.skills, cognitiveOnly: execution.cognitiveOnly },
         ...(previous ? {} : execution.access ? { accessMode: execution.access.mode } : {}),
       }, signal);
@@ -163,7 +174,7 @@ export class DshTaskBroker {
       const capabilities = dshTaskCapabilitiesSchema.parse({ ...session.capabilities as object, instanceId: instance.id, runtimeId: runtime.id,
         runtimeVersion: runtime.version, workspacePath: workspace.workspacePath, capturedAt: new Date().toISOString() });
       record = dshTaskRecordSchema.parse({ id: operation.id, operationId: operation.id, instanceId: instance.id, runtimeId: runtime.id, runtimeVersion: runtime.version,
-        title: input.title ?? 'DSH task', status: 'running', accessMode: session.accessMode, ...workspace, pid: client.pid, sessionId,
+        title: input.title ?? 'DSH task', status: 'running', accessMode: session.accessMode, ...workspace, sessionWorkspacePath, pid: client.pid, sessionId,
         profile: { mode: execution.task?.mode ?? 'native', tools: execution.task?.tools, skills: execution.task?.skills }, effective: capabilities.effective,
         constraintsDigest: execution.constraints ? createHash('sha256').update(JSON.stringify(execution.constraints)).digest('hex') : undefined, startedAt: new Date().toISOString() });
       this.records.unshift(record); while (this.records.length > 100) { const index = this.records.findLastIndex(value => value.status !== 'running'); if (index < 0) break; const removed = this.records.splice(index, 1)[0]!; this.results.delete(removed.id); this.histories.delete(removed.id); }
@@ -174,7 +185,7 @@ export class DshTaskBroker {
       await this.save(); this.changed(); emit({ type: 'ready', sessionId, stage: 'session', summary: '已接入原生 Web Host 会话' });
       await operation.update('Submitting task to the shared native Web Host', 10);
       active.submitted = true;
-      await client.request(`/sessions/${sessionId}/prompt`, { prompt }, signal);
+      await client.request(`/sessions/${sessionId}/prompt`, { prompt: taskPrompt }, signal);
       ready();
       for (const item of execution.inputs ?? []) await this.sendInput(operation.id, item.content, item.mode, item.id);
       let complete = false;

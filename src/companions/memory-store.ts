@@ -233,6 +233,9 @@ export class CompanionMemoryStore {
             this.db.prepare("INSERT OR REPLACE INTO metadata VALUES('vcp-management-totals-ready','1')").run();
         }).immediate();
         this.development.initialize();
+        // Retry only deliveries rejected by the old unescaped Tag wire format.
+        // The usual source/version authorization is still checked on claim.
+        this.db.prepare("UPDATE vcp_memory_outbox SET status='pending',attempts=0,next_attempt=0,error=NULL,lease_token=NULL,lease_until=NULL WHERE status='failed' AND error LIKE '%Tags must be individual names without separators%'").run();
         initializeMemoryProcessingJournal(this.db, ['capture', 'index']);
     }
     private scope(owner: string, conversationId: string): string {

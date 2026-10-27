@@ -144,7 +144,7 @@ describe('VCP semantic space and shutdown boundaries', () => {
     const service = runtime(async () => embedding);
     try {
       const original = await getCore(service);
-      expect(original.profileKey).toBe(embedding.modelSignature);
+      expect(original.profileKey).toBe(embedding.modelSignature + ':narrative-v2');
       expect((await getCore(service)).client).toBe(original.client);
       embedding = { ...embedding, dimension: 1024 };
       await expect(getCore(service)).rejects.toThrow('签名');
@@ -154,7 +154,7 @@ describe('VCP semantic space and shutdown boundaries', () => {
       embedding = { ...embedding, modelSignature: 'new-verified-space' };
       const changed = await getCore(service);
       expect(changed.client).not.toBe(original.client);
-      expect(changed.profileKey).toBe(embedding.modelSignature);
+      expect(changed.profileKey).toBe(embedding.modelSignature + ':narrative-v2');
       expect(mocks.clients[0]!.close).toHaveBeenCalledTimes(1);
       expect(mocks.clients[1]!.options.dataRoot).not.toBe(mocks.clients[0]!.options.dataRoot);
     } finally { await service.close(); }
@@ -177,7 +177,7 @@ describe('VCP semantic space and shutdown boundaries', () => {
       generationProfile: { maxOutputTokens: 8192 }, resolveGenerationPlugins: async input => { resolved.push(input.config); return { plugins: {}, dispose: disposed }; } });
     try {
       const original = await service.acquireGeneration({ ownerId: 'alice', config: chat() });
-      expect(original.profileKey).toMatch(/^verified-space:owner-generation-v1-[a-f0-9]{20}$/u);
+      expect(original.profileKey).toMatch(/^verified-space:narrative-v2:owner-generation-v1-[a-f0-9]{20}$/u);
       const same = await service.acquireGeneration({ ownerId: 'alice', config: chat() }); expect(same.client).toBe(original.client);
       await same.release(); await original.release();
       const rotated = await service.acquireGeneration({ ownerId: 'alice', config: chat('focus-one', 'secret-two') });
@@ -230,7 +230,7 @@ describe('VCP semantic space and shutdown boundaries', () => {
       expect(mocks.clients[1]!.options.dataRoot).toBe(mocks.clients[0]!.options.dataRoot);
       const model = await service.acquireGeneration({ ownerId: 'alice', config: chat('focus-two', 'new-key') }); await model.release();
       expect(model.profileKey).not.toBe(first.profileKey); expect(mocks.clients[2]!.options.dataRoot).not.toBe(mocks.clients[0]!.options.dataRoot);
-      expect((await getCore(service)).profileKey).toBe('verified-space');
+      expect((await getCore(service)).profileKey).toBe('verified-space:narrative-v2');
     } finally { await service.close(); }
   });
   it.each([undefined, ''])('still rotates an external focus semantic space when its unsigned endpoint changes (%s)', async _sourceSignature => {
@@ -296,10 +296,10 @@ describe('VCP semantic space and shutdown boundaries', () => {
     const service = new CompanionVcpRuntime({ resolveOwnerStorage: storage('unused'), resolveOwnerCleanupStorage: storage('unused'), vendorRoot: 'unused', workerPath: 'unused', resolveEmbedding: async () => configuration(),
       resolvePlugins: legacy, resolveGenerationPlugins: resolvePlugins });
     try {
-      expect(await service.describeEmbedding()).toEqual({ profileKey: 'verified-space' });
+      expect(await service.describeEmbedding()).toEqual({ profileKey: 'verified-space:narrative-v2' });
       const description = await service.describeGeneration({ ownerId: 'alice', config: chat() }); expect(description.ownerId).toBe('alice');
       expect(mocks.clients).toHaveLength(0); expect(resolvePlugins).not.toHaveBeenCalled();
-      const core = await getCore(service); expect(core.profileKey).toBe('verified-space'); expect(mocks.clients[0]!.options.plugins?.chat).toBeUndefined(); expect(legacy).not.toHaveBeenCalled();
+      const core = await getCore(service); expect(core.profileKey).toBe('verified-space:narrative-v2'); expect(mocks.clients[0]!.options.plugins?.chat).toBeUndefined(); expect(legacy).not.toHaveBeenCalled();
       const withoutRoute = runtime(async () => configuration());
       await expect(withoutRoute.acquireGeneration({ ownerId: 'alice', config: chat() })).rejects.toThrow('路由'); await withoutRoute.close();
     } finally { await service.close(); }
@@ -320,8 +320,8 @@ describe('VCP semantic space and shutdown boundaries', () => {
       expect(resumed.client).toBe(leases[0]!.client); await resumed.release();
       expect(route).toHaveBeenCalledTimes(4);
       const core = await getCore(service), cold = await getCold(service, async () => true);
-      expect(core.profileKey).toBe('verified-space'); expect(cold).toBeDefined();
-      expect(await service.describeEmbedding()).toEqual({ profileKey: 'verified-space' });
+      expect(core.profileKey).toBe('verified-space:narrative-v2'); expect(cold).toBeDefined();
+      expect(await service.describeEmbedding()).toEqual({ profileKey: 'verified-space:narrative-v2' });
       expect(route).toHaveBeenCalledTimes(4);
       abort.abort(); await rejected; await service.interruptOwner('alice');
       expect(mocks.clients[0]!.close).toHaveBeenCalledOnce(); expect(mocks.clients[1]!.close).not.toHaveBeenCalled();

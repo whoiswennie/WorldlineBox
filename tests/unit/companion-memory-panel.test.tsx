@@ -66,6 +66,25 @@ it('opens the full owner document space independently of the current chat and ex
   expect(f.request.mock.calls.some(([command]) => command.type === 'memory.browse' || command.type === 'memory.search')).toBe(false);
   await click('学习资料1'); expect(f.workspace).toHaveBeenLastCalledWith(expect.objectContaining({ type: 'memory.documents.read', path: '资料/灯塔路线.md' }));
 });
+it('shows natural revision titles and distinct document icons without exposing internal history directories', async () => {
+  const f = fixture(), original = f.workspace.getMockImplementation()!;
+  const history = { ...doc, path: '记忆历史/note_internal/r2-hash.md', name: 'r2-hash.md', title: '一起准备晚餐 · 第 2 版', kind: 'document' as const,
+    category: 'other' as const, directory: '记忆历史/note_internal', noteId: undefined, readOnly: true, syncState: 'generated' as const, excerpt: '约好一起准备南瓜汤。' };
+  f.workspace.mockImplementation(async command => {
+    if (command.type === 'memory.documents.read' && command.path === history.path) return { ok: true, document: readFixture(history, '约好一起准备南瓜汤。') };
+    const result = await original(command);
+    if (!result.documents) return result;
+    return { ...result, documents: { ...result.documents, folders: [...result.documents.folders, { path: '记忆历史', name: '记忆历史', count: 1 },
+      { path: '记忆历史/note_internal', name: 'note_internal', count: 1 }], ...(command.type === 'memory.documents.list' && command.directory === '记忆历史' ? { items: [history] } : {}) } };
+  });
+  await mount(f); expect(element('.memory-library-folders').textContent).not.toContain('note_internal');
+  await click('记忆历史1');
+  expect(element('.memory-library-paper h1').textContent).toBe(history.title);
+  expect(element('.memory-library-markdown').textContent).toContain('南瓜汤');
+  const documentIcon = element('.memory-library-file-top svg').innerHTML;
+  expect(documentIcon).not.toBe(element('.memory-library-folders button[aria-current="page"] svg').innerHTML);
+  expect(element('.memory-library-file').getAttribute('aria-label')).toBe('阅读修订历史：' + history.title);
+});
 it('guards unfinished document edits before entering the unified companion recall validator', async () => {
   const f = await mount(), openProbe = vi.fn(); await f.render({ onMemoryProbe: openProbe });
   await click('编辑记忆 memory-a'); await fill('共同记忆内容', '这段还没有保存的修正。');
@@ -111,13 +130,13 @@ it('asks before leaving an unsaved edit and navigates only after explicit discar
   const f = await mount(); await click('编辑记忆 memory-a'); await fill('共同记忆内容', '尚未保存的文字'); await click('关闭共同记忆管理'); expect(f.onClose).not.toHaveBeenCalled(); expect(element('[role="alertdialog"]').textContent).toContain('未保存'); await click('继续编辑'); expect(element<HTMLTextAreaElement>('textarea').value).toBe('尚未保存的文字'); await click('关闭共同记忆管理'); await click('放弃修改并离开'); expect(f.onClose).toHaveBeenCalledOnce();
 });
 it('renames or moves the real file with its revision while retaining the note identity', async () => {
-  const f = await mount(); await click('查看记忆来源 memory-a'); await click('重命名或移动'); await fill('文档目标路径', '资料/海边回忆.md'); await click('确认保存'); expect(f.workspace).toHaveBeenCalledWith({ type: 'memory.documents.move', companionId: 'role', path: doc.path, targetPath: '资料/海边回忆.md', expectedRevision: 'version-2' }); expect(container!.textContent).toContain('文件已移动'); expect(button('阅读记忆 memory-a')).toBeTruthy();
+  const f = await mount(); await click('查看记忆来源 memory-a'); await click('重命名或移动'); await fill('文档目标路径', '资料/海边回忆.md'); await click('确认保存'); expect(f.workspace).toHaveBeenCalledWith({ type: 'memory.documents.move', companionId: 'role', path: doc.path, targetPath: '资料/海边回忆.md', expectedRevision: 'version-2' }); expect(container!.textContent).toContain('文件已移动'); expect(button('阅读日记：海边回忆')).toBeTruthy();
 });
 it('requires explicit confirmation before deleting and withdrawing the document', async () => {
   const f = await mount(); await click('查看记忆来源 memory-a'); await click('删除记忆 memory-a'); expect(f.workspace.mock.calls.some(([command]) => command.type === 'memory.documents.delete')).toBe(false); expect(container!.textContent).toContain('原始聊天仍保留'); await click('确认遗忘'); expect(f.workspace).toHaveBeenCalledWith({ type: 'memory.documents.delete', companionId: 'role', path: doc.path, expectedRevision: 'version-2' }); expect(container!.textContent).toContain('旧来源已退出召回');
 });
 it('opens generated timelines read-only and explicitly copies them into learning materials', async () => {
-  const f = await mount(); await click('阅读文档 时间线/VCP-2026-10.md'); expect(container!.querySelector('button[aria-label="编辑记忆 时间线/VCP-2026-10.md"]')).toBeNull(); await click('另存为资料'); expect(element<HTMLInputElement>('[aria-label="新文档路径"]').value).toBe('资料/十月时间线-副本.md'); expect(element<HTMLTextAreaElement>('textarea').value).toContain('自动整理的生活时间线'); await click('保存文档'); expect(f.workspace).toHaveBeenCalledWith(expect.objectContaining({ type: 'memory.documents.create', path: '资料/十月时间线-副本.md' }));
+  const f = await mount(); await click('阅读时间线：2026 年 10 月 · 生活时间线'); expect(container!.querySelector('button[aria-label="编辑记忆 时间线/VCP-2026-10.md"]')).toBeNull(); await click('另存为资料'); expect(element<HTMLInputElement>('[aria-label="新文档路径"]').value).toBe('资料/十月时间线-副本.md'); expect(element<HTMLTextAreaElement>('textarea').value).toContain('自动整理的生活时间线'); await click('保存文档'); expect(f.workspace).toHaveBeenCalledWith(expect.objectContaining({ type: 'memory.documents.create', path: '资料/十月时间线-副本.md' }));
 });
 it('creates a real nested directory instead of inventing an in-memory notebook', async () => {
   const f = await mount(); await click('新建记忆文件夹'); await fill('记忆文件夹路径', '资料/书籍'); await click('确认保存'); expect(f.workspace).toHaveBeenCalledWith({ type: 'memory.documents.mkdir', companionId: 'role', path: '资料/书籍' }); expect(container!.textContent).toContain('文件夹已创建');
@@ -148,7 +167,7 @@ it('ignores a late directory response after the user has opened a different note
   expect(element('.memory-library-files h3').textContent).toBe('日记');
 });
 it('keeps background changes from discarding dirty text or forcing narrow navigation', async () => {
-  const f = await mount(); await click('阅读记忆 memory-a'); await click('返回文档'); await act(async () => f.emit()); await advance(); expect(element('.companion-memory-library').className).toContain('is-list'); await click('编辑记忆 memory-a'); await fill('共同记忆内容', '尚未完成的长篇日记'); await act(async () => f.emit()); await advance(); expect(element<HTMLTextAreaElement>('textarea').value).toBe('尚未完成的长篇日记');
+  const f = await mount(); await click('阅读日记：海边散步'); await click('返回文档'); await act(async () => f.emit()); await advance(); expect(element('.companion-memory-library').className).toContain('is-list'); await click('编辑记忆 memory-a'); await fill('共同记忆内容', '尚未完成的长篇日记'); await act(async () => f.emit()); await advance(); expect(element<HTMLTextAreaElement>('textarea').value).toBe('尚未完成的长篇日记');
 });
 it('shows owner-wide processing and explicit release of future topic restrictions', async () => {
   const f = await mount(); await click('收录与记录规则'); expect(container!.textContent).toContain('收录服务暂不可用'); expect(container!.textContent).toContain('饮料偏好'); await click('重试失败收录'); expect(f.request).toHaveBeenCalledWith({ type: 'memory.jobs.retry', companionId: 'role' }); await click('重建记忆索引'); expect(f.request).toHaveBeenCalledWith({ type: 'memory.index.rebuild', companionId: 'role' }); await click('允许今后记录此主题'); expect(f.request).toHaveBeenCalledWith({ type: 'memory.policy.release', companionId: 'role', id: 'rule' }); expect(container!.textContent).toContain('旧的已遗忘来源仍被排除');

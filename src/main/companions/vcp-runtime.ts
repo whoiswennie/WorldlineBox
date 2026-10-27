@@ -135,7 +135,7 @@ export class CompanionVcpRuntime implements CompanionMemoryRuntime {
   private async embedding() {
     const embedding = { ...await this.options.resolveEmbedding() };
     if (this.closed) throw new Error('记忆服务已关闭。');
-    const profileKey = embedding.modelSignature ?? (embedding.model + ':' + embedding.dimension);
+    const profileKey = (embedding.modelSignature ?? (embedding.model + ':' + embedding.dimension)) + ':narrative-v2';
     const space = JSON.stringify([embedding.model, embedding.dimension, embedding.modelSignature ?? null]);
     if (this.spaces.has(profileKey) && this.spaces.get(profileKey) !== space) throw new Error('向量模型或维度已变化，语义空间签名必须同步更新。');
     this.spaces.set(profileKey, space);

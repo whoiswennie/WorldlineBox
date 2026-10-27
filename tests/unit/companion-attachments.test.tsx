@@ -51,7 +51,7 @@ it('offers system opening for oversized media without allocating a playback elem
   Object.assign(window, { worldlinebox: { companions: { request: launch } } });
   const video = { ...attachment('movie.mp4', 'video/mp4'), size: 4 * 1024 ** 3 };
   await render(<CompanionAttachments attachments={[video]} onOpen={vi.fn()} />);
-  expect(container!.querySelector('video')).toBeNull(); expect(container!.textContent).toContain('256 MB');
+  expect(container!.querySelector('video')).toBeNull(); expect(container!.textContent).toContain('2 GiB');
   await click('使用系统应用打开：movie.mp4'); expect(launch).toHaveBeenCalledWith({ type: 'attachment.launch', id: video.id });
 });
 it('navigates the selected full image and reveals that image instead of the original selection', async () => {
