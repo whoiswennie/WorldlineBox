@@ -171,3 +171,9 @@
 这次计时与只读对照确认一个资源夹具差异：prepared host未接Main已有的`companion.assets.initialized/mark-initialized`持久凭证，因此意图轻量的`bootstrapProfile`仍每次退入完整提示词加载。生产Main已接该凭证，初次成功初始化后状态字段只需严格loadProfile；真实提供方调用仍完整读取用途提示词。该差异没有独立耗时，不能由差值解释全部超时。后续只在benchmark夹具接相同真实Store凭证，保留首次完整bootstrap及实际mark、文件缺失检查和模型前full roles；先用64本人/100伙伴/4活跃、768维、2样本的显式仪器smoke验证，不能把小测试当10k性能验收。完整两小时Main运行仍未开始。
 
 该benchmark-only接线已通过独立仪器smoke，74.62秒、实际exit0。首次seed真实Store登记100位伙伴，重启run host后登记0次、持续读取持久凭证；没有用硬编码true替代初始化。真实原生峰4、请求配对异常/失败/遗弃均0，12个被测进程均已退出，详见`native-memory-resources-2026-10-27T01-02-33-971Z-36668/initialization-instrumentation-smoke-summary.json`。非benchmark恢复宿主、生产代码、模型前完整角色读取和停止门均未修改；main/extension完整类型及修改文件lint exit0。运行指南另存为`companion-memory-user-guide.md`，集中说明用户可观察的触发、文件和维护方式。最终10k和两小时结果仍须单独记录，不从小测试推定。
+
+## 本次交付收尾（2026-10-27）
+
+用户明确要求尽快交付并取消两小时测试，因此该测试未启动，不再追加优化或重跑。最终56cda718的10k专项已自然结束：1622.16秒、实际exit1，仍触原生首次投递600秒门。退出后真实只读SQLite聚合确认主伙伴indexed/ACK8406/10000、queued1594（pending1593、running1），三个peer各8均done。没有取得完整图查询或100次warm样本，10k的300ms准备目标未验收；旧100k盘门红也未被覆盖。前后HEAD clean、sourceChanged=false、frozenIntegrity=true，峰值树工作集949,997,568B、磁盘436,003,181B、native4。5个被测进程及辅助进程均已退出，0残留。独立收据为`native-memory-resources-2026-10-27T01-12-09-951Z-23152/final-targeted-summary.json`及`closing-audit.json`。
+
+交付前仅只读复核实际旧目录，计数仍为98/7/1/590/1006/10，没有再次尝试或绕过已被自动审批拒绝的删除。实际旧伙伴目录不能视为已完成新标准初始化。代码、运行指南、架构和[交付报告](companion-memory-lifecycle-delivery.md)形成可审阅交付；整体目标不标为全部完成。取消的长时程测试、未通过的容量门及受工具限制的物理清理均明确保留。
