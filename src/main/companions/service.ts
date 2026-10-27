@@ -483,6 +483,9 @@ export class CompanionService {
     finally { if (mutating) this.sourceValidationRevision++; }
     storageMs = performance.now() - started;
     if (!response.ok) throw new Error(response.error ?? '伙伴存储暂时不可用。');
+    const resetOwners = new Set([...this.resettingCompanions,
+      ...(response.state?.resetJobs ?? []).filter(job => job.status !== 'completed').map(job => job.companionId),
+      ...(response.reset && response.reset.status !== 'completed' ? [response.reset.companionId] : [])]);
     if (fileRead) {
       for (let attempt = 0; attempt < 3; attempt++) {
         const notes = response.memorySnapshot?.notes ?? response.memoryCaptureContributions?.items ?? response.memoryPage?.items.map(hit => hit.memory)
@@ -508,7 +511,10 @@ export class CompanionService {
     }
     if (this.assetProfiles) {
       if (response.state) response.state.companions = await Promise.all(response.state.companions.map(async owner => {
-        if (this.resettingCompanions.has(owner.id) || response.state?.resetJobs?.some(job => job.companionId === owner.id && job.status !== 'completed')) return owner;
+        if (this.resettingCompanions.has(owner.id) || response.state?.resetJobs?.some(job => job.companionId === owner.id && job.status !== 'completed')) {
+          try { return this.assetProfiles!.hydrateProfileFromSnapshot(owner, await this.assetProfiles!.loadProfile(owner.id)); }
+          catch { return owner; } // The explicit reset may be replacing this directory. Never initialize it from a state read.
+        }
         try { const current = this.assetProfiles!.hydrateProfileFromSnapshot(owner, await this.assetProfiles!.bootstrapProfile(owner)); this.assetProfileFailures.delete(owner.id); return current; }
         catch (error) {
           const message = publicError(error).slice(0, 500);
@@ -547,6 +553,7 @@ export class CompanionService {
     }
     if (origin !== 'memory-files' && this.liveFiles && mutating) {
       for (const owner of response.memoryChangedCompanionIds ?? []) {
+        if (resetOwners.has(owner)) continue;
         const noteIds = response.memories?.filter(note => note.companionId === owner).map(note => note.id);
         let cursor: number | undefined;
         do {
@@ -555,9 +562,9 @@ export class CompanionService {
         } while (cursor !== undefined);
       }
     }
-    if (origin !== 'memory-files') for (const owner of response.memorySourceChangedCompanionIds ?? []) await this.flushSourceFiles(owner);
+    if (origin !== 'memory-files') for (const owner of response.memorySourceChangedCompanionIds ?? []) if (!resetOwners.has(owner)) await this.flushSourceFiles(owner);
     if (origin !== 'memory-files') for (const owner of new Set([...(response.memoryChangedCompanionIds ?? []), ...(response.memoryInvalidatedCompanionIds ?? [])]))
-      await this.flushHistoryFiles(owner);
+      if (!resetOwners.has(owner)) await this.flushHistoryFiles(owner);
     if (fileRead && response.memoryRead && this.sourceFiles) {
       // Reconciliation can create a new manual-source revision through the
       // internal file port. Its notification is consumed inside that port;
@@ -1003,7 +1010,7 @@ export class CompanionService {
       const url = new URL(request.url);
       if (url.hostname === 'portrait') return companionPortraitResponse(request, (ownerId, role) => this.assetIo.run(async () => {
         await this.initialization;
-        if (this.closed || this.resettingCompanions.has(ownerId)) return undefined;
+        if (this.closed) return undefined;
         const owner = (await this.storage.request({ type: 'state', companionId: ownerId })).state?.companions.find(owner => owner.id === ownerId);
         return owner ? this.profiles.readOwnerImage(ownerId, role) : undefined;
       }));
@@ -1181,8 +1188,8 @@ export class CompanionService {
               } catch { /* A missing/invalid connection is represented as offline. */ }
             }
             const offline = !connected || !!companion.assetProfileError || !!unavailable && !companion.activeCount;
-            const assetImages = !reset && !companion.assetProfileError
-              ? await this.assetIo.run(() => this.profiles.runtimeImages(companion)).catch(() => ({})) : {};
+            const assetImages = !companion.assetProfileError
+              ? await this.assetIo.run(() => this.profiles.runtimeImages(companion, { initialize: !reset })).catch(() => ({})) : {};
             return { ...companion, assetImages, ...(companion.llm ? { llm: { ...companion.llm, hasKey: connected } } : {}),
               availability: companion.assetProfileError ? 'offline' as const : companion.active === false ? 'dormant' as const : reset ? 'waiting' as const : offline ? 'offline' as const : companion.availability,
               availabilityReason: companion.assetProfileError ?? (companion.active === false ? '伙伴已休眠，虚拟生活与后台活动已暂停；请手动激活。' : reset ? reset.status === 'failed' ? '伙伴重置已暂停，请查看进度' : '伙伴正在重置' : offline ? unavailable?.reason ?? (companion.llm ? '此伙伴尚未保存模型服务密钥' : '尚未配置全局模型服务') : companion.availabilityReason) };
@@ -1625,6 +1632,14 @@ export class CompanionService {
         await this.options.purgeMemoryAssets?.(job.companionId);
         await this.options.dsh()?.removeCompanionTaskRecords(job.companionId, job.id);
         await this.credentials.save(job.companionId, '');
+        if (this.assetProfiles) {
+          const response = await this.storage.request({ type: 'state', companionId: job.companionId, includeConversations: false });
+          const initial = response.state?.companions.find(owner => owner.id === job.companionId);
+          if (!response.ok || !initial) throw new Error('重置后无法读取伙伴初始资料。');
+          await this.assetProfiles.initializeAfterReset(initial);
+          await this.profiles.initializeAfterReset(initial);
+          this.assetProfileFailures.delete(job.companionId);
+        }
         await this.call({ type: 'companion.reset.cleanup', id: job.companionId, jobId: job.id });
       } catch (error) {
         await this.call({ type: 'companion.reset.cleanup-failed', id: job.companionId, jobId: job.id, error: publicError(error) });
@@ -1636,6 +1651,7 @@ export class CompanionService {
   }
   private async stopCompanion(companionId: string, knownTaskIds: readonly string[] = []): Promise<void> {
     this.learning?.cancel(companionId);
+    this.memoryTags.cancelCompanion(companionId);
     this.learningGoals?.cancel(companionId);
     for (const [controller, owner] of this.memoryValidationControllers) if (owner === companionId) controller.abort();
     const replies = [...this.replies.values()].filter(value => this.replyOwners.get(value.controller) === companionId);

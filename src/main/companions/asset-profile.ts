@@ -208,6 +208,13 @@ export class CompanionAssetProfileStore {
     if (await this.options.initialized?.(owner.id)) return this.loadProfile(owner.id);
     return this.bootstrap(owner);
   }
+  /** Explicit factory reset only, after the old owner directory has been
+   * removed. Durable receipts still prevent ordinary reads from reseeding. */
+  initializeAfterReset(owner: Companion): Promise<CompanionAssetProfileSnapshot> {
+    // The reset barrier intentionally rejects ordinary receipt writes. Once
+    // cleanup completes, the normal verified read acknowledges these files.
+    return new CompanionAssetProfileStore(this.libraryDirectory, { ...this.options, initialized: undefined, markInitialized: undefined }).bootstrap(owner);
+  }
   bootstrap(owner: Companion): Promise<CompanionAssetProfileSnapshot> {
     return this.serialized(owner.id, async () => {
       ownerId.parse(owner.id);

@@ -318,7 +318,9 @@ export class CompanionVcpRuntime implements CompanionMemoryRuntime {
         for (const scopeId of scopeIds) { await entry.client.interruptScope({ scopeId }); await entry.client.purgeScope({ scopeId }); }
       }
     })() : this.interruptOwner(ownerId);
-    const pending = this.tail.then(async () => {
+    // Withdrawal owns only this resident. Waiting behind the global admission
+    // tail can trap a reset behind another resident's full connection pool.
+    const pending = (this.ownerPurges.get(ownerId) ?? Promise.resolve()).catch(() => undefined).then(async () => {
       await interrupt;
       const storage = await this.cleanupStorage(ownerId);
       for (const pair of scopes.historicalViews ?? []) {
@@ -343,7 +345,7 @@ export class CompanionVcpRuntime implements CompanionMemoryRuntime {
     this.ownerPurges.set(ownerId, pending);
     void pending.then(() => { if (this.ownerPurges.get(ownerId) === pending) this.ownerPurges.delete(ownerId); },
       () => { if (this.ownerPurges.get(ownerId) === pending) this.ownerPurges.delete(ownerId); });
-    this.tail = pending.catch(() => undefined); return pending;
+    return pending;
   }
   private retireCold(entry: ColdEntry): Promise<void> { return entry.retiring ??= entry.service.close().then(() => {
     if (this.colds.get(entry.key) === entry) this.colds.delete(entry.key);
@@ -402,17 +404,19 @@ export class CompanionVcpRuntime implements CompanionMemoryRuntime {
    * configured encoder. The root and each ancestor must be owned real folders. */
   resetCold(owner: string): Promise<void> {
     ownerIdentity(owner);
-    const pending = this.tail.then(async () => {
+    this.ownerEpochs.set(owner, (this.ownerEpochs.get(owner) ?? 0) + 1);
+    const pending = (this.ownerPurges.get(owner) ?? Promise.resolve()).catch(() => undefined).then(async () => {
       await Promise.all([...this.colds.values()].filter(entry => entry.ownerId === owner).map(entry => this.retireCold(entry)));
       const storage = await this.cleanupStorage(owner), target = path.join(storage.indexRoot, 'cold');
       if (await this.directory(storage, target)) await removeOwnedDirectory(target);
     });
-    this.tail = pending.catch(() => undefined);
+    this.ownerPurges.set(owner, pending);
+    void pending.finally(() => { if (this.ownerPurges.get(owner) === pending) this.ownerPurges.delete(owner); }).catch(() => undefined);
     return pending;
   }
   async close(): Promise<void> {
     this.closed = true;
-    await Promise.all([this.tail, this.generationTail, ...[...this.generationAdmissions, ...this.coreAdmissions].map(pending => pending.catch(() => undefined))]);
+    await Promise.all([this.tail, this.generationTail, ...this.ownerPurges.values(), ...[...this.generationAdmissions, ...this.coreAdmissions].map(pending => pending.catch(() => undefined))]);
     const results = await Promise.allSettled([
       ...[...this.cores.values()].map(entry => this.retireCore(entry)), ...[...this.colds.values()].map(entry => this.retireCold(entry)),
       ...[...this.generations.values()].map(entry => this.retireEntry(entry)),

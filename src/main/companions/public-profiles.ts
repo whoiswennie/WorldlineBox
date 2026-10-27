@@ -22,7 +22,7 @@ export class CompanionPublicProfiles {
   private readonly imageChecks = new Map<string, Promise<boolean>>();
   // Metadata only: one current signature per owner/role. The bound covers
   // 1,000 residents with two images without retaining any decoded pixels.
-  private readonly runtimeImageChecks = new Map<string, { signature: string; sha256: string; fileRevision: string }>();
+  private readonly runtimeImageChecks = new Map<string, { signature: string; sha256: string; fileRevision: string; acknowledged?: boolean }>();
   private readonly visuals = new Map<string, Promise<{ base64: string; sha256: string; originalHash: string } | undefined>>();
   constructor(private readonly options: { root: string; appPath: string; libraryDirectory?: string; profileStore?: CompanionAssetProfileStore;
     portraitInitialized?(ownerId: string, role: 'avatar' | 'orthographic'): Promise<boolean>;
@@ -63,7 +63,7 @@ export class CompanionPublicProfiles {
 
   /** Saved contacts expose only their editable owner copy. Template/source
    * materialization is a one-time factory guarded by the durable role receipt. */
-  async runtimeImages(owner: Companion): Promise<CompanionAssetImages> {
+  async runtimeImages(owner: Companion, options: { initialize?: boolean } = {}): Promise<CompanionAssetImages> {
     if (!this.assetProfiles || owner.assetProfileError) return {};
     const images: CompanionAssetImages = {};
     for (const role of ['avatar', 'orthographic'] as const) {
@@ -72,11 +72,11 @@ export class CompanionPublicProfiles {
         const selected = role === 'avatar' ? owner.avatarAttachmentId : owner.appearanceAttachmentId;
         if (!selected && (role === 'avatar' ? owner.avatar === 'custom' : !owner.builtin || !COMPANION_APPEARANCE_FILES[owner.id])) { this.runtimeImageChecks.delete(key); continue; }
         let file;
-        try { file = await this.runtimeOwnerImageFile(owner, role); }
+        try { file = options.initialize === false ? await this.ownerImageFile(owner.id, role) : await this.runtimeOwnerImageFile(owner, role); }
         catch (error) {
           // A missing body/receipt after durable initialization is an empty
           // state. Only a genuinely new role may enter the copy factory.
-          if ((error as NodeJS.ErrnoException).code !== 'ENOENT' || await this.options.portraitInitialized?.(owner.id, role)) throw error;
+          if (options.initialize === false || (error as NodeJS.ErrnoException).code !== 'ENOENT' || await this.options.portraitInitialized?.(owner.id, role)) throw error;
           const receipt = path.join(this.assetProfiles.libraryDirectory, owner.id, '形象', '.' + role + '-initialized.json');
           try { await lstat(receipt); throw new Error('The initialized owner image is missing.', { cause: error }); }
           catch (receiptError) { if ((receiptError as NodeJS.ErrnoException).code !== 'ENOENT') throw receiptError; }
@@ -97,14 +97,17 @@ export class CompanionPublicProfiles {
         if (metadata?.signature !== signature) {
           const image = await this.readOwnerImage(owner.id, role);
           if (!image) { this.runtimeImageChecks.delete(key); continue; }
-          // Recover the narrow crash window after receipt publication but
-          // before its durable lifecycle acknowledgement, once per cache load.
-          if (!metadata && this.options.portraitInitialized && !await this.options.portraitInitialized(owner.id, role)) await this.options.markPortraitInitialized?.(owner.id, role);
-          metadata = { signature: image.fileRevision, sha256: image.sha256, fileRevision: image.fileRevision };
+          metadata = { signature: image.fileRevision, sha256: image.sha256, fileRevision: image.fileRevision, acknowledged: metadata?.acknowledged };
           this.runtimeImageChecks.set(key, metadata);
           while (this.runtimeImageChecks.size > 4096) this.runtimeImageChecks.delete(this.runtimeImageChecks.keys().next().value!);
         } else {
           this.runtimeImageChecks.delete(key); this.runtimeImageChecks.set(key, metadata);
+        }
+        // Reset reads serve current pixels without writing across the reset
+        // barrier. A subsequent normal read acknowledges the new files once.
+        if (options.initialize !== false && !metadata.acknowledged) {
+          if (this.options.portraitInitialized && !await this.options.portraitInitialized(owner.id, role)) await this.options.markPortraitInitialized?.(owner.id, role);
+          metadata.acknowledged = true;
         }
         // The filesystem revision also retries a restored identical image
         // after an earlier 404, without generating a timestamp per render.
@@ -112,6 +115,20 @@ export class CompanionPublicProfiles {
       } catch { this.runtimeImageChecks.delete(key); /* Never cache an unavailable image or use its seed/source. */ }
     }
     return images;
+  }
+
+  /** A user-requested factory reset explicitly restores the template copies. */
+  async initializeAfterReset(owner: Companion): Promise<void> {
+    if (!this.assetProfiles) return;
+    const factory = new CompanionPublicProfiles({ ...this.options,
+      profileStore: new CompanionAssetProfileStore(this.assetProfiles.libraryDirectory),
+      portraitInitialized: undefined, markPortraitInitialized: undefined });
+    for (const role of ['avatar', 'orthographic'] as const) {
+      const source = role === 'avatar' && owner.avatar !== 'custom' ? COMPANION_PORTRAIT_FILES[owner.avatar] : COMPANION_APPEARANCE_FILES[owner.id];
+      if (!source) continue;
+      this.portraits.delete(owner.id + '/' + role); this.runtimeImageChecks.delete(owner.id + '/' + role);
+      await factory.materializePortrait(owner, role, source, true);
+    }
   }
 
   private async runtimeOwnerImageFile(owner: Companion, role: PortraitRole) {

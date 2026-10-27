@@ -296,8 +296,8 @@ export class CompanionMemoryService {
       && (timeZone === undefined || (artifacts.calendarTimeZone ?? 'Asia/Shanghai') === timeZone);
   }
 
-  cancelCompanion(id: string): void { void this.invalidate(id).catch(this.options.report); }
-  async drainCompanion(id: string): Promise<void> { await this.invalidate(id); }
+  cancelCompanion(id: string): void { if (!this.invalidations.has(id)) void this.invalidate(id).catch(this.options.report); }
+  async drainCompanion(id: string): Promise<void> { await (this.invalidations.get(id) ?? this.invalidate(id)); }
   private generation(owner: string) { return this.generations.get(owner) ?? 0; }
   private assertCurrent(owner: string, generation: number) {
     if (this.closed || this.generation(owner) !== generation) throw new Error('记忆工作已取消，授权视图需要重新核验。');

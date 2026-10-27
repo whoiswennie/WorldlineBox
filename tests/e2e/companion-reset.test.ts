@@ -13,6 +13,53 @@ type Bridge = Window & { worldlinebox: { companions: WorldlineBoxCompanionsApi; 
 async function request(page: Page, input: CompanionsRequest) { const result = await page.evaluate(value => (window as unknown as Bridge).worldlinebox.companions.request(value), input); expect(result.ok, result.error).toBe(true); return result; }
 function cleanup(root: string) { const absolute = path.resolve(root); if (path.dirname(absolute) !== path.resolve(tmpdir()) || !path.basename(absolute).startsWith('worldlinebox-reset-e2e-')) throw new Error('Unexpected reset fixture cleanup.'); removeCompanionTestDirectory(absolute); }
 
+test('file-backed factory reset completes twice and preserves working owner images and prompts across restart', async () => {
+  test.setTimeout(90000);
+  const root = mkdtempSync(path.join(tmpdir(), 'worldlinebox-reset-e2e-')), profile = path.join(root, 'profile'), id = 'deepseek-flash';
+  let application: ElectronApplication | undefined;
+  const launch = async () => {
+    const app = await electron.launch({ executablePath: resolveElectronExecutablePath(), args: [resolveElectronAppPath()], cwd: resolveElectronAppPath(),
+      env: electronLaunchEnv({ WORLDLINEBOX_E2E: '1', WORLDLINEBOX_E2E_USER_DATA_PATH: profile }, { gpu: 'software' }) });
+    const page = await app.firstWindow();
+    await (await app.browserWindow(page)).evaluate(window => { window.hide(); window.setSize(1440, 1100); window.webContents.setBackgroundThrottling(false); });
+    await ensureCompanionTestWorkspace(page);
+    await page.locator('[data-application-module="companions"]').click(); await page.getByRole('button', { name: '联系人', exact: true }).click();
+    await page.locator(`[data-companion-contact="${id}"]`).click(); return { app, page };
+  };
+  const checkImages = async (page: Page) => {
+    await expect.poll(() => page.locator('.companions-profile-heading .companion-avatar > img').evaluate((image: HTMLImageElement) => image.complete && image.naturalWidth > 0)).toBe(true);
+    await expect.poll(() => page.locator('.companions-contact-profile .public-appearance-thumbnail img').evaluate((image: HTMLImageElement) => image.complete && image.naturalWidth > image.naturalHeight)).toBe(true);
+  };
+  try {
+    let current = await launch(); application = current.app; let page = current.page; await checkImages(page);
+    const defaults = BUILTIN_COMPANIONS.find(owner => owner.id === id)!;
+    for (let round = 0; round < 2; round++) {
+      const owner = (await request(page, { type: 'state' })).state!.companions.find(owner => owner.id === id)!;
+      await request(page, { type: 'companion.update', id, expectedRevision: owner.revision,
+        companion: { name: '临时小肥鱼', description: '重置前简介', persona: '需要恢复的临时设定。', model: '', avatar: 'flash', proactive: false } });
+      const assets = await page.evaluate(id => (window as unknown as Bridge).worldlinebox.companions.workspace!({ type: 'companion.assets.read', companionId: id }), id);
+      expect(assets.ok, assets.error).toBe(true);
+      const module = assets.companionAssets!.prompts.find(module => module.path === '提示词/对话.md')!;
+      const edited = await page.evaluate(input => (window as unknown as Bridge).worldlinebox.companions.workspace!({ type: 'companion.assets.prompt.save', ...input }),
+        { companionId: id, path: module.path, expectedRevision: module.revision, content: 'RESET_TEST_CUSTOM_PROMPT' });
+      expect(edited.ok, edited.error).toBe(true);
+      await request(page, { type: 'companion.reset', id, scope: 'all' });
+      await expect.poll(async () => (await request(page, { type: 'companion.reset.status', id })).reset, { timeout: 20000 })
+        .toMatchObject({ status: 'completed', phase: 'completed' });
+      const restored = (await request(page, { type: 'state' })).state!.companions.find(owner => owner.id === id)!;
+      expect(restored).toMatchObject({ name: defaults.name, description: defaults.description, persona: defaults.persona });
+      expect(restored.assetProfileError).toBeUndefined(); expect(restored.assetImages?.avatar).toBeDefined(); expect(restored.assetImages?.orthographic).toBeDefined();
+      const currentAssets = await page.evaluate(id => (window as unknown as Bridge).worldlinebox.companions.workspace!({ type: 'companion.assets.read', companionId: id }), id);
+      expect(currentAssets.ok, currentAssets.error).toBe(true); expect(JSON.stringify(currentAssets.companionAssets)).not.toContain('RESET_TEST_CUSTOM_PROMPT');
+      await checkImages(page);
+    }
+    await application.close(); application = undefined;
+    current = await launch(); application = current.app; page = current.page; await checkImages(page);
+    const artifacts = path.resolve('.tools/test-output/companions'); mkdirSync(artifacts, { recursive: true });
+    await page.screenshot({ path: path.join(artifacts, 'verified-file-backed-reset.png') });
+  } finally { await application?.close(); cleanup(root); }
+});
+
 // Real UtilityProcess/SQLite, provider stream, public forms and managed files.
 // Only the provider and OS chooser are fixtures; no reset handler is replaced.
 // eslint-disable-next-line no-empty-pattern

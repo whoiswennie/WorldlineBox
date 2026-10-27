@@ -44,6 +44,20 @@ function runtime(resolveEmbedding: () => Promise<VcpMemoryEmbeddingConfig>, reso
 beforeEach(() => { mocks.clients.length = 0; coldMocks.services.length = 0; });
 
 describe('VCP semantic space and shutdown boundaries', () => {
+  it.each(['memory', 'knowledge'] as const)('cleans one owner’s %s while another owner waits for a full pool', async kind => {
+    const service = runtime(async () => configuration()), leases = [];
+    const abort = new AbortController(); let waiting: Promise<unknown> | undefined;
+    try {
+      for (const ownerId of ['alice', 'bob', 'carol', 'dave']) leases.push(await service.get({ ownerId }));
+      waiting = service.get({ ownerId: 'erin', signal: abort.signal }).catch(() => undefined);
+      await new Promise(resolve => setTimeout(resolve, 30));
+      expect(mocks.clients).toHaveLength(4);
+      let cleaned = false;
+      const cleanup = (kind === 'memory' ? service.purgeOwner('reset_owner') : service.resetCold('reset_owner')).then(() => { cleaned = true; });
+      await vi.waitFor(() => expect(cleaned).toBe(true), { timeout: 1000 }); await cleanup;
+      expect(mocks.clients.every(client => client.close.mock.calls.length === 0)).toBe(true);
+    } finally { abort.abort(); await waiting; await Promise.all(leases.map(lease => lease.release?.())); await service.close(); }
+  });
   it('allows trusted index withdrawal with a missing live prompt while queries reject, then rereads repaired prompts without index clearing them', async () => {
     const root = await mkdtemp(path.join(tmpdir(), 'worldline-index-prompt-')), prompt = path.join(root, 'live-focus.md');
     if (path.dirname(path.resolve(root)) !== path.resolve(tmpdir()) || !path.basename(root).startsWith('worldline-index-prompt-')) throw new Error('Unsafe index prompt fixture cleanup.');

@@ -1194,6 +1194,29 @@ it.each(['generated', 'explicit'] as const)('blocks %s TagMaster metadata at the
 });
 
 describe('CompanionService durable factory reset', () => {
+  it.each(['request', 'startup'] as const)('shows existing owner images while stopping and rebuilds defaults and images after reset (%s)', async entry => {
+    const f = fixture(fakeDsh(() => ({ tasks: [], operations: [] }), vi.fn(async () => ({ ok: true as const }))), false, false, undefined, true);
+    const before = (await f.service.handle({ type: 'state' })).state!.companions.find(owner => owner.id === 'sister')!;
+    expect(before.assetImages?.avatar).toBeDefined();
+    await f.service.handle({ type: 'companion.update', id: before.id, expectedRevision: before.revision,
+      companion: { ...seeds[0]!, name: '修改的名字', persona: '需要重置的人格', proactive: false } });
+    const started = f.store.request({ type: 'companion.reset', id: 'sister', scope: 'all' });
+    expect(started.reset?.phase).toBe('stopping');
+    const during = (await f.service.handle({ type: 'state' })).state!.companions.find(owner => owner.id === 'sister')!;
+    expect(during.assetImages?.avatar?.sha256).toBe(before.assetImages!.avatar!.sha256);
+    expect((await f.service.attachmentResponse(new Request(during.assetImages!.avatar!.url))).status).toBe(200);
+    expect(during.name).toBe('修改的名字');
+    if (entry === 'startup') await (f.service as unknown as { restoreResets(): Promise<void> }).restoreResets();
+    else await f.service.handle({ type: 'companion.reset', id: 'sister', scope: 'all' });
+    await finishReset(f.store);
+    const restored = (await f.service.handle({ type: 'state' })).state!.companions.find(owner => owner.id === 'sister')!;
+    expect(restored).toMatchObject({ name: seeds[0]!.name, persona: seeds[0]!.persona });
+    expect(restored.assetProfileError).toBeUndefined(); expect(restored.assetImages?.avatar?.sha256).toBe(before.assetImages!.avatar!.sha256);
+    const assets = await f.service.manageCompanionAssets({ type: 'companion.assets.read', companionId: 'sister' });
+    expect(assets.companionAssets!.prompts.length).toBeGreaterThan(10);
+    expect(readFileSync(path.join(f.root, 'library', '伙伴记忆', 'sister', 'profile.md'), 'utf8')).toContain(seeds[0]!.persona);
+    await closeService(f.service);
+  });
   it('drains a late native file commit before acknowledging the reset cleanup boundary', async () => {
     const f = fixture(fakeDsh(() => ({ tasks: [], operations: [] }), vi.fn(async () => ({ ok: true as const }))));
     const sourcePath = path.join(f.root, 'before-reset.txt'); writeFileSync(sourcePath, '旧任务读取的文件内容');

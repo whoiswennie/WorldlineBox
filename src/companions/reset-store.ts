@@ -69,7 +69,7 @@ export class CompanionResetStore {
   status(id: string): { reset?: CompanionReset; resetTaskIds: string[] } { const job = this.load(id); return { reset: job && this.public(job), resetTaskIds: job?.progress.taskIds ?? [] }; }
   blocked(id: string): boolean { return !!this.db.prepare("SELECT 1 FROM companion_reset_jobs WHERE companion_id=? AND status!='completed'").get(id); }
   assertCommand(command: CompanionStorageCommand): void {
-    if (command.type.startsWith('companion.reset') || command.type.startsWith('memory.outbox.') || command.type === 'companion.task.track') return;
+    if (command.type === 'state' || command.type.startsWith('companion.reset') || command.type.startsWith('memory.outbox.') || command.type === 'companion.task.track') return;
     const input = command as unknown as { type: string; id?: string; actionId?: string; companionId?: string; sourceMessageId?: string;
       action?: { companionId: string; sourceMessageId: string }; work?: { companionId: string; sourceMessageId: string };
       checkpoint?: { companionId?: string; sourceMessageId?: string }; memory?: { companionId: string; sourceMessageId?: string };

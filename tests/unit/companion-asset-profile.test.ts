@@ -23,6 +23,19 @@ async function fixture() {
   return { root, library, profiles, initial: await profiles.bootstrap(owner) };
 }
 
+it('allows explicit reset initialization after a durable owner was removed without weakening normal missing-file guards', async () => {
+  const f = await fixture(), initialized = new Set([owner.id]);
+  const store = new CompanionAssetProfileStore(f.library, { initialized: async id => initialized.has(id) });
+  const directory = path.resolve(f.initial.root);
+  if (path.dirname(directory) !== path.resolve(f.library)) throw new Error('Unexpected fixture owner path.');
+  await rm(directory, { recursive: true });
+  await expect(store.bootstrap(owner)).rejects.toMatchObject({ code: 'MISSING' });
+  const fresh = await store.initializeAfterReset({ ...owner, persona: '明确重置后的初始人格。' });
+  expect(fresh.profile.persona).toBe('明确重置后的初始人格。'); expect(fresh.memoryPolicy).toBeDefined();
+  await unlink(path.join(directory, 'profile.md'));
+  await expect(store.bootstrap(owner)).rejects.toMatchObject({ code: 'MISSING' });
+});
+
 it('initializes a previous exported role from its actual file, preserves the source and leaves diary documents untouched', async () => {
   const root = await mkdtemp(path.join(tmpdir(), 'companion-asset-profile-')); roots.push(root);
   const library = path.join(root, '伙伴记忆'), directory = path.join(library, owner.id);
