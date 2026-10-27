@@ -642,7 +642,7 @@ it.each(['unrelated_note', 'ordinary_revision', 'withdrawn_source'] as const)('r
   await vi.waitFor(() => expect(store.request({ type: 'loop.get', sourceMessageId: source.id, companionId: 'sister' }).loop?.status).toBe('done'), { timeout: 5000 });
   expect(recall).not.toHaveBeenCalled(); expect(search).not.toHaveBeenCalled();
   const current = store.request({ type: 'loop.get', sourceMessageId: source.id, companionId: 'sister' }).loop!;
-  expect(current.turns[0]).toMatchObject(loop.turns[0]);
+  expect(current.turns[0]).toMatchObject(loop.turns[0]!);
   expect(transport.fetch).toHaveBeenCalledOnce();
   if (change === 'withdrawn_source') {
     expect(JSON.parse(current.context!.user).memoryRecall.context).toBeUndefined();
