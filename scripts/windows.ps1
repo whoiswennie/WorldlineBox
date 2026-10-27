@@ -25,15 +25,40 @@ $innoRoot = Join-Path $toolsRoot 'inno'
 $setupState = Join-Path $toolsRoot 'setup-state.json'
 Set-Location -LiteralPath $projectRoot
 
-function Download-File([string]$Url, [string]$Destination) {
-    Write-Host "Downloading $Url"
-    if (Get-Command curl.exe -ErrorAction SilentlyContinue) {
-        & curl.exe --fail --location --retry 4 --output $Destination $Url
-        if ($LASTEXITCODE -ne 0) { throw "Download failed: $Url" }
-    } else {
-        $downloadOptions = @{ UseBasicParsing = $true; Uri = $Url; OutFile = $Destination }
-        if ($Proxy) { $downloadOptions.Proxy = $Proxy }
-        Invoke-WebRequest @downloadOptions
+function Download-File([string]$Url, [string]$Destination, [string[]]$FallbackUrls = @(), [string]$ExpectedSha256) {
+    $pending = $Destination + '.download-' + [Guid]::NewGuid().ToString('N')
+    $lastFailure = 'No download source was available.'
+    try {
+        foreach ($source in (@($Url) + $FallbackUrls | Select-Object -Unique)) {
+            for ($attempt = 1; $attempt -le 2; $attempt++) {
+                try {
+                    Write-Host "Downloading $source (attempt $attempt/2)"
+                    if (Get-Command curl.exe -ErrorAction SilentlyContinue) {
+                        # curl --retry alone does not retry connection reset (56).
+                        # Retry every failed attempt here, including on older Windows curl.
+                        $minimumSpeed = if ($FallbackUrls.Count -gt 0) { 131072 } else { 1024 }
+                        & curl.exe --fail --location --connect-timeout 15 --max-time 600 --speed-limit $minimumSpeed --speed-time 20 --output $pending $source
+                        if ($LASTEXITCODE -ne 0) { throw "curl exited with code $LASTEXITCODE" }
+                    } else {
+                        $downloadOptions = @{ UseBasicParsing = $true; Uri = $source; OutFile = $pending; TimeoutSec = 600 }
+                        if ($Proxy) { $downloadOptions.Proxy = $Proxy }
+                        Invoke-WebRequest @downloadOptions
+                    }
+                    if ($ExpectedSha256 -and (File-Sha256 $pending) -ne $ExpectedSha256) { throw 'Downloaded file checksum mismatch.' }
+                    Move-Item -LiteralPath $pending -Destination $Destination -Force
+                    return
+                } catch {
+                    $lastFailure = $_.Exception.Message
+                    if (Test-Path -LiteralPath $pending) { Remove-Item -LiteralPath $pending -Force }
+                    Write-Warning "Download attempt failed: $lastFailure"
+                    if ($attempt -lt 2) { Start-Sleep -Seconds 1 }
+                }
+            }
+            Write-Warning 'Trying the next available download source.'
+        }
+        throw "Download failed from all sources: $Url. $lastFailure. If a proxy is required, run 01-Setup-Environment.bat -Proxy http://127.0.0.1:PORT"
+    } finally {
+        if (Test-Path -LiteralPath $pending) { Remove-Item -LiteralPath $pending -Force }
     }
 }
 
@@ -124,7 +149,14 @@ function Prepare-Electron([switch]$RequireArchive) {
     $expectedHash = $checksums.$archiveName
     if (-not $expectedHash) { throw 'Pinned Electron checksum is missing.' }
     if (-not (Test-Path -LiteralPath $archivePath) -or (File-Sha256 $archivePath) -ne $expectedHash) {
-        Download-File "https://github.com/electron/electron/releases/download/v$electronVersion/$archiveName" $archivePath
+        $sources = @()
+        if ($env:ELECTRON_MIRROR) {
+            $mirrorVersion = if ($env:ELECTRON_CUSTOM_DIR) { $env:ELECTRON_CUSTOM_DIR.Replace('{{ version }}', $electronVersion) } else { "v$electronVersion" }
+            $sources += $env:ELECTRON_MIRROR.TrimEnd('/') + '/' + $mirrorVersion.Trim('/') + '/' + $archiveName
+        }
+        $sources += "https://github.com/electron/electron/releases/download/v$electronVersion/$archiveName"
+        $sources += "https://npmmirror.com/mirrors/electron/$electronVersion/$archiveName"
+        Download-File -Url $sources[0] -Destination $archivePath -FallbackUrls @($sources | Select-Object -Skip 1) -ExpectedSha256 $expectedHash
     }
     if ((File-Sha256 $archivePath) -ne $expectedHash) { throw 'Electron checksum mismatch.' }
     if (-not $hasDistribution) {
