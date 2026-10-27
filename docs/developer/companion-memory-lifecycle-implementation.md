@@ -165,3 +165,9 @@
 `memory-index-ack-before-after-summary.json`保存原ac2ef22和修后同1000来源语料的单次SQLite/经历归档诊断：循环16.383→14.282秒，经历纯SQL3.961→2.213秒，WAL追加472,184,992→446,307,272B，来源DELETE1000→0，SQLprepare73,001→55,001。保留FULL synchronous，只在隔离诊断中关闭autocheckpoint记录追加帧；这些不是OS设备写入量、实际原生入库速度或跨机器统计。正文、修订和来源身份及权限门均核验；不能据此声称原10k或100k规模门已经通过。最终界面、类型检查与新提交后的规模/长时程验证继续进行。
 
 窄修后实际普通记忆E2E单项通过，case3.1分钟、runner及观察器exit0；194个编译文件哈希一致，实际Gemma及全部后代两次核验残留0，见`automatic-storage-optimization-20261027-082145/summary.json`。第一次启动命令因grep锚点未匹配完整标题而无选中测试、exit1，该日志保留；随后复用同一成功编译bundle实际只执行了一次case，不重复模型/编码器作业。完整main/extension类型和全lint均exit0，仍有原7项hook警告。资源夹具增加按阶段的实际store.request+clone及requestId发送至响应/退出聚合时序，只保存元数据；并发调用耗时总和不代表独占墙钟或CPU，不能据此细分未测的协调器内部。下一次clean冻结复测仍沿用原N、768维、100样本与停止门。
+
+第二次clean冻结10k专项使用`75d6fbf5e89810a878af8bcfea384f71c451871c`，1767.77秒、实际exit1，源码及宿主冻结核验通过。当前文件发布355.07秒、来源和历史发布593.34秒后，真实原生入库再次触600秒门。最后100ms快照6212次remember响应与6212次complete终端是全部活跃owner计数；辅助退出观察未取得SQLite最终聚合，临时库已按夹具清理，不能据此宣称本人精确ACK6212。未取得全10k图或warm样本。树工作集峰922,636,288B、磁盘410,618,912B、原生峰4，5个被测进程及辅助观察器均已退出。完整结果保存在`native-memory-resources-2026-10-27T00-28-39-467Z-19800/`，原红门不改写。
+
+这次计时与只读对照确认一个资源夹具差异：prepared host未接Main已有的`companion.assets.initialized/mark-initialized`持久凭证，因此意图轻量的`bootstrapProfile`仍每次退入完整提示词加载。生产Main已接该凭证，初次成功初始化后状态字段只需严格loadProfile；真实提供方调用仍完整读取用途提示词。该差异没有独立耗时，不能由差值解释全部超时。后续只在benchmark夹具接相同真实Store凭证，保留首次完整bootstrap及实际mark、文件缺失检查和模型前full roles；先用64本人/100伙伴/4活跃、768维、2样本的显式仪器smoke验证，不能把小测试当10k性能验收。完整两小时Main运行仍未开始。
+
+该benchmark-only接线已通过独立仪器smoke，74.62秒、实际exit0。首次seed真实Store登记100位伙伴，重启run host后登记0次、持续读取持久凭证；没有用硬编码true替代初始化。真实原生峰4、请求配对异常/失败/遗弃均0，12个被测进程均已退出，详见`native-memory-resources-2026-10-27T01-02-33-971Z-36668/initialization-instrumentation-smoke-summary.json`。非benchmark恢复宿主、生产代码、模型前完整角色读取和停止门均未修改；main/extension完整类型及修改文件lint exit0。运行指南另存为`companion-memory-user-guide.md`，集中说明用户可观察的触发、文件和维护方式。最终10k和两小时结果仍须单独记录，不从小测试推定。

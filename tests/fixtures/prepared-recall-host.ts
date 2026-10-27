@@ -64,7 +64,18 @@ const rawRequest = async (command: CompanionStorageCommand): Promise<CompanionSt
 const workspaceRoot = path.join(root, 'owner-assets'), vendorRoot = benchmark?.implementation?.vendorRoot ?? path.resolve('vendor/vcp-memory');
 const activeBenchmarkOwners = new Set(benchmark ? store.state(false, { includeConversations: false }).companions.slice(0, benchmark.activeOwners).map(owner => owner.id) : []);
 const profiles = new CompanionAssetProfileStore(workspaceRoot, { loadInitialFocusPrompt: () => readFile(path.join(vendorRoot, 'Plugin/RAGDiaryPlugin/AIMemoPrompt.txt'), 'utf8'),
-  loadInitialTimelinePrompts: () => loadInitialTimelinePrompts(vendorRoot), loadInitialTagPrompt: async () => 'Synthetic tag instructions.' });
+  loadInitialTimelinePrompts: () => loadInitialTimelinePrompts(vendorRoot), loadInitialTagPrompt: async () => 'Synthetic tag instructions.',
+  ...(benchmark ? {
+    initialized: async (companionId: string) => {
+      const response = await rawRequest({ type: 'companion.assets.initialized', companionId });
+      if (!response.ok) throw new Error(response.error ?? 'Synthetic owner initialization receipt is unavailable.');
+      return response.assetProfileInitialized === true;
+    },
+    markInitialized: async (companionId: string) => {
+      const response = await rawRequest({ type: 'companion.assets.mark-initialized', companionId });
+      if (!response.ok) throw new Error(response.error ?? 'Synthetic owner initialization receipt was not persisted.');
+    },
+  } : {}) });
 const owner = store.state().companions.find(owner => owner.id === 'alice')!;
 await profiles.bootstrap(owner);
 const library = new CompanionMemoryLibrary({ libraryDirectory: workspaceRoot, request: rawRequest, profileStore: profiles });
