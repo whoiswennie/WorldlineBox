@@ -38,8 +38,28 @@ const initialOwners = Array.from({ length: benchmark?.owners ?? 1 }, (_, index) 
   persona: 'Use actual sources.', model: '', avatar: 'sister' as const, active: true, proactive: false }));
 const store = new CompanionsStore(path.join(root, 'ledger.sqlite'), initialOwners);
 const hostPortCalls: Record<string, number> = {}, storagePortCalls: Record<string, number> = {};
+type OperationTiming = { calls: number; totalMs: number; maxMs: number; failures: number; abandoned: number };
+type PhaseOperationTimings = { storage: Record<string, OperationTiming>; native: Record<string, OperationTiming>; nativePending: number; pairingAnomalies: number };
+let operationTimingPhase = 'host_initialization';
+const phaseOperationTimings = new Map<string, PhaseOperationTimings>();
+const phaseTimings = (name: string): PhaseOperationTimings => {
+  let value = phaseOperationTimings.get(name);
+  if (!value) { value = { storage: {}, native: {}, nativePending: 0, pairingAnomalies: 0 }; phaseOperationTimings.set(name, value); }
+  return value;
+};
+const recordOperationTiming = (target: Record<string, OperationTiming>, operation: string, durationMs: number, outcome: 'ok' | 'failed' | 'abandoned') => {
+  const value = target[operation] ??= { calls: 0, totalMs: 0, maxMs: 0, failures: 0, abandoned: 0 };
+  value.calls++; value.totalMs += durationMs; value.maxMs = Math.max(value.maxMs, durationMs);
+  if (outcome === 'failed') value.failures++; else if (outcome === 'abandoned') value.abandoned++;
+};
+const operationTimingsSnapshot = (name = operationTimingPhase) => ({ schema: 'worldlinebox.native-resource-operation-timings-v1',
+  hostPid: process.pid, phase: name, ...phaseTimings(name) });
 const rawRequest = async (command: CompanionStorageCommand): Promise<CompanionStorageResponse> => {
-  storagePortCalls[command.type] = (storagePortCalls[command.type] ?? 0) + 1; return structuredClone(store.request(command));
+  storagePortCalls[command.type] = (storagePortCalls[command.type] ?? 0) + 1;
+  if (!benchmark) return structuredClone(store.request(command));
+  const startedAt = performance.now(), phase = operationTimingPhase; let outcome: 'ok' | 'failed' = 'failed';
+  try { const result = structuredClone(store.request(command)); outcome = 'ok'; return result; }
+  finally { recordOperationTiming(phaseTimings(phase).storage, command.type, performance.now() - startedAt, outcome); }
 };
 const workspaceRoot = path.join(root, 'owner-assets'), vendorRoot = benchmark?.implementation?.vendorRoot ?? path.resolve('vendor/vcp-memory');
 const activeBenchmarkOwners = new Set(benchmark ? store.state(false, { includeConversations: false }).companions.slice(0, benchmark.activeOwners).map(owner => owner.id) : []);
@@ -81,11 +101,26 @@ const runtime = new CompanionVcpRuntime({ vendorRoot, workerPath: benchmark?.imp
       throw new Error('Native launch differs from the frozen host manifest.');
     const env: NodeJS.ProcessEnv = { ...process.env, ELECTRON_RUN_AS_NODE: '1' }; delete env.NODE_PATH;
     const child = fork(file, [], { execPath: process.execPath, env, stdio: ['ignore', 'ignore', 'ignore', 'ipc'] });
+    const pendingTimings = new Map<string, { operation: string; phase: string; startedAt: number }>();
+    const finishNativeTiming = (requestId: string, outcome: 'ok' | 'failed' | 'abandoned') => {
+      const pending = pendingTimings.get(requestId); if (!pending) return;
+      pendingTimings.delete(requestId); const metrics = phaseTimings(pending.phase); metrics.nativePending--;
+      recordOperationTiming(metrics.native, pending.operation, performance.now() - pending.startedAt, outcome);
+      // A request is charged to its send phase, even if it settles later.
+      if (pending.phase !== operationTimingPhase) process.send?.({ stage: 'operation-timings', phase: pending.phase,
+        operationTimings: operationTimingsSnapshot(pending.phase) });
+    };
+    if (benchmark) child.on('message', value => {
+      const response = value as { requestId?: unknown; ok?: boolean };
+      if (typeof response?.requestId === 'string') finishNativeTiming(response.requestId, response.ok === false ? 'failed' : 'ok');
+    });
     launches++; nativePids.add(child.pid!); process.send?.({ stage: 'native-launch', pid: child.pid, hostPid: process.pid, workerPath: file,
       launchedAt: Date.now(), nativePids: [...nativePids] });
-    child.on('exit', () => { nativePids.delete(child.pid!); process.send?.({ stage: 'native-exit', pid: child.pid, nativePids: [...nativePids] }); });
+    child.on('exit', () => { for (const requestId of pendingTimings.keys()) finishNativeTiming(requestId, 'abandoned');
+      nativePids.delete(child.pid!); process.send?.({ stage: 'native-exit', pid: child.pid, nativePids: [...nativePids] }); });
     return { postMessage: value => { nativeCommands++; nativeInputBytes += Buffer.byteLength(JSON.stringify(value));
-      const command = (value as { command?: { type: string; notes?: unknown[]; removedIds?: string[]; configuration?: { dataRoot?: string } } }).command;
+      const envelope = value as { requestId?: string; command?: { type: string; notes?: unknown[]; removedIds?: string[]; configuration?: { dataRoot?: string } } };
+      const command = envelope.command;
       if (benchmark && command?.type === 'initialize') {
         const dataRoot = command.configuration?.dataRoot;
         if (!dataRoot) throw new Error('Native benchmark initialization lacks its trusted owner path.');
@@ -97,7 +132,15 @@ const runtime = new CompanionVcpRuntime({ vendorRoot, workerPath: benchmark?.imp
       if (command?.type === 'replace') { nativeWrites.replaceCalls++; nativeWrites.replaceNotes += command.notes?.length ?? 0; }
       if (command?.type === 'projection-delta') { nativeWrites.deltaCalls++; nativeWrites.deltaUpserts += command.notes?.length ?? 0; nativeWrites.deltaRemovals += command.removedIds?.length ?? 0; }
       if (command?.type === 'remember') nativeWrites.rememberCalls++;
-      child.send(value as object); }, on: child.on.bind(child), kill: () => { child.kill(); } };
+      const requestId = envelope.requestId;
+      if (benchmark && command && typeof requestId === 'string') {
+        if (pendingTimings.has(requestId)) phaseTimings(operationTimingPhase).pairingAnomalies++;
+        else { pendingTimings.set(requestId, { operation: command.type, phase: operationTimingPhase, startedAt: performance.now() });
+          phaseTimings(operationTimingPhase).nativePending++; }
+      }
+      try { child.send(value as object); }
+      catch (error) { if (benchmark && typeof requestId === 'string') finishNativeTiming(requestId, 'failed'); throw error; }
+    }, on: child.on.bind(child), kill: () => { child.kill(); } };
   }, resolveGenerationPlugins: async input => {
     const route = await gateway.registerOwnerRoute({ ownerId: input.ownerId, semanticProfile: { profileKey: input.profileKey }, credential: config.apiKey,
       generate: (context, signal, work) => generateCompanionText(context, { ...config, ownerId: input.ownerId, workPriority: work?.priority }, signal) });
@@ -117,11 +160,16 @@ const memory = new CompanionMemoryService({ request, runtime, cacheRootFor: asyn
   busy: () => false, changed: () => undefined, report: error => errors.push(String(error)) });
 memory.schedule = () => undefined; // Recovery harness does not create unrelated background cognition.
 const resourceTimer = benchmark ? setInterval(() => process.send?.({ stage: 'resources', host: process.memoryUsage(), nativePids: [...nativePids],
-  nativeCommands, nativeInputBytes, nativeWrites, hostPortCalls, storagePortCalls, timingSummary, resources: memory.resourceSnapshot() }), 100) : undefined;
+  nativeCommands, nativeInputBytes, nativeWrites, hostPortCalls, storagePortCalls, timingSummary,
+  operationTimings: operationTimingsSnapshot(), resources: memory.resourceSnapshot() }), 100) : undefined;
 try {
   if (benchmark) {
     await runNativeMemoryResourceScenario(phase === 'benchmark-seed' ? 'seed' : 'run', { store, memory, runtime, liveFiles, profiles, sourceFiles, historyFiles,
-      endpoint, config: benchmark, emit: value => process.send?.(value), measureQuery: async (operation, startedAt) => {
+      endpoint, config: benchmark, emit: value => {
+        if (value.stage === 'phase' && typeof value.phase === 'string') operationTimingPhase = value.phase;
+        process.send?.({ ...value, ...(['phase-complete', 'phase-failed'].includes(String(value.stage))
+          ? { operationTimings: operationTimingsSnapshot() } : {}) });
+      }, measureQuery: async (operation, startedAt) => {
         const timing: { startedAt: number; firstFocusSendAt?: number } = { startedAt };
         return queryTiming.run(timing, async () => { const result = await operation();
           return { ...result, localPreparationMs: (timing.firstFocusSendAt ?? performance.now()) - startedAt,
@@ -168,6 +216,8 @@ try {
   store.request({ type: 'loop.save', checkpoint }); await memory.acknowledgeTaskRecall(prepared);
   process.send?.({ stage: 'complete', launches, context: result.context, errors });
 } catch (error) { process.send?.({ stage: 'rejected', error: error instanceof Error ? error.message : String(error), launches, nativePids: [...nativePids] }); }
-finally { if (resourceTimer) clearInterval(resourceTimer); await memory.close(); await library.close(); await gateway.close(); store.close(); }
+finally { if (resourceTimer) clearInterval(resourceTimer); operationTimingPhase = 'host_shutdown';
+  await memory.close(); await library.close(); await gateway.close(); store.close();
+  if (benchmark) process.send?.({ stage: 'operation-timings', phase: operationTimingPhase, operationTimings: operationTimingsSnapshot() }); }
 }
 void runHost().catch(error => { process.send?.({ stage: 'fatal', error: error instanceof Error ? error.message : String(error) }); process.exitCode = 1; });

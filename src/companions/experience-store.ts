@@ -87,15 +87,22 @@ export class CompanionExperienceStore {
         WHERE companion_experiences.fingerprint!=excluded.fingerprint`).run(entry.id, entry.companionId, entry.day, entry.occurredAt, entry.title, snapshot.fingerprint, JSON.stringify(entry), JSON.stringify(snapshot));
   }
   private projectPending(limit = 24): void {
-    for (const pending of this.db.prepare('SELECT * FROM companion_experience_projection WHERE attempts<8 AND next_attempt<=? ORDER BY rowid LIMIT ?').all(Date.now(), limit) as Row[]) {
-      try {
-        const input = JSON.parse(String(pending.payload)) as ProjectionInput;
-        if (this.db.prepare("SELECT 1 FROM companions WHERE id=? AND deleted_at IS NULL AND NOT EXISTS(SELECT 1 FROM companion_reset_jobs r WHERE r.companion_id=companions.id AND r.status!='completed')").get(input.owner))
-          this.put(this.project({ ...input, observedAt: String(pending.observed_at) }));
-        this.db.prepare('DELETE FROM companion_experience_projection WHERE source=? AND source_id=?').run(pending.source, pending.source_id);
-      } catch (error) { this.db.prepare('UPDATE companion_experience_projection SET attempts=attempts+1,next_attempt=?,error=? WHERE source=? AND source_id=?')
-        .run(Date.now() + 10000, (error instanceof Error ? error.message : String(error)).slice(0, 1000), pending.source, pending.source_id); }
-    }
+    const now = Date.now();
+    // Empty observational reads need no writer lock. Re-select the bounded
+    // inputs after BEGIN so each successful put and its intent deletion commit
+    // together, without one FULL-sync autocommit per SQL statement.
+    if (!this.db.prepare('SELECT 1 FROM companion_experience_projection WHERE attempts<8 AND next_attempt<=? LIMIT 1').get(now)) return;
+    this.db.transaction(() => {
+      for (const pending of this.db.prepare('SELECT * FROM companion_experience_projection WHERE attempts<8 AND next_attempt<=? ORDER BY rowid LIMIT ?').all(now, limit) as Row[]) {
+        try {
+          const input = JSON.parse(String(pending.payload)) as ProjectionInput;
+          if (this.db.prepare("SELECT 1 FROM companions WHERE id=? AND deleted_at IS NULL AND NOT EXISTS(SELECT 1 FROM companion_reset_jobs r WHERE r.companion_id=companions.id AND r.status!='completed')").get(input.owner))
+            this.put(this.project({ ...input, observedAt: String(pending.observed_at) }));
+          this.db.prepare('DELETE FROM companion_experience_projection WHERE source=? AND source_id=?').run(pending.source, pending.source_id);
+        } catch (error) { this.db.prepare('UPDATE companion_experience_projection SET attempts=attempts+1,next_attempt=?,error=? WHERE source=? AND source_id=?')
+          .run(Date.now() + 10000, (error instanceof Error ? error.message : String(error)).slice(0, 1000), pending.source, pending.source_id); }
+      }
+    }).immediate();
   }
 
   private project(input: ProjectionInput): Snapshot {

@@ -42,6 +42,11 @@ async function sourceManifest() {
   return { files, digest: createHash('sha256').update(JSON.stringify(files)).digest('hex') };
 }
 interface Event { stage: string; phase?: string; elapsedMs?: number; limitMs?: number; error?: string; pid?: number; nativePids?: number[]; [key: string]: unknown }
+interface OperationTiming { calls: number; totalMs: number; maxMs: number; failures: number; abandoned: number }
+interface PhaseOperationTimings {
+  schema: 'worldlinebox.native-resource-operation-timings-v1'; hostPid: number; phase: string;
+  storage: Record<string, OperationTiming>; native: Record<string, OperationTiming>; nativePending: number; pairingAnomalies: number;
+}
 async function resourceGitState() {
   const [head, status] = await Promise.all([execute('git', ['rev-parse', 'HEAD'], { windowsHide: true }), execute('git', ['status', '--porcelain', '--untracked-files=normal'], { windowsHide: true })]);
   return { head: head.stdout.trim(), dirty: !!status.stdout.trim(), status: status.stdout.trim() };
@@ -105,6 +110,7 @@ it.skipIf(!enabled)('measures bounded full-pipeline native synthetic-vector owne
       const caseRoot = path.join(root, 'case-' + config.notes + '-' + config.owners); await mkdir(caseRoot);
       const caseArtifact = path.join(artifact, config.notes + '-' + config.owners); await mkdir(caseArtifact);
       const events: Event[] = [], nativePids = new Set<number>(), allPids = new Set<number>(), peaks = new Map<number, number>();
+      const operationTimingPhases = new Map<string, PhaseOperationTimings & { phaseCompleted: boolean }>();
       const nativeOwners = new Map<number, string>(); let peakNativeProcesses = 0;
       const livePids = new Set<number>(), nativeLaunches = new Map<number, { hostPid: number; workerPath: string; launchedAt: number }>();
       let currentPhase = 'launch', activeChild: ChildProcess | undefined, stopReason: string | undefined, sampledTreePeak = 0, diskPeak = 0,
@@ -163,6 +169,11 @@ it.skipIf(!enabled)('measures bounded full-pipeline native synthetic-vector owne
         child.stderr?.on('data', chunk => { void appendFile(path.join(caseArtifact, 'stderr.log'), String(chunk)); });
         phaseTimer = setTimeout(() => stop('host_initialization_phase_deadline'), limits.phaseMs);
         child.on('message', (event: Event) => {
+          const timing = event.operationTimings as PhaseOperationTimings | undefined;
+          if (timing?.schema === 'worldlinebox.native-resource-operation-timings-v1') {
+            const key = `${timing.hostPid}:${timing.phase}`, previous = operationTimingPhases.get(key);
+            operationTimingPhases.set(key, { ...timing, phaseCompleted: previous?.phaseCompleted === true || event.stage === 'phase-complete' });
+          }
           for (const pid of event.nativePids ?? []) { nativePids.add(pid); allPids.add(pid); }
           if (event.stage === 'native-launch') { peakNativeProcesses = Math.max(peakNativeProcesses, event.nativePids?.length ?? 0);
             if (event.pid !== undefined && typeof event.hostPid === 'number' && typeof event.workerPath === 'string' && typeof event.launchedAt === 'number') {
@@ -209,11 +220,27 @@ it.skipIf(!enabled)('measures bounded full-pipeline native synthetic-vector owne
         const localPreparation = Object.fromEntries(samplePhases.map(phase => { const selected = events.filter(event => event.stage === 'sample' && event.phase === phase && typeof event.localPreparationMs === 'number');
           const values = selected.map(event => event.localPreparationMs as number); return [phase, { samples: values.length, p50Ms: percentile(values, 0.5), p95Ms: percentile(values, 0.95),
             p99Ms: percentile(values, 0.99), rawMs: values, boundaries: selected.map(event => event.preparationBoundary) }]; }));
+        const timingPhaseDeltas = [...operationTimingPhases.values()];
+        const aggregateTimings = (kind: 'storage' | 'native') => {
+          const totals: Record<string, OperationTiming> = {};
+          for (const phase of timingPhaseDeltas) for (const [operation, value] of Object.entries(phase[kind])) {
+            const total = totals[operation] ??= { calls: 0, totalMs: 0, maxMs: 0, failures: 0, abandoned: 0 };
+            total.calls += value.calls; total.totalMs += value.totalMs; total.maxMs = Math.max(total.maxMs, value.maxMs);
+            total.failures += value.failures; total.abandoned += value.abandoned;
+          }
+          return totals;
+        };
         const record = { config, complete, failure, stopReason, lastPhase: currentPhase, sampledTreePeakRssBytes: sampledTreePeak,
           sumPerProcessOsLifetimePeakRssBytes: [...peaks.values()].reduce((sum, value) => sum + value, 0), osSamples, diskPeakBytes: diskPeak,
           actualPids: [...allPids], perProcessIoLastObserved: Object.fromEntries(ioPeaks), documentInputs, queryInputs, embeddingInputBytes, providerInputs, providerInputBytes,
           peakNativeProcesses, actualNativeOwnerByPid: Object.fromEntries(nativeOwners), nativeOwnerIds: [...new Set(nativeOwners.values())],
-          latencies, localPreparation, completedPhases: events.filter(event => event.stage === 'phase-complete'), failureEvents: events.filter(event => event.stage.includes('fail') || event.stage.includes('error')) };
+          latencies, localPreparation, operationTimings: { schema: 'worldlinebox.native-resource-operation-timings-v1', phaseDeltas: timingPhaseDeltas,
+            storageTotals: aggregateTimings('storage'), nativeTotals: aggregateTimings('native'), definitions: {
+              phaseDelta: 'Zero-based per-host phase totals; requests belong to their start phase. Maxima are phase-local, not differences of cumulative maxima.',
+              storage: 'Actual synchronous store.request plus structuredClone. Direct fixture ledger-seeding calls bypass this port and remain unmeasured.',
+              native: 'Transport postMessage send through matching requestId response or process exit; includes IPC, worker queue and worker IO/computation. Excludes pre-send broker/ensureScope and does not isolate DailyNote/coordinator/embedding/native commit.',
+              terminalCalls: 'Calls and durations include observed success, error and abandoned terminals, distinguished by failures/abandoned. NativePending remains separate; abrupt host death retains only its last 100ms snapshot.',
+            } }, completedPhases: events.filter(event => event.stage === 'phase-complete'), failureEvents: events.filter(event => event.stage.includes('fail') || event.stage.includes('error')) };
         cases.push(record); await writeFile(path.join(caseArtifact, 'report.json'), JSON.stringify(record, null, 2));
         await writeFile(path.join(artifact, 'report.json'), JSON.stringify(report, null, 2));
       }

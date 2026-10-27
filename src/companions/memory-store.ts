@@ -189,6 +189,10 @@ export class CompanionMemoryStore {
       CREATE INDEX IF NOT EXISTS vcp_memory_outbox_claim ON vcp_memory_outbox(status,next_attempt,ordinal);
       CREATE INDEX IF NOT EXISTS vcp_memory_outbox_owner_ordinal ON vcp_memory_outbox(companion_id,ordinal);
       CREATE INDEX IF NOT EXISTS vcp_memory_outbox_owner_ready ON vcp_memory_outbox(companion_id,status,next_attempt,ordinal);
+      CREATE INDEX IF NOT EXISTS vcp_memory_outbox_owner_actionable ON vcp_memory_outbox(companion_id,ordinal)
+        WHERE status IN('pending','failed') AND attempts<8;
+      CREATE INDEX IF NOT EXISTS vcp_memory_outbox_scope_unsettled ON vcp_memory_outbox(scope_id,status)
+        WHERE status NOT IN('done','stale','cancelled');
       CREATE TABLE IF NOT EXISTS companion_memory_delivery_owners(companion_id TEXT PRIMARY KEY,last_service INTEGER NOT NULL DEFAULT 0);
       CREATE INDEX IF NOT EXISTS companion_memory_delivery_fair ON companion_memory_delivery_owners(last_service,companion_id);
       CREATE INDEX IF NOT EXISTS vcp_note_library_key ON vcp_memory_notes(companion_id,id);
@@ -1199,7 +1203,16 @@ export class CompanionMemoryStore {
         note.status = 'indexed';
         note.sourceFile = sourceFile;
         note.updatedAt = stamp();
-        this.persist(note);
+        // This receipt changes publication status, never the already-attested
+        // body, annotations, immutable version or source/dependency mapping.
+        // Keep the note UPDATE (and its projection/experience triggers), but
+        // do not run the semantic writer and rebuild unchanged provenance.
+        const data = sourceFile === undefined
+          ? "json_remove(json_set(data,'$.status','indexed','$.updatedAt',?),'$.sourceFile')"
+          : "json_set(data,'$.status','indexed','$.updatedAt',?,'$.sourceFile',?)";
+        const updated = this.db.prepare(`UPDATE vcp_memory_notes SET data=${data} WHERE id=? AND json_extract(data,'$.version')=?`)
+          .run(note.updatedAt, ...(sourceFile === undefined ? [] : [sourceFile]), note.id, note.version);
+        if (updated.changes !== 1) throw new Error('记忆索引确认期间版本已变化，尚未发布。');
     }
       if (entry.operation === 'remember') disposition = this.consolidation.publish(note);
       this.db.prepare("UPDATE vcp_memory_outbox SET status=?,error=?,lease_token=NULL,lease_until=NULL WHERE id=?").run(disposition.state === 'stale' ? 'stale' : 'done', disposition.reason ?? null, id);
