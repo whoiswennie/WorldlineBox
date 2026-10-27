@@ -1,4 +1,5 @@
 import { companionContactGroups } from './contact-groups';
+import { CompanionDshMailboxStore } from './dsh-mailbox-store';
 import { assertCompanionInboxCapacity, companionAttentionCanClaim } from './attention-queue';
 import { CompanionTaskOverviewStore } from './task-overview-store';
 import { CompanionTaskDetailStore } from './task-detail-store';
@@ -85,6 +86,7 @@ const decode = <T>(value: string | number | null | undefined): T => JSON.parse(S
 
 /** The UtilityProcess is the sole owner of this database. There are no session rows. */
 export class CompanionsStore {
+  readonly #dshMailbox: CompanionDshMailboxStore;
   readonly #taskOverview: CompanionTaskOverviewStore;
   readonly #taskDetails: CompanionTaskDetailStore;
   readonly #learning: CompanionLearningStore;
@@ -115,6 +117,7 @@ export class CompanionsStore {
     seeds ??= BUILTIN_COMPANIONS;
     mkdirSync(path.dirname(databasePath), { recursive: true });
     this.#db = new Database(databasePath);
+    this.#dshMailbox = new CompanionDshMailboxStore(this.#db);
     this.#taskOverview = new CompanionTaskOverviewStore(this.#db);
     this.#taskDetails = new CompanionTaskDetailStore(this.#db, this.#taskOverview, (companionId, conversationId, id) =>
       this.#memory.sourcesFilter({ companionId, conversationId }, [id]).some(message => message.id === id),
@@ -1227,7 +1230,10 @@ export class CompanionsStore {
         const topicId = checkpoint.messageId && this.#topics.messageTopic(checkpoint.messageId);
         const topicFinal = topicId && ['story', 'game'].includes(this.#topics.topic(topicId, checkpoint.conversationId).kind);
         const playerReplyFinal = !checkpoint.invocationKey && this.getMessage(checkpoint.sourceMessageId).authorId === 'user';
-        if (!topicFinal && !playerReplyFinal
+        const backgroundFinal = rejection.reason.startsWith('后台任务仍在运行：') && !!checkpoint.messageId
+          && (!!prior?.topicPublicationRejection || !!this.#db.prepare("SELECT 1 FROM actions WHERE companion_id=? AND conversation_id=? AND status IN('queued','running') AND json_extract(data,'$.parentMessageId')=?")
+            .get(checkpoint.companionId, checkpoint.conversationId, checkpoint.messageId));
+        if (!topicFinal && !playerReplyFinal && !backgroundFinal
           || turn.calls.length || createHash('sha256').update(turn.rawText).digest('hex') !== rejection.rawTextChecksum
           || createHash('sha256').update(turn.text).digest('hex') !== rejection.contentChecksum
           || !prior || prior.text !== turn.text || prior.rawText !== turn.rawText || prior.calls.length
@@ -1928,6 +1934,7 @@ export class CompanionsStore {
       return { ok: true, topicCompactionPage: { ...page, items } };
     }
     const contacts = companionContactGroups(this.#db, command); if (contacts) return contacts;
+    const mailResponse = this.#dshMailbox.execute(command); if (mailResponse) return mailResponse;
     const topicResponse = this.#topics.execute(command); if (topicResponse) return topicResponse;
     const collaborationResponse = this.#collaborations.execute(command); if (collaborationResponse) return collaborationResponse;
     const tagResponse = this.#memoryTags.execute(command); if (tagResponse) return tagResponse;

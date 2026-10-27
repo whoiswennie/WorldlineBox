@@ -47,7 +47,7 @@ export async function apply(ctx) {
   const capabilities = async (record, query = { kind: 'overview' }) => {
     const agent = record.agent;
     const allTools = ctx.tools.schemas(agent);
-    const tools = record.policy.cognitiveOnly ? [] : allTools.filter(tool => !record.policy.tools || record.policy.tools.includes(tool.name));
+    const tools = record.policy.cognitiveOnly ? [] : allTools.filter(tool => !record.policy.tools || record.policy.tools.includes(tool.name) || ['report_to_parent', 'wait_for_parent'].includes(tool.name) && record.policy.parentMailbox);
     const provider = service(agent);
     const allSkills = provider ? await provider.list({ cwd: record.cwd, scope: agent }) : [];
     const skills = record.policy.cognitiveOnly ? [] : allSkills.filter(skill => !record.policy.skills || record.policy.skills.includes(skill.name));
@@ -114,9 +114,20 @@ export async function apply(ctx) {
       case 'tool/result':
         if (event.surfaceOp === undefined || event.surfaceOp === 'append') emit(record, { type: 'tool_result', stage: 'tool_end', callId: data.message.toolCallId,
           text: textOf(data.message), contentKind: 'output', summary: data.message.isError ? '工具执行失败' : '工具执行完成' });
+        if (!data.message.isError && (event.surfaceOp === undefined || event.surfaceOp === 'append') && record.parentReports?.has(data.message.toolCallId)) {
+          const report = record.parentReports.get(data.message.toolCallId); record.parentReports.delete(data.message.toolCallId);
+          emit(record, { type: 'parent_report', stage: 'message', callId: data.message.toolCallId, text: JSON.stringify(report), contentKind: 'message',
+            outputState: 'committed', summary: report.kind === 'question' ? '执行器请求主脑决策' : '执行器回传阶段进展' });
+        }
         break;
       case 'assistant/message': record.text = textOf(data.message); emit(record, { type: 'text', stage: 'message', text: record.text, contentKind: 'message', outputState: 'committed' }); break;
       case 'deliverables/presented': record.artifacts = data.files; emit(record, { type: 'artifacts', artifacts: data.files }); break;
+      case 'tool/ptc-dispatch': {
+        const report = record.parentReports?.get(data.subCallId); record.parentReports?.delete(data.subCallId);
+        if (report && !data.isError) emit(record, { type: 'parent_report', stage: 'message', callId: data.subCallId,
+          text: JSON.stringify(report), contentKind: 'message', outputState: 'committed', summary: '执行器回传阶段进展' });
+        break;
+      }
     }
   });
   ctx.on('agent/assistant-stream', ({ agent, frame }) => {
@@ -140,7 +151,7 @@ export async function apply(ctx) {
     const record = recordFor(execution.agent);
     if (!record) return;
     if (record.policy.cognitiveOnly) return 'This task is computation only; tool execution is unavailable.';
-    if (record.policy.tools && !record.policy.tools.includes(execution.name)) return 'This tool is outside the task selection.';
+    if (record.policy.tools && !record.policy.tools.includes(execution.name) && !(record.policy.parentMailbox && ['report_to_parent', 'wait_for_parent'].includes(execution.name))) return 'This tool is outside the task selection.';
     if (execution.name === 'skill' && record.policy.skills && !record.policy.skills.includes(execution.arguments?.name)) return 'This skill is outside the task selection.';
   }));
   const create = async input => {
@@ -167,13 +178,54 @@ export async function apply(ctx) {
       next: 0, revision: 0, admissions: 0, status: 'idle', text: '', stream: '', lastPublish: 0, artifacts: [], disposers: [], eventBytes: 0 };
     sessions.set(record.id, record); requests.set(input.sessionId, record);
     try {
+    if (record.policy.parentMailbox && !record.policy.cognitiveOnly) {
+      record.parentReports = new Map();
+      record.parentInputs = 0; record.parentInputConsumed = 0; record.parentInputIds = new Set(); record.parentWaiters = new Set();
+      record.disposers.push(record.agent.ctx.tools.register({
+        name: 'report_to_parent',
+        description: '向委派本任务的主脑回传重要阶段进展、可供检查的中间成果，或需主脑决定的问题。说明已确认事实、产物路径、阻碍与需要的决定；不输出思维链，不逐步刷屏。发送后可继续不依赖答复的工作；需要答复时明确提出问题并说明停在哪个决策点。只发给本任务主脑。',
+        parameters: { type: 'object', properties: { kind: { type: 'string', enum: ['progress', 'checkpoint', 'question'] }, text: { type: 'string', minLength: 1, maxLength: 12000 } }, required: ['kind', 'text'], additionalProperties: false },
+        output: { schema: { type: 'object', properties: { accepted: { type: 'boolean' } }, required: ['accepted'], additionalProperties: false },
+          render: () => [{ type: 'text', text: '阶段消息已交给任务所属主脑；不代表主脑已作答。' }] },
+        async execute(args, exec) {
+          if (exec.agent !== record.agent || exec.signal.aborted || typeof args?.text !== 'string' || !args.text.trim()
+            || args.text.length > 12000 || !['progress', 'checkpoint', 'question'].includes(args.kind)) throw new Error('Invalid parent report.');
+          record.parentReports.set(exec.callId, { kind: args.kind, text: args.text.trim() });
+          return { accepted: true };
+        },
+      }));
+      record.disposers.push(record.agent.ctx.tools.register({
+        name: 'wait_for_parent',
+        description: '报告需要主脑决定的问题后，暂停本任务等待主脑新消息。等待时不重复请求模型、不轮询；主脑发来指令立即唤醒，随后从下一步消息中读取指令。先用report_to_parent交代已做、问题与需要的决定。没有依赖主脑的工作可以先继续。',
+        parameters: { type: 'object', properties: { timeoutMs: { type: 'integer', minimum: 1000, maximum: 600000 } }, additionalProperties: false },
+        output: { schema: { type: 'object', properties: { reason: { type: 'string' }, inputVersion: { type: 'integer' } }, required: ['reason', 'inputVersion'], additionalProperties: false },
+          render: (_args, value) => [{ type: 'text', text: JSON.stringify(value) }] },
+        async execute(args, exec) {
+          if (exec.agent !== record.agent || exec.signal.aborted) throw new Error('Parent wait is unavailable.');
+          const timeoutMs = args.timeoutMs ?? 600000;
+          if (!Number.isInteger(timeoutMs) || timeoutMs < 1000 || timeoutMs > 600000) throw new Error('Invalid parent wait duration.');
+          if (record.parentInputs <= record.parentInputConsumed) await new Promise((resolve, reject) => {
+            const done = () => { clearTimeout(timer); record.parentWaiters.delete(done); exec.signal.removeEventListener('abort', abort); resolve(); };
+            const abort = () => { done(); reject(exec.signal.reason ?? new Error('Parent wait cancelled.')); };
+            const timer = setTimeout(done, timeoutMs); record.parentWaiters.add(done); exec.signal.addEventListener('abort', abort, { once: true });
+            if (exec.signal.aborted) abort();
+          });
+          exec.signal.throwIfAborted();
+          const reason = record.parentInputs > record.parentInputConsumed ? 'parent_input' : 'timeout';
+          record.parentInputConsumed = record.parentInputs;
+          return { reason, inputVersion: record.parentInputs };
+        },
+      }));
+    }
     if (record.policy.cognitiveOnly || record.policy.tools) {
+      // Native restrictions mask inherited tools; these two scoped registrations
+      // remain available and must not be named as global capabilities here.
       const allow = record.policy.cognitiveOnly ? [] : record.policy.tools;
       const actual = ctx.tools.schemas(record.agent);
       for (const tool of allow) if (!actual.some(entry => entry.name === tool)) throw new Error('Unknown native tool: ' + tool);
       record.disposers.push(record.agent.ctx.tools.restrict({ allow }));
       record.disposers.push(record.agent.ctx.on('system-prompt/assemble', async (_assembly, _context, next) => {
-        const assembled = await next(); return { ...assembled, tools: (assembled.tools ?? []).filter(tool => allow.includes(tool.name)) };
+        const assembled = await next(); return { ...assembled, tools: (assembled.tools ?? []).filter(tool => allow.includes(tool.name) || record.policy.parentMailbox && ['report_to_parent', 'wait_for_parent'].includes(tool.name)) };
       }, { prepend: true }));
     }
     if (record.policy.skills && !record.policy.cognitiveOnly) {
@@ -277,6 +329,10 @@ export async function apply(ctx) {
         try {
           const accepted = await ctx.sessionController.prompt({ sessionId: record.id, requestId: input.messageId ?? randomUUID(), mode: input.mode ?? 'queue',
             content: [{ type: 'text', text: input.prompt }], clientTimeZone: 'Asia/Shanghai' }, new AbortController().signal);
+          if (record.policy.parentMailbox && input.messageId && !record.parentInputIds.has(input.messageId)) {
+            record.parentInputIds.add(input.messageId); record.parentInputs++;
+            for (const wake of [...record.parentWaiters]) wake();
+          }
           json(response, accepted);
         } finally { record.admissions--; void settle(record); }
         return;

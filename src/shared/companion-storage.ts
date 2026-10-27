@@ -14,6 +14,7 @@ import { companionExperienceCommands, companionExperiencePublishSchema } from '.
 import { companionKnowledgeCommandSchema } from './companion-knowledge-store';
 import { companionSocialReplyReceiptSchema } from './companion-social-reply';
 import { z } from 'zod';
+import { companionDshMailboxCommands, companionDshMailSchema } from './companion-dsh-background';
 import { companionMemoryInvestigationSchema } from './companion-memory-investigation';
 import { companionMemoryHistoryDescriptorSchema, companionMemoryHistoryOutboxSchema } from './companion-memory-history';
 import { companionWorldProposalSchema } from './companion-world-proposals';
@@ -190,6 +191,7 @@ export const companionStorageCommandSchema = z.discriminatedUnion('type', [
   z.strictObject({ type: z.literal('memory.save'), memory: saveCompanionMemorySchema }),
   z.strictObject({ type: z.literal('memory.delete'), id: companionIdSchema }),
   z.strictObject({ type: z.literal('actions'), conversationId: companionIdSchema.optional() }),
+  ...companionDshMailboxCommands,
   z.strictObject({ type: z.literal('actions.invocation'), conversationId: companionIdSchema, companionId: companionIdSchema, parentMessageId: companionIdSchema }),
   companionActionPageQuerySchema.extend({ type: z.literal('actions.page') }).strict(),
   z.strictObject({ type: z.literal('action.get'), id: companionIdSchema }),
@@ -250,6 +252,7 @@ export const companionTopicCompactionPageSchema = z.strictObject({
 });
 export type CompanionTopicCompactionPage = z.infer<typeof companionTopicCompactionPageSchema>;
 export const companionStorageResponseSchema = companionsResponseSchema.extend({
+  dshMailbox: z.object({ items: z.array(companionDshMailSchema).max(50), nextAfter: z.number().int().nonnegative(), hasMore: z.boolean() }).optional(),
   pendingCompanionDeletions: z.array(companionIdSchema).optional(),
   taskCapacityClaimed: z.boolean().optional(),
   memoryFrozenValid: z.boolean().optional(),

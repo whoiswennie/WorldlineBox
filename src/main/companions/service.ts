@@ -106,6 +106,8 @@ import { companionLifeArgumentsSchema } from '../../shared/companion-life-tool';
 import { authorizeCompanionManagement } from './management-authorization';
 import { companionDshArgumentsSchema, companionDshRecordArgumentsSchema } from '../../shared/companion-dsh-tool';
 import { companionDshReceipt } from '../../shared/companion-dsh-receipt';
+import { companionDshControlSchema, COMPANION_DSH_BACKGROUND_INSTRUCTIONS } from '../../shared/companion-dsh-background';
+import { CompanionDshWakeHub, controlCompanionDsh, companionDshInboxContext } from './background-dsh';
 import type { DshRecordQuery } from '../../shared/dsh-task-record';
 import { companionLoopCheckpointPublishedText, type CompanionLoopCheckpoint, type CompanionLoopTurn, type CompanionWork } from '../../shared/companion-loop';
 import { companionTopicNarrativeBasis } from '../../shared/companion-topic-canon';
@@ -213,6 +215,7 @@ export class CompanionService {
   private readonly memoryValidationControllers = new Map<AbortController, string>();
   private readonly memoryValidationJobs = new Set<Promise<void>>();
   private readonly dshCapabilitySnapshots = new Map<string, Promise<DshTaskCapabilities | undefined>>();
+  private readonly backgroundWake = new CompanionDshWakeHub();
   private pumping = false;
   private pumpAgain = false;
   private pumpIdle: Promise<void> | undefined;
@@ -837,7 +840,7 @@ export class CompanionService {
         const normalized = normalizeCompanionCapabilityCall(call), result = turn.results?.find(result => result.callId === call.id);
         if (!result) continue;
         const body = JSON.parse(result.content);
-        if (normalized.name === 'dsh') for (const task of body.tasks ?? []) if (typeof task.id === 'string' && task.contentAvailable !== false) dependencies.add(task.id);
+        if (normalized.name === 'dsh' || normalized.name === 'dsh_control') for (const task of body.tasks ?? []) if (typeof task.id === 'string' && task.contentAvailable !== false) dependencies.add(task.id);
         if (normalized.name === 'dsh_record' && body.overview) recordReads.add(JSON.parse(normalized.arguments).recordId);
       } catch { /* Only successful host execution records establish derived dependencies. */ }
     }
@@ -1355,6 +1358,13 @@ export class CompanionService {
               const work = ((await this.call({ type: 'work.list' })).works ?? []).find(item => item.id === request.workId && item.conversationId === request.conversationId);
               if (!work || !['interrupted', 'cancelled'].includes(work.status)) throw new Error('这次回复当前不能重试。');
               await this.replies.get(work.id)?.promise;
+              const loop = (await this.call({ type: 'loop.get', sourceMessageId: work.sourceMessageId, companionId: work.companionId,
+                ...(work.proactive ? { invocationKey: work.id } : {}) })).loop;
+              if (loop?.messageId) {
+                const owned = (await this.call({ type: 'actions.invocation', companionId: work.companionId,
+                  conversationId: work.conversationId, parentMessageId: loop.messageId })).actions ?? [];
+                await Promise.allSettled(owned.map(action => this.actionJobs.get(action.id)).filter((job): job is Promise<void> => !!job));
+              }
               if (controller.signal.aborted) return;
               await this.call({ type: 'work.enqueue', work, resume: true });
               if (controller.signal.aborted) { await this.call({ type: 'work.status', id: work.id, status: 'cancelled' }); return; }
@@ -1811,7 +1821,7 @@ export class CompanionService {
     if (loop.supplements.some(item => item.id === source.id)) return true;
     if (loop.status !== 'running' || loop.sourceMessageId === source.id || source.authorId !== 'user' || loop.supplements.length >= 100) return false;
     const origin = (await this.call({ type: 'message.get', id: loop.sourceMessageId })).message;
-    if (!origin || origin.topicId !== source.topicId || origin.sequence >= source.sequence || loop.status !== 'running') return false;
+    if (!origin || origin.conversationId !== source.conversationId || origin.topicId !== source.topicId || origin.sequence >= source.sequence || loop.status !== 'running') return false;
     const content = [source.content || '请处理我提供的附件。', ...source.attachments.map(file => `${file.name}: ${file.path ?? file.id}`)].join('\n').slice(0, 16000);
     if (loop.supplements.some(item => item.id === source.id)) return true;
     loop.supplements.push({ id: source.id, content });
@@ -1823,9 +1833,6 @@ export class CompanionService {
     }
     this.loopInferences.get(loop)?.abort(new Error('当前回复收到新的引导消息，重新组织本步上下文。'));
     this.loopWaiters.get(loop)?.();
-    void this.call({ type: 'actions', conversationId: source.conversationId }).then(response => Promise.all((response.actions ?? [])
-      .filter(action => action.parentMessageId === loop.messageId && ['running', 'queued'].includes(action.status))
-      .map(action => this.deliverInput(action, content, 'steer', source.id)))).catch(this.options.report);
     return true;
   }
   private async drainGuidance(loop: CompanionLoopCheckpoint): Promise<void> {
@@ -2144,6 +2151,13 @@ export class CompanionService {
           await this.call({ type: 'loop.save', checkpoint });
           await this.memory.acknowledgeTaskRecall(preparedRecall);
         } else updateActivity('thinking', '正在核验工具结果与当前上下文', 'context');
+        if (recovery && checkpoint.messageId) {
+          const actions = (await this.call({ type: 'actions.invocation', companionId: id, conversationId, parentMessageId: checkpoint.messageId })).actions ?? [];
+          for (const action of actions) if (!action.thought && ['interrupted', 'cancelled'].includes(action.status) && !this.actionJobs.has(action.id)) {
+            this.assertReplyActive(controller.signal);
+            await this.resumeAction(action.id, new Set(), controller.signal);
+          }
+        }
         if (checkpoint.context && checkpoint.memoryPreparation) {
           const prepared = checkpoint.memoryPreparation; delete checkpoint.memoryPreparation;
           await this.call({ type: 'loop.save', checkpoint }); await this.memory.acknowledgeTaskRecall(prepared);
@@ -2171,6 +2185,7 @@ export class CompanionService {
             await this.drainGuidance(checkpoint);
             const turn = checkpoint.turns[step];
             if (checkpoint.status === 'done' || !turn || turn.calls.length || turn.topicPublicationRejection) return;
+            if (await this.rejectPendingBackgroundFinal(checkpoint, turn)) return;
             if (await rejectOutdatedFinal(turn)) return;
             // A persisted final bypasses infer() on restart. Legacy finals have
             // no publication CAS; newer finals may have become stale while
@@ -2265,7 +2280,7 @@ export class CompanionService {
             let identityCorrection: string | undefined;
             let deliveryCorrection: string | undefined;
             const rejectedCachedFinal = checkpoint.turns.findLast(turn => !!turn.topicPublicationRejection)?.topicPublicationRejection;
-            let topicCorrection: string | undefined = rejectedCachedFinal
+            let topicCorrection: string | undefined = rejectedCachedFinal?.reason.startsWith('后台任务仍在运行：') ? rejectedCachedFinal.reason : rejectedCachedFinal
               ? '重启恢复时核验确认：先前缓存的最终草稿未正式发布、不是已完成事实或已发生剧情。其原文仅保留审计，不在本次正文或模型历史中；已确认工具结果保留且不能重做。请依据当前真实进度和原用户任务自行重新作答，不复述修订过程。原审计理由可能引用后来撤回的资料，不作为新事实重新注入。' : undefined;
             const rejectedReports: Array<{ draft: string; correction: string }> = [];
             const topicCorrections: string[] = [];
@@ -2444,9 +2459,17 @@ export class CompanionService {
           },
           finish: async turn => {
             await this.drainGuidance(checkpoint);
+            if (await this.rejectPendingBackgroundFinal(checkpoint, turn)) throw new CompanionAgentFinalValidationError('后台目标尚未结束，主脑继续处理或等待。');
             if (await rejectOutdatedFinal(turn)) throw new CompanionAgentFinalValidationError('新的用户引导已使旧最终草稿失效。');
           },
-          recoverFinal: async (turn, _step, error) => error instanceof CompanionAgentFinalValidationError && !!turn.topicPublicationRejection,
+          recoverFinal: async (turn, _step, error) => {
+            if (!(error instanceof CompanionAgentFinalValidationError) || !turn.topicPublicationRejection) return false;
+            if (turn.topicPublicationRejection.reason.startsWith('后台任务仍在运行：')) {
+              updateActivity('waiting', '正在等待后台任务；你可以继续发消息', 'waiting');
+              await this.parkBackground(checkpoint, controller.signal);
+            }
+            return true;
+          },
           completed: async (_output, turn) => {
             updateActivity('thinking', '回复已完成', 'completed'); await progressSaves;
             if (!proactive) await this.call({ type: 'reply.checkpoint.complete', conversationId, sourceMessageId: userMessage.id, companionId: id });
@@ -2459,7 +2482,7 @@ export class CompanionService {
           execute: async (turn, step) => {
             const { results, suspended } = await this.executeLoopTools({ checkpoint, turn, companionId: id, conversationId,
               userMessage, proactive, step, loopKey, signal: controller.signal, authorizationSourceIds: [userMessage.id],
-              onProgress: detail => updateActivity('working', detail, 'tools') });
+              onProgress: detail => detail.startsWith('正在等待') ? updateActivity('waiting', detail, 'waiting') : updateActivity('working', detail, 'tools') });
             if (suspended || controller.signal.aborted || this.closed) throw new CompanionModelError('CANCELLED', '本次回复已中断，气泡和能力进度已保存，可以继续恢复。');
             return results;
           },
@@ -2478,6 +2501,43 @@ export class CompanionService {
     }));
 
   }
+  private async rejectPendingBackgroundFinal(checkpoint: CompanionLoopCheckpoint, turn: CompanionLoopTurn): Promise<boolean> {
+    if (!checkpoint.messageId) return false;
+    const actions = (await this.call({ type: 'actions.invocation', companionId: checkpoint.companionId,
+      conversationId: checkpoint.conversationId, parentMessageId: checkpoint.messageId })).actions ?? [];
+    const pending = actions.filter(action => !action.thought && ['queued', 'running'].includes(action.status));
+    if (!pending.length) return false;
+    turn.topicPublicationRejection = { rawTextChecksum: createHash('sha256').update(turn.rawText).digest('hex'),
+      contentChecksum: createHash('sha256').update(turn.text).digest('hex'), rejectedAt: new Date().toISOString(),
+      reason: '后台任务仍在运行：' + pending.map(action => `${action.title}(${action.id})`).join('；')
+        + '。本次目标尚未结束，不能以最终答复丢下子任务。可以先在带工具调用的步骤中自然回应用户，再用dsh.send干预或dsh.wait等待消息；没有新信息时等待，用户输入会唤醒。' };
+    await this.call({ type: 'loop.save', checkpoint }); return true;
+  }
+  /** A premature final cannot turn pending work into a polling inference loop. */
+  private async parkBackground(checkpoint: CompanionLoopCheckpoint, signal: AbortSignal): Promise<void> {
+    signal.throwIfAborted();
+    const query = { type: 'actions.invocation' as const, companionId: checkpoint.companionId,
+      conversationId: checkpoint.conversationId, parentMessageId: checkpoint.messageId! };
+    const pending = ((await this.call(query)).actions ?? []).filter(action => ['queued', 'running'].includes(action.status));
+    if (!pending.length) return;
+    const inputRevision = checkpoint.supplements.length;
+    await new Promise<void>((resolve, reject) => {
+      let settled = false;
+      const done = (error?: unknown) => {
+        if (settled) return; settled = true; clearTimeout(timer); unsubscribe(); signal.removeEventListener('abort', abort);
+        if (this.loopWaiters.get(checkpoint) === wake) this.loopWaiters.delete(checkpoint);
+        if (error) reject(error); else resolve();
+      };
+      const wake = () => done(), abort = () => done(signal.reason ?? new Error('后台等待已停止。'));
+      const unsubscribe = this.backgroundWake.subscribe(pending.map(action => action.id), wake);
+      const timer = setTimeout(wake, 600000);
+      signal.addEventListener('abort', abort, { once: true }); this.loopWaiters.set(checkpoint, wake);
+      if (signal.aborted) abort(); else if (checkpoint.supplements.length !== inputRevision) wake();
+      else void this.call(query).then(response => {
+        if (pending.some(old => !response.actions?.some(action => action.id === old.id && action.status === old.status))) wake();
+      }, done);
+    });
+  }
   /** Persistent work and scheduled tasks use the same model and capability loop as dialogue. */
   private async runGoal(input: { id: string; kind: 'work' | 'schedule' | 'collaboration'; companionId: string; conversationId: string;
     sourceMessageId: string; authorizationSourceMessageIds: readonly string[]; goal: string;
@@ -2493,7 +2553,7 @@ export class CompanionService {
     const attempts = new Map<number, { count: number; identityCorrection?: string; capacityFeedback?: boolean }>();
     const activityKey = 'goal:' + slot;
     const progress = (stage: string) => {
-      this.activities.set(activityKey, { ...scope, sourceMessageId: input.sourceMessageId, status: 'thinking', stage, startedAt: new Date().toISOString() });
+      this.activities.set(activityKey, { ...scope, sourceMessageId: input.sourceMessageId, status: stage.includes('等待') ? 'waiting' : 'thinking', stage, startedAt: new Date().toISOString() });
       this.changed();
     };
     try {
@@ -2627,9 +2687,15 @@ export class CompanionService {
           return reply.turn;
         },
         finish: async turn => {
+          if (await this.rejectPendingBackgroundFinal(checkpoint, turn)) throw new CompanionAgentFinalValidationError('后台任务仍在运行，继续处理或等待。');
           const actions = await actionIds();
           return { invocationId: input.id, goalSlot: slot, status: actions.length && !actions.some(action => action.status === 'succeeded') && actions.some(action => action.status === 'failed') ? 'failed' as const : 'succeeded' as const,
             result: turn.text, actionIds: actions.map(action => action.id) };
+        },
+        recoverFinal: async (turn, _step, error) => {
+          if (!(error instanceof CompanionAgentFinalValidationError) || !turn.topicPublicationRejection) return false;
+          if (turn.topicPublicationRejection.reason.startsWith('后台任务仍在运行：')) await this.parkBackground(checkpoint, signal);
+          return true;
         },
         execute: async (turn, step) => {
           const { source, authorizations, authorityScope } = current;
@@ -2714,6 +2780,11 @@ export class CompanionService {
           admitted++; return { call, dshRecord: true };
         }
         if (call.name === 'dsh_capabilities') { dshTaskCapabilityQuerySchema.parse(JSON.parse(call.arguments)); return { call, capabilities: true }; }
+        if (call.name === 'dsh_control') {
+          const control = companionDshControlSchema.parse(JSON.parse(call.arguments));
+          if (control.operation === 'wait' && turn.calls.length !== 1) throw new Error('等待后台消息必须单独调用，其他操作先执行。');
+          return { call, control };
+        }
         if (call.name !== 'dsh') throw new Error('原生能力名称无效。');
         const parsed = companionDshArgumentsSchema.parse(JSON.parse(call.arguments));
         if (admitted + parsed.tasks.length > 4) throw new Error('每一步最多同时运行四项能力，请将其余任务放到下一步。');
@@ -2722,10 +2793,36 @@ export class CompanionService {
       } catch { return { call, error: '工具调用或参数无效。请按已提供工具的原生参数格式修正后继续。' }; }
     });
     onProgress?.('正在调用能力：' + [...new Set(turn.calls.map(call => call.name))].join('、'));
-    let suspended = false;
+    const suspended = false;
     // Memory mutations in one model turn retain order; dependent revisions cannot race each other.
     let memoryChain: Promise<unknown> = Promise.resolve();
     const results = await Promise.all(plans.map(async plan => {
+      if (plan.control) {
+        try {
+          if (plan.control.operation === 'wait') onProgress?.('正在等待后台任务；你可以继续发消息');
+          const value = await controlCompanionDsh({ operation: plan.control, checkpoint, signal,
+            effectId: `${loopKey}:${step}:${plan.call.id}`, onWait: wake => { if (wake) this.loopWaiters.set(checkpoint, wake); else this.loopWaiters.delete(checkpoint); } }, {
+            request: command => this.call(command), hub: this.backgroundWake, valid: action => this.executionEvidenceValid(action),
+            send: async (action, text, mode, messageId) => {
+              const current = (await this.call({ type: 'action.get', id: action.id })).action;
+              if (current?.taskId) {
+                const response = await this.options.dsh()?.requestTask({ type: 'task.message', taskId: current.taskId, content: text, mode, messageId });
+                if (!response?.ok) throw new Error('执行器未确认收到消息；原投递已保留。');
+              }
+            },
+            cancel: async action => {
+              this.cancelledActions.add(action.id); this.actionControllers.get(action.id)?.abort();
+              if (action.taskId) {
+                const response = await this.options.dsh()?.requestTask({ type: 'task.cancel', taskId: action.taskId });
+                if (!response?.ok) throw new Error('执行器尚未确认停止。');
+              }
+              await this.actionJobs.get(action.id);
+              this.backgroundWake.notify(action.id);
+            },
+          });
+          return { callId: plan.call.id, content: JSON.stringify(value) };
+        } catch (error) { signal.throwIfAborted(); return { callId: plan.call.id, content: JSON.stringify({ ok: false, error: publicError(error) }) }; }
+      }
       if (plan.wait) {
         const { ms, reason } = companionWaitArgumentsSchema.parse(JSON.parse(plan.call.arguments));
         onProgress?.('正在等待：' + reason);
@@ -2849,10 +2946,9 @@ export class CompanionService {
             await this.captureExecutionEvidence(checkpoint, { companionId: id, conversationId, beforeSequence: await this.memoryBoundary(checkpoint, userMessage.sequence) }));
           action = launched.actions!.find(item => item.parentMessageId === checkpoint.messageId && item.toolCallId === toolCallId)!;
         } else if (action.status === 'interrupted' || action.status === 'cancelled') await this.resumeAction(action.id, new Set(), signal);
-        await this.actionJobs.get(action.id);
         const final = (await this.call({ type: 'action.get', id: action.id })).action!;
-        if (final.status === 'interrupted' || final.status === 'cancelled') suspended = true;
-        return projectCompanionExecutionReceipt(companionDshReceipt(final, Math.min(6000, Math.floor(10000 / plan.tasks.length) - 1000)), await this.executionEvidenceValid(final));
+        return { ...projectCompanionExecutionReceipt(companionDshReceipt(final, Math.min(6000, Math.floor(10000 / plan.tasks.length) - 1000)), await this.executionEvidenceValid(final)),
+          actionId: final.id, background: true, instruction: '后台任务已登记；用status/send/cancel/wait与它沟通。未结束时不代表已完成。' };
       }));
       return { callId: plan.call.id, content: JSON.stringify({ tasks: results }) };
     }));
@@ -3181,16 +3277,19 @@ export class CompanionService {
       }
       topicReviewFrame = { ...continued, topicPublicationReference };
     }
-    const executionLedger = invocationActions.slice(-32)
+    delete (data as { backgroundInbox?: unknown }).backgroundInbox;
+    const backgroundInbox = checkpoint.messageId ? await companionDshInboxContext(checkpoint, invocationActions, command => this.call(command), action => this.executionEvidenceValid(action)) : [];
+    const executionLedger = invocationActions.filter((action, index) => ['queued', 'running'].includes(action.status) || index >= invocationActions.length - 32)
       .map(action => ({ id: action.id, status: action.status, recordId: action.taskId, toolCallId: action.toolCallId }));
     let currentSystem = checkpoint.context.system.includes(COMPANION_ROLE_RESOURCE_RULES) ? checkpoint.context.system
       : checkpoint.context.system + '\n' + COMPANION_ROLE_RESOURCE_RULES;
     if (!currentSystem.includes(COMPANION_ACTIVITY_HANDOFF_RULES)) currentSystem += '\n' + COMPANION_ACTIVITY_HANDOFF_RULES;
+    if (!currentSystem.includes(COMPANION_DSH_BACKGROUND_INSTRUCTIONS)) currentSystem += '\n' + COMPANION_DSH_BACKGROUND_INSTRUCTIONS;
     const browserState = this.options.browser ? await this.options.browser({ companionId, conversationId, companionName: companion?.name ?? companionId }, { action: 'tabs' }, signal)
       .then(result => result.value).catch(error => ({ unavailable: publicError(error) })) : undefined;
     const userTaskStops = (await this.call({ type: 'task-stop.list', companionId, conversationId, topicId: data.invocation?.topicId ?? null, limit: 12 })).userTaskStops ?? [];
     if (!currentSystem.includes('【用户手动停止记录】')) currentSystem += '\n【用户手动停止记录】\nuserTaskStops 是宿主记录的用户手动停止决定，不是任务故障或未完成的委托。已执行的步骤保留为事实；不要重建、重试或继续其中的目标，除非收到用户新的明确授权。可以如实说明“你手动停止了该任务”。这些记录不提供任何新工具授权。';
-    const context = { system: currentSystem, user: JSON.stringify({ ...data, userTaskStops, browserState, resourceBounds, activityHandoff, executionLedger, currentGoalReplies,
+    const context = { system: currentSystem, user: JSON.stringify({ ...data, ...(backgroundInbox.length ? { backgroundInbox } : {}), userTaskStops, browserState, resourceBounds, activityHandoff, executionLedger, currentGoalReplies,
       currentGoalRepliesTrust: 'host_verified_replies_from_this_original_goal_outbound_chains_not_recent_other_room_dialogue_or_new_authorization',
       executionLedgerArchive: { total: invocationActions.length, shown: executionLedger.length, allReceiptsPersisted: true,
         readTool: 'dsh', readOperation: 'record' },
@@ -3847,34 +3946,23 @@ export class CompanionService {
       if (waiting.signal.aborted || this.closed) await this.call({ type: 'action.update', id: action.id,
         patch: { status: this.cancelledActions.has(action.id) ? 'cancelled' : 'interrupted' } });
       else { await this.call({ type: 'action.update', id: action.id, patch: { status: 'failed', error: publicError(error) } }); this.options.report(error); }
-    }).finally(() => {
+    }).finally(async () => {
       signal?.removeEventListener('abort', cancelFromReply);
       this.actionJobs.delete(action.id); this.actionOwners.delete(action.id); this.cancelledActions.delete(action.id); this.changed();
       this.actionControllers.delete(action.id);
+      await this.settleBackgroundAction(action.id);
     }).catch(error => { if (!this.resettingCompanions.has(action.companionId)) this.options.report(error); });
     this.actionJobs.set(action.id, job);
     this.actionOwners.set(action.id, action.companionId);
     return { ok: true, actions: (await this.call({ type: 'actions', conversationId: action.conversationId })).actions };
   }
-  private async deliverInput(action: CompanionAction, content: string, mode: 'steer' | 'queue', messageId: string) {
-    if (action.thought) throw new Error('活动内部思考只接收该次已核验资料，不能通过外部会话输入更换目标。');
-    if (this.dormantCompanions.has(action.companionId)) throw new Error('伙伴已休眠，请先手动激活。');
-    if (this.resettingCompanions.has(action.companionId)) throw new Error('伙伴正在停止，暂不接收任务补充。');
+  private async settleBackgroundAction(id: string): Promise<void> {
     try {
-      await this.call({ type: 'checkpoint.input', id: action.id, input: { id: messageId, content, mode } });
-      if (this.resettingCompanions.has(action.companionId)) return;
-      const current = (await this.call({ type: 'action.get', id: action.id })).action;
-      if (current?.taskId && ['running', 'queued'].includes(current.status)) {
-        const result = await this.options.dsh()?.requestTask({ type: 'task.message', taskId: current.taskId, content, mode, messageId });
-        if (!result?.ok) throw new Error('任务没有接受这条补充。');
-      }
-      if (!this.closed && !action.parentMessageId) await this.call({ type: 'message.append', message: { conversationId: action.conversationId, authorId: 'system', kind: 'notice',
-        content: !action.taskId ? '补充已保存，任务启动时会一并读取。' : mode === 'steer' ? '补充已送入正在运行的任务，会在下一步生效。' : '消息已进入任务队列，会在当前轮次结束后继续处理。' } });
-    } catch (error) {
-      this.options.report(error);
-      if (!this.closed && !action.parentMessageId) await this.call({ type: 'message.append', message: { conversationId: action.conversationId, authorId: 'system', kind: 'notice', status: 'failed', content: '这条补充的接收尚未确认，消息已保留。请查看任务实际进度。' } });
-    }
-    this.changed();
+      const current = (await this.call({ type: 'action.get', id })).action;
+      if (current?.parentMessageId && !current.thought && !['queued', 'running'].includes(current.status)) await this.call({ type: 'action.mail.append', mail: {
+        actionId: current.id, direction: 'to_parent', kind: 'settled', deduplicationKey: `${current.taskId ?? current.id}:settled:${current.attempt ?? 1}`,
+        text: `任务${current.title}已结束，状态：${current.status}。${current.error ?? ''}请读取任务回执核实实际成果。` } });
+    } finally { this.backgroundWake.notify(id); }
   }
   private async resumeAction(id: string, ancestors: ReadonlySet<string> = new Set(), signal?: AbortSignal): Promise<CompanionsResponse> {
     this.assertReplyActive(signal);
@@ -3936,9 +4024,10 @@ export class CompanionService {
         await this.executeAction(resumed, prompt, checkpointToResume.execution);
       }).catch(async error => {
         await this.call({ type: 'action.update', id, patch: { status: this.cancelledActions.has(id) ? 'cancelled' : this.closed ? 'interrupted' : 'failed', error: publicError(error) } });
-      }).finally(() => {
+      }).finally(async () => {
         signal?.removeEventListener('abort', cancelFromReply);
         this.actionJobs.delete(id); this.actionOwners.delete(id); this.actionControllers.delete(id); this.cancelledActions.delete(id); this.changed();
+        await this.settleBackgroundAction(id);
       }).catch(error => { if (!this.resettingCompanions.has(action.companionId)) this.options.report(error); });
       this.actionJobs.set(id, job); this.actionOwners.set(id, action.companionId); this.changed();
       return { ok: true, actions: (await this.call({ type: 'actions', conversationId: action.conversationId })).actions };
@@ -4058,13 +4147,11 @@ export class CompanionService {
       }
       const topic = source?.topicId ? (await this.call({ type: 'topic.read', conversationId: source.conversationId,
         topicId: source.topicId, readerId: sourceScope.companionId })).topic : undefined;
-      const requestedWorkspace = checkpoint?.dshTask?.workspace?.mode === 'existing' ? checkpoint.dshTask.workspace.path : undefined;
+      if (!thought && checkpoint?.dshTask?.workspace?.mode === 'existing') throw new Error('伙伴任务必须使用本人托管工作区；请把项目绝对路径放入任务输入后重新提交。');
       const dshState = dsh.state();
       const executionInstance = dshState.instances.find(instance => instance.id === (resume?.instanceId ?? dshState.cli?.selectedInstanceId))
         ?? dshState.instances.find(instance => instance.isDefault);
-      const allowedWorkspaceRoots = [executionInstance?.workspacePath,
-        ...(requestedWorkspace && path.isAbsolute(requestedWorkspace) && source?.content.includes(requestedWorkspace) ? [requestedWorkspace] : [])]
-        .filter((root): root is string => !!root);
+      const allowedWorkspaceRoots = [executionInstance?.workspacePath].filter((root): root is string => !!root);
       if (controller.signal.aborted || this.closed || this.resettingCompanions.has(action.companionId)) return;
       const companion = (await this.call({ type: 'state', includeConversations: false })).state?.companions.find(value => value.id === action.companionId);
       if (!companion) throw new Error('执行伙伴已不存在。');
@@ -4072,7 +4159,7 @@ export class CompanionService {
       await this.publishActionProgress(action.id, { stage: '正在连接 DSH Web Host' });
       const started = await dsh.requestTask({ type: 'task.run', title: action.title.slice(0, 100),
         ...(resume?.sessionId ? { instanceId: resume.instanceId, sessionId: resume.sessionId } : {}),
-        prompt }, { toolkit: true, interactive: true, ...(thought ? { cognitiveOnly: true } : { inputs: checkpoint?.supplements }),
+        prompt }, { toolkit: true, interactive: true, ...(thought ? { cognitiveOnly: true } : {}),
         task: thought ? { mode: 'native', tools: [], skills: [], session: { mode: 'new' }, workspace: { mode: 'managed' } } : checkpoint?.dshTask,
         companionName: companion.name,
         workspaceRootPath: path.join(this.root, 'dsh-tasks'), allowedWorkspaceRoots: thought ? [] : allowedWorkspaceRoots,
@@ -4103,15 +4190,18 @@ export class CompanionService {
         return;
       }
       await this.publishActionProgress(action.id, { taskId, status: 'running', stage: '已提交 DSH，等待执行反馈' });
-      // Follow-ups can commit after the launch snapshot but before taskId is
-      // published. Drain the durable inbox; the native host deduplicates IDs.
-      if (!thought) {
-        const current = (await this.call({ type: 'checkpoint.get', id: action.id })).checkpoint;
-        for (const input of current?.supplements ?? []) {
-          try {
-            const delivered = await dsh.requestTask({ type: 'task.message', taskId, content: input.content, mode: input.mode, messageId: input.id });
-            if (!delivered.ok) this.options.report(new Error('DSH 未确认任务补充；原消息已保留在主脑上下文。'));
-          } catch (error) { this.options.report(error); }
+      if (!thought && action.parentMessageId) {
+        let after = 0;
+        for (;;) {
+          const mailbox = (await this.call({ type: 'action.mail.read', companionId: action.companionId, conversationId: action.conversationId,
+            parentMessageId: action.parentMessageId, actionIds: [action.id], after })).dshMailbox;
+          if (!mailbox) throw new Error('任务消息邮箱暂不可用。');
+          for (const mail of mailbox.items.filter(mail => mail.direction === 'to_child')) {
+            const delivered = await dsh.requestTask({ type: 'task.message', taskId, content: mail.text, mode: mail.mode ?? 'steer', messageId: mail.deduplicationKey });
+            if (!delivered.ok) throw new Error('执行器没有确认接收主脑的任务消息。');
+          }
+          if (!mailbox.hasMore) break;
+          after = mailbox.nextAfter;
         }
       }
       this.activities.set(`action:${action.id}`, { companionId: action.companionId, conversationId: action.conversationId, status: 'working', startedAt: action.createdAt });
@@ -4138,12 +4228,23 @@ export class CompanionService {
         if (progress.ok && progress.taskEvents?.length) {
           const received = progress.taskEvents;
           afterSequence = received[received.length - 1]!.sequence;
+          for (const event of received.filter(event => event.type === 'parent_report' && event.text)) {
+            const report = JSON.parse(event.text!) as { kind: 'progress' | 'checkpoint' | 'question'; text: string };
+            if (!['progress', 'checkpoint', 'question'].includes(report.kind) || typeof report.text !== 'string' || !report.text.trim() || report.text.length > 12000)
+              throw new Error('执行器回传的阶段消息无效。');
+            await this.call({ type: 'action.mail.append', mail: { actionId: action.id, direction: 'to_parent', kind: report.kind, text: report.text,
+              deduplicationKey: `${taskId}:${event.callId ?? event.sequence}` } });
+            this.backgroundWake.notify(action.id);
+          }
           const visible = received.map(companionProgressEvent).filter((event): event is CompanionActionEvent => !!event);
           if (visible.length && !this.cancelledActions.has(action.id) && !this.closed) {
             events = mergeCompanionProgress(events, visible);
             await this.publishActionProgress(action.id, { events, stage: events[events.length - 1]!.summary });
           }
         }
+        // Drain archived pages before accepting a terminal receipt, otherwise a
+        // fast producer could finish with an unread checkpoint behind a ring gap.
+        if (progress.ok && progress.taskEventsHasMore) continue;
         await this.actionStopRequests.get(action.id)?.catch(() => undefined);
         const record = dsh.state().tasks?.find(value => value.id === taskId);
         if (record && JSON.stringify(record) !== recordedExecution) {

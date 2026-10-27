@@ -145,7 +145,11 @@ export class CompanionScheduleStore {
       const schedule = this.owned(scope, id, expectedRevision);
       schedule.status = 'cancelled'; schedule.nextRunAt = undefined; schedule.blockedReason = undefined; schedule.deferredUntil = undefined;
       const scheduleOccurrences = rows(this.db.prepare("SELECT data FROM companion_schedule_occurrences WHERE schedule_id=? AND status IN ('pending','dispatching','running')").all(id)).map(item => decode<CompanionScheduleOccurrence>(item.data));
-      for (const occurrence of scheduleOccurrences) if (!occurrence.actionId && !occurrence.messageId) { occurrence.status = 'cancelled'; occurrence.finishedAt = iso(); occurrence.leaseToken = undefined; occurrence.leaseUntil = undefined; this.saveOccurrence(occurrence); }
+      for (const occurrence of scheduleOccurrences) {
+        occurrence.status = 'cancelled'; occurrence.updatedAt = occurrence.finishedAt = iso();
+        occurrence.result = '日程已取消，本次执行停止。'; delete occurrence.error;
+        occurrence.leaseToken = undefined; occurrence.leaseUntil = undefined; this.saveOccurrence(occurrence);
+      }
       this.touch(schedule); return { schedule, scheduleOccurrences };
     }).immediate();
   }
@@ -285,6 +289,7 @@ export class CompanionScheduleStore {
     return this.db.transaction(() => {
       const occurrence = this.occurrence(input.id), schedule = this.load(occurrence.scheduleId);
       if (occurrence.stop && input.status !== 'cancelled') throw new Error('本次定时执行已由用户停止，旧执行不能覆盖停止结果。');
+      if (occurrence.status === 'cancelled' && input.status !== 'cancelled') throw new Error('本次定时执行已取消，旧执行不能覆盖取消结果。');
       if (['done', 'failed', 'cancelled'].includes(occurrence.status) && input.status === occurrence.status && (!input.actionId || occurrence.actionId === input.actionId) && (!input.messageId || occurrence.messageId === input.messageId)) return occurrence;
       if (input.leaseToken && input.leaseToken !== occurrence.leaseToken) throw new Error('定时任务租约已失效。');
       if (input.actionId) {

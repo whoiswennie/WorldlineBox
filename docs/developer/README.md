@@ -16,6 +16,7 @@
 - [Serpent 0.3.3 资产管理升级](serpent-033-upgrade/README.md)——模型双面与透明贴图、浏览刷新、路径快捷键及自有功能边界
 - [伙伴消息系统](companions.md)——独立 SQLite owner、角色模型连接、记忆与 DSH 行动回流
 - [伙伴 Agent 执行流程](companion-agent-flow.md)——角色上下文编译、普通聊天长期接续、原文搜索与宿主能力
+- [伙伴主脑与后台 DSH](companion-background-agents.md)——后台执行、双向邮箱、可唤醒等待、并发隔离及验收
 - [伙伴流程验收记录](companion-upgrade-validation-2026-10-27.md)——引导、中断恢复、并发、分页与全量回归的实际结果及限制
 - [伙伴问题修正验收](companion-followup-validation-2026-10-27.md)——DSH 同名分组、运行中引导竞态、大附件与记忆元数据边界
 - [可成长人设与主脑扮演](companion-character-performance.md)——标准字段、15位内置伙伴、实时资料与来源核验的成长

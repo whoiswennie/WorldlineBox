@@ -211,7 +211,7 @@ export const dshLauncherResponseSchema = z.discriminatedUnion('ok', [
     marketPage: dshMarketPageSchema.optional(), skillInspection: dshSkillInspectionSchema.optional(), installedSkills: z.array(dshInstalledSkillSchema).optional(),
     packDistribution: dshPackDistributionSchema.optional(),
     installedPlugins: z.array(dshInstalledPluginSchema).optional(),
-    taskResult: dshTaskResultSchema.optional(), taskEvents: z.array(dshTaskEventSchema).optional(), taskRecord: dshRecordPageSchema.optional(),
+    taskResult: dshTaskResultSchema.optional(), taskEvents: z.array(dshTaskEventSchema).optional(), taskEventsHasMore: z.boolean().optional(), taskRecord: dshRecordPageSchema.optional(),
     instanceId: id.optional(), operationId: id.optional(), text: z.string().optional(), cancelled: z.boolean().optional(), removedOperations: z.number().int().min(0).optional() }),
   z.object({ ok: z.literal(false), error: z.string() }),
 ]);

@@ -13,6 +13,12 @@ afterEach(async () => { for (const root of roots.splice(0)) await rm(root, { rec
 const owner = { actionId: randomUUID(), companionId: 'companion-a', conversationId: 'conversation-a', sourceMessageId: 'message-a' };
 
 describe('Companion task specification', () => {
+  it('keeps every partner in its managed workspace while general launcher tasks retain explicit project workspaces', () => {
+    const task = { title: '已有项目', prompt: '在输入中的项目绝对路径继续工作。', workspace: { mode: 'existing', path: path.resolve('project') } };
+    expect(companionDshArgumentsSchema.safeParse({ tasks: [task] }).success).toBe(false);
+    expect(dshTaskSpecSchema.safeParse({ workspace: task.workspace }).success).toBe(true);
+    expect(companionDshArgumentsSchema.safeParse({ tasks: [{ ...task, workspace: { mode: 'managed' } }] }).success).toBe(true);
+  });
   it('accepts per-task choices while denying plugin, model and credential fields', () => {
     const task = { title: 'Read', prompt: 'Inspect the file', mode: 'native', tools: ['read'], skills: [], session: { mode: 'new' }, workspace: { mode: 'managed' }, delivery: { format: 'json' } };
     expect(companionDshArgumentsSchema.safeParse({ tasks: [task] }).success).toBe(true);

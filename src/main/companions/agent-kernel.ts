@@ -44,6 +44,8 @@ export async function runCompanionAgentKernel<T>(options: CompanionAgentKernelOp
   // Resume the final native turn: it can contain a planned call whose effect
   // has already committed in the domain's idempotent effect ledger.
   for (let step = Math.max(0, state.turns.length - 1); ; step++) {
+    // Rejected final proposals also yield, rather than bypassing the quantum below.
+    if (step && step % 32 === 0) await new Promise<void>(resolve => setImmediate(resolve));
     signal?.throwIfAborted();
     await options.beforeStep?.(step);
     const rawEpoch = await options.progressFingerprint?.();
@@ -115,7 +117,5 @@ export async function runCompanionAgentKernel<T>(options: CompanionAgentKernelOp
         progressFrom = state.turns.length;
       }
     }
-    // A scheduling quantum yields CPU; it never caps an invocation's lifetime.
-    if ((step + 1) % 32 === 0) await new Promise<void>(resolve => setImmediate(resolve));
   }
 }

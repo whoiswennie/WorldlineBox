@@ -305,7 +305,7 @@ export class DshLauncher {
       }
       case 'task.result': return { ok: true, taskResult: this.tasks.result(request.taskId) };
       case 'task.record': return { ok: true, taskRecord: await this.tasks.readRecord(request.query) };
-      case 'task.events': return { ok: true, taskEvents: this.tasks.events(request.taskId, request.after) };
+      case 'task.events': return { ok: true, ...await this.tasks.readEvents(request.taskId, request.after) };
       case 'task.message': await this.tasks.sendInput(request.taskId, request.content, request.mode, request.messageId); return { ok: true };
       case 'cli.select': case 'instance.default': {
         const epoch = ++this.selectionEpoch; const selection = await this.instances.prepareCli(request.instanceId);

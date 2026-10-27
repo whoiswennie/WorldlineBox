@@ -85,6 +85,33 @@ export class DshTaskBroker {
   state() { return this.records.map(record => ({ ...record })); }
   result(id: string) { const value = this.results.get(id); return value ? { ...value } : undefined; }
   events(id: string, after = -1) { return (this.histories.get(id) ?? []).filter(event => event.sequence > after).map(value => ({ ...value })); }
+  /** Recover an event-ring gap from the indexed durable transcript. Reports
+   * must survive a busy producer and a broker restart, including their full text. */
+  async readEvents(id: string, after = -1) {
+    await this.init();
+    const live = this.events(id, after);
+    if (live.length && live[0]!.sequence === after + 1) return { taskEvents: live, taskEventsHasMore: false };
+    // Before Session creation the archive itself can still be opening; no ring
+    // can have overflowed yet, and startup should not fail on that read race.
+    if (this.active.has(id) && !this.records.some(record => record.id === id)) return { taskEvents: live, taskEventsHasMore: false };
+    if (!this.records.some(record => record.id === id) && !this.active.has(id)) return { taskEvents: [], taskEventsHasMore: false };
+    const page = await this.archive.read({ recordId: id, start: after + 2, entryChars: 4000 });
+    const taskEvents: DshTaskEvent[] = [];
+    for (const entry of page.entries) {
+      const event = { ...entry.event };
+      if (event.type === 'parent_report' && entry.truncated) {
+        let offset = entry.nextTextOffset;
+        while (offset !== undefined) {
+          const continuation = (await this.archive.read({ recordId: id, start: entry.number, end: entry.number,
+            snapshot: page.snapshot, textOffset: offset, entryChars: 4000 })).entries[0];
+          if (!continuation || continuation.textOffset !== offset || continuation.nextTextOffset === offset) throw new Error('后台报告续读未推进。');
+          event.text = (event.text ?? '') + (continuation.event.text ?? ''); offset = continuation.nextTextOffset;
+        }
+      }
+      taskEvents.push(event);
+    }
+    return { taskEvents, taskEventsHasMore: page.hasMore };
+  }
   private changed() { this.options.onChanged?.(); }
   private save() { const value = { format: 'worldlinebox-dsh-tasks-v1', records: this.state() }; const pending = this.writes.then(() => atomicJson(path.join(this.options.rootPath, 'tasks.json'), value)); this.writes = pending.catch(() => undefined); return pending; }
   init(): Promise<void> {
@@ -166,7 +193,8 @@ export class DshTaskBroker {
       const preparation = performance.now();
       const session = await client.request<{ sessionId: string; cursor: number; capabilities: unknown; accessMode: DshTaskRecord['accessMode'] }>('/sessions', {
         sessionId, resume: !!previous, cwd: sessionWorkspacePath, ...(workspaceTitle ? { workspaceTitle } : {}), ...(execution.task?.mode === 'ptc' ? { preset: 'ptc' } : {}),
-        policy: { tools: execution.task?.tools, skills: execution.task?.skills, cognitiveOnly: execution.cognitiveOnly },
+        policy: { tools: execution.task?.tools, skills: execution.task?.skills, cognitiveOnly: execution.cognitiveOnly,
+          parentMailbox: !!execution.recordScope && !execution.cognitiveOnly },
         ...(previous ? {} : execution.access ? { accessMode: execution.access.mode } : {}),
       }, signal);
       if (previous && session.sessionId !== sessionId) throw new Error('Native resume returned a different Session identity.');

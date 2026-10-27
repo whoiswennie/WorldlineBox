@@ -87,6 +87,32 @@ it('uses one Host for parallel partner tasks with separate native Sessions', asy
   expect(results[0]!.sessionId).not.toBe(results[1]!.sessionId); expect(new Set(f.broker.state().map(value => value.pid))).toEqual(new Set([5678]));
   expect(f.calls.filter(value => value.endpoint === '/sessions')).toHaveLength(2);
 });
+it('replays complete parent reports across event-ring overflow and a broker restart', async () => {
+  const f = await fixture(), operation = f.operation();
+  const executing = f.broker.execute({ prompt: 'wait for report replay' }, operation, { recordScope: f.scope });
+  await vi.waitFor(() => expect(f.calls.some(call => call.endpoint.endsWith('/prompt'))).toBe(true));
+  const sessionId = f.broker.state().find(task => task.id === operation.id)!.sessionId!;
+  const checkpoint = JSON.stringify({ kind: 'checkpoint', text: '不能截断的阶段成果'.repeat(1000) });
+  f.publish(sessionId, { type: 'parent_report', text: checkpoint, callId: 'durable-report' });
+  for (let index = 0; index < 1050; index++) f.publish(sessionId, { type: 'status', summary: '后续进度 ' + index });
+  f.publish(sessionId, { type: 'complete', status: 'succeeded', text: '已完成' }); await executing;
+  expect(f.broker.events(operation.id).some(event => event.type === 'parent_report')).toBe(false);
+  const first = await f.broker.readEvents(operation.id);
+  expect(first.taskEvents.find(event => event.type === 'parent_report')?.text).toBe(checkpoint);
+  expect(first.taskEventsHasMore).toBe(true);
+  await f.broker.shutdown();
+  const restored = new DshTaskBroker({ rootPath: f.root, getHost: f.getHost });
+  try {
+    let after = -1, done = false; const sequences: number[] = [], reports: string[] = [];
+    while (!done) {
+      const page = await restored.readEvents(operation.id, after);
+      for (const event of page.taskEvents) { sequences.push(event.sequence); if (event.type === 'parent_report') reports.push(event.text!); }
+      after = page.taskEvents.at(-1)?.sequence ?? after; done = !page.taskEventsHasMore;
+    }
+    expect(new Set(sequences).size).toBe(sequences.length); expect(sequences).toEqual(Array.from({ length: sequences.length }, (_, index) => index));
+    expect(reports).toEqual([checkpoint]); expect(sequences.length).toBeGreaterThan(1000);
+  } finally { await restored.shutdown(); }
+});
 it('names a partner’s native workspace from Main and reuses its directory across task Sessions', async () => {
   const f = await fixture();
   const execution = { recordScope: f.scope, companionName: '小肥鱼', workspaceRootPath: path.join(f.root, 'partners') };

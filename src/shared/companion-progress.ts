@@ -4,6 +4,14 @@ import type { CompanionActionEvent } from './companions';
 /** Same bounded, non-reasoning projection for live IPC and durable task history. */
 export function companionProgressEvent(event: DshTaskEvent): CompanionActionEvent | undefined {
   if (/(?:^|[._-])(reasoning|thinking|analysis)(?:$|[._-])/i.test(event.type) || !event.summary) return;
+  if (event.type === 'parent_report' && event.text) {
+    try {
+      const report = JSON.parse(event.text) as { text?: unknown; kind?: unknown };
+      if (typeof report.text === 'string') return { sequence: event.sequence, type: 'message',
+        summary: report.kind === 'question' ? '执行器请求决定' : '执行器阶段汇报', receivedAt: event.receivedAt,
+        callId: event.callId, content: report.text.slice(0, 16000), contentKind: 'message', outputState: 'committed' };
+    } catch { /* An invalid report retains its ordinary diagnostic projection. */ }
+  }
   return { sequence: event.sequence, type: event.stage ?? event.type, summary: event.summary,
     toolName: event.toolName, receivedAt: event.receivedAt, callId: event.callId, streamId: event.streamId, outputState: event.outputState,
     ...(event.text && event.type !== 'final' ? { content: event.text.slice(0, 16000), contentKind: event.contentKind ?? 'message' } : {}) };

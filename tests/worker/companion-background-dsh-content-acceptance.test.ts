@@ -135,6 +135,42 @@ it.skipIf(process.env.WORLDLINEBOX_BACKGROUND_DSH_ACCEPTANCE !== '1')('runs sche
     const matching = store.listAction().find(action => action.workOrderId === completed.id);
     expect(matching).toBeDefined();
     await verify('work', completed.sourceMessageId, completed.id, completeCommand!.goalSlot, completed.actionIds);
+    const webpageMarker = 'PAGE_' + randomUUID(), privateMarker = 'PRIVATE_CHAT_' + randomUUID();
+    const webpageSource = (await service.handle({ type: 'message.send', conversationId: room.id, clientId: 'actual_webpage_parent_channel',
+      content: `请用DSH制作一个本地单文件网页 index.html，包含标题“阶段协作验收”、至少三个内容卡片、响应式CSS和可点击的展开按钮，正文至少1000字符。页面保留标记 ${webpageMarker}。流程要求：先完成橙色草稿，然后DSH必须用report_to_parent回传question，说明草稿文件并询问最终主题颜色，再用wait_for_parent停下来等你；你收到问题后等我确认颜色，不要自行决定或结束本轮。拿到我的确认后，由你重新组织具体更正发给DSH，DSH改好、实际读回核验并present交付网页后才完成。不要操控电脑、不要使用浏览器，不要联网，只在本次任务目录写产物。` })).message!;
+    const pageAction = await wait('webpage checkpoint', () => {
+      const action = store.listAction().find(action => action.sourceMessageId === webpageSource.id && action.parentMessageId && action.taskId);
+      if (!action) return;
+      if (['failed', 'cancelled', 'interrupted'].includes(action.status)) throw new Error(`Webpage child ${action.status}: ${action.error}`);
+      const mail = store.request({ type: 'action.mail.read', companionId: 'lin', conversationId: room.id,
+        parentMessageId: action.parentMessageId!, actionIds: [action.id] }).dshMailbox!;
+      return mail.items.some(item => item.kind === 'question' && item.direction === 'to_parent') ? action : undefined;
+    });
+    expect(native.broker.state().find(task => task.id === pageAction.taskId)?.status).toBe('running');
+    const correction = (await service.handle({ type: 'message.send', conversationId: room.id, clientId: 'actual_webpage_guidance', delivery: 'steer',
+      content: `最终使用蓝色主题，请让DSH继续原任务并在html根元素标注 data-theme="blue"。私聊暗号 ${privateMarker} 与网页任务无关，请不要转交给DSH或写进网页。` })).message!;
+    const pageLoop = await wait('webpage corrected completion', () => {
+      const loop = store.request({ type: 'loop.get', companionId: 'lin', sourceMessageId: webpageSource.id }).loop;
+      if (loop?.progress && ['failed', 'interrupted', 'cancelled'].includes(loop.progress.phase)) throw new Error(`Webpage main ${loop.progress.phase}`);
+      return loop?.status === 'done' ? loop : undefined;
+    });
+    expect(pageLoop.supplements.some(item => item.id === correction.id)).toBe(true);
+    const pageTasks = store.listAction().filter(action => action.sourceMessageId === webpageSource.id);
+    expect(pageTasks).toHaveLength(1); expect(pageTasks[0]!.status).toBe('succeeded');
+    const pageMail = store.request({ type: 'action.mail.read', companionId: 'lin', conversationId: room.id,
+      parentMessageId: pageAction.parentMessageId!, actionIds: [pageAction.id] }).dshMailbox!.items;
+    const instructions = pageMail.filter(mail => mail.direction === 'to_child');
+    expect(instructions.length).toBeGreaterThan(0); expect(instructions.map(mail => mail.text).join('\n')).not.toContain(privateMarker);
+    const nativePage = native.broker.state().find(task => task.id === pageAction.taskId)!;
+    const htmlPath = path.join(nativePage.workspacePath!, 'index.html'), html = await readFile(htmlPath, 'utf8');
+    expect(html).toContain(webpageMarker); expect(html).toMatch(/data-theme=["']blue["']/u); expect(html).not.toContain(privateMarker);
+    expect(html.length).toBeGreaterThan(1000);
+    const archive = await native.broker.readRecord({ recordId: pageAction.taskId! });
+    expect(archive.overview.artifacts?.some(artifact => path.resolve(artifact.path) === htmlPath)).toBe(true);
+    const proofDirectory = output.replace(/\.json$/u, '-files'); await mkdir(proofDirectory, { recursive: true });
+    await writeFile(path.join(proofDirectory, 'index.html'), html);
+    evidence.webpage = { sourceMessageId: webpageSource.id, correctionId: correction.id, nativePage, pageMail,
+      htmlPath, proofDirectory, contentVerified: true, childStayedInOriginalTask: true, privateChatNotForwarded: true };
     expect(transport.requests.some(request => request.kind === 'schedule')).toBe(true); expect(transport.requests.some(request => request.kind === 'work')).toBe(true);
     expect(transport.requests.every(request => !request.foreignCanaryPresent)).toBe(true); expect(transport.errors).toEqual([]);
     evidence.parentStatuses = { scheduleOccurrence: occurrence.status, workOrder: completed.status }; evidence.waitingFor = undefined; status = 'passed';
