@@ -24,6 +24,9 @@ export class CompanionPublicProfiles {
   // 1,000 residents with two images without retaining any decoded pixels.
   private readonly runtimeImageChecks = new Map<string, { signature: string; sha256: string; fileRevision: string; acknowledged?: boolean }>();
   private readonly visuals = new Map<string, Promise<{ base64: string; sha256: string; originalHash: string } | undefined>>();
+  forgetOwner(owner: string): void {
+    for (const role of ['avatar', 'orthographic']) { this.portraits.delete(owner + '/' + role); this.runtimeImageChecks.delete(owner + '/' + role); }
+  }
   constructor(private readonly options: { root: string; appPath: string; libraryDirectory?: string; profileStore?: CompanionAssetProfileStore;
     portraitInitialized?(ownerId: string, role: 'avatar' | 'orthographic'): Promise<boolean>;
     markPortraitInitialized?(ownerId: string, role: 'avatar' | 'orthographic'): Promise<void>;
@@ -53,7 +56,7 @@ export class CompanionPublicProfiles {
         const image = await this.attachment(selected, current, role, true);
         if (!image?.available) throw new Error('所选形象尚未成功写入此伙伴目录，请核对原始受管图片。');
       } else if (!selected && (role === 'avatar' ? current.avatar !== 'custom' && (current.avatar !== previous?.avatar || !!old) : current.builtin && !!old)) {
-        const file = role === 'avatar' && current.avatar !== 'custom' ? COMPANION_PORTRAIT_FILES[current.avatar] : COMPANION_APPEARANCE_FILES[current.id];
+        const file = role === 'avatar' && current.avatar !== 'custom' ? COMPANION_PORTRAIT_FILES[current.avatar] : COMPANION_APPEARANCE_FILES[current.templateId ?? current.id];
         if (!file) continue;
         this.portraits.delete(current.id + '/' + role);
         await this.materializePortrait(current, role, file, true);
@@ -70,7 +73,7 @@ export class CompanionPublicProfiles {
       const key = owner.id + '/' + role;
       try {
         const selected = role === 'avatar' ? owner.avatarAttachmentId : owner.appearanceAttachmentId;
-        if (!selected && (role === 'avatar' ? owner.avatar === 'custom' : !owner.builtin || !COMPANION_APPEARANCE_FILES[owner.id])) { this.runtimeImageChecks.delete(key); continue; }
+        if (!selected && (role === 'avatar' ? owner.avatar === 'custom' : !owner.builtin || !COMPANION_APPEARANCE_FILES[owner.templateId ?? owner.id])) { this.runtimeImageChecks.delete(key); continue; }
         let file;
         try { file = options.initialize === false ? await this.ownerImageFile(owner.id, role) : await this.runtimeOwnerImageFile(owner, role); }
         catch (error) {
@@ -85,7 +88,7 @@ export class CompanionPublicProfiles {
             if (!stored || !/^image\/(?:png|jpeg|webp|gif)$/u.test(stored.attachment.mime)) throw new Error('Invalid initial owner image.', { cause: error });
             await this.materializeAttachment(owner, role, stored, false);
           } else {
-            const initial = role === 'avatar' && owner.avatar !== 'custom' ? COMPANION_PORTRAIT_FILES[owner.avatar] : COMPANION_APPEARANCE_FILES[owner.id];
+            const initial = role === 'avatar' && owner.avatar !== 'custom' ? COMPANION_PORTRAIT_FILES[owner.avatar] : COMPANION_APPEARANCE_FILES[owner.templateId ?? owner.id];
             if (!initial) continue;
             await this.materializePortrait(owner, role, initial);
           }
@@ -124,7 +127,7 @@ export class CompanionPublicProfiles {
       profileStore: new CompanionAssetProfileStore(this.assetProfiles.libraryDirectory),
       portraitInitialized: undefined, markPortraitInitialized: undefined });
     for (const role of ['avatar', 'orthographic'] as const) {
-      const source = role === 'avatar' && owner.avatar !== 'custom' ? COMPANION_PORTRAIT_FILES[owner.avatar] : COMPANION_APPEARANCE_FILES[owner.id];
+      const source = role === 'avatar' && owner.avatar !== 'custom' ? COMPANION_PORTRAIT_FILES[owner.avatar] : COMPANION_APPEARANCE_FILES[owner.templateId ?? owner.id];
       if (!source) continue;
       this.portraits.delete(owner.id + '/' + role); this.runtimeImageChecks.delete(owner.id + '/' + role);
       await factory.materializePortrait(owner, role, source, true);
@@ -146,7 +149,7 @@ export class CompanionPublicProfiles {
     if (!this.assetProfiles) return undefined;
     const snapshot = await this.assetProfiles.loadProfile(ownerId), profile = snapshot.profile;
     const selected = role === 'avatar' ? profile.avatarAttachmentId : profile.appearanceAttachmentId;
-    if (!selected && (role === 'avatar' ? profile.avatar === 'custom' : !COMPANION_APPEARANCE_FILES[ownerId])) return undefined;
+    if (!selected && (role === 'avatar' ? profile.avatar === 'custom' : !COMPANION_APPEARANCE_FILES[profile.templateId ?? ownerId])) return undefined;
     const directory = path.join(snapshot.root, '形象'), actualOwner = await realpath(snapshot.root);
     const parent = await lstat(directory);
     if (!parent.isDirectory() || parent.isSymbolicLink() || path.dirname(await realpath(directory)) !== actualOwner) throw new Error('Invalid owner portrait directory.');
@@ -287,7 +290,7 @@ export class CompanionPublicProfiles {
     return absolute;
   }
   private async builtinImage(companion: Companion, role: 'avatar' | 'orthographic' = 'avatar'): Promise<CompanionPublicImage | undefined> {
-    const file = role === 'orthographic' ? companion.builtin ? COMPANION_APPEARANCE_FILES[companion.id] : undefined
+    const file = role === 'orthographic' ? companion.builtin ? COMPANION_APPEARANCE_FILES[companion.templateId ?? companion.id] : undefined
       : companion.avatar !== 'custom' ? COMPANION_PORTRAIT_FILES[companion.avatar] : undefined;
     if (!file) return undefined;
     if (!this.assetProfiles) return undefined;

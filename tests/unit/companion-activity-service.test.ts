@@ -257,7 +257,7 @@ it('accepts unused optional nulls as explicit no-ops alongside one actual query,
   await vi.waitFor(() => expect(get().step).toBe(1));
   expect(actorCalls).toBe(1); expect(get().history).toHaveLength(1); expect(get().history[0]).toMatchObject({ action: 'query', ok: true });
   expect(store.request({ type: 'activity.memory.claim' }).activityMemoryIntent).toBeUndefined();
-  expect(store.request({ type: 'topic.list', conversationId: scope.conversationId, readerId: 'alice' }).topics).toEqual([]);
+  expect(store.request({ type: 'topic.list', conversationId: scope.conversationId, readerId: 'alice' }).topics?.filter(topic => !topic.isPrimary)).toEqual([]);
   const runId = createHash('sha256').update(JSON.stringify(['alice', scope.conversationId, `${scope.task.id}_0`])).digest('hex');
   const run = store.request({ type: 'agent.run.get', companionId: 'alice', id: runId }).agentRun!;
   expect(run.rejectedFinals).toBeUndefined(); expect(run.turns).toHaveLength(1);
@@ -271,7 +271,7 @@ it('still rejects non-null malformed proposal fields in the original three slots
   await vi.waitFor(() => expect(get().status).toBe('failed'));
   expect(fetchFn).toHaveBeenCalledTimes(3); expect(get().history).toEqual([]); expect(get().step).toBe(0);
   expect(store.request({ type: 'activity.memory.claim' }).activityMemoryIntent).toBeUndefined();
-  expect(store.request({ type: 'topic.list', conversationId: scope.conversationId, readerId: 'alice' }).topics).toEqual([]);
+  expect(store.request({ type: 'topic.list', conversationId: scope.conversationId, readerId: 'alice' }).topics?.filter(topic => !topic.isPrimary)).toEqual([]);
   const runId = createHash('sha256').update(JSON.stringify(['alice', scope.conversationId, `${scope.task.id}_0`])).digest('hex');
   expect(store.request({ type: 'agent.run.get', companionId: 'alice', id: runId }).agentRun?.rejectedFinals).toHaveLength(3);
 });

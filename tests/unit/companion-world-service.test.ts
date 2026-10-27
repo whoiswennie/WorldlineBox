@@ -62,9 +62,10 @@ function fixture(fetchFn: typeof fetch, asleep = true, members = seeds, narrateD
         eventTime: input.now, clockDomain: input.clockDomain })) : [], resonanceL1: [], cascadeL2: [] }, mid: { seeds: [], cascadeL1: [] }, deep: { recalls: [] } },
       diagnostics: { algorithm: 'upstream-DreamWaveEngine', sourceCount: snapshot.notes.length, indexedCount: snapshot.notes.length, queries: [] } };
   });
+  const report = vi.fn();
   const service = new CompanionWorldService({ request, fetchFn, configFor: async () => ({ apiFormat: 'openai_chat', model: 'test-model', apiKey: 'private-key', baseUrl: 'https://provider.invalid' }),
-    changed: vi.fn(), wakeWaiting: vi.fn(), report: vi.fn(), memoryContextValid, recall, dreamWave }); services.add(service);
-  return { store, service, alice, bob, request, memoryContextValid, recall, dreamWave, root };
+    changed: vi.fn(), wakeWaiting: vi.fn(), report, memoryContextValid, recall, dreamWave }); services.add(service);
+  return { store, service, alice, bob, request, memoryContextValid, recall, dreamWave, root, report };
 }
 function advance(store: CompanionsStore, milliseconds: number) { vi.setSystemTime(Date.now() + milliseconds); return store.request({ type: 'world.tick' }).world!; }
 function indexNotes(store: CompanionsStore) {
@@ -180,7 +181,7 @@ it.each(['focused', 'empty', 'legacy'] as const)('restores a social invocation j
   const memoryRecall = { reasons: [], pending: false, degraded: false, ...(kind === 'focused' ? { context: { ...recalled.context!, text: 'PREVIOUS_FOCUSED_SOCIAL_TASK' } } : {}) };
   const frame: CompanionReplyInput = { companion, conversation, sourceMessage: source, messages: [source], memories: [], memoryRecall,
     contextThroughSequence: job.throughSequence,
-    invocation: { id: job.id, kind: 'peer', companionId: companion.id, conversationId: conversation.id, sourceMessageId: source.id,
+    invocation: { id: job.id, kind: 'peer', companionId: companion.id, conversationId: conversation.id, sourceMessageId: source.id, topicId: source.topicId,
       goal: source.content, status: 'running', createdAt: job.createdAt, participants: conversation.memberIds, messagePort: { kind: 'conversation' },
       authorization: { kind: 'peer', sourceMessageIds: [source.id], externalActions: false } } };
   const journal = companionAgentJournal(f.request), run = await journal.load(frame, { system: '', user: '{"purpose":"world_social"}' });
@@ -190,7 +191,7 @@ it.each(['focused', 'empty', 'legacy'] as const)('restores a social invocation j
   await journal.save(run);
   f.store.request({ type: 'social.job.fail', id: job.id, leaseToken: job.leaseToken!, error: '模拟此前应用退出后的恢复' });
   advance(f.store, 40000); await f.service.tick();
-  await vi.waitFor(() => expect(fetchFn).toHaveBeenCalled());
+  await vi.waitFor(() => expect(fetchFn, JSON.stringify(f.report.mock.calls.map(([e]) => String(e)))).toHaveBeenCalled());
   await vi.advanceTimersByTimeAsync(1500);
   try { await vi.waitFor(() => expect(f.request.mock.calls.some(([command]) => command.type === 'social.job.complete' && command.id === job.id)).toBe(true)); }
   catch (error) { throw new Error(`Social restore did not complete: ${JSON.stringify(f.request.mock.calls.map(([command]) => ({ type: command.type,
@@ -614,7 +615,7 @@ describe('semantic world background service with actual SQLite sources', () => {
         return new Response(JSON.stringify({ choices: [{ message: { content: '', tool_calls: [{ id: 'self_join', type: 'function',
           function: { name: 'world', arguments: JSON.stringify({ action: 'topic', parameters: { action: 'join', topicId } }) } }] } }] }));
       }
-      expect(JSON.stringify(data)).toContain('PREVIOUS_TOPIC_A');
+      expect(JSON.stringify(wire)).toContain('PREVIOUS_TOPIC_A');
       expect(data.topicState.workingState.state.ownSecret).toBe('BOB_PRIVATE_ONLY');
       return response({ text: '我自己加入这个话题，按本话题继续。', reason: '愿意参加实际邀请。' });
     };

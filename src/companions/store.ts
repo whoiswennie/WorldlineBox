@@ -1,3 +1,4 @@
+import { companionContactGroups } from './contact-groups';
 import { assertCompanionInboxCapacity, companionAttentionCanClaim } from './attention-queue';
 import { CompanionTaskOverviewStore } from './task-overview-store';
 import { CompanionTaskDetailStore } from './task-detail-store';
@@ -37,6 +38,7 @@ import {
 import { BUILTIN_COMPANIONS } from '../shared/companion-personas';
 import { companionGroupTitle } from '../shared/companion-titles';
 import { companionLoopCheckpointSchema, companionLoopCheckpointPublishedText, companionWorkSchema, type CompanionWork, type CompanionLoopCheckpoint } from '../shared/companion-loop';
+import { advanceCompanionReplyTiming } from '../shared/companion-reply-progress';
 import { companionSearchTokens, companionSearchMatch, companionSearchExcerpt, companionSearchFacet } from '../shared/companion-search';
 import { CompanionMemoryStore } from './memory-store';
 import { initializeCompanionModelResources, executeCompanionModelResources } from './model-resource-store';
@@ -108,7 +110,9 @@ export class CompanionsStore {
   readonly #collaborations: CompanionCollaborationStore;
   readonly #agentRuns: CompanionAgentRunStore;
 
-  constructor(databasePath: string, seeds: readonly CompanionSeed[] = BUILTIN_COMPANIONS) {
+  constructor(databasePath: string, seeds?: readonly CompanionSeed[]) {
+    const instantiateSeeds = seeds !== undefined;
+    seeds ??= BUILTIN_COMPANIONS;
     mkdirSync(path.dirname(databasePath), { recursive: true });
     this.#db = new Database(databasePath);
     this.#taskOverview = new CompanionTaskOverviewStore(this.#db);
@@ -359,10 +363,10 @@ export class CompanionsStore {
     this.#world.connectLife(this.#life);
     this.#seeds = seeds;
     this.#reset = new CompanionResetStore(this.#db, path.dirname(databasePath), id => {
-      const seed = this.#seeds.find(item => item.id === id);
       const current = this.#requireCompanion(id);
+      const seed = this.#seeds.find(item => item.id === (current.templateId ?? id));
       if (!seed || !current.builtin) throw new Error('只有内置伙伴具有可恢复的出厂设定。');
-      return { ...companionDraftSchema.parse(seed), id, active: current.active, builtin: true, createdAt: current.createdAt };
+      return { ...companionDraftSchema.parse(seed), id, active: current.active, builtin: true, templateId: seed.id, createdAt: current.createdAt };
     }, id => { this.#world.resetCompanion(id); }, ids => {
       const affected = new Set<string>();
       const placeholders = ids.map(() => '?').join(',');
@@ -401,7 +405,7 @@ export class CompanionsStore {
       this.#db.exec("CREATE INDEX IF NOT EXISTS companion_work_conversation ON companion_work_queue(json_extract(data,'$.conversationId'),status)");
       this.#db.exec("CREATE INDEX IF NOT EXISTS companion_work_role_status ON companion_work_queue(companion_id,status)");
       this.#db.exec("CREATE INDEX IF NOT EXISTS companion_reply_pending ON metadata(json_extract(value,'$.status')) WHERE key GLOB 'reply-source/*'");
-      this.#seed();
+      this.#seed(instantiateSeeds);
       // One-time upgrade of legacy profiles; subsequent launches retain manual choices.
       this.#db.exec("UPDATE companions SET data=json_set(data,'$.active',json(CASE WHEN id='deepseek-flash' THEN 'true' ELSE 'false' END)) WHERE json_type(data,'$.active') IS NULL");
       this.backfillSearchIndex();
@@ -425,6 +429,7 @@ export class CompanionsStore {
       this.#experience.initialize();
       this.#taskOverview.initialize();
       this.#reset.prepareIndexes();
+      for (const room of this.#db.prepare('SELECT id FROM conversations WHERE dissolved_at IS NULL').all() as { id: string }[]) this.#topics.ensurePrimary(room.id);
       this.#experience.backfill(64); this.#experience.flush();
     } catch (error) {
       this.#db.close();
@@ -531,13 +536,13 @@ export class CompanionsStore {
     }).immediate();
   }
 
-  #seed(): void {
+  #seed(instantiateSeeds: boolean): void {
+    if (!instantiateSeeds) return;
     this.#db.transaction(() => {
       for (const seed of this.#seeds) {
-        // Built-in contacts always remain available; saved profile edits survive startup.
-        if (this.#db.prepare('SELECT 1 FROM companions WHERE id=?').get(seed.id)) {
-          this.#db.prepare('UPDATE companions SET deleted_at=NULL WHERE id=?').run(seed.id); continue;
-        }
+        // Seeding never revives a deleted instance; explicit re-addition owns
+        // its fresh identity and preserves historical deleted authors.
+        if (this.#db.prepare('SELECT 1 FROM companions WHERE id=?').get(seed.id)) continue;
         const companion: Companion = { ...companionDraftSchema.parse(seed), id: companionIdSchema.parse(seed.id), active: seed.active ?? seed.id === 'deepseek-flash', builtin: true, createdAt: stamp(), revision: 1 };
         this.#db.prepare('INSERT INTO companions(id,data) VALUES(?,?)').run(companion.id, JSON.stringify(companion));
       }
@@ -661,14 +666,16 @@ export class CompanionsStore {
   }
 
   #conversation(found: Row): CompanionConversation {
+    const primaryTopic = this.#topics.ensurePrimary(String(found.id));
     const id = String(found.id);
-    const visibleTopic = "NOT EXISTS(SELECT 1 FROM companion_message_topics association JOIN companion_topics topic ON topic.id=association.topic_id WHERE association.message_id=m.id AND json_extract(topic.data,'$.deletedAt') IS NOT NULL)";
+    const visibleTopic = "NOT (m.author_id='system' AND m.kind='notice' AND m.status='failed') AND NOT EXISTS(SELECT 1 FROM companion_message_topics association JOIN companion_topics topic ON topic.id=association.topic_id WHERE association.message_id=m.id AND json_extract(topic.data,'$.deletedAt') IS NOT NULL)";
     const latest = this.#db.prepare("SELECT content FROM messages m WHERE conversation_id=? AND NOT EXISTS(SELECT 1 FROM metadata WHERE key='message-memory-evidence/'||m.id) AND " + visibleTopic + " ORDER BY sequence DESC LIMIT 1").get(id);
     const unread = row(this.#db.prepare("SELECT count(*) AS total FROM messages m WHERE conversation_id=? AND sequence>? AND author_id!='user' AND NOT EXISTS(SELECT 1 FROM metadata WHERE key='message-memory-evidence/'||m.id) AND " + visibleTopic).get(id, found.read_sequence)).total;
     return { id, kind: found.kind as CompanionConversation['kind'], title: found.kind === 'group' && this.#automaticGroupTitle(found) ? this.#groupTitle(id) : String(found.title),
       memberIds: this.#memberIds(id), pinned: Boolean(found.pinned), muted: Boolean(found.muted),
       peerOnly: !!this.#db.prepare('SELECT 1 FROM metadata WHERE key=?').get('world-room/' + id),
       unread: Number(unread), updatedAt: String(found.updated_at), lastMessage: latest ? String(row(latest).content).slice(0, 500) : '',
+      ...(primaryTopic ? { defaultTopicId: primaryTopic.id } : {}),
       ...(this.#topics.current(String(found.id)) ? { activeTopicId: this.#topics.current(String(found.id)) } : {}) };
   }
   #automaticGroupTitle(group: Row): boolean {
@@ -883,14 +890,18 @@ export class CompanionsStore {
   deleteCompanion(id: string): void {
     this.#db.transaction(() => {
       const companion = this.#requireCompanion(id);
-      if (companion.builtin || this.#seeds.some(seed => seed.id === id)) throw new Error('内置伙伴不能删除，可以在资料中重置伙伴。');
-      const at = stamp();
-      this.#db.prepare('UPDATE companions SET deleted_at=? WHERE id=?').run(at, id);
-      this.#db.prepare("UPDATE companion_work_queue SET status='cancelled',data=json_set(data,'$.status','cancelled','$.updatedAt',?) WHERE companion_id=? AND status IN ('queued','running')").run(at, id);
-      this.#db.prepare("UPDATE actions SET status='cancelled',data=json_set(data,'$.status','cancelled','$.updatedAt',?,'$.finishedAt',?) WHERE companion_id=? AND status IN ('queued','running')").run(at, at, id);
-      this.#db.prepare("UPDATE companion_work_orders SET status='cancelled',lease_until=NULL,lease_token=NULL,data=json_set(data,'$.status','cancelled','$.updatedAt',?) WHERE companion_id=? AND status IN('offered','accepted','running','paused')").run(at, id);
-      this.#world.changed();
-      this.#schedule.stopUnavailable();
+      this.#collaborations.cancelFor(id);
+      this.#reset.purgeDeletedOwner(id);
+      const tombstone: Companion = { id, name: '已删除联系人', description: '', persona: '联系人已删除。', model: '', avatar: 'custom',
+        proactive: false, active: false, builtin: false, createdAt: companion.createdAt, revision: (companion.revision ?? 1) + 1 };
+      this.#db.prepare('UPDATE companions SET deleted_at=?,data=? WHERE id=?').run(stamp(), JSON.stringify(tombstone), id);
+      this.#world.removeDeletedCompanion(id);
+      this.#db.prepare("DELETE FROM conversation_members WHERE companion_id=? AND conversation_id IN(SELECT id FROM conversations WHERE kind='group')").run(id);
+      this.#db.prepare("UPDATE companion_topics SET data=json_set(data,'$.moderatorId','user') WHERE json_extract(data,'$.moderatorId')=?").run(id);
+      const groups = this.#db.prepare("SELECT value FROM metadata WHERE key='contact-groups-v1'").get() as { value: string } | undefined;
+      if (groups) { const state = JSON.parse(groups.value); delete state.assignments[id]; state.revision++; this.#db.prepare("UPDATE metadata SET value=? WHERE key='contact-groups-v1'").run(JSON.stringify(state)); }
+      this.#db.prepare('INSERT OR REPLACE INTO metadata(key,value) VALUES(?,?)').run('companion-delete-pending/' + id, 'true');
+      this.#world.changed(); this.#schedule.stopUnavailable();
     }).immediate();
     this.#experience.resetOwner(id);
   }
@@ -912,18 +923,16 @@ export class CompanionsStore {
   }
 
   restoreBuiltin(id: string): Companion {
-    const seed = this.#seeds.find((item) => item.id === id);
+    const seed = this.#seeds.find(item => item.id === id);
     if (!seed) throw new Error('没有这个内置伙伴。');
     return this.#db.transaction(() => {
-      const found = this.#db.prepare('SELECT data FROM companions WHERE id=?').get(id);
-      let companion: Companion;
-      if (found) {
-        companion = { revision: 1, ...decode<Companion>(row(found).data) };
-        this.#db.prepare('UPDATE companions SET deleted_at=NULL WHERE id=?').run(id);
-      } else {
-        companion = { ...companionDraftSchema.parse(seed), id, active: id === 'deepseek-flash', builtin: true, createdAt: stamp(), revision: 1 };
-        this.#db.prepare('INSERT INTO companions(id,data) VALUES(?,?)').run(id, JSON.stringify(companion));
-      }
+      const found = this.#db.prepare("SELECT data FROM companions WHERE deleted_at IS NULL AND (id=? OR json_extract(data,'$.templateId')=?)").get(id, id);
+      if (found) return { revision: 1, ...decode<Companion>(row(found).data) };
+      // Re-adding a deleted template creates a distinct identity. Old messages
+      // keep their deleted author rather than being attributed to the new role.
+      const instanceId = this.#db.prepare('SELECT 1 FROM companions WHERE id=?').get(id) ? randomUUID() : id;
+      const companion: Companion = { ...companionDraftSchema.parse(seed), id: instanceId, templateId: id, active: id === 'deepseek-flash', builtin: true, createdAt: stamp(), revision: 1 };
+      this.#db.prepare('INSERT INTO companions(id,data) VALUES(?,?)').run(instanceId, JSON.stringify(companion));
       return companion;
     }).immediate();
   }
@@ -1136,7 +1145,7 @@ export class CompanionsStore {
           phase: status === 'queued' ? 'queued' : status === 'cancelled' ? 'cancelled' : 'interrupted',
           phaseStartedAt: stamp(),
           detail: status === 'queued' ? '已重新加入回复队列' : status === 'cancelled' ? '这次回复已取消' : '回复已中断，可继续恢复',
-          ...(status === 'queued' ? { stop: undefined, finishedAt: undefined } : {}),
+          ...(status === 'queued' ? { stop: undefined, finishedAt: undefined } : { finishedAt: checkpoint.progress?.finishedAt ?? stamp() }),
           startedAt: checkpoint.progress?.startedAt ?? previous.createdAt, updatedAt: stamp() };
         this.saveLoop(checkpoint);
       }
@@ -1228,6 +1237,7 @@ export class CompanionsStore {
       }
       if (previous?.turns.some((turn, index) => turn.topicPublicationRejection && !checkpoint.turns[index]?.topicPublicationRejection))
         throw new Error('已保存的最终草稿拒绝记录不能移除。');
+      if (checkpoint.progress) checkpoint.progress = advanceCompanionReplyTiming(previous?.progress, checkpoint.progress);
       this.#setMetadata(`loop/${checkpoint.sourceMessageId}/${checkpoint.companionId}` + (checkpoint.invocationKey ? '/invocation/' + checkpoint.invocationKey : ''), checkpoint);
       if (checkpoint.messageId) {
         const message = this.getMessage(checkpoint.messageId);
@@ -1292,6 +1302,7 @@ export class CompanionsStore {
 
   messages(input: { conversationId: string; topicId?: string | null; before?: number; after?: number; around?: string; limit?: number }): { messages: CompanionMessage[]; hasMore: boolean; hasNewer: boolean } {
     input = { ...input, conversationId: this.#conversationId(input.conversationId) };
+    if (input.topicId === null) input = { ...input, topicId: this.#topics.ensurePrimary(input.conversationId)?.id ?? null };
     const request = companionStorageCommandSchema.parse({ type: 'messages', ...input });
     if (request.type !== 'messages') throw new Error('Invalid message request.');
     this.#requireConversation(request.conversationId);
@@ -1334,6 +1345,10 @@ export class CompanionsStore {
       "NOT EXISTS(SELECT 1 FROM metadata draft WHERE draft.key='message-loop/'||m.id AND json_extract(draft.value,'$.status')!='done')",
       "(json_extract(m.request_fingerprint,'$.loopStep') IS NULL OR EXISTS(SELECT 1 FROM metadata final WHERE final.key='message-loop/'||m.id AND json_extract(final.value,'$.status')='done'))"];
     args.push(snapshot, request.before ?? Number.MAX_SAFE_INTEGER);
+    if (request.topicId !== undefined) {
+      conditions.push('(SELECT topic_id FROM companion_message_topics WHERE message_id=m.id) IS ?');
+      args.push(request.topicId === null && request.conversationId ? this.#topics.ensurePrimary(request.conversationId)?.id ?? null : request.topicId);
+    }
     const indexed = !!request.query || request.category !== 'all';
     const facets = [request.query ? 'tokens : (' + companionSearchMatch(request.query) + ')' : '',
       indexed && request.conversationId ? 'scope : "c' + companionSearchFacet(request.conversationId) + '"' : '',
@@ -1912,6 +1927,7 @@ export class CompanionsStore {
       });
       return { ok: true, topicCompactionPage: { ...page, items } };
     }
+    const contacts = companionContactGroups(this.#db, command); if (contacts) return contacts;
     const topicResponse = this.#topics.execute(command); if (topicResponse) return topicResponse;
     const collaborationResponse = this.#collaborations.execute(command); if (collaborationResponse) return collaborationResponse;
     const tagResponse = this.#memoryTags.execute(command); if (tagResponse) return tagResponse;
@@ -1961,6 +1977,8 @@ export class CompanionsStore {
       case 'companion.create': return { ok: true, companion: this.createCompanion(command.companion) };
       case 'companion.update': return { ok: true, companion: this.updateCompanion(command.id, command.companion, command.expectedRevision) };
       case 'companion.delete': this.deleteCompanion(command.id); return { ok: true };
+      case 'companion.deletion.pending': return { ok: true, pendingCompanionDeletions: rows(this.#db.prepare("SELECT key FROM metadata WHERE key GLOB 'companion-delete-pending/*'").all()).map(item => String(item.key).slice('companion-delete-pending/'.length)) };
+      case 'companion.deletion.complete': this.#db.prepare('DELETE FROM metadata WHERE key=?').run('companion-delete-pending/' + command.id); return { ok: true };
       case 'companion.restore-builtin': return { ok: true, companion: this.restoreBuiltin(command.id) };
       case 'conversation.open': return { ok: true, conversation: this.openPrivate(command.companionId) };
       case 'conversation.create-group': return { ok: true, conversation: this.createConversation(command.title, command.memberIds) };
@@ -2066,7 +2084,7 @@ export class CompanionsStore {
             if (checkpoint && checkpoint.status !== 'done' && !['failed', 'cancelled'].includes(checkpoint.progress?.phase ?? '')) {
               checkpoint.progress = { ...checkpoint.progress, workId: work.id, revision: (checkpoint.progress?.revision ?? 0) + 1,
                 phase: 'interrupted', detail: '应用已重启，先前回复可继续恢复',
-                startedAt: checkpoint.progress?.startedAt ?? work.createdAt, updatedAt: stamp() };
+                startedAt: checkpoint.progress?.startedAt ?? work.createdAt, finishedAt: checkpoint.progress?.updatedAt ?? work.updatedAt ?? work.createdAt, updatedAt: stamp() };
               this.saveLoop(checkpoint);
             }
             this.#db.prepare('UPDATE companion_work_queue SET status=?,data=? WHERE id=?').run('interrupted', JSON.stringify({ ...work, status: 'interrupted', resumeOnRestart: true, updatedAt: stamp() }), work.id);

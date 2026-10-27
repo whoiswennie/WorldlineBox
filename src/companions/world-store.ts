@@ -498,6 +498,11 @@ export class CompanionWorldStore {
     }
     this.syncOccupancy(state); this.save(state); this.dirty = true;
   }
+  removeDeletedCompanion(id: string): void {
+    const state = this.load();
+    state.slots = state.slots.filter(owner => owner !== id);
+    this.save(state); this.dirty = true;
+  }
   private save(state: StoredWorld): void {
     this.atomic(() => {
       const upsert = this.db.prepare('INSERT INTO companion_world_work_records(work_id,companion_id,status,data) VALUES(?,?,?,?) ON CONFLICT(work_id) DO UPDATE SET status=excluded.status,data=excluded.data WHERE data!=excluded.data');
@@ -688,8 +693,10 @@ export class CompanionWorldStore {
         activityStartedAtReal: iso(state.cursor), route: [], routinePhase: 'awake', lastDecisionAt: this.virtualFor(state, state.cursor) });
       if (!this.db.prepare('SELECT 1 FROM conversations WHERE id=?').get(privateRoom(id))) {
         this.db.prepare("INSERT INTO conversations(id,kind,title,private_companion_id,updated_at,hidden_at) VALUES(?,'group','伙伴世界',NULL,?,?)").run(privateRoom(id), iso(), iso());
-        this.db.prepare('INSERT INTO conversation_members(conversation_id,companion_id) VALUES(?,?)').run(privateRoom(id), id);
       }
+      // The private world port belongs to this live instance even when another
+      // host recorder created its room before a world body was activated.
+      this.db.prepare('INSERT OR IGNORE INTO conversation_members(conversation_id,companion_id) VALUES(?,?)').run(privateRoom(id), id);
       this.db.prepare('INSERT OR IGNORE INTO metadata(key,value) VALUES(?,?)').run('world-room/' + privateRoom(id), 'true');
     }
     state.actors = state.actors.filter(actor => activeIds.has(actor.companionId));

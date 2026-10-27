@@ -44,12 +44,13 @@ export class CompanionDocumentCatalogStore {
     }
     if (command.type === 'document.catalog.query') {
       const where = ['c.companion_id=?'], args: unknown[] = [owner];
+      if (command.recordsOnly) where.push("c.path NOT LIKE '提示词/%' AND c.path NOT LIKE '形象/%' AND c.path NOT IN('profile.md','同步状态.md')");
       const sort = command.sort ?? 'updated_desc', dateField = command.dateField ?? 'updatedAt';
       const sortColumn = sort === 'updated_desc' ? 'updated_at' : 'created_at', ascending = sort === 'created_asc';
       const dateColumn = dateField === 'createdAt' ? 'created_at' : 'updated_at';
       const from = command.from ? new Date(command.from).toISOString() : undefined, to = command.to ? new Date(command.to).toISOString() : undefined;
       if (from && to && from > to) throw new Error('开始时间不能晚于结束时间。');
-      const fingerprint = createHash('sha256').update(JSON.stringify([owner, command.directory, command.query.trim(), [...command.tags].sort(), command.noteIds ?? null, sort, dateField, from ?? null, to ?? null])).digest('hex');
+      const fingerprint = createHash('sha256').update(JSON.stringify([owner, command.directory, command.query.trim(), [...command.tags].sort(), command.noteIds ?? null, sort, dateField, from ?? null, to ?? null, !!command.recordsOnly])).digest('hex');
       if (command.directory) { where.push('c.path>=? AND c.path<?'); args.push(command.directory + '/', command.directory + '0'); }
       const tokens = command.query.trim().toLowerCase().split(/\s+/u).filter(Boolean).slice(0, 20);
       const long = tokens.filter(token => [...token].length >= 3);

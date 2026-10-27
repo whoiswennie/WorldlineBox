@@ -79,6 +79,7 @@ export class CompanionMemoryDocuments {
     void pending.finally(() => this.jobs.delete(pending));
     return pending;
   }
+  async forgetOwner(owner: string): Promise<void> { await this.catalog.forgetOwner(owner); }
   async close(): Promise<void> { this.closed = true; await Promise.allSettled(this.jobs); await this.catalog.close(); }
   private editableDirectory(relative: string): void {
     memoryLibraryPathParts(relative);
@@ -200,7 +201,7 @@ export class CompanionMemoryDocuments {
     if (from && to && from > to) throw new Error('开始时间不能晚于结束时间。');
     const sort = command.sort ?? 'updated_desc', dateField = command.dateField ?? 'updatedAt';
     const semanticMode = command.mode === 'semantic' && !!query;
-    const fingerprint = hash(JSON.stringify([session.owner.id, command.directory, query, [...tags].sort(), sort, dateField, from ?? null, to ?? null]));
+    const fingerprint = hash(JSON.stringify([session.owner.id, command.directory, query, [...tags].sort(), sort, dateField, from ?? null, to ?? null, !!command.recordsOnly]));
     let semanticCursor: string | undefined;
     if (semanticMode && command.cursor) {
       try {
@@ -211,7 +212,7 @@ export class CompanionMemoryDocuments {
     }
     const semantic = semanticMode ? await this.options.search?.(session.owner.id, query, command.limit, semanticCursor) : undefined;
     if (command.mode === 'semantic' && query && !this.options.search) throw new Error('原版 VCP 语义检索暂不可用。');
-    const result = await session.request({ type: 'document.catalog.query', companionId: session.owner.id, directory: command.directory,
+    const result = await session.request({ type: 'document.catalog.query', companionId: session.owner.id, directory: command.directory, recordsOnly: command.recordsOnly,
       query: semantic ? '' : query, tags, sort, dateField, from, to,
       ...(semantic ? { noteIds: semantic.hits.map(hit => hit.noteId) } : { cursor: command.cursor }), limit: command.limit });
     const page = result.documentCatalog;

@@ -43,6 +43,7 @@ export const companionMemoryDocumentCommands = [
   z.strictObject({ type: z.literal('memory.documents.tags.retry'), companionId: owner, path: relativePath, expectedRevision: revision }),
   z.strictObject({ type: z.literal('memory.documents.tags.cancel'), companionId: owner, path: relativePath, expectedRevision: revision }),
   z.strictObject({ type: z.literal('memory.documents.list'), companionId: owner,
+    recordsOnly: z.boolean().optional(),
     directory: z.string().max(1024).default(''), cursor: z.string().max(4096).optional(),
     query: z.string().trim().max(1000).optional(), tags: z.array(companionMemoryTagSchema).max(20).optional(), mode: z.enum(['keyword', 'semantic']).optional(),
     sort: companionMemoryDocumentSortSchema.optional(), dateField: companionMemoryDocumentDateFieldSchema.optional(),

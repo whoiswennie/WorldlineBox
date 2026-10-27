@@ -594,3 +594,14 @@ it('reads long automatic timeline text and rejects a restored stale automatic ex
   expect(stale.ok).toBe(false); expect(JSON.stringify(stale)).not.toContain('STALE_TIMELINE_COPY');
   expect(f.store.request({ type: 'memory.list', companionId: 'alice' }).memories).toEqual([]);
 });
+
+it('keeps configuration files out of the records-only list and its counts without deleting them', async () => {
+  const f = fixture(), { call } = f.make();
+  await call({ type: 'memory.documents.create', path: '资料/种植.md', content: '薄荷适合保持土壤微湿。' });
+  const prompts = path.join(f.directory, 'alice', '提示词'); mkdirSync(prompts, { recursive: true });
+  writeFileSync(path.join(prompts, '规则.md'), '行为配置，不是新的记忆。', 'utf8');
+  await expect.poll(async () => (await call({ type: 'memory.documents.list', limit: 64 })).documents?.items.some(item => item.path === '提示词/规则.md')).toBe(true);
+  const records = (await call({ type: 'memory.documents.list', recordsOnly: true, limit: 64 })).documents!;
+  expect(records.items.map(item => item.path)).toEqual(['资料/种植.md']); expect(records.total).toBe(1);
+  expect(existsSync(path.join(prompts, '规则.md'))).toBe(true);
+});

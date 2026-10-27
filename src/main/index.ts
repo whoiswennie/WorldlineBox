@@ -5068,7 +5068,17 @@ async function startApplication(): Promise<void> {
     if (!parsed.success) return { ok: false, error: '伙伴资产库请求格式不正确。' };
     const command = parsed.data;
     const operation = workspaceTail.then(async () => {
-      if (command.type === 'companion.assets.read' || command.type === 'companion.assets.prompt.save') return (await ensureCompanionService()).manageCompanionAssets(command);
+      if (command.type === 'companion.assets.read' || command.type === 'companion.assets.prompt.save' || command.type === 'companion.assets.profile.save') return (await ensureCompanionService()).manageCompanionAssets(command);
+      if (command.type === 'companion.assets.location') {
+        await (await ensureCompanionService()).manageCompanionAssets({ type: 'companion.assets.read', companionId: command.companionId });
+        const selected = await companionWorkspace.current();
+        if (!selected || !workerClient) throw new Error('伙伴资产库尚未就绪。');
+        await ensureCompanionLibrary(selected);
+        const result = await workerClient.request({ type: 'linked-folder.list', libraryId: selected.libraryId });
+        const folder = result.ok && result.type === 'linked-folder.list' ? result.folders.find(item => item.relativePath === '' && path.resolve(item.absoluteRootPath) === path.resolve(selected.memoryRoot)) : undefined;
+        if (!folder) throw new Error('伙伴实例尚未映射到资产管理。');
+        return { ok: true, assetLocation: { libraryId: selected.libraryId, libraryPath: selected.libraryPath, linkedFolderId: folder.linkedFolderId, relativePath: command.companionId } };
+      }
       if (command.type === 'model.resources.read' || command.type === 'model.resources.save') return (await ensureCompanionService()).manageModelResources(command);
       if (command.type.startsWith('memory.learning.')) return (await ensureCompanionService()).manageLearningSources(command as CompanionLearningWorkspaceCommand);
       if (command.type.startsWith('memory.documents.')) {

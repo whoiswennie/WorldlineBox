@@ -82,7 +82,7 @@ function fixture(stagedCreation = false) {
   const claim = store.request({ type: 'social.job.claim' });
   const job = claim.socialJob!, source = claim.socialMessage?.message ?? store.request(send).socialMessage!.message;
   expect(job).toMatchObject({ companionId: 'b', sourceMessageId: source.id, status: 'running' });
-  expect(source.topicId).toBeUndefined();
+  expect(source.topicId).toMatch(/^main_/u);
   const command = { type: 'social.job.game_context' as const, id: job.id, leaseToken: job.leaseToken!, companionId: 'b', conversationId: peer.id,
     sourceMessageId: source.id, sourceChecksum: sha(source.content), recipientIds: ['c'] };
   return { root, store, db, scope, human, room, topicId, task, source, job, command, advance, readset, drain, groupInput };
@@ -152,7 +152,7 @@ it('keeps topic-less game private messages out of automatic journals while ordin
   f.advance();
   const reply = f.store.request({ type: 'social.job.complete', id: f.job.id, leaseToken: f.job.leaseToken!, text: '本局私密行动已收到。',
     executionReadset: f.readset('b', f.source.conversationId, [f.source]) }).socialMessage!.message;
-  expect(reply.topicId).toBeUndefined();
+  expect(reply.topicId).toBe(f.source.topicId);
   expect(f.db.prepare('SELECT 1 FROM vcp_capture_jobs WHERE message_id=?').get(reply.id)).toBeUndefined();
   const human = f.store.appendMessage({ conversationId: f.scope.conversationId, authorId: 'user', content: '请告诉c明天有空一起聊天。', replyDirective: 'none' });
   const peer = f.store.request({ type: 'social.conversation.ensure', companionId: 'a', memberIds: ['a', 'c'] }).socialConversation!;

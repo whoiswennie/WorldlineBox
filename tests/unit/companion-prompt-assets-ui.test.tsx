@@ -29,7 +29,7 @@ it('loads only when expanded and saves the actual selected owner file with its c
     : { ok: true, companionAssets: initial });
   await mount(workspace, false); expect(workspace).not.toHaveBeenCalled();
   await act(async () => { const details = node!.querySelector('details')!; details.open = true; details.dispatchEvent(new Event('toggle')); });
-  expect(node!.textContent).toContain('初始模板只用于首次创建'); expect(node!.textContent).toContain('alice/提示词/对话.md');
+  expect(node!.textContent).toContain('不会随着聊天自动新增'); expect(node!.textContent).toContain('alice/提示词/对话.md');
   await edit('新的伙伴交流指导。'); await act(async () => button('保存到伙伴文件').click());
   expect(workspace).toHaveBeenLastCalledWith({ type: 'companion.assets.prompt.save', companionId: 'alice', path: '提示词/对话.md',
     expectedRevision: 'c'.repeat(64), content: '新的伙伴交流指导。' });

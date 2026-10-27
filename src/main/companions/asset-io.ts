@@ -15,4 +15,6 @@ export class CompanionAssetIo {
     this.closing = true;
     return this.closed ??= (async () => { while (this.pending.size) await Promise.allSettled([...this.pending]); })();
   }
+  /** Wait for already admitted readers/writers without closing other owners. */
+  async settle(): Promise<void> { await Promise.allSettled([...this.pending]); }
 }

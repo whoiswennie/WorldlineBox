@@ -23,15 +23,17 @@ describe('Companion task specification', () => {
     expect(snapshotDshTaskExecution({ task: { tools: [] } })).toMatchObject({ interactive: true, toolkit: true });
   });
 
-  it('reuses each owner’s managed workspace across Sessions while keeping different owners separate', async () => {
+  it('reuses the same invocation workspace across Sessions while isolating independent invocations and owners', async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), 'worldlinebox-task-space-')); roots.push(root);
     const storage = path.join(root, '.worldlinebox', 'companions', 'dsh-tasks');
     const first = await prepareDshTaskWorkspace({ workspaceRootPath: storage, recordScope: owner }, randomUUID(), root);
     const second = await prepareDshTaskWorkspace({ workspaceRootPath: storage, recordScope: owner }, randomUUID(), root);
-    expect(path.relative(storage, first.workspacePath)).toBe('companion-a');
+    expect(path.dirname(path.relative(storage, first.workspacePath))).toBe('companion-a');
     expect(second.workspacePath).toBe(first.workspacePath);
     const other = await prepareDshTaskWorkspace({ workspaceRootPath: storage, recordScope: { ...owner, companionId: 'companion-b' } }, randomUUID(), root);
     expect(other.workspacePath).not.toBe(first.workspacePath);
+    const independent = await prepareDshTaskWorkspace({ workspaceRootPath: storage, recordScope: { ...owner, invocationId: 'another-loop' } }, randomUUID(), root);
+    expect(independent.workspacePath).not.toBe(first.workspacePath);
     expect(first.taskWorkspaceRoot).toBe(storage);
   });
 

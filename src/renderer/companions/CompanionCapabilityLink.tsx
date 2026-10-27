@@ -16,7 +16,7 @@ export function CompanionCapabilityLink({ action, actionId, now, onOpen }: {
     title={action?.stage || action?.title || '查看已保存的执行过程'} onClick={() => onOpen(actionId)}>
     <span className="companions-capability-symbol"><Icon name="activity" /></span>
     <span className="companions-capability-title">{action?.title || '查看这次能力调用'}</span>
-    {action && <span className="companions-capability-state">{labels[action.status]}{working && <> · {elapsedTime(action.startedAt || action.createdAt, now)}</>}</span>}
+    {action && <span className="companions-capability-state">{labels[action.status]}{working && <> · {elapsedTime(action.startedAt || action.attemptCreatedAt || action.createdAt, now)}</>}</span>}
     <Icon name="chevron" />
   </button>;
 }

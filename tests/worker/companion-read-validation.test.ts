@@ -32,7 +32,7 @@ beforeEach(() => {
     fetchFn: async () => { throw new Error('A history read must not call a model'); }, busy: () => true, changed: () => undefined,
     report: error => { throw error; } });
   Object.assign(instance, { storage: { request: async (command: CompanionStorageCommand) => { commands.push(command); return store.request(command); } },
-    memory, sourceValidationRevision: 0, evidenceRevision: 0, options: { report: (error: unknown) => { throw error; } } });
+    memory, resettingCompanions: new Set(), sourceValidationRevision: 0, evidenceRevision: 0, options: { report: (error: unknown) => { throw error; } } });
 });
 
 afterEach(async () => {

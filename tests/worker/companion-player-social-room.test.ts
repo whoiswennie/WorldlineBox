@@ -31,17 +31,17 @@ it('keeps a normal user group editable after a formal introduction without grant
   expect(store.request({ type: 'social.conversations', companionId: 'alice', query: '重新命名' }).socialConversationPage?.items.map(room => room.id)).toContain(group.id);
 });
 
-it('merges indexed normal user groups and retains actual historical recipients and observers', () => {
+it('keeps same-member groups and their primary topics independent while retaining actual historical recipients', () => {
   const canonical = store.createConversation('原群', ['alice', 'bob']), other = store.createConversation('待合并群', ['bob', 'carol']);
   const first = store.appendMessage({ conversationId: canonical.id, authorId: 'alice', content: '原群的真实介绍。' });
   const second = store.appendMessage({ conversationId: other.id, authorId: 'carol', content: '旧群只有bob实际听到。' });
   const merged = store.updateConversation(other.id, { memberIds: ['bob', 'alice'] });
-  expect(merged.id).toBe(canonical.id);
-  expect(store.request({ type: 'messages', conversationId: canonical.id }).messages?.map(message => message.id)).toEqual([first.id, second.id]);
-  const social = store.request({ type: 'social.messages', conversationId: canonical.id }).socialMessagePage!;
-  expect(social.total).toBe(2); expect(social.items.find(item => item.message.id === second.id)?.recipientIds).toEqual(['bob']);
-  expect(store.request({ type: 'memory.sources.filter', companionId: 'alice', conversationId: canonical.id, ids: [second.id] }).memorySources).toEqual([]);
-  expect(store.request({ type: 'memory.sources.filter', companionId: 'bob', conversationId: canonical.id, ids: [second.id] }).memorySources?.map(message => message.id)).toEqual([second.id]);
+  expect(merged.id).toBe(other.id);
+  expect(store.request({ type: 'messages', conversationId: canonical.id }).messages?.map(message => message.id)).toEqual([first.id]);
+  const social = store.request({ type: 'social.messages', conversationId: other.id }).socialMessagePage!;
+  expect(social.total).toBe(1); expect(social.items.find(item => item.message.id === second.id)?.recipientIds).toEqual(['bob']);
+  expect(store.request({ type: 'memory.sources.filter', companionId: 'alice', conversationId: other.id, ids: [second.id] }).memorySources).toEqual([]);
+  expect(store.request({ type: 'memory.sources.filter', companionId: 'bob', conversationId: other.id, ids: [second.id] }).memorySources?.map(message => message.id)).toEqual([second.id]);
 });
 
 it.each(['source', 'target'] as const)('keeps both user room identities when the %s room has a durable topic checkpoint', side => {

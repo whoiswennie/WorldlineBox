@@ -6,10 +6,10 @@ import { CompanionsStore } from '../../src/companions/store';
 import { companionSearchTokens } from '../../src/shared/companion-search';
 const roots: string[] = []; const stores: CompanionsStore[] = [];
 afterEach(() => { for (const store of stores.splice(0)) store.close(); for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
-function fixture() { const root = mkdtempSync(path.join(tmpdir(), 'companion-history-')); roots.push(root); const filename = path.join(root, 'messages.sqlite'); const store = new CompanionsStore(filename); stores.push(store); return { store, filename }; }
-it('starts with contacts only and explicitly opens an empty chat; hide, restore and dissolution survive restart', () => {
+function fixture() { const root = mkdtempSync(path.join(tmpdir(), 'companion-history-')); roots.push(root); const filename = path.join(root, 'messages.sqlite'); const store = new CompanionsStore(filename); stores.push(store); store.restoreBuiltin('gpt'); store.restoreBuiltin('kimi'); return { store, filename }; }
+it('starts with explicitly added contacts only and explicitly opens an empty chat; hide, restore and dissolution survive restart', () => {
   const { store, filename } = fixture();
-  expect(store.state().companions).toHaveLength(15); expect(store.state().conversations).toHaveLength(0);
+  expect(store.state().companions).toHaveLength(2); expect(store.state().conversations).toHaveLength(0);
   store.restoreBuiltin('gpt'); expect(store.state().conversations).toHaveLength(0);
   const room = store.openPrivate('gpt'); expect(store.messages({ conversationId: room.id }).messages).toEqual([]);
   const message = store.appendMessage({ conversationId: room.id, authorId: 'user', content: '保留私聊记录' });
@@ -45,7 +45,7 @@ it('pages in both directions and locates a bounded context without gaps or dupli
   const around = store.messages({ conversationId: room.id, around: all[70]!.id });
   expect(around.messages.map(item => item.id)).toEqual(all.slice(46, 96).map(item => item.id)); expect(around.hasMore && around.hasNewer).toBe(true);
   expect(store.messages({ conversationId: room.id, after: all[1]!.sequence, before: all[10]!.sequence }).messages.map(item => item.id)).toEqual(all.slice(2, 10).map(item => item.id));
-  const other = store.openPrivate('kimi'); expect(() => store.messages({ conversationId: other.id, around: all[70]!.id })).toThrow('不属于');
+  const other = store.openPrivate('kimi'); expect(() => store.messages({ conversationId: other.id, around: all[70]!.id })).toThrow(/不属于|属于别的会话/u);
 });
 it('indexes short Chinese, literal punctuation, normalized width, filename references and filtered cursor pages', () => {
   const { store } = fixture(); const room = store.createConversation('', ['gpt', 'kimi']);

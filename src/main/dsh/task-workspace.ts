@@ -1,4 +1,5 @@
 import path from 'node:path';
+import { createHash } from 'node:crypto';
 import { lstat, mkdir, realpath } from './disk';
 import type { DshTaskExecutionOptions } from './task-execution';
 
@@ -34,9 +35,11 @@ export async function prepareDshTaskWorkspace(execution: DshTaskExecutionOptions
   const owner = execution.recordScope?.companionId;
   if (!owner || !/^[A-Za-z0-9_-]{1,100}$/.test(owner) || !/^[a-f0-9-]{36}$/.test(taskId)) throw new Error('Managed task workspaces require a trusted owner and task identity.');
   const root = await ordinaryDirectory(execution.workspaceRootPath, true);
-  // Native DSH groups Sessions by their exact cwd. Reuse one stable directory
-  // per owner; its display title is independent of names and filesystem paths.
-  const workspacePath = await ordinaryDirectory(path.join(root, owner), true);
+  // Chained calls within one invocation share their files. Independent loops
+  // belonging to the same character must not overwrite each other's output.
+  const invocation = execution.recordScope?.invocationId ?? execution.recordScope?.actionId ?? taskId;
+  const slot = createHash('sha256').update(invocation).digest('hex').slice(0, 24);
+  const workspacePath = await ordinaryDirectory(path.join(root, owner, slot), true);
   if (!inside(root, workspacePath)) throw new Error('The task workspace escaped its library directory.');
   return { workspacePath, taskWorkspaceRoot: root };
 }

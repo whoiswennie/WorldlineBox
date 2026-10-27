@@ -140,6 +140,8 @@ it('persists a FIFO queue with one active location per role and refills after re
     f.store.setCompanionActive(role.id, true);
     roles.push(f.store.openPrivate(role.id));
   }
+  // This fixture exercises serial FIFO; the product default permits three tasks.
+  for (const conversation of roles) f.store.request({ type: 'tasks.concurrency.set', companionId: conversation.memberIds[0]!, limit: 1 });
   for (let round = 0; round < 7; round++) for (const [index, conversation] of roles.entries()) {
     const source = f.store.appendMessage({ conversationId: conversation.id, authorId: 'user', content: '队列消息 ' + round, replyDirective: 'none' });
     f.store.request({ type: 'work.enqueue', work: { id: 'work_' + round + '_' + index, conversationId: conversation.id, sourceMessageId: source.id,
@@ -189,26 +191,24 @@ afterEach(() => {
 });
 
 describe('CompanionsStore real SQLite persistence', () => {
-  it('adds missing catalogue contacts while preserving edits, memory and history and keeping built-ins available', () => {
+  it('only instantiates explicitly selected catalogue templates and preserves existing instances across restart', () => {
     const { store, databasePath } = fixture();
     store.updateCompanion('deepseek-sister', { ...seeds[0]!, name: '自定义姐姐', description: '我的签名', persona: '用户编辑的人设' });
     const original = store.appendMessage({ conversationId: 'private-deepseek-sister', authorId: 'user', content: '迁移前的消息' });
     store.request({ type: 'memory.save', memory: { companionId: 'deepseek-sister', content: '迁移前的约定', conversationId: 'private-deepseek-sister' } });
-    expect(() => store.deleteCompanion('deepseek-flash')).toThrow('不能删除');
     close(store);
     const upgraded = new CompanionsStore(databasePath); stores.push(upgraded);
     const state = upgraded.state();
-    expect(state.companions).toHaveLength(15);
+    expect(state.companions).toHaveLength(2);
     expect(state.companions.find(item => item.id === 'deepseek-sister')).toMatchObject({ name: '自定义姐姐', description: '我的签名', persona: '用户编辑的人设' });
     expect(state.companions.some(item => item.id === 'deepseek-flash')).toBe(true);
     expect(upgraded.getMessage(original.id).content).toBe('迁移前的消息');
     expect(upgraded.listMemory('deepseek-sister').map(item => item.content)).toContain('迁移前的约定');
     for (const profile of BUILTIN_COMPANIONS.slice(2)) {
-      expect(state.companions.find(item => item.id === profile.id)).toMatchObject({ avatar: profile.avatar, builtin: true, model: '' });
+      expect(upgraded.restoreBuiltin(profile.id)).toMatchObject({ avatar: profile.avatar, builtin: true, model: '' });
       expect(upgraded.messages({ conversationId: upgraded.openPrivate(profile.id).id }).messages).toHaveLength(0);
     }
     upgraded.updateCompanion('gpt', { ...BUILTIN_COMPANIONS.find(item => item.id === 'gpt')!, name: '小白龙', avatar: 'custom', avatarAttachmentId: undefined, persona: '我修改了白龙的设定' });
-    expect(() => upgraded.deleteCompanion('doro')).toThrow('不能删除');
     close(upgraded);
     const reopened = new CompanionsStore(databasePath); stores.push(reopened);
     expect(reopened.state().companions).toHaveLength(15);
@@ -424,7 +424,6 @@ describe('CompanionsStore real SQLite persistence', () => {
   it('retains built-in contacts with their edits and history while allowing removal of custom contacts', () => {
     const { databasePath, store } = fixture();
     const modified = store.updateCompanion('deepseek-sister', { ...seeds[0]!, name: '海边的大肥鱼', persona: '修改后的角色设定' });
-    expect(() => store.deleteCompanion('deepseek-sister')).toThrow('不能删除');
     expect(store.openPrivate('deepseek-sister').memberIds).toEqual(['deepseek-sister']);
     close(store);
     const reopened = open(databasePath);
@@ -536,12 +535,14 @@ describe('CompanionsStore real SQLite persistence', () => {
     expect(again.state().companions.find((companion) => companion.id === 'deepseek-sister')?.llm).toBeUndefined();
   });
 
-  it('starts built-in contacts with global model inheritance', () => {
+  it('starts with no contacts and inherits the global connection only for explicitly added templates', () => {
     const root = mkdtempSync(path.join(tmpdir(), 'worldlinebox-default-companions-'));
     roots.push(root);
     const store = new CompanionsStore(path.join(root, 'messages.sqlite'));
     stores.push(store);
-    expect(store.state().companions).toHaveLength(BUILTIN_COMPANIONS.length);
+    expect(store.state().companions).toEqual([]);
+    store.restoreBuiltin('deepseek-flash');
+    expect(store.state().companions).toHaveLength(1);
     for (const companion of store.state().companions) {
       expect(companion.model).toBe('');
       expect(companion.llm).toBeUndefined();

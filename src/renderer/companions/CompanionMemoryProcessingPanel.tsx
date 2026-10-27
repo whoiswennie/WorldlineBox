@@ -56,13 +56,13 @@ function useMemoryProcessing({ companionId, api, request }: Props, limit: number
 }
 
 /** An owner-scoped entrance, shared by the memory library and the current chat. */
-export function CompanionMemoryProcessingSummary({ onOpen, ...props }: Props & { onOpen(): void }) {
+export function CompanionMemoryProcessingSummary({ onOpen, compact = false, ...props }: Props & { onOpen(): void; compact?: boolean }) {
   const { data, error } = useMemoryProcessing(props, 1);
   const current = data?.jobs.find(job => job.status === 'running' && (!job.schedule || job.schedule.scheduleKind === 'running'));
-  return <button type="button" className="companion-memory-processing-summary" aria-label="查看记忆处理进度" onClick={onOpen}>
+  return <button type="button" className={'companion-memory-processing-summary' + (compact ? ' is-compact' : '')} aria-label="查看记忆处理进度" onClick={onOpen}>
     <span className={'memory-processing-summary-icon' + (current ? ' is-working' : '')}><Icon name="activity" size={16} /></span>
-    <span><strong>记忆整理</strong><small>{error ? '记录暂时不可用，点此查看' : !data ? '正在读取处理进度…' : current ? kinds[current.kind] + '进行中' : data.summary.failed ? `${data.summary.failed} 项需要处理` : data.summary.pending ? `${data.summary.pending} 项等待整理` : data.summary.running ? `${data.summary.running} 项已领取，等待核对执行条件` : data.summary.completed ? '已整理，记录可查' : '还没有需要整理的来源'}</small>{!error && data?.schedule && <small className="memory-processing-summary-next">{data.schedule.nextCheckAt
-      ? <ScheduleMoment at={data.schedule.nextCheckAt} label="下次检查" basis={data.schedule.timeBasis} /> : data.schedule.condition}</small>}</span>
+    <span><strong>记忆整理</strong><small>{error ? '暂不可用，查看详情' : !data ? compact ? '正在读取…' : '正在读取处理进度…' : current ? kinds[current.kind] + '进行中' : data.summary.failed ? `${data.summary.failed} 项需要处理` : data.summary.pending ? `${data.summary.pending} 项等待整理` : data.summary.running ? compact ? '等待执行条件' : `${data.summary.running} 项已领取，等待核对执行条件` : data.summary.completed ? '已整理，记录可查' : compact ? '暂无待整理内容' : '还没有需要整理的来源'}</small>{!error && data?.schedule && <small className="memory-processing-summary-next">{data.schedule.nextCheckAt
+      ? compact ? <span title={'下次检查：' + timestamp(data.schedule.nextCheckAt) + '（' + clockLabel(data.schedule.timeBasis) + '）'}><Icon name="clock" size={11} />下次 <time dateTime={data.schedule.nextCheckAt}>{new Date(data.schedule.nextCheckAt).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', hour12: false })}</time><em>{clockLabel(data.schedule.timeBasis).slice(0, 2)}</em></span> : <ScheduleMoment at={data.schedule.nextCheckAt} label="下次检查" basis={data.schedule.timeBasis} /> : data.schedule.condition}</small>}</span>
     <Icon name="chevron-right" size={14} />
   </button>;
 }

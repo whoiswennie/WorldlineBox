@@ -23,7 +23,7 @@ beforeEach(() => {
   const source = store.appendMessage({ conversationId: conversation.id, authorId: 'user', content: '建立一个独立讨论话题。', replyDirective: 'none' });
   frame = { companion: store.state().companions[0]!, conversation, messages: [source], sourceMessage: source, memories: [],
     invocation: { id: 'actual_job', kind: 'player', companionId: 'alice', conversationId: conversation.id,
-      sourceMessageId: source.id, goal: source.content, status: 'running', createdAt: source.createdAt,
+      sourceMessageId: source.id, topicId: source.topicId, goal: source.content, status: 'running', createdAt: source.createdAt,
       messagePort: { kind: 'conversation' }, authorization: { kind: 'player', sourceMessageIds: [source.id], externalActions: false } } };
 });
 afterEach(() => {
@@ -41,7 +41,7 @@ async function legacyActivityFinal(withEffect = false, finalObservationFingerpri
   const conversation = store.openPrivate('alice');
   const source = store.appendMessage({ conversationId: conversation.id, authorId: 'user', content: '建立一个独立讨论话题。', replyDirective: 'none' });
   frame = { companion: store.state().companions[0]!, conversation, messages: [source], sourceMessage: source, memories: [],
-    invocation: { id: 'actual_job', kind: 'player', companionId: 'alice', conversationId: conversation.id, sourceMessageId: source.id,
+    invocation: { id: 'actual_job', kind: 'player', companionId: 'alice', conversationId: conversation.id, sourceMessageId: source.id, topicId: source.topicId,
       goal: source.content, status: 'running', createdAt: source.createdAt, messagePort: { kind: 'conversation' },
       authorization: { kind: 'player', sourceMessageIds: [source.id], externalActions: false } } };
   const scope = { companionId: 'alice', conversationId: frame.conversation.id };
@@ -123,7 +123,7 @@ it('reopens an obsolete done final for new native work without spending the thir
   await expect(runCompanionStructuredAgent({ context: current.context, frame, capabilities: f.capabilities(), finalObservationFingerprint: current.fingerprint,
     reviseFinal }, config, undefined, { fetchFn: later })).rejects.toThrow('第三次模型语义错误');
   expect(later).not.toHaveBeenCalled();
-  expect(store.request({ type: 'topic.list', conversationId: frame.conversation.id, readerId: 'alice' }).topics).toHaveLength(2);
+  expect(store.request({ type: 'topic.list', conversationId: frame.conversation.id, readerId: 'alice' }).topics?.filter(topic => !topic.isPrimary)).toHaveLength(2);
 });
 it.each(['withdrawn', 'lease_changed', 'cancelled'] as const)('does not let a changed observation reopen a saved final after the live activity is %s', async invalid => {
   const f = await legacyActivityFinal(true, '[]');
@@ -162,7 +162,7 @@ it('repairs a saved done final only for the same still-uncommitted actual activi
   expect(revised.status).toBe('done'); expect(revised.turns.slice(0, f.run.turns.length)).toEqual(f.run.turns);
   expect(revised.effects).toEqual(f.run.effects); expect(revised.effects).toHaveLength(1);
   expect(revised.rejectedFinals).toMatchObject([{ step: 1, proposalChecksum: f.reject.proposalChecksum, activityTaskId: f.task.id, activityStep: 0 }]);
-  expect(store.request({ type: 'topic.list', conversationId: frame.conversation.id, readerId: 'alice' }).topics).toHaveLength(1);
+  expect(store.request({ type: 'topic.list', conversationId: frame.conversation.id, readerId: 'alice' }).topics?.filter(topic => !topic.isPrimary)).toHaveLength(1);
   expect(store.request({ type: 'activity.get', ...f.scope, id: f.task.id }).activityTask).toMatchObject({ status: 'running', step: 0 });
 });
 it.each(['cancelled', 'failed', 'succeeded', 'withdrawn', 'lease_changed', 'lease_expired', 'wrong_checksum', 'wrong_step', 'foreign_task'] as const)('does not reopen a legacy final when its actual activity proof is %s', async invalid => {
@@ -255,7 +255,7 @@ it('keeps a confirmed native effect while repairing only the final empty continu
     capabilities: companionTopicCapabilities(request, { companionId: 'alice', conversationId: frame.conversation.id },
       companionRecallCapabilities(request, { companionId: 'alice', conversationId: frame.conversation.id })) }, config, undefined, { fetchFn })).toEqual(wait);
   expect(fetchFn).toHaveBeenCalledTimes(3);
-  expect(store.request({ type: 'topic.list', conversationId: frame.conversation.id, readerId: 'alice' }).topics).toHaveLength(1);
+  expect(store.request({ type: 'topic.list', conversationId: frame.conversation.id, readerId: 'alice' }).topics?.filter(topic => !topic.isPrimary)).toHaveLength(1);
   const id = createHash('sha256').update(JSON.stringify(['alice', frame.conversation.id, frame.invocation!.id])).digest('hex');
   expect(store.request({ type: 'agent.run.get', companionId: 'alice', id }).agentRun?.turns).toHaveLength(2);
 });
@@ -273,7 +273,7 @@ it('recovers a committed topic effect after receipt acknowledgement fails, witho
     arguments: JSON.stringify({ action: 'topic', parameters: { action: 'create', title: '唯一讨论', kind: 'discussion' } }) } }))
     .mockResolvedValueOnce(response('{"answer":"话题已建立"}'));
   await expect(runCompanionStructuredAgent({ context: domain, frame, capabilities: capabilities() }, config, undefined, { fetchFn })).rejects.toThrow('acknowledgement');
-  const topics = () => store.request({ type: 'topic.list', conversationId: frame.conversation.id, readerId: 'alice' }).topics!;
+  const topics = () => store.request({ type: 'topic.list', conversationId: frame.conversation.id, readerId: 'alice' }).topics!.filter(topic => !topic.isPrimary);
   expect(topics()).toHaveLength(1);
   store.close(); store = new CompanionsStore(path.join(root, 'state.sqlite'), seeds);
   await expect(runCompanionStructuredAgent({ context: domain, frame, capabilities: capabilities() }, config, undefined, { fetchFn })).resolves.toEqual({ answer: '话题已建立' });

@@ -97,7 +97,7 @@ it('holds a paused sender outbox, clears its typing lane and continues ordinary 
   const f = fixture(); pending(f.store, f.room.id, 'alice', 'paused-sender', f.topic.id); pause(f, 'alice');
   const ordinary = pending(f.store, f.room.id, 'bob', 'ordinary', null); advance(f.store, 1300);
   const ready = f.store.request({ type: 'social.job.claim' });
-  expect(ready.socialMessage!.message.topicId).toBeUndefined(); expect(ready.socialJob!.companionId).toBe('alice');
+  expect(ready.socialMessage!.message.topicId).toMatch(/^main_/u); expect(ready.socialJob!.companionId).toBe('alice');
   const held = inspect(f.filename, "SELECT data FROM companion_social_outbox WHERE client_id='paused-sender'");
   expect(held.typingNotBefore).toBeUndefined(); expect(held.topicId).toBe(f.topic.id);
   const db = new Database(f.filename); try { expect(db.prepare("SELECT status FROM companion_social_outbox WHERE client_id='paused-sender'").get()).toEqual({ status: 'pending' }); } finally { db.close(); }

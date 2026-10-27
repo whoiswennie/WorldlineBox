@@ -25,6 +25,7 @@ const candidate=(source:CompanionMessage)=>({content:'虚构身份不是现实�
 it('revokes deleted discussion bodies, their derived index receipts and in-flight indexing while preserving actual participation',()=>{
   const f=fixture();
   let topic=f.store.request({type:'topic.create',conversationId:f.room,readerId:'user',title:'删除后不可回读的讨论',kind:'discussion',participantIds:['alice'],tags:['删除边界']}).topic!;
+  f.store.request({type:'topic.leave',conversationId:f.room,topicId:topic.id,readerId:'alice'});
   topic=f.store.request({type:'topic.join',conversationId:f.room,topicId:topic.id,readerId:'alice'}).topic!;
   const source=f.store.appendMessage({conversationId:f.room,authorId:'user',content:'DELETE_RAW_DISCUSSION_BODY'});
   const note=f.store.request({type:'memory.record',...f.scope,candidate:{...candidate(source),content:source.content,diaryName:'经历'}}).memories![0]!;
@@ -40,6 +41,7 @@ it('revokes deleted discussion bodies, their derived index receipts and in-fligh
   const db=new(Database as {new(file:string):CompanionConnection})(f.file);
   try{expect((db.prepare("SELECT json_extract(data,'$.status') status FROM vcp_memory_notes WHERE id=?").get(note.id) as {status:string}).status).toBe('invalid');}
   finally{db.close();}
+  for(;;){const entry=f.store.request({type:'memory.outbox.claim',companionId:'alice'}).memoryOutbox;if(!entry)break;deliveries.push(entry);}
   const participation=deliveries.find(entry=>entry.note.metadata?.trust==='actual_participation_only')!;
   expect(participation).toBeDefined();
   expect(f.store.request({type:'memory.sources.filter',...f.scope,ids:participation.note.sources.map(entry=>entry.messageId)}).memorySources).toHaveLength(1);
@@ -157,7 +159,7 @@ it('queries topic tags and real participation scopes without exposing other read
   expect(index.workingState).toBeUndefined();expect(JSON.stringify(alice)).not.toContain('BOB_ROLE_SECRET');
   expect(query('alice',{query:'absent'}).worldKnowledge?.items).toEqual([]);
   expect(query('alice',{tags:['absent']}).worldKnowledge?.items).toEqual([]);
-  expect(query('carol').worldKnowledge?.items).toEqual([]);
+  expect(query('carol').worldKnowledge?.items).not.toContainEqual(expect.objectContaining({ topicId:topic.id }));
   const bobInvited=query('bob',{topicId:topic.id});expect(bobInvited.worldKnowledge?.items[0]).toMatchObject({participation:'invited'});
   expect(JSON.stringify(bobInvited)).not.toContain('BOB_ROLE_SECRET');expect(JSON.stringify(bobInvited)).not.toContain('ALICE_ROLE_PRIVATE');
   const detail=query('alice',{topicId:topic.id});expect(detail.worldKnowledge?.items[0]).toMatchObject({workingState:{state:{role:'detective'}}});

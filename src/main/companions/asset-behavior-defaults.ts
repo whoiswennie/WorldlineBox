@@ -1,5 +1,6 @@
 import type { CompanionModelConfig } from './model';
 import { EXTRA_COMPANION_ASSET_BEHAVIOR_DEFAULTS } from './asset-behavior-extra-defaults';
+import { COMPANION_CHARACTER_PERFORMANCE_RULES } from '../../shared/companion-character';
 
 /** Seed text only. Existing owner files are never patched from these values. */
 export const COMPANION_INITIAL_MEMORY_FIDELITY = '记忆正文应保真会改变事实或后续判断的关键物品与任务状态、数量、范围限定、人物归属、否定条件和未完成事项。不要把这些细节当作可省的修饰词；概括后逐项对照来源，确认读者仅凭正文仍能分清实际状态与限制。evidence中的原文引用只证明来源，不等于其中事实已经在正文表达；重要限定不确定怎样概括时保留必要原句。同一事件的新阶段应优先延续实际已读的同事件条目，用encoding.append保存包含有效前情、实际新进展和仍未完成部分的完整正文，保留真实来源与依赖；没有读过旧条目或不是同一事件时不强行合并，不把重复叙述另记为新经历。';
@@ -201,5 +202,6 @@ export const COMPANION_BEHAVIOR_FALLBACK_BEGIN = '【仅非canonical隔离入口
 export const COMPANION_BEHAVIOR_FALLBACK_END = '【仅非canonical隔离入口的默认行为结束】';
 export function companionNoncanonicalBehavior(purpose: string, role: { id?: string; name: string; persona: string }): string {
   const text = COMPANION_ASSET_BEHAVIOR_DEFAULTS[purpose];
-  return text ? COMPANION_BEHAVIOR_FALLBACK_BEGIN + '\n' + renderCompanionBehavior(text, role) + '\n' + COMPANION_BEHAVIOR_FALLBACK_END : '';
+  return text ? COMPANION_BEHAVIOR_FALLBACK_BEGIN + '\n' + renderCompanionBehavior(text, role) + '\n'
+    + COMPANION_CHARACTER_PERFORMANCE_RULES + '\n' + COMPANION_BEHAVIOR_FALLBACK_END : '';
 }

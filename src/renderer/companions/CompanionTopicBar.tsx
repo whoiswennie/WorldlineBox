@@ -10,10 +10,11 @@ export const companionTopicStatus = { active: '进行中', paused: '已暂停', 
 function parseTags(value: string) { return [...new Set(value.split(/[,，\s]+/).map(tag => tag.trim()).filter(Boolean))]; }
 function invalidTags(value: string) { const tags = parseTags(value); return tags.length > 50 || tags.some(tag => tag.length > 80); }
 
-export function CompanionTopicBar({ conversationId, members, activeTopicId, topics, historyFilter, request, onActivate, onChanged, onCatalog, onDeleted, onHistoryFilter }: {
+export function CompanionTopicBar({ conversationId, members, activeTopicId, defaultTopicId, topics, historyFilter, request, onActivate, onChanged, onCatalog, onDeleted, onHistoryFilter }: {
   readonly conversationId: string;
   readonly members: readonly { id: string; name: string }[];
   readonly activeTopicId?: string;
+  readonly defaultTopicId?: string;
   readonly topics: readonly CompanionTopic[];
   readonly historyFilter: CompanionTopicHistoryFilter;
   readonly request: (input: CompanionsRequest) => Promise<CompanionsResponse | undefined>;
@@ -137,16 +138,16 @@ export function CompanionTopicBar({ conversationId, members, activeTopicId, topi
       if (event.shiftKey && (document.activeElement === first || document.activeElement === event.currentTarget)) { event.preventDefault(); last?.focus(); }
       else if (!event.shiftKey && (document.activeElement === last || document.activeElement === event.currentTarget)) { event.preventDefault(); first.focus(); }
     }}>
-    <header className="companions-topic-heading"><div><h3>话题</h3><p>把游戏、故事和日常分开，随时接着聊。</p></div><button className="companion-icon-button" aria-label="关闭话题管理" onClick={close}><Icon name="close" /></button></header>
+    <header className="companions-topic-heading"><div><h3>话题</h3><p>每段聊天都保存在独立话题中，切换后随时接着聊。</p></div><button className="companion-icon-button" aria-label="关闭话题管理" onClick={close}><Icon name="close" /></button></header>
     <div className="companions-topic-body">
     <section className="companions-topic-current-card" aria-label="当前聊天位置">
-      <div><span>当前发送到</span><strong>{activeTopicId ? current?.title ?? '正在读取话题…' : '日常聊天'}</strong></div>
+      <div><span>当前发送到</span><strong>{current?.title ?? '正在读取话题…'}</strong></div>
       {current && <span className={`companions-topic-status is-${current.status}`} role="status">{companionTopicStatus[current.status]}</span>}
       <div className="companions-topic-current-actions">
-      {current?.status === 'active' && <button disabled={busy} onClick={() => void transition('topic.pause')}>暂停话题</button>}
+      {current?.status === 'active' && !current.isPrimary && <button disabled={busy} onClick={() => void transition('topic.pause')}>暂停话题</button>}
       {current?.status === 'paused' && <button disabled={busy} onClick={() => void transition('topic.resume')}>恢复话题</button>}
-      {current && current.status !== 'closed' && <button disabled={busy} onClick={() => void transition('topic.close')}>结束话题</button>}
-      {activeTopicId && <button disabled={busy} onClick={() => void activate(null)}>返回日常</button>}
+      {current && !current.isPrimary && current.status !== 'closed' && <button disabled={busy} onClick={() => void transition('topic.close')}>结束话题</button>}
+      {activeTopicId && activeTopicId !== defaultTopicId && <button disabled={busy} onClick={() => void activate(defaultTopicId ?? null)}>返回主要对话</button>}
       </div>
     </section>
     <div className="companions-topic-list-heading"><h4>聊天话题</h4><button className="companion-primary-button" disabled={busy} aria-expanded={creating} onClick={() => setCreating(value => !value)}><Icon name="plus" />新建话题</button></div>
@@ -154,7 +155,7 @@ export function CompanionTopicBar({ conversationId, members, activeTopicId, topi
       <input autoFocus aria-label="话题名称" placeholder="给话题起个名字，例如：狼人杀" maxLength={120} value={title} onChange={event => setTitle(event.target.value)} disabled={busy} />
       <select aria-label="话题类型" value={kind} onChange={event => setKind(event.target.value as CompanionTopic['kind'])} disabled={busy}><option value="discussion">讨论</option><option value="game">游戏</option><option value="story">故事</option></select>
       <input aria-label="话题标签" placeholder="标签，用逗号分隔（可选）" maxLength={1000} value={tags} onChange={event => setTags(event.target.value)} disabled={busy} />
-      <fieldset className="companions-topic-invites"><legend>邀请伙伴（对方自行决定加入）</legend>{members.map(member => <label key={member.id}><input type="checkbox" checked={invitedIds.includes(member.id)} onChange={event => setInvitedIds(current => event.target.checked ? [...current, member.id] : current.filter(id => id !== member.id))} disabled={busy} />{member.name}</label>)}</fieldset>
+      <fieldset className="companions-topic-invites"><legend>{kind === 'discussion' ? '参与聊天的伙伴' : '邀请伙伴（对方自行决定加入）'}</legend>{members.map(member => <label key={member.id}><input type="checkbox" checked={invitedIds.includes(member.id)} onChange={event => setInvitedIds(current => event.target.checked ? [...current, member.id] : current.filter(id => id !== member.id))} disabled={busy} />{member.name}</label>)}</fieldset>
       {invalidTags(tags) && <p role="alert">最多 50 个标签，每个标签最多 80 个字。</p>}
       <button className="companion-primary-button" disabled={busy || !title.trim() || invalidTags(tags)} type="submit">创建并进入</button>
       <button type="button" disabled={busy} onClick={() => setCreating(false)}>取消</button>
@@ -173,13 +174,13 @@ export function CompanionTopicBar({ conversationId, members, activeTopicId, topi
             <details className="companions-topic-more"><summary aria-label={`管理${topic.title}`}>更多</summary><div>
               <button disabled={busy} onClick={() => setEditing({ topic, title: topic.title, tags: topic.tags.join(', '), invitedIds: topic.invitedIds, fork: false })}>编辑话题</button>
               <button disabled={busy} onClick={() => setEditing({ topic, title: `${topic.title} · 分支`.slice(0, 120), tags: topic.tags.join(', '), invitedIds: topic.invitedIds, fork: true })}>创建分支</button>
-              {topic.participantIds.includes('user') && <button disabled={busy} onClick={() => void membership('topic.leave', topic)}>退出话题</button>}
-              <button className="companions-topic-danger" disabled={busy} onClick={() => setDeleting(topic.id)}>删除</button>
+              {!topic.isPrimary && topic.participantIds.includes('user') && <button disabled={busy} onClick={() => void membership('topic.leave', topic)}>退出话题</button>}
+              {!topic.isPrimary && <button className="companions-topic-danger" disabled={busy} onClick={() => setDeleting(topic.id)}>删除</button>}
             </div></details>
           </div>
           {deleting === topic.id && <div className="companions-topic-delete" role="alert"><span>删除「{topic.title}」的话题及工作状态？删除后无法查看该话题原文，记录不会转入日常。</span><button disabled={busy} onClick={() => void transition('topic.delete', topic)}>确认删除话题</button><button onClick={() => setDeleting(undefined)}>取消删除</button></div>}
         </article>)}
-        {!history.length && !historyLoading && <p className="companions-topic-empty">{query || tagQuery ? '没有找到匹配的话题，试试其他关键词。' : '还没有话题。新建一个，留住这段聊天的来龙去脉。'}</p>}
+        {!history.length && !historyLoading && <p className="companions-topic-empty">{query || tagQuery || status !== 'all' ? '没有找到匹配的话题，试试其他筛选条件。' : '话题暂未加载，请刷新重试。已有聊天记录会保留。'}</p>}
         {historyLoading && <p role="status">正在读取话题列表…</p>}
         {nextCursor && <button className="companions-topic-load-more" disabled={historyLoading} onClick={() => void loadHistory(nextCursor)}>读取更早的话题</button>}
       </div>
@@ -192,7 +193,7 @@ export function CompanionTopicBar({ conversationId, members, activeTopicId, topi
       </form>}
     </section>
     <label className="companions-topic-history">聊天记录显示<select aria-label="话题历史筛选" value={historyFilter} onChange={event => onHistoryFilter(event.target.value as CompanionTopicHistoryFilter)}>
-        <option value="current">仅当前聊天</option><option value="all">全部话题与日常</option><option value="ordinary">仅日常</option>
+        <option value="current">仅当前话题</option><option value="all">全部话题</option><option value="ordinary">主要对话</option>
         {historyFilter.startsWith('topic:') && <option value={historyFilter}>{topics.find(topic => `topic:${topic.id}` === historyFilter)?.title ?? '选中的话题'}</option>}
       </select></label>
       {historyFilter !== 'current' && <p className="companions-topic-history-note">仅更改查看的记录，新消息仍发送到当前聊天位置。</p>}

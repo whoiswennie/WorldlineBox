@@ -37,7 +37,7 @@ function button(label: string) {
 it('does not read any bodies until the user opens one reply and drops the receipt on close', async () => {
   const request = vi.fn<WorldlineBoxCompanionsApi['request']>(async () => ({ ok: true, replyMemory: receipt() })); const { api, listeners } = apiFor(request);
   Object.defineProperty(window, 'worldlinebox', { configurable: true, value: { companions: api } });
-  await mount(<CompanionReplyProgress scope={scope} now={Date.parse(at)} progress={{ revision: 1, phase: 'completed', detail: '回复已完成', startedAt: at, updatedAt: at, memory: { status: 'completed', count: 1, injected: true } }} />);
+  await mount(<CompanionReplyProgress revealCompleted scope={scope} now={Date.parse(at)} progress={{ revision: 1, phase: 'completed', detail: '回复已完成', startedAt: at, updatedAt: at, memory: { status: 'completed', count: 1, injected: true } }} />);
   expect(request).not.toHaveBeenCalled(); expect(listeners.size).toBe(0); expect(node!.querySelector('[data-reply-memory-context]')).toBeNull();
   const details = node!.querySelector<HTMLDetailsElement>('.companions-bubble-memory')!;
   await act(async () => { details.open = true; details.dispatchEvent(new Event('toggle')); });
@@ -123,7 +123,7 @@ it('discards current evidence on a failed revalidation and permits a fresh retry
 });
 
 it('keeps one pending shell and the open recall details through clock ticks, live stages and delayed history pages', async () => {
-  const request = vi.fn<WorldlineBoxCompanionsApi['request']>(async () => ({ ok: true, replyMemory: receipt() })); const { api } = apiFor(request);
+  const request = vi.fn<WorldlineBoxCompanionsApi['request']>(async () => ({ ok: true, replyMemory: receipt() })); const { api, listeners } = apiFor(request);
   Object.defineProperty(window, 'worldlinebox', { configurable: true, value: { companions: api } });
   const store = new CompanionReplyStreamStore(), sourceMessageId = 'source-fish';
   const message: CompanionMessage = { id: scope.messageId, conversationId: scope.conversationId, authorId: scope.companionId, replyToId: sourceMessageId, sequence: 2,
@@ -131,8 +131,8 @@ it('keeps one pending shell and the open recall details through clock ticks, liv
   const render = (value = message, now = Date.parse(at)) => <CompanionMessageBubble message={value} actions={[]} now={now} streamStore={store} interrupted={false}
     onOpenAction={() => undefined} onOpenUrl={() => undefined} onOpenAttachment={() => undefined} onLocateQuote={() => undefined} onStreamLayout={() => undefined} />;
   store.reconcile([message]); await mount(render());
-  const shell = node!.querySelector('.companions-message-bubble')!;
-  expect(shell.classList.contains('is-reply-pending')).toBe(true);
+  const shell = node!.querySelector('.companions-reply-thread')!;
+  expect(shell.querySelector('.companions-message-bubble')).toBeNull();
   await act(() => store.accept({ conversationId: scope.conversationId, companionId: scope.companionId, messageId: scope.messageId, sourceMessageId, step: 0, attemptId: 'empty-opening', phase: 'streaming', text: '' }));
   expect(shell.querySelector('.companions-loop-segment, .companions-reply-cursor')).toBeNull();
   const frame = (revision: number, detail: string): CompanionReplyStreamEvent => ({ conversationId: scope.conversationId, companionId: scope.companionId, messageId: scope.messageId,
@@ -146,10 +146,10 @@ it('keeps one pending shell and the open recall details through clock ticks, liv
   for (let revision = 3; revision < 8; revision++) {
     await act(() => store.accept(frame(revision, revision % 2 ? '核验记忆来源' : '正在检索获权记忆并准备这次召回的完整上下文')));
     await act(async () => { store.reconcile([message]); root!.render(render(message, Date.parse(at) + revision * 1000)); });
-    expect(node!.querySelector('.companions-message-bubble')).toBe(shell);
+    expect(node!.querySelector('.companions-reply-thread')).toBe(shell);
     expect(node!.querySelector('.companions-bubble-memory')).toBe(details); expect(details.open).toBe(true);
     expect(node!.querySelector('[aria-label="本轮回忆详情"]')).toBe(currentDetails);
-    expect(shell.classList.contains('is-reply-pending')).toBe(true);
+    expect(shell.querySelector('.companions-message-bubble')).toBeNull();
     expect(node!.querySelector('[data-reply-stage]')?.getAttribute('data-reply-stage')).toBe('memory');
   }
   expect(request).not.toHaveBeenCalled();
@@ -158,7 +158,8 @@ it('keeps one pending shell and the open recall details through clock ticks, liv
   expect(request).toHaveBeenCalledTimes(1); expect(details.open).toBe(true);
   expect(node!.querySelector('[data-reply-memory-context]')?.textContent).toBe(receipt().contextText);
   await act(async () => { const completed = { ...message, isReplyDraft: false, content: '回复正文', segments: [{ text: '回复正文', actionIds: [] }], replyProgress: { ...frame(9, '').progress!, phase: 'completed' as const } }; store.reconcile([completed]); root!.render(render(completed)); });
-  expect(shell.classList.contains('is-reply-pending')).toBe(false); expect(shell.textContent).toContain('回复正文');
+  expect(shell.querySelector('.companions-message-bubble')!.textContent).toContain('回复正文');
+  expect(shell.querySelector('[data-reply-stage]')).toBeNull(); expect(listeners.size).toBe(0);
 });
 
 it('labels a not-yet-persisted live receipt as ongoing until the reply finishes', async () => {

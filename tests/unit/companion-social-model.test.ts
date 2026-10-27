@@ -174,7 +174,8 @@ it('preserves human presence and distinct speaker identity in companion-created 
     expect(data.identity.self.id).toBe(companion.id);
     expect(data.identity.currentReply.speaker.id).toBe(source.authorId);
     expect(data.messages.map((message: { authorId: string }) => message.authorId)).toEqual(['user', source.authorId]);
-    expect(data.messages[0].content).toBe('我是真人，等我一起玩。');
+    expect(request.messages[2].content).toContain('我是真人，等我一起玩。');
+    expect(data.messages[0]).not.toHaveProperty('content');
     expect(request.messages[0].content).not.toContain('这是独立peer-only伙伴通信，没有玩家在会话中。');
     return response({ text: '姐姐，我们等玩家一起。', reason: '按真实成员与来源回应。' });
   });
@@ -223,7 +224,8 @@ it.each(['phone', 'face_to_face'] as const)('composes ordinary %s visit speech f
     expect(data.runtimeState).not.toHaveProperty('recentChanges');
     expect(data.runtimeBehavior.responseLength).toBe('brief');
     expect(data.characterDevelopment.items[0].statement).toBe('我想先慢慢核实。');
-    expect(data.messages).toEqual([expect.objectContaining({ authorId: source.authorId, content: source.content, sequence: source.sequence, conversationId: conversation.id })]);
+    expect(data.messages).toEqual([expect.objectContaining({ authorId: source.authorId, sequence: source.sequence })]);
+    expect(request.messages[2].content).toContain(source.content);
     expect(JSON.stringify(data)).not.toMatch(/PRIVATE_|UNSENT_|OTHER_PEER/);
     expect(request.tools.map((tool: { function: { name: string } }) => tool.function.name)).toEqual(['wait']);
     return response({ text: '姐姐，我们已经见面啦，坐一会儿吧。' });

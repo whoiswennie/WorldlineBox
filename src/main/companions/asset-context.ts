@@ -2,6 +2,8 @@ import type { CompanionAssetProfileSnapshot } from './asset-profile';
 import type { CompanionReplyInput } from './context';
 import { COMPANION_WORLD_PERCEPTION_RULES } from './world-perception-context';
 import { COMPANION_BEHAVIOR_FALLBACK_BEGIN, COMPANION_BEHAVIOR_FALLBACK_END, renderCompanionBehavior } from './asset-behavior-defaults';
+import { COMPANION_CHARACTER_PERFORMANCE_RULES, parseCompanionCharacter } from '../../shared/companion-character';
+import { parseCharacterDocument } from '../../shared/companion-character-document';
 
 const domainBoundary = '\n【本次领域调用与最终交付】\n';
 const object = (value: unknown): Record<string, unknown> | undefined => value && typeof value === 'object' && !Array.isArray(value)
@@ -85,6 +87,11 @@ export function assembleCompanionAssetContext(context: { system: string; user: s
   let system = refreshRoleSlots(canonicalSystem, snapshot, purpose,
     own(data?.companion) || own(data?.self) || own(object(data?.identity)?.self));
   system += `\n【当前伙伴目录中的身份与可编辑行为指导】\n角色标识：${snapshot.companionId}\n名字：${profile.name}\n简介：${profile.description}\n完整人格：\n${profile.persona}\n\n${prompt}\n角色身份与行为偏好依据本次实际文件内容；技术输出格式、真实来源与工具授权仍按宿主合同核验。`;
+  // Acting belongs to the main brain, including its world/social domains.
+  // Journal extraction and other memory processors retain their own output
+  // contract and do not turn evidence into an in-character performance.
+  const acting = kind === 'reply' || purpose === 'world_attention' || purpose === 'companion_dream_wave_narrative';
+  if (acting) system += '\n' + COMPANION_CHARACTER_PERFORMANCE_RULES;
   if (data) {
     const companion = data.companion;
     if (companion && typeof companion === 'object' && !Array.isArray(companion)
@@ -100,6 +107,11 @@ export function assembleCompanionAssetContext(context: { system: string; user: s
         ...(reply ? { currentReply: { ...reply, author: currentSelf(reply.author) } } : {}) };
     }
     data.assetContext = { companionId: snapshot.companionId, profileRevision: snapshot.profileRevision, promptRevision: snapshot.promptRevision };
+    if (acting) data.characterPerformance = { schema: 'worldlinebox.character-performance-v1', companionId: snapshot.companionId,
+      profileRevision: snapshot.profileRevision, source: 'profile.md',
+      format: parseCompanionCharacter(profile.persona).standardized ? 'standard_character_sheet' : 'authored_free_text',
+      sections: parseCharacterDocument(profile.persona).map(section => ({ title: section.title, fields: section.fields.map(field => field.label) })),
+      growthSource: 'current_visible_characterDevelopment', stateSource: 'current_host_runtimeState' };
   }
   return { system, user: data ? JSON.stringify(data) : context.user };
 }

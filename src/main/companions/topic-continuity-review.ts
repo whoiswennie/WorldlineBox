@@ -59,6 +59,9 @@ export interface TopicContinuityReviewInput {
  * its already authorized owner/topic snapshot; rejected drafts stay outside
  * the message log and a failed review cannot authorize publication. */
 export async function reviewTopicContinuity(input: TopicContinuityReviewInput): Promise<string | undefined> {
+  // Normal chat is a topic session, not a game/story publication. It does not
+  // invoke narrative critics after every reply or create fictional canon.
+  if (input.frame.topic?.kind === 'discussion') return undefined;
   const { frame, proposed } = input, { topic, topicState, companion, conversation } = frame;
   if (!topic || !topicState || topic.id !== topicState.topicId || topicState.readerId !== companion.id
     || topic.conversationId !== conversation.id || topic.status !== 'active' || !topic.participantIds.includes(companion.id)) return undefined;

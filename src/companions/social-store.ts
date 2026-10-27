@@ -517,10 +517,15 @@ export class CompanionSocialStore {
       if (previous) return this.sendOutcome(previous, this.deliver(previous, context));
       if (input.urgent && this.db.prepare("SELECT 1 FROM companion_social_outbox WHERE companion_id=? AND json_extract(data,'$.urgent')=1 AND status IN('pending','sent') AND created_at>? LIMIT 1").get(input.companionId, iso(Date.now() - 120000))) throw new Error('刚刚已经发起紧急联系，请等待对方处理，不要重复打扰。');
       const sourceChecksums = this.sources(input), recipients = this.requireRoom(input.conversationId, input.companionId).filter(id => id !== input.companionId);
+      // Resolve the primary port before freezing the outbox. Its publication
+      // receipt must carry the exact same topic identity as the queued send.
+      this.options.topicExecute?.({ type: 'topic.list', conversationId: input.conversationId, readerId: input.companionId, limit: 1 });
+      const primary = this.db.prepare('SELECT value FROM metadata WHERE key=?').get('primary-chat-topic/' + input.conversationId);
+      const primaryId = primary ? String(row(primary).value) : undefined;
       const chosen = this.db.prepare('SELECT topic_id FROM companion_topic_current WHERE conversation_id=? AND reader_id=?').get(input.conversationId, input.companionId);
       // Freeze and validate the destination before creating an outbox or origin.
       // A source topic never becomes a port in a different destination room.
-      const topicId = input.replyToId ? this.message(input.replyToId).topicId ?? null : input.topicId ?? (input.topicId === undefined && chosen ? String(row(chosen).topic_id) : null);
+      const topicId = input.replyToId ? this.message(input.replyToId).topicId ?? null : input.topicId ?? (input.topicId === undefined && chosen ? String(row(chosen).topic_id) : primaryId ?? null);
       if (this.topicAdmission(input.companionId, input.conversationId, topicId) === 'cancelled') throw new Error(invalidSendPort);
       const authorization = input.authorizationMessageId ? this.message(input.authorizationMessageId) : undefined;
       const inheritedOrigin = !authorization ? this.agentSourceOrigin(input) : undefined;

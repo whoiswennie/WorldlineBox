@@ -646,7 +646,8 @@ export class CompanionActivityTaskStore {
     // A dedicated game/story port may carry that topic's live flow. An ordinary
     // private room is reusable: only this goal's anchored job chains may cross
     // into task cognition, never that room's unrelated earlier conversation.
-    const current = (task.sourceMessageId || task.seededSocialClientIds?.length) && !topicId ? []
+    const dedicated = topicId && this.db.prepare("SELECT 1 FROM companion_topics WHERE id=? AND COALESCE(json_extract(data,'$.isPrimary'),0)=0").get(topicId);
+    const current = (task.sourceMessageId || task.seededSocialClientIds?.length) && !dedicated ? []
       : this.visible({ companionId: task.companionId, conversationId }, ids).reverse();
     const inbox = this.inboxMessages(task), inboxIds = new Set(inbox.map(message => message.id)), remaining = 100 - inbox.length;
     const recent = remaining > 0 ? [...new Map([...this.goalSocialMessages(task).messages, ...current].map(message => [message.id, message])).values()]

@@ -37,6 +37,41 @@ export class CompanionTopicStore {
       CREATE INDEX IF NOT EXISTS companion_message_topic ON companion_message_topics(topic_id,message_id);`);
     this.db.exec(`CREATE INDEX IF NOT EXISTS companion_topic_publication_page ON metadata(json_extract(value,'$.topicId'),CAST(json_extract(value,'$.revision') AS INTEGER)) WHERE key GLOB 'message-topic-publication/*'`);
   }
+  /** A chat always owns an explicit persistent primary topic. */
+  ensurePrimary(conversationId: string): CompanionTopic | undefined {
+    const peerOnly = !!this.db.prepare('SELECT 1 FROM metadata WHERE key=?').get('world-room/' + conversationId);
+    const members = this.members(conversationId);
+    // A one-owner world evidence port is not dialogue. Real peer pairs and
+    // groups use the same persistent topic/context path as player chats.
+    if (peerOnly && members.length < 2) return;
+    return this.db.transaction(() => {
+      const key = 'primary-chat-topic/' + conversationId;
+      const saved = this.db.prepare('SELECT value FROM metadata WHERE key=?').get(key) as { value: string } | undefined;
+      if (saved) {
+        const topic = this.topic(saved.value, conversationId), participants = peerOnly ? members : ['user', ...members];
+        if (JSON.stringify(topic.participantIds) !== JSON.stringify(participants)) {
+          topic.participantIds = participants; topic.invitedIds = []; topic.revision++; topic.updatedAt = new Date().toISOString();
+          this.db.prepare('UPDATE companion_topics SET data=? WHERE id=?').run(JSON.stringify(topic), topic.id);
+          for (const reader of participants) this.db.prepare('INSERT OR IGNORE INTO companion_topic_current(conversation_id,reader_id,topic_id) VALUES(?,?,?)').run(conversationId, reader, topic.id);
+        }
+        return topic;
+      }
+      const room = this.db.prepare('SELECT kind,updated_at FROM conversations WHERE id=? AND dissolved_at IS NULL').get(conversationId) as { kind: string; updated_at: string } | undefined;
+      if (!room) return;
+      const id = 'main_' + createHash('sha256').update(conversationId).digest('hex').slice(0, 48);
+      const topic: CompanionTopic = { id, conversationId, title: room.kind === 'group' ? '主要群聊' : '主要对话', kind: 'discussion', status: 'active',
+        isPrimary: true, participantIds: peerOnly ? members : ['user', ...members], invitedIds: [], tags: [],
+        moderatorId: peerOnly ? members[0]! : 'user', revision: 1, createdAt: room.updated_at, updatedAt: room.updated_at };
+      this.db.prepare('INSERT INTO companion_topics(id,conversation_id,data) VALUES(?,?,?)').run(id, conversationId, JSON.stringify(topic));
+      this.db.prepare('INSERT INTO metadata(key,value) VALUES(?,?)').run(key, id);
+      for (const reader of topic.participantIds) this.db.prepare('INSERT OR IGNORE INTO companion_topic_current(conversation_id,reader_id,topic_id) VALUES(?,?,?)').run(conversationId, reader, id);
+      return topic;
+    }).immediate();
+  }
+  primaryId(conversationId: string): string | undefined {
+    const found = this.db.prepare('SELECT value FROM metadata WHERE key=?').get('primary-chat-topic/' + conversationId) as { value: string } | undefined;
+    return found?.value;
+  }
   current(conversationId: string, readerId = 'user'): string | undefined {
     const found = this.db.prepare('SELECT topic_id FROM companion_topic_current WHERE conversation_id=? AND reader_id=?').get(conversationId, readerId);
     return found && row(found).topic_id ? String(row(found).topic_id) : undefined;
@@ -52,15 +87,17 @@ export class CompanionTopicStore {
   }
   bindMessage(messageId: string, conversationId: string, authorId: string, topicId: string | null | undefined, replyToId?: string, draft = false): void {
     const inherited = replyToId ? this.messageTopic(replyToId) : undefined;
-    const chosen = replyToId ? inherited : topicId ?? (topicId === undefined && authorId === 'user' ? this.current(conversationId, authorId) : undefined);
-    if (replyToId && topicId !== undefined && (topicId ?? undefined) !== inherited) throw new Error('回复必须保留实际来源的话题，不能随当前选中项切换。');
+    const primary = this.ensurePrimary(conversationId)?.id;
+    const normalized = topicId === null ? primary : topicId;
+    const chosen = replyToId ? inherited : normalized ?? (authorId === 'user' ? this.current(conversationId, authorId) : undefined) ?? primary;
+    if (replyToId && topicId !== undefined && normalized !== inherited) throw new Error('回复必须保留实际来源的话题，不能随当前选中项切换。');
     if (!chosen) return;
     const topic = this.topic(chosen, conversationId);
     if (topic.deletedAt) throw new Error('话题已删除，不能继续向原话题发言。');
     if (topic.status !== 'active' && !replyToId) throw new Error('话题已暂停或结束，请先恢复或切回普通聊天。');
     if (authorId !== 'system' && this.paused(topic.id, authorId)) throw new Error('本人已暂停这个话题，请先恢复再发言。');
     if (authorId !== 'system' && !topic.participantIds.includes(authorId) && !(draft && topic.invitedIds.includes(authorId))) throw new Error('请先自主加入这个话题，再正式发言。');
-    this.db.prepare('INSERT INTO companion_message_topics(message_id,topic_id) VALUES(?,?)').run(messageId, chosen);
+    this.db.prepare('INSERT INTO companion_message_topics(message_id,topic_id) VALUES(?,?) ON CONFLICT(message_id) DO UPDATE SET topic_id=excluded.topic_id').run(messageId, chosen);
   }
   fictionalMessage(messageId: string): boolean {
     return companionMessageFictionalLineage(this.db, messageId);
@@ -346,6 +383,7 @@ export class CompanionTopicStore {
     if (command.type === 'topic.compaction.sources') throw new Error('话题原文扫描只能通过宿主来源投影读取。');
     const roomMembers = this.members(command.conversationId);
     if (command.readerId !== 'user' && !roomMembers.includes(command.readerId)) throw new Error('话题请求者不属于当前会话。');
+    const primary = this.ensurePrimary(command.conversationId);
     if (command.type === 'topic.list') {
       const found = this.db.prepare("SELECT rowid,data FROM companion_topics WHERE conversation_id=? AND rowid<? AND json_extract(data,'$.deletedAt') IS NULL AND (?='' OR CASE WHEN json_extract(data,'$.status')='active' AND EXISTS(SELECT 1 FROM companion_topic_participation p WHERE p.topic_id=companion_topics.id AND p.reader_id=? AND p.status='paused') THEN 'paused' ELSE json_extract(data,'$.status') END=?) AND (?='' OR instr(lower(json_extract(data,'$.title')||' '||json_extract(data,'$.tags')),lower(?))>0) AND (?='user' OR EXISTS(SELECT 1 FROM json_each(data,'$.participantIds') WHERE value=?) OR EXISTS(SELECT 1 FROM json_each(data,'$.invitedIds') WHERE value=?)) AND (?='[]' OR EXISTS(SELECT 1 FROM json_each(data,'$.tags') t JOIN json_each(?) q ON lower(t.value)=lower(q.value))) ORDER BY rowid DESC LIMIT ?")
         .all(command.conversationId, command.before ?? Number.MAX_SAFE_INTEGER, command.status ?? '', command.readerId, command.status ?? '', command.query ?? '', command.query ?? '', command.readerId, command.readerId, command.readerId,
@@ -354,12 +392,14 @@ export class CompanionTopicStore {
         hasMore: found.length > (command.limit ?? 50), ...(found.length > (command.limit ?? 50) ? { topicNextCursor: Number(row(found[(command.limit ?? 50) - 1]).rowid) } : {}) };
     }
     if (command.type === 'topic.activate' && command.topicId === null) {
+      if (primary) { this.select(command.conversationId, command.readerId, primary.id); return { ok: true, topic: primary, topicState: this.state(primary, command.readerId) }; }
       this.db.prepare('DELETE FROM companion_topic_current WHERE conversation_id=? AND reader_id=?').run(command.conversationId, command.readerId); return { ok: true };
     }
     if (command.type === 'topic.create') {
       const invited = [...new Set(command.participantIds ?? ['user', ...roomMembers])].filter(id => id !== command.readerId);
-      const participants = [command.readerId];
+      const participants = command.readerId === 'user' && command.kind === 'discussion' ? ['user', ...invited] : [command.readerId];
       if (invited.some(id => id !== 'user' && !roomMembers.includes(id))) throw new Error('受邀者必须是本会话真实参与者。');
+      if (command.readerId === 'user' && command.kind === 'discussion') invited.splice(0);
       const moderatorId = command.moderatorId ?? command.readerId;
       if (!participants.includes(moderatorId) && !invited.includes(moderatorId)) throw new Error('主持人必须参与或受邀当前话题。');
       const at = new Date().toISOString(), topic: CompanionTopic = { id: randomUUID(), conversationId: command.conversationId,
@@ -378,6 +418,7 @@ export class CompanionTopicStore {
     }
     if (command.type === 'topic.read') return { ok: true, topic: this.project(topic, command.readerId), topicState: this.state(topic, command.readerId) };
     if (command.type === 'topic.join' || command.type === 'topic.leave') {
+      if (command.type === 'topic.leave' && topic.isPrimary) throw new Error('主要对话随联系人保留；可切换话题或将伙伴休眠。');
       const wasJoined = topic.participantIds.includes(command.readerId);
       if (command.type === 'topic.join') {
         if (!topic.participantIds.includes(command.readerId)) topic.participantIds.push(command.readerId);
@@ -450,6 +491,7 @@ export class CompanionTopicStore {
     }
     if (command.type === 'topic.delete') {
       if (command.readerId !== 'user') throw new Error('删除话题档案仅能由用户界面明确操作，伙伴可以暂停、退出或结束。');
+      if (topic.isPrimary) throw new Error('主要对话保存原有聊天，请保留或编辑它；其他话题可单独删除。');
       this.db.prepare('DELETE FROM companion_topic_current WHERE topic_id=?').run(topic.id);
       this.db.prepare('DELETE FROM companion_topic_state WHERE topic_id=?').run(topic.id);
       this.db.prepare('DELETE FROM companion_topic_events WHERE topic_id=?').run(topic.id);

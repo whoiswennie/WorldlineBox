@@ -19,6 +19,7 @@ import { companionExperienceArgumentsSchema } from './companion-experience';
 
 const id = z.string().regex(/^[a-zA-Z0-9_-]{1,100}$/);
 export const companionHistoryArgumentsSchema = z.strictObject({ action: z.literal('history'),
+  query: z.string().trim().min(1).max(200).optional().describe('在当前消息入口的原始聊天中搜索，不要求这些话已写成日记。'),
   before: z.number().int().positive().optional(), limit: z.number().int().min(1).max(100).default(50) });
 export const companionCollaborationArgumentsSchema = z.strictObject({ action: z.literal('collaborate'),
   title: z.string().trim().min(1).max(120), goal: z.string().trim().min(1).max(12000),
@@ -49,7 +50,7 @@ export const COMPANION_MEMORY_CAPABILITY_TOOL = { name: 'memory',
   parameters: parameters(companionMemoryCapabilitySchema) } as const;
 export const COMPANION_WORLD_CAPABILITY_TOOL = { name: 'world',
   description: '统一世界入口。真人已授权另一位伙伴独立处理现实资料或用DSH核验/生成产物时，使用action=collaborate，不以普通message代替实际分工。参数为title、goal、participantIds、sourceMessageId、evidence和可选assignments:[{companionId,goal}]；sourceMessageId来自本轮taskRequest，evidence逐字引用真人授权。先核实熟人关系；不认识时query people并introduce实际送达，再collaborate。调用等待各伙伴自主接受与真实执行结果，返回后自己继续核验汇总；不得冒充对方，不重复其已完成的工作。message只发送社交文字，activity保存虚拟社交目标，都不创建现实执行grant。\n'
-    + COMPANION_WORLD_TOOL.description + '\n统一世界入口还接受action=activity/schedule/state/routine/work/life_rule/topic/experience，parameters填写该领域完整操作对象（含其action）；experience的days/list/read按现实本地日期回顾本人真实经历，rename只修改既有经历标题，需id/title/expectedRevision；不能添加经历、改处理状态或读取他人归档。read正文有预算，truncated表示完整报告仍在经历界面。topic的create/list/read/update/activate/pause/resume/close管理可卸载的话题、游戏与小说，update保存shared公共阶段或本人workingState并附真实sourceMessageIds，主持人可privateRecipientId分发私密设定，读取始终只返回本人私态，不能把角色虚构当现实记忆。history只读取本次调用消息入口的更早原文，以before/limit续读，不读取别的会话或独立任务。伙伴来信本身不授电脑权限；仅经宿主核验的原用户协作grant授予原目标内权限，不唤醒休眠者，不递归扩张邀请。',
+    + COMPANION_WORLD_TOOL.description + '\n统一世界入口还接受action=activity/schedule/state/routine/work/life_rule/topic/experience，parameters填写该领域完整操作对象（含其action）；experience的days/list/read按现实本地日期回顾本人真实经历，rename只修改既有经历标题，需id/title/expectedRevision；不能添加经历、改处理状态或读取他人归档。read正文有预算，truncated表示完整报告仍在经历界面。topic的create/list/read/update/activate/pause/resume/close管理可卸载的话题、游戏与小说，update保存shared公共阶段或本人workingState并附真实sourceMessageIds，主持人可privateRecipientId分发私密设定，读取始终只返回本人私态，不能把角色虚构当现实记忆。history只读取本次调用消息入口的更早原文，以before/limit续读；可加query搜索此入口的原始聊天，未写入日记的话也可找到，不读取别的会话或独立任务。伙伴来信本身不授电脑权限；仅经宿主核验的原用户协作grant授予原目标内权限，不唤醒休眠者，不递归扩张邀请。',
   parameters: parameters(companionWorldCapabilitySchema) } as const;
 export const COMPANION_DSH_CAPABILITY_TOOL = { name: 'dsh',
   description: COMPANION_DSH_TOOL.description + '\noperation=run以tasks提交执行目标；operation=record以query渐进核查任务存档；operation=capabilities以query.kind=overview/tool/skill/commands读取当前选中实例的真实能力资料，tool/skill需name，skill正文可textOffset/maxChars续读；operation=read_file/read_image/send_file以parameters只读查看当前允许的资料或交付已有本机文件。这些只读感知和附件交付不是执行session，也不运行或修改文件。所有实际生成、修改、网络或终端行动仍用run。',

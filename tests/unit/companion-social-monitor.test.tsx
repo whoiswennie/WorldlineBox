@@ -80,6 +80,8 @@ it('shows each peer reply milestone and reads its actual pending and completed m
   completed = true;
   await act(async () => { for (const listener of listeners) listener(); await vi.advanceTimersByTimeAsync(800); });
   expect(container!.querySelectorAll('[data-social-pending]')).toHaveLength(0);
+  expect(container!.querySelector('[data-social-message="message_52"] [data-reply-stage]')).toBeNull();
+  await act(async () => container!.querySelector<HTMLButtonElement>('[data-social-message="message_52"] [aria-label="查看回复过程"]')!.click());
   expect(container!.querySelector('[data-social-message="message_52"]')!.textContent).toContain('回复完成');
   await act(async () => { const details = container!.querySelector<HTMLDetailsElement>('[data-social-message="message_52"] .companions-bubble-memory')!; details.open = true; details.dispatchEvent(new Event('toggle')); });
   expect(request).toHaveBeenCalledWith(expect.objectContaining({ type: 'reply.memory.inspect', messageId: 'message_52', companionId: two.id }));

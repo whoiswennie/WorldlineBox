@@ -77,7 +77,7 @@ it('returns the actual peer-created candidate instead of a second topic, then bi
   const offered = store.request(f.originalCreate);
   expect(offered.activityPortCandidate).toMatchObject({ conversationId: topic.conversationId, topicId: topic.id, creatorCompanionId: 'b', requiresJoin: true });
   expect(offered.socialMessage).toBeUndefined(); expect(offered.socialPending).toBe(false);
-  expect(store.request({ type: 'topic.list', conversationId: topic.conversationId, readerId: 'a' }).topics).toHaveLength(1);
+  expect(store.request({ type: 'topic.list', conversationId: topic.conversationId, readerId: 'a' }).topics?.filter(topic => !topic.isPrimary)).toHaveLength(1);
   expect(store.request({ type: 'activity.port.adopt_candidate', companionId: 'a', conversationId: topic.conversationId, topicId: topic.id }).activityTask).toBeUndefined();
   store.request({ type: 'topic.update', conversationId: topic.conversationId, topicId: topic.id, readerId: 'b', expectedRevision: topic.revision,
     patch: { workingState: { summary: '仅创建者自己可见', state: { privateCanary: 'CREATOR_PRIVATE_REMAINS_PRIVATE' } } } });
@@ -114,7 +114,7 @@ it('preserves two independently valid candidate ports as ambiguous instead of ov
     deliveryClientId: 'second_real_candidate_send', conversationId: first.conversationId, topicId: second.id, memberIds: ['a', 'b', 'c'], includePlayer: false });
   expect(findCompanionActivityPortCandidate(f.db, f.social, f.visible, { ...f.scope, sourceMessageId: f.human.id })).toBeUndefined();
   expect(() => f.store.request(f.originalCreate)).toThrow('多个有效候选');
-  expect(f.store.request({ type: 'topic.list', conversationId: first.conversationId, readerId: 'a' }).topics).toHaveLength(2);
+  expect(f.store.request({ type: 'topic.list', conversationId: first.conversationId, readerId: 'a' }).topics?.filter(topic => !topic.isPrimary)).toHaveLength(2);
 });
 
 it.each(['root', 'peer'] as const)('does not discover or adopt a candidate after its actual %s source is withdrawn', withdrawn => {

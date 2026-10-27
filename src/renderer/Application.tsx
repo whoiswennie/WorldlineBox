@@ -1,3 +1,5 @@
+import type { CompanionAssetLocation } from '../shared/companion-instance';
+import { CompanionAssetNavigation } from './companions/companion-asset-navigation';
 import { CompanionMediaPlayer } from './companions/CompanionMediaPlayer';
 import { lazy, Suspense, useCallback, useEffect, useRef, useState } from 'react';
 import { ApplicationShell, type ApplicationShellState } from './ApplicationShell';
@@ -47,12 +49,14 @@ export function App() {
     void api?.captureTools?.request({ type: 'open', task, ...(source ? { source } : {}) }).then(result => setToolError(result.ok ? '' : result.error)).catch(() => setToolError('无法打开屏幕工具，请重试。'));
   }, []);
   const assetManagerRef = useRef<AssetManagerHandle>(null);
+  const pendingCompanionAssets = useRef<CompanionAssetLocation | undefined>(undefined);
   const pendingSettings = useRef(false);
   const pendingExtensionSave = useRef<ExtensionSaveCompletedEvent | null>(null);
   const [settingsController, setSettingsController] = useState<'idle' | 'opening' | 'open'>('idle');
   const [shellState, setShellState] = useState<ApplicationShellState>({ settingsOpen: false, settingsDisabled: false });
   const attachAssetManager = useCallback((handle: AssetManagerHandle | null) => {
     assetManagerRef.current = handle;
+    if (handle && pendingCompanionAssets.current) { handle.openCompanionAssets(pendingCompanionAssets.current); pendingCompanionAssets.current = undefined; }
     if (handle && pendingSettings.current) { pendingSettings.current = false; handle.openSettings(); }
     if (handle && pendingExtensionSave.current) {
       handle.revealExtensionSave(pendingExtensionSave.current);
@@ -79,6 +83,11 @@ export function App() {
     setSettingsController(current => current === 'idle' ? 'opening' : current);
     if (assetManagerRef.current) { pendingSettings.current = false; assetManagerRef.current.openSettings(); }
   }, []);
+  const openCompanionAssets = useCallback((location: CompanionAssetLocation) => {
+    if (assetManagerRef.current) assetManagerRef.current.openCompanionAssets(location);
+    else pendingCompanionAssets.current = location;
+    setActiveModuleId('assets');
+  }, []);
   return <ContextMenuProvider><MusicProvider api={api?.music}>
     <div className="application-root"><ThemeBackground /><HoverTipHost /><EditTextContextMenuHost />
       {usesWindowsStyleShell(navigator.userAgent) ? <><WindowsWindowControls shell={api?.shell} /><WindowEdgeResizeHandles shell={api?.shell} /></> : null}
@@ -89,7 +98,7 @@ export function App() {
         settingsOpen={shellState.settingsOpen} settingsDisabled={activeModuleId === 'assets' && shellState.settingsDisabled}
         modules={[
           { id: 'dsh', label: t('appNavigation.launcher'), icon: 'box', content: <Suspense fallback={<FeatureLoading />}><Launcher api={api?.dshLauncher} /></Suspense> },
-          { id: 'companions', label: t('appNavigation.companions'), icon: 'users', content: <CompanionWorkspace api={api?.companions} libraryApi={api?.library}><Suspense fallback={<FeatureLoading />}><Companions api={api?.companions} dshApi={api?.dshLauncher} onOpenSettings={openSettings} isActive={activeModuleId === 'companions'} /></Suspense></CompanionWorkspace> },
+          { id: 'companions', label: t('appNavigation.companions'), icon: 'users', content: <CompanionAssetNavigation.Provider value={openCompanionAssets}><CompanionWorkspace api={api?.companions} libraryApi={api?.library}><Suspense fallback={<FeatureLoading />}><Companions api={api?.companions} dshApi={api?.dshLauncher} onOpenSettings={openSettings} isActive={activeModuleId === 'companions'} /></Suspense></CompanionWorkspace></CompanionAssetNavigation.Provider> },
           { id: 'assets', label: t('appNavigation.assets'), icon: 'grid', keepEffectsActive: settingsController !== 'idle', content: <Suspense fallback={<FeatureLoading />}><Assets settingsRef={attachAssetManager} onShellStateChange={reportShellState} isModuleActive={activeModuleId === 'assets'} /></Suspense> },
           { id: 'browser', label: t('appNavigation.browser'), icon: 'globe', content: <Suspense fallback={<FeatureLoading />}><Browser api={api?.browser} active={activeModuleId === 'browser' && settingsController === 'idle' && !shellState.settingsOpen} onScreenshot={() => openTool('screenshot')} onOpenAssets={() => setActiveModuleId('assets')} onOpenNetwork={() => setActiveModuleId('network')} /></Suspense> },
           { id: 'network', label: t('appNavigation.network'), icon: 'network', content: <Suspense fallback={<FeatureLoading />}><Network api={api?.network} /></Suspense> },

@@ -30,7 +30,8 @@ vi.mock('../../src/main/companions/storage-client', () => ({ CompanionStorageCli
   start = transport.start; request = transport.request; close = transport.close;
 } }));
 vi.mock('electron', () => ({
-  net: { fetch: ((input: Parameters<typeof fetch>[0], init?: RequestInit) => payload(init).purpose === 'companion_social_progress_review'
+  net: { fetch: ((input: Parameters<typeof fetch>[0], init?: RequestInit) => payload(init).purpose === 'topic_context_compaction'
+    ? Promise.resolve(structuredResponse({ summary: '此前已聊过的普通历史，仍可按消息来源回读。', stage: '继续当前对话' })) : payload(init).purpose === 'companion_social_progress_review'
     ? transport.progressFetch(input, init) : /companion_management_authorization/u.test(String(init?.body))
     ? transport.authorizationFetch(input, init) : /vcp_memory_prohibition_check/u.test(String(init?.body)) ? transport.prohibitionFetch(input, init) : /vcp_(?:experience_journal|sleep_reflection)/u.test(String(init?.body))
     ? transport.memoryFetch(input, init) : /world_(?:decision|attention)/u.test(String(init?.body)) ? transport.worldFetch(input, init) : transport.fetch(input, init)) },

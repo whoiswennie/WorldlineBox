@@ -71,9 +71,13 @@ it.each(['openai_chat', 'openai_responses', 'anthropic', 'gemini_native', 'dashs
     dashscope_native: { output: { choices: [{ message: { content: [{ text: output }] } }] } } };
   const fetchFn = vi.fn(async (_url, init) => {
     const body = JSON.parse(String(init?.body));
-    const user = format === 'gemini_native' ? body.contents[0].parts[0].text : format === 'dashscope_native' ? body.input.messages[1].content[0].text : format === 'openai_responses' ? body.input[0].content : body.messages.at(-1).content;
+    const user = format === 'gemini_native' ? body.contents[0].parts[0].text : format === 'dashscope_native' ? body.input.messages[1].content[0].text : format === 'openai_responses' ? body.input[0].content
+      : format === 'anthropic' ? body.messages[0].content : body.messages[1].content;
     const identity = JSON.parse(user).identity;
     expect(identity.self.id).toBe(role.id); expect(identity.currentReply.speaker.id).toBe('deepseek-sister'); expect(identity.currentReply.replyToMessageId).toBe(source.id); expect(identity.authorization.playerRequestMessageId).toBeNull();
+    const dialogue = format === 'gemini_native' ? body.contents.at(-1).parts[0].text : format === 'dashscope_native' ? body.input.messages.at(-1).content[0].text
+      : format === 'openai_responses' ? body.input.at(-1).content : body.messages.at(-1).content;
+    expect(dialogue).toContain(source.content); expect(dialogue).toContain(source.authorId);
     return new Response(JSON.stringify(bodies[format]), { headers: { 'Content-Type': 'application/json' } });
   });
   await generateCompanionReply({ ...value, sourceMessage: source, audience: 'peers', messages: [source], conversation: { ...value.conversation, kind: 'group', memberIds: members.map(member => member.id) } }, config, undefined, { fetchFn });

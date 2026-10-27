@@ -129,7 +129,7 @@ it('returns none for an actually empty topic and never exposes a forged other-ro
   const f = fixture(), empty = f.read();
   expect(empty.lastNarrativePublicationAvailability).toBe('none'); expect(empty.lastInputPublicationAvailability).toBe('none');
   const privateRoom = f.store.openPrivate('peer'), secret = f.store.appendMessage({ conversationId: privateRoom.id, authorId: 'peer', content: 'PRIVATE_OTHER_ROOM_884', replyDirective: 'none' });
-  f.sql(db => db.prepare('INSERT INTO metadata(key,value) VALUES(?,?)').run('message-topic-publication/' + secret.id,
+  f.sql(db => db.prepare('INSERT OR REPLACE INTO metadata(key,value) VALUES(?,?)').run('message-topic-publication/' + secret.id,
     JSON.stringify({ topicId: f.topic.id, revision: 1, checksum: hash(secret.content) })));
   const own = f.read();
   expect(own.lastNarrativePublicationRef).toBeUndefined(); expect(JSON.stringify(own)).not.toContain(secret.id);

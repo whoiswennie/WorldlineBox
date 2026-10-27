@@ -1,3 +1,5 @@
+import type { CompanionAssetLocation } from '../shared/companion-instance';
+import { encodeLinkedVirtualFolderId } from '../shared/linked-folder-tree';
 import { getGlobalLlmApi } from "./global-llm";
 import { isCurrentAiConnectionProbe } from "./ai-connection-probe-guard";
 import { DEFAULT_GLOBAL_LLM_CONFIG } from "../shared/llm";
@@ -884,6 +886,7 @@ function ToolButton({
 export interface AssetManagerHandle {
   openSettings: () => void;
   revealExtensionSave: (event: ExtensionSaveCompletedEvent) => void;
+  openCompanionAssets: (location: CompanionAssetLocation) => void;
 }
 
 function renderApplicationDialog(content: ReactNode) {
@@ -1900,12 +1903,16 @@ export function AssetManager({
   // REQ-PREF-001: browse-area general settings panel (theme/language/canvas).
   const [appSettingsOpen, setAppSettingsOpen] = useState(false);
   const [deferredExtensionSave, setDeferredExtensionSave] = useState<ExtensionSaveCompletedEvent | null>(null);
+  const [deferredCompanionAssets, setDeferredCompanionAssets] = useState<CompanionAssetLocation>();
+  const handledCompanionAssets = useRef<CompanionAssetLocation | undefined>(undefined);
+  const openingCompanionAssets = useRef<CompanionAssetLocation | undefined>(undefined);
   const handledExtensionSaveRef = useRef<ExtensionSaveCompletedEvent | null>(null);
   const [appSettingsCategory, setAppSettingsCategory] =
     useState<AppSettingsCategoryId>("profile");
 
   useImperativeHandle(settingsRef, () => ({
     revealExtensionSave: setDeferredExtensionSave,
+    openCompanionAssets: setDeferredCompanionAssets,
     openSettings: () => {
       setAppSettingsCategory("profile");
       setAppSettingsOpen(true);
@@ -6370,6 +6377,18 @@ export function AssetManager({
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [api, runLibraryOpenPipeline],
   );
+
+  useEffect(() => {
+    if (!deferredCompanionAssets || !isModuleActive || handledCompanionAssets.current === deferredCompanionAssets) return;
+    if (library?.libraryId !== deferredCompanionAssets.libraryId) {
+      if (openingCompanionAssets.current === deferredCompanionAssets) return;
+      openingCompanionAssets.current = deferredCompanionAssets;
+      void openRecentLibrary(deferredCompanionAssets.libraryPath);
+      return;
+    }
+    handledCompanionAssets.current = deferredCompanionAssets;
+    void chooseFolderRef.current(encodeLinkedVirtualFolderId(deferredCompanionAssets.linkedFolderId, deferredCompanionAssets.relativePath));
+  }, [deferredCompanionAssets, isModuleActive, library, openRecentLibrary]);
 
   async function runLibraryOpenPipeline(
     busyState: "creating" | "opening",

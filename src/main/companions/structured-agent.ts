@@ -15,7 +15,7 @@ import { CompanionModelError, generateCompanionReply, type CompanionModelConfig,
 import { runCompanionAgentKernel, CompanionAgentFinalValidationError } from './agent-kernel';
 import { companionAgentJournal, captureCompanionAgentMemories, type CompanionAgentJournal } from './agent-journal';
 import { ensureCompanionLoopContinuity } from './loop-continuity';
-import { ensureTopicContinuity } from './topic-compaction';
+import { prepareCompanionAgentDialogue } from './agent-dialogue';
 import { CompanionAgentNoProgressError, type CompanionAgentNoProgressProof } from './agent-progress';
 import type { CompanionExecutionReadset } from '../../shared/companion-execution-evidence';
 import { captureCompanionExecutionReadset } from './execution-evidence';
@@ -294,6 +294,8 @@ export async function runCompanionStructuredAgent(input: CompanionStructuredAgen
       refreshedFrame = withTaskPassiveRecall(input.refresh ? await input.refresh() : input.frame);
       refreshedFrame = { ...refreshedFrame, dshContext: input.capabilities?.dshContext ?? 'unavailable', capabilityAvailability: companionBoundCapabilityContext(refreshedFrame.companion.id,
         refreshedFrame.conversation.id, availableAuxiliaryTools().map(tool => tool.name)) };
+      if (input.capabilities?.continuityRequest) refreshedFrame = await prepareCompanionAgentDialogue({ frame: refreshedFrame,
+        request: input.capabilities.continuityRequest, config, signal, fetchFn: options.fetchFn });
       evidenceContext = assembleCompanionRoleContext(refreshedFrame, input.context);
       await captureEvidence();
     },
@@ -305,7 +307,7 @@ export async function runCompanionStructuredAgent(input: CompanionStructuredAgen
     frame = { ...frame, dshContext: input.capabilities?.dshContext ?? 'unavailable', capabilityAvailability: companionBoundCapabilityContext(frame.companion.id, frame.conversation.id,
       effectiveTools.map(tool => tool.name)) };
     const capacityBefore = capacityFeedback ? JSON.stringify({ messages: frame.messages, topicState: frame.topicState }).length : 0;
-    if (capacityFeedback && frame.topic && input.capabilities?.continuityRequest) frame = await ensureTopicContinuity({ frame,
+    if (capacityFeedback && input.capabilities?.continuityRequest) frame = await prepareCompanionAgentDialogue({ frame,
       request: input.capabilities.continuityRequest, config, signal, fetchFn: options.fetchFn, capacityFeedback: true });
     const topicCapacityReduced = capacityFeedback && JSON.stringify({ messages: frame.messages, topicState: frame.topicState }).length < capacityBefore;
     const context = outputCorrection ? { ...input.context, user: JSON.stringify({ ...JSON.parse(input.context.user),

@@ -1,0 +1,28 @@
+.companions-character-editor { display: grid; gap: 14px; min-width: 0; }
+.companions-character-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.companions-character-toolbar strong { font-size: 15px; font-weight: 600; }
+.companions-character-toolbar > div { display: flex; gap: 6px; }
+.character-section-tabs { display: flex; gap: 4px; flex-wrap: wrap; padding: 5px; border-radius: 10px; background: var(--ui-surface-canvas); border: 1px solid var(--ui-border-subtle); }
+.companions-character-editor .character-section-tabs button { display: inline-flex; align-items: center; justify-content: center; gap: 7px; padding: 8px 11px; border: 0; border-radius: 7px; background: transparent; color: var(--ui-content-secondary); font-size: 12px; }
+.companions-character-editor .character-section-tabs button[aria-pressed=true] { color: var(--ui-content-accent); background: var(--ui-surface-raised); box-shadow: 0 1px 4px #0000000a; }
+.character-section-tabs small { opacity: .65; font-size: 10px; font-variant-numeric: tabular-nums; }
+.character-section-tabs svg { width: 13px; height: 13px; }
+.character-section-management { display: flex; align-items: end; gap: 15px; grid-column: 1/-1; padding-bottom: 13px; margin-bottom: 2px; border-bottom: 1px solid var(--ui-border-subtle); }
+.character-section-management > label { flex: 1; }
+.character-section-management input, .character-field-management input { min-width: 0; padding: 6px 9px; border: 1px solid var(--ui-border-control); border-radius: 6px; background: var(--ui-surface-raised); color: var(--ui-content-primary); font: inherit; }
+.character-section-management button { padding: 7px 8px; border: 0; background: transparent; color: var(--ui-status-danger-content); font-size: 12px; }
+.character-field-management { display: flex; align-items: center; gap: 7px; }
+.character-field-management input { flex: 1; width: 0; }
+.character-field-management button { display: grid; place-items: center; padding: 5px; border: 0; border-radius: 5px; background: transparent; color: var(--ui-content-secondary); }
+.character-field-management svg { width: 14px; height: 14px; }
+.character-empty-fields { display: grid; justify-items: start; gap: 12px; padding: 22px; border: 1px dashed var(--ui-border-control); border-radius: 9px; color: var(--ui-content-secondary); font-size: 12px; }
+.companions-character-editor .character-add-field { grid-column: 1/-1; display: flex; justify-content: center; align-items: center; gap: 7px; padding: 10px; border: 1px dashed var(--ui-border-control); border-radius: 7px; background: transparent; color: var(--ui-content-secondary); font-size: 12px; }
+.character-add-field svg { width: 14px; height: 14px; }
+.companions-character-editor fieldset { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); align-items: start; gap: 18px; border: 0; padding: 8px 0 0; }
+.companions-character-editor fieldset[hidden], .companions-character-editor .character-extra[hidden] { display: none; }
+.companions-character-editor legend { padding: 0; margin-bottom: 10px; font-size: 13px; font-weight: 600; color: var(--ui-content-primary); }
+.companions-character-editor label { display: grid; gap: 8px; font-size: 12px; color: var(--ui-content-secondary); min-width: 0; }
+.companions-character-editor label.is-wide { grid-column: 1/-1; }
+.companions-character-editor textarea { display: block; width: 100%; min-height: 96px; padding: 10px 12px; border: 1px solid var(--ui-border-control); border-radius: 8px; background: var(--ui-surface-raised); color: var(--ui-content-primary); line-height: 1.8; font: inherit; font-size: 13px; resize: vertical; }
+.companions-character-editor > p:last-of-type { font-size: 11px; font-variant-numeric: tabular-nums; text-align: right; }
+@media (max-width:760px) { .companions-character-editor fieldset { grid-template-columns: minmax(0,1fr); gap: 14px; }.character-section-tabs small { display: none; }.companions-character-editor .character-section-tabs button { padding: 7px 9px; } }

@@ -182,7 +182,7 @@ it('creates a separately scoped game topic in the new group, invites each reader
   expect(topic.conversationId).not.toBe(scope().conversationId);
   expect(topic.participantIds).toEqual(['alice']); expect(topic.invitedIds).toEqual(['bob', 'carol', 'user']);
   expect(act(action, 'topic_group').topic!.id).toBe(topic.id);
-  expect(store.request({ type: 'topic.list', conversationId: topic.conversationId, readerId: 'alice' }).topics).toHaveLength(1);
+  expect(store.request({ type: 'topic.list', conversationId: topic.conversationId, readerId: 'alice' }).topics?.filter(topic => !topic.isPrimary)).toHaveLength(1);
   advance(); const delivered = act(action, 'topic_group');
   expect(delivered.socialMessage!.message.topicId).toBe(topic.id);
   const peer = store.request({ type: 'social.job.claim' }).socialJob!;
@@ -190,7 +190,7 @@ it('creates a separately scoped game topic in the new group, invites each reader
   expect(store.request({ type: 'topic.read', conversationId: topic.conversationId, readerId: peer.companionId, topicId: topic.id }).topic!.participantIds).toEqual(['alice']);
   const joined = store.request({ type: 'topic.join', conversationId: topic.conversationId, readerId: peer.companionId, topicId: topic.id });
   expect(joined.topic!.participantIds).toContain(peer.companionId);
-  expect(store.request({ type: 'topic.list', conversationId: scope().conversationId, readerId: 'alice' }).topics).toHaveLength(0);
+  expect(store.request({ type: 'topic.list', conversationId: scope().conversationId, readerId: 'alice' }).topics?.filter(topic => !topic.isPrimary)).toHaveLength(0);
 });
 it('delivers an introduction from the current peer brain while its own reply job is running, preserving typing and the original lease', () => {
   const pair = know('bob');
@@ -282,7 +282,7 @@ function continuingIntroduction() {
 it('persists one original social goal from a pending real introduction, defers while Main owns the actor and wakes from an actual peer reply', () => {
   const f = continuingIntroduction();
   expect(f.initial.socialPending).toBe(true);
-  expect(f.task).toMatchObject({ status: 'waiting', goal: f.source.content, sourceMessageId: f.source.id, peerConversationId: f.initial.socialConversation!.id, peerTopicId: null });
+  expect(f.task).toMatchObject({ status: 'waiting', goal: f.source.content, sourceMessageId: f.source.id, peerConversationId: f.initial.socialConversation!.id, peerTopicId: expect.stringMatching(/^main_/u) });
   expect(f.task.history).toHaveLength(1);
   expect(JSON.parse(f.task.history[0]!.result)).toMatchObject({ socialPending: true, socialConversation: { id: f.initial.socialConversation!.id } });
   expect(store.request(f.ensure).activityTask).toEqual(f.task);
@@ -349,7 +349,7 @@ it.each([false, true])('moves a continuation from private chat into its real gam
   store.request({ type: 'social.message.append', conversationId: f.initial.socialConversation!.id, authorId: 'bob', content: 'UNRELATED_PRIVATE_HISTORY', virtualCreatedAt: new Date().toISOString(), clientId: 'unrelated_private_reply' });
   finishQueuedReplies({ bob: '我愿意参加，继续组局吧。' });
   advance(); const initial = store.request({ type: 'activity.claim' }).activityTask!;
-  expect(initial.peerTopicId).toBeNull();
+  expect(initial.peerTopicId).toMatch(/^main_/u);
   const grouped = store.request({ type: 'activity.commit', id: initial.id, leaseToken: initial.leaseToken!, decision: { status: 'continue',
     action: { action: 'create_group', recipientIds: ['bob', 'carol'], title: '持续游戏群', text: '在新游戏话题里继续吧。', includePlayer,
       topic: { title: '共同游戏', kind: 'game' } }, wait: { kind: 'reply', targetCompanionId: 'bob' }, summary: '建立群，等待真实报名。' } }).activityTask!;
@@ -376,7 +376,7 @@ it.each([false, true])('moves a continuation from private chat into its real gam
   advance(); const next = store.request({ type: 'activity.claim' }).activityTask!;
   const privateAgain = store.request({ type: 'activity.commit', id: next.id, leaseToken: next.leaseToken!, decision: { status: 'continue',
     action: { action: 'message', recipientIds: ['carol'], text: 'carol，另一个独立的小问题。' }, wait: { kind: 'reply', targetCompanionId: 'carol' }, summary: '切换到单独联系端口。' } }).activityTask!;
-  expect(privateAgain.peerConversationId).not.toBe(roomId); expect(privateAgain.peerTopicId).toBeNull();
+  expect(privateAgain.peerConversationId).not.toBe(roomId); expect(privateAgain.peerTopicId).toMatch(/^main_/u);
 });
 
 function deferGroupWhileReplying() {

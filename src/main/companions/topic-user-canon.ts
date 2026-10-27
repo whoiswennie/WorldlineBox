@@ -50,6 +50,7 @@ export function topicClockMentions(text: string) {
 /** Exact user instructions are a separate source-backed authority. Story
  * prose and assistant-authored summaries never revise this slot. */
 export async function prepareTopicUserCanon(input: { frame: Frame; config: CompanionModelConfig; signal?: AbortSignal; fetchFn?: typeof fetch; extract?: Infer }): Promise<TopicUserCanon> {
+  if (input.frame.topic?.kind === 'discussion') return { version: 1, throughSequence: 0, entries: [] };
   const { frame } = input;
   const rawPrior = frame.topicState?.workingState?.state?.__topicUserCanon;
   const prior = rawPrior === undefined ? { version: 1 as const, throughSequence: 0, entries: [] } : topicUserCanonSchema.parse(rawPrior);

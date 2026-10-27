@@ -3,7 +3,7 @@ import type { CompanionMemoryDocumentRead } from '../../shared/companion-memory-
 import { companionTimestamp } from '../../shared/companion-time';
 import { MessageContent } from './MessageContent';
 import { Icon } from '../Icons';
-import { memoryReadingEnd } from './companion-memory-presentation';
+import { memoryReadingEnd, memoryReadonlyDescription } from './companion-memory-presentation';
 
 export function MemoryReading({ content, onPageChange }: { content: string; onPageChange(): void }) {
   const [offsets, setOffsets] = useState([0]), [page, setPage] = useState(0);
@@ -32,7 +32,7 @@ export function MemoryDocumentTimes({ read }: { read: CompanionMemoryDocumentRea
 }
 
 export function MemoryDocumentProcessing({ read, onOpen }: { read: CompanionMemoryDocumentRead; onOpen(): void }) {
-  if (read.document.readOnly) return <p className="memory-library-document-processing-note"><Icon name="info" />{read.document.kind === 'timeline' ? '由已有记忆整理，日期沿用来源经历的时间，可能与文件创建时间不同。内容不会再次当作新经历收录。' : read.document.kind === 'profile' ? '伙伴设定单独管理，日记整理不会自动改写。' : '系统生成的管理文档。'}</p>;
+  if (read.document.readOnly) return <p className="memory-library-document-processing-note"><Icon name="info" />{memoryReadonlyDescription(read.document)}</p>;
   const tags = read.tagStatus?.note?.state;
   const tagText = read.document.autoTagsEnabled === false ? '标签手动管理' : tags === 'completed' ? '标签已整理' : tags === 'running' ? '正在整理标签' : tags === 'waiting_model' ? '标签等待模型' : tags === 'failed' ? '标签整理失败' : tags === 'pending' ? '标签待整理' : tags === 'cancelled' ? '标签已取消' : tags === 'stale' ? '标签需要更新' : '标签未安排';
   const indexReady = read.document.syncState === 'indexed';

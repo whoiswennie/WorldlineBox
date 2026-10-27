@@ -1,4 +1,5 @@
 import type { CompanionConnection } from './store';
+import { advanceCompanionReplyTiming } from '../shared/companion-reply-progress';
 import { companionTaskStopReceiptSchema, type CompanionTaskStopReceipt } from '../shared/companion-task-stop';
 import type { CompanionStorageCommand, CompanionStorageResponse } from '../shared/companion-storage';
 
@@ -24,7 +25,8 @@ export class CompanionTaskStopStore {
       return (JSON.parse(found.value) as unknown[]).flatMap(value => { const parsed = companionTaskStopReceiptSchema.safeParse(value); return parsed.success ? [parsed.data] : []; });
     };
     if (command.type === 'task-stop.list') return { ok: true, userTaskStops: read().filter(item => {
-      if (item.conversationId !== command.conversationId || (item.topicId ?? null) !== (command.topicId ?? null)) return false;
+      const primary = this.db.prepare('SELECT value FROM metadata WHERE key=?').get('primary-chat-topic/' + command.conversationId) as { value: string } | undefined;
+      if (item.conversationId !== command.conversationId || (item.topicId ?? null) !== (command.topicId ?? primary?.value ?? null)) return false;
       const found = this.db.prepare(`SELECT * FROM ${tables[item.kind]} WHERE id=?`).get(item.taskId) as StoredRow | undefined;
       return !!found && stopped(item.kind, found, found.data ? JSON.parse(found.data) : {});
     }).slice(-(command.limit ?? 12)).reverse() };
@@ -51,8 +53,8 @@ export class CompanionTaskStopStore {
         const stored = this.db.prepare('SELECT value FROM metadata WHERE key=?').get(metadataKey) as { value: string } | undefined;
         if (stored) {
           const loop = JSON.parse(stored.value);
-          loop.progress = { ...loop.progress, revision: (loop.progress?.revision ?? 0) + 1, phase: 'cancelled', detail: '用户已停止这次回复',
-            stop: command.stop, finishedAt: command.stop.requestedAt, updatedAt: command.stop.requestedAt };
+          loop.progress = advanceCompanionReplyTiming(loop.progress, { ...loop.progress, revision: (loop.progress?.revision ?? 0) + 1, phase: 'cancelled', detail: '用户已停止这次回复',
+            stop: command.stop, finishedAt: command.stop.requestedAt, updatedAt: command.stop.requestedAt });
           for (const loopKey of [metadataKey, `loop/${value.sourceMessageId}/${value.companionId}` + (value.proactive ? '/invocation/' + value.id : '')])
             this.db.prepare('INSERT INTO metadata(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value').run(loopKey, JSON.stringify(loop));
         }

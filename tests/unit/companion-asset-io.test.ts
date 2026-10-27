@@ -26,3 +26,16 @@ it('drains failed local operations without hiding their original rejection', asy
   await entered.promise; const result = expect(job).rejects.toThrow('missing canonical file'), closing = io.close();
   release.resolve(); await Promise.all([result, closing]);
 });
+
+it('waits for existing asset work before deletion without closing other contacts', async () => {
+  const io = new CompanionAssetIo(), entered = deferred(), release = deferred();
+  const job = io.run(async () => { entered.resolve(); await release.promise; });
+  await entered.promise;
+  let settled = false;
+  const waiting = io.settle().then(() => { settled = true; });
+  await Promise.resolve(); expect(settled).toBe(false);
+  release.resolve(); await Promise.all([job, waiting]);
+  expect(settled).toBe(true);
+  expect(await io.run(async () => 'another-contact')).toBe('another-contact');
+  await io.close();
+});

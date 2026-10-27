@@ -19,6 +19,16 @@ function fixture() {
   const create = (title: string, readerId = 'user') => store.request({ type: 'topic.create', conversationId: room.id, title, kind: 'game', readerId }).topic!;
   return { file, store, room, create };
 }
+it('keeps one primary topic synchronized with the actual group audience while preserving other selected topics', () => {
+  const f = fixture(), primaryId = f.room.defaultTopicId!, separate = f.create('独立游戏');
+  const newcomer = f.store.createCompanion({ name: '新成员', description: '', persona: '认真', model: '', avatar: 'sister', proactive: false });
+  f.store.updateConversation(f.room.id, { memberIds: ['alice', 'bob', newcomer.id] });
+  const primary = f.store.request({ type: 'topic.read', conversationId: f.room.id, topicId: primaryId, readerId: newcomer.id }).topic!;
+  expect(primary.participantIds).toEqual(['user', 'alice', 'bob', newcomer.id]);
+  expect(f.store.request({ type: 'topic.list', conversationId: f.room.id, readerId: 'user' }).topics!.filter(topic => topic.isPrimary)).toHaveLength(1);
+  expect(f.store.state().conversations.find(room => room.id === f.room.id)?.activeTopicId).toBe(separate.id);
+  expect(f.store.appendMessage({ conversationId: f.room.id, authorId: newcomer.id, content: '向主要群聊发言。' }).topicId).toBe(primaryId);
+});
 it('transfers only the existing moderator with exact live consent and preserves every participant private state', () => {
   const f = fixture(), topic = f.create('同一话题主持移交', 'alice');
   const read = (readerId = 'alice') => f.store.request({ type: 'topic.read', conversationId: f.room.id, topicId: topic.id, readerId });
@@ -91,7 +101,7 @@ it('anchors replies and paginated history to the original topic while ordinary c
   const newer = f.store.appendMessage({ conversationId: f.room.id, authorId: 'user', content: 'B_TOPIC_SOURCE' });
   const ordinary = f.store.appendMessage({ conversationId: f.room.id, topicId: null, authorId: 'user', content: 'ORDINARY_SOURCE' });
   const reply = f.store.appendMessage({ conversationId: f.room.id, authorId: 'alice', content: 'A_TOPIC_REPLY', replyToId: source.id });
-  expect(reply.topicId).toBe(first.id); expect(newer.topicId).toBe(second.id); expect(ordinary.topicId).toBeUndefined();
+  expect(reply.topicId).toBe(first.id); expect(newer.topicId).toBe(second.id); expect(ordinary.topicId).toBe(f.room.defaultTopicId);
   expect(f.store.messages({ conversationId: f.room.id, topicId: first.id }).messages.map(message => message.content)).toEqual(['A_TOPIC_SOURCE', 'A_TOPIC_REPLY']);
   expect(f.store.messages({ conversationId: f.room.id, topicId: null }).messages.map(message => message.content)).toEqual(['ORDINARY_SOURCE']);
   expect(f.store.messages({ conversationId: f.room.id, topicId: first.id, after: source.sequence - 1, before: reply.sequence + 1 }).messages.map(message => message.id)).toEqual([source.id, reply.id]);
@@ -153,8 +163,8 @@ it('lets the human manage companion-only topics without joining them or reading 
   expect(admin.topic?.participantIds).toEqual(['alice']);
   expect(admin.topicState?.shared?.summary).toBe('公开规则');
   expect(JSON.stringify(admin)).not.toContain('ALICE_PRIVATE_ROLE');
-  expect(f.store.request({ type: 'topic.list', conversationId: f.room.id, readerId: 'user' }).topics?.map(item => item.id)).toEqual([topic.id]);
-  expect(f.store.state().conversations.find(room => room.id === f.room.id)?.activeTopicId).toBeUndefined();
+  expect(f.store.request({ type: 'topic.list', conversationId: f.room.id, readerId: 'user' }).topics?.filter(item => !item.isPrimary).map(item => item.id)).toEqual([topic.id]);
+  expect(f.store.state().conversations.find(room => room.id === f.room.id)?.activeTopicId).toBe(f.room.defaultTopicId);
   expect(() => f.store.appendMessage({ conversationId: f.room.id, topicId: topic.id, authorId: 'user', content: '尚未加入' })).toThrow('自主加入');
 });
 it('records participation for a never-activated companion without activating a world body', () => {
@@ -184,7 +194,7 @@ it('protects host continuity markers and excludes deleted topic data from ordina
   expect(f.store.request({ type: 'topic.list', conversationId: f.room.id, readerId: 'user', query: '标签', tags: ['长局'] }).topics?.map(item => item.id)).toEqual([topic.id]);
   current = f.store.request({ type: 'topic.read', conversationId: f.room.id, topicId: topic.id, readerId: 'user' }).topic!;
   f.store.request({ type: 'topic.delete', conversationId: f.room.id, topicId: topic.id, readerId: 'user', expectedRevision: current.revision });
-  expect(f.store.request({ type: 'topic.list', conversationId: f.room.id, readerId: 'user' }).topics).toEqual([]);
+  expect(f.store.request({ type: 'topic.list', conversationId: f.room.id, readerId: 'user' }).topics?.filter(item => !item.isPrimary)).toEqual([]);
   expect(f.store.messages({ conversationId: f.room.id, topicId: null }).messages).toEqual([]);
   expect(f.store.messages({ conversationId: f.room.id }).messages).toEqual([]);
   expect(f.store.state().conversations.find(room => room.id === f.room.id)?.lastMessage).toBe('');

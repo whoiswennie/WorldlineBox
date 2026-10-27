@@ -1,3 +1,4 @@
+import { companionContactGroupCommands } from './companion-contact-groups';
 import { companionInterruptionCommands, companionInterruptionSchema } from './companion-interruption';
 import { companionTaskStopStorageCommands, companionTaskStopReceiptSchema } from './companion-task-stop';
 import { companionTaskConcurrencyCommands } from './companion-task-concurrency';
@@ -121,6 +122,9 @@ export const companionProactiveStateSchema = z.strictObject({
 export type CompanionProactiveState = z.infer<typeof companionProactiveStateSchema>;
 
 export const companionStorageCommandSchema = z.discriminatedUnion('type', [
+  z.strictObject({ type: z.literal('companion.deletion.pending') }),
+  z.strictObject({ type: z.literal('companion.deletion.complete'), id: companionIdSchema }),
+  ...companionContactGroupCommands,
   ...companionMemoryProjectionCommands,
   ...companionModelResourceCommands,
   companionTaskControlStopCommand,
@@ -244,6 +248,7 @@ export const companionTopicCompactionPageSchema = z.strictObject({
 });
 export type CompanionTopicCompactionPage = z.infer<typeof companionTopicCompactionPageSchema>;
 export const companionStorageResponseSchema = companionsResponseSchema.extend({
+  pendingCompanionDeletions: z.array(companionIdSchema).optional(),
   taskCapacityClaimed: z.boolean().optional(),
   memoryFrozenValid: z.boolean().optional(),
   taskControl: companionTaskControlResultSchema.optional(),

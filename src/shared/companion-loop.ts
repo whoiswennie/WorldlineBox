@@ -15,6 +15,8 @@ export const companionTopicNarrativeApprovalSchema = topicNarrativeApprovalSchem
   quote: z.string().min(1).max(128), contentScope: z.literal('full_reply').optional() }).strict().refine(value => JSON.stringify(value).length <= 256000);
 export const companionLoopTurnSchema = z.object({ text: z.string().max(65536), rawText: z.string().max(65536), calls: z.array(companionLoopCallSchema).max(16), messageId: id.optional(),
   inputRevision: z.number().int().nonnegative().optional(),
+  /** Host receipt for the exact prose and call proposal already reviewed. */
+  proseReviewChecksum: z.string().regex(/^[a-f0-9]{64}$/).optional(),
   /** Host-only final schema binding. Calls and provider body remain intact. */
   finalProposal: companionFinalProposalSchema.optional(),
   /** Host digest of actual source/evidence versions; never provider metadata. */

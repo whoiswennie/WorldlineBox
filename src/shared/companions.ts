@@ -1,3 +1,4 @@
+import { companionContactGroupCommands, companionContactGroupStateSchema } from './companion-contact-groups';
 import { z } from 'zod';
 import { companionTaskInspectCommand, companionTaskContentCommand, companionTaskDetailSchema, companionTaskContentSchema } from './companion-task-detail';
 import { companionTaskListCommand, companionTaskStopCommand, companionTaskResumeCommand, companionTaskItemSchema, companionTaskPageSchema } from './companion-task-overview';
@@ -64,6 +65,7 @@ export const companionAssetImageSchema = z.object({ url: z.string().max(1024), s
 export const companionAssetImagesSchema = z.object({ avatar: companionAssetImageSchema.optional(), orthographic: companionAssetImageSchema.optional() });
 export type CompanionAssetImages = z.infer<typeof companionAssetImagesSchema>;
 export const companionSchema = z.object({
+  templateId: companionIdSchema.optional(),
   id: companionIdSchema, name: z.string().trim().min(1).max(60),
   description: z.string().max(500), persona: z.string().min(1).max(12000),
   model: z.string().max(160), avatar: z.enum(COMPANION_AVATAR_IDS),
@@ -83,6 +85,7 @@ export const conversationSchema = z.object({
   memberIds: z.array(companionIdSchema).max(20), pinned: z.boolean(), muted: z.boolean(),
   unread: z.number().int().min(0), updatedAt: z.string(), lastMessage: z.string().max(500),
   activeTopicId: companionIdSchema.optional(),
+  defaultTopicId: companionIdSchema.optional(),
   peerOnly: z.boolean().optional(),
 });
 export type CompanionConversation = z.infer<typeof conversationSchema>;
@@ -111,6 +114,7 @@ export const companionMessagesQuerySchema = z.object({
 });
 export const companionSearchQuerySchema = z.object({
   conversationId: companionIdSchema.optional(), query: z.string().trim().max(200).default(''),
+  topicId: companionIdSchema.nullable().optional(),
   authorId: companionIdSchema.optional(), category: z.enum(['all', 'images', 'files', 'links']).default('all'),
   from: z.iso.datetime().optional(), to: z.iso.datetime().optional(),
   before: z.number().int().positive().optional(), snapshot: z.number().int().nonnegative().optional(),
@@ -180,6 +184,7 @@ export const companionDraftSchema = companionSchema.pick({ name: true, descripti
   .extend({ llm: companionLlmSchema.omit({ hasKey: true }).optional() });
 export type CompanionDraft = z.infer<typeof companionDraftSchema>;
 export const companionsRequestSchema = z.discriminatedUnion('type', [
+  ...companionContactGroupCommands,
   ...companionTaskConcurrencyCommands,
   companionTaskListCommand, companionTaskStopCommand, companionTaskResumeCommand, companionTaskInspectCommand, companionTaskContentCommand,
   ...companionExperienceCommands,
@@ -244,6 +249,7 @@ export const companionsRequestSchema = z.discriminatedUnion('type', [
 ]);
 export type CompanionsRequest = z.infer<typeof companionsRequestSchema>;
 export const companionsResponseSchema = z.object({
+  contactGroups: companionContactGroupStateSchema.optional(),
   taskConcurrency: companionTaskConcurrencySchema.optional(),
   taskPage: companionTaskPageSchema.optional(), task: companionTaskItemSchema.optional(),
   taskDetail: companionTaskDetailSchema.optional(), taskContent: companionTaskContentSchema.optional(),

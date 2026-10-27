@@ -5,8 +5,9 @@ import './companion-prompt-assets.css';
 
 type Snapshot = NonNullable<CompanionWorkspaceResponse['companionAssets']>;
 type Draft = { revision: string; content: string };
-export function CompanionPromptAssetsEditor({ companionId, api, disabled = false, initiallyOpen = false }: {
+export function CompanionPromptAssetsEditor({ companionId, api, disabled = false, initiallyOpen = false, onDirtyChange }: {
   companionId: string; api?: Pick<WorldlineBoxCompanionsApi, 'workspace'>; disabled?: boolean; initiallyOpen?: boolean;
+  onDirtyChange?(dirty: boolean): void;
 }) {
   const [open, setOpen] = useState(initiallyOpen), [snapshot, setSnapshot] = useState<Snapshot>();
   const [selected, setSelected] = useState(''), [drafts, setDrafts] = useState<Record<string, Draft>>({});
@@ -21,6 +22,7 @@ export function CompanionPromptAssetsEditor({ companionId, api, disabled = false
   const key = file ? companionId + '/' + file.path : '', storedDraft = key ? drafts[key] : undefined;
   const draft = storedDraft ?? (file ? { revision: file.revision, content: file.content } : undefined);
   const dirty = !!file && !!draft && draft.content !== file.content;
+  useEffect(() => { onDirtyChange?.(dirty); return () => onDirtyChange?.(false); }, [dirty, onDirtyChange]);
   const refresh = useCallback(async () => {
     if (!api?.workspace) { setError('伙伴提示词文件接口暂不可用。'); return; }
     const requestOwner = companionId, sequence = ++serial.current; setLoading(true); setError(''); setNotice('');
@@ -56,9 +58,9 @@ export function CompanionPromptAssetsEditor({ companionId, api, disabled = false
     finally { if (alive.current && owner.current === requestOwner && sequence === serial.current) setSaving(false); }
   };
   return <section className="companion-prompt-assets"><details open={open} onToggle={event => setOpen(event.currentTarget.open)}>
-    <summary>本伙伴的提示词与记忆策略文件</summary>
+    <summary>行为模块与记忆规则{current && <small> · {current.prompts.filter(file => file.path.endsWith('.md')).length} 个提示词模块</small>}</summary>
     {open && <div className="companion-prompt-assets-body">
-      <p className="companions-subtle">初始模板只用于首次创建。这里的修改会写入当前伙伴目录，影响后续上下文；不会改动内置模板或其他伙伴。</p>
+      <p className="companions-subtle">这些模块在创建伙伴时一次生成，每次按职责选用，不会随着聊天自动新增。编辑会更新原文件；日记、知识与成长记录在各自分类中积累。</p>
       <p className="companions-subtle">记忆策略.json管理静默窗口、批次、深度维护与梦境频率；它不作为提示词发送给模型。现有维护会话保留开始时的策略，新会话使用当前文件。</p>
       {current?.memoryPolicyError && <p role="alert">{current.memoryPolicyError}</p>}
       {error && <p role="alert">{error} 本地草稿会保留；可重读文件后核对。</p>}

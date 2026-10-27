@@ -44,7 +44,7 @@ it('retains only a source-backed actual game port across private messages and mo
     task = store.request({ type: 'activity.social.ensure', ...scope, sourceMessageId: source.id, deliveryClientId: clientId, operation: 'message' }).activityTask!;
     advance();
   }
-  expect(task.step).toBe(36); expect(task.peerConversationId).toBe(pair.id); expect(task.peerTopicId).toBeNull();
+  expect(task.step).toBe(36); expect(task.peerConversationId).toBe(pair.id); expect(task.peerTopicId).toMatch(/^main_/u);
   expect(task.gamePort?.topicId).toBe(group.topic!.id);
   expect(store.request({ type: 'activity.history', ...scope, id: task.id, limit: 100 }).activityHistory?.total).toBe(36);
   const competingTopic = store.request({ type: 'topic.create', conversationId: group.socialConversation!.id, readerId: 'a', title: '另一个真实话题', kind: 'game' }).topic!;
@@ -184,7 +184,7 @@ it.each(['cancel', 'source_withdrawn', 'peer_withdrawn', 'topic_source_withdrawn
   const reusedSent = store.request(competing);
   expect(reusedSent.socialMessage?.message.id).toBe(created.socialMessage?.message.id);
   expect(reusedSent.socialMessage?.message.content).toBe(create.arguments.text);
-  expect(store.request({ type: 'topic.list', conversationId: created.socialConversation!.id, readerId: 'a' }).topics).toHaveLength(1);
+  expect(store.request({ type: 'topic.list', conversationId: created.socialConversation!.id, readerId: 'a' }).topics?.filter(topic => !topic.isPrimary)).toHaveLength(1);
   expect(() => store.request({ ...competing, clientId: 'main_conflicting_game_audience', arguments: { ...competing.arguments, includePlayer: true } }))
     .toThrow('收件人与原端口不一致');
   const bound = store.request({ type: 'activity.social.bind_peer_port', ...peerScope, deliveryClientId: create.clientId });
@@ -206,7 +206,7 @@ it.each(['cancel', 'source_withdrawn', 'peer_withdrawn', 'topic_source_withdrawn
     const oldRetry = store.request(competing);
     expect(oldRetry).toMatchObject({ socialDeliveryClientId: create.clientId, topic: { id: topic.id, status: 'closed' } });
     expect(oldRetry.socialMessage?.message.id).toBe(created.socialMessage?.message.id);
-    expect(store.request({ type: 'topic.list', conversationId: topic.conversationId, readerId: 'a' }).topics).toHaveLength(2);
+    expect(store.request({ type: 'topic.list', conversationId: topic.conversationId, readerId: 'a' }).topics?.filter(topic => !topic.isPrimary)).toHaveLength(2);
     expect(() => store.request({ ...competing, arguments: { ...competing.arguments, text: '试图更改原调用内容' } })).toThrow('另一提案');
     return;
   }

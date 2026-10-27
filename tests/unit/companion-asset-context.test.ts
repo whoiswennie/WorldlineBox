@@ -5,6 +5,7 @@ import { assembleCompanionRoleContext } from '../../src/main/companions/structur
 import { buildCompanionContext, type CompanionReplyInput } from '../../src/main/companions/context';
 import { COMPANION_WORLD_PERCEPTION_RULES } from '../../src/main/companions/world-perception-context';
 import { generateCompanionReply } from '../../src/main/companions/model';
+import { emptyCompanionCharacter, renderCompanionCharacter } from '../../src/shared/companion-character';
 
 const oldPersona = 'OLD_BASE_PERSONA\n\n保留多段旧设定。', oldDomainPersona = 'OLDER_DOMAIN_PERSONA\n\n领域构建后，公共frame还可能再次刷新。';
 const frame: CompanionReplyInput = {
@@ -16,6 +17,28 @@ const snapshot = {
   companionId: 'alice', profile: { ...frame.companion, name: 'CurrentAlice', description: 'current description', persona: 'CURRENT_PERSONA' },
   profileRevision: 'profile-current', promptRevision: 'prompt-current', prompts: { default: 'CURRENT_OWNER_GUIDANCE' },
 } as unknown as CompanionAssetProfileSnapshot;
+
+it('binds the main brain to the current standard sheet on each inference, including native tool continuations', async () => {
+  let current = { ...snapshot, profile: { ...snapshot.profile,
+    persona: renderCompanionCharacter({ ...emptyCompanionCharacter('CurrentAlice'), personality: '温和但坚持判断', voice: 'EDITED_VOICE_V1' }) } };
+  const fetchFn = vi.fn<typeof fetch>().mockImplementation(async () => new Response(JSON.stringify({ choices: [{ message: { content: '我会认真核对。' } }] })));
+  const config = { apiFormat: 'openai_chat' as const, model: 'model', apiKey: 'test', baseUrl: 'https://provider.invalid',
+    resolveAssetContext: async (context: { system: string; user: string }, kind: 'reply' | 'structured' | 'text') => assembleCompanionAssetContext(context, current, kind) };
+  const context = buildCompanionContext(frame);
+  await generateCompanionReply(frame, config, undefined, { fetchFn, loop: true, context });
+  current = { ...current, profileRevision: 'new-live-revision', profile: { ...current.profile,
+    persona: renderCompanionCharacter({ ...emptyCompanionCharacter('CurrentAlice'), personality: '温和但坚持判断', voice: 'EDITED_VOICE_V2' }) } };
+  await generateCompanionReply(frame, config, undefined, { fetchFn, loop: true, context,
+    turns: [{ text: '', rawText: '', calls: [{ id: 'observe-1', name: 'world', arguments: '{"action":"observe"}' }], results: [{ callId: 'observe-1', content: '{"ok":true}' }] }] });
+  const wires = fetchFn.mock.calls.map(call => JSON.parse(String(call[1]?.body)));
+  expect(wires[0].messages[0].content).toContain('EDITED_VOICE_V1');
+  expect(wires[1].messages[0].content).toContain('EDITED_VOICE_V2');
+  expect(wires[1].messages[0].content).not.toContain('EDITED_VOICE_V1');
+  expect(wires[1].messages[0].content.match(/【主脑角色扮演准则】/gu)).toHaveLength(1);
+  const envelope = JSON.parse(wires[1].messages[1].content);
+  expect(envelope.characterPerformance).toMatchObject({ profileRevision: 'new-live-revision', format: 'standard_character_sheet', source: 'profile.md' });
+  expect(wires[1].messages.some((message: { role: string; tool_call_id?: string }) => message.role === 'tool' && message.tool_call_id === 'observe-1')).toBe(true);
+});
 
 it.each([
   ['world_decision', `你是WorldlineBox中一个持续生活的伙伴，只控制自己的世界行为。完整稳定人格：\n${oldDomainPersona}\n\n${COMPANION_WORLD_PERCEPTION_RULES}\nWORLD_CONTRACT`],
@@ -78,6 +101,13 @@ it('uses the actual action-result event to select the owner feedback module', ()
   expect(actual.system).toContain('OWNER_RESULT_GUIDANCE'); expect(actual.system).not.toContain('DIALOGUE');
 });
 
+it('keeps factual memory encoding outside the main-brain performance contract', () => {
+  const actual = assembleCompanionAssetContext({ system: 'EXTRACT_FACTS_JSON', user: JSON.stringify({ purpose: 'vcp_experience_journal', companion: { id: 'alice' } }) }, snapshot, 'structured');
+  expect(actual.system).not.toContain('【主脑角色扮演准则】');
+  expect(JSON.parse(actual.user)).not.toHaveProperty('characterPerformance');
+  expect(actual.system).toContain('CURRENT_PERSONA'); expect(actual.system).toContain('EXTRACT_FACTS_JSON');
+});
+
 it('validates an actual provider reply against the same current name sent after admission, including same-name peers', async () => {
   const current = { ...snapshot, profile: { ...snapshot.profile, name: 'PeerBob' } };
   const input: CompanionReplyInput = { ...frame, publicProfiles: [
@@ -92,4 +122,12 @@ it('validates an actual provider reply against the same current name sent after 
   const currentInput = companionAssetReplyIdentity(input, assembleCompanionAssetContext(buildCompanionContext(input), current, 'reply'));
   expect(currentInput.companion.name).toBe('PeerBob'); expect(currentInput.publicProfiles?.find(profile => profile.id === 'alice')?.name).toBe('PeerBob');
   expect(input.companion.name).toBe('OldAlice'); expect(input.publicProfiles?.[0]?.name).toBe('OldAlice');
+});
+
+it('passes the current extensible section names to the main brain without restoring removed template fields', () => {
+  const current = { ...snapshot, profile: { ...snapshot.profile, persona: '【契约】\n新称呼：领航员\n【生活约定】\n见面礼：一杯茶' } };
+  const result = assembleCompanionAssetContext({ system: '', user: JSON.stringify({ identity: { self: { id: 'alice', name: 'Alice' } } }) }, current, 'reply');
+  expect(result.system).toContain('新称呼：领航员');
+  expect(result.system).not.toContain('姓名/自称/别称：');
+  expect(JSON.parse(result.user).characterPerformance.sections).toEqual([{ title: '契约', fields: ['新称呼'] }, { title: '生活约定', fields: ['见面礼'] }]);
 });

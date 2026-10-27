@@ -4,6 +4,7 @@ import {
   type AiApiFormat,
 } from '../../shared/ai-endpoints';
 import type { Companion } from '../../shared/companions';
+import { compileCompanionAgentContext, companionAgentContextSize } from './agent-context';
 import { isDeepseekOfficialEndpoint } from '../../shared/llm';
 import { buildCompanionContext, refreshCompanionContextClock, refreshCompanionRuntimeStateContext, refreshCompanionCharacterDevelopmentContext, refreshCompanionIdentityContext, refreshCompanionFilesContext, type CompanionReplyInput } from './context';
 import { companionPerceivedToolTurns } from './world-perception-context';
@@ -154,7 +155,7 @@ export async function generateCompanionReply(
         const current = prepareCompanionLoopVisuals(context, input.visualInputs ?? options.visualInputs, options.loop ? options.toolImages : undefined, options.loop ? turns : [], config, rejected);
         const request = providerRequest({ ...config, model }, projectCompanionMemoryContextForModel(current.context), controller.signal, options.loop === true, options.loop === true, true, current.images, true,
           options.tools ?? (options.loop ? [COMPANION_DSH_CAPABILITY_TOOL, COMPANION_MEMORY_CAPABILITY_TOOL, COMPANION_WORLD_CAPABILITY_TOOL, COMPANION_WAIT_TOOL,
-            ...(options.browser ? [COMPANION_BROWSER_CAPABILITY_TOOL] : [])] : undefined));
+            ...(options.browser ? [COMPANION_BROWSER_CAPABILITY_TOOL] : [])] : undefined), true);
         if (options.loop) appendLoopHistory(request, config, projectCompanionMemoryToolTurnsForModel(turns), options.supplements ?? [], current.tools, options.hostValidationFeedback);
         return { request, hasImages: current.images.length > 0 || current.tools.some(tool => !!tool.image) };
       }, config.providerBudget, config.accountingPurpose ?? 'reply');
@@ -199,7 +200,8 @@ export async function generateCompanionReply(
       return result;
     };
     return await Promise.race([companionModelQuota.run({ ownerId: input.companion.id, connectionId: companionModelConnection(config),
-      priority: config.workPriority ?? 'foreground', estimatedInputTokens: Math.ceil((context.system.length + context.user.length) / 4) }, operation, controller.signal), aborted]);
+      priority: config.workPriority ?? 'foreground', estimatedInputTokens: Math.ceil((companionAgentContextSize(projectCompanionMemoryContextForModel(context))
+        + (options.loop ? JSON.stringify(turns).length : 0)) / 4) }, operation, controller.signal), aborted]);
   } catch (error) {
     if (error instanceof CompanionModelError) throw error;
     if (error instanceof CompanionModelAdmissionError) throw new CompanionModelError('RATE_LIMIT', error.message, undefined, { reason: error.reason, retryAt: error.retryAt });
@@ -365,7 +367,8 @@ function companionImagePart(format: AiApiFormat, image: Pick<ToolVisualInput, 'm
   if (format === 'openai_responses') return { type: 'input_image', image_url: url, detail };
   return { type: 'image_url', image_url: { url, detail } };
 }
-function providerRequest(config: CompanionModelConfig, context: { system: string; user: string }, signal: AbortSignal, enableDsh = true, enableMemory = false, stream = false, images: readonly CompanionVisualInput[] = [], structured = true, suppliedTools?: readonly CompanionNativeTool[]): Parameters<typeof fetch> {
+function providerRequest(config: CompanionModelConfig, context: { system: string; user: string }, signal: AbortSignal, enableDsh = true, enableMemory = false, stream = false, images: readonly CompanionVisualInput[] = [], structured = true, suppliedTools?: readonly CompanionNativeTool[], agent = false): Parameters<typeof fetch> {
+  const compiled = agent ? compileCompanionAgentContext(context) : { system: context.system, messages: [{ role: 'user' as const, content: context.user }] };
   const deepseek = isDeepseekOfficialEndpoint(config.baseUrl ?? '');
   const tools = suppliedTools ?? [...(enableDsh ? [COMPANION_DSH_CAPABILITY_TOOL] : []), ...(enableMemory ? [COMPANION_MEMORY_CAPABILITY_TOOL, COMPANION_WORLD_CAPABILITY_TOOL] : [])];
   const bearerHeaders = { Authorization: `Bearer ${config.apiKey}`, 'Content-Type': 'application/json' };
@@ -378,36 +381,36 @@ function providerRequest(config: CompanionModelConfig, context: { system: string
         model: config.model, max_tokens: COMPANION_TEXT_GENERATION_PROFILE.maxOutputTokens, stream,
         ...(tools.length ? { tools: tools.map(tool => ({ type: 'function', function: tool })), parallel_tool_calls: true } : {}),
         ...(deepseek ? { thinking: { type: 'disabled' }, ...(structured ? { response_format: { type: 'json_object' } } : {}) } : {}),
-        messages: [{ role: 'system', content: context.system }, { role: 'user', content: context.user }, ...imageMessage],
+        messages: [{ role: 'system', content: compiled.system }, ...compiled.messages, ...imageMessage],
       })];
     case 'openai_responses':
       return [resolveOpenAiResponsesUrl(config.baseUrl), init(bearerHeaders, {
         model: config.model, max_output_tokens: COMPANION_TEXT_GENERATION_PROFILE.maxOutputTokens, stream,
         ...(tools.length ? { tools: tools.map(tool => ({ type: 'function', ...tool, strict: false })), parallel_tool_calls: true } : {}),
         ...(deepseek ? { reasoning: { effort: 'none' }, ...(structured ? { text: { format: { type: 'json_object' } } } : {}) } : {}),
-        instructions: context.system, input: [{ role: 'user', content: context.user }, ...imageMessage],
+        instructions: compiled.system, input: [...compiled.messages, ...imageMessage],
       })];
     case 'anthropic':
       return [resolveAnthropicMessagesUrl(config.baseUrl), init({ 'x-api-key': config.apiKey,
         'anthropic-version': '2023-06-01', 'Content-Type': 'application/json' }, {
-        model: config.model, max_tokens: COMPANION_TEXT_GENERATION_PROFILE.maxOutputTokens, stream, system: context.system,
+        model: config.model, max_tokens: COMPANION_TEXT_GENERATION_PROFILE.maxOutputTokens, stream, system: compiled.system,
         ...(tools.length ? { tools: tools.map(tool => ({ name: tool.name, description: tool.description, input_schema: tool.parameters })) } : {}),
         ...(deepseek ? { thinking: { type: 'disabled' } } : {}),
-        messages: [{ role: 'user', content: context.user }, ...imageMessage],
+        messages: [...compiled.messages, ...imageMessage],
       })];
     case 'gemini_native':
       return [resolveGeminiGenerateContentUrl(config.model, config.baseUrl).replace(/:generateContent$/u, stream ? ':streamGenerateContent?alt=sse' : ':generateContent'), init({ 'x-goog-api-key': config.apiKey,
         'Content-Type': 'application/json' }, {
-        system_instruction: { parts: [{ text: context.system }] },
+        system_instruction: { parts: [{ text: compiled.system }] },
         ...(tools.length ? { tools: [{ function_declarations: tools.map(tool => ({ name: tool.name,
           description: tool.description, parametersJsonSchema: tool.parameters })) }] } : {}),
-        contents: [{ role: 'user', parts: [{ text: context.user }] }, ...(images.length ? [{ role: 'user', parts: companionImageParts(config.apiFormat, images) }] : [])],
+        contents: [...compiled.messages.map(message => ({ role: message.role === 'assistant' ? 'model' : 'user', parts: [{ text: message.content }] })), ...(images.length ? [{ role: 'user', parts: companionImageParts(config.apiFormat, images) }] : [])],
         generationConfig: { maxOutputTokens: COMPANION_TEXT_GENERATION_PROFILE.maxOutputTokens, ...(structured ? { responseMimeType: 'application/json' } : {}) },
       })];
     case 'dashscope_native':
       return [resolveDashScopeMultimodalGenerationUrl(config.baseUrl), init({ ...bearerHeaders, ...(stream ? { 'X-DashScope-SSE': 'enable' } : {}) }, {
-        model: config.model, input: { messages: [{ role: 'system', content: [{ text: context.system }] },
-          { role: 'user', content: [{ text: context.user }] }, ...imageMessage] },
+        model: config.model, input: { messages: [{ role: 'system', content: [{ text: compiled.system }] },
+          ...compiled.messages.map(message => ({ role: message.role, content: [{ text: message.content }] })), ...imageMessage] },
         parameters: { result_format: 'message', max_tokens: COMPANION_TEXT_GENERATION_PROFILE.maxOutputTokens, enable_thinking: false, ...(structured ? { response_format: { type: 'json_object' } } : {}),
           ...(stream ? { incremental_output: true } : {}),
           ...(tools.length ? { tools: tools.map(tool => ({ type: 'function', function: tool })) } : {}) },

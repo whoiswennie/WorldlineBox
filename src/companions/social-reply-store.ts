@@ -1,6 +1,7 @@
 import type { CompanionConnection } from './store';
 import type { CompanionSocialJob } from '../shared/companion-social';
 import type { CompanionReplyProgress } from '../shared/companion-reply-progress';
+import { advanceCompanionReplyTiming } from '../shared/companion-reply-progress';
 import type { CompanionSocialRecall, CompanionSocialReplyProgressEntry, CompanionSocialReplyReceipt } from '../shared/companion-social-reply';
 import type { CompanionStorageCommand } from '../shared/companion-storage';
 import { createHash } from 'node:crypto';
@@ -23,11 +24,12 @@ export class CompanionSocialReplyStore {
     const phase = job.status === 'done' ? 'completed' : job.status === 'cancelled' ? 'cancelled' : job.status === 'failed' ? 'failed' : undefined;
     if (previous && !phase) return previous;
     if (previous && previous.phase === phase) return previous;
-    return { ...previous, workId: job.id, sourceMessageId: job.sourceMessageId, revision: (previous?.revision ?? 0) + 1,
+    const updatedAt = job.finishedAt ?? job.updatedAt ?? previous?.updatedAt ?? job.createdAt;
+    return advanceCompanionReplyTiming(previous, { ...previous, workId: job.id, sourceMessageId: job.sourceMessageId, revision: (previous?.revision ?? 0) + 1,
       phase: phase ?? (job.status === 'running' ? 'context' : 'queued'),
       detail: phase === 'completed' ? '本轮伙伴回复已完成' : phase === 'failed' ? job.terminal ? (job.error ?? '本轮未能继续，等待新资料或明确处理后再试').slice(0, 500) : '本轮伙伴回复尚未完成，等待重试'
         : phase === 'cancelled' ? '本轮伙伴回复已停止' : job.status === 'running' ? '正在核验来信与参与者' : '等待处理这条伙伴来信',
-      startedAt: previous?.startedAt ?? job.createdAt, updatedAt: previous?.updatedAt ?? job.createdAt };
+      startedAt: previous?.startedAt ?? job.createdAt, updatedAt, ...(phase ? { finishedAt: updatedAt } : {}) });
   }
   update(input: Extract<CompanionStorageCommand, { type: 'social.job.progress' }>): void {
     const row = this.db.prepare('SELECT data,lease_until FROM companion_social_jobs WHERE id=?').get(input.id) as Row | undefined;
@@ -35,9 +37,9 @@ export class CompanionSocialReplyStore {
     const job = JSON.parse(row.data) as Job;
     const leaseUntil = Date.parse(row.lease_until ?? '');
     if (job.status !== 'running' || job.leaseToken !== input.leaseToken || !Number.isFinite(leaseUntil) || leaseUntil <= Date.now()) throw new Error('伙伴回复租约已经失效。');
-    const previous = this.progress(job), progress: CompanionReplyProgress = { ...previous,
+    const previous = this.progress(job), progress: CompanionReplyProgress = advanceCompanionReplyTiming(previous, { ...previous,
       phase: input.phase, detail: input.detail, revision: previous.revision + 1, updatedAt: new Date().toISOString(),
-      ...(input.memory ? { memory: input.memory } : {}) };
+      finishedAt: undefined, ...(input.memory ? { memory: input.memory } : {}) });
     this.db.prepare('INSERT INTO companion_social_reply_progress VALUES(?,?) ON CONFLICT(job_id) DO UPDATE SET data=excluded.data').run(job.id, JSON.stringify(progress));
     if (input.memoryRecall) {
       const source = this.db.prepare('SELECT content FROM messages WHERE id=?').get(job.sourceMessageId) as { content: string } | undefined;
@@ -59,7 +61,8 @@ export class CompanionSocialReplyStore {
     });
   }
   complete(job: Job, messageId: string | undefined, sourceContent: string, recall?: CompanionSocialRecall): void {
-    const progress = { ...this.progress(job), phase: 'completed' as const, detail: messageId ? '已发送本轮伙伴回复' : '本轮无需继续发言', updatedAt: new Date().toISOString() };
+    const previous = this.progress(job), now = new Date().toISOString();
+    const progress = advanceCompanionReplyTiming(previous, { ...previous, phase: 'completed', detail: messageId ? '已发送本轮伙伴回复' : '本轮无需继续发言', updatedAt: now, finishedAt: previous.finishedAt ?? now });
     this.db.prepare('INSERT INTO companion_social_reply_progress VALUES(?,?) ON CONFLICT(job_id) DO UPDATE SET data=excluded.data').run(job.id, JSON.stringify(progress));
     if (!messageId || !recall) return;
     const receipt: CompanionSocialReplyReceipt = { companionId: job.companionId, conversationId: job.conversationId,
@@ -73,9 +76,10 @@ export class CompanionSocialReplyStore {
   }
   terminal(job: Job, detail?: string): void {
     if (!['pending', 'done', 'failed', 'cancelled'].includes(job.status)) return;
-    const progress = { ...this.progress(job), ...(job.status === 'pending' ? { phase: 'queued' as const,
-      detail: '等待重新处理这条伙伴来信', memory: undefined } : {}),
-      ...(detail ? { detail: detail.slice(0, 500) } : {}), updatedAt: new Date().toISOString() };
+    const previous = this.progress(job);
+    const progress = advanceCompanionReplyTiming(previous, { ...previous, ...(job.status === 'pending' ? { phase: 'queued' as const,
+      detail: '等待重新处理这条伙伴来信', memory: undefined, finishedAt: undefined } : {}),
+      ...(detail ? { detail: detail.slice(0, 500) } : {}), updatedAt: new Date().toISOString() });
     this.db.prepare('INSERT INTO companion_social_reply_progress VALUES(?,?) ON CONFLICT(job_id) DO UPDATE SET data=excluded.data').run(job.id, JSON.stringify(progress));
     this.db.prepare('DELETE FROM companion_social_reply_pending WHERE job_id=?').run(job.id);
   }

@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { CompanionsStore } from '../../src/companions/store';
+import { companionReplyElapsedMs } from '../../src/shared/companion-reply-progress';
 
 let store: CompanionsStore | undefined, root: string;
 beforeEach(() => {
@@ -21,6 +22,42 @@ beforeEach(() => {
   vi.setSystemTime(Date.now() + 10000); store.request({ type: 'world.tick' });
 });
 afterEach(() => { store?.close(); if (path.dirname(root) !== path.resolve(tmpdir()) || !path.basename(root).startsWith('companion-attention-')) throw Error('Unexpected cleanup'); rmSync(root, { recursive: true, force: true }); vi.useRealTimers(); });
+it('records the terminal time on interruption and clears it only when the work is queued again', () => {
+  const room = store!.openPrivate('alice');
+  const source = store!.appendMessage({ conversationId: room.id, authorId: 'user', content: '检查一次', replyDirective: 'queue' });
+  const work = store!.request({ type: 'work.claim' }).work!;
+  vi.setSystemTime(Date.now() + 5000);
+  store!.request({ type: 'work.status', id: work.id, status: 'interrupted' });
+  const interrupted = store!.request({ type: 'loop.get', companionId: 'alice', sourceMessageId: source.id }).loop!;
+  expect(interrupted.progress!.finishedAt).toBe(new Date().toISOString());
+  expect(interrupted.progress!.timing).toEqual({ elapsedMs: 5000 });
+  vi.setSystemTime(Date.now() + 3600000);
+  store!.request({ type: 'work.status', id: work.id, status: 'interrupted' });
+  expect(store!.request({ type: 'loop.get', companionId: 'alice', sourceMessageId: source.id }).loop!.progress!.finishedAt).toBe(interrupted.progress!.finishedAt);
+  store!.request({ type: 'work.status', id: work.id, status: 'queued' });
+  expect(store!.request({ type: 'loop.get', companionId: 'alice', sourceMessageId: source.id }).loop!.progress!.finishedAt).toBeUndefined();
+  store!.request({ type: 'work.claim' });
+  vi.setSystemTime(Date.now() + 7000);
+  const resumed = store!.request({ type: 'loop.get', companionId: 'alice', sourceMessageId: source.id }).loop!;
+  expect(companionReplyElapsedMs(resumed.progress!, Date.now())).toBe(12000);
+  store!.request({ type: 'work.status', id: work.id, status: 'cancelled' });
+  const frozen = store!.request({ type: 'loop.get', companionId: 'alice', sourceMessageId: source.id }).loop!;
+  vi.setSystemTime(Date.now() + 3600000);
+  expect(companionReplyElapsedMs(frozen.progress!, Date.now())).toBe(12000);
+});
+it('does not count offline time when recovering a previously running process', () => {
+  const room = store!.openPrivate('alice');
+  const source = store!.appendMessage({ conversationId: room.id, authorId: 'user', content: '检查一次', replyDirective: 'queue' });
+  store!.request({ type: 'work.claim' });
+  vi.setSystemTime(Date.now() + 6000);
+  const checkpoint = store!.request({ type: 'loop.get', companionId: 'alice', sourceMessageId: source.id }).loop!;
+  checkpoint.progress = { ...checkpoint.progress!, updatedAt: new Date().toISOString() };
+  store!.request({ type: 'loop.save', checkpoint });
+  vi.setSystemTime(Date.now() + 3600000);
+  store!.request({ type: 'work.interrupt-running' });
+  const recovered = store!.request({ type: 'loop.get', companionId: 'alice', sourceMessageId: source.id }).loop!;
+  expect(recovered.progress!.timing).toEqual({ elapsedMs: 6000 });
+});
 it('shares one FIFO between private and group messages while other companions remain independent', () => {
   store!.request({ type: 'tasks.concurrency.set', companionId: 'alice', limit: 1 });
   store!.request({ type: 'tasks.concurrency.set', companionId: 'bob', limit: 1 });

@@ -24,5 +24,6 @@ export const companionExecutionReadsetSchema = z.strictObject({
   /** Captured immutable topic checkpoints, including their transitive DAG.
    * Missing legacy closure is deliberately not accepted as complete evidence. */
   topics: z.array(z.strictObject({ conversationId: id, topicId: id, checkpointEventIds: z.array(id).min(1).max(2), sourceMessageIds: z.array(id).max(512) })),
+  /** Immutable dialogue ancestry stays in SQLite instead of being copied into every reply. */
 });
 export type CompanionExecutionReadset = z.infer<typeof companionExecutionReadsetSchema>;

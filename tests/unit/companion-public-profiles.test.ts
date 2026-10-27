@@ -9,7 +9,7 @@ import { CompanionPublicProfiles } from '../../src/main/companions/public-profil
 import type { CompanionStorageCommand, CompanionStorageResponse } from '../../src/shared/companion-storage';
 import type { CompanionPublicProfile } from '../../src/shared/companion-public-profile';
 import { BUILTIN_COMPANIONS } from '../../src/shared/companion-personas';
-import { COMPANION_APPEARANCE_FILES } from '../../src/shared/companion-portrait-files';
+import { COMPANION_APPEARANCE_FILES, COMPANION_PORTRAIT_FILES } from '../../src/shared/companion-portrait-files';
 import { CompanionAssetProfileStore, renderCompanionAssetProfile } from '../../src/main/companions/asset-profile';
 import { companionPortraitResponse } from '../../src/main/companions/portrait-response';
 
@@ -17,15 +17,15 @@ const roots: string[] = [], stores = new Set<CompanionsStore>();
 const seeds: CompanionSeed[] = ['alice', 'bob', 'carol'].map(id => ({ id, name: id, description: '公开的伙伴介绍 ' + id, persona: '独立且尊重边界。', model: '', avatar: id === 'alice' ? 'sister' : 'custom', proactive: false }));
 const sha = (bytes: Buffer) => createHash('sha256').update(bytes).digest('hex');
 
-it.each([false, true])('every built-in companion receives readable owner images, including existing exported profiles (%s)', async previousExport => {
+it.each([false, true])('every built-in companion receives readable owner images for fresh and already initialized instances (%s)', async previousExport => {
   const root = await mkdtemp(path.join(tmpdir(), 'companion-public-profiles-')); roots.push(root);
   const store = new CompanionsStore(path.join(root, 'messages.sqlite'), BUILTIN_COMPANIONS); stores.add(store);
   const loader = new CompanionPublicProfiles({ root, libraryDirectory: path.join(root, '伙伴记忆'), appPath: process.cwd(), request: async command => store.request(command) });
   expect(Object.keys(COMPANION_APPEARANCE_FILES).sort()).toEqual(BUILTIN_COMPANIONS.map(item => item.id).sort());
   for (const companion of BUILTIN_COMPANIONS) {
     if (previousExport) {
-      const directory = path.join(root, '伙伴记忆', companion.id); await mkdir(directory, { recursive: true });
-      await writeFile(path.join(directory, 'profile.md'), `# ${companion.name}\n\n伙伴标识：${companion.id}\n\n## 稳定人格\n\n${companion.persona}\n\n此文件供查阅；日记、学习资料和自我认识不会自动改写稳定人格。请在伙伴资料管理中修改人格。\n`);
+      const current = store.state().companions.find(owner => owner.id === companion.id)!;
+      await new CompanionAssetProfileStore(path.join(root, '伙伴记忆')).bootstrap(current);
     }
     const original = await readFile(path.resolve(COMPANION_APPEARANCE_FILES[companion.id]!));
     const prepared = await loader.prepare({ companionId: companion.id, conversation: store.openPrivate(companion.id), sourceAuthorId: 'user' });
@@ -300,4 +300,18 @@ it('rejects invalid, linked, missing and corrupt images, including corrupt non-s
   const prepared = await loader.prepare({ companionId: 'alice', conversation: room, sourceAuthorId: 'bob' });
   expect(prepared.visualInputs).toEqual([]); expect(person(prepared.publicProfiles, 'alice').avatar!.available).toBe(false); expect(person(prepared.publicProfiles, 'alice').orthographic!.available).toBe(false); expect(person(prepared.publicProfiles, 'bob').avatar!.available).toBe(false);
   expect(person(prepared.publicProfiles, 'carol').avatar!.available).toBe(false);
+});
+
+it('materializes both images under a re-added identity using its explicit template, not the old owner ID', async () => {
+  const f = await fixture(), seed = BUILTIN_COMPANIONS.find(owner => owner.id === 'deepseek-flash')!;
+  await picture(path.join(f.appPath, COMPANION_PORTRAIT_FILES.flash), '#44aabb', 64, 64);
+  await picture(path.join(f.appPath, COMPANION_APPEARANCE_FILES[seed.id]!), '#55bbcc', 192, 64);
+  const owner = { ...seed, id: 'new-flash-instance', templateId: seed.id, builtin: true, createdAt: new Date().toISOString() };
+  const profiles = new CompanionAssetProfileStore(f.libraryDirectory);
+  const loader = new CompanionPublicProfiles({ root: f.managed, appPath: f.appPath, profileStore: profiles, request: f.request });
+  const images = await loader.runtimeImages(owner);
+  expect(images.avatar?.url).toContain('/new-flash-instance/avatar?');
+  expect(images.orthographic?.url).toContain('/new-flash-instance/orthographic?');
+  expect((await profiles.loadProfile(owner.id)).profile.templateId).toBe(seed.id);
+  expect(await loader.readOwnerImage(owner.id, 'orthographic')).toBeDefined();
 });

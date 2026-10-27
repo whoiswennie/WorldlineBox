@@ -253,7 +253,7 @@ it.each([
   const invalidate = vi.fn(async () => undefined), schedule = vi.fn(), request = vi.fn(async () => ({ ok: true,
     memoryInvalidatedCompanionIds: ['owner'], memoryInvalidatedScopeIds: ['canonical-owner'] }));
   const host = Object.create(CompanionService.prototype) as { call(command: CompanionStorageCommand): Promise<CompanionStorageResponse> };
-  Object.assign(host, { storage: { request }, sourceValidationRevision: 0, evidenceRevision: 0,
+  Object.assign(host, { storage: { request }, resettingCompanions: new Set(), sourceValidationRevision: 0, evidenceRevision: 0,
     memory: { invalidate, schedule }, memoryLibrary: { invalidate: vi.fn(async () => undefined) }, options: { report: vi.fn() },
     // This test starts after the write-authority gate, and isolates the real
     // Main invalidation policy from independent semantic write validation.

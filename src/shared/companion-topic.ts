@@ -17,6 +17,7 @@ export type CompanionTopicModeratorTransferApproval = z.infer<typeof companionTo
 const publicationReference = z.strictObject({ messageId: id, contentChecksum: z.string().regex(/^[a-f0-9]{64}$/u), authorId: id });
 const publicationViewAvailability = z.enum(['available', 'unavailable', 'legacy_order_unknown', 'none']);
 export const companionTopicSchema = z.object({ id, conversationId: id, title: z.string().trim().min(1).max(120),
+  isPrimary: z.boolean().optional(),
   kind: z.enum(['discussion', 'game', 'story']), status: z.enum(['active', 'paused', 'closed']), forkedFromTopicId: id.optional(), deletedAt: z.string().optional(),
   participantIds: z.array(id).max(21), invitedIds: z.array(id).max(21), tags: z.array(z.string().trim().min(1).max(80)).max(50), moderatorId: id,
   revision: z.number().int().positive(), formalPublicationRevision: z.number().int().nonnegative().safe().optional(),

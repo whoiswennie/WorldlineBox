@@ -21,6 +21,8 @@ export function CompanionHistorySearch({ request, conversations, companions, pla
   useDialogFocusTrap(true, '查找聊天记录');
   const [query, setQuery] = useState('');
   const [scope, setScope] = useState(conversationId ?? '');
+  const [topicFilter, setTopicFilter] = useState<'all' | 'ordinary' | 'current'>('all');
+  const activeTopicId = conversations.find(room => room.id === scope)?.activeTopicId;
   const [authorId, setAuthorId] = useState('');
   const [category, setCategory] = useState<NonNullable<CompanionSearchQuery['category']>>('all');
   const [from, setFrom] = useState(''); const [to, setTo] = useState('');
@@ -32,16 +34,25 @@ export function CompanionHistorySearch({ request, conversations, companions, pla
   const [revision, setRevision] = useState(0);
   const epoch = useRef(0);
   const snapshot = useRef<number | undefined>(undefined);
+  const observedTopic = useRef(activeTopicId);
   useEffect(() => {
     const generation = ++epoch.current;
     let disposed = false;
     const timer = setTimeout(async () => {
+      if (topicFilter === 'current' && observedTopic.current !== activeTopicId) {
+        observedTopic.current = activeTopicId;
+        snapshot.current = undefined; setCursors([undefined]); setPageIndex(0); setPageOffset(0); setPage(null);
+        if (!activeTopicId) setTopicFilter('all');
+        return;
+      }
+      observedTopic.current = activeTopicId;
       setBusy(true); setError('');
       const fromDate = from ? new Date(from + 'T00:00:00') : undefined;
       const toDate = to ? new Date(to + 'T00:00:00') : undefined;
       if (toDate) toDate.setDate(toDate.getDate() + 1);
       if (fromDate && toDate && fromDate >= toDate) { setError('结束日期不能早于开始日期。'); setBusy(false); return; }
       const response = await request({ type: 'message.search', query: query.trim(), ...(scope ? { conversationId: scope } : {}),
+        ...(scope && topicFilter === 'ordinary' ? { topicId: null } : scope && topicFilter === 'current' && activeTopicId ? { topicId: activeTopicId } : {}),
         ...(authorId ? { authorId } : {}), category, ...(fromDate ? { from: fromDate.toISOString() } : {}), ...(toDate ? { to: toDate.toISOString() } : {}),
         ...(cursors[pageIndex] ? { before: cursors[pageIndex] } : {}), ...(snapshot.current !== undefined ? { snapshot: snapshot.current } : {}), limit: 30, compact: true });
       if (disposed || generation !== epoch.current) return;
@@ -51,7 +62,7 @@ export function CompanionHistorySearch({ request, conversations, companions, pla
       snapshot.current = result.snapshot; setPage(result);
     }, 250);
     return () => { clearTimeout(timer); disposed = true; };
-  }, [request, query, scope, authorId, category, from, to, pageIndex, cursors, revision]);
+  }, [request, query, scope, topicFilter, activeTopicId, authorId, category, from, to, pageIndex, cursors, revision]);
   useEffect(() => {
     if (page?.indexReady !== false) return;
     const timer = setTimeout(() => setRevision(value => value + 1), 1000);
@@ -62,10 +73,11 @@ export function CompanionHistorySearch({ request, conversations, companions, pla
   const player = { name: playerProfile?.name || '我', avatar: 'custom' as const, avatarAttachmentId: playerProfile?.avatarAttachmentId };
   return <div className="companions-modal-backdrop" onKeyDown={event => { if (event.key === 'Escape') { event.stopPropagation(); onClose(); } }}>
     <section role="dialog" aria-modal="true" aria-label="查找聊天记录" className="companions-history-modal">
-      <header><div><h2>查找聊天记录</h2><p>按关键词、成员、日期或文件类型查找，再回到原消息</p></div><button className="companion-icon-button" aria-label="关闭聊天搜索" onClick={onClose}>×</button></header>
+      <header><div><h2>查找聊天记录</h2><p>按关键词、话题、成员、日期或文件类型查找，再回到原消息</p></div><button className="companion-icon-button" aria-label="关闭聊天搜索" onClick={onClose}>×</button></header>
       <div className="companions-history-query"><Icon name="search" /><input data-dialog-initial-focus="true" aria-label="搜索聊天内容" maxLength={200} placeholder="关键词或文件名，多个关键词用空格分隔" value={query} onChange={event => { reset(); setQuery(event.target.value); }} /><button className="companion-secondary-button" onClick={() => { reset(); setRevision(value => value + 1); }}>刷新</button></div>
       <div className="companions-history-filters">
-        <label>聊天<select aria-label="搜索范围" value={scope} onChange={event => { reset(); setScope(event.target.value); setAuthorId(''); }}><option value="">全部聊天</option>{conversations.map(room => <option value={room.id} key={room.id}>{room.title}</option>)}</select></label>
+        <label>聊天<select aria-label="搜索范围" value={scope} onChange={event => { reset(); setScope(event.target.value); setAuthorId(''); setTopicFilter('all'); }}><option value="">全部聊天</option>{conversations.map(room => <option value={room.id} key={room.id}>{room.title}</option>)}</select></label>
+        {scope && <label>话题<select aria-label="搜索话题范围" value={topicFilter} onChange={event => { reset(); setTopicFilter(event.target.value as typeof topicFilter); }}><option value="all">全部话题与日常</option><option value="ordinary">仅日常聊天</option>{activeTopicId && <option value="current">仅当前话题</option>}</select></label>}
         <label>发送者<select aria-label="搜索发送者" value={authorId} onChange={event => { reset(); setAuthorId(event.target.value); }}><option value="">所有人</option><option value="user">{player.name}</option>{authors.map(role => <option value={role.id} key={role.id}>{role.name}</option>)}</select></label>
         <label>类型<select aria-label="消息类型" value={category} onChange={event => { reset(); setCategory(event.target.value as typeof category); }}><option value="all">全部消息</option><option value="images">图片</option><option value="files">文件</option><option value="links">链接</option></select></label>
         <label>开始日期<input aria-label="开始日期" type="date" value={from} onChange={event => { reset(); setFrom(event.target.value); }} /></label><label>结束日期<input aria-label="结束日期" type="date" value={to} onChange={event => { reset(); setTo(event.target.value); }} /></label>

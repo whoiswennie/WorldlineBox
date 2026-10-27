@@ -2,7 +2,7 @@ import { mkdtempSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { afterEach, beforeEach, expect, it } from 'vitest';
+import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { CompanionsStore } from '../../src/companions/store';
 import { removeOwnedDirectorySync } from '../../src/main/vcp-memory/filesystem';
 import { companionDshReceipt } from '../../src/shared/companion-dsh-receipt';
@@ -11,8 +11,8 @@ import { captureCompanionExecutionReadset } from '../../src/main/companions/exec
 let root: string, database: string, store: CompanionsStore, room: string;
 const seeds = [{ id: 'owner', name: '伙伴', description: '', persona: '如实说明', model: '', avatar: 'sister' as const, active: true, proactive: false }];
 const stop = { actor: 'user' as const, reason: 'user_requested' as const, requestedAt: '2026-10-26T05:00:00.000Z' };
-beforeEach(() => { root = mkdtempSync(path.join(tmpdir(), 'companion-user-task-stop-')); database = path.join(root, 'messages.sqlite'); store = new CompanionsStore(database, seeds); room = store.openPrivate('owner').id; });
-afterEach(() => { store.close(); removeOwnedDirectorySync(root); });
+beforeEach(() => { vi.useFakeTimers({ toFake: ['Date'] }); vi.setSystemTime('2026-10-26T05:00:00.000Z'); root = mkdtempSync(path.join(tmpdir(), 'companion-user-task-stop-')); database = path.join(root, 'messages.sqlite'); store = new CompanionsStore(database, seeds); room = store.openPrivate('owner').id; });
+afterEach(() => { store.close(); removeOwnedDirectorySync(root); vi.useRealTimers(); });
 
 it('persists exact user reply stop, rejects late publication, and clears active suppression only on explicit retry', () => {
   const source = store.appendMessage({ conversationId: room, authorId: 'user', content: '原始目标', replyDirective: 'none' });

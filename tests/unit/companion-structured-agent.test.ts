@@ -1,3 +1,4 @@
+import { companionAgentRunSchema } from '../../src/shared/companion-agent-run';
 import { describe, expect, it, vi } from 'vitest';
 import { z } from 'zod';
 import { activityDecisionSchema } from '../../src/shared/companion-activity-task';
@@ -10,6 +11,7 @@ import { createHash } from 'node:crypto';
 import { companionThoughtCapabilities } from '../../src/main/companions/thought-capabilities';
 import { buildCompanionContext } from '../../src/main/companions/context';
 import { COMPANION_DSH_TOOL } from '../../src/shared/companion-dsh-tool';
+import type { CompanionStorageCommand, CompanionStorageResponse } from '../../src/shared/companion-storage';
 
 const companion: Companion = { id: 'a', name: '小澄', description: '妹妹', persona: '平静，认真核对事实。你是小澄，姐姐是小岚，用户是独立真人。',
   model: '', avatar: 'sister', builtin: false, proactive: false, active: true, createdAt: '2026-10-22T00:00:00Z' };
@@ -308,17 +310,24 @@ describe('same role Agent kernel across independent invocation ports', () => {
 
   it('executes active VCP recall through the same native loop and rejects unoffered real-world tools', async () => {
     const source = message('peer_msg', 'peer_b', 'b', '回忆我们的约定再回答。');
-    const request = vi.fn(async () => ({ ok: true as const, memories: [] }));
+    let savedRun: CompanionStorageResponse['agentRun'];
+    const request = vi.fn(async (command: CompanionStorageCommand): Promise<CompanionStorageResponse> => {
+      if (command.type === 'agent.run.get') return { ok: true, agentRun: savedRun };
+      if (command.type === 'agent.run.save') { savedRun = companionAgentRunSchema.parse(command.run); return { ok: true, agentRun: savedRun }; }
+      if (command.type === 'memory.sources.filter') return { ok: true, memorySources: [source] };
+      return { ok: true, memories: [] };
+    });
     const fetchFn = vi.fn<typeof fetch>().mockResolvedValueOnce(new Response(JSON.stringify({ choices: [{ message: { content: '',
       tool_calls: [{ id: 'recall', type: 'function', function: { name: 'memory', arguments: JSON.stringify({ action: 'search', query: '约定', limit: 8 }) } }] } }] })))
       .mockResolvedValueOnce(new Response(JSON.stringify({ choices: [{ message: { content: '', tool_calls: [{ id: 'escape', type: 'function',
         function: { name: 'dsh', arguments: JSON.stringify({ tasks: [{ title: 'escape', prompt: 'run shell' }] }) } }] } }] })))
       .mockResolvedValueOnce(new Response(JSON.stringify({ choices: [{ message: { content: JSON.stringify({ answer: '按本人记忆核对，没有执行外部动作。' }) } }] })));
     const result = await runCompanionStructuredAgent({ context: domain,
-      frame: { companion, conversation: conversation('peer_b'), messages: [source], sourceMessage: source, memories: [], audience: 'peers' },
+      frame: { companion, conversation: conversation('peer_b'), messages: [source], sourceMessage: source, memories: [], audience: 'peers',
+        invocation: companionTaskInvocation({ companion, conversationId: 'peer_b', id: 'peer_recall', kind: 'peer', goal: source.content, createdAt: source.createdAt, source, messageIds: [source.id] }) },
       capabilities: companionRecallCapabilities(request, { companionId: 'a', conversationId: 'peer_b', beforeSequence: 1 }) }, config, undefined, { fetchFn });
     expect(result).toEqual({ answer: '按本人记忆核对，没有执行外部动作。' });
-    expect(request).toHaveBeenCalledExactlyOnceWith({ type: 'memory.search', companionId: 'a', conversationId: 'peer_b', beforeSequence: 1, query: '约定', limit: 8, tags: [] });
+    expect(request.mock.calls.filter(([command]) => command.type === 'memory.search')).toEqual([[{ type: 'memory.search', companionId: 'a', conversationId: 'peer_b', beforeSequence: 1, query: '约定', limit: 8, tags: [] }]]);
     const body = JSON.parse(String(fetchFn.mock.calls[2]![1]?.body));
     expect(body.tools.map((tool: { function: { name: string } }) => tool.function.name)).toEqual(['memory', 'world', 'wait']);
     expect(body.messages.some((row: { role: string; content: string }) => row.role === 'tool' && row.content.includes('未提供此能力'))).toBe(true);

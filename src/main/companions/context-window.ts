@@ -8,10 +8,11 @@ export const COMPANION_DIALOGUE_WINDOW: Readonly<CompanionDialogueWindowPolicy> 
 
 /** Keep complete, contiguous recent messages. The current source is retained even when it alone exceeds the window. */
 export function selectCompanionDialogue(messages: readonly CompanionMessage[], options: {
-  conversationId: string; source?: CompanionMessage; throughSequence?: number; proactive?: boolean; policy?: Readonly<CompanionDialogueWindowPolicy>;
+  conversationId: string; source?: CompanionMessage; throughSequence?: number; proactive?: boolean; policy?: Readonly<CompanionDialogueWindowPolicy>; checkpointed?: boolean;
 }) {
   const policy = options.policy ?? COMPANION_DIALOGUE_WINDOW;
   const available = messages.filter(message => message.conversationId === options.conversationId && message.status === 'sent'
+    && !message.memoryEvidenceOnly
     && !message.isReplyDraft && !message.replyDraft && (options.proactive || !options.source || message.sequence <= options.source.sequence
       || message.sequence <= (options.throughSequence ?? options.source.sequence) && message.authorId !== 'user' && message.replyToId === options.source.id))
     .sort((left, right) => left.sequence - right.sequence);
@@ -22,7 +23,7 @@ export function selectCompanionDialogue(messages: readonly CompanionMessage[], o
   for (const message of [...available].reverse()) {
     const required = message.id === options.source?.id;
     if (!required && selected.length && (selected.length >= policy.maxMessages || chars + message.content.length > policy.maxChars
-      || selected.length >= policy.minimumMessages && Number.isFinite(anchor) && Date.parse(message.createdAt) < earliest)) break;
+      || !options.checkpointed && selected.length >= policy.minimumMessages && Number.isFinite(anchor) && Date.parse(message.createdAt) < earliest)) break;
     selected.push(message); chars += message.content.length;
   }
   const pinnedSource = available.find(message => message.id === options.source?.id);

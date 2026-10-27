@@ -12,12 +12,12 @@ let root: Root | undefined;
 let container: HTMLDivElement;
 afterEach(async () => { await act(() => root?.unmount()); container?.remove(); vi.restoreAllMocks(); });
 const date = '2026-10-23T08:00:00.000Z';
-const room: CompanionConversation = { id: 'room', title: '伙伴群聊', kind: 'group', memberIds: ['deepseek-sister', 'deepseek-flash'], pinned: true, muted: false, unread: 0, updatedAt: date, lastMessage: '日常消息' };
+const room: CompanionConversation = { defaultTopicId: 'primary', activeTopicId: 'primary', id: 'room', title: '伙伴群聊', kind: 'group', memberIds: ['deepseek-sister', 'deepseek-flash'], pinned: true, muted: false, unread: 0, updatedAt: date, lastMessage: '日常消息' };
 const topic = (id: string, title: string): CompanionTopic => ({ id, title, conversationId: room.id, kind: 'game', status: 'active', participantIds: ['user', ...room.memberIds], invitedIds: [], tags: [], moderatorId: 'user', revision: 1, createdAt: date, updatedAt: date });
-const message = (sequence: number, content: string, topicId?: string): CompanionMessage => ({ id: `m-${sequence}`, sequence, content, conversationId: room.id, authorId: 'user', kind: 'text', status: 'sent', attachments: [], createdAt: date, topicId });
+const message = (sequence: number, content: string, topicId = 'primary'): CompanionMessage => ({ id: `m-${sequence}`, sequence, content, conversationId: room.id, authorId: 'user', kind: 'text', status: 'sent', attachments: [], createdAt: date, topicId });
 function fixture() {
   let conversation = { ...room };
-  let topics = [topic('wolves', '狼人杀'), topic('trip', '周末旅行')];
+  let topics = [{ ...topic('primary', '主要对话'), isPrimary: true, kind: 'discussion' as const }, topic('wolves', '狼人杀'), topic('trip', '周末旅行')];
   let messages = [message(1, '日常消息'), message(2, '第一局开始', 'wolves'), message(3, '去海边', 'trip')];
   const listeners = new Set<() => void>();
   let pendingPick: ((value: CompanionsResponse) => void) | undefined;
@@ -26,7 +26,7 @@ function fixture() {
     switch (input.type) {
       case 'state': return { ok: true, state: { companions: BUILTIN_COMPANIONS.map(role => ({ ...role, builtin: true, createdAt: date })), conversations: [conversation], activities: [], configured: true } satisfies CompanionState };
       case 'topic.list': return { ok: true, topics: topics.filter(topic => !input.query || topic.title.includes(input.query)), hasMore: false };
-      case 'topic.activate': conversation = { ...conversation, activeTopicId: input.topicId ?? undefined }; return { ok: true, conversation };
+      case 'topic.activate': conversation = { ...conversation, activeTopicId: input.topicId ?? 'primary' }; return { ok: true, conversation };
       case 'topic.create': { const created = { ...topic('created-topic', input.title), participantIds: ['user'], invitedIds: input.participantIds ?? room.memberIds, tags: input.tags ?? [], kind: input.kind }; topics = [...topics, created]; return { ok: true, topic: created }; }
       case 'topic.pause': case 'topic.resume': case 'topic.close': case 'topic.reopen': {
         const changed = { ...topics.find(item => item.id === input.topicId)!, status: input.type === 'topic.pause' ? 'paused' as const : input.type === 'topic.close' ? 'closed' as const : 'active' as const, revision: input.expectedRevision + 1 };
@@ -125,8 +125,8 @@ it('keeps current destination separate from historical topic browsing and sends 
   expect(container.querySelector('.companions-composer-destination')!.textContent).toContain('狼人杀');
   await click('发送');
   expect(test.request).toHaveBeenCalledWith(expect.objectContaining({ type: 'message.send', content: '狼人杀草稿', topicId: 'wolves' }));
-  await openTopics(); await click('返回日常'); expect(input().value).toBe('日常草稿');
-  await click('发送'); expect(test.request).toHaveBeenCalledWith(expect.objectContaining({ type: 'message.send', content: '日常草稿', topicId: null }));
+  await openTopics(); await click('返回主要对话'); expect(input().value).toBe('日常草稿');
+  await click('发送'); expect(test.request).toHaveBeenCalledWith(expect.objectContaining({ type: 'message.send', content: '日常草稿', topicId: 'primary' }));
   expect(test.request.mock.calls.some(([call]) => call.type === 'topic.read')).toBe(false);
 });
 
@@ -137,7 +137,7 @@ it('creates game topics, pauses and resumes them, and preserves pending attachme
   expect(test.request).toHaveBeenCalledWith({ type: 'topic.create', conversationId: 'room', title: '狼人杀第二局', kind: 'game', tags: [], participantIds: room.memberIds });
   expect(destination()).toContain('狼人杀第二局');
   await openTopics(); await click('暂停话题'); expect(input().disabled).toBe(true); expect(button('发送').disabled).toBe(true);
-  await click('返回日常'); await openTopics(); await click('恢复并进入', row('狼人杀第二局'));
+  await click('返回主要对话'); await openTopics(); await click('恢复并进入', row('狼人杀第二局'));
   expect(test.request).toHaveBeenCalledWith({ type: 'topic.resume', conversationId: 'room', topicId: 'created-topic', expectedRevision: 2 });
   expect(input().disabled).toBe(false);
   expect(container.querySelector('[role="dialog"][aria-label="话题管理"]')).toBeNull();
@@ -145,7 +145,7 @@ it('creates game topics, pauses and resumes them, and preserves pending attachme
   await enterTopic('周末旅行'); await test.finishAttachment();
   expect(container.querySelector('.companions-draft-attachments')).toBeNull();
   await enterTopic('狼人杀'); expect(container.querySelector('.companions-draft-attachments')!.textContent).toContain('附件只属于狼人杀.png');
-  await openTopics(); await click('结束话题'); expect(destination()).toContain('日常聊天');
+  await openTopics(); await click('结束话题'); expect(destination()).toContain('主要对话');
 });
 
 it('manages long-lived topics with rename, restore, fork, search and explicit deletion', async () => {
@@ -167,7 +167,7 @@ it('manages long-lived topics with rename, restore, fork, search and explicit de
   expect(test.request.mock.calls.some(([call]) => call.type === 'topic.delete')).toBe(false);
   await click('确认删除话题', row('平行第二局'));
   expect(test.request).toHaveBeenCalledWith({ type: 'topic.delete', conversationId: 'room', topicId: 'forked', expectedRevision: 1 });
-  expect(destination()).toContain('日常聊天');
+  expect(destination()).toContain('主要对话');
   expect(container.textContent).not.toContain('归档');
 });
 
@@ -175,7 +175,7 @@ it('joins and leaves only as the user while other participants remain in their o
   const test = fixture(); await mount(test.api); await enterTopic('狼人杀'); await openTopics();
   await click('退出话题', row('狼人杀'));
   expect(test.request).toHaveBeenCalledWith({ type: 'topic.leave', conversationId: 'room', topicId: 'wolves' });
-  expect(destination()).toContain('日常聊天'); expect(row('狼人杀').textContent).toContain('受邀加入');
+  expect(destination()).toContain('主要对话'); expect(row('狼人杀').textContent).toContain('受邀加入');
   expect(row('狼人杀').textContent).toContain('大肥鱼');
   await click('加入话题', row('狼人杀'));
   expect(test.request).toHaveBeenCalledWith({ type: 'topic.join', conversationId: 'room', topicId: 'wolves' });

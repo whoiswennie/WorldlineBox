@@ -1,25 +1,26 @@
-.companions-bubble-progress { min-width: min(270px, 100%); margin-top: 10px; padding-top: 9px; border-top: 1px solid var(--ui-border-subtle); font-size: 12px; line-height: 1.5; color: var(--ui-content-secondary); }
-.companions-loop-segments:empty + .companions-bubble-progress { margin-top: 0; padding-top: 0; border-top: 0; }
-/* Stage descriptions change often during one recall. Keep the empty live shell
-   independent of their intrinsic width, and reserve its detail/summary rows. */
-.companions-message-bubble.is-reply-pending { width: 420px; max-width: 100%; }
-.is-reply-pending .companions-bubble-progress { min-height: 90px; }
-.is-reply-pending .companions-bubble-progress-detail { min-height: 3em; }
-.companions-bubble-progress-row { display: flex; align-items: center; gap: 6px; min-width: 0; }
-.companions-bubble-progress-row strong { color: var(--ui-content-primary); font-size: 12px; font-weight: 500; }
-.companions-bubble-progress-row time { font-variant-numeric: tabular-nums; margin-left: auto; white-space: nowrap; }
-.companions-bubble-duration-unknown { margin-left: auto; color: var(--ui-content-tertiary, var(--ui-content-secondary)); }
-.companions-bubble-progress-row button { margin-left: auto; border: 0; border-radius: var(--ui-radius-control, 6px); padding: 3px 7px; background: var(--ui-surface-raised); color: var(--ui-content-secondary); font: inherit; cursor: pointer; }
-.companions-bubble-progress-row time + button { margin-left: 2px; }
+.companions-bubble-progress { box-sizing: border-box; width: 420px; max-width: 100%; min-width: 0; padding: 9px 11px; border: 1px solid color-mix(in srgb, var(--ui-border-subtle) 75%, transparent); border-radius: 12px; background: color-mix(in srgb, var(--companion-blue, #637dff) 3%, var(--ui-surface-panel, var(--companion-composer))); color: var(--ui-content-secondary); font-size: 12px; line-height: 1.5; }
+.companions-bubble-progress-row { display: flex; align-items: center; gap: 7px; min-width: 0; }
+.companions-bubble-progress-row button { flex: none; padding: 3px 7px; border: 0; border-radius: 6px; background: transparent; color: var(--ui-content-secondary); font: inherit; cursor: pointer; }
 .companions-bubble-progress-row button:hover { color: var(--ui-content-primary); background: var(--ui-surface-hover); }
-.companions-bubble-progress-detail { display: block; padding-left: 19px; margin-top: 3px; max-width: 420px; overflow-wrap: anywhere; }
-.companions-bubble-progress.is-failed .companions-bubble-progress-row strong { color: var(--ui-danger, var(--ui-content-primary)); }
-.companions-bubble-memory { margin-top: 5px; padding-left: 19px; font-size: 12px; }
-.companions-bubble-memory > summary { cursor: pointer; overflow-wrap: anywhere; }
-.companions-bubble-memory > summary > span { margin-left: 8px; color: var(--ui-accent, #637dff); white-space: nowrap; }
+.companions-bubble-progress-row button:disabled { cursor: wait; opacity: .6; }
+.companions-bubble-retry-error { margin: 7px 0 0 33px; color: var(--ui-danger, #c05c67); overflow-wrap: anywhere; }
+.companions-bubble-progress-row .companions-reply-process-toggle { flex: 1; display: flex; align-items: center; gap: 8px; min-width: 0; padding: 0; text-align: left; background: transparent; }
+.companions-reply-process-symbol { display: grid; place-items: center; flex: none; width: 25px; height: 25px; border-radius: 8px; background: color-mix(in srgb, var(--companion-blue, #637dff) 9%, transparent); color: var(--companion-blue, #637dff); }
+.companions-reply-process-heading { display: flex; align-items: baseline; flex-wrap: wrap; gap: 3px 10px; min-width: 0; flex: 1; }
+.companions-reply-process-heading strong { color: var(--ui-content-primary); font-weight: 500; }
+.companions-reply-process-heading time, .companions-bubble-duration-unknown { color: var(--ui-content-tertiary, var(--ui-content-secondary)); font-size: 11px; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.companions-reply-process-chevron { display: flex; flex: none; color: var(--ui-content-tertiary); transition: transform 160ms; }
+.companions-reply-process-content { padding: 3px 1px 1px 33px; }
+.companions-reply-process-content[hidden] { display: none; }
+.companions-bubble-progress-detail { display: block; margin: 2px 0 5px; overflow-wrap: anywhere; }
+.companions-bubble-progress-detail:empty { display: none; }
+.companions-bubble-progress.is-failed { border-color: color-mix(in srgb, var(--ui-danger, #c05c67) 25%, var(--ui-border-subtle)); }
+.companions-bubble-progress.is-failed .companions-reply-process-symbol { color: var(--ui-danger, #c05c67); background: color-mix(in srgb, var(--ui-danger, #c05c67) 8%, transparent); }
+.companions-bubble-memory { margin-top: 4px; font-size: 11px; }
+.companions-bubble-memory > summary { cursor: pointer; overflow-wrap: anywhere; color: var(--ui-content-secondary); }
+.companions-bubble-memory > summary > span { margin-left: 7px; color: var(--ui-accent, #637dff); white-space: nowrap; }
 .companions-bubble-memory[open] > summary > span { display: none; }
-.companions-bubble-progress.is-terminal { opacity: .86; }
-.companions-bubble-progress.is-terminal:has(.companions-bubble-memory[open]) { opacity: 1; }
+@media (prefers-reduced-motion: reduce) { .companions-reply-process-chevron { transition: none; } }
 .companions-reply-memory-details { box-sizing: border-box; width: min(600px, 100%); min-width: 0; margin: 10px 0 3px; padding: 14px; border: 1px solid var(--ui-border-subtle); border-radius: 12px; background: var(--ui-surface-panel, var(--ui-surface-raised)); color: var(--ui-content-secondary); line-height: 1.65; }
 .companions-reply-memory-details header, .reply-memory-section-title, .reply-memory-candidate-heading { display: flex; align-items: center; gap: 7px; min-width: 0; }
 .companions-reply-memory-details header { justify-content: space-between; }

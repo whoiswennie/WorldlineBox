@@ -221,6 +221,38 @@ export class CompanionResetStore {
       ...['actorId', 'targetId', 'privateOwner'].map(field => ['companion_world_events', `json_extract(data,'$.${field}')=?`, [id]] as [string, string, unknown[]]),
     ];
   }
+  /** Erase an instance's runtime state while preserving shared chat history. */
+  purgeDeletedOwner(id: string): void {
+    const evidence = rows(this.db.prepare(`SELECT m.id FROM messages m JOIN conversations c ON c.id=m.conversation_id
+      WHERE EXISTS(SELECT 1 FROM metadata WHERE key='message-memory-evidence/'||m.id)
+      AND (m.author_id=? OR c.private_companion_id=? OR EXISTS(SELECT 1 FROM metadata p WHERE p.key='memory-world-observation/'||m.id AND json_extract(p.value,'$.companionId')=?))`).all(id, id, id));
+    if (evidence.length) this.withdrawSources(evidence.map(item => String(item.id)));
+    this.resetWorld(id);
+    while (this.resetNotes(id, 256)) { /* Withdraw owned notes and their derived records. */ }
+    const job = { id: 'delete-' + id, companionId: id } as Job;
+    for (const [table, predicate, args, before] of this.ownerSteps(job)) {
+      while (this.removeRows(table, predicate, args, 256, before)) { /* Bounded batches on the worker connection. */ }
+    }
+    const actions = rows(this.db.prepare('SELECT id FROM actions WHERE companion_id=?').all(id));
+    for (const action of actions) {
+      this.db.prepare('DELETE FROM companion_state_actions WHERE action_id=?').run(action.id);
+      this.db.prepare('UPDATE messages SET action_id=NULL WHERE action_id=?').run(action.id);
+      this.db.prepare('DELETE FROM metadata WHERE key=? OR key GLOB ?').run('task-checkpoint/' + action.id, 'task-attempt/' + action.id + '/*');
+    }
+    this.db.prepare('DELETE FROM actions WHERE companion_id=?').run(id);
+    for (const source of evidence) {
+      for (const reference of this.messageReferences) {
+        this.db.prepare(reference.table === 'messages'
+          ? `UPDATE messages SET ${ident(reference.column)}=NULL WHERE ${ident(reference.column)}=?`
+          : `DELETE FROM ${ident(reference.table)} WHERE ${ident(reference.column)}=?`).run(source.id);
+      }
+      this.db.prepare('DELETE FROM metadata WHERE key=? OR key=?').run('message-memory-evidence/' + source.id, 'memory-world-observation/' + source.id);
+      this.db.prepare('DELETE FROM messages WHERE id=?').run(source.id);
+    }
+    this.db.prepare("DELETE FROM metadata WHERE key NOT GLOB 'file-result/*' AND CASE WHEN json_valid(value) THEN json_extract(value,'$.companionId') END=?").run(id);
+    this.db.prepare('DELETE FROM companion_reset_jobs WHERE companion_id=?').run(id);
+    this.db.prepare('DELETE FROM companion_reset_boundaries WHERE companion_id=?').run(id);
+  }
   private memoryBatch(job: Job, limit: number): number { return this.resetNotes(job.companionId, limit); }
   private rooms(job: Job, limit: number): number {
     const found = rows(this.db.prepare("SELECT c.id,c.kind,(SELECT COUNT(*) FROM conversation_members x WHERE x.conversation_id=c.id) AS members,EXISTS(SELECT 1 FROM companion_social_conversations s WHERE s.id=c.id) AS peer,EXISTS(SELECT 1 FROM metadata marker WHERE marker.key='world-room/'||c.id) AS peer_only FROM conversation_members m JOIN conversations c ON c.id=m.conversation_id WHERE m.companion_id=? AND c.id>? ORDER BY c.id LIMIT ?").all(job.companionId, job.progress.roomAfter, limit));

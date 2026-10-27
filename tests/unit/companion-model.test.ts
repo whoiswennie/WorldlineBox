@@ -347,7 +347,7 @@ describe('native memory tools across provider formats', () => {
     const body = JSON.parse(String(fetchFn.mock.calls[0]?.[1]?.body));
     const messages = apiFormat === 'openai_chat' ? body.messages : body.input.messages;
     expect(messages.every((message: { role: string; content?: unknown; tool_calls?: unknown[] }) => message.role !== 'assistant' || message.content || message.tool_calls?.length)).toBe(true);
-    expect(messages).toHaveLength(2);
+    expect(messages).toHaveLength(3); // system, host frame, native user utterance
   });
   it('preserves Gemini opaque function-call signatures while excluding the thought text', async () => {
     const fetchFn = vi.fn<typeof fetch>().mockResolvedValueOnce(response({ candidates: [{ content: { parts: [

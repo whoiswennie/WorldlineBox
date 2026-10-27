@@ -97,6 +97,18 @@ it('names a partner’s native workspace from Main and reuses its directory acro
   await f.broker.execute({ prompt: 'hello' }, f.operation(), { ...execution, allowedWorkspaceRoots: [f.workspace], task: { workspace: { mode: 'existing', path: f.workspace } } });
   expect(f.calls.filter(call => call.endpoint === '/sessions').at(-1)!.input).not.toHaveProperty('workspaceTitle');
 });
+it('isolates concurrent invocations of one partner while reusing the same invocation workspace', async () => {
+  const f = await fixture();
+  const execution = { recordScope: { ...f.scope, invocationId: 'website-a' }, companionName: '同一伙伴', workspaceRootPath: path.join(f.root, 'partners') };
+  const [first, second] = await Promise.all([
+    f.broker.execute({ prompt: 'build website a' }, f.operation(), execution),
+    f.broker.execute({ prompt: 'build website b' }, f.operation(), { ...execution, recordScope: { ...f.scope, invocationId: 'website-b' } }),
+  ]);
+  expect(first.sessionId).not.toBe(second.sessionId);
+  expect(first.workspacePath).not.toBe(second.workspacePath);
+  const nextStep = await f.broker.execute({ prompt: 'verify website a' }, f.operation(), execution);
+  expect(nextStep.workspacePath).toBe(first.workspacePath);
+});
 it('does not treat rejected native Session creation as unconfirmed running work', async () => {
   const f = await fixture(); const original = vi.mocked(f.client.request).getMockImplementation()!;
   vi.mocked(f.client.request).mockImplementationOnce(async () => { throw new Error('Unknown native tool'); });
@@ -146,6 +158,8 @@ it('validates JSON delivery and preserves the exact user constraints sent to DSH
     format: 'json', jsonSchema: { type: 'object', properties: { count: { type: 'integer' } }, required: ['count'] } } } });
   expect(result.structured).toEqual({ count: 2 }); expect(result.verification?.jsonSchema).toBe(true);
   expect(String(f.calls.find(value => value.endpoint.endsWith('/prompt'))?.input.prompt)).toContain(constraint.text);
+  expect(String(f.calls.find(value => value.endpoint.endsWith('/prompt'))?.input.prompt)).not.toContain('sourceMessageId');
+  expect(f.broker.state()[0]!.constraintsDigest).toMatch(/^[a-f0-9]{64}$/u);
 });
 it('rejects unauthorized Session reuse and foreign partner checkpoints before dispatch', async () => {
   const f = await fixture(); await expect(f.broker.execute({ prompt: 'hello', sessionId: 'foreign' }, f.operation())).rejects.toThrow('checkpoint');

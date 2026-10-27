@@ -6,6 +6,8 @@ import { PublicAppearanceSheet } from './PublicAppearanceSheet';
 import { AvatarCropDialog } from './AvatarCropDialog';
 import { companionGroupTitle } from '../../shared/companion-titles';
 import { builtinCompanionProfile, BUILTIN_COMPANION_PROFILES } from '../../shared/companion-catalogue';
+import { CompanionCharacterEditor } from './CompanionCharacterEditor';
+import { standardizeCompanionCharacter } from '../../shared/companion-character';
 
 export type CompanionRequest = (input: CompanionsRequest) => Promise<CompanionsResponse | undefined>;
 export type CompanionDialog =
@@ -41,7 +43,7 @@ export function CompanionDialogs({ dialog, companions, request, onClose, onOpen,
   const [catalogueQuery, setCatalogueQuery] = useState('');
   const [catalogueCategory, setCatalogueCategory] = useState('全部');
   const initial = dialog.kind === 'companion' ? dialog.companion : undefined;
-  const [draft, setDraft] = useState<CompanionDraft>(() => ({ name: initial?.name ?? '', description: initial?.description ?? '', persona: initial?.persona ?? '', model: '', avatar: initial?.avatar ?? 'custom', proactive: initial?.proactive ?? true, inputMode: initial?.inputMode ?? 'steer', ...(initial?.avatarAttachmentId ? { avatarAttachmentId: initial.avatarAttachmentId } : {}), ...(initial?.appearanceAttachmentId ? { appearanceAttachmentId: initial.appearanceAttachmentId } : {}) }));
+  const [draft, setDraft] = useState<CompanionDraft>(() => ({ name: initial?.name ?? '', description: initial?.description ?? '', persona: initial?.persona ?? standardizeCompanionCharacter('', ''), model: '', avatar: initial?.avatar ?? 'custom', proactive: initial?.proactive ?? true, inputMode: initial?.inputMode ?? 'steer', ...(initial?.avatarAttachmentId ? { avatarAttachmentId: initial.avatarAttachmentId } : {}), ...(initial?.appearanceAttachmentId ? { appearanceAttachmentId: initial.appearanceAttachmentId } : {}) }));
   const [connectionMode, setConnectionMode] = useState<'global' | 'independent'>(initial?.llm ? 'independent' : 'global');
   const [connection, setConnection] = useState<NonNullable<CompanionDraft['llm']>>(() => ({ apiFormat: initial?.llm?.apiFormat ?? 'openai_chat', baseUrl: initial?.llm?.baseUrl ?? '', model: initial?.llm?.model ?? '' }));
   const [apiKey, setApiKey] = useState('');
@@ -80,7 +82,7 @@ export function CompanionDialogs({ dialog, companions, request, onClose, onOpen,
     } catch (cause) { setError(cause instanceof Error ? cause.message : '图片未能选取，请重试。'); }
     finally { setBusy(false); }
   }
-  const modalTitle = dialog.kind === 'chat' ? '发起聊天' : dialog.kind === 'companion' ? (initial ? '编辑伙伴资料' : '添加联系人') : dialog.kind === 'group' ? (group ? '管理群聊' : '创建群聊') : dialog.kind === 'action' ? '交给伙伴处理' : dialog.kind === 'delete-conversation' ? (dialog.mode === 'dissolve' ? '解散群聊' : '删除聊天') : '移除联系人';
+  const modalTitle = dialog.kind === 'chat' ? '发起聊天' : dialog.kind === 'companion' ? (initial ? '编辑伙伴资料' : '添加联系人') : dialog.kind === 'group' ? (group ? '管理群聊' : '创建群聊') : dialog.kind === 'action' ? '交给伙伴处理' : dialog.kind === 'delete-conversation' ? (dialog.mode === 'dissolve' ? '解散群聊' : '删除聊天') : '删除联系人';
   const visibleBuiltins = builtins.filter(item => {
     const profile = builtinCompanionProfile(item.id);
     return (catalogueCategory === '全部' || profile?.category === catalogueCategory)
@@ -95,7 +97,7 @@ export function CompanionDialogs({ dialog, companions, request, onClose, onOpen,
         <input className="companions-catalogue-search" aria-label="搜索内置角色" placeholder="搜索名字、性格或兴趣…" value={catalogueQuery} onChange={event => setCatalogueQuery(event.target.value)} />
         <div className="companions-catalogue-categories" role="group" aria-label="角色分类">{['全部', 'AI 拟人', '原创角色', '社区伙伴'].map(category => <button key={category} type="button" aria-pressed={catalogueCategory === category} onClick={() => setCatalogueCategory(category)}>{category}</button>)}<span>{visibleBuiltins.length} 位伙伴</span></div>
         <div className="companions-catalogue-grid">{visibleBuiltins.map(item => {
-          const existing = companions.find(companion => companion.id === item.id && companion.builtin);
+          const existing = companions.find(companion => (companion.templateId ?? companion.id) === item.id && companion.builtin);
           const profile = builtinCompanionProfile(item.id)!;
           return <article className="companions-builtin-card" key={item.id} data-builtin-template={profile.templateId}><div className="companions-builtin-card-identity"><Avatar companion={existing ?? item} templatePreview={!existing} large /><div><h3>{item.name}</h3><span>{profile.category}</span></div></div><p>{profile.introduction}</p><footer><span>{existing ? '已在联系人中' : item.description}</span>
             <button className={existing ? 'companion-secondary-button' : 'companion-primary-button'} disabled={busy} onClick={() => {
@@ -117,7 +119,7 @@ export function CompanionDialogs({ dialog, companions, request, onClose, onOpen,
         <div className="companions-avatar-editor"><Avatar companion={initial && draft.avatar === initial.avatar && draft.avatarAttachmentId === initial.avatarAttachmentId ? { ...initial, name: draft.name } : draft} large /><div><button ref={avatarTrigger} type="button" className="companion-secondary-button" disabled={busy} onClick={() => void chooseAvatar()}>选择本地头像</button><button type="button" className="companions-avatar-reset" disabled={busy} onClick={() => setDraft({ ...draft, avatar: 'custom', avatarAttachmentId: undefined })}>恢复名字头像</button><p className="companions-subtle">选择一张图片，作为她在聊天中的头像。</p></div></div>
         <PublicAppearanceSheet attachmentId={draft.appearanceAttachmentId} removeLabel={initial?.builtin ? '恢复内置三视图' : '移除三视图'} ownerSource={{ url: initial && draft.appearanceAttachmentId === initial.appearanceAttachmentId ? companionAppearance(initial) : companionAppearance({ ...draft, id: initial?.id, builtin: initial?.builtin }, true) }} name={draft.name || '伙伴'} description="一张正面、侧面、背面的标准设定板，作为这位伙伴的公开形象资料。上传的图片优先于内置形象。" disabled={busy} onChoose={() => void chooseAppearance()} onRemove={() => setDraft(current => ({ ...current, appearanceAttachmentId: undefined }))} />
         <label>个性签名<input maxLength={500} value={draft.description} onChange={event => setDraft({ ...draft, description: event.target.value })} placeholder="显示在联系人资料中的一句话" /></label>
-        <label>人设<textarea required rows={5} maxLength={12000} value={draft.persona} onChange={event => setDraft({ ...draft, persona: event.target.value })} placeholder="身份、性格、表达习惯、喜欢什么，以及你们如何相处……" /></label>
+        <CompanionCharacterEditor value={draft.persona} name={draft.name} disabled={busy} onChange={persona => setDraft(current => ({ ...current, persona }))} />
         <label>形象<select value={draft.avatar} onChange={event => setDraft({ ...draft, avatar: event.target.value as CompanionDraft['avatar'], avatarAttachmentId: undefined })}><option value="custom">{draft.avatarAttachmentId ? '本地头像' : '名字头像'}</option>{BUILTIN_COMPANION_PROFILES.map(profile => <option key={profile.id} value={profile.templateId}>{profile.name}</option>)}</select></label>
         <label>LLM 服务<select aria-label="伙伴 LLM 服务" value={connectionMode} onChange={event => setConnectionMode(event.target.value as 'global' | 'independent')}><option value="global">使用全局 LLM 服务（默认）</option><option value="independent">为此伙伴单独配置</option></select></label>
         {connectionMode === 'global' ? <p className="companions-subtle">共用设置中的全局 LLM 服务，继承连接方式、地址、密钥和模型。角色名字、人设与记忆独立保存。</p> : <fieldset className="companions-independent-connection"><legend>此伙伴的独立连接</legend>
@@ -147,7 +149,7 @@ export function CompanionDialogs({ dialog, companions, request, onClose, onOpen,
       <p className="companions-subtle">她会使用自己的能力处理这件事。你们可以继续聊天，结果会回到这里。</p>
       <footer><button type="button" className="companion-secondary-button" onClick={onClose} disabled={busy}>取消</button><button className="companion-primary-button" disabled={busy || !actionOwner}>{busy ? '提交中…' : '开始处理'}</button></footer>
     </form>}
-    {dialog.kind === 'delete' && <div className="companions-form"><p>确定将“{dialog.companion.name}”从联系人移除吗？已有聊天记录保留。</p><footer><button className="companion-secondary-button" disabled={busy} onClick={onClose}>保留联系人</button><button className="companion-danger-button" disabled={busy || dialog.companion.builtin} onClick={() => void submit({ type: 'companion.delete', id: dialog.companion.id })}>移除联系人</button></footer></div>}
+    {dialog.kind === 'delete' && <div className="companions-form"><p>删除“{dialog.companion.name}”后，将停止她的任务并清理人设、形象、知识、记忆、世界状态及专属连接配置。已有聊天记录保留，作者将显示为已删除联系人。此操作无法恢复；再次添加会创建新的伙伴实例。</p><footer><button className="companion-secondary-button" disabled={busy} onClick={onClose}>保留联系人</button><button className="companion-danger-button" disabled={busy} onClick={() => void submit({ type: 'companion.delete', id: dialog.companion.id })}>{busy ? '正在停止并清理…' : '删除联系人'}</button></footer></div>}
     {dialog.kind === 'delete-conversation' && <div className="companions-form"><p>{dialog.mode === 'dissolve' ? `确定解散“${dialog.conversation.title}”吗？该群正在运行和排队的回复会停止。` : `从消息列表删除“${dialog.conversation.title}”吗？聊天记录会保留，重新发起聊天时可以找回。`}</p><footer><button className="companion-secondary-button" disabled={busy} onClick={onClose}>取消</button><button className="companion-danger-button" disabled={busy} onClick={() => void submit({ type: 'conversation.delete', id: dialog.conversation.id, mode: dialog.mode })}>{dialog.mode === 'dissolve' ? '确认解散群聊' : '删除聊天'}</button></footer></div>}
     {cropSource && <AvatarCropDialog attachment={cropSource} name={draft.name || '伙伴'} request={request} returnFocusRef={avatarTrigger} onCancel={() => setCropSource(undefined)} onConfirm={image => { setDraft(current => ({ ...current, avatar: 'custom', avatarAttachmentId: image.id })); setCropSource(undefined); }} />}
     {error && <p className="companions-modal-error" role="alert">{error === 'request' ? requestError || '操作未完成，请查看错误信息后重试。' : error}</p>}

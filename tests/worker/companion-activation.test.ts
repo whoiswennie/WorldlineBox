@@ -18,6 +18,7 @@ afterEach(() => {
 function fixture() {
   const root = mkdtempSync(path.join(tmpdir(), 'companion-activation-')); roots.push(root);
   const filename = path.join(root, 'messages.sqlite'), store = new CompanionsStore(filename); stores.add(store);
+  store.restoreBuiltin(fish); store.restoreBuiltin(sister);
   const settings = store.request({ type: 'world.snapshot' }).world!.settings;
   store.request({ type: 'world.configure', expectedRevision: settings.revision, patch: { mode: 'realtime', timeZone: 'UTC' } });
   return { store, filename };
@@ -31,7 +32,7 @@ function awake(store: CompanionsStore, companionId: string) {
   return scope;
 }
 
-it('loads only the default fish world and never creates dormant actors, interiors, perceptions or cognition jobs', () => {
+it('loads only the explicitly added and active fish world and never creates dormant actors, interiors, perceptions or cognition jobs', () => {
   const { store, filename } = fixture(), world = store.request({ type: 'world.snapshot' }).world!;
   expect(store.state().companions.filter(role => role.active).map(role => role.id)).toEqual([fish]);
   expect(world.actors.map(actor => actor.companionId)).toEqual([fish]);
@@ -48,7 +49,7 @@ it('loads only the default fish world and never creates dormant actors, interior
   } finally { db.close(); }
 });
 
-it('migrates legacy choices once, persists manual activation across restart, and creates custom contacts dormant', () => {
+it('persists manual activation across restart and creates custom contacts dormant', () => {
   const f = fixture(); f.store.close(); stores.delete(f.store);
   const db = new Database(f.filename); db.exec("UPDATE companions SET data=json_remove(data,'$.active')"); db.close();
   let store = new CompanionsStore(f.filename); stores.add(store);

@@ -60,8 +60,8 @@ async function click(label: string) { await act(async () => button(label).click(
 async function fill(label: string, value: string) { const item = element<HTMLInputElement | HTMLTextAreaElement>(`[aria-label="${label}"]`); const prototype = item instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype; await act(async () => { Object.getOwnPropertyDescriptor(prototype, 'value')!.set!.call(item, value); item.dispatchEvent(new Event('input', { bubbles: true })); }); }
 
 it('opens the full owner document space independently of the current chat and exposes real folders', async () => {
-  const f = await mount(); expect(f.workspace).toHaveBeenCalledWith({ type: 'memory.documents.list', companionId: 'role', directory: '', limit: 64 });
-  expect(container!.textContent).toContain('伙伴记忆库'); expect(container!.textContent).toContain('学习资料'); expect(container!.textContent).toContain('世界经历'); expect(container!.textContent).not.toContain('与你有关');
+  const f = await mount(); expect(f.workspace).toHaveBeenCalledWith({ type: 'memory.documents.list', companionId: 'role', directory: '', limit: 64, recordsOnly: true });
+  expect(container!.textContent).toContain('伙伴资产空间'); expect(container!.textContent).toContain('学习资料'); expect(container!.textContent).toContain('世界经历'); expect(container!.textContent).not.toContain('与你有关');
   expect(f.workspace).toHaveBeenCalledWith({ type: 'memory.documents.read', companionId: 'role', path: doc.path, sourceLimit: 30 });
   expect(f.request.mock.calls.some(([command]) => command.type === 'memory.browse' || command.type === 'memory.search')).toBe(false);
   await click('学习资料1'); expect(f.workspace).toHaveBeenLastCalledWith(expect.objectContaining({ type: 'memory.documents.read', path: '资料/灯塔路线.md' }));
@@ -133,10 +133,10 @@ it('uses the real string cursor and replaces later pages with bounded file rows'
     return response;
   });
   await mount(f); await click('下一页文档');
-  expect(f.workspace).toHaveBeenCalledWith({ type: 'memory.documents.list', companionId: 'role', directory: '', limit: 64, cursor: '资料/灯塔路线.md' });
+  expect(f.workspace).toHaveBeenCalledWith({ type: 'memory.documents.list', companionId: 'role', directory: '', limit: 64, recordsOnly: true, cursor: '资料/灯塔路线.md' });
   expect(container!.querySelectorAll('.memory-library-file')).toHaveLength(3);
   await click('上一页文档');
-  expect(f.workspace).toHaveBeenCalledWith({ type: 'memory.documents.list', companionId: 'role', directory: '', limit: 64 });
+  expect(f.workspace).toHaveBeenCalledWith({ type: 'memory.documents.list', companionId: 'role', directory: '', limit: 64, recordsOnly: true });
 });
 it('ignores a late directory response after the user has opened a different notebook', async () => {
   const f = fixture(), base = f.workspace.getMockImplementation()!;

@@ -36,19 +36,19 @@ async function finish(store: CompanionsStore, id = 'alice', max = 20000) {
     }
     throw new Error('Reset did not complete.');
 }
-it('rejects deletion of built-ins, resumes a tombstoned built-in without overwriting its saved profile, and requires a seed for reset', () => {
+it('deletes a template instance without resurrection and re-adds it with a fresh identity', () => {
     const f = fixture();
-    expect(() => f.store.deleteCompanion('alice')).toThrow('不能删除');
-    const custom = f.store.createCompanion({ name: '自定义', description: '', persona: '用户设定', model: '', avatar: 'custom', proactive: false });
-    expect(() => f.store.request({ type: 'companion.reset', id: custom.id, scope: 'all' })).toThrow('出厂设定');
-    f.store.deleteCompanion(custom.id);
     f.store.updateCompanion('alice', { ...seeds[0]!, name: '已编辑的名字' });
+    f.store.deleteCompanion('alice');
+    expect(f.store.state().companions.some(item => item.id === 'alice')).toBe(false);
     close(f.store);
-    const db = new Database(f.file);
-    db.prepare('UPDATE companions SET deleted_at=? WHERE id=?').run('previous removal', 'alice');
-    db.close();
     const reopened = open(f.file);
-    expect(reopened.state().companions.find(item => item.id === 'alice')!.name).toBe('已编辑的名字');
+    expect(reopened.state().companions.some(item => item.id === 'alice')).toBe(false);
+    const replacement = reopened.restoreBuiltin('alice');
+    expect(replacement.id).not.toBe('alice');
+    expect(replacement.name).toBe('alice');
+    const custom = reopened.createCompanion({ name: '自定义', description: '', persona: '用户设定', model: '', avatar: 'custom', proactive: false });
+    expect(() => reopened.request({ type: 'companion.reset', id: custom.id, scope: 'all' })).toThrow('出厂设定');
 });
 it('scopes internal owner lookups and clears only the explicitly reset owner initialization receipt', async () => {
     const f = fixture();

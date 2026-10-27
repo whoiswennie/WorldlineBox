@@ -1,4 +1,5 @@
 // @vitest-environment happy-dom
+import { initialCompanionContactGroups } from '../../src/shared/companion-contact-groups';
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, expect, it, vi } from 'vitest';
@@ -21,7 +22,7 @@ function message(sequence: number, content = `第 ${sequence} 条消息`, extra:
 
 function pendingReply(phase: 'waiting' | 'thinking' = 'thinking', detail = '正在生成回复'): CompanionMessage {
   return message(2, '', { isReplyDraft: true, segments: [], replyToId: 'message-1', replyProgress: {
-    workId: 'work-one', revision: 1, phase, detail, startedAt: date, updatedAt: date } });
+    workId: 'work-one', revision: 1, phase, detail, startedAt: date, updatedAt: date, timing: { elapsedMs: 0, activeSince: date } } });
 }
 
 function fixture(extra: Partial<CompanionState> = {}, initialMessages = [message(1, '帮我整理照片'), message(2, '我们慢慢来。')], initialActions: CompanionAction[] = []) {
@@ -34,6 +35,7 @@ function fixture(extra: Partial<CompanionState> = {}, initialMessages = [message
   const unsubscribe = vi.fn();
   const request = vi.fn(async (input: CompanionsRequest): Promise<CompanionsResponse> => {
     switch (input.type) {
+      case 'contact.groups.read': return { ok: true, contactGroups: initialCompanionContactGroups() };
       case 'state': return { ok: true, state: { ...state, companions: state.companions.map(item => ({ ...item, assetImages: item.assetImages ?? { ...(item.avatarAttachmentId || item.avatar !== 'custom' ? { avatar: { url: 'worldlinebox-companion://portrait/' + item.id + '/avatar?v=' + 'a'.repeat(64), sha256: 'a'.repeat(64) } } : {}), ...(item.appearanceAttachmentId || item.builtin ? { orthographic: { url: 'worldlinebox-companion://portrait/' + item.id + '/orthographic?v=' + 'b'.repeat(64), sha256: 'b'.repeat(64) } } : {}) } })) } };
       case 'messages': {
         const all = messages.filter(item => item.conversationId === input.conversationId);
@@ -271,7 +273,7 @@ it('pastes clipboard files through Main while leaving ordinary text paste untouc
 
 it('searches and filters the full built-in catalogue and restores the selected role with its own template ID', async () => {
   const f = fixture({ companions: sisters.filter(item => item.id !== 'phoebe') });
-  await mount(f.api); await click('联系人'); await click('添加新的伙伴');
+  await mount(f.api); await click('联系人'); await click('添加伙伴');
   const dialog = container!.querySelector('[role="dialog"]')!;
   expect(dialog.querySelectorAll('[data-builtin-template]')).toHaveLength(15);
   await click('原创角色', dialog);
@@ -357,13 +359,42 @@ it('honors IME and Shift+Enter, accepts new input while the companion is thinkin
 });
 
 it('retains a failed message draft, shows the real error, and offers retry for a failed model reply', async () => {
-  const failed = message(3, '服务暂时不可用', { kind: 'notice', authorId: 'system', status: 'failed' });
+  const failed = { ...pendingReply(), replyProgress: { ...pendingReply().replyProgress!, phase: 'failed' as const, detail: '服务暂时不可用' } };
   const f = fixture({}, [message(1), failed]); const original = f.request.getMockImplementation()!;
   f.request.mockImplementation(input => input.type === 'message.send' ? Promise.resolve({ ok: false, error: '网络连接中断，请稍后重试' }) : original(input));
   await mount(f.api); await fill('textarea[aria-label="输入消息"]', '不要丢掉这句话'); await click('发送');
   expect(container!.querySelector('[role="alert"]')!.textContent).toContain('网络连接中断');
   expect(container!.querySelector<HTMLTextAreaElement>('textarea[aria-label="输入消息"]')!.value).toBe('不要丢掉这句话');
-  await click('重试回复'); expect(f.request).toHaveBeenCalledWith({ type: 'reply.retry', conversationId: 'private-sister' });
+  await click('重试这条回复'); expect(f.request).toHaveBeenCalledWith({ type: 'reply.retry', conversationId: 'private-sister', workId: 'work-one' });
+});
+it('shows the current restored process without repeating system failure messages in chat', async () => {
+  const draft = pendingReply(), old = [3, 4, 5].map(sequence => message(sequence, '本次回复已中断，气泡和能力进度已保存，可以继续恢复。', { authorId: 'system', kind: 'notice', status: 'failed' }));
+  const f = fixture({}, [message(1), draft, ...old]); await mount(f.api);
+  expect(container!.querySelectorAll('.companions-notice.is-failed')).toHaveLength(0);
+  expect(container!.textContent).not.toContain('重试回复');
+  expect(container!.querySelector('[data-reply-stage]')).not.toBeNull();
+});
+
+it('keeps a dismissed repeated read failure closed while still reporting action errors and new failures', async () => {
+  const f = fixture(), original = f.request.getMockImplementation()!;
+  let failure = '伙伴不是聊天成员。';
+  f.request.mockImplementation(input => ['messages', 'actions'].includes(input.type) && failure ? Promise.resolve({ ok: false, error: failure }) : input.type === 'message.send'
+    ? Promise.resolve({ ok: false, error: '伙伴不是聊天成员。' }) : original(input));
+  await mount(f.api);
+  expect(container!.querySelector('.companions-error')!.textContent).toContain('伙伴不是聊天成员。');
+  await click('关闭错误提示');
+  await f.publish(); await act(async () => { await new Promise(resolve => setTimeout(resolve, 650)); });
+  expect(container!.querySelector('.companions-error')).toBeNull();
+  await fill('textarea[aria-label="输入消息"]', '再发一条'); await click('发送');
+  expect(container!.querySelector('.companions-error')!.textContent).toContain('伙伴不是聊天成员。');
+  await click('关闭错误提示');
+  failure = '历史消息暂时无法读取';
+  await f.publish(); await act(async () => { await new Promise(resolve => setTimeout(resolve, 650)); });
+  expect(container!.querySelector('.companions-error')!.textContent).toContain(failure);
+  await click('关闭错误提示');
+  failure = ''; await f.publish(); await act(async () => { await new Promise(resolve => setTimeout(resolve, 650)); });
+  failure = '历史消息暂时无法读取'; await f.publish(); await act(async () => { await new Promise(resolve => setTimeout(resolve, 650)); });
+  expect(container!.querySelector('.companions-error')!.textContent).toContain(failure);
 });
 
 it('coalesces a double send and keeps text entered during the pending acknowledgement', async () => {
@@ -421,6 +452,26 @@ it('evicts messages during 80 consecutive history pages and returns directly to 
   expect(container!.querySelector('.companions-history-chip')).toBeNull();
   expect(f.request.mock.calls.filter(([input]) => input.type === 'messages')).toHaveLength(82);
 });
+it('opens each conversation at the newest bounded page and loads history only after an upward gesture', async () => {
+  vi.spyOn(HTMLElement.prototype, 'scrollHeight', 'get').mockReturnValue(1500);
+  const history = Array.from({ length: 10000 }, (_, index) => message(index + 1));
+  const f = fixture({}, history); await mount(f.api);
+  const scroll = container!.querySelector<HTMLDivElement>('[data-companion-messages]')!;
+  Object.defineProperties(scroll, { scrollHeight: { configurable: true, value: 1500 }, clientHeight: { configurable: true, value: 300 } });
+  const reads = () => f.request.mock.calls.filter(([input]) => input.type === 'messages' && input.before !== undefined);
+  await act(() => { scroll.scrollTop = 0; scroll.dispatchEvent(new Event('scroll')); });
+  expect(reads()).toHaveLength(0);
+  expect(Number(scroll.dataset.windowCount)).toBe(50); expect(scroll.textContent).toContain('第 10000 条消息');
+  await act(() => scroll.dispatchEvent(new WheelEvent('wheel', { deltaY: -80, bubbles: true })));
+  expect(reads()).toHaveLength(1); expect(Number(scroll.dataset.windowCount)).toBe(100);
+  expect(container!.querySelector('[aria-label="正在查看历史消息"]')).not.toBeNull();
+  await click('联系人'); await click('消息');
+  const reopened = container!.querySelector<HTMLDivElement>('[data-companion-messages]')!;
+  expect(Number(reopened.dataset.windowCount)).toBe(50); expect(reopened.scrollTop).toBe(1500);
+  expect(container!.querySelector('[aria-label="正在查看历史消息"]')).toBeNull();
+  await act(() => reopened.dispatchEvent(new Event('scroll')));
+  expect(reads()).toHaveLength(1);
+});
 
 it('uses the messages plus button to choose a chat and reserves contact creation for the contacts tab', async () => {
   const f = fixture({ conversations: [] }, []); await mount(f.api);
@@ -441,7 +492,7 @@ it('fetches an older capability detail on demand instead of loading every histor
   f.request.mockImplementation(input => input.type === 'action.get' ? Promise.resolve({ ok: true, action }) : original(input));
   await mount(f.api); expect(f.request.mock.calls.some(([input]) => input.type === 'action.get')).toBe(false);
   await click('查看这次能力调用'); expect(f.request).toHaveBeenCalledWith({ type: 'action.get', id: action.id });
-  expect(container!.querySelector('[role="tab"][aria-selected="true"]')!.textContent).toBe('全部记录');
+  expect(container!.querySelector('[role="dialog"] [role="tab"][aria-selected="true"]')!.textContent).toBe('全部记录');
   expect(container!.textContent).toContain('原来的文件处理'); expect(container!.textContent).toContain('原始能力结果已保留');
   await f.publish(); expect(container!.textContent).toContain('原来的文件处理');
 });
@@ -478,7 +529,9 @@ it('opens the exact parallel capability from a lightweight message entry and kee
   const f = fixture({}, [message(1, '我看看。', { segments: [{ text: '我看看。', actionIds: [first.id, second.id] }] })]);
   await mount(f.api); await f.publishActions([first, second]);
   const bubble = container!.querySelector('.companions-message-bubble')!;
-  expect(bubble.querySelectorAll('.companions-capability-link')).toHaveLength(2);
+  expect(bubble.querySelectorAll('.companions-capability-link')).toHaveLength(0);
+  expect(bubble.parentElement!.querySelectorAll('.companions-loop-capabilities > .companions-capability-link')).toHaveLength(2);
+  expect(bubble.textContent).toBe('我看看。');
   expect(bubble.querySelector('.companions-action-card')).toBeNull();
   expect(bubble.querySelector('details')).toBeNull();
   expect(bubble.textContent).not.toContain('CLOCK TOOL STREAM');
@@ -586,6 +639,7 @@ it('finds an older message and explicitly returns to the latest history without 
 
 it('adds a custom contact with the complete global connection inherited by default', async () => {
   const f = fixture(); await mount(f.api); await click('联系人'); await click('添加联系人'); await click('自定义角色');
+  await click('编辑完整文本');
   await fill('[role="dialog"] input', '阿蓝'); await fill('[role="dialog"] textarea', '喜欢海风，也会有自己的看法。');
   expect(container!.querySelector('[role="dialog"] input[aria-label="模型"]')).toBeNull();
   await submitDialog();
@@ -600,7 +654,9 @@ it('shows a readable biography with the full editable role setting collapsed by 
   expect(introduction.textContent).not.toContain('工具凭据');
   const details = container!.querySelector<HTMLDetailsElement>('.companions-persona-details')!;
   expect(details.open).toBe(false); expect(details.querySelector('summary')!.textContent).toBe('查看角色设定');
-  await click('编辑资料'); expect(container!.querySelector<HTMLTextAreaElement>('[role="dialog"] textarea')!.value).toBe(sisters[0]!.persona);
+  await click('编辑资料');
+  expect(container!.querySelectorAll('.companions-character-editor legend')).toHaveLength(5);
+  await click('编辑完整文本'); expect(container!.querySelector<HTMLTextAreaElement>('[role="dialog"] textarea')!.value).toBe(sisters[0]!.persona);
 });
 
 it('uses a custom contact description as its biography and keeps instructions inside a collapsed setting', async () => {
@@ -612,6 +668,7 @@ it('uses a custom contact description as its biography and keeps instructions in
 
 it('selects a local image avatar, preserves it when contact settings change, and restores the name avatar', async () => {
   const f = fixture(); await mount(f.api); await click('联系人'); await click('添加联系人'); await click('自定义角色');
+  await click('编辑完整文本');
   await fill('[role="dialog"] input', '海盐'); await fill('[role="dialog"] textarea', '喜欢记录生活中的小事。');
   await click('选择本地头像');
   const source = document.querySelector<HTMLImageElement>('[alt="待调整的头像原图"]')!; Object.defineProperties(source, { naturalWidth: { value: 1200 }, naturalHeight: { value: 800 } }); await act(() => source.dispatchEvent(new Event('load'))); await act(() => document.querySelector<HTMLButtonElement>('.avatar-crop-dialog .companion-primary-button')!.click());
@@ -666,7 +723,7 @@ it('shows the public player nickname and avatar while keeping the user message s
 
 it('offers built-in and custom contacts and opens an existing built-in instead of duplicating it', async () => {
   const f = fixture(); await mount(f.api); await click('联系人'); await click('添加联系人');
-  expect(container!.querySelector('[role="tab"][aria-selected="true"]')!.textContent).toBe('内置角色');
+  expect(container!.querySelector('[role="dialog"] [role="tab"][aria-selected="true"]')!.textContent).toBe('内置角色');
   const card = [...container!.querySelectorAll<HTMLElement>('.companions-builtin-card')].find(item => item.textContent?.includes('大肥鱼'))!;
   await click('已添加 · 打开', card);
   expect(f.request).toHaveBeenCalledWith({ type: 'conversation.open', companionId: 'deepseek-sister' });
@@ -747,13 +804,14 @@ it('does not render a second ability bubble for a durable memory-only action res
   expect(container!.querySelector('[data-companion-message="message-3"]')).toBeNull();
 });
 
-it('updates a reply bubble directly from real stream frames without reloading the page data or duplicating committed turns', async () => {
+it('updates separate reply bubbles directly from real stream frames without reloading the page data or duplicating committed turns', async () => {
   const source = message(1, '流式聊天');
   const reply = message(2, '前一步。', { replyToId: source.id, isReplyDraft: true, segments: [{ text: '前一步。', actionIds: [] }] });
   const f = fixture({}, [source, reply]); await mount(f.api); f.request.mockClear();
   const frame: CompanionReplyStreamEvent = { conversationId: reply.conversationId, companionId: reply.authorId, sourceMessageId: source.id, messageId: reply.id, step: 1, attemptId: 'attempt-a', text: '第一段真实增量', phase: 'streaming' };
   await f.stream(frame);
-  const bubble = container!.querySelector('[data-companion-message="message-2"] .companions-message-bubble')!;
+  const bubble = container!.querySelector('[data-companion-message="message-2"] .companions-reply-thread')!;
+  expect([...bubble.querySelectorAll('.companions-message-bubble')].map(value => value.textContent)).toEqual(['前一步。', '第一段真实增量']);
   expect(bubble.textContent).toContain('第一段真实增量'); expect(bubble.getAttribute('aria-busy')).toBe('true');
   expect(bubble.querySelector('[aria-label="伙伴正在输出"]')).not.toBeNull();
   await f.stream({ ...frame, text: '第一段真实增量，第二段接着来。' });
@@ -951,7 +1009,7 @@ it('mounts real progress before a slow history read returns and keeps it through
   await fill('textarea[aria-label="输入消息"]', '请打开浏览器'); await click('发送');
   const sent = f.request.mock.calls.find(([input]) => input.type === 'message.send')![0];
   if (sent.type !== 'message.send') throw new Error('Missing sent source');
-  const frame: CompanionReplyStreamEvent = { conversationId: 'private-sister', companionId: 'deepseek-sister', sourceMessageId: sent.clientId!, messageId: 'new-live-reply', step: 0, attemptId: 'progress', text: '', phase: 'progress', messageIdentity: { sequence: 3, createdAt: date }, progress: { workId: 'live-work', sourceMessageId: sent.clientId!, revision: 3, phase: 'memory', detail: '正在构建这次回忆', startedAt: date, updatedAt: date } };
+  const frame: CompanionReplyStreamEvent = { conversationId: 'private-sister', companionId: 'deepseek-sister', sourceMessageId: sent.clientId!, messageId: 'new-live-reply', step: 0, attemptId: 'progress', text: '', phase: 'progress', messageIdentity: { sequence: 3, createdAt: date }, progress: { workId: 'live-work', sourceMessageId: sent.clientId!, revision: 3, phase: 'memory', detail: '正在构建这次回忆', startedAt: date, updatedAt: date, timing: { elapsedMs: 0, activeSince: date } } };
   await f.stream(frame);
   expect(container!.querySelector('[data-companion-message="new-live-reply"]')!.textContent).toContain('正在构建这次回忆');
   expect(container!.querySelector('[data-companion-message="new-live-reply"]')!.textContent).toContain('1 秒');
@@ -992,4 +1050,16 @@ it('does not insert live progress into browsed history or resurrect it after a c
   expect(container!.querySelector('[data-companion-message="reset-live-reply"]')).toBeNull();
   await f.stream({ ...frame, progress: { ...frame.progress!, revision: 2 } });
   expect(container!.querySelector('[data-companion-message="reset-live-reply"]')).toBeNull();
+});
+
+it('keeps a deleted private contact readable with a placeholder author and closes the send composer', async () => {
+  const room = conversation('deleted-room', 'private', [sisters[0]!.id]);
+  const old = { ...message(1, '保留这段旧消息'), conversationId: room.id, authorId: sisters[0]!.id };
+  const f = fixture({ companions: [], conversations: [room] }, [old]);
+  await mount(f.api);
+  await act(() => container!.querySelector<HTMLButtonElement>('[data-companion-conversation="deleted-room"]')!.click());
+  expect(container!.textContent).toContain('已删除联系人');
+  expect(container!.textContent).toContain('该联系人已删除');
+  expect(container!.textContent).toContain('保留这段旧消息');
+  expect(container!.querySelector('.companions-composer')).toBeNull();
 });

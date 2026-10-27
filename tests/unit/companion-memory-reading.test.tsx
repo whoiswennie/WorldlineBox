@@ -67,3 +67,11 @@ it('maps a date interval to local day boundaries without inventing invalid dates
   expect(start.getHours()).toBe(0); expect(end.getHours()).toBe(23); expect(end.getMilliseconds()).toBe(999);
   expect(memoryFilterDate('', false)).toBeUndefined();
 });
+
+it('describes prompt configuration without calling it a memory or monthly timeline', async () => {
+  const document = { ...doc, path: '提示词/时间线摘要.md', kind: 'document' as const, category: 'other' as const, readOnly: true };
+  await mount(<MemoryDocumentProcessing read={{ document, content: '你是月度时间线摘要器。', sources: [], hasMoreSources: false }} onOpen={vi.fn()} />);
+  expect(node!.textContent).toContain('这是行为配置');
+  expect(node!.textContent).toContain('聊天不会自动新增模块');
+  expect(node!.textContent).not.toContain('这份时间线由已有记忆整理');
+});

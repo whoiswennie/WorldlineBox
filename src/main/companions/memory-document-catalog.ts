@@ -138,7 +138,7 @@ export class CompanionMemoryDocumentCatalog {
       }, { synchronize: false, readOnly: true });
     }).catch((error: unknown) => { state.error = error instanceof Error ? error.message : String(error); state.complete = true; }).finally(() => {
       state.job = undefined;
-      if (!this.closed && !state.error) this.schedule(owner, state);
+      if (!this.closed && !state.error && this.states.get(owner) === state) this.schedule(owner, state);
     });
     state.job = job;
   }
@@ -158,6 +158,12 @@ export class CompanionMemoryDocumentCatalog {
   }
   async dropped(owner: string, relative: string): Promise<void> {
     await this.options.request({ type: 'document.catalog.drop', companionId: owner, paths: [relative] });
+  }
+  async forgetOwner(owner: string): Promise<void> {
+    const state = this.states.get(owner); if (!state) return;
+    state.watcher?.close(); this.states.delete(owner);
+    await state.job;
+    for (const frame of state.frames.splice(0)) await frame.dir.close().catch(() => undefined);
   }
   async close(): Promise<void> {
     this.closed = true;

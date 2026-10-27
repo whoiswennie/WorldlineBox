@@ -163,7 +163,7 @@ it('uses the latest formal actions even when a later paragraph did not repeat th
 it('runs the focus through the real model serialization path and skips the game path', async () => {
   const f = fixture(), fetchFn = vi.fn<typeof fetch>(async (_url, init) => {
     const body = JSON.parse(String(init!.body));
-    const user = JSON.parse(body.messages.findLast((item: { role: string }) => item.role === 'user').content);
+    const user = JSON.parse(body.messages[1].content);
     expect(user.topicContinuityFocus.latestPublishedText.content).toBe(f.published.content);
     expect(user.topicContinuityFocus.allowedTimeWindows[0].remainingWholeMinutes).toBe(0);
     return new Response(JSON.stringify({ choices: [{ message: { content: '他在门外继续等候。' } }] }), { headers: { 'Content-Type': 'application/json' } });
