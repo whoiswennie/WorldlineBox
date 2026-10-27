@@ -17,18 +17,25 @@ const roots: string[] = [], stores = new Set<CompanionsStore>();
 const seeds: CompanionSeed[] = ['alice', 'bob', 'carol'].map(id => ({ id, name: id, description: '公开的伙伴介绍 ' + id, persona: '独立且尊重边界。', model: '', avatar: id === 'alice' ? 'sister' : 'custom', proactive: false }));
 const sha = (bytes: Buffer) => createHash('sha256').update(bytes).digest('hex');
 
-it('every built-in companion has a packaged default reference and receives its own real readable orthographic path', async () => {
+it.each([false, true])('every built-in companion receives readable owner images, including existing exported profiles (%s)', async previousExport => {
   const root = await mkdtemp(path.join(tmpdir(), 'companion-public-profiles-')); roots.push(root);
   const store = new CompanionsStore(path.join(root, 'messages.sqlite'), BUILTIN_COMPANIONS); stores.add(store);
   const loader = new CompanionPublicProfiles({ root, libraryDirectory: path.join(root, '伙伴记忆'), appPath: process.cwd(), request: async command => store.request(command) });
   expect(Object.keys(COMPANION_APPEARANCE_FILES).sort()).toEqual(BUILTIN_COMPANIONS.map(item => item.id).sort());
   for (const companion of BUILTIN_COMPANIONS) {
+    if (previousExport) {
+      const directory = path.join(root, '伙伴记忆', companion.id); await mkdir(directory, { recursive: true });
+      await writeFile(path.join(directory, 'profile.md'), `# ${companion.name}\n\n伙伴标识：${companion.id}\n\n## 稳定人格\n\n${companion.persona}\n\n此文件供查阅；日记、学习资料和自我认识不会自动改写稳定人格。请在伙伴资料管理中修改人格。\n`);
+    }
     const original = await readFile(path.resolve(COMPANION_APPEARANCE_FILES[companion.id]!));
     const prepared = await loader.prepare({ companionId: companion.id, conversation: store.openPrivate(companion.id), sourceAuthorId: 'user' });
     const image = person(prepared.publicProfiles, companion.id).orthographic!;
     expect(image.available).toBe(true); expect(path.isAbsolute(image.absolutePath)).toBe(true);
     expect(image.sha256).toBe(sha(original)); expect(await readFile(image.absolutePath)).toEqual(original);
     const metadata = await sharp(original).metadata(); expect(metadata.width).toBeGreaterThan(metadata.height!);
+    const runtime = await loader.runtimeImages(store.request({ type: 'state' }).state!.companions.find(owner => owner.id === companion.id)!);
+    expect(runtime.avatar?.url).toContain(`/portrait/${companion.id}/avatar?`);
+    expect(runtime.orthographic?.sha256).toBe(sha(original));
   }
 });
 afterEach(async () => {

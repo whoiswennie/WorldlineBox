@@ -220,9 +220,25 @@ export class CompanionAssetProfileStore {
       const root = await this.owner(owner.id, true);
       try { await lstat(path.join(root, MARKER)); return accepted(); }
       catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
-      for (const existing of [PROFILE, '提示词', COMPANION_MEMORY_POLICY_FILE]) {
+      for (const existing of ['提示词', COMPANION_MEMORY_POLICY_FILE]) {
         try { await lstat(path.join(root, existing)); throw new CompanionAssetProfileError('CONFLICT', '伙伴配置已有文件但缺少完整初始化标记；请核对现有文件，不会覆盖或补写内置设定。'); }
         catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
+      }
+      let source: ReadFile | undefined;
+      let initialProfile: CompanionAssetProfile = { name: owner.name, description: owner.description, persona: owner.persona,
+        avatar: owner.avatar, proactive: owner.proactive, inputMode: owner.inputMode ?? 'steer', avatarAttachmentId: owner.avatarAttachmentId ?? null,
+        appearanceAttachmentId: owner.appearanceAttachmentId ?? null };
+      try { source = await this.read(root, PROFILE, 64 * 1024); }
+      catch (error) { if (!(error instanceof CompanionAssetProfileError) || error.code !== 'MISSING') throw error; }
+      if (source) {
+        // The previous profile exporter wrote this exact envelope before the
+        // owner-file configuration factory existed. It is an initialization
+        // source, never a runtime fallback. Preserve its actual role text;
+        // no diary, timeline or learned-memory document is read or imported.
+        const envelope = /^# ([^\r\n]+)\r?\n\r?\n伙伴标识：([a-zA-Z0-9_-]+)\r?\n\r?\n## 稳定人格\r?\n\r?\n([\s\S]+)\r?\n\r?\n此文件供查阅；日记、学习资料和自我认识不会自动改写稳定人格。请在伙伴资料管理中修改人格。\r?\n?$/u.exec(source.text);
+        if (!envelope || envelope[2] !== owner.id)
+          throw new CompanionAssetProfileError('CONFLICT', '伙伴配置已有文件但缺少完整初始化标记；请核对现有文件，不会覆盖或补写内置设定。');
+        initialProfile = profileDraftSchema.parse({ ...initialProfile, name: envelope[1], persona: envelope[3] });
       }
       const focus = this.options.loadInitialFocusPrompt ? await this.options.loadInitialFocusPrompt()
         : '根据当前查询聚焦本人合法记忆，保留正式来源、适用条件与未知，不生成新的经历。';
@@ -231,10 +247,8 @@ export class CompanionAssetProfileStore {
         : { timeline: '为{{agentName}}整理{{month}}实际有来源的月度时间线。', summary: '概括{{agentName}}在{{month}}的真实进展与仍未解决的问题。' };
       if ([focus, tag, timelines.timeline, timelines.summary].some(text => !text.trim() || Buffer.byteLength(text) > 128 * 1024))
         throw new CompanionAssetProfileError('INVALID', '初始聚焦或标签模板为空或超出大小限制。');
+      if (source) await writeFile(path.join(root, 'profile.initialization-source.md'), source.text, { encoding: 'utf8', flag: 'wx' });
       await mkdir(path.join(root, '提示词'));
-      await writeFile(path.join(root, PROFILE), renderCompanionAssetProfile(owner.id, { name: owner.name, description: owner.description, persona: owner.persona,
-        avatar: owner.avatar, proactive: owner.proactive, inputMode: owner.inputMode ?? 'steer', avatarAttachmentId: owner.avatarAttachmentId ?? null,
-        appearanceAttachmentId: owner.appearanceAttachmentId ?? null }), { encoding: 'utf8', flag: 'wx' });
       const behaviors = Object.fromEntries(Object.entries(COMPANION_ASSET_BEHAVIOR_DEFAULTS).map(([purpose, text]) => ['职能-' + purpose, text]));
       for (const [name, content] of Object.entries({ ...initialModules, ...behaviors, '记忆聚焦': focus, '自动标签': tag, '月度时间线': timelines.timeline, '时间线摘要': timelines.summary }))
         await writeFile(path.join(root, '提示词', name + '.md'), ['记忆聚焦', '自动标签', '月度时间线', '时间线摘要'].includes(name) ? content : content + '\n', { encoding: 'utf8', flag: 'wx' });
@@ -247,6 +261,9 @@ export class CompanionAssetProfileStore {
       await writeFile(path.join(root, ...MANIFEST.split('/')), JSON.stringify(plan, null, 2) + '\n', { encoding: 'utf8', flag: 'wx' });
       await writeFile(path.join(root, COMPANION_MEMORY_POLICY_FILE), JSON.stringify({ schema: 'worldlinebox.companion-memory-policy-v1', companionId: owner.id,
         policy: initialCompanionMemoryPolicy() }, null, 2) + '\n', { encoding: 'utf8', flag: 'wx' });
+      const rendered = renderCompanionAssetProfile(owner.id, initialProfile);
+      if (source) await this.publish(root, PROFILE, source.hash, rendered);
+      else await writeFile(path.join(root, PROFILE), rendered, { encoding: 'utf8', flag: 'wx' });
       await writeFile(path.join(root, MARKER), JSON.stringify({ schema: 'worldlinebox.companion-assets-v1', companionId: owner.id, initializedAt: new Date().toISOString() }) + '\n', { encoding: 'utf8', flag: 'wx' });
       return accepted();
     });

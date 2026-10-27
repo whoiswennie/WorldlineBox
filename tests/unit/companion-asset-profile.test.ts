@@ -23,6 +23,34 @@ async function fixture() {
   return { root, library, profiles, initial: await profiles.bootstrap(owner) };
 }
 
+it('initializes a previous exported role from its actual file, preserves the source and leaves diary documents untouched', async () => {
+  const root = await mkdtemp(path.join(tmpdir(), 'companion-asset-profile-')); roots.push(root);
+  const library = path.join(root, '伙伴记忆'), directory = path.join(library, owner.id);
+  await mkdir(path.join(directory, '日记'), { recursive: true });
+  const source = `# 文件中的名字\n\n伙伴标识：${owner.id}\n\n## 稳定人格\n\n用户修改的人格。\n包含独立段落，不采用过时数据库或新内置模板。\n\n此文件供查阅；日记、学习资料和自我认识不会自动改写稳定人格。请在伙伴资料管理中修改人格。\n`;
+  await writeFile(path.join(directory, 'profile.md'), source);
+  await writeFile(path.join(directory, '日记', 'existing.md'), '已有日记保持原样。');
+  const initialized = new Set<string>(), options = { initialized: async (id: string) => initialized.has(id), markInitialized: async (id: string) => { initialized.add(id); } };
+  const profiles = new CompanionAssetProfileStore(library, options), current = await profiles.bootstrap(owner);
+  expect(current.profile).toMatchObject({ name: '文件中的名字', persona: '用户修改的人格。\n包含独立段落，不采用过时数据库或新内置模板。', avatar: owner.avatar });
+  expect(current.modules.length).toBeGreaterThan(10); expect(current.memoryPolicy).toBeDefined();
+  expect(await readFile(path.join(directory, 'profile.initialization-source.md'), 'utf8')).toBe(source);
+  expect(await readFile(path.join(directory, '日记', 'existing.md'), 'utf8')).toBe('已有日记保持原样。');
+  expect((await profiles.bootstrap({ ...owner, persona: '升级后的种子' })).profile).toEqual(current.profile);
+  await unlink(path.join(directory, '.伙伴配置.json'));
+  await expect(new CompanionAssetProfileStore(library, options).bootstrap(owner)).rejects.toMatchObject({ code: 'MISSING' });
+});
+
+it('refuses a previous role export belonging to another owner without writing initialization files', async () => {
+  const root = await mkdtemp(path.join(tmpdir(), 'companion-asset-profile-')); roots.push(root);
+  const library = path.join(root, '伙伴记忆'), directory = path.join(library, owner.id); await mkdir(directory, { recursive: true });
+  const source = '# Bob\n\n伙伴标识：bob\n\n## 稳定人格\n\n其他伙伴的人格。\n\n此文件供查阅；日记、学习资料和自我认识不会自动改写稳定人格。请在伙伴资料管理中修改人格。\n';
+  await writeFile(path.join(directory, 'profile.md'), source);
+  await expect(new CompanionAssetProfileStore(library).bootstrap(owner)).rejects.toMatchObject({ code: 'CONFLICT' });
+  expect(await readFile(path.join(directory, 'profile.md'), 'utf8')).toBe(source);
+  await expect(access(path.join(directory, '提示词'))).rejects.toMatchObject({ code: 'ENOENT' });
+});
+
 it('initializes owner-local assets once, then hydrates live files without overwriting authored profile or prompt edits', async () => {
   const f = await fixture(), profileFile = path.join(f.initial.root, 'profile.md');
   expect(f.initial.profile.persona).toBe(owner.persona);
