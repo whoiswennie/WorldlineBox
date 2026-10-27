@@ -3,7 +3,7 @@ import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
-import { DshTaskBroker } from '../../src/main/dsh/task-broker';
+import { DshTaskBroker, type DshTaskBrokerOptions } from '../../src/main/dsh/task-broker';
 import type { NativeHostClient, NativeHostEvent } from '../../src/main/dsh/native-host-client';
 import { dshInstanceSchema, dshRuntimeSchema } from '../../src/shared/dsh-launcher';
 
@@ -47,13 +47,31 @@ async function fixture() {
       });
     }
   } } as unknown as NativeHostClient;
-  const getHost = vi.fn(async () => ({ instance, runtime, client }));
+  const getHost = vi.fn<DshTaskBrokerOptions['getHost']>(async () => ({ instance, runtime, client }));
   const broker = new DshTaskBroker({ rootPath: root, getHost });
   cleanups.push(async () => { await broker.shutdown(); await rm(root, { recursive: true, force: true }); });
   const operation = () => ({ id: randomUUID(), signal: new AbortController().signal, log: async () => undefined, update: async () => undefined });
   const scope = { actionId: randomUUID(), companionId: 'fish', conversationId: 'room', sourceMessageId: 'user-message' };
   return { broker, root, workspace, client, getHost, calls, operation, scope, publish };
 }
+it('bounds reset host startup and retains owned task records when native cleanup times out', async () => {
+  const f = await fixture(), operation = f.operation();
+  await f.broker.execute({ prompt: 'hello', title: 'Finished owner task' }, operation, { recordScope: f.scope });
+  const abort = new AbortController(), deadline = vi.spyOn(AbortSignal, 'timeout').mockReturnValue(abort.signal);
+  let received: AbortSignal | undefined;
+  f.getHost.mockImplementationOnce(async (_id, signal) => {
+    received = signal;
+    return new Promise((_resolve, reject) => signal!.addEventListener('abort', () => reject(signal!.reason), { once: true }));
+  });
+  try {
+    const resetting = f.broker.removeCompanionRecords('fish');
+    const rejected = expect(resetting).rejects.toThrow('原生任务记录清理超时');
+    await vi.waitFor(() => expect(received).toBe(abort.signal)); abort.abort(new Error('fixture timeout')); await rejected;
+    expect(deadline).toHaveBeenCalledWith(120000);
+    expect(f.broker.state().some(record => record.id === operation.id)).toBe(true);
+    expect((await f.broker.readRecord({ recordId: operation.id })).overview.recordId).toBe(operation.id);
+  } finally { deadline.mockRestore(); }
+});
 it('submits native Session parameters and keeps model/account configuration in the Host', async () => {
   const f = await fixture(), op = f.operation();
   const result = await f.broker.execute({ prompt: 'hello', title: 'Native task' }, op, { recordScope: f.scope, task: { instructions: 'read only' } });

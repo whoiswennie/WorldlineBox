@@ -43,7 +43,7 @@ import { companionRoutineStorageCommands } from './companion-routine';
 import { companionWorldStorageCommands, companionWorldSnapshotSchema, companionWorldWorkSchema, companionWorldJobSchema, companionWorldTimeSchema } from './companion-world';
 import { companionSocialStorageCommands, companionSocialConversationSchema, companionSocialMessageSchema, companionSocialJobSchema, companionSocialNotificationSchema, companionSocialGameContextSchema, companionSocialProgressEvidenceSchema } from './companion-social';
 import { playerProfileCommands } from './companion-profile';
-import { companionResetCommands } from './companion-reset';
+import { companionResetCommands, companionResetCleanupStageSchema } from './companion-reset';
 import { companionWorkOrderStorageCommands, companionWorkOrderClaimSchema } from './companion-work-order';
 import { companionLifeStorageCommands } from './companion-life-event';
 import { companionTopicStorageCommands } from './companion-topic';
@@ -154,6 +154,7 @@ export const companionStorageCommandSchema = z.discriminatedUnion('type', [
   ...companionTopicStorageCommands,
   ...companionCollaborationStorageCommands,
   z.strictObject({ type: z.literal('companion.reset.cleanup'), id: companionIdSchema, jobId: companionIdSchema }),
+  z.strictObject({ type: z.literal('companion.reset.progress'), id: companionIdSchema, jobId: companionIdSchema, stage: companionResetCleanupStageSchema }),
   z.strictObject({ type: z.literal('companion.reset.cleanup-failed'), id: companionIdSchema, jobId: companionIdSchema, error: z.string().max(1000) }),
   z.strictObject({ type: z.literal('companion.task-ids'), id: companionIdSchema }),
   z.strictObject({ type: z.literal('companion.task.track'), id: companionIdSchema, companionId: companionIdSchema, taskId: companionIdSchema }),

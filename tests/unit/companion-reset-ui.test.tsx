@@ -36,6 +36,12 @@ it('resumes the view of a durable reset and reaches completion without issuing a
   expect(f.request.mock.calls.every(([input]) => input.type === 'companion.reset.status')).toBe(true);
   expect(container.querySelector('progress')).toBeNull(); await act(() => button('完成').click()); expect(f.onClose).toHaveBeenCalledOnce();
 });
+it('shows the actual native cleanup stage without presenting its wait as zero data processed', async () => {
+  vi.useFakeTimers(); await mount({ ...pending, phase: 'stopping', processed: 0, cleanupStage: 'native-records' });
+  expect(container.textContent).toContain('正在清理原生任务记录');
+  expect(container.textContent).toContain('完成后会自动继续');
+  expect(container.textContent).not.toContain('已处理 0 项数据');
+});
 it('allows a failed durable job to continue and closing the panel does not cancel the job', async () => {
   const f = await mount({ ...pending, status: 'failed', error: '旧任务未停止，请重试。' });
   expect(container.textContent).toContain('旧任务未停止'); await act(() => button('继续重置').click());

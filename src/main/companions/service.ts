@@ -1624,22 +1624,34 @@ export class CompanionService {
     const existing = this.resetCleanupJobs.get(job.companionId);
     if (existing) return existing;
     this.resettingCompanions.add(job.companionId);
+    const step = async <T>(name: NonNullable<CompanionReset['cleanupStage']>, operation: () => Promise<T>): Promise<T> => {
+      await this.call({ type: 'companion.reset.progress', id: job.companionId, jobId: job.id, stage: name }); this.changed();
+      const started = performance.now();
+      const report = (state: string) => { try { this.options.onTiming?.({ operation: `reset.${job.companionId}.${name}.${state}`, durationMs: performance.now() - started }); } catch { /* Diagnostics cannot block cleanup. */ } };
+      report('started'); const waiting = setInterval(() => report('waiting'), 10000); waiting.unref();
+      try { const value = await operation(); report('completed'); return value; }
+      catch (error) { report('failed'); throw error; }
+      finally { clearInterval(waiting); }
+    };
     const pending = (async () => {
       try {
-        await this.stopCompanion(job.companionId, taskIds);
-        await this.knowledge.reset(job.companionId);
-        await this.memoryLibrary?.reset(job.companionId, job.id);
-        await this.options.purgeMemoryAssets?.(job.companionId);
-        await this.options.dsh()?.removeCompanionTaskRecords(job.companionId, job.id);
+        if (job.status === 'failed') await this.call({ type: 'companion.reset', id: job.companionId, scope: 'all' });
+        await step('stop', () => this.stopCompanion(job.companionId, taskIds));
+        await step('knowledge', () => this.knowledge.reset(job.companionId));
+        // Starting a native host can require an integrity check. Keep current
+        // owner profiles and images readable throughout that potentially slow wait.
+        await step('native-records', async () => this.options.dsh()?.removeCompanionTaskRecords(job.companionId, job.id));
+        await step('documents', async () => this.memoryLibrary?.reset(job.companionId, job.id));
+        await step('asset-index', async () => this.options.purgeMemoryAssets?.(job.companionId));
         await this.credentials.save(job.companionId, '');
-        if (this.assetProfiles) {
+        if (this.assetProfiles) await step('profile', async () => {
           const response = await this.storage.request({ type: 'state', companionId: job.companionId, includeConversations: false });
           const initial = response.state?.companions.find(owner => owner.id === job.companionId);
           if (!response.ok || !initial) throw new Error('重置后无法读取伙伴初始资料。');
-          await this.assetProfiles.initializeAfterReset(initial);
+          await this.assetProfiles!.initializeAfterReset(initial);
           await this.profiles.initializeAfterReset(initial);
           this.assetProfileFailures.delete(job.companionId);
-        }
+        });
         await this.call({ type: 'companion.reset.cleanup', id: job.companionId, jobId: job.id });
       } catch (error) {
         await this.call({ type: 'companion.reset.cleanup-failed', id: job.companionId, jobId: job.id, error: publicError(error) });

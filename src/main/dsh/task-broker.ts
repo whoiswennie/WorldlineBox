@@ -58,9 +58,17 @@ export class DshTaskBroker {
     for (const [instanceId, records] of groups) {
       const managed = records.filter(record => record.taskWorkspaceRoot && record.workspacePath
         && path.resolve(record.taskWorkspaceRoot, owner) === path.resolve(record.workspacePath));
-      const { client } = await this.options.getHost(instanceId);
-      await client.request('/companions/reset', { sessionIds: [...new Set(records.flatMap(record => record.sessionId ? [record.sessionId] : []))],
-        workspacePaths: [...new Set(managed.map(record => record.workspacePath!))] });
+      // The deadline includes host startup/integrity checks, not just HTTP.
+      // Keep the durable records for a safe retry when that host is unavailable.
+      const signal = AbortSignal.timeout(120000);
+      try {
+        const { client } = await this.options.getHost(instanceId, signal);
+        await client.request('/companions/reset', { sessionIds: [...new Set(records.flatMap(record => record.sessionId ? [record.sessionId] : []))],
+          workspacePaths: [...new Set(managed.map(record => record.workspacePath!))] }, signal);
+      } catch (error) {
+        if (signal.aborted) throw new Error('原生任务记录清理超时，请稍后继续重置。', { cause: error });
+        throw error;
+      }
       for (const record of managed) roots.add(record.taskWorkspaceRoot!);
     }
     for (const root of roots) await removeOwnedDirectory(root, owner, jobId);

@@ -4997,7 +4997,9 @@ async function startApplication(): Promise<void> {
       if (applicationClosing) throw new Error('应用正在关闭。');
       let workspaceCompanionService: CompanionService | undefined;
       companionService = workspaceCompanionService = new CompanionService({
-        onTiming: timing => logger?.info('companions.context.slow', 'Companion preparation or source validation exceeded 500 ms.', timing),
+        onTiming: timing => timing.operation.startsWith('reset.')
+          ? logger?.info('companions.reset.step', 'Companion reset step updated.', timing)
+          : logger?.info('companions.context.slow', 'Companion preparation or source validation exceeded 500 ms.', timing),
         vcpMemoryVendorRoot: app.isPackaged ? path.join(process.resourcesPath, 'vcp-memory') : path.join(app.getAppPath(), 'vendor', 'vcp-memory'),
         purgeMemoryAssets: async owner => {
           if (!/^[A-Za-z0-9_-]{1,100}$/.test(owner) || !workerClient) throw new Error('伙伴资产库尚未就绪。');

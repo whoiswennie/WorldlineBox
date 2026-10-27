@@ -62,6 +62,8 @@ it('scopes internal owner lookups and clears only the explicitly reset owner ini
     close(f.store); const reopened = open(f.file);
     expect(reopened.request({ type: 'companion.assets.initialized', companionId: 'alice' }).assetProfileInitialized).toBe(true);
     const reset = reopened.request({ type: 'companion.reset', id: 'alice', scope: 'all' }).reset!;
+    expect(reopened.request({ type: 'companion.reset.progress', id: 'alice', jobId: reset.id, stage: 'native-records' }).reset?.cleanupStage).toBe('native-records');
+    expect(() => reopened.request({ type: 'companion.reset.progress', id: 'alice', jobId: 'different-reset', stage: 'profile' })).toThrow('重置阶段');
     expect(reopened.request({ type: 'state', companionId: 'alice', includeConversations: false }).state!.companions.map(owner => owner.id)).toEqual(['alice']);
     expect(() => reopened.request({ type: 'companion.assets.mark-initialized', companionId: 'alice' })).toThrow('重置');
     reopened.request({ type: 'companion.reset.cleanup', id: 'alice', jobId: reset.id }); await finish(reopened);

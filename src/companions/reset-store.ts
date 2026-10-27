@@ -63,7 +63,8 @@ export class CompanionResetStore {
   list(): CompanionReset[] { return rows(this.db.prepare('SELECT data FROM companion_reset_jobs ORDER BY rowid').all()).map(item => this.public(json<Job>(item.data))); }
   private public(job: Job): CompanionReset {
     return { id: job.id, companionId: job.companionId, scope: job.scope, status: job.status, phase: job.phase, processed: job.processed,
-      startedAt: job.startedAt, updatedAt: job.updatedAt, ...(job.error ? { error: job.error } : {}) };
+      startedAt: job.startedAt, updatedAt: job.updatedAt, ...(job.error ? { error: job.error } : {}),
+      ...(job.phase === 'stopping' && job.cleanupStage ? { cleanupStage: job.cleanupStage } : {}) };
   }
   private load(id: string): Job | undefined { const found = this.db.prepare('SELECT data FROM companion_reset_jobs WHERE companion_id=?').get(id); return found ? json<Job>(row(found).data) : undefined; }
   status(id: string): { reset?: CompanionReset; resetTaskIds: string[] } { const job = this.load(id); return { reset: job && this.public(job), resetTaskIds: job?.progress.taskIds ?? [] }; }
@@ -138,6 +139,11 @@ export class CompanionResetStore {
     if (job.phase !== 'stopping') { if (error) throw new Error('外部任务清理阶段已经结束。'); return this.public(job); }
     job.status = error ? 'failed' : 'running'; job.error = error?.slice(0, 1000); if (!error) { job.phase = 'rooms'; job.progress.taskIds = []; }
     this.save(job); return this.public(job);
+  }
+  progress(id: string, jobId: string, stage: NonNullable<CompanionReset['cleanupStage']>): CompanionReset {
+    const job = this.load(id);
+    if (!job || job.id !== jobId || job.phase !== 'stopping' || job.status !== 'running') throw new Error('重置阶段已变化，不能更新旧任务进度。');
+    job.cleanupStage = stage; this.save(job); return this.public(job);
   }
   private garbage(job: Job, attachmentId: string): void { this.db.prepare('INSERT OR IGNORE INTO companion_reset_garbage(job_id,attachment_id) VALUES(?,?)').run(job.id, attachmentId); }
   private invalidate(_job: Job, noteId: string): void { this.withdrawNote(noteId); }

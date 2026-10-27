@@ -1194,6 +1194,19 @@ it.each(['generated', 'explicit'] as const)('blocks %s TagMaster metadata at the
 });
 
 describe('CompanionService durable factory reset', () => {
+  it('keeps owner profile and image files available while native cleanup waits and persists its actual stage', async () => {
+    const dsh = fakeDsh(() => ({ tasks: [], operations: [] }), vi.fn(async () => ({ ok: true as const }))), gate = deferred<void>();
+    vi.spyOn(dsh, 'removeCompanionTaskRecords').mockImplementation(async () => gate.promise);
+    const f = fixture(dsh, false, false, undefined, true);
+    const before = (await f.service.handle({ type: 'state' })).state!.companions.find(owner => owner.id === 'sister')!;
+    await f.service.handle({ type: 'companion.reset', id: 'sister', scope: 'all' });
+    await vi.waitFor(() => expect(f.store.request({ type: 'companion.reset.status', id: 'sister' }).reset?.cleanupStage).toBe('native-records'));
+    const current = (await f.service.handle({ type: 'state' })).state!.companions.find(owner => owner.id === 'sister')!;
+    expect(current.assetImages?.avatar?.sha256).toBe(before.assetImages!.avatar!.sha256);
+    expect((await f.service.attachmentResponse(new Request(current.assetImages!.avatar!.url))).status).toBe(200);
+    expect(existsSync(path.join(f.root, 'library', '伙伴记忆', 'sister', 'profile.md'))).toBe(true);
+    gate.resolve(); await finishReset(f.store); await closeService(f.service);
+  });
   it.each(['request', 'startup'] as const)('shows existing owner images while stopping and rebuilds defaults and images after reset (%s)', async entry => {
     const f = fixture(fakeDsh(() => ({ tasks: [], operations: [] }), vi.fn(async () => ({ ok: true as const }))), false, false, undefined, true);
     const before = (await f.service.handle({ type: 'state' })).state!.companions.find(owner => owner.id === 'sister')!;

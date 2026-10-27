@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import type { Companion } from '../../shared/companions';
 import type { CompanionReset } from '../../shared/companion-reset';
+import { COMPANION_RESET_CLEANUP_LABELS } from '../../shared/companion-reset';
 import { Icon } from '../Icons';
 import { useDialogFocusTrap } from '../use-dialog-focus-trap';
 import { isImeKeyboardEvent } from '../ime-safe-dismiss';
@@ -46,6 +47,8 @@ export function CompanionResetDialog({ companion, initialJob, request, requestEr
     finally { if (alive.current) setBusy(false); }
   }
   const running = job?.status === 'running', completed = job?.status === 'completed', failed = job?.status === 'failed';
+  const preparing = running && job.phase === 'stopping';
+  const progressLabel = job?.cleanupStage ? COMPANION_RESET_CLEANUP_LABELS[job.cleanupStage] : '正在停止旧任务';
   return <div className="companions-modal-backdrop" onKeyDown={event => { if (event.key === 'Escape' && !isImeKeyboardEvent(event.nativeEvent)) { event.stopPropagation(); onClose(); } }}>
     <section className="companion-reset-dialog" role="dialog" aria-modal="true" aria-label="重置伙伴">
       <header><div><span>伙伴管理</span><h2>重置伙伴</h2></div><button className="companion-icon-button" type="button" aria-label="关闭重置窗口" onClick={onClose}><Icon name="close" /></button></header>
@@ -58,7 +61,7 @@ export function CompanionResetDialog({ companion, initialJob, request, requestEr
           <div><Icon name="settings" /><span><strong>人设与形象</strong><small>恢复内置设定、头像、三视图与全局模型</small></span></div>
         </div><p className="companion-reset-boundary">其他伙伴的资料和群聊发言会保留。这位伙伴会退出所有群聊，与其有关的私聊、社交关系、拜访和个人记忆会清空；你的用户资料和本机原文件不受影响。</p>
         <label className="companion-reset-confirm">输入「{companion.name}」以确认<input autoComplete="off" spellCheck={false} aria-label="确认重置的伙伴名字" placeholder={companion.name} value={confirmation} onChange={event => setConfirmation(event.target.value)} disabled={busy} /></label></>}
-        {job && <div className={`companion-reset-progress${completed ? ' is-completed' : failed ? ' is-failed' : ''}`} role="status" aria-live="polite"><div><Icon name={completed ? 'check' : failed ? 'alert-circle' : 'loader'} /><strong>{completed ? '重置完成' : failed ? '重置已暂停' : job.phase === 'stopping' ? '正在停止旧任务' : '正在清理伙伴记录'}</strong></div>{running && <progress aria-label="重置进度" />}<p>{completed ? '历史记录已清理，伙伴已恢复默认设置。' : failed ? job.error || '记录已受保护，解决问题后可以继续重置。' : '已处理 ' + job.processed.toLocaleString() + ' 项数据'}</p>{!completed && <small>可以关闭窗口继续使用软件。中途退出后，下次启动会接着处理。</small>}</div>}
+        {job && <div className={`companion-reset-progress${completed ? ' is-completed' : failed ? ' is-failed' : ''}`} role="status" aria-live="polite"><div><Icon name={completed ? 'check' : failed ? 'alert-circle' : 'loader'} /><strong>{completed ? '重置完成' : failed ? '重置已暂停' : job.phase === 'stopping' ? progressLabel : '正在清理伙伴记录'}</strong></div>{running && <progress aria-label="重置进度" />}<p>{completed ? '历史记录已清理，伙伴已恢复默认设置。' : failed ? job.error || '记录已受保护，解决问题后可以继续重置。' : preparing ? job.cleanupStage === 'native-records' ? '正在核验原生运行环境并清理这位伙伴的任务记录，完成后会自动继续。' : '正在完成当前准备步骤，完成后会自动继续。' : '已处理 ' + job.processed.toLocaleString() + ' 项数据'}</p>{!completed && <small>可以关闭窗口继续使用软件。中途退出后，下次启动会接着处理。</small>}</div>}
         {(error || requestError) && <p className="companion-reset-error" role="alert">{error || requestError}</p>}
       </div>
       <footer><p>{completed ? '从新的相处开始。' : running ? '重置期间暂停这位伙伴的互动。' : '此操作无法撤销。'}</p><button type="button" className="companion-secondary-button" onClick={onClose}>{completed ? '完成' : running ? '后台继续' : '取消'}</button>{!running && !completed && <button type="button" className="companion-danger-button" disabled={busy || !job && confirmation !== companion.name} onClick={() => void start()}>{busy ? '正在开始…' : failed ? '继续重置' : '确认重置'}</button>}</footer>

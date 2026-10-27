@@ -1944,6 +1944,7 @@ export class CompanionsStore {
       case 'memory.library.scope': return { ok: true, conversation: this.libraryScope(command.companionId) };
       case 'companion.reset': { const reset = this.#reset.begin(command.id, command.expectedRevision); this.#experience.resetOwner(command.id); this.#collaborations.cancelFor(command.id); return { ok: true, ...reset }; }
       case 'companion.reset.status': return { ok: true, ...this.#reset.status(command.id) };
+      case 'companion.reset.progress': return { ok: true, reset: this.#reset.progress(command.id, command.jobId, command.stage) };
       case 'companion.reset.cleanup': return { ok: true, reset: this.#reset.cleanup(command.id, command.jobId) };
       case 'companion.reset.cleanup-failed': return { ok: true, reset: this.#reset.cleanup(command.id, command.jobId, command.error) };
       case 'companion.task-ids': return { ok: true, companionTaskIds: this.#db.prepare("SELECT DISTINCT json_extract(data,'$.taskId') AS task_id FROM actions WHERE companion_id=? AND json_extract(data,'$.taskId') IS NOT NULL").all(command.id).map(value => String(row(value).task_id)) };
