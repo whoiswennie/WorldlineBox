@@ -63,10 +63,42 @@ it('keeps actual same-room steering lazy but mounts its progress before it start
   enqueue('first_steer'); expect(store.request({ type: 'work.claim' }).work?.id).toBe('first_steer');
   enqueue('followup_steer');
   expect(store.request({ type: 'work.list' }).works!.find(item => item.id === 'followup_steer')?.messageId).toBeUndefined();
+  // Spare task slots must never convert live steering into a parallel reply.
+  store.request({ type: 'tasks.concurrency.set', companionId, limit: 3 });
+  expect(store.request({ type: 'work.claim' }).work).toBeUndefined();
   store.request({ type: 'work.status', id: 'first_steer', status: 'done' });
   const second = store.request({ type: 'work.claim' }).work!;
   expect(second.id).toBe('followup_steer'); expect(second.messageId).toBeTruthy();
   expect(store.getMessage(second.messageId!).replyProgress?.phase).toBe('context');
+});
+
+it('commits a steering receipt together with inbox retirement and rolls both back for a stopped target', () => {
+  vi.useFakeTimers({ toFake: ['Date'] }); vi.setSystemTime('2026-10-14T08:00:00Z');
+  const { store, databasePath } = fixture(), companionId = 'deepseek-sister', conversationId = store.openPrivate(companionId).id;
+  const routine = store.request({ type: 'routine.get', companionId, conversationId }).routine!;
+  store.request({ type: 'routine.configure', companionId, conversationId, expectedRevision: routine.revision,
+    patch: { sleepAt: '23:00', wakeAt: '01:00', meals: [], habits: [] } });
+  const enqueue = (id: string) => {
+    const source = store.appendMessage({ conversationId, authorId: 'user', content: id });
+    store.request({ type: 'work.enqueue', work: { id, companionId, conversationId, sourceMessageId: source.id,
+      inputMode: 'steer', status: 'queued', proactive: false, createdAt: source.createdAt, updatedAt: source.createdAt } });
+    return source;
+  };
+  const original = enqueue('atomic_original');
+  expect(store.request({ type: 'work.claim' }).work?.id).toBe('atomic_original');
+  const followup = enqueue('atomic_followup');
+  const checkpoint = store.request({ type: 'loop.get', sourceMessageId: original.id, companionId }).loop!;
+  checkpoint.supplements.push({ id: followup.id, content: followup.content });
+  const command = { type: 'work.promote' as const, sourceMessageId: followup.id, companionId, checkpoint };
+  store.request({ type: 'work.status', id: 'atomic_original', status: 'interrupted' });
+  expect(() => store.request(command)).toThrow('无法加入');
+  expect(store.request({ type: 'loop.get', sourceMessageId: original.id, companionId }).loop?.supplements).toEqual([]);
+  expect(store.request({ type: 'work.list', sourceMessageId: followup.id }).works?.[0]?.status).toBe('queued');
+  store.request({ type: 'work.status', id: 'atomic_original', status: 'running' });
+  store.request(command);
+  close(store); const reopened = open(databasePath);
+  expect(reopened.request({ type: 'loop.get', sourceMessageId: original.id, companionId }).loop?.supplements).toEqual([{ id: followup.id, content: followup.content }]);
+  expect(reopened.request({ type: 'work.list', sourceMessageId: followup.id }).works?.[0]?.status).toBe('cancelled');
 });
 
 it('creates one durable queued bubble per group loop, keeps its identity on retry and cancels only the selected work', () => {

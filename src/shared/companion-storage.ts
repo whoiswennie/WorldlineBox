@@ -215,7 +215,7 @@ export const companionStorageCommandSchema = z.discriminatedUnion('type', [
   z.strictObject({ type: z.literal('work.claim') }),
   z.strictObject({ type: z.literal('work.list'), sourceMessageId: companionIdSchema.optional(), unfinishedOnly: z.boolean().optional() }),
   z.strictObject({ type: z.literal('work.interrupt-running') }),
-  z.strictObject({ type: z.literal('work.promote'), sourceMessageId: companionIdSchema, companionId: companionIdSchema.optional() }),
+  z.strictObject({ type: z.literal('work.promote'), sourceMessageId: companionIdSchema, companionId: companionIdSchema.optional(), checkpoint: companionLoopCheckpointSchema.optional() }),
   z.strictObject({ type: z.literal('work.status'), id: companionIdSchema, status: companionWorkSchema.shape.status, resumeOnRestart: z.boolean().optional() }),
   z.strictObject({ type: z.literal('reply.checkpoint.status'), conversationId: companionIdSchema, sourceMessageId: companionIdSchema, status: z.enum(['pending', 'interrupted', 'done', 'cancelled']) }),
   z.strictObject({ type: z.literal('reply.checkpoint.complete'), conversationId: companionIdSchema, sourceMessageId: companionIdSchema, companionId: companionIdSchema }),

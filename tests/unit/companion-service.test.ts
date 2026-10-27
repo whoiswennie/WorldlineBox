@@ -2660,6 +2660,69 @@ describe('one durable bubble per source and native multi-step main loop', () => 
     }
     expect(transport.fetch).toHaveBeenCalledTimes(4);
   });
+  it('inserts steering into a running browser task even when the queue pump races admission with spare slots', async () => {
+    const reading = deferred<void>();
+    const browser = vi.fn<NonNullable<CompanionServiceOptions['browser']>>(async (_scope, args) => {
+      if (args.action === 'read') await reading.promise;
+      return { value: args.action === 'tabs' ? { tabs: [{ id: 'steer-page', title: '页面', url: 'https://example.test/' }] } : { text: '页面内容' } };
+    });
+    const f = fixture(fakeDsh(() => ({ tasks: [], operations: [] }), vi.fn(async () => ({ ok: true as const }))), false, false, browser);
+    let calls = 0;
+    transport.fetch.mockImplementation(async (_url, init) => {
+      if (++calls === 1) return new Response(JSON.stringify({ choices: [{ message: { content: '', tool_calls: [{ id: 'reading-page', type: 'function',
+        function: { name: 'browser', arguments: JSON.stringify({ action: 'read', tabId: 'steer-page' }) } }] } }] }), { headers: { 'Content-Type': 'application/json' } });
+      expect(String(init?.body)).toContain('只查第二张专辑');
+      return modelResponse('已按补充只检查第二张专辑。');
+    });
+    const first = (await f.service.handle({ type: 'message.send', conversationId: f.conversation.id, content: '查看歌手作品', clientId: 'live-browser-original' })).message!;
+    await vi.waitFor(() => expect(browser.mock.calls.some(([, args]) => args.action === 'read')).toBe(true));
+    const originalRequest = transport.request.getMockImplementation()!;
+    const racedClaims: string[] = [];
+    transport.request.mockImplementation(async command => {
+      const result = await originalRequest(command);
+      if (command.type === 'work.enqueue' && command.work.sourceMessageId !== first.id) {
+        const claimed = f.store.request({ type: 'work.claim' }).work;
+        if (claimed) racedClaims.push(claimed.id);
+      }
+      return result;
+    });
+    const response = await f.service.handle({ type: 'message.send', conversationId: f.conversation.id, content: '只查第二张专辑', clientId: 'live-browser-steer' });
+    expect(response).toMatchObject({ ok: true, inserted: true });
+    expect(racedClaims).toEqual([]);
+    expect(calls).toBe(1);
+    const loop = () => f.store.request({ type: 'loop.get', sourceMessageId: first.id, companionId: 'sister' }).loop!;
+    expect(loop().supplements.map(item => item.id)).toEqual([response.message!.id]);
+    // Repeated admission uses the same receipt and keeps the original tool alive.
+    await f.service.handle({ type: 'message.guide', id: response.message!.id, targetSourceMessageId: first.id });
+    reading.resolve();
+    await vi.waitFor(() => expect(loop().status, JSON.stringify(loop().progress)).toBe('done'), { timeout: 5000 });
+    expect(calls).toBe(2);
+    expect(browser.mock.calls.filter(([, args]) => args.action === 'read')).toHaveLength(1);
+    expect(f.store.messages({ conversationId: f.conversation.id }).messages.filter(item => item.authorId === 'sister' && item.kind === 'text')).toHaveLength(1);
+    expect(f.store.request({ type: 'work.list', sourceMessageId: response.message!.id }).works?.[0]?.status).toBe('cancelled');
+  });
+  it('acknowledges a committed message when later dispatch fails and retries its inbox without duplicating the message', async () => {
+    const f = fixture(fakeDsh(() => ({ tasks: [], operations: [] }), vi.fn(async () => ({ ok: true as const }))), false, false);
+    await f.service.handle({ type: 'state' });
+    const originalRequest = transport.request.getMockImplementation()!;
+    let failed = false;
+    transport.request.mockImplementation(async command => {
+      if (!failed && command.type === 'reply.checkpoint.get') { failed = true; throw new Error('模拟消息落盘后的调度故障'); }
+      return originalRequest(command);
+    });
+    const input = { type: 'message.send' as const, conversationId: f.conversation.id, content: '已发送的正文', clientId: 'committed-send-ack' };
+    const response = await f.service.handle(input);
+    expect(failed).toBe(true);
+    expect(response).toMatchObject({ ok: true, inserted: true, message: { content: input.content } });
+    const repeated = await f.service.handle(input);
+    expect(repeated).toMatchObject({ ok: true, inserted: false, message: { id: response.message!.id } });
+    await vi.waitFor(() => {
+      const work = f.store.request({ type: 'work.list', sourceMessageId: response.message!.id }).works?.[0];
+      const progress = f.store.request({ type: 'loop.get', sourceMessageId: response.message!.id, companionId: 'sister' }).loop?.progress;
+      expect(work?.status, JSON.stringify(progress)).toBe('done');
+    }, { timeout: 5000 });
+    expect(f.store.messages({ conversationId: f.conversation.id }).messages.filter(item => item.content === input.content)).toHaveLength(1);
+  });
   it('wakes a waiting loop on default steering without starting another loop or repeating an action', async () => {
     let calls = 0;
     transport.fetch.mockImplementation(async (_url, init) => {

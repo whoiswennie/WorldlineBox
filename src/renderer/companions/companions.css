@@ -61,11 +61,17 @@
 .companions-list-footer { display: flex; align-items: center; gap: 6px; padding: 16px 18px; font-size: 10px; color: var(--ui-content-tertiary); }
 .companions-local-dot { width: 4px; height: 4px; background: var(--ui-status-success); border-radius: 50%; }
 .companions-main { display: flex; position: relative; flex-direction: column; min-width: 0; min-height: 0; overflow: hidden; }
-.companions-error { display: flex; align-items: center; gap: 8px; flex: 0 0 auto; padding: 8px 20px; color: var(--ui-content-primary); background: color-mix(in srgb, #d96170 11%, var(--ui-surface-pane)); border-bottom: 1px solid color-mix(in srgb, #d96170 25%, var(--ui-border-subtle)); font-size: 12px; }
-.companions-error > svg { flex-shrink: 0; color: #d96170; width: 17px; }
-.companions-error > span { flex: 1; overflow-wrap: anywhere; }
-.companions-error .companion-icon-button { width: 25px; height: 25px; }
-:root[data-platform="windows"] .companions-error { padding-right: calc(3 * var(--windows-caption-width, 46px) + 20px); }
+.companions-error {
+  position: absolute; z-index: var(--ui-layer-notice); top: 86px; left: 50%; transform: translateX(-50%);
+  display: flex; align-items: center; gap: 10px; width: max-content; max-width: min(460px, calc(100% - 40px));
+  padding: 10px 12px; border: 1px solid var(--ui-border-subtle); border-radius: 12px;
+  color: var(--ui-content-primary); background: var(--ui-surface-pane); box-shadow: var(--ui-shadow-popover);
+  font-size: 13px; line-height: 1.6;
+}
+.companions-error > svg { flex: 0 0 18px; width: 18px; height: 18px; color: #d96170; }
+.companions-error > span { flex: 1; min-width: 0; max-height: 144px; overflow-y: auto; overflow-wrap: anywhere; }
+.companions-error .companion-icon-button { flex: 0 0 28px; width: 28px; height: 28px; border-radius: 7px; align-self: flex-start; }
+.companions-error .companion-icon-button svg { width: 16px; height: 16px; }
 .companions-empty { display: flex; flex: 1; flex-direction: column; align-items: center; justify-content: center; gap: 17px; padding: 40px; text-align: center; }
 .companions-empty > svg { width: 68px; height: 68px; color: color-mix(in srgb, var(--companion-blue) 65%, var(--ui-content-tertiary)); margin-bottom: 10px; }
 .companions-empty h2 { font-size: 23px; font-weight: 550; }

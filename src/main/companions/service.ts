@@ -192,6 +192,7 @@ export class CompanionService {
   private readonly inputJobs = new Set<Promise<void>>();
   private readonly recoveringActions = new Set<string>();
   private readonly activeLoops = new Map<string, CompanionLoopCheckpoint>();
+  private readonly guidanceAdmissions = new Map<string, Promise<boolean>>();
   private readonly loopWaiters = new Map<CompanionLoopCheckpoint, () => void>();
   private readonly unavailableCompanions = new Map<string, { connection: string | undefined; reason: string }>();
   private readonly replyControllers = new Map<AbortController, string>();
@@ -1265,18 +1266,26 @@ export class CompanionService {
         } });
         if (response.inserted) {
           this.changed();
-          if (request.priority === 'urgent' && response.message) {
-            const source = response.message, state = (await this.call({ type: 'state', includeHidden: true })).state;
-            const room = state?.conversations.find(room => room.id === source.conversationId);
-            if (source.content.trim()) for (const companionId of room?.memberIds ?? []) {
-              await this.call({ type: 'world.attention.record', companionId, conversationId: source.conversationId, sourceMessageId: source.id,
-                sourceChecksum: createHash('sha256').update(source.content).digest('hex'), urgency: 'urgent', confidence: 1,
-                evidence: [source.content], reason: '玩家明确选择紧急打扰，优先处理这条真实消息。' });
-              this.assessedAttention.add(companionId + ':' + source.id);
+          try {
+            if (request.priority === 'urgent' && response.message) {
+              const source = response.message, state = (await this.call({ type: 'state', includeHidden: true })).state;
+              const room = state?.conversations.find(room => room.id === source.conversationId);
+              if (source.content.trim()) for (const companionId of room?.memberIds ?? []) {
+                await this.call({ type: 'world.attention.record', companionId, conversationId: source.conversationId, sourceMessageId: source.id,
+                  sourceChecksum: createHash('sha256').update(source.content).digest('hex'), urgency: 'urgent', confidence: 1,
+                  evidence: [source.content], reason: '玩家明确选择紧急打扰，优先处理这条真实消息。' });
+                this.assessedAttention.add(companionId + ':' + source.id);
+              }
             }
+            if (guide) await this.handle({ type: 'message.guide', id: response.message!.id, targetSourceMessageId: request.targetSourceMessageId });
+            else await this.launchReply(response.message?.conversationId ?? request.conversationId, false, delivery, false, response.message?.id);
+          } catch (error) {
+            // Publication is already committed. An admission/attention failure
+            // must not report a failed send and make the composer resend it.
+            this.options.report(error);
+            if (guide) await this.launchReply(request.conversationId, false, 'steer', false, response.message?.id).catch(this.options.report);
+            void this.pumpQueue();
           }
-          if (guide) await this.handle({ type: 'message.guide', id: response.message!.id, targetSourceMessageId: request.targetSourceMessageId });
-          else await this.launchReply(response.message?.conversationId ?? request.conversationId, false, delivery, false, response.message?.id);
         }
         return response;
       }
@@ -1298,25 +1307,21 @@ export class CompanionService {
       case 'message.guide': {
         const source = (await this.call({ type: 'message.get', id: request.id })).message;
         if (!source || source.authorId !== 'user') throw new Error('只能引导你发出的消息。');
-        const candidates = [...this.activeLoops.values()].filter(loop => loop.status === 'running' && loop.conversationId === source.conversationId && loop.sourceMessageId !== source.id
-          && (JSON.parse(loop.context?.user ?? '{}') as { invocation?: { topicId?: string } }).invocation?.topicId === source.topicId);
+        const running = [...this.activeLoops.values()].filter(loop => loop.status === 'running' && loop.conversationId === source.conversationId && loop.sourceMessageId !== source.id);
+        const candidates: CompanionLoopCheckpoint[] = [];
+        for (const loop of running) {
+          const origin = (await this.call({ type: 'message.get', id: loop.sourceMessageId })).message;
+          if (origin && origin.topicId === source.topicId && origin.sequence < source.sequence) candidates.push(loop);
+        }
         const sources = new Set(candidates.map(loop => loop.sourceMessageId));
         if (!request.targetSourceMessageId && sources.size > 1) throw new Error('请选择要引导的那条回复。');
         const loops = candidates.filter(loop => !request.targetSourceMessageId || loop.sourceMessageId === request.targetSourceMessageId);
         if (!loops.length) throw new Error('当前没有正在运行的回复。');
-        const fileReferences = source.attachments.map(file => file.path ? file.name + ': ' + file.path : file.name);
-        const content = ((source.content || '请处理我提供的附件。').slice(0, 12000) + (fileReferences.length ? '\n附件绝对路径：\n' + fileReferences.join('\n') : '')).slice(0, 16000);
-        await this.call({ type: 'work.promote', sourceMessageId: source.id });
+        let accepted = false;
         for (const loop of loops) {
-          if (loop.status !== 'running') continue;
-          if (!loop.supplements.some(item => item.id === source.id)) loop.supplements.push({ id: source.id, content });
-          await this.call({ type: 'loop.save', checkpoint: loop });
-          this.loopWaiters.get(loop)?.();
-          const actions = ((await this.call({ type: 'actions', conversationId: source.conversationId })).actions ?? []).filter(action => action.parentMessageId === loop.messageId && ['running', 'queued'].includes(action.status));
-          await Promise.all(actions.map(action => this.deliverInput(action, content, 'steer', source.id)));
+          if (await this.acceptGuidance(loop, source)) accepted = true;
         }
-        if (loops.every(loop => loop.status === 'done')) { await this.launchReply(source.conversationId, false, 'auto', true, source.id); return { ok: true }; }
-        await this.call({ type: 'reply.checkpoint.status', conversationId: source.conversationId, sourceMessageId: source.id, status: 'cancelled' });
+        if (!accepted) throw new Error('所选回复已结束，请将这条消息作为新消息处理。');
         this.changed(); return { ok: true };
       }
       case 'reply.retry': {
@@ -1726,28 +1731,41 @@ export class CompanionService {
       const stamp = new Date().toISOString();
       const work = { id: proactive ? randomUUID() : createHash('sha256').update(message.id + ':' + companionId).digest('hex'),
         conversationId, companionId, sourceMessageId: message.id, status: 'queued' as const, proactive, createdAt: stamp, updatedAt: stamp,
-        inputMode: _delivery === 'queue' ? 'queue' as const : state?.companions.find(role => role.id === companionId)?.inputMode ?? 'steer' as const };
+        inputMode: _delivery === 'queue' ? 'queue' as const : _delivery === 'steer' ? 'steer' as const : state?.companions.find(role => role.id === companionId)?.inputMode ?? 'steer' as const };
       await this.call({ type: 'work.enqueue', work, resume: recovery });
       await this.publishWorkProgress(work).catch(this.options.report);
       if (!proactive && work.inputMode === 'steer') {
-        const loop = [...this.activeLoops.values()].find(loop => loop.companionId === companionId && loop.conversationId === conversationId && loop.status === 'running');
-        if (loop) await this.acceptGuidance(loop, message);
+        for (const loop of this.activeLoops.values()) if (loop.companionId === companionId && loop.conversationId === conversationId && loop.status === 'running') {
+          if (await this.acceptGuidance(loop, message)) break;
+        }
       }
       if (this.closed) return;
       if (!proactive) void this.assessAttention(companionId, message.id);
     }
     this.changed(); void this.pumpQueue();
   }
-  private async acceptGuidance(loop: CompanionLoopCheckpoint, source: CompanionMessage): Promise<boolean> {
+  private acceptGuidance(loop: CompanionLoopCheckpoint, source: CompanionMessage): Promise<boolean> {
+    const key = [loop.sourceMessageId, loop.companionId, loop.invocationKey ?? '', source.id].join(':');
+    const pending = this.guidanceAdmissions.get(key);
+    if (pending) return pending;
+    const admission = this.admitGuidance(loop, source).finally(() => { this.guidanceAdmissions.delete(key); });
+    this.guidanceAdmissions.set(key, admission);
+    return admission;
+  }
+  private async admitGuidance(loop: CompanionLoopCheckpoint, source: CompanionMessage): Promise<boolean> {
+    if (loop.supplements.some(item => item.id === source.id)) return true;
     if (loop.status !== 'running' || loop.sourceMessageId === source.id || source.authorId !== 'user' || loop.supplements.length >= 100) return false;
     const origin = (await this.call({ type: 'message.get', id: loop.sourceMessageId })).message;
     if (!origin || origin.topicId !== source.topicId || origin.sequence >= source.sequence || loop.status !== 'running') return false;
     const content = [source.content || '请处理我提供的附件。', ...source.attachments.map(file => `${file.name}: ${file.path ?? file.id}`)].join('\n').slice(0, 16000);
-    if (!loop.supplements.some(item => item.id === source.id)) loop.supplements.push({ id: source.id, content });
-    // Persist receipt before retiring the inbox item. Crash recovery can safely
-    // replay admission by source ID without starting a second invocation.
-    await this.call({ type: 'loop.save', checkpoint: loop });
-    await this.call({ type: 'work.promote', sourceMessageId: source.id, companionId: loop.companionId });
+    if (loop.supplements.some(item => item.id === source.id)) return true;
+    loop.supplements.push({ id: source.id, content });
+    try {
+      await this.call({ type: 'work.promote', sourceMessageId: source.id, companionId: loop.companionId, checkpoint: loop });
+    } catch (error) {
+      loop.supplements = loop.supplements.filter(item => item.id !== source.id);
+      throw error;
+    }
     this.loopWaiters.get(loop)?.();
     void this.call({ type: 'actions', conversationId: source.conversationId }).then(response => Promise.all((response.actions ?? [])
       .filter(action => action.parentMessageId === loop.messageId && ['running', 'queued'].includes(action.status))

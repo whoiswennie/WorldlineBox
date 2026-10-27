@@ -1157,6 +1157,11 @@ export class CompanionsStore {
         1=1 ORDER BY ordinal`).all());
       for (const found of candidates) {
         const next = { ...companionWorkSchema.parse(decode(found.data)), ordinal: Number(found.ordinal) };
+        // A steering inbox item belongs to the running reply even when this
+        // companion has spare parallel slots. Main may still be loading that
+        // reply's context, so do not race its guidance admission with a new loop.
+        if (!next.proactive && next.inputMode === 'steer' && this.#db.prepare("SELECT 1 FROM companion_work_queue WHERE companion_id=? AND status='running' AND json_extract(data,'$.conversationId')=? AND (SELECT topic_id FROM companion_message_topics WHERE message_id=json_extract(data,'$.sourceMessageId')) IS (SELECT topic_id FROM companion_message_topics WHERE message_id=?) LIMIT 1")
+          .get(next.companionId, next.conversationId, next.sourceMessageId)) continue;
         if (!companionTaskCanClaim(this.#db, next.companionId, { kind: 'reply', id: next.id })) continue;
         if (!this.#memory.sourcesFilter(next, [next.sourceMessageId]).length) { this.workStatus(next.id, 'cancelled'); continue; }
         if (!companionAttentionCanClaim(this.#db, next.companionId, next.sourceMessageId)) continue;
@@ -2033,6 +2038,19 @@ export class CompanionsStore {
         this.#db.transaction(() => {
           const works = this.workList(command.sourceMessageId).filter(work => !command.companionId || work.companionId === command.companionId);
           if (works.some(work => work.status === 'running' || work.status === 'done')) throw new Error('这条消息已经开始处理，不能再从队列转为引导。');
+          if (command.checkpoint) {
+            const target = command.checkpoint, source = this.getMessage(command.sourceMessageId), origin = this.getMessage(target.sourceMessageId);
+            const current = this.loopCheckpoint(target.sourceMessageId, target.companionId, target.invocationKey);
+            const running = this.workList(target.sourceMessageId).some(work => work.companionId === target.companionId && work.status === 'running'
+              && (work.proactive ? work.id : undefined) === target.invocationKey);
+            if (target.companionId !== command.companionId || target.status !== 'running' || current?.status !== 'running'
+              || !running || current.progress?.stop || source.authorId !== 'user' || source.conversationId !== target.conversationId
+              || origin.topicId !== source.topicId || origin.sequence >= source.sequence
+              || !target.supplements.some(item => item.id === source.id)) throw new Error('这条补充无法加入所选的运行中回复。');
+            // Receipt and retirement share a transaction: a restart sees either
+            // the pending inbox item or the accepted input on its original loop.
+            this.saveLoop(target);
+          }
           for (const work of works) if (work.status === 'queued') { this.workStatus(work.id, 'cancelled'); this.completeReply(work.conversationId, work.sourceMessageId, work.companionId); }
         }).immediate();
         return { ok: true };
