@@ -106,7 +106,7 @@ export function CompanionTaskDashboard({ companions, request, api, initialCompan
   return <div className="companions-task-backdrop task-center-backdrop" onMouseDown={event => { if (event.target === event.currentTarget) onClose(); }}>
     <section className="companions-task-dashboard" role="dialog" aria-modal="true" aria-label="伙伴任务总览">
       <header className="task-center-header">
-        <div className="task-center-brand"><h2>任务中心</h2><span>伙伴的任务与执行记录</span></div>
+        <div className="task-center-brand"><span className="task-center-brand-icon"><Icon name="activity" size={21} /></span><div><h2>任务中心</h2><p>伙伴的任务与执行记录</p></div></div>
         <div className="task-center-header-counts"><span>当前 <strong>{page?.current ?? '—'}</strong></span><span>已结束 <strong>{page?.history ?? '—'}</strong></span></div>
         <div className="task-center-header-controls"><CompanionTaskConcurrencySettings companions={companions} companionId={owner || undefined} request={request} /><button className="task-center-icon-button" aria-label="关闭任务总览" title="关闭任务中心" onClick={onClose}><Icon name="close" size={20} /></button></div>
       </header>

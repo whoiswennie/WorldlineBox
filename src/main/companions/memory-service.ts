@@ -1033,7 +1033,8 @@ export class CompanionMemoryService {
       // durable index admission gate refuses it. Continue its current input
       // with explicit pending memory, never an old graph or a fabricated empty
       // corpus receipt. Existing prepared task recovery remains fail-closed.
-      if (!input.recovery?.reference && error && typeof error === 'object' && 'code' in error && error.code === 'MEMORY_INDEX_PENDING') {
+      if (!input.recovery?.reference && error && typeof error === 'object' && 'code' in error
+        && ['MEMORY_INDEX_PENDING', 'MEMORY_FILES_PENDING'].includes(String(error.code))) {
         if (input.recovery && !await input.recovery.isCurrent()) throw error;
         input.signal?.throwIfAborted();
         return { memories: [], sources: [], reasons: [], pending: true, degraded: true };
@@ -1048,8 +1049,16 @@ export class CompanionMemoryService {
   async contextValid(scope: { companionId: string; conversationId: string; beforeSequence?: number }, context?: { revision: string; profileKey: string; text?: string; evidence?: unknown; proceduralStatus?: unknown;
     fileReceipts?: readonly CompanionMemoryFileReceipt[]; fileReceiptOnly?: true }): Promise<boolean> {
     await this.options.validateAssets?.(scope.companionId);
-    await this.options.prepareFiles?.(scope.companionId);
     if (!context) return true;
+    const dependencies = companionMemoryContextDependencies(context);
+    if (dependencies.malformed) return false;
+    // Validate the inputs this task actually consumed, without waiting for
+    // unrelated notebook discovery/imports. Exact receipts still reject an
+    // edited, missing, conflicted or withdrawn body. Unscoped contexts must
+    // keep the full file gate before consulting the ledger.
+    const scopedFiles = context.fileReceiptOnly || dependencies.complete
+      && dependencies.memories.every(note => context.fileReceipts?.some(receipt => receipt.companionId === scope.companionId && receipt.noteId === note.id));
+    if (!scopedFiles) await this.options.prepareFiles?.(scope.companionId);
     if (context.fileReceipts?.length && (!this.options.validateFiles || !await this.options.validateFiles(scope.companionId, context.fileReceipts))) return false;
     if (context.fileReceiptOnly) return !!context.fileReceipts?.length;
     const practice = companionProcedureContextSources(context);
@@ -1074,8 +1083,6 @@ export class CompanionMemoryService {
           && actual.outcome === receipt.outcome && actual.contentRevision === receipt.contentRevision))) return false;
       }
     }
-    const dependencies = companionMemoryContextDependencies(context);
-    if (dependencies.malformed) return false;
     if (dependencies.frozenMemories) {
       // Once prepared, passive context is an immutable task snapshot. Only
       // actual withdrawal/forget/delete or its original source ACL/bytes may
@@ -1225,12 +1232,13 @@ export class CompanionMemoryService {
   private async runContinuity(scope: MemoryScope, generation: number): Promise<boolean> {
     try { await this.options.prepareFiles?.(scope.companionId); await this.drainOwnerDeliveries(scope.companionId); }
     catch (error) {
-      if (!error || typeof error !== 'object' || !('code' in error) || error.code !== 'MEMORY_INDEX_PENDING') throw error;
+      if (!error || typeof error !== 'object' || !('code' in error)
+        || !['MEMORY_INDEX_PENDING', 'MEMORY_FILES_PENDING'].includes(String(error.code))) throw error;
       // No snapshot has been selected or revision marked as processed. Keep
       // the durable index work and timeline retry pending rather than treating
       // the previous indexed revision as this new maintenance attempt.
       for (const job of this.timelineProcessing.get(scope.companionId) ?? []) if (job.conversationId === scope.conversationId && job.status === 'pending')
-        this.updateTimelineProcessing(job, { stage: '等待当前来源的记忆索引完成', nextAttemptAt: new Date(Date.now() + 1000).toISOString() });
+        this.updateTimelineProcessing(job, { stage: error.code === 'MEMORY_FILES_PENDING' ? '等待记忆文件核对完成' : '等待当前来源的记忆索引完成', nextAttemptAt: new Date(Date.now() + 1000).toISOString() });
       this.schedule(1000); return false;
     }
     const identity = identityFor(scope), previous = this.continuityAttempts.get(identity);

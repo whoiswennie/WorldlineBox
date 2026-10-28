@@ -696,12 +696,10 @@ export class CompanionService {
     return publication;
   }
   async prepareModelAssetContext(owner: string, context: { system: string; user: string }, kind: 'reply' | 'structured' | 'text', nativePrompt?: CompanionNativeMemoryPrompt): Promise<{ system: string; user: string }> {
-    try { await this.prepareOwnerMemoryFiles(owner); }
-    catch (error) {
-      if (error && typeof error === 'object' && 'code' in error && error.code === 'MEMORY_FILES_PENDING')
-        throw new CompanionModelError('RATE_LIMIT', error instanceof Error ? error.message : '伙伴资料仍在核对，本次尚未发送模型。', undefined, { reason: 'files_pending' });
-      throw error;
-    }
+    // Role admission reads profile/prompts directly below. Notebook discovery
+    // belongs to new recall, not every model request (including the semantic
+    // checker needed to finish that very discovery). Existing inputs have
+    // their own exact file/source receipts checked before publication.
     if (!this.assetProfiles) {
       if (nativePrompt) throw new CompanionModelError('CONFIG', '原生记忆提示词的伙伴资产目录尚不可用。');
       return context;

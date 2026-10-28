@@ -248,7 +248,7 @@ it('resumes a paid capture writer after restart with one HTTP request per UTC da
   const after = new (Database as unknown as { new(file: string): CompanionConnection })(f.databasePath);
   try { expect(after.prepare('SELECT COUNT(*) AS n FROM companion_capture_proposals').get()).toEqual({ n: 0 }); } finally { after.close(); }
 }, 30_000);
-it('reconciles an external new topic before provider role admission and permits only its own semantic checker to reenter the file gate', async () => {
+it('reconciles an external new topic on memory read while its semantic checker can read the current role', async () => {
   const f = fixture(seeds, true), scope = { companionId: 'sister', conversationId: f.conversation.id };
   const saved = (await f.service.handle({ type: 'memory.save', ...scope, content: '旧稿只写过银色文件夹。' })).memories![0]!;
   f.store.request({ type: 'memory.forget', ...scope, tag: '家庭住址', persistent: true });
@@ -260,11 +260,28 @@ it('reconciles an external new topic before provider role admission and permits 
     expect(nested.system).toContain('当前伙伴目录'); reentered++;
     return structuredResponse({ allowed: true, matchedPolicyIds: [] });
   });
+  const actual = (await f.service.handle({ type: 'memory.read', ...scope, id: saved.id, sourceLimit: 10 })).memoryRead!;
   const admission = await f.service.prepareModelAssetContext('sister', { system: '外部实际请求技术合同。', user: JSON.stringify({ purpose: 'companion_reply' }) }, 'reply');
   expect(admission.system).toContain('当前伙伴目录'); expect(reentered).toBe(1);
-  const actual = (await f.service.handle({ type: 'memory.read', ...scope, id: saved.id, sourceLimit: 10 })).memoryRead!;
   expect(actual.memory.content).toContain('海棠磁卡位于实验室的蓝色工具盒');
   expect(actual.sources.some(source => source.content.includes('海棠磁卡位于实验室的蓝色工具盒'))).toBe(true);
+}, 20_000);
+it('finishes and displays a real reply while unrelated notebook reconciliation is still pending', async () => {
+  const f = fixture(seeds, true);
+  const gate = vi.spyOn(f.service as unknown as { prepareOwnerMemoryFiles(owner: string): Promise<void> }, 'prepareOwnerMemoryFiles')
+    .mockRejectedValue(Object.assign(new Error('测试：其他文档仍在分批核对'), { code: 'MEMORY_FILES_PENDING' }));
+  transport.fetch.mockImplementation(async () => textResponse('你好，我在这里。'));
+  const source = await sent(f.service, f.store, f.conversation.id, '你好，聊聊今天的计划。', 'pending-file-reply');
+  const loop = f.store.request({ type: 'loop.get', companionId: 'sister', sourceMessageId: source.id }).loop!;
+  expect(loop.status).toBe('done'); expect(loop.progress?.phase).toBe('completed');
+  expect(loop.progress?.memory?.status).toBe('unavailable');
+  const replies = f.store.messages({ conversationId: f.conversation.id }).messages.filter(message => message.authorId === 'sister' && !message.memoryEvidenceOnly);
+  expect(replies.some(message => message.content === '你好，我在这里。')).toBe(true);
+  expect(replies.every(message => message.replyProgress?.phase !== 'failed')).toBe(true);
+  expect(transport.fetch).toHaveBeenCalledTimes(1);
+  const role = await f.service.prepareModelAssetContext('sister', { system: '继续读取当前角色。', user: '{}' }, 'structured');
+  expect(role.system).toContain('当前伙伴目录');
+  gate.mockRestore();
 }, 20_000);
 async function background(milliseconds = 2_100) {
   await vi.advanceTimersByTimeAsync(milliseconds);

@@ -66,6 +66,14 @@ it('keeps full native/preprocess parity through warm catalogue reuse and annotat
     const generation = await runtime.acquireGeneration({ ownerId: 'alice', config });
     try {
       const client: VcpMemoryClient = generation.client, prepared = vi.spyOn(client, 'prepareRecall'), replaced = vi.spyOn(client, 'replace'), delta = vi.spyOn(client, 'applyProjectionDelta');
+      const verifyCanonical = client.verifyPreparedCanonicalNotes.bind(client);
+      vi.spyOn(client, 'verifyPreparedCanonicalNotes').mockImplementation(async (handle, inputs, signal) => {
+        // Verify while the packet is live, before focus consumes and removes
+        // it. Excluding the disk-only ID anchor must never admit changed prose.
+        await expect(verifyCanonical(handle, inputs.map(note => ({ ...note, content: 'Unrelated changed canonical prose.' })), signal))
+          .rejects.toMatchObject({ code: 'VCP_MEMORY_CANONICAL_SOURCE_CHANGED' });
+        await verifyCanonical(handle, inputs, signal);
+      });
       const oracle = { scopeId: 'original-full-corpus-oracle' };
       const round = async (query: string, expectedIds: string[]) => {
         prompts.length = 0; const result = await memory!.search({ ...scope, query, limit: 2 }, 'passive');

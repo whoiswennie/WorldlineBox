@@ -458,7 +458,9 @@ it('isolates three simultaneous DSH tasks in user private chat, delegated peer w
     expect(groupSawBothLive).toBe(true);
     await f.service.handle({ type: 'message.send', conversationId: f.conversation.id, content: 'PRIVATE_CONTINUE_NOW 现在继续我的私聊问题。',
       clientId: 'three-lane-guidance', delivery: 'steer', targetSourceMessageId: source.id });
-    await vi.waitFor(() => expect(f.store.request({ type: 'work.list', sourceMessageId: source.id }).works?.[0]?.status).toBe('done'));
+    // Steering returns on accepted delivery; the child then settles through
+    // the independent one-second broker poll before the main loop can finish.
+    await vi.waitFor(() => expect(f.store.request({ type: 'work.list', sourceMessageId: source.id }).works?.[0]?.status).toBe('done'), { timeout: 15000 });
     expect(privateGuided).toBe(true); expect(requestTask.mock.calls.filter(([request]) => request.type === 'task.message')).toHaveLength(1);
     expect(records.find(record => record.title === '伙伴网页')?.status).toBe('running');
     expect(records.find(record => record.title === '群聊网页')?.status).toBe('running');

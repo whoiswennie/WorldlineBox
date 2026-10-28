@@ -27,7 +27,7 @@ it.each([{ diaryName: 'missing' }, { tags: ['missing'] }, { from: '2027-01-01', 
     expect(result.memoryRetrieval?.authorizedCorpusRevision).toBeUndefined();
   } finally { await f.service.close(); }
 });
-function fixture(notes: CompanionMemory[], options: Pick<ConstructorParameters<typeof CompanionMemoryService>[0], 'maxPendingRecalls' | 'maxPendingRecallsPerOwner' | 'validateAssets'> = {}) {
+function fixture(notes: CompanionMemory[], options: Pick<ConstructorParameters<typeof CompanionMemoryService>[0], 'maxPendingRecalls' | 'maxPendingRecallsPerOwner' | 'validateAssets' | 'prepareFiles' | 'validateFiles'> = {}) {
   let corpus = notes, revision = 'stable', revocationEpoch = 0;
   const scopes = new Map<string, VcpMemoryNote[]>();
   const client = {
@@ -72,6 +72,28 @@ function fixture(notes: CompanionMemory[], options: Pick<ConstructorParameters<t
 }
 
 describe('one physical corpus for memory filters, context and citation pages', () => {
+  it('checks exact consumed files and revocations without waiting for unrelated notebook imports', async () => {
+    const pending = Object.assign(new Error('Other notebooks are still being reconciled'), { code: 'MEMORY_FILES_PENDING' });
+    const prepareFiles = vi.fn(async () => { throw pending; }), validateFiles = vi.fn(async () => true);
+    const original = note('used'), f = fixture([original], { prepareFiles, validateFiles });
+    const scope = { companionId: 'owner', conversationId: 'private' };
+    const receipts = [{ companionId: 'owner', noteId: original.id, contentRevision: 1, path: '日记/used.md', contentHash: 'a'.repeat(64) }];
+    const context = { revision: 'stable', profileKey: 'fixture', text: original.content, fileReceipts: receipts,
+      evidence: { dependencyCoverage: 'complete', dependencies: [{ id: original.id, version: 1 }] } };
+    try {
+      expect(await f.service.contextValid(scope)).toBe(true);
+      expect(await f.service.contextValid(scope, context)).toBe(true);
+      expect(prepareFiles).not.toHaveBeenCalled(); expect(validateFiles).toHaveBeenCalledWith('owner', receipts);
+      validateFiles.mockResolvedValueOnce(false);
+      expect(await f.service.contextValid(scope, context)).toBe(false);
+      f.setCorpus([], 'withdrawn');
+      expect(await f.service.contextValid(scope, context)).toBe(false);
+      // New retrieval and contexts without complete physical receipts still
+      // await file discovery: this fix never admits an outdated query graph.
+      await expect(f.service.search({ ...scope, query: 'facts' })).rejects.toBe(pending);
+      await expect(f.service.contextValid(scope, { ...context, fileReceipts: [] })).rejects.toBe(pending);
+    } finally { await f.service.close(); }
+  });
   it('reserves bounded queued and running recalls before the asset gate and releases capacity on cancellation', async () => {
     let release!: () => void;
     const gate = vi.fn(async () => new Promise<void>(resolve => { release = resolve; }));

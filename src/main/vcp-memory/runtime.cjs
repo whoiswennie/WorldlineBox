@@ -39,7 +39,13 @@ function formattedNativeDiary(note, recordedAt) {
 function renderNativeDiaryText(input) {
   const note = normalizeNote(input);
   if (!note.occurredAt) throw failure('VCP_MEMORY_CANONICAL_PROVENANCE_UNAVAILABLE', 'Canonical source rendering requires its captured occurrence.');
-  return formattedNativeDiary(note, note.occurredAt).text;
+  // Match the bytes admitted into native chunks, rather than the on-disk
+  // provenance envelope. Removing the anchor must not break later canonical
+  // verification of an otherwise unchanged candidate.
+  return nativeDiarySemanticText(formattedNativeDiary(note, note.occurredAt).text);
+}
+function nativeDiarySemanticText(text) {
+  return text.replace(/^<!-- WorldlineBoxMemory:[a-f0-9]{64} -->\r?$(?:\r?\n)?/gmu, '');
 }
 function embeddingConfiguration(input) {
   const dimension = input?.dimension;
@@ -292,7 +298,7 @@ class VcpMemoryRuntime {
     // The unique anchor belongs to file provenance, not semantic content.
     // Strip it before native preparation, chunks, tags and embedding requests.
     const prepareText = this.kb.prepareIngestionText.bind(this.kb);
-    this.kb.prepareIngestionText = text => prepareText(text.replace(/^<!-- WorldlineBoxMemory:[a-f0-9]{64} -->\r?$(?:\r?\n)?/gmu, ''));
+    this.kb.prepareIngestionText = text => prepareText(nativeDiarySemanticText(text));
     this.getEmbeddingsBatch = require(path.join(this.runtimeRoot, 'EmbeddingUtils.js')).getEmbeddingsBatch;
     this.chunkText = require(path.join(this.runtimeRoot, 'TextChunker.js')).chunkText;
     await this.kb.initialize();
