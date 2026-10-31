@@ -27,6 +27,9 @@ export interface VcpMemoryNote {
   /** Host-only calendar projection; source content/occurredAt remain unchanged. */
   hostProjection?: { timeZone: string };
 }
+/** Current host authorization metadata only; canonical text remains in owner files. */
+export interface VcpMemoryProjectionDescriptor { id: string; contentHash: string; annotations: Omit<VcpMemoryNote, 'content'> }
+export interface VcpMemoryProjectionInspection { upsertIds: string[]; removedIds: string[]; reused: number }
 
 /** Unweighted values copied from upstream's final ordered result; not probabilities. */
 export interface VcpMemoryScoreDetails {
@@ -151,10 +154,16 @@ export interface VcpMemoryPreparedFocusGroup {
 export interface VcpMemoryPreparedPayload {
   schema: 'worldlinebox.prepared-recall-payload'; receipt: VcpMemoryPreprocessResult;
   groups: VcpMemoryPreparedFocusGroup[]; modelIdentity: string;
+  /** Actual raw formatter inputs, captured before its paths are discarded.
+   * They authenticate returned chunks against canonical source bytes without
+   * invoking an AIMemo model or substituting a whole-note fingerprint. */
+  nativeSources?: Array<{ id: string; textHash: string; text: string }>;
   hostEvidence?: VcpMemoryPreparedHostEvidence;
 }
 export type VcpMemoryFocusValidationReason = 'fence' | 'model_admission' | 'publication';
 export interface VcpMemoryFocusOptions {
+  /** Ephemeral owner-loopback transport capability; never persisted in a recall. */
+  nativeDispatchToken?: string;
   signal?: AbortSignal;
   /** Called before every actual model request and before publishing, including cache reuse. */
   validate?(reason?: VcpMemoryFocusValidationReason): Promise<void>;
@@ -179,6 +188,8 @@ export interface VcpMemoryOwnerIdentity {
   agentName: string;
 }
 export interface VcpMemoryTimelineRequest {
+  /** Host-only loopback capability, not a prompt or upstream plugin option. */
+  nativeDispatchToken?: string;
   operation: 'listAgents' | 'getAgentDetail' | 'generateTimelines' | 'generateSummaries' | 'saveTimelineFile' | 'saveSummary';
   agentName?: string;
   month?: string;
@@ -196,12 +207,17 @@ export interface VcpMemoryTimelineArtifacts {
   agents: Array<{ agentName: string; months: Array<{ month: string; sourceDigest: string; content?: string; summary?: string }> }>;
 }
 
-export interface VcpMemoryOwnerPrompts { aimemoTemplate: string; timelineTemplate?: string; summaryTemplate?: string }
+export interface VcpMemoryOwnerPrompts {
+  aimemoTemplate: string; timelineTemplate?: string; summaryTemplate?: string;
+  /** Hash of the actual rendered system guidance supplied by the live owner gateway. */
+  focusGuidanceSignature?: string;
+}
 export type VcpMemoryCommand = (
   | { type: 'initialize'; configuration: VcpMemoryWorkerConfiguration }
   | { type: 'remember'; note: VcpMemoryNote }
   | { type: 'replace'; notes: VcpMemoryNote[] }
   | { type: 'projection-delta'; notes: VcpMemoryNote[]; removedIds: string[] }
+  | { type: 'projection-inspect'; descriptors: VcpMemoryProjectionDescriptor[] }
   | { type: 'prepare' }
   | { type: 'search'; text: string; topK?: number }
   | { type: 'read'; id: string }

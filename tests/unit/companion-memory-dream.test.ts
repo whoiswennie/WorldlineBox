@@ -5,14 +5,14 @@ import type { CompanionMemory, CompanionMessage, Companion } from '../../src/sha
 const at = '2026-10-14T00:00:00Z';
 const companion: Companion = { id: 'sister', name: '姐姐', description: '', persona: '温柔沉稳，喜欢安静听歌。', model: '', avatar: 'sister', builtin: true, proactive: false, createdAt: at };
 const source: CompanionMessage = { id: 'actual_result', sequence: 2, conversationId: 'private_sister', authorId: 'sister', kind: 'text', content: '这次先备份再修改，实际修复了聊天保存问题。', status: 'sent', createdAt: at, attachments: [] };
-const journal: CompanionMemory = { id: 'actual_journal', companionId: 'sister', scopeId: 'scope_private_sister',
+const journal: CompanionMemory = { artifactKind: 'episode_memory' as const, id: 'actual_journal', companionId: 'sister', scopeId: 'scope_private_sister',
   sourceMessageId: source.id, sourceConversationId: source.conversationId, sourceSequence: source.sequence,
   sources: [{ messageId: source.id, conversationId: source.conversationId, sequence: source.sequence, authorId: source.authorId, revision: 1, checksum: 'host-owned-checksum', createdAt: at }],
   content: source.content, tags: ['聊天保存', '备份'], status: 'indexed', origin: 'companion', captureMethod: 'automatic', version: 1, createdAt: at, updatedAt: at };
 const input = { companion, conversation: { id: source.conversationId, kind: 'private' as const, title: '姐姐', memberIds: ['sister'], pinned: false, muted: false, unread: 0, updatedAt: at, lastMessage: '' }, messages: [source], relevantMemories: [journal] };
 const config = { apiFormat: 'openai_chat' as const, model: 'selected-model', apiKey: 'private-key', baseUrl: 'https://provider.invalid' };
 const dream = { text: '梦里，我把散乱的聊天纸片慢慢整理好；这是对实际修复经历的主观联想。', sourceMessageIds: [source.id], relatedMemoryIds: [journal.id], evidence: [{ sourceMessageId: source.id, quote: source.content }] };
-const reflection = { content: '这次聊天保存修复中，我先备份再修改，实际修复了保存问题。这次经历支持保留可恢复副本；还不能证明同样做法适用于所有故障。',
+const reflection = { artifactKind: 'knowledge' as const, content: '这次聊天保存修复中，我先备份再修改，实际修复了保存问题。这次经历支持保留可恢复副本；还不能证明同样做法适用于所有故障。',
   tags: ['聊天保存', '备份', '修复经验'], sourceMessageIds: [source.id], evidence: dream.evidence, relatedMemoryIds: [journal.id] };
 function fetchFor(value: unknown) { return vi.fn<typeof fetch>().mockResolvedValue(new Response(JSON.stringify({ choices: [{ message: { content: JSON.stringify(value) } }] }))); }
 function request(fetchFn: ReturnType<typeof fetchFor>) {
@@ -24,7 +24,7 @@ describe('source-based VCP sleep reflection', () => {
   it('proposes only an unvalidated procedure from real reflection and never from fictional dream text', async () => {
     const procedure = { applicability: '此次约定的备份文件检查', steps: ['先形成backup.txt。', '核对备份文件。'], limitations: ['后续仍需真实实践'],
       verification: { kind: 'artifact_delivery', artifactRequirements: [{ path: 'backup.txt', minBytes: 1 }] } };
-    const fetchFn = fetchFor({ notes: [{ ...reflection, procedure }], dream: null });
+    const fetchFn = fetchFor({ notes: [{ ...reflection, artifactKind: 'procedure', procedure }], dream: null });
     const result = await generateCompanionMemoryDream({ ...input, maintenanceMode: 'background', reflectionOnly: true }, config, undefined, { fetchFn });
     expect(result.notes[0]?.procedure).toEqual(procedure); expect(result.dream).toBeNull();
     expect(request(fetchFn).payload.maintenanceMode).toBe('background'); expect(request(fetchFn).system).toContain('procedure不会增加工具权限');
@@ -44,7 +44,7 @@ describe('source-based VCP sleep reflection', () => {
     expect(payload.purpose).toBe('vcp_sleep_reflection'); expect(payload.companion.persona).toBe(companion.persona);
     expect(payload.relevantMemories).toEqual([journal]);
     expect(body.tools).toBeUndefined(); expect(body.stream).toBe(false); expect(body.model).toBe(config.model);
-    expect(system).toContain('梦中虚构画面只能出现在 dream'); expect(system).toContain('不改变稳定人格');
+    expect(system).toContain('梦境虚构绝不能补充现实事实'); expect(system).toContain('本轮不能直接重写人格');
   });
   it('permits neither a reflection nor a dream when sources add no new understanding', async () => {
     expect(await generateCompanionMemoryDream(input, config, undefined, { fetchFn: fetchFor({ notes: [], dream: null }) }))
@@ -120,15 +120,15 @@ describe('source-based VCP sleep reflection', () => {
   });
   it('allows a present, source-backed integration focus only alongside a newly saved qualified reflection', async () => {
     const stateProposal = { reason: '这次整理后，下次处理类似故障时先确认可恢复副本。', expression: 'direct', focus: '下次修复先核验备份',
-      sourceMessageIds: [source.id], evidence: dream.evidence, appraisals: [{ type: 'shared_success', target: 'task', intensity: .3, confidence: .9 }] };
+      sourceMessageIds: [source.id], evidence: dream.evidence, relationshipUpdates: [] };
     const result = await generateCompanionMemoryDream(input, config, undefined, { fetchFn: fetchFor({ notes: [reflection], dream: null, stateProposal }) });
     expect(result.stateProposal).toEqual(stateProposal);
     await expect(generateCompanionMemoryDream(input, config, undefined, { fetchFn: fetchFor({ notes: [reflection], dream: null,
-      stateProposal: { ...stateProposal, appraisals: [{ type: 'shared_success', target: 'user', intensity: .3, confidence: .9 }] } }) })).rejects.toMatchObject({ code: 'INVALID_RESPONSE' });
+      stateProposal: { ...stateProposal, relationshipUpdates: [{ targetId: 'user', topic: '修复', context: '旧来源', kind: 'shared_experience', statement: '重放用户关系', reassessWhen: ['新交流后复核'] }] } }) })).rejects.toMatchObject({ code: 'INVALID_RESPONSE' });
   });
   it('preserves a qualified self-understanding projection grounded in the sleepers own actual action', async () => {
     const statement = '我愿意先保留可恢复副本。', qualification = '仅是这次修复支持的暂定做法，不保证适用于所有故障。';
-    const note = { ...reflection, content: statement + qualification, diaryName: '自我认识', selfDevelopment: { kind: 'value', topic: '可恢复性', statement, basis: 'reflection', qualification } };
+    const note = { ...reflection, artifactKind: 'self_understanding', content: statement + qualification, diaryName: '自我认识', selfDevelopment: { kind: 'value', topic: '可恢复性', statement, basis: 'reflection', qualification } };
     const result = await generateCompanionMemoryDream(input, config, undefined, { fetchFn: fetchFor({ notes: [note], dream: null }) });
     expect(result.notes[0]?.selfDevelopment).toMatchObject({ statement, qualification, basis: 'reflection' });
     await expect(generateCompanionMemoryDream({ ...input, messages: [{ ...source, authorId: 'user' }] }, config, undefined,

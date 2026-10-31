@@ -18,8 +18,11 @@ export function memoryOwnerSchedule(schedulers: CompanionMemoryOwnerSchedule['sc
 export function memoryProcessingJobSchedule(job: CompanionMemoryProcessingJob, host: CompanionMemoryJobSchedule): CompanionMemoryProcessingJob {
   host = { ...host, nextCheckAt: host.nextCheckAt && Date.parse(host.nextCheckAt) > Date.now() ? host.nextCheckAt : undefined };
   const stored = { ...(job.schedule ?? memorySchedule(job.kind)), nextCheckAt: undefined };
-  if (['completed', 'cancelled', 'stale'].includes(job.status)) return { ...job, nextAttemptAt: undefined, schedule: memorySchedule(job.kind, {
-    scheduleKind: 'finished', waitingReason: undefined, condition: job.status === 'completed' ? '本次整理已完成；内容再次变化后才会产生新的任务。' : '此任务已停止或被新版本取代，不会自动继续旧版本。' }) };
+  if (['completed', 'cancelled', 'stale', 'abandoned'].includes(job.status)) return { ...job, nextAttemptAt: undefined, schedule: memorySchedule(job.kind, {
+    scheduleKind: 'finished', waitingReason: undefined, condition: job.status === 'completed' ? '本次整理已完成；内容再次变化后才会产生新的任务。'
+      : job.status === 'abandoned' ? '本项处理已明确放弃，原始事件和处理历史保留；不会自动重试。' : '此任务已停止或被新版本取代，不会自动继续旧版本。' }) };
+  if (job.status === 'parked') return { ...job, nextAttemptAt: undefined, schedule: memorySchedule(job.kind, {
+    scheduleKind: 'manual', waitingReason: 'parked', condition: '本项处理已搁置，原始事件和处理历史保留；核对后可明确恢复或放弃，其他独立作业继续处理。' }) };
   if (job.status === 'running' && ['device_testing', 'embedding_unavailable'].includes(host.waitingReason ?? '')) return { ...job, nextAttemptAt: undefined,
     schedule: { ...host, condition: `任务已领取，但当前等待本地向量条件。${host.condition}` } };
   if (job.status === 'running' && stored.waitingReason !== 'lease_expired' && stored.scheduleKind !== 'manual') return { ...job, nextAttemptAt: undefined,

@@ -3,6 +3,8 @@ const ratio = z.number().finite().min(0).max(1).multipleOf(0.000001);
 
 /** Each option selects an upstream stage for this query only. No marker text is accepted. */
 export const companionMemoryRetrievalOptionsSchema = z.strictObject({
+  /** Optional original AIMemo+ generation, never required for ordinary recall. */
+  focus: z.boolean().optional(),
   time: z.strictObject({ ratio: ratio.optional() }).optional(),
   timeDecay: z.strictObject({ halfLifeDays: z.number().int().min(1).max(36500).optional(), minScore: ratio.optional() }).optional(),
   semanticGroup: z.boolean().optional(), expand: z.boolean().optional(), associate: z.boolean().optional(),
@@ -11,13 +13,13 @@ export const companionMemoryRetrievalOptionsSchema = z.strictObject({
 });
 export type CompanionMemoryRetrievalOptions = z.infer<typeof companionMemoryRetrievalOptionsSchema>;
 
-export const companionMemoryRetrievalModeIds = ['river', 'active', 'passive', 'time', 'time_decay', 'semantic_group', 'expand', 'associate', 'external_rerank', 'jev_rerank', 'meta_thinking', 'timeline'] as const;
+export const companionMemoryRetrievalModeIds = ['river', 'active', 'passive', 'focus', 'time', 'time_decay', 'semantic_group', 'expand', 'associate', 'external_rerank', 'jev_rerank', 'meta_thinking', 'timeline'] as const;
 export type CompanionMemoryRetrievalModeId = typeof companionMemoryRetrievalModeIds[number];
 export const companionMemoryRetrievalModesSchema = z.object({
   engine: z.literal('original-VCP'),
   queryScope: z.enum(['current_authorized_candidate_page', 'current_authorized_corpus']),
   modes: z.array(z.object({ id: z.enum(companionMemoryRetrievalModeIds), label: z.string(), description: z.string(), available: z.boolean(), configured: z.boolean(),
-    enabledByDefault: z.boolean(), exposure: z.string(), cost: z.string(), observedCalls: z.number().int().nonnegative(), reason: z.string().optional(), configurations: z.array(z.string()).optional() })).max(12),
+    enabledByDefault: z.boolean(), exposure: z.string(), cost: z.string(), observedCalls: z.number().int().nonnegative(), reason: z.string().optional(), configurations: z.array(z.string()).optional() })).max(13),
   coldKnowledge: z.object({ tool: z.literal('memory.knowledge'), separatePipeline: z.literal(true) }),
 });
 export type CompanionMemoryRetrievalModes = z.infer<typeof companionMemoryRetrievalModesSchema>;
@@ -26,7 +28,8 @@ export interface CompanionMemoryModeRegistration { available: boolean; configure
 const descriptions: Record<CompanionMemoryRetrievalModeId, [string, string]> = {
   river: ['RiverMemo', '原版语义网、拓扑与引力检索。'],
   active: ['主动回忆', '默认 LightMemo 主动检索。'],
-  passive: ['上下文回忆', '原版 RAG 在完整获权记忆图上按当前语境检索，再由 AIMemo+ 聚焦；与聊天前自动回忆使用同一入口。'],
+  passive: ['上下文回忆', '原版 RAG 在完整获权记忆图上按当前语境检索并返回真实相关片段；与聊天前自动回忆使用同一入口，默认不增加模型生成请求。'],
+  focus: ['模型聚焦', '显式选择 focus:true 时，由此伙伴当前模型执行原版 AIMemo+ 对已召回资料的聚焦；会额外等待模型，不是原生检索的必经步骤。'],
   time: ['时间感知检索', '::Time 的语义/时间双路配额；按本次查询传入的宿主世界时钟与时区识别“昨天”等相对词，独立原生调用未传时钟时沿用现实日历。精确日期范围先用 from/to，不是月度时间线生成。'],
   time_decay: ['时间衰减', '原版半衰期和最低分后处理；日常被动上下文默认180天、最低分0并保护资料/重要条目，显式选择时沿用本次参数。显式时间路按原逻辑豁免。原版将 TimeDecay 后缀也识别为 Time，含相对时间词时可联动时间候选。'],
   semantic_group: ['语义组', '原版已配置语义组向量增强查询；不会从模型参数创建新组。'],
@@ -69,6 +72,7 @@ export function planCompanionMemoryRetrieval(options: CompanionMemoryRetrievalOp
   if (parsed.semanticGroup) { requireMode('semantic_group'); modifierSuffix += '::Group'; }
   if (parsed.expand) { requireMode('expand'); modifierSuffix += '::Expand'; }
   if (parsed.associate) { requireMode('associate'); modifierSuffix += '::Associate'; }
+  if (parsed.focus) { requireMode('focus'); modifierSuffix += '::AIMemo+'; }
   if (parsed.rerank) { requireMode(parsed.rerank.provider === 'jev' ? 'jev_rerank' : 'external_rerank'); modifierSuffix += `::Rerank${parsed.rerank.fusionAlpha === undefined ? '' : `+${parsed.rerank.fusionAlpha}`}`; }
   let metaMarker: string | undefined;
   if (parsed.metaThinking) {

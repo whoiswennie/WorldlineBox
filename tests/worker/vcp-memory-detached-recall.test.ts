@@ -45,7 +45,9 @@ it('releases the graph before focusing, survives worker LRU, and matches origina
     const scope = { scopeId: 'alice' }, direct = { scopeId: 'original-parity' };
     const notes = [0, 1, 2].map(index => ({ id: 'alice-note-' + index, content: `umbrella 雨伞约定${index}：下雨不出门，尚未完成。`, tags: ['umbrella', '约定'], author: 'alice', occurredAt: '2026-10-25T01:02:03Z' }));
     await client.replace(scope, notes);
-    const messages: VcpMemoryMessage[] = [{ role: 'system', content: '[[AIMemo=True]]\n[[memories日记本::RiverMemo::AIMemo+]]' }, { role: 'user', content: 'umbrella 雨伞的约定是什么？' }];
+    // A double-colon suffix after AIMemo+ is another pipeline modifier, not
+    // the single-colon named-preset form. Compare it with upstream exactly.
+    const messages: VcpMemoryMessage[] = [{ role: 'system', content: '[[AIMemo=True]]\n[[memories日记本::RiverMemo::AIMemo+::TimeDecay180/0]]' }, { role: 'user', content: 'umbrella 雨伞的约定是什么？' }];
     const clock = { now: '2026-10-26T03:04:05Z', timeZone: 'Asia/Shanghai' };
     const prepared = await client.prepareRecall(scope, messages, clock);
     expect(prompts).toEqual([]);

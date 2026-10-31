@@ -62,10 +62,10 @@ test('shows source-backed current state and self-understanding, opens exact docu
     const cause = await append(application, group.id, 'user', support);
     const applied = (await storage(application, { type: 'state.update', companionId: small, conversationId: group.id, proposal: {
       expression: 'gentle', focus: '认真核对读书会的资料', reason, sourceMessageIds: [cause.id], evidence: [{ sourceMessageId: cause.id, quote: support }],
-      appraisals: [{ type: 'support', target: 'user', intensity: .7, confidence: .95 }],
+      experience: { situation: '读书会讨论资料核验。', statement: '我愿意认真核对后继续讨论。', reassessWhen: ['本次资料核验完成后。'] },
     } })).runtimeState!;
     const receipt = applied.recentChanges!.find(change => change.sourceMessageIds.includes(cause.id))!;
-    expect(receipt.kind).toBe('appraisal'); expect(receipt.relationshipDelta.affinity).toBeGreaterThan(0);
+    expect(receipt.kind).toBe('experience'); expect(receipt.experienceId).toBe(applied.experience?.id);
 
     for (const id of [small, big]) await request(page, { type: 'companion.set-active', id, active: true });
     const clock = (await request(page, { type: 'world.status', companionIds: [small] })).worldStatus!.clock;
@@ -87,7 +87,7 @@ test('shows source-backed current state and self-understanding, opens exact docu
     const detail = page.getByRole('dialog', { name: '伙伴当前状态', exact: true });
     await detail.locator('.companions-state-changes > summary').click();
     const change = detail.locator(`[data-state-change="${receipt.id}"]`);
-    await expect(change).toContainText(reason); await expect(change.getByLabel('当时生效的属性变化')).toContainText('好感');
+    await expect(change).toContainText(reason); await expect(change).not.toContainText('好感');
     expect(await change.locator('time').first().getAttribute('dateTime')).toBe(receipt.appliedAt);
     await capture(page, 'state-causes-light-1440.png');
     await detail.locator('.companions-character-development > summary').click();
@@ -217,7 +217,7 @@ test('shows source-backed current state and self-understanding, opens exact docu
 });
 
 function draft(message: CompanionMessage, kind: 'preference' | 'voice', topic: string): CompanionMemoryCandidate {
-  return { content: message.content, diaryName: '自我认识', tags: ['自我认识', topic], metadata: { autoTags: false }, sourceMessageIds: [message.id], evidence: [{ sourceMessageId: message.id, quote: message.content }], selfDevelopment: { kind, topic, statement: message.content, basis: 'self_expression' } };
+  return { artifactKind: 'self_understanding', content: message.content, diaryName: '自我认识', tags: ['自我认识', topic], metadata: { autoTags: false }, sourceMessageIds: [message.id], evidence: [{ sourceMessageId: message.id, quote: message.content }], selfDevelopment: { kind, topic, statement: message.content, basis: 'self_expression' } };
 }
 async function append(application: ElectronApplication, conversationId: string, authorId: string, content: string) {
   return (await storage(application, { type: 'message.append', message: { conversationId, authorId, content } })).message!;
@@ -295,7 +295,7 @@ function createQuietProvider() {
       try {
         const payload = JSON.parse(body) as { messages: Array<{ role: string; content: string }> };
         const context = JSON.parse(payload.messages.findLast(message => message.role === 'user')?.content ?? '{}') as { purpose?: string };
-        text = JSON.stringify(context.purpose === 'world_decision' ? { action: null, appraisals: [], reason: '本次界面验收没有新的自主行动。' }
+        text = JSON.stringify(context.purpose === 'world_decision' ? { action: null, reason: '本次界面验收没有新的自主行动。' }
           : context.purpose === 'world_social' ? { text: null, reason: '本次界面验收不延伸社交。' }
             : context.purpose === 'world_attention' ? { urgency: 'ordinary', confidence: .99, evidence: [], reason: '本次没有需要打断的请求。' }
               : context.purpose === 'world_message_authorization' ? { allowed: false, confidence: .99, evidence: [], reason: '本次没有新的转发授权。' }

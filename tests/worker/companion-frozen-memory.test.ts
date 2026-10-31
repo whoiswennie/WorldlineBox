@@ -16,7 +16,7 @@ afterEach(() => { store.close(); removeOwnedDirectorySync(root); });
 function setup() {
   const room = store.openPrivate('alice'), source = store.appendMessage({ conversationId: room.id, authorId: 'user', content: '旧快照依据：原始资料只有这一条。', replyDirective: 'none' });
   const scope = { companionId: 'alice', conversationId: room.id };
-  const note = store.request({ type: 'memory.record', ...scope, candidate: { content: '旧任务应该保留这条当时读到的资料。', tags: ['快照'],
+  const note = store.request({ type: 'memory.record', ...scope, candidate: { artifactKind: 'episode_memory' as const, content: '旧任务应该保留这条当时读到的资料。', tags: ['快照'],
     sourceMessageIds: [source.id], evidence: [{ sourceMessageId: source.id, quote: source.content }] } }).memories![0]!;
   const question = store.appendMessage({ conversationId: room.id, authorId: 'user', content: '请按现在的回忆继续本任务。', replyDirective: 'none' });
   const memory = { id: note.id, sources: note.sources.map(source => ({ id: source.messageId, conversationId: source.conversationId, checksum: source.checksum })) };
@@ -25,7 +25,7 @@ function setup() {
 }
 function revise(f: ReturnType<typeof setup>, source = f.source): CompanionMemory {
   return store.request({ type: 'memory.revise', ...f.scope, id: f.note.id, expectedVersion: f.note.version,
-    candidate: { content: '当前记忆已被普通编辑为新内容。', tags: ['新标签'], sourceMessageIds: [source.id], evidence: [{ sourceMessageId: source.id, quote: source.content }] } }).memories![0]!;
+    candidate: { artifactKind: 'episode_memory' as const, content: '当前记忆已被普通编辑为新内容。', tags: ['新标签'], sourceMessageIds: [source.id], evidence: [{ sourceMessageId: source.id, quote: source.content }] } }).memories![0]!;
 }
 
 it('keeps passive snapshot facts after an ordinary note revision while active versioned reads remain exact', () => {
@@ -55,7 +55,7 @@ it('rejects another owner or a fabricated source outside the note witness histor
   const source = store.request({ type: 'memory.sources.filter', ...f.scope, ids: [unrelated.id] }).memorySources![0]!;
   // Reuse a real checksum from a genuine source-backed note to avoid testing
   // only malformed bytes; a source must actually belong to this note history.
-  const second = store.request({ type: 'memory.record', ...f.scope, candidate: { content: '另一份独立资料。', tags: [], sourceMessageIds: [source.id], evidence: [{ sourceMessageId: source.id, quote: source.content }] } }).memories![0]!;
+  const second = store.request({ type: 'memory.record', ...f.scope, candidate: { artifactKind: 'episode_memory' as const, content: '另一份独立资料。', tags: [], sourceMessageIds: [source.id], evidence: [{ sourceMessageId: source.id, quote: source.content }] } }).memories![0]!;
   expect(store.request({ type: 'memory.frozen.valid', ...f.scope, memories: [{ id: f.note.id, sources: second.sources.map(source => ({ id: source.messageId, conversationId: source.conversationId, checksum: source.checksum })) }] }).memoryFrozenValid).toBe(false);
 });
 

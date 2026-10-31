@@ -13,29 +13,76 @@ function fixture() {
     sequence: 10, kind: 'text', status: 'sent', attachments: [], createdAt };
   const evidence: CompanionMessage = { ...source, id: 'intro', authorId: 'user', conversationId: 'private_alice', sequence: 1, content: '你好，我叫天幻。' };
   const bubble: CompanionMessage = { ...source, id: 'reply', authorId: 'alice', sequence: 11, content: '你之前说叫天幻。' };
-  const note: CompanionMemory = { id: 'name_note', companionId: 'alice', scopeId: 'alice_private', content: '玩家向我介绍自己叫天幻。',
+  const note: CompanionMemory = { artifactKind: 'episode_memory' as const, id: 'name_note', companionId: 'alice', scopeId: 'alice_private', content: '玩家向我介绍自己叫天幻。',
     sourceConversationId: evidence.conversationId, sourceMessageId: evidence.id, sourceSequence: 1, version: 1, origin: 'user', captureMethod: 'automatic',
     status: 'indexed', tags: ['名字'], createdAt, updatedAt: createdAt, sources: [{ messageId: evidence.id, conversationId: evidence.conversationId,
-      sequence: 1, authorId: 'user', revision: 1, checksum: 'source_checksum', createdAt }] };
+      sequence: 1, authorId: 'user', revision: 1, checksum: createHash('sha256').update(evidence.content).digest('hex'), createdAt }] };
   const contextText = '【VCP 实际话题聚焦结果】\n玩家之前介绍自己叫天幻。\n' + '原文不折叠成摘要。'.repeat(1500);
   const data = { memories: [note], memoryRecall: { pending: false, degraded: false,
     continuation: { query: { query: source.content } }, context: { text: contextText, revision: 'original_snapshot',
       evidence: { capturedAt, corpusHash: recallCorpusHash([note]) } } } };
-  let notes = [note], revision = 'original_snapshot', allowed = true;
+  let notes = [note], revision = 'original_snapshot', allowed = true, frozenValid = true;
   const request = vi.fn(async (command: CompanionStorageCommand): Promise<CompanionStorageResponse> => {
     if (command.type === 'message.get') return { ok: true, message: bubble };
     if (command.type === 'loop.for-message') return { ok: true, loop: { companionId: 'alice', conversationId: source.conversationId,
       messageId: bubble.id, sourceMessageId: source.id, status: 'done', turns: [], supplements: [], context: { system: '', user: JSON.stringify(data) } } };
     if (command.type === 'memory.sources.filter') return { ok: true, memorySources: allowed ? [source, evidence].filter(item => command.ids.includes(item.id)) : [] };
     if (command.type === 'memory.snapshot') return { ok: true, memorySnapshot: { scopeId: 'owner_alice', revision, notes } };
+    if (command.type === 'memory.records.filter') return { ok: true, memories: notes.filter(note => command.ids.includes(note.id)) };
+    if (command.type === 'memory.frozen.valid') return { ok: true, memoryFrozenValid: frozenValid };
     throw new Error('Inspection must not execute ' + command.type);
   });
   return { source, note, contextText, data, request,
     inspect: (patch: Record<string, unknown> = {}) => inspectCompanionReplyMemory(companionReplyMemoryCommand.parse({ type: 'reply.memory.inspect', companionId: 'alice', conversationId: source.conversationId, messageId: bubble.id, ...patch }), request),
-    update: (next: CompanionMemory[]) => { notes = next; revision = 'new_snapshot'; }, withdraw: () => { allowed = false; } };
+    update: (next: CompanionMemory[]) => { notes = next; revision = 'new_snapshot'; }, withdraw: () => { allowed = false; },
+    freeze: () => Object.assign(data.memoryRecall.context.evidence, { dependencyCoverage: 'complete', dependencies: [{ id: note.id, version: note.version }],
+      snapshotPolicy: 'task_passive_v1', frozenDependencies: [{ id: note.id, sources: note.sources.map(source => ({ id: source.messageId,
+        conversationId: source.conversationId, checksum: source.checksum })) }] }),
+    withdrawFrozen: () => { frozenValid = false; } };
 }
 
 describe('persisted per-reply native recall inspection', () => {
+  it('inspects a complete task-passive receipt through its exact dependencies and candidate IDs without scanning the corpus twice', async () => {
+    const f = fixture(); f.freeze(); f.data.memoryRecall.context.evidence.corpusHash = 'unrelated_current_corpus_is_not_the_task_input';
+    f.update([f.note, { ...f.note, id: 'unrelated_later_note', createdAt: '2026-10-22T02:02:00.000Z' }]);
+    const result = await f.inspect();
+    expect(result).toMatchObject({ state: 'ready', contextText: f.contextText.slice(0, 8192), candidates: [{ id: f.note.id, version: f.note.version }] });
+    expect(f.request.mock.calls.some(([command]) => command.type === 'memory.snapshot')).toBe(false);
+    expect(f.request.mock.calls.filter(([command]) => command.type === 'memory.frozen.valid')).toHaveLength(2);
+    const candidateReads = f.request.mock.calls.map(([command]) => command).filter(command => command.type === 'memory.records.filter');
+    expect(candidateReads).toHaveLength(2); expect(candidateReads.every(command => command.ids.join() === f.note.id)).toBe(true);
+  });
+
+  it('hides frozen receipt text when its actual source closure has been withdrawn', async () => {
+    const f = fixture(); f.freeze(); f.withdrawFrozen();
+    expect(await f.inspect()).toMatchObject({ state: 'withdrawn', candidates: [], contextCharacters: 0 });
+    expect(f.request.mock.calls.some(([command]) => command.type === 'memory.snapshot')).toBe(false);
+  });
+
+  it('rechecks frozen inputs after asynchronous candidate/source reads and refuses a simultaneous withdrawal', async () => {
+    const f = fixture(); f.freeze(); let checks = 0;
+    const actual = f.request.getMockImplementation()!;
+    f.request.mockImplementation(async command => command.type === 'memory.frozen.valid'
+      ? { ok: true, memoryFrozenValid: ++checks === 1 } : actual(command));
+    expect(await f.inspect()).toMatchObject({ state: 'withdrawn', candidates: [], contextCharacters: 0 }); expect(checks).toBe(2);
+  });
+
+  it('rechecks the triggering message after reading a complete receipt so an unrelated-source forget cannot expose its query', async () => {
+    const f = fixture(); f.freeze(); let reads = 0;
+    const actual = f.request.getMockImplementation()!;
+    f.request.mockImplementation(async command => {
+      if (command.type === 'memory.sources.filter' && command.ids.includes(f.source.id) && ++reads > 1) return { ok: true, memorySources: [] };
+      return actual(command);
+    });
+    const result = await f.inspect();
+    expect(result).toMatchObject({ state: 'withdrawn', candidates: [], contextCharacters: 0 }); expect(result.query).toBeUndefined();
+  });
+
+  it('refuses a malformed frozen closure rather than treating it as a precise receipt or falling back to a full scan', async () => {
+    const f = fixture(); f.freeze(); Object.assign(f.data.memoryRecall.context.evidence, { frozenDependencies: [] });
+    expect(await f.inspect()).toMatchObject({ state: 'withdrawn', candidates: [] });
+    expect(f.request.mock.calls.some(([command]) => ['memory.snapshot', 'memory.records.filter'].includes(command.type))).toBe(false);
+  });
   it('rechecks a pending peer lease after loading sources and refuses a replacement attempt', async () => {
     const f = fixture(); let reads = 0;
     const receipt: CompanionSocialReplyReceipt = { companionId: 'alice', conversationId: f.source.conversationId, messageId: 'peer_job',

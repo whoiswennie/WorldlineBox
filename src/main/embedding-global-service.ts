@@ -118,6 +118,26 @@ export class GlobalEmbeddingService {
     return task;
   }
 
+  /** Idle physical admission only: no synthetic text, vector or semantic job. */
+  async prepare(input: { signal?: AbortSignal } = {}): Promise<void> {
+    if (this.#closed) throw new Error('Embedding service is closed.');
+    input.signal?.throwIfAborted();
+    const generation = this.#generation, profile = await this.resolveProfile();
+    const work = async () => {
+      input.signal?.throwIfAborted();
+      if (this.#closed || generation !== this.#generation) throw new EmbeddingProfileChangedError();
+      const controller = new AbortController(); this.#active.add(controller);
+      // Once admitted, physical loading is shared with foreground requests.
+      // Caller cancellation yields the graph lane after this same load settles;
+      // only device invalidation/shutdown tears down the global session startup.
+      const signal = controller.signal;
+      try { await this.#localSession(profile, signal); signal.throwIfAborted(); input.signal?.throwIfAborted();
+        if (this.#closed || generation !== this.#generation) throw new EmbeddingProfileChangedError();
+      } finally { this.#active.delete(controller); }
+    };
+    const task = this.#queue.then(work, work); this.#queue = task.catch(() => undefined); return task;
+  }
+
   async invalidate(): Promise<void> {
     this.#generation++;
     for (const listener of this.#invalidationListeners) { try { listener(); } catch { /* A cache observer cannot prevent model teardown. */ } }
@@ -152,6 +172,8 @@ export class GlobalEmbeddingService {
       threads: Math.max(1, Math.min(4, availableParallelism())),
     };
     let session: LlamaEmbeddingSession;
+    const cancelStartup = () => runtimeController.abort(signal.reason);
+    signal.addEventListener('abort', cancelStartup, { once: true });
     try {
       // Match the asset encoder: a GPU-capable bundled backend may offload automatically.
       // The shipped CPU build has no GPU dependency and continues to execute on the CPU.
@@ -163,7 +185,8 @@ export class GlobalEmbeddingService {
       if (signal.aborted || runtimeController.signal.aborted || error instanceof AggregateError) throw error;
       if (preference?.backend) throw new Error('已通过检测的向量运行设备未能启动，请在设置的全局模型中重新检测。', { cause: error });
       session = await startSession({ ...sessionOptions, executable: layout.cpuRuntimePath ?? layout.runtimePath, gpuLayers: 0 });
-    }
+    } finally { signal.removeEventListener('abort', cancelStartup); }
+    if (signal.aborted) { await session.close(); signal.throwIfAborted(); }
     this.#session = { key: profile.profileKey, session };
     return session;
   }

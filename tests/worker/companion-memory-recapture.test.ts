@@ -5,6 +5,7 @@ import Database from 'better-sqlite3';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { CompanionsStore, type CompanionConnection } from '../../src/companions/store';
 import { removeOwnedDirectorySync } from '../../src/main/vcp-memory/filesystem';
+import { randomUUID } from 'node:crypto';
 import type { CompanionMemoryCandidate, CompanionMemoryJob } from '../../src/shared/companion-memory';
 import type { CompanionMessage } from '../../src/shared/companions';
 
@@ -15,7 +16,7 @@ afterEach(() => { vi.useRealTimers(); store.close(); if (path.dirname(path.resol
 function sql<T>(run: (db: CompanionConnection) => T): T { const db = new (Database as { new(file: string): CompanionConnection })(file); try { return run(db); } finally { db.close(); } }
 const intents = () => sql(db => db.prepare("SELECT key,value FROM metadata WHERE key GLOB 'vcp-capture-reconsideration/*'").all()) as Array<{ key: string; value: string }>;
 const source = (content: string) => store.appendMessage({ conversationId: scope.conversationId, authorId: 'user', content, replyDirective: 'none' });
-const draft = (message: CompanionMessage, relatedMemoryIds: string[] = []): CompanionMemoryCandidate => ({ content: message.content, tags: ['原始事实'], sourceMessageIds: [message.id], evidence: [{ sourceMessageId: message.id, quote: message.content }], relatedMemoryIds });
+const draft = (message: CompanionMessage, relatedMemoryIds: string[] = []): CompanionMemoryCandidate => ({ artifactKind: 'episode_memory', content: message.content, tags: ['原始事实'], sourceMessageIds: [message.id], evidence: [{ sourceMessageId: message.id, quote: message.content }], relatedMemoryIds });
 // These cases exercise withdrawal/retry invariants after an admitted episode;
 // the normal quiet/count/deadline admission is tested in its lifecycle suite.
 const claim = () => store.request({ type: 'memory.jobs.claim', force: true, companionId: scope.companionId }).memoryJob;
@@ -36,7 +37,7 @@ it('durably requeues only the still-authorized original B after A is forgotten a
   expect(store.request({ type: 'memory.snapshot', ...scope }).memorySnapshot!.notes.some(note => note.id === mixed.id)).toBe(false);
   store.close(); store = new CompanionsStore(file, seeds);
   const recovery = claim(); expect(recovery?.sourceMessageIds).toEqual([b.id]);
-  expect(recovery!.attempts).toBe(1); expect(recovery!.leaseToken).not.toBe(oldJob.leaseToken);
+  expect(recovery!.attempts).toBe(2); expect(recovery!.leaseToken).not.toBe(oldJob.leaseToken);
   expect(() => complete(oldJob, [])).toThrow('租约');
   expect(visible(a.id)).toEqual([]);
   const rebuilt = complete(recovery!, [draft(b)])[0]!;
@@ -47,7 +48,7 @@ it('durably requeues only the still-authorized original B after A is forgotten a
 
 function directMerge() {
   const a = source('A：保留蓝色封皮。'), b = source('B：米色棉线在第二层抽屉。'), job = claim()!;
-  const candidate: CompanionMemoryCandidate = { content: a.content + b.content, tags: ['合写稿'], sourceMessageIds: [a.id, b.id],
+  const candidate: CompanionMemoryCandidate = { artifactKind: 'episode_memory', content: a.content + b.content, tags: ['合写稿'], sourceMessageIds: [a.id, b.id],
     evidence: [a, b].map(message => ({ sourceMessageId: message.id, quote: message.content })), relatedMemoryIds: [] };
   const merged = complete(job, [candidate])[0]!; indexed(); return { a, b, job, candidate, merged };
 }
@@ -134,7 +135,7 @@ it.each(['complete', 'fail', 'expire'] as const)('supersedes a running extractio
   if (settlement === 'complete') expect(complete(stale, [])).toEqual([]);
   else if (settlement === 'fail') store.request({ type: 'memory.jobs.fail', id: stale.id, leaseToken: stale.leaseToken, error: '旧请求失败', retryAfterMs: 99999 });
   else { vi.useFakeTimers({ toFake: ['Date'] }); vi.setSystemTime(Date.now() + 120001); }
-  const fresh = claim()!; expect(fresh.sourceMessageIds).toEqual([b.id]); expect(fresh.leaseToken).not.toBe(stale.leaseToken); expect(fresh.attempts).toBe(1);
+  const fresh = claim()!; expect(fresh.sourceMessageIds).toEqual([b.id]); expect(fresh.leaseToken).not.toBe(stale.leaseToken); expect(fresh.attempts).toBe(3);
   expect(() => complete(stale, [])).toThrow('租约');
   const rebuilt = complete(fresh, [draft(b)])[0]!; indexed();
   expect(rebuilt.content).toBe(b.content); expect(intents()).toEqual([]);
@@ -163,7 +164,7 @@ it('retains every invalid note version from multiple candidates of one exact ori
 it('does not reopen a historical source removed from the current version of a dependent note', () => {
   const a = source('A：蓝色封皮。'), parent = complete(claim()!, [draft(a)])[0]!; indexed();
   const c = source('C：旧版记录用的是红色棉线。'), b = source('B：现在只保留米色棉线的原始位置。');
-  const both: CompanionMemoryCandidate = { content: b.content, tags: ['原始事实'], sourceMessageIds: [c.id, b.id],
+  const both: CompanionMemoryCandidate = { artifactKind: 'episode_memory', content: b.content, tags: ['原始事实'], sourceMessageIds: [c.id, b.id],
     evidence: [c, b].map(message => ({ sourceMessageId: message.id, quote: message.content })), relatedMemoryIds: [parent.id] };
   const old = complete(claim()!, [both])[0]!; indexed();
   store.request({ type: 'memory.revise', ...scope, id: old.id, expectedVersion: old.version, candidate: draft(b, [parent.id]) }); indexed();
@@ -191,26 +192,37 @@ it('does not replay historical state or consume new C state processing in the sa
   expect(historical.sourceMessageIds).toEqual([b.id]);
   const stateBefore = store.request({ type: 'state.get', ...scope }).runtimeState!;
   store.request({ type: 'memory.jobs.complete', id: historical.id, leaseToken: historical.leaseToken, notes: [draft(b)],
-    stateProposal: { reason: '历史来源补抽不应变成现在的新评价。', focus: '不应重放的旧关注', sourceMessageIds: [b.id], evidence: draft(b).evidence, appraisals: [{ type: 'support', target: 'user', intensity: 1, confidence: 1 }] } });
+    stateProposal: { reason: '历史来源补抽不应变成现在的新评价。', focus: '不应重放的旧关注', sourceMessageIds: [b.id], evidence: draft(b).evidence, relationshipUpdates: [] } });
   const afterHistorical = store.request({ type: 'state.get', ...scope }).runtimeState!;
-  expect(afterHistorical.relationship).toEqual(stateBefore.relationship); expect(afterHistorical.focus).toBe(stateBefore.focus);
+  expect(afterHistorical.relationshipRecords).toEqual(stateBefore.relationshipRecords); expect(afterHistorical.focus).toBe(stateBefore.focus);
   const ordinary = claim()!; expect(ordinary.sourceMessageIds).toEqual([c.id]);
   store.request({ type: 'memory.jobs.complete', id: ordinary.id, leaseToken: ordinary.leaseToken, notes: [draft(c)],
-    stateProposal: { reason: c.content, focus: '眼前的新任务', sourceMessageIds: [c.id], evidence: draft(c).evidence, appraisals: [{ type: 'support', target: 'user', intensity: 1, confidence: 1 }] } });
+    stateProposal: { reason: c.content, focus: '眼前的新任务', sourceMessageIds: [c.id], evidence: draft(c).evidence, relationshipUpdates: [] } });
   const afterC = store.request({ type: 'state.get', ...scope }).runtimeState!;
-  expect(afterC.focus).toBe('眼前的新任务'); expect(afterC.relationship.affinity).toBeGreaterThan(afterHistorical.relationship.affinity);
+  expect(afterC.focus).toBe('眼前的新任务'); expect(afterC.relationshipRecords).toEqual(afterHistorical.relationshipRecords);
 });
 
-it('preserves the normal backoff and eight-attempt ceiling across repeated parent withdrawal', () => {
-  const { a, parent } = originals(); store.request({ type: 'memory.forget', ...scope, sourceMessageIds: [a.id] });
+it('preserves lifetime attempts and parks three actual failures across parent withdrawal while new events continue', () => {
+  const { a, b, parent } = originals(); store.request({ type: 'memory.forget', ...scope, sourceMessageIds: [a.id] });
   vi.useFakeTimers({ toFake: ['Date'] }); vi.setSystemTime(Date.now());
-  for (let attempt = 1; attempt <= 8; attempt++) {
-    const job = claim()!; expect(job.attempts).toBe(attempt);
+  let job: CompanionMemoryJob | undefined;
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    job = claim()!; expect(job.attempts).toBe(attempt + 1);
     store.request({ type: 'memory.jobs.fail', id: job.id, leaseToken: job.leaseToken, error: '逐字引文不匹配', retryAfterMs: 30000 });
     for (let repeat = 0; repeat < 3; repeat++) store.request({ type: 'memory.forget', ...scope, id: parent.id });
     expect(claim()).toBeUndefined(); vi.setSystemTime(Date.now() + 30001);
   }
   expect(claim()).toBeUndefined(); expect(intents()).toHaveLength(1);
+  const held = store.request({ type: 'jobs.inspect', ownerId: 'alice', kind: 'capture', id: job!.id }).jobDisposition!;
+  expect(held).toMatchObject({ state: 'parked', failureCount: 3, cycleFailureCount: 3, attemptCount: 4 });
+  const c = source('C：新的独立真实事件继续被保存和处理。'), independent = claim()!;
+  expect(independent.sourceMessageIds).toEqual([c.id]); complete(independent, [draft(c)]);
+  expect(store.request({ type: 'jobs.inspect', ownerId: 'alice', kind: 'capture', id: held.id }).jobDisposition).toEqual(held);
+  store.request({ type: 'jobs.control', ownerId: 'alice', kind: 'capture', id: held.id, inputVersion: held.inputVersion,
+    expectedRevision: held.revision, operationId: randomUUID(), action: 'resume' });
+  const resumed = claim()!; expect(resumed.sourceMessageIds).toEqual([b.id]); expect(resumed.attempts).toBe(5);
+  complete(resumed, [draft(b)]); expect(intents()).toEqual([]);
+  expect(store.getMessage(b.id).content).toBe(b.content);
 });
 
 it('preserves current reconsideration while its owner is inactive and resumes after explicit activation', () => {
@@ -223,11 +235,17 @@ it('preserves current reconsideration while its owner is inactive and resumes af
 
 it('removes reconsideration authority during the normal durable owner reset and rejects the old token', async () => {
   const { a, b } = originals(); store.request({ type: 'memory.forget', ...scope, sourceMessageIds: [a.id] });
-  const running = claim()!, reset = store.request({ type: 'companion.reset', id: 'alice', scope: 'all' }).reset!;
-  expect(() => complete(running, [draft(b)])).toThrow('重置');
-  store.request({ type: 'companion.reset.cleanup', id: 'alice', jobId: reset.id });
-  for (let n = 0; n < 200 && store.request({ type: 'companion.reset.status', id: 'alice' }).reset?.status !== 'completed'; n++) await store.advanceReset();
-  expect(store.request({ type: 'companion.reset.status', id: 'alice' }).reset?.status).toBe('completed');
-  expect(intents()).toEqual([]); expect(claim()).toBeUndefined();
+  const alice = scope; scope = { companionId: 'bob', conversationId: store.openPrivate('bob').id };
+  const peer = originals(); store.request({ type: 'memory.forget', ...scope, sourceMessageIds: [peer.a.id] });
+  const peerIntent = intents().find(item => item.key.startsWith('vcp-capture-reconsideration/bob/'))!;
+  expect(peerIntent).toBeDefined(); scope = alice;
+  const running = claim()!, reset = store.request({ type: 'companion.retire', id: 'alice', scope: 'all' }).reset!;
+  expect(() => complete(running, [draft(b)])).toThrow('删除清理');
+  store.request({ type: 'companion.retire.cleanup', id: 'alice', jobId: reset.id });
+  for (let n = 0; n < 200 && store.request({ type: 'companion.retire.status', id: 'alice' }).reset?.status !== 'completed'; n++) await store.advanceReset();
+  const resetResult = store.request({ type: 'companion.retire.status', id: 'alice' }).reset;
+  expect(resetResult?.status, resetResult?.error).toBe('completed');
+  expect(intents()).toEqual([peerIntent]); expect(claim()).toBeUndefined();
+  expect(store.getMessage(peer.b.id).content).toBe(peer.b.content);
   expect(() => complete(running, [draft(b)])).toThrow();
 });

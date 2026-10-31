@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import { companionTaskStopCommand, companionTaskItemSchema } from './companion-task-overview';
 import { companionMemoryProcessingJobSchema } from './companion-memory-processing';
+import { companionJobFailureKindSchema } from './companion-job-control';
 
 export const companionTaskSectionSchema = z.enum(['input', 'process', 'output']);
 export type CompanionTaskSection = z.infer<typeof companionTaskSectionSchema>;
@@ -24,4 +25,5 @@ export type CompanionTaskDetail = z.infer<typeof companionTaskDetailSchema>;
 export const companionTaskContentSchema = companionTaskRecordSchema.extend({ offset: z.number().int().nonnegative(), hasMore: z.boolean() }).strict();
 export const companionTaskTimelineRecordCommand = z.strictObject({ type: z.literal('tasks.timeline.record'),
   companionId: companionTaskStopCommand.shape.companionId, job: companionMemoryProcessingJobSchema,
+  expectedDispositionRevision: z.number().int().nonnegative().safe().optional(), failureKind: companionJobFailureKindSchema.optional(),
   input: z.string().max(1000000).optional(), output: z.string().max(2000000).optional() });

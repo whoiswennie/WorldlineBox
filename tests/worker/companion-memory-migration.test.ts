@@ -43,7 +43,7 @@ function fixture() {
   db.prepare('INSERT INTO memory_observers VALUES(?,?)').run(common.id, 'alice');
   return { file, scope, forgotten, common, group, db };
 }
-function draft(message: { id: string; content: string }) { return { content: message.content, sourceMessageIds: [message.id], evidence: [{ sourceMessageId: message.id, quote: message.content }] }; }
+function draft(message: { id: string; content: string }) { return { artifactKind: 'episode_memory' as const, content: message.content, sourceMessageIds: [message.id], evidence: [{ sourceMessageId: message.id, quote: message.content }] }; }
 
 it('does not import, retire or replay old facts, authorization receipts or messages on startup', () => {
   const f = fixture();

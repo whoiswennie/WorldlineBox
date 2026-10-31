@@ -2,6 +2,7 @@ import { z } from 'zod';
 import { companionMemoryPolicySchema } from './companion-memory-policy';
 import { companionRoutineConfigSchema } from './companion-routine';
 import { companionLearningGrantSchema } from './companion-learning';
+import { companionJobDispositionSchema } from './companion-job-control';
 
 const id = z.string().regex(/^[a-zA-Z0-9_-]{1,100}$/u);
 const instant = z.iso.datetime();
@@ -27,9 +28,10 @@ export const companionWorldSleepPlanSchema = z.object({ companionId: id, checked
   maintenance: z.object({ eligible: z.boolean().optional(), policy: companionMemoryPolicySchema.optional(), policyError: z.string().max(1000).optional(), lastDecisionAt: instant.optional(), nextDeepEligibleAt: instant.optional(), lastDreamSuccessAt: instant.optional(),
     investigations: z.object({ waiting: z.number().int().nonnegative(), observed: z.number().int().nonnegative(), reason: z.string().max(1000).optional() }).optional(),
     mode: z.enum(['sleep', 'background']).optional(), reflectionCompletedAt: instant.optional(), realCompletedAt: instant.optional(),
-    narrativeAttempts: z.number().int().min(0).max(3).optional(), narrativeStatus: z.enum(['pending', 'skipped', 'completed', 'failed']).optional() }).optional(),
+    narrativeAttempts: z.number().int().nonnegative().optional(), narrativeStatus: z.enum(['pending', 'skipped', 'completed', 'failed']).optional() }).optional(),
   dreamCooldownUntilWorld: instant.optional(),
-  job: z.object({ status: z.enum(['pending', 'running', 'failed']), attempts: z.number().int().nonnegative(),
+  job: z.object({ id, status: z.enum(['pending', 'running', 'failed', 'parked', 'abandoned']), attempts: z.number().int().nonnegative(),
+    disposition: companionJobDispositionSchema.optional(),
     terminal: z.boolean().optional(), error: z.string().max(2000).optional(),
     nextAttemptAt: instant.optional(), leaseActive: z.boolean(), dreamAllowed: z.boolean() }).optional(),
   captureQueue: z.object({ pending: z.number().int().nonnegative(), running: z.number().int().nonnegative(), failed: z.number().int().nonnegative(),

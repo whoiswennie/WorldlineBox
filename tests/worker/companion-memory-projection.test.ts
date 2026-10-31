@@ -5,6 +5,7 @@ import path from 'node:path';
 import { expect, it } from 'vitest';
 import { CompanionsStore } from '../../src/companions/store';
 import { companionSearchFacet, companionSearchTokens } from '../../src/shared/companion-search';
+import { recordSourceBackedMemory } from '../fixtures/source-backed-memory';
 
 it('journals exact native projection status acknowledgements, tags, archive, DELETE and scope/reset fences without returning bodies', async () => {
   const root = await mkdtemp(path.join(tmpdir(), 'worldline-projection-ledger-'));
@@ -15,7 +16,7 @@ it('journals exact native projection status acknowledgements, tags, archive, DEL
   const acknowledge = () => { for (;;) { const job = store.request({ type: 'memory.outbox.claim' }).memoryOutbox; if (!job) break;
     store.request({ type: 'memory.outbox.complete', id: job.id, leaseToken: job.leaseToken, indexed: true }); } };
   try {
-    const note = store.saveMemory({ ...scope, content: 'Synthetic exact canonical body canary.', tags: ['initial'], diaryName: '资料' }), queued = state();
+    const note = recordSourceBackedMemory(store, { ...scope, content: 'Synthetic exact canonical body canary.', tags: ['initial'], diaryName: '资料' }), queued = state();
     expect(store.request({ type: 'memory.projection.page', ...scope, expected: queued }).memoryProjectionPage?.notes).toEqual([]);
     acknowledge(); const indexed = state(); expect(indexed.sequence).toBeGreaterThan(queued.sequence);
     const initial = store.request({ type: 'memory.projection.delta', ...scope, expected: indexed, afterSequence: queued.sequence }).memoryProjectionPage!;
@@ -54,10 +55,10 @@ it('pages one immutable metadata frame through ordinary writes, releases cancell
   const organize = (id: string, tag: string) => { const current = store.request({ type: 'memory.library.read', companionId: 'alice', id }).memoryRead!.memory;
     store.request({ type: 'memory.library.organize', companionId: 'alice', id, expectedVersion: current.version, tags: [tag], diaryName: current.diaryName ?? '日记' }); acknowledge(); };
   try {
-    const notes = Array.from({ length: 3 }, (_, index) => store.saveMemory({ ...scope, content: 'Immutable synthetic body ' + index, tags: ['initial'] })); acknowledge();
+    const notes = Array.from({ length: 3 }, (_, index) => recordSourceBackedMemory(store, { ...scope, content: 'Immutable synthetic body ' + index, tags: ['initial'] })); acknowledge();
     const first = store.request({ type: 'memory.projection.page', ...scope, expected: state(), limit: 1 }).memoryProjectionPage!;
     expect(first.hasMore).toBe(true);
-    const added = store.saveMemory({ ...scope, content: 'Lawful later body outside the captured frame.', tags: ['later'] }); acknowledge();
+    const added = recordSourceBackedMemory(store, { ...scope, content: 'Lawful later body outside the captured frame.', tags: ['later'] }); acknowledge();
     const second = store.request({ type: 'memory.projection.page', ...scope, expected: first.state, afterId: first.nextId, limit: 10 }).memoryProjectionPage!;
     expect(second.state).toEqual(first.state); expect(second.hasMore).toBe(false);
     expect([...first.notes, ...second.notes].map(note => note.id).sort()).toEqual(notes.map(note => note.id).sort());

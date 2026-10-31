@@ -4,7 +4,7 @@ import { companionMemoryToolArgumentsSchemas } from '../../src/shared/companion-
 import { companionMemoryCapabilitySchema, normalizeCompanionCapabilityCall } from '../../src/shared/companion-capability-tools';
 
 const registration: CompanionMemoryModeRegistration = { available: true, configured: true, enabledByDefault: false, exposure: 'original_preprocess', cost: 'original_stage', observedCalls: 0 };
-const catalog = projectCompanionMemoryRetrievalModes({ modes: Object.fromEntries(['time', 'time_decay', 'semantic_group', 'expand', 'associate', 'external_rerank', 'meta_thinking'].map(name => [name, { ...registration, configurations: name === 'meta_thinking' ? ['default', '调查'] : [] }])) });
+const catalog = projectCompanionMemoryRetrievalModes({ modes: Object.fromEntries(['focus', 'time', 'time_decay', 'semantic_group', 'expand', 'associate', 'external_rerank', 'meta_thinking'].map(name => [name, { ...registration, configurations: name === 'meta_thinking' ? ['default', '调查'] : [] }])) });
 describe('bounded original VCP retrieval intentions', () => {
   it('leaves every optional stage off by default and generates only explicitly requested upstream tokens', () => {
     expect(planCompanionMemoryRetrieval(undefined, catalog)).toEqual({ modifierSuffix: '', requestedModes: [] });
@@ -13,6 +13,8 @@ describe('bounded original VCP retrieval intentions', () => {
     expect(plan.modifierSuffix).toBe('::Time0.3::TimeDecay/0.01::Expand::Associate::Rerank+0.7');
     expect(plan.metaMarker).toBe('[[VCP元思考:调查::Group]]');
     expect(plan.requestedModes).toContain('semantic_group');
+    expect(planCompanionMemoryRetrieval({ focus: true }, catalog)).toEqual({ modifierSuffix: '::AIMemo+', requestedModes: ['focus'] });
+    expect(planCompanionMemoryRetrieval({ focus: false }, catalog)).toEqual({ modifierSuffix: '', requestedModes: [] });
   });
   it('rejects unknown marker syntax, unbounded settings and unregistered meta chains instead of silently changing the request', () => {
     for (const value of [{ modifiers: '::Group' }, { metaThinking: { chain: 'default::Auto' } }, { time: { ratio: 1.1 } },
@@ -28,6 +30,7 @@ describe('bounded original VCP retrieval intentions', () => {
     expect(normalizeCompanionCapabilityCall({ id: 'test', name: 'memory', arguments: '{"action":"retrieval_modes"}' })).toMatchObject({ name: 'memory.retrieval_modes', arguments: '{}' });
     expect(companionMemoryToolArgumentsSchemas['memory.retrieval_modes'].safeParse({ companionId: 'other' }).success).toBe(false);
     expect(companionMemoryToolArgumentsSchemas['memory.search'].safeParse({ query: '昨天', retrievalOptions: { time: { ratio: .2 } } }).success).toBe(true);
+    expect(companionMemoryToolArgumentsSchemas['memory.search'].safeParse({ query: '复杂的问题', retrievalOptions: { focus: true } }).success).toBe(true);
     expect(companionMemoryToolArgumentsSchemas['memory.search'].safeParse({ query: '昨天', retrievalOptions: { marker: '[[other日记本]]' } }).success).toBe(false);
   });
 });

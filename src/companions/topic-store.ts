@@ -1,3 +1,5 @@
+import { initializeCompanionTopicCheckpointIndex, indexCompanionTopicCheckpoint } from './topic-checkpoint-index';
+import type { CompanionTopicCompactionCommand } from '../shared/companion-topic-compaction-jobs';
 import { createHash, randomUUID } from 'node:crypto';
 import type { CompanionConnection } from './store';
 import type { CompanionStorageCommand, CompanionStorageResponse } from '../shared/companion-storage';
@@ -11,7 +13,7 @@ import { companionMessageFictionalLineage } from './fictional-source';
 type Row = Record<string, string | number | null>;
 const row = (value: unknown) => value as Row;
 const decode = <T>(value: unknown): T => JSON.parse(String(value)) as T;
-type Command = Extract<CompanionStorageCommand, { type: `topic.${string}` }>;
+type Command = Exclude<Extract<CompanionStorageCommand, { type: `topic.${string}` }>, { type: CompanionTopicCompactionCommand['type'] }>;
 type PublicationBasis = { companionId: string; conversationId: string; topicId: string; revision: number; checksum: string; canon?: CompanionTopicUserCanon };
 type PublicationCommand = Extract<Command, { type: 'topic.compaction.sources' }>;
 export interface TopicPublicationSourcePage {
@@ -25,7 +27,10 @@ export class CompanionTopicStore {
     private readonly participation?: (receipt: TopicParticipationReceipt) => void,
     private readonly changed?: (conversationId: string, topicId: string, readerId?: string) => void,
     private readonly checkpointSourcesValid?: (conversationId: string, readerId: string, sourceMessageIds: readonly string[]) => boolean,
-    private readonly publicationSourcesValid?: (conversationId: string, readerId: string, sourceMessageIds: readonly string[]) => boolean) {}
+    private readonly publicationSourcesValid?: (conversationId: string, readerId: string, sourceMessageIds: readonly string[]) => boolean,
+    private readonly compactionJobValid?: (guard: { id: string; leaseToken: string }, scope: { companionId: string; conversationId: string; topicId: string }, publication: { sourceMessageIds: readonly string[]; continuity?: unknown; checkpointEventIds?: readonly string[] }) => boolean,
+    private readonly compactionSourceJobValid?: (guard: { id: string; leaseToken: string }, input: { companionId: string; conversationId: string; topicId: string;
+      beforeSequence: number; throughPublicationRevision?: number; sourceMessageId?: string; sourceChecksum?: string }) => boolean) {}
   initialize(): void {
     this.db.exec(`CREATE TABLE IF NOT EXISTS companion_topics(id TEXT PRIMARY KEY,conversation_id TEXT NOT NULL REFERENCES conversations(id),data TEXT NOT NULL);
       CREATE INDEX IF NOT EXISTS companion_topics_room ON companion_topics(conversation_id,id);
@@ -35,6 +40,7 @@ export class CompanionTopicStore {
       CREATE TABLE IF NOT EXISTS companion_topic_events(id TEXT PRIMARY KEY,topic_id TEXT NOT NULL REFERENCES companion_topics(id),reader_id TEXT NOT NULL,author_id TEXT NOT NULL,data TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS companion_message_topics(message_id TEXT PRIMARY KEY REFERENCES messages(id) ON DELETE CASCADE,topic_id TEXT NOT NULL REFERENCES companion_topics(id));
       CREATE INDEX IF NOT EXISTS companion_message_topic ON companion_message_topics(topic_id,message_id);`);
+    initializeCompanionTopicCheckpointIndex(this.db);
     this.db.exec(`CREATE INDEX IF NOT EXISTS companion_topic_publication_page ON metadata(json_extract(value,'$.topicId'),CAST(json_extract(value,'$.revision') AS INTEGER)) WHERE key GLOB 'message-topic-publication/*'`);
   }
   /** A chat always owns an explicit persistent primary topic. */
@@ -139,24 +145,30 @@ export class CompanionTopicStore {
   publicationPage(command: PublicationCommand): TopicPublicationSourcePage {
     const topic = this.topic(command.topicId, command.conversationId); this.allowed(topic, command.readerId);
     if (!topic.participantIds.includes(command.readerId)) throw new Error('只有实际参加者可以装配本人话题工作上下文。');
+    const maintenance = command.jobGuard !== undefined;
+    if (maintenance && !this.compactionSourceJobValid?.(command.jobGuard!, { companionId: command.readerId,
+      conversationId: command.conversationId, topicId: command.topicId, beforeSequence: command.beforeSequence,
+      throughPublicationRevision: command.throughPublicationRevision, sourceMessageId: command.sourceMessageId, sourceChecksum: command.sourceChecksum }))
+      throw new Error('话题整理读取租约或固定来源已变化，旧范围未读取。');
     const maximum = topic.formalPublicationRevision ?? 0;
     let horizon = maximum, legacyPortThrough = command.beforeSequence;
     if (command.sourceMessageId) {
       const source = this.db.prepare('SELECT m.sequence,m.content FROM messages m JOIN companion_message_topics t ON t.message_id=m.id WHERE m.id=? AND m.conversation_id=? AND t.topic_id=?').get(command.sourceMessageId, topic.conversationId, topic.id) as { sequence: number; content: string } | undefined;
       if (!source || !command.sourceChecksum || createHash('sha256').update(source.content).digest('hex') !== command.sourceChecksum
         || source.sequence > command.beforeSequence || !this.checkpointSourcesValid?.(topic.conversationId, command.readerId, [command.sourceMessageId])) throw new Error('话题压缩调用来源已经失效或原文变化。');
-      legacyPortThrough = Math.min(legacyPortThrough, source.sequence);
+      if (!maintenance) legacyPortThrough = Math.min(legacyPortThrough, source.sequence);
       // Publication can legitimately finish after its bubble/root was created.
       // Stop before the first different future port instead of pretending that
       // source's own publication revision froze all earlier pending bubbles.
-      const barrier = this.db.prepare(`SELECT MIN(CAST(json_extract(p.value,'$.revision') AS INTEGER)) AS revision
+      const barrier = !maintenance ? this.db.prepare(`SELECT MIN(CAST(json_extract(p.value,'$.revision') AS INTEGER)) AS revision
         FROM metadata p JOIN messages m ON p.key='message-topic-publication/'||m.id
         WHERE p.key GLOB 'message-topic-publication/*' AND json_extract(p.value,'$.topicId')=?
         AND CAST(json_extract(p.value,'$.revision') AS INTEGER)>? AND (m.sequence>? OR
           (m.sequence>? AND NOT(m.author_id!='user' AND COALESCE(m.reply_to_id,'')=?)))`)
-        .get(topic.id, command.afterPublicationRevision, command.beforeSequence, source.sequence, command.sourceMessageId) as { revision: number | null };
-      if (barrier.revision !== null) horizon = Math.min(horizon, barrier.revision - 1);
-    } else {
+        .get(topic.id, command.afterPublicationRevision, command.beforeSequence, source.sequence, command.sourceMessageId) as { revision: number | null } : undefined;
+      if (barrier?.revision !== undefined && barrier.revision !== null) horizon = Math.min(horizon, barrier.revision - 1);
+    }
+    if (!command.sourceMessageId || maintenance) {
       const barrier = this.db.prepare(`SELECT MIN(CAST(json_extract(p.value,'$.revision') AS INTEGER)) AS revision
         FROM metadata p JOIN messages m ON p.key='message-topic-publication/'||m.id
         WHERE p.key GLOB 'message-topic-publication/*' AND json_extract(p.value,'$.topicId')=?
@@ -164,7 +176,11 @@ export class CompanionTopicStore {
         .get(topic.id, command.afterPublicationRevision, command.beforeSequence) as { revision: number | null };
       if (barrier.revision !== null) horizon = Math.min(horizon, barrier.revision - 1);
     }
-    const throughPublicationRevision = command.throughPublicationRevision ?? horizon;
+    // A maintenance anchor is a lease witness, not a foreground user turn.
+    // A lawful replacement may precede a withdrawn tail. Its fixed claim still
+    // owns only the captured sequence/publication window; an earlier outside-
+    // window publication remains a barrier rather than a skipped coverage hole.
+    const throughPublicationRevision = maintenance ? Math.min(command.throughPublicationRevision!, horizon) : command.throughPublicationRevision ?? horizon;
     if (throughPublicationRevision > horizon || command.afterPublicationRevision > throughPublicationRevision) throw new Error('话题发布扫描游标超出当前实际来源窗口。');
     const legacyThroughSequence = Math.min(command.legacyThroughSequence ?? legacyPortThrough, legacyPortThrough);
     if (command.legacyAfterSequence > legacyThroughSequence) throw new Error('旧话题来源端口早于已保存覆盖，保留当前进度停止旧调用。');
@@ -276,6 +292,7 @@ export class CompanionTopicStore {
       state: { ...previous?.state, __topicUserCanon: canon, ...(clock ? { __topicNarrativeTime: { sourceMessageId: message.id, sourceChecksum: contentHash,
         minutes: clock.minutes, quote: clock.quote, rangeDigest: clock.rangeDigest } } : {}) } };
     this.db.prepare('INSERT INTO companion_topic_events(id,topic_id,reader_id,author_id,data) VALUES(?,?,?,?,?)').run(eventId, topicId, message.authorId, message.authorId, JSON.stringify(data));
+    indexCompanionTopicCheckpoint(this.db, eventId);
     this.db.prepare('INSERT INTO companion_topic_state(topic_id,reader_id,data) VALUES(?,?,?) ON CONFLICT(topic_id,reader_id) DO UPDATE SET data=excluded.data').run(topicId, message.authorId, JSON.stringify(data));
     topic.revision++; topic.updatedAt = at;
     this.db.prepare('UPDATE companion_topics SET data=? WHERE id=?').run(JSON.stringify(topic), topicId);
@@ -355,10 +372,12 @@ export class CompanionTopicStore {
     return this.publicationReadable(topic, readerId, reference) ? { availability: 'available', reference } : { availability: 'unavailable' };
   }
   execute(command: CompanionStorageCommand): CompanionStorageResponse | undefined {
-    if (command.type === 'topic.compaction.sources') return;
+    if (command.type.startsWith('topic.compaction.')) return;
     if (!command.type.startsWith('topic.')) return;
     const response = this.db.transaction(() => {
       const input = command as Command;
+      if (input.type === 'topic.update' && input.compaction?.jobGuard && !this.compactionJobValid?.(input.compaction.jobGuard, { companionId: input.readerId, conversationId: input.conversationId, topicId: input.topicId }, { sourceMessageIds: input.patch.workingState?.sourceMessageIds ?? [], continuity: input.patch.workingState?.state?.__continuity, checkpointEventIds: [input.compaction.previousWorkingEventId, input.compaction.sharedEventId].filter((id): id is string => !!id) }))
+        throw new Error('话题整理发布租约已失效，旧摘要未提交。');
       if (!input.operationId || ['topic.read', 'topic.list', 'topic.sources.valid'].includes(input.type)) return this.dispatch(input);
       const key = `topic-operation/${input.conversationId}/${input.readerId}/${input.operationId}`;
       const digest = createHash('sha256').update(JSON.stringify(input)).digest('hex');
@@ -510,7 +529,14 @@ export class CompanionTopicStore {
         const current = this.state(topic, command.readerId);
         if (command.compaction.publicationCoverage) {
           const publication = command.compaction.publicationCoverage;
-          if ((topic.formalPublicationRevision ?? 0) !== publication.expectedFormalPublicationRevision) throw new Error('话题正式发布在压缩期间已变化，摘要未提交。');
+          const actualPublication = topic.formalPublicationRevision ?? 0;
+          // The guarded actor freezes its input publication horizon. New raw
+          // messages may arrive while that lawful old chunk is being reduced;
+          // its atomic job guard already rejects every source beyond the claim.
+          // Ordinary unguarded maintenance retains the exact publication CAS.
+          if (actualPublication < publication.expectedFormalPublicationRevision
+            || !command.compaction.jobGuard && actualPublication !== publication.expectedFormalPublicationRevision)
+            throw new Error('话题正式发布在压缩期间已变化，摘要未提交。');
           for (const [id, revision] of Object.entries(publication.sourcePublicationRevisions)) {
             const actual = this.db.prepare('SELECT value FROM metadata WHERE key=?').get('message-topic-publication/' + id) as { value: string } | undefined;
             const value = actual && decode<{ topicId: string; revision: number; checksum: string }>(actual.value);
@@ -570,6 +596,7 @@ export class CompanionTopicStore {
         data.sourceMessageIds ??= [];
         data.sourceChecksums = Object.fromEntries(data.sourceMessageIds.map(id => [id, createHash('sha256').update(String(row(this.db.prepare('SELECT content FROM messages WHERE id=?').get(id)).content)).digest('hex')]));
         this.db.prepare('INSERT INTO companion_topic_events(id,topic_id,reader_id,author_id,data) VALUES(?,?,?,?,?)').run(eventId, topic.id, reader, command.readerId, JSON.stringify(data));
+        indexCompanionTopicCheckpoint(this.db, eventId);
         this.db.prepare('INSERT INTO companion_topic_state(topic_id,reader_id,data) VALUES(?,?,?) ON CONFLICT(topic_id,reader_id) DO UPDATE SET data=excluded.data').run(topic.id, reader, JSON.stringify(data));
       }
       if (patch.title) topic.title = patch.title;

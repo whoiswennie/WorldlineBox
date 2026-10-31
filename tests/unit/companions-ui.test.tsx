@@ -9,6 +9,8 @@ import type { Companion, CompanionAction, CompanionAttachment, CompanionConversa
 import type { CompanionMemoryDocumentRead } from '../../src/shared/companion-memory-documents';
 import type { CompanionWorkspaceRequest, CompanionWorkspaceResponse } from '../../src/shared/companion-workspace';
 import type { CompanionRuntimeState } from '../../src/shared/companion-state';
+import { companionAgendaRuleSchema } from '../../src/shared/companion-agenda';
+import { DEFAULT_COMPANION_TOOL_POLICY } from '../../src/shared/companion-tool-policy';
 
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
 
@@ -30,7 +32,7 @@ function fixture(extra: Partial<CompanionState> = {}, initialMessages = [message
   let messages = initialMessages;
   let memories: CompanionMemory[] = [];
   let actions: CompanionAction[] = initialActions;
-  let listener: (() => void) | undefined;
+  const listeners = new Set<() => void>();
   let streamListener: ((event: CompanionReplyStreamEvent) => void) | undefined;
   const unsubscribe = vi.fn();
   const request = vi.fn(async (input: CompanionsRequest): Promise<CompanionsResponse> => {
@@ -62,8 +64,8 @@ function fixture(extra: Partial<CompanionState> = {}, initialMessages = [message
         return { ok: true, conversation: state.conversations.find(item => item.id === input.id) };
       }
       case 'companion.create': {
-        const companion: Companion = { ...input.companion, id: 'new-companion', builtin: false, createdAt: date };
-        state = { ...state, companions: [...state.companions, companion] }; return { ok: true, companion };
+        const companion: Companion = { ...input.companion, id: input.companionId, builtin: false, createdAt: date };
+        state = { ...state, companions: [...state.companions, companion] }; return { ok: true, companion, creation: { schema: 'companion-creation-v1', operationId: input.operationId, companionId: input.companionId, requestHash: 'a'.repeat(64), state: 'committed', createdAt: date, updatedAt: date } };
       }
       case 'companion.update': {
         state = { ...state, companions: state.companions.map(item => item.id === input.id ? { ...item, ...input.companion } : item) };
@@ -72,8 +74,8 @@ function fixture(extra: Partial<CompanionState> = {}, initialMessages = [message
       case 'companion.set-active': { state = { ...state, companions: state.companions.map(role => role.id === input.id ? { ...role, active: input.active } : role) }; return { ok: true, companion: state.companions.find(role => role.id === input.id) }; }
       case 'companion.delete': state = { ...state, companions: state.companions.filter(item => item.id !== input.id) }; return { ok: true };
       case 'companion.add-builtin': {
-        const template = sisters.find(item => item.avatar === input.templateId)!;
-        state = { ...state, companions: [...state.companions, template] }; return { ok: true, companion: template };
+        const template = { ...sisters.find(item => item.avatar === input.templateId)!, id: input.companionId };
+        state = { ...state, companions: [...state.companions, template] }; return { ok: true, companion: template, creation: { schema: 'companion-creation-v1', operationId: input.operationId, companionId: input.companionId, requestHash: 'a'.repeat(64), state: 'committed', createdAt: date, updatedAt: date } };
       }
       case 'message.send': {
         const sent = message((messages.at(-1)?.sequence ?? 0) + 1, input.content, { id: input.clientId, conversationId: input.conversationId, authorId: 'user', replyToId: input.replyToId, attachments: input.attachmentIds?.map(id => ({ id, name: '旅行照片.jpg', mime: 'image/jpeg', size: 2048 })) ?? [] });
@@ -85,12 +87,12 @@ function fixture(extra: Partial<CompanionState> = {}, initialMessages = [message
       case 'memory.browse': return { ok: true, memoryPage: { items: memories.filter(item => item.companionId === input.companionId).map(memory => ({ memory, reasons: [], path: [] })), hasMore: false } };
       case 'schedule.list': return { ok: true, schedules: [], scheduleOccurrences: [] };
       case 'work-order.list': return { ok: true, workOrderPage: { items: [], hasMore: false } };
-      case 'state.get': return { ok: true, runtimeState: { companionId: input.companionId, energy: 82, mood: 'calm', expression: 'gentle', affect: { pleasure: .2, arousal: -.1, dominance: .1 }, relationship: { affinity: 45, trust: 50, respect: 60 }, familiarity: { stage: 'acquainted', interactionCount: 4, sharedEventCount: 1 }, updatedAt: date, revision: 1 } };
+      case 'state.get': return { ok: true, runtimeState: { schema: 'companion-runtime-qualitative-v1', companionId: input.companionId, energy: 82, expression: 'gentle', relationshipRecords: [], updatedAt: date, revision: 1 } };
       case 'memory.save': {
         const previous = memories.find(item => item.id === input.id);
         const source = messages.find(item => item.id === (input.sourceMessageId ?? previous?.sourceMessageId));
         const sourceConversationId = input.conversationId ?? source?.conversationId ?? previous?.sourceConversationId ?? 'private-sister';
-        const saved: CompanionMemory = { id: input.id ?? 'memory-a', companionId: input.companionId,
+        const saved: CompanionMemory = { artifactKind: 'episode_memory', id: input.id ?? 'memory-a', companionId: input.companionId,
           scopeId: `scope-${input.companionId}-${sourceConversationId}`, content: input.content, sourceMessageId: source?.id,
           sourceConversationId, sourceSequence: source?.sequence ?? 0,
           sources: source ? [{ messageId: source.id, conversationId: source.conversationId, sequence: source.sequence,
@@ -113,19 +115,41 @@ function fixture(extra: Partial<CompanionState> = {}, initialMessages = [message
       default: return { ok: true };
     }
   });
-  const api: WorldlineBoxCompanionsApi = { request, onChanged: vi.fn(next => { listener = next; return unsubscribe; }), onReplyStream: vi.fn(next => { streamListener = next; return () => { streamListener = undefined; }; }) };
-  return { api, request, unsubscribe, state: () => state, async stream(event: CompanionReplyStreamEvent) { await act(() => streamListener?.(event)); }, async publish(next: Partial<CompanionState> = {}, nextMessages = messages) { state = { ...state, ...next }; messages = nextMessages; await act(() => listener?.()); }, async publishActions(next: CompanionAction[]) { actions = next; await act(() => listener?.()); }, memories: () => memories };
+  const api: WorldlineBoxCompanionsApi = { request, workspace: async input => {
+    if (input.type !== 'companion.assets.read') return { ok: true };
+    const owner = state.companions.find(item => item.id === input.companionId)!;
+    return { ok: true, companionAssets: { companionId: owner.id, profileRevision: 'a'.repeat(64), promptRevision: 'b'.repeat(64), profile: { name: owner.name, description: owner.description, persona: owner.persona }, prompts: [] } };
+  }, onChanged: vi.fn(next => { listeners.add(next); return () => { listeners.delete(next); unsubscribe(); }; }), onReplyStream: vi.fn(next => { streamListener = next; return () => { streamListener = undefined; }; }) };
+  const refresh = async () => { await act(async () => { for (const listener of listeners) listener(); if (vi.isFakeTimers()) await vi.advanceTimersByTimeAsync(1100); else await new Promise(resolve => setTimeout(resolve, 1100)); }); };
+  return { api, request, unsubscribe, state: () => state, async stream(event: CompanionReplyStreamEvent) { await act(() => streamListener?.(event)); }, async publish(next: Partial<CompanionState> = {}, nextMessages = messages) { state = { ...state, ...next }; messages = nextMessages; await refresh(); }, async publishActions(next: CompanionAction[]) { actions = next; await refresh(); }, memories: () => memories };
 }
 async function mount(api: WorldlineBoxCompanionsApi, isActive = true, onOpenSettings = vi.fn()) {
   container = document.createElement('div'); document.body.append(container); root = createRoot(container);
   await act(() => root!.render(<Companions api={api} isActive={isActive} onOpenSettings={onOpenSettings} />));
+  await settleDeferredPanels();
   return onOpenSettings;
 }
 function button(label: string, scope: ParentNode = container!): HTMLButtonElement {
   const found = [...scope.querySelectorAll<HTMLButtonElement>('button')].find(item => item.getAttribute('aria-label') === label || item.textContent?.trim() === label);
   if (!found) throw new Error(`Button missing: ${label}`); return found;
 }
-async function click(label: string, scope?: ParentNode) { await act(() => button(label, scope).click()); }
+async function settleDeferredPanels() {
+  if (!container?.querySelector('.feature-loading,[data-message-format="loading"]')) return;
+  await vi.waitFor(async () => {
+    await act(async () => { await Promise.resolve(); });
+    expect(container!.querySelector('.feature-loading,[data-message-format="loading"]')).toBeNull();
+  }, { timeout: 5000, interval: 20 });
+}
+async function click(label: string, scope?: ParentNode) { await act(() => button(label, scope).click()); await settleDeferredPanels(); }
+async function fill(selector: string, value: string) {
+  const element = container!.querySelector<HTMLInputElement | HTMLTextAreaElement>(selector)!;
+  if (!element) throw new Error(`Input missing: ${selector}`);
+  const prototype = element instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
+  await act(() => { Object.getOwnPropertyDescriptor(prototype, 'value')!.set!.call(element, value); element.dispatchEvent(new Event('input', { bubbles: true })); });
+  return element;
+}
+async function select(selector: string, value: string) { const element = container!.querySelector<HTMLSelectElement>(selector)!; await act(() => { element.value = value; element.dispatchEvent(new Event('change', { bubbles: true })); }); }
+async function submitDialog() { const form = container!.querySelector<HTMLFormElement>('[role="dialog"] form')!; await act(() => form.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }))); }
 function memoryWorkspaceFixture() {
   const documents: CompanionMemoryDocumentRead[] = ['日记/晨间札记.md', '资料/学习摘记.md'].map((path, index) => ({
     document: { path, name: path.split('/').at(-1)!, title: index ? '学习摘记' : '晨间札记', directory: index ? '资料' : '日记', kind: 'note', category: index ? 'material' : 'diary',
@@ -148,8 +172,8 @@ function stateReceiptFixture() {
   const f = fixture({}, [message(1), message(2), message(3, '这是状态变化对应的真实群聊来源。', { conversationId: 'group-home' })]);
   const base = f.request.getMockImplementation()!; let withdrawn = false;
   f.request.mockImplementation(input => input.type === 'state.get' ? Promise.resolve({ ok: true, runtimeState: {
-    companionId: input.companionId, energy: 82, mood: 'calm', expression: 'gentle', affect: { pleasure: .2, arousal: -.1, dominance: .1 }, relationship: { affinity: 45, trust: 50, respect: 60 }, familiarity: { stage: 'acquainted', interactionCount: 4, sharedEventCount: 1 }, updatedAt: date, revision: 1,
-    recentChanges: withdrawn ? [] : [{ id: 'formal-state', kind: 'memory', appliedAt: date, occurredAt: date, reason: '有真实来源的理解影响。', affectDelta: { pleasure: .05, arousal: 0, dominance: 0 }, relationshipDelta: { affinity: 0, trust: 0, respect: 0 }, energyDelta: 0, sourceConversationId: 'group-home', sourceMessageIds: ['message-3'], memoryIds: ['note-1'] }],
+    schema: 'companion-runtime-qualitative-v1', companionId: input.companionId, energy: 82, expression: 'gentle', relationshipRecords: [], updatedAt: date, revision: 1,
+    recentChanges: withdrawn ? [] : [{ id: 'formal-state', kind: 'memory', appliedAt: date, occurredAt: date, reason: '有真实来源的理解影响。', energyDelta: 0, sourceConversationId: 'group-home', sourceMessageIds: ['message-3'], memoryIds: ['note-1'] }],
   } satisfies CompanionRuntimeState }) : base(input));
   return { ...f, withdraw: () => { withdrawn = true; } };
 }
@@ -157,6 +181,13 @@ async function openStateReceiptSources() {
   await click('我们之间'); await click('查看当前伙伴状态详情');
   for (const text of ['状态变化的来处', '查看来源']) { const summary = [...container!.querySelectorAll('summary')].find(item => item.textContent?.includes(text))!; await act(() => { const details = summary.parentElement as HTMLDetailsElement; details.open = true; details.dispatchEvent(new Event('toggle')); }); }
 }
+
+it('opens navigation with the UI readiness barrier and uses complete state readiness after the first snapshot', async () => {
+  const f = fixture(); await mount(f.api);
+  expect(f.request.mock.calls.filter(([input]) => input.type === 'state').map(([input]) => input)).toEqual([{ type: 'state', readiness: 'navigation' }]);
+  await f.publish();
+  expect(f.request.mock.calls.filter(([input]) => input.type === 'state').at(-1)?.[0]).toEqual({ type: 'state' });
+});
 
 it('revalidates a state source before navigating to its actual cross-conversation message', async () => {
   const f = stateReceiptFixture(); await mount(f.api); await openStateReceiptSources(); await click('查看来源消息 1');
@@ -171,9 +202,13 @@ it('keeps a withdrawn state source from opening an obsolete or unrelated convers
 
 it('opens the exact current owner memory document from a committed state receipt', async () => {
   vi.useFakeTimers(); const f = stateReceiptFixture(), base = memoryWorkspaceFixture();
-  const workspace = vi.fn((input: CompanionWorkspaceRequest) => input.type === 'memory.documents.locate' ? base({ type: 'memory.documents.read', companionId: input.companionId, path: '资料/学习摘记.md', sourceLimit: 20 }) : base(input));
+  let finish!: (value: CompanionWorkspaceResponse) => void;
+  const workspace = vi.fn((input: CompanionWorkspaceRequest) => input.type === 'memory.documents.locate' ? new Promise<CompanionWorkspaceResponse>(resolve => { finish = resolve; }) : base(input));
   await mount({ ...f.api, workspace }); await openStateReceiptSources(); await click('查看相关记忆 1'); await act(() => vi.advanceTimersByTimeAsync(400));
-  expect(workspace).toHaveBeenCalledWith({ type: 'memory.documents.locate', companionId: 'deepseek-sister', noteId: 'note-1' }); expect(container!.querySelector('.memory-library-paper')?.textContent ?? container!.textContent).toContain('今天读到的一段资料。');
+  expect(workspace).toHaveBeenCalledWith({ type: 'memory.documents.locate', companionId: 'deepseek-sister', noteId: 'note-1' });
+  expect(workspace.mock.calls.some(([input]) => input.type === 'memory.documents.read')).toBe(false);
+  await act(async () => finish(await base({ type: 'memory.documents.read', companionId: 'deepseek-sister', path: '资料/学习摘记.md', sourceLimit: 20 })));
+  expect(container!.querySelector('.memory-library-paper')?.textContent ?? container!.textContent).toContain('今天读到的一段资料。');
 });
 
 it('keeps companion navigation usable and preserves the selected folder, document and unsaved edit across memory tabs', async () => {
@@ -186,9 +221,9 @@ it('keeps companion navigation usable and preserves the selected folder, documen
   const nav = container!.querySelector<HTMLElement>('[aria-label="伙伴导航"]')!;
   expect(button('打开伙伴记忆库', nav).getAttribute('aria-pressed')).toBe('true');
   expect(button('消息', nav).getAttribute('aria-pressed')).toBe('false');
-  await click('学习资料1'); await act(() => vi.advanceTimersByTimeAsync(300));
-  await click('编辑记忆 note-1'); await fill('textarea[aria-label="共同记忆内容"]', '还没有保存的学习笔记。');
-  const editor = manager.querySelector<HTMLTextAreaElement>('textarea[aria-label="共同记忆内容"]')!;
+  await click('资料1'); await act(() => vi.advanceTimersByTimeAsync(300));
+  expect(manager.querySelector('textarea[aria-label="共同记忆内容"]')).toBeNull();
+  expect(manager.querySelector('.memory-library-paper')?.textContent).toContain('今天读到的一段资料。');
   await click('联系人', nav); expect(manager.hidden).toBe(true);
   expect(button('联系人', nav).getAttribute('aria-pressed')).toBe('true');
   const requests = workspace.mock.calls.length;
@@ -199,50 +234,30 @@ it('keeps companion navigation usable and preserves the selected folder, documen
   expect(f.request.mock.calls.some(([command]) => command.type === 'conversation.open')).toBe(false);
   await click('打开伙伴记忆库', nav); await act(() => vi.advanceTimersByTimeAsync(300));
   expect(manager.hidden).toBe(false); expect(container!.querySelector('[aria-label="共同记忆管理"]')).toBe(manager);
-  expect(manager.querySelector('textarea[aria-label="共同记忆内容"]')).toBe(editor);
-  expect(editor.value).toBe('还没有保存的学习笔记。');
-  expect(manager.querySelector('[aria-label="记忆文档目录"] [aria-current="page"]')?.textContent).toContain('学习资料');
+  expect(manager.querySelector('textarea[aria-label="共同记忆内容"]')).toBeNull();
+  expect(manager.querySelector('.memory-library-paper')?.textContent).toContain('今天读到的一段资料。');
+  expect(manager.querySelector('[aria-label="记忆文档目录"] [aria-current="page"]')?.textContent).toContain('资料');
   expect(container!.querySelector('[role="alertdialog"]')).toBeNull();
 });
 
-it('routes the current chat processing entrance into the memory tab and leaves navigation available while preserving that view', async () => {
+it('routes memory processing and growth to the owner chat sidebar while leaving actual files in the library', async () => {
   vi.useFakeTimers();
   const f = fixture(), workspace = memoryWorkspaceFixture(), original = f.request.getMockImplementation()!;
-  f.request.mockImplementation(async input => input.type === 'memory.processing.status' ? { ok: true, memoryProcessing: { companionId: input.companionId,
-    summary: { pending: 0, running: 0, failed: 0, completed: 1, cancelled: 0 }, jobs: [], hasMore: false } } : original(input));
-  await mount({ ...f.api, workspace }); await click('我们之间');
-  await click('查看记忆处理进度', container!.querySelector('[aria-label="伙伴手帐"]')!);
-  await act(() => vi.advanceTimersByTimeAsync(300));
-  const nav = container!.querySelector<HTMLElement>('[aria-label="伙伴导航"]')!;
+  f.request.mockImplementation(async input => input.type === 'agenda.read' ? { ok: true, agenda: { companionId: input.companionId, rules: [], occurrences: [], runs: [], goals: [], grants: [], hasMore: false, observedAt: date, revision: 1 } } : input.type === 'agenda.tasks.read' ? { ok: true, agendaTasks: [], agendaHasMore: false } : original(input));
+  await mount({ ...f.api, workspace }); await click('打开伙伴记忆库'); await act(() => vi.advanceTimersByTimeAsync(400));
   const manager = container!.querySelector<HTMLElement>('[aria-label="共同记忆管理"]')!;
-  expect(button('打开伙伴记忆库', nav).getAttribute('aria-pressed')).toBe('true');
-  expect(manager.querySelector('[role="region"][aria-label="记忆处理进度"]')).not.toBeNull();
-  expect(document.querySelector('.companion-memory-processing-chat-overlay')).toBeNull();
-  expect(manager.querySelector<HTMLSelectElement>('[aria-label="记忆所属伙伴"]')!.value).toBe('deepseek-sister');
-  await click('联系人', nav); expect(manager.hidden).toBe(true);
-  expect(manager.querySelector('[aria-label="记忆处理进度"]')).toBeNull();
-  await click('打开伙伴记忆库', nav);
-  expect(manager.querySelector('[aria-label="记忆处理进度"]')).not.toBeNull();
-  await click('关闭记忆处理进度');
-  await click('消息', nav); await click('打开伙伴记忆库', nav);
-  expect(manager.querySelector('[aria-label="记忆处理进度"]')).toBeNull();
-  expect(manager.querySelector('[aria-label="伙伴记忆库"]')).not.toBeNull();
-  await click('学习与成长');
-  expect(manager.querySelector('[aria-label="伙伴学习与成长"]')).not.toBeNull();
-  await click('消息', nav);
-  await click('查看记忆处理进度', container!.querySelector('[aria-label="伙伴手帐"]')!);
-  expect(manager.querySelector('[aria-label="伙伴学习与成长"]')).toBeNull();
-  expect(manager.querySelector('[role="region"][aria-label="记忆处理进度"]')).not.toBeNull();
+  await click('日程与整理安排', manager);
+  expect(container!.querySelector('.companions-events-panel [role="region"][aria-label="伙伴日程"]')).not.toBeNull();
+  expect(document.querySelector('[role="dialog"][aria-label="伙伴日程"]')).toBeNull();
+  expect(f.request.mock.calls.some(([input]) => input.type === 'memory.processing.status')).toBe(false);
+  await click('关闭伙伴日程', document); await click('打开伙伴记忆库');
+  await click('学习与成长', manager);
+  const agenda = container!.querySelector('.companions-events-panel [role="region"][aria-label="伙伴日程"]')!;
+  expect(agenda.querySelector('[role="tab"][aria-selected="true"]')?.textContent).toBe('任务');
+  expect(workspace.mock.calls.some(([input]) => input.type === 'memory.learning.goals.list')).toBe(false);
+  await click('关闭伙伴日程', document); await click('打开伙伴记忆库'); await click('学习资料范围', manager);
+  expect(manager.querySelector('[aria-label="学习来源管理"]')).not.toBeNull();
 });
-async function fill(selector: string, value: string) {
-  const element = container!.querySelector<HTMLInputElement | HTMLTextAreaElement>(selector)!;
-  if (!element) throw new Error(`Input missing: ${selector}`);
-  const prototype = element instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
-  await act(() => { Object.getOwnPropertyDescriptor(prototype, 'value')!.set!.call(element, value); element.dispatchEvent(new Event('input', { bubbles: true })); });
-  return element;
-}
-async function select(selector: string, value: string) { const element = container!.querySelector<HTMLSelectElement>(selector)!; await act(() => { element.value = value; element.dispatchEvent(new Event('change', { bubbles: true })); }); }
-async function submitDialog() { const form = container!.querySelector<HTMLFormElement>('[role="dialog"] form')!; await act(() => form.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }))); }
 
 it('drops several local files into the composer, keeps text and absolute-path references, and deduplicates repeated drops', async () => {
   const f = fixture(), files = [new File(['alpha'], '资料.txt'), new File(['beta'], 'image.png')];
@@ -284,13 +299,13 @@ it('searches and filters the full built-in catalogue and restores the selected r
   const card = dialog.querySelector('[data-builtin-template="phoebe"]')!;
   expect(card.querySelector('.companion-avatar')!.classList.contains('has-square-image')).toBe(true);
   await click('添加', card);
-  expect(f.request).toHaveBeenCalledWith({ type: 'companion.add-builtin', templateId: 'phoebe' });
+  expect(f.request).toHaveBeenCalledWith(expect.objectContaining({ type: 'companion.add-builtin', templateId: 'phoebe', operationId: expect.any(String), companionId: expect.any(String) }));
 });
 
 it('keeps private and group conversations in the message list and opens the same private conversation from contacts', async () => {
   const f = fixture(); await mount(f.api);
   const navigation = container!.querySelector('nav[aria-label="伙伴导航"]')!;
-  expect([...navigation.querySelectorAll('button')].map(item => item.textContent)).toEqual(['消息', '联系人', '任务', '生活', '记忆', '世界', '社交']);
+  expect([...navigation.querySelectorAll('button')].map(item => item.textContent)).toEqual(['消息', '联系人', '生活', '记忆', '世界', '社交']);
   expect(container!.querySelector('[aria-label="伙伴设置"]')).toBeNull();
   expect(container!.querySelectorAll('[data-companion-conversation]')).toHaveLength(2);
   expect(container!.querySelector('[data-companion-conversation]')!.getAttribute('data-companion-conversation')).toBe('private-sister');
@@ -358,6 +373,16 @@ it('honors IME and Shift+Enter, accepts new input while the companion is thinkin
   expect(f.request).toHaveBeenCalledWith({ type: 'reply.cancel', conversationId: 'private-sister', workId: 'work-one' });
 });
 
+it('keeps the draft and selected restrictions when an old Main process rejects the updated send protocol', async () => {
+  const f = fixture(); const original = f.request.getMockImplementation()!;
+  f.request.mockImplementation(input => input.type === 'message.send' ? Promise.resolve({ ok: false, error: '伙伴请求格式不正确。' }) : original(input));
+  await mount(f.api); await fill('textarea[aria-label="输入消息"]', '这条消息和能力限制都应保留'); await click('发送');
+  expect(container!.textContent).toContain('当前后台不接受这版消息协议，请重启应用后再发送');
+  expect(container!.querySelector<HTMLTextAreaElement>('textarea[aria-label="输入消息"]')!.value).toBe('这条消息和能力限制都应保留');
+  expect(f.request.mock.calls.filter(([input]) => input.type === 'message.send')).toHaveLength(1);
+  expect(f.request).toHaveBeenCalledWith(expect.objectContaining({ type: 'message.send', toolPolicy: DEFAULT_COMPANION_TOOL_POLICY }));
+});
+
 it('retains a failed message draft, shows the real error, and offers retry for a failed model reply', async () => {
   const failed = { ...pendingReply(), replyProgress: { ...pendingReply().replyProgress!, phase: 'failed' as const, detail: '服务暂时不可用' } };
   const f = fixture({}, [message(1), failed]); const original = f.request.getMockImplementation()!;
@@ -419,6 +444,12 @@ it('keeps a dismissed repeated read failure closed while still reporting action 
   failure = '历史消息暂时无法读取'; await f.publish(); await act(async () => { await new Promise(resolve => setTimeout(resolve, 650)); });
   expect(container!.querySelector('.companions-error')!.textContent).toContain(failure);
 });
+it('preserves the current view during a host-controlled backup pause while explicit message attempts still explain the pause',async()=>{
+  const f=fixture(),original=f.request.getMockImplementation()!;await mount(f.api);expect(container!.textContent).toContain('我们慢慢来。');
+  f.request.mockImplementation(input=>['state','messages','actions','topic.list','topic.read','conversation.read','message.send'].includes(input.type)?Promise.resolve({ok:false,executionPaused:true,error:'伙伴执行因备份暂时暂停，请完成后再试。'}):original(input));
+  await f.publish();await act(async()=>{await new Promise(resolve=>setTimeout(resolve,650));});expect(container!.querySelector('.companions-error')).toBeNull();expect(container!.textContent).toContain('我们慢慢来。');
+  await fill('textarea[aria-label="输入消息"]','这是用户明确发送的消息');await click('发送');expect(container!.querySelector('.companions-error')?.textContent).toContain('因备份暂时暂停');expect(container!.textContent).not.toContain('无法初始化');
+});
 
 it('coalesces a double send and keeps text entered during the pending acknowledgement', async () => {
   const f = fixture(); await mount(f.api); const original = f.request.getMockImplementation()!;
@@ -438,7 +469,7 @@ it('sends a referenced message and previews its saved image inside the chat befo
   const f = fixture(); await mount(f.api); await click('引用消息 2'); await click('发送文件或图片'); await click('发送');
   expect(f.request).toHaveBeenCalledWith(expect.objectContaining({ type: 'message.send', replyToId: 'message-2', attachmentIds: ['photo'], content: '' }));
   expect(container!.querySelector('[aria-label="取消引用"]')).toBeNull();
-  await act(() => container!.querySelector<HTMLButtonElement>('.companions-attachment')!.click());
+  await act(() => container!.querySelector<HTMLButtonElement>('.companions-attachment')!.click()); await settleDeferredPanels();
   expect(container!.querySelector('[role="dialog"][aria-label="图片预览：旅行照片.jpg"]')).not.toBeNull();
   expect(f.request.mock.calls.some(([input]) => input.type === 'attachment.open')).toBe(false);
   await click('查看文件位置');
@@ -515,38 +546,109 @@ it('fetches an older capability detail on demand instead of loading every histor
   f.request.mockImplementation(input => input.type === 'action.get' ? Promise.resolve({ ok: true, action }) : original(input));
   await mount(f.api); expect(f.request.mock.calls.some(([input]) => input.type === 'action.get')).toBe(false);
   await click('查看这次能力调用'); expect(f.request).toHaveBeenCalledWith({ type: 'action.get', id: action.id });
-  expect(container!.querySelector('[role="dialog"] [role="tab"][aria-selected="true"]')!.textContent).toBe('全部记录');
+  expect(container!.querySelector('[role="dialog"][aria-label="执行详情"]')).not.toBeNull();
   expect(container!.textContent).toContain('原来的文件处理'); expect(container!.textContent).toContain('原始能力结果已保留');
   await f.publish(); expect(container!.textContent).toContain('原来的文件处理');
 });
 
-it('offers the complete partner task entry even when this chat has no tool actions', async () => {
-  const f = fixture({}, [message(1)]), original = f.request.getMockImplementation()!;
-  f.request.mockImplementation(input => input.type === 'tasks.list' ? Promise.resolve({ ok: true, taskPage: { items: [
-    { id: 'reply-other-room', kind: 'reply', companionId: 'deepseek-sister', conversationId: 'another-room', title: '另一个房间的回复', status: 'running', rawStatus: 'running', stage: '正在整理上下文', createdAt: date, updatedAt: date, canStop: true, stoppedByUser: false },
-  ], total: 1, current: 1, history: 0, hasMore: false, observedAt: date, owners: [{ companionId: 'deepseek-sister', name: '大肥鱼', current: 1, history: 0 }], coverage: ['reply'] } }) : original(input));
-  await mount(f.api); await click('查看伙伴任务');
-  expect(container!.querySelector('[role="dialog"][aria-label="伙伴任务总览"]')).not.toBeNull();
-  expect(f.request).toHaveBeenCalledWith({ type: 'tasks.list', companionId: 'deepseek-sister', view: 'current', limit: 20 });
-  expect(container!.textContent).toContain('另一个房间的回复'); expect(container!.querySelector('[aria-label="停止任务 另一个房间的回复"]')).not.toBeNull();
+it('waits for the visible message page and requests only its action IDs instead of the recent history catalogue', async () => {
+  const f = fixture(), original = f.request.getMockImplementation()!;
+  let resolve!: (value: CompanionsResponse) => void;
+  f.request.mockImplementation(input => input.type === 'messages' ? new Promise(done => { resolve = done; }) : original(input));
+  await mount(f.api);
+  expect(f.request.mock.calls.filter(([input]) => input.type === 'actions')).toHaveLength(0);
+  await act(() => resolve({ ok: true, messages: [message(2, '本页已完成的调用', { segments: [{ text: '结果', actionIds: ['visible-old-action'] }] })], hasMore: true }));
+  const requests = f.request.mock.calls.map(([input]) => input).filter(input => input.type === 'actions');
+  expect(requests).toEqual([{ type: 'actions', conversationId: 'private-sister', ids: ['visible-old-action'], includeOngoing: true }]);
+  const before = requests.length;
+  await click('联系人');
+  expect(f.request.mock.calls.filter(([input]) => input.type === 'actions')).toHaveLength(before);
 });
 
-it('opens the actual source conversation when inspecting a tool task from another room', async () => {
-  const action: CompanionAction = { id: 'cross-room-action', companionId: 'deepseek-sister', conversationId: 'other-group', sourceMessageId: 'message-other', title: '另一个房间的工具执行', status: 'succeeded', result: '跨房间的真实执行记录', createdAt: date, updatedAt: date };
+it('batches all visible action IDs within the bounded API and asks for ongoing work only in the first batch', async () => {
+  const ids = Array.from({ length: 205 }, (_, index) => 'visible-action-' + index);
+  const f = fixture({}, [message(2, '实际调用', { segments: [{ text: '结果', actionIds: ids }] })]);
+  await mount(f.api);
+  const requests = f.request.mock.calls.map(([input]) => input).filter(input => input.type === 'actions');
+  expect(requests).toHaveLength(2);
+  expect(requests.map(input => input.ids!.length)).toEqual([200, 5]);
+  expect(requests.map(input => input.includeOngoing)).toEqual([true, false]);
+  expect(new Set(requests.flatMap(input => input.ids!))).toEqual(new Set(ids));
+});
+
+it('keeps one visible call entry and retains genuine autonomous calls without repeating attached receipts', async () => {
+  const action: CompanionAction = { id: 'browser-call', companionId: 'deepseek-sister', conversationId: 'private-sister', title: '浏览需要了解的内容', status: 'succeeded', createdAt: date, updatedAt: date };
+  const f = fixture({}, [message(2, '我看到这段字幕了。', { segments: [{ text: '我看到这段字幕了。', actionIds: [action.id] }] }),
+    message(3, action.title, { authorId: 'deepseek-sister', kind: 'action', actionId: action.id }),
+    message(4, '独立观察', { kind: 'action', actionId: 'autonomous' })], [action]);
+  await mount(f.api);
+  expect(container!.querySelectorAll(`[data-loop-action="${action.id}"]`)).toHaveLength(1);
+  expect(container!.querySelector('[data-companion-message="message-3"]')).toBeNull();
+  expect(container!.querySelector('[data-loop-action="autonomous"]')).not.toBeNull();
+});
+
+it('keeps autonomous agenda activity out of conversation bubbles while retaining the same tool used for this exchange', async () => {
+  const companionId = 'deepseek-sister', conversationId = 'private-sister';
+  const call: CompanionAction = { id: 'related-memory', companionId, conversationId, parentMessageId: 'message-2', sourceMessageId: 'message-1', title: '回忆与整理记忆', status: 'succeeded', createdAt: date, updatedAt: date,
+    capability: { name: 'memory', callId: 'call-1', invocationId: 'reply-1', inputHash: 'a'.repeat(64), audience: 'conversation' } };
+  const autonomous: CompanionAction = { ...call, id: 'autonomous-memory', sourceMessageId: undefined, parentMessageId: undefined, capability: { ...call.capability!, audience: 'agenda', agendaRunId: 'self-run' } };
+  const f = fixture({}, [message(1, '你还记得我之前说的那个问题吗？'), message(2, '我想起来了。', { segments: [{ text: '我想起来了。', actionIds: [call.id] }] }),
+    message(3, '自己的后台整理', { authorId: companionId, kind: 'action', actionId: autonomous.id, audience: 'agenda' }),
+    message(4, '旧记录实时归类', { authorId: companionId, kind: 'action', actionId: autonomous.id })], [call, autonomous]);
+  await mount(f.api);
+  expect(container!.querySelector('[data-loop-action="related-memory"]')).not.toBeNull();
+  expect(container!.querySelector('[data-companion-message="message-3"]')).toBeNull();
+  expect(container!.querySelector('[data-companion-message="message-4"]')).toBeNull();
+  expect(container!.querySelector('[data-loop-action="autonomous-memory"]')).toBeNull();
+  expect(container!.querySelector('.companions-message-scroll')!.textContent).toContain('我想起来了。');
+});
+
+it('sends the exact composer capability choices and keeps selections separate for each chat', async () => {
+  const f = fixture(); await mount(f.api);
+  await click('本次消息可用能力');
+  expect(container!.querySelector<HTMLInputElement>('[role="switch"][aria-label="内置浏览器"]')!.checked).toBe(false);
+  await act(() => container!.querySelector<HTMLInputElement>('[role="switch"][aria-label="内置浏览器"]')!.click());
+  expect(container!.querySelector('[role="switch"][aria-label="记忆"]')).toBeNull();
+  await click('本次消息可用能力');
+  await fill('textarea[aria-label="输入消息"]', '按这些能力处理。'); await click('发送');
+  expect(f.request).toHaveBeenCalledWith(expect.objectContaining({ type: 'message.send', toolPolicy: { ...DEFAULT_COMPANION_TOOL_POLICY, browser: true } }));
+  await act(() => container!.querySelector<HTMLButtonElement>('[data-companion-conversation="group-home"]')!.click());
+  await click('本次消息可用能力');
+  expect(container!.querySelector<HTMLInputElement>('[role="switch"][aria-label="内置浏览器"]')!.checked).toBe(false);
+  expect(container!.querySelector('[role="switch"][aria-label="记忆"]')).toBeNull();
+  await act(() => container!.querySelector<HTMLButtonElement>('[data-companion-conversation="private-sister"]')!.click());
+  await click('本次消息可用能力');
+  expect(container!.querySelector<HTMLInputElement>('[role="switch"][aria-label="内置浏览器"]')!.checked).toBe(true);
+  expect(container!.querySelector('[role="switch"][aria-label="记忆"]')).toBeNull();
+});
+
+it('opens only this companion chat sidebar daily projection even without tool actions', async () => {
   const f = fixture({}, [message(1)]), original = f.request.getMockImplementation()!;
-  f.request.mockImplementation(input => input.type === 'tasks.list' ? Promise.resolve({ ok: true, taskPage: { items: [
-    { id: action.id, kind: 'action', companionId: action.companionId, conversationId: action.conversationId, title: action.title, status: 'completed', rawStatus: 'succeeded', stage: '已完成', createdAt: date, updatedAt: date, canStop: false, stoppedByUser: false },
-  ], total: 1, current: 0, history: 1, hasMore: false, observedAt: date, owners: [{ companionId: 'deepseek-sister', name: '大肥鱼', current: 0, history: 1 }], coverage: ['action'] } })
-    : input.type === 'action.get' ? Promise.resolve({ ok: true, action }) : input.type === 'actions.page' ? Promise.resolve({ ok: true, actionPage: { items: [action], hasMore: false, total: 1, owners: [{ companionId: action.companionId, name: '大肥鱼', count: 1 }] } }) : original(input));
-  await mount(f.api); await click('查看伙伴任务'); expect(f.request.mock.calls.some(([input]) => input.type === 'action.get')).toBe(false);
-  await act(() => container!.querySelector<HTMLButtonElement>('[aria-label="已结束记录"]')!.click());
-  expect(f.request).toHaveBeenCalledWith(expect.objectContaining({ type: 'tasks.list', view: 'history' }));
-  await click('工具执行过程');
-  expect(f.request).toHaveBeenCalledWith({ type: 'actions.page', conversationId: 'other-group', companionId: 'deepseek-sister', limit: 20 });
-  expect(container!.querySelector('[aria-label="伙伴实时任务"]')?.textContent).toContain('跨房间的真实执行记录');
+  const now = new Date().toISOString();
+  const event = companionAgendaRuleSchema.parse({ id: 'reply-other-room', companionId: 'deepseek-sister', conversationId: 'another-room', category: 'task', title: '另一个房间的交流', intent: '回应另一段实际对话。', kind: 'chat', executor: 'brain', trigger: { kind: 'at', at: now, timeZone: 'system' }, reason: '收到另一会话的消息。', origin: 'system', status: 'active', revision: 1, createdAt: now, updatedAt: now, nextAt: now });
+  f.request.mockImplementation(input => input.type === 'agenda.read' ? Promise.resolve({ ok: true, agenda: { companionId: input.companionId, rules: [event], occurrences: [], runs: [], goals: [], grants: [], hasMore: false, observedAt: now, revision: 1 } }) : original(input));
+  await mount(f.api);
+  expect(container!.querySelector('.companions-chat-header [aria-label="查看伙伴日程"],.companions-chat-header [aria-label="查看此伙伴的交互"]')).toBeNull();
+  await click('我们之间'); await click('查看伙伴日程');
+  const agenda = container!.querySelector('.companions-events-panel [role="region"][aria-label="伙伴日程"]'); expect(agenda).not.toBeNull();
+  expect(f.request).toHaveBeenCalledWith(expect.objectContaining({ type: 'agenda.read', companionId: 'deepseek-sister', limit: 50 }));
+  expect(agenda?.textContent).toContain('另一个房间的交流');
+  expect(container!.querySelector('[aria-label="打开任务中心"],[aria-label="打开伙伴日程"]')).toBeNull();
+  expect(f.request.mock.calls.some(([input]) => input.type === 'tasks.list' || input.type === 'work-order.list')).toBe(false);
+});
+
+it('routes an outside contact entry to that companion chat before opening its sidebar', async () => {
+  const f = fixture({ conversations: [] }, []), original = f.request.getMockImplementation()!;
+  f.request.mockImplementation(input => input.type === 'agenda.read' ? Promise.resolve({ ok: true, agenda: { companionId: input.companionId, rules: [], occurrences: [], runs: [], goals: [], grants: [], hasMore: false, observedAt: date, revision: 1 } }) : original(input));
+  await mount(f.api); await click('联系人'); await click('查看日程');
+  expect(container!.querySelector('.companions-events-panel [role="region"][aria-label="伙伴日程"]')).not.toBeNull();
+  expect(document.querySelector('[role="dialog"][aria-label="伙伴日程"]')).toBeNull();
+  expect(f.request).toHaveBeenCalledWith({ type: 'conversation.open', companionId: sisters[0]!.id });
+  expect(container!.querySelector('[aria-label="打开伙伴日程"]')).toBeNull();
 });
 
 it('opens the exact parallel capability from a lightweight message entry and keeps logs out of the bubble', async () => {
+  vi.useFakeTimers();
   const first: CompanionAction = { id: 'weather-task', conversationId: 'private-sister', companionId: 'deepseek-sister', sourceMessageId: 'message-1', title: '查询上海天气', status: 'running', createdAt: date, updatedAt: date };
   const second: CompanionAction = { ...first, id: 'clock-task', title: '读取系统时间', events: [{ sequence: 0, type: 'tool_start', summary: '开始读取时间', content: 'CLOCK TOOL STREAM', contentKind: 'output', receivedAt: date }] };
   const f = fixture({}, [message(1, '我看看。', { segments: [{ text: '我看看。', actionIds: [first.id, second.id] }] })]);
@@ -559,9 +661,8 @@ it('opens the exact parallel capability from a lightweight message entry and kee
   expect(bubble.querySelector('details')).toBeNull();
   expect(bubble.textContent).not.toContain('CLOCK TOOL STREAM');
   await click('查看任务进度 读取系统时间');
-  const monitor = container!.querySelector('[role="dialog"][aria-label="伙伴实时任务"]')!;
-  expect(monitor.querySelector<HTMLSelectElement>('#companion-task-owner')!.value).toBe('deepseek-sister');
-  expect(monitor.querySelector('[role="tab"][aria-selected="true"]')!.textContent).toBe('当前工作');
+  const monitor = container!.querySelector('[role="dialog"][aria-label="执行详情"]')!;
+  expect(monitor.querySelector('.companions-task-history')).toBeNull();
   expect(monitor.querySelector('main')!.textContent).toContain('CLOCK TOOL STREAM');
   expect(monitor.querySelector('main')!.textContent).toContain('读取系统时间');
   await click('关闭任务监视'); expect(bubble.textContent).not.toContain('CLOCK TOOL STREAM');
@@ -666,27 +767,60 @@ it('adds a custom contact with the complete global connection inherited by defau
   await fill('[role="dialog"] input', '阿蓝'); await fill('[role="dialog"] textarea', '喜欢海风，也会有自己的看法。');
   expect(container!.querySelector('[role="dialog"] input[aria-label="模型"]')).toBeNull();
   await submitDialog();
-  expect(f.request).toHaveBeenCalledWith({ type: 'companion.create', companion: { name: '阿蓝', description: '', persona: '喜欢海风，也会有自己的看法。', model: '', avatar: 'custom', proactive: true, inputMode: 'steer' } });
-  await click('联系人'); expect(container!.querySelector('[data-companion-contact="new-companion"]')).not.toBeNull();
+  expect(f.request).toHaveBeenCalledWith(expect.objectContaining({ type: 'companion.create', operationId: expect.any(String), companionId: expect.any(String), companion: { name: '阿蓝', description: '', persona: '喜欢海风，也会有自己的看法。', model: '', avatar: 'custom', proactive: true, inputMode: 'queue' } }));
+  await click('联系人'); expect(container!.querySelector(`[data-companion-contact="${f.state().companions.find(item => item.name === '阿蓝')!.id}"]`)).not.toBeNull();
 });
 
-it('shows a readable biography with the full editable role setting collapsed by default', async () => {
+it('offers task guidance only as an explicit composer action and describes new messages as independent tasks', async () => {
+  const source = message(1, '原来的任务', { authorId: 'user' });
+  const f = fixture({ queue: [{ id: 'working', conversationId: 'private-sister', companionId: 'deepseek-sister', sourceMessageId: source.id,
+    status: 'running', proactive: false, createdAt: date, updatedAt: date }] }, [source]);
+  await mount(f.api);
+  await fill('.companions-composer textarea', '只补充这一个任务');
+  await click('更多聊天操作'); await click('引导当前任务');
+  expect(f.request).toHaveBeenCalledWith(expect.objectContaining({ type: 'message.send', content: '只补充这一个任务',
+    delivery: 'steer', targetSourceMessageId: source.id }));
+  await click('联系人');
+  expect(container!.querySelector('select[aria-label="新消息的处理方式"]')).toBeNull();
+  expect(container!.textContent).toContain('每条新消息都会建立独立任务');
+});
+
+it('propagates a failed bubble stop acknowledgement so the exact task can be retried', async () => {
+  const f = fixture({}, [message(1), pendingReply()]);
+  const original = f.request.getMockImplementation()!;
+  let attempts = 0;
+  f.request.mockImplementation(input => input.type === 'reply.cancel' ? Promise.resolve(++attempts === 1
+    ? { ok: false, error: '取消传输暂不可用' } : { ok: true }) : original(input));
+  await mount(f.api); await click('取消这条回复');
+  expect(container!.querySelector('.companions-bubble-cancel-error')?.textContent).toBe('停止请求未获确认，请重试。');
+  expect(button('取消这条回复').disabled).toBe(false);
+  await click('取消这条回复');
+  expect(f.request.mock.calls.filter(([input]) => input.type === 'reply.cancel').map(([input]) => input)).toEqual([
+    { type: 'reply.cancel', conversationId: 'private-sister', workId: 'work-one' },
+    { type: 'reply.cancel', conversationId: 'private-sister', workId: 'work-one' },
+  ]);
+  expect(button('取消这条回复').disabled).toBe(true);
+  expect(container!.querySelector('[aria-label="本条回复进度"]')?.textContent).toContain('正在停止…');
+});
+
+it('shows the exact current persona read-only and limits post-creation settings to operation', async () => {
   const f = fixture(); await mount(f.api); await click('联系人');
-  const introduction = container!.querySelector('.companions-introduction')!;
+  const introduction = container!.querySelector('.companions-profile-heading p')!;
   expect(introduction.textContent).toBe(f.state().companions[0]!.description); expect(introduction.textContent).not.toContain('白米饭');
   expect(introduction.textContent).not.toContain('工具凭据');
-  const details = container!.querySelector<HTMLDetailsElement>('.companions-persona-details')!;
-  expect(details.open).toBe(false); expect(details.querySelector('summary')!.textContent).toBe('查看角色设定');
-  await click('编辑资料');
-  expect(container!.querySelectorAll('.companions-character-editor legend')).toHaveLength(5);
-  await click('编辑完整文本'); expect(container!.querySelector<HTMLTextAreaElement>('[role="dialog"] textarea')!.value).toBe(sisters[0]!.persona);
+  const details = container!.querySelector<HTMLDetailsElement>('.cognition-page .cognition-source')!;
+  expect(details.open).toBe(false); expect(details.querySelector('pre')!.textContent).toBe(sisters[0]!.persona);
+  await click('运行设置');
+  expect(container!.querySelector('.companions-character-editor')).toBeNull();
+  expect(container!.querySelector('[role="dialog"] textarea')).toBeNull();
+  expect(container!.querySelector('[role="dialog"] input[placeholder="她希望你如何称呼她？"]')).toBeNull();
 });
 
 it('uses a custom contact description as its biography and keeps instructions inside a collapsed setting', async () => {
   const custom: Companion = { ...sisters[0]!, builtin: false, description: '一起把生活中的小事记下来', persona: '内部角色设定测试文本' };
   const f = fixture({ companions: [custom, sisters[1]!] }); await mount(f.api); await click('联系人');
-  expect(container!.querySelector('.companions-introduction')!.textContent).toBe('一起把生活中的小事记下来');
-  expect(container!.querySelector<HTMLDetailsElement>('.companions-persona-details')!.open).toBe(false);
+  expect(container!.querySelector('.companions-profile-heading p')!.textContent).toBe('一起把生活中的小事记下来');
+  expect(container!.querySelector<HTMLDetailsElement>('.cognition-page .cognition-source')!.open).toBe(false);
 });
 
 it('selects a local image avatar, preserves it when contact settings change, and restores the name avatar', async () => {
@@ -698,22 +832,23 @@ it('selects a local image avatar, preserves it when contact settings change, and
   expect(container!.querySelector<HTMLImageElement>('.companions-avatar-editor .companion-avatar img')!.src).toContain('worldlinebox-companion://attachment/cropped-photo');
   await submitDialog();
   expect(f.request).toHaveBeenCalledWith(expect.objectContaining({ type: 'companion.create', companion: expect.objectContaining({ avatar: 'custom', avatarAttachmentId: 'cropped-photo' }) }));
-  await click('联系人'); await act(() => container!.querySelector<HTMLButtonElement>('[data-companion-contact="new-companion"]')!.click());
-  expect(container!.querySelector<HTMLImageElement>('.companions-profile-heading .companion-avatar img')!.src).toContain('worldlinebox-companion://portrait/new-companion/avatar?v=');
+  const createdId = f.state().companions.at(-1)!.id;
+  await click('联系人'); await act(() => container!.querySelector<HTMLButtonElement>(`[data-companion-contact="${createdId}"]`)!.click());
+  expect(container!.querySelector<HTMLImageElement>('.companions-profile-heading .companion-avatar img')!.src).toContain('worldlinebox-companion://portrait/' + createdId + '/avatar?v=');
   await act(() => container!.querySelector<HTMLInputElement>('.companions-contact-profile input[type="checkbox"]')!.click());
   expect(f.request.mock.calls.filter(([input]) => input.type === 'companion.update').at(-1)![0]).toEqual(expect.objectContaining({ companion: expect.objectContaining({ proactive: false, avatarAttachmentId: 'cropped-photo' }) }));
-  await click('编辑资料'); await click('恢复名字头像');
+  await click('运行设置'); await click('恢复名字头像');
   const restored = container!.querySelector<HTMLElement>('.companions-avatar-editor .companion-avatar')!;
   expect(restored.querySelector('img')).toBeNull(); expect(restored.textContent).toBe('海');
   await submitDialog();
-  expect(f.state().companions.find(item => item.id === 'new-companion')!.avatarAttachmentId).toBeUndefined();
+  expect(f.state().companions.find(item => item.id === createdId)!.avatarAttachmentId).toBeUndefined();
 });
 
 it('rejects a non-image avatar without clearing the previously selected image', async () => {
   const custom: Companion = { ...sisters[0]!, builtin: false, avatar: 'custom', avatarAttachmentId: 'saved-avatar' };
   const f = fixture({ companions: [custom, sisters[1]!] }); const original = f.request.getMockImplementation()!;
   f.request.mockImplementation(input => input.type === 'attachment.pick' ? Promise.resolve({ ok: true, attachments: [{ id: 'not-image', name: 'notes.txt', mime: 'text/plain', size: 120 }] }) : original(input));
-  await mount(f.api); await click('联系人'); await click('编辑资料'); await click('选择本地头像');
+  await mount(f.api); await click('联系人'); await click('运行设置'); await click('选择本地头像');
   expect(container!.querySelector('[role="dialog"] [role="alert"]')!.textContent).toBe('请选择图片文件作为头像。');
   expect(container!.querySelector<HTMLImageElement>('.companions-avatar-editor .companion-avatar img')!.src).toContain('worldlinebox-companion://portrait/deepseek-sister/avatar?v=');
 });
@@ -723,11 +858,11 @@ it('keeps public appearance references and the loaded revision across contact sh
   expect(container!.querySelector<HTMLImageElement>('.public-appearance-thumbnail img')!.src).toContain('worldlinebox-companion://portrait/deepseek-sister/orthographic?v=');
   await act(() => container!.querySelector<HTMLInputElement>('.companions-contact-profile input[type="checkbox"]')!.click());
   expect(f.request).toHaveBeenCalledWith(expect.objectContaining({ type: 'companion.update', expectedRevision: 3, companion: expect.objectContaining({ appearanceAttachmentId: 'saved-board' }) }));
-  await click('编辑资料'); await click('更换三视图', container!.querySelector('[role="dialog"]')!);
+  await click('运行设置'); await click('更换三视图', container!.querySelector('[role="dialog"]')!);
   expect(f.request).toHaveBeenCalledWith({ type: 'attachment.pick', kind: 'image', purpose: 'appearance' });
   await click('取消', container!.querySelector('[role="dialog"]')!);
   expect(f.state().companions[0]!.appearanceAttachmentId).toBe('saved-board');
-  await click('编辑资料'); await click('恢复内置三视图', container!.querySelector('[role="dialog"]')!); await submitDialog();
+  await click('运行设置'); await click('恢复内置三视图', container!.querySelector('[role="dialog"]')!); await submitDialog();
   expect(f.request.mock.calls.filter(([input]) => input.type === 'companion.update').at(-1)![0]).toMatchObject({ expectedRevision: 3, companion: { appearanceAttachmentId: undefined } });
   expect(f.state().companions[0]!.appearanceAttachmentId).toBeUndefined();
 });
@@ -757,7 +892,7 @@ it('configures an independent service without revealing a saved key and retains 
   const independent = { ...sisters[0]!, llm: { apiFormat: 'anthropic' as const, baseUrl: 'https://example.test', model: 'test-model', hasKey: true } };
   const f = fixture({ configured: false, companions: [independent, sisters[1]!] }); await mount(f.api);
   expect(container!.querySelector('.companions-config-hint')).toBeNull();
-  await click('联系人'); await click('编辑资料');
+  await click('联系人'); await click('运行设置');
   const key = container!.querySelector<HTMLInputElement>('input[aria-label="API Key"]')!;
   expect(key.type).toBe('password'); expect(key.value).toBe(''); expect(key.placeholder).toBe('已保存，留空保留');
   await select('select[aria-label="连接方式"]', 'openai_responses');
@@ -777,46 +912,18 @@ it('creates a group and manages its name and membership in the same conversation
   await act(() => container!.querySelectorAll<HTMLInputElement>('[role="dialog"] input[type="checkbox"]')[0]!.click());
   await submitDialog();
   expect(f.request).toHaveBeenCalledWith({ type: 'conversation.create-group', title: '摸鱼小组', memberIds: ['deepseek-sister'] });
-  await click('管理群聊'); await fill('[role="dialog"] input:not([type="checkbox"])', '一起看海'); await submitDialog();
+  await click('我们之间'); await click('管理群聊'); await fill('[role="dialog"] input:not([type="checkbox"])', '一起看海'); await submitDialog();
   expect(f.request).toHaveBeenCalledWith({ type: 'conversation.update', id: 'new-group', title: '一起看海', memberIds: ['deepseek-sister'] });
   expect(container!.querySelector('.companions-chat-header h2')!.textContent).toContain('一起看海');
 });
 
-it('saves and corrects sourced memory without a second manual capability dispatch entry', async () => {
-  vi.useFakeTimers(); const f = fixture(); let saved: CompanionMemoryDocumentRead | undefined;
-  const source = message(1, '帮我整理照片');
-  const workspace = vi.fn(async (input: CompanionWorkspaceRequest): Promise<CompanionWorkspaceResponse> => {
-    if (input.type === 'status') return { ok: true, selected: { libraryId: 'fixture-library', displayName: '伙伴资产库', libraryPath: 'D:/fixture', dataRoot: 'D:/fixture/.companions', memoryRoot: 'D:/fixture/伙伴记忆' } };
-    if (input.type === 'memory.documents.list') return { ok: true, documents: { companionId: input.companionId, directory: input.directory, folders: [{ path: '日记', name: '日记', count: saved ? 1 : 0 }], items: saved ? [saved.document] : [], hasMore: false } };
-    if (input.type === 'memory.documents.read') return { ok: true, document: saved };
-    if (input.type === 'memory.documents.create') {
-      const memory: CompanionMemory = { id: 'memory-a', companionId: input.companionId, scopeId: 'fixture-scope', content: input.content, diaryName: input.diaryName, sourceMessageId: input.sourceMessageId,
-        sourceConversationId: source.conversationId, sourceSequence: source.sequence, sources: [{ sourceType: 'message', messageId: source.id, conversationId: source.conversationId, sequence: source.sequence, authorId: source.authorId, revision: 1, checksum: 'fixture-source-checksum', createdAt: source.createdAt }],
-        tags: input.tags, status: 'queued', captureMethod: 'manual', version: 1, origin: 'user', createdAt: date, updatedAt: date };
-      saved = { document: { path: input.path, name: '聊天摘记.md', title: '聊天摘记', directory: '日记', kind: 'note', category: 'diary', updatedAt: date, bytes: 100, revision: 'fixture-document-1', contentHash: 'a'.repeat(64), readOnly: false, tags: input.tags, syncState: 'pending', noteId: memory.id, version: 1, sourceCount: 1 }, content: input.content, memory, sources: [source], hasMoreSources: false };
-      return { ok: true, document: saved };
-    }
-    if (input.type === 'memory.documents.save' && saved) {
-      if (input.expectedRevision !== saved.document.revision) return { ok: false, error: '版本已变化。' };
-      saved = { ...saved, content: input.content, document: { ...saved.document, revision: 'fixture-document-2', version: 2 }, memory: saved.memory ? { ...saved.memory, content: input.content, version: 2 } : undefined }; return { ok: true, document: saved };
-    }
-    return { ok: true };
-  });
-  await mount({ ...f.api, workspace }); await click('记住消息 1'); await fill('textarea[aria-label="共同记忆内容"]', '喜欢把照片按旅行地点整理'); await click('保存文档');
-  expect(workspace).toHaveBeenCalledWith({ type: 'memory.documents.create', companionId: 'deepseek-sister', path: '日记/聊天摘记.md', content: '喜欢把照片按旅行地点整理', sourceMessageId: 'message-1', tags: [], diaryName: '日记' });
-  const created = (await workspace({ type: 'memory.documents.read', companionId: 'deepseek-sister', path: '日记/聊天摘记.md', sourceLimit: 30 })).document!;
-  expect(created.memory?.sources[0]).toMatchObject({ sourceType: 'message', messageId: source.id });
-  await click('编辑记忆 memory-a'); await fill('textarea[aria-label="共同记忆内容"]', '这次照片按地点整理'); await click('保存修正');
-  expect(workspace).toHaveBeenCalledWith(expect.objectContaining({ type: 'memory.documents.save', path: '日记/聊天摘记.md', expectedRevision: 'fixture-document-1', content: '这次照片按地点整理' }));
-  const corrected = (await workspace({ type: 'memory.documents.read', companionId: 'deepseek-sister', path: '日记/聊天摘记.md', sourceLimit: 30 })).document!;
-  expect(corrected.memory?.content).toBe('这次照片按地点整理'); expect(corrected.memory?.sources[0]?.messageId).toBe(source.id);
-  await click('关闭共同记忆管理'); await click('我们之间'); await click('管理共同记忆');
-  await act(async () => { await vi.advanceTimersByTimeAsync(300); });
+it('opens a message excerpt for review without manufacturing editable memory or a second capability dispatch', async () => {
+  vi.useFakeTimers(); const f = fixture(), workspace = memoryWorkspaceFixture();
+  await mount({ ...f.api, workspace }); await click('记住消息 1'); await act(() => vi.advanceTimersByTimeAsync(300));
+  expect(container!.textContent).toContain('帮我整理照片');
   expect(container!.querySelector('textarea[aria-label="共同记忆内容"]')).toBeNull();
-  expect(container!.querySelector('.memory-library-paper')?.textContent).toContain('这次照片按地点整理');
-  expect(container!.querySelector('[title="交给伙伴处理"]')).toBeNull();
-  expect(f.request.mock.calls.some(([input]) => input.type === 'memory.save')).toBe(false);
-  expect(f.request.mock.calls.some(([input]) => input.type === 'action.run')).toBe(false);
+  expect(workspace.mock.calls.some(([input]) => ['memory.documents.create', 'memory.documents.save'].includes(input.type))).toBe(false);
+  expect(f.request.mock.calls.some(([input]) => input.type === 'memory.save' || input.type === 'action.run')).toBe(false);
 });
 
 it('does not render a second ability bubble for a durable memory-only action result', async () => {
@@ -936,6 +1043,7 @@ it('shows real waiting and generation stages before reply text exists and allows
   await mount(f.api);
   const progress = container!.querySelector('[data-companion-message="message-2"] .companions-bubble-progress')!;
   expect(progress.textContent).toContain('等待回复');
+  await click('展开回复过程', progress);
   expect(progress.textContent).toContain('正在用手机处理先前消息');
   expect(progress.getAttribute('data-reply-stage')).toBe('waiting');
   expect(container!.querySelector('.companions-reply-progress')).toBeNull();
@@ -1034,6 +1142,7 @@ it('mounts real progress before a slow history read returns and keeps it through
   if (sent.type !== 'message.send') throw new Error('Missing sent source');
   const frame: CompanionReplyStreamEvent = { conversationId: 'private-sister', companionId: 'deepseek-sister', sourceMessageId: sent.clientId!, messageId: 'new-live-reply', step: 0, attemptId: 'progress', text: '', phase: 'progress', messageIdentity: { sequence: 3, createdAt: date }, progress: { workId: 'live-work', sourceMessageId: sent.clientId!, revision: 3, phase: 'memory', detail: '正在构建这次回忆', startedAt: date, updatedAt: date, timing: { elapsedMs: 0, activeSince: date } } };
   await f.stream(frame);
+  await click('展开回复过程', container!.querySelector('[data-companion-message="new-live-reply"]')!);
   expect(container!.querySelector('[data-companion-message="new-live-reply"]')!.textContent).toContain('正在构建这次回忆');
   expect(container!.querySelector('[data-companion-message="new-live-reply"]')!.textContent).toContain('1 秒');
   await act(async () => { await vi.advanceTimersByTimeAsync(2000); });
@@ -1057,6 +1166,7 @@ it('buffers progress arriving before the send acknowledgement until its exact so
   const frame: CompanionReplyStreamEvent = { conversationId: 'private-sister', companionId: 'deepseek-sister', sourceMessageId: source.id, messageId: 'early-reply', step: 0, attemptId: 'progress', text: '', phase: 'progress', messageIdentity: { sequence: 3, createdAt: date }, progress: { revision: 1, phase: 'context', detail: '收到任务，正在准备', startedAt: date, updatedAt: date } };
   await f.stream(frame); expect(container!.querySelector('[data-companion-message="early-reply"]')).toBeNull();
   await act(() => acknowledge({ ok: true, message: source }));
+  await click('展开回复过程', container!.querySelector('[data-companion-message="early-reply"]')!);
   expect(container!.querySelector('[data-companion-message="early-reply"]')!.textContent).toContain('收到任务，正在准备');
   await act(() => finish({ ok: true, messages: [message(1), source], hasMore: false }));
   expect(container!.querySelector('[data-companion-message="early-reply"]')).not.toBeNull();
@@ -1069,7 +1179,7 @@ it('does not insert live progress into browsed history or resurrect it after a c
   await f.stream(frame); expect(container!.querySelector('[data-companion-message="reset-live-reply"]')).toBeNull();
   await click('回到最新消息'); await f.stream(frame);
   expect(container!.querySelector('[data-companion-message="reset-live-reply"]')).not.toBeNull();
-  await f.publish({ resetJobs: [{ id: 'reset-done', companionId: 'deepseek-sister', scope: 'all', status: 'completed', phase: 'done', processed: 1, startedAt: date, updatedAt: date }] }, []);
+  await f.publish({ resetJobs: [{ operation: 'retire_identity', id: 'reset-done', companionId: 'deepseek-sister', scope: 'all', status: 'completed', phase: 'completed', processed: 1, startedAt: date, updatedAt: date }] }, []);
   expect(container!.querySelector('[data-companion-message="reset-live-reply"]')).toBeNull();
   await f.stream({ ...frame, progress: { ...frame.progress!, revision: 2 } });
   expect(container!.querySelector('[data-companion-message="reset-live-reply"]')).toBeNull();

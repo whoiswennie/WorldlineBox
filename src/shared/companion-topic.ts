@@ -76,11 +76,13 @@ export const companionTopicPublicCommands = [create, list, read, update, transfe
 /** The reader is bound by Main; a model never chooses another participant's private state. */
 const topicStorageCommandSchemas = [create.extend({ readerId: id }), list.extend({ readerId: id }), read.extend({ readerId: id }),
   z.strictObject({ type: z.literal('topic.compaction.sources'), conversationId: id, topicId: id, readerId: id,
+    jobGuard: z.strictObject({ id, leaseToken: z.string().uuid() }).optional(),
     afterPublicationRevision: z.number().int().nonnegative().safe(), throughPublicationRevision: z.number().int().nonnegative().safe().optional(),
     legacyAfterSequence: z.number().int().nonnegative().safe(), legacyThroughSequence: z.number().int().nonnegative().safe().optional(),
     beforeSequence: z.number().int().nonnegative().safe(), sourceMessageId: id.optional(), sourceChecksum: z.string().regex(/^[a-f0-9]{64}$/u).optional(), limit: z.number().int().min(1).max(100).optional() }),
   update.extend({ readerId: id, maintenance: z.boolean().optional(), compaction: z.strictObject({
     previousWorkingEventId: id.nullable(), sharedEventId: id.nullable(),
+    jobGuard: z.strictObject({ id, leaseToken: z.string().uuid() }).optional(),
     sourceChecksums: z.record(id, z.string().regex(/^[a-f0-9]{64}$/)),
     publicationCoverage: z.strictObject({ expectedFormalPublicationRevision: z.number().int().nonnegative().safe(),
       sourcePublicationRevisions: z.record(id, z.number().int().positive().safe()) }).optional(),

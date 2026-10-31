@@ -54,6 +54,7 @@ export function CompanionMemoryProbeWorkspace(props: Props) {
 function CompanionMemoryProbeBody({ companion, request, api, active = true, initialQuery = '', onClose, onOpenNote }: Props) {
   const [query, setQuery] = useState(initialQuery), [mode, setMode] = useState<Mode>('active');
   const [probe, setProbe] = useState<CompanionMemoryProbe>(), [busy, setBusy] = useState(false), [error, setError] = useState(''), [stale, setStale] = useState(false);
+  const [hasUpdates, setHasUpdates] = useState(false);
   const [view, setView] = useState<'context' | 'candidate'>('context'), [selectedId, setSelectedId] = useState<string>();
   const [wasActive, setWasActive] = useState(active);
   const [timing, setTiming] = useState<MemoryProbeTimingView>();
@@ -72,13 +73,14 @@ function CompanionMemoryProbeBody({ companion, request, api, active = true, init
       ...(progress ? { stageId: progress.stageId, label: progress.label, stageElapsedMs: progress.stageElapsedMs + delta, backendState: progress.state } : {}),
       stages: final?.stages ?? progress?.stages.map(stage => stage.id === progress.stageId ? { ...stage, elapsedMs: progress.stageElapsedMs + delta } : stage) ?? [] });
   }, []);
-  if (wasActive !== active) { setWasActive(active); setProbe(undefined); setBusy(false); setStale(false); setError(''); setTiming(undefined); }
+  if (wasActive !== active) { setWasActive(active); setProbe(undefined); setBusy(false); setStale(false); setHasUpdates(false); setError(''); setTiming(undefined); }
   useEffect(() => {
     const reads = epoch.current; alive.current = active;
     if (!active) { stopProgress(); return; }
     return () => { alive.current = false; reads.value++; stopProgress(); };
   }, [active, stopProgress]);
   const corpusStamp = probe?.corpusStamp;
+  const authorityStamp = probe?.authorityStamp;
   useEffect(() => {
     if (!active || !api || !corpusStamp) return;
     let listening = true, timer: ReturnType<typeof setTimeout> | undefined, checkEpoch = 0;
@@ -88,17 +90,24 @@ function CompanionMemoryProbeBody({ companion, request, api, active = true, init
         const result = await request({ type: 'memory.recall.state', companionId: companion.id });
         if (!listening || turn !== checkEpoch) return;
         if (!result?.ok || !result.memoryCorpusStamp) throw new Error(result?.error || '当前记忆状态暂时无法核验，请重新回忆。');
-        if (result.memoryCorpusStamp !== corpusStamp) { setProbe(undefined); setTiming(undefined); setStale(true); }
+        if (authorityStamp) {
+          if (!result.memoryRecallAuthorityStamp) throw new Error('当前回忆的来源授权版本暂不可核验，请重新回忆。');
+          if (result.memoryRecallAuthorityStamp !== authorityStamp) { setProbe(undefined); setTiming(undefined); setStale(true); setHasUpdates(false); }
+          else setHasUpdates(result.memoryCorpusStamp !== corpusStamp);
+        } else if (result.memoryCorpusStamp !== corpusStamp) {
+          // Historical receipts have no independent hard authority proof.
+          setProbe(undefined); setTiming(undefined); setStale(true); setHasUpdates(false);
+        }
       } catch (cause) { if (listening && turn === checkEpoch) { setProbe(undefined); setTiming(undefined); setError(cause instanceof Error ? cause.message : '当前记忆状态暂时无法核验。'); } }
     };
     const unsubscribe = api.onChanged(() => { if (!timer) timer = setTimeout(() => { timer = undefined; void check(); }, 750); });
     return () => { listening = false; checkEpoch++; if (timer) clearTimeout(timer); unsubscribe(); };
-  }, [active, api, corpusStamp, companion.id, request]);
-  const clear = () => { epoch.current.value++; stopProgress(); setTiming(undefined); setProbe(undefined); setError(''); setBusy(false); setStale(false); };
+  }, [active, api, corpusStamp, authorityStamp, companion.id, request]);
+  const clear = () => { epoch.current.value++; stopProgress(); setTiming(undefined); setProbe(undefined); setError(''); setBusy(false); setStale(false); setHasUpdates(false); };
   async function run() {
     const text = query.trim(); if (!text || busy || !active) return;
     const startedAt = performance.now();
-    const turn = ++epoch.current.value; setBusy(true); setProbe(undefined); setError(''); setStale(false);
+    const turn = ++epoch.current.value; setBusy(true); setProbe(undefined); setError(''); setStale(false); setHasUpdates(false);
     stopProgress();
     const pending: RunningProbe = { requestId: globalThis.crypto.randomUUID(), epoch: turn, startedAt, progressAt: startedAt, sequence: -1 };
     running.current = pending; updateTiming(pending);
@@ -132,6 +141,7 @@ function CompanionMemoryProbeBody({ companion, request, api, active = true, init
       <form className="memory-probe-query" onSubmit={event => { event.preventDefault(); void run(); }}><label htmlFor={'memory-probe-query-' + companion.id}>此刻，想让{companion.name}回忆什么？</label><textarea id={'memory-probe-query-' + companion.id} aria-label="想回忆的事" placeholder="例如：我们第一次认识时，我介绍了什么？" rows={3} maxLength={16000} value={query} onChange={event => { clear(); setQuery(event.target.value); }} /><div className="memory-probe-query-controls"><div role="tablist" aria-label="回忆方式"><button type="button" role="tab" aria-selected={mode === 'active'} onClick={() => { clear(); setMode('active'); }}><Icon name="search" size={14} />主动回忆<span>主动查找</span></button><button type="button" role="tab" aria-selected={mode === 'passive'} onClick={() => { clear(); setMode('passive'); }}><Icon name="sparkles" size={14} />被动回忆<span>随话题想起</span></button></div><button type="submit" className="memory-probe-run" disabled={busy || !query.trim()}><Icon name={busy ? 'clock' : 'play'} size={14} />{busy ? '回忆中…' : '开始回忆'}</button></div><p>从这位伙伴自己的经历与知识中，寻找和话题有关的回忆。{mode === 'active' ? '主动查找这位伙伴已经留下的记忆。' : '看看伙伴回答前，会自然想起哪些经历。'}</p></form>
       {error && <p className="memory-probe-notice is-error" role="alert"><Icon name="alert-circle" size={15} />{error}</p>}
       {stale && !busy && <p className="memory-probe-notice" role="status"><Icon name="refresh" size={14} />记忆数据已更新，请点击“开始回忆”重新查看。</p>}
+      {hasUpdates && probe && !busy && <p className="memory-probe-notice" role="status"><Icon name="refresh" size={14} />记忆库有更新，可重新回忆。下方保留本次检索时的结果。</p>}
       {timing && <MemoryProbeTiming timing={timing} mode={mode} />}
       {!current && !busy && !error && !stale && <div className="memory-probe-empty"><Icon name="search" size={25} /><strong>看看一段经历，怎样被想起来</strong><p>输入一个话题，沿着线索看看伙伴想起了什么。这里也能查阅每段回忆的来源。</p></div>}
       {current && <div className="memory-probe-result" aria-label="本次回忆结果"><div className="memory-probe-result-meta"><span><Icon name={current.degraded ? 'alert-circle' : 'check'} size={14} />{current.degraded ? '召回已降级' : '本次检索已完成'}</span><time dateTime={current.observedAt}>{dateLabel(current.observedAt)}</time></div><details className="memory-probe-explanation"><summary><Icon name="info" size={12} />检索说明</summary><p>{current.explanation}</p></details>{current.pending && <p className="memory-probe-notice"><Icon name="clock" size={14} />部分来源仍在收录或建立索引，可能尚未出现在这次结果中。</p>}

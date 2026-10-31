@@ -30,7 +30,7 @@ options: Pick<CompanionModelOptions, 'fetchFn' | 'timeoutMs'> = {}): Promise<str
   const messages = input.messages.filter(message => message.conversationId === conversationId && ids.has(message.authorId)
     && message.status === 'sent' && !message.isReplyDraft && !message.replyDraft);
   const source = messages.findLast(message => message.authorId === input.target.id);
-  const result = speechSchema.safeParse(await runCompanionStructuredAgent({ frame: { companion: input.companion,
+  const result = speechSchema.safeParse(await runCompanionStructuredAgent({ responseSchema: speechSchema, frame: { companion: input.companion,
     conversation: companionTaskConversation(conversationId, input.companion.id, input.task.updatedAt, [...ids]),
     messages, sourceMessage: source, memories: [], audience: 'peers', publicProfiles: input.publicProfiles,
     runtimeState, characterDevelopment: input.characterDevelopment,

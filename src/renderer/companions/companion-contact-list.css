@@ -8,7 +8,6 @@
 .companion-contact-add svg { width: 19px; height: 19px; }
 .companion-contact-manager { display: flex; align-items: center; justify-content: center; gap: 7px; margin: 0 14px 10px; padding: 9px 6px; border: 1px solid var(--ui-border-subtle); border-radius: 9px; background: transparent; color: var(--ui-content-primary); font-size: 13px; }
 .companion-contact-manager svg { width: 17px; height: 17px; }
-.companion-contact-manager.is-active { color: var(--companion-blue); border-color: var(--companion-blue); }
 .companion-contact-shortcuts { padding: 0 14px 12px; border-bottom: 1px solid var(--ui-border-subtle); }
 .companion-contact-shortcuts button { display: flex; align-items: center; justify-content: space-between; width: 100%; padding: 11px 4px; border: 0; border-radius: 6px; background: transparent; color: var(--ui-content-primary); font-size: 13px; }
 .companion-contact-shortcuts svg { width: 15px; height: 15px; }
@@ -21,17 +20,10 @@
 .companion-contact-group-heading > button svg { width: 14px; height: 14px; flex-shrink: 0; }
 .companion-contact-group-heading .companion-contact-group-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; }
 .companion-contact-group-heading small { margin-left: auto; color: var(--ui-content-tertiary); font-size: 11px; }
-.companion-contact-group-actions { display: flex; padding-right: 4px; }
-.companion-contact-group-actions svg { width: 13px; height: 13px; }
 .companion-contact-entry .companions-contact { min-height: 60px; gap: 9px; padding: 8px 14px 8px 27px; margin: 0; border-radius: 7px; }
 .companion-contact-entry .companion-avatar, .companion-contact-entry .companion-group-avatar { width: 35px; height: 35px; flex-shrink: 0; }
 .companion-contact-entry .companions-contact > span:last-child { flex: 1; gap: 4px; overflow: hidden; }
 .companion-contact-entry strong { font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.companion-contact-entry select { display: block; max-width: calc(100% - 48px); margin: 0 12px 8px 36px; padding: 4px 7px; border: 1px solid var(--ui-border-subtle); border-radius: 5px; background: var(--ui-surface-pane); color: var(--ui-content-secondary); font-size: 11px; }
-.companion-contact-group-form { display: flex; gap: 5px; margin: 7px 10px; }
-.companion-contact-group-form input { width: 0; min-width: 0; flex: 1; padding: 7px; border: 1px solid var(--ui-border-subtle); border-radius: 5px; background: var(--ui-surface-pane); color: var(--ui-content-primary); font-size: 12px; }
-.companion-contact-group-form button { padding: 5px 7px; border: 0; border-radius: 5px; color: var(--companion-blue); background: var(--companion-selected); font-size: 12px; }
-.companion-contact-group-form svg { width: 13px; height: 13px; }
 .companion-contact-group-error { padding: 4px 14px; color: var(--ui-content-danger, #bd3c50); font-size: 12px; }
 .companion-contact-add:hover, .companion-contact-shortcuts button:hover, .companion-contact-group-heading:hover, .companion-contact-group-actions button:hover, .companion-contact-search button:hover { background: var(--ui-surface-hover); }
 .companion-contact-group { margin: 3px 3px 8px; }
@@ -51,3 +43,8 @@
 .companion-contact-entry .companions-contact.is-selected::before { content: ''; position: absolute; left: 0; top: 12px; bottom: 12px; width: 2px; border-radius: 2px; background: var(--ui-content-accent); }
 .companion-contact-group-empty { padding: 9px 10px; color: var(--ui-content-tertiary); font-size: 11px; }
 @media (prefers-reduced-motion: reduce) { .companion-contact-disclosure, .companion-contact-group-heading, .companion-contact-group-heading .companion-contact-group-count, .companion-contact-group-content .companions-contact { transition: none; } }
+
+.companion-contact-manager { justify-content: flex-start; padding: 10px 12px; color: var(--ui-content-secondary); background: var(--ui-surface-pane); }
+.companion-contact-manager > span { flex: 1; text-align: left; }
+.companion-contact-manager > svg:last-child { width: 14px; height: 14px; color: var(--ui-content-tertiary); }
+.companion-contact-manager:hover { background: var(--ui-surface-hover); color: var(--ui-content-primary); }

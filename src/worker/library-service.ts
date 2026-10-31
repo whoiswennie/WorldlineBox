@@ -1132,6 +1132,13 @@ const DEFAULT_LINKED_FOLDER_RULES: ReadonlyArray<Omit<LinkedFolderRule, 'ruleId'
   })),
 ];
 
+// Only these owner-relative host namespaces are technical. A user-authored
+// `.运行` directory elsewhere, or an unknown child inside it, remains an asset.
+const COMPANION_RUNTIME_TECHNICAL_PATHS = [
+  '.运行/索引', '.运行/视图', '.运行/发布', '.运行/上下文',
+  '.运行/引用', '.运行/诊断', '.运行/观察', '.运行/日程职能版本.json',
+] as const;
+
 const DEFAULT_IGNORED_ASSET_DIRECTORIES = new Set([
   '.git',
   '.hg',
@@ -8296,6 +8303,10 @@ export class LibraryService {
     const parts = relativePath.split('/');
     if (parts.length < 2 || !/^[a-zA-Z0-9_-]{1,100}$/u.test(parts[0]!)) return false;
     if (parts[1] === '.认知索引') return true;
+    if (parts[1] === '.运行') {
+      const ownerRelative = parts.slice(1).join('/');
+      if (COMPANION_RUNTIME_TECHNICAL_PATHS.some(root => ownerRelative === root || ownerRelative.startsWith(root + '/'))) return true;
+    }
     const filename = parts.at(-1)!;
     if (parts.length === 2 && ['.同步状态.json', '.时间线索引.json', '同步状态.md'].includes(filename)) return true;
     if (filename.endsWith('.meta.json')) return true;
@@ -9967,8 +9978,8 @@ export class LibraryService {
       'DELETE FROM linked_ignored_assets WHERE asset_id = ?',
     );
     const folders = openLibrary.connection
-      .prepare('SELECT folder_id FROM linked_folders WHERE library_id = ?')
-      .all(openLibrary.summary.libraryId) as Array<{ folder_id: string }>;
+      .prepare('SELECT folder_id, absolute_root_path FROM linked_folders WHERE library_id = ?')
+      .all(openLibrary.summary.libraryId) as Array<{ folder_id: string; absolute_root_path: string }>;
     const hasLinkedRules = hasTable(openLibrary.connection, 'linked_folder_rules');
     const loadRules = hasLinkedRules
       ? openLibrary.connection.prepare(
@@ -9977,6 +9988,7 @@ export class LibraryService {
       )
       : null;
     for (const folder of folders) {
+      const companionMemoryRoot = this.isCompanionMemoryRoot(openLibrary, folder.absolute_root_path);
       const rules = loadRules
         ? (loadRules.all(folder.folder_id) as Array<{
           rule_id: string;
@@ -10003,7 +10015,8 @@ export class LibraryService {
         ignored: number;
       }>;
       for (const asset of assets) {
-        const ignored = this.linkedPathIsIgnored(asset.relative_file_path, rules)
+        const ignored = (companionMemoryRoot && this.isCompanionMemoryTechnicalPath(asset.relative_file_path))
+          || this.linkedPathIsIgnored(asset.relative_file_path, rules)
           || this.isExplicitlyIgnored(
             openLibrary,
             'linked',
@@ -18214,13 +18227,14 @@ export class LibraryService {
   }): { rules: LinkedFolderRule[]; hiddenCount: number; restoredCount: number } {
     const openLibrary = this.requireOpenLibrary(input.libraryId);
     const folder = openLibrary.connection.prepare(
-      'SELECT folder_id FROM linked_folders WHERE folder_id = ? AND library_id = ?',
-    ).get(input.folderId, input.libraryId);
+      'SELECT folder_id, absolute_root_path FROM linked_folders WHERE folder_id = ? AND library_id = ?',
+    ).get(input.folderId, input.libraryId) as { folder_id: string; absolute_root_path: string } | undefined;
     if (!folder) throw new LibraryServiceError('FOLDER_NOT_FOUND');
     if (input.rules.length > 200 || new Set(input.rules.map((rule) => rule.ruleId)).size !== input.rules.length) {
       throw new LibraryServiceError('INVALID_SELECTION');
     }
     const rules = input.rules.map((rule) => this.normalizeLinkedFolderRule(rule));
+    const companionMemoryRoot = this.isCompanionMemoryRoot(openLibrary, folder.absolute_root_path);
     let hiddenCount = 0;
     let restoredCount = 0;
     const now = new Date().toISOString();
@@ -18239,7 +18253,8 @@ export class LibraryService {
            FROM assets a WHERE a.linked_folder_id = ?`,
       ).all(input.folderId) as Array<{ asset_id: string; relative_file_path: string; ignored: number }>;
       for (const asset of assets) {
-        const ignored = this.linkedPathIsIgnored(asset.relative_file_path, rules)
+        const ignored = (companionMemoryRoot && this.isCompanionMemoryTechnicalPath(asset.relative_file_path))
+          || this.linkedPathIsIgnored(asset.relative_file_path, rules)
           || this.isExplicitlyIgnored(
             openLibrary,
             'linked',
@@ -19448,7 +19463,7 @@ export class LibraryService {
     const defaultRules = DEFAULT_LINKED_FOLDER_RULES.map((rule) => ({ ...rule, ruleId: randomUUID() }));
     if (ownedCompanionMemory) for (const owner of readdirSync(canonicalRoot, { withFileTypes: true })) {
       if (owner.isDirectory() && !owner.isSymbolicLink() && /^[a-zA-Z0-9_-]{1,100}$/u.test(owner.name)) {
-        for (const basename of ['.认知索引', '.同步状态.json', '.时间线索引.json', '同步状态.md']) {
+        for (const basename of ['.认知索引', '.同步状态.json', '.时间线索引.json', '同步状态.md', ...COMPANION_RUNTIME_TECHNICAL_PATHS]) {
           defaultRules.push({ ruleId: randomUUID(), action: 'exclude', target: 'path', pattern: owner.name + '/' + basename, enabled: true });
         }
       }
@@ -46913,13 +46928,22 @@ export class LibraryService {
       stageMark = now;
     };
     const requestedAssetIds = assetIds === undefined ? undefined : [...new Set(assetIds)];
-    const before = requestedAssetIds === undefined
+    const registeredAssets = requestedAssetIds === undefined
       ? openLibrary.connection.prepare(queryBefore()).all() as RefreshAssetRow[]
       : sqliteAllInChunks<string, RefreshAssetRow>({
           connection: openLibrary.connection,
           values: requestedAssetIds,
           buildSql: queryBefore,
         });
+    // Older scanners registered host internals as assets. Keep their records
+    // and files, but do not stat/fingerprint/revise them during reconciliation.
+    const companionMemoryFolderIds = new Set((openLibrary.connection
+      .prepare('SELECT folder_id, absolute_root_path FROM linked_folders WHERE library_id = ?')
+      .all(libraryId) as Array<{ folder_id: string; absolute_root_path: string }>)
+      .filter(folder => this.isCompanionMemoryRoot(openLibrary, folder.absolute_root_path)).map(folder => folder.folder_id));
+    const before = registeredAssets.filter(asset => !(asset.location_kind === 'linked'
+      && companionMemoryFolderIds.has(asset.linked_folder_id ?? '')
+      && this.isCompanionMemoryTechnicalPath(asset.relative_file_path)));
     markStage('before-query');
 
     // A refresh can also be triggered by a watcher or an explicit client

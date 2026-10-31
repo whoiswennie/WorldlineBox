@@ -159,7 +159,12 @@ supported=true表示没有实质问题且issues为空。否则最多给3项最�
     try {
       const reviewContext = formatCorrection ? { ...context, user: JSON.stringify({ ...JSON.parse(context.user), criticFormatCorrection: formatCorrection }) } : context;
       const raw = input.review ? await input.review(reviewContext, input.signal)
-        : await generateCompanionStructured(reviewContext, input.config, input.signal, { fetchFn: input.fetchFn, timeoutMs: 120000 });
+        : await generateCompanionStructured(reviewContext, input.config, input.signal, { fetchFn: input.fetchFn, timeoutMs: 120000, responseSchema: resultSchema,
+          repairPreserveCollections: [
+            { path: ['issues'], fields: ['claim', 'basis', 'claimQuote', 'basisQuote', 'correction'] },
+            { path: ['narrativeReferenceChecks'], fields: ['sourceAnchorIndex', 'status', 'targetMentionIndex', 'revisionSourceMessageId', 'revisionQuote'] },
+            { path: ['clockClaims'], fields: ['index', 'usage'] },
+          ], repairPreserveValues: [{ path: ['supported'] }] });
       const parsed = resultSchema.safeParse(raw);
       if (!parsed.success) throw new CompanionModelError('INVALID_RESPONSE', '话题连续性核验没有返回有效的结构化判断，未发布拟议内容。');
       const refs = narrativeReferences.references, checks = parsed.data.narrativeReferenceChecks;
@@ -190,6 +195,7 @@ supported=true表示没有实质问题且issues为空。否则最多给3项最�
         throw new CompanionModelError('INVALID_RESPONSE', '话题连续性核验的引文不在本次拟稿或合法来源中，未发布拟议内容。');
       result = parsed.data; clockCorrection = checkedClock; break;
     } catch (error) {
+      if (error instanceof CompanionModelError && error.diagnostic === 'structured_repair_exhausted') throw error;
       if (!(error instanceof CompanionModelError) || error.code !== 'INVALID_RESPONSE' || attempt === 2) throw error;
       formatCorrection = '核验JSON格式/引用修复：' + error.message
         + ' 仅重新核验以上同一拟稿和同一合法来源；不要改写正文或来源，不沿用无依据的先前异议。supported必须严格等于issues为空；逐一完整标注clockMentions索引和实际sourceBoundNarrativeReferences.references的回指检查。claimQuote/basisQuote必须是对应资料中原样连续子串，不加省略号、不拼接；找不到逐字依据的异议应删除。仅summary真实遗漏允许claimQuote为空。返回完整outputSchema JSON。';
@@ -235,7 +241,8 @@ supported=true表示没有实质问题且issues为空。否则最多给3项最�
       outputSchema: z.toJSONSchema(adjudicationSchema, { io: 'input' }) }),
   };
   const confirmationRaw = input.adjudicate ? await input.adjudicate(adjudication, input.signal)
-    : await generateCompanionStructured(adjudication, input.config, input.signal, { fetchFn: input.fetchFn, timeoutMs: 120000 });
+    : await generateCompanionStructured(adjudication, input.config, input.signal, { fetchFn: input.fetchFn, timeoutMs: 120000, responseSchema: adjudicationSchema,
+      repairPreserveCollections: [{ path: ['upheldIssueIndexes'], fields: [] }] });
   const confirmed = adjudicationSchema.safeParse(confirmationRaw);
   if (!confirmed.success || confirmed.data.upheldIssueIndexes.some(index => index >= decision.issues.length))
     throw new CompanionModelError('INVALID_RESPONSE', '话题连续性异议复核没有返回有效的结构化判断，未发布拟议内容。');

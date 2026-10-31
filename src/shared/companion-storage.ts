@@ -1,4 +1,11 @@
+import { companionTopicCompactionCommands, companionTopicCompactionJobSchema } from './companion-topic-compaction-jobs';
 import { companionContactGroupCommands } from './companion-contact-groups';
+import { companionRecoveryWorkspaceCommands, companionRecoveryReviewCommand, companionRecoveryReviewPageCommand, companionRecoveryResultSchema } from './companion-recovery';
+import { companionGrowthStorageCommands, companionGrowthGoalSchema } from './companion-cognition';
+import { companionAgendaStorageCommands } from './companion-agenda';
+import { companionCreationIdentitySchema, companionCreationStatusCommand, companionCreationReceiptSchema } from './companion-creation';
+import { COMPANION_TEMPLATE_IDS } from './companion-template-ids';
+import { companionRegistryStorageCommands, companionRegistryStorageResponseShape } from './companion-registry-storage';
 import { COMPANION_ATTACHMENT_SNAPSHOT_MAX_BYTES } from './companion-media';
 import { companionInterruptionCommands, companionInterruptionSchema } from './companion-interruption';
 import { companionTaskStopStorageCommands, companionTaskStopReceiptSchema } from './companion-task-stop';
@@ -14,12 +21,14 @@ import { companionExperienceCommands, companionExperiencePublishSchema } from '.
 import { companionKnowledgeCommandSchema } from './companion-knowledge-store';
 import { companionSocialReplyReceiptSchema } from './companion-social-reply';
 import { z } from 'zod';
+import { companionToolPolicySchema } from './companion-tool-policy';
+import { companionJobCommands, companionJobDispositionSchema, companionJobPageSchema } from './companion-job-control';
 import { companionDshMailboxCommands, companionDshMailSchema } from './companion-dsh-background';
 import { companionMemoryInvestigationSchema } from './companion-memory-investigation';
 import { companionMemoryHistoryDescriptorSchema, companionMemoryHistoryOutboxSchema } from './companion-memory-history';
+import { companionMemoryFileInspectCommand, companionMemoryFileReadinessSchema, companionMemoryFileStateCommand, companionMemoryFileStateSchema } from './companion-memory-file-readiness';
 import { companionWorldProposalSchema } from './companion-world-proposals';
 import { companionMemoryProjectionCommands, companionMemoryProjectionStateSchema, companionMemoryProjectionPageSchema } from './companion-memory-projection';
-import { companionModelResourceCommands, companionModelResourceAdmissionSchema, companionModelResourceUsageSchema } from './companion-model-resources';
 import { companionLearningStorageCommands, companionLearningStatusSchema, companionLearningJobSchema,
   companionLearningAssetSnapshotSchema, companionLearningAssetValidationSchema } from './companion-learning';
 import { companionLearningGoalStorageCommands, companionLearningGoalSchema, companionLearningGoalPageSchema, companionLearningGoalRoundPageSchema, companionLearningGoalJobSchema } from './companion-learning-goals';
@@ -27,17 +36,17 @@ import { companionWorldSleepPlanSchema } from './companion-life-plan';
 import { companionLifeOverviewReadCommand, companionLifeOverviewContextSchema } from './companion-life-overview';
 import { companionMemoryTraceListCommand, companionMemoryTraceInspectCommand } from './companion-memory-trace';
 import { companionDocumentCatalogCommands, companionDocumentCatalogPageSchema } from './companion-document-catalog';
-import { activityStorageCommands, activityMemoryIntentSchema, activityPlanningStateSchema, activityHandoffSchema, activityPassiveRecallSchema } from './companion-activity-task';
+import { activityStorageCommands, activityMemoryIntentSchema, activityPlanningStateSchema, activityHandoffSchema, activityPassiveRecallSchema, activityAgendaPageSchema } from './companion-activity-task';
 import { companionMemoryTagCommands, companionMemoryTagJobSchema, companionMemoryTagStatusSchema } from './companion-memory-tags';
 
 import {
   actionSchema, attachmentSchema, companionDraftSchema, companionIdSchema, messageSchema, memorySchema,
-  companionsResponseSchema, companionActionPageQuerySchema, companionReplyRecoverySchema, companionMessagesQuerySchema, companionSearchQuerySchema,
+  companionsResponseSchema, companionActionPageQuerySchema, companionActionReadWindowSchema, companionReplyRecoverySchema, companionMessagesQuerySchema, companionSearchQuerySchema,
 } from './companions';
 import { dshTaskRecordSchema } from './dsh-tasks';
 import { dshTaskSpecSchema } from './dsh-task-spec';
 import { companionLoopCheckpointSchema, companionWorkSchema } from './companion-loop';
-import { companionMemoryStorageCommands, companionMemoryJobSchema, companionMemoryDomainSchema, companionMemoryOutboxSchema, companionMemorySourceOutboxSchema, companionMemorySnapshotSchema, companionMemoryPolicySchema, companionMemoryProhibitionSchema } from './companion-memory';
+import { companionMemoryStorageCommands, companionMemoryJobSchema, companionMemoryDomainSchema, companionMemoryOutboxSchema, companionMemorySourceOutboxSchema, companionMemorySnapshotSchema, companionMemoryPolicySchema, companionMemoryProhibitionSchema, companionMemoryDescriptorSchema } from './companion-memory';
 import { companionMemoryLibraryIndexStateSchema, companionMemoryLibraryIndexPageSchema, companionMemoryLibraryChangesSchema,
   companionMemoryLifecycleStateSchema, companionMemoryLifecycleChangesSchema, companionMemoryCaptureContributionsSchema, companionCaptureProposalSchema } from './companion-memory';
 import { companionScheduleStorageCommands, companionScheduleOccurrenceSchema, companionScheduleSchema } from './companion-schedule';
@@ -64,6 +73,7 @@ export const appendCompanionMessageSchema = z.strictObject({
   replyCompletion: z.object({ sourceMessageId: companionIdSchema, companionId: companionIdSchema }).optional(),
   loopStep: z.number().int().nonnegative().optional(),
   executionReadset: companionExecutionReadsetSchema.optional(),
+  toolPolicy: companionToolPolicySchema.optional(),
 });
 export type AppendCompanionMessage = z.input<typeof appendCompanionMessageSchema>;
 
@@ -125,11 +135,14 @@ export const companionProactiveStateSchema = z.strictObject({
 export type CompanionProactiveState = z.infer<typeof companionProactiveStateSchema>;
 
 export const companionStorageCommandSchema = z.discriminatedUnion('type', [
-  z.strictObject({ type: z.literal('companion.deletion.pending') }),
-  z.strictObject({ type: z.literal('companion.deletion.complete'), id: companionIdSchema }),
+  ...companionAgendaStorageCommands,
+  ...companionRecoveryWorkspaceCommands, companionRecoveryReviewCommand, companionRecoveryReviewPageCommand,
+  ...companionJobCommands,
+  ...companionTopicCompactionCommands,
+  ...companionRegistryStorageCommands,
+  ...companionGrowthStorageCommands,
   ...companionContactGroupCommands,
   ...companionMemoryProjectionCommands,
-  ...companionModelResourceCommands,
   companionTaskControlStopCommand,
   companionTaskPageStorageCommand, companionTaskResolveStorageCommand, companionTaskInspectCommand, companionTaskContentCommand, companionTaskTimelineRecordCommand,
   ...companionTaskStopStorageCommands,
@@ -160,17 +173,23 @@ export const companionStorageCommandSchema = z.discriminatedUnion('type', [
   ...companionLifeStorageCommands,
   ...companionTopicStorageCommands,
   ...companionCollaborationStorageCommands,
-  z.strictObject({ type: z.literal('companion.reset.cleanup'), id: companionIdSchema, jobId: companionIdSchema }),
-  z.strictObject({ type: z.literal('companion.reset.progress'), id: companionIdSchema, jobId: companionIdSchema, stage: companionResetCleanupStageSchema }),
-  z.strictObject({ type: z.literal('companion.reset.cleanup-failed'), id: companionIdSchema, jobId: companionIdSchema, error: z.string().max(1000) }),
+  z.strictObject({ type: z.literal('companion.retire.cleanup'), id: companionIdSchema, jobId: companionIdSchema }),
+  z.strictObject({ type: z.literal('companion.retire.progress'), id: companionIdSchema, jobId: companionIdSchema, stage: companionResetCleanupStageSchema }),
+  z.strictObject({ type: z.literal('companion.retire.cleanup-failed'), id: companionIdSchema, jobId: companionIdSchema, error: z.string().max(1000) }),
   z.strictObject({ type: z.literal('companion.task-ids'), id: companionIdSchema }),
   z.strictObject({ type: z.literal('companion.task.track'), id: companionIdSchema, companionId: companionIdSchema, taskId: companionIdSchema }),
   z.strictObject({ type: z.literal('state'), includeHidden: z.boolean().optional(), includeConversations: z.boolean().optional(), activeOnly: z.boolean().optional(), conversationId: companionIdSchema.optional(), companionId: companionIdSchema.optional() }),
   z.strictObject({ type: z.literal('companion.set-active'), id: companionIdSchema, active: z.boolean(), expectedRevision: z.number().int().positive().optional() }),
-  z.strictObject({ type: z.literal('companion.create'), companion: companionDraftSchema }),
+  companionCreationStatusCommand,
+  companionCreationIdentitySchema.extend({ type: z.literal('companion.creation.prepare'), request: z.discriminatedUnion('kind', [
+    z.strictObject({ kind: z.literal('custom'), companion: companionDraftSchema.strict() }),
+    z.strictObject({ kind: z.literal('builtin'), templateId: z.enum(COMPANION_TEMPLATE_IDS) }),
+  ]) }).strict(),
+  z.strictObject({ type: z.literal('companion.creation.commit'), operationId: z.uuid() }),
+  z.strictObject({ type: z.literal('companion.creation.fail'), operationId: z.uuid(), error: z.string().max(1000) }),
+  z.strictObject({ type: z.literal('companion.creation.pending'), after: z.uuid().optional(), limit: z.number().int().min(1).max(50).default(20) }),
   z.strictObject({ type: z.literal('companion.update'), id: companionIdSchema, companion: companionDraftSchema, expectedRevision: z.number().int().positive().optional() }),
   z.strictObject({ type: z.literal('companion.delete'), id: companionIdSchema }),
-  z.strictObject({ type: z.literal('companion.restore-builtin'), id: companionIdSchema }),
   z.strictObject({ type: z.literal('conversation.open'), companionId: companionIdSchema }),
   z.strictObject({ type: z.literal('conversation.create-group'), title: z.string().trim().max(100).default(''), memberIds: z.array(companionIdSchema).min(1).max(20) }),
   z.strictObject({ type: z.literal('conversation.update'), id: companionIdSchema, title: z.string().trim().max(100).optional(), memberIds: z.array(companionIdSchema).min(1).max(20).optional(), pinned: z.boolean().optional(), muted: z.boolean().optional() }),
@@ -181,8 +200,12 @@ export const companionStorageCommandSchema = z.discriminatedUnion('type', [
   z.strictObject({ type: z.literal('message.get'), id: companionIdSchema }),
   companionSearchQuerySchema.extend({ type: z.literal('message.search') }).strict(),
   z.strictObject({ type: z.literal('message.append'), message: appendCompanionMessageSchema }),
+  z.strictObject({ type: z.literal('agenda.message.commit'), companionId: companionIdSchema, runId: companionIdSchema, leaseToken: companionIdSchema,
+    unsolicited: z.boolean(), message: appendCompanionMessageSchema }),
   z.strictObject({ type: z.literal('memory.list'), companionId: companionIdSchema }),
   ...companionMemoryStorageCommands,
+  companionMemoryFileInspectCommand,
+  companionMemoryFileStateCommand,
   ...companionScheduleStorageCommands,
   ...companionStateStorageCommands,
   ...companionRoutineStorageCommands,
@@ -190,12 +213,21 @@ export const companionStorageCommandSchema = z.discriminatedUnion('type', [
   ...companionSocialStorageCommands,
   z.strictObject({ type: z.literal('memory.save'), memory: saveCompanionMemorySchema }),
   z.strictObject({ type: z.literal('memory.delete'), id: companionIdSchema }),
-  z.strictObject({ type: z.literal('actions'), conversationId: companionIdSchema.optional() }),
+  z.strictObject({ type: z.literal('actions'), conversationId: companionIdSchema.optional(), ...companionActionReadWindowSchema.shape }),
   ...companionDshMailboxCommands,
   z.strictObject({ type: z.literal('actions.invocation'), conversationId: companionIdSchema, companionId: companionIdSchema, parentMessageId: companionIdSchema }),
+  z.strictObject({ type: z.literal('actions.ongoing'), conversationId: companionIdSchema, companionId: companionIdSchema }),
   companionActionPageQuerySchema.extend({ type: z.literal('actions.page') }).strict(),
   z.strictObject({ type: z.literal('action.get'), id: companionIdSchema }),
+  z.strictObject({ type: z.literal('capability.revalidation.read'), id: companionIdSchema }),
+  z.strictObject({ type: z.literal('capability.revalidation.commit'), id: companionIdSchema,
+    invalidation: z.string().max(1000), writeGeneration: z.number().int().nonnegative().safe(), actionDigest: z.string().regex(/^[a-f0-9]{64}$/u) }),
+  z.strictObject({ type: z.literal('capability.for-task'), companionId: companionIdSchema, conversationId: companionIdSchema, taskId: companionIdSchema }),
   z.strictObject({ type: z.literal('action.create'), action: createCompanionActionSchema, checkpoint: companionTaskCheckpointSchema.optional() }),
+  z.strictObject({ type: z.literal('capability.begin'), companionId: companionIdSchema, conversationId: companionIdSchema,
+    title: z.string().min(1).max(120), name: z.string().min(1).max(100), callId: z.string().min(1).max(200), invocationId: z.string().min(1).max(200),
+    input: z.string().max(65536), sourceMessageId: companionIdSchema.optional(), parentMessageId: companionIdSchema.optional(),
+    loopStep: z.number().int().nonnegative().optional(), agendaRunId: companionIdSchema.optional(), leaseToken: companionIdSchema.optional(), authorizationGrantId: companionIdSchema.optional() }),
   z.strictObject({ type: z.literal('activity.thought.create'), taskId: companionIdSchema, leaseToken: companionIdSchema,
     expectedStep: z.number().int().nonnegative().safe(), effectId: z.string().min(1).max(200),
     observationFingerprint: z.string().min(2).max(65536), executionReadset: companionExecutionReadsetSchema,
@@ -218,13 +250,22 @@ export const companionStorageCommandSchema = z.discriminatedUnion('type', [
   z.strictObject({ type: z.literal('memory.corpus.stamp'), companionId: companionIdSchema }),
   z.strictObject({ type: z.literal('loop.save'), checkpoint: companionLoopCheckpointSchema, executionReadset: companionExecutionReadsetSchema.optional() }),
   z.strictObject({ type: z.literal('execution.sources'), sourceMessageIds: z.array(companionIdSchema).max(100), memoryIds: z.array(companionIdSchema).max(100).default([]) }),
+  z.strictObject({ type: z.literal('execution.capabilities.validate'), actions: z.array(z.strictObject({ id: companionIdSchema,
+    companionId: companionIdSchema, conversationId: companionIdSchema, capability: actionSchema.shape.capability })).max(512) }),
   z.strictObject({ type: z.literal('execution.invalidate'), kind: z.enum(['message', 'action']), id: companionIdSchema, companionId: companionIdSchema }),
   z.strictObject({ type: z.literal('work.enqueue'), work: companionWorkSchema, resume: z.boolean().optional() }),
-  z.strictObject({ type: z.literal('work.claim') }),
+  z.strictObject({ type: z.literal('work.claim'), companionId: companionIdSchema.optional(), id: companionIdSchema.optional(),
+    agendaRunId: companionIdSchema.optional(), agendaLeaseToken: companionIdSchema.optional() })
+    .refine(value => (!value.agendaRunId && !value.agendaLeaseToken) || !!(value.companionId && value.id && value.agendaRunId && value.agendaLeaseToken), '日程聊天认领需要完整的原始任务与父租约。'),
+  z.strictObject({ type: z.literal('work.get'), companionId: companionIdSchema, id: companionIdSchema }),
+  z.strictObject({ type: z.literal('work.agenda.restore'), companionId: companionIdSchema, id: companionIdSchema,
+    agendaRunId: companionIdSchema, expectedUpdatedAt: z.string() }),
   z.strictObject({ type: z.literal('work.list'), sourceMessageId: companionIdSchema.optional(), unfinishedOnly: z.boolean().optional() }),
   z.strictObject({ type: z.literal('work.interrupt-running') }),
   z.strictObject({ type: z.literal('work.promote'), sourceMessageId: companionIdSchema, companionId: companionIdSchema.optional(), checkpoint: companionLoopCheckpointSchema.optional() }),
-  z.strictObject({ type: z.literal('work.status'), id: companionIdSchema, status: companionWorkSchema.shape.status, resumeOnRestart: z.boolean().optional() }),
+  z.strictObject({ type: z.literal('work.status'), id: companionIdSchema, status: companionWorkSchema.shape.status, resumeOnRestart: z.boolean().optional(),
+    agendaRunId: companionIdSchema.optional(), agendaLeaseToken: companionIdSchema.optional() })
+    .refine(value => (!value.agendaRunId && !value.agendaLeaseToken) || !!(value.agendaRunId && value.agendaLeaseToken), '日程聊天结算需要完整父租约。'),
   z.strictObject({ type: z.literal('reply.checkpoint.status'), conversationId: companionIdSchema, sourceMessageId: companionIdSchema, status: z.enum(['pending', 'interrupted', 'done', 'cancelled']) }),
   z.strictObject({ type: z.literal('reply.checkpoint.complete'), conversationId: companionIdSchema, sourceMessageId: companionIdSchema, companionId: companionIdSchema }),
   z.strictObject({ type: z.literal('reply.checkpoint.reset'), conversationId: companionIdSchema, sourceMessageId: companionIdSchema, delivery: z.enum(['auto', 'steer', 'queue', 'parallel', 'chat']) }),
@@ -252,18 +293,34 @@ export const companionTopicCompactionPageSchema = z.strictObject({
 });
 export type CompanionTopicCompactionPage = z.infer<typeof companionTopicCompactionPageSchema>;
 export const companionStorageResponseSchema = companionsResponseSchema.extend({
+  capabilityRevalidation: z.strictObject({ action: actionSchema, invalidation: z.string().max(1000),
+    writeGeneration: z.number().int().nonnegative().safe(), actionDigest: z.string().regex(/^[a-f0-9]{64}$/u) }).optional(),
+  capabilityRevalidated: z.boolean().optional(),
+  agendaMessageRejected: z.literal(true).optional(),
+  recovery: companionRecoveryResultSchema.optional(),
+  recoveryReview: z.strictObject({ownerIds:z.array(companionIdSchema).max(50),hasMore:z.boolean(),nextId:companionIdSchema.optional()}).optional(),
+  jobDisposition: companionJobDispositionSchema.optional(),
+  topicCompactionJob: companionTopicCompactionJobSchema.optional(),
+  jobPage: companionJobPageSchema.optional(),
+  worldInputAccepted: z.boolean().optional(),
+  ...companionRegistryStorageResponseShape,
+  pendingCreations: z.array(z.strictObject({ creation: companionCreationReceiptSchema, companion: companionsResponseSchema.shape.companion.unwrap() })).optional(),
+  growthGoal: companionGrowthGoalSchema.optional(), growthGoals: z.array(companionGrowthGoalSchema).max(40).optional(),
   dshMailbox: z.object({ items: z.array(companionDshMailSchema).max(50), nextAfter: z.number().int().nonnegative(), hasMore: z.boolean() }).optional(),
-  pendingCompanionDeletions: z.array(companionIdSchema).optional(),
   taskCapacityClaimed: z.boolean().optional(),
   memoryFrozenValid: z.boolean().optional(),
   taskControl: companionTaskControlResultSchema.optional(),
   userTaskStops: z.array(companionTaskStopReceiptSchema).max(20).optional(),
   activityThoughtValid: z.boolean().optional(),
+  capabilityAuthorityResults: z.array(z.strictObject({ id: companionIdSchema, companionId: companionIdSchema,
+    conversationId: companionIdSchema, valid: z.boolean() })).max(512).optional(),
   experienceEvidence: companionExecutionReadsetSchema.optional(),
   agentRun: companionAgentRunSchema.optional(),
   executionSources: z.array(z.object({ kind: z.enum(['message', 'action']), id: companionIdSchema, companionId: companionIdSchema,
     conversationId: companionIdSchema, sourceMessageIds: z.array(companionIdSchema), invalidated: z.boolean().optional(), executionReadset: companionExecutionReadsetSchema.optional(),
-    storageValidatedReadsetDigest: z.string().regex(/^[a-f0-9]{64}$/u).optional() })).optional(),
+    capability: actionSchema.shape.capability,
+    storageValidatedReadsetDigest: z.string().regex(/^[a-f0-9]{64}$/u).optional(),
+    storageValidatedAuthorityEpoch: z.number().int().nonnegative().safe().optional() })).optional(),
   topicSourcesValid: z.boolean().optional(),
   topicCompactionPage: companionTopicCompactionPageSchema.optional(),
   collaboration: companionCollaborationGrantSchema.optional(), collaborations: z.array(companionCollaborationGrantSchema).max(100).optional(),
@@ -280,7 +337,7 @@ export const companionStorageResponseSchema = companionsResponseSchema.extend({
   action: actionSchema.optional(),
   proactive: companionProactiveStateSchema.optional(),
   checkpoint: companionTaskCheckpointSchema.optional(), replyRecovery: companionReplyRecoverySchema.optional(),
-  loop: companionLoopCheckpointSchema.optional(), memoryCorpusStamp: z.string().optional(),
+  loop: companionLoopCheckpointSchema.optional(), memoryCorpusStamp: z.string().optional(), memoryRecallAuthorityStamp: z.string().min(1).max(1000).optional(),
   work: companionWorkSchema.optional(), works: z.array(companionWorkSchema).optional(),
   memoryJob: companionMemoryJobSchema.optional(),
   memoryCaptureContributions: companionMemoryCaptureContributionsSchema.optional(),
@@ -290,13 +347,16 @@ export const companionStorageResponseSchema = companionsResponseSchema.extend({
   memorySourceChangedCompanionIds: z.array(companionIdSchema).optional(), memorySourcePendingOwners: z.array(companionIdSchema).optional(),
   assetProfileInitialized: z.boolean().optional(),
   assetPortraitInitialized: z.boolean().optional(),
-  modelResourcesInitialized: z.boolean().optional(), modelResourceAdmission: companionModelResourceAdmissionSchema.optional(), modelResourceUsage: companionModelResourceUsageSchema.optional(),
-  memoryTagJob: companionMemoryTagJobSchema.optional(), memoryTagStatus: companionMemoryTagStatusSchema.optional(),
+  memoryTagJob: companionMemoryTagJobSchema.optional(), memoryTagStatus: companionMemoryTagStatusSchema.optional(), memoryTagValid: z.boolean().optional(),
   memoryDomains: z.array(companionMemoryDomainSchema).optional(), memoryOutbox: companionMemoryOutboxSchema.optional(),
   memoryOutboxDisposition: z.strictObject({ state: z.enum(['completed', 'stale']), reason: z.string().max(1000).optional() }).optional(),
   memoryConsolidationDeferred: z.strictObject({ requiresFreshReadSet: z.literal(true), reason: z.string().max(1000) }).optional(),
   memorySnapshot: companionMemorySnapshotSchema.optional(),
+  memoryDescriptors: z.array(companionMemoryDescriptorSchema).optional(),
   memorySearchTimings: z.record(z.string(), z.number().nonnegative()).optional(),
+  memoryFileReadiness: companionMemoryFileReadinessSchema.optional(),
+  memoryFileState: companionMemoryFileStateSchema.optional(),
+  memoryFilesPending: z.boolean().optional(),
   memoryLibraryIndexState: companionMemoryLibraryIndexStateSchema.optional(),
   memoryProjectionState: companionMemoryProjectionStateSchema.optional(),
   memoryProjectionPage: companionMemoryProjectionPageSchema.optional(),
@@ -313,6 +373,7 @@ export const companionStorageResponseSchema = companionsResponseSchema.extend({
   memoryLifecycleState: companionMemoryLifecycleStateSchema.optional(),
   memoryLifecycleChanges: companionMemoryLifecycleChangesSchema.optional(),
   activityMemoryIntent: activityMemoryIntentSchema.optional(),
+  activityAgendaPage: activityAgendaPageSchema.optional(),
   activityPlanningState: activityPlanningStateSchema.optional(),
   activityPassiveRecall: activityPassiveRecallSchema.optional(),
   activityHandoff: activityHandoffSchema.optional(),
@@ -331,7 +392,7 @@ export const companionStorageResponseSchema = companionsResponseSchema.extend({
   world: companionWorldSnapshotSchema.optional(), worldWork: companionWorldWorkSchema.optional(), worldJob: companionWorldJobSchema.optional(),
   worldProposal: companionWorldProposalSchema.optional(),
   memoryInvestigations: z.array(companionMemoryInvestigationSchema).optional(), memoryInvestigation: companionMemoryInvestigationSchema.optional(),
-  memoryHistoryDescriptor: companionMemoryHistoryDescriptorSchema.optional(), memoryHistoryOutbox: companionMemoryHistoryOutboxSchema.optional(),
+  memoryHistoryDescriptor: companionMemoryHistoryDescriptorSchema.optional(), memoryHistoryDescriptors: z.array(companionMemoryHistoryDescriptorSchema).max(10000).optional(), memoryHistoryOutbox: companionMemoryHistoryOutboxSchema.optional(),
   memoryHistoryPendingOwners: z.array(z.string()).optional(), memoryHistoryOutboxAccepted: z.boolean().optional(),
   socialConversation: companionSocialConversationSchema.optional(), socialMessage: companionSocialMessageSchema.optional(), socialJob: companionSocialJobSchema.optional(),
   socialReplyReceipt: companionSocialReplyReceiptSchema.optional(),

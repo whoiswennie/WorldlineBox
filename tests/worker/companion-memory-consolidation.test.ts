@@ -20,7 +20,7 @@ afterEach(() => {
   if (path.dirname(resolved) !== path.resolve(tmpdir()) || !path.basename(resolved).startsWith('companion-consolidation-')) throw new Error('Invalid cleanup');
   rmSync(resolved, { recursive: true, force: true });
 });
-const candidate = (source: CompanionMessage, content = source.content): CompanionMemoryCandidate => ({ content, tags: ['有条件认识'],
+const candidate = (source: CompanionMessage, content = source.content): CompanionMemoryCandidate => ({ artifactKind: 'episode_memory' as const, content, tags: ['有条件认识'],
   sourceMessageIds: [source.id], evidence: [{ sourceMessageId: source.id, quote: source.content }] });
 function note(content: string, room = scope.conversationId) {
   const source = store.appendMessage({ conversationId: room, authorId: 'user', content, replyDirective: 'none' });
@@ -39,7 +39,7 @@ const Database = BetterSqlite3 as { new(filename: string): CompanionConnection }
 function fullMerge(items: Array<ReturnType<typeof note>>, operationId: string, content = items.map(item => item.source.content).join('\n')) {
   return store.request({ type: 'memory.consolidate', ...scope, operationId,
     inputs: items.map(item => ({ id: item.memory.id, version: read(item.memory.id).version })),
-    candidate: { content, tags: ['合成整合'], sourceMessageIds: [...new Set(items.map(item => item.source.id))],
+    candidate: { artifactKind: 'episode_memory' as const, content, tags: ['合成整合'], sourceMessageIds: [...new Set(items.map(item => item.source.id))],
       evidence: items.map(item => ({ sourceMessageId: item.source.id, quote: item.source.content })) } }).memories?.[0];
 }
 function consolidate(inputs: CompanionMemory[], source: CompanionMessage, operationId = 'merge_one') {
@@ -84,7 +84,7 @@ it.each(['A', 'B'] as const)('preserves the other original after source-only for
   const forgotten = forgottenSide === 'A' ? a : b, survivor = forgottenSide === 'A' ? b : a;
   const merged = store.request({ type: 'memory.consolidate', ...scope, operationId: 'merge_complete_sources',
     inputs: [read(a.memory.id), read(b.memory.id)].map(memory => ({ id: memory.id, version: memory.version })),
-    candidate: { content: `${a.source.content}${b.source.content}`, tags: ['有条件认识'], sourceMessageIds: [a.source.id, b.source.id],
+    candidate: { artifactKind: 'episode_memory' as const, content: `${a.source.content}${b.source.content}`, tags: ['有条件认识'], sourceMessageIds: [a.source.id, b.source.id],
       evidence: [a.source, b.source].map(source => ({ sourceMessageId: source.id, quote: source.content })) } }).memories![0]!;
   expect(merged.sources.map(source => source.messageId).sort()).toEqual([a.source.id, b.source.id].sort());
   const publish = store.request({ type: 'memory.outbox.claim' }).memoryOutbox!;
@@ -227,7 +227,7 @@ it('safely finalizes a running delivery whose real source was withdrawn, without
   const dispatch = store.request({ type: 'memory.outbox.claim' }).memoryOutbox!;
   expect(dispatch.noteId).toBe(merged.id);
   store.request({ type: 'memory.forget', ...scope, sourceMessageIds: [a.source.id] });
-  expect(store.request({ type: 'memory.outbox.complete', id: dispatch.id, leaseToken: dispatch.leaseToken, indexed: true }).memoryOutboxDisposition?.state).toBe('stale');
+  expect(() => store.request({ type: 'memory.outbox.complete', id: dispatch.id, leaseToken: dispatch.leaseToken, indexed: true })).toThrow('租约');
   index(); expect(active().map(note => note.id)).toEqual([b.memory.id]); expect(read(b.memory.id).archivedAt).toBeUndefined();
 });
 
@@ -241,11 +241,11 @@ it('keeps real native failures retryable while source-snapshot deferrals do not 
     expect(store.request({ type: 'memory.status', companionId: 'alice' }).memoryStatus?.failed).toBe(0);
     expect(store.request({ type: 'memory.outbox.claim' }).memoryOutbox).toBeUndefined();
     now += 1001; const second = store.request({ type: 'memory.outbox.claim' }).memoryOutbox!;
-    expect(second).toMatchObject({ id: first.id, attempts: 1 });
+    expect(second).toMatchObject({ id: first.id, attempts: 2 });
     store.request({ type: 'memory.outbox.fail', id: second.id, leaseToken: second.leaseToken, error: '真实编码服务故障', retryAfterMs: 0 });
     expect(store.request({ type: 'memory.status', companionId: 'alice' }).memoryStatus?.failed).toBe(1);
     const third = store.request({ type: 'memory.outbox.claim' }).memoryOutbox!;
-    expect(third).toMatchObject({ id: first.id, attempts: 2 });
+    expect(third).toMatchObject({ id: first.id, attempts: 3 });
     store.request({ type: 'memory.outbox.complete', id: third.id, leaseToken: third.leaseToken, indexed: true }); index();
     expect(active().map(note => note.id)).toEqual([merged.id]);
   } finally { clock.mockRestore(); }
@@ -274,7 +274,7 @@ it('replays a deferred operation receipt with the same explicit fresh-read requi
   fullMerge([a, b], 'occupying_plan');
   const command = { type: 'memory.consolidate' as const, ...scope, operationId: 'deferred_identity',
     inputs: [a.memory, c.memory].map(note => ({ id: note.id, version: note.version })),
-    candidate: { content: `${a.source.content}\n${c.source.content}`, tags: [], sourceMessageIds: [a.source.id, c.source.id],
+    candidate: { artifactKind: 'episode_memory' as const, content: `${a.source.content}\n${c.source.content}`, tags: [], sourceMessageIds: [a.source.id, c.source.id],
       evidence: [a.source, c.source].map(source => ({ sourceMessageId: source.id, quote: source.content })) } };
   const first = store.request(command), replayed = store.request(command);
   expect(first.memoryConsolidationDeferred).toMatchObject({ requiresFreshReadSet: true });

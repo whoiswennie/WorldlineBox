@@ -100,7 +100,7 @@ function source(f: ReturnType<typeof fixture>, ownerIndex: number) {
 function indexed(f: ReturnType<typeof fixture>, ownerIndex: number, occurredAt?: string) {
   const message = source(f, ownerIndex);
   const note = f.store.request({ type: 'memory.record', companionId: f.seeds[ownerIndex]!.id, conversationId: message.conversationId,
-    candidate: { content: message.content, sourceMessageIds: [message.id], evidence: [{ sourceMessageId: message.id, quote: message.content }],
+    candidate: { artifactKind: 'episode_memory' as const, content: message.content, sourceMessageIds: [message.id], evidence: [{ sourceMessageId: message.id, quote: message.content }],
       tags: [], ...(occurredAt ? { occurredAt } : {}) } }).memories![0]!;
   const outbox = f.store.request({ type: 'memory.outbox.claim', companionId: f.seeds[ownerIndex]!.id }).memoryOutbox!;
   f.store.request({ type: 'memory.outbox.complete', id: outbox.id, leaseToken: outbox.leaseToken, indexed: true });

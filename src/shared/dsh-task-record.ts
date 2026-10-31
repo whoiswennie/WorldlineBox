@@ -6,10 +6,12 @@ import { companionThoughtOriginSchema } from './companion-activity-thought';
 export const DSH_RECORD_LIMITS = { pageSize: 20, maxPageSize: 50, entryChars: 2000, maxEntryChars: 4000, pageChars: 12000, finalChars: 6000 } as const;
 export const dshRecordScopeSchema = z.strictObject({ actionId: z.uuid(), companionId: z.string().regex(/^[A-Za-z0-9_-]{1,100}$/), conversationId: z.string().regex(/^[A-Za-z0-9_-]{1,100}$/), sourceMessageId: z.string().regex(/^[A-Za-z0-9_-]{1,100}$/).optional(),
   activityThought: companionThoughtOriginSchema.optional(),
+  agendaOrigin: z.strictObject({ runId: z.string().regex(/^[A-Za-z0-9_-]{1,100}$/u), ruleId: z.string().regex(/^[A-Za-z0-9_-]{1,100}$/u),
+    occurrenceId: z.string().regex(/^[A-Za-z0-9_-]{1,100}$/u), grantId: z.string().regex(/^[A-Za-z0-9_-]{1,100}$/u), grantRevision: z.number().int().positive() }).optional(),
   topicId: z.string().min(1).max(100).nullable().optional(), invocationId: z.string().min(1).max(200).optional(),
   sourceDigest: z.string().regex(/^[a-f0-9]{64}$/).optional(), authorizationGrantId: z.string().min(1).max(100).optional(),
   executionReadsetDigest: z.string().regex(/^[a-f0-9]{64}$/u).optional(),
-  domain: z.enum(['reality', 'game', 'story', 'discussion']).optional() }).refine(scope => !!scope.sourceMessageId || !!scope.activityThought,
+  domain: z.enum(['reality', 'game', 'story', 'discussion']).optional() }).refine(scope => !!scope.sourceMessageId || !!scope.activityThought || !!scope.agendaOrigin,
   '执行记录须绑定真实用户来源或宿主核验的持续活动思考来源。');
 export type DshRecordScope = z.infer<typeof dshRecordScopeSchema>;
 export const dshRecordQuerySchema = z.strictObject({ recordId: z.uuid(),

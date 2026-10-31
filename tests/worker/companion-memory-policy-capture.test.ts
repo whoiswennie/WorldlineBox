@@ -20,7 +20,7 @@ function fixture() {
   const root = mkdtempSync(path.join(tmpdir(), 'memory-policy-capture-')); roots.push(root);
   const filename = path.join(root, 'messages.sqlite'), policyRoot = path.join(root, '伙伴记忆'), policy = initialCompanionMemoryPolicy();
   const write = (owner = 'alice') => { mkdirSync(path.join(policyRoot, owner), { recursive: true }); writeFileSync(path.join(policyRoot, owner, COMPANION_MEMORY_POLICY_FILE),
-    JSON.stringify({ schema: 'worldlinebox.companion-memory-policy-v1', companionId: owner, policy })); };
+    JSON.stringify({ schema: 'worldlinebox.companion-cognition-policy-v2', companionId: owner, policy })); };
   write(); write('bob');
   const store = new CompanionsStore(filename, ['alice', 'bob'].map(id => ({ id, name: id, description: '', persona: '真实经历', model: '', avatar: 'sister' as const, active: true, proactive: false })));
   stores.add(store); store.request({ type: 'world.maintenance.bind-policy-root', root: policyRoot });
@@ -54,16 +54,16 @@ it('keeps raw intake through policy failure, spends no attempts and restores pen
   finally { db.close(); }
   f.write(); expect(f.claim('alice')?.sourceMessageIds).toEqual([first.id, second.id]);
 });
-it('defers only a valid whole capture lease without exhausting debt or advancing source coverage', () => {
+it('defers only a valid whole capture lease without adding failures or advancing source coverage', () => {
   const f = fixture(), first = f.append('第一段需要保留。'), second = f.append('第二段也需要保留。');
   vi.setSystemTime(Date.now() + 65_000);
   const db = new (BetterSqlite3 as unknown as { new(file: string): CompanionConnection })(f.filename);
   try {
     for (let attempt = 0; attempt < 10; attempt++) {
-      const job = f.claim('alice')!; expect(job.sourceMessageIds).toEqual([first.id, second.id]); expect(job.attempts).toBe(1);
+      const job = f.claim('alice')!; expect(job.sourceMessageIds).toEqual([first.id, second.id]); expect(job.attempts).toBe(attempt + 1);
       expect(() => f.store.request({ type: 'memory.jobs.defer', id: job.id, leaseToken: 'forged-token', error: '不应改动租约', retryAfterMs: 1000 })).toThrow();
       f.store.request({ type: 'memory.jobs.defer', id: job.id, leaseToken: job.leaseToken, error: '本地资源暂不可用', retryAfterMs: 1000 });
-      expect(db.prepare("SELECT COUNT(*) AS n,SUM(attempts) AS attempts FROM vcp_capture_jobs WHERE companion_id='alice' AND status='pending' AND lease_token IS NULL").get()).toEqual({ n: 2, attempts: 0 });
+      expect(db.prepare("SELECT COUNT(*) AS n,SUM(attempts) AS attempts,SUM(failure_count) AS failures FROM vcp_capture_jobs WHERE companion_id='alice' AND status='pending' AND lease_token IS NULL").get()).toEqual({ n: 2, attempts: 2 * (attempt + 1), failures: 0 });
       expect(f.claim('alice')).toBeUndefined(); vi.setSystemTime(Date.now() + 1000);
     }
     const job = f.claim('alice')!;
@@ -83,7 +83,10 @@ it('lifts only typed pending admission debt and preserves genuine failures and a
   const bob = f.claim('bob')!;
   f.store.request({ type: 'memory.jobs.retry-admission', companionId: 'bob' }); expect(f.claim('alice')).toBeUndefined();
   f.store.request({ type: 'memory.jobs.retry-admission' });
-  const retried = f.claim('alice')!; expect(retried).toMatchObject({ attempts: 2, sourceMessageIds: [source.id] });
+  const retried = f.claim('alice')!; expect(retried).toMatchObject({ attempts: 3, sourceMessageIds: [source.id] });
+  const db = new (BetterSqlite3 as unknown as { new(file: string): CompanionConnection })(f.filename);
+  try { expect(db.prepare('SELECT failure_count FROM vcp_capture_jobs WHERE id=?').get(retried.id)).toEqual({ failure_count: 1 }); }
+  finally { db.close(); }
   expect(f.claim('bob')).toBeUndefined();
   f.store.request({ type: 'memory.jobs.complete', id: retried.id, leaseToken: retried.leaseToken, notes: [] });
   f.store.request({ type: 'memory.jobs.complete', id: bob.id, leaseToken: bob.leaseToken, notes: [] });

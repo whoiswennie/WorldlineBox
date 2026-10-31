@@ -14,7 +14,7 @@ function fixture(positions = [{ x: 18, y: 26 }, { x: 20, y: 26 }, { x: 19, y: 28
   const root = mkdtempSync(path.join(tmpdir(), 'companion-encounter-')); roots.push(root); const filename = path.join(root, 'messages.sqlite');
   let store = new CompanionsStore(filename, seeds.map(seed => ({ ...seed, active: true }))); stores.add(store);
   const first = store.request({ type: 'world.snapshot' }).world!;
-  store.request({ type: 'world.configure', expectedRevision: first.settings.revision, patch: { mode: 'compressed', timeZone: 'UTC' } });
+  store.request({ type: 'world.configure', expectedRevision: first.settings.revision, patch: { mode: 'realtime', timeZone: 'UTC' } });
   for (const role of seeds) {
     const scope = { companionId: role.id, conversationId: store.openPrivate(role.id).id }, routine = store.request({ type: 'routine.get', ...scope }).routine!;
     store.request({ type: 'routine.configure', ...scope, expectedRevision: routine.revision, patch: { timeZone: 'UTC', sleepAt: '23:00', wakeAt: '07:00', meals: [], habits: [] } });
@@ -30,7 +30,7 @@ function fixture(positions = [{ x: 18, y: 26 }, { x: 20, y: 26 }, { x: 19, y: 28
 function advance(store: CompanionsStore, ms: number) { vi.setSystemTime(Date.now() + ms); return store.request({ type: 'world.tick', snapshot: true }).world!; }
 function encounter(store: CompanionsStore): CompanionWorldJob {
   let job: CompanionWorldJob | undefined;
-  for (let index = 0; index < 40 && !job; index++) { advance(store, 500); job = store.request({ type: 'world.job.claim', kind: 'decision' }).worldJob; }
+  for (let index = 0; index < 60 && !job; index++) { advance(store, 5000); job = store.request({ type: 'world.job.claim', kind: 'decision' }).worldJob; }
   expect(job?.encounterMemberIds).toHaveLength(3); return job!;
 }
 function audit(filename: string) {
@@ -93,7 +93,7 @@ describe('durable real face-to-face encounters', () => {
     expect(store.request({ type: 'social.conversations' }).socialConversationPage!.total).toBe(0);
   });
 
-  it('rolls back physical encounter release when the final failed-job write is rejected, then retries the same lease cleanly', () => {
+  it('rolls back physical encounter release when the failed-job write is rejected, then records the failure on the same lease cleanly', () => {
     const store = fixture(), job = encounter(store), filename = path.join(roots.at(-1)!, 'messages.sqlite'), before = audit(filename);
     const fault = new Sqlite(filename);
     try { fault.exec(`CREATE TRIGGER fail_encounter_termination BEFORE UPDATE ON companion_world_jobs WHEN OLD.id='${job.id}' BEGIN SELECT RAISE(ABORT,'injected final encounter job failure'); END`); }
@@ -102,8 +102,12 @@ describe('durable real face-to-face encounters', () => {
     expect(audit(filename)).toEqual(before);
     const repair = new Sqlite(filename); try { repair.exec('DROP TRIGGER fail_encounter_termination'); } finally { repair.close(); }
     store.request({ type: 'world.job.fail', id: job.id, leaseToken: job.leaseToken!, error: '本次提供方没有返回。' });
-    const committed = audit(filename), saved = committed.worldJobs.find(value => (value as { id: string }).id === job.id) as { status: string };
-    expect(saved.status).toBe('done');
+    const committed = audit(filename), saved = committed.worldJobs.find(value => (value as { id: string }).id === job.id) as
+      { status: string; failure_count: number; cycle_failure_count: number; data: string };
+    // Releasing the physical meeting is not a successful cognitive result.
+    // The precious original encounter remains available for bounded retry.
+    expect(saved).toMatchObject({ status: 'failed', failure_count: 1, cycle_failure_count: 1 });
+    expect(JSON.parse(saved.data).encounterMemberIds).toEqual(job.encounterMemberIds);
     const state = JSON.parse((committed.world[0] as { data: string }).data) as { actors: Array<{ meetingHold?: unknown; meetingResume?: unknown }> };
     expect(state.actors.every(actor => !actor.meetingHold && !actor.meetingResume)).toBe(true);
     expect(committed.messages).toHaveLength(0);

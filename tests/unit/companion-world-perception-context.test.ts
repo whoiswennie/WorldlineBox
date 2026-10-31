@@ -20,7 +20,7 @@ function fixture(): CompanionWorldSnapshot {
   const actors: CompanionWorldActor[] = ['self', 'near', 'remembered', 'far'].map((companionId, index) => ({ companionId,
     sceneId: index < 2 ? 'home_self' : 'home_far', homeSceneId: 'home_' + companionId, position: { x: 4 + index * 40, y: 4 },
     facing: 'south', frame: 0, activity: 'idle', activityStartedAtReal: now, artAction: 'idle', locomotion: 'walk', movementSpeed: 2.4,
-    state: { energy: 7, mood: 'low', expression: 'reserved', affect: { pleasure: -.9, arousal: .9, dominance: -.7 }, thermalComfort: .2 },
+    state: { energy: 7, expression: 'reserved', thermalComfort: .2 },
     destinationId: companionId === 'self' ? 'self_desk' : 'PRIVATE_PEER_PLAN', route: [{ sceneId: 'home_far', x: 777, y: 888 }], routinePhase: 'awake' }));
   const ownHome = createCompanionWorldHome('self'), foreignHome = createCompanionWorldHome('far');
   foreignHome.objects[0] = { ...foreignHome.objects[0]!, id: 'UNSEEN_PRIVATE_FURNITURE', name: 'UNSEEN_PRIVATE_FURNITURE' };
@@ -33,8 +33,8 @@ function fixture(): CompanionWorldSnapshot {
     visits: [{ id: 'hidden_visit', guestId: 'near', hostId: 'far', status: 'allowed', reason: 'PRIVATE_VISIT_REASON', createdAt: now, expiresAt: '2026-10-16T10:00:00.000Z' }],
     events: [{ id: 'hidden_event', sequence: 1, actorId: 'far', targetId: 'near', sceneId: foreignHome.id, kind: 'social_phone', text: 'PRIVATE_ROOM_EVENT', at: now, realAt: now, simulation: true }],
     works: [{ workId: 'PRIVATE_PEER_WORK', companionId: 'near', kind: 'action', status: 'ready', computerId: 'UNSEEN_COMPUTER', reason: 'PRIVATE_WORK_REASON' }],
-    relationships: [{ companionId: 'near', targetCompanionId: 'self', affinity: 99, trust: 99, interactions: 9, updatedAt: now },
-      { companionId: 'self', targetCompanionId: 'near', affinity: 60, trust: 55, interactions: 2, updatedAt: old }],
+    relationships: [{ companionId: 'near', targetCompanionId: 'self', interactions: 9, updatedAt: now },
+      { companionId: 'self', targetCompanionId: 'near', interactions: 2, updatedAt: old }],
     lastEventSequence: 1, backlog: false,
     perception: { companionId: 'self', sceneId: ownHome.id, position: { x: 4, y: 4 }, activity: 'idle', awake: true, radius: 5,
       observedAtReal: now, observedAtVirtual: now, revision: 3,
@@ -54,7 +54,7 @@ function checkBoundary(world: ReturnType<typeof companionModelWorld>) {
   expect(world!.perception!.people.some(person => person.companionId === 'remembered')).toBe(false);
   expect(world!.residents.some(person => person.companionId === 'far')).toBe(false);
   expect(world!.scenes.find(scene => scene.id === 'home_far')!.objects).toEqual([]);
-  expect(world!.relationships).toEqual([{ companionId: 'self', targetCompanionId: 'near', affinity: 60, trust: 55, interactions: 2, updatedAt: old }]);
+  expect(world!.relationships).toEqual([{ companionId: 'self', targetCompanionId: 'near', interactions: 2, updatedAt: old }]);
   expect(world!.environment).toMatchObject({ temperature: 21, light: .4, temperatureLocation: 'indoors', weatherStatus: 'remembered',
     lastWeatherObservation: { weather: 'rain', weatherObservedAtVirtual: old, weatherLabel: '下雨' } });
   expect(world!.environment).not.toHaveProperty('weather');
@@ -289,7 +289,7 @@ it('keeps world decision and phone reply provider payloads within the same finit
   const decisionFetch: typeof fetch = async (_url, init) => {
     const data = JSON.parse(JSON.parse(String(init?.body)).messages[1].content); checkBoundary(data.world);
     expect(data.trigger.encounterMemberIds).toEqual(['self', 'near']);
-    return response({ action: null, reason: '先承认未观察到的内容。', appraisals: [] });
+    return response({ action: null, reason: '先承认未观察到的内容。' });
   };
   await generateCompanionWorldDecision({ companion, world, members, job: { id: 'job', companionId: 'self', conversationId: 'world_self',
     kind: 'decision', status: 'running', throughEventSequence: 1, attempts: 1, createdAt: now, sourceMemoryIds: [], encounterMemberIds: ['self', 'near', 'far'] } }, config, undefined, { fetchFn: decisionFetch });
@@ -311,7 +311,7 @@ it('validates present encounters from visible perception even when the scoped ac
   const decide = (targetCompanionId: string) => generateCompanionWorldDecision({ companion, world, members: [], job: { id: 'encounter',
     companionId: 'self', conversationId: 'world_self', kind: 'decision', status: 'running', throughEventSequence: 1,
     attempts: 1, createdAt: now, sourceMemoryIds: [] } }, config, undefined,
-  { fetchFn: async () => response({ action: { action: 'social', targetCompanionId, kind: 'greet', text: '你好，现在方便聊会儿吗？' }, reason: '只和眼前的人交流。', appraisals: [] }) });
+  { fetchFn: async () => response({ action: { action: 'social', targetCompanionId, kind: 'greet', text: '你好，现在方便聊会儿吗？' }, reason: '只和眼前的人交流。' }) });
   await expect(decide('near')).resolves.toMatchObject({ action: { action: 'social', targetCompanionId: 'near' } });
   await expect(decide('remembered')).rejects.toMatchObject({ code: 'INVALID_RESPONSE' });
   await expect(decide('far')).rejects.toMatchObject({ code: 'INVALID_RESPONSE' });

@@ -58,7 +58,7 @@ function timeline(config: CompanionRoutineConfig, from: number, to: number): Int
   const intervals: Interval[] = [];
   for (let day = firstDay; day <= lastDay; day += DAY) {
     const sleep = atClock(day, config.sleepAt, zone), wake = atClock(day + (config.wakeAt <= config.sleepAt ? DAY : 0), config.wakeAt, zone);
-    if (sleep !== undefined && wake !== undefined) intervals.push({ start: sleep, end: wake, phase: 'sleeping', activity: '睡眠', priority: 4 });
+    if (config.sleepEnabled !== false && sleep !== undefined && wake !== undefined) intervals.push({ start: sleep, end: wake, phase: 'sleeping', activity: '睡眠', priority: 4 });
     for (const meal of config.meals) {
       const start = atClock(day, meal.at, zone);
       if (start !== undefined) intervals.push({ start, end: start + meal.durationMinutes * MINUTE, phase: 'eating', activity: meal.name, priority: 3 });

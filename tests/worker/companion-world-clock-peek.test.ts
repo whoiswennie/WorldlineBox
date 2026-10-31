@@ -7,7 +7,7 @@ import { CompanionsStore, type CompanionConnection } from '../../src/companions/
 import { removeOwnedDirectorySync } from '../../src/main/vcp-memory/filesystem';
 import { companionWorldTimeSchema } from '../../src/shared/companion-world';
 
-it('peeks persisted world time without advancing or rolling jobs while preserving the original advancing clock API', () => {
+it('peeks the materialized world cursor without advancing or rolling jobs while the explicit clock API advances', () => {
   vi.useFakeTimers({ toFake: ['Date'] }); vi.setSystemTime('2026-10-22T08:00:00.000Z');
   const root = mkdtempSync(path.join(tmpdir(), 'worldlinebox-clock-peek-')), file = path.join(root, 'state.sqlite');
   const store = new CompanionsStore(file, [{ id: 'alice', name: 'Alice', description: '', persona: '认真', model: '', avatar: 'sister', active: true, proactive: false }]);
@@ -24,14 +24,14 @@ it('peeks persisted world time without advancing or rolling jobs while preservin
       const overview = store.request({ type: 'life.overview.read', companionId: 'alice', filter: 'all', limit: 20 }).lifeOverviewContext!;
       expect(observed.backlog, `ordinary tick delay ${lag}ms`).toBe(false);
       expect(overview.clock.backlog, `overview tick delay ${lag}ms`).toBe(false);
-      expect(observed.virtualNow).toBe(new Date().toISOString()); expect(overview.clock.virtualNow).toBe(observed.virtualNow);
+      expect(observed.virtualNow).toBe(initial.virtualNow); expect(overview.clock.virtualNow).toBe(observed.virtualNow);
     }
     vi.setSystemTime(base + 3_600_000);
     for (let n = 0; n < 5; n++) {
       const observed = store.request({ type: 'world.clock.peek' }).worldClock!;
       const overview = store.request({ type: 'life.overview.read', companionId: 'alice', filter: 'all', limit: 20 }).lifeOverviewContext!;
       expect(companionWorldTimeSchema.parse(observed)).toEqual(observed);
-      expect(observed.virtualNow).toBe(new Date().toISOString()); expect(observed.backlog).toBe(true);
+      expect(observed.virtualNow).toBe(initial.virtualNow); expect(observed.backlog).toBe(true);
       expect(overview.clock.virtualNow).toBe(observed.virtualNow); expect(overview.clock.backlog).toBe(true);
       expect(overview.clock.observedRealAt).toBe(initial.realNow);
     }

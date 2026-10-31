@@ -20,7 +20,7 @@ function fixture(){const root=mkdtempSync(path.join(tmpdir(),'worldlinebox-ficti
   const room=store.openPrivate('alice').id,scope={companionId:'alice',conversationId:room};
   return {root,file,store,room,scope,topic:(kind:'game'|'story')=>store.request({type:'topic.create',conversationId:room,readerId:'user',title:'虚构对局',kind}).topic!,
     bind:(messageId:string,topicId:string)=>{const db=new(Database as {new(file:string):CompanionConnection})(file);try{db.prepare('INSERT OR REPLACE INTO companion_message_topics(message_id,topic_id) VALUES(?,?)').run(messageId,topicId);}finally{db.close();}}};}
-const candidate=(source:CompanionMessage)=>({content:'虚构身份不是现实事实：'+source.content,tags:['测试'],sourceMessageIds:[source.id],evidence:[{sourceMessageId:source.id,quote:source.content}]});
+const candidate=(source:CompanionMessage)=>({ artifactKind: 'episode_memory' as const,content:'虚构身份不是现实事实：'+source.content,tags:['测试'],sourceMessageIds:[source.id],evidence:[{sourceMessageId:source.id,quote:source.content}]});
 
 it('revokes deleted discussion bodies, their derived index receipts and in-flight indexing while preserving actual participation',()=>{
   const f=fixture();

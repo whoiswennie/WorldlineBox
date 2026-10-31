@@ -11,10 +11,45 @@ const message = (id: string): CompanionMessage => ({ id, conversationId: scope.c
   sequence: 1, createdAt: '2026-10-23T00:00:00.000Z', attachments: [] });
 const proof = (id: string): CompanionExecutionSourceProof => ({ kind: 'message', id, ...scope, sourceMessageIds: [id], executionReadset: captureCompanionExecutionReadset(scope) });
 
+it('validates a typed capability presentation proof without requiring a legacy DSH readset', async () => {
+  const actual: CompanionExecutionSourceProof = { kind: 'action', id: 'cap_actual', ...scope, sourceMessageIds: ['card'],
+    capability: { name: 'agenda', callId: 'actual_call', invocationId: 'actual_run', agendaRunId: 'actual_run', inputHash: 'a'.repeat(64) } };
+  const valid = vi.fn(async () => true);
+  const storage = vi.fn(async (command: CompanionStorageCommand): Promise<CompanionStorageResponse> => {
+    if (command.type === 'execution.sources') return { ok: true, executionSources: [actual] };
+    throw new Error('A valid capability presentation must never be invalidated.');
+  });
+  const result = await guardCompanionExecutionSources({ type: 'message.get', id: 'card' }, { ok: true, message: message('card') }, { storage, valid });
+  expect(result.message?.content).toBe('ACTUAL_PRIVATE_BYTES'); expect(valid).toHaveBeenCalledExactlyOnceWith(actual, false);
+  expect(storage.mock.calls.map(([command]) => command.type)).toEqual(['execution.sources']);
+});
+
+it('does not treat an unproven ordinary action as a capability presentation', async () => {
+  const actual: CompanionExecutionSourceProof = { kind: 'action', id: 'ordinary_action', ...scope, sourceMessageIds: ['card'] };
+  const valid = vi.fn(async () => true);
+  const storage = vi.fn(async (command: CompanionStorageCommand): Promise<CompanionStorageResponse> => command.type === 'execution.sources'
+    ? { ok: true, executionSources: [actual] } : command.type === 'execution.invalidate' ? { ok: true } : { ok: true, message: message('card') });
+  const result = await guardCompanionExecutionSources({ type: 'message.get', id: 'card' }, { ok: true, message: message('card') }, { storage, valid });
+  expect(result.message?.sourceUnavailable).toBe('execution_source_changed'); expect(valid).not.toHaveBeenCalled();
+  expect(storage.mock.calls.map(([command]) => command.type)).toContain('execution.invalidate');
+});
+
+it.each([true, false])('rechecks current capability authority after a verified legacy marker repair (current valid: %s)', async currentValid => {
+  const actual: CompanionExecutionSourceProof = { kind: 'action', id: 'cap_actual', ...scope, invalidated: true, sourceMessageIds: ['card'],
+    capability: { name: 'agenda', callId: 'actual_call', invocationId: 'actual_run', agendaRunId: 'actual_run', inputHash: 'a'.repeat(64) } };
+  const recoverCapability = vi.fn(async () => true), valid = vi.fn(async () => currentValid);
+  const storage = vi.fn(async (command: CompanionStorageCommand): Promise<CompanionStorageResponse> => command.type === 'execution.sources'
+    ? { ok: true, executionSources: [actual] } : command.type === 'execution.invalidate' ? { ok: true } : { ok: true, message: message('card') });
+  const result = await guardCompanionExecutionSources({ type: 'message.get', id: 'card' }, { ok: true, message: message('card') }, { storage, valid, recoverCapability });
+  expect(recoverCapability).toHaveBeenCalledOnce(); expect(valid).toHaveBeenCalledOnce();
+  expect(result.message?.sourceUnavailable).toBe(currentValid ? undefined : 'execution_source_changed');
+  expect(storage.mock.calls.some(([command]) => command.type === 'execution.invalidate')).toBe(!currentValid);
+});
+
 it('does not invalidate source proofs for pure status reads or disposable catalogue maintenance', () => {
-  for (const type of ['memory.tags.status', 'memory.processing.status', 'memory.policy.list', 'memory.library.index-state', 'memory.outbox.pending',
+  for (const type of ['memory.tags.status', 'memory.processing.status', 'memory.policy.list', 'memory.library.index-state', 'memory.library.scope.read', 'memory.outbox.pending',
     'actions.page', 'document.catalog.query', 'document.catalog.touch', 'document.catalog.put', 'document.catalog.drop', 'document.catalog.finish', 'world.clock.peek',
-    'routine.get', 'schedule.list', 'schedule.get', 'activity.list', 'social.reply.progress', 'social.days', 'social.graph',
+    'world.tick', 'routine.get', 'schedule.list', 'schedule.get', 'activity.list', 'social.reply.progress', 'social.days', 'social.graph',
     'memory.revision.read', 'memory.revision.describe', 'memory.history.outbox.check', 'memory.history.outbox.owners',
     'memory.history.outbox.claim', 'memory.history.outbox.complete', 'memory.history.outbox.fail', 'memory.jobs.defer', 'memory.jobs.fail',
     'memory.jobs.retry-admission', 'memory.tags.retry-admission', 'world.job.retry-admission', 'memory.jobs.proposal.read', 'memory.jobs.proposal.save']) {
@@ -73,6 +108,37 @@ it('coalesces concurrent proof checks within one read and rechecks them on the n
   expect((await first).every(result => result.message?.content === 'ACTUAL_PRIVATE_BYTES')).toBe(true);
   await read();
   expect(valid).toHaveBeenCalledTimes(2);
+});
+
+it('retains foreground source proofs across calendar and task polling while still fencing grant changes', async () => {
+  let revision = 0, release!: () => void;
+  const gate = new Promise<void>(resolve => { release = resolve; });
+  const valid = vi.fn(async () => { await gate; return true; });
+  const storage = async (): Promise<CompanionStorageResponse> => ({ ok: true, executionSources: [proof('shared')] });
+  const read = () => guardCompanionExecutionSources({ type: 'message.get', id: 'shared' }, { ok: true, message: message('shared') },
+    { storage, valid, revision: () => revision });
+  const dispatch = (type: CompanionStorageCommand['type']) => {
+    if (!companionExecutionSourceReadOnly({ type } as CompanionStorageCommand)) revision += 2;
+  };
+  await withCompanionExecutionValidation(async () => {
+    const pending = read();
+    await vi.waitFor(() => expect(valid).toHaveBeenCalledOnce());
+    for (const type of ['agenda.read', 'agenda.event.read', 'agenda.tasks.read', 'agenda.goals.read', 'agenda.goal.read',
+      'agenda.grants.read', 'agenda.run.read', 'agenda.step.read', 'activity.agenda.pending', 'activity.agenda.get', 'activity.get',
+      'world.status', 'world.tick', 'learning.status', 'agenda.tick', 'agenda.claim', 'agenda.run.bindGrant', 'agenda.run.settle',
+      'agenda.run.checkpoint', 'agenda.run.heartbeat', 'world.work.begin', 'world.work.end', 'social.job.check', 'social.job.progress',
+      'player.profile.get', 'social.job.read', 'social.notification.read', 'world.job.read', 'learning.assets.snapshot',
+      'world.observe', 'interruption.begin', 'interruption.end', 'work.enqueue', 'work.claim', 'agenda.rule.create',
+      'message.append', 'social.send', 'social.conversation.ensure', 'activity.social.route', 'social.job.claim', 'social.notification.claim',
+      'world.job.claim', 'social.job.assets.save', 'social.job.preparation.save', 'agent.run.save', 'social.job.defer', 'social.notification.defer', 'world.job.defer'] as const) dispatch(type);
+    release(); await pending;
+    await read(); expect(valid).toHaveBeenCalledOnce();
+    dispatch('agenda.grant.revoke');
+    await read(); expect(valid).toHaveBeenCalledTimes(2);
+  });
+  await read(); expect(valid).toHaveBeenCalledTimes(3);
+  for (const type of ['agenda.grant.revoke', 'agenda.run.control', 'memory.outbox.claim', 'memory.jobs.claim', 'memory.tags.claim'] as const)
+    expect(companionExecutionSourceReadOnly({ type } as CompanionStorageCommand), type).toBe(false);
 });
 
 it('expires a read frame even in background work that inherited its async context', async () => {

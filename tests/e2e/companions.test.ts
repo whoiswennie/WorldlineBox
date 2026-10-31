@@ -294,7 +294,7 @@ test('journal uses live state and calendar plans, reminder runs once, and spacio
     await ensureAwakeRoutine(page, companionId, conversationId);
     const before = (await request(page, { type: 'state.get', companionId, conversationId })).runtimeState!;
     await sendUi(page, conversationId, '谢谢你一直陪我，我相信你，也会支持你。', [companionId]);
-    await expect.poll(async () => (await request(page, { type: 'state.get', companionId, conversationId })).runtimeState!.relationship.affinity, { timeout: 35_000 }).toBeGreaterThan(before.relationship.affinity);
+    await expect.poll(async () => (await request(page, { type: 'state.get', companionId, conversationId })).runtimeState?.experience?.statement, { timeout: 35_000 }).toBe('收到感谢让我感到被支持，也想认真回应。');
     await expect.poll(() => provider.requests.some(item => item.toolResults?.some(text => {
       try {
         const result = JSON.parse(text) as { ok?: boolean; stateObservation?: { status?: string; revision?: number } };
@@ -302,14 +302,15 @@ test('journal uses live state and calendar plans, reminder runs once, and spacio
       } catch { return false; }
     }))).toBe(true);
     const after = (await request(page, { type: 'state.get', companionId, conversationId })).runtimeState!;
-    expect(after.affect.pleasure).toBeGreaterThan(before.affect.pleasure);
+    expect(after.revision).toBeGreaterThan(before.revision); expect(after.experience?.sourceVersions.length).toBeGreaterThan(0); expect(after.experience?.reassessWhen).toEqual(['交流情境发生变化时重新核对']);
     await page.getByRole('button', { name: '我们之间', exact: true }).click();
     const journal = page.getByRole('complementary', { name: '伙伴手帐' });
-    await expect(journal.getByRole('progressbar', { name: '伙伴精力' })).toBeVisible();
-    await expect(journal.getByRole('button', { name: '查看当前伙伴状态详情', exact: true })).toContainText('好感 ' + Math.round(after.relationship.affinity));
+    await expect(journal.getByRole('progressbar')).toHaveCount(0);
+    await expect(journal.getByRole('button', { name: '查看当前伙伴状态详情', exact: true })).toContainText('近期处境与关注');
     await journal.getByRole('button', { name: '查看当前伙伴状态详情', exact: true }).click();
     await expect(journal.getByRole('dialog', { name: '伙伴当前状态' })).toContainText('用户表达了陪伴的感谢与信任。');
-    await expect(journal.locator('meter')).toHaveCount(6);
+    await expect(journal.getByRole('dialog', { name: '伙伴当前状态' })).toContainText('收到感谢让我感到被支持，也想认真回应。');
+    await expect(journal.locator('meter')).toHaveCount(0);
     await journal.getByRole('button', { name: '关闭当前状态详情', exact: true }).click();
     await journal.getByRole('button', { name: '管理伙伴日程', exact: true }).click();
     const manager = page.getByRole('dialog', { name: '伙伴日程', exact: true });
@@ -620,14 +621,15 @@ test('loads every portrait, preserves edited built-ins and chats privately and i
     expect((await messages(page, group.id)).filter(item => item.replyToId === groupSource.id)).toHaveLength(3);
     expect(provider.requests.every(item => item.model === 'one-shared-fixture-model' && item.headers.authorization === 'Bearer fixture-catalogue-key')).toBe(true);
     const gpt = state.companions.find(item => item.id === 'gpt')!;
-    await request(page, { type: 'companion.update', id: gpt.id, companion: { name: '小白龙', description: '我的白龙签名', persona: '用户编辑的白龙人设', avatar: gpt.avatar, model: '', proactive: false } });
+    const rejectedEdit = await page.evaluate(role => (window as unknown as CompanionBridgeWindow).worldlinebox.companions.request({ type: 'companion.update', id: role.id, companion: { name: '小白龙', description: '我的白龙签名', persona: '用户编辑的白龙人设', avatar: role.avatar, model: '', proactive: false } }), gpt);
+    expect(rejectedEdit.ok).toBe(false);
     const rejectedDelete = await page.evaluate(id => (window as unknown as CompanionBridgeWindow).worldlinebox.companions.request({ type: 'companion.delete', id }), gpt.id);
     expect(rejectedDelete.ok).toBe(false); expect(rejectedDelete.error).toContain('内置伙伴不能删除');
     await application.close(); application = undefined;
     started = await launch(profile); application = started.application; page = started.page;
     expect((await request(page, { type: 'state' })).state!.companions.some(item => item.id === 'gpt')).toBe(true);
-    const restored = (await request(page, { type: 'companion.add-builtin', templateId: 'gpt' })).companion!;
-    expect(restored).toMatchObject({ id: 'gpt', name: '小白龙', description: '我的白龙签名', persona: '用户编辑的白龙人设' });
+    const restored = (await request(page, { type: 'state' })).state!.companions.find(role => role.id === gpt.id)!;
+    expect(restored).toMatchObject({ id: gpt.id, name: gpt.name, description: gpt.description, persona: gpt.persona });
     expect((await messages(page, 'private-gpt')).filter(item => item.kind === 'notice')).toHaveLength(0);
     await page.locator('[data-application-module="companions"]').click();
     await page.getByRole('button', { name: '联系人', exact: true }).click();
@@ -1043,7 +1045,7 @@ async function providerFixture(hold?: { roleId: string; userText: string }): Pro
         if (context.purpose === 'companion_social_progress_review') {
           socialReviews.push({ proposedText: context.proposedText ?? '', facts: context.facts ?? [], nativeActions: context.nativeActions ?? [] });
           text = JSON.stringify({ supported: true, correction: '' });
-        } else if (context.purpose === 'world_decision') text = JSON.stringify({ action: null, reason: '没有需要打扰的世界事件。', appraisals: [] });
+        } else if (context.purpose === 'world_decision') text = JSON.stringify({ action: null, reason: '没有需要打扰的世界事件。', relationshipUpdates: [] });
         else if (context.purpose === 'world_social') text = JSON.stringify({ text: null, reason: '本例不继续伙伴话题。' });
         else if (context.purpose === 'world_message_authorization') text = JSON.stringify({ allowed: false, confidence: .99, evidence: [], reason: '本例无转发委托。' });
         else if (context.purpose === 'world_attention') text = JSON.stringify({ urgency: 'ordinary', confidence: .95, evidence: [context.source?.content ?? ''], reason: '用户没有请求打断当前作息。' });
@@ -1052,9 +1054,9 @@ async function providerFixture(hold?: { roleId: string; userText: string }): Pro
           memoryRequests.push({ purpose: context.purpose, companionId: context.companion?.id ?? '', sourceIds: context.messages.map(message => message.id).filter((id): id is string => !!id) });
           const appreciation = context.messages.find(message => message.authorId === 'user' && message.id && message.content === '谢谢你一直陪我，我相信你，也会支持你。');
           text = JSON.stringify({ notes: context.messages.filter(message => message.authorId === 'user' && message.id && message.content.includes('喜欢看海')).map(message => ({
-            content: '用户喜欢看海。', diaryName: '生活日记', tags: ['用户', '看海'],
+            artifactKind: 'episode_memory', content: '用户喜欢看海。', diaryName: '生活日记', tags: ['用户', '看海'],
             sourceMessageIds: [message.id], evidence: [{ sourceMessageId: message.id, quote: message.content }],
-          })), ...(appreciation ? { stateProposal: { reason: '用户表达了陪伴的感谢与信任。', sourceMessageIds: [appreciation.id], evidence: [{ sourceMessageId: appreciation.id, quote: appreciation.content }], appraisals: [{ type: 'support', target: 'user', intensity: .7, confidence: .95 }] } } : {}) });
+          })), ...(appreciation ? { stateProposal: { reason: '用户表达了陪伴的感谢与信任。', sourceMessageIds: [appreciation.id], evidence: [{ sourceMessageId: appreciation.id, quote: appreciation.content }], experience: { situation: '用户向我表达感谢与支持。', statement: '收到感谢让我感到被支持，也想认真回应。', touchedGoalIds: [], reassessWhen: ['交流情境发生变化时重新核对'] }, relationshipUpdates: [] } } : {}) });
         } else {
           const latestUser = context.messages.filter(message => message.speaker === 'user').at(-1)?.content ?? '';
           const recalledSeaside = context.memoryRecall?.context?.text.includes('用户喜欢看海') ?? false;
@@ -1089,7 +1091,7 @@ async function providerFixture(hold?: { roleId: string; userText: string }): Pro
           if (appreciation?.id && context.runtimeState && !payload.messages.some(message => message.role === 'tool' && message.tool_call_id === 'fixture_state')) stateCall = {
             id: 'fixture_state', type: 'function', function: { name: 'world', arguments: JSON.stringify({ action: 'state', parameters: { action: 'update', expectedRevision: context.runtimeState.revision, proposal: {
               expression: 'gentle', reason: '用户表达了陪伴的感谢与信任。', sourceMessageIds: [appreciation.id], evidence: [{ sourceMessageId: appreciation.id, quote: appreciation.content }],
-              appraisals: [{ type: 'support', target: 'user', intensity: .7, confidence: .95 }],
+              experience: { situation: '用户向我表达感谢与支持。', statement: '收到感谢让我感到被支持，也想认真回应。', touchedGoalIds: [], reassessWhen: ['交流情境发生变化时重新核对'] }, relationshipUpdates: [],
             } } }) },
           };
           text = JSON.stringify({ text: reply, memories: [], topic: '一起看海' });

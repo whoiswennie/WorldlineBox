@@ -1,5 +1,5 @@
 import { CompanionVcpRuntime } from '../../src/main/companions/vcp-runtime';
-import { generateCompanionText, COMPANION_TEXT_GENERATION_PROFILE } from '../../src/main/companions/model';
+import { generateCompanionText, companionNativeProviderLifecycle, COMPANION_TEXT_GENERATION_PROFILE } from '../../src/main/companions/model';
 import { VcpChatGateway } from '../../src/main/vcp-chat-gateway';
 import type { VcpMemoryEmbeddingConfig } from '../../src/main/vcp-memory/contracts';
 import type { VcpMemoryClientOptions } from '../../src/main/vcp-memory/client';
@@ -26,6 +26,7 @@ export function ownerGenerationRuntime(dataRoot: string, embedding: VcpMemoryEmb
       const route = await gateway.registerOwnerRoute({ ownerId: input.ownerId, credential: config.apiKey,
         semanticProfile: { ownerId: input.ownerId, profileKey: input.profileKey, generation: COMPANION_TEXT_GENERATION_PROFILE },
         generate: (context, signal, work) => generateCompanionText(context, { ...config, ownerId: input.ownerId, workPriority: work?.priority ?? 'foreground',
+          providerLifecycle: companionNativeProviderLifecycle(config, work?.nativeDispatchToken),
           resolveAssetContext: async context => {
             if (!work?.nativePrompt) return context;
             const native = validateCompanionNativeMemoryPrompt(work.nativePrompt, input.ownerId, context.system);

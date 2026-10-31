@@ -39,7 +39,7 @@ signal?: AbortSignal, options: Pick<CompanionModelOptions, 'fetchFn' | 'timeoutM
       user: JSON.stringify({ purpose: 'topic_moderator_transfer_consent', currentTopic: topic,
         proposedTransfer: { previousModeratorId: topic.moderatorId, targetCompanionId: command.targetCompanionId, expectedRevision: command.expectedRevision },
         publicSources: sources.map(message => ({ id: message.id, authorId: message.authorId, content: message.content })),
-        outputSchema: z.toJSONSchema(verdictSchema), ...(correction ? { formatCorrection: correction } : {}) }) }, config, signal, options);
+        outputSchema: z.toJSONSchema(verdictSchema), ...(correction ? { formatCorrection: correction } : {}) }) }, config, signal, { ...options, responseSchema: verdictSchema });
     const parsed = verdictSchema.safeParse(value);
     if (!parsed.success) { correction = { error: '主持移交核验必须返回outputSchema的完整字段与类型。' }; continue; }
     const verdict = parsed.data;

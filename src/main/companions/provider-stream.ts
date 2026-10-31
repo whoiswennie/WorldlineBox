@@ -1,10 +1,15 @@
 import type { AiApiFormat } from '../../shared/ai-endpoints';
 import { companionProviderContextCapacity } from './provider-capacity';
+import { companionProviderUsage } from './model-usage';
+import type { CompanionReportedUsage } from '../../shared/companion-model-usage';
 
 type RecordValue = Record<string, unknown>;
 const record = (value: unknown): RecordValue => value && typeof value === 'object' && !Array.isArray(value) ? value as RecordValue : {};
 const array = (value: unknown): unknown[] => Array.isArray(value) ? value : [];
 const MAX_STREAM_BYTES = 4 * 1_024 * 1_024, MAX_EVENT_LENGTH = 256 * 1_024;
+// Usage is telemetry after the native terminal frame. A provider that leaves
+// its socket open must not turn a completed answer into a long wait or replay.
+const USAGE_TAIL_WAIT_MS = 1000;
 export class CompanionProviderStreamError extends Error {
   constructor(readonly code: 'INVALID_RESPONSE' | 'REFUSED' | 'CANCELLED' | 'NETWORK' | 'CONTEXT_CAPACITY', message: string,
     readonly diagnostic?: 'missing_body' | 'malformed_event_json' | 'event_bytes_limit' | 'stream_bytes_limit' | 'uncompleted_stream'
@@ -17,10 +22,12 @@ type Call = { id: string; name: string; arguments: string; thoughtSignature?: st
 
 /** SSE adapters build the same final envelopes as non-streaming provider calls. */
 export async function readCompanionProviderStream(response: Response, format: AiApiFormat,
-  options: { signal: AbortSignal; onText?: (text: string) => void; onActivity?: () => void }): Promise<unknown> {
+  options: { signal: AbortSignal; onText?: (text: string) => void; onActivity?: () => void; onUsage?: (usage: CompanionReportedUsage) => void }): Promise<unknown> {
   const reader = response.body?.getReader(); if (!reader) throw invalid('missing_body');
-  const accumulator = new ProviderAccumulator(format, options.onText), decoder = new TextDecoder('utf-8', { fatal: true });
+  const accumulator = new ProviderAccumulator(format, options.onText, !!options.onUsage), decoder = new TextDecoder('utf-8', { fatal: true });
   let bytes = 0, pending = '', eventName = '', data: string[] = [], completed = false, skipLeadingLf = false;
+  let usageTailDeadline: number | undefined;
+  const finish = () => { const result = accumulator.finish(); completed = true; void reader.cancel().catch(() => undefined); return result; };
   const abort = () => { void reader.cancel().catch(() => undefined); };
   options.signal.addEventListener('abort', abort, { once: true });
   const dispatch = () => {
@@ -30,6 +37,7 @@ export async function readCompanionProviderStream(response: Response, format: Ai
       const value = data.join('\n'); data = [];
       if (value !== '[DONE]') {
         let parsed: unknown; try { parsed = JSON.parse(value); } catch { throw invalid('malformed_event_json'); }
+        const usage = companionProviderUsage(format, parsed); if (usage) options.onUsage?.(usage);
         accumulator.accept(eventName, parsed);
         if (streamActivity(format, eventName, parsed)) options.onActivity?.();
       } else accumulator.done();
@@ -49,11 +57,21 @@ export async function readCompanionProviderStream(response: Response, format: Ai
     if (options.signal.aborted) throw new CompanionProviderStreamError('CANCELLED', '这次回复已取消。');
     while (true) {
       let chunk: ReadableStreamReadResult<Uint8Array>;
-      try { chunk = await reader.read(); }
+      let tailTimer: ReturnType<typeof setTimeout> | undefined;
+      try {
+        if (accumulator.awaitingUsageTail) usageTailDeadline ??= Date.now() + USAGE_TAIL_WAIT_MS;
+        const remaining = usageTailDeadline === undefined ? undefined : usageTailDeadline - Date.now();
+        if (remaining !== undefined && remaining <= 0) return finish();
+        const next = remaining === undefined ? await reader.read() : await Promise.race([reader.read(),
+          new Promise<undefined>(resolve => { tailTimer = setTimeout(() => resolve(undefined), remaining); })]);
+        if (!next) return finish();
+        chunk = next;
+      }
       catch {
         if (options.signal.aborted) throw new CompanionProviderStreamError('CANCELLED', '这次回复已取消。');
+        if (accumulator.awaitingUsageTail) return finish();
         throw new CompanionProviderStreamError('NETWORK', '无法连接聊天模型，请检查网络和模型设置。');
-      }
+      } finally { if (tailTimer !== undefined) clearTimeout(tailTimer); }
       if (options.signal.aborted) throw new CompanionProviderStreamError('CANCELLED', '这次回复已取消。');
       if (chunk.done) break;
       bytes += chunk.value.byteLength; if (bytes > MAX_STREAM_BYTES) throw invalid('stream_bytes_limit');
@@ -66,8 +84,7 @@ export async function readCompanionProviderStream(response: Response, format: Ai
         pending = pending.slice(end + (cr && pending[end + 1] === '\n' ? 2 : 1));
       }
       if (accumulator.isFinished) {
-        const result = accumulator.finish(); completed = true;
-        void reader.cancel().catch(() => undefined); return result;
+        return finish();
       }
       if (pending.length > MAX_EVENT_LENGTH) throw invalid('event_bytes_limit');
     }
@@ -105,17 +122,20 @@ class ProviderAccumulator {
   private text = '';
   private visible = '';
   private terminal = false;
+  private nativeDone = false;
   private calls = new Map<number, Call>();
   private items = new Map<number, RecordValue>();
   private blocks = new Map<number, RecordValue>();
   private openBlocks = new Set<number>();
   private response?: RecordValue;
   private stopReason = '';
-  constructor(private readonly format: AiApiFormat, private readonly onText?: (text: string) => void) {}
-  get isFinished(): boolean { return this.terminal; }
+  constructor(private readonly format: AiApiFormat, private readonly onText?: (text: string) => void, private readonly waitForUsage = false) {}
+  get awaitingUsageTail(): boolean { return this.terminal && this.waitForUsage && ['openai_chat', 'dashscope_native'].includes(this.format) && !this.nativeDone; }
+  get isFinished(): boolean { return this.terminal && (!this.waitForUsage || !['openai_chat', 'dashscope_native'].includes(this.format) || this.nativeDone); }
   done(): void {
     // Chat/DashScope also require their native finish reason before [DONE].
     if (!this.terminal) throw invalid('uncompleted_stream');
+    this.nativeDone = true;
   }
   private updateText(value: string, cumulative = false): void {
     if (cumulative) { if (!value.startsWith(this.text)) throw invalid(); this.text = value; }

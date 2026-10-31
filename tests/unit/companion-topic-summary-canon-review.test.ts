@@ -2,10 +2,17 @@ import { expect, it, vi } from 'vitest';
 vi.mock('../../src/main/companions/topic-summary-quantity-review', () => ({ reviewTopicSummaryQuantities: async () => undefined }));
 import { reviewTopicSummaryCanon, topicSummaryClauses } from '../../src/main/companions/topic-summary-canon-review';
 import type { TopicUserCanon } from '../../src/main/companions/topic-user-canon';
+import { CompanionModelError } from '../../src/main/companions/model';
 
 const canon: TopicUserCanon = { version: 1, throughSequence: 1, entries: [{ id: 'rule', sourceMessageId: 'source', sourceChecksum: 'a'.repeat(64),
   quote: '共有5张卡，其中第4张还没拿到。', rule: '自由解释不应进入审核' }] };
 const config = { model: 'synthetic', apiKey: 'fixture', apiFormat: 'openai_chat' as const };
+it('does not renew an exhausted central format budget through the semantic audit retry loop', async () => {
+  const exhausted = new CompanionModelError('INVALID_RESPONSE', '格式修复已耗尽。', 'structured_repair_exhausted');
+  const audit = vi.fn(async () => { throw exhausted; });
+  await expect(reviewTopicSummaryCanon({ canon, summary: '当前状态', stage: '', config, audit })).rejects.toBe(exhausted);
+  expect(audit).toHaveBeenCalledTimes(1);
+});
 const clauses = (summary: string, stage = '') => topicSummaryClauses(summary, stage).map(clause => ({ clauseIndex: clause.clauseIndex,
   status: 'compatible', canonIndexes: [0] }));
 it('binds a contradiction to the actual full summary and exact source canon before a separate narrow decision', async () => {

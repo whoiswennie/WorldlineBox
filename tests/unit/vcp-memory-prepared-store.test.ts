@@ -22,7 +22,7 @@ it('joins concurrent and late hard-scope cleanup after the owner closes its work
 });
 it('shares workspace disk capacity and TTL collection across owners without deleting active packets', async () => {
   const root = await mkdtemp(path.join(tmpdir(), 'worldline-prepared-workspace-'));
-  const ownerRoot = (owner: string) => path.join(root, owner, '.认知索引', 'generation', 'a'.repeat(64));
+  const ownerRoot = (owner: string) => path.join(root, owner, '.运行', '索引', 'generation', 'a'.repeat(64));
   const limits = { workspaceRoot: root, maxPackages: 2, maxBytes: 4096 };
   const alice = new VcpPreparedRecallStore(ownerRoot('alice'), limits), bob = new VcpPreparedRecallStore(ownerRoot('bob'), limits);
   let active: Awaited<ReturnType<VcpPreparedRecallStore['acquire']>> | undefined;
@@ -43,7 +43,7 @@ it('shares workspace disk capacity and TTL collection across owners without dele
 });
 it('reconstructs a workspace byte budget from pre-existing packets after restart', async () => {
   const root = await mkdtemp(path.join(tmpdir(), 'worldline-prepared-disk-restart-'));
-  const dataRoot = path.join(root, 'alice', '.认知索引', 'generation', 'a'.repeat(64));
+  const dataRoot = path.join(root, 'alice', '.运行', '索引', 'generation', 'a'.repeat(64));
   let store = new VcpPreparedRecallStore(dataRoot, { workspaceRoot: root });
   try {
     const first = await store.save('alice', payload);
@@ -60,11 +60,11 @@ it('reconstructs a workspace byte budget from pre-existing packets after restart
 it('quarantines an owner directory replaced by a junction without unlinking its external target or blocking a peer', async () => {
   const root = await mkdtemp(path.join(tmpdir(), 'worldline-prepared-owner-link-'));
   const external = await mkdtemp(path.join(tmpdir(), 'worldline-prepared-owner-external-'));
-  const ownerRoot = (owner: string) => path.join(root, owner, '.认知索引', 'generation', 'a'.repeat(64));
+  const ownerRoot = (owner: string) => path.join(root, owner, '.运行', '索引', 'generation', 'a'.repeat(64));
   const alice = new VcpPreparedRecallStore(ownerRoot('alice'), { workspaceRoot: root }), bob = new VcpPreparedRecallStore(ownerRoot('bob'), { workspaceRoot: root });
   let moved = false;
   try {
-    const packet = await alice.save('alice', payload), suffix = path.join('.认知索引', 'generation', 'a'.repeat(64), createHash('sha256').update('alice').digest('hex'), 'prepared-recalls', packet.id + '.json');
+    const packet = await alice.save('alice', payload), suffix = path.join('.运行', '索引', 'generation', 'a'.repeat(64), createHash('sha256').update('alice').digest('hex'), 'prepared-recalls', packet.id + '.json');
     const bytes = await readFile(path.join(root, 'alice', suffix));
     const externalFile = path.join(external, suffix); await mkdir(path.dirname(externalFile), { recursive: true }); await writeFile(externalFile, bytes);
     const expired = new Date(Date.now() - 11 * 60 * 1000); await utimes(externalFile, expired, expired);

@@ -55,23 +55,18 @@ export function companionLifeThreshold(seed: string): number {
   value = Math.imul(value, 0x846ca68b); value ^= value >>> 16;
   return -Math.log(((value >>> 0) + .5) / 4294967296);
 }
-export function companionLifeMultiplier(input: { energy: number; pleasure: number; arousal: number; affinity: number; trust: number;
-  action: CompanionLifeRule['action']; available: boolean; expression?: string; thermalComfort?: number; weather?: CompanionWorldSnapshot['environment']['weather']; outdoorTemperature?: number }): number {
+export function companionLifeMultiplier(input: { energy: number; action: CompanionLifeRule['action']; available: boolean;
+  thermalComfort?: number; weather?: CompanionWorldSnapshot['environment']['weather']; outdoorTemperature?: number }): number {
   if (!input.available) return 0;
+  const energy = Math.max(0, Math.min(100, input.energy));
+  const comfort = Math.max(.35, Math.min(1, input.thermalComfort ?? 1));
   if (input.action === 'park_walk') {
-    // A modest need for regulation raises the desire to stroll, while exhaustion
-    // and unsafe outdoor conditions suppress it rather than forcing exercise.
-    if (!companionWorldParkSuitable({ weather: input.weather ?? 'clear', outdoorTemperature: input.outdoorTemperature ?? 20 }, input.energy)) return 0;
-    const readiness = Math.max(0, Math.min(1, (input.energy - 25) / 40));
-    const expression = input.expression === 'playful' ? 1.2 : input.expression === 'reserved' ? .85 : 1;
-    return Math.min(3, readiness * readiness * (3 - 2 * readiness) * Math.exp(.45 * Math.max(0, input.arousal) - .4 * input.pleasure)
-      * expression * Math.max(0, Math.min(1, input.thermalComfort ?? 1)) * (input.weather === 'cloudy' ? .85 : 1));
+    if (input.thermalComfort !== undefined && input.thermalComfort <= .2) return 0;
+    if (!companionWorldParkSuitable({ weather: input.weather ?? 'clear', outdoorTemperature: input.outdoorTemperature ?? 20 }, energy)) return 0;
+    const readiness = Math.max(0, Math.min(1, (energy - 25) / 40));
+    return readiness * readiness * (3 - 2 * readiness) * comfort * (input.weather === 'cloudy' ? .85 : 1);
   }
-  const social = input.action === 'message' || input.action === 'visit';
-  const energy = (Math.max(0, Math.min(100, input.energy)) - 60) / 100;
-  const relationship = social ? .9 * (input.affinity - 50) / 50 + .4 * (input.trust - 50) / 50 : 0;
-  const mood = social ? .45 * input.pleasure - .25 * Math.max(0, input.arousal) : input.action === 'rest' ? -energy : .2 * input.pleasure;
-  const expression = social ? input.expression === 'playful' ? .15 : input.expression === 'reserved' ? -.2 : 0 : 0;
-  return Math.max(.1, Math.min(3, Math.exp((input.action === 'rest' ? -energy : energy) + relationship + mood + expression)
-    * Math.max(.35, Math.min(1, input.thermalComfort ?? 1))));
+  // Opportunity is based on actual resources. Desire and specific relationship
+  // matters are evaluated by the owner, never converted into a friendship score.
+  return (input.action === 'rest' ? .5 + (100 - energy) / 100 : .25 + energy / 100) * comfort;
 }

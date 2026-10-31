@@ -13,7 +13,9 @@ it('runs the real-model probe through current, historical and source owner files
   let files: Awaited<ReturnType<typeof canonicalMemoryFiles>> | undefined;
   try {
     const scope = { companionId: 'alice', conversationId: store.openPrivate('alice').id };
-    const original = store.saveMemory({ ...scope, content: '合成物品的蓝色资料袋放在书房东侧书柜最下层，事情尚未完成。', diaryName: '资料' });
+    const message = store.appendMessage({ conversationId: scope.conversationId, authorId: 'user', content: '合成物品的蓝色资料袋放在书房东侧书柜最下层，事情尚未完成。', replyDirective: 'none' });
+    const original = store.request({ type: 'memory.record', ...scope, candidate: { artifactKind: 'episode_memory', content: message.content,
+      diaryName: '资料', sourceMessageIds: [message.id], evidence: [{ sourceMessageId: message.id, quote: message.content }] } }).memories![0]!;
     const outbox = store.request({ type: 'memory.outbox.claim' }).memoryOutbox!;
     store.request({ type: 'memory.outbox.complete', id: outbox.id, leaseToken: outbox.leaseToken, indexed: true });
     files = await canonicalMemoryFiles(root, store, { apiFormat: 'openai_chat', model: 'unused-synthetic-model', apiKey: 'synthetic' });
@@ -22,8 +24,9 @@ it('runs the real-model probe through current, historical and source owner files
     const receipt = snapshot.fileReceipts![0]!;
     expect(await readFile(path.join(root, 'owner-assets', 'alice', ...receipt.path.split('/')), 'utf8')).toBe(original.content);
     const raw = store.getMessage(original.sources[0]!.messageId);
-    store.request({ type: 'memory.revise', ...scope, id: original.id, expectedVersion: original.version,
-      candidate: { content: original.content + ' 这仍只是一条合成资料记录。', sourceMessageIds: [raw.id], evidence: [{ sourceMessageId: raw.id, quote: raw.content }], tags: ['合成'] } });
+    const revised = store.request({ type: 'memory.revise', ...scope, id: original.id, expectedVersion: original.version,
+      candidate: { artifactKind: 'episode_memory' as const, content: original.content + ' 这仍只是一条合成资料记录。', sourceMessageIds: [raw.id], evidence: [{ sourceMessageId: raw.id, quote: raw.content }], tags: ['合成'] } });
+    expect(revised.memories![0]!.diaryName).toBe(original.diaryName);
     await files.publish('alice');
     expect(() => store.request({ type: 'memory.revision.read', ...scope, id: original.id, contentRevision: original.contentRevision! })).toThrow('SQL');
     expect((await files.request({ type: 'memory.revision.read', ...scope, id: original.id, contentRevision: original.contentRevision! })).memories![0]!.content).toBe(original.content);

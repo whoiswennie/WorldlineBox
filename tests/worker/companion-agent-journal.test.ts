@@ -311,7 +311,7 @@ it('invalidates a resumed private-port inference when its separate game private 
 it('binds native context inputs by observed note version and excludes the separate candidate list', async () => {
   const source = frame.sourceMessage!;
   const candidate = store.request({ type: 'memory.record', companionId: 'alice', conversationId: frame.conversation.id,
-    candidate: { content: 'A candidate body that native focusing did not consume.', tags: ['candidate'], sourceMessageIds: [source.id], evidence: [{ sourceMessageId: source.id, quote: source.content }] } }).memories![0]!;
+    candidate: { artifactKind: 'episode_memory' as const, content: 'A candidate body that native focusing did not consume.', tags: ['candidate'], sourceMessageIds: [source.id], evidence: [{ sourceMessageId: source.id, quote: source.content }] } }).memories![0]!;
   frame.memories = [candidate];
   frame.memoryRecall = { reasons: [{ id: candidate.id, version: candidate.version, reasons: ['native candidate'], path: [] }], pending: false, degraded: false,
     context: { text: 'Actual focused material.', revision: 'snapshot', profileKey: 'profile', evidence: { capturedAt: source.createdAt, corpusHash: 'hash',

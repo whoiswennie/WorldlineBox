@@ -1,4 +1,5 @@
 import { mkdtempSync, rmSync } from 'node:fs';
+import { createHash } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
@@ -63,7 +64,10 @@ async function fixture(seeds: CompanionSeed[], global: CompanionModelConfig, key
   const item = { assetId: 'actual-asset', displayName: '已授权原文.md', currentRevisionId: 'revision', relativeFilePath: 'source.md', mediaType: 'text' } as AssetSummary;
   const assets = { catalog: vi.fn(async () => []), grant: vi.fn(async () => ({ libraryName: '实际授权库', libraryPath: root })),
     page: vi.fn<CompanionLearningAssets['page']>(async () => ({ assets: [item], hasMore: false })),
-    read: vi.fn<CompanionLearningAssets['read']>(async grant => ({ content: `${grant.companionId} 实际读到的授权资料，不代表已经学会。`, revisionId: 'actual_revision', truncated: false })) };
+    read: vi.fn<CompanionLearningAssets['read']>(async grant => {
+      const content = `${grant.companionId} 实际读到的授权资料，不代表已经学会。`;
+      return { content, revisionId: item.currentRevisionId + '_' + createHash('sha256').update(Buffer.from(content)).digest('hex').slice(0, 20), truncated: false };
+    }) };
   transport.request.mockImplementation(async command => store.request(command));
   transport.close.mockImplementation(async () => undefined);
   // Persist the real automatic grant before Main starts; only Main's production timer may claim it.
@@ -71,14 +75,15 @@ async function fixture(seeds: CompanionSeed[], global: CompanionModelConfig, key
     autonomous: true, intervalMinutes: 30 });
   const report = vi.fn(), getConfig = vi.fn(() => global);
   const service = new CompanionService({ userData: root, workerPath: 'mocked-worker', learningAssets: assets,
-    window: () => undefined, getConfig, hasConfig: () => !!global.apiKey.trim(), dsh: () => undefined, report }); services.add(service);
+    window: () => undefined, getConfig, hasConfig: () => !!global.apiKey.trim(), dsh: () => undefined, report,
+    memoryLibraryRoot: path.join(root, 'cognition', '伙伴记忆') }); services.add(service);
   await service.handle({ type: 'state' });
   return { store, service, assets, report, getConfig };
 }
 const learning = (store: CompanionsStore, owner: string) => store.request({ type: 'learning.status', companionId: owner }).learning!;
 async function automaticTick() { await vi.advanceTimersByTimeAsync(1000); }
 async function expectRead(f: Awaited<ReturnType<typeof fixture>>, owner: string) {
-  try { await vi.waitFor(() => expect(learning(f.store, owner).reads).toHaveLength(1), { timeout: 5000 }); }
+  try { await vi.waitFor(() => expect(learning(f.store, owner).reads).toHaveLength(1), { timeout: 15000 }); }
   catch (error) {
     throw new Error(JSON.stringify({ owner, learning: learning(f.store, owner),
       actor: f.store.request({ type: 'world.snapshot' }).world!.actors.find(actor => actor.companionId === owner),

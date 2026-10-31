@@ -156,7 +156,7 @@ describe('derived DSH content keeps its exact host dependency closure', () => {
         revision: 'former-corpus', profileKey: 'former-profile', evidence: { ...evidence, queryClock: { now: '2035-01-01T00:00:00Z', timeZone: 'UTC' } } } } }) } });
       expect(readset.memories).toEqual([{ id: 'real_input', version: 3 }]); expect(readset.contexts).toEqual([]);
       const contextValid = vi.fn(async () => false);
-      const request = async (): Promise<CompanionStorageResponse> => ({ ok: true, memories: [{ id: 'real_input', version: 3, companionId: scope.companionId }] } as CompanionStorageResponse);
+      const request = async (): Promise<CompanionStorageResponse> => ({ ok: true, memoryDescriptors: [{ id: 'real_input', version: 3, companionId: scope.companionId }] } as CompanionStorageResponse);
       expect(await verifyCompanionExecutionReadset(readset, scope, { request, contextValid })).toBe(true); expect(contextValid).not.toHaveBeenCalled();
     }
     const malformed = captureCompanionExecutionReadset(scope, { context: { user: JSON.stringify({ memoryRecall: { context: { text: 'Unproven body', revision: 'corpus', profileKey: 'profile',
@@ -173,7 +173,7 @@ describe('derived DSH content keeps its exact host dependency closure', () => {
       contexts: [{ revision: 'corpus-one', profileKey: 'profile-one', beforeSequence: 42 }], turns: [turn()] });
     let noteVersion = 1, content = sourceText, grantActive = true;
     const request = vi.fn(async (command: CompanionStorageCommand): Promise<CompanionStorageResponse> => {
-      if (command.type === 'memory.records.filter') return { ok: true, memories: [{ id: 'note_one', companionId: 'alice', version: noteVersion }] } as CompanionStorageResponse;
+      if (command.type === 'memory.records.describe') return { ok: true, memoryDescriptors: [{ id: 'note_one', companionId: 'alice', version: noteVersion }] } as CompanionStorageResponse;
       if (command.type === 'memory.sources.filter') return { ok: true, memorySources: [{ id: 'source_one', conversationId: 'private_alice', content }] } as CompanionStorageResponse;
       if (command.type === 'memory.knowledge') return grantActive ? receipt() as CompanionStorageResponse : { ok: false, error: 'Grant withdrawn' };
       throw new Error('Unexpected verification port');
@@ -222,7 +222,7 @@ describe('derived DSH content keeps its exact host dependency closure', () => {
     expect(JSON.stringify(hidden)).not.toMatch(/Private|private|secret|session_one/u);
     expect(actual.finalReply).toBe('Private source text');
   });
-  it('binds actual progress replies to their typed outbound origins and the direct current-goal context port', () => {
+  it('binds direct current-goal replies to their typed origins without admitting retired activity-tool lookalikes', () => {
     const message = { id: 'reply_one', conversationId: 'peer_room', authorId: 'bob', content: 'I changed my mind about attending.', sequence: 100,
       kind: 'text', status: 'sent', createdAt: '2026-10-23T00:00:00.000Z', attachments: [] };
     const origin = { messageId: message.id, conversationId: message.conversationId, sourceMessageId: 'actual_outbound', deliveryClientId: 'actual_delivery', chainId: 'actual_chain' };
@@ -231,7 +231,7 @@ describe('derived DSH content keeps its exact host dependency closure', () => {
     const progress: CompanionLoopTurn = { text: '', rawText: '', calls: [{ id: 'progress_read', name: 'world', arguments: JSON.stringify({ action: 'activity', parameters: { action: 'progress', id: activityTask.id } }) }],
       results: [{ callId: 'progress_read', content: JSON.stringify({ ok: true, activityTask, activityMessages: [message], activityMessageOrigins: [origin] }) }] };
     const expected = [{ id: message.id, conversationId: message.conversationId, checksum: hash(message.content) }];
-    expect(captureCompanionExecutionReadset(scope, { turns: [progress] }).sources).toEqual(expected);
+    expect(captureCompanionExecutionReadset(scope, { turns: [progress] }).sources).toEqual([]);
     expect(captureCompanionExecutionReadset(scope, { context: { user: JSON.stringify({ currentGoalReplies: [{ taskId: activityTask.id, messages: [message], origins: [origin] }] }) } }).sources).toEqual(expected);
     const wrongRoom = structuredClone(progress);
     wrongRoom.results![0]!.content = JSON.stringify({ ok: true, activityTask, activityMessages: [message], activityMessageOrigins: [{ ...origin, conversationId: 'another_room' }] });

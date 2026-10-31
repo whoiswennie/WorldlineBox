@@ -82,6 +82,7 @@ async function ensureStaticDirectoryLink(name) {
   await symlink(target, link, process.platform === 'win32' ? 'junction' : 'dir');
 }
 
+if (!process.env.WORLDLINEBOX_E2E_PACKAGED_EXECUTABLE) {
 if (isolatedBuild) {
   const toolsRoot = path.join(projectRoot, '.tools');
   await ensureOwnedDirectory(projectRoot, toolsRoot);
@@ -265,6 +266,7 @@ await build({
     outDir: path.join(buildRoot, 'renderer/main_window'),
   },
 });
+}
 
 const playwrightPath = require.resolve('@playwright/test/cli');
 // Cursor/agent shells often inherit ELECTRON_RUN_AS_NODE=1 so Electron behaves

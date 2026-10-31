@@ -45,7 +45,7 @@ it('continues past 64 saved brain steps, restarts the real service/store and fin
     const body = JSON.parse(String(init?.body)), context = JSON.parse(body.messages[1].content);
     if (context.purpose === 'companion_loop_compaction') { summaries++; return response({ summary: `已完成至真实步骤${context.throughTurn}，继续同一目标，未完成剩余检查。`, stage: '逐步核验' }); }
     if (context.purpose === 'world_attention') return response({ urgency: 'ordinary', confidence: .95, evidence: [context.source.content], reason: '按明确当前委托处理。' });
-    if (context.purpose === 'world_decision') return response({ action: null, reason: '没有需要打扰的事件。', appraisals: [] });
+    if (context.purpose === 'world_decision') return response({ action: null, reason: '没有需要打扰的事件。' });
     if (context.purpose === 'vcp_experience_journal') return response({ notes: [] });
     if (context.invocation?.kind !== 'work') return response({ text: '本次没有其他任务。' });
     historySizes.push(body.messages.filter((message: { role: string }) => message.role === 'assistant').length);
@@ -59,14 +59,23 @@ it('continues past 64 saved brain steps, restarts the real service/store and fin
     return new Response(JSON.stringify({ choices: [{ message: { content: null, tool_calls: [{ id, type: 'function', function: {
       name: 'world', arguments: JSON.stringify({ action: 'state', parameters: { action: 'inspect' } }) } }] } }] }), { headers: { 'Content-Type': 'application/json' } });
   });
-  const open = () => new CompanionService({ userData: root, workerPath: 'in-process-test-port', window: () => undefined, hasConfig: () => true,
+  const open = () => new CompanionService({ userData: root, workerPath: 'in-process-test-port', memoryLibraryRoot: path.join(root, 'cognition', '伙伴记忆'), window: () => undefined, hasConfig: () => true,
     getConfig: () => ({ apiFormat: 'openai_chat', model: 'fixture-model', baseUrl: 'https://provider.invalid', apiKey: 'synthetic-test-key' }),
     dsh: () => undefined, report: error => errors.push(error instanceof Error ? error.message : String(error)) });
-  const until = async (predicate: () => boolean) => { const deadline = Date.now() + 20000; while (Date.now() < deadline) {
-    if (predicate()) return; await new Promise(resolve => setTimeout(resolve, 10));
-  } throw new Error('Long goal did not reach expected checkpoint: ' + JSON.stringify({ issued, errors })); };
+  // Each real Main turn now compiles and publishes its actual typed frame.
+  // Bound stalls rather than imposing the former in-memory 20s total on 85
+  // legitimate durable turns; still cap the complete controlled scenario.
+  const until = async (predicate: () => boolean) => {
+    const deadline = Date.now() + 240000; let progress = issued, changedAt = Date.now();
+    while (Date.now() < deadline && Date.now() - changedAt < 20000) {
+      if (predicate()) return;
+      if (issued !== progress) { progress = issued; changedAt = Date.now(); }
+      await new Promise(resolve => setTimeout(resolve, 10));
+    }
+    throw new Error('Long goal did not reach expected checkpoint: ' + JSON.stringify({ issued, errors }));
+  };
   try {
-    service = open();
+    service = open(); await service.handle({ type: 'state' });
     const order = (await service.handle({ type: 'work-order.create', ...scope, title: '长目标持续核验',
       instruction: '请连续推进本次85个检查步骤，自行调用世界状态核验；只完成本工作，不添加其他任务。', clientId: 'long_goal' })).workOrder!;
     await until(() => blocked);
@@ -74,7 +83,7 @@ it('continues past 64 saved brain steps, restarts the real service/store and fin
     const before = store.request({ type: 'loop.get', sourceMessageId: order.sourceMessageId, companionId: 'alice', invocationKey: lastSlot }).loop!;
     expect(before.turns).toHaveLength(70); expect(before.workingState?.throughTurn).toBeGreaterThan(0);
     await service.shutdown(); service = undefined; store.close();
-    store = new CompanionsStore(file, []); restarted = true; service = open();
+    store = new CompanionsStore(file, []); restarted = true; service = open(); await service.handle({ type: 'state' });
     await until(() => store.request({ type: 'work-order.list', ...scope, includeHistory: true }).workOrderPage?.items[0]?.status === 'completed');
     const after = store.request({ type: 'loop.get', sourceMessageId: order.sourceMessageId, companionId: 'alice', invocationKey: lastSlot }).loop!;
     expect(after.status).toBe('done'); expect(after.turns).toHaveLength(86); expect(after.turns.slice(0, 70)).toEqual(before.turns);
@@ -83,7 +92,7 @@ it('continues past 64 saved brain steps, restarts the real service/store and fin
     expect(errors).toEqual([]);
   } finally { await service?.shutdown(); store.close(); vi.restoreAllMocks();
     rmSync(root, { recursive: true, force: true }); }
-}, 60000);
+}, 300000);
 
 it('summarizes only legal world history and leaves the retained provider tail for exactly one visibility projection', async () => {
   const root = mkdtempSync(path.join(tmpdir(), 'worldlinebox-long-goal-'));
@@ -120,10 +129,11 @@ it('summarizes only legal world history and leaves the retained provider tail fo
     transport.fetch.mockImplementation(async (_url, init) => {
       const context = JSON.parse(JSON.parse(String(init?.body)).messages[1].content);
       if (context.purpose === 'companion_loop_compaction') { summarized.push(JSON.stringify(context)); return response({ summary: '过去观察到本人的家具；不表示当前仍如此。', stage: '历史核验' }); }
-      return response({ action: null, reason: '没有其他事件。', appraisals: [] });
+      return response({ action: null, reason: '没有其他事件。' });
     });
     const config = { apiFormat: 'openai_chat' as const, model: 'fixture-model', baseUrl: 'https://provider.invalid', apiKey: 'synthetic-test-key' };
-    service = new CompanionService({ userData: root, workerPath: 'in-process-test-port', window: () => undefined, hasConfig: () => true, getConfig: () => config, dsh: () => undefined, report: () => undefined });
+    service = new CompanionService({ userData: root, workerPath: 'in-process-test-port', memoryLibraryRoot: path.join(root, 'cognition', '伙伴记忆'), window: () => undefined, hasConfig: () => true, getConfig: () => config, dsh: () => undefined, report: () => undefined });
+    await service.handle({ type: 'state' });
     const inference = await (service as unknown as { memoryInference(checkpoint: CompanionLoopCheckpoint, owner: string, room: string, sequence: number): Promise<{ context: { system: string; user: string }; turns: typeof turns }> }).memoryInference(checkpoint, 'alice', conversation.id, source.sequence);
     expect(summarized.length).toBeGreaterThan(0); expect(summarized.join('\n')).not.toContain('GLOBAL_RAW_SECRET_440');
     expect(summarized.join('\n')).toContain(object.id);

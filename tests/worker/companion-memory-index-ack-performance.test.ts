@@ -163,7 +163,7 @@ it('does not publish a same-version ACK after its source observer permission is 
   const f = fixture(), group = f.store.createConversation('Shared evidence', ['alice', 'bob']);
   const source = f.store.appendMessage({ conversationId: group.id, authorId: 'user', content: 'Actual shared evidence whose membership can be revoked.', replyDirective: 'none' });
   const note = f.store.request({ type: 'memory.record', companionId: 'alice', conversationId: group.id,
-    candidate: { content: source.content, sourceMessageIds: [source.id], evidence: [{ sourceMessageId: source.id, quote: source.content }] } }).memories![0]!;
+    candidate: { artifactKind: 'episode_memory' as const, content: source.content, sourceMessageIds: [source.id], evidence: [{ sourceMessageId: source.id, quote: source.content }] } }).memories![0]!;
   const lease = f.store.request({ type: 'memory.outbox.claim', companionId: 'alice' }).memoryOutbox!;
   expect(lease.noteId).toBe(note.id);
   // Leaving a room does not erase a previously witnessed personal experience.

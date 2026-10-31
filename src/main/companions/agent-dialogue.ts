@@ -1,7 +1,7 @@
 import type { CompanionReplyInput } from './context';
 import type { CompanionStorageCommand, CompanionStorageResponse } from '../../shared/companion-storage';
 import { assembleCompanionInvocation } from './invocation-context';
-import { ensureTopicContinuity, type TopicCompactionInput } from './topic-compaction';
+import { prepareTopicContinuity, type TopicCompactionInput } from './topic-compaction';
 
 /** Every conversation has a real topic. Independent work ports retain only
  * their own explicit records and never inherit the selected chat. */
@@ -17,5 +17,5 @@ export async function prepareCompanionAgentDialogue(input: Omit<TopicCompactionI
     if (!loaded.ok || !loaded.topic || !loaded.topicState) throw new Error('当前聊天话题不可读，不能退回其他入口继续推理。');
     input = { ...input, frame: { ...input.frame, topic: loaded.topic, topicState: loaded.topicState } };
   }
-  return input.frame.topic!.participantIds.includes(input.frame.companion.id) ? ensureTopicContinuity(input) : input.frame;
+  return input.frame.topic!.participantIds.includes(input.frame.companion.id) ? prepareTopicContinuity(input) : input.frame;
 }

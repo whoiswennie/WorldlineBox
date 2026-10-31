@@ -1,9 +1,17 @@
 import { ipcRenderer } from 'electron';
 import { afterEach, expect, it, vi } from 'vitest';
 import { companions } from '../../src/preload/bridge/companions';
-import { COMPANIONS_CHANNEL, COMPANION_REPLY_STREAM_CHANNEL } from '../../src/shared/companions';
+import { COMPANIONS_CHANNEL, COMPANIONS_CHANGED_CHANNEL, COMPANION_REPLY_STREAM_CHANNEL } from '../../src/shared/companions';
 vi.mock('electron', () => ({ ipcRenderer: { invoke: vi.fn(), on: vi.fn(), removeListener: vi.fn() } }));
 afterEach(() => vi.clearAllMocks());
+it('accepts only the exact progress notification and preserves full refreshes for legacy or unknown changes', () => {
+  const listener = vi.fn(), unsubscribe = companions.onChanged(listener);
+  const handler = vi.mocked(ipcRenderer.on).mock.calls[0]![1];
+  for (const payload of [{ kind: 'progress' }, undefined, { kind: 'content' }, { kind: 'progress', sourceRevoked: true }, null]) handler({} as Electron.IpcRendererEvent, payload);
+  expect(listener.mock.calls).toEqual([[{ kind: 'progress' }], [undefined], [undefined], [undefined], [undefined]]);
+  expect(ipcRenderer.on).toHaveBeenCalledWith(COMPANIONS_CHANGED_CHANNEL, handler);
+  unsubscribe(); expect(ipcRenderer.removeListener).toHaveBeenCalledWith(COMPANIONS_CHANGED_CHANNEL, handler);
+});
 it('validates reply stream frames and removes its exact IPC listener on unsubscribe', () => {
   const listener = vi.fn(), unsubscribe = companions.onReplyStream(listener);
   const handler = vi.mocked(ipcRenderer.on).mock.calls[0]![1];

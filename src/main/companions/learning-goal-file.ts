@@ -1,9 +1,11 @@
 import { createHash } from 'node:crypto';
 import { lstat, open, realpath } from 'node:fs/promises';
+import { assertCompanionExternalLearningSource, type CompanionExternalLearningSourcePolicy } from './learning-source-admission';
 
 /** An already selected attachment is read in place; repeated learning never recopies its bytes. */
-export async function readGoalTextFile(file: string, signal: AbortSignal): Promise<{ content: string; revision: string }> {
+export async function readGoalTextFile(file: string, signal: AbortSignal, policy: CompanionExternalLearningSourcePolicy): Promise<{ content: string; revision: string }> {
   signal.throwIfAborted();
+  await assertCompanionExternalLearningSource(file, policy);
   const resolved = await realpath(file), info = await lstat(file, { bigint: true });
   if (!info.isFile() || info.isSymbolicLink() || info.size > 2097152n) throw new Error('学习文件须为不超过 2 MiB 的普通文本，可拆分后继续。');
   const handle = await open(resolved, 'r');
@@ -18,6 +20,7 @@ export async function readGoalTextFile(file: string, signal: AbortSignal): Promi
     const bytes = buffer.subarray(0, length), encoding = bytes[0] === 255 && bytes[1] === 254 ? 'utf-16le' : bytes[0] === 254 && bytes[1] === 255 ? 'utf-16be' : 'utf-8';
     const content = new TextDecoder(encoding, { fatal: true }).decode(bytes);
     for (let index = 0; index < content.length; index++) { const code = content.charCodeAt(index); if (code === 127 || code < 32 && code !== 9 && code !== 10 && code !== 13) throw new Error('学习文件包含二进制内容，不能作为纯文本读取。'); }
+    await assertCompanionExternalLearningSource(file, policy);
     signal.throwIfAborted(); return { content, revision: createHash('sha256').update(bytes).digest('hex') };
   } finally { await handle.close(); }
 }

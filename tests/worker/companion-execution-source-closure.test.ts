@@ -38,7 +38,7 @@ function index() {
   throw new Error('Unexpected unbounded fixture index');
 }
 function record(source: CompanionMessage) {
-  const note = store.request({ type: 'memory.record', ...scope, candidate: { content: 'HOST_ONLY_COLD_FACT', tags: ['合成执行结果'], sourceMessageIds: [source.id],
+  const note = store.request({ type: 'memory.record', ...scope, candidate: { artifactKind: 'episode_memory', content: 'HOST_ONLY_COLD_FACT', tags: ['合成执行结果'], sourceMessageIds: [source.id],
     evidence: [{ sourceMessageId: source.id, quote: 'HOST_ONLY_COLD_FACT' }] } }).memories![0]!;
   index(); return note;
 }
@@ -99,7 +99,7 @@ it('binds the final loop proof atomically and follows it when a derived ordinary
 
 it.each(['revise', 'forget'] as const)('retains an actual focused file-backed reply through soft changes, then honors the real source withdrawal after %s', async change => {
   const parentSource = store.appendMessage({ conversationId: scope.conversationId, authorId: 'user', content: 'group0 PARENT_FACT', replyDirective: 'none' });
-  const parent = store.request({ type: 'memory.record', ...scope, candidate: { content: parentSource.content, tags: ['group0'], sourceMessageIds: [parentSource.id], evidence: [{ sourceMessageId: parentSource.id, quote: parentSource.content }] } }).memories![0]!;
+  const parent = store.request({ type: 'memory.record', ...scope, candidate: { artifactKind: 'episode_memory', content: parentSource.content, tags: ['group0'], sourceMessageIds: [parentSource.id], evidence: [{ sourceMessageId: parentSource.id, quote: parentSource.content }] } }).memories![0]!;
   const parentRevision = parent.contentRevision;
   if (parentRevision === undefined) throw new Error('The canonical parent fixture requires its real content revision.');
   index();
@@ -124,11 +124,11 @@ it.each(['revise', 'forget'] as const)('retains an actual focused file-backed re
     const bubble = store.appendMessage({ conversationId: scope.conversationId, authorId: 'alice', content: '', loopStep: 0 });
     store.request({ type: 'loop.save', checkpoint: { ...scope, sourceMessageId: source.id, messageId: bubble.id, status: 'done', turns: [{ text: 'group0 PARENT_FACT', rawText: 'group0 PARENT_FACT', calls: [] }] }, executionReadset: readset });
     const published = store.getMessage(bubble.id);
-    const derived = store.request({ type: 'memory.record', ...scope, candidate: { content: published.content, tags: ['derived'], relatedMemoryIds: [parent.id], sourceMessageIds: [published.id], evidence: [{ sourceMessageId: published.id, quote: published.content }] } }).memories![0]!;
+    const derived = store.request({ type: 'memory.record', ...scope, candidate: { artifactKind: 'episode_memory', content: published.content, tags: ['derived'], relatedMemoryIds: [parent.id], sourceMessageIds: [published.id], evidence: [{ sourceMessageId: published.id, quote: published.content }] } }).memories![0]!;
     const derivedRevision = derived.contentRevision;
     if (derivedRevision === undefined) throw new Error('The derived fixture requires its real immutable content revision.');
     const unrelated = store.appendMessage({ conversationId: scope.conversationId, authorId: 'user', content: 'A genuinely unrelated garden entry.', replyDirective: 'none' });
-    store.request({ type: 'memory.record', ...scope, candidate: { content: unrelated.content, sourceMessageIds: [unrelated.id], evidence: [{ sourceMessageId: unrelated.id, quote: unrelated.content }] } });
+    store.request({ type: 'memory.record', ...scope, candidate: { artifactKind: 'episode_memory', content: unrelated.content, sourceMessageIds: [unrelated.id], evidence: [{ sourceMessageId: unrelated.id, quote: unrelated.content }] } });
     index(); profileKey = 'profile-two';
     await canonical.publish(scope.companionId);
     const historicalDerivedFiles = (await canonical.live.materialize(scope.companionId, [derived])).receipts;
@@ -142,7 +142,7 @@ it.each(['revise', 'forget'] as const)('retains an actual focused file-backed re
     if (change === 'forget') store.request({ type: 'memory.forget', ...scope, sourceMessageIds: [parentSource.id] });
     else {
       const revised = store.appendMessage({ conversationId: scope.conversationId, authorId: 'user', content: 'group0 REVISED_PARENT_FACT', replyDirective: 'none' });
-      const revisedParent = store.request({ type: 'memory.revise', ...scope, id: parent.id, expectedVersion: parent.version, candidate: { content: revised.content, sourceMessageIds: [revised.id], evidence: [{ sourceMessageId: revised.id, quote: revised.content }] } }).memories![0]!;
+      const revisedParent = store.request({ type: 'memory.revise', ...scope, id: parent.id, expectedVersion: parent.version, candidate: { artifactKind: 'episode_memory', content: revised.content, sourceMessageIds: [revised.id], evidence: [{ sourceMessageId: revised.id, quote: revised.content }] } }).memories![0]!;
       expect((await canonical.history.read(scope, parent.id, parentRevision)).content).toBe(parent.content);
       // A latest derived entry tied to the superseded body is retired from
       // current views. Its genuine old task/history receipts still survive.
@@ -152,6 +152,10 @@ it.each(['revise', 'forget'] as const)('retains an actual focused file-backed re
       expect(await canonical.live.validate(scope.companionId, historicalDerivedFiles)).toBe(true);
       expect(await service.contextValid(scope, actual.memoryContext)).toBe(true);
       index();
+      // Production reads use publishedFilesOnly. Commit the real typed outbox
+      // before this new read gate, rather than publishing a replacement body
+      // after its old registry witness has already been consumed in the gate.
+      await canonical.publish(scope.companionId);
       const fresh = await service.search({ ...scope, query: 'group0 parent fact' }, 'passive');
       expect(fresh.memoryContext?.evidence?.dependencyCoverage).toBe('complete');
       expect(fresh.memoryContext?.evidence?.dependencies).toContainEqual({ id: parent.id, version: revisedParent.version });
@@ -197,7 +201,7 @@ it('keeps an invalidated failed effect in history while refusing worker resume a
 
 it.each(['indexed', 'leased'] as const)('settles a derived-action %s outbox and removes its native row using a sanitized deletion receipt', async state => {
   const { action, evidence } = complete();
-  const note = store.request({ type: 'memory.record', ...scope, candidate: { content: 'group0 HOST_ONLY_COLD_FACT', tags: ['合成来源'], sourceMessageIds: [evidence.id],
+  const note = store.request({ type: 'memory.record', ...scope, candidate: { artifactKind: 'episode_memory', content: 'group0 HOST_ONLY_COLD_FACT', tags: ['合成来源'], sourceMessageIds: [evidence.id],
     evidence: [{ sourceMessageId: evidence.id, quote: 'HOST_ONLY_COLD_FACT' }] } }).memories![0]!;
   const native = await nativeManagementHarness(root, request);
   try {

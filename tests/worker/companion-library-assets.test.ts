@@ -1,4 +1,4 @@
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { tmpdir } from 'node:os';
 import { afterEach, expect, it, vi } from 'vitest';
@@ -50,9 +50,14 @@ it('maps only the fixed companion text directory into its owning asset library',
 it('prunes only the canonical owner cognition tree and host sidecars while retaining real profile, prompt, diary and source assets', () => {
   const f = observedFixture();
   const visible = ['alice/profile.md', 'alice/提示词/manifest.json', 'alice/提示词/对话.md', 'alice/日记/day.md', 'alice/来源/source.md', 'alice/记忆历史/note-one/r1-history.md',
-    'alice/日记/.认知索引/user-authored.md', 'alice/日记/同步状态.md', 'alice/日记/.同步状态.json'];
+    'alice/日记/.认知索引/user-authored.md', 'alice/日记/同步状态.md', 'alice/日记/.同步状态.json',
+    'alice/记忆/经历/published.md', 'alice/记忆/知识/learned.md', 'alice/演化/发布/r1.md',
+    'alice/日记/.运行/索引/user-authored.md', 'alice/.运行/我的笔记.md', '.运行/索引/user-authored.md'];
   const technical = ['alice/.认知索引/hot/index.sqlite', 'alice/.认知索引/cold/tmp/chunk.bin', 'alice/.同步状态.json', 'alice/.时间线索引.json',
-    'alice/同步状态.md', 'alice/日记/day.md.meta.json', 'alice/来源/source.md.meta.json', 'alice/profile.md.12345678-1234-4234-8234-123456789abc.tmp'];
+    'alice/同步状态.md', 'alice/日记/day.md.meta.json', 'alice/来源/source.md.meta.json', 'alice/profile.md.12345678-1234-4234-8234-123456789abc.tmp',
+    'alice/.运行/索引/hot/runtime/RiverMemoEngine.js', 'alice/.运行/上下文/ctx_one/request.json', 'alice/.运行/上下文/ctx_one/attempt.json',
+    'alice/.运行/视图/persona.json', 'alice/.运行/发布/暂存/operation.bin', 'alice/.运行/观察/contact-sheet.png',
+    'alice/.运行/引用/task.json', 'alice/.运行/诊断/run.json', 'alice/.运行/日程职能版本.json'];
   for (const file of [...visible, ...technical]) put(f.memoryRoot, file);
   const linked = f.service.importFolderAsLinked({ libraryId: f.library.libraryId, sourceRootPath: f.memoryRoot, companionMemory: true });
   expect(linked.assetCount).toBe(visible.length);
@@ -62,15 +67,16 @@ it('prunes only the canonical owner cognition tree and host sidecars while retai
   }));
 
   const externalRoot = path.join(f.root, '普通外部资料');
-  for (const file of ['alice/.认知索引/user.md', 'alice/日记/day.md.meta.json']) put(externalRoot, file);
+  const externalFiles = ['alice/.认知索引/user.md', 'alice/日记/day.md.meta.json', 'alice/.运行/索引/runtime/RiverMemoEngine.js', 'alice/.运行/上下文/request.json'];
+  for (const file of externalFiles) put(externalRoot, file);
   const external = f.service.importFolderAsLinked({ libraryId: f.library.libraryId, sourceRootPath: externalRoot });
-  expect(external.assetCount).toBe(2);
+  expect(external.assetCount).toBe(externalFiles.length);
   expect(f.service.listAssets({ libraryId: f.library.libraryId, folderId: external.folderId, recursive: true }).map(asset => asset.relativeFilePath).sort())
-    .toEqual(['alice/.认知索引/user.md', 'alice/日记/day.md.meta.json']);
+    .toEqual([...externalFiles].sort());
   const otherLibrary = f.service.createLibrary({ displayName: '另一个资产库', selectedParentPath: f.root });
   const foreign = f.service.importFolderAsLinked({ libraryId: otherLibrary.libraryId, sourceRootPath: f.memoryRoot });
   expect(f.service.listAssets({ libraryId: otherLibrary.libraryId, folderId: foreign.folderId, recursive: true }).map(asset => asset.relativeFilePath))
-    .toEqual(expect.arrayContaining(['alice/.认知索引/hot/index.sqlite', 'alice/日记/day.md.meta.json']));
+    .toEqual(expect.arrayContaining(['alice/.认知索引/hot/index.sqlite', 'alice/日记/day.md.meta.json', 'alice/.运行/索引/hot/runtime/RiverMemoEngine.js']));
 });
 
 it('silences internal change and rename storms for an existing root even without default rules, while real role edits still refresh', async () => {
@@ -84,8 +90,10 @@ it('silences internal change and rename storms for an existing root even without
   f.changes.length = 0;
   const generated = ['alice/.认知索引/hot/index.sqlite', 'alice/.认知索引/hot/index.sqlite-wal', 'alice/.认知索引/历史发布/durable-job.tmp', 'alice/.同步状态.json', 'alice/.时间线索引.json',
     'alice/同步状态.md', 'alice/日记/real.md.meta.json', 'alice/来源/original.md.meta.json',
-    'alice/.同步状态.json.12345678-1234-4234-8234-123456789abc.tmp', 'alice/提示词/对话.md.12345678-1234-4234-8234-123456789abc.tmp'];
-  for (const relative of generated) put(f.memoryRoot, relative);
+    'alice/.同步状态.json.12345678-1234-4234-8234-123456789abc.tmp', 'alice/提示词/对话.md.12345678-1234-4234-8234-123456789abc.tmp',
+    'alice/.运行/索引/hot/runtime/RiverMemoEngine.js', 'alice/.运行/上下文/ctx_one/request.json', 'alice/.运行/上下文/ctx_one/attempt.json',
+    'alice/.运行/索引', 'alice/.运行/上下文'];
+  for (const relative of generated.filter(relative => !['alice/.运行/索引', 'alice/.运行/上下文'].includes(relative))) put(f.memoryRoot, relative);
   for (let round = 0; round < 50; round++) for (const filename of generated) {
     callback({ eventType: 'change', filename }); callback({ eventType: 'rename', filename });
   }
@@ -109,4 +117,22 @@ it('silences internal change and rename storms for an existing root even without
   expect(f.service.listAssets({ libraryId: f.library.libraryId, folderId: linked.folderId, recursive: true }).map(asset => asset.relativeFilePath).sort())
     .toEqual([...expected, 'bob/日记/new.md'].sort());
   expect(f.scheduler.pending()).toBe(0);
+});
+
+it('keeps previously registered runtime files and audit rows but excludes them from asset reconciliation', () => {
+  const f = observedFixture(), runtime = 'alice/.运行/索引/hot/runtime/RiverMemoEngine.js';
+  put(f.memoryRoot, 'alice/profile.md'); const runtimeFile = put(f.memoryRoot, runtime);
+  const linked = f.service.importFolderAsLinked({ libraryId: f.library.libraryId, sourceRootPath: f.memoryRoot, companionMemory: true });
+  // Reproduce a row imported by the earlier scanner without touching a user library.
+  const legacy = vi.spyOn(f.service as unknown as { isCompanionMemoryTechnicalPath(relative: string): boolean }, 'isCompanionMemoryTechnicalPath').mockReturnValue(false);
+  f.service.setLinkedFolderRules({ libraryId: f.library.libraryId, folderId: linked.folderId, rules: [] });
+  const old = f.service.listAssets({ libraryId: f.library.libraryId, folderId: linked.folderId, recursive: true }).find(asset => asset.relativeFilePath === runtime)!;
+  expect(old).toBeDefined(); legacy.mockRestore();
+  const resolve = vi.spyOn(f.service as unknown as { linkedAssetPath(...args: unknown[]): string }, 'linkedAssetPath');
+  f.service.setLinkedFolderRules({ libraryId: f.library.libraryId, folderId: linked.folderId, rules: [] });
+  f.service.refreshManagedAssets(f.library.libraryId);
+  expect(resolve.mock.calls.some(args => args[2] === runtime)).toBe(false);
+  expect(f.service.listAssets({ libraryId: f.library.libraryId, folderId: linked.folderId, recursive: true }).map(asset => asset.relativeFilePath)).toEqual(['alice/profile.md']);
+  expect(existsSync(runtimeFile)).toBe(true);
+  expect(f.service.getAssetDisplayName(f.library.libraryId, old.assetId)).toBe('RiverMemoEngine.js');
 });

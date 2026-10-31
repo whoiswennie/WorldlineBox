@@ -1,11 +1,13 @@
 import { z } from 'zod';
+import { companionJobDispositionSchema, companionJobFailureKindSchema } from './companion-job-control';
 
 const owner = z.string().regex(/^[a-zA-Z0-9_-]{1,100}$/u), identifier = z.string().min(1).max(255);
 export const companionLearningGrantSchema = z.object({
   id: owner, companionId: owner, libraryId: identifier, libraryName: z.string().max(255), libraryPath: z.string().max(4096),
   folderId: z.string().max(4096).optional(), folderName: z.string().max(255).optional(), enabled: z.boolean(), autonomous: z.boolean(),
   intervalMinutes: z.number().int().min(5).max(1440), revision: z.number().int().positive(),
-  createdAt: z.string(), updatedAt: z.string(), nextAt: z.string().optional(), status: z.enum(['idle', 'reading', 'waiting', 'failed']),
+  createdAt: z.string(), updatedAt: z.string(), nextAt: z.string().optional(), status: z.enum(['idle', 'reading', 'waiting', 'failed', 'parked', 'abandoned', 'cancelled', 'stale']),
+  disposition: companionJobDispositionSchema.optional(),
   error: z.string().optional(), reads: z.number().int().nonnegative().default(0),
 });
 export const companionLearningReadSchema = z.object({ id: owner, companionId: owner, grantId: owner, libraryId: identifier,
@@ -39,11 +41,15 @@ export const companionLearningStorageCommands = [
   z.strictObject({ type: z.literal('learning.revoke'), companionId: owner, id: owner, expectedRevision: z.number().int().positive() }),
   z.strictObject({ type: z.literal('learning.run'), companionId: owner, id: owner, expectedRevision: z.number().int().positive() }),
   z.strictObject({ type: z.literal('learning.claim'), excludedOwners: z.array(owner).max(100).default([]), leaseMs: z.number().int().min(1000).max(600000).default(120000) }),
+  z.strictObject({ type: z.literal('learning.begin'), id: owner, leaseToken: owner, assetId: identifier, assetRevisionId: identifier, offset: z.number().int().nonnegative() }),
   z.strictObject({ type: z.literal('learning.commit'), id: owner, leaseToken: owner, assetId: identifier, assetRevisionId: identifier, assetName: z.string().max(512), offset: z.number().int().nonnegative(), content: z.string().min(1).max(48000), nextOffset: z.number().int().positive().optional(), afterAssetId: identifier.optional(), more: z.boolean() }),
-  z.strictObject({ type: z.literal('learning.advance'), id: owner, leaseToken: owner, afterAssetId: identifier.optional(), more: z.boolean(), reason: z.string().max(500).optional() }),
-  z.strictObject({ type: z.literal('learning.defer'), id: owner, leaseToken: owner, error: z.string().max(500), state: z.enum(['waiting', 'failed']).optional(), retryAfterMs: z.number().int().min(1000).max(3600000).default(30000) }),
+  z.strictObject({ type: z.literal('learning.advance'), id: owner, leaseToken: owner, afterAssetId: identifier.optional(), more: z.boolean(), reason: z.string().max(500).optional(),
+    assetJobId: owner.optional(), assetRevisionId: identifier.optional(), failureKind: companionJobFailureKindSchema.optional() }),
+  z.strictObject({ type: z.literal('learning.defer'), id: owner, leaseToken: owner, error: z.string().max(500), state: z.enum(['waiting', 'failed']).optional(), failureKind: companionJobFailureKindSchema.optional(),
+    continueAfterAsset: z.boolean().optional(), retryAfterMs: z.number().int().min(1000).max(3600000).default(30000) }),
 ] as const;
 export const companionLearningJobSchema = z.object({ id: owner, leaseToken: owner, grant: companionLearningGrantSchema,
+  assetJobId: owner.optional(),
   afterAssetId: identifier.optional(), assetId: identifier.optional(), assetRevisionId: identifier.optional(), offset: z.number().int().nonnegative().default(0) });
 export type CompanionLearningGrant = z.infer<typeof companionLearningGrantSchema>;
 export type CompanionLearningRead = z.infer<typeof companionLearningReadSchema>;

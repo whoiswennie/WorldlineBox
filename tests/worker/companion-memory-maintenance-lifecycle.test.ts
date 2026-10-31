@@ -41,7 +41,7 @@ function fixture() {
   } };
   const record = (content: string, important = false) => {
     const source = store.appendMessage({ conversationId: scope.conversationId, authorId: 'user', content, replyDirective: 'none' });
-    const note = store.request({ type: 'memory.record', ...scope, candidate: { content, tags: important ? ['重要'] : ['经历'],
+    const note = store.request({ type: 'memory.record', ...scope, candidate: { artifactKind: 'episode_memory' as const, content, tags: important ? ['重要'] : ['经历'],
       sourceMessageIds: [source.id], evidence: [{ sourceMessageId: source.id, quote: content }] } }).memories![0]!;
     index(); return { source, note };
   };
@@ -58,7 +58,7 @@ function fixture() {
     restart: () => { store.close(); stores.delete(store); store = new CompanionsStore(filename, seeds); stores.add(store); } };
 }
 
-it('fences narrative admission refunds to one live lease, persists the deadline and preserves completed real phases', () => {
+it('fences narrative admission waits to one live lease, keeps lifetime counters and preserves completed real phases', () => {
   vi.mocked(Math.random).mockReturnValue(.1); const f = fixture(); f.record('本轮实际重要经历。', true); f.tick();
   const job = f.claim()!; f.bind(job);
   f.store.request({ type: 'world.job.complete', id: job.id, leaseToken: job.leaseToken!, stage: 'reflection' });
@@ -67,22 +67,27 @@ it('fences narrative admission refunds to one live lease, persists the deadline 
   expect(f.store.request({ type: 'world.job.narrative.begin', id: job.id, leaseToken: job.leaseToken! }).worldJob?.narrativeAttempts).toBe(1);
   const deadline = Date.now() + 3600000;
   f.store.request({ type: 'world.job.defer', id: job.id, leaseToken: job.leaseToken!, error: 'Local host admission refused before HTTP.', retryAfterMs: 3600000 });
-  expect(() => f.store.request({ type: 'world.job.defer', id: job.id, leaseToken: job.leaseToken!, error: 'Cannot refund twice.', retryAfterMs: 1000 })).toThrow('租约');
+  const deferred = f.store.request({ type: 'jobs.inspect', ownerId: 'alice', kind: 'world', id: job.id }).jobDisposition!;
+  expect(deferred).toMatchObject({ state: 'pending', failureCount: 0, cycleFailureCount: 0, attemptCount: 1 });
+  f.store.request({ type: 'world.job.defer', id: job.id, leaseToken: job.leaseToken!, error: 'Cannot defer twice.', retryAfterMs: 1000 });
+  expect(f.store.request({ type: 'jobs.inspect', ownerId: 'alice', kind: 'world', id: job.id }).jobDisposition).toEqual(deferred);
   f.restart(); f.tick(3599999); expect(f.claim()).toBeUndefined(); f.tick(2);
-  const next = f.claim()!; expect(next).toMatchObject({ id: job.id, attempts: 1, narrativeAttempts: 0,
+  const next = f.claim()!; expect(next).toMatchObject({ id: job.id, attempts: 2, narrativeAttempts: 1,
     realCompletedAt: expect.any(String), reflectionCompletedAt: expect.any(String) }); expect(Date.now()).toBeGreaterThan(deadline);
-  expect(() => f.store.request({ type: 'world.job.defer', id: job.id, leaseToken: job.leaseToken!, error: 'Old lease cannot touch this attempt.', retryAfterMs: 1000 })).toThrow('租约');
-  expect(f.store.request({ type: 'world.job.narrative.begin', id: next.id, leaseToken: next.leaseToken! }).worldJob?.narrativeAttempts).toBe(1);
+  const current = f.store.request({ type: 'world.job.check', id: next.id, leaseToken: next.leaseToken! }).worldJob!;
+  f.store.request({ type: 'world.job.defer', id: job.id, leaseToken: job.leaseToken!, error: 'Old lease cannot touch this attempt.', retryAfterMs: 1000 });
+  expect(f.store.request({ type: 'world.job.check', id: next.id, leaseToken: next.leaseToken! }).worldJob).toEqual(current);
+  expect(f.store.request({ type: 'world.job.narrative.begin', id: next.id, leaseToken: next.leaseToken! }).worldJob?.narrativeAttempts).toBe(2);
   f.store.request({ type: 'world.job.fail', id: next.id, leaseToken: next.leaseToken!, error: 'Actual provider HTTP 429 still uses failure policy.' });
-  f.tick(60001); const third = f.claim()!; expect(third.narrativeAttempts).toBe(1);
+  f.tick(60001); const third = f.claim()!; expect(third.narrativeAttempts).toBe(2);
   f.store.request({ type: 'world.job.defer', id: third.id, leaseToken: third.leaseToken!, error: 'No narrative begin in this lease.', retryAfterMs: 1000 });
   const db = f.database(); try {
     const saved = JSON.parse((db.prepare('SELECT data FROM companion_memory_maintenance_sessions WHERE id=?').get(job.maintenanceSessionId) as { data: string }).data);
-    expect(saved).toMatchObject({ narrativeAttempts: 1, narrativeStatus: 'pending' });
+    expect(saved).toMatchObject({ narrativeAttempts: 2, narrativeStatus: 'pending' });
   } finally { db.close(); }
   f.store.request({ type: 'world.job.retry-admission', companionId: 'bob' }); expect(f.claim()).toBeUndefined();
   f.store.request({ type: 'world.job.retry-admission' }); const awakened = f.claim()!;
-  expect(awakened).toMatchObject({ id: job.id, attempts: 2, narrativeAttempts: 1, realCompletedAt: next.realCompletedAt, reflectionCompletedAt: next.reflectionCompletedAt });
+  expect(awakened).toMatchObject({ id: job.id, attempts: 4, narrativeAttempts: 2, realCompletedAt: next.realCompletedAt, reflectionCompletedAt: next.reflectionCompletedAt });
   f.store.request({ type: 'world.job.retry-admission' });
   expect(f.store.request({ type: 'world.job.check', id: awakened.id, leaseToken: awakened.leaseToken! }).worldJob?.leaseToken).toBe(awakened.leaseToken);
 });
@@ -138,7 +143,7 @@ it('counts three real episodes rather than three notes split out of one conversa
 it('reads live owner policy, parks only the damaged owner and pins a session policy across edits and restart', () => {
   const f = fixture(), root = path.join(f.root, '伙伴记忆'), policy = initialCompanionMemoryPolicy();
   const write = (owner: string) => { mkdirSync(path.join(root, owner), { recursive: true }); writeFileSync(path.join(root, owner, COMPANION_MEMORY_POLICY_FILE),
-    JSON.stringify({ schema: 'worldlinebox.companion-memory-policy-v1', companionId: owner, policy })); };
+    JSON.stringify({ schema: 'worldlinebox.companion-cognition-policy-v2', companionId: owner, policy })); };
   write('alice'); write('bob'); f.store.request({ type: 'world.maintenance.bind-policy-root', root });
   f.record('需要维护的重要来源。', true); unlinkSync(path.join(root, 'alice', COMPANION_MEMORY_POLICY_FILE));
   f.tick(); expect(f.claim()).toBeUndefined();
@@ -152,11 +157,19 @@ it('reads live owner policy, parks only the damaged owner and pins a session pol
   expect(resumed.id).toBe(first.id); expect(resumed.dreamAllowed).toBe(true);
   expect(f.store.request({ type: 'world.sleep-plan', companionId: 'alice' }).worldSleepPlan!.maintenance!.policy!.dream).toMatchObject({ probability: 1, maxAttempts: 1 });
   f.store.request({ type: 'world.job.narrative.begin', id: resumed.id, leaseToken: resumed.leaseToken! });
-  f.store.request({ type: 'world.job.fail', id: resumed.id, leaseToken: resumed.leaseToken!, error: '一次真实叙述失败耗尽开始时策略' });
+  f.store.request({ type: 'world.job.fail', id: resumed.id, leaseToken: resumed.leaseToken!, error: '开始时策略保持快照，实际失败由统一作业周期累计' });
+  for (let failure = 2; failure <= 3; failure++) {
+    f.tick(130_000); const retry = f.claim()!; expect(retry.id).toBe(first.id);
+    f.store.request({ type: 'world.job.narrative.begin', id: retry.id, leaseToken: retry.leaseToken! });
+    f.store.request({ type: 'world.job.fail', id: retry.id, leaseToken: retry.leaseToken!, error: '统一作业周期真实失败 ' + failure });
+  }
   f.tick(130_000); expect(f.claim()).toBeUndefined();
+  expect(f.store.request({ type: 'jobs.inspect', ownerId: 'alice', kind: 'world', id: first.id }).jobDisposition).toMatchObject({ state: 'parked', failureCount: 3, cycleFailureCount: 3 });
+  // maxAttempts stays a pinned policy snapshot; the shared three-failure job
+  // governance replaces the former one-attempt terminal mechanism.
   const db = f.database(); try {
     const session = JSON.parse((db.prepare('SELECT data FROM companion_memory_maintenance_sessions WHERE id=?').get(first.maintenanceSessionId) as { data: string }).data);
-    expect(session).toMatchObject({ policy: { dream: { probability: 1, maxAttempts: 1 } }, narrativeAttempts: 1, narrativeStatus: 'failed' });
+    expect(session).toMatchObject({ policy: { dream: { probability: 1, maxAttempts: 1 } }, narrativeAttempts: 3, narrativeStatus: 'pending' });
   } finally { db.close(); }
 });
 
@@ -181,7 +194,7 @@ it('keeps a real reflection when a concurrent task has already changed the optio
   f.store.request({ type: 'state.update', ...f.scope, expectedRevision: originalState.revision, proposal: {
     focus: '另一任务刚确认的新关注', reason: '实际任务已进入新的关注阶段。', sourceMessageIds: [source.id], evidence } });
   f.store.request({ type: 'world.job.complete', id: job.id, leaseToken: job.leaseToken!, stage: 'reflection', sourceMemoryIds: [note.id],
-    memoryCandidates: [{ content: '这次重要任务的进展提示我之后仍应保留来源核验。', tags: ['实际反思'], sourceMessageIds: [source.id], relatedMemoryIds: [note.id], evidence }],
+    memoryCandidates: [{ artifactKind: 'knowledge' as const, content: '这次重要任务的进展提示我之后仍应保留来源核验。', tags: ['实际反思'], sourceMessageIds: [source.id], relatedMemoryIds: [note.id], evidence }],
     expectedStateRevision: originalState.revision, stateProposal: { focus: '过时的关注提议', reason: '基于刚才的旧状态提出。', sourceMessageIds: [source.id], evidence } });
   expect(f.store.request({ type: 'state.get', ...f.scope }).runtimeState?.focus).toBe('另一任务刚确认的新关注');
   expect(f.store.request({ type: 'memory.browse', ...f.scope }).memoryPage!.items.some(hit => hit.memory.tags.includes('实际反思'))).toBe(true);
@@ -208,7 +221,7 @@ it('persists a fixed draw and a real checkpoint, then resumes only the bounded n
   const db = f.database(); try {
     expect(db.prepare('SELECT count(*) AS n FROM companion_world_dream_watermark WHERE companion_id=?').get('alice')).toEqual({ n: 1 });
     const session = JSON.parse((db.prepare('SELECT data FROM companion_memory_maintenance_sessions WHERE id=?').get(job.maintenanceSessionId) as { data: string }).data);
-    expect(session).toMatchObject({ narrativeAttempts: 3, narrativeStatus: 'failed' });
+    expect(session).toMatchObject({ narrativeAttempts: 3, narrativeStatus: 'pending' });
   } finally { db.close(); }
 });
 
@@ -260,7 +273,7 @@ it('counts new episodes across source domains and drains fixed domain batches fa
   const shared = f.store.appendMessage({ conversationId: room.id, authorId: 'user', content: '共同资料中的普通经历。', replyDirective: 'none' });
   const observed = f.store.request({ type: 'memory.world_query', companionId: 'alice', conversationId: 'world_alice', category: 'observations', query: '', limit: 1 }).memorySources![0]!;
   for (const source of [shared, observed]) {
-    f.store.request({ type: 'memory.record', companionId: 'alice', conversationId: source.conversationId, candidate: { content: source.content, tags: ['经历'],
+    f.store.request({ type: 'memory.record', companionId: 'alice', conversationId: source.conversationId, candidate: { artifactKind: 'episode_memory' as const, content: source.content, tags: ['经历'],
       sourceMessageIds: [source.id], evidence: [{ sourceMessageId: source.id, quote: source.content }] } });
   }
   f.index(); f.tick(); const jobs: CompanionWorldJob[] = [];
@@ -272,7 +285,7 @@ it('counts new episodes across source domains and drains fixed domain batches fa
   expect(f.claim()).toBeUndefined();
 });
 
-it('keeps a failed fixed readset fenced when later data arrives during its retry budget', () => {
+it('keeps a parked fixed readset fenced while later independent input can finish', () => {
   const f = fixture(), original = f.record('尚未成功回顾的重要事实。', true); f.tick(); const first = f.claim()!;
   const second = f.record('运行期间新增的独立重要事实。', true);
   for (let attempt = 1, job = first; attempt <= 3; attempt++) {
@@ -280,13 +293,14 @@ it('keeps a failed fixed readset fenced when later data arrives during its retry
     f.store.request({ type: 'world.job.fail', id: job.id, leaseToken: job.leaseToken!, error: '受控真实阶段故障' });
     f.tick(130000); if (attempt < 3) job = f.claim()!;
   }
-  expect(f.claim()).toBeUndefined();
-  const db = f.database(); try {
-    const owner = JSON.parse((db.prepare('SELECT data FROM companion_memory_maintenance_owners WHERE companion_id=?').get('alice') as { data: string }).data);
-    owner.lastDecisionAt = Date.now() - 7 * 3600000;
-    db.prepare('UPDATE companion_memory_maintenance_owners SET data=? WHERE companion_id=?').run(JSON.stringify(owner), 'alice');
-  } finally { db.close(); }
-  f.tick(); expect(f.claim()?.sourceMemoryIds).toEqual([second.note.id]);
+  expect(f.store.request({ type: 'jobs.inspect', ownerId: 'alice', kind: 'world', id: first.id }).jobDisposition).toMatchObject({ state: 'parked', failureCount: 3, cycleFailureCount: 3 });
+  const independent = f.claim()!; expect(independent).toBeDefined(); expect(independent.id).not.toBe(first.id);
+  expect(independent.sourceMemoryIds).toEqual([second.note.id]); f.bind(independent);
+  f.store.request({ type: 'world.job.complete', id: independent.id, leaseToken: independent.leaseToken!, stage: 'real', sourceMemoryIds: independent.sourceMemoryIds });
+  f.tick(); expect(f.claim()).toBeUndefined();
+  expect(f.store.getMessage(original.source.id).content).toBe(original.source.content);
+  expect(f.store.getMessage(second.source.id).content).toBe(second.source.content);
+  expect(f.store.request({ type: 'jobs.inspect', ownerId: 'alice', kind: 'world', id: first.id }).jobDisposition).toMatchObject({ state: 'parked', failureCount: 3 });
 });
 
 it('enforces owner-local session admission without needing world or model services', () => {
@@ -325,9 +339,9 @@ it('persists dream questions separately, guides an authorized actual file read a
   const picked: string[] = [], service = new CompanionLearningService({ request: async command => f.store.request(command), configured: () => true,
     assets: { catalog: async () => [], grant: async () => ({ libraryName: grant.libraryName, libraryPath: f.root }),
       page: async (current, _after, focus) => { expect(current.id).toBe(grant.id); expect(focus?.pendingQuestions.some(item => item.id === queued.id)).toBe(true);
-        return { assets: [{ assetId: 'unrelated', displayName: '其它主题.md' }, { assetId: 'read-asset', displayName: '核对出处.md' }] as AssetSummary[], hasMore: false }; },
+        return { assets: [{ assetId: 'unrelated', displayName: '其它主题.md', currentRevisionId: 'unrelated_revision' }, { assetId: 'read-asset', displayName: '核对出处.md', currentRevisionId: 'read_revision' }] as AssetSummary[], hasMore: false }; },
       read: async (current, asset) => { expect(current.id).toBe(grant.id); picked.push(asset.assetId); const content = readFileSync(file, 'utf8');
-        return { content, revisionId: createHash('sha256').update(content).digest('hex'), truncated: false }; } },
+        return { content, revisionId: asset.currentRevisionId + '_' + createHash('sha256').update(Buffer.from(content)).digest('hex').slice(0, 20), truncated: false }; } },
     changed: () => undefined, report: error => { throw error; } });
   try { await service.tick(); await vi.waitFor(() => expect(f.store.request({ type: 'learning.status', companionId: 'alice' }).learning!.reads).toHaveLength(1)); }
   finally { await service.close(); }
@@ -378,8 +392,8 @@ it('services a week of debt with only twenty daytime minutes per day across dura
   } finally { debug.close(); }
   // A session may process bounded audience batches; count sessions separately
   // from provider operations and never treat two batches as two paid reruns.
-  expect(completed).toBe(6); expect(modelPurposes.filter(purpose => purpose === 'vcp_sleep_reflection')).toHaveLength(6);
-  expect(modelPurposes.filter(purpose => purpose === 'vcp_sleep_memory_maintenance').length).toBeLessThanOrEqual(6);
+  expect(completed).toBe(3); expect(modelPurposes.filter(purpose => purpose === 'vcp_sleep_reflection')).toHaveLength(3);
+  expect(modelPurposes.filter(purpose => purpose === 'vcp_sleep_memory_maintenance').length).toBeLessThanOrEqual(3);
   expect(commands.filter(command => command.type === 'world.job.narrative.begin')).toHaveLength(0);
   // Day seven's one new source is correctly waiting for its next real deadline.
   expect(f.store.request({ type: 'world.sleep-plan', companionId: 'alice' }).worldSleepPlan!.maintenance?.eligible).toBe(false);

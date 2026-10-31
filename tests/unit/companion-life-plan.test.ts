@@ -24,10 +24,19 @@ describe('truthful owner memory and learning plans', () => {
   it('shows an attention-required failed review as waiting without promising automatic retry or eligibility', () => {
     const sleep = context({ hasUnconsolidated: true, admission: 'admitted',
       actor: { activity: 'sleeping', routinePhase: 'sleeping', activityStartedAtReal: '2026-10-22T09:00:00.000Z', moving: false, working: false },
-      job: { status: 'failed', attempts: 1, dreamAllowed: true, leaseActive: false, terminal: true, error: '当前原文块超过实际容量，需明确处理后继续。' } });
+      job: { id: 'review_capacity', status: 'failed', attempts: 1, dreamAllowed: true, leaseActive: false, terminal: true, error: '当前原文块超过实际容量，需明确处理后继续。' } });
     for (const kind of ['sleep_consolidation', 'dream']) {
       expect(row(sleep, kind)).toMatchObject({ state: 'waiting', timing: { kind: 'conditional', clock: 'real' } });
       expect(row(sleep, kind).reason).toContain('需明确处理'); expect(row(sleep, kind).timing.at).toBeUndefined();
+    }
+  });
+  it.each(['parked', 'abandoned'] as const)('never presents a %s world job as eligible or scheduled', status => {
+    const sleep = context({ hasUnconsolidated: true, admission: 'admitted', job: { id: 'held_world_job', status, attempts: 17,
+      dreamAllowed: true, leaseActive: false, nextAttemptAt: '2026-10-22T11:00:00.000Z' } });
+    for (const kind of ['sleep_consolidation', 'dream']) {
+      expect(row(sleep, kind)).toMatchObject({ state: 'waiting', timing: { kind: 'conditional', clock: 'real' } });
+      expect(row(sleep, kind).timing.at).toBeUndefined();
+      expect(row(sleep, kind).reason).toContain(status === 'parked' ? '明确恢复' : '不会自动重启');
     }
   });
   it('keeps event-driven diaries distinct from fixed daily tasks and probability dreams', () => {
@@ -81,7 +90,7 @@ describe('truthful owner memory and learning plans', () => {
   });
   it('separates retry eligibility from an actual registered main-process check and keeps a dream output optional', () => {
     const sleep = context({ hasUnconsolidated: true, admission: 'admitted', actor: { activity: 'sleeping', routinePhase: 'sleeping', activityStartedAtReal: '2026-10-22T09:00:00.000Z', moving: false, working: false },
-      job: { status: 'failed', attempts: 1, leaseActive: false, dreamAllowed: true, nextAttemptAt: '2026-10-22T10:00:30.000Z' },
+      job: { id: 'retry_world_job', status: 'failed', attempts: 1, leaseActive: false, dreamAllowed: true, nextAttemptAt: '2026-10-22T10:00:30.000Z' },
       captureQueue: { pending: 0, running: 0, failed: 2, liveRunning: 0, expiredLeases: 0, retryExhausted: 0, eligible: 0, nextAttemptAt: '2026-10-22T10:00:30.000Z' } });
     expect(row(sleep, 'sleep_consolidation').timing).toMatchObject({ kind: 'retry', clock: 'real' });
     expect(row(sleep, 'journal').timing).toMatchObject({ kind: 'retry', clock: 'real' });
@@ -99,7 +108,7 @@ describe('truthful owner memory and learning plans', () => {
     sleep.active = false;
     expect(row(sleep, 'journal').reason).toContain('未启用');
     sleep.resetting = true;
-    expect(row(sleep, 'journal').reason).toContain('重建');
+    expect(row(sleep, 'journal').reason).toContain('退役');
     sleep.active = true; sleep.resetting = false;
     sleep.captureQueue = { pending: 0, running: 0, failed: 3, liveRunning: 0, expiredLeases: 0, eligible: 0, retryExhausted: 3 };
     expect(row(sleep, 'journal').reason).toContain('手动重试');

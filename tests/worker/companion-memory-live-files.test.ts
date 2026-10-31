@@ -1,228 +1,133 @@
-import { linkSync, mkdtempSync, readFileSync, renameSync, statSync, unlinkSync, utimesSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { linkSync, readFileSync, renameSync, statSync, unlinkSync, utimesSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
-import { afterEach, expect, it, vi } from 'vitest';
-import { CompanionsStore } from '../../src/companions/store';
-import { CompanionMemoryLibrary } from '../../src/main/companions/memory-library';
-import { CompanionMemoryLiveFiles } from '../../src/main/companions/memory-live-files';
-import { CompanionAssetProfileStore } from '../../src/main/companions/asset-profile';
-import { CompanionMemorySourceFiles } from '../../src/main/companions/memory-source-files';
-import { CompanionMemoryHistoryFiles } from '../../src/main/companions/memory-history-files';
-import { CompanionMemoryDocuments } from '../../src/main/companions/memory-documents';
+import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { canonicalProjectionInputs } from '../../src/main/companions/canonical-projection-inputs';
-import type { CompanionStorageCommand } from '../../src/shared/companion-storage';
-import { removeOwnedDirectorySync } from '../../src/main/vcp-memory/filesystem';
+import { CompanionMemoryHistoryFiles } from '../../src/main/companions/memory-history-files';
+import { CompanionArtifactRegistry } from '../../src/main/companions/artifact-registry';
+import { companionMemorySourceArtifactId } from '../../src/main/companions/memory-source-files';
+import { CompanionService } from '../../src/main/companions/service';
+import { withCompanionExecutionValidation } from '../../src/main/companions/source-execution-evidence';
+import type { CompanionMemoryFileReceipt } from '../../src/shared/companion-memory-files';
+import { managedMemoryFiles } from '../fixtures/managed-memory-files';
 
-const fixtures: Array<{ root: string; library: CompanionMemoryLibrary; store: CompanionsStore }> = [];
-afterEach(async () => { for (const f of fixtures.splice(0)) { await f.library.close(); f.store.close(); removeOwnedDirectorySync(f.root); } });
-function fixture() {
-  const root = mkdtempSync(path.join(tmpdir(), 'companion-memory-live-files-'));
-  const store = new CompanionsStore(path.join(root, 'state.sqlite'), ['alice', 'bob'].map(id => ({ id, name: id, description: '', persona: '原文与已核验来源共同构成记忆。',
-    avatar: 'sister' as const, model: '', active: true, proactive: false })));
-  const directory = path.join(root, '伙伴记忆'), scope = { companionId: 'alice', conversationId: store.openPrivate('alice').id };
-  const profiles = new CompanionAssetProfileStore(directory), commands: CompanionStorageCommand[] = [];
-  const library = new CompanionMemoryLibrary({ libraryDirectory: directory, profileStore: profiles,
-    request: async command => { commands.push(command); return store.request(command); }, maxFilesPerOwner: 2 });
-  const sourceFiles = new CompanionMemorySourceFiles({ library }), historyFiles = new CompanionMemoryHistoryFiles({ library });
-  const live = new CompanionMemoryLiveFiles({ library, maxFilesPerFlush: 2, history: historyFiles }), publish = live.flush.bind(live);
-  const initialized = new Set<string>();
-  live.flush = async (owner, input) => {
-    if (!initialized.has(owner)) { const current = store.state(false).companions.find(companion => companion.id === owner);
-      if (!current) throw new Error('Unknown synthetic owner.'); await profiles.bootstrap(current); initialized.add(owner); }
-    while ((await sourceFiles.flush(owner)).pending) { /* Complete the canonical fixture publication boundary. */ }
-    while ((await historyFiles.flush(owner)).pending) { /* Same publication chain as Main's source-file flush. */ }
-    return publish(owner, input);
-  };
-  fixtures.push({ root, store, library });
-  const message = store.appendMessage({ conversationId: scope.conversationId, authorId: 'user', content: '这是有正式来源、必须保留的真实材料。', replyDirective: 'none' });
-  const candidate = (content: string) => ({ content, tags: [], sourceMessageIds: [message.id], evidence: [{ sourceMessageId: message.id, quote: message.content }] });
-  const record = (content = '第一版有据记忆。') => store.request({ type: 'memory.record', ...scope, candidate: candidate(content) }).memories![0]!;
-  const read = (id: string) => store.request({ type: 'memory.read', ...scope, id }).memoryRead!.memory;
-  const file = (relative: string) => path.join(directory, 'alice', ...relative.split('/'));
-  return { root, store, library, live, historyFiles, scope, message, candidate, record, read, file, directory, profiles, commands };
-}
+const fixtures: ReturnType<typeof managedMemoryFiles>[] = [];
+const fixture = () => { const f = managedMemoryFiles(); fixtures.push(f); return f; };
+beforeEach(() => { vi.useFakeTimers({ toFake: ['Date'] }); vi.setSystemTime('2026-10-27T10:00:00Z'); });
+afterEach(async () => { for (const f of fixtures.splice(0)) await f.close(); vi.useRealTimers(); });
 
-it('reads a complete native input set from real historical files through one directory session and rejects edited published history', async () => {
-  const f = fixture(), notes = [f.record('候选一的原始正文。'), f.record('候选二的原始正文。')];
-  await f.live.flush('alice', { noteIds: notes.map(note => note.id), reconcile: false });
-  for (;;) { const job = f.store.request({ type: 'memory.outbox.claim' }).memoryOutbox; if (!job) break;
-    f.store.request({ type: 'memory.outbox.complete', id: job.id, leaseToken: job.leaseToken, indexed: true }); }
+it('shares exact canonical receipts across overlapping historical contexts and rechecks them in the next gate', async () => {
+  const f = fixture(), source = f.source('共同且有权使用的真实原始来源。');
+  const notes = ['甲', '乙', '丙'].map(name => f.record(name + '的正式经历。', [source.id])); await f.publish();
+  const receipts = (await f.live.materialize('alice', notes)).receipts;
+  const subject = Object.assign(Object.create(CompanionService.prototype), { liveFiles: f.live,
+    storage: { request: async (command: Parameters<typeof f.store.request>[0]) => f.store.request(command) } }) as {
+      memoryFilesValid(owner: string, values: readonly CompanionMemoryFileReceipt[]): Promise<boolean> };
+  const validations = vi.spyOn(f.live, 'validate');
+  await withCompanionExecutionValidation(async () => {
+    expect(await subject.memoryFilesValid('alice', [receipts[0]!, receipts[1]!])).toBe(true);
+    expect(await subject.memoryFilesValid('alice', [receipts[1]!, receipts[2]!])).toBe(true);
+    expect(await subject.memoryFilesValid('alice', [receipts[2]!, receipts[0]!])).toBe(true);
+    expect(validations.mock.calls.map(([, batch]) => batch.map(item => item.noteId))).toEqual([
+      [notes[0]!.id, notes[1]!.id], [notes[2]!.id],
+    ]);
+  });
+  expect(await subject.memoryFilesValid('alice', [receipts[1]!])).toBe(true);
+  expect(validations).toHaveBeenCalledTimes(3);
+  const target = f.noteFile(notes[1]!); writeFileSync(target, '未知的外部改写。');
+  expect(await subject.memoryFilesValid('alice', [receipts[1]!])).toBe(false);
+});
+
+it('checks shared canonical sources through one batched registry read across selected notes', async () => {
+  const f = fixture(), sources = Array.from({ length: 12 }, (_, index) => f.source('共同原始来源 ' + index));
+  const notes = [f.record('第一条正式有据日记。', sources.map(source => source.id)), f.record('第二条正式有据日记。', sources.map(source => source.id))];
+  await f.publish(); f.commands.length = 0;
+  const batches = vi.spyOn(CompanionArtifactRegistry.prototype, 'readMany');
+  try {
+    expect((await f.live.materialize('alice', notes)).notes.map(note => note.id)).toEqual(notes.map(note => note.id));
+    const sourceBatches = batches.mock.calls.filter(([inputs]) => inputs.every(input => input.consumer === 'source_verification'));
+    expect(sourceBatches).toHaveLength(1); expect(sourceBatches[0]![0]).toHaveLength(12);
+    const metadataBatches = f.commands.filter(command => command.type === 'cognition.registry.read' && command.artifactIds?.length === 12);
+    expect(metadataBatches).toHaveLength(1);
+    // The final SQL fence covers both notes and all shared sources together.
+    expect(f.commands.filter(command => command.type === 'cognition.registry.read' && command.artifactIds?.length === 14)).toHaveLength(2);
+  } finally { batches.mockRestore(); }
+});
+
+it('reads native projection input from exact historical files in one owner session and rejects edited history', async () => {
+  const f = fixture(), notes = [f.record('第一篇真实正文。'), f.record('第二篇真实正文。')]; await f.publish();
+  const state = f.store.request({ type: 'memory.projection.state', ...f.scope }).memoryProjectionState!, descriptors = f.store.request({ type: 'memory.projection.page', ...f.scope, expected: state }).memoryProjectionPage!.notes;
+  const sessions = vi.spyOn(f.library, 'withDocuments'); expect((await canonicalProjectionInputs(f.history, f.scope, descriptors, f.library)).map(note => note.content)).toEqual(descriptors.map(note => notes.find(expected => expected.id === note.id)!.content)); expect(sessions).toHaveBeenCalledTimes(1); sessions.mockRestore();
+  const target = f.historyFile(notes[0]!.id, 1); writeFileSync(target, '外改历史。'); await expect(canonicalProjectionInputs(f.history, f.scope, descriptors, f.library)).rejects.toThrow(); expect(readFileSync(target, 'utf8')).toBe('外改历史。');
+});
+it('batches shared historical sources once per canonical input gate and reopens them at the next gate', async () => {
+  const f = fixture(), sources = Array.from({ length: 12 }, (_, index) => f.source('共同历史依据 ' + index));
+  const notes = [f.record('第一份有据历史。', sources.map(source => source.id)), f.record('第二份有据历史。', sources.map(source => source.id))];
+  await f.publish();
   const state = f.store.request({ type: 'memory.projection.state', ...f.scope }).memoryProjectionState!;
   const descriptors = f.store.request({ type: 'memory.projection.page', ...f.scope, expected: state }).memoryProjectionPage!.notes;
-  const session = vi.spyOn(f.library, 'withDocuments');
-  expect((await canonicalProjectionInputs(f.historyFiles, f.scope, descriptors, f.library)).map(note => note.content)).toEqual(
-    descriptors.map(note => notes.find(expected => expected.id === note.id)!.content));
-  expect(session).toHaveBeenCalledTimes(1); session.mockRestore();
-  const descriptor = f.store.request({ type: 'memory.revision.describe', ...f.scope, id: notes[0]!.id, contentRevision: 1 }).memoryHistoryDescriptor!;
-  writeFileSync(f.file(descriptor.relativePath), '外部更改历史文件，不能从SQL覆盖。');
-  await expect(canonicalProjectionInputs(f.historyFiles, f.scope, descriptors, f.library)).rejects.toThrow();
-  expect(readFileSync(f.file(descriptor.relativePath), 'utf8')).toBe('外部更改历史文件，不能从SQL覆盖。');
-});
-
-it('preserves a captured body across a host-committed move while unregistered moves and edits remain unavailable', async () => {
-  const f = fixture(), note = f.record(); await f.live.flush('alice', { noteIds: [note.id], reconcile: false });
-  const original = await f.live.materialize('alice', [note]), receipt = original.receipts[0]!;
-  const manager = new CompanionMemoryDocuments({ library: f.library, libraryDirectory: f.directory, requestStorage: async command => f.store.request(command) });
+  const batches = vi.spyOn(CompanionArtifactRegistry.prototype, 'readMany');
   try {
-    const read = await manager.handle({ type: 'memory.documents.read', companionId: 'alice', path: receipt.path, sourceLimit: 30 });
-    expect(read.ok, read.error).toBe(true);
-    const target = '资料/完成整理后的原记忆.md';
-    const moved = await manager.handle({ type: 'memory.documents.move', companionId: 'alice', path: receipt.path, targetPath: target,
-      expectedRevision: read.document!.document.revision });
-    expect(moved.ok, moved.error).toBe(true);
-    expect(await f.live.validate('alice', original.receipts)).toBe(true);
-    expect(await f.live.validate('bob', original.receipts)).toBe(false);
-    const current = f.file(target), external = f.file('资料/未登记移动.md'); renameSync(current, external);
-    expect(await f.live.validate('alice', original.receipts)).toBe(false);
-    renameSync(external, current); writeFileSync(current, '未登记改写不能借旧历史通过。');
-    expect(await f.live.validate('alice', original.receipts)).toBe(false);
-  } finally { await manager.close(); }
+    expect((await canonicalProjectionInputs(f.history, f.scope, descriptors, f.library)).map(note => note.id).sort()).toEqual(notes.map(note => note.id).sort());
+    const sourceBatches = () => batches.mock.calls.filter(([inputs]) => inputs.length && inputs.every(input => input.consumer === 'source_verification'));
+    expect(sourceBatches()).toHaveLength(1);
+    expect(sourceBatches()[0]![0]).toHaveLength(12);
+    expect(f.commands.filter(command => command.type === 'memory.revisions.describe')).toHaveLength(2);
+    await canonicalProjectionInputs(f.history, f.scope, descriptors, f.library);
+    expect(sourceBatches()).toHaveLength(2);
+    const artifact = await (await f.artifacts('alice')).get(companionMemorySourceArtifactId(sources[0]!.id, 1));
+    expect(artifact).toBeDefined();
+    writeFileSync(f.file(artifact!.relativePath), '外部改写原始依据。');
+    await expect(canonicalProjectionInputs(f.history, f.scope, descriptors, f.library)).rejects.toThrow();
+  } finally { batches.mockRestore(); }
 });
-
-it('bounds foreground reconciliation to its owner and prepares the role once per writer operation', async () => {
-  const f = fixture(), note = f.record();
-  await f.live.flush('alice', { noteIds: [note.id], reconcile: false });
-  const preparation = vi.spyOn(f.profiles, 'bootstrap'); f.commands.length = 0;
-  await f.live.flush('alice', { reconcile: true });
-  expect(preparation.mock.calls.map(([owner]) => owner.id)).toEqual(['alice']);
-  const states = f.commands.filter(command => command.type === 'state');
-  expect(states.length).toBeGreaterThan(0);
-  expect(states.every(command => command.companionId === 'alice')).toBe(true);
-  expect((await f.live.materialize('alice', [note])).notes[0]!.content).toBe(note.content);
+it('materializes the exact registered canonical body under its owner without rescanning or cross-owner use', async () => {
+  const f = fixture(), note = f.record('明确的正式正文。'); await f.publish(); f.commands.length = 0;
+  const result = await f.live.materialize('alice', [note]); expect(result.notes[0]!.content).toBe(readFileSync(f.noteFile(note), 'utf8')); expect(result.receipts[0]).toMatchObject({ companionId: 'alice', noteId: note.id, contentRevision: 1 });
+  expect(await f.live.validate('alice', result.receipts)).toBe(true); expect(await f.live.validate('bob', result.receipts)).toBe(false); await expect(f.live.materialize('bob', [note])).rejects.toThrow();
+  expect(f.commands.some(command => command.type === 'memory.library.page' || command.type === 'cognition.registry.page')).toBe(false);
 });
-
-it('keeps live role-file admission after bounded reconciliation and does not reseed a missing initialized prompt', async () => {
-  const f = fixture(), note = f.record();
-  await f.live.flush('alice', { noteIds: [note.id], reconcile: false });
-  const initial = await f.live.materialize('alice', [note]);
-  writeFileSync(f.file(initial.receipts[0]!.path), '来自文件的新事实，必须在下一次上下文前登记。');
-  await f.live.flush('alice', { reconcile: true });
-  expect((await f.live.materialize('alice', [f.read(note.id)])).notes[0]!.content).toBe('来自文件的新事实，必须在下一次上下文前登记。');
-  const prompt = f.file('提示词/共同.md'); unlinkSync(prompt);
-  await expect(f.live.flush('alice', { reconcile: true })).rejects.toMatchObject({ code: 'MISSING' });
-  await expect(f.live.materialize('alice', [f.read(note.id)])).rejects.toMatchObject({ code: 'MISSING' });
-  expect(await f.live.validate('alice', initial.receipts)).toBe(false);
-  expect(() => readFileSync(prompt, 'utf8')).toThrow();
+it('rejects unregistered moves and human body edits without importing or repairing either', async () => {
+  const f = fixture(), note = f.record('不能被人类改写为新认识。'); await f.publish(); const before = await f.live.materialize('alice', [note]), target = f.noteFile(note), moved = path.join(path.dirname(target), '外部改名.md');
+  renameSync(target, moved); expect(await f.live.validate('alice', before.receipts)).toBe(false); await expect(f.live.materialize('alice', [note])).rejects.toThrow(); renameSync(moved, target);
+  writeFileSync(target, '未知外部改写。'); await expect(f.live.flush('alice', { noteIds: [note.id] })).rejects.toThrow(); await expect(f.live.materialize('alice', [note])).rejects.toThrow();
+  expect(f.store.listMemory('alice')[0]!.content).toBe(note.content); expect(readFileSync(target, 'utf8')).toBe('未知外部改写。');
 });
-
-it('publishes specified host writes immediately and materializes actual canonical text under the correct owner', async () => {
-  const f = fixture(), note = f.record();
-  expect(await f.live.flush('alice', { noteIds: [note.id], reconcile: false })).toMatchObject({ checked: 1, published: 1, pending: false });
-  const result = await f.live.materialize('alice', [note]);
-  expect(result.notes[0]!.content).toBe(readFileSync(f.file(result.receipts[0]!.path), 'utf8'));
-  expect(result.receipts[0]).toMatchObject({ companionId: 'alice', noteId: note.id, contentRevision: 1 });
-  expect(await f.live.validate('alice', result.receipts)).toBe(true);
-  expect(await f.live.validate('bob', result.receipts)).toBe(false);
-  await expect(f.live.materialize('bob', [note])).rejects.toThrow('伙伴');
+it('rechecks ctime and exact bytes in the same admission window after a same-size mtime-restored edit', async () => {
+  const f = fixture(), note = f.record('第一版真实正文。'); await f.publish(); const result = await f.live.materialize('alice', [note]), window = {}, target = f.noteFile(note);
+  expect(await f.live.validate('alice', result.receipts, window)).toBe(true); const before = statSync(target), edited = note.content.replace('第', '新'); expect(Buffer.byteLength(edited)).toBe(Buffer.byteLength(note.content));
+  writeFileSync(target, edited); utimesSync(target, before.atime, before.mtime); expect(await f.live.validate('alice', result.receipts, window)).toBe(false);
 });
-
-it('persists one complete bounded publication intent before bodies and recovers an interrupted batch without losing order', async () => {
-  const f = fixture(), notes = [f.record('批量原文一。'), f.record('批量原文二。'), f.record('批量原文三。')];
-  const original = f.library.withDocuments.bind(f.library); let projects = 0, saves = 0;
-  const intercepted = vi.spyOn(f.library, 'withDocuments').mockImplementation((owner, work, options) => original(owner, async session => {
-    const project = session.project, save = session.save;
-    session.save = async () => { saves++; await save(); };
-    session.project = async (relative, note) => {
-      const manifest = JSON.parse(readFileSync(f.file('.同步状态.json'), 'utf8'));
-      expect(notes.every(item => manifest.files['日记/' + item.id + '.md']?.state === 'projecting')).toBe(true);
-      if (++projects === 2) throw new Error('Synthetic interruption between committed batch bodies.');
-      await project(relative, note);
-    };
-    return work(session);
-  }, options));
-  await expect(f.live.flush('alice', { noteIds: notes.map(note => note.id), limit: 3, reconcile: false })).rejects.toThrow('Synthetic interruption');
-  expect(saves).toBe(1); intercepted.mockRestore();
-  expect(await f.live.flush('alice', { noteIds: notes.map(note => note.id), limit: 3, reconcile: false })).toMatchObject({ checked: 3, pending: false });
-  const actual = await f.live.materialize('alice', notes);
-  expect(actual.notes.map(note => note.id)).toEqual(notes.map(note => note.id));
-  expect(actual.notes.map(note => note.content)).toEqual(notes.map(note => note.content));
+it.each(['missing', 'hardlink'] as const)('does not trust SQLite or follow an alias when current body is %s', async mode => {
+  const f = fixture(), note = f.record('必须以正式文件读取。'); await f.publish(); const result = await f.live.materialize('alice', [note]);
+  if (mode === 'missing') unlinkSync(f.noteFile(note)); else linkSync(f.noteFile(note), path.join(f.root, 'alias.md'));
+  expect(await f.live.validate('alice', result.receipts)).toBe(false); await expect(f.live.materialize('alice', [note])).rejects.toThrow(); await expect(f.live.flush('alice', { noteIds: [note.id] })).rejects.toThrow();
 });
-
-it('fails closed on unregistered external edits and imports current text before preparing another context', async () => {
-  const f = fixture(), note = f.record(); await f.live.flush('alice', { noteIds: [note.id], reconcile: false });
-  const initial = await f.live.materialize('alice', [note]), receipt = initial.receipts[0]!;
-  writeFileSync(f.file(receipt.path), '用户在资产目录即时改写的完整正文。');
-  expect(await f.live.validate('alice', initial.receipts)).toBe(false);
-  await expect(f.live.materialize('alice', [note])).rejects.toThrow('登记外部编辑');
-  await f.live.flush('alice', { noteIds: [note.id], reconcile: false });
-  const current = f.read(note.id), materialized = await f.live.materialize('alice', [current]);
-  expect(current.contentRevision).toBe(2); expect(materialized.notes[0]!.content).toBe('用户在资产目录即时改写的完整正文。');
-  expect(await f.live.validate('alice', materialized.receipts)).toBe(true);
+it('keeps a frozen task valid across lawful newer publication but rejects an external current-file edit', async () => {
+  const f = fixture(), source = f.source('正式原始依据。'), note = f.record('原任务读到的版本。', [source.id]); await f.publish(); const original = await f.live.materialize('alice', [note]);
+  const next = f.store.request({ type: 'memory.revise', ...f.scope, id: note.id, expectedVersion: note.version, candidate: f.candidate('后台真实修订。', [source.id]) }).memories![0]!;
+  expect(await f.live.validate('alice', original.receipts)).toBe(true); await expect(f.live.materialize('alice', [next])).rejects.toThrow(); await f.publish();
+  expect(await f.live.validate('alice', original.receipts)).toBe(true); expect((await f.live.materialize('alice', [next])).notes[0]!.content).toBe(next.content);
+  writeFileSync(f.noteFile(next), '未登记的当前正文不能借旧历史通过。'); expect(await f.live.validate('alice', original.receipts)).toBe(false);
 });
-
-it('rechecks real file identity and ctime within the same admission memo even after a same-size edit restores mtime', async () => {
-  const f = fixture(), note = f.record(); await f.live.flush('alice', { noteIds: [note.id], reconcile: false });
-  const initial = await f.live.materialize('alice', [note]), window = {}, file = f.file(initial.receipts[0]!.path);
-  expect(await f.live.validate('alice', initial.receipts, window)).toBe(true);
-  expect(await f.live.validate('alice', initial.receipts, window)).toBe(true);
-  const before = statSync(file), edited = note.content.replace('第', '新'); expect(Buffer.byteLength(edited)).toBe(Buffer.byteLength(note.content));
-  writeFileSync(file, edited); utimesSync(file, before.atime, before.mtime);
-  expect(await f.live.validate('alice', initial.receipts, window)).toBe(false);
+it('preserves independently authorized B-only r1 after later A+B r2 withdrawal, then rejects whole-note forgetting', async () => {
+  const f = fixture(), b = f.source('真实B。'), a = f.source('真实A。'), note = f.record('仅依赖B的旧版本。', [b.id]); await f.publish(); const receipt = (await f.live.materialize('alice', [note])).receipts;
+  f.store.request({ type: 'memory.revise', ...f.scope, id: note.id, expectedVersion: note.version, candidate: f.candidate('之后依据A与B。', [a.id, b.id]) }); await f.publish();
+  f.store.request({ type: 'memory.forget', ...f.scope, sourceMessageIds: [a.id] }); await f.sources.flush('alice'); await f.history.flush('alice');
+  expect(await f.live.validate('alice', receipt)).toBe(true); f.store.request({ type: 'memory.forget', ...f.scope, id: note.id }); await f.sources.flush('alice'); await f.history.flush('alice'); expect(await f.live.validate('alice', receipt)).toBe(false);
 });
-
-it('opens role modules once within an owner operation while fresh contexts still reject a missing current role', async () => {
-  const f = fixture(), note = f.record(); await f.live.flush('alice', { noteIds: [note.id], reconcile: false });
-  const receipts = (await f.live.materialize('alice', [note])).receipts, window = {}, roles = vi.spyOn(f.profiles, 'load');
-  expect(await f.live.validate('alice', receipts, window)).toBe(true); expect(roles).toHaveBeenCalledTimes(1);
-  expect(await f.live.validate('alice', receipts, window)).toBe(true); expect(roles).toHaveBeenCalledTimes(1);
-  expect(await f.live.validate('bob', receipts, window)).toBe(false);
-  unlinkSync(f.file('提示词/共同.md'));
-  expect(await f.live.validate('alice', receipts, {})).toBe(false);
-  expect(await f.live.validate('alice', receipts)).toBe(false);
+it('does not overwrite concurrent external bytes with a newer SQL revision', async () => {
+  const f = fixture(), source = f.source('真实来源。'), note = f.record('正式第一版。', [source.id]); await f.publish(); writeFileSync(f.noteFile(note), '外部改写必须保留。');
+  f.store.request({ type: 'memory.revise', ...f.scope, id: note.id, expectedVersion: note.version, candidate: f.candidate('同时发生的真实后台修订。', [source.id]) });
+  await f.sources.flush('alice'); expect(await f.history.flush('alice')).toMatchObject({ failed: 1 }); expect(readFileSync(f.noteFile(note), 'utf8')).toBe('外部改写必须保留。');
 });
-
-it('keeps legitimate frozen tasks valid during and after a newer background body publication', async () => {
-  const f = fixture(), note = f.record(); await f.live.flush('alice', { noteIds: [note.id], reconcile: false });
-  const original = await f.live.materialize('alice', [note]);
-  const next = f.store.request({ type: 'memory.revise', ...f.scope, id: note.id, expectedVersion: note.version, candidate: f.candidate('后台基于相同真实来源改进的新正文。') }).memories![0]!;
-  expect(await f.live.validate('alice', original.receipts)).toBe(true);
-  await expect(f.live.materialize('alice', [next])).rejects.toThrow();
-  await f.live.flush('alice', { noteIds: [next.id], reconcile: false });
-  expect(await f.live.validate('alice', original.receipts)).toBe(true);
-  expect((await f.live.materialize('alice', [f.read(note.id)])).notes[0]!.content).toBe(next.content);
-  f.store.request({ type: 'memory.forget', ...f.scope, sourceMessageIds: [f.message.id] });
-  expect(await f.live.validate('alice', original.receipts)).toBe(false);
+it('recovers history-committed/current-body-unpublished debt through the durable outbox after restart', async () => {
+  const f = fixture(), note = f.record('不能在一次崩溃后永远丢出版任务。'); await f.sources.flush('alice');
+  const history = new CompanionMemoryHistoryFiles({ library: f.library, afterPublish: async () => { throw new Error('CRASH_BEFORE_LIVE_BODY'); } }); expect(await history.flush('alice')).toMatchObject({ failed: 1, completed: 0 });
+  f.restart(); vi.setSystemTime(Date.now() + 31_000); await f.history.flush('alice'); expect((await f.live.materialize('alice', [note])).notes[0]!.content).toBe(note.content);
 });
-
-it('keeps a real old B-only file receipt after host withdrawal of a later A+B body, then rejects explicit whole-note forgetting', async () => {
-  const f = fixture(), original = f.record('仅有B真实来源的第一版。'); await f.live.flush('alice', { noteIds: [original.id], reconcile: false });
-  const receipt = (await f.live.materialize('alice', [original])).receipts;
-  const a = f.store.appendMessage({ conversationId: f.scope.conversationId, authorId: 'user', content: '后来新增的真实证据A。', replyDirective: 'none' });
-  const revised = f.store.request({ type: 'memory.revise', ...f.scope, id: original.id, expectedVersion: original.version, candidate: {
-    content: '后来综合A与B的第二版。', sourceMessageIds: [a.id, f.message.id], evidence: [{ sourceMessageId: a.id, quote: a.content },
-      { sourceMessageId: f.message.id, quote: f.message.content }] } }).memories![0]!;
-  await f.live.flush('alice', { noteIds: [revised.id], reconcile: false });
-  f.store.request({ type: 'memory.forget', ...f.scope, sourceMessageIds: [a.id] });
-  expect(await f.live.validate('alice', receipt)).toBe(true); // Registered r2 can retire before its host file withdrawal finishes.
-  await f.live.flush('alice', { reconcile: false }); await f.library.sync();
-  expect(await f.live.validate('alice', receipt)).toBe(true);
-  f.store.request({ type: 'memory.forget', ...f.scope, id: original.id }); await f.live.flush('alice', { reconcile: false });
-  expect(await f.live.validate('alice', receipt)).toBe(false);
-});
-
-it('does not overwrite concurrent external text with a newer SQL projection', async () => {
-  const f = fixture(), note = f.record(); await f.live.flush('alice', { noteIds: [note.id], reconcile: false });
-  const result = await f.live.materialize('alice', [note]), file = f.file(result.receipts[0]!.path);
-  writeFileSync(file, '外部编辑必须保留，不能被后台覆盖。');
-  f.store.request({ type: 'memory.revise', ...f.scope, id: note.id, expectedVersion: note.version, candidate: f.candidate('同时发生的后台改进。') });
-  await expect(f.live.flush('alice', { noteIds: [note.id], reconcile: false })).rejects.toThrow('保留文件并停止自动覆盖');
-  expect(readFileSync(file, 'utf8')).toBe('外部编辑必须保留，不能被后台覆盖。');
-  expect(await f.live.validate('alice', result.receipts)).toBe(false);
-});
-
-it('treats removed or multiply linked files as unavailable instead of trusting SQLite or following aliases', async () => {
-  const f = fixture(), note = f.record(); await f.live.flush('alice', { noteIds: [note.id], reconcile: false });
-  const result = await f.live.materialize('alice', [note]), file = f.file(result.receipts[0]!.path), alias = path.join(f.root, 'outside-copy.md');
-  linkSync(file, alias); expect(await f.live.validate('alice', result.receipts)).toBe(false);
-  await expect(f.live.materialize('alice', [note])).rejects.toThrow('普通文本'); unlinkSync(alias);
-  unlinkSync(file); expect(await f.live.validate('alice', result.receipts)).toBe(false);
-  await expect(f.live.materialize('alice', [note])).rejects.toThrow();
-});
-
-it('offers bounded resumable write-through for explicit batches without another owner scan', async () => {
-  const f = fixture(), notes = Array.from({ length: 5 }, (_, index) => f.record('第' + index + '篇有据记忆。')), ids = notes.map(note => note.id);
-  const first = await f.live.flush('alice', { noteIds: ids, limit: 2, reconcile: false }); expect(first).toMatchObject({ checked: 2, pending: true, nextCursor: 2 });
-  const second = await f.live.flush('alice', { noteIds: ids, limit: 2, cursor: first.nextCursor, reconcile: false }); expect(second.nextCursor).toBe(4);
-  const final = await f.live.flush('alice', { noteIds: ids, limit: 2, cursor: second.nextCursor, reconcile: false }); expect(final).toMatchObject({ checked: 1, pending: false });
-  expect((await f.live.materialize('alice', notes)).receipts).toHaveLength(5);
+it('keeps explicit writer batches bounded and ordered without using reconciliation to import new text', async () => {
+  const f = fixture(), notes = Array.from({ length: 5 }, (_, index) => f.record('有据条目' + index)); await f.publish(); const ids = notes.map(note => note.id);
+  const first = await f.live.flush('alice', { noteIds: ids, limit: 2, reconcile: true }); expect(first).toMatchObject({ checked: 2, published: 0, pending: true, nextCursor: 2 });
+  const second = await f.live.flush('alice', { noteIds: ids, limit: 2, cursor: first.nextCursor }); expect(second.nextCursor).toBe(4);
+  const final = await f.live.flush('alice', { noteIds: ids, limit: 2, cursor: second.nextCursor }); expect(final).toMatchObject({ checked: 1, pending: false }); expect((await f.live.materialize('alice', notes)).notes.map(note => note.id)).toEqual(ids);
 });

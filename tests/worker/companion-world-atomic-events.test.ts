@@ -16,7 +16,7 @@ function fixture() {
   const root = mkdtempSync(path.join(tmpdir(), 'companion-atomic-events-')); roots.push(root); const filename = path.join(root, 'messages.sqlite');
   const store = new CompanionsStore(filename, [{ id: 'alice', name: 'Alice', persona: '喜欢散步，认真生活。', description: '', model: '', avatar: 'sister', active: true, proactive: true }]); stores.add(store);
   const scope = { companionId: 'alice', conversationId: store.openPrivate('alice').id }, world = store.request({ type: 'world.snapshot' }).world!;
-  store.request({ type: 'world.configure', expectedRevision: world.settings.revision, patch: { mode: 'compressed', timeZone: 'UTC' } });
+  store.request({ type: 'world.configure', expectedRevision: world.settings.revision, patch: { mode: 'realtime', timeZone: 'UTC' } });
   const routine = store.request({ type: 'routine.get', ...scope }).routine!;
   store.request({ type: 'routine.configure', ...scope, expectedRevision: routine.revision, patch: { timeZone: 'UTC', sleepAt: '23:00', wakeAt: '07:00', meals: [], habits: [] } });
   store.request({ type: 'world.snapshot' });
@@ -87,7 +87,7 @@ it('rejects an impossible replacement without cancelling the existing physical p
   for (const rule of f.store.request({ type: 'life-rule.list', companionId: 'alice' }).lifeRules!) f.store.request({ type: 'life-rule.remove', companionId: 'alice', id: rule.id, expectedRevision: rule.revision });
   f.store.request({ type: 'life-rule.create', companionId: 'alice', rule: { title: '原有散步活动', action: 'park_walk', startMinute: 600, endMinute: 602, probability: 1, checkIntervalMinutes: 1, durationMinutes: 35 } });
   f.store.request({ type: 'life-event.tick' });
-  vi.setSystemTime(Date.now() + 1600); f.store.request({ type: 'world.tick' });
+  vi.setSystemTime(Date.now() + 60_000); f.store.request({ type: 'world.tick' });
   const claim = f.store.request({ type: 'life-event.claim' }).lifeOccurrence!;
   expect(claim?.rule.action).toBe('park_walk'); f.store.request({ type: 'life-event.complete', id: claim.id, leaseToken: claim.leaseToken! });
   const physical = f.store.request({ type: 'world.snapshot' }).world!, subject = (world: CompanionWorldSnapshot) => world.actors.find(actor => actor.companionId === 'alice')!;

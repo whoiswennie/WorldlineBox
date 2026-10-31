@@ -72,14 +72,14 @@ it('perceives actual rain and cold while walking outside once per climate change
   const walking = f.store.request({ type: 'world.tick', snapshot: true }).world!, actor = walking.actors[0]!;
   expect(actor).toMatchObject({ sceneId: 'park', activity: 'walking' }); expect(actor.route.length).toBeGreaterThan(0);
   const perceived = walking.events.filter(event => event.kind === 'environment' && event.actorId === seed.id);
-  expect(perceived).toHaveLength(1); expect(perceived[0]!.effect).toMatchObject({ type: 'stress' });
+  expect(perceived).toHaveLength(1); expect(perceived[0]!.text).toBeTruthy(); expect(perceived[0]!).not.toHaveProperty('effect');
   vi.setSystemTime(Date.now() + 120000);
   const arrived = f.store.request({ type: 'world.tick', snapshot: true }).world!;
   expect(arrived.actors[0]!.route).toEqual([]);
   expect(arrived.events.filter(event => event.kind === 'environment' && event.actorId === seed.id)).toHaveLength(1);
   const after = f.store.request({ type: 'state.get', ...f.scope }).runtimeState!;
-  expect(after.affect.pleasure).toBeLessThan(before.affect.pleasure);
-  expect(after.relationship).toEqual(before.relationship);
+  expect(after).not.toHaveProperty('affect');
+  expect(after.relationshipRecords).toEqual(before.relationshipRecords);
 });
 
 it.each(['routine.get', 'state.get'] as const)('returns one materialized instant for %s during bounded offline catch-up', type => {

@@ -9,9 +9,9 @@ import { companionSearchTokens, companionSearchFacet } from '../../src/shared/co
 
 const owned: { root: string; store: CompanionsStore }[] = [];
 afterEach(() => { for (const item of owned.splice(0)) { item.store.close(); if (path.dirname(item.root) !== tmpdir() || !path.basename(item.root).startsWith('worldlinebox-collaboration-')) throw new Error('Unexpected fixture'); rmSync(item.root, { recursive: true, force: true }); } });
-function fixture() {
+function fixture(names: Record<string, string> = {}) {
   const root = mkdtempSync(path.join(tmpdir(), 'worldlinebox-collaboration-')), file = path.join(root, 'messages.sqlite');
-  const store = new CompanionsStore(file, ['a', 'b', 'c'].map(id => ({ id, name: id, description: '', persona: '认真核验', avatar: 'sister', model: '', active: true, proactive: false })));
+  const store = new CompanionsStore(file, ['a', 'b', 'c'].map(id => ({ id, name: names[id] ?? id, description: '', persona: '认真核验', avatar: 'sister', model: '', active: true, proactive: false })));
   owned.push({ root, store });
   const origin = store.openPrivate('a');
   store.appendMessage({ conversationId: origin.id, authorId: 'user', content: 'PRIVATE_A_ONLY_NOT_DELEGATED' });
@@ -39,8 +39,7 @@ it('persists explicit grants without adding the invited partner to the private s
 });
 
 it('finds a real collaborator when contact queries contain both their display name and ID', () => {
-  const f = fixture();
-  f.store.request({ type: 'companion.update', id: 'b', companion: { name: '周岚', description: '', persona: '独立核对', avatar: 'sister', model: '', proactive: false } });
+  const f = fixture({ b: '周岚' });
   expect(f.store.request({ type: 'memory.world_query', companionId: 'a', conversationId: f.origin.id, category: 'contacts', query: '周岚 b', limit: 10 }).worldKnowledge?.items).toEqual([]);
   const introduced = f.store.request({ type: 'social.conversation.ensure', companionId: 'a', memberIds: ['a', 'b'] }).socialConversation!;
   f.store.request({ type: 'social.message.append', conversationId: introduced.id, authorId: 'a', content: '周岚你好，我是a，想认识你一起核对结果。',
@@ -162,13 +161,13 @@ it('reads the same durable invitation from a new store and revokes old participa
   try { expect(reopened.request({ type: 'collaboration.read', id: f.grant.id, companionId: 'b' }).collaboration).toMatchObject({ id: f.grant.id, sourceMessageId: f.source.id }); }
   finally { reopened.close(); }
   f.start();
-  const reset = f.store.request({ type: 'companion.reset', id: 'b', scope: 'all' }).reset!;
-  f.store.request({ type: 'companion.reset.cleanup', id: 'b', jobId: reset.id });
+  const reset = f.store.request({ type: 'companion.retire', id: 'b', scope: 'all' }).reset!;
+  f.store.request({ type: 'companion.retire.cleanup', id: 'b', jobId: reset.id });
   for (let step = 0; step < 20000; step++) {
-    if (f.store.request({ type: 'companion.reset.status', id: 'b' }).reset?.status === 'completed') break;
+    if (f.store.request({ type: 'companion.retire.status', id: 'b' }).reset?.status === 'completed') break;
     await f.store.advanceReset();
   }
-  expect(f.store.request({ type: 'companion.reset.status', id: 'b' }).reset?.status).toBe('completed');
+  expect(f.store.request({ type: 'companion.retire.status', id: 'b' }).reset?.status).toBe('completed');
   expect(() => f.store.request({ type: 'collaboration.read', id: f.grant.id, companionId: 'b' })).toThrow(/权限已撤回/);
   expect(f.store.request({ type: 'collaboration.read', id: f.grant.id, companionId: 'a' }).collaboration?.participants[0]).toMatchObject({ status: 'cancelled', accessRevokedAt: expect.any(String) });
 });

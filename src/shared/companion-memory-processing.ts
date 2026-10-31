@@ -1,7 +1,8 @@
 import { z } from 'zod';
+import { companionJobDispositionSchema } from './companion-job-control';
 
 const id = z.string().regex(/^[a-zA-Z0-9_-]{1,100}$/u);
-export const companionMemoryProcessingFilterSchema = z.enum(['all', 'active', 'failed', 'completed']);
+export const companionMemoryProcessingFilterSchema = z.enum(['all', 'active', 'failed', 'parked', 'abandoned', 'completed']);
 export type CompanionMemoryProcessingFilter = z.infer<typeof companionMemoryProcessingFilterSchema>;
 export const companionMemoryJobScheduleSchema = z.object({
   scheduleKind: z.enum(['running', 'timer', 'retry', 'condition', 'manual', 'finished', 'unknown']),
@@ -25,7 +26,8 @@ export const MEMORY_PROCESSING_TRIGGERS = {
 export const companionMemoryProcessingCommand = z.strictObject({ type: z.literal('memory.processing.status'), companionId: id,
   filter: companionMemoryProcessingFilterSchema.optional(), limit: z.number().int().min(1).max(50).default(30) });
 export const companionMemoryProcessingJobSchema = z.object({ id, kind: z.enum(['capture', 'index', 'tags', 'timeline']),
-  status: z.enum(['pending', 'running', 'completed', 'failed', 'cancelled', 'stale', 'waiting_model']),
+  status: z.enum(['pending', 'running', 'completed', 'failed', 'parked', 'abandoned', 'cancelled', 'stale', 'waiting_model']),
+  disposition: companionJobDispositionSchema.optional(),
   stage: z.string().max(300), title: z.string().max(160), attempts: z.number().int().nonnegative(),
   createdAt: z.string().optional(), startedAt: z.string().optional(), updatedAt: z.string().optional(), nextAttemptAt: z.string().optional(),
   sourceRevision: z.string().max(160).optional(),
@@ -36,7 +38,8 @@ export const companionMemoryProcessingSchema = z.object({ companionId: id,
   metrics: z.object({ sourceVersions: z.number().int().nonnegative(), originalEntries: z.number().int().nonnegative(), derivedEntries: z.number().int().nonnegative() }).optional(),
   schedule: companionMemoryOwnerScheduleSchema.optional(),
   summary: z.object({ pending: z.number().int().nonnegative(), running: z.number().int().nonnegative(),
-    failed: z.number().int().nonnegative(), completed: z.number().int().nonnegative(), cancelled: z.number().int().nonnegative() }),
+    failed: z.number().int().nonnegative(), parked: z.number().int().nonnegative(), abandoned: z.number().int().nonnegative(),
+    completed: z.number().int().nonnegative(), cancelled: z.number().int().nonnegative() }),
   jobs: z.array(companionMemoryProcessingJobSchema).max(50), hasMore: z.boolean(),
 });
 export type CompanionMemoryProcessing = z.infer<typeof companionMemoryProcessingSchema>;

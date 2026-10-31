@@ -25,13 +25,16 @@ import { useApplicationModuleShortcuts } from './use-application-module-shortcut
 import type { WorldlineBoxLibraryApi } from '../shared/library-api';
 import type { ExtensionSaveCompletedEvent } from '../shared/protocol/responses';
 import { CompanionWorkspace } from './companions/CompanionWorkspace';
+import { featureLoader } from './feature-loader';
 import './feature-loading.css';
 
-const Launcher = lazy(() => import('./launcher/DshLauncher').then(module => ({ default: module.DshLauncher })));
-const Browser = lazy(() => import('./browser/BrowserPage').then(module => ({ default: module.BrowserPage })));
-const Companions = lazy(() => import('./companions/Companions').then(module => ({ default: module.Companions })));
-const Assets = lazy(() => import('./App').then(module => ({ default: module.AssetManager })));
-const Network = lazy(() => import('./network/ApplicationNetworkPage').then(module => ({ default: module.ApplicationNetworkPage })));
+const launcherFeature = featureLoader(() => import('./launcher/DshLauncher').then(module => ({ default: module.DshLauncher })));
+const browserFeature = featureLoader(() => import('./browser/BrowserPage').then(module => ({ default: module.BrowserPage })));
+const companionsFeature = featureLoader(() => import('./companions/Companions').then(module => ({ default: module.Companions })));
+const assetsFeature = featureLoader(() => import('./App').then(module => ({ default: module.AssetManager })));
+const networkFeature = featureLoader(() => import('./network/ApplicationNetworkPage').then(module => ({ default: module.ApplicationNetworkPage })));
+const Launcher = lazy(launcherFeature.load), Browser = lazy(browserFeature.load), Companions = lazy(companionsFeature.load);
+const Assets = lazy(assetsFeature.load), Network = lazy(networkFeature.load);
 const api = (window as Window & { worldlinebox?: { dshLauncher?: WorldlineBoxDshLauncherApi;
   captureTools?: WorldlineBoxCaptureToolsApi; network?: WorldlineBoxApplicationNetworkApi; companions?: WorldlineBoxCompanionsApi; music?: WorldlineBoxMusicApi; shell?: WorldlineBoxShellApi; browser?: WorldlineBoxBrowserApi; library?: WorldlineBoxLibraryApi } }).worldlinebox;
 
@@ -97,11 +100,11 @@ export function App() {
         tools={api?.captureTools ? <CaptureToolsToolbar onOpen={openTool} /> : null}
         settingsOpen={shellState.settingsOpen} settingsDisabled={activeModuleId === 'assets' && shellState.settingsDisabled}
         modules={[
-          { id: 'dsh', label: t('appNavigation.launcher'), icon: 'box', content: <Suspense fallback={<FeatureLoading />}><Launcher api={api?.dshLauncher} /></Suspense> },
-          { id: 'companions', label: t('appNavigation.companions'), icon: 'users', content: <CompanionAssetNavigation.Provider value={openCompanionAssets}><CompanionWorkspace api={api?.companions} libraryApi={api?.library}><Suspense fallback={<FeatureLoading />}><Companions api={api?.companions} dshApi={api?.dshLauncher} onOpenSettings={openSettings} isActive={activeModuleId === 'companions'} /></Suspense></CompanionWorkspace></CompanionAssetNavigation.Provider> },
-          { id: 'assets', label: t('appNavigation.assets'), icon: 'grid', keepEffectsActive: settingsController !== 'idle', content: <Suspense fallback={<FeatureLoading />}><Assets settingsRef={attachAssetManager} onShellStateChange={reportShellState} isModuleActive={activeModuleId === 'assets'} /></Suspense> },
-          { id: 'browser', label: t('appNavigation.browser'), icon: 'globe', content: <Suspense fallback={<FeatureLoading />}><Browser api={api?.browser} active={activeModuleId === 'browser' && settingsController === 'idle' && !shellState.settingsOpen} onScreenshot={() => openTool('screenshot')} onOpenAssets={() => setActiveModuleId('assets')} onOpenNetwork={() => setActiveModuleId('network')} /></Suspense> },
-          { id: 'network', label: t('appNavigation.network'), icon: 'network', content: <Suspense fallback={<FeatureLoading />}><Network api={api?.network} /></Suspense> },
+          { id: 'dsh', preload: launcherFeature.preload, label: t('appNavigation.launcher'), icon: 'box', content: <Suspense fallback={<FeatureLoading />}><Launcher api={api?.dshLauncher} /></Suspense> },
+          { id: 'companions', preload: companionsFeature.preload, label: t('appNavigation.companions'), icon: 'users', content: <CompanionAssetNavigation.Provider value={openCompanionAssets}><CompanionWorkspace api={api?.companions} libraryApi={api?.library}><Suspense fallback={<FeatureLoading />}><Companions api={api?.companions} dshApi={api?.dshLauncher} onOpenSettings={openSettings} isActive={activeModuleId === 'companions'} /></Suspense></CompanionWorkspace></CompanionAssetNavigation.Provider> },
+          { id: 'assets', preload: assetsFeature.preload, label: t('appNavigation.assets'), icon: 'grid', keepEffectsActive: settingsController !== 'idle', content: <Suspense fallback={<FeatureLoading />}><Assets settingsRef={attachAssetManager} onShellStateChange={reportShellState} isModuleActive={activeModuleId === 'assets'} /></Suspense> },
+          { id: 'browser', preload: browserFeature.preload, label: t('appNavigation.browser'), icon: 'globe', content: <Suspense fallback={<FeatureLoading />}><Browser api={api?.browser} active={activeModuleId === 'browser' && settingsController === 'idle' && !shellState.settingsOpen} onScreenshot={() => openTool('screenshot')} onOpenAssets={() => setActiveModuleId('assets')} onOpenNetwork={() => setActiveModuleId('network')} /></Suspense> },
+          { id: 'network', preload: networkFeature.preload, label: t('appNavigation.network'), icon: 'network', content: <Suspense fallback={<FeatureLoading />}><Network api={api?.network} /></Suspense> },
         ]} />
     </div>
   </MusicProvider></ContextMenuProvider>;

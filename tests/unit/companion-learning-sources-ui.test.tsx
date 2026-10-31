@@ -44,6 +44,19 @@ it('grants an explicitly selected folder with autonomous reading on, and never s
   expect(node!.textContent).toContain('按计划阅读');
 });
 
+it('keeps the live authorization-only view free of a second reading schedule', async () => {
+  const f = fixture({ grants: [grant] });
+  node = document.createElement('div'); document.body.append(node); root = createRoot(node);
+  await act(() => root!.render(<CompanionLearningSources owner={owner} api={f.api} onClose={vi.fn()} embedded authorizationOnly />));
+  expect(node.textContent).not.toContain('读一轮'); expect(node.textContent).not.toContain('空闲时自主阅读'); expect(node.textContent).not.toContain('保存安排');
+  await click('添加来源');
+  expect(node.querySelector('.learning-add input[type="checkbox"]')).toBeNull();
+  expect(node.textContent).toContain('由伙伴日程与长期方向统一安排');
+  await click('添加为学习来源');
+  expect(f.workspace).toHaveBeenCalledWith(expect.objectContaining({ type: 'memory.learning.grant', companionId: owner.id, autonomous: false }));
+  expect(f.workspace.mock.calls.some(([input]) => input.type === 'memory.learning.run' || input.type === 'memory.learning.update')).toBe(false);
+});
+
 it('preserves an existing manual source and allows a new grant to opt out before reading starts', async () => {
   const f = await mount(fixture({ grants: [grant] }));
   expect(node!.querySelector<HTMLInputElement>('.learning-source input[type="checkbox"]')!.checked).toBe(false);

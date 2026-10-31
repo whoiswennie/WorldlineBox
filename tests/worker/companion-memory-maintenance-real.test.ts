@@ -40,7 +40,7 @@ it.skipIf(process.env.WORLDLINEBOX_MEMORY_MAINTENANCE_REAL !== '1')('makes a rea
       .map(content => store.appendMessage({ conversationId: scope.conversationId, authorId: 'user', content, replyDirective: 'none' }));
     const capture = store.request({ type: 'memory.jobs.claim', companionId: 'alice' }).memoryJob!;
     const originals = store.request({ type: 'memory.jobs.complete', id: capture.id, leaseToken: capture.leaseToken,
-      notes: sources.map(source => ({ content: source.content, sourceMessageIds: [source.id], evidence: [{ sourceMessageId: source.id, quote: source.content }] })) }).memories!;
+      notes: sources.map(source => ({ artifactKind: 'episode_memory' as const, content: source.content, sourceMessageIds: [source.id], evidence: [{ sourceMessageId: source.id, quote: source.content }] })) }).memories!;
     index();
     const world = store.request({ type: 'world.snapshot' }).world!;
     store.request({ type: 'world.configure', expectedRevision: world.settings.revision, patch: { mode: 'realtime', timeZone: 'UTC' } });

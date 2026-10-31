@@ -1,4 +1,5 @@
 import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs';
+import { randomUUID } from 'node:crypto';
 import { createServer, type ServerResponse } from 'node:http';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -35,7 +36,7 @@ test('keeps three group reply bubbles independent through actual tools, streamin
         if (context.purpose) {
           const text = context.purpose === 'world_attention' ? JSON.stringify({ urgency: 'ordinary', confidence: .99, evidence: [], reason: '无紧急打断。' })
             : context.purpose === 'world_social' ? JSON.stringify({ text: null, reason: '不扩展本例话题。' })
-              : context.purpose === 'world_decision' ? JSON.stringify({ action: null, reason: '当前无新的世界行动。', appraisals: [] })
+              : context.purpose === 'world_decision' ? JSON.stringify({ action: null, reason: '当前无新的世界行动。', relationshipUpdates: [] })
                 : JSON.stringify({ notes: [], dream: null });
           json(response, text); return;
         }
@@ -69,7 +70,7 @@ test('keeps three group reply bubbles independent through actual tools, streamin
     const configured = await page.evaluate(input => (window as unknown as Bridge).worldlinebox.llm.setConfig(input), { apiFormat: 'openai_chat' as const, baseUrl: `http://127.0.0.1:${address.port}`, model: 'timing-only-fixture', apiKey: 'isolated-ui-fixture' }); expect(configured.ok).toBe(true);
     const owners: string[] = [];
     for (const [index, role] of ['tool', 'stream', 'waiting'].entries()) {
-      const owner = (await call(page, { type: 'companion.create', companion: { name: ['甲', '乙', '丙'][index]!, description: '实际并行回复验收', persona: '按当前请求自然回复。', model: '', avatar: 'custom', proactive: false } })).companion!;
+      const owner = (await call(page, { type: 'companion.create', companionId: randomUUID(), operationId: randomUUID(), companion: { name: ['甲', '乙', '丙'][index]!, description: '实际并行回复验收', persona: '按当前请求自然回复。', model: '', avatar: 'custom', proactive: false } })).companion!;
       roles.set(owner.id, role as 'tool' | 'stream' | 'waiting'); owners.push(owner.id);
       const room = (await call(page, { type: 'conversation.open', companionId: owner.id })).conversation!;
       await readyAtDesk(page, owner.id, room.id);

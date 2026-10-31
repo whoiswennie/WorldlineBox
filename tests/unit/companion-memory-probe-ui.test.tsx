@@ -21,7 +21,7 @@ const second = { ...owner, id: 'another-owner', name: '另一位伙伴' };
 type Props = ComponentProps<typeof CompanionMemoryProbeWorkspace>;
 function value(patch: Partial<CompanionMemoryProbe> = {}): CompanionMemoryProbe {
   return { companionId: owner.id, query: '你记得我的名字吗', mode: 'active', observedAt: at, contextText: '用户第一次见面时介绍自己叫天幻呀。', corpusStamp: 'owner-corpus-1', pending: false, degraded: false, explanation: '本次使用真实 VCP 原生检索获得回忆。', memories: [
-    { score: .81, reasons: ['原生语义检索'], path: [], memory: { id: 'note-name', companionId: owner.id, scopeId: 'owner-scope', content: '初次见面的日记\n用户介绍自己叫天幻呀。', tags: ['名字'], metadata: { title: '初次见面的日记' }, sourceConversationId: 'private-room', sourceSequence: 1, sources: [{ messageId: 'intro', conversationId: 'private-room', sequence: 1, authorId: 'user', revision: 1, checksum: 'original', createdAt: at }], createdAt: at, updatedAt: at, origin: 'companion', status: 'indexed', version: 1, captureMethod: 'automatic' } },
+    { score: .81, reasons: ['原生语义检索'], path: [], memory: { artifactKind: 'episode_memory', id: 'note-name', companionId: owner.id, scopeId: 'owner-scope', content: '初次见面的日记\n用户介绍自己叫天幻呀。', tags: ['名字'], metadata: { title: '初次见面的日记' }, sourceConversationId: 'private-room', sourceSequence: 1, sources: [{ messageId: 'intro', conversationId: 'private-room', sequence: 1, authorId: 'user', revision: 1, checksum: 'original', createdAt: at }], createdAt: at, updatedAt: at, origin: 'companion', status: 'indexed', version: 1, captureMethod: 'automatic' } },
   ], ...patch };
 }
 function retrieval(): CompanionMemoryRetrieval {
@@ -252,6 +252,33 @@ it('keeps results through unrelated events and invalidates actual corpus changes
   await run(); await act(async () => root!.render(<CompanionMemoryProbeWorkspace {...props} active={false} />));
   expect(node!.querySelector('[aria-label="本次回忆结果"]')).toBeNull(); await act(async () => root!.render(<CompanionMemoryProbeWorkspace {...props} active />));
   expect(request.mock.calls.filter(([command]) => command.type === 'memory.recall.test')).toHaveLength(2);
+});
+
+it('retains a captured result through background publication but hides it after hard source authority changes', async () => {
+  vi.useFakeTimers(); let corpus = 'owner-corpus-1', authority = 'source-authority-1';
+  const request = vi.fn<ScheduleRequest>(async command => command.type === 'memory.recall.state'
+    ? { ok: true, memoryCorpusStamp: corpus, memoryRecallAuthorityStamp: authority }
+    : { ok: true, memoryProbe: value({ authorityStamp: 'source-authority-1' }) });
+  const { api, emit } = events(request); await mount(request, { api }); await fill('你记得我的名字吗'); await run();
+  corpus = 'owner-corpus-2'; await act(() => emit()); await act(async () => vi.advanceTimersByTimeAsync(751));
+  expect(node!.querySelector('[aria-label="本次回忆结果"]')).not.toBeNull();
+  expect(node!.textContent).toContain('记忆库有更新，可重新回忆');
+  expect(node!.textContent).toContain('用户第一次见面时介绍自己叫天幻呀。');
+  expect(request.mock.calls.filter(([command]) => command.type === 'memory.recall.test')).toHaveLength(1);
+  authority = 'source-authority-2'; await act(() => emit()); await act(async () => vi.advanceTimersByTimeAsync(751));
+  expect(node!.querySelector('[aria-label="本次回忆结果"]')).toBeNull();
+  expect(node!.textContent).not.toContain('用户第一次见面时介绍自己叫天幻呀。');
+});
+
+it('hides a current-authority receipt if that authority cannot be revalidated', async () => {
+  vi.useFakeTimers();
+  const request = vi.fn<ScheduleRequest>(async command => command.type === 'memory.recall.state'
+    ? { ok: false, error: '伙伴已删除或当前状态不可读取' }
+    : { ok: true, memoryProbe: value({ authorityStamp: 'source-authority-1' }) });
+  const { api, emit } = events(request); await mount(request, { api }); await fill('你记得我的名字吗'); await run();
+  await act(() => emit()); await act(async () => vi.advanceTimersByTimeAsync(751));
+  expect(node!.querySelector('[aria-label="本次回忆结果"]')).toBeNull();
+  expect(node!.textContent).toContain('伙伴已删除或当前状态不可读取');
 });
 
 it('reports empty, pending, degraded and failed retrieval truthfully without document-search fallback', async () => {

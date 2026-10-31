@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import { createHash } from 'node:crypto';
-import type { VcpMemoryPreparedPayload, VcpMemoryPreprocessResult } from './contracts';
+import type { VcpMemoryPreparedHostEvidence, VcpMemoryPreparedPayload, VcpMemoryPreprocessResult } from './contracts';
 import { companionFrozenMemoryDependencySchema, companionExecutionSourceReferenceSchema } from '../../shared/companion-frozen-memory';
 import { companionMemoryFileReceiptSchema } from '../../shared/companion-memory-files';
 import type { CompanionMemoryFileReceipt } from '../../shared/companion-memory-files';
@@ -26,6 +26,27 @@ export const preparedRecallRecoverySchema = z.strictObject({ schema: z.literal('
     automaticDecay: z.strictObject({ schema: z.literal('episodic-v1'), halfLifeDays: z.literal(180), minScore: z.literal(0), protectedNoteIds: z.array(id) }).optional() }),
 });
 export type PreparedRecallRecovery = z.infer<typeof preparedRecallRecoverySchema>;
+
+/** Persist the actual native inputs rather than copying the entire lifetime
+ * catalogue into every task checkpoint. Corpus hashes still identify the full
+ * authorized retrieval graph. Only complete formatter/model-input observations
+ * may narrow provenance; unknown IDs retain the conservative original closure. */
+export function observedPreparedHostEvidence(evidence: VcpMemoryPreparedHostEvidence | undefined,
+  receipt: Pick<VcpMemoryPreprocessResult, 'contextReferences' | 'contextReferenceCoverage'>): VcpMemoryPreparedHostEvidence | undefined {
+  if (!evidence?.recovery || receipt.contextReferenceCoverage !== 'observed' || !Array.isArray(receipt.contextReferences)) return evidence;
+  const recovery = preparedRecallRecoverySchema.parse(evidence.recovery);
+  if (evidence.ownerId !== recovery.scope.companionId || evidence.revocationEpoch !== recovery.revocationEpoch
+    || evidence.sourceClosureDigest !== createHash('sha256').update(JSON.stringify(recovery.frozen)).digest('hex'))
+    throw new Error('Prepared recall recovery closure does not match its host evidence.');
+  const ids = new Set(receipt.contextReferences.map(reference => reference.id));
+  if ([...ids].some(id => !recovery.frozen.some(note => note.id === id) || !recovery.contextSeed.notes.some(note => note.id === id))) return evidence;
+  const frozen = recovery.frozen.filter(note => ids.has(note.id));
+  const narrowed = { ...recovery, frozen, fileReceipts: recovery.fileReceipts.filter(file => ids.has(file.noteId)),
+    contextSeed: { ...recovery.contextSeed, notes: recovery.contextSeed.notes.filter(note => ids.has(note.id)),
+      ...(recovery.contextSeed.automaticDecay ? { automaticDecay: { ...recovery.contextSeed.automaticDecay,
+        protectedNoteIds: recovery.contextSeed.automaticDecay.protectedNoteIds.filter(id => ids.has(id)) } } : {}) } };
+  return { ...evidence, sourceClosureDigest: createHash('sha256').update(JSON.stringify(frozen)).digest('hex'), recovery: narrowed };
+}
 
 /** A complete original native observation can narrow physical byte checks after
  * candidate selection; its complete graph/source authorization closure remains

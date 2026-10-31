@@ -170,123 +170,68 @@ describe('persistent companion schedules', () => {
   });
 });
 
-describe('sourced companion runtime state', () => {
-  it('derives actual interaction counts and reply cost without gifting relationship for ordinary chatting', () => {
-    const { store, scope } = fixture();
-    const initial = store.request({ type: 'state.get', ...scope }).runtimeState!;
-    const user = store.appendMessage({ conversationId: scope.conversationId, authorId: 'user', content: '今天做什么？' });
-    const reply = store.appendMessage({ conversationId: scope.conversationId, authorId: 'alice', content: '一起看看计划。' });
-    store.request({ type: 'state.interaction', companionId: 'alice', messageId: user.id }); store.request({ type: 'state.interaction', companionId: 'alice', messageId: reply.id });
+describe('sourced qualitative companion runtime state', () => {
+  it('does not infer relationships or maturity from ordinary conversation receipts', () => {
+    const { store, scope } = fixture(), initial = store.request({ type: 'state.get', ...scope }).runtimeState!;
+    for (const authorId of ['user', 'alice']) {
+      const message = store.appendMessage({ conversationId: scope.conversationId, authorId, content: '一起看看计划。' });
+      store.request({ type: 'state.interaction', companionId: 'alice', messageId: message.id });
+    }
     const state = store.request({ type: 'state.get', ...scope }).runtimeState!;
-    expect(state.familiarity.interactionCount).toBe(2); expect(state.energy).toBeCloseTo(initial.energy - 2, 4); expect(state.relationship).toEqual(initial.relationship);
+    expect(state.energy).toBe(initial.energy); expect(state.relationshipRecords).toEqual([]);
+    expect(state).not.toHaveProperty('familiarity'); expect(state).not.toHaveProperty('affect');
   });
-
-  it('validates exact evidence and commits an automatic state proposal with its leased extraction', () => {
-    const { store, scope } = fixture(), message = store.appendMessage({ conversationId: scope.conversationId, authorId: 'user', content: '我支持你，也尊重你的选择。' });
-    // Exercise the leased state/evidence transaction, independently of quiet.
+  it('validates exact evidence and atomically completes a leased qualitative state extraction', () => {
+    const { store, scope } = fixture(), message = store.appendMessage({ conversationId: scope.conversationId, authorId: 'alice', content: '这次我想先核实，再作决定。' });
     const job = store.request({ type: 'memory.jobs.claim', companionId: scope.companionId, force: true }).memoryJob!;
     expect(job.sourceMessageIds).toEqual([message.id]);
-    expect(() => store.request({ type: 'memory.jobs.complete', id: job.id, leaseToken: job.leaseToken, notes: [], stateProposal: proposal(message, { evidence: [{ sourceMessageId: message.id, quote: '捏造来源' }] }) })).toThrow('原文');
+    expect(() => store.request({ type: 'memory.jobs.complete', id: job.id, leaseToken: job.leaseToken, notes: [], stateProposal: proposal(message, { focus: '核实', evidence: [{ sourceMessageId: message.id, quote: '捏造来源' }] }) })).toThrow();
     expect(store.request({ type: 'memory.status', ...scope }).memoryStatus?.running).toBe(1);
-    store.request({ type: 'memory.jobs.complete', id: job.id, leaseToken: job.leaseToken, notes: [], stateProposal: proposal(message, { expression: 'playful', focus: '讨论选择', appraisals: [{ type: 'support', target: 'user', intensity: 1, confidence: 1 }] }) });
+    store.request({ type: 'memory.jobs.complete', id: job.id, leaseToken: job.leaseToken, notes: [], stateProposal: proposal(message, { expression: 'direct', focus: '讨论选择', experience: { situation: '正在讨论选择。', statement: message.content, reassessWhen: ['核实结束后。'] } }) });
     const state = store.request({ type: 'state.get', ...scope }).runtimeState!;
-    expect(state.expression).toBe('playful'); expect(state.relationship.affinity).toBeGreaterThan(50);
+    expect(state.expression).toBe('direct'); expect(state.experience?.statement).toBe(message.content);
     expect(store.request({ type: 'memory.status', ...scope }).memoryStatus?.completed).toBe(1);
-    store.request({ type: 'state.update', ...scope, proposal: proposal(message, { appraisals: [{ type: 'support', target: 'user', intensity: 1, confidence: 1 }] }) });
-    expect(store.request({ type: 'state.get', ...scope }).runtimeState?.relationship).toEqual(state.relationship);
+    expect(state.relationshipRecords).toEqual([]);
   });
-
-  it('keeps an inspected authored revision valid while natural energy and affect clocks advance', () => {
-    const { store, scope } = fixture(), message = store.appendMessage({ conversationId: scope.conversationId, authorId: 'user', content: '谢谢你，我尊重你的选择。' });
+  it('keeps an authored revision stable during energy polling and checks concurrent updates', () => {
+    const { store, scope } = fixture(), message = store.appendMessage({ conversationId: scope.conversationId, authorId: 'alice', content: '我先关注这次检查。' });
     const inspected = store.request({ type: 'state.inspect', ...scope }).runtimeState!;
     vi.setSystemTime(new Date(time).getTime() + 5000);
     expect(store.request({ type: 'state.get', ...scope }).runtimeState?.revision).toBe(inspected.revision);
-    const result = store.request({ type: 'state.update', ...scope, expectedRevision: inspected.revision, proposal: proposal(message, { appraisals: [{ type: 'respect', target: 'user', intensity: 1, confidence: 1 }] }) }).runtimeState!;
-    expect(result.relationship.respect).toBeGreaterThan(inspected.relationship.respect);
+    const result = store.request({ type: 'state.update', ...scope, expectedRevision: inspected.revision, proposal: proposal(message, { focus: '这次检查' }) }).runtimeState!;
     expect(result.revision).toBe(inspected.revision + 1);
-    const newer = store.appendMessage({ conversationId: scope.conversationId, authorId: 'user', content: '新一条真实互动。' });
-    expect(() => store.request({ type: 'state.update', ...scope, expectedRevision: result.revision, proposal: proposal(newer) })).toThrow('已更新');
+    expect(() => store.request({ type: 'state.update', ...scope, expectedRevision: inspected.revision, proposal: proposal(message, { focus: '另一个关注' }) })).toThrow('已更新');
   });
-
-  it('does not reserve low confidence evidence, and never rewards negation or penalizes quoted hostility', () => {
-    const { store, scope } = fixture(), user = store.appendMessage({ conversationId: scope.conversationId, authorId: 'user', content: '我支持你。' });
-    store.request({ type: 'state.update', ...scope, proposal: proposal(user, { appraisals: [{ type: 'support', target: 'user', intensity: 1, confidence: 0.4 }] }) });
-    expect(store.request({ type: 'state.get', ...scope }).runtimeState?.relationship.affinity).toBe(50);
-    store.request({ type: 'state.update', ...scope, proposal: proposal(user, { appraisals: [{ type: 'support', target: 'user', intensity: 1, confidence: 1 }] }) });
-    const before = store.request({ type: 'state.get', ...scope }).runtimeState!.relationship;
-    for (const [content, type] of [['我不支持你', 'support'], ['我不尊重你', 'respect'], ['不要说谢谢', 'respect'], ['不需要道歉', 'repair'], ['他说你是废物', 'hostility']] as const) {
-      const message = store.appendMessage({ conversationId: scope.conversationId, authorId: 'user', content });
-      store.request({ type: 'state.update', ...scope, proposal: proposal(message, { appraisals: [{ type, target: 'user', intensity: 1, confidence: 1 }] }) });
-    }
-    expect(store.request({ type: 'state.get', ...scope }).runtimeState?.relationship).toEqual(before);
-  });
-
-  it('caps positive daily change, hides private state explanations from groups and withdraws forgotten effects', () => {
-    const { store, scope } = fixture();
-    const original = store.appendMessage({ conversationId: scope.conversationId, authorId: 'user', content: '我支持你，私人项目甲。' });
-    store.request({ type: 'state.update', ...scope, proposal: proposal(original, { focus: '私人项目甲', reason: original.content, appraisals: [{ type: 'support', target: 'user', intensity: 1, confidence: 1 }] }) });
-    const influenced = store.request({ type: 'state.get', ...scope }).runtimeState!.relationship;
+  it('hides private experience from groups and withdraws it when the source is forgotten', () => {
+    const { store, scope } = fixture(), source = store.appendMessage({ conversationId: scope.conversationId, authorId: 'alice', content: 'PRIVATE_FOCUS_我暂时需要核实。' });
+    store.request({ type: 'state.update', ...scope, proposal: proposal(source, { focus: source.content, experience: { situation: '私人项目。', statement: source.content, reassessWhen: ['核验后。'] } }) });
     const group = store.createConversation('群', ['alice']);
-    const publicState = store.request({ type: 'state.get', companionId: 'alice', conversationId: group.id }).runtimeState!;
-    expect(publicState.focus).not.toContain('私人'); expect(publicState.reason).not.toContain('私人'); expect(publicState.sourceMessageIds).toEqual([]); expect(publicState.familiarity.interactionCount).toBe(0);
-    store.request({ type: 'memory.forget', ...scope, sourceMessageIds: [original.id] });
+    expect(JSON.stringify(store.request({ type: 'state.get', companionId: 'alice', conversationId: group.id }).runtimeState)).not.toContain('PRIVATE_FOCUS');
+    store.request({ type: 'memory.forget', ...scope, sourceMessageIds: [source.id] });
     const withdrawn = store.request({ type: 'state.get', ...scope }).runtimeState!;
-    expect(withdrawn.focus).toBeUndefined(); expect(withdrawn.relationship.affinity).toBeLessThan(influenced.affinity);
-    for (let i = 0; i < 12; i++) { const message = store.appendMessage({ conversationId: scope.conversationId, authorId: 'user', content: '我支持你，谢谢。' + i }); store.request({ type: 'state.update', ...scope, proposal: proposal(message, { appraisals: [{ type: 'support', target: 'user', intensity: 1, confidence: 1 }] }) }); }
-    const state = store.request({ type: 'state.get', ...scope }).runtimeState!;
-    expect(state.relationship.affinity + state.relationship.trust + state.relationship.respect - 150).toBeLessThanOrEqual(6.000001);
+    expect(withdrawn.focus).toBeUndefined(); expect(withdrawn.experience).toBeUndefined();
   });
-
-  it('keeps newer state provenance out of a reply bounded to an earlier source', () => {
-    const { store, scope } = fixture();
-    const old = store.appendMessage({ conversationId: scope.conversationId, authorId: 'user', content: '先讨论旧话题。' });
-    const newer = store.appendMessage({ conversationId: scope.conversationId, authorId: 'user', content: 'NEW_PRIVATE_FOCUS_稍后才提出' });
-    store.request({ type: 'state.update', ...scope, proposal: proposal(newer, { focus: newer.content, reason: newer.content }) });
-    const earlierScope = { ...scope, beforeSequence: old.sequence };
+  it('keeps late work from overwriting a newer focus and hides future source state from an earlier reply', () => {
+    const { store, scope } = fixture(), older = store.appendMessage({ conversationId: scope.conversationId, authorId: 'alice', content: '旧话题。' });
+    const newer = store.appendMessage({ conversationId: scope.conversationId, authorId: 'alice', content: 'NEW_PRIVATE_FOCUS' });
+    store.request({ type: 'state.update', ...scope, proposal: proposal(newer, { focus: newer.content }) });
+    const earlierScope = { ...scope, beforeSequence: older.sequence };
     expect(JSON.stringify(store.request({ type: 'state.get', ...earlierScope }).runtimeState)).not.toContain('NEW_PRIVATE_FOCUS');
-    expect(() => store.request({ type: 'state.update', ...earlierScope, proposal: proposal(newer) })).toThrow('可见');
-    const late = store.request({ type: 'state.update', ...earlierScope, proposal: proposal(old) }).runtimeState!;
-    expect(JSON.stringify(late)).not.toContain('NEW_PRIVATE_FOCUS');
+    expect(() => store.request({ type: 'state.update', ...earlierScope, proposal: proposal(newer, { focus: '不可见' }) })).toThrow();
+    expect(() => store.request({ type: 'state.update', ...scope, proposal: proposal(older, { focus: '迟到旧关注' }) })).toThrow('迟到');
     expect(store.request({ type: 'state.get', ...scope }).runtimeState?.focus).toBe(newer.content);
   });
-
-  it('completes a leased state extraction harmlessly when its source is withdrawn mid-flight', () => {
-    const { store, scope } = fixture(), source = store.appendMessage({ conversationId: scope.conversationId, authorId: 'user', content: '我支持你，暂时的私密计划。' });
-    const job = store.request({ type: 'memory.jobs.claim', companionId: scope.companionId, force: true }).memoryJob!;
-    expect(job.sourceMessageIds).toEqual([source.id]);
-    store.request({ type: 'memory.forget', ...scope, sourceMessageIds: [source.id] });
-    expect(() => store.request({ type: 'memory.jobs.complete', id: job.id, leaseToken: job.leaseToken, notes: [],
-      stateProposal: proposal(source, { focus: source.content, appraisals: [{ type: 'support', target: 'user', intensity: 1, confidence: 1 }] }) })).not.toThrow();
-    expect(store.request({ type: 'memory.status', ...scope }).memoryStatus?.completed).toBe(1);
-    expect(store.request({ type: 'state.get', ...scope }).runtimeState).toMatchObject({ relationship: { affinity: 50, trust: 50, respect: 50 } });
-    expect(store.request({ type: 'state.get', ...scope }).runtimeState?.focus).toBeUndefined();
-  });
-
-  it('charges actual task start once and never blames the user relationship for an execution failure', () => {
+  it('charges actual task start once without inferring a relationship from task success or failure', () => {
     const { store, scope } = fixture(), source = store.appendMessage({ conversationId: scope.conversationId, authorId: 'user', content: '请执行检查。' });
     const action = store.createAction({ ...scope, sourceMessageId: source.id, title: '检查任务', status: 'running' });
     store.request({ type: 'state.action', actionId: action.id });
     expect(store.request({ type: 'state.get', ...scope }).runtimeState?.energy).toBe(88);
     store.updateAction(action.id, { status: 'failed', error: '实际程序报错' });
-    expect(store.request({ type: 'state.get', ...scope }).runtimeState).toMatchObject({ energy: 88, relationship: { affinity: 50, trust: 50, respect: 50 } });
-    expect(store.request({ type: 'state.get', ...scope }).runtimeState?.familiarity.sharedEventCount).toBe(1);
-    store.request({ type: 'state.action', actionId: action.id });
-    expect(store.request({ type: 'state.get', ...scope }).runtimeState?.familiarity.sharedEventCount).toBe(1);
-    const group = store.createConversation('另一可见域', ['alice']);
-    expect(store.request({ type: 'state.get', companionId: 'alice', conversationId: group.id }).runtimeState?.familiarity.sharedEventCount).toBe(0);
-    store.request({ type: 'memory.forget', ...scope, sourceMessageIds: [source.id] });
-    expect(store.request({ type: 'state.get', ...scope }).runtimeState?.familiarity.sharedEventCount).toBe(0);
-  });
-
-  it('does not count diary creation or a task without a real outcome as a shared experience', () => {
-    const { store, scope } = fixture();
-    const source = store.appendMessage({ conversationId: scope.conversationId, authorId: 'user', content: '今天一起看看任务吧。' });
-    store.request({ type: 'memory.record', ...scope, candidate: { content: '共同的日记描述', sourceMessageIds: [source.id], evidence: [{ sourceMessageId: source.id, quote: source.content }] } });
-    store.createAction({ ...scope, sourceMessageId: source.id, title: '只有完成标签', status: 'succeeded' });
-    expect(store.request({ type: 'state.get', ...scope }).runtimeState?.familiarity.sharedEventCount).toBe(0);
+    const state = store.request({ type: 'state.get', ...scope }).runtimeState!;
+    expect(state.energy).toBe(88); expect(state.relationshipRecords).toEqual([]); expect(state.experience).toBeUndefined();
+    store.request({ type: 'state.action', actionId: action.id }); expect(store.request({ type: 'state.get', ...scope }).runtimeState?.energy).toBe(88);
   });
 });
-
 describe('virtual routine scheduling and offline energy', () => {
   it('integrates offline awake consumption and sleep recovery from the same persisted clock', () => {
     const { store, scope, filename } = fixture();

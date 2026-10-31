@@ -1,14 +1,29 @@
 import type { z } from 'zod';
+import { createHash } from 'node:crypto';
 import type { CompanionConnection } from './store';
 import type { CompanionStorageCommand, CompanionStorageResponse } from '../shared/companion-storage';
 import type { CompanionTaskOverviewStore } from './task-overview-store';
 import type { CompanionTaskItem, CompanionTaskKind } from '../shared/companion-task-overview';
+import { COMPANION_JOB_FAILURES_PER_CYCLE, type CompanionJobDisposition } from '../shared/companion-job-control';
+import { companionJobInputVersion, pageCompanionJobIds, type CompanionJobControlAdapter } from './job-control-store';
+import type { CompanionMemoryProcessingJob } from '../shared/companion-memory-processing';
+import { indexCompanionJobInputs } from './memory-withdrawal-store';
 import { companionTaskContentCommand, companionTaskInspectCommand, companionTaskTimelineRecordCommand,
   type CompanionTaskDetail, type CompanionTaskRecord, type CompanionTaskSection } from '../shared/companion-task-detail';
 
 type Value = string | number | null;
 type RecordRow = { id: string; title: string; body: string; at: string | null; provenance: CompanionTaskRecord['provenance']; state: string | null };
 type Port = { sql: string; params: Value[] };
+export function readTimelineJobDisposition(db: CompanionConnection, ownerId: string, id: string): CompanionJobDisposition | undefined {
+  const found = db.prepare(`SELECT status,disposition_revision,failure_count,cycle_failure_count,last_failure_at,last_failure_error,
+    json_extract(data,'$.attempts') AS attempts,json_extract(data,'$.sourceRevision') AS source_revision,json_extract(data,'$.conversationId') AS room
+    FROM companion_task_timeline_jobs WHERE companion_id=? AND id=?`).get(ownerId, id) as
+    { status: CompanionJobDisposition['state']; disposition_revision: number; failure_count: number; cycle_failure_count: number; attempts: number; source_revision?: string; room?: string; last_failure_at?: string; last_failure_error?: string } | undefined;
+  if (!found) return;
+  return { ownerId, kind: 'timeline', id, processorId: id, inputVersion: companionJobInputVersion([ownerId, id, found.source_revision, found.room]), revision: found.disposition_revision,
+    state: found.status, failureCount: found.failure_count, cycleFailureCount: found.cycle_failure_count, attemptCount: found.attempts,
+    ...(found.room ? { conversationId: found.room } : {}), ...(found.last_failure_at ? { lastErrorAt: found.last_failure_at } : {}), ...(found.last_failure_error ? { lastError: found.last_failure_error } : {}) };
+}
 const purposes: Record<CompanionTaskKind, string> = {
   reply: '根据本次消息准备上下文、调用所需工具并向会话交付回复。', action: '执行伙伴发起的工具任务，记录实际调用与返回。',
   activity: '围绕一个持续目标推进世界行动、交流或记忆操作。', work_order: '处理用户交付的委托，保留目标、实际进展与交付物。',
@@ -70,18 +85,63 @@ export class CompanionTaskDetailStore {
       .get(command.id, command.leaseToken);
   }
 
-  timeline(input: z.input<typeof companionTaskTimelineRecordCommand>): void {
+  timeline(input: z.input<typeof companionTaskTimelineRecordCommand>): CompanionJobDisposition | undefined {
     const command = companionTaskTimelineRecordCommand.parse(input), job = command.job;
     if (!this.db.prepare('SELECT 1 FROM companions WHERE id=? AND deleted_at IS NULL').get(command.companionId)) return;
-    this.db.transaction(() => {
-      const previous = this.db.prepare('SELECT status,json_extract(data,\'$.stage\') AS stage FROM companion_task_timeline_jobs WHERE id=? AND companion_id=?')
-        .get(job.id, command.companionId) as { status: string; stage: string } | undefined;
+    return this.db.transaction(() => {
+      const previous = this.db.prepare(`SELECT status,disposition_revision,failure_count,cycle_failure_count,json_extract(data,'$.stage') AS stage,json_extract(data,'$.attempts') AS attempts
+        FROM companion_task_timeline_jobs WHERE id=? AND companion_id=?`).get(job.id, command.companionId) as
+        { status: string; stage: string; attempts: number; disposition_revision: number; failure_count: number; cycle_failure_count: number } | undefined;
+      if (previous && (command.expectedDispositionRevision === undefined || command.expectedDispositionRevision !== previous.disposition_revision)) throw new Error('时间线作业状态已变化，旧运行记录不能覆盖当前处置。');
+      if (previous && this.jobControlAdapter().read(command.companionId, job.id)?.inputVersion !== companionJobInputVersion([command.companionId, job.id, job.sourceRevision, job.conversationId]))
+        throw new Error('时间线固定输入已经变化，不能把另一份输入写回旧作业。');
+      if (previous && ['parked', 'abandoned', 'completed', 'cancelled', 'stale'].includes(previous.status)) throw new Error('时间线处理已经搁置或终结，旧运行不能覆盖。');
+      if (!previous && !['running', 'pending'].includes(job.status)) throw new Error('时间线处理必须先登记真实运行输入，不能直接制造完成或失败记录。');
+      const failed = !!previous && previous.status === 'running' && job.status === 'failed' && (command.failureKind ?? 'processing') === 'processing';
+      const cycle = (previous?.cycle_failure_count ?? 0) + Number(failed);
+      const status = failed && cycle >= COMPANION_JOB_FAILURES_PER_CYCLE ? 'parked' : job.status === 'failed' && command.failureKind && command.failureKind !== 'processing'
+        ? command.failureKind === 'waiting' ? 'pending' : command.failureKind : job.status;
+      const { disposition: _disposition, ...original } = job; void _disposition;
+      const actual = { ...original, status, attempts: previous ? previous.attempts + Number(job.status === 'running' && previous.status !== 'running') : Number(job.status === 'running') };
+      if (command.input !== undefined) {
+        let input: unknown; try { input = JSON.parse(command.input); } catch { input = undefined; }
+        if (input && typeof input === 'object' && 'sources' in input && Array.isArray(input.sources)) {
+          const memoryVersions = input.sources.map(source => {
+            if (!source || typeof source !== 'object' || !('id' in source) || typeof source.id !== 'string'
+              || !this.visibleNote?.(command.companionId, source.id)) throw new Error('时间线输入含未获准的正式记忆。');
+            const contentRevision = 'contentRevision' in source && typeof source.contentRevision === 'number' && Number.isSafeInteger(source.contentRevision) && source.contentRevision > 0 ? source.contentRevision : undefined;
+            return { id: source.id, contentRevision };
+          });
+          if (memoryVersions.length > 128) throw new Error('时间线原始输入引用超过本次核验边界。');
+          indexCompanionJobInputs(this.db, { ownerId: command.companionId, kind: 'timeline', jobId: job.id, memoryVersions });
+        }
+      }
       this.db.prepare(`INSERT INTO companion_task_timeline_jobs(id,companion_id,status,data,input,output) VALUES(?,?,?,?,?,?)
         ON CONFLICT(id) DO UPDATE SET status=excluded.status,data=excluded.data,input=COALESCE(excluded.input,input),output=COALESCE(excluded.output,output)`)
-        .run(job.id, command.companionId, job.status, JSON.stringify(job), command.input ?? null, command.output ?? null);
+        .run(job.id, command.companionId, status, JSON.stringify(actual), command.input ?? null, command.output ?? null);
+      if (failed) this.db.prepare(`UPDATE companion_task_timeline_jobs SET failure_count=failure_count+1,cycle_failure_count=?,last_failure_at=?,last_failure_error=? WHERE id=?`)
+        .run(cycle, new Date().toISOString(), job.error?.slice(0, 1000) ?? '时间线处理失败。', job.id);
       if (previous?.stage !== job.stage && previous?.status === job.status) this.db.prepare(`INSERT INTO companion_task_observations(kind,task_id,companion_id,phase,title,at) VALUES('memory_timeline',?,?,?,?,?)`)
         .run(job.id, command.companionId, job.status, job.stage, job.updatedAt ?? new Date().toISOString());
+      return this.jobControlAdapter().read(command.companionId, job.id);
     }).immediate();
+  }
+  jobControlAdapter(): CompanionJobControlAdapter {
+    const read = (ownerId: string, id: string) => readTimelineJobDisposition(this.db, ownerId, id);
+    return { read, page: input => {
+      const rows = pageCompanionJobIds(this.db, 'companion_task_timeline_jobs', input).map(id => ({ id }));
+      const page = rows.slice(0, input.limit); return { items: page.map(row => read(input.ownerId, row.id)!), hasMore: rows.length > input.limit,
+        ...(rows.length > input.limit && page.length ? { nextId: page.at(-1)!.id } : {}) };
+    }, transition: (current, action) => {
+      const row = this.db.prepare('SELECT data FROM companion_task_timeline_jobs WHERE id=? AND companion_id=?').get(current.id, current.ownerId) as { data: string } | undefined;
+      if (!row) throw new Error('时间线处理不存在。');
+      const job = JSON.parse(row.data) as CompanionMemoryProcessingJob; job.status = action === 'resume' ? 'pending' : action === 'park' ? 'parked' : 'abandoned';
+      job.stage = action === 'resume' ? '已明确恢复，等待有界重试' : action === 'park' ? '处理已搁置，原始依据保留' : '本次处理已明确放弃，原始依据保留'; job.updatedAt = new Date().toISOString();
+      delete job.disposition;
+      this.db.prepare('UPDATE companion_task_timeline_jobs SET status=?,data=?,cycle_failure_count=?,disposition_revision=disposition_revision+1 WHERE id=? AND disposition_revision=?')
+        .run(job.status, JSON.stringify(job), action === 'resume' ? 0 : current.cycleFailureCount, job.id, current.revision);
+      const next = read(current.ownerId, current.id); if (!next) throw new Error('时间线作业处置期间已消失。'); return next;
+    } };
   }
   private task(input: { companionId: string; kind: CompanionTaskKind; id: string }): CompanionTaskItem {
     const item = this.overview.resolve({ type: 'tasks.resolve', companionId: input.companionId, kind: input.kind, id: input.id });
@@ -89,6 +149,18 @@ export class CompanionTaskDetailStore {
     return item;
   }
   private unavailable(item: CompanionTaskItem): boolean {
+    if (item.kind === 'world' || item.kind === 'memory_timeline') {
+      const refs = this.db.prepare('SELECT input_kind,input_id,revision,checksum FROM companion_job_input_refs WHERE owner_id=? AND kind=? AND job_id=?')
+        .all(item.companionId, item.kind === 'world' ? 'world' : 'timeline', item.id) as Array<{ input_kind: string; input_id: string; revision: number; checksum: string }>;
+      for (const reference of refs) {
+        if (reference.input_kind === 'memory' && !this.visibleNote?.(item.companionId, reference.input_id)) return true;
+        if (reference.input_kind === 'source') {
+          const source = this.db.prepare('SELECT conversation_id,revision,content FROM messages WHERE id=?').get(reference.input_id) as { conversation_id: string; revision: number; content: string } | undefined;
+          if (!source || !this.visibleMessage(item.companionId, source.conversation_id, reference.input_id)
+            || reference.revision > 0 && reference.revision !== source.revision || reference.checksum && createHash('sha256').update(source.content).digest('hex') !== reference.checksum) return true;
+        }
+      }
+    }
     if (item.sourceMessageId && item.conversationId && !this.visibleMessage(item.companionId, item.conversationId, item.sourceMessageId)) return true;
     const invalid = item.kind === 'action' ? 'action/' + item.id : item.messageId ? 'message/' + item.messageId : undefined;
     if (invalid && this.db.prepare('SELECT 1 FROM metadata WHERE key=?').get('execution-source-invalid/' + invalid)) return true;

@@ -20,12 +20,13 @@ const fileOperation = (name: string, arguments_: string): boolean => {
 };
 const ident = (input: string) => { if (!/^[a-z_][a-z0-9_]*$/iu.test(input)) throw new Error('Invalid reset table.'); return '"' + input + '"'; };
 
-/** Incremental deletion on the UtilityProcess's existing connection, with a durable evidence barrier. */
+/** New-protocol identity retirement. Historical class/table names are private
+ * implementation names; no reset or seed restoration command is accepted. */
 export class CompanionResetStore {
   private messageReferences: Array<{ table: string; column: string }> = [];
   constructor(private readonly db: CompanionConnection, private readonly root: string,
-    private readonly defaults: (id: string) => Companion,
-    private readonly resetWorld: (id: string) => void,
+
+    private readonly removeWorld: (id: string) => void,
     private readonly withdrawSources: (ids: string[]) => void,
     private readonly withdrawNote: (id: string) => void, private readonly resetNotes: (owner: string, limit: number) => number) {}
 
@@ -60,22 +61,28 @@ export class CompanionResetStore {
     for (const table of ['companion_social_jobs', 'companion_social_outbox']) this.db.exec(`CREATE INDEX IF NOT EXISTS ${ident('reset_source_' + table)} ON ${ident(table)}(json_extract(data,'$.sourceMessageId'))`);
     this.db.exec("CREATE INDEX IF NOT EXISTS reset_outbox_authorization ON companion_social_outbox(json_extract(data,'$.authorizationMessageId'))");
   }
-  list(): CompanionReset[] { return rows(this.db.prepare('SELECT data FROM companion_reset_jobs ORDER BY rowid').all()).map(item => this.public(json<Job>(item.data))); }
+  list(): CompanionReset[] { return rows(this.db.prepare('SELECT data FROM companion_reset_jobs ORDER BY rowid').all()).map(item => this.public(this.requireJob(json<Job>(item.data)))); }
+  private requireJob(job: Job): Job {
+    if (job.operation !== 'retire_identity') throw new Error('旧重置任务不属于当前删除协议，请使用开发版受管清空重建流程。'); return job;
+  }
   private public(job: Job): CompanionReset {
-    return { id: job.id, companionId: job.companionId, scope: job.scope, status: job.status, phase: job.phase, processed: job.processed,
+    return { operation: 'retire_identity', id: job.id, companionId: job.companionId, scope: job.scope, status: job.status, phase: job.phase, processed: job.processed,
       startedAt: job.startedAt, updatedAt: job.updatedAt, ...(job.error ? { error: job.error } : {}),
       ...(job.phase === 'stopping' && job.cleanupStage ? { cleanupStage: job.cleanupStage } : {}) };
   }
-  private load(id: string): Job | undefined { const found = this.db.prepare('SELECT data FROM companion_reset_jobs WHERE companion_id=?').get(id); return found ? json<Job>(row(found).data) : undefined; }
+  private load(id: string): Job | undefined { const found = this.db.prepare('SELECT data FROM companion_reset_jobs WHERE companion_id=?').get(id); return found ? this.requireJob(json<Job>(row(found).data)) : undefined; }
   status(id: string): { reset?: CompanionReset; resetTaskIds: string[] } { const job = this.load(id); return { reset: job && this.public(job), resetTaskIds: job?.progress.taskIds ?? [] }; }
   blocked(id: string): boolean { return !!this.db.prepare("SELECT 1 FROM companion_reset_jobs WHERE companion_id=? AND status!='completed'").get(id); }
   assertCommand(command: CompanionStorageCommand): void {
-    if (command.type === 'state' || command.type.startsWith('companion.reset') || command.type.startsWith('memory.outbox.') || command.type === 'companion.task.track') return;
-    const input = command as unknown as { type: string; id?: string; actionId?: string; companionId?: string; sourceMessageId?: string;
+    if (command.type === 'state' || command.type === 'companion.assets.initialized' || command.type.startsWith('companion.retire') || command.type.startsWith('memory.outbox.') || command.type === 'companion.task.track') return;
+    const registryCleanup = ['cognition.registry.read', 'cognition.registry.page', 'cognition.registry.publication.read', 'cognition.registry.publication.pending',
+      'cognition.registry.refs.validate', 'cognition.registry.revoke', 'cognition.registry.body-removed', 'cognition.registry.publication.stages-cleaned'];
+    if (registryCleanup.includes(command.type) || command.type === 'cognition.registry.publication.transition' && ['revoked', 'cancelled', 'conflict'].includes(command.nextState)) return;
+    const input = command as unknown as { type: string; id?: string; actionId?: string; companionId?: string; ownerId?: string; sourceMessageId?: string;
       action?: { companionId: string; sourceMessageId: string }; work?: { companionId: string; sourceMessageId: string };
       checkpoint?: { companionId?: string; sourceMessageId?: string }; memory?: { companionId: string; sourceMessageId?: string };
       message?: { authorId: string; conversationId: string; replyToId?: string } };
-    let owner = input.companionId, source = input.sourceMessageId;
+    let owner = input.companionId ?? input.ownerId, source = input.sourceMessageId;
     for (const value of [input.action, input.work, input.checkpoint, input.memory]) if (value?.companionId) { owner = value.companionId; source = value.sourceMessageId; }
     const table = input.type.startsWith('action.') || input.type.startsWith('checkpoint.') || input.type === 'state.action' ? 'actions'
       : input.type.startsWith('activity.') ? 'companion_activity_tasks' : input.type.startsWith('memory.jobs.') ? 'vcp_capture_jobs' : input.type.startsWith('world.job.') ? 'companion_world_jobs'
@@ -88,12 +95,12 @@ export class CompanionResetStore {
       else { const room = this.db.prepare('SELECT private_companion_id FROM conversations WHERE id=?').get(input.message.conversationId); if (room && row(room).private_companion_id) owner = String(row(room).private_companion_id); }
     }
     if (!owner) return;
-    if (this.blocked(owner)) throw new Error('伙伴正在重置，旧作业不能继续写回。');
+    if (this.blocked(owner)) throw new Error('伙伴正在删除清理，旧作业不能继续写回。');
     if (source) {
-      if (this.db.prepare('SELECT 1 FROM companion_reset_messages WHERE message_id=? LIMIT 1').get(source)) throw new Error('这个来源正在重置，不能继续写回。');
+      if (this.db.prepare('SELECT 1 FROM companion_reset_messages WHERE message_id=? LIMIT 1').get(source)) throw new Error('这个来源正在删除清理，不能继续写回。');
       const before = this.db.prepare('SELECT through_sequence FROM companion_reset_boundaries WHERE companion_id=?').get(owner);
       const message = this.db.prepare('SELECT sequence FROM messages WHERE id=?').get(source);
-      if (before && (!message || Number(row(message).sequence) <= Number(row(before).through_sequence))) throw new Error('这个来源早于伙伴重置，不能恢复旧作业。');
+      if (before && (!message || Number(row(message).sequence) <= Number(row(before).through_sequence))) throw new Error('这个来源早于伙伴删除清理，不能恢复旧作业。');
     }
   }
   private save(job: Job): void {
@@ -104,7 +111,7 @@ export class CompanionResetStore {
       const action = this.db.prepare('SELECT companion_id FROM actions WHERE id=?').get(id);
       if (!action || row(action).companion_id !== companionId) throw new Error('任务不属于这个伙伴，不能登记执行进程。');
       const job = this.load(companionId);
-      if (job && job.status !== 'completed' && job.phase !== 'stopping') throw new Error('重置已进入清理阶段，不能新增执行进程。');
+      if (job && job.status !== 'completed' && job.phase !== 'stopping') throw new Error('删除清理已进入清理阶段，不能新增执行进程。');
       this.db.prepare("UPDATE actions SET data=json_set(data,'$.taskId',?) WHERE id=?").run(taskId, id);
       if (job && job.status !== 'completed' && !job.progress.taskIds.includes(taskId)) { job.progress.taskIds.push(taskId); this.save(job); }
     }).immediate();
@@ -112,11 +119,12 @@ export class CompanionResetStore {
   begin(id: string, expectedRevision?: number): { reset: CompanionReset; resetTaskIds: string[] } {
     return this.db.transaction(() => {
       const previous = this.load(id);
-      if (previous && previous.status !== 'completed') { previous.status = 'running'; delete previous.error; this.save(previous); return this.status(id) as { reset: CompanionReset; resetTaskIds: string[] }; }
-      const found = this.db.prepare('SELECT data FROM companions WHERE id=?').get(id); if (!found) throw new Error('伙伴不存在。');
-      const current = json<Companion>(row(found).data), defaults = this.defaults(id);
-      if (expectedRevision !== undefined && expectedRevision !== (current.revision ?? 1)) throw new Error('伙伴资料已经更新，请重新读取后重置。');
-      const job: Job = { id: randomUUID(), companionId: id, scope: 'all', status: 'running', phase: 'stopping', processed: 0, startedAt: stamp(), updatedAt: stamp(),
+      if (previous?.status === 'completed') return this.status(id) as { reset: CompanionReset; resetTaskIds: string[] };
+      if (previous) { previous.status = 'running'; delete previous.error; this.save(previous); return this.status(id) as { reset: CompanionReset; resetTaskIds: string[] }; }
+      const found = this.db.prepare('SELECT data FROM companions WHERE id=? AND deleted_at IS NULL').get(id); if (!found) throw new Error('伙伴不存在或身份已经删除。');
+      const current = json<Companion>(row(found).data);
+      if (expectedRevision !== undefined && expectedRevision !== (current.revision ?? 1)) throw new Error('伙伴资料已经更新，请重新读取后删除清理。');
+      const job: Job = { operation: 'retire_identity', id: randomUUID(), companionId: id, scope: 'all', status: 'running', phase: 'stopping', processed: 0, startedAt: stamp(), updatedAt: stamp(),
         throughSequence: Number(row(this.db.prepare('SELECT COALESCE(MAX(sequence),0) AS n FROM messages').get()).n),
         progress: { step: 0, roomAfter: '', messageAfter: 0, refs: 0, taskIds: rows(this.db.prepare("SELECT json_extract(data,'$.taskId') AS task FROM actions WHERE companion_id=? AND status IN('queued','running','interrupted') AND json_extract(data,'$.taskId') IS NOT NULL").all(id)).map(item => String(item.task)) } };
       this.save(job); this.db.prepare('INSERT INTO companion_reset_boundaries(companion_id,through_sequence) VALUES(?,?) ON CONFLICT(companion_id) DO UPDATE SET through_sequence=MAX(through_sequence,excluded.through_sequence)').run(id, job.throughSequence);
@@ -127,14 +135,13 @@ export class CompanionResetStore {
         SELECT ?,c.id FROM conversations c WHERE c.id=? AND c.kind='group' AND c.hidden_at IS NOT NULL
         AND EXISTS(SELECT 1 FROM metadata m WHERE m.key='world-room/'||c.id AND m.value='true')`).run(job.id, 'world_' + id);
       for (const attachment of [current.avatarAttachmentId, current.appearanceAttachmentId]) if (attachment) this.garbage(job, attachment);
-      this.db.prepare('UPDATE companions SET deleted_at=NULL,data=? WHERE id=?').run(JSON.stringify({ ...defaults, id, createdAt: current.createdAt, revision: (current.revision ?? 1) + 1 }), id);
-      this.db.prepare('UPDATE conversations SET title=? WHERE private_companion_id=?').run(defaults.name, id);
-      this.resetWorld(id);
+      this.db.prepare('UPDATE companions SET data=? WHERE id=? AND deleted_at IS NULL').run(JSON.stringify({ ...current, active: false, revision: (current.revision ?? 1) + 1 }), id);
+      this.removeWorld(id);
       return { reset: this.public(job), resetTaskIds: job.progress.taskIds };
     }).immediate();
   }
   cleanup(id: string, jobId: string, error?: string): CompanionReset {
-    const job = this.load(id); if (!job || job.id !== jobId) throw new Error('重置任务已改变，请重新读取。');
+    const job = this.load(id); if (!job || job.id !== jobId) throw new Error('删除清理任务已改变，请重新读取。');
     if (job.status === 'completed') return this.public(job);
     if (job.phase !== 'stopping') { if (error) throw new Error('外部任务清理阶段已经结束。'); return this.public(job); }
     job.status = error ? 'failed' : 'running'; job.error = error?.slice(0, 1000); if (!error) { job.phase = 'rooms'; job.progress.taskIds = []; }
@@ -142,7 +149,7 @@ export class CompanionResetStore {
   }
   progress(id: string, jobId: string, stage: NonNullable<CompanionReset['cleanupStage']>): CompanionReset {
     const job = this.load(id);
-    if (!job || job.id !== jobId || job.phase !== 'stopping' || job.status !== 'running') throw new Error('重置阶段已变化，不能更新旧任务进度。');
+    if (!job || job.id !== jobId || job.phase !== 'stopping' || job.status !== 'running') throw new Error('删除清理阶段已变化，不能更新旧任务进度。');
     job.cleanupStage = stage; this.save(job); return this.public(job);
   }
   private garbage(job: Job, attachmentId: string): void { this.db.prepare('INSERT OR IGNORE INTO companion_reset_garbage(job_id,attachment_id) VALUES(?,?)').run(job.id, attachmentId); }
@@ -160,6 +167,9 @@ export class CompanionResetStore {
   private ownerSteps(job: Job): Array<[string, string, unknown[], ((items: Row[]) => void)?]> {
     const id = job.companionId;
     return [
+      ...['companion_agenda_steps', 'companion_agenda_runs', 'companion_agenda_occurrences', 'companion_agenda_emissions', 'companion_agenda_receipts',
+        'companion_agenda_audit', 'companion_agenda_rules', 'companion_agenda_goals', 'companion_agenda_grants']
+        .map(table => [table, 'companion_id=?', [id]] as [string, string, unknown[]]),
       ...['companion_memory_history_outbox', 'companion_memory_history_dependencies', 'companion_memory_history_sources', 'companion_memory_history_files']
         .map(table => [table, 'companion_id=?', [id]] as [string, string, unknown[]]),
       // Reset's durable boundary already blocks this owner. After withdrawal,
@@ -182,11 +192,19 @@ export class CompanionResetStore {
       ['companion_state_change_sources', 'change_id IN(SELECT id FROM companion_state_changes WHERE companion_id=?)', [id]],
       ['companion_state_change_memories', 'change_id IN(SELECT id FROM companion_state_changes WHERE companion_id=?)', [id]],
       ['companion_state_changes', 'companion_id=?', [id]],
+      ...['companion_artifact_publication_reservations', 'companion_artifact_publication_producers', 'companion_artifact_publication_edges', 'companion_artifact_publications', 'companion_artifact_edges', 'companion_artifact_versions', 'companion_artifacts', 'companion_growth_input_scopes', 'companion_job_control_receipts', 'companion_job_input_refs']
+        .map(table => [table, 'owner_id=?', [id]] as [string, string, unknown[]]),
+      ['companion_growth_goal_definitions', 'goal_id IN(SELECT id FROM companion_growth_goals WHERE companion_id=?)', [id]],
+      ['companion_growth_goal_revisions', 'goal_id IN(SELECT id FROM companion_growth_goals WHERE companion_id=?)', [id]],
       ['companion_learning_goal_sources', 'goal_id IN(SELECT id FROM companion_learning_goals WHERE companion_id=?)', [id]],
       ['companion_learning_goal_rounds', 'companion_id=?', [id]],
       ['companion_learning_goals', 'companion_id=?', [id]],
       ['companion_learning_asset_sources', 'companion_id=?', [id]],
       ['companion_learning_observed_assets', 'companion_id=?', [id]],
+      ['companion_learning_asset_job_history', 'companion_id=?', [id]],
+      ['companion_topic_compaction_jobs', 'companion_id=?', [id]],
+      ['companion_topic_checkpoint_owner_blocks', 'owner_id=?', [id]],
+      ['companion_topic_checkpoint_owner_reads', 'owner_id=?', [id]],
       ['companion_learning_reads', 'companion_id=?', [id]],
       ['companion_learning_grants', 'companion_id=?', [id]],
       ...['vcp_capture_jobs', 'vcp_source_observers', 'vcp_source_blocks', 'vcp_source_prohibitions', 'vcp_operation_receipts'].map(table => [table, 'companion_id=?', [id]] as [string, string, unknown[]]),
@@ -203,9 +221,9 @@ export class CompanionResetStore {
       ['metadata', 'key=?', ['companion-assets-initialized/' + id]],
       ['metadata', 'key IN(?,?)', ['companion-portrait-initialized/' + id + '/avatar', 'companion-portrait-initialized/' + id + '/orthographic']],
       ['metadata', 'key=?', ['life-park-walk-initialized/' + id]],
-      ...['companion_schedules', 'companion_state_interactions', 'companion_appraisal_sources', 'companion_state_appraisals', 'companion_state_events', 'companion_routine_interruptions', 'companion_routine_audit', 'companion_routine_work', 'companion_routines', 'companion_runtime_states', 'companion_world_occupancy', 'companion_world_attention', 'companion_focus_interruptions', 'companion_world_work_records', 'companion_world_dream_watermark', 'companion_world_jobs', 'companion_social_jobs', 'companion_social_outbox', 'companion_social_budget', 'companion_social_communication', 'companion_social_delegations', 'companion_social_notifications', 'companion_work_queue', 'proactive_state'].map(table => [table, 'companion_id=?', [id]] as [string, string, unknown[]]),
+      ['metadata', 'key>=? AND key<?', ['vcp-capture-reconsideration/' + id + '/', 'vcp-capture-reconsideration/' + id + '/\uffff']],
+      ...['companion_schedules', 'companion_state_interactions', 'companion_state_event_sources', 'companion_qualitative_state_sources', 'companion_qualitative_state_memories', 'companion_current_experiences', 'companion_relationship_records', 'companion_growth_operations', 'companion_growth_goals', 'companion_state_events', 'companion_routine_interruptions', 'companion_routine_audit', 'companion_routine_work', 'companion_routines', 'companion_runtime_states', 'companion_world_occupancy', 'companion_world_attention', 'companion_focus_interruptions', 'companion_world_work_records', 'companion_world_dream_watermark', 'companion_world_jobs', 'companion_social_jobs', 'companion_social_outbox', 'companion_social_budget', 'companion_social_communication', 'companion_social_delegations', 'companion_social_notifications', 'companion_work_queue', 'proactive_state'].map(table => [table, 'companion_id=?', [id]] as [string, string, unknown[]]),
       ['companion_social_interruptions', 'companion_id=? OR author_id=?', [id, id]],
-      ['companion_world_peer_appraisals', 'companion_id=? OR target_id=?', [id, id]],
       ['companion_world_visit_records', 'guest_id=? OR host_id=?', [id, id]],
       ['companion_world_perceptions', 'companion_id=?', [id]],
       ['companion_activity_tasks', 'companion_id=?', [id]],
@@ -220,38 +238,6 @@ export class CompanionResetStore {
       ['companion_social_chain_origins', "json_extract(data,'$.ownerId')=? OR json_extract(data,'$.initiatorId')=?", [id, id]],
       ...['actorId', 'targetId', 'privateOwner'].map(field => ['companion_world_events', `json_extract(data,'$.${field}')=?`, [id]] as [string, string, unknown[]]),
     ];
-  }
-  /** Erase an instance's runtime state while preserving shared chat history. */
-  purgeDeletedOwner(id: string): void {
-    const evidence = rows(this.db.prepare(`SELECT m.id FROM messages m JOIN conversations c ON c.id=m.conversation_id
-      WHERE EXISTS(SELECT 1 FROM metadata WHERE key='message-memory-evidence/'||m.id)
-      AND (m.author_id=? OR c.private_companion_id=? OR EXISTS(SELECT 1 FROM metadata p WHERE p.key='memory-world-observation/'||m.id AND json_extract(p.value,'$.companionId')=?))`).all(id, id, id));
-    if (evidence.length) this.withdrawSources(evidence.map(item => String(item.id)));
-    this.resetWorld(id);
-    while (this.resetNotes(id, 256)) { /* Withdraw owned notes and their derived records. */ }
-    const job = { id: 'delete-' + id, companionId: id } as Job;
-    for (const [table, predicate, args, before] of this.ownerSteps(job)) {
-      while (this.removeRows(table, predicate, args, 256, before)) { /* Bounded batches on the worker connection. */ }
-    }
-    const actions = rows(this.db.prepare('SELECT id FROM actions WHERE companion_id=?').all(id));
-    for (const action of actions) {
-      this.db.prepare('DELETE FROM companion_state_actions WHERE action_id=?').run(action.id);
-      this.db.prepare('UPDATE messages SET action_id=NULL WHERE action_id=?').run(action.id);
-      this.db.prepare('DELETE FROM metadata WHERE key=? OR key GLOB ?').run('task-checkpoint/' + action.id, 'task-attempt/' + action.id + '/*');
-    }
-    this.db.prepare('DELETE FROM actions WHERE companion_id=?').run(id);
-    for (const source of evidence) {
-      for (const reference of this.messageReferences) {
-        this.db.prepare(reference.table === 'messages'
-          ? `UPDATE messages SET ${ident(reference.column)}=NULL WHERE ${ident(reference.column)}=?`
-          : `DELETE FROM ${ident(reference.table)} WHERE ${ident(reference.column)}=?`).run(source.id);
-      }
-      this.db.prepare('DELETE FROM metadata WHERE key=? OR key=?').run('message-memory-evidence/' + source.id, 'memory-world-observation/' + source.id);
-      this.db.prepare('DELETE FROM messages WHERE id=?').run(source.id);
-    }
-    this.db.prepare("DELETE FROM metadata WHERE key NOT GLOB 'file-result/*' AND CASE WHEN json_valid(value) THEN json_extract(value,'$.companionId') END=?").run(id);
-    this.db.prepare('DELETE FROM companion_reset_jobs WHERE companion_id=?').run(id);
-    this.db.prepare('DELETE FROM companion_reset_boundaries WHERE companion_id=?').run(id);
   }
   private memoryBatch(job: Job, limit: number): number { return this.resetNotes(job.companionId, limit); }
   private rooms(job: Job, limit: number): number {
@@ -381,7 +367,7 @@ export class CompanionResetStore {
     const pending = rows(this.db.prepare('SELECT relative_path FROM companion_reset_files WHERE job_id=? LIMIT 16').all(job.id));
     const root = await realpath(this.root), directory = path.join(root, 'attachments');
     for (const item of pending) {
-      const relative = String(item.relative_path); if (!/^attachments\/[a-zA-Z0-9_-]{1,100}(?:\.[a-zA-Z0-9]{1,16})?$/u.test(relative)) throw new Error('重置附件路径不属于受管目录。');
+      const relative = String(item.relative_path); if (!/^attachments\/[a-zA-Z0-9_-]{1,100}(?:\.[a-zA-Z0-9]{1,16})?$/u.test(relative)) throw new Error('删除清理附件路径不属于受管目录。');
       const file = path.join(root, relative);
       try { const info = await lstat(file); if (info.isSymbolicLink() || !info.isFile() || path.dirname(await realpath(file)) !== directory) throw new Error('附件路径已改变，已停止清理。'); await unlink(file); }
       catch (error) { if (!(error instanceof Error && 'code' in error && error.code === 'ENOENT')) throw error; }
@@ -391,17 +377,25 @@ export class CompanionResetStore {
   }
   async advance(limit = 300): Promise<CompanionReset | undefined> {
     const found = this.db.prepare("SELECT data FROM companion_reset_jobs WHERE status='running' AND phase!='stopping' ORDER BY rowid LIMIT 1").get(); if (!found) return;
-    const job = json<Job>(row(found).data);
+    const job = this.requireJob(json<Job>(row(found).data));
     try {
       if (job.phase === 'files') { const count = await this.files(job); job.processed += count; if (!count) job.phase = 'finish'; this.save(job); return this.public(job); }
       this.db.transaction(() => {
         const started = performance.now(); let emptySteps = 0;
         do {
         let count = 0;
-        if (job.phase === 'rooms') { count = this.rooms(job, limit); if (!count) job.phase = 'journals'; }
-        // Each note also removes source, vector and history links. Keep this
-        // denser phase smaller so one owner does not monopolize the Worker.
-        else if (job.phase === 'journals') { count = this.memoryBatch(job, Math.min(limit, 32)); if (!count) job.phase = 'owner-records'; }
+        if (job.phase === 'rooms') {
+          count = this.rooms(job, limit);
+          if (!count) {
+            job.phase = 'journals';
+            // The terminal note port checks the actual SQL stop/phase fence.
+            // Keep it current before this same transaction enters that port.
+            this.save(job);
+          }
+        }
+        // Main's confirmed stop already removed native/files state. This
+        // bounded terminal batch only deletes exact owner SQL note/FK rows.
+        else if (job.phase === 'journals') { count = this.memoryBatch(job, Math.min(limit, 128)); if (!count) job.phase = 'owner-records'; }
         else if (job.phase === 'owner-records') {
           const step = this.ownerSteps(job)[job.progress.step];
           if (!step) job.phase = 'metadata';
@@ -411,18 +405,40 @@ export class CompanionResetStore {
         else if (job.phase === 'social-rooms') { count = this.socialRooms(job, limit); if (!count) job.phase = 'actions'; }
         else if (job.phase === 'message-links') { count = this.messageLinks(job, limit); if (count < 0) { count = 0; job.phase = 'messages'; } }
         else if (job.phase === 'messages') { count = this.messageMetadata(job, limit); if (!count) job.phase = 'select-messages'; }
-        else if (job.phase === 'actions') { count = this.removeRows('actions', 'companion_id=?', [job.companionId], limit, items => { for (const item of items) { this.db.prepare('DELETE FROM companion_state_actions WHERE action_id=?').run(item.id); this.db.prepare('UPDATE messages SET action_id=NULL WHERE action_id=?').run(item.id); this.db.prepare('DELETE FROM metadata WHERE key=? OR key GLOB ?').run('task-checkpoint/' + item.id, 'task-attempt/' + item.id + '/*'); } }); if (!count) job.phase = 'attachments'; }
+        else if (job.phase === 'actions') { count = this.removeRows('actions', 'companion_id=?', [job.companionId], limit, items => { for (const item of items) {  this.db.prepare('UPDATE messages SET action_id=NULL WHERE action_id=?').run(item.id); this.db.prepare('DELETE FROM metadata WHERE key=? OR key GLOB ?').run('task-checkpoint/' + item.id, 'task-attempt/' + item.id + '/*'); } }); if (!count) job.phase = 'attachments'; }
         else if (job.phase === 'attachments') { count = this.garbageBatch(job, limit); if (!count) job.phase = 'files'; }
         else if (job.phase === 'finish') {
           for (const table of ['companion_reset_rooms']) { count = this.removeRows(table, 'job_id=?', [job.id], limit); if (count) break; }
-          if (!count) { job.status = 'completed'; job.phase = 'completed'; this.resetWorld(job.companionId); }
+          if (!count) {
+            const owner = this.db.prepare('SELECT data FROM companions WHERE id=?').get(job.companionId);
+            if (!owner) throw new Error('待删除身份的归属标记不存在。');
+            const current = json<Companion>(row(owner).data);
+            const tombstone: Companion = { id: job.companionId, name: '已删除联系人', description: '', persona: '', model: '', avatar: 'custom', proactive: false, active: false,
+              builtin: false, createdAt: current.createdAt, revision: (current.revision ?? 1) + 1 };
+            this.db.prepare('UPDATE companions SET deleted_at=?,data=? WHERE id=?').run(stamp(), JSON.stringify(tombstone), job.companionId);
+            this.db.prepare("DELETE FROM conversation_members WHERE companion_id=? AND conversation_id IN(SELECT id FROM conversations WHERE kind='group')").run(job.companionId);
+            this.db.prepare(`UPDATE companion_topics SET data=json_set(data,
+              '$.participantIds',json((SELECT json_group_array(value) FROM json_each(data,'$.participantIds') WHERE value<>?)),
+              '$.invitedIds',json((SELECT json_group_array(value) FROM json_each(data,'$.invitedIds') WHERE value<>?)),
+              '$.moderatorId',CASE WHEN json_extract(data,'$.moderatorId')=? THEN 'user' ELSE json_extract(data,'$.moderatorId') END,
+              '$.revision',COALESCE(json_extract(data,'$.revision'),1)+1,'$.updatedAt',?)
+              WHERE json_extract(data,'$.moderatorId')=? OR EXISTS(SELECT 1 FROM json_each(data,'$.participantIds') WHERE value=?)
+                OR EXISTS(SELECT 1 FROM json_each(data,'$.invitedIds') WHERE value=?)`)
+              .run(job.companionId, job.companionId, job.companionId, stamp(), job.companionId, job.companionId, job.companionId);
+            const groups = this.db.prepare("SELECT value FROM metadata WHERE key='contact-groups-v1'").get() as { value: string } | undefined;
+            if (groups) {
+              const state = json<{ revision: number; assignments: Record<string, string> }>(groups.value);
+              if (job.companionId in state.assignments) { delete state.assignments[job.companionId]; state.revision++; this.db.prepare("UPDATE metadata SET value=? WHERE key='contact-groups-v1'").run(JSON.stringify(state)); }
+            }
+            this.removeWorld(job.companionId); job.status = 'completed'; job.phase = 'completed';
+          }
         }
         job.processed += count;
         if (count || job.status === 'completed' || job.phase === 'files' || performance.now() - started >= 5) break;
         } while (++emptySteps < 32);
         this.save(job);
       }).immediate();
-    } catch (error) { job.status = 'failed'; job.error = (error instanceof Error ? error.message : '伙伴重置失败。').slice(0, 1000); this.save(job); }
+    } catch (error) { job.status = 'failed'; job.error = (error instanceof Error ? error.message : '伙伴删除清理失败。').slice(0, 1000); this.save(job); }
     return this.public(job);
   }
 }

@@ -3,7 +3,7 @@ import { CompanionMemoryProjectionCache } from '../../src/main/companions/memory
 import type { CompanionMemoryProjectionNote } from '../../src/shared/companion-memory-projection';
 import type { CompanionStorageCommand } from '../../src/shared/companion-storage';
 
-const metadata = (id: string, companionId = 'alice'): CompanionMemoryProjectionNote => ({ id, companionId, scopeId: 'scope',
+const metadata = (id: string, companionId = 'alice'): CompanionMemoryProjectionNote => ({ id, companionId, scopeId: 'scope', artifactKind: 'episode_memory',
   tags: ['original'], sourceConversationId: 'private', sourceSequence: 20,
   sources: [{ messageId: 'source', conversationId: 'private', authorId: 'user', sequence: 20, revision: 1, checksum: 'a'.repeat(64), createdAt: '2026-10-27T00:00:00Z' }],
   createdAt: '2026-10-27T00:00:00Z', updatedAt: '2026-10-27T00:00:00Z', origin: 'user', status: 'indexed', version: 1, captureMethod: 'manual', contentRevision: 1,

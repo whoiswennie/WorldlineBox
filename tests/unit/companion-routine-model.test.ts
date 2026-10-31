@@ -5,9 +5,8 @@ import { companionRoutineArgumentsSchema } from '../../src/shared/companion-rout
 import type { AiApiFormat } from '../../src/shared/ai-endpoints';
 import type { CompanionRuntimeState } from '../../src/shared/companion-state';
 
-const runtimeState: CompanionRuntimeState = { companionId: 'sister', energy: 70, mood: 'calm', expression: 'gentle',
-  affect: { pleasure: 0, arousal: 0, dominance: 0 }, relationship: { affinity: 50, trust: 50, respect: 50 },
-  familiarity: { stage: 'new', interactionCount: 0, sharedEventCount: 0 }, updatedAt: '2026-10-14T00:00:00Z', revision: 1,
+const runtimeState: CompanionRuntimeState = { schema: 'companion-runtime-qualitative-v1', companionId: 'sister', energy: 70, expression: 'gentle', relationshipRecords: [],
+  updatedAt: '2026-10-14T00:00:00Z', revision: 1,
   routine: { phase: 'habit', activity: 'PRIVATE_HABIT_440', activeHabitId: 'private_habit', canRespond: false, nextTransitionAt: '2026-10-14T01:00:00Z', simulation: true } };
 const input: CompanionReplyInput = {
   companion: { id: 'sister', name: '大肥鱼', description: '姐姐', persona: '温柔沉稳，喜欢海洋。', model: '', avatar: 'sister', builtin: true, proactive: false, createdAt: '2026-10-14T00:00:00Z' },

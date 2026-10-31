@@ -21,7 +21,7 @@ it('automatically applies original gentle decay during ordinary recall while ret
   // timing is tested separately, so this host-only fixture explicitly flushes.
   const job = store.request({ type: 'memory.jobs.claim', companionId: 'alice', force: true }).memoryJob!;
   expect(job.sourceMessageIds).toEqual(messages.map(source => source.id));
-  const notes = store.request({ type: 'memory.jobs.complete', id: job.id, leaseToken: job.leaseToken, notes: messages.map((source, i) => ({ content: source.content,
+  const notes = store.request({ type: 'memory.jobs.complete', id: job.id, leaseToken: job.leaseToken, notes: messages.map((source, i) => ({ artifactKind: 'episode_memory', content: source.content,
     occurredAt: dates[i], diaryName: '日记', tags: ['group0', 'umbrella', ...(i === 2 ? ['重要'] : [])], sourceMessageIds: [source.id], evidence: [{ sourceMessageId: source.id, quote: source.content }] })) }).memories!;
   expect(notes.every(note => note.captureMethod === 'automatic')).toBe(true);
   for (let i = 0; i < notes.length; i++) { const outbox = store.request({ type: 'memory.outbox.claim' }).memoryOutbox!; store.request({ type: 'memory.outbox.complete', id: outbox.id, leaseToken: outbox.leaseToken, indexed: true }); }

@@ -14,7 +14,7 @@ function fixture() {
   const root = mkdtempSync(path.join(tmpdir(), 'companion-computer-transition-')); roots.push(root); const filename = path.join(root, 'messages.sqlite');
   const store = new CompanionsStore(filename, [{ ...seed, active: true }]); stores.add(store);
   const scope = { companionId: 'alice', conversationId: store.openPrivate('alice').id }, world = store.request({ type: 'world.snapshot' }).world!;
-  store.request({ type: 'world.configure', expectedRevision: world.settings.revision, patch: { mode: 'compressed', timeZone: 'UTC' } });
+  store.request({ type: 'world.configure', expectedRevision: world.settings.revision, patch: { mode: 'realtime', timeZone: 'UTC' } });
   const routine = store.request({ type: 'routine.get', ...scope }).routine!;
   store.request({ type: 'routine.configure', ...scope, expectedRevision: routine.revision, patch: { timeZone: 'UTC', sleepAt: '23:00', wakeAt: '07:00', meals: [], habits: [] } });
   store.request({ type: 'world.tool', ...scope, arguments: { action: 'move', destinationId: 'alice_computer' } }); advance(store, 12000);

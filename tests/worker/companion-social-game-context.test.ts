@@ -138,7 +138,7 @@ it.each(['original_goal', 'actual_private_card'] as const)('keeps the actual gam
   const reply = f.store.request({ type: 'social.job.complete', id: job.id, leaseToken: job.leaseToken!, text: '本局已实际确认收到。',
     executionReadset: f.readset('c', peer.id, [source]) }).socialMessage!.message;
   const scope = { companionId: 'c', conversationId: peer.id };
-  expect(() => f.store.request({ type: 'memory.record', ...scope, candidate: { content: reply.content, sourceMessageIds: [reply.id], evidence: [{ sourceMessageId: reply.id, quote: reply.content }] } })).toThrow('游戏与故事');
+  expect(() => f.store.request({ type: 'memory.record', ...scope, candidate: { artifactKind: 'episode_memory' as const, content: reply.content, sourceMessageIds: [reply.id], evidence: [{ sourceMessageId: reply.id, quote: reply.content }] } })).toThrow('游戏与故事');
   expect(f.store.request({ type: 'memory.sources.filter', ...scope, ids: [source.id, reply.id] }).memorySources).toHaveLength(2);
   f.store.request(withdrawal === 'original_goal' ? { type: 'memory.forget', ...f.scope, sourceMessageIds: [f.human.id] }
     : { type: 'memory.forget', companionId: 'b', conversationId: f.source.conversationId, sourceMessageIds: [f.source.id] });
@@ -199,7 +199,7 @@ it('captures the actual game-context private checkpoint into a reply proof, reje
   expect(readset.topics[0]?.checkpointEventIds).toContain(gameCommunication.topicState.workingState!.sourceEventId);
   f.advance();
   const reply = f.store.request({ type: 'social.job.complete', id: f.job.id, leaseToken: f.job.leaseToken!, text: '本局本人秘密查验已记录。', executionReadset: readset }).socialMessage!.message;
-  expect(() => f.store.request({ type: 'memory.record', ...scope, candidate: { content: reply.content, sourceMessageIds: [reply.id], evidence: [{ sourceMessageId: reply.id, quote: reply.content }] } })).toThrow('游戏与故事');
+  expect(() => f.store.request({ type: 'memory.record', ...scope, candidate: { artifactKind: 'episode_memory' as const, content: reply.content, sourceMessageIds: [reply.id], evidence: [{ sourceMessageId: reply.id, quote: reply.content }] } })).toThrow('游戏与故事');
   expect(f.store.request({ type: 'memory.sources.filter', ...scope, ids: [reply.id, f.source.id] }).memorySources).toHaveLength(2);
   f.store.request({ type: 'memory.forget', companionId: 'b', conversationId: f.room, sourceMessageIds: [cardSource.id] });
   expect(f.store.request({ type: 'memory.sources.filter', ...scope, ids: [reply.id] }).memorySources).toHaveLength(0);

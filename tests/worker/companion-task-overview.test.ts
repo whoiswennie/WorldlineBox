@@ -7,10 +7,28 @@ import { CompanionsStore, type CompanionConnection } from '../../src/companions/
 import { CompanionTaskOverviewStore } from '../../src/companions/task-overview-store';
 import { removeOwnedDirectorySync } from '../../src/main/vcp-memory/filesystem';
 import type { CompanionTaskItem, CompanionTaskPage } from '../../src/shared/companion-task-overview';
+import { randomUUID } from 'node:crypto';
 
 const fixtures: Array<{ root: string; store: CompanionsStore; db: CompanionConnection }> = [];
 afterEach(() => { for (const f of fixtures.splice(0)) { f.db.close(); f.store.close(); removeOwnedDirectorySync(f.root); } });
 const at = '2026-10-26T05:00:00.000Z';
+it('distinguishes a durable parked source from a successful task and an explicitly abandoned history record', () => {
+  const f = fixture();
+  const source = f.store.appendMessage({ conversationId: f.alice, authorId: 'user', content: 'PRECIOUS_SOURCE_BODY_MUST_NOT_ENTER_TASK_LIST', replyDirective: 'none' });
+  const job = f.store.request({ type: 'jobs.page', ownerId: 'alice', kind: 'capture', limit: 20 }).jobPage!.items.find(job => job.sourceMessageId === source.id)!;
+  expect(job).toBeDefined();
+  const parked = f.store.request({ type: 'jobs.control', ownerId: 'alice', kind: 'capture', id: job.id, inputVersion: job.inputVersion,
+    expectedRevision: job.revision, operationId: randomUUID(), action: 'park' }).jobDisposition!;
+  const waiting = f.inventory.resolve({ type: 'tasks.resolve', companionId: 'alice', kind: 'memory_capture', id: job.id })!;
+  expect(waiting).toMatchObject({ rawStatus: 'parked', status: 'paused', canStop: false });
+  expect(JSON.stringify(waiting)).not.toContain(source.content);
+  expect(f.inventory.page({ type: 'tasks.page', companionId: 'alice', view: 'current', limit: 20 }).items.some(task => task.id === job.id)).toBe(true);
+  f.store.request({ type: 'jobs.control', ownerId: 'alice', kind: 'capture', id: job.id, inputVersion: parked.inputVersion,
+    expectedRevision: parked.revision, operationId: randomUUID(), action: 'abandon' });
+  expect(f.inventory.resolve({ type: 'tasks.resolve', companionId: 'alice', kind: 'memory_capture', id: job.id })).toMatchObject({ rawStatus: 'abandoned', status: 'cancelled', canStop: false });
+  expect(f.inventory.page({ type: 'tasks.page', companionId: 'alice', view: 'history', limit: 20 }).items.some(task => task.id === job.id)).toBe(true);
+  expect(f.store.getMessage(source.id).content).toBe(source.content);
+});
 function fixture() {
   const root = mkdtempSync(path.join(tmpdir(), 'worldlinebox-task-overview-')), file = path.join(root, 'state.sqlite');
   const store = new CompanionsStore(file, ['alice', 'bob'].map(id => ({ id, name: id, description: '', persona: '测试伙伴', model: '', avatar: 'sister' as const, active: false, proactive: false })));

@@ -73,8 +73,11 @@ export async function prepareTopicNarrativeReferences(input: { frame: Frame; con
         reason: '实际来源候选互相冲突，不能选择其中一个当作确定人物指代。' }))] };
   };
   if (!sources.length) return structuredClone(combine([]));
-  const infer = (context: { system: string; user: string }, transport?: Infer) => transport ? transport(context, input.signal)
-    : generateCompanionStructured(context, input.config, input.signal, { fetchFn: input.fetchFn, timeoutMs: 120000 });
+  const infer = (context: { system: string; user: string }, schema: z.ZodType, transport?: Infer) => transport ? transport(context, input.signal)
+    : generateCompanionStructured(context, input.config, input.signal, { fetchFn: input.fetchFn, timeoutMs: 120000, responseSchema: schema,
+      repairPreserveCollections: schema === extractionSchema
+        ? [{ path: ['references'], fields: ['sourceMessageId', 'subjectName', 'quote', 'referencePronoun', 'referenceOccurrence', 'decision'] }]
+        : [{ path: ['decisions'], fields: ['index', 'decision'] }] });
   const save = (result: TopicNarrativeReferences) => {
     if (useCache) {
       for (const source of sources) cache.set(keyFor(source), structuredClone({ ...result,
@@ -106,7 +109,7 @@ export async function prepareTopicNarrativeReferences(input: { frame: Frame; con
 具名人物的动作/身体动作接续清楚可accept，如“甲没有上前。他举灯。”、“甲握灯的手一紧。他的戒指暗了。”。原文其它位置有人物不自动否定局部绑定。
 名字与代词之间换主语则不能绑回原人：“甲停下。短斗篷没动。他站着”不绑甲；“甲看向乙，他…”有受事歧义。引语、假设、叙述者切换或多个可能所指均ambiguous/reject。名字与唯一他/她同现不是绑定证据。无可靠项返回空数组。`,
       user: JSON.stringify({ purpose: 'topic_narrative_reference_extract', sources: extractionSources,
-        outputSchema: z.toJSONSchema(extractionSchema, { io: 'input' }) }) }, input.extract);
+        outputSchema: z.toJSONSchema(extractionSchema, { io: 'input' }) }) }, extractionSchema, input.extract);
     const parsed = extractionSchema.safeParse(raw);
     if (!parsed.success) return save({ ...base, status: 'abstained' });
     const candidates = parsed.data.references.filter(item => item.decision !== 'reject').flatMap(item => {
@@ -133,7 +136,7 @@ export async function prepareTopicNarrativeReferences(input: { frame: Frame; con
         sourceMessageId: candidate.sourceMessageId, subjectName: candidate.subjectName, quote: candidate.quote, sourcePronoun: candidate.sourcePronoun,
         quoteStart: candidate.quoteStart, quoteEnd: candidate.quoteEnd, nameStart: candidate.nameStart, nameEnd: candidate.nameEnd,
         referenceStart: candidate.referenceStart, referenceEnd: candidate.referenceEnd })),
-        sources: sources.map(message => ({ id: message.id, sequence: message.sequence, content: message.content })), outputSchema: z.toJSONSchema(reviewSchema) }) }, input.review));
+        sources: sources.map(message => ({ id: message.id, sequence: message.sequence, content: message.content })), outputSchema: z.toJSONSchema(reviewSchema) }) }, reviewSchema, input.review));
     if (!confirmed.success || confirmed.data.decisions.length !== candidates.length || new Set(confirmed.data.decisions.map(item => item.index)).size !== candidates.length
       || confirmed.data.decisions.some(item => item.index >= candidates.length)) return save({ ...base, status: 'abstained' });
     const diagnostics: NonNullable<TopicNarrativeReferences['diagnostics']> = [];
@@ -157,6 +160,7 @@ export async function prepareTopicNarrativeReferences(input: { frame: Frame; con
     });
     return save({ ...base, status: references.length ? 'reviewed' : 'abstained', references, conflicts: [], diagnostics });
   } catch (error) {
+    if (error instanceof CompanionModelError && error.diagnostic === 'structured_repair_exhausted') throw error;
     if (error instanceof CompanionModelError && error.code === 'INVALID_RESPONSE' && !input.signal?.aborted) return save({ ...base, status: 'abstained' });
     throw error;
   }

@@ -20,6 +20,9 @@ describe('VCP memory host input boundaries', () => {
   it('rejects unsupported dimensions and injected tag metadata before mutation', () => {
     expect(() => embeddingConfiguration({ baseUrl: 'https://host.invalid', model: 'model', dimension: 4097 })).toThrow(/dimension/iu);
     expect(() => normalizeNote({ id: 'note', content: 'fact', tags: ['safe\nTag: injected'] })).toThrow(/Tags/u);
+    for (const separator of ['\r', '\r\n', '\u2028', '\u2029']) {
+      expect(() => normalizeNote({ id: 'note', content: 'fact', tags: [`safe${separator}Tag: injected`] })).toThrow(/Tags/u);
+    }
     expect(() => normalizeNote({ id: 'note', content: 'fact', tags: [], occurredAt: 'not-a-date' })).toThrow(/date/u);
   });
   it('accepts the full public diary length and rejects only text beyond that contract', () => {
@@ -28,6 +31,12 @@ describe('VCP memory host input boundaries', () => {
     }
     expect(() => normalizeNote({ id: 'long', content: 'x'.repeat(65537), tags: [] })).toThrow(/content/iu);
     expect(() => normalizeNote({ id: 'x'.repeat(4097), content: 'valid', tags: [] })).toThrow(/ID/u);
+  });
+  it('rejects current revision-history envelopes as semantic memory while preserving normal quoted technical prose', () => {
+    expect(() => normalizeNote({ id: 'history-copy', tags: [], content: '---\n{"schema":"worldlinebox.companion-memory-history-v2"}\n---\n派生审计副本不能成为新记忆。' }))
+      .toThrow(/provenance/u);
+    expect(normalizeNote({ id: 'ordinary', tags: ['技术资料'], content: '这份资料讨论frontmatter中的schema字段；它不是宿主历史封装。' }))
+      .toMatchObject({ content: '这份资料讨论frontmatter中的schema字段；它不是宿主历史封装。' });
   });
   it('accepts 16000-character queries without truncation and rejects 16001 before embedding', async () => {
     const queryEmbedding = async (text: string) => { expect(text).toHaveLength(16000); return [1, 0]; };

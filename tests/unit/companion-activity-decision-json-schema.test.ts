@@ -1,7 +1,7 @@
 import { createRequire } from 'node:module';
 import { expect, it } from 'vitest';
 import { z } from 'zod';
-import { activityDecisionJsonSchema, activityDecisionSchema } from '../../src/shared/companion-activity-task';
+import { activityDecisionJsonSchema, activityDecisionSchema, activityAgentDecisionSchema } from '../../src/shared/companion-activity-task';
 
 // The locked ajv-formats dependency already carries Ajv 8. Use its draft-2020
 // validator for Zod's original schema without changing the product dialect.
@@ -16,7 +16,7 @@ const values = {
   memory: { operation: 'search', query: '本人经历' }, topic: { action: 'read', topicId: 'topic' },
 };
 
-it('matches the existing Zod operation refinements for every omitted/null/value combination and status', () => {
+it('matches the actor-only Zod contract for every omitted/null/value combination and status', () => {
   const fields = ['action', 'wait', 'memory', 'topic'] as const;
   for (const status of ['continue', 'complete', 'blocked']) for (let combination = 0; combination < 3 ** fields.length; combination++) {
     const proposal: Record<string, unknown> = { status, summary: '按实际资料决定下一步。' };
@@ -25,7 +25,7 @@ it('matches the existing Zod operation refinements for every omitted/null/value 
       const state = remaining % 3; remaining = Math.floor(remaining / 3);
       if (state) proposal[field] = state === 1 ? null : values[field];
     }
-    expect(validate(proposal), JSON.stringify(proposal)).toBe(activityDecisionSchema.safeParse(proposal).success);
+    expect(validate(proposal), JSON.stringify(proposal)).toBe(activityAgentDecisionSchema.safeParse(proposal).success);
   }
 });
 
@@ -37,7 +37,7 @@ it('rejects the real topic-read plus reply-wait shape while preserving action pl
 });
 
 it('keeps original field schemas, required fields and strict unknown-field rejection', () => {
-  const original = z.toJSONSchema(activityDecisionSchema, { io: 'input' });
+  const original = z.toJSONSchema(activityAgentDecisionSchema, { io: 'input' });
   const schema = activityDecisionJsonSchema();
   expect(schema.properties).toEqual(original.properties); expect(schema.required).toEqual(original.required);
   expect(schema.additionalProperties).toBe(false);
@@ -46,4 +46,12 @@ it('keeps original field schemas, required fields and strict unknown-field rejec
     { status: 'complete', action: null, wait: null, summary: '完成', invented: true },
     { status: 'blocked', action: null, wait: null, summary: '受阻', topic: { action: 'read', topicId: 'topic', invented: true } },
   ]) { expect(activityDecisionSchema.safeParse(proposal).success).toBe(false); expect(validate(proposal)).toBe(false); }
+});
+
+it('retains legacy decisions for audit while refusing memory or experience proposals from an actor', () => {
+  const legacy = { status: 'continue', action: null, wait: null, memory: values.memory, summary: '旧记忆提案' };
+  expect(activityDecisionSchema.safeParse(legacy).success).toBe(true);
+  expect(activityAgentDecisionSchema.safeParse(legacy).success).toBe(false); expect(validate(legacy)).toBe(false);
+  expect(activityDecisionJsonSchema().properties).not.toHaveProperty('memory');
+  expect(validate({ status: 'continue', action: { action: 'experience', parameters: { action: 'days' } }, wait: null, summary: '绕过工具回顾经历' })).toBe(false);
 });

@@ -12,6 +12,22 @@ function canonical(value: unknown): unknown {
   return object ? Object.fromEntries(Object.entries(object).filter(([key]) => !transient.has(key)).sort(([left], [right]) => left.localeCompare(right))
     .map(([key, child]) => [key, canonical(child)])) : value;
 }
+/** Search diagnostics describe the cost/time of observing facts, not new facts.
+ * Keep every actual hit, source, corpus/permission version, scope and argument.
+ * Only these typed receipt fields are volatile; source timestamps inside the
+ * returned memories remain part of the observation. */
+function memorySearchFacts(result: Record<string, unknown>): Record<string, unknown> {
+  const { memorySearchTimings: _timings, ...facts } = result; void _timings;
+  const context = record(facts.memoryContext), evidence = context && record(context.evidence);
+  if (context && evidence) {
+    const { capturedAt: _captured, queryClock, ...observed } = evidence; void _captured;
+    const clock = record(queryClock);
+    if (clock) { const { now: _now, ...domain } = clock; void _now; observed.queryClock = domain; }
+    else if (queryClock !== undefined) observed.queryClock = queryClock;
+    facts.memoryContext = { ...context, evidence: observed };
+  }
+  return facts;
+}
 export interface CompanionAgentNoProgressProof { fromStep: number; throughStep: number; repetitions: number; observationDigest: string; tools: string[]; kind?: 'empty_authorized_memory' }
 export class CompanionAgentNoProgressError extends Error {
   readonly code = 'COMPANION_AGENT_NEEDS_ATTENTION';
@@ -42,7 +58,7 @@ function observation(turn: CompanionLoopTurn): { digest: string; tools: string[]
         queries.push({ name: 'memory.search', authorizedCorpusEmpty: true, revision: retrieval.authorizedCorpusRevision });
         tools.push(current.name); continue;
       }
-      let facts: unknown = result;
+      let facts: unknown = current.name === 'memory.search' ? memorySearchFacts(result) : result;
       if (worldQuery) {
         const knowledge = record(result.worldKnowledge);
         if (!knowledge || !Array.isArray(knowledge.items)) return;

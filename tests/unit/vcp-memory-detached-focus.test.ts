@@ -32,6 +32,14 @@ function fixture(batched = false): VcpMemoryPreparedPayload {
       ] } }] };
 }
 function response(prompt: string): string { return `这是我获取的所有相关知识/记忆[[核验 ${createHash('sha256').update(prompt).digest('hex')}]]`; }
+it('returns an already formatted native-only packet without configuring or calling a focusing model', async () => {
+  const packet = fixture(); packet.groups = []; packet.modelIdentity = modelIdentity(undefined);
+  packet.receipt.messages = [{ role: 'system', content: 'Actual native RiverMemo output' }];
+  const fetchFn = vi.fn(), validate = vi.fn(async () => undefined);
+  const result = await focusPreparedRecall(packet, { vendorRoot: path.resolve('vendor/vcp-memory'), chat: undefined }, { fetchFn, validate });
+  expect(result).toEqual(packet.receipt); expect(result).not.toBe(packet.receipt);
+  expect(fetchFn).not.toHaveBeenCalled(); expect(validate).toHaveBeenCalled();
+});
 it.each([false, true])('keeps exact upstream sourceFiles prompt, ordering, batching and output with detached=%s', async batched => {
   const payload = fixture(batched), prompts: unknown[] = [];
   const result = await focusPreparedRecall(payload, { vendorRoot: path.resolve('vendor/vcp-memory'), chat }, {

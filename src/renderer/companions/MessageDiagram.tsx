@@ -23,6 +23,8 @@ export function MessageDiagram({ source }: { source: string }) {
         const result = await mermaid.render('companion-diagram-' + id, source);
         const safe = DOMPurify.sanitize(result.svg, { USE_PROFILES: { svg: true, svgFilters: true }, FORBID_TAGS: ['script', 'foreignObject', 'iframe', 'image'] });
         const diagramDoc = new DOMParser().parseFromString(safe, 'image/svg+xml');
+        if (diagramDoc.documentElement.localName !== 'svg' || diagramDoc.documentElement.namespaceURI !== 'http://www.w3.org/2000/svg' || diagramDoc.querySelector('parsererror'))
+          throw new Error('Invalid sanitized diagram');
         for (const element of diagramDoc.querySelectorAll('*')) {
           for (const attribute of [...element.attributes]) if (/^(?:href|xlink:href)$/i.test(attribute.name) && !attribute.value.startsWith('#')) element.removeAttribute(attribute.name);
           if (/url\(\s*['"]?(?!#)/i.test(element.getAttribute('style') ?? '')) element.removeAttribute('style');

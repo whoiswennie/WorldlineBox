@@ -24,7 +24,7 @@ it('changes the cheap owner stamp for actual corpus writes and index completion,
   const { db, scope, stamp } = fixture(), initial = stamp(), bob = stamp('bob');
   const source = db.appendMessage({ conversationId: scope.conversationId, content: '我的名字是天幻。', authorId: 'user' });
   expect(stamp()).toBe(initial);
-  const note = db.request({ type: 'memory.record', ...scope, candidate: { content: '玩家介绍自己叫天幻。', tags: ['名字'],
+  const note = db.request({ type: 'memory.record', ...scope, candidate: { artifactKind: 'episode_memory' as const, content: '玩家介绍自己叫天幻。', tags: ['名字'],
     sourceMessageIds: [source.id], evidence: [{ sourceMessageId: source.id, quote: source.content }] } }).memories![0]!;
   const queued = stamp(); expect(queued).not.toBe(initial); expect(stamp('bob')).toBe(bob);
   const job = db.request({ type: 'memory.outbox.claim', companionId: 'alice' }).memoryOutbox!;

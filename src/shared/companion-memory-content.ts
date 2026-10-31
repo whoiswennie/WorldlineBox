@@ -5,7 +5,7 @@ export function companionHistoryView(text: string): { content: string; version: 
   if (!match) return;
   try {
     const header = JSON.parse(match[1]!);
-    if (header?.schema !== 'worldlinebox.companion-memory-history-v1' || !Number.isSafeInteger(header.contentRevision)
+    if (header?.schema !== 'worldlinebox.companion-memory-history-v2' || !Number.isSafeInteger(header.contentRevision)
       || header.contentRevision < 1 || !header.memory || typeof header.memory !== 'object'
       || !/^[a-f0-9]{64}$/u.test(header.bodyHash) || header.id !== header.memory.id) return;
     const content = match[2]!, first = content.split(/\r?\n/u).find(line => line.trim()) ?? '记忆正文';
@@ -15,5 +15,5 @@ export function companionHistoryView(text: string): { content: string; version: 
   } catch { return; }
 }
 export function companionNarrativeText(text: string): string {
-  return (companionHistoryView(text)?.content ?? text).replace(/^<!-- WorldlineBoxMemory:[a-f0-9]{64} -->\r?$(?:\r?\n)?/gmu, '');
+  return companionHistoryView(text)?.content ?? text;
 }

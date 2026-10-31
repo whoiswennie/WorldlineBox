@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import { createHash } from 'node:crypto';
-import { CompanionModelError, generateCompanionStructured, type CompanionModelConfig } from './model';
+import { CompanionModelError, generateCompanionStructured, type CompanionModelConfig, type CompanionStructuredModelOptions } from './model';
 import type { TopicUserCanon } from './topic-user-canon';
 import { admitQuantitySourcePremises, buildQuantitySourcePremiseCandidates, quantitySourcePremiseInput,
   quantitySourcePremiseProtocol, quantitySourcePremiseSchema, quantitySourcePremiseSystem, validateQuantitySourcePremises,
@@ -35,6 +35,19 @@ const rolesSchema = z.strictObject({ reviews: z.array(z.strictObject({ candidate
     kind: z.enum(['count', 'member', 'unrelated', 'ambiguous']), reason: z.string().min(1).max(1000) })).max(1000),
   all: z.strictObject({ collection: collectionSchema, voice: voiceSchema, time: timeSchema,
     relation: z.enum(['affirmed_all', 'not_affirmed_all', 'ambiguous']), reason: z.string().min(1).max(1000) }) })).max(1000) });
+
+function repairCollections(schema: z.ZodType): CompanionStructuredModelOptions['repairPreserveCollections'] {
+  if (schema === setsSchema) return [{ path: ['sets'], fields: ['canonIndex', 'entityQuote', 'totalNumberIndex', 'missingOrdinalNumberIndexes'] }];
+  if (schema === quantitySourcePremiseSchema) return [{ path: ['sets'], fields: ['setIndex', 'totalBinding', 'totalEvidenceClauseIndex', 'members'] }];
+  if (schema === quantityClaimsSchema) return [
+    { path: ['clauses'], fields: ['clauseIndex', 'quantities'] },
+    { path: ['allProjections'], fields: ['clauseIndex', 'setIndex', 'projection'] },
+    { path: ['numberProjections'], fields: ['clauseIndex', 'setIndex', 'numberIndex', 'projection'] },
+  ];
+  if (schema === rolesSchema) return [{ path: ['reviews'], fields: ['candidateIndex', 'numbers', 'all'] }];
+  if (schema === quantityDisjointWaiverSchema) return [{ path: ['reviews'], fields: ['checkIndex', 'verdict', 'basis', 'evidenceRefs', 'targetScopeComplete', 'assertionEvidenceIds'] }];
+  throw new Error('数量审查阶段未注册格式修复守恒合同。');
+}
 type QuantitySet = VerifiedQuantitySourceSet;
 const cache = new Map<string, { sets: QuantitySet[]; receipt: QuantitySourcePremiseReview }>();
 const formatPathKeys = new Set(['sets', 'canonIndex', 'entityQuote', 'totalNumberIndex', 'missingOrdinalNumberIndexes', 'clauses', 'clauseIndex',
@@ -147,8 +160,10 @@ export async function reviewTopicSourceQuantities(input: TopicSourceQuantityRevi
             ...(feedback ? { formatCorrection: feedback } : {}) }) };
         if (purpose.endsWith('_source_premise_verification') || purpose.endsWith('_semantic_exemption_verification') || purpose.endsWith('_actual_claims')) context.system = system;
         const value = schema.parse(alternate ? await alternate(context, input.signal)
-          : await generateCompanionStructured(context, input.config, input.signal, { fetchFn: input.fetchFn, timeoutMs: 120000 })); validate(value); return value;
+          : await generateCompanionStructured(context, input.config, input.signal, { fetchFn: input.fetchFn, timeoutMs: 120000, responseSchema: schema,
+            repairPreserveCollections: repairCollections(schema) })); validate(value); return value;
       } catch (error) {
+        if (error instanceof CompanionModelError && error.diagnostic === 'structured_repair_exhausted') throw error;
         if (input.signal?.aborted || error instanceof CompanionModelError && error.code !== 'INVALID_RESPONSE') throw error;
         if (attempt === 2) throw new CompanionModelError('INVALID_RESPONSE', kind === 'reply'
           ? '正文数量来源/实际片段分类不能完整核验，未发布正文。' : '摘要数量来源/实际片段分类不能完整核验，未推进水位。');

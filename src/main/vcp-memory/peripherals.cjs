@@ -118,6 +118,7 @@ class VcpMemoryPeripherals {
     this.ownerPrompts = configuration.ownerPrompts;
     this.events = [];
     this.contextReferences = [];
+    this.nativeSources = [];
     this.contextSourceRows = new Map();
     this.contextSourceRowsByName = new Map();
     this.observedCalls = Object.create(null);
@@ -170,7 +171,7 @@ class VcpMemoryPeripherals {
     this.preprocessReceipts.set(key, { serialized, bytes });
     this.preprocessReceiptBytes += bytes;
   }
-  beginContext() { this.contextReferences = []; this.contextSourceRows = new Map(); this.contextSourceRowsByName = new Map(); this.unmappedContextSources = 0; this.observeRawContextOutput = false; }
+  beginContext() { this.contextReferences = []; this.nativeSources = []; this.contextSourceRows = new Map(); this.contextSourceRowsByName = new Map(); this.unmappedContextSources = 0; this.observeRawContextOutput = false; }
   observeCandidateRows(values, dbName) {
     for (const [index, row] of (values || []).entries()) {
       const text = typeof row.text === 'string' ? row.text.trim() : '';
@@ -193,6 +194,10 @@ class VcpMemoryPeripherals {
       if (!id || typeof row.text !== 'string') { this.unmappedContextSources++; continue; }
       const reference = { id, role, sourceFile, textHash: createHash('sha256').update(row.text.trim()).digest('hex') };
       if (!this.contextReferences.some(item => item.id === id && item.role === role && item.textHash === reference.textHash)) this.contextReferences.push(reference);
+      // Capture the unchanged bytes at the actual raw formatter boundary.
+      // A chunk hash cannot be authenticated against only the whole-note hash.
+      if (role === 'returned' && !this.nativeSources.some(item => item.id === id && item.textHash === reference.textHash))
+        this.nativeSources.push({ id, textHash: reference.textHash, text: row.text.trim() });
     }
   }
   observeFocusFiles(files) {
@@ -241,7 +246,6 @@ class VcpMemoryPeripherals {
         if (!['http:', 'https:'].includes(url.protocol)) throw new Error('Invalid VCP chat endpoint.');
         Object.assign(process.env, { AIMemoModel: chat.model, AIMemoApi: chat.apiKey,
           AIMemoUrl: `${url.toString().replace(/\/+$/u, '').replace(/\/v1$/u, '')}/`,
-          AIMemoBatch: '2', AIMemoMaxTokensPerBatch: '18000',
           AIMEMO_CACHE_MAX_SIZE: '32', AIMEMO_CACHE_TTL_MS: '60000' });
       }
       await this.queryEnvironment(() => plugin.initialize(config, { ...dependencies,
@@ -365,7 +369,8 @@ class VcpMemoryPeripherals {
             month: current.month, owner: this.timelineOwner, systemSuffix } : undefined;
           const base = url.toString().replace(/\/+$/u, '').replace(/\/v1$/u, '');
           const response = await fetch(`${base}/v1/chat/completions`, { method: 'POST',
-            headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${chat.apiKey}` },
+            headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${chat.apiKey}`,
+              ...(this.timelineDispatchToken ? { 'X-WorldlineBox-Native-Dispatch': this.timelineDispatchToken } : {}) },
             body: JSON.stringify({ model: chat.model, stream: false, max_tokens: maxTokens, ...(nativePrompt ? { nativePrompt } : {}),
               messages: [{ role: 'system', content: systemPrompt + systemSuffix }, { role: 'user', content: userPrompt }] }) });
           if (!response.ok) throw new Error(`Timeline chat model returned ${response.status}.`);
@@ -407,7 +412,8 @@ class VcpMemoryPeripherals {
     const modes = {
       river: mode(true, true, 'native_search_and_context', 'local_native_graph_query', 'river'),
       active: mode(true, true, 'LightMemo', 'query_embedding_and_native_query', 'LightMemo'),
-      passive: mode(!!this.configuration.chat, true, 'RAGDiaryPlugin::RiverMemo::AIMemo+', 'query_embedding_and_focusing_model', 'RAGDiaryPlugin', '尚未配置全局聚焦模型。'),
+      passive: mode(true, true, 'RAGDiaryPlugin::RiverMemo', 'query_embedding_and_native_query', 'RAGDiaryPlugin'),
+      focus: mode(!!this.configuration.chat, false, 'explicit_AIMemo+', 'additional_focusing_model_request', 'RAGDiaryPlugin', '尚未配置此伙伴的聚焦模型。'),
       time: mode(typeof rag._getTimeRangeFilePathsCached === 'function', false, 'preprocess_suffix_only', 'additional_temporal_candidates', 'time', '原版时间候选接口不可用。'),
       time_decay: mode(typeof rag._applyTimeDecay === 'function', true, 'passive_context_policy_or_explicit_suffix', 'local_candidate_postprocessing', 'time_decay', '原版时间衰减接口不可用。'),
       semantic_group: mode(groupNames.length > 0, false, 'preprocess_suffix_only', 'configured_group_vectors_and_query_enhancement', 'semantic_group', '尚无内容与当前向量空间均已就绪的语义组。', groupNames),
@@ -450,7 +456,7 @@ class VcpMemoryPeripherals {
       contextReferenceCoverage: this.unmappedContextSources ? 'partial' : 'observed' };
   }
   async preprocess(messages, clock, automaticDecay) {
-    if (this.ownerPrompts && recallMarkers(messages).some(marker => /\[\[VCP元思考|::AIMemo(?!\+)|::AIMemo\+:/iu.test(marker)))
+    if (this.ownerPrompts && recallMarkers(messages).some(marker => /\[\[VCP元思考|::AIMemo(?!\+)|::AIMemo\+:(?!:)/iu.test(marker)))
       throw Object.assign(new Error('The owner has no managed prompt for this optional memory mode.'), { code: 'VCP_MEMORY_OWNER_PROMPT_UNAVAILABLE' });
     if (automaticDecay !== undefined && (!automaticDecay || automaticDecay.schema !== 'episodic-v1' || automaticDecay.halfLifeDays !== 180 || automaticDecay.minScore !== 0
       || !Array.isArray(automaticDecay.protectedNoteIds) || automaticDecay.protectedNoteIds.length > this.runtime.records.size
@@ -463,7 +469,9 @@ class VcpMemoryPeripherals {
    * before the original AIMemo network stage, so no generated text or worker
    * pointer is needed after this command releases the physical graph lane. */
   async prepareRecall(messages, clock, automaticDecay) {
-    if (recallMarkers(messages).some(marker => /::Rerank|\[\[VCP元思考|::AIMemo(?!\+)|::AIMemo\+:/iu.test(marker)))
+    // Upstream accepts another :: modifier after AIMemo+. Only a single
+    // colon introduces a named preset, which cannot use this detached path.
+    if (recallMarkers(messages).some(marker => /::Rerank|\[\[VCP元思考|::AIMemo(?!\+)|::AIMemo\+:(?!:)/iu.test(marker)))
       throw Object.assign(new Error('This optional retrieval stage requires isolated preprocessing.'), { code: 'VCP_MEMORY_DETACHED_UNSUPPORTED' });
     const rag = await this.load('RAGDiaryPlugin'), handler = rag.aiMemoHandler;
     const original = handler.processAIMemoPlusAggregated;
@@ -487,7 +495,7 @@ class VcpMemoryPeripherals {
       const receipt = await this.preprocess(messages, clock, automaticDecay);
       if (captureFailure) throw captureFailure;
       const chat = this.configuration.chat;
-      return { schema: 'worldlinebox.prepared-recall-payload', receipt, groups,
+      return { schema: 'worldlinebox.prepared-recall-payload', receipt, groups, nativeSources: structuredClone(this.nativeSources),
         modelIdentity: recallModelIdentity(chat) };
     } finally { handler.processAIMemoPlusAggregated = original; this.preparingDetachedRecall = false; }
   }
@@ -569,10 +577,13 @@ class VcpMemoryPeripherals {
       await this.validateTimelines(plugin);
       const sources = await plugin.discoverMemories(request.agentName, request.options?.startMonth, request.options?.endMonth);
       const previousOwner = this.timelineOwner;
+      const previousDispatchToken = this.timelineDispatchToken;
+      if (request.nativeDispatchToken !== undefined && !/^[a-f0-9-]{36}$/u.test(request.nativeDispatchToken)) throw new Error('Invalid native dispatch capability.');
+      this.timelineDispatchToken = request.nativeDispatchToken;
       this.timelineOwner = request.owner;
       let result;
       try { result = await plugin[request.operation](request.agentName, request.options || {}); }
-      finally { this.timelineOwner = previousOwner; }
+      finally { this.timelineOwner = previousOwner; this.timelineDispatchToken = previousDispatchToken; }
       const dependencies = await this.readDependencies();
       dependencies[request.agentName] ||= {};
       for (const month of result.generated || []) dependencies[request.agentName][month] = this.sourcesDigest(request.agentName, month, sources.get(month) || []);

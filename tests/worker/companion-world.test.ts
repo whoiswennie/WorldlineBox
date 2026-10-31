@@ -249,15 +249,16 @@ describe('one authoritative companion world', () => {
         expect(guest.sceneId).toBe(host.sceneId);
         tool(f.store, f.alice, { action: 'social', targetCompanionId: 'bob', text: '你好', kind: 'greet' });
         const relation = f.store.request({ type: 'world.snapshot' }).world!.relationships.find(relation => relation.companionId === 'alice')!;
-        expect(relation.affinity).toBe(50);
-        expect(relation.trust).toBe(50);
+        expect(relation.interactions).toBeGreaterThan(0);
+        expect(relation).not.toHaveProperty('affinity');
+        expect(relation).not.toHaveProperty('trust');
         const job = f.store.request({ type: 'world.job.claim', kind: 'decision' }).worldJob!;
         expect(job.leaseToken).toBeTruthy();
         expect(f.store.request({ type: 'world.job.claim', kind: 'decision' }).worldJob?.id).not.toBe(job.id);
         expect(() => f.store.request({ type: 'world.job.complete', id: job.id, leaseToken: 'wrong' })).toThrow('租约');
         const scope = { companionId: job.companionId, conversationId: job.conversationId };
         const observed = f.store.request({ type: 'memory.world_query', ...scope, category: 'contacts', query: 'alice' }).memorySources![0]!;
-        const note = f.store.request({ type: 'memory.record', ...scope, candidate: { content: '刚才查询了联系人目录。', tags: ['联系人'], sourceMessageIds: [observed.id], evidence: [{ sourceMessageId: observed.id, quote: observed.content }] } }).memories![0]!;
+        const note = f.store.request({ type: 'memory.record', ...scope, candidate: { artifactKind: 'episode_memory' as const, content: '刚才查询了联系人目录。', tags: ['联系人'], sourceMessageIds: [observed.id], evidence: [{ sourceMessageId: observed.id, quote: observed.content }] } }).memories![0]!;
         indexNotes(f.store);
         const previous = f.store.request({ type: 'memory.snapshot', ...scope }).memorySnapshot!.revision;
         f.store.request({ type: 'memory.forget', ...scope, id: note.id });
@@ -296,8 +297,8 @@ describe('one authoritative companion world', () => {
             expect(f.store.request({ type: 'memory.sources.filter', ...scope, ids: [message.id] }).memorySources).toHaveLength(1);
         expect(f.store.state().conversations.some(conversation => conversation.id === message.conversationId)).toBe(false);
         const after = f.store.request({ type: 'state.get', ...f.alice }).runtimeState!;
-        expect(after.relationship).toEqual(before.relationship);
-        expect(after.familiarity).toEqual(before.familiarity);
+        expect(after.relationshipRecords.filter(record => record.targetId === 'user')).toEqual(before.relationshipRecords.filter(record => record.targetId === 'user'));
+        expect(after).not.toHaveProperty('familiarity');
         f.store.request({ type: 'memory.forget', ...f.alice, sourceMessageIds: [message.id] });
         expect(f.store.request({ type: 'world.observe', ...f.alice }).world!.events.some(item => item.id === event.id)).toBe(false);
         expect(f.store.request({ type: 'world.observe', ...f.bob }).world!.events.some(item => item.id === event.id)).toBe(true);
@@ -307,7 +308,7 @@ describe('one authoritative companion world', () => {
         vi.setSystemTime('2026-10-14T02:00:00Z');
         const f = fixture();
         const source = f.store.appendMessage({ conversationId: f.alice.conversationId, authorId: 'user', content: '我们今天一起完成读书计划。' });
-        const memory = f.store.request({ type: 'memory.record', ...f.alice, candidate: { content: source.content,
+        const memory = f.store.request({ type: 'memory.record', ...f.alice, candidate: { artifactKind: 'episode_memory' as const, content: source.content,
                 sourceMessageIds: [source.id], evidence: [{ sourceMessageId: source.id, quote: source.content }] } }).memories![0]!;
         indexNotes(f.store);
         expect(f.store.request({ type: 'world.job.claim', kind: 'dream' }).worldJob).toBeUndefined();
@@ -323,11 +324,11 @@ describe('one authoritative companion world', () => {
         f.store.request({ type: 'memory.forget', ...f.alice, sourceMessageIds: [source.id] });
         expect(f.store.request({ type: 'world.observe', ...f.alice }).world!.events.some(event => event.kind === 'dream')).toBe(false);
     });
-    it('keeps a terminal maintenance failure fenced across later body sleep episodes', () => {
+    it('keeps a parked maintenance failure fenced across later body sleep episodes', () => {
         vi.setSystemTime('2026-10-14T02:00:00Z');
         const f = fixture('realtime');
         const source = f.store.appendMessage({ conversationId: f.alice.conversationId, authorId: 'alice', content: '一次真实读书经历，尚未反思整理。', replyDirective: 'none' });
-        f.store.request({ type: 'memory.record', ...f.alice, candidate: { content: source.content, sourceMessageIds: [source.id], evidence: [{ sourceMessageId: source.id, quote: source.content }] } });
+        f.store.request({ type: 'memory.record', ...f.alice, candidate: { artifactKind: 'episode_memory' as const, content: source.content, sourceMessageIds: [source.id], evidence: [{ sourceMessageId: source.id, quote: source.content }] } });
         indexNotes(f.store); advance(f.store, 10000); advance(f.store, 6000);
         const failed = f.store.request({ type: 'world.job.claim', kind: 'dream' }).worldJob!;
         f.store.request({ type: 'world.job.fail', id: failed.id, leaseToken: failed.leaseToken!, error: '当前来源不可拆分，需要处理', terminal: true });
@@ -338,13 +339,15 @@ describe('one authoritative companion world', () => {
         advance(f.store, 180001); expect(f.store.request({ type: 'world.job.claim', kind: 'dream' }).worldJob).toBeUndefined();
         let routine = f.store.request({ type: 'routine.get', ...f.alice }).routine!;
         f.store.request({ type: 'routine.configure', ...f.alice, expectedRevision: routine.revision, patch: { sleepAt: '23:00', wakeAt: '01:00' } });
-        advance(f.store, 20000); expect(inspect()).toMatchObject({ status: 'failed', terminal: true });
+        advance(f.store, 20000); expect(inspect()).toMatchObject({ status: 'parked' });
+        expect(f.store.request({ type: 'jobs.inspect', ownerId: failed.companionId, kind: 'world', id: failed.id }).jobDisposition).toMatchObject({ state: 'parked', failureCount: 1, cycleFailureCount: 1 });
         routine = f.store.request({ type: 'routine.get', ...f.alice }).routine!;
         f.store.request({ type: 'routine.configure', ...f.alice, expectedRevision: routine.revision, patch: { sleepAt: '01:00', wakeAt: '03:00' } });
         advance(f.store, 20000); advance(f.store, 6000);
         const next = f.store.request({ type: 'world.job.claim', kind: 'dream' }).worldJob!;
         expect(next).toBeUndefined();
-        expect(inspect()).toMatchObject({ status: 'failed', terminal: true });
+        expect(inspect()).toMatchObject({ status: 'parked' });
+        expect(f.store.request({ type: 'jobs.inspect', ownerId: failed.companionId, kind: 'world', id: failed.id }).jobDisposition).toMatchObject({ state: 'parked', failureCount: 1, cycleFailureCount: 1 });
     });
     it('checks the dream job policies across every owned source domain before committing its private review', () => {
         vi.spyOn(Math, 'random').mockReturnValue(.1);
@@ -352,7 +355,7 @@ describe('one authoritative companion world', () => {
         const f = fixture(), group = f.store.createConversation('本人见证的群经历', ['alice', 'bob']);
         const source = f.store.appendMessage({ conversationId: group.id, authorId: 'user', content: '今天在群里约好一起读书。' });
         const note = f.store.request({ type: 'memory.record', companionId: 'alice', conversationId: group.id,
-            candidate: { content: source.content, tags: ['读书'], sourceMessageIds: [source.id], evidence: [{ sourceMessageId: source.id, quote: source.content }] } }).memories![0]!;
+            candidate: { artifactKind: 'episode_memory' as const, content: source.content, tags: ['读书'], sourceMessageIds: [source.id], evidence: [{ sourceMessageId: source.id, quote: source.content }] } }).memories![0]!;
         indexNotes(f.store); advance(f.store, 10000); advance(f.store, 6000);
         const job = f.store.request({ type: 'world.job.claim', kind: 'dream' }).worldJob!;
         const scope = { companionId: job.companionId, conversationId: job.conversationId };
@@ -415,7 +418,7 @@ describe('one authoritative companion world', () => {
         const ids: string[] = [];
         for (let index = 0; index < 25; index++) {
             const source = f.store.appendMessage({ conversationId: f.alice.conversationId, authorId: 'user', content: '真实测试事实条目' + index });
-            ids.push(f.store.request({ type: 'memory.record', ...f.alice, candidate: { content: source.content,
+            ids.push(f.store.request({ type: 'memory.record', ...f.alice, candidate: { artifactKind: 'episode_memory' as const, content: source.content,
                     sourceMessageIds: [source.id], evidence: [{ sourceMessageId: source.id, quote: source.content }] } }).memories![0]!.id);
         }
         indexNotes(f.store);

@@ -11,6 +11,7 @@ export function companionProgressMessage(event: CompanionReplyStreamEvent, state
   if (topicId !== undefined && (identity.topicId ?? null) !== topicId) return;
   const source = messages.find(item => item.id === event.sourceMessageId);
   const existing = messages.find(item => item.id === event.messageId);
+  if (source?.audience === 'agenda' || existing?.audience === 'agenda') return;
   const existingSource = existing?.replyToId ?? existing?.replyProgress?.sourceMessageId;
   if (existing && (existing.conversationId !== conversationId || existing.authorId !== event.companionId || existingSource !== event.sourceMessageId || existing.sequence !== identity.sequence || (existing.topicId ?? null) !== (identity.topicId ?? null))) return;
   const work = state.queue?.find(item => item.id === progress.workId);

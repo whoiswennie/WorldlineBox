@@ -52,15 +52,16 @@ describe('independent world cross-layer regression review', () => {
     expect(world.actors.find(actor => actor.companionId === 'alice')!.sceneId).not.toBe('home_bob');
     expect(world.visits[0]!.status).toBe('expired');
   });
-  it('preserves the compressed start and realigns the world to computer time on returning to realtime', () => {
+  it('preserves real elapsed time and fixed reminders across display time-zone changes', () => {
     const f = fixture(), initial = f.store.request({ type: 'world.snapshot' }).world!;
     const schedule = f.store.request({ type: 'schedule.create', ...f.alice, entries: [{ title: '固定提醒', prompt: '提醒喝水', kind: 'reminder', runAt: '2026-10-14T11:00:00Z' }] }).schedules![0]!;
     advance(f.store, 30000);
     const realBefore = f.store.request({ type: 'world.snapshot' }).world!;
-    const fast = f.store.request({ type: 'world.configure', expectedRevision: initial.settings.revision, patch: { mode: 'compressed', dayDurationMinutes: 20 } }).world!;
-    expect(fast.clock.virtualNow).toBe(realBefore.clock.virtualNow);
-    advance(f.store, 60000);
-    const sync = f.store.request({ type: 'world.configure', expectedRevision: fast.settings.revision, patch: { mode: 'realtime' } }).world!;
+    const changed = f.store.request({ type: 'world.configure', expectedRevision: initial.settings.revision, patch: { timeZone: 'Asia/Shanghai' } }).world!;
+    expect(changed.clock.virtualNow).toBe(realBefore.clock.virtualNow); expect(changed.clock.speed).toBe(1);
+    const elapsed = advance(f.store, 60000);
+    expect(Date.parse(elapsed.clock.virtualNow) - Date.parse(realBefore.clock.virtualNow)).toBe(60000);
+    const sync = f.store.request({ type: 'world.configure', expectedRevision: changed.settings.revision, patch: { timeZone: 'UTC' } }).world!;
     expect(sync.clock.virtualNow).toBe(new Date().toISOString());
     expect(f.store.request({ type: 'schedule.list', ...f.alice }).schedules![0]).toMatchObject({ id: schedule.id, nextRunAt: '2026-10-14T11:00:00.000Z' });
     expect(f.store.request({ type: 'schedule.due.claim' }).scheduleOccurrence).toBeUndefined();

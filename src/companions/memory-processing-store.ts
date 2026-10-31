@@ -1,5 +1,7 @@
 import type { CompanionConnection } from './store';
 import { companionMemoryStatistics, initializeCompanionMemoryStatistics } from './memory-statistics-store';
+import { companionQueueJobAdapter } from './job-control-store';
+import { readTimelineJobDisposition } from './task-detail-store';
 import { MEMORY_PROCESSING_TRIGGERS, MEMORY_SCHEDULE_EXPLANATION,
   type CompanionMemoryJobSchedule, type CompanionMemoryProcessing, type CompanionMemoryProcessingFilter, type CompanionMemoryProcessingJob } from '../shared/companion-memory-processing';
 
@@ -31,13 +33,11 @@ function queueSchedule(kind: Kind, item: Row, status: CompanionMemoryProcessingJ
     waitingReason: 'queue', condition: '已进入队列，等待主进程下一轮检查；存储队列本身不掌握主进程定时器。' };
   if (['completed', 'cancelled', 'stale'].includes(status)) return { ...base, scheduleKind: 'finished', waitingReason: undefined,
     condition: status === 'completed' ? '本次任务已结束；来源或文档再次变化才会产生新的整理任务。' : '本次任务已停止，不会自动执行旧版本。' };
-  if (status === 'running' && item.lease_until && item.lease_until <= context.now && item.attempts >= 8) return { ...base, scheduleKind: 'manual', waitingReason: 'retry_limit',
-    condition: '上次处理租约已经过期，且八次自动尝试已耗尽。请检查错误后点击“重试失败的整理”，不会中断有效的运行任务。' };
+  if (status === 'parked' || status === 'abandoned') return { ...base, scheduleKind: status === 'parked' ? 'manual' : 'finished', waitingReason: status,
+    condition: status === 'parked' ? '本次处理已搁置，自动检查不会解封；核对原事件和错误后，可以明确恢复一个有界重试周期。' : '用户已明确放弃本次处理；原始事件和证据保留，不标记为成功，也不自动恢复。' };
   if (status === 'running') return item.lease_until && item.lease_until <= context.now
     ? { ...base, waitingReason: 'lease_expired', condition: '上次处理的租约已过期，等待下一轮领取时回收并核验；租约到期不是完成时间。' }
     : { ...base, scheduleKind: 'running', waitingReason: undefined, condition: '任务已经领取并正在处理，完成时间取决于模型和实际内容。' };
-  if (item.attempts >= 8 && status !== 'waiting_model') return { ...base, scheduleKind: 'manual', waitingReason: 'retry_limit',
-    condition: '自动尝试次数已达到八次上限。请检查模型与错误原因后，点击“重试失败的整理”。' };
   const nextAttemptAt = item.next_attempt > 0 ? new Date(item.next_attempt).toISOString() : undefined;
   const eligible = { ...base, ...(nextAttemptAt ? { nextAttemptAt } : {}) };
   if ((kind === 'capture' || kind === 'tags') && context.resetting) return { ...eligible, waitingReason: 'reset_in_progress', condition: '伙伴正在重置，队列不会领取新任务。请先完成或重试伙伴重置。' };
@@ -56,7 +56,7 @@ function job(kind: Kind, item: Row, context: QueueContext): CompanionMemoryProce
   const title = kind === 'capture' ? '整理聊天与经历' : kind === 'tags' ? '整理文档标签' : item.operation === 'forget' ? '撤回记忆索引' : '建立记忆索引';
   const stage = status === 'running' ? kind === 'capture' ? '正在理解来源并判断哪些内容值得记录' : kind === 'tags' ? '正在根据原文整理标签' : item.operation === 'forget' ? '正在从检索中撤回记忆' : '正在生成向量并写入 VCP 索引'
     : status === 'completed' ? kind === 'capture' ? '来源已处理；是否写成日记由内容价值决定' : kind === 'tags' ? '标签整理已完成' : item.operation === 'forget' ? '记忆已退出检索' : '索引投递已完成'
-      : status === 'waiting_model' ? '等待可用的全局聊天模型' : status === 'failed' ? item.attempts >= 8 ? '自动重试次数已用尽，可手动重试' : '处理失败，等待重试' : status === 'stale' ? '文档或来源已变化，旧任务不再发布'
+      : status === 'waiting_model' ? '等待可用的全局聊天模型' : status === 'parked' ? '处理已搁置，等待明确处置' : status === 'abandoned' ? '本次处理已明确放弃，原事件保留' : status === 'failed' ? '处理失败，等待有界重试' : status === 'stale' ? '文档或来源已变化，旧任务不再发布'
         : status === 'cancelled' ? '任务已取消' : '已排队，等待后台处理';
   const schedule = queueSchedule(kind, item, status, context);
   return { id: item.id, kind, status, title, stage, attempts: item.attempts, schedule,
@@ -77,7 +77,7 @@ export function memoryProcessingStatus(db: CompanionConnection, companionId: str
     resetting: !!db.prepare("SELECT 1 FROM companion_reset_jobs WHERE companion_id=? AND status!='completed'").get(companionId),
     scopeBusy: (scope, id) => !!db.prepare("SELECT 1 FROM vcp_memory_outbox WHERE scope_id=? AND id!=? AND status='running' AND lease_until>? LIMIT 1").get(scope, id, Date.now()) };
   const bound = Math.min(50, Math.max(1, Math.floor(limit)));
-  const summary = { pending: 0, running: 0, failed: 0, completed: 0, cancelled: 0 };
+  const summary = { pending: 0, running: 0, failed: 0, parked: 0, abandoned: 0, completed: 0, cancelled: 0 };
   const candidates: Array<{ item: CompanionMemoryProcessingJob; ordinal: number }> = [];
   let matching = 0;
   for (const kind of Object.keys(tables) as Kind[]) {
@@ -92,10 +92,27 @@ export function memoryProcessingStatus(db: CompanionConnection, companionId: str
     // The equality on status keeps each LIMIT on a matching owner/status/time index,
     // even when a companion has years of completed queue history.
     for (const state of counts.map(entry => entry.status)) {
-      if (!(filter === 'all' || filter === 'active' && ['pending', 'running', 'waiting_model'].includes(state) || filter === 'failed' && state === 'failed' || filter === 'completed' && ['done', 'completed'].includes(state))) continue;
+      if (!(filter === 'all' || filter === 'active' && ['pending', 'running', 'waiting_model'].includes(state) || filter === 'failed' && ['failed', 'parked'].includes(state)
+        || filter === 'parked' && state === 'parked' || filter === 'abandoned' && state === 'abandoned' || filter === 'completed' && ['done', 'completed'].includes(state))) continue;
       matching += counts.find(entry => entry.status === state)!.n;
       const found = db.prepare(`SELECT ${columns} FROM ${table} WHERE companion_id=? AND status=? ORDER BY updated_at DESC,ordinal DESC LIMIT ?`).all(companionId, state, bound + 1) as Row[];
-      for (const entry of found) candidates.push({ item: job(kind, entry, context), ordinal: entry.ordinal });
+      const adapter = companionQueueJobAdapter(db, table);
+      for (const entry of found) candidates.push({ item: { ...job(kind, entry, context), disposition: adapter.read(companionId, entry.id) }, ordinal: entry.ordinal });
+    }
+  }
+  const timelineCounts = db.prepare('SELECT status,COUNT(*) AS n FROM companion_task_timeline_jobs WHERE companion_id=? GROUP BY status').all(companionId) as Array<{ status: CompanionMemoryProcessingJob['status']; n: number }>;
+  for (const entry of timelineCounts) {
+    const key = entry.status === 'stale' ? 'cancelled' : entry.status === 'waiting_model' ? 'pending' : entry.status;
+    if (key in summary) summary[key as keyof typeof summary] += entry.n;
+    if (!(filter === 'all' || filter === 'active' && ['pending', 'running', 'waiting_model'].includes(entry.status)
+      || filter === 'failed' && ['failed', 'parked'].includes(entry.status) || filter === 'parked' && entry.status === 'parked'
+      || filter === 'abandoned' && entry.status === 'abandoned' || filter === 'completed' && entry.status === 'completed')) continue;
+    matching += entry.n;
+    const found = db.prepare('SELECT id,data FROM companion_task_timeline_jobs WHERE companion_id=? AND status=? ORDER BY updated_at DESC,id DESC LIMIT ?')
+      .all(companionId, entry.status, bound + 1) as Array<{ id: string; data: string }>;
+    for (const row of found) {
+      const value = JSON.parse(row.data) as CompanionMemoryProcessingJob;
+      candidates.push({ item: { ...value, status: entry.status, disposition: readTimelineJobDisposition(db, companionId, row.id) }, ordinal: 0 });
     }
   }
   const priority = (value: CompanionMemoryProcessingJob) => value.status === 'running' ? 0 : ['pending', 'waiting_model', 'failed'].includes(value.status) ? 1 : 2;

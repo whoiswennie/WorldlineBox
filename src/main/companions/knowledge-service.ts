@@ -92,7 +92,8 @@ export class CompanionKnowledgeService {
     }
     const library = (await this.options.request({ type: 'memory.library.read', companionId: scope.companionId, id, sourceLimit: 100 })).memoryRead?.memory;
     const scoped = (await this.options.request({ type: 'memory.read', ...scope, id, sourceLimit: 100 })).memoryRead?.memory;
-    if (!library || !scoped || (library.contentRevision ?? library.version) !== (scoped.contentRevision ?? scoped.version) || library.content !== scoped.content) throw new Error('资料笔记已变化或不属于当前可见来源。');
+    if (!library || !scoped || !['knowledge', 'procedure'].includes(library.artifactKind) || library.artifactKind !== scoped.artifactKind
+      || (library.contentRevision ?? library.version) !== (scoped.contentRevision ?? scoped.version) || library.content !== scoped.content) throw new Error('资料笔记不是知识或方法类型、已变化或不属于当前可见来源。');
     const contentRevision = library.contentRevision ?? library.version;
     return { id: `cold_memory_${hash(id).slice(0, 48)}`, sourceId: id, sourceType: type,
       sourceDigest: hash(JSON.stringify({ content: library.content, contentRevision, sources: library.sources })), sourceVersion: String(contentRevision),

@@ -1,5 +1,6 @@
-import { existsSync, statSync } from 'node:fs';
+import { createReadStream, existsSync, statSync } from 'node:fs';
 import { spawn } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 
@@ -34,16 +35,26 @@ for (const [label, candidate] of [['library', library], ['second-library', secon
 
 const reportPath = process.env.WORLDLINEBOX_NAV_BENCH_OUT
   ?? path.join(tmpdir(), `worldlinebox-nav-bench-${Date.now()}.json`);
+let packagedAsarSha256;
+if (process.env.WORLDLINEBOX_E2E_PACKAGED_EXECUTABLE) {
+  const archive = path.join(path.dirname(path.resolve(process.env.WORLDLINEBOX_E2E_PACKAGED_EXECUTABLE)), 'resources', 'app.asar');
+  const digest = createHash('sha256');
+  for await (const bytes of createReadStream(archive)) digest.update(bytes);
+  packagedAsarSha256 = digest.digest('hex');
+}
 
 const child = spawn(process.execPath, [
   'scripts/run-e2e.mjs',
-  'tests/e2e/navigation-perf-benchmark.test.ts',
+  process.env.WORLDLINEBOX_NAV_BENCH_MODULES_ONLY === '1'
+    ? 'tests/e2e/module-navigation-perf-benchmark.test.ts'
+    : 'tests/e2e/navigation-perf-benchmark.test.ts',
 ], {
   env: {
     ...process.env,
     WORLDLINEBOX_NAV_BENCH_LIBRARY: path.resolve(library),
     ...(secondLibrary ? { WORLDLINEBOX_NAV_BENCH_LIBRARY_B: path.resolve(secondLibrary) } : {}),
     WORLDLINEBOX_NAV_BENCH_OUT: reportPath,
+    ...(packagedAsarSha256 ? { WORLDLINEBOX_NAV_BENCH_ASAR_SHA256: packagedAsarSha256 } : {}),
   },
   stdio: 'inherit',
 });

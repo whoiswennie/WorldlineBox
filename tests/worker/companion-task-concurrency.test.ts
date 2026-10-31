@@ -26,6 +26,20 @@ it('admits three independent jobs across private/group entrances and keeps the f
   expect(policy()).toMatchObject({ limit: 3, active: 3, queued: 1 });
 });
 
+it('claims an older steer inbox entry as its own task while another reply is running', () => {
+  const first = queued('current'); expect(store.request({ type: 'work.claim' }).work?.id).toBe(first.id);
+  const source = store.appendMessage({ conversationId: first.conversationId, authorId: 'user', content: '另一条独立消息', replyDirective: 'none' });
+  store.request({ type: 'work.enqueue', work: { id: 'legacy-steer', companionId: 'alice', conversationId: first.conversationId,
+    sourceMessageId: source.id, status: 'queued', proactive: false, inputMode: 'steer',
+    createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() } });
+  const next = store.request({ type: 'work.claim' }).work;
+  expect(next?.id).toBe('legacy-steer');
+  const initial = store.request({ type: 'loop.get', sourceMessageId: first.sourceMessageId, companionId: 'alice' }).loop!;
+  const independent = store.request({ type: 'loop.get', sourceMessageId: source.id, companionId: 'alice' }).loop!;
+  expect(independent.messageId).toBeTruthy(); expect(independent.messageId).not.toBe(initial.messageId);
+  expect(initial.supplements).toEqual([]); expect(independent.supplements).toEqual([]);
+});
+
 it('reduces future admission without killing running work and preserves the owner policy across restart', () => {
   for (const id of ['one', 'two', 'three', 'four']) queued(id);
   for (let n = 0; n < 3; n++) store.request({ type: 'work.claim' });

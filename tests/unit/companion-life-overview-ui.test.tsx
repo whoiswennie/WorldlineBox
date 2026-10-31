@@ -59,6 +59,29 @@ it('replaces bounded pages and uses the backend filter instead of retaining ever
   expect(node!.querySelector('[role="tab"][aria-selected="true"]')?.textContent).toBe('需关注');
 });
 
+it('keeps an empty life feed as one compact icon-and-copy block and omits pointless single-page controls', async () => {
+  const request = vi.fn<ScheduleRequest>(async () => ({ ok: true, lifeOverview: overview(alice.id, []) }));
+  await mount(request);
+  const feed = node!.querySelector('.life-overview-feed')!, empty = feed.querySelector('[role="status"]')!;
+  expect(empty.classList.contains('life-overview-empty')).toBe(true);
+  expect(empty.querySelector('.life-overview-empty-symbol > svg')).not.toBeNull();
+  expect(empty.querySelector('.life-overview-empty-copy h3')?.textContent).toBe('生活正在慢慢展开');
+  expect(empty.querySelector('.life-overview-empty-copy p')?.textContent).toContain('新的安排与真实经历');
+  expect(feed.querySelector('.life-overview-pagination')).toBeNull();
+  expect(feed.textContent).not.toContain('第 1 页');
+});
+
+it('keeps back navigation available when a later page becomes empty', async () => {
+  const request = vi.fn<ScheduleRequest>(async command => command.type === 'life.overview.status' && command.cursor
+    ? { ok: true, lifeOverview: overview(alice.id, []) }
+    : { ok: true, lifeOverview: { ...overview(), hasMore: true, nextCursor: 'later-page' } });
+  await mount(request); await act(async () => button('下一页').click());
+  expect(node!.querySelectorAll('[data-life-item]')).toHaveLength(0);
+  expect(button('上一页').disabled).toBe(false);
+  await act(async () => button('上一页').click());
+  expect(node!.querySelector('[data-life-item]')).not.toBeNull();
+});
+
 it('never displays the previous companion under a new identity or accepts another owner memory projection', async () => {
   let finishBob!: (value: { ok: true; lifeOverview: Overview }) => void;
   const request = vi.fn<ScheduleRequest>(async command => command.type === 'life.overview.status' && command.companionId === bob.id
@@ -91,7 +114,7 @@ it('keeps probabilistic life windows distinct from a guaranteed task and exposes
 });
 
 it('does not mistake an expired persistent running lease for a live memory model task', async () => {
-  const data = overview(); data.memoryProcessing = { companionId: alice.id, hasMore: false, summary: { pending: 0, running: 7, failed: 0, completed: 20, cancelled: 0 }, jobs: [
+  const data = overview(); data.memoryProcessing = { companionId: alice.id, hasMore: false, summary: { pending: 0, running: 7, failed: 0, parked: 0, abandoned: 0, completed: 20, cancelled: 0 }, jobs: [
     { id: 'expired', kind: 'index', title: '海边札记的索引', status: 'running', attempts: 8, stage: '旧阶段：正在生成向量', schedule: {
       scheduleKind: 'manual', timeBasis: 'real', observedAt: at, waitingReason: 'lease_expired', condition: '上次整理已中断，需要手动恢复。', triggerRule: '核验后恢复。', explanation: '不是实时执行中。',
     } },
@@ -103,7 +126,7 @@ it('does not mistake an expired persistent running lease for a live memory model
 });
 
 it('shows one representative condition per memory pipeline while retaining the full backend queue counts', async () => {
-  const data = overview(); data.memoryProcessing = { companionId: alice.id, hasMore: true, summary: { pending: 900, running: 0, failed: 0, completed: 400, cancelled: 0 }, jobs: [
+  const data = overview(); data.memoryProcessing = { companionId: alice.id, hasMore: true, summary: { pending: 900, running: 0, failed: 0, parked: 0, abandoned: 0, completed: 400, cancelled: 0 }, jobs: [
     ...[1, 2, 3].map(index => ({ id: 'capture-' + index, kind: 'capture' as const, status: 'pending' as const, title: '整理聊天与经历', attempts: 0, stage: '等待聊天模型可用' })),
     { id: 'index-1', kind: 'index', status: 'pending', title: '海边日记', attempts: 0, stage: '等待设备检测通过' },
     { id: 'index-2', kind: 'index', status: 'pending', title: '另一篇日记', attempts: 0, stage: '等待设备检测通过' },

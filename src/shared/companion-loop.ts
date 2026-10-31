@@ -5,6 +5,11 @@ import { companionToolImageReferenceSchema } from './companion-file-tool';
 import { companionTopicNarrativeApprovalSchema as topicNarrativeApprovalSchema, companionTopicPublicationApprovalSchema } from './companion-topic-canon';
 import { COMPANION_SUBMIT_RESULT_TOOL, companionFinalProposalSchema } from './companion-final-proposal';
 import { companionPreparedRecallReferenceSchema } from './companion-prepared-recall';
+import { companionContextFrameSchema } from './companion-cognition';
+import { companionModelUsageStateSchema } from './companion-model-usage';
+import { companionReplyReceivedStateSchema } from './companion-reply-observation';
+import { companionTaskAssetsBlobSchema } from './companion-task-assets-binding';
+import { companionTaskPreparationBlobSchema } from './companion-task-preparation';
 const id = z.string().regex(/^[a-zA-Z0-9_-]{1,100}$/);
 export const companionLoopCallSchema = z.object({ id: z.string().min(1).max(200), name: z.string().max(100), arguments: z.string().max(65536),
   // Opaque provider protocol metadata, never thought text or a memory source.
@@ -19,6 +24,15 @@ export const companionLoopTurnSchema = z.object({ text: z.string().max(65536), r
   proseReviewChecksum: z.string().regex(/^[a-f0-9]{64}$/).optional(),
   /** Host-only final schema binding. Calls and provider body remain intact. */
   finalProposal: companionFinalProposalSchema.optional(),
+  /** Host-only repair ledger. Original provider text and calls remain intact;
+   * successful repaired bytes are separate data, never native tool authority. */
+  structuredRepair: z.strictObject({ originalHash: z.string().regex(/^[a-f0-9]{64}$/u),
+    attempts: z.number().int().min(1).max(2), content: z.string().max(65536).optional(),
+    contentHash: z.string().regex(/^[a-f0-9]{64}$/u).optional(),
+    rootContext: z.strictObject({ system: z.string().max(512 * 1024), user: z.string().max(512 * 1024), frame: companionContextFrameSchema,
+      hash: z.string().regex(/^[a-f0-9]{64}$/u) }).refine(value => JSON.stringify(value).length <= 512 * 1024, '原请求修复凭证超出有界容量。').optional(),
+  }).refine(receipt =>
+    (receipt.content === undefined) === (receipt.contentHash === undefined), '修复正文与校验必须同时存在。').optional(),
   /** Host digest of actual source/evidence versions; never provider metadata. */
   hostProgressKey: z.string().regex(/^[a-f0-9]{64}$/).optional(),
   topicNarrativeApproval: companionTopicNarrativeApprovalSchema.optional(),
@@ -29,6 +43,8 @@ export const companionLoopTurnSchema = z.object({ text: z.string().max(65536), r
     contentChecksum: z.string().regex(/^[a-f0-9]{64}$/u), reason: z.string().min(1).max(16000), rejectedAt: z.string() }).optional(),
   results: z.array(z.object({ callId: z.string().max(200), content: z.string(), images: z.array(companionToolImageReferenceSchema).max(4).optional(), attachmentIds: z.array(id).max(10).optional() })).max(16).optional() })
   .superRefine((turn, context) => {
+    if (turn.structuredRepair && turn.calls.length && !turn.finalProposal)
+      context.addIssue({ code: 'custom', path: ['structuredRepair'], message: '格式修复只能属于最终提案，不能修补或重放原生作用调用。' });
     if (turn.finalProposal && (!turn.calls.some(call => call.id === turn.finalProposal!.callId && call.name === COMPANION_SUBMIT_RESULT_TOOL)
       || new Set(turn.calls.map(call => call.id)).size !== turn.calls.length))
       context.addIssue({ code: 'custom', path: ['finalProposal'], message: '最终提案标记必须绑定本轮真实保留名调用与唯一调用标识。' });
@@ -44,6 +60,12 @@ export const companionLoopWorkingStateSchema = z.strictObject({
   summary: z.string().trim().min(1).max(32000), stage: z.string().max(1000), createdAt: z.string(),
 });
 export const companionLoopCheckpointSchema = z.object({ conversationId: id, sourceMessageId: id, companionId: id, messageId: id.optional(),
+  receivedState: companionReplyReceivedStateSchema.optional(),
+  taskAssets: companionTaskAssetsBlobSchema.optional(),
+  /** Host-only prepared invocation metadata; model messages remain in context. */
+  preparedTask: z.string().min(1).max(4 * 1024 * 1024).optional(),
+  goalPreparation: companionTaskPreparationBlobSchema.optional(),
+  usage: companionModelUsageStateSchema.optional(),
   memoryPreparation: companionPreparedRecallReferenceSchema.optional(),
   authorizationGrantId: id.optional(),
   invocationKey: id.optional(), contextThroughSequence: z.number().int().positive().optional(),
@@ -82,6 +104,9 @@ export function companionLoopCheckpointPublishedText(checkpoint: Pick<CompanionL
   return companionLoopPublishedText(checkpoint.turns.map((turn, index) => index < through ? { ...turn, text: '' } : turn), checkpoint.draft);
 }
 export const companionWorkSchema = z.object({ id, conversationId: id, sourceMessageId: id, companionId: id,
+  receivedState: companionReplyReceivedStateSchema.optional(),
+  // Host-owned parent lease; ordinary chat and its tool children use one slot.
+  agendaRunId: id.optional(), agendaLeaseToken: id.optional(), agendaAttempt: z.number().int().nonnegative().safe().optional(),
   inputMode: z.enum(['steer', 'queue']).optional(),
   messageId: id.optional(), status: z.enum(['queued', 'running', 'interrupted', 'done', 'cancelled']), ordinal: z.number().int().positive().optional(), proactive: z.boolean().default(false),
   resumeOnRestart: z.boolean().optional(), stop: companionUserStopSchema.optional(),

@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { companionJobDispositionSchema, companionJobFailureKindSchema } from './companion-job-control';
 import { companionWorldProposalCommands } from './companion-world-proposals';
 import { companionDreamInvestigationProposalSchema, companionMemoryInvestigationCommands } from './companion-memory-investigation';
 import { companionUserStopSchema } from './companion-task-stop';
@@ -33,8 +34,8 @@ export const companionWorldActorSchema = z.object({ companionId: id, sceneId: id
   artAction: z.enum(COMPANION_WORLD_ART_ACTIONS), artStartedAtReal: z.iso.datetime().optional(),
   transitionEndsAtReal: z.iso.datetime().optional(),
   locomotion: z.enum(['walk', 'run']), movementSpeed: z.number().positive(),
-  state: z.object({ energy: z.number().min(0).max(100), mood: z.enum(['calm', 'bright', 'focused', 'tired', 'low']),
-    expression: z.enum(['gentle', 'direct', 'playful', 'reserved']), affect: z.object({ pleasure: z.number().min(-1).max(1), arousal: z.number().min(-1).max(1), dominance: z.number().min(-1).max(1) }), thermalComfort: z.number().min(0).max(1) }),
+  state: z.strictObject({ energy: z.number().min(0).max(100),
+    expression: z.enum(['gentle', 'direct', 'playful', 'reserved']), thermalComfort: z.number().min(0).max(1) }),
   travel: z.object({ targetSceneId: id, exitId: id, entryId: id }).optional(),
   route: z.array(z.object({ sceneId: id, x: z.number(), y: z.number() })), destinationId: id.optional(), furnitureId: id.optional(),
   routinePhase: z.enum(['awake', 'sleeping', 'eating', 'resting', 'habit']), activityLabel: z.string().optional(),
@@ -53,10 +54,10 @@ export const companionWorldEventSchema = z.object({ id, sequence: z.number().int
   sourceReads: z.array(companionWorldSourceReadSchema).max(128).optional(),
   witnessIds: z.array(id).max(100).optional(),
   behavior: z.object({ id, kind: companionWorldActorSchema.shape.activity, phase: z.enum(['started', 'completed', 'interrupted']), targetId: id.optional(), parentId: id.optional() }).optional(),
-  perception: companionWorldPerceptionSchema.pick({ revision: true, radius: true, visibleObjectIds: true, visibleCompanionIds: true, environment: true }).optional(),
-  effect: z.object({ type: z.enum(['comfort', 'stress', 'shared_success', 'rest', 'social']), intensity: z.number().min(0).max(1) }).optional() });
-export const companionWorldRelationshipSchema = z.object({ companionId: id, targetCompanionId: id, affinity: z.number().min(0).max(100),
-  trust: z.number().min(0).max(100), interactions: z.number().int().nonnegative(), updatedAt: z.iso.datetime() });
+  perception: companionWorldPerceptionSchema.pick({ revision: true, radius: true, visibleObjectIds: true, visibleCompanionIds: true, environment: true }).optional() });
+/** Contact history is a graph, not a psychological score or maturity stage. */
+export const companionWorldRelationshipSchema = z.strictObject({ companionId: id, targetCompanionId: id,
+  interactions: z.number().int().nonnegative(), updatedAt: z.iso.datetime() });
 export const companionWorldWorkSchema = z.object({ workId: id, companionId: id, kind: z.enum(['chat', 'action', 'schedule', 'learning']),
   status: z.enum(['waiting', 'moving', 'seating', 'ready', 'ended']), computerId: id.optional(), nextCheckAt: z.iso.datetime().optional(), reason: z.string().optional() });
 export const companionMemoryMaintenanceAuditSchema = z.strictObject({ decision: z.enum(['merge', 'defer']), reason: z.string().trim().min(1).max(2000),
@@ -73,7 +74,9 @@ export const companionDreamComponentFailureSchema = z.strictObject({ stage: z.en
     if (value.stage !== expected.stage || value.message !== expected.message)
       context.addIssue({ code: 'custom', message: '梦境组件失败只接受宿主固定阶段、代码与说明。' });
   });
-export const companionWorldJobSchema = z.object({ id, kind: z.enum(['decision', 'dream']), companionId: id, conversationId: id, status: z.enum(['pending', 'running', 'done', 'failed']),
+export const companionWorldJobSchema = z.object({ id, kind: z.enum(['decision', 'dream']), companionId: id, conversationId: id, status: z.enum(['pending', 'running', 'done', 'failed', 'parked', 'abandoned', 'cancelled', 'stale']),
+  agendaUncertain: z.boolean().optional(), agendaParentRunId: id.optional(),
+  disposition: companionJobDispositionSchema.optional(),
   stop: companionUserStopSchema.optional(), startedAt: z.iso.datetime().optional(), updatedAt: z.iso.datetime().optional(), finishedAt: z.iso.datetime().optional(),
   terminal: z.boolean().optional(), error: z.string().max(2000).optional(), nextAttemptAt: z.iso.datetime().optional(), admissionDeferred: z.literal(true).optional(),
   leaseToken: id.optional(), throughEventSequence: z.number().int().nonnegative(), createdAt: z.iso.datetime(), attempts: z.number().int().nonnegative(), sourceMemoryIds: z.array(id).max(128).default([]), encounterMemberIds: z.array(id).min(2).max(4).optional(),
@@ -136,8 +139,11 @@ export const companionWorldStorageCommands = [
     learningGrantId: id.optional(), learningLeaseToken: id.optional() }).strict(),
   z.strictObject({ type: z.literal('world.work.ready'), companionId: id, workId: id }),
   z.strictObject({ type: z.literal('world.work.end'), companionId: id, workId: id }),
-  z.strictObject({ type: z.literal('world.job.claim'), kind: z.enum(['decision', 'dream']), excludedCompanionIds: z.array(id).max(100).optional() }),
+  z.strictObject({ type: z.literal('world.job.claim'), kind: z.enum(['decision', 'dream']), excludedCompanionIds: z.array(id).max(100).optional(),
+    companionId: id.optional(), id: id.optional(), agendaRunId: id.optional(), agendaLeaseToken: id.optional(), expectedInputVersion: z.string().regex(/^[a-f0-9]{64}$/u).optional() }),
+  z.strictObject({ type: z.literal('world.job.read'), companionId: id, id }),
   z.strictObject({ type: z.literal('world.job.check'), id, leaseToken: id }),
+  z.strictObject({ type: z.literal('world.job.bind-inputs'), id, leaseToken: id, readset: companionExecutionReadsetSchema }),
   z.strictObject({ type: z.literal('world.job.bind-memories'), id, leaseToken: id,
     memoryVersions: z.array(z.strictObject({ id, version: z.number().int().positive() })).min(1).max(128) }),
   z.strictObject({ type: z.literal('world.job.narrative.begin'), id, leaseToken: id }),
@@ -147,9 +153,8 @@ export const companionWorldStorageCommands = [
     dreamComponentFailure: companionDreamComponentFailureSchema.optional(),
     dream: z.strictObject({ text: z.string().max(8000), sourceMessageIds: z.array(id).min(1).max(30), relatedMemoryIds: z.array(id).min(1).max(30),
       investigations: z.array(companionDreamInvestigationProposalSchema).max(3).optional(),
-      evidence: z.array(z.object({ sourceMessageId: id, quote: z.string().min(1).max(4000) })).min(1).max(60) }).optional(),
-    appraisals: z.array(z.strictObject({ eventId: id, targetCompanionId: id, type: z.enum(['support', 'respect', 'boundary_violation', 'hostility', 'shared_success', 'repair', 'disappointment']), intensity: z.number().min(0).max(1), confidence: z.number().min(0).max(1) })).max(10).default([]) }),
-  z.strictObject({ type: z.literal('world.job.fail'), id, leaseToken: id, error: z.string().max(2000), terminal: z.boolean().optional() }),
-  z.strictObject({ type: z.literal('world.job.defer'), id, leaseToken: id, error: z.string().max(2000), retryAfterMs: z.number().int().min(1000).max(86_400_000) }),
+      evidence: z.array(z.object({ sourceMessageId: id, quote: z.string().min(1).max(4000) })).min(1).max(60) }).optional() }),
+  z.strictObject({ type: z.literal('world.job.fail'), id, leaseToken: id, error: z.string().max(2000), failureKind: companionJobFailureKindSchema.optional(), terminal: z.boolean().optional() }),
+  z.strictObject({ type: z.literal('world.job.defer'), id, leaseToken: id, error: z.string().max(2000), retryAfterMs: z.number().int().min(1000).max(86_400_000), uncertain: z.boolean().optional() }),
   z.strictObject({ type: z.literal('world.job.retry-admission'), companionId: id.optional() }),
 ] as const;

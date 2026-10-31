@@ -249,7 +249,7 @@ it('accepts unused optional nulls as explicit no-ops alongside one actual query,
     const decision = { status: 'continue', action: { action: 'query', category: 'people', query: 'Qwen' }, wait: null, summary: '按原目标查询真实公开人物目录。' };
     expect(data.outputCorrection).toBeUndefined();
     expect(store.request({ type: 'activity.get', companionId: 'alice', conversationId: data.task.conversationId, id: data.task.id }).activityTask?.history).toEqual([]);
-    return response({ ...decision, memory: null, topic: null, planningState: null });
+    return response({ ...decision, topic: null, planningState: null });
   });
   const scope = setup(fetchFn, '先按公开目录了解其他伙伴。');
   await service!.tick();
@@ -261,9 +261,9 @@ it('accepts unused optional nulls as explicit no-ops alongside one actual query,
   const runId = createHash('sha256').update(JSON.stringify(['alice', scope.conversationId, `${scope.task.id}_0`])).digest('hex');
   const run = store.request({ type: 'agent.run.get', companionId: 'alice', id: runId }).agentRun!;
   expect(run.rejectedFinals).toBeUndefined(); expect(run.turns).toHaveLength(1);
-  expect(JSON.parse(run.turns[0]!.rawText)).toMatchObject({ memory: null, topic: null, planningState: null });
+  expect(JSON.parse(run.turns[0]!.rawText)).toMatchObject({ topic: null, planningState: null });
 });
-it('still rejects non-null malformed proposal fields in the original three slots without any effect', async () => {
+it('rejects non-null malformed proposal fields after two global repairs without any effect', async () => {
   const fetchFn = vi.fn<typeof fetch>(async () => response({ status: 'continue', action: { action: 'query', category: 'people', query: 'Qwen' },
     wait: null, memory: 'not-an-operation', topic: { action: 'made-up-operation' }, planningState: 'not-a-plan', summary: '坏非空字段不能作为no-op接受。' }));
   const scope = setup(fetchFn, '了解其他伙伴。'); await service!.tick();
@@ -273,7 +273,10 @@ it('still rejects non-null malformed proposal fields in the original three slots
   expect(store.request({ type: 'activity.memory.claim' }).activityMemoryIntent).toBeUndefined();
   expect(store.request({ type: 'topic.list', conversationId: scope.conversationId, readerId: 'alice' }).topics?.filter(topic => !topic.isPrimary)).toEqual([]);
   const runId = createHash('sha256').update(JSON.stringify(['alice', scope.conversationId, `${scope.task.id}_0`])).digest('hex');
-  expect(store.request({ type: 'agent.run.get', companionId: 'alice', id: runId }).agentRun?.rejectedFinals).toHaveLength(3);
+  const run = store.request({ type: 'agent.run.get', companionId: 'alice', id: runId }).agentRun!;
+  expect(run.rejectedFinals).toBeUndefined(); expect(run.turns).toHaveLength(1);
+  expect(run.turns[0]!.structuredRepair).toMatchObject({ attempts: 2 });
+  expect(run.turns[0]!.structuredRepair?.content).toBeUndefined();
 });
 it('keeps the source-bound whole-goal plan when a later valid query has no new planning proposal', async () => {
   let actorCalls = 0;
@@ -282,7 +285,7 @@ it('keeps the source-bound whole-goal plan when a later valid query has no new p
     const data = JSON.parse(JSON.parse(String(init?.body)).messages[1].content); actorCalls++;
     if (actorCalls === 2) expect(data.planningState.plan).toEqual(plan);
     return response({ status: 'continue', action: { action: 'query', category: 'people', query: actorCalls === 1 ? 'Qwen' : 'Kimi' }, wait: null,
-      planningState: actorCalls === 1 ? plan : null, memory: null, topic: null, summary: '本步只是核实目录，不修改整体路线。' });
+      planningState: actorCalls === 1 ? plan : null, topic: null, summary: '本步只是核实目录，不修改整体路线。' });
   });
   const scope = setup(fetchFn, '了解伙伴并完成整个原目标。');
   const get = () => store.request({ type: 'activity.get', companionId: 'alice', conversationId: scope.conversationId, id: scope.task.id }).activityTask!;
@@ -297,11 +300,22 @@ it('keeps the source-bound whole-goal plan when a later valid query has no new p
   expect(observed.activityPlanningState).toMatchObject({ taskId: scope.task.id, revision: 2, throughStep: 1, plan });
 });
 it.each(['string', 'native-wrapper', 'topic-patch-field', 'topic-revision'] as const)('corrects actual invalid topic final shape %s in the original slot before one SQLite topic commit', async shape => {
-  let actorCalls = 0;
+  let actorCalls = 0, repairCalls = 0;
   const fetchFn = vi.fn<typeof fetch>(async (_url, init) => {
     const data = JSON.parse(JSON.parse(String(init?.body)).messages[1].content);
     if (data.purpose === 'activity_resource_feasibility' || data.purpose === 'game_shared_state_privacy')
       return response({ allowed: true, confidence: .99, reason: '仅作者本人公开筹备提案，不含秘密或虚构报名。' });
+    if (data.purpose === 'companion_structured_repair') {
+      repairCalls++; expect(shape).not.toBe('topic-revision');
+      const original = JSON.parse(data.originalRequest.user);
+      expect(original.purpose).toBe('activity_task_step'); expect(original.task.goal).toBe('找伙伴玩完一局游戏。');
+      expect(JSON.stringify(data.validationErrors)).not.toContain('PRIVATE_REJECTED_BODY_VALUE');
+      expect(JSON.parse(String(init?.body)).tools).toBeUndefined();
+      const topic = { action: 'update', roomId: original.gameTopic.topic.conversationId, topicId: original.gameTopic.topic.id,
+        expectedRevision: original.gameTopic.topic.revision, patch: { shared: { summary: '作者自行修订的真实公开方案' } } };
+      expect(store.request({ type: 'topic.read', conversationId: topic.roomId, topicId: topic.topicId, readerId: 'alice' }).topicState?.shared).toBeUndefined();
+      return response({ status: 'continue', action: null, wait: null, topic, summary: '只修原字段结构，仍由原宿主核验实际来源和版本。' });
+    }
     expect(data.purpose).toBe('activity_task_step'); actorCalls++;
     expect(data.executionContract.finalOutputShape).toContain('独立顶层topic');
     const topic = { action: 'update', roomId: data.gameTopic.topic.conversationId, topicId: data.gameTopic.topic.id,
@@ -351,15 +365,19 @@ it.each(['string', 'native-wrapper', 'topic-patch-field', 'topic-revision'] as c
   await service!.tick();
   const get = () => store.request({ type: 'activity.get', companionId: 'alice', conversationId: scope.conversationId, id: bound.id }).activityTask!;
   await vi.waitFor(() => expect(get().step, JSON.stringify({ actorCalls, task: get() })).toBe(bound.step + 1));
-  expect(actorCalls).toBe(2);
+  expect(actorCalls).toBe(shape === 'topic-revision' ? 2 : 1); expect(repairCalls).toBe(shape === 'topic-revision' ? 0 : 1);
   expect(get().history.filter(item => item.action === 'topic.update')).toHaveLength(1);
   expect(store.request({ type: 'topic.read', conversationId: group.topic!.conversationId, topicId: group.topic!.id, readerId: 'alice' }).topicState?.shared?.summary)
     .toBe('作者自行修订的真实公开方案');
   const runId = createHash('sha256').update(JSON.stringify(['alice', scope.conversationId, `${bound.id}_${bound.step}`])).digest('hex');
   const run = store.request({ type: 'agent.run.get', companionId: 'alice', id: runId }).agentRun!;
-  expect(run.rejectedFinals).toHaveLength(1); expect(run.turns).toHaveLength(2); expect(run.effects).toEqual([]);
+  if (shape === 'topic-revision') expect(run.rejectedFinals).toHaveLength(1); else {
+    expect(run.rejectedFinals).toBeUndefined(); expect(run.turns[0]!.structuredRepair).toMatchObject({ attempts: 1, content: expect.any(String) });
+  }
+  expect(run.turns).toHaveLength(shape === 'topic-revision' ? 2 : 1); expect(run.effects).toEqual([]);
   expect(JSON.parse(run.turns[0]!.rawText).action).toEqual(shape === 'string' ? 'topic' : shape === 'native-wrapper' ? expect.objectContaining({ action: 'topic' }) : null);
-  expect(JSON.parse(run.turns[1]!.rawText)).toMatchObject({ action: null, wait: null, topic: { action: 'update' } });
+  const accepted = shape === 'topic-revision' ? run.turns[1]!.rawText : run.turns[0]!.structuredRepair!.content!;
+  expect(JSON.parse(accepted)).toMatchObject({ action: null, wait: null, topic: { action: 'update' } });
 });
 it('hands the same live topic to its consenting participant through the activity host proof without copying private state', async () => {
   let actors = 0, reviews = 0, consentId = '', targetId = '';
@@ -560,7 +578,7 @@ it('requires the exact source, current lease/step and a real completed inference
   expect(store.request({ type: 'activity.get', companionId: scope.companionId, conversationId: scope.conversationId,
     id: leased.id }).activityTask).toMatchObject({ status: 'running', step: 0, history: [] });
 });
-it('freezes an empty passive preparation across steps while preserving explicit memory and actual experience tools', async () => {
+it('freezes an empty automatic recall across steps without offering memory or experience tools', async () => {
   let empty = true;
   const calls: CompanionStorageCommand[] = [];
   const toolMenus: string[][] = [];
@@ -568,17 +586,10 @@ it('freezes an empty passive preparation across steps while preserving explicit 
     const wire = JSON.parse(String(init?.body)), data = JSON.parse(wire.messages[1].content);
     toolMenus.push(wire.tools.map((tool: { function: { name: string } }) => tool.function.name));
     if (empty) {
-      expect(wire.tools.map((tool: { function: { name: string } }) => tool.function.name)).toEqual(['memory', 'world', 'wait', COMPANION_SUBMIT_RESULT_TOOL]);
+      expect(wire.tools.map((tool: { function: { name: string } }) => tool.function.name)).toEqual(['wait', COMPANION_SUBMIT_RESULT_TOOL]);
       expect(data.memoryAvailability).toMatchObject({ authorizedCorpusEmpty: true, revision: 'empty-now' });
-      if (fetchFn.mock.calls.length === 1) return new Response(JSON.stringify({ choices: [{ message: { content: '', tool_calls: [{
-        id: 'empty_corpus_experience_days', type: 'function', function: { name: 'world',
-          arguments: JSON.stringify({ action: 'experience', parameters: { action: 'days' } }) },
-      }] } }] }));
-      expect(wire.messages.some((message: { role: string; tool_call_id?: string; content: string }) => message.role === 'tool'
-        && message.tool_call_id === 'empty_corpus_experience_days' && message.content.includes('"experienceDays"'))).toBe(true);
-      expect(calls.filter(command => command.type === 'experience.days')).toEqual([{ type: 'experience.days', companionId: 'alice', limit: 20 }]);
     }
-    else { expect(wire.tools).toHaveLength(4); expect(wire.tools.map((tool: { function: { name: string } }) => tool.function.name)).toEqual(['memory', 'world', 'wait', COMPANION_SUBMIT_RESULT_TOOL]); expect(data.memoryAvailability).toMatchObject({ authorizedCorpusEmpty: true, revision: 'empty-now' }); }
+    else { expect(wire.tools).toHaveLength(2); expect(wire.tools.map((tool: { function: { name: string } }) => tool.function.name)).toEqual(['wait', COMPANION_SUBMIT_RESULT_TOOL]); expect(data.memoryAvailability).toMatchObject({ authorizedCorpusEmpty: true, revision: 'empty-now' }); }
     return response({ status: 'continue', action: { action: 'query', category: 'scenes', limit: 1 }, wait: null, summary: '用当前真实上下文继续，回忆可用性每步核实。' });
   });
   const base = setup(fetchFn); await service!.close();
@@ -589,11 +600,12 @@ it('freezes an empty passive preparation across steps while preserving explicit 
     profiles: async () => ({ publicProfiles: [], visualInputs: [] }), excludedIds: () => [], changed: vi.fn(), report: error => { throw error; } });
   const get = () => store.request({ type: 'activity.get', companionId: base.companionId, conversationId: base.conversationId, id: base.task.id }).activityTask!;
   await service.tick(); await vi.waitFor(() => expect(toolMenus.length).toBeGreaterThan(0));
-  expect(toolMenus[0]).toEqual(['memory', 'world', 'wait', COMPANION_SUBMIT_RESULT_TOOL]);
+  expect(toolMenus[0]).toEqual(['wait', COMPANION_SUBMIT_RESULT_TOOL]);
   await vi.waitFor(() => expect(get().step).toBe(1));
   empty = false; vi.setSystemTime(Date.now() + 3000); await service.tick(); await vi.waitFor(() => expect(get().step, JSON.stringify(get())).toBe(2));
-  expect(fetchFn).toHaveBeenCalledTimes(3);
+  expect(fetchFn).toHaveBeenCalledTimes(2);
   expect(calls.filter(command => command.type === 'memory.search')).toHaveLength(1);
+  expect(calls.some(command => command.type.startsWith('experience.') || command.type === 'activity.memory.apply')).toBe(false);
 });
 it.each(['ordinary_revision', 'withdrawal'] as const)('keeps one task-level passive receipt through a wait, user stop/resume and process restart: %s', async change => {
   const actorSteps: number[] = [];
@@ -606,7 +618,7 @@ it.each(['ordinary_revision', 'withdrawal'] as const)('keeps one task-level pass
   const base = setup(fetchFn, '分两次观察并核对原有约定。'); await service!.close();
   const scope = { companionId: base.companionId, conversationId: base.conversationId };
   const original = store.appendMessage({ conversationId: scope.conversationId, authorId: 'user', content: '原有约定的真实来源。', replyDirective: 'none' });
-  const note = store.request({ type: 'memory.record', ...scope, candidate: { content: original.content, tags: [], sourceMessageIds: [original.id],
+  const note = store.request({ type: 'memory.record', ...scope, candidate: { artifactKind: 'episode_memory' as const, content: original.content, tags: [], sourceMessageIds: [original.id],
     evidence: [{ sourceMessageId: original.id, quote: original.content }] } }).memories![0]!;
   const frozenDependencies = [{ id: note.id, sources: note.sources.map(source => ({ id: source.messageId, conversationId: source.conversationId, checksum: source.checksum })) }];
   const passiveRecall = vi.fn(async () => ({ ok: true, memoryContext: { text: 'INITIAL_TASK_PASSIVE_FACT', revision: 'initial-corpus', profileKey: 'fixture',
@@ -627,7 +639,7 @@ it.each(['ordinary_revision', 'withdrawal'] as const)('keeps one task-level pass
   await service.close(); store.close();
   store = new CompanionsStore(path.join(root, 'state.sqlite'), seeds.map(seed => ({ ...seed, active: true })));
   if (change === 'ordinary_revision') store.request({ type: 'memory.revise', ...scope, id: note.id, expectedVersion: note.version,
-    candidate: { content: '普通整理后的另一种表述。', tags: ['整理'], sourceMessageIds: [original.id], evidence: [{ sourceMessageId: original.id, quote: original.content }] } });
+    candidate: { artifactKind: 'episode_memory' as const, content: '普通整理后的另一种表述。', tags: ['整理'], sourceMessageIds: [original.id], evidence: [{ sourceMessageId: original.id, quote: original.content }] } });
   else store.request({ type: 'memory.forget', ...scope, sourceMessageIds: [original.id], persistent: true });
   expect(store.request({ type: 'activity.resume', ...scope, id: base.task.id }).activityTask).toMatchObject({ step: 1, history });
   service = createService(); vi.setSystemTime(Date.now() + 3000); store.request({ type: 'world.tick' }); await service.tick();
@@ -647,7 +659,7 @@ it('binds the native initial recall actually consumed by the plan, excludes cand
   const scope = { companionId: base.companionId, conversationId: base.conversationId };
   const note = (content: string) => {
     const source = store.appendMessage({ conversationId: scope.conversationId, authorId: 'user', content, replyDirective: 'none' });
-    const memory = store.request({ type: 'memory.record', ...scope, candidate: { content, tags: ['资料'], sourceMessageIds: [source.id],
+    const memory = store.request({ type: 'memory.record', ...scope, candidate: { artifactKind: 'episode_memory' as const, content, tags: ['资料'], sourceMessageIds: [source.id],
       evidence: [{ sourceMessageId: source.id, quote: content }] } }).memories![0]!;
     return { source, memory };
   };
@@ -676,7 +688,7 @@ it.each([{ initiallyQueued: true, offline: false }, { initiallyQueued: false, of
     purposes.push(data.purpose);
     if (data.purpose === 'world_decision') {
       const pending = data.world.visits.find((visit: { hostId: string; status: string }) => visit.hostId === data.companion.id && visit.status === 'requested');
-      return response({ action: pending ? { action: 'respond', requestId: pending.id, decision: 'allow', reason: '有空，欢迎来玩。' } : null, reason: '按实际请求回应。', appraisals: [] });
+      return response({ action: pending ? { action: 'respond', requestId: pending.id, decision: 'allow', reason: '有空，欢迎来玩。' } : null, reason: '按实际请求回应。' });
     }
     if (data.purpose === 'world_social') return response({ text: data.identity.self.id === targetId ? '我有空，欢迎来一起看书。' : null, reason: '依据真实来信回应。' });
     if (data.purpose === 'world_social_notification') return response({ text: null, eventId: data.confirmedEvent.eventId, initiatorId: 'user' });
@@ -732,7 +744,7 @@ it.each([{ initiallyQueued: true, offline: false }, { initiallyQueued: false, of
     store.close(); vi.setSystemTime(Date.now() + 3 * 3600000);
     store = new CompanionsStore(path.join(root, 'state.sqlite'), seeds.map(seed => ({ ...seed, active: true })));
     store.request({ type: 'activity.recover' });
-    expect(Date.parse(task.deadline)).toBeLessThan(Date.now());
+    expect(Date.parse(task.deadline!)).toBeLessThan(Date.now());
     await service!.tick(); expect(fetchFn).not.toHaveBeenCalled();
     expect(get()).toMatchObject({ status: 'waiting', step: 2 });
   }
@@ -809,32 +821,16 @@ it('rejects an in-flight result after cancellation, rather than dispatching its 
   expect(store.request({ type: 'activity.get', companionId: scope.companionId, conversationId: scope.conversationId, id: scope.task.id }).activityTask!.status).toBe('cancelled');
 });
 
-it.each(['private', 'group', 'world', 'world-private-owned', 'private-own-revise', 'private-own-organize'] as const)(
-  'reads a real owned material and records sourced personal understanding within the original %s domain', async domain => {
-    let materialId = '', sourceId = '', quote = '', learnedId = '';
+it.each(['private', 'group', 'world', 'world-private-owned', 'private-host-revise', 'private-host-organize'] as const)(
+  'uses one host automatic recall in the original %s domain without actor memory operations', async domain => {
+    let expectedText = '';
     const fetchFn = vi.fn<typeof fetch>(async (_url, init) => {
-      const data = JSON.parse(JSON.parse(String(init?.body)).messages[1].content);
-      expect(data.purpose).toBe('activity_task_step');
-      if (data.task.step === 0) return response({ status: 'continue', action: null, wait: null,
-        memory: { operation: 'read', id: materialId }, summary: '先实际阅读这一份本人可见资料，再决定是否形成认识。' });
-      const read = data.task.history.find((item: { action: string }) => item.action === 'memory.read');
-      expect(read).toBeDefined();
-      expect(read.ok).toBe(true);
-      const actualRead = JSON.parse(read.result);
-      expect(actualRead.memories[0]).toMatchObject({ id: materialId, version: 1, sourceMessageIds: [sourceId] });
-      expect(actualRead.sources[0]).toMatchObject({ id: sourceId, content: expect.stringContaining(quote) });
-      const ownMutation = domain === 'private-own-revise' || domain === 'private-own-organize';
-      if (ownMutation && data.task.step === 1) return response({ status: 'continue', action: null, wait: null,
-        memory: domain === 'private-own-organize' ? { operation: 'organize', ids: [materialId], tags: ['学习资料', '已核对出处'] }
-          : { operation: 'revise', id: materialId, expectedVersion: 1, candidate: { diaryName: '学习资料', content: '阅读方法：' + quote,
-            tags: ['学习资料', '已核对出处'], sourceMessageIds: [sourceId], evidence: [{ sourceMessageId: sourceId, quote }] } }, summary: '按实际阅读结果整理这一份资料。' });
-      if (data.task.step === 1 || ownMutation && data.task.step === 2) return response({ status: 'continue', action: null, wait: null,
-        memory: { operation: 'record', candidate: { diaryName: '自我认识', content: '读过这份有来源的资料后，我更愿意保留观察背景和原始出处，再形成有条件的个人判断。',
-          tags: ['资料学习', '原始出处', '个人认识'], sourceMessageIds: [sourceId], relatedMemoryIds: [materialId], evidence: [{ sourceMessageId: sourceId, quote }] } },
-        summary: '根据实际读到的资料，记录可以追溯和撤回的个人理解。' });
-      const written = data.task.history.find((item: { action: string }) => item.action === 'memory.record');
-      expect(written.ok).toBe(true); learnedId = JSON.parse(written.result).memories[0].id;
-      return response({ status: 'complete', action: null, wait: null, summary: '已读完这份资料，并保存有原始来源的个人认识。' });
+      const wire = JSON.parse(String(init?.body)), data = JSON.parse(wire.messages[1].content);
+      expect(data.purpose).toBe('activity_task_step'); expect(data.memoryContext).toBe(expectedText);
+      expect(data.memories).toEqual([]);
+      expect(wire.tools.map((tool: { function: { name: string } }) => tool.function.name)).toEqual(['wait', COMPANION_SUBMIT_RESULT_TOOL]);
+      expect(data.outputSchema.properties).not.toHaveProperty('memory');
+      return response({ status: 'complete', action: null, wait: null, summary: '依据系统已经提供的真实资料完成本次阅读，没有自行写入记忆。' });
     });
     const base = setup(fetchFn); store.request({ type: 'activity.cancel', companionId: base.companionId, conversationId: base.conversationId, id: base.task.id });
     await service!.close();
@@ -843,71 +839,65 @@ it.each(['private', 'group', 'world', 'world-private-owned', 'private-own-revise
     const materialScope = domain === 'world-private-owned' ? { companionId: 'alice', conversationId: base.conversationId } : scope;
     const source = domain === 'world' ? store.request({ type: 'memory.world_query', ...scope, category: 'observations', query: '', limit: 2 }).memorySources![0]!
       : store.appendMessage({ conversationId: materialScope.conversationId, authorId: 'user',
-        content: domain === 'world-private-owned' ? 'PRIVATE_MATERIAL_DETAIL' : '读资料时保存原始出处，区分实际观察、作者解释和自己的推测，不把一次观察升级为普遍结论。', replyDirective: 'none' });
-    sourceId = source.id; quote = source.content.slice(0, 180);
-    materialId = store.request({ type: 'memory.record', ...materialScope, candidate: { diaryName: '学习资料', content: source.content, tags: ['学习资料', '阅读方法'],
-      sourceMessageIds: [source.id], evidence: [{ sourceMessageId: source.id, quote: source.content }] } }).memories![0]!.id;
+        content: '读资料时保存原始出处，区分实际观察、作者解释和自己的推测，不把一次观察升级为普遍结论。', replyDirective: 'none' });
+    const candidate = { artifactKind: 'episode_memory' as const, diaryName: '学习资料', content: source.content, tags: ['学习资料'],
+      sourceMessageIds: [source.id], evidence: [{ sourceMessageId: source.id, quote: source.content }] };
+    let note = store.request({ type: 'memory.record', ...materialScope, candidate }).memories![0]!;
+    // Background host storage remains available; removing actor tools does not
+    // remove sourced publication, revision or annotation from the memory core.
+    if (domain === 'private-host-revise') note = store.request({ type: 'memory.revise', ...materialScope, id: note.id,
+      expectedVersion: note.version, candidate: { ...candidate, content: source.content + ' 保留有条件的解释。' } }).memories![0]!;
+    if (domain === 'private-host-organize') note = store.request({ type: 'memory.organize', ...materialScope, ids: [note.id], tags: ['学习资料', '已核对出处'] }).memories![0]!;
+    expectedText = note.content;
+    const frozenDependencies = [{ id: note.id, sources: note.sources.map(item => ({ id: item.messageId, conversationId: item.conversationId, checksum: item.checksum })) }];
     const calls: CompanionStorageCommand[] = [];
-    service = new CompanionActivityTaskService({ request: async input => { calls.push(input); return input.type === 'memory.search'
-      ? { ok: true, memoryPage: { items: [], hasMore: false } } : store.request(input); },
+    const passiveRecall = vi.fn(async () => ({ ok: true, memoryContext: { text: note.content, revision: 'initial-corpus', profileKey: 'fixture',
+      evidence: { capturedAt: new Date().toISOString(), corpusHash: 'initial', dependencyCoverage: 'complete' as const,
+        dependencies: [{ id: note.id, version: note.version }], snapshotPolicy: 'task_passive_v1' as const, frozenDependencies } }, memoryPage: { items: [], hasMore: false } }));
+    service = new CompanionActivityTaskService({ request: async input => { calls.push(input); return store.request(input); }, passiveRecall,
+      memoryContextValid: async () => store.request({ type: 'memory.frozen.valid', ...scope, memories: frozenDependencies }).memoryFrozenValid === true,
       configFor: async () => ({ apiFormat: 'openai_chat', model: 'fixture', apiKey: 'fake', baseUrl: 'https://fixture.invalid' }),
       profiles: async () => ({ publicProfiles: [], visualInputs: [] }), fetchFn: withProgressReview(fetchFn), excludedIds: () => [], changed: vi.fn(), report: error => { throw error; } });
-    const goal = '阅读本人可见资料 ' + materialId + '；只有实际读到内容后才用逐字证据形成个人认识，保持原来源范围。';
+    const goal = '依据本次系统提供的本人资料形成有条件的理解，不重新读取或写入记忆。';
     const taskSource = domain.startsWith('world') ? undefined : store.appendMessage({ conversationId: scope.conversationId, authorId: 'user', content: goal, replyDirective: 'none' });
-    const task = store.request({ type: 'activity.start', ...scope, clientId: 'learn_material_' + domain,
-      ...(taskSource ? { sourceMessageId: taskSource.id } : {}), title: '阅读指定的本人资料', goal }).activityTask!;
+    const task = store.request({ type: 'activity.start', ...scope, clientId: 'automatic_material_' + domain,
+      ...(taskSource ? { sourceMessageId: taskSource.id } : {}), title: '理解自动召回的资料', goal }).activityTask!;
     const get = () => store.request({ type: 'activity.get', ...scope, id: task.id }).activityTask!;
-    for (let step = 0; step < 15 && !['succeeded', 'failed'].includes(get().status); step++) {
-      await service.tick(); await new Promise(resolve => setImmediate(resolve));
-      vi.setSystemTime(Date.now() + 2000); store.request({ type: 'world.tick' });
-    }
-    expect(get().status).toBe('succeeded');
-    expect(calls.find(input => input.type === 'memory.read')).toMatchObject({ ...scope, id: materialId });
-    expect(calls.filter(input => input.type === 'memory.record')).toHaveLength(1);
-    const learned = store.request({ type: 'memory.read', ...scope, id: learnedId }).memoryRead!.memory;
-    expect(learned).toMatchObject({ diaryName: '自我认识', sourceConversationId: materialScope.conversationId });
-    expect(learned.sources.map(item => item.messageId)).toEqual([sourceId]);
-    expect(get().history.filter(item => item.action.startsWith('memory.')).map(item => item.action)).toEqual(domain === 'private-own-revise'
-      ? ['memory.read', 'memory.revise', 'memory.record'] : domain === 'private-own-organize' ? ['memory.read', 'memory.organize', 'memory.record'] : ['memory.read', 'memory.record']);
-    store.request({ type: 'memory.forget', ...materialScope, sourceMessageIds: [sourceId] });
-    expect(() => store.request({ type: 'memory.read', ...scope, id: learnedId })).toThrow();
+    await service.tick(); await vi.waitFor(() => expect(get().status).toBe('succeeded'));
+    expect(passiveRecall).toHaveBeenCalledOnce(); expect(fetchFn).toHaveBeenCalledOnce();
+    expect(calls.some(input => ['memory.search', 'memory.read', 'memory.record', 'memory.revise', 'memory.organize', 'activity.memory.apply'].includes(input.type))).toBe(false);
+    expect(get().history.some(item => item.action.startsWith('memory.'))).toBe(false);
+    expect(store.request({ type: 'memory.read', ...materialScope, id: note.id }).memoryRead!.memory).toMatchObject({ content: expectedText, version: note.version });
+    store.request({ type: 'memory.forget', ...materialScope, sourceMessageIds: [source.id] });
     expect(store.request({ type: 'activity.get', ...scope, id: task.id }).activityTask!.history).toEqual([]);
   });
 
-it.each(['revise', 'forget'] as const)('rejects stale learning after a previously read material is externally %s during the next model inference', async change => {
-  let materialId = '', planning = false, resolve!: (value: Response) => void;
+it.each(['note', 'source'] as const)('rejects an in-flight action after the automatic recall source is withdrawn by %s', async change => {
+  let planning = false, resolve!: (value: Response) => void;
   const pending = new Promise<Response>(done => { resolve = done; });
   const fetchFn: typeof fetch = async (_url, init) => {
     const data = JSON.parse(JSON.parse(String(init?.body)).messages[1].content);
-    if (data.task.step === 0) return response({ status: 'continue', action: null, wait: null, memory: { operation: 'read', id: materialId }, summary: '读取指定的本人资料。' });
-    expect(data.task.history[0]).toMatchObject({ action: 'memory.read', ok: true }); planning = true; return pending;
+    expect(data.memoryContext).toBe('这是需要保留出处的原始阅读资料。'); planning = true; return pending;
   };
-  const base = setup(fetchFn); store.request({ type: 'activity.cancel', companionId: base.companionId, conversationId: base.conversationId, id: base.task.id }); await service!.close();
+  const base = setup(fetchFn); await service!.close();
   const scope = { companionId: base.companionId, conversationId: base.conversationId };
   const source = store.appendMessage({ conversationId: scope.conversationId, authorId: 'user', content: '这是需要保留出处的原始阅读资料。', replyDirective: 'none' });
-  const sourceId = source.id, quote = source.content;
-  const candidate = { diaryName: '学习资料', content: source.content, tags: ['学习资料'], sourceMessageIds: [sourceId], evidence: [{ sourceMessageId: sourceId, quote }] };
-  materialId = store.request({ type: 'memory.record', ...scope, candidate }).memories![0]!.id;
+  const note = store.request({ type: 'memory.record', ...scope, candidate: { artifactKind: 'episode_memory', content: source.content, tags: [], sourceMessageIds: [source.id],
+    evidence: [{ sourceMessageId: source.id, quote: source.content }] } }).memories![0]!;
+  const frozenDependencies = [{ id: note.id, sources: note.sources.map(item => ({ id: item.messageId, conversationId: item.conversationId, checksum: item.checksum })) }];
   const calls: CompanionStorageCommand[] = [];
-  service = new CompanionActivityTaskService({ request: async input => { calls.push(input); return input.type === 'memory.search'
-    ? { ok: true, memoryPage: { items: [], hasMore: false } } : store.request(input); },
+  const passiveRecall = vi.fn(async () => ({ ok: true, memoryContext: { text: note.content, revision: 'initial-corpus', profileKey: 'fixture',
+    evidence: { capturedAt: new Date().toISOString(), corpusHash: 'initial', dependencyCoverage: 'complete' as const, dependencies: [{ id: note.id, version: note.version }],
+      snapshotPolicy: 'task_passive_v1' as const, frozenDependencies } }, memoryPage: { items: [], hasMore: false } }));
+  service = new CompanionActivityTaskService({ request: async input => { calls.push(input); return store.request(input); }, passiveRecall,
+    memoryContextValid: async () => store.request({ type: 'memory.frozen.valid', ...scope, memories: frozenDependencies }).memoryFrozenValid === true,
     configFor: async () => ({ apiFormat: 'openai_chat', model: 'fixture', apiKey: 'fake', baseUrl: 'https://fixture.invalid' }),
     profiles: async () => ({ publicProfiles: [], visualInputs: [] }), fetchFn, excludedIds: () => [], changed: vi.fn(), report: error => { throw error; } });
-  const request = store.appendMessage({ conversationId: scope.conversationId, authorId: 'user', content: '阅读这份资料并形成有来源的个人认识。', replyDirective: 'none' });
-  const task = store.request({ type: 'activity.start', ...scope, sourceMessageId: request.id, clientId: 'stale_learning_' + change,
-    title: '阅读指定资料', goal: request.content + materialId }).activityTask!;
-  for (let step = 0; step < 8 && !planning; step++) { await service.tick(); await new Promise(done => setImmediate(done));
-    vi.setSystemTime(Date.now() + 2000); store.request({ type: 'world.tick' }); }
-  expect(planning).toBe(true);
-  if (change === 'forget') store.request({ type: 'memory.forget', ...scope, id: materialId });
-  else store.request({ type: 'memory.revise', ...scope, id: materialId, expectedVersion: 1, candidate: { ...candidate, content: '管理员修订了资料解释，但保留同一份原始出处。' } });
-  resolve(response({ status: 'continue', action: null, wait: null, summary: '这是基于旧资料版本的晚到认识。',
-    memory: { operation: 'record', candidate: { ...candidate, diaryName: '自我认识', content: '不应落盘的旧版认识', relatedMemoryIds: [materialId] } } }));
+  await service.tick(); await vi.waitFor(() => expect(planning).toBe(true));
+  store.request({ type: 'memory.forget', ...scope, ...(change === 'note' ? { id: note.id } : { sourceMessageIds: [source.id] }) });
+  resolve(response({ status: 'continue', action: { action: 'query', category: 'scenes', limit: 1 }, wait: null, summary: '不应执行的旧资料提案。' }));
   await vi.waitFor(() => expect(calls.some(command => command.type === 'activity.fail')).toBe(true));
-  // A rejected in-flight lease is reclaimed by the durable scheduler, without publishing its old result.
-  vi.setSystemTime(Date.now() + 122000); store.request({ type: 'world.tick' }); await service.tick();
-  expect(calls.some(command => command.type === 'memory.record')).toBe(false);
-  const stopped = store.request({ type: 'activity.get', ...scope, id: task.id }).activityTask!;
-  expect(stopped).toMatchObject({ status: 'cancelled', history: [] });
-  expect(store.request({ type: 'memory.browse', ...scope }).memoryPage!.items.some(hit => hit.memory.content === '不应落盘的旧版认识')).toBe(false);
+  expect(passiveRecall).toHaveBeenCalledOnce();
+  expect(calls.some(command => command.type === 'activity.commit' || command.type === 'activity.memory.apply' || command.type === 'memory.record')).toBe(false);
+  expect(store.request({ type: 'activity.get', ...scope, id: base.task.id }).activityTask!.history).toEqual([]);
 });

@@ -167,21 +167,31 @@ it('repairs schema and exact-quote errors for the actual failed public rules pro
   const game = await resolveCompanionGameContactContext(fixture({ participants: ['owner', ...recipientIds] }), { scope, source, recipientIds, turns,
     delivery: { channel: 'phone', roomId: topic.conversationId, topicId: topic.id } });
   const text = '先把人数和流程一次讲清，免得再来回猜。\n【两条路，大家挑一条】\nA. 4人快局（不再补人）：Kimi 进话题报名，四位玩家＝我、小肥鱼、Grok、Kimi，我下场抽牌不主持；牌表2狼＋1预言家＋1村民＝4，屠边。\nB. 6人标准局：我主持、不抽牌，玩家＝小肥鱼、Grok、Kimi＋再找两位，牌表2狼＋1预言家＋1女巫＋2村民＝6。\n身份牌由我一一私发本人、绝不公开；夜里一对一收行动再公布结果；白天按座位顺序发言然后全体投票。名单和牌表数量对不上就不发牌。';
-  let calls = 0;
+  let calls = 0, repairs = 0;
   const fetchFn = vi.fn<typeof fetch>(async (_url, init) => {
-    const body = JSON.parse(String(init?.body)), data = JSON.parse(body.messages[1].content); calls++;
+    const body = JSON.parse(String(init?.body)), data = JSON.parse(body.messages[1].content);
+    if (data.purpose === 'companion_structured_repair') {
+      repairs++; expect(body.tools).toBeUndefined();
+      const original = JSON.parse(data.originalRequest.user);
+      expect(original.source.content).toBe(source.content); expect(original.proposedText).toBe(text);
+      expect(original.recipients.map((item: { id: string }) => item.id)).toEqual(recipientIds);
+      expect(JSON.stringify(data.validationErrors)).toContain('extraAuthority');
+      return new Response(JSON.stringify({ choices: [{ message: { content: JSON.stringify({ allowed: true, confidence: .99, intent: 'message',
+        requiresContinuation: true, reason: '结构修复不证明来源正确。', evidence: ['先把人数和流程一次讲清'] }) } }] }));
+    }
+    calls++;
     expect(data.source.content).toBe(source.content); expect(data.proposedText).toBe(text);
     expect(data.recipients.map((item: { id: string }) => item.id)).toEqual(recipientIds);
-    if (calls === 2) expect(data.outputCorrection.error).toContain('extraAuthority');
-    if (calls === 3) expect(data.outputCorrection.error).toContain('evidence[0]');
+    if (calls === 2) expect(data.outputCorrection.error).toContain('evidence[0]');
     const reply = { allowed: true, confidence: .99, intent: 'message', requiresContinuation: true, reason: '仅本局必要的公开规则确认。',
-      evidence: calls === 2 ? ['先把人数和流程一次讲清'] : [source.content], ...(calls === 1 ? { extraAuthority: true } : {}) };
+      evidence: [source.content], ...(calls === 1 ? { extraAuthority: true } : {}) };
     return new Response(JSON.stringify({ choices: [{ message: { content: JSON.stringify(reply) } }] }), { headers: { 'Content-Type': 'application/json' } });
   });
   expect(await authorizeCompanionContact({ source, recipients: recipientIds.map(id => ({ id, name: id })), text, game },
     { apiFormat: 'openai_chat', model: 'fixture', apiKey: 'fixture-key', baseUrl: 'https://fixture.invalid' }, undefined, { fetchFn }))
     .toMatchObject({ allowed: true, intent: 'message', requiresContinuation: true });
   expect(fetchFn).toHaveBeenCalledTimes(3);
+  expect(repairs).toBe(1); expect(calls).toBe(2);
 });
 it('does not turn a repaired privacy rejection into permission and reports persistent malformed evidence precisely', async () => {
   const config = { apiFormat: 'openai_chat' as const, model: 'fixture', apiKey: 'fixture-key', baseUrl: 'https://fixture.invalid' };

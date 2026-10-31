@@ -26,7 +26,7 @@ function validView(value: unknown): value is View {
     && (view.sourceToken === undefined || typeof view.sourceToken === 'string' && /^[a-f0-9]{64}$/u.test(view.sourceToken));
 }
 function fingerprints(notes: readonly CompanionMemory[]) {
-  return Object.fromEntries(notes.map(note => [note.id, hash(JSON.stringify([note.version, note.content, note.tags, note.occurredAt,
+  return Object.fromEntries(notes.map(note => [note.id, hash(JSON.stringify([note.artifactKind, note.version, note.content, note.tags, note.occurredAt,
     note.diaryName, note.metadata, note.sourceConversationId, note.sources, note.captureMethod]))]));
 }
 

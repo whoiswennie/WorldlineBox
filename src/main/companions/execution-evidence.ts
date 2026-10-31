@@ -11,6 +11,7 @@ import { companionProcedureContextSources, companionProcedureValidationSources }
 import { companionMemoryFileReceiptsSchema } from '../../shared/companion-memory-files';
 import { companionWorldSourceReadSchema } from '../../shared/companion-world';
 import { companionSocialGameContextSchema } from '../../shared/companion-social';
+import type { CompanionMemory } from '../../shared/companions';
 
 type Scope = Pick<CompanionExecutionReadset, 'companionId' | 'conversationId' | 'beforeSequence'>;
 type Fields = Pick<CompanionExecutionReadset, 'memories' | 'memoryReads' | 'frozenMemories' | 'sources' | 'knowledgeReads' | 'contexts' | 'topics'>;
@@ -20,6 +21,52 @@ const entries = (value: unknown): unknown[] => Array.isArray(value) ? value : []
 const unique = <T>(values: T[]): T[] => [...new Map(values.map(value => [JSON.stringify(value), value])).values()]
   .sort((left, right) => { const a = JSON.stringify(left), b = JSON.stringify(right); return a < b ? -1 : a > b ? 1 : 0; });
 const sourceBody = z.object({ id: z.string().regex(/^[a-zA-Z0-9_-]{1,100}$/u), conversationId: z.string().regex(/^[a-zA-Z0-9_-]{1,100}$/u), content: z.string() });
+
+const attestedFilesBrand = Symbol('SQL-attested current memory files');
+export type CompanionAttestedMemoryFiles = Readonly<{ [attestedFilesBrand]: true }>;
+type AttestedFileInput = { scope: Scope; context: CompanionExecutionReadset['contexts'][number];
+  memories: NonNullable<CompanionExecutionReadset['frozenMemories']>; authorityEpoch: number };
+// A token exists only for the awaited context callback of one already checked
+// SQL readset. It is neither serializable authority nor a retained cache.
+const attestedFileInputs = new WeakMap<CompanionAttestedMemoryFiles, AttestedFileInput>();
+function currentFileAuthority(readset: CompanionExecutionReadset, context: CompanionExecutionReadset['contexts'][number], scope: Scope, authorityEpoch: number): CompanionAttestedMemoryFiles | undefined {
+  if (!context.fileReceiptOnly || !context.fileReceipts?.length) return;
+  const memories: AttestedFileInput['memories'] = [];
+  for (const receipt of context.fileReceipts) {
+    const captured = [...readset.memoryReads ?? [], ...readset.frozenMemories ?? []].find(memory => memory.id === receipt.noteId && memory.contentRevision === receipt.contentRevision);
+    if (receipt.companionId !== readset.companionId || !captured) return;
+    memories.push(captured);
+  }
+  const token: CompanionAttestedMemoryFiles = Object.freeze({ [attestedFilesBrand]: true });
+  attestedFileInputs.set(token, structuredClone({ scope, context, memories, authorityEpoch })); return token;
+}
+export function companionAttestedMemoryFilesMatch(value: CompanionAttestedMemoryFiles | undefined, scope: Scope,
+  context: { revision: string; profileKey: string }): boolean {
+  const input = value && attestedFileInputs.get(value);
+  return !!input && JSON.stringify(input.scope) === JSON.stringify(scope) && JSON.stringify(input.context) === JSON.stringify(context);
+}
+export function companionAttestedMemoryFileInputs(value: CompanionAttestedMemoryFiles): { scope: Scope; receipts: NonNullable<CompanionExecutionReadset['contexts'][number]['fileReceipts']>; keys: string[] } | undefined {
+  const input = attestedFileInputs.get(value);
+  if (!input) return;
+  // File identity deliberately excludes the semantic entrance and cursor.
+  // Their exact readsets still retain separate SQL/dispatch fences outside.
+  const keys = input.context.fileReceipts!.map((receipt, index) => 'sql-attested-memory-file:' + hash(JSON.stringify([
+    input.scope.companionId, input.authorityEpoch, receipt,
+    input.memories[index]!.sources.map(source => JSON.stringify(source)).sort(),
+  ])));
+  return structuredClone({ scope: input.scope, receipts: input.context.fileReceipts!, keys });
+}
+export function companionAttestedMemoryFilesKey(value: CompanionAttestedMemoryFiles): string | undefined {
+  const input = attestedFileInputs.get(value); return input ? hash(JSON.stringify(input)) : undefined;
+}
+export function companionAttestedMemoryFileCurrent(value: CompanionAttestedMemoryFiles, note: Pick<CompanionMemory, 'id' | 'companionId' | 'contentRevision' | 'sources'>): boolean {
+  const input = attestedFileInputs.get(value), expected = input?.memories.find(memory => memory.id === note.id && memory.contentRevision === note.contentRevision);
+  if (!input || !expected || note.companionId !== input.scope.companionId || expected.sources.length !== note.sources.length) return false;
+  const actual = note.sources.map(source => ({ id: source.messageId, conversationId: source.conversationId, checksum: source.checksum,
+    ...(expected.sources.some(reference => reference.revision !== undefined) ? { revision: source.revision } : {}) }));
+  const ordered = (values: readonly unknown[]) => values.map(value => JSON.stringify(value)).sort();
+  return JSON.stringify(ordered(actual)) === JSON.stringify(ordered(expected.sources));
+}
 
 /** Host world quotes name their actual message dependencies. Free JSON in
  * topic state, note metadata or native task output never contributes IDs. */
@@ -132,6 +179,7 @@ export function captureCompanionExecutionReadset(scope: Scope, input: Partial<Fi
       if (!files.success || files.data.some(receipt => receipt.companionId !== scope.companionId)) result.complete = false;
       else if (files.data.length) {
         const guard = companionExecutionReadsetSchema.shape.contexts.element.safeParse({ revision: native.revision, profileKey: native.profileKey,
+          ...(native.typeScope === undefined ? {} : { typeScope: native.typeScope }),
           fileReceiptOnly: true, fileReceipts: files.data,
           ...(evidence?.beforeSequence !== undefined ? { beforeSequence: evidence.beforeSequence } : scope.beforeSequence !== undefined ? { beforeSequence: scope.beforeSequence } : {}) });
         if (!guard.success) result.complete = false; else result.contexts.push(guard.data);
@@ -150,6 +198,7 @@ export function captureCompanionExecutionReadset(scope: Scope, input: Partial<Fi
     if (dependencies.complete) return;
     const evidence = row(native.evidence);
     const parsed = companionExecutionReadsetSchema.shape.contexts.element.safeParse({ revision: native.revision, profileKey: native.profileKey,
+      ...(native.typeScope === undefined ? {} : { typeScope: native.typeScope }),
       ...(evidence?.beforeSequence !== undefined ? { beforeSequence: evidence.beforeSequence } : scope.beforeSequence !== undefined ? { beforeSequence: scope.beforeSequence } : {}) });
     if (!parsed.success) { result.complete = false; return; }
     result.contexts.push(parsed.data);
@@ -297,11 +346,14 @@ export function companionExecutionReadsetDigest(value: CompanionExecutionReadset
 
 export async function verifyCompanionExecutionReadset(value: CompanionExecutionReadset | undefined, scope: Scope, ports: {
   request(command: CompanionStorageCommand): Promise<CompanionStorageResponse>;
-  contextValid?(scope: Scope, context: { revision: string; profileKey: string }): Promise<boolean>;
+  contextValid?(scope: Scope, context: { revision: string; profileKey: string }, files?: CompanionAttestedMemoryFiles): Promise<boolean>;
   /** Ephemeral Main-only proof of this exact readset from the current worker
    * response. Callers must bind its digest and mutation generation; never
    * derive it from model/tool JSON or a persisted historical receipt. */
   sqliteSourcesValidated?: boolean;
+  /** Both fields come from the same current worker proof, not persisted/model
+   * JSON. The digest alone is a weaker legacy contract and cannot mint files. */
+  memoryFileAttestation?: { readsetDigest: string; authorityEpoch: number };
 }): Promise<boolean> {
     const parsed = companionExecutionReadsetSchema.safeParse(value);
     if (!parsed.success || !parsed.data.complete || parsed.data.companionId !== scope.companionId || parsed.data.conversationId !== scope.conversationId
@@ -327,8 +379,8 @@ export async function verifyCompanionExecutionReadset(value: CompanionExecutionR
     for (let offset = 0; offset < readset.memories.length; offset += 100) {
       const expected = readset.memories.slice(offset, offset + 100).filter(memory => !readset.memoryReads?.some(read => read.id === memory.id && read.version === memory.version));
       if (!expected.length) continue;
-      const response = await ports.request({ type: 'memory.records.filter', ...memoryScope, ids: [...new Set(expected.map(memory => memory.id))] });
-      if (!response.ok || expected.some(memory => !response.memories?.some(current => current.id === memory.id && current.companionId === scope.companionId && current.version === memory.version))) return false;
+      const response = await ports.request({ type: 'memory.records.describe', ...memoryScope, ids: [...new Set(expected.map(memory => memory.id))] });
+      if (!response.ok || expected.some(memory => !response.memoryDescriptors?.some(current => current.id === memory.id && current.companionId === scope.companionId && current.version === memory.version))) return false;
     }
     const rooms = new Set(readset.sources.map(source => source.conversationId));
     for (const conversationId of rooms) {
@@ -343,7 +395,15 @@ export async function verifyCompanionExecutionReadset(value: CompanionExecutionR
       }
     }
     }
-    for (const context of readset.contexts) if (!ports.contextValid || !await ports.contextValid({ ...memoryScope, beforeSequence: context.beforeSequence }, context)) return false;
+    for (const context of readset.contexts) {
+      if (!ports.contextValid) return false;
+      const contextScope = { ...memoryScope, beforeSequence: context.beforeSequence };
+      const attestation = ports.memoryFileAttestation;
+      const files = ports.sqliteSourcesValidated && attestation && Number.isSafeInteger(attestation.authorityEpoch) && attestation.authorityEpoch >= 0
+        && attestation.readsetDigest === hash(JSON.stringify(readset)) ? currentFileAuthority(readset, context, contextScope, attestation.authorityEpoch) : undefined;
+      try { if (!await ports.contextValid(contextScope, context, files)) return false; }
+      finally { if (files) attestedFileInputs.delete(files); }
+    }
     return await verifyCompanionKnowledgeReads(readset.knowledgeReads, memoryScope, ports.request);
 }
 

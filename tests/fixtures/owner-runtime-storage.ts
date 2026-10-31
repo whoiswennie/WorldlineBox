@@ -8,13 +8,13 @@ export function fixtureOwnerRuntimePaths(workspaceRoot: string): (ownerId: strin
   return async ownerId => {
     if (!/^[a-zA-Z0-9_-]{1,100}$/u.test(ownerId)) throw new Error('Invalid fixture owner.');
     const ownerRoot = path.join(path.resolve(workspaceRoot), ownerId);
-    return { ownerId, workspaceRoot: path.resolve(workspaceRoot), ownerRoot, indexRoot: path.join(ownerRoot, '.认知索引') };
+    return { ownerId, workspaceRoot: path.resolve(workspaceRoot), ownerRoot, indexRoot: path.join(ownerRoot, '.运行', '索引') };
   };
 }
 export function fixtureOwnerRuntimeStorage(workspaceRoot: string, options: { vendorRoot?: string } = {}): (ownerId: string) => Promise<CompanionOwnerRuntimeStorage> {
   return async ownerId => {
     if (!/^[a-zA-Z0-9_-]{1,100}$/u.test(ownerId)) throw new Error('Invalid fixture owner.');
-    const ownerRoot = path.join(path.resolve(workspaceRoot), ownerId), indexRoot = path.join(ownerRoot, '.认知索引');
+    const ownerRoot = path.join(path.resolve(workspaceRoot), ownerId), indexRoot = path.join(ownerRoot, '.运行', '索引');
     const promptsRoot = path.join(ownerRoot, '提示词'), focus = path.join(promptsRoot, '记忆聚焦.md');
     const marker = path.join(ownerRoot, '.fixture-runtime-prompts.json');
     try { await readFile(marker, 'utf8'); }

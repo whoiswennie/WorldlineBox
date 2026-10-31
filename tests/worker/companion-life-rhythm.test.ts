@@ -19,13 +19,13 @@ it('keeps three individual life rhythms evaluating across two days, silence, fai
   const root = mkdtempSync(path.join(tmpdir(), 'worldlinebox-life-rhythm-')); roots.push(root);
   const file = path.join(root, 'messages.sqlite'); let store = new CompanionsStore(file, members); stores.add(store);
   const initial = store.request({ type: 'world.snapshot' }).world!;
-  store.request({ type: 'world.configure', expectedRevision: initial.settings.revision, patch: { mode: 'compressed', dayDurationMinutes: 5, timeZone: 'UTC' } });
+  store.request({ type: 'world.configure', expectedRevision: initial.settings.revision, patch: { mode: 'realtime', timeZone: 'UTC' } });
   const rules = new Map<string, CompanionLifeRule>(), attempts = new Map<string, Array<{ at: number; outcome: string }>>();
   for (const [index, member] of members.entries()) {
     const scope = { companionId: member.id, conversationId: store.openPrivate(member.id).id };
     const routine = store.request({ type: 'routine.get', ...scope }).routine!;
     store.request({ type: 'routine.configure', ...scope, expectedRevision: routine.revision,
-      patch: { sleepAt: ['23:00', '01:00', '22:00'][index]!, wakeAt: ['07:00', '09:00', '06:00'][index]!, meals: [], habits: [] } });
+      patch: { timeZone: 'UTC', sleepAt: ['23:00', '01:00', '22:00'][index]!, wakeAt: ['07:00', '09:00', '06:00'][index]!, meals: [], habits: [] } });
     const defaults = store.request({ type: 'life-rule.list', companionId: member.id }).lifeRules!;
     expect(defaults.some(rule => rule.targetId === 'user')).toBe(false);
     for (const rule of defaults) store.request({ type: 'life-rule.remove', companionId: member.id, id: rule.id, expectedRevision: rule.revision });
@@ -36,8 +36,11 @@ it('keeps three individual life rhythms evaluating across two days, silence, fai
     } }).lifeRule!);
     attempts.set(member.id, []);
   }
-  for (let step = 0; step <= 600; step++) {
-    vi.setSystemTime(Date.now() + 1000); store.request({ type: 'world.tick' });
+  // Advance the actual wall clock by two minutes per sample. This stays
+  // inside the documented observed-gap boundary, at production speed 1.
+  // 1,440 legitimate samples span exactly 48 hours without inventing offline contacts.
+  for (let step = 1; step <= 1440; step++) {
+    vi.setSystemTime(Date.now() + 120_000); store.request({ type: 'world.tick' });
     store.request({ type: 'life-event.tick' });
     for (let slot = 0; slot < 3; slot++) {
       const occurrence = store.request({ type: 'life-event.claim' }).lifeOccurrence;
@@ -51,7 +54,7 @@ it('keeps three individual life rhythms evaluating across two days, silence, fai
       else store.request({ type: 'life-event.complete', id: occurrence.id, leaseToken: occurrence.leaseToken!, text: '我刚核对了自己的问题，想听听你的不同理解。' });
       history.push({ at, outcome });
     }
-    if (step === 300) { store.close(); stores.delete(store); store = new CompanionsStore(file, members); stores.add(store); }
+    if (step === 720) { store.close(); stores.delete(store); store = new CompanionsStore(file, members); stores.add(store); }
   }
   for (const member of members) {
     const history = attempts.get(member.id)!, rhythm = companionLifeRhythm(rules.get(member.id)!);
@@ -70,7 +73,7 @@ it('keeps three individual life rhythms evaluating across two days, silence, fai
     mkdirSync(path.dirname(output), { recursive: true });
     writeFileSync(output, JSON.stringify({ generatedAt: new Date(vi.getRealSystemTime()).toISOString(), success: true,
       evidenceKind: 'Actual SQLite and world clock, controlled silent/failure/success completions. This is scheduler verification, not real-model content quality.',
-      virtualEnd: store.request({ type: 'world.clock' }).worldClock!.virtualNow, totalVirtualHours: 48.08,
+      virtualEnd: store.request({ type: 'world.clock' }).worldClock!.virtualNow, totalVirtualHours: 48,
       restartAtHour: 24, playerMessages: 0, sleepContacts: 0,
       owners: members.map(member => ({ id: member.id, rhythm: companionLifeRhythm(rules.get(member.id)!),
         probability: rules.get(member.id)!.probability, decisions: attempts.get(member.id),
@@ -79,4 +82,4 @@ it('keeps three individual life rhythms evaluating across two days, silence, fai
         actionCount: attempts.get(member.id)!.filter(item => item.outcome === 'done').length })),
     }, null, 2), 'utf8');
   }
-}, 60000);
+}, 120000);

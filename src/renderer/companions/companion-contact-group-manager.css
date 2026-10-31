@@ -1,0 +1,75 @@
+.contact-manager-backdrop { position: fixed; inset: 0; z-index: var(--ui-layer-modal-backdrop, 900); display: grid; place-items: center; padding: 24px; background: var(--ui-surface-scrim, #0006); backdrop-filter: blur(5px); }
+.contact-manager { display: flex; flex-direction: column; width: min(780px, 100%); max-height: min(760px, calc(100dvh - 64px)); min-height: 440px; overflow: hidden; border: 1px solid var(--ui-border-subtle, #dedee5); border-radius: 20px; background: var(--ui-surface-canvas, #fff); box-shadow: var(--ui-shadow-modal, 0 24px 80px #0003); color: var(--ui-content-primary, #222); font-family: var(--ui-font-family, inherit); font-size: 13px; }
+.contact-manager *, .contact-manager *::before, .contact-manager *::after { box-sizing: border-box; }
+.contact-manager button, .contact-manager input { font: inherit; }
+.contact-manager button { cursor: pointer; }
+.contact-manager button:disabled { cursor: default; opacity: .45; }
+.contact-manager button:focus-visible, .contact-manager input:focus-visible { outline: 2px solid var(--ui-border-focus, #7787f5); outline-offset: 3px; }
+.contact-manager h2, .contact-manager h3, .contact-manager p { margin: 0; }
+.contact-manager-header { display: flex; align-items: center; gap: 14px; flex-shrink: 0; padding: 26px 28px 22px; }
+.contact-manager-mark { display: grid; place-items: center; width: 44px; height: 44px; flex-shrink: 0; border-radius: 14px; color: var(--ui-content-accent, #6978e8); background: var(--ui-action-accent-soft, #eff1ff); }
+.contact-manager-mark svg { width: 23px; height: 23px; }
+.contact-manager-header h2 { font-size: 20px; font-weight: 650; letter-spacing: -.025em; line-height: 1.5; }
+.contact-manager-header p { color: var(--ui-content-secondary, #777); font-size: 12px; line-height: 1.7; margin-top: 3px; }
+.contact-manager-header > .contact-manager-icon { margin-left: auto; align-self: flex-start; }
+.contact-manager-icon { display: inline-grid; place-items: center; width: 30px; height: 30px; flex: 0 0 30px; border: 0; border-radius: 8px; background: transparent; color: var(--ui-content-secondary, #777); }
+.contact-manager-icon svg { width: 16px; height: 16px; }
+.contact-manager-icon:hover { background: var(--ui-surface-hover, #f3f3f6); color: var(--ui-content-primary, #222); }
+.contact-manager-type { display: flex; align-items: center; gap: 6px; margin: 0 28px 20px; padding: 4px; width: fit-content; border-radius: 10px; background: var(--ui-surface-pane, #f4f4f7); }
+.contact-manager-type button { display: flex; align-items: center; gap: 8px; min-width: 112px; justify-content: center; padding: 8px 14px; border: 1px solid transparent; border-radius: 7px; color: var(--ui-content-secondary, #777); background: transparent; }
+.contact-manager-type svg { width: 15px; height: 15px; }
+.contact-manager-type button[aria-selected="true"] { color: var(--ui-content-primary, #222); background: var(--ui-surface-canvas, #fff); border-color: var(--ui-border-subtle, #e6e6ec); box-shadow: 0 1px 3px #00000006; font-weight: 600; }
+.contact-manager-type button > span { font-size: 11px; color: var(--ui-content-tertiary, #999); }
+.contact-manager-body { display: grid; grid-template-columns: 205px minmax(0, 1fr); flex: 1; min-height: 240px; overflow: hidden; border-block: 1px solid var(--ui-border-subtle, #e6e6ec); }
+.contact-manager-groups { display: flex; flex-direction: column; min-height: 0; padding: 20px 12px 14px; border-right: 1px solid var(--ui-border-subtle, #e6e6ec); background: var(--ui-surface-pane, #f7f7fa); }
+.contact-manager-section-label { display: flex; align-items: center; justify-content: space-between; padding: 0 12px 13px; color: var(--ui-content-tertiary, #999); font-size: 11px; }
+.contact-manager-group-list { min-height: 0; flex: 1; overflow-y: auto; scrollbar-width: thin; }
+.contact-manager-group-list button { display: flex; align-items: center; gap: 9px; width: 100%; min-height: 40px; padding: 9px 12px; margin-bottom: 4px; border: 1px solid transparent; border-radius: 9px; color: var(--ui-content-secondary, #777); background: transparent; text-align: left; }
+.contact-manager-group-list button > svg { width: 16px; height: 16px; flex-shrink: 0; }
+.contact-manager-group-list button > span { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.contact-manager-group-list small { color: var(--ui-content-tertiary, #999); font-size: 11px; }
+.contact-manager-group-list button:hover { background: var(--ui-surface-hover, #eeeef4); }
+.contact-manager-group-list button.is-current { color: var(--ui-content-accent, #6978e8); background: var(--ui-action-accent-soft, #eff1ff); font-weight: 600; }
+.contact-manager-new { display: flex; align-items: center; justify-content: center; gap: 7px; min-height: 36px; margin-top: 18px; border: 1px dashed var(--ui-border-control, #dadae4); border-radius: 8px; background: transparent; color: var(--ui-content-secondary, #777); }
+.contact-manager-new svg { width: 15px; height: 15px; }
+.contact-manager-new:hover { background: var(--ui-surface-canvas, #fff); }
+.contact-manager-members { display: flex; flex-direction: column; min-width: 0; min-height: 0; padding: 20px 22px 12px; }
+.contact-manager-group-title { display: flex; align-items: center; gap: 6px; margin-bottom: 17px; }
+.contact-manager-group-title > div { flex: 1; min-width: 0; }
+.contact-manager-group-title h3 { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 16px; font-weight: 600; line-height: 1.6; }
+.contact-manager-group-title p { margin-top: 2px; color: var(--ui-content-tertiary, #999); font-size: 11px; }
+.contact-manager-search { display: flex; align-items: center; gap: 8px; flex-shrink: 0; padding: 9px 11px; border: 1px solid var(--ui-border-subtle, #e6e6ec); border-radius: 8px; color: var(--ui-content-tertiary, #999); background: var(--ui-surface-pane, #f7f7fa); }
+.contact-manager-search svg { width: 15px; height: 15px; flex-shrink: 0; }
+.contact-manager-search input { width: 100%; min-width: 0; border: 0; outline: 0; background: transparent; color: var(--ui-content-primary, #222); font-size: 12px; }
+.contact-manager-select-all { display: flex; align-items: center; gap: 10px; padding: 14px 8px 10px; color: var(--ui-content-secondary, #777); font-size: 11px; }
+.contact-manager-select-all small { margin-left: auto; color: var(--ui-content-tertiary, #999); }
+.contact-manager input[type="checkbox"] { width: 15px; height: 15px; margin: 0; accent-color: var(--ui-content-accent, #6978e8); flex-shrink: 0; }
+.contact-manager-member-list { flex: 1; min-height: 160px; overflow-y: auto; scrollbar-width: thin; padding: 2px; }
+.contact-manager-member { display: flex; align-items: center; gap: 11px; padding: 11px 8px; margin-bottom: 3px; border: 1px solid transparent; border-radius: 9px; cursor: pointer; }
+.contact-manager-member:hover { background: var(--ui-surface-pane, #f7f7fa); }
+.contact-manager-member.is-selected { background: var(--ui-action-accent-soft, #eff1ff); }
+.contact-manager-member > .companion-avatar, .contact-manager-member > .companion-group-avatar, .contact-manager-chat-avatar { display: grid; place-items: center; width: 36px; height: 36px; flex: 0 0 36px; border-radius: 11px; background: var(--ui-surface-pane, #f0f0f5); color: var(--ui-content-secondary, #777); overflow: hidden; }
+.contact-manager-member .companion-avatar img { width: 100%; height: 100%; object-fit: contain; }
+.contact-manager-chat-avatar svg { width: 19px; height: 19px; }
+.contact-manager-member > span:last-child { display: grid; gap: 5px; min-width: 0; flex: 1; }
+.contact-manager-member strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; font-weight: 600; }
+.contact-manager-member small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11px; color: var(--ui-content-secondary, #777); }
+.contact-manager-empty { display: flex; flex-direction: column; align-items: center; justify-content: center; min-height: 200px; padding: 28px 12px; text-align: center; }
+.contact-manager-empty > svg { width: 28px; height: 28px; color: var(--ui-content-tertiary, #999); margin-bottom: 14px; }
+.contact-manager-empty strong { font-size: 13px; font-weight: 500; }
+.contact-manager-empty p { margin-top: 8px; line-height: 1.8; color: var(--ui-content-secondary, #777); font-size: 11px; }
+.contact-manager-editor { padding: 13px; margin-bottom: 14px; border: 1px solid var(--ui-border-subtle, #e6e6ec); border-radius: 10px; background: var(--ui-surface-pane, #f7f7fa); }
+.contact-manager-editor > label { display: block; margin-bottom: 8px; font-size: 11px; color: var(--ui-content-secondary, #777); }
+.contact-manager-editor > div { display: flex; align-items: center; gap: 7px; }
+.contact-manager-editor input { width: 100%; min-width: 0; flex: 1; padding: 9px 10px; border: 1px solid var(--ui-border-control, #dadae4); border-radius: 7px; background: var(--ui-surface-canvas, #fff); color: var(--ui-content-primary, #222); font-size: 12px; }
+.contact-manager-primary { flex-shrink: 0; padding: 9px 15px; border: 1px solid transparent; border-radius: 8px; color: var(--ui-content-on-accent, #fff); background: var(--ui-content-accent, #6978e8); font-size: 12px; white-space: nowrap; }
+.contact-manager-quiet { flex-shrink: 0; padding: 8px 5px; border: 0; color: var(--ui-content-secondary, #777); background: transparent; font-size: 12px; }
+.contact-manager-error { display: flex; align-items: center; gap: 8px; padding: 11px 22px; color: var(--ui-status-danger-content, #b13c4f); background: var(--ui-status-danger-soft, #fff0f2); font-size: 12px; }
+.contact-manager-error svg { width: 15px; height: 15px; flex-shrink: 0; }
+.contact-manager-footer { display: flex; align-items: center; gap: 10px; flex-shrink: 0; padding: 18px 24px; }
+.contact-manager-footer > div:first-child { flex: 1; min-width: 0; }
+.contact-manager-footer strong { font-size: 12px; font-weight: 500; }
+.contact-manager-footer p { font-size: 11px; color: var(--ui-content-tertiary, #999); line-height: 1.7; margin-top: 4px; }
+.contact-manager-move { min-width: 125px; min-height: 35px; border: 1px solid var(--ui-border-control, #dadae4); border-radius: 8px; background: var(--ui-surface-canvas, #fff); font-size: 12px; }
+@media (max-width: 650px) { .contact-manager-backdrop { padding: 16px; }.contact-manager { max-height: calc(100dvh - 32px); }.contact-manager-header { padding: 20px; }.contact-manager-type { margin-inline: 20px; }.contact-manager-body { grid-template-columns: 155px minmax(0, 1fr); }.contact-manager-groups { padding-inline: 7px; }.contact-manager-members { padding: 16px 12px 10px; }.contact-manager-footer { padding: 15px; }.contact-manager-footer p { display: none; }.contact-manager-editor > div { flex-wrap: wrap; }.contact-manager-editor input { flex-basis: 100%; } }
+@media (prefers-reduced-motion: reduce) { .contact-manager-backdrop { backdrop-filter: none; } }

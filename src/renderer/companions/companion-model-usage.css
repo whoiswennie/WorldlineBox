@@ -1,0 +1,33 @@
+.companion-model-usage { position: relative; min-width: 0; margin: -3px 6px 0; }
+.companion-usage-footer-row { display: flex; align-items: center; flex-wrap: wrap; gap: 5px 12px; }
+.companion-reply-total-duration { display: inline-flex; align-items: center; gap: 5px; color: var(--ui-content-tertiary); font-size: 10px; font-variant-numeric: tabular-nums; }
+.companion-reply-total-duration > svg { width: 12px; height: 12px; flex: none; }
+.companion-usage-trigger { display: flex; align-items: center; flex-wrap: wrap; gap: 5px 9px; max-width: 100%; padding: 1px 0; border: 0; background: transparent; color: var(--ui-content-tertiary); font: inherit; font-size: 10px; text-align: left; cursor: pointer; }
+.companion-usage-trigger:disabled { cursor: default; opacity: .75; }
+.companion-usage-trigger:not(:disabled):hover { color: var(--ui-content-primary); }
+.companion-usage-trigger:focus-visible { outline: 2px solid var(--companion-blue); outline-offset: 3px; border-radius: 3px; }
+.companion-usage-trigger > svg { width: 12px; height: 12px; }
+.companion-usage-trigger > svg:last-child { margin-left: auto; }
+.companion-usage-meter { display: inline-flex; width: 40px; height: 3px; overflow: hidden; border-radius: 4px; background: var(--ui-border-subtle); }
+.companion-usage-meter > i { height: 100%; border-radius: inherit; background: var(--ui-content-tertiary); }
+.companion-usage-popover { position: absolute; left: 0; bottom: calc(100% + 9px); z-index: var(--ui-layer-popover); width: min(370px, calc(100vw - 100px)); max-height: min(620px, 65vh); overflow: auto; padding: 16px; box-sizing: border-box; border: 1px solid var(--ui-border-subtle); border-radius: 15px; background: var(--ui-surface-pane); color: var(--ui-content-primary); box-shadow: var(--ui-shadow-popover); font-size: 12px; }
+.companion-usage-popover header { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; }
+.companion-usage-popover header > div { display: flex; flex-direction: column; min-width: 0; gap: 5px; }
+.companion-usage-popover header strong { font-size: 13px; }
+.companion-usage-popover header small { color: var(--ui-content-tertiary); overflow-wrap: anywhere; font-size: 10px; }
+.companion-usage-popover header button { display: grid; place-items: center; flex: none; width: 24px; height: 24px; border: 0; border-radius: 6px; background: transparent; color: var(--ui-content-secondary); cursor: pointer; }
+.companion-usage-popover header button:hover { background: var(--ui-surface-hover); }
+.companion-usage-popover header svg { width: 13px; height: 13px; }
+.companion-usage-context { display: flex; flex-direction: column; gap: 5px; margin-top: 17px; }
+.companion-usage-context > div { display: flex; flex-direction: column; gap: 6px; }
+.companion-usage-context strong { font-variant-numeric: tabular-nums; font-size: 19px; font-weight: 550; }
+.companion-usage-context strong small, .companion-usage-context > small { color: var(--ui-content-tertiary); font-size: 10px; font-weight: 400; }
+.companion-usage-popover h3 { display: flex; justify-content: space-between; gap: 8px; margin: 15px 0 10px; padding-top: 13px; border-top: 1px solid var(--ui-border-subtle); font-size: 11px; font-weight: 550; }
+.companion-usage-popover h3 span { color: var(--ui-content-tertiary); font-weight: 400; }
+.companion-usage-readings { display: grid; grid-template-columns: 1fr 1fr; gap: 8px 20px; margin: 0; }
+.companion-usage-readings > div { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; font-size: 10px; }
+.companion-usage-readings dt { color: var(--ui-content-tertiary); }
+.companion-usage-readings dd { margin: 0; font-variant-numeric: tabular-nums; }
+.companion-usage-note { margin: 9px 0 0; color: var(--ui-content-tertiary); font-size: 10px; line-height: 1.7; }
+.companion-usage-popover details { margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--ui-border-subtle); }
+.companion-usage-popover summary { margin-bottom: 10px; color: var(--ui-content-secondary); cursor: pointer; font-size: 10px; }

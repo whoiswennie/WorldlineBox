@@ -328,18 +328,21 @@ it('recovers the same event after a crashed lease without accepting a stale comp
   const committed = store.request({ type: 'social.notification.complete', id: after.id, leaseToken: after.leaseToken!, text: '菲比已经回复邀请。' }).message!;
   expect(committed.replyToId).toBe(f.source.id); expect(store.request({ type: 'social.notification.claim' }).socialNotification).toBeUndefined();
 });
-it.each(['forget', 'reset'] as const)('blocks an already claimed result after original source %s', async action => {
+it.each(['forget', 'retire'] as const)('blocks an already claimed result after original source %s', async action => {
   const f = fixture(); replied(f); const notice = f.store.request({ type: 'social.notification.claim' }).socialNotification!;
   if (action === 'forget') f.store.request({ type: 'memory.forget', companionId: 'deepseek-flash', conversationId: f.playerRoom.id, sourceMessageIds: [f.source.id] });
-  if (action === 'reset') {
-    const reset = f.store.request({ type: 'companion.reset', id: 'deepseek-flash', scope: 'all' }).reset!;
-    f.store.request({ type: 'companion.reset.cleanup', id: 'deepseek-flash', jobId: reset.id });
-    for (let count = 0; count < 500 && f.store.request({ type: 'companion.reset.status', id: 'deepseek-flash' }).reset?.status !== 'completed'; count++) await f.store.advanceReset();
+  if (action === 'retire') {
+    const reset = f.store.request({ type: 'companion.retire', id: 'deepseek-flash', scope: 'all' }).reset!;
+    f.store.request({ type: 'companion.retire.cleanup', id: 'deepseek-flash', jobId: reset.id });
+    for (let count = 0; count < 500 && f.store.request({ type: 'companion.retire.status', id: 'deepseek-flash' }).reset?.status !== 'completed'; count++) await f.store.advanceReset();
   }
   expect(() => f.store.request({ type: 'social.notification.complete', id: notice.id, leaseToken: notice.leaseToken!, text: '已撤回的结果不得回流。' })).toThrow();
   expect(f.store.request({ type: 'social.notification.claim' }).socialNotification).toBeUndefined();
-  const conversationId = action === 'reset' ? f.store.openPrivate('deepseek-flash').id : f.playerRoom.id;
-  expect(f.store.messages({ conversationId }).messages.some(value => value.content === '已撤回的结果不得回流。')).toBe(false);
+  if (action === 'retire') {
+    expect(() => f.store.openPrivate('deepseek-flash')).toThrow('伙伴不存在或已移除');
+    const db = new (BetterSqlite3 as { new(filename: string): CompanionConnection })(f.filename);
+    try { expect(db.prepare('SELECT id FROM messages WHERE content=?').get('已撤回的结果不得回流。')).toBeUndefined(); } finally { db.close(); }
+  } else expect(f.store.messages({ conversationId: f.playerRoom.id }).messages.some(value => value.content === '已撤回的结果不得回流。')).toBe(false);
 });
 it('does not return a claimed event to a deleted custom owner', () => {
   const f = fixture(), owner = f.store.createCompanion({ name: '独立伙伴', description: '', persona: '友好', model: '', avatar: 'custom', proactive: false });
@@ -395,16 +398,16 @@ it('does not enqueue a raw visit response after the host has forgotten its actua
   expect(f.store.request({ type: 'social.notification.claim' }).socialNotification).toBeUndefined();
   expect(f.store.messages({ conversationId: f.playerRoom.id }).messages.some(message => message.content.includes('WITHDRAWN_HOST_SECRET'))).toBe(false);
 });
-it.each(['forget', 'reset'] as const)('rejects a claimed visit response after its host source %s without undoing the public permission fact', async action => {
+it.each(['forget', 'retire'] as const)('rejects a claimed visit response after its host source %s without undoing the public permission fact', async action => {
   const f = fixture(), { host, responseSource, visit } = visitResponse(f);
   const notice = f.store.request({ type: 'social.notification.claim' }).socialNotification!;
   expect(notice.evidence.text).toContain('WITHDRAWN_HOST_SECRET');
   if (action === 'forget') f.store.request({ type: 'memory.forget', ...host, sourceMessageIds: [responseSource.id] });
   else {
-    const reset = f.store.request({ type: 'companion.reset', id: host.companionId, scope: 'all' }).reset!;
-    f.store.request({ type: 'companion.reset.cleanup', id: host.companionId, jobId: reset.id });
-    for (let count = 0; count < 500 && f.store.request({ type: 'companion.reset.status', id: host.companionId }).reset?.status !== 'completed'; count++) await f.store.advanceReset();
-    expect(f.store.request({ type: 'companion.reset.status', id: host.companionId }).reset?.status).toBe('completed');
+    const reset = f.store.request({ type: 'companion.retire', id: host.companionId, scope: 'all' }).reset!;
+    f.store.request({ type: 'companion.retire.cleanup', id: host.companionId, jobId: reset.id });
+    for (let count = 0; count < 500 && f.store.request({ type: 'companion.retire.status', id: host.companionId }).reset?.status !== 'completed'; count++) await f.store.advanceReset();
+    expect(f.store.request({ type: 'companion.retire.status', id: host.companionId }).reset?.status).toBe('completed');
   }
   expect(() => f.store.request({ type: 'social.notification.complete', id: notice.id, leaseToken: notice.leaseToken!, text: '不得回流WITHDRAWN_HOST_SECRET。' })).toThrow();
   expect(f.store.request({ type: 'social.notification.claim' }).socialNotification).toBeUndefined();

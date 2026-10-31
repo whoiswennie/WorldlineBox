@@ -34,3 +34,11 @@
 .companions-reset-note { display: flex; gap: 10px; align-items: center; margin-block: 15px; padding: 13px 15px; border: 1px solid var(--ui-border-subtle); border-radius: 10px; background: var(--ui-action-accent-soft); font-size: 11px; color: var(--ui-content-accent); }
 .companions-reset-note button { margin-left: auto; padding: 0; background: transparent; border: 0; color: inherit; font-size: 11px; cursor: pointer; }
 @media (max-width: 500px) { .companion-reset-dialog > header, .companion-reset-body { padding: 18px; }.companion-reset-dialog > footer { padding: 14px 18px; flex-wrap: wrap; }.companion-reset-dialog footer p { flex-basis: 100%; }.companion-reset-scope { grid-template-columns: 1fr; }.companion-reset-identity h3 { font-size: 14px; } }
+.companion-retire-stages { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 9px; list-style: none; margin: 4px 0 19px; padding: 0; }
+.companion-retire-stages li { display: flex; flex-direction: column; align-items: center; gap: 8px; color: var(--ui-content-tertiary); font-size: 10px; text-align: center; }
+.companion-retire-stages li > span { display: grid; place-items: center; width: 27px; height: 27px; border: 1px solid var(--ui-border-subtle); border-radius: 50%; background: var(--ui-surface-pane); font-size: 11px; }
+.companion-retire-stages li svg { width: 13px; height: 13px; }
+.companion-retire-stages [data-state="done"], .companion-retire-stages [data-state="current"] { color: var(--companion-blue); }
+.companion-retire-stages [data-state="done"] > span { background: var(--companion-blue-soft); border-color: transparent; }
+.companion-retire-stages [data-state="current"] > span { border-color: var(--companion-blue); box-shadow: 0 0 0 3px var(--companion-blue-soft); }
+.companion-retire-phase { display: block; margin-top: 9px; color: var(--ui-content-secondary); font-size: 11px; }

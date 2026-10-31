@@ -16,7 +16,7 @@ function fixture() {
   fixtures.push({ root, store }); return { root, store, scope: { companionId: 'alice', conversationId: store.openPrivate('alice').id } };
 }
 function draft(message: CompanionMessage, patch: Partial<CompanionMemoryCandidate> = {}): CompanionMemoryCandidate {
-  return { content: message.content, diaryName: '自我认识', tags: ['自我认识'], sourceMessageIds: [message.id], evidence: [{ sourceMessageId: message.id, quote: message.content }],
+  return { artifactKind: 'self_understanding' as const, content: message.content, diaryName: '自我认识', tags: ['自我认识'], sourceMessageIds: [message.id], evidence: [{ sourceMessageId: message.id, quote: message.content }],
     selfDevelopment: { kind: 'preference', topic: '饮品', statement: message.content, basis: 'self_expression' }, ...patch };
 }
 function self(store: CompanionsStore, scope: { companionId: string; conversationId: string }, content: string) {
@@ -65,7 +65,7 @@ describe('current source-backed VCP self-understanding', () => {
     store.request({ type: 'memory.record', ...scope, candidate: draft(earlier) });
     expect(store.request({ type: 'character.development', ...scope }).characterDevelopment!.items.map(item => item.memoryId)).toEqual([current.id]);
     const different = self(store, scope, '我喜欢简短表达。');
-    expect(() => store.request({ type: 'memory.record', ...scope, candidate: draft(different, { selfDevelopment: { kind: 'voice', topic: '表达', statement: different.content, basis: 'self_expression', supersedesMemoryIds: [current.id] } }) })).toThrow('同一主题');
+    expect(() => store.request({ type: 'memory.record', ...scope, candidate: draft(different, { selfDevelopment: { kind: 'voice', topic: '表达', statement: different.content, basis: 'self_expression', supersedesMemoryIds: [current.id] } }) })).toThrow('同一类别与主题');
     const bobScope = { companionId: 'bob', conversationId: store.openPrivate('bob').id }, bob = self(store, bobScope, '我喜欢红茶。');
     const bobNote = store.request({ type: 'memory.record', ...bobScope, candidate: draft(bob) }).memories![0]!;
     expect(() => store.request({ type: 'memory.record', ...scope, candidate: draft(different, { selfDevelopment: { kind: 'preference', topic: '饮品', statement: different.content, basis: 'self_expression', supersedesMemoryIds: [bobNote.id] } }) })).toThrow('本人旧认识');
@@ -100,21 +100,21 @@ describe('current source-backed VCP self-understanding', () => {
     const Database = BetterSqlite3 as { new(filename: string): CompanionConnection }, db = new Database(path.join(root, 'companions.db'));
     try {
       expect((db.prepare('SELECT COUNT(*) AS n FROM companion_character_retirement_watermarks WHERE companion_id=?').get('alice') as { n: number }).n).toBe(1);
-      const started = store.request({ type: 'companion.reset', id: 'alice', scope: 'all', expectedRevision: store.state().companions.find(companion => companion.id === 'alice')!.revision! }).reset!;
-      store.request({ type: 'companion.reset.cleanup', id: 'alice', jobId: started.id });
-      for (let step = 0; step < 300 && store.request({ type: 'companion.reset.status', id: 'alice' }).reset?.status !== 'completed'; step++) await store.advanceReset();
-      expect(store.request({ type: 'companion.reset.status', id: 'alice' }).reset?.status).toBe('completed');
+      const started = store.request({ type: 'companion.retire', id: 'alice', scope: 'all', expectedRevision: store.state().companions.find(companion => companion.id === 'alice')!.revision! }).reset!;
+      store.request({ type: 'companion.retire.cleanup', id: 'alice', jobId: started.id });
+      for (let step = 0; step < 300 && store.request({ type: 'companion.retire.status', id: 'alice' }).reset?.status !== 'completed'; step++) await store.advanceReset();
+      expect(store.request({ type: 'companion.retire.status', id: 'alice' }).reset?.status).toBe('completed');
       expect((db.prepare('SELECT COUNT(*) AS n FROM companion_character_retirement_watermarks WHERE companion_id=?').get('alice') as { n: number }).n).toBe(0);
     } finally { db.close(); }
   });
   it('preserves a qualified reflection, invalidates it with the contributing source, and never projects dreams', () => {
     const { store, scope } = fixture(), source = self(store, scope, '我这次先备份，再实际修好了保存问题。');
-    const learned = store.request({ type: 'memory.record', ...scope, candidate: { ...draft(source), selfDevelopment: undefined, diaryName: '日记' } }).memories![0]!;
+    const learned = store.request({ type: 'memory.record', ...scope, candidate: { ...draft(source), artifactKind: 'episode_memory' as const, selfDevelopment: undefined, diaryName: '日记' } }).memories![0]!;
     const statement = '我愿意优先保留可恢复副本。', qualification = '这是本次修复带来的暂定认识，不保证适合所有故障。';
     const reflection = { ...draft(source), content: statement + qualification, relatedMemoryIds: [learned.id], selfDevelopment: { kind: 'value' as const, topic: '可恢复性', statement, basis: 'reflection' as const, qualification } };
     const note = store.request({ type: 'memory.record', ...scope, candidate: reflection }).memories![0]!;
     expect(store.request({ type: 'character.development', ...scope }).characterDevelopment!.items[0]).toMatchObject({ memoryId: note.id, basis: 'reflection', qualification });
-    expect(() => store.request({ type: 'memory.record', ...scope, candidate: { ...reflection, metadata: { dream: true } } })).toThrow('梦');
+    expect(() => store.request({ type: 'memory.record', ...scope, candidate: { ...reflection, metadata: { dream: true } } })).toThrow('虚构');
     store.request({ type: 'memory.forget', ...scope, id: learned.id });
     expect(store.request({ type: 'character.development', ...scope }).characterDevelopment!.items).toEqual([]);
   });

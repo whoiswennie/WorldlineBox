@@ -4,6 +4,7 @@
 const fs = require('node:fs/promises');
 const { createHash } = require('node:crypto');
 const fingerprintNote = note => createHash('sha256').update(JSON.stringify(note)).digest('hex');
+const fingerprintAnnotations = note => { const annotations = { ...note }; delete annotations.content; return fingerprintNote(annotations); };
 const contentHash = text => createHash('sha256').update(text).digest('hex');
 const failure = message => Object.assign(new Error(message), { code: 'VCP_MEMORY_RECORD_CHANGED' });
 
@@ -50,7 +51,8 @@ class OwnedMemoryRecordCatalog {
       metadata: { ...(hostMemoryOwner ? { hostMemoryOwner } : {}),
         ...(typeof record.metadata?.hostMemoryVersion === 'number' ? { hostMemoryVersion: record.metadata.hostMemoryVersion } : {}),
         ...(record.metadata?.dream ? { dream: true } : {}) },
-      noteFingerprint: fingerprintNote(note), contentHash: contentHash(note.content), contentBytes: Buffer.byteLength(note.content, 'utf8') });
+      noteFingerprint: fingerprintNote(note), annotationFingerprint: fingerprintAnnotations(note),
+      contentHash: contentHash(note.content), contentBytes: Buffer.byteLength(note.content, 'utf8') });
     this.cacheBody(id, JSON.stringify(record));
     return this;
   }
@@ -80,4 +82,4 @@ class OwnedMemoryRecordCatalog {
   }
 }
 
-module.exports = { OwnedMemoryRecordCatalog, fingerprintNote };
+module.exports = { OwnedMemoryRecordCatalog, fingerprintNote, fingerprintAnnotations };

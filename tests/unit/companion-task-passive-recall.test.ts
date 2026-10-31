@@ -5,16 +5,17 @@ import { captureCompanionExecutionReadset, verifyCompanionExecutionReadset } fro
 import type { CompanionLoopCheckpoint } from '../../src/shared/companion-loop';
 import type { CompanionStorageCommand, CompanionStorageResponse } from '../../src/shared/companion-storage';
 import type { CompanionMemory } from '../../src/shared/companions';
+import { companionMemoryTypeScope } from '../../src/main/companions/memory-type-scope';
 
 vi.mock('electron', () => ({ utilityProcess: { fork: vi.fn() } }));
 const scope = { companionId: 'owner', conversationId: 'private', beforeSequence: 40 };
-const complete = { text: '先前由真实获权来源聚焦的本任务回忆。', revision: 'old-corpus', profileKey: 'old-model-profile',
+const complete = { text: '先前由真实获权来源聚焦的本任务回忆。', revision: 'old-corpus', profileKey: 'old-model-profile', typeScope: companionMemoryTypeScope('facts'),
   evidence: { capturedAt: '2026-10-26T00:00:00Z', corpusHash: 'old', queryClock: { now: '2026-10-26T00:00:00Z', timeZone: 'Asia/Shanghai', domain: 'world' as const },
     dependencyCoverage: 'complete' as const, dependencies: [{ id: 'memory_a', version: 2 }] } };
 const frozen = { ...complete, evidence: { ...complete.evidence, snapshotPolicy: 'task_passive_v1' as const,
   frozenDependencies: [{ id: 'memory_a', sources: [{ id: 'original_source', conversationId: 'private', checksum: 'a'.repeat(64) }] }] } };
 function fixture() {
-  let notes = [{ id: 'memory_a', companionId: 'owner', version: 2 }] as CompanionMemory[];
+  let notes = [{ id: 'memory_a', artifactKind: 'episode_memory', companionId: 'owner', version: 2 }] as CompanionMemory[];
   let frozenValid = true;
   const request = vi.fn(async (command: CompanionStorageCommand): Promise<CompanionStorageResponse> => {
     if (command.type === 'memory.records.filter') return { ok: true, memories: notes };
@@ -33,7 +34,7 @@ function fixture() {
 it('keeps frozen passive facts after ordinary revision while explicit tools retain exact note versions', async () => {
   const f = fixture();
   try {
-    f.notes([{ id: 'memory_a', companionId: 'owner', version: 3 }] as CompanionMemory[]);
+    f.notes([{ id: 'memory_a', artifactKind: 'episode_memory', companionId: 'owner', version: 3 }] as CompanionMemory[]);
     expect(await f.service.contextValid(scope, frozen)).toBe(true);
     expect(await f.service.contextValid(scope, complete)).toBe(false);
     const proof = captureCompanionExecutionReadset(scope, { context: { user: JSON.stringify({ memoryRecall: { context: frozen } }) } });
@@ -77,7 +78,7 @@ it('keeps the frozen passive task snapshot across a new day without consulting a
   const f = fixture();
   try {
     expect(await f.service.contextFresh(scope, frozen)).toBe(true);
-    expect(f.request.mock.calls.map(([command]) => command.type)).toEqual(['memory.frozen.valid']);
+    expect(f.request.mock.calls.map(([command]) => command.type)).toEqual(['memory.records.filter', 'memory.frozen.valid']);
     expect(f.get).not.toHaveBeenCalled();
   } finally { await f.service.close(); }
 });
@@ -85,7 +86,7 @@ it('keeps the frozen passive task snapshot across a new day without consulting a
 it.each(['version', 'owner', 'withdrawn'] as const)('rejects %s changes to actual captured dependencies without semantic recall', async kind => {
   const f = fixture();
   try {
-    f.notes(kind === 'withdrawn' ? [] : [{ id: 'memory_a', companionId: kind === 'owner' ? 'other' : 'owner', version: kind === 'version' ? 3 : 2 }] as CompanionMemory[]);
+    f.notes(kind === 'withdrawn' ? [] : [{ id: 'memory_a', artifactKind: 'episode_memory', companionId: kind === 'owner' ? 'other' : 'owner', version: kind === 'version' ? 3 : 2 }] as CompanionMemory[]);
     expect(await f.service.contextValid(scope, complete)).toBe(false); expect(f.get).not.toHaveBeenCalled();
   } finally { await f.service.close(); }
 });

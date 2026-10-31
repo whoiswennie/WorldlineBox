@@ -8,9 +8,11 @@ import type { CompanionMemorySearch } from '../../src/shared/companion-memory';
 
 describe('human validation uses the actual companion memory tool', () => {
   it.each(['active', 'passive'] as const)('delegates %s exactly to the shared memory search without a management corpus or fallback', async mode => {
-    const request = vi.fn(async (command: CompanionStorageCommand): Promise<CompanionStorageResponse> => command.type === 'memory.library.scope'
+    const request = vi.fn(async (command: CompanionStorageCommand): Promise<CompanionStorageResponse> => command.type === 'memory.library.scope.read'
       ? { ok: true, conversation: { id: 'private_alice', kind: 'private', title: 'Alice', memberIds: ['alice'], muted: false, pinned: false, unread: 0, updatedAt: '', lastMessage: '' } }
       : command.type === 'memory.corpus.stamp' ? { ok: true, memoryCorpusStamp: 'corpus_alice_1' }
+        : command.type === 'memory.recall.authority' ? { ok: true, memoryRecallAuthorityStamp: 'authority-1' }
+        : command.type === 'memory.lifecycle.state' ? { ok: true, memoryLifecycleState: { companionId: 'alice', revocationEpoch: 0, ledgerSequence: 0 } }
         : { ok: true, memoryStatus: { pending: 1, running: 0, completed: 0, failed: 0, memories: 0, forgotten: 0, indexed: 0, pendingIndex: 0, messageWatermark: 0, captureWatermark: 0 } });
     const memoryRetrieval = projectCompanionMemoryRetrieval({ mode, observedAt: '', documentCount: 1, hits: [], contextText: '原版 VCP 实际返回原文' });
     const search = vi.fn(async (): Promise<CompanionStorageResponse> => ({ ok: true, memoryPage: { items: [], hasMore: false }, memoryRetrieval, memoryContext: { text: '原版 VCP 实际返回原文', revision: 'revision', profileKey: 'bundled' } }));
@@ -19,14 +21,15 @@ describe('human validation uses the actual companion memory tool', () => {
     expect(result).toMatchObject({ companionId: 'alice', mode, contextText: '原版 VCP 实际返回原文', pending: true, degraded: false });
     expect(result.memoryRetrieval).toEqual(memoryRetrieval);
     expect(companionMemoryProbeSchema.safeParse(result).success).toBe(true);
-    expect(request.mock.calls.map(([command]) => command.type)).toEqual(['memory.library.scope', 'memory.corpus.stamp', 'memory.status', 'memory.corpus.stamp']);
+    expect(request.mock.calls.map(([command]) => command.type)).toEqual(['memory.library.scope.read', 'memory.lifecycle.state', 'memory.recall.authority', 'memory.status', 'memory.corpus.stamp', 'memory.lifecycle.state', 'memory.recall.authority']);
   });
 
   it('surfaces a failed native query without replacing it with keyword or management search', async () => {
-    const request = vi.fn(async (): Promise<CompanionStorageResponse> => ({ ok: true, conversation: { id: 'private_alice', kind: 'private', title: '', memberIds: ['alice'], muted: false, pinned: false, unread: 0, updatedAt: '', lastMessage: '' } }));
+    const request = vi.fn(async (): Promise<CompanionStorageResponse> => ({ ok: true, conversation: { id: 'private_alice', kind: 'private', title: '', memberIds: ['alice'], muted: false, pinned: false, unread: 0, updatedAt: '', lastMessage: '' },
+      memoryRecallAuthorityStamp: 'authority-1', memoryLifecycleState: { companionId: 'alice', revocationEpoch: 0, ledgerSequence: 0 } }));
     const search = vi.fn(async () => { throw new Error('原版 VCP 话题聚焦不可用'); });
     await expect(probeCompanionMemory({ type: 'memory.recall.test', companionId: 'alice', query: '名字', mode: 'passive' }, { request, search })).rejects.toThrow('原版 VCP 话题聚焦不可用');
-    expect(search).toHaveBeenCalledTimes(1); expect(request).toHaveBeenCalledTimes(2);
+    expect(search).toHaveBeenCalledTimes(1); expect(request).toHaveBeenCalledTimes(3);
   });
 });
 
@@ -43,8 +46,10 @@ it('records backend preparation before native progress, every actual phase and a
   let now = 100, notify: ((stage: string) => void) | undefined;
   const scope = deferred<CompanionStorageResponse>(), searching = deferred<void>(), result = deferred<CompanionStorageResponse>();
   const progress: CompanionMemoryProbeProgressEvent[] = [];
-  const request = vi.fn(async (command: CompanionStorageCommand): Promise<CompanionStorageResponse> => command.type === 'memory.library.scope' ? scope.promise
-    : command.type === 'memory.corpus.stamp' ? { ok: true, memoryCorpusStamp: 'stable-corpus' } : { ok: true });
+  const request = vi.fn(async (command: CompanionStorageCommand): Promise<CompanionStorageResponse> => command.type === 'memory.library.scope.read' ? scope.promise
+    : command.type === 'memory.corpus.stamp' ? { ok: true, memoryCorpusStamp: 'stable-corpus' }
+      : command.type === 'memory.recall.authority' ? { ok: true, memoryRecallAuthorityStamp: 'authority-1' }
+      : command.type === 'memory.lifecycle.state' ? { ok: true, memoryLifecycleState: { companionId: 'alice', revocationEpoch: 0, ledgerSequence: 0 } } : { ok: true });
   const search = vi.fn(async (...args: [CompanionMemorySearch, 'active' | 'passive', ((stage: string) => void)?]) => { notify = args[2]; searching.resolve(); return result.promise; });
   const pending = probeCompanionMemory({ type: 'memory.recall.test', companionId: 'alice', mode: 'passive', query: '明确话题', requestId: 'backend-live-test' },
     { request, search, now: () => now, onProgress: event => progress.push(event) });
@@ -73,8 +78,8 @@ it('records backend preparation before native progress, every actual phase and a
 it('emits failure timing and ignores late native updates without replacing the original failure', async () => {
   let now = 0, notify: ((stage: string) => void) | undefined;
   const searching = deferred<void>(), result = deferred<CompanionStorageResponse>(), progress: CompanionMemoryProbeProgressEvent[] = [];
-  const request = vi.fn(async (command: CompanionStorageCommand): Promise<CompanionStorageResponse> => command.type === 'memory.library.scope'
-    ? { ok: true, conversation: room } : { ok: true, memoryCorpusStamp: 'stable-corpus' });
+  const request = vi.fn(async (command: CompanionStorageCommand): Promise<CompanionStorageResponse> => command.type === 'memory.library.scope.read'
+    ? { ok: true, conversation: room } : { ok: true, memoryRecallAuthorityStamp: 'authority-1', memoryCorpusStamp: 'stable-corpus', memoryLifecycleState: { companionId: 'alice', revocationEpoch: 0, ledgerSequence: 0 } });
   const search = vi.fn(async (...args: [CompanionMemorySearch, 'active' | 'passive', ((stage: string) => void)?]) => { notify = args[2]; searching.resolve(); return result.promise; });
   const pending = probeCompanionMemory({ type: 'memory.recall.test', companionId: 'alice', mode: 'active', query: '明确话题', requestId: 'backend-failure-test' },
     { request, search, now: () => now, onProgress: event => progress.push(event) });
@@ -83,4 +88,23 @@ it('emits failure timing and ignores late native updates without replacing the o
   now = 50; notify!('整理检索片段'); now = 1250; result.reject(new Error('原版查询真实失败')); await rejected;
   expect(progress.at(-1)).toMatchObject({ state: 'failed', elapsedMs: 1250, stageId: 'focus', stageElapsedMs: 1200 });
   const frozen = structuredClone(progress); now = 99_999; notify!('核验本轮回忆'); expect(progress).toEqual(frozen);
+});
+
+it.each(['active', 'passive'] as const)('keeps the captured %s result while background notes/indexing advance, but rejects a withdrawal', async mode => {
+  let epoch = 3, sequence = 12, stamp = 'before';
+  const request = vi.fn(async (command: CompanionStorageCommand): Promise<CompanionStorageResponse> => command.type === 'memory.library.scope.read'
+    ? { ok: true, conversation: room } : command.type === 'memory.lifecycle.state'
+      ? { ok: true, memoryLifecycleState: { companionId: 'alice', revocationEpoch: epoch, ledgerSequence: sequence } }
+      : command.type === 'memory.corpus.stamp' ? { ok: true, memoryCorpusStamp: stamp }
+        : command.type === 'memory.recall.authority' ? { ok: true, memoryRecallAuthorityStamp: `authority-${epoch}` }
+        : { ok: true, memoryStatus: { pending: 1, running: 1, completed: 0, failed: 0, memories: 2, forgotten: 0, indexed: 1, pendingIndex: 1, messageWatermark: 0, captureWatermark: 0 } });
+  const search = vi.fn(async (): Promise<CompanionStorageResponse> => {
+    sequence++; stamp = 'after-background-publication';
+    return { ok: true, memoryPage: { items: [], hasMore: false }, memoryContext: { text: '已捕获的真实发布视图', revision: 'captured', profileKey: 'fixture' } };
+  });
+  const result = await probeCompanionMemory({ type: 'memory.recall.test', companionId: 'alice', query: '已发布的内容', mode }, { request, search });
+  expect(result).toMatchObject({ contextText: '已捕获的真实发布视图', pending: true, corpusStamp: 'after-background-publication' });
+  search.mockImplementationOnce(async () => { epoch++; return { ok: true, memoryPage: { items: [], hasMore: false } }; });
+  await expect(probeCompanionMemory({ type: 'memory.recall.test', companionId: 'alice', query: '撤回的内容', mode }, { request, search }))
+    .rejects.toThrow('来源或授权在检索期间已撤回');
 });

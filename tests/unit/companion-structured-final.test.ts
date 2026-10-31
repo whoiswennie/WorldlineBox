@@ -9,6 +9,9 @@ import type { CompanionExecutionReadset } from '../../src/shared/companion-execu
 import type { CompanionReplyInput } from '../../src/main/companions/context';
 import type { CompanionAgentJournal } from '../../src/main/companions/agent-journal';
 import { runCompanionStructuredAgent, type CompanionStructuredAgentInput } from '../../src/main/companions/structured-agent';
+import { generateCompanionReply } from '../../src/main/companions/model';
+import { DEFAULT_COMPANION_TOOL_POLICY } from '../../src/shared/companion-tool-policy';
+import { COMPANION_WORLD_CAPABILITY_TOOL } from '../../src/shared/companion-capability-tools';
 
 const formats: AiApiFormat[] = ['openai_chat', 'openai_responses', 'anthropic', 'gemini_native', 'dashscope_native'];
 const config = { model: 'user-selected-model', baseUrl: 'https://offline.invalid/v1', apiKey: 'synthetic-only' };
@@ -107,9 +110,65 @@ function finalFeedback(format: AiApiFormat, wire: Row): Row {
   return object(JSON.parse(String(format === 'gemini_native' ? rows(last.parts)[0]!.text : last.content)).hostValidationFeedback);
 }
 
+const disabledPolicy = { dsh: false, browser: false, memory: false, world: false, social: false, planning: false, observation: false, files: false };
+function policyFrame(disabled: boolean): CompanionReplyInput {
+  const source = { id: 'actual_peer_message', conversationId: frame.conversation.id, sequence: 1, authorId: 'bob', kind: 'text' as const,
+    content: '现在方便聊聊吗？', attachments: [], status: 'sent' as const, createdAt: frame.companion.createdAt,
+    toolPolicy: disabled ? disabledPolicy : { ...DEFAULT_COMPANION_TOOL_POLICY } };
+  return { ...frame, sourceMessage: source, messages: [source] };
+}
+
+it.each(formats.flatMap(format => [false, true].map(disabled => ({ format, disabled }))))(
+  'advertises and accepts only the host-registered final control on $format with every action disabled=$disabled', async ({ format, disabled }) => {
+    const f = journalFixture(), execute = vi.fn(async () => ({ ok: true })), validateOutput = vi.fn((value: unknown) => output.parse(value));
+    const fetchFn = vi.fn<typeof fetch>(async (_url, init) => {
+      const defs = definitions(format, object(JSON.parse(String(init?.body)))), names = defs.map(tool => tool.name);
+      expect(names).toEqual(disabled ? ['wait', COMPANION_SUBMIT_RESULT_TOOL] : ['world', 'wait', COMPANION_SUBMIT_RESULT_TOOL]);
+      expect(names.some(name => name === 'memory' || String(name).startsWith('memory.'))).toBe(false);
+      const world = defs.find(tool => tool.name === 'world');
+      if (world) {
+        const parameters = object(world.parameters ?? world.parametersJsonSchema ?? world.input_schema);
+        expect(object(object(parameters.properties).action).enum).not.toContain('experience');
+      }
+      const registered = defs.find(tool => tool.name === COMPANION_SUBMIT_RESULT_TOOL)!;
+      expect(registered.parameters ?? registered.parametersJsonSchema ?? registered.input_schema).toMatchObject({
+        type: 'object', required: ['answer'], properties: { answer: { type: 'string' } } });
+      // The provider can return this control only after observing its actual
+      // declaration, rather than inventing an unavailable function in a mock.
+      return envelope(format, [call('advertised_final', { answer: '本条任务完成交付' }, String(registered.name))]);
+    });
+    await expect(runCompanionStructuredAgent({ context, frame: policyFrame(disabled), finalSchema, journal: f.journal, validateOutput,
+      capabilities: { tools: [{ name: 'memory', description: '已授权时实际可用的记忆能力', parameters: { type: 'object' } }, COMPANION_WORLD_CAPABILITY_TOOL], execute } },
+    { ...config, apiFormat: format }, undefined, { fetchFn })).resolves.toEqual({ answer: '本条任务完成交付' });
+    expect(fetchFn).toHaveBeenCalledOnce(); expect(validateOutput).toHaveBeenCalledOnce(); expect(execute).not.toHaveBeenCalled();
+    expect(f.read()).toMatchObject({ status: 'done', effects: [] });
+  });
+
+it.each(formats.flatMap(format => [false, true].map(disabled => ({ format, disabled }))))(
+  'does not invent a final or recall control for ordinary $format chat with every action disabled=$disabled', async ({ format, disabled }) => {
+  const fetchFn = vi.fn<typeof fetch>(async (_url, init) => {
+    const defs = definitions(format, object(JSON.parse(String(init?.body)))), names = defs.map(tool => tool.name);
+    if (disabled) expect(names).toEqual(['wait']);
+    expect(names).not.toContain(COMPANION_SUBMIT_RESULT_TOOL);
+    expect(names.some(name => name === 'memory' || String(name).startsWith('memory.'))).toBe(false);
+    return envelope(format, [], '按眼前来信自然回复。');
+  });
+  await expect(generateCompanionReply(policyFrame(disabled), { ...config, apiFormat: format }, undefined, { loop: true, fetchFn }))
+    .resolves.toMatchObject({ text: '按眼前来信自然回复。' });
+  expect(fetchFn).toHaveBeenCalledOnce();
+});
+
+it('still rejects a capability attempting to register the reserved final control before provider dispatch', async () => {
+  const fetchFn = vi.fn<typeof fetch>(), execute = vi.fn(async () => ({ ok: true }));
+  await expect(runCompanionStructuredAgent({ context, frame: policyFrame(true), finalSchema, validateOutput: value => output.parse(value),
+    capabilities: { tools: [{ name: COMPANION_SUBMIT_RESULT_TOOL, description: '不得冒充宿主控制通道', parameters: {} }], execute } },
+  { ...config, apiFormat: 'openai_chat' }, undefined, { fetchFn })).rejects.toThrow('保留的最终提案工具');
+  expect(fetchFn).not.toHaveBeenCalled(); expect(execute).not.toHaveBeenCalled();
+});
+
 it.each(formats)('preserves actual native IDs, schema and rejected call/result pairs through %s final correction', async format => {
   const f = journalFixture(), expectedSchema = { ...finalSchema }; delete expectedSchema.$schema;
-  const auxiliary = call('actual_read', { action: 'read', id: 'existing' }, 'memory');
+  const auxiliary = call('actual_read', { action: 'query', category: 'contacts' }, 'world');
   const badShape = call('final_shape', { answer: 7 }), badMeaning = call('final_meaning', { answer: 'UNVERIFIED_DONE' });
   const accepted = call('final_accepted', { answer: 'host-reviewed result' });
   const calls = [auxiliary, badShape, badMeaning, accepted], raw = '这是一份尚未执行的提案。';
@@ -119,7 +178,7 @@ it.each(formats)('preserves actual native IDs, schema and rejected call/result p
   let inference = 0;
   const fetchFn = vi.fn<typeof fetch>(async (_url, init) => {
     const wire = object(JSON.parse(String(init?.body))), defs = definitions(format, wire);
-    expect(defs.map(tool => tool.name)).toEqual(['memory', 'wait', COMPANION_SUBMIT_RESULT_TOOL]);
+    expect(defs.map(tool => tool.name)).toEqual(['world', 'wait', COMPANION_SUBMIT_RESULT_TOOL]);
     const final = defs.find(tool => tool.name === COMPANION_SUBMIT_RESULT_TOOL)!;
     expect(final.parameters ?? final.parametersJsonSchema ?? final.input_schema).toEqual(expectedSchema);
     if (inference >= 1) assertNativeHistory(format, wire, f.read().turns[0]!);
@@ -135,7 +194,7 @@ it.each(formats)('preserves actual native IDs, schema and rejected call/result p
     return envelope(format, [calls[inference++]!], raw);
   });
   expect(await runCompanionStructuredAgent({ context, frame, finalSchema, journal: f.journal, reviseFinal: f.reviseFinal,
-    validateOutput, capabilities: { tools: [{ name: 'memory', description: '实际辅助读取', parameters: { type: 'object' } }], execute } },
+    validateOutput, capabilities: { tools: [COMPANION_WORLD_CAPABILITY_TOOL], execute } },
   { ...config, apiFormat: format }, undefined, { fetchFn })).toEqual({ answer: 'host-reviewed result' });
   const saved = f.read(); expect(saved.status).toBe('done'); expect(fetchFn).toHaveBeenCalledTimes(4);
   expect(execute).toHaveBeenCalledOnce(); expect(validateOutput).toHaveBeenCalledTimes(3);
@@ -151,7 +210,7 @@ it.each(formats)('preserves actual native IDs, schema and rejected call/result p
 
 it.each(['auxiliary-before-final', 'two-final-calls'] as const)('rejects %s before any effect and retains every original call', async mode => {
   const f = journalFixture(), final = call('invalid_final', { answer: 'not executed' });
-  const rejected = mode === 'auxiliary-before-final' ? [call('must_not_dispatch', { action: 'read' }, 'memory'), final]
+  const rejected = mode === 'auxiliary-before-final' ? [call('must_not_dispatch', { action: 'query', category: 'contacts' }, 'world'), final]
     : [final, call('second_final', { answer: 'also not executed' })];
   const execute = vi.fn(async () => ({ ok: true })); let inference = 0;
   const fetchFn = vi.fn<typeof fetch>(async (_url, init) => {
@@ -164,7 +223,7 @@ it.each(['auxiliary-before-final', 'two-final-calls'] as const)('rejects %s befo
     return envelope('openai_chat', inference === 1 ? rejected : [call('valid_final', { answer: 'corrected' })]);
   });
   expect(await runCompanionStructuredAgent({ context, frame, finalSchema, journal: f.journal,
-    validateOutput: value => output.parse(value), capabilities: { tools: [{ name: 'memory', description: '辅助读取', parameters: {} }], execute } },
+    validateOutput: value => output.parse(value), capabilities: { tools: [COMPANION_WORLD_CAPABILITY_TOOL], execute } },
   { ...config, apiFormat: 'openai_chat' }, undefined, { fetchFn })).toEqual({ answer: 'corrected' });
   expect(execute).not.toHaveBeenCalled(); expect(f.read().effects).toEqual([]); expect(fetchFn).toHaveBeenCalledTimes(2);
 });

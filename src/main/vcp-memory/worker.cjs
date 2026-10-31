@@ -19,6 +19,7 @@ function receive(message) {
         case 'remember': value = await runtime.remember(command.note); break;
         case 'replace': value = await runtime.replace(command.notes); break;
         case 'projection-delta': value = await runtime.applyProjectionDelta(command.notes, command.removedIds); break;
+        case 'projection-inspect': value = await runtime.inspectProjection(command.descriptors); break;
         case 'prepare': value = await runtime.prepare(); break;
         case 'search': value = await runtime.search(command); break;
         case 'read': value = await runtime.read(command.id); break;

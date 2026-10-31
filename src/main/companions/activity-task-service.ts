@@ -2,7 +2,7 @@ import { companionBehaviorSystem } from './asset-behavior-defaults';
 import { createHash } from 'node:crypto';
 import type { Companion, CompanionConversation, CompanionMessage } from '../../shared/companions';
 import type { CompanionStorageCommand, CompanionStorageResponse } from '../../shared/companion-storage';
-import { activityDecisionSchema, activityDecisionJsonSchema, projectCompanionActivityHistoryEntry, type CompanionActivityTask, type CompanionActivityMemoryIntent } from '../../shared/companion-activity-task';
+import { activityAgentDecisionSchema, activityDecisionJsonSchema, projectCompanionActivityHistoryEntry, type CompanionActivityTask, type CompanionActivityMemoryIntent } from '../../shared/companion-activity-task';
 import type { CompanionProfileInput } from '../../shared/companion-public-profile';
 import { CompanionModelError, type CompanionModelConfig } from './model';
 import { CompanionAgentNoProgressError, CompanionAgentFinalValidationError } from './agent-kernel';
@@ -45,18 +45,28 @@ export function companionActivitySocialObservationFingerprint(messages: readonly
   return JSON.stringify(messages.map(message => [message.id, message.conversationId, message.sequence,
     createHash('sha256').update(message.content).digest('hex')]));
 }
+export interface CompanionActivityAgendaParent { companionId: string; id: string; agendaRunId: string; agendaLeaseToken: string }
+export type CompanionActivityAgendaPhase = 'report' | 'memory' | 'planning' | 'waiting';
 /** Sleeps in durable host predicates, not model polling or a held chat/computer lease. */
 export class CompanionActivityTaskService {
   private timer?: ReturnType<typeof setInterval>;
   private ticking?: Promise<void>;
   private closed = false;
+  private agendaDriven = false;
+  private agendaReady?: Promise<void>;
   private jobs = new Map<string, { companionId: string; controller: AbortController; promise: Promise<void> }>();
   constructor(private readonly options: Options) {}
-  start(): void { if (this.closed || this.timer) return; this.timer = setInterval(() => { void this.tick(); }, 1000); this.timer.unref(); void this.tick(); }
+  setAgendaDriven(): Promise<void> {
+    if (this.agendaReady) return this.agendaReady;
+    this.agendaDriven = true; if (this.timer) { clearInterval(this.timer); this.timer = undefined; }
+    for (const job of this.jobs.values()) job.controller.abort();
+    return this.agendaReady ??= this.options.request({ type: 'activity.agenda.enable' }).then(result => { if (!result.ok) throw new Error(result.error ?? '持续行动日程模式未启用。'); });
+  }
+  start(): void { if (this.agendaDriven || this.closed || this.timer) return; this.timer = setInterval(() => { void this.tick(); }, 1000); this.timer.unref(); void this.tick(); }
   async tick(): Promise<void> {
-    if (this.closed || this.ticking) return;
+    if (this.agendaDriven || this.closed || this.ticking) return;
     this.ticking = (async () => {
-      while (!this.closed && this.jobs.size < 20) {
+      while (!this.agendaDriven && !this.closed && this.jobs.size < 20) {
         const excludedReports = [...new Set([...this.options.excludedIds(), ...[...this.jobs.values()].map(job => job.companionId)])];
         const reporting = await this.options.request({ type: 'activity.report.claim', excludedIds: excludedReports });
         if (reporting.activityReport && reporting.activityTask) {
@@ -82,24 +92,62 @@ export class CompanionActivityTaskService {
     })().catch(this.options.report).finally(() => { this.ticking = undefined; });
     await this.ticking;
   }
-  private async memoryStep(intent: CompanionActivityMemoryIntent, signal: AbortSignal): Promise<void> {
-    try {
-      signal.throwIfAborted();
-      if (this.options.excludedIds().includes(intent.companionId)) throw new Error('伙伴当前暂停，记忆步骤稍后继续。');
-      const { operation, ...parameters } = intent.operation;
-      const scope = { companionId: intent.companionId, conversationId: intent.conversationId };
-      const command = { ...parameters, ...scope, type: `memory.${operation}`,
-        ...(['record', 'revise', 'organize', 'consolidate'].includes(operation) ? { operationId: intent.id } : {}) } as CompanionStorageCommand;
-      const result = await this.options.request(command);
-      if (!result.ok) throw new Error(result.error ?? '记忆操作未完成。');
-      signal.throwIfAborted();
-      const receipt = activityMemoryReceipt(result);
-      await this.options.request({ type: 'activity.memory.complete', id: intent.id, leaseToken: intent.leaseToken,
-        ...receipt });
-    } catch (error) {
-      if (!signal.aborted && !this.closed) await this.options.request({ type: 'activity.memory.fail', id: intent.id, leaseToken: intent.leaseToken,
-        error: error instanceof Error ? error.message.slice(0, 1000) : '记忆操作未完成。' }).catch(() => undefined);
+  /** One actual child phase only. Native arrival/reply/model waits remain in
+   * SQLite and release the agenda root instead of retaining this processor. */
+  async runAgendaQuantum(parent: CompanionActivityAgendaParent, signal: AbortSignal,
+    onPhase?: (phase: CompanionActivityAgendaPhase, task: CompanionActivityTask) => Promise<void>): Promise<{ task: CompanionActivityTask; phase: CompanionActivityAgendaPhase }> {
+    await this.setAgendaDriven(); signal.throwIfAborted();
+    if (this.closed || this.jobs.has(parent.id)) throw new Error('该持续行动已有执行或服务已停止，未重复认领。');
+    const read = async () => {
+      const response = await this.options.request({ type: 'activity.agenda.get', companionId: parent.companionId, id: parent.id });
+      if (!response.ok || !response.activityTask || response.activityTask.id !== parent.id || response.activityTask.companionId !== parent.companionId)
+        throw new Error(response.error ?? '持续行动没有返回准确本人回执。');
+      return response.activityTask;
+    };
+    const original = await read();
+    if (original.historyAvailable === false) throw new Error('持续行动来源已撤回，旧目标不再执行。');
+    const controller = new AbortController(), effective = AbortSignal.any([signal, controller.signal]);
+    let phase: CompanionActivityAgendaPhase = 'waiting', failure: unknown;
+    const promise = (async () => {
+      if (original.reportPending) {
+        phase = 'report'; await onPhase?.(phase, original);
+        const report = await this.options.request({ type: 'activity.report.claim', ...parent, excludedIds: this.options.excludedIds() });
+        if (!report.ok) throw new Error(report.error ?? '本次报告步骤未获准确认领。');
+        if (report.activityReport && report.activityTask) await this.reportStep(report, effective);
+      } else if (original.memoryIntentId) {
+        phase = 'memory'; await onPhase?.(phase, original);
+        const response = await this.options.request({ type: 'activity.memory.claim', companionId: parent.companionId, taskId: parent.id,
+          agendaRunId: parent.agendaRunId, agendaLeaseToken: parent.agendaLeaseToken });
+        if (!response.ok) throw new Error(response.error ?? '本次记忆步骤未获准确认领。');
+        if (response.activityMemoryIntent) await this.memoryStep(response.activityMemoryIntent, effective);
+      } else if (!['succeeded', 'failed', 'cancelled'].includes(original.status)) {
+        const response = await this.options.request({ type: 'activity.claim', ...parent, excludedIds: this.options.excludedIds() });
+        if (!response.ok) throw new Error(response.error ?? '本次行动步骤未获准确认领。');
+        if (response.activityTask?.leaseToken) {
+          if (response.activityTask.id !== parent.id || response.activityTask.agendaRunId !== parent.agendaRunId || response.activityTask.agendaLeaseToken !== parent.agendaLeaseToken)
+            throw new Error('持续行动认领没有绑定当前准确父租约。');
+          phase = 'planning'; await onPhase?.(phase, response.activityTask); await this.step(response.activityTask, effective);
+        }
+      }
+    })();
+    this.jobs.set(parent.id, { companionId: parent.companionId, controller, promise });
+    try { await promise; effective.throwIfAborted(); return { task: await read(), phase }; }
+    catch (error) { failure = error; throw error; }
+    finally {
+      this.jobs.delete(parent.id); this.options.changed();
+      if (effective.aborted || failure) await this.options.request({ type: 'activity.agenda.release', ...parent, action: 'pause' }).catch(this.options.report);
     }
+  }
+  private async memoryStep(intent: CompanionActivityMemoryIntent, signal: AbortSignal): Promise<void> {
+    signal.throwIfAborted();
+    if (this.options.excludedIds().includes(intent.companionId)) throw new Error('伙伴当前暂停，旧记忆步骤稍后退役。');
+    // An old durable proposal is audit history, not permission to restore the
+    // retired actor memory channel. Record failure and let the same task plan
+    // its next step; never claim that a search/write or the goal completed.
+    const result = await this.options.request({ type: 'activity.memory.fail', id: intent.id, leaseToken: intent.leaseToken,
+      error: JSON.stringify({ ok: false, code: 'COMPANION_MEMORY_AUTOMATIC_ONLY',
+        error: '伙伴记忆操作已退役，本步骤未执行。继续使用本任务系统自动召回的资料。' }) });
+    if (!result.ok) throw new Error(result.error ?? '旧记忆步骤尚未成功退役。');
   }
   private async reportStep(claim: CompanionStorageResponse, signal: AbortSignal): Promise<void> {
     const ticket = claim.activityReport!, task = claim.activityTask!;
@@ -121,9 +169,10 @@ export class CompanionActivityTaskService {
         throw new CompanionModelError('INVALID_RESPONSE', '报告复核期间真实资料已变化，未发布。');
       await this.options.request({ type: 'activity.report.complete', id: ticket.id, leaseToken: ticket.leaseToken, executionReadset: proof });
     } catch (error) {
-      await this.options.request({ type: 'activity.report.fail', id: ticket.id, leaseToken: ticket.leaseToken,
+      if (!this.agendaDriven) await this.options.request({ type: 'activity.report.fail', id: ticket.id, leaseToken: ticket.leaseToken,
         error: (error instanceof Error ? error.message : '行动结果暂时不可报告。').slice(0, 1000),
         ...(error instanceof CompanionModelError && error.code === 'INVALID_RESPONSE' ? { terminal: true } : {}) }).catch(() => undefined);
+      if (this.agendaDriven) throw error;
     }
   }
   private async step(task: CompanionActivityTask, signal: AbortSignal): Promise<void> {
@@ -176,8 +225,8 @@ export class CompanionActivityTaskService {
       const emptyMemoryCorpus = snapshot.authorizedCorpusEmpty === true;
       let executionReadset: CompanionExecutionReadset | undefined;
       let topicModeratorTransferApproval: CompanionTopicModeratorTransferApproval | undefined;
-      // A frozen empty snapshot describes task preparation only. Explicit
-      // memory tools stay available for material acquired while the task runs.
+      // A frozen empty result is still the task's completed automatic recall.
+      // Current replies and world observations remain separate live inputs.
       const recalledCapabilities = recall;
       let capabilities = this.options.think ? companionThoughtCapabilities(recalledCapabilities, {
         run: async (proposal, effectId, nativeSignal) => {
@@ -191,6 +240,7 @@ export class CompanionActivityTaskService {
       capabilities = this.options.browserCapabilities?.({ companionId: companion.id, conversationId: conversation.id }, capabilities) ?? capabilities;
       const modelConfig = await this.options.configFor(companion);
       const output = await runCompanionStructuredAgent({
+        responseSchema: activityAgentDecisionSchema,
         finalSchema: activityDecisionJsonSchema(),
         evidenceScope: {},
         observeReadset: readset => {
@@ -257,12 +307,12 @@ export class CompanionActivityTaskService {
         sourceMessage: source,
         memoryRecall: { reasons: [], pending: false, degraded: false, ...(snapshot.context ? { context: snapshot.context } : {}) },
         proactive: true, audience: 'peers', runtimeState, characterDevelopment, publicProfiles: profiles.publicProfiles,
-        invocation: companionTaskInvocation({ companion, conversationId: conversation.id, id: `${task.id}_${expectedStep}`, kind: 'activity',
+        invocation: companionTaskInvocation({ companion, conversationId: conversation.id, id: `${task.id}_${expectedStep}${this.agendaDriven ? '_agenda_' + (task.agendaCycle ?? 0) : ''}`, kind: 'activity',
           goal: task.goal, createdAt: task.createdAt, source }) },
         capabilities,
         context: { system: companionBehaviorSystem(modelConfig, 'activity_task_step', `【宿主持续活动合同】当前self仅执行task真实目标和原授权限制；executionContract/resourceBounds/实际成员与本入口schema决定可用提案，不从角色文件扩权。无现实电脑授权，不替其他人参加或改变私态。
 ${COMPANION_WORLD_PERCEPTION_RULES}
-每轮严格返回outputSchema，status=continue/complete/blocked均需summary；action/topic/memory/wait等字段仅是宿主核验前的提案。history的host_receipt只证明对应真实操作；model_summary不是执行事实，wait_registered不证明后续事件已发生。已确认作用不能重发；summary只据实际来源/位置/成果，不把提案或正常退出说成完成。`, companion),
+每轮严格返回outputSchema，status=continue/complete/blocked均需summary；action/topic/wait等字段仅是宿主核验前的提案。长期记忆已在任务开始时由系统自动召回一次，本次不提供memory提案或个人经历回顾，不补搜、重建或等待回忆。history的host_receipt只证明对应真实操作；model_summary不是执行事实，wait_registered不证明后续事件已发生。已确认作用不能重发；summary只据实际来源/位置/成果，不把提案或正常退出说成完成。`, companion),
         user: JSON.stringify({ purpose: 'activity_task_step', executionContract: { ownerId: companion.id, persistentGoal: true,
           finalOutputShape: COMPANION_ACTIVITY_FINAL_CONTRACT,
           soleActorIsNotSoleRecipient: true, canContactGoalRecipients: true, canCreateAcquaintanceGroup: true,
@@ -272,7 +322,7 @@ ${COMPANION_WORLD_PERCEPTION_RULES}
           authority: 'Own virtual character and this original goal only; cannot decide for other members or operate the real computer.' },
         memoryContext: snapshot.context?.text, memoryAvailability: emptyMemoryCorpus ? {
           authorizedCorpusEmpty: true, revision: snapshot.authorizedCorpusRevision,
-          notice: '本任务首次准备时获权VCP日记为空，这份被动快照在任务内保持固定。实时话题、回信、历史和持续计划仍会更新；确有新资料需要时可额外主动回忆，不重复整轮被动检索。' } : undefined,
+          notice: '本任务首次准备时获权VCP日记为空，自动回忆已完成且任务内保持固定。实时话题、回信、历史和持续计划仍会更新；不再发起记忆查询，不把空回忆当作整个任务已经完成。' } : undefined,
         planningState, runtimeState, runtimeBehavior: runtimeState ? companionRuntimeBehavior(runtimeState) : undefined, characterDevelopment,
           gameTopic: observed.topic ? { topic: observed.topic, ownState: observed.topicState } : undefined,
           activityPortCandidate: observed.activityPortCandidate,
@@ -288,7 +338,7 @@ ${COMPANION_WORLD_PERCEPTION_RULES}
             sequence: message.sequence, topicId: message.topicId, content: message.content.slice(0, 2000), originalChars: message.content.length, truncated: message.content.length > 2000 })), contacts: state!.companions.filter(role => role.id === companion.id || observed.world?.perception?.visibleCompanionIds.includes(role.id)).map(role => ({ id: role.id, name: role.name, active: role.active })),
           publicProfiles: profiles.publicProfiles, outputSchema: activityDecisionJsonSchema() }) } },
       modelConfig, signal, { fetchFn: this.options.fetchFn, timeoutMs: 60_000, visualInputs: profiles.visualInputs });
-      const decision = activityDecisionSchema.parse(output);
+      const decision = activityAgentDecisionSchema.parse(output);
       if (signal.aborted || this.closed) return;
       const savedPlan = await this.options.request({ type: 'activity.plan.save', id: task.id, leaseToken, expectedStep,
         sourceDigest: createHash('sha256').update(source?.content ?? task.goal).digest('hex') });
@@ -364,14 +414,16 @@ ${COMPANION_WORLD_PERCEPTION_RULES}
         throw new Error('行动提案所依据的真实资料已经变化，未提交。');
       const committed = await this.options.request({ type: 'activity.commit', id: task.id, leaseToken, expectedStep, decision, executionReadset,
         ...(topicModeratorTransferApproval ? { topicModeratorTransferApproval } : {}) });
-      if (committed.activityTask && ['succeeded', 'failed', 'cancelled'].includes(committed.activityTask.status)) {
+      if (!this.agendaDriven && committed.activityTask && ['succeeded', 'failed', 'cancelled'].includes(committed.activityTask.status)) {
         const reporting = await this.options.request({ type: 'activity.report.claim', id: task.id, excludedIds: this.options.excludedIds() });
         if (reporting.activityReport && reporting.activityTask) await this.reportStep(reporting, signal);
       }
     } catch (error) {
       if (!signal.aborted && !this.closed) await this.options.request({ type: 'activity.fail', id: task.id, leaseToken,
-        terminal: error instanceof ActivityPassiveRecallWithdrawnError || error instanceof CompanionAgentNoProgressError || error instanceof CompanionAgentFinalValidationError || error instanceof CompanionModelError && error.code === 'CONTEXT_CAPACITY',
+        terminal: error instanceof ActivityPassiveRecallWithdrawnError || error instanceof CompanionAgentNoProgressError || error instanceof CompanionAgentFinalValidationError
+          || error instanceof CompanionModelError && (error.code === 'CONTEXT_CAPACITY' || error.diagnostic === 'structured_repair_exhausted'),
         error: error instanceof Error ? error.message.slice(0, 1000) : '行动规划暂时不可用。' }).catch(() => undefined);
+      if (this.agendaDriven) throw error;
     }
   }
   cancel(id: string): void { this.jobs.get(id)?.controller.abort(); }

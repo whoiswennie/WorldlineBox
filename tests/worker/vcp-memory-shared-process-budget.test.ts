@@ -19,7 +19,7 @@ it('reuses published cold data after repeated actual native hot/cold LRU while s
     const transport = native.launch(file), identity = Symbol(file); live.add(identity); peak = Math.max(peak, live.size);
     transport.on('exit', () => live.delete(identity)); return transport;
   };
-  const ownerIndex = path.join(root, 'alice', '.认知索引');
+  const ownerIndex = path.join(root, 'alice', '.运行', '索引');
   const hot = new VcpMemoryClient({ dataRoot: path.join(ownerIndex, 'hot', 'a'.repeat(64)), vendorRoot: path.resolve('vendor/vcp-memory'),
     workerPath: path.resolve('src/main/vcp-memory/worker.cjs'), embedding: native.embedding, processBroker: broker, launch });
   const cold = new ColdKnowledgeService({ dataRoot: path.join(ownerIndex, 'cold', 'b'.repeat(64)), boundOwnerId: 'alice', vendorRoot: path.resolve('vendor/vcp-memory'),

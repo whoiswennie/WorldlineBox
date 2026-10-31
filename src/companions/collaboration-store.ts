@@ -5,6 +5,7 @@ import type { CompanionLoopCheckpoint } from '../shared/companion-loop';
 import type { CompanionStorageCommand, CompanionStorageResponse } from '../shared/companion-storage';
 import { companionCollaborationGrantSchema, type CompanionCollaborationGrant, type CompanionCollaborationParticipant } from '../shared/companion-collaboration';
 import { verifyCompanionActionSlots } from './goal-action-proof';
+import { CompanionPermissionDeniedError } from '../shared/companion-permission';
 
 type Row = Record<string, string | number | null>;
 type Scope = { companionId: string; conversationId: string };
@@ -24,15 +25,15 @@ export class CompanionCollaborationStore {
   }
   private active(companionId: string): void {
     const found = this.db.prepare('SELECT data FROM companions WHERE id=? AND deleted_at IS NULL').get(companionId);
-    if (!found || decode<{ active?: boolean }>(row(found).data).active === false) throw new Error('协作参与者必须是真实已激活的伙伴。');
-    if (this.db.prepare("SELECT 1 FROM companion_reset_jobs WHERE companion_id=? AND status!='completed'").get(companionId)) throw new Error('伙伴正在重置，协作授权不可用。');
+    if (!found || decode<{ active?: boolean }>(row(found).data).active === false) throw new CompanionPermissionDeniedError('协作参与者必须是真实已激活的伙伴。');
+    if (this.db.prepare("SELECT 1 FROM companion_reset_jobs WHERE companion_id=? AND status!='completed'").get(companionId)) throw new CompanionPermissionDeniedError('伙伴正在重置，协作授权不可用。');
   }
   private member(companionId: string, conversationId: string): void {
-    if (!this.db.prepare('SELECT 1 FROM conversation_members m JOIN conversations c ON c.id=m.conversation_id WHERE m.companion_id=? AND m.conversation_id=? AND c.dissolved_at IS NULL').get(companionId, conversationId)) throw new Error('协作消息入口不属于这个伙伴。');
+    if (!this.db.prepare('SELECT 1 FROM conversation_members m JOIN conversations c ON c.id=m.conversation_id WHERE m.companion_id=? AND m.conversation_id=? AND c.dissolved_at IS NULL').get(companionId, conversationId)) throw new CompanionPermissionDeniedError('协作消息入口不属于这个伙伴。');
   }
   private load(id: string): CompanionCollaborationGrant {
     const found = this.db.prepare('SELECT data FROM companion_collaborations WHERE id=?').get(id);
-    if (!found) throw new Error('协作授权不存在。');
+    if (!found) throw new CompanionPermissionDeniedError('协作授权不存在。');
     return companionCollaborationGrantSchema.parse(decode(row(found).data));
   }
   private save(grant: CompanionCollaborationGrant): void {
@@ -45,11 +46,11 @@ export class CompanionCollaborationStore {
     const source = this.visible({ companionId: grant.ownerId, conversationId: grant.conversationId }, [grant.sourceMessageId])[0];
     if (!source || source.authorId !== 'user' || source.status !== 'sent' || source.isReplyDraft || source.replyDraft
       || source.conversationId !== grant.conversationId || checksum(source.content) !== grant.sourceChecksum
-      || !grant.evidence.every(quote => source.content.includes(quote))) throw new Error('协作原始用户授权已撤回、变化或不可访问。');
-    if (grant.status === 'cancelled') throw new Error('协作已取消，不再授予执行权限。');
+      || !grant.evidence.every(quote => source.content.includes(quote))) throw new CompanionPermissionDeniedError('协作原始用户授权已撤回、变化或不可访问。');
+    if (grant.status === 'cancelled') throw new CompanionPermissionDeniedError('协作已取消，不再授予执行权限。');
   }
   private allowed(grant: CompanionCollaborationGrant, companionId: string): void {
-    if (grant.ownerId !== companionId && !grant.participants.some(participant => participant.companionId === companionId && !participant.accessRevokedAt)) throw new Error('当前伙伴不属于这份协作授权，或原参与权限已撤回。');
+    if (grant.ownerId !== companionId && !grant.participants.some(participant => participant.companionId === companionId && !participant.accessRevokedAt)) throw new CompanionPermissionDeniedError('当前伙伴不属于这份协作授权，或原参与权限已撤回。');
     this.active(companionId); this.current(grant);
   }
   private participant(grant: CompanionCollaborationGrant, companionId: string) {
@@ -68,7 +69,10 @@ export class CompanionCollaborationStore {
   }
   assertAction(action: Pick<CompanionAction, 'authorizationGrantId' | 'companionId' | 'conversationId' | 'sourceMessageId'>): void {
     if (!action.sourceMessageId) throw new Error('协作执行必须保留真实授权来源。');
-    this.assertInvocation({ ...action, sourceMessageId: action.sourceMessageId });
+    // A capability has its own source:owner invocation ID. It is not the
+    // independent parent invocation accepted by the collaboration participant.
+    this.assertInvocation({ authorizationGrantId: action.authorizationGrantId, companionId: action.companionId,
+      conversationId: action.conversationId, sourceMessageId: action.sourceMessageId });
   }
   cancelFor(companionId: string): void {
     const found = this.db.prepare("SELECT data FROM companion_collaborations WHERE owner_id=? OR EXISTS(SELECT 1 FROM json_each(data,'$.participants') p WHERE json_extract(p.value,'$.companionId')=?)").all(companionId, companionId);

@@ -5,7 +5,7 @@ import type { CompanionStorageCommand, CompanionStorageResponse } from '../share
 import type { CompanionMessage } from '../shared/companions';
 import type { CompanionActivityTask, activityPlanningStateSchema } from '../shared/companion-activity-task';
 import type { z } from 'zod';
-import { companionFinalProposalBytes, companionFinalProposalReceiptSchema, companionFinalProposalResults, isCompanionFinalTurn } from '../shared/companion-final-proposal';
+import { companionFinalProposalBytes, companionFinalProposalJsonText, companionFinalProposalReceiptSchema, companionFinalProposalResults, isCompanionFinalTurn } from '../shared/companion-final-proposal';
 import { companionPeerActivitySourceValid } from './peer-activity-source';
 import { findJoinedCompanionActivityPortCandidate } from './activity-port-candidates';
 import type { CompanionSocialStore } from './social-store';
@@ -21,6 +21,18 @@ export class CompanionAgentRunStore {
     private readonly social?: CompanionSocialStore,
     private readonly frozenMemoryValid?: (scope: { companionId: string; conversationId: string }, memory: NonNullable<CompanionExecutionReadset['frozenMemories']>[number]) => boolean) {}
   private assertValid(run: CompanionAgentRun): void {
+    for (const turn of run.turns) if (turn.structuredRepair) {
+      const receipt = turn.structuredRepair, raw = turn.finalProposal ? companionFinalProposalJsonText(turn) : turn.rawText;
+      if (!isCompanionFinalTurn(turn) || receipt.originalHash !== createHash('sha256').update(raw).digest('hex')
+        || receipt.content !== undefined && receipt.contentHash !== createHash('sha256').update(receipt.content).digest('hex'))
+        throw new Error('结构修复收据不属于原始最终提案或修复正文已变化。');
+      const root = receipt.rootContext;
+      if (root && (root.frame.companionId !== run.companionId
+        || root.hash !== createHash('sha256').update(JSON.stringify([root.system, root.user, root.frame])).digest('hex')))
+        throw new Error('结构修复原请求凭证的所属伙伴或实际字节不匹配。');
+    }
+    if (run.status === 'done' && run.turns.at(-1)?.structuredRepair && run.turns.at(-1)!.structuredRepair!.content === undefined)
+      throw new Error('只有成功格式修复才可完成该最终提案。');
     for (const rejected of run.rejectedFinals ?? []) if (createHash('sha256').update(companionFinalProposalBytes(run.turns[rejected.step]!)).digest('hex') !== rejected.proposalChecksum)
       throw new Error('被拒最终提案的不可变原文校验不匹配。');
     for (const turn of run.turns) if (turn.finalProposal && turn.results) {
@@ -153,9 +165,22 @@ export class CompanionAgentRunStore {
         || previous.turns.length > run.turns.length || previous.status === 'done' && run.status !== 'done')) throw new Error('推理检查点不能更换任务或丢失已提交步骤。');
       if (previous) for (let index = 0; index < previous.turns.length; index++) {
         const before = previous.turns[index]!, next = run.turns[index]!;
-        if (JSON.stringify({ ...before, results: undefined }) !== JSON.stringify({ ...next, results: undefined })
+        if (JSON.stringify({ ...before, results: undefined, structuredRepair: undefined }) !== JSON.stringify({ ...next, results: undefined, structuredRepair: undefined })
           || before.results && JSON.stringify(before.results) !== JSON.stringify(next.results)) throw new Error('已提交的推理决策或能力回执不可改写。');
+        if (JSON.stringify(before.structuredRepair) !== JSON.stringify(next.structuredRepair)) {
+          const prior = before.structuredRepair, receipt = next.structuredRepair;
+          if (previous.status !== 'running' || run.status !== 'running' || index !== previous.turns.length - 1 || index !== run.turns.length - 1
+            || !isCompanionFinalTurn(before) || before.results || before.topicPublicationRejection || previous.rejectedFinals?.some(item => item.step === index)
+            || !receipt || prior?.content !== undefined || prior && (prior.originalHash !== receipt.originalHash
+              || JSON.stringify(prior.rootContext) !== JSON.stringify(receipt.rootContext)))
+            throw new Error('结构修复只能单调追加到尚未完成的本轮最终提案。');
+          const beginsAttempt = receipt.attempts === (prior?.attempts ?? 0) + 1 && receipt.content === undefined;
+          const recordsSuccess = prior && receipt.attempts === prior.attempts && receipt.content !== undefined;
+          if (!beginsAttempt && !recordsSuccess) throw new Error('结构修复次数不能跳过、回退、重置或覆盖成功结果。');
+        }
       }
+      if (run.turns.slice(previous?.turns.length ?? 0).some(turn => turn.structuredRepair))
+        throw new Error('必须先保存原始最终提案，再登记格式修复尝试。');
       if (previous && (previous.sources.some(source => !run.sources.some(next => JSON.stringify(next) === JSON.stringify(source)))
         || previous.memories.some(memory => !run.memories.some(next => next.id === memory.id && next.version === memory.version))
         || previous.effects.some(effect => !run.effects.some(next => next.step === effect.step && next.callId === effect.callId

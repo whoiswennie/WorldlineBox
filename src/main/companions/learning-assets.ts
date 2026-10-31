@@ -7,6 +7,7 @@ import type { CompanionLearningAssetSnapshot, CompanionLearningAssetValidation, 
 import type { CompanionStorageCommand, CompanionStorageResponse } from '../../shared/companion-storage';
 import type { AssetSummary } from '../../shared/asset-types';
 import { CompanionLearningReadError, type CompanionLearningAssets } from './learning-service';
+import { assertCompanionExternalLearningSource, CompanionLearningSourceDenied } from './learning-source-admission';
 
 export interface CompanionCanonicalLearningAssets extends CompanionLearningAssets {
   /** Only Main supplies canonical verification; never exposed as a model capability. */
@@ -59,6 +60,8 @@ export function companionLearningAssets(options: { request(command: WorkerComman
       if (source.type !== 'media.asset-path') throw new Error('学习资料路径不可用。');
       const resolved = await realpath(source.absolutePath), info = await lstat(source.absolutePath, { bigint: true });
       if (await protectedPath(resolved, grant.libraryPath)) throw new CompanionLearningReadError('private-source', '伙伴私有记忆与应用运行文件不会作为学习资料来源。');
+      try { await assertCompanionExternalLearningSource(source.absolutePath, { managedRoots: [options.memoryRoot, path.join(grant.libraryPath, '.worldlinebox'), path.join(grant.libraryPath, '伙伴记忆')] }); }
+      catch (error) { if (error instanceof CompanionLearningSourceDenied) throw new CompanionLearningReadError('private-source', error.message); throw error; }
       if (!info.isFile() || info.isSymbolicLink()) throw new CompanionLearningReadError('private-source', '学习资料必须是资产库中可用的普通文本文件。');
       if (info.size > 2097152n) return { content: '', revisionId: asset.currentRevisionId, truncated: true };
       const handle = await open(resolved, 'r');

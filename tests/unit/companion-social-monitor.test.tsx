@@ -73,8 +73,9 @@ it('shows each peer reply milestone and reads its actual pending and completed m
   await click('往来记录');
   const pending = container!.querySelector('[data-social-pending="peer_job"]')!;
   expect(pending.textContent).toContain('正在思考');
-  expect(pending.textContent).toContain('已注入话题相关的记忆上下文');
-  await act(async () => { const details = pending.querySelector('details')!; details.open = true; details.dispatchEvent(new Event('toggle')); });
+  expect(pending.textContent).not.toContain('记忆上下文');
+  await act(async () => pending.querySelector<HTMLButtonElement>('[aria-label="展开回复过程"]')!.click());
+  await act(async () => pending.querySelector<HTMLButtonElement>('[aria-label="查看这次回复的回忆"]')!.click());
   expect(request).toHaveBeenCalledWith(expect.objectContaining({ type: 'social.reply.memory.inspect', jobId: 'peer_job', companionId: two.id }));
   expect(pending.textContent).toContain('姐姐曾询问玩家姓名。');
   completed = true;
@@ -82,8 +83,9 @@ it('shows each peer reply milestone and reads its actual pending and completed m
   expect(container!.querySelectorAll('[data-social-pending]')).toHaveLength(0);
   expect(container!.querySelector('[data-social-message="message_52"] [data-reply-stage]')).toBeNull();
   await act(async () => container!.querySelector<HTMLButtonElement>('[data-social-message="message_52"] [aria-label="查看回复过程"]')!.click());
-  expect(container!.querySelector('[data-social-message="message_52"]')!.textContent).toContain('回复完成');
-  await act(async () => { const details = container!.querySelector<HTMLDetailsElement>('[data-social-message="message_52"] .companions-bubble-memory')!; details.open = true; details.dispatchEvent(new Event('toggle')); });
+  expect(container!.querySelector('[data-social-message="message_52"]')!.textContent).toContain('回复已完成');
+  await act(async () => container!.querySelector<HTMLButtonElement>('[data-social-message="message_52"] [aria-label="展开回复过程"]')!.click());
+  await act(async () => container!.querySelector<HTMLButtonElement>('[data-social-message="message_52"] [aria-label="查看这次回复的回忆"]')!.click());
   expect(request).toHaveBeenCalledWith(expect.objectContaining({ type: 'reply.memory.inspect', messageId: 'message_52', companionId: two.id }));
 });
 

@@ -55,6 +55,13 @@ function commit(task: CompanionActivityTask, decision: ActivityDecision) {
     }
     return result;
 }
+it('rejects a new actor memory final before writing an intent or charging the activity', () => {
+    const { task } = start('automatic_recall_only'), leased = claim()!;
+    expect(() => commit(leased, { status: 'continue', action: null, wait: null,
+        memory: { operation: 'search', query: '不再自行检索' }, summary: '旧提案不得执行。' })).toThrow('伙伴记忆操作已退役');
+    expect(store.request({ type: 'activity.memory.claim' }).activityMemoryIntent).toBeUndefined();
+    expect(store.request({ type: 'activity.get', ...alice, id: task.id }).activityTask).toMatchObject({ step: 0, history: [], status: 'running' });
+});
 it('separates an actor wait summary from the registered host wait and preserves real query receipts', () => {
     const { task } = start('wait_receipt_provenance');
     const summary = '资料已经全部核实，大家都已确认。UNVERIFIED_ACTOR_SUMMARY';
@@ -123,8 +130,8 @@ it('atomically binds source-free activity reasoning to its actual observation an
     store.updateAction(action.id, { status: 'running' });
     store.updateAction(action.id, { status: 'succeeded', result: 'PRIVATE_ANALYSIS_NOT_A_PUBLIC_ACTION' });
     const stateAfter = store.request({ type: 'state.get', ...own }).runtimeState!;
-    expect(stateAfter.familiarity).toEqual(stateBefore.familiarity);
-    expect(stateAfter.affect).toEqual(stateBefore.affect);
+    expect(stateAfter.relationshipRecords).toEqual(stateBefore.relationshipRecords);
+    expect(stateAfter.experience).toEqual(stateBefore.experience);
     expect(store.messages({ conversationId: own.conversationId }).messages.some(message => message.actionId === action.id || message.content.includes('PRIVATE_ANALYSIS'))).toBe(false);
     expect(store.getAction(action.id).canResume).toBe(false);
     expect(() => store.resumeAction(action.id)).toThrow('持续活动思考');
@@ -279,14 +286,14 @@ it('continues a chat-issued weather check after physical arrival, coalesces repe
     expect(observed.perception!.environment.weatherObservedAtVirtual).toBe(observed.perception!.observedAtVirtual);
     const summary = '已到门口实际查看，当前天气为 ' + authoritative.environment.weather + '。';
     expect(commit(resumed, { status: 'complete', action: null, wait: null, summary }).status).toBe('succeeded');
-    expect(store.request({ type: 'state.get', ...alice }).runtimeState?.familiarity.sharedEventCount).toBe(1);
+    expect(store.request({ type: 'state.get', ...alice }).runtimeState?.relationshipRecords).toEqual([]);
     const reports = store.messages({ conversationId: alice.conversationId }).messages.filter(message => message.replyToId === source.id && message.content.includes(summary));
     expect(reports).toHaveLength(1);
     expect(store.request(input).activityTask!.status).toBe('succeeded');
     expect(store.messages({ conversationId: alice.conversationId }).messages.filter(message => message.content.includes(summary))).toHaveLength(1);
-    expect(store.request({ type: 'state.get', ...alice }).runtimeState?.familiarity.sharedEventCount).toBe(1);
+    expect(store.request({ type: 'state.get', ...alice }).runtimeState?.relationshipRecords).toEqual([]);
     store.request({ type: 'memory.forget', ...alice, sourceMessageIds: [source.id] });
-    expect(store.request({ type: 'state.get', ...alice }).runtimeState?.familiarity.sharedEventCount).toBe(0);
+    expect(store.request({ type: 'state.get', ...alice }).runtimeState?.relationshipRecords).toEqual([]);
 });
 it('does not create a continuation or send stale feedback after its source is withdrawn', () => {
     const source = store.appendMessage({ conversationId: alice.conversationId, authorId: 'user', content: '去门口看看天气再回我。', replyDirective: 'none' });
@@ -539,7 +546,7 @@ it('waits on genuine peer replies, internalizes a shared entrance explicitly, an
     expect(context.world!.knownAddresses).toHaveLength(1);
     const query = store.request({ type: 'memory.world_query', ...alice, category: 'social', roomId: sent.message.conversationId });
     expect(query.worldKnowledge!.items.find(item => item.messageId === sent.message.id)!.sharedEntrance).toBeDefined();
-    store.request({ type: 'memory.record', ...alice, candidate: { learnedEntranceSourceId: sent.message.id, content: 'bob分享了她的小屋入口。', sourceMessageIds: [sent.message.id], evidence: [{ sourceMessageId: sent.message.id, quote: '场景 home_bob' }] } });
+    store.request({ type: 'memory.record', ...alice, candidate: { artifactKind: 'navigation', learnedEntranceSourceId: sent.message.id, content: 'bob分享了她的小屋入口。', sourceMessageIds: [sent.message.id], evidence: [{ sourceMessageId: sent.message.id, quote: '场景 home_bob' }] } });
     expect(store.request({ type: 'world.observe', ...alice }).world!.knownAddresses).toHaveLength(2);
     store.request({ type: 'memory.forget', companionId: 'alice', conversationId: sent.message.conversationId, sourceMessageIds: [sent.message.id] });
     expect(store.request({ type: 'world.observe', ...alice }).world!.knownAddresses).toHaveLength(1);

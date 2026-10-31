@@ -10,6 +10,7 @@ export function projectCompanionMemoryRetrieval(input: {
   samePipeline?: boolean;
 }): CompanionMemoryRetrieval {
   const { result, hits, documentCount, mode } = input, trace = result?.retrieval, counts = trace?.counts;
+  const modelFocused = input.contextReferences?.some(reference => reference.role === 'focus_input') === true;
   const empty = documentCount === 0, degraded = result?.degraded === true;
   const fact = (label: string, value: string | number) => ({ label, value: String(value).slice(0, 1000) });
   const present = (label: string, value: number | undefined) => value === undefined ? [] : [fact(label, value)];
@@ -45,11 +46,13 @@ export function projectCompanionMemoryRetrieval(input: {
       stage({ id: 'ranking', title: '核对并排列记忆', state: empty ? 'skipped' : result ? degraded ? 'degraded' : 'completed' : 'not_observed',
         description: '沿用 VCP 实际返回顺序，每篇文档保留首先命中的片段。基础分、关系加成和锚点凭证只在引擎确实提供时显示；分数不是记忆真实性的概率。',
         facts: [...present('原生返回片段', counts?.returnedCandidates), fact('本页获权记忆', hits.length)], tags: [], matches }),
-      stage({ id: 'context', title: mode === 'passive' ? '聚焦本轮回忆' : '返回主动回忆', state: empty ? 'skipped' : 'completed',
-        description: mode === 'passive' ? '原版 RAGDiary / AIMemo 在完整获权记忆图上按当前语境召回。列表来自该管线实际观测，展示数量不裁剪关系图或聚焦正文；模型输入不等于回答的逐句引用。'
+      stage({ id: 'context', title: modelFocused ? '聚焦本轮回忆' : mode === 'passive' ? '返回上下文回忆' : '返回主动回忆', state: empty ? 'skipped' : 'completed',
+        description: mode === 'passive' ? modelFocused
+          ? '本次显式使用原版 AIMemo+ 聚焦已召回资料。列表来自该管线实际观测；聚焦模型输入不等于回答的逐句引用。'
+          : '原版 RAGDiary 在完整获权记忆图上按当前语境召回。正文与来源来自实际格式器输出，默认不额外调用模型；列表条数不裁剪关系图。'
           : '原版 LightMemo 在本页获权资料内独立生成正文。来源凭证来自实际输出格式器，正文排序与上方候选查询分别保留。',
         facts: empty ? [] : [fact('实际返回正文字符', input.contextText.length), fact('观测到的正文来源片段', input.contextReferences?.length ?? 0),
-          fact('来源含义', mode === 'passive' ? '聚焦模型实际输入；不等于最终逐句引用' : '原版格式器实际输出；排序独立于候选查询')], tags: [], matches: [],
+          fact('来源含义', modelFocused ? '聚焦模型实际输入；不等于最终逐句引用' : '原版格式器实际输出；不是模型生成的总结')], tags: [], matches: [],
         ...(input.contextReferences ? { contextReferences: input.contextReferences.slice(0, 100) } : {}) }),
     ] };
 }

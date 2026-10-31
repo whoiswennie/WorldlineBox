@@ -7,6 +7,10 @@ import { nextCompanionLearningGoalAt } from '../shared/companion-learning-goal-s
 import { registerCompanionLearningAssetSource } from './learning-asset-store';
 import type { CompanionExecutionReadset } from '../shared/companion-execution-evidence';
 import { learningTestBasis, learningTestInput, learningTestHash, learningSelfTestResult } from './learning-goal-test-protocol';
+import { COMPANION_JOB_FAILURES_PER_CYCLE } from '../shared/companion-job-control';
+import { companionJobInputVersion, companionStoredLearningAdapter, initializeCompanionJobDisposition, type CompanionJobControlAdapter } from './job-control-store';
+import type { CompanionAgendaGoal, CompanionAgendaGrant, CompanionAgendaRule } from '../shared/companion-agenda';
+import { companionAgendaGoalDefinitionHash, companionAgendaLearningIntent } from './agenda-goal-definition';
 
 type Row = { id: string; companion_id: string; data: string; state: CompanionLearningGoal['state']; revision: number; next_at: number; lease_token: string | null; lease_until: number; round_id: string | null; rounds: number };
 /** Private additive tables in the selected companion library; history is retained and read in bounded pages. */
@@ -27,6 +31,7 @@ export class CompanionLearningGoalStore {
       CREATE INDEX IF NOT EXISTS companion_learning_goal_history ON companion_learning_goal_rounds(goal_id,ordinal DESC);
       CREATE TABLE IF NOT EXISTS companion_learning_goal_sources(goal_id TEXT NOT NULL,read_id TEXT NOT NULL,grant_id TEXT,source_message_id TEXT NOT NULL,PRIMARY KEY(goal_id,read_id));
       CREATE INDEX IF NOT EXISTS companion_learning_goal_source_grant ON companion_learning_goal_sources(grant_id);`);
+    initializeCompanionJobDisposition(this.db, 'companion_learning_goal_rounds');
     // Sole utility-process owner: old in-flight leases cannot survive its restart.
     this.db.prepare('UPDATE companion_learning_goals SET lease_token=NULL,lease_until=0,next_at=MIN(next_at,?) WHERE lease_token IS NOT NULL').run(this.clock());
   }
@@ -41,7 +46,7 @@ export class CompanionLearningGoalStore {
   private round(id: string): CompanionLearningGoalRound | undefined {
     const row = this.db.prepare('SELECT data FROM companion_learning_goal_rounds WHERE id=?').get(id) as { data: string } | undefined;
     if (!row) return;
-    const round = companionLearningGoalRoundSchema.parse(JSON.parse(row.data));
+    const round = { ...companionLearningGoalRoundSchema.parse(JSON.parse(row.data)), disposition: this.jobControlAdapter().read((JSON.parse(row.data) as CompanionLearningGoalRound).companionId, id) };
     const revoked = round.reads.some(read => read.grantId && !this.db.prepare('SELECT 1 FROM companion_learning_grants WHERE id=? AND companion_id=? AND enabled=1').get(read.grantId, round.companionId)
       || read.sourceMessageId && !this.sourceVisible(round.companionId, read.sourceMessageId));
     if (revoked) return { ...round, plan: undefined, summary: undefined, claims: [], memoryIds: [], integration: undefined, selfTest: undefined, selfTestProgress: undefined, stateReflection: undefined, gaps: [], nextPlan: [], readingIssues: [],
@@ -84,12 +89,72 @@ export class CompanionLearningGoalStore {
       ...(last ? { lastRound: last, phase: row.lease_token && row.lease_until > this.clock() ? last.phase : data.phase } : {}) };
   }
   private saveRound(round: CompanionLearningGoalRound): void {
-    this.db.prepare('INSERT INTO companion_learning_goal_rounds(id,goal_id,companion_id,ordinal,data) VALUES(?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET data=excluded.data')
-      .run(round.id, round.goalId, round.companionId, round.ordinal, JSON.stringify(round));
+    const { disposition: _disposition, ...body } = round; void _disposition;
+    const goal = JSON.parse(this.load(round.goalId).data) as CompanionLearningGoal;
+    this.db.prepare('INSERT INTO companion_learning_goal_rounds(id,goal_id,companion_id,ordinal,data,status,input_version) VALUES(?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET data=excluded.data,status=excluded.status')
+      .run(round.id, round.goalId, round.companionId, round.ordinal, JSON.stringify(body), round.status === 'deferred' ? 'pending' : round.status, this.definitionVersion(goal));
+  }
+  private definitionVersion(goal: CompanionLearningGoal): string { return companionJobInputVersion([goal.companionId, goal.id, goal.text, goal.materials, goal.allowWeb]); }
+  jobControlAdapter(): CompanionJobControlAdapter {
+    return companionStoredLearningAdapter(this.db, 'companion_learning_goal_rounds', (current, action) => {
+      const round = this.round(current.id); if (!round || round.companionId !== current.ownerId) throw new Error('学习轮次不存在。');
+      const status = action === 'resume' ? 'deferred' : action === 'park' ? 'parked' : 'abandoned';
+      this.saveRound({ ...round, status, updatedAt: new Date(this.clock()).toISOString(), error: action === 'resume' ? undefined : round.error });
+      this.db.prepare('UPDATE companion_learning_goal_rounds SET cycle_failure_count=?,disposition_revision=disposition_revision+1 WHERE id=?')
+        .run(action === 'resume' ? 0 : current.cycleFailureCount, current.id);
+      this.db.prepare('UPDATE companion_learning_goals SET lease_token=NULL,lease_until=0,next_at=? WHERE id=? AND round_id=?')
+        .run(this.clock(), round.goalId, current.id);
+    });
   }
   private expected(owner: string, id: string, revision: number): Row { this.owner(owner); const row = this.load(id); if (row.companion_id !== owner || row.revision !== revision) throw new Error('学习目标已变化，请刷新后重试。'); return row; }
-  private leased(id: string, token: string): Row {
-    const row = this.load(id); if (row.state !== 'active' || row.lease_token !== token || row.lease_until <= this.clock() || !this.activated(row.companion_id)) throw new Error('学习目标作业已取消、过期或伙伴已休眠。'); return row;
+  private sourceAgendaGoal(owner: string, source: { id: string; revision: number }): CompanionAgendaGoal {
+    const current = this.db.prepare("SELECT revision,data FROM companion_agenda_goals WHERE companion_id=? AND id=? AND status NOT IN('completed','retired')")
+      .get(owner, source.id) as { revision: number; data: string } | undefined;
+    if (!current || current.revision !== source.revision) throw new Error('AGENDA_CONFLICT: 原长期方向已经变化，旧修订未改写学习执行。');
+    const goal = JSON.parse(current.data) as CompanionAgendaGoal;
+    if (!['knowledge', 'procedure'].includes(goal.domain)) throw new Error('此长期方向不属于知识学习。');
+    return goal;
+  }
+  private bindAgendaDefinition(goal: CompanionLearningGoal, source: CompanionAgendaGoal): void {
+    if (goal.text !== companionAgendaLearningIntent(source) || JSON.stringify(goal.materials) !== JSON.stringify(source.materials) || goal.allowWeb !== source.allowWeb)
+      throw new Error('AGENDA_CONFLICT: 真实学习定义尚未完整对应当前长期方向。');
+    this.db.prepare('INSERT INTO metadata(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value')
+      .run('agenda-learning-definition/' + goal.id, JSON.stringify({ companionId: goal.companionId, goalId: source.id, definitionHash: companionAgendaGoalDefinitionHash(source) }));
+  }
+  private agendaDefinitionValid(owner: string, learningId: string, rule: CompanionAgendaRule): boolean {
+    const stamp = new Date(this.clock()).toISOString();
+    let source: CompanionAgendaGoal | undefined;
+    if (rule.goalId) {
+      const raw = this.db.prepare("SELECT data FROM companion_agenda_goals WHERE companion_id=? AND id=? AND status='active'").get(owner, rule.goalId) as { data: string } | undefined;
+      const receipt = this.db.prepare('SELECT value FROM metadata WHERE key=?').get('agenda-learning-definition/' + learningId) as { value: string } | undefined;
+      const bound = receipt ? JSON.parse(receipt.value) as { companionId: string; goalId: string; definitionHash: string } : undefined;
+      source = raw ? JSON.parse(raw.data) as CompanionAgendaGoal : undefined;
+      if (!source || !bound || bound.companionId !== owner || bound.goalId !== rule.goalId || bound.definitionHash !== companionAgendaGoalDefinitionHash(source)) return false;
+      if (rule.grantId !== source.grantId) return false;
+    }
+    if (rule.grantId) {
+      const raw = this.db.prepare("SELECT data FROM companion_agenda_grants WHERE companion_id=? AND id=? AND status='active'").get(owner, rule.grantId) as { data: string } | undefined;
+      const grant = raw ? JSON.parse(raw.data) as CompanionAgendaGrant : undefined;
+      if (!grant || !grant.capabilities.includes('learning') || grant.goalId && grant.goalId !== rule.goalId || grant.expiresAt && grant.expiresAt <= stamp
+        || source && (source.allowWeb || source.materials.some(item => item.kind === 'web')) && !grant.allowPublicWeb) return false;
+    }
+    return true;
+  }
+  private leased(id: string, token: string, checkAgenda = true): Row {
+    const row = this.load(id); if (row.state !== 'active' || row.lease_token !== token || row.lease_until <= this.clock() || !this.activated(row.companion_id)) throw new Error('学习目标作业已取消、过期或伙伴已休眠。');
+    if (checkAgenda) {
+      const link = this.db.prepare('SELECT value FROM metadata WHERE key=?').get('agenda-learning-parent/' + id) as { value: string } | undefined;
+      const bound = this.db.prepare('SELECT value FROM metadata WHERE key=?').get('agenda-learning-definition/' + id);
+      if (link || bound) {
+        const parent = link ? JSON.parse(link.value) as { companionId: string; runId: string; roundId: string; agendaLeaseToken: string } : undefined;
+        const live = parent && parent.companionId === row.companion_id && parent.roundId === row.round_id
+          ? this.db.prepare("SELECT o.rule_data FROM companion_agenda_runs r JOIN companion_agenda_occurrences o ON o.id=r.occurrence_id WHERE r.id=? AND r.companion_id=? AND r.status='running' AND r.lease_until>? AND json_extract(r.data,'$.leaseToken')=? AND json_extract(o.rule_data,'$.executor')='learning' AND json_extract(o.rule_data,'$.referenceId')=?")
+            .get(parent.runId, row.companion_id, new Date(this.clock()).toISOString(), parent.agendaLeaseToken ?? '', id) as { rule_data: string } | undefined : undefined;
+        if (!live || !this.agendaDefinitionValid(row.companion_id, id, JSON.parse(live.rule_data) as CompanionAgendaRule))
+          throw Object.assign(new Error('当前日程、长期方向或持续授权已变化，旧学习阶段停止。'), { code: 'REVOKED' });
+      }
+    }
+    return row;
   }
   execute(input: CompanionStorageCommand): CompanionStorageResponse | undefined {
     if (!input.type.startsWith('learning.goals.')) return;
@@ -97,6 +162,11 @@ export class CompanionLearningGoalStore {
     return this.db.transaction((): CompanionStorageResponse => {
       const now = this.clock(), stamp = new Date(now).toISOString();
       switch (command.type) {
+        case 'learning.goals.read': {
+          this.owner(command.companionId); const row = this.load(command.id);
+          if (row.companion_id !== command.companionId) throw new Error('学习目标不属于当前伙伴。');
+          return { ok: true, learningGoal: this.goal(row) };
+        }
         case 'learning.goals.list': {
           this.owner(command.companionId);
           const rows = this.db.prepare('SELECT * FROM companion_learning_goals WHERE companion_id=? ORDER BY rowid DESC LIMIT ? OFFSET ?').all(command.companionId, command.limit + 1, command.cursor) as Row[];
@@ -105,25 +175,42 @@ export class CompanionLearningGoalStore {
         }
         case 'learning.goals.create': {
           this.owner(command.companionId);
-          if ((this.db.prepare('SELECT COUNT(*) AS n FROM companion_learning_goals WHERE companion_id=? AND state!=\'stopped\'').get(command.companionId) as { n: number }).n >= 50) throw new Error('每位伙伴最多保留 50 个未停止的学习目标，请先整理已有目标。');
+          const receiptKey = command.clientId ? 'learning-goal-create/' + command.companionId + '/' + command.clientId : undefined;
+          const fingerprint = learningTestHash({ companionId: command.companionId, text: command.text, materials: command.materials, allowWeb: command.allowWeb, schedule: command.schedule });
+          const prior = receiptKey ? this.db.prepare('SELECT value FROM metadata WHERE key=?').get(receiptKey) as { value: string } | undefined : undefined;
+          if (prior) {
+            const receipt = JSON.parse(prior.value) as { id: string; fingerprint: string };
+            if (receipt.fingerprint !== fingerprint) throw new Error('学习目标创建标识已用于其他内容。');
+            const existing = this.load(receipt.id);
+            if (existing.companion_id !== command.companionId) throw new Error('原学习目标不属于当前伙伴。');
+            return { ok: true, learningGoal: this.goal(existing) };
+          }
           const goal: CompanionLearningGoal = { id: randomUUID(), companionId: command.companionId, text: command.text, materials: command.materials, allowWeb: command.allowWeb,
             schedule: command.schedule, state: 'active', revision: 1, createdAt: stamp, updatedAt: stamp, phase: 'idle', totalRounds: 0,
             nextAt: new Date(nextCompanionLearningGoalAt(command.schedule, now)).toISOString() };
           this.db.prepare('INSERT INTO companion_learning_goals(id,companion_id,data,state,revision,next_at) VALUES(?,?,?,\'active\',1,?)')
             .run(goal.id, goal.companionId, this.serializeGoal(goal), Date.parse(goal.nextAt));
+          if (receiptKey) this.db.prepare('INSERT INTO metadata(key,value) VALUES(?,?)').run(receiptKey, JSON.stringify({ id: goal.id, fingerprint }));
           return { ok: true, learningGoal: goal };
         }
         case 'learning.goals.update': {
           const row = this.expected(command.companionId, command.id, command.expectedRevision), goal = this.goal(row);
+          const agendaSource = command.sourceAgendaGoal ? this.sourceAgendaGoal(command.companionId, command.sourceAgendaGoal) : undefined;
           const current = row.round_id ? this.round(row.round_id) : undefined;
           if (current && ['running', 'deferred'].includes(current.status)) this.saveRound({ ...current, updatedAt: stamp, endedAt: stamp, status: 'cancelled', selfTestProgress: undefined, error: '用户修改或暂停了目标，本轮未提交的工作已取消。' });
           const next = { ...goal, ...(command.text !== undefined ? { text: command.text } : {}), ...(command.materials !== undefined ? { materials: command.materials } : {}),
             ...(command.schedule ? { schedule: command.schedule } : {}), ...(command.allowWeb !== undefined ? { allowWeb: command.allowWeb } : {}),
             ...(command.state ? { state: command.state } : {}), revision: row.revision + 1, updatedAt: stamp, phase: 'idle' as const, waitReason: undefined };
           const nextAt = nextCompanionLearningGoalAt(next.schedule, now);
-          this.db.prepare('UPDATE companion_learning_goals SET data=?,state=?,revision=?,next_at=?,lease_token=NULL,lease_until=0 WHERE id=?')
-            .run(this.serializeGoal(next), next.state, next.revision, nextAt, row.id);
+          this.db.prepare('UPDATE companion_learning_goals SET data=?,state=?,revision=?,next_at=?,lease_token=NULL,lease_until=0,round_id=CASE WHEN ? THEN NULL ELSE round_id END WHERE id=?')
+            .run(this.serializeGoal(next), next.state, next.revision, nextAt, Number(this.definitionVersion(next) !== this.definitionVersion(goal)), row.id);
+          if (agendaSource) this.bindAgendaDefinition(next, agendaSource);
           return { ok: true, learningGoal: this.goal(this.load(row.id)) };
+        }
+        case 'learning.goals.bind': {
+          const row = this.expected(command.companionId, command.id, command.expectedRevision), goal = this.goal(row);
+          this.bindAgendaDefinition(goal, this.sourceAgendaGoal(command.companionId, command.sourceAgendaGoal));
+          return { ok: true, learningGoal: goal };
         }
         case 'learning.goals.run': {
           const row = this.expected(command.companionId, command.id, command.expectedRevision);
@@ -138,18 +225,35 @@ export class CompanionLearningGoalStore {
             ...(rows.length > command.limit ? { nextCursor: command.cursor + command.limit } : {}) } };
         }
         case 'learning.goals.claim': {
+          let agendaParent: { id: string; companionId: string } | undefined;
+          if (command.agendaRunId) {
+            const parent = this.db.prepare("SELECT r.id,r.companion_id,o.rule_data FROM companion_agenda_runs r JOIN companion_agenda_occurrences o ON o.id=r.occurrence_id WHERE r.id=? AND r.companion_id=? AND r.status='running' AND r.lease_until>? AND json_extract(r.data,'$.leaseToken')=? AND json_extract(o.rule_data,'$.executor')='learning' AND json_extract(o.rule_data,'$.referenceId')=?")
+              .get(command.agendaRunId, command.companionId!, stamp, command.agendaLeaseToken!, command.id!) as { id: string; companion_id: string; rule_data: string } | undefined;
+            if (!parent) throw new Error('学习执行缺少本人当前日程的真实父执行。');
+            if (!this.agendaDefinitionValid(parent.companion_id, command.id!, JSON.parse(parent.rule_data) as CompanionAgendaRule)) return { ok: true };
+            agendaParent = { id: parent.id, companionId: parent.companion_id };
+          }
           if ((this.db.prepare('SELECT COUNT(*) AS n FROM companion_learning_goals WHERE lease_until>?').get(now) as { n: number }).n >= 2) return { ok: true };
-          const rows = this.db.prepare(`SELECT g.* FROM companion_learning_goals g JOIN companions c ON c.id=g.companion_id WHERE g.state='active' AND g.next_at<=? AND g.lease_until<=? AND c.deleted_at IS NULL AND COALESCE(json_extract(c.data,'$.active'),1)=1
-            AND g.companion_id NOT IN(SELECT value FROM json_each(?)) AND NOT EXISTS(SELECT 1 FROM companion_reset_jobs r WHERE r.companion_id=g.companion_id AND r.status!='completed') ORDER BY g.next_at,g.rowid LIMIT 50`).all(now, now, JSON.stringify(command.excludedOwners)) as Row[];
+          const rows = this.db.prepare(`SELECT g.* FROM companion_learning_goals g JOIN companions c ON c.id=g.companion_id WHERE g.state='active' ${agendaParent ? '' : 'AND g.next_at<=?'} AND g.lease_until<=? ${command.id ? 'AND g.id=?' : ''} ${command.companionId ? 'AND g.companion_id=?' : ''} AND c.deleted_at IS NULL AND COALESCE(json_extract(c.data,'$.active'),1)=1
+            AND NOT EXISTS(SELECT 1 FROM companion_learning_goal_rounds held WHERE held.id=g.round_id AND held.status IN('parked','abandoned'))
+            AND g.companion_id NOT IN(SELECT value FROM json_each(?)) AND NOT EXISTS(SELECT 1 FROM companion_reset_jobs r WHERE r.companion_id=g.companion_id AND r.status!='completed') ORDER BY g.next_at,g.rowid LIMIT 50`)
+            .all(...(agendaParent ? [] : [now]), now, ...(command.id ? [command.id] : []), ...(command.companionId ? [command.companionId] : []), JSON.stringify(command.excludedOwners)) as Row[];
           for (const row of rows) {
-            if (!companionTaskCanClaim(this.db, row.companion_id, { kind: 'learning_goal', id: row.id })) continue;
+            if (!agendaParent && this.db.prepare('SELECT 1 FROM metadata WHERE key=?').get('agenda-learning-definition/' + row.id)) continue;
+            if (!agendaParent && !companionTaskCanClaim(this.db, row.companion_id, { kind: 'learning_goal', id: row.id })) continue;
             const goal = this.goal(row), due = nextCompanionLearningGoalAt(goal.schedule, now);
-            if (due > now) { this.db.prepare('UPDATE companion_learning_goals SET next_at=? WHERE id=?').run(due, row.id); continue; }
+            if (!agendaParent && due > now) { this.db.prepare('UPDATE companion_learning_goals SET next_at=? WHERE id=?').run(due, row.id); continue; }
             const previous = row.round_id ? this.round(row.round_id) : undefined;
-            const round: CompanionLearningGoalRound = previous && ['running', 'deferred'].includes(previous.status) ? { ...previous, updatedAt: stamp, endedAt: undefined, error: undefined, status: 'running' } : { id: randomUUID(), goalId: row.id, companionId: row.companion_id,
+            const sameInput = previous?.disposition?.inputVersion === this.definitionVersion(goal);
+            if (sameInput && previous && ['parked', 'abandoned'].includes(previous.status)) continue;
+            const round: CompanionLearningGoalRound = previous && sameInput && ['running', 'deferred', 'failed'].includes(previous.status) ? { ...previous, updatedAt: stamp, endedAt: undefined, error: undefined, status: 'running' } : { id: randomUUID(), goalId: row.id, companionId: row.companion_id,
               ordinal: row.rounds + 1, startedAt: stamp, updatedAt: stamp, status: 'running', phase: 'planning', reads: [], readingIssues: [], claims: [], memoryIds: [], gaps: [], nextPlan: [] };
             const token = randomUUID(); this.saveRound(round);
+            this.db.prepare('UPDATE companion_learning_goal_rounds SET attempts=attempts+1 WHERE id=?').run(round.id);
             this.db.prepare('UPDATE companion_learning_goals SET lease_token=?,lease_until=?,round_id=?,rounds=MAX(rounds,?) WHERE id=?').run(token, now + command.leaseMs, round.id, round.ordinal, row.id);
+            if (agendaParent) this.db.prepare('INSERT INTO metadata(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value')
+              .run('agenda-learning-parent/' + row.id, JSON.stringify({ companionId: row.companion_id, runId: agendaParent.id, roundId: round.id, agendaLeaseToken: command.agendaLeaseToken }));
+            else this.db.prepare('DELETE FROM metadata WHERE key=?').run('agenda-learning-parent/' + row.id);
             const prior = this.db.prepare('SELECT data FROM companion_learning_goal_rounds WHERE goal_id=? AND ordinal<? ORDER BY ordinal DESC LIMIT 1').get(row.id, round.ordinal) as { data: string } | undefined;
             return { ok: true, learningGoalJob: { goal: this.goal(this.load(row.id)), round, ...(prior ? { previousRound: this.round((JSON.parse(prior.data) as { id: string }).id) } : {}), leaseToken: token } };
           }
@@ -179,6 +283,8 @@ export class CompanionLearningGoalStore {
           for (const read of round.reads) if (read.grantId && !this.db.prepare('SELECT 1 FROM companion_learning_grants WHERE id=? AND companion_id=? AND enabled=1').get(read.grantId, row.companion_id)) throw new Error('学习资料授权已撤回，未整合旧结论。');
           const response = this.integrate(goal, round, command.content, command.evidence, command.claimHash, command.target, command.expectedProhibitionRevision);
           if (!response.ok || !response.memories?.length) throw new Error(response.error ?? 'VCP 正式记忆未登记。');
+          if (response.memories.some(note => note.companionId !== goal.companionId || !['knowledge', 'procedure'].includes(note.artifactKind)))
+            throw new Error('持续学习只能整合当前伙伴的显式知识或方法记录，不能把经历、人设、梦境或引用转为学习成果。');
           const note = response.memories[0]!;
           this.saveRound({ ...round, memoryIds: response.memories.map(note => note.id), updatedAt: stamp,
             integration: { action: command.target?.action === 'reuse' ? 'reused' : command.target ? 'revised' : 'recorded', noteId: note.id, version: note.version, reason: command.reason } });
@@ -205,9 +311,30 @@ export class CompanionLearningGoalStore {
           return { ok: true, learningGoal: this.goal(this.load(row.id)) };
         }
         case 'learning.goals.checkpoint': case 'learning.goals.finish': {
-          const row = this.leased(command.id, command.leaseToken), goal = this.goal(row), round = command.round;
+          if (command.type === 'learning.goals.finish' && command.round.status !== 'completed') {
+            const current = this.load(command.id);
+            if (current.lease_token !== command.leaseToken || current.lease_until <= now) return { ok: true };
+          }
+          const row = this.leased(command.id, command.leaseToken, command.type !== 'learning.goals.finish' || command.round.status === 'completed'), goal = this.goal(row), round = command.round;
           if (round.id !== row.round_id || round.goalId !== row.id || round.companionId !== row.companion_id || round.ordinal !== row.rounds) throw new Error('学习轮次归属不匹配。');
           if (command.type === 'learning.goals.checkpoint' && round.status !== 'running' || command.type === 'learning.goals.finish' && round.status === 'running') throw new Error('学习轮次状态无效。');
+          // Integrating knowledge commits before its exact files/index may
+          // become ready. A waiting/cancel catch still holds the older local
+          // round: it cannot erase the host's durable integration receipt.
+          const committed = this.round(row.round_id!)!;
+          if (committed.integration) {
+            if (round.integration && learningTestHash(round.integration) !== learningTestHash(committed.integration)
+              || round.memoryIds.length && learningTestHash([...round.memoryIds].sort()) !== learningTestHash([...committed.memoryIds].sort()))
+              throw new Error('已提交的学习整合收据不能被后续旧检查点改写。');
+            round.integration = committed.integration; round.memoryIds = [...committed.memoryIds];
+          }
+          if (command.type === 'learning.goals.finish' && (command.failureKind === 'stale' || command.failureKind === 'cancelled')) {
+            const actual = this.round(row.round_id!)!;
+            this.saveRound({ ...actual, status: command.failureKind, selfTestProgress: undefined, selfTest: undefined, stateReflection: undefined,
+              endedAt: stamp, updatedAt: stamp, error: command.failureKind === 'stale' ? '原始来源或固定输入已变化，本轮未发布。' : '本轮已取消，原始依据保留。' });
+            this.db.prepare('UPDATE companion_learning_goals SET lease_token=NULL,lease_until=0,next_at=? WHERE id=?').run(now + goal.schedule.intervalMinutes * 60000, row.id);
+            return { ok: true, learningGoal: this.goal(this.load(row.id)) };
+          }
           const storedProgress = this.round(row.round_id!)?.selfTestProgress;
           if (learningTestHash(round.selfTestProgress ?? null) !== learningTestHash(storedProgress ?? null)) throw new Error('自测阶段只能通过宿主逐步回执提交。');
           if (round.selfTestProgress) this.assertTestBasis(goal, round, round.selfTestProgress.sourceChecksums);
@@ -222,7 +349,14 @@ export class CompanionLearningGoalStore {
               ? { outcome: 'not_needed' as const, detail: '本轮复用已有知识，不重复改写当前关注或产生情绪奖励。' }
               : this.reflect?.(goal, round) ?? { outcome: 'not_needed' as const, detail: '本次未配置状态整合，不改变当前关注。' }) };
           }
+          const qualityFailure = command.type === 'learning.goals.finish' && round.status === 'failed' && (command.failureKind ?? 'processing') === 'processing';
+          if (qualityFailure) {
+            const counts = this.db.prepare('SELECT cycle_failure_count FROM companion_learning_goal_rounds WHERE id=?').get(round.id) as { cycle_failure_count: number };
+            if (counts.cycle_failure_count + 1 >= COMPANION_JOB_FAILURES_PER_CYCLE) round.status = 'parked';
+          } else if (command.type === 'learning.goals.finish' && round.status === 'failed' && command.failureKind === 'waiting') round.status = 'deferred';
           this.saveRound(round);
+          if (qualityFailure) this.db.prepare('UPDATE companion_learning_goal_rounds SET failure_count=failure_count+1,cycle_failure_count=cycle_failure_count+1,last_failure_at=?,last_failure_error=? WHERE id=?')
+            .run(stamp, round.error?.slice(0, 1000) ?? '本轮学习处理失败。', round.id);
           if (command.type === 'learning.goals.finish') {
             const nextAt = nextCompanionLearningGoalAt(goal.schedule, now + (command.retryAfterMs ?? goal.schedule.intervalMinutes * 60000));
             this.db.prepare('UPDATE companion_learning_goals SET data=?,next_at=?,lease_token=NULL,lease_until=0 WHERE id=?')

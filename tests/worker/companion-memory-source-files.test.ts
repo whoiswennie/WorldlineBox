@@ -1,84 +1,46 @@
-import { existsSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import path from 'node:path';
+import { existsSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs';
 import { afterEach, expect, it } from 'vitest';
-import { CompanionsStore } from '../../src/companions/store';
-import { CompanionMemoryLibrary } from '../../src/main/companions/memory-library';
-import { CompanionMemorySourceFiles, companionMemorySourceFilePath } from '../../src/main/companions/memory-source-files';
-import { removeOwnedDirectorySync } from '../../src/main/vcp-memory/filesystem';
-import type { CompanionStorageCommand } from '../../src/shared/companion-storage';
+import { companionMemorySourceArtifactId, companionMemorySourceFilePath } from '../../src/main/companions/memory-source-files';
+import { managedMemoryFiles } from '../fixtures/managed-memory-files';
 
-const fixtures: Array<{ root: string; store: CompanionsStore; library: CompanionMemoryLibrary }> = [];
-afterEach(async () => { for (const f of fixtures.splice(0)) { await f.library.close(); f.store.close(); removeOwnedDirectorySync(f.root); } });
-async function fixture() {
-  const root = mkdtempSync(path.join(tmpdir(), 'companion-memory-source-files-')), scope = { companionId: 'alice', conversationId: 'private_alice' };
-  const store = new CompanionsStore(path.join(root, 'state.sqlite'), ['alice', 'bob'].map(id => ({ id, name: id, description: '', persona: '只保留自己获权的真实来源。', model: '', avatar: 'sister' as const, active: true, proactive: false })));
-  scope.conversationId = store.openPrivate('alice').id;
-  let beforeComplete: (() => void) | undefined;
-  const request = async (command: CompanionStorageCommand) => {
-    if (command.type === 'memory.sources.outbox.complete' && beforeComplete) { const hook = beforeComplete; beforeComplete = undefined; hook(); }
-    return store.request(command);
-  };
-  const directory = path.join(root, '伙伴记忆'), library = new CompanionMemoryLibrary({ libraryDirectory: directory, request }), files = new CompanionMemorySourceFiles({ library });
-  fixtures.push({ root, store, library });
-  // Source/history delivery never creates an owner namespace. Production Main
-  // initializes the canonical role before starting these durable publishers.
-  await library.withDocuments('alice', async () => undefined, { readOnly: true });
-  const source = store.appendMessage({ conversationId: scope.conversationId, authorId: 'user', content: 'ACTUAL_RAW_SOURCE_包含摘要未保留的原始条件、否定和细节。', replyDirective: 'none' });
-  const note = store.request({ type: 'memory.record', ...scope, candidate: { content: '仅是原文的短摘要。', tags: ['来源核验'], sourceMessageIds: [source.id], evidence: [{ sourceMessageId: source.id, quote: source.content }] } }).memories![0]!;
-  const reference = note.sources[0]!, relative = companionMemorySourceFilePath({ sourceId: source.id, sourceRevision: reference.revision, sourceChecksum: reference.checksum });
-  return { root, scope, store, library, files, source, note, reference, file: path.join(directory, 'alice', ...relative.split('/')),
-    beforeComplete: (hook: () => void) => { beforeComplete = hook; } };
-}
+const fixtures: ReturnType<typeof managedMemoryFiles>[] = [];
+function fixture() { const f = managedMemoryFiles(); fixtures.push(f); const source = f.source('ACTUAL_RAW_SOURCE_摘要没有保留的条件、否定和细节。'), note = f.record('只是原文的短摘要。', [source.id]), reference = note.sources[0]!;
+  return Object.assign(f, { sourceMessage: source, note, reference, sourceFile: f.file(companionMemorySourceFilePath({ sourceId: source.id, sourceRevision: reference.revision, sourceChecksum: reference.checksum })) }); }
+afterEach(async () => { for (const f of fixtures.splice(0)) await f.close(); });
 
-it('publishes immutable owner-local actual originals and never re-learns their directory as a new diary', async () => {
-  const f = await fixture(); expect(await f.files.flush('alice')).toMatchObject({ completed: 1, pending: false });
-  expect(readFileSync(f.file, 'utf8')).toBe(f.source.content); expect(readFileSync(f.file + '.meta.json', 'utf8')).toContain(f.reference.checksum);
-  expect(await f.files.read(f.scope, f.reference)).toBe(f.source.content);
-  const before = f.store.listMemory('alice').length; await f.library.sync(); expect(f.store.listMemory('alice')).toHaveLength(before);
-  expect((await f.files.flush('alice')).completed).toBe(0);
-  await expect(f.files.read({ companionId: 'bob', conversationId: f.store.openPrivate('bob').id }, f.reference)).rejects.toThrow();
+it('publishes the exact immutable host original under a typed identity without learning its directory or trusting sidecars', async () => {
+  const f = fixture(); expect(await f.sources.flush('alice')).toMatchObject({ completed: 1, pending: false }); expect(readFileSync(f.sourceFile, 'utf8')).toBe(f.sourceMessage.content);
+  const artifact = await (await f.artifacts('alice')).get(companionMemorySourceArtifactId(f.sourceMessage.id, 1)); expect(artifact).toMatchObject({ kind: 'source_evidence', contentHash: f.reference.checksum, allowedConsumers: ['source_verification', 'audit'] });
+  const publicCommand = { type: 'memory.revision.read' as const, ...f.scope, id: f.note.id, contentRevision: 1 };
+  expect(existsSync(f.sourceFile + '.meta.json')).toBe(false); expect(await f.sources.read(publicCommand, f.reference)).toBe(f.sourceMessage.content);
+  const before = f.store.listMemory('alice').length; await f.library.sync(); expect(f.store.listMemory('alice')).toHaveLength(before); expect((await f.sources.flush('alice')).completed).toBe(0);
+  await expect(f.sources.read({ companionId: 'bob', conversationId: f.store.openPrivate('bob').id }, f.reference)).rejects.toThrow();
 });
-
-it('withdraws exact archived source files and metadata through a durable retract without scanning another owner', async () => {
-  const f = await fixture(); await f.files.flush('alice');
-  f.store.request({ type: 'memory.forget', ...f.scope, sourceMessageIds: [f.source.id] });
-  expect(await f.files.flush('alice')).toMatchObject({ completed: 1 });
-  expect(existsSync(f.file)).toBe(false); expect(existsSync(f.file + '.meta.json')).toBe(false);
-  await expect(f.files.read(f.scope, f.reference)).rejects.toThrow('撤回');
+it('withdraws only the exact registered source file through the durable outbox and does not scan another owner', async () => {
+  const f = fixture(); await f.sources.flush('alice'); f.store.request({ type: 'memory.forget', ...f.scope, sourceMessageIds: [f.sourceMessage.id] }); f.commands.length = 0;
+  expect(await f.sources.flush('alice')).toMatchObject({ completed: 1 }); expect(existsSync(f.sourceFile)).toBe(false); await expect(f.sources.read(f.scope, f.reference)).rejects.toThrow();
+  expect(f.commands.filter(command => 'companionId' in command && command.companionId).every(command => !('companionId' in command) || command.companionId === 'alice')).toBe(true);
 });
-
-it('rechecks the lease after file publication and removes bytes if authorization changed during the write', async () => {
-  const f = await fixture(); f.beforeComplete(() => f.store.request({ type: 'memory.forget', ...f.scope, sourceMessageIds: [f.source.id] }));
-  await f.files.flush('alice'); expect(existsSync(f.file)).toBe(false); expect(existsSync(f.file + '.meta.json')).toBe(false);
+it('rechecks the SQL lease after registry publication and removes exact bytes when authorization changes before acknowledgment', async () => {
+  const f = fixture(); f.intercept(command => { if (command.type === 'memory.sources.outbox.complete') { f.intercept(); f.store.request({ type: 'memory.forget', ...f.scope, sourceMessageIds: [f.sourceMessage.id] }); } });
+  await f.sources.flush('alice'); expect(existsSync(f.sourceFile)).toBe(false); await expect(f.sources.read(f.scope, f.reference)).rejects.toThrow();
 });
-
-it('rejects edited raw copies instead of falling back to authoritative SQL or admitting forged memory', async () => {
-  const f = await fixture(); await f.files.flush('alice'); writeFileSync(f.file, 'FORGED_SOURCE_MUST_NOT_REPLACE_ACTUAL_BYTES');
-  await expect(f.files.read(f.scope, f.reference)).rejects.toThrow('不使用SQL');
-  expect(f.store.getMessage(f.source.id).content).toBe(f.source.content);
-  const before = f.store.listMemory('alice').length; await f.library.sync(); expect(f.store.listMemory('alice')).toHaveLength(before);
+it('rejects edited or missing raw copies without falling back to SQL or manufacturing another source', async () => {
+  const f = fixture(); await f.sources.flush('alice'); writeFileSync(f.sourceFile, 'FORGED_UNKNOWN_BYTES'); await expect(f.sources.read(f.scope, f.reference)).rejects.toThrow();
+  expect(f.store.getMessage(f.sourceMessage.id).content).toBe(f.sourceMessage.content); await f.library.sync(); expect(readFileSync(f.sourceFile, 'utf8')).toBe('FORGED_UNKNOWN_BYTES');
+  unlinkSync(f.sourceFile); f.restart(); await expect(f.sources.read(f.scope, f.reference)).rejects.toThrow(); expect(existsSync(f.sourceFile)).toBe(false);
 });
-
-it('admits inactive pending owners and retracts originals even while their prompt profile is malformed', async () => {
-  const f = await fixture();
-  f.store.request({ type: 'companion.set-active', id: 'alice', active: false });
-  expect(f.store.request({ type: 'memory.sources.outbox.owners', limit: 4 }).memorySourcePendingOwners).toContain('alice');
-  expect(await f.files.flushPending(async command => f.store.request(command))).toMatchObject({ owners: 1, completed: 1 });
-  await f.library.sync();
-  writeFileSync(path.join(f.root, '伙伴记忆', 'alice', 'profile.md'), 'malformed profile does not suspend source revocation');
-  f.store.request({ type: 'memory.forget', ...f.scope, sourceMessageIds: [f.source.id] });
-  expect(await f.files.flushPending(async command => f.store.request(command))).toMatchObject({ owners: 1, completed: 1 });
-  expect(existsSync(f.file)).toBe(false);
+it('does not delete unknown external bytes during source withdrawal, while immediately revoking their authority', async () => {
+  const f = fixture(); await f.sources.flush('alice'); writeFileSync(f.sourceFile, 'UNKNOWN_EXTERNAL_REPLACEMENT'); f.store.request({ type: 'memory.forget', ...f.scope, sourceMessageIds: [f.sourceMessage.id] });
+  expect(await f.sources.flush('alice')).toMatchObject({ failed: 1, completed: 0 }); expect(readFileSync(f.sourceFile, 'utf8')).toBe('UNKNOWN_EXTERNAL_REPLACEMENT'); await expect(f.sources.read(f.scope, f.reference)).rejects.toThrow();
 });
-
-it('recovers a durable claimed publication immediately after the owned SQLite process restarts', async () => {
-  const f = await fixture(), claimed = f.store.request({ type: 'memory.sources.outbox.claim', companionId: 'alice', leaseMs: 600000 }).memorySourceOutbox!;
-  expect(claimed.operation).toBe('publish'); await f.library.close(); f.store.close();
-  const store = new CompanionsStore(path.join(f.root, 'state.sqlite'), []), library = new CompanionMemoryLibrary({ libraryDirectory: path.join(f.root, '伙伴记忆'), request: async command => store.request(command) });
-  const owned = fixtures.find(item => item.root === f.root)!; owned.store = store; owned.library = library;
-  const publisher = new CompanionMemorySourceFiles({ library });
-  expect(await publisher.flushPending(async command => store.request(command))).toMatchObject({ owners: 1, completed: 1 });
-  expect(readFileSync(f.file, 'utf8')).toBe(f.source.content);
-  expect(() => store.request({ type: 'memory.sources.outbox.complete', id: claimed.id, leaseToken: claimed.leaseToken })).toThrow('租约');
+it('publishes and retracts for inactive owners without parsing or recreating a missing persona', async () => {
+  const f = fixture(); f.store.request({ type: 'companion.set-active', id: 'alice', active: false }); expect(await f.sources.flushPending(f.request)).toMatchObject({ owners: 1, completed: 1 });
+  writeFileSync(f.file('profile.md'), 'malformed profile cannot suspend source withdrawal'); f.store.request({ type: 'memory.forget', ...f.scope, sourceMessageIds: [f.sourceMessage.id] });
+  expect(await f.sources.flushPending(f.request)).toMatchObject({ owners: 1, completed: 1 }); expect(existsSync(f.sourceFile)).toBe(false); expect(readFileSync(f.file('profile.md'), 'utf8')).toBe('malformed profile cannot suspend source withdrawal');
+});
+it('recovers an outstanding claimed source publication when its isolated SQLite process reopens', async () => {
+  const f = fixture(), claimed = f.store.request({ type: 'memory.sources.outbox.claim', companionId: 'alice', leaseMs: 600000 }).memorySourceOutbox!; expect(claimed.operation).toBe('publish');
+  f.restart(); expect(await f.sources.flushPending(f.request)).toMatchObject({ owners: 1, completed: 1 }); expect(readFileSync(f.sourceFile, 'utf8')).toBe(f.sourceMessage.content);
+  expect(() => f.store.request({ type: 'memory.sources.outbox.complete', id: claimed.id, leaseToken: claimed.leaseToken })).toThrow('租约');
 });

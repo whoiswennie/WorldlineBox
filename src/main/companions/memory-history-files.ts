@@ -1,192 +1,224 @@
 import { createHash } from 'node:crypto';
-import { lstat, open, realpath, link, unlink, mkdir } from 'node:fs/promises';
-import path from 'node:path';
 import type { CompanionMemory } from '../../shared/companions';
 import { companionMemorySchema } from '../../shared/companion-memory';
-import { companionMemoryHistoryPath, renderCompanionMemoryHistory, type CompanionMemoryHistoryOutbox, type CompanionMemoryHistoryPayload } from '../../shared/companion-memory-history';
+import { companionMemoryHistoryPath, renderCompanionMemoryHistory, type CompanionMemoryHistoryDescriptor, type CompanionMemoryHistoryOutbox, type CompanionMemoryHistoryPayload } from '../../shared/companion-memory-history';
 import type { CompanionStorageCommand, CompanionStorageResponse } from '../../shared/companion-storage';
-import type { CompanionMemoryLibrary, MemoryLibraryDocumentSession } from './memory-library';
-import { inspectVcpOwnedDirectory } from '../vcp-memory/filesystem';
-import { companionMemorySourceFilePath } from './memory-source-files';
+import { companionMemoryRegisteredPath, memoryArtifactReference, type CompanionMemoryLibrary, type MemoryLibraryDocumentSession } from './memory-library';
+import { companionMemorySourceArtifactId } from './memory-source-files';
+import { cancelRetiredMemoryPublications, removeRetiredMemoryFile } from './memory-retired-files';
+import { memoryFilePublicationOperation, prepareMemoryFilePublication, releaseHeldMemoryFilePublications } from './memory-publication-jobs';
+import { CompanionPublicationBusyError } from './artifact-registry';
 
 type Scope = { companionId: string; conversationId: string; beforeSequence?: number };
-type HistoryRead = { active: Set<string>; seen: Set<string>; memo: Map<string, CompanionMemory> };
-const checksum = (text: string) => createHash('sha256').update(text).digest('hex');
-const stamp = (stat: Awaited<ReturnType<typeof lstat>>) => [stat.dev, stat.ino, stat.size, stat.mtimeMs, stat.ctimeMs].join(':');
-const missing = (error: unknown) => (error as NodeJS.ErrnoException).code === 'ENOENT';
+export type CompanionMemoryHistoryTraversal = { active: Set<string>; seen: Set<string>; memo: Map<string, CompanionMemory>;
+  sourceChecks?: Map<string, Promise<void>> };
+class HistoryInputsPending extends Error {}
+class StaleHistoryDelivery extends Error {}
+const hash = (content: string) => createHash('sha256').update(content).digest('hex');
+export const companionMemoryHistoryArtifactId = (id: string, revision: number) => `history:${id}:r${revision}`;
 
-/** Immutable historical bodies live beside the owner's other managed assets.
- * SQL is a publication/authorization journal, never a historical-body fallback. */
+/** Immutable bodies are typed audit evidence, outside all recall/learning channels.
+ * A delivered history file is never reconstructed from the SQL body after loss. */
 export class CompanionMemoryHistoryFiles {
   private readonly failedOwners = new Map<string, number>();
-  constructor(private readonly options: { library: CompanionMemoryLibrary; report?(error: unknown): void;
-    /** A deterministic fault boundary for crash-window integration tests. */
-    afterLink?(job: CompanionMemoryHistoryOutbox): Promise<void> }) {}
-  private async parent(session: MemoryLibraryDocumentSession, file: string): Promise<void> {
-    if (!await inspectVcpOwnedDirectory(session.root) || !await inspectVcpOwnedDirectory(path.dirname(file)))
-      throw Object.assign(new Error('历史目录缺失。'), { code: 'ENOENT' });
-    const actualRoot = await realpath(session.root), actualParent = await realpath(path.dirname(file)), relative = path.relative(actualRoot, actualParent);
-    if (path.isAbsolute(relative) || relative === '..' || relative.startsWith('..' + path.sep)) throw new Error('历史文件超出伙伴目录。');
-  }
-  private file(session: MemoryLibraryDocumentSession, relative: string): string {
-    if (relative.startsWith('.认知索引/历史发布/')) {
-      const name = relative.slice('.认知索引/历史发布/'.length);
-      if (!/^[a-zA-Z0-9_-]{1,100}\.tmp$/u.test(name)) throw new Error('历史宿主临时身份无效。');
-      return path.join(session.root, '.认知索引', '历史发布', name);
-    }
-    return session.file(relative);
-  }
-  private async temporaryDirectory(session: MemoryLibraryDocumentSession): Promise<void> {
-    let directory = session.root;
-    if (!await inspectVcpOwnedDirectory(directory)) throw new Error('历史宿主目录不安全。');
-    for (const part of ['.认知索引', '历史发布']) {
-      directory = path.join(directory, part);
-      try { await mkdir(directory); } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error; }
-      if (!await inspectVcpOwnedDirectory(directory)) throw new Error('历史宿主临时目录被外部改为链接。');
-    }
-  }
-  private async text(session: MemoryLibraryDocumentSession, relative: string, optional = false, recoveryTemporary?: string): Promise<string | undefined> {
-    const file = this.file(session, relative);
-    try {
-      await this.parent(session, file); const before = await lstat(file);
-      if (!before.isFile() || before.isSymbolicLink() || before.size > 2 * 1024 * 1024) throw new Error('历史文件不是有界普通文件。');
-      if (before.nlink !== 1) {
-        if (before.nlink !== 2 || !recoveryTemporary) throw new Error('历史文件不能是硬链接。');
-        await this.parent(session, recoveryTemporary); const temporary = await lstat(recoveryTemporary);
-        if (!temporary.isFile() || temporary.isSymbolicLink() || temporary.nlink !== 2 || temporary.dev !== before.dev || temporary.ino !== before.ino)
-          throw new Error('历史发布恢复链接不属于本次耐久任务。');
-      }
-      const handle = await open(file, 'r');
-      try {
-        if (stamp(await handle.stat()) !== stamp(before)) throw new Error('历史文件在打开前发生变化。');
-        const bytes = Buffer.alloc(before.size + 1); let length = 0;
-        while (length < bytes.length) { const result = await handle.read(bytes, length, bytes.length - length, length); if (!result.bytesRead) break; length += result.bytesRead; }
-        if (length !== before.size || stamp(await handle.stat()) !== stamp(before) || stamp(await lstat(file)) !== stamp(before)) throw new Error('历史文件在读取期间发生变化。');
-        await this.parent(session, file);
-        return new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(bytes.subarray(0, length));
-      } finally { await handle.close(); }
-    } catch (error) { if (optional && missing(error)) return; throw error; }
-  }
-  private temporary(job: CompanionMemoryHistoryOutbox): string { return `.认知索引/历史发布/${job.id}.tmp`; }
-  private async remove(session: MemoryLibraryDocumentSession, relative: string): Promise<void> {
-    const file = this.file(session, relative);
-    try { await this.parent(session, file); const info = await lstat(file); if (!info.isFile() || info.isSymbolicLink()) throw new Error('历史撤回目标不是普通文件。'); await unlink(file); }
-    catch (error) { if (!missing(error)) throw error; }
-  }
-  private async check(session: MemoryLibraryDocumentSession, job: CompanionMemoryHistoryOutbox): Promise<void> {
-    if (!(await session.request({ type: 'memory.history.outbox.check', id: job.id, leaseToken: job.leaseToken })).memoryHistoryOutboxAccepted)
-      throw new Error('历史发布租约或来源权限已撤回。');
+  constructor(private readonly options: { library: CompanionMemoryLibrary; report?(error: unknown): void; afterPublish?(job: CompanionMemoryHistoryOutbox): Promise<void> }) {}
+  private async check(session: MemoryLibraryDocumentSession, job: CompanionMemoryHistoryOutbox) {
+    if (!(await session.request({ type: 'memory.history.outbox.check', id: job.id, leaseToken: job.leaseToken })).memoryHistoryOutboxAccepted) throw new StaleHistoryDelivery('历史发布租约或真实来源授权已撤回。');
   }
   private async publish(session: MemoryLibraryDocumentSession, job: CompanionMemoryHistoryOutbox): Promise<void> {
     const payload = job.payload as CompanionMemoryHistoryPayload | undefined;
-    if (!payload || payload.memory.companionId !== job.companionId || payload.memory.id !== job.memoryId || payload.memory.contentRevision !== job.contentRevision)
-      throw new Error('历史发布正文不属于本次不可变修订。');
-    if (job.relativePath !== companionMemoryHistoryPath(job.memoryId, job.contentRevision, job.bodyHash)) throw new Error('历史发布路径身份不一致。');
-    const content = renderCompanionMemoryHistory(payload, job.bodyHash);
-    if (checksum(content) !== job.documentHash) throw new Error('历史发布正文与耐久hash不一致。');
-    await session.directory(`记忆历史/${job.memoryId}`); await this.temporaryDirectory(session);
-    const temporaryRelative = this.temporary(job), temporary = this.file(session, temporaryRelative), target = session.file(job.relativePath);
-    // A crash may leave exactly our durable job's two links. Only this publisher
-    // may recognize that pair; ordinary readers always require nlink=1.
-    const existing = await this.text(session, job.relativePath, true, temporary);
-    if (existing !== undefined) {
-      if (checksum(existing) !== job.documentHash) throw new Error('已登记历史文件被外部编辑，不能覆盖或SQL重建。');
-      try { const targetInfo = await lstat(target), temporaryInfo = await lstat(temporary);
-        if (targetInfo.nlink === 2 && temporaryInfo.nlink === 2 && targetInfo.dev === temporaryInfo.dev && targetInfo.ino === temporaryInfo.ino
-          && await this.text(session, temporaryRelative, false, target) === content) await unlink(temporary);
-        else if (targetInfo.nlink !== 1) throw new Error('历史发布恢复出现未知硬链接。');
-      } catch (error) { if (!missing(error)) throw error; }
-      if (checksum((await this.text(session, job.relativePath))!) !== job.documentHash) throw new Error('历史恢复后文件不一致。');
+    if (!payload || payload.memory.companionId !== session.owner.id || payload.memory.id !== job.memoryId || payload.memory.contentRevision !== job.contentRevision
+      || job.relativePath !== companionMemoryHistoryPath(job.memoryId, job.contentRevision, job.bodyHash)) throw new Error('历史发布身份、类型或不可变正文不一致。');
+    companionMemorySchema.parse(payload.memory);
+    const memory = payload.memory, content = renderCompanionMemoryHistory(payload, job.bodyHash);
+    if (hash(content) !== job.documentHash) throw new Error('历史发布正文校验不一致。');
+    await this.check(session, job);
+    const artifactId = companionMemoryHistoryArtifactId(job.memoryId, job.contentRevision), previous = await session.registry.get(artifactId);
+    if (previous) {
+      const result = await session.registry.read({ artifactId, consumer: 'audit' });
+      if (result.artifact.kind !== 'revision_history' || result.artifact.relativePath !== job.relativePath || result.text !== content) throw new Error('已提交历史被改写或缺失，不能覆盖或SQL重建。');
       await this.check(session, job); return;
     }
-    try { const previous = await lstat(temporary); if (!previous.isFile() || previous.isSymbolicLink() || previous.nlink !== 1) throw new Error('历史临时路径不是本宿主可恢复的普通文件。'); await unlink(temporary); }
-    catch (error) { if (!missing(error)) throw error; }
-    const handle = await open(temporary, 'wx');
-    try { await handle.writeFile(content, 'utf8'); await handle.sync(); } finally { await handle.close(); }
-    await this.parent(session, target); await this.check(session, job);
-    // Atomic no-replace publication. An external file created after the check
-    // causes EEXIST; it is never overwritten by a rename from stale SQL.
-    await link(temporary, target);
-    await this.options.afterLink?.(job);
-    await unlink(temporary);
-    if (checksum((await this.text(session, job.relativePath))!) !== job.documentHash) throw new Error('历史发布后被并发修改。');
+    const sourceArtifacts = await session.registry.getMany(memory.sources.map(source => companionMemorySourceArtifactId(source.messageId, source.revision)));
+    const sourceRefs = memory.sources.map(source => {
+      const artifact = sourceArtifacts.find(item => item.artifactId === companionMemorySourceArtifactId(source.messageId, source.revision));
+      if (!artifact) throw new HistoryInputsPending('历史记忆的准确真实来源尚未登记，等待上游原始资料发布。');
+      if (artifact.kind !== 'source_evidence' || artifact.contentHash !== source.checksum) throw new Error('历史记忆的真实来源登记身份或原文校验不一致。'); return memoryArtifactReference(artifact);
+    });
+    const dependencies = await session.registry.getMany(payload.dependencies.map(dependency => companionMemoryHistoryArtifactId(dependency.id, dependency.contentRevision)));
+    const dependencyRefs = payload.dependencies.map(dependency => {
+      const artifact = dependencies.find(item => item.artifactId === companionMemoryHistoryArtifactId(dependency.id, dependency.contentRevision));
+      if (!artifact) throw new HistoryInputsPending('历史记忆的准确依赖版本尚未登记，等待上游版本发布。');
+      if (artifact.kind !== 'revision_history') throw new Error('历史记忆依赖版本的登记类型不一致。'); return memoryArtifactReference(artifact);
+    });
+    const operationId = memoryFilePublicationOperation('history', job.id, job.retryCycle);
+    await prepareMemoryFilePublication(session, operationId, this.options.report);
+    await session.registry.publish({ artifactId, kind: 'revision_history', producer: { kind: 'host', id: 'history-outbox' },
+      relativePath: job.relativePath, expectedRevision: null, content, sourceRefs, dependencyRefs, visibility: { scope: 'owner' }, allowedConsumers: ['audit'], retentionClass: 'history',
+      operationId }, async () => {
+        await this.check(session, job); for (const reference of sourceRefs) await session.registry.read({ artifactId: reference.artifactId, consumer: 'source_verification', audienceIds: [memory.sourceConversationId] });
+      }, { kind: 'history_files', id: job.id, leaseToken: job.leaseToken, retryCycle: job.retryCycle });
+    await this.options.afterPublish?.(job);
   }
-  private async deliver(session: MemoryLibraryDocumentSession, limit: number, target?: { id: string; contentRevision: number }): Promise<{ completed: number; pending: boolean }> {
-    let completed = 0;
-    for (; completed < limit; completed++) {
-      const job = (await session.request({ type: 'memory.history.outbox.claim', companionId: session.owner.id,
-        ...(target ? { memoryId: target.id, contentRevision: target.contentRevision } : {}) })).memoryHistoryOutbox;
+  private async withdraw(session: MemoryLibraryDocumentSession, job: CompanionMemoryHistoryOutbox) {
+    const artifactId = companionMemoryHistoryArtifactId(job.memoryId, job.contentRevision);
+    const artifact = await session.registry.get(artifactId, true);
+    if (artifact) { await session.registry.revoke(artifactId); await removeRetiredMemoryFile(session.registry, artifact); }
+    await cancelRetiredMemoryPublications(session.registry, artifactId, 'history-outbox', 'revision_history');
+  }
+  private async deliver(session: MemoryLibraryDocumentSession, limit: number, target?: { id?: string; contentRevision?: number; operation?: 'publish' | 'retract'; throughOrdinal?: number }): Promise<{ completed: number; pending: boolean; failed: number; waiting: number }> {
+    let completed = 0, processed = 0, failed = 0, waiting = 0;
+    for (; processed < limit; processed++) {
+      const job = (await session.request({ type: 'memory.history.outbox.claim', companionId: session.owner.id, ...(target ? { memoryId: target.id, contentRevision: target.contentRevision,
+        operation: target.operation, throughOrdinal: target.throughOrdinal } : {}) })).memoryHistoryOutbox;
       if (!job) break;
-      if (job.companionId !== session.owner.id) throw new Error('历史发布任务不属于当前伙伴目录。');
+      if (job.companionId !== session.owner.id) throw new Error('历史发布不属于当前伙伴。');
       try {
-        if (job.operation === 'retract') { await this.remove(session, job.relativePath); await this.remove(session, this.temporary(job)); }
-        else await this.publish(session, job);
-        const result = await session.request({ type: 'memory.history.outbox.complete', id: job.id, leaseToken: job.leaseToken, documentHash: job.documentHash });
-        if (!result.memoryHistoryOutboxAccepted) { await this.remove(session, job.relativePath); await this.remove(session, this.temporary(job)); }
-      } catch (error) {
-        if (job.operation === 'publish') {
-          const current = await session.request({ type: 'memory.history.outbox.check', id: job.id, leaseToken: job.leaseToken }).catch(() => undefined);
-          if (current?.memoryHistoryOutboxAccepted === false) {
-            await this.remove(session, job.relativePath); await this.remove(session, this.temporary(job));
-            await session.request({ type: 'memory.history.outbox.complete', id: job.id, leaseToken: job.leaseToken, documentHash: job.documentHash }).catch(() => undefined);
-            continue;
+        if (job.operation === 'retract') await this.withdraw(session, job);
+        else {
+          await this.publish(session, job);
+          // One durable outbox owns both the immutable revision and current
+          // body. A crash between them leaves this job unacknowledged; replay
+          // verifies the history and completes only its still-current body.
+          const current = (await session.request({ type: 'memory.library.read', companionId: session.owner.id, id: job.memoryId })).memoryRead?.memory;
+          if (current && current.contentRevision === job.contentRevision) {
+            const payload = job.payload as CompanionMemoryHistoryPayload | undefined;
+            if (!payload || current.content !== payload.memory.content || current.artifactKind !== payload.memory.artifactKind) throw new Error('历史发布与当前正式正文不一致。');
+            await this.check(session, job);
+            await session.project(companionMemoryRegisteredPath(current), current, { dependencies: payload.dependencies, jobId: job.id, retryCycle: job.retryCycle,
+              check: () => this.check(session, job), fileJobGuard: { kind: 'history_files', id: job.id, leaseToken: job.leaseToken, retryCycle: job.retryCycle } });
+            await this.check(session, job);
           }
         }
-        await session.request({ type: 'memory.history.outbox.fail', id: job.id, leaseToken: job.leaseToken,
-          error: error instanceof Error ? error.message.slice(0, 1000) : '历史文件发布失败。', retryAfterMs: 30000 }).catch(() => undefined);
-        throw error;
+        const result = await session.request({ type: 'memory.history.outbox.complete', id: job.id, leaseToken: job.leaseToken, documentHash: job.documentHash });
+        if (!result.memoryHistoryOutboxAccepted) await this.withdraw(session, job);
+        if (result.memoryHistoryOutboxAccepted) completed++;
+      } catch (cause) {
+        const current = await session.request({ type: 'memory.history.outbox.check', id: job.id, leaseToken: job.leaseToken });
+        const failureKind = cause instanceof StaleHistoryDelivery || current.memoryHistoryOutboxAccepted === false ? 'stale' : cause instanceof HistoryInputsPending || cause instanceof CompanionPublicationBusyError ? 'waiting' : 'processing';
+        // A failed/parked publisher never grants file deletion. A real source
+        // withdrawal has its own durable retract row, consumed independently.
+        const recorded = await session.request({ type: 'memory.history.outbox.fail', id: job.id, leaseToken: job.leaseToken, failureKind,
+          error: cause instanceof Error ? cause.message.slice(0, 1000) : '历史发布失败。', retryAfterMs: 30_000 });
+        if (!recorded.ok) throw new Error(recorded.error || '历史发布失败处置尚未耐久保存。', { cause });
+        await releaseHeldMemoryFilePublications(session, this.options.report);
+        if (failureKind === 'processing') { failed++; this.options.report?.(cause); } else waiting++;
       }
     }
-    return { completed, pending: completed === limit };
+    return { completed, pending: processed === limit, failed, waiting };
   }
-  flush(owner: string, input: { limit?: number } = {}): Promise<{ completed: number; pending: boolean }> {
-    return this.options.library.withDocuments(owner, session => this.deliver(session, Math.max(1, Math.min(256, input.limit ?? 64))), { synchronize: false, sourceDelivery: true });
+  flush(owner: string, input: { limit?: number; memoryId?: string; contentRevision?: number; operation?: 'publish' | 'retract'; throughOrdinal?: number; ifIdle?: boolean } = {}): Promise<{ completed: number; pending: boolean; failed: number; waiting: number }> {
+    return this.options.library.withDocuments(owner, session => this.deliver(session, Math.max(1, Math.min(256, input.limit ?? 64)), {
+      id: input.memoryId, contentRevision: input.contentRevision, operation: input.operation, throughOrdinal: input.throughOrdinal }), { sourceDelivery: true, ifIdle: input.ifIdle });
   }
   async flushPending(request: (command: CompanionStorageCommand) => Promise<CompanionStorageResponse>, limitOwners = 4): Promise<void> {
     for (const [owner, until] of this.failedOwners) if (until <= Date.now()) this.failedOwners.delete(owner);
-    const owners = (await request({ type: 'memory.history.outbox.owners', limit: limitOwners, excludedOwners: [...this.failedOwners.keys()].slice(-128) })).memoryHistoryPendingOwners ?? [];
-    for (const owner of owners) try { await this.flush(owner); } catch (error) { this.failedOwners.set(owner, Date.now() + 30000); this.options.report?.(error); }
+    const result = await request({ type: 'memory.history.outbox.owners', limit: limitOwners, excludedOwners: [...this.failedOwners.keys()].slice(-128) });
+    if (!result.ok) throw new Error(result.error || '历史发布队列不可用。');
+    for (const owner of result.memoryHistoryPendingOwners ?? []) try { await this.flush(owner); } catch (cause) { this.failedOwners.set(owner, Date.now() + 30_000); this.options.report?.(cause); }
   }
-  read(scope: Scope, id: string, contentRevision: number): Promise<CompanionMemory> {
-    const normalized: Scope = { companionId: scope.companionId, conversationId: scope.conversationId,
-      ...(scope.beforeSequence !== undefined ? { beforeSequence: scope.beforeSequence } : {}) };
-    return this.options.library.withDocuments(normalized.companionId, session => this.readInSession(session, normalized, id, contentRevision, undefined, true),
-      { synchronize: false, sourceDelivery: true });
+  read(scope: Scope, id: string, contentRevision: number, traversal?: CompanionMemoryHistoryTraversal): Promise<CompanionMemory> {
+    return this.options.library.withDocuments(scope.companionId, session => this.readInSession(session, scope, id, contentRevision, traversal), { readOnly: true, sourceDelivery: true });
   }
-  async readInSession(session: MemoryLibraryDocumentSession, scope: Scope, id: string, contentRevision: number,
-    traversal: HistoryRead = { active: new Set(), seen: new Set(), memo: new Map() }, publishPending = false): Promise<CompanionMemory> {
-    const key = `${id}:${contentRevision}`, remembered = traversal.memo.get(key);
-    if (remembered) return remembered;
-    if (session.owner.id !== scope.companionId || traversal.active.has(key) || !traversal.seen.has(key) && traversal.seen.size >= 10000)
-      throw new Error('历史记忆依赖归属、环路或完整闭包预算无效。');
+  readMany(scope: Scope, roots: readonly { id: string; contentRevision: number }[]): Promise<CompanionMemory[]> {
+    if (!roots.length) return Promise.resolve([]);
+    return this.options.library.withDocuments(scope.companionId, session => this.readManyInSession(session, scope, roots), { readOnly: true, sourceDelivery: true });
+  }
+  private decode(scope: Scope, before: CompanionMemoryHistoryDescriptor,
+    registered: Awaited<ReturnType<MemoryLibraryDocumentSession['registry']['read']>>): CompanionMemory {
+    const { id, contentRevision } = before;
+    if (before.companionId !== scope.companionId || before.relativePath !== companionMemoryHistoryPath(id, contentRevision, before.bodyHash)) throw new Error('历史描述归属不一致。');
+    if (registered.artifact.kind !== 'revision_history' || registered.artifact.relativePath !== before.relativePath || registered.artifact.contentHash !== before.documentHash) throw new Error('历史登记与正式修订不一致。');
+    const match = /^---\n([^]*?)\n---\n([^]*)$/u.exec(registered.text); if (!match) throw new Error('历史正文封装无效。');
+    const header = JSON.parse(match[1]!) as { schema: string; companionId: string; id: string; contentRevision: number; bodyHash: string; memory: object; dependencies: unknown };
+    if (header.schema !== 'worldlinebox.companion-memory-history-v2' || header.companionId !== scope.companionId || header.id !== id
+      || header.contentRevision !== contentRevision || header.bodyHash !== before.bodyHash || JSON.stringify(header.dependencies) !== JSON.stringify(before.dependencies)) throw new Error('历史封装与正式来源凭证不一致。');
+    const memory = companionMemorySchema.parse({ ...header.memory, content: match[2]! });
+    if (memory.id !== id || memory.companionId !== scope.companionId || memory.contentRevision !== contentRevision) throw new Error('历史正文身份不一致。');
+    return memory;
+  }
+  /** A whole canonical closure crosses IPC twice, rather than once per node.
+   * Bodies remain exclusively in registered files; SQL supplies only current
+   * authorized descriptors and never a replacement body. */
+  async readManyInSession(session: MemoryLibraryDocumentSession, scope: Scope, roots: readonly { id: string; contentRevision: number }[]): Promise<CompanionMemory[]> {
+    if (!roots.length) return [];
+    if (session.owner.id !== scope.companionId || roots.length > 10000) throw new Error('历史依赖归属或预算无效。');
+    const key = (reference: { id: string; contentRevision: number }) => `${reference.id}:${reference.contentRevision}`;
+    const describe = async () => {
+      const response = await session.request({ type: 'memory.revisions.describe', ...scope, roots: [...roots] });
+      if (!response.ok || !response.memoryHistoryDescriptors) throw new Error('历史修订依赖暂不可完整读取。');
+      const result = new Map(response.memoryHistoryDescriptors.map(value => [key(value), value]));
+      if (result.size !== response.memoryHistoryDescriptors.length) throw new Error('历史修订闭包包含重复身份。');
+      return result;
+    };
+    const before = await describe(), active = new Set<string>(), complete = new Set<string>();
+    const pending = roots.map(reference => ({ key: key(reference), closing: false }));
+    while (pending.length) {
+      const entry = pending.pop()!;
+      if (entry.closing) { active.delete(entry.key); complete.add(entry.key); continue; }
+      if (complete.has(entry.key)) continue;
+      const descriptor = before.get(entry.key);
+      if (!descriptor || active.has(entry.key)) throw new Error('历史依赖闭包缺失或存在环路。');
+      active.add(entry.key); pending.push({ ...entry, closing: true });
+      for (const dependency of descriptor.dependencies) pending.push({ key: key(dependency), closing: false });
+    }
+    if (complete.size !== before.size) throw new Error('历史闭包包含未请求的修订。');
+    const descriptors = [...before.values()];
+    const bodies = await session.registry.readMany(descriptors.map(reference => ({ artifactId: companionMemoryHistoryArtifactId(reference.id, reference.contentRevision), consumer: 'audit' as const })));
+    const memories = new Map(descriptors.map((reference, index) => [key(reference), this.decode(scope, reference, bodies[index]!)]));
+    const sources = [...new Map([...memories.values()].flatMap(memory => memory.sources)
+      .map(source => [JSON.stringify([source.messageId, source.revision, source.checksum]), source])).values()];
+    const originals = await session.registry.readMany(sources.map(source => ({ artifactId: companionMemorySourceArtifactId(source.messageId, source.revision),
+      consumer: 'source_verification' as const, audienceIds: [scope.conversationId] })));
+    for (let index = 0; index < sources.length; index++) if (originals[index]?.artifact.kind !== 'source_evidence'
+      || originals[index]!.artifact.contentHash !== sources[index]!.checksum) throw new Error('历史真实来源已变化或缺失。');
+    const after = await describe();
+    if (after.size !== before.size) throw new Error('读取期间历史闭包已变化。');
+    for (const [identity, expected] of before) {
+      const actual = after.get(identity);
+      if (!actual || actual.bodyHash !== expected.bodyHash || actual.documentHash !== expected.documentHash || actual.relativePath !== expected.relativePath
+        || JSON.stringify(actual.sources) !== JSON.stringify(expected.sources) || JSON.stringify(actual.dependencies) !== JSON.stringify(expected.dependencies)) throw new Error('读取期间历史授权已变化。');
+      const memory = memories.get(identity)!;
+      if (memory.procedure && actual.procedureValidation) memory.procedure.validation = actual.procedureValidation;
+    }
+    return roots.map(reference => memories.get(key(reference))!);
+  }
+  async readInSession(session: MemoryLibraryDocumentSession, scope: Scope, id: string, contentRevision: number, traversal: CompanionMemoryHistoryTraversal = { active: new Set(), seen: new Set(), memo: new Map() }): Promise<CompanionMemory> {
+    const key = `${id}:${contentRevision}`, remembered = traversal.memo.get(key); if (remembered) return remembered;
+    if (session.owner.id !== scope.companionId || traversal.active.has(key) || !traversal.seen.has(key) && traversal.seen.size >= 10_000) throw new Error('历史依赖归属、环路或闭包预算无效。');
     traversal.seen.add(key); traversal.active.add(key);
     try {
-    if (publishPending) await this.deliver(session, 2, { id, contentRevision });
-    const describe = async () => { const result = await session.request({ type: 'memory.revision.describe', companionId: scope.companionId,
-      conversationId: scope.conversationId, ...(scope.beforeSequence !== undefined ? { beforeSequence: scope.beforeSequence } : {}), id, contentRevision });
-      if (!result.ok || !result.memoryHistoryDescriptor) throw new Error(result.error ?? '历史正文尚未发布或授权无效。'); return result.memoryHistoryDescriptor; };
-    const before = await describe();
-    if (before.companionId !== scope.companionId || before.id !== id || before.contentRevision !== contentRevision
-      || before.relativePath !== companionMemoryHistoryPath(id, contentRevision, before.bodyHash)) throw new Error('历史发布描述身份不一致。');
-    const content = await this.text(session, before.relativePath);
-    if (content === undefined || checksum(content) !== before.documentHash) throw new Error('历史文件缺失或被修改，不使用SQL正文代替。');
-    const match = /^---\n([\s\S]*?)\n---\n([\s\S]*)$/u.exec(content); if (!match) throw new Error('历史正文或真实元数据格式无效。');
-    const header = JSON.parse(match[1]!) as { schema: string; companionId: string; id: string; contentRevision: number; bodyHash: string; memory: object; dependencies: unknown };
-    if (header.schema !== 'worldlinebox.companion-memory-history-v1' || header.companionId !== scope.companionId || header.id !== id || header.contentRevision !== contentRevision
-      || header.bodyHash !== before.bodyHash || JSON.stringify(header.dependencies) !== JSON.stringify(before.dependencies)) throw new Error('历史文件的正文身份或元数据不一致。');
-    const memory = companionMemorySchema.parse({ ...header.memory, content: match[2]! });
-    if (memory.id !== id || memory.companionId !== scope.companionId || memory.contentRevision !== contentRevision) throw new Error('历史文件不属于当前伙伴或修订。');
-    for (const dependency of before.dependencies) await this.readInSession(session, scope, dependency.id, dependency.contentRevision, traversal, publishPending);
-    for (const source of memory.sources) {
-      const sourcePath = companionMemorySourceFilePath({ sourceId: source.messageId, sourceRevision: source.revision, sourceChecksum: source.checksum });
-      if (checksum((await this.text(session, sourcePath))!) !== source.checksum) throw new Error('历史记忆的真实原始资料文件缺失或被修改。');
-    }
-    const after = await describe();
-    if (before.documentHash !== after.documentHash || before.bodyHash !== after.bodyHash) throw new Error('历史来源授权在读取期间发生变化。');
-    // Practice validation is a host-derived outcome annotation, never file text
-    // or a model's assertion. The immutable procedure proposal stays in file.
-    if (memory.procedure && after.procedureValidation) memory.procedure.validation = after.procedureValidation;
-    traversal.memo.set(key, memory); return memory;
+      const describe = async () => {
+        const result = await session.request({ type: 'memory.revision.describe', companionId: scope.companionId, conversationId: scope.conversationId, ...(scope.beforeSequence === undefined ? {} : { beforeSequence: scope.beforeSequence }), id, contentRevision });
+        if (!result.memoryHistoryDescriptor) throw new Error('历史修订未正式发布或当前入口无权读取。'); return result.memoryHistoryDescriptor;
+      };
+      const before = await describe();
+      if (before.id !== id || before.contentRevision !== contentRevision) throw new Error('历史描述归属不一致。');
+      const registered = await session.registry.read({ artifactId: companionMemoryHistoryArtifactId(id, contentRevision), consumer: 'audit' });
+      const memory = this.decode(scope, before, registered);
+      for (const dependency of before.dependencies) await this.readInSession(session, scope, dependency.id, dependency.contentRevision, traversal);
+      const sourceChecks = traversal.sourceChecks ??= new Map<string, Promise<void>>();
+      const missing = new Map<string, typeof memory.sources[number]>(), waiting = new Set<Promise<void>>();
+      for (const source of memory.sources) {
+        const sourceKey = JSON.stringify([scope.companionId, scope.conversationId, source.messageId, source.revision, source.checksum]);
+        const pending = sourceChecks.get(sourceKey);
+        if (pending) waiting.add(pending); else missing.set(sourceKey, source);
+      }
+      if (missing.size) {
+        const expected = [...missing.values()];
+        const batch = session.registry.readMany(expected.map(source => ({ artifactId: companionMemorySourceArtifactId(source.messageId, source.revision),
+          consumer: 'source_verification' as const, audienceIds: [scope.conversationId] }))).then(references => {
+          for (let index = 0; index < expected.length; index++) if (references[index]?.artifact.kind !== 'source_evidence'
+            || references[index]!.artifact.contentHash !== expected[index]!.checksum) throw new Error('历史真实来源已变化或缺失。');
+        });
+        for (const sourceKey of missing.keys()) sourceChecks.set(sourceKey, batch);
+        waiting.add(batch);
+      }
+      await Promise.all(waiting);
+      const after = await describe();
+      if (after.documentHash !== before.documentHash || after.bodyHash !== before.bodyHash) throw new Error('读取期间历史授权已变化。');
+      if (memory.procedure && after.procedureValidation) memory.procedure.validation = after.procedureValidation;
+      traversal.memo.set(key, memory); return memory;
     } finally { traversal.active.delete(key); }
   }
 }

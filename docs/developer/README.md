@@ -4,6 +4,8 @@
 
 开发者文档分两部分：
 
+伙伴重构的后续验证遵循用户于 2026-10-29 调整的范围：不再运行两小时耐久、十万事件实际灌入、多轮真实模型成长实验，也不再把这些长测作为继续开发或完成的前置条件。优先使用 `npm run test:companion:quick` 及受影响模块的短时定向检查；不要自动启动整套广集、重复打包或真实模型实验。历史结果保留，未完成的长测不能改称通过。
+
 ## 第一部分：软件开发
 
 面向参与 WorldlineBox 本身开发的开发者：架构、源码构建、测试规范。
@@ -16,6 +18,11 @@
 - [Serpent 0.3.3 资产管理升级](serpent-033-upgrade/README.md)——模型双面与透明贴图、浏览刷新、路径快捷键及自有功能边界
 - [伙伴消息系统](companions.md)——独立 SQLite owner、角色模型连接、记忆与 DSH 行动回流
 - [伙伴 Agent 执行流程](companion-agent-flow.md)——角色上下文编译、普通聊天长期接续、原文搜索与宿主能力
+- [伙伴认知与自主成长重构标准](companion-cognition-refactor-standard-2026-10-28.md)——新协议的内容准入、人格演化、只读上下文与发布门；[实施记录](companion-cognition-implementation-2026-10-28.md)和[逐项证据审计](companion-cognition-acceptance-evidence-audit-2026-10-28.md)区分已验证能力与待完成门
+- [新伙伴系统运行与管理说明](companion-cognition-runtime-guide.md)——当前目录职责、日记／反思／人格发布触发、实际上下文、故障搁置与恢复
+- [新伙伴系统源码交付核对](companion-cognition-delivery-2026-10-29.md)——R01～R15逐项实现、最后短检查、源码交付和安装包边界
+- [伙伴界面反馈修复](companion-ui-feedback-fixes-2026-10-29.md)——集中分组管理、同步提示生命周期、Markdown／Mermaid阅读器、记忆页加载与刷新
+- [伙伴统一日程与自主行为重构标准](companion-agenda-autonomy-standard-2026-10-29.md)——唯一事件归属、主脑自我唤醒、持续授权与并发；[实施记录](companion-agenda-implementation-2026-10-29.md)说明实际接入、协商人格、旧入口退役、验证凭证及未验证边界
 - [伙伴主脑与后台 DSH](companion-background-agents.md)——后台执行、双向邮箱、可唤醒等待、并发隔离及验收
 - [伙伴流程验收记录](companion-upgrade-validation-2026-10-27.md)——引导、中断恢复、并发、分页与全量回归的实际结果及限制
 - [伙伴问题修正验收](companion-followup-validation-2026-10-27.md)——DSH 同名分组、运行中引导竞态、大附件与记忆元数据边界

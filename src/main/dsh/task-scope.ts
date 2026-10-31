@@ -2,6 +2,7 @@ import type { DshRecordScope } from '../../shared/dsh-task-record';
 
 /** The proof is issued by Main after checking the old source's current ACL and digest. */
 export function assertDshResumeScope(previous: DshRecordScope | undefined, current: DshRecordScope | undefined, proof?: DshRecordScope): void {
+  if (previous?.agendaOrigin || current?.agendaOrigin) throw new Error('Agenda reasoning uses a new isolated session; old agenda history cannot become a different execution task.');
   if (previous?.activityThought || current?.activityThought) throw new Error('Activity reasoning always uses a new isolated session; its private history cannot resume as an execution task.');
   if (!previous || !current || previous.companionId !== current.companionId || previous.conversationId !== current.conversationId)
     throw new Error('The requested session belongs to another companion or conversation.');

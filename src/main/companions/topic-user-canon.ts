@@ -89,10 +89,13 @@ prior中的每项默认仍有效。只有newUserMessages中user明确更正/修�
   for (let attempt = 0; attempt < 3; attempt++) {
     try {
       const parsed = extraction.safeParse(input.extract ? await input.extract(context, input.signal)
-        : await generateCompanionStructured(context, input.config, input.signal, { fetchFn: input.fetchFn, timeoutMs: 120000 }));
+        : await generateCompanionStructured(context, input.config, input.signal, { fetchFn: input.fetchFn, timeoutMs: 120000, responseSchema: extraction,
+          repairPreserveCollections: [{ path: ['additions'], fields: ['sourceMessageId', 'quote', 'rule', 'timeRange'] },
+            { path: ['revisions'], fields: ['supersedes', 'replacement'] }] }));
       if (!parsed.success) throw new CompanionModelError('INVALID_RESPONSE', '话题用户约束提取失败，未丢弃原规则或推进摘要。');
       result = accept(parsed.data); break;
     } catch (error) {
+      if (error instanceof CompanionModelError && error.diagnostic === 'structured_repair_exhausted') throw error;
       if (input.signal?.aborted || !(error instanceof CompanionModelError) || error.code !== 'INVALID_RESPONSE' || attempt === 2) throw error;
       context.user = JSON.stringify({ ...JSON.parse(context.user), formatCorrection: `上一份提取未通过核验：${error.message} 未提交任何规则。请按完全相同的user原文和prior自行修正，不删除或放宽真实约束；quote须逐字来自指定user消息，timeRange仅用于quote内有两个明确时刻端点的范围，相对时长不是时刻端点。严格输出包含additions和revisions数组的单个完整JSON对象。` });
     }

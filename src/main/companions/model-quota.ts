@@ -3,7 +3,7 @@ import { createHash } from 'node:crypto';
 export type CompanionModelPriority = 'foreground' | 'background';
 export class CompanionModelAdmissionError extends Error {
   readonly code = 'RATE_LIMIT';
-  constructor(readonly reason: 'queue_full' | 'connection_full' | 'owner_full' | 'queue_timeout' | 'preflight_timeout' | 'configuration_unavailable' | 'files_pending' | 'policy_unavailable' | 'accounting_unavailable' | 'budget', message: string, readonly retryAt?: string) { super(message); this.name = 'CompanionModelAdmissionError'; }
+  constructor(readonly reason: 'queue_full' | 'connection_full' | 'owner_full' | 'queue_timeout' | 'preflight_timeout' | 'configuration_unavailable' | 'files_pending', message: string, readonly retryAt?: string) { super(message); this.name = 'CompanionModelAdmissionError'; }
 }
 export interface CompanionModelQuotaLimits {
   active: number; connection: number; background: number; foregroundBurst: number;

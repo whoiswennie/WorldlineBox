@@ -34,13 +34,14 @@ it.each(['text', 'reply'] as const)('defers an unsent %s queue timeout while exp
   } finally { hold.resolve(); await blocker; companionModelQuota.releaseConnectionPolicy(connection, policy); }
 });
 
-it.each(['text', 'reply'] as const)('defers an unsent %s preflight timeout and settles a late reservation as cancelled before send', async kind => {
+it.each(['text', 'reply'] as const)('defers an unsent %s source preflight timeout and settles a late guard as cancelled before send', async kind => {
   vi.useFakeTimers(); const settings = config(), hold = pending<void>(), finish = vi.fn(async () => undefined), fetchFn = vi.fn<typeof fetch>(async () => response());
-  settings.providerBudget = { beforeRequest: async () => { await hold.promise; return finish; } };
+  const beforeDispatch = vi.fn(async () => { await hold.promise; return finish; }); settings.providerLifecycle = { beforeDispatch };
   try {
     const result = invoke(kind, settings, fetchFn).catch(error => error);
     await vi.advanceTimersByTimeAsync(11); const error = await result;
     expect(error).toMatchObject({ code: 'RATE_LIMIT', admission: { reason: 'preflight_timeout' } }); expect(fetchFn).not.toHaveBeenCalled();
+    expect(beforeDispatch).toHaveBeenCalledExactlyOnceWith();
     hold.resolve(); await vi.waitFor(() => expect(finish).toHaveBeenCalledWith('cancelled_before_send', 0));
     expect(fetchFn).not.toHaveBeenCalled();
   } finally { hold.resolve(); }

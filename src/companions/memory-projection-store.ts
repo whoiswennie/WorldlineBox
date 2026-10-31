@@ -3,9 +3,10 @@ import type { CompanionMemory } from '../shared/companions';
 import type { CompanionMemoryProjectionNote, CompanionMemoryProjectionState } from '../shared/companion-memory-projection';
 import type { CompanionStorageCommand, CompanionStorageResponse } from '../shared/companion-storage';
 import type { CompanionConnection } from './store';
+import { companionMemoryContentKinds, companionMemoryKindAllowed, type CompanionMemoryArtifactKind } from '../shared/companion-memory-scope';
 
-type Scope = { companionId: string; conversationId: string; beforeSequence?: number };
-type NoteRow = { id: string; metadata: string; body_hash: string | null; published_after: number | null };
+type Scope = { companionId: string; conversationId: string; beforeSequence?: number; contentKinds?: CompanionMemoryArtifactKind[]; publishedOnly?: boolean };
+type NoteRow = { id: string; metadata: string; body_hash: string | null; text_hash: string; published_after: number | null; file_state: string | null };
 const sha = (value: unknown) => createHash('sha256').update(JSON.stringify(value)).digest('hex');
 /** Compact invalidation journal: one latest stamp per note, including status
  * acknowledgements. No body, prompt, semantic index or second recall engine. */
@@ -19,6 +20,8 @@ export class CompanionMemoryProjectionStore {
     lifecycle(owner: string): { revocationEpoch: number };
   }) {}
   initialize(): void {
+    // A transport proof only: SQL never supplies this text as canonical prose.
+    this.db.function('companion_projection_text_hash', { deterministic: true }, text => createHash('sha256').update(text).digest('hex'));
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS companion_memory_projection_state(companion_id TEXT PRIMARY KEY,sequence INTEGER NOT NULL DEFAULT 0,floor_sequence INTEGER NOT NULL DEFAULT 0);
       CREATE TABLE IF NOT EXISTS companion_memory_projection_mutations(companion_id TEXT NOT NULL,note_id TEXT NOT NULL,sequence INTEGER NOT NULL,PRIMARY KEY(companion_id,note_id));
@@ -34,6 +37,14 @@ export class CompanionMemoryProjectionStore {
           ON CONFLICT(companion_id,note_id) DO UPDATE SET sequence=excluded.sequence;
       END;`);
     }
+    this.db.exec(`CREATE TRIGGER IF NOT EXISTS companion_memory_projection_file_publication AFTER UPDATE OF state ON companion_memory_history_files
+      WHEN OLD.state!=NEW.state BEGIN
+        INSERT INTO companion_memory_projection_state(companion_id,sequence) VALUES(NEW.companion_id,1)
+          ON CONFLICT(companion_id) DO UPDATE SET sequence=sequence+1;
+        INSERT INTO companion_memory_projection_mutations(companion_id,note_id,sequence)
+          SELECT NEW.companion_id,NEW.note_id,sequence FROM companion_memory_projection_state WHERE companion_id=NEW.companion_id
+          ON CONFLICT(companion_id,note_id) DO UPDATE SET sequence=excluded.sequence;
+      END;`);
   }
   invalidate(owner: string): void { this.generations.set(owner, (this.generations.get(owner) ?? 0) + 1); this.captures.delete(owner); this.lastPruned.delete(owner); }
   cacheGeneration(owner: string): number { return this.generations.get(owner) ?? 0; }
@@ -72,7 +83,7 @@ export class CompanionMemoryProjectionStore {
   private capture(scope: Scope, expected: CompanionMemoryProjectionState, deltaAfter?: number) {
     for (const [owner, value] of this.captures) if (Date.now() - value.used > 600000) this.captures.delete(owner);
     this.authorityFence(scope, expected);
-    const scopeKey = JSON.stringify([scope.conversationId, scope.beforeSequence ?? null, deltaAfter === undefined ? 'page' : 'delta']);
+    const scopeKey = JSON.stringify([scope.conversationId, scope.beforeSequence ?? null, companionMemoryContentKinds(scope.contentKinds), !!scope.publishedOnly, deltaAfter === undefined ? 'page' : 'delta']);
     const previous = this.captures.get(scope.companionId);
     if (previous && previous.scope === scopeKey && JSON.stringify(previous.state) === JSON.stringify(expected)
       && (deltaAfter === undefined || deltaAfter >= previous.base)) { previous.used = Date.now(); return previous; }
@@ -100,10 +111,12 @@ export class CompanionMemoryProjectionStore {
     // Later pages may survive ordinary writes, while hard authority changes
     // reject them. No SQL body is copied into this paging cache.
     if (deltaAfter === undefined) {
-      const statement = this.db.prepare(this.select + " WHERE n.companion_id=? AND json_extract(n.data,'$.status')='indexed' ORDER BY n.id") as
+      const kinds = companionMemoryContentKinds(scope.contentKinds);
+      const statement = this.db.prepare(this.select + " WHERE n.companion_id=? AND json_extract(n.data,'$.status')='indexed' AND json_extract(n.data,'$.artifactKind') IN(" + kinds.map(() => '?').join(',') + ')' +
+        (scope.publishedOnly ? " AND h.state='published'" : '') + ' ORDER BY n.id') as
         ReturnType<CompanionConnection['prepare']> & { iterate(...args: unknown[]): IterableIterator<NoteRow> };
       if (typeof statement.iterate !== 'function') throw new Error('Native projection capture requires the actual streaming SQLite port.');
-      for (const row of statement.iterate(scope.companionId)) {
+      for (const row of statement.iterate(scope.companionId, ...kinds)) {
         const note = this.descriptor(scope, row); if (!note) continue;
         bytes += Buffer.byteLength(JSON.stringify(note)); reserve(); notes.push(note);
       }
@@ -123,15 +136,18 @@ export class CompanionMemoryProjectionStore {
   private descriptor(scope: Scope, row: NoteRow): CompanionMemoryProjectionNote | undefined {
     const metadata = JSON.parse(row.metadata) as Omit<CompanionMemory, 'content'>;
     if (metadata.companionId !== scope.companionId || metadata.status !== 'indexed' || metadata.archivedAt
+      || !companionMemoryKindAllowed(metadata.artifactKind, companionMemoryContentKinds(scope.contentKinds))
       || !this.ports.visible(scope, { ...metadata, content: '' })) return;
+    if (scope.publishedOnly && row.file_state !== 'published') return;
     if (!row.body_hash) throw new Error('获权记忆缺少完整的宿主正文修订，不生成不完整投影。');
     const projectionFingerprint = sha(['native-projection-note-v1', row.body_hash, metadata]);
-    return { ...metadata, bodyFingerprint: row.body_hash, projectionFingerprint,
+    return { ...metadata, bodyFingerprint: row.body_hash, contentHash: row.text_hash, projectionFingerprint,
       notBeforeSequence: Math.max(0, ...metadata.sources.map(source => source.sequence), row.published_after === null ? 0 : row.published_after + 1) };
   }
-  private select = `SELECT n.id,json_remove(n.data,'$.content') AS metadata,r.body_hash,
+  private select = `SELECT n.id,json_remove(n.data,'$.content') AS metadata,r.body_hash,companion_projection_text_hash(json_extract(n.data,'$.content')) AS text_hash,h.state AS file_state,
     (SELECT MAX(CAST(m.value AS INTEGER)) FROM vcp_note_sources s JOIN metadata m ON m.key='message-published-after/'||s.message_id WHERE s.note_id=n.id) AS published_after
-    FROM vcp_memory_notes n LEFT JOIN companion_memory_content_revisions r ON r.note_id=n.id AND r.content_revision=json_extract(n.data,'$.contentRevision')`;
+    FROM vcp_memory_notes n LEFT JOIN companion_memory_content_revisions r ON r.note_id=n.id AND r.content_revision=json_extract(n.data,'$.contentRevision')
+      LEFT JOIN companion_memory_history_files h ON h.companion_id=n.companion_id AND h.note_id=n.id AND h.content_revision=json_extract(n.data,'$.contentRevision')`;
   execute(command: CompanionStorageCommand): CompanionStorageResponse | undefined {
     if (command.type === 'memory.projection.release') {
       const value = this.captures.get(command.companionId);

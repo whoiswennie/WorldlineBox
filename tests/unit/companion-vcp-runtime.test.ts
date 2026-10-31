@@ -27,7 +27,7 @@ vi.mock('../../src/main/vcp-memory/cold-service', () => ({ ColdKnowledgeService:
 } }));
 const storage = (base: string) => async (ownerId: string) => {
   const workspaceRoot = path.resolve(base), ownerRoot = path.join(workspaceRoot, ownerId);
-  return { ownerId, workspaceRoot, ownerRoot, indexRoot: path.join(ownerRoot, '.认知索引'), ownerPrompts: { aimemoTemplate: 'fixture {{knowledge_base}}', timelineTemplate: 'fixture {{agentName}} {{month}}', summaryTemplate: 'fixture summary {{agentName}} {{month}}' } };
+  return { ownerId, workspaceRoot, ownerRoot, indexRoot: path.join(ownerRoot, '.运行', '索引'), ownerPrompts: { aimemoTemplate: 'fixture {{knowledge_base}}', timelineTemplate: 'fixture {{agentName}} {{month}}', summaryTemplate: 'fixture summary {{agentName}} {{month}}' } };
 };
 async function getCore(service: CompanionVcpRuntime) {
   const lease = await service.get({ ownerId: 'alice' }); await lease.release?.(); return lease;
@@ -58,7 +58,7 @@ describe('VCP semantic space and shutdown boundaries', () => {
       expect(mocks.clients.every(client => client.close.mock.calls.length === 0)).toBe(true);
     } finally { abort.abort(); await waiting; await Promise.all(leases.map(lease => lease.release?.())); await service.close(); }
   });
-  it('allows trusted index withdrawal with a missing live prompt while queries reject, then rereads repaired prompts without index clearing them', async () => {
+  it.each(['index', 'prepare'] as const)('allows trusted %s maintenance with a missing live prompt while queries reject, then rereads repaired prompts without clearing them', async purpose => {
     const root = await mkdtemp(path.join(tmpdir(), 'worldline-index-prompt-')), prompt = path.join(root, 'live-focus.md');
     if (path.dirname(path.resolve(root)) !== path.resolve(tmpdir()) || !path.basename(root).startsWith('worldline-index-prompt-')) throw new Error('Unsafe index prompt fixture cleanup.');
     await writeFile(prompt, 'OLD {{knowledge_base}}');
@@ -68,7 +68,7 @@ describe('VCP semantic space and shutdown boundaries', () => {
     try {
       const query = await service.get({ ownerId: 'alice' }), setPrompts = query.client.setOwnerPrompts as ReturnType<typeof vi.fn>;
       await query.release?.(); const before = setPrompts.mock.calls.length; await rm(prompt);
-      const index = await service.get({ ownerId: 'alice', purpose: 'index' });
+      const index = await service.get({ ownerId: 'alice', purpose });
       await index.client.forget({ scopeId: 'synthetic-index' }, 'withdrawn_note'); await index.release?.();
       expect(index.client).toBe(query.client); expect(setPrompts.mock.calls).toHaveLength(before);
       await expect(service.get({ ownerId: 'alice' })).rejects.toMatchObject({ code: 'ENOENT' });
@@ -99,10 +99,10 @@ describe('VCP semantic space and shutdown boundaries', () => {
     const generation = await service.acquireGeneration({ ownerId: 'alice', config: chat() });
     const cold = await service.getCold({ ownerId: 'alice' }, async () => true);
     try {
-      expect(mocks.clients[0]!.options.dataRoot).toContain(path.join(root, 'alice', '.认知索引', 'hot'));
-      expect(mocks.clients[1]!.options.dataRoot).toContain(path.join(root, 'bob', '.认知索引', 'hot'));
-      expect(mocks.clients[2]!.options.dataRoot).toContain(path.join(root, 'alice', '.认知索引', 'generation'));
-      expect(coldMocks.services[0]!.options.dataRoot).toContain(path.join(root, 'alice', '.认知索引', 'cold'));
+      expect(mocks.clients[0]!.options.dataRoot).toContain(path.join(root, 'alice', '.运行', '索引', 'hot'));
+      expect(mocks.clients[1]!.options.dataRoot).toContain(path.join(root, 'bob', '.运行', '索引', 'hot'));
+      expect(mocks.clients[2]!.options.dataRoot).toContain(path.join(root, 'alice', '.运行', '索引', 'generation'));
+      expect(coldMocks.services[0]!.options.dataRoot).toContain(path.join(root, 'alice', '.运行', '索引', 'cold'));
       expect(coldMocks.services[0]!.options.boundOwnerId).toBe('alice');
       expect(coldMocks.services[0]!.options.processBroker).toBe(mocks.clients[0]!.options.processBroker);
       expect(mocks.clients.every(client => client.options.preparedRecallBudget?.workspaceRoot === root)).toBe(true);
@@ -144,7 +144,7 @@ describe('VCP semantic space and shutdown boundaries', () => {
     const service = runtime(async () => embedding);
     try {
       const original = await getCore(service);
-      expect(original.profileKey).toBe(embedding.modelSignature + ':narrative-v2');
+      expect(original.profileKey).toBe(embedding.modelSignature + ':typed-cognition-v3');
       expect((await getCore(service)).client).toBe(original.client);
       embedding = { ...embedding, dimension: 1024 };
       await expect(getCore(service)).rejects.toThrow('签名');
@@ -154,7 +154,7 @@ describe('VCP semantic space and shutdown boundaries', () => {
       embedding = { ...embedding, modelSignature: 'new-verified-space' };
       const changed = await getCore(service);
       expect(changed.client).not.toBe(original.client);
-      expect(changed.profileKey).toBe(embedding.modelSignature + ':narrative-v2');
+      expect(changed.profileKey).toBe(embedding.modelSignature + ':typed-cognition-v3');
       expect(mocks.clients[0]!.close).toHaveBeenCalledTimes(1);
       expect(mocks.clients[1]!.options.dataRoot).not.toBe(mocks.clients[0]!.options.dataRoot);
     } finally { await service.close(); }
@@ -177,7 +177,7 @@ describe('VCP semantic space and shutdown boundaries', () => {
       generationProfile: { maxOutputTokens: 8192 }, resolveGenerationPlugins: async input => { resolved.push(input.config); return { plugins: {}, dispose: disposed }; } });
     try {
       const original = await service.acquireGeneration({ ownerId: 'alice', config: chat() });
-      expect(original.profileKey).toMatch(/^verified-space:narrative-v2:owner-generation-v1-[a-f0-9]{20}$/u);
+      expect(original.profileKey).toMatch(/^verified-space:typed-cognition-v3:owner-generation-v1-[a-f0-9]{20}$/u);
       const same = await service.acquireGeneration({ ownerId: 'alice', config: chat() }); expect(same.client).toBe(original.client);
       await same.release(); await original.release();
       const rotated = await service.acquireGeneration({ ownerId: 'alice', config: chat('focus-one', 'secret-two') });
@@ -190,22 +190,48 @@ describe('VCP semantic space and shutdown boundaries', () => {
       expect(mocks.clients[2]!.options.dataRoot).not.toBe(mocks.clients[0]!.options.dataRoot);
     } finally { await service.close(); }
   });
-  it('preserves host live-file and provider-budget callbacks on the owner generation route without adding them to semantic identities', async () => {
-    const resolved: CompanionModelConfig[] = [], beforeRequest = vi.fn(async () => async () => undefined);
+  it('binds source lifecycle callbacks per native lease without caching a completed run or changing semantic and client identities', async () => {
+    const resolved: CompanionModelConfig[] = [], finish = vi.fn(async () => undefined), beforeDispatch = vi.fn(async () => finish);
     const resolveAssetContext = vi.fn(async (context: { system: string; user: string }) => context);
     const service = new CompanionVcpRuntime({ resolveOwnerStorage: storage('unused-data'), resolveOwnerCleanupStorage: storage('unused-data'), vendorRoot: 'unused', workerPath: 'unused',
       resolveEmbedding: async () => configuration(), resolveGenerationPlugins: async input => { resolved.push(input.config); return { plugins: {}, dispose: async () => undefined }; } });
     try {
       const plain = await service.describeGeneration({ ownerId: 'alice', config: chat() });
-      const config = { ...chat(), providerBudget: { beforeRequest }, resolveAssetContext };
+      const config: CompanionModelConfig = { ...chat(), providerLifecycle: { beforeDispatch }, requestPurpose: 'timeline', resolveAssetContext };
       const lease = await service.acquireGeneration({ ownerId: 'alice', config });
-      expect(lease.profileKey).toBe(plain.profileKey); expect(resolved[0]!.providerBudget?.beforeRequest).toBe(beforeRequest);
+      expect(lease.profileKey).toBe(plain.profileKey); expect(resolved[0]!.providerLifecycle).toBeUndefined();
+      expect(resolved[0]!.requestPurpose).toBe('timeline'); expect(resolved[0]).not.toHaveProperty('providerBudget');
       expect(resolved[0]!.resolveAssetContext).toBe(resolveAssetContext);
-      await resolved[0]!.providerBudget!.beforeRequest(12, 8192, 'timeline'); expect(beforeRequest).toHaveBeenCalledWith(12, 8192, 'timeline');
+      const resolve = resolved[0]!.resolveNativeLifecycle!, firstDispatch = resolve(lease.dispatchToken)!;
+      expect(() => resolve()).toThrow('准确派发凭证'); expect(() => resolve('unknown-token')).toThrow('失效');
+      const result = await firstDispatch.beforeDispatch(); expect(beforeDispatch).toHaveBeenCalledExactlyOnceWith(); expect(result).toBe(finish);
       await lease.release();
-      const anotherCallback = await service.acquireGeneration({ ownerId: 'alice', config: { ...chat(), providerBudget: { beforeRequest: async () => async () => undefined } } });
-      expect(anotherCallback.client).toBe(lease.client); await anotherCallback.release();
+      expect(() => resolve(lease.dispatchToken)).toThrow('失效'); await expect(firstDispatch.beforeDispatch()).rejects.toThrow('失效');
+      const otherDispatch = vi.fn(async () => async () => undefined);
+      const anotherCallback = await service.acquireGeneration({ ownerId: 'alice', config: { ...chat(), requestPurpose: 'tags', providerLifecycle: { beforeDispatch: otherDispatch } } });
+      expect(anotherCallback.client).toBe(lease.client); expect(anotherCallback.profileKey).toBe(plain.profileKey);
+      expect(anotherCallback.dispatchToken).not.toBe(lease.dispatchToken);
+      await resolve(anotherCallback.dispatchToken)!.beforeDispatch(); expect(otherDispatch).toHaveBeenCalledOnce(); expect(beforeDispatch).toHaveBeenCalledOnce();
+      await anotherCallback.release(); expect(() => resolve(anotherCallback.dispatchToken)).toThrow('失效');
     } finally { await service.close(); }
+  });
+  it('keeps durable governance stable across restarts and sensitive endpoint rotations while isolating live caches', async () => {
+    const options = { resolveOwnerStorage: storage('unused-data'), resolveOwnerCleanupStorage: storage('unused-data'), vendorRoot: 'unused', workerPath: 'unused',
+      resolveEmbedding: async () => configuration() };
+    const first = new CompanionVcpRuntime(options), restarted = new CompanionVcpRuntime(options);
+    const selection = { ownerId: 'alice', config: chat('focus', 'secret-one', 'https://user:password@focus.invalid/v1?token=first#secret') };
+    try {
+      const original = await first.describeGeneration(selection), next = await restarted.describeGeneration(selection);
+      expect(original.governanceKey).toMatch(/:owner-governance-v1-[a-f0-9]{20}$/u);
+      expect(next.governanceKey).toBe(original.governanceKey); expect(next.profileKey).not.toBe(original.profileKey);
+      const rotated = await restarted.describeGeneration({ ...selection, config: chat('focus', 'secret-two', 'https://other:different@focus.invalid/v1?token=second#changed') });
+      expect(rotated.governanceKey).toBe(original.governanceKey); expect(rotated.profileKey).not.toBe(next.profileKey);
+      const model = await restarted.describeGeneration({ ...selection, config: { ...selection.config, model: 'another-model' } });
+      expect(model.governanceKey).not.toBe(original.governanceKey);
+      const endpoint = await restarted.describeGeneration({ ...selection, config: { ...selection.config, baseUrl: 'https://other.invalid/v1?token=first' } });
+      expect(endpoint.governanceKey).not.toBe(original.governanceKey);
+      expect(mocks.clients).toHaveLength(0);
+    } finally { await first.close(); await restarted.close(); }
   });
   it('does not construct a client when closed during plugin configuration resolution', async () => {
     let finish!: (value: { plugins: VcpMemoryPluginConfiguration; dispose(): Promise<void> }) => void, started!: () => void;
@@ -230,7 +256,7 @@ describe('VCP semantic space and shutdown boundaries', () => {
       expect(mocks.clients[1]!.options.dataRoot).toBe(mocks.clients[0]!.options.dataRoot);
       const model = await service.acquireGeneration({ ownerId: 'alice', config: chat('focus-two', 'new-key') }); await model.release();
       expect(model.profileKey).not.toBe(first.profileKey); expect(mocks.clients[2]!.options.dataRoot).not.toBe(mocks.clients[0]!.options.dataRoot);
-      expect((await getCore(service)).profileKey).toBe('verified-space:narrative-v2');
+      expect((await getCore(service)).profileKey).toBe('verified-space:typed-cognition-v3');
     } finally { await service.close(); }
   });
   it.each([undefined, ''])('still rotates an external focus semantic space when its unsigned endpoint changes (%s)', async _sourceSignature => {
@@ -276,14 +302,14 @@ describe('VCP semantic space and shutdown boundaries', () => {
     };
     try {
       for (const profile of ['a'.repeat(64), 'b'.repeat(64)]) for (const owner of ['alice', 'bob']) {
-        const directory = path.join(root, owner, '.认知索引', 'cold', profile, 'owners', ownerHash(owner));
+        const directory = path.join(root, owner, '.运行', '索引', 'cold', profile, 'owners', ownerHash(owner));
         await mkdir(directory, { recursive: true }); await writeFile(path.join(directory, 'receipt'), owner);
       }
       await service.close(); await service.resetCold('alice');
       expect(resolveEmbedding).not.toHaveBeenCalled();
       for (const profile of ['a'.repeat(64), 'b'.repeat(64)]) {
-        await expect(lstat(path.join(root, 'alice', '.认知索引', 'cold', profile, 'owners', ownerHash('alice')))).rejects.toMatchObject({ code: 'ENOENT' });
-        expect(await readFile(path.join(root, 'bob', '.认知索引', 'cold', profile, 'owners', ownerHash('bob'), 'receipt'), 'utf8')).toBe('bob');
+        await expect(lstat(path.join(root, 'alice', '.运行', '索引', 'cold', profile, 'owners', ownerHash('alice')))).rejects.toMatchObject({ code: 'ENOENT' });
+        expect(await readFile(path.join(root, 'bob', '.运行', '索引', 'cold', profile, 'owners', ownerHash('bob'), 'receipt'), 'utf8')).toBe('bob');
       }
     } finally {
       await service.close();
@@ -296,10 +322,10 @@ describe('VCP semantic space and shutdown boundaries', () => {
     const service = new CompanionVcpRuntime({ resolveOwnerStorage: storage('unused'), resolveOwnerCleanupStorage: storage('unused'), vendorRoot: 'unused', workerPath: 'unused', resolveEmbedding: async () => configuration(),
       resolvePlugins: legacy, resolveGenerationPlugins: resolvePlugins });
     try {
-      expect(await service.describeEmbedding()).toEqual({ profileKey: 'verified-space:narrative-v2' });
+      expect(await service.describeEmbedding()).toEqual({ profileKey: 'verified-space:typed-cognition-v3' });
       const description = await service.describeGeneration({ ownerId: 'alice', config: chat() }); expect(description.ownerId).toBe('alice');
       expect(mocks.clients).toHaveLength(0); expect(resolvePlugins).not.toHaveBeenCalled();
-      const core = await getCore(service); expect(core.profileKey).toBe('verified-space:narrative-v2'); expect(mocks.clients[0]!.options.plugins?.chat).toBeUndefined(); expect(legacy).not.toHaveBeenCalled();
+      const core = await getCore(service); expect(core.profileKey).toBe('verified-space:typed-cognition-v3'); expect(mocks.clients[0]!.options.plugins?.chat).toBeUndefined(); expect(legacy).not.toHaveBeenCalled();
       const withoutRoute = runtime(async () => configuration());
       await expect(withoutRoute.acquireGeneration({ ownerId: 'alice', config: chat() })).rejects.toThrow('路由'); await withoutRoute.close();
     } finally { await service.close(); }
@@ -320,8 +346,8 @@ describe('VCP semantic space and shutdown boundaries', () => {
       expect(resumed.client).toBe(leases[0]!.client); await resumed.release();
       expect(route).toHaveBeenCalledTimes(4);
       const core = await getCore(service), cold = await getCold(service, async () => true);
-      expect(core.profileKey).toBe('verified-space:narrative-v2'); expect(cold).toBeDefined();
-      expect(await service.describeEmbedding()).toEqual({ profileKey: 'verified-space:narrative-v2' });
+      expect(core.profileKey).toBe('verified-space:typed-cognition-v3'); expect(cold).toBeDefined();
+      expect(await service.describeEmbedding()).toEqual({ profileKey: 'verified-space:typed-cognition-v3' });
       expect(route).toHaveBeenCalledTimes(4);
       abort.abort(); await rejected; await service.interruptOwner('alice');
       expect(mocks.clients[0]!.close).toHaveBeenCalledOnce(); expect(mocks.clients[1]!.close).not.toHaveBeenCalled();
@@ -352,15 +378,15 @@ describe('VCP semantic space and shutdown boundaries', () => {
     const service = new CompanionVcpRuntime({ resolveOwnerStorage, resolveOwnerCleanupStorage, vendorRoot: 'unused', workerPath: 'unused', resolveEmbedding });
     const pair = { profileKey: 'historical-global-chat', scopeId: 'exact-old-view' };
     try {
-      for (const owner of ['alice','bob']) { const target = path.join(root,owner,'.认知索引','generation','old'); await mkdir(target,{recursive:true}); await writeFile(path.join(target,'sentinel'),owner); }
-      const old = path.join(root,'alice','.认知索引','hot',hash(pair.profileKey),hash(pair.scopeId)), peer = path.join(root,'bob','.认知索引','hot',hash(pair.profileKey),hash('peer-view'));
+      for (const owner of ['alice','bob']) { const target = path.join(root,owner,'.运行', '索引','generation','old'); await mkdir(target,{recursive:true}); await writeFile(path.join(target,'sentinel'),owner); }
+      const old = path.join(root,'alice','.运行', '索引','hot',hash(pair.profileKey),hash(pair.scopeId)), peer = path.join(root,'bob','.运行', '索引','hot',hash(pair.profileKey),hash('peer-view'));
       await mkdir(old,{recursive:true}); await mkdir(peer,{recursive:true}); await writeFile(path.join(peer,'sentinel'),'peer');
       await service.close(); await service.purgeOwner('alice',{historicalViews:[pair]});
       expect(resolveEmbedding).not.toHaveBeenCalled(); await expect(lstat(old)).rejects.toMatchObject({code:'ENOENT'});
-      await expect(lstat(path.join(root,'alice','.认知索引','generation'))).rejects.toMatchObject({code:'ENOENT'});
-      expect(await readFile(path.join(root,'bob','.认知索引','generation','old','sentinel'),'utf8')).toBe('bob');
+      await expect(lstat(path.join(root,'alice','.运行', '索引','generation'))).rejects.toMatchObject({code:'ENOENT'});
+      expect(await readFile(path.join(root,'bob','.运行', '索引','generation','old','sentinel'),'utf8')).toBe('bob');
       expect(await readFile(path.join(peer,'sentinel'),'utf8')).toBe('peer');
-      const cold = path.join(root, 'alice', '.认知索引', 'cold', 'historical-encoder');
+      const cold = path.join(root, 'alice', '.运行', '索引', 'cold', 'historical-encoder');
       await mkdir(cold, { recursive: true }); await writeFile(path.join(cold, 'sentinel'), 'cold derived material');
       await service.resetCold('alice'); await expect(lstat(cold)).rejects.toMatchObject({ code: 'ENOENT' });
       await service.purgeOwner('absent'); await service.resetCold('absent');
@@ -379,14 +405,14 @@ describe('VCP semantic space and shutdown boundaries', () => {
     const sentinel = async (directory: string, value: string) => { await mkdir(directory, { recursive: true }); await writeFile(path.join(directory, 'vectors'), value); };
     try {
       const before = await service.acquireGeneration({ ownerId: 'alice', config: chat() }); await before.release();
-      const ownerRoot = path.join(root, 'alice', '.认知索引', 'generation');
+      const ownerRoot = path.join(root, 'alice', '.运行', '索引', 'generation');
       const clean = path.join(mocks.clients[0]!.options.dataRoot, hash('clean-view'));
       const dirty = path.join(mocks.clients[0]!.options.dataRoot, hash('dirty-view'));
       const oldProfile = 'historical-profile', oldClean = path.join(ownerRoot, hash(oldProfile), hash('old-clean'));
       const oldDirty = path.join(ownerRoot, hash(oldProfile), hash('old-dirty'));
-      const bob = path.join(root, 'bob', '.认知索引', 'generation', hash(oldProfile), hash('bob-clean'));
-      const canonical = path.join(root, 'alice', '.认知索引', 'hot', hash('verified-space'), hash('canonical-owner'));
-      const peerCanonical = path.join(root, 'bob', '.认知索引', 'hot', hash('verified-space'), hash('peer-canonical'));
+      const bob = path.join(root, 'bob', '.运行', '索引', 'generation', hash(oldProfile), hash('bob-clean'));
+      const canonical = path.join(root, 'alice', '.运行', '索引', 'hot', hash('verified-space'), hash('canonical-owner'));
+      const peerCanonical = path.join(root, 'bob', '.运行', '索引', 'hot', hash('verified-space'), hash('peer-canonical'));
       for (const [directory, value] of [[clean, 'CURRENT_CLEAN_VECTORS'], [dirty, 'UNSAFE_INTERRUPTED_WRITE'],
         [oldClean, 'HISTORICAL_CLEAN_VECTORS'], [oldDirty, 'OLD_UNSAFE_WRITE'], [bob, 'BOB_VECTORS'],
         [canonical, 'CANONICAL_VECTORS'], [peerCanonical, 'PEER_CANONICAL']] as const) await sentinel(directory, value);

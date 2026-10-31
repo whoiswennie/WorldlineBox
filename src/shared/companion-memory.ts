@@ -1,24 +1,31 @@
 import { z } from 'zod';
+import { companionJobFailureKindSchema } from './companion-job-control';
 import { companionNarrativeText } from './companion-memory-content';
 import { companionMemoryHistoryCommands } from './companion-memory-history';
 import { companionMemoryFileReceiptsSchema } from './companion-memory-files';
 import { companionWorldQuerySchema } from './companion-knowledge';
 import { companionStateProposalSchema } from './companion-state';
 import { companionMemoryProcessingCommand } from './companion-memory-processing';
-import { companionCharacterDevelopmentCommand, companionCharacterDevelopmentDraftSchema } from './companion-character-development';
+import { companionCharacterDevelopmentCommand, companionCharacterDevelopmentDraftSchema, companionCharacterDevelopmentScopeCommands } from './companion-character-development';
 import { companionMemoryRetrievalOptionsSchema } from './companion-memory-modes';
 import { companionMemoryProcedureProposalSchema, companionMemoryProcedureSchema, companionMemoryProcedureObservationCommand } from './companion-procedure';
+import { companionMemoryArtifactKindSchema, companionMemoryContentKindsSchema, companionMemoryRetrievalScopeSchema } from './companion-memory-scope';
+import { companionHostBehaviorReceiptSchema } from './companion-host-behavior';
+export { companionMemoryArtifactKindSchema } from './companion-memory-scope';
 const id = z.string().regex(/^[a-zA-Z0-9_-]{1,100}$/);
+/** Explicit ingress classification; paths and notebook labels never assign a cognitive type. */
 /** Ordered VCP tags; the host has no tag inference or retrieval algorithm. */
 export const companionMemoryTagSchema = z.string().trim().min(1).max(100);
 export const companionMemorySourceSchema = z.object({
     sourceType: z.enum(['message', 'world_observation', 'manual_input', 'asset_read']).optional(), messageId: id, conversationId: id,
     sequence: z.number().int().positive(), authorId: id, revision: z.number().int().positive(), checksum: z.string().max(128),
     createdAt: z.string(), worldCreatedAt: z.string().optional(), publishedAfterSequence: z.number().int().nonnegative().optional(),
+    hostBehavior: companionHostBehaviorReceiptSchema.optional(),
 });
 /** Journal proposal, not a structured fact or another knowledge representation. */
 export const companionMemoryCandidateSchema = z.strictObject({
-    content: z.string().trim().min(1).max(65536).refine(text => companionNarrativeText(text) === text,
+    artifactKind: companionMemoryArtifactKindSchema,
+    content: z.string().trim().min(1).max(65536).refine(text => companionNarrativeText(text) === text && !/^---\r?\n\{[\s\S]*?"schema"\s*:\s*"worldlinebox\.companion-memory-history-v/u.test(text),
       '记忆正文只能包含经历或知识；宿主修订头、校验值及索引锚点应保留在元数据中。'), tags: z.array(companionMemoryTagSchema).max(50).default([]),
     occurredAt: z.string().max(100).optional(), diaryName: z.string().trim().min(1).max(160).optional(),
     sourceMessageIds: z.array(id).min(1).max(100), sourceChecksums: z.record(id, z.string().max(128)).optional(),
@@ -46,6 +53,7 @@ export const companionMemoryConsolidateSchema = z.strictObject({ inputs: z.array
     .refine(inputs => new Set(inputs.map(input => input.id)).size === inputs.length, '整合来源不能重复。'), candidate: companionMemoryCandidateSchema });
 export type CompanionMemoryConsolidation = z.output<typeof companionMemoryConsolidateSchema>;
 export const companionMemorySchema = z.object({
+    artifactKind: companionMemoryArtifactKindSchema,
     id, companionId: id, scopeId: id, content: z.string().trim().min(1).max(65536),
     tags: z.array(companionMemoryTagSchema), occurredAt: z.string().optional(), diaryName: z.string().optional(),
     sourceFile: z.string().max(4096).optional(), metadata: z.record(z.string(), z.unknown()).optional(),
@@ -58,7 +66,12 @@ export const companionMemorySchema = z.object({
     archivedAt: z.string().optional(), supersededBy: id.optional(),
 });
 export const companionMemoryScopeSchema = z.object({ companionId: id, conversationId: id, beforeSequence: z.number().int().nonnegative().optional() });
+/** Authorized predicate metadata, never a memory body or model input. */
+export const companionMemoryDescriptorSchema = companionMemorySchema.pick({ id: true, companionId: true, artifactKind: true, version: true,
+    contentRevision: true, status: true, sourceConversationId: true, sourceSequence: true, sources: true });
+export type CompanionMemoryDescriptor = z.infer<typeof companionMemoryDescriptorSchema>;
 export const companionMemorySearchSchema = companionMemoryScopeSchema.extend({
+    retrievalScope: companionMemoryRetrievalScopeSchema.optional().describe('facts默认检索经历/知识/方法；episodes仅经历；knowledge仅资料；procedures仅方法；self为本人主观认识；navigation为派生导航；dream为明确虚构联想。类型作用域不能通过笔记本名称改变。'),
     query: z.string().trim().max(16000).default('').describe('非空时运行VCP语义检索，结果只是选中的候选；省略或空字符串时按tags/diaryName/from/to浏览本人当前获权、未归档的日记目录，不经过语义去重。浏览仍按limit/cursor分页，不代表一次返回全部。'),
     tags: z.array(companionMemoryTagSchema).max(50).default([]).describe('按已知标签筛选，多个标签全部匹配；可省略query按标签分页浏览原记录。'),
     diaryName: z.string().max(160).optional(), from: z.string().max(100).optional().describe('发生时间起点；可与空query一起按日期有界浏览。'),
@@ -86,6 +99,7 @@ export const companionMemoryCaptureContributionsSchema = z.strictObject({ items:
 export type CompanionMemoryPage = z.infer<typeof companionMemoryPageSchema>;
 export const companionMemoryJobSchema = z.object({
     id, companionId: id, conversationId: id, sourceMessageIds: z.array(id), throughSequence: z.number().int().positive(),
+    sourceJobIds: z.array(id).min(1).max(128).optional(),
     episodeId: id.optional(),
     leaseToken: id, attempts: z.number().int().positive(), sourceChecksums: z.record(id, z.string()), sourceRevisions: z.record(id, z.number().int().positive()),
 });
@@ -128,7 +142,7 @@ export const companionMemoryOutboxSchema = z.object({
 });
 export type CompanionMemoryOutbox = z.infer<typeof companionMemoryOutboxSchema>;
 export const companionMemorySourceOutboxSchema = z.object({ id, companionId: id, sourceId: id, sourceRevision: z.number().int().positive(),
-    sourceChecksum: z.string().regex(/^[a-f0-9]{64}$/u), operation: z.enum(['publish', 'retract']), leaseToken: id, attempts: z.number().int().positive(),
+    sourceChecksum: z.string().regex(/^[a-f0-9]{64}$/u), operation: z.enum(['publish', 'retract']), leaseToken: id, attempts: z.number().int().positive(), retryCycle: z.number().int().nonnegative().safe(),
     source: companionMemorySourceSchema.extend({ content: z.string().max(65536) }).optional() });
 export type CompanionMemorySourceOutbox = z.infer<typeof companionMemorySourceOutboxSchema>;
 export const companionMemorySnapshotSchema = z.object({ scopeId: id, revision: z.string(), semanticRevision: z.string().optional(), fileReceipts: companionMemoryFileReceiptsSchema.optional(),
@@ -167,6 +181,7 @@ export const companionMemoryPublicCommands = [
     companionMemorySearchSchema.extend({ type: z.literal('memory.browse') }).strict(),
     companionMemoryScopeSchema.extend({ type: z.literal('memory.sources.filter'), ids: z.array(id).max(100) }).strict(),
     companionMemoryScopeSchema.extend({ type: z.literal('memory.records.filter'), ids: z.array(id).max(100) }).strict(),
+    companionMemoryScopeSchema.extend({ type: z.literal('memory.records.describe'), ids: z.array(id).max(100) }).strict(),
     companionMemoryScopeSchema.extend({ type: z.literal('memory.read'), id, sourceLimit: z.number().int().min(1).max(100).default(30), sourceCursor: z.number().int().nonnegative().optional() }).strict(),
     companionMemoryScopeSchema.extend({ type: z.literal('memory.inspect'), id, sourceLimit: z.number().int().min(1).max(100).default(30), sourceCursor: z.number().int().nonnegative().optional() }).strict(),
     z.strictObject({ type: z.literal('memory.status'), companionId: id, conversationId: id.optional() }),
@@ -182,18 +197,22 @@ export const companionMemoryWriteReadReferencesSchema = z.array(z.strictObject({
 }).refine(reference => reference.version !== undefined || reference.contentRevision !== undefined)).max(256);
 export type CompanionMemoryWriteReadReferences = z.infer<typeof companionMemoryWriteReadReferencesSchema>;
 export const companionMemoryStorageCommands = [
+    ...companionCharacterDevelopmentScopeCommands,
     ...companionMemoryHistoryCommands,
-    z.strictObject({ type: z.literal('memory.sources.outbox.owners'), limit: z.number().int().min(1).max(128).default(4), excludedOwners: z.array(id).max(128).default([]) }),
-    z.strictObject({ type: z.literal('memory.sources.outbox.claim'), companionId: id.optional(), leaseMs: z.number().int().min(1000).max(600000).default(120000) }),
+    z.strictObject({ type: z.literal('memory.sources.outbox.owners'), limit: z.number().int().min(1).max(128).default(4), excludedOwners: z.array(id).max(128).default([]), afterOwnerId: id.optional() }),
+    z.strictObject({ type: z.literal('memory.sources.outbox.claim'), companionId: id.optional(), jobId: id.optional(), operation: z.enum(['publish', 'retract']).optional(), throughOrdinal: z.number().int().nonnegative().safe().optional(), leaseMs: z.number().int().min(1000).max(600000).default(120000) }),
     z.strictObject({ type: z.literal('memory.sources.outbox.complete'), id, leaseToken: id }),
-    z.strictObject({ type: z.literal('memory.sources.outbox.fail'), id, leaseToken: id, error: z.string().max(1000), retryAfterMs: z.number().int().min(1000).max(3600000).default(30000) }),
+    z.strictObject({ type: z.literal('memory.sources.outbox.check'), id, leaseToken: id }),
+    z.strictObject({ type: z.literal('memory.sources.outbox.fail'), id, leaseToken: id, error: z.string().max(1000), failureKind: companionJobFailureKindSchema.optional(), retryAfterMs: z.number().int().min(1000).max(3600000).default(30000) }),
     companionMemoryProcedureObservationCommand,
     ...companionMemoryPublicCommands,
     z.strictObject({ type: z.literal('memory.lifecycle.state'), companionId: id }),
+    z.strictObject({ type: z.literal('memory.recall.authority'), companionId: id }),
     z.strictObject({ type: z.literal('memory.lifecycle.changes'), companionId: id, afterSequence: z.number().int().nonnegative().default(0), limit: z.number().int().min(1).max(256).default(64) }),
     companionMemoryScopeSchema.extend({ type: z.literal('memory.revision.read'), id, contentRevision: z.number().int().positive() }).strict(),
     z.strictObject({ type: z.literal('memory.library.page'), companionId: id, cursor: z.number().int().nonnegative().default(0), limit: z.number().int().min(1).max(256).default(64) }),
     z.strictObject({ type: z.literal('memory.library.scope'), companionId: id }),
+    z.strictObject({ type: z.literal('memory.library.scope.read'), companionId: id }),
     z.strictObject({ type: z.literal('memory.library.index-state'), companionId: id }),
     z.strictObject({ type: z.literal('memory.library.index-page'), companionId: id, resetRevision: z.number().int().nonnegative(), throughOrdinal: z.number().int().nonnegative(), afterId: id.optional(), limit: z.number().int().min(1).max(256).default(64) }),
     z.strictObject({ type: z.literal('memory.library.changes'), companionId: id, resetRevision: z.number().int().nonnegative(), throughOrdinal: z.number().int().nonnegative(), afterOrdinal: z.number().int().nonnegative(), limit: z.number().int().min(1).max(256).default(64) }),
@@ -202,7 +221,7 @@ export const companionMemoryStorageCommands = [
     z.strictObject({ type: z.literal('memory.library.organize'), companionId: id, id, expectedVersion: z.number().int().positive(), tags: z.array(companionMemoryTagSchema).max(50), diaryName: z.string().trim().min(1).max(160), autoTags: z.boolean().optional(), expectedProhibitionRevision: z.string().min(1).max(128).optional() }),
     z.strictObject({ type: z.literal('memory.operation.inspect'), companionId: id, operationId: id }),
     companionMemoryScopeSchema.extend({ type: z.literal('memory.domains') }).strict(),
-    companionMemoryScopeSchema.extend({ type: z.literal('memory.snapshot') }).strict(),
+    companionMemoryScopeSchema.extend({ type: z.literal('memory.snapshot'), contentKinds: companionMemoryContentKindsSchema.optional(), publishedOnly: z.boolean().optional() }).strict(),
     companionMemoryScopeSchema.extend({ type: z.literal('memory.prohibitions'), sourceMessageIds: z.array(id).min(1).max(100).optional(), noteId: id.optional(), worldJobId: id.optional() }).strict(),
     z.strictObject({ type: z.literal('memory.jobs.claim'), companionId: id.optional(), leaseMs: z.number().int().min(1000).max(600000).default(120000), force: z.boolean().default(false) }),
     z.strictObject({ type: z.literal('memory.jobs.contributions'), companionId: id, id, leaseToken: id, afterId: id.optional(), limit: z.number().int().min(1).max(64).default(32) }),
@@ -211,13 +230,13 @@ export const companionMemoryStorageCommands = [
     z.strictObject({ type: z.literal('memory.jobs.complete'), id, leaseToken: id, notes: z.array(companionMemoryCandidateSchema).max(100),
       readMemories: z.array(z.strictObject({ id, version: z.number().int().positive(), contentRevision: z.number().int().positive() })).max(256).optional(),
       stateProposal: companionStateProposalSchema.optional(), expectedStateRevision: z.number().int().positive().optional(), expectedProhibitionRevision: z.string().min(1).max(128).optional() }),
-    z.strictObject({ type: z.literal('memory.jobs.fail'), id, leaseToken: id, error: z.string().max(1000), retryAfterMs: z.number().int().min(0).max(86400000).default(30000), preserveProposal: z.boolean().default(false) }),
+    z.strictObject({ type: z.literal('memory.jobs.fail'), id, leaseToken: id, error: z.string().max(1000), failureKind: companionJobFailureKindSchema.optional(), retryAfterMs: z.number().int().min(0).max(86400000).default(30000), preserveProposal: z.boolean().default(false) }),
     z.strictObject({ type: z.literal('memory.jobs.defer'), id, leaseToken: id, error: z.string().max(1000), retryAfterMs: z.number().int().min(1000).max(86400000).default(30000) }),
     z.strictObject({ type: z.literal('memory.jobs.retry-admission'), companionId: id.optional() }),
-    z.strictObject({ type: z.literal('memory.outbox.claim'), companionId: id.optional(), excludedOwners: z.array(id).max(128).optional(), leaseMs: z.number().int().min(1000).max(600000).default(120000) }),
-    z.strictObject({ type: z.literal('memory.outbox.pending'), companionId: id }),
+    z.strictObject({ type: z.literal('memory.outbox.claim'), companionId: id.optional(), publishedOnly: z.boolean().optional(), excludedOwners: z.array(id).max(128).optional(), leaseMs: z.number().int().min(1000).max(600000).default(120000) }),
+    z.strictObject({ type: z.literal('memory.outbox.pending'), companionId: id, conversationId: id.optional(), beforeSequence: z.number().int().nonnegative().safe().optional(), contentKinds: companionMemoryContentKindsSchema.optional() }),
     z.strictObject({ type: z.literal('memory.outbox.complete'), id, leaseToken: id, sourceFile: z.string().max(4096).optional(), indexed: z.boolean() }),
-    z.strictObject({ type: z.literal('memory.outbox.fail'), id, leaseToken: id, error: z.string().max(1000), retryAfterMs: z.number().int().min(0).max(86400000).default(30000) }),
+    z.strictObject({ type: z.literal('memory.outbox.fail'), id, leaseToken: id, error: z.string().max(1000), failureKind: companionJobFailureKindSchema.optional(), retryAfterMs: z.number().int().min(0).max(86400000).default(30000) }),
     z.strictObject({ type: z.literal('memory.outbox.defer'), id, leaseToken: id, retryAfterMs: z.number().int().min(100).max(30000).default(1000) }),
     z.strictObject({ type: z.literal('memory.outbox.retry'), companionId: id.optional() }),
     companionMemoryScopeSchema.extend({ type: z.literal('memory.record'), candidate: companionMemoryCandidateSchema,

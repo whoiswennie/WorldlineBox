@@ -72,12 +72,12 @@ it('retains the current schema, contact settings, message index and attachments 
   const welcome = store.openPrivate('kimi'); store.appendMessage({ conversationId: welcome.id, authorId: 'kimi', content: '自动欢迎', clientId: 'builtin-welcome-kimi', kind: 'notice' });
   for (let index = 0; index < 1100; index++) store.appendMessage({ conversationId: room.id, authorId: 'user', content: '历史合同 ' + index });
   const profile = store.state().companions.find(companion => companion.id === 'gpt')!;
-  store.updateCompanion('gpt', { ...profile, name: '保留的名字', persona: '保留的人设' });
+  store.updateCompanion('gpt', { ...profile, model: 'retained-runtime-model' });
   store.registerAttachment({ attachment: { id: 'retained-avatar', name: 'avatar.png', mime: 'image/png', size: 32 }, relativePath: 'attachments/retained-avatar.png' });
   store.close(); stores.splice(stores.indexOf(store), 1);
   let reopened = new CompanionsStore(filename); stores.push(reopened);
   expect(reopened.state().conversations).toHaveLength(2);
-  expect(reopened.state().companions.find(companion => companion.id === 'gpt')).toMatchObject({ name: '保留的名字', persona: '保留的人设' });
+  expect(reopened.state().companions.find(companion => companion.id === 'gpt')).toMatchObject({ name: profile.name, persona: profile.persona, model: 'retained-runtime-model' });
   expect(reopened.getAttachment('retained-avatar').attachment.name).toBe('avatar.png');
   expect(reopened.search({ query: '合同' }).messages).toHaveLength(30);
   expect(reopened.request({ type: 'memory.status', companionId: 'gpt' }).memoryStatus).toMatchObject({ pending: 1100, running: 0, failed: 0, memories: 0 });

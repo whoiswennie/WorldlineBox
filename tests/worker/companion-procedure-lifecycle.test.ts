@@ -30,7 +30,7 @@ function fixture(shared = false) {
   const source = store.appendMessage({ conversationId: scope.conversationId, authorId: 'user', content: '用明确的方法生成结果文件，并核对其内容后再判断是否有效。', replyDirective: 'none' });
   const method: CompanionMemoryProcedureProposal = { applicability: '在本地受管测试目录生成受约束的结果文本时。', steps: ['写入结果文件。', '实际读取并核对输出正文。'],
     limitations: ['只验证当前文件交付合同，不代表其他任务都成功。'], verification: { kind: 'artifact_delivery', artifactRequirements: [{ path: 'trial-output.txt', containsText: 'ACTUAL_VERIFIED_RESULT' }] } };
-  const note = store.request({ type: 'memory.record', ...scope, candidate: { content: '候选方法：先保存结果，再按明确的文件合同验证。', tags: ['方法候选'], procedure: method,
+  const note = store.request({ type: 'memory.record', ...scope, candidate: { artifactKind: 'procedure' as const, content: '候选方法：先保存结果，再按明确的文件合同验证。', tags: ['方法候选'], procedure: method,
     metadata: { validation: 'validated', procedureValidation: { state: 'validated' } }, sourceMessageIds: [source.id], evidence: [{ sourceMessageId: source.id, quote: source.content }] } }).memories![0]!;
   const index = () => { for (let n = 0; n < 100; n++) { const entry = store.request({ type: 'memory.outbox.claim' }).memoryOutbox; if (!entry) break;
     store.request({ type: 'memory.outbox.complete', id: entry.id, leaseToken: entry.leaseToken, indexed: true }); } };
@@ -103,7 +103,7 @@ it('keeps a real failed trial as counterevidence and resets validation after an 
   const current = f.read(); expect(current.procedure?.validation).toMatchObject({ state: 'disabled', successes: 1, failures: 1 });
   expect(current.procedure?.validation.evidence.some(evidence => evidence.actionId === failed.action.id && evidence.outcome === 'failed')).toBe(true);
   await f.trial(); expect(f.read().procedure?.validation.state).toBe('disabled');
-  const revised = f.store.request({ type: 'memory.revise', ...f.scope, id: current.id, expectedVersion: f.read().version, candidate: {
+  const revised = f.store.request({ type: 'memory.revise', ...f.scope, id: current.id, expectedVersion: f.read().version, candidate: { artifactKind: 'procedure' as const,
     content: '纠正后的候选方法：先检查限制条件，再保存与核对输出。', tags: ['更正后的方法候选'], procedure: { ...f.method, steps: ['先核对限制。', ...f.method.steps] },
     sourceMessageIds: [f.source.id], evidence: [{ sourceMessageId: f.source.id, quote: f.source.content }] } }).memories![0] as CompanionMemory;
   expect(revised.contentRevision).toBeGreaterThan(current.contentRevision!); expect(revised.procedure?.validation).toMatchObject({ state: 'unverified', successes: 0, failures: 0 });

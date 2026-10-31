@@ -43,7 +43,10 @@ it('stops after the original native request plus two retries and retains a paylo
 it('does not reset the native retry budget when a transported proposal is rejected inside the same stable decision slot', async () => {
   const fetchFn = vi.fn<typeof fetch>().mockImplementationOnce(async () => partial()).mockImplementationOnce(async () => partial())
     .mockImplementationOnce(async () => json('not valid final JSON')).mockImplementation(async () => partial());
-  await expect(runCompanionStructuredAgent({ frame, context: { system: '返回JSON answer。', user: '{}' } }, config, undefined, { fetchFn }))
-    .rejects.toMatchObject({ code: 'INVALID_RESPONSE', diagnostic: 'uncompleted_stream' });
+  const error = await runCompanionStructuredAgent({ frame, context: { system: '返回JSON answer。', user: '{}' } }, config, undefined, { fetchFn }).catch(error => error);
+  expect(error).toMatchObject({ code: 'INVALID_RESPONSE', cause: { code: 'INVALID_RESPONSE' } });
+  expect(JSON.stringify(error)).not.toContain('UNCOMMITTED_PARTIAL');
   expect(fetchFn).toHaveBeenCalledTimes(4);
+  const repair = JSON.parse(String(fetchFn.mock.calls[3]![1]?.body));
+  expect(JSON.parse(repair.messages.find((message: { role: string }) => message.role === 'user').content).purpose).toBe('companion_structured_repair');
 });

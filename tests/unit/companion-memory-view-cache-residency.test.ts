@@ -13,7 +13,7 @@ async function fixture(limits: CompanionMemoryViewCacheLimits = {}) {
   const directory = await mkdtemp(path.join(tmpdir(), 'worldline-view-residency-')); directories.push(directory);
   return { directory, cache: new CompanionMemoryViewCache(directory, limits) };
 }
-const note = (id = 'note', version = 1): CompanionMemory => ({ id, companionId: 'owner', scopeId: 'original', content: `CURRENT_BODY_${version}`,
+const note = (id = 'note', version = 1): CompanionMemory => ({ id, companionId: 'owner', scopeId: 'original', artifactKind: 'episode_memory', content: `CURRENT_BODY_${version}`,
   tags: ['topic'], diaryName: '日记', sourceConversationId: 'private', sourceSequence: 1, sources: [], createdAt: '2026-10-26', updatedAt: '2026-10-26',
   version, origin: 'user', status: 'indexed', captureMethod: 'manual' });
 const artifacts = (label: string, size = 16): VcpMemoryTimelineArtifacts => ({ schema: 'worldlinebox.vcp-timeline-artifacts', sourceRevision: label,

@@ -47,9 +47,9 @@ async function fixture() {
     } };
   const memory = new CompanionMemoryStore(port, id => store.getMessage(id), undefined, undefined, undefined, undefined, undefined, () => 'UTC');
   const alice = { companionId: 'alice', conversationId: store.openPrivate('alice').id }, bob = { companionId: 'bob', conversationId: store.openPrivate('bob').id };
-  const record = (content: string, tags: string[], diaryName = '日记', occurredAt = '2026-10-14T02:00:00Z') => {
-    const source = store.appendMessage({ conversationId: alice.conversationId, authorId: 'user', content, replyDirective: 'none' });
-    return store.request({ type: 'memory.record', ...alice, candidate: { content, tags, diaryName, occurredAt, metadata: { autoTags: false },
+  const record = (content: string, tags: string[], diaryName = '日记', occurredAt = '2026-10-14T02:00:00Z', target = alice) => {
+    const source = store.appendMessage({ conversationId: target.conversationId, authorId: 'user', content, replyDirective: 'none' });
+    return store.request({ type: 'memory.record', ...target, candidate: { artifactKind: 'episode_memory' as const, content, tags, diaryName, occurredAt, metadata: { autoTags: false },
       sourceMessageIds: [source.id], evidence: [{ sourceMessageId: source.id, quote: content.slice(0, 16000) }] } }).memories![0]!;
   };
   // This is the old full-body listing algorithm, with the unchanged public
@@ -81,7 +81,7 @@ it('matches the full-body oracle for row order, tags, dates, cutoff, archives, o
     f.record('Third original in another diary.', ['blue'], '资料');
     const archived = f.record('Archived history is outside the directory.', ['red']);
     f.db.prepare("UPDATE vcp_memory_notes SET data=json_set(data,'$.archivedAt','2026-10-14T03:00:00Z') WHERE id=?").run(archived.id);
-    f.store.saveMemory({ ...f.bob, content: 'FOREIGN_OWNER_BROWSE_SECRET', tags: ['red'] });
+    f.record('FOREIGN_OWNER_BROWSE_SECRET', ['red'], '日记', undefined, f.bob);
     const queries: CompanionMemorySearch[] = [{ ...f.alice, limit: 1 }, { ...f.alice, limit: 1, cursor: 1 }, { ...f.alice, limit: 2, cursor: 2 },
       { ...f.alice, tags: ['red'], diaryName: '资料', from: '2026-10-13T00:00:00Z', to: '2026-10-14T23:59:59Z', limit: 10 },
       { ...f.alice, tags: ['red', 'blue'], limit: 10 }, { ...f.alice, beforeSequence: first.sourceSequence + 1, limit: 10 }];
@@ -97,7 +97,7 @@ it('loads only returned top-level bodies from a large-body SQLite corpus, includ
   const f = await fixture(), pages: unknown[] = [], notes: CompanionMemory[] = [], output = path.resolve('artifacts/vcp-validation/memory-browse-metadata-' + randomUUID() + '.json');
   let passed = false;
   try {
-    for (let index = 0; index < 128; index++) notes.push(f.store.saveMemory({ ...f.alice, content: 'ORIGINAL_BODY_' + index + '\n' + '关键状态、归属和未完成条件。'.repeat(2500), tags: ['large-body'], autoTags: false }));
+    for (let index = 0; index < 128; index++) notes.push(f.record('ORIGINAL_BODY_' + index + '\n' + '关键状态、归属和未完成条件。'.repeat(2500), ['large-body']));
     for (const cursor of [0, 5, 125]) {
       const query = { ...f.alice, tags: ['large-body'], limit: 3, cursor }, expected = f.oracle(query);
       f.track(); const actual = f.memory.browse(query); f.stop();
@@ -124,7 +124,7 @@ it('keeps metadata and returned bodies in one deferred WAL snapshot when an actu
     let revised: CompanionMemory | undefined;
     f.onMetadata(() => {
       const content = 'New body committed by the other real SQLite connection.', source = f.store.appendMessage({ conversationId: f.alice.conversationId, authorId: 'user', content, replyDirective: 'none' });
-      revised = f.store.request({ type: 'memory.revise', ...f.alice, id: original.id, expectedVersion: original.version, candidate: {
+      revised = f.store.request({ type: 'memory.revise', ...f.alice, id: original.id, expectedVersion: original.version, candidate: { artifactKind: 'episode_memory' as const,
         content, tags: ['snapshot'], sourceMessageIds: [source.id], evidence: [{ sourceMessageId: source.id, quote: content }] } }).memories![0]!;
     });
     const page = f.memory.browse({ ...f.alice, tags: ['snapshot'], limit: 1 });

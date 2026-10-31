@@ -1,47 +1,65 @@
+import type { CompanionResetDialog as CompanionResetDialogView } from './CompanionResetDialog';
+import type { CompanionExperienceDialog as CompanionExperienceDialogView } from './CompanionExperienceDialog';
+import type { CompanionCognitionDossier as CompanionCognitionDossierView } from './CompanionCognitionDossier';
+import type { PublicAppearanceSheet as PublicAppearanceSheetView } from './PublicAppearanceSheet';
+import type { CompanionImagePreview as CompanionImagePreviewView } from './CompanionImagePreview';
+import type { CompanionDocumentPreview as CompanionDocumentPreviewView } from './CompanionDocumentPreview';
+import type { CompanionTaskMonitor as CompanionTaskMonitorView } from './CompanionTaskMonitor';
+import type { CompanionAgenda as CompanionAgendaView } from './CompanionAgenda';
+import type { CompanionSocialMonitor as CompanionSocialMonitorView } from './CompanionSocialMonitor';
+import type { CompanionHistorySearch as CompanionHistorySearchView } from './CompanionHistorySearch';
+import type { CompanionPresencePanel as CompanionPresencePanelView } from './CompanionPresencePanel';
+import type { CompanionMemoryManager as CompanionMemoryManagerView } from './CompanionMemoryManager';
+import type { CompanionPlanner as CompanionPlannerView } from './CompanionPlanner';
 import { CompanionContactList } from './CompanionContactList';
 import { COMPANION_IMAGE_PREVIEW_MAX_BYTES } from '../../shared/companion-media';
 import { stopCompanionMedia } from './CompanionMediaPlayer';
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import type { CompanionWorldWindowApi } from '../../shared/companion-world-window';
 import type { Companion, CompanionAction, CompanionAttachment, CompanionConversation, CompanionMessage, CompanionReplyStreamEvent, CompanionSearchHit, CompanionState, CompanionsRequest, CompanionsResponse, WorldlineBoxCompanionsApi } from '../../shared/companions';
+import { companionsRequestSchema } from '../../shared/companions';
 import { BUILTIN_COMPANIONS } from '../../shared/companion-personas';
 import { builtinCompanionProfile } from '../../shared/companion-catalogue';
 import { companionMessagePreview } from '../../shared/companion-titles';
 import { Icon } from '../Icons';
-import { CompanionDialogs, type CompanionDialog } from './CompanionDialogs';
-import { CompanionResetDialog } from './CompanionResetDialog';
-import { CompanionExperienceDialog } from './CompanionExperienceDialog';
-import { CompanionPromptAssetsEditor } from './CompanionPromptAssetsEditor';
-import { PublicAppearanceSheet } from './PublicAppearanceSheet';
+import type { CompanionDialog, CompanionDialogs as CompanionDialogsView } from './CompanionDialogs';
+
+
+
+
 import { Avatar, ChatGlyph, companionPortrait, companionAppearance } from './CompanionVisuals';
 import { useCompanionClock } from './CompanionProgress';
-import { CompanionImagePreview } from './CompanionImagePreview';
-import { CompanionDocumentPreview } from './CompanionDocumentPreview';
+
+
 import { companionAttachmentKind } from './CompanionAttachments';
-import { CompanionTaskMonitor } from './CompanionTaskMonitor';
-import { CompanionTaskDashboard } from './CompanionTaskDashboard';
+
+
+import type { AgendaViewName } from './companion-agenda-presentation';
 import { CompanionWorldStatus } from './CompanionWorldStatus';
-import { CompanionSocialMonitor } from './CompanionSocialMonitor';
+
 import { CompanionMessageBubble } from './CompanionMessageBubble';
+import { companionTimelineActionEntries } from './companion-reply-presentation';
+import { CompanionComposerCapabilities } from './CompanionComposerCapabilities';
+import { isImeKeyboardEvent } from '../ime-safe-dismiss';
+import { DEFAULT_COMPANION_TOOL_POLICY, type CompanionToolPolicy } from '../../shared/companion-tool-policy';
 import { CompanionTopicBar, type CompanionTopicHistoryFilter } from './CompanionTopicBar';
 import type { CompanionTopic } from '../../shared/companion-topic';
 import { CompanionReplyStreamStore } from './reply-stream';
-import { CompanionHistorySearch } from './CompanionHistorySearch';
-import { CompanionPresencePanel } from './CompanionPresencePanel';
+
+
 import { CompanionStatusBadge } from './CompanionStatusBadge';
 import { type CompanionMemoryDraft } from './companion-memory-draft';
-import { CompanionMemoryManager } from './CompanionMemoryManager';
-import { CompanionPlanner } from './CompanionPlanner';
-import { CompanionLifeOverview, type CompanionLifeOverviewDestination } from './CompanionLifeOverview';
+
+
+import type { CompanionLifeOverviewDestination, CompanionLifeOverview as CompanionLifeOverviewView } from './CompanionLifeOverview';
 import type { CompanionLifeOverviewItem } from '../../shared/companion-life-overview';
 import { companionWorkPhase } from './companion-work-overview';
-import { CompanionScheduleManager } from './CompanionScheduleManager';
-import { CompanionWorkManager } from './CompanionWorkManager';
 import { companionPresence, COMPANION_PRESENCE_LABELS } from '../../shared/companion-presence';
 import { trimMessageWindow } from './message-window';
 import { CompanionRecentReadCache } from './recent-read-cache';
 import { companionProgressMessage, preserveCompanionProgressMessages } from './message-progress-projection';
 import { createCoalescedRefresh } from './coalesced-refresh';
+import { applyCompanionRuntimeProgress } from './runtime-progress';
 import { companionTimestamp, companionTimezone } from '../../shared/companion-time';
 import type { WorldlineBoxDshLauncherApi } from '../../shared/dsh-launcher';
 import type { CompanionActionEvent } from '../../shared/companions';
@@ -52,6 +70,24 @@ import './companions.css';
 import './companion-planner.css';
 import './world/companion-world.css';
 
+
+import { deferredFeature } from '../deferred-feature';
+
+const CompanionDialogs = deferredFeature<Parameters<typeof CompanionDialogsView>[0]>(() => import('./CompanionDialogs').then(module => ({ default: module.CompanionDialogs })));
+const CompanionResetDialog = deferredFeature<Parameters<typeof CompanionResetDialogView>[0]>(() => import('./CompanionResetDialog').then(module => ({ default: module.CompanionResetDialog })));
+const CompanionExperienceDialog = deferredFeature<Parameters<typeof CompanionExperienceDialogView>[0]>(() => import('./CompanionExperienceDialog').then(module => ({ default: module.CompanionExperienceDialog })));
+const CompanionCognitionDossier = deferredFeature<Parameters<typeof CompanionCognitionDossierView>[0]>(() => import('./CompanionCognitionDossier').then(module => ({ default: module.CompanionCognitionDossier })));
+const PublicAppearanceSheet = deferredFeature<Parameters<typeof PublicAppearanceSheetView>[0]>(() => import('./PublicAppearanceSheet').then(module => ({ default: module.PublicAppearanceSheet })));
+const CompanionImagePreview = deferredFeature<Parameters<typeof CompanionImagePreviewView>[0]>(() => import('./CompanionImagePreview').then(module => ({ default: module.CompanionImagePreview })));
+const CompanionDocumentPreview = deferredFeature<Parameters<typeof CompanionDocumentPreviewView>[0]>(() => import('./CompanionDocumentPreview').then(module => ({ default: module.CompanionDocumentPreview })));
+const CompanionTaskMonitor = deferredFeature<Parameters<typeof CompanionTaskMonitorView>[0]>(() => import('./CompanionTaskMonitor').then(module => ({ default: module.CompanionTaskMonitor })));
+const CompanionAgenda = deferredFeature<Parameters<typeof CompanionAgendaView>[0]>(() => import('./CompanionAgenda').then(module => ({ default: module.CompanionAgenda })));
+const CompanionSocialMonitor = deferredFeature<Parameters<typeof CompanionSocialMonitorView>[0]>(() => import('./CompanionSocialMonitor').then(module => ({ default: module.CompanionSocialMonitor })));
+const CompanionHistorySearch = deferredFeature<Parameters<typeof CompanionHistorySearchView>[0]>(() => import('./CompanionHistorySearch').then(module => ({ default: module.CompanionHistorySearch })));
+const CompanionPresencePanel = deferredFeature<Parameters<typeof CompanionPresencePanelView>[0]>(() => import('./CompanionPresencePanel').then(module => ({ default: module.CompanionPresencePanel })));
+const CompanionMemoryManager = deferredFeature<Parameters<typeof CompanionMemoryManagerView>[0]>(() => import('./CompanionMemoryManager').then(module => ({ default: module.CompanionMemoryManager })));
+const CompanionPlanner = deferredFeature<Parameters<typeof CompanionPlannerView>[0]>(() => import('./CompanionPlanner').then(module => ({ default: module.CompanionPlanner })));
+const CompanionLifeOverview = deferredFeature<Parameters<typeof CompanionLifeOverviewView>[0]>(() => import('./CompanionLifeOverview').then(module => ({ default: module.CompanionLifeOverview })));
 
 interface ChatDraft { content: string; attachments: CompanionAttachment[]; reply?: CompanionMessage }
 const EMPTY_DRAFT: ChatDraft = { content: '', attachments: [] };
@@ -65,7 +101,7 @@ function mergeTopicCatalog(current: CompanionTopic[], next: CompanionTopic[], re
 }
 const PAGE_SIZE = 50;
 const emojis = ['🐳', '😊', '💙', '✨', '👀', '🥺', '🎉', '☕', '🌙', '👍', '🌸', '😴', '🤔', '😂', '🫶', '🌊'];
-function contactIntroduction(companion: Companion) { return companion.description || '还没有写下简介。可以在编辑资料中介绍这位伙伴。'; }
+
 function mergeMessages(current: CompanionMessage[], next: CompanionMessage[]) {
   const byId = new Map(current.map(item => [item.id, item]));
   next.forEach(item => byId.set(item.id, item));
@@ -92,8 +128,8 @@ export function Companions({ api, dshApi, onOpenSettings, isActive = true }: { r
   const [state, setState] = useState<CompanionState | null>(null);
   const [page, setPage] = useState<'messages' | 'contacts' | 'memory' | 'overview'>('messages');
   const [overviewOwnerId, setOverviewOwnerId] = useState<string>();
+  const [overviewVisited, setOverviewVisited] = useState(false);
   const overviewNavigation = useRef<{ owner?: string; page: string }>({ page: 'messages' });
-  const [selectedActivityTaskId, setSelectedActivityTaskId] = useState<string>();
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [contactId, setContactId] = useState<string | null>(null);
   const [messages, setMessages] = useState<CompanionMessage[]>([]);
@@ -104,11 +140,13 @@ export function Companions({ api, dshApi, onOpenSettings, isActive = true }: { r
   const topicHistoryFilterRef = useRef<CompanionTopicHistoryFilter>('current');
   const [hasMore, setHasMore] = useState(false);
   const [loadingMessages, setLoadingMessages] = useState(false);
+  const [messageLoadFailed, setMessageLoadFailed] = useState(false);
   const [loadingOlder, setLoadingOlder] = useState(false);
   const [loadingNewer, setLoadingNewer] = useState(false);
   const [hasNewer, setHasNewer] = useState(false);
   const [awayFromBottom, setAwayFromBottom] = useState(false);
   const [drafts, setDrafts] = useState<Record<string, ChatDraft>>({});
+  const [toolPolicies, setToolPolicies] = useState<Record<string, CompanionToolPolicy>>({});
   const [sending, setSending] = useState(false);
   const [addingFiles, setAddingFiles] = useState(false);
   const [fileDrag, setFileDrag] = useState(false);
@@ -116,7 +154,9 @@ export function Companions({ api, dshApi, onOpenSettings, isActive = true }: { r
   const dragDepth = useRef(0);
   const [guideMessageId, setGuideMessageId] = useState<string | null>(null);
   const [showTaskMonitor, setShowTaskMonitor] = useState(false);
-  const [showTaskDashboard, setShowTaskDashboard] = useState(false);
+  const [agendaSelection, setAgendaSelection] = useState<{ ownerId: string; conversationId: string; view: AgendaViewName; eventId?: string; nonce: number }>();
+  const agendaNavigation = useRef(0);
+  function closeAgenda() { ++agendaNavigation.current; setAgendaSelection(undefined); }
   const [taskConversationId, setTaskConversationId] = useState<string>();
   const [showSocialMonitor, setShowSocialMonitor] = useState(false);
   const [socialSelection, setSocialSelection] = useState<{ companionId?: string; conversationId?: string }>({});
@@ -154,10 +194,6 @@ export function Companions({ api, dshApi, onOpenSettings, isActive = true }: { r
   const memoryRequestSequence = useRef(0);
   const stateNavigation = useRef<{ owner?: string; conversationId?: string; page: string }>({ page: 'messages' });
   const stateSourceSequence = useRef(0);
-  const [showScheduleManager, setShowScheduleManager] = useState(false);
-  const [scheduleSelection, setScheduleSelection] = useState<{ page: 'plans' | 'routine' | 'life'; id?: string }>();
-  const [showWorkManager, setShowWorkManager] = useState(false);
-  const [selectedWorkOrderId, setSelectedWorkOrderId] = useState<string>();
   const openWorld = async (companionId?: string) => {
     const world = (window as unknown as { worldlinebox?: { companionWorld?: CompanionWorldWindowApi } }).worldlinebox?.companionWorld;
     if (!world) { setError('世界窗口暂时不可用。'); return; }
@@ -169,8 +205,14 @@ export function Companions({ api, dshApi, onOpenSettings, isActive = true }: { r
   const [memoryDraft, setMemoryDraft] = useState<CompanionMemoryDraft>();
   const [emojiOpen, setEmojiOpen] = useState(false);
   const [composerMore, setComposerMore] = useState(false);
+  const composerMenuRef = useRef<HTMLDivElement>(null);
+  const composerMoreTrigger = useRef<HTMLButtonElement>(null);
+  const emojiPickerRef = useRef<HTMLDivElement>(null);
+  const emojiTrigger = useRef<HTMLButtonElement>(null);
   const [dialog, setDialog] = useState<CompanionDialog | null>(null);
   const [resetCompanionId, setResetCompanionId] = useState<string>();
+  const retirementSnapshots = useRef(new Map<string, Companion>());
+  const openRetirement = (companion: Companion) => { retirementSnapshots.current.set(companion.id, companion); setResetCompanionId(companion.id); };
   const [experienceOwnerId, setExperienceOwnerId] = useState<string>();
   const [newMessages, setNewMessages] = useState(false);
   const [previewAttachment, setPreviewAttachment] = useState<CompanionAttachment | null>(null);
@@ -199,6 +241,7 @@ export function Companions({ api, dshApi, onOpenSettings, isActive = true }: { r
   const latestLoadEpoch = useRef(0);
   const latestReads = useRef(new Map<string, ReturnType<typeof request>>());
   const actionsEpoch = useRef(0);
+  const actionReads = useRef(new Map<string, ReturnType<typeof request>>());
   const streamedEvents = useRef(new Map<string, CompanionActionEvent[]>());
   const stateEpoch = useRef(0);
   const stateRef = useRef<CompanionState | null>(null);
@@ -207,11 +250,35 @@ export function Companions({ api, dshApi, onOpenSettings, isActive = true }: { r
   const sendInFlight = useRef(false);
   const latestSequence = useRef(0);
 
+  useEffect(() => {
+    if (!composerMore && !emojiOpen) return;
+    const outside = (event: PointerEvent) => {
+      if (!(event.target instanceof Node)) return;
+      if (composerMore && !composerMenuRef.current?.contains(event.target) && !composerMoreTrigger.current?.contains(event.target)) setComposerMore(false);
+      if (emojiOpen && !emojiPickerRef.current?.contains(event.target) && !emojiTrigger.current?.contains(event.target)) setEmojiOpen(false);
+    };
+    const escape = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape' || composingRef.current || isImeKeyboardEvent(event)) return;
+      event.stopPropagation();
+      setComposerMore(false); setEmojiOpen(false);
+      (composerMore ? composerMoreTrigger : emojiTrigger).current?.focus();
+    };
+    document.addEventListener('pointerdown', outside, true);
+    document.addEventListener('keydown', escape);
+    return () => { document.removeEventListener('pointerdown', outside, true); document.removeEventListener('keydown', escape); };
+  }, [composerMore, emojiOpen]);
+  useEffect(() => {
+    let current = true;
+    if (!isActive || page !== 'messages') void Promise.resolve().then(() => { if (current) { setComposerMore(false); setEmojiOpen(false); } });
+    return () => { current = false; };
+  }, [isActive, page]);
+
   const request = useCallback(async (input: CompanionsRequest): Promise<CompanionsResponse | undefined> => {
     if (!api) return;
     // Repeated observational refreshes must respect dismissal. Mutations and
     // explicit task actions always report their own failure, even if identical.
-    const readKey = ['state', 'messages', 'actions', 'topic.list', 'topic.read', 'conversation.read'].includes(input.type) ? JSON.stringify(input) : undefined;
+    const readKey = input.type === 'state' ? JSON.stringify({ type: 'state' })
+      : ['messages', 'actions', 'topic.list', 'topic.read', 'conversation.read'].includes(input.type) ? JSON.stringify(input) : undefined;
     const fail = (message: string) => {
       if (readKey) {
         observedReadErrors.current.set(readKey, message);
@@ -224,7 +291,13 @@ export function Companions({ api, dshApi, onOpenSettings, isActive = true }: { r
     try {
       const result = await api.request(input);
       if (!aliveRef.current) return;
-      if (!result.ok) { fail(result.error || '操作未完成，请重试。'); return; }
+      if (!result.ok) {
+        if (readKey && result.executionPaused) return;
+        const outdatedMessageProtocol = input.type === 'message.send' && input.toolPolicy
+          && result.error === '伙伴请求格式不正确。' && companionsRequestSchema.safeParse(input).success;
+        fail(outdatedMessageProtocol ? '当前后台不接受这版消息协议，请重启应用后再发送。草稿和能力选择已保留。' : result.error || '操作未完成，请重试。');
+        return;
+      }
       if (readKey) { dismissedReadErrors.current.delete(readKey); observedReadErrors.current.delete(readKey); }
       return result;
     } catch (cause) {
@@ -241,19 +314,20 @@ export function Companions({ api, dshApi, onOpenSettings, isActive = true }: { r
     const affected = new Set(stateRef.current?.conversations.filter(room => room.memberIds.includes(companionId)).map(room => room.id));
     stopCompanionMedia({ ownerId: companionId, conversationIds: affected });
     setDrafts(current => Object.fromEntries(Object.entries(current).filter(([id]) => !affected.has(id.split('/topic/')[0]!))));
+    setToolPolicies(current => Object.fromEntries(Object.entries(current).filter(([id]) => !affected.has(id))));
     setActions(current => current.filter(action => action.companionId !== companionId));
     if (affected.has(selectedRef.current ?? '') || messagesRef.current.some(message => message.authorId === companionId)) {
       ++loadEpoch.current; ++latestLoadEpoch.current; ++actionsEpoch.current;
       messagesRef.current = []; setMessages([]); latestSequence.current = 0;
       historyRef.current = false; stickyRef.current = true; setHistoryMode(false); setHasMore(false); setHasNewer(false); setHighlightedId(null); setNewMessages(false);
       setReferencedMessages({}); setPreviewAttachment(null); setPreviewImages([]); setMemoryDraft(undefined);
-      setShowMemoryManager(false); setPage(current => current === 'memory' ? 'messages' : current); setShowScheduleManager(false); setShowWorkManager(false); setShowTaskMonitor(false); setShowTaskDashboard(false);
+      setShowMemoryManager(false); setPage(current => current === 'memory' ? 'messages' : current); setShowTaskMonitor(false); ++agendaNavigation.current; setAgendaSelection(undefined);
     }
   }, [recentMessages]);
 
   const refreshState = useCallback(async () => {
     const epoch = ++stateEpoch.current;
-    const response = await request({ type: 'state' });
+    const response = await request(stateRef.current ? { type: 'state' } : { type: 'state', readiness: 'navigation' });
     if (!response?.state || epoch !== stateEpoch.current) return;
     const next = response.state;
     if (stateRef.current?.conversations.some(room => !next.conversations.some(current => current.id === room.id))) recentMessages.clear();
@@ -268,9 +342,18 @@ export function Companions({ api, dshApi, onOpenSettings, isActive = true }: { r
       ++loadEpoch.current; historyRef.current = false; stickyRef.current = true; latestSequence.current = 0;
       pagingRef.current = false; scrollAnchor.current = null; setLoadingOlder(false); setLoadingNewer(false); setMessages([]); setActions([]); setHasMore(false); setHasNewer(false); setAwayFromBottom(false); setHistoryMode(false); setHighlightedId(null); setMemoryOwnerId(null); setMemoryDraft(undefined);
       selectedRef.current = first?.id ?? null;
+      setLoadingMessages(!!first); setMessageLoadFailed(false);
       setSelectedId(first?.id ?? null);
     }
   }, [request, clearResetCaches, recentMessages]);
+
+  const refreshRuntimeProgress = useCallback(async () => {
+    const sourceEpoch = stateEpoch.current;
+    const response = await request({ type: 'state.progress' });
+    if (!response?.runtimeProgress || sourceEpoch !== stateEpoch.current || !stateRef.current) return;
+    const next = applyCompanionRuntimeProgress(stateRef.current, response.runtimeProgress);
+    stateRef.current = next; setState(next);
+  }, [request]);
 
   const messageTopic = useCallback((id: string): string | null | undefined => {
     const filter = topicHistoryFilterRef.current;
@@ -293,6 +376,7 @@ export function Companions({ api, dshApi, onOpenSettings, isActive = true }: { r
     const epoch = refresh ? loadEpoch.current : ++loadEpoch.current;
     const latestEpoch = ++latestLoadEpoch.current;
     const topicId = messageTopic(id);
+    if (selectedRef.current === id && !messagesRef.current.length) { setLoadingMessages(true); setMessageLoadFailed(false); }
     const readKey = JSON.stringify([id, topicId]);
     const cacheGeneration = recentMessages.generation;
     let pending = latestReads.current.get(readKey);
@@ -303,7 +387,7 @@ export function Companions({ api, dshApi, onOpenSettings, isActive = true }: { r
     }
     const response = await pending;
     if (selectedRef.current !== id || epoch !== loadEpoch.current || latestEpoch !== latestLoadEpoch.current || historyRef.current || messageTopic(id) !== topicId) return;
-    if (!response?.messages) { if (!refresh) setLoadingMessages(false); return; }
+    if (!response?.messages) { setLoadingMessages(false); setMessageLoadFailed(!messagesRef.current.length); return; }
     // Only a host-verified latest page is reusable. Older/around windows never
     // enter this cache, even if the currently displayed window contains them.
     recentMessages.set(readKey, { messages: trimMessageWindow(response.messages, 'newer'), hasMore: response.hasMore ?? false }, cacheGeneration);
@@ -314,20 +398,36 @@ export function Companions({ api, dshApi, onOpenSettings, isActive = true }: { r
     // keep deleted messages (or a previous workspace's rows) alive indefinitely.
     const merged = preserveCompanionProgressMessages(response.messages, messagesRef.current, liveProgress.current.values(), stateRef.current, id, topicId);
     const window = trimMessageWindow(merged, 'newer');
-    setMessages(window); setHasNewer(false);
+    messagesRef.current = window; setMessages(window); setHasNewer(false);
     setHasMore((response.hasMore ?? false) || window.length < merged.length);
     setLoadingMessages(false);
+    setMessageLoadFailed(false);
   }, [request, messageTopic, recentMessages]);
 
   const loadActions = useCallback(async (id: string) => {
+    if (!activeRef.current || pageRef.current !== 'messages' || selectedRef.current !== id) return;
     const epoch = ++actionsEpoch.current;
-    const response = await request({ type: 'actions', conversationId: id });
-    if (selectedRef.current === id && epoch === actionsEpoch.current && response?.actions) {
-      const next = response.actions.map(action => mergeLiveAction(action, streamedEvents.current));
-      const visible = new Set(messagesRef.current.flatMap(message => [message.actionId, ...(message.segments ?? []).flatMap(segment => segment.actionIds)]).filter(Boolean));
+    const ids = [...new Set(messagesRef.current.filter(message => message.conversationId === id)
+      .flatMap(message => [message.actionId, ...(message.segments ?? []).flatMap(segment => segment.actionIds)])
+      .filter((value): value is string => !!value))].sort();
+    const next: CompanionAction[] = [];
+    for (let start = 0; start < Math.max(ids.length, 1); start += 200) {
+      const command = { type: 'actions' as const, conversationId: id, ids: ids.slice(start, start + 200), includeOngoing: start === 0 };
+      const key = JSON.stringify(command);
+      let pending = actionReads.current.get(key);
+      if (!pending) {
+        pending = request(command); actionReads.current.set(key, pending);
+        void pending.finally(() => { if (actionReads.current.get(key) === pending) actionReads.current.delete(key); });
+      }
+      const response = await pending;
+      if (selectedRef.current !== id || epoch !== actionsEpoch.current || !response?.actions) return;
+      next.push(...response.actions.map(action => mergeLiveAction(action, streamedEvents.current)));
+    }
+    if (selectedRef.current === id && epoch === actionsEpoch.current) {
+      const visible = new Set(ids);
       setActions(current => {
         const merged = [...next, ...current.filter(action => visible.has(action.id) && !next.some(item => item.id === action.id)).slice(-50)];
-        return [...merged.filter(action => action.status === 'queued' || action.status === 'running'), ...merged.filter(action => action.status !== 'queued' && action.status !== 'running').slice(0, 150)];
+        return [...new Map(merged.filter(action => visible.has(action.id) || action.status === 'queued' || action.status === 'running').map(action => [action.id, action])).values()];
       });
     }
   }, [request]);
@@ -339,8 +439,11 @@ export function Companions({ api, dshApi, onOpenSettings, isActive = true }: { r
     pagingRef.current = false; setLoadingOlder(false); setLoadingNewer(false);
     historyRef.current = true; stickyRef.current = false; setHistoryMode(true); setAwayFromBottom(true);
     positionedHighlight.current = null; scrollAnchor.current = null;
+    setLoadingMessages(true); setMessageLoadFailed(false);
     const response = await request({ type: 'messages', conversationId: message.conversationId, around: message.id, limit: PAGE_SIZE });
-    if (response?.messages && epoch === loadEpoch.current && selectedRef.current === message.conversationId) {
+    if (epoch !== loadEpoch.current || selectedRef.current !== message.conversationId) return;
+    setLoadingMessages(false); setMessageLoadFailed(!response?.messages && !messagesRef.current.length);
+    if (response?.messages) {
       setMessages(trimMessageWindow(response.messages, 'newer')); setHasMore(response.hasMore ?? false); setHasNewer(response.hasNewer ?? false); setHighlightedId(message.id); setLoadingMessages(false);
     }
   }, [request]);
@@ -398,19 +501,28 @@ export function Companions({ api, dshApi, onOpenSettings, isActive = true }: { r
   useEffect(() => {
     // A stream of world/message changes must not invalidate every unfinished
     // snapshot. Finish and display one batch, then read again if it became dirty.
+    let refreshContent = true;
     const refresh = createCoalescedRefresh(async () => {
-      const reads: Promise<unknown>[] = [refreshState()];
+      const full = refreshContent; refreshContent = false;
+      const reads: Promise<unknown>[] = [full ? refreshState() : refreshRuntimeProgress()];
       const id = selectedRef.current;
-      if (id && activeRef.current && pageRef.current === 'messages') { if (!historyRef.current) reads.push(loadMessages(id, true)); reads.push(loadActions(id), loadTopics(id)); }
+      if (full && id && activeRef.current && pageRef.current === 'messages') {
+        reads.push(!historyRef.current ? loadMessages(id, true).then(() => loadActions(id)) : loadActions(id), loadTopics(id));
+      }
       await Promise.allSettled(reads);
     }, undefined, 500);
     void refresh.trigger();
-    const unsubscribe = api?.onChanged(() => {
-      recentMessages.clear(); latestReads.current.clear();
+    const unsubscribe = api?.onChanged(change => {
+      if (change?.kind !== 'progress') {
+        // A real content/authority change dominates every progress notification
+        // until its full read starts. Pure progress already has its own stream.
+        refreshContent = true;
+        recentMessages.clear(); latestReads.current.clear(); actionReads.current.clear(); ++actionsEpoch.current;
+      }
       return refresh.trigger();
     });
     return () => { unsubscribe?.(); refresh.dispose(); };
-  }, [api, refreshState, loadMessages, loadActions, loadTopics, recentMessages]);
+  }, [api, refreshState, refreshRuntimeProgress, loadMessages, loadActions, loadTopics, recentMessages]);
   const previousView = useRef({ page, isActive });
   useEffect(() => {
     const previous = previousView.current; previousView.current = { page, isActive };
@@ -420,17 +532,21 @@ export function Companions({ api, dshApi, onOpenSettings, isActive = true }: { r
       if (!pendingJump.current) {
         historyRef.current = false; stickyRef.current = true; historyScrollIntent.current = false;
         scrollAnchor.current = null; setHistoryMode(false); setAwayFromBottom(false); setHasNewer(false); setHighlightedId(null);
-        void loadMessages(id, true);
+        void loadMessages(id, true).then(() => loadActions(id));
       }
-      void loadActions(id); void loadTopics(id);
+      void loadTopics(id);
     }
   }, [page, isActive, loadMessages, loadActions, loadTopics]);
   useEffect(() => { if (selectedId) void Promise.resolve().then(() => {
     const jump = pendingJump.current; pendingJump.current = null;
     if (jump?.conversationId === selectedId) void loadAround(jump); else void loadMessages(selectedId);
-    void loadActions(selectedId);
     void loadTopics(selectedId);
   }); }, [selectedId, loadMessages, loadActions, loadAround, loadTopics]);
+  const visibleActionKey = useMemo(() => JSON.stringify([...new Set(messages.filter(message => message.conversationId === selectedId)
+    .flatMap(message => [message.actionId, ...(message.segments ?? []).flatMap(segment => segment.actionIds)]).filter(Boolean))].sort()), [messages, selectedId]);
+  useEffect(() => {
+    if (selectedId && !loadingMessages && page === 'messages' && isActive) void loadActions(selectedId);
+  }, [selectedId, loadingMessages, visibleActionKey, page, isActive, loadActions]);
   useEffect(() => {
     // Quotes are a bounded cache too; evicted history cannot stay alive here.
     const needed = new Set(messages.flatMap(message => message.replyToId ? [message.replyToId] : []));
@@ -455,6 +571,7 @@ export function Companions({ api, dshApi, onOpenSettings, isActive = true }: { r
     liveProgress.current.clear();
     ++loadEpoch.current; ++latestLoadEpoch.current;
     messagesRef.current = []; setMessages([]); setHasMore(false); setHasNewer(false);
+    setLoadingMessages(true); setMessageLoadFailed(false);
     historyRef.current = false; setHistoryMode(false); pagingRef.current = false; setLoadingOlder(false); setLoadingNewer(false);
     stickyRef.current = true; latestSequence.current = 0;
     void loadMessages(selectedId);
@@ -468,7 +585,7 @@ export function Companions({ api, dshApi, onOpenSettings, isActive = true }: { r
   const selectedContact = companions.find(item => item.id === contactId) ?? companions[0];
   const contactReset = state?.resetJobs?.find(job => job.companionId === selectedContact?.id && job.status !== 'completed');
   const selectedReset = selected?.kind === 'private' ? state?.resetJobs?.find(job => job.status !== 'completed' && selected.memberIds.includes(job.companionId)) : undefined;
-  const resetCompanion = companions.find(item => item.id === resetCompanionId);
+  const resetCompanion = companions.find(item => item.id === resetCompanionId) ?? retirementSnapshots.current.get(resetCompanionId ?? '');
   const memoryOwner = members.find(item => item.id === memoryOwnerId) ?? primary;
   useLayoutEffect(() => { stateNavigation.current = { owner: memoryOwner?.id, conversationId: selectedId ?? undefined, page }; }, [memoryOwner?.id, selectedId, page]);
   const documentOwner = companions.find(item => item.id === documentOwnerId) ?? memoryOwner ?? companions[0];
@@ -493,6 +610,7 @@ export function Companions({ api, dshApi, onOpenSettings, isActive = true }: { r
     const source = (await request({ type: 'message.get', id: messageId }))?.message;
     if (!current()) return;
     if (!source || source.conversationId !== sourceRoom || source.status !== 'sent' || source.isReplyDraft || source.replyDraft) { setError('来源消息当前不可访问。'); return; }
+    if (source.audience === 'agenda') { if (source.actionId) await openExecutionRecord(source.actionId); else openAgenda(owner); return; }
     if (source.memoryEvidenceOnly && !source.actionId) {
       if (receipt.memoryIds?.[0]) openStateMemory(owner, receipt.memoryIds[0]);
       else setError('这是一条内部来源凭证，请在相关记忆记录中查阅。');
@@ -507,11 +625,12 @@ export function Companions({ api, dshApi, onOpenSettings, isActive = true }: { r
     void refreshState();
   }
   const visibleTopicId = selectedId ? messageTopic(selectedId) : undefined;
-  const timelineMessages = messages.filter(message => !message.memoryEvidenceOnly
+  const timelineMessages = companionTimelineActionEntries(messages.filter(message => !message.memoryEvidenceOnly
     && !(message.authorId === 'system' && message.kind === 'notice' && message.status === 'failed')
-    && (visibleTopicId === undefined || (message.topicId ?? null) === visibleTopicId));
+    && (visibleTopicId === undefined || (message.topicId ?? null) === visibleTopicId)), actions);
   const draftKey = selectedId ? chatDraftKey(selectedId, selected?.activeTopicId) : '';
   const draft = draftKey ? drafts[draftKey] ?? EMPTY_DRAFT : EMPTY_DRAFT;
+  const toolPolicy = selectedId ? toolPolicies[selectedId] ?? DEFAULT_COMPANION_TOOL_POLICY : DEFAULT_COMPANION_TOOL_POLICY;
   useLayoutEffect(() => {
     const input = composerRef.current;
     if (!input) return;
@@ -587,15 +706,16 @@ export function Companions({ api, dshApi, onOpenSettings, isActive = true }: { r
   function selectConversation(conversation: CompanionConversation) {
     historyScrollIntent.current = false;
     if (selectedRef.current !== conversation.id) {
-      liveProgress.current.clear();
+      closeAgenda(); liveProgress.current.clear();
       topicHistoryFilterRef.current = 'current'; setTopicHistoryFilter('current');
       ++loadEpoch.current; selectedRef.current = conversation.id; historyRef.current = false; stickyRef.current = true; latestSequence.current = 0;
       const cached = pendingJump.current ? undefined : recentMessages.get(JSON.stringify([conversation.id, messageTopic(conversation.id)]));
       const next = cached?.messages ?? [];
       messagesRef.current = next; latestSequence.current = next.at(-1)?.sequence ?? 0;
+      setMessageLoadFailed(false);
       pagingRef.current = false; scrollAnchor.current = null; setLoadingOlder(false); setLoadingNewer(false); setSelectedId(conversation.id); setMessages(next); setActions([]); setHasMore(cached?.hasMore ?? false); setHasNewer(false); setAwayFromBottom(false); setLoadingMessages(!cached); setHistoryMode(false);
 
-      positionedHighlight.current = null; setHighlightedId(null); setShowSearch(false); setNewMessages(false); setMemoryOwnerId(null); setMemoryDraft(undefined); setSelectedActivityTaskId(undefined);
+      positionedHighlight.current = null; setHighlightedId(null); setShowSearch(false); setNewMessages(false); setMemoryOwnerId(null); setMemoryDraft(undefined);
     } else if (!pendingJump.current) returnToLatest();
     setPage('messages'); setEmojiOpen(false); setComposerMore(false);
     setShowPresence(false);
@@ -605,16 +725,43 @@ export function Companions({ api, dshApi, onOpenSettings, isActive = true }: { r
     const response = await request({ type: 'conversation.open', companionId });
     if (response?.conversation) { selectConversation(response.conversation); void refreshState(); }
   }
+  function openAgenda(ownerId?: string, view: AgendaViewName = 'today', eventId?: string) {
+    if (!ownerId) return;
+    const nonce = ++agendaNavigation.current;
+    const current = stateRef.current?.conversations.find(room => room.id === selectedRef.current && room.memberIds.includes(ownerId));
+    const open = (room: CompanionConversation) => {
+      if (!aliveRef.current || nonce !== agendaNavigation.current || !room.memberIds.includes(ownerId)) return;
+      if (selectedRef.current !== room.id) selectConversation(room); else setPage('messages');
+      const opened = ++agendaNavigation.current; setMemoryOwnerId(ownerId); setShowPanel(true);
+      setAgendaSelection({ ownerId, conversationId: room.id, view, eventId, nonce: opened });
+    };
+    if (current && pageRef.current === 'messages') { open(current); return; }
+    void request({ type: 'conversation.open', companionId: ownerId }).then(result => { if (result?.conversation) { open(result.conversation); void refreshState(); } });
+  }
+  async function discussAgenda(companionId: string) {
+    const navigation = agendaNavigation.current;
+    const result = await request({ type: 'conversation.open', companionId });
+    if (!aliveRef.current || navigation !== agendaNavigation.current || !result?.conversation || !result.conversation.memberIds.includes(companionId)) return;
+    const room = result.conversation, key = chatDraftKey(room.id, room.activeTopicId);
+    setDrafts(current => {
+      const previous = current[key];
+      if (previous && (previous.content.trim() || previous.attachments.length || previous.reply)) return current;
+      return { ...current, [key]: { content: '我想和你商量一下接下来的安排。', attachments: [] } };
+    });
+    closeAgenda(); selectConversation(room); void refreshState();
+  }
   async function openOverviewDestination(kind: CompanionLifeOverviewDestination, item?: CompanionLifeOverviewItem) {
     if (kind === 'contacts') { setPage('contacts'); if (overviewOwner) setContactId(overviewOwner.id); return; }
     const owner = overviewOwner;
     if (!owner) return;
     if (kind === 'world') { void openWorld(owner.id); return; }
-    if (kind === 'learning' || kind === 'memory_processing' || kind === 'trace') {
+    if (kind === 'learning' || kind === 'memory_processing' || kind === 'schedules' || kind === 'life_rules' || kind === 'activity' || kind === 'work' && item?.kind !== 'action') {
+      openAgenda(owner.id, kind === 'learning' ? 'goals' : 'today'); return;
+    }
+    if (kind === 'work' && item?.kind === 'action') { void openExecutionRecord(item.destination.id); return; }
+    if (kind === 'trace') {
       setDocumentOwnerId(owner.id); setShowMemoryManager(true); setPage('memory');
-      if (kind === 'memory_processing') { setMemoryLearningRequest(undefined); setMemoryTraceRequest(undefined); setMemoryProcessingRequest({ owner: owner.id, nonce: ++memoryRequestSequence.current }); }
-      else if (kind === 'trace') { setMemoryProcessingRequest(undefined); setMemoryLearningRequest(undefined); setMemoryTraceRequest({ owner: owner.id, nonce: ++memoryRequestSequence.current }); }
-      else { setMemoryProcessingRequest(undefined); setMemoryTraceRequest(undefined); setMemoryLearningRequest({ owner: owner.id, nonce: ++memoryRequestSequence.current }); }
+      setMemoryProcessingRequest(undefined); setMemoryLearningRequest(undefined); setMemoryTraceRequest({ owner: owner.id, nonce: ++memoryRequestSequence.current });
       return;
     }
     const destinationRoom = item?.destination.conversationId;
@@ -628,16 +775,8 @@ export function Companions({ api, dshApi, onOpenSettings, isActive = true }: { r
       const openedRoom = room;
       setState(current => current ? { ...current, conversations: [...current.conversations.filter(candidate => candidate.id !== openedRoom.id), openedRoom] } : current);
     }
-    selectConversation(room); setMemoryOwnerId(owner.id); setSelectedActivityTaskId(undefined);
+    selectConversation(room); setMemoryOwnerId(owner.id);
     if (kind === 'chat') return;
-    if (kind === 'activity') { setSelectedActivityTaskId(item?.destination.id); setShowPanel(true); return; }
-    setPage('overview');
-    if (kind === 'schedules' || kind === 'life_rules') {
-      setScheduleSelection({ page: kind === 'life_rules' ? 'life' : 'plans', ...(item?.kind === 'schedule' ? { id: item.destination.id } : {}) }); setShowScheduleManager(true);
-    } else if (kind === 'work' && item?.kind === 'action') {
-      setTaskConversationId(room.id);
-      setTaskOwnerId(owner.id); setSelectedTaskActionId(item.destination.id); setTaskView(item.section === 'events' ? 'history' : 'active'); setShowTaskMonitor(true);
-    } else if (kind === 'work') { setSelectedWorkOrderId(undefined); setShowWorkManager(true); }
   }
   const sourceInCurrentTopic = (id: string) => {
     const source = messages.find(message => message.id === id) ?? referencedMessages[id];
@@ -662,6 +801,7 @@ export function Companions({ api, dshApi, onOpenSettings, isActive = true }: { r
     const wasHistory = historyRef.current;
     if (wasHistory) { historyRef.current = false; setHistoryMode(false); setMessages([]); }
     const response = await request({ type: 'message.send', conversationId: id, topicId: sentTopicId, content: sentDraft.content, clientId: crypto.randomUUID(),
+      toolPolicy: { ...toolPolicy },
       ...(urgent ? { priority: 'urgent' as const } : {}),
       ...(guide ? { delivery: 'steer', targetSourceMessageId: targetSourceMessageId ?? runningSources[0] } : {}),
       ...(sentDraft.reply ? { replyToId: sentDraft.reply.id } : {}), ...(sentDraft.attachments.length ? { attachmentIds: sentDraft.attachments.map(item => item.id) } : {}) });
@@ -769,6 +909,7 @@ export function Companions({ api, dshApi, onOpenSettings, isActive = true }: { r
     const message = cached ?? (await request({ type: 'message.get', id }))?.message;
     if (!message || selectedRef.current !== conversationId) return;
     if (message.conversationId !== conversationId) { setError('引用消息不属于当前聊天。'); return; }
+    if (message.audience === 'agenda') { if (message.actionId) await openExecutionRecord(message.actionId); else openAgenda(message.authorId); return; }
     setReferencedMessages(current => Object.fromEntries([...Object.entries(current).filter(([key]) => key !== message.id), [message.id, message]].slice(-50)));
     await jumpToMessage(message);
   }
@@ -776,16 +917,16 @@ export function Companions({ api, dshApi, onOpenSettings, isActive = true }: { r
     const response = await request({ type: 'action.cancel', id });
     if (response && selectedRef.current) void loadActions(selectedRef.current);
   }
-  function openTaskProgress(id?: string) {
+  function openTaskProgress(id: string) {
     const action = actions.find(item => item.id === id);
     setTaskConversationId(undefined);
     setSelectedTaskActionId(id); setTaskOwnerId(action?.companionId); setTaskView(action && companionWorkPhase(action) ? 'active' : 'history'); setShowTaskMonitor(true);
   }
-  async function openDashboardAction(id: string) {
+  async function openExecutionRecord(id: string) {
     const response = await request({ type: 'action.get', id });
     if (!response?.action || !aliveRef.current) return;
     setTaskConversationId(response.action.conversationId); setSelectedTaskActionId(id); setTaskOwnerId(response.action.companionId);
-    setTaskView('history'); setShowTaskDashboard(false); setShowTaskMonitor(true);
+    setTaskView('history'); closeAgenda(); setShowTaskMonitor(true);
   }
   async function manageAction(type: 'action.resume' | 'action.terminate', id: string) {
     const response = await request({ type, id });
@@ -812,12 +953,13 @@ export function Companions({ api, dshApi, onOpenSettings, isActive = true }: { r
     try { await request({ type: 'companion.set-active', id: item.id, active: item.active === false, expectedRevision: item.revision }); await refreshState(); }
     finally { setActivationPending(undefined); }
   }
-  async function toggleProactive(item: Companion, value: boolean, inputMode = item.inputMode ?? 'steer') {
+  async function toggleProactive(item: Companion, value: boolean, inputMode = 'queue' as const) {
     const { name, description, persona, avatar, avatarAttachmentId, appearanceAttachmentId } = item;
     const llm = item.llm ? { apiFormat: item.llm.apiFormat, baseUrl: item.llm.baseUrl, model: item.llm.model } : undefined;
     const response = await request({ type: 'companion.update', id: item.id, expectedRevision: item.revision, expectedAssetProfileRevision: item.assetProfileRevision, companion: { name, description, persona, model: '', avatar, proactive: value, inputMode, ...(llm ? { llm } : {}), ...(avatarAttachmentId ? { avatarAttachmentId } : {}), ...(appearanceAttachmentId ? { appearanceAttachmentId } : {}) } });
     if (response) void refreshState();
   }
+  const contactActions = selectedContact ? <div className="companions-profile-actions"><button className="companion-primary-button" onClick={() => void openPrivate(selectedContact.id)}><ChatGlyph name="chat" />发消息</button><button className="companion-secondary-button" disabled={!!contactReset} onClick={() => setDialog({ kind: 'companion', companion: selectedContact })}><Icon name="sliders" />运行设置</button><details className="companion-contact-more"><summary>更多<Icon name="chevron" /></summary><div onClick={event => { if ((event.target as HTMLElement).closest('button')) event.currentTarget.parentElement?.removeAttribute('open'); }}><button onClick={() => void openWorld(selectedContact.id)}><Icon name="globe" />看看她的小屋</button><button onClick={() => setExperienceOwnerId(selectedContact.id)}><Icon name="activity" />查看经历</button><button onClick={() => openAgenda(selectedContact.id)}><Icon name="clock" />查看日程</button><button className="is-danger" onClick={() => openRetirement(selectedContact)}><Icon name="trash" />{contactReset ? '查看删除进度' : '删除伙伴及个人记录'}</button></div></details></div> : null;
   const visibleConversations = [...(state?.conversations ?? [])].filter(item => `${item.title} ${item.lastMessage}`.toLocaleLowerCase().includes(filter.toLocaleLowerCase())).sort((a, b) => Number(b.pinned) - Number(a.pinned) || b.updatedAt.localeCompare(a.updatedAt));
   const playerAvatar = { name: state?.playerProfile?.name || '我', avatar: 'custom' as const, avatarAttachmentId: state?.playerProfile?.avatarAttachmentId };
   const authorName = (id: string) => id === 'user' ? playerAvatar.name : companions.find(item => item.id === id)?.name ?? (id === 'system' ? '系统' : '已删除联系人');
@@ -827,15 +969,15 @@ export function Companions({ api, dshApi, onOpenSettings, isActive = true }: { r
   }
   return <div className="companions-app" data-companions>
     <nav className="companions-navigation" aria-label="伙伴导航">
-      <button className={page === 'messages' ? 'is-active' : ''} aria-pressed={page === 'messages'} onClick={() => { setPage('messages'); setFilter(''); }}><ChatGlyph name="chat" /><span>消息</span>{!!state?.conversations.reduce((sum, item) => sum + item.unread, 0) && <i className="companions-nav-dot" />}</button>
-      <button className={page === 'contacts' ? 'is-active' : ''} aria-pressed={page === 'contacts'} onClick={() => { setPage('contacts'); setFilter(''); }}><ChatGlyph name="contacts" /><span>联系人</span></button>
-      <button aria-label="打开任务中心" aria-pressed={showTaskDashboard} disabled={!companions.length} onClick={() => { setTaskView('active'); setTaskOwnerId(undefined); setSelectedTaskActionId(undefined); setShowTaskDashboard(true); }}><Icon name="activity" /><span>任务</span></button>
-      <button aria-label="生活总览" className={page === 'overview' ? 'is-active' : ''} aria-pressed={page === 'overview'} onClick={() => setPage('overview')}><Icon name="sparkles" /><span>生活</span></button>
-      <button aria-label="打开伙伴记忆库" className={page === 'memory' ? 'is-active' : ''} aria-pressed={page === 'memory'} disabled={!companions.length} onClick={() => { setShowMemoryManager(true); setPage('memory'); }}><Icon name="file-text" /><span>记忆</span></button>
+      <button className={page === 'messages' ? 'is-active' : ''} aria-pressed={page === 'messages'} onClick={() => { closeAgenda(); setPage('messages'); setFilter(''); }}><ChatGlyph name="chat" /><span>消息</span>{!!state?.conversations.reduce((sum, item) => sum + item.unread, 0) && <i className="companions-nav-dot" />}</button>
+      <button className={page === 'contacts' ? 'is-active' : ''} aria-pressed={page === 'contacts'} onClick={() => { closeAgenda(); setPage('contacts'); setFilter(''); }}><ChatGlyph name="contacts" /><span>联系人</span></button>
+
+      <button aria-label="生活总览" className={page === 'overview' ? 'is-active' : ''} aria-pressed={page === 'overview'} onClick={() => { closeAgenda(); setOverviewVisited(true); setPage('overview'); }}><Icon name="sparkles" /><span>生活</span></button>
+      <button aria-label="打开伙伴记忆库" className={page === 'memory' ? 'is-active' : ''} aria-pressed={page === 'memory'} disabled={!companions.length} onClick={() => { closeAgenda(); setShowMemoryManager(true); setPage('memory'); }}><Icon name="file-text" /><span>记忆</span></button>
       <button aria-label="打开伙伴世界" onClick={() => void openWorld()}><Icon name="globe" /><span>世界</span></button><button aria-label="打开伙伴社交观察" onClick={() => observeSocial()}><Icon name="users" /><span>社交</span></button>
     </nav>
     <aside className="companions-list-pane" hidden={page === 'memory' || page === 'overview'} aria-label={page === 'messages' ? '消息列表' : '联系人列表'}>
-      {page === 'contacts' ? <CompanionContactList companions={companions} conversations={state?.conversations ?? []} selectedId={selectedContact?.id} request={request}
+      {page === 'contacts' ? <CompanionContactList active={isActive} companions={companions} conversations={state?.conversations ?? []} selectedId={selectedContact?.id} request={request}
         onSelect={setContactId} onOpenConversation={selectConversation} onAdd={() => setDialog({ kind: 'companion' })} onCreateGroup={() => setDialog({ kind: 'group' })} renderConversationAvatar={conversationAvatar} /> : <>
       <header className="companions-list-title"><h1>消息</h1><button className="companion-icon-button" aria-label="发起聊天" title="发起聊天" onClick={() => setDialog({ kind: 'chat' })}><Icon name="plus" /></button></header>
       <div className="companions-list-search"><Icon name="search" /><input aria-label="搜索会话" placeholder="搜索消息和群聊" value={filter} onChange={event => setFilter(event.target.value)} />{filter && <button aria-label="清空搜索" className="companion-icon-button" onClick={() => setFilter('')}>×</button>}</div>
@@ -847,16 +989,16 @@ export function Companions({ api, dshApi, onOpenSettings, isActive = true }: { r
       <footer className="companions-list-footer"><span className="companions-local-dot" />消息保存在本机</footer>
     </aside>
     <main className="companions-main" hidden={page === 'memory' || page === 'overview'}>
-      {error && page !== 'memory' && !showScheduleManager && !showWorkManager && <div className="companions-error" role="alert"><Icon name="alert-circle" /><span>{error}</span><button type="button" className="companion-icon-button" aria-label="关闭错误提示" onClick={dismissError}><Icon name="close" /></button></div>}
+      {error && page !== 'memory' && !agendaSelection && <div className="companions-error" role="alert"><Icon name="alert-circle" /><span>{error}</span><button type="button" className="companion-icon-button" aria-label="关闭错误提示" onClick={dismissError}><Icon name="close" /></button></div>}
       {!state ? <div className="companions-empty"><ChatGlyph name="chat" /><h2>{api ? '正在打开伙伴的消息…' : '伙伴服务暂不可用'}</h2>{error && <button className="companion-secondary-button" onClick={() => void refreshState()}>重新加载</button>}</div>
-        : page === 'contacts' ? selectedContact ? <div className="companions-contact-profile"><header className="companions-profile-label">联系人资料</header><div className="companions-profile-heading"><Avatar companion={selectedContact} large /><div><h2>{selectedContact.name}<CompanionStatusBadge companion={selectedContact} /></h2><p>{selectedContact.description}</p>{selectedContact.builtin && <span className="companions-profile-tag">{builtinCompanionProfile(selectedContact.templateId ?? selectedContact.id)?.sourceSummary ?? '内置伙伴'}</span>}</div></div>
-          <div className="companions-profile-body"><div>{contactReset && <div className="companions-reset-note"><Icon name="refresh" /><span>{contactReset.status === 'failed' ? '伙伴重置已暂停' : '伙伴正在重置'}</span><button onClick={() => setResetCompanionId(selectedContact.id)}>查看进度</button></div>}<section><h3>关于她</h3><p className="companions-introduction">{contactIntroduction(selectedContact)}</p><details key={selectedContact.id} className="companions-persona-details"><summary>查看角色设定</summary><p className="companions-persona">{selectedContact.persona}</p></details></section><CompanionPromptAssetsEditor key={selectedContact.id} companionId={selectedContact.id} api={api} disabled={!!contactReset} /><PublicAppearanceSheet attachmentId={selectedContact.appearanceAttachmentId} ownerSource={{ url: companionAppearance(selectedContact) }} name={selectedContact.name} description="这位伙伴的公开正面、侧面与背面设定板。可在编辑资料中上传或移除。" /><section className="companions-activation"><div className="companions-activation-heading"><h3>伙伴生活</h3><span className="companions-activation-status" data-status={selectedContact.active === false ? 'dormant' : 'ready'}>{selectedContact.active === false ? '休眠中' : '已激活'}</span></div><p className="companions-subtle">{selectedContact.active === false ? '虚拟世界未加载，不进行后台活动。聊天和存档保留，手动激活后继续生活。' : '虚拟世界正在运行。休眠会停止后台活动和当前任务，保留聊天与存档。'}</p><div className="companions-activation-actions"><button className={selectedContact.active === false ? 'companion-primary-button' : 'companion-secondary-button'} disabled={!!contactReset || !!activationPending} onClick={() => void toggleActive(selectedContact)}>{activationPending === selectedContact.id ? '正在切换…' : selectedContact.active === false ? '激活伙伴' : '让伙伴休眠'}</button><button className="companion-secondary-button" onClick={() => observeSocial(selectedContact.id)}><Icon name="users" />查看她与谁交互</button></div></section><section><h3>联系习惯</h3><label className="companions-checkbox"><input type="checkbox" disabled={!!contactReset} checked={selectedContact.proactive} onChange={event => void toggleProactive(selectedContact, event.target.checked)} />允许她主动联系我</label><p className="companions-subtle">应用运行时，她可以延续你们的话题。夜间会保持安静。</p></section><section><h3>新消息的处理方式</h3><label className="companions-input-mode">伙伴正在回复时<select aria-label="新消息的处理方式" disabled={!!contactReset} value={selectedContact.inputMode ?? 'steer'} onChange={event => void toggleProactive(selectedContact, selectedContact.proactive, event.target.value as 'steer' | 'queue')}><option value="steer">引导当前任务（默认）</option><option value="queue">排队，稍后处理</option></select></label><p className="companions-subtle">引导会在下一步纳入追加要求，并唤醒正在等待的伙伴；排队会在当前回复结束后重新组织上下文。群聊也按每位伙伴的设置处理。</p></section><section><h3>模型与能力</h3><p>{selectedContact.llm ? '使用此伙伴的独立 LLM 服务' : '共用设置中的全局 LLM 服务'}</p><p className="companions-subtle">{selectedContact.llm ? `模型：${selectedContact.llm.model}` : '跟随全局模型'} · 可以使用自己的能力查看文件、查资料和处理任务</p></section><div className="companions-profile-actions"><button className="companion-primary-button" onClick={() => void openPrivate(selectedContact.id)}><ChatGlyph name="chat" />发消息</button><button className="companion-secondary-button" disabled={!!contactReset} onClick={() => setDialog({ kind: 'companion', companion: selectedContact })}><Icon name="edit" />编辑资料</button><details className="companion-contact-more"><summary>更多<Icon name="chevron" /></summary><div onClick={event => { if ((event.target as HTMLElement).closest('button')) event.currentTarget.parentElement?.removeAttribute('open'); }}><button onClick={() => void openWorld(selectedContact.id)}><Icon name="globe" />看看她的小屋</button><button onClick={() => setExperienceOwnerId(selectedContact.id)}><Icon name="activity" />查看经历</button><button onClick={() => { setTaskOwnerId(selectedContact.id); setTaskView('active'); setShowTaskDashboard(true); }}><Icon name="activity" />查看全部任务</button>{selectedContact.builtin && <button onClick={() => setResetCompanionId(selectedContact.id)}><Icon name="refresh" />{contactReset ? '查看重置进度' : '重置伙伴'}</button>}<button className="is-danger" disabled={!!contactReset} onClick={() => setDialog({ kind: 'delete', companion: selectedContact })}><Icon name="trash" />删除联系人</button></div></details></div></div>
+        : page === 'contacts' ? selectedContact ? <div className="companions-contact-profile"><header className="companions-profile-label">联系人资料</header><div className="companions-profile-heading"><Avatar companion={selectedContact} large /><div><h2>{selectedContact.name}<CompanionStatusBadge companion={selectedContact} /></h2><p>{selectedContact.description}</p>{selectedContact.builtin && <span className="companions-profile-tag">{builtinCompanionProfile(selectedContact.templateId ?? selectedContact.id)?.sourceSummary ?? '内置伙伴'}</span>}</div>{contactActions}</div>
+          <div className="companions-profile-body"><div>{contactReset && <div className="companions-reset-note"><Icon name="refresh" /><span>{contactReset.status === 'failed' ? '伙伴删除清理已暂停' : '伙伴正在删除清理'}</span><button onClick={() => openRetirement(selectedContact)}>查看进度</button></div>}<CompanionCognitionDossier compactHeader key={selectedContact.id} companionId={selectedContact.id} companion={selectedContact} api={api} onOpenLearning={() => openAgenda(selectedContact.id, 'goals')} onOpenMemory={() => { setDocumentOwnerId(selectedContact.id); setPage('memory'); }} /><PublicAppearanceSheet attachmentId={selectedContact.appearanceAttachmentId} ownerSource={{ url: companionAppearance(selectedContact) }} name={selectedContact.name} description="这位伙伴的公开正面、侧面与背面设定板。可在运行设置中管理形象。" /><section className="companions-activation"><div className="companions-activation-heading"><h3>伙伴生活</h3><span className="companions-activation-status" data-status={selectedContact.active === false ? 'dormant' : 'ready'}>{selectedContact.active === false ? '休眠中' : '已激活'}</span></div><p className="companions-subtle">{selectedContact.active === false ? '虚拟世界未加载，不进行后台活动。聊天和存档保留，手动激活后继续生活。' : '虚拟世界正在运行。休眠会停止后台活动和当前任务，保留聊天与存档。'}</p><div className="companions-activation-actions"><button className={selectedContact.active === false ? 'companion-primary-button' : 'companion-secondary-button'} disabled={!!contactReset || !!activationPending} onClick={() => void toggleActive(selectedContact)}>{activationPending === selectedContact.id ? '正在切换…' : selectedContact.active === false ? '激活伙伴' : '让伙伴休眠'}</button><button className="companion-secondary-button" onClick={() => observeSocial(selectedContact.id)}><Icon name="users" />查看她与谁交互</button></div></section><section><h3>联系习惯</h3><label className="companions-checkbox"><input type="checkbox" disabled={!!contactReset} checked={selectedContact.proactive} onChange={event => void toggleProactive(selectedContact, event.target.checked)} />允许她主动联系我</label><p className="companions-subtle">她会在日程中合适的机会主动联系你。安静窗口与观察范围可以在日程中查看。</p></section><section><h3>新消息的处理方式</h3><p className="companions-subtle">每条新消息都会建立独立任务，在任务开始时准备一次上下文；工具调用会继续沿用该任务的上下文。需要补充正在执行的任务时，请明确选择“引导当前任务”。</p></section><section><h3>模型与能力</h3><p>{selectedContact.llm ? '使用此伙伴的独立 LLM 服务' : '共用设置中的全局 LLM 服务'}</p><p className="companions-subtle">{selectedContact.llm ? `模型：${selectedContact.llm.model}` : '跟随全局模型'} · 可以使用自己的能力查看文件、查资料和处理任务</p></section></div>
           {companionPortrait(selectedContact) && <figure className="companions-character-art is-portrait"><img src={companionPortrait(selectedContact)} alt={`${selectedContact.name}的角色形象`} /><figcaption>{selectedContact.name} · 聊天头像</figcaption></figure>}</div>
         </div> : <div className="companions-empty"><ChatGlyph name="contacts" /><h2>认识你的第一位伙伴</h2><p>从内置角色开始，或者创造属于你的伙伴。</p><button className="companion-primary-button" onClick={() => setDialog({ kind: 'companion' })}>添加联系人</button></div>
         : !selected ? <div className="companions-empty"><ChatGlyph name="chat" /><h2>每天，都可以接着聊</h2><p>打开一个伙伴，开始你们的第一段共同经历。</p><button className="companion-primary-button" onClick={() => setPage('contacts')}>查看联系人</button></div>
         : <div className={`companions-chat-layout${showPanel ? ' has-panel' : ''}`}>
           <section className="companions-chat" aria-label={`${selected.title}的聊天`}>
-            <CompanionWorldStatus key={selected.id} api={api} members={members} companions={companions} active={isActive && page === 'messages'} onObserve={observeSocial}>{({ clock, activity }) => <><header className="companions-chat-header"><div className="companions-chat-identity"><button className="companions-presence-avatar" data-presence-trigger aria-label="查看伙伴状态" aria-expanded={showPresence} title={COMPANION_PRESENCE_LABELS[roomPresence] + ' · 点击查看状态'} onClick={() => setShowPresence(!showPresence)}>{conversationAvatar(selected)}</button><div><h2><span className="companions-chat-name">{selected.title}{selected.kind === 'group' && '（' + (selected.memberIds.length + 1) + '）'}</span><CompanionStatusBadge className="companions-presence-label" status={roomPresence} />{offlineMembers.length > 0 && selected.kind === 'group' && <CompanionStatusBadge className="companions-presence-label" status="offline">{offlineMembers.length} 位离线</CompanionStatusBadge>}{historyMode && <button className="companions-history-chip" aria-label="正在查看历史消息" title="回到最新消息" onClick={returnToLatest}><Icon name="clock" />历史记录</button>}</h2><div className="companions-chat-meta"><p>{selected.kind === 'group' ? members.map(item => item.name).join('、') : primary?.availability === 'offline' ? primary.availabilityReason || '尚未连接模型服务 · 点击头像配置' : primary?.description || '你们的日常，慢慢聊'}</p>{clock}</div></div></div><div className="companions-header-actions"><CompanionTopicBar defaultTopicId={selected.defaultTopicId} key={`topic-${selected.id}`} conversationId={selected.id} members={members} activeTopicId={selected.activeTopicId} topics={topics} historyFilter={topicHistoryFilter} request={request} onActivate={id => activateTopic(selected.id, id)} onChanged={topic => topicChanged(selected.id, topic)} onCatalog={items => topicCatalog(selected.id, items)} onDeleted={id => topicDeleted(selected.id, id)} onHistoryFilter={filterTopicHistory} />{activity}<button className="companions-task-monitor-button" aria-label="查看伙伴任务" onClick={() => { setTaskView('active'); setTaskOwnerId(primary?.id); setSelectedTaskActionId(undefined); setShowTaskDashboard(true); }}><Icon name="activity" /><span>任务</span></button><button className={`companion-icon-button${selected.pinned ? ' is-active' : ''}`} title={selected.pinned ? '取消置顶' : '置顶聊天'} aria-label={selected.pinned ? '取消置顶' : '置顶聊天'} onClick={() => void request({ type: 'conversation.update', id: selected.id, pinned: !selected.pinned }).then(result => { if (result) void refreshState(); })}><ChatGlyph name="pin" /></button><button className={`companion-icon-button${selected.muted ? ' is-active' : ''}`} aria-label={selected.muted ? '取消免打扰' : '消息免打扰'} title={selected.muted ? '取消免打扰' : '消息免打扰'} onClick={() => void request({ type: 'conversation.update', id: selected.id, muted: !selected.muted }).then(result => { if (result) void refreshState(); })}><ChatGlyph name="bell" /></button><button className="companion-icon-button" title="搜索聊天记录" aria-label="搜索聊天记录" onClick={() => { setSearchScope(selected.id); setShowSearch(true); }}><Icon name="search" /></button>{selected.kind === 'group' && <button className="companion-icon-button" aria-label="管理群聊" title="管理群聊" onClick={() => setDialog({ kind: 'group', conversation: selected })}><ChatGlyph name="group" /></button>}<button className="companion-icon-button" aria-label="删除聊天" title="删除聊天" onClick={() => setDialog({ kind: 'delete-conversation', conversation: selected, mode: 'hide' })}><Icon name="trash" /></button><button className={`companion-icon-button${showPanel ? ' is-active' : ''}`} aria-label="我们之间" title="我们之间" aria-expanded={showPanel} onClick={() => setShowPanel(!showPanel)}><Icon name="panel-right" /></button></div></header></>}</CompanionWorldStatus>
+            <CompanionWorldStatus key={selected.id} api={api} members={members} companions={companions} active={isActive && page === 'messages'} onObserve={observeSocial}>{({ clock }) => <><header className="companions-chat-header"><div className="companions-chat-identity"><button className="companions-presence-avatar" data-presence-trigger aria-label="查看伙伴状态" aria-expanded={showPresence} title={COMPANION_PRESENCE_LABELS[roomPresence] + ' · 点击查看状态'} onClick={() => setShowPresence(!showPresence)}>{conversationAvatar(selected)}</button><div><h2><span className="companions-chat-name">{selected.title}{selected.kind === 'group' && '（' + (selected.memberIds.length + 1) + '）'}</span><CompanionStatusBadge className="companions-presence-label" status={roomPresence} />{offlineMembers.length > 0 && selected.kind === 'group' && <CompanionStatusBadge className="companions-presence-label" status="offline">{offlineMembers.length} 位离线</CompanionStatusBadge>}{historyMode && <button className="companions-history-chip" aria-label="正在查看历史消息" title="回到最新消息" onClick={returnToLatest}><Icon name="clock" />历史记录</button>}</h2><div className="companions-chat-meta"><p>{selected.kind === 'group' ? members.map(item => item.name).join('、') : primary?.availability === 'offline' ? primary.availabilityReason || '尚未连接模型服务 · 点击头像配置' : primary?.description || '你们的日常，慢慢聊'}</p>{clock}</div></div></div><div className="companions-header-actions"><CompanionTopicBar defaultTopicId={selected.defaultTopicId} key={`topic-${selected.id}`} conversationId={selected.id} members={members} activeTopicId={selected.activeTopicId} topics={topics} historyFilter={topicHistoryFilter} request={request} onActivate={id => activateTopic(selected.id, id)} onChanged={topic => topicChanged(selected.id, topic)} onCatalog={items => topicCatalog(selected.id, items)} onDeleted={id => topicDeleted(selected.id, id)} onHistoryFilter={filterTopicHistory} /><button className={`companion-icon-button${selected.pinned ? ' is-active' : ''}`} title={selected.pinned ? '取消置顶' : '置顶聊天'} aria-label={selected.pinned ? '取消置顶' : '置顶聊天'} onClick={() => void request({ type: 'conversation.update', id: selected.id, pinned: !selected.pinned }).then(result => { if (result) void refreshState(); })}><ChatGlyph name="pin" /></button><button className={`companion-icon-button${selected.muted ? ' is-active' : ''}`} aria-label={selected.muted ? '取消免打扰' : '消息免打扰'} title={selected.muted ? '取消免打扰' : '消息免打扰'} onClick={() => void request({ type: 'conversation.update', id: selected.id, muted: !selected.muted }).then(result => { if (result) void refreshState(); })}><ChatGlyph name="bell" /></button><button className="companion-icon-button" title="搜索聊天记录" aria-label="搜索聊天记录" onClick={() => { setSearchScope(selected.id); setShowSearch(true); }}><Icon name="search" /></button><button className="companion-icon-button" aria-label="删除聊天" title="删除聊天" onClick={() => setDialog({ kind: 'delete-conversation', conversation: selected, mode: 'hide' })}><Icon name="trash" /></button><button className={`companion-icon-button${showPanel ? ' is-active' : ''}`} aria-label="我们之间" title="我们之间" aria-expanded={showPanel} onClick={() => { setShowPanel(!showPanel); closeAgenda(); }}><Icon name="panel-right" /></button></div></header></>}</CompanionWorldStatus>
             {showPresence && <CompanionPresencePanel members={members} onClose={() => setShowPresence(false)} onConfigure={role => { setShowPresence(false); if (role.llm) setDialog({ kind: 'companion', companion: role }); else onOpenSettings(); }} />}
             {topicHistoryFilter !== 'current' && <div className="companions-topic-browsing" role="status"><span>正在查看{topicHistoryFilter === 'all' ? '全部聊天记录' : topicHistoryFilter === 'ordinary' ? '主要对话记录' : `「${topics.find(topic => `topic:${topic.id}` === topicHistoryFilter)?.title ?? '话题'}」的记录`}，发送位置保持不变。</span><button onClick={() => filterTopicHistory('current')}>回到当前聊天</button></div>}
             <div className="companions-message-scroll" ref={scrollRef} data-companion-messages data-window-count={messages.length}
@@ -877,8 +1019,8 @@ export function Companions({ api, dshApi, onOpenSettings, isActive = true }: { r
               else if (!loadingMessages && atBottom && hasNewer) void loadNewer();
             }}>
               {hasMore && <button className="companions-load-older" disabled={loadingOlder} onClick={() => void loadOlder()}>{loadingOlder ? '正在读取…' : '查看更早的消息'}</button>}
-              {loadingMessages && <p className="companions-chat-tip">正在读取聊天记录…</p>}
-              {!loadingMessages && !timelineMessages.length && <div className="companions-chat-welcome"><ChatGlyph name="chat" /><p>从一句“你好”开始。以后每次回来，都可以接着聊。</p></div>}
+              {loadingMessages && <div className={`companions-message-loading${timelineMessages.length ? ' is-inline' : ''}`} role="status" aria-live="polite"><span className="companions-loading-spinner" aria-hidden="true" /><span>正在读取聊天记录…</span></div>}
+              {!loadingMessages && !timelineMessages.length && (messageLoadFailed ? <div className="companions-message-load-failed" role="status"><Icon name="file" /><p>聊天记录暂时未能读取</p><button type="button" onClick={returnToLatest}>重新加载</button></div> : <div className="companions-chat-welcome"><ChatGlyph name="chat" /><p>从一句“你好”开始。以后每次回来，都可以接着聊。</p></div>)}
               {timelineMessages.map((message, index) => {
                 const own = message.authorId === 'user'; const author = companions.find(item => item.id === message.authorId);
                 const replied = messages.find(item => item.id === message.replyToId) || (message.replyToId ? referencedMessages[message.replyToId] : undefined);
@@ -886,7 +1028,7 @@ export function Companions({ api, dshApi, onOpenSettings, isActive = true }: { r
                 const newDay = index === 0 || dayLabel(timelineMessages[index - 1]!.createdAt) !== dayLabel(message.createdAt);
                 return <div key={message.id}>{newDay && <div className="companions-date-separator">{dayLabel(message.createdAt)}</div>}
                   {message.kind === 'notice' ? <div className={`companions-notice${message.status === 'failed' ? ' is-failed' : ''}`} data-companion-message={message.id}>{message.authorId !== 'system' && <small>内置欢迎 · {authorName(message.authorId)}</small>}<span>{message.content}</span></div> : <article className={`companions-message${own ? ' is-own' : ''}${highlightedId === message.id ? ' is-highlighted' : ''}`} data-companion-message={message.id}>
-                    <Avatar companion={own ? playerAvatar : author} showPresence={false} /><div className="companions-message-body"><div className="companions-message-author">{authorName(message.authorId)}<button className="companions-message-topic" aria-label={`查看${message.topicId ? topics.find(topic => topic.id === message.topicId)?.title ?? '话题' : '日常'}记录`} onClick={() => filterTopicHistory(message.topicId ? `topic:${message.topicId}` : 'ordinary')}>{message.topicId ? topics.find(topic => topic.id === message.topicId)?.title ?? '历史话题' : '日常'}</button><time title={companionTimestamp(message.createdAt) + ' · ' + companionTimezone(message.createdAt)}>{clockTime(message.createdAt)}</time></div><CompanionMessageBubble message={message} replied={replied} quoteAuthor={replied ? authorName(replied.authorId) : undefined} actions={actions} now={clock} streamStore={replyStreams} interrupted={state?.recoveries?.some(item => item.conversationId === message.conversationId && item.sourceMessageId === message.replyToId && !item.completedIds.includes(message.authorId) && (item.status === 'interrupted' || item.status === 'cancelled')) ?? false} onOpenAction={openTaskProgress} onOpenUrl={openMessageLink} onOpenAttachment={openAttachment} onLocateQuote={id => void jumpToReference(id)} onStreamLayout={scrollStreamingReply} onCancelReply={workId => void request({ type: 'reply.cancel', conversationId: selected.id, workId }).then(() => refreshState())} onRetryReply={workId => request({ type: 'reply.retry', conversationId: selected.id, workId }).then(() => refreshState())} onGuideReply={message.replyProgress?.sourceMessageId && runningSources.length && !runningSources.includes(message.replyProgress.sourceMessageId) ? sourceMessageId => void guideQueued(sourceMessageId) : undefined} tools={<><button aria-label={`引用消息 ${message.sequence}`} disabled={selectedDeleted || (message.topicId ?? null) !== (selected.activeTopicId ?? null)} title={(message.topicId ?? null) !== (selected.activeTopicId ?? null) ? "请先进入消息所属话题，再引用回复" : "引用回复"} onClick={() => { updateDraft({ reply: message }); composerRef.current?.focus(); }}><ChatGlyph name="reply" /></button>{message.content && !message.isReplyDraft && <button aria-label={`记住消息 ${message.sequence}`} title="记住这件事" onClick={() => rememberMessage(message)}><Icon name="heart" /></button>}</>} /></div>
+                    <Avatar companion={own ? playerAvatar : author} showPresence={false} /><div className="companions-message-body"><div className="companions-message-author">{authorName(message.authorId)}<button className="companions-message-topic" aria-label={`查看${message.topicId ? topics.find(topic => topic.id === message.topicId)?.title ?? '话题' : '日常'}记录`} onClick={() => filterTopicHistory(message.topicId ? `topic:${message.topicId}` : 'ordinary')}>{message.topicId ? topics.find(topic => topic.id === message.topicId)?.title ?? '历史话题' : '日常'}</button><time title={companionTimestamp(message.createdAt) + ' · ' + companionTimezone(message.createdAt)}>{clockTime(message.createdAt)}</time></div><CompanionMessageBubble companionName={authorName(message.authorId)} message={message} replied={replied} quoteAuthor={replied ? authorName(replied.authorId) : undefined} actions={actions} now={clock} streamStore={replyStreams} interrupted={state?.recoveries?.some(item => item.conversationId === message.conversationId && item.sourceMessageId === message.replyToId && !item.completedIds.includes(message.authorId) && (item.status === 'interrupted' || item.status === 'cancelled')) ?? false} onOpenAction={openTaskProgress} onOpenUrl={openMessageLink} onOpenAttachment={openAttachment} onLocateQuote={id => void jumpToReference(id)} onStreamLayout={scrollStreamingReply} onCancelReply={async workId => { const response = await request({ type: 'reply.cancel', conversationId: selected.id, workId }); if (!response?.ok) throw new Error('停止请求未获确认，请重试。'); await refreshState(); }} onRetryReply={workId => request({ type: 'reply.retry', conversationId: selected.id, workId }).then(() => refreshState())} onGuideReply={message.replyProgress?.sourceMessageId && runningSources.length && !runningSources.includes(message.replyProgress.sourceMessageId) ? sourceMessageId => void guideQueued(sourceMessageId) : undefined} tools={<><button aria-label={`引用消息 ${message.sequence}`} disabled={selectedDeleted || (message.topicId ?? null) !== (selected.activeTopicId ?? null)} title={(message.topicId ?? null) !== (selected.activeTopicId ?? null) ? "请先进入消息所属话题，再引用回复" : "引用回复"} onClick={() => { updateDraft({ reply: message }); composerRef.current?.focus(); }}><ChatGlyph name="reply" /></button>{message.content && !message.isReplyDraft && <button aria-label={`记住消息 ${message.sequence}`} title="记住这件事" onClick={() => rememberMessage(message)}><Icon name="heart" /></button>}</>} /></div>
                   </article>}
                 </div>;
               })}
@@ -908,24 +1050,26 @@ export function Companions({ api, dshApi, onOpenSettings, isActive = true }: { r
               onPaste={event => { if (event.clipboardData.files.length || event.clipboardData.types.includes('Files') || !event.clipboardData.getData('text/plain') && !event.clipboardData.getData('text/html')) { event.preventDefault(); event.stopPropagation(); void receiveFiles(Array.from(event.clipboardData.files), true); } }}>
               {fileDrag && <div className="companions-file-drop-hint"><Icon name="plus" /><strong>松开以添加文件</strong><span>支持多个文件 · 原文件绝对路径交给伙伴</span></div>}
               {addingFiles && <div className="companions-file-import-status" role="status">正在添加附件…</div>}
-              {emojiOpen && <div className="companions-emoji-picker" aria-label="选择表情">{emojis.map(emoji => <button key={emoji} aria-label={`表情 ${emoji}`} onClick={() => { updateDraft({ content: draft.content + emoji }); setEmojiOpen(false); composerRef.current?.focus(); }}>{emoji}</button>)}</div>}
-              {composerMore && <div className="companions-composer-menu"><button disabled={!draft.content.trim() || sending || !!selectedReset || topicBlocked} onClick={() => { setComposerMore(false); void send(false, undefined, true); }}><Icon name="activity" />紧急打扰并发送</button><button onClick={() => { setComposerMore(false); void receiveFiles([], true); }}><Icon name="clipboard" />粘贴文件或图片</button><button onClick={() => { setComposerMore(false); openMemoryManager(); }}><Icon name="heart" />查看共同记忆</button></div>}
+              {emojiOpen && <div ref={emojiPickerRef} className="companions-emoji-picker" aria-label="选择表情">{emojis.map(emoji => <button key={emoji} aria-label={`表情 ${emoji}`} onClick={() => { updateDraft({ content: draft.content + emoji }); setEmojiOpen(false); composerRef.current?.focus(); }}>{emoji}</button>)}</div>}
+              {composerMore && <div ref={composerMenuRef} className="companions-composer-menu" aria-label="更多聊天操作菜单"><button disabled={!runningSources.length || !draft.content.trim() || sending || !!selectedReset || topicBlocked} onClick={() => { setComposerMore(false); void send(true); }}><ChatGlyph name="reply" />引导当前任务</button><button disabled={!draft.content.trim() || sending || !!selectedReset || topicBlocked} onClick={() => { setComposerMore(false); void send(false, undefined, true); }}><Icon name="activity" />紧急打扰并发送</button><button onClick={() => { setComposerMore(false); void receiveFiles([], true); }}><Icon name="clipboard" />粘贴文件或图片</button><button onClick={() => { setComposerMore(false); openMemoryManager(); }}><Icon name="heart" />查看共同记忆</button></div>}
               {draft.reply && <div className="companions-draft-reply"><ChatGlyph name="reply" /><span>回复 {authorName(draft.reply.authorId)}：{draft.reply.content || '附件'}</span><button className="companion-icon-button" aria-label="取消引用" onClick={() => updateDraft({ reply: undefined })}>×</button></div>}
               {!!draft.attachments.length && <div className="companions-draft-attachments">{draft.attachments.map(item => <span key={item.id} title={item.path ?? item.name}>{item.mime.startsWith('image/') && item.url ? <img className="companions-draft-image" src={item.url} alt="" /> : item.mime.startsWith('image/') ? <ChatGlyph name="image" /> : <Icon name="file" />}<span>{item.name}</span><small>{bytes(item.size)}</small><button aria-label={`移除附件 ${item.name}`} onClick={() => updateDraft({ attachments: draft.attachments.filter(attachment => attachment.id !== item.id) })}>×</button></span>)}</div>}
               <div className="companions-composer-context">
                 <div className="companions-composer-destination" aria-label="当前发送话题">发送到：{activeTopic?.title ?? '正在读取话题…'}{topicBlocked && <span> · {activeTopic?.status === 'paused' ? '已暂停，请先恢复话题' : activeTopic?.status === 'closed' ? '已结束，请切换话题或重新开启' : '正在读取话题状态'}</span>}</div>
                 {primary?.active === false && selected.kind === 'private' && <div className="companions-composer-dormant"><span>伙伴休眠中</span><button aria-label={`激活${primary.name}`} title={`激活${primary.name}`} disabled={!!activationPending} onClick={() => void toggleActive(primary)}>{activationPending === primary.id ? '激活中…' : '激活'}</button></div>}
               </div>
-              <textarea ref={composerRef} rows={2} aria-label="输入消息" disabled={!!selectedReset || topicBlocked} placeholder={selectedReset ? '伙伴正在重置，完成后可以重新聊天' : selected.kind === 'group' ? '和大家聊聊，@名字可以指定伙伴…' : `发消息给${selected.title}…`} value={draft.content} maxLength={16000} onChange={event => updateDraft({ content: event.target.value })} onCompositionStart={() => { composingRef.current = true; }} onCompositionEnd={() => { composingRef.current = false; }} onKeyDown={event => { if (event.key === 'Enter' && !event.shiftKey && !event.nativeEvent.isComposing && !composingRef.current && event.keyCode !== 229) { event.preventDefault(); void send((event.ctrlKey || event.metaKey) && activities.length > 0); } }} />
-              <div className="companions-composer-toolbar"><div className="companions-composer-tools"><button className="companion-icon-button" aria-label="发送文件或图片" title="发送文件" onClick={() => void pickAttachments()}><Icon name="plus" /></button><button className={`companion-icon-button${emojiOpen ? ' is-active' : ''}`} aria-label="表情" title="表情" aria-expanded={emojiOpen} onClick={() => { setEmojiOpen(!emojiOpen); setComposerMore(false); }}><ChatGlyph name="smile" /></button><button className="companion-icon-button" aria-label="发送图片" title="发送图片" onClick={() => void pickAttachments('image')}><ChatGlyph name="image" /></button><button className={`companion-icon-button${composerMore ? ' is-active' : ''}`} aria-label="更多聊天操作" title="更多" aria-expanded={composerMore} onClick={() => { setComposerMore(!composerMore); setEmojiOpen(false); }}><ChatGlyph name="more" /></button></div><div className="companions-composer-send"><span>{selectedReset ? '伙伴正在重置' : sending ? '正在发送…' : draft.content.length > 15000 ? `${draft.content.length} / 16000` : 'Enter 发送 · Shift + Enter 换行'}</span><button className="companions-send-button" aria-label="发送" title="发送消息" disabled={!!selectedReset || topicBlocked || sending || addingFiles || (!draft.content.trim() && !draft.attachments.length)} onClick={() => void send()}><ChatGlyph name="send" /></button></div></div>
+              <textarea ref={composerRef} rows={2} aria-label="输入消息" disabled={!!selectedReset || topicBlocked} placeholder={selectedReset ? '伙伴正在删除清理，完成后可以重新聊天' : selected.kind === 'group' ? '和大家聊聊，@名字可以指定伙伴…' : `发消息给${selected.title}…`} value={draft.content} maxLength={16000} onChange={event => updateDraft({ content: event.target.value })} onCompositionStart={() => { composingRef.current = true; }} onCompositionEnd={() => { composingRef.current = false; }} onKeyDown={event => { if (event.key === 'Enter' && !event.shiftKey && !event.nativeEvent.isComposing && !composingRef.current && event.keyCode !== 229) { event.preventDefault(); void send((event.ctrlKey || event.metaKey) && activities.length > 0); } }} />
+              <div className="companions-composer-toolbar"><div className="companions-composer-tools"><CompanionComposerCapabilities key={selected.id} policy={toolPolicy} onChange={policy => setToolPolicies(current => ({ ...current, [selected.id]: policy }))} onOpen={() => { setEmojiOpen(false); setComposerMore(false); }} /><button className="companion-icon-button" aria-label="发送文件或图片" title="发送文件" onClick={() => void pickAttachments()}><Icon name="plus" /></button><button className={`companion-icon-button${emojiOpen ? ' is-active' : ''}`} ref={emojiTrigger} aria-label="表情" title="表情" aria-expanded={emojiOpen} onClick={() => { setEmojiOpen(!emojiOpen); setComposerMore(false); }}><ChatGlyph name="smile" /></button><button className="companion-icon-button" aria-label="发送图片" title="发送图片" onClick={() => void pickAttachments('image')}><ChatGlyph name="image" /></button><button className={`companion-icon-button${composerMore ? ' is-active' : ''}`} ref={composerMoreTrigger} aria-label="更多聊天操作" title="更多" aria-expanded={composerMore} onClick={() => { setComposerMore(!composerMore); setEmojiOpen(false); }}><ChatGlyph name="more" /></button></div><div className="companions-composer-send"><span>{selectedReset ? '伙伴正在删除清理' : sending ? '正在发送…' : draft.content.length > 15000 ? `${draft.content.length} / 16000` : 'Enter 发送 · Shift + Enter 换行'}</span><button className="companions-send-button" aria-label="发送" title="发送消息" disabled={!!selectedReset || topicBlocked || sending || addingFiles || (!draft.content.trim() && !draft.attachments.length)} onClick={() => void send()}><ChatGlyph name="send" /></button></div></div>
             </section>}
           </section>
-          {showPanel && memoryOwner && <CompanionPlanner active={isActive && page === 'messages'} initialActivityTaskId={selectedActivityTaskId} key={selected.id + '/' + memoryOwner.id} companion={memoryOwner} members={members} conversationId={selected.id} conversationKind={selected.kind} actions={actions} request={request} api={api} onOwnerChange={id => { setMemoryOwnerId(id); setMemoryDraft(undefined); setSelectedActivityTaskId(undefined); }} onClose={() => setShowPanel(false)} onProfile={() => { setContactId(memoryOwner.id); setPage('contacts'); }} onMemory={() => openMemoryManager()} onLocateStateSource={(room, messageId) => void openStateSource(memoryOwner.id, selected.id, room, messageId)} onStateMemory={noteId => openStateMemory(memoryOwner.id, noteId)} onMemoryProcessing={() => openMemoryManager(true)} onTasks={(view = 'active', ownerId) => { setSelectedTaskActionId(undefined); setTaskView(view); setTaskOwnerId(ownerId); setShowTaskDashboard(true); }} onSchedules={() => { setScheduleSelection(undefined); setShowScheduleManager(true); }} onWork={id => { setSelectedWorkOrderId(id); setShowWorkManager(true); }} onWorld={() => void openWorld(memoryOwner.id)} />}
+          {showPanel && memoryOwner && !(agendaSelection?.conversationId === selected.id && agendaSelection.ownerId === memoryOwner.id) && <CompanionPlanner active={isActive && page === 'messages'} key={selected.id + '/' + memoryOwner.id} companion={memoryOwner} members={members} conversationId={selected.id} conversationKind={selected.kind} actions={actions} request={request} api={api} onOwnerChange={id => { setMemoryOwnerId(id); setMemoryDraft(undefined); }} onClose={() => { setShowPanel(false); closeAgenda(); }} onProfile={() => { setContactId(memoryOwner.id); setPage('contacts'); }} onMemory={() => openMemoryManager()} onLocateStateSource={(room, messageId) => void openStateSource(memoryOwner.id, selected.id, room, messageId)} onStateMemory={noteId => openStateMemory(memoryOwner.id, noteId)} onSchedules={id => openAgenda(memoryOwner.id, 'today', id)} onObserve={() => observeSocial(memoryOwner.id, selected.id)} onManageGroup={selected.kind === 'group' ? () => setDialog({ kind: 'group', conversation: selected }) : undefined} onWorld={() => void openWorld(memoryOwner.id)} />}
+          {showPanel && memoryOwner && agendaSelection?.conversationId === selected.id && agendaSelection.ownerId === memoryOwner.id && <aside className="companions-events-panel" aria-label={`${memoryOwner.name}的日程`}><CompanionAgenda key={agendaSelection.nonce} companions={[memoryOwner]} initialCompanionId={agendaSelection.ownerId} initialView={agendaSelection.view} initialEventId={agendaSelection.eventId} request={request} api={api} jobsApi={api} active={isActive && page === 'messages'} modal={false} onClose={closeAgenda} onDiscuss={id => void discussAgenda(id)} onOpenAction={id => void openExecutionRecord(id)} readCapacity={async companionId => { const result = await request({ type: 'agenda.capacity.read', companionId }); if (!result?.ok || !result.agendaCapacity) throw new Error(result?.error ?? '并行安排暂不可用。'); return result.agendaCapacity; }} configureCapacity={async (companionId, limit) => { const result = await request({ type: 'agenda.capacity.configure', companionId, limit }); if (!result?.ok || !result.agendaCapacity) throw new Error(result?.error ?? '并行安排尚未确认保存。'); return result.agendaCapacity; }} loadObservationSources={async companionId => { const result = await request({ type: 'agenda.observation.sources', companionId }); if (!result?.ok || !result.observationSources) throw new Error(result?.error ?? '可观察窗口暂不可用。'); return result.observationSources; }} /></aside>}
         </div>}
     </main>
-    <CompanionLifeOverview companions={companions} companionId={overviewOwner?.id} active={page === 'overview' && isActive} api={api} request={request} onOwnerChange={setOverviewOwnerId} onOpen={(kind, item) => void openOverviewDestination(kind, item)} onOpenTrace={() => void openOverviewDestination('trace')} onOpenExperience={setExperienceOwnerId} />
-    {showMemoryManager && documentOwner && <CompanionMemoryManager memoryNoteRequest={memoryNoteRequest} onMemoryNoteRequestConsumed={() => setMemoryNoteRequest(undefined)} active={page === 'memory' && isActive} traceRequest={memoryTraceRequest?.owner === documentOwner.id ? memoryTraceRequest.nonce : undefined} onTraceRequestConsumed={() => setMemoryTraceRequest(undefined)} learningRequest={memoryLearningRequest?.owner === documentOwner.id ? memoryLearningRequest.nonce : undefined} onLearningRequestConsumed={() => setMemoryLearningRequest(undefined)} processingRequest={memoryProcessingRequest?.owner === documentOwner.id ? memoryProcessingRequest.nonce : undefined} onProcessingRequestConsumed={() => setMemoryProcessingRequest(undefined)} companions={companions} ownerId={documentOwner.id} conversation={selected} request={request} api={api} draft={memoryDraft} onDraftConsumed={() => setMemoryDraft(undefined)} requestError={error} onDismissError={dismissError} authorName={authorName} onOwnerChange={id => { setDocumentOwnerId(id); setMemoryDraft(undefined); }} onClose={() => setPage('messages')} onLocateSource={source => {
+    {overviewVisited && <CompanionLifeOverview companions={companions} companionId={overviewOwner?.id} active={page === 'overview' && isActive} api={api} request={request} onOwnerChange={setOverviewOwnerId} onOpen={(kind, item) => void openOverviewDestination(kind, item)} onOpenTrace={() => void openOverviewDestination('trace')} onOpenExperience={setExperienceOwnerId} />}
+    {showMemoryManager && documentOwner && <CompanionMemoryManager onOpenAgenda={(ownerId, eventId, view) => openAgenda(ownerId, view ?? 'today', eventId)} memoryNoteRequest={memoryNoteRequest} onMemoryNoteRequestConsumed={() => setMemoryNoteRequest(undefined)} active={page === 'memory' && isActive} traceRequest={memoryTraceRequest?.owner === documentOwner.id ? memoryTraceRequest.nonce : undefined} onTraceRequestConsumed={() => setMemoryTraceRequest(undefined)} learningRequest={memoryLearningRequest?.owner === documentOwner.id ? memoryLearningRequest.nonce : undefined} onLearningRequestConsumed={() => setMemoryLearningRequest(undefined)} processingRequest={memoryProcessingRequest?.owner === documentOwner.id ? memoryProcessingRequest.nonce : undefined} onProcessingRequestConsumed={() => setMemoryProcessingRequest(undefined)} companions={companions} ownerId={documentOwner.id} conversation={selected} request={request} api={api} draft={memoryDraft} onDraftConsumed={() => setMemoryDraft(undefined)} requestError={error} onDismissError={dismissError} authorName={authorName} onOwnerChange={id => { setDocumentOwnerId(id); setMemoryDraft(undefined); }} onClose={() => setPage('messages')} onLocateSource={source => {
       setPage('messages');
+      if (source.audience === 'agenda') { if (source.actionId) void openExecutionRecord(source.actionId); else openAgenda(source.authorId); return; }
       if (source.conversationId === selectedRef.current) { if (source.memoryEvidenceOnly && source.actionId) openTaskProgress(source.actionId); else void jumpToMessage(source); return; }
       void (async () => {
         const room = state?.conversations.find(item => item.id === source.conversationId) ?? (await request({ type: 'conversation.reopen', id: source.conversationId }))?.conversation;
@@ -935,8 +1079,6 @@ export function Companions({ api, dshApi, onOpenSettings, isActive = true }: { r
         void refreshState();
       })();
     }} />}
-    {showScheduleManager && selected && memoryOwner && <CompanionScheduleManager key={selected.id + '/' + memoryOwner.id + '/' + (scheduleSelection?.id ?? scheduleSelection?.page ?? '')} initialPage={scheduleSelection?.page} initialScheduleId={scheduleSelection?.id} companion={memoryOwner} companions={state?.companions ?? []} conversationId={selected.id} conversationKind={selected.kind} request={request} api={api} requestError={error} onDismissError={dismissError} onClose={() => setShowScheduleManager(false)} />}
-    {showWorkManager && selected && memoryOwner && <CompanionWorkManager key={selected.id + '/' + memoryOwner.id} companion={memoryOwner} companions={state?.companions ?? []} conversationId={selected.id} request={request} api={api} initialOrderId={selectedWorkOrderId} requestError={error} onDismissError={dismissError} onClose={() => setShowWorkManager(false)} onOpenAction={id => { setShowWorkManager(false); openTaskProgress(id); }} />}
     {guideMessageId && <div className="companions-modal-backdrop" onClick={() => setGuideMessageId(null)}><section className="companions-modal" role="dialog" aria-modal="true" aria-label="选择要引导的回复" onClick={event => event.stopPropagation()}>
       <header><h2>选择要引导的回复</h2><button className="companion-icon-button" aria-label="关闭引导选择" onClick={() => setGuideMessageId(null)}>×</button></header>
       <p className="companions-subtle">这条补充只会进入所选回复的下一步。</p>
@@ -952,11 +1094,11 @@ export function Companions({ api, dshApi, onOpenSettings, isActive = true }: { r
       else void jumpToMessage(hit);
     }} />}
     {experienceOwnerId && companions.find(owner => owner.id === experienceOwnerId) && <CompanionExperienceDialog key={experienceOwnerId} companion={companions.find(owner => owner.id === experienceOwnerId)!} api={api} request={request} onClose={() => setExperienceOwnerId(undefined)} onOpenAction={id => { setExperienceOwnerId(undefined); openTaskProgress(id); }} />}
-    {resetCompanion && <CompanionResetDialog key={resetCompanion.id} companion={resetCompanion} initialJob={state?.resetJobs?.find(job => job.companionId === resetCompanion.id)} request={request} requestError={error} onClose={() => { setResetCompanionId(undefined); setError(''); void refreshState(); }} onStarted={id => { clearResetCaches(id); void refreshState(); }} />}
+    {resetCompanion && <CompanionResetDialog key={resetCompanion.id} companion={resetCompanion} initialJob={state?.resetJobs?.find(job => job.companionId === resetCompanion.id)} request={request} requestError={error} onClose={() => { retirementSnapshots.current.clear(); setResetCompanionId(undefined); setError(''); void refreshState(); }} onStarted={id => { clearResetCaches(id); void refreshState(); }} />}
     {dialog && <CompanionDialogs key={dialog.kind === 'companion' ? 'companion-' + (dialog.companion?.id ?? 'new') : dialog.kind === 'group' ? 'group-' + (dialog.conversation?.id ?? 'new') : dialog.kind === 'action' ? 'action-' + dialog.message.id : dialog.kind === 'delete' ? 'delete-' + dialog.companion.id : dialog.kind === 'delete-conversation' ? 'delete-conversation-' + dialog.conversation.id : 'chat'} dialog={dialog} companions={companions} request={request} requestError={error} onClose={() => { setDialog(null); void refreshState(); }} onOpen={id => void openPrivate(id)} onCreated={selectConversation} builtins={BUILTIN_COMPANIONS} />}
     {previewAttachment && (companionAttachmentKind(previewAttachment) === 'image' ? <CompanionImagePreview key={previewAttachment.id} attachment={previewAttachment} images={previewImages} onClose={() => setPreviewAttachment(null)} onReveal={item => void request({ type: 'attachment.open', id: item.id })} /> : <CompanionDocumentPreview key={previewAttachment.id} attachment={previewAttachment} onClose={() => setPreviewAttachment(null)} onReveal={() => void request({ type: 'attachment.open', id: previewAttachment.id })} onLaunch={() => void request({ type: 'attachment.launch', id: previewAttachment.id })} />)}
     {showSocialMonitor && <CompanionSocialMonitor playerProfile={state?.playerProfile} initialCompanionId={socialSelection.companionId || memoryOwner?.id} initialConversationId={socialSelection.conversationId} companions={companions} request={request} api={api} onClose={() => setShowSocialMonitor(false)} onOpenUrl={openMessageLink} />}
-    {showTaskDashboard && <CompanionTaskDashboard companions={companions} request={request} api={api} initialCompanionId={taskOwnerId} initialView={taskView === 'active' ? 'current' : 'history'} onClose={() => setShowTaskDashboard(false)} onOpenAction={id => void openDashboardAction(id)} />}
+
     {showTaskMonitor && <CompanionTaskMonitor initialView={taskView} initialCompanionId={taskOwnerId} initialActionId={selectedTaskActionId} conversationId={taskConversationId ?? selectedId!} request={request} dshApi={dshApi} actions={actions.filter(action => action.conversationId === (taskConversationId ?? selectedId))} companions={companions} now={clock} onClose={() => { setShowTaskMonitor(false); setSelectedTaskActionId(undefined); }} onStop={id => void stopAction(id)} onResume={id => manageAction('action.resume', id)} onTerminate={id => manageAction('action.terminate', id)} onGuide={() => { setShowTaskMonitor(false); setSelectedTaskActionId(undefined); setTimeout(() => composerRef.current?.focus(), 0); }} onOpenUrl={openMessageLink} />}
   </div>;
 }

@@ -1,7 +1,7 @@
 import { ipcRenderer, webUtils } from 'electron';
 import { COMPANION_WORKSPACE_CHANNEL, companionWorkspaceRequestSchema, companionWorkspaceResponseSchema, type CompanionWorkspaceRequest } from '../../shared/companion-workspace';
-import { COMPANIONS_CHANNEL, COMPANIONS_CHANGED_CHANNEL, COMPANION_REPLY_STREAM_CHANNEL, companionsRequestSchema, companionsResponseSchema, companionReplyStreamEventSchema,
-  type CompanionReplyStreamEvent, type CompanionsRequest, type WorldlineBoxCompanionsApi } from '../../shared/companions';
+import { COMPANIONS_CHANNEL, COMPANIONS_CHANGED_CHANNEL, COMPANION_REPLY_STREAM_CHANNEL, companionsRequestSchema, companionsResponseSchema, companionReplyStreamEventSchema, companionChangeEventSchema,
+  type CompanionChangeEvent, type CompanionReplyStreamEvent, type CompanionsRequest, type WorldlineBoxCompanionsApi } from '../../shared/companions';
 import { COMPANION_MEMORY_PROBE_PROGRESS_CHANNEL, companionMemoryProbeProgressEventSchema,
   type CompanionMemoryProbeProgressEvent } from '../../shared/companion-memory-probe-progress';
 
@@ -24,8 +24,12 @@ export const companions: WorldlineBoxCompanionsApi = Object.freeze({
     const result = companionsResponseSchema.safeParse(await ipcRenderer.invoke(COMPANIONS_CHANNEL, parsed.data));
     return result.success ? result.data : { ok: false, error: '伙伴服务返回了无效结果。' };
   },
-  onChanged(listener: () => void) {
-    const handler = () => listener();
+  onChanged(listener: (change?: CompanionChangeEvent) => void) {
+    const handler = (_event: Electron.IpcRendererEvent, input: unknown) => {
+      const parsed = companionChangeEventSchema.safeParse(input);
+      // Unknown or older notifications cannot suppress an authority refresh.
+      listener(parsed.success ? parsed.data : undefined);
+    };
     ipcRenderer.on(COMPANIONS_CHANGED_CHANNEL, handler);
     return () => ipcRenderer.removeListener(COMPANIONS_CHANGED_CHANNEL, handler);
   },

@@ -83,15 +83,15 @@ it('retains the full visit audit but only active permission and recent settled v
 }, 30000);
 
 it('keeps one hot clock anchor through hundreds of edits while historical real/virtual accounting survives reopening', () => {
-  const f = fixture(); let world = f.store.request({ type: 'world.snapshot' }).world!, expected = Date.parse(world.clock.virtualNow), speed = 1;
+  const f = fixture(); let world = f.store.request({ type: 'world.snapshot' }).world!, expected = Date.parse(world.clock.virtualNow);
+  const speed = 1;
   const checkpoints: Array<{ real: number; virtual: number; speed: number }> = [];
   for (let index = 0; index < 300; index++) {
     vi.setSystemTime(Date.now() + 1000); expected += 1000 * speed;
-    const patch: Partial<CompanionWorldSettings> = index % 2 ? { mode: 'realtime' } : { mode: 'compressed', dayDurationMinutes: 30 };
-    if (patch.mode === 'realtime') expected = Date.now();
+    const patch: Partial<CompanionWorldSettings> = { timeZone: index % 2 ? 'UTC' : 'Asia/Shanghai' };
     world = f.store.request({ type: 'world.configure', expectedRevision: world.settings.revision, patch }).world!;
     expect(Date.parse(world.clock.virtualNow)).toBe(expected);
-    speed = patch.mode === 'compressed' ? 48 : 1; checkpoints.push({ real: Date.now(), virtual: expected, speed });
+    expect(world.clock.speed).toBe(1); checkpoints.push({ real: Date.now(), virtual: expected, speed });
   }
   close(f.store); const db = audit(f.filename);
   const hot = JSON.parse(String(record(db.prepare('SELECT data FROM companion_world WHERE id=1').get()).data));

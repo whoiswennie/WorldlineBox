@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { companionJobDispositionSchema, companionJobFailureKindSchema } from './companion-job-control';
 import { companionExecutionReadsetSchema } from './companion-execution-evidence';
 
 const id = z.string().regex(/^[a-zA-Z0-9_-]{1,100}$/u);
@@ -49,7 +50,8 @@ export const companionLearningTestProgressSchema = z.object({ basisHash: digest,
 });
 export const companionLearningGoalRoundSchema = z.object({
   id, goalId: id, companionId: id, ordinal: z.number().int().positive(), startedAt: z.string(), updatedAt: z.string(), endedAt: z.string().optional(),
-  status: z.enum(['running', 'completed', 'deferred', 'failed', 'cancelled']), phase: companionLearningGoalPhaseSchema,
+  status: z.enum(['running', 'completed', 'deferred', 'failed', 'parked', 'abandoned', 'cancelled', 'stale']), phase: companionLearningGoalPhaseSchema,
+  disposition: companionJobDispositionSchema.optional(),
   plan: companionLearningGoalPlanSchema.optional(), reads: z.array(companionLearningGoalReadSchema).max(6).default([]),
   readingIssues: z.array(z.string().max(1000)).max(10).optional(),
   summary: z.string().max(6000).optional(), claims: z.array(z.object({ text: z.string().max(2000), evidence: z.array(evidence).max(4) })).max(12).default([]),
@@ -76,7 +78,7 @@ export const companionLearningGoalSchema = z.object({ id, companionId: id, text,
 });
 export const companionLearningGoalPageSchema = z.object({ items: z.array(companionLearningGoalSchema).max(50), hasMore: z.boolean(), nextCursor: z.number().int().nonnegative().optional() });
 export const companionLearningGoalRoundPageSchema = z.object({ items: z.array(companionLearningGoalRoundSchema).max(50), hasMore: z.boolean(), nextCursor: z.number().int().nonnegative().optional() });
-const create = { companionId: id, text, materials: z.array(companionLearningGoalMaterialSchema).max(20).default([]), allowWeb: z.boolean().default(false),
+const create = { companionId: id, clientId: id.optional(), text, materials: z.array(companionLearningGoalMaterialSchema).max(20).default([]), allowWeb: z.boolean().default(false),
   schedule: companionLearningGoalScheduleSchema.default({ intervalMinutes: 60, windows: [], timeZone: 'UTC' }) };
 const update = { companionId: id, id, expectedRevision: z.number().int().positive(), text: text.optional(), materials: z.array(companionLearningGoalMaterialSchema).max(20).optional(),
   allowWeb: z.boolean().optional(), schedule: companionLearningGoalScheduleSchema.optional(), state: z.enum(['active', 'paused', 'stopped']).optional() };
@@ -89,11 +91,17 @@ export const companionLearningGoalWorkspaceCommands = [
   z.strictObject({ type: z.literal('memory.learning.goals.rounds'), ...page, id }),
 ] as const;
 export const companionLearningGoalStorageCommands = [
+  z.strictObject({ type: z.literal('learning.goals.read'), companionId: id, id }),
   z.strictObject({ type: z.literal('learning.goals.list'), ...page }), z.strictObject({ type: z.literal('learning.goals.create'), ...create }),
-  z.strictObject({ type: z.literal('learning.goals.update'), ...update }),
+  z.strictObject({ type: z.literal('learning.goals.update'), ...update,
+    sourceAgendaGoal: z.strictObject({ id, revision: z.number().int().positive().safe() }).optional() }),
+  z.strictObject({ type: z.literal('learning.goals.bind'), companionId: id, id, expectedRevision: z.number().int().positive(),
+    sourceAgendaGoal: z.strictObject({ id, revision: z.number().int().positive().safe() }) }),
   z.strictObject({ type: z.literal('learning.goals.run'), companionId: id, id, expectedRevision: z.number().int().positive() }),
   z.strictObject({ type: z.literal('learning.goals.rounds'), ...page, id }),
-  z.strictObject({ type: z.literal('learning.goals.claim'), excludedOwners: z.array(id).max(100).default([]), leaseMs: z.number().int().min(1000).max(600000).default(120000) }),
+  z.strictObject({ type: z.literal('learning.goals.claim'), id: id.optional(), companionId: id.optional(), agendaRunId: id.optional(), agendaLeaseToken: id.optional(),
+    excludedOwners: z.array(id).max(100).default([]), leaseMs: z.number().int().min(1000).max(600000).default(120000) })
+    .refine(value => !value.agendaRunId || !!value.id && !!value.companionId && !!value.agendaLeaseToken, '日程学习必须绑定本人目标及实际父执行租约。'),
   z.strictObject({ type: z.literal('learning.goals.heartbeat'), id, leaseToken: id, leaseMs: z.number().int().min(1000).max(600000).default(120000), phase: companionLearningGoalPhaseSchema }),
   z.strictObject({ type: z.literal('learning.goals.checkpoint'), id, leaseToken: id, round: companionLearningGoalRoundSchema }),
   z.strictObject({ type: z.literal('learning.goals.test.checkpoint'), id, leaseToken: id, sourceChecksums: z.record(id, digest), step: companionLearningTestStepSchema }),
@@ -103,7 +111,7 @@ export const companionLearningGoalStorageCommands = [
     claimHash: z.string().regex(/^[a-f0-9]{64}$/u), reason: z.string().max(2000),
     target: z.object({ id, expectedVersion: z.number().int().positive(), action: z.enum(['reuse', 'revise']) }).optional(),
     evidence: z.array(z.object({ sourceMessageId: id, quote: z.string().min(1).max(1000) })).min(1).max(48) }),
-  z.strictObject({ type: z.literal('learning.goals.finish'), id, leaseToken: id, round: companionLearningGoalRoundSchema, retryAfterMs: z.number().int().min(1000).max(604800000).optional() }),
+  z.strictObject({ type: z.literal('learning.goals.finish'), id, leaseToken: id, round: companionLearningGoalRoundSchema, failureKind: companionJobFailureKindSchema.optional(), retryAfterMs: z.number().int().min(1000).max(604800000).optional() }),
 ] as const;
 export const companionLearningGoalJobSchema = z.object({ goal: companionLearningGoalSchema, round: companionLearningGoalRoundSchema, previousRound: companionLearningGoalRoundSchema.optional(), leaseToken: id });
 export const companionLearningGoalStorageCommandSchema = z.discriminatedUnion('type', companionLearningGoalStorageCommands);

@@ -1,4 +1,7 @@
 import { companionAgentRunSchema } from '../../src/shared/companion-agent-run';
+import type { CompanionAgentRun } from '../../src/shared/companion-agent-run';
+import type { CompanionAgentJournal } from '../../src/main/companions/agent-journal';
+import type { CompanionContextFrame } from '../../src/shared/companion-cognition';
 import { describe, expect, it, vi } from 'vitest';
 import { z } from 'zod';
 import { activityDecisionSchema } from '../../src/shared/companion-activity-task';
@@ -6,7 +9,6 @@ import type { Companion, CompanionConversation, CompanionMessage } from '../../s
 import { assembleCompanionRoleContext, companionRecallCapabilities, companionTaskInvocation, runCompanionStructuredAgent } from '../../src/main/companions/structured-agent';
 import type { CompanionReplyInput } from '../../src/main/companions/context';
 import type { CompanionTopic } from '../../src/shared/companion-topic';
-import { CompanionAgentNoProgressError } from '../../src/main/companions/agent-progress';
 import { createHash } from 'node:crypto';
 import { companionThoughtCapabilities } from '../../src/main/companions/thought-capabilities';
 import { buildCompanionContext } from '../../src/main/companions/context';
@@ -21,6 +23,179 @@ const message = (id: string, room: string, authorId: string, content: string, se
   authorId, sequence, content, kind: 'text', status: 'sent', attachments: [], createdAt: '2026-10-22T00:00:00Z' });
 const config = { apiFormat: 'openai_chat' as const, model: 'test-model', baseUrl: 'https://test.invalid/v1', apiKey: 'synthetic-only' };
 const domain = { system: '只输出JSON {answer:string}。', user: JSON.stringify({ purpose: 'isolation_test', messages: [{ content: 'DOMAIN_WINDOW_MUST_NOT_OVERRIDE' }] }) };
+const currentWorldTool = { name: 'world', description: '当前联系人查询', parameters: z.toJSONSchema(z.object({ action: z.literal('query'), category: z.literal('contacts') })) };
+
+function durableRepairJournal(initial?: CompanionAgentRun) {
+  let persisted = initial ?? companionAgentRunSchema.parse({ id: 'repair_run', companionId: 'a', conversationId: 'group', invocationId: 'repair_invocation',
+    requestDigest: '0'.repeat(64), revision: 0, status: 'running', turns: [], sources: [], memories: [], effects: [] });
+  const journal: CompanionAgentJournal = { load: async () => structuredClone(persisted), valid: async () => true,
+    save: async run => { persisted = companionAgentRunSchema.parse(structuredClone({ ...run, revision: run.revision + 1 })); run.revision = persisted.revision; } };
+  return { journal, read: () => structuredClone(persisted) };
+}
+
+describe('durable final-output repair', () => {
+  it.each(['profile', 'prompt', 'revocation'] as const)('binds repair to the sent frame and cancels recovery after %s changes', async changed => {
+    const state = durableRepairJournal(), shape = z.object({ answer: z.string() });
+    const repairInputs: Array<{ structuredRepair: { rootInvocationId: string }; originalRequest: { system: string; user: string } }> = [];
+    let epoch = 3, profileRevision = '1'.repeat(64), promptRevision = '2'.repeat(64);
+    const resolve = vi.fn(async (context: { system: string; user: string }) => {
+      const user = JSON.stringify({ ...JSON.parse(context.user), exactProviderInput: 'ACTUAL_PORT_ONLY' });
+      const frame: CompanionContextFrame = { schema: 'worldlinebox.companion-context-v2', companionId: 'a', purpose: 'isolation_test',
+        profileRevision, promptRevision, revocationEpoch: epoch, conversationId: 'group',
+        invocationId: 'actually_sent_invocation', identity: companion.persona, roleGuidance: '已发布指导', processorContract: context.system, input: user,
+        sourceRefs: [{ artifactId: 'source:actual', contentRevision: 1, contentHash: '3'.repeat(64) }] };
+      return { system: context.system + '\nACTUAL_PROVIDER_SYSTEM', user, frame };
+    });
+    const globalResolver = async (context: { system: string; user: string }) => {
+      const current = await resolve(context); return { ...current, frame: { ...current.frame, purpose: 'companion_structured_repair' } };
+    };
+    const currentConfig = { ...config, ownerId: 'a', resolveAssetContext: resolve,
+      resolveStructuredRepairConfig: async () => ({ ...config, ownerId: 'a', model: 'global-repair-model', resolveAssetContext: globalResolver }) };
+    const fetchFn = vi.fn<typeof fetch>(async (_url, init) => {
+      const wire = JSON.parse(String(init?.body));
+      if (fetchFn.mock.calls.length === 1) return new Response(JSON.stringify({ choices: [{ message: { content: '{"answer":12}' } }] }));
+      repairInputs.push(JSON.parse(wire.messages[1].content));
+      return new Response(JSON.stringify({ choices: [{ message: { content: '{"answer":"核对完成"}' } }] }));
+    });
+    const input = { context: domain, responseSchema: shape, journal: state.journal,
+      frame: { companion, conversation: conversation('group'), messages: [], memories: [] } };
+    await expect(runCompanionStructuredAgent(input, currentConfig, undefined, { fetchFn })).resolves.toEqual({ answer: '核对完成' });
+    const actualResolved = await resolve.mock.results[0]!.value;
+    expect(repairInputs).toHaveLength(1); expect(repairInputs[0]!.structuredRepair.rootInvocationId).toBe('actually_sent_invocation');
+    expect(repairInputs[0]!.originalRequest).toMatchObject({ system: actualResolved.system, user: actualResolved.user });
+    expect(JSON.parse(String(fetchFn.mock.calls[1]![1]?.body)).tools).toBeUndefined();
+    const receipt = state.read().turns.at(-1)!.structuredRepair!;
+    expect(receipt.rootContext?.frame).toMatchObject({ invocationId: 'actually_sent_invocation', revocationEpoch: 3,
+      sourceRefs: [{ artifactId: 'source:actual', contentRevision: 1, contentHash: '3'.repeat(64) }] });
+    expect(receipt.rootContext?.frame).toEqual(actualResolved.frame);
+    if (changed === 'profile') profileRevision = '4'.repeat(64);
+    else if (changed === 'prompt') promptRevision = '5'.repeat(64); else epoch++;
+    await expect(runCompanionStructuredAgent(input, currentConfig, undefined, { fetchFn })).rejects.toMatchObject({ code: 'CANCELLED' });
+    expect(fetchFn).toHaveBeenCalledTimes(2);
+  });
+
+  it('refuses to repair a pending production turn whose original sent frame was not saved', async () => {
+    const saved = durableRepairJournal().read(); saved.turns = [{ text: '', rawText: '{"answer":12}', calls: [],
+      structuredRepair: { originalHash: createHash('sha256').update('{"answer":12}').digest('hex'), attempts: 1 } }];
+    const state = durableRepairJournal(saved), fetchFn = vi.fn<typeof fetch>(), resolver = vi.fn(async (context: { system: string; user: string }) => context);
+    await expect(runCompanionStructuredAgent({ context: domain, journal: state.journal, responseSchema: z.object({ answer: z.string() }),
+      frame: { companion, conversation: conversation('group'), messages: [], memories: [] } }, { ...config, resolveAssetContext: resolver }, undefined, { fetchFn }))
+      .rejects.toThrow('实际已发送');
+    expect(fetchFn).not.toHaveBeenCalled(); expect(resolver).not.toHaveBeenCalled();
+  });
+
+  it('persists the successful schema repair and resumes without paying again or replaying a confirmed capability', async () => {
+    const state = durableRepairJournal(), original = '{"answer":12}', repaired = '{"answer":"经结构修复的回答"}';
+    const execute = vi.fn(async () => ({ ok: true, source: 'actual fixture capability receipt' }));
+    const shape = z.object({ answer: z.string() }), guard = vi.fn((value: unknown) => shape.parse(value));
+    const fetchFn = vi.fn<typeof fetch>(async (_url, init) => {
+      const wire = JSON.parse(String(init?.body));
+      if (fetchFn.mock.calls.length === 1) return new Response(JSON.stringify({ choices: [{ message: { content: '', tool_calls: [{ id: 'read_once', type: 'function',
+        function: { name: 'world', arguments: '{"action":"query","category":"contacts"}' } }] } }] }));
+      if (fetchFn.mock.calls.length === 2) return new Response(JSON.stringify({ choices: [{ message: { content: original } }] }));
+      expect(wire.model).toBe('global-repair-model'); expect(wire.tools).toBeUndefined();
+      expect(state.read().turns.at(-1)?.structuredRepair).toEqual({ originalHash: createHash('sha256').update(original).digest('hex'), attempts: 1 });
+      return new Response(JSON.stringify({ choices: [{ message: { content: repaired } }] }));
+    });
+    let interrupted = true;
+    const input = { context: domain, responseSchema: shape, journal: state.journal,
+      frame: { companion, conversation: conversation('group'), messages: [], memories: [] },
+      capabilities: { tools: [currentWorldTool], execute },
+      validateOutput: (value: unknown) => { const checked = guard(value); if (interrupted) throw new Error('模拟修复收据保存后领域尚未提交'); return checked; } };
+    const currentConfig = { ...config, resolveStructuredRepairConfig: async () => ({ ...config, model: 'global-repair-model' }) };
+    await expect(runCompanionStructuredAgent(input, currentConfig, undefined, { fetchFn })).rejects.toThrow('领域尚未提交');
+    const saved = state.read(), final = saved.turns.at(-1)!;
+    expect(saved.status).toBe('running'); expect(final.rawText).toBe(original); expect(final.calls).toEqual([]);
+    expect(final.structuredRepair).toMatchObject({ attempts: 1, content: repaired, contentHash: createHash('sha256').update(repaired).digest('hex') });
+    interrupted = false;
+    await expect(runCompanionStructuredAgent(input, currentConfig, undefined, { fetchFn })).resolves.toEqual({ answer: '经结构修复的回答' });
+    expect(fetchFn).toHaveBeenCalledTimes(3); expect(execute).toHaveBeenCalledOnce(); expect(guard).toHaveBeenCalledTimes(2);
+    expect(state.read().status).toBe('done');
+  });
+
+  it('preserves the two-attempt limit across restart after both schema repairs fail', async () => {
+    const state = durableRepairJournal(), shape = z.object({ answer: z.string() });
+    const fetchFn = vi.fn<typeof fetch>(async (_url, init) => {
+      const wire = JSON.parse(String(init?.body));
+      if (fetchFn.mock.calls.length > 1) { expect(wire.tools).toBeUndefined(); expect(state.read().turns.at(-1)?.structuredRepair?.attempts).toBe(fetchFn.mock.calls.length - 1); }
+      return new Response(JSON.stringify({ choices: [{ message: { content: '{"answer":12}' } }] }));
+    });
+    const input = { context: domain, responseSchema: shape, journal: state.journal,
+      frame: { companion, conversation: conversation('group'), messages: [], memories: [] } };
+    await expect(runCompanionStructuredAgent(input, config, undefined, { fetchFn })).rejects.toMatchObject({ code: 'INVALID_RESPONSE' });
+    expect(state.read().turns.at(-1)?.structuredRepair?.attempts).toBe(2);
+    await expect(runCompanionStructuredAgent(input, config, undefined, { fetchFn })).rejects.toMatchObject({ code: 'INVALID_RESPONSE' });
+    expect(fetchFn).toHaveBeenCalledTimes(3);
+  });
+
+  it('never turns supplied learning claims into an empty success and persists the bounded failed repair cycle', async () => {
+    const state = durableRepairJournal(), original = JSON.stringify({ claims: [{ text: '原材料已有珍贵主张', evidence: [{ sourceId: 'source_actual', quote: '实际读到的原句' }] }], valid: 12 });
+    const responseSchema = z.object({ claims: z.array(z.object({ text: z.string(), evidence: z.array(z.object({ sourceId: z.string(), quote: z.string() })) })), valid: z.boolean() });
+    const fetchFn = vi.fn<typeof fetch>(async (_url, init) => {
+      if (fetchFn.mock.calls.length === 1) return new Response(JSON.stringify({ choices: [{ message: { content: original } }] }));
+      const repair = JSON.parse(JSON.parse(String(init?.body)).messages[1].content);
+      expect(repair.originalOutput).toBe(original);
+      return new Response(JSON.stringify({ choices: [{ message: { content: '{"claims":[],"valid":true}' } }] }));
+    });
+    const validateOutput = vi.fn(), input = { context: domain, responseSchema, repairPreserveCollections: [{ path: ['claims'], fields: ['text', 'evidence'] }],
+      journal: state.journal, frame: { companion, conversation: conversation('group'), messages: [], memories: [] }, validateOutput };
+    await expect(runCompanionStructuredAgent(input, config, undefined, { fetchFn })).rejects.toMatchObject({ code: 'INVALID_RESPONSE' });
+    expect(state.read().turns.at(-1)).toMatchObject({ rawText: original, structuredRepair: { attempts: 2 } });
+    expect(state.read().turns.at(-1)?.structuredRepair).not.toHaveProperty('content');
+    await expect(runCompanionStructuredAgent(input, config, undefined, { fetchFn })).rejects.toMatchObject({ code: 'INVALID_RESPONSE' });
+    expect(fetchFn).toHaveBeenCalledTimes(3); expect(validateOutput).not.toHaveBeenCalled();
+  });
+
+  it('revalidates conservation of a saved successful repair before accepting its content after restart', async () => {
+    const original = '{"claims":[{"text":"不可丢失的原始结论","evidence":[{"sourceId":"actual","quote":"原句"}]}],"valid":12}',
+      content = '{"claims":[],"valid":true}', saved = durableRepairJournal().read();
+    saved.turns = [{ text: '', rawText: original, calls: [], structuredRepair: { originalHash: createHash('sha256').update(original).digest('hex'),
+      attempts: 1, content, contentHash: createHash('sha256').update(content).digest('hex') } }];
+    const state = durableRepairJournal(saved), fetchFn = vi.fn<typeof fetch>(), validateOutput = vi.fn();
+    await expect(runCompanionStructuredAgent({ context: domain, journal: state.journal,
+      responseSchema: z.object({ claims: z.array(z.unknown()), valid: z.boolean() }),
+      repairPreserveCollections: [{ path: ['claims'], fields: ['text', 'evidence'] }], validateOutput,
+      frame: { companion, conversation: conversation('group'), messages: [], memories: [] } }, config, undefined, { fetchFn }))
+      .rejects.toThrow('没有保留原提案');
+    expect(fetchFn).not.toHaveBeenCalled(); expect(validateOutput).not.toHaveBeenCalled();
+  });
+
+  it('never restores an old repaired value that erased a declared original semantic action', async () => {
+    const original = '{"action":{"action":"visit","targetCompanionId":"b"}}', content = '{"action":null,"reason":"删除行动以通过格式检查"}', saved = durableRepairJournal().read();
+    saved.turns = [{ text: '', rawText: original, calls: [], structuredRepair: { originalHash: createHash('sha256').update(original).digest('hex'), attempts: 1,
+      content, contentHash: createHash('sha256').update(content).digest('hex') } }];
+    const state = durableRepairJournal(saved), fetchFn = vi.fn<typeof fetch>(), validateOutput = vi.fn();
+    await expect(runCompanionStructuredAgent({ context: domain, journal: state.journal, responseSchema: z.object({ action: z.unknown(), reason: z.string() }),
+      repairPreserveValues: [{ path: ['action'] }], validateOutput, frame: { companion, conversation: conversation('group'), messages: [], memories: [] } }, config, undefined, { fetchFn }))
+      .rejects.toThrow('没有保留原提案');
+    expect(fetchFn).not.toHaveBeenCalled(); expect(validateOutput).not.toHaveBeenCalled();
+  });
+
+  it.each(['originalHash', 'contentHash'] as const)('refuses a changed %s on a saved successful repair without making another request', async field => {
+    const original = '{"answer":12}', content = '{"answer":"已经修复"}';
+    const saved = durableRepairJournal().read();
+    saved.turns = [{ text: '', rawText: original, calls: [], structuredRepair: {
+      originalHash: createHash('sha256').update(original).digest('hex'), attempts: 1, content,
+      contentHash: createHash('sha256').update(content).digest('hex'), [field]: 'f'.repeat(64),
+    } }];
+    const state = durableRepairJournal(saved), fetchFn = vi.fn<typeof fetch>(), validateOutput = vi.fn();
+    await expect(runCompanionStructuredAgent({ context: domain, journal: state.journal, responseSchema: z.object({ answer: z.string() }), validateOutput,
+      frame: { companion, conversation: conversation('group'), messages: [], memories: [] } }, config, undefined, { fetchFn }))
+      .rejects.toMatchObject({ code: 'INVALID_RESPONSE' });
+    expect(fetchFn).not.toHaveBeenCalled(); expect(validateOutput).not.toHaveBeenCalled();
+  });
+
+  it('keeps the domain authority gate after a shape repair and never sends its refusal to the repair model', async () => {
+    const shape = z.object({ target: z.string() }), execute = vi.fn();
+    const fetchFn = vi.fn<typeof fetch>().mockResolvedValueOnce(new Response(JSON.stringify({ choices: [{ message: { content: '{"target":12}' } }] })))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ choices: [{ message: { content: '{"target":"other_owner_private_port"}' } }] })));
+    const validateOutput = vi.fn(() => { throw new Error('当前来源没有这个伙伴的权限'); });
+    await expect(runCompanionStructuredAgent({ context: domain, responseSchema: shape,
+      frame: { companion, conversation: conversation('group'), messages: [], memories: [] }, validateOutput,
+      capabilities: { tools: [], execute } }, config, undefined, { fetchFn })).rejects.toThrow('没有这个伙伴的权限');
+    expect(fetchFn).toHaveBeenCalledTimes(2); expect(validateOutput).toHaveBeenCalledOnce(); expect(execute).not.toHaveBeenCalled();
+  });
+});
 
 describe('same role Agent kernel across independent invocation ports', () => {
   it('projects the actual cognitive DSH binding without chat file operations or a virtual computer prerequisite', async () => {
@@ -50,8 +225,8 @@ describe('same role Agent kernel across independent invocation ports', () => {
     const validateOutput = vi.fn((value: unknown) => activityDecisionSchema.parse(value));
     const fetchFn = vi.fn<typeof fetch>(async (_url, init) => {
       const wire = JSON.parse(String(init?.body)), data = JSON.parse(wire.messages[1].content);
-      expect(wire.tools.map((tool: { function: { name: string } }) => tool.function.name)).toEqual(['memory', 'wait']);
-      expect(data.capabilityAvailability).toMatchObject({ companionId: 'a', conversationId: 'group', boundToolNames: ['memory', 'wait'] });
+      expect(wire.tools.map((tool: { function: { name: string } }) => tool.function.name)).toEqual(['wait']);
+      expect(data.capabilityAvailability).toMatchObject({ companionId: 'a', conversationId: 'group', boundToolNames: ['wait'] });
       expect(data.identity.self.id).toBe('a'); expect(data.source.content).toBe(source.content);
       expect(data.executionContract).toEqual({ finalProposalIsNotExecution: true });
       expect(data.outputSchema).toEqual(z.toJSONSchema(activityDecisionSchema, { io: 'input' }));
@@ -69,13 +244,15 @@ describe('same role Agent kernel across independent invocation ports', () => {
     expect(result).toEqual(proposed); expect(validateOutput).toHaveBeenCalledOnce();
     expect(fetchFn).toHaveBeenCalledOnce(); expect(execute).not.toHaveBeenCalled();
   });
-  it('still rejects three prose-prefixed JSON code blocks without extracting or executing their embedded proposals', async () => {
+  it('bounds global repair of prose-prefixed JSON at two attempts without extracting or executing its proposal', async () => {
     const malformed = '这一步没有执行。\n```json\n{"status":"blocked","action":null,"wait":{"kind":"delay","seconds":60},"summary":"等待"}\n```';
     const fetchFn = vi.fn<typeof fetch>(async (_url, init) => {
       const data = JSON.parse(JSON.parse(String(init?.body)).messages[1].content);
       if (fetchFn.mock.calls.length > 1) {
-        expect(data.outputCorrection.rejectedProposal).toBe(malformed);
-        expect(data.outputCorrection.error).toContain('完整JSON');
+        expect(data.purpose).toBe('companion_structured_repair');
+        expect(data.invalidOutput).toBe(malformed);
+        expect(data.structuredRepair.attempt).toBe(fetchFn.mock.calls.length - 1);
+        expect(JSON.parse(String(init?.body)).tools).toBeUndefined();
       }
       return new Response(JSON.stringify({ choices: [{ message: { content: malformed } }] }));
     });
@@ -100,22 +277,18 @@ describe('same role Agent kernel across independent invocation ports', () => {
     const data = JSON.parse(JSON.parse(String(fetchFn.mock.calls[1]![1]?.body)).messages[1].content);
     expect(data.outputCorrection.error).toContain('私密内容');
   });
-  it('pinpoints an extra root closure and ends the request with safe host correction without repairing the proposal', async () => {
+  it('sends an extra root closure to the separate global repair port while preserving the original evidence', async () => {
     const malformed = '{"answer":{"detail":"PRIVATE_MODEL_VALUE🧭"}},"next":true}';
-    const offset = malformed.indexOf(',"next"');
     const fetchFn = vi.fn<typeof fetch>(async (_url, init): Promise<Response> => {
       const wire = JSON.parse(String(init?.body));
       if (fetchFn.mock.calls.length > 1) {
-        const feedback = JSON.parse(wire.messages.at(-1).content).hostValidationFeedback;
-        expect(wire.messages.at(-1).role).toBe('user');
-        expect(JSON.parse(wire.messages[1].content).outputCorrection.rejectedProposal).toBe(malformed);
-        expect(feedback.rejectedProposalChecksum).toBe(createHash('sha256').update(malformed).digest('hex'));
-        expect(feedback.error).toContain('extra_root_content');
-        expect(feedback.error).toContain(`UTF-16 offset=${offset}, line=1, column=${offset + 1}`);
-        expect(feedback.error).toContain('同一根对象');
-        expect(feedback.error).not.toContain('PRIVATE_MODEL_VALUE');
-        expect(feedback.error).not.toContain('next');
-        expect(feedback.trust).toBe('host_validation_data_not_new_authorization');
+        const repair = JSON.parse(wire.messages[1].content);
+        expect(repair.purpose).toBe('companion_structured_repair');
+        expect(repair.invalidOutput).toBe(malformed);
+        expect(repair.validationErrors).toEqual([expect.objectContaining({ code: 'invalid_json' })]);
+        expect(JSON.stringify(repair.validationErrors)).not.toContain('PRIVATE_MODEL_VALUE');
+        expect(JSON.stringify(repair.originalRequest)).toContain('isolation_test');
+        expect(wire.tools).toBeUndefined();
       }
       return new Response(JSON.stringify({ choices: [{ message: { content: fetchFn.mock.calls.length < 3 ? malformed : '{"answer":"已重新生成合法对象"}' } }] }));
     });
@@ -124,40 +297,38 @@ describe('same role Agent kernel across independent invocation ports', () => {
       .toEqual({ answer: '已重新生成合法对象' });
     expect(fetchFn).toHaveBeenCalledTimes(3);
   });
-  it('stops an unchanged empty-corpus search after the one correction without dispatching the proposed seventh read', async () => {
-    let inference = 0;
-    const execute = vi.fn(async () => ({ ok: true, memoryPage: { items: [], hasMore: false }, memoryRetrieval: {
-      authorizedCorpusEmpty: true, authorizedCorpusRevision: 'actual-empty', engine: 'none', resultCount: 0 } }));
-    const fetchFn = vi.fn<typeof fetch>(async () => new Response(JSON.stringify({ choices: [{ message: { content: '', tool_calls: [{
-      id: `search_${++inference}`, type: 'function', function: { name: 'memory', arguments: JSON.stringify({ action: 'search', query: `变词${inference}` }) } }] } }] })));
+  it('rejects hallucinated memory namespaces despite adapter injection and completes from initial context', async () => {
+    const execute = vi.fn(async () => ({ ok: true }));
+    let calls = 0;
+    const fetchFn = vi.fn<typeof fetch>(async (_url, init): Promise<Response> => {
+      const wire = JSON.parse(String(init?.body));
+      expect(wire.tools.map((tool: { function: { name: string } }) => tool.function.name)).toEqual(['wait']);
+      if (++calls === 1) return new Response(JSON.stringify({ choices: [{ message: { content: '', tool_calls: [
+        { id: 'unoffered_search', type: 'function', function: { name: 'memory', arguments: '{"action":"search","query":"same"}' } },
+        { id: 'unoffered_read', type: 'function', function: { name: 'memory.read', arguments: '{"id":"same"}' } },
+      ] } }] }));
+      expect(wire.messages.filter((row: { role: string; content?: string }) => row.role === 'tool' && row.content?.includes('MEMORY_TOOL_DISABLED'))).toHaveLength(2);
+      return new Response(JSON.stringify({ choices: [{ message: { content: '{"answer":"依照系统初始回忆回答。"}' } }] }));
+    });
     await expect(runCompanionStructuredAgent({ context: domain,
       frame: { companion, conversation: conversation('group'), messages: [], memories: [] }, capabilities: {
-        replaySafe: true, tools: [{ name: 'memory', description: '实际检索', parameters: { type: 'object' } }], execute } }, config, undefined, { fetchFn }))
-      .rejects.toBeInstanceOf(CompanionAgentNoProgressError);
-    expect(execute).toHaveBeenCalledTimes(6); expect(fetchFn).toHaveBeenCalledTimes(7);
+        replaySafe: true, tools: [{ name: 'memory', description: 'injected', parameters: { type: 'object' } },
+          { name: 'memory.read', description: 'injected dotted', parameters: { type: 'object' } }], execute } }, config, undefined, { fetchFn }))
+      .resolves.toEqual({ answer: '依照系统初始回忆回答。' });
+    expect(execute).not.toHaveBeenCalled(); expect(fetchFn).toHaveBeenCalledTimes(2);
   });
-  it('makes one bounded decision correction after repeated whole-corpus-empty recall without replaying reads or declaring the goal complete', async () => {
-    let inference = 0;
-    const execute = vi.fn(async () => ({ ok: true, memoryPage: { items: [], hasMore: false }, memoryRetrieval: {
-      authorizedCorpusEmpty: true, authorizedCorpusRevision: 'actual-empty-ledger', engine: 'none', resultCount: 0 } }));
-    const fetchFn = vi.fn<typeof fetch>(async (_url, init) => {
-      const wire = JSON.parse(String(init?.body)), data = JSON.parse(wire.messages[1].content);
-      inference++;
-      if (inference <= 6) return new Response(JSON.stringify({ choices: [{ message: { content: '', tool_calls: [{ id: `search_${inference}`,
-        type: 'function', function: { name: 'memory', arguments: JSON.stringify({ action: 'search', query: `换词${inference}` }) } }] } }] }));
-      expect(inference).toBe(7); expect(wire.tools.map((tool: { function: { name: string } }) => tool.function.name)).toEqual(['wait']);
-      expect(data.observationCorrection.proof).toMatchObject({ kind: 'empty_authorized_memory', repetitions: 6 });
-      expect(wire.messages.filter((item: { role: string }) => item.role === 'tool')).toHaveLength(6);
-      return new Response(JSON.stringify({ choices: [{ message: { content: JSON.stringify({ status: 'continue',
-        action: { action: 'query', category: 'people' }, summary: '根据已有真实上下文选择实际下一步。' }) } }] }));
-    });
-    const result = await runCompanionStructuredAgent({ context: domain,
-      frame: { companion, conversation: conversation('group'), messages: [], memories: [] }, capabilities: {
-        replaySafe: true, tools: [{ name: 'memory', description: '实际检索', parameters: { type: 'object' } }], execute } }, config, undefined, { fetchFn });
-    expect(result).toMatchObject({ status: 'continue', action: { action: 'query' } });
-    expect(execute).toHaveBeenCalledTimes(6); expect(fetchFn).toHaveBeenCalledTimes(7);
+  it('does not allow personal experience recall to replace a retired memory tool', async () => {
+    const execute = vi.fn(async () => ({ ok: true }));
+    let calls = 0;
+    const fetchFn = vi.fn<typeof fetch>(async (): Promise<Response> => ++calls === 1
+      ? new Response(JSON.stringify({ choices: [{ message: { content: '', tool_calls: [{ id: 'unoffered_experience', type: 'function',
+        function: { name: 'world', arguments: '{"action":"experience","parameters":{"action":"list"}}' } }] } }] }))
+      : new Response(JSON.stringify({ choices: [{ message: { content: '{"answer":"未主动回顾个人经历。"}' } }] })));
+    await expect(runCompanionStructuredAgent({ context: domain, frame: { companion, conversation: conversation('group'), messages: [], memories: [] },
+      capabilities: { tools: [currentWorldTool], execute } }, config, undefined, { fetchFn })).resolves.toEqual({ answer: '未主动回顾个人经历。' });
+    expect(execute).not.toHaveBeenCalled();
   });
-  it('retains offered world actions after empty recall so an invited reader can actually join before final delivery', async () => {
+  it('retains current world actions with host-only recall so an invited reader can join before final delivery', async () => {
     const source = { ...message('invitation', 'group', 'b', '愿意的话加入共同讨论。'), topicId: 'discussion' };
     let topic: CompanionTopic = { id: 'discussion', conversationId: 'group', title: '共同讨论', kind: 'discussion', status: 'active',
       participantIds: ['b'], invitedIds: ['a'], moderatorId: 'b', tags: [], revision: 1, createdAt: source.createdAt, updatedAt: source.createdAt };
@@ -172,29 +343,29 @@ describe('same role Agent kernel across independent invocation ports', () => {
       topic = { ...topic, participantIds: ['a', 'b'], invitedIds: [], revision: 2 };
       return { ok: true, topic };
     });
-    const fetchFn = vi.fn<typeof fetch>(async (_url, init) => {
+    let providerAssertion: unknown;
+    const fetchFn = vi.fn<typeof fetch>(async (_url, init) => { try {
       const wire = JSON.parse(String(init?.body)), data = JSON.parse(wire.messages[1].content);
       inference++;
-      if (inference <= 6) return new Response(JSON.stringify({ choices: [{ message: { content: '', tool_calls: [{ id: `recall_${inference}`,
-        type: 'function', function: { name: 'memory', arguments: JSON.stringify({ action: 'search', query: `讨论经历${inference}` }) } }] } }] }));
       expect(wire.tools.map((tool: { function: { name: string } }) => tool.function.name)).toEqual(['world', 'wait']);
       expect(data.capabilityAvailability.boundToolNames).toEqual(['world', 'wait']);
-      expect(data.observationCorrection.proof.kind).toBe('empty_authorized_memory');
-      if (inference === 7) return new Response(JSON.stringify({ choices: [{ message: { content: '', tool_calls: [{ id: 'own_join',
+      if (inference === 1) return new Response(JSON.stringify({ choices: [{ message: { content: '', tool_calls: [{ id: 'own_join',
         type: 'function', function: { name: 'world', arguments: '{"action":"topic","parameters":{"action":"join","topicId":"discussion"}}' } }] } }] }));
-      expect(inference).toBe(8);
+      expect(inference).toBe(2);
       expect(data.topic.participantIds).toContain('a');
-      expect(wire.messages.filter((row: { role: string }) => row.role === 'tool')).toHaveLength(7);
+      expect(wire.messages.filter((row: { role: string }) => row.role === 'tool')).toHaveLength(1);
       return new Response(JSON.stringify({ choices: [{ message: { content: '{"answer":"我已加入讨论。"}' } }] }));
-    });
+    } catch (error) { providerAssertion = error; throw error; } });
     const result = await runCompanionStructuredAgent({ context: domain, frame: frame(), refresh: async () => frame(),
       capabilities: { replaySafe: true, tools: [{ name: 'memory', description: '本人记忆', parameters: { type: 'object' } },
-        { name: 'world', description: '本人实际加入话题', parameters: { type: 'object' } }], execute },
-      validateOutput: value => { expect(topic.participantIds).toContain('a'); return value; } }, config, undefined, { fetchFn });
+        // Production policy projects only concrete offered world actions.
+        { name: 'world', description: '本人实际加入话题', parameters: z.toJSONSchema(z.object({ action: z.literal('topic'),
+          parameters: z.object({ action: z.literal('join'), topicId: z.string() }) })) }], execute },
+      validateOutput: value => { expect(topic.participantIds).toContain('a'); return value; } }, config, undefined, { fetchFn }).catch(error => { throw providerAssertion ?? error; });
     expect(result).toEqual({ answer: '我已加入讨论。' });
-    expect(execute.mock.calls.filter(([call]) => call.name === 'memory')).toHaveLength(6);
+    expect(execute.mock.calls.filter(([call]) => call.name === 'memory')).toHaveLength(0);
     expect(execute.mock.calls.filter(([call]) => call.name === 'world')).toHaveLength(1);
-    expect(fetchFn).toHaveBeenCalledTimes(8);
+    expect(fetchFn).toHaveBeenCalledTimes(2);
   });
   it('compresses an actual rejected work pair and retries the same inference without replaying its effect or shrinking identity and goal', async () => {
     const source = message('source', 'group', 'user', '保留这个完整目标：核验record_701，完成后只汇报真实结论。');
@@ -214,7 +385,7 @@ describe('same role Agent kernel across independent invocation ports', () => {
       expect(wire.tools.some((tool: { function: { name: string } }) => tool.function.name === 'dsh')).toBe(true);
       expect(JSON.stringify(data)).toContain(source.content);
       if (inference === 1) return new Response(JSON.stringify({ choices: [{ message: { content: '', tool_calls: [{ id: 'effect', type: 'function',
-        function: { name: 'memory', arguments: '{"action":"read","id":"note"}' } }] } }] }));
+        function: { name: 'world', arguments: '{"action":"query","category":"contacts"}' } }] } }] }));
       if (inference === 2) return new Response(JSON.stringify({ error: { code: 'context_length_exceeded' } }), { status: 400 });
       expect(data.loopContinuity.summary).toContain('record_701');
       expect(wire.messages.filter((row: { role: string }) => row.role === 'tool')).toEqual([]);
@@ -222,7 +393,7 @@ describe('same role Agent kernel across independent invocation ports', () => {
     };
     const result = await runCompanionStructuredAgent({ context: domain, frame: frame(), refresh: async () => frame(),
       capabilities: companionThoughtCapabilities({ replaySafe: true,
-        tools: [{ name: 'memory', description: 'fixture read', parameters: { type: 'object' } }], execute }, { run: vi.fn() }) }, config, undefined, { fetchFn });
+        tools: [currentWorldTool], execute }, { run: vi.fn() }) }, config, undefined, { fetchFn });
     expect(result).toEqual({ answer: '已依据真实record_701核验。' }); expect(execute).toHaveBeenCalledOnce();
     expect(purposes).toEqual(['isolation_test', 'isolation_test', 'companion_loop_compaction', 'isolation_test']); expect(wires).toHaveLength(4);
   });
@@ -253,10 +424,9 @@ describe('same role Agent kernel across independent invocation ports', () => {
     expect(String(fetchFn.mock.calls[2]![1]?.body)).not.toContain('REJECTED_UNJOINED_SPEECH');
     expect(topic.participantIds).toContain('a');
   });
-  it('rejects malformed and illegal proposals before effects and corrects within the same invocation', async () => {
+  it('rejects a well-formed illegal proposal through the original author without invoking format repair', async () => {
     const source = message('source', 'group', 'user', '只选择当前可用的目标。');
-    const fetchFn = vi.fn<typeof fetch>().mockResolvedValueOnce(new Response(JSON.stringify({ choices: [{ message: { content: '不是JSON' } }] })))
-      .mockResolvedValueOnce(new Response(JSON.stringify({ choices: [{ message: { content: '{"target":"other_topic"}' } }] })))
+    const fetchFn = vi.fn<typeof fetch>().mockResolvedValueOnce(new Response(JSON.stringify({ choices: [{ message: { content: '{"target":"other_topic"}' } }] })))
       .mockResolvedValueOnce(new Response(JSON.stringify({ choices: [{ message: { content: '{"target":"current_topic"}' } }] })));
     const result = await runCompanionStructuredAgent({ context: domain, frame: { companion, conversation: conversation('group'),
       messages: [source], sourceMessage: source, memories: [] }, validateOutput: value => {
@@ -264,9 +434,11 @@ describe('same role Agent kernel across independent invocation ports', () => {
       return value;
     } }, config, undefined, { fetchFn });
     expect(result).toEqual({ target: 'current_topic' });
-    const wire = JSON.parse(JSON.parse(String(fetchFn.mock.calls[2]![1]?.body)).messages[1].content);
+    const wire = JSON.parse(JSON.parse(String(fetchFn.mock.calls[1]![1]?.body)).messages[1].content);
     expect(wire.outputCorrection.error).toContain('只有current_topic合法'); expect(wire.identity.self.id).toBe('a');
     expect(wire.messages.map((row: { id: string }) => row.id)).toEqual([source.id]);
+    expect(fetchFn).toHaveBeenCalledTimes(2);
+    expect(wire.purpose).toBe('isolation_test');
   });
   it('does not allow a domain payload, another room or another task to replace short term messages', () => {
     const a = message('m_a', 'peer_b', 'b', 'B_PORT_ONLY');
@@ -308,7 +480,7 @@ describe('same role Agent kernel across independent invocation ports', () => {
     expect(request).not.toHaveBeenCalled();
   });
 
-  it('executes active VCP recall through the same native loop and rejects unoffered real-world tools', async () => {
+  it('rejects hallucinated active recall and unoffered real-world tools while retaining the domain final', async () => {
     const source = message('peer_msg', 'peer_b', 'b', '回忆我们的约定再回答。');
     let savedRun: CompanionStorageResponse['agentRun'];
     const request = vi.fn(async (command: CompanionStorageCommand): Promise<CompanionStorageResponse> => {
@@ -327,9 +499,9 @@ describe('same role Agent kernel across independent invocation ports', () => {
         invocation: companionTaskInvocation({ companion, conversationId: 'peer_b', id: 'peer_recall', kind: 'peer', goal: source.content, createdAt: source.createdAt, source, messageIds: [source.id] }) },
       capabilities: companionRecallCapabilities(request, { companionId: 'a', conversationId: 'peer_b', beforeSequence: 1 }) }, config, undefined, { fetchFn });
     expect(result).toEqual({ answer: '按本人记忆核对，没有执行外部动作。' });
-    expect(request.mock.calls.filter(([command]) => command.type === 'memory.search')).toEqual([[{ type: 'memory.search', companionId: 'a', conversationId: 'peer_b', beforeSequence: 1, query: '约定', limit: 8, tags: [] }]]);
+    expect(request.mock.calls.filter(([command]) => command.type === 'memory.search' || command.type === 'memory.read')).toEqual([]);
     const body = JSON.parse(String(fetchFn.mock.calls[2]![1]?.body));
-    expect(body.tools.map((tool: { function: { name: string } }) => tool.function.name)).toEqual(['memory', 'world', 'wait']);
+    expect(body.tools.map((tool: { function: { name: string } }) => tool.function.name)).toEqual(['wait']);
     expect(body.messages.some((row: { role: string; content: string }) => row.role === 'tool' && row.content.includes('未提供此能力'))).toBe(true);
   });
 });

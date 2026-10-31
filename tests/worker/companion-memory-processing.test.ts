@@ -2,7 +2,8 @@ import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import Database from 'better-sqlite3';
-import { afterEach, expect, it } from 'vitest';
+import { afterEach, expect, it, vi } from 'vitest';
+import { randomUUID } from 'node:crypto';
 import { CompanionsStore, type CompanionConnection, type CompanionSeed } from '../../src/companions/store';
 import { removeOwnedDirectorySync } from '../../src/main/vcp-memory/filesystem';
 
@@ -10,26 +11,35 @@ const seeds: CompanionSeed[] = ['alice', 'bob'].map(id => ({ id, name: id, descr
 const fixtures: Array<{ root: string; store: CompanionsStore }> = [];
 function fixture() { const root = mkdtempSync(path.join(tmpdir(), 'worldlinebox-memory-processing-')); const file = path.join(root, 'messages.sqlite');
   const store = new CompanionsStore(file, seeds); fixtures.push({ root, store }); return { root, file, store, room: store.openPrivate('alice').id, peerRoom: store.openPrivate('bob').id }; }
-afterEach(() => { for (const item of fixtures.splice(0)) { item.store.close(); if (path.dirname(item.root) !== tmpdir() || !path.basename(item.root).startsWith('worldlinebox-memory-processing-')) throw new Error('Unexpected fixture.'); removeOwnedDirectorySync(item.root); } });
+afterEach(() => { vi.useRealTimers(); for (const item of fixtures.splice(0)) { item.store.close(); if (path.dirname(item.root) !== tmpdir() || !path.basename(item.root).startsWith('worldlinebox-memory-processing-')) throw new Error('Unexpected fixture.'); removeOwnedDirectorySync(item.root); } });
 const status = (store: CompanionsStore, companionId = 'alice', limit = 30) => store.request({ type: 'memory.processing.status', companionId, limit }).memoryProcessing!;
+function recordDocument(store: CompanionsStore, input: { companionId: string; conversationId: string; content: string; tags?: string[] }) {
+  const source = store.appendMessage({ conversationId: input.conversationId, authorId: 'user', content: input.content, replyDirective: 'none' });
+  const note = store.request({ type: 'memory.record', companionId: input.companionId, conversationId: input.conversationId, candidate: {
+    artifactKind: 'knowledge', content: input.content, tags: input.tags ?? [], metadata: { autoTags: !input.tags?.length },
+    sourceMessageIds: [source.id], evidence: [{ sourceMessageId: source.id, quote: source.content }],
+  } }).memories![0]!;
+  if (!input.tags?.length) store.request({ type: 'memory.tags.retry', companionId: input.companionId, noteId: note.id });
+  return note;
+}
 
 it('counts source versions, original records and derived records independently of attempts, revisions and annotation updates', () => {
   const { store, room, peerRoom, file } = fixture(), scope = { companionId: 'alice', conversationId: room };
   const a = store.appendMessage({ conversationId: room, authorId: 'user', content: '修伞的上半部已完成，下半部仍未完成。' });
   const b = store.appendMessage({ conversationId: room, authorId: 'user', content: '下次修伞时需要第二层抽屉里的棉线。' });
   store.appendMessage({ conversationId: peerRoom, authorId: 'user', content: 'Bob自己的整理来源。' });
-  const original = [a, b].map(raw => store.request({ type: 'memory.record', ...scope, candidate: { content: raw.content, tags: ['修伞'],
+  const original = [a, b].map(raw => store.request({ type: 'memory.record', ...scope, candidate: { artifactKind: 'episode_memory' as const, content: raw.content, tags: ['修伞'],
     sourceMessageIds: [raw.id], evidence: [{ sourceMessageId: raw.id, quote: raw.content }] } }).memories![0]!);
   expect(status(store).metrics).toEqual({ sourceVersions: 2, originalEntries: 2, derivedEntries: 0 });
   expect(status(store, 'bob').metrics).toEqual({ sourceVersions: 1, originalEntries: 0, derivedEntries: 0 });
   const annotate = store.request({ type: 'memory.organize', ...scope, ids: [original[0]!.id], tags: ['待完成'] }).memories![0]!;
   store.request({ type: 'memory.revise', ...scope, id: annotate.id, expectedVersion: annotate.version,
-    candidate: { content: a.content + ' 仍需继续。', tags: ['修伞'], sourceMessageIds: [a.id], evidence: [{ sourceMessageId: a.id, quote: a.content }] } });
+    candidate: { artifactKind: 'episode_memory' as const, content: a.content + ' 仍需继续。', tags: ['修伞'], sourceMessageIds: [a.id], evidence: [{ sourceMessageId: a.id, quote: a.content }] } });
   for (let i = 0; i < 10; i++) { const outbox = store.request({ type: 'memory.outbox.claim' }).memoryOutbox;
     if (outbox) store.request({ type: 'memory.outbox.complete', id: outbox.id, leaseToken: outbox.leaseToken, indexed: true }); }
   const merged = store.request({ type: 'memory.consolidate', ...scope, operationId: 'processing_actual_merge',
     inputs: original.map(note => ({ id: note.id, version: store.request({ type: 'memory.read', ...scope, id: note.id }).memoryRead!.memory.version })),
-    candidate: { content: a.content + b.content, tags: ['修伞'], sourceMessageIds: [a.id, b.id], evidence: [a, b].map(raw => ({ sourceMessageId: raw.id, quote: raw.content })) } }).memories![0]!;
+    candidate: { artifactKind: 'episode_memory' as const, content: a.content + b.content, tags: ['修伞'], sourceMessageIds: [a.id, b.id], evidence: [a, b].map(raw => ({ sourceMessageId: raw.id, quote: raw.content })) } }).memories![0]!;
   expect(merged).toBeDefined(); expect(status(store).metrics).toEqual({ sourceVersions: 2, originalEntries: 2, derivedEntries: 1 });
   const reopened = new CompanionsStore(file, seeds);
   try { expect(status(reopened).metrics).toEqual(status(store).metrics); } finally { reopened.close(); }
@@ -57,13 +67,13 @@ it('shows real source queue admission, claimed work and completed checks without
 
 it('reports actual index and TagMaster failures separately and leaves document bodies out of stale evidence', () => {
   const { store, room } = fixture();
-  const note = store.saveMemory({ companionId: 'alice', conversationId: room, content: '这是一份等待原文标签整理的资料。', tags: [] });
-  let report = status(store); expect(report.jobs.map(job => job.kind).sort()).toEqual(['index', 'tags']);
+  const note = recordDocument(store, { companionId: 'alice', conversationId: room, content: '这是一份等待原文标签整理的资料。', tags: [] });
+  let report = status(store); expect(report.jobs.filter(job => job.kind !== 'capture').map(job => job.kind).sort()).toEqual(['index', 'tags']);
   const tag = store.request({ type: 'memory.tags.claim' }).memoryTagJob!;
   store.request({ type: 'memory.tags.defer', id: tag.id, leaseToken: tag.leaseToken, reason: 'needs_model', error: '尚未配置聊天模型', retryAfterMs: 1000 });
   const delivery = store.request({ type: 'memory.outbox.claim', companionId: 'alice' }).memoryOutbox!;
   store.request({ type: 'memory.outbox.fail', id: delivery.id, leaseToken: delivery.leaseToken, error: '本地向量服务暂时不可用', retryAfterMs: 5000 });
-  report = status(store); expect(report.summary).toMatchObject({ pending: 1, failed: 1 });
+  report = status(store); expect(report.summary).toMatchObject({ pending: 2, failed: 1 });
   expect(report.jobs.find(job => job.kind === 'tags')).toMatchObject({ status: 'waiting_model', error: '尚未配置聊天模型', noteId: note.id });
   expect(report.jobs.find(job => job.kind === 'index')).toMatchObject({ status: 'failed', error: '本地向量服务暂时不可用', attempts: 1 });
   expect(report.jobs.every(job => !!job.createdAt && !!job.updatedAt)).toBe(true);
@@ -114,8 +124,9 @@ it('filters completed tasks in SQLite even when pending tasks fill the default p
   expect(completed.summary).toMatchObject({ pending: 40, completed: 8 });
 });
 
-it('reports durable retry floors and manual exhaustion without inventing a host timer or start ETA', () => {
-  const { store, room, file } = fixture(); store.appendMessage({ conversationId: room, authorId: 'user', content: '有价值但尚未整理的来源。' });
+it('reports durable retry floors and the actual three-failure park without inventing a host timer or start ETA', () => {
+  vi.useFakeTimers({ toFake: ['Date'] });
+  const { store, room } = fixture(); store.appendMessage({ conversationId: room, authorId: 'user', content: '有价值但尚未整理的来源。' });
   const pending = status(store).jobs[0]!;
   expect(pending.schedule).toMatchObject({ scheduleKind: 'condition', timeBasis: 'real', waitingReason: 'queue' });
   expect(pending.schedule?.nextCheckAt).toBeUndefined(); expect(pending.schedule?.explanation).toContain('不保证');
@@ -125,17 +136,21 @@ it('reports durable retry floors and manual exhaustion without inventing a host 
   const retry = status(store).jobs[0]!;
   expect(retry.schedule).toMatchObject({ scheduleKind: 'retry', waitingReason: 'retry_backoff', nextAttemptAt: retry.nextAttemptAt });
   expect(Date.parse(retry.nextAttemptAt!)).toBeGreaterThanOrEqual(before + 5000);
-  const db = new (Database as { new(file: string): CompanionConnection })(file);
-  try { db.prepare("UPDATE vcp_capture_jobs SET attempts=8 WHERE id=?").run(claimed.id); } finally { db.close(); }
+  for (let failure = 1; failure < 3; failure++) {
+    vi.setSystemTime(Date.now() + 5001);
+    const next = store.request({ type: 'memory.jobs.claim', force: true, companionId: 'alice' }).memoryJob!;
+    store.request({ type: 'memory.jobs.fail', id: next.id, leaseToken: next.leaseToken, error: '真实模型请求失败。', retryAfterMs: 5000 });
+  }
   const exhausted = status(store).jobs[0]!;
-  expect(exhausted.schedule).toMatchObject({ scheduleKind: 'manual', waitingReason: 'retry_limit' });
+  expect(exhausted).toMatchObject({ status: 'parked', disposition: { failureCount: 3, cycleFailureCount: 3 } });
+  expect(exhausted.schedule).toMatchObject({ scheduleKind: 'manual', waitingReason: 'parked' });
   expect(exhausted.nextAttemptAt).toBeUndefined(); expect(exhausted.schedule?.nextAttemptAt).toBeUndefined();
 });
 
 it('distinguishes capture activation requirements from document tag and index work', () => {
   const { store, room, file } = fixture();
   store.appendMessage({ conversationId: room, authorId: 'user', content: '休眠后留在队列的原始来源。' });
-  store.saveMemory({ companionId: 'alice', conversationId: room, content: '手工资料的管理流程不依赖虚拟生活是否激活。' });
+  recordDocument(store, { companionId: 'alice', conversationId: room, content: '手工资料的管理流程不依赖虚拟生活是否激活。' });
   const db = new (Database as { new(file: string): CompanionConnection })(file);
   try { db.prepare("UPDATE companions SET data=json_set(data,'$.active',json('false')) WHERE id='alice'").run(); } finally { db.close(); }
   const jobs = status(store).jobs;
@@ -147,8 +162,8 @@ it('distinguishes capture activation requirements from document tag and index wo
 
 it('shows actual same-scope index contention and never calls a lease expiry an execution time', () => {
   const { store, room } = fixture();
-  store.saveMemory({ companionId: 'alice', conversationId: room, content: '第一份有明确手工标签的资料。', tags: ['手工'] });
-  store.saveMemory({ companionId: 'alice', conversationId: room, content: '同一记忆范围的第二份资料。', tags: ['手工'] });
+  recordDocument(store, { companionId: 'alice', conversationId: room, content: '第一份有明确手工标签的资料。', tags: ['手工'] });
+  recordDocument(store, { companionId: 'alice', conversationId: room, content: '同一记忆范围的第二份资料。', tags: ['手工'] });
   const running = store.request({ type: 'memory.outbox.claim', companionId: 'alice' }).memoryOutbox!;
   const queued = status(store).jobs.find(job => job.kind === 'index' && job.id !== running.id)!;
   expect(queued.schedule).toMatchObject({ scheduleKind: 'condition', waitingReason: 'scope_busy' });
@@ -156,44 +171,55 @@ it('shows actual same-scope index contention and never calls a lease expiry an e
   expect(store.request({ type: 'memory.outbox.claim', companionId: 'alice' }).memoryOutbox).toBeUndefined();
 });
 
-it('manual retry recovers exhausted pending work for its owner while preserving other owners', () => {
+it('bulk retries cannot wash held work and exact per-job resume preserves lifetime counts and other owners', () => {
   const { store, room, peerRoom, file } = fixture();
-  store.appendMessage({ conversationId: room, authorId: 'user', content: '本人的待收录来源。' });
+  const source = store.appendMessage({ conversationId: room, authorId: 'user', content: '本人的待收录来源。' });
   store.appendMessage({ conversationId: peerRoom, authorId: 'user', content: '别人的待收录来源。' });
-  store.saveMemory({ companionId: 'alice', conversationId: room, content: '本人的待索引及标签文档。' });
-  store.saveMemory({ companionId: 'bob', conversationId: peerRoom, content: '别人的待索引及标签文档。' });
+  recordDocument(store, { companionId: 'alice', conversationId: room, content: '本人的待索引及标签文档。' });
+  recordDocument(store, { companionId: 'bob', conversationId: peerRoom, content: '别人的待索引及标签文档。' });
   const db = new (Database as { new(file: string): CompanionConnection })(file);
   try {
-    for (const table of ['vcp_capture_jobs', 'vcp_memory_outbox', 'companion_memory_tag_jobs']) db.prepare(`UPDATE ${table} SET status='pending',attempts=8,next_attempt=0`).run();
-    expect(status(store).jobs.every(job => job.schedule?.scheduleKind === 'manual')).toBe(true);
+    const tables = ['vcp_capture_jobs', 'vcp_memory_outbox', 'companion_memory_tag_jobs'] as const;
+    for (const table of tables) db.prepare(`UPDATE ${table} SET status='parked',attempts=8,failure_count=3,cycle_failure_count=3,next_attempt=0 WHERE status!='done'`).run();
+    expect(status(store).jobs.filter(job => job.status !== 'completed').every(job => job.schedule?.scheduleKind === 'manual')).toBe(true);
     store.request({ type: 'memory.jobs.retry', companionId: 'alice' }); store.request({ type: 'memory.tags.retry', companionId: 'alice' });
-    for (const table of ['vcp_capture_jobs', 'vcp_memory_outbox', 'companion_memory_tag_jobs']) {
-      expect(db.prepare(`SELECT status,attempts FROM ${table} WHERE companion_id='alice'`).get()).toMatchObject({ status: 'pending', attempts: 0 });
-      expect(db.prepare(`SELECT status,attempts FROM ${table} WHERE companion_id='bob'`).get()).toMatchObject({ status: 'pending', attempts: 8 });
+    for (const table of tables) {
+      expect(db.prepare(`SELECT status,attempts FROM ${table} WHERE companion_id='alice' AND status!='done'`).get()).toMatchObject({ status: 'parked', attempts: 8 });
+      expect(db.prepare(`SELECT status,attempts FROM ${table} WHERE companion_id='bob' AND status!='done'`).get()).toMatchObject({ status: 'parked', attempts: 8 });
     }
-    expect(store.request({ type: 'memory.jobs.claim', force: true, companionId: 'alice' }).memoryJob?.attempts).toBe(1);
-    expect(store.request({ type: 'memory.outbox.claim', companionId: 'alice' }).memoryOutbox?.attempts).toBe(1);
+    for (const kind of ['capture', 'index', 'tags'] as const) {
+      const page = store.request({ type: 'jobs.page', ownerId: 'alice', kind, states: ['parked'], limit: 20 }).jobPage!;
+      const held = kind === 'capture' ? page.items.find(item => item.sourceMessageId === source.id)! : page.items[0]!;
+      store.request({ type: 'jobs.control', ownerId: 'alice', kind, id: held.id, inputVersion: held.inputVersion,
+        expectedRevision: held.revision, operationId: randomUUID(), action: 'resume' });
+    }
+    expect(store.request({ type: 'memory.jobs.claim', force: true, companionId: 'alice' }).memoryJob?.attempts).toBe(9);
+    expect(store.request({ type: 'memory.outbox.claim', companionId: 'alice' }).memoryOutbox?.attempts).toBe(9);
     expect(store.request({ type: 'memory.tags.claim' }).memoryTagJob?.companionId).toBe('alice');
   } finally { db.close(); }
 });
 
-it('retries exhausted expired leases but never resets a valid running lease', () => {
+it('reclaims expired leases without an obsolete attempt ceiling and never resets a valid running lease', () => {
   const { store, room, file } = fixture();
   store.appendMessage({ conversationId: room, authorId: 'user', content: '有效租约保护的来源。' });
-  store.saveMemory({ companionId: 'alice', conversationId: room, content: '有效租约保护的文档。' });
+  recordDocument(store, { companionId: 'alice', conversationId: room, content: '有效租约保护的文档。' });
   store.request({ type: 'memory.jobs.claim', force: true, companionId: 'alice' }); store.request({ type: 'memory.outbox.claim', companionId: 'alice' }); store.request({ type: 'memory.tags.claim' });
   const db = new (Database as { new(file: string): CompanionConnection })(file);
   try {
-    for (const table of ['vcp_capture_jobs', 'vcp_memory_outbox', 'companion_memory_tag_jobs']) db.prepare(`UPDATE ${table} SET attempts=8,lease_until=? WHERE companion_id='alice'`).run(Date.now() + 60000);
+    for (const table of ['vcp_capture_jobs', 'vcp_memory_outbox', 'companion_memory_tag_jobs']) db.prepare(`UPDATE ${table} SET attempts=8,lease_until=? WHERE companion_id='alice' AND status='running'`).run(Date.now() + 60000);
     store.request({ type: 'memory.jobs.retry', companionId: 'alice' }); store.request({ type: 'memory.tags.retry', companionId: 'alice' });
     for (const table of ['vcp_capture_jobs', 'vcp_memory_outbox', 'companion_memory_tag_jobs']) {
-      const valid = db.prepare(`SELECT status,attempts,lease_token FROM ${table} WHERE companion_id='alice'`).get() as { lease_token: string };
+      const valid = db.prepare(`SELECT status,attempts,lease_token FROM ${table} WHERE companion_id='alice' AND status!='done'`).get() as { lease_token: string };
       expect(valid).toMatchObject({ status: 'running', attempts: 8 }); expect(valid.lease_token).toBeTruthy();
-      db.prepare(`UPDATE ${table} SET lease_until=? WHERE companion_id='alice'`).run(Date.now() - 1);
+      db.prepare(`UPDATE ${table} SET lease_until=? WHERE companion_id='alice' AND status='running'`).run(Date.now() - 1);
     }
-    expect(status(store).jobs.every(job => job.schedule?.waitingReason === 'retry_limit')).toBe(true);
+    expect(status(store).jobs.filter(job => job.status !== 'completed').every(job => job.schedule?.waitingReason === 'lease_expired')).toBe(true);
     store.request({ type: 'memory.jobs.retry', companionId: 'alice' }); store.request({ type: 'memory.tags.retry', companionId: 'alice' });
-    for (const table of ['vcp_capture_jobs', 'vcp_memory_outbox', 'companion_memory_tag_jobs']) expect(db.prepare(`SELECT status,attempts,lease_token,lease_until FROM ${table} WHERE companion_id='alice'`).get())
-      .toMatchObject({ status: 'pending', attempts: 0, lease_token: null, lease_until: null });
+    for (const table of ['vcp_capture_jobs', 'vcp_memory_outbox', 'companion_memory_tag_jobs']) expect(db.prepare(`SELECT status,attempts FROM ${table} WHERE companion_id='alice' AND status!='done'`).get())
+      .toMatchObject({ status: 'running', attempts: 8 });
+    // Expiry is reclaimed by the actual claim CAS, not by a blanket retry.
+    expect(store.request({ type: 'memory.jobs.claim', force: true, companionId: 'alice' }).memoryJob?.attempts).toBe(9);
+    expect(store.request({ type: 'memory.outbox.claim', companionId: 'alice' }).memoryOutbox?.attempts).toBe(9);
+    expect(store.request({ type: 'memory.tags.claim' }).memoryTagJob?.attempts).toBe(9);
   } finally { db.close(); }
 });

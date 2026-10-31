@@ -22,13 +22,34 @@ function message(id: string, sequence: number, content: string, overrides: Parti
 }
 function memory(id: string, companionId: string, content: string, sourceMessageId?: string, sourceConversationId = 'private_sister'): CompanionMemory {
   const at = '2026-10-13T00:00:00Z';
-  return { id, companionId, content, sourceMessageId, scopeId: `scope_${companionId}`, sourceConversationId,
+  return { artifactKind: 'episode_memory', id, companionId, content, sourceMessageId, scopeId: `scope_${companionId}`, sourceConversationId,
     sources: sourceMessageId ? [{ messageId: sourceMessageId, conversationId: sourceConversationId, sequence: 1,
       authorId: 'user', revision: 1, checksum: 'host-checksum', createdAt: at }] : [],
     sourceSequence: 0, tags: [], status: 'indexed', captureMethod: 'automatic', version: 1,
     origin: 'companion', createdAt: at, updatedAt: at };
 }
 function response(body: unknown): Response { return new Response(JSON.stringify(body), { headers: { 'Content-Type': 'application/json' } }); }
+it.each(['reply', 'structured'] as const)('stops an untracked %s operation before HTTP when the host lifecycle registration fails', async kind => {
+  const fetchFn = vi.fn<typeof fetch>(async () => response({ choices: [{ message: { content: '{"text":"must not send"}' } }] }));
+  const tracked = { ...config, ownerId: 'sister', trackOperation: () => { throw new Error('Private broken host lifecycle detail.'); } };
+  const result = kind === 'reply' ? generateCompanionReply(input, tracked, undefined, { fetchFn })
+    : generateCompanionStructured({ system: '只返回JSON。', user: '{}' }, tracked, undefined, { fetchFn });
+  await expect(result).rejects.toMatchObject({ code: 'CONFIG', message: '模型操作未能登记到宿主生命周期，本次处理已停止。' });
+  expect(fetchFn).not.toHaveBeenCalled();
+});
+it.each(['reply', 'structured'] as const)('retains the real %s operation after public cancellation until its admitted local preparation settles', async kind => {
+  let enter!: () => void, release!: () => void;
+  const entered = new Promise<void>(resolve => { enter = resolve; }), gate = new Promise<void>(resolve => { release = resolve; });
+  let retained: Promise<unknown> | undefined, settled = false;
+  const fetchFn = vi.fn<typeof fetch>(), controller = new AbortController();
+  const tracked: CompanionModelConfig = { ...config, ownerId: 'sister', resolveAssetContext: async context => { enter(); await gate; return context; },
+    trackOperation: operation => { retained = operation; void operation.finally(() => { settled = true; }).catch(() => undefined); } };
+  const result = (kind === 'reply' ? generateCompanionReply(input, tracked, controller.signal, { fetchFn })
+    : generateCompanionStructured({ system: '只返回JSON。', user: '{}' }, tracked, controller.signal, { fetchFn })).catch(error => error);
+  await entered; controller.abort();
+  expect(await result).toMatchObject({ code: 'CANCELLED' }); expect(settled).toBe(false);
+  release(); await expect(retained).rejects.toMatchObject({ code: 'CANCELLED' }); expect(fetchFn).not.toHaveBeenCalled();
+});
 it.each(['', '这是我获取的所有相关知识/记忆[[未找到相关记忆]]'])('does not reinject unfiltered native candidate bodies after VCP focused context %j', text => {
   const payload = JSON.parse(buildCompanionContext({ ...input, memories: [memory('candidate', 'sister', 'PRIVATE_UNRELATED_CANDIDATE')],
     memoryRecall: { reasons: [{ id: 'candidate', reasons: ['native candidate'], path: ['candidate'] }], pending: false, degraded: false,
@@ -299,7 +320,7 @@ describe('native memory tools across provider formats', () => {
     const registered = format === 'dashscope_native' ? request.parameters.tools : request.tools;
     const definitions = format === 'gemini_native' ? registered[0].function_declarations
       : registered.map((tool: { function?: unknown }) => tool.function ?? tool);
-    expect(definitions.map((tool: { name: string }) => tool.name)).toEqual(['dsh', 'memory', 'world', 'wait']);
+    expect(definitions.map((tool: { name: string }) => tool.name)).toEqual(['dsh', 'memory', 'world', 'agenda', 'wait']);
     const worldTool = definitions.find((tool: { name: string }) => tool.name === 'world');
     expect(worldTool.description).toContain('统一世界入口');
     expect(JSON.stringify(worldTool)).toContain('work');

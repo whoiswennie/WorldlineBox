@@ -44,15 +44,18 @@ export async function reviewTopicSummaryCanon(input: Options): Promise<string | 
   const clauses = topicSummaryClauses(input.summary, input.stage);
   const quantityCorrection = await reviewTopicSummaryQuantities({ ...input, clauses });
   if (quantityCorrection) return quantityCorrection;
-  const infer = (context: { system: string; user: string }, alternate?: Infer) => alternate ? alternate(context, input.signal)
-    : generateCompanionStructured(context, input.config, input.signal, { fetchFn: input.fetchFn, timeoutMs: 120000 });
+  const infer = (context: { system: string; user: string }, schema: z.ZodType, alternate?: Infer) => alternate ? alternate(context, input.signal)
+    : generateCompanionStructured(context, input.config, input.signal, { fetchFn: input.fetchFn, timeoutMs: 120000, responseSchema: schema,
+      repairPreserveCollections: schema === auditSchema
+        ? [{ path: ['checks'], fields: ['canonIndex', 'status', 'contradictions'] }, { path: ['clauses'], fields: ['clauseIndex', 'status', 'canonIndexes'] }]
+        : [{ path: ['decisions'], fields: ['issueIndex', 'decision'] }] });
   const data = { purpose: 'topic_summary_canon_audit', canon: source.entries.map((entry, canonIndex) => ({ canonIndex, ...entry })), proposed, actualClauses: clauses,
     outputSchema: z.toJSONSchema(auditSchema) };
   let audit: z.infer<typeof auditSchema> | undefined, feedback: string | undefined;
   for (let attempt = 0; attempt < 3; attempt++) {
     try {
       audit = auditSchema.parse(await infer({ system: '你只审查一份有界工作摘要与独立逐字用户约束的语义一致性，不写摘要、不提出新规则。两套检查都必须完整：checks对每条canon一个，canonIndex精确完整唯一覆盖；clauses对每个actualClauses一个，clauseIndex精确完整唯一覆盖。先逐片段核它本身的断言：compatible=涉及canon且相符；unrelated=不涉及canon；ambiguous=歧义不能证明违反；contradiction=本片段与相关canon不能同时为真，canonIndexes填实际相关的约束编号。不得拿其它片段中正确的规则替本片段作答；一处正确写总数，不豁免后来将它写成实际带齐。完整proposed用于核说话者和语境，片段切分不是新的事实归属。checks的consistent=拟稿相关断言相符；not_asserted=未重复该规则且无冲突；contradiction=拟稿有实际冲突；ambiguous=不足以证实。仅checks的contradiction带非空contradictions，其余为空。区分数量的本体/总数/目前持有/缺失/已用/预留，计划与实际、未来承诺与履行、未知与已知，以及人物对白或猜测与叙述者确定事实；不能把某人声称的数字升级为实际持有。明确归属于人物的话语不等于叙述事实，不仅因说法与canon有异就拒。claimQuote逐字连续来自拟稿。不可因新创作未在canon出现或摘要没有全文重复canon而拒绝，歧义不可猜成矛盾。',
-        user: JSON.stringify({ ...data, ...(feedback ? { formatCorrection: feedback } : {}) }) }, input.audit));
+        user: JSON.stringify({ ...data, ...(feedback ? { formatCorrection: feedback } : {}) }) }, auditSchema, input.audit));
       const indexes = audit.checks.map(check => check.canonIndex);
       if (indexes.length !== source.entries.length || new Set(indexes).size !== indexes.length || indexes.some(index => !source.entries[index])) throw new Error('checks必须完整且唯一覆盖实际canonIndex。');
       for (const check of audit.checks) {
@@ -65,6 +68,7 @@ export async function reviewTopicSummaryCanon(input: Options): Promise<string | 
         || check.status === 'contradiction' && !check.canonIndexes.length) throw new Error('片段的相关canonIndexes必须真实，contradiction不可缺其实际约束来源。');
       break;
     } catch (error) {
+      if (error instanceof CompanionModelError && error.diagnostic === 'structured_repair_exhausted') throw error;
       if (input.signal?.aborted || !(error instanceof z.ZodError || error instanceof Error && !(error instanceof CompanionModelError)
         || error instanceof CompanionModelError && error.code === 'INVALID_RESPONSE')) throw error;
       if (attempt === 2) throw new CompanionModelError('INVALID_RESPONSE', '工作摘要canon审查无法形成完整来源绑定结果，未推进水位。');
@@ -85,11 +89,12 @@ export async function reviewTopicSummaryCanon(input: Options): Promise<string | 
     try {
       decision = decisionSchema.parse(await infer({ system: '你独立复核已经提出的工作摘要矛盾，不能新增问题、创作正文或改变用户规则。只根据给定逐字canonQuote、拟稿全文与实际claimQuote判定该问题是否成立。返回每个issueIndex一次完整decision。upheld=拟稿有清楚断言与该用户原句不能并存；rejected=没有矛盾；ambiguous=依赖未获给定证据的猜测。特别核数量的总量与目前持有/缺失不能偷换，计划不等于完成，对白明确归属不等于叙述者事实。摘要其他地方正确抄规则，仍不能抵消另一句的实际冲突。允许合法省略独立canon的重复和新创作，不以未写即禁止。不给替代句，只说明已有问题是否有证据。',
         user: JSON.stringify({ purpose: 'topic_summary_canon_issue_adjudication', proposed, issues: issues.map((issue, issueIndex) => ({ issueIndex, ...issue })),
-          outputSchema: z.toJSONSchema(decisionSchema), ...(feedback ? { formatCorrection: feedback } : {}) }) }, input.adjudicate));
+          outputSchema: z.toJSONSchema(decisionSchema), ...(feedback ? { formatCorrection: feedback } : {}) }) }, decisionSchema, input.adjudicate));
       const indexes = decision.decisions.map(item => item.issueIndex);
       if (indexes.length !== issues.length || new Set(indexes).size !== indexes.length || indexes.some(index => !issues[index])) throw new Error('decisions必须完整且唯一覆盖实际issueIndex。');
       break;
     } catch (error) {
+      if (error instanceof CompanionModelError && error.diagnostic === 'structured_repair_exhausted') throw error;
       if (input.signal?.aborted || !(error instanceof z.ZodError || error instanceof Error && !(error instanceof CompanionModelError)
         || error instanceof CompanionModelError && error.code === 'INVALID_RESPONSE')) throw error;
       if (attempt === 2) throw new CompanionModelError('INVALID_RESPONSE', '工作摘要canon矛盾复核无法完整对应原问题，未推进水位。');

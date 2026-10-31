@@ -11,6 +11,12 @@ it('projects only an empty host identity after matching the visible source and o
   expect(companionProgressMessage(event, state, 'room', [source], null)).toMatchObject({ id: 'reply', sequence: 3, authorId: 'role', replyToId: 'source', content: '', attachments: [], isReplyDraft: true, replyProgress: { revision: 3, phase: 'memory' } });
 });
 
+it('does not turn agenda-only source receipts or rows into live conversation replies', () => {
+  expect(companionProgressMessage(event, state, 'room', [{ ...source, audience: 'agenda' }], null)).toBeUndefined();
+  const current = companionProgressMessage(event, state, 'room', [source], null)!;
+  expect(companionProgressMessage({ ...event, progress: { ...event.progress!, revision: 4 } }, state, 'room', [source, { ...current, audience: 'agenda' }], null)).toBeUndefined();
+});
+
 it.each(['room', 'owner', 'source', 'topic', 'progress-source', 'sequence', 'reset'] as const)('rejects a mismatched %s without publishing a synthetic bubble', mismatch => {
   const changed = { ...event, messageIdentity: { ...event.messageIdentity! }, progress: { ...event.progress! } };
   let currentState = state;

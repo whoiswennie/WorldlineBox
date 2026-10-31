@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { companionFrozenMemoryDependencySchema } from './companion-frozen-memory';
+import { companionMemoryArtifactKindSchema } from './companion-memory-scope';
 
 /** The same host VCP evidence crosses public responses and durable peer-reply
  * receipts. Keeping it in a dependency-free leaf avoids a second, stale wire
@@ -16,6 +17,7 @@ export const companionMemoryContextEvidenceSchema = z.strictObject({
   snapshotPolicy: z.literal('task_passive_v1').optional(),
   frozenDependencies: z.array(companionFrozenMemoryDependencySchema).optional(),
   references: z.array(z.strictObject({ id: z.string(), version: z.number().int().positive(), role: z.enum(['returned', 'focus_input']),
+    artifactKind: companionMemoryArtifactKindSchema.optional(),
     sourceFile: z.string().optional(), textHash: z.string(),
     sources: z.array(z.strictObject({ messageId: z.string(), revision: z.number().int().positive(), checksum: z.string() })) })).optional(),
 });

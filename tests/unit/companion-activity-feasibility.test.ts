@@ -16,11 +16,16 @@ const input = (decision: ActivityDecision) => ({ task, topic, resourceBounds, sh
 const config = { apiFormat: 'openai_chat' as const, model: 'test', apiKey: 'fake', baseUrl: 'https://fixture.invalid' };
 const response = (value: unknown) => new Response(JSON.stringify({ choices: [{ message: { content: JSON.stringify(value) } }] }));
 describe('activity resource feasibility proposal review', () => {
-  it.each([{ topic: { action: 'read', topicId: 'game' } }, { action: { action: 'query' as const, category: 'contacts' as const } },
-    { memory: { operation: 'search' as const, query: '已存在资料' } }])('does not add a reviewer to pure needed reads or memory: %j', operation => {
+  it.each([{ topic: { action: 'read', topicId: 'game' } }, { action: { action: 'query' as const, category: 'contacts' as const } }])('does not add a reviewer to pure needed current reads: %j', operation => {
     const fetchFn = vi.fn<typeof fetch>();
     return expect(reviewCompanionActivityFeasibility(input({ status: 'continue', action: null, wait: null, summary: '实际读取', ...operation }), config, undefined,
       { fetchFn })).resolves.toEqual({ allowed: true }).then(() => expect(fetchFn).not.toHaveBeenCalled());
+  });
+  it('refuses a retired actor memory proposal before any review request', async () => {
+    const fetchFn = vi.fn<typeof fetch>();
+    const result = await reviewCompanionActivityFeasibility(input({ status: 'continue', action: null, wait: null,
+      memory: { operation: 'search', query: '已存在资料' }, summary: '不能恢复主动回忆' }), config, undefined, { fetchFn });
+    expect(result).toMatchObject({ allowed: false, reason: expect.stringContaining('已退役') }); expect(fetchFn).not.toHaveBeenCalled();
   });
   it('fails closed on mismatched actual bound port without making a model request', async () => {
     const fetchFn = vi.fn<typeof fetch>();
@@ -64,12 +69,11 @@ describe('activity resource feasibility proposal review', () => {
     config, undefined, { fetchFn });
     expect(fetchFn).toHaveBeenCalledTimes(1); expect(result).toEqual({ allowed: true });
   });
-  it('keeps unbound pure reads, memory and completion free of resource review calls', async () => {
+  it('keeps unbound pure current reads and completion free of resource review calls', async () => {
     const fetchFn = vi.fn<typeof fetch>();
     const decisions: ActivityDecision[] = [
       { status: 'continue', action: { action: 'query', category: 'people' }, wait: null, summary: '读取实际目录' },
       { status: 'continue', action: null, wait: null, topic: { action: 'read', topicId: 'game' }, summary: '读取资料' },
-      { status: 'continue', action: null, wait: null, memory: { operation: 'search', query: '资料' }, summary: '读取记忆' },
       { status: 'complete', action: null, wait: null, summary: '交由结果审查' },
     ];
     for (const decision of decisions) expect(await reviewCompanionActivityFeasibility({ ...input(decision),
@@ -78,16 +82,18 @@ describe('activity resource feasibility proposal review', () => {
     config, undefined, { fetchFn })).toEqual({ allowed: true });
     expect(fetchFn).not.toHaveBeenCalled();
   });
-  it('corrects the actual reviewer schema in the same review slot and preserves precise host capacity facts', async () => {
+  it('uses bounded structural repair and preserves the exact original reviewer evidence', async () => {
     let calls = 0;
     const fetchFn = vi.fn<typeof fetch>(async (_url, init) => {
-      const data = JSON.parse(JSON.parse(String(init?.body)).messages[1].content);
+      const sent = JSON.parse(JSON.parse(String(init?.body)).messages[1].content);
+      const data = sent.purpose === 'companion_structured_repair' ? JSON.parse(sent.originalRequest.user) : sent;
       expect(data.purpose).toBe('activity_resource_feasibility');
       expect(data.actualResourceBounds).toMatchObject({ boundGameRoomMemberCount: 3, otherActiveCharacterCount: 2,
         moderatorDrawSeat: 'unknown_not_inferred_from_moderator_role', humanPlayer: { includedInRoom: false, joined: false } });
       expect(data.exactProposedDecision.planningState.constraints).toEqual(['模型自己设定6位玩家']);
       if (++calls === 1) return response({ allowed: 'no', reason: 'wrong schema' });
-      expect(data.reviewCorrection.error).toContain('confidence');
+      expect(sent.purpose).toBe('companion_structured_repair');
+      expect(sent.validationErrors.some((issue: { path?: string[] }) => issue.path?.includes('confidence'))).toBe(true);
       return response({ allowed: false, confidence: .99, reason: '原目标未规定6人，当前群容量不足以支持作者该自选方案，应由作者自行修订。' });
     });
     const result = await reviewCompanionActivityFeasibility(input({ status: 'continue', action: null, wait: { kind: 'reply', targetCompanionId: 'b' },

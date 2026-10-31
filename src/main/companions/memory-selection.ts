@@ -7,7 +7,7 @@ export function companionMemorySelection(query: CompanionMemorySearch, actual: C
   const input = companionMemorySearchSchema.parse(query);
   const common = { scope: { companionId: input.companionId, conversationId: input.conversationId,
     ...(input.beforeSequence === undefined ? {} : { beforeSequence: input.beforeSequence }) },
-  filters: { tags: input.tags, ...(input.diaryName === undefined ? {} : { diaryName: input.diaryName }),
+  filters: { tags: input.tags, retrievalScope: input.retrievalScope ?? 'facts', ...(input.diaryName === undefined ? {} : { diaryName: input.diaryName }),
     ...(input.from === undefined ? {} : { from: input.from }), ...(input.to === undefined ? {} : { to: input.to }) },
   page: { cursor: input.cursor ?? 0, limit: input.limit, returned: actual.items.length, hasMore: actual.hasMore,
     ...(actual.nextCursor === undefined ? {} : { nextCursor: actual.nextCursor }) } };

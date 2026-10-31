@@ -50,7 +50,7 @@ it.each(phases)('recovers real killed capture/index publication host at %s witho
       const data = JSON.parse(body.messages[1].content) as { purpose: string; messages: Array<{ id: string; content: string }> };
       provider.push(data);
       const groups = [data.messages.slice(0, 6), data.messages.slice(6)].filter(group => group.length);
-      response.end(JSON.stringify({ choices: [{ message: { content: JSON.stringify({ notes: groups.map(group => ({ content: group.map(source => source.content).join('\n'),
+      response.end(JSON.stringify({ choices: [{ message: { content: JSON.stringify({ notes: groups.map(group => ({ artifactKind: 'episode_memory', content: group.map(source => source.content).join('\n'),
         tags: ['合成验收'], diaryName: '经历', sourceMessageIds: group.map(source => source.id), evidence: group.map(source => ({ sourceMessageId: source.id, quote: source.content })) })) }) } }] }));
     }
   });

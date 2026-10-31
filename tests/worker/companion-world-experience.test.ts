@@ -76,7 +76,7 @@ it('durably captures one completed walk in its world domain, survives restart, f
   expect(source).toMatchObject({ authorId: 'system', kind: 'notice', memoryEvidenceOnly: true });
   expect(JSON.parse(source.content).items[0]).toMatchObject({ id: event.id, sequence: event.sequence, kind: 'park_walk_complete' });
   expect(reopened.state().conversations.some(room => room.id === 'world_alice')).toBe(false);
-  const note = reopened.request({ type: 'memory.jobs.complete', id: job.id, leaseToken: job.leaseToken, notes: [{ diaryName: '自我认识',
+  const note = reopened.request({ type: 'memory.jobs.complete', id: job.id, leaseToken: job.leaseToken, notes: [{ artifactKind: 'episode_memory' as const, diaryName: '自我认识',
     content: '这次实际完成了花园散步，我感到有规律地留出户外时间值得尝试；这是这一次经历的个人认识。', tags: ['花园散步', '生活节奏', '个人认识'],
     sourceMessageIds: [source.id], evidence: [{ sourceMessageId: source.id, quote: event.text }] }] }).memories![0]!;
   expect(note.sourceConversationId).toBe('world_alice'); expect(note.sources[0]).toMatchObject({ sourceType: 'world_observation', messageId: source.id });

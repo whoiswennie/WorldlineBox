@@ -1,10 +1,11 @@
+import { createHash } from 'node:crypto';
 import type { CompanionConnection } from './store';
 import type { CompanionRuntimeState } from '../shared/companion-state';
 import { companionStateChangeSchema, type CompanionStateChange } from '../shared/companion-state-change';
 import type { CompanionMessage } from '../shared/companions';
 
 type Scope = { companionId: string; conversationId: string; beforeSequence?: number };
-type Snapshot = Pick<CompanionRuntimeState, 'affect' | 'relationship' | 'energy' | 'expression' | 'focus'>;
+type Snapshot = Pick<CompanionRuntimeState, 'energy' | 'expression' | 'focus' | 'experience' | 'relationshipRecords'>;
 export class CompanionStateChangeStore {
   constructor(private readonly db: CompanionConnection, private readonly visible: (scope: Scope, ids: string[]) => CompanionMessage[]) {}
   initialize(): void {
@@ -14,18 +15,20 @@ export class CompanionStateChangeStore {
       CREATE INDEX IF NOT EXISTS companion_state_change_source ON companion_state_change_sources(message_id,change_id);
       CREATE TABLE IF NOT EXISTS companion_state_change_memories(change_id TEXT NOT NULL REFERENCES companion_state_changes(id) ON DELETE CASCADE,note_id TEXT NOT NULL,note_version INTEGER NOT NULL,PRIMARY KEY(change_id,note_id,note_version));
       CREATE INDEX IF NOT EXISTS companion_state_change_memory ON companion_state_change_memories(note_id,note_version,change_id);`);
-    if (!this.db.prepare("SELECT 1 FROM metadata WHERE key='state-change-memory-links/v1'").get()) {
-      this.db.prepare(`INSERT OR IGNORE INTO companion_state_change_memories SELECT c.id,json_extract(v.value,'$.id'),json_extract(v.value,'$.version')
-        FROM companion_state_changes c,json_each(c.data,'$.memoryVersions') v`).run();
-      this.db.prepare("INSERT INTO metadata(key,value) VALUES('state-change-memory-links/v1','done')").run();
-    }
   }
-  add(owner: string, receipt: Omit<CompanionStateChange, 'affectDelta' | 'relationshipDelta' | 'energyDelta' | 'expression' | 'focus'>, before: Snapshot, after: Snapshot): void {
-    const affectDelta = { pleasure: after.affect.pleasure - before.affect.pleasure, arousal: after.affect.arousal - before.affect.arousal, dominance: after.affect.dominance - before.affect.dominance };
-    const relationshipDelta = { affinity: after.relationship.affinity - before.relationship.affinity, trust: after.relationship.trust - before.relationship.trust, respect: after.relationship.respect - before.relationship.respect };
-    if (![...Object.values(affectDelta), ...Object.values(relationshipDelta), after.energy - before.energy].some(value => Math.abs(value) > 1e-12)
-      && before.expression === after.expression && before.focus === after.focus) return;
-    const value = companionStateChangeSchema.parse({ ...receipt, affectDelta, relationshipDelta, energyDelta: after.energy - before.energy,
+  add(owner: string, receipt: Omit<CompanionStateChange, 'energyDelta' | 'expression' | 'focus' | 'experienceId' | 'relationshipRecordIds'>, before: Snapshot, after: Snapshot): void {
+    const oldRecords = new Set(before.relationshipRecords.map(record => record.id));
+    const added = after.relationshipRecords.filter(record => !oldRecords.has(record.id)).map(record => record.id);
+    if (before.energy === after.energy && before.expression === after.expression && before.focus === after.focus
+      && before.experience?.id === after.experience?.id && !added.length) return;
+    const sourceVersions = receipt.sourceMessageIds.map(messageId => {
+      const source = this.db.prepare('SELECT revision,content FROM messages WHERE id=?').get(messageId) as { revision: number; content: string } | undefined;
+      if (!source) throw new Error('状态生效来源不存在。');
+      return { messageId, revision: source.revision, checksum: createHash('sha256').update(source.content).digest('hex') };
+    });
+    const value = companionStateChangeSchema.parse({ ...receipt, sourceVersions, energyDelta: after.energy - before.energy,
+      ...(before.experience?.id !== after.experience?.id && after.experience ? { experienceId: after.experience.id } : {}),
+      ...(added.length ? { relationshipRecordIds: added } : {}),
       ...(before.expression !== after.expression ? { expression: { before: before.expression, after: after.expression } } : {}),
       ...(before.focus !== after.focus ? { focus: { before: before.focus, after: after.focus } } : {}) });
     if (!this.db.prepare('INSERT OR IGNORE INTO companion_state_changes(id,companion_id,kind,applied_at,data) VALUES(?,?,?,?,?)').run(value.id, owner, value.kind, value.appliedAt, JSON.stringify(value)).changes) return;
@@ -34,22 +37,20 @@ export class CompanionStateChangeStore {
   }
   recent(scope: Scope): CompanionStateChange[] {
     const group = (this.db.prepare('SELECT kind FROM conversations WHERE id=?').get(scope.conversationId) as { kind: string } | undefined)?.kind === 'group';
-    // Bounded SQL scan and transport. Private reasons are never relabelled as group events.
     const rows = this.db.prepare('SELECT data FROM companion_state_changes WHERE companion_id=? AND active=1 ORDER BY applied_at DESC,rowid DESC LIMIT 30').all(scope.companionId) as { data: string }[];
-    return rows.map(row => companionStateChangeSchema.parse(JSON.parse(row.data))).filter(change => {
-      if (group && change.sourceConversationId !== scope.conversationId) return false;
-      return !change.sourceMessageIds.length || this.visible(scope, change.sourceMessageIds).length === change.sourceMessageIds.length;
-    }).slice(0, 5);
+    return rows.map(row => companionStateChangeSchema.parse(JSON.parse(row.data))).filter(change =>
+      (!group || change.sourceConversationId === scope.conversationId)
+      && (!change.sourceMessageIds.length || this.visible(scope, change.sourceMessageIds).length === change.sourceMessageIds.length)
+      && (change.sourceVersions ?? []).every(version => {
+        const source = this.visible(scope, [version.messageId])[0];
+        const stored = source && this.db.prepare('SELECT revision FROM messages WHERE id=?').get(source.id) as { revision: number } | undefined;
+        return source && stored?.revision === version.revision && createHash('sha256').update(source.content).digest('hex') === version.checksum;
+      })).slice(0, 5);
   }
   withdraw(owner: string, sourceIds: string[]): void {
     for (const source of sourceIds) this.db.prepare('UPDATE companion_state_changes SET active=0 WHERE companion_id=? AND id IN(SELECT change_id FROM companion_state_change_sources WHERE message_id=?)').run(owner, source);
   }
   delivery(scope: Scope, field: 'expression' | 'focus'): CompanionStateChange | undefined {
-    const found = this.db.prepare(`SELECT data FROM companion_state_changes WHERE companion_id=? AND active=1 AND json_type(data,'$.${field}')='object' ORDER BY applied_at DESC,rowid DESC LIMIT 30`).all(scope.companionId) as { data: string }[];
-    for (const row of found) {
-      const change = companionStateChangeSchema.parse(JSON.parse(row.data));
-      if (!change.sourceMessageIds.length || this.visible(scope, change.sourceMessageIds).length === change.sourceMessageIds.length) return change;
-    }
-    return undefined;
+    return this.recent(scope).find(change => change[field] !== undefined);
   }
 }

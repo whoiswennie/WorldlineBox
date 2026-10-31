@@ -13,18 +13,21 @@ import { removeOwnedDirectory } from '../../src/main/vcp-memory/filesystem';
 
 const revision = '918baf448ac12853c44d5a314542ac96e97affe7';
 type Build = { CompanionsStore: typeof CompanionsStore; CompanionMemoryService: typeof CompanionMemoryService };
-type Input = { purpose: string; messages: Array<{ id: string; content: string }> };
+type Input = { purpose: string; memoryStage?: unknown; messages: Array<{ id: string; content: string }> };
 
 it('compares actual checkpointed and current capture admission on the same timed source trace', async () => {
   const root = await mkdtemp(path.join(tmpdir(), 'worldline-memory-capture-paired-'));
   const reports: Array<Record<string, unknown>> = [], requests: Input[] = [];
   const server = createServer(async (request, response) => {
+    try {
     let raw = ''; for await (const chunk of request) raw += chunk.toString();
     const data = JSON.parse(JSON.parse(raw).messages[1].content) as Input; requests.push(data);
-    const notes = data.messages.length ? [{ content: data.messages.map(message => message.content).join('\n'), tags: ['合成修伞资料'],
+    if (!Array.isArray(data.messages)) throw new Error('The deterministic journal fixture received an unexpected purpose: ' + data.purpose);
+    const notes = data.messages.length ? [{ ...(data.memoryStage ? { artifactKind: 'episode_memory' } : {}), content: data.messages.map(message => message.content).join('\n'), tags: ['合成修伞资料'],
       sourceMessageIds: data.messages.map(message => message.id), evidence: data.messages.map(message => ({ sourceMessageId: message.id, quote: message.content })) }] : [];
     response.setHeader('content-type', 'application/json');
     response.end(JSON.stringify({ choices: [{ message: { content: JSON.stringify({ notes }) } }] }));
+    } catch (error) { response.statusCode = 500; response.end(String(error)); }
   });
   let passed = false, failure: string | undefined;
   try {

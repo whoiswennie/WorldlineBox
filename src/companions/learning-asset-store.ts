@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import type { CompanionConnection } from './store';
 import type { CompanionLearningAssetSnapshot, CompanionLearningAssetValidation, CompanionLearningGrant } from '../shared/companion-learning';
 import type { CompanionStorageCommand, CompanionStorageResponse } from '../shared/companion-storage';
+import { scrubCompanionJobReceipts } from './memory-withdrawal-store';
 
 type Reference = { grant_id: string; asset_id: string; asset_revision: string };
 /** A real read is indexed once for both passive reading and goal-driven learning. */
@@ -85,11 +86,25 @@ export class CompanionLearningAssetStore {
         const ids = (entry.asset ? this.db.prepare("SELECT source_message_id FROM companion_learning_asset_sources WHERE grant_id=? AND asset_id=? AND asset_revision=? AND status='read'")
           .all(entry.grant.id, entry.asset.assetId, entry.asset.assetRevisionId)
           : this.db.prepare("SELECT source_message_id FROM companion_learning_asset_sources WHERE grant_id=? AND status='read'").all(entry.grant.id)) as Array<{ source_message_id: string }>;
-        if (!entry.asset) this.db.prepare('UPDATE companion_learning_grants SET enabled=0,revision=revision+1,manual=0,lease_token=NULL,lease_until=0 WHERE id=?').run(entry.grant.id);
-        else this.db.prepare("UPDATE companion_learning_grants SET lease_token=NULL,lease_until=0,cursor='{}' WHERE id=?").run(entry.grant.id);
+        const jobIds = (this.db.prepare(`SELECT job_id FROM companion_learning_observed_assets WHERE grant_id=? AND job_id IS NOT NULL
+          ${entry.asset ? 'AND asset_id=? AND (asset_revision=? OR job_byte_revision=?)' : ''}`)
+          .all(entry.grant.id, ...(entry.asset ? [entry.asset.assetId, entry.asset.assetRevisionId, entry.asset.assetRevisionId] : [])) as Array<{ job_id: string }>).map(item => item.job_id);
+        if (!entry.asset) this.db.prepare("UPDATE companion_learning_grants SET enabled=0,status='stale',revision=revision+1,manual=0,lease_token=NULL,lease_until=0,active_job_id=NULL,last_failure_error=NULL,data=json_remove(data,'$.error') WHERE id=?").run(entry.grant.id);
+        else this.db.prepare(`UPDATE companion_learning_grants SET lease_token=NULL,lease_until=0,cursor='{}',active_job_id=NULL WHERE id=?
+          AND (active_job_id IN(SELECT job_id FROM companion_learning_observed_assets WHERE grant_id=? AND asset_id=? AND (asset_revision=? OR job_byte_revision=?))
+            OR (json_extract(cursor,'$.assetId')=? AND (json_extract(cursor,'$.assetRevisionId')=?
+              OR EXISTS(SELECT 1 FROM companion_learning_observed_assets j WHERE j.grant_id=? AND j.asset_id=? AND (j.asset_revision=? OR j.job_byte_revision=?)
+                AND json_extract(cursor,'$.assetRevisionId') IN(j.asset_revision,j.job_byte_revision)))))`)
+          .run(entry.grant.id, entry.grant.id, entry.asset.assetId, entry.asset.assetRevisionId, entry.asset.assetRevisionId,
+            entry.asset.assetId, entry.asset.assetRevisionId, entry.grant.id, entry.asset.assetId, entry.asset.assetRevisionId, entry.asset.assetRevisionId);
         if (entry.asset) this.db.prepare("UPDATE companion_learning_observed_assets SET status='withdrawn' WHERE grant_id=? AND asset_id=? AND asset_revision=? AND status='read'")
           .run(entry.grant.id, entry.asset.assetId, entry.asset.assetRevisionId);
         else this.db.prepare("UPDATE companion_learning_observed_assets SET status='withdrawn' WHERE grant_id=? AND status='read'").run(entry.grant.id);
+        this.db.prepare(`UPDATE companion_learning_observed_assets SET job_status=CASE WHEN job_status IN('parked','abandoned') THEN job_status ELSE 'stale' END,
+          disposition_revision=disposition_revision+1,last_failure_error=NULL,retry_requested=0 WHERE grant_id=? AND job_id IS NOT NULL
+          ${entry.asset ? 'AND asset_id=? AND (asset_revision=? OR job_byte_revision=?)' : ''}`)
+          .run(entry.grant.id, ...(entry.asset ? [entry.asset.assetId, entry.asset.assetRevisionId, entry.asset.assetRevisionId] : []));
+        scrubCompanionJobReceipts(this.db, entry.grant.companionId, 'learning', [...(!entry.asset ? [entry.grant.id] : []), ...jobIds]);
         for (const source of ids) {
           this.db.prepare("UPDATE companion_learning_asset_sources SET status='withdrawn' WHERE source_message_id=?").run(source.source_message_id);
           this.db.prepare("UPDATE companion_learning_reads SET status='withdrawn' WHERE source_message_id=?").run(source.source_message_id);

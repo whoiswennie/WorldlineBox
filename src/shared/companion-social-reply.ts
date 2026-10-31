@@ -1,23 +1,17 @@
 import { z } from 'zod';
 import { companionReplyProgressSchema } from './companion-reply-progress';
-import { companionMemoryContextEvidenceSchema } from './companion-memory-context-evidence';
-import { companionMemoryProcedureContextListSchema } from './companion-procedure';
-import { companionMemoryFileReceiptsSchema } from './companion-memory-files';
-import { companionMemorySelectionSchema } from './companion-memory-selection';
+import { companionMemoryRecallContextSchema } from './companion-memory-recall-context';
 
 const id = z.string().regex(/^[a-zA-Z0-9_-]{1,100}$/u);
 export const companionSocialRecallSchema = z.strictObject({
   reasons: z.array(z.strictObject({ id, version: z.number().int().positive().optional(),
     reasons: z.array(z.string().max(500)).max(20), path: z.array(id).max(50) })).max(12),
   pending: z.boolean(), degraded: z.boolean(),
-  context: z.strictObject({ text: z.string().max(1024 * 1024), revision: z.string().max(160), profileKey: z.string().max(4096),
-    selection: companionMemorySelectionSchema.optional(),
-    evidence: companionMemoryContextEvidenceSchema.optional(), proceduralStatus: companionMemoryProcedureContextListSchema.optional(), fileReceipts: companionMemoryFileReceiptsSchema.optional(),
-  }).optional(),
+  context: companionMemoryRecallContextSchema.optional(),
 });
 export const companionSocialReplyProgressEntrySchema = z.strictObject({
   jobId: id, companionId: id, conversationId: id, sourceMessageId: id, messageId: id.optional(),
-  status: z.enum(['pending', 'running', 'done', 'failed', 'cancelled']), progress: companionReplyProgressSchema,
+  status: z.enum(['pending', 'running', 'done', 'failed', 'cancelled', 'parked', 'abandoned']), progress: companionReplyProgressSchema,
 });
 export const companionSocialReplyProgressCommand = z.strictObject({ type: z.literal('social.reply.progress'),
   conversationId: id, companionId: id.optional(), limit: z.number().int().min(1).max(50).default(20),

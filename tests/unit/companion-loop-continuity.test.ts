@@ -3,6 +3,7 @@ import { ensureCompanionLoopContinuity, LOOP_CONTINUITY_POLICY } from '../../src
 import type { CompanionLoopCheckpoint, CompanionLoopTurn } from '../../src/shared/companion-loop';
 import { projectCompanionEvidenceHistory } from '../../src/main/companions/context-tool-history';
 import { CompanionModelError } from '../../src/main/companions/model';
+import { createHash } from 'node:crypto';
 
 function fixture(count = 80) {
   const turns: CompanionLoopTurn[] = Array.from({ length: count }, (_, index) => ({ text: '', rawText: '',
@@ -15,6 +16,56 @@ function fixture(count = 80) {
   const input = { checkpoint, turns, context, config: { apiFormat: 'openai_chat' as const, model: 'configured', apiKey: 'synthetic-key' }, save, summarize };
   return { ...input, input };
 }
+
+it('does not compact host-only search manifests and duplicate candidates absent from the actual provider view', async () => {
+  const f = fixture(4), manifest = Array.from({ length: 1500 }, (_, index) => ({ id: 'HOST_ONLY_DEPENDENCY_' + index, version: 1 }));
+  for (const [index, turn] of f.turns.entries()) {
+    turn.calls = [{ id: 'memory_' + index, name: 'memory', arguments: '{"action":"search","query":"本条约定"}' }];
+    turn.results = [{ callId: 'memory_' + index, content: JSON.stringify({ ok: true,
+      memoryContext: { text: '本次实际相关约定。', revision: 'current', profileKey: 'encoder', evidence: { dependencies: manifest } },
+      memoryPage: { items: [{ memory: { id: 'note_' + index, version: 1, artifactKind: 'episode_memory',
+        content: 'HOST_ONLY_DUPLICATE_CANDIDATE'.repeat(4000) }, score: .9 }], hasMore: false },
+      memoryRetrieval: { stages: [{ explanation: 'INSPECTION_ONLY_EXCERPT'.repeat(4000) }] } }) }];
+  }
+  const original = JSON.stringify(f.turns);
+  expect(original.length).toBeGreaterThan(LOOP_CONTINUITY_POLICY.maxChars);
+  const result = await ensureCompanionLoopContinuity(f.input);
+  expect(f.summarize).not.toHaveBeenCalled(); expect(f.save).not.toHaveBeenCalled();
+  expect(f.checkpoint.workingState).toBeUndefined(); expect(result.turns).toEqual(f.turns);
+  expect(JSON.stringify(f.turns)).toBe(original);
+});
+
+it('compacts genuinely large explicit memory reads using the provider view while sealing the raw source digest', async () => {
+  const f = fixture(3), fullBody = '完整实际阅读正文，不删除限定与否定。'.repeat(6000);
+  for (const [index, turn] of f.turns.entries()) {
+    turn.calls = [{ id: 'read_' + index, name: 'memory', arguments: JSON.stringify({ action: 'read', id: 'note_' + index }) }];
+    turn.results = [{ callId: 'read_' + index, content: JSON.stringify({ ok: true, memoryRead: {
+      memory: { id: 'note_' + index, version: 1, artifactKind: 'procedure', content: fullBody, sources: [] }, related: [] } }) }];
+  }
+  const original = JSON.stringify(f.turns), summarize = vi.fn(async (context: { system: string; user: string }) => {
+    const prompt = JSON.parse(context.user);
+    for (const step of prompt.steps) {
+      const result = JSON.parse(step.results[0].content);
+      expect(result.memoryRead.memory.content).toBe(fullBody);
+      expect(result.memoryRead.memory.typeMeaning).toContain('方法与适用条件');
+      expect(step.step).toBeGreaterThanOrEqual(prompt.fromTurn);
+    }
+    return { summary: '已真实阅读方法原文；适用条件和验证范围仍须保留。', stage: '继续当前任务' };
+  });
+  const result = await ensureCompanionLoopContinuity({ ...f.input, summarize });
+  expect(summarize).toHaveBeenCalled(); expect(f.save).toHaveBeenCalled();
+  const state = f.checkpoint.workingState!;
+  expect(state.sourceDigest).toBe(createHash('sha256').update(JSON.stringify(f.turns.slice(0, state.throughTurn))).digest('hex'));
+  expect(result.turns[0]).toBe(f.turns[state.throughTurn]);
+  expect(JSON.stringify(f.turns)).toBe(original); expect(f.checkpoint.turns).toHaveLength(3);
+});
+
+it('preserves the central exhausted repair budget without starting an outer format retry', async () => {
+  const f = fixture(), exhausted = new CompanionModelError('INVALID_RESPONSE', '格式修复已耗尽。', 'structured_repair_exhausted');
+  const summarize = vi.fn(async () => { throw exhausted; });
+  await expect(ensureCompanionLoopContinuity({ ...f.input, summarize })).rejects.toBe(exhausted);
+  expect(summarize).toHaveBeenCalledTimes(1); expect(f.save).not.toHaveBeenCalled();
+});
 
 it('projects a bounded recent window with a cumulative durable summary while preserving all absolute action slots', async () => {
   const f = fixture(), original = JSON.stringify(f.turns);

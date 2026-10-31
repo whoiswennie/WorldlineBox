@@ -7,7 +7,7 @@ import type { CompanionLoopTurn } from '../../shared/companion-loop';
 import { COMPANION_WEATHER_LABELS } from '../../shared/companion-weather';
 import { companionContactReceiptSchema } from '../../shared/companion-contact';
 
-export const COMPANION_WORLD_PERCEPTION_RULES = `world是你自己的有限感知与带时间戳的见闻，不是全图监控。perception.radius、awake、遮挡和光照限制现场可见范围；只有visible=true且列于visibleCompanionIds/visibleObjectIds的资料才表示本次看见。world.observation.status=historical、requiresReobservation=true或backlog=true表示历史观察或尚未补算到当前时刻，不能作为当前天气、位置、忙闲或许可的证明。旧工具回执始终是当时的记录，本轮宿主新观察优先；asOfReal/asOfVirtual保留真正观察时点，没有新观察时先重新核实。visible=false、lastObservedAt与weatherObservedAtVirtual表示过去某时看到的事实，不能当作现在仍在那里、仍空闲或天气未变。residents仅包含当前看见、自己或有真实记忆来源的联系人，不是完整目录。未知伙伴和场景必须通过memory.world_query按需查询，结果是带时间戳的外部资料，不是你已记住或亲历的事实；只有另行经memory.record等记忆系统记录才内化，旧观察必须重新核实。knownAddresses是自己的空间记忆，own_home为本人住宅，owner_shared为房主通过真实消息分享的地址；地址并非进入许可。场景地址，不证明对方当前在家、屋内家具、忙闲、情绪或工作。其他人的内心PAD、精力、工作内容和移动计划不可知；只能依据实际外在活动和对方已经说出的内容理解。environment只表示本地实际感受；weather缺省就是未知，不能默认晴天，室内记得的旧天气不代表现在。先观察、走近或询问再确认未知事实，不能凭全局地图补造观察。时间认知使用worldClock及world.clock.virtualNow；记忆和远程来信不会自动更新对方的现场位置。`;
+export const COMPANION_WORLD_PERCEPTION_RULES = `world是你自己的有限感知与带时间戳的见闻，不是全图监控。perception.radius、awake、遮挡和光照限制现场可见范围；只有visible=true且列于visibleCompanionIds/visibleObjectIds的资料才表示本次看见。world.observation.status=historical、requiresReobservation=true或backlog=true表示历史观察或尚未补算到当前时刻，不能作为当前天气、位置、忙闲或许可的证明。旧工具回执始终是当时的记录，本轮宿主新观察优先；asOfReal/asOfVirtual保留真正观察时点，没有新观察时先重新核实。visible=false、lastObservedAt与weatherObservedAtVirtual表示过去某时看到的事实，不能当作现在仍在那里、仍空闲或天气未变。residents仅包含当前看见、自己或有真实记忆来源的联系人，不是完整目录。未知伙伴和场景仅可通过本轮实际提供的world查询按需了解，结果是带时间戳的外部资料，不是你已记住或亲历的事实；长期内化由宿主后台记忆流程处理，旧观察必须重新核实。knownAddresses是自己的空间记忆，own_home为本人住宅，owner_shared为房主通过真实消息分享的地址；地址并非进入许可。场景地址，不证明对方当前在家、屋内家具、忙闲、情绪或工作。其他人的内心PAD、精力、工作内容和移动计划不可知；只能依据实际外在活动和对方已经说出的内容理解。environment只表示本地实际感受；weather缺省就是未知，不能默认晴天，室内记得的旧天气不代表现在。先观察、走近或询问再确认未知事实，不能凭全局地图补造观察。时间认知使用worldClock及world.clock.virtualNow；记忆和远程来信不会自动更新对方的现场位置。`;
 
 const residentsSchema = z.array(z.object({ companionId: z.string(), name: z.string(), active: z.boolean().optional(), homeSceneId: z.string().optional() }));
 const record = (value: unknown): Record<string, unknown> | undefined => value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : undefined;
@@ -99,7 +99,7 @@ export function companionModelWorld(value: unknown, companionId: string, options
         actorId: event.actorId, targetId: event.targetId, sceneId: event.kind === 'social_phone' ? undefined : event.sceneId, text: outwardText, simulation: event.simulation,
         sourceMessageId: event.sourceMessageId, conversationId: event.conversationId, sourceReads: event.sourceReads,
         ...(witnessed ? { witnessIds: [companionId] } : {}), ...(behavior ? { behavior } : {}),
-        ...(event.effect && event.actorId === companionId ? { effect: event.effect } : {}) }]; }),
+        }]; }),
     relationships: rows(source.relationships).flatMap(item => { const result = companionWorldRelationshipSchema.safeParse(item);
       return result.success && result.data.companionId === companionId ? [result.data] : []; }),
     works: rows(source.works).flatMap(item => { const result = companionWorldWorkSchema.safeParse(item);

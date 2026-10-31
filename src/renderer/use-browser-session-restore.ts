@@ -29,6 +29,7 @@ import {
 import { useLocale, useT } from "./i18n";
 import {
   applyStoredBrowserSession,
+  browserSessionInitialLoad,
   type LoadContentForRestore,
 } from "./restore-browser-session";
 import type { BeginBrowsePage } from "./use-browse-pagination";
@@ -153,11 +154,36 @@ export function useBrowserSessionRestore(
         // Tabs first: the saved strip decides which tab is active, and the
         // scope restored below is applied to that tab's history.
         restoreWorkspaceTabs(activeLibrary.libraryId);
-        const restoredItems =
-          (await loadContent(activeLibrary, "all", {
-            blockingLibraryLoad: true,
-          })) ?? [];
-        const session = readBrowserSession(activeLibrary.libraryId);
+        let session = readBrowserSession(activeLibrary.libraryId);
+        const initialLoad = browserSessionInitialLoad({
+          session,
+          collectionRecursive: collectionRecursiveRef.current,
+          folderRecursive: (folderId) =>
+            isFolderRecursiveEnabled(
+              loadFolderRecursivePreferences(),
+              activeLibrary!.libraryId,
+              folderId,
+            ),
+        });
+        let restoredItems: AssetSummary[];
+        try {
+          restoredItems =
+            (await loadContent(activeLibrary, initialLoad.scope, {
+              ...initialLoad.options,
+              blockingLibraryLoad: true,
+            })) ?? [];
+        } catch (scopeError) {
+          if (!session || session.scope.kind === "all") throw scopeError;
+          console.warn(
+            "Saved browser scope could not be restored.",
+            scopeError,
+          );
+          session = null;
+          restoredItems =
+            (await loadContent(activeLibrary, "all", {
+              blockingLibraryLoad: true,
+            })) ?? [];
+        }
         let restoredLocation: WorkspaceNavLocation = { kind: "all" };
         if (session) {
           try {
@@ -166,6 +192,7 @@ export function useBrowserSessionRestore(
               library: activeLibrary,
               session,
               initialItems: restoredItems,
+              initialScopeLoaded: true,
               collectionRecursive: collectionRecursiveRef.current,
               isFolderRecursiveEnabled: (libraryId, folderId) =>
                 isFolderRecursiveEnabled(

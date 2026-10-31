@@ -309,7 +309,7 @@ test('world save resumes an actual route, peer relationship and visit after proc
     expect(savedActor.travel).toEqual({ targetSceneId: allowed.destination!.sceneId, exitId: parkEntrance.id, entryId: allowed.destination!.entryId });
     expect(savedActor.destinationId).toBe(allowed.destination!.sceneId);
     // One actual greeting and the owner's separately delivered address share.
-    expect(savedRelation.interactions).toBe(2); expect(savedRelation.affinity).toBe(50);
+    expect(savedRelation.interactions).toBe(2); expect(savedRelation).not.toHaveProperty('affinity'); expect(savedRelation).not.toHaveProperty('trust');
     expect(saved.visits.find(value => value.id === visit.id)?.status).toBe('allowed');
     const savedAt = Date.now();
     expect(Math.abs(Date.parse(saved.clock.virtualNow) - savedAt)).toBeLessThan(2000);
@@ -322,7 +322,7 @@ test('world save resumes an actual route, peer relationship and visit after proc
     expect(Date.parse(restored.clock.virtualNow)).toBeGreaterThan(Date.parse(saved.clock.virtualNow));
     expect(Math.abs(Date.parse(restored.clock.virtualNow) - Date.now())).toBeLessThan(2000);
     expect(restored.visits.find(value => value.id === visit.id)?.status).toBe('allowed');
-    expect(restored.relationships.find(relation => relation.companionId === guestId && relation.targetCompanionId === hostId)).toMatchObject({ affinity: savedRelation.affinity, trust: savedRelation.trust, interactions: savedRelation.interactions });
+    expect(restored.relationships.find(relation => relation.companionId === guestId && relation.targetCompanionId === hostId)).toMatchObject({ interactions: savedRelation.interactions });
     expect(restoredActor.sceneId === savedActor.sceneId && restoredActor.position.x === savedActor.position.x && restoredActor.position.y === savedActor.position.y).toBe(false);
     expect(restoredActor.sceneId === 'home_' + guestId && restoredActor.position.x === 10 && restoredActor.position.y === 13).toBe(false);
     // Resume the accepted local exit route; the permit alone does not teleport

@@ -3,24 +3,24 @@ import { companionWorldExpression } from '../../src/shared/companion-world-expre
 import type { CompanionWorldActor, CompanionWorldEvent } from '../../src/shared/companion-world';
 
 const now = Date.parse('2026-10-14T14:00:00Z');
-const calm: CompanionWorldActor['state'] = { energy: 80, mood: 'calm', expression: 'gentle',
-  affect: { pleasure: 0, arousal: 0, dominance: 0 }, thermalComfort: 1 };
+const calm: CompanionWorldActor['state'] = { energy: 80, expression: 'gentle', thermalComfort: 1 };
 const reaction = (state: CompanionWorldActor['state'], pose: CompanionWorldActor['artAction'] = 'idle', events: CompanionWorldEvent[] = []) =>
   companionWorldExpression({ companionId: 'alice', pose, state, events, now });
 const event = (kind: string, actorId: string, targetId: string, age = 500): CompanionWorldEvent => ({ id: 'event', sequence: 1,
   at: new Date(now - age).toISOString(), realAt: new Date(now - age).toISOString(), kind, actorId, targetId, text: '可见的实际世界事件', simulation: true });
 
 describe('host world expressions remain consistent with real activity', () => {
-  it('keeps bed, seated work, meals and movement poses even during strong emotion', () => {
-    const upset = { ...calm, mood: 'low' as const, affect: { pleasure: -.8, arousal: .7, dominance: .6 } };
+  it('keeps bed, seated work, meals and movement poses regardless of obsolete score fields', () => {
+    const upset = { ...calm, mood: 'low', affect: { pleasure: -.8, arousal: .7, dominance: .6 } };
     for (const pose of ['sleep', 'work', 'eat', 'sitDown', 'standUp', 'lieDown', 'wake', 'run'] as const)
       expect(reaction(upset, pose, [event('visit_request', 'bob', 'alice')]).action).toBe(pose);
   });
-  it('distinguishes withdrawn low arousal from high arousal frustration using the same PAD state as the brain', () => {
-    expect(reaction({ ...calm, mood: 'low', affect: { pleasure: -.6, arousal: -.3, dominance: -.2 } }).action).toBe('sad');
-    expect(reaction({ ...calm, mood: 'low', affect: { pleasure: -.6, arousal: .6, dominance: .4 } }).action).toBe('angry');
-    expect(reaction({ ...calm, affect: { pleasure: .5, arousal: .3, dominance: .1 } }).action).toBe('pleased');
-    expect(reaction({ ...calm, energy: 18, mood: 'bright' }).action).toBe('tired');
+  it('does not invent an emotional expression from old scores and reflects actual fatigue', () => {
+    const upset = { ...calm, mood: 'low', affect: { pleasure: -.6, arousal: .6, dominance: .4 } };
+    const pleased = { ...calm, affect: { pleasure: .5, arousal: .3, dominance: .1 } };
+    expect(reaction(upset).action).toBe('idle');
+    expect(reaction(pleased).action).toBe('idle');
+    expect(reaction({ ...calm, energy: 18 }).action).toBe('tired');
   });
   it('reacts to a current incoming visit and uses the actual event start', () => {
     const visit = event('visit_request', 'bob', 'alice');

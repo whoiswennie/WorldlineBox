@@ -10,7 +10,7 @@ vi.mock('electron', () => ({ utilityProcess: { fork: vi.fn() } }));
 
 it('rejects another owner before a bound cold service creates directories or launches native work', async () => {
   const root = await mkdtemp(path.join(tmpdir(), 'worldline-owner-cold-bound-')), launch = vi.fn();
-  const directory = path.join(root, 'alice', '.认知索引', 'cold');
+  const directory = path.join(root, 'alice', '.运行', '索引', 'cold');
   const service = new ColdKnowledgeService({ dataRoot: directory, boundOwnerId: 'alice', vendorRoot: 'unused', workerPath: 'unused', launch,
     embedding: { baseUrl: 'http://127.0.0.1', model: 'fixture', dimension: 4, apiKey: 'fixture' }, authorize: async () => true });
   try {
@@ -22,8 +22,11 @@ it('rejects another owner before a bound cold service creates directories or lau
 
 it('accepts only the exact canonical owner subtree supplied by the host resolver', () => {
   const workspaceRoot = path.resolve('synthetic-owner-assets'), ownerRoot = path.join(workspaceRoot, 'alice');
-  const storage = { ownerId: 'alice', workspaceRoot, ownerRoot, indexRoot: path.join(ownerRoot, '.认知索引'), ownerPrompts: { aimemoTemplate: 'live owner text', timelineTemplate: 'live timeline', summaryTemplate: 'live summary' } };
+  const storage = { ownerId: 'alice', workspaceRoot, ownerRoot, indexRoot: path.join(ownerRoot, '.运行', '索引'), ownerPrompts: { aimemoTemplate: 'live owner text', timelineTemplate: 'live timeline', summaryTemplate: 'live summary' } };
   expect(companionOwnerRuntimeStorage('alice', storage)).toEqual(storage);
+  const signed = { ...storage, ownerPrompts: { ...storage.ownerPrompts, focusGuidanceSignature: 'a'.repeat(64) } };
+  expect(companionOwnerRuntimeStorage('alice', signed).ownerPrompts.focusGuidanceSignature).toBe(signed.ownerPrompts.focusGuidanceSignature);
+  expect(() => companionOwnerRuntimeStorage('alice', { ...signed, ownerPrompts: { ...signed.ownerPrompts, focusGuidanceSignature: 'not-a-signature' } })).toThrow('签名');
   expect(() => companionOwnerRuntimeStorage('bob', storage)).toThrow('可信伙伴');
   expect(() => companionOwnerRuntimeStorage('alice', { ...storage, indexRoot: path.join(workspaceRoot, '.global-cache') })).toThrow('当前伙伴');
 });

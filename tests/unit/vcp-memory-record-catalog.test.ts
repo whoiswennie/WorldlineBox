@@ -1,9 +1,10 @@
 import { createRequire } from 'node:module';
+import { createHash } from 'node:crypto';
 import { mkdtemp, mkdir, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterEach, expect, it, vi } from 'vitest';
-import type { VcpMemoryNote } from '../../src/main/vcp-memory/contracts';
+import type { VcpMemoryNote, VcpMemoryProjectionDescriptor, VcpMemoryProjectionInspection } from '../../src/main/vcp-memory/contracts';
 import { removeOwnedDirectory } from '../../src/main/vcp-memory/filesystem';
 
 type RecordData = VcpMemoryNote & { indexState: 'indexed'; recordedAt: string; rawPath?: string };
@@ -18,13 +19,16 @@ const require = createRequire(import.meta.url);
 const { OwnedMemoryRecordCatalog } = require('../../src/main/vcp-memory/record-catalog.cjs') as {
   OwnedMemoryRecordCatalog: new(options: { recordPath(id: string): string; normalize(value: unknown): VcpMemoryNote; maxCachedRecords?: number; maxCacheBytes?: number }) => Catalog;
 };
-const { normalizeNote, VcpMemoryRuntime } = require('../../src/main/vcp-memory/runtime.cjs') as {
+const { normalizeNote, renderNativeDiaryFileText, VcpMemoryRuntime } = require('../../src/main/vcp-memory/runtime.cjs') as {
   normalizeNote(input: unknown): VcpMemoryNote;
+  renderNativeDiaryFileText(input: VcpMemoryNote): string;
   VcpMemoryRuntime: new() => { records: Catalog; recordsRoot: string; kb: unknown; notesRoot: string; requireReady(): void;
+    peripherals: { invalidateCorpus(): void; close(): Promise<void> };
     notePaths: Map<string, string>; sourceIds: Map<string, string>; fileIds: Map<string, string>; bindNotePath(id: string, file: string): void;
     removeSources(files: string[]): Promise<void>; removeRecordNote(id: string): Promise<void>;
     paths(id: string): { record: string; note: string }; remember(note: VcpMemoryNote): Promise<unknown>; forget(id: string): Promise<unknown>;
     replace(notes: VcpMemoryNote[]): Promise<{ count: number }>; list(): Promise<VcpMemoryNote[]>; read(id: string): Promise<VcpMemoryNote | null>;
+    inspectProjection(descriptors: VcpMemoryProjectionDescriptor[]): Promise<VcpMemoryProjectionInspection>;
     exportNotes(): Promise<VcpMemoryNote[]>; close(): Promise<void> };
 };
 const directories: string[] = [];
@@ -128,4 +132,31 @@ it('performs frequent replacement, deletion, list/export and close without hydra
   second = normalizeNote(record('two', 'second restored', 2)); await runtime.replace([first, second]);
   expect(await runtime.read('two')).toMatchObject({ content: 'second restored' });
   await runtime.close(); expect(runtime.records.cacheSnapshot()).toMatchObject({ records: 0, entries: 0, bytes: 0 });
+});
+
+it('inspects restored native records against exact host hashes and canonical annotations, with affected-only repair', async () => {
+  const directory = await root(), runtime = new VcpMemoryRuntime();
+  runtime.recordsRoot = directory; runtime.notesRoot = path.join(directory, 'notes'); runtime.requireReady = () => undefined;
+  runtime.peripherals = { invalidateCorpus: () => undefined, close: async () => undefined };
+  await mkdir(path.join(runtime.notesRoot, 'memories'), { recursive: true });
+  runtime.kb = { shutdown: async () => undefined, nativeKnowledgeRuntime: {
+    listIndexedFilePaths: async () => [...runtime.notePaths.values()].map(file => path.relative(runtime.notesRoot, file)) } };
+  vi.spyOn(runtime, 'removeSources').mockResolvedValue();
+  const first = normalizeNote({ ...record('first'), occurredAt: '2026-10-26T00:00:00Z' }), second = normalizeNote({ ...record('second'), occurredAt: '2026-10-26T00:00:00Z' });
+  for (const note of [first, second]) {
+    const rawPath = `memories/${note.id}.md`, file = path.join(runtime.notesRoot, rawPath);
+    const stored = { ...note, rawPath, recordedAt: note.occurredAt!, indexState: 'indexed' as const };
+    await writeFile(file, renderNativeDiaryFileText(note)); await writeFile(runtime.paths(note.id).record, JSON.stringify(stored));
+    runtime.records.set(note.id, stored); runtime.bindNotePath(note.id, file);
+  }
+  const descriptors = [first, second].map(note => { const { content, ...annotations } = note;
+    return { id: note.id, contentHash: createHash('sha256').update(content).digest('hex'), annotations }; });
+  const remember = vi.spyOn(runtime, 'remember');
+  expect(await runtime.inspectProjection(descriptors)).toEqual({ upsertIds: [], removedIds: [], reused: 2 });
+  expect(remember).not.toHaveBeenCalled();
+  await writeFile(runtime.paths('first').note, 'UNTRUSTED_DERIVED_BYTES');
+  expect(await runtime.inspectProjection(descriptors)).toEqual({ upsertIds: ['first'], removedIds: [], reused: 1 });
+  expect(runtime.records.get('first')).toBeUndefined(); expect(runtime.records.get('second')).toBeDefined();
+  expect(await runtime.inspectProjection([])).toMatchObject({ upsertIds: [], removedIds: ['second'], reused: 0 });
+  expect(runtime.records.size).toBe(0); await runtime.close();
 });

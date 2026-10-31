@@ -1,9 +1,11 @@
 import { z } from 'zod';
+import { companionHostBehaviorMatches } from './companion-host-behavior';
 
 const id = z.string().regex(/^[a-zA-Z0-9_-]{1,100}$/);
+export const companionSelfUnderstandingKindSchema = z.enum(['preference', 'aversion', 'value', 'voice', 'self_understanding', 'worldview', 'relationship_view', 'habit', 'goal']);
 /** A bounded reading of the owner's source-backed VCP self-understanding diary. */
 export const companionCharacterDevelopmentDraftSchema = z.strictObject({
-  kind: z.enum(['preference', 'aversion', 'value', 'voice']),
+  kind: companionSelfUnderstandingKindSchema,
   topic: z.string().trim().min(1).max(80), statement: z.string().trim().min(1).max(300),
   basis: z.enum(['self_expression', 'reflection']), qualification: z.string().trim().min(1).max(300).optional(),
   supersedesMemoryIds: z.array(id).max(8).default([]),
@@ -14,12 +16,19 @@ export const companionCharacterDevelopmentDraftSchema = z.strictObject({
 export type CompanionCharacterDevelopmentDraft = z.infer<typeof companionCharacterDevelopmentDraftSchema>;
 export const companionCharacterDevelopmentCommand = z.strictObject({
   type: z.literal('character.development'), companionId: id, conversationId: id,
-  beforeSequence: z.number().int().nonnegative().optional(), limit: z.number().int().min(1).max(24).default(12),
+  beforeSequence: z.number().int().nonnegative().optional(), limit: z.number().int().min(1).max(24).default(12), cursor: id.optional(),
 });
+export const companionCharacterDevelopmentScopeCommands = [
+  z.strictObject({ type: z.literal('character.development.scopes.page'), companionId: id.optional(), conversationId: id.optional(),
+    afterCompanionId: id.optional(), afterConversationId: id.optional(), limit: z.number().int().min(1).max(16).optional() }),
+  z.strictObject({ type: z.literal('character.development.scopes.ack'), companionId: id, conversationId: id,
+    expectedGeneration: z.number().int().positive(), nextCursor: id.optional() }),
+] as const;
 export const companionCharacterDevelopmentSchema = z.strictObject({
   companionId: id, conversationId: id, observedAt: z.iso.datetime(), truncated: z.boolean(),
+  hasMore: z.boolean().optional(), nextCursor: id.optional(),
   items: z.array(z.strictObject({
-    memoryId: id, memoryVersion: z.number().int().positive(), kind: z.enum(['preference', 'aversion', 'value', 'voice']),
+    memoryId: id, memoryVersion: z.number().int().positive(), kind: companionSelfUnderstandingKindSchema,
     topic: z.string().max(80), statement: z.string().max(300), basis: z.enum(['self_expression', 'reflection']),
     qualification: z.string().max(300).optional(), updatedAt: z.string(), sourceMessageIds: z.array(id).max(100),
   })).max(24),
@@ -48,13 +57,15 @@ export function normalizeCompanionCharacterDiary<T extends { content: string; di
 export function validateCompanionCharacterDevelopment(input: {
   owner: string; diaryName?: string; content: string; development: CompanionCharacterDevelopmentDraft;
   evidence: ReadonlyArray<{ sourceMessageId: string; quote: string }>;
-  sources: ReadonlyArray<{ id: string; authorId: string; content: string }>;
+  sources: ReadonlyArray<{ id: string; authorId: string; content: string; revision?: number; conversationId?: string; kind?: string; hostBehavior?: unknown }>;
   dependencies: ReadonlyArray<{ id: string; companionId: string; sources: ReadonlyArray<{ messageId: string }> }>;
 }): void {
   const { development, sources, evidence, owner } = input;
   if (input.diaryName !== '自我认识' || !input.content.includes(development.statement)
     || development.qualification && !input.content.includes(development.qualification)) throw new Error('成长档案必须来自自我认识日记的实际正文。');
   const selfEvidence = evidence.filter(item => sources.some(source => source.id === item.sourceMessageId && source.authorId === owner && source.content.includes(item.quote)));
+  const hostBehaviorEvidence = evidence.filter(item => sources.some(source => source.id === item.sourceMessageId
+    && companionHostBehaviorMatches(owner, source) && source.content.includes(item.quote)));
   if (!/(?:我|\bI\b|\bfor me\b)/iu.test(development.statement)
     || /(?:我(?:知道|记得|听说|读到|看到|转述|引用)|\bI (?:know|remember|heard|read|quote)\b)/iu.test(development.statement)) throw new Error('成长档案需要本人的明确立场，不能只是转述别人。');
   if (development.basis === 'self_expression') {
@@ -63,8 +74,9 @@ export function validateCompanionCharacterDevelopment(input: {
       || /(?:他说|她说|用户说|台词|角色扮演|假如|假设|例如|举例|he said|she said|roleplay|for example)/iu.test(development.statement))
       throw new Error('本人的明确偏好或表达必须逐字引用本人正式言行，不能将他人的话归给自己。');
   } else {
-    if (!selfEvidence.length || !input.dependencies.length
+    if ((!selfEvidence.length && !hostBehaviorEvidence.length) || !input.dependencies.length
       || !input.dependencies.every(note => note.companionId === owner && note.sources.some(source => sources.some(message => message.id === source.messageId))))
       throw new Error('反思形成的认识需要本人实际言行及已读取、贡献来源的本人记忆；阅读他人资料不等于认同。');
+    if (hostBehaviorEvidence.length && !/(?:虚拟|virtual)/iu.test(development.qualification ?? '')) throw new Error('宿主虚拟生活行为形成的认识必须保留虚拟生活限定，不能冒充现实身体经验。');
   }
 }

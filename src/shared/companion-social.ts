@@ -7,6 +7,9 @@ import { companionReplyProgressSchema } from './companion-reply-progress';
 import { companionSocialRecallSchema, companionSocialReplyProgressCommand, companionSocialReplyMemoryCommand } from './companion-social-reply';
 import { companionTopicSchema, companionTopicStateSchema } from './companion-topic';
 import { companionExecutionReadsetSchema } from './companion-execution-evidence';
+import { companionReplyReceivedStateSchema } from './companion-reply-observation';
+import { companionTaskAssetsBlobSchema } from './companion-task-assets-binding';
+import { companionTaskPreparationBlobSchema } from './companion-task-preparation';
 
 const id = z.string().regex(/^[a-zA-Z0-9_-]{1,100}$/);
 export const companionSocialDaySchema = z.string().regex(/^\d{4}-\d{2}-\d{2}$/).refine(value => {
@@ -65,11 +68,19 @@ export const companionSocialOriginSchema = z.strictObject({
   id, initiatorId: id, initiatorKind: z.enum(['human_player', 'companion']), ownerId: id,
   sharedText: z.string().max(2000), provenance: z.enum(['current_player_request', 'companion_initiative']),
 });
-export const companionSocialJobSchema = z.strictObject({ id, companionId: id, conversationId: id, sourceMessageId: id,
+const agendaNativeState = { agendaInputVersion: z.string().regex(/^[a-f0-9]{64}$/u).optional(), agendaRevision: z.number().int().nonnegative().optional(),
+  agendaFailureCount: z.number().int().nonnegative().optional(), agendaCycleFailureCount: z.number().int().nonnegative().optional(), agendaUncertain: z.boolean().optional(), agendaRetryAt: z.iso.datetime().optional(), agendaParentRunId: id.optional() };
+const agendaNativeClaim = { companionId: id.optional(), id: id.optional(), agendaRunId: id.optional(), agendaLeaseToken: id.optional(), expectedInputVersion: z.string().regex(/^[a-f0-9]{64}$/u).optional() };
+const agendaNativeControl = { companionId: id, id, inputVersion: z.string().regex(/^[a-f0-9]{64}$/u), expectedRevision: z.number().int().nonnegative(),
+  operationId: z.string().uuid(), action: z.enum(['park', 'resume', 'abandon']) };
+export const companionSocialJobSchema = z.strictObject({ id, companionId: id, conversationId: id, sourceMessageId: id, ...agendaNativeState,
+  receivedState: companionReplyReceivedStateSchema.optional(),
+  taskAssets: companionTaskAssetsBlobSchema.optional(),
+  preparation: companionTaskPreparationBlobSchema.optional(),
   stop: companionUserStopSchema.optional(), updatedAt: z.iso.datetime().optional(), finishedAt: z.iso.datetime().optional(),
   throughSequence: z.number().int().positive(), chainId: id, remainingTurns: z.number().int().min(0).max(4),
   memberIds: z.array(id).min(2).max(20), channel: z.enum(['phone', 'face_to_face']), urgent: z.boolean().optional(),
-  status: z.enum(['pending', 'running', 'done', 'failed', 'cancelled']), attempts: z.number().int().nonnegative(),
+  status: z.enum(['pending', 'running', 'done', 'failed', 'cancelled', 'parked', 'abandoned']), attempts: z.number().int().nonnegative(),
   terminal: z.boolean().optional(), error: z.string().max(2000).optional(),
   leaseToken: id.optional(), typingNotBefore: z.iso.datetime(), createdAt: z.iso.datetime(),
   origin: companionSocialOriginSchema.optional(),
@@ -93,6 +104,7 @@ export const companionSocialProgressEvidenceSchema = z.strictObject({ observatio
   outbound: z.array(z.strictObject({ message: z.lazy(() => messageSchema), recipientIds: z.array(id).max(19) })).max(100),
   complete: z.boolean() });
 export const companionSocialNotificationSchema = z.strictObject({
+  ...agendaNativeState,
   stop: companionUserStopSchema.optional(), updatedAt: z.iso.datetime().optional(), finishedAt: z.iso.datetime().optional(),
   id, companionId: id, conversationId: id, sourceMessageId: id, origin: companionSocialOriginSchema,
   ...companionSocialNotificationEventSchema.shape,
@@ -101,7 +113,7 @@ export const companionSocialNotificationSchema = z.strictObject({
   /** Host claim only: actual sent bodies linked to this human goal and its
    * exact recipients. Unrelated owner rooms are never part of this view. */
   progressEvidence: companionSocialProgressEvidenceSchema.optional(),
-  status: z.enum(['pending', 'running', 'done', 'failed', 'cancelled']), attempts: z.number().int().nonnegative(),
+  status: z.enum(['pending', 'running', 'done', 'failed', 'cancelled', 'parked', 'abandoned']), attempts: z.number().int().nonnegative(),
   terminal: z.boolean().optional(), error: z.string().max(2000).optional(),
   leaseToken: id.optional(), createdAt: z.iso.datetime(),
 });
@@ -120,7 +132,13 @@ export const companionSocialStorageCommands = [...companionSocialPublicCommands,
   z.strictObject({ type: z.literal('social.message.append'), conversationId: id, authorId: id, content: z.string().min(1).max(65536), virtualCreatedAt: z.iso.datetime(), clientId: id, recipientIds: z.array(id).max(20).optional(), replyToId: id.optional() }),
   z.strictObject({ type: z.literal('social.send'), urgent: z.boolean().optional(), companionId: id, conversationId: id, content: z.string().min(1).max(2000), channel: z.enum(['phone', 'face_to_face']), sourceMessageId: id.optional(), authorizationMessageId: id.optional(), replyToId: id.optional(), clientId: id,
     topicId: id.nullable().optional(), agentSource: z.strictObject({ conversationId: id, messageId: id }).optional(), executionReadset: companionExecutionReadsetSchema.optional() }),
-  z.strictObject({ type: z.literal('social.job.claim') }),
+  z.strictObject({ type: z.literal('social.job.claim'), ...agendaNativeClaim }),
+  z.strictObject({ type: z.literal('social.job.read'), companionId: id, id }),
+  z.strictObject({ type: z.literal('social.job.check'), companionId: id, id, leaseToken: id }),
+  z.strictObject({ type: z.literal('social.job.assets.save'), companionId: id, id, leaseToken: id, taskAssets: companionTaskAssetsBlobSchema }),
+  z.strictObject({ type: z.literal('social.job.preparation.save'), companionId: id, id, leaseToken: id, preparation: companionTaskPreparationBlobSchema }),
+  z.strictObject({ type: z.literal('social.job.defer'), companionId: id, id, leaseToken: id, error: z.string().max(2000), retryAfterMs: z.number().int().min(1000).max(86_400_000), uncertain: z.boolean().optional() }),
+  z.strictObject({ type: z.literal('social.job.control'), ...agendaNativeControl }),
   z.strictObject({ type: z.literal('social.job.game_context'), id, leaseToken: id, companionId: id, conversationId: id, sourceMessageId: id,
     sourceChecksum: z.string().regex(/^[a-f0-9]{64}$/), recipientIds: z.array(id).max(19).optional() }),
   z.strictObject({ type: z.literal('social.job.complete'), id, leaseToken: id, text: z.string().trim().max(2000).nullable().optional(), nextRecipientId: id.optional(), workOffer: companionSocialWorkOfferSchema.optional(), shareAddress: z.boolean().optional(), expectedMemoryRevision: z.string().min(1).max(160).optional(), memoryRecall: companionSocialRecallSchema.optional(), executionReadset: companionExecutionReadsetSchema.optional() }),
@@ -132,7 +150,10 @@ export const companionSocialStorageCommands = [...companionSocialPublicCommands,
   z.strictObject({ type: z.literal('social.job.fail'), id, leaseToken: id, error: z.string().max(2000), terminal: z.boolean().optional() }),
   z.strictObject({ type: z.literal('social.delegation.record'), companionId: id, conversationId: id, sourceMessageId: id,
     recipientIds: z.array(id).min(1).max(19), sharedText: z.string().trim().min(1).max(2000), visitId: id.optional(), intent: z.enum(['visit', 'message']).default('visit') }),
-  z.strictObject({ type: z.literal('social.notification.claim') }),
+  z.strictObject({ type: z.literal('social.notification.claim'), ...agendaNativeClaim }),
+  z.strictObject({ type: z.literal('social.notification.read'), companionId: id, id }),
+  z.strictObject({ type: z.literal('social.notification.defer'), companionId: id, id, leaseToken: id, error: z.string().max(2000), retryAfterMs: z.number().int().min(1000).max(86_400_000), uncertain: z.boolean().optional() }),
+  z.strictObject({ type: z.literal('social.notification.control'), ...agendaNativeControl }),
   z.strictObject({ type: z.literal('social.notification.complete'), id, leaseToken: id, text: z.string().trim().min(1).max(2000).nullable(), executionReadset: companionExecutionReadsetSchema.optional() }),
   z.strictObject({ type: z.literal('social.notification.fail'), id, leaseToken: id, error: z.string().max(2000), terminal: z.boolean().optional() }),
 ] as const;

@@ -1,5 +1,7 @@
 # 伙伴系统闭环验收
 
+> 本页是2026-10-22构建的历史收据，不能证明新认知系统已通过。当前发布门见[新协议验收](companion-cognition-acceptance-2026-10-28.md)，实际进度与限制见[逐项证据审计](companion-cognition-acceptance-evidence-audit-2026-10-28.md)。
+
 日期：2026-10-22，Windows x64。本次以真实记忆内容、实际执行与持久状态共同判断，不以返回成功或界面截图单独代替验收。源码范围、VCP 适配和来源规则见[实施说明](companion-memory-implementation.md)，原版信息流与真实模型原文见[内容审计](vcp-memory-content-audit.md)。
 
 后续工作台、角色身份修正与设备能力检测的独立范围和证据见[补充验收](companion-memory-device-ui-acceptance-2026-10-22.md)。以下安装包记录对应此前已验证的版本，不能直接作为后续源码改动的发布证明。

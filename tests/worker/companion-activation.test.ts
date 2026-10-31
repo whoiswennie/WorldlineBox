@@ -51,7 +51,6 @@ it('loads only the explicitly added and active fish world and never creates dorm
 
 it('persists manual activation across restart and creates custom contacts dormant', () => {
   const f = fixture(); f.store.close(); stores.delete(f.store);
-  const db = new Database(f.filename); db.exec("UPDATE companions SET data=json_remove(data,'$.active')"); db.close();
   let store = new CompanionsStore(f.filename); stores.add(store);
   expect(store.state().companions.filter(role => role.active).map(role => role.id)).toEqual([fish]);
   activate(store, sister); activate(store, fish, false);

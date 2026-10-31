@@ -1,176 +1,78 @@
-import { randomUUID } from 'node:crypto';
-import { watch, type FSWatcher, type Dir } from 'node:fs';
-import { lstat, opendir } from 'node:fs/promises';
+import { createHash, randomUUID } from 'node:crypto';
 import type { CompanionMemory } from '../../shared/companions';
-import type { CompanionMemoryDocument, CompanionMemoryDocumentRead } from '../../shared/companion-memory-documents';
+import type { CompanionMemoryDocument } from '../../shared/companion-memory-documents';
 import type { CompanionStorageCommand, CompanionStorageResponse } from '../../shared/companion-storage';
-import { memoryLibraryPathParts, type CompanionMemoryLibrary, type MemoryLibraryDocumentSession } from './memory-library';
+import type { CompanionMemoryLibrary, MemoryLibraryDocumentSession } from './memory-library';
 import { companionHistoryView, companionNarrativeText } from '../../shared/companion-memory-content';
+import { detachedCompanionExecutionValidation, withCompanionExecutionValidation } from './source-execution-evidence';
 
-type State = { generation: string; frames: Array<{ relative: string; dir: Dir }>; prioritizedDirectory?: string; started: boolean; complete: boolean; indexed: number; dirty: Set<string>; watcher?: FSWatcher; job?: Promise<void>; error?: string; lastScan: number };
+type State = { generation: string; signature: string; paths: string[]; cursor: number; complete: boolean; indexed: number; dirty: Set<string>; job?: Promise<void>; batch?: Promise<void>; error?: string };
 interface Options {
-  library: CompanionMemoryLibrary;
-  request(command: CompanionStorageCommand): Promise<CompanionStorageResponse>;
-  describe(relative: string, content: string, updatedAt: string, note?: CompanionMemory, entry?: MemoryLibraryDocumentSession['manifest']['files'][string], fileCreatedAt?: string): CompanionMemoryDocument;
+  library: CompanionMemoryLibrary; request(command: CompanionStorageCommand): Promise<CompanionStorageResponse>;
+  describe(relative: string, content: string, updatedAt: string, note?: CompanionMemory, entry?: MemoryLibraryDocumentSession['manifest']['files'][string]): CompanionMemoryDocument;
 }
-/** Incremental, persistent file catalogue. Only bounded pages are hydrated through the authoritative document reader. */
+/** A rebuildable search index over registered artifacts only. No filesystem
+ * watcher, directory walk, filename discovery or ingestion permission exists. */
 export class CompanionMemoryDocumentCatalog {
   private closed = false;
   private readonly states = new Map<string, State>();
+  private readonly jobs = new Set<Promise<void>>();
   constructor(private readonly options: Options) {}
-  async ensure(session: MemoryLibraryDocumentSession, requestedDirectory?: string): Promise<State> {
+  async ensure(session: MemoryLibraryDocumentSession): Promise<State> {
+    const paths = Object.entries(session.manifest.files).filter(([file, entry]) => /\.(?:md|txt)$/iu.test(file) && entry.artifact.kind !== 'context_snapshot' && !file.startsWith('.运行/')).map(([file]) => file).sort();
+    const signature = createHash('sha256').update(JSON.stringify(paths.map(file => [file, session.manifest.files[file]!.artifact.contentRevision, session.manifest.files[file]!.hash]))).digest('hex');
     let state = this.states.get(session.owner.id);
-    if (!state) {
-      state = { generation: randomUUID(), frames: [], started: false, complete: false, indexed: 0, dirty: new Set(), lastScan: Date.now() };
-      this.states.set(session.owner.id, state);
-      try {
-        state.watcher = watch(session.root, { recursive: true }, (_event, filename) => {
-          if (this.closed || !filename) return;
-          let relative = filename.replaceAll('\\', '/');
-          if (relative.endsWith('.meta.json')) relative = relative.slice(0, -10);
-          if (relative.split('/').some(part => part.startsWith('.'))) return;
-          try { memoryLibraryPathParts(relative); } catch { return; }
-          if (state!.error) state!.lastScan = 0;
-          // A rename can affect a folder; a bounded rescan discovers descendants.
-          if (!/\.(md|txt)$/iu.test(relative)) { state!.lastScan = 0; return; }
-          state!.dirty.add(relative);
-          this.schedule(session.owner.id, state!);
-        });
-        state.watcher.on('error', error => { state!.error = error.message; state!.lastScan = 0; });
-      } catch (error) { state.error = error instanceof Error ? error.message : String(error); }
-      // A persisted catalogue already provides first-page candidates. Scanning
-      // even a small batch can include slow source verification; perform it in
-      // the background while the reader authorizes the actual requested rows.
-      const initial = (async () => {
-        const persisted = (await this.options.request({ type: 'document.catalog.query', companionId: session.owner.id,
-          directory: '', query: '', tags: [], limit: 1 })).documentCatalog;
-        if (!persisted?.total) {
-          // A truly new library gets a bounded seed batch and an explicit building
-          // state rather than presenting a transient empty catalogue as complete.
-          await this.batch(session, state!, 16, requestedDirectory);
-        }
-      })();
-      // Register the entire initialization before yielding to filesystem events;
-      // watcher-triggered work must not concurrently advance the scan cursor.
-      state.job = initial;
-      try { await initial; } finally { if (state.job === initial) state.job = undefined; }
-    } else if (state.job) return state;
-    if (state.complete && Date.now() - state.lastScan > 60_000) {
-      for (const frame of state.frames) await frame.dir.close().catch(() => undefined);
-      state.frames = []; state.error = undefined; state.prioritizedDirectory = undefined;
-      state.generation = randomUUID(); state.started = false; state.complete = false; state.indexed = 0; state.lastScan = Date.now();
+    if (!state || state.signature !== signature) {
+      state = { generation: randomUUID(), signature, paths, cursor: 0, complete: false, indexed: 0, dirty: new Set() }; this.states.set(session.owner.id, state);
     }
-    this.schedule(session.owner.id, state);
-    return state;
+    // First paint needs a small useful page, not a serial read of 64 bodies.
+    // The remaining registered entries continue on the background lane.
+    if (!state.batch && !state.complete && !state.indexed) await this.batch(session, state, 12);
+    this.schedule(session.owner.id, state); return state;
   }
-  private async one(session: MemoryLibraryDocumentSession, relative: string, state: State, force = false): Promise<void> {
-    if (!/\.(md|txt)$/iu.test(relative)) return;
-    memoryLibraryPathParts(relative);
-    const entry = session.manifest.files[relative];
-    let info;
-    try { info = await lstat(session.file(relative)); }
-    catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
-    if (!info || entry?.state === 'forgotten') {
-      await this.options.request({ type: 'document.catalog.drop', companionId: session.owner.id, paths: [relative] }); return;
-    }
-    if (!info.isFile() || info.isSymbolicLink() || info.nlink > 1) throw new Error(`记忆目录不能包含链接或目录联接：${relative}`);
-    // Version the stat stamp so older derived rows acquire their time columns.
-    const stamp = `v3-narrative:${info.mtimeMs}:${info.ctimeMs}:${info.size}:${entry?.version ?? ''}:${entry?.hash ?? ''}:${entry?.state ?? ''}`;
-    if (!force && (await this.options.request({ type: 'document.catalog.touch', companionId: session.owner.id, path: relative, stamp, generation: state.generation })).documentCatalogUnchanged) return;
-    if (info.size > 8_000_000) return;
-    const content = await session.text(relative, true); if (content === undefined || content.length > 2_000_000) return;
-    const note = entry?.noteId ? await session.current(entry) : undefined;
-    if (entry?.noteId && !note) { await this.options.request({ type: 'document.catalog.drop', companionId: session.owner.id, paths: [relative] }); return; }
-    const document = this.options.describe(relative, content, info.mtime.toISOString(), note, entry, info.birthtimeMs > 0 ? info.birthtime.toISOString() : undefined);
+  private async one(session: MemoryLibraryDocumentSession, relative: string, state: State) {
+    const entry = await session.currentEntry(relative);
+    if (!entry) { await this.dropped(session.owner.id, relative); return; }
+    const note = entry.noteId ? await session.current(entry) : undefined;
+    if (entry.noteId && !note) { await this.dropped(session.owner.id, relative); return; }
+    if (entry.artifact.kind === 'navigation' && !await session.timelineValid(relative, entry.hash)) { await this.dropped(session.owner.id, relative); return; }
+    if (this.states.get(session.owner.id) !== state || this.closed) return;
+    const stamp = JSON.stringify([entry.artifact.contentRevision, entry.hash, note?.version, note?.tags]);
+    const unchanged = await this.options.request({ type: 'document.catalog.touch', companionId: session.owner.id, generation: state.generation, path: relative, stamp });
+    if (unchanged.documentCatalogUnchanged) return;
+    const content = await session.text(relative);
+    if (content === undefined || content.length > 2_000_000) return;
+    if (this.states.get(session.owner.id) !== state || this.closed) return;
+    const document = this.options.describe(relative, content, entry.artifact.committedAt, note, entry);
     await this.options.request({ type: 'document.catalog.put', companionId: session.owner.id, generation: state.generation,
-      entries: [{ document, text: relative.startsWith('记忆历史/') ? companionHistoryView(content)?.content ?? '' : companionNarrativeText(content), stamp }] });
+      entries: [{ document, text: entry.artifact.kind === 'revision_history' ? companionHistoryView(content)?.content ?? '' : companionNarrativeText(content), stamp }] });
   }
-  private async refresh(session: MemoryLibraryDocumentSession, state: State, limit: number): Promise<void> {
-    for (const relative of [...state.dirty].slice(0, limit)) { state.dirty.delete(relative); await this.one(session, relative, state, true); }
+  private batch(session: MemoryLibraryDocumentSession, state: State, limit: number): Promise<void> {
+    // Foreground and background fills share one cursor; the generation is
+    // complete only after every earlier entry has finished its durable put.
+    const batch = (state.batch ?? Promise.resolve()).then(() => this.fill(session, state, limit)); state.batch = batch;
+    void batch.finally(() => { if (state.batch === batch) state.batch = undefined; }).catch(() => undefined); return batch;
   }
-  private async batch(session: MemoryLibraryDocumentSession, state: State, limit: number, requestedDirectory?: string): Promise<void> {
-    if (!state.started) {
-      state.frames.push({ relative: '', dir: await opendir(session.root) }); state.started = true;
-      if (requestedDirectory) {
-        memoryLibraryPathParts(requestedDirectory);
-        // The cold seed should serve the actual requested notebook instead of
-        // spending its complete budget on unrelated role-prompt modules.
-        await session.text(requestedDirectory + '/worldlinebox-validation-placeholder', true);
-        try {
-          const directory = await opendir(session.file(requestedDirectory));
-          state.prioritizedDirectory = requestedDirectory;
-          state.frames.push({ relative: requestedDirectory, dir: directory });
-          await this.options.request({ type: 'document.catalog.put', companionId: session.owner.id, generation: state.generation, entries: [], folders: [requestedDirectory] });
-        } catch (error) { if (!['ENOENT', 'ENOTDIR'].includes((error as NodeJS.ErrnoException).code ?? '')) throw error; }
-      }
-    }
-    let visited = 0;
-    while (state.frames.length && visited < limit && !this.closed) {
-      const frame = state.frames.at(-1)!, entry = await frame.dir.read();
-      if (!entry) { await frame.dir.close(); state.frames.pop(); continue; }
-      visited++;
-      if (entry.name.startsWith('.')) continue;
-      const relative = frame.relative ? frame.relative + '/' + entry.name : entry.name;
-      memoryLibraryPathParts(relative);
-      if (entry.isSymbolicLink()) throw new Error(`记忆目录包含链接，已停止索引：${relative}`);
-      if (entry.isDirectory()) {
-        // The preferred DFS frame finishes before its root ancestor resumes.
-        // Skip exactly that completed subtree, keeping the rest of the owner
-        // inventory and its final generation fence intact.
-        if (relative === state.prioritizedDirectory) continue;
-        // Resolve every ancestor through the library's path checks before opening it.
-        await session.text(relative + '/worldlinebox-validation-placeholder', true);
-        await this.options.request({ type: 'document.catalog.put', companionId: session.owner.id, generation: state.generation, entries: [], folders: [relative] });
-        state.frames.push({ relative, dir: await opendir(session.file(relative)) });
-      } else if (entry.isFile() && /\.(md|txt)$/iu.test(entry.name)) { await this.one(session, relative, state); state.indexed++; }
-    }
-    if (!state.frames.length) {
-      state.complete = true; state.lastScan = Date.now();
-      await this.options.request({ type: 'document.catalog.finish', companionId: session.owner.id, generation: state.generation });
-    }
+  private async fill(session: MemoryLibraryDocumentSession, state: State, limit: number) {
+    for (const file of [...state.dirty].slice(0, limit)) { if (this.states.get(session.owner.id) !== state || this.closed) return; state.dirty.delete(file); await this.one(session, file, state); }
+    for (let count = 0; count < limit && state.cursor < state.paths.length; count++) { if (this.states.get(session.owner.id) !== state || this.closed) return; await this.one(session, state.paths[state.cursor++]!, state); state.indexed++; }
+    if (this.states.get(session.owner.id) === state && !this.closed && state.cursor === state.paths.length && !state.complete) { await this.options.request({ type: 'document.catalog.finish', companionId: session.owner.id, generation: state.generation }); state.complete = true; }
   }
-  private schedule(owner: string, state: State): void {
+  private schedule(owner: string, state: State) {
     if (this.closed || state.job || state.complete && !state.dirty.size) return;
-    const job = new Promise<void>(resolve => setImmediate(resolve)).then(async () => {
-      if (this.closed) return;
-      await this.options.library.withDocuments(owner, async session => {
-        await this.refresh(session, state, 64);
-        if (!state.complete) await this.batch(session, state, 64);
-      }, { synchronize: false, readOnly: true });
-    }).catch((error: unknown) => { state.error = error instanceof Error ? error.message : String(error); state.complete = true; }).finally(() => {
-      state.job = undefined;
-      if (!this.closed && !state.error && this.states.get(owner) === state) this.schedule(owner, state);
+    // Catalog work belongs to this owner, not the UI read's proof lifetime.
+    // Existing closed/state checks still cancel an invalidated owner job.
+    const job = detachedCompanionExecutionValidation(() => new Promise<void>(resolve => setImmediate(resolve)).then(async () => {
+      if (!this.closed && this.states.get(owner) === state) await withCompanionExecutionValidation(() =>
+        this.options.library.withDocuments(owner, session => this.batch(session, state, 64), { readOnly: true }));
+    })).catch(cause => { state.error = cause instanceof Error ? cause.message : '登记索引不可核实。'; state.complete = true; }).finally(() => {
+      this.jobs.delete(job);
+      state.job = undefined; if (!this.closed && !state.error && this.states.get(owner) === state) this.schedule(owner, state);
     });
-    state.job = job;
+    state.job = job; this.jobs.add(job);
   }
-  mark(owner: string, ...files: string[]): void {
-    const state = this.states.get(owner); if (!state) return;
-    for (const file of files) {
-      if (/\.(md|txt)$/iu.test(file)) state.dirty.add(file); else state.lastScan = 0;
-    }
-  }
-  async published(owner: string, read: CompanionMemoryDocumentRead): Promise<void> {
-    // A completed, authorized edit already has the current bytes. Publish its
-    // candidate row directly so read-your-writes does not require a foreground
-    // directory scan. Later readers still verify the actual file and authority.
-    await this.options.request({ type: 'document.catalog.put', companionId: owner,
-      generation: this.states.get(owner)?.generation ?? randomUUID(),
-      entries: [{ document: read.document, text: read.content, stamp: 'published:' + read.document.revision }] });
-  }
-  async dropped(owner: string, relative: string): Promise<void> {
-    await this.options.request({ type: 'document.catalog.drop', companionId: owner, paths: [relative] });
-  }
-  async forgetOwner(owner: string): Promise<void> {
-    const state = this.states.get(owner); if (!state) return;
-    state.watcher?.close(); this.states.delete(owner);
-    await state.job;
-    for (const frame of state.frames.splice(0)) await frame.dir.close().catch(() => undefined);
-  }
-  async close(): Promise<void> {
-    this.closed = true;
-    for (const state of this.states.values()) state.watcher?.close();
-    await Promise.allSettled([...this.states.values()].map(state => state.job));
-    for (const state of this.states.values()) for (const frame of state.frames) await frame.dir.close().catch(() => undefined);
-    this.states.clear();
-  }
+  mark(owner: string, ...files: string[]) { const state = this.states.get(owner); if (state) for (const file of files) if (state.paths.includes(file)) state.dirty.add(file); }
+  async dropped(owner: string, relative: string) { await this.options.request({ type: 'document.catalog.drop', companionId: owner, paths: [relative] }); }
+  async forgetOwner(owner: string) { const state = this.states.get(owner); this.states.delete(owner); await state?.job; }
+  async close() { this.closed = true; await Promise.allSettled(this.jobs); this.states.clear(); }
 }

@@ -21,6 +21,10 @@ class RoutedClient extends VcpMemoryClient {
   override search = vi.fn(async (scope: VcpMemoryScope) => ({ results: (this.notes.get(scope.scopeId) ?? []).map(note => ({ ...note, sourceFile: note.id, engine: 'river' as const })), diagnostics: {}, degraded: false }));
   override preprocess = vi.fn(async (scope: VcpMemoryScope, messages: VcpMemoryMessage[]) => { void messages;
     return { messages: [{ role: 'system', content: (this.notes.get(scope.scopeId) ?? []).map(note => note.content).join('\n') }], events: [] }; });
+  override capabilities = vi.fn(async () => ({ plugins: {}, coldKnowledge: false, timelineGenerationConfigured: true, modes: {
+    passive: { available: true, configured: true, enabledByDefault: true, exposure: 'RAGDiaryPlugin::RiverMemo', cost: 'native', observedCalls: 0 },
+    focus: { available: true, configured: true, enabledByDefault: false, exposure: 'explicit_AIMemo+', cost: 'model', observedCalls: 0 },
+  } }));
   override pluginCall = vi.fn(async (scope: VcpMemoryScope, name: string, args: Record<string, unknown>) => { void name; void args;
     return { result: (this.notes.get(scope.scopeId) ?? []).map(note => note.content).join('\n'), indexed: true }; });
   override interruptScope = vi.fn(async () => undefined);
@@ -35,7 +39,7 @@ async function fixture() {
   const scopes = Object.fromEntries(['alice', 'bob'].map(companionId => [companionId, { companionId, conversationId: store.openPrivate(companionId).id }]));
   for (const owner of ['alice', 'bob']) {
     const scope = scopes[owner]!, source = store.appendMessage({ conversationId: scope.conversationId, authorId: 'user', content: owner + ' ONLY_SOURCE', replyDirective: 'none' });
-    store.request({ type: 'memory.record', ...scope, candidate: { content: source.content, tags: [], sourceMessageIds: [source.id], evidence: [{ sourceMessageId: source.id, quote: source.content }] } });
+    store.request({ type: 'memory.record', ...scope, candidate: { artifactKind: 'episode_memory' as const, content: source.content, tags: [], sourceMessageIds: [source.id], evidence: [{ sourceMessageId: source.id, quote: source.content }] } });
   }
   for (;;) { const row = store.request({ type: 'memory.outbox.claim' }).memoryOutbox; if (!row) break; store.request({ type: 'memory.outbox.complete', id: row.id, leaseToken: row.leaseToken, indexed: true }); }
   const core = new RoutedClient(), clients = { alice: new RoutedClient(), bob: new RoutedClient() };
@@ -58,7 +62,7 @@ async function fixture() {
 
 it('uses each actual owner configuration as an immutable lease and releases both independent focus operations', async () => {
   const f = await fixture();
-  const results = await Promise.all(['alice', 'bob'].map(owner => f.service.search({ ...f.scopes[owner]!, query: 'ONLY_SOURCE' }, 'passive')));
+  const results = await Promise.all(['alice', 'bob'].map(owner => f.service.search({ ...f.scopes[owner]!, query: 'ONLY_SOURCE', retrievalOptions: { focus: true } }, 'passive')));
   expect(f.get).not.toHaveBeenCalled(); expect(f.release).toHaveBeenCalledTimes(2);
   expect(f.acquireGeneration.mock.calls.map(([input]) => [input.ownerId, input.config.apiFormat, input.config.model])).toEqual([
     ['alice', 'anthropic', 'alice-model'], ['bob', 'gemini_native', 'bob-model']]);
@@ -68,7 +72,7 @@ it('uses each actual owner configuration as an immutable lease and releases both
 
 it('does not fall back to an old ownerless globally configured runtime for generation', async () => {
   const f = await fixture(); delete f.runtime.acquireGeneration;
-  await expect(f.service.search({ ...f.scopes.alice!, query: 'ONLY_SOURCE' }, 'passive')).rejects.toThrow('未连接此伙伴');
+  await expect(f.service.search({ ...f.scopes.alice!, query: 'ONLY_SOURCE', retrievalOptions: { focus: true } }, 'passive')).rejects.toThrow('未连接此伙伴');
   expect(f.get).not.toHaveBeenCalled(); expect(f.clients.alice.preprocess).not.toHaveBeenCalled();
 });
 
@@ -83,11 +87,48 @@ it('keeps raw active search and metadata validation independent from chat creden
   expect(await f.service.contextValid(f.scopes.alice!, { revision: result.memoryContext!.revision, profileKey: 'legacy-global:vcp-old' })).toBe(false);
 });
 
+it('uses native conversation-aware passive recall without an extra model or owner generation credentials', async () => {
+  const f = await fixture(); delete f.runtime.acquireGeneration;
+  f.configFor.mockRejectedValue(Error('No chat model credentials'));
+  const result = await f.service.search({ ...f.scopes.alice!, query: 'ONLY_SOURCE' }, 'passive');
+  expect(result.memoryContext?.text).toBe('alice ONLY_SOURCE');
+  expect(f.configFor).not.toHaveBeenCalled(); expect(f.acquireGeneration).not.toHaveBeenCalled();
+  expect(f.core.preprocess).toHaveBeenCalledOnce();
+  const messages = f.core.preprocess.mock.calls[0]![1];
+  expect(JSON.stringify(messages)).toContain('::RiverMemo::TimeDecay180/0');
+  expect(JSON.stringify(messages)).not.toContain('AIMemo');
+  expect(result.memoryContext?.evidence).toMatchObject({ snapshotPolicy: 'task_passive_v1', dependencyCoverage: 'complete' });
+});
+
+it('keeps native-only passive packets detached with actual returned references and a final publication fence', async () => {
+  const f = await fixture(); delete f.runtime.acquireGeneration;
+  Object.defineProperty(f.core, 'supportsDetachedRecall', { value: true });
+  const note = f.store.request({ type: 'memory.snapshot', ...f.scopes.alice! }).memorySnapshot!.notes[0]!;
+  const references = [{ id: note.id, role: 'returned' as const, textHash: 'a'.repeat(64) }];
+  const prepare = vi.spyOn(f.core, 'prepareRecall').mockImplementation(async (scope, messages, clock, _policy, evidence) => {
+    expect(JSON.stringify(messages)).not.toContain('AIMemo');
+    return { schema: 'worldlinebox.prepared-recall-v2', id: 'native_packet', scopeId: scope.scopeId, contentHash: 'b'.repeat(64),
+      createdAt: new Date().toISOString(), expiresAt: new Date(Date.now() + 60000).toISOString(), corpusEpoch: 1,
+      contextReferences: references, contextReferenceCoverage: 'observed', queryClock: clock, hostEvidence: evidence };
+  });
+  const validateReasons: string[] = [];
+  vi.spyOn(f.core, 'focusRecall').mockImplementation(async (_handle, options) => {
+    validateReasons.push('publication'); await options?.validate?.('publication');
+    return { messages: [{ role: 'system', content: 'Actual native formatter text' }], events: [], contextReferences: references, contextReferenceCoverage: 'observed' };
+  });
+  const result = await f.service.search({ ...f.scopes.alice!, query: 'ONLY_SOURCE' }, 'passive');
+  expect(prepare).toHaveBeenCalledOnce(); expect(result.memoryContext?.text).toBe('Actual native formatter text');
+  expect(result.memoryContext?.evidence?.references).toEqual([expect.objectContaining({ id: note.id, role: 'returned' })]);
+  expect(result.memoryPage?.items[0]?.reasons).toEqual(['VCP 原版正文实际来源']);
+  expect(validateReasons).toEqual(['publication']); expect(f.acquireGeneration).not.toHaveBeenCalled();
+  expect(f.core.preprocess).not.toHaveBeenCalled();
+});
+
 it('releases and refuses an in-flight focus after an owner configuration change', async () => {
   const f = await fixture(); f.clients.alice.preprocess.mockImplementationOnce(async () => {
     await f.service.generationConfigurationChanged('alice'); return { messages: [{ role: 'system', content: 'STALE_RESULT' }], events: [] };
   });
-  await expect(f.service.search({ ...f.scopes.alice!, query: 'ONLY_SOURCE' }, 'passive')).rejects.toThrow();
+  await expect(f.service.search({ ...f.scopes.alice!, query: 'ONLY_SOURCE', retrievalOptions: { focus: true } }, 'passive')).rejects.toThrow();
   expect(f.interruptOwner).toHaveBeenCalledWith('alice'); expect(f.release).toHaveBeenCalledOnce(); expect(f.get).not.toHaveBeenCalled();
 });
 
@@ -96,7 +137,7 @@ it('rejects a credential-only rotation before the asynchronous configuration-cha
     f.configs.alice = { ...f.configs.alice!, apiKey: 'rotated-private-key' };
     return { messages: [{ role: 'system', content: 'OLD_CREDENTIAL_RESULT' }], events: [] };
   });
-  await expect(f.service.search({ ...f.scopes.alice!, query: 'ONLY_SOURCE' }, 'passive')).rejects.toThrow('凭证已经变化');
+  await expect(f.service.search({ ...f.scopes.alice!, query: 'ONLY_SOURCE', retrievalOptions: { focus: true } }, 'passive')).rejects.toThrow('凭证已经变化');
   expect(f.interruptOwner).not.toHaveBeenCalled(); expect(f.release).toHaveBeenCalledOnce();
   expect(f.acquireGeneration).toHaveBeenCalledOnce();
 });

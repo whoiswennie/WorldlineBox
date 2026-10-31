@@ -20,6 +20,11 @@ import type { CompanionExecutionReadset } from '../shared/companion-execution-ev
 import { companionAcceptedPeerActivitySchema, type CompanionAcceptedPeerActivity, type CompanionPeerActivityAcceptanceInput } from '../shared/companion-peer-activity';
 import { companionPeerActivitySourceChecksum } from './peer-activity-source';
 import type { CompanionPeerThoughtAuthorization } from '../shared/companion-activity-thought';
+import { assertCompanionAgendaNativeClaim, assertCompanionAgendaNativeParent, bindCompanionAgendaNative, companionAgendaNativeBound, companionAgendaNativeParentId, controlCompanionAgendaNative } from './agenda-native-parent';
+import type { CompanionReplyReceivedState } from '../shared/companion-reply-observation';
+import { withdrawCompanionReplyObservation } from '../shared/companion-reply-observation-content';
+import { assertCompanionTaskAssetsBinding } from '../shared/companion-task-assets-binding';
+import { parseCompanionTaskPreparation } from '../shared/companion-task-preparation';
 
 type Row = Record<string, string | number | null>;
 type Calendar = { timeZone: string; virtualNow: string; observedDay: string; backlog: boolean };
@@ -51,7 +56,10 @@ export class CompanionSocialStore {
     private readonly available: (owner: string, channel: Send['channel'], recipients: string[]) => boolean,
     private readonly speech: (message: CompanionSocialMessage, channel: Send['channel']) => void,
     private readonly clock: { elapsedVirtual(from: number, to: number): number } = { elapsedVirtual: (from, to) => to - from },
-    private readonly options: { observationCalendar?(): Calendar; memoryRevision?(scope: { companionId: string; conversationId: string; beforeSequence: number }): string; interrupt?(owner: string, source: CompanionSocialMessage): void; endInterrupt?(owner: string, sourceId: string): void; contactState?(owner: string): CompanionContactState; createPeerWork?(input: CompanionPeerWorkInput): { activityTaskId: string } | void; addressText?(owner: string): string; shareHome?(owner: string, recipients: string[], source: CompanionMessage): void; createPlayerGroup?(title: string, members: string[]): { id: string }; topicExecute?(command: Extract<CompanionStorageCommand, { type: `topic.${string}` }>): CompanionStorageResponse | undefined; activityTaskValid?(id: string, owner: string, conversationId: string): boolean } = {}) {
+    private readonly options: { observationCalendar?(): Calendar; memoryRevision?(scope: { companionId: string; conversationId: string; beforeSequence: number }): string; interrupt?(owner: string, source: CompanionSocialMessage): void; endInterrupt?(owner: string, sourceId: string): void; contactState?(owner: string): CompanionContactState; createPeerWork?(input: CompanionPeerWorkInput): { activityTaskId: string } | void; addressText?(owner: string): string; shareHome?(owner: string, recipients: string[], source: CompanionMessage): void; createPlayerGroup?(title: string, members: string[]): { id: string }; topicExecute?(command: Extract<CompanionStorageCommand, { type: `topic.${string}` }>): CompanionStorageResponse | undefined; activityTaskValid?(id: string, owner: string, conversationId: string): boolean;
+      queued?(job: Pick<CompanionSocialJob, 'id' | 'companionId' | 'conversationId' | 'sourceMessageId' | 'createdAt'>): void;
+      captureReceipt?(scope: CompanionWorldScope, kind: CompanionReplyReceivedState['kind']): CompanionReplyReceivedState;
+      receiptEpoch?(owner: string): number } = {}) {
     this.continuity = new CompanionSocialContinuityStore(db, append, message, visible,
       owner => available(owner, 'phone', []), () => calendar().backlog);
     this.replies = new CompanionSocialReplyStore(db);
@@ -601,7 +609,9 @@ export class CompanionSocialStore {
     if (remainingTurns <= 0) { this.db.prepare("UPDATE companion_social_chains SET status='done' WHERE id=?").run(chainId); return; }
     assertCompanionInboxCapacity(this.db, owner);
     const job: StoredJob = { urgent, round, id: randomUUID(), companionId: owner, conversationId: source.message.conversationId, sourceMessageId: source.message.id, throughSequence: source.message.sequence, chainId, remainingTurns, memberIds: this.members(source.message.conversationId), channel, status: 'pending', attempts: 0, typingNotBefore: iso(), createdAt: iso(), ...(replyOpportunity ? { replyOpportunity } : {}) };
+    job.receivedState = this.options.captureReceipt?.({ companionId: owner, conversationId: job.conversationId, beforeSequence: job.throughSequence }, 'received');
     this.db.prepare('INSERT INTO companion_social_jobs(id,companion_id,conversation_id,status,created_at,data) VALUES(?,?,?,?,?,?)').run(job.id, owner, job.conversationId, job.status, job.createdAt, JSON.stringify(job));
+    this.options.queued?.(job);
   }
   private activityReplyValid(proof: ActivityReplyProof): boolean {
     if (!this.options.activityTaskValid?.(proof.taskId, proof.ownerId, proof.taskConversationId)) return false;
@@ -723,6 +733,8 @@ export class CompanionSocialStore {
     return this.continuity.stopNotification(companionId, id, stop);
   }
   private saveJob(job: StoredJob, leaseUntil?: string): void {
+    if (job.agendaInputVersion) job.agendaRevision = (job.agendaRevision ?? 0) + 1;
+    job.agendaRetryAt = ['pending', 'failed'].includes(job.status) ? leaseUntil : undefined;
     this.db.prepare('UPDATE companion_social_jobs SET status=?,lease_until=?,data=? WHERE id=?').run(job.status, leaseUntil ?? null, JSON.stringify(job), job.id);
     this.replies.terminal(job);
   }
@@ -761,11 +773,25 @@ export class CompanionSocialStore {
     this.endChain(job.chainId);
   }
   private publicJob(job: StoredJob): CompanionSocialJob {
+    const epoch = this.options.receiptEpoch?.(job.companionId);
+    if (job.receivedState && epoch !== undefined && epoch > job.receivedState.revocationEpoch) {
+      job.receivedState = withdrawCompanionReplyObservation(job.receivedState, job.companionId, epoch);
+      // Only monotonic source redaction is persisted here. A status read never
+      // replaces the task's time or increments its native processing revision.
+      this.db.prepare("UPDATE companion_social_jobs SET data=json_set(data,'$.receivedState',json(?)) WHERE id=? AND companion_id=?")
+        .run(JSON.stringify(job.receivedState), job.id, job.companionId);
+    }
     return { id: job.id, companionId: job.companionId, conversationId: job.conversationId, sourceMessageId: job.sourceMessageId,
+      ...(job.receivedState ? { receivedState: job.receivedState } : {}),
+      ...(job.taskAssets ? { taskAssets: job.taskAssets } : {}),
+      ...(job.preparation ? { preparation: job.preparation } : {}),
       throughSequence: job.throughSequence, chainId: job.chainId, remainingTurns: job.remainingTurns, memberIds: job.memberIds,
       channel: job.channel, urgent: job.urgent, status: job.status, attempts: job.attempts, leaseToken: job.leaseToken, typingNotBefore: job.typingNotBefore, createdAt: job.createdAt,
       ...(job.stop ? { stop: job.stop } : {}), ...(job.updatedAt ? { updatedAt: job.updatedAt } : {}), ...(job.finishedAt ? { finishedAt: job.finishedAt } : {}),
-      origin: this.continuity.forChain(job.chainId) };
+      origin: this.continuity.forChain(job.chainId), terminal: job.terminal, error: job.error,
+      agendaParentRunId: companionAgendaNativeParentId(this.db, 'social', job.id, job.companionId),
+      ...(job.agendaInputVersion ? { agendaInputVersion: job.agendaInputVersion, agendaRevision: job.agendaRevision,
+        agendaFailureCount: job.agendaFailureCount ?? 0, agendaCycleFailureCount: job.agendaCycleFailureCount ?? 0, agendaUncertain: job.agendaUncertain, agendaRetryAt: job.agendaRetryAt } : {}) };
   }
   private phoneBusy(owner: string, leaseId: string, allowedLeaseId = ''): boolean {
     // Actual reply and delivery leases reserve attention; virtual routines do not.
@@ -861,6 +887,7 @@ export class CompanionSocialStore {
       const found = this.db.prepare('SELECT data,lease_until FROM companion_social_jobs WHERE id=?').get(authorization.jobId);
       if (!found) return false;
       const job = parse<StoredJob>(row(found).data), source = this.message(job.sourceMessageId);
+      assertCompanionAgendaNativeParent(this.db, 'social', job.id, job.companionId, authorization.leaseToken);
       if (job.companionId !== authorization.companionId || job.conversationId !== authorization.conversationId
         || job.sourceMessageId !== authorization.sourceMessageId || job.throughSequence !== authorization.throughSequence
         || source.authorId === 'user' || source.authorId === job.companionId || !job.memberIds.includes(source.authorId)
@@ -894,10 +921,11 @@ export class CompanionSocialStore {
   private scanned(table: 'companion_social_outbox' | 'companion_social_jobs', owner: string, ordinal: number): void {
     this.db.prepare('INSERT INTO metadata(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value').run('social-scan/' + table + '/' + owner, String(ordinal));
   }
-  claim(): CompanionStorageResponse {
+  claim(input?: Extract<CompanionStorageCommand, { type: 'social.job.claim' }>): CompanionStorageResponse {
     const context = this.calendar(); return this.db.transaction(() => {
+      if (input) assertCompanionAgendaNativeClaim(this.db, input, 'social');
       let dispatched: CompanionSocialMessage | undefined;
-      const outboxOwners = this.db.prepare("SELECT companion_id FROM companion_social_outbox WHERE status='pending' GROUP BY companion_id ORDER BY MIN(rowid)").all() as Row[];
+      const outboxOwners = input?.id ? [] : this.db.prepare("SELECT companion_id FROM companion_social_outbox WHERE status='pending' AND (? IS NULL OR companion_id=?) GROUP BY companion_id ORDER BY MIN(rowid)").all(input?.companionId ?? null, input?.companionId ?? null) as Row[];
       for (const owner of outboxOwners) for (const value of this.candidates('companion_social_outbox', String(owner.companion_id), "status='pending'", [])) {
         this.scanned('companion_social_outbox', String(owner.companion_id), Number(value.ordinal));
         const pending = parse<PendingSend>(value.data);
@@ -906,14 +934,20 @@ export class CompanionSocialStore {
         const message = this.db.transaction(() => this.deliver(pending, context)).immediate(); dispatched ??= message;
         if (message || pending.typingNotBefore && Date.parse(pending.typingNotBefore) > Date.now()) { this.scanned('companion_social_outbox', pending.companionId, 0); break; }
       }
-      const jobPredicate = "COALESCE(json_extract(data,'$.terminal'),0)=0 AND json_extract(data,'$.attempts')<8 AND (status='pending' OR status IN('running','failed') AND lease_until<=?)", now = iso();
-      const jobOwners = this.db.prepare('SELECT companion_id FROM companion_social_jobs WHERE ' + jobPredicate + ' GROUP BY companion_id ORDER BY MIN(rowid)').all(now) as Row[];
-      for (const owner of jobOwners) for (const value of this.candidates('companion_social_jobs', String(owner.companion_id), jobPredicate, [now])) {
+      const jobPredicate = "COALESCE(json_extract(data,'$.terminal'),0)=0 AND (json_extract(data,'$.agendaInputVersion') IS NOT NULL OR json_extract(data,'$.attempts')<8) AND (status='pending' AND (lease_until IS NULL OR lease_until<=?) OR status IN('running','failed') AND lease_until<=?) AND (? IS NULL OR id=?)", now = iso();
+      const jobOwners = this.db.prepare('SELECT companion_id FROM companion_social_jobs WHERE ' + jobPredicate + ' AND (? IS NULL OR companion_id=?) GROUP BY companion_id ORDER BY MIN(rowid)')
+        .all(now, now, input?.id ?? null, input?.id ?? null, input?.companionId ?? null, input?.companionId ?? null) as Row[];
+      for (const owner of jobOwners) for (const value of this.candidates('companion_social_jobs', String(owner.companion_id), jobPredicate, [now, now, input?.id ?? null, input?.id ?? null])) {
         this.scanned('companion_social_jobs', String(owner.companion_id), Number(value.ordinal));
         const job = parse<StoredJob>(value.data);
+        if (input?.expectedInputVersion && job.agendaInputVersion !== input.expectedInputVersion) throw new Error('原伙伴来信的固定输入已变化，未重新拼装后冒充旧事件。');
+        if (companionAgendaNativeBound(this.db, 'social', job.id)) {
+          if (!input?.agendaRunId) continue;
+          if (job.status === 'running') { job.status = 'parked'; job.agendaUncertain = true; job.error = '先前日程回复的结果未确认，保留原始来信等待明确处置。'; delete job.leaseToken; this.saveJob(job); this.clearCommunication(job.companionId, 'job:' + job.id); continue; }
+        }
         if (job.replyOpportunity && !this.activityReplyValid(job.replyOpportunity)) { job.status = 'cancelled'; this.saveJob(job); this.endChain(job.chainId); continue; }
         if (!this.participantsActivated(job.memberIds)) { for (const id of job.memberIds.filter(id => !this.activated(id))) this.stopInactive(id); continue; }
-        if (!companionAttentionCanClaim(this.db, job.companionId, job.sourceMessageId)) continue;
+        if (!companionAttentionCanClaim(this.db, job.companionId, job.sourceMessageId, !!input?.agendaRunId)) continue;
         if (this.phoneBusy(job.companionId, 'job:' + job.id)) continue;
         if (this.db.prepare("SELECT 1 FROM companion_social_jobs WHERE companion_id=? AND status='running' AND lease_until>? LIMIT 1").get(job.companionId, iso())) continue;
         try { this.requireRoom(job.conversationId, job.companionId); } catch { job.status = 'cancelled'; this.saveJob(job); continue; }
@@ -921,19 +955,23 @@ export class CompanionSocialStore {
         if (admission !== 'active') { this.holdOrCancelTopicJob(job, admission); continue; }
         const chain = this.chain(job.chainId);
         if (!chain || chain.used >= chain.data.maxMessages || !this.continuity.chainValid(job.chainId)) { job.status = 'cancelled'; this.saveJob(job); continue; }
-        if (job.round === 'first') {
+        if (job.round === 'first' && !job.agendaInputVersion && !job.receivedState) {
           // Keep the original invitation as the reply/authority anchor while
           // including already published group replies in this reader's claim.
           const source = this.message(job.sourceMessageId);
           const latest = this.db.prepare("SELECT MAX(s.sequence) AS sequence FROM messages s LEFT JOIN companion_message_topics t ON t.message_id=s.id WHERE s.conversation_id=? AND s.status='sent' AND COALESCE(t.topic_id,'')=?").get(job.conversationId, source.topicId ?? '');
           job.throughSequence = Math.max(job.throughSequence, Number(row(latest).sequence ?? 0));
         }
-        job.readSet = this.readSet(job); if (!job.readSet.some(source => source.id === job.sourceMessageId)) { job.status = 'cancelled'; this.saveJob(job); continue; }
+        if (!job.agendaInputVersion) job.readSet = this.readSet(job);
+        if (!job.readSet?.some(source => source.id === job.sourceMessageId) || job.agendaInputVersion && !this.validRead(job)) { job.status = 'cancelled'; job.error = '原来信的准确读集已经变化，保留旧事件，不替换成新内容。'; this.saveJob(job); continue; }
+        job.receivedState ??= this.options.captureReceipt?.({ companionId: job.companionId, conversationId: job.conversationId, beforeSequence: job.throughSequence }, 'preparation');
         if (job.urgent) this.options.interrupt?.(job.companionId, this.wrap(job.sourceMessageId));
         const available = this.available(job.companionId, job.channel, job.memberIds.filter(id => id !== job.companionId));
         if (job.channel === 'face_to_face' && !available) { job.status = 'cancelled'; this.saveJob(job); this.clearFace(job.conversationId); continue; }
-        if (context.backlog || !available || this.continuity.forChain(job.chainId)?.initiatorKind !== 'human_player' && !job.urgent && !this.budget(job.companionId, 'reply', context)) continue;
+        if (context.backlog || !available || !input?.agendaRunId && this.continuity.forChain(job.chainId)?.initiatorKind !== 'human_player' && !job.urgent && !this.budget(job.companionId, 'reply', context)) continue;
+        if (input?.agendaRunId) job.agendaInputVersion = hash([job.companionId, job.id, job.sourceMessageId, job.chainId, job.readSet]);
         job.status = 'running'; job.attempts++; job.leaseToken = randomUUID(); job.typingNotBefore = iso(Date.now() + 1200); this.saveJob(job, iso(Date.now() + 180000));
+        if (input) bindCompanionAgendaNative(this.db, input, 'social', job.id, job.leaseToken);
         this.scanned('companion_social_jobs', job.companionId, 0);
         if (job.channel === 'phone') this.communicate(job.companionId, job.conversationId, job.memberIds.filter(id => id !== job.companionId), 'typing', 180000, 'job:' + job.id);
         else this.communicateFace(job.conversationId, undefined, 60000);
@@ -945,6 +983,7 @@ export class CompanionSocialStore {
   complete(input: Extract<CompanionStorageCommand, { type: 'social.job.complete' }>): CompanionStorageResponse {
     const context = this.calendar(); return this.db.transaction(() => {
       const existing = this.db.prepare('SELECT * FROM companion_social_jobs WHERE id=?').get(input.id); if (!existing) throw new Error('社交回复任务不存在。'); const job = parse<StoredJob>(row(existing).data);
+      assertCompanionAgendaNativeParent(this.db, 'social', job.id, job.companionId, input.leaseToken);
       if (job.status !== 'running' || job.leaseToken !== input.leaseToken || Date.parse(String(row(existing).lease_until)) < Date.now()) throw new Error('这次社交回复的租约已经失效。');
       if (job.replyOpportunity && !this.activityReplyValid(job.replyOpportunity)) throw new Error('持续任务的原始来源或本次真实回复机会已失效，未发布。');
       if (!this.participantsActivated(job.memberIds)) { for (const id of job.memberIds.filter(id => !this.activated(id))) this.stopInactive(id); return { ok: true }; }
@@ -953,7 +992,7 @@ export class CompanionSocialStore {
       if (input.expectedMemoryRevision && this.options.memoryRevision?.({ companionId: job.companionId, conversationId: job.conversationId, beforeSequence: job.throughSequence }) !== input.expectedMemoryRevision) throw new Error('社交回复引用的记忆已经变化，请重新回忆后再发言。');
       this.requireRoom(job.conversationId, job.companionId); if (!this.validRead(job) || !this.continuity.chainValid(job.chainId)) throw new Error('已观察的社交来源或原玩家委托已经撤回或修改，请重新读取。');
       if (job.channel === 'face_to_face' && !this.available(job.companionId, job.channel, job.memberIds.filter(id => id !== job.companionId))) { job.status = 'cancelled'; delete job.leaseToken; this.saveJob(job); this.clearFace(job.conversationId); return { ok: true }; }
-      if (context.backlog || this.phoneBusy(job.companionId, 'job:' + job.id) || !this.available(job.companionId, job.channel, job.memberIds.filter(id => id !== job.companionId)) || this.continuity.forChain(job.chainId)?.initiatorKind !== 'human_player' && !job.urgent && !this.budget(job.companionId, 'reply', context)) { job.status = 'pending'; delete job.leaseToken; delete job.readSet; this.saveJob(job); this.clearCommunication(job.companionId, 'job:' + job.id); return { ok: true, socialPending: true }; }
+      if (context.backlog || this.phoneBusy(job.companionId, 'job:' + job.id) || !this.available(job.companionId, job.channel, job.memberIds.filter(id => id !== job.companionId)) || !job.agendaInputVersion && this.continuity.forChain(job.chainId)?.initiatorKind !== 'human_player' && !job.urgent && !this.budget(job.companionId, 'reply', context)) { job.status = 'pending'; delete job.leaseToken; delete job.readSet; this.saveJob(job); this.clearCommunication(job.companionId, 'job:' + job.id); return { ok: true, socialPending: true }; }
       if (Date.parse(job.typingNotBefore) > Date.now()) throw new Error('伙伴仍在输入，尚未完成这次发言。');
       const chain = this.chain(job.chainId); if (!chain || chain.used >= chain.data.maxMessages) throw new Error('这次交谈已经结束。');
       if (input.nextRecipientId && (input.nextRecipientId === job.companionId || !job.memberIds.includes(input.nextRecipientId))) throw new Error('下一位回应者必须是同会话的其他伙伴。');
@@ -993,6 +1032,12 @@ export class CompanionSocialStore {
     this.db.transaction(() => {
       const existing = this.db.prepare('SELECT data FROM companion_social_jobs WHERE id=?').get(input.id); if (!existing) return; const job = parse<StoredJob>(row(existing).data);
       if (job.status !== 'running' || job.leaseToken !== input.leaseToken) return;
+      if (job.agendaInputVersion) {
+        job.agendaFailureCount = (job.agendaFailureCount ?? 0) + 1; job.agendaCycleFailureCount = (job.agendaCycleFailureCount ?? 0) + 1;
+        job.status = input.terminal || job.agendaCycleFailureCount >= 3 ? 'parked' : 'failed'; job.error = input.error; delete job.leaseToken;
+        this.saveJob(job, job.status === 'failed' ? iso(Date.now() + Math.min(300000, 10000 * 2 ** Math.min(job.agendaCycleFailureCount, 5))) : undefined);
+        this.clearCommunication(job.companionId, 'job:' + job.id); return;
+      }
       if (input.terminal) {
         job.status = 'failed'; job.terminal = true; job.error = input.error; delete job.leaseToken;
         this.saveJob(job); this.clearCommunication(job.companionId, 'job:' + job.id);
@@ -1022,9 +1067,68 @@ export class CompanionSocialStore {
       case 'social.reply.progress': this.requireRoom(command.conversationId, command.companionId); return { ok: true, socialReplyProgress: this.replies.list(command.conversationId, command.companionId, command.limit ?? 20) };
       case 'social.reply.for-message': return { ok: true, socialReplyReceipt: this.replies.receipt(command.messageId) };
       case 'social.reply.for-job': return { ok: true, socialReplyReceipt: this.replies.pending(command.jobId) };
-      case 'social.job.progress': this.replies.update(command); return { ok: true };
+      case 'social.job.progress': {
+        const found = this.db.prepare('SELECT companion_id FROM companion_social_jobs WHERE id=?').get(command.id) as { companion_id: string } | undefined;
+        if (found) assertCompanionAgendaNativeParent(this.db, 'social', command.id, found.companion_id, command.leaseToken);
+        this.replies.update(command); return { ok: true };
+      }
       case 'social.send': return this.send(command);
-      case 'social.job.claim': return this.claim();
+      case 'social.job.claim': return this.claim(command);
+      case 'social.job.read': {
+        const found = this.db.prepare('SELECT data FROM companion_social_jobs WHERE id=? AND companion_id=?').get(command.id, command.companionId);
+        return { ok: true, ...(found ? { socialJob: this.publicJob(parse<StoredJob>(row(found).data)) } : {}) };
+      }
+      case 'social.job.check': return this.db.transaction(() => {
+        const found = this.db.prepare("SELECT data FROM companion_social_jobs WHERE id=? AND companion_id=? AND status='running' AND lease_until>?").get(command.id, command.companionId, iso());
+        if (!found) return { ok: true }; const job = parse<StoredJob>(row(found).data);
+        if (job.leaseToken !== command.leaseToken) return { ok: true };
+        try { assertCompanionAgendaNativeParent(this.db, 'social', job.id, job.companionId, command.leaseToken);
+          this.requireRoom(job.conversationId, job.companionId); } catch { return { ok: true }; }
+        if (!this.participantsActivated(job.memberIds) || this.jobTopicAdmission(job) !== 'active'
+          || !this.validRead(job) || !this.continuity.chainValid(job.chainId)) return { ok: true };
+        this.db.prepare('UPDATE companion_social_jobs SET lease_until=? WHERE id=?').run(iso(Date.now() + 180000), job.id); return { ok: true, socialJob: this.publicJob(job) };
+      }).immediate();
+      case 'social.job.assets.save':
+      case 'social.job.preparation.save': return this.db.transaction(() => {
+        const found = this.db.prepare("SELECT data,lease_until FROM companion_social_jobs WHERE id=? AND companion_id=? AND status='running' AND lease_until>?").get(command.id, command.companionId, iso());
+        if (!found) throw new Error('伙伴来信任务已停止或租约失效，未保存角色快照。');
+        const job = parse<StoredJob>(row(found).data);
+        if (job.leaseToken !== command.leaseToken) throw new Error('伙伴来信角色快照的执行租约不匹配。');
+        assertCompanionAgendaNativeParent(this.db, 'social', job.id, job.companionId, command.leaseToken);
+        if (!this.participantsActivated(job.memberIds) || this.jobTopicAdmission(job) !== 'active' || !this.validRead(job) || !this.continuity.chainValid(job.chainId))
+          throw new Error('伙伴来信的来源、参与者或当前任务已经失效，未保存角色快照。');
+        let changed = false;
+        if (command.type === 'social.job.assets.save') {
+          if (job.taskAssets && job.taskAssets !== command.taskAssets) throw new Error('伙伴来信任务初始角色快照已封存，不能被后续步骤替换。');
+          if (!job.taskAssets) {
+            assertCompanionTaskAssetsBinding(command.taskAssets, { ownerId: job.companionId, conversationId: job.conversationId,
+              sourceMessageId: job.sourceMessageId, invocationKey: job.id });
+            job.taskAssets = command.taskAssets; changed = true;
+          }
+        } else {
+          if (job.preparation && job.preparation !== command.preparation) throw new Error('伙伴来信任务初始输入已封存，不能被后续步骤替换。');
+          if (!job.preparation) {
+            parseCompanionTaskPreparation(command.preparation, { kind: 'social', ownerId: job.companionId, conversationId: job.conversationId,
+              sourceMessageId: job.sourceMessageId, invocationKey: job.id });
+            job.preparation = command.preparation; changed = true;
+          }
+        }
+        if (changed) this.saveJob(job, String(row(found).lease_until));
+        return { ok: true, socialJob: this.publicJob(job) };
+      }).immediate();
+      case 'social.job.control': return this.db.transaction(() => {
+        const found = this.db.prepare('SELECT data FROM companion_social_jobs WHERE id=? AND companion_id=?').get(command.id, command.companionId);
+        if (!found) throw new Error('伙伴通信行为不存在。');
+        const job = controlCompanionAgendaNative(this.db, 'social', command, parse<StoredJob>(row(found).data), value => this.saveJob(value));
+        this.clearCommunication(job.companionId, 'job:' + job.id); return { ok: true, socialJob: this.publicJob(job) };
+      }).immediate();
+      case 'social.job.defer': return this.db.transaction(() => {
+        const found = this.db.prepare('SELECT data FROM companion_social_jobs WHERE id=? AND companion_id=?').get(command.id, command.companionId);
+        if (!found) return { ok: true }; const job = parse<StoredJob>(row(found).data);
+        if (job.status !== 'running' || job.leaseToken !== command.leaseToken) return { ok: true };
+        job.status = command.uncertain ? 'parked' : 'pending'; job.agendaUncertain = command.uncertain || undefined; job.error = command.error; delete job.leaseToken;
+        this.saveJob(job, command.uncertain ? undefined : iso(Date.now() + command.retryAfterMs)); this.clearCommunication(job.companionId, 'job:' + job.id); return { ok: true };
+      }).immediate();
       case 'social.job.game_context': return { ok: true, socialGameContext: companionSocialGameContext(this.db, command, {
         visible: this.visible, validRead: job => this.validRead(job as StoredJob), sourceGoal: (owner, source) => companionSocialGoalOrigin(this.db, this, this.visible, owner, source), topicExecute: this.options.topicExecute, activityTaskValid: this.options.activityTaskValid }) };
       case 'social.job.complete': return this.complete(command);

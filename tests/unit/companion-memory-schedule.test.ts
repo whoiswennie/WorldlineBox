@@ -54,4 +54,16 @@ describe('memory scheduler projections', () => {
     expect(completed.schedule).toMatchObject({ scheduleKind: 'finished' }); expect(completed.nextAttemptAt).toBeUndefined();
     expect(completed.schedule?.nextCheckAt).toBeUndefined(); expect(completed.schedule?.nextAttemptAt).toBeUndefined();
   });
+  it('never turns a parked job into automatic work when its owner has a live timer', () => {
+    const future = new Date(Date.now() + 5000).toISOString();
+    const parked = memoryProcessingJobSchedule({ ...queued(), status: 'parked', nextAttemptAt: future }, memorySchedule('capture', { scheduleKind: 'timer', nextCheckAt: future }));
+    expect(parked).toMatchObject({ status: 'parked', schedule: { scheduleKind: 'manual', waitingReason: 'parked' } });
+    expect(parked.nextAttemptAt).toBeUndefined(); expect(parked.schedule?.nextCheckAt).toBeUndefined();
+    expect(parked.schedule?.condition).toContain('其他独立作业继续');
+  });
+  it('shows an explicitly abandoned job as stopped and preserves the distinction from successful processing', () => {
+    const abandoned = memoryProcessingJobSchedule({ ...queued(), status: 'abandoned' }, memorySchedule('capture', { scheduleKind: 'running' }));
+    expect(abandoned).toMatchObject({ status: 'abandoned', schedule: { scheduleKind: 'finished' } });
+    expect(abandoned.schedule?.condition).toContain('原始事件和处理历史保留'); expect(abandoned.schedule?.condition).not.toContain('已完成');
+  });
 });

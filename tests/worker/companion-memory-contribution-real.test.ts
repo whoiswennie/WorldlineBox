@@ -34,7 +34,7 @@ it.skipIf(process.env.WORLDLINEBOX_MEMORY_CONTRIBUTION_REAL !== '1')('avoids re-
       await mkdir(nativeRoot, { recursive: true });
       const native = await nativeManagementHarness(nativeRoot, async command => store.request(command));
       const snapshot = () => store.request({ type: 'memory.snapshot', ...scope }).memorySnapshot!.notes;
-      const draft = (id: string, raw: string, content: string) => ({ content, tags: ['真实经历'], diaryName: '经历', sourceMessageIds: [id], evidence: [{ sourceMessageId: id, quote: raw }] });
+      const draft = (id: string, raw: string, content: string) => ({ artifactKind: 'episode_memory' as const, content, tags: ['真实经历'], diaryName: '经历', sourceMessageIds: [id], evidence: [{ sourceMessageId: id, quote: raw }] });
       let receipt: Record<string, unknown> = { omittedFact };
       try {
         for (let i = 0; i < 12; i++) {

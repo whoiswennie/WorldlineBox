@@ -4,6 +4,10 @@ import type { CompanionActionEvent } from './companions';
 /** Same bounded, non-reasoning projection for live IPC and durable task history. */
 export function companionProgressEvent(event: DshTaskEvent): CompanionActionEvent | undefined {
   if (/(?:^|[._-])(reasoning|thinking|analysis)(?:$|[._-])/i.test(event.type) || !event.summary) return;
+  if (event.type === 'approval_required' || event.type === 'approval_decided') return {
+    sequence: event.sequence, type: event.type, summary: event.summary, receivedAt: event.receivedAt,
+    toolName: event.toolName, callId: event.callId, content: event.text?.slice(0, 16000), contentKind: 'message',
+  };
   if (event.type === 'parent_report' && event.text) {
     try {
       const report = JSON.parse(event.text) as { text?: unknown; kind?: unknown };

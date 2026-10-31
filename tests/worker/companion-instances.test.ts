@@ -6,6 +6,7 @@ import { CompanionsStore } from '../../src/companions/store';
 import { CompanionAssetProfileStore } from '../../src/main/companions/asset-profile';
 import { buildCompanionContext } from '../../src/main/companions/context';
 import { companionInstanceSchema } from '../../src/shared/companion-instance';
+import type { CompanionStorageCommand } from '../../src/shared/companion-storage';
 
 const roots: string[] = [], stores: CompanionsStore[] = [];
 afterEach(async () => {
@@ -19,10 +20,15 @@ it('creates no default contacts, then instantiates only selected owners and pers
   const root = await mkdtemp(path.join(tmpdir(), 'companion-instance-')); roots.push(root);
   const file = path.join(root, 'messages.sqlite'), store = new CompanionsStore(file); stores.push(store);
   expect(store.state().companions).toEqual([]); expect(store.state().conversations).toEqual([]);
-  const role = store.restoreBuiltin('deepseek-flash'), files = new CompanionAssetProfileStore(path.join(root, '伙伴记忆'));
+  const role = store.restoreBuiltin('deepseek-flash'), files = new CompanionAssetProfileStore(path.join(root, '伙伴记忆'), {
+    registryStorage: { request: async (command: CompanionStorageCommand) => store.request(command) },
+    initialized: async companionId => !!store.request({ type: 'companion.assets.initialized', companionId }).assetProfileInitialized,
+    markInitialized: async companionId => { store.request({ type: 'companion.assets.mark-initialized', companionId }); },
+  });
   const snapshot = await files.bootstrap(role);
   const manifest = companionInstanceSchema.parse(JSON.parse(await readFile(path.join(snapshot.root, 'instance.json'), 'utf8')));
-  expect(manifest.companionId).toBe(role.id); expect(manifest.files.knowledge).toBe('资料');
+  expect(manifest.companionId).toBe(role.id); expect(manifest.files.knowledge).toBe('记忆/知识');
+  await expect((await files.artifacts(role.id)).get('origin:creation')).resolves.toMatchObject({ kind: 'origin_snapshot', ownerId: role.id });
   expect(await readdir(path.join(root, '伙伴记忆'))).toEqual([role.id]);
   const room = store.openPrivate(role.id), topics = store.request({ type: 'topic.list', conversationId: room.id, readerId: 'user' }).topics!;
   expect(topics).toHaveLength(1); expect(topics[0]).toMatchObject({ id: room.defaultTopicId, title: '主要对话', isPrimary: true, participantIds: ['user', role.id] });

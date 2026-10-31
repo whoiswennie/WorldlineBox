@@ -1,9 +1,11 @@
 import { randomUUID } from 'node:crypto';
 import { createRequire } from 'node:module';
-import { mkdirSync, mkdtempSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { afterEach, expect, it } from 'vitest';
+import { afterEach, expect, it, vi } from 'vitest';
+import { CompanionsStore } from '../../src/companions/store';
+import { CompanionLearningService } from '../../src/main/companions/learning-service';
 import { removeOwnedDirectorySync } from '../../src/main/vcp-memory/filesystem';
 import { LibraryService } from '../../src/worker/library-service';
 import { companionLearningAssets } from '../../src/main/companions/learning-assets';
@@ -29,8 +31,8 @@ function fixture() {
   const folder = service.createManagedFolder({ libraryId: library.libraryId, name: 'Books' });
   const outside = service.createManagedFolder({ libraryId: library.libraryId, name: 'Books-extra' });
   const db = new Sqlite(path.join(library.libraryPath, '.worldlinebox/library.db')); databases.push(db);
-  const add = (name: string, content: string | Buffer, target = folder) => {
-    const assetId = randomUUID(), revisionId = randomUUID(), bytes = typeof content === 'string' ? Buffer.from(content) : content;
+  const add = (name: string, content: string | Buffer, target = folder, fixedId?: string) => {
+    const assetId = fixedId ?? randomUUID(), revisionId = randomUUID(), bytes = typeof content === 'string' ? Buffer.from(content) : content;
     const relative = target.relativePath + '/' + name, at = new Date().toISOString();
     db.prepare("INSERT INTO assets(asset_id,location_kind,managed_folder_id,linked_folder_id,relative_file_path,current_revision_id,availability,path_identity,created_at,updated_at) VALUES(?,'managed',?,NULL,?,NULL,'available',?,?,?)")
       .run(assetId, target.folderId, relative, relative, at, at);
@@ -84,6 +86,40 @@ it('rejects invalid encodings and binary files without inventing readable text',
   const f = fixture(), reader = f.make();
   await expect(reader.read(f.grant, f.add('invalid.md', Buffer.from([255, 255])))).rejects.toMatchObject({ code: 'unsupported-text' });
   await expect(reader.read(f.grant, f.add('binary.md', Buffer.from([65, 0, 66])))).rejects.toMatchObject({ code: 'unsupported-text' });
+});
+
+it('durably parks a real invalid UTF-8 file after three failures and reads the next real file while retaining the bad bytes and exact manual retry history', async () => {
+  vi.useFakeTimers({ toFake: ['Date'] }); vi.setSystemTime('2026-10-28T09:00:00Z');
+  const f = fixture(), bad = f.add('bad.md', Buffer.from([255, 255]), f.folder, '00000000-0000-4000-8000-000000000001');
+  const good = f.add('good.md', '真实后续材料应正常读取。', f.folder, '00000000-0000-4000-8000-000000000002');
+  const store = new CompanionsStore(path.join(f.root, 'companion.sqlite'), [{ id: 'alice', name: 'Alice', description: '', persona: '固定起点', avatar: 'sister', model: '', proactive: false, active: true }]);
+  const canonical = companionLearningAssets({ request: f.request, memoryRoot: path.join(f.root, 'memory-runtime'), storageRequest: async command => store.request(command) });
+  const read = vi.fn(canonical.read), runner = new CompanionLearningService({ assets: { ...canonical, read }, request: async command => store.request(command), configured: () => true, changed: () => undefined, report: () => undefined });
+  const idle = async () => vi.waitFor(() => expect((runner as unknown as { active: Map<string, unknown> }).active.size).toBe(0), { timeout: 15000 });
+  try {
+    store.request({ type: 'learning.grant', companionId: 'alice', libraryId: f.library.libraryId, libraryName: f.library.displayName, libraryPath: f.library.libraryPath, folderId: f.folder.folderId, autonomous: true, intervalMinutes: 5 });
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      await runner.tick(); await idle();
+      const job = store.request({ type: 'jobs.page', ownerId: 'alice', kind: 'learning', limit: 50 }).jobPage!.items.find(item => item.assetId === bad.assetId)!;
+      expect(job).toMatchObject({ failureCount: attempt, cycleFailureCount: attempt, state: attempt === 3 ? 'parked' : 'failed' });
+      vi.setSystemTime(Date.now() + 31000);
+    }
+    await runner.tick(); await idle();
+    const reads = store.request({ type: 'learning.status', companionId: 'alice' }).learning!.reads;
+    expect(reads).toHaveLength(1); expect(reads[0]!.assetId).toBe(good.assetId);
+    expect(store.getMessage(reads[0]!.sourceMessageId).content).toContain('真实后续材料');
+    expect(read.mock.calls.filter(([, asset]) => asset.assetId === good.assetId)).toHaveLength(1);
+    expect(readFileSync(f.service.resolveAssetPath(f.library.libraryId, bad.assetId))).toEqual(Buffer.from([255, 255]));
+    const parked = store.request({ type: 'jobs.page', ownerId: 'alice', kind: 'learning', states: ['parked'], limit: 50 }).jobPage!.items.find(item => item.assetId === bad.assetId)!;
+    store.request({ type: 'jobs.control', ownerId: 'alice', kind: 'learning', id: parked.id, inputVersion: parked.inputVersion, expectedRevision: parked.revision, operationId: randomUUID(), action: 'resume' });
+    await runner.tick(); await idle();
+    const retried = store.request({ type: 'jobs.inspect', ownerId: 'alice', kind: 'learning', id: parked.id }).jobDisposition!;
+    expect(retried).toMatchObject({ state: 'failed', failureCount: 4, cycleFailureCount: 1, assetId: bad.assetId, assetRevisionId: bad.currentRevisionId });
+    expect(read.mock.calls.filter(([, asset]) => asset.assetId === good.assetId)).toHaveLength(1);
+    store.request({ type: 'jobs.control', ownerId: 'alice', kind: 'learning', id: retried.id, inputVersion: retried.inputVersion, expectedRevision: retried.revision, operationId: randomUUID(), action: 'abandon' });
+    expect(store.request({ type: 'jobs.inspect', ownerId: 'alice', kind: 'learning', id: parked.id }).jobDisposition).toMatchObject({ state: 'abandoned', failureCount: 4 });
+    expect(readFileSync(f.service.resolveAssetPath(f.library.libraryId, bad.assetId))).toEqual(Buffer.from([255, 255]));
+  } finally { await runner.close(); store.close(); vi.useRealTimers(); }
 });
 
 it('rechecks directory membership after reading before permitting any receipt', async () => {

@@ -29,6 +29,9 @@ export interface CompanionAgentKernelOptions<T> {
   decisionCommitted?(turn: CompanionLoopTurn, step: number): void;
   resultsCommitted?(turn: CompanionLoopTurn, step: number): void;
   completed?(output: T, turn: CompanionLoopTurn): Promise<void>;
+  /** End a finite host-read gate after its durable step. Failed steps discard
+   * admission state; successful steps must finish their fresh source fence. */
+  afterStep?(succeeded: boolean): Promise<void>;
   /** A bounded domain repair may request a different decision without replaying reads. */
   recoverNoProgress?(proof: CompanionAgentNoProgressProof): Promise<boolean>;
   /** Host may reject an uncommitted final while retaining its original bytes. */
@@ -44,6 +47,8 @@ export async function runCompanionAgentKernel<T>(options: CompanionAgentKernelOp
   // Resume the final native turn: it can contain a planned call whose effect
   // has already committed in the domain's idempotent effect ledger.
   for (let step = Math.max(0, state.turns.length - 1); ; step++) {
+    let failed = false;
+    try {
     // Rejected final proposals also yield, rather than bypassing the quantum below.
     if (step && step % 32 === 0) await new Promise<void>(resolve => setImmediate(resolve));
     signal?.throwIfAborted();
@@ -117,5 +122,7 @@ export async function runCompanionAgentKernel<T>(options: CompanionAgentKernelOp
         progressFrom = state.turns.length;
       }
     }
+    } catch (error) { failed = true; throw error; }
+    finally { await options.afterStep?.(!failed); }
   }
 }

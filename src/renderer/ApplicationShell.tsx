@@ -15,6 +15,8 @@ export interface ApplicationModule {
   readonly content: ReactNode;
   /** Keep a module's dialog controller active while its view stays hidden. */
   readonly keepEffectsActive?: boolean;
+  /** Fetch only feature code on navigation intent; never mount hidden views. */
+  readonly preload?: () => void;
 }
 
 export interface ApplicationShellState {
@@ -73,7 +75,9 @@ export function ApplicationShell({
               className={`application-navigation-item${selectedId === module.id ? " is-active" : ""}`}
               data-application-module={module.id}
               key={module.id}
-              onClick={() => onSelectModule(module.id)}
+              onPointerEnter={module.preload}
+              onFocus={module.preload}
+              onClick={() => { module.preload?.(); onSelectModule(module.id); }}
               type="button"
             >
               <Icon name={module.icon} size={22} />

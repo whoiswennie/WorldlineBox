@@ -17,6 +17,7 @@ import { CompanionModelAdmissionError } from '../../src/main/companions/model-qu
 import { canonicalMemoryFiles } from '../fixtures/canonical-memory-files';
 import { learningTestInput } from '../../src/companions/learning-goal-test-protocol';
 import type { CompanionMemoryFileReceipt } from '../../src/shared/companion-memory-files';
+import type { CompanionJobDisposition } from '../../src/shared/companion-job-control';
 
 const model = vi.hoisted(() => ({ structured: vi.fn() }));
 const roots: string[] = [], stores = new Set<CompanionsStore>(), services = new Set<CompanionLearningGoalService>();
@@ -35,6 +36,35 @@ function fixture() {
   return { root, file, seeds, get store() { return store; }, grant, create, rounds, claim,
     reopen() { store.close(); stores.delete(store); store = new CompanionsStore(file, seeds); stores.add(store); } };
 }
+
+it('governs the original failed learning round through restart and allows a healthy goal to pass the parked one', () => {
+  const f = fixture(), bad = f.create('需保留原轮次的坏处理'), inspect = (id: string) => f.store.request({ type: 'jobs.inspect', ownerId: 'alice', kind: 'learning_goal', id }).jobDisposition!;
+  let id = '';
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    const job = f.claim()!; expect(job.goal.id).toBe(bad.id); if (!id) id = job.round.id; expect(job.round.id).toBe(id);
+    f.store.request({ type: 'learning.goals.finish', id: bad.id, leaseToken: job.leaseToken, failureKind: 'processing', retryAfterMs: 1000,
+      round: { ...job.round, status: 'failed', error: 'Actual fixed-round processing failure.' } });
+    vi.setSystemTime(Date.now() + 1001);
+  }
+  const held = inspect(id); expect(held).toMatchObject({ state: 'parked', failureCount: 3, cycleFailureCount: 3, attemptCount: 3 });
+  f.reopen(); expect(inspect(id)).toEqual(held);
+  f.store.request({ type: 'learning.goals.run', companionId: 'alice', id: bad.id, expectedRevision: bad.revision });
+  expect(f.claim()).toBeUndefined();
+  const healthy = f.create('后续独立学习目标'), next = f.claim()!;
+  expect(next.goal.id).toBe(healthy.id); expect(next.round.id).not.toBe(id);
+  const command = (current: CompanionJobDisposition, action: 'resume' | 'park' | 'abandon') => ({ type: 'jobs.control' as const, ownerId: 'alice', kind: 'learning_goal' as const,
+    id: current.id, inputVersion: current.inputVersion, expectedRevision: current.revision, operationId: randomUUID(), action });
+  const resume = command(held, 'resume'), resumed = f.store.request(resume).jobDisposition!;
+  expect(resumed).toMatchObject({ state: 'pending', failureCount: 3, cycleFailureCount: 0 });
+  expect(f.store.request(resume).jobDisposition).toEqual(resumed);
+  const retry = f.claim()!; expect(retry.round.id).toBe(id); expect(inspect(id).attemptCount).toBe(4);
+  const abandoned = f.store.request(command(inspect(id), 'abandon')).jobDisposition!;
+  expect(abandoned).toMatchObject({ state: 'abandoned', failureCount: 3, attemptCount: 4 });
+  f.store.request({ type: 'learning.goals.finish', id: bad.id, leaseToken: retry.leaseToken, failureKind: 'processing', round: { ...retry.round, status: 'failed', error: 'Late result cannot re-open abandoned work.' } });
+  expect(inspect(id)).toEqual(abandoned);
+  expect(f.store.request({ type: 'jobs.page', ownerId: 'alice', kind: 'learning_goal', states: ['abandoned'], limit: 50 }).jobPage?.items).toEqual([abandoned]);
+  expect(f.rounds(bad.id).items[0]?.status).toBe('abandoned');
+});
 function build(f: ReturnType<typeof fixture>, overrides: Partial<Pick<CompanionLearningGoalIntegrationOptions, 'validateWrite' | 'request' | 'configFor' | 'fetchFn'>> = {}, resolveAssetContext?: CompanionModelConfig['resolveAssetContext']) {
   const material = { text: '先核对资料出处，再记录结论。', claim: '先核对资料出处。', badEvidence: false, unknownAnswer: false };
   const asset = { assetId: 'asset-one', displayName: '教材.md', currentRevisionId: 'revision', relativeFilePath: '教材.md', mediaType: 'text' } as AssetSummary;
@@ -63,7 +93,7 @@ function build(f: ReturnType<typeof fixture>, overrides: Partial<Pick<CompanionL
     throw new Error('Unexpected stage ' + stage);
   });
   const report = vi.fn();
-  const service = createCompanionLearningGoalService({ request, assets, files: { readFile: vi.fn() }, attachmentPath: vi.fn(), memory,
+  const service = createCompanionLearningGoalService({ request, assets, files: { readFile: vi.fn() }, attachmentPath: vi.fn(), managedRoots: [path.join(f.root, 'managed')], memory,
     configFor: async () => ({ apiFormat: 'openai_chat', model: 'unit-only', apiKey: 'unit-only', ...(resolveAssetContext ? { resolveAssetContext } : {}) }),
     fetchFn: async (_url, init) => {
       const wire = JSON.parse(String(init?.body));
@@ -73,29 +103,54 @@ function build(f: ReturnType<typeof fixture>, overrides: Partial<Pick<CompanionL
   return { service, material, assets, request, memory, report };
 }
 async function completed(f: ReturnType<typeof fixture>, service: CompanionLearningGoalService, goal: CompanionLearningGoal, ordinal: number) {
-  await service.tick(); await vi.waitFor(() => expect(f.rounds(goal.id).items[0]).toMatchObject({ ordinal, status: 'completed' }));
+  await service.tick(); await vi.waitFor(() => { const round = f.rounds(goal.id).items[0]; expect(round, round?.error).toMatchObject({ ordinal, status: 'completed' }); });
 }
 
-it.each(['complete', 'external_edit', 'source_withdrawal'] as const)('makes durable progress with one actual HTTP request per UTC day across restart without repaying successful self-test stages (%s)', async outcome => {
-  const f = fixture(), goal = f.create(), httpStages: string[] = [], days: Array<Record<string, unknown>> = [];
+it.each(['plan', 'learn', 'consolidate', 'questions', 'answer', 'assess'] as const)(
+  'repairs a malformed %s stage through the shared shape gate while retaining real learning evidence', async stage => {
+    const f = fixture(), goal = f.create(), b = build(f), original = model.structured.getMockImplementation()!;
+    let corrupted = false, repaired = 0;
+    model.structured.mockImplementation(async (context: { system: string; user: string }) => {
+      const payload = JSON.parse(context.user);
+      if (payload.purpose === 'companion_structured_repair') {
+        repaired++; expect(payload.structuredRepair.originalPurpose).toBe('companion_learning_' + stage);
+        expect(payload.validationErrors.length).toBeGreaterThan(0);
+        expect(payload.originalRequest).toMatchObject({ system: expect.any(String), user: expect.any(String) });
+        return original(payload.originalRequest);
+      }
+      if (!corrupted && payload.purpose === 'companion_learning_' + stage) { corrupted = true; return {}; }
+      return original(context);
+    });
+    await completed(f, b.service, goal, 1);
+    if (stage === 'consolidate') {
+      b.material.text = '先核对新资料的出处，再与旧资料交叉核实。'; b.material.claim = '新旧资料应交叉核实。';
+      vi.setSystemTime(Date.now() + 5 * 60000); await completed(f, b.service, goal, 2);
+    }
+    expect(corrupted).toBe(true); expect(repaired).toBe(1); expect(b.report).not.toHaveBeenCalled();
+    const latest = f.rounds(goal.id).items[0]!;
+    expect(latest.memoryIds).toHaveLength(1); expect(latest.reads[0]!.sourceMessageId).toBeTruthy();
+    expect(latest.claims.every(claim => claim.evidence.every(item => latest.reads.some(read => read.id === item.sourceId && read.excerpt.includes(item.quote))))).toBe(true);
+  });
+
+it.each(['complete', 'external_edit', 'source_withdrawal'] as const)('resumes actual HTTP stages across restart and temporary host unavailability without repeating successful self-test stages (%s)', async outcome => {
+  const f = fixture(), goal = f.create(), httpStages: string[] = [], httpErrors: string[] = [], days: Array<Record<string, unknown>> = [];
   const server = createServer((incoming, outgoing) => { void (async () => {
     const chunks: Buffer[] = []; for await (const chunk of incoming) chunks.push(Buffer.from(chunk));
     const wire = JSON.parse(Buffer.concat(chunks).toString('utf8')), input = { system: wire.messages[0].content, user: wire.messages[1].content };
     httpStages.push(/阶段=(\w+)/u.exec(input.system)?.[1] ?? 'unknown');
     const value = await model.structured(input);
     outgoing.writeHead(200, { 'Content-Type': 'application/json' }); outgoing.end(JSON.stringify({ choices: [{ message: { content: JSON.stringify(value) } }] }));
-  })().catch(error => { outgoing.writeHead(500); outgoing.end(String(error)); }); });
+  })().catch(error => { httpErrors.push(String(error)); outgoing.writeHead(500); outgoing.end(String(error)); }); });
   await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
   const address = server.address(); if (!address || typeof address === 'string') throw new Error('Missing local HTTP fixture address.');
-  const config: CompanionModelConfig = { apiFormat: 'openai_chat', model: 'deterministic-learning-budget-fixture', baseUrl: 'http://127.0.0.1:' + address.port, apiKey: 'synthetic-fixture-only' };
+  const config: CompanionModelConfig = { apiFormat: 'openai_chat', model: 'deterministic-learning-checkpoint-fixture', baseUrl: 'http://127.0.0.1:' + address.port, apiKey: 'synthetic-fixture-only' };
   let actual = await canonicalMemoryFiles(f.root, f.store, config), failure: unknown;
-  const artifact = { status: 'running', outcome, actualHttp: true, actualSqliteAccounting: true, actualCanonicalOwnerFiles: true,
+  const artifact = { status: 'running', outcome, actualHttp: true, actualSqliteCheckpoints: true, actualCanonicalOwnerFiles: true,
     nativeRecall: 'controlled orchestration fixture; not Rust ranking or encoder quality', realPaidProvider: false, httpStages, days };
   try {
-    const initial = await actual.resources.load(), policy = JSON.parse(initial.content); policy.defaultConnection.requestsPerUtcDay = 1;
-    await actual.resources.save(initial.revision, JSON.stringify(policy));
     let roundId = '', memoryId = '', recalls = 0;
     for (let day = 0; day < 5; day++) {
+      const httpBefore = httpStages.length;
       const withdrawn = day === 3 && outcome !== 'complete';
       if (withdrawn && outcome === 'external_edit') {
         const receipt = f.rounds(goal.id).items[0]!.selfTestProgress!.recall!.value.executionReadset.contexts.flatMap(context => context.fileReceipts ?? [])[0]!;
@@ -103,7 +158,18 @@ it.each(['complete', 'external_edit', 'source_withdrawal'] as const)('makes dura
       }
       if (withdrawn && outcome === 'source_withdrawal') f.store.request({ type: 'memory.forget', companionId: 'alice', conversationId: 'world_alice',
         sourceMessageIds: [f.rounds(goal.id).items[0]!.reads[0]!.sourceMessageId!] });
-      const b = build(f, { request: actual.request, configFor: owner => actual.configFor(owner), fetchFn: fetch });
+      const b = build(f, { request: actual.request, configFor: async owner => {
+        const current = await actual.configFor(owner), resolve = current.resolveAssetContext;
+        return { ...current, resolveAssetContext: async (context, kind) => {
+          if (!resolve) throw new Error('Canonical fixture resolver is missing.');
+          let resolved;
+          try { resolved = await resolve(context, kind); } catch (error) { httpErrors.push('canonical: ' + String(error)); throw error; }
+          // Test-only host availability: stop between real provider stages.
+          // This is not a persisted request/day/token/cost allowance.
+          if (httpStages.length >= day + 1) throw new CompanionModelAdmissionError('queue_full', 'Controlled host queue is temporarily unavailable.', new Date(Date.now() + 86400000).toISOString());
+          return resolved;
+        } };
+      }, fetchFn: fetch });
       b.memory.search.mockImplementation(async query => {
         const page = (await actual.request({ type: 'memory.browse', companionId: query.companionId, conversationId: query.conversationId })).memoryPage!;
         const materialized = await actual.live.materialize(query.companionId, page.items.map(item => item.memory));
@@ -117,13 +183,20 @@ it.each(['complete', 'external_edit', 'source_withdrawal'] as const)('makes dura
         !context?.fileReceipts?.length || await actual.live.validate('alice', context.fileReceipts));
       await b.service.tick();
       await vi.waitFor(() => expect((b.service as unknown as { jobs: Map<string, unknown> }).jobs.size).toBe(0), { timeout: 10000 });
-      expect(f.rounds(goal.id).items[0]!.status, f.rounds(goal.id).items[0]!.error).toBe(withdrawn ? outcome === 'external_edit' ? 'cancelled' : 'failed' : day < 4 ? 'deferred' : 'completed');
+      // An unauthorized byte edit is a registry conflict, not a user stop.
+      // The later zero-request assertion still proves it cannot resume or pay
+      // for another answer using the changed fixed recall.
+      const reported:unknown=b.report.mock.calls.at(-1)?.[0];
+      const diagnostic=reported instanceof Error?JSON.stringify({name:reported.name,code:'code' in reported?reported.code:undefined,cause:reported.cause,stack:reported.stack}):String(reported??'');
+      expect(f.rounds(goal.id).items[0]!.status, f.rounds(goal.id).items[0]!.error + '\n' + httpErrors.join('\n')+'\n'+diagnostic).toBe(withdrawn ? outcome === 'external_edit' ? 'deferred' : 'stale' : day < 4 ? 'deferred' : 'completed');
+      if (withdrawn) expect(f.rounds(goal.id).items[0]!.disposition?.failureCount).toBe(0);
+      if (withdrawn && outcome === 'external_edit') expect(f.rounds(goal.id).items[0]!.error)
+        .toContain('固定来源文件当前不可核验，等待原文件恢复；尚未发送新的自测请求。');
       const round = f.rounds(goal.id).items[0]!; if (!roundId) roundId = round.id; expect(round.id).toBe(roundId);
       if (round.memoryIds.length) { if (!memoryId) memoryId = round.memoryIds[0]!; expect(round.memoryIds).toEqual([memoryId]); }
-      const usage = f.store.request({ type: 'model.resources.usage', companionId: 'alice' }).modelResourceUsage!;
-      expect(usage).toMatchObject({ requests: withdrawn ? 0 : 1, responses: withdrawn ? 0 : 1, networkErrors: 0, unfinished: 0 });
-      if (!withdrawn) expect(usage.purposes).toEqual([expect.objectContaining({ purpose: 'learning', requests: 1 })]);
-      days.push({ day, status: round.status, roundId, memoryIds: round.memoryIds, completedTestStages: Object.keys(round.selfTestProgress ?? {}).filter(key => ['questions', 'recall', 'answer', 'assess'].includes(key)), usage });
+      const requests = httpStages.length - httpBefore;
+      expect(requests).toBe(withdrawn ? 0 : 1);
+      days.push({ day, status: round.status, roundId, memoryIds: round.memoryIds, completedTestStages: Object.keys(round.selfTestProgress ?? {}).filter(key => ['questions', 'recall', 'answer', 'assess'].includes(key)), actualHttpRequests: requests });
       expect(httpStages).toEqual(['plan', 'learn', 'questions', 'answer', 'assess'].slice(0, withdrawn ? 3 : day + 1));
       recalls += b.memory.search.mock.calls.filter(([query]) => (query as { query?: string }).query === '本轮材料建议怎么做？').length;
       if (!withdrawn) expect(b.report).not.toHaveBeenCalled();
@@ -146,10 +219,18 @@ it.each(['complete', 'external_edit', 'source_withdrawal'] as const)('makes dura
   }
 }, 60000);
 
+it('counts an ordinary processing error even when its prose imitates a typed canonical-file conflict',async()=>{
+  const f=fixture(),goal=f.create(),failure=new Error('正文不是合法提交字节，拒绝外部改写。');
+  const b=build(f,{validateWrite:async()=>{throw failure;}});
+  await b.service.tick();await vi.waitFor(()=>expect((b.service as unknown as {jobs:Map<string,unknown>}).jobs.size).toBe(0),{timeout:10000});
+  expect(f.rounds(goal.id).items[0]).toMatchObject({status:'failed',disposition:{failureCount:1,cycleFailureCount:1}});
+  expect(b.report).toHaveBeenCalledWith(failure);expect(f.store.listMemory('alice')).toHaveLength(0);
+});
+
 it('rejects forged, reordered, rebound or foreign-lease self-test receipts and cancels a deferred prefix when its goal changes', async () => {
   const f = fixture(), goal = f.create(), deadline = Date.now() + 3600000;
   const b = build(f, {}, async context => {
-    if (JSON.parse(context.user).purpose === 'companion_learning_answer') throw new CompanionModelAdmissionError('budget', 'Unsent answer', new Date(deadline).toISOString());
+    if (JSON.parse(context.user).purpose === 'companion_learning_answer') throw new CompanionModelAdmissionError('queue_full', 'Unsent answer', new Date(deadline).toISOString());
     return context;
   });
   await b.service.tick(); await vi.waitFor(() => expect(f.rounds(goal.id).items[0]?.status).toBe('deferred'));
@@ -195,15 +276,15 @@ it('routes every learning role stage to its canonical purpose and leaves behavio
   expect([...purposes].sort()).toEqual(['answer', 'assess', 'consolidate', 'learn', 'plan', 'questions'].map(stage => 'companion_learning_' + stage).sort());
   expect(model.structured.mock.calls.every(([input]) => input.system.includes('FILE_ONLY_LEARNING_BEHAVIOR'))).toBe(true);
 });
-it('defers unsent host budget refusal until its deadline and resumes a real goal round without fabricated reading or self-test', async () => {
+it('defers unsent host queue refusal until its deadline and resumes a real goal round without fabricated reading or self-test', async () => {
   const f = fixture(), goal = f.create(), deadline = Date.parse('2026-10-23T00:00:00Z');
   let available = false;
   const b = build(f, {}, async context => {
-    if (!available) throw new CompanionModelAdmissionError('budget', '本地模型预算待恢复。', new Date(deadline).toISOString());
+    if (!available) throw new CompanionModelAdmissionError('queue_full', '本地模型队列暂不可用。', new Date(deadline).toISOString());
     return context;
   });
   await b.service.tick();
-  await vi.waitFor(() => expect(f.rounds(goal.id).items[0]).toMatchObject({ status: 'deferred', reads: [], memoryIds: [], error: '本地模型预算待恢复。' }));
+  await vi.waitFor(() => expect(f.rounds(goal.id).items[0]).toMatchObject({ status: 'deferred', reads: [], memoryIds: [], error: '本地模型队列暂不可用。' }));
   expect(f.rounds(goal.id).items[0]!.selfTest).toBeUndefined(); expect(b.report).not.toHaveBeenCalled();
   expect(model.structured).not.toHaveBeenCalled(); expect(b.assets.read).not.toHaveBeenCalled();
   const current = f.store.request({ type: 'learning.goals.list', companionId: 'alice' }).learningGoals!.items[0]!;
@@ -257,7 +338,7 @@ it('links optional learning reflection to the exact formal VCP version and real 
   await completed(f, b.service, goal, 1);
   const round = f.rounds(goal.id).items[0]!, after = f.store.request({ type: 'state.get', ...scope }).runtimeState!;
   expect(round.stateReflection).toMatchObject({ outcome: 'applied', expectedRevision: before.revision });
-  expect(after.focus).toBe('下一轮核对第二份资料是否支持同一结论。'); expect(after.affect).toEqual(before.affect); expect(after.relationship).toEqual(before.relationship);
+  expect(after.focus).toBe('下一轮核对第二份资料是否支持同一结论。'); expect(after.experience).toEqual(before.experience); expect(after.relationshipRecords).toEqual(before.relationshipRecords);
   expect(after.recentChanges?.[0]).toMatchObject({ kind: 'memory', energyDelta: 0, memoryVersions: [{ id: round.integration!.noteId, version: round.integration!.version }], sourceMessageIds: [round.reads[0]!.sourceMessageId] });
   const authoredRevision = after.revision;
   vi.setSystemTime(Date.now() + 5 * 60000); await completed(f, b.service, goal, 2);
@@ -275,7 +356,7 @@ it('keeps newly changed conversational focus while committing a concurrent learn
     const output = await original(input);
     if (!input.system.includes('阶段=assess')) return output;
     const s = { companionId: 'alice', conversationId: f.store.openPrivate('alice').id }, source = f.store.appendMessage({ conversationId: s.conversationId, authorId: 'user', content: '先聊聊我们刚才约好的安排。' });
-    f.store.request({ type: 'state.update', ...s, proposal: { focus: '正在回应新的聊天安排', reason: '用户刚提出新的实际聊天话题。', sourceMessageIds: [source.id], evidence: [{ sourceMessageId: source.id, quote: source.content }], appraisals: [] } });
+    f.store.request({ type: 'state.update', ...s, proposal: { focus: '正在回应新的聊天安排', reason: '用户刚提出新的实际聊天话题。', sourceMessageIds: [source.id], evidence: [{ sourceMessageId: source.id, quote: source.content }], relationshipUpdates: [] } });
     const data = JSON.parse(input.user).data;
     return { ...output, stateReflection: { focus: '继续学习旧资料', reason: '学习阶段较早提出的关注。', evidence: [{ sourceId: data.reads[0].id, quote: b.material.text }] } };
   });
@@ -375,7 +456,7 @@ it('retains old rounds beyond one hundred and pages the stored history without l
     if (index) f.store.request({ type: 'learning.goals.run', companionId: 'alice', id: goal.id, expectedRevision: 1 });
     const job = f.claim()!;
     f.store.request({ type: 'learning.goals.finish', id: goal.id, leaseToken: job.leaseToken,
-      round: { ...job.round, status: 'failed', error: 'Synthetic pagination receipt, no learning claimed.' }, retryAfterMs: 1000 });
+      round: { ...job.round, status: 'cancelled', error: 'Explicit synthetic cancellation receipt, no learning claimed.' }, failureKind: 'cancelled', retryAfterMs: 1000 });
   }
   expect(f.rounds(goal.id, 0, 50)).toMatchObject({ hasMore: true, nextCursor: 50 });
   const oldest = f.rounds(goal.id, 100, 50); expect(oldest.items.map(round => round.ordinal)).toEqual([3, 2, 1]); expect(oldest.hasMore).toBe(false);

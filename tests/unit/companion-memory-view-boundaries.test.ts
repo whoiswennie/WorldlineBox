@@ -13,7 +13,7 @@ async function persisted() {
   return { directory, cache: new CompanionMemoryViewCache(directory) };
 }
 
-const note: CompanionMemory = { id: 'note_a', companionId: 'alice', scopeId: 'scope_a', content: '真实来源的合成测试日记。', tags: ['测试'], diaryName: '日记',
+const note: CompanionMemory = { artifactKind: 'episode_memory' as const, id: 'note_a', companionId: 'alice', scopeId: 'scope_a', content: '真实来源的合成测试日记。', tags: ['测试'], diaryName: '日记',
   sourceConversationId: 'private-alice', sourceMessageId: 'message_a', sourceSequence: 1, createdAt: '2026-10-21', updatedAt: '2026-10-21',
   version: 1, origin: 'user', status: 'indexed', captureMethod: 'automatic', metadata: { source: 'original' },
   sources: [{ messageId: 'message_a', conversationId: 'private-alice', authorId: 'user', sequence: 1, revision: 1, checksum: 'original', createdAt: '2026-10-21', sourceType: 'message' }] };

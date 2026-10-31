@@ -10,7 +10,7 @@ import path from 'node:path';
 import BetterSqlite3 from 'better-sqlite3';
 import { afterEach, expect, it, vi } from 'vitest';
 import { CompanionsStore, type CompanionSeed, type CompanionConnection } from '../../src/companions/store';
-import { ensureTopicContinuity } from '../../src/main/companions/topic-compaction';
+import { CompanionTopicCompactionChanged, ensureTopicContinuity } from '../../src/main/companions/topic-compaction';
 import type { CompanionReplyInput } from '../../src/main/companions/context';
 import type { CompanionStorageCommand, CompanionStorageResponse } from '../../src/shared/companion-storage';
 import { companionSearchTokens, companionSearchFacet } from '../../src/shared/companion-search';
@@ -340,11 +340,15 @@ it('cancels a stale invocation when its current source is withdrawn while an old
 
 it('revalidates source visibility inside the atomic commit, after the last asynchronous read', async () => {
   const f = fixture(), messages = f.messages(8);
+  const before=f.read().topicState?.workingState?.sourceEventId,requestCount=f.summarize.mock.calls.length;
   await expect(f.compress({ request: async command => {
     if (command.type === 'topic.update' && command.compaction) f.store.request({ type: 'memory.forget', companionId: 'alice', conversationId: f.room.id, sourceMessageIds: [messages[0]!.id] });
     return f.store.request(command);
-  } })).rejects.toThrow('来源已经失效');
+  } })).rejects.toBeInstanceOf(CompanionTopicCompactionChanged);
+  expect(f.summarize).toHaveBeenCalledTimes(requestCount+1);
   expect(f.read().topicState?.workingState).toBeUndefined();
+  expect(f.read().topicState?.workingState?.sourceEventId).toBe(before);
+  expect(f.store.getMessage(messages[0]!.id).content).toBe(messages[0]!.content);
 });
 
 it('rejects a shared-rule change during compression rather than attaching the new revision to an old summary', async () => {

@@ -10,6 +10,8 @@ const match = z.object({
 export const companionMemoryRetrievalSchema = z.object({
   mode: z.enum(['active', 'passive']), engine: z.enum(['river', 'knn', 'none']), observedAt: z.string(), resultCount: z.number().int().nonnegative(),
   candidateQuerySeparateFromContext: z.boolean(),
+  /** A captured formally published/indexed view can have durable newer work. */
+  publicationView: z.strictObject({ basis: z.literal('committed_indexed'), pendingFiles: z.boolean(), pendingIndex: z.boolean() }).optional(),
   /** Only the unfiltered owner authorization snapshot can establish this. */
   authorizedCorpusEmpty: z.literal(true).optional(), authorizedCorpusRevision: z.string().min(1).optional(),
   stages: z.array(z.object({

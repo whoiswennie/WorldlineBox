@@ -44,7 +44,7 @@ function fixture() {
       job = store.request({ type: 'memory.jobs.claim', force: true, companionId: owner }).memoryJob!;
     }
     expect(job.sourceMessageIds).toContain(source.id);
-    const memory = store.request({ type: 'memory.jobs.complete', id: job.id, leaseToken: job.leaseToken, notes: [{ content, tags: ['实际来源'], sourceMessageIds: [source.id], evidence: [{ sourceMessageId: source.id, quote: content }] }] }).memories![0]!;
+    const memory = store.request({ type: 'memory.jobs.complete', id: job.id, leaseToken: job.leaseToken, notes: [{ artifactKind: 'episode_memory' as const, content, tags: ['实际来源'], sourceMessageIds: [source.id], evidence: [{ sourceMessageId: source.id, quote: content }] }] }).memories![0]!;
     for (;;) { const entry = store.request({ type: 'memory.outbox.claim' }).memoryOutbox; if (!entry) break; store.request({ type: 'memory.outbox.complete', id: entry.id, leaseToken: entry.leaseToken, indexed: true }); }
     expect(memory.captureMethod).toBe('automatic'); return { source, memory };
   };
@@ -67,7 +67,10 @@ it('keeps old maintenance atoms outside reflection seeds and rejects their withd
   expect(second.sourceMemoryIds).toEqual([b.memory.id]); expect(second.maintenanceMemoryIds?.sort()).toEqual([a.memory.id, b.memory.id].sort());
   const memories = f.bind(second); f.store.request({ type: 'memory.forget', ...f.scope, sourceMessageIds: [a.source.id] });
   expect(() => f.store.request({ type: 'world.job.complete', stage: 'real', id: second.id, leaseToken: second.leaseToken!, sourceMemoryIds: memories.map(note => note.id),
-    maintenance: { decision: 'defer', reason: '已撤回旧依赖，不能结算。', reviewedMemoryVersions: memories.map(note => ({ id: note.id, version: note.version })) } })).toThrow('记忆已经变化');
+    maintenance: { decision: 'defer', reason: '已撤回旧依赖，不能结算。', reviewedMemoryVersions: memories.map(note => ({ id: note.id, version: note.version })) } })).toThrow('租约已失效');
+  expect(f.store.request({ type: 'world.job.check', id: second.id, leaseToken: second.leaseToken! }).worldJob).toBeUndefined();
+  expect(f.store.getMessage(a.source.id).content).toBe(a.source.content);
+  expect(f.store.getMessage(b.source.id).content).toBe(b.source.content);
   expect(f.store.request({ type: 'memory.read', ...f.scope, id: b.memory.id }).memoryRead!.memory.archivedAt).toBeUndefined();
 });
 
@@ -135,13 +138,13 @@ it('waits on exact pending sources without consuming deferred seeds or blocking 
   f.cycle(true); const reviewing = f.claim(), memories = f.bind(reviewing);
   const winner = f.store.request({ type: 'memory.consolidate', ...f.scope, operationId: 'pending_winner',
     inputs: [a.memory, b.memory].map(note => ({ id: note.id, version: note.version })),
-    candidate: { content: `${a.source.content}\n${b.source.content}`, tags: [], sourceMessageIds: [a.source.id, b.source.id],
+    candidate: { artifactKind: 'episode_memory' as const, content: `${a.source.content}\n${b.source.content}`, tags: [], sourceMessageIds: [a.source.id, b.source.id],
       evidence: [a.source, b.source].map(source => ({ sourceMessageId: source.id, quote: source.content })) } }).memories![0]!;
   const delivery = f.store.request({ type: 'memory.outbox.claim' }).memoryOutbox!;
   expect(delivery.noteId).toBe(winner.id);
   f.store.request({ type: 'world.job.complete', stage: 'real', id: reviewing.id, leaseToken: reviewing.leaseToken!, sourceMemoryIds: memories.map(note => note.id),
     maintenance: { decision: 'merge', reason: '受控夹具：候选A/C在索引确认前与A/B的待发布计划重叠。', reviewedMemoryVersions: memories.map(note => ({ id: note.id, version: note.version })) },
-    consolidations: [{ inputs: [a.memory, c.memory].map(note => ({ id: note.id, version: note.version })), candidate: {
+    consolidations: [{ inputs: [a.memory, c.memory].map(note => ({ id: note.id, version: note.version })), candidate: { artifactKind: 'episode_memory' as const,
       content: `${a.source.content}\n${c.source.content}`, tags: [], relatedMemoryIds: [], sourceMessageIds: [a.source.id, c.source.id],
       evidence: [a.source, c.source].map(source => ({ sourceMessageId: source.id, quote: source.content })) } }] });
   const db = f.database(); try {

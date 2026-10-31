@@ -20,6 +20,7 @@ function learned(f: ReturnType<typeof fixture>, owner = 'alice') {
   const grant = f.store.request({ type: 'learning.grant', companionId: owner, libraryId: 'library-' + owner, libraryName: '海边书架', libraryPath: f.root, autonomous: true, intervalMinutes: 30 }).learning!.grants[0]!;
   const job = f.store.request({ type: 'learning.claim', excludedOwners: owner === 'bob' ? ['alice'] : [] }).learningJob!;
   const content = '先核对出处，再把结论写成有条件的观察。';
+  f.store.request({ type: 'learning.begin', id: job.id, leaseToken: job.leaseToken, assetId: 'book-' + owner, assetRevisionId: 'revision-one', offset: 0 });
   const read = f.store.request({ type: 'learning.commit', id: job.id, leaseToken: job.leaseToken, assetId: 'book-' + owner, assetRevisionId: 'revision-one', assetName: '海风与阅读笔记.md', offset: 0, content, more: false }).learning!.reads[0]!;
   return { grant, read, content };
 }
@@ -29,7 +30,7 @@ describe('bounded persistent memory provenance', () => {
   it('traces a real authorized read through shared source capture, exact journal evidence and index confirmation without inventing mastery', () => {
     const f = fixture(), { read, content } = learned(f), capture = f.store.request({ type: 'memory.jobs.claim', force: true, companionId: 'alice' }).memoryJob!;
     const journalContent = content + '\n\n' + '这份学习仍然只是参考，之后还要核验它适用的条件。'.repeat(20);
-    const note = f.store.request({ type: 'memory.jobs.complete', id: capture.id, leaseToken: capture.leaseToken, notes: [{ content: journalContent, diaryName: '核对出处的阅读观察', tags: ['出处'], sourceMessageIds: [read.sourceMessageId], evidence: [{ sourceMessageId: read.sourceMessageId, quote: content }] }] }).memories![0]!;
+    const note = f.store.request({ type: 'memory.jobs.complete', id: capture.id, leaseToken: capture.leaseToken, notes: [{ artifactKind: 'episode_memory' as const, content: journalContent, diaryName: '核对出处的阅读观察', tags: ['出处'], sourceMessageIds: [read.sourceMessageId], evidence: [{ sourceMessageId: read.sourceMessageId, quote: content }] }] }).memories![0]!;
     const outbox = f.store.request({ type: 'memory.outbox.claim', companionId: 'alice' }).memoryOutbox!;
     f.store.request({ type: 'memory.outbox.complete', id: outbox.id, leaseToken: outbox.leaseToken, indexed: true });
     const before = f.db.prepare('PRAGMA data_version').get();
@@ -54,7 +55,7 @@ describe('bounded persistent memory provenance', () => {
   });
   it('independently pages more than twenty exact-source journals and rejects reused root/stage cursors', () => {
     const f = fixture(), { read, content } = learned(f), job = f.store.request({ type: 'memory.jobs.claim', force: true, companionId: 'alice' }).memoryJob!;
-    f.store.request({ type: 'memory.jobs.complete', id: job.id, leaseToken: job.leaseToken, notes: Array.from({ length: 37 }, (_, n) => ({ content: content + ' 观察编号 ' + n, diaryName: '读书札记 ' + n, sourceMessageIds: [read.sourceMessageId], evidence: [{ sourceMessageId: read.sourceMessageId, quote: content }] })) });
+    f.store.request({ type: 'memory.jobs.complete', id: job.id, leaseToken: job.leaseToken, notes: Array.from({ length: 37 }, (_, n) => ({ artifactKind: 'episode_memory' as const, content: content + ' 观察编号 ' + n, diaryName: '读书札记 ' + n, sourceMessageIds: [read.sourceMessageId], evidence: [{ sourceMessageId: read.sourceMessageId, quote: content }] })) });
     const seen: string[] = []; let cursor: string | undefined;
     for (let n = 0; n < 10; n++) {
       const page = f.store.request({ type: 'memory.trace.inspect', companionId: 'alice', kind: 'learning', id: read.id, stage: 'memory', cursor, limit: 8 }).memoryTrace!;
@@ -70,7 +71,7 @@ describe('bounded persistent memory provenance', () => {
     const source = f.store.appendMessage({ conversationId: room, authorId: 'user', content: '海边约好带上书签。' });
     const claim = f.store.request({ type: 'memory.jobs.claim', force: true, companionId: 'alice' }).memoryJob!;
     expect(claim.sourceMessageIds).toEqual([first.id, source.id]);
-    const candidate = { content: '海边约好带上书签。', sourceMessageIds: [source.id], evidence: [{ sourceMessageId: source.id, quote: source.content }] };
+    const candidate = { artifactKind: 'episode_memory' as const, content: '海边约好带上书签。', sourceMessageIds: [source.id], evidence: [{ sourceMessageId: source.id, quote: source.content }] };
     const notes = f.store.request({ type: 'memory.jobs.complete', id: claim.id, leaseToken: claim.leaseToken, notes: [candidate, candidate] }).memories!;
     expect(notes[0]!.id).toBe(notes[1]!.id); // A repeated candidate reuses the existing confirmed version.
     const note = notes[0]!, ack = f.db.prepare('SELECT completed_batch_id,output_note_versions FROM vcp_capture_jobs WHERE companion_id=? ORDER BY ordinal').all('alice') as Array<{ completed_batch_id: string; output_note_versions: string }>;
@@ -83,7 +84,7 @@ describe('bounded persistent memory provenance', () => {
     const later = f.store.appendMessage({ conversationId: room, authorId: 'user', content: '这次只是随便聊聊，不一定要留下日记。' });
     const failed = f.store.request({ type: 'memory.jobs.claim', force: true, companionId: 'alice' }).memoryJob!;
     const countBefore = f.db.prepare('SELECT COUNT(*) AS n FROM vcp_memory_notes').get(), deliveryBefore = f.db.prepare('SELECT COUNT(*) AS n FROM vcp_memory_outbox').get();
-    const valid = { content: '本次应当随着整个失败事务回滚。', sourceMessageIds: [later.id], evidence: [{ sourceMessageId: later.id, quote: later.content }] };
+    const valid = { artifactKind: 'episode_memory' as const, content: '本次应当随着整个失败事务回滚。', sourceMessageIds: [later.id], evidence: [{ sourceMessageId: later.id, quote: later.content }] };
     expect(() => f.store.request({ type: 'memory.jobs.complete', id: failed.id, leaseToken: failed.leaseToken, notes: [valid, { ...valid, content: '另一条失败候选。', evidence: [{ sourceMessageId: later.id, quote: '这不是真实来源的原文。' }] }] })).toThrow();
     expect(f.db.prepare('SELECT COUNT(*) AS n FROM vcp_memory_notes').get()).toEqual(countBefore); expect(f.db.prepare('SELECT COUNT(*) AS n FROM vcp_memory_outbox').get()).toEqual(deliveryBefore);
     expect(f.db.prepare('SELECT status,completed_batch_id,output_note_versions FROM vcp_capture_jobs WHERE id=?').get(failed.id)).toEqual({ status: 'running', completed_batch_id: null, output_note_versions: null });
@@ -93,7 +94,10 @@ describe('bounded persistent memory provenance', () => {
     expect(inspect()).toMatchObject({ relation: 'shared_source', confidence: 'shared_source', outputCount: 1, outputs: [] });
     f.db.prepare('UPDATE vcp_capture_jobs SET completed_batch_id=NULL,output_note_versions=NULL WHERE id=? OR message_id=?').run(claim.id, source.id);
     expect(inspect()).toMatchObject({ relation: 'shared_source', confidence: 'shared_source' }); expect(inspect().outputCount).toBeUndefined();
-    const peerRoom = f.store.openPrivate('bob').id, peer = f.store.saveMemory({ companionId: 'bob', conversationId: peerRoom, content: '大肥鱼的私人书签约定。' });
+    const peerRoom = f.store.openPrivate('bob').id;
+    const peerSource = f.store.appendMessage({ conversationId: peerRoom, authorId: 'bob', content: '大肥鱼的私人书签约定。', replyDirective: 'none' });
+    const peer = f.store.request({ type: 'memory.record', companionId: 'bob', conversationId: peerRoom, candidate: { artifactKind: 'episode_memory',
+      content: peerSource.content, sourceMessageIds: [peerSource.id], evidence: [{ sourceMessageId: peerSource.id, quote: peerSource.content }] } }).memories![0]!;
     f.db.prepare('UPDATE vcp_capture_jobs SET completed_batch_id=?,output_note_versions=? WHERE message_id=?').run(claim.id, JSON.stringify([{ id: peer.id, version: peer.version }]), source.id);
     expect(inspect()).toMatchObject({ relation: 'shared_source', confidence: 'shared_source', outputs: [] }); expect(JSON.stringify(inspect())).not.toContain(peer.id);
     f.store.request({ type: 'memory.forget', ...scope, id: note.id });
@@ -102,7 +106,7 @@ describe('bounded persistent memory provenance', () => {
   });
   it('removes withdrawn titles from search and never returns old note/source content through inspect or cached metadata', () => {
     const f = fixture(), { read, grant, content } = learned(f), job = f.store.request({ type: 'memory.jobs.claim', force: true, companionId: 'alice' }).memoryJob!;
-    const note = f.store.request({ type: 'memory.jobs.complete', id: job.id, leaseToken: job.leaseToken, notes: [{ content, diaryName: '只有这一次的海风暗号', sourceMessageIds: [read.sourceMessageId], evidence: [{ sourceMessageId: read.sourceMessageId, quote: content }] }] }).memories![0]!;
+    const note = f.store.request({ type: 'memory.jobs.complete', id: job.id, leaseToken: job.leaseToken, notes: [{ artifactKind: 'episode_memory' as const, content, diaryName: '只有这一次的海风暗号', sourceMessageIds: [read.sourceMessageId], evidence: [{ sourceMessageId: read.sourceMessageId, quote: content }] }] }).memories![0]!;
     expect(list(f, { query: '海风暗号' }).entries.map(entry => entry.id)).toContain(note.id);
     f.store.request({ type: 'learning.revoke', companionId: 'alice', id: grant.id, expectedRevision: grant.revision });
     expect(list(f, { query: '海风暗号' }).entries).toEqual([]);
@@ -114,7 +118,7 @@ describe('bounded persistent memory provenance', () => {
   });
   it('uses bounded natural opening titles consistently and upgrades an old diary-only cache in maintenance batches', () => {
     const f = fixture(), { read, content, grant } = learned(f), scope = { companionId: 'alice', conversationId: 'world_alice' };
-    const candidate = { sourceMessageIds: [read.sourceMessageId], evidence: [{ sourceMessageId: read.sourceMessageId, quote: content }], diaryName: '日记' };
+    const candidate = { artifactKind: 'episode_memory' as const, sourceMessageIds: [read.sourceMessageId], evidence: [{ sourceMessageId: read.sourceMessageId, quote: content }], diaryName: '日记' };
     const plain = f.store.request({ type: 'memory.record', ...scope, candidate: { ...candidate,
       content: '# 海边约定\n今天约好在旧灯塔前见面。' + '慢慢走，留一点空白。'.repeat(30) + '这是正文后面的独特暗号。' } }).memories![0]!;
     const named = f.store.request({ type: 'memory.record', ...scope, candidate: { ...candidate, content: '这段开头不应覆盖用户命名。',
@@ -147,7 +151,7 @@ describe('bounded persistent memory provenance', () => {
   });
   it('distinguishes version dependencies, successful review watermarks and persisted dream task links without claiming ordinary reflection has a job ID', () => {
     const f = fixture(), { read, content } = learned(f), capture = f.store.request({ type: 'memory.jobs.claim', force: true, companionId: 'alice' }).memoryJob!;
-    const note = f.store.request({ type: 'memory.jobs.complete', id: capture.id, leaseToken: capture.leaseToken, notes: [{ content, diaryName: '查证资料', sourceMessageIds: [read.sourceMessageId], evidence: [{ sourceMessageId: read.sourceMessageId, quote: content }] }] }).memories![0]!;
+    const note = f.store.request({ type: 'memory.jobs.complete', id: capture.id, leaseToken: capture.leaseToken, notes: [{ artifactKind: 'episode_memory' as const, content, diaryName: '查证资料', sourceMessageIds: [read.sourceMessageId], evidence: [{ sourceMessageId: read.sourceMessageId, quote: content }] }] }).memories![0]!;
     const scope = { companionId: 'alice', conversationId: 'world_alice' };
     const outbox = f.store.request({ type: 'memory.outbox.claim', companionId: 'alice' }).memoryOutbox!;
     f.store.request({ type: 'memory.outbox.complete', id: outbox.id, leaseToken: outbox.leaseToken, indexed: true });
@@ -164,7 +168,7 @@ describe('bounded persistent memory provenance', () => {
     random.mockRestore(); expect(job.dreamAllowed).toBe(true);
     const sleepId = job.id, episode = job.sleepEpisodeId!;
     f.store.request({ type: 'world.job.complete', stage: 'real', id: sleepId, leaseToken: job.leaseToken!, sourceMemoryIds: [note.id],
-      memoryCandidates: [{ content: '资料中的结论应当保留出处与适用条件。', diaryName: '睡眠反思', sourceMessageIds: [read.sourceMessageId], relatedMemoryIds: [note.id],
+      memoryCandidates: [{ artifactKind: 'knowledge' as const, content: '资料中的结论应当保留出处与适用条件。', diaryName: '睡眠反思', sourceMessageIds: [read.sourceMessageId], relatedMemoryIds: [note.id],
         evidence: [{ sourceMessageId: read.sourceMessageId, quote: content }] }] });
     f.store.request({ type: 'world.job.narrative.begin', id: sleepId, leaseToken: job.leaseToken! });
     f.store.request({ type: 'world.job.complete', stage: 'dream', id: sleepId, leaseToken: job.leaseToken!, sourceMemoryIds: [note.id],
@@ -175,7 +179,7 @@ describe('bounded persistent memory provenance', () => {
       if (!pending) break;
       f.store.request({ type: 'memory.outbox.complete', id: pending.id, leaseToken: pending.leaseToken, indexed: true });
     }
-    const saved = f.store.request({ type: 'memory.snapshot', ...scope }).memorySnapshot!.notes;
+    const saved = f.store.request({ type: 'memory.snapshot', ...scope, contentKinds: ['episode_memory', 'knowledge', 'dream_fiction'] }).memorySnapshot!.notes;
     const reflection = saved.find(note => note.diaryName === '睡眠反思')!, dream = saved.find(note => note.metadata?.dream === true)!;
     expect(reflection).toBeDefined(); expect(dream).toBeDefined();
     const trace = f.store.request({ type: 'memory.trace.inspect', companionId: 'alice', kind: 'journal', id: note.id }).memoryTrace!;
@@ -184,14 +188,17 @@ describe('bounded persistent memory provenance', () => {
     expect(trace.stages.find(stage => stage.kind === 'memory')?.records.find(item => item.noteId === reflection.id)).toMatchObject({ relation: 'dependency' });
     expect(trace.stages.find(stage => stage.kind === 'memory')?.records.find(item => item.noteId === reflection.id)?.worldJobId).toBeUndefined();
     expect(trace.stages.find(stage => stage.kind === 'dream')?.records.find(item => item.noteId === dream.id)).toMatchObject({ worldJobId: sleepId, sleepEpisodeId: episode, relation: 'dependency' });
-    f.store.request({ type: 'memory.revise', ...scope, id: note.id, expectedVersion: 1, candidate: { content: content + ' 这里补充了新的条件。', sourceMessageIds: [read.sourceMessageId], evidence: [{ sourceMessageId: read.sourceMessageId, quote: content }] } });
+    f.store.request({ type: 'memory.revise', ...scope, id: note.id, expectedVersion: 1, candidate: { artifactKind: 'episode_memory' as const, content: content + ' 这里补充了新的条件。', sourceMessageIds: [read.sourceMessageId], evidence: [{ sourceMessageId: read.sourceMessageId, quote: content }] } });
     const oldSleep = f.store.request({ type: 'memory.trace.inspect', companionId: 'alice', kind: 'sleep', id: sleepId }).memoryTrace!;
     expect(oldSleep.stages.find(stage => stage.kind === 'memory')!.records).toEqual([]);
     const oldDream = f.store.request({ type: 'memory.trace.inspect', companionId: 'alice', kind: 'dream', id: dream.id }).memoryTrace!;
     expect(oldDream.root.redacted).toBe(true); expect(oldDream.stages).toEqual([]);
   });
   it('exposes bounded resumable metadata backfill and searches ten thousand historical notes without JSON-body scans', () => {
-    const f = fixture(), room = f.store.openPrivate('alice').id, base = f.store.saveMemory({ companionId: 'alice', conversationId: room, content: '普通的可读文本。', diaryName: '札记' });
+    const f = fixture(), room = f.store.openPrivate('alice').id;
+    const raw = f.store.appendMessage({ conversationId: room, authorId: 'alice', content: '普通的可读文本。', replyDirective: 'none' });
+    const base = f.store.request({ type: 'memory.record', companionId: 'alice', conversationId: room, candidate: { artifactKind: 'episode_memory',
+      content: raw.content, diaryName: '札记', sourceMessageIds: [raw.id], evidence: [{ sourceMessageId: raw.id, quote: raw.content }] } }).memories![0]!;
     const insert = f.db.prepare('INSERT INTO vcp_memory_notes(id,companion_id,conversation_id,scope_id,identity_key,data) VALUES(?,?,?,?,?,?)');
     const start = performance.now();
     f.db.transaction(() => { for (let n = 0; n < 10000; n++) {

@@ -16,4 +16,14 @@ describe('DSH task controls independent of application models', () => {
       expect(dshTaskInputSchema.safeParse({ prompt: 'task', ...injected }).success).toBe(false);
     }
   });
+  it('pins full access only for new host-owned companion execution and retains explicit and resumed policy', () => {
+    const recordScope = { actionId: '12345678-1234-4123-8123-123456789abc', companionId: 'fish', conversationId: 'room', sourceMessageId: 'actual-source' };
+    expect(snapshotDshTaskExecution({ recordScope }).access).toEqual({ mode: 'danger-full-access' });
+    expect(snapshotDshTaskExecution({ recordScope, access: { mode: 'workspace-write' } }).access).toEqual({ mode: 'workspace-write' });
+    expect(snapshotDshTaskExecution({ recordScope, task: { session: { mode: 'resume', taskId: '12345678-1234-4123-8123-123456789abc' } } }).access).toBeUndefined();
+    expect(snapshotDshTaskExecution({}).access).toBeUndefined();
+    const thought = snapshotDshTaskExecution({ recordScope, cognitiveOnly: true, workspaceRootPath: 'fixture-root' });
+    expect(thought.access).toEqual({ mode: 'read-only' });
+    expect(thought.task?.tools).toEqual([]);
+  });
 });

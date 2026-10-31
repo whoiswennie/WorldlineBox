@@ -3,7 +3,7 @@ import { mkdtempSync, renameSync, writeFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { afterEach, expect, it } from 'vitest';
+import { afterEach, expect, it, vi } from 'vitest';
 import { LibraryService } from '../../src/worker/library-service';
 import { CompanionsStore } from '../../src/companions/store';
 import { companionLearningAssets } from '../../src/main/companions/learning-assets';
@@ -13,6 +13,12 @@ import type { CompanionLearningGrant } from '../../src/shared/companion-learning
 import type { AssetSummary } from '../../src/shared/asset-types';
 import type { WorkerCommand } from '../../src/shared/protocol/requests';
 import type { WorkerResult } from '../../src/shared/protocol/responses';
+import { CompanionService } from '../../src/main/companions/service';
+import { detachedCompanionExecutionValidation, memoCompanionExecutionWitnesses, withCompanionExecutionValidation } from '../../src/main/companions/source-execution-evidence';
+import type { CompanionLearningAssetValidation } from '../../src/shared/companion-learning';
+
+vi.mock('electron', () => ({ net: { fetch: vi.fn() }, dialog: { showOpenDialog: vi.fn() }, ipcMain: { handle: vi.fn() },
+  protocol: { handle: vi.fn() }, shell: { showItemInFolder: vi.fn() }, safeStorage: { isEncryptionAvailable: () => true } }));
 
 const fixtures: Array<{ root: string; library: LibraryService; store: CompanionsStore }> = [];
 const Sqlite = createRequire(import.meta.url)('better-sqlite3') as new (file: string, options?: { readonly: boolean }) => {
@@ -46,20 +52,122 @@ function fixture() {
     const actual = await assets.read(grant, asset);
     store.request({ type: 'learning.run', companionId: grant.companionId, id: grant.id, expectedRevision: grant.revision });
     const job = store.request({ type: 'learning.claim', excludedOwners: [grant.companionId === 'alice' ? 'bob' : 'alice'] }).learningJob!;
+    store.request({ type: 'learning.begin', id: job.id, leaseToken: job.leaseToken, assetId: asset.assetId, assetRevisionId: actual.revisionId, offset: 0 });
     const result = store.request({ type: 'learning.commit', id: job.id, leaseToken: job.leaseToken, assetId: asset.assetId, assetRevisionId: actual.revisionId,
       assetName: asset.displayName, offset: 0, content: actual.content, more: false });
     const receipt = result.learning!.reads.find(receipt => receipt.assetId === asset.assetId && receipt.status === 'read')!;
     const note = store.request({ type: 'memory.record', companionId: grant.companionId, conversationId: 'world_' + grant.companionId,
-      candidate: { content: actual.content, tags: ['资料'], sourceMessageIds: [receipt.sourceMessageId], evidence: [{ sourceMessageId: receipt.sourceMessageId, quote: actual.content }] } }).memories![0]!;
+      candidate: { artifactKind: 'knowledge', content: actual.content, tags: ['资料'], sourceMessageIds: [receipt.sourceMessageId], evidence: [{ sourceMessageId: receipt.sourceMessageId, quote: actual.content }] } }).memories![0]!;
     return { receipt, note, actual };
   };
   return { root, library, opened, store, books, outside, assets, grant, add, read, request, backend: (value: boolean) => { unavailable = value; } };
 }
 
+function validationHost(assets: ReturnType<typeof companionLearningAssets>) {
+  const changed = vi.fn(), reset = vi.fn(async () => undefined), report = vi.fn();
+  const host = Object.assign(Object.create(CompanionService.prototype), { options: { learningAssets: assets, report }, assetValidations: new Map(),
+    memory: { changed }, knowledge: { reset } }) as { validateAssets(filter?: { companionId?: string; libraryId?: string }): Promise<CompanionLearningAssetValidation> };
+  return { host, changed, reset, report };
+}
+
+it('admits the same finite asset filter once, verifies it fresh at the gate end, and keeps standalone/new gates fresh', async () => {
+  const f = fixture(), { host } = validationHost(f.assets), revalidate = vi.spyOn(f.assets, 'revalidate');
+  await withCompanionExecutionValidation(async () => {
+    for (let index = 0; index < 39; index++) await host.validateAssets({ companionId: 'alice' });
+    expect(revalidate).toHaveBeenCalledOnce();
+  });
+  expect(revalidate).toHaveBeenCalledTimes(2);
+  await host.validateAssets({ companionId: 'alice' }); await host.validateAssets({ companionId: 'alice' });
+  expect(revalidate).toHaveBeenCalledTimes(4);
+  await withCompanionExecutionValidation(async () => { await host.validateAssets({ companionId: 'alice' }); await host.validateAssets({ companionId: 'alice' }); });
+  expect(revalidate).toHaveBeenCalledTimes(6);
+});
+
+it.each(['membership', 'same-revision-bytes'] as const)('rejects a real asset %s change during the final canonical witness and preserves actual withdrawal side effects', async change => {
+  const f = fixture(), grant = f.grant(), asset = f.add(), original = await f.read(grant, asset), { host, changed } = validationHost(f.assets);
+  const actual = f.assets.revalidate.bind(f.assets); let maintenanceChecks = 0;
+  const revalidate = vi.spyOn(f.assets, 'revalidate').mockImplementation(async filter => {
+    const result = await actual(filter);
+    if (result.changedCompanionIds.length) {
+      // Main's real invalidation callback can retract canonical publications.
+      // Its new witnesses must belong to maintenance, never the sealed old
+      // publication gate whose content is about to be refused.
+      await memoCompanionExecutionWitnesses(['retraction'], { identity: {}, scope: 'maintenance', revision: () => 0,
+        read: async keys => new Map(keys.map(key => [key, 'actual revoked receipt'])), verify: async () => { maintenanceChecks++; } });
+    }
+    return result;
+  });
+  await expect(withCompanionExecutionValidation(async () => {
+    await host.validateAssets({ companionId: 'alice' }); await host.validateAssets({ companionId: 'alice' });
+    await memoCompanionExecutionWitnesses(['actual-file'], { identity: {}, scope: 'canonical', revision: () => 0,
+      read: async keys => new Map(keys.map(key => [key, 'actual body'])), verify: async () => {
+        if (change === 'membership') f.library.moveAssets({ libraryId: f.opened.libraryId, assetIds: [asset.assetId], targetFolderId: f.outside.folderId, conflictStrategy: 'keep-both' });
+        else f.library.saveTextAsset({ libraryId: f.opened.libraryId, assetId: asset.assetId, content: '同一个修订号下，真实正文已变化。', expectedRevisionId: asset.currentRevisionId, createRevision: false });
+      } });
+  })).rejects.toThrow('授权资料已经变化');
+  expect(revalidate).toHaveBeenCalledTimes(2); expect(changed).toHaveBeenCalledWith('alice'); expect(maintenanceChecks).toBe(1);
+  expect(f.store.request({ type: 'learning.status', companionId: 'alice' }).learning!.reads.find(read => read.id === original.receipt.id)?.status).toBe('withdrawn');
+});
+
+it('rejects final asset unavailability without withdrawing evidence, then allows an independent recovered gate', async () => {
+  const f = fixture(), grant = f.grant(), read = await f.read(grant, f.add()), { host, changed } = validationHost(f.assets);
+  await expect(withCompanionExecutionValidation(async () => {
+    await host.validateAssets({ companionId: 'alice' }); f.backend(true);
+  })).rejects.toThrow('暂时无法核验');
+  expect(changed).not.toHaveBeenCalled();
+  expect(f.store.request({ type: 'learning.status', companionId: 'alice' }).learning!.reads.find(item => item.id === read.receipt.id)?.status).toBe('read');
+  f.backend(false);
+  await expect(withCompanionExecutionValidation(() => host.validateAssets({ companionId: 'alice' }))).resolves.toMatchObject({ unavailableCompanionIds: [] });
+});
+
+it('does not cache an initial unavailable asset result or omit the later healthy final fence', async () => {
+  const f = fixture(); await f.read(f.grant(), f.add()); const { host, changed } = validationHost(f.assets), revalidate = vi.spyOn(f.assets, 'revalidate');
+  await withCompanionExecutionValidation(async () => {
+    f.backend(true); expect((await host.validateAssets({ companionId: 'alice' })).unavailableCompanionIds).toEqual(['alice']);
+    f.backend(false); expect((await host.validateAssets({ companionId: 'alice' })).unavailableCompanionIds).toEqual([]);
+    await host.validateAssets({ companionId: 'alice' }); expect(revalidate).toHaveBeenCalledTimes(2);
+  });
+  expect(revalidate).toHaveBeenCalledTimes(3); expect(changed).not.toHaveBeenCalled();
+});
+
+it('retains the final asset fence when a caught retry throws after an earlier unavailable result was consumed', async () => {
+  const f = fixture(); await f.read(f.grant(), f.add()); const { host, changed } = validationHost(f.assets), actual = f.assets.revalidate.bind(f.assets);
+  let calls = 0; f.backend(true);
+  vi.spyOn(f.assets, 'revalidate').mockImplementation(filter => {
+    if (++calls === 2) return Promise.reject(new Error('actual adapter transport failure'));
+    return actual(filter);
+  });
+  await expect(withCompanionExecutionValidation(async () => {
+    expect((await host.validateAssets({ companionId: 'alice' })).unavailableCompanionIds).toEqual(['alice']);
+    await expect(host.validateAssets({ companionId: 'alice' })).rejects.toThrow('actual adapter transport failure');
+  })).rejects.toThrow('暂时无法核验');
+  expect(calls).toBe(3); expect(changed).not.toHaveBeenCalled();
+});
+
+it('does not use an older in-flight asset snapshot as its final fence after real membership changes', async () => {
+  const f = fixture(), asset = f.add(); await f.read(f.grant(), asset); const { host } = validationHost(f.assets), actual = f.assets.revalidate.bind(f.assets);
+  let release!: () => void, started!: () => void, calls = 0, pending!: Promise<CompanionLearningAssetValidation>;
+  const held = new Promise<void>(resolve => { release = resolve; }), entered = new Promise<void>(resolve => { started = resolve; });
+  vi.spyOn(f.assets, 'revalidate').mockImplementation(async filter => {
+    const result = await actual(filter);
+    if (++calls === 2) { started(); await held; }
+    return result;
+  });
+  const operation = withCompanionExecutionValidation(async () => {
+    await host.validateAssets({ companionId: 'alice' });
+    pending = detachedCompanionExecutionValidation(() => host.validateAssets({ companionId: 'alice' }));
+    await entered;
+    f.library.moveAssets({ libraryId: f.opened.libraryId, assetIds: [asset.assetId], targetFolderId: f.outside.folderId, conflictStrategy: 'keep-both' });
+  });
+  await entered; await Promise.resolve(); release();
+  await expect(operation).rejects.toThrow('授权资料已经变化'); await pending;
+  expect(calls).toBe(3);
+});
+
 it('revokes moved sources, derived memory and frozen history only for grants that lost membership, then requires a fresh actual read after restore', async () => {
   const f = fixture(), asset = f.add(), alice = f.grant(), bob = f.grant('bob', true), a = await f.read(alice, asset), b = await f.read(bob, asset);
   const scope = { companionId: 'alice', conversationId: 'world_alice' }, frozen = { id: a.note.id, sources: a.note.sources.map(source => ({ id: source.messageId, conversationId: source.conversationId, checksum: source.checksum })) };
-  const derived = f.store.request({ type: 'memory.record', ...scope, candidate: { content: '基于资料的新认识。', tags: [], sourceMessageIds: [a.receipt.sourceMessageId],
+  const derived = f.store.request({ type: 'memory.record', ...scope, candidate: { artifactKind: 'knowledge', content: '基于资料的新认识。', tags: [], sourceMessageIds: [a.receipt.sourceMessageId],
     evidence: [{ sourceMessageId: a.receipt.sourceMessageId, quote: a.actual.content }], relatedMemoryIds: [a.note.id] } }).memories![0]!;
   f.library.moveAssets({ libraryId: f.opened.libraryId, assetIds: [asset.assetId], targetFolderId: f.outside.folderId, conflictStrategy: 'keep-both' });
   expect(await f.assets.revalidate({ libraryId: f.opened.libraryId })).toMatchObject({ changedCompanionIds: ['alice'], unavailableCompanionIds: [], revokedSourceCount: 1 });
@@ -167,4 +275,77 @@ it('does not apply an old invalid asset result after a newer successful actual r
   expect(f.store.request({ type: 'learning.assets.validate', token: snapshot.token, checks }).learningAssetValidation)
     .toMatchObject({ changedCompanionIds: [], unavailableCompanionIds: ['alice'], revokedSourceCount: 0 });
   expect(await f.assets.revalidate()).toMatchObject({ changedCompanionIds: [], unavailableCompanionIds: [] });
+});
+
+it.each(['parked', 'abandoned'] as const)('keeps %s material holds and cumulative failures through exact source withdrawal and same-byte reauthorization', async heldState => {
+  const f = fixture(), grant = f.grant(), peer = f.add('peer.md', '另一份资料仍然有效。'), preserved = await f.read(grant, peer), asset = f.add();
+  const actual = await f.assets.read(grant, asset);
+  f.store.request({ type: 'learning.run', companionId: 'alice', id: grant.id, expectedRevision: grant.revision });
+  const claim = f.store.request({ type: 'learning.claim' }).learningJob!;
+  const began = f.store.request({ type: 'learning.begin', id: claim.id, leaseToken: claim.leaseToken, assetId: asset.assetId, assetRevisionId: actual.revisionId, offset: 0 }).jobDisposition!;
+  f.store.request({ type: 'learning.defer', id: claim.id, leaseToken: claim.leaseToken, failureKind: 'processing', error: 'PRIVATE_READING_PROVIDER_ERROR', retryAfterMs: 1000 });
+  const failed = f.store.request({ type: 'jobs.inspect', ownerId: 'alice', kind: 'learning', id: began.id }).jobDisposition!;
+  const held = f.store.request({ type: 'jobs.control', ownerId: 'alice', kind: 'learning', id: began.id, inputVersion: failed.inputVersion,
+    expectedRevision: failed.revision, operationId: randomUUID(), action: heldState === 'parked' ? 'park' : 'abandon' }).jobDisposition!;
+  expect(held).toMatchObject({ state: heldState, failureCount: 1, cycleFailureCount: 1 });
+  f.library.moveAssets({ libraryId: f.opened.libraryId, assetIds: [asset.assetId], targetFolderId: f.outside.folderId, conflictStrategy: 'keep-both' });
+  expect(await f.assets.revalidate()).toMatchObject({ changedCompanionIds: ['alice'] });
+  const withdrawn = f.store.request({ type: 'jobs.inspect', ownerId: 'alice', kind: 'learning', id: began.id }).jobDisposition!;
+  expect(withdrawn).toMatchObject({ id: held.id, state: heldState, failureCount: 1, cycleFailureCount: 1 });
+  expect(withdrawn.lastError).toBeUndefined(); expect(withdrawn.revision).toBeGreaterThan(held.revision);
+  expect(() => f.store.request({ type: 'jobs.control', ownerId: 'alice', kind: 'learning', id: began.id, inputVersion: held.inputVersion,
+    expectedRevision: held.revision, operationId: randomUUID(), action: 'resume' })).toThrow();
+  f.library.moveAssets({ libraryId: f.opened.libraryId, assetIds: [asset.assetId], targetFolderId: f.books.folderId, conflictStrategy: 'keep-both' });
+  const fresh = await f.assets.read(grant, asset); expect(fresh.revisionId).toBe(actual.revisionId);
+  f.store.request({ type: 'learning.run', companionId: 'alice', id: grant.id, expectedRevision: grant.revision });
+  const next = f.store.request({ type: 'learning.claim' }).learningJob!;
+  expect(f.store.request({ type: 'learning.begin', id: next.id, leaseToken: next.leaseToken, assetId: asset.assetId, assetRevisionId: fresh.revisionId, offset: 0 }).jobDisposition)
+    .toMatchObject({ id: held.id, state: heldState, failureCount: 1 });
+  expect(() => f.store.request({ type: 'learning.commit', id: next.id, leaseToken: next.leaseToken, assetId: asset.assetId,
+    assetRevisionId: fresh.revisionId, assetName: asset.displayName, offset: 0, content: fresh.content, more: false })).toThrow();
+  expect(f.store.request({ type: 'memory.records.filter', companionId: 'alice', conversationId: 'world_alice', ids: [preserved.note.id] }).memories).toHaveLength(1);
+  // Whole-grant withdrawal has the same hold-preservation and privacy fence.
+  f.store.request({ type: 'learning.revoke', companionId: 'alice', id: grant.id, expectedRevision: grant.revision });
+  expect(f.store.request({ type: 'jobs.inspect', ownerId: 'alice', kind: 'learning', id: held.id }).jobDisposition)
+    .toMatchObject({ state: heldState, failureCount: 1, cycleFailureCount: 1 });
+});
+
+it('restarts a same-byte reauthorized partial material from zero and never restores its withdrawn prefix source', async () => {
+  const f = fixture(), grant = f.grant(), asset = f.add('partial.md', '前半段有明确条件。后半段必须在新获权读取后重新检验。');
+  const actual = await f.assets.read(grant, asset), size = 9;
+  f.store.request({ type: 'learning.run', companionId: 'alice', id: grant.id, expectedRevision: grant.revision });
+  const job = f.store.request({ type: 'learning.claim' }).learningJob!;
+  const original = f.store.request({ type: 'learning.begin', id: job.id, leaseToken: job.leaseToken, assetId: asset.assetId, assetRevisionId: actual.revisionId, offset: 0 }).jobDisposition!;
+  const read = f.store.request({ type: 'learning.commit', id: job.id, leaseToken: job.leaseToken, assetId: asset.assetId, assetRevisionId: actual.revisionId,
+    assetName: asset.displayName, offset: 0, content: actual.content.slice(0, size), nextOffset: size, more: true }).learning!.reads[0]!;
+  f.library.moveAssets({ libraryId: f.opened.libraryId, assetIds: [asset.assetId], targetFolderId: f.outside.folderId, conflictStrategy: 'keep-both' });
+  await f.assets.revalidate();
+  f.library.moveAssets({ libraryId: f.opened.libraryId, assetIds: [asset.assetId], targetFolderId: f.books.folderId, conflictStrategy: 'keep-both' });
+  const fresh = await f.assets.read(grant, asset); expect(fresh.revisionId).toBe(actual.revisionId);
+  f.store.request({ type: 'learning.run', companionId: 'alice', id: grant.id, expectedRevision: grant.revision });
+  const next = f.store.request({ type: 'learning.claim' }).learningJob!; expect(next.offset).toBe(0);
+  expect(() => f.store.request({ type: 'learning.begin', id: next.id, leaseToken: next.leaseToken, assetId: asset.assetId, assetRevisionId: fresh.revisionId, offset: size })).toThrow();
+  const began = f.store.request({ type: 'learning.begin', id: next.id, leaseToken: next.leaseToken, assetId: asset.assetId, assetRevisionId: fresh.revisionId, offset: 0 }).jobDisposition!;
+  expect(began.id).not.toBe(original.id);
+  const current = f.store.request({ type: 'learning.commit', id: next.id, leaseToken: next.leaseToken, assetId: asset.assetId, assetRevisionId: fresh.revisionId,
+    assetName: asset.displayName, offset: 0, content: fresh.content, more: false }).learning!.reads.find(item => item.status === 'read')!;
+  expect(current.sourceMessageId).not.toBe(read.sourceMessageId);
+  expect(f.store.request({ type: 'memory.sources.filter', companionId: 'alice', conversationId: 'world_alice', ids: [read.sourceMessageId] }).memorySources).toEqual([]);
+});
+
+it('does not reset another lawful partial material cursor when a peer asset loses its folder authorization', async () => {
+  const f = fixture(), grant = f.grant(), first = f.add(), prior = await f.read(grant, first), second = f.add('peer-partial.md', '另一份材料分段读取，游标与获权条件必须保持。');
+  const actual = await f.assets.read(grant, second), size = 8;
+  f.store.request({ type: 'learning.run', companionId: 'alice', id: grant.id, expectedRevision: grant.revision });
+  const job = f.store.request({ type: 'learning.claim' }).learningJob!;
+  f.store.request({ type: 'learning.begin', id: job.id, leaseToken: job.leaseToken, assetId: second.assetId, assetRevisionId: actual.revisionId, offset: 0 });
+  const partial = f.store.request({ type: 'learning.commit', id: job.id, leaseToken: job.leaseToken, assetId: second.assetId, assetRevisionId: actual.revisionId,
+    assetName: second.displayName, offset: 0, content: actual.content.slice(0, size), nextOffset: size, more: true }).learning!.reads.find(item => item.assetId === second.assetId)!;
+  f.library.moveAssets({ libraryId: f.opened.libraryId, assetIds: [first.assetId], targetFolderId: f.outside.folderId, conflictStrategy: 'keep-both' });
+  await f.assets.revalidate();
+  f.store.request({ type: 'learning.run', companionId: 'alice', id: grant.id, expectedRevision: grant.revision });
+  const next = f.store.request({ type: 'learning.claim' }).learningJob!;
+  expect(next).toMatchObject({ assetId: second.assetId, assetRevisionId: actual.revisionId, offset: size });
+  expect(f.store.request({ type: 'memory.sources.filter', companionId: 'alice', conversationId: 'world_alice', ids: [partial.sourceMessageId] }).memorySources).toHaveLength(1);
+  expect(f.store.request({ type: 'memory.sources.filter', companionId: 'alice', conversationId: 'world_alice', ids: [prior.receipt.sourceMessageId] }).memorySources).toEqual([]);
 });

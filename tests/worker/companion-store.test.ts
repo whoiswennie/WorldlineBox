@@ -49,7 +49,7 @@ it('creates an immediate durable bubble for an idle steering message and reuses 
   expect(store.getMessage(claimed.messageId!)).toMatchObject({ replyProgress: { phase: 'context', detail: '正在读取最近对话并核验来源' } });
 });
 
-it('keeps actual same-room steering lazy but mounts its progress before it starts after the first work', () => {
+it('mounts a separate task for an older same-room steer entry and admits it when a slot is free', () => {
   vi.useFakeTimers({ toFake: ['Date'] }); vi.setSystemTime('2026-10-14T08:00:00Z');
   const { store } = fixture(), companionId = 'deepseek-sister', conversationId = 'private-deepseek-sister';
   const routine = store.request({ type: 'routine.get', companionId, conversationId }).routine!;
@@ -62,11 +62,9 @@ it('keeps actual same-room steering lazy but mounts its progress before it start
   };
   enqueue('first_steer'); expect(store.request({ type: 'work.claim' }).work?.id).toBe('first_steer');
   enqueue('followup_steer');
-  expect(store.request({ type: 'work.list' }).works!.find(item => item.id === 'followup_steer')?.messageId).toBeUndefined();
-  // Spare task slots must never convert live steering into a parallel reply.
+  expect(store.request({ type: 'work.list' }).works!.find(item => item.id === 'followup_steer')?.messageId).toBeTruthy();
+  // A persisted inputMode must not turn this message into another task's input.
   store.request({ type: 'tasks.concurrency.set', companionId, limit: 3 });
-  expect(store.request({ type: 'work.claim' }).work).toBeUndefined();
-  store.request({ type: 'work.status', id: 'first_steer', status: 'done' });
   const second = store.request({ type: 'work.claim' }).work!;
   expect(second.id).toBe('followup_steer'); expect(second.messageId).toBeTruthy();
   expect(store.getMessage(second.messageId!).replyProgress?.phase).toBe('context');
@@ -184,6 +182,10 @@ function close(store: CompanionsStore): void {
   store.close();
   stores.splice(stores.indexOf(store), 1);
 }
+function recordSource(store: CompanionsStore, companionId: string, conversationId: string, sourceMessageId: string, content: string) {
+  return store.request({ type: 'memory.record', companionId, conversationId, candidate: { artifactKind: 'episode_memory', content,
+    sourceMessageIds: [sourceMessageId], evidence: [{ sourceMessageId, quote: store.getMessage(sourceMessageId).content }] } }).memories![0]!;
+}
 afterEach(() => {
   vi.useRealTimers();
   stores.splice(0).forEach((store) => store.close());
@@ -193,26 +195,28 @@ afterEach(() => {
 describe('CompanionsStore real SQLite persistence', () => {
   it('only instantiates explicitly selected catalogue templates and preserves existing instances across restart', () => {
     const { store, databasePath } = fixture();
-    store.updateCompanion('deepseek-sister', { ...seeds[0]!, name: '自定义姐姐', description: '我的签名', persona: '用户编辑的人设' });
+    expect(() => store.updateCompanion('deepseek-sister', { ...seeds[0]!, name: '自定义姐姐', persona: '用户编辑的人设' })).toThrow('身份与人格');
+    store.updateCompanion('deepseek-sister', { ...seeds[0]!, model: 'runtime-selection' });
     const original = store.appendMessage({ conversationId: 'private-deepseek-sister', authorId: 'user', content: '迁移前的消息' });
-    store.request({ type: 'memory.save', memory: { companionId: 'deepseek-sister', content: '迁移前的约定', conversationId: 'private-deepseek-sister' } });
+    recordSource(store, 'deepseek-sister', original.conversationId, original.id, original.content);
     close(store);
     const upgraded = new CompanionsStore(databasePath); stores.push(upgraded);
     const state = upgraded.state();
     expect(state.companions).toHaveLength(2);
-    expect(state.companions.find(item => item.id === 'deepseek-sister')).toMatchObject({ name: '自定义姐姐', description: '我的签名', persona: '用户编辑的人设' });
+    expect(state.companions.find(item => item.id === 'deepseek-sister')).toMatchObject({ name: seeds[0]!.name, persona: seeds[0]!.persona, model: 'runtime-selection' });
     expect(state.companions.some(item => item.id === 'deepseek-flash')).toBe(true);
     expect(upgraded.getMessage(original.id).content).toBe('迁移前的消息');
-    expect(upgraded.listMemory('deepseek-sister').map(item => item.content)).toContain('迁移前的约定');
+    expect(upgraded.listMemory('deepseek-sister').map(item => item.content)).toContain(original.content);
     for (const profile of BUILTIN_COMPANIONS.slice(2)) {
       expect(upgraded.restoreBuiltin(profile.id)).toMatchObject({ avatar: profile.avatar, builtin: true, model: '' });
       expect(upgraded.messages({ conversationId: upgraded.openPrivate(profile.id).id }).messages).toHaveLength(0);
     }
-    upgraded.updateCompanion('gpt', { ...BUILTIN_COMPANIONS.find(item => item.id === 'gpt')!, name: '小白龙', avatar: 'custom', avatarAttachmentId: undefined, persona: '我修改了白龙的设定' });
+    const gpt = upgraded.state().companions.find(item => item.id === 'gpt')!;
+    expect(() => upgraded.updateCompanion('gpt', { ...gpt, persona: '我修改了白龙的设定' })).toThrow('身份与人格');
     close(upgraded);
     const reopened = new CompanionsStore(databasePath); stores.push(reopened);
     expect(reopened.state().companions).toHaveLength(15);
-    expect(reopened.restoreBuiltin('gpt')).toMatchObject({ name: '小白龙', avatar: 'custom', persona: '我修改了白龙的设定' });
+    expect(reopened.restoreBuiltin('gpt')).toEqual(gpt);
     const restored = reopened.restoreBuiltin('doro');
     expect(restored.id).toBe('doro');
     expect(reopened.restoreBuiltin('doro').id).toBe(restored.id);
@@ -269,15 +273,15 @@ describe('CompanionsStore real SQLite persistence', () => {
     const { store, databasePath } = fixture();
     const group = store.createConversation('', ['deepseek-sister', 'deepseek-flash']);
     expect(group.title).toBe('我、大肥鱼和小肥鱼的群聊');
-    store.updateCompanion('deepseek-flash', { ...seeds[1]!, name: '小蓝' });
-    expect(store.state().conversations.find(item => item.id === group.id)?.title).toBe('我、大肥鱼和小蓝的群聊');
-    expect(store.updateConversation(group.id, { title: '我、大肥鱼和小蓝的群聊', memberIds: ['deepseek-sister'] }).title).toBe('我和大肥鱼的群聊');
+    expect(() => store.updateCompanion('deepseek-flash', { ...seeds[1]!, name: '小蓝' })).toThrow('身份与人格');
+    expect(store.state().conversations.find(item => item.id === group.id)?.title).toBe('我、大肥鱼和小肥鱼的群聊');
+    expect(store.updateConversation(group.id, { title: '我、大肥鱼和小肥鱼的群聊', memberIds: ['deepseek-sister'] }).title).toBe('我和大肥鱼的群聊');
     expect(store.updateConversation(group.id, { title: '蓝色海边' }).title).toBe('蓝色海边');
     store.updateConversation(group.id, { memberIds: ['deepseek-sister', 'deepseek-flash'] });
     close(store);
     const reopened = open(databasePath);
     expect(reopened.state().conversations.find(item => item.id === group.id)?.title).toBe('蓝色海边');
-    expect(reopened.updateConversation(group.id, { title: '   ' }).title).toBe('我、大肥鱼和小蓝的群聊');
+    expect(reopened.updateConversation(group.id, { title: '   ' }).title).toBe('我、大肥鱼和小肥鱼的群聊');
     expect(reopened.createConversation('不会重复创建', ['deepseek-flash', 'deepseek-sister']).id).toBe(group.id);
   });
   it('reuses exactly the same group for a canonical set of members, independent of ordering or title', () => {
@@ -389,15 +393,18 @@ describe('CompanionsStore real SQLite persistence', () => {
   it('isolates private memories and prevents changing ownership through an ID', () => {
     const { databasePath, store } = fixture();
     const message = store.appendMessage({ conversationId: 'private-deepseek-sister', authorId: 'user', content: '我喜欢慢慢看海' });
-    const memory = store.saveMemory({ companionId: 'deepseek-sister', content: '用户喜欢慢慢看海', conversationId: message.conversationId, sourceMessageId: message.id });
+    const memory = recordSource(store, 'deepseek-sister', message.conversationId, message.id, '用户喜欢慢慢看海');
     expect(store.listMemory('deepseek-flash')).toEqual([]);
-    expect(() => store.saveMemory({ companionId: 'deepseek-flash', content: '偷看姐姐私聊', conversationId: message.conversationId, sourceMessageId: message.id })).toThrow('不是聊天成员');
-    expect(() => store.saveMemory({ id: memory.id, companionId: 'deepseek-flash', content: '修改记忆归属', conversationId: 'private-deepseek-flash', expectedVersion: memory.version })).toThrow();
-    store.saveMemory({ companionId: memory.companionId, conversationId: memory.sourceConversationId, id: memory.id, expectedVersion: memory.version, content: '用户目前喜欢慢慢看海' });
+    expect(() => recordSource(store, 'deepseek-flash', message.conversationId, message.id, '偷看姐姐私聊')).toThrow('不是聊天成员');
+    expect(() => store.saveMemory({ id: memory.id, companionId: 'deepseek-flash', content: '修改记忆归属', conversationId: 'private-deepseek-flash', expectedVersion: memory.version })).toThrow('人工保存接口');
+    const correction = store.appendMessage({ conversationId: message.conversationId, authorId: 'user', content: '我目前喜欢慢慢看海。' });
+    store.request({ type: 'memory.revise', companionId: memory.companionId, conversationId: memory.sourceConversationId, id: memory.id, expectedVersion: memory.version,
+      candidate: { artifactKind: 'episode_memory', content: '用户目前喜欢慢慢看海', sourceMessageIds: [message.id, correction.id],
+        evidence: [message, correction].map(source => ({ sourceMessageId: source.id, quote: source.content })) } });
     close(store);
     const reopened = open(databasePath);
     expect(reopened.listMemory('deepseek-sister')[0]!.content).toBe('用户目前喜欢慢慢看海');
-    reopened.deleteMemory(memory.id);
+    reopened.request({ type: 'memory.forget', companionId: memory.companionId, conversationId: memory.sourceConversationId, id: memory.id });
     expect(reopened.listMemory('deepseek-sister')).toEqual([]);
   });
 
@@ -405,12 +412,12 @@ describe('CompanionsStore real SQLite persistence', () => {
     const { databasePath, store } = fixture();
     const group = store.createConversation('持久共同经历', ['deepseek-sister', 'deepseek-flash']);
     const message = store.appendMessage({ conversationId: group.id, authorId: 'user', content: '下次去看海' });
-    const memory = store.saveMemory({ companionId: 'deepseek-sister', content: '群里约定下次去看海', conversationId: group.id, sourceMessageId: message.id });
+    const memory = recordSource(store, 'deepseek-sister', group.id, message.id, '群里约定下次去看海');
     expect(memory.sourceConversationId).toBe(group.id);
     const forgedInput = { companionId: 'deepseek-sister', content: '只属于姐姐私聊', sourceMessageId: 'missing', conversationId: group.id };
-    expect(() => store.saveMemory(forgedInput)).toThrow();
+    expect(() => recordSource(store, forgedInput.companionId, forgedInput.conversationId, forgedInput.sourceMessageId, forgedInput.content)).toThrow();
     const privateSource = store.appendMessage({ conversationId: 'private-deepseek-sister', authorId: 'user', content: '私聊的约定' });
-    const derived = store.saveMemory({ ...forgedInput, conversationId: privateSource.conversationId, sourceMessageId: privateSource.id });
+    const derived = recordSource(store, 'deepseek-sister', privateSource.conversationId, privateSource.id, '只属于姐姐私聊');
     expect(derived.sourceConversationId).toBe('private-deepseek-sister');
     for (let index = 0; index < 55; index++) store.appendMessage({ conversationId: group.id, authorId: 'user', content: `后来第${index}条聊天` });
     expect(store.messages({ conversationId: group.id, limit: 50 }).messages.some(value => value.id === message.id)).toBe(false);
@@ -421,9 +428,9 @@ describe('CompanionsStore real SQLite persistence', () => {
     expect(reopened.listMemory('deepseek-flash')).toEqual([]);
   });
 
-  it('retains built-in contacts with their edits and history while allowing removal of custom contacts', () => {
+  it('retains built-in identities with runtime settings and history while durably retiring custom contacts', async () => {
     const { databasePath, store } = fixture();
-    const modified = store.updateCompanion('deepseek-sister', { ...seeds[0]!, name: '海边的大肥鱼', persona: '修改后的角色设定' });
+    const modified = store.updateCompanion('deepseek-sister', { ...seeds[0]!, model: 'runtime-only' });
     expect(store.openPrivate('deepseek-sister').memberIds).toEqual(['deepseek-sister']);
     close(store);
     const reopened = open(databasePath);
@@ -435,7 +442,14 @@ describe('CompanionsStore real SQLite persistence', () => {
     const custom = reopened.createCompanion({ ...seeds[0]!, name: '新伙伴', model: '', avatar: 'custom' });
     expect(custom.builtin).toBe(false);
     expect(reopened.openPrivate(custom.id).memberIds).toEqual([custom.id]);
-    reopened.deleteCompanion(custom.id); expect(reopened.state().companions.some(item => item.id === custom.id)).toBe(false);
+    const job = reopened.request({ type: 'companion.retire', id: custom.id, scope: 'all' }).reset!;
+    reopened.request({ type: 'companion.retire.cleanup', id: custom.id, jobId: job.id });
+    for (let attempt = 0; attempt < 2000; attempt++) {
+      if (reopened.request({ type: 'companion.retire.status', id: custom.id }).reset?.status === 'completed') break;
+      await reopened.advanceReset();
+    }
+    expect(reopened.request({ type: 'companion.retire.status', id: custom.id }).reset?.status).toBe('completed');
+    expect(reopened.state().companions.some(item => item.id === custom.id)).toBe(false);
   });
 
   it('owns attachment paths by ID and attaches only registered files', () => {
@@ -477,7 +491,7 @@ describe('CompanionsStore real SQLite persistence', () => {
     const before = store.state();
     expect(() => store.createCompanion({ ...seeds[0]!, avatarAttachmentId: 'missing-image' })).toThrow('附件不存在');
     expect(() => store.createCompanion({ ...seeds[0]!, avatarAttachmentId: 'document-avatar' })).toThrow('头像必须');
-    expect(() => store.updateCompanion('deepseek-sister', { ...seeds[0]!, name: '不应保存', avatarAttachmentId: 'document-avatar' })).toThrow('头像必须');
+    expect(() => store.updateCompanion('deepseek-sister', { ...seeds[0]!, avatarAttachmentId: 'document-avatar' })).toThrow('头像必须');
     expect(store.state()).toEqual(before);
     for (const [extension, mime] of [['png', 'image/png'], ['jpg', 'image/jpeg'], ['webp', 'image/webp'], ['gif', 'image/gif']]) {
       const id = `avatar-${extension}`;
@@ -529,7 +543,7 @@ describe('CompanionsStore real SQLite persistence', () => {
     expect(reopened.state().companions.find((companion) => companion.id === created.id)?.llm).toEqual(llm);
     expect(reopened.state().companions.find((companion) => companion.id === 'deepseek-sister')?.llm).toEqual(llm);
     expect(JSON.stringify(reopened.state())).not.toContain('never-write-to-sqlite');
-    reopened.updateCompanion('deepseek-sister', { ...seeds[0]!, name: '继承全局' });
+    reopened.updateCompanion('deepseek-sister', { ...seeds[0]! });
     close(reopened);
     const again = open(databasePath);
     expect(again.state().companions.find((companion) => companion.id === 'deepseek-sister')?.llm).toBeUndefined();

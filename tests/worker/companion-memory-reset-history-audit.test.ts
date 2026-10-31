@@ -24,16 +24,18 @@ it('physically removes reset-owner immutable SQL bodies and annotations while re
   let before: Record<string, number> | undefined, after: Record<string, number> | undefined, reset: unknown;
   try {
     const room = store.openPrivate('alice'), bobRoom = store.openPrivate('bob');
-    const bobNote = store.saveMemory({ companionId: 'bob', conversationId: bobRoom.id, content: other, tags: [] });
-    const note = store.saveMemory({ companionId: 'alice', conversationId: room.id, content: secret + ' first body', tags: [secret] });
+    const bobSource = store.appendMessage({ conversationId: bobRoom.id, authorId: 'bob', content: other, replyDirective: 'none' });
+    const bobNote = store.request({ type: 'memory.record', companionId: 'bob', conversationId: bobRoom.id, candidate: { artifactKind: 'episode_memory', content: other, tags: [], sourceMessageIds: [bobSource.id], evidence: [{ sourceMessageId: bobSource.id, quote: other }] } }).memories![0]!;
+    const firstSource = store.appendMessage({ conversationId: room.id, authorId: 'alice', content: secret + ' first body', replyDirective: 'none' });
+    const note = store.request({ type: 'memory.record', companionId: 'alice', conversationId: room.id, candidate: { artifactKind: 'episode_memory', content: firstSource.content, tags: [secret], sourceMessageIds: [firstSource.id], evidence: [{ sourceMessageId: firstSource.id, quote: firstSource.content }] } }).memories![0]!;
     const source = store.appendMessage({ conversationId: room.id, authorId: 'user', content: secret + ' corrected body', replyDirective: 'none' });
     store.request({ type: 'memory.revise', companionId: 'alice', conversationId: room.id, id: note.id, expectedVersion: note.version,
-      candidate: { content: source.content, tags: [secret], sourceMessageIds: [source.id], evidence: [{ sourceMessageId: source.id, quote: source.content }] } });
+      candidate: { artifactKind: 'episode_memory', content: source.content, tags: [secret], sourceMessageIds: [source.id], evidence: [{ sourceMessageId: source.id, quote: source.content }] } });
     before = rows(); expect(before.secretBodies).toBe(2);
-    const job = store.request({ type: 'companion.reset', id: 'alice', scope: 'all' }).reset!;
-    store.request({ type: 'companion.reset.cleanup', id: 'alice', jobId: job.id });
+    const job = store.request({ type: 'companion.retire', id: 'alice', scope: 'all' }).reset!;
+    store.request({ type: 'companion.retire.cleanup', id: 'alice', jobId: job.id });
     for (let step = 0; step < 1000; step++) {
-      const current = store.request({ type: 'companion.reset.status', id: 'alice' }).reset!;
+      const current = store.request({ type: 'companion.retire.status', id: 'alice' }).reset!;
       if (current.status === 'failed') throw Error('Reset failed: ' + current.phase + ': ' + current.error);
       if (current.status === 'completed') { reset = current; break; }
       await store.advanceReset();

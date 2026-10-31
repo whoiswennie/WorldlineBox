@@ -106,16 +106,12 @@ export class CompanionLifeEventStore {
   private multiplier(world: CompanionWorldSnapshot, rule: CompanionLifeRule, targetId?: string): number {
     const actor = world.actors.find(actor => actor.companionId === rule.companionId);
     if (!actor || !this.targetActivated(rule, targetId)) return 0;
-    const relationship = targetId === 'user' ? this.db.prepare('SELECT data FROM companion_runtime_states WHERE companion_id=?').get(rule.companionId) : undefined;
-    const player = relationship ? read<{ relationship: { affinity: number; trust: number } }>(relationship).relationship : undefined;
-    const peer = world.relationships.find(edge => edge.companionId === rule.companionId && edge.targetCompanionId === targetId);
     const perception = this.options.perception(rule.companionId), seenTarget = perception?.people.find(person => person.companionId === targetId && person.visible);
     // A distant friend's attention is unknown. Message delivery, rather than a
     // telepathic probability gate, handles their actual sleeping/working state.
     const targetAvailable = !seenTarget || !['working', 'eating', 'sleeping', 'lyingDown', 'waking'].includes(seenTarget.activity);
     const weather = perception?.environment.weather, temperature = perception?.environment.temperature;
-    const input = { ...actor.state, pleasure: actor.state.affect.pleasure, arousal: actor.state.affect.arousal,
-      affinity: player?.affinity ?? peer?.affinity ?? 50, trust: player?.trust ?? peer?.trust ?? 50,
+    const input = { energy: actor.state.energy,
       action: rule.action, available: this.available(world, rule.companionId) && targetAvailable,
       weather, outdoorTemperature: temperature };
     if (rule.action !== 'park_walk') return companionLifeMultiplier(input);
@@ -130,9 +126,9 @@ export class CompanionLifeEventStore {
     if (rule.targetId || !['message', 'visit'].includes(rule.action)) return rule.targetId;
     const known = this.options.acquaintances(rule.companionId);
     const peers = world.residents.filter(peer => known.has(peer.companionId) && peer.active !== false && this.activated(peer.companionId)).sort((a, b) => a.companionId.localeCompare(b.companionId));
-    // Exponential race gives affinity-weighted selection without a biased sort.
-    return peers.map(peer => ({ id: peer.companionId, score: companionLifeThreshold(key + '/' + peer.companionId)
-      / Math.exp(((world.relationships.find(edge => edge.companionId === rule.companionId && edge.targetCompanionId === peer.companionId)?.affinity ?? 50) - 50) / 50) }))
+    // Equal opportunity among known available people. The owner makes the
+    // actual social choice; no hidden friendship weighting is introduced.
+    return peers.map(peer => ({ id: peer.companionId, score: companionLifeThreshold(key + '/' + peer.companionId) }))
       .sort((a, b) => a.score - b.score || a.id.localeCompare(b.id))[0]?.id;
   }
   private observe(world: CompanionWorldSnapshot): void {

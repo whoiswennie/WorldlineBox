@@ -21,13 +21,14 @@ export class CompanionSocialReplyStore {
   private progress(job: Job): CompanionReplyProgress {
     const saved = this.db.prepare('SELECT data FROM companion_social_reply_progress WHERE job_id=?').get(job.id) as Row | undefined;
     const previous: CompanionReplyProgress | undefined = saved ? JSON.parse(saved.data) : undefined;
-    const phase = job.status === 'done' ? 'completed' : job.status === 'cancelled' ? 'cancelled' : job.status === 'failed' ? 'failed' : undefined;
+    const phase = job.status === 'done' ? 'completed' : ['cancelled', 'abandoned'].includes(job.status) ? 'cancelled' : ['failed', 'parked'].includes(job.status) ? 'failed' : undefined;
     if (previous && !phase) return previous;
     if (previous && previous.phase === phase) return previous;
     const updatedAt = job.finishedAt ?? job.updatedAt ?? previous?.updatedAt ?? job.createdAt;
     return advanceCompanionReplyTiming(previous, { ...previous, workId: job.id, sourceMessageId: job.sourceMessageId, revision: (previous?.revision ?? 0) + 1,
       phase: phase ?? (job.status === 'running' ? 'context' : 'queued'),
-      detail: phase === 'completed' ? '本轮伙伴回复已完成' : phase === 'failed' ? job.terminal ? (job.error ?? '本轮未能继续，等待新资料或明确处理后再试').slice(0, 500) : '本轮伙伴回复尚未完成，等待重试'
+      detail: job.status === 'parked' ? '本轮伙伴回复已搁置，原始来信与处理依据保留，等待明确恢复' : job.status === 'abandoned' ? '本轮伙伴回复已放弃，原始来信与处置记录保留'
+        : phase === 'completed' ? '本轮伙伴回复已完成' : phase === 'failed' ? job.terminal ? (job.error ?? '本轮未能继续，等待新资料或明确处理后再试').slice(0, 500) : '本轮伙伴回复尚未完成，等待重试'
         : phase === 'cancelled' ? '本轮伙伴回复已停止' : job.status === 'running' ? '正在核验来信与参与者' : '等待处理这条伙伴来信',
       startedAt: previous?.startedAt ?? job.createdAt, updatedAt, ...(phase ? { finishedAt: updatedAt } : {}) });
   }
@@ -75,7 +76,7 @@ export class CompanionSocialReplyStore {
     return found ? JSON.parse(found.data) as CompanionSocialReplyReceipt : undefined;
   }
   terminal(job: Job, detail?: string): void {
-    if (!['pending', 'done', 'failed', 'cancelled'].includes(job.status)) return;
+    if (!['pending', 'done', 'failed', 'cancelled', 'parked', 'abandoned'].includes(job.status)) return;
     const previous = this.progress(job);
     const progress = advanceCompanionReplyTiming(previous, { ...previous, ...(job.status === 'pending' ? { phase: 'queued' as const,
       detail: '等待重新处理这条伙伴来信', memory: undefined, finishedAt: undefined } : {}),

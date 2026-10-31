@@ -3,22 +3,11 @@ import { CompanionInlineMedia } from './CompanionMediaPlayer';
 import { COMPANION_MEDIA_PREVIEW_MAX_BYTES, COMPANION_IMAGE_PREVIEW_MAX_BYTES } from '../../shared/companion-media';
 import type { CompanionAttachment } from '../../shared/companions';
 import { Icon } from '../Icons';
+import { CompanionResourceGallery, CompanionResourceThumbnail } from './CompanionResourceGallery';
+import { attachmentCollectionSummary, companionAttachmentKind, companionAttachmentSize } from './companion-attachment-presentation';
+export { companionAttachmentKind, companionAttachmentSize, companionAttachmentSource } from './companion-attachment-presentation';
 import './companion-attachments.css';
 
-export function companionAttachmentSource(attachment: CompanionAttachment) {
-  return attachment.url || `worldlinebox-companion://attachment/${encodeURIComponent(attachment.id)}`;
-}
-export function companionAttachmentSize(value: number) {
-  return value < 1024 ? `${value} B` : value < 1024 * 1024 ? `${(value / 1024).toFixed(1)} KB` : `${(value / 1024 / 1024).toFixed(1)} MB`;
-}
-export function companionAttachmentKind(attachment: Pick<CompanionAttachment, 'mime' | 'name'>) {
-  if (attachment.mime.startsWith('image/')) return 'image';
-  if (attachment.mime.startsWith('audio/')) return 'audio';
-  if (attachment.mime.startsWith('video/')) return 'video';
-  if (attachment.mime === 'application/pdf') return 'pdf';
-  if (attachment.mime.startsWith('text/') || /\.(?:md|markdown|json|csv|log|ya?ml)$/iu.test(attachment.name)) return 'text';
-  return 'file';
-}
 const labels = { image: '图片', audio: '音频', video: '视频', pdf: 'PDF 文档', text: '文本文件', file: '文件' } as const;
 
 function MediaAttachment({ attachment, onOpen, ownerId, conversationId }: { attachment: CompanionAttachment; onOpen: (attachment: CompanionAttachment) => void; ownerId?: string; conversationId?: string }) {
@@ -38,9 +27,14 @@ export function CompanionAttachments({ attachments, onOpen, ownerId, conversatio
   ownerId?: string; conversationId?: string;
   onOpen: (attachment: CompanionAttachment, images?: readonly CompanionAttachment[]) => void;
 }) {
+  const [opened, setOpened] = useState<string>();
+  const scope = JSON.stringify([ownerId, conversationId, attachments.map(attachment => [attachment.id, attachment.url, attachment.mime, attachment.size])]);
+  if (attachments.length > 3) return <div className="companions-message-attachments is-collection"><button type="button" className="companions-resource-cover" aria-label={`打开 ${attachments.length} 个分享资源`} aria-haspopup="dialog" onClick={() => setOpened(scope)}>
+    <span className="resource-cover-mosaic">{attachments.slice(0, 4).map(attachment => <span key={attachment.id}><CompanionResourceThumbnail attachment={attachment} /></span>)}</span><span className="resource-cover-caption"><strong>{attachments.length} 个分享资源</strong><small>{attachmentCollectionSummary(attachments)}</small><span>打开画廊<Icon name="chevron-right" /></span></span>
+  </button>{opened === scope && <CompanionResourceGallery key={scope} attachments={attachments} ownerId={ownerId} conversationId={conversationId} onClose={() => setOpened(undefined)} />}</div>;
   const images = attachments.filter(attachment => companionAttachmentKind(attachment) === 'image' && attachment.size <= COMPANION_IMAGE_PREVIEW_MAX_BYTES);
   return <div className="companions-message-attachments">
-    {!!images.length && <div className={`companions-attachment-images${images.length === 1 ? ' is-single' : ''}`} aria-label={`${images.length} 张图片`}>{images.map(attachment => <button type="button" className="companions-attachment is-image" key={attachment.id} onClick={() => onOpen(attachment, images)} aria-label={`预览图片：${attachment.name}`}><img loading="lazy" src={companionAttachmentSource(attachment)} alt={attachment.name} /><span><strong>{attachment.name}</strong><small>{companionAttachmentSize(attachment.size)} · 查看大图</small></span></button>)}</div>}
+    {!!images.length && <div className={`companions-attachment-images${images.length === 1 ? ' is-single' : ''}`} aria-label={`${images.length} 张图片`}>{images.map(attachment => <button type="button" className="companions-attachment is-image" key={attachment.id} onClick={() => onOpen(attachment, images)} aria-label={`预览图片：${attachment.name}`}><CompanionResourceThumbnail attachment={attachment} /><span><strong>{attachment.name}</strong><small>{companionAttachmentSize(attachment.size)} · 查看大图</small></span></button>)}</div>}
     {attachments.filter(attachment => !images.includes(attachment)).map(attachment => {
       const kind = companionAttachmentKind(attachment);
       return kind === 'audio' || kind === 'video' ? <MediaAttachment key={attachment.id} attachment={attachment} onOpen={onOpen} ownerId={ownerId} conversationId={conversationId} />

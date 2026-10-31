@@ -2,6 +2,7 @@ import type { ActivityMemoryOperation } from '../shared/companion-activity-task'
 import { createHash, randomUUID } from 'node:crypto';
 import type { CompanionConnection } from './store';
 import type { AppendCompanionMessage, CompanionStorageCommand, CompanionStorageResponse } from '../shared/companion-storage';
+import { assertCompanionAgendaActivityParent } from './agenda-activity-parent';
 import { companionExecutionReadsetSchema, type CompanionExecutionReadset } from '../shared/companion-execution-evidence';
 import type { CompanionMessage } from '../shared/companions';
 import { activityTaskSchema, activityMemorySchema, activityDecisionSchema, activityPassiveRecallSchema, projectCompanionActivityHistoryEntry, COMPANION_ACTIVITY_HANDOFF_NOTICE, type ActivityDecision, type CompanionActivityTask, type CompanionActivityPassiveRecall } from '../shared/companion-activity-task';
@@ -21,6 +22,7 @@ type Row = { data: string };
 type SocialRouteProof = { sourceMessageId: string; throughSequence: number; chainId: string; memberIds: string[]; readSet?: Array<{ id: string; checksum: string }> };
 type GoalSocialOrigin = { messageId: string; sourceMessageId: string; deliveryClientId: string; conversationId: string; topicId?: string; chainId: string };
 type Stored = CompanionActivityTask & { clientId: string; sourceChecksum?: string; nextAt: number; leaseUntil?: number;
+  agendaPaused?: boolean;
   planningMs?: number; planningStartedAt?: number; reportVersion?: number;
   planningMilestoneStep?: number; planningMilestoneMs?: number;
   reportPending?: boolean; memoryIntentId?: string;
@@ -78,6 +80,22 @@ export class CompanionActivityTaskStore {
       PRIMARY KEY(task_id,message_id));
       CREATE INDEX IF NOT EXISTS companion_activity_social_inbox_pending ON companion_activity_social_inbox(task_id,status)`);
   }
+  private agendaDriven(): boolean { return !!this.db.prepare('SELECT 1 FROM metadata WHERE key=?').get('activity-agenda-driven'); }
+  private parent(task: Stored, input?: { companionId?: string; agendaRunId?: string; agendaLeaseToken?: string }): boolean {
+    if (!input?.agendaRunId && !input?.agendaLeaseToken) { if (this.agendaDriven()) throw new Error('持续行动只能由准确的日程父执行认领。'); return false; }
+    if (input.companionId !== task.companionId) throw new Error('持续行动的日程主体不匹配。');
+    assertCompanionAgendaActivityParent(this.db, task, input.agendaRunId, input.agendaLeaseToken);
+    task.agendaRunId = input.agendaRunId; task.agendaLeaseToken = input.agendaLeaseToken; return true;
+  }
+  /** Retired actor-memory intents are readable for audit, never replayable.
+   * Ordinary host capture/learning writes do not use this actor intent port. */
+  guardMemory<T>(command: CompanionStorageCommand, execute: (guarded: CompanionStorageCommand) => T): T {
+    if (command.type === 'activity.memory.apply' || ['memory.record', 'memory.revise', 'memory.organize', 'memory.consolidate'].includes(command.type)
+      && 'operationId' in command && typeof command.operationId === 'string'
+      && this.db.prepare('SELECT 1 FROM companion_activity_memory_intents WHERE id=?').get(command.operationId))
+      throw new Error('伙伴记忆操作已退役；旧活动记忆提案不能执行。');
+    return execute(command);
+  }
   private save(task: Stored): void { task.updatedAt = iso(); this.db.prepare('UPDATE companion_activity_tasks SET status=?,next_at=?,report_pending=?,data=? WHERE id=?').run(task.status, task.nextAt, Number(!!task.reportPending), JSON.stringify(task), task.id); }
   /** Only leased planning consumes the budget. Offline time and durable waits do not. */
   private chargePlanning(task: Stored): void {
@@ -96,8 +114,8 @@ export class CompanionActivityTaskStore {
     const found = this.db.prepare('SELECT data FROM companion_activity_passive_snapshots WHERE task_id=?').get(id) as Row | undefined;
     return found ? activityPassiveRecallSchema.parse(JSON.parse(found.data)) : undefined;
   }
-  private public(task: Stored): CompanionActivityTask {
-    const parsed = activityTaskSchema.parse({ ...task, historyAvailable: true, history: task.history.slice(-32).map(projectCompanionActivityHistoryEntry) });
+  private public(task: Stored, host = false): CompanionActivityTask {
+    const parsed = activityTaskSchema.parse({ ...task, ...(this.agendaDriven() ? { deadline: undefined } : {}), ...(!host ? { leaseToken: undefined, agendaLeaseToken: undefined } : {}), historyAvailable: true, history: task.history.slice(-32).map(projectCompanionActivityHistoryEntry) });
     if (this.valid(task)) {
       if (terminal(task) && task.reportRejected) return { ...parsed, stage: '这条任务记录已结束，实际结果尚未核验。' };
       if (task.seededSocialClientIds?.length && !terminal(task)) {
@@ -422,10 +440,13 @@ export class CompanionActivityTaskStore {
     }
     return true;
   }
-  private flushReports(): void {
-    const rows = this.db.prepare('SELECT data FROM companion_activity_tasks WHERE report_pending=1 AND next_at<=? ORDER BY next_at,id LIMIT 16').all(Date.now()) as Row[];
+  private flushReports(parent?: { id?: string; companionId?: string; agendaRunId?: string; agendaLeaseToken?: string }): void {
+    if (this.agendaDriven() && !parent?.agendaRunId) return;
+    const rows = parent?.id ? this.db.prepare('SELECT data FROM companion_activity_tasks WHERE id=? AND report_pending=1 AND next_at<=?').all(parent.id, Date.now()) as Row[]
+      : this.db.prepare('SELECT data FROM companion_activity_tasks WHERE report_pending=1 AND next_at<=? ORDER BY next_at,id LIMIT 16').all(Date.now()) as Row[];
     for (const row of rows) {
       const task = JSON.parse(row.data) as Stored;
+      if (parent) this.parent(task, parent);
       if (!this.valid(task)) { task.reportPending = false; this.save(task); continue; }
       this.world.snapshot(task);
       if (!this.world.socialAvailable(task.companionId, 'phone', []) || companionPlayerPhoneBusy(this.db, task.companionId)) { task.nextAt = Date.now() + 5000; this.save(task); continue; }
@@ -499,6 +520,7 @@ export class CompanionActivityTaskStore {
     // A later step or an ordinary terminal status does not erase an actual
     // historical analysis. Its captured source/readset is verified by Store.
     if (mode === 'read') return true;
+    if (task.agendaRunId) { try { assertCompanionAgendaActivityParent(this.db, task); } catch { return false; } }
     if (task.status !== 'running' || task.step !== authorization.step || task.leaseToken !== authorization.leaseToken
       || (task.leaseUntil ?? 0) < Date.now() || task.observedSocialEvidence?.leaseToken !== authorization.leaseToken) return false;
     const messages = this.peerMessages(task);
@@ -515,18 +537,22 @@ export class CompanionActivityTaskStore {
       version: task.reportVersion, readset: task.reportReadset,
       progress: task.sourceMessageId && !task.peerResponsibility ? this.social.continuity.progressForGoal({ ...task, sourceMessageId: task.sourceMessageId }).observationChecksum : undefined })).digest('hex');
   }
-  private claimReport(excluded: string[], id?: string): CompanionStorageResponse {
+  private claimReport(excluded: string[], id?: string, parent?: { companionId?: string; agendaRunId?: string; agendaLeaseToken?: string }): CompanionStorageResponse {
     return this.db.transaction(() => {
-      this.flushReports();
-      for (const row of this.db.prepare('SELECT data FROM companion_activity_tasks WHERE report_pending=1 AND next_at<=? ORDER BY next_at,id LIMIT 16').all(Date.now()) as Row[]) {
+      if (this.agendaDriven() && (!id || !parent?.agendaRunId)) return { ok: true };
+      this.flushReports(parent ? { ...parent, id } : undefined);
+      const rows = id ? this.db.prepare('SELECT data FROM companion_activity_tasks WHERE id=? AND report_pending=1 AND next_at<=?').all(id, Date.now()) as Row[]
+        : this.db.prepare('SELECT data FROM companion_activity_tasks WHERE report_pending=1 AND next_at<=? ORDER BY next_at,id LIMIT 16').all(Date.now()) as Row[];
+      for (const row of rows) {
         const task = JSON.parse(row.data) as Stored;
+        if (parent) this.parent(task, parent);
         if (!terminal(task) || !task.reportReadset || id && task.id !== id || excluded.includes(task.companionId) || (task.reportLeaseUntil ?? 0) > Date.now()) continue;
         if (!this.valid(task)) { task.reportPending = false; delete task.reportLeaseToken; delete task.reportLeaseUntil; this.save(task); continue; }
         if (!this.db.prepare("SELECT 1 FROM companions WHERE id=? AND json_extract(data,'$.active')=1").get(task.companionId)
           || !this.world.socialAvailable(task.companionId, 'phone', []) || companionPlayerPhoneBusy(this.db, task.companionId) || this.peerBusy(task.companionId)) continue;
         task.reportLeaseToken = randomUUID(); task.reportLeaseUntil = Date.now() + PLANNING_LEASE_MS;
         task.reportObservation = this.reportObservation(task); task.reportAttempts = (task.reportAttempts ?? 0) + 1; this.save(task);
-        return { ok: true, activityTask: this.public(task), activityReport: { id: task.id, leaseToken: task.reportLeaseToken, executionReadset: task.reportReadset },
+        return { ok: true, activityTask: this.public(task, true), activityReport: { id: task.id, leaseToken: task.reportLeaseToken, executionReadset: task.reportReadset },
           activityProgressEvidence: task.sourceMessageId && !task.peerResponsibility ? this.social.continuity.progressForGoal({ ...task, sourceMessageId: task.sourceMessageId }) : undefined,
           activityMessages: this.peerMessages(task).slice(-100) };
       }
@@ -536,6 +562,7 @@ export class CompanionActivityTaskStore {
   private completeReport(input: Extract<CompanionStorageCommand, { type: 'activity.report.complete' }>): CompanionStorageResponse {
     return this.db.transaction(() => {
       const task = this.get(input.id), clientId = 'activity_result_' + task.id + (task.reportVersion ? '_resumed_' + task.reportVersion : '');
+      if (this.agendaDriven() || task.agendaRunId) assertCompanionAgendaActivityParent(this.db, task);
       if (!task.reportPending) {
         const message = this.db.prepare('SELECT id FROM messages WHERE client_id=?').get(clientId) as { id: string } | undefined;
         return { ok: true, ...(message ? { message: this.visible(task, [message.id])[0] } : {}) };
@@ -561,6 +588,7 @@ export class CompanionActivityTaskStore {
   private failReport(input: Extract<CompanionStorageCommand, { type: 'activity.report.fail' }>): void {
     this.db.transaction(() => {
       const task = this.get(input.id);
+      if (this.agendaDriven() || task.agendaRunId) assertCompanionAgendaActivityParent(this.db, task);
       if (!task.reportPending || task.reportLeaseToken !== input.leaseToken) return;
       task.reportError = input.error;
       delete task.reportLeaseToken; delete task.reportLeaseUntil;
@@ -848,15 +876,18 @@ export class CompanionActivityTaskStore {
     return !!task.sourceMessageId && !!this.db.prepare("SELECT 1 FROM companion_work_queue WHERE companion_id=? AND status IN('queued','running') AND json_extract(data,'$.sourceMessageId')=? AND json_extract(data,'$.conversationId')=? LIMIT 1")
       .get(task.companionId, task.sourceMessageId, task.conversationId);
   }
-  claim(excluded: string[]): CompanionActivityTask | undefined {
+  claim(excluded: string[], parent?: { id?: string; companionId?: string; agendaRunId?: string; agendaLeaseToken?: string }): CompanionActivityTask | undefined {
     return this.db.transaction(() => {
-      this.flushReports();
+      if (this.agendaDriven() && (!parent?.id || !parent.agendaRunId)) return undefined;
+      if (!parent) this.flushReports();
       // Bounded indexed scan; deferred actors rotate by next_at rather than starving others.
-      const candidates = this.db.prepare("SELECT data FROM companion_activity_tasks WHERE status IN('queued','waiting','running') AND next_at<=? ORDER BY next_at,id LIMIT 32").all(Date.now()) as Row[];
+      const candidates = parent?.id ? this.db.prepare("SELECT data FROM companion_activity_tasks WHERE id=? AND status IN('queued','waiting','running') AND next_at<=?").all(parent.id, Date.now()) as Row[]
+        : this.db.prepare("SELECT data FROM companion_activity_tasks WHERE status IN('queued','waiting','running') AND next_at<=? ORDER BY next_at,id LIMIT 32").all(Date.now()) as Row[];
       for (const row of candidates) {
         const task = JSON.parse(row.data) as Stored;
+        const agenda = parent ? this.parent(task, parent) : false;
         if (!this.db.prepare("SELECT 1 FROM companions WHERE id=? AND json_extract(data,'$.active')=1").get(task.companionId)) { task.nextAt = Date.now() + 5000; this.save(task); continue; }
-        if (excluded.includes(task.companionId) || !companionTaskCanClaim(this.db, task.companionId, { kind: 'activity', id: task.id })) { task.nextAt = Date.now() + 2000; this.save(task); continue; }
+        if (excluded.includes(task.companionId) || !agenda && !companionTaskCanClaim(this.db, task.companionId, { kind: 'activity', id: task.id })) { task.nextAt = Date.now() + 2000; this.save(task); continue; }
         if (!this.valid(task)) { this.finish(task, 'cancelled', '来源被撤回、伙伴重置或联系人已移除，停止后续行动。'); continue; }
         if (task.status === 'running' && (task.leaseUntil ?? 0) > Date.now()) continue;
         if (task.status === 'running') this.chargePlanning(task);
@@ -869,13 +900,13 @@ export class CompanionActivityTaskStore {
         if (task.step - (task.planningMilestoneStep ?? 0) >= 32) {
           task.planningMilestoneStep = task.step; task.planningMilestoneMs = 0;
         }
-        if ((task.planningMilestoneMs ?? 0) >= PLANNING_BUDGET_MS) {
+        if (!agenda && (task.planningMilestoneMs ?? 0) >= PLANNING_BUDGET_MS) {
           this.noteArrival(task, world);
           this.finish(task, 'failed', '这次安排多次尝试后仍未完成，已停止继续尝试。' + (task.visitTargetId
             ? task.visitInteractionAt ? '已经与对方当面交流，后续安排尚未完成。' : task.visitArrivedAt ? '已经抵达，但尚未完成当面交流。' : '尚未抵达对方的小屋。'
             : '目标尚未完成，已发生的行为保留。')); continue;
         }
-        if (task.deferredDecision) {
+        if (task.deferredDecision && !agenda) {
           const deferred = task.deferredDecision;
           const socialEvidence = this.peerMessages(task).map(message => ({ id: message.id, checksum: checksum(message) }));
           const progressChanged = task.sourceMessageId && !task.peerResponsibility && task.observedProgressEvidence
@@ -900,13 +931,13 @@ export class CompanionActivityTaskStore {
         }
         if (task.attempts >= 3) { this.finish(task, 'failed', ('同一步连续失败三次，已停止自动重试。最后原因：' + task.stage).slice(0, 2000)); continue; }
         task.attempts++; task.status = 'running'; task.leaseToken = randomUUID(); task.planningStartedAt = Date.now();
-        task.deadline = iso(Date.now() + Math.max(0, PLANNING_BUDGET_MS - (task.planningMilestoneMs ?? 0)));
+        if (!agenda) task.deadline = iso(Date.now() + Math.max(0, PLANNING_BUDGET_MS - (task.planningMilestoneMs ?? 0)));
         task.leaseUntil = Date.now() + PLANNING_LEASE_MS; task.nextAt = task.leaseUntil;
-        this.save(task); return this.public(task);
+        this.save(task); return this.public(task, true);
       }
     }).immediate();
   }
-  private leased(id: string, token: string): Stored { const task = this.get(id); if (task.status !== 'running' || task.leaseToken !== token || (task.leaseUntil ?? 0) < Date.now() || !this.valid(task)) throw new Error('行动任务租约或来源已失效。'); return task; }
+  private leased(id: string, token: string, requireParent = true): Stored { const task = this.get(id); if (task.status !== 'running' || task.leaseToken !== token || (task.leaseUntil ?? 0) < Date.now() || !this.valid(task)) throw new Error('行动任务租约或来源已失效。'); if (requireParent && (this.agendaDriven() || task.agendaRunId)) assertCompanionAgendaActivityParent(this.db, task); return task; }
   private topicStep(task: Stored, input: NonNullable<ActivityDecision['topic']>, moderatorTransferApproval?: CompanionTopicModeratorTransferApproval): CompanionStorageResponse {
     if (!this.topicExecute) throw new Error('当前宿主没有装配话题操作接口，未执行。');
     const operation = input as { action: string; roomId?: string; topicId?: string | null };
@@ -981,8 +1012,9 @@ export class CompanionActivityTaskStore {
   }
   private commit(id: string, token: string, decision: ActivityDecision, fromPrimary = false, expectedStep?: number, executionReadset?: CompanionExecutionReadset,
     topicModeratorTransferApproval?: CompanionTopicModeratorTransferApproval): CompanionActivityTask {
+    if (decision.memory) throw new Error('伙伴记忆操作已退役；本任务只使用系统自动召回的资料，提案未执行。');
     return this.db.transaction(() => {
-      const task = this.leased(id, token);
+      const task = this.leased(id, token, !fromPrimary);
       if (expectedStep !== undefined && task.step !== expectedStep) throw new Error('行动步骤已有真实进展，旧提案未执行；须重新观察。');
       if (decision.status !== 'continue' && this.inboxMessages(task).some(message => task.observedSocialEvidence?.leaseToken !== token
         || !task.observedSocialEvidence.messages.some(ref => ref.id === message.id && ref.checksum === checksum(message))))
@@ -1132,10 +1164,14 @@ export class CompanionActivityTaskStore {
       this.save(task); this.ensureWaitReplyOpportunity(task); return this.public(task);
     }).immediate();
   }
-  private claimMemory(): CompanionStorageResponse {
+  private claimMemory(parent?: { taskId?: string; companionId?: string; agendaRunId?: string; agendaLeaseToken?: string }): CompanionStorageResponse {
     return this.db.transaction(() => {
-      this.db.prepare("UPDATE companion_activity_memory_intents SET status='pending',lease_token=NULL,lease_until=NULL WHERE status='running' AND lease_until<=?").run(Date.now());
-      const candidates = this.db.prepare("SELECT * FROM companion_activity_memory_intents WHERE status='pending' ORDER BY rowid LIMIT 32").all() as Array<{ id: string; task_id: string; companion_id: string; conversation_id: string; data: string }>;
+      if (this.agendaDriven() && (!parent?.taskId || !parent.agendaRunId)) return { ok: true };
+      if (parent?.taskId) { const task = this.get(parent.taskId); this.parent(task, parent); this.save(task);
+        this.db.prepare("UPDATE companion_activity_memory_intents SET status='pending',lease_token=NULL,lease_until=NULL WHERE task_id=? AND status='running' AND lease_until<=?").run(parent.taskId, Date.now()); }
+      else this.db.prepare("UPDATE companion_activity_memory_intents SET status='pending',lease_token=NULL,lease_until=NULL WHERE status='running' AND lease_until<=?").run(Date.now());
+      const candidates = (parent?.taskId ? this.db.prepare("SELECT * FROM companion_activity_memory_intents WHERE task_id=? AND status='pending' ORDER BY rowid LIMIT 1").all(parent.taskId)
+        : this.db.prepare("SELECT * FROM companion_activity_memory_intents WHERE status='pending' ORDER BY rowid LIMIT 32").all()) as Array<{ id: string; task_id: string; companion_id: string; conversation_id: string; data: string }>;
       for (const entry of candidates) {
         const task = this.get(entry.task_id);
         if (terminal(task) || !this.valid(task) || task.memoryIntentId !== entry.id) {
@@ -1155,6 +1191,7 @@ export class CompanionActivityTaskStore {
         .get(command.id, command.leaseToken, Date.now()) as { task_id: string; data: string } | undefined;
       if (!entry) throw new Error('记忆操作租约已失效。');
       const task = this.get(entry.task_id);
+      if (this.agendaDriven() || task.agendaRunId) assertCompanionAgendaActivityParent(this.db, task);
       const operation = JSON.parse(entry.data) as ActivityMemoryOperation;
       // A successful own revise/organize is the one allowed transition from the
       // version that admitted this intent. External edits still invalidate it.
@@ -1182,18 +1219,50 @@ export class CompanionActivityTaskStore {
       }
       task.step++; task.attempts = 0; task.history.push({ step: task.step, at: iso(), action: 'memory.' + operation.operation,
         result: command.type === 'activity.memory.complete' ? command.result : command.error, ok: command.type === 'activity.memory.complete' });
-      delete task.memoryIntentId; task.status = 'queued'; task.nextAt = Date.now() + 1500; task.stage = '记忆操作已有真实回执，继续判断下一步。'; this.save(task);
+      delete task.memoryIntentId; task.status = 'queued'; task.nextAt = Date.now() + 1500;
+      task.stage = command.type === 'activity.memory.complete' ? '旧记忆操作已有真实回执，继续判断下一步。' : '旧记忆操作未执行；使用任务自动回忆继续判断下一步。'; this.save(task);
       this.db.prepare("UPDATE companion_activity_memory_intents SET status='done',data='{}',lease_token=NULL,lease_until=NULL WHERE id=?").run(command.id);
       return { ok: true, activityTask: this.public(task) };
     }).immediate();
   }
   execute(command: CompanionStorageCommand): CompanionStorageResponse | undefined {
     switch (command.type) {
+      case 'activity.agenda.enable': this.db.prepare("INSERT INTO metadata(key,value) VALUES('activity-agenda-driven','true') ON CONFLICT(key) DO UPDATE SET value=excluded.value").run(); return { ok: true };
+      case 'activity.agenda.pending': {
+        const limit = command.limit ?? 50;
+        const rows = this.db.prepare(`SELECT data FROM companion_activity_tasks WHERE (status IN('queued','running','waiting') OR report_pending=1)
+          ${command.companionId ? 'AND companion_id=?' : ''} ${command.afterId ? 'AND id>?' : ''} ORDER BY id LIMIT ?`)
+          .all(...(command.companionId ? [command.companionId] : []), ...(command.afterId ? [command.afterId] : []), limit + 1) as Row[];
+        const tasks = rows.slice(0, limit).map(row => this.public(JSON.parse(row.data) as Stored, true));
+        return { ok: true, activityAgendaPage: { tasks, hasMore: rows.length > limit, ...(rows.length > limit ? { nextId: tasks.at(-1)!.id } : {}) } };
+      }
+      case 'activity.agenda.get': { const task = this.get(command.id); if (task.companionId !== command.companionId) throw new Error('持续行动不属于该日程主体。'); return { ok: true, activityTask: this.public(task, true) }; }
+      case 'activity.agenda.release': return this.db.transaction(() => {
+        const task = this.get(command.id);
+        if (task.companionId !== command.companionId || task.agendaRunId !== command.agendaRunId || task.agendaLeaseToken !== command.agendaLeaseToken)
+          throw new Error('不能停止另一个父执行的持续行动。');
+        assertCompanionAgendaActivityParent(this.db, task, command.agendaRunId, command.agendaLeaseToken, true);
+        this.db.prepare("UPDATE companion_activity_memory_intents SET status='pending',lease_token=NULL,lease_until=NULL WHERE task_id=? AND status='running'").run(task.id);
+        this.chargePlanning(task); delete task.leaseToken; delete task.leaseUntil; delete task.reportLeaseToken; delete task.reportLeaseUntil;
+        if (task.status === 'running') task.status = 'queued';
+        if (command.action === 'abandon') { task.status = 'cancelled'; task.reportPending = false; task.stage = '所属日程已明确放弃本次，原来源与已发生步骤保留。'; }
+        else task.agendaPaused = true;
+        this.save(task); return { ok: true, activityTask: this.public(task, true) };
+      }).immediate();
+      case 'activity.agenda.restore': return this.db.transaction(() => {
+        const task = this.get(command.id);
+        if (task.companionId !== command.companionId || task.agendaRunId !== command.agendaRunId || task.updatedAt !== command.expectedUpdatedAt
+          || task.status === 'cancelled' || !this.valid(task)) throw new Error('原持续行动状态或来源已变化，未恢复另一个版本。');
+        assertCompanionAgendaActivityParent(this.db, task, command.agendaRunId, task.agendaLeaseToken, true);
+        if (task.status === 'failed') { task.status = 'queued'; task.reportPending = false; task.reportVersion = (task.reportVersion ?? 0) + 1; }
+        task.attempts = 0; task.agendaCycle = (task.agendaCycle ?? 0) + 1;
+        delete task.agendaPaused; this.save(task); return { ok: true, activityTask: this.public(task, true) };
+      }).immediate();
       case 'activity.social.route': return this.routeSocial(command);
       case 'activity.handoff': return this.handoff(command);
       case 'activity.social.bind_peer_port': return this.bindPeerPort(command);
       case 'activity.port.adopt_candidate': return this.adoptCandidate(command);
-      case 'activity.memory.claim': return this.claimMemory();
+      case 'activity.memory.claim': return this.claimMemory(command.agendaRunId ? command : undefined);
       case 'activity.memory.complete': case 'activity.memory.fail': return this.completeMemory(command);
       case 'activity.motion.ensure': return this.ensureMotion(command);
       case 'activity.get': { const task = this.get(command.id); if (task.companionId !== command.companionId || task.conversationId !== command.conversationId) throw new Error('行动任务范围不可访问。'); return { ok: true, activityTask: this.public(task) }; }
@@ -1239,11 +1308,12 @@ export class CompanionActivityTaskStore {
         if (task.companionId !== command.companionId || task.conversationId !== command.conversationId) throw new Error('不能控制其他伙伴的任务。');
         if (task.status !== 'cancelled' || task.stop?.actor !== 'user' || !this.valid(task)) throw new Error('只有用户停止且来源仍有效的持续任务可以恢复。');
         task.status = 'queued'; task.stage = '用户已恢复原任务，保留已完成步骤，等待继续'; delete task.stop;
+        task.agendaAttempt = (task.agendaAttempt ?? 0) + 1; delete task.agendaRunId; delete task.agendaLeaseToken; delete task.agendaPaused;
         delete task.leaseToken; delete task.leaseUntil; task.reportPending = false; task.nextAt = Date.now(); task.deadline = iso(Date.now() + 3600_000);
         this.save(task); return { ok: true, activityTask: this.public(task) };
       }).immediate();
-      case 'activity.claim': return { ok: true, activityTask: this.claim(command.excludedIds ?? []) };
-      case 'activity.report.claim': return this.claimReport(command.excludedIds ?? [], command.id);
+      case 'activity.claim': return { ok: true, activityTask: this.claim(command.excludedIds ?? [], command.agendaRunId ? command : undefined) };
+      case 'activity.report.claim': return this.claimReport(command.excludedIds ?? [], command.id, command.agendaRunId ? command : undefined);
       case 'activity.report.complete': return this.completeReport(command);
       case 'activity.report.fail': this.failReport(command); return { ok: true };
       case 'activity.observe': {
@@ -1293,7 +1363,12 @@ export class CompanionActivityTaskStore {
         const runId = createHash('sha256').update(JSON.stringify([task.companionId, task.conversationId, invocationId])).digest('hex');
         const run = this.agentRunExecute?.({ type: 'agent.run.get', companionId: task.companionId, id: runId })?.agentRun;
         if (!run || run.status !== 'done' || run.companionId !== task.companionId || run.conversationId !== task.conversationId || run.invocationId !== invocationId) throw new Error('没有本任务本步骤已完成且来源有效的推理，未保存计划。');
-        const decision = activityDecisionSchema.parse(JSON.parse(companionFinalProposalJsonText(run.turns.at(-1)!)));
+        const final = run.turns.at(-1)!;
+        const original = companionFinalProposalJsonText(final), repair = final.structuredRepair;
+        if (repair && (repair.content === undefined || repair.originalHash !== createHash('sha256').update(original).digest('hex')
+          || repair.contentHash !== createHash('sha256').update(repair.content).digest('hex')))
+          throw new Error('行动计划格式修复未完成或不属于原始最终提案，未保存计划。');
+        const decision = activityDecisionSchema.parse(JSON.parse(repair?.content ?? original));
         const evidence = new Map((task.evidence ?? []).map(item => [item.id, item]));
         for (const item of run.sources) evidence.set(item.id, item);
         task.evidence = [...evidence.values()];

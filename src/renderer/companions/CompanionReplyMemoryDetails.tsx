@@ -34,18 +34,26 @@ function CompanionReplyMemoryBody({ scope, refreshKey, replyRunning, api = (wind
   useEffect(() => {
     const requests = serial.current;
     let alive = true, timer: ReturnType<typeof setTimeout> | undefined, corpusStamp: string | undefined;
+    const deadlines = new Set<ReturnType<typeof setTimeout>>();
+    async function withinReadDeadline<T>(promise: Promise<T>): Promise<T> {
+      let deadline: ReturnType<typeof setTimeout> | undefined;
+      try { return await Promise.race([promise, new Promise<never>((_resolve, reject) => {
+        deadline = setTimeout(() => reject(new Error('记忆详情暂时没能读取完成，可以重新查看或关闭详情。')), 10_000); deadlines.add(deadline);
+      })]); }
+      finally { if (deadline !== undefined) { clearTimeout(deadline); deadlines.delete(deadline); } }
+    }
     const invalidate = () => { requests.epoch++; setReceipt(undefined); setError(''); setLoading(true); };
     const read = async () => {
       if (document.visibilityState === 'hidden') return;
       const epoch = ++requests.epoch; setReceipt(undefined); setError(''); setLoading(true);
       try {
         if (!api) throw new Error('记忆详情暂时无法读取。');
-        const [result, state] = await Promise.all([
+        const [result, state] = await withinReadDeadline(Promise.all([
           api.request(scope.socialJobId
             ? { type: 'social.reply.memory.inspect', companionId: scope.companionId, conversationId: scope.conversationId, jobId: scope.socialJobId, contextOffset, contextLimit: 8192 }
             : { type: 'reply.memory.inspect', companionId: scope.companionId, conversationId: scope.conversationId, messageId: scope.messageId, contextOffset, contextLimit: 8192 }),
           api.request({ type: 'memory.recall.state', companionId: scope.companionId }),
-        ]);
+        ]));
         if (!alive || epoch !== requests.epoch) return;
         if (!result.ok || !result.replyMemory) throw new Error(result.error || '这条回复还没有可核验的记忆详情。');
         if (!state.ok || !state.memoryCorpusStamp) throw new Error(state.error || '当前记忆状态暂时无法核验。');
@@ -60,7 +68,7 @@ function CompanionReplyMemoryBody({ scope, refreshKey, replyRunning, api = (wind
       if (!api || !corpusStamp || document.visibilityState === 'hidden') return;
       const epoch = requests.epoch;
       try {
-        const state = await api.request({ type: 'memory.recall.state', companionId: scope.companionId });
+        const state = await withinReadDeadline(api.request({ type: 'memory.recall.state', companionId: scope.companionId }));
         if (!alive || epoch !== requests.epoch) return;
         if (!state.ok || !state.memoryCorpusStamp) throw new Error(state.error || '当前记忆状态暂时无法核验。');
         if (state.memoryCorpusStamp !== corpusStamp) { corpusStamp = undefined; invalidate(); void read(); }
@@ -69,15 +77,15 @@ function CompanionReplyMemoryBody({ scope, refreshKey, replyRunning, api = (wind
     const unsubscribe = api?.onChanged(() => { if (!timer && document.visibilityState !== 'hidden') timer = setTimeout(() => { timer = undefined; void checkState(); }, 750); });
     const visibility = () => { corpusStamp = undefined; invalidate(); if (timer) { clearTimeout(timer); timer = undefined; } if (document.visibilityState !== 'hidden') void read(); };
     document.addEventListener('visibilitychange', visibility);
-    return () => { alive = false; requests.epoch++; if (timer) clearTimeout(timer); unsubscribe?.(); document.removeEventListener('visibilitychange', visibility); };
+    return () => { alive = false; requests.epoch++; if (timer) clearTimeout(timer); for (const deadline of deadlines) clearTimeout(deadline); unsubscribe?.(); document.removeEventListener('visibilitychange', visibility); };
   }, [api, reload, refreshKey, contextOffset, scope.companionId, scope.conversationId, scope.messageId, scope.socialJobId]);
   const current = receipt?.companionId === scope.companionId && receipt.conversationId === scope.conversationId && receipt.messageId === scope.messageId && (receipt.state !== 'ready' || receipt.contextOffset === contextOffset) ? receipt : undefined;
   // A withdrawn/unavailable receipt is metadata only. Even a malformed response
   // must never cause a cached excerpt to reappear in the rendered body.
   const verified = current?.state === 'ready' ? current : undefined;
   return <div className="companions-reply-memory-details" aria-label="本轮回忆详情" aria-busy={loading}>
-    <header><span><Icon name="sparkles" size={15} /><strong>本轮回忆</strong></span><button type="button" aria-label="重新核验本轮回忆" disabled={loading} onClick={() => setReload(value => value + 1)}><Icon name="refresh" size={13} />刷新</button></header>
-    {loading ? <p role="status" className="reply-memory-note">正在核对这条回复实际收到的记忆…</p> : error ? <p role="alert" className="reply-memory-note">{error}</p> : current && <>
+    <header><span><Icon name="sparkles" size={15} /><strong>这次回复的回忆</strong></span><button type="button" aria-label="重新核验本轮回忆" disabled={loading} onClick={() => setReload(value => value + 1)}><Icon name="refresh" size={13} />重新读取</button></header>
+    {loading ? <p role="status" className="reply-memory-note">正在读取这次回复用到的记忆…</p> : error ? <p role="alert" className="reply-memory-note">{error}</p> : current && <>
       <p className={'reply-memory-note' + (current.state === 'withdrawn' ? ' is-withdrawn' : '')}>{replyRunning && current.state === 'unavailable' ? '本条回复仍在进行，记忆上下文尚未完成保存。完成后可查看实际收到的记忆与来源。' : current.explanation}</p>
       {current.pending && <p className="reply-memory-status"><Icon name="clock" size={13} />部分来源仍在收录或建立索引，本轮回忆可能尚未包含这些内容。</p>}
       {current.degraded && <p className="reply-memory-status"><Icon name="alert-circle" size={13} />本轮召回发生降级，请结合原文核对。</p>}

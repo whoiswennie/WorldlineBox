@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { readVerifiedHostBehaviorReceipt } from './host-behavior-receipts';
 import type { CompanionConnection } from './store';
 import type { CompanionMemory, CompanionMessage } from '../shared/companions';
 import type { z } from 'zod';
@@ -74,6 +75,13 @@ export class CompanionSourceAccess {
     private sourceKey(scope: CompanionSourceScope, source: Row): string {
         return JSON.stringify([scope.companionId, scope.conversationId, scope.beforeSequence ?? null, source.id, source.revision ?? 1,
           source.status, source.conversation_id, companionSourceChecksum(String(source.content))]);
+    }
+    /** Every row field consumed by formal/forgotten admission, including
+     * detached rows passed by nested guards within the same SQL snapshot. */
+    private sourceBindingKey(source: Row): string {
+        return JSON.stringify([source.id, source.author_id, source.conversation_id, source.sequence, source.revision ?? 1,
+          source.status, source.kind, source.action_id ?? null, source.reply_to_id ?? null,
+          companionSourceChecksum(String(source.content)), source.request_fingerprint ?? null]);
     }
     /** Note dependencies and execution sources share one read-local validation
      * session, including mutation invalidation and active-path cycle rejection. */
@@ -252,6 +260,13 @@ export class CompanionSourceAccess {
         return String(row(source).conversation_id);
     }
     formal(source: Row): boolean {
+        // An earlier completed result must never certify its own active
+        // message/action dependency. These guards precede even a memo hit.
+        if (this.executionPath.has('message:' + source.id)
+            || source.action_id && this.executionPath.has('action:' + source.action_id)) return false;
+        return this.memo('formal:' + this.sourceBindingKey(source), () => this.formalValue(source));
+    }
+    private formalValue(source: Row): boolean {
         const derived = this.statement('SELECT value FROM metadata WHERE key=?').get(executionMessageReadsetKey(String(source.id)));
         if (derived && !this.executionValid('message', String(source.id), String(source.author_id), String(source.conversation_id), executionReadsetFromJson(String(row(derived).value)))) return false;
         if (this.statement('SELECT 1 FROM metadata WHERE key=?').get(executionSourceInvalidKey('message', String(source.id)))) return false;
@@ -277,7 +292,13 @@ export class CompanionSourceAccess {
                 id: string; companionId: string; conversationId: string;
                 result?: string;
                 error?: string;
+                capability?: unknown;
             }>(row(action).data);
+            if (result.id !== source.action_id) return false;
+            // A visible tool-process card is not itself an experience source.
+            // Memory may use the parent's formal reply or an actual admitted
+            // result, never a capability trace with an invented DSH proof.
+            if (result.capability) return false;
             const checkpoint = this.statement("SELECT CASE WHEN json_valid(value) THEN json_extract(value,'$.executionReadset') END AS value FROM metadata WHERE key=?").get('task-checkpoint/' + result.id);
             const readset = checkpoint ? executionReadsetFromJson(row(checkpoint).value == null ? undefined : String(row(checkpoint).value)) : undefined;
             return !!(result.result || result.error) && this.executionValid('action', result.id, result.companionId, result.conversationId, readset);
@@ -293,6 +314,7 @@ export class CompanionSourceAccess {
         return fingerprint?.loopStep === undefined;
     }
     reference(source: Row): z.infer<typeof companionMemorySourceSchema> {
+        const hostBehavior = readVerifiedHostBehaviorReceipt(this.db, source);
         const manual = this.statement('SELECT 1 FROM metadata WHERE key=?').get('vcp-manual-input/' + source.id);
         const observation = this.statement('SELECT value FROM metadata WHERE key=?').get('memory-world-observation/' + source.id);
         const publication = this.statement('SELECT value FROM metadata WHERE key=?').get('message-published-after/' + source.id);
@@ -302,7 +324,8 @@ export class CompanionSourceAccess {
         return { sourceType: manual ? 'manual_input' : assetRead ? 'asset_read' : observation ? 'world_observation' : 'message', messageId: String(source.id), conversationId: String(source.conversation_id),
             sequence: Number(source.sequence), authorId: String(source.author_id), revision: Number(source.revision ?? 1),
             checksum: companionSourceChecksum(String(source.content)), createdAt: String(source.created_at),
-            ...(worldTime ? { worldCreatedAt: String(row(worldTime).world_at) } : {}), ...(publication ? { publishedAfterSequence: Number(row(publication).value) } : {}) };
+            ...(worldTime ? { worldCreatedAt: String(row(worldTime).world_at) } : {}), ...(publication ? { publishedAfterSequence: Number(row(publication).value) } : {}),
+            ...(hostBehavior ? { hostBehavior } : {}) };
     }
     blockedTag(scope: CompanionSourceScope, tags: readonly string[], sequence: number): boolean {
         return this.statement('SELECT tag,through_sequence,persistent FROM vcp_source_prohibitions WHERE companion_id=? AND (conversation_id=? OR conversation_id=\'*\')').all(scope.companionId, scope.conversationId)
@@ -336,7 +359,9 @@ export class CompanionSourceAccess {
     }
     forgotten(scope: CompanionSourceScope, source: Row, visited = new Set<string>()): boolean {
         if (visited.has(String(source.id))) return true;
-        return this.memo('forgotten:' + this.sourceKey(scope, source), () => this.forgottenValue(scope, source, visited), true);
+        // Withdrawal follows this owner's original source ancestry. A reader's
+        // current entrance/cursor does not change whether it was forgotten.
+        return this.memo(JSON.stringify(['forgotten', scope.companionId, this.sourceBindingKey(source)]), () => this.forgottenValue(scope, source, visited), true);
     }
     private forgottenValue(scope: CompanionSourceScope, source: Row, visited: Set<string>): boolean {
         const id = String(source.id);

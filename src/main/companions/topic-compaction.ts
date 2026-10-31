@@ -9,6 +9,7 @@ import { prepareTopicUserCanon, topicCanonSourceProjection, projectTopicCanonChe
 import { prepareTopicNarrativeReferences } from './topic-narrative-references';
 import { workingSummaryBudget, workingSummaryFeedback, workingSummarySchema, type WorkingSummary } from './working-summary-budget';
 import { reviewTopicSummaryCanon } from './topic-summary-canon-review';
+import { selectCompanionDialogue } from './context-window';
 
 /** Adapted from DSH compaction-basic: pressure threshold, consolidated checkpoint,
  * verbatim tail, immutable source log and atomic publication. Only the topic
@@ -28,11 +29,19 @@ const continuitySchema = z.object({ topicId: z.string(), companionId: z.string()
 type Request = (command: CompanionStorageCommand) => Promise<CompanionStorageResponse>;
 export interface TopicCompactionInput { frame: CompanionReplyInput; request: Request; config: CompanionModelConfig; signal?: AbortSignal;
   fetchFn?: typeof fetch; policy?: TopicCompactionPolicy;
+  /** Register every source a maintenance model can read before any dispatch.
+   * A capacity split may register a smaller prefix later; the host retains the
+   * union already read by this lease until its result is safely disposed. */
+  bindInputs?: (input: { sourceVersions: Array<{ id: string; revision: number; checksum: string }>;
+    checkpointEventIds: string[] }) => Promise<void>;
+  /** A scheduler work quantum, not a limit on the total history to maintain. */
+  singleChunk?: boolean;
   /** One bounded extra reduction after an explicit provider input rejection. */
   capacityFeedback?: boolean;
   summarize?: (context: { system: string; user: string }, signal?: AbortSignal) => Promise<unknown>;
   review?: TopicContinuityReviewInput['review']; adjudicate?: TopicContinuityReviewInput['adjudicate']; extractCanon?: TopicContinuityReviewInput['extractCanon'] }
 const running = new Map<string, Promise<void>>();
+export class CompanionTopicCompactionChanged extends Error {}
 async function waitForCompaction(previous: Promise<void>, signal?: AbortSignal) {
   if (!signal) return previous;
   signal.throwIfAborted();
@@ -113,7 +122,7 @@ async function readUncovered(input: TopicCompactionInput) {
       ...(protectedSource.publicationRevision !== undefined ? { publicationRevision: protectedSource.publicationRevision } : { legacyOrderUnknown: true }) });
   }
   let publicationRevision = prior?.publicationRevision ?? 0, legacyCursor = prior?.legacyScannedThroughSequence ?? 0;
-  let publicationThrough: number | undefined, legacyThrough = prior?.legacyThroughSequence,
+  let publicationThrough = frame.contextThroughPublicationRevision, legacyThrough = prior?.legacyThroughSequence,
     chars = result.reduce((sum, message) => sum + message.content.length, 0), complete = false;
   // Once calibrated, new publications always have an exact indexed revision;
   // no full topic history is scanned again. A new horizon merely scans index-
@@ -182,7 +191,44 @@ ${frame.topic?.kind === 'story' ? 'sourceBoundNarrativeReferences只给本批原
       outputSchema: z.toJSONSchema(schema) }) } };
 }
 
-/** Before inference, compact old topic spans and return their private checkpoint plus verbatim tail.
+/** Foreground preparation never waits for a model or the background writer's
+ * lock. Only exact source/reader checks and the durable enqueue happen here. */
+export async function prepareTopicContinuity(input: TopicCompactionInput): Promise<CompanionReplyInput> {
+  const { frame, request, signal } = input;
+  if (!frame.topic || !frame.topicState || frame.topicState.readerId !== frame.companion.id
+    || frame.topicState.topicId !== frame.topic.id || frame.topic.conversationId !== frame.conversation.id) return frame;
+  signal?.throwIfAborted();
+  const loaded = await request({ type: 'topic.read', conversationId: frame.conversation.id, topicId: frame.topic.id, readerId: frame.companion.id });
+  if (!loaded.topic || !loaded.topicState || loaded.topic.status !== 'active' || !loaded.topic.participantIds.includes(frame.companion.id))
+    throw new CompanionModelError('CANCELLED', '话题已暂停、删除或当前伙伴无权读取，原记录保持不变。');
+  const port = frame.sourceMessage && !frame.messages.some(message => message.id === frame.sourceMessage!.id)
+    ? [...frame.messages, frame.sourceMessage] : frame.messages;
+  const bounded = selectCompanionDialogue(port, { conversationId: frame.conversation.id, source: frame.sourceMessage,
+    throughSequence: frame.contextThroughSequence, proactive: frame.proactive, policy: frame.dialogueWindow,
+    checkpointed: coverage({ ...frame, topicState: loaded.topicState }) > 0 }).messages;
+  let messages = await visibleMessages(input, bounded);
+  if (frame.sourceMessage && fingerprint(messages.filter(message => message.id === frame.sourceMessage!.id)) !== fingerprint([frame.sourceMessage]))
+    throw new CompanionModelError('CANCELLED', '本次请求的真实来源已变化，不能继续推理。');
+  const source = frame.sourceMessage ?? messages.at(-1);
+  const queued = source ? await request({ type: 'topic.compaction.enqueue', companionId: frame.companion.id,
+    conversationId: frame.conversation.id, topicId: frame.topic.id, sourceMessageId: source.id }) : undefined;
+  if (queued && !queued.ok) throw new Error(queued.error ?? '对话整理欠账未能持久登记。');
+  if (input.capacityFeedback) {
+    if (messages.length <= 1) throw new CompanionModelError('CONTEXT_CAPACITY', '当前只剩必须逐字保留的请求，不能静默截断；原文已保留。');
+    const tailCount = Math.max(0, Math.floor(messages.length / 2) - (frame.sourceMessage ? 1 : 0));
+    const tail = messages.filter(message => message.id !== frame.sourceMessage?.id);
+    messages = [...(tailCount ? tail.slice(-tailCount) : []), ...(frame.sourceMessage ? [frame.sourceMessage] : [])]
+      .sort((a, b) => a.sequence - b.sequence);
+  }
+  const job = queued?.topicCompactionJob, current = { ...frame, topic: loaded.topic, topicState: loaded.topicState };
+  return { ...current, messages, topicUncompactedSources: undefined, topicContinuityCoverage: {
+    maintenanceState: job?.status ?? 'completed', requestedThroughSequence: job?.requestedThroughSequence ?? source?.sequence ?? 0,
+    checkedThroughSequence: job?.checkedThroughSequence ?? 0, checkpointCreationSequence: coverage(current),
+    completeHistory: false, rawMessagesRetained: true,
+    notice: '工作摘要只覆盖已正式登记的原文，不是完整历史。近期原文可能与摘要重叠；尚未整理的更早记录仍保留，可按需读取，不能凭空补全。' } };
+}
+
+/** Background maintenance compacts exact old spans and retains a private checkpoint plus verbatim tail.
  * Concurrent owners never share summaries. A failed/truncated/stale summary is
  * not published and does not advance the effective message surface. */
 export async function ensureTopicContinuity(input: TopicCompactionInput): Promise<CompanionReplyInput> {
@@ -208,6 +254,10 @@ export async function ensureTopicContinuity(input: TopicCompactionInput): Promis
       if (loaded.topic.status !== 'active' || !loaded.topic.participantIds.includes(frame.companion.id)) throw new Error('本人话题已暂停或尚未参加，不能继续压缩。');
       current = { ...current, topic: loaded.topic, topicState: loaded.topicState };
       const previousThrough = coverage(current);
+      const previousPublication = continuity(current)?.publicationCoverage?.publicationRevision;
+      if (frame.contextThroughPublicationRevision !== undefined && (previousThrough > (frame.contextThroughSequence ?? 0)
+        || previousPublication !== undefined && previousPublication > frame.contextThroughPublicationRevision))
+        throw new CompanionTopicCompactionChanged('话题检查点已推进到本次领取范围之后，旧整理让出后重新领取。');
       const scanned = await readUncovered({ ...input, frame: current });
       current = projectTopicContinuity(current, scanned.messages);
       const planning = frame.sourceMessage ? [...scanned.messages.filter(message => message.id !== frame.sourceMessage!.id),
@@ -216,7 +266,7 @@ export async function ensureTopicContinuity(input: TopicCompactionInput): Promis
       if (!plan) {
         if (input.capacityFeedback && scanned.messages.length === 1 && scanned.messages[0]!.id === frame.sourceMessage?.id)
           throw new CompanionModelError('CONTEXT_CAPACITY', '当前仅剩必须逐字保留的请求，无法继续压缩；原文与摘要水位保持不变。');
-        return projectTopicContinuity(current, scanned.messages);
+        return { ...projectTopicContinuity(current, scanned.messages), topicCompactionPending: false };
       }
       if (plan.prefix.length > 255) { plan.retained = [...plan.prefix.slice(255), ...plan.retained]; plan.prefix = plan.prefix.slice(0, 255); }
       const previousEvent = current.topicState?.workingState?.sourceEventId;
@@ -226,6 +276,10 @@ export async function ensureTopicContinuity(input: TopicCompactionInput): Promis
       const attemptKey = JSON.stringify([previousEvent, sharedEvent, previousThrough, prefixDigest]);
       if (attempted.has(attemptKey)) throw new Error('话题压缩没有推进有效水位，已停止重复摘要。');
       attempted.add(attemptKey);
+      const bindInputs = () => input.bindInputs?.({ sourceVersions: plan.prefix.map(message => ({ id: message.id,
+        revision: message.revision ?? 1, checksum: createHash('sha256').update(message.content).digest('hex') })),
+        checkpointEventIds: [...new Set([previousEvent, sharedEvent].filter((event): event is string => event !== undefined))] });
+      await bindInputs();
       let canon = await prepareTopicUserCanon({ frame: { ...current, messages: plan.prefix }, config: input.config, signal,
         fetchFn: input.fetchFn, extract: input.extractCanon });
       let narrativeReferences = await prepareTopicNarrativeReferences({ frame: { ...current, messages: plan.prefix, topicPublicationReference: undefined }, config: input.config, signal, fetchFn: input.fetchFn });
@@ -252,13 +306,15 @@ export async function ensureTopicContinuity(input: TopicCompactionInput): Promis
       for (let attempt = 0; attempt < 3;) {
         let raw: unknown;
         try { raw = input.summarize ? await input.summarize(context, signal)
-          : await generateCompanionStructured(context, input.config, signal, { fetchFn: input.fetchFn, timeoutMs: 120000 }); }
+          : await generateCompanionStructured(context, input.config, signal, { fetchFn: input.fetchFn, timeoutMs: 120000, responseSchema: prepared.schema }); }
         catch (error) {
+          if (error instanceof CompanionModelError && error.diagnostic === 'structured_repair_exhausted') throw error;
           if (!signal?.aborted && error instanceof CompanionModelError && error.code === 'CONTEXT_CAPACITY') {
             if (plan.prefix.length <= 1) throw new CompanionModelError('CONTEXT_CAPACITY',
               '单条完整话题原文或已有话题摘要超过模型服务的实际容量；原文与水位保持不变，需要按需读取原文或缩小消息端口，不能静默截断。');
             const cut = Math.ceil(plan.prefix.length / 2);
             plan.retained = [...plan.prefix.slice(cut), ...plan.retained]; plan.prefix = plan.prefix.slice(0, cut);
+            await bindInputs();
             canon = await prepareTopicUserCanon({ frame: { ...current, messages: plan.prefix }, config: input.config, signal,
               fetchFn: input.fetchFn, extract: input.extractCanon });
             narrativeReferences = await prepareTopicNarrativeReferences({ frame: { ...current, messages: plan.prefix, topicPublicationReference: undefined }, config: input.config, signal, fetchFn: input.fetchFn });
@@ -299,11 +355,13 @@ export async function ensureTopicContinuity(input: TopicCompactionInput): Promis
       if (!summary) throw new Error('话题摘要尚未形成有效结果。');
       signal?.throwIfAborted();
       const sources = await visibleMessages(input, plan.prefix);
-      if (sources.length !== plan.prefix.length || fingerprint(sources) !== prefixDigest) throw new Error('话题压缩期间原文已变化或来源已失效，摘要未提交。');
-      if (frame.sourceMessage && fingerprint(await visibleMessages(input, [frame.sourceMessage])) !== sourceDigest) throw new Error('话题调用来源已经失效或变化，摘要未提交。');
+      if (sources.length !== plan.prefix.length || fingerprint(sources) !== prefixDigest) throw new CompanionTopicCompactionChanged('话题压缩期间原文已变化或来源已失效，摘要未提交。');
+      if (frame.sourceMessage && fingerprint(await visibleMessages(input, [frame.sourceMessage])) !== sourceDigest) throw new CompanionTopicCompactionChanged('话题调用来源已经失效或变化，摘要未提交。');
       const latest = await request({ type: 'topic.read', conversationId: frame.conversation.id, topicId: frame.topic.id, readerId: frame.companion.id });
       if (!latest.topic || !latest.topicState || latest.topic.revision !== previousRevision || latest.topicState.workingState?.sourceEventId !== previousEvent
-        || latest.topicState.shared?.sourceEventId !== sharedEvent || latest.topic.formalPublicationRevision !== loaded.topic.formalPublicationRevision) throw new Error('话题工作状态在压缩期间已变化，保留原文重新装配。');
+        || latest.topicState.shared?.sourceEventId !== sharedEvent
+        || frame.contextThroughPublicationRevision === undefined && latest.topic.formalPublicationRevision !== loaded.topic.formalPublicationRevision)
+        throw new CompanionTopicCompactionChanged('话题工作状态在压缩期间已变化，保留原文重新装配。');
       const publicationCoverage = consumedPublications(scanned, plan.prefix, frame.sourceMessage);
       const proofSources = publicationCoverage.protectedSource && frame.sourceMessage
         ? [...plan.prefix, frame.sourceMessage] : plan.prefix;
@@ -314,19 +372,35 @@ export async function ensureTopicContinuity(input: TopicCompactionInput): Promis
         summarizedMessageIds: plan.prefix.map(message => message.id),
         scannedThroughSequence: scanned.scannedThroughSequence,
         sourceDigest: prefixDigest, compactedMessages: plan.prefix.length, createdAt: new Date().toISOString() } };
-      const saved = await request({ type: 'topic.update', conversationId: frame.conversation.id, topicId: frame.topic.id, readerId: frame.companion.id,
+      let saved: CompanionStorageResponse;
+      try { saved = await request({ type: 'topic.update', conversationId: frame.conversation.id, topicId: frame.topic.id, readerId: frame.companion.id,
         maintenance: true, expectedRevision: previousRevision,
         compaction: { previousWorkingEventId: previousEvent ?? null, sharedEventId: sharedEvent ?? null,
           publicationCoverage: { expectedFormalPublicationRevision: loaded.topic.formalPublicationRevision ?? 0,
             sourcePublicationRevisions: Object.fromEntries(scanned.entries.filter(entry => entry.publicationRevision !== undefined && proofSources.some(message => message.id === entry.message.id))
               .map(entry => [entry.message.id, entry.publicationRevision!])) },
           sourceChecksums: Object.fromEntries(proofSources.map(message => [message.id, createHash('sha256').update(message.content).digest('hex')])) },
-        patch: { workingState: { ...summary, state, sourceMessageIds: proofSources.map(message => message.id) } } });
+        patch: { workingState: { ...summary, state, sourceMessageIds: proofSources.map(message => message.id) } } }); }
+      catch (error) {
+        // A real CAS conflict can occur after the final Main check. Establish
+        // it from current records; never classify by an exception's prose or
+        // hide a database/write failure while all inputs remain unchanged.
+        let changed = false;
+        try {
+          const now = await request({ type: 'topic.read', conversationId: frame.conversation.id, topicId: frame.topic.id, readerId: frame.companion.id });
+          changed = !now.topic || !now.topicState || now.topic.revision !== previousRevision
+            || now.topicState.workingState?.sourceEventId !== previousEvent || now.topicState.shared?.sourceEventId !== sharedEvent
+            || frame.contextThroughPublicationRevision === undefined && now.topic.formalPublicationRevision !== loaded.topic.formalPublicationRevision;
+          if (!changed) changed = fingerprint(await visibleMessages(input, proofSources)) !== fingerprint(proofSources);
+        } catch { /* Keep the original write failure if state cannot be checked. */ }
+        if (changed) throw new CompanionTopicCompactionChanged('话题发布前的准确依赖已变化，旧摘要未覆盖当前记录。');
+        throw error;
+      }
       if (!saved.ok || !saved.topic || !saved.topicState) throw new Error('话题压缩未持久保存，原消息继续保留。');
       current = { ...current, topic: saved.topic, topicState: saved.topicState };
       if (current.topicState?.workingState?.sourceEventId === previousEvent || !continuity(current)
         || JSON.stringify(continuity(current)?.publicationCoverage) !== JSON.stringify(publicationCoverage)) throw new Error('话题压缩结果不可用且水位未推进，已停止重复摘要。');
-      if (input.capacityFeedback) return projectTopicContinuity(current, plan.retained);
+      if (input.capacityFeedback || input.singleChunk) return { ...projectTopicContinuity(current, plan.retained), topicCompactionPending: true };
     }
   } finally {
     completed();

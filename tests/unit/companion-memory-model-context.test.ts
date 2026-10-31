@@ -73,6 +73,45 @@ it('does not reinterpret raw dialogue, source metadata, plain templates or a dif
   expect(projectCompanionMemoryContextForModel({ system: '模板', user: '原版AIMemo正文不需要JSON解析。' })).toEqual({ system: '模板', user: '原版AIMemo正文不需要JSON解析。' });
 });
 
+it('sends formatter text once with a readable candidate directory while preserving the full host search receipt', () => {
+  const f = fixture(2), note = { id: f.dependencies[0]!.id, version: 1, contentRevision: 1, artifactKind: 'episode_memory',
+    content: 'FULL_CANDIDATE_BODY', sources: [{ messageId: 'source_ref', quote: 'COPIED_SOURCE_EVIDENCE' }],
+    tags: ['花园'], diaryName: '约定', occurredAt: clock.now, metadata: { privateGraph: 'HOST_ONLY_GRAPH' } };
+  const raw = { ok: true, memoryContext: f.receipt, memoryPage: { items: [{ memory: note, score: .9, reasons: ['语义相关'], path: [] }], hasMore: true, nextCursor: 1 },
+    memoryRetrieval: { mode: 'active', engine: 'river', resultCount: 1, candidateQuerySeparateFromContext: true,
+      publicationView: { basis: 'committed_indexed', pendingFiles: true, pendingIndex: false },
+      stages: [{ matches: [{ excerpt: f.receipt.text }], explanation: 'INSPECTION_PANEL_ONLY' }] } };
+  const turns = [{ ...f.turns[0]!, results: [{ callId: 'actual_memory_call', content: JSON.stringify(raw) }] }];
+  const before = structuredClone(turns), projected = projectCompanionMemoryToolTurnsForModel(turns), wire = projected[0]!.results![0]!.content;
+  const value = JSON.parse(wire);
+  expect(value.memoryContext.text).toBe(f.receipt.text);
+  expect(wire.split(f.receipt.text)).toHaveLength(2);
+  expect(value.memoryPage).toMatchObject({ hasMore: true, nextCursor: 1, items: [{ memory: { id: note.id, version: 1,
+    tags: ['花园'], diaryName: '约定' }, bodyAvailability: 'candidate_directory_only', score: .9 }] });
+  expect(wire).not.toContain('FULL_CANDIDATE_BODY'); expect(wire).not.toContain('COPIED_SOURCE_EVIDENCE');
+  expect(wire).not.toContain('HOST_ONLY_GRAPH'); expect(wire).not.toContain('INSPECTION_PANEL_ONLY');
+  expect(value.memoryRetrieval.publicationView.pendingFiles).toBe(true);
+  expect(turns).toEqual(before);
+  expect(captureCompanionExecutionReadset(scope, { context: f.context, turns }).memories).toEqual(
+    captureCompanionExecutionReadset(scope, { context: f.context, turns: before }).memories);
+  // A focused no-match must not promote raw candidates into model facts.
+  const empty = [{ ...turns[0]!, results: [{ callId: 'actual_memory_call', content: JSON.stringify({ ...raw, memoryContext: { ...f.receipt, text: '' } }) }] }];
+  expect(projectCompanionMemoryToolTurnsForModel(empty)[0]!.results![0]!.content).not.toContain('FULL_CANDIDATE_BODY');
+});
+
+it('keeps complete note bodies for browsing and explicit reading instead of applying search formatter projection', () => {
+  const f = fixture(2), note = { id: 'note', version: 1, artifactKind: 'episode_memory', content: '完整正文及其否定和限定，不做摘要。', sources: [] };
+  const browse = { ok: true, memoryPage: { items: [{ memory: note, reasons: [], path: [] }], hasMore: false } };
+  const read = { ok: true, memoryContext: f.receipt, memoryRead: { memory: note, related: [note] } };
+  for (const [arguments_, raw] of [['{"action":"search","query":""}', browse], ['{"action":"read","id":"note"}', read]] as const) {
+    const turns = [{ ...f.turns[0]!, calls: [{ id: 'actual_memory_call', name: 'memory', arguments: arguments_ }],
+      results: [{ callId: 'actual_memory_call', content: JSON.stringify(raw) }] }];
+    const value = JSON.parse(projectCompanionMemoryToolTurnsForModel(turns)[0]!.results![0]!.content);
+    expect(value.memoryRead?.memory.content ?? value.memoryPage.items[0].memory.content).toBe(note.content);
+    if (value.memoryRead) expect(value.memoryRead.related[0].content).toBe(note.content);
+  }
+});
+
 it.each(['openai_chat', 'openai_responses', 'anthropic', 'gemini_native', 'dashscope_native'] as const)('bounds %s wire payloads without altering original context or native evidence pairs', async apiFormat => {
   const f = fixture(), before = JSON.stringify({ context: f.context, turns: f.turns });
   const fetchFn = vi.fn<typeof fetch>(async () => response(envelope(apiFormat)));

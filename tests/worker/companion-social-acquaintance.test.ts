@@ -87,7 +87,7 @@ it('requires a real public observation, sends one introduction with stable id an
   expect(query('contacts', 'bob').items).toEqual([expect.objectContaining({ id: 'alice', known: true })]);
   expect(store.request({ type: 'social.messages', conversationId: delivered.socialConversation!.id }).socialMessagePage!.total).toBe(1);
   expect(store.request({ type: 'social.graph', companionId: 'alice' }).socialGraph!.links).toContainEqual(expect.objectContaining({ targetId: 'bob', phoneCount: 1 }));
-  expect(store.request({ type: 'world.observe', ...scope() }).world!.relationships).toEqual([expect.objectContaining({ companionId: 'alice', targetCompanionId: 'bob', affinity: 50, trust: 50, interactions: 1 })]);
+  expect(store.request({ type: 'world.observe', ...scope() }).world!.relationships).toEqual([expect.objectContaining({ companionId: 'alice', targetCompanionId: 'bob', interactions: 1 })]);
   expect(query('contacts', 'outsider').items).toEqual([]);
 });
 

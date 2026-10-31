@@ -1,46 +1,35 @@
-import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { useCallback, useLayoutEffect, useRef, useState } from 'react';
 import type { Companion, CompanionAction, WorldlineBoxCompanionsApi } from '../../shared/companions';
 import type { CompanionRuntimeState } from '../../shared/companion-state';
 import { Avatar } from './CompanionVisuals';
 import { Icon } from '../Icons';
-import { CompanionActivityPanel } from './CompanionActivityPanel';
-import { CompanionMemoryProcessingSummary } from './CompanionMemoryProcessingPanel';
-import { CompanionMemoryLifePlan } from './CompanionMemoryLifePlan';
+import { CompanionAgendaSummary } from './CompanionAgenda';
 import './companion-planner-current.css';
-import { localDateKey, scheduleStatus, scheduleTime, useCompanionSchedules, type ScheduleRequest } from './companion-schedules';
-import { routineAgenda, routineClock, useCompanionRoutine } from './companion-routines';
-import { useCompanionWorkOrders, WORK_ORDER_STATUS } from './companion-work-orders';
+import type { ScheduleRequest } from './companion-schedules';
+import { useCompanionRoutine } from './companion-routines';
 import { createCoalescedRefresh } from './coalesced-refresh';
 import { CompanionStateChanges } from './CompanionStateChanges';
 import { CompanionCharacterDevelopment } from './CompanionCharacterDevelopment';
+import { CompanionExperienceView } from './CompanionCurrentCircumstances';
 
-const MOODS: Record<CompanionRuntimeState['mood'], string> = { calm: '平静', bright: '心情明亮', focused: '专注', tired: '有点疲惫', low: '情绪低落' };
-const EXPRESSIONS: Record<CompanionRuntimeState['expression'], string> = { gentle: '温柔', direct: '直率', playful: '轻快', reserved: '安静' };
-const RELATIONSHIPS: Record<CompanionRuntimeState['familiarity']['stage'], string> = { new: '初次相识', acquainted: '渐渐熟悉', close: '彼此亲近' };
 
-export function CompanionPlanner({ companion, members, conversationId, conversationKind = 'private', actions, request, api, onOwnerChange, onClose, onProfile, onMemory, onMemoryProcessing, onTasks, onSchedules, onWork, onWorld, onLocateStateSource, onStateMemory, active = true, initialActivityTaskId }: {
+export function CompanionPlanner({ companion, members, conversationId,  request, api, onOwnerChange, onClose, onProfile, onMemory, onSchedules, onWorld, onObserve, onManageGroup, onLocateStateSource, onStateMemory, active = true }: {
   readonly companion: Companion; readonly members: Companion[]; readonly conversationId: string; readonly conversationKind?: 'private' | 'group'; readonly actions: CompanionAction[];
   readonly request: ScheduleRequest; readonly api?: WorldlineBoxCompanionsApi; readonly onOwnerChange: (id: string) => void;
-  readonly onClose: () => void; readonly onProfile: () => void; readonly onMemory: () => void; readonly onTasks: (view?: 'active' | 'history', companionId?: string) => void; readonly onSchedules: () => void; readonly onWork: (id?: string) => void;
+  readonly onClose: () => void; readonly onProfile: () => void; readonly onMemory: () => void; readonly onSchedules: (eventId?: string) => void;
   readonly onWorld?: () => void;
-  readonly onMemoryProcessing?: () => void;
+  readonly onObserve?: () => void; readonly onManageGroup?: () => void;
   readonly onLocateStateSource?: (conversationId: string, messageId: string) => void;
   readonly onStateMemory?: (noteId: string) => void;
   readonly active?: boolean;
-  readonly initialActivityTaskId?: string;
 }) {
-  const { schedules, occurrences, loading, error, refresh } = useCompanionSchedules(companion.id, conversationId, request, api);
-  const { routine } = useCompanionRoutine(companion.id, conversationId, request, api);
-  const { orders, hasMore: moreWork, error: workError, loading: workLoading, refresh: refreshWork } = useCompanionWorkOrders(companion.id, conversationId, request, api, false, 100);
+  const { routine } = useCompanionRoutine(companion.id, conversationId, request, api, active);
   const stateScope = companion.id + '/' + conversationId;
   const [runtimeSnapshot, setRuntime] = useState<{ scope: string; state: CompanionRuntimeState; checkedAt: string }>();
   const [stateError, setStateError] = useState<{ scope: string; message: string }>();
-  const runtime = runtimeSnapshot?.scope === stateScope && runtimeSnapshot.state.companionId === companion.id ? runtimeSnapshot.state : undefined;
-  const stateIssue = stateError?.scope === stateScope ? stateError.message : undefined;
+  const runtime = active && runtimeSnapshot?.scope === stateScope && runtimeSnapshot.state.companionId === companion.id ? runtimeSnapshot.state : undefined;
+  const stateIssue = active && stateError?.scope === stateScope ? stateError.message : undefined;
   const [stateDetails, setStateDetails] = useState(false);
-  const [now, setNow] = useState(Date.now);
-  const [selectedDay, setSelectedDay] = useState<string>();
-  const [weekOffset, setWeekOffset] = useState(0);
   const epoch = useRef(0), currentScope = useRef(stateScope);
   useLayoutEffect(() => { currentScope.current = stateScope; }, [stateScope]);
   const invalidateStateRead = useCallback(() => { ++epoch.current; }, []);
@@ -56,50 +45,23 @@ export function CompanionPlanner({ companion, members, conversationId, conversat
       setRuntime(undefined); setStateError({ scope: stateScope, message: cause instanceof Error ? cause.message : '当前伙伴状态暂时无法核实。' });
     }
   }, [active, request, companion.id, conversationId, stateScope]);
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (!active) return; const reads = createCoalescedRefresh(loadState, undefined, 200); void reads.trigger();
     const unsubscribe = api?.onChanged(() => reads.trigger());
-    return () => { invalidateStateRead(); reads.dispose(); unsubscribe?.(); };
+    return () => { invalidateStateRead(); setRuntime(undefined); setStateError(undefined); reads.dispose(); unsubscribe?.(); };
   }, [active, api, loadState, invalidateStateRead]);
-  useEffect(() => { const timer = setInterval(() => setNow(Date.now()), 60_000); return () => clearInterval(timer); }, []);
-  const today = new Date(now), start = new Date(now); start.setHours(0, 0, 0, 0); start.setDate(start.getDate() - (start.getDay() + 6) % 7 + weekOffset * 7);
-  const days = Array.from({ length: 7 }, (_, index) => { const day = new Date(start); day.setDate(day.getDate() + index); return day; });
-  const upcoming = schedules.filter(schedule => schedule.status === 'active' && scheduleStatus(schedule) !== '已完成').sort((a, b) => (a.deferredUntil ?? a.nextRunAt ?? a.runAt).localeCompare(b.deferredUntil ?? b.nextRunAt ?? b.runAt));
-  const visible = selectedDay ? upcoming.filter(schedule => localDateKey(schedule.deferredUntil ?? schedule.nextRunAt ?? schedule.runAt) === selectedDay) : upcoming;
-  const currentActions = actions.filter(action => action.companionId === companion.id && action.conversationId === conversationId && ['queued', 'running'].includes(action.status));
-  const workCounts = { running: orders.filter(order => order.status === 'running').length, waiting: orders.filter(order => order.status === 'accepted' || order.status === 'offered').length, paused: orders.filter(order => order.status === 'paused').length };
-  const workPreview = [...orders].sort((a, b) => (a.status === 'running' ? 0 : a.status === 'accepted' ? 1 : 2) - (b.status === 'running' ? 0 : b.status === 'accepted' ? 1 : 2)).slice(0, 2);
-  const completed = occurrences.filter(occurrence => occurrence.status === 'done').slice(0, 2);
-  const focus = currentActions.length > 1 ? `正在照看 ${currentActions.length} 件事` : currentActions[0]?.title || runtime?.focus;
-  const rhythm = routine && conversationKind === 'private' ? routineAgenda(routine, selectedDay ? new Date(selectedDay + 'T12:00:00') : today).filter(item => selectedDay && selectedDay !== localDateKey(now) || item.at >= routineClock(today, routine.config.timeZone).clock).slice(0, 2) : [];
+  const focus = runtime?.focus;
   return <><aside className="companions-relationship-panel companions-planner" aria-label="伙伴手帐">
     <header><div><span>伙伴手帐</span><h3>{companion.name}的日常</h3></div><button className="companion-icon-button" aria-label="收起我们之间" onClick={onClose}>×</button></header>
-    <div className="companions-planner-identity"><Avatar companion={companion} /><div><strong>{companion.name}</strong>{members.length > 1 ? <select aria-label="待办所属伙伴" value={companion.id} onChange={event => onOwnerChange(event.target.value)}>{members.map(member => <option key={member.id} value={member.id}>{member.name}</option>)}</select> : <span>{runtime ? RELATIONSHIPS[runtime.familiarity.stage] : '读取当前状态…'}</span>}</div><button className="companion-icon-button" aria-label="查看伙伴资料" onClick={onProfile}><Icon name="users" /></button></div>
-    <div className="companions-planner-state" data-mood={runtime?.mood ?? 'loading'}>
-      <button className="companions-planner-state-chips" aria-label="查看当前伙伴状态详情" aria-expanded={stateDetails} onClick={() => setStateDetails(value => !value)}>{runtime ? <><span>{MOODS[runtime.mood]}</span><span>{EXPRESSIONS[runtime.expression]}</span><span>好感 {Math.round(runtime.relationship.affinity)}</span></> : <span>{stateIssue ? '当前状态暂不可用' : '正在了解当前状态…'}</span>}<Icon name="chevron" /></button>
-      <div className="companions-planner-energy"><span>精力</span><div role="progressbar" aria-label="伙伴精力" aria-valuemin={0} aria-valuemax={100} aria-valuenow={runtime?.energy}><i style={{ width: runtime ? runtime.energy + '%' : '0%' }} /></div><small>{runtime ? Math.round(runtime.energy) + '%' : '…'}</small></div>
-      <p className="companions-planner-focus"><i />{stateIssue ? '状态同步中断，等待重新核对' : routine?.runtime.phase === 'resting' ? routine.runtime.activity ?? '正在休息，恢复精力' : focus ? '正在关注 · ' + focus : runtime ? '当下闲暇，等你来聊聊' : '正在读取当前关注'}</p>
-      {routine && <button className="companions-planner-routine-current" onClick={onSchedules}><Icon name="clock" /><span>{routine.runtime.activity ?? (routine.runtime.phase === 'sleeping' ? '正在睡觉' : routine.runtime.phase === 'awake' ? '清醒的日常' : '正在休息')}</span><small>{companion.active === false ? '激活后可交流' : '可以交流'}</small></button>}
-      {stateDetails && <div className="companions-planner-state-detail" role="dialog" aria-label="伙伴当前状态"><header><strong>当前状态</strong><button aria-label="关闭当前状态详情" onClick={() => setStateDetails(false)}>×</button></header>{runtime?.reason ? <p>{runtime.reason}</p> : <p>{stateIssue ? '当前状态尚未核实，旧状态与来源已隐藏。' : '状态会随实际交流、共同经历和执行任务更新。'}</p>}{runtime && <small>{runtime.familiarity.interactionCount} 次交流 · {runtime.familiarity.sharedEventCount} 次共同经历</small>}{stateIssue && <p className="companions-state-sync-error" role="status">{stateIssue}<button type="button" onClick={() => void loadState()}>重新核对</button></p>}{runtime && <CompanionStateChanges key={stateScope} changes={runtime.recentChanges} onLocateSource={onLocateStateSource} onOpenMemory={onStateMemory} />}{runtime && <CompanionCharacterDevelopment companionId={companion.id} conversationId={conversationId} request={request} api={api} onOpenMemory={onStateMemory} />}{runtime && <div className="companions-planner-state-measures"><p>情绪维度</p>{([['pleasure', '愉悦'], ['arousal', '活跃'], ['dominance', '自主']] as const).map(([key, label]) => <div key={key}><span>{label}</span><meter min={-1} max={1} value={runtime.affect[key]} /><small>{runtime.affect[key].toFixed(2)}</small></div>)}<p>相处状态</p>{([['affinity', '好感'], ['trust', '信任'], ['respect', '尊重']] as const).map(([key, label]) => <div key={key}><span>{label}</span><meter min={0} max={100} value={runtime.relationship[key]} /><small>{Math.round(runtime.relationship[key])}</small></div>)}</div>}<p>这些状态由真实交流与任务经历计算，影响当前表达与可调整安排。固定时间的承诺仍照时执行。</p><button onClick={onProfile}>查看完整角色设定</button>{runtime && runtimeSnapshot?.scope === stateScope && <small className="companions-state-sync">状态核对 <time dateTime={runtimeSnapshot.checkedAt}>{new Date(runtimeSnapshot.checkedAt).toLocaleTimeString('zh-CN', { hour12: false })}</time></small>}</div>}
+    <div className="companions-planner-identity"><Avatar companion={companion} /><div><strong>{companion.name}</strong>{members.length > 1 ? <select aria-label="当前伙伴" value={companion.id} onChange={event => onOwnerChange(event.target.value)}>{members.map(member => <option key={member.id} value={member.id}>{member.name}</option>)}</select> : <span>{companion.active === false ? '伙伴生活已暂停' : '查看处境与经历'}</span>}</div><button className="companion-icon-button" aria-label="查看伙伴资料" onClick={onProfile}><Icon name="users" /></button></div>
+    <div className="companions-planner-state">
+      <button className="companions-planner-state-chips" aria-label="查看当前伙伴状态详情" aria-expanded={stateDetails} onClick={() => setStateDetails(value => !value)}>{runtime ? <span>{runtime.reason ? '近期处境与关注' : '处境尚无明确记录'}</span> : <span>{stateIssue ? '当前状态暂不可用' : '正在了解当前状态…'}</span>}<Icon name="chevron" /></button>
+      <p className="companions-planner-focus"><i />{stateIssue ? '状态同步中断，等待重新核对' : routine?.runtime.phase === 'resting' ? routine.runtime.activity ?? '正在休息' : focus ? '正在关注 · ' + focus : runtime ? '暂无已记录的关注' : '正在读取当前关注'}</p>
+      {routine && <button className="companions-planner-routine-current" onClick={() => onSchedules()}><Icon name="clock" /><span>{routine.runtime.activity ?? (routine.runtime.phase === 'sleeping' ? '正在睡觉' : routine.runtime.phase === 'awake' ? '清醒的日常' : '正在休息')}</span><small>{companion.active === false ? '激活后可交流' : '可以交流'}</small></button>}
+      {stateDetails && <div className="companions-planner-state-detail" role="dialog" aria-label="伙伴当前状态"><header><strong>当前状态</strong><button aria-label="关闭当前状态详情" onClick={() => setStateDetails(false)}>×</button></header>{runtime?.reason ? <p>{runtime.reason}</p> : <p>{stateIssue ? '当前状态尚未核实，旧状态与来源已隐藏。' : '状态会随实际交流、共同经历和执行任务更新。'}</p>}{stateIssue && <p className="companions-state-sync-error" role="status">{stateIssue}<button type="button" onClick={() => void loadState()}>重新核对</button></p>}{runtime && <CompanionExperienceView runtime={runtime} />}{runtime && <CompanionStateChanges key={stateScope} changes={runtime.recentChanges} onLocateSource={onLocateStateSource} onOpenMemory={onStateMemory} />}{runtime && <CompanionCharacterDevelopment active={active} companionId={companion.id} conversationId={conversationId} request={request} api={api} onOpenMemory={onStateMemory} />}<p>这里展示已记录的处境、关注和来源。没有明确记录时保留未知，不用心理分数或交流次数推断感受与关系。</p><button onClick={onProfile}>查看完整角色设定</button>{runtime && runtimeSnapshot?.scope === stateScope && <small className="companions-state-sync">状态核对 <time dateTime={runtimeSnapshot.checkedAt}>{new Date(runtimeSnapshot.checkedAt).toLocaleTimeString('zh-CN', { hour12: false })}</time></small>}</div>}
     </div>
     {onWorld && <button className="companions-world-entry" aria-label="看看伙伴的小屋" onClick={onWorld}><Icon name="globe" /><span><strong>去她的小屋看看</strong><small>窗外的天气，和她此刻的生活</small></span><Icon name="chevron" /></button>}
-    <section className="companions-planner-work" aria-label="伙伴工作概览">
-      <header><h4><Icon name="activity" />工作台</h4><button aria-label="查看全部伙伴工作" onClick={() => onWork()}>管理工作<Icon name="chevron" /></button></header>
-      <div className="companions-planner-work-counts" aria-label="工作数量">{([['running', '进行中'], ['waiting', '待处理'], ['paused', '已暂停']] as const).map(([phase, label]) => <span key={phase} data-work-phase={phase}><strong>{workCounts[phase]}</strong>{label}</span>)}</div>
-      {workError ? <p className="companions-planner-work-empty">工作暂时无法读取 <button onClick={() => void refreshWork()}>刷新</button></p> : workLoading ? <p className="companions-planner-work-empty">正在读取工作…</p> : workPreview.length ? <div className="companions-planner-work-preview">{workPreview.map(order => <button key={order.id} data-work-preview={order.id} onClick={() => onWork(order.id)} title={order.title}><i data-work-phase={order.status} /><span>{order.title}</span><small>{WORK_ORDER_STATUS[order.status]}</small></button>)}</div> : <p className="companions-planner-work-empty">还没有工作，<button onClick={() => onWork()}>发布一份委托</button></p>}
-      {orders.length > 2 && <button className="companions-planner-work-more" onClick={() => onWork()}>另有 {orders.length - 2}{moreWork ? '+' : ''} 件，展开工作台</button>}
-    </section>
-    <CompanionActivityPanel companionId={companion.id} conversationId={conversationId} api={api} request={request} initialTaskId={initialActivityTaskId} />
-    {active && <div className="companions-planner-memory-processing"><CompanionMemoryProcessingSummary companionId={companion.id} companionName={companion.name} api={api} request={request} onOpen={onMemoryProcessing ?? onMemory} /></div>}
-    <section className="companions-planner-calendar" aria-label="伙伴周历"><div className="companions-planner-date"><span><strong>{today.getDate()}</strong><small>{today.toLocaleDateString('zh-CN', { month: 'long' })}<br />{today.toLocaleDateString('zh-CN', { weekday: 'long' })}</small></span><div><button aria-label="上一周" onClick={() => setWeekOffset(value => value - 1)}><Icon name="chevron-left" /></button><button aria-label="下一周" onClick={() => setWeekOffset(value => value + 1)}><Icon name="chevron-right" /></button></div></div><div className="companions-planner-week">{days.map(day => { const key = localDateKey(day.getTime()), hasPlan = upcoming.some(schedule => localDateKey(schedule.deferredUntil ?? schedule.nextRunAt ?? schedule.runAt) === key); return <button key={key} aria-label={'查看 ' + day.toLocaleDateString('zh-CN') + ' 的安排'} aria-pressed={selectedDay === key} className={(key === localDateKey(now) ? 'is-today ' : '') + (selectedDay === key ? 'is-selected' : '')} onClick={() => setSelectedDay(current => current === key ? undefined : key)}><small>{day.toLocaleDateString('zh-CN', { weekday: 'narrow' })}</small><strong>{day.getDate()}</strong><i className={hasPlan ? 'has-plan' : ''} /></button>; })}</div></section>
-    <section className="companions-planner-agenda"><div className="companions-planner-section-title"><h4>{selectedDay ? '这一天的便签' : '接下来的便签'}</h4><button aria-label="管理伙伴日程" onClick={onSchedules}><Icon name="plus" /></button></div>
-      {!!rhythm.length && <div className="companions-planner-rhythm" aria-label="今日作息"><header>生活的小节奏 <span>{routine!.config.timeZone === 'system' ? '本地时间' : routine!.config.timeZone}</span></header>{rhythm.map(item => <button key={item.id} onClick={onSchedules}><time>{item.at}</time><i /><span>{item.title}</span></button>)}</div>}
-      {error ? <p className="companions-memory-error">{error}<button onClick={() => void refresh()}>刷新</button></p> : loading ? <p className="companions-subtle">正在读取安排…</p> : !visible.length ? <div className="companions-planner-empty-note"><span className="companions-note-tape" aria-hidden="true" /><Icon name="clipboard" /><p>{selectedDay ? '这一天，先留一些空白' : '下一件小事，等你来安排'}</p><button onClick={onSchedules}>写一张便签</button></div> : null}
-      {visible.slice(0, 3).map((schedule, index) => <button className={'companions-todo-note tone-' + index % 3} key={schedule.id} data-schedule-note={schedule.id} onClick={onSchedules}><span className="companions-todo-note-top"><span><Icon name={schedule.kind === 'task' ? 'clipboard' : 'clock'} />{schedule.kind === 'task' ? 'DSH任务' : schedule.kind === 'activity' ? '伙伴行动' : '提醒'}</span><small>{scheduleStatus(schedule)}</small></span><strong>{schedule.title}</strong><time dateTime={schedule.deferredUntil ?? schedule.nextRunAt ?? schedule.runAt}>{scheduleTime(schedule.deferredUntil ?? schedule.nextRunAt ?? schedule.runAt)}</time>{schedule.blockedReason && <small>{schedule.blockedReason === 'resting' ? '伙伴正在休息，稍后处理' : '等待模型连接恢复'}</small>}</button>)}
-      {visible.length > 3 && <button className="companions-planner-more" onClick={onSchedules}>还有 {visible.length - 3} 张便签，查看全部</button>}
-      {!!completed.length && <details className="companions-planner-completed"><summary><Icon name="check" />最近完成 · {completed.length}</summary>{completed.map(occurrence => <button key={occurrence.id} onClick={onSchedules}><Icon name="check" /><span>{schedules.find(schedule => schedule.id === occurrence.scheduleId)?.title || '已完成的安排'}</span><small>{scheduleTime(occurrence.finishedAt ?? occurrence.scheduledAt)}</small></button>)}</details>}
-    </section>
-    <CompanionMemoryLifePlan companionId={companion.id} request={request} api={api} active={active} onOpenMemory={onMemory} />
-    <div className="companions-planner-links"><button onClick={onMemory} aria-label="管理共同记忆"><Icon name="archive" /><span>共同记忆<small>查看来处与相处的细节</small></span><Icon name="chevron" /></button><button onClick={() => onTasks('history', companion.id)} aria-label="查看任务历史"><Icon name="activity" /><span>任务记录<small>展开执行过程与成果</small></span><Icon name="chevron" /></button></div>
+    <CompanionAgendaSummary companionId={companion.id} request={request} api={api} active={active} onOpen={onSchedules} />
+    <div className="companions-planner-links"><button onClick={onMemory} aria-label="管理共同记忆"><Icon name="archive" /><span>共同记忆<small>查看来处与相处的细节</small></span><Icon name="chevron" /></button><button onClick={() => onSchedules()} aria-label="查看伙伴日程"><Icon name="activity" /><span>日程<small>查看这件事如何发生与完成</small></span><Icon name="chevron" /></button>{onObserve && <button onClick={onObserve} aria-label="查看此伙伴的交互"><Icon name="users" /><span>伙伴往来<small>查看真实交往与关系</small></span><Icon name="chevron" /></button>}{onManageGroup && <button onClick={onManageGroup} aria-label="管理群聊"><Icon name="users" /><span>群聊成员<small>查看与管理这段群聊</small></span><Icon name="chevron" /></button>}</div>
   </aside></>;
 }

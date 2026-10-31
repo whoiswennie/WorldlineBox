@@ -40,7 +40,7 @@ it('roundtrips the complete production VCP context through live social storage a
   advance(10000);
   const privateScope = { companionId: 'bob', conversationId: current.openPrivate('bob').id };
   const fact = current.appendMessage({ conversationId: privateScope.conversationId, authorId: 'user', content: 'group0 SYNTHETIC_SOCIAL_FACT：棉线在第二层抽屉。', replyDirective: 'none' });
-  const parent = current.request({ type: 'memory.record', ...privateScope, candidate: { content: fact.content, tags: ['group0'], sourceMessageIds: [fact.id], evidence: [{ sourceMessageId: fact.id, quote: fact.content }] } }).memories![0]!;
+  const parent = current.request({ type: 'memory.record', ...privateScope, candidate: { artifactKind: 'episode_memory' as const, content: fact.content, tags: ['group0'], sourceMessageIds: [fact.id], evidence: [{ sourceMessageId: fact.id, quote: fact.content }] } }).memories![0]!;
   for (let n = 0; n < 10; n++) { const outbox = current.request({ type: 'memory.outbox.claim' }).memoryOutbox; if (!outbox) break; current.request({ type: 'memory.outbox.complete', id: outbox.id, leaseToken: outbox.leaseToken, indexed: true }); }
   const pair = current.request({ type: 'social.conversation.ensure', companionId: 'alice', memberIds: ['alice', 'bob'], title: '实际伙伴入口' }).socialConversation!;
   const send = { type: 'social.send', companionId: 'alice', conversationId: pair.id, channel: 'phone', content: 'group0 请核对棉线的位置。', clientId: 'schema-real-source' } as const;

@@ -11,12 +11,12 @@ export const companionRoutineHabitSchema = z.strictObject({ id, title: z.string(
   if (habit.weekDays && new Set(habit.weekDays).size !== habit.weekDays.length) context.addIssue({ code: 'custom', path: ['weekDays'], message: '习惯星期不能重复。' });
 });
 export const companionRoutineConfigSchema = z.strictObject({
-  timeZone: timeZone.default('system'), sleepAt: clock.default('23:00'), wakeAt: clock.default('07:00'),
+  timeZone: timeZone.default('system'), sleepAt: clock.default('23:00'), wakeAt: clock.default('07:00'), sleepEnabled: z.boolean().optional(),
   meals: z.array(companionRoutineMealSchema).max(8).default([{ name: '早餐', at: '08:00', durationMinutes: 20 },
     { name: '午餐', at: '12:00', durationMinutes: 30 }, { name: '晚餐', at: '19:00', durationMinutes: 30 }]),
   habits: z.array(companionRoutineHabitSchema).max(20).default([]),
 }).superRefine((config, context) => {
-  if (config.sleepAt === config.wakeAt) context.addIssue({ code: 'custom', path: ['wakeAt'], message: '睡觉与醒来时间须不同。' });
+  if (config.sleepEnabled !== false && config.sleepAt === config.wakeAt) context.addIssue({ code: 'custom', path: ['wakeAt'], message: '睡觉与醒来时间须不同。' });
   if (new Set(config.habits.map(habit => habit.id)).size !== config.habits.length) context.addIssue({ code: 'custom', path: ['habits'], message: '习惯标识不能重复。' });
 });
 export type CompanionRoutineConfig = z.output<typeof companionRoutineConfigSchema>;
@@ -34,6 +34,8 @@ export const companionHabitProgressSchema = z.object({ id, strength: z.number().
   streak: z.number().int().nonnegative(), lastCompletedAt: z.iso.datetime().optional() });
 export type CompanionHabitProgress = z.infer<typeof companionHabitProgressSchema>;
 export const companionRoutineSchema = z.object({ companionId: id, config: companionRoutineConfigSchema,
+  configurationSource: z.enum(['template', 'agenda']).optional(),
+  sourceRules: z.array(z.strictObject({ id, revision: z.number().int().positive() })).optional(),
   revision: z.number().int().positive(), createdAt: z.iso.datetime(), updatedAt: z.iso.datetime(),
   sourceConversationId: id.optional(), sourceMessageId: id.optional(), habitProgress: z.array(companionHabitProgressSchema),
   runtime: companionRoutineRuntimeSchema });
@@ -45,6 +47,7 @@ export const companionRoutinePublicCommands = [
 ] as const;
 export const companionRoutineStorageCommands = [
   ...companionRoutinePublicCommands,
+  z.strictObject({ type: z.literal('routine.agenda.adopt'), companionId: id, ruleIds: z.array(id).max(29) }),
   scope.extend({ type: z.literal('routine.interrupt'), sourceMessageId: id }).strict(),
   z.strictObject({ type: z.literal('routine.complete-interrupt'), companionId: id }),
 ] as const;

@@ -7,7 +7,7 @@ import { utilityProcess } from 'electron';
 import { detachRuntimeDependencyLinks, inspectVcpOwnedDirectory, removeOwnedDirectory } from './filesystem';
 import { VcpMemoryProcessBroker } from './process-broker';
 import { VcpPreparedRecallStore } from './prepared-recall-store';
-import { preparedRecallReference, recoveryFromPayload, type PreparedRecallRecovery } from './prepared-recall-recovery';
+import { observedPreparedHostEvidence, preparedRecallReference, recoveryFromPayload, type PreparedRecallRecovery } from './prepared-recall-recovery';
 import type { CompanionPreparedRecallReference } from '../../shared/companion-prepared-recall';
 import type { VcpMemoryDreamWaveRequest, VcpMemoryDreamWaveResult } from './dream-contracts';
 import type {
@@ -17,6 +17,7 @@ import type {
   VcpMemoryTimelineArtifacts,
   VcpMemoryContextReference, VcpMemoryCapabilities, VcpMemoryQueryClock, VcpMemoryAutomaticDecayPolicy,
   VcpMemoryPreparationReceipt, VcpMemoryPreprocessResult,
+  VcpMemoryProjectionDescriptor, VcpMemoryProjectionInspection,
   VcpMemoryPreparedRecall, VcpMemoryPreparedPayload, VcpMemoryPreparedHostEvidence, VcpMemoryFocusOptions, VcpMemoryOwnerPrompts,
 } from './contracts';
 
@@ -118,9 +119,11 @@ export class VcpMemoryClient {
   setOwnerPrompts(prompts: VcpMemoryOwnerPrompts): void {
     if (!prompts || typeof prompts.aimemoTemplate !== 'string' || !prompts.aimemoTemplate.trim()) throw new Error('Owner memory focus template is unavailable.');
     for (const value of [prompts.timelineTemplate, prompts.summaryTemplate]) if (value !== undefined && (typeof value !== 'string' || !value.trim())) throw new Error('Owner timeline template is unavailable.');
+    if (prompts.focusGuidanceSignature !== undefined && (typeof prompts.focusGuidanceSignature !== 'string' || !/^[a-f0-9]{64}$/u.test(prompts.focusGuidanceSignature))) throw new Error('Owner focus guidance identity is invalid.');
     this.ownerPrompts = { aimemoTemplate: prompts.aimemoTemplate,
       ...(prompts.timelineTemplate !== undefined ? { timelineTemplate: prompts.timelineTemplate } : {}),
-      ...(prompts.summaryTemplate !== undefined ? { summaryTemplate: prompts.summaryTemplate } : {}) };
+      ...(prompts.summaryTemplate !== undefined ? { summaryTemplate: prompts.summaryTemplate } : {}),
+      ...(prompts.focusGuidanceSignature !== undefined ? { focusGuidanceSignature: prompts.focusGuidanceSignature } : {}) };
   }
   hasOpenScope(scope: VcpMemoryScope): boolean {
     const child = this.scopes.get(scopeKey(scope)); return Boolean(child && !child.failed && !child.stopping);
@@ -306,6 +309,9 @@ export class VcpMemoryClient {
   applyProjectionDelta(scope: VcpMemoryScope, notes: VcpMemoryNote[], removedIds: string[]): Promise<{ changed: number; removed: number }> {
     return this.request(scope, { type: 'projection-delta', notes, removedIds });
   }
+  inspectProjection(scope: VcpMemoryScope, descriptors: VcpMemoryProjectionDescriptor[]): Promise<VcpMemoryProjectionInspection> {
+    return this.request(scope, { type: 'projection-inspect', descriptors });
+  }
   prepare(scope: VcpMemoryScope): Promise<VcpMemoryPreparationReceipt> { return this.request(scope, { type: 'prepare' }); }
   search(scope: VcpMemoryScope, query: { text: string; topK?: number }): Promise<VcpMemorySearchResult> { return this.request(scope, { type: 'search', text: query.text, topK: query.topK }); }
   read(scope: VcpMemoryScope, id: string): Promise<VcpMemoryNote | null> { return this.request(scope, { type: 'read', id }); }
@@ -317,22 +323,44 @@ export class VcpMemoryClient {
   preprocess(scope: VcpMemoryScope, messages: VcpMemoryMessage[], clock?: VcpMemoryQueryClock, automaticDecay?: VcpMemoryAutomaticDecayPolicy): Promise<VcpMemoryPreprocessResult> { return this.request(scope, { type: 'preprocess', messages, ...(clock ? { clock } : {}), ...(automaticDecay ? { automaticDecay } : {}) }); }
   /** Candidate preparation consumes a physical graph permit; focusing below never does. */
   prepareRecall(scope: VcpMemoryScope, messages: VcpMemoryMessage[], clock?: VcpMemoryQueryClock,
-    automaticDecay?: VcpMemoryAutomaticDecayPolicy, hostEvidence?: VcpMemoryPreparedHostEvidence): Promise<VcpMemoryPreparedRecall> {
+    automaticDecay?: VcpMemoryAutomaticDecayPolicy, hostEvidence?: VcpMemoryPreparedHostEvidence,
+    captureEvidence?: (observation: Pick<VcpMemoryPreprocessResult, 'contextReferences' | 'contextReferenceCoverage'>) => Promise<VcpMemoryPreparedHostEvidence | undefined>): Promise<VcpMemoryPreparedRecall> {
     if (this.options.boundOwnerId && hostEvidence?.ownerId !== this.options.boundOwnerId) return Promise.reject(new Error('Prepared recall belongs to another owner.'));
     const key = scopeKey(scope), generation = this.scopeGenerations.get(key) ?? 0;
-    const immutableEvidence = hostEvidence ? structuredClone(hostEvidence) : undefined;
+    let immutableEvidence = hostEvidence ? structuredClone(hostEvidence) : undefined;
     const current = () => { if (this.closed || (this.scopeGenerations.get(key) ?? 0) !== generation) throw new Error('Prepared recall was withdrawn.'); };
     const pending = (async () => {
       current();
       const payload = await this.request<VcpMemoryPreparedPayload>(scope, { type: 'prepare-recall', messages,
         ...(clock ? { clock } : {}), ...(automaticDecay ? { automaticDecay } : {}) });
       current();
-      const handle = await this.prepared.save(scope.scopeId, { ...payload, ...(immutableEvidence ? { hostEvidence: immutableEvidence } : {}) });
+      if (captureEvidence) {
+        const captured = await captureEvidence(payload.receipt);
+        if (captured?.ownerId !== hostEvidence?.ownerId || captured?.revocationEpoch !== hostEvidence?.revocationEpoch)
+          throw new Error('Prepared candidate capture changed its owner or source authority.');
+        immutableEvidence = captured ? structuredClone(captured) : undefined; current();
+      }
+      const evidence = observedPreparedHostEvidence(immutableEvidence, payload.receipt);
+      const handle = await this.prepared.save(scope.scopeId, { ...payload, ...(evidence ? { hostEvidence: evidence } : {}) });
       try { current(); return handle; } catch (error) { await this.prepared.remove(handle); throw error; }
     })();
     this.preparations.set(pending, scope.scopeId);
     void pending.finally(() => this.preparations.delete(pending)).catch(() => undefined);
     return pending;
+  }
+  private nativeFocusTransport(options: VcpMemoryFocusOptions): VcpMemoryFocusOptions {
+    if (!options.nativeDispatchToken) return options;
+    if (!/^[a-f0-9-]{36}$/u.test(options.nativeDispatchToken)) throw new Error('Invalid native dispatch capability.');
+    const expected = new URL(this.options.plugins?.chat?.baseUrl ?? 'invalid:');
+    if (!['http:', 'https:'].includes(expected.protocol) || !['127.0.0.1', '[::1]'].includes(expected.hostname) || expected.username || expected.password)
+      throw new Error('Native dispatch capabilities belong only to the authenticated owner loopback.');
+    const providerFetch = options.fetchFn ?? fetch;
+    return { ...options, fetchFn: (input, init) => {
+      const target = new URL(input instanceof Request ? input.url : String(input));
+      if (target.origin !== expected.origin || target.pathname !== '/v1/chat/completions') throw new Error('Native dispatch target changed.');
+      const headers = new Headers(init?.headers); headers.set('X-WorldlineBox-Native-Dispatch', options.nativeDispatchToken!);
+      return providerFetch(input, { ...init, headers });
+    } };
   }
   focusRecall(handle: VcpMemoryPreparedRecall, options: VcpMemoryFocusOptions = {}): Promise<VcpMemoryPreprocessResult> {
     const key = scopeKey(handle), generation = this.recallGenerations.get(key) ?? 0;
@@ -363,22 +391,26 @@ export class VcpMemoryClient {
         };
         await validate();
         const cacheKey = this.focusCacheKey(handle.scopeId, lease.payload);
-        const cached = this.focusedReceipts.get(cacheKey);
-        if (cached && Date.now() - cached.createdAt < 60000) {
+        const cached = cacheKey ? this.focusedReceipts.get(cacheKey) : undefined;
+        if (cacheKey && cached && Date.now() - cached.createdAt < 60000) {
           this.focusedReceipts.delete(cacheKey); this.focusedReceipts.set(cacheKey, cached);
           const receipt = JSON.parse(cached.serialized) as VcpMemoryPreprocessResult;
           await validate('publication');
-          return await finish({ ...receipt, queryClock: lease.payload.receipt.queryClock,
-            receiptCache: { hit: true, corpusEpoch: handle.corpusEpoch,
-              ...(receipt.queryClock ? { sourceQueryClock: receipt.queryClock } : {}) } });
+          // A newer owner snapshot may arrive while publication is checked.
+          if (cacheKey === this.focusCacheKey(handle.scopeId, lease.payload))
+            return await finish({ ...receipt, queryClock: lease.payload.receipt.queryClock,
+              receiptCache: { hit: true, corpusEpoch: handle.corpusEpoch,
+                ...(receipt.queryClock ? { sourceQueryClock: receipt.queryClock } : {}) } });
         }
         const implementation = createRequire(path.join(this.options.vendorRoot, 'package.json'))(
           path.join(path.dirname(this.options.workerPath), 'prepared-focus.cjs')) as {
             focusPreparedRecall(payload: VcpMemoryPreparedPayload, configuration: { vendorRoot: string; chat?: VcpMemoryPluginConfiguration['chat'] }, options: VcpMemoryFocusOptions): Promise<VcpMemoryPreprocessResult>;
           };
         const result = await implementation.focusPreparedRecall(lease.payload,
-          { vendorRoot: this.options.vendorRoot, chat: this.options.plugins?.chat }, { ...options, signal, validate });
-        await validate(); const completed = await finish(result); this.cacheFocusedReceipt(cacheKey, handle.scopeId, result); return completed;
+          { vendorRoot: this.options.vendorRoot, chat: this.options.plugins?.chat }, { ...this.nativeFocusTransport(options), signal, validate });
+        await validate(); const completed = await finish(result);
+        if (cacheKey && cacheKey === this.focusCacheKey(handle.scopeId, lease.payload)) this.cacheFocusedReceipt(cacheKey, handle.scopeId, result);
+        return completed;
       } finally {
         try { if (discard || signal.aborted) await this.prepared.remove(handle); }
         finally { lease?.release(); }
@@ -397,19 +429,35 @@ export class VcpMemoryClient {
     try {
       const payload = lease.payload;
       if (payload.receipt.contextReferenceCoverage !== 'observed') throw Object.assign(new Error('Native candidate source observations are incomplete.'), { code: 'VCP_MEMORY_CANONICAL_PROVENANCE_UNAVAILABLE' });
-      const renderer = createRequire(path.join(this.options.vendorRoot, 'package.json'))(path.join(path.dirname(this.options.workerPath), 'runtime.cjs')) as { renderNativeDiaryText(note: VcpMemoryNote): string };
+      const renderer = createRequire(path.join(this.options.vendorRoot, 'package.json'))(path.join(path.dirname(this.options.workerPath), 'runtime.cjs')) as {
+        renderNativeDiaryText(note: VcpMemoryNote): string; renderNativeDiaryFileText(note: VcpMemoryNote): string;
+        prepareCanonicalNativeText(note: VcpMemoryNote, vendorRoot: string): Promise<string> };
       const normalize = (text: string) => text.replaceAll('\r\n', '\n').trim();
-      const expected = new Map(inputs.map(note => [note.id, normalize(renderer.renderNativeDiaryText(note))]));
+      // Upstream ::Expand reads the original native diary file, while normal
+      // retrieval reads its anchor-free semantic chunks. Both representations
+      // must be derived exactly from the authorized canonical note. Never
+      // strip arbitrary candidate markup or trust its file path as authority.
+      const expected = new Map(await Promise.all(inputs.map(async note => [note.id, [normalize(renderer.renderNativeDiaryText(note)),
+        normalize(renderer.renderNativeDiaryFileText(note)), normalize(await renderer.prepareCanonicalNativeText(note, this.options.vendorRoot))]] as const)));
       const verified = new Set<string>();
+      for (const source of payload.nativeSources ?? []) {
+        signal?.throwIfAborted();
+        if (!source || typeof source.id !== 'string' || typeof source.text !== 'string' || !source.text.trim()
+          || source.textHash !== createHash('sha256').update(source.text.trim()).digest('hex')
+          || !payload.receipt.contextReferences?.some(reference => reference.id === source.id && reference.role === 'returned' && reference.textHash === source.textHash)
+          || !expected.get(source.id)?.some(value => value.includes(normalize(source.text))))
+          throw Object.assign(new Error('The native returned fragment does not match its actual canonical source bytes.'), { code: 'VCP_MEMORY_CANONICAL_SOURCE_CHANGED' });
+        verified.add(source.id + ':' + source.textHash);
+      }
       for (const group of payload.groups) for (const file of group.options.sourceFiles) {
         signal?.throwIfAborted(); const text = String(file.content || file.text || '').trim(), digest = createHash('sha256').update(text).digest('hex');
         const references = payload.receipt.contextReferences?.filter(reference => reference.textHash === digest) ?? [];
-        if (!references.length || references.some(reference => !expected.get(reference.id)?.includes(normalize(text))))
+        if (!references.length || references.some(reference => !expected.get(reference.id)?.some(value => value.includes(normalize(text)))))
           throw Object.assign(new Error('The original native candidate does not match its actual canonical source bytes.'), { code: 'VCP_MEMORY_CANONICAL_SOURCE_CHANGED' });
         for (const reference of references) verified.add(reference.id + ':' + reference.textHash);
       }
       if (payload.receipt.contextReferences?.some(reference => !verified.has(reference.id + ':' + reference.textHash)
-        && createHash('sha256').update(expected.get(reference.id) ?? '').digest('hex') !== reference.textHash))
+        && !expected.get(reference.id)?.some(value => createHash('sha256').update(value).digest('hex') === reference.textHash)))
         throw Object.assign(new Error('Native returned source bytes cannot be matched to their canonical inputs.'), { code: 'VCP_MEMORY_CANONICAL_PROVENANCE_UNAVAILABLE' });
       signal?.throwIfAborted();
     } finally { lease.release(); }
@@ -442,7 +490,7 @@ export class VcpMemoryClient {
         // the captured source order, template, clock and native inputs stay fixed.
         const rebound = { ...lease.payload, modelIdentity: implementation.modelIdentity(this.options.plugins?.chat) };
         const processed = await implementation.focusPreparedRecall(rebound, { vendorRoot: this.options.vendorRoot, chat: this.options.plugins?.chat },
-          { ...options, signal, validate });
+          { ...this.nativeFocusTransport(options), signal, validate });
         await validate(); const hash = await this.prepared.completeFocus(lease.handle, processed);
         await options.onFocused(preparedRecallReference(lease.handle, recovery, hash)); await validate();
         return { processed, recovery };
@@ -459,14 +507,32 @@ export class VcpMemoryClient {
     if (active) await Promise.allSettled([active.settled]);
     await this.prepared.remove(handle);
   }
-  private focusCacheKey(scopeId: string, payload: VcpMemoryPreparedPayload): string {
+  private focusCacheKey(scopeId: string, payload: VcpMemoryPreparedPayload): string | undefined {
+    // The native packet owns its user template; the authenticated gateway
+    // separately supplies current common/purpose system guidance. Legacy
+    // owner snapshots without that identity cannot reuse a focused receipt.
+    if (this.ownerPrompts && !this.ownerPrompts.focusGuidanceSignature) return;
     const groups = payload.groups.map(({ token: _token, ...input }) => { void _token; return input; });
+    // Upstream replaces Date/Time after inserting source/user/assistant text.
+    // A placeholder inside those bytes therefore also changes the real model
+    // prompt. Day-based retrieval buckets alone cannot identify a rendered
+    // {{Time}} prompt, and an unfrozen wall clock has no reusable identity.
+    const renderedInputs = groups.flatMap(group => [group.promptTemplate, group.userContent, group.aiContent,
+      ...group.options.sourceFiles.flatMap(file => [file.content || file.text || '', file.dbName || group.dbNames[0] || 'AIMemoPlus'])]);
+    const hasTime = renderedInputs.some(value => typeof value === 'string' && value.includes('{{Time}}'));
+    const hasDate = renderedInputs.some(value => typeof value === 'string' && value.includes('{{Date}}'));
+    const clock = payload.receipt.queryClock;
+    if ((hasTime || hasDate) && !clock) return;
+    const renderedClock = clock && (hasTime || hasDate) ? [clock.timeZone,
+      hasTime ? Math.floor(Date.parse(clock.now) / 1000) : null,
+      hasDate ? new Intl.DateTimeFormat('sv', { timeZone: clock.timeZone, year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date(clock.now)) : null] : null;
     const tokenIndexes = new Map(payload.groups.map((group, index) => [group.token, 'prepared-group-' + index]));
     const messages = payload.receipt.messages.map(message => ({ ...message, content: typeof message.content === 'string'
       ? message.content.replace(/WORLDLINE_PREPARED_FOCUS_[a-f0-9]{32}/gu, token => tokenIndexes.get(token) ?? token) : message.content }));
     return createHash('sha256').update(JSON.stringify([scopeId, payload.modelIdentity, groups, messages,
       payload.receipt.cacheClock?.bucket, payload.receipt.receiptCache?.corpusEpoch,
-      payload.hostEvidence ? [payload.hostEvidence.ownerId, payload.hostEvidence.revocationEpoch, payload.hostEvidence.sourceClosureDigest] : null])).digest('hex');
+      payload.hostEvidence ? [payload.hostEvidence.ownerId, payload.hostEvidence.revocationEpoch, payload.hostEvidence.sourceClosureDigest] : null,
+      renderedClock, this.ownerPrompts?.focusGuidanceSignature ?? null])).digest('hex');
   }
   private cacheFocusedReceipt(key: string, scopeId: string, receipt: VcpMemoryPreprocessResult): void {
     const serialized = JSON.stringify(receipt), bytes = Buffer.byteLength(serialized) + key.length + 128;

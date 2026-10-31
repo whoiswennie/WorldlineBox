@@ -39,13 +39,42 @@ it('does not read any bodies until the user opens one reply and drops the receip
   Object.defineProperty(window, 'worldlinebox', { configurable: true, value: { companions: api } });
   await mount(<CompanionReplyProgress revealCompleted scope={scope} now={Date.parse(at)} progress={{ revision: 1, phase: 'completed', detail: '回复已完成', startedAt: at, updatedAt: at, memory: { status: 'completed', count: 1, injected: true } }} />);
   expect(request).not.toHaveBeenCalled(); expect(listeners.size).toBe(0); expect(node!.querySelector('[data-reply-memory-context]')).toBeNull();
-  const details = node!.querySelector<HTMLDetailsElement>('.companions-bubble-memory')!;
-  await act(async () => { details.open = true; details.dispatchEvent(new Event('toggle')); });
+  await act(async () => button('展开回复过程').click());
+  await act(async () => button('查看这次回复的回忆').click());
   expect(request).toHaveBeenCalledExactlyOnceWith({ type: 'reply.memory.inspect', ...scope, contextOffset: 0, contextLimit: 8192 }); expect(listeners.size).toBe(1);
   expect(node!.querySelector('[data-reply-memory-context]')?.textContent).toBe(receipt().contextText);
-  await act(async () => { details.open = false; details.dispatchEvent(new Event('toggle')); });
+  await act(async () => button('关闭回忆详情').click());
   expect(node!.querySelector('[aria-label="本轮回忆详情"]')).toBeNull(); expect(listeners.size).toBe(0);
-  await act(async () => { details.open = true; details.dispatchEvent(new Event('toggle')); }); expect(request).toHaveBeenCalledTimes(2);
+  await act(async () => button('查看这次回复的回忆').click()); expect(request).toHaveBeenCalledTimes(2);
+});
+
+it('keeps a long local preparation stage compact and distinguishes its own time from total reply time', async () => {
+  const request = vi.fn<WorldlineBoxCompanionsApi['request']>(); const { api } = apiFor(request);
+  Object.defineProperty(window, 'worldlinebox', { configurable: true, value: { companions: api } });
+  const cancel = vi.fn();
+  await mount(<CompanionReplyProgress scope={scope} now={Date.parse(at) + 65_000} onCancel={cancel} progress={{ revision: 2, phase: 'context',
+    detail: '被动记忆召回已完成，正在准备对话上下文', startedAt: at, phaseStartedAt: new Date(Date.parse(at) + 60_000).toISOString(), updatedAt: at,
+    timing: { elapsedMs: 65_000 }, memory: { status: 'completed', count: 3, injected: false } }} />);
+  expect(node!.textContent).toContain('正在整理这次聊天需要的信息'); expect(node!.textContent).toContain('总用时 1 分 05 秒');
+  expect(node!.textContent).not.toContain('正在思考'); expect(node!.textContent).not.toContain('上下文'); expect(node!.textContent).not.toContain('候选');
+  expect(node!.querySelector('[role="dialog"]')).toBeNull(); expect(request).not.toHaveBeenCalled();
+  expect(node!.querySelector('time')!.title).toContain('当前阶段 5 秒');
+  await act(async () => button('取消这条回复').click()); expect(cancel).toHaveBeenCalledOnce();
+});
+
+it('stops waiting for a hung inspection, permits a new read and ignores the old late body', async () => {
+  vi.useFakeTimers(); const first = deferred<CompanionsResponse>();
+  const request = vi.fn<WorldlineBoxCompanionsApi['request']>().mockImplementationOnce(() => first.promise).mockResolvedValue({ ok: true, replyMemory: receipt({ contextText: '重新读取的真实记忆' }) });
+  const { api } = apiFor(request); await mount(<CompanionReplyMemoryDetails scope={scope} api={api} />);
+  expect(button('重新核验本轮回忆').disabled).toBe(true);
+  await act(async () => vi.advanceTimersByTimeAsync(10_001));
+  expect(node!.querySelector('[role="alert"]')?.textContent).toContain('可以重新查看或关闭详情');
+  expect(button('重新核验本轮回忆').disabled).toBe(false);
+  await act(async () => button('重新核验本轮回忆').click());
+  expect(node!.querySelector('[data-reply-memory-context]')?.textContent).toBe('重新读取的真实记忆');
+  await act(async () => first.resolve({ ok: true, replyMemory: receipt({ contextText: '已经过期的迟到正文' }) }));
+  expect(node!.textContent).not.toContain('已经过期的迟到正文');
+  expect(request.mock.calls.every(([command]) => command.type === 'reply.memory.inspect')).toBe(true);
 });
 
 it('keeps exact injected text distinct from candidates and renders original source evidence literally', async () => {
@@ -132,30 +161,31 @@ it('keeps one pending shell and the open recall details through clock ticks, liv
     onOpenAction={() => undefined} onOpenUrl={() => undefined} onOpenAttachment={() => undefined} onLocateQuote={() => undefined} onStreamLayout={() => undefined} />;
   store.reconcile([message]); await mount(render());
   const shell = node!.querySelector('.companions-reply-thread')!;
-  expect(shell.querySelector('.companions-message-bubble')).toBeNull();
+  expect(shell.querySelector('[data-reply-placeholder]')).not.toBeNull();
   await act(() => store.accept({ conversationId: scope.conversationId, companionId: scope.companionId, messageId: scope.messageId, sourceMessageId, step: 0, attemptId: 'empty-opening', phase: 'streaming', text: '' }));
   expect(shell.querySelector('.companions-loop-segment, .companions-reply-cursor')).toBeNull();
   const frame = (revision: number, detail: string): CompanionReplyStreamEvent => ({ conversationId: scope.conversationId, companionId: scope.companionId, messageId: scope.messageId,
     sourceMessageId, step: 0, attemptId: 'progress', phase: 'progress', text: '', progress: { ...message.replyProgress!, revision, phase: 'memory', detail, memory: { status: 'running' } } });
   await act(() => store.accept(frame(2, '等待本伙伴的记忆查询')));
-  const details = node!.querySelector<HTMLDetailsElement>('.companions-bubble-memory')!;
-  await act(async () => { details.open = true; details.dispatchEvent(new Event('toggle')); });
-  const currentDetails = node!.querySelector('[aria-label="本轮回忆详情"]');
-  expect(node!.textContent).toContain('召回仍在进行'); expect(node!.textContent).not.toContain('历史记录不会补造');
+  await act(async () => button('展开回复过程').click());
+  await act(async () => button('查看这次回复的回忆').click());
+  const details = node!.querySelector('[role="dialog"][aria-label="这次回复的回忆"]')!;
+  const currentDetails = node!.querySelector('.companions-reply-memory-wait');
+  expect(node!.textContent).toContain('这次回忆还在进行'); expect(node!.textContent).not.toContain('历史记录不会补造');
   expect(request).not.toHaveBeenCalled();
   for (let revision = 3; revision < 8; revision++) {
     await act(() => store.accept(frame(revision, revision % 2 ? '核验记忆来源' : '正在检索获权记忆并准备这次召回的完整上下文')));
     await act(async () => { store.reconcile([message]); root!.render(render(message, Date.parse(at) + revision * 1000)); });
     expect(node!.querySelector('.companions-reply-thread')).toBe(shell);
-    expect(node!.querySelector('.companions-bubble-memory')).toBe(details); expect(details.open).toBe(true);
-    expect(node!.querySelector('[aria-label="本轮回忆详情"]')).toBe(currentDetails);
-    expect(shell.querySelector('.companions-message-bubble')).toBeNull();
+    expect(node!.querySelector('[role="dialog"][aria-label="这次回复的回忆"]')).toBe(details);
+    expect(node!.querySelector('.companions-reply-memory-wait')).toBe(currentDetails);
+    expect(shell.querySelector('[data-reply-placeholder]')).not.toBeNull();
     expect(node!.querySelector('[data-reply-stage]')?.getAttribute('data-reply-stage')).toBe('memory');
   }
   expect(request).not.toHaveBeenCalled();
   // The real completed receipt replaces only the running status, once available.
   await act(() => store.accept({ ...frame(8, '正在生成回复'), progress: { ...frame(8, '').progress!, phase: 'thinking', memory: { status: 'completed', count: 1, injected: true } } }));
-  expect(request).toHaveBeenCalledTimes(1); expect(details.open).toBe(true);
+  expect(request).toHaveBeenCalledTimes(1); expect(node!.querySelector('[role="dialog"][aria-label="这次回复的回忆"]')).toBe(details);
   expect(node!.querySelector('[data-reply-memory-context]')?.textContent).toBe(receipt().contextText);
   await act(async () => { const completed = { ...message, isReplyDraft: false, content: '回复正文', segments: [{ text: '回复正文', actionIds: [] }], replyProgress: { ...frame(9, '').progress!, phase: 'completed' as const } }; store.reconcile([completed]); root!.render(render(completed)); });
   expect(shell.querySelector('.companions-message-bubble')!.textContent).toContain('回复正文');

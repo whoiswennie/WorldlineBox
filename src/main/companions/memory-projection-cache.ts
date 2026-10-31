@@ -2,14 +2,15 @@ import { createHash } from 'node:crypto';
 import type { CompanionStorageCommand, CompanionStorageResponse } from '../../shared/companion-storage';
 import type { CompanionMemoryProjectionNote, CompanionMemoryProjectionState } from '../../shared/companion-memory-projection';
 import type { CompanionMemoryFileReceipt } from '../../shared/companion-memory-files';
+import { companionMemoryContentKinds, companionMemoryKindAllowed, type CompanionMemoryArtifactKind } from '../../shared/companion-memory-scope';
 
-type Scope = { companionId: string; conversationId: string; beforeSequence?: number };
+type Scope = { companionId: string; conversationId: string; beforeSequence?: number; contentKinds?: CompanionMemoryArtifactKind[]; publishedOnly?: boolean };
 export interface CompanionMemoryProjectionSnapshot {
   state: CompanionMemoryProjectionState; notes: readonly CompanionMemoryProjectionNote[]; byId: ReadonlyMap<string, CompanionMemoryProjectionNote>;
   fingerprints: Readonly<Record<string, string>>; corpusHash: string; semanticHash: string; notBeforeSequence: number;
   receipts: ReadonlyMap<string, CompanionMemoryFileReceipt>;
 }
-interface Entry { owner: string; value: CompanionMemoryProjectionSnapshot; bytes: number; metadataBytes: number; receiptBytes: number; references: number; used: number; invalid: boolean }
+interface Entry { key: string; owner: string; value: CompanionMemoryProjectionSnapshot; bytes: number; metadataBytes: number; receiptBytes: number; references: number; used: number; invalid: boolean }
 export interface CompanionMemoryProjectionLease { value: CompanionMemoryProjectionSnapshot;
   setReceipts(receipts: readonly CompanionMemoryFileReceipt[]): void; assertCurrent(): void; release(): void }
 const digest = (value: unknown) => createHash('sha256').update(JSON.stringify(value)).digest('hex');
@@ -44,24 +45,25 @@ export class CompanionMemoryProjectionCache {
     return response;
   }
   private discard(entry: Entry, invalidate = true): void {
-    if (this.entries.get(entry.owner) === entry) this.entries.delete(entry.owner);
+    if (this.entries.get(entry.key) === entry) this.entries.delete(entry.key);
     if (entry.references) this.retired.add(entry); else { this.bytes -= entry.bytes; this.retired.delete(entry); }
     if (invalidate) entry.invalid = true;
   }
-  invalidate(owner: string): void { this.generations.set(owner, (this.generations.get(owner) ?? 0) + 1); const entry = this.entries.get(owner); if (entry) this.discard(entry);
+  invalidate(owner: string): void { this.generations.set(owner, (this.generations.get(owner) ?? 0) + 1);
+    for (const entry of this.entries.values()) if (entry.owner === owner) this.discard(entry);
     for (const value of this.retired) if (value.owner === owner) value.invalid = true; }
-  clear(): void { for (const owner of new Set([...this.entries.keys(), ...[...this.retired].map(entry => entry.owner), ...this.loading.keys(), ...this.tails.keys()])) this.invalidate(owner); }
+  clear(): void { for (const owner of new Set([...this.entries.values()].map(entry => entry.owner).concat([...this.retired].map(entry => entry.owner), [...this.tails.keys()]))) this.invalidate(owner); }
   snapshot() { return { owners: this.entries.size, metadataBytes: this.bytes, maxMetadataBytes: this.maxBytes, maxSingleMetadataBytes: this.maxSingleBytes,
     maxOwners: this.maxOwners, loading: this.loading.size, pending: this.pending, retiredCatalogues: this.retired.size,
     references: [...this.entries.values(), ...this.retired].reduce((sum, entry) => sum + entry.references, 0) }; }
   private admit(owner: string, bytes: number): void {
     if (bytes > this.maxSingleBytes) throw capacity();
     for (;;) {
-      const other = [...this.entries.values()].filter(entry => entry.owner !== owner);
+      const other = [...this.entries.values()].filter(entry => entry.key !== owner);
       const previous = this.entries.get(owner), retained = [...this.retired, ...(previous?.references && bytes ? [previous] : [])];
       const occupied = [...other, ...retained, ...[...this.loading].filter(([key]) => key !== owner).map(([owner, bytes]) => ({ owner, bytes }))];
       const occupiedBytes = occupied.reduce((sum, entry) => sum + entry.bytes, 0);
-      if (new Set([owner, ...occupied.map(entry => entry.owner)]).size <= this.maxOwners && (!occupiedBytes || occupiedBytes + bytes <= this.maxBytes)) return;
+      if (new Set([owner, ...occupied.map(entry => 'key' in entry ? entry.key : entry.owner)]).size <= this.maxOwners && (!occupiedBytes || occupiedBytes + bytes <= this.maxBytes)) return;
       const victim = other.filter(entry => !entry.references).sort((a, b) => a.used - b.used)[0]; if (!victim) throw capacity(); this.discard(victim);
     }
   }
@@ -74,23 +76,23 @@ export class CompanionMemoryProjectionCache {
     return pending;
   }
   private async acquireNow(scope: Scope, generation: number, signal?: AbortSignal): Promise<CompanionMemoryProjectionLease | undefined> {
-    const owner = scope.companionId;
+    const owner = scope.companionId, kinds = companionMemoryContentKinds(scope.contentKinds), key = JSON.stringify([owner, scope.conversationId, kinds, !!scope.publishedOnly]);
     const current = () => { signal?.throwIfAborted(); if ((this.generations.get(owner) ?? 0) !== generation) throw new Error('伙伴投影元数据已撤回。'); };
-    current(); this.admit(owner, 0);
+    current(); this.admit(key, 0);
     let state = (await this.call({ type: 'memory.projection.state', ...scope })).memoryProjectionState;
     if (!state) throw new Error('原生投影状态缺少宿主凭证。'); current();
-    let entry = this.entries.get(owner);
+    let entry = this.entries.get(key);
     const canDelta = entry && !entry.invalid && sameAuthority(entry.value.state, state)
       && entry.value.state.sequence <= state.sequence && entry.value.state.sequence >= state.floorSequence;
     if (!canDelta || entry!.value.state.sequence !== state.sequence) {
-      this.loading.set(owner, 0);
+      this.loading.set(key, 0);
       try {
       const byId = canDelta ? new Map(entry!.value.byId) : new Map<string, CompanionMemoryProjectionNote>();
       const receipts = canDelta ? new Map(entry!.value.receipts) : new Map<string, CompanionMemoryFileReceipt>();
       let bytes = canDelta ? entry!.metadataBytes : 0, fileBytes = canDelta ? entry!.receiptBytes : 0;
       let afterSequence = canDelta ? entry!.value.state.sequence : 0, afterId: string | undefined;
       const dropReceipt = (id: string) => { const old = receipts.get(id); if (old) fileBytes -= receiptBytes(old); receipts.delete(id); };
-      const metadataScope = { companionId: owner, conversationId: scope.conversationId }; let firstPage = true;
+      const metadataScope = { companionId: owner, conversationId: scope.conversationId, contentKinds: kinds, ...(scope.publishedOnly ? { publishedOnly: true } : {}) }; let firstPage = true;
       for (;;) {
         current();
         const response = await this.call(canDelta ? { type: 'memory.projection.delta', ...metadataScope, expected: state, afterSequence, limit: 128 }
@@ -101,22 +103,23 @@ export class CompanionMemoryProjectionCache {
         state = page.state; firstPage = false;
         for (const id of page.removedIds) { const old = byId.get(id); if (old) bytes -= Buffer.byteLength(JSON.stringify(old)); byId.delete(id); dropReceipt(id); }
         for (const note of page.notes) {
+          if (!companionMemoryKindAllowed(note.artifactKind, kinds)) throw new Error('原生投影返回了当前消费者无权使用的内容类型。');
           const old = byId.get(note.id); if (old) bytes -= Buffer.byteLength(JSON.stringify(old));
           if (old?.projectionFingerprint !== note.projectionFingerprint) dropReceipt(note.id);
-          byId.set(note.id, note); bytes += Buffer.byteLength(JSON.stringify(note)); this.admit(owner, bytes + fileBytes); this.loading.set(owner, bytes + fileBytes);
+          byId.set(note.id, note); bytes += Buffer.byteLength(JSON.stringify(note)); this.admit(key, bytes + fileBytes); this.loading.set(key, bytes + fileBytes);
         }
         if (!page.hasMore) break; afterId = page.nextId; afterSequence = page.nextSequence!;
       }
       current(); const notes = [...byId.values()].sort((a, b) => a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
       const fingerprints = Object.fromEntries(notes.map(note => [note.id, note.projectionFingerprint]));
       const value: CompanionMemoryProjectionSnapshot = { state, notes, byId, fingerprints,
-        corpusHash: digest(['native-projection-corpus-v1', notes.map(note => [note.id, note.projectionFingerprint])]),
-        semanticHash: digest(['native-projection-semantic-v1', notes.map(note => [note.id, note.bodyFingerprint])]),
+        corpusHash: digest(['native-projection-corpus-v2', kinds, notes.map(note => [note.id, note.artifactKind, note.projectionFingerprint])]),
+        semanticHash: digest(['native-projection-semantic-v2', kinds, notes.map(note => [note.id, note.artifactKind, note.bodyFingerprint])]),
         notBeforeSequence: notes.reduce((max, note) => Math.max(max, note.notBeforeSequence), 0), receipts };
       if (entry) this.discard(entry, false);
-      entry = { owner, value, bytes: bytes + fileBytes, metadataBytes: bytes, receiptBytes: fileBytes, references: 0, used: Date.now(), invalid: false };
-      this.entries.set(owner, entry); this.bytes += entry.bytes;
-      } finally { this.loading.delete(owner);
+      entry = { key, owner, value, bytes: bytes + fileBytes, metadataBytes: bytes, receiptBytes: fileBytes, references: 0, used: Date.now(), invalid: false };
+      this.entries.set(key, entry); this.bytes += entry.bytes;
+      } finally { this.loading.delete(key);
         await this.call({ type: 'memory.projection.release', companionId: owner, expected: state }).catch(() => undefined);
       }
     }

@@ -30,6 +30,56 @@ async function fixture(fetch: (url: string, init: RequestInit) => Promise<Respon
 }
 
 describe('built-in browser capture trust and import lifecycle', () => {
+  it('shares four concurrent frame discovery reads only while their identical target read is in flight', async () => {
+    const { host, hooks, source } = await fixture();
+    const original = hooks.listTargets.bind(hooks);
+    let release!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    const list = vi.fn(async () => { await gate; return original(); }); hooks.listTargets = list;
+    const calls = Array.from({ length: 4 }, (_, index) => host.content({ type: 'runtime.message', message: {
+      type: index % 2 ? 'worldlinebox-list-folders' : 'worldlinebox-connection-status',
+    } }, { ...source, frame: { ...source.frame, routingId: index + 1 } } as BrowserCaptureSource));
+    await until(() => list.mock.calls.length === 1);
+    release(); const results = await Promise.all(calls);
+    expect(list).toHaveBeenCalledOnce();
+    expect(results[0]).toEqual({ kind: 'connected' });
+    expect(results[1]).toMatchObject({ kind: 'ok', folders: [{ folderId: 'a-folder' }] });
+    await host.content({ type: 'runtime.message', message: { type: 'worldlinebox-connection-status' } }, source);
+    expect(list).toHaveBeenCalledTimes(2);
+    await host.shutdown();
+  });
+
+  it('does not reuse the old discovery read after switching its target library', async () => {
+    const { host, hooks, source } = await fixture(); await host.handle({ type: 'state' });
+    const original = hooks.listTargets.bind(hooks); let release!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; }); let calls = 0;
+    hooks.listTargets = vi.fn(async libraryId => { if (++calls === 1) { await gate; return original('a'); } return original(libraryId); });
+    const old = host.content({ type: 'runtime.message', message: { type: 'worldlinebox-list-folders' } }, source);
+    await until(() => calls === 1);
+    const selected = await host.handle({ type: 'target.set', target: { libraryId: 'b', folderId: 'b-folder' } });
+    expect(selected.ok).toBe(true);
+    const fresh = await host.content({ type: 'runtime.message', message: { type: 'worldlinebox-list-folders' } }, source);
+    expect(fresh).toMatchObject({ kind: 'ok', folders: [{ libraryId: 'b', folderId: 'b-folder' }] });
+    release(); await old;
+    expect(host.state().target?.libraryId).toBe('b'); expect(host.state().folders[0]?.libraryId).toBe('b');
+    await host.shutdown();
+  });
+
+  it('freshly rejects a save after permission is revoked while a read-only discovery is in flight', async () => {
+    const { host, hooks, source, imported, fetch } = await fixture();
+    const original = hooks.listTargets.bind(hooks); let release!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; }); let calls = 0;
+    hooks.listTargets = vi.fn(async libraryId => {
+      if (++calls === 1) { const before = await original(libraryId); await gate; return before; }
+      const current = await original(libraryId); return { ...current, libraries: current.libraries.map(library => ({ ...library, readOnly: true })) };
+    });
+    const reading = host.content({ type: 'runtime.message', message: { type: 'worldlinebox-list-folders' } }, source);
+    await until(() => calls === 1);
+    const saved = await host.handle({ type: 'save', tabId: 'tab', kind: 'image', mediaUrl: 'https://cdn.example/a.png', target: { libraryId: 'a', folderId: null } });
+    expect(saved).toMatchObject({ ok: false }); expect(imported).toEqual([]); expect(fetch).not.toHaveBeenCalled();
+    release(); await reading; expect(host.state().libraries.every(library => library.readOnly)).toBe(true);
+    await host.shutdown();
+  });
   it('streams authenticated media to an owned stage and preserves referer and MIME filename', async () => {
     const directory = await root();
     const fetch = vi.fn<(url: string, init: RequestInit) => Promise<Response>>().mockResolvedValue(new Response(png, { headers: { 'content-type': 'application/octet-stream' } }));

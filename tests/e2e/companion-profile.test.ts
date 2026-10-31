@@ -10,7 +10,6 @@ import type { WorldlineBoxLlmApi } from '../../src/shared/llm';
 import type { CompanionPublicProfile } from '../../src/shared/companion-public-profile';
 import { BUILTIN_COMPANIONS } from '../../src/shared/companion-personas';
 import { companionMemoryPolicyFileSchema } from '../../src/shared/companion-memory-policy';
-import { companionModelResourcePolicySchema } from '../../src/shared/companion-model-resources';
 import { removeCompanionTestDirectory, ensureCompanionTestWorkspace, electronLaunchEnv, resolveElectronAppPath, resolveElectronExecutablePath } from './electron-test-helpers';
 
 type Bridge = Window & { worldlinebox: { companions: WorldlineBoxCompanionsApi; llm: WorldlineBoxLlmApi } };
@@ -223,33 +222,16 @@ test('keeps owner profile and prompt files authoritative through UI saves, exter
     const memoryLibrary = page.getByRole('region', { name: '伙伴记忆库', exact: true });
     await memoryLibrary.getByRole('combobox', { name: '记忆所属伙伴', exact: true }).selectOption(owner);
     await memoryLibrary.getByRole('button', { name: '查看记忆处理进度', exact: true }).click();
-    const processing = page.getByRole('region', { name: '记忆处理进度', exact: true }), budget = processing.locator('.companion-model-resources');
-    await expect(processing).toBeVisible(); await expect(budget.getByRole('textbox', { name: '资源预算文件内容', exact: true })).toHaveCount(0);
-    await budget.getByText('模型资源与预算', { exact: true }).click();
-    const budgetField = budget.getByRole('textbox', { name: '资源预算文件内容', exact: true }); await expect(budgetField).toBeVisible();
-    const budgetPolicy = companionModelResourcePolicySchema.parse(JSON.parse(await budgetField.inputValue()));
-    budgetPolicy.defaultConnection.concurrency = 2; budgetPolicy.defaultConnection.requestsPerMinute = 240;
-    const sharedBudgetFile = path.join(dataRoot, '模型资源预算.json'), budgetContent = JSON.stringify(budgetPolicy, null, 2);
-    await budgetField.fill(budgetContent); await budget.getByRole('button', { name: '保存预算文件', exact: true }).click();
-    await expect(budget.getByRole('status')).toContainText('已写入 模型资源预算.json'); expect(JSON.parse(readFileSync(sharedBudgetFile, 'utf8'))).toEqual(budgetPolicy);
-    const unsavedBudget = { ...budgetPolicy, defaultConnection: { ...budgetPolicy.defaultConnection, requestsPerMinute: 241 } };
-    const externalBudget = { ...budgetPolicy, defaultConnection: { ...budgetPolicy.defaultConnection, requestsPerMinute: 242 } };
-    const unsavedBudgetContent = JSON.stringify(unsavedBudget, null, 2), externalBudgetContent = JSON.stringify(externalBudget, null, 2);
-    await budgetField.fill(unsavedBudgetContent); writeFileSync(sharedBudgetFile, externalBudgetContent, 'utf8');
-    await budget.getByRole('button', { name: '保存预算文件', exact: true }).click();
-    await expect(budget.getByRole('alert')).toContainText('外部修改'); await expect(budgetField).toHaveValue(unsavedBudgetContent);
-    expect(readFileSync(sharedBudgetFile, 'utf8')).toBe(externalBudgetContent);
-    await budget.scrollIntoViewIfNeeded(); const budgetScreenshot = path.join(artifact, 'verified-model-resource-budget-ui.png');
-    await page.screenshot({ path: budgetScreenshot });
-    await budget.getByRole('button', { name: '重读预算与统计', exact: true }).click(); await expect(budgetField).toHaveValue(unsavedBudgetContent);
-    await budget.getByRole('button', { name: '用最新文件替换草稿', exact: true }).click(); await expect(budgetField).toHaveValue(externalBudgetContent);
-    await expect(budget.getByLabel('当前伙伴当日模型请求统计')).toBeVisible(); expect(failures).toEqual([]);
+    const processing = page.getByRole('region', { name: '记忆处理进度', exact: true });
+    await expect(processing).toBeVisible(); await expect(processing.locator('.companion-model-resources')).toHaveCount(0);
+    await expect(processing.getByRole('textbox', { name: '资源预算文件内容', exact: true })).toHaveCount(0);
+    expect(failures).toEqual([]);
     const evidence = { actualElectron: true, isolatedLibrary: true, providerBoundary: 'Local deterministic provider; real UI, file authority, CAS and app scheduling.',
       softwarePersonaSavedToOwnerFile: true, externalPersonaWonCAS: true, conflictDraftPreserved: true, promptUISavedToOwnerFile: true,
       externalProfileUsedInNextProviderRequest: true, externalPromptUsedInNextProviderRequest: true, providerRequests: captures.length,
       policyUISavedToRealOwnerJSON: true, brokenPolicyReadAndRepairedInUI: true, ordinaryReplyWithBrokenPolicy: true,
-      sharedResourceBudgetUISavedToRealJSON: true, budgetConflictPreservedDraftAndExternalFile: true,
-      screenshots: { policy: policyScreenshot, budget: budgetScreenshot }, compiledHashes,
+      quotaControlsAbsent: true,
+      screenshots: { policy: policyScreenshot }, compiledHashes,
       compiledBoundary: 'API/UI baseline before the final projection-delta search integration; dynamic native host is not exercised by this deterministic UI case.' };
     expect(compiledProfileFixtureHashes()).toEqual(compiledHashes);
     await testInfo.attach('owner-asset-file-authority', { body: JSON.stringify(evidence, null, 2), contentType: 'application/json' });

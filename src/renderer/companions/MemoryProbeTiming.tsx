@@ -16,7 +16,7 @@ const stageOrder: CompanionMemoryProbeStageId[] = ['preparation', 'queue', 'sour
 function stageLabel(id: CompanionMemoryProbeStageId, mode: CompanionMemoryProbe['mode']) {
   const labels: Record<CompanionMemoryProbeStageId, string> = { preparation: '准备回忆服务', queue: '等待查询队列', sources: '核验记忆来源',
     runtime: '连接记忆引擎', projection: '同步记忆索引', retrieval: mode === 'active' ? '候选检索与准备' : '准备原版话题检索',
-    focus: mode === 'active' ? '原版检索与片段整理' : '原版检索与模型聚焦', verification: '复核本轮回忆' };
+    focus: '原版检索与片段整理', verification: '检查来源与文件' };
   return labels[id];
 }
 function duration(ms: number) {

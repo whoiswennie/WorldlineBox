@@ -18,7 +18,7 @@ function fixture() {
   const root = mkdtempSync(path.join(tmpdir(), 'companion-park-walk-')); roots.push(root); const filename = path.join(root, 'messages.sqlite');
   const store = new CompanionsStore(filename, seeds.map(seed => ({ ...seed, active: true }))); stores.add(store);
   const world = store.request({ type: 'world.snapshot' }).world!;
-  store.request({ type: 'world.configure', expectedRevision: world.settings.revision, patch: { mode: 'compressed', timeZone: 'UTC' } });
+  store.request({ type: 'world.configure', expectedRevision: world.settings.revision, patch: { mode: 'realtime', timeZone: 'UTC' } });
   for (const companionId of seeds.map(seed => seed.id)) {
     const conversationId = store.openPrivate(companionId).id, routine = store.request({ type: 'routine.get', companionId, conversationId }).routine!;
     store.request({ type: 'routine.configure', companionId, conversationId, expectedRevision: routine.revision, patch: { timeZone: 'UTC', sleepAt: '23:00', wakeAt: '07:00', meals: [], habits: [] } });
@@ -32,7 +32,7 @@ function start(store: CompanionsStore, durationMinutes = 35): CompanionLifeOccur
   store.request({ type: 'life-rule.create', companionId: 'alice', rule: { title: '测试实际公园散步', enabled: true, startMinute: 600, endMinute: 610, probability: 1, checkIntervalMinutes: 1, action: 'park_walk', durationMinutes } });
   store.request({ type: 'life-event.tick' });
   let claim: CompanionLifeOccurrence | undefined;
-  for (let index = 0; index < 4 && !claim; index++) { advance(store, 1000); claim = store.request({ type: 'life-event.claim' }).lifeOccurrence; }
+  for (let index = 0; index < 12 && !claim; index++) { advance(store, 30_000); claim = store.request({ type: 'life-event.claim' }).lifeOccurrence; }
   expect(claim?.rule.action).toBe('park_walk');
   return store.request({ type: 'life-event.complete', id: claim!.id, leaseToken: claim!.leaseToken! }).lifeOccurrence!;
 }
@@ -65,12 +65,19 @@ describe('persistent physical park walks', () => {
     const reopened = new CompanionsStore(f.filename, seeds.map(seed => ({ ...seed, active: true }))); stores.add(reopened);
     world = reopened.request({ type: 'world.snapshot' }).world!;
     expect(actor(world).parkWalk).toEqual(saved.parkWalk); expect(actor(world).position).toEqual(saved.position); expect(actor(world).route).toEqual(saved.route);
-    for (let index = 0; index < 120 && actor(world).parkWalk; index++) world = advance(reopened, 1000);
+    // Finish 35 actual walking minutes at realtime speed, then the physical return.
+    for (let index = 0; index < 120 && actor(world).parkWalk; index++) world = advance(reopened, 30_000);
     expect(actor(world).parkWalk).toBeUndefined(); expect(actor(world).sceneId).toBe(actor(world).homeSceneId);
-    expect(world.events.filter(event => event.kind === 'park_walk_complete')).toHaveLength(1);
-    expect(world.events.filter(event => event.kind === 'park_walk_enter')).toHaveLength(1);
-    expect(world.events.filter(event => event.kind === 'park_walk_relax')).toHaveLength(3);
-    expect(world.events.some(event => event.kind === 'park_walk_interrupted')).toBe(false);
+    // Thirty-five real minutes can legitimately exceed the bounded snapshot's
+    // latest 500 events. Check the exact actor's durable walk history instead.
+    const db = new Sqlite(f.filename);
+    let walkEvents: Array<{ kind: string }>;
+    try { walkEvents = db.prepare("SELECT json_extract(data,'$.kind') AS kind FROM companion_world_events WHERE json_extract(data,'$.actorId')='alice' AND json_extract(data,'$.kind') LIKE 'park_walk_%' ORDER BY sequence").all() as Array<{ kind: string }>; }
+    finally { db.close(); }
+    expect(walkEvents.filter(event => event.kind === 'park_walk_complete')).toHaveLength(1);
+    expect(walkEvents.filter(event => event.kind === 'park_walk_enter')).toHaveLength(1);
+    expect(walkEvents.filter(event => event.kind === 'park_walk_relax')).toHaveLength(3);
+    expect(walkEvents.some(event => event.kind === 'park_walk_interrupted')).toBe(false);
     expect(reopened.request({ type: 'life-rule.list', companionId: 'alice' }).lifeOccurrences!.find(occurrence => occurrence.id === started.id)?.status).toBe('done');
   });
 
@@ -87,10 +94,10 @@ describe('persistent physical park walks', () => {
     expect(f.store.request({ type: 'life-rule.list', companionId: 'alice' }).lifeOccurrences!.find(occurrence => occurrence.id === started.id)?.status).toBe('cancelled');
   });
 
-  it('yields to a scheduled meal while physically travelling and restores the meal at the real dining anchor', () => {
+  it('yields to a newly scheduled current meal while physically travelling and restores the meal at the real dining anchor', () => {
     const f = fixture(); start(f.store);
     const routine = f.store.request({ type: 'routine.get', ...f.scope }).routine!;
-    f.store.request({ type: 'routine.configure', ...f.scope, expectedRevision: routine.revision, patch: { meals: [{ name: '午餐', at: '10:05', durationMinutes: 30 }] } });
+    f.store.request({ type: 'routine.configure', ...f.scope, expectedRevision: routine.revision, patch: { meals: [{ name: '午餐', at: new Date().toISOString().slice(11, 16), durationMinutes: 30 }] } });
     let world = advance(f.store, 8000);
     expect(actor(world).parkWalk).toBeUndefined(); expect(actor(world).destinationId).toBe('alice_dining');
     expect(world.events.find(event => event.kind === 'park_walk_interrupted')?.text).toContain('实际在园中散步0分钟');

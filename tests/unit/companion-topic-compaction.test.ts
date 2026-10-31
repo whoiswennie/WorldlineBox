@@ -6,8 +6,8 @@ vi.mock('../../src/main/companions/topic-narrative-references', () => ({ prepare
 vi.mock('../../src/main/companions/topic-summary-canon-review', () => ({ reviewTopicSummaryCanon: async () => undefined }));
 import { expect, it, vi } from 'vitest';
 import { createHash } from 'node:crypto';
-import type { CompanionReplyInput } from '../../src/main/companions/context';
-import { ensureTopicContinuity, projectTopicContinuity } from '../../src/main/companions/topic-compaction';
+import { buildCompanionContext, type CompanionReplyInput } from '../../src/main/companions/context';
+import { CompanionTopicCompactionChanged, ensureTopicContinuity, projectTopicContinuity } from '../../src/main/companions/topic-compaction';
 import type { CompanionStorageCommand, CompanionStorageResponse } from '../../src/shared/companion-storage';
 import type { CompanionTopicState } from '../../src/shared/companion-topic';
 import type { CompanionMessage } from '../../src/shared/companions';
@@ -80,6 +80,38 @@ it('does not advance or discard messages after a failed or stale compaction', as
   expect(f.request.mock.calls.some(([command]) => command.type === 'topic.update')).toBe(false);
   expect(f.frame.messages).toHaveLength(8);
 });
+it('registers the exact prefix and captured checkpoints before any extraction or summary model reads them', async () => {
+  const f = fixture(), order: string[] = [];
+  f.messages[0]!.content += '；实际读集登记顺序回归。';
+  const bindInputs = vi.fn(async input => {
+    order.push('bound');
+    expect(input).toEqual({ sourceVersions: f.messages.slice(0, 6).map(message => ({ id: message.id, revision: 1,
+      checksum: createHash('sha256').update(message.content).digest('hex') })), checkpointEventIds: ['initial'] });
+  });
+  await ensureTopicContinuity({ ...f, bindInputs, extractCanon: async () => {
+    expect(order).toEqual(['bound']); order.push('canon'); return { additions: [], revisions: [] };
+  }, summarize: async () => {
+    expect(order).toEqual(['bound', 'canon']); order.push('summary'); return { summary: 'RULE_701仍有效。', stage: '继续' };
+  } });
+  expect(order).toEqual(['bound', 'canon', 'summary']); expect(bindInputs).toHaveBeenCalledOnce();
+});
+it('does not dispatch extraction, review or summary when the actual maintenance read-set cannot be registered', async () => {
+  const f = fixture(), extractCanon = vi.fn(), summarize = vi.fn(), review = vi.fn();
+  await expect(ensureTopicContinuity({ ...f, extractCanon, summarize, review,
+    bindInputs: async () => { throw new Error('source withdrawn before dispatch'); } })).rejects.toThrow('source withdrawn');
+  expect(extractCanon).not.toHaveBeenCalled(); expect(summarize).not.toHaveBeenCalled(); expect(review).not.toHaveBeenCalled();
+  expect(f.request.mock.calls.some(([command]) => command.type === 'topic.update')).toBe(false);
+});
+it('yields an old maintenance claim before reading or summarizing a newer checkpoint as its old source range', async () => {
+  const f = fixture();
+  const current = await ensureTopicContinuity({ ...f, summarize: async () => ({ summary: 'RULE_701仍有效。', stage: '继续' }) });
+  const previousPages = f.request.mock.calls.filter(([command]) => command.type === 'topic.compaction.sources').length;
+  const summarize = vi.fn(), extractCanon = vi.fn(), source = f.messages[0]!;
+  await expect(ensureTopicContinuity({ ...f, summarize, extractCanon, frame: { ...current, sourceMessage: source, messages: [source],
+    contextThroughSequence: source.sequence, contextThroughPublicationRevision: 1 } })).rejects.toBeInstanceOf(CompanionTopicCompactionChanged);
+  expect(f.request.mock.calls.filter(([command]) => command.type === 'topic.compaction.sources')).toHaveLength(previousPages);
+  expect(summarize).not.toHaveBeenCalled(); expect(extractCanon).not.toHaveBeenCalled();
+});
 
 it('never sends legacy canon paraphrases to either the compactor or its critic while keeping stored history exact', async () => {
   const f = fixture(), legacy = { version: 1, throughSequence: 1, entries: [{ id: 'quoted', sourceMessageId: 'm_0', sourceChecksum: 'a'.repeat(64),
@@ -100,19 +132,37 @@ it('reduces older complete topic messages only after actual capacity feedback an
   expect(result.sourceMessage).toEqual(source); expect(result.topicState!.workingState!.state!.__continuity).toMatchObject({ throughSequence: 4 });
 });
 it('splits a provider-rejected summary batch without skipping any unconsumed topic source', async () => {
-  const f = fixture(), sizes: number[] = [];
-  const result = await ensureTopicContinuity({ ...f, capacityFeedback: true, summarize: async context => {
+  const f = fixture(), sizes: number[] = [], registered: string[][] = [];
+  const result = await ensureTopicContinuity({ ...f, capacityFeedback: true,
+    bindInputs: async input => { registered.push(input.sourceVersions.map(source => source.id)); }, summarize: async context => {
     const data = JSON.parse(context.user); sizes.push(data.messages.length);
+    expect(registered.at(-1)).toEqual(data.messages.map((message: { id: string }) => message.id));
     if (data.messages.length > 1) throw new CompanionModelError('CONTEXT_CAPACITY', 'fixture provider capacity');
     return { summary: 'RULE_701', stage: '继续' };
   } });
   expect(sizes).toEqual([4, 2, 1]); expect(result.topicState!.workingState!.state!.__continuity).toMatchObject({ throughSequence: 1 });
+  expect(registered.map(sources => sources.length)).toEqual([4, 2, 1]);
   expect(result.messages.map(message => message.id)).toEqual(f.messages.slice(1).map(message => message.id));
 });
 it('does not apply another topic or another character compaction watermark', () => {
   const f = fixture(); f.frame.topicState!.workingState!.state = { __continuity: { topicId: 'foreign', companionId: 'bob', conversationId: 'group',
     throughSequence: 1000, sourceDigest: 'fake', compactedMessages: 1000, createdAt: '2026-10-23T00:00:00Z' } };
   expect(projectTopicContinuity(f.frame).messages).toHaveLength(8);
+});
+it('keeps queue inspection and wake status out of the provider evidence for a frozen source port', () => {
+  vi.useFakeTimers(); vi.setSystemTime(new Date('2026-10-29T00:00:00Z'));
+  try {
+    const f = fixture(), coverage = { maintenanceState: 'pending', requestedThroughSequence: 8, checkedThroughSequence: 0,
+      checkpointCreationSequence: 0, completeHistory: false as const, rawMessagesRetained: true as const, notice: '更早原文仍可按需读取。' };
+    const before = buildCompanionContext({ ...f.frame, topicContinuityCoverage: coverage });
+    const after = buildCompanionContext({ ...f.frame, topicContinuityCoverage: { ...coverage, maintenanceState: 'completed',
+      requestedThroughSequence: 1000, checkedThroughSequence: 1000 } });
+    expect(after).toEqual(before);
+    const body = JSON.parse(before.user);
+    expect(body.topicContinuityCoverage).toEqual({ checkpointCreationSequence: 0, completeHistory: false, rawMessagesRetained: true,
+      notice: coverage.notice });
+    expect(buildCompanionContext({ ...f.frame, topicContinuityCoverage: { ...coverage, checkpointCreationSequence: 6 } }).user).not.toBe(before.user);
+  } finally { vi.useRealTimers(); }
 });
 it('does not let a later user request create compaction pressure in the frozen source port', async () => {
   const f = fixture(), source = f.messages.at(-1)!;

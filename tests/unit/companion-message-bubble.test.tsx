@@ -83,6 +83,22 @@ it('gives each spoken step its own bubble and attaches capabilities below that e
   expect(container!.querySelector('.companions-message-bubble [data-loop-action]')).toBeNull();
 });
 
+it('replaces consecutive tool-only cards with one process entry and opens each original call from a dialog', async () => {
+  const open = await mount({ ...message, segments: [{ text: '我先打开视频看看。', actionIds: ['initial'] }, { text: '', actionIds: ['frame-1'] },
+    { text: '', actionIds: ['frame-2'] }, { text: '', actionIds: ['frame-3'] }, { text: '看到了这段字幕。', actionIds: [] }] });
+  expect(container!.querySelectorAll('.companions-capability-group')).toHaveLength(1);
+  expect(container!.querySelector('[data-loop-action="initial"]')?.closest('.is-attached')).not.toBeNull();
+  expect(container!.querySelectorAll('.is-standalone [data-loop-action]')).toHaveLength(0);
+  const group = container!.querySelector<HTMLButtonElement>('[aria-label="查看 3 次能力调用"]')!;
+  await act(() => group.click());
+  const dialog = container!.querySelector('[role="dialog"][aria-label="这段行动过程"]')!;
+  expect([...dialog.querySelectorAll('[data-loop-action]')].map(item => item.getAttribute('data-loop-action'))).toEqual(['frame-1', 'frame-2', 'frame-3']);
+  await act(() => dialog.querySelector<HTMLButtonElement>('[data-loop-action="frame-2"]')!.click());
+  expect(open).toHaveBeenCalledExactlyOnceWith('frame-2');
+  expect(container!.querySelector('[role="dialog"]')).toBeNull();
+  expect(container!.querySelectorAll('.companions-message-bubble')).toHaveLength(2);
+});
+
 it('collapses live progress, hides it on completion and allows explicit inspection without reopening on newer revisions', async () => {
   const progress = { revision: 1, phase: 'tools' as const, detail: '正在检查文件', startedAt: message.createdAt, updatedAt: message.createdAt };
   const value = { ...message, segments: [{ text: '我来处理。', actionIds: ['inspect'] }], replyProgress: progress };
@@ -90,6 +106,10 @@ it('collapses live progress, hides it on completion and allows explicit inspecti
   expect(container!.querySelector('.companions-message-bubble')!.textContent).toBe('我来处理。');
   const card = container!.querySelector('[data-reply-stage]')!;
   expect(card.closest('.companions-message-bubble')).toBeNull();
+  expect(container!.querySelector('[aria-label="展开回复过程"]')).not.toBeNull();
+  expect(container!.querySelector('.companions-bubble-progress-detail')).toBeNull();
+  await act(() => container!.querySelector<HTMLButtonElement>('[aria-label="展开回复过程"]')!.click());
+  expect(container!.querySelector('.companions-bubble-progress-detail')?.textContent).toContain('正在检查文件');
   await act(() => container!.querySelector<HTMLButtonElement>('[aria-label="收起回复过程"]')!.click());
   expect(container!.querySelector('[aria-label="展开回复过程"]')!.getAttribute('aria-expanded')).toBe('false');
   expect(container!.querySelector('.companions-bubble-progress-detail')).toBeNull();
@@ -116,7 +136,8 @@ it('renders only the current cursor through sparse streaming, discarded retries,
   expect(container!.querySelector('.companions-message-bubble')).toBeNull();
   expect(container!.querySelector('.companions-loop-pending, .companions-message-content')).toBeNull();
   await act(() => store.accept(frame({ text: '正在走向门口。' })));
-  expect(container!.textContent).toBe('正在走向门口。');
+  expect(container!.querySelector('[data-loop-step="9"]')!.textContent).toBe('正在走向门口。');
+  expect(container!.querySelector('.companion-reply-total-duration')!.textContent).toBe('耗时未记录');
   await act(() => store.accept(frame({ phase: 'discarded' })));
   expect(container!.querySelector('[data-loop-step]')).toBeNull();
   await act(() => store.accept(frame({ attemptId: 'retry', text: '已经到门口。' })));
@@ -144,18 +165,18 @@ it('renders each parallel partner progress below its own stable reply thread and
     store.accept(frame({ messageId: 'reply-b', companionId: 'b', text: '只有乙的正文增量' }));
   });
   expect([...container.querySelectorAll('[data-reply-stage]')].map(node => node.getAttribute('data-reply-stage'))).toEqual(['tools', 'streaming', 'waiting']);
-  expect(bubbles[0]!.textContent).toContain('read_file'); expect(bubbles[0]!.textContent).not.toContain('只有乙');
-  expect(bubbles[1]!.textContent).toContain('只有乙的正文增量'); expect(bubbles[1]!.textContent).toContain('已注入话题相关的记忆上下文');
+  expect(bubbles[0]!.textContent).not.toContain('read_file'); expect(bubbles[0]!.textContent).not.toContain('只有乙');
+  expect(bubbles[1]!.textContent).toContain('只有乙的正文增量'); expect(bubbles[1]!.textContent).not.toContain('记忆上下文');
   expect(bubbles[1]!.textContent).not.toContain('2 条');
   expect(bubbles[1]!.querySelector('.companions-bubble-progress-detail')).toBeNull();
-  expect(bubbles[2]!.textContent).toContain('正在完成先前活动');
+  expect(bubbles[2]!.textContent).toContain('正在等待回复');
   await act(() => container!.querySelector<HTMLButtonElement>('[data-owner="c"] [aria-label="取消这条回复"]')!.click());
   expect(cancel).toHaveBeenCalledExactlyOnceWith('work-c');
   await act(() => store.accept(frame({ messageId: 'reply-c', companionId: 'c', phase: 'progress', progress: { ...items[2]!.replyProgress!, revision: 3, phase: 'cancelled', detail: '这次回复已取消' } })));
   expect(container.querySelector('[data-owner="c"] [data-reply-stage="cancelled"]')).not.toBeNull();
   expect(container.querySelector('[data-owner="b"] [data-reply-stage="streaming"]')).not.toBeNull();
   expect([...container.querySelectorAll('.companions-reply-thread')]).toEqual(bubbles);
-  expect(container.querySelector('.companions-message-bubble .companions-bubble-progress')).toBeNull();
+  expect(container.querySelectorAll('.companions-message-bubble .companions-bubble-progress')).toHaveLength(1);
   await act(() => container!.querySelector<HTMLButtonElement>('[data-owner="c"] [aria-label="重试这条回复"]')!.click());
   expect(retry).toHaveBeenCalledExactlyOnceWith('work-c');
   expect(container.querySelector('.companions-reply-progress, .companions-typing')).toBeNull();
@@ -169,7 +190,9 @@ it('distinguishes native candidates from the focused context and keeps guide on 
       startedAt: message.createdAt, updatedAt: message.createdAt, memory: { status: 'completed', count: 3, injected: false } } };
   await act(() => root!.render(<CompanionMessageBubble message={queued} actions={[]} now={0} streamStore={new CompanionReplyStreamStore()} interrupted={false}
     onOpenAction={vi.fn()} onOpenUrl={vi.fn()} onOpenAttachment={vi.fn()} onLocateQuote={vi.fn()} onStreamLayout={vi.fn()} onCancelReply={cancel} onGuideReply={guide} />));
-  expect(container.textContent).toContain('已筛选 3 条候选 · 未纳入话题上下文'); expect(container.textContent).not.toContain('已注入');
+  expect(container.textContent).not.toContain('候选'); expect(container.textContent).not.toContain('上下文');
+  await act(() => container!.querySelector<HTMLButtonElement>('[aria-label="展开回复过程"]')!.click());
+  expect(container.textContent).toContain('找到了相关内容，尚未用于这次回复'); expect(container.textContent).not.toContain('已注入');
   expect(container.querySelector('.companions-bubble-progress-detail')).toBeNull();
   const buttons = [...container.querySelectorAll<HTMLButtonElement>('button')];
   await act(() => buttons.find(button => button.textContent === '立即引导')!.click());
@@ -181,8 +204,34 @@ it('distinguishes native candidates from the focused context and keeps guide on 
 it('distinguishes unfinished memory capture from an empty settled corpus', async () => {
   await mount({ ...message, replyProgress: { revision: 1, phase: 'thinking', detail: '正在思考', startedAt: message.createdAt, updatedAt: message.createdAt,
     memory: { status: 'completed', count: 0, injected: false, pending: true } } });
-  expect(container!.textContent).toContain('记忆仍在整理 · 本轮未命中'); expect(container!.textContent).not.toContain('无相关记忆');
+  await act(() => container!.querySelector<HTMLButtonElement>('[aria-label="展开回复过程"]')!.click());
+  expect(container!.textContent).toContain('部分经历还在整理，这次尚未找到相关回忆');
   await mount({ ...message, replyProgress: { revision: 2, phase: 'thinking', detail: '正在思考', startedAt: message.createdAt, updatedAt: message.createdAt,
     memory: { status: 'completed', count: 0, injected: false, pending: false } } });
-  expect(container!.textContent).toContain('被动召回完成 · 无相关记忆'); expect(container!.textContent).not.toContain('仍在整理');
+  expect(container!.textContent).toContain('这次没有找到相关回忆'); expect(container!.textContent).not.toContain('还在整理');
+});
+
+it('keeps actual errors and tool actions visible while routine reply diagnostics start collapsed', async () => {
+  const open = await mount({ ...message, segments: [{ text: '我来核对一下。', actionIds: ['actual-file-check'] }], replyProgress: {
+    revision: 3, phase: 'failed', detail: '连接中断，尚未完成这次回复。', startedAt: message.createdAt, updatedAt: message.createdAt, memory: { status: 'unavailable' } } });
+  expect(container!.querySelector('[aria-label="展开回复过程"]')).not.toBeNull();
+  expect(container!.querySelector('[role="alert"]')?.textContent).toBe('连接中断，尚未完成这次回复。');
+  expect(container!.textContent).toContain('回忆暂不可用');
+  await act(() => container!.querySelector<HTMLButtonElement>('[data-loop-action="actual-file-check"]')!.click());
+  expect(open).toHaveBeenCalledExactlyOnceWith('actual-file-check');
+});
+
+it('keeps one reply identity with an empty bubble and real-stage spinner until its content arrives', async () => {
+  const pending = { ...message, content: '', isReplyDraft: true, segments: [], replyProgress: { revision: 1, phase: 'context' as const, detail: '正在读取获准资料。', startedAt: message.createdAt, updatedAt: message.createdAt } };
+  await mount(pending);
+  const thread = container!.querySelector('.companions-reply-thread');
+  expect(container!.querySelectorAll('.companions-message-bubble')).toHaveLength(1);
+  expect(container!.querySelector('[data-reply-placeholder] .is-first-reply .companions-reply-process-symbol svg')).not.toBeNull();
+  expect(container!.textContent).toContain('正在整理这次聊天需要的信息');
+  await mount({ ...pending, content: '资料已经找到了。', segments: [{ text: '资料已经找到了。', actionIds: [] }], replyProgress: { ...pending.replyProgress, revision: 2, phase: 'streaming' } });
+  expect(container!.querySelector('.companions-reply-thread')).toBe(thread);
+  expect(container!.querySelectorAll('.companions-message-bubble')).toHaveLength(1);
+  expect(container!.querySelector('.companions-message-bubble')?.textContent).toBe('资料已经找到了。');
+  expect(container!.querySelector('[data-reply-placeholder]')).toBeNull();
+  expect(container!.querySelector('.companions-message-bubble [data-reply-stage]')).toBeNull();
 });

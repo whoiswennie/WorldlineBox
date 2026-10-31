@@ -90,6 +90,20 @@ export class CompanionMemoryLedger {
         return old && (old.revision !== source.revision || old.checksum !== source.checksum) ? [{ before: old, after: source }] : []; }), newSourceVersions };
     const lineageRootIds = new Set([...(note?.sources.length ? note.sources : previous?.sources ?? []).map(source => source.messageId), ...cause?.sourceMessageIds ?? []]);
     const pending = [...(dependencies ?? (note ? this.db.prepare('SELECT source_note_id AS id,version AS contentRevision FROM vcp_note_dependencies WHERE note_id=?').all(note.id) as StoredRevision['dependencies'] : []))], visited = new Set<string>();
+    const revocation = kind === 'revoke' || !!note && ['forgotten', 'invalid'].includes(note.status);
+    if (revocation && pending.length) {
+      // The body may already have been erased by source withdrawal. Exact
+      // lineage IDs live in the host dependency index and need no old prose.
+      const roots = this.db.prepare(`WITH RECURSIVE inputs(note_id,content_revision) AS (
+        SELECT json_extract(value,'$.id'),json_extract(value,'$.contentRevision') FROM json_each(?)
+        UNION SELECT d.parent_id,d.parent_revision FROM companion_memory_history_dependencies d JOIN inputs i
+          ON d.note_id=i.note_id AND d.content_revision=i.content_revision WHERE d.companion_id=?)
+        SELECT DISTINCT s.source_id FROM companion_memory_history_sources s JOIN inputs i USING(note_id,content_revision) WHERE s.companion_id=? LIMIT 10001`)
+        .all(JSON.stringify(pending), owner, owner) as Array<{ source_id: string }>;
+      for (const root of roots) lineageRootIds.add(root.source_id);
+      if (lineageRootIds.size > 10000) throw new Error('记忆原始来源谱系超过本次完整核验上限。');
+      pending.length = 0;
+    }
     while (pending.length) {
       const input = pending.pop()!, key = `${input.id}:${input.contentRevision}`;
       if (visited.has(key)) continue; visited.add(key);
@@ -146,7 +160,8 @@ export class CompanionMemoryLedger {
   }
   versionAnnotations(id: string, version: number): { tags: string[]; diaryName?: string; autoTags?: boolean } | undefined {
     const saved = this.db.prepare('SELECT annotations FROM companion_memory_version_revisions WHERE note_id=? AND version=?').get(id, version) as { annotations: string } | undefined;
-    return saved ? JSON.parse(saved.annotations) : undefined;
+    if (!saved) return;
+    const value = JSON.parse(saved.annotations); return value.withdrawn ? undefined : value;
   }
   recordBody(note: CompanionMemory, dependencies: StoredRevision['dependencies']): void {
     if (note.contentRevision === undefined) throw new Error('记忆正文缺少内容修订。');
@@ -161,7 +176,9 @@ export class CompanionMemoryLedger {
   readBody(owner: string, id: string, contentRevision: number): StoredRevision | undefined {
     const value = this.db.prepare('SELECT data FROM companion_memory_content_revisions WHERE companion_id=? AND note_id=? AND content_revision=?')
       .get(owner, id, contentRevision) as { data: string } | undefined;
-    return value ? JSON.parse(value.data) as StoredRevision : undefined;
+    if (!value) return;
+    const payload = JSON.parse(value.data);
+    return payload.withdrawn ? undefined : payload as StoredRevision;
   }
   cover(note: CompanionMemory, completeSources: readonly string[]): void {
     for (const source of note.sources) if (completeSources.includes(source.messageId)) this.db.prepare(`INSERT INTO companion_memory_source_coverage VALUES(?,?,?,?,?,?)

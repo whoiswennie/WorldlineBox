@@ -798,13 +798,13 @@ export class BrowserService {
     item.once('done', (_event, status) => { record.status = status; record.received = Math.max(0, item.getReceivedBytes()); record.path = item.getSavePath() || record.path; if (status !== 'completed') releaseEmptyReservation(); this.downloads.delete(id); this.changed(); });
   }
   async handle(request: BrowserRequest): Promise<BrowserResponse> {
-    await this.init(); this.error = undefined;
+    await this.init(); if (request.type !== 'state') this.error = undefined;
     const ai = browserAiRequestSchema.safeParse(request);
     if (ai.success) { await this.ai.handle(ai.data); return { ok: true, state: this.state() }; }
     switch (request.type) {
       case 'companion.pause': if (request.tabId) this.requireTab(request.tabId); this.companionActivity.pause(request.paused, request.tabId); break;
       case 'activate': this.ensureView(this.active()); break;
-      case 'state': break;
+      case 'state': return { ok: true, state: this.state() };
       case 'layout': this.visible = request.visible; this.bounds = request.bounds; this.layout(); return { ok: true };
       case 'tab.new': this.addTab(request.url ? browserAddress(request.url, this.store.data.preferences.searchEngine) : undefined, request.background); break;
       case 'tab.select': this.select(request.id); break;

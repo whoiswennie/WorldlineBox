@@ -41,6 +41,26 @@ it('does not render or import a feature until it is first activated', async () =
   expect(renderHeavy).toHaveBeenCalledTimes(1);
 });
 
+it('preloads feature code on navigation intent without mounting it or starting its effects', async () => {
+  const preload = vi.fn(), mounted = vi.fn();
+  function Optional() { useEffect(mounted, []); return <p>Optional feature</p>; }
+  function Fixture() {
+    const [active, select] = useState('launcher');
+    return <ApplicationShell activeModuleId={active} onSelectModule={select} onOpenSettings={() => undefined} modules={[
+      { id: 'launcher', label: 'Launcher', icon: 'box', content: <p>Home</p> },
+      { id: 'optional', label: 'Optional', icon: 'users', preload, content: <Optional /> },
+    ]} />;
+  }
+  await mount(<Fixture />);
+  const button = container!.querySelector<HTMLButtonElement>('[data-application-module="optional"]')!;
+  await act(() => button.dispatchEvent(new Event('pointerover', { bubbles: true })));
+  expect(preload).toHaveBeenCalledOnce(); expect(mounted).not.toHaveBeenCalled();
+  await act(() => button.focus());
+  expect(preload).toHaveBeenCalledTimes(2); expect(mounted).not.toHaveBeenCalled();
+  await act(() => button.click());
+  expect(preload).toHaveBeenCalledTimes(3); expect(mounted).toHaveBeenCalledOnce();
+});
+
 it("keeps module state while suspending inactive module effects", async () => {
   const started = vi.fn();
   const stopped = vi.fn();

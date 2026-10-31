@@ -26,7 +26,7 @@ it('uses real elapsed time and preserves message/source dates through reopening'
   vi.setSystemTime(Date.now() + 60000);
   const source = f.store.appendMessage({ conversationId: f.scope.conversationId, authorId: 'user', content: '我今天买了一盆兰花。', replyDirective: 'none' });
   expect(source.worldCreatedAt).toBe(source.createdAt); expect(source.createdAt).toBe('2026-10-14T10:01:00.000Z');
-  f.store.request({ type: 'memory.record', ...f.scope, candidate: { content: source.content, sourceMessageIds: [source.id], evidence: [{ sourceMessageId: source.id, quote: source.content }] } });
+  f.store.request({ type: 'memory.record', ...f.scope, candidate: { artifactKind: 'episode_memory' as const, content: source.content, sourceMessageIds: [source.id], evidence: [{ sourceMessageId: source.id, quote: source.content }] } });
   vi.setSystemTime(Date.now() + 120000);
   const response = companionStorageResponseSchema.parse(f.store.request({ type: 'world.clock', since: [start] }));
   expect(response.worldClock).toMatchObject({ mode: 'realtime', speed: 1, virtualNow: new Date().toISOString(), elapsed: [{ realAt: start, milliseconds: 3 * 60000 }] });
@@ -40,7 +40,7 @@ it('uses real elapsed time and preserves message/source dates through reopening'
 it('starts with the new maintenance schema and preserves actual narrative cooldown across restart', () => {
   vi.spyOn(Math, 'random').mockReturnValue(.1);
   const f = fixture(), source = f.store.appendMessage({ conversationId: f.scope.conversationId, authorId: 'user', content: '应保留出处的重要学习经历。', replyDirective: 'none' });
-  const memory = f.store.request({ type: 'memory.record', ...f.scope, candidate: { content: source.content, tags: ['重要'],
+  const memory = f.store.request({ type: 'memory.record', ...f.scope, candidate: { artifactKind: 'episode_memory' as const, content: source.content, tags: ['重要'],
     sourceMessageIds: [source.id], evidence: [{ sourceMessageId: source.id, quote: source.content }] } }).memories![0]!;
   const delivery = f.store.request({ type: 'memory.outbox.claim' }).memoryOutbox!;
   f.store.request({ type: 'memory.outbox.complete', id: delivery.id, leaseToken: delivery.leaseToken, indexed: true });
@@ -79,6 +79,6 @@ it('does not insert a present-day task into the offline past and refuses clock e
   expect(f.store.request({ type: 'world.work.ready', companionId: 'alice', workId: work.workId }).worldWork!.status).toBe('waiting');
   const world = f.store.request({ type: 'world.snapshot' }).world!; expect(world.backlog).toBe(true);
   expect(world.events.some(event => event.kind === 'work_ready' || event.kind === 'work_start')).toBe(false);
-  expect(world.clock.virtualNow).toBe(new Date().toISOString()); expect(world.clock.speed).toBe(1);
+  expect(world.clock.realNow).toBe(new Date().toISOString()); expect(Date.parse(world.clock.virtualNow)).toBeLessThan(Date.now()); expect(world.clock.speed).toBe(1);
   expect(() => f.store.request({ type: 'world.configure', expectedRevision: world.settings.revision, patch: { timeZone: 'UTC' } })).toThrow('补算');
 });

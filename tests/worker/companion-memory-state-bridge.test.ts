@@ -20,21 +20,21 @@ it('atomically ties a capture integration to a formal diary and withdraws only t
   // Host-only flush isolates the capture/state transaction from admission time.
   const job = store.request({ type: 'memory.jobs.claim', companionId: scope.companionId, force: true }).memoryJob!;
   expect(job.sourceMessageIds).toEqual([source.id]);
-  const candidate = { content: '这次先核验备份，再完成恢复检查；下一次仍需要重新核实适用情况。', diaryName: '自我认识', tags: ['恢复检查'], sourceMessageIds: [source.id], evidence: [{ sourceMessageId: source.id, quote: source.content }] };
+  const candidate = { artifactKind: 'episode_memory' as const, content: '这次先核验备份，再完成恢复检查；下一次仍需要重新核实适用情况。', diaryName: '日记', tags: ['恢复检查'], sourceMessageIds: [source.id], evidence: [{ sourceMessageId: source.id, quote: source.content }] };
   const note = store.request({ type: 'memory.jobs.complete', id: job.id, leaseToken: job.leaseToken, notes: [candidate], expectedStateRevision: before.revision,
     stateProposal: { expression: 'direct', focus: '下次先核验备份的适用范围', reason: '这次整理后形成暂定的下一步关注。', sourceMessageIds: [source.id], evidence: candidate.evidence,
-      appraisals: [{ type: 'shared_success', target: 'task', intensity: .4, confidence: 1 }] } }).memories![0]!;
+      experience: { situation: '本次备份与恢复检查。', statement: '下次先核验备份的适用范围。', reassessWhen: ['下一次检查后。'] } } }).memories![0]!;
   const changed = store.request({ type: 'state.get', ...scope }).runtimeState!;
   expect(changed.expression).toBe('direct'); expect(changed.focus).toBe('下次先核验备份的适用范围');
-  expect(changed.affect.pleasure).toBeGreaterThan(before.affect.pleasure); expect(changed.relationship).toEqual(before.relationship);
+  expect(changed.experience?.statement).toBe('下次先核验备份的适用范围。'); expect(changed.relationshipRecords).toEqual(before.relationshipRecords);
   expect(changed.recentChanges?.some(change => change.kind === 'memory' && change.memoryIds?.includes(note.id))).toBe(true);
-  const oldAffect = { ...changed.affect };
+  const experience = changed.experience;
   store.request({ type: 'memory.browse', ...scope }); store.request({ type: 'character.development', ...scope });
-  expect(store.request({ type: 'state.get', ...scope }).runtimeState!.affect).toEqual(oldAffect);
+  expect(store.request({ type: 'state.get', ...scope }).runtimeState!.experience).toEqual(experience);
   expect(() => store.request({ type: 'memory.jobs.complete', id: job.id, leaseToken: job.leaseToken, notes: [candidate] })).toThrow('租约');
   store.request({ type: 'memory.revise', ...scope, id: note.id, expectedVersion: note.version, candidate: { ...candidate, content: candidate.content + '补充：还需核对恢复日志。' } });
   const revised = store.request({ type: 'state.get', ...scope }).runtimeState!;
-  expect(revised.expression).toBe(before.expression); expect(revised.focus).toBeUndefined(); expect(revised.relationship).toEqual(before.relationship);
+  expect(revised.expression).toBe(before.expression); expect(revised.focus).toBeUndefined(); expect(revised.experience).toBeUndefined(); expect(revised.relationshipRecords).toEqual(before.relationshipRecords);
   expect(revised.recentChanges?.some(change => change.kind === 'memory' && change.memoryIds?.includes(note.id))).toBe(false);
   expect(store.state().companions[0]!.persona).toBe(persona);
 });
@@ -44,10 +44,10 @@ it('keeps an authored newer state when a slow capture completes, while preservin
   const previous = store.request({ type: 'state.get', ...scope }).runtimeState!, job = store.request({ type: 'memory.jobs.claim', companionId: scope.companionId, force: true }).memoryJob!;
   expect(job.sourceMessageIds).toEqual([source.id]);
   const newer = store.appendMessage({ conversationId: scope.conversationId, authorId: 'user', content: '现在请先关注这次正在发生的讨论。' });
-  store.request({ type: 'state.update', ...scope, proposal: { focus: '眼前讨论', reason: '实际较新来信', sourceMessageIds: [newer.id], evidence: [{ sourceMessageId: newer.id, quote: newer.content }], appraisals: [] } });
-  const candidate = { content: '我留下过一个待读问题，尚未实际解决。', sourceMessageIds: [source.id], evidence: [{ sourceMessageId: source.id, quote: source.content }] };
+  store.request({ type: 'state.update', ...scope, proposal: { focus: '眼前讨论', reason: '实际较新来信', sourceMessageIds: [newer.id], evidence: [{ sourceMessageId: newer.id, quote: newer.content }], relationshipUpdates: [] } });
+  const candidate = { artifactKind: 'episode_memory' as const, content: '我留下过一个待读问题，尚未实际解决。', sourceMessageIds: [source.id], evidence: [{ sourceMessageId: source.id, quote: source.content }] };
   expect(store.request({ type: 'memory.jobs.complete', id: job.id, leaseToken: job.leaseToken, notes: [candidate], expectedStateRevision: previous.revision,
-    stateProposal: { focus: '旧的待读问题', reason: '较慢的来源整理', sourceMessageIds: [source.id], evidence: candidate.evidence, appraisals: [] } }).memories).toHaveLength(1);
+    stateProposal: { focus: '旧的待读问题', reason: '较慢的来源整理', sourceMessageIds: [source.id], evidence: candidate.evidence, relationshipUpdates: [] } }).memories).toHaveLength(1);
   expect(store.request({ type: 'state.get', ...scope }).runtimeState!.focus).toBe('眼前讨论');
 });
 it.each(['A', 'B'] as const)('withdraws only the merged memory impulse while keeping the other source state after forgetting %s', forgottenSide => {
@@ -60,12 +60,12 @@ it.each(['A', 'B'] as const)('withdraws only the merged memory impulse while kee
   const capture = store.request({ type: 'memory.jobs.claim', companionId: scope.companionId, force: true }).memoryJob!;
   expect([...capture.sourceMessageIds].sort()).toEqual([a.id, b.id].sort());
   const forgotten = forgottenSide === 'A' ? a : b, survivor = forgottenSide === 'A' ? b : a;
-  const proposalFor = (source: typeof a) => ({ content: source.content, tags: ['核验'], sourceMessageIds: [source.id], evidence: [{ sourceMessageId: source.id, quote: source.content }] });
+  const proposalFor = (source: typeof a) => ({ artifactKind: 'episode_memory' as const, content: source.content, tags: ['核验'], sourceMessageIds: [source.id], evidence: [{ sourceMessageId: source.id, quote: source.content }] });
   const originals = [a, b].map(source => store.request({ type: 'memory.record', ...scope, candidate: proposalFor(source) }).memories![0]!);
   const index = () => { for (let count = 0; count < 100; count++) { const job = store.request({ type: 'memory.outbox.claim' }).memoryOutbox;
     if (job) store.request({ type: 'memory.outbox.complete', id: job.id, leaseToken: job.leaseToken, indexed: true }); } };
   index();
-  const mergeCandidate = { content: `${a.content}${b.content}`, tags: ['核验'], sourceMessageIds: [a.id, b.id],
+  const mergeCandidate = { artifactKind: 'episode_memory' as const, content: `${a.content}${b.content}`, tags: ['核验'], sourceMessageIds: [a.id, b.id],
     evidence: [a, b].map(source => ({ sourceMessageId: source.id, quote: source.content })), relatedMemoryIds: originals.map(note => note.id) };
   const merged = store.request({ type: 'memory.consolidate', ...scope, operationId: 'merge_with_state',
     inputs: originals.map(note => ({ id: note.id, version: note.version })), candidate: mergeCandidate }).memories![0]!;
@@ -74,13 +74,13 @@ it.each(['A', 'B'] as const)('withdraws only the merged memory impulse while kee
   const independentFocus = '仍需保留的来源' + survivor.sequence + '独立关注';
   const independent = store.request({ type: 'state.update', ...scope, proposal: { expression: 'direct', focus: independentFocus,
     reason: '这条仍合法的原消息独立支持当前关注。', sourceMessageIds: [survivor.id], evidence: [{ sourceMessageId: survivor.id, quote: survivor.content }],
-    appraisals: [{ type: 'support', target: 'user', intensity: .4, confidence: 1 }] } }).runtimeState!;
-  expect(independent.relationship.affinity).toBeGreaterThan(before.relationship.affinity);
-  const independentChange = independent.recentChanges!.find(change => change.kind === 'appraisal' && change.sourceMessageIds.length === 1 && change.sourceMessageIds[0] === survivor.id)!;
+    relationshipUpdates: [{ targetId: 'user', topic: '本次核验', context: '独立检查', kind: 'expectation', statement: '保留独立来源的核验要求。', reassessWhen: ['核验完成后。'] }] } }).runtimeState!;
+  expect(independent.relationshipRecords).toHaveLength(1);
+  const independentChange = independent.recentChanges!.find(change => change.kind === 'experience' && change.sourceMessageIds.length === 1 && change.sourceMessageIds[0] === survivor.id)!;
   expect(independentChange).toBeDefined();
   const integrated = store.request({ type: 'memory.jobs.complete', id: capture.id, leaseToken: capture.leaseToken, notes: [mergeCandidate],
     stateProposal: { expression: 'playful', focus: '依赖两条来源的整合关注', reason: '这次合并记忆带来的暂定状态。',
-      sourceMessageIds: [a.id, b.id], evidence: mergeCandidate.evidence, appraisals: [{ type: 'shared_success', target: 'task', intensity: .2, confidence: 1 }] } }).memories![0]!;
+      sourceMessageIds: [a.id, b.id], evidence: mergeCandidate.evidence, experience: { situation: '整合两条核验来源。', statement: '仍待进一步核验。', reassessWhen: ['结果核查后。'] } } }).memories![0]!;
   expect(integrated.id).toBe(merged.id);
   const withImpulse = store.request({ type: 'state.get', ...scope }).runtimeState!;
   expect(withImpulse.focus).toBe('依赖两条来源的整合关注');
@@ -90,18 +90,18 @@ it.each(['A', 'B'] as const)('withdraws only the merged memory impulse while kee
   const after = store.request({ type: 'state.get', ...scope }).runtimeState!;
   expect(after.recentChanges?.some(change => change.kind === 'memory' && change.memoryIds?.includes(merged.id))).toBe(false);
   expect(after.recentChanges?.some(change => change.id === independentChange.id)).toBe(true);
-  expect(after.focus).toBe(independentFocus); expect(after.expression).toBe('direct');
-  expect(after.relationship).toEqual(independent.relationship); expect(after.affect).toEqual(independent.affect);
+  expect(after.focus).toBeUndefined(); expect(after.experience).toBeUndefined();
+  expect(after.relationshipRecords).toEqual(independent.relationshipRecords);
   const otherGroup = store.createConversation('另一个群聊', [scope.companionId]);
   const groupState = store.request({ type: 'state.get', companionId: scope.companionId, conversationId: otherGroup.id }).runtimeState!;
   expect(groupState.focus).not.toBe(independentFocus);
   expect(JSON.stringify(groupState)).not.toContain(independentFocus);
-  expect(store.request({ type: 'state.get', ...scope }).runtimeState!.focus).toBe(independentFocus);
+  expect(store.request({ type: 'state.get', ...scope }).runtimeState!.relationshipRecords).toEqual(independent.relationshipRecords);
   store.request({ type: 'memory.forget', ...scope, sourceMessageIds: [survivor.id] }); index();
   expect(store.request({ type: 'memory.sources.filter', ...scope, ids: [survivor.id] }).memorySources).toEqual([]);
   const allWithdrawn = store.request({ type: 'state.get', ...scope }).runtimeState!;
   expect(allWithdrawn.focus).toBeUndefined(); expect(allWithdrawn.expression).toBe(before.expression);
   expect(allWithdrawn.recentChanges?.some(change => change.id === independentChange.id)).toBe(false);
   expect(allWithdrawn.recentChanges?.some(change => change.kind === 'memory' && change.memoryIds?.includes(merged.id))).toBe(false);
-  expect(allWithdrawn.relationship).toEqual(before.relationship);
+  expect(allWithdrawn.relationshipRecords).toEqual(before.relationshipRecords);
 });

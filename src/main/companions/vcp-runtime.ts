@@ -13,14 +13,19 @@ import { companionPreparedRecallReferenceSchema, type CompanionPreparedRecallRef
 import { VcpPreparedRecallStore } from '../vcp-memory/prepared-recall-store';
 
 export type { CompanionOwnerRuntimeStorage, CompanionOwnerRuntimePaths } from './owner-runtime-storage';
-export interface CompanionMemoryOwnerScope { ownerId: string; signal?: AbortSignal; purpose?: 'index' }
+export interface CompanionMemoryOwnerScope { ownerId: string; signal?: AbortSignal; purpose?: 'index' | 'prepare' }
 export interface CompanionEmbeddingLease { client: VcpMemoryClient; profileKey: string; release?(): Promise<void> }
 export type CompanionColdLease = ColdKnowledgeService & { release?(): Promise<void> };
 
 export interface CompanionGenerationSelection { ownerId: string; config: Readonly<CompanionModelConfig> }
-export interface CompanionGenerationDescriptor { ownerId: string; profileKey: string }
+export interface CompanionGenerationDescriptor {
+  ownerId: string; profileKey: string;
+  /** Stable public routing semantics for durable processing fences. Transport
+   * credentials and process-local cache identities must never open a new cycle. */
+  governanceKey?: string;
+}
 export interface CompanionGenerationLease extends CompanionGenerationDescriptor {
-  client: VcpMemoryClient; connectionEpoch: number; release(): Promise<void>;
+  client: VcpMemoryClient; connectionEpoch: number; dispatchToken?: string; release(): Promise<void>;
 }
 export interface CompanionProjectionCleanup {
   /** Maintenance of one projection does not revoke other task snapshots. */
@@ -37,6 +42,8 @@ export interface CompanionMemoryRuntime {
   readonly supportsProjectionDelta?: boolean;
   get(scope: CompanionMemoryOwnerScope): Promise<CompanionEmbeddingLease>;
   describeEmbedding?(): Promise<{ profileKey: string }>;
+  /** Load the physical encoder without generating a vector or running recall. */
+  prepareEmbedding?(signal?: AbortSignal): Promise<void>;
   describeGeneration?(input: CompanionGenerationSelection): Promise<CompanionGenerationDescriptor>;
   acquireGeneration?(input: CompanionGenerationSelection & { signal?: AbortSignal }): Promise<CompanionGenerationLease>;
   interruptOwner?(ownerId: string): Promise<void>;
@@ -65,12 +72,14 @@ interface GenerationEntry {
   key: string; ownerId: string; profileKey: string; connection: string; connectionEpoch: number;
   client: VcpMemoryClient; references: number; used: number; dispose(): Promise<void>; retiring?: Promise<void>;
   storage: CompanionOwnerRuntimeStorage;
+  lifecycles: Map<string, { lifecycle: CompanionModelConfig['providerLifecycle']; active: boolean }>;
 }
 export interface CompanionVcpRuntimeOptions {
   vendorRoot: string; workerPath: string;
   resolveOwnerStorage(ownerId: string): Promise<CompanionOwnerRuntimeStorage>;
   resolveOwnerCleanupStorage(ownerId: string): Promise<CompanionOwnerRuntimePaths>;
   resolveEmbedding(): Promise<VcpMemoryEmbeddingConfig>;
+  prepareEmbedding?(signal?: AbortSignal): Promise<void>;
   /** Retained only for source compatibility. Core operations never acquire chat. */
   resolvePlugins?(): Promise<VcpMemoryPluginConfiguration>;
   generationProfile?: unknown;
@@ -135,12 +144,13 @@ export class CompanionVcpRuntime implements CompanionMemoryRuntime {
   private async embedding() {
     const embedding = { ...await this.options.resolveEmbedding() };
     if (this.closed) throw new Error('记忆服务已关闭。');
-    const profileKey = (embedding.modelSignature ?? (embedding.model + ':' + embedding.dimension)) + ':narrative-v2';
+    const profileKey = (embedding.modelSignature ?? (embedding.model + ':' + embedding.dimension)) + ':typed-cognition-v3';
     const space = JSON.stringify([embedding.model, embedding.dimension, embedding.modelSignature ?? null]);
     if (this.spaces.has(profileKey) && this.spaces.get(profileKey) !== space) throw new Error('向量模型或维度已变化，语义空间签名必须同步更新。');
     this.spaces.set(profileKey, space);
     return { embedding, profileKey };
   }
+  async prepareEmbedding(signal?: AbortSignal): Promise<void> { await this.options.prepareEmbedding?.(signal); }
   async describeEmbedding(): Promise<{ profileKey: string }> {
     if (this.closed) throw new Error('记忆服务已关闭。');
     return { profileKey: (await this.embedding()).profileKey };
@@ -148,8 +158,8 @@ export class CompanionVcpRuntime implements CompanionMemoryRuntime {
   private snapshot(input: CompanionGenerationSelection): CompanionGenerationSelection {
     return { ownerId: ownerIdentity(input.ownerId), config: Object.freeze({ apiFormat: input.config.apiFormat,
       model: input.config.model, baseUrl: input.config.baseUrl, apiKey: input.config.apiKey,
-      ownerId: input.ownerId, workPriority: input.config.workPriority, accountingPurpose: input.config.accountingPurpose,
-      providerBudget: input.config.providerBudget, resolveAssetContext: input.config.resolveAssetContext }) };
+      ownerId: input.ownerId, workPriority: input.config.workPriority, requestPurpose: input.config.requestPurpose,
+      providerLifecycle: input.config.providerLifecycle, trackOperation: input.config.trackOperation, resolveAssetContext: input.config.resolveAssetContext }) };
   }
   private semanticEndpoint(raw: string | undefined): string | null {
     if (!raw) return null;
@@ -163,21 +173,31 @@ export class CompanionVcpRuntime implements CompanionMemoryRuntime {
     if (!identity) { identity = 'opaque-endpoint-' + randomUUID(); this.sensitiveEndpoints.set(key, identity); }
     return identity;
   }
+  private governanceEndpoint(raw: string | undefined): string | null {
+    if (!raw) return null;
+    try {
+      const url = new URL(raw);
+      url.username = ''; url.password = ''; url.search = ''; url.hash = '';
+      return url.toString();
+    } catch { return 'unparseable-endpoint'; }
+  }
   private async generationDescription(input: CompanionGenerationSelection) {
     const selection = this.snapshot(input), core = await this.embedding();
     const semantic = { adapter: 'owner-generation-v1', apiFormat: selection.config.apiFormat, model: selection.config.model,
       endpoint: this.semanticEndpoint(selection.config.baseUrl), generation: this.options.generationProfile ?? null };
     const profileKey = core.profileKey + ':owner-generation-v1-' + digest(JSON.stringify(semantic)).slice(0, 20);
+    const governanceKey = core.profileKey + ':owner-governance-v1-' + digest(JSON.stringify({ ...semantic,
+      endpoint: this.governanceEndpoint(selection.config.baseUrl) })).slice(0, 20);
     // Host callbacks enforce live files and real-request accounting. They must
     // survive routing, but are neither provider semantics nor transport keys.
     const config = selection.config;
-    return { ...core, selection, profileKey, connection: digest(JSON.stringify({ embedding: core.embedding,
+    return { ...core, selection, profileKey, governanceKey, connection: digest(JSON.stringify({ embedding: core.embedding,
       config: { apiFormat: config.apiFormat, model: config.model, baseUrl: config.baseUrl, apiKey: config.apiKey } })) };
   }
   async describeGeneration(input: CompanionGenerationSelection): Promise<CompanionGenerationDescriptor> {
     if (this.closed) throw new Error('记忆服务已关闭。');
     const description = await this.generationDescription(input);
-    return { ownerId: description.selection.ownerId, profileKey: description.profileKey };
+    return { ownerId: description.selection.ownerId, profileKey: description.profileKey, governanceKey: description.governanceKey };
   }
   private retireCore(entry: CoreEntry): Promise<void> { return entry.retiring ??= entry.client.close().then(() => {
     if (this.cores.get(entry.key) === entry) this.cores.delete(entry.key);
@@ -193,9 +213,9 @@ export class CompanionVcpRuntime implements CompanionMemoryRuntime {
       if ((this.ownerEpochs.get(ownerId) ?? 0) !== epoch) throw new Error('伙伴记忆已取消。'); if (Date.now() >= deadline) throw new Error('伙伴记忆连接池仍然繁忙。'); };
     return this.track(Promise.resolve().then(async () => {
       current(); const { embedding, profileKey } = await this.embedding();
-      // This trusted host-only purpose is used exclusively by ledger outbox
-      // remember/forget. It neither reads nor changes query prompt snapshots.
-      const coreStorage = () => scope.purpose === 'index' ? this.cleanupStorage(ownerId) : this.storage(ownerId);
+      // Trusted host maintenance only: outbox writes and idle physical prepare
+      // never read or change query prompts. A real recall refreshes them below.
+      const coreStorage = () => scope.purpose ? this.cleanupStorage(ownerId) : this.storage(ownerId);
       const storage: CoreEntry['storage'] = await coreStorage(); current();
       const connection = digest(JSON.stringify(embedding)), key = ownerId + ':' + profileKey;
       const existing = this.cores.get(key);
@@ -230,6 +250,8 @@ export class CompanionVcpRuntime implements CompanionMemoryRuntime {
     }));
   }
   private retireEntry(entry: GenerationEntry): Promise<void> {
+    for (const binding of entry.lifecycles.values()) binding.active = false;
+    entry.lifecycles.clear();
     return entry.retiring ??= (async () => {
       const results = await Promise.allSettled([entry.dispose(), entry.client.close()]);
       const failure = results.find(result => result.status === 'rejected');
@@ -237,10 +259,11 @@ export class CompanionVcpRuntime implements CompanionMemoryRuntime {
       if (this.generations.get(entry.key) === entry) this.generations.delete(entry.key);
     })();
   }
-  private leaseEntry(entry: GenerationEntry): CompanionGenerationLease {
+  private leaseEntry(entry: GenerationEntry, lifecycle: CompanionModelConfig['providerLifecycle']): CompanionGenerationLease {
     entry.references++; entry.used = Date.now(); let released = false;
-    return { ownerId: entry.ownerId, profileKey: entry.profileKey, connectionEpoch: entry.connectionEpoch, client: entry.client,
-      release: async () => { if (released) return; released = true; entry.references--; entry.used = Date.now(); } };
+    const dispatchToken = randomUUID(), binding = { lifecycle, active: true }; entry.lifecycles.set(dispatchToken, binding);
+    return { ownerId: entry.ownerId, profileKey: entry.profileKey, connectionEpoch: entry.connectionEpoch, client: entry.client, dispatchToken,
+      release: async () => { if (released) return; released = true; binding.active = false; entry.lifecycles.delete(dispatchToken); entry.references--; entry.used = Date.now(); } };
   }
   acquireGeneration(input: CompanionGenerationSelection & { signal?: AbortSignal }): Promise<CompanionGenerationLease> {
     if (this.generationAdmissions.size >= this.maxPendingAdmissions) return Promise.reject(this.capacityError());
@@ -257,7 +280,7 @@ export class CompanionVcpRuntime implements CompanionMemoryRuntime {
       // routes join the exclusive admission tail; their writer exclusion is
       // unchanged, including retirement and outstanding old leases.
       if (existing && !existing.retiring && existing.connection === description.connection && existing.storage.indexRoot === storage.indexRoot && !this.ownerPurges.has(selection.ownerId)) {
-        existing.client.setOwnerPrompts(storage.ownerPrompts); existing.storage = storage; return this.leaseEntry(existing);
+        existing.client.setOwnerPrompts(storage.ownerPrompts); existing.storage = storage; return this.leaseEntry(existing, selection.config.providerLifecycle);
       }
       const queued = this.generationTail.then(async () => {
         while (this.ownerPurges.has(selection.ownerId)) { current(); await delay(); }
@@ -279,7 +302,20 @@ export class CompanionVcpRuntime implements CompanionMemoryRuntime {
           }
           current();
           if (!this.options.resolveGenerationPlugins) throw new Error('伙伴生成路由未配置。');
-          const route = await this.options.resolveGenerationPlugins({ ...selection, profileKey: description.profileKey });
+          const lifecycles: GenerationEntry['lifecycles'] = new Map();
+          const routedConfig: CompanionModelConfig = { ...selection.config, providerLifecycle: undefined, resolveNativeLifecycle: token => {
+            if (!token) {
+              if ([...lifecycles.values()].some(binding => binding.lifecycle)) throw new Error('原生处理缺少本次作业的准确派发凭证。');
+              return undefined;
+            }
+            const binding = lifecycles.get(token);
+            if (!binding?.active) throw new Error('原生处理的派发凭证已释放或失效。');
+            return { beforeDispatch: async () => {
+              if (!binding.active || lifecycles.get(token) !== binding) throw new Error('原生处理的派发凭证已释放或失效。');
+              return await binding.lifecycle?.beforeDispatch() ?? (async () => undefined);
+            } };
+          } };
+          const route = await this.options.resolveGenerationPlugins({ ownerId: selection.ownerId, config: Object.freeze(routedConfig), profileKey: description.profileKey });
           try {
             current();
             const client = new VcpMemoryClient({ dataRoot: path.join(storage.indexRoot, 'generation', digest(description.profileKey)),
@@ -288,11 +324,11 @@ export class CompanionVcpRuntime implements CompanionMemoryRuntime {
               vendorRoot: this.options.vendorRoot, workerPath: this.options.workerPath, embedding: description.embedding,
               plugins: { ...route.plugins, ownerPrompts: storage.ownerPrompts }, semanticProfileKey: description.profileKey, processBroker: this.broker, launch: this.options.launch, maxOpenScopes: 4 });
             entry = { key, ownerId: selection.ownerId, profileKey: description.profileKey, connection: description.connection,
-              connectionEpoch: ++this.connectionEpoch, client, references: 0, used: Date.now(), dispose: route.dispose, storage };
+              connectionEpoch: ++this.connectionEpoch, client, references: 0, used: Date.now(), dispose: route.dispose, storage, lifecycles };
             this.generations.set(key, entry);
           } catch (error) { await route.dispose(); throw error; }
         }
-        current(); entry.client.setOwnerPrompts(storage.ownerPrompts); entry.storage = storage; return this.leaseEntry(entry);
+        current(); entry.client.setOwnerPrompts(storage.ownerPrompts); entry.storage = storage; return this.leaseEntry(entry, selection.config.providerLifecycle);
       });
       this.generationTail = queued.catch(() => undefined); return queued;
     });

@@ -232,14 +232,22 @@ describe('authoritative continuous subjective perception', () => {
     expect(f.store.request({ type: 'life-rule.list', companionId: 'alice' }).lifeOccurrences!.find(value => value.id === claimed.id)).toMatchObject({ status: 'cancelled', result: expect.stringContaining('实际散步0分钟') });
   });
 
-  it('clears reset knowledge in bounded cleanup and starts the restored companion with fresh local awareness', async () => {
+  it('retires old knowledge in bounded cleanup and gives an explicitly created new identity fresh local awareness', async () => {
     const f = fixture([{ x: 18, y: 26 }, { x: 20, y: 26 }]); expect(knowledge(f.filename).visibleObjectIds).toContain('park_bench');
-    const job = f.store.request({ type: 'companion.reset', id: 'alice', scope: 'all' }).reset!;
-    f.store.request({ type: 'companion.reset.cleanup', id: 'alice', jobId: job.id });
-    for (let step = 0; step < 1000 && f.store.request({ type: 'companion.reset.status', id: 'alice' }).reset!.status !== 'completed'; step++) await f.store.advanceReset();
-    expect(f.store.request({ type: 'companion.reset.status', id: 'alice' }).reset!.status).toBe('completed');
+    const job = f.store.request({ type: 'companion.retire', id: 'alice', scope: 'all' }).reset!;
+    f.store.request({ type: 'companion.retire.cleanup', id: 'alice', jobId: job.id });
+    for (let step = 0; step < 1000 && f.store.request({ type: 'companion.retire.status', id: 'alice' }).reset!.status !== 'completed'; step++) await f.store.advanceReset();
+    expect(f.store.request({ type: 'companion.retire.status', id: 'alice' }).reset!.status).toBe('completed');
     expect(records(f.filename).some(row => row.companion_id === 'alice')).toBe(false);
-    const fresh = observe(f).perception!; expect(fresh.sceneId).toBe('home_alice'); expect(fresh.objects.some(object => object.id === 'park_bench')).toBe(false);
+    expect(() => f.store.openPrivate('alice')).toThrow('伙伴不存在或已移除');
+    expect(() => observe(f)).toThrow();
+    const peerBefore = records(f.filename).find(row => row.companion_id === 'bob');
+    const owner = f.store.createCompanion({ name: 'New Alice', description: '', persona: '认真观察周围', model: '', avatar: 'sister', proactive: false });
+    expect(owner.id).not.toBe('alice'); f.store.setCompanionActive(owner.id, true);
+    const freshScope = { companionId: owner.id, conversationId: f.store.openPrivate(owner.id).id };
+    const fresh = f.store.request({ type: 'world.observe', ...freshScope }).world!.perception!;
+    expect(records(f.filename).find(row => row.companion_id === 'bob')).toEqual(peerBefore);
+    expect(fresh.sceneId).toBe('home_' + owner.id); expect(fresh.objects.some(object => object.id === 'park_bench')).toBe(false);
     expect(fresh.people.some(person => person.companionId === 'bob')).toBe(false);
   });
 });

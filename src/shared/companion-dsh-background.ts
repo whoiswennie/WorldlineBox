@@ -1,13 +1,15 @@
 import { z } from 'zod';
 
 const id = z.string().regex(/^[a-zA-Z0-9_-]{1,100}$/);
+export const companionDshReasonSchema = z.string().trim().min(1).max(2000).optional().describe('可选的主脑协调理由，仅作说明，不会改变任务目标或扩大权限。');
+const reason = companionDshReasonSchema;
 export const companionDshControlSchema = z.discriminatedUnion('operation', [
-  z.strictObject({ operation: z.literal('status'), actionIds: z.array(id).min(1).max(4), after: z.number().int().nonnegative().default(0) }),
+  z.strictObject({ operation: z.literal('status'), actionIds: z.array(id).min(1).max(4), after: z.number().int().nonnegative().default(0), reason }),
   z.strictObject({ operation: z.literal('wait'), actionIds: z.array(id).min(1).max(4), after: z.number().int().nonnegative().default(0),
-    timeoutMs: z.number().int().min(1000).max(600000).default(600000) }),
+    timeoutMs: z.number().int().min(1000).max(600000).default(600000), reason }),
   z.strictObject({ operation: z.literal('send'), actionId: id, message: z.string().trim().min(1).max(16000),
-    mode: z.enum(['steer', 'queue']).default('steer') }),
-  z.strictObject({ operation: z.literal('cancel'), actionId: id }),
+    mode: z.enum(['steer', 'queue']).default('steer'), reason }),
+  z.strictObject({ operation: z.literal('cancel'), actionId: id, reason }),
 ]);
 export type CompanionDshControl = z.infer<typeof companionDshControlSchema>;
 export const companionDshMailSchema = z.strictObject({ sequence: z.number().int().positive(), actionId: id,

@@ -1,10 +1,11 @@
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { CompanionsStore, type CompanionSeed } from '../../src/companions/store';
 import type { CompanionLearningGrant, CompanionLearningJob } from '../../src/shared/companion-learning';
+import type { CompanionJobDisposition } from '../../src/shared/companion-job-control';
 
 const roots: string[] = [], stores = new Set<CompanionsStore>();
 beforeEach(() => { vi.useFakeTimers({ toFake: ['Date'] }); vi.setSystemTime('2026-10-22T10:00:00Z'); });
@@ -20,6 +21,7 @@ function fixture() {
   return { root, file, seeds, store, grant, run, claim };
 }
 function commit(store: CompanionsStore, job: CompanionLearningJob, content = '原文提出先核对出处，再记录有条件的结论。', extra: { offset?: number; nextOffset?: number; more?: boolean } = {}) {
+  store.request({ type: 'learning.begin', id: job.id, leaseToken: job.leaseToken, assetId: 'asset-one', assetRevisionId: 'revision-one_hash', offset: job.offset });
   return store.request({ type: 'learning.commit', id: job.id, leaseToken: job.leaseToken, assetId: 'asset-one', assetRevisionId: 'revision-one_hash',
     assetName: '学习资料.md', offset: extra.offset ?? 0, content, more: extra.more ?? false, nextOffset: extra.nextOffset });
 }
@@ -51,7 +53,7 @@ it('registers the actual host read as asset_read evidence and a selective captur
   const capture = f.store.request({ type: 'memory.jobs.claim', companionId: 'alice' }).memoryJob!;
   expect(capture.sourceMessageIds).toEqual([message.id]);
   const note = f.store.request({ type: 'memory.jobs.complete', id: capture.id, leaseToken: capture.leaseToken,
-    notes: [{ diaryName: '资料', content, tags: ['出处核验'], sourceMessageIds: [message.id], evidence: [{ sourceMessageId: message.id, quote: content }] }] }).memories![0]!;
+    notes: [{ artifactKind: 'knowledge', diaryName: '资料', content, tags: ['出处核验'], sourceMessageIds: [message.id], evidence: [{ sourceMessageId: message.id, quote: content }] }] }).memories![0]!;
   expect(note.sources[0]).toMatchObject({ sourceType: 'asset_read', messageId: message.id, conversationId: 'world_alice' });
   const bobGrant = f.grant('bob'); f.run(bobGrant); const bobReceipt = commit(f.store, f.claim()).learning!.reads[0]!;
   f.store.request({ type: 'learning.revoke', companionId: 'alice', id: grant.id, expectedRevision: grant.revision });
@@ -97,7 +99,8 @@ it('restores only a fresh lease after restart, keeps the cursor and never duplic
   commit(reopened, resumed, 'def', { offset: 3 });
   expect(reopened.request({ type: 'learning.status', companionId: 'alice' }).learning!.reads).toHaveLength(2);
   reopened.request({ type: 'learning.run', companionId: 'alice', id: grant.id, expectedRevision: grant.revision });
-  const rescan = reopened.request({ type: 'learning.claim', excludedOwners: [] }).learningJob!; commit(reopened, rescan, 'abc');
+  const rescan = reopened.request({ type: 'learning.claim', excludedOwners: [] }).learningJob!;
+  expect(reopened.request({ type: 'learning.begin', id: rescan.id, leaseToken: rescan.leaseToken, assetId: 'asset-one', assetRevisionId: 'revision-one_hash', offset: 0 }).jobDisposition?.state).toBe('completed');
   expect(reopened.request({ type: 'learning.status', companionId: 'alice' }).learning!.reads).toHaveLength(2);
 });
 
@@ -152,4 +155,42 @@ it('ends a prior-process reading pose and requires a fresh grant lease after res
   expect(fresh.id).toBe(old.id); expect(fresh.leaseToken).not.toBe(old.leaseToken);
   expect(reopened.request({ ...begin, workId: 'new_process_reading', learningLeaseToken: fresh.leaseToken }).worldWork!.kind).toBe('learning');
   expect(() => commit(reopened, old)).toThrow(/取消|过期/u);
+});
+
+it('holds the actual failed material version and allows the next good file without broad run or old controls cancelling it', () => {
+  const f = fixture(), grant = f.grant(); f.run(grant); let material: CompanionJobDisposition | undefined;
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    const job = f.claim();
+    material = f.store.request({ type: 'learning.begin', id: job.id, leaseToken: job.leaseToken, assetId: 'bad-asset', assetRevisionId: 'bad-revision', offset: 0 }).jobDisposition!;
+    f.store.request({ type: 'learning.defer', id: job.id, leaseToken: job.leaseToken, error: 'BAD_MATERIAL_SECRET', failureKind: 'processing', retryAfterMs: 1000, continueAfterAsset: true });
+    vi.setSystemTime(Date.now() + 1001);
+  }
+  const inspect = () => f.store.request({ type: 'jobs.inspect', ownerId: 'alice', kind: 'learning', id: material!.id }).jobDisposition!;
+  const parked = inspect(); expect(parked).toMatchObject({ state: 'parked', failureCount: 3, cycleFailureCount: 3, attemptCount: 3, assetId: 'bad-asset', assetRevisionId: 'bad-revision' });
+  f.run(grant); expect(inspect()).toEqual(parked);
+  const next = f.claim();
+  expect(f.store.request({ type: 'learning.begin', id: next.id, leaseToken: next.leaseToken, assetId: 'good-asset', assetRevisionId: 'good-revision', offset: 0 }).jobDisposition?.state).toBe('running');
+  const abandoned = f.store.request({ type: 'jobs.control', ownerId: 'alice', kind: 'learning', id: parked.id, inputVersion: parked.inputVersion,
+    expectedRevision: parked.revision, operationId: randomUUID(), action: 'abandon' }).jobDisposition!;
+  expect(abandoned).toMatchObject({ state: 'abandoned', failureCount: 3 });
+  // A control for the old asset must not revoke the currently running good
+  // file merely because both use the same reading grant.
+  const result = f.store.request({ type: 'learning.commit', id: next.id, leaseToken: next.leaseToken, assetId: 'good-asset', assetRevisionId: 'good-revision', assetName: '真正新资料.md', offset: 0, content: '实际完整读到的新资料。', more: false });
+  expect(result.learning?.reads).toHaveLength(1); expect(result.learning?.reads[0]?.assetId).toBe('good-asset');
+  expect(f.store.request({ type: 'jobs.page', ownerId: 'alice', kind: 'learning', states: ['abandoned'], limit: 50 }).jobPage?.items).toEqual([abandoned]);
+  const currentGrant = f.store.request({ type: 'learning.status', companionId: 'alice' }).learning!.grants[0]!;
+  f.store.request({ type: 'learning.revoke', companionId: 'alice', id: grant.id, expectedRevision: currentGrant.revision });
+  const revoked = inspect(); expect(revoked).not.toHaveProperty('lastError');
+  expect(revoked).toMatchObject({ state: 'abandoned', failureCount: 3, cycleFailureCount: 3, attemptCount: 3, assetId: parked.assetId, assetRevisionId: parked.assetRevisionId });
+  expect(revoked.inputVersion).toBe(abandoned.inputVersion); expect(revoked.revision).toBeGreaterThan(abandoned.revision);
+  expect(() => f.store.request({ type: 'jobs.control', ownerId: 'alice', kind: 'learning', id: revoked.id, inputVersion: revoked.inputVersion,
+    expectedRevision: revoked.revision, operationId: randomUUID(), action: 'resume' })).toThrow('已经终结');
+});
+
+it('rejects a skipped begin offset and makes a duplicate begin on the same lease idempotent', () => {
+  const f = fixture(), grant = f.grant(); f.run(grant); const job = f.claim();
+  const begin = { type: 'learning.begin' as const, id: job.id, leaseToken: job.leaseToken, assetId: 'asset', assetRevisionId: 'revision', offset: 0 };
+  expect(() => f.store.request({ ...begin, offset: 9 })).toThrow('顺序');
+  const first = f.store.request(begin).jobDisposition!;
+  expect(f.store.request(begin).jobDisposition).toEqual(first); expect(first.attemptCount).toBe(1);
 });

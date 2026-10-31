@@ -1,6 +1,7 @@
-import { useEffect, useRef, useSyncExternalStore } from 'react';
+import { useEffect, useRef, useState, useSyncExternalStore } from 'react';
 import type { CompanionAttachment } from '../../shared/companions';
 import { Icon } from '../Icons';
+import { companionAttachmentCoverSource } from './companion-attachment-presentation';
 
 // One actual media element, moved between an inline card and the app-level
 // dock. Switching routes never replaces its decoder or playback position.
@@ -24,12 +25,13 @@ export function stopCompanionMedia(scope?: { ownerId: string; conversationIds: R
   if (scope && current.ownerId !== scope.ownerId && !scope.conversationIds.has(current.conversationId ?? '')) return;
   current.element.pause(); current.element.removeAttribute('src'); current.element.load(); current.element.remove(); current = undefined; notify();
 }
+export function stopCompanionMediaAttachments(ids: ReadonlySet<string>) { if (current && ids.has(current.attachment.id)) stopCompanionMedia(); }
 export function playCompanionMedia(attachment: CompanionAttachment, scope?: { ownerId?: string; conversationId?: string }) {
   if (current?.attachment.id !== attachment.id) {
     stopCompanionMedia();
     const element = document.createElement(attachment.mime.startsWith('video/') ? 'video' : 'audio');
     element.controls = true; element.preload = 'metadata'; element.setAttribute('aria-label', '播放' + (attachment.mime.startsWith('video/') ? '视频：' : '音频：') + attachment.name);
-    if (element instanceof HTMLVideoElement) element.playsInline = true;
+    if (element instanceof HTMLVideoElement) { element.playsInline = true; element.poster = companionAttachmentCoverSource(attachment); }
     element.src = attachment.url || `worldlinebox-companion://attachment/${encodeURIComponent(attachment.id)}`;
     current = { attachment, ...scope, element, inline: false, failed: false };
     element.addEventListener('error', () => { if (current?.element === element) { current = { ...current, failed: true }; notify(); } });
@@ -39,12 +41,14 @@ export function playCompanionMedia(attachment: CompanionAttachment, scope?: { ow
 }
 export function CompanionInlineMedia({ attachment, ownerId, conversationId }: { attachment: CompanionAttachment; ownerId?: string; conversationId?: string }) {
   const playback = useSyncExternalStore(subscribe, snapshot), anchor = useRef<HTMLDivElement>(null);
+  const [failedPoster, setFailedPoster] = useState<string>();
+  const video = attachment.mime.startsWith('video/'), poster = companionAttachmentCoverSource(attachment);
   useEffect(() => {
     const target = anchor.current!; anchors.set(attachment.id, target); relocate();
     return () => { if (anchors.get(attachment.id) === target) anchors.delete(attachment.id); relocate(); };
   }, [attachment.id]);
   const selected = playback?.attachment.id === attachment.id;
-  return <><div ref={anchor} className="companions-media-surface" />{!selected && <button type="button" className="companions-media-play" aria-label={'播放：' + attachment.name} onClick={() => playCompanionMedia(attachment, { ownerId, conversationId })}><Icon name="play" size={20} />播放{attachment.mime.startsWith('audio/') ? '音频' : '视频'}</button>}{selected && playback.failed && <p role="status">此格式无法在内置播放器解码，请使用系统应用打开。</p>}</>;
+  return <><div ref={anchor} className="companions-media-surface" />{!selected && <button type="button" className={`companions-media-play${video && failedPoster !== poster ? ' has-poster' : ''}`} aria-label={'播放：' + attachment.name} onClick={() => playCompanionMedia(attachment, { ownerId, conversationId })}>{video && failedPoster !== poster && <img loading="lazy" decoding="async" className="companions-media-poster" src={poster} alt="" onError={() => setFailedPoster(poster)} />}<span><Icon name="play" size={20} />播放{video ? '视频' : '音频'}</span></button>}{selected && playback.failed && <p role="status">此格式无法在内置播放器解码，请使用系统应用打开。</p>}</>;
 }
 export function CompanionMediaPlayer() {
   const playback = useSyncExternalStore(subscribe, snapshot), target = useRef<HTMLDivElement>(null);

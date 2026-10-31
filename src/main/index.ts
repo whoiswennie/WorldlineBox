@@ -4,7 +4,7 @@ import { isCurrentDocumentReload } from "./renderer-navigation";
 import { DEFAULT_GLOBAL_LLM_CONFIG, resolveStoredLlmConfig } from "../shared/llm";
 import path from "node:path";
 import { CompanionWorkspaceStore, type CompanionWorkspaceSelection } from './companions/workspace';
-import { COMPANION_WORKSPACE_CHANNEL, companionWorkspaceRequestSchema, type CompanionWorkspaceLibrary } from '../shared/companion-workspace';
+import { COMPANION_WORKSPACE_CHANNEL, companionWorkspaceRequestSchema, type CompanionWorkspaceLibrary, type CompanionWorkspaceResponse } from '../shared/companion-workspace';
 import type { CompanionMemoryDocumentCommand } from '../shared/companion-memory-documents';
 import type { CompanionLearningWorkspaceCommand } from '../shared/companion-learning';
 import { companionLearningAssets } from './companions/learning-assets';
@@ -19,6 +19,7 @@ import type { LauncherNetwork } from './dsh/launcher-network';
 import { forkNetworkUtility } from './network-utility-process';
 import { APPLICATION_NETWORK_REQUEST } from '../shared/application-network';
 import type { CompanionService } from './companions/service';
+import { CompanionExecutionPausedError } from './companions/execution-pause';
 import { CompanionWorldWindowManager } from './companions/world-windows';
 import type { MusicService } from './music/service';
 import type { CaptureToolsService } from './capture-tools/service';
@@ -654,6 +655,7 @@ let browserService: Pick<BrowserService, 'shutdown' | 'closeLibrary' | 'captureV
 let captureToolsService: CaptureToolsService | undefined;
 let musicService: MusicService | undefined;
 let companionService: CompanionService | undefined;
+let companionRecoveryOperation: { key: string; promise: Promise<CompanionWorkspaceResponse> } | undefined;
 let creatingCompanionService: Promise<CompanionService> | undefined;
 let companionWorldWindows: CompanionWorldWindowManager | undefined;
 const mainProcessSessionId = randomUUID();
@@ -680,13 +682,16 @@ async function prepareBundledEmbedding(): Promise<void> {
 }
 
 function globalEmbedding(): GlobalEmbeddingService {
-  return globalEmbeddingService ??= new GlobalEmbeddingService({
+  if (globalEmbeddingService) return globalEmbeddingService;
+  globalEmbeddingService = new GlobalEmbeddingService({
     userDataPath: app.getPath('userData'),
     bundleDirectory: path.join(app.isPackaged ? process.resourcesPath : path.join(app.getAppPath(), 'resources'), 'embedding-models'),
     ...(process.platform === 'win32' ? { koffiPath: createRequire(path.join(app.getAppPath(), 'package.json')).resolve('koffi') } : {}),
     ensureDeviceCapability: signal => embeddingDevice().ensureSupported(signal),
     devicePreference: () => embeddingDevice().snapshot(),
   });
+  globalEmbeddingService.subscribeInvalidation(() => companionService?.embeddingChanged());
+  return globalEmbeddingService;
 }
 
 function embeddingDevice(): EmbeddingDeviceCapabilityService {
@@ -3863,7 +3868,7 @@ async function handleLibraryRequest(
       // vector requests wait for this same check instead of reopening a model.
       void embeddingDevice().test({ force: request.force, beforeTest: async () => {
         await Promise.all([globalEmbeddingService?.invalidate(), embeddingTestIndex?.close(), embeddingHttpIndex?.close()]);
-      } }).catch(error => logger?.error('embedding.device.test', error));
+      } }).then(() => companionService?.embeddingChanged()).catch(error => logger?.error('embedding.device.test', error));
       return { ok: true, type: 'embedding.device.status', capability: embeddingDevice().snapshot() };
     }
     if (request.type === 'embedding.index.status.request' || request.type === 'embedding.search.request' || request.type === 'embedding.similar.request') await prepareBundledEmbedding();
@@ -4979,8 +4984,9 @@ async function startApplication(): Promise<void> {
     return promise;
   };
   const ensureCompanionService = (): Promise<CompanionService> => {
-    if (applicationClosing) return Promise.reject(new Error('应用正在关闭。'));
-    if (changingCompanionWorkspace) return Promise.reject(new Error('正在切换伙伴资产库，请稍后重试。'));
+    if (applicationClosing) return Promise.reject(new CompanionExecutionPausedError('应用正在关闭。'));
+    if (companionRecoveryOperation) return Promise.reject(new CompanionExecutionPausedError('伙伴资产库正在备份或恢复，执行暂时停止；请等待该操作完成。'));
+    if (changingCompanionWorkspace) return Promise.reject(new CompanionExecutionPausedError('正在切换伙伴资产库，请稍后重试。'));
     if (companionService) return Promise.resolve(companionService);
     return creatingCompanionService ??= (async () => {
       const activationStarted = performance.now();
@@ -4997,8 +5003,10 @@ async function startApplication(): Promise<void> {
       if (applicationClosing) throw new Error('应用正在关闭。');
       let workspaceCompanionService: CompanionService | undefined;
       companionService = workspaceCompanionService = new CompanionService({
+        getFfmpeg: () => resolveHostMediaBinaries()?.ffmpegPath,
         onTiming: timing => timing.operation.startsWith('reset.')
           ? logger?.info('companions.reset.step', 'Companion reset step updated.', timing)
+          : timing.operation.startsWith('shutdown.') ? logger?.info('companions.shutdown.step', 'Companion shutdown phase updated.', timing)
           : logger?.info('companions.context.slow', 'Companion preparation or source validation exceeded 500 ms.', timing),
         vcpMemoryVendorRoot: app.isPackaged ? path.join(process.resourcesPath, 'vcp-memory') : path.join(app.getAppPath(), 'vendor', 'vcp-memory'),
         purgeMemoryAssets: async owner => {
@@ -5031,6 +5039,7 @@ async function startApplication(): Promise<void> {
           vendorRoot: app.isPackaged ? path.join(process.resourcesPath, 'vcp-memory') : path.join(app.getAppPath(), 'vendor', 'vcp-memory'),
           workerPath: app.isPackaged ? path.join(process.resourcesPath, 'vcp-memory-host', 'worker.cjs') : path.join(app.getAppPath(), 'src', 'main', 'vcp-memory', 'worker.cjs'),
           resolveEmbedding: vcpEmbeddingConfiguration,
+          prepareEmbedding: signal => globalEmbedding().prepare({ signal }),
           generationProfile: COMPANION_TEXT_GENERATION_PROFILE,
           resolveGenerationPlugins: async input => {
             const config = Object.freeze({ ...input.config });
@@ -5039,14 +5048,17 @@ async function startApplication(): Promise<void> {
               semanticProfile: { ownerId: input.ownerId, profileKey: input.profileKey, generation: COMPANION_TEXT_GENERATION_PROFILE },
               credential: config.apiKey, generate: async (context, signal, work) => {
                 await workspaceCompanionService?.validateAssetsForModel(input.ownerId);
-                const { generateCompanionText } = await import('./companions/model');
-                return generateCompanionText(context, { ...config, ownerId: input.ownerId, workPriority: work?.priority ?? 'foreground', accountingPurpose: work?.nativePrompt ? 'timeline' : 'other',
-                  resolveAssetContext: (context, kind) => workspaceCompanionService!.prepareModelAssetContext(input.ownerId, context, kind, work?.nativePrompt) }, signal,
+                const { generateCompanionText, companionNativeProviderLifecycle } = await import('./companions/model');
+                return generateCompanionText(context, workspaceCompanionService!.bindModelTransport(input.ownerId, { ...config, ownerId: input.ownerId, workPriority: work?.priority ?? 'foreground', requestPurpose: work?.nativePrompt ? 'timeline' : 'other',
+                  providerLifecycle: companionNativeProviderLifecycle(config, work?.nativeDispatchToken),
+                  resolveAssetContext: (context, kind) => workspaceCompanionService!.prepareModelAssetContext(input.ownerId, context, kind, work?.nativePrompt,
+                    work?.nativePrompt ? work.nativePrompt.kind === 'timeline' ? 'native_timeline' : 'native_summary' : 'vcp_focus_guidance') }), signal,
                   { fetchFn: (input, init) => net.fetch(input instanceof URL ? input.toString() : input, { ...init, credentials: 'omit' }), timeoutMs: 120000 });
               } });
             return { plugins: { chat: route.chat }, dispose: route.dispose };
           } }),
         userData: app.getPath('userData'), dataRoot: workspace.dataRoot, memoryLibraryRoot: workspace.memoryRoot,
+        libraryPath: workspace.libraryPath, libraryId: workspace.libraryId,
         workerPath: path.join(__dirname, 'companion_worker.js'), appPath: app.getAppPath(),
         window: () => mainWindow, hasConfig: () => loadAiConfig().hasKey,
         getConfig: () => {
@@ -5068,7 +5080,51 @@ async function startApplication(): Promise<void> {
     if (!parsed.success) return { ok: false, error: '伙伴资产库请求格式不正确。' };
     const command = parsed.data;
     const operation = workspaceTail.then(async () => {
-      if (command.type === 'companion.assets.read' || command.type === 'companion.assets.prompt.save' || command.type === 'companion.assets.profile.save') return (await ensureCompanionService()).manageCompanionAssets(command);
+      if (command.type === 'recovery.choose') {
+        const fixturePath = process.env.WORLDLINEBOX_E2E === '1' ? process.env[command.kind === 'package'
+          ? 'WORLDLINEBOX_E2E_RECOVERY_PACKAGE' : 'WORLDLINEBOX_E2E_RECOVERY_DESTINATION'] : undefined;
+        const selected = fixturePath ? { canceled: false, filePaths: [fixturePath] } : await dialog.showOpenDialog(mainWindow!, {
+          title: command.kind === 'package' ? '选择新协议伙伴备份包目录' : '选择伙伴备份的保存位置',
+          buttonLabel: command.kind === 'package' ? '核对备份包' : '保存到这里',
+          properties: command.kind === 'package' ? ['openDirectory'] : ['openDirectory', 'createDirectory'],
+        });
+        return selected.canceled || !selected.filePaths[0] ? { ok: true, cancelled: true } : { ok: true, recoveryPath: selected.filePaths[0] };
+      }
+      if (command.type === 'recovery.backup.create' || command.type === 'recovery.package.inspect' || command.type === 'recovery.restore') {
+        const selected = await companionWorkspace.current();
+        if (!selected) throw new Error('请先选择要核对或恢复的伙伴资产库。');
+        if (command.type !== 'recovery.package.inspect' && command.libraryId !== selected.libraryId) throw new Error('伙伴资产库已变化，请重新核对本次备份或恢复的目标。');
+        const { executeCompanionRecovery } = await import('./companions/recovery');
+        const worker = path.join(__dirname, 'companion_worker.js');
+        if (command.type === 'recovery.package.inspect') return executeCompanionRecovery(worker, selected, command);
+        const key = JSON.stringify([selected.libraryId, command]);
+        if (companionRecoveryOperation) {
+          if (companionRecoveryOperation.key === key) return companionRecoveryOperation.promise;
+          throw new Error('已有备份或恢复操作正在进行，请保留原操作标识等待核对。');
+        }
+        if (changingCompanionWorkspace) throw new Error('资产库正在切换，不能同时备份或恢复。');
+        const recovery = (async () => {
+          const initialized = await creatingCompanionService?.catch(() => undefined);
+          companionWorldWindows?.closeAll();
+          const previous = companionService ?? initialized;
+          companionService = undefined; creatingCompanionService = undefined;
+          await previous?.shutdown();
+          return executeCompanionRecovery(worker, selected, command);
+        })();
+        companionRecoveryOperation = { key, promise: recovery };
+        try { return await recovery; }
+        finally {
+          if (companionRecoveryOperation?.promise === recovery) companionRecoveryOperation = undefined;
+          mainWindow?.webContents.send('worldlinebox:companions-changed');
+        }
+      }
+      if (companionRecoveryOperation && (command.type === 'select' || command.type === 'choose')) throw new Error('请等待当前备份或恢复操作完成后再切换伙伴资产库。');
+      if (command.type === 'companion.assets.read') return (await ensureCompanionService()).manageCompanionAssets(command);
+      if (command.type === 'growth.releases.read') return (await ensureCompanionService()).manageGrowthReleases(command);
+      if (command.type === 'growth.jobs.read') return (await ensureCompanionService()).manageGrowthJobs(command);
+      if (command.type === 'jobs.inspect' || command.type === 'jobs.control' || command.type === 'jobs.page') return (await ensureCompanionService()).manageJobs(command);
+      if (command.type === 'growth.goals.read' || command.type === 'growth.goals.propose' || command.type === 'growth.goal.status') return (await ensureCompanionService()).manageGrowthGoals(command);
+      if (command.type === 'cognition.context.list' || command.type === 'cognition.context.read') return (await ensureCompanionService()).manageContextSnapshots(command);
       if (command.type === 'companion.assets.location') {
         await (await ensureCompanionService()).manageCompanionAssets({ type: 'companion.assets.read', companionId: command.companionId });
         const selected = await companionWorkspace.current();
@@ -5079,7 +5135,6 @@ async function startApplication(): Promise<void> {
         if (!folder) throw new Error('伙伴实例尚未映射到资产管理。');
         return { ok: true, assetLocation: { libraryId: selected.libraryId, libraryPath: selected.libraryPath, linkedFolderId: folder.linkedFolderId, relativePath: command.companionId } };
       }
-      if (command.type === 'model.resources.read' || command.type === 'model.resources.save') return (await ensureCompanionService()).manageModelResources(command);
       if (command.type.startsWith('memory.learning.')) return (await ensureCompanionService()).manageLearningSources(command as CompanionLearningWorkspaceCommand);
       if (command.type.startsWith('memory.documents.')) {
         const started = performance.now();
@@ -5090,7 +5145,9 @@ async function startApplication(): Promise<void> {
         }
       }
       const selectedWorkspace = command.type === 'status' ? await companionWorkspace.current() : undefined;
-      if (selectedWorkspace) await ensureCompanionLibrary(selectedWorkspace);
+      // A locator read must not open/import the asset library before the
+      // companion UI can mount. Actual data access and explicit selection
+      // already admit the library through ensureCompanionLibrary below.
       const list = await workerClient?.request({ type: 'library.list' });
       const libraries: CompanionWorkspaceLibrary[] = list?.ok && list.type === 'library.list' ? list.libraries.filter(library => !library.readOnly) : [];
       if (command.type === 'status') return { ok: true, selected: selectedWorkspace, libraries };
@@ -5113,6 +5170,7 @@ async function startApplication(): Promise<void> {
         publishLifecycle({ type: 'library.opened', library: { libraryId: library.libraryId, displayName: library.displayName, displayPath: library.libraryPath } });
       }
       if (!library) throw new Error('资产库尚未打开，请重新选择。');
+      if (companionRecoveryOperation) throw new Error('备份或恢复正在进行，尚不能切换伙伴资产库。');
       changingCompanionWorkspace = true;
       try {
         const current = await companionWorkspace.current().catch(() => undefined);
@@ -5142,7 +5200,10 @@ async function startApplication(): Promise<void> {
   ipcMain.handle(COMPANIONS_CHANNEL, async (event, input: unknown) => {
     if (!mainWindow || mainWindow.isDestroyed() || event.sender !== mainWindow.webContents || event.senderFrame !== mainWindow.webContents.mainFrame) return { ok: false, error: '无权访问伙伴服务。' };
     try { return await (await ensureCompanionService()).handleRendererRequest(event, input); }
-    catch (error) { logger?.error('companions.initialization', error); return { ok: false, error: '伙伴服务无法初始化，请查看诊断日志。' }; }
+    catch (error) {
+      if (error instanceof CompanionExecutionPausedError) return { ok: false, error: error.message, executionPaused: true };
+      logger?.error('companions.initialization', error); return { ok: false, error: '伙伴服务无法初始化，请查看诊断日志。' };
+    }
   });
   try {
     companionWorldWindows = new CompanionWorldWindowManager({
@@ -7847,7 +7908,7 @@ if (!hasSingleInstanceLock) {
     criticalConfirmationWindowManager = undefined;
     criticalConfirmationBroker?.dispose();
     criticalConfirmationBroker = undefined;
-    if (quitAfterShutdown || (!workerClient && !embeddingTestIndex && !embeddingHttpIndex && !globalEmbeddingService && !embeddingDeviceCapability && !vcpEmbeddingGateway && !browserService && !captureToolsService && !dshLauncher && !musicService && !companionService && !creatingCompanionService && !closeGlobalNetwork)) return;
+    if (quitAfterShutdown || (!workerClient && !embeddingTestIndex && !embeddingHttpIndex && !globalEmbeddingService && !embeddingDeviceCapability && !vcpEmbeddingGateway && !browserService && !captureToolsService && !dshLauncher && !musicService && !companionService && !creatingCompanionService && !companionRecoveryOperation && !closeGlobalNetwork)) return;
     event.preventDefault();
     if (applicationShutdownPromise) return;
 
@@ -7875,10 +7936,11 @@ if (!hasSingleInstanceLock) {
         vcpEmbeddingGateway?.close(),
         vcpChatGateway?.close(),
         embeddingDeviceCapability?.close(),
+        companionRecoveryOperation?.promise,
       ]);
       for (const [index, result] of results.entries()) {
         if (result.status !== "rejected") continue;
-        const source = ["automation.mcp.close", "embedding.local-index.close", "embedding.http-index.close", "browser.shutdown", "dsh.shutdown", "music.flush", "companion.shutdown", "capture-tools.shutdown", "embedding.global.close", "embedding.gateway.close", "vcp.chat.close", "embedding.device.close"][index]
+        const source = ["automation.mcp.close", "embedding.local-index.close", "embedding.http-index.close", "browser.shutdown", "dsh.shutdown", "music.flush", "companion.shutdown", "capture-tools.shutdown", "embedding.global.close", "embedding.gateway.close", "vcp.chat.close", "embedding.device.close", "companion.recovery"][index]
           ?? "application.shutdown.close";
         logger?.error(source, result.reason, { reason: "application-quit" });
       }

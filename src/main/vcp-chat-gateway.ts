@@ -4,7 +4,7 @@ import type { VcpMemoryPluginConfiguration } from './vcp-memory/contracts';
 import { validateCompanionNativeMemoryPrompt, type CompanionNativeMemoryPrompt } from '../shared/companion-native-memory-prompt';
 
 type Generate = (context: { system: string; user: string }, signal: AbortSignal,
-  work?: { ownerId?: string; priority: 'foreground' | 'background'; nativePrompt?: CompanionNativeMemoryPrompt }) => Promise<string>;
+  work?: { ownerId?: string; priority: 'foreground' | 'background'; nativePrompt?: CompanionNativeMemoryPrompt; nativeDispatchToken?: string }) => Promise<string>;
 type OwnerRoute = { ownerId: string; token: string; generate: Generate; active: Set<AbortController> };
 
 /** Converts VCP's internal chat call to the application's global provider, with no credential copy. */
@@ -81,12 +81,14 @@ export class VcpChatGateway {
           const nativeValue = body && typeof body === 'object' && 'nativePrompt' in body ? body.nativePrompt : undefined;
           if (nativeValue !== undefined && (!route || !system)) throw new Error('Native prompt metadata requires an authenticated owner timeline request.');
           const nativePrompt = nativeValue !== undefined ? validateCompanionNativeMemoryPrompt(nativeValue, route!.ownerId, String(system!.content)) : undefined;
+          const nativeDispatchToken = request.headers['x-worldlinebox-native-dispatch'];
+          if (nativeDispatchToken !== undefined && (!route || typeof nativeDispatchToken !== 'string' || !/^[a-f0-9-]{36}$/u.test(nativeDispatchToken))) throw new Error('Invalid native dispatch capability.');
           controller.signal.throwIfAborted();
           if (route && this.routes.get(route.token) !== route) throw new Error('Owner route was retired.');
           // AIMemo's prepared user template is opaque transport input. The
           // owner's live asset resolver supplies its current system guidance.
           const content = await generate({ system: typeof system?.content === 'string' ? system.content : '', user: user.content }, controller.signal,
-            { ownerId: route?.ownerId, priority: system ? 'background' : 'foreground', ...(nativePrompt ? { nativePrompt } : {}) });
+            { ownerId: route?.ownerId, priority: system ? 'background' : 'foreground', ...(nativePrompt ? { nativePrompt } : {}), ...(nativeDispatchToken ? { nativeDispatchToken } : {}) });
           response.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify({ choices: [{ message: { role: 'assistant', content } }] }));
         } catch {
           if (!response.headersSent) response.writeHead(503, { 'content-type': 'application/json' });

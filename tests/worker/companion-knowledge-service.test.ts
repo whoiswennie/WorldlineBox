@@ -40,7 +40,12 @@ it('uses actual owner sources/full memory bodies, enforces sequence/source filte
   const bridge = new CompanionKnowledgeService({ request: async command => store.request(command), runtime, blocked: () => blocked });
   try {
     const source = store.appendMessage({ conversationId: scope.conversationId, authorId: 'user', content: 'AUTHORITATIVE_FULL_BODY_CANARY\n' + 'Actual material sentence.\n'.repeat(1400) });
-    const note = store.request({ type: 'memory.record', ...scope, candidate: { content: source.content, tags: ['资料'], diaryName: 'SHORT_TITLE_ONLY', sourceMessageIds: [source.id], evidence: [{ sourceMessageId: source.id, quote: 'AUTHORITATIVE_FULL_BODY_CANARY' }] } }).memories![0]!;
+    const note = store.request({ type: 'memory.record', ...scope, candidate: { artifactKind: 'knowledge', content: source.content, tags: ['资料'], diaryName: 'SHORT_TITLE_ONLY', sourceMessageIds: [source.id], evidence: [{ sourceMessageId: source.id, quote: 'AUTHORITATIVE_FULL_BODY_CANARY' }] } }).memories![0]!;
+    const episode = store.request({ type: 'memory.record', ...scope, candidate: { artifactKind: 'episode_memory', content: '这次讨论中提到了这份资料，记录的是一次讨论经历。', diaryName: '资料',
+      sourceMessageIds: [source.id], evidence: [{ sourceMessageId: source.id, quote: 'AUTHORITATIVE_FULL_BODY_CANARY' }] } }).memories![0]!;
+    const beforeDenied = inputs.length;
+    await expect(bridge.execute({ type: 'memory.knowledge', ...scope, operation: 'ingest', sourceType: 'memory', sourceId: episode.id })).rejects.toThrow('不是知识或方法');
+    expect(inputs).toHaveLength(beforeDenied);
     await expect(bridge.execute({ type: 'memory.knowledge', ...scope, operation: 'ingest', sourceType: 'memory', sourceId: note.id, text: 'forged' } as never)).rejects.toThrow();
     const receipt = await bridge.execute({ type: 'memory.knowledge', ...scope, operation: 'ingest', sourceType: 'memory', sourceId: note.id });
     expect(receipt.indexed).toBe(true); expect(receipt.result?.sourceVersion).toBe(String(note.version));

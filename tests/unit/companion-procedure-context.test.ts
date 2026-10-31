@@ -5,13 +5,14 @@ import { captureCompanionExecutionReadset, verifyCompanionExecutionReadset } fro
 import { projectCompanionMemoryContextForModel } from '../../src/main/companions/memory-model-context';
 import type { CompanionStorageCommand, CompanionStorageResponse } from '../../src/shared/companion-storage';
 import type { CompanionMemoryProcedureContext } from '../../src/shared/companion-procedure';
+import { companionMemoryTypeScope } from '../../src/main/companions/memory-type-scope';
 
 const scope = { companionId: 'alice', conversationId: 'private_alice' }, sourceText = 'actual objectively checked task outcome';
 const checksum = createHash('sha256').update(sourceText).digest('hex');
 const status: CompanionMemoryProcedureContext = { memoryId: 'method_one', contentRevision: 1, state: 'validated', successes: 1, failures: 0,
   evidence: [{ actionId: 'HOST_PRIVATE_ACTION', sourceMessageId: 'HOST_PRIVATE_OUTCOME', conversationId: scope.conversationId, checksum,
     contentRevision: 1, outcome: 'passed', recordedAt: '2026-10-26T12:00:00Z' }] };
-const context = () => ({ text: '原生聚焦只返回方法正文。', revision: 'body_snapshot', profileKey: 'test_profile', proceduralStatus: [structuredClone(status)],
+const context = () => ({ text: '原生聚焦只返回方法正文。', revision: 'body_snapshot', profileKey: 'test_profile', typeScope: companionMemoryTypeScope('procedures'), proceduralStatus: [structuredClone(status)],
   evidence: { capturedAt: '2026-10-26T12:01:00Z', corpusHash: 'body_hash', snapshotPolicy: 'task_passive_v1', dependencyCoverage: 'complete',
     dependencies: [{ id: 'method_one', version: 1 }], frozenDependencies: [{ id: 'method_one', sources: [{ id: 'original_method_source', conversationId: scope.conversationId, checksum: 'a'.repeat(64) }] }] } });
 
@@ -38,6 +39,7 @@ it('captures practice outcomes in addition to frozen method bodies and rejects t
 it('rechecks exact trial receipts before accepting a frozen context and fails closed on revoked practice', async () => {
   let withdrawn = false, receiptValid = true;
   const request = vi.fn(async (command: CompanionStorageCommand): Promise<CompanionStorageResponse> => {
+    if (command.type === 'memory.records.filter') return { ok: true, memories: [{ id: 'method_one', artifactKind: 'procedure', companionId: scope.companionId, version: 1 }] as CompanionStorageResponse['memories'] };
     if (command.type === 'memory.frozen.valid') return { ok: true, memoryFrozenValid: true };
     if (command.type === 'memory.sources.filter') return { ok: true, memorySources: withdrawn ? []
       : [{ id: 'HOST_PRIVATE_OUTCOME', conversationId: scope.conversationId, content: sourceText }] as CompanionStorageResponse['memorySources'] };

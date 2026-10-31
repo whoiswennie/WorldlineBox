@@ -70,7 +70,7 @@ async function fixture(vectorDimension = 4) {
   const conversation = store.openPrivate('alpha');
   const source = store.appendMessage({ conversationId: conversation.id, authorId: 'user', content: 'alpha borrowed the blue umbrella.', replyDirective: 'none' });
   const note = store.request({ type: 'memory.record', companionId: 'alpha', conversationId: conversation.id,
-    candidate: { content: source.content, tags: ['alpha', 'umbrella'], occurredAt: '2026-10-14T01:00:00Z',
+    candidate: { artifactKind: 'episode_memory' as const, content: source.content, tags: ['alpha', 'umbrella'], occurredAt: '2026-10-14T01:00:00Z',
       sourceMessageIds: [source.id], evidence: [{ sourceMessageId: source.id, quote: source.content }] } }).memories![0]!;
   const outbox = store.request({ type: 'memory.outbox.claim' }).memoryOutbox!;
   store.request({ type: 'memory.outbox.complete', id: outbox.id, leaseToken: outbox.leaseToken, indexed: true });
@@ -96,7 +96,7 @@ async function fixture(vectorDimension = 4) {
       configFor: async () => ({ ...config, model: controls.modelConfigured ? config.model : '' }), runtime: native.runtime,
       runtimeAvailability: () => { controls.deviceStatusReads++; return { state: controls.deviceState, message: '实际检测快照的公开原因。' }; },
       fetchFn: fetch, busy: () => controls.foregroundBusy, changed, report,
-      onTimelineArtifacts: async (scope, artifacts, stillValid) => { published({ scope, artifacts, stillValid }); } });
+      onTimelineArtifacts: async (scope, artifacts, stillValid) => { published({ scope, artifacts, stillValid, validAtPublication: await stillValid() }); } });
     services.push(service); return { service, client, changed, report, published, profileKey, runtime: native.runtime };
   }
   return { root, store, note, conversation, cacheRoot, controls, pending, createService };
@@ -107,7 +107,7 @@ describe('original monthly VCP continuity behind the main memory service', () =>
     const f = await fixture(16), scope = { companionId: 'alpha', conversationId: f.conversation.id };
     for (const [day, fact] of [['2026-09-12', '雨伞在九月借出，仍未归还。'], ['2026-09-18', '保留九月雨伞的归还条件。'], ['2026-10-19', '十月仍须先核对借还记录。']]) {
       const raw = f.store.appendMessage({ conversationId: f.conversation.id, authorId: 'user', content: day + ' ' + fact, replyDirective: 'none' });
-      f.store.request({ type: 'memory.record', ...scope, candidate: { content: raw.content, occurredAt: day + 'T10:00:00Z', tags: ['雨伞'],
+      f.store.request({ type: 'memory.record', ...scope, candidate: { artifactKind: 'episode_memory' as const, content: raw.content, occurredAt: day + 'T10:00:00Z', tags: ['雨伞'],
         sourceMessageIds: [raw.id], evidence: [{ sourceMessageId: raw.id, quote: raw.content }] } });
     }
     for (;;) { const job = f.store.request({ type: 'memory.outbox.claim', companionId: 'alpha' }).memoryOutbox; if (!job) break;
@@ -149,7 +149,7 @@ describe('original monthly VCP continuity behind the main memory service', () =>
       // turn genuine October evidence changes into a reusable old digest.
       const original = after.notes.find(note => note.id === f.note.id)!;
       const changedSource = f.store.appendMessage({ conversationId: f.conversation.id, authorId: 'user', content: '2026-10-14 alpha confirmed the umbrella was returned, correcting the earlier unfinished status.', replyDirective: 'none' });
-      f.store.request({ type: 'memory.revise', ...scope, id: original.id, expectedVersion: original.version, candidate: { content: changedSource.content,
+      f.store.request({ type: 'memory.revise', ...scope, id: original.id, expectedVersion: original.version, candidate: { artifactKind: 'episode_memory' as const, content: changedSource.content,
         occurredAt: original.occurredAt, tags: original.tags, sourceMessageIds: [changedSource.id], evidence: [{ sourceMessageId: changedSource.id, quote: changedSource.content }] } });
       await service.drainDeliveries();
       const changed = f.store.request({ type: 'memory.snapshot', ...scope }).memorySnapshot!, changedView = { scopeId: 'actual_body_changed_control_view' };
@@ -234,22 +234,25 @@ describe('original monthly VCP continuity behind the main memory service', () =>
       sourceRevision: artifacts?.sourceRevision, startedAt: expect.any(String), updatedAt: expect.any(String) });
     expect(first.service.processingFor('another-owner')).toEqual([]);
     expect(first.published).toHaveBeenCalledWith(expect.objectContaining({ scope: { companionId: 'alpha', conversationId: conversation.id }, artifacts: expect.objectContaining({ sourceRevision: expect.any(String) }) }));
-    expect(await first.published.mock.calls[0]![0].stillValid()).toBe(true);
+    expect(first.published.mock.calls[0]![0].validAtPublication).toBe(true);
+    // A completed run no longer owns a publication lease. Its callback must
+    // not become a reusable authority after onTimelineArtifacts returns.
+    expect(await first.published.mock.calls[0]![0].stillValid()).toBe(false);
     await first.service.close();
     store.request({ type: 'memory.organize', companionId: 'alpha', conversationId: conversation.id, ids: [note.id], tags: ['annotated', 'umbrella'] });
     for (;;) {
       const outbox = store.request({ type: 'memory.outbox.claim' }).memoryOutbox; if (!outbox) break;
       store.request({ type: 'memory.outbox.complete', id: outbox.id, leaseToken: outbox.leaseToken, indexed: true });
     }
-    expect(store.request({ type: 'memory.snapshot', companionId: 'alpha', conversationId: conversation.id }).memorySnapshot?.semanticRevision).toBe(artifacts?.sourceRevision);
+    expect(store.request({ type: 'memory.snapshot', companionId: 'alpha', conversationId: conversation.id, contentKinds: ['episode_memory'] }).memorySnapshot?.semanticRevision).toBe(artifacts?.sourceRevision);
     const restarted = await createService();
     expect(restarted.service.processingFor('alpha')).toEqual([]);
     const replayed = await restarted.service.search({ companionId: 'alpha', conversationId: conversation.id, query: 'alpha umbrella' }, 'passive');
     expect(replayed.memoryContext?.text).toContain('umbrella');
-    expect(replayed.memoryContext?.text).toContain('TIMELINE_ONLY_VALIDATED_MONTH');
+    expect(replayed.memoryContext?.text).not.toContain('TIMELINE_ONLY_VALIDATED_MONTH');
     expect(replayed.memoryContext?.text).not.toContain('[[VCPTimeLine');
     expect(controls.focusCalls).toBe(1);
-    expect(controls.focusPrompts[0]).toContain('TIMELINE_ONLY_VALIDATED_MONTH');
+    expect(controls.focusPrompts[0]).not.toContain('TIMELINE_ONLY_VALIDATED_MONTH');
     const timeline = vi.spyOn(restarted.client, 'timeline');
     restarted.service.schedule(0);
     await vi.waitFor(() => expect(restarted.changed).toHaveBeenCalled(), { timeout: 20000 });
@@ -257,7 +260,7 @@ describe('original monthly VCP continuity behind the main memory service', () =>
     expect(controls.timelineCalls).toBe(2);
   });
 
-  it('does not reuse legacy brand-authored artifacts or an old owner name after a resident rename', async () => {
+  it('does not reuse legacy brand-authored artifacts and rejects identity changes through runtime configuration', async () => {
     const { createService, cacheRoot, controls, conversation, store, note } = await fixture();
     const identity = 'alpha:owner-v2', cache = new CompanionMemoryViewCache(cacheRoot);
     const revision = store.request({ type: 'memory.snapshot', companionId: 'alpha', conversationId: conversation.id }).memorySnapshot!.revision;
@@ -269,16 +272,20 @@ describe('original monthly VCP continuity behind the main memory service', () =>
     expect(imported).not.toHaveBeenCalled();
     expect(first.published.mock.calls[0]![0].artifacts.owner).toMatchObject({ companionId: 'alpha', name: 'Alpha', version: 2 });
     expect(JSON.stringify(first.published.mock.calls)).not.toContain('STALE_BRAND_OWNER');
+    await vi.waitFor(() => expect(first.service.processingFor('alpha')[0]?.status).toBe('completed'));
     await first.service.close();
     const owner = store.state().companions.find(role => role.id === 'alpha')!;
-    store.updateCompanion(owner.id, { ...owner, name: '小肥鱼' }, owner.revision);
-    const renamed = await createService(); renamed.service.schedule(0);
-    await vi.waitFor(() => expect(renamed.published).toHaveBeenCalled(), { timeout: 20000 });
-    const artifacts = renamed.published.mock.calls[0]![0].artifacts;
-    expect(artifacts.owner).toMatchObject({ companionId: 'alpha', name: '小肥鱼', agentName: '小肥鱼', version: 2 });
-    expect(artifacts.agents[0]?.agentName).toBe('小肥鱼');
-    expect(artifacts.agents[0]?.months[0]?.content).toContain('2026-10 小肥鱼时间线');
-    expect(controls.timelineCalls).toBe(4);
+    expect(() => store.updateCompanion(owner.id, { ...owner, name: '小肥鱼' }, owner.revision)).toThrow('身份与人格');
+    const renamed = await createService(); renamed.service.schedule = () => undefined;
+    const run = () => Reflect.apply(Reflect.get(CompanionMemoryService.prototype, 'runContinuity'), renamed.service,
+      [{ companionId: 'alpha', conversationId: conversation.id }, 0]);
+    const callsBeforeRestart = controls.timelineCalls; expect(await run()).toBe(false);
+    expect(renamed.published).not.toHaveBeenCalled(); expect(controls.timelineCalls).toBe(callsBeforeRestart);
+    const artifacts = await new CompanionMemoryViewCache(cacheRoot).loadArtifacts(identity, renamed.profileKey);
+    expect(artifacts?.owner).toMatchObject({ companionId: 'alpha', name: 'Alpha', agentName: 'Alpha', version: 2 });
+    expect(artifacts?.agents[0]?.agentName).toBe('Alpha');
+    expect(artifacts?.agents[0]?.months[0]?.content).toContain('2026-10 Alpha时间线');
+    expect(JSON.stringify(artifacts)).not.toContain('小肥鱼');
     const current = store.request({ type: 'memory.read', companionId: 'alpha', conversationId: conversation.id, id: note.id }).memoryRead!.memory;
     expect(current).toMatchObject({ id: note.id, version: note.version, content: note.content });
   });
@@ -291,12 +298,12 @@ describe('original monthly VCP continuity behind the main memory service', () =>
     expect(service.processingFor('alpha')[0]).toMatchObject({ kind: 'timeline', status: 'running', stage: '整理2026-10的月度时间线' });
     const front = await service.search({ companionId: 'alpha', conversationId: conversation.id, query: 'alpha umbrella' }, 'passive');
     expect(front.memoryPage?.items[0]?.memory.id).toBe(note.id);
-    const ownerProjection = path.join(root, 'runtime', '伙伴记忆', 'alpha', '.认知索引', 'generation');
+    const ownerProjection = path.join(root, 'runtime', '伙伴记忆', 'alpha', '.运行', '索引', 'generation');
     expect((await readdir(ownerProjection)).length).toBeGreaterThan(0);
     store.request({ type: 'memory.forget', companionId: 'alpha', conversationId: conversation.id, id: note.id });
     const interrupted = vi.spyOn(client, 'interruptScope'), purged = vi.spyOn(runtime, 'purgeOwner');
     await service.invalidate('alpha', [note.scopeId]);
-    expect(service.processingFor('alpha')[0]?.status).toBe('cancelled');
+    expect(service.processingFor('alpha')[0]?.status).toBe('stale');
     expect(interrupted).toHaveBeenCalled();
     expect(purged).toHaveBeenCalledWith('alpha', expect.objectContaining({ canonicalScopes: expect.arrayContaining([note.scopeId]) }));
     await expect(readdir(ownerProjection)).rejects.toMatchObject({ code: 'ENOENT' });
@@ -326,8 +333,8 @@ describe('original monthly VCP continuity behind the main memory service', () =>
       .toMatchObject({ id: note.id, version: note.version, content: note.content });
   });
 
-  it('retires a queued old revision when a newer source revision is actually retried', async () => {
-    const { createService, store, conversation, controls } = await fixture();
+  it('processes a newer independent source revision while retaining the earlier failed fixed input and original evidence', async () => {
+    const { createService, store, conversation, controls, note } = await fixture();
     const { service, client, published } = await createService();
     vi.spyOn(client, 'timeline').mockRejectedValueOnce(new Error('first revision failure')).mockRejectedValueOnce(new Error('new revision failure'));
     service.schedule(0);
@@ -335,20 +342,23 @@ describe('original monthly VCP continuity behind the main memory service', () =>
     const first = service.processingFor('alpha')[0]!;
     const source = store.appendMessage({ conversationId: conversation.id, authorId: 'user', content: 'The blue umbrella was returned to alpha.', replyDirective: 'none' });
     store.request({ type: 'memory.record', companionId: 'alpha', conversationId: conversation.id,
-      candidate: { content: source.content, tags: ['umbrella', 'returned'], occurredAt: '2026-10-14T02:00:00Z',
+      candidate: { artifactKind: 'episode_memory' as const, content: source.content, tags: ['umbrella', 'returned'], occurredAt: '2026-10-14T02:00:00Z',
         sourceMessageIds: [source.id], evidence: [{ sourceMessageId: source.id, quote: source.content }] } });
     expect(service.retryProcessingFor('alpha')).toBe(1);
     await vi.waitFor(() => {
       const jobs = service.processingFor('alpha');
       expect(jobs[0]).toMatchObject({ status: 'failed', sourceRevision: expect.any(String) });
       expect(jobs[0]!.sourceRevision).not.toBe(first.sourceRevision);
-      expect(jobs.find(job => job.id === first.id)?.status).toBe('stale');
+      expect(jobs[0]!.id).not.toBe(first.id);
+      expect(jobs.find(job => job.id === first.id)?.status).toBe('failed');
+      expect(store.request({ type: 'jobs.inspect', ownerId: 'alpha', kind: 'timeline', id: first.id }).jobDisposition).toMatchObject({ state: 'failed', failureCount: 1 });
     }, { timeout: 20000 });
-    expect(service.retryProcessingFor('alpha')).toBe(1);
+    expect(service.retryProcessingFor('alpha')).toBe(service.processingFor('alpha').filter(job => job.status === 'failed').length);
     await vi.waitFor(() => expect(published).toHaveBeenCalled(), { timeout: 20000 });
     const jobs = service.processingFor('alpha');
-    expect(jobs[0]?.status).toBe('completed'); expect(jobs.find(job => job.id === first.id)?.status).toBe('stale');
+    expect(jobs[0]?.status).toBe('completed'); expect(jobs.find(job => job.id === first.id)?.status).toBe('failed');
     expect(jobs.some(job => job.status === 'pending' || job.status === 'running')).toBe(false);
+    expect(store.getMessage(note.sources[0]!.messageId).content).toBe(note.content);
     expect(controls.timelineCalls).toBe(2);
   });
 

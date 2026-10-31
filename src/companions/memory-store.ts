@@ -1,8 +1,8 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { companionMemoryCandidateSchema, companionMemoryConsolidateSchema, companionMemorySearchSchema, companionMemoryForgetSchema, type CompanionMemoryCandidate, type CompanionMemoryJob, type CompanionMemorySearch, type CompanionMemoryPage, type CompanionMemoryWriteReadReferences } from '../shared/companion-memory';
+import { companionMemoryCandidateSchema, companionMemoryConsolidateSchema, companionMemorySearchSchema, companionMemoryForgetSchema, companionMemoryDescriptorSchema, type CompanionMemoryCandidate, type CompanionMemoryJob, type CompanionMemorySearch, type CompanionMemoryPage, type CompanionMemoryWriteReadReferences } from '../shared/companion-memory';
 import type { CompanionMemory, CompanionMessage } from '../shared/companions';
 import type { CompanionStorageCommand, CompanionStorageResponse, SaveCompanionMemory } from '../shared/companion-storage';
-import type { CompanionStateProposal } from '../shared/companion-state';
+import { companionStateProposalSchema, type CompanionStateProposal } from '../shared/companion-state';
 import type { CompanionConnection } from './store';
 import { CompanionSourceAccess, companionSourceChecksum, type CompanionSourceScope as Scope } from './source-access';
 import { initializeMemoryProcessingJournal, memoryProcessingStatus } from './memory-processing-store';
@@ -20,9 +20,13 @@ import { resolveCompanionMemoryPolicy, CompanionMemoryPolicyUnavailableError } f
 import { CompanionMemoryProcedureStore } from './memory-procedure-store';
 import { unverifiedCompanionMemoryProcedure, type CompanionMemoryProcedureValidation } from '../shared/companion-procedure';
 import { CompanionMemorySourceOutboxStore } from './memory-source-outbox';
-import { CompanionMemoryHistoryOutboxStore, retractCompanionMemoryHistorySources, forgetCompanionMemoryHistoryNote } from './memory-history-outbox';
+import { CompanionMemoryHistoryOutboxStore, retractCompanionMemoryHistorySources, retractCompanionMemoryHistoryChangedSource, forgetCompanionMemoryHistoryNote } from './memory-history-outbox';
+import { initializeCompanionMemoryWithdrawal, indexCompanionCaptureProposal, withdrawCompanionCaptureSources, stopCompanionWithdrawnNoteJobs } from './memory-withdrawal-store';
 import { CompanionMemoryProjectionStore } from './memory-projection-store';
 import { companionCaptureProposalSchema, type CompanionCaptureProposal } from '../shared/companion-memory';
+import { companionMemoryContentKinds, companionMemoryKinds, companionMemoryKindAllowed, type CompanionMemoryArtifactKind } from '../shared/companion-memory-scope';
+import { companionQueueJobAdapter, failCompanionQueueJob, initializeCompanionJobDisposition, type CompanionJobControlAdapter } from './job-control-store';
+import type { CompanionJobFailureKind } from '../shared/companion-job-control';
 type Row = Record<string, string | number | null>;
 type MemoryMetadata = Omit<CompanionMemory, 'content'>;
 type HostClassification = { consolidation?: true | 'source_version_graph'; automaticConsolidation?: true; sleepReflection?: true;
@@ -141,6 +145,7 @@ export class CompanionMemoryStore {
           try { const note = this.load(id); return note.companionId === owner && (note.version === version || this.ledger.versionRevision(id, version) === note.contentRevision)
             && this.visible(scope ?? this.sources.ownerScope(owner), note); } catch { return false; }
         }, (owner, ids) => { this.invalidateOwner(owner, { operation: 'source_revoke', eventId: 'source-block/' + randomUUID(), sourceMessageIds: [...ids] });
+          withdrawCompanionCaptureSources(this.db, owner, ids);
           retractCompanionMemoryHistorySources(this.db, owner, ids);
           this.sourceOutbox.retract(owner, ids); this.refreshProcedures(owner, ids); }); this.development = new CompanionCharacterDevelopmentStore(db, (scope, note) => this.visible(scope, note));
         this.historyOutbox = new CompanionMemoryHistoryOutboxStore(db, { ownerScope: owner => this.sources.ownerScope(owner),
@@ -171,7 +176,6 @@ export class CompanionMemoryStore {
       CREATE TABLE IF NOT EXISTS vcp_memory_notes(id TEXT PRIMARY KEY,companion_id TEXT NOT NULL REFERENCES companions(id),conversation_id TEXT NOT NULL,scope_id TEXT NOT NULL REFERENCES vcp_memory_scopes(scope_id),identity_key TEXT NOT NULL,data TEXT NOT NULL,UNIQUE(companion_id,identity_key));
       CREATE INDEX IF NOT EXISTS vcp_note_scope ON vcp_memory_notes(companion_id,conversation_id);
       CREATE INDEX IF NOT EXISTS vcp_note_live_owner ON vcp_memory_notes(companion_id,json_extract(data,'$.status'));
-      CREATE INDEX IF NOT EXISTS vcp_note_reset_pending ON vcp_memory_notes(companion_id,id) WHERE json_extract(data,'$.status') NOT IN('forgotten','invalid');
       CREATE TABLE IF NOT EXISTS vcp_note_sources(note_id TEXT NOT NULL REFERENCES vcp_memory_notes(id) ON DELETE CASCADE,message_id TEXT NOT NULL REFERENCES messages(id),revision INTEGER NOT NULL,checksum TEXT NOT NULL,PRIMARY KEY(note_id,message_id));
       CREATE INDEX IF NOT EXISTS vcp_note_source_message ON vcp_note_sources(message_id,note_id);
       CREATE TABLE IF NOT EXISTS vcp_note_source_history(note_id TEXT NOT NULL REFERENCES vcp_memory_notes(id) ON DELETE CASCADE,message_id TEXT NOT NULL REFERENCES messages(id),PRIMARY KEY(note_id,message_id));
@@ -190,7 +194,7 @@ export class CompanionMemoryStore {
       CREATE INDEX IF NOT EXISTS vcp_memory_outbox_owner_ordinal ON vcp_memory_outbox(companion_id,ordinal);
       CREATE INDEX IF NOT EXISTS vcp_memory_outbox_owner_ready ON vcp_memory_outbox(companion_id,status,next_attempt,ordinal);
       CREATE INDEX IF NOT EXISTS vcp_memory_outbox_owner_actionable ON vcp_memory_outbox(companion_id,ordinal)
-        WHERE status IN('pending','failed') AND attempts<8;
+        WHERE status IN('pending','failed');
       CREATE INDEX IF NOT EXISTS vcp_memory_outbox_scope_unsettled ON vcp_memory_outbox(scope_id,status)
         WHERE status NOT IN('done','stale','cancelled');
       CREATE TABLE IF NOT EXISTS companion_memory_delivery_owners(companion_id TEXT PRIMARY KEY,last_service INTEGER NOT NULL DEFAULT 0);
@@ -221,6 +225,9 @@ export class CompanionMemoryStore {
       END;
       CREATE TABLE IF NOT EXISTS vcp_operation_receipts(id TEXT PRIMARY KEY,companion_id TEXT NOT NULL,conversation_id TEXT NOT NULL,payload_hash TEXT NOT NULL,response TEXT NOT NULL);
     `);
+        initializeCompanionMemoryWithdrawal(this.db);
+        initializeCompanionJobDisposition(this.db, 'vcp_capture_jobs');
+        initializeCompanionJobDisposition(this.db, 'vcp_memory_outbox');
         if (!rows(this.db.prepare('PRAGMA table_info(vcp_capture_jobs)').all()).some(column => column.name === 'admission_deferred'))
             this.db.exec('ALTER TABLE vcp_capture_jobs ADD COLUMN admission_deferred INTEGER NOT NULL DEFAULT 0');
         this.ledger.initialize();
@@ -233,9 +240,6 @@ export class CompanionMemoryStore {
             this.db.prepare("INSERT OR REPLACE INTO metadata VALUES('vcp-management-totals-ready','1')").run();
         }).immediate();
         this.development.initialize();
-        // Retry only deliveries rejected by the old unescaped Tag wire format.
-        // The usual source/version authorization is still checked on claim.
-        this.db.prepare("UPDATE vcp_memory_outbox SET status='pending',attempts=0,next_attempt=0,error=NULL,lease_token=NULL,lease_until=NULL WHERE status='failed' AND error LIKE '%Tags must be individual names without separators%'").run();
         initializeMemoryProcessingJournal(this.db, ['capture', 'index']);
     }
     private scope(owner: string, conversationId: string): string {
@@ -333,7 +337,7 @@ export class CompanionMemoryStore {
           ||proof.checksum!==companionSourceChecksum(String(source.content))||JSON.stringify(payload.items?.[0])!==JSON.stringify(receipt)) throw Error('话题参与体验与实际事件不一致。');
         const scope={companionId,conversationId:worldRoom},tags=topicParticipationMemoryTags(receipt);
         if(this.sources.blockedTag(scope,tags,Number(source.sequence))||!this.sources.visible(scope,source)) return;
-        return this.record(scope,{content:topicParticipationMemoryContent(receipt),tags,diaryName:'活动体验',occurredAt:receipt.occurredAt,
+        return this.record(scope,{artifactKind:'episode_memory',content:topicParticipationMemoryContent(receipt),tags,diaryName:'活动体验',occurredAt:receipt.occurredAt,
           sourceMessageIds:[messageId],evidence:[{sourceMessageId:messageId,quote:String(source.content)}],metadata:{topicParticipation:receipt.id,topicId:receipt.topicId,participationAction:receipt.action,trust:receipt.trust}});
     }
     /** Host-only completed-world receipt; ordinary world_query observations remain opt-in. */
@@ -375,6 +379,8 @@ export class CompanionMemoryStore {
         if (Number(source.revision ?? 1) > 1) for (const observer of rows(this.db.prepare('SELECT companion_id FROM vcp_source_observers WHERE message_id=?').all(messageId))) {
             const owner = String(observer.companion_id);
             this.invalidateOwner(owner, { operation: 'source_revoke', eventId: 'source-revision/' + messageId + '/' + source.revision, sourceMessageIds: [messageId], conversationId: String(source.conversation_id) }); this.withdrawStateSources?.(owner, [messageId]);
+            withdrawCompanionCaptureSources(this.db, owner, [messageId], { revision: Number(source.revision), checksum });
+            retractCompanionMemoryHistoryChangedSource(this.db, owner, messageId, checksum);
             this.sourceOutbox.changedSource(owner, messageId);
             this.refreshProcedures(owner, [messageId]);
         }
@@ -477,7 +483,7 @@ export class CompanionMemoryStore {
               invalidNotes: note.status === 'invalid' ? changed : prior?.invalidNotes ?? [],
               ...(note.status === 'forgotten' ? { retiredNotes: changed } : prior?.retiredNotes ? { retiredNotes: prior.retiredNotes } : {}),
               causes: newCause ? [...(prior?.causes ?? []), cause] : prior!.causes, ...(job.status === 'running' ? { blockedLeaseToken: String(job.lease_token) } : {}) });
-            if (job.status !== 'running' && newCause) this.db.prepare(`UPDATE vcp_capture_jobs SET status='pending',attempts=0,next_attempt=0,error=NULL,
+            if (!['running', 'parked', 'abandoned'].includes(String(job.status)) && newCause) this.db.prepare(`UPDATE vcp_capture_jobs SET status='pending',next_attempt=0,error=NULL,
               lease_token=NULL,lease_until=NULL,completed_batch_id=NULL,output_note_versions=NULL WHERE id=?`).run(job.id);
         }
     }
@@ -488,7 +494,7 @@ export class CompanionMemoryStore {
             const retained = intent && this.liveReconsideration(job, intent);
             this.db.prepare(`UPDATE vcp_capture_jobs SET status=?,attempts=?,next_attempt=0,error=NULL,lease_token=NULL,lease_until=NULL,
               completed_batch_id=NULL,output_note_versions=NULL WHERE id=?`).run(intent && !retained ? 'done' : 'pending',
-              intent?.blockedLeaseToken === token ? 0 : Number(job.attempts), job.id);
+              Number(job.attempts), job.id);
             if (intent) this.saveReconsideration(job, retained ? { ...intent, blockedLeaseToken: undefined } : undefined);
         }
     }
@@ -522,7 +528,7 @@ export class CompanionMemoryStore {
                 if (intent && (intent.blockedLeaseToken === job.lease_token || !this.liveReconsideration(job, intent))) this.releaseSupersededCapture(String(job.lease_token));
             }
             this.db.prepare("UPDATE vcp_capture_jobs SET status='pending',lease_token=NULL,lease_until=NULL WHERE status='running' AND lease_until<=?").run(now);
-            const candidates = this.db.prepare(`SELECT j.* FROM vcp_capture_jobs j JOIN companions c ON c.id=j.companion_id WHERE j.status IN('pending','failed') AND j.next_attempt<=? AND j.attempts<8 AND c.deleted_at IS NULL AND json_extract(c.data,'$.active')=1 AND NOT EXISTS(SELECT 1 FROM companion_reset_jobs r WHERE r.companion_id=j.companion_id AND r.status!='completed') ${companionId ? 'AND j.companion_id=?' : ''} AND j.ordinal>? ORDER BY j.ordinal LIMIT 8`);
+            const candidates = this.db.prepare(`SELECT j.* FROM vcp_capture_jobs j JOIN companions c ON c.id=j.companion_id WHERE j.status IN('pending','failed') AND j.next_attempt<=? AND c.deleted_at IS NULL AND json_extract(c.data,'$.active')=1 AND NOT EXISTS(SELECT 1 FROM companion_reset_jobs r WHERE r.companion_id=j.companion_id AND r.status!='completed') ${companionId ? 'AND j.companion_id=?' : ''} AND j.ordinal>? ORDER BY j.ordinal LIMIT 8`);
             let found: Row | undefined, after = 0;
             for (;;) {
                 const page = rows(candidates.all(now, ...(companionId ? [companionId] : []), after));
@@ -533,7 +539,7 @@ export class CompanionMemoryStore {
                     if (!this.captureReady(job)) return false;
                     if (this.settleCaptureCoverage(job)) return false;
                     const episode = this.episodes.observe({ id: String(job.id), companion_id: String(job.companion_id), conversation_id: String(job.conversation_id), message_id: String(job.message_id) }, undefined, capture);
-                    return force || !!this.reconsideration(job) || this.episodes.due(episode, capture) <= now;
+                    return force || Number(job.failure_count ?? 0) > 0 || !!this.reconsideration(job) || this.episodes.due(episode, capture) <= now;
                 });
                 if (found || page.length < 8) break;
                 after = Number(page.at(-1)!.ordinal);
@@ -551,15 +557,17 @@ export class CompanionMemoryStore {
               ORDER BY j.source_sequence,j.ordinal LIMIT 12`).all(job.companion_id, job.conversation_id)))
                 this.episodes.observe({ id: String(pending.id), companion_id: String(pending.companion_id), conversation_id: String(pending.conversation_id), message_id: String(pending.message_id) }, undefined, capture);
             const episode = this.episodes.observe({ id: String(job.id), companion_id: String(job.companion_id), conversation_id: String(job.conversation_id), message_id: String(job.message_id) }, undefined, capture);
-            if (!force && !reconsidering && this.episodes.due(episode, capture) > now) return;
+            if (!force && !reconsidering && Number(job.failure_count ?? 0) === 0 && this.episodes.due(episode, capture) > now) return;
             // A historical extraction cannot replay state, while a fresh source
             // must retain its normal state processing. Never mix those batches.
             const cohort = this.db.prepare(`SELECT * FROM vcp_capture_jobs j WHERE companion_id=? AND conversation_id=? AND status IN('pending','failed')
-              AND next_attempt<=? AND attempts<8 AND EXISTS(SELECT 1 FROM metadata m WHERE m.key='vcp-capture-reconsideration/'||j.companion_id||'/'||j.id)=?
+              AND next_attempt<=? AND failure_count=0 AND EXISTS(SELECT 1 FROM metadata m WHERE m.key='vcp-capture-reconsideration/'||j.companion_id||'/'||j.id)=?
               AND id IN(SELECT job_id FROM companion_memory_episode_sources WHERE episode_id=?)
               AND id!=? AND (source_sequence>? OR source_sequence=? AND ordinal>?) ORDER BY source_sequence,ordinal LIMIT 12`);
             const batch = [job]; let sequence = -1, ordinal = 0;
-            while (batch.length < capture.batchSize) {
+            // After a cohort fails, retry each original event separately. One
+            // poisoned input cannot repeatedly fail its healthy neighbours.
+            while (batch.length < capture.batchSize && Number(job.failure_count ?? 0) === 0) {
                 const page = rows(cohort.all(job.companion_id, job.conversation_id, now, Number(reconsidering), episode.id, job.id, sequence, sequence, ordinal));
                 for (const source of page) if (batch.length < capture.batchSize && this.captureReady(source) && !this.settleCaptureCoverage(source)) batch.push(source);
                 if (page.length < 12) break;
@@ -569,7 +577,8 @@ export class CompanionMemoryStore {
             this.episodes.seal(episode.id);
             for (const source of batch)
                 this.db.prepare("UPDATE vcp_capture_jobs SET status='running',lease_token=?,lease_until=?,attempts=attempts+1,admission_deferred=0 WHERE id=?").run(token, now + leaseMs, source.id);
-            return { id: String(job.id), companionId: String(job.companion_id), conversationId: String(job.conversation_id), episodeId: episode.id, sourceMessageIds: batch.map(source => String(source.message_id)), throughSequence: Math.max(...batch.map(source => Number(source.through_sequence))), leaseToken: token, attempts: Number(job.attempts) + 1, sourceChecksums: Object.fromEntries(batch.map(source => [String(source.message_id), String(source.source_checksum)])), sourceRevisions: Object.fromEntries(batch.map(source => [String(source.message_id), Number(source.source_revision)])) };
+            return { id: String(job.id), companionId: String(job.companion_id), conversationId: String(job.conversation_id), episodeId: episode.id,
+              sourceJobIds: batch.map(source => String(source.id)), sourceMessageIds: batch.map(source => String(source.message_id)), throughSequence: Math.max(...batch.map(source => Number(source.through_sequence))), leaseToken: token, attempts: Number(job.attempts) + 1, sourceChecksums: Object.fromEntries(batch.map(source => [String(source.message_id), String(source.source_checksum)])), sourceRevisions: Object.fromEntries(batch.map(source => [String(source.message_id), Number(source.source_revision)])) };
         }).immediate();
     }
     captureEligibility(companionId: string, now = Date.now()): { eligible: number; nextAt?: string } { return this.episodes.eligibility(companionId, now); }
@@ -674,7 +683,7 @@ export class CompanionMemoryStore {
                 const skipped = expectedStateRevision !== undefined && (current?.revision ?? 1) !== expectedStateRevision;
                 if (skipped) this.db.prepare('INSERT OR REPLACE INTO metadata(key,value) VALUES(?,?)').run('vcp-capture-state-skipped/' + id,
                   JSON.stringify({ reason: 'state_revision_changed', expectedRevision: expectedStateRevision, currentRevision: current?.revision ?? 1, at: stamp() }));
-                else if (result.length && !(stateProposal.appraisals ?? []).some(appraisal => appraisal.target === 'user'))
+                else if (result.length)
                     this.integrateState(scope, result, stateProposal, { eventKey: 'capture:' + id, kind: 'capture', expectedRevision: expectedStateRevision });
                 else this.applyState?.(scope, stateProposal);
             }
@@ -685,19 +694,21 @@ export class CompanionMemoryStore {
             return result;
         }).immediate();
     }
-    fail(id: string, token: string, error: string, retryAfterMs = 30000, preserveProposal = false): void { this.db.transaction(() => {
-        this.leased('vcp_capture_jobs', id, token);
+    fail(id: string, token: string, error: string, retryAfterMs = 30000, preserveProposal = false, failureKind: CompanionJobFailureKind = 'processing'): void { this.db.transaction(() => {
+        if (!this.db.prepare("SELECT 1 FROM vcp_capture_jobs WHERE id=? AND status='running' AND lease_token=? AND lease_until>?").get(id, token, Date.now())) return;
         const batch = rows(this.db.prepare("SELECT * FROM vcp_capture_jobs WHERE status='running' AND lease_token=?").all(token));
         if (batch.some(job => this.reconsideration(job)?.blockedLeaseToken === token)) { this.releaseSupersededCapture(token); return; }
         if (!preserveProposal) this.db.prepare('DELETE FROM companion_capture_proposals WHERE job_id=?').run(id);
-        this.db.prepare("UPDATE vcp_capture_jobs SET status='failed',error=?,next_attempt=?,lease_token=NULL,lease_until=NULL,admission_deferred=0 WHERE lease_token=?").run(error, Date.now() + retryAfterMs, token);
+        if (failureKind === 'processing') failCompanionQueueJob(this.db, 'vcp_capture_jobs', { leaseToken: token }, error, retryAfterMs);
+        else this.db.prepare("UPDATE vcp_capture_jobs SET status=?,error=?,next_attempt=?,lease_token=NULL,lease_until=NULL,admission_deferred=? WHERE status='running' AND lease_token=?")
+            .run(failureKind === 'waiting' ? 'pending' : failureKind, error, Date.now() + retryAfterMs, Number(failureKind === 'waiting'), token);
     }).immediate(); }
     /** Unsent host admission preserves the whole leased cohort and its debt. */
     defer(id: string, token: string, error: string, retryAfterMs = 30000): void { this.db.transaction(() => {
         this.leased('vcp_capture_jobs', id, token);
         const batch = rows(this.db.prepare("SELECT * FROM vcp_capture_jobs WHERE status='running' AND lease_token=?").all(token));
         if (batch.some(job => this.reconsideration(job)?.blockedLeaseToken === token)) { this.releaseSupersededCapture(token); return; }
-        this.db.prepare("UPDATE vcp_capture_jobs SET status='pending',attempts=MAX(0,attempts-1),error=?,next_attempt=?,lease_token=NULL,lease_until=NULL,admission_deferred=1 WHERE status='running' AND lease_token=?")
+        this.db.prepare("UPDATE vcp_capture_jobs SET status='pending',error=?,next_attempt=?,lease_token=NULL,lease_until=NULL,admission_deferred=1 WHERE status='running' AND lease_token=?")
             .run(error, Date.now() + retryAfterMs, token);
     }).immediate(); }
     retryAdmission(companionId?: string): void {
@@ -721,11 +732,23 @@ export class CompanionMemoryStore {
                 throw new Error('未发布日记提案的原始来源、权限或实际编码批次已经变化。');
             }
             if (!proposed) return;
+            for (const reference of proposed.readMemories) {
+                if (this.ledger.versionRevision(reference.id, reference.version) !== reference.contentRevision) {
+                    this.db.prepare('DELETE FROM companion_capture_proposals WHERE job_id=?').run(id);
+                    throw new Error('未发布日记提案读取的记忆版本已经撤回。');
+                }
+                try { this.readRevision(scope, reference.id, reference.contentRevision); }
+                catch {
+                    this.db.prepare('DELETE FROM companion_capture_proposals WHERE job_id=?').run(id);
+                    throw new Error('未发布日记提案读取的记忆正文或来源已经撤回。');
+                }
+            }
             if (input) {
                 const serialized = JSON.stringify(companionCaptureProposalSchema.parse(input));
                 if (Buffer.byteLength(serialized, 'utf8') > 1_048_576) throw new Error('未发布日记提案超过本轮持久检查点预算，来源尚未完成。');
                 this.db.prepare('INSERT INTO companion_capture_proposals(job_id,companion_id,data) VALUES(?,?,?) ON CONFLICT(job_id) DO UPDATE SET data=excluded.data')
                     .run(id, job.companion_id, serialized);
+                indexCompanionCaptureProposal(this.db, String(job.companion_id), id, proposed);
             }
             return proposed;
         }).immediate();
@@ -733,22 +756,27 @@ export class CompanionMemoryStore {
     /** Only committed, still-authorized VCP notes can substantiate a present integration event. */
     integrateState(scope: Scope, notes: readonly CompanionMemory[], proposal: CompanionStateProposal,
       event: Pick<CompanionMemoryStateIntegration, 'eventKey' | 'kind' | 'expectedRevision'>): void {
+        const normalized = companionStateProposalSchema.parse(proposal);
         if (!notes.length) throw new Error('记忆整合状态需要本次实际保存的新笔记。');
         const current = notes.map(note => { const actual = this.load(note.id); if (actual.version !== note.version || !this.visible(scope, actual)) throw new Error('整合所依赖的笔记已经变化。'); return actual; });
         const ids = [...new Set(proposal.sourceMessageIds)], sources = this.sources.filter(scope, ids);
         if (sources.length !== ids.length || ids.some(id => !current.some(note => note.sources.some(source => source.messageId === id)))
           || proposal.evidence.some(evidence => !ids.includes(evidence.sourceMessageId) || !sources.some(source => source.id === evidence.sourceMessageId && source.content.includes(evidence.quote)))
           || ids.some(id => !proposal.evidence.some(evidence => evidence.sourceMessageId === id))) throw new Error('整合状态缺少本次笔记的真实逐字来源。');
-        if ((proposal.appraisals ?? []).some(appraisal => appraisal.target === 'user')) throw new Error('记忆整合不能重放用户关系评价。');
-        if (this.applyIntegration) this.applyIntegration(scope, { ...event, reason: proposal.reason, expression: proposal.expression,
-          focus: proposal.focus, appraisals: proposal.appraisals ?? [], sourceMessageIds: ids,
+        if (this.applyIntegration) this.applyIntegration(scope, { ...event, reason: normalized.reason, expression: normalized.expression,
+          focus: normalized.focus, experience: normalized.experience, relationshipUpdates: normalized.relationshipUpdates ?? [], sourceMessageIds: ids,
           memoryVersions: current.map(note => ({ id: note.id, version: note.version })) });
         else if (event.kind === 'capture') this.applyState?.(scope, proposal);
     }
+    jobControlAdapter(kind: 'capture' | 'index' | 'source_files' | 'history_files'): CompanionJobControlAdapter {
+        if (kind === 'source_files') return this.sourceOutbox.jobControlAdapter();
+        if (kind === 'history_files') return this.historyOutbox.jobControlAdapter();
+        return companionQueueJobAdapter(this.db, kind === 'capture' ? 'vcp_capture_jobs' : 'vcp_memory_outbox');
+    }
     retry(companionId?: string): void { this.retryAdmission(companionId); for (const table of ['vcp_capture_jobs', 'vcp_memory_outbox'])
-        this.db.prepare(`UPDATE ${table} SET status='pending',attempts=0,next_attempt=0,error=NULL,lease_token=NULL,lease_until=NULL
-          WHERE (status='failed' OR status='pending' AND attempts>=8 OR status='running' AND attempts>=8 AND lease_until<=?)
-          ${companionId ? 'AND companion_id=?' : ''}`).run(Date.now(), ...(companionId ? [companionId] : [])); }
+        this.db.prepare(`UPDATE ${table} SET status='pending',next_attempt=0,lease_token=NULL,lease_until=NULL
+          WHERE status='failed' AND cycle_failure_count<3
+          ${companionId ? 'AND companion_id=?' : ''}`).run(...(companionId ? [companionId] : [])); }
     recordPrivateConsolidation(scope: Scope, candidate: CompanionMemoryCandidate, worldJobId: string, leaseToken: string): CompanionMemory | undefined {
         return this.db.transaction(() => {
             const found = this.db.prepare("SELECT data,lease_until FROM companion_world_jobs WHERE id=? AND companion_id=? AND kind='dream' AND status='running'").get(worldJobId, scope.companionId);
@@ -763,6 +791,11 @@ export class CompanionMemoryStore {
             const related = candidate.relatedMemoryIds ?? [];
             if (!related.length || related.some(id => !versions.has(id))) throw new Error('私人整理缺少本轮实际读取的记忆版本。');
             const seeds = related.map(id => this.load(id));
+            if (seeds.some(seed => !['episode_memory', 'knowledge', 'procedure'].includes(seed.artifactKind)))
+              throw new Error('真实反思只读取有原始来源的经历、知识或方法，不把旧自我认识、导航或梦作为独立经历。');
+            if (candidate.metadata?.dream === true ? candidate.artifactKind !== 'dream_fiction'
+              : !['self_understanding', 'knowledge', 'procedure'].includes(candidate.artifactKind))
+              throw new Error('反思、知识学习和虚构联想必须分别提交对应类型，不能生成新的亲历事实。');
             const ownerScope = this.sources.ownerScope(scope.companionId);
             if (seeds.some(seed => { const expected = versions.get(seed.id)!; return seed.companionId !== scope.companionId
               || (expected.contentRevision !== undefined ? seed.contentRevision !== expected.contentRevision : seed.version !== expected.version)
@@ -792,6 +825,8 @@ export class CompanionMemoryStore {
               || (expected.contentRevision !== undefined ? actual.contentRevision !== expected.contentRevision : note.version !== expected.version);
             })) throw new Error('自动整合只能使用本轮准确读取的真实种子版本。');
             const originals = plan.inputs.map(note => this.load(note.id)), ownerScope = this.sources.ownerScope(scope.companionId);
+            if (plan.candidate.artifactKind !== 'episode_memory' || originals.some(note => note.artifactKind !== 'episode_memory'))
+              throw new Error('普通事件整合只能处理经历；知识、方法和自我认识各自独立维护，梦和导航不得进入。');
             if (originals.some(note => note.procedure)) throw new Error('方法记忆保留独立的修订与实践验证，不参与自动摘要归档。');
             if (originals.some((note, index) => note.companionId !== scope.companionId || note.version !== plan.inputs[index]!.version
               || note.status !== 'indexed' || note.archivedAt || note.metadata?.dream || note.metadata?.simulation
@@ -825,6 +860,9 @@ export class CompanionMemoryStore {
       reconsideredRetiredNotes?: ReadonlyMap<string, number>): CompanionMemory | undefined {
         return this.db.transaction(() => {
             const draft = companionMemoryCandidateSchema.parse(normalizeCompanionCharacterDiary(input));
+            if (draft.selfDevelopment && draft.artifactKind !== 'self_understanding') throw new Error('本人认识只能发布为self_understanding类型。');
+            if (draft.procedure && draft.artifactKind !== 'procedure') throw new Error('方法提案只能发布为procedure类型，不能凭笔记本名称改变职责。');
+            if ((draft.metadata?.dream || draft.metadata?.simulation) && draft.artifactKind !== 'dream_fiction') throw new Error('虚构联想不能伪装为现实经历、知识或人格依据。');
             if (draft.encoding && draft.encoding.action !== 'create' && (!revision || revision.id !== draft.encoding.targetId || revision.expectedVersion !== draft.encoding.expectedVersion))
                 throw new Error('延续或纠正必须通过固定目标版本的编码提交。');
             // Free metadata is not an alternate host authority. Only the
@@ -869,10 +907,14 @@ export class CompanionMemoryStore {
             const previous = revision ? this.load(revision.id) : undefined;
             if (previous && (!this.visible(scope, previous) || previous.version !== revision!.expectedVersion || previous.sourceConversationId !== conversationId))
                 throw new Error('日记版本或可见域已变化，请重新读取。');
+            if (previous && previous.artifactKind !== draft.artifactKind) throw new Error('记忆修订不能改变内容类型，跨类型认识须另行正式提交。');
             if (previous && !hostClassification && typeof previous.metadata?.captureEpisodeId === 'string')
                 draft.metadata = { ...draft.metadata, captureEpisodeId: previous.metadata.captureEpisodeId };
             const dependencies = draft.relatedMemoryIds.map(id => this.load(id));
             if (dependencies.some(source => !this.visible(scope, source) || source.id === previous?.id)) throw new Error('整理来源不属于此伙伴当前可读的本人记忆。');
+            if (['episode_memory', 'knowledge', 'procedure'].includes(draft.artifactKind)
+              && dependencies.some(source => !['episode_memory', 'knowledge', 'procedure'].includes(source.artifactKind)))
+                throw new Error('虚构、导航和主观认识不能经依赖关系变成现实事实或已经验证的方法。');
             if (readMemories) for (const dependency of dependencies) {
                 const witnessed = readMemories.some(reference => reference.id === dependency.id
                     && (reference.version === undefined || this.ledger.versionRevision(reference.id, reference.version) === dependency.contentRevision)
@@ -882,7 +924,7 @@ export class CompanionMemoryStore {
             this.development.validate(scope, draft, available, dependencies, previous?.id);
             const method = draft.procedure ?? (previous?.procedure ? { applicability: previous.procedure.applicability, steps: previous.procedure.steps,
               limitations: previous.procedure.limitations, verification: previous.procedure.verification } : undefined);
-            const scopeId = this.scope(scope.companionId, conversationId), identity = hash([scopeId, draft.content, references.map(source => [source.messageId, source.revision, source.checksum]), draft.occurredAt ?? '', draft.relatedMemoryIds, ...(draft.selfDevelopment ? [draft.selfDevelopment] : []), method]);
+            const scopeId = this.scope(scope.companionId, conversationId), identity = hash([scopeId, draft.artifactKind, draft.content, references.map(source => [source.messageId, source.revision, source.checksum]), draft.occurredAt ?? '', draft.relatedMemoryIds, ...(draft.selfDevelopment ? [draft.selfDevelopment] : []), method]);
             const existing = !previous && this.db.prepare('SELECT data FROM vcp_memory_notes WHERE companion_id=? AND identity_key=?').get(scope.companionId, identity);
             let restored: CompanionMemory | undefined;
             if (existing) {
@@ -921,7 +963,7 @@ export class CompanionMemoryStore {
                     throw new Error('该日记来源已失效或已遗忘。');
                 restored = note;
             }
-            const note: CompanionMemory = { id: previous?.id ?? restored?.id ?? 'note_' + identity.slice(0, 48), companionId: scope.companionId, scopeId, content: draft.content, tags: draft.tags, occurredAt: draft.occurredAt ?? references.at(-1)?.worldCreatedAt ?? references.at(-1)?.createdAt, diaryName: draft.diaryName ?? '经历', metadata: { ...draft.metadata, ...(draft.selfDevelopment ? { characterDevelopment: draft.selfDevelopment } : {}), learnedEntranceSourceId: draft.learnedEntranceSourceId, sourceMessageIds: references.map(source => source.messageId) }, sourceMessageId: references[0]!.messageId, sourceConversationId: conversationId, sources: references, sourceSequence, createdAt: previous?.createdAt ?? restored?.createdAt ?? stamp(), updatedAt: stamp(), origin: references.some(source => source.authorId === 'user') ? 'user' : 'companion', status: 'queued', version: (previous?.version ?? restored?.version ?? 0) + 1, captureMethod };
+            const note: CompanionMemory = { id: previous?.id ?? restored?.id ?? 'note_' + identity.slice(0, 48), companionId: scope.companionId, scopeId, artifactKind: draft.artifactKind, content: draft.content, tags: draft.tags, occurredAt: draft.occurredAt ?? references.at(-1)?.worldCreatedAt ?? references.at(-1)?.createdAt, diaryName: draft.diaryName ?? previous?.diaryName ?? restored?.diaryName ?? '经历', metadata: { ...draft.metadata, ...(draft.selfDevelopment ? { characterDevelopment: draft.selfDevelopment } : {}), learnedEntranceSourceId: draft.learnedEntranceSourceId, sourceMessageIds: references.map(source => source.messageId) }, sourceMessageId: references[0]!.messageId, sourceConversationId: conversationId, sources: references, sourceSequence, createdAt: previous?.createdAt ?? restored?.createdAt ?? stamp(), updatedAt: stamp(), origin: references.some(source => source.authorId === 'user') ? 'user' : 'companion', status: 'queued', version: (previous?.version ?? restored?.version ?? 0) + 1, captureMethod };
             if (method) {
                 note.procedure = unverifiedCompanionMemoryProcedure(method);
                 if (previous?.procedure && previous.content === note.content && previous.occurredAt === note.occurredAt
@@ -964,6 +1006,18 @@ export class CompanionMemoryStore {
         this.db.transaction(() => {
             const note = this.load(id);
             if (['forgotten', 'invalid'].includes(note.status)) {
+                // An earlier source-only withdrawal may intentionally retain
+                // a lawful older version. A later explicit whole-note forget
+                // withdraws that history too, even though current is invalid.
+                if (status === 'forgotten' && !preserveHistorical) {
+                    forgetCompanionMemoryHistoryNote(this.db, note.companionId, note.id);
+                    stopCompanionWithdrawnNoteJobs(this.db, note.companionId, note.id);
+                    if (note.status !== 'forgotten') {
+                        note.status = 'forgotten'; note.version++; note.updatedAt = stamp(); note.content = '已遗忘的日记';
+                        note.tags = []; note.sources = []; delete note.metadata; delete note.diaryName; delete note.procedure; delete note.sourceMessageId;
+                        this.invalidateOwner(note.companionId); this.persist(note); this.enqueue(note, 'forget');
+                    }
+                }
                 if (note.status === 'invalid' && status === 'invalid' && dependencyCause) {
                     this.reconsiderRetiredNote(note, dependencyCause);
                     this.invalidateDependents(id, visited, dependencyCause);
@@ -982,7 +1036,10 @@ export class CompanionMemoryStore {
             note.tags = [];
             note.sources = [];
             delete note.metadata;
+            delete note.diaryName;
+            delete note.procedure;
             delete note.sourceMessageId;
+            stopCompanionWithdrawnNoteJobs(this.db, note.companionId, note.id);
             this.persist(note);
             this.enqueue(note, 'forget');
             if (status === 'invalid' && dependencyCause) this.reconsiderRetiredNote(note, dependencyCause, sourceIds);
@@ -1004,16 +1061,31 @@ export class CompanionMemoryStore {
         }).immediate();
     }
     resetOwner(owner: string, limit: number): number {
-        const started = performance.now(); this.pruneReconsiderations(owner);
-        const notes = rows(this.db.prepare("SELECT id FROM vcp_memory_notes INDEXED BY vcp_note_reset_pending WHERE companion_id=? AND json_extract(data,'$.status') NOT IN('forgotten','invalid') LIMIT ?").all(owner, Math.min(limit, 32)));
-        let processed = 0;
-        for (const note of notes) {
-            this.withdrawNote(String(note.id), 'forgotten'); processed++;
-            // A single lineage withdrawal remains atomic. Yield between notes
-            // instead of spending a whole dense batch in this worker turn.
-            if (performance.now() - started >= 25) break;
-        }
-        return processed;
+        // This port is terminal identity retirement, after Main has stopped
+        // all producers and removed the owner's native/files namespace. It
+        // must never serve ordinary forgetting: publishing a last forgotten
+        // version and an outbox per note would recreate work being erased.
+        if (!this.db.prepare("SELECT 1 FROM companion_reset_jobs WHERE companion_id=? AND status='running' AND phase='journals'").get(owner))
+            throw new Error('身份记忆批清理需要已确认停止的删除栅栏。');
+        const notes = rows(this.db.prepare('SELECT id FROM vcp_memory_notes INDEXED BY vcp_note_library_key WHERE companion_id=? ORDER BY id LIMIT ?')
+            .all(owner, Math.min(limit, 128)));
+        if (!notes.length) return 0;
+        const ids = JSON.stringify(notes.map(note => String(note.id)));
+        // Normal admission keeps note dependencies within one owner. If a
+        // historical foreign edge exists, still retire that actual dependent
+        // through the ordinary invalidation path before removing its basis.
+        const foreign = rows(this.db.prepare(`SELECT DISTINCT d.note_id,d.source_note_id FROM vcp_note_dependencies d
+          JOIN vcp_memory_notes n ON n.id=d.note_id WHERE d.source_note_id IN(SELECT value FROM json_each(?)) AND n.companion_id<>?`).all(ids, owner));
+        const visited = new Set<string>();
+        for (const note of foreign) this.withdrawNote(String(note.note_id), 'invalid', visited,
+            'identity-retire/' + owner + '/' + String(note.source_note_id));
+        this.db.prepare('DELETE FROM vcp_note_dependencies WHERE source_note_id IN(SELECT value FROM json_each(?))').run(ids);
+        // These point deletes cascade only through exact note FKs, preserving
+        // other owners' current bodies and all still-shared raw messages.
+        const remove = this.db.prepare('DELETE FROM vcp_memory_notes WHERE id=? AND companion_id=?');
+        for (const note of notes) remove.run(note.id, owner);
+        this.projection.invalidate(owner);
+        return notes.length;
     }
     rebuildIndex(companionId?: string): number { return this.db.transaction(() => { const found = rows(this.db.prepare("SELECT data FROM vcp_memory_notes WHERE json_extract(data,'$.status') IN('queued','indexed') AND json_extract(data,'$.archivedAt') IS NULL" + (companionId ? ' AND companion_id=?' : '')).all(...(companionId ? [companionId] : []))); for (const entry of found) {
         const note = json<CompanionMemory>(entry.data);
@@ -1021,7 +1093,7 @@ export class CompanionMemoryStore {
         note.status = 'queued';
         this.persist(note);
         this.enqueue(note, 'remember');
-        this.db.prepare("UPDATE vcp_memory_outbox SET status='pending',attempts=0,next_attempt=0,error=NULL,lease_token=NULL,lease_until=NULL WHERE note_id=? AND note_version=? AND operation='remember' AND status!='running'").run(note.id, note.version);
+        this.db.prepare("UPDATE vcp_memory_outbox SET status='pending',next_attempt=0,error=NULL,lease_token=NULL,lease_until=NULL WHERE note_id=? AND note_version=? AND operation='remember' AND status NOT IN('running','parked','abandoned')").run(note.id, note.version);
     } return found.length; }).immediate(); }
     read(scope: Scope, id: string, limit = 30, cursor = 0): NonNullable<CompanionStorageResponse['memoryRead']> { const note = this.load(id); if (!this.visible(scope, note))
         throw new Error('日记来源失效或不属于当前可见范围。'); const next = cursor + limit; return { memory: this.project(note, scope), sources: this.sources.filter(scope, note.sources.slice(cursor, next).map(source => source.messageId)), related: [], hasMore: next < note.sources.length, nextSourceCursor: next < note.sources.length ? next : undefined }; }
@@ -1043,7 +1115,7 @@ export class CompanionMemoryStore {
                 const note = json<MemoryMetadata>(row(found).metadata);
                 if (note.archivedAt) continue;
                 const at = Date.parse(note.occurredAt ?? note.sources.at(-1)?.worldCreatedAt ?? note.sources.at(-1)?.createdAt ?? note.createdAt);
-                if (!this.visible(query, note) || query.diaryName && note.diaryName !== query.diaryName || !query.tags.every(tag => note.tags.includes(tag))
+                if (!companionMemoryKindAllowed(note.artifactKind, companionMemoryKinds(query.retrievalScope)) || !this.visible(query, note) || query.diaryName && note.diaryName !== query.diaryName || !query.tags.every(tag => note.tags.includes(tag))
                   || start !== undefined && !(at >= start) || end !== undefined && !(at <= end)) continue;
                 if (matched++ < cursor) continue;
                 selected.push(note);
@@ -1058,13 +1130,15 @@ export class CompanionMemoryStore {
             }), hasMore, nextCursor: hasMore ? cursor + query.limit : undefined };
         })();
     }
-    snapshot(scope: Scope): NonNullable<CompanionStorageResponse['memorySnapshot']> {
+    snapshot(scope: Scope & { contentKinds?: CompanionMemoryArtifactKind[]; publishedOnly?: boolean }): NonNullable<CompanionStorageResponse['memorySnapshot']> {
         this.sources.requireScope(scope);
-        const notes = rows(this.db.prepare("SELECT data FROM vcp_memory_notes WHERE companion_id=? AND json_extract(data,'$.status')='indexed' ORDER BY id").all(scope.companionId))
+        const kinds = companionMemoryContentKinds(scope.contentKinds);
+        const notes = rows(this.db.prepare("SELECT data FROM vcp_memory_notes n WHERE companion_id=? AND json_extract(data,'$.status')='indexed' AND json_extract(data,'$.artifactKind') IN(" + kinds.map(() => '?').join(',') + ')' +
+          (scope.publishedOnly ? " AND EXISTS(SELECT 1 FROM companion_memory_history_files f WHERE f.companion_id=n.companion_id AND f.note_id=n.id AND f.content_revision=json_extract(n.data,'$.contentRevision') AND f.state='published')" : '') + ' ORDER BY id').all(scope.companionId, ...kinds))
           .map(found => json<CompanionMemory>(found.data)).filter(note => !note.archivedAt && this.visible(scope, note));
-        const revision = hash(['owner-memory-v2', scope.companionId, scope.beforeSequence ?? null, notes.map(note => [note.id, note.version, note.sources.map(source => [source.messageId, source.revision, source.checksum])])]);
-        const semanticRevision = hash(['owner-memory-content-v1', scope.companionId, scope.beforeSequence ?? null,
-          notes.map(note => [note.id, note.contentRevision, note.occurredAt, note.content, note.sources.map(source => [source.messageId, source.revision, source.checksum])])]);
+        const revision = hash(['owner-memory-v3', scope.companionId, scope.beforeSequence ?? null, kinds, notes.map(note => [note.id, note.artifactKind, note.version, note.sources.map(source => [source.messageId, source.revision, source.checksum])])]);
+        const semanticRevision = hash(['owner-memory-content-v2', scope.companionId, scope.beforeSequence ?? null, kinds,
+          notes.map(note => [note.id, note.artifactKind, note.contentRevision, note.occurredAt, note.content, note.sources.map(source => [source.messageId, source.revision, source.checksum])])]);
         return { scopeId: 'view_' + revision.slice(0, 48), revision, semanticRevision, revocationEpoch: this.ledger.state(scope.companionId).revocationEpoch, notes: notes.map(note => this.project(note, scope)) };
     }
     domains(scope: Scope): NonNullable<CompanionStorageResponse['memoryDomains']> { this.sources.requireScope(scope); return rows(this.db.prepare('SELECT * FROM vcp_memory_scopes WHERE companion_id=? ORDER BY scope_id').all(scope.companionId)).map(domain => ({ scopeId: String(domain.scope_id), companionId: String(domain.companion_id), conversationId: String(domain.conversation_id), revision: Number(domain.revision), state: domain.state as 'dirty' | 'ready', updatedAt: String(domain.updated_at) })); }
@@ -1151,7 +1225,7 @@ export class CompanionMemoryStore {
         note.tags = [...tags]; note.version++; note.status = 'queued'; note.updatedAt = stamp(); this.persist(note); this.enqueue(note, 'remember'); return note; })).immediate(); }
     rehomeConversation(oldId: string, newId: string): void { this.db.prepare('UPDATE vcp_capture_jobs SET conversation_id=? WHERE conversation_id=?').run(newId, oldId); for (const entry of rows(this.db.prepare('SELECT data FROM vcp_memory_notes WHERE conversation_id=?').all(oldId)))
         this.withdrawNote(json<CompanionMemory>(entry.data).id, 'invalid'); }
-    claimOutbox(companionId?: string, leaseMs = 120000, excludedOwners: readonly string[] = []): NonNullable<CompanionStorageResponse['memoryOutbox']> | undefined {
+    claimOutbox(companionId?: string, leaseMs = 120000, excludedOwners: readonly string[] = [], publishedOnly = false): NonNullable<CompanionStorageResponse['memoryOutbox']> | undefined {
         return this.db.transaction(() => {
             const now = Date.now();
             this.db.prepare("UPDATE vcp_memory_outbox SET status='pending',lease_token=NULL,lease_until=NULL WHERE status='running' AND lease_until<=?").run(now);
@@ -1160,12 +1234,13 @@ export class CompanionMemoryStore {
             const owner = this.db.prepare(`SELECT d.companion_id FROM companion_memory_delivery_owners d
               WHERE d.companion_id NOT IN(SELECT value FROM json_each(?)) ${companionId ? 'AND d.companion_id=?' : ''}
               AND EXISTS(SELECT 1 FROM vcp_memory_outbox o WHERE o.companion_id=d.companion_id AND o.status IN('pending','failed')
-                AND o.next_attempt<=? AND o.attempts<8 AND NOT EXISTS(SELECT 1 FROM vcp_memory_outbox active
+                AND o.next_attempt<=? ${publishedOnly ? "AND (o.operation='forget' OR EXISTS(SELECT 1 FROM vcp_memory_notes n JOIN companion_memory_history_files f ON f.note_id=n.id AND f.companion_id=n.companion_id AND f.content_revision=json_extract(n.data,'$.contentRevision') WHERE n.id=o.note_id AND f.state='published'))" : ''} AND NOT EXISTS(SELECT 1 FROM vcp_memory_outbox active
                   WHERE active.scope_id=o.scope_id AND active.status='running' AND active.lease_until>?))
               ORDER BY d.last_service,d.companion_id LIMIT 1`)
               .get(...(companionId ? [JSON.stringify(excludedOwners), companionId, now, now] : [JSON.stringify(excludedOwners), now, now]));
             if (!owner) return;
-            const found = this.db.prepare(`SELECT o.* FROM vcp_memory_outbox o WHERE o.companion_id=? AND o.status IN('pending','failed') AND o.next_attempt<=? AND o.attempts<8
+            const found = this.db.prepare(`SELECT o.* FROM vcp_memory_outbox o WHERE o.companion_id=? AND o.status IN('pending','failed') AND o.next_attempt<=?
+              ${publishedOnly ? "AND (o.operation='forget' OR EXISTS(SELECT 1 FROM vcp_memory_notes n JOIN companion_memory_history_files f ON f.note_id=n.id AND f.companion_id=n.companion_id AND f.content_revision=json_extract(n.data,'$.contentRevision') WHERE n.id=o.note_id AND f.state='published'))" : ''}
               AND NOT EXISTS(SELECT 1 FROM vcp_memory_outbox active WHERE active.scope_id=o.scope_id AND active.status='running' AND active.lease_until>?)
               ORDER BY o.ordinal LIMIT 1`).get(row(owner).companion_id, now, now);
             if (!found)
@@ -1197,7 +1272,18 @@ export class CompanionMemoryStore {
             }
         }).immediate();
     }
-    completeOutbox(id: string, token: string, indexed: boolean, sourceFile?: string): { state: 'completed' | 'stale'; reason?: string } { return this.db.transaction(() => { const entry = this.leased('vcp_memory_outbox', id, token), note = this.load(String(entry.note_id));
+    completeOutbox(id: string, token: string, indexed: boolean, sourceFile?: string): { state: 'completed' | 'stale'; reason?: string } { return this.db.transaction(() => {
+      const current = this.db.prepare('SELECT * FROM vcp_memory_outbox WHERE id=?').get(id);
+      // Withdrawal or a manual hold can retire the exact remember lease while
+      // Main is validating its execution ancestry. A negative acknowledgement
+      // publishes nothing: report that stale attempt without touching a newer
+      // lease, held row or counters. Successful acknowledgements stay strict.
+      if (!indexed && current) {
+        const value = row(current);
+        if (value.operation === 'remember' && (value.status !== 'running' || value.lease_token !== token || Number(value.lease_until) <= Date.now()))
+          return { state: 'stale' as const, reason: 'delivery_lease_changed' };
+      }
+      const entry = this.leased('vcp_memory_outbox', id, token), note = this.load(String(entry.note_id));
       let disposition: { state: 'completed' | 'stale'; reason?: string } = { state: 'completed' };
       if (entry.operation === 'remember' && note.version === Number(entry.note_version) && note.sources.some(source => this.fictionalSource(source.messageId) || this.deletedTopicSource(source.messageId))) this.withdrawNote(note.id, 'invalid');
       if (entry.operation === 'remember' && note.version === Number(entry.note_version) && this.visible(this.sources.ownerScope(note.companionId), note)) {
@@ -1222,8 +1308,20 @@ export class CompanionMemoryStore {
       if (!this.db.prepare("SELECT 1 FROM vcp_memory_outbox WHERE scope_id=? AND status NOT IN('done','stale','cancelled') LIMIT 1").get(note.scopeId))
         this.db.prepare("UPDATE vcp_memory_scopes SET state='ready',updated_at=? WHERE scope_id=?").run(stamp(), note.scopeId);
       return disposition; }).immediate(); }
-    failOutbox(id: string, token: string, error: string, retryAfterMs = 30000): void { this.leased('vcp_memory_outbox', id, token); this.db.prepare("UPDATE vcp_memory_outbox SET status='failed',error=?,next_attempt=?,lease_token=NULL,lease_until=NULL WHERE id=?").run(error, Date.now() + retryAfterMs, id); }
-    deferOutbox(id: string, token: string, retryAfterMs = 1000): void { this.leased('vcp_memory_outbox', id, token); this.db.prepare("UPDATE vcp_memory_outbox SET status='pending',attempts=MAX(0,attempts-1),error=NULL,next_attempt=?,lease_token=NULL,lease_until=NULL WHERE id=?").run(Date.now() + retryAfterMs, id); }
+    failOutbox(id: string, token: string, error: string, retryAfterMs = 30000, failureKind: CompanionJobFailureKind = 'processing'): void {
+      if (!this.db.prepare("SELECT 1 FROM vcp_memory_outbox WHERE id=? AND status='running' AND lease_token=? AND lease_until>?").get(id, token, Date.now())) return;
+      if (failureKind === 'processing') failCompanionQueueJob(this.db, 'vcp_memory_outbox', { id }, error, retryAfterMs);
+      else this.db.prepare("UPDATE vcp_memory_outbox SET status=?,error=?,next_attempt=?,lease_token=NULL,lease_until=NULL WHERE id=?")
+        .run(failureKind === 'waiting' ? 'pending' : failureKind, error, Date.now() + retryAfterMs, id);
+    }
+    deferOutbox(id: string, token: string, retryAfterMs = 1000): void {
+      // Withdrawal or explicit management can revoke a lease while native
+      // delivery is returning. Its late cancellation is inert; it cannot
+      // reopen a held job or clear a newer worker's lease.
+      const now = Date.now();
+      this.db.prepare("UPDATE vcp_memory_outbox SET status='pending',error=NULL,next_attempt=?,lease_token=NULL,lease_until=NULL WHERE id=? AND status='running' AND lease_token=? AND lease_until>?")
+        .run(now + retryAfterMs, id, token, now);
+    }
     policies(companionId: string): NonNullable<CompanionStorageResponse['memoryPolicies']> {
         if (!this.db.prepare('SELECT 1 FROM companions WHERE id=? AND deleted_at IS NULL').get(companionId)) throw new Error('伙伴不存在。');
         const topics: NonNullable<CompanionStorageResponse['memoryPolicies']> = rows(this.db.prepare(`SELECT p.*,r.released_at,
@@ -1384,6 +1482,24 @@ export class CompanionMemoryStore {
         const projection = this.projection.execute(command); if (projection) return projection;
         const sourceDelivery = this.sourceOutbox.execute(command); if (sourceDelivery) return sourceDelivery;
         const historyDelivery = this.historyOutbox.execute(command); if (historyDelivery) return historyDelivery;
+        if (command.type === 'memory.files.state') {
+          this.sources.requireScope(command);
+          const kinds = companionMemoryContentKinds(command.contentKinds);
+          const candidates = this.db.prepare(`SELECT json_remove(n.data,'$.content') AS metadata FROM companion_memory_history_files f JOIN vcp_memory_notes n ON n.id=f.note_id AND n.companion_id=f.companion_id
+              WHERE f.companion_id=? AND f.content_revision=json_extract(n.data,'$.contentRevision') AND f.state='pending'
+                AND json_extract(n.data,'$.status') IN('queued','indexed') AND json_extract(n.data,'$.artifactKind') IN(${kinds.map(() => '?').join(',')})`) as ReturnType<CompanionConnection['prepare']>
+            & { iterate(...args: unknown[]): IterableIterator<{ metadata: string }> };
+          if (typeof candidates.iterate !== 'function') throw new Error('文件准入状态需要实际流式SQLite端口。');
+          let pending = false;
+          for (const candidate of candidates.iterate(command.companionId, ...kinds)) {
+            if (this.visible(command, { ...JSON.parse(candidate.metadata), content: '' } as CompanionMemory)) { pending = true; break; }
+          }
+          const value = this.db.prepare(`SELECT
+            (SELECT COALESCE(MAX(ordinal),0) FROM companion_memory_source_outbox WHERE companion_id=?) AS sourceThroughOrdinal,
+            (SELECT COALESCE(MAX(ordinal),0) FROM companion_memory_history_outbox WHERE companion_id=?) AS historyThroughOrdinal`)
+            .get(command.companionId, command.companionId) as { sourceThroughOrdinal: number; historyThroughOrdinal: number };
+          return { ok: true, memoryFileState: { ...value, pending } };
+        }
         switch (command.type) {
             case 'memory.procedure.observe-action': return this.db.transaction(() => ({ ok: true,
                 memories: this.procedures.observeAction(command.actionId).flatMap(observation => {
@@ -1464,6 +1580,8 @@ export class CompanionMemoryStore {
             }).immediate();
             case 'memory.browse': return { ok: true, memoryPage: this.browse(command) };
             case 'memory.sources.filter': return { ok: true, memorySources: this.sourcesFilter(command, command.ids) };
+            case 'memory.records.describe': return { ok: true, memoryDescriptors: command.ids.map(id => { try { return this.load(id); } catch { return undefined; } })
+                .filter((note): note is CompanionMemory => !!note && this.visible(command, note)).map(note => companionMemoryDescriptorSchema.parse(this.project(note, command))) };
             case 'memory.records.filter': return { ok: true, memories: command.ids.map(id => { try {
                     return this.load(id);
                 }
@@ -1476,6 +1594,8 @@ export class CompanionMemoryStore {
             case 'memory.snapshot': return { ok: true, memorySnapshot: this.snapshot(command) };
             case 'memory.frozen.valid': return { ok: true, memoryFrozenValid: command.memories.every(memory => this.sources.frozenMemoryValid(command, memory)) };
             case 'character.development': this.sources.requireScope(command); return { ok: true, characterDevelopment: this.development.read(command, command.limit ?? 12) };
+            case 'character.development.scopes.page': return { ok: true, characterDevelopmentScopes: this.development.scopes(command) };
+            case 'character.development.scopes.ack': return { ok: true, characterDevelopmentScopeAcknowledged: this.development.acknowledge(command) };
             case 'memory.prohibitions': return this.writePolicy(command);
             case 'memory.record': {
                 return this.operation(command, () => { const note = this.record(command, command.candidate, undefined, 'automatic', command.expectedProhibitionRevision, command.readMemories); return { ok: true, memories: note ? [note] : [] }; });
@@ -1510,7 +1630,7 @@ export class CompanionMemoryStore {
             case 'memory.jobs.proposal.save': this.captureProposal(command.id, command.leaseToken, companionCaptureProposalSchema.parse(command.proposal)); return { ok: true };
             case 'memory.jobs.complete': return { ok: true, memories: this.complete(command.id, command.leaseToken, command.notes, command.stateProposal, command.expectedProhibitionRevision, command.expectedStateRevision, command.readMemories) };
             case 'memory.jobs.fail':
-                this.fail(command.id, command.leaseToken, command.error, command.retryAfterMs, command.preserveProposal);
+                this.fail(command.id, command.leaseToken, command.error, command.retryAfterMs, command.preserveProposal, command.failureKind);
                 return { ok: true };
             case 'memory.jobs.defer':
                 this.defer(command.id, command.leaseToken, command.error, command.retryAfterMs);
@@ -1522,12 +1642,24 @@ export class CompanionMemoryStore {
             case 'memory.outbox.retry':
                 this.retry(command.companionId);
                 return { ok: true };
-            case 'memory.outbox.claim': return { ok: true, memoryOutbox: this.claimOutbox(command.companionId, command.leaseMs, command.excludedOwners) };
-            case 'memory.outbox.pending': return { ok: true, memoryOutboxPending: !!this.db.prepare("SELECT 1 FROM vcp_memory_outbox WHERE companion_id=? AND status IN('pending','running','failed') AND operation='remember' LIMIT 1").get(command.companionId) };
+            case 'memory.outbox.claim': return { ok: true, memoryOutbox: this.claimOutbox(command.companionId, command.leaseMs, command.excludedOwners, command.publishedOnly) };
+            case 'memory.outbox.pending': {
+              if (!command.conversationId) return { ok: true, memoryOutboxPending: !!this.db.prepare("SELECT 1 FROM vcp_memory_outbox WHERE companion_id=? AND status IN('pending','running','failed') AND operation='remember' LIMIT 1").get(command.companionId) };
+              const scope = { ...command, conversationId: command.conversationId }; this.sources.requireScope(scope);
+              const kinds = companionMemoryContentKinds(command.contentKinds);
+              const candidates = this.db.prepare(`SELECT json_remove(n.data,'$.content') AS metadata FROM vcp_memory_outbox o JOIN vcp_memory_notes n ON n.id=o.note_id AND n.companion_id=o.companion_id
+                WHERE o.companion_id=? AND o.status NOT IN('done','stale','cancelled') AND o.operation='remember' AND o.note_version=json_extract(n.data,'$.version')
+                  AND json_extract(n.data,'$.status') IN('queued','indexed') AND json_extract(n.data,'$.artifactKind') IN(${kinds.map(() => '?').join(',')})`) as ReturnType<CompanionConnection['prepare']>
+                & { iterate(...args: unknown[]): IterableIterator<{ metadata: string }> };
+              if (typeof candidates.iterate !== 'function') throw new Error('索引准入状态需要实际流式SQLite端口。');
+              for (const candidate of candidates.iterate(command.companionId, ...kinds))
+                if (this.visible(scope, { ...JSON.parse(candidate.metadata), content: '' } as CompanionMemory)) return { ok: true, memoryOutboxPending: true };
+              return { ok: true, memoryOutboxPending: false };
+            }
             case 'memory.outbox.complete':
                 return { ok: true, memoryOutboxDisposition: this.completeOutbox(command.id, command.leaseToken, command.indexed, command.sourceFile) };
             case 'memory.outbox.fail':
-                this.failOutbox(command.id, command.leaseToken, command.error, command.retryAfterMs);
+                this.failOutbox(command.id, command.leaseToken, command.error, command.retryAfterMs, command.failureKind);
                 return { ok: true };
             case 'memory.outbox.defer':
                 this.deferOutbox(command.id, command.leaseToken, command.retryAfterMs);

@@ -18,6 +18,8 @@ test-results/
 /test-results-*/
 # Generated screenshots, test receipts and release staging are local outputs.
 /artifacts/
+__pycache__/
+*.py[cod]
 *.log
 .env
 .env.*

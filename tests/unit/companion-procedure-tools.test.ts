@@ -4,7 +4,7 @@ import { companionMemoryToolArgumentsSchemas } from '../../src/shared/companion-
 
 const procedure = { applicability: '生成本地 UTF-8 报告时。', steps: ['核对实际输入，再生成报告并检查交付。'], limitations: ['不保证报告结论适用于其他输入。'],
   verification: { kind: 'artifact_delivery', artifactRequirements: [{ path: 'report.md', minBytes: 10 }] } };
-const candidate = { content: '核对输入后生成报告并检查产物。', sourceMessageIds: ['actual_source'], evidence: [{ sourceMessageId: 'actual_source', quote: '核对输入' }], procedure };
+const candidate = { artifactKind: 'procedure', content: '核对输入后生成报告并检查产物。', sourceMessageIds: ['actual_source'], evidence: [{ sourceMessageId: 'actual_source', quote: '核对输入' }], procedure };
 
 it('publishes the same bounded procedure proposal in native tool schema and actual argument parsing', () => {
   const native = JSON.stringify(COMPANION_MEMORY_CAPABILITY_TOOL.parameters);

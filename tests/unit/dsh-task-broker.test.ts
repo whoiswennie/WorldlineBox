@@ -2,7 +2,8 @@ import { afterEach, expect, it, vi } from 'vitest';
 import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
+import sharp from 'sharp';
 import { DshTaskBroker, type DshTaskBrokerOptions } from '../../src/main/dsh/task-broker';
 import type { NativeHostClient, NativeHostEvent } from '../../src/main/dsh/native-host-client';
 import { dshInstanceSchema, dshRuntimeSchema } from '../../src/shared/dsh-launcher';
@@ -34,7 +35,7 @@ async function fixture() {
     if (endpoint.endsWith('/prompt')) {
       sessions.get(id)!.prompt = String(input.prompt);
       if (!String(input.prompt).startsWith('wait')) publish(id, { type: 'complete', status: 'succeeded', text: String(input.prompt).startsWith('json') ? '{"count":2}' : 'native reply' });
-      return { accepted: true };
+      return { accepted: true, ...(Array.isArray(input.visualInputs) ? { visualInputsAccepted: input.visualInputs.map(({ mime, sha256, source }: { mime: string; sha256: string; source: object }) => ({ mime, sha256, source })) } : {}) };
     }
     throw new Error('Unexpected native operation: ' + endpoint);
   }), async *events(id: string, after: number, signal: AbortSignal) {
@@ -78,9 +79,26 @@ it('submits native Session parameters and keeps model/account configuration in t
   expect(result.text).toBe('native reply'); expect(f.broker.state()[0]).toMatchObject({ pid: f.client.pid, status: 'succeeded', accessMode: 'danger-full-access' });
   const create = f.calls.find(value => value.endpoint === '/sessions')!;
   expect(create.input).toMatchObject({ cwd: f.workspace, policy: {} });
-  expect(create.input).not.toHaveProperty('accessMode'); expect(create.input).not.toHaveProperty('model');
+  expect(create.input.accessMode).toBe('danger-full-access'); expect(create.input).not.toHaveProperty('model');
   expect(f.calls.find(value => value.endpoint.endsWith('/prompt'))?.input.prompt).toContain('read only');
   const saved = await f.broker.readRecord({ recordId: op.id }); expect(saved.overview.status).toBe('succeeded');
+});
+it('submits validated Main-only observation pixels to a zero-tool native Session and archives only their acceptance manifest', async () => {
+  const f = await fixture(), op = f.operation(), bytes = await sharp({ create: { width: 4, height: 4, channels: 3, background: 'blue' } }).png().toBuffer();
+  const visual = { mime: 'image/png' as const, dataBase64: bytes.toString('base64'), sha256: createHash('sha256').update(bytes).digest('hex'),
+    source: { kind: 'observation_storyboard' as const, sourceId: 'window:1:0', observedAt: '2026-10-29T10:00:00.000Z' } };
+  const scope = { ...f.scope, agendaOrigin: { runId: 'actual_run', ruleId: 'actual_rule', occurrenceId: 'actual_occurrence', grantId: 'actual_grant', grantRevision: 1 } };
+  const result = await f.broker.execute({ prompt: '请只分析实际抽样画面，不当作完整视频。' }, op, { cognitiveOnly: true, recordScope: scope,
+    workspaceRootPath: path.join(f.root, 'owner-workspaces'), visualInputs: [visual] });
+  expect(result.text).toBe('native reply');
+  const session = f.calls.find(call => call.endpoint === '/sessions')!;
+  const manifest = [{ mime: visual.mime, sha256: visual.sha256, source: visual.source }];
+  expect(session.input).toMatchObject({ accessMode: 'read-only', policy: { cognitiveOnly: true, tools: [], skills: [], visualInputManifest: manifest } });
+  const submission = f.calls.find(call => call.endpoint.endsWith('/prompt'))!.input;
+  expect(submission.visualInputs).toEqual([visual]); expect(submission.prompt).not.toContain(visual.dataBase64);
+  const events = await f.broker.readEvents(op.id);
+  expect(JSON.stringify(events)).toContain('visual_inputs_accepted'); expect(JSON.stringify(events)).toContain(visual.sha256);
+  expect(JSON.stringify(events)).not.toContain(visual.dataBase64);
 });
 it('uses one Host for parallel partner tasks with separate native Sessions', async () => {
   const f = await fixture(); const results = await Promise.all([1, 2].map(() => f.broker.execute({ prompt: 'hello' }, f.operation())));

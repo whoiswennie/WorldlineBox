@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { lazy, Suspense, useCallback, useEffect, useRef, useState } from 'react';
 import type { BrowserHistory, BrowserRequest, BrowserState, WorldlineBoxBrowserApi } from '../../shared/browser';
 import type { BrowserCaptureRequest, BrowserCaptureState } from '../../shared/browser-capture';
 import { Icon, type IconName } from '../Icons';
@@ -6,7 +6,6 @@ import { Button, Select, TextField } from '../ui';
 import { useT } from '../i18n';
 import { formatBytes } from '../format-file-meta';
 import { BrowserBookmarks, SiteMark } from './BrowserBookmarks';
-import { BrowserCapturePanel } from './BrowserCapturePanel';
 import { BrowserDownloadRecords } from './BrowserDownloadRecords';
 import { BrowserMorePanel } from './BrowserMorePanel';
 import { BrowserLoadFailure } from './BrowserLoadFailure';
@@ -14,14 +13,15 @@ import { BrowserTabStrip } from './BrowserTabStrip';
 import { BrowserCompanionStatus } from './BrowserCompanionStatus';
 import { browserTabShortcut } from '../../shared/browser-shortcuts';
 import { BrowserStartPage } from './BrowserStartPage';
-import { BrowserAiPanel } from './BrowserAiPanel';
-import { BrowserAiSettings } from './BrowserAiSettings';
 import type { BrowserAiRequest } from '../../shared/browser-ai';
 import brandLogo from '../../../assets/icons/startup-logo.png';
 import './browser.css';
 import './browser-ai.css';
 
 type Panel = 'bookmarks' | 'history' | 'downloads' | 'settings' | 'more' | 'capture' | 'ai';
+const BrowserCapturePanel = lazy(() => import('./BrowserCapturePanel').then(module => ({ default: module.BrowserCapturePanel })));
+const BrowserAiPanel = lazy(() => import('./BrowserAiPanel').then(module => ({ default: module.BrowserAiPanel })));
+const BrowserAiSettings = lazy(() => import('./BrowserAiSettings').then(module => ({ default: module.BrowserAiSettings })));
 export function BrowserPage({ api, active, onOpenNetwork, onOpenAssets, onScreenshot }: { api?: WorldlineBoxBrowserApi; active: boolean; onOpenNetwork(): void; onOpenAssets?(): void; onScreenshot?(): void }) {
   const t = useT(); const b = (key: string) => t('browser.' + key);
   const [snapshot, setSnapshot] = useState<{ browser?: BrowserState; capture?: BrowserCaptureState }>({});
@@ -37,6 +37,7 @@ export function BrowserPage({ api, active, onOpenNetwork, onOpenAssets, onScreen
   const [rememberPermission, setRememberPermission] = useState(false);
   const [aiWidth, setAiWidth] = useState(() => { try { return Math.min(800, Math.max(320, Number(localStorage.getItem('worldlinebox.browser.ai-width')) || 420)); } catch { return 420; } });
   const [aiDraft, setAiDraft] = useState('');
+  const previouslyActive = useRef(active);
   const accept = useCallback((next: BrowserState) => setSnapshot(previous => previous.browser && next.revision < previous.browser.revision
     ? previous
     : { browser: next, capture: next.capture ?? previous.capture }), []);
@@ -70,12 +71,13 @@ export function BrowserPage({ api, active, onOpenNetwork, onOpenAssets, onScreen
     const stop = api.onChanged(accept);
     const focus = api.onFocus(target => { if (target === 'address') { locationField.current?.focus(); locationField.current?.select(); } else { setFindOpen(true); requestAnimationFrame(() => findField.current?.focus()); } });
     void api.request({ type: 'activate' }).then(response => { if (response.ok && response.state) accept(response.state); else if (!response.ok) setError(response.error); }).catch(cause => setError(String(cause)));
-    void api.capture({ type: 'state' }).then(response => { if (response.state) setCapture(response.state); if (!response.ok) setError(response.error); }).catch(cause => setError(String(cause)));
     return () => { stop(); focus(); void api.request({ type: 'layout', visible: false, bounds: { x: 0, y: 0, width: 0, height: 0 } }).catch(() => undefined); };
   }, [api, accept, setCapture]);
   const ready = state !== undefined;
   useEffect(() => {
-    if (!active || !api) return;
+    const resumed = active && !previouslyActive.current;
+    previouslyActive.current = active;
+    if (!resumed || !api) return;
     let cancelled = false;
     void api.request({ type: 'state' }).then(response => { if (!cancelled && response.ok && response.state) accept(response.state); }).catch(() => undefined);
     return () => { cancelled = true; };
@@ -189,9 +191,9 @@ export function BrowserPage({ api, active, onOpenNetwork, onOpenAssets, onScreen
           openPanel(next); event.currentTarget.querySelector<HTMLButtonElement>('#browser-menu-tab-' + next)?.focus();
         }}>{(['more', 'settings'] as const).map(item => <button type="button" role="tab" key={item} id={'browser-menu-tab-' + item} aria-selected={panel === item} aria-controls="browser-menu-content" tabIndex={panel === item ? 0 : -1} onClick={() => openPanel(item)}><Icon name={item === 'more' ? 'sliders' : 'settings'} size={15} />{b(item === 'more' ? 'menuActions' : 'settings')}</button>)}</div> : null}
         <div className={menuOpen ? 'browser-menu-content' : 'browser-panel-content'} id={menuOpen ? 'browser-menu-content' : undefined} role={menuOpen ? 'tabpanel' : undefined} aria-labelledby={menuOpen ? 'browser-menu-tab-' + panel : undefined}>
-        {panel === 'ai' && state ? <BrowserAiPanel state={state} run={run} settings={() => togglePanel('settings')} close={() => setPanel(undefined)} input={aiDraft} setInput={setAiDraft} /> : null}
-        {panel === 'settings' ? <BrowserAiSettings config={state?.ai?.config} run={run} /> : null}
-        {panel === 'capture' ? <BrowserCapturePanel capture={capture} run={runCapture} onOpenAssets={onOpenAssets} onScreenshot={onScreenshot} documentKey={tab ? JSON.stringify([tab.id, tab.url, tab.loading]) : ''} /> : null}
+        {panel === 'ai' && state ? <Suspense fallback={<p role="status">{b('loading')}</p>}><BrowserAiPanel state={state} run={run} settings={() => togglePanel('settings')} close={() => setPanel(undefined)} input={aiDraft} setInput={setAiDraft} /></Suspense> : null}
+        {panel === 'settings' ? <Suspense fallback={<p role="status">{b('loading')}</p>}><BrowserAiSettings config={state?.ai?.config} run={run} /></Suspense> : null}
+        {panel === 'capture' ? <Suspense fallback={<p role="status">{b('loading')}</p>}><BrowserCapturePanel capture={capture} run={runCapture} onOpenAssets={onOpenAssets} onScreenshot={onScreenshot} documentKey={tab ? JSON.stringify([tab.id, tab.url, tab.loading]) : ''} /></Suspense> : null}
         {panel === 'bookmarks' && state ? <BrowserBookmarks bookmarks={state.bookmarks} tab={tab} navigate={navigate} run={run} /> : null}
         {panel === 'history' ? <><TextField label={b('searchHistory')} maxLength={200} value={historyQuery} onChange={event => { setHistoryQuery(event.target.value); setHistoryOffset(0); setHistory([]); }} />{history.length ? <ul className="browser-records">{history.map(item => <li key={item.id}><button className="browser-record-link" onClick={() => navigate(item.url)} title={item.url}><strong>{item.title}</strong><span>{new Date(item.visitedAt).toLocaleString()}</span><span>{item.url}</span></button></li>)}</ul> : <p className="browser-help">{b('emptyHistory')}</p>}<div className="browser-actions"><Button disabled={!historyOffset} onClick={() => setHistoryOffset(value => Math.max(0, value - 50))}>{b('previousPage')}</Button><span>{historyTotal} · {Math.floor(historyOffset / 50) + 1} / {Math.max(1, Math.ceil(historyTotal / 50))}</span><Button disabled={historyOffset + 50 >= historyTotal} onClick={() => setHistoryOffset(value => value + 50)}>{b('nextPage')}</Button></div></> : null}
         {panel === 'downloads' ? <BrowserDownloadRecords downloads={state?.downloads ?? []} run={run} b={b} /> : null}

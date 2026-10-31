@@ -19,7 +19,7 @@ export async function companionRuntimeDirectory(directory: string, create = fals
 /** Returned only by the host's canonical asset-library resolver. */
 export interface CompanionOwnerRuntimePaths { ownerId: string; ownerRoot: string; indexRoot: string; workspaceRoot: string }
 export interface CompanionOwnerRuntimeStorage extends CompanionOwnerRuntimePaths {
-  ownerPrompts: { aimemoTemplate: string; timelineTemplate: string; summaryTemplate: string } }
+  ownerPrompts: { aimemoTemplate: string; timelineTemplate: string; summaryTemplate: string; focusGuidanceSignature?: string } }
 export function companionRuntimeOwner(ownerId: string): string {
   if (typeof ownerId !== 'string' || !/^[a-zA-Z0-9_-]{1,100}$/u.test(ownerId)) throw new Error('记忆所属伙伴标识无效。');
   return ownerId;
@@ -29,7 +29,7 @@ export function companionOwnerRuntimePaths(ownerId: string, storage: CompanionOw
   if (storage.ownerId !== ownerId || ![storage.ownerRoot, storage.indexRoot, storage.workspaceRoot].every(value => typeof value === 'string' && path.isAbsolute(value)))
     throw new Error('记忆索引目录未绑定可信伙伴。');
   const workspaceRoot = path.resolve(storage.workspaceRoot), ownerRoot = path.resolve(storage.ownerRoot), indexRoot = path.resolve(storage.indexRoot);
-  if (ownerRoot !== path.join(workspaceRoot, ownerId) || indexRoot !== path.join(ownerRoot, '.认知索引'))
+  if (ownerRoot !== path.join(workspaceRoot, ownerId) || indexRoot !== path.join(ownerRoot, '.运行', '索引'))
     throw new Error('记忆索引目录不属于当前伙伴资产目录。');
   return Object.freeze({ ownerId, workspaceRoot, ownerRoot, indexRoot });
 }
@@ -39,6 +39,9 @@ export function companionOwnerRuntimeStorage(ownerId: string, storage: Companion
     const value = storage.ownerPrompts[key as keyof typeof storage.ownerPrompts]; return typeof value !== 'string' || !value.trim();
   }))
     throw new Error('伙伴实时记忆聚焦提示词不可用。');
+  if (storage.ownerPrompts.focusGuidanceSignature !== undefined && (typeof storage.ownerPrompts.focusGuidanceSignature !== 'string' || !/^[a-f0-9]{64}$/u.test(storage.ownerPrompts.focusGuidanceSignature)))
+    throw new Error('伙伴实时记忆聚焦指导签名无效。');
   return Object.freeze({ ...paths, ownerPrompts: Object.freeze({
-    aimemoTemplate: storage.ownerPrompts.aimemoTemplate, timelineTemplate: storage.ownerPrompts.timelineTemplate, summaryTemplate: storage.ownerPrompts.summaryTemplate }) });
+    aimemoTemplate: storage.ownerPrompts.aimemoTemplate, timelineTemplate: storage.ownerPrompts.timelineTemplate, summaryTemplate: storage.ownerPrompts.summaryTemplate,
+    ...(storage.ownerPrompts.focusGuidanceSignature !== undefined ? { focusGuidanceSignature: storage.ownerPrompts.focusGuidanceSignature } : {}) }) });
 }

@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import type { CompanionLoopCheckpoint } from '../../shared/companion-loop';
 import type { CompanionReplyStreamEvent } from '../../shared/companions';
+import { companionModelUsageView, updateCompanionModelUsage, type CompanionModelUsageCurrent } from '../../shared/companion-model-usage';
 
 interface ReplyStreamOptions {
   checkpoint: CompanionLoopCheckpoint;
@@ -40,6 +41,14 @@ export class CompanionReplyStream {
       if (!this.closed && this.ownsDraft()) this.saveDraft();
     }, 750);
   };
+  readonly onUsage = (usage: CompanionModelUsageCurrent): void => {
+    if (this.closed || !this.ownsDraft()) return;
+    this.options.checkpoint.usage = updateCompanionModelUsage(this.options.checkpoint.usage, { ...usage, step: this.options.step });
+    this.publish('usage', this.text);
+    if (!this.saveTimer) this.saveTimer = setTimeout(() => {
+      this.saveTimer = undefined; if (!this.closed && this.ownsDraft()) this.saveDraft();
+    }, 750);
+  };
 
   private ownsDraft(): boolean { return this.options.checkpoint.draft?.attemptId === this.attemptId; }
   private publish(phase: CompanionReplyStreamEvent['phase'], text: string): void {
@@ -48,7 +57,8 @@ export class CompanionReplyStream {
     if (phase === 'streaming' && this.lastPublished === text) return;
     this.lastPublished = text;
     this.options.publish({ conversationId: checkpoint.conversationId, companionId: checkpoint.companionId,
-      sourceMessageId: checkpoint.sourceMessageId, messageId: checkpoint.messageId, step, attemptId: this.attemptId, text, phase });
+      sourceMessageId: checkpoint.sourceMessageId, messageId: checkpoint.messageId, step, attemptId: this.attemptId, text, phase,
+      ...(checkpoint.usage ? { modelUsage: companionModelUsageView(checkpoint.usage) } : {}) });
   }
   private saveDraft(): void {
     this.saves = this.saves.then(async () => {

@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { AiApiFormat } from '../../src/shared/ai-endpoints';
 import type { Companion, CompanionConversation, CompanionMemory, CompanionMessage } from '../../src/shared/companions';
-import { generateCompanionJournal } from '../../src/main/companions/memory-model';
+import { generateCompanionJournal, generateCompanionMemoryDream } from '../../src/main/companions/memory-model';
 import type { CompanionModelConfig } from '../../src/main/companions/model';
 
 const at = '2026-10-14T00:00:00Z';
@@ -15,11 +15,11 @@ function message(id: string, sequence: number, content: string, overrides: Parti
     createdAt: at, attachments: [], status: 'sent', ...overrides };
 }
 const input = { companion, conversation, messages: [message('coffee', 4, '现在已经不喝咖啡了，聊天功能忙完了。')] };
-const note = { content: '用户说：“现在已经不喝咖啡了”，并说明聊天功能已经忙完；没有说明这一改变会持续多久。',
+const note = { artifactKind: 'episode_memory' as const, content: '用户说：“现在已经不喝咖啡了”，并说明聊天功能已经忙完；没有说明这一改变会持续多久。',
   tags: ['用户', '聊天功能', '咖啡'], sourceMessageIds: ['coffee'],
   evidence: [{ sourceMessageId: 'coffee', quote: '现在已经不喝咖啡了，聊天功能忙完了' }] };
 function memory(overrides: Partial<CompanionMemory> = {}): CompanionMemory {
-  return { id: 'coffee_note', companionId: companion.id, scopeId: 'scope_private_sister', content: '用户以前喝咖啡。', tags: ['用户', '咖啡'],
+  return { artifactKind: 'episode_memory' as const, id: 'coffee_note', companionId: companion.id, scopeId: 'scope_private_sister', content: '用户以前喝咖啡。', tags: ['用户', '咖啡'],
     sourceMessageId: 'old', sourceConversationId: conversation.id, sourceSequence: 3,
     sources: [{ messageId: 'old', conversationId: conversation.id, sequence: 3, authorId: 'user', revision: 1, checksum: 'host-checksum', createdAt: at }],
     origin: 'companion', status: 'indexed', captureMethod: 'automatic', version: 1, createdAt: at, updatedAt: at, ...overrides };
@@ -40,6 +40,47 @@ function request(fetchFn: ReturnType<typeof fetchFor>) {
 }
 
 describe('source-grounded VCP experience journals', () => {
+  it.each([{ existing: [] }, { existing: [memory()] }])('exposes only actual read dependencies and new self utterances for reflection admission: $existing.length', async ({ existing }) => {
+    const own = message('actual_self', 6, '我想练习先说明不确定的条件。', { authorId: companion.id });
+    const quoted = message('quoted_other', 7, '“我想练习”是别人的引文。', { authorId: 'peer' });
+    const oldSelf = message('context_self', 2, '仅用于理解指代的旧发言。', { authorId: companion.id });
+    const draftSelf = message('draft_self', 8, '未发送成功的候选。', { authorId: companion.id, status: 'failed' });
+    const fetchFn = fetchFor({ notes: [], dream: null });
+    await generateCompanionMemoryDream({ ...input, reflectionOnly: true, dreamAllowed: false, maintenanceSeparated: true,
+      messages: [...input.messages, own, quoted, draftSelf], contextMessages: [oldSelf], relevantMemories: existing }, config, undefined, { fetchFn });
+    expect(request(fetchFn).payload.selfDevelopmentAdmission).toEqual({ readMemoryIds: existing.map(item => item.id),
+      reflectionReadSet: existing.length ? 'available_subject_to_actual_contribution' : 'unavailable_no_read_memory',
+      selfExpressionSourceIds: [own.id], sameOutputProposalsArePublishedEvidence: false });
+  });
+  it('captures an actual self utterance as an episode before a separate reflection can consume its committed identity', async () => {
+    const own = message('actual_self', 6, '这次我先解释了条件，下次仍要核对是否合适。', { authorId: companion.id });
+    const fetchFn = fetchFor({ notes: [{ ...note, content: own.content, sourceMessageIds: [own.id], evidence: [{ sourceMessageId: own.id, quote: own.content }] }] });
+    const result = await generateCompanionJournal({ ...input, messages: [own] }, config, undefined, { fetchFn });
+    expect(result.notes[0]).toMatchObject({ artifactKind: 'episode_memory', content: own.content });
+    const sent = request(fetchFn);
+    expect(sent.payload.memoryStage).toEqual({ kind: 'capture_facts_before_reflection', allowedArtifactKinds: ['episode_memory', 'knowledge', 'procedure'], selfUnderstandingIsDeferred: true });
+    expect(sent.payload.selfDevelopmentAdmission).toBeUndefined(); expect(sent.payload.selfDevelopmentCatalog).toBeUndefined();
+  });
+  it('repairs incomplete state evidence linkage against the original journal schema before validating actual source quotes', async () => {
+    const reply = message('reply', 5, '我先听你把今天的事情说完。', { authorId: companion.id });
+    const stateProposal = { expression: 'gentle', focus: '先听对方说明当前处境', reason: '本批真实交流支持当前表达安排。',
+      sourceMessageIds: ['coffee', reply.id], evidence: [{ sourceMessageId: 'coffee', quote: input.messages[0]!.content }] };
+    const fetchFn = vi.fn<typeof fetch>()
+      .mockResolvedValueOnce(response('openai_chat', { notes: [], stateProposal }))
+      .mockResolvedValueOnce(response('openai_chat', { notes: [], stateProposal: { ...stateProposal,
+        evidence: [...stateProposal.evidence, { sourceMessageId: reply.id, quote: reply.content }] } }));
+    const result = await generateCompanionJournal({ ...input, messages: [...input.messages, reply] }, config, undefined, { fetchFn });
+    expect(result.stateProposal?.sourceMessageIds).toEqual(['coffee', reply.id]);
+    expect(result.stateProposal?.evidence).toHaveLength(2); expect(fetchFn).toHaveBeenCalledTimes(2);
+    const repair = JSON.parse(JSON.parse(String(fetchFn.mock.calls[1]![1]?.body)).messages[1].content);
+    expect(repair.purpose).toBe('companion_structured_repair');
+    expect(repair.validationErrors.some((issue: { path?: string[] }) => issue.path?.includes('evidence'))).toBe(true);
+    expect(JSON.parse(repair.originalRequest.user).messages.map((source: { id: string }) => source.id)).toEqual(['coffee', reply.id]);
+    const invented = vi.fn<typeof fetch>().mockResolvedValue(response('openai_chat', { notes: [], stateProposal: { ...stateProposal,
+      evidence: [...stateProposal.evidence, { sourceMessageId: reply.id, quote: '这句从未说过。' }] } }));
+    await expect(generateCompanionJournal({ ...input, messages: [...input.messages, reply] }, config, undefined, { fetchFn: invented })).rejects.toMatchObject({ code: 'INVALID_RESPONSE' });
+    expect(invented).toHaveBeenCalledTimes(1);
+  });
   it('compares complete addressable source text with actual saved bodies without claiming semantic full coverage', async () => {
     const raw = message('partial_source', 7, ('这条未完成事项保留🙂真实条件。\n').repeat(5000) + '剩余棉线在第二层抽屉。');
     const prior = memory({ content: '这是未完成的修复事项。', contentRevision: 3,
@@ -59,7 +100,7 @@ describe('source-grounded VCP experience journals', () => {
     const source = message('method_source', 6, '保存output.txt后，再检查文件是否包含已核验结果。');
     const procedure = { applicability: '生成当前约定的文本文件时', steps: ['保存output.txt。', '检查是否包含已核验结果。'], limitations: ['仅适用当前约定'],
       verification: { kind: 'artifact_delivery' as const, artifactRequirements: [{ path: 'output.txt', containsText: '已核验结果' }] } };
-    const draft = { content: source.content, tags: ['方法候选'], procedure, sourceMessageIds: [source.id], evidence: [{ sourceMessageId: source.id, quote: source.content }] };
+    const draft = { artifactKind: 'procedure' as const, content: source.content, tags: ['方法候选'], procedure, sourceMessageIds: [source.id], evidence: [{ sourceMessageId: source.id, quote: source.content }] };
     const fetchFn = fetchFor({ notes: [draft] });
     const old = memory({ procedure: { ...procedure, validation: { state: 'disabled', successes: 0, failures: 1, evidence: [] } } });
     const result = await generateCompanionJournal({ ...input, messages: [source], relevantMemories: [old] }, config, undefined, { fetchFn });
@@ -72,7 +113,7 @@ describe('source-grounded VCP experience journals', () => {
     const peerRoom = { ...conversation, id: 'peer_sisters', kind: 'group' as const, memberIds: ['sister', 'younger'] };
     const question = message('peer_question', 5, '姐姐，那位玩家让我来问，你还记得他叫什么吗？', { conversationId: peerRoom.id, authorId: 'younger' });
     const answer = message('peer_answer', 6, '我记得，他亲口向我介绍过自己叫天幻。', { conversationId: peerRoom.id, authorId: companion.id });
-    const draft = { content: '妹妹来询问那位玩家的姓名，我依据自己的旧记忆回答天幻；这是本次实际发生的交流。', diaryName: '日记', tags: ['妹妹', '姓名询问'],
+    const draft = { artifactKind: 'episode_memory' as const, content: '妹妹来询问那位玩家的姓名，我依据自己的旧记忆回答天幻；这是本次实际发生的交流。', diaryName: '日记', tags: ['妹妹', '姓名询问'],
       sourceMessageIds: [question.id, answer.id], relatedMemoryIds: ['coffee_note'], evidence: [{ sourceMessageId: question.id, quote: question.content }, { sourceMessageId: answer.id, quote: answer.content }] };
     const fetchFn = fetchFor({ notes: [draft] });
     const result = await generateCompanionJournal({ companion, conversation: peerRoom, messages: [question, answer],
@@ -250,7 +291,8 @@ describe('source-grounded VCP experience journals', () => {
 
 describe('journal current-state provenance', () => {
   const stateProposal = { expression: 'direct', focus: '聊天功能', reason: '用户明确报告聊天功能已完成。', sourceMessageIds: ['coffee'], evidence: note.evidence,
-    appraisals: [{ type: 'shared_success', target: 'user', intensity: 0.4, confidence: 0.8 }] };
+    relationshipUpdates: [{ targetId: 'user', topic: '聊天功能反馈', context: '用户本轮直接报告', kind: 'shared_experience',
+      statement: '用户报告聊天功能已经完成，仍保留不知道会持续多久的条件。', reassessWhen: ['后续用户补充或更正时'], replacesRecordIds: [] }] };
   it('accepts a quoted current user appraisal independently of whether a new journal is needed', async () => {
     expect(await generateCompanionJournal(input, config, undefined, { fetchFn: fetchFor({ notes: [], stateProposal }) }))
       .toEqual({ notes: [], stateProposal });

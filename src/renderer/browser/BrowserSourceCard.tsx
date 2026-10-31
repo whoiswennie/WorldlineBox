@@ -1,9 +1,9 @@
-import { memo, useState } from 'react';
+import { lazy, memo, Suspense, useState } from 'react';
 import type { BrowserAiSource } from '../../shared/browser-ai';
 import { Icon } from '../Icons';
 import { SiteMark } from './BrowserBookmarks';
-import { BrowserMarkdown } from './BrowserMarkdown';
 import { BrowserSourcePreview, sourcePreviewText, sourcePreviewDate } from './BrowserSourcePreview';
+const BrowserMarkdown = lazy(() => import('./BrowserMarkdown').then(module => ({ default: module.BrowserMarkdown })));
 
 /** Source bodies mount only when requested; a streamed answer never reparses them. */
 export const BrowserSourceCard = memo(function BrowserSourceCard({ source, open, zh }: {
@@ -28,7 +28,7 @@ export const BrowserSourceCard = memo(function BrowserSourceCard({ source, open,
     </div>
     {expanded && source.content ? <div className="browser-source-card-content" role="region" aria-label={zh ? '来源正文' : 'Source content'}>
       {source.truncated ? <p className="browser-source-clip-note">{zh ? '这里是已读取的正文片段，可打开原网页继续阅读。' : 'This is an extracted passage. Open the original page to continue reading.'}</p> : null}
-      <BrowserMarkdown text={source.content} open={open} /></div> : null}
+      <Suspense fallback={<p role="status">{zh ? '正在加载正文…' : 'Loading content…'}</p>}><BrowserMarkdown text={source.content} open={open} /></Suspense></div> : null}
   </article>;
 }, (previous, next) => previous.zh === next.zh && previous.open === next.open && previous.source.id === next.source.id
   && previous.source.title === next.source.title && previous.source.url === next.source.url && previous.source.date === next.source.date

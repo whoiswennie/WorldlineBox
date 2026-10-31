@@ -186,7 +186,7 @@ it('reuses the internal order empty passive receipt after manual pause and resum
   f.store.request({ type: 'work-order.pause', ...owner, id: order.id, expectedRevision: running.revision, paused: true });
   f.service.cancelOrder(order.id); await f.service.drainOrder(order.id);
   const unrelated = f.store.appendMessage({ conversationId: f.scope.conversationId, authorId: 'user', content: '这是暂停后新增、与原提纲无关的资料。', replyDirective: 'none' });
-  f.store.request({ type: 'memory.record', ...f.scope, candidate: { content: unrelated.content, tags: [], sourceMessageIds: [unrelated.id], evidence: [{ sourceMessageId: unrelated.id, quote: unrelated.content }] } });
+  f.store.request({ type: 'memory.record', ...f.scope, candidate: { artifactKind: 'episode_memory' as const, content: unrelated.content, tags: [], sourceMessageIds: [unrelated.id], evidence: [{ sourceMessageId: unrelated.id, quote: unrelated.content }] } });
   const paused = f.orders(owner)[0]!;
   f.store.request({ type: 'work-order.pause', ...owner, id: order.id, expectedRevision: paused.revision, paused: false });
   f.fetchFn.mockImplementation(async (_url, init) => {
@@ -235,7 +235,8 @@ it('uses accumulated world-time life probability to send one authored spontaneou
     const body = JSON.parse(String(init?.body)), input = JSON.parse(body.messages[1].content);
     expect(body.tools.map((tool: { function: { name: string } }) => tool.function.name)).toEqual(['memory', 'world', 'wait']);
     expect(input).toMatchObject({ speakerId: 'alice', target: { id: 'user', kind: 'human_player' }, action: 'message' });
-    return response({ eventId: input.eventId, speakerId: 'alice', targetId: 'user', text: '想和你打个招呼，现在方便聊聊吗？' });
+    return response({ eventId: input.eventId, speakerId: 'alice', targetId: 'user', decision: 'speak',
+      text: '想和你打个招呼，现在方便聊聊吗？', reason: '本次生活规则产生了一次自主问候机会。' });
   });
   f.service.tick(); await until(() => f.store.request({ type: 'life-rule.list', companionId: 'alice' }).lifeOccurrences!.some(occurrence => occurrence.ruleId === rule.id));
   advance(f.store, 90_000); f.service.tick();
@@ -259,7 +260,7 @@ it('reclaims the same interrupted life occurrence with its saved empty passive r
   const original = f.store.request({ type: 'life-rule.list', companionId: 'alice' }).lifeOccurrences!.find(occ => occ.ruleId === rule.id)!;
   await f.service.close();
   const unrelated = f.store.appendMessage({ conversationId: f.scope.conversationId, authorId: 'user', content: '中断后新增的无关资料，不属于已准备的生活回忆。', replyDirective: 'none' });
-  f.store.request({ type: 'memory.record', ...f.scope, candidate: { content: unrelated.content, tags: [], sourceMessageIds: [unrelated.id], evidence: [{ sourceMessageId: unrelated.id, quote: unrelated.content }] } });
+  f.store.request({ type: 'memory.record', ...f.scope, candidate: { artifactKind: 'episode_memory' as const, content: unrelated.content, tags: [], sourceMessageIds: [unrelated.id], evidence: [{ sourceMessageId: unrelated.id, quote: unrelated.content }] } });
   f.fetchFn.mockImplementation(async (_url, init) => {
     const input = JSON.parse(JSON.parse(String(init?.body)).messages[1].content);
     expect(input.memoryContext).toBe(''); expect(input.eventId).toBe(original.id);

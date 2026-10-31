@@ -28,7 +28,7 @@ it('stops only the owned world job, releases its meeting, revokes the lease and 
   const room = store.openPrivate('alice').id;
   const job: CompanionWorldJob = { id: 'world_selected', kind: 'decision', companionId: 'alice', conversationId: room, status: 'running', leaseToken: 'old_world_lease', createdAt: at, throughEventSequence: 0, attempts: 1, sourceMemoryIds: [] };
   db(connection => {
-    for (const entry of [job, { ...job, id: 'world_other', companionId: 'bob', conversationId: store.openPrivate('bob').id, leaseToken: 'other_lease' }]) connection.prepare('INSERT INTO companion_world_jobs VALUES(?,?,?,?,?,?)').run(entry.id, entry.companionId, entry.kind, entry.status, '2026-10-26T08:10:00.000Z', JSON.stringify(entry));
+    for (const entry of [job, { ...job, id: 'world_other', companionId: 'bob', conversationId: store.openPrivate('bob').id, leaseToken: 'other_lease' }]) connection.prepare('INSERT INTO companion_world_jobs(id,companion_id,kind,status,lease_until,data) VALUES(?,?,?,?,?,?)').run(entry.id, entry.companionId, entry.kind, entry.status, '2026-10-26T08:10:00.000Z', JSON.stringify(entry));
     const state = JSON.parse((connection.prepare('SELECT data FROM companion_world WHERE id=1').get() as { data: string }).data);
     state.actors.find((actor: { companionId: string }) => actor.companionId === 'alice').meetingHold = { jobId: job.id, memberIds: ['alice', 'bob'], untilReal: Date.now() + 60000 };
     connection.prepare('UPDATE companion_world SET data=? WHERE id=1').run(JSON.stringify(state));
@@ -50,7 +50,7 @@ it('stops only the owned world job, releases its meeting, revokes the lease and 
 
 it('does not relabel a completed world job as manually stopped', () => {
   const room = store.openPrivate('alice').id;
-  db(connection => connection.prepare('INSERT INTO companion_world_jobs VALUES(?,?,?,?,?,?)').run('already_done', 'alice', 'decision', 'done', null,
+  db(connection => connection.prepare('INSERT INTO companion_world_jobs(id,companion_id,kind,status,lease_until,data) VALUES(?,?,?,?,?,?)').run('already_done', 'alice', 'decision', 'done', null,
     JSON.stringify({ id: 'already_done', companionId: 'alice', conversationId: room, kind: 'decision', status: 'done', throughEventSequence: 0, createdAt: at, attempts: 1, sourceMemoryIds: [] })));
   expect(store.request({ type: 'task-control.stop', companionId: 'alice', kind: 'world', id: 'already_done', stop }).taskControl?.stopped).toBe(false);
   expect(data('companion_world_jobs', 'already_done').stop).toBeUndefined();
@@ -59,7 +59,7 @@ it('does not relabel a completed world job as manually stopped', () => {
 it('does not recreate a manually stopped sleep episode or decision from an automatic tick', () => {
   const room = store.openPrivate('alice').id;
   const source = store.appendMessage({ conversationId: room, authorId: 'user', content: '保存这段真实经历作为睡眠整理来源。', replyDirective: 'none' });
-  store.request({ type: 'memory.record', companionId: 'alice', conversationId: room, candidate: { content: source.content, tags: ['经历'], sourceMessageIds: [source.id], evidence: [{ sourceMessageId: source.id, quote: source.content }] } });
+  store.request({ type: 'memory.record', companionId: 'alice', conversationId: room, candidate: { artifactKind: 'episode_memory' as const, content: source.content, tags: ['经历'], sourceMessageIds: [source.id], evidence: [{ sourceMessageId: source.id, quote: source.content }] } });
   const indexing = store.request({ type: 'memory.outbox.claim' }).memoryOutbox!;
   store.request({ type: 'memory.outbox.complete', id: indexing.id, leaseToken: indexing.leaseToken, indexed: true });
   db(connection => {
@@ -70,7 +70,7 @@ it('does not recreate a manually stopped sleep episode or decision from an autom
     for (const kind of ['decision', 'dream'] as const) {
       const job = { id: 'stopped_' + kind, kind, companionId: 'alice', conversationId: room, status: 'done', terminal: true, stop,
         throughEventSequence: through, createdAt: at, attempts: 1, sourceMemoryIds: [], ...(kind === 'dream' ? { sleepEpisodeId: episode } : {}) };
-      connection.prepare('INSERT INTO companion_world_jobs VALUES(?,?,?,?,?,?)').run(job.id, 'alice', kind, 'done', null, JSON.stringify(job));
+      connection.prepare('INSERT INTO companion_world_jobs(id,companion_id,kind,status,lease_until,data) VALUES(?,?,?,?,?,?)').run(job.id, 'alice', kind, 'done', null, JSON.stringify(job));
     }
     const world = new CompanionWorldStore(connection, () => defaultCompanionRoutineConfig(), () => [], () => undefined as never,
       () => undefined, () => undefined, () => '', () => '');

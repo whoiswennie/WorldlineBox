@@ -11,9 +11,9 @@ export const companionMemoryPolicySchema = z.strictObject({
   dream: z.strictObject({ probability: z.number().min(0).max(1), cooldownMs: z.number().int().min(28_800_000).max(259_200_000), maxAttempts: z.number().int().min(1).max(3) }),
 });
 export type CompanionMemoryPolicy = z.infer<typeof companionMemoryPolicySchema>;
-export const companionMemoryPolicyFileSchema = z.strictObject({ schema: z.literal('worldlinebox.companion-memory-policy-v1'),
+export const companionMemoryPolicyFileSchema = z.strictObject({ schema: z.literal('worldlinebox.companion-cognition-policy-v2'),
   companionId: z.string().regex(/^[a-zA-Z0-9_-]{1,100}$/u), policy: companionMemoryPolicySchema });
-export const COMPANION_MEMORY_POLICY_FILE = '记忆策略.json';
+export const COMPANION_MEMORY_POLICY_FILE = '认知策略.json';
 export function initialCompanionMemoryPolicy(mode: CompanionMemoryPolicy['mode'] = 'balanced'): CompanionMemoryPolicy {
   const policies: Record<CompanionMemoryPolicy['mode'], CompanionMemoryPolicy> = {
     quiet: { mode, capture: { quietMs: 120_000, maxWaitMs: 600_000, batchSize: 12 }, deep: { intervalMs: 43_200_000, maxDebtAgeMs: 172_800_000, minEpisodes: 5 }, dream: { probability: .3, cooldownMs: 57_600_000, maxAttempts: 2 } },

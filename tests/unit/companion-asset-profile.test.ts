@@ -1,313 +1,199 @@
-import { mkdtemp, readdir, readFile, writeFile, rm, unlink, mkdir, link, access } from 'node:fs/promises';
-import { randomUUID } from 'node:crypto';
+import { access, link, mkdtemp, readFile, readdir, rm, unlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterEach, expect, it, vi } from 'vitest';
 import { CompanionAssetProfileStore, renderCompanionAssetProfile } from '../../src/main/companions/asset-profile';
-import type { Companion } from '../../src/shared/companions';
-import { COMPANION_MEMORY_POLICY_FILE, initialCompanionMemoryPolicy } from '../../src/shared/companion-memory-policy';
+import { CompanionArtifactRegistry } from '../../src/main/companions/artifact-registry';
 import { assembleCompanionAssetContext } from '../../src/main/companions/asset-context';
-import { generateCompanionReply, generateCompanionStructured, generateCompanionText } from '../../src/main/companions/model';
-import { companionModelConnection, companionModelQuota } from '../../src/main/companions/model-quota';
+import type { Companion } from '../../src/shared/companions';
+import { registryStorageFixture } from '../fixtures/companion-registry-storage';
+import ts from 'typescript';
+import { companionLearningGoalResponseSchemas } from '../../src/main/companions/learning-goal-response';
 
-const roots: string[] = [];
-afterEach(async () => { for (const root of roots.splice(0)) {
-  if (path.dirname(root) !== path.resolve(tmpdir()) || !path.basename(root).startsWith('companion-asset-profile-')) throw Error('Unexpected cleanup');
-  await rm(root, { recursive: true, force: true });
-} });
-const owner: Companion = { id: 'alice', name: 'Alice', description: '初始简介', persona: '初始人格，只用于首次初始化。',
+const roots: string[] = [], databases: Array<{ close(): void }> = [];
+afterEach(async () => {
+  for (const db of databases.splice(0)) db.close();
+  for (const root of roots.splice(0)) {
+    if (path.dirname(root) !== path.resolve(tmpdir()) || !path.basename(root).startsWith('companion-asset-profile-')) throw Error('Unexpected cleanup');
+    await rm(root, { recursive: true, force: true });
+  }
+});
+const owner: Companion = { id: 'alice', name: 'Alice', description: '创建简介', persona: '任意创建人格，只是起点。',
   model: '', avatar: 'sister', builtin: true, proactive: false, active: true, createdAt: '2026-10-26T10:00:00Z' };
 async function fixture() {
   const root = await mkdtemp(path.join(tmpdir(), 'companion-asset-profile-')); roots.push(root);
-  const library = path.join(root, '伙伴记忆'), profiles = new CompanionAssetProfileStore(library);
-  return { root, library, profiles, initial: await profiles.bootstrap(owner) };
+  const library = path.join(root, '伙伴资产'), database = registryStorageFixture(root); databases.push(database);
+  const profiles = new CompanionAssetProfileStore(library, { registryStorage: database.storage });
+  return { root, library, database, profiles, initial: await profiles.bootstrap(owner) };
 }
 
-
-
-
-
-it('reads a live persona edit made while the main brain is waiting for a provider slot', async () => {
-  const f = await fixture(), file = path.join(f.initial.root, 'profile.md');
-  const fetchFn = vi.fn<typeof fetch>().mockImplementation(async () => new Response(JSON.stringify({ choices: [{ message: { content: '我会按现在的想法回应。' } }] })));
-  const config = { apiFormat: 'openai_chat' as const, model: randomUUID(), apiKey: 'fixture', baseUrl: 'https://provider.invalid',
-    resolveAssetContext: async (context: { system: string; user: string }, kind: 'reply' | 'structured' | 'text') => assembleCompanionAssetContext(context, await f.profiles.load(owner.id), kind) };
-  const input = { companion: owner, conversation: { id: 'room', kind: 'private' as const, title: 'room', memberIds: [owner.id],
-    pinned: false, muted: false, unread: 0, lastMessage: '', updatedAt: owner.createdAt }, messages: [], memories: [] };
-  const connection = companionModelConnection(config), policy = randomUUID();
-  let release!: () => void; const hold = new Promise<void>(resolve => { release = resolve; });
-  companionModelQuota.configureConnection(connection, 1, policy);
-  const blocker = companionModelQuota.run({ ownerId: 'another-owner', connectionId: connection, priority: 'foreground' }, () => hold);
-  let pending: ReturnType<typeof generateCompanionReply> | undefined;
-  try {
-    pending = generateCompanionReply(input, config, undefined, { fetchFn, loop: true });
-    await vi.waitFor(() => expect(companionModelQuota.snapshot().queued).toBe(1));
-    await writeFile(file, renderCompanionAssetProfile(owner.id, { ...f.initial.profile, persona: 'QUEUED_LIVE_CHARACTER_UPDATE：现在说话更直接。' }), 'utf8');
-    release(); await blocker; await pending;
-    const wire = JSON.parse(String(fetchFn.mock.calls[0]![1]?.body));
-    expect(wire.messages[0].content).toContain('QUEUED_LIVE_CHARACTER_UPDATE');
-    expect(wire.messages[0].content).not.toContain(owner.persona);
-    expect(wire.messages[0].content).toContain('【主脑角色扮演准则】');
-  } finally { release(); await blocker; await pending?.catch(() => undefined); companionModelQuota.releaseConnectionPolicy(connection, policy); }
+it('seals the authored creation profile once with a stable creation payload and empty typed memory directories', async () => {
+  const f = await fixture(), registry = await f.profiles.artifacts(owner.id);
+  expect((await f.profiles.readInstance(owner.id)).createdAt).toBe(owner.createdAt);
+  expect((await registry.read({ artifactId: 'origin:creation', consumer: 'audit' })).text).toBe(renderCompanionAssetProfile(owner.id, f.initial.profile));
+  const restart = new CompanionAssetProfileStore(f.library, { registryStorage: f.database.storage });
+  expect((await restart.bootstrap({ ...owner, persona: '旧数据库不能重新设定角色。' })).profile.persona).toBe(owner.persona);
+  expect(await readdir(path.join(f.initial.root, '记忆', '经历'))).toEqual([]);
+  expect(await readdir(path.join(f.initial.root, '记忆', '自我认识'))).toEqual([]);
+  expect((await registry.list('episode_recall'))).toEqual([]);
 });
 
-it('allows explicit reset initialization after a durable owner was removed without weakening normal missing-file guards', async () => {
-  const f = await fixture(), initialized = new Set([owner.id]);
-  const store = new CompanionAssetProfileStore(f.library, { initialized: async id => initialized.has(id) });
+it('rejects all direct post-creation profile and prompt writes without modifying canonical bytes', async () => {
+  const f = await fixture(), before = await readFile(path.join(f.initial.root, 'profile.md'), 'utf8');
+  await expect(f.profiles.writeProfile({ companionId: owner.id, expectedRevision: f.initial.profileRevision,
+    profile: { name: '手改名字', description: '', persona: '手改人格' } })).rejects.toMatchObject({ code: 'READ_ONLY' });
+  await expect(f.profiles.writePrompt({ companionId: owner.id, expectedRevision: f.initial.promptRevision,
+    relativePath: f.initial.modules[0]!.path, content: '手改规则' })).rejects.toMatchObject({ code: 'READ_ONLY' });
+  expect(await readFile(path.join(f.initial.root, 'profile.md'), 'utf8')).toBe(before);
+});
+
+it('preserves current SQL runtime configuration while hydrating only canonical identity fields', async () => {
+  const f = await fixture();
+  const runtime: Companion = { ...owner, name: '旧名字', description: '旧简介', persona: '旧人格', avatar: 'sister', proactive: true,
+    inputMode: 'queue', avatarAttachmentId: 'current_avatar', appearanceAttachmentId: 'current_appearance' };
+  expect(await f.profiles.hydrate(runtime)).toMatchObject({ name: owner.name, description: owner.description, persona: owner.persona,
+    assetProfileRevision: f.initial.profileRevision, avatar: 'sister', proactive: true, inputMode: 'queue',
+    avatarAttachmentId: 'current_avatar', appearanceAttachmentId: 'current_appearance' });
+  expect((await f.profiles.load(owner.id)).profileRevision).toBe(f.initial.profileRevision);
+});
+
+it('batches strict profile and prompt metadata while reopening every file at each separate admission', async () => {
+  const f = await fixture(); f.database.commands.length = 0;
+  const read = vi.spyOn(f.profiles as unknown as { read(root: string, file: string, max?: number): Promise<{ text: string; hash: string; stamp: string }> }, 'read');
+  const bytes = vi.spyOn(CompanionArtifactRegistry.prototype as unknown as { bytes(relative: string, admitted?: (stamp: string) => void): Promise<Buffer> }, 'bytes');
+  const first = await f.profiles.load(owner.id), files = Object.keys(first.fileRevisions);
+  expect(read).not.toHaveBeenCalled();
+  for (const file of files) expect(bytes.mock.calls.filter(([relative]) => relative === file)).toHaveLength(2);
+  expect(first.modules.length).toBeGreaterThan(15);
+  const commands = f.database.commands.filter(command => command.type === 'cognition.registry.read');
+  expect(commands.filter(command => command.relativePaths)).toHaveLength(2);
+  expect(commands.some(command => command.relativePath)).toBe(false);
+  expect(commands.length).toBeLessThanOrEqual(12);
+  const final = f.database.commands.at(-1)!;
+  expect(final.type).toBe('cognition.registry.refs.validate');
+  if (final.type === 'cognition.registry.refs.validate') expect(final.references.length).toBeGreaterThan(first.modules.length);
+  expect((await f.profiles.load(owner.id)).revision).toBe(first.revision);
+  expect(read).not.toHaveBeenCalled();
+  for (const file of files) expect(bytes.mock.calls.filter(([relative]) => relative === file)).toHaveLength(4);
+  f.database.commands.length = 0;
+  await f.profiles.loadProfile(owner.id);
+  const profileReads = f.database.commands.filter(command => command.type === 'cognition.registry.read');
+  expect(profileReads.filter(command => command.relativePaths)).toMatchObject([{ relativePaths: ['.伙伴配置.json', 'profile.md', 'instance.json'] }]);
+  expect(profileReads.length).toBeLessThanOrEqual(10);
+  read.mockRestore(); bytes.mockRestore();
+});
+
+it('rechecks the full selected artifact union after strict reads so a withdrawn module cannot escape a completed path batch', async () => {
+  const f = await fixture(), registry = await f.profiles.artifacts(owner.id);
+  const target = f.initial.modules.find(module => module.path.startsWith('提示词/处理职能/'))!, artifact = (await registry.findByPath(target.path))!;
+  const targetReader = f.profiles as unknown as { registeredRead(root: string, file: string, current: Awaited<ReturnType<CompanionArtifactRegistry['read']>>, max?: number): Promise<{ text: string; hash: string; stamp: string }> };
+  const original = targetReader.registeredRead.bind(f.profiles); let revoked = false;
+  const read = vi.spyOn(targetReader, 'registeredRead').mockImplementation(async (root, file, current, max) => {
+    const value = await original(root, file, current, max);
+    if (file === target.path && !revoked) { revoked = true; await registry.revoke(artifact.artifactId); }
+    return value;
+  });
+  try { await expect(f.profiles.load(owner.id)).rejects.toBeDefined(); expect(revoked).toBe(true); }
+  finally { read.mockRestore(); }
+});
+
+it('admits a new registered role publication on the next strict snapshot without mutating the earlier identity or guidance', async () => {
+  const f = await fixture(), registry = await f.profiles.artifacts(owner.id);
+  const before = await f.profiles.load(owner.id), module = before.modules.find(value => value.purposes.includes('companion_reply'))!;
+  const artifact = (await registry.findByPath(module.path))!, content = module.content + '\n本次正式发布的角色指导：先明确真实依据，再保留独立判断。\n';
+  const context = { system: '实际宿主合同', user: JSON.stringify({ purpose: 'companion_reply', invocation: { conversationId: 'room' } }) };
+  const originalFrame = assembleCompanionAssetContext(context, before, 'reply');
+  await registry.publish({ artifactId: artifact.artifactId, kind: artifact.kind, relativePath: artifact.relativePath,
+    producer: { kind: 'system', id: 'fixture:role-publication' }, expectedRevision: artifact.contentRevision, content,
+    sourceRefs: artifact.sourceRefs, dependencyRefs: artifact.dependencyRefs, visibility: artifact.visibility,
+    allowedConsumers: artifact.allowedConsumers, retentionClass: artifact.retentionClass, operationId: 'fixture:role:r2' }, async () => undefined);
+  const after = await f.profiles.load(owner.id), nextFrame = assembleCompanionAssetContext(context, after, 'reply');
+  expect(after.profileRevision).toBe(before.profileRevision);
+  expect(after.profile.persona).toBe(before.profile.persona);
+  expect(after.personaFragments).toEqual(before.personaFragments);
+  expect(after.promptRevision).not.toBe(before.promptRevision);
+  expect(nextFrame.frame.roleGuidance).toContain('本次正式发布的角色指导');
+  expect(nextFrame.frame.identity).toBe(originalFrame.frame.identity);
+  expect(assembleCompanionAssetContext(context, before, 'reply')).toEqual(originalFrame);
+  expect(before.prompts.companion_reply).not.toContain('本次正式发布的角色指导');
+});
+
+it('rejects a newly withdrawn role during the next strict admission while keeping the independent current profile available', async () => {
+  const f = await fixture(), before = await f.profiles.load(owner.id), registry = await f.profiles.artifacts(owner.id);
+  const module = before.modules.find(value => value.purposes.includes('companion_reply'))!, artifact = (await registry.findByPath(module.path))!;
+  await registry.revoke(artifact.artifactId);
+  await expect(f.profiles.load(owner.id)).rejects.toBeDefined();
+  const identity = await f.profiles.loadProfile(owner.id);
+  expect(identity.profileRevision).toBe(before.profileRevision);
+  expect(identity.profile.persona).toBe(before.profile.persona);
+  expect(before.modules.find(value => value.path === module.path)?.content).toBe(module.content);
+});
+
+it('fails closed for edited or missing current files and cannot reseed a deleted initialized namespace', async () => {
+  const f = await fixture(), file = path.join(f.initial.root, 'profile.md');
+  await writeFile(file, renderCompanionAssetProfile(owner.id, { ...f.initial.profile, persona: 'UNREGISTERED_EXTERNAL_PERSONA' }));
+  await expect(f.profiles.loadProfile(owner.id)).rejects.toMatchObject({ code: 'CHANGED' });
+  await writeFile(file, renderCompanionAssetProfile(owner.id, f.initial.profile)); await unlink(file);
+  await expect(f.profiles.bootstrap(owner)).rejects.toBeDefined(); await expect(access(file)).rejects.toMatchObject({ code: 'ENOENT' });
   const directory = path.resolve(f.initial.root);
   if (path.dirname(directory) !== path.resolve(f.library)) throw new Error('Unexpected fixture owner path.');
   await rm(directory, { recursive: true });
-  await expect(store.bootstrap(owner)).rejects.toMatchObject({ code: 'MISSING' });
-  const fresh = await store.initializeAfterReset({ ...owner, persona: '明确重置后的初始人格。' });
-  expect(fresh.profile.persona).toBe('明确重置后的初始人格。'); expect(fresh.memoryPolicy).toBeDefined();
-  await unlink(path.join(directory, 'profile.md'));
-  await expect(store.bootstrap(owner)).rejects.toMatchObject({ code: 'MISSING' });
+  const restart = new CompanionAssetProfileStore(f.library, { registryStorage: f.database.storage, initialized: async () => true });
+  await expect(restart.bootstrap(owner)).rejects.toBeDefined(); await expect(access(file)).rejects.toMatchObject({ code: 'ENOENT' });
 });
 
-
-
-
-
-it('initializes owner-local assets once, then hydrates live files without overwriting authored profile or prompt edits', async () => {
-  const f = await fixture(), profileFile = path.join(f.initial.root, 'profile.md');
-  expect(f.initial.profile.persona).toBe(owner.persona);
-  expect(f.initial.prompts.companion_reply).toContain('摘要没有提到某事，不证明全库不存在');
-  expect(f.initial.prompts.vcp_experience_journal).toContain('原文引用只证明来源，不等于其中事实已经在正文表达');
-  const edited = { ...f.initial.profile, name: '海岚', description: '外部文件中的当前简介', persona: '我现在的完整设定来自这个文件。' };
-  await writeFile(profileFile, renderCompanionAssetProfile(owner.id, edited), 'utf8');
-  await writeFile(path.join(f.initial.root, '提示词', '对话.md'), '按此文件中的新交流习惯回应。', 'utf8');
-  const current = await f.profiles.bootstrap({ ...owner, name: '过时数据库名', persona: '不能覆盖人工文件的旧数据库内容' });
-  expect(current.profile).toEqual(edited); expect(current.profileRevision).not.toBe(f.initial.profileRevision);
-  expect(current.prompts.chat).toContain('新交流习惯'); expect(current.promptRevision).not.toBe(f.initial.promptRevision);
-  expect(await f.profiles.hydrate(owner)).toMatchObject({ name: edited.name, description: edited.description, persona: edited.persona,
-    assetProfileRevision: current.profileRevision, avatar: owner.avatar });
-  expect(await readFile(profileFile, 'utf8')).toBe(renderCompanionAssetProfile(owner.id, edited));
-});
-
-it('initializes editable focus guidance and reads its actual current file for every provider admission', async () => {
-  const f = await fixture(), module = f.initial.modules.find(item => item.purposes.includes('vcp_focus_guidance'))!;
-  expect(module.path).toBe('提示词/记忆聚焦指导.md');
-  expect(module.content).toContain('当前明确换话题');
-  const file = path.join(f.initial.root, ...module.path.split('/'));
-  const fetchFn = vi.fn<typeof fetch>().mockImplementation(async () => new Response(JSON.stringify({ choices: [{ message: { content: 'focused result' } }] })));
-  const native = { system: '', user: 'PREPARED_NATIVE_TEMPLATE_WITH_FIXED_SOURCES' };
-  const config = { apiFormat: 'openai_chat' as const, model: 'fixture-model', apiKey: 'fixture', baseUrl: 'https://provider.invalid', ownerId: owner.id,
-    resolveAssetContext: async (context: typeof native, kind: 'reply' | 'structured' | 'text') => assembleCompanionAssetContext(context, await f.profiles.load(owner.id), kind) };
-  await writeFile(file, 'OWNER_FILE_FOCUS_V1', 'utf8');
-  await generateCompanionText(native, config, undefined, { fetchFn });
-  await writeFile(file, 'OWNER_FILE_FOCUS_V2', 'utf8');
-  await generateCompanionText(native, config, undefined, { fetchFn });
-  const wires = fetchFn.mock.calls.map(call => JSON.parse(String(call[1]?.body)) as { messages: Array<{ role: string; content: string }> });
-  expect(wires[0]!.messages[0]!.content).toContain('OWNER_FILE_FOCUS_V1');
-  expect(wires[1]!.messages[0]!.content).toContain('OWNER_FILE_FOCUS_V2');
-  expect(wires[1]!.messages[0]!.content).not.toContain('OWNER_FILE_FOCUS_V1');
-  expect(wires.every(wire => wire.messages.at(-1)!.content === native.user)).toBe(true);
-  expect(wires.every(wire => !wire.messages[0]!.content.includes('当前明确换话题'))).toBe(true);
-  await unlink(file);
-  await expect(generateCompanionText(native, config, undefined, { fetchFn })).rejects.toThrow();
-  expect(fetchFn).toHaveBeenCalledTimes(2);
-  await expect(f.profiles.bootstrap(owner)).rejects.toMatchObject({ code: 'MISSING' });
-  await expect(access(file)).rejects.toMatchObject({ code: 'ENOENT' });
-});
-
-it('honors an authored manifest default for focus without adding an undeclared initialization module', async () => {
-  const f = await fixture(), manifestFile = path.join(f.initial.root, '提示词', 'manifest.json');
-  const manifest = JSON.parse(await readFile(manifestFile, 'utf8')) as { purposes: Record<string, string[]> };
-  delete manifest.purposes.vcp_focus_guidance;
-  await writeFile(manifestFile, JSON.stringify(manifest), 'utf8');
-  await writeFile(path.join(f.initial.root, '提示词', '默认.md'), 'AUTHORED_OWNER_DEFAULT_FOR_UNMAPPED_PURPOSES', 'utf8');
-  const guide = path.join(f.initial.root, '提示词', '记忆聚焦指导.md'); await unlink(guide);
-  const current = await f.profiles.bootstrap(owner);
-  const assembled = assembleCompanionAssetContext({ system: '', user: 'immutable prepared input' }, current, 'text');
-  expect(assembled.system).toContain('AUTHORED_OWNER_DEFAULT_FOR_UNMAPPED_PURPOSES');
-  expect(assembled.system).not.toContain('当前明确换话题');
-  expect(assembled.user).toBe('immutable prepared input');
-  await expect(access(guide)).rejects.toMatchObject({ code: 'ENOENT' });
-  expect(JSON.parse(await readFile(manifestFile, 'utf8'))).toEqual(manifest);
-});
-
-it('reads a queued native focus guidance edit after its connection slot is granted', async () => {
-  const f = await fixture(), file = path.join(f.initial.root, '提示词', '记忆聚焦指导.md');
-  await writeFile(file, 'BEFORE_QUEUE_GUIDANCE', 'utf8');
-  const fetchFn = vi.fn<typeof fetch>().mockImplementation(async () => new Response(JSON.stringify({ choices: [{ message: { content: 'focused result' } }] })));
-  const config = { apiFormat: 'openai_chat' as const, model: randomUUID(), apiKey: 'fixture', baseUrl: 'https://provider.invalid', ownerId: owner.id,
-    resolveAssetContext: async (context: { system: string; user: string }, kind: 'reply' | 'structured' | 'text') => assembleCompanionAssetContext(context, await f.profiles.load(owner.id), kind) };
-  const connection = companionModelConnection(config), policy = randomUUID();
-  let release!: () => void; const hold = new Promise<void>(resolve => { release = resolve; });
-  companionModelQuota.configureConnection(connection, 1, policy);
-  const blocker = companionModelQuota.run({ ownerId: 'different-owner', connectionId: connection, priority: 'foreground' }, () => hold);
-  let pending: Promise<string> | undefined;
-  try {
-    pending = generateCompanionText({ system: '', user: 'FIXED_PREPARED_NATIVE_INPUT' }, config, undefined, { fetchFn });
-    await vi.waitFor(() => expect(companionModelQuota.snapshot().queued).toBe(1));
-    expect(fetchFn).not.toHaveBeenCalled();
-    await writeFile(file, 'EDITED_WHILE_WAITING_GUIDANCE', 'utf8');
-    release(); await blocker; await pending;
-    const wire = JSON.parse(String(fetchFn.mock.calls[0]![1]?.body)) as { messages: Array<{ content: string }> };
-    expect(wire.messages[0]!.content).toContain('EDITED_WHILE_WAITING_GUIDANCE');
-    expect(wire.messages[0]!.content).not.toContain('BEFORE_QUEUE_GUIDANCE');
-    expect(wire.messages.at(-1)!.content).toBe('FIXED_PREPARED_NATIVE_INPUT');
-  } finally { release(); await blocker; await pending?.catch(() => undefined); companionModelQuota.releaseConnectionPolicy(connection, policy); }
-});
-
-it.each(['profile.md', '提示词/对话.md', '.伙伴配置.json', COMPANION_MEMORY_POLICY_FILE])('fails visibly when initialized %s is removed and never silently restores seeds', async relative => {
-  const f = await fixture(), file = path.join(f.initial.root, ...relative.split('/')); await unlink(file);
-  await expect(f.profiles.load(owner.id)).rejects.toMatchObject({ code: 'MISSING' });
-  await expect(f.profiles.bootstrap(owner)).rejects.toMatchObject({ code: relative === '.伙伴配置.json' ? 'CONFLICT' : 'MISSING' });
-  await expect(access(file)).rejects.toMatchObject({ code: 'ENOENT' });
-});
-
-it('uses a durable host receipt to refuse reseeding a deleted owner namespace after restart', async () => {
+it('copies native templates only at creation, registers every module purpose, and refuses unregistered model purposes', async () => {
   const root = await mkdtemp(path.join(tmpdir(), 'companion-asset-profile-')); roots.push(root);
-  const initialized = new Set<string>(), library = path.join(root, '伙伴记忆');
-  const options = { initialized: async (id: string) => initialized.has(id), markInitialized: async (id: string) => { initialized.add(id); } };
-  const initial = await new CompanionAssetProfileStore(library, options).bootstrap(owner);
-  expect(initialized.has(owner.id)).toBe(true);
-  // The receipt belongs to host lifecycle metadata, not the owner directory.
-  await rm(initial.root, { recursive: true });
-  const restarted = new CompanionAssetProfileStore(library, options);
-  await expect(restarted.bootstrap({ ...owner, persona: '旧缓存不应重新成为初始化素材。' })).rejects.toMatchObject({ code: 'MISSING' });
-  await expect(access(initial.root)).rejects.toMatchObject({ code: 'ENOENT' });
+  const database = registryStorageFixture(root); databases.push(database);
+  const focus = vi.fn(async () => 'EXACT_NATIVE_FOCUS_TEMPLATE'), tags = vi.fn(async () => 'EXACT_NATIVE_TAG_TEMPLATE');
+  const profiles = new CompanionAssetProfileStore(path.join(root, 'assets'), { registryStorage: database.storage,
+    loadInitialFocusPrompt: focus, loadInitialTagPrompt: tags,
+    loadInitialTimelinePrompts: async () => ({ timeline: 'EXACT_NATIVE_TIMELINE', summary: 'EXACT_NATIVE_SUMMARY' }) });
+  const initial = await profiles.bootstrap(owner);
+  for (let iteration = 0; iteration < 3; iteration++) {
+    const loaded = await profiles.load(owner.id);
+    expect(loaded.nativeFocusTemplate).toBe('EXACT_NATIVE_FOCUS_TEMPLATE\n'); expect(loaded.tagMasterTemplate).toBe('EXACT_NATIVE_TAG_TEMPLATE\n');
+    expect(loaded.modules.every(module => module.purposes.length > 0)).toBe(true);
+    expect(loaded.modules.map(module => module.path)).toEqual(initial.modules.map(module => module.path));
+  }
+  expect(focus).toHaveBeenCalledTimes(1); expect(tags).toHaveBeenCalledTimes(1);
+  expect(() => assembleCompanionAssetContext({ system: '', user: JSON.stringify({ purpose: 'UNREGISTERED_PURPOSE' }) }, initial, 'structured')).toThrow('未显式登记');
+  const assembled = assembleCompanionAssetContext({ system: '本轮职责', user: JSON.stringify({ purpose: 'companion_reply', conversationId: 'private_alice' }) }, initial, 'reply');
+  expect(assembled.system).toContain(owner.persona); expect(JSON.stringify(assembled.frame)).toContain(initial.profileRevision);
+  const repairModules = initial.modules.filter(module => module.purposes.includes('companion_structured_repair'));
+  expect(repairModules).toHaveLength(2); expect(repairModules.every(module => module.path.startsWith('提示词/处理职能/'))).toBe(true);
+  expect(assembleCompanionAssetContext({ system: '本次修复合同', user: JSON.stringify({ purpose: 'companion_structured_repair' }) }, initial, 'structured').system).toContain('不新增原材料没有的事实');
 });
 
-it('recovers a missing host receipt from a valid completed marker without copying templates again', async () => {
-  const f = await fixture(), markInitialized = vi.fn(async () => undefined), loader = vi.fn(async () => '不能重新读取初始模板。');
-  const current = { ...f.initial.profile, persona: '初始化后由用户编辑的设定。' };
-  await writeFile(path.join(f.initial.root, 'profile.md'), renderCompanionAssetProfile(owner.id, current), 'utf8');
-  const restarted = new CompanionAssetProfileStore(f.library, { initialized: async () => false, markInitialized, loadInitialFocusPrompt: loader });
-  expect((await restarted.bootstrap(owner)).profile.persona).toBe(current.persona);
-  expect(markInitialized).toHaveBeenCalledWith(owner.id); expect(loader).not.toHaveBeenCalled();
+it('rejects linked canonical files and unauthorized owner identifiers before reading any content', async () => {
+  const f = await fixture(), canonical = path.join(f.initial.root, 'profile.md'), linked = path.join(f.root, 'unregistered-copy.md');
+  await link(canonical, linked);
+  await expect(f.profiles.load(owner.id)).rejects.toMatchObject({ code: 'UNSAFE' });
+  await unlink(linked);
+  await expect(f.profiles.load('../bob')).rejects.toBeDefined();
+  expect((await f.profiles.load(owner.id)).profileRevision).toBe(f.initial.profileRevision);
 });
 
-it('hydrates fresh profile fields without reading prompt modules after durable initialization, while full admission stays strict', async () => {
-  const root = await mkdtemp(path.join(tmpdir(), 'companion-asset-profile-')); roots.push(root);
-  const initialized = new Set<string>(), profiles = new CompanionAssetProfileStore(path.join(root, '伙伴记忆'), {
-    initialized: async id => initialized.has(id), markInitialized: async id => { initialized.add(id); },
-  });
-  const first = await profiles.bootstrapProfile(owner), current = { ...first.profile, name: '状态读取的当前名字', persona: '状态仍实时读人格正文。' };
-  await writeFile(path.join(first.root, 'profile.md'), renderCompanionAssetProfile(owner.id, current), 'utf8');
-  await unlink(path.join(first.root, '提示词', '对话.md'));
-  const fields = await profiles.bootstrapProfile(owner), hydrated = profiles.hydrateProfileFromSnapshot(owner, fields);
-  expect(hydrated).toMatchObject({ name: current.name, persona: current.persona, assetProfileRevision: fields.profileRevision });
-  expect(hydrated).not.toHaveProperty('assetPromptRevision');
-  await expect(profiles.load(owner.id)).rejects.toMatchObject({ code: 'MISSING' });
-  await unlink(path.join(first.root, '.伙伴配置.json'));
-  await expect(profiles.bootstrapProfile(owner)).rejects.toMatchObject({ code: 'MISSING' });
-  await expect(access(path.join(first.root, '.伙伴配置.json'))).rejects.toMatchObject({ code: 'ENOENT' });
-});
-
-it('writes software profile and prompt edits to their canonical files with conflict checks against external edits', async () => {
-  const f = await fixture();
-  const updated = await f.profiles.writeProfile({ companionId: owner.id, expectedRevision: f.initial.profileRevision,
-    profile: { ...f.initial.profile, name: '软件保存的名字', persona: '软件保存的完整人格。' } });
-  expect(await readFile(path.join(updated.root, 'profile.md'), 'utf8')).toContain('软件保存的完整人格');
-  await expect(f.profiles.writeProfile({ companionId: owner.id, expectedRevision: f.initial.profileRevision, profile: f.initial.profile })).rejects.toMatchObject({ code: 'CONFLICT' });
-  const prompt = '提示词/对话.md';
-  const changed = await f.profiles.writePrompt({ companionId: owner.id, relativePath: prompt, expectedRevision: updated.fileRevisions[prompt]!, content: '新的对话指导。' });
-  expect(changed.prompts.chat).toContain('新的对话指导');
-  await writeFile(path.join(updated.root, '提示词', '对话.md'), '随后外部编辑的对话指导。', 'utf8');
-  await expect(f.profiles.writePrompt({ companionId: owner.id, relativePath: prompt, expectedRevision: changed.fileRevisions[prompt]!, content: '旧编辑器内容' })).rejects.toMatchObject({ code: 'CONFLICT' });
-  expect((await f.profiles.load(owner.id)).prompts.chat).toContain('随后外部编辑');
-});
-
-it('stores owner maintenance policy as editable JSON with live validation and file CAS, outside model prompts', async () => {
-  const f = await fixture(), module = f.initial.modules.find(item => item.path === COMPANION_MEMORY_POLICY_FILE)!;
-  expect(module.purposes).toEqual(['host_policy']); expect(f.initial.memoryPolicy).toEqual(initialCompanionMemoryPolicy());
-  const policy = { schema: 'worldlinebox.companion-memory-policy-v1', companionId: 'alice', policy: initialCompanionMemoryPolicy('quiet') };
-  const changed = await f.profiles.writePrompt({ companionId: 'alice', relativePath: module.path, expectedRevision: module.revision, content: JSON.stringify(policy) });
-  expect(changed.memoryPolicy?.mode).toBe('quiet'); expect(changed.memoryPolicyRevision).not.toBe(module.revision);
-  expect(JSON.parse(await readFile(path.join(changed.root, module.path), 'utf8'))).toEqual(policy);
-  expect(Object.values(changed.prompts).join('\n')).not.toContain('worldlinebox.companion-memory-policy-v1');
-  await expect(f.profiles.writePrompt({ companionId: 'alice', relativePath: module.path, expectedRevision: module.revision, content: JSON.stringify(policy) })).rejects.toMatchObject({ code: 'CONFLICT' });
-  policy.policy.capture.batchSize = 13;
-  await expect(f.profiles.writePrompt({ companionId: 'alice', relativePath: module.path, expectedRevision: changed.memoryPolicyRevision, content: JSON.stringify(policy) })).rejects.toBeDefined();
-  await writeFile(path.join(changed.root, module.path), '{invalid', 'utf8');
-  const invalid = await f.profiles.load('alice'); expect(invalid.memoryPolicy).toBeUndefined(); expect(invalid.memoryPolicyError).toContain('暂停');
-  expect(invalid.modules.find(module => module.path === COMPANION_MEMORY_POLICY_FILE)?.content).toBe('{invalid');
-  expect(invalid.profile.persona).toBe(owner.persona); expect(invalid.prompts.chat).toContain('自然交流');
-  const fetchFn = vi.fn<typeof fetch>(async () => new Response(JSON.stringify({ choices: [{ message: { content: '{"ordinaryTaskStillWorks":true}' } }] })));
-  expect(await generateCompanionStructured({ system: 'HOST_TECHNICAL_CONTRACT', user: JSON.stringify({ purpose: 'companion_reply', companion: owner }) }, {
-    apiFormat: 'openai_chat', model: 'policy-isolation-fixture', baseUrl: 'https://fixture.invalid', apiKey: 'synthetic-only',
-    resolveAssetContext: async (context, kind) => assembleCompanionAssetContext(context, await f.profiles.load('alice'), kind),
-  }, undefined, { fetchFn })).toEqual({ ordinaryTaskStillWorks: true });
-  expect(JSON.parse(String(fetchFn.mock.calls[0]![1]!.body)).messages[0].content).not.toContain('{invalid');
-  policy.policy.capture.batchSize = 2;
-  const repaired = await f.profiles.writePrompt({ companionId: 'alice', relativePath: module.path, expectedRevision: invalid.memoryPolicyRevision, content: JSON.stringify(policy) });
-  expect(repaired.memoryPolicy?.capture.batchSize).toBe(2); expect(repaired.memoryPolicyError).toBeUndefined();
-});
-
-it('isolates owners and serializes stale writes even across two adapters for the same directory', async () => {
-  const f = await fixture(); await f.profiles.bootstrap({ ...owner, id: 'bob', name: 'Bob', persona: '另一伙伴独立人格。' });
-  const otherAdapter = new CompanionAssetProfileStore(f.library), expectedRevision = f.initial.profileRevision;
-  const results = await Promise.allSettled([f.profiles.writeProfile({ companionId: owner.id, expectedRevision, profile: { ...f.initial.profile, name: '第一位编辑者' } }),
-    otherAdapter.writeProfile({ companionId: owner.id, expectedRevision, profile: { ...f.initial.profile, name: '过时的第二位编辑者' } })]);
-  expect(results.map(result => result.status)).toEqual(['fulfilled', 'rejected']);
-  expect((await f.profiles.load('bob')).profile).toMatchObject({ name: 'Bob', persona: '另一伙伴独立人格。' });
-  const text = renderCompanionAssetProfile('bob', { ...f.initial.profile, name: '不能改owner' });
-  await writeFile(path.join(f.initial.root, 'profile.md'), text, 'utf8');
-  await expect(f.profiles.load('alice')).rejects.toMatchObject({ code: 'INVALID' });
-});
-
-it('keeps public settings in the same canonical profile transaction and preserves them during a partial persona edit', async () => {
-  const f = await fixture();
-  const changed = await f.profiles.writeProfile({ companionId: 'alice', expectedRevision: f.initial.profileRevision,
-    profile: { name: 'Alice', description: '当前简介', persona: '当前人格。', avatar: 'custom', proactive: true, inputMode: 'queue', avatarAttachmentId: 'approved_avatar' } });
-  expect(await f.profiles.hydrate({ ...owner, avatar: 'flash', proactive: false, inputMode: 'steer' })).toMatchObject({ avatar: 'custom', proactive: true,
-    inputMode: 'queue', avatarAttachmentId: 'approved_avatar' });
-  const partial = await f.profiles.writeProfile({ companionId: 'alice', expectedRevision: changed.profileRevision,
-    profile: { name: 'Alice', description: '当前简介', persona: '只修改人格。' } });
-  expect(partial.profile).toMatchObject({ avatar: 'custom', proactive: true, inputMode: 'queue', avatarAttachmentId: 'approved_avatar' });
-  const cleared = await f.profiles.writeProfile({ companionId: 'alice', expectedRevision: partial.profileRevision,
-    profile: { name: 'Alice', description: '当前简介', persona: '只修改人格。', avatarAttachmentId: undefined } });
-  expect(cleared.profile.avatarAttachmentId).toBeNull(); expect((await f.profiles.hydrate(owner)).avatarAttachmentId).toBeUndefined();
-});
-
-it('rejects malformed and out-of-owner prompt manifests instead of reading arbitrary files', async () => {
-  const f = await fixture(), manifestFile = path.join(f.initial.root, '提示词', 'manifest.json');
-  const manifest = JSON.parse(await readFile(manifestFile, 'utf8'));
-  manifest.common = ['提示词/../../bob/profile.md']; await writeFile(manifestFile, JSON.stringify(manifest), 'utf8');
-  await expect(f.profiles.load('alice')).rejects.toMatchObject({ code: 'INVALID' });
-});
-
-it('copies the native focus template only at initialization and preserves exact owner-edited text afterwards', async () => {
-  const root = await mkdtemp(path.join(tmpdir(), 'companion-asset-profile-')); roots.push(root);
-  const original = '\uFEFF  NATIVE {{query}}\n{{memories}}\n\n';
-  const loader = vi.fn(async () => original), tags = '\uFEFFNATIVE_TAG {{content}}\n\n', tagLoader = vi.fn(async () => tags);
-  const timeline = '\uFEFFORIGINAL_TIMELINE {{agentName}} {{month}}\n\n', summary = 'ORIGINAL_SUMMARY {{agentName}} {{month}}\n';
-  const timelineLoader = vi.fn(async () => ({ timeline, summary }));
-  const profiles = new CompanionAssetProfileStore(path.join(root, '伙伴记忆'), { loadInitialFocusPrompt: loader, loadInitialTagPrompt: tagLoader, loadInitialTimelinePrompts: timelineLoader });
-  const first = await profiles.bootstrap(owner); expect(first.nativeFocusTemplate).toBe(original); expect(loader).toHaveBeenCalledOnce();
-  expect(first.tagMasterTemplate).toBe(tags);
-  expect(first.nativeTimelineTemplate).toBe(timeline); expect(first.nativeSummaryTemplate).toBe(summary);
-  const native = first.modules.find(module => module.purposes.includes('vcp_aimemo'))!;
-  expect(native.path).toBe('提示词/记忆聚焦.md'); expect(native.content).toBe(original);
-  await profiles.writePrompt({ companionId: owner.id, relativePath: native.path, expectedRevision: native.revision, content: '\nMY EDITED {{query}}\n' });
-  expect((await profiles.bootstrap({ ...owner, persona: '软件升级后的种子' })).nativeFocusTemplate).toBe('\nMY EDITED {{query}}\n');
-  expect(loader).toHaveBeenCalledOnce();
-  const tag = first.modules.find(module => module.purposes.includes('vcp_tagmaster'))!;
-  await profiles.writePrompt({ companionId: owner.id, relativePath: tag.path, expectedRevision: tag.revision, content: 'MY_TAG {{content}}\n' });
-  expect((await profiles.bootstrap(owner)).tagMasterTemplate).toBe('MY_TAG {{content}}\n'); expect(tagLoader).toHaveBeenCalledOnce();
-  const month = first.modules.find(module => module.purposes.includes('native_timeline'))!;
-  await profiles.writePrompt({ companionId: owner.id, relativePath: month.path, expectedRevision: month.revision, content: 'MY_MONTH {{agentName}} {{month}}\n' });
-  expect((await profiles.bootstrap(owner)).nativeTimelineTemplate).toBe('MY_MONTH {{agentName}} {{month}}\n'); expect(timelineLoader).toHaveBeenCalledOnce();
-});
-
-it('rejects a linked canonical file and an incomplete prior initialization without modifying either', async () => {
-  const f = await fixture(), file = path.join(f.initial.root, '提示词', '对话.md'), second = path.join(f.root, 'shared-authority.md');
-  await link(file, second); await expect(f.profiles.load('alice')).rejects.toMatchObject({ code: 'UNSAFE' });
-  const incomplete = path.join(f.library, 'unfinished'); await mkdir(incomplete);
-  const authored = '这是尚未登记的人工资料，不能被初始化覆盖。'; await writeFile(path.join(incomplete, 'profile.md'), authored, 'utf8');
-  await expect(f.profiles.bootstrap({ ...owner, id: 'unfinished' })).rejects.toMatchObject({ code: 'CONFLICT' });
-  expect(await readFile(path.join(incomplete, 'profile.md'), 'utf8')).toBe(authored);
-});
-
-it('keeps a bounded prompt inventory across repeated runtime loads and every file has a declared purpose', async () => {
-  const f = await fixture(), directory = path.join(f.initial.root, '提示词');
-  const before = (await readdir(directory)).sort();
-  expect(before).toHaveLength(34); expect(f.initial.modules.filter(module => module.path.endsWith('.md'))).toHaveLength(33);
-  expect(f.initial.modules.filter(module => module.path.endsWith('.md')).every(module => module.purposes.length > 0)).toBe(true);
-  for (let i = 0; i < 8; i++) await f.profiles.bootstrap(owner);
-  expect((await readdir(directory)).sort()).toEqual(before);
-  expect(f.initial.prompts.companion_reply).toContain('像真实联系人一样');
-  expect(f.initial.prompts.companion_reply).not.toContain('你是月度时间线摘要器');
+it('registers every literal production model purpose and all declared continuous-learning stages', async () => {
+  const f = await fixture(), directory = path.resolve('src/main/companions'), purposes = new Map<string, string>();
+  const learning = Object.keys(companionLearningGoalResponseSchemas); expect(learning.length).toBeGreaterThan(0);
+  for (const filename of await readdir(directory)) {
+    if (!filename.endsWith('.ts')) continue;
+    const source = ts.createSourceFile(filename, await readFile(path.join(directory, filename), 'utf8'), ts.ScriptTarget.Latest, true);
+    const record = (value: string) => {
+      if (value === 'index' || value === 'prepare') return; // Native embedding maintenance, not model consumers.
+      if (value === 'companion_learning_') for (const stage of learning) purposes.set(value + stage, filename);
+      else purposes.set(value, filename);
+    };
+    const visit = (node: ts.Node): void => {
+      if (ts.isPropertyAssignment(node) && node.name.getText(source).replaceAll("'", '').replaceAll('"', '') === 'purpose') {
+        const literals = (value: ts.Node): void => { if (ts.isStringLiteral(value)) record(value.text); ts.forEachChild(value, literals); };
+        literals(node.initializer);
+      }
+      if (ts.isCallExpression(node) && node.expression.getText(source) === 'companionBehaviorSystem'
+        && node.arguments[1] && ts.isStringLiteral(node.arguments[1])) record(node.arguments[1].text);
+      ts.forEachChild(node, visit);
+    }; visit(source);
+  }
+  for (const [purpose, file] of purposes) expect(f.initial.prompts[purpose], `${file}: ${purpose} must have an explicit declared consumer`).toBeDefined();
 });

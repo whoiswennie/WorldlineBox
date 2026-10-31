@@ -13,11 +13,13 @@ import { VcpMemoryClient, type VcpMemoryTransport } from '../../src/main/vcp-mem
 import { removeOwnedDirectory } from '../../src/main/vcp-memory/filesystem';
 import type { CompanionStorageCommand, CompanionStorageResponse } from '../../src/shared/companion-storage';
 import { controlledMemoryRuntime } from '../fixtures/controlled-memory-runtime';
+import { canonicalMemoryFiles } from '../fixtures/canonical-memory-files';
+import { recordSourceBackedMemory } from '../fixtures/source-backed-memory';
 
 vi.mock('electron', () => ({ utilityProcess: { fork: vi.fn() } }));
 
 /** A local deterministic encoder/model fixture, but real unchanged upstream
- * JavaScript, Rust database, graph construction and RAG/AIMemo+ execution.
+ * JavaScript, Rust database, graph construction and default RAG execution.
  * This checks transport/orchestration parity, not natural-language quality. */
 it('matches direct upstream preprocessing on the complete witnessed graph, independently of diagnostic display limits', async () => {
   const root = await mkdtemp(path.join(tmpdir(), 'worldline-passive-parity-'));
@@ -35,6 +37,7 @@ it('matches direct upstream preprocessing on the complete witnessed graph, indep
     response.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify({ data: vectors }));
   });
   let client: VcpMemoryClient | undefined, service: CompanionMemoryService | undefined, store: CompanionsStore | undefined;
+  let files: Awaited<ReturnType<typeof canonicalMemoryFiles>> | undefined;
   try {
     await new Promise<void>(resolve => encoder.listen(0, '127.0.0.1', resolve));
     const address = encoder.address();
@@ -52,18 +55,26 @@ it('matches direct upstream preprocessing on the complete witnessed graph, indep
       model: '', avatar: 'sister', active: true, proactive: false }));
     store = new CompanionsStore(path.join(root, 'messages.sqlite'), seeds);
     const conversation = store.openPrivate('alice'), scope = { companionId: 'alice', conversationId: conversation.id };
-    for (let index = 0; index < 15; index++) store.saveMemory({ ...scope,
+    for (let index = 0; index < 15; index++) recordSourceBackedMemory(store, { ...scope,
       content: `garden umbrella 花园雨伞约定，第 ${index} 项可核验记录。`, diaryName: '日记', tags: ['umbrella', 'garden', `记录${index}`] });
     const bobScope = { companionId: 'bob', conversationId: store.openPrivate('bob').id };
-    store.saveMemory({ ...bobScope, content: 'bob_only_secret 不属于 alice 的记录。', diaryName: '日记', tags: ['private'] });
+    recordSourceBackedMemory(store, { ...bobScope, content: 'bob_only_secret 不属于 alice 的记录。', diaryName: '日记', tags: ['private'] });
     for (;;) {
       const job = store.request({ type: 'memory.outbox.claim' }).memoryOutbox;
       if (!job) break;
       store.request({ type: 'memory.outbox.complete', id: job.id, leaseToken: job.leaseToken, indexed: true });
     }
-    const request = async (command: CompanionStorageCommand): Promise<CompanionStorageResponse> => store!.request(command);
     const config = { model: 'controlled-parity', apiKey: 'fixture', apiFormat: 'openai_chat' as const, baseUrl: 'http://127.0.0.1' };
+    files = await canonicalMemoryFiles(root, store, config);
+    let clockMoved = false;
+    const request = async (command: CompanionStorageCommand): Promise<CompanionStorageResponse> => {
+      const response = await files!.request(command);
+      if (clockMoved && command.type === 'world.clock' && response.worldClock) return { ...response,
+        worldClock: { ...response.worldClock, virtualNow: '2026-11-02T05:00:00.000Z', timeZone: 'America/New_York' } };
+      return response;
+    };
     service = new CompanionMemoryService({ request, runtime, cacheRoot: path.join(root, 'views'), configFor: async () => config,
+      ...files.projection, validateFiles: (owner, receipts, window) => files!.live.validate(owner, receipts, window), prepareFiles: owner => files!.publish(owner),
       fetchFn: fetch, busy: () => true, changed: () => undefined, report: error => { throw error; } });
     const replace = vi.spyOn(client, 'replace'), search = vi.spyOn(client, 'search'), preprocess = vi.spyOn(client, 'prepareRecall');
 
@@ -81,7 +92,9 @@ it('matches direct upstream preprocessing on the complete witnessed graph, indep
     const [, capturedMessages, capturedClock, capturedDecay] = preprocess.mock.calls[0]!;
     const messages = structuredClone(capturedMessages), clock = structuredClone(capturedClock), decay = structuredClone(capturedDecay);
     expect(result.memories.length).toBeLessThanOrEqual(2);
-    expect(prompts.length).toBeGreaterThan(0);
+    // Ordinary passive recall uses native retrieval, without an AIMemo LLM
+    // round-trip. Compare exactly that default against the upstream pipeline.
+    expect(prompts).toHaveLength(0);
     const hostPrompts = structuredClone(prompts);
     const hostReferences = (await preprocess.mock.results[0]!.value).contextReferences;
     expect(hostReferences?.length).toBeGreaterThan(0);
@@ -106,13 +119,16 @@ it('matches direct upstream preprocessing on the complete witnessed graph, indep
     const question = store.appendMessage({ conversationId: conversation.id, authorId: 'user', content: query });
     const companion = store.request({ type: 'state' }).state!.companions.find(owner => owner.id === 'alice')!;
     const replacementsBeforeRecall = replace.mock.calls.length;
-    const recalled = await service.recall({ companion, conversation, currentMessage: question, messages: [question], config });
+    clockMoved = true;
+    const recalled = await service.recall({ companion, conversation, currentMessage: question, messages: [question], config,
+      queryClock: { virtualNow: clock!.now, timeZone: clock!.timeZone, mode: 'realtime' } });
     expect(recalled.degraded).toBe(false);
     expect(recalled.context?.text).toBe(result.contextText);
+    expect(recalled.context?.evidence?.queryClock).toMatchObject(clock!);
     expect(replace).toHaveBeenCalledTimes(replacementsBeforeRecall);
     expect(search).not.toHaveBeenCalled();
   } finally {
-    await service?.close(); await client?.close(); await chat.close(); store?.close();
+    await service?.close(); await client?.close(); await chat.close(); await files?.close(); store?.close();
     await new Promise<void>(resolve => { encoder.close(() => resolve()); encoder.closeAllConnections(); });
     await removeOwnedDirectory(root);
   }
@@ -148,6 +164,7 @@ it('continues a frozen main-service recall through repeated same-owner graph wri
     } }] }));
   });
   let client: VcpMemoryClient | undefined, service: CompanionMemoryService | undefined, store: CompanionsStore | undefined;
+  let files: Awaited<ReturnType<typeof canonicalMemoryFiles>> | undefined;
   try {
     await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
     const address = server.address(); if (!address || typeof address === 'string') throw new Error('Fixture server not listening.');
@@ -167,21 +184,26 @@ it('continues a frozen main-service recall through repeated same-owner graph wri
       const job = store!.request({ type: 'memory.outbox.claim' }).memoryOutbox; if (!job) return;
       store!.request({ type: 'memory.outbox.complete', id: job.id, leaseToken: job.leaseToken, indexed: true });
     } };
-    const initial = [0, 1, 2].map(index => store!.saveMemory({ ...scope, content: `umbrella 雨伞约定初始记录 ${index}。`, tags: ['umbrella'], diaryName: '日记' }));
+    const initial = [0, 1, 2].map(index => recordSourceBackedMemory(store!, { ...scope, content: `umbrella 雨伞约定初始记录 ${index}。`, tags: ['umbrella'], diaryName: '日记' }));
     indexSaved();
+    const config = { model: 'controlled-concurrency', apiKey: 'fixture', apiFormat: 'openai_chat' as const, baseUrl };
+    files = await canonicalMemoryFiles(root, store, config);
     const runtime = controlledMemoryRuntime({ get: async () => ({ client: client!, profileKey: 'controlled-concurrency' }), close: async () => undefined });
-    service = new CompanionMemoryService({ request: async command => store!.request(command), runtime, cacheRoot: path.join(root, 'views'),
-      configFor: async () => ({ model: 'controlled-concurrency', apiKey: 'fixture', apiFormat: 'openai_chat', baseUrl }),
+    service = new CompanionMemoryService({ request: command => files!.request(command), runtime, cacheRoot: path.join(root, 'views'),
+      ...files.projection, validateFiles: (owner, receipts, window) => files!.live.validate(owner, receipts, window), prepareFiles: owner => files!.publish(owner),
+      configFor: async () => config,
       fetchFn: fetch, busy: () => true, changed: () => undefined, report: () => undefined });
     const prepared = vi.spyOn(client, 'prepareRecall'), replace = vi.spyOn(client, 'replace');
     let firstSettled = false;
-    const first = service.search({ ...scope, query: 'umbrella 雨伞初始约定是什么？' }, 'passive').finally(() => { firstSettled = true; });
+    const focus = { focus: true } as const;
+    const first = service.search({ ...scope, query: 'umbrella 雨伞初始约定是什么？', retrievalOptions: focus }, 'passive').finally(() => { firstSettled = true; });
     void first.catch(() => undefined);
-    await within(modelEntered, 'First detached main recall did not send a model request.');
+    await within(Promise.race([modelEntered, first.then(() => { throw new Error('Explicit focusing completed without sending a model request.'); })]),
+      'First detached main recall did not send a model request.');
     const originalEpoch = store.request({ type: 'memory.lifecycle.state', companionId: 'alice' }).memoryLifecycleState!.revocationEpoch;
     for (let index = 0; index < 3; index++) {
-      const added = store.saveMemory({ ...scope, content: `umbrella 后来补充的无关新记忆 ${index}。`, tags: ['umbrella'], diaryName: '日记' });
-      indexSaved(); service.changed('alice');
+      const added = recordSourceBackedMemory(store, { ...scope, content: `umbrella 后来补充的无关新记忆 ${index}。`, tags: ['umbrella'], diaryName: '日记' });
+      indexSaved(); await files.publish('alice'); service.changed('alice');
       const active = await within(service.search({ ...scope, query: 'umbrella 全部记录' }, 'active'), 'Focusing still occupies the owner graph lane.');
       expect(active.ok).toBe(true);
       expect((await client.list(replace.mock.calls[0]![0])).some(note => note.id === added.id)).toBe(true);
@@ -195,7 +217,7 @@ it('continues a frozen main-service recall through repeated same-owner graph wri
     expect(await service.contextValid(scope, historical.memoryContext)).toBe(true);
 
     nextGate();
-    const revoked = service.search({ ...scope, query: 'umbrella 雨伞约定请重新核验。' }, 'passive');
+    const revoked = service.search({ ...scope, query: 'umbrella 雨伞约定请重新核验。', retrievalOptions: focus }, 'passive');
     const rejected = expect(revoked).rejects.toThrow('撤回');
     await within(modelEntered, 'Revocation fixture did not send a distinct model request.');
     store.request({ type: 'memory.forget', ...scope, id: initial[0]!.id });
@@ -206,14 +228,14 @@ it('continues a frozen main-service recall through repeated same-owner graph wri
     // Two simultaneous same-owner focus calls must both be tracked until the
     // actual asset/owner withdrawal has aborted and drained them.
     nextGate(2);
-    const cancelled = [service.search({ ...scope, query: 'umbrella 并发问题一。' }, 'passive'),
-      service.search({ ...scope, query: 'umbrella 并发问题二。' }, 'passive')];
+    const cancelled = [service.search({ ...scope, query: 'umbrella 并发问题一。', retrievalOptions: focus }, 'passive'),
+      service.search({ ...scope, query: 'umbrella 并发问题二。', retrievalOptions: focus }, 'passive')];
     const rejections = cancelled.map(pending => expect(pending).rejects.toThrow());
     await within(modelEntered, 'Simultaneous same-owner focus calls did not both send model requests.');
     await service.invalidate('alice');
     await Promise.all(rejections); release();
   } finally {
-    release?.(); await service?.close(); await client?.close(); store?.close();
+    release?.(); await service?.close(); await client?.close(); await files?.close(); store?.close();
     await new Promise<void>(resolve => { server.close(() => resolve()); server.closeAllConnections(); });
     await removeOwnedDirectory(root);
   }

@@ -7,7 +7,7 @@ import type { CompanionStorageCommand, CompanionStorageResponse } from '../../sr
 vi.mock('electron', () => ({ utilityProcess: { fork: vi.fn() } }));
 
 function fixture(error?: Error, disposition: 'completed' | 'stale' = 'completed') {
-  const note: CompanionMemory = { id: 'note', companionId: 'alice', scopeId: 'scope', sourceConversationId: 'private', sourceSequence: 1,
+  const note: CompanionMemory = { artifactKind: 'episode_memory' as const, id: 'note', companionId: 'alice', scopeId: 'scope', sourceConversationId: 'private', sourceSequence: 1,
     content: '合成实际来源。', tags: [], diaryName: '日记', sources: [{ messageId: 'source', conversationId: 'private', sequence: 1, revision: 1,
       authorId: 'user', checksum: 'fixture', createdAt: '2026-10-26T00:00:00Z' }], createdAt: '2026-10-26T00:00:00Z', updatedAt: '2026-10-26T00:00:00Z',
     captureMethod: 'automatic', origin: 'user', status: 'queued', version: 1 };

@@ -5,7 +5,7 @@ import { _electron as electron, type ElectronApplication, type Page } from "@pla
 
 import {
   electronLaunchEnv,
-  resolveElectronExecutablePath,
+  resolveElectronLaunchOptions,
   resolveSessionLogPath,
 } from "./electron-test-helpers";
 
@@ -76,11 +76,8 @@ export async function launchBenchmarkApp(options: {
   extraEnv?: Record<string, string>;
 }): Promise<BenchmarkApp> {
   mkdirSync(options.userDataPath, { recursive: true });
-  const applicationDirectory = process.env.WORLDLINEBOX_E2E_APP_DIRECTORY ?? process.cwd();
   const application = await electron.launch({
-    args: [applicationDirectory],
-    cwd: applicationDirectory,
-    executablePath: resolveElectronExecutablePath(),
+    ...resolveElectronLaunchOptions(),
     env: electronLaunchEnv({
       WORLDLINEBOX_E2E: "1",
       WORLDLINEBOX_E2E_RESTORE_RECENT: "1",
@@ -92,6 +89,16 @@ export async function launchBenchmarkApp(options: {
       ...(options.extraEnv ?? {}),
     }),
   });
+  if (process.env.WORLDLINEBOX_E2E_PACKAGED_EXECUTABLE) {
+    const actual = await application.evaluate(({ app }) => ({
+      packaged: app.isPackaged, appPath: app.getAppPath(), userData: app.getPath('userData'),
+    }));
+    if (!actual.packaged || path.basename(actual.appPath) !== 'app.asar'
+      || path.resolve(actual.userData).toLowerCase() !== path.resolve(options.userDataPath).toLowerCase()) {
+      await application.close();
+      throw new Error('Navigation acceptance requires the packaged ASAR and its isolated user profile.');
+    }
+  }
   const window = await application.firstWindow();
   await window.waitForLoadState("domcontentloaded");
   // A busy library raises a native confirm when switching away; Playwright does

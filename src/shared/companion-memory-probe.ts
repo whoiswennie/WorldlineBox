@@ -17,6 +17,8 @@ export const companionMemoryProbeSchema = z.strictObject({
   companionId: id, mode: companionMemoryProbeModeSchema, query: z.string().max(16000), observedAt: z.string(),
   contextText: z.string().max(1024 * 1024), memories: z.array(companionMemoryHitSchema).max(12),
   pending: z.boolean(), degraded: z.boolean(), explanation: z.string().max(2000), corpusStamp: z.string().min(1).max(1000),
+  /** Hard source/owner authority, separate from ordinary publication progress. */
+  authorityStamp: z.string().min(1).max(1000).optional(),
   memoryRetrieval: companionMemoryRetrievalSchema.optional(),
   timing: companionMemoryProbeTimingSchema.optional(),
 });

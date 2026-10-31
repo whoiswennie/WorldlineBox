@@ -20,7 +20,7 @@ beforeEach(() => {
 afterEach(() => { store.close(); removeOwnedDirectorySync(root); vi.useRealTimers(); });
 const advance = (milliseconds: number) => vi.setSystemTime(Date.now() + milliseconds);
 const source = (content: string) => store.appendMessage({ conversationId: scope.conversationId, authorId: 'user', content, replyDirective: 'none' });
-const draft = (message: CompanionMessage, content = message.content) => ({ content, tags: ['真实经历'], sourceMessageIds: [message.id], evidence: [{ sourceMessageId: message.id, quote: message.content }] });
+const draft = (message: CompanionMessage, content = message.content) => ({ artifactKind: 'episode_memory' as const, content, tags: ['真实经历'], sourceMessageIds: [message.id], evidence: [{ sourceMessageId: message.id, quote: message.content }] });
 const record = (message: CompanionMessage, content?: string) => store.request({ type: 'memory.record', ...scope, candidate: draft(message, content) }).memories![0]!;
 const read = (id: string) => store.request({ type: 'memory.read', ...scope, id }).memoryRead!.memory;
 function indexed() {
@@ -50,7 +50,7 @@ it('preserves an unrelated old revision after source-only withdrawal and still h
   const b = source('B独立来源在旧版中合法。'), original = record(b);
   const a = source('A是新版后来加入的来源。');
   store.request({ type: 'memory.revise', ...scope, id: original.id, expectedVersion: original.version,
-    candidate: { content: b.content + a.content, sourceMessageIds: [a.id, b.id], evidence: [a, b].map(message => ({ sourceMessageId: message.id, quote: message.content })) } });
+    candidate: { artifactKind: 'episode_memory' as const, content: b.content + a.content, sourceMessageIds: [a.id, b.id], evidence: [a, b].map(message => ({ sourceMessageId: message.id, quote: message.content })) } });
   expect(publishedHistory(original.id, 1).content).toBe(b.content);
   store.request({ type: 'memory.forget', ...scope, sourceMessageIds: [a.id] });
   expect(publishedHistory(original.id, 1).content).toBe(b.content);
@@ -64,7 +64,7 @@ it('normally re-extracts a surviving original contribution without rejecting its
   const b = source('B是此前独立保存、仍然合法的原始事实。'), original = record(b);
   const a = source('A是后来增加、现已撤回的另一项事实。');
   store.request({ type: 'memory.revise', ...scope, id: original.id, expectedVersion: original.version,
-    candidate: { content: b.content + a.content, sourceMessageIds: [a.id, b.id], evidence: [a, b].map(message => ({ sourceMessageId: message.id, quote: message.content })) } });
+    candidate: { artifactKind: 'episode_memory' as const, content: b.content + a.content, sourceMessageIds: [a.id, b.id], evidence: [a, b].map(message => ({ sourceMessageId: message.id, quote: message.content })) } });
   publishedHistory(original.id, 1);
   store.request({ type: 'memory.forget', ...scope, sourceMessageIds: [a.id] });
   const job = store.request({ type: 'memory.jobs.claim', companionId: 'alice', force: true }).memoryJob!;
@@ -78,7 +78,7 @@ it.each(['general-record', 'forged-lease', 'other-owner', 'whole-note-forget'] a
   const b = source('B这条独立原始贡献仍需真实宿主租约。'), original = record(b);
   const a = source('A这条后加贡献会被单独撤回。');
   store.request({ type: 'memory.revise', ...scope, id: original.id, expectedVersion: original.version,
-    candidate: { content: b.content + a.content, sourceMessageIds: [a.id, b.id], evidence: [a, b].map(message => ({ sourceMessageId: message.id, quote: message.content })) } });
+    candidate: { artifactKind: 'episode_memory' as const, content: b.content + a.content, sourceMessageIds: [a.id, b.id], evidence: [a, b].map(message => ({ sourceMessageId: message.id, quote: message.content })) } });
   publishedHistory(original.id, 1);
   store.request({ type: 'memory.forget', ...scope, sourceMessageIds: [a.id] });
   if (attempt === 'whole-note-forget') {
@@ -308,7 +308,7 @@ it('retains immutable body revisions while hard source withdrawal revokes their 
 it('publishes a fixed-body merge after annotation changes without losing or falsely revoking originals', () => {
   const a = source('原文A。'), b = source('原文B。'), one = record(a), two = record(b); indexed();
   const merged = store.request({ type: 'memory.consolidate', ...scope, inputs: [one, two].map(note => ({ id: note.id, version: note.version })),
-    candidate: { content: '完整保留A与B。', tags: ['整合'], sourceMessageIds: [a.id, b.id], evidence: [{ sourceMessageId: a.id, quote: a.content }, { sourceMessageId: b.id, quote: b.content }] } }).memories![0]!;
+    candidate: { artifactKind: 'episode_memory' as const, content: '完整保留A与B。', tags: ['整合'], sourceMessageIds: [a.id, b.id], evidence: [{ sourceMessageId: a.id, quote: a.content }, { sourceMessageId: b.id, quote: b.content }] } }).memories![0]!;
   store.request({ type: 'memory.organize', ...scope, ids: [one.id], tags: ['仅换标签'] });
   store.request({ type: 'memory.organize', ...scope, ids: [merged.id], tags: ['整合后的标签'] });
   indexed(); expect(read(one.id).supersededBy).toBe(merged.id); expect(read(two.id).supersededBy).toBe(merged.id);
@@ -318,11 +318,11 @@ it('publishes a fixed-body merge after annotation changes without losing or fals
 
 it('keeps method proposals out of generic consolidation so summary archiving cannot erase their practice ledger', () => {
   const a = source('先检查输入，再生成产物并核验。'), b = source('另一段有据经历。');
-  const method = store.request({ type: 'memory.record', ...scope, candidate: { ...draft(a), procedure: { applicability: '明确要求文本交付时。',
+  const method = store.request({ type: 'memory.record', ...scope, candidate: { ...draft(a), artifactKind: 'procedure' as const, procedure: { applicability: '明确要求文本交付时。',
     steps: ['检查输入。', '生成并核验产物。'], limitations: [], verification: { kind: 'artifact_delivery', artifactRequirements: [{ path: 'result.txt' }] } } } }).memories![0]!;
   const other = record(b); indexed();
   expect(() => store.request({ type: 'memory.consolidate', ...scope, inputs: [method, other].map(note => ({ id: note.id, version: note.version })),
-    candidate: { content: '两段经历的摘要。', sourceMessageIds: [a.id, b.id], evidence: [{ sourceMessageId: a.id, quote: a.content }, { sourceMessageId: b.id, quote: b.content }] } })).toThrow('方法记忆');
+    candidate: { artifactKind: 'episode_memory' as const, content: '两段经历的摘要。', sourceMessageIds: [a.id, b.id], evidence: [{ sourceMessageId: a.id, quote: a.content }, { sourceMessageId: b.id, quote: b.content }] } })).toThrow('真实经历');
   expect(read(method.id).archivedAt).toBeUndefined(); expect(read(method.id).procedure?.validation.state).toBe('unverified');
 });
 
@@ -412,7 +412,8 @@ it('commits verified journal text when a newer runtime state makes its optional 
 });
 
 it('submits auto-tag preference through the same annotation ledger without creating an experience', () => {
-  const manual = store.saveMemory({ ...scope, content: '手工资料，暂不自动打标签。', autoTags: false });
+  const message = source('伙伴保存的资料，暂不自动打标签。');
+  const manual = store.request({ type: 'memory.record', ...scope, candidate: { ...draft(message), metadata: { autoTags: false } } }).memories![0]!;
   const before = state();
   store.request({ type: 'memory.tags.retry', companionId: 'alice', noteId: manual.id });
   expect(read(manual.id)).toMatchObject({ contentRevision: 1, semanticRevision: 1, annotationRevision: 2, metadata: { autoTags: true } });
@@ -428,6 +429,7 @@ it('propagates an actual asset grant revocation to immutable history and its own
     autonomous: false, intervalMinutes: 30 }).learning!.grants[0]!;
   store.request({ type: 'learning.run', companionId: 'alice', id: grant.id, expectedRevision: grant.revision });
   const reading = store.request({ type: 'learning.claim', excludedOwners: [] }).learningJob!;
+  store.request({ type: 'learning.begin', id: reading.id, leaseToken: reading.leaseToken, assetId: 'real_asset', assetRevisionId: 'asset_revision', offset: 0 });
   const committed = store.request({ type: 'learning.commit', id: reading.id, leaseToken: reading.leaseToken, assetId: 'real_asset', assetRevisionId: 'asset_revision',
     assetName: '材料.md', offset: 0, content: '原文明确说明适用条件。', more: false });
   const receipt = committed.learning!.reads[0]!, evidence = store.getMessage(receipt.sourceMessageId);

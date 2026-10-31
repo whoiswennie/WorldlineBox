@@ -12,6 +12,7 @@ import { CompanionsStore } from '../../src/companions/store';
 import type { CompanionPreparedRecallReference } from '../../src/shared/companion-prepared-recall';
 import { companionSearchFacet, companionSearchTokens } from '../../src/shared/companion-search';
 import { companionMemorySourceFilePath } from '../../src/main/companions/memory-source-files';
+import { canonicalMemoryFiles } from '../fixtures/canonical-memory-files';
 
 vi.mock('electron', () => ({ utilityProcess: { fork: vi.fn() } }));
 interface HostEvent { stage: string; error?: string; launches?: number; nativePids?: number[]; reference?: CompanionPreparedRecallReference;
@@ -81,7 +82,7 @@ it.each(cases)('checks actual host kill recovery after $stage with $mutation evi
     expect(providerInputs).toHaveLength(stage === 'focused' ? 1 : 0);
     first.child.kill('SIGKILL'); await waitExit(first.child);
     await vi.waitFor(() => expect([...nativePids].some(alive)).toBe(false), { timeout: 10000 });
-    const reference = saved.reference!, packet = path.join(root, 'owner-assets', 'alice', '.认知索引', 'generation',
+    const reference = saved.reference!, packet = path.join(root, 'owner-assets', 'alice', '.运行', '索引', 'generation',
       createHash('sha256').update(reference.profileKey).digest('hex'), createHash('sha256').update(reference.scopeId).digest('hex'), 'prepared-recalls', reference.id + '.json');
     const packetText = await readFile(packet, 'utf8'), envelope = JSON.parse(packetText.split('\n')[0]!), payload = JSON.parse(envelope.serialized);
     expect(createHash('sha256').update(envelope.serialized).digest('hex')).toBe(reference.contentHash);
@@ -110,7 +111,19 @@ it.each(cases)('checks actual host kill recovery after $stage with $mutation evi
     if (['history_file', 'source_file', 'current_file_revision', 'source_withdrawal', 'whole_note_forget'].includes(mutation)) expect(observedId).toBeTruthy();
     if (mutation === 'current_file_revision') {
       const receipt = payload.hostEvidence.recovery.fileReceipts.find((file: { noteId: string }) => file.noteId === observedId); expect(receipt).toBeDefined();
-      await appendFile(path.join(root, 'owner-assets', 'alice', ...receipt.path.split('/')), '\nExternal source change.');
+      // A newer current body is a formal system revision, never an imported
+      // filesystem edit. The prepared read must retain its lawful old version.
+      const store = new CompanionsStore(path.join(root, 'ledger.sqlite'));
+      const files = await canonicalMemoryFiles(root, store, { apiFormat: 'openai_chat', baseUrl: endpoint + '/provider', apiKey: 'synthetic-local-provider', model: 'synthetic-recovery-provider' });
+      try {
+        const current = store.request({ type: 'memory.library.read', companionId: 'alice', id: observedId }).memoryRead!.memory;
+        const sources = store.request({ type: 'memory.sources.filter', companionId: 'alice', conversationId: task.conversationId,
+          ids: current.sources.map(source => source.messageId) }).memorySources!;
+        store.request({ type: 'memory.revise', companionId: 'alice', conversationId: task.conversationId, id: observedId, expectedVersion: current.version,
+          candidate: { artifactKind: current.artifactKind, content: current.content + '\nFormal current-body revision.', tags: current.tags,
+            sourceMessageIds: sources.map(source => source.id), evidence: sources.map(source => ({ sourceMessageId: source.id, quote: source.content })) } });
+        await files.publish('alice');
+      } finally { await files.close(); store.close(); }
     }
     if (mutation === 'history_file' || mutation === 'source_file' || mutation === 'source_withdrawal' || mutation === 'whole_note_forget') {
       const store = new CompanionsStore(path.join(root, 'ledger.sqlite'));
@@ -165,13 +178,13 @@ it.each(cases)('checks actual host kill recovery after $stage with $mutation evi
       }
       if (mutation === 'current_file_revision') {
         const current = store.request({ type: 'memory.library.read', companionId: 'alice', id: observedId }).memoryRead!.memory;
-        expect(current.contentRevision).toBe(2); expect(current.content).toContain('External source change.');
+        expect(current.contentRevision).toBe(2); expect(current.content).toContain('Formal current-body revision.');
         const receipt = payload.hostEvidence.recovery.fileReceipts.find((file: { noteId: string }) => file.noteId === observedId)!;
         expect(await readFile(path.join(root, 'owner-assets', 'alice', ...receipt.path.split('/')), 'utf8')).toBe(current.content);
         const descriptor = store.request({ type: 'memory.revision.describe', companionId: 'alice', conversationId: task.conversationId,
           id: observedId, contentRevision: 1 }).memoryHistoryDescriptor!;
         const oldHistory = await readFile(path.join(root, 'owner-assets', 'alice', ...descriptor.relativePath.split('/')), 'utf8');
-        expect(oldHistory).not.toContain('External source change.');
+        expect(oldHistory).not.toContain('Formal current-body revision.');
         const source = payload.hostEvidence.recovery.contextSeed.notes.find((note: { id: string }) => note.id === observedId)!.sources[0];
         const relative = companionMemorySourceFilePath({ sourceId: source.messageId, sourceRevision: source.revision, sourceChecksum: source.checksum });
         expect(createHash('sha256').update(await readFile(path.join(root, 'owner-assets', 'alice', ...relative.split('/')))).digest('hex')).toBe(source.checksum);

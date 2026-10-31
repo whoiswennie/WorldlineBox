@@ -27,3 +27,16 @@ it('uses the last observed execution boundary after a crash and tolerates a back
   const resumed = advanceCompanionReplyTiming(interrupted, { ...interrupted, phase: 'context', finishedAt: undefined, updatedAt: at(7200) });
   expect(companionReplyElapsedMs(resumed, start + 7205000)).toBe(15000);
 });
+
+it.each([NaN, Infinity, -Infinity, -1])('rejects a corrupt accumulated duration %s', elapsedMs => {
+  const progress: CompanionReplyProgress = { revision: 1, phase: 'tools', detail: '', startedAt: at(0), updatedAt: at(5), timing: { elapsedMs, activeSince: at(5) } };
+  expect(companionReplyElapsedMs(progress, start + 10000)).toBeUndefined();
+});
+
+it('keeps a terminal interval fixed and never propagates invalid live clocks', () => {
+  const progress: CompanionReplyProgress = { revision: 1, phase: 'completed', detail: '', startedAt: at(0), updatedAt: at(50), finishedAt: at(12), timing: { elapsedMs: 3000, activeSince: at(5) } };
+  expect(companionReplyElapsedMs(progress, start + 100000)).toBe(10000);
+  expect(companionReplyElapsedMs(progress, start + 864000000)).toBe(10000);
+  expect(companionReplyElapsedMs({ ...progress, phase: 'tools' }, NaN)).toBe(3000);
+  expect(companionReplyElapsedMs({ ...progress, phase: 'tools', timing: { elapsedMs: Number.MAX_VALUE, activeSince: at(5) } }, Number.MAX_VALUE)).toBeUndefined();
+});

@@ -1,9 +1,11 @@
 import { useEffect, useMemo, useState } from 'react';
 import type { CompanionLearningGoalRead, CompanionLearningGoalRound } from '../../shared/companion-learning-goals';
 import { Icon } from '../Icons';
+import './companion-learning-round.css';
 
 export const learningPhaseLabels: Record<CompanionLearningGoalRound['phase'], string> = { idle: '等待下一轮', planning: '规划这一轮', reading: '阅读材料', integrating: '整理理解', testing: '自测与核对', reflecting: '反思与计划', waiting: '等待合适时机' };
-const statusLabels: Record<CompanionLearningGoalRound['status'], string> = { running: '进行中', completed: '本轮已记录', deferred: '本轮已延后', failed: '需要处理', cancelled: '已停止本轮' };
+const statusLabels: Record<CompanionLearningGoalRound['status'], string> = { running: '进行中', completed: '本轮已记录', deferred: '本轮已延后', failed: '需要处理', cancelled: '已停止本轮',
+  stale: '本轮依据已失效', parked: '本轮已搁置', abandoned: '本轮已明确放弃' };
 const evaluations = { supported: '自评：有材料支持', partial: '自评：部分支持', unsupported: '自评：缺少支持', unassessed: '尚未评估' };
 export function learningDate(value?: string, timeZone?: string) {
   if (!value || !Number.isFinite(Date.parse(value))) return '时间未记录';

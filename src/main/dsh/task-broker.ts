@@ -6,7 +6,8 @@ import { dshTaskInputSchema, dshTaskRecordSchema, dshTaskEventSchema, type DshTa
 import { atomicJson, readJson } from './files';
 import { sanitizeOutput } from './instance-process';
 import type { OperationContext } from './operations';
-import { snapshotDshTaskExecution, type DshTaskExecutionOptions } from './task-execution';
+import { snapshotDshTaskExecution, type DshTaskExecutionOptions, type DshTaskVisualManifest } from './task-execution';
+import { validateDshTaskVisualInputs } from './task-visual-inputs';
 import { removeOwnedDirectory } from '../companions/owned-directory-cleanup';
 import { DshTaskRecordStore } from './task-record-store';
 import type { DshRecordQuery } from '../../shared/dsh-task-record';
@@ -146,6 +147,7 @@ export class DshTaskBroker {
   }
   async execute(inputValue: DshTaskInput, operation: OperationContext, executionValue?: DshTaskExecutionOptions): Promise<DshTaskResult> {
     const input = dshTaskInputSchema.parse(inputValue), execution = snapshotDshTaskExecution(executionValue);
+    const visualManifest = await validateDshTaskVisualInputs(execution.visualInputs);
     await this.init(); if (this.closed || this.active.size + this.pendingStops.size >= 20) throw new Error('The DSH broker is closing or at its concurrent task limit.');
     if (this.active.has(operation.id) || this.records.some(record => record.id === operation.id)) throw new Error('Task identity is already in use.');
     if (execution.cognitiveOnly && input.sessionId) throw new Error('A cognitive task requires a new Session.');
@@ -194,6 +196,7 @@ export class DshTaskBroker {
       const session = await client.request<{ sessionId: string; cursor: number; capabilities: unknown; accessMode: DshTaskRecord['accessMode'] }>('/sessions', {
         sessionId, resume: !!previous, cwd: sessionWorkspacePath, ...(workspaceTitle ? { workspaceTitle } : {}), ...(execution.task?.mode === 'ptc' ? { preset: 'ptc' } : {}),
         policy: { tools: execution.task?.tools, skills: execution.task?.skills, cognitiveOnly: execution.cognitiveOnly,
+          ...(visualManifest.length ? { visualInputManifest: visualManifest } : {}),
           parentMailbox: !!execution.recordScope && !execution.cognitiveOnly },
         ...(previous ? {} : execution.access ? { accessMode: execution.access.mode } : {}),
       }, signal);
@@ -213,7 +216,13 @@ export class DshTaskBroker {
       await this.save(); this.changed(); emit({ type: 'ready', sessionId, stage: 'session', summary: '已接入原生 Web Host 会话' });
       await operation.update('Submitting task to the shared native Web Host', 10);
       active.submitted = true;
-      await client.request(`/sessions/${sessionId}/prompt`, { prompt: taskPrompt }, signal);
+      const admitted = await client.request<{ accepted?: boolean; visualInputsAccepted?: DshTaskVisualManifest }>(`/sessions/${sessionId}/prompt`,
+        { prompt: taskPrompt, ...(visualManifest.length ? { visualInputs: execution.visualInputs } : {}) }, signal);
+      if (visualManifest.length) {
+        if (!admitted.accepted || JSON.stringify(admitted.visualInputsAccepted) !== JSON.stringify(visualManifest)) throw new Error('Native DSH did not confirm the exact observation image payload; visual analysis is unconfirmed.');
+        emit({ type: 'visual_inputs_accepted', stage: 'message', contentKind: 'input', summary: 'DSH已接收实际观察抽样图像；不是完整视频。',
+          text: JSON.stringify({ kind: 'host_observation_samples', images: visualManifest, notFullVideo: true }) });
+      }
       ready();
       for (const item of execution.inputs ?? []) await this.sendInput(operation.id, item.content, item.mode, item.id);
       let complete = false;

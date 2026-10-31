@@ -1,24 +1,34 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useLayoutEffect, useRef, useState } from 'react';
 import type { CompanionRoutine } from '../../shared/companion-routine';
 import type { WorldlineBoxCompanionsApi } from '../../shared/companions';
 import type { ScheduleRequest } from './companion-schedules';
+import { createCoalescedRefresh } from './coalesced-refresh';
 
-export function useCompanionRoutine(companionId: string, conversationId: string, request: ScheduleRequest, api?: WorldlineBoxCompanionsApi) {
+export function useCompanionRoutine(companionId: string, conversationId: string, request: ScheduleRequest, api?: WorldlineBoxCompanionsApi, active = true) {
   const [snapshot, setRoutine] = useState<{ scope: string; routine: CompanionRoutine }>();
   const [failure, setError] = useState<{ scope: string; message: string }>();
   const scope = companionId + '/' + conversationId;
-  const routine = snapshot?.scope === scope && snapshot.routine.companionId === companionId ? snapshot.routine : undefined;
+  const routine = active && snapshot?.scope === scope && snapshot.routine.companionId === companionId ? snapshot.routine : undefined;
   const error = failure?.scope === scope ? failure.message : '';
   const epoch = useRef(0);
   const refresh = useCallback(async () => {
+    if (!active) return;
     const current = ++epoch.current;
     const response = await request({ type: 'routine.get', companionId, conversationId });
     if (current !== epoch.current) return;
     if (response?.ok && response.routine?.companionId === companionId) { setRoutine({ scope, routine: response.routine }); setError(undefined); }
-    else setError({ scope, message: '暂时无法读取作息。' });
-  }, [companionId, conversationId, request, scope]);
-  useEffect(() => { const currentEpoch = epoch; void Promise.resolve().then(refresh); return () => { currentEpoch.current++; }; }, [refresh]);
-  useEffect(() => { let timer: ReturnType<typeof setTimeout> | undefined; const unsubscribe = api?.onChanged(() => { clearTimeout(timer); timer = setTimeout(() => void refresh(), 200); }); return () => { unsubscribe?.(); clearTimeout(timer); }; }, [api, refresh]);
+    else { setRoutine(undefined); setError({ scope, message: '暂时无法读取作息。' }); }
+  }, [companionId, conversationId, request, scope, active]);
+  useLayoutEffect(() => {
+    if (!active) return;
+    const currentEpoch = epoch, reads = createCoalescedRefresh(refresh, undefined, 200);
+    void reads.trigger();
+    const unsubscribe = api?.onChanged(change => {
+      if (change?.kind !== 'progress') { ++currentEpoch.current; setRoutine(undefined); setError(undefined); }
+      void reads.trigger();
+    });
+    return () => { ++currentEpoch.current; setRoutine(undefined); setError(undefined); reads.dispose(); unsubscribe?.(); };
+  }, [active, api, refresh]);
   return { routine, error, refresh };
 }
 

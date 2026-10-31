@@ -31,8 +31,8 @@ export class VcpPreparedRecallDiskBudget {
     const relative = path.relative(root, dataRoot), parts = relative ? relative.split(path.sep) : [];
     const nativeLayout = parts.every(part => /^[a-f0-9]{64}$/u.test(part))
       || parts[0] === 'generation' && parts.slice(1).every(part => /^[a-f0-9]{64}$/u.test(part));
-    const ownerLayout = parts.length === 4 && /^[a-zA-Z0-9_-]{1,100}$/u.test(parts[0]!) && parts[1] === '.认知索引'
-      && ['hot', 'generation'].includes(parts[2]!) && /^[a-f0-9]{64}$/u.test(parts[3]!);
+    const ownerLayout = parts.length === 5 && /^[a-zA-Z0-9_-]{1,100}$/u.test(parts[0]!) && parts[1] === '.运行' && parts[2] === '索引'
+      && ['hot', 'generation'].includes(parts[3]!) && /^[a-f0-9]{64}$/u.test(parts[4]!);
     if (path.isAbsolute(relative) || parts.includes('..') || !(nativeLayout && parts.length <= 3 || ownerLayout))
       throw new Error('Prepared recall data root must be inside its native workspace layout.');
     const maxPackages = limits.maxPackages ?? DEFAULT_PACKAGES, maxBytes = limits.maxBytes ?? DEFAULT_BYTES;
@@ -61,7 +61,8 @@ export class VcpPreparedRecallDiskBudget {
         if (entry.isSymbolicLink()) continue;
         if (depth === 0 && /^[a-zA-Z0-9_-]{1,100}$/u.test(entry.name)) {
           if (entry.isDirectory()) for (const lane of ['hot', 'generation']) {
-            const index = path.join(file, '.认知索引'), target = path.join(index, lane);
+            const index = path.join(file, '.运行', '索引'), target = path.join(index, lane);
+            if (!await preparedBudgetOwnedDirectory(index)) continue;
             let indexInfo, laneInfo;
             try { indexInfo = await lstat(index); laneInfo = await lstat(target); }
             catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') continue; throw error; }

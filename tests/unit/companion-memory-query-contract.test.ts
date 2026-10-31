@@ -7,11 +7,13 @@ import type { VcpMemoryNote, VcpMemoryScope } from '../../src/main/vcp-memory/co
 import type { CompanionStorageCommand } from '../../src/shared/companion-storage';
 import type { VcpMemoryDreamWaveRequest, VcpMemoryDreamWaveResult } from '../../src/main/vcp-memory/dream-contracts';
 import { createHash } from 'node:crypto';
+import { companionMemoryDescriptorSchema } from '../../src/shared/companion-memory';
 import { companionMemoryContextEvidenceSchema } from '../../src/shared/companion-memory-context-evidence';
+import { companionMemoryTypeScope } from '../../src/main/companions/memory-type-scope';
 
 vi.mock('electron', () => ({ utilityProcess: { fork: vi.fn() } }));
 
-const note = (id: string, patch: Partial<CompanionMemory> = {}): CompanionMemory => ({
+const note = (id: string, patch: Partial<CompanionMemory> = {}): CompanionMemory => ({ artifactKind: 'episode_memory' as const,
   id, companionId: 'owner', scopeId: 'source', content: `FACT_${id}`, tags: ['flower'], diaryName: 'journal',
   sourceConversationId: 'private', sourceSequence: 1, sources: [{ messageId: `source_${id}`, conversationId: 'private',
     authorId: 'user', sequence: 1, revision: 1, checksum: createHash('sha256').update(id).digest('hex'), createdAt: '2026-10-23T00:00:00Z' }],
@@ -57,6 +59,7 @@ function fixture(notes: CompanionMemory[], options: Pick<ConstructorParameters<t
     if (command.type === 'memory.snapshot') return { ok: true, memorySnapshot: { scopeId: 'original', revision, revocationEpoch, notes: corpus } };
     if (command.type === 'memory.lifecycle.state') return { ok: true, memoryLifecycleState: { revocationEpoch } };
     if (command.type === 'memory.records.filter') return { ok: true, memories: corpus.filter(note => command.ids.includes(note.id)) };
+    if (command.type === 'memory.records.describe') return { ok: true, memoryDescriptors: corpus.filter(note => command.ids.includes(note.id)).map(note => companionMemoryDescriptorSchema.parse(note)) };
     if (command.type === 'memory.frozen.valid') return { ok: true, memoryFrozenValid: command.memories.every(expected => corpus.some(note => note.id === expected.id
       && expected.sources.every(source => note.sources.some(actual => actual.messageId === source.id && actual.conversationId === source.conversationId
         && actual.checksum === source.checksum && (source.revision === undefined || source.revision === actual.revision))))) };
@@ -78,7 +81,7 @@ describe('one physical corpus for memory filters, context and citation pages', (
     const original = note('used'), f = fixture([original], { prepareFiles, validateFiles });
     const scope = { companionId: 'owner', conversationId: 'private' };
     const receipts = [{ companionId: 'owner', noteId: original.id, contentRevision: 1, path: '日记/used.md', contentHash: 'a'.repeat(64) }];
-    const context = { revision: 'stable', profileKey: 'fixture', text: original.content, fileReceipts: receipts,
+    const context = { revision: 'stable', profileKey: 'fixture', typeScope: companionMemoryTypeScope(), text: original.content, fileReceipts: receipts,
       evidence: { dependencyCoverage: 'complete', dependencies: [{ id: original.id, version: 1 }] } };
     try {
       expect(await f.service.contextValid(scope)).toBe(true);
@@ -134,7 +137,7 @@ describe('one physical corpus for memory filters, context and citation pages', (
     let now = '2026-10-23T04:00:00Z';
     f.request.mockImplementation(command => command.type === 'world.clock'
       ? Promise.resolve({ ok: true, worldClock: { realNow: now, virtualNow: now, timeZone: 'Asia/Shanghai', mode: 'realtime', speed: 1, backlog: false } }) : originalRequest(command));
-    const scope = { companionId: 'owner', conversationId: 'private' }, context = { revision: 'stable', profileKey: 'fixture', evidence: { queryClock: { now, timeZone: 'Asia/Shanghai' } } };
+    const scope = { companionId: 'owner', conversationId: 'private' }, context = { revision: 'stable', profileKey: 'fixture', typeScope: companionMemoryTypeScope(), evidence: { queryClock: { now, timeZone: 'Asia/Shanghai' } } };
     try {
       expect(await f.service.contextValid(scope, context)).toBe(true); expect(await f.service.contextFresh(scope, context)).toBe(true);
       now = '2026-10-23T04:00:00.500Z'; expect(await f.service.contextFresh(scope, context)).toBe(true);
@@ -322,7 +325,7 @@ describe('one physical corpus for memory filters, context and citation pages', (
       expect(scope.scopeId).toBe(f.client.replace.mock.calls[0]![0].scopeId);
       expect(input.notes).toEqual([{ id: 'world', version: 1, eventTime: '2026-10-22T12:00:00Z', clockDomain: 'world', contentHash: createHash('sha256').update(world.content).digest('hex') },
         { id: 'mixed', version: 1, eventTime: '2026-10-23T01:00:00Z', clockDomain: 'real', contentHash: createHash('sha256').update(mixed.content).digest('hex') }]);
-      expect(f.client.replace.mock.calls[0]![1].map(note => note.metadata)).toEqual(input.notes.map(() => ({ hostMemoryOwner: input.owner, hostMemoryVersion: 1 })));
+      expect(f.client.replace.mock.calls[0]![1].map(note => note.metadata)).toEqual(input.notes.map(() => ({ hostArtifactKind: 'episode_memory', hostMemoryOwner: input.owner, hostMemoryVersion: 1 })));
       expect(result.sourceRevision).toBe('stable');
     } finally { await f.service.close(); }
   });

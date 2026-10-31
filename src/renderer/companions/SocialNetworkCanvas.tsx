@@ -43,7 +43,8 @@ export function SocialNetworkCanvas({ graph, companions, playerProfile, selected
   }, [onCapacity]);
   const positions = shown.map((node, index) => ({ ...node, ...(slots[index] ?? { x: size.width / 2, y: -200 }) }));
   const portrait = (node: Graph['nodes'][number]) => node.id === 'user' ? { id: 'user', name: playerProfile?.name ?? '我', avatar: 'custom' as const, avatarAttachmentId: playerProfile?.avatarAttachmentId }
-    : { ...node, avatar: node.avatar ?? roles.get(node.id)?.avatar ?? 'custom', avatarAttachmentId: node.avatarAttachmentId ?? roles.get(node.id)?.avatarAttachmentId };
+    : { ...roles.get(node.id), ...node, avatar: node.avatar ?? roles.get(node.id)?.avatar ?? 'custom', avatarAttachmentId: node.avatarAttachmentId ?? roles.get(node.id)?.avatarAttachmentId,
+      assetImages: roles.get(node.id)?.assetImages };
   const reset = () => { setZoom(1); setPan({ x: 0, y: 0 }); };
   return <div className="social-explorer">
     <div className="social-explorer-search"><label><Icon name="search" /><input type="search" aria-label="搜索全部社交关系" placeholder="搜索姓名或 ID，定位任意关系…" value={query} onChange={event => { onQuery(event.target.value); setDirectory(true); }} /></label><button aria-pressed={directory} onClick={() => setDirectory(value => !value)}><Icon name="users" />关系目录</button></div>

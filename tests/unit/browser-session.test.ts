@@ -11,6 +11,7 @@ import {
 import {
   applyStoredBrowserSession,
   findSessionSelectedAsset,
+  browserSessionInitialLoad,
   type RestoreBrowserSessionApi,
 } from "../../src/renderer/restore-browser-session";
 import type { AssetSummary } from "../../src/shared/asset-types";
@@ -146,8 +147,8 @@ describe("findSessionSelectedAsset", () => {
     expect(found?.assetId).toBe("a2");
   });
 
-  it("loads the full smart collection when the asset is missing", async () => {
-    const executeSmartCollection = vi.fn(async () => ({
+  it("finds an off-page selection by filename inside its smart scope without loading the whole collection", async () => {
+    const searchAssets = vi.fn(async () => ({
       ok: true as const,
       value: {
         items: [asset({ assetId: "deep" })],
@@ -156,8 +157,8 @@ describe("findSessionSelectedAsset", () => {
       },
     }));
     const api: RestoreBrowserSessionApi = {
-      executeSmartCollection,
-      searchAssets: vi.fn(),
+      executeSmartCollection: vi.fn(),
+      searchAssets,
     };
     const found = await findSessionSelectedAsset({
       api,
@@ -171,9 +172,11 @@ describe("findSessionSelectedAsset", () => {
       restoredItems: [asset({ assetId: "page0" })],
     });
     expect(found?.assetId).toBe("deep");
-    expect(executeSmartCollection).toHaveBeenCalledWith(
-      expect.objectContaining({ scopeMode: true }),
+    expect(searchAssets).toHaveBeenCalledWith(
+      expect.objectContaining({ scopeMode: true, scope: { kind: "smart_collection", collectionId: "sc1" },
+        query: { clauses: [{ field: "filename", values: ["deep.png"], exclude: false }] } }),
     );
+    expect(api.executeSmartCollection).not.toHaveBeenCalled();
   });
 
   it("falls back to filename search outside smart scope", async () => {
@@ -211,6 +214,26 @@ describe("findSessionSelectedAsset", () => {
 });
 
 describe("applyStoredBrowserSession", () => {
+  it.each<StoredBrowserSession['scope']>([
+    { kind: 'root' }, { kind: 'folder', id: 'folder' }, { kind: 'trash' },
+    { kind: 'tag', id: 'tag', name: 'Saved tag' }, { kind: 'collection', id: 'collection' }, { kind: 'smart', id: 'smart' },
+  ])('keeps the already loaded saved $kind page and its opaque pagination session', async scope => {
+    const selected = asset({ assetId: 'selected' }), loadContent = vi.fn(), searchAssets = vi.fn(), executeSmartCollection = vi.fn(), beginBrowsePage = vi.fn();
+    const initial = browserSessionInitialLoad({ session: { version: 1, scope, selectedAssetId: selected.assetId, selectedAssetName: selected.displayName },
+      collectionRecursive: true, folderRecursive: () => true });
+    expect(initial).not.toEqual({ scope: 'all', options: {} });
+    const restored = await applyStoredBrowserSession({
+      api: { searchAssets, executeSmartCollection }, library: { libraryId: 'lib' } as never,
+      session: { version: 1, scope, selectedAssetId: selected.assetId, selectedAssetName: selected.displayName },
+      initialItems: [selected], initialScopeLoaded: true, collectionRecursive: true, isFolderRecursiveEnabled: () => true,
+      loadContent, setShowTrash: vi.fn(), setAssetScope: vi.fn(), setFolderRecursive: vi.fn(), folderRecursiveRef: { current: false },
+      setActiveTagId: vi.fn(), setTagFilter: vi.fn(), setActiveCollectionId: vi.fn(), setActiveSmartCollectionId: vi.fn(),
+      setAssets: vi.fn(), setTrashedAssets: vi.fn(), setSearchTotal: vi.fn(), beginBrowsePage,
+    });
+    expect(restored.restoredAsset).toBe(selected);
+    expect(loadContent).not.toHaveBeenCalled(); expect(searchAssets).not.toHaveBeenCalled(); expect(executeSmartCollection).not.toHaveBeenCalled();
+    expect(beginBrowsePage).not.toHaveBeenCalled();
+  });
   it("restores trash scope and appends missing selected asset", async () => {
     const setShowTrash = vi.fn();
     const setAssetScope = vi.fn();

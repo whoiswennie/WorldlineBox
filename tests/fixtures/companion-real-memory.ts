@@ -12,6 +12,9 @@ import { CompanionVcpRuntime } from '../../src/main/companions/vcp-runtime';
 import { generateCompanionText, COMPANION_TEXT_GENERATION_PROFILE } from '../../src/main/companions/model';
 import { fixtureOwnerRuntimeStorage, fixtureOwnerRuntimePaths } from './owner-runtime-storage';
 import { renderCompanionNativeMemoryPrompt, validateCompanionNativeMemoryPrompt } from '../../src/shared/companion-native-memory-prompt';
+import type { CompanionNativeMemoryPrompt } from '../../src/shared/companion-native-memory-prompt';
+import type { CompanionOwnerRuntimeStorage, CompanionOwnerRuntimePaths } from '../../src/main/companions/owner-runtime-storage';
+import type { CompanionContextFrame } from '../../src/shared/companion-cognition';
 
 export interface RealColdWorkerObservation {
   direction: 'request' | 'response'; requestId: string; commandType: string; ok?: boolean;
@@ -22,11 +25,19 @@ export interface RealColdWorkerObservation {
 
 export async function realMemoryRuntime(root: string, generate?: (context: { system: string; user: string }, signal: AbortSignal) => Promise<string>,
   options: { observeColdWorker?(event: RealColdWorkerObservation): void; modelFetch?: typeof fetch;
-    observeHotLatency?(event: { operation: string; elapsedMs: number; count?: number }): void } = {}) {
-  const encoder = new GlobalEmbeddingService({ userDataPath: path.join(root, 'encoder'), bundleDirectory: path.resolve('resources/embedding-models'), koffiPath: createRequire(import.meta.url).resolve('koffi') });
+    workerPath?: string; vendorRoot?: string; repositoryRoot?: string; nativeProcessLimit?: number; beforeLaunch?(workerPath: string): void;
+    observeHotLatency?(event: { operation: string; elapsedMs: number; count?: number }): void;
+    resolveOwnerStorage?(ownerId: string): Promise<CompanionOwnerRuntimeStorage>;
+    resolveOwnerCleanupStorage?(ownerId: string): Promise<CompanionOwnerRuntimePaths>;
+    prepareOwnerAssetContext?(ownerId: string, context: { system: string; user: string }, kind: 'reply' | 'structured' | 'text', nativePrompt?: CompanionNativeMemoryPrompt, explicitPurpose?: string): Promise<{ system: string; user: string; frame?: CompanionContextFrame }> } = {}) {
+  const repositoryRoot = options.repositoryRoot ?? process.cwd();
+  const encoder = new GlobalEmbeddingService({ userDataPath: path.join(root, 'encoder'), bundleDirectory: path.join(repositoryRoot, 'resources/embedding-models'),
+    koffiPath: createRequire(path.join(repositoryRoot, 'package.json')).resolve('koffi') });
+  const vendorRoot = options.vendorRoot ?? path.resolve('vendor/vcp-memory'), workerPath = options.workerPath ?? path.resolve('src/main/vcp-memory/worker.cjs');
   const profile = await encoder.resolveProfile(); const gateway = new VcpEmbeddingGateway(encoder);
   const configuration = await gateway.configuration(profile.selectionId, profile);
   const childLaunch = (file: string): VcpMemoryTransport => {
+    options.beforeLaunch?.(file);
     const child = fork(file, [], { execPath: process.execPath, env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' }, stdio: ['ignore', 'ignore', 'ignore', 'ipc'],
       ...(options.observeHotLatency && path.basename(file) === 'worker.cjs'
         ? { execArgv: ['--require', path.resolve('tests/fixtures/companion-memory-latency-probe.cjs')] } : {}) });
@@ -72,33 +83,36 @@ export async function realMemoryRuntime(root: string, generate?: (context: { sys
   };
   const chat = generate ? new VcpChatGateway(generate) : undefined;
   const plugins = chat ? { chat: await chat.configuration() } : undefined;
-  const client = new VcpMemoryClient({ dataRoot: path.join(root, 'vcp'), vendorRoot: path.resolve('vendor/vcp-memory'), workerPath: path.resolve('src/main/vcp-memory/worker.cjs'), embedding: configuration, plugins, launch: childLaunch, maxOpenScopes: 4, requestTimeoutMs: 120000 });
+  const client = new VcpMemoryClient({ dataRoot: path.join(root, 'vcp'), vendorRoot, workerPath, embedding: configuration, plugins, launch: childLaunch, maxOpenScopes: 4, requestTimeoutMs: 120000 });
   const extraClients: VcpMemoryClient[] = [];
   const coldServices: ColdKnowledgeService[] = [];
   const cold = (authorize: ColdKnowledgeServiceOptions['authorize']) => {
-    const service = new ColdKnowledgeService({ dataRoot: path.join(root, 'real-cold'), vendorRoot: path.resolve('vendor/vcp-memory'),
-      workerPath: path.resolve('src/main/vcp-memory/cold-worker.cjs'), embedding: configuration, authorize, launch: childLaunch });
+    const service = new ColdKnowledgeService({ dataRoot: path.join(root, 'real-cold'), vendorRoot,
+      workerPath: path.join(path.dirname(workerPath), 'cold-worker.cjs'), embedding: configuration, authorize, launch: childLaunch });
     coldServices.push(service); return service;
   };
   const profileClient = (behaviorProfile: NonNullable<VcpMemoryPluginConfiguration['behaviorProfile']>) => {
-    const instance = new VcpMemoryClient({ dataRoot: path.join(root, 'vcp-' + behaviorProfile), vendorRoot: path.resolve('vendor/vcp-memory'),
-      workerPath: path.resolve('src/main/vcp-memory/worker.cjs'), embedding: configuration, plugins: { ...plugins, behaviorProfile },
+    const instance = new VcpMemoryClient({ dataRoot: path.join(root, 'vcp-' + behaviorProfile), vendorRoot,
+      workerPath, embedding: configuration, plugins: { ...plugins, behaviorProfile },
       launch: childLaunch, maxOpenScopes: 2, requestTimeoutMs: 120000 });
     extraClients.push(instance); return instance;
   };
   // Direct parity clients above retain their explicit test callback. Main's
   // generation path uses the production runtime and the actual owner snapshot.
   const ownerChat = new VcpChatGateway();
-  const resolveOwnerStorage = fixtureOwnerRuntimeStorage(path.join(root, 'owner-assets'));
-  const runtime = new CompanionVcpRuntime({ resolveOwnerStorage, vendorRoot: path.resolve('vendor/vcp-memory'),
-    resolveOwnerCleanupStorage: fixtureOwnerRuntimePaths(path.join(root, 'owner-assets')),
-    workerPath: path.resolve('src/main/vcp-memory/worker.cjs'), resolveEmbedding: async () => configuration, launch: childLaunch,
+  const resolveOwnerStorage = options.resolveOwnerStorage ?? fixtureOwnerRuntimeStorage(path.join(root, 'owner-assets'));
+  const runtime = new CompanionVcpRuntime({ resolveOwnerStorage, vendorRoot,
+    resolveOwnerCleanupStorage: options.resolveOwnerCleanupStorage ?? fixtureOwnerRuntimePaths(path.join(root, 'owner-assets')),
+    workerPath, resolveEmbedding: async () => configuration, launch: childLaunch,
+    ...(options.nativeProcessLimit !== undefined ? { nativeProcessLimit: options.nativeProcessLimit } : {}),
     generationProfile: COMPANION_TEXT_GENERATION_PROFILE, resolveGenerationPlugins: async input => {
       const snapshot = Object.freeze({ ...input.config });
       const route = await ownerChat.registerOwnerRoute({ ownerId: input.ownerId, credential: snapshot.apiKey,
         semanticProfile: { ownerId: input.ownerId, profileKey: input.profileKey, generation: COMPANION_TEXT_GENERATION_PROFILE },
         generate: (context, signal, work) => generateCompanionText(context, { ...snapshot, ownerId: input.ownerId,
-          workPriority: work?.priority ?? 'background', accountingPurpose: work?.nativePrompt ? 'timeline' : 'other', resolveAssetContext: async (context, kind) => {
+          workPriority: work?.priority ?? 'background', requestPurpose: work?.nativePrompt ? 'timeline' : 'other', resolveAssetContext: async (context, kind) => {
+            if (options.prepareOwnerAssetContext) return options.prepareOwnerAssetContext(input.ownerId, context, kind, work?.nativePrompt,
+              work?.nativePrompt ? work.nativePrompt.kind === 'timeline' ? 'native_timeline' : 'native_summary' : 'vcp_focus_guidance');
             if (work?.nativePrompt) {
               const native = validateCompanionNativeMemoryPrompt(work.nativePrompt, input.ownerId, context.system);
               const storage = await resolveOwnerStorage(input.ownerId);

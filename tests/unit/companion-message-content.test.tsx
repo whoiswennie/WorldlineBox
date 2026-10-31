@@ -8,10 +8,15 @@ import type { CompanionAction } from '../../src/shared/companions';
 
 let root: Root | undefined;
 let container: HTMLDivElement | undefined;
+Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
 afterEach(async () => { await act(() => root?.unmount()); container?.remove(); root = undefined; container = undefined; });
 async function render(content: string, onOpenUrl = vi.fn()) {
   container = document.createElement('div'); document.body.append(container); root = createRoot(container);
   await act(() => root!.render(<MessageContent content={content} onOpenUrl={onOpenUrl} />));
+  if (container.querySelector('[data-message-format="loading"]')) await vi.waitFor(async () => {
+    await act(async () => { await Promise.resolve(); });
+    expect(container!.querySelector('[data-message-format="loading"]')).toBeNull();
+  }, { timeout: 5000, interval: 20 });
   return onOpenUrl;
 }
 

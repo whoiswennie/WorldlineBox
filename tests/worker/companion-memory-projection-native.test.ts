@@ -13,6 +13,7 @@ import type { VcpMemoryClient } from '../../src/main/vcp-memory/client';
 import { removeOwnedDirectory } from '../../src/main/vcp-memory/filesystem';
 import { canonicalMemoryFiles } from '../fixtures/canonical-memory-files';
 import { fixtureOwnerRuntimePaths } from '../fixtures/owner-runtime-storage';
+import { recordSourceBackedMemory } from '../fixtures/source-backed-memory';
 
 vi.mock('electron', () => ({ utilityProcess: { fork: vi.fn() } }));
 
@@ -38,14 +39,14 @@ it('keeps full native/preprocess parity through warm catalogue reuse and annotat
     await new Promise<void>(resolve => encoder.listen(0, '127.0.0.1', resolve));
     const address = encoder.address(); if (!address || typeof address === 'string') throw new Error('Missing fixture encoder.');
     const config = { apiFormat: 'openai_chat' as const, model: 'synthetic-native-parity', apiKey: 'synthetic-local-only', baseUrl: 'http://127.0.0.1' };
-    const original = Array.from({ length: 8 }, (_, index) => store.saveMemory({ ...scope,
+    const original = Array.from({ length: 8 }, (_, index) => recordSourceBackedMemory(store, { ...scope,
       content: `umbrella garden 合成完整正文 ${index}：雨伞尚未归还，周三归还。`, tags: ['umbrella', 'garden', 'item_' + index], diaryName: '资料' }));
     files = await canonicalMemoryFiles(root, store, config);
     const workspaceRoot = path.join(root, 'owner-assets'), nativeWrites: string[] = [];
     runtime = new CompanionVcpRuntime({ vendorRoot: path.resolve('vendor/vcp-memory'), workerPath: path.resolve('src/main/vcp-memory/worker.cjs'), nativeProcessLimit: 3,
       resolveOwnerCleanupStorage: fixtureOwnerRuntimePaths(workspaceRoot), resolveOwnerStorage: async ownerId => {
         const snapshot = await files!.profiles.load(ownerId);
-        return { ownerId, workspaceRoot, ownerRoot: snapshot.root, indexRoot: path.join(snapshot.root, '.认知索引'),
+        return { ownerId, workspaceRoot, ownerRoot: snapshot.root, indexRoot: path.join(snapshot.root, '.运行', '索引'),
           ownerPrompts: { aimemoTemplate: snapshot.nativeFocusTemplate, timelineTemplate: snapshot.nativeTimelineTemplate, summaryTemplate: snapshot.nativeSummaryTemplate } };
       }, resolveEmbedding: async () => ({ baseUrl: `http://127.0.0.1:${address.port}`, apiKey: 'synthetic', model: 'synthetic-parity-vector', dimension: 4 }),
       launch: worker => { const child = fork(worker, [], { execPath: process.execPath, env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' }, stdio: ['ignore', 'ignore', 'ignore', 'ipc'] });
@@ -57,7 +58,7 @@ it('keeps full native/preprocess parity through warm catalogue reuse and annotat
         return { plugins: { chat: route.chat }, dispose: route.dispose };
       } });
     const request = vi.fn(files.request);
-    memory = new CompanionMemoryService({ request, runtime, cacheRootFor: async owner => path.join(workspaceRoot, owner, '.认知索引', 'views'),
+    memory = new CompanionMemoryService({ request, runtime, cacheRootFor: async owner => path.join(workspaceRoot, owner, '.运行', '索引', 'views'),
       configFor: async () => config, fetchFn: fetch, ...files.projection, validateFiles: (owner, receipts, window) => files!.live.validate(owner, receipts, window),
       prepareFiles: owner => files!.library.prepareOwnerFiles(owner),
       busy: () => false, changed: () => undefined, report: () => undefined });
@@ -105,7 +106,7 @@ it('keeps full native/preprocess parity through warm catalogue reuse and annotat
       expect(replaced).toHaveBeenCalledTimes(initialReplaces); expect(delta).not.toHaveBeenCalled();
       const current = store.request({ type: 'memory.library.read', companionId: 'alice', id: original[0]!.id }).memoryRead!.memory;
       store.request({ type: 'memory.library.organize', companionId: 'alice', id: current.id, expectedVersion: current.version, tags: ['umbrella', 'new_annotation'], diaryName: '资料' });
-      const added = store.saveMemory({ ...scope, content: 'umbrella garden 新增的完整合法正文，原来约定继续存在。', tags: ['umbrella', 'garden'], diaryName: '资料' });
+      const added = recordSourceBackedMemory(store, { ...scope, content: 'umbrella garden 新增的完整合法正文，原来约定继续存在。', tags: ['umbrella', 'garden'], diaryName: '资料' });
       await files.publish('alice'); await memory.drainDeliveries(); memory.changed('alice');
       await round('umbrella garden 新增与整理之后的约定？', [...original.map(note => note.id), added.id]);
       expect(delta).toHaveBeenCalledTimes(1); expect(delta.mock.calls[0]![1].map(note => note.id).sort()).toEqual([current.id, added.id].sort());

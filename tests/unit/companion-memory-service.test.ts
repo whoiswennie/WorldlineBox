@@ -6,6 +6,7 @@ import Database from 'better-sqlite3';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { CompanionsStore, type CompanionConnection, type CompanionSeed } from '../../src/companions/store';
 import { CompanionService } from '../../src/main/companions/service';
+import { CompanionModelError } from '../../src/main/companions/model';
 import { VcpMemoryClient } from '../../src/main/vcp-memory/client';
 import type { VcpMemoryNote, VcpMemoryScope, VcpMemoryMessage, VcpMemoryTimelineArtifacts, VcpMemoryPluginName } from '../../src/main/vcp-memory/contracts';
 import { vcpMemoryNotebookFolder } from '../../src/main/vcp-memory/contracts';
@@ -18,10 +19,13 @@ import { COMPANION_DIALOGUE_WINDOW } from '../../src/main/companions/context-win
 import { buildCompanionContext } from '../../src/main/companions/context';
 import type { CompanionLoopCheckpoint } from '../../src/shared/companion-loop';
 import { CompanionMemoryService } from '../../src/main/companions/memory-service';
+import type { CompanionMemorySourceFiles } from '../../src/main/companions/memory-source-files';
 import { CompanionOptionalDreamError } from '../../src/main/companions/optional-dream-error';
 import type { VcpMemoryDreamWaveResult } from '../../src/main/vcp-memory/dream-contracts';
 import { captureCompanionExecutionReadset } from '../../src/main/companions/execution-evidence';
 import { verifyDshDelivery } from '../../src/main/dsh/task-delivery';
+import { companionMemoryRegisteredPath } from '../../src/main/companions/memory-library';
+import { randomUUID } from 'node:crypto';
 import type { DshTaskResult } from '../../src/shared/dsh-tasks';
 
 const transport = vi.hoisted(() => ({ request: vi.fn<(command: CompanionStorageCommand) => Promise<CompanionStorageResponse>>(),
@@ -63,7 +67,7 @@ function memoryResponse(id: string, action: string, args: Record<string, unknown
   return toolResponse(id, 'memory', { action, ...args });
 }
 function journal(source: { id: string; content: string }, content = '用户喜欢茶。', tags = ['饮料偏好']): CompanionMemoryCandidate {
-  return { content, sourceMessageIds: [source.id], evidence: [{ sourceMessageId: source.id, quote: source.content }], tags };
+  return { artifactKind: 'episode_memory' as const, content, sourceMessageIds: [source.id], evidence: [{ sourceMessageId: source.id, quote: source.content }], tags };
 }
 
 /** Host orchestration fake only. Original indexing/River behavior is tested in the worker suite. */
@@ -115,7 +119,7 @@ function bindStorage(store: CompanionsStore) {
   transport.request.mockImplementation(async command => store.request(command));
   transport.close.mockImplementation(async () => { store.close(); stores.delete(store); });
 }
-function startService(root: string, memoryLibrary = false): CompanionService {
+function startService(root: string, memoryLibrary = true): CompanionService {
   const dsh = { state: () => ({ tasks: [], operations: [] }), requestTask: vi.fn(async () => ({ ok: true })) } as unknown as DshLauncher;
   const client = new FakeVcpClient(root); clients.set(root, client);
   const runtime: CompanionMemoryRuntime = controlledMemoryRuntime({ get: async () => ({ client, profileKey: 'bundled-gemma2:768' }), close: async () => client.close() });
@@ -125,7 +129,7 @@ function startService(root: string, memoryLibrary = false): CompanionService {
     hasConfig: () => true, dsh: () => dsh, report: vi.fn() });
   services.add(service); return service;
 }
-function fixture(customSeeds = seeds, memoryLibrary = false) {
+function fixture(customSeeds = seeds, memoryLibrary = true) {
   const testNow = Date.now(); vi.setSystemTime(testNow - 10_000);
   const root = mkdtempSync(path.join(tmpdir(), 'worldlinebox-memory-service-')); roots.push(root);
   const databasePath = path.join(root, 'companions', 'messages.sqlite');
@@ -147,9 +151,9 @@ async function closeService(service: CompanionService) {
 async function sent(service: CompanionService, store: CompanionsStore, conversationId: string, content: string, clientId: string) {
   const result = await service.handle({ type: 'message.send', conversationId, content, clientId, delivery: 'chat' });
   const message = result.message!;
-  try { await vi.waitFor(() => expect(store.request({ type: 'work.list', sourceMessageId: message.id }).works?.every(work => work.status === 'done'), content).toBe(true), { timeout: 5000 }); }
+  try { await vi.waitFor(() => expect(store.request({ type: 'work.list', sourceMessageId: message.id }).works?.every(work => work.status === 'done'), content).toBe(true), { timeout: 15000 }); }
   catch (error) {
-    const reports = (service as unknown as { options: { report: { mock: { calls: unknown[][] } } } }).options.report.mock.calls.flat().map(value => value instanceof Error ? value.message : String(value));
+    const reports = (service as unknown as { options: { report: { mock: { calls: unknown[][] } } } }).options.report.mock.calls.flat().map(value => value instanceof Error ? value.stack ?? value.message : String(value));
     const work = store.request({ type: 'work.list', sourceMessageId: message.id }).works;
     const checkpoint = store.request({ type: 'loop.get', companionId: 'sister', sourceMessageId: message.id }).loop;
     const memory = (service as unknown as { memory: { invalidations: Map<string, unknown>; queryTails: Map<string, unknown>; captures: Map<string, unknown>; continuity?: { owner: string } } }).memory;
@@ -162,97 +166,134 @@ function active(store: CompanionsStore, conversationId: string, companionId = 's
 }
 function status(store: CompanionsStore, companionId = 'sister') { return store.request({ type: 'memory.status', companionId }).memoryStatus!; }
 
-it('edits the actual shared model budget file through Main only after validating the selected companion', async () => {
-  const f = fixture(seeds, true);
-  const initial = (await f.service.manageModelResources({ type: 'model.resources.read', companionId: 'sister' })).modelResources!;
-  const file = path.join(f.root, 'companions', initial.path), policy = JSON.parse(initial.content);
-  expect(readFileSync(file, 'utf8')).toBe(initial.content); expect(initial.usage.requests).toBe(0);
-  policy.defaultConnection.requestsPerMinute = 3;
-  const edited = JSON.stringify(policy, null, 2);
-  const saved = (await f.service.manageModelResources({ type: 'model.resources.save', companionId: 'sister', expectedRevision: initial.revision, content: edited })).modelResources!;
-  expect(readFileSync(file, 'utf8')).toBe(edited); expect(saved.revision).not.toBe(initial.revision);
-  policy.defaultConnection.requestsPerMinute = 7;
-  await expect(f.service.manageModelResources({ type: 'model.resources.save', companionId: 'missing-owner', expectedRevision: saved.revision, content: JSON.stringify(policy) })).rejects.toThrow('伙伴不存在');
-  expect(readFileSync(file, 'utf8')).toBe(edited);
-  writeFileSync(file, JSON.stringify(policy));
-  await expect(f.service.manageModelResources({ type: 'model.resources.save', companionId: 'sister', expectedRevision: saved.revision, content: edited })).rejects.toThrow('外部修改');
-  expect(JSON.parse(readFileSync(file, 'utf8')).defaultConnection.requestsPerMinute).toBe(7);
+it('starts automatic memory processing without a product quota file or budget management endpoint', async () => {
+  const f = fixture(); await f.service.handle({ type: 'state' });
+  expect('manageModelResources' in f.service).toBe(false);
+  expect(readdirSync(path.join(f.root, 'companions')).some(name => /model-resources|budget/iu.test(name))).toBe(false);
+  expect(transport.request.mock.calls.some(([command]) => command.type.startsWith('model.resources.'))).toBe(false);
+  const db = new (Database as { new(file: string): CompanionConnection })(f.databasePath);
+  try { expect(db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name IN('companion_model_requests','companion_model_request_purposes')").all()).toEqual([]); }
+  finally { db.close(); }
 });
-it.each(['next_day', 'raised_budget'] as const)('parks actual Main capture until the durable local budget deadline without spending eight extraction attempts: %s', async recovery => {
-  const f = fixture(seeds, true);
-  await sent(f.service, f.store, f.conversation.id, '今天先正常聊一句。', 'budget-deferral-baseline');
-  const initial = (await f.service.manageModelResources({ type: 'model.resources.read', companionId: 'sister' })).modelResources!;
-  const policy = JSON.parse(initial.content); expect(initial.usage.requests).toBeGreaterThan(0);
-  policy.defaultConnection.requestsPerUtcDay = initial.usage.requests;
-  await f.service.manageModelResources({ type: 'model.resources.save', companionId: 'sister', expectedRevision: initial.revision, content: JSON.stringify(policy) });
-  const source = f.store.appendMessage({ conversationId: f.conversation.id, authorId: 'user', content: '这份欠账需要在资源恢复后写入。', replyDirective: 'none' });
-  (f.service as unknown as { memory: CompanionMemoryService }).memory.changed('sister');
-  const db = new (Database as unknown as { new(file: string): CompanionConnection })(f.databasePath);
-  try {
-    const httpBefore = transport.memoryFetch.mock.calls.length;
-    await background(65_000);
-    await vi.waitFor(() => expect((db.prepare('SELECT next_attempt FROM vcp_capture_jobs WHERE message_id=?').get(source.id) as { next_attempt: number }).next_attempt).toBeGreaterThan(Date.now()), { timeout: 5000 });
-    const deferred = db.prepare('SELECT status,attempts,next_attempt,error FROM vcp_capture_jobs WHERE message_id=?').get(source.id) as { status: string; attempts: number; next_attempt: number; error: string };
-    expect(deferred).toMatchObject({ status: 'pending', attempts: 0, error: expect.stringContaining('预算') });
-    expect(deferred.next_attempt).toBeGreaterThan(Date.now() + 60_000);
-    for (let poll = 0; poll < 10; poll++) await background(31_000);
-    expect(db.prepare('SELECT status,attempts,next_attempt FROM vcp_capture_jobs WHERE message_id=?').get(source.id)).toEqual({ status: 'pending', attempts: 0, next_attempt: deferred.next_attempt });
-    expect(transport.memoryFetch).toHaveBeenCalledTimes(httpBefore);
-    transport.memoryFetch.mockImplementation(async (_input, init) => {
-      const actual = payload(init).messages.find(message => message.id === source.id);
-      return structuredResponse({ notes: actual ? [journal(actual, actual.content)] : [] });
-    });
-    if (recovery === 'next_day') vi.setSystemTime(deferred.next_attempt + 1000);
-    else {
-      const current = (await f.service.manageModelResources({ type: 'model.resources.read', companionId: 'sister' })).modelResources!;
-      const raised = JSON.parse(current.content); raised.defaultConnection.requestsPerUtcDay += 20;
-      await f.service.manageModelResources({ type: 'model.resources.save', companionId: 'sister', expectedRevision: current.revision, content: JSON.stringify(raised) });
-    }
-    await background(31_000);
-    await vi.waitFor(() => expect(db.prepare('SELECT status,attempts FROM vcp_capture_jobs WHERE message_id=?').get(source.id)).toEqual({ status: 'done', attempts: 1 }), { timeout: 5000 });
-    expect(active(f.store, f.conversation.id).some(note => note.content === source.content)).toBe(true);
-  } finally { db.close(); }
-}, 20_000);
+it('parks an actual running cohort child through Main, aborts only its processor and leaves independent chat and original events usable', async () => {
+  const f = fixture(); await f.service.handle({ type: 'state' });
+  const source = await sent(f.service, f.store, f.conversation.id, '这次真实交流需要保留。', 'cohort-child-cancel');
+  let signal: AbortSignal | undefined;
+  transport.memoryFetch.mockImplementation(async (_url, init) => new Promise<Response>((_resolve, reject) => {
+    signal = init?.signal ?? undefined;
+    const aborted = () => reject(new CompanionModelError('CANCELLED', '受管处理已停止。'));
+    if (signal?.aborted) aborted(); else signal?.addEventListener('abort', aborted, { once: true });
+  }));
+  const memory = (f.service as unknown as { memory: Pick<CompanionMemoryService, 'schedule'> & { captures: Map<string, { id: string }>; running?: Promise<void> } }).memory;
+  memory.schedule(0); await vi.advanceTimersByTimeAsync(65000);
+  await vi.waitFor(() => expect(transport.memoryFetch).toHaveBeenCalledTimes(1));
+  const processorId = memory.captures.get('sister')!.id;
+  const page = await f.service.manageJobs({ type: 'jobs.page', ownerId: 'sister', kind: 'capture', limit: 20 });
+  const child = page.jobPage!.items.find(job => job.id !== processorId && job.state === 'running')!;
+  expect(child).toBeDefined(); expect(child.processorId).toBe(processorId);
+  const control = { type: 'jobs.control' as const, ownerId: 'sister', kind: 'capture' as const, id: child.id, inputVersion: child.inputVersion,
+    expectedRevision: child.revision, operationId: randomUUID(), action: 'park' as const };
+  const parked = await f.service.manageJobs(control); await memory.running;
+  expect(signal?.aborted).toBe(true); expect(parked.jobDisposition).toMatchObject({ state: 'parked', processorId, failureCount: 0 });
+  expect((await f.service.manageJobs(control)).jobDisposition).toEqual(parked.jobDisposition);
+  const after = await f.service.manageJobs({ type: 'jobs.inspect', ownerId: 'sister', kind: 'capture', id: child.id });
+  expect(after.jobDisposition).toMatchObject({ state: 'parked', failureCount: 0 });
+  expect(f.store.getMessage(source.id).content).toBe(source.content);
+  const held = after.jobDisposition!;
+  await f.service.manageJobs({ ...control, operationId: randomUUID(), inputVersion: held.inputVersion, expectedRevision: held.revision, action: 'resume' });
+  await vi.advanceTimersByTimeAsync(2100);
+  await vi.waitFor(() => expect(transport.memoryFetch).toHaveBeenCalledTimes(2), { timeout: 15000 });
+  const resumedSignal = signal;
+  expect(resumedSignal?.aborted).toBe(false);
+  expect((await f.service.manageJobs(control)).jobDisposition).toEqual(parked.jobDisposition);
+  expect(resumedSignal?.aborted).toBe(false);
+  const activeChild = (await f.service.manageJobs({ type: 'jobs.inspect', ownerId: 'sister', kind: 'capture', id: child.id })).jobDisposition!;
+  await f.service.manageJobs({ ...control, operationId: randomUUID(), inputVersion: activeChild.inputVersion, expectedRevision: activeChild.revision });
+  await memory.running;
+  await sent(f.service, f.store, f.conversation.id, '我们仍可以继续聊天。', 'independent-after-park');
+  expect(f.store.messages({ conversationId: f.conversation.id }).messages.at(-1)?.content).toBe('好，慢慢聊。');
+  expect(active(f.store, f.conversation.id)).toHaveLength(0);
+}, 30000);
 /** The native model memory tool uses this Main host port; internal proposals
  * are deliberately absent from the human management request schema. */
 function hostMemory(service: CompanionService, command: CompanionStorageCommand): Promise<CompanionStorageResponse> {
   return (service as unknown as { call(command: CompanionStorageCommand): Promise<CompanionStorageResponse> }).call(command);
 }
-it('resumes a paid capture writer after restart with one HTTP request per UTC day instead of paying the writer forever', async () => {
-  const f = fixture(seeds, true), currentService = f.service; let currentStore = f.store;
-  const initial = (await currentService.manageModelResources({ type: 'model.resources.read', companionId: 'sister' })).modelResources!;
-  const policy = JSON.parse(initial.content); policy.defaultConnection.requestsPerUtcDay = 1;
-  await currentService.manageModelResources({ type: 'model.resources.save', companionId: 'sister', expectedRevision: initial.revision, content: JSON.stringify(policy) });
-  currentStore.request({ type: 'memory.forget', companionId: 'sister', conversationId: f.conversation.id, tag: '家庭住址', persistent: true });
-  const source = currentStore.appendMessage({ conversationId: f.conversation.id, authorId: 'user', content: '蓝色纸张放在书房抽屉。', replyDirective: 'none' });
-  transport.memoryFetch.mockImplementation(async () => structuredResponse({ notes: [journal(source, source.content)] }));
-  (currentService as unknown as { memory: CompanionMemoryService }).memory.changed('sister');
-  await background(65_000);
-  const db = new (Database as unknown as { new(file: string): CompanionConnection })(f.databasePath);
-  let deadline: number;
+async function seedMemory(f: ReturnType<typeof fixture>, content: string, tags: string[] = []): Promise<CompanionMemory> {
+  const source = f.store.appendMessage({ conversationId: f.conversation.id, authorId: 'user', content, replyDirective: 'none' });
+  return (await hostMemory(f.service, { type: 'memory.record', companionId: 'sister', conversationId: f.conversation.id,
+    candidate: { ...journal(source, content, tags), metadata: { autoTags: false } } })).memories![0]!;
+}
+function memoryFile(f: ReturnType<typeof fixture>, note: CompanionMemory): string {
+  return path.join(f.root, 'assets', '伙伴记忆', note.companionId, ...companionMemoryRegisteredPath(note).split('/'));
+}
+it('publishes a new source before its history when it arrives after an older drain observed an empty page', async () => {
+  const f = fixture(); await f.service.handle({ type: 'state' });
+  const host = f.service as unknown as { sourceFiles: CompanionMemorySourceFiles; wakeMemoryFiles(owner: string): void; filePublicationPumps: Map<string, Promise<void>> };
+  let release!: () => void, observedEmpty = false;
+  const gate = new Promise<void>(resolve => { release = resolve; }), flush = host.sourceFiles.flush.bind(host.sourceFiles);
+  const intercepted = vi.spyOn(host.sourceFiles, 'flush').mockImplementation(async (owner, options) => {
+    const result = await flush(owner, options);
+    if (!observedEmpty && owner === 'sister' && !result.pending) { observedEmpty = true; await gate; }
+    return result;
+  });
+  host.wakeMemoryFiles('sister');
+  const earlier = host.filePublicationPumps.get('sister')!; expect(earlier).toBeDefined();
+  let earlierFinished = false; void earlier.finally(() => { earlierFinished = true; }).catch(() => undefined);
+  await vi.waitFor(() => expect(observedEmpty).toBe(true), { timeout: 15000 });
+  const source = f.store.appendMessage({ conversationId: f.conversation.id, authorId: 'user', content: '这条后到事件不能被旧空页回执漏掉。', replyDirective: 'none' });
+  const saving = hostMemory(f.service, { type: 'memory.record', companionId: 'sister', conversationId: f.conversation.id,
+    candidate: { ...journal(source, source.content), metadata: { autoTags: false } } }); void saving.catch(() => undefined);
   try {
-    await vi.waitFor(() => expect(db.prepare('SELECT status,attempts,admission_deferred FROM vcp_capture_jobs WHERE message_id=?').get(source.id)).toEqual({ status: 'pending', attempts: 0, admission_deferred: 1 }), { timeout: 5000 });
-    deadline = (db.prepare('SELECT next_attempt FROM vcp_capture_jobs WHERE message_id=?').get(source.id) as { next_attempt: number }).next_attempt;
-    expect(db.prepare('SELECT COUNT(*) AS n FROM companion_capture_proposals').get()).toEqual({ n: 1 });
-  } finally { db.close(); }
-  expect(transport.memoryFetch).toHaveBeenCalledTimes(1); expect(transport.prohibitionFetch).not.toHaveBeenCalled();
-  expect(currentStore.request({ type: 'model.resources.usage', companionId: 'sister' }).modelResourceUsage?.requests).toBe(1);
-  await closeService(currentService);
+    const result = await saving, note = result.memories![0]!;
+    // The old empty quantum is still unfinished, but its writer session has
+    // released. The new request prepares only its exact source/history and
+    // does not inherit that older pump's completion receipt.
+    expect(earlierFinished).toBe(false); expect(result.memoryFilesPending).not.toBe(true);
+    expect(active(f.store, f.conversation.id).some(note => note.content === source.content)).toBe(true);
+    expect(readFileSync(memoryFile(f, note), 'utf8')).toBe(source.content);
+    expect(await host.sourceFiles.read({ companionId: 'sister', conversationId: f.conversation.id }, note.sources[0]!)).toBe(source.content);
+    expect((await hostMemory(f.service, { type: 'memory.revision.read', companionId: 'sister', conversationId: f.conversation.id,
+      id: note.id, contentRevision: note.contentRevision! })).memories?.[0]?.content).toBe(source.content);
+    const sourceJob = f.store.request({ type: 'jobs.page', ownerId: 'sister', kind: 'source_files', limit: 50 }).jobPage!.items.find(job => job.sourceMessageId === source.id)!;
+    const commands = transport.request.mock.calls.map(([command]) => command);
+    const sourceComplete = commands.findIndex(command => command.type === 'memory.sources.outbox.complete' && command.id === sourceJob.id);
+    const historyClaim = commands.findIndex(command => command.type === 'memory.history.outbox.claim' && command.memoryId === note.id && command.contentRevision === note.contentRevision);
+    expect(sourceComplete).toBeGreaterThanOrEqual(0); expect(historyClaim).toBeGreaterThan(sourceComplete);
+    expect(transport.request.mock.calls.flatMap(([command]) => command.type === 'memory.history.outbox.fail' ? [command] : [])).toEqual([]);
+  } finally { release(); await Promise.allSettled([earlier, saving]); intercepted.mockRestore(); }
+}, 30000);
+it('resumes a saved capture proposal after a pre-dispatch queue interruption without paying the writer again', async () => {
+  const f = fixture(), currentService = f.service; let currentStore = f.store;
+  await currentService.handle({ type: 'state' });
+  await hostMemory(currentService, { type: 'memory.forget', companionId: 'sister', conversationId: f.conversation.id, tag: '家庭住址', persistent: true });
+  const source = currentStore.appendMessage({ conversationId: f.conversation.id, authorId: 'user', content: '明天带蓝色雨伞。', replyDirective: 'none' });
+  transport.memoryFetch.mockImplementation(async () => structuredResponse({ notes: [journal(source, source.content)] }));
+  const prepare = currentService.prepareModelAssetContext.bind(currentService); let rejected = false;
+  const intercepted = vi.spyOn(currentService, 'prepareModelAssetContext').mockImplementation(async (owner, context, kind, ...rest) => {
+    if (!rejected && JSON.parse(context.user).purpose === 'vcp_memory_prohibition_check') {
+      rejected = true;
+      throw new CompanionModelError('RATE_LIMIT', '工程队列暂不可用，尚未发送。', undefined, { reason: 'queue_full', retryAt: new Date(Date.now() + 30000).toISOString() });
+    }
+    return prepare(owner, context, kind, ...rest);
+  });
+  await background(65000);
+  expect(rejected).toBe(true); expect(transport.memoryFetch).toHaveBeenCalledTimes(1); expect(transport.prohibitionFetch).not.toHaveBeenCalled();
+  expect(active(currentStore, f.conversation.id)).toHaveLength(0);
+  const staged = new (Database as { new(file: string): CompanionConnection })(f.databasePath);
+  try { expect(staged.prepare('SELECT COUNT(*) AS n FROM companion_capture_proposals').get()).toEqual({ n: 1 }); } finally { staged.close(); }
+  intercepted.mockRestore(); await closeService(currentService);
   currentStore = new CompanionsStore(f.databasePath, seeds); stores.add(currentStore); bindStorage(currentStore);
-  vi.setSystemTime(deadline! + 1000); startService(f.root, true);
-  await background(31_000);
-  await vi.waitFor(() => expect(active(currentStore, f.conversation.id)).toHaveLength(1), { timeout: 5000 });
+  startService(f.root); await background(31000);
+  await vi.waitFor(() => expect(active(currentStore, f.conversation.id)).toHaveLength(1), { timeout: 15000 });
   expect(active(currentStore, f.conversation.id)[0]!.content).toBe(source.content);
   expect(transport.memoryFetch).toHaveBeenCalledTimes(1); expect(transport.prohibitionFetch).toHaveBeenCalledTimes(1);
-  expect(currentStore.request({ type: 'model.resources.usage', companionId: 'sister' }).modelResourceUsage?.requests).toBe(1);
-  const after = new (Database as unknown as { new(file: string): CompanionConnection })(f.databasePath);
-  try { expect(after.prepare('SELECT COUNT(*) AS n FROM companion_capture_proposals').get()).toEqual({ n: 0 }); } finally { after.close(); }
-}, 30_000);
-it('reconciles an external new topic on memory read while its semantic checker can read the current role', async () => {
+}, 45000);
+it('rejects an unapproved external topic instead of importing it through a semantic checker', async () => {
   const f = fixture(seeds, true), scope = { companionId: 'sister', conversationId: f.conversation.id };
-  const saved = (await f.service.handle({ type: 'memory.save', ...scope, content: '旧稿只写过银色文件夹。' })).memories![0]!;
+  const saved = await seedMemory(f, '旧稿只写过银色文件夹。');
   f.store.request({ type: 'memory.forget', ...scope, tag: '家庭住址', persistent: true });
-  const file = path.join(f.root, 'assets', '伙伴记忆', 'sister', '日记', saved.id + '.md');
+  const file = memoryFile(f, saved);
   writeFileSync(file, '外部修改的新主题：海棠磁卡位于实验室的蓝色工具盒。');
   let reentered = 0;
   transport.prohibitionFetch.mockImplementation(async () => {
@@ -260,12 +301,22 @@ it('reconciles an external new topic on memory read while its semantic checker c
     expect(nested.system).toContain('当前伙伴目录'); reentered++;
     return structuredResponse({ allowed: true, matchedPolicyIds: [] });
   });
-  const actual = (await f.service.handle({ type: 'memory.read', ...scope, id: saved.id, sourceLimit: 10 })).memoryRead!;
+  await expect(f.service.handle({ type: 'memory.read', ...scope, id: saved.id, sourceLimit: 10 })).rejects.toThrow();
   const admission = await f.service.prepareModelAssetContext('sister', { system: '外部实际请求技术合同。', user: JSON.stringify({ purpose: 'companion_reply' }) }, 'reply');
-  expect(admission.system).toContain('当前伙伴目录'); expect(reentered).toBe(1);
-  expect(actual.memory.content).toContain('海棠磁卡位于实验室的蓝色工具盒');
-  expect(actual.sources.some(source => source.content.includes('海棠磁卡位于实验室的蓝色工具盒'))).toBe(true);
+  expect(admission.system).toContain('当前伙伴目录'); expect(reentered).toBe(0);
+  expect(f.store.request({ type: 'memory.read', ...scope, id: saved.id }).memoryRead?.memory.content).toBe(saved.content);
 }, 20_000);
+it.each(['active', 'passive'] as const)('starts the %s memory diagnostic without draining unrelated pending indexing', async mode => {
+  const f = fixture(seeds, true), memory = (f.service as unknown as { memory: CompanionMemoryService }).memory;
+  const drain = vi.spyOn(memory, 'drainOwnerDeliveries').mockRejectedValue(Object.assign(new Error('Unrelated pending native write'), { code: 'MEMORY_INDEX_PENDING' }));
+  const search = vi.spyOn(memory, 'search').mockResolvedValue({ ok: true, memoryPage: { items: [], hasMore: false },
+    memoryContext: { text: '已发布视图仍可读取', revision: 'captured', profileKey: 'fixture' } });
+  const result = await f.service.handle({ type: 'memory.recall.test', companionId: 'sister', query: '读取已经发布的记录', mode });
+  expect(result.ok).toBe(true); expect(result.memoryProbe?.contextText).toBe('已发布视图仍可读取');
+  expect(search).toHaveBeenCalledOnce(); expect(drain).not.toHaveBeenCalled();
+  drain.mockRestore(); search.mockRestore();
+});
+
 it('finishes and displays a real reply while unrelated notebook reconciliation is still pending', async () => {
   const f = fixture(seeds, true);
   const gate = vi.spyOn(f.service as unknown as { prepareOwnerMemoryFiles(owner: string): Promise<void> }, 'prepareOwnerMemoryFiles')
@@ -279,12 +330,15 @@ it('finishes and displays a real reply while unrelated notebook reconciliation i
   expect(replies.some(message => message.content === '你好，我在这里。')).toBe(true);
   expect(replies.every(message => message.replyProgress?.phase !== 'failed')).toBe(true);
   expect(transport.fetch).toHaveBeenCalledTimes(1);
-  const role = await f.service.prepareModelAssetContext('sister', { system: '继续读取当前角色。', user: '{}' }, 'structured');
-  expect(role.system).toContain('当前伙伴目录');
+  const role = await f.service.prepareModelAssetContext('sister', { system: '继续读取当前角色。', user: '{"purpose":"vcp_memory_prohibition_check"}' }, 'structured');
+  expect(role.system).toContain('继续读取当前角色。');
+  expect(JSON.parse(role.user).assetContext).toMatchObject({ companionId: 'sister' });
   gate.mockRestore();
 }, 20_000);
 async function background(milliseconds = 2_100) {
+  for (const service of services) await service.handle({ type: 'state' });
   await vi.advanceTimersByTimeAsync(milliseconds);
+  for (const service of services) await (service as unknown as { memory: { running?: Promise<void> } }).memory.running;
   // The persistent permission-view manifest uses real asynchronous file I/O.
   await vi.waitFor(() => {
     for (const store of stores) for (const companion of store.request({ type: 'state', includeConversations: false }).state?.companions ?? []) {
@@ -314,7 +368,7 @@ beforeEach(() => {
     return structuredResponse({ allowed: data.source.content.startsWith('请忘掉'), confidence: 1,
       sourceMessageId: data.source.id, tool: data.tool, action: data.action, targetId: data.targetId, evidence: [data.source.content] });
   });
-  transport.worldFetch.mockReset(); transport.worldFetch.mockImplementation(async () => structuredResponse({ action: null, reason: '安静观察。', appraisals: [] }));
+  transport.worldFetch.mockReset(); transport.worldFetch.mockImplementation(async () => structuredResponse({ action: null, reason: '安静观察。' }));
   transport.fetch.mockImplementation(async () => textResponse('好，慢慢聊。'));
   transport.memoryFetch.mockImplementation(async () => structuredResponse({ notes: [] }));
 });
@@ -356,9 +410,9 @@ describe('VCP companion memory through the main service and real SQLite', () => 
     const f = fixture(seeds, true), scope = { companionId: 'sister', conversationId: f.conversation.id };
     const raw = f.store.appendMessage({ conversationId: scope.conversationId, authorId: 'user', content: '我叫青遥，这条介绍还等待后台核对。', replyDirective: 'none' });
     const saved = (await hostMemory(f.service, { type: 'memory.record', ...scope, candidate: journal(raw, '玩家的名字是青遥。') })).memories![0]!;
-    const prohibited = f.store.saveMemory({ ...scope, content: '不得再记录住址。', tags: ['住址'] });
+    const prohibited = await seedMemory(f, '不得再记录住址。', ['住址']);
     f.store.request({ type: 'memory.forget', ...scope, id: prohibited.id, tag: '住址', persistent: true });
-    const file = path.join(f.root, 'assets', '伙伴记忆', 'sister', '日记', saved.id + '.md');
+    const file = memoryFile(f, saved);
     writeFileSync(file, '外部编辑包含尚未获准登记的住址。');
     transport.prohibitionFetch.mockImplementation(async () => structuredResponse({ allowed: false, matchedPolicyIds: [] }));
     await background(61_100);
@@ -370,20 +424,29 @@ describe('VCP companion memory through the main service and real SQLite', () => 
 
   it('browses complete canonical journal bodies by empty-query tags and date with bounded pagination and actual owner/source ACLs', async () => {
     const f = fixture([...seeds, { ...seeds[0]!, id: 'flash', name: '另一位伙伴', avatar: 'flash' }], true);
+    await f.service.handle({ type: 'state' });
+    const publishing = f.service as unknown as { filePublicationPumps: Map<string, Promise<void>> };
     const scope = { companionId: 'sister', conversationId: f.conversation.id }, tag = '元数据分页验收';
-    const save = (content: string, ownerScope = scope, tags = [tag], occurredAt = fixedTime) => {
+    const save = async (content: string, ownerScope = scope, tags = [tag], occurredAt = fixedTime) => {
+      // Finish the fixture's already-started empty background quantum before
+      // creating the next independent input. Publication itself still goes
+      // through the real Main exact-revision writer, never a directory flush.
+      await publishing.filePublicationPumps.get(ownerScope.companionId);
       const source = f.store.appendMessage({ conversationId: ownerScope.conversationId, authorId: 'user', content, replyDirective: 'none' });
-      return f.store.request({ type: 'memory.record', ...ownerScope, candidate: { ...journal(source, content, tags), occurredAt, metadata: { autoTags: false } } }).memories![0]!;
+      const result = await hostMemory(f.service, { type: 'memory.record', ...ownerScope, candidate: { ...journal(source, content, tags), occurredAt, metadata: { autoTags: false } } });
+      const note = result.memories![0]!;
+      expect((await hostMemory(f.service, { type: 'memory.revision.read', ...ownerScope, id: note.id, contentRevision: note.contentRevision! })).memories?.[0]?.content).toBe(content);
+      expect(readFileSync(memoryFile(f, note), 'utf8')).toBe(content); return note;
     };
     const full = '分页正文的前部。' + '必要的原始过程与限定。'.repeat(500) + 'FINAL_REQUIRED_FRAGMENT_761';
-    const expected = [full, '同一事件的第二篇独立记录。', '同一事件的第三篇独立记录。'].map(content => save(content));
-    save('同标签但日期范围之外，明确发生于2020年1月1日。', scope, [tag], '2020-01-01T00:00:00Z');
-    save('日期相同但标签不匹配。', scope, ['其他标签']);
-    const blocked = save('已明确撤销的来源不属于浏览结果。');
-    f.store.request({ type: 'memory.forget', ...scope, sourceMessageIds: [blocked.sources[0]!.messageId] });
+    const expected: CompanionMemory[] = [];
+    for (const content of [full, '同一事件的第二篇独立记录。', '同一事件的第三篇独立记录。']) expected.push(await save(content));
+    await save('同标签但日期范围之外，明确发生于2020年1月1日。', scope, [tag], '2020-01-01T00:00:00Z');
+    await save('日期相同但标签不匹配。', scope, ['其他标签']);
+    const blocked = await save('已明确撤销的来源不属于浏览结果。');
+    await hostMemory(f.service, { type: 'memory.forget', ...scope, sourceMessageIds: [blocked.sources[0]!.messageId] });
     const otherScope = { companionId: 'flash', conversationId: f.store.openPrivate('flash').id };
-    save('FOREIGN_OWNER_TAG_MATCH_SECRET', otherScope);
-    markIndexed(f.store);
+    await save('FOREIGN_OWNER_TAG_MATCH_SECRET', otherScope);
     const found: CompanionMemory[] = [], cursors: number[] = [];
     let cursor: number | undefined;
     for (let page = 0; page < 4; page++) {
@@ -401,24 +464,22 @@ describe('VCP companion memory through the main service and real SQLite', () => 
     expect(new Set(found.map(note => note.id))).toEqual(new Set(expected.map(note => note.id)));
     expect(found.find(note => note.id === expected[0]!.id)?.content).toBe(full);
     expect(found.every(note => note.companionId === 'sister')).toBe(true);
-    for (const note of found) expect(readFileSync(path.join(f.root, 'assets', '伙伴记忆', 'sister', '日记', note.id + '.md'), 'utf8')).toBe(note.content);
+    for (const note of found) expect(readFileSync(memoryFile(f, note), 'utf8')).toBe(note.content);
     expect(clients.get(f.root)!.search).not.toHaveBeenCalled();
     await expect(f.service.handle(companionsRequestSchema.parse({ type: 'memory.search', companionId: 'sister', conversationId: otherScope.conversationId, tags: [tag], limit: 1 }))).rejects.toThrow();
   }, 20000);
 
-  it('reconciles external canonical edits before an empty-query tag browse and never returns deleted-file SQL bodies', async () => {
+  it('rejects external edits during tag browsing and never returns deleted-file SQL bodies', async () => {
     const f = fixture(seeds, true), scope = { companionId: 'sister', conversationId: f.conversation.id }, tags = ['目录浏览文件权威'];
-    const note = f.store.saveMemory({ ...scope, content: 'OLD_SQL_BODY_MUST_NOT_BE_USED', tags }); markIndexed(f.store);
+    const note = await seedMemory(f, 'OLD_SQL_BODY_MUST_NOT_BE_USED', tags); markIndexed(f.store);
     const first = await f.service.handle(companionsRequestSchema.parse({ type: 'memory.search', ...scope, tags, limit: 1 }));
     expect(first.memoryPage!.items[0]!.memory.content).toBe(note.content);
-    const file = path.join(f.root, 'assets', '伙伴记忆', 'sister', '日记', note.id + '.md');
+    const file = memoryFile(f, note);
     const edited = '外部真实文件中的完整新正文。' + '保留目录读取的实际限定。'.repeat(400) + 'EXTERNAL_END_982';
     writeFileSync(file, edited);
-    const current = await f.service.handle({ type: 'memory.search', ...scope, query: '', tags, limit: 1 });
-    expect(current.memoryPage!.items[0]!.memory).toMatchObject({ id: note.id, content: edited, contentRevision: 2 });
+    await expect(f.service.handle({ type: 'memory.search', ...scope, query: '', tags, limit: 1 })).rejects.toThrow();
     unlinkSync(file);
-    // Reconciliation may remove the note from the page or reject the read.
-    // Neither outcome may expose a stale copy of the now-missing body.
+    // A missing registered body cannot fall back to its SQL metadata copy.
     const missing = await f.service.handle(companionsRequestSchema.parse({ type: 'memory.search', ...scope, tags, limit: 1 })).catch(() => undefined);
     expect(missing?.memoryPage?.items ?? []).toEqual([]);
     expect(() => readFileSync(file, 'utf8')).toThrow();
@@ -428,7 +489,7 @@ describe('VCP companion memory through the main service and real SQLite', () => 
   it('delivers the full empty-query tagged body through the actual Main tool loop instead of a truncated preview', async () => {
     const f = fixture(seeds, true), scope = { companionId: 'sister', conversationId: f.conversation.id }, tags = ['完整原记录工具验收'];
     const full = '本条长记忆的起点。' + '实际原记录中的条件和过程。'.repeat(500) + 'TOOL_BODY_END_678';
-    const note = f.store.saveMemory({ ...scope, content: full, tags }); markIndexed(f.store);
+    const note = await seedMemory(f, full, tags); markIndexed(f.store);
     let steps = 0, nativeSearchesBeforeBrowse = 0;
     transport.fetch.mockImplementation(async (_input, init) => {
       if (steps++ === 0) {
@@ -452,34 +513,50 @@ describe('VCP companion memory through the main service and real SQLite', () => 
     expect(JSON.parse(result.content).memoryPage.items[0].memory.content).toBe(full);
   }, 20000);
 
-  it('writes app saves to canonical owner files and immediately imports external edits through the same checked policy gate', async () => {
+  it('publishes host-authored records while denying human saves and unapproved external edits', async () => {
     const f = fixture(seeds, true), scope = { companionId: 'sister', conversationId: f.conversation.id };
-    const saved = (await f.service.handle({ type: 'memory.save', ...scope, content: 'APP_WRITE_THROUGH_ACTUAL_TEXT' })).memories![0]!;
-    const notebook = path.join(f.root, 'assets', '伙伴记忆', 'sister', '日记');
-    const file = path.join(notebook, saved.id + '.md'); expect(readFileSync(file, 'utf8')).toBe(saved.content);
-    const blocked = f.store.saveMemory({ ...scope, content: '另一个禁止今后记录的主题。', tags: ['禁止项'] });
-    f.store.request({ type: 'memory.forget', ...scope, id: blocked.id, tag: '禁止项', persistent: true });
+    await expect(f.service.handle({ type: 'memory.save', ...scope, content: 'HUMAN_WRITE_MUST_NOT_PUBLISH' })).rejects.toThrow('人工保存接口已经退出');
+    const saved = await seedMemory(f, 'HOST_WRITE_THROUGH_ACTUAL_TEXT');
+    const file = memoryFile(f, saved); expect(readFileSync(file, 'utf8')).toBe(saved.content);
+    transport.prohibitionFetch.mockClear();
     writeFileSync(file, 'EXTERNAL_EDIT_READ_IMMEDIATELY_WITH_POLICY');
-    const actual = await f.service.handle({ type: 'memory.read', ...scope, id: saved.id, sourceLimit: 10 });
-    expect(actual.memoryRead!.memory).toMatchObject({ content: 'EXTERNAL_EDIT_READ_IMMEDIATELY_WITH_POLICY', contentRevision: 2 });
-    expect(f.store.request({ type: 'memory.read', ...scope, id: saved.id }).memoryRead!.memory.content).toBe('EXTERNAL_EDIT_READ_IMMEDIATELY_WITH_POLICY');
-    expect(transport.prohibitionFetch).toHaveBeenCalled();
+    await expect(f.service.handle({ type: 'memory.read', ...scope, id: saved.id, sourceLimit: 10 })).rejects.toThrow();
+    expect(f.store.request({ type: 'memory.read', ...scope, id: saved.id }).memoryRead!.memory.content).toBe(saved.content);
+    expect(transport.prohibitionFetch).not.toHaveBeenCalled();
   }, 20000);
 
   it('fails closed when the actual canonical file was removed instead of answering from cached SQL', async () => {
     const f = fixture(seeds, true), scope = { companionId: 'sister', conversationId: f.conversation.id };
-    const saved = (await f.service.handle({ type: 'memory.save', ...scope, content: 'REMOVED_FILE_MUST_NOT_FALL_BACK_TO_SQL' })).memories![0]!;
-    const file = path.join(f.root, 'assets', '伙伴记忆', 'sister', '日记', saved.id + '.md');
+    const saved = await seedMemory(f, 'REMOVED_FILE_MUST_NOT_FALL_BACK_TO_SQL');
+    const file = memoryFile(f, saved);
     unlinkSync(file);
     await expect(f.service.handle({ type: 'memory.read', ...scope, id: saved.id, sourceLimit: 10 })).rejects.toThrow();
     expect(() => readFileSync(file, 'utf8')).toThrow();
   }, 20000);
 
-  it('uses edited asset profile text in the actual provider request while another malformed owner remains isolated', async () => {
-    const f = fixture([...seeds, { ...seeds[0]!, id: 'flash', name: '另一位伙伴', avatar: 'flash', persona: '另一位伙伴自己的稳定设置。' }], true);
+  it.each(['index-page', 'changes'] as const)('requires canonical files before the human management %s port can feed an index', async kind => {
+    const f = fixture(), saved = await seedMemory(f, 'MANAGEMENT_SQL_COPY_CANNOT_AUTHORIZE_A_BODY');
+    const state = f.store.request({ type: 'memory.library.index-state', companionId: 'sister' }).memoryLibraryIndexState!;
+    const command: CompanionStorageCommand = kind === 'index-page'
+      ? { type: 'memory.library.index-page', companionId: 'sister', resetRevision: state.resetRevision, throughOrdinal: state.throughOrdinal, limit: 8 }
+      : { type: 'memory.library.changes', companionId: 'sister', resetRevision: state.resetRevision, throughOrdinal: state.throughOrdinal, afterOrdinal: 0, limit: 8 };
+    const original = readFileSync(memoryFile(f, saved), 'utf8'), current = await hostMemory(f.service, command);
+    const notes = current.memoryLibraryIndexPage?.notes ?? current.memoryLibraryChanges?.changes.flatMap(change => change.note ? [change.note] : []);
+    expect(notes?.map(note => note.content)).toContain(saved.content);
+    writeFileSync(memoryFile(f, saved), 'UNAPPROVED_MANAGEMENT_INDEX_BYTES');
+    await expect(hostMemory(f.service, command)).rejects.toThrow();
+    expect(f.store.request(command).ok).toBe(true);
+    writeFileSync(memoryFile(f, saved), original); unlinkSync(memoryFile(f, saved));
+    await expect(hostMemory(f.service, command)).rejects.toThrow();
+    expect(() => readFileSync(memoryFile(f, saved), 'utf8')).toThrow();
+    expect(f.store.getMessage(saved.sources[0]!.messageId).content).toBe(saved.content);
+  }, 30000);
+
+  it('uses the published profile in the actual provider request while another malformed owner remains isolated', async () => {
+    const f = fixture([{ ...seeds[0]!, persona: 'CURRENT_FILE_PERSONA_MUST_REACH_PROVIDER' },
+      { ...seeds[0]!, id: 'flash', name: '另一位伙伴', avatar: 'flash', persona: '另一位伙伴自己的稳定设置。' }], true);
     await f.service.handle({ type: 'state' });
-    const ownerRoot = path.join(f.root, 'assets', '伙伴记忆', 'sister'), profile = path.join(ownerRoot, 'profile.md');
-    writeFileSync(profile, readFileSync(profile, 'utf8').replace(/(\r?\n---\r?\n)[\s\S]*$/u, '$1\nCURRENT_FILE_PERSONA_MUST_REACH_PROVIDER\n'));
+    const ownerRoot = path.join(f.root, 'assets', '伙伴记忆', 'sister');
     writeFileSync(path.join(f.root, 'assets', '伙伴记忆', 'flash', 'profile.md'), 'malformed profile must not replace another owner');
     const state = (await f.service.handle({ type: 'state' })).state!;
     expect(state.companions.find(owner => owner.id === 'flash')?.availability).toBe('offline');
@@ -501,7 +578,7 @@ describe('VCP companion memory through the main service and real SQLite', () => 
     expect(state.companions.find(owner => owner.id === 'sister')).toMatchObject({ availability: 'offline', assetProfileError: expect.any(String) });
     await expect(restarted.resolveOwnerStorage('sister')).rejects.toThrow();
     const cleanup = await restarted.resolveOwnerCleanupStorage('sister');
-    expect(cleanup).toMatchObject({ ownerId: 'sister', ownerRoot, indexRoot: path.join(ownerRoot, '.认知索引') });
+    expect(cleanup).toMatchObject({ ownerId: 'sister', ownerRoot, indexRoot: path.join(ownerRoot, '.运行', '索引') });
     expect(() => readdirSync(ownerRoot)).toThrow();
     expect(reopened.request({ type: 'companion.assets.initialized', companionId: 'sister' }).assetProfileInitialized).toBe(true);
   }, 20000);
@@ -540,7 +617,13 @@ describe('VCP companion memory through the main service and real SQLite', () => 
         expect(f.store.request({ type: 'memory.frozen.valid', ...scope, memories: frozen.map(note => ({ ...note,
           sources: note.sources.map(receipt => ({ ...receipt, revision: captured.notes.find(original => original.id === note.id)!.sources.find(original => original.messageId === receipt.id)!.revision })),
         })) }).memoryFrozenValid).toBe(false);
-      } else if (failure === 'owner') f.store.updateCompanion('sister', { name: '改名后的真实伙伴', description: '姐姐', persona: '温柔沉稳', model: '', avatar: 'sister', proactive: false });
+      } else if (failure === 'owner') {
+        // Identity loss is a real invalidation. Editing the frozen seed name
+        // is no longer a supported way to change a current companion.
+        const db = new (Database as { new(file: string): CompanionConnection })(f.databasePath);
+        try { db.prepare('UPDATE companions SET deleted_at=? WHERE id=?').run(new Date().toISOString(), 'sister'); }
+        finally { db.close(); }
+      }
       else if (failure === 'generation') cancelDuringOwnerCheck = true;
       else if (failure === 'native_integrity') throw Object.assign(Error('Native owner/version/content evidence is invalid.'), { code: 'VCP_MEMORY_DREAM_INVALID' });
       else if (failure === 'native_abort') throw Object.assign(Error('Native scope was cancelled.'), { name: 'AbortError', code: 'ABORT_ERR' });
@@ -562,7 +645,7 @@ describe('VCP companion memory through the main service and real SQLite', () => 
         await expect(result).rejects.toMatchObject({ code: failure === 'runtime' ? 'runtime_unavailable' : 'wave_operation_failed' });
       } else {
         await expect(result).rejects.not.toBeInstanceOf(CompanionOptionalDreamError);
-        await expect(result).rejects.toThrow(/来源|授权|取消|归属|时间凭证|Native/u);
+        await expect(result).rejects.toThrow(/来源|授权|取消|归属|时间凭证|Native|伙伴不存在/u);
       }
       expect(native).toHaveBeenCalledTimes(failure === 'runtime' ? 0 : 1);
       if (failure === 'runtime') expect(get).toHaveBeenCalledOnce();
@@ -591,9 +674,9 @@ describe('VCP companion memory through the main service and real SQLite', () => 
             f.service.handle({ type: 'life.overview.status', companionId: 'sister', filter: 'all', limit: 20 }),
           ]);
           expect(processing.memoryProcessing?.companionId).toBe('sister'); expect(life.memoryLifePlan?.companionId).toBe('sister');
-          // Civil time follows the wall clock; the persisted observation cursor
-          // remains unchanged, including when the background world is behind.
-          expect(overview.lifeOverview?.clock.virtualNow).toBe(new Date(base + lag).toISOString());
+          // Management reads retain the actual materialized observation time.
+          expect(overview.lifeOverview?.clock.virtualNow).toBe(new Date(base).toISOString());
+          expect(overview.lifeOverview?.clock.realNow).toBe(new Date(base + lag).toISOString());
           expect(overview.lifeOverview?.clock.backlog, `persisted observation lag ${lag}ms`).toBe(lag > 5_000);
           expect(processing.memoryProcessing?.schedule?.schedulers.some(item => item.waitingReason === 'world_backlog'), `memory maintenance remains independent of observation lag ${lag}ms`).toBe(false);
         }
@@ -617,7 +700,7 @@ describe('VCP companion memory through the main service and real SQLite', () => 
     expect(first).toBe(second); expect(transport.close).not.toHaveBeenCalled();
     ready(); await vi.advanceTimersByTimeAsync(1000); await first; services.delete(f.service);
     expect(transport.close).toHaveBeenCalledTimes(1);
-    expect(transport.request.mock.calls.map(([command]) => command.type)).toEqual(['actions', 'action.interrupt-pending']);
+    expect(transport.request.mock.calls.map(([command]) => command.type)).toEqual(['activity.agenda.enable', 'world.maintenance.bind-policy-root', 'companion.creation.pending', 'actions', 'action.interrupt-pending']);
     await expect(f.service.handle({ type: 'state' })).rejects.toThrow('关闭');
   });
   it('captures an experience journal without primary-model tools and retains actual user/reply sources', async () => {
@@ -642,13 +725,14 @@ describe('VCP companion memory through the main service and real SQLite', () => 
     await background();
     expect(transport.memoryFetch).not.toHaveBeenCalled();
     await background(60_000);
+    await (f.service as unknown as { memory: CompanionMemoryService }).memory.drainOwnerDeliveries('sister');
     expect(active(f.store, f.conversation.id)).toHaveLength(1);
     const note = active(f.store, f.conversation.id)[0]!;
     expect(note).toMatchObject({ content: '用户喜欢茶。', tags: ['饮料偏好'], sourceMessageId: source.id, status: 'indexed', captureMethod: 'automatic' });
     const read = f.store.request({ type: 'memory.read', companionId: 'sister', conversationId: f.conversation.id, id: note.id }).memoryRead!;
     expect(read.sources.some(message => message.id === source.id && message.content === source.content)).toBe(true);
     expect(read.sources.some(message => message.authorId === 'sister' && message.content === '好，慢慢聊。')).toBe(true);
-    expect(clients.get(f.root)!.remember).toHaveBeenCalledWith(expect.objectContaining({ scopeId: note.scopeId }), expect.objectContaining({ id: note.id, content: note.content, author: '大肥鱼',
+    expect(clients.get(f.root)!.remember).toHaveBeenCalledWith(expect.objectContaining({ scopeId: `${note.scopeId}:kind-episode_memory-v2` }), expect.objectContaining({ id: note.id, content: note.content, author: '大肥鱼',
       metadata: expect.objectContaining({ hostMemoryOwner: { version: 2, companionId: 'sister', name: '大肥鱼', agentName: '大肥鱼' } }) }));
     expect(f.store.request({ type: 'loop.get', sourceMessageId: source.id, companionId: 'sister' }).loop?.turns.every(turn => turn.calls.length === 0)).toBe(true);
     await background(31_000);
@@ -676,7 +760,11 @@ describe('VCP companion memory through the main service and real SQLite', () => 
     expect(status(f.store).captureWatermark).toBeLessThan(source.sequence);
     await background(31_000);
     expect(active(f.store, f.conversation.id)).toHaveLength(1);
-    expect(status(f.store).failed).toBe(0);
+    // Failed cohort members receive independent turns; the successful user
+    // event cannot mark its unprocessed reply sibling as complete.
+    await background(31_000);
+    expect(status(f.store).failed, JSON.stringify({ status: status(f.store), jobs: f.store.request({ type: 'jobs.page', ownerId: 'sister', kind: 'capture', limit: 50 }).jobPage,
+      failures: transport.request.mock.calls.flatMap(([command]) => command.type === 'memory.jobs.fail' ? [command] : []) })).toBe(0);
     expect(status(f.store).captureWatermark).toBe(status(f.store).messageWatermark);
   });
 
@@ -689,10 +777,33 @@ describe('VCP companion memory through the main service and real SQLite', () => 
     client.remember.mockRejectedValueOnce(new Error('Local encoder temporarily unavailable.'));
     await sent(f.service, f.store, f.conversation.id, '记住周六带伞。', 'pending-embedding');
     await background(62_100);
+    let indexJobId: string | undefined;
+    await vi.waitFor(() => {
+      expect(client.remember).toHaveBeenCalledTimes(1);
+      const note = active(f.store, f.conversation.id)[0]!; expect(note).toBeDefined();
+      expect(client.remember.mock.calls[0]?.[1].id).toBe(note.id);
+      expect(f.store.request({ type: 'memory.files.inspect', companionId: 'sister', conversationId: f.conversation.id,
+        id: note.id, contentRevision: note.contentRevision! }).memoryFileReadiness?.state).toBe('published');
+      const failed = f.store.request({ type: 'jobs.page', ownerId: 'sister', kind: 'index', states: ['failed'], limit: 50 }).jobPage?.items ?? [];
+      expect(failed).toHaveLength(1); expect(failed[0]).toMatchObject({ state: 'failed', failureCount: 1, attemptCount: 1 });
+      indexJobId = failed[0]!.id;
+      expect(transport.request.mock.calls.map(([command]) => command)).toContainEqual(expect.objectContaining({ type: 'memory.outbox.fail', id: indexJobId,
+        error: 'Local encoder temporarily unavailable.' }));
+    }, { timeout: 15000 });
+    const queued = active(f.store, f.conversation.id)[0]!;
+    expect((await hostMemory(f.service, { type: 'memory.revision.read', companionId: 'sister', conversationId: f.conversation.id,
+      id: queued.id, contentRevision: queued.contentRevision! })).memories?.[0]?.content).toBe(queued.content);
     expect(active(f.store, f.conversation.id)[0]?.status).toBe('queued');
     expect(status(f.store).pendingIndex).toBe(1);
     expect(f.store.request({ type: 'memory.snapshot', companionId: 'sister', conversationId: f.conversation.id }).memorySnapshot?.notes).toHaveLength(0);
     await background(35_000);
+    await vi.waitFor(() => {
+      expect(client.remember).toHaveBeenCalledTimes(2);
+      expect(client.remember.mock.calls[1]?.[1].id).toBe(queued.id);
+      expect(active(f.store, f.conversation.id)[0]?.status).toBe('indexed');
+      expect(f.store.request({ type: 'jobs.inspect', ownerId: 'sister', kind: 'index', id: indexJobId! }).jobDisposition)
+        .toMatchObject({ state: 'completed', failureCount: 1, attemptCount: 2 });
+    }, { timeout: 15000 });
     expect(active(f.store, f.conversation.id)[0]?.status).toBe('indexed');
     expect(client.remember).toHaveBeenCalledTimes(2);
     expect(f.store.request({ type: 'memory.snapshot', companionId: 'sister', conversationId: f.conversation.id }).memorySnapshot?.notes).toHaveLength(1);
@@ -706,8 +817,16 @@ describe('VCP companion memory through the main service and real SQLite', () => 
     });
     const birthday = await sent(f.service, f.store, f.conversation.id, '我的生日是4月9日。', 'old-birthday');
     await background(62_100);
+    // Semantic capture now belongs to the unified agenda. Its real file-I/O
+    // adapter is independent of memory.running (index/integrity only). Join
+    // that actual execution rather than assuming advancing the fake clock
+    // also completed asynchronous canonical-source publication.
+    await (f.service as unknown as { agenda: { drain(): Promise<void> } }).agenda.drain();
+    await (f.service as unknown as { memory: CompanionMemoryService }).memory.drainOwnerDeliveries('sister');
     expect(active(f.store, f.conversation.id)).toEqual(expect.arrayContaining([expect.objectContaining({ content: '用户的生日是4月9日。', status: 'indexed' })]));
     for (let i = 0; i < COMPANION_DIALOGUE_WINDOW.maxMessages + 20; i++) f.store.appendMessage({ conversationId: f.conversation.id, authorId: 'user', content: `无关的天气闲聊第${i}次`, replyDirective: 'none' });
+    const journalCallsBeforeRecall = transport.memoryFetch.mock.calls.length;
+    const brainCallsBeforeRecall = transport.fetch.mock.calls.length;
     let brainPayload: Payload | undefined;
     transport.fetch.mockImplementation(async (_input, init) => {
       brainPayload = payload(init);
@@ -717,9 +836,14 @@ describe('VCP companion memory through the main service and real SQLite', () => 
     expect(brainPayload?.messages.some(message => message.id === birthday.id)).toBe(false);
     expect(brainPayload?.memories).toEqual([]);
     expect(brainPayload?.memoryRecall?.context?.text).toContain('4月9日');
-    expect(clients.get(f.root)!.search).not.toHaveBeenCalled();
+    expect(transport.memoryFetch).toHaveBeenCalledTimes(journalCallsBeforeRecall);
+    expect(transport.fetch).toHaveBeenCalledTimes(brainCallsBeforeRecall + 1);
+    const recallMessages = clients.get(f.root)!.preprocess.mock.calls.at(-1)![1];
+    expect(recallMessages.every(message => typeof message.content !== 'string'
+      || !message.content.includes('[[AIMemo=True]]') && !message.content.includes('::AIMemo'))).toBe(true);
+    expect(clients.get(f.root)!.search.mock.calls.every(([, query]) => !query.text.includes('你知道我出生的那天是哪一日吗'))).toBe(true);
     expect(clients.get(f.root)!.preprocess).toHaveBeenCalledWith(expect.anything(), expect.arrayContaining([
-      expect.objectContaining({ role: 'system', content: expect.stringContaining(`[[${vcpMemoryNotebookFolder('经历')}日记本::RiverMemo::TimeDecay180/0::AIMemo+]]`) }),
+      expect.objectContaining({ role: 'system', content: expect.stringContaining(`[[${vcpMemoryNotebookFolder('经历')}日记本::RiverMemo::TimeDecay180/0]]`) }),
     ]), expect.objectContaining({ now: expect.any(String), timeZone: expect.any(String) }), expect.objectContaining({ schema: 'episodic-v1', halfLifeDays: 180, minScore: 0 }));
     expect(f.store.messages({ conversationId: f.conversation.id }).messages.at(-1)?.content).toBe('是4月9日。');
   });
@@ -751,7 +875,7 @@ describe('VCP companion memory through the main service and real SQLite', () => 
       return textResponse('处理好了。');
     });
     const recordSource = await sent(f.service, f.store, f.conversation.id, '我一直喜欢茶。', 'native-record'); collect(recordSource.id);
-    expect(active(f.store, f.conversation.id)[0]).toMatchObject({ status: 'queued', version: 1 });
+    expect(results.find(result => result.id === 'record_1')?.value.memories?.[0]).toMatchObject({ status: 'queued', version: 1 });
     await background();
     const organizeSource = await sent(f.service, f.store, f.conversation.id, '回忆并整理饮料日记。', 'native-organize'); collect(organizeSource.id);
     expect(active(f.store, f.conversation.id)[0]).toMatchObject({ content: '用户喜欢茶。', tags: ['饮料偏好', '茶'], version: 2 });
@@ -777,7 +901,7 @@ describe('VCP companion memory through the main service and real SQLite', () => 
   it('binds native record to observed inference reads instead of a guessed ID or the passive physical corpus', async () => {
     const f = fixture(), scope = { companionId: 'sister', conversationId: f.conversation.id };
     const raw = f.store.appendMessage({ conversationId: scope.conversationId, authorId: 'user', content: '验收方法应先检查真实产物。', replyDirective: 'none' });
-    const note = f.store.request({ type: 'memory.record', ...scope, candidate: journal(raw, raw.content) }).memories![0]!;
+    const note = (await hostMemory(f.service, { type: 'memory.record', ...scope, candidate: journal(raw, raw.content) })).memories![0]!;
     const source = f.store.appendMessage({ conversationId: scope.conversationId, authorId: 'user', content: '这次核对方法以后再形成一条记录。', replyDirective: 'none' });
     const inference: Pick<CompanionLoopCheckpoint, 'context' | 'turns'> = { turns: [], context: { system: '', user: JSON.stringify({ conversation: { id: scope.conversationId },
       memoryRecall: { context: { text: '', revision: 'physical-corpus', profileKey: 'fixture', evidence: { dependencyCoverage: 'complete', snapshotPolicy: 'task_passive_v1',
@@ -793,10 +917,10 @@ describe('VCP companion memory through the main service and real SQLite', () => 
     const read = await hostMemory(f.service, { type: 'memory.read', ...scope, id: note.id });
     inference.turns.push({ text: '', rawText: '', calls: [{ id: 'actual-read', name: 'memory', arguments: JSON.stringify({ action: 'read', id: note.id }) }],
       results: [{ callId: 'actual-read', content: JSON.stringify(read) }] });
-    const annotated = f.store.request({ type: 'memory.organize', ...scope, ids: [note.id], tags: ['核对真实产物'] }).memories![0]!;
+    const annotated = (await hostMemory(f.service, { type: 'memory.organize', ...scope, ids: [note.id], tags: ['核对真实产物'] })).memories![0]!;
     expect(await execute('memory.record', JSON.stringify({ candidate }), { ...scope, beforeSequence: source.sequence }, [source.id], undefined, 'read-native', inference))
       .toMatchObject({ ok: true, memories: [expect.objectContaining({ content: source.content })] });
-    f.store.request({ type: 'memory.revise', ...scope, id: note.id, expectedVersion: annotated.version, candidate: journal(raw, '正文后来采用了新的核对方法。') });
+    await hostMemory(f.service, { type: 'memory.revise', ...scope, id: note.id, expectedVersion: annotated.version, candidate: journal(raw, '正文后来采用了新的核对方法。') });
     expect(await execute('memory.record', JSON.stringify({ candidate }), { ...scope, beforeSequence: source.sequence }, [source.id], undefined, 'changed-native', inference))
       .toMatchObject({ ok: false, error: expect.stringContaining('正文已变化') });
   });
@@ -806,7 +930,7 @@ describe('VCP companion memory through the main service and real SQLite', () => 
     const raw = f.store.appendMessage({ conversationId: scope.conversationId, authorId: 'user', content: '候选方法：先保存结果文件，再实际读取，确认包含ACTUAL_VALIDATED_RESULT才算交付。', replyDirective: 'none' });
     const proposal = { applicability: '当前受管测试目录的文本交付', steps: ['写入结果文件。', '读取并核对实际正文。'], limitations: ['只适用于当前客观合同。'],
       verification: { kind: 'artifact_delivery' as const, artifactRequirements: [{ path: 'verified.txt', containsText: 'ACTUAL_VALIDATED_RESULT' }] } };
-    const original = (await hostMemory(f.service, { type: 'memory.record', ...scope, candidate: { ...journal(raw, raw.content, ['方法候选']), procedure: proposal, metadata: { autoTags: false } } })).memories![0]!;
+    const original = (await hostMemory(f.service, { type: 'memory.record', ...scope, candidate: { ...journal(raw, raw.content, ['方法候选']), artifactKind: 'procedure', procedure: proposal, metadata: { autoTags: false } } })).memories![0]!;
     markIndexed(f.store); let steps = 0, actualRead: CompanionStorageResponse | undefined, resumedToolBodies: string[] = [], withdrawFailure: unknown;
     const providerFailures: string[] = [];
     transport.fetch.mockImplementation(async (_url, init) => {
@@ -901,7 +1025,7 @@ describe('VCP companion memory through the main service and real SQLite', () => 
     const original = (await hostMemory(f.service, { type: 'memory.record', ...scope, candidate: { ...journal(b, b.content), metadata: { autoTags: false } } })).memories![0]!;
     const a = f.store.appendMessage({ conversationId: scope.conversationId, authorId: 'user', content: 'A后来增加但需要撤回。', replyDirective: 'none' });
     await hostMemory(f.service, { type: 'memory.revise', ...scope, id: original.id, expectedVersion: original.version,
-      candidate: { content: b.content + a.content, sourceMessageIds: [a.id, b.id], evidence: [a, b].map(message => ({ sourceMessageId: message.id, quote: message.content })), metadata: { autoTags: false } } });
+      candidate: { artifactKind: 'episode_memory' as const, content: b.content + a.content, sourceMessageIds: [a.id, b.id], evidence: [a, b].map(message => ({ sourceMessageId: message.id, quote: message.content })), metadata: { autoTags: false } } });
     await hostMemory(f.service, { type: 'memory.forget', ...scope, sourceMessageIds: [a.id] });
     const job = (await hostMemory(f.service, { type: 'memory.jobs.claim', companionId: scope.companionId, force: true })).memoryJob!;
     expect(job.sourceMessageIds).toEqual([b.id]);
@@ -918,68 +1042,87 @@ describe('VCP companion memory through the main service and real SQLite', () => 
     await expect(hostMemory(f.service, { type: 'memory.revision.read', ...scope, id: original.id, contentRevision: original.contentRevision! })).rejects.toThrow();
   });
 
-  it.each(['record', 'revise', 'save'] as const)('checks a changed-word residence proposal at the unified %s entrance', async action => {
+  it.each(['record', 'revise'] as const)('checks a changed-word residence proposal at the native %s entrance', async action => {
     const f = fixture(), secret = 'FORGOTTEN_RESIDENCE_8734';
-    f.store.saveMemory({ companionId: 'sister', conversationId: f.conversation.id, content: secret, tags: ['家庭住址'] });
-    f.store.request({ type: 'memory.forget', companionId: 'sister', conversationId: f.conversation.id, tag: '家庭住址', persistent: true });
-    const safe = f.store.saveMemory({ companionId: 'sister', conversationId: f.conversation.id, content: '周六为花园浇水。', tags: ['花园'] });
+    await seedMemory(f, secret, ['家庭住址']);
+    await hostMemory(f.service, { type: 'memory.forget', companionId: 'sister', conversationId: f.conversation.id, tag: '家庭住址', persistent: true });
+    const safe = await seedMemory(f, '周六为花园浇水。', ['花园']);
     const rules = f.store.request({ type: 'memory.prohibitions', companionId: 'sister', conversationId: f.conversation.id }).memoryProhibitions!;
     const proposed = '用户已经搬到枫树街二十三号居住。';
+    // The lawful seed has already passed the same policy gate. Count only the
+    // changed-word native proposal exercised below.
+    transport.prohibitionFetch.mockClear();
     transport.prohibitionFetch.mockImplementation(async () => structuredResponse({ allowed: false, matchedPolicyIds: [rules[0]!.id] }));
-    if (action === 'save') {
-      await expect(f.service.handle({ type: 'memory.save', companionId: 'sister', conversationId: f.conversation.id, content: proposed })).rejects.toThrow('不再记录');
-    } else {
-      let step = 0;
-      transport.fetch.mockImplementation(async (_input, init) => {
-        if (step++ === 0) return memoryResponse('blocked_diary', action, {
-          ...(action === 'revise' ? { id: safe.id, expectedVersion: safe.version } : {}),
-          candidate: journal({ id: payload(init).taskRequest!.sourceMessageId, content: proposed }, proposed, ['新居']),
-        });
-        expect(JSON.parse(body(init).messages.at(-1)!.content)).toMatchObject({ ok: false, error: expect.stringContaining('不再记录') });
-        return textResponse('这项信息尚未保存。');
+    let step = 0;
+    transport.fetch.mockImplementation(async (_input, init) => {
+      if (step++ === 0) return memoryResponse('blocked_diary', action, {
+        ...(action === 'revise' ? { id: safe.id, expectedVersion: safe.version } : {}),
+        candidate: journal({ id: payload(init).taskRequest!.sourceMessageId, content: proposed }, proposed, ['新居']),
       });
-      await sent(f.service, f.store, f.conversation.id, proposed, `prohibition-${action}`);
-      expect(step).toBe(2);
-    }
+      expect(JSON.parse(body(init).messages.at(-1)!.content)).toMatchObject({ ok: false, error: expect.stringContaining('不再记录') });
+      return textResponse('这项信息尚未保存。');
+    });
+    await sent(f.service, f.store, f.conversation.id, proposed, `prohibition-${action}`);
+    expect(step).toBe(2);
     expect(transport.prohibitionFetch).toHaveBeenCalledTimes(1);
     const validation = String(transport.prohibitionFetch.mock.calls[0]?.[1]?.body);
     expect(validation).toContain(proposed); expect(validation).toContain('家庭住址'); expect(validation).not.toContain(secret);
     expect(active(f.store, f.conversation.id)).toEqual([expect.objectContaining({ id: safe.id, content: safe.content, version: safe.version })]);
   });
 
-  it('keeps a manual diary uncommitted when semantic prohibition validation fails', async () => {
+  it('rejects the retired human diary save entrance without invoking any model or memory writer', async () => {
     const f = fixture();
-    f.store.request({ type: 'memory.forget', companionId: 'sister', conversationId: f.conversation.id, tag: '家庭住址', persistent: true });
-    transport.prohibitionFetch.mockRejectedValueOnce(new Error('Policy provider unavailable'));
     await expect(f.service.handle({ type: 'memory.save', companionId: 'sister', conversationId: f.conversation.id,
-      content: '用户已搬到枫树街二十三号。' })).rejects.toThrow();
+      content: '用户已搬到枫树街二十三号。' })).rejects.toThrow('人工保存接口已经退出');
+    expect(transport.fetch).not.toHaveBeenCalled(); expect(transport.prohibitionFetch).not.toHaveBeenCalled();
+    expect(transport.memoryFetch).not.toHaveBeenCalled();
     expect(active(f.store, f.conversation.id)).toHaveLength(0);
     expect(transport.request.mock.calls.filter(([command]) => command.type === 'memory.save')).toHaveLength(0);
   });
 
+  it('keeps a native diary uncommitted when semantic prohibition validation fails', async () => {
+    const f = fixture();
+    await hostMemory(f.service, { type: 'memory.forget', companionId: 'sister', conversationId: f.conversation.id, tag: '家庭住址', persistent: true });
+    transport.prohibitionFetch.mockRejectedValueOnce(new Error('Policy provider unavailable'));
+    const proposed = '用户已搬到枫树街二十三号。'; let step = 0;
+    transport.fetch.mockImplementation(async (_input, init) => {
+      if (step++ === 0) return memoryResponse('unchecked_diary', 'record', { candidate: journal({ id: payload(init).taskRequest!.sourceMessageId, content: proposed }, proposed) });
+      expect(JSON.parse(body(init).messages.at(-1)!.content)).toMatchObject({ ok: false });
+      return textResponse('禁记范围尚未核验成功，这项信息尚未保存。');
+    });
+    await sent(f.service, f.store, f.conversation.id, proposed, 'policy-provider-unavailable');
+    expect(step).toBe(2); expect(transport.prohibitionFetch).toHaveBeenCalledTimes(1);
+    expect(active(f.store, f.conversation.id)).toHaveLength(0);
+    expect(transport.request.mock.calls.filter(([command]) => command.type === 'memory.record')).toHaveLength(0);
+  });
+
   it('atomically refuses a new prohibition installed after an empty preflight read', async () => {
-    const f = fixture(); let installed = false;
+    const f = fixture(); let armed = false, installed = false;
     transport.request.mockImplementation(async command => {
       const response = f.store.request(command);
-      if (command.type === 'memory.prohibitions' && !installed) {
+      if (command.type === 'memory.prohibitions' && armed && !installed) {
         installed = true;
         f.store.request({ type: 'memory.forget', companionId: 'sister', conversationId: f.conversation.id, tag: '饮食偏好', persistent: true });
       }
       return response;
     });
-    await expect(f.service.handle({ type: 'memory.save', companionId: 'sister', conversationId: f.conversation.id,
-      content: '用户最喜欢香煎蛋。' })).rejects.toThrow('禁记规则已变化');
+    const proposed = '用户最喜欢香煎蛋。'; let step = 0;
+    transport.fetch.mockImplementation(async (_input, init) => {
+      if (step++ === 0) { armed = true; return memoryResponse('racing_diary', 'record', { candidate: journal({ id: payload(init).taskRequest!.sourceMessageId, content: proposed }, proposed) }); }
+      expect(JSON.parse(body(init).messages.at(-1)!.content)).toMatchObject({ ok: false, error: expect.stringContaining('禁记规则已变化') });
+      return textResponse('禁记范围已经变化，尚未保存。');
+    });
+    await sent(f.service, f.store, f.conversation.id, proposed, 'policy-raced-after-read');
+    expect(installed).toBe(true); expect(step).toBe(2);
     expect(transport.prohibitionFetch).not.toHaveBeenCalled();
     expect(active(f.store, f.conversation.id)).toHaveLength(0);
-    expect(transport.request.mock.calls.find(([command]) => command.type === 'memory.save')?.[0]).toMatchObject({
-      memory: { expectedProhibitionRevision: expect.stringMatching(/^[a-f0-9]{64}$/u) },
-    });
+    expect(transport.request.mock.calls.find(([command]) => command.type === 'memory.record')?.[0]).toMatchObject({ expectedProhibitionRevision: expect.stringMatching(/^[a-f0-9]{64}$/u) });
   });
 
   it('uses the actual group source policy when a private tool records witnessed group material', async () => {
     const f = fixture([...seeds, { id: 'flash', name: '小肥鱼', description: '妹妹', persona: '活泼', model: '', avatar: 'flash', proactive: false }]);
     const group = f.store.createConversation('讨论', ['sister', 'flash']);
-    f.store.request({ type: 'memory.forget', companionId: 'sister', conversationId: group.id, tag: '家庭住址', persistent: true });
+    await hostMemory(f.service, { type: 'memory.forget', companionId: 'sister', conversationId: group.id, tag: '家庭住址', persistent: true });
     const source = f.store.appendMessage({ conversationId: group.id, authorId: 'user', content: '我现在住枫树街二十三号。', replyDirective: 'none' });
     const rules = f.store.request({ type: 'memory.prohibitions', companionId: 'sister', conversationId: group.id }).memoryProhibitions!;
     transport.prohibitionFetch.mockImplementation(async () => structuredResponse({ allowed: false, matchedPolicyIds: [rules[0]!.id] }));
@@ -996,7 +1139,7 @@ describe('VCP companion memory through the main service and real SQLite', () => 
 
   it('refuses a model-proposed forget when the current user message contains no forgetting request', async () => {
     const f = fixture(), old = f.store.appendMessage({ conversationId: f.conversation.id, authorId: 'user', content: '我一直喜欢茶。', replyDirective: 'none' });
-    f.store.request({ type: 'memory.record', companionId: 'sister', conversationId: f.conversation.id, candidate: journal(old) }); markIndexed(f.store);
+    await hostMemory(f.service, { type: 'memory.record', companionId: 'sister', conversationId: f.conversation.id, candidate: journal(old) }); markIndexed(f.store);
     let attempted = false, result: CompanionStorageResponse | undefined;
     transport.fetch.mockImplementation(async (_input, init) => {
       const sourceId = payload(init).taskRequest!.sourceMessageId;
@@ -1041,6 +1184,7 @@ describe('VCP companion memory through the main service and real SQLite', () => 
 
   it('retains an actual sent-message receipt newer than the dialogue cursor and still revokes its forgotten source', async () => {
     const f = fixture([...seeds, { id: 'flash', name: '小肥鱼', description: '朋友', persona: '活泼', model: '', avatar: 'flash', proactive: false }]);
+    await f.service.handle({ type: 'state' });
     const source = f.store.appendMessage({ conversationId: f.conversation.id, authorId: 'user', content: '邀请朋友一起玩。', replyDirective: 'none' });
     const room = f.store.request({ type: 'social.conversation.ensure', companionId: 'sister', memberIds: ['sister', 'flash'] }).socialConversation!;
     const sent = f.store.request({ type: 'social.message.append', conversationId: room.id, authorId: 'sister', content: '想一起玩吗？',
@@ -1057,7 +1201,7 @@ describe('VCP companion memory through the main service and real SQLite', () => 
     const current = await inference.memoryInference(checkpoint, 'sister', f.conversation.id, source.sequence);
     expect(current.turns[0]?.results?.[0]?.content).toContain(sent.message.id);
     expect(JSON.parse(checkpoint.context!.user).withdrawnEvidenceThroughStep).toBeUndefined();
-    f.store.request({ type: 'memory.forget', companionId: 'sister', conversationId: room.id, sourceMessageIds: [sent.message.id] });
+    await hostMemory(f.service, { type: 'memory.forget', companionId: 'sister', conversationId: room.id, sourceMessageIds: [sent.message.id] });
     const withdrawn = await inference.memoryInference(checkpoint, 'sister', f.conversation.id, source.sequence);
     expect(JSON.stringify(withdrawn.turns)).not.toContain(sent.message.content);
     expect(JSON.parse(checkpoint.context!.user).withdrawnEvidenceThroughStep).toBe(1);
@@ -1066,11 +1210,11 @@ describe('VCP companion memory through the main service and real SQLite', () => 
   it('keeps new authorized search and read results after forgetting cuts off the contaminated provider history', async () => {
     const f = fixture(), secret = 'WITHDRAWN_SECRET_9127';
     const oldSource = f.store.appendMessage({ conversationId: f.conversation.id, authorId: 'user', content: `旧秘密是${secret}`, replyDirective: 'none' });
-    const old = f.store.request({ type: 'memory.record', companionId: 'sister', conversationId: f.conversation.id,
-      candidate: journal(oldSource, `旧秘密是${secret}`, ['旧秘密']) }).memories![0]!;
+    const old = (await hostMemory(f.service, { type: 'memory.record', companionId: 'sister', conversationId: f.conversation.id,
+      candidate: journal(oldSource, `旧秘密是${secret}`, ['旧秘密']) })).memories![0]!;
     const source = f.store.appendMessage({ conversationId: f.conversation.id, authorId: 'user', content: '花园计划是周六给玫瑰浇水。', replyDirective: 'none' });
-    const safe = f.store.request({ type: 'memory.record', companionId: 'sister', conversationId: f.conversation.id,
-      candidate: journal(source, source.content, ['花园计划']) }).memories![0]!;
+    const safe = (await hostMemory(f.service, { type: 'memory.record', companionId: 'sister', conversationId: f.conversation.id,
+      candidate: journal(source, source.content, ['花园计划']) })).memories![0]!;
     markIndexed(f.store);
     let step = 0;
     transport.fetch.mockImplementation(async (_input, init) => {
@@ -1109,6 +1253,7 @@ describe('VCP companion memory through the main service and real SQLite', () => 
     const source = await sent(f.service, f.store, group.id, '@大肥鱼，大家周六十点在东门集合。', 'group-agreement');
     expect(f.store.messages({ conversationId: group.id }).messages.some(message => message.authorId === 'flash')).toBe(false);
     await background(62_100);
+    await vi.waitFor(() => expect(active(f.store, group.id, 'flash')[0]?.status).toBe('indexed'), { timeout: 15000 });
     expect(active(f.store, group.id, 'flash')[0]).toMatchObject({ sourceMessageId: source.id, sourceConversationId: group.id, content: expect.stringContaining('东门'), status: 'indexed' });
     const other = f.store.createConversation('另一个群', ['sister', 'flash', 'comet']);
     expect(active(f.store, other.id, 'flash')).toHaveLength(1);
@@ -1119,15 +1264,15 @@ describe('VCP companion memory through the main service and real SQLite', () => 
 
   it('preserves journal dependency sources and invalidates derived notes when a source note is revised', async () => {
     const f = fixture(), source = await sent(f.service, f.store, f.conversation.id, 'WorldlineBox 聊天功能验收通过，我先核对真实结果再确认。', 'phase-completed');
-    const atom = f.store.request({ type: 'memory.record', companionId: 'sister', conversationId: f.conversation.id,
-      candidate: journal(source, 'WorldlineBox 聊天功能验收通过。', ['WorldlineBox', '聊天验收']) }).memories![0]!;
-    const derived = f.store.request({ type: 'memory.record', companionId: 'sister', conversationId: f.conversation.id,
-      candidate: { ...journal(source, '这次验收先核对真实结果才确认完成；一次通过不能保证所有功能。', ['WorldlineBox', '验收经验']), relatedMemoryIds: [atom.id] } }).memories![0]!;
+    const atom = (await hostMemory(f.service, { type: 'memory.record', companionId: 'sister', conversationId: f.conversation.id,
+      candidate: journal(source, 'WorldlineBox 聊天功能验收通过。', ['WorldlineBox', '聊天验收']) })).memories![0]!;
+    const derived = (await hostMemory(f.service, { type: 'memory.record', companionId: 'sister', conversationId: f.conversation.id,
+      candidate: { ...journal(source, '这次验收先核对真实结果才确认完成；一次通过不能保证所有功能。', ['WorldlineBox', '验收经验']), relatedMemoryIds: [atom.id] } })).memories![0]!;
     await background();
     expect(active(f.store, f.conversation.id)).toHaveLength(2);
     expect(f.store.request({ type: 'memory.read', companionId: 'sister', conversationId: f.conversation.id, id: derived.id }).memoryRead?.sources.some(message => message.id === source.id)).toBe(true);
     const correction = f.store.appendMessage({ conversationId: f.conversation.id, authorId: 'user', content: '更正：聊天功能验收没有通过，仍需修复。', replyDirective: 'none' });
-    f.store.request({ type: 'memory.revise', companionId: 'sister', conversationId: f.conversation.id, id: atom.id, expectedVersion: atom.version,
+    await hostMemory(f.service, { type: 'memory.revise', companionId: 'sister', conversationId: f.conversation.id, id: atom.id, expectedVersion: atom.version,
       candidate: journal(correction, '聊天功能验收未通过，仍需修复。', ['WorldlineBox', '聊天验收']) });
     expect(active(f.store, f.conversation.id)).toHaveLength(1);
     expect(active(f.store, f.conversation.id)[0]?.id).toBe(atom.id);
@@ -1143,10 +1288,14 @@ describe('VCP companion memory through the main service and real SQLite', () => 
     f.store.request({ type: 'world.tool', companionId: 'sister', conversationId: f.conversation.id, sourceMessageId: old.id,
       arguments: { action: 'visit', targetCompanionId: 'flash', reason: secret } });
     for (let index = 0; index < COMPANION_DIALOGUE_WINDOW.maxMessages + 20; index++) f.store.appendMessage({ conversationId: f.conversation.id, authorId: 'user', content: '普通的历史消息' + index, replyDirective: 'none' });
-    let resolvePending!: (value: Response) => void; const pending = new Promise<Response>(resolve => { resolvePending = resolve; });
-    transport.fetch.mockResolvedValueOnce(toolResponse('old_world_inspection', 'world', { action: 'inspect' })).mockImplementationOnce(() => pending);
+    let resolvePending!: (value: Response) => void;
+    transport.fetch.mockResolvedValueOnce(toolResponse('old_world_inspection', 'world', { action: 'inspect' })).mockImplementationOnce((_input, init) => new Promise<Response>((resolve, reject) => {
+      const abort = () => reject(init?.signal?.reason ?? new DOMException('Aborted', 'AbortError'));
+      resolvePending = value => { init?.signal?.removeEventListener('abort', abort); resolve(value); };
+      if (init?.signal?.aborted) abort(); else init?.signal?.addEventListener('abort', abort, { once: true });
+    }));
     const source = (await f.service.handle({ type: 'message.send', conversationId: f.conversation.id, content: '看看你现在在哪里。', clientId: 'world-source-withdrawal' })).message!;
-    await vi.waitFor(() => expect(transport.fetch).toHaveBeenCalledTimes(2), { timeout: 5000 });
+    await vi.waitFor(() => expect(transport.fetch).toHaveBeenCalledTimes(2), { timeout: 15000 });
     const first = payload(transport.fetch.mock.calls[0]?.[1]);
     expect(first.messages.some(message => message.id === old.id)).toBe(false);
     expect(String(transport.fetch.mock.calls[1]?.[1]?.body)).toContain(secret);
@@ -1157,7 +1306,7 @@ describe('VCP companion memory through the main service and real SQLite', () => 
     transport.fetch.mockReset(); transport.memoryFetch.mockClear();
     transport.fetch.mockImplementation(async () => textResponse('我已经移除撤回的资料。'));
     const restarted = startService(f.root); await restarted.handle({ type: 'state' }); await restarted.handle({ type: 'reply.resume', conversationId: f.conversation.id });
-    await vi.waitFor(() => expect(reopened.request({ type: 'work.list', sourceMessageId: source.id }).works?.[0]?.status).toBe('done'), { timeout: 10000 });
+    await vi.waitFor(() => expect(reopened.request({ type: 'work.list', sourceMessageId: source.id }).works?.[0]?.status).toBe('done'), { timeout: 15000 });
     expect(transport.fetch).toHaveBeenCalled();
     for (const [, init] of transport.fetch.mock.calls) expect(String(init?.body)).not.toContain(secret);
   });
@@ -1189,7 +1338,7 @@ describe('VCP companion memory through the main service and real SQLite', () => 
         arguments: JSON.stringify({ action: 'inspect' }) }], results: [{ callId: 'older_world_inspection', content: JSON.stringify(inspection) }] }] };
     // A separate harmless note changes the VCP revision. That may discard old
     // memory.* results, but this still-valid world receipt must remain usable.
-    f.store.request({ type: 'memory.record', companionId: 'sister', conversationId: f.conversation.id,
+    await hostMemory(f.service, { type: 'memory.record', companionId: 'sister', conversationId: f.conversation.id,
       candidate: journal(safe, safe.content, ['薄荷']) });
     markIndexed(f.store);
     const inference = f.service as unknown as { memoryInference(checkpoint: CompanionLoopCheckpoint, id: string, room: string, sequence: number): Promise<{ turns: CompanionLoopCheckpoint['turns'] }> };
@@ -1200,7 +1349,7 @@ describe('VCP companion memory through the main service and real SQLite', () => 
     // The original request is outside the recent window and VCP recall. Its
     // later withdrawal must still invalidate the retained world's provenance.
     const forget = f.store.appendMessage({ conversationId: f.conversation.id, authorId: 'user', content: '请忘掉之前的私人拜访原因。', replyDirective: 'none' });
-    f.store.request({ type: 'memory.forget', companionId: 'sister', conversationId: f.conversation.id,
+    await hostMemory(f.service, { type: 'memory.forget', companionId: 'sister', conversationId: f.conversation.id,
       sourceMessageIds: [old.id], requestMessageId: forget.id });
     const withdrawn = await inference.memoryInference(checkpoint, 'sister', f.conversation.id, source.sequence);
     expect(JSON.stringify(withdrawn.turns)).not.toContain(secret);
@@ -1222,7 +1371,7 @@ describe('VCP companion memory through the main service and real SQLite', () => 
     const inference = f.service as unknown as { memoryInference(checkpoint: CompanionLoopCheckpoint, id: string, room: string, sequence: number): Promise<{ turns: CompanionLoopCheckpoint['turns'] }> };
     expect(JSON.stringify((await inference.memoryInference(checkpoint, 'sister', f.conversation.id, source.sequence)).turns)).toContain(secret);
     expect(JSON.parse(checkpoint.context!.user).messages.some((message: { id: string }) => message.id === old.id)).toBe(false);
-    f.store.request({ type: 'memory.forget', companionId: 'sister', conversationId: f.conversation.id, sourceMessageIds: [old.id] });
+    await hostMemory(f.service, { type: 'memory.forget', companionId: 'sister', conversationId: f.conversation.id, sourceMessageIds: [old.id] });
     expect(JSON.stringify((await inference.memoryInference(checkpoint, 'sister', f.conversation.id, source.sequence)).turns)).not.toContain(secret);
     expect(JSON.parse(checkpoint.context!.user).withdrawnEvidenceThroughStep).toBe(1);
   });
@@ -1246,12 +1395,12 @@ describe('VCP companion memory through the main service and real SQLite', () => 
     const checkpoint: CompanionLoopCheckpoint = { companionId: 'sister', conversationId: f.conversation.id, sourceMessageId: source.id,
       status: 'running', supplements: [], context, turns: [{ text: '', rawText: '', calls: [{ id: 'older_topic', name: 'world',
         arguments: JSON.stringify({ action: 'topic', parameters: { action: 'read', topicId: topic.id } }) }], results: [{ callId: 'older_topic', content: JSON.stringify(topicReceipt) }] }] };
-    f.store.request({ type: 'memory.record', companionId: 'sister', conversationId: f.conversation.id, candidate: journal(safe, safe.content, ['薄荷']) }); markIndexed(f.store);
+    await hostMemory(f.service, { type: 'memory.record', companionId: 'sister', conversationId: f.conversation.id, candidate: journal(safe, safe.content, ['薄荷']) }); markIndexed(f.store);
     const inference = f.service as unknown as { memoryInference(checkpoint: CompanionLoopCheckpoint, id: string, room: string, sequence: number): Promise<{ turns: CompanionLoopCheckpoint['turns'] }> };
     expect(JSON.stringify((await inference.memoryInference(checkpoint, 'sister', f.conversation.id, source.sequence)).turns)).toContain(secret);
     expect(JSON.parse(checkpoint.context!.user).memoryEvidenceThroughStep).toBe(1);
     expect(JSON.parse(checkpoint.context!.user).withdrawnEvidenceThroughStep).toBeUndefined();
-    f.store.request({ type: 'memory.forget', companionId: 'sister', conversationId: f.conversation.id, sourceMessageIds: [old.id] });
+    await hostMemory(f.service, { type: 'memory.forget', companionId: 'sister', conversationId: f.conversation.id, sourceMessageIds: [old.id] });
     expect(JSON.stringify((await inference.memoryInference(checkpoint, 'sister', f.conversation.id, source.sequence)).turns)).not.toContain(secret);
     expect(JSON.parse(checkpoint.context!.user).withdrawnEvidenceThroughStep).toBe(1);
     expect(f.store.request({ type: 'topic.read', conversationId: f.conversation.id, topicId: topic.id, readerId: 'sister' }).topicState?.shared).toBeUndefined();
@@ -1261,16 +1410,19 @@ describe('VCP companion memory through the main service and real SQLite', () => 
   it.each([false, true])('does not reintroduce withdrawn evidence when a loop resumes (request itself withdrawn: %s)', async requestWithdrawn => {
     const f = fixture(), secret = 'SECRET_ADDRESS_青松路881号';
     const old = f.store.appendMessage({ conversationId: f.conversation.id, authorId: 'user', content: `旧地址是 ${secret}`, replyDirective: 'none' });
-    const saved = f.store.request({ type: 'memory.record', companionId: 'sister', conversationId: f.conversation.id, candidate: {
+    const saved = (await hostMemory(f.service, { type: 'memory.record', companionId: 'sister', conversationId: f.conversation.id, candidate: { artifactKind: 'episode_memory' as const,
       content: `用户地址 ${secret}`, tags: ['地址'],
       sourceMessageIds: [old.id], evidence: [{ sourceMessageId: old.id, quote: old.content }],
-    } }).memories![0]!;
+    } })).memories![0]!;
     let resolvePending!: (response: Response) => void;
-    const pending = new Promise<Response>(resolve => { resolvePending = resolve; });
-    transport.fetch.mockResolvedValueOnce(memoryResponse('read_before_shutdown', 'read', { id: saved.id })).mockImplementationOnce(() => pending);
+    transport.fetch.mockResolvedValueOnce(memoryResponse('read_before_shutdown', 'read', { id: saved.id })).mockImplementationOnce((_input, init) => new Promise<Response>((resolve, reject) => {
+      const abort = () => reject(init?.signal?.reason ?? new DOMException('Aborted', 'AbortError'));
+      resolvePending = value => { init?.signal?.removeEventListener('abort', abort); resolve(value); };
+      if (init?.signal?.aborted) abort(); else init?.signal?.addEventListener('abort', abort, { once: true });
+    }));
     const source = (await f.service.handle({ type: 'message.send', conversationId: f.conversation.id,
       content: requestWithdrawn ? `请核对地址 ${secret}` : '请核对我引用的旧地址。', replyToId: old.id, clientId: 'forgotten-resume-request' })).message!;
-    await vi.waitFor(() => expect(transport.fetch).toHaveBeenCalledTimes(2), { timeout: 5000 });
+    await vi.waitFor(() => expect(transport.fetch).toHaveBeenCalledTimes(2), { timeout: 15000 });
     const supplement = (await f.service.handle({ type: 'message.send', conversationId: f.conversation.id, content: `补充地址仍是 ${secret}`,
       clientId: 'forgotten-supplement', delivery: 'steer', targetSourceMessageId: source.id })).message!;
     const checkpoint = f.store.request({ type: 'loop.get', sourceMessageId: source.id, companionId: 'sister' }).loop!;

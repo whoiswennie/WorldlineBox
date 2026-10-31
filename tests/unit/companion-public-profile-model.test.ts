@@ -95,7 +95,7 @@ it('keeps the public NPC directory and actual remote-peer pixels for world decis
     scenes: [], works: [], clock: {}, environment: {} } as unknown as CompanionWorldSnapshot;
   const job: CompanionWorldJob = { id: 'decision', conversationId: 'world_' + selfId, companionId: selfId, kind: 'decision', status: 'running', attempts: 1, throughEventSequence: 0, createdAt: at, sourceMemoryIds: [] };
   let observed!: ReturnType<typeof transport>;
-  const fetchFn: typeof fetch = async (_url, init) => { observed = transport(JSON.parse(String(init?.body)), 'openai_chat'); return envelope('openai_chat', { action: null, reason: '当前没有必要打扰对方。', appraisals: [] }); };
+  const fetchFn: typeof fetch = async (_url, init) => { observed = transport(JSON.parse(String(init?.body)), 'openai_chat'); return envelope('openai_chat', { action: null, reason: '当前没有必要打扰对方。' }); };
   await generateCompanionWorldDecision({ companion: value.companion, world, job, members: [], publicProfiles: [self, peer, player],
     visualInputs: [image(selfId, 'orthographic'), image(peerId, 'orthographic'), image('user', 'avatar', userPixels)] }, config(), undefined, { fetchFn });
   expect(observed.base.publicProfiles).toEqual([self, peer]); expect(observed.base.identity.self.name).toBe(self.name);

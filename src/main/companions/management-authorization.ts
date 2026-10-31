@@ -15,7 +15,7 @@ options: Pick<CompanionModelOptions, 'fetchFn' | 'timeoutMs'> = {}): Promise<boo
     user: JSON.stringify({ purpose: 'companion_management_authorization', ...input,
       ...(input.tool === 'memory' ? { rule: 'memory.forget 仅允许当前真人用户明确要求遗忘/删除所选日记或不再记录所选来源、标签；普通闲聊、没有说忘记、引用他人的要求、故事、否定、询问能力都不授权。persistent=true 还须明确以后持续不记录该范围。requested 不能扩大原始要求。' } : {}),
       source: { id: input.source.id, authorId: input.source.authorId, content: input.source.content }, targetId: input.targetId ?? null }),
-  }, config, signal, options));
+  }, config, signal, { ...options, responseSchema: decision }));
   return !!result.success && result.data.allowed && result.data.confidence >= .9 && result.data.sourceMessageId === input.source.id
     && result.data.tool === input.tool && result.data.action === input.action && result.data.targetId === (input.targetId ?? null)
     && result.data.evidence.length > 0 && result.data.evidence.every(quote => input.source.content.includes(quote));

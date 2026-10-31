@@ -1,4 +1,4 @@
-import { mkdtempSync } from 'node:fs';
+import { mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import Database from 'better-sqlite3';
@@ -62,11 +62,12 @@ describe('owner scheduling read projection', () => {
     expect(after.learning.some(item => item.grant.id === first.id)).toBe(false);
   });
   it('uses unprocessed indexed memories with actual sources instead of raw document count', () => {
-    const { store } = fixture(), room = store.openPrivate('alice').id;
-    for (let n = 0; n < 3; n++) store.saveMemory({ companionId: 'alice', conversationId: room, content: '没有来源的普通文档 ' + n });
+    const { store, root } = fixture(), room = store.openPrivate('alice').id;
+    for (let n = 0; n < 3; n++) writeFileSync(path.join(root, 'unknown-document-' + n + '.md'), '没有登记或来源的普通文档 ' + n);
     expect(status(store).hasUnconsolidated).toBe(false);
     const source = store.appendMessage({ conversationId: room, authorId: 'user', content: '今天约好了沿海边慢慢走。', replyDirective: 'none' });
-    store.saveMemory({ companionId: 'alice', conversationId: room, sourceMessageId: source.id, content: '约好了沿海边慢慢走。' });
+    store.request({ type: 'memory.record', companionId: 'alice', conversationId: room, candidate: { artifactKind: 'episode_memory', content: '约好了沿海边慢慢走。',
+      tags: [], sourceMessageIds: [source.id], evidence: [{ sourceMessageId: source.id, quote: source.content }], relatedMemoryIds: [] } });
     expect(status(store).hasUnconsolidated).toBe(false);
     for (let n = 0; n < 20; n++) {
       const job = store.request({ type: 'memory.outbox.claim', companionId: 'alice' }).memoryOutbox;

@@ -135,7 +135,7 @@ it('keeps the observed world source hash and rejects a same-ID reply revision be
 
 it.each(['revise', 'forget'] as const)('retains a published reply and its new diary across unrelated indexing, then withdraws them after its actual parent %s', async mutation => {
   const source = store.appendMessage({ conversationId: ownerScope.conversationId, authorId: 'user', content: '修书材料是米色棉线，放在第二层抽屉。', replyDirective: 'none' });
-  const parent = store.request({ type: 'memory.record', ...ownerScope, candidate: { content: source.content, diaryName: '经历', tags: ['修书'],
+  const parent = store.request({ type: 'memory.record', ...ownerScope, candidate: { artifactKind: 'episode_memory' as const, content: source.content, diaryName: '经历', tags: ['修书'],
     sourceMessageIds: [source.id], evidence: [{ sourceMessageId: source.id, quote: source.content }] } }).memories![0]!;
   const indexPending = () => {
     for (;;) {
@@ -158,9 +158,11 @@ it.each(['revise', 'forget'] as const)('retains a published reply and its new di
   const bubble = store.appendMessage({ conversationId: ownerScope.conversationId, authorId: 'alice', content: '', loopStep: 0 });
   store.request({ type: 'loop.save', checkpoint: { ...checkpoint, messageId: bubble.id, status: 'done', turns: [{ text: parent.content, rawText: parent.content, calls: [] }] }, executionReadset: proof });
   const published = store.getMessage(bubble.id);
-  const diary = store.request({ type: 'memory.record', ...ownerScope, candidate: { content: published.content, diaryName: '回忆', tags: ['出处'],
+  const diary = store.request({ type: 'memory.record', ...ownerScope, candidate: { artifactKind: 'episode_memory' as const, content: published.content, diaryName: '回忆', tags: ['出处'],
     sourceMessageIds: [published.id], evidence: [{ sourceMessageId: published.id, quote: published.content }] } }).memories![0]!;
-  store.saveMemory({ ...ownerScope, content: '无关的新观察：阳台薄荷长出了新叶。' }); indexPending();
+  const unrelated = store.appendMessage({ conversationId: ownerScope.conversationId, authorId: 'user', content: '无关的新观察：阳台薄荷长出了新叶。', replyDirective: 'none' });
+  store.request({ type: 'memory.record', ...ownerScope, candidate: { artifactKind: 'episode_memory', content: unrelated.content,
+    sourceMessageIds: [unrelated.id], evidence: [{ sourceMessageId: unrelated.id, quote: unrelated.content }] } }); indexPending();
   expect(store.request({ type: 'memory.snapshot', ...ownerScope }).memorySnapshot!.revision).not.toBe(snapshot.revision);
   corpusCurrent = false;
   expect((await service.call({ type: 'memory.sources.filter', ...ownerScope, ids: [published.id] })).memorySources?.[0]?.content).toBe(parent.content);
@@ -168,7 +170,7 @@ it.each(['revise', 'forget'] as const)('retains a published reply and its new di
   if (mutation === 'forget') store.request({ type: 'memory.forget', ...ownerScope, id: parent.id });
   else {
     const correction = store.appendMessage({ conversationId: ownerScope.conversationId, authorId: 'user', content: '更正：棉线后来移到了第一层。', replyDirective: 'none' });
-    store.request({ type: 'memory.revise', ...ownerScope, id: parent.id, expectedVersion: parent.version, candidate: {
+    store.request({ type: 'memory.revise', ...ownerScope, id: parent.id, expectedVersion: parent.version, candidate: { artifactKind: 'episode_memory' as const,
       content: correction.content, diaryName: '经历', tags: ['修书', '更正'], sourceMessageIds: [correction.id], evidence: [{ sourceMessageId: correction.id, quote: correction.content }],
     } });
   }

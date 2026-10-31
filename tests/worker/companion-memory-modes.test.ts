@@ -14,7 +14,7 @@ it('discovers actual original modes, rejects missing dependencies, and executes 
   const store = new CompanionsStore(path.join(root, 'ledger.sqlite'), [{ id: 'alice', name: '小肥鱼', persona: '合成验收', description: '', model: '', avatar: 'sister', proactive: false, active: true }]);
   const scope = { companionId: 'alice', conversationId: store.openPrivate('alice').id };
   const source = store.appendMessage({ conversationId: scope.conversationId, authorId: 'user', content: 'group0 昨天约好带蓝色雨伞。完整尾段 HOST_MODE_TAIL。', replyDirective: 'none' });
-  const note = store.request({ type: 'memory.record', ...scope, candidate: { content: source.content, occurredAt: new Date(Date.now() - 86400000).toISOString(), tags: ['group0', '雨伞'],
+  const note = store.request({ type: 'memory.record', ...scope, candidate: { artifactKind: 'episode_memory' as const, content: source.content, occurredAt: new Date(Date.now() - 86400000).toISOString(), tags: ['group0', '雨伞'],
     sourceMessageIds: [source.id], evidence: [{ sourceMessageId: source.id, quote: source.content }] } }).memories![0]!;
   const delivery = store.request({ type: 'memory.outbox.claim' }).memoryOutbox!;
   store.request({ type: 'memory.outbox.complete', id: delivery.id, leaseToken: delivery.leaseToken, indexed: true });

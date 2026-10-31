@@ -51,6 +51,7 @@ export class BrowserCaptureHost {
   private initialized?: Promise<void>;
   private lastProgress = 0;
   private refreshSequence = 0;
+  private readonly readRefreshes = new Map<string, Promise<void>>();
   private pickingLocalImage = false;
   constructor(private readonly root: string, private readonly hooks: BrowserCaptureHooks,
     private readonly environment: { fetch(url: string, init: RequestInit): Promise<Response>; tempRoot: string;
@@ -81,6 +82,17 @@ export class BrowserCaptureHost {
     this.targets = targets;
     if (!this.stored.target || !this.targets.libraries.some(item => item.libraryId === this.stored.target!.libraryId)) this.stored.target = this.targets.defaultTarget;
     if (this.stored.target?.folderId && !this.targets.folders.some(item => item.folderId === this.stored.target!.folderId)) this.stored.target = { ...this.stored.target, folderId: null };
+  }
+  /** A frame's status/menu discovery shares only the same in-flight read.
+   * Saves and target validation always use their independent fresh checks. */
+  private async refreshReadOnly(): Promise<void> {
+    await this.init();
+    const key = JSON.stringify([this.stored.target, [...this.libraryGenerations]]);
+    const current = this.readRefreshes.get(key);
+    if (current) return current;
+    const pending = this.refresh().finally(() => { if (this.readRefreshes.get(key) === pending) this.readRefreshes.delete(key); });
+    this.readRefreshes.set(key, pending);
+    return pending;
   }
   private key(source: BrowserCaptureSource): string { return source.frame.processId + ':' + source.frame.routingId; }
   private broadcast(event: BrowserCaptureContentEvent): void {
@@ -113,9 +125,9 @@ export class BrowserCaptureHost {
       this.broadcast({ type: 'storage.changed', area: request.area, changes }); return {};
     }
     const message = request.message;
-    if (message.type === 'worldlinebox-connection-status') { await this.refresh(); return { kind: this.state().connected ? 'connected' : 'disconnected' }; }
+    if (message.type === 'worldlinebox-connection-status') { await this.refreshReadOnly(); return { kind: this.state().connected ? 'connected' : 'disconnected' }; }
     if (message.type === 'worldlinebox-list-folders') {
-      await this.refresh(); const state = this.state();
+      await this.refreshReadOnly(); const state = this.state();
       if (!state.target) return { kind: 'rejected' };
       this.frameTargets.set(this.key(source), { url: source.frame.url, target: { ...state.target } });
       if (this.frameTargets.size > 2000) this.frameTargets.delete(this.frameTargets.keys().next().value!);

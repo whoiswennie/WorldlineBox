@@ -12,6 +12,14 @@ const companions: Companion[] = ['alice', 'bob'].map(id => ({ id, name: id, desc
 const initial: Graph = { centerId: 'alice', timeZone: 'Asia/Shanghai', observedDay: '2026-10-20', virtualNow: '2026-10-20T05:40:00Z', backlog: false,
   nodes: [{ id: 'alice', name: 'alice', active: true, state: 'available' }, { id: 'bob', name: 'bob', active: false, state: 'dormant' }, { id: 'user', name: '我', active: true, state: 'player' }],
   links: [{ targetId: 'bob', kind: 'peer', conversationIds: ['pair'], phoneCount: 1, faceCount: 0, status: 'permission' }, { targetId: 'user', kind: 'player', conversationIds: ['private'], phoneCount: 0, faceCount: 0, status: 'idle' }], visits: [], events: [], hasMoreEvents: false };
+it('uses each actual companion asset portrait and the user profile attachment in the social map', async () => {
+  vi.useFakeTimers(); container = document.createElement('div'); document.body.append(container); root = createRoot(container);
+  const roles = companions.map(role => ({ ...role, assetImages: { avatar: { url: `worldlinebox-companion://portrait/${role.id}/avatar?v=verified`, sha256: 'a'.repeat(64) } } }));
+  await act(async () => root!.render(<CompanionSocialGraph companions={roles} playerProfile={{ name: '真实用户', avatarAttachmentId: 'player-avatar' }} initialCompanionId="alice" request={async () => ({ ok: true, socialGraph: initial })} onHistory={vi.fn()} />));
+  expect(container.querySelector('[data-social-focus="alice"] img')?.getAttribute('src')).toBe(roles[0]!.assetImages.avatar.url);
+  expect(container.querySelector('[data-social-node="bob"] img')?.getAttribute('src')).toBe(roles[1]!.assetImages.avatar.url);
+  expect(container.querySelector('[data-social-node="user"] img')?.getAttribute('src')).toBe('worldlinebox-companion://attachment/player-avatar');
+});
 async function click(label: string) { const button = [...container!.querySelectorAll<HTMLButtonElement>('button')].find(button => button.getAttribute('aria-label') === label || button.textContent === label)!; await act(async () => button.click()); }
 it('renders the actual focal graph with the player, updates new committed events automatically, and pauses only observation', async () => {
   vi.useFakeTimers(); let graph = initial, changed: (() => void) | undefined;

@@ -94,7 +94,7 @@ queued/running/waiting都是真实已保存且能由后台自动推进的持久�
           messageIds: replies.filter(message => message.authorId === authorId).map(message => message.id) })),
         replyEvidenceRule: 'verifiedReplies是当前已核验且汇报者实际读过的本目标回信。人数严格按verifiedRespondents的实际authorId去重；正文提到、简称、亲属称呼不产生新增人物。同一人的“妹妹”和姓名不能重复计数。根据正文判断明确的接受/拒绝/条件，不能在明确报名后仍笼统断言无人确认；不把并行晚到的消息强加给先前发言者。' } : {}),
       outputSchema: z.toJSONSchema(reviewSchema, { io: 'input' }) }),
-  }, config, signal, modelOptions));
+  }, config, signal, { ...modelOptions, responseSchema: reviewSchema }));
   if (!result.success) throw new CompanionModelError('INVALID_RESPONSE', '社交进展核验没有返回有效的结构化判断。');
   if (result.data.supported) return undefined;
   const violation = result.data.violation;

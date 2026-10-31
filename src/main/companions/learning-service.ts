@@ -15,7 +15,7 @@ export interface CompanionLearningAssets {
   asset?(grant: CompanionLearningGrant, assetId: string): Promise<AssetSummary | undefined>;
   read(grant: CompanionLearningGrant, asset: AssetSummary): Promise<{ content: string; revisionId: string; truncated: boolean }>;
 }
-/** A specific unreadable candidate may be skipped without blocking later files. */
+/** An unreadable material gets a durable bounded processing cycle. */
 export class CompanionLearningReadError extends Error {
   constructor(readonly code: 'private-source' | 'unsupported-text' | 'source-moved', message: string) { super(message); }
 }
@@ -32,7 +32,7 @@ interface Options {
 /** Bounded actual reading, independent from the user's asset semantic-search switch. */
 export class CompanionLearningService {
   private timer?: ReturnType<typeof setTimeout>;
-  private readonly active = new Map<string, { controller: AbortController; promise: Promise<void>; grantId: string }>();
+  private readonly active = new Map<string, { controller: AbortController; promise: Promise<void>; grantId: string; jobId: string }>();
   private pumping?: Promise<void>;
   private closed = false;
   constructor(private readonly options: Options) {}
@@ -60,11 +60,12 @@ export class CompanionLearningService {
       const controller = new AbortController();
       const promise = new Promise<void>(resolve => setImmediate(resolve)).then(() => this.process(job, controller.signal))
         .catch(this.options.report).finally(() => { this.active.delete(job.grant.companionId); this.options.changed(); });
-      this.active.set(job.grant.companionId, { controller, promise, grantId: job.grant.id });
+      this.active.set(job.grant.companionId, { controller, promise, grantId: job.grant.id, jobId: job.assetJobId ?? job.id });
     }
   }
   private async process(job: CompanionLearningJob, signal: AbortSignal): Promise<void> {
     const owner = job.grant.companionId, workId = 'learning_' + job.leaseToken;
+    let continueAfterAsset = false;
     try {
       if (this.options.configured && !await this.options.configured(owner)) throw new CompanionLearningWaitingError('等待此伙伴可用的聊天模型配置，尚未读取或内化资料。');
       signal.throwIfAborted();
@@ -80,31 +81,45 @@ export class CompanionLearningService {
       // interrupt a partial read, or replace an explicit learning goal.
       const focused = page.assets.find(asset => { const title = asset.displayName.replace(/\.[^.]+$/u, '').trim();
         return title.length >= 2 && pendingQuestions.some(item => item.question.includes(title)); });
-      const asset = job.assetId ? page.assets.find(asset => asset.assetId === job.assetId) : focused ?? page.assets[0];
+      if (job.assetId && !this.options.assets.asset && !page.assets.some(asset => asset.assetId === job.assetId)) throw new CompanionLearningWaitingError('固定资料暂时不在本页，等待精确资料核对接口。');
+      const asset = job.assetId ? this.options.assets.asset ? await this.options.assets.asset(job.grant, job.assetId) : page.assets.find(asset => asset.assetId === job.assetId) : focused ?? page.assets[0];
       if (!asset) {
         await this.request({ type: 'learning.advance', id: job.id, leaseToken: job.leaseToken, afterAssetId: job.assetId ?? page.nextCursor, more: !!job.assetId || page.hasMore,
+          ...(job.assetJobId ? { assetJobId: job.assetJobId, failureKind: 'stale' as const } : {}),
           ...(page.assets.length ? { reason: '上次阅读的资料已经移动或删除，正在继续核对。' } : {}) }); return;
+      }
+      continueAfterAsset = page.hasMore || page.assets.length > 1;
+      if (job.assetId && job.assetRevisionId && job.assetRevisionId !== asset.currentRevisionId && !job.assetRevisionId.startsWith(asset.currentRevisionId + '_')) {
+        await this.request({ type: 'learning.advance', id: job.id, leaseToken: job.leaseToken, assetJobId: job.assetJobId, afterAssetId: asset.assetId,
+          more: continueAfterAsset, failureKind: 'stale', reason: '固定资料版本已变化，旧处理未改读另一版。' }); return;
+      }
+      const begun = (await this.request({ type: 'learning.begin', id: job.id, leaseToken: job.leaseToken, assetId: asset.assetId,
+        assetRevisionId: asset.currentRevisionId, offset: job.assetId === asset.assetId ? job.offset : 0 })).jobDisposition;
+      if (!begun) throw new Error('资料处理未取得真实耐久登记。');
+      const active = this.active.get(owner); if (active) active.jobId = begun.id;
+      if (['parked', 'abandoned', 'completed', 'stale', 'cancelled'].includes(begun.state)) {
+        await this.request({ type: 'learning.advance', id: job.id, leaseToken: job.leaseToken, afterAssetId: asset.assetId, more: continueAfterAsset }); return;
       }
       let document: Awaited<ReturnType<CompanionLearningAssets['read']>>;
       try { document = await this.options.assets.read(job.grant, asset); }
       catch (error) {
         if (!(error instanceof CompanionLearningReadError)) throw error;
         signal.throwIfAborted();
-        await this.request({ type: 'learning.advance', id: job.id, leaseToken: job.leaseToken, afterAssetId: asset.assetId,
-          more: page.hasMore || page.assets.length > 1, reason: error.message.slice(0, 500) }); return;
+        throw error;
       }
       signal.throwIfAborted();
       // A partial preview cannot be represented as a complete reading. Large sources
       // remain pending for an appropriate reader instead of silently losing their tail.
       if (document.truncated) {
         await this.request({ type: 'learning.advance', id: job.id, leaseToken: job.leaseToken, afterAssetId: asset.assetId,
-          more: page.hasMore || page.assets.length > 1, reason: '此资料超过 2 MiB 文本阅读范围，未读取或内化；可拆分后重试，正在继续其它资料。' }); return;
+          more: continueAfterAsset, failureKind: 'waiting', reason: '此资料超过 2 MiB 文本阅读范围，未读取或内化；原材料已搁置，可拆分后明确恢复，继续其它资料。' }); return;
       }
+      if (job.offset > 0 && job.assetRevisionId !== document.revisionId) throw new CompanionLearningReadError('source-moved', '实际资料字节版本已变化，不能从旧偏移继续读取。');
       const offset = job.assetRevisionId === document.revisionId ? job.offset : 0;
       let end = Math.min(document.content.length, offset + 12000);
       if (end < document.content.length && /[\uD800-\uDBFF]/u.test(document.content[end - 1]!) && /[\uDC00-\uDFFF]/u.test(document.content[end]!)) end--;
       const content = document.content.slice(offset, end);
-      if (!content.trim()) { await this.request({ type: 'learning.advance', id: job.id, leaseToken: job.leaseToken, afterAssetId: asset.assetId, more: page.hasMore || page.assets.length > 1 }); return; }
+      if (!content.trim()) { await this.request({ type: 'learning.advance', id: job.id, leaseToken: job.leaseToken, afterAssetId: asset.assetId, assetRevisionId: document.revisionId, more: continueAfterAsset }); return; }
       const nextOffset = offset + content.length < document.content.length ? offset + content.length : undefined;
       await this.request({ type: 'learning.commit', id: job.id, leaseToken: job.leaseToken, assetId: asset.assetId,
         assetRevisionId: document.revisionId, assetName: asset.displayName, offset, content,
@@ -112,9 +127,14 @@ export class CompanionLearningService {
     } catch (error) {
       await this.request({ type: 'learning.defer', id: job.id, leaseToken: job.leaseToken,
         state: signal.aborted || error instanceof CompanionLearningWaitingError ? 'waiting' : 'failed',
+        failureKind: signal.aborted || error instanceof CompanionLearningWaitingError ? 'waiting' : error instanceof CompanionLearningReadError && error.code !== 'unsupported-text' ? 'stale' : 'processing', continueAfterAsset,
         error: signal.aborted ? '学习已停止，尚未提交的读取不会进入记忆。' : error instanceof Error ? error.message.slice(0, 500) : '学习尚未完成。', retryAfterMs: 30000 }).catch(() => undefined);
-      if (!signal.aborted && !(error instanceof Error && /等待|资料超过|资料来源|取消|权限/u.test(error.message))) this.options.report(error);
+      if (!signal.aborted && !(error instanceof CompanionLearningReadError) && !(error instanceof CompanionLearningWaitingError)
+        && !(error instanceof Error && /等待|资料超过|资料来源|取消|权限/u.test(error.message))) this.options.report(error);
     } finally { await this.options.end?.(owner, workId).catch(this.options.report); }
+  }
+  cancelJob(ownerId: string, jobId: string): void {
+    const active = this.active.get(ownerId); if (active?.jobId === jobId) active.controller.abort(new Error('此项资料处理已经搁置或放弃。'));
   }
   async handle(command: CompanionLearningWorkspaceCommand): Promise<CompanionWorkspaceResponse> {
     if (this.closed) return { ok: false, error: '学习服务已关闭。' };

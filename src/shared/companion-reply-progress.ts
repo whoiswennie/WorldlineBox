@@ -17,10 +17,11 @@ export const terminalReplyPhases = new Set<CompanionReplyProgress['phase']>(['co
 /** Only admitted execution intervals count. Queueing, stopped replies and time
  * outside the application cannot accrue execution time. */
 export function companionReplyElapsedMs(progress: CompanionReplyProgress, now: number): number | undefined {
-  if (!progress.timing) return;
+  if (!progress.timing || !Number.isFinite(progress.timing.elapsedMs) || progress.timing.elapsedMs < 0) return;
   const end = terminalReplyPhases.has(progress.phase) ? Date.parse(progress.finishedAt ?? progress.updatedAt) : now;
   const since = Date.parse(progress.timing.activeSince ?? '');
-  return progress.timing.elapsedMs + (Number.isFinite(since) && Number.isFinite(end) ? Math.max(0, end - since) : 0);
+  const total = progress.timing.elapsedMs + (Number.isFinite(since) && Number.isFinite(end) ? Math.max(0, end - since) : 0);
+  return Number.isFinite(total) && total >= 0 ? total : undefined;
 }
 
 export function advanceCompanionReplyTiming(previous: CompanionReplyProgress | undefined, next: CompanionReplyProgress): CompanionReplyProgress {

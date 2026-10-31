@@ -33,15 +33,19 @@ it('matches the original scoped status counts through source/owner revocation, a
   const acknowledge = () => { for (;;) { const job = store.request({ type: 'memory.outbox.claim' }).memoryOutbox; if (!job) break;
     store.request({ type: 'memory.outbox.complete', id: job.id, leaseToken: job.leaseToken, indexed: true }); } };
   try {
-    const first = store.saveMemory({ ...alice, content: 'Synthetic queued body.', tags: [] });
-    store.saveMemory({ ...bob, content: 'Bob remains independent.', tags: [] });
-    store.saveMemory({ companionId: 'alice', conversationId: group.id, content: 'Group-only counted body.', tags: [] });
+    const record = (scope: { companionId: string; conversationId: string }, content: string) => {
+      const message = store.appendMessage({ conversationId: scope.conversationId, authorId: 'user', content, replyDirective: 'none' });
+      return store.request({ type: 'memory.record', ...scope, candidate: { artifactKind: 'episode_memory', content, tags: [],
+        sourceMessageIds: [message.id], evidence: [{ sourceMessageId: message.id, quote: content }] } }).memories![0]!;
+    };
+    const first = record(alice, 'Synthetic queued body.'); record(bob, 'Bob remains independent.');
+    record({ companionId: 'alice', conversationId: group.id }, 'Group-only counted body.');
     expect(check('alice')).toBe(1); expect(check('alice')).toBe(0); check('alice', alice.conversationId); check('alice', group.id); check('bob');
     db.prepare("UPDATE vcp_memory_notes SET data=json_set(data,'$.archivedAt','2026-10-27T00:00:00Z') WHERE id=?").run(first.id);
     expect(check('alice')).toBe(1); expect(memory.status('alice').pendingIndex).toBe(1);
     acknowledge(); expect(check('alice')).toBe(1);
     const raw = [0, 1].map(index => store.appendMessage({ conversationId: alice.conversationId, authorId: 'user', content: 'Synthetic original source ' + index, replyDirective: 'none' }));
-    const derived = store.request({ type: 'memory.record', ...alice, candidate: { content: 'A source-backed memory.', sourceMessageIds: raw.map(source => source.id),
+    const derived = store.request({ type: 'memory.record', ...alice, candidate: { artifactKind: 'episode_memory' as const, content: 'A source-backed memory.', sourceMessageIds: raw.map(source => source.id),
       evidence: raw.map(source => ({ sourceMessageId: source.id, quote: source.content })), tags: [] } }).memories![0]!;
     acknowledge(); check('alice');
     store.request({ type: 'memory.forget', ...alice, sourceMessageIds: [raw[0]!.id] }); expect(check('alice')).toBe(1);
@@ -56,12 +60,12 @@ it('matches the original scoped status counts through source/owner revocation, a
     for (let index = 0; index < 24; index++) check('alice', 'synthetic_room_' + index);
     expect((memory as unknown as { statusNoteCounts: Map<string, unknown> }).statusNoteCounts.size).toBe(16);
     check('alice'); memory.invalidateOwner('alice'); expect(check('alice')).toBe(1);
-    const reset = store.request({ type: 'companion.reset', id: 'alice', scope: 'all' }).reset!;
-    store.request({ type: 'companion.reset.cleanup', id: 'alice', jobId: reset.id });
-    for (let step = 0; step < 1000; step++) { const job = store.request({ type: 'companion.reset.status', id: 'alice' }).reset!;
+    const reset = store.request({ type: 'companion.retire', id: 'alice', scope: 'all' }).reset!;
+    store.request({ type: 'companion.retire.cleanup', id: 'alice', jobId: reset.id });
+    for (let step = 0; step < 1000; step++) { const job = store.request({ type: 'companion.retire.status', id: 'alice' }).reset!;
       if (job.status === 'failed') throw new Error('Synthetic reset failed: ' + job.error);
       if (job.status === 'completed') break; await store.advanceReset(); }
-    expect(store.request({ type: 'companion.reset.status', id: 'alice' }).reset?.status).toBe('completed');
+    expect(store.request({ type: 'companion.retire.status', id: 'alice' }).reset?.status).toBe('completed');
     check('alice'); expect(memory.status('alice').memories).toBe(0); check('bob'); expect(memory.status('bob').memories).toBe(1);
   } finally { db.close(); store.close(); await removeOwnedDirectory(root); }
 });

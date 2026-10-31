@@ -60,13 +60,13 @@ export class CompanionCaptureProposalCheckpoint {
     } };
   }
   modelConfig(config: CompanionModelConfig): CompanionModelConfig {
-    return { ...config, providerBudget: { beforeRequest: async (...args) => {
-      // Recheck after the actual model queue wait, before either accounting or
-      // HTTP. A withdrawn queued input cannot be sent merely because its
+    return { ...config, providerLifecycle: { beforeDispatch: async () => {
+      // Recheck after the actual model queue wait, before HTTP. A withdrawn
+      // queued input cannot be sent merely because its
       // writer or checker had once acquired a legal snapshot.
       await this.validateForModel();
-      const finish: Awaited<ReturnType<NonNullable<CompanionModelConfig['providerBudget']>['beforeRequest']>> = config.providerBudget
-        ? await config.providerBudget.beforeRequest(...args) : async () => undefined;
+      const finish: Awaited<ReturnType<NonNullable<CompanionModelConfig['providerLifecycle']>['beforeDispatch']>> = config.providerLifecycle
+        ? await config.providerLifecycle.beforeDispatch() : async () => undefined;
       try { await this.validateForModel(); return finish; }
       catch (error) { await finish('cancelled_before_send', 0); throw error; }
     } } };

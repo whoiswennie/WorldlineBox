@@ -66,11 +66,11 @@ it('slices long Unicode tool output and formats structured fields without transf
 it('persists timeline inputs, stages and final documents through an actual SQLite reopen', () => {
   const { f, inspect, room, file, roles, source } = fixture();
   const note = f.store.request({ type: 'memory.record', companionId: 'alice', conversationId: room,
-    candidate: { content: '十月核对季度报告。', sourceMessageIds: [source.id], evidence: [{ sourceMessageId: source.id, quote: source.content }] } }).memories![0]!;
+    candidate: { artifactKind: 'episode_memory' as const, content: '十月核对季度报告。', sourceMessageIds: [source.id], evidence: [{ sourceMessageId: source.id, quote: source.content }] } }).memories![0]!;
   const job = { id: 'timeline_one', kind: 'timeline' as const, status: 'running' as const, stage: '正在整理十月时间线', title: '十月时间线整理', attempts: 1, conversationId: room, createdAt: at, startedAt: at, updatedAt: at };
-  f.store.request({ type: 'tasks.timeline.record', companionId: 'alice', job, input: JSON.stringify({ count: 1, sources: [{ id: note.id, version: note.version }] }) });
-  f.store.request({ type: 'tasks.timeline.record', companionId: 'alice', job: { ...job, stage: '核对产出文档' } });
-  f.store.request({ type: 'tasks.timeline.record', companionId: 'alice', job: { ...job, status: 'completed', stage: '文档已发布' }, output: '# 十月\n\n完成季度核对。' });
+  const first = f.store.request({ type: 'tasks.timeline.record', companionId: 'alice', job, input: JSON.stringify({ count: 1, sources: [{ id: note.id, version: note.version }] }) }).jobDisposition!;
+  const progress = f.store.request({ type: 'tasks.timeline.record', companionId: 'alice', expectedDispositionRevision: first.revision, job: { ...job, stage: '核对产出文档' } }).jobDisposition!;
+  f.store.request({ type: 'tasks.timeline.record', companionId: 'alice', expectedDispositionRevision: progress.revision, job: { ...job, status: 'completed', stage: '文档已发布' }, output: '# 十月\n\n完成季度核对。' });
   expect(inspect('memory_timeline', job.id, 'process').items.map(item => item.title)).toEqual(expect.arrayContaining(['正在整理十月时间线', '核对产出文档', '文档已发布']));
   f.store.close(); f.store = new CompanionsStore(file, roles);
   expect(inspect('memory_timeline', job.id, 'output').items[0]?.text).toBe('# 十月\n\n完成季度核对。');
@@ -80,12 +80,13 @@ it('persists timeline inputs, stages and final documents through an actual SQLit
   expect(inspect('memory_timeline', job.id, 'output').items).toHaveLength(0);
 });
 
-it('marks an interrupted timeline pending after reopening instead of showing a nonexistent running process', () => {
+it('parks an interrupted timeline after reopening instead of automatically repeating an unknown model attempt', () => {
   const { f, room, file, roles, inspect } = fixture();
   f.store.request({ type: 'tasks.timeline.record', companionId: 'alice', job: { id: 'timeline_interrupted', kind: 'timeline', title: '中断的时间线',
     status: 'running', stage: '生成月度摘要', attempts: 1, conversationId: room, createdAt: at, startedAt: at, updatedAt: at } });
   f.store.close(); f.store = new CompanionsStore(file, roles);
-  expect(inspect('memory_timeline', 'timeline_interrupted', 'process').task).toMatchObject({ status: 'queued', stage: '上次运行已中断，等待后台重新检查' });
+  expect(inspect('memory_timeline', 'timeline_interrupted', 'process').task).toMatchObject({ status: 'paused', rawStatus: 'parked', stage: '上次运行已中断，发送结果尚未确认；请核对后明确恢复' });
+  expect(f.store.request({ type: 'jobs.inspect', ownerId: 'alice', kind: 'timeline', id: 'timeline_interrupted' }).jobDisposition).toMatchObject({ state: 'parked', failureCount: 0 });
 });
 
 it('keeps actual world events and distinguishes retry wait from a finished decision', () => {
@@ -118,7 +119,7 @@ it('does not expose a withdrawn message through task inputs or full-content read
 it('shows actual maintenance inputs and output versions without assuming every captured source produced a diary', () => {
   const { f, room, source, inspect } = fixture();
   const note = f.store.request({ type: 'memory.record', companionId: 'alice', conversationId: room,
-    candidate: { content: '已保存：本季度报告已完成核对。', tags: ['季度报告'], sourceMessageIds: [source.id], evidence: [{ sourceMessageId: source.id, quote: source.content }] } }).memories![0]!;
+    candidate: { artifactKind: 'episode_memory' as const, content: '已保存：本季度报告已完成核对。', tags: ['季度报告'], sourceMessageIds: [source.id], evidence: [{ sourceMessageId: source.id, quote: source.content }] } }).memories![0]!;
   f.db.prepare('INSERT INTO vcp_memory_outbox(id,companion_id,scope_id,note_id,note_version,operation,data,status) VALUES(?,?,?,?,?,?,?,?)').run('index_test', 'alice', note.scopeId, note.id, note.version, 'forget', '{}', 'done');
   f.db.prepare('INSERT INTO companion_memory_tag_jobs(id,companion_id,note_id,note_version,content_hash,status) VALUES(?,?,?,?,?,?)').run('tag_test', 'alice', note.id, note.version, 'hash', 'done');
   f.db.prepare('INSERT INTO vcp_capture_jobs(id,companion_id,conversation_id,message_id,source_sequence,through_sequence,source_checksum,source_revision,status,output_note_versions,completed_batch_id) VALUES(?,?,?,?,?,?,?,?,?,?,?)')

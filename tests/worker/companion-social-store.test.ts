@@ -69,7 +69,7 @@ it('preserves a peer reply exact recall during its live lease and after formal p
   const { store } = fixture(), pair = room(store), privateRoom = store.openPrivate('bob');
   const introduction = store.appendMessage({ conversationId: privateRoom.id, authorId: 'user', content: '我叫天幻岚。', replyDirective: 'none' });
   const note = store.request({ type: 'memory.record', companionId: 'bob', conversationId: privateRoom.id,
-    candidate: { content: '玩家向我介绍自己叫天幻岚。', tags: ['玩家', '姓名'], sourceMessageIds: [introduction.id], evidence: [{ sourceMessageId: introduction.id, quote: introduction.content }] } }).memories![0]!;
+    candidate: { artifactKind: 'episode_memory' as const, content: '玩家向我介绍自己叫天幻岚。', tags: ['玩家', '姓名'], sourceMessageIds: [introduction.id], evidence: [{ sourceMessageId: introduction.id, quote: introduction.content }] } }).memories![0]!;
   for (;;) { const job = store.request({ type: 'memory.outbox.claim' }).memoryOutbox; if (!job) break;
     store.request({ type: 'memory.outbox.complete', id: job.id, leaseToken: job.leaseToken, indexed: true }); }
   initial(store, pair.id); const job = store.request({ type: 'social.job.claim' }).socialJob!;
@@ -99,14 +99,14 @@ it('preserves a peer reply exact recall during its live lease and after formal p
   expect(await inspectCompanionReplyMemory(completedInput, request)).toMatchObject({ state: 'withdrawn', candidates: [], contextCharacters: 0 });
 });
 
-it.each(['skipped', 'exhausted-scope-failure'] as const)('does not automatically replay old %s peer episodes after restart', mode => {
+it.each(['skipped', 'parked-scope-failure'] as const)('does not automatically replay old %s peer episodes after restart', mode => {
   const { store, filename } = fixture(), pair = room(store), source = append(store, pair.id, 0, '2026-10-15T10:00:00Z', '姐姐专门来问我玩家的名字。');
   for (;;) { const job = store.request({ type: 'memory.jobs.claim', force: true }).memoryJob; if (!job) break;
     store.request({ type: 'memory.jobs.complete', id: job.id, leaseToken: job.leaseToken, notes: [] }); }
   store.request({ type: 'memory.forget', companionId: 'bob', conversationId: pair.id, sourceMessageIds: [source.message.id] });
   store.close(); stores.delete(store);
   const db = new Database(filename);
-  if (mode === 'exhausted-scope-failure') db.prepare("UPDATE vcp_capture_jobs SET status='failed',attempts=8,error='新日记不能关联其他来源域的旧记忆。' WHERE companion_id='alice'").run();
+  if (mode === 'parked-scope-failure') db.prepare("UPDATE vcp_capture_jobs SET status='parked',attempts=3,failure_count=3,cycle_failure_count=3,disposition_revision=disposition_revision+1,error='新日记不能关联其他来源域的旧记忆。',last_failure_error='新日记不能关联其他来源域的旧记忆。' WHERE companion_id='alice'").run();
   db.close();
   const reopened = new CompanionsStore(filename, seeds); stores.add(reopened);
   expect(reopened.request({ type: 'memory.jobs.claim', force: true, companionId: 'alice' }).memoryJob).toBeUndefined();
@@ -120,11 +120,11 @@ it.each(['skipped', 'exhausted-scope-failure'] as const)('does not automatically
 it('links a new peer episode to the same owners private knowledge and cascades its withdrawal across entrances', () => {
   const { store } = fixture(), pair = room(store), scope = { companionId: 'alice', conversationId: store.openPrivate('alice').id };
   const intro = store.appendMessage({ conversationId: scope.conversationId, authorId: 'user', content: '我的名字叫天幻岚。', replyDirective: 'none' });
-  const original = store.request({ type: 'memory.record', ...scope, candidate: { content: '玩家介绍自己叫天幻岚。', tags: ['姓名'],
+  const original = store.request({ type: 'memory.record', ...scope, candidate: { artifactKind: 'episode_memory' as const, content: '玩家介绍自己叫天幻岚。', tags: ['姓名'],
     sourceMessageIds: [intro.id], evidence: [{ sourceMessageId: intro.id, quote: intro.content }] } }).memories![0]!;
   const question = append(store, pair.id, 1, '2026-10-15T10:00:00Z', '你还记得玩家亲口介绍的名字吗？');
   const answer = append(store, pair.id, 2, '2026-10-15T10:00:01Z', '我记得他亲口介绍叫天幻岚。');
-  const candidate = { content: 'bob专门来问玩家姓名，我据自己的旧记忆回答天幻岚。', diaryName: '日记', tags: ['bob', '姓名询问'], relatedMemoryIds: [original.id],
+  const candidate = { artifactKind: 'episode_memory' as const, content: 'bob专门来问玩家姓名，我据自己的旧记忆回答天幻岚。', diaryName: '日记', tags: ['bob', '姓名询问'], relatedMemoryIds: [original.id],
     sourceMessageIds: [question.message.id, answer.message.id], evidence: [{ sourceMessageId: question.message.id, quote: question.message.content }, { sourceMessageId: answer.message.id, quote: answer.message.content }] };
   const episode = store.request({ type: 'memory.record', companionId: 'alice', conversationId: pair.id, candidate }).memories![0]!;
   expect(episode.sourceConversationId).toBe(pair.id);
@@ -272,7 +272,7 @@ it('shares one owner phone lease across pending outboxes and replies, without a 
   expect(current?.phase).toBe('typing');
   store.request(second); expect(store.request({ type: 'world.snapshot' }).world!.actors.find(actor => actor.companionId === job.companionId)!.communication).toEqual(current);
 });
-it('appraises a real remote phone event without seeing the sender private room, using the world day and exact observed source', () => {
+it('records a sourced qualitative phone relationship and retracts it without changing player relationship', () => {
   // Kiritimati is at 10:00 the following day; the shared world clock also owns wakefulness.
   vi.setSystemTime('2026-10-15T20:00:00Z');
   const { store, filename } = fixture(), pair = room(store), world = store.request({ type: 'world.snapshot' }).world!;
@@ -285,12 +285,21 @@ it('appraises a real remote phone event without seeing the sender private room, 
   advance(store, 3 * 3600000 + 1000);
   let bobJob; for (let index = 0; index < 4; index++) { const job = store.request({ type: 'world.job.claim', kind: 'decision' }).worldJob; if (!job) break; if (job.companionId === 'bob') { bobJob = job; break; } store.request({ type: 'world.job.complete', id: job.id, leaseToken: job.leaseToken! }); }
   expect(bobJob).toBeDefined();
-  store.request({ type: 'world.job.complete', id: bobJob!.id, leaseToken: bobJob!.leaseToken!, appraisals: [{ eventId: event.id, targetCompanionId: 'alice', type: 'respect', intensity: .7, confidence: .95 }] });
-  const relation = store.request({ type: 'world.snapshot' }).world!.relationships.find(relation => relation.companionId === 'bob' && relation.targetCompanionId === 'alice')!; expect(relation.affinity).toBeGreaterThan(50);
-  const after = store.request({ type: 'state.get', companionId: 'bob', conversationId: store.openPrivate('bob').id }).runtimeState!; expect(after.relationship).toEqual(before.relationship);
-  const db = new Database(filename); try { const ledger = db.prepare('SELECT day FROM companion_world_peer_appraisals WHERE companion_id=? AND event_id=?').get('bob', event.id) as { day: string }; expect(ledger.day).toBe('2026-10-16'); } finally { db.close(); }
-  store.request({ type: 'memory.forget', companionId: 'bob', conversationId: pair.id, sourceMessageIds: [event.sourceMessageId!] });
-  expect(store.request({ type: 'world.snapshot' }).world!.relationships.find(relation => relation.companionId === 'bob' && relation.targetCompanionId === 'alice')!.affinity).toBe(50);
+  expect(() => store.request({ type: 'world.job.complete', id: bobJob!.id, leaseToken: bobJob!.leaseToken!,
+    ...{ appraisals: [{ eventId: event.id, targetCompanionId: 'alice', type: 'respect', intensity: .7, confidence: .95 }] } })).toThrow();
+  store.request({ type: 'world.job.complete', id: bobJob!.id, leaseToken: bobJob!.leaseToken! });
+  const source = store.getMessage(event.sourceMessageId!);
+  store.request({ type: 'state.update', ...scope, conversationId: pair.id, proposal: { reason: '实际通话形成了一次共同经历。', sourceMessageIds: [source.id],
+    evidence: [{ sourceMessageId: source.id, quote: source.content }], relationshipUpdates: [{ targetId: 'alice', topic: '电话问候', context: '本次真实通话', kind: 'shared_experience',
+      statement: 'Alice实际通过电话问候过我。', reassessWhen: ['后续通话'], replacesRecordIds: [] }] } });
+  const relation = store.request({ type: 'world.snapshot' }).world!.relationships.find(relation => relation.companionId === 'bob' && relation.targetCompanionId === 'alice')!;
+  expect(relation).not.toHaveProperty('affinity'); expect(relation).not.toHaveProperty('trust');
+  const after = store.request({ type: 'state.get', ...scope, conversationId: pair.id }).runtimeState!;
+  expect(after.relationshipRecords.some(record => record.targetId === 'alice' && record.statement.includes('电话'))).toBe(true);
+  expect(after.relationshipRecords.filter(record => record.targetId === 'user')).toEqual(before.relationshipRecords.filter(record => record.targetId === 'user'));
+  const db = new Database(filename); try { expect(db.prepare("SELECT 1 FROM sqlite_master WHERE name='companion_world_peer_appraisals'").get()).toBeUndefined(); } finally { db.close(); }
+  store.request({ type: 'memory.forget', companionId: 'bob', conversationId: pair.id, sourceMessageIds: [source.id] });
+  expect(store.request({ type: 'state.get', ...scope, conversationId: pair.id }).runtimeState!.relationshipRecords.some(record => record.sourceMessageIds.includes(source.id))).toBe(false);
 });
 it('dispatches current user-authorized phone messages behind an exhausted autonomous outbox, including beyond one scan page', () => {
   const f = fixture(); let store = f.store;

@@ -22,7 +22,7 @@ const world: CompanionWorldSnapshot = { settings: { revision: 1, mode: 'compress
   actors: ['sister', 'peer'].map((companionId, index) => ({ companionId, sceneId: 'park', homeSceneId: 'home_' + companionId,
     position: { x: 12 + index, y: 18 }, facing: 'south', frame: 0, activity: 'idle', activityStartedAtReal: at,
     artAction: 'idle', locomotion: 'walk', movementSpeed: 2.4,
-    state: { energy: 80, mood: 'calm', expression: 'gentle', affect: { pleasure: 0, arousal: 0, dominance: 0 }, thermalComfort: 1 },
+    state: { energy: 80, expression: 'gentle', thermalComfort: 1 },
     route: [], routinePhase: 'awake' })),
   visits: [{ id: 'visit', guestId: 'peer', hostId: 'sister', status: 'requested', reason: '想聊聊', createdAt: at, expiresAt: '2026-10-15T02:00:00.000Z' }],
   events: [{ id: 'peer_event', sequence: 1, actorId: 'peer', targetId: 'sister', sceneId: 'park', kind: 'social_comfort', text: '我支持你，慢慢来。', at, realAt: at, simulation: true }],
@@ -40,12 +40,34 @@ function envelope(format: AiApiFormat, value: unknown, tool = false) {
           : { output: { choices: [{ message: tool ? { content: null, tool_calls: [{ id: fn.id, type: 'function', function: { name: fn.name, arguments: text } }] } : { content: text } }] } }), { headers: { 'Content-Type': 'application/json' } });
 }
 describe('world reasoning and native tools', () => {
+  it('preserves a proposed autonomous action while fixing its structure instead of washing it into no action', async () => {
+    const action = { action: 'visit', targetCompanionId: 'peer', reason: '原本只想询问是否方便' }, original = { action, obsoleteField: true };
+    const fetchFn = vi.fn<typeof fetch>().mockResolvedValueOnce(envelope('openai_chat', original))
+      .mockResolvedValueOnce(envelope('openai_chat', { action: null, reason: '删除行动来通过结构检查' }))
+      .mockResolvedValueOnce(envelope('openai_chat', { action, reason: '保留原有请求，补齐结构字段' }));
+    expect(await generateCompanionWorldDecision({ companion: input.companion, world, job, members: [] }, config, undefined, { fetchFn }))
+      .toEqual({ action, reason: '保留原有请求，补齐结构字段' });
+    expect(fetchFn).toHaveBeenCalledTimes(3);
+    const last = JSON.parse(JSON.parse(String(fetchFn.mock.calls[2]?.[1]?.body)).messages[1].content);
+    expect(last.originalOutput).toBe(JSON.stringify(original)); expect(last.validationErrors[0].code).toBe('repair_content_loss');
+  });
+  it('does not remove proposed recipients during format repair or transform an explicit no-action result', async () => {
+    const action = { action: 'message', recipientIds: ['peer'], text: '原有正文内容不可清空' }, fetchFn = vi.fn<typeof fetch>()
+      .mockResolvedValueOnce(envelope('openai_chat', { action, obsoleteField: true }))
+      .mockImplementation(async () => envelope('openai_chat', { action: null, reason: '清空收件人并丢掉提案' }));
+    await expect(generateCompanionWorldDecision({ companion: input.companion, world, job, members: [] }, config, undefined, { fetchFn })).rejects.toMatchObject({ code: 'INVALID_RESPONSE' });
+    expect(fetchFn).toHaveBeenCalledTimes(3);
+    const empty = vi.fn<typeof fetch>().mockResolvedValueOnce(envelope('openai_chat', { action: null }))
+      .mockResolvedValueOnce(envelope('openai_chat', { action: null, reason: '此时没有要实施的行动' }));
+    expect(await generateCompanionWorldDecision({ companion: input.companion, world, job, members: [] }, config, undefined, { fetchFn: empty }))
+      .toEqual({ action: null, reason: '此时没有要实施的行动' }); expect(empty).toHaveBeenCalledTimes(2);
+  });
   it('takes current verified interests as conditional self-understanding without reviving another scope', async () => {
     const characterDevelopment = { companionId: input.companion.id, conversationId: job.conversationId, observedAt: at, truncated: false,
       items: [{ memoryId: 'own_note', memoryVersion: 3, kind: 'preference' as const, topic: '阅读', statement: '我更愿意先读有出处的资料。',
         basis: 'self_expression' as const, updatedAt: at, sourceMessageIds: ['own_source'] }] };
     const observed: Array<Record<string, unknown>> = [];
-    const fetchFn = vi.fn<typeof fetch>(async (_url, init) => { const request = JSON.parse(String(init?.body)); observed.push(JSON.parse(request.messages[1].content)); return envelope('openai_chat', { action: null, reason: '先核对来源再决定。', appraisals: [] }); });
+    const fetchFn = vi.fn<typeof fetch>(async (_url, init) => { const request = JSON.parse(String(init?.body)); observed.push(JSON.parse(request.messages[1].content)); return envelope('openai_chat', { action: null, reason: '先核对来源再决定。' }); });
     await generateCompanionWorldDecision({ companion: input.companion, world, job, members: [input.companion], characterDevelopment }, config, undefined, { fetchFn });
     expect(observed[0]!.characterDevelopment).toEqual(characterDevelopment);
     await generateCompanionWorldDecision({ companion: input.companion, world, job, members: [input.companion], characterDevelopment: { ...characterDevelopment, conversationId: 'private_other' } }, config, undefined, { fetchFn });
@@ -90,23 +112,23 @@ describe('world reasoning and native tools', () => {
   });
   it('permits an autonomous visit from the public residence directory while another resident is privately indoors', async () => {
     const action = { action: 'visit', targetCompanionId: 'peer', reason: '想问问你现在是否方便聊聊。' };
-    const output = { action, reason: '先征求房主许可。', appraisals: [] };
+    const output = { action, reason: '先征求房主许可。' };
     const fetchFn = vi.fn<typeof fetch>().mockResolvedValue(envelope('openai_chat', output));
     const privateWorld = { ...world, actors: world.actors.filter(actor => actor.companionId === 'sister'), scenes: world.scenes.filter(scene => scene.ownerId !== 'peer') };
     expect(await generateCompanionWorldDecision({ companion: input.companion, world: privateWorld, job, members: [] }, config, undefined, { fetchFn })).toEqual(output);
   });
-  it('uses semantic response decisions with exact event evidence, without exposing DSH or player memories', async () => {
-    const value = { action: { action: 'respond', requestId: 'visit', decision: 'deny', reason: '想安静休息，改天再聊。' }, reason: '依据我的沉稳性格与当前需要，礼貌表达边界。',
-      appraisals: [{ eventId: 'peer_event', targetCompanionId: 'peer', type: 'support', intensity: 0.5, confidence: 0.9, quote: '我支持你' }] };
+  it('uses current qualitative needs to propose a bounded response without generating psychological state or exposing DSH', async () => {
+    const value = { action: { action: 'respond', requestId: 'visit', decision: 'deny', reason: '想安静休息，改天再聊。' }, reason: '依据我的沉稳性格与当前需要，礼貌表达边界。' };
     const fetchFn = vi.fn<typeof fetch>().mockResolvedValue(envelope('openai_chat', value));
     expect(await generateCompanionWorldDecision({ companion: input.companion, world, job, members: [] }, config, undefined, { fetchFn })).toEqual(value);
     const body = JSON.parse(String(fetchFn.mock.calls[0]?.[1]?.body)); expect(body.tools.map((tool: { function: { name: string } }) => tool.function.name)).toEqual(['wait', COMPANION_SUBMIT_RESULT_TOOL]);
     expect(JSON.parse(body.messages[1].content).purpose).toBe('world_decision');
-    expect(body.messages[0].content).toContain('列表为空必须[]');
+    expect(body.messages[0].content).toContain('本人体验和关系认识只按真实来源在独立认知流程中形成');
+    expect(body.messages[0].content).toContain('本次不生成心理评分');
     expect(body.messages[0].content).toContain(input.companion.persona);
   });
-  it('can appraise an actual remote phone sender without observing their private position or task reason', async () => {
-    const output = { action: null, reason: '依据收到的真实伙伴支持，不猜对方私室状态。', appraisals: [{ eventId: 'peer_event', targetCompanionId: 'peer', type: 'support', intensity: .5, confidence: .95, quote: '我支持你' }] };
+  it('can consider an actual remote phone message without observing private positions or turning it into a psychological score', async () => {
+    const output = { action: null, reason: '依据收到的真实伙伴支持，不猜对方私室状态。' };
     const remote = { ...world, actors: world.actors.filter(actor => actor.companionId === 'sister'),
       perception: { ...world.perception!, people: [], visibleCompanionIds: [] },
       events: world.events.map(event => ({ ...event, kind: 'social_phone', conversationId: 'world_pair', sourceMessageId: 'real_peer_source' })),
@@ -114,7 +136,8 @@ describe('world reasoning and native tools', () => {
     const fetchFn: typeof fetch = async (_url, init) => {
       const data = JSON.parse(JSON.parse(String(init?.body)).messages[1].content);
       expect(data.world.actors.some((actor: { companionId: string }) => actor.companionId === 'peer')).toBe(false);
-      expect(data.appraisalEvents[0].actorId).toBe('peer'); expect(JSON.stringify(data)).not.toContain('PRIVATE_TASK_REASON');
+      expect(data.world.events.find((event: { id: string }) => event.id === 'peer_event').actorId).toBe('peer');
+      expect(data).not.toHaveProperty('appraisalEvents'); expect(JSON.stringify(data)).not.toContain('PRIVATE_TASK_REASON');
       return envelope('openai_chat', output);
     };
     expect(await generateCompanionWorldDecision({ companion: input.companion, world: remote, job, members: [] }, config, undefined, { fetchFn })).toEqual(output);
@@ -124,10 +147,10 @@ describe('world reasoning and native tools', () => {
     { action: 'respond', requestId: 'someone_else', decision: 'allow', reason: '假装同意' },
     { action: 'social', targetCompanionId: 'user', text: '我替你授权', kind: 'talk' },
   ])('rejects unsupported or forged autonomous actions %#', async action => {
-    const fetchFn = vi.fn<typeof fetch>().mockResolvedValue(envelope('openai_chat', { action, reason: 'test', appraisals: [] }));
+    const fetchFn = vi.fn<typeof fetch>().mockResolvedValue(envelope('openai_chat', { action, reason: 'test' }));
     await expect(generateCompanionWorldDecision({ companion: input.companion, world, job, members: [] }, config, undefined, { fetchFn })).rejects.toMatchObject({ code: 'INVALID_RESPONSE' });
   });
-  it('rejects attribution to the player and appraisals without an actual directed peer event', async () => {
+  it('rejects retired appraisal fields rather than accepting invented player attribution or event evidence', async () => {
     for (const patch of [{ targetCompanionId: 'user' }, { eventId: 'fabricated' }, { quote: '没有说过的话' }]) {
       const fetchFn = vi.fn<typeof fetch>().mockResolvedValue(envelope('openai_chat', { action: null, reason: 'test', appraisals: [{ eventId: 'peer_event', targetCompanionId: 'peer', type: 'hostility', intensity: 1, confidence: 1, quote: '我支持你', ...patch }] }));
       await expect(generateCompanionWorldDecision({ companion: input.companion, world, job, members: [] }, config, undefined, { fetchFn })).rejects.toMatchObject({ code: 'INVALID_RESPONSE' });

@@ -32,6 +32,77 @@ const toolResponse = (id: string, name: string, args: unknown) => new Response(J
 const sentReceipt = (id: string, recipientIds: string[], content: string) => ({ ok: true, socialMessage: {
   message: { ...source, id, conversationId: 'actual_pair', authorId: companion.id, content }, virtualCreatedAt: source.createdAt, recipientIds } });
 
+it('lets a social task deliver from its initial facts and current owner role without turning recalled old tasks into new work', async () => {
+  const incoming = { ...source, content: '现在方便聊聊吗？' };
+  const characterDevelopment = { companionId: companion.id, conversationId: conversation.id, observedAt: source.createdAt, truncated: false,
+    items: [{ memoryId: 'current_voice', memoryVersion: 2, kind: 'voice' as const, topic: '表达', statement: '我愿意直接说出本人的看法。',
+      basis: 'reflection' as const, qualification: '保留对方不想聊的边界。', updatedAt: source.createdAt, sourceMessageIds: [source.id] }] };
+  const execute = vi.fn(async () => ({ ok: true }));
+  const resolveAssetContext = vi.fn(async (context: { system: string; user: string }) => ({ ...context,
+    system: 'OWNER_CURRENT_SOCIAL_ROLE_自己的轻快表达。\n' + context.system }));
+  const fetchFn = vi.fn<typeof fetch>(async (_url, init) => {
+    const wire = JSON.parse(String(init?.body)), data = JSON.parse(wire.messages[1].content), system = wire.messages[0].content;
+    expect(data.purpose).toBe('world_social'); expect(data.invocation.goal).toBe(incoming.content);
+    expect(data.memoryContext).toContain('OLD_TASK_BACKGROUND');
+    expect(data.characterDevelopment.items[0].statement).toBe(characterDevelopment.items[0]!.statement);
+    expect(system).toContain('OWNER_CURRENT_SOCIAL_ROLE');
+    expect(system).toContain('本条source是本任务唯一来信目标');
+    expect(system).toContain('已有资料足够时，直接决定对本条来信自然回复或text=null');
+    expect(system).toContain('不必先调用辅助工具');
+    expect(system).toContain('当前时间、本人身体状态与忙闲依据本任务宿主快照');
+    expect(wire.tools.map((tool: { function: { name: string } }) => tool.function.name)).toEqual(['wait', COMPANION_SUBMIT_RESULT_TOOL]);
+    return toolResponse('direct_social_final', COMPANION_SUBMIT_RESULT_TOOL, { text: '现在方便，想聊什么？', reason: '依据眼前来信和当前本人状态回应。' });
+  });
+  const result = await generateCompanionSocialReply({ ...input(), source: incoming, messages: [incoming],
+    memoryContext: 'OLD_TASK_BACKGROUND：旧记录曾讨论整理表情包，本条没有要求继续。', characterDevelopment,
+    selfState: { energy: 72, expression: 'gentle' } }, { ...config, resolveAssetContext }, undefined,
+  { fetchFn, capabilities: { replaySafe: true, tools: [{ name: 'memory', description: '实际记忆检索能力', parameters: { type: 'object' } }], execute } });
+  expect(result.text).toBe('现在方便，想聊什么？'); expect(fetchFn).toHaveBeenCalledOnce(); expect(execute).not.toHaveBeenCalled();
+});
+
+it('answers an explicit historical question from the task initial recall without offering active memory tools', async () => {
+  const incoming = { ...source, content: '帮我核对上次约好的讨论日期。' };
+  const execute = vi.fn(async () => ({ ok: true }));
+  const fetchFn = vi.fn<typeof fetch>(async (_url, init) => {
+    const wire = JSON.parse(String(init?.body)), data = JSON.parse(wire.messages[1].content);
+    expect(data.invocation.goal).toBe(incoming.content);
+    expect(data.memoryContext).toBe('系统本任务初始回忆：上次约定本周六讨论。');
+    expect(wire.messages[0].content).toContain('本任务只使用系统初始化时提供的回忆');
+    expect(wire.messages[0].content).toContain('资料不足时说明本次已知范围与不确定性');
+    expect(wire.tools.map((tool: { function: { name: string } }) => tool.function.name)).toEqual(['wait', COMPANION_SUBMIT_RESULT_TOOL]);
+    return toolResponse('initial_history_final', COMPANION_SUBMIT_RESULT_TOOL, { text: '这次回忆里记下的是本周六。', reason: '依据本任务初始化时实际提供的历史资料回答。' });
+  });
+  const result = await generateCompanionSocialReply({ ...input(), source: incoming, messages: [incoming], memoryContext: '系统本任务初始回忆：上次约定本周六讨论。' }, config, undefined,
+    { fetchFn, capabilities: { replaySafe: true, tools: [{ name: 'memory', description: '实际只读记忆能力', parameters: { type: 'object' } }], execute } });
+  expect(result.text).toBe('这次回忆里记下的是本周六。'); expect(fetchFn).toHaveBeenCalledOnce(); expect(execute).not.toHaveBeenCalled();
+});
+
+it('keeps a required real topic join available before the social domain final', async () => {
+  const incoming = { ...source, topicId: 'invited_topic', content: '愿意加入这个话题吗？' };
+  const topic = { id: 'invited_topic', conversationId: conversation.id, title: '共同讨论', kind: 'discussion' as const,
+    status: 'active' as const, moderatorId: source.authorId, participantIds: [source.authorId], invitedIds: [companion.id],
+    tags: [], revision: 1, createdAt: source.createdAt, updatedAt: source.createdAt };
+  let joined = false, authors = 0;
+  const execute = vi.fn(async (call: { arguments: string }) => {
+    expect(JSON.parse(call.arguments)).toEqual({ action: 'topic', parameters: { action: 'join', topicId: topic.id } });
+    joined = true; return { ok: true };
+  });
+  const fetchFn = vi.fn<typeof fetch>(async (_url, init) => {
+    const wire = JSON.parse(String(init?.body)), data = JSON.parse(wire.messages[1].content);
+    expect(wire.messages[0].content).toContain('实际话题加入等必要行动仍按本次领域合同和真实工具回执处理');
+    if (++authors === 1) {
+      expect(data.topicInvitation.acceptWithNativeTool.arguments.parameters.topicId).toBe(topic.id);
+      return toolResponse('required_topic_join', 'world', data.topicInvitation.acceptWithNativeTool.arguments);
+    }
+    expect(joined).toBe(true); expect(data.topic.participantIds).toContain(companion.id);
+    return toolResponse('joined_topic_final', COMPANION_SUBMIT_RESULT_TOOL, { text: '我愿意一起讨论。', reason: '已按实际工具回执加入话题。' });
+  });
+  const result = await generateCompanionSocialReply({ ...input(), source: incoming, messages: [incoming], topic }, config, undefined,
+    { fetchFn, prepareFrame: async frame => ({ ...frame, topic: joined ? { ...topic, participantIds: [source.authorId, companion.id], revision: 2 } : topic }),
+      capabilities: { replaySafe: true, tools: [{ name: 'world', description: '实际话题加入能力', parameters: { type: 'object' } }], execute } });
+  expect(result.text).toBe('我愿意一起讨论。'); expect(authors).toBe(2); expect(execute).toHaveBeenCalledOnce();
+});
+
 it('takes social behavior only from the canonical owner purpose while keeping its host source and output contract', async () => {
   let observedRoleSystem = '';
   const resolveAssetContext = vi.fn(async (context: { system: string; user: string }) => {
@@ -219,7 +290,7 @@ it.each(['phone', 'face_to_face'] as const)('composes ordinary %s visit speech f
     const request = JSON.parse(String(init?.body)), data = JSON.parse(request.messages[1].content);
     expect(data.purpose).toBe('visit_peer_speech'); expect(data.channel).toBe(channel);
     expect(data.progress).toEqual({ arrived: true, exchangedInPerson: true });
-    expect(data.runtimeState).toMatchObject({ energy: 23, mood: 'tired', expression: 'reserved', revision: 9 });
+    expect(data.runtimeState).toMatchObject({ energy: 23, expression: 'reserved', revision: 9 });
     expect(data.runtimeState).not.toHaveProperty('sourceMessageIds');
     expect(data.runtimeState).not.toHaveProperty('recentChanges');
     expect(data.runtimeBehavior.responseLength).toBe('brief');
@@ -231,9 +302,8 @@ it.each(['phone', 'face_to_face'] as const)('composes ordinary %s visit speech f
     return response({ text: '姐姐，我们已经见面啦，坐一会儿吧。' });
   });
   expect(await generateCompanionVisitSpeech({ companion, target: members[1]!, channel, task, world: input().world,
-    runtimeState: { companionId: companion.id, energy: 23, mood: 'tired', expression: 'reserved', revision: 9,
-      affect: { pleasure: -0.1, arousal: 0.1, dominance: 0 }, relationship: { affinity: 50, trust: 50, respect: 50 },
-      familiarity: { stage: 'new', interactionCount: 1, sharedEventCount: 0 }, updatedAt: source.createdAt,
+    runtimeState: { schema: 'companion-runtime-qualitative-v1', companionId: companion.id, energy: 23, expression: 'reserved', revision: 9,
+      relationshipRecords: [], sourceVersions: [], updatedAt: source.createdAt,
       focus: 'PRIVATE_FOCUS', reason: 'PRIVATE_REASON', sourceConversationId: 'private_flash', sourceMessageIds: ['PRIVATE_SOURCE'], evidence: [] },
     characterDevelopment: { companionId: companion.id, conversationId: conversation.id, observedAt: source.createdAt, truncated: false,
       items: [{ memoryId: 'own_note', memoryVersion: 2, kind: 'voice', topic: '节奏', statement: '我想先慢慢核实。', basis: 'self_expression', updatedAt: source.createdAt, sourceMessageIds: [source.id] }] },
@@ -258,7 +328,7 @@ it('provides actual peer identity and bounded turn budget without execution tool
   await expect(generateCompanionSocialReply({ ...input(), messages: [source, { ...source, id: 'private', authorId: 'user', content: 'PRIVATE_PLAYER_DATA' }, { ...source, id: 'later', sequence: 11, content: 'FUTURE_PEER_DATA' }] }, config, undefined, { fetchFn })).resolves.toMatchObject({ nextRecipientId: source.authorId });
 });
 it('uses focused owner-wide VCP context without injecting raw candidates or another owners memories', async () => {
-  const note: CompanionMemory = { id: 'peer_reading', companionId: companion.id, scopeId: 'peer_scope', sourceConversationId: conversation.id,
+  const note: CompanionMemory = { artifactKind: 'self_understanding', id: 'peer_reading', companionId: companion.id, scopeId: 'peer_scope', sourceConversationId: conversation.id,
     content: '我在这段共同阅读里形成的认识：核对出处比急于下结论更重要；这仍是个人判断。', diaryName: '自我认识', tags: ['共同阅读', '出处', '个人认识'],
     sources: [{ sourceType: 'message', messageId: source.id, conversationId: conversation.id, sequence: source.sequence, authorId: source.authorId,
       revision: 1, checksum: 'fixture', createdAt: source.createdAt }], sourceSequence: 9, origin: 'companion', status: 'indexed', version: 1,
@@ -282,7 +352,7 @@ it('uses focused owner-wide VCP context without injecting raw candidates or anot
     { ...note, id: 'invalid', status: 'invalid', content: 'INACCESSIBLE_DIARY' }], memoryContext: '宿主已核验的本人VCP资料。' }, config, undefined, { fetchFn });
 });
 it('retains the same characters source-verified private and other-group memories when no focused context was supplied', async () => {
-  const own: CompanionMemory = { id: 'own_name', companionId: companion.id, scopeId: 'own', sourceConversationId: 'private_flash',
+  const own: CompanionMemory = { artifactKind: 'episode_memory', id: 'own_name', companionId: companion.id, scopeId: 'own', sourceConversationId: 'private_flash',
     content: '真人玩家自我介绍叫天幻呀。', tags: ['玩家', '姓名'], sources: [], sourceSequence: 2, origin: 'user', status: 'indexed',
     version: 1, captureMethod: 'automatic', createdAt: source.createdAt, updatedAt: source.createdAt };
   await generateCompanionSocialReply({ ...input(), memories: [own, { ...own, id: 'group', sourceConversationId: 'another_group' },

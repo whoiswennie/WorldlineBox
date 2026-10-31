@@ -59,6 +59,9 @@ export type LoadContentForRestore = (
   opts?: {
     trashMode?: boolean;
     blockingLibraryLoad?: boolean;
+    folderRecursive?: boolean;
+    searchScope?: SearchScope;
+    discovery?: { filters?: FilterClause[] };
   },
 ) => Promise<AssetSummary[] | undefined>;
 
@@ -68,6 +71,8 @@ export type RestoreBrowserSessionDeps = {
   session: StoredBrowserSession;
   /** Items from the initial all-scope load before session apply. */
   initialItems: AssetSummary[];
+  /** The first real browse session already loaded this saved scope. */
+  initialScopeLoaded?: boolean;
   collectionRecursive: boolean;
   isFolderRecursiveEnabled: (libraryId: string, folderId: string) => boolean;
   loadContent: LoadContentForRestore;
@@ -98,6 +103,54 @@ export type RestoreBrowserSessionResult = {
   restoredAsset: AssetSummary | null;
 };
 
+/** Select the actual saved page before opening a browse snapshot. */
+export function browserSessionInitialLoad(input: {
+  session: StoredBrowserSession | null;
+  collectionRecursive: boolean;
+  folderRecursive(folderId: string): boolean;
+}): {
+  scope: "all" | "root" | string;
+  options: NonNullable<Parameters<LoadContentForRestore>[2]>;
+} {
+  const scope = input.session?.scope;
+  if (scope?.kind === "trash")
+    return { scope: "all", options: { trashMode: true } };
+  if (scope?.kind === "root") return { scope: "root", options: {} };
+  if (scope?.kind === "folder")
+    return {
+      scope: scope.id,
+      options: { folderRecursive: input.folderRecursive(scope.id) },
+    };
+  if (scope?.kind === "tag" && scope.name)
+    return {
+      scope: "all",
+      options: {
+        discovery: {
+          filters: [{ field: "tag", values: [scope.name], exclude: false }],
+        },
+      },
+    };
+  if (scope?.kind === "collection")
+    return {
+      scope: "all",
+      options: {
+        searchScope: {
+          kind: "collection",
+          collectionId: scope.id,
+          recursive: input.collectionRecursive,
+        },
+      },
+    };
+  if (scope?.kind === "smart")
+    return {
+      scope: "all",
+      options: {
+        searchScope: { kind: "smart_collection", collectionId: scope.id },
+      },
+    };
+  return { scope: "all", options: {} };
+}
+
 /**
  * Recover the saved selection from the restored scope rows, or one extra
  * scope query / filename search when the asset is missing (WorldlineBox-6w7n).
@@ -118,18 +171,6 @@ export async function findSessionSelectedAsset(args: {
   );
   if (restoredAsset) return restoredAsset;
 
-  if (session.scope.kind === "smart") {
-    const result = await api.executeSmartCollection({
-      libraryId,
-      collectionId: session.scope.id,
-      ...BROWSE_SCOPE_SEARCH,
-    });
-    if (!result.ok || result.value.items.length === 0) return undefined;
-    return result.value.items.find(
-      (asset) => asset.assetId === session.selectedAssetId,
-    );
-  }
-
   const result = await api.searchAssets({
     libraryId,
     query: {
@@ -142,7 +183,10 @@ export async function findSessionSelectedAsset(args: {
       ],
     },
     filters: searchFilters,
-    scope: searchScope,
+    scope:
+      session.scope.kind === "smart"
+        ? { kind: "smart_collection", collectionId: session.scope.id }
+        : searchScope,
     ...BROWSE_SCOPE_SEARCH,
   });
   if (!result.ok || result.value.items.length === 0) return undefined;
@@ -183,17 +227,19 @@ export async function applyStoredBrowserSession(
   let restoredLocation: WorkspaceNavLocation = { kind: "all" };
   let searchScope: SearchScope | undefined;
   let searchFilters: FilterClause[] | undefined;
+  const preloaded = deps.initialScopeLoaded === true;
 
   if (session.scope.kind === "trash") {
     setShowTrash(true);
     setAssetScope("all");
-    restoredItems =
-      (await loadContent(library, "all", { trashMode: true })) ?? [];
+    if (!preloaded)
+      restoredItems =
+        (await loadContent(library, "all", { trashMode: true })) ?? [];
     searchScope = { kind: "trash" };
     restoredLocation = { kind: "trash", tombstoneId: null };
   } else if (session.scope.kind === "root") {
     setAssetScope("root");
-    restoredItems = (await loadContent(library, "root")) ?? [];
+    if (!preloaded) restoredItems = (await loadContent(library, "root")) ?? [];
     searchScope = {
       kind: "folder",
       folderId: null,
@@ -208,7 +254,8 @@ export async function applyStoredBrowserSession(
     );
     folderRecursiveRef.current = enabled;
     setFolderRecursive(enabled);
-    restoredItems = (await loadContent(library, session.scope.id)) ?? [];
+    if (!preloaded)
+      restoredItems = (await loadContent(library, session.scope.id)) ?? [];
     searchScope = {
       kind: "folder",
       folderId: session.scope.id,
@@ -222,31 +269,33 @@ export async function applyStoredBrowserSession(
     searchFilters = [
       { field: "tag", values: [session.scope.name], exclude: false },
     ];
-    const result = await api.searchAssets({
-      libraryId: library.libraryId,
-      query: null,
-      filters: searchFilters,
-      // WorldlineBox-87pd: first window only; scrollbar jumps fetch other offsets.
-      limit: BROWSE_PAGE_SIZE,
-      offset: 0,
-    });
-    if (!result.ok) throw new LibraryOperationError(result.error);
+    if (!preloaded) {
+      const result = await api.searchAssets({
+        libraryId: library.libraryId,
+        query: null,
+        filters: searchFilters,
+        // WorldlineBox-87pd: first window only; scrollbar jumps fetch other offsets.
+        limit: BROWSE_PAGE_SIZE,
+        offset: 0,
+      });
+      if (!result.ok) throw new LibraryOperationError(result.error);
+      setSearchTotal(result.value.total);
+      registerBrowseSearchPage(beginBrowsePage, {
+        libraryId: library.libraryId,
+        query: null,
+        filters: searchFilters,
+        scope: null,
+        sort: null,
+        showIgnored: false,
+        target: "assets",
+        items: result.value.items,
+        total: result.value.total,
+        offset: result.value.offset,
+      });
+      restoredItems = result.value.items;
+    }
     setActiveTagId(session.scope.id);
     setTagFilter(session.scope.name);
-    setSearchTotal(result.value.total);
-    registerBrowseSearchPage(beginBrowsePage, {
-      libraryId: library.libraryId,
-      query: null,
-      filters: searchFilters,
-      scope: null,
-      sort: null,
-      showIgnored: false,
-      target: "assets",
-      items: result.value.items,
-      total: result.value.total,
-      offset: result.value.offset,
-    });
-    restoredItems = result.value.items;
     restoredLocation = { kind: "tag", tagId: session.scope.id };
   } else if (session.scope.kind === "collection") {
     searchScope = {
@@ -254,54 +303,58 @@ export async function applyStoredBrowserSession(
       collectionId: session.scope.id,
       recursive: collectionRecursive,
     };
-    const result = await api.searchAssets({
-      libraryId: library.libraryId,
-      query: null,
-      scope: searchScope,
-      // WorldlineBox-87pd: first window only; scrollbar jumps fetch other offsets.
-      limit: BROWSE_PAGE_SIZE,
-      offset: 0,
-    });
-    if (!result.ok) throw new LibraryOperationError(result.error);
+    if (!preloaded) {
+      const result = await api.searchAssets({
+        libraryId: library.libraryId,
+        query: null,
+        scope: searchScope,
+        // WorldlineBox-87pd: first window only; scrollbar jumps fetch other offsets.
+        limit: BROWSE_PAGE_SIZE,
+        offset: 0,
+      });
+      if (!result.ok) throw new LibraryOperationError(result.error);
+      setSearchTotal(result.value.total);
+      registerBrowseSearchPage(beginBrowsePage, {
+        libraryId: library.libraryId,
+        query: null,
+        filters: null,
+        scope: searchScope,
+        sort: null,
+        showIgnored: false,
+        target: "assets",
+        items: result.value.items,
+        total: result.value.total,
+        offset: result.value.offset,
+      });
+      restoredItems = result.value.items;
+    }
     setActiveCollectionId(session.scope.id);
-    setSearchTotal(result.value.total);
-    registerBrowseSearchPage(beginBrowsePage, {
-      libraryId: library.libraryId,
-      query: null,
-      filters: null,
-      scope: searchScope,
-      sort: null,
-      showIgnored: false,
-      target: "assets",
-      items: result.value.items,
-      total: result.value.total,
-      offset: result.value.offset,
-    });
-    restoredItems = result.value.items;
     restoredLocation = {
       kind: "collection",
       collectionId: session.scope.id,
       recursive: collectionRecursive,
     };
   } else if (session.scope.kind === "smart") {
-    const result = await api.executeSmartCollection({
-      libraryId: library.libraryId,
-      collectionId: session.scope.id,
-      // WorldlineBox-87pd: first window only; scrollbar jumps fetch other offsets.
-      limit: BROWSE_PAGE_SIZE,
-      offset: 0,
-    });
-    if (!result.ok) throw new LibraryOperationError(result.error);
+    if (!preloaded) {
+      const result = await api.executeSmartCollection({
+        libraryId: library.libraryId,
+        collectionId: session.scope.id,
+        // WorldlineBox-87pd: first window only; scrollbar jumps fetch other offsets.
+        limit: BROWSE_PAGE_SIZE,
+        offset: 0,
+      });
+      if (!result.ok) throw new LibraryOperationError(result.error);
+      setSearchTotal(result.value.total);
+      registerBrowseSmartCollectionPage(beginBrowsePage, {
+        libraryId: library.libraryId,
+        collectionId: session.scope.id,
+        items: result.value.items,
+        total: result.value.total,
+        offset: result.value.offset,
+      });
+      restoredItems = result.value.items;
+    }
     setActiveSmartCollectionId(session.scope.id);
-    setSearchTotal(result.value.total);
-    registerBrowseSmartCollectionPage(beginBrowsePage, {
-      libraryId: library.libraryId,
-      collectionId: session.scope.id,
-      items: result.value.items,
-      total: result.value.total,
-      offset: result.value.offset,
-    });
-    restoredItems = result.value.items;
     restoredLocation = {
       kind: "smart-collection",
       collectionId: session.scope.id,

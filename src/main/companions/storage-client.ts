@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 
 import { utilityProcess, type UtilityProcess } from 'electron';
+import { companionRecoveryResultSchema, type CompanionRecoveryResult } from '../../shared/companion-recovery';
 
 import {
   companionStorageCommandSchema, companionStorageReplySchema,
@@ -34,7 +35,38 @@ export class CompanionStorageClient {
   #closedAck: (() => void) | undefined;
 
   constructor(private readonly workerPath: string, private readonly databasePath: string,
-    private readonly onIndexChanged: (event?: CompanionStorageChange) => void = () => undefined, private readonly onIndexError: (error: Error) => void = () => undefined) {}
+    private readonly onIndexChanged: (event?: CompanionStorageChange) => void = () => undefined, private readonly onIndexError: (error: Error) => void = () => undefined,
+    private readonly initializationOptions?: { hostRetention?: { libraryPath: string; libraryId: string } }) {}
+
+  /** Main must stop all companion execution and close its normal worker first.
+   * This child never constructs a Store or dispatches a model request. */
+  static recoverDatabase(workerPath: string, selection: {libraryPath:string;libraryId:string}, input: {operationId:string;packagePath:string;expectedManifestHash:string}): Promise<CompanionRecoveryResult> {
+    return CompanionStorageClient.offlineRecovery(workerPath,selection,input,false);
+  }
+  static inspectRecoveryPackage(workerPath:string,selection:{libraryPath:string;libraryId:string},packagePath:string):Promise<CompanionRecoveryResult>{
+    return CompanionStorageClient.offlineRecovery(workerPath,selection,{packagePath},true);
+  }
+  private static offlineRecovery(workerPath:string,selection:{libraryPath:string;libraryId:string},input:{packagePath:string;operationId?:string;expectedManifestHash?:string},inspect:boolean):Promise<CompanionRecoveryResult>{
+    const child = utilityProcess.fork(workerPath, [], {serviceName:'WorldlineBox Companion Recovery',stdio:'pipe'});
+    child.stdout?.resume(); child.stderr?.resume();
+    return new Promise((resolve,reject)=>{
+      let settled=false;
+      const end=(error?:Error,result?:CompanionRecoveryResult)=>{if(settled)return;settled=true;clearTimeout(timer);child.kill();if(error)reject(error);else resolve(result!);};
+      const timer=setTimeout(()=>end(new Error('恢复执行状态尚未确认，请保留同一操作标识核对或继续，不能更换操作重试。')),30*60*1000);
+      child.on('error',()=>end(new Error('恢复子进程异常。')));
+      child.on('exit',()=>end(new Error('恢复子进程在确认结果前退出，请以同一操作核对。')));
+      child.on('message',(value:unknown)=>{
+        if(!value||typeof value!=='object'||!('type' in value))return;
+        if(value.type==='storage.booted')child.postMessage(inspect?{type:'storage.recovery.inspect',selection,packagePath:input.packagePath}
+          :{type:'storage.recover.initialize',selection,operationId:input.operationId,packagePath:input.packagePath,expectedManifestHash:input.expectedManifestHash});
+        else if(value.type===(inspect?'storage.recovery-inspected':'storage.recovered')){
+          const result=companionRecoveryResultSchema.safeParse('recovery' in value?value.recovery:undefined);
+          if(!result.success||input.operationId&&result.data.operationId!==input.operationId||input.expectedManifestHash&&result.data.manifestHash!==input.expectedManifestHash||result.success&&(result.data.libraryId!==selection.libraryId||result.data.mode!==(inspect?'backup':'database')))end(new Error('恢复结果身份与审核的操作不一致。'));
+          else end(undefined,result.data);
+        }else if(value.type==='storage.recovery-failed')end(new Error('error' in value&&typeof value.error==='string'?value.error:'恢复失败。'));
+      });
+    });
+  }
 
   async start(): Promise<void> {
     if (this.#closing) throw new Error('伙伴存储正在关闭。');
@@ -77,14 +109,14 @@ export class CompanionStorageClient {
         if (typeof message !== 'object' || !message) return;
         if ('type' in message) {
           if (message.type === 'storage.booted') {
-            child.postMessage({ type: 'storage.initialize', databasePath: this.databasePath });
+            child.postMessage({ type: 'storage.initialize', databasePath: this.databasePath, ...this.initializationOptions });
           } else if (message.type === 'storage.ready' && !settled) {
             settled = true; clearTimeout(timer); this.#ready = true; resolve();
           } else if (message.type === 'storage.failed') {
             fail(new Error('error' in message && typeof message.error === 'string' ? message.error : '伙伴存储无法启动。'));
           } else if (message.type === 'storage.closed') {
             this.#closedAck?.();
-          } else if (message.type === 'storage.reset-changed') {
+          } else if (message.type === 'storage.retire-changed') {
             this.onIndexChanged({
               memoryInvalidatedCompanionIds: invalidatedIds('memoryInvalidatedCompanionIds' in message ? message.memoryInvalidatedCompanionIds : undefined),
               memoryInvalidatedScopeIds: invalidatedIds('memoryInvalidatedScopeIds' in message ? message.memoryInvalidatedScopeIds : undefined),
@@ -116,12 +148,13 @@ export class CompanionStorageClient {
     const child = this.#child;
     return new Promise<CompanionStorageResponse>((resolve, reject) => {
       const requestId = randomUUID();
+      const timeoutMs=command.type.startsWith('recovery.')?30*60*1000:REQUEST_TIMEOUT_MS;
       const timer = setTimeout(() => {
         if (!this.#pending.delete(requestId)) return;
-        const error = new Error(`伙伴存储请求 ${command.type} 等待超过 30 秒，执行状态尚未确认，请勿重复提交。`);
+        const error = new Error(`伙伴存储请求 ${command.type} 等待超过 ${timeoutMs / 1000} 秒，执行状态尚未确认，请勿重复提交。`);
         reject(error);
         try { this.onIndexError(error); } catch { /* Diagnostics cannot prevent request settlement. */ }
-      }, REQUEST_TIMEOUT_MS);
+      }, timeoutMs);
       timer.unref();
       this.#pending.set(requestId, { resolve, reject, timer });
       try { child.postMessage({ requestId, command }); } catch (error) {

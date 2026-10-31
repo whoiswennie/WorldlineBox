@@ -1,14 +1,17 @@
-import { z } from 'zod';
 import { createHash } from 'node:crypto';
-import { companionModelAdmissionRetryAfter } from './model';
+import { CompanionModelError, companionModelAdmissionRetryAfter } from './model';
 import type { CompanionStorageCommand, CompanionStorageResponse } from '../../shared/companion-storage';
 import type { CompanionWorkspaceResponse } from '../../shared/companion-workspace';
-import { companionLearningGoalPlanSchema, companionLearningAssessmentSchema, type CompanionLearningGoal, type CompanionLearningGoalJob, type CompanionLearningGoalRead,
+import { type CompanionLearningGoal, type CompanionLearningGoalJob, type CompanionLearningGoalRead,
   type CompanionLearningGoalRound, type CompanionLearningGoalWorkspaceCommand } from '../../shared/companion-learning-goals';
 import type { CompanionExecutionReadset } from '../../shared/companion-execution-evidence';
 import { learningTestBasis, learningTestInput, learningSelfTestResult, type CompanionLearningTestStep } from '../../companions/learning-goal-test-protocol';
+import { companionLearningGoalResponseSchemas, type GoalInferenceStage } from './learning-goal-response';
+import { CompanionMemoryLiveFileError } from './memory-live-files';
 
-export type GoalInferenceStage = 'plan' | 'learn' | 'consolidate' | 'questions' | 'answer' | 'assess';
+export type { GoalInferenceStage } from './learning-goal-response';
+export interface CompanionAgendaLearningRoundResult { status: 'completed' | 'waiting' | 'failed' | 'parked' | 'abandoned' | 'cancelled' | 'unknown';
+  goalId: string; round?: CompanionLearningGoalRound; reason: string; nextAt?: string }
 export interface CompanionLearningGoalServiceOptions {
   request(command: CompanionStorageCommand): Promise<CompanionStorageResponse>;
   infer(input: { stage: GoalInferenceStage; goal: CompanionLearningGoal; round: CompanionLearningGoalRound; data: unknown; signal: AbortSignal }): Promise<unknown>;
@@ -20,40 +23,80 @@ export interface CompanionLearningGoalServiceOptions {
   blocked?(owner: string): boolean;
   changed(): void; report(error: unknown): void;
 }
-const evidence = z.object({ sourceId: z.string(), quote: z.string().min(1).max(1000) });
-const learning = z.object({ summary: z.string().min(1).max(6000), claims: z.array(z.object({ text: z.string().min(1).max(2000), evidence: z.array(evidence).min(1).max(4) })).min(1).max(12) });
-const questionsSchema = z.object({ questions: z.array(z.string().min(1).max(1500)).min(1).max(3) });
-const answerSchema = z.object({ answers: z.array(z.string().max(3000)).max(5) });
+const { learn: learning, questions: questionsSchema, answer: answerSchema } = companionLearningGoalResponseSchemas;
 class WaitForLearning extends Error { constructor(message: string, readonly retryAfterMs = 30000) { super(message); } }
+class StaleLearningInput extends Error {}
 
 /** Two bounded background rounds may coexist with chat; no whole-companion work lease. */
 export class CompanionLearningGoalService {
   private closed = false;
   private timer?: ReturnType<typeof setTimeout>;
   private pumping?: Promise<void>;
-  private readonly jobs = new Map<string, { owner: string; controller: AbortController; promise: Promise<void> }>();
+  private autonomousPump = true;
+  private readonly jobs = new Map<string, { owner: string; roundId: string; agendaRunId?: string; agendaLeaseToken?: string; controller: AbortController; promise: Promise<void> }>();
   constructor(private readonly options: CompanionLearningGoalServiceOptions) {}
   start(): void {
-    if (this.closed || this.timer) return;
-    const next = () => { this.timer = undefined; void this.tick().catch(this.options.report).finally(() => { if (!this.closed) { this.timer = setTimeout(next, 5000); this.timer.unref(); } }); };
+    if (this.closed || !this.autonomousPump || this.timer) return;
+    const next = () => { this.timer = undefined; void this.tick().catch(this.options.report).finally(() => { if (!this.closed && this.autonomousPump) { this.timer = setTimeout(next, 5000); this.timer.unref(); } }); };
     this.timer = setTimeout(next, 500); this.timer.unref();
   }
   private async request(command: CompanionStorageCommand): Promise<CompanionStorageResponse> {
     const result = await this.options.request(command); if (!result.ok) throw new Error(result.error ?? '学习目标存储不可用。'); return result;
   }
   tick(): Promise<void> {
-    if (this.closed) return Promise.resolve(); if (this.pumping) return this.pumping;
+    if (this.closed || !this.autonomousPump) return Promise.resolve(); if (this.pumping) return this.pumping;
     const task = this.pump(); this.pumping = task; void task.finally(() => { if (this.pumping === task) this.pumping = undefined; }).catch(() => undefined); return task;
   }
   private async pump(): Promise<void> {
-    while (!this.closed && this.jobs.size < 2) {
+    while (!this.closed && this.autonomousPump && this.jobs.size < 2) {
       const job = (await this.request({ type: 'learning.goals.claim', excludedOwners: [], leaseMs: 120000 })).learningGoalJob;
       if (!job || this.closed) break;
       const controller = new AbortController();
       const promise = new Promise<void>(resolve => setImmediate(resolve)).then(() => this.process(job, controller.signal))
         .catch(this.options.report).finally(() => { this.jobs.delete(job.goal.id); this.options.changed(); });
-      this.jobs.set(job.goal.id, { owner: job.goal.companionId, controller, promise }); this.options.changed();
+      this.jobs.set(job.goal.id, { owner: job.goal.companionId, roundId: job.round.id, controller, promise }); this.options.changed();
     }
+  }
+  /** Disable every legacy self-pump path, including handle(update)->tick().
+   * Domain stage/checkpoint code remains the same processor under the agenda. */
+  useAgendaScheduling(): void { this.autonomousPump = false; if (this.timer) { clearTimeout(this.timer); this.timer = undefined; } }
+  /** Process exactly one host-selected learning goal/round. Selection and
+   * timing belong to the verified agenda parent, not this processor's timer. */
+  async processGoal(goalId: string, signal: AbortSignal, scope: { companionId: string; agendaRunId: string; agendaLeaseToken: string }): Promise<CompanionAgendaLearningRoundResult> {
+    this.useAgendaScheduling(); signal.throwIfAborted();
+    if (this.closed) return { status: 'waiting', goalId, reason: '学习处理器已关闭。' };
+    let processedRoundId: string | undefined;
+    const existing = this.jobs.get(goalId);
+    if (existing) {
+      if (existing.owner !== scope.companionId || existing.agendaRunId !== scope.agendaRunId || existing.agendaLeaseToken !== scope.agendaLeaseToken) return { status: 'waiting', goalId, reason: '同一目标的另一轮学习仍在处理，等待其真实结果。' };
+      processedRoundId = existing.roundId;
+      await existing.promise;
+    } else {
+      const claimed = await this.request({ type: 'learning.goals.claim', id: goalId, companionId: scope.companionId, agendaRunId: scope.agendaRunId, agendaLeaseToken: scope.agendaLeaseToken, excludedOwners: [], leaseMs: 120000 });
+      const job = claimed.learningGoalJob;
+      if (job) {
+        if (job.goal.id !== goalId || job.goal.companionId !== scope.companionId) throw new Error('学习目标领取回执不属于本次日程。');
+        processedRoundId = job.round.id;
+        const controller = new AbortController(), abort = () => controller.abort(signal.reason);
+        signal.addEventListener('abort', abort, { once: true }); if (signal.aborted) abort();
+        const promise = Promise.resolve().then(() => this.process(job, controller.signal));
+        this.jobs.set(goalId, { owner: scope.companionId, roundId: job.round.id, agendaRunId: scope.agendaRunId, agendaLeaseToken: scope.agendaLeaseToken, controller, promise }); this.options.changed();
+        try { await promise; }
+        finally { signal.removeEventListener('abort', abort); this.jobs.delete(goalId); this.options.changed(); }
+      }
+    }
+    signal.throwIfAborted();
+    const current = (await this.request({ type: 'learning.goals.read', companionId: scope.companionId, id: goalId })).learningGoal;
+    if (!current || current.companionId !== scope.companionId) throw new Error('本次学习结果已不可访问。');
+    const round = current.lastRound;
+    if (!processedRoundId && !['parked', 'abandoned'].includes(round?.status ?? '') && current.state === 'active')
+      return { status: 'waiting', goalId, reason: '本次尚未取得学习轮次；等待域处理资源与当前方向核验，不把上次完成当作本次成果。', nextAt: new Date(Date.now() + 30000).toISOString() };
+    if (processedRoundId && round?.id !== processedRoundId) return { status: 'unknown', goalId, reason: '本次轮次结算回执已变化，需要核对原轮次。' };
+    const status = current.state === 'stopped' ? 'cancelled' : current.state === 'paused' ? 'waiting'
+      : round?.status === 'completed' ? 'completed' : round?.status === 'parked' ? 'parked' : round?.status === 'abandoned' ? 'abandoned'
+        : round?.status === 'failed' ? 'failed' : round?.status === 'cancelled' || round?.status === 'stale' ? 'cancelled' : round?.status === 'running' ? 'unknown' : 'waiting';
+    return { status, goalId, round, nextAt: current.nextAt,
+      reason: current.waitReason ?? round?.error ?? (status === 'completed' ? '本轮真实阅读、知识整合与回忆核验已经完成。' : status === 'unknown' ? '学习阶段尚未确认最终结算，先核对原轮次。' : '等待学习材料、模型或域处理资源。') };
   }
   private async process(job: CompanionLearningGoalJob, inputSignal: AbortSignal): Promise<void> {
     const timeout = AbortSignal.timeout(10 * 60000), signal = AbortSignal.any([inputSignal, timeout]);
@@ -75,8 +118,8 @@ export class CompanionLearningGoalService {
     try {
       if (!job.goal.materials.length && !job.goal.allowWeb) throw new WaitForLearning('请添加学习材料，或允许探索公开网页；本轮尚未调用模型或读取资料。', 5 * 60000);
       await checkpoint('planning');
-      if (round.reads.some(read => !read.sourceMessageId || !read.excerpt)) throw new Error('本轮原始资料已经撤回，不能恢复旧模型阶段。');
-      if (!round.plan) round.plan = companionLearningGoalPlanSchema.parse(await infer('plan', { lastRound: job.previousRound }));
+      if (round.reads.some(read => !read.sourceMessageId || !read.excerpt)) throw new StaleLearningInput('本轮原始资料已经撤回，不能恢复旧模型阶段。');
+      if (!round.plan) round.plan = companionLearningGoalResponseSchemas.plan.parse(await infer('plan', { lastRound: job.previousRound }));
       await checkpoint('reading');
       if (!round.reads.length) {
         const reading = await this.options.read(current(), signal); signal.throwIfAborted();
@@ -100,7 +143,7 @@ export class CompanionLearningGoalService {
       if (!round.selfTest) {
         const ids = round.reads.map(read => read.sourceMessageId).filter((id): id is string => !!id);
         const actual = (await this.request({ type: 'memory.sources.filter', companionId: job.goal.companionId, conversationId: 'world_' + job.goal.companionId, ids })).memorySources ?? [];
-        if (actual.length !== ids.length) throw new Error('自测真实资料来源已经撤回。');
+        if (actual.length !== ids.length) throw new StaleLearningInput('自测真实资料来源已经撤回。');
         const sourceChecksums = round.selfTestProgress?.sourceChecksums ?? Object.fromEntries(actual.map(source => [source.id, createHash('sha256').update(source.content).digest('hex')]));
         const basis = learningTestBasis(job.goal, round, sourceChecksums);
         const saveStep = async (step: CompanionLearningTestStep) => {
@@ -114,13 +157,13 @@ export class CompanionLearningGoalService {
         const questions = round.selfTestProgress!.questions!.value.questions;
         if (!round.selfTestProgress!.recall) {
           const recalled = await this.options.recall(current(), questions, signal); signal.throwIfAborted();
-          if (!await this.options.validateRecall(current(), recalled, signal)) throw new Error('自测实际回忆来源或文件已经变化。');
+          if (!await this.options.validateRecall(current(), recalled, signal)) await this.invalidRecall(current(), recalled);
           await saveStep({ stage: 'recall', inputHash: learningTestInput(basis, round, 'recall'), value: recalled });
         }
         const recalled = round.selfTestProgress!.recall!.value;
         const validateRecall = async () => {
           signal.throwIfAborted(); await checkpoint('testing');
-          if (!await this.options.validateRecall(current(), recalled, signal)) throw new Error('自测固定回忆的来源或实际文件已经撤回。');
+          if (!await this.options.validateRecall(current(), recalled, signal)) await this.invalidRecall(current(), recalled);
         };
         await validateRecall();
         // Answers consume only actual fixed recall, never the read rubric.
@@ -131,7 +174,7 @@ export class CompanionLearningGoalService {
         if (!round.selfTestProgress!.assess) {
           const currentState = (await this.request({ type: 'state.get', companionId: job.goal.companionId, conversationId: 'world_' + job.goal.companionId })).runtimeState;
           const state = { expectedStateRevision: currentState?.revision, currentFocus: currentState?.focus };
-          const review = companionLearningAssessmentSchema.parse(await infer('assess', { questions, answers, reads: round.reads,
+          const review = companionLearningGoalResponseSchemas.assess.parse(await infer('assess', { questions, answers, reads: round.reads,
             currentFocus: state.currentFocus, nextPlanPurpose: '可选择提出基于真实资料及不足的下一关注点，不把自评分数当成掌握，也不产生关系或固定情绪奖励。' }));
           await validateRecall();
           await saveStep({ stage: 'assess', inputHash: learningTestInput(basis, round, 'assess', state), value: { review, ...state } });
@@ -149,12 +192,29 @@ export class CompanionLearningGoalService {
       await this.request({ type: 'learning.goals.finish', id: job.goal.id, leaseToken: job.leaseToken, round });
     } catch (error) {
       const admissionRetry = companionModelAdmissionRetryAfter(error);
-      round = { ...round, status: signal.aborted || error instanceof WaitForLearning || admissionRetry !== undefined ? 'deferred' : 'failed', phase: 'waiting', updatedAt: new Date().toISOString(), endedAt: new Date().toISOString(),
+      const code = error instanceof Error && 'code' in error ? String(error.code) : '';
+      const stale = error instanceof StaleLearningInput || !signal.aborted && (code === 'REVOKED' || code === 'CANCELLED');
+      const waiting = signal.aborted || error instanceof WaitForLearning || error instanceof CompanionMemoryLiveFileError || admissionRetry !== undefined || error instanceof CompanionModelError && error.code === 'CONFIG'
+        || ['ENOENT', 'EBUSY', 'EACCES', 'EPERM', 'CHANGED', 'UNREGISTERED', 'FILE_CHANGED', 'CONTEXT_RECORD_FAILED'].includes(code);
+      round = { ...round, status: stale ? 'stale' : waiting ? 'deferred' : 'failed', phase: 'waiting', updatedAt: new Date().toISOString(), endedAt: new Date().toISOString(),
         error: signal.aborted ? '本轮已停止，已完成的读取与正式记忆保留，未提交结果不再生效。' : error instanceof Error ? error.message.slice(0, 2000) : '本轮学习尚未完成。' };
       await this.request({ type: 'learning.goals.finish', id: job.goal.id, leaseToken: job.leaseToken, round,
+        failureKind: stale ? 'stale' : waiting ? 'waiting' : 'processing',
         retryAfterMs: admissionRetry ?? (error instanceof WaitForLearning ? error.retryAfterMs : 60000) }).catch(() => undefined);
-      if (!signal.aborted && !(error instanceof WaitForLearning) && admissionRetry === undefined) this.options.report(error);
+      if (!stale && !waiting) this.options.report(error);
     } finally { clearInterval(heartbeat); }
+  }
+  private async invalidRecall(job: CompanionLearningGoalJob, recalled: NonNullable<NonNullable<CompanionLearningGoalRound['selfTestProgress']>['recall']>['value']): Promise<never> {
+    const proof = recalled.executionReadset, references = [...proof.sources, ...(proof.frozenMemories ?? []).flatMap(item => item.sources), ...(proof.memoryReads ?? []).flatMap(item => item.sources)];
+    const ids = [...new Set(references.map(item => item.id))];
+    if (ids.length > 4096) throw new WaitForLearning('固定来源超过本轮核验边界，尚未发送新的自测请求。');
+    for (let offset = 0; offset < ids.length; offset += 64) {
+      const batch = ids.slice(offset, offset + 64), actual = (await this.request({ type: 'memory.sources.filter', companionId: job.goal.companionId,
+        conversationId: 'world_' + job.goal.companionId, ids: batch })).memorySources ?? [];
+      if (actual.length !== batch.length || actual.some(source => references.some(reference => reference.id === source.id && reference.checksum !== createHash('sha256').update(source.content).digest('hex'))))
+        throw new StaleLearningInput('固定自测来源已撤回或版本改变，旧输入不能继续。');
+    }
+    throw new WaitForLearning('固定来源文件当前不可核验，等待原文件恢复；尚未发送新的自测请求。');
   }
   async handle(command: CompanionLearningGoalWorkspaceCommand): Promise<CompanionWorkspaceResponse> {
     if (this.closed) return { ok: false, error: '学习目标服务已关闭。' };
@@ -164,6 +224,8 @@ export class CompanionLearningGoalService {
     return { ok: true, learningGoal: result.learningGoal, learningGoals: result.learningGoals, learningRounds: result.learningRounds };
   }
   cancel(owner: string): void { for (const job of this.jobs.values()) if (job.owner === owner) job.controller.abort(); }
+  cancelTask(owner: string, id: string): void { const job = this.jobs.get(id); if (job?.owner === owner) job.controller.abort(); }
+  cancelRound(owner: string, roundId: string): void { for (const job of this.jobs.values()) if (job.owner === owner && job.roundId === roundId) job.controller.abort(); }
   async drain(owner: string): Promise<void> { await this.pumping; this.cancel(owner); await Promise.allSettled([...this.jobs.values()].filter(job => job.owner === owner).map(job => job.promise)); }
   async close(): Promise<void> { this.closed = true; if (this.timer) clearTimeout(this.timer); for (const job of this.jobs.values()) job.controller.abort(); await this.pumping; await Promise.allSettled([...this.jobs.values()].map(job => job.promise)); }
 }

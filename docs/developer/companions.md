@@ -1,5 +1,7 @@
 # 伙伴消息系统
 
+> 认知协议更新（2026-10-28）：本页保留消息、IPC和DSH架构背景。角色编辑、旧心理字段、目录摄取与维护行为以[新系统标准](companion-cognition-refactor-standard-2026-10-28.md)及[实施记录](companion-cognition-implementation-2026-10-28.md)为准；下面的历史角色写入说明不能作为新协议的兼容或迁移入口。
+
 应用入口在 `ApplicationShell` 的 `companions` 模块，位于启动器和资产管理之间。消息、联系人、任务与社交观察通过独立 preload bridge 调用经 Zod 验证的 IPC；仅管理器主窗口的 main frame 可访问。三维世界使用可多开的原生观察窗口与窄 preload，只能访问世界观测、设置和自身窗口控制。
 
 ## 状态与存储边界

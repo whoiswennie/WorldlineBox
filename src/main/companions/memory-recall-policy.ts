@@ -8,11 +8,10 @@ export function companionMemoryClockBucket(clock: { now: string; timeZone: strin
 
 /** Host activation policy only. Upstream keeps its exponential formula and
  * explicit-time branch; it never forgets a note or treats its age as falsehood. */
-export function companionAutomaticRecallDecay(notes: readonly Pick<CompanionMemory, 'id' | 'captureMethod' | 'diaryName' | 'metadata' | 'tags' | 'sources'>[], worldMode: 'realtime' | 'compressed'): VcpMemoryAutomaticDecayPolicy {
-  const episodic = new Set(['日记', '经历', '活动体验']);
+export function companionAutomaticRecallDecay(notes: readonly Pick<CompanionMemory, 'id' | 'artifactKind' | 'captureMethod' | 'tags' | 'sources'>[], worldMode: 'realtime' | 'compressed'): VcpMemoryAutomaticDecayPolicy {
   const important = new Set(['重要', '长期', '重要约定']);
   return { schema: 'episodic-v1', halfLifeDays: 180, minScore: 0, protectedNoteIds: notes.filter(note => note.captureMethod !== 'automatic'
-    || !episodic.has(note.diaryName ?? '经历') || note.metadata?.characterDevelopment !== undefined
+    || note.artifactKind !== 'episode_memory'
     || note.tags.some(tag => important.has(tag.normalize('NFKC').trim()))
     // An old real-time source without a proven world timestamp must not age by
     // accelerated-world years. It remains recallable at its original score.

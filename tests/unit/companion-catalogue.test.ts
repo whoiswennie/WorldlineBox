@@ -1,5 +1,5 @@
 import { readFileSync, existsSync } from 'node:fs';
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { expect, it } from 'vitest';
 import { BUILTIN_COMPANIONS, BUILTIN_WELCOMES, builtinCompanionId } from '../../src/shared/companion-personas';
 import { BUILTIN_COMPANION_PROFILES } from '../../src/shared/companion-catalogue';
@@ -11,7 +11,8 @@ it('registers all old identities once alongside the existing whale sisters and k
   expect(new Set(BUILTIN_COMPANIONS.map(item => item.id)).size).toBe(15);
   expect(BUILTIN_COMPANIONS.filter(item => item.name === '大肥鱼')).toHaveLength(1);
   for (const templateId of COMPANION_TEMPLATE_IDS) {
-    expect(companionsRequestSchema.parse({ type: 'companion.add-builtin', templateId })).toEqual({ type: 'companion.add-builtin', templateId });
+    const operationId = randomUUID(), companionId = randomUUID();
+    expect(companionsRequestSchema.parse({ type: 'companion.add-builtin', templateId, operationId, companionId })).toEqual({ type: 'companion.add-builtin', templateId, operationId, companionId });
     const id = builtinCompanionId(templateId);
     const item = BUILTIN_COMPANIONS.find(entry => entry.id === id)!;
     const draft = companionDraftSchema.parse(item);

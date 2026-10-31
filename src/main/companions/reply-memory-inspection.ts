@@ -5,10 +5,11 @@ import type { companionReplyMemoryCommand, CompanionReplyMemory } from '../../sh
 import { recallCorpusHash } from './recall-evidence';
 import { createHash } from 'node:crypto';
 import type { CompanionSocialReplyMemoryRequest, CompanionSocialReplyReceipt } from '../../shared/companion-social-reply';
+import { companionMemoryContextDependencies } from './memory-context-evidence';
 
 type Request = z.infer<typeof companionReplyMemoryCommand>;
 type Transport = (command: CompanionStorageCommand) => Promise<CompanionStorageResponse>;
-type SavedContext = { memories?: Array<{ id: string; version: number }>; memoryRecall?: {
+type SavedContext = { taskRequest?: { sourceMessageId?: string; prompt?: string }; memories?: Array<{ id: string; version: number }>; memoryRecall?: {
   reasons?: Array<{ id: string; version?: number }>;
   pending?: boolean; degraded?: boolean; continuation?: { query?: { query?: string } };
   context?: { text: string; revision: string; evidence?: { capturedAt: string; corpusHash: string; beforeSequence?: number } };
@@ -59,16 +60,41 @@ async function inspectSavedRecall(input: Omit<Request, 'type'>, checkpoint: Chec
     explanation: '这条回复引用的来源或记忆已经修改、撤回或不再获权。历史上下文已隐藏，不重新推测当时想起了什么。' });
   if (!source) return withdrawn();
   if (sourceChecksum && createHash('sha256').update(source.content).digest('hex') !== sourceChecksum) return withdrawn();
+  if (data.taskRequest?.sourceMessageId === source.id && typeof data.taskRequest.prompt === 'string' && data.taskRequest.prompt !== source.content) return withdrawn();
   const context = data.memoryRecall.context;
-  const snapshot = (await request({ type: 'memory.snapshot', ...scope })).memorySnapshot;
-  if (!snapshot) return withdrawn();
+  const dependencies = companionMemoryContextDependencies(context);
+  if (dependencies.malformed) return withdrawn();
+  const frozen = dependencies.complete ? dependencies.frozenMemories : undefined;
   const valid = (notes: readonly CompanionMemory[], revision: string) => !context || (context.evidence
     ? recallCorpusHash(notes.filter(note => Date.parse(note.createdAt) <= Date.parse(context.evidence!.capturedAt))) === context.evidence.corpusHash
     : revision === context.revision);
-  if (!valid(snapshot.notes, snapshot.revision)) return withdrawn();
   const original = [...new Map([...(data.memories ?? []), ...(data.memoryRecall.reasons ?? [])
     .flatMap(item => item.version ? [{ id: item.id, version: item.version }] : [])].map(item => [item.id, item])).values()].slice(0, 12);
-  const current = new Map(snapshot.notes.filter(note => note.companionId === input.companionId).map(note => [note.id, note]));
+  const validateFrozen = async () => {
+    for (let offset = 0; offset < Math.max(1, frozen!.length); offset += 100) {
+      const checked = await request({ type: 'memory.frozen.valid', ...scope, memories: frozen!.slice(offset, offset + 100) });
+      if (!checked.ok || !checked.memoryFrozenValid) return false;
+    }
+    return true;
+  };
+  const readCandidates = async () => original.length
+    ? (await request({ type: 'memory.records.filter', ...scope, ids: original.map(note => note.id) })).memories : [];
+  let currentNotes: CompanionMemory[];
+  if (frozen) {
+    // A complete task-passive receipt identifies the physical inputs already
+    // consumed. Inspecting it must not scan/materialize the owner's whole
+    // notebook twice, or reinterpret it through today's unrelated corpus.
+    if (!await validateFrozen()) return withdrawn();
+    const selected = await readCandidates(); if (!selected) return withdrawn();
+    currentNotes = selected;
+  } else {
+    // Legacy receipts did not record a complete dependency closure. Keep the
+    // original conservative corpus check; never invent a precise proof.
+    const snapshot = (await request({ type: 'memory.snapshot', ...scope })).memorySnapshot;
+    if (!snapshot || !valid(snapshot.notes, snapshot.revision)) return withdrawn();
+    currentNotes = snapshot.notes;
+  }
+  const current = new Map(currentNotes.filter(note => note.companionId === input.companionId).map(note => [note.id, note]));
   const notes = original.flatMap(note => {
     const found = current.get(note.id);
     return found?.version === note.version ? [found] : [];
@@ -77,8 +103,16 @@ async function inspectSavedRecall(input: Omit<Request, 'type'>, checkpoint: Chec
   const sourceIds = [...new Set(notes.flatMap(note => note.sources.slice(0, 3).map(item => item.messageId)))];
   const sources = sourceIds.length ? (await request({ type: 'memory.sources.filter', ...scope, ids: sourceIds })).memorySources ?? [] : [];
   const sourcesById = new Map<string, CompanionMessage>(sources.map(item => [item.id, item]));
-  const verified = (await request({ type: 'memory.snapshot', ...scope })).memorySnapshot;
-  if (!verified || !valid(verified.notes, verified.revision)) return withdrawn();
+  if (frozen) {
+    const checked = await readCandidates();
+    if (!checked || recallCorpusHash(checked) !== recallCorpusHash(notes) || !await validateFrozen()) return withdrawn();
+  } else {
+    const verified = (await request({ type: 'memory.snapshot', ...scope })).memorySnapshot;
+    if (!verified || !valid(verified.notes, verified.revision)) return withdrawn();
+  }
+  const currentSource = (await request({ type: 'memory.sources.filter', ...scope, ids: [checkpoint.sourceMessageId] })).memorySources?.[0];
+  if (!currentSource || currentSource.id !== source.id || currentSource.conversationId !== source.conversationId
+    || currentSource.content !== source.content) return withdrawn();
   if (stillValid && !await stillValid()) return withdrawn();
   // The exact native text can contain topic-focused synthesis; top-K candidates
   // are evidence candidates, not a fabricated list of what VCP finally injected.

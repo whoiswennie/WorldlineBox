@@ -37,7 +37,7 @@ it.skipIf(!enabled)('audits two resident identities and virtual dates through or
       const conversation = store!.openPrivate(owner.id);
       const source = store!.appendMessage({ conversationId: conversation.id, authorId: owner.id, content: owner.content, replyDirective: 'none' });
       const note = store!.request({ type: 'memory.record', companionId: owner.id, conversationId: conversation.id,
-        candidate: { content: owner.content, tags: owner.tags, diaryName: '日记', occurredAt: owner.occurredAt,
+        candidate: { artifactKind: 'episode_memory' as const, content: owner.content, tags: owner.tags, diaryName: '日记', occurredAt: owner.occurredAt,
           sourceMessageIds: [source.id], evidence: [{ sourceMessageId: source.id, quote: owner.content }] } }).memories![0]!;
       // The subject of this case is already-written diaries, not another journal-model run.
       for (let n = 0; n < 10; n++) {

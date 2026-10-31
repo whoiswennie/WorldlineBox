@@ -12,6 +12,7 @@ import type { CompanionActionEvent } from '../../shared/companions';
 import { COMPANION_WORK_PHASE_LABELS, companionWorkOverview, companionWorkPhase } from './companion-work-overview';
 import { dshRecordQuerySchema } from '../../shared/dsh-task-record';
 import { createCoalescedRefresh } from './coalesced-refresh';
+import { companionCapabilityTitle } from './companion-capability-presentation';
 
 type Cursor = NonNullable<CompanionActionPage['nextCursor']>;
 const PAGE_SIZE = 20;
@@ -66,7 +67,7 @@ export function CompanionTaskMonitor({ actions, companions, conversationId, requ
     return () => { cancelled = true; };
   }, [view, firstActiveId, activeCount, owner, pageNumber, refresh]); // Progress tokens do not change list selection.
   useEffect(() => {
-    if (view !== 'history') return;
+    if (view !== 'history' || initialActionId) return;
     let cancelled = false;
     void request({ type: 'actions.page', conversationId, ...(owner ? { companionId: owner } : {}), ...(cursor ? { before: cursor } : {}), limit: PAGE_SIZE }).then(response => {
       if (cancelled) return;
@@ -76,7 +77,7 @@ export function CompanionTaskMonitor({ actions, companions, conversationId, requ
       setSelectedId(current => current && (current === linkedSelection.current || response.actionPage!.items.some(item => item.id === current)) ? current : response.actionPage!.items[0]?.id);
     });
     return () => { cancelled = true; };
-  }, [conversationId, owner, cursor, request, refresh, revision, view]);
+  }, [conversationId, owner, cursor, request, refresh, revision, view, initialActionId]);
   useEffect(() => {
     let cancelled = false;
     if (!selectedId) return;
@@ -93,6 +94,7 @@ export function CompanionTaskMonitor({ actions, companions, conversationId, requ
   useEffect(() => { const handle = (event: KeyboardEvent) => { if (event.key === 'Escape') onClose(); }; document.addEventListener('keydown', handle); return () => document.removeEventListener('keydown', handle); }, [onClose]);
   const owners = view === 'history' && page?.owners.length ? page.owners : companions.map(role => ({ companionId: role.id, name: role.name, count: companionWorkOverview(actions, role.id).total }));
   function reset(nextOwner = owner) { linkedSelection.current = undefined; setSelectedId(undefined); setLoading(true); setOwner(nextOwner); setCursors([undefined]); setPageNumber(0); setRefresh(value => value + 1); }
+  if (initialActionId) return <div className="companions-task-backdrop" onMouseDown={event => { if (event.target === event.currentTarget) onClose(); }}><section className="companions-task-monitor is-execution-detail" role="dialog" aria-modal="true" aria-label={selected?.capability ? '能力调用详情' : '执行详情'}><header><div><h2>{selected ? companionCapabilityTitle(selected) : '执行详情'}</h2><p>{selected?.capability ? '这次实际调用的输入、过程与结果' : '这次实际执行的记录'}</p></div><button className="companion-icon-button" aria-label="关闭任务监视" onClick={onClose}><Icon name="close" /></button></header><main>{selected ? <CompanionActionCard key={selected.id} action={selected} now={now} defaultShowProgress onReadRecord={selected.taskId && (!selected.capability || selected.capability.name === 'think') ? async query => (await request({ type: 'action.record', id: selected.id, query: dshRecordQuerySchema.parse(query) }))?.taskRecord : undefined} onStop={() => onStop(selected.id)} onResume={!selected.capability && onResume ? async () => { await onResume(selected.id); setRefresh(value => value + 1); } : undefined} onTerminate={!selected.capability && onTerminate ? async () => { await onTerminate(selected.id); setRefresh(value => value + 1); } : undefined} onGuide={!selected.capability ? () => onGuide(selected.id) : undefined} onOpenUrl={onOpenUrl} /> : <p>{detailError || '正在读取实际调用记录…'}</p>}</main></section></div>;
   return <div className="companions-task-backdrop" onMouseDown={event => { if (event.target === event.currentTarget) onClose(); }}><section className="companions-task-monitor" role="dialog" aria-modal="true" aria-label="伙伴实时任务">
     <header><div><h2>伙伴正在做什么</h2><p>{overview.counts.running} 件进行中 · {overview.counts.queued} 件等待中{overview.counts.confirmation ? ` · ${overview.counts.confirmation} 件待确认` : ''}{overview.counts.interrupted ? ` · ${overview.counts.interrupted} 件可继续` : ''}</p></div><button className="companion-icon-button" aria-label="关闭任务监视" onClick={onClose}><Icon name="close" /></button></header>
     <div className="companions-task-monitor-body"><aside className="companions-task-history">

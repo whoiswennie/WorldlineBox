@@ -21,7 +21,7 @@ it.each([
     const dates = { start: test.start, end: test.end, before: new Date(Date.parse(test.start) - 1).toISOString(), after: new Date(Date.parse(test.end) + 1).toISOString() };
     const saved = Object.fromEntries(Object.entries(dates).map(([label, occurredAt]) => {
       const source = store.appendMessage({ conversationId: conversation.id, authorId: 'user', content: `Actual source for ${label}`, replyDirective: 'none' });
-      const note = store.request({ type: 'memory.record', ...scope, candidate: { content: source.content, occurredAt, tags: [], sourceMessageIds: [source.id], evidence: [{ sourceMessageId: source.id, quote: source.content }] } }).memories![0]!;
+      const note = store.request({ type: 'memory.record', ...scope, candidate: { artifactKind: 'episode_memory' as const, content: source.content, occurredAt, tags: [], sourceMessageIds: [source.id], evidence: [{ sourceMessageId: source.id, quote: source.content }] } }).memories![0]!;
       return [label, note.id];
     }));
     const page = store.request({ type: 'memory.browse', ...scope, from: test.day, to: test.day }).memoryPage!;

@@ -1,83 +1,62 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { WorldlineBoxCompanionsApi } from '../../shared/companions';
 import type { CompanionWorkspaceResponse } from '../../shared/companion-workspace';
+import { companionPurposeLabel } from './companion-purpose-labels';
+import { createCoalescedRefresh } from './coalesced-refresh';
 import './companion-prompt-assets.css';
 
 type Snapshot = NonNullable<CompanionWorkspaceResponse['companionAssets']>;
-type Draft = { revision: string; content: string };
-export function CompanionPromptAssetsEditor({ companionId, api, disabled = false, initiallyOpen = false, onDirtyChange }: {
-  companionId: string; api?: Pick<WorldlineBoxCompanionsApi, 'workspace'>; disabled?: boolean; initiallyOpen?: boolean;
-  onDirtyChange?(dirty: boolean): void;
+const purposeLabels: Record<string, string> = {
+  common: '共同原则', chat: '交流', autonomous: '自主活动', activity: '活动与任务',
+  proactive: '主动联系', world: '世界行动', social: '伙伴交往', reflection: '经历反思',
+  diary: '经历记录', memory_capture: '经历记录', memory_consolidation: '记忆整合',
+  memory_reflection: '经历反思', memory_dream: '梦境联想', memory_recall: '记忆回忆',
+  vcp_focus_guidance: '记忆聚焦指导', vcp_focus: '记忆聚焦', host_policy: '运行策略',
+};
+function label(file: Snapshot['prompts'][number]) {
+  const labels = [...new Set(file.purposes.map(purpose => purposeLabels[purpose] ?? companionPurposeLabel(purpose)))];
+  return (labels.length > 3 ? labels.slice(0, 3).join(' · ') + '等职能指导' : labels.join(' · ')) || '其他职能指导';
+}
+
+/** Exact, read-only role instructions. This is a current asset view, never a request snapshot. */
+export function CompanionPromptAssets({ companionId, api, snapshot: supplied, initiallyOpen = false }: {
+  companionId: string; api?: Pick<WorldlineBoxCompanionsApi, 'workspace'>; snapshot?: Snapshot; initiallyOpen?: boolean;
 }) {
-  const [open, setOpen] = useState(initiallyOpen), [snapshot, setSnapshot] = useState<Snapshot>();
-  const [selected, setSelected] = useState(''), [drafts, setDrafts] = useState<Record<string, Draft>>({});
-  const [error, setError] = useState(''), [notice, setNotice] = useState(''), [loading, setLoading] = useState(false), [saving, setSaving] = useState(false);
-  const owner = useRef(companionId), serial = useRef(0), alive = useRef(true);
-  useEffect(() => {
-    owner.current = companionId; serial.current++; alive.current = true;
-    return () => { alive.current = false; };
-  }, [companionId]);
-  const current = snapshot?.companionId === companionId ? snapshot : undefined;
-  const file = current?.prompts.find(item => item.path === selected) ?? current?.prompts[0];
-  const key = file ? companionId + '/' + file.path : '', storedDraft = key ? drafts[key] : undefined;
-  const draft = storedDraft ?? (file ? { revision: file.revision, content: file.content } : undefined);
-  const dirty = !!file && !!draft && draft.content !== file.content;
-  useEffect(() => { onDirtyChange?.(dirty); return () => onDirtyChange?.(false); }, [dirty, onDirtyChange]);
+  const [open, setOpen] = useState(initiallyOpen), [loaded, setLoaded] = useState<Snapshot>();
+  const [error, setError] = useState(''), [loading, setLoading] = useState(false);
+  const lifecycle = useRef({ serial: 0, alive: false });
+  const snapshot = supplied?.companionId === companionId ? supplied : loaded?.companionId === companionId ? loaded : undefined;
   const refresh = useCallback(async () => {
-    if (!api?.workspace) { setError('伙伴提示词文件接口暂不可用。'); return; }
-    const requestOwner = companionId, sequence = ++serial.current; setLoading(true); setError(''); setNotice('');
+    const state = lifecycle.current, sequence = ++state.serial; setLoading(true); setError('');
     try {
-      const response = await api.workspace({ type: 'companion.assets.read', companionId: requestOwner });
-      if (!alive.current || owner.current !== requestOwner || sequence !== serial.current) return;
-      if (!response.ok || response.companionAssets?.companionId !== requestOwner) throw new Error(response.error || '当前伙伴提示词文件不可读取。');
-      setSnapshot(response.companionAssets);
-      setSelected(previous => response.companionAssets!.prompts.some(item => item.path === previous) ? previous : response.companionAssets!.prompts[0]?.path ?? '');
-    } catch (cause) { if (alive.current && owner.current === requestOwner && sequence === serial.current) setError(cause instanceof Error ? cause.message : '提示词读取失败。'); }
-    finally { if (alive.current && owner.current === requestOwner && sequence === serial.current) setLoading(false); }
+      const response = await api?.workspace?.({ type: 'companion.assets.read', companionId });
+      if (!state.alive || sequence !== state.serial) return;
+      if (!response?.ok || response.companionAssets?.companionId !== companionId) throw new Error(response?.error || '当前职能指导暂不可读取。');
+      setLoaded(response.companionAssets);
+    } catch (cause) { if (state.alive && sequence === state.serial) { setLoaded(undefined); setError(cause instanceof Error ? cause.message : '读取失败。'); } }
+    finally { if (state.alive && sequence === state.serial) setLoading(false); }
   }, [api, companionId]);
   useEffect(() => {
-    if (!open) return;
-    let cancelled = false;
-    void Promise.resolve().then(() => { if (!cancelled) return refresh(); });
-    return () => { cancelled = true; };
-  }, [open, refresh]);
-  const save = async () => {
-    if (!api?.workspace || !file || !draft || disabled || saving) return;
-    const requestOwner = companionId, path = file.path, submitted = draft, sequence = ++serial.current;
-    setSaving(true); setError(''); setNotice('');
-    try {
-      const response = await api.workspace({ type: 'companion.assets.prompt.save', companionId: requestOwner, path,
-        expectedRevision: submitted.revision, content: submitted.content });
-      if (!alive.current || owner.current !== requestOwner || sequence !== serial.current) return;
-      if (!response.ok || response.companionAssets?.companionId !== requestOwner) throw new Error(response.error || '保存未完成；本地草稿已保留。');
-      const saved = response.companionAssets.prompts.find(item => item.path === path);
-      if (!saved) throw new Error('保存后的文件清单发生变化；本地草稿已保留。');
-      setSnapshot(response.companionAssets); setDrafts(previous => ({ ...previous, [requestOwner + '/' + path]: { revision: saved.revision, content: saved.content } }));
-      setNotice('已保存到此伙伴的 ' + path + '，后续调用与新维护会话会实时读取。');
-    } catch (cause) { if (alive.current && owner.current === requestOwner && sequence === serial.current) setError(cause instanceof Error ? cause.message : '保存失败；本地草稿已保留。'); }
-    finally { if (alive.current && owner.current === requestOwner && sequence === serial.current) setSaving(false); }
-  };
+    const state = lifecycle.current, updates = createCoalescedRefresh(refresh);
+    state.alive = true;
+    if (open && !supplied) void updates.trigger();
+    return () => { state.alive = false; ++state.serial; updates.dispose(); };
+  }, [open, supplied, refresh]);
   return <section className="companion-prompt-assets"><details open={open} onToggle={event => setOpen(event.currentTarget.open)}>
-    <summary>行为模块与记忆规则{current && <small> · {current.prompts.filter(file => file.path.endsWith('.md')).length} 个提示词模块</small>}</summary>
+    <summary>角色相关职能指导 · 只读</summary>
     {open && <div className="companion-prompt-assets-body">
-      <p className="companions-subtle">这些模块在创建伙伴时一次生成，每次按职责选用，不会随着聊天自动新增。编辑会更新原文件；日记、知识与成长记录在各自分类中积累。</p>
-      <p className="companions-subtle">记忆策略.json管理静默窗口、批次、深度维护与梦境频率；它不作为提示词发送给模型。现有维护会话保留开始时的策略，新会话使用当前文件。</p>
-      {current?.memoryPolicyError && <p role="alert">{current.memoryPolicyError}</p>}
-      {error && <p role="alert">{error} 本地草稿会保留；可重读文件后核对。</p>}
-      {notice && <p role="status">{notice}</p>}
-      <div className="companion-prompt-assets-controls"><label>提示词文件<select aria-label="提示词文件" disabled={loading || saving} value={file?.path ?? ''}
-        onChange={event => { setSelected(event.target.value); setError(''); setNotice(''); }}>
-        {!current && <option value="">{loading ? '正在读取…' : '尚未读取'}</option>}
-        {current?.prompts.map(item => <option value={item.path} key={item.path}>{item.path}</option>)}
-      </select></label><button type="button" className="companion-secondary-button" disabled={loading || saving} onClick={() => void refresh()}>重读文件</button></div>
-      {file && draft && <><p className="companions-subtle"><code>{companionId}/{file.path}</code>{file.purposes.length ? ' · ' + file.purposes.join('、') : ''}</p>
-        <textarea aria-label="提示词正文" spellCheck={false} value={draft.content} disabled={disabled || saving}
-          onChange={event => setDrafts(previous => ({ ...previous, [key]: { revision: draft.revision, content: event.target.value } }))} />
-        <div className="companion-prompt-assets-controls"><button type="button" className="companion-primary-button" disabled={disabled || loading || saving || !dirty || !draft.content.trim()}
-          onClick={() => void save()}>{saving ? '正在保存…' : '保存到伙伴文件'}</button>
-          {storedDraft && (dirty || storedDraft.revision !== file.revision) && <button type="button" className="companion-secondary-button" disabled={saving}
-            onClick={() => { setDrafts(previous => ({ ...previous, [key]: { revision: file.revision, content: file.content } })); setError(''); setNotice('已用刚读取的文件内容替换本地草稿。'); }}>使用最新文件替换草稿</button>}
-          <small>{dirty ? '有未保存草稿' : '已与读取的文件一致'}</small></div></>}
+      <p className="companions-subtle">下列是当前资料中按用途配置的完整指导，运行时按任务选择。它们不代表某次模型实际收到的全部上下文；实际采用情况请查看“本次实际上下文”。</p>
+      {snapshot?.memoryPolicyError && <p role="alert">{snapshot.memoryPolicyError}</p>}
+      {error && <p role="alert">{error}</p>}
+      {loading ? <p role="status">正在核对当前职能指导…</p> : snapshot ? <>
+        {!snapshot.prompts.length && <p>当前没有可展示的职能指导。</p>}
+        {snapshot.prompts.filter(file => !file.purposes.includes('host_policy')).map(file => <details className="companion-instruction" key={file.path}>
+          <summary>{label(file)}</summary><pre className="companion-instruction-text">{file.content}</pre>
+          <details className="companion-instruction-source"><summary>来源与版本</summary><dl><dt>来源</dt><dd>{file.path}</dd><dt>版本</dt><dd><code>{file.revision}</code></dd><dt>用途标识</dt><dd>{file.purposes.join('、') || '未提供'}</dd></dl></details>
+        </details>)}
+        {snapshot.prompts.some(file => file.purposes.includes('host_policy')) && <details className="companion-instruction"><summary>记忆运行规则（不作为角色正文）</summary><p>这些规则安排记录和维护工作，不作为提示词发送给模型。</p>{snapshot.prompts.filter(file => file.purposes.includes('host_policy')).map(file => <div key={file.path}><pre className="companion-instruction-text">{file.content}</pre><small>来源 {file.path} · 版本 <code>{file.revision}</code></small></div>)}</details>}
+      </> : !error && <p>尚未读取当前职能指导。</p>}
+      {!supplied && <button type="button" className="companion-secondary-button" disabled={loading} onClick={() => void refresh()}>重新核对指导</button>}
     </div>}
   </details></section>;
 }

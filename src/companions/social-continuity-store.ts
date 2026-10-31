@@ -7,6 +7,7 @@ import type { CompanionSocialNotification, CompanionSocialOrigin } from '../shar
 import type { CompanionExecutionReadset } from '../shared/companion-execution-evidence';
 import type { CompanionUserStop } from '../shared/companion-task-stop';
 import type { CompanionTaskControlResult } from '../shared/companion-task-control';
+import { assertCompanionAgendaNativeClaim, assertCompanionAgendaNativeParent, bindCompanionAgendaNative, companionAgendaNativeBound, companionAgendaNativeParentId, controlCompanionAgendaNative } from './agenda-native-parent';
 
 type Row = Record<string, string | number | null>;
 type Scope = { companionId: string; conversationId: string };
@@ -214,13 +215,16 @@ export class CompanionSocialContinuityStore {
     }).immediate();
   }
   private save(notice: Notice, lease?: string): void {
+    if (notice.agendaInputVersion) notice.agendaRevision = (notice.agendaRevision ?? 0) + 1;
+    notice.agendaRetryAt = ['pending', 'failed'].includes(notice.status) ? lease : undefined;
     this.db.prepare('UPDATE companion_social_notifications SET status=?,lease_until=?,attempts=?,data=? WHERE id=?')
       .run(notice.status, lease ?? null, notice.attempts, JSON.stringify(notice), notice.id);
   }
   private publicNotice(notice: Notice): CompanionSocialNotification {
     const { sourceChecksum: _source, evidenceChecksum: _evidence, resultMessageId: _result, responseSource: _response,
       batchIds: _batch, dialogueChecksum: _dialogue, eventWatermark: _watermark, ...result } = notice;
-    void _source; void _evidence; void _result; void _response; void _batch; void _dialogue; void _watermark; return result;
+    void _source; void _evidence; void _result; void _response; void _batch; void _dialogue; void _watermark;
+    return { ...result, agendaParentRunId: companionAgendaNativeParentId(this.db, 'notification', notice.id, notice.companionId) };
   }
   private eventWatermark(originId: string): number {
     return Number(row(this.db.prepare('SELECT COALESCE(MAX(rowid),0) AS ordinal FROM companion_social_notifications WHERE origin_id=?').get(originId)).ordinal);
@@ -341,20 +345,27 @@ export class CompanionSocialContinuityStore {
     }
     return { ok: true, socialPending: true };
   }
-  claim(): CompanionStorageResponse {
+  claim(input?: Extract<CompanionStorageCommand, { type: 'social.notification.claim' }>): CompanionStorageResponse {
     return this.db.transaction(() => {
+      if (input) assertCompanionAgendaNativeClaim(this.db, input, 'notification');
       this.observeVisits(); if (this.backlog()) return { ok: true };
-      const values = this.db.prepare("SELECT data FROM companion_social_notifications WHERE COALESCE(json_extract(data,'$.terminal'),0)=0 AND (status='pending' OR status IN('running','failed') AND lease_until<=?) ORDER BY created_at,rowid LIMIT 32").all(iso()) as Row[];
+      const values = this.db.prepare("SELECT data FROM companion_social_notifications WHERE COALESCE(json_extract(data,'$.terminal'),0)=0 AND (? IS NULL OR companion_id=?) AND (? IS NULL OR id=?) AND (status='pending' AND (lease_until IS NULL OR lease_until<=?) OR status IN('running','failed') AND lease_until<=?) ORDER BY created_at,rowid LIMIT 32")
+        .all(input?.companionId ?? null, input?.companionId ?? null, input?.id ?? null, input?.id ?? null, iso(), iso()) as Row[];
       for (const value of values) {
         const notice = parse<Notice>(value.data);
+        if (input?.expectedInputVersion && notice.agendaInputVersion !== input.expectedInputVersion) throw new Error('原后续回报的固定输入已变化，未恢复其他版本。');
+        if (companionAgendaNativeBound(this.db, 'notification', notice.id)) {
+          if (!input?.agendaRunId) continue;
+          if (notice.status === 'running') { notice.status = 'parked'; notice.agendaUncertain = true; notice.error = '先前日程回报的结果未确认，保留真实事件等待明确处置。'; delete notice.leaseToken; this.save(notice); continue; }
+        }
         if (!this.db.prepare("SELECT 1 FROM companions WHERE id=? AND json_extract(data,'$.active')=1").get(notice.companionId)) continue;
         if (!this.validNotice(notice)) { notice.status = 'cancelled'; delete notice.leaseToken; this.save(notice); continue; }
-        if (!companionAttentionCanClaim(this.db, notice.companionId, notice.sourceMessageId) || !this.ready(notice.companionId) || companionPlayerPhoneBusy(this.db, notice.companionId) || this.db.prepare("SELECT 1 FROM companion_social_jobs WHERE companion_id=? AND status='running' AND lease_until>? LIMIT 1").get(notice.companionId, iso())
+        if (!companionAttentionCanClaim(this.db, notice.companionId, notice.sourceMessageId, !!input?.agendaRunId) || !this.ready(notice.companionId) || companionPlayerPhoneBusy(this.db, notice.companionId) || this.db.prepare("SELECT 1 FROM companion_social_jobs WHERE companion_id=? AND status='running' AND lease_until>? LIMIT 1").get(notice.companionId, iso())
           || this.db.prepare("SELECT 1 FROM companion_activity_tasks WHERE companion_id=? AND report_pending=1 AND json_extract(data,'$.reportLeaseUntil')>? LIMIT 1").get(notice.companionId, Date.now())
           || this.db.prepare("SELECT 1 FROM companion_social_communication WHERE companion_id=? AND until_real>? AND json_extract(data,'$.phase')='typing'").get(notice.companionId, iso())
           || this.db.prepare("SELECT 1 FROM companion_social_notifications WHERE companion_id=? AND status='running' AND lease_until>? LIMIT 1").get(notice.companionId, iso())) continue;
         // Collapse already waiting facts for the same delegation into one coherent report.
-        const siblings = this.db.prepare("SELECT data FROM companion_social_notifications WHERE origin_id=? AND id!=? AND COALESCE(json_extract(data,'$.terminal'),0)=0 AND (status='pending' OR status IN('running','failed') AND lease_until<=?) ORDER BY created_at,rowid LIMIT ?")
+        const siblings = input?.id ? [] : this.db.prepare("SELECT data FROM companion_social_notifications WHERE origin_id=? AND id!=? AND COALESCE(json_extract(data,'$.terminal'),0)=0 AND (status='pending' OR status='failed' AND lease_until<=?) ORDER BY created_at,rowid LIMIT ?")
           .all(notice.origin.id, notice.id, iso(), NOTIFICATION_BATCH_LIMIT - 1) as Row[];
         const batch = [notice];
         for (const sibling of siblings) {
@@ -364,8 +375,10 @@ export class CompanionSocialContinuityStore {
         }
         const token = hash([notice.id, notice.attempts + 1, Date.now()]).slice(0, 48), until = new Date(Date.now() + 180000).toISOString();
         for (const item of batch) {
+          if (input?.agendaRunId) { item.agendaInputVersion = hash([item.companionId, item.id, item.sourceChecksum, item.evidenceChecksum, item.eventId]); item.agendaFailureCount ??= 0; item.agendaCycleFailureCount ??= 0; }
           item.status = 'running'; item.attempts++; item.leaseToken = token;
           delete item.batchIds; delete item.events; delete item.dialogue; delete item.dialogueChecksum; delete item.eventWatermark; this.save(item, until);
+          if (input) bindCompanionAgendaNative(this.db, input, 'notification', item.id, token);
         }
         notice.batchIds = batch.map(item => item.id);
         notice.events = batch.map(({ kind, eventId, peerConversationId, evidence }) => ({ kind, eventId, peerConversationId, evidence }));
@@ -382,6 +395,7 @@ export class CompanionSocialContinuityStore {
       const found = this.db.prepare('SELECT * FROM companion_social_notifications WHERE id=?').get(input.id);
       if (!found) throw new Error('这次后续回报已经失效。'); const value = row(found), notice = parse<Notice>(value.data);
       if (notice.status === 'done') return { ok: true, ...(notice.resultMessageId ? { message: this.message(notice.resultMessageId) } : {}) };
+      assertCompanionAgendaNativeParent(this.db, 'notification', notice.id, notice.companionId, input.leaseToken);
       if (notice.status !== 'running' || notice.leaseToken !== input.leaseToken || Date.parse(String(value.lease_until)) < Date.now()
         || !this.validNotice(notice)) throw new Error('后续回报的来源或租约已经变化。');
       const batch = this.batch(notice);
@@ -407,6 +421,11 @@ export class CompanionSocialContinuityStore {
       const notice = parse<Notice>(row(found).data); if (notice.status !== 'running' || notice.leaseToken !== input.leaseToken) return;
       for (const item of this.batch(notice)) {
         if (item.status !== 'running' || item.leaseToken !== input.leaseToken) continue;
+        if (item.agendaInputVersion) {
+          item.agendaFailureCount = (item.agendaFailureCount ?? 0) + 1; item.agendaCycleFailureCount = (item.agendaCycleFailureCount ?? 0) + 1;
+          item.status = input.terminal || item.agendaCycleFailureCount >= 3 ? 'parked' : 'failed'; item.error = input.error; delete item.leaseToken;
+          this.save(item, item.status === 'failed' ? new Date(Date.now() + Math.min(900000, 10000 * 2 ** Math.min(item.agendaCycleFailureCount, 7))).toISOString() : undefined); continue;
+        }
         if (input.terminal) {
           item.status = 'failed'; item.terminal = true; item.error = input.error; delete item.leaseToken;
           this.save(item); continue;
@@ -419,7 +438,34 @@ export class CompanionSocialContinuityStore {
   execute(command: CompanionStorageCommand): CompanionStorageResponse | undefined {
     switch (command.type) {
       case 'social.delegation.record': this.record(command); return { ok: true };
-      case 'social.notification.claim': return this.claim();
+      case 'social.notification.claim': return this.claim(command);
+      case 'social.notification.read': {
+        const found = this.db.prepare('SELECT data FROM companion_social_notifications WHERE id=? AND companion_id=?').get(command.id, command.companionId);
+        return { ok: true, ...(found ? { socialNotification: this.publicNotice(parse<Notice>(row(found).data)) } : {}) };
+      }
+      case 'social.notification.control': return this.db.transaction(() => {
+        const found = this.db.prepare('SELECT data FROM companion_social_notifications WHERE id=? AND companion_id=?').get(command.id, command.companionId);
+        if (!found) throw new Error('伙伴后续回报不存在。');
+        const notice = controlCompanionAgendaNative(this.db, 'notification', command, parse<Notice>(row(found).data), value => {
+          for (const item of this.batch(value)) if (item.id !== value.id && item.companionId === value.companionId) {
+            item.status = value.status; delete item.leaseToken; delete item.terminal;
+            if (command.action === 'resume') { item.agendaCycleFailureCount = 0; delete item.agendaUncertain; delete item.error; }
+            this.save(item);
+          }
+          this.save(value);
+        });
+        return { ok: true, socialNotification: this.publicNotice(notice) };
+      }).immediate();
+      case 'social.notification.defer': return this.db.transaction(() => {
+        const found = this.db.prepare('SELECT data FROM companion_social_notifications WHERE id=? AND companion_id=?').get(command.id, command.companionId);
+        if (!found) return { ok: true }; const notice = parse<Notice>(row(found).data);
+        if (notice.status !== 'running' || notice.leaseToken !== command.leaseToken) return { ok: true };
+        for (const item of this.batch(notice)) if (item.status === 'running' && item.leaseToken === command.leaseToken) {
+          item.status = command.uncertain ? 'parked' : 'pending'; item.agendaUncertain = command.uncertain || undefined; item.error = command.error; delete item.leaseToken;
+          this.save(item, command.uncertain ? undefined : new Date(Date.now() + command.retryAfterMs).toISOString());
+        }
+        return { ok: true };
+      }).immediate();
       case 'social.notification.complete': return this.complete(command);
       case 'social.notification.fail': this.fail(command); return { ok: true };
       default: return undefined;

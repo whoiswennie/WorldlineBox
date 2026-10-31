@@ -1,12 +1,14 @@
 import { z } from 'zod';
 import { companionMemorySchema } from './companion-memory';
+import { companionMemoryContentKindsSchema } from './companion-memory-scope';
 
 const projectionId = z.string().regex(/^[a-zA-Z0-9_-]{1,100}$/u), counter = z.number().int().nonnegative().safe();
-const projectionScope = { companionId: projectionId, conversationId: projectionId, beforeSequence: counter.optional() };
+const projectionScope = { companionId: projectionId, conversationId: projectionId, beforeSequence: counter.optional(), contentKinds: companionMemoryContentKindsSchema.optional(), publishedOnly: z.boolean().optional() };
 /** Host-only metadata describes an authorized native projection, never supplies
  * model prose. Canonical owner files still supply every changed/selected body. */
 export const companionMemoryProjectionNoteSchema = companionMemorySchema.omit({ content: true }).extend({
-  bodyFingerprint: z.string().regex(/^[a-f0-9]{64}$/u), projectionFingerprint: z.string().regex(/^[a-f0-9]{64}$/u), notBeforeSequence: counter,
+  bodyFingerprint: z.string().regex(/^[a-f0-9]{64}$/u), contentHash: z.string().regex(/^[a-f0-9]{64}$/u).optional(),
+  projectionFingerprint: z.string().regex(/^[a-f0-9]{64}$/u), notBeforeSequence: counter,
 }).strict();
 export type CompanionMemoryProjectionNote = z.infer<typeof companionMemoryProjectionNoteSchema>;
 export const companionMemoryProjectionStateSchema = z.strictObject({ companionId: projectionId, sequence: counter, floorSequence: counter,

@@ -158,7 +158,7 @@ it('records capture and index processing separately, and withholds withdrawn mem
   // This case inspects durable processing receipts, not quiet admission.
   const job = store.request({ type: 'memory.jobs.claim', companionId: 'alice', force: true }).memoryJob!;
   expect(job.sourceMessageIds).toEqual([source.id]);
-  const note = store.request({ type: 'memory.jobs.complete', id: job.id, leaseToken: job.leaseToken, notes: [{ content: source.content, sourceMessageIds: [source.id], evidence: [{ sourceMessageId: source.id, quote: source.content }], tags: [], relatedMemoryIds: [], sourceChecksums: job.sourceChecksums }] }).memories![0]!;
+  const note = store.request({ type: 'memory.jobs.complete', id: job.id, leaseToken: job.leaseToken, notes: [{ artifactKind: 'episode_memory' as const, content: source.content, sourceMessageIds: [source.id], evidence: [{ sourceMessageId: source.id, quote: source.content }], tags: [], relatedMemoryIds: [], sourceChecksums: job.sourceChecksums }] }).memories![0]!;
   const outbox = store.request({ type: 'memory.outbox.claim', companionId: 'alice' }).memoryOutbox!;
   store.request({ type: 'memory.outbox.complete', id: outbox.id, leaseToken: outbox.leaseToken, indexed: true });
   const page = items(), processing = page.items.filter(item => item.source.kind === 'memory_processing');
@@ -171,22 +171,25 @@ it('records capture and index processing separately, and withholds withdrawn mem
   expect(JSON.stringify(store.request({ type: 'experience.read', companionId: 'alice', id: entry.id }))).not.toContain(source.content);
 });
 
-it('binds native experience reads and rename to self, budgets the body, and retains real provenance through withdrawal', async () => {
+it('rejects autonomous experience recall while retaining internal/UI reads and source withdrawal', async () => {
   const { task, source, current } = action();
   store.request({ type: 'action.update', id: task.id, patch: { status: 'succeeded', result: 'SOURCE_PRIVATE' + '实际内容'.repeat(3000) } });
   const instance = Object.create(CompanionService.prototype) as { call(command: CompanionStorageCommand): Promise<CompanionStorageResponse> };
   Object.assign(instance, { storage: { request: async (command: CompanionStorageCommand) => store.request(command) }, sourceValidationRevision: 0, evidenceRevision: 0,
     memory: { contextValid: async () => true, schedule: () => undefined, invalidate: async () => undefined }, resettingCompanions: new Set(), options: { report: () => undefined }, changed: () => undefined });
-  const capability = companionRecallCapabilities(command => instance.call(command), current), entry = items().items.find(item => item.source.id === task.id)!;
+  const request = vi.fn((command: CompanionStorageCommand) => instance.call(command));
+  const capability = companionRecallCapabilities(request, current), entry = items().items.find(item => item.source.id === task.id)!;
   const call = { id: 'read_experience', name: 'world', arguments: JSON.stringify({ action: 'experience', parameters: { action: 'read', id: entry.id } }) };
-  const result = await capability.execute(call) as CompanionStorageResponse & { truncated: boolean };
-  expect(result.truncated).toBe(true); expect(result.experienceDetail!.sections.reduce((n, item) => n + item.text.length, 0)).toBeLessThanOrEqual(8000);
-  const proof = captureCompanionExecutionReadset(current, { turns: [{ text: '', rawText: '', calls: [call], results: [{ callId: call.id, content: JSON.stringify(result) }] }] });
-  expect(proof.sources).toEqual(expect.arrayContaining([expect.objectContaining({ id: source.id })]));
-  await expect(capability.execute({ ...call, arguments: JSON.stringify({ action: 'experience', parameters: { action: 'read', id: entry.id, companionId: 'bob' } }) })).rejects.toThrow();
+  expect(capability.tools).toEqual([]);
+  expect(await capability.execute(call)).toMatchObject({ ok: false, code: 'MEMORY_TOOL_DISABLED' });
+  expect(await capability.execute({ ...call, arguments: JSON.stringify({ action: 'experience', parameters: { action: 'read', id: entry.id, companionId: 'bob' } }) }))
+    .toMatchObject({ ok: false, code: 'MEMORY_TOOL_DISABLED' });
+  expect(request).not.toHaveBeenCalled();
+  const result = await instance.call({ type: 'experience.read', companionId: 'alice', id: entry.id });
+  expect(result.experienceDetail?.entry.status).toBe('completed'); expect(JSON.stringify(result)).toContain('SOURCE_PRIVATE');
   expect(companionsRequestSchema.safeParse({ type: 'experience.publish', companionId: 'alice', id: 'fake', title: '伪造完成', status: 'completed', summary: '无真实执行' }).success).toBe(false);
   store.request({ type: 'memory.forget', ...current, sourceMessageIds: [source.id] });
-  const after = await capability.execute(call) as CompanionStorageResponse;
+  const after = await instance.call({ type: 'experience.read', companionId: 'alice', id: entry.id });
   expect(after.experienceDetail!.entry.status).toBe('completed'); expect(JSON.stringify(after)).not.toContain('SOURCE_PRIVATE');
 });
 
@@ -198,10 +201,14 @@ it('retries a failed projection without blocking the actual producer and clears 
   sql(db => expect(db.prepare('SELECT attempts,error FROM companion_experience_projection WHERE source_id=?').get(task.id)).toMatchObject({ attempts: 1, error: expect.any(String) }));
   store.request({ type: 'action.update', id: task.id, patch: { status: 'failed', error: '真实终态仍可提交' } });
   expect(items().items.find(item => item.source.id === task.id)?.status).toBe('failed');
-  const job = store.request({ type: 'companion.reset', id: 'alice', scope: 'all' }).reset!;
-  store.request({ type: 'companion.reset.cleanup', id: 'alice', jobId: job.id });
-  for (let n = 0; n < 200 && store.request({ type: 'companion.reset.status', id: 'alice' }).reset!.status !== 'completed'; n++) await store.advanceReset();
-  expect(store.request({ type: 'experience.days', companionId: 'alice', limit: 31 }).experienceDays!.days).toEqual([]);
+  const job = store.request({ type: 'companion.retire', id: 'alice', scope: 'all' }).reset!;
+  store.request({ type: 'companion.retire.cleanup', id: 'alice', jobId: job.id });
+  for (let n = 0; n < 200 && store.request({ type: 'companion.retire.status', id: 'alice' }).reset!.status !== 'completed'; n++) await store.advanceReset();
+  expect(() => store.request({ type: 'experience.days', companionId: 'alice', limit: 31 })).toThrow('伙伴不存在');
+  sql(db => {
+    expect(db.prepare('SELECT 1 FROM companion_experiences WHERE companion_id=?').get('alice')).toBeUndefined();
+    expect(db.prepare('SELECT 1 FROM companion_experience_projection WHERE companion_id=?').get('alice')).toBeUndefined();
+  });
   expect(existsSync(path.join(root, 'experiences', 'alice'))).toBe(false);
   expect(items('bob').items.some(item => item.source.id === bob.task.id)).toBe(true);
 });

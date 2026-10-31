@@ -185,7 +185,7 @@ it('recovers a durable unfinished claim, rejects stale leases and cancels paused
   expect(resumed.status).toBe('accepted'); expect(resumed.actionId).toBe(action.id); expect(reopened.request({ type: 'work-order.claim' }).workOrderClaim!.order.id).toBe(order.id);
 });
 
-it('resets work and life state in batches, blocks stale completion and preserves another assignee', async () => {
+it('retires work and life state in batches, blocks stale completion and preserves another assignee while a new identity starts independently', async () => {
   const f = fixture(), bob = { companionId: 'bob', conversationId: f.store.openPrivate('bob').id };
   const order = f.store.request({ type: 'work-order.create', ...f.scope, title: '要重置的工作', instruction: '检查。' }).workOrder!;
   const claim = f.store.request({ type: 'work-order.claim', companionId: 'alice' }).workOrderClaim!;
@@ -194,18 +194,23 @@ it('resets work and life state in batches, blocks stale completion and preserves
   f.store.request({ type: 'life-rule.remove', companionId: 'alice', id: defaults[0]!.id, expectedRevision: defaults[0]!.revision });
   const lifeRequest = { type: 'life-rule.create' as const, companionId: 'alice', clientId: 'new_after_factory_reset', rule: { title: '可重置的生活事件', enabled: true, startMinute: 600, endMinute: 660, probability: .5, action: 'rest' as const } };
   const oldLife = f.store.request(lifeRequest).lifeRule!;
-  const started = f.store.request({ type: 'companion.reset', id: 'alice', scope: 'all' }).reset!;
-  expect(() => f.store.request({ type: 'work-order.fail', id: order.id, leaseToken: claim.leaseToken, error: '重置中的迟到回包' })).toThrow('重置');
-  f.store.request({ type: 'companion.reset.cleanup', id: 'alice', jobId: started.id });
-  for (let index = 0; index < 1000 && f.store.request({ type: 'companion.reset.status', id: 'alice' }).reset!.status !== 'completed'; index++) await f.store.advanceReset();
-  expect(f.store.request({ type: 'companion.reset.status', id: 'alice' }).reset!.status).toBe('completed');
+  const started = f.store.request({ type: 'companion.retire', id: 'alice', scope: 'all' }).reset!;
+  expect(() => f.store.request({ type: 'work-order.fail', id: order.id, leaseToken: claim.leaseToken, error: '退役中的迟到回包' })).toThrow('删除清理');
+  f.store.request({ type: 'companion.retire.cleanup', id: 'alice', jobId: started.id });
+  for (let index = 0; index < 1000 && f.store.request({ type: 'companion.retire.status', id: 'alice' }).reset!.status !== 'completed'; index++) await f.store.advanceReset();
+  expect(f.store.request({ type: 'companion.retire.status', id: 'alice' }).reset!.status).toBe('completed');
   expect(() => f.store.request({ type: 'work-order.complete', id: order.id, leaseToken: claim.leaseToken, result: '不能复活' })).toThrow('不存在');
-  expect(f.store.request({ type: 'work-order.list', ...f.scope, includeHistory: true }).workOrderPage!.items).toEqual([]);
+  expect(() => f.store.request({ type: 'work-order.list', ...f.scope, includeHistory: true })).toThrow('工作单不属于当前伙伴或聊天');
   expect(companionStorageResponseSchema.parse(f.store.request({ type: 'work-order.list', ...bob })).workOrderPage!.items[0]!.id).toBe(other.id);
-  const resetDefaults = f.store.request({ type: 'life-rule.list', companionId: 'alice' }).lifeRules!;
+  expect(() => f.store.request({ type: 'life-rule.list', companionId: 'alice' })).toThrow('不存在');
+  const replacement = f.store.restoreBuiltin('alice'); expect(replacement.id).not.toBe('alice');
+  const nextScope = { companionId: replacement.id, conversationId: f.store.openPrivate(replacement.id).id };
+  expect(nextScope.conversationId).not.toBe(f.scope.conversationId);
+  expect(f.store.request({ type: 'work-order.list', ...nextScope, includeHistory: true }).workOrderPage!.items).toEqual([]);
+  const resetDefaults = f.store.request({ type: 'life-rule.list', companionId: replacement.id }).lifeRules!;
   expect(resetDefaults.map(rule => rule.action).sort()).toEqual(['message', 'park_walk']);
   expect(resetDefaults.some(rule => rule.action === 'message' && rule.targetId === 'user')).toBe(false);
-  expect(f.store.request(lifeRequest).lifeRule!.id).not.toBe(oldLife.id);
+  expect(f.store.request({ ...lifeRequest, companionId: replacement.id }).lifeRule!.id).not.toBe(oldLife.id);
 });
 
 it('does not claim a deleted custom contact or revive its late leased execution', () => {

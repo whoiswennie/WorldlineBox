@@ -65,7 +65,8 @@ it('projects and shares exact action readsets without parsing a large unrelated 
     if (sql.includes("json_extract(value,'$.executionReadset')")) projectedQueries++;
     return f.db.prepare(sql);
   } } as unknown as CompanionConnection;
-  const resolver = new CompanionExecutionSourceStore(counted, { sources: f.access } as CompanionMemoryStore);
+  const resolver = new CompanionExecutionSourceStore(counted, { sources: f.access,
+    lifecycleState: (companionId: string) => f.store.request({ type: 'memory.lifecycle.state', companionId }).memoryLifecycleState! } as CompanionMemoryStore);
   const parsed = vi.spyOn(JSON, 'parse');
   try {
     const actual = resolver.resolve(ids);
@@ -85,7 +86,8 @@ it('reads status and original request from large completed loops without parsing
   const parsed = vi.spyOn(JSON, 'parse');
   try {
     expect(f.access.filter(f.alice, f.nodes.slice(-2).map(node => node.id))).toHaveLength(2);
-    const resolver = new CompanionExecutionSourceStore(f.db, { sources: f.access } as CompanionMemoryStore);
+  const resolver = new CompanionExecutionSourceStore(f.db, { sources: f.access,
+    lifecycleState: (companionId: string) => f.store.request({ type: 'memory.lifecycle.state', companionId }).memoryLifecycleState! } as CompanionMemoryStore);
     expect(resolver.resolve(f.nodes.slice(1).map(node => node.id))).toHaveLength(8);
     expect(parsed.mock.calls.some(([value]) => typeof value === 'string' && value.includes('UNRELATED_FROZEN_MODEL_CONTEXT_'))).toBe(false);
   } finally { parsed.mockRestore(); }
@@ -94,7 +96,8 @@ it('reads status and original request from large completed loops without parsing
 it('resolves each shared adjacency once for many roots and retains all roots affected by a withdrawn ancestor', () => {
   const f = fixture(24), roots = f.nodes.slice(1), queries: string[] = [];
   const counted = { prepare: (sql: string) => { queries.push(sql); return f.db.prepare(sql); } } as unknown as CompanionConnection;
-  const resolver = new CompanionExecutionSourceStore(counted, { sources: f.access } as CompanionMemoryStore);
+  const resolver = new CompanionExecutionSourceStore(counted, { sources: f.access,
+    lifecycleState: (companionId: string) => f.store.request({ type: 'memory.lifecycle.state', companionId }).memoryLifecycleState! } as CompanionMemoryStore);
   const proofs = resolver.resolve(roots.map(message => message.id));
   expect(proofs).toHaveLength(24);
   expect(queries.filter(sql => sql === 'SELECT action_id,author_id,conversation_id FROM messages WHERE id=?')).toHaveLength(25);
@@ -106,7 +109,7 @@ it('resolves each shared adjacency once for many roots and retains all roots aff
 });
 function noteFixture(count: number) {
   const f = fixture(0), source = f.base;
-  const original = f.store.request({ type: 'memory.record', ...f.alice, candidate: { content: source.content,
+  const original = f.store.request({ type: 'memory.record', ...f.alice, candidate: { artifactKind: 'episode_memory' as const, content: source.content,
     sourceMessageIds: [source.id], evidence: [{ sourceMessageId: source.id, quote: source.content }] } }).memories![0]!;
   const outbox = f.store.request({ type: 'memory.outbox.claim' }).memoryOutbox!;
   f.store.request({ type: 'memory.outbox.complete', id: outbox.id, leaseToken: outbox.leaseToken, indexed: true });
@@ -117,7 +120,7 @@ function noteFixture(count: number) {
     const parents = noteIds.slice(-2).map(id => f.store.request({ type: 'memory.read', ...f.alice, id }).memoryRead!.memory);
     const note = f.store.request({ type: 'memory.record', ...f.alice,
       readMemories: parents.map(parent => ({ id: parent.id, version: parent.version, contentRevision: parent.contentRevision! })),
-      candidate: { content: 'DERIVED_NOTE_' + index, sourceMessageIds: [source.id],
+      candidate: { artifactKind: 'episode_memory' as const, content: 'DERIVED_NOTE_' + index, sourceMessageIds: [source.id],
         evidence: [{ sourceMessageId: source.id, quote: source.content }], relatedMemoryIds: parents.map(parent => parent.id) } }).memories![0]!;
     const publication = f.store.request({ type: 'memory.outbox.claim', companionId: f.alice.companionId }).memoryOutbox!;
     expect(publication.note.id).toBe(note.id);
@@ -236,7 +239,7 @@ it('keeps annotation changes legal but rechecks exact ancestor body revisions ev
   expect(annotated.contentRevision).toBe(f.original.contentRevision);
   expect(f.read()).toBeDefined();
   f.store.request({ type: 'memory.revise', ...f.alice, id: annotated.id, expectedVersion: annotated.version,
-    candidate: { content: 'REVISED_ANCESTOR_BODY_427', sourceMessageIds: [f.base.id], evidence: [{ sourceMessageId: f.base.id, quote: f.base.content }] } });
+    candidate: { artifactKind: 'episode_memory' as const, content: 'REVISED_ANCESTOR_BODY_427', sourceMessageIds: [f.base.id], evidence: [{ sourceMessageId: f.base.id, quote: f.base.content }] } });
   expect(f.store.request({ type: 'memory.read', ...f.alice, id: annotated.id }).memoryRead!.memory.contentRevision).toBe(f.original.contentRevision! + 1);
   expect(dependency().version).toBe(f.original.contentRevision);
   expect(() => f.read()).toThrow('日记来源失效');
@@ -382,4 +385,42 @@ it('keeps the original topic participant-or-invitee ACL for immutable old checkp
   f.store.request({ type: 'topic.update', conversationId: f.alice.conversationId, topicId: f.topic.id, readerId: 'user', expectedRevision: left.revision, patch: { invitedIds: [] } });
   expect(() => f.store.request({ type: 'topic.sources.valid', conversationId: f.alice.conversationId, topicId: f.topic.id, readerId: 'alice', sourceMessageIds: [], checkpointEventIds: [state.sourceEventId] })).toThrow('当前读者');
   expect(proof()?.storageValidatedReadsetDigest).toBeUndefined();
+});
+
+it('retains every root association through a dense shared message graph and its real withdrawal', () => {
+  const f = fixture(0), nodes = [...f.nodes];
+  for (let index = 0; index < 12; index++) {
+    const message = f.store.appendMessage({ conversationId: f.alice.conversationId, authorId: 'alice', content: 'DENSE_SOURCE_' + index, replyDirective: 'none' });
+    f.bind(message, nodes); nodes.push(message);
+  }
+  const roots = nodes.slice(-3).map(node => node.id);
+  const resolve = () => f.store.request({ type: 'execution.sources', sourceMessageIds: [...roots, roots[0]!] }).executionSources!;
+  const original = resolve();
+  expect(original).toHaveLength(12);
+  for (const node of nodes.slice(1)) {
+    const expected = roots.filter(id => nodes.findIndex(value => value.id === id) >= nodes.indexOf(node));
+    expect(original.find(proof => proof.id === node.id)?.sourceMessageIds).toEqual(expected);
+  }
+  const common = nodes[1]!;
+  f.store.request({ type: 'execution.invalidate', kind: 'message', id: common.id, companionId: 'alice' });
+  const withdrawn = resolve();
+  expect(withdrawn.find(proof => proof.id === common.id)).toMatchObject({ invalidated: true, sourceMessageIds: roots });
+  expect(withdrawn.filter(proof => roots.includes(proof.id)).every(proof => !proof.storageValidatedReadsetDigest)).toBe(true);
+});
+
+it('continues from an empty message queue into note and topic-event ancestry without losing either root', () => {
+  const f = topicFixture(3), state = f.readTopic().topicState!.workingState!;
+  const note = f.store.request({ type: 'memory.record', ...f.alice, candidate: { artifactKind: 'episode_memory', content: 'BASE_SOURCE_VALID_427',
+    tags: [], sourceMessageIds: [f.base.id], evidence: [{ sourceMessageId: f.base.id, quote: f.base.content }] } }).memories![0]!;
+  const readset = captureCompanionExecutionReadset(f.alice, { memories: [{ id: note.id, version: note.version }], topics: [{
+    conversationId: f.alice.conversationId, topicId: f.topic.id, sourceMessageIds: state.sourceMessageIds, checkpointEventIds: [state.sourceEventId] }] });
+  const roots = [0, 1].map(index => f.store.appendMessage({ conversationId: f.alice.conversationId, authorId: 'alice', content: 'MIXED_QUEUE_ROOT_' + index,
+    replyDirective: 'none', executionReadset: readset }).id);
+  const proof = f.store.request({ type: 'execution.sources', sourceMessageIds: roots, memoryIds: [note.id] }).executionSources!;
+  for (const source of f.nodes.slice(1)) expect(proof.find(value => value.id === source.id)?.sourceMessageIds).toEqual(roots);
+  expect(roots.every(id => proof.find(value => value.id === id)?.storageValidatedReadsetDigest)).toBe(true);
+  f.bind(f.nodes[1]!, [f.nodes.at(-1)!]);
+  const cycled = f.store.request({ type: 'execution.sources', sourceMessageIds: roots, memoryIds: [note.id] }).executionSources!;
+  expect(cycled).toHaveLength(proof.length);
+  expect(roots.every(id => !cycled.find(value => value.id === id)?.storageValidatedReadsetDigest)).toBe(true);
 });

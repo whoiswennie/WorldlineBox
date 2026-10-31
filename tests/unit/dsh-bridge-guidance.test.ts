@@ -39,6 +39,11 @@ it('does not emit the old completion when guidance arrives during native persist
     const id = agent.session.id; await post('/sessions', { sessionId: id, cwd: tmpdir() });
     const stream = await fetch(`http://127.0.0.1:${port}/sessions/${id}/events`, { headers: { Authorization: 'Bearer ' + token }, signal: signal.signal });
     pump = (async () => { let pending = ''; for await (const chunk of stream.body!) { pending += new TextDecoder().decode(chunk); const lines = pending.split('\n'); pending = lines.pop()!; for (const line of lines) if (line) events.push(JSON.parse(line)); } })().catch(() => undefined);
+    listeners.get('session/event')!(agent.session, { type: 'approval/asked', data: { id: 'permission-fixture', toolName: 'pwsh', callId: 'actual-call', reason: '启动浏览器需要确认' } });
+    listeners.get('session/event')!(agent.session, { type: 'approval/decided', data: { id: 'permission-fixture', outcome: 'allowed-once' } });
+    await vi.waitFor(() => expect(events.filter(event => event.type.startsWith('approval_')).map(event => ({ type: event.type, data: JSON.parse(event.text!) })))
+      .toEqual([{ type: 'approval_required', data: { requestId: 'permission-fixture', reason: '启动浏览器需要确认' } },
+        { type: 'approval_decided', data: { requestId: 'permission-fixture', outcome: 'allowed-once' } }]));
     await post(`/sessions/${id}/prompt`, { prompt: '原任务' }); await flushing.promise;
     const guidance = post(`/sessions/${id}/prompt`, { prompt: '改为展示', mode: 'steer' });
     await vi.waitFor(() => expect(prompts).toBe(2)); flushRelease.resolve(); await delay(100);

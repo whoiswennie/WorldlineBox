@@ -7,7 +7,7 @@ const { createHash, randomUUID } = require('node:crypto');
 const { URL, fileURLToPath, pathToFileURL } = require('node:url');
 const { createRequire, isBuiltin, registerHooks } = require('node:module');
 const { tmpdir } = require('node:os');
-const { OwnedMemoryRecordCatalog, fingerprintNote } = require('./record-catalog.cjs');
+const { OwnedMemoryRecordCatalog, fingerprintNote, fingerprintAnnotations } = require('./record-catalog.cjs');
 
 function failure(code, message) { return Object.assign(new Error(message), { code }); }
 function identity(value, label) {
@@ -34,7 +34,11 @@ function formattedNativeDiary(note, recordedAt) {
   const key = digest(note.id), folder = notebookFolder(note.diaryName), header = `[${day}] - ${note.author || 'WorldlineBox'}\n`;
   const content = `[${time}]\n<!-- WorldlineBoxMemory:${key} -->\n${note.content}`;
   const tags = note.tags.length ? note.tags : [note.author || 'WorldlineBox'];
-  return { day, time, key, folder, content, tags, text: `${header}${content}\nTag: ${tags.join(', ')}` };
+  // DailyNote.create applies this wire-format normalization; update must use
+  // the same bytes or a first write and its later canonical rendering differ.
+  const tagLine = tags.join(', ').replace(/\uff1a/gu, '').replace(/\uff0c|\u3001/gu, ', ').replace(/[。.]+$/gu, '')
+    .replace(/,\s*/gu, ', ').replace(/,\s{2,}/gu, ', ').replace(/\s+,/gu, ',').replace(/\s{2,}/gu, ' ').trim();
+  return { day, time, key, folder, content, tags, text: `${header}${content}\nTag: ${tagLine}` };
 }
 function renderNativeDiaryText(input) {
   const note = normalizeNote(input);
@@ -43,6 +47,26 @@ function renderNativeDiaryText(input) {
   // provenance envelope. Removing the anchor must not break later canonical
   // verification of an otherwise unchanged candidate.
   return nativeDiarySemanticText(formattedNativeDiary(note, note.occurredAt).text);
+}
+function renderNativeDiaryFileText(input) {
+  const note = normalizeNote(input);
+  if (!note.occurredAt) throw failure('VCP_MEMORY_CANONICAL_PROVENANCE_UNAVAILABLE', 'Canonical full-file rendering requires its captured occurrence.');
+  return formattedNativeDiary(note, note.occurredAt).text;
+}
+const canonicalTextPreparers = new Map();
+async function prepareCanonicalNativeText(input, vendorRoot) {
+  const root = path.resolve(vendorRoot);
+  let native = canonicalTextPreparers.get(root);
+  if (!native) {
+    const { NativeKnowledgeRuntime, VexusIndex } = createRequire(path.join(root, 'package.json'))('./rust-vexus-lite');
+    // This object calls the upstream pure text API only: no database, watcher,
+    // note catalogue, vectors or retrieval are created or populated here.
+    native = new NativeKnowledgeRuntime(new VexusIndex(1, 1)); canonicalTextPreparers.set(root, native);
+  }
+  const raw = await native.prepareText(JSON.stringify({ text: renderNativeDiaryText(input), tagBlacklist: [], tagBlacklistSuper: [], maxTags: 50, maxTokens: 6800, overlapTokens: 680 }));
+  const prepared = typeof raw === 'string' ? JSON.parse(raw) : raw;
+  if (typeof prepared?.preparedText !== 'string' || !prepared.preparedText.trim()) throw failure('VCP_MEMORY_CANONICAL_PROVENANCE_UNAVAILABLE', 'Original native text preparation did not produce canonical bytes.');
+  return prepared.preparedText;
 }
 function nativeDiarySemanticText(text) {
   return text.replace(/^<!-- WorldlineBoxMemory:[a-f0-9]{64} -->\r?$(?:\r?\n)?/gmu, '');
@@ -61,10 +85,10 @@ function embeddingConfiguration(input) {
 function normalizeNote(input) {
   const id = identity(input?.id, 'memory ID');
   const content = memoryText(input?.content, 'memory content', 65536);
-  if (/^---\r?\n[\s\S]*?"schema"\s*:\s*"worldlinebox\.companion-memory-history-v1"/u.test(content)
+  if (/^---\r?\n[\s\S]*?"schema"\s*:\s*"worldlinebox\.companion-memory-history-v[12]"/u.test(content)
     || /^<!-- WorldlineBoxMemory:[a-f0-9]{64} -->/mu.test(content))
     throw failure('VCP_MEMORY_INVALID_INPUT', 'Host provenance envelopes cannot be used as semantic memory prose.');
-  if (!Array.isArray(input.tags) || input.tags.some(tag => typeof tag !== 'string')) throw failure('VCP_MEMORY_INVALID_INPUT', 'Tags must be individual text names.');
+  if (!Array.isArray(input.tags) || input.tags.some(tag => typeof tag !== 'string' || /[\r\n\u2028\u2029]/u.test(tag))) throw failure('VCP_MEMORY_INVALID_INPUT', 'Tags must be individual single-line text names.');
   // Each array item is one label, not a comma-separated list. DailyNote's wire
   // format uses delimiters between labels; encode punctuation inside a label
   // without splitting a coordinate such as 坐标(10,13) into unrelated tags.
@@ -229,7 +253,7 @@ class VcpMemoryRuntime {
       if (profile === 'preserve-corrections') container[key] = 1;
       differences.push({ parameter, upstream, effective: container[key] });
     }
-    this.behavior = { profile, differences, generation: { aimemoBatchSize: 2, aimemoMaxTokensPerBatch: 18000,
+    this.behavior = { profile, differences, generation: { aimemoBatchSize: 5, aimemoMaxTokensPerBatch: 60000,
       aimemoOutputTokens: 40000, queryResultCacheEnabled: false, riverThinkingEnabled: !!configuration.plugins?.riverThinkingEnabled,
       queryEncoding: 'upstream_chunk_token_weighted_average', queryScope: 'physical_projection_before_top_k',
       contextClock: 'request_local_dayjs_host_world_clock_or_native_real_fallback', passiveRecallPolicy: { schema: 'episodic-v1', halfLifeDays: 180, minScore: 0 } } };
@@ -426,6 +450,52 @@ class VcpMemoryRuntime {
     for (const note of notes.sort((a, b) => a.id < b.id ? -1 : a.id > b.id ? 1 : 0))
       if (this.records.get(note.id)?.noteFingerprint !== fingerprintNote(note)) await this.remember(note);
     return { changed: notes.length, removed: removed.size };
+  }
+  /** Reopen a persisted graph against today's complete host authorization.
+   * The catalogue is an index cache, never a canonical source. Unknown records
+   * are removed before search; changed/damaged records require host file bytes. */
+  async inspectProjection(inputs) {
+    this.requireReady();
+    if (!Array.isArray(inputs)) throw failure('VCP_MEMORY_INVALID_INPUT', 'Projection descriptors must be an array.');
+    const expected = new Map();
+    for (const input of inputs) {
+      const id = identity(input?.id, 'memory ID');
+      if (expected.has(id) || !/^[a-f0-9]{64}$/u.test(input.contentHash) || !input.annotations || Object.hasOwn(input.annotations, 'content'))
+        throw failure('VCP_MEMORY_INVALID_INPUT', 'Projection descriptor is not an exact metadata proof.');
+      const note = normalizeNote({ ...input.annotations, content: 'host-metadata-proof' });
+      if (note.id !== id) throw failure('VCP_MEMORY_INVALID_INPUT', 'Projection annotation identity changed.');
+      expected.set(id, { contentHash: input.contentHash, annotationFingerprint: fingerprintAnnotations(note) });
+    }
+    const removedIds = [];
+    for (const id of [...this.records.keys()]) if (!expected.has(id)) { await this.forget(id); removedIds.push(id); }
+    const raw = await this.kb.nativeKnowledgeRuntime.listIndexedFilePaths(this.kb.dbPath);
+    const indexed = new Set((typeof raw === 'string' ? JSON.parse(raw) : raw).map(file => String(typeof file === 'string' ? file : file.path).replaceAll('\\', '/')));
+    const ownedPaths = new Set([...this.notePaths.values()].map(file => path.relative(this.notesRoot, file).replaceAll('\\', '/')));
+    const orphans = [...indexed].filter(relative => !ownedPaths.has(relative));
+    if (orphans.length) await this.removeSources(orphans.map(relative => this.sourcePath(relative)));
+    const upsertIds = []; let reused = 0;
+    for (const [id, proof] of expected) {
+      const descriptor = this.records.get(id);
+      let valid = !!descriptor && descriptor.indexState === 'indexed' && !descriptor.deleted && descriptor.contentHash === proof.contentHash
+        && descriptor.annotationFingerprint === proof.annotationFingerprint && this.notePaths.has(id)
+        && indexed.has(path.relative(this.notesRoot, this.paths(id).note).replaceAll('\\', '/'));
+      if (valid) try {
+        this.records.forgetBody(id);
+        const record = await this.records.read(id);
+        valid = !!record && await fs.readFile(this.paths(id).note, 'utf8') === formattedNativeDiary(normalizeNote(record), record.recordedAt).text;
+      } catch (error) {
+        if (error.code !== 'ENOENT' && error.code !== 'VCP_MEMORY_RECORD_CHANGED' && !(error instanceof SyntaxError)) throw error;
+        valid = false;
+      }
+      if (valid) reused++;
+      else {
+        // Invalidate the disposable copy so a same-fingerprint damaged raw
+        // file cannot make applyProjectionDelta skip its canonical repair.
+        if (descriptor) await this.forget(id);
+        upsertIds.push(id);
+      }
+    }
+    return { upsertIds, removedIds, reused };
   }
   async read(id) {
     this.requireReady();
@@ -626,4 +696,4 @@ class VcpMemoryRuntime {
   }
 }
 
-module.exports = { VcpMemoryRuntime, embeddingConfiguration, normalizeNote, renderNativeDiaryText, projectNativeScoreDetails, notebookFolder, unlinkRuntimeDependency, removeOwnedDirectory, bindRuntimeDependencies };
+module.exports = { VcpMemoryRuntime, embeddingConfiguration, normalizeNote, renderNativeDiaryText, renderNativeDiaryFileText, prepareCanonicalNativeText, projectNativeScoreDetails, notebookFolder, unlinkRuntimeDependency, removeOwnedDirectory, bindRuntimeDependencies };

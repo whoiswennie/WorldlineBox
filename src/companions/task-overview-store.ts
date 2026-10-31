@@ -1,4 +1,5 @@
 import type { CompanionConnection } from './store';
+import { initializeCompanionJobDisposition } from './job-control-store';
 import { COMPANION_TASK_KIND_LABELS, companionTaskItemSchema, companionTaskPageStorageCommand, companionTaskResolveStorageCommand,
   type CompanionTaskItem, type CompanionTaskKind, type CompanionTaskPage } from '../shared/companion-task-overview';
 import type { z } from 'zod';
@@ -48,16 +49,16 @@ const sourceDefinitions = (): Source[] => [
     title: "'伙伴之间的交流'", stage: "json_extract(sp.data,'$.detail')", created: 't.created_at', updated: `COALESCE(${json('updatedAt')},json_extract(sp.data,'$.updatedAt'),t.created_at)`, started: "json_extract(sp.data,'$.startedAt')", finished: json('finishedAt'),
     source: json('sourceMessageId'), message: json('resultMessageId'), stopLabel: '停止本次交流' },
   { kind: 'world', table: 'companion_world_jobs', from: 'companion_world_jobs t', room: json('conversationId'),
-    current: `t.status IN('pending','running') OR t.status='failed' AND COALESCE(${json('terminal')},0)=0`,
-    title: "CASE t.kind WHEN 'dream' THEN '梦境与记忆维护' ELSE '世界活动决策' END", stage: `CASE t.status WHEN 'pending' THEN '等待生活调度' WHEN 'running' THEN '正在处理世界活动' WHEN 'failed' THEN CASE WHEN COALESCE(${json('terminal')},0)=0 THEN '本轮未完成，等待重试' ELSE '世界活动未完成' END ELSE '世界活动已结束' END`,
+    current: "t.status IN('pending','running','failed','parked')",
+    title: "CASE t.kind WHEN 'dream' THEN '梦境与记忆维护' ELSE '世界活动决策' END", stage: `CASE t.status WHEN 'pending' THEN '等待生活调度' WHEN 'running' THEN '正在处理世界活动' WHEN 'failed' THEN '本轮未完成，等待重试' WHEN 'parked' THEN '本项处理已搁置，等待核对后明确恢复或放弃' WHEN 'abandoned' THEN '本项处理已明确放弃，原始依据保留' ELSE '世界活动已结束' END`,
     created: json('createdAt'), updated: `COALESCE(${json('updatedAt')},${json('createdAt')})`, finished: json('finishedAt'), stopLabel: '停止本次世界任务' },
   { kind: 'world_action', table: 'companion_world_events', from: 'companion_world_events t', owner: json('actorId'), room: json('conversationId'),
     current: '0', status: "'recorded'", title: `COALESCE(${json('text')},'世界行动')`, stage: "'已记录实际世界事件'",
     created: json('realAt'), updated: json('realAt'), finished: json('realAt'), stoppable: false, stopReason: '这是已发生的世界事件。' },
   { kind: 'memory_timeline', table: 'companion_task_timeline_jobs', from: 'companion_task_timeline_jobs t', room: json('conversationId'),
-    current: "t.status IN('pending','running','waiting_model')", title: json('title'), stage: json('stage'),
+    current: "t.status IN('pending','running','failed','waiting_model','parked')", title: json('title'), stage: json('stage'),
     created: json('createdAt'), updated: json('updatedAt'), started: json('startedAt'),
-    finished: `CASE WHEN t.status IN('completed','failed','cancelled','stale') THEN ${json('updatedAt')} END`,
+    finished: `CASE WHEN t.status IN('completed','failed','cancelled','stale','abandoned') THEN ${json('updatedAt')} END`,
     stoppable: false, stopReason: '时间线由记忆后台管理，输入、处理阶段和实际产出保存在下方。' },
   { kind: 'social_notification', table: 'companion_social_notifications', from: 'companion_social_notifications t', room: json('conversationId'),
     current: `t.status IN('pending','running') OR t.status='failed' AND COALESCE(${json('terminal')},0)=0`, title: "'向用户回报后续进展'",
@@ -75,25 +76,25 @@ const sourceDefinitions = (): Source[] => [
     current: "t.state!='stopped'", title: "'学习目标'", stage: json('phase'), created: json('createdAt'), updated: json('updatedAt'),
     scheduled: "strftime('%Y-%m-%dT%H:%M:%fZ',t.next_at/1000.0,'unixepoch')", revision: 't.revision', stopLabel: '停止学习目标' },
   { kind: 'memory_capture', table: 'vcp_capture_jobs', from: 'vcp_capture_jobs t', room: 't.conversation_id',
-    current: "t.status IN('pending','running') OR t.status='failed' AND t.attempts<8", title: "'整理聊天与经历来源'",
-    stage: "CASE WHEN t.status='failed' AND t.attempts<8 THEN '等待重试来源整理' WHEN t.status='running' THEN '正在整理聊天与经历来源' ELSE '来源整理' END", created: 't.created_at', updated: 'COALESCE(t.updated_at,t.created_at)',
+    current: "t.status IN('pending','running','failed','parked')", title: "'整理聊天与经历来源'",
+    stage: "CASE t.status WHEN 'failed' THEN '等待重试来源整理' WHEN 'running' THEN '正在整理聊天与经历来源' WHEN 'parked' THEN '来源整理已搁置，原始事件保留' WHEN 'abandoned' THEN '本项来源整理已明确放弃，原始事件保留' ELSE '来源整理' END", created: 't.created_at', updated: 'COALESCE(t.updated_at,t.created_at)',
     source: 't.message_id', stoppable: false, stopReason: '来源整理保留已收录队列；可在记忆规则中管理后续收录。' },
   { kind: 'memory_index', table: 'vcp_memory_outbox', from: 'vcp_memory_outbox t LEFT JOIN vcp_memory_scopes s ON s.scope_id=t.scope_id', room: 's.conversation_id', parent: 't.note_id',
-    current: "t.status IN('pending','running') OR t.status='failed' AND t.attempts<8", title: "CASE WHEN t.operation='forget' THEN '移除过期记忆索引' ELSE '建立记忆索引' END",
-    stage: "CASE WHEN t.status='failed' AND t.attempts<8 THEN '等待重试记忆索引' WHEN t.status='running' THEN '正在同步记忆索引' ELSE '记忆索引' END", created: 't.created_at', updated: 'COALESCE(t.updated_at,t.created_at)',
+    current: "t.status IN('pending','running','failed','parked')", title: "CASE WHEN t.operation='forget' THEN '移除过期记忆索引' ELSE '建立记忆索引' END",
+    stage: "CASE t.status WHEN 'failed' THEN '等待重试记忆索引' WHEN 'running' THEN '正在同步记忆索引' WHEN 'parked' THEN '索引处理已搁置，正文保留' WHEN 'abandoned' THEN '本项索引处理已明确放弃，正文保留' ELSE '记忆索引' END", created: 't.created_at', updated: 'COALESCE(t.updated_at,t.created_at)',
     stoppable: false, stopReason: '索引维护需要完成版本同步，请在记忆界面管理来源和文档。' },
   { kind: 'memory_tags', table: 'companion_memory_tag_jobs', from: 'companion_memory_tag_jobs t',
-    current: "t.status IN('pending','running','waiting_model') OR t.status='failed' AND t.attempts<8", title: "'整理资料自动标签'",
-    stage: "CASE WHEN t.status='waiting_model' THEN '等待标签模型' WHEN t.status='running' THEN '正在整理自动标签' ELSE '自动标签' END", created: 't.created_at', updated: 'COALESCE(t.updated_at,t.created_at)', parent: 't.note_id', stopLabel: '停止自动标签' },
+    current: "t.status IN('pending','running','waiting_model','failed','parked')", title: "'整理资料自动标签'",
+    stage: "CASE t.status WHEN 'waiting_model' THEN '等待标签模型' WHEN 'running' THEN '正在整理自动标签' WHEN 'parked' THEN '标签处理已搁置，正文保留' WHEN 'abandoned' THEN '本项标签处理已明确放弃，正文保留' ELSE '自动标签' END", created: 't.created_at', updated: 'COALESCE(t.updated_at,t.created_at)', parent: 't.note_id', stopLabel: '停止自动标签' },
 ];
 const optional = (value: unknown): string | undefined => typeof value === 'string' && value.length ? value : undefined;
 function normalized(status: string, current: boolean): CompanionTaskItem['status'] {
-  if (status === 'paused') return 'paused';
+  if (status === 'paused' || status === 'parked') return 'paused';
   if (status === 'running' || status === 'reading') return 'running';
   if (status === 'interrupted') return 'interrupted';
-  if (status === 'cancelled' || status === 'stopped') return 'cancelled';
+  if (status === 'cancelled' || status === 'stopped' || status === 'abandoned' || status === 'stale') return 'cancelled';
   if (status === 'failed') return current ? 'waiting' : 'failed';
-  if (['done', 'succeeded', 'completed', 'stale', 'discarded', 'recorded'].includes(status)) return 'completed';
+  if (['done', 'succeeded', 'completed', 'discarded', 'recorded'].includes(status)) return 'completed';
   if (['queued', 'pending', 'dispatching', 'accepted', 'offered'].includes(status)) return 'queued';
   return 'waiting';
 }
@@ -113,7 +114,15 @@ export class CompanionTaskOverviewStore {
       CREATE TABLE IF NOT EXISTS companion_task_counts(kind TEXT NOT NULL,companion_id TEXT NOT NULL,total INTEGER NOT NULL,live INTEGER NOT NULL,PRIMARY KEY(kind,companion_id));
       CREATE TABLE IF NOT EXISTS companion_task_payloads(kind TEXT NOT NULL,task_id TEXT NOT NULL,companion_id TEXT NOT NULL,section TEXT NOT NULL,record_key TEXT NOT NULL,title TEXT NOT NULL,body TEXT NOT NULL,at TEXT NOT NULL,PRIMARY KEY(kind,task_id,companion_id,record_key));
       CREATE INDEX IF NOT EXISTS task_journal_invocation ON metadata(json_extract(value,'$.companionId'),json_extract(value,'$.invocationId')) WHERE key GLOB 'agent-run/*';`);
-    this.db.exec(`UPDATE companion_task_timeline_jobs SET status='pending',data=json_set(data,'$.status','pending','$.stage','上次运行已中断，等待后台重新检查','$.updatedAt',strftime('%Y-%m-%dT%H:%M:%fZ','now')) WHERE status='running'`);
+    initializeCompanionJobDisposition(this.db, 'companion_task_timeline_jobs');
+    if (!(this.db.prepare('PRAGMA table_info(companion_task_timeline_jobs)').all() as Array<{ name: string }>).some(column => column.name === 'updated_at'))
+      this.db.exec("ALTER TABLE companion_task_timeline_jobs ADD COLUMN updated_at TEXT NOT NULL DEFAULT ''");
+    this.db.exec(`CREATE INDEX IF NOT EXISTS companion_task_timeline_processing ON companion_task_timeline_jobs(companion_id,status,updated_at DESC,id DESC);
+      CREATE TRIGGER IF NOT EXISTS companion_task_timeline_updated AFTER UPDATE OF data,status ON companion_task_timeline_jobs
+      BEGIN UPDATE companion_task_timeline_jobs SET updated_at=COALESCE(json_extract(NEW.data,'$.updatedAt'),strftime('%Y-%m-%dT%H:%M:%fZ','now')) WHERE id=NEW.id; END;
+      CREATE TRIGGER IF NOT EXISTS companion_task_timeline_created AFTER INSERT ON companion_task_timeline_jobs
+      BEGIN UPDATE companion_task_timeline_jobs SET updated_at=COALESCE(json_extract(NEW.data,'$.updatedAt'),strftime('%Y-%m-%dT%H:%M:%fZ','now')) WHERE id=NEW.id; END;`);
+    this.db.exec(`UPDATE companion_task_timeline_jobs SET status='parked',data=json_set(data,'$.status','parked','$.stage','上次运行已中断，发送结果尚未确认；请核对后明确恢复','$.updatedAt',strftime('%Y-%m-%dT%H:%M:%fZ','now')) WHERE status='running'`);
     this.sources = sourceDefinitions().filter(source => !!this.db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?").get(source.table));
     // Per-table reads limit before merging. These indexes let current and
     // historical pages seek metadata without parsing full archived payloads.
@@ -196,7 +205,7 @@ export class CompanionTaskOverviewStore {
     const current = row.current === 1, stoppedByUser = row.stop_actor === 'user';
     const status = stoppedByUser && !current ? 'cancelled' : normalized(String(row.status), current);
     return companionTaskItemSchema.parse({ id: row.id, kind: source.kind, companionId: row.owner, title: row.title, stage: row.stage, rawStatus: row.status,
-      status, updatedAt: String(row.updated ?? ''), canStop: current && source.stoppable !== false,
+      status, updatedAt: String(row.updated ?? ''), canStop: current && source.stoppable !== false && row.status !== 'parked',
       ...(current && source.stoppable !== false ? { stopLabel: source.stopLabel ?? '停止任务' } : { stopReason: current ? source.stopReason ?? '此后台状态不支持直接停止。' : '任务已结束' }), stoppedByUser,
       ...(optional(row.room) ? { conversationId: row.room } : {}), ...(optional(row.created) ? { createdAt: row.created } : {}),
       ...(optional(row.conversation_title) ? { conversationTitle: row.conversation_title } : {}),

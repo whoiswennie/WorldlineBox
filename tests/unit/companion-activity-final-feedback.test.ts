@@ -18,7 +18,7 @@ it('keeps a legitimate action plus wait and rejects memory or terminal effects t
     wait: { kind: 'delay', seconds: 30 }, summary: '真实查询后按原规则等待' };
   expect(parseCompanionActivityDecision(proposal)).toMatchObject(proposal);
   expect(() => parseCompanionActivityDecision({ ...proposal, memory: { operation: 'search', query: 'PRIVATE_QUERY' } }))
-    .toThrow('memory_must_be_separate');
+    .toThrow('COMPANION_MEMORY_AUTOMATIC_ONLY');
   expect(() => parseCompanionActivityDecision({ ...proposal, status: 'complete' })).toThrow('terminal_has_pending_effects');
   expect(() => parseCompanionActivityDecision({ status: 'continue', action: null, wait: null, summary: '空计划' }))
     .toThrow('continue_requires_operation');

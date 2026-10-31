@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { GlobalEmbeddingService, EmbeddingProfileChangedError, splitLocalEmbeddingText } from '../../src/main/embedding-global-service';
 import { LOCAL_TEXT_EMBEDDING_MODEL, LOCAL_TEXT_EMBEDDING_MODEL_ID, prepareGlobalEmbeddingText } from '../../src/shared/embedding/global-profile';
 import { embeddingProfileKey } from '../../src/shared/embedding/profile';
-import type { LlamaEmbeddingSession } from '../../src/main/embedding-llama-session';
+import type { LlamaEmbeddingSession, startLlamaEmbeddingSession } from '../../src/main/embedding-llama-session';
 
 const disk = vi.hoisted(() => ({ resolveLayout: vi.fn(), sha: vi.fn() }));
 vi.mock('../../src/main/embedding-text-model-install', () => ({
@@ -20,6 +20,42 @@ beforeEach(() => {
 });
 
 describe('one bundled global embedding encoder', () => {
+  it('primes the real physical session without synthetic text and reuses it for the next query', async () => {
+    const local = session(), startLocalSession = vi.fn(async () => local), ensureDeviceCapability = vi.fn(async () => undefined);
+    const encoder = new GlobalEmbeddingService({ userDataPath: '.', startLocalSession, ensureDeviceCapability });
+    await encoder.prepare(); await encoder.prepare();
+    expect(startLocalSession).toHaveBeenCalledOnce(); expect(ensureDeviceCapability).toHaveBeenCalledOnce();
+    expect(local.embedTexts).not.toHaveBeenCalled(); expect(local.embedText).not.toHaveBeenCalled();
+    await encoder.embed(['真实问题'], { purpose: 'query' });
+    expect(startLocalSession).toHaveBeenCalledOnce(); expect(local.embedTexts).toHaveBeenCalledOnce();
+    await encoder.close(); expect(local.close).toHaveBeenCalledOnce();
+  });
+  it('promotes an admitted idle load to foreground without loading a second session', async () => {
+    const controller = new AbortController(), local = session();
+    let entered!: () => void, release!: () => void;
+    const starting = new Promise<void>(resolve => { entered = resolve; }), barrier = new Promise<void>(resolve => { release = resolve; });
+    const startLocalSession = vi.fn(async () => { entered(); await barrier; return local; });
+    const encoder = new GlobalEmbeddingService({ userDataPath: '.', startLocalSession });
+    const pending = encoder.prepare({ signal: controller.signal });
+    const rejected = expect(pending).rejects.toThrow('foreground');
+    await starting; controller.abort(new Error('foreground'));
+    const foreground = encoder.embed(['真实问题'], { purpose: 'query' });
+    release(); await rejected; await foreground;
+    expect(startLocalSession).toHaveBeenCalledOnce(); expect(local.embedTexts).toHaveBeenCalledOnce(); await encoder.close();
+  });
+  it('really aborts physical startup on device invalidation and rechecks a failed device gate', async () => {
+    const ensureDeviceCapability = vi.fn(async () => undefined);
+    let entered!: () => void; const starting = new Promise<void>(resolve => { entered = resolve; });
+    const startLocalSession = vi.fn(async (input: Parameters<typeof startLlamaEmbeddingSession>[0]) => {
+      entered(); await new Promise((_, reject) => input.signal!.addEventListener('abort', () => reject(input.signal!.reason), { once: true })); return session();
+    });
+    const encoder = new GlobalEmbeddingService({ userDataPath: '.', startLocalSession, ensureDeviceCapability });
+    const pending = encoder.prepare(), rejected = expect(pending).rejects.toBeInstanceOf(EmbeddingProfileChangedError);
+    await starting; await encoder.invalidate(); await rejected;
+    ensureDeviceCapability.mockRejectedValueOnce(new Error('device unavailable'));
+    await expect(encoder.prepare()).rejects.toThrow('device unavailable');
+    expect(startLocalSession).toHaveBeenCalledOnce(); await encoder.close();
+  });
   it('invalidates subscribed derived vector caches immediately and permits observers to detach', async () => {
     const encoder = new GlobalEmbeddingService({ userDataPath: '.' }), notify = vi.fn();
     const detach = encoder.subscribeInvalidation(notify);

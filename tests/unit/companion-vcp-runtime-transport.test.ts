@@ -9,7 +9,7 @@ import type { VcpMemoryCommand, VcpMemoryPluginConfiguration } from '../../src/m
 import { removeOwnedDirectory } from '../../src/main/vcp-memory/filesystem';
 vi.mock('electron',()=>({utilityProcess:{fork:vi.fn()}}));
 const hash=(value:string)=>createHash('sha256').update(value).digest('hex');
-const storage=(root:string)=>async(ownerId:string)=>{const workspaceRoot=path.resolve(root),ownerRoot=path.join(workspaceRoot,ownerId);return{ownerId,workspaceRoot,ownerRoot,indexRoot:path.join(ownerRoot,'.认知索引'),ownerPrompts:{aimemoTemplate:'fixture {{knowledge_base}}',timelineTemplate:'fixture {{agentName}} {{month}}',summaryTemplate:'fixture summary {{agentName}} {{month}}'}};};
+const storage=(root:string)=>async(ownerId:string)=>{const workspaceRoot=path.resolve(root),ownerRoot=path.join(workspaceRoot,ownerId);return{ownerId,workspaceRoot,ownerRoot,indexRoot:path.join(ownerRoot,'.运行', '索引'),ownerPrompts:{aimemoTemplate:'fixture {{knowledge_base}}',timelineTemplate:'fixture {{agentName}} {{month}}',summaryTemplate:'fixture summary {{agentName}} {{month}}'}};};
 const embedding={baseUrl:'http://127.0.0.1',model:'localfixture',dimension:4,apiKey:'local',modelSignature:'actual-profile'};
 describe('owner runtime actual transport and cleanup',()=>{
   it('stops a current core historical view before deleting its directory while leaving the peer running and resolving no model',async()=>{
@@ -22,7 +22,7 @@ describe('owner runtime actual transport and cleanup',()=>{
     const service=new CompanionVcpRuntime({resolveOwnerStorage:storage(root),resolveOwnerCleanupStorage:storage(root),vendorRoot:'unused',workerPath:'unused',resolveEmbedding,launch});
     try{
       const core=await service.get({ownerId:'alice'}),peer=await service.get({ownerId:'bob'});await core.client.list({scopeId:'historical-alice'});await peer.client.list({scopeId:'peer-bob'});
-      const alice=path.join(root,'alice','.认知索引','hot',hash(core.profileKey),hash('historical-alice')),bob=path.join(root,'bob','.认知索引','hot',hash(core.profileKey),hash('peer-bob'));
+      const alice=path.join(root,'alice','.运行', '索引','hot',hash(core.profileKey),hash('historical-alice')),bob=path.join(root,'bob','.运行', '索引','hot',hash(core.profileKey),hash('peer-bob'));
       await mkdir(alice,{recursive:true});await mkdir(bob,{recursive:true});await writeFile(path.join(alice,'sentinel'),'alice');await writeFile(path.join(bob,'sentinel'),'bob');
       resolveEmbedding.mockRejectedValue(new Error('encoder removed'));
       await service.purgeOwner('alice',{historicalViews:[{profileKey:core.profileKey,scopeId:'historical-alice'}]});
@@ -37,8 +37,8 @@ describe('owner runtime actual transport and cleanup',()=>{
     const service=new CompanionVcpRuntime({resolveOwnerStorage:storage(root),resolveOwnerCleanupStorage:storage(root),vendorRoot:'unused',workerPath:'unused',resolveEmbedding:resolver});
     try{
       await mkdir(path.join(external,hash('alice')));await writeFile(path.join(external,hash('alice'),'sentinel'),'external survives');
-      await mkdir(path.join(root,'alice','.认知索引'),{recursive:true});
-      await symlink(external,path.join(root,'alice','.认知索引','generation'),process.platform==='win32'?'junction':'dir');
+      await mkdir(path.join(root,'alice','.运行', '索引'),{recursive:true});
+      await symlink(external,path.join(root,'alice','.运行', '索引','generation'),process.platform==='win32'?'junction':'dir');
       await expect(service.purgeOwner('alice')).rejects.toThrow('文件夹');expect(await readFile(path.join(external,hash('alice'),'sentinel'),'utf8')).toBe('external survives');
       expect(resolver).not.toHaveBeenCalled();
     }finally{await service.close();await removeOwnedDirectory(root);await removeOwnedDirectory(external);}

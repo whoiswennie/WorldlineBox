@@ -160,7 +160,7 @@ describe('unchanged VCP core behind isolated worker processes', () => {
       const capabilities = await client.capabilities({ scopeId: 'behavior-' + profile });
       expect(capabilities.behavior?.profile).toBe(profile);
       expect(capabilities.behavior?.differences.map(item => item.effective)).toEqual(profile === 'upstream' ? [.88, .92, .97] : [1, 1, 1]);
-      expect(capabilities.behavior?.generation).toMatchObject({ aimemoBatchSize: 2, aimemoMaxTokensPerBatch: 18000, queryResultCacheEnabled: false });
+      expect(capabilities.behavior?.generation).toMatchObject({ aimemoBatchSize: 5, aimemoMaxTokensPerBatch: 60000, queryResultCacheEnabled: false });
       expect(capabilities.modes?.semantic_group).toMatchObject({ available: false, configured: false, enabledByDefault: false, observedCalls: 0, configurations: [], reason: expect.any(String) });
       expect(capabilities.modes?.meta_thinking).toMatchObject({ available: false, configured: false, enabledByDefault: false, configurations: [] });
       expect(capabilities.modes?.external_rerank?.enabledByDefault).toBe(false);

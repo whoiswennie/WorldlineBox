@@ -22,7 +22,9 @@ export async function generateCompanionDreamNarrative(input: { companion: Compan
     user: JSON.stringify({ purpose: 'companion_dream_wave_narrative', self: { id: input.companion.id, name: input.companion.name },
       reality: 'private_fiction_not_real_world_evidence', mode: input.mode ?? 'rehearsal_dream', clock: { now: input.wave.now, domain: input.wave.clockDomain },
       boundaries: input.wave.boundaries, stages: groups, outputSchema: z.toJSONSchema(narrative, { io: 'input' }) }),
-  }, config, signal, options));
+  }, config, signal, { ...options, responseSchema: narrative,
+    repairPreserveCollections: [{ path: ['relatedMemoryIds'], fields: [] }, { path: ['investigations'], fields: ['question', 'hypothesis', 'relatedMemoryIds', 'test'] }],
+    repairPreserveValues: [{ path: ['text'] }] }));
   if (!value.success || value.data && (new Set(value.data.relatedMemoryIds).size !== value.data.relatedMemoryIds.length
     || value.data.relatedMemoryIds.some(id => !ids.has(id)) || value.data.investigations?.some(proposal => proposal.relatedMemoryIds.some(id => !ids.has(id))))) throw new CompanionModelError('INVALID_RESPONSE', '梦叙述引用了未实际读取的浪潮记忆。');
   return value.data;

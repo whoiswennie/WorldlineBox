@@ -116,6 +116,8 @@ export class CompanionMemoryConsolidationStore {
   }
   prepare(command: Extract<CompanionStorageCommand, { type: 'memory.consolidate' }>, automatic?: AutomaticClassification): CompanionMemory | undefined {
     const originals = command.inputs.map(input => this.port.load(input.id));
+    if (command.candidate.artifactKind !== 'episode_memory' || originals.some(note => note.artifactKind !== 'episode_memory'))
+      throw new Error('普通记忆整合只处理真实经历；知识、方法、自我认识、导航和梦不能跨职责归并。');
     if (originals.some(note => note.procedure)) throw new Error('方法记忆使用自身的修订与实践验证流程维护，不能并入摘要后归档。');
     if (originals.some((note, index) => note.companionId !== command.companionId || note.version !== command.inputs[index]!.version
       || note.archivedAt || note.status !== 'indexed' || !this.port.valid(note))) throw new Error('整合前须重新读取本人尚未归档且已就绪的准确记忆版本。');

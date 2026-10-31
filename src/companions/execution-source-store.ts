@@ -2,7 +2,7 @@ import type { CompanionConnection } from './store';
 import type { CompanionMemoryStore } from './memory-store';
 import { companionExecutionReadsetSchema, type CompanionExecutionReadset } from '../shared/companion-execution-evidence';
 import type { CompanionStorageResponse } from '../shared/companion-storage';
-import type { CompanionMemory } from '../shared/companions';
+import { actionSchema, type CompanionAction, type CompanionMemory } from '../shared/companions';
 import { executionMessageReadsetKey, executionSourceInvalidKey } from './execution-source-access';
 
 type Proof = NonNullable<CompanionStorageResponse['executionSources']>[number];
@@ -36,7 +36,7 @@ export class CompanionExecutionSourceStore {
     // every root's dependency association for later invalidation/redaction.
     // The maps die at this command boundary and never cache authorization.
     const messagesById = new Map<string, { action_id?: string; author_id: string; conversation_id: string } | undefined>();
-    const actionsById = new Map<string, { companion_id: string; conversation_id: string } | undefined>();
+    const actionsById = new Map<string, { companion_id: string; conversation_id: string; capability?: CompanionAction['capability'] } | undefined>();
     const noteEdges = new Map<string, { messages: string[]; notes: string[] }>();
     const eventEdges = new Map<string, { messages: string[]; events: string[] }>();
     const messageRow = (id: string) => {
@@ -44,7 +44,13 @@ export class CompanionExecutionSourceStore {
       return messagesById.get(id);
     };
     const actionRow = (id: string) => {
-      if (!actionsById.has(id)) actionsById.set(id, this.db.prepare('SELECT companion_id,conversation_id FROM actions WHERE id=?').get(id) as { companion_id: string; conversation_id: string } | undefined);
+      if (!actionsById.has(id)) {
+        const found = this.db.prepare("SELECT companion_id,conversation_id,json_extract(data,'$.capability') AS capability FROM actions WHERE id=?").get(id) as {
+          companion_id: string; conversation_id: string; capability?: string } | undefined;
+        const capability = actionSchema.shape.capability.safeParse(parse(found?.capability));
+        actionsById.set(id, found ? { companion_id: found.companion_id, conversation_id: found.conversation_id,
+          ...(capability.success && capability.data ? { capability: capability.data } : {}) } : undefined);
+      }
       return actionsById.get(id);
     };
     const noteReferences = (id: string) => {
@@ -70,6 +76,11 @@ export class CompanionExecutionSourceStore {
     };
     for (const root of [...new Set(ids)]) {
       const messages = [root], notes: string[] = [], events: string[] = [], seenMessages = new Set<string>(), seenNotes = new Set<string>(), seenEvents = new Set<string>();
+      let messageHead = 0, noteHead = 0, eventHead = 0;
+      const enqueuedMessages = new Set(messages), enqueuedNotes = new Set<string>(), enqueuedEvents = new Set<string>();
+      const enqueueMessages = (ids: readonly string[]) => { for (const id of ids) if (!enqueuedMessages.has(id)) { enqueuedMessages.add(id); messages.push(id); } };
+      const enqueueNotes = (ids: readonly string[]) => { for (const id of ids) if (!enqueuedNotes.has(id)) { enqueuedNotes.add(id); notes.push(id); } };
+      const enqueueEvents = (ids: readonly string[]) => { for (const id of ids) if (!enqueuedEvents.has(id)) { enqueuedEvents.add(id); events.push(id); } };
       const include = (proof: Omit<Proof, 'sourceMessageIds'>) => {
         const key = `${proof.kind}:${proof.id}`;
         if (!checkedReadsets.has(key)) {
@@ -83,15 +94,15 @@ export class CompanionExecutionSourceStore {
         else proofs.set(key, { ...proof, sourceMessageIds: [root] });
         const readset = proof.executionReadset;
         if (!readset) return;
-        messages.push(...readset.sources.map(source => source.id)); notes.push(...readset.memories.map(note => note.id));
+        enqueueMessages(readset.sources.map(source => source.id)); enqueueNotes(readset.memories.map(note => note.id));
         // Frozen task facts follow their original witnesses, never the note's
         // newly edited semantic graph.
-        messages.push(...(readset.frozenMemories ?? []).flatMap(note => note.sources.map(source => source.id)));
-        for (const read of readset.knowledgeReads) { if (read.sourceType === 'memory') notes.push(read.sourceId); else if (read.sourceType === 'message') messages.push(read.sourceId); }
-        for (const topic of readset.topics) events.push(...topic.checkpointEventIds);
+        enqueueMessages((readset.frozenMemories ?? []).flatMap(note => note.sources.map(source => source.id)));
+        for (const read of readset.knowledgeReads) { if (read.sourceType === 'memory') enqueueNotes([read.sourceId]); else if (read.sourceType === 'message') enqueueMessages([read.sourceId]); }
+        for (const topic of readset.topics) enqueueEvents(topic.checkpointEventIds);
       };
-      while (messages.length || notes.length || events.length) {
-        const id = messages.shift();
+      while (messageHead < messages.length || noteHead < notes.length || eventHead < events.length) {
+        const id = messageHead < messages.length ? messages[messageHead++] : undefined;
         if (id && !seenMessages.has(id)) {
           seenMessages.add(id);
           const message = messageRow(id);
@@ -103,21 +114,25 @@ export class CompanionExecutionSourceStore {
             if (derived !== undefined) include({ kind: 'message', id, companionId: message.author_id, conversationId: message.conversation_id, executionReadset: decoded<CompanionExecutionReadset>(executionMessageReadsetKey(id)) });
             if (message.action_id) {
               const action = actionRow(message.action_id);
-              const readset = decoded<CompanionExecutionReadset>('task-checkpoint/' + message.action_id);
-              if (action) include({ kind: 'action', id: message.action_id, companionId: action.companion_id, conversationId: action.conversation_id, executionReadset: readset });
+              // Capability cards are traces of their real parent/run, not old
+              // DSH tasks. Their typed identity must reach Main's dedicated
+              // validator even while running and without a task checkpoint.
+              if (action) include({ kind: 'action', id: message.action_id, companionId: action.companion_id, conversationId: action.conversation_id,
+                ...(action.capability ? { capability: action.capability }
+                  : { executionReadset: decoded<CompanionExecutionReadset>('task-checkpoint/' + message.action_id) }) });
             }
             const observation = decoded<{ sources?: Array<{ id: string }>; topicCheckpoints?: Array<{ checkpointEventIds: string[] }> }>('memory-world-observation/' + id);
-            messages.push(...(observation?.sources ?? []).map(source => source.id));
-            for (const reference of observation?.topicCheckpoints ?? []) events.push(...reference.checkpointEventIds);
+            enqueueMessages((observation?.sources ?? []).map(source => source.id));
+            for (const reference of observation?.topicCheckpoints ?? []) enqueueEvents(reference.checkpointEventIds);
           }
         }
-        const noteId = notes.shift();
+        const noteId = noteHead < notes.length ? notes[noteHead++] : undefined;
         if (noteId && !seenNotes.has(noteId)) {
           seenNotes.add(noteId);
           const edges = noteReferences(noteId);
-          messages.push(...edges.messages); notes.push(...edges.notes);
+          enqueueMessages(edges.messages); enqueueNotes(edges.notes);
         }
-        const eventId = events.shift();
+        const eventId = eventHead < events.length ? events[eventHead++] : undefined;
         if (eventId && !seenEvents.has(eventId)) {
           seenEvents.add(eventId);
           if (!eventEdges.has(eventId)) {
@@ -127,7 +142,7 @@ export class CompanionExecutionSourceStore {
               ...(checkpoint?.state?.__continuity?.previousCheckpointEventId ? [checkpoint.state.__continuity.previousCheckpointEventId] : [])] });
           }
           const edges = eventEdges.get(eventId)!;
-          messages.push(...edges.messages); events.push(...edges.events);
+          enqueueMessages(edges.messages); enqueueEvents(edges.events);
         }
       }
     }
@@ -137,11 +152,16 @@ export class CompanionExecutionSourceStore {
       const sourceIds = [...new Set(memoryIds.flatMap(id => (this.db.prepare('SELECT message_id FROM vcp_note_sources WHERE note_id=?').all(id) as Array<{ message_id: string }>).map(source => source.message_id)))];
       for (const proof of this.resolve(sourceIds)) if (!proofs.has(`${proof.kind}:${proof.id}`)) proofs.set(`${proof.kind}:${proof.id}`, proof);
     }
+    const authorityEpochs = new Map<string, number>();
     return [...proofs.values()].map(proof => {
       if (proof.invalidated || !proof.executionReadset) return proof;
       const digest = proof.kind === 'message' ? this.memory.sources.validatedMessageReadsetDigest(proof.id, proof.executionReadset)
         : this.memory.sources.validatedActionReadsetDigest(proof.id, proof.executionReadset);
-      return digest ? { ...proof, storageValidatedReadsetDigest: digest } : proof;
+      if (!digest) return proof;
+      // This epoch attests SQL source inputs only. Main must independently
+      // check live action collaboration/thought/lease authority on each gate.
+      if (!authorityEpochs.has(proof.companionId)) authorityEpochs.set(proof.companionId, this.memory.lifecycleState(proof.companionId).revocationEpoch);
+      return { ...proof, storageValidatedReadsetDigest: digest, storageValidatedAuthorityEpoch: authorityEpochs.get(proof.companionId)! };
     });
   }
   invalidate(reference: { kind: 'action' | 'message'; id: string; companionId: string }): void {
@@ -155,7 +175,9 @@ export class CompanionExecutionSourceStore {
       if ((owner as { owner: string }).owner !== reference.companionId) throw new Error('失效来源不属于该伙伴。');
       const key = executionSourceInvalidKey(reference.kind, reference.id);
       if (this.db.prepare('SELECT 1 FROM metadata WHERE key=?').get(key)) return;
-      this.db.prepare('INSERT INTO metadata(key,value) VALUES(?,?)').run(key, JSON.stringify({ invalidatedAt: new Date().toISOString() }));
+      const capability = reference.kind === 'action' && this.db.prepare("SELECT 1 FROM actions WHERE id=? AND json_type(data,'$.capability')='object'").get(reference.id);
+      this.db.prepare('INSERT INTO metadata(key,value) VALUES(?,?)').run(key, JSON.stringify({ invalidatedAt: new Date().toISOString(),
+        ...(capability ? { validator: 'capability-v1' } : {}) }));
       // Revocation is rare. Recheck all owners' derived notes, including public
       // observations of the result, and use the normal recursive withdrawal
       // path to retire consolidation/state/index dependencies atomically.

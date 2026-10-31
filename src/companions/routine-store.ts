@@ -8,6 +8,8 @@ import type { CompanionConnection } from './store';
 import type { CompanionStorageCommand, CompanionStorageResponse } from '../shared/companion-storage';
 import type { CompanionWorldOccupancy } from '../shared/companion-world';
 import { advanceCompanionWorldEnergy, deriveCompanionWorldHabitProgress } from '../shared/companion-world-engine';
+import { projectCompanionAgendaRoutine } from '../shared/companion-agenda-routine';
+import type { CompanionAgendaRule } from '../shared/companion-agenda';
 
 type Scope = { companionId: string; conversationId: string; beforeSequence?: number };
 type Row = Record<string, string | number | null>;
@@ -28,7 +30,16 @@ export class CompanionRoutineStore {
       clockBoundaries: (from: number, to: number) => number[]; timeZone: () => string; canRespond: (id: string, allowWake: boolean) => boolean;
       actual: (id: string, at: number) => Pick<CompanionRoutineRuntime, 'phase' | 'activity' | 'activeHabitId'>; occupancy: (id: string, from: number, to: number) => CompanionWorldOccupancy[]; urgent: (id: string, source: string, now: number) => boolean }) {}
 
-  configuration(companionId: string): CompanionRoutineConfig { return { ...structuredClone(this.load(companionId).config), timeZone: this.worldClock.timeZone() }; }
+  private agendaProjection(companionId: string): ReturnType<typeof projectCompanionAgendaRoutine> | undefined {
+    if (!this.db.prepare('SELECT 1 FROM metadata WHERE key=?').get('routine-agenda-adopted/' + companionId)) return undefined;
+    const rules = this.db.prepare("SELECT data FROM companion_agenda_rules WHERE companion_id=? AND status='active' AND json_extract(data,'$.executor')='routine' ORDER BY id LIMIT 30")
+      .all(companionId).map(found => decode<CompanionAgendaRule>(row(found).data));
+    return projectCompanionAgendaRoutine(rules, this.worldClock.timeZone());
+  }
+  configuration(companionId: string): CompanionRoutineConfig {
+    this.requireCompanion(companionId);
+    return this.agendaProjection(companionId)?.config ?? { ...structuredClone(this.load(companionId).config), timeZone: this.worldClock.timeZone() };
+  }
   private virtualTime(at: number | string | Date, referenceRealAt?: number): number { return this.worldClock.virtualAt(new Date(at).getTime(), referenceRealAt); }
   private realTime(at: number | string | Date, referenceRealAt?: number): number { return this.worldClock.realAt(new Date(at).getTime(), referenceRealAt); }
 
@@ -58,6 +69,7 @@ export class CompanionRoutineStore {
     const saved = this.db.prepare('SELECT data FROM companion_routines WHERE companion_id=?').get(companionId);
     if (saved) {
       const current = decode<StoredRoutine>(row(saved).data);
+      if (this.db.prepare('SELECT 1 FROM metadata WHERE key=?').get('routine-agenda-adopted/' + companionId)) return current;
       let validSource = true;
       for (const provenance of current.configurationSources) try {
         if (!this.visibleSources({ companionId, conversationId: provenance.conversationId }, [provenance.messageId]).some(source => source.authorId === 'user')) validSource = false;
@@ -80,7 +92,9 @@ export class CompanionRoutineStore {
   get(scope: Scope): CompanionRoutine {
     const conversation = this.requireScope(scope), stored = this.load(scope.companionId), observedAt = this.worldClock.ensureThrough(Date.now());
     this.observeWork(scope.companionId);
-    const config = this.configuration(scope.companionId), privateSource = this.mustHideConfiguration(scope, conversation, stored);
+    const projection = this.agendaProjection(scope.companionId), config = projection?.config ?? this.configuration(scope.companionId);
+    const privateSource = projection ? conversation.kind === 'group' || scope.beforeSequence !== undefined && projection.sources.some(source =>
+      source.sourceMessageId && !this.visibleSources(scope, [source.sourceMessageId]).length) : this.mustHideConfiguration(scope, conversation, stored);
     let runtime = this.phase(scope.companionId, observedAt), habitProgress = this.habitProgress(stored, observedAt);
     if (privateSource) {
       if (this.db.prepare('SELECT 1 FROM metadata WHERE key=?').get('world-room/' + scope.conversationId)) {
@@ -92,7 +106,9 @@ export class CompanionRoutineStore {
       runtime = this.publicRuntime(runtime);
     }
     return { companionId: stored.companionId, config, revision: stored.revision, createdAt: stored.createdAt, updatedAt: stored.updatedAt,
-      ...(!privateSource && stored.sourceMessageId ? { sourceMessageId: stored.sourceMessageId, sourceConversationId: stored.sourceConversationId } : {}), habitProgress,
+      configurationSource: projection ? 'agenda' : 'template',
+      ...(projection ? { sourceRules: projection.sources.map(({ id, revision }) => ({ id, revision })) } : {}),
+      ...(!projection && !privateSource && stored.sourceMessageId ? { sourceMessageId: stored.sourceMessageId, sourceConversationId: stored.sourceConversationId } : {}), habitProgress,
       runtime };
   }
   getRuntime(scope: Scope, at = Date.now()): CompanionRoutineRuntime {
@@ -107,8 +123,9 @@ export class CompanionRoutineStore {
   }
   private habitProgress(stored: StoredRoutine, now: number): CompanionRoutine['habitProgress'] {
     const actualNow = this.worldClock.ensureThrough(now);
-    return stored.config.habits.flatMap(habit => {
-      const from = Date.parse(stored.habitSince[habit.id] ?? stored.createdAt), windows = this.worldClock.occupancy(stored.companionId, from, actualNow);
+    const projection = this.agendaProjection(stored.companionId), config = projection?.config ?? this.configuration(stored.companionId);
+    return config.habits.flatMap(habit => {
+      const from = Date.parse(projection?.sources.find(source => source.id === habit.id)?.updatedAt ?? stored.habitSince[habit.id] ?? stored.createdAt), windows = this.worldClock.occupancy(stored.companionId, from, actualNow);
       return deriveCompanionWorldHabitProgress({ ...this.configuration(stored.companionId), habits: [habit] }, windows, actualNow,
         (at, reference) => this.virtualTime(at, reference), (at, reference) => this.realTime(at, reference), this.worldClock.clockBoundaries(from, actualNow));
     });
@@ -145,6 +162,7 @@ export class CompanionRoutineStore {
   }
   configure(scope: Scope, patch: CompanionRoutinePatch, expectedRevision: number, sourceMessageId?: string): CompanionRoutine {
     return this.db.transaction(() => {
+      if (this.agendaProjection(scope.companionId)) throw new Error('作息已由统一日程维护，请修改对应的世界时间规则；旧作息表单不再生效。');
       if (this.requireScope(scope).kind !== 'private') throw new Error('请在伙伴私聊的日程表单中修改作息，群里只显示公开状态。');
       const value = this.load(scope.companionId);
       if (value.revision !== expectedRevision) throw new Error('作息已更新，请重新读取后修改。');
@@ -219,6 +237,23 @@ export class CompanionRoutineStore {
   }
   execute(command: CompanionStorageCommand): CompanionStorageResponse | undefined {
     switch (command.type) {
+      case 'routine.agenda.adopt': return this.db.transaction(() => {
+        this.requireCompanion(command.companionId);
+        const key = 'routine-agenda-adopted/' + command.companionId;
+        if (this.db.prepare('SELECT 1 FROM metadata WHERE key=?').get(key)) return { ok: true };
+        const ids = [...new Set(command.ruleIds)];
+        for (const id of ids) {
+          const found = this.db.prepare('SELECT data FROM companion_agenda_rules WHERE companion_id=? AND id=?').get(command.companionId, id);
+          const rule = found ? decode<CompanionAgendaRule>(row(found).data) : undefined;
+          if (!rule || rule.executor !== 'routine' || rule.clock !== 'world' || !rule.routine) throw new Error('初始作息规则尚未完整保存，未切换身体计划来源。');
+        }
+        const rules = this.db.prepare("SELECT data FROM companion_agenda_rules WHERE companion_id=? AND status='active' AND json_extract(data,'$.executor')='routine'")
+          .all(command.companionId).map(found => decode<CompanionAgendaRule>(row(found).data));
+        projectCompanionAgendaRoutine(rules, this.worldClock.timeZone());
+        this.beforeConfigure(command.companionId);
+        this.db.prepare('INSERT INTO metadata(key,value) VALUES(?,?)').run(key, JSON.stringify({ at: iso(), ruleIds: ids }));
+        return { ok: true };
+      }).immediate();
       case 'routine.get': return { ok: true, routine: this.get(command) };
       case 'routine.configure': return { ok: true, routine: this.configure(command, command.patch, command.expectedRevision, command.sourceMessageId) };
       case 'routine.interrupt': this.interrupt(command, command.sourceMessageId); return { ok: true, routine: this.get(command) };

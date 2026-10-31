@@ -114,17 +114,19 @@ it('leaves private-only and ordinary non-game updates under their existing ACL w
   expect(await reviewCompanionGameSharedUpdate({ command, request }, config, undefined, { fetchFn })).toEqual({ allowed: true });
   expect(request).toHaveBeenCalledOnce(); expect(fetchFn).not.toHaveBeenCalled();
 });
-it('repairs reviewer format in the same read-only slot without changing the original patch or audience', async () => {
+it('repairs reviewer format through the global repair contract without changing the original patch or audience', async () => {
   const request = vi.fn<(command: CompanionStorageCommand) => Promise<CompanionStorageResponse>>(async () => current()), payloads: unknown[] = [];
   const fetchFn = vi.fn<typeof fetch>(async (_url, init) => {
     const data = JSON.parse(JSON.parse(String(init?.body)).messages[1].content); payloads.push(data);
     if (payloads.length === 1) return response({ allowed: 'yes', confidence: .99, reason: '格式错误' });
-    expect(data.reviewCorrection.error).toContain('allowed');
+    expect(data.purpose).toBe('companion_structured_repair');
+    expect(data.validationErrors.some((issue: { path?: string[] }) => issue.path?.includes('allowed'))).toBe(true);
     return response({ allowed: true, confidence: .99, reason: '只有公开规则，没有秘密。' });
   });
   expect(await reviewCompanionGameSharedUpdate({ command, request }, config, undefined, { fetchFn })).toEqual({ allowed: true });
   const [first, second] = payloads as Array<Record<string, unknown>>;
-  expect(second!.actualAudience).toEqual(first!.actualAudience); expect(second!.exactProposedPatch).toEqual(first!.exactProposedPatch);
+  const original = JSON.parse((second!.originalRequest as { user: string }).user);
+  expect(original.actualAudience).toEqual(first!.actualAudience); expect(original.exactProposedPatch).toEqual(first!.exactProposedPatch);
   expect(request).toHaveBeenCalledOnce();
 });
 it('lets the native author correct a rejected patch under the same real reader without issuing its SQLite write', async () => {

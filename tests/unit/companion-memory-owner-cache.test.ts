@@ -10,9 +10,9 @@ const roots: string[] = [];
 afterEach(async () => { for (const root of roots.splice(0)) await removeOwnedDirectory(root); });
 async function fixture() {
   const root = await mkdtemp(path.join(tmpdir(), 'companion-owner-view-cache-')); roots.push(root);
-  const directoryForOwner = vi.fn(async (owner: string) => path.join(root, owner, '.认知索引', 'views'));
+  const directoryForOwner = vi.fn(async (owner: string) => path.join(root, owner, '.运行', '索引', 'views'));
   return { root, directoryForOwner, cache: new CompanionMemoryViewCache({ directoryForOwner }, { maxViews: 1, maxArtifacts: 1 }),
-    directory: (owner: string) => path.join(root, owner, '.认知索引', 'views') };
+    directory: (owner: string) => path.join(root, owner, '.运行', '索引', 'views') };
 }
 const artifacts: VcpMemoryTimelineArtifacts = { schema: 'worldlinebox.vcp-timeline-artifacts', sourceRevision: 'actual_revision', agents: [] };
 

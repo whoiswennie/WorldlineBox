@@ -4,7 +4,7 @@ import { companionMemoryRetrievalSchema } from '../../src/shared/companion-memor
 import type { CompanionMemoryPage } from '../../src/shared/companion-memory';
 import type { VcpMemorySearchResult } from '../../src/main/vcp-memory/contracts';
 
-const hits: CompanionMemoryPage['items'] = [{ memory: { id: 'owned_note', companionId: 'alice', scopeId: 'owner', content: '原始整篇文档正文', tags: ['约定'],
+const hits: CompanionMemoryPage['items'] = [{ memory: { artifactKind: 'episode_memory' as const, id: 'owned_note', companionId: 'alice', scopeId: 'owner', content: '原始整篇文档正文', tags: ['约定'],
   sourceConversationId: 'private_alice', sources: [], sourceSequence: 0, createdAt: '2026-10-22T01:00:00Z', updatedAt: '2026-10-22T01:00:00Z',
   origin: 'companion', status: 'indexed', version: 1, captureMethod: 'automatic' }, reasons: ['VCP river'], path: ['owned_note'],
   scoreDetails: { engine: 'river', rank: 2, nativeRank: 2, finalScore: .81, baseScore: .71, topologyBonus: .06, anchorBonus: .04, matchedTags: ['海边', '约定'], coreTagsMatched: ['约定'] } }];

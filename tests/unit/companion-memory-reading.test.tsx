@@ -14,9 +14,9 @@ async function mount(content: React.ReactNode) { node = document.createElement('
 const doc: CompanionMemoryDocument = { path: '日记/note_abc.md', name: 'note_abc.md', directory: '日记', title: '原始日记', kind: 'note', category: 'diary', createdAt: '2026-10-21T01:00:00Z', updatedAt: '2026-10-22T02:00:00Z', occurredAt: '2026-10-16T03:00:00Z', bytes: 20, revision: 'r1', contentHash: 'a'.repeat(64), readOnly: false, tags: [], syncState: 'pending', captureMethod: 'automatic' };
 
 it('uses friendly monthly titles without changing the original internal path or manual title', () => {
-  const timeline = { ...doc, kind: 'timeline' as const, name: 'VCP-world_pair_a91cd2b4fac7671790337488-2026-10.summary.md' };
+  const timeline = { ...doc, kind: 'timeline' as const, path: '记忆/导航/2026-10-summary-a91cd2b4fac76717.md', name: '2026-10-summary-a91cd2b4fac76717.md' };
   expect(memoryDocumentTitle(timeline)).toBe('2026 年 10 月 · 月度摘要');
-  expect(timeline.name).toContain('world_pair_');
+  expect(timeline.path).toBe('记忆/导航/2026-10-summary-a91cd2b4fac76717.md');
   const long = { ...doc, title: '这是一个非常长的自动日记首句'.repeat(10) };
   expect([...memoryDocumentTitle(long)]).toHaveLength(33);
   expect(memoryDocumentTitle({ ...long, captureMethod: 'manual' })).toBe(long.title);
@@ -71,7 +71,7 @@ it('maps a date interval to local day boundaries without inventing invalid dates
 it('describes prompt configuration without calling it a memory or monthly timeline', async () => {
   const document = { ...doc, path: '提示词/时间线摘要.md', kind: 'document' as const, category: 'other' as const, readOnly: true };
   await mount(<MemoryDocumentProcessing read={{ document, content: '你是月度时间线摘要器。', sources: [], hasMoreSources: false }} onOpen={vi.fn()} />);
-  expect(node!.textContent).toContain('这是行为配置');
-  expect(node!.textContent).toContain('聊天不会自动新增模块');
+  expect(node!.textContent).toContain('这是按职能选用的系统指导');
+  expect(node!.textContent).toContain('创建后只读');
   expect(node!.textContent).not.toContain('这份时间线由已有记忆整理');
 });

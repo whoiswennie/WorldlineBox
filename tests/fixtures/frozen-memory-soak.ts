@@ -48,7 +48,7 @@ async function mapBounded<T, V>(values: T[], work: (value: T) => Promise<V>): Pr
   return output;
 }
 async function sourcePaths(repository: string): Promise<string[]> {
-  const tree = (await Promise.all(['src', 'tests', 'scripts'].map(async folder => (await files(path.join(repository, folder), relative => sourceExtension.test(relative))).map(file => folder + '/' + file)))).flat();
+  const tree = (await Promise.all(['src', 'tests', 'scripts', 'resources'].map(async folder => (await files(path.join(repository, folder), relative => sourceExtension.test(relative))).map(file => folder + '/' + file)))).flat();
   const root = (await readdir(repository, { withFileTypes: true })).filter(item => item.isFile() && (sourceExtension.test(item.name) || item.name === 'package-lock.json'))
     .map(item => item.name);
   return [...tree, ...root].sort();
@@ -62,13 +62,17 @@ async function gitState(repository: string): Promise<FrozenMemorySoakManifest['g
  * npm dependencies remain at their explicitly recorded installed boundary;
  * the package lock/version hashes are checked, never silently replaced. */
 export async function freezeMemorySoakImplementation(input: { fixtureRoot: string; repositoryRoot?: string; requireClean?: boolean;
-  loadedImplementation?: Record<string, unknown> }) {
+  loadedImplementation?: Record<string, unknown>; captureSources?: boolean }) {
   if (!path.isAbsolute(input.fixtureRoot)) throw new Error('Frozen soak fixture root must be absolute.');
   const repository = await realpath(input.repositoryRoot ?? process.cwd()), git = await gitState(repository);
   if (input.requireClean && (!git.head || git.dirty)) throw new Error('Final memory soak requires a clean committed implementation.');
   const root = path.join(input.fixtureRoot, 'frozen-implementation'), hostRoot = path.join(root, 'host'), vendorRoot = path.join(root, 'vendor');
   await mkdir(root); await mkdir(hostRoot); await mkdir(vendorRoot);
-  const sources = await mapBounded(await sourcePaths(repository), async relative => { const bytes = await stableBytes(path.join(repository, relative)); return { path: relative, bytes: bytes.length, sha256: sha(bytes) }; });
+  const sourceRoot = input.captureSources ? path.join(root, 'source') : undefined;
+  if (sourceRoot) await mkdir(sourceRoot);
+  const sources = await mapBounded(await sourcePaths(repository), async relative => { const bytes = await stableBytes(path.join(repository, relative));
+    if (sourceRoot) { const target = path.join(sourceRoot, ...relative.split('/')); await mkdir(path.dirname(target), { recursive: true }); await writeFile(target, bytes, { flag: 'wx' }); }
+    return { path: relative, bytes: bytes.length, sha256: sha(bytes) }; });
   const copy = async (origin: string, target: string, selected: string[], readonlyFiles = true): Promise<CopyEntry[]> => mapBounded(selected, async relative => {
     const bytes = await stableBytes(path.join(origin, relative)), destination = path.join(target, ...relative.split('/'));
     await mkdir(path.dirname(destination), { recursive: true }); await writeFile(destination, bytes, { flag: 'wx' }); if (readonlyFiles) await chmod(destination, 0o444);
@@ -109,6 +113,7 @@ export async function freezeMemorySoakImplementation(input: { fixtureRoot: strin
   const verifyFrozen = async () => {
     if (sha(await stableBytes(manifestFile)) !== manifestSha256) throw new Error('Frozen implementation manifest changed.');
     await mapBounded([...hostCjs, ...vendor], async entry => { const bytes = await stableBytes(entry.frozenPath); if (sha(bytes) !== entry.sha256) throw new Error('Frozen implementation changed: ' + entry.path); });
+    if (sourceRoot) await mapBounded(sources, async entry => { if (sha(await stableBytes(path.join(sourceRoot, ...entry.path.split('/')))) !== entry.sha256) throw new Error('Frozen build source changed: ' + entry.path); });
     if (await realpath(path.join(root, 'node_modules')) !== nodeModules) throw new Error('Frozen dependency boundary changed.');
   };
   const verifySources = async () => {
@@ -124,7 +129,7 @@ export async function freezeMemorySoakImplementation(input: { fixtureRoot: strin
     if (!expected || sha(readFileSync(expected.frozenPath)) !== expected.sha256) throw new Error('Native launch is outside the frozen host tree or changed.');
     for (const entry of [...hostCjs, ...vendor]) if (sha(readFileSync(entry.frozenPath)) !== entry.sha256) throw new Error('Frozen native input changed before launch: ' + entry.path);
   };
-  await verifyFrozen(); await verifySources();
+  await verifyFrozen(); if (!sourceRoot) await verifySources();
   return { root, workerPath: path.join(hostRoot, 'worker.cjs'), coldWorkerPath: path.join(hostRoot, 'cold-worker.cjs'), vendorRoot,
-    manifest, manifestFile, manifestSha256, verifyFrozen, verifySources, beforeLaunch };
+    manifest, manifestFile, manifestSha256, sourceRoot, verifyFrozen, verifySources, beforeLaunch };
 }

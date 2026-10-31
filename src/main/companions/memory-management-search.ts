@@ -56,7 +56,7 @@ export class CompanionMemoryManagementSearch {
     if (!state) throw new Error('伙伴管理索引状态不可用。'); return state;
   }
   private async identity(owner: string): Promise<VcpMemoryOwnerIdentity> {
-    const companion = (await this.request({ type: 'state', includeHidden: true, includeConversations: false })).state?.companions.find(item => item.id === owner);
+    const companion = (await this.request({ type: 'state', companionId: owner, includeHidden: true, includeConversations: false })).state?.companions.find(item => item.id === owner);
     if (!companion) throw new Error('记忆所属伙伴不存在。');
     return companionMemoryIdentity(companion);
   }

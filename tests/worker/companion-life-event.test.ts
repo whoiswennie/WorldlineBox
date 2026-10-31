@@ -36,7 +36,7 @@ function frozenLifeFixture() {
   const claimed = f.store.request({ type: 'life-event.claim' }).lifeOccurrence!, room = f.store.openPrivate('alice');
   const scope = { companionId: 'alice', conversationId: room.id };
   const source = f.store.appendMessage({ conversationId: room.id, authorId: 'user', content: '这是生活发言当时读到的真实资料。', replyDirective: 'none' });
-  const note = f.store.request({ type: 'memory.record', ...scope, candidate: { content: '准备发言时记住的原始认识。', tags: ['生活'],
+  const note = f.store.request({ type: 'memory.record', ...scope, candidate: { artifactKind: 'episode_memory', content: '准备发言时记住的原始认识。', tags: ['生活'],
     sourceMessageIds: [source.id], evidence: [{ sourceMessageId: source.id, quote: source.content }] } }).memories![0]!;
   const sources = note.sources.map(source => ({ id: source.messageId, conversationId: source.conversationId, checksum: source.checksum }));
   const proof: CompanionExecutionReadset = { schema: 'worldlinebox.companion-execution-readset-v1', companionId: 'alice', conversationId: 'world_alice',
@@ -47,7 +47,7 @@ function frozenLifeFixture() {
 it('commits a life utterance with its original frozen evidence after ordinary maintenance without a global revision veto', () => {
   const f = frozenLifeFixture();
   f.store.request({ type: 'memory.revise', ...f.scope, id: f.note.id, expectedVersion: f.note.version, candidate: {
-    content: '后来的普通整理，只改变现在的笔记。', tags: ['新标签'], sourceMessageIds: [f.source.id], evidence: [{ sourceMessageId: f.source.id, quote: f.source.content }] } });
+    artifactKind: 'episode_memory', content: '后来的普通整理，只改变现在的笔记。', tags: ['新标签'], sourceMessageIds: [f.source.id], evidence: [{ sourceMessageId: f.source.id, quote: f.source.content }] } });
   const completed = f.store.request({ type: 'life-event.complete', id: f.claimed.id, leaseToken: f.claimed.leaseToken!,
     text: '根据当时真实可见的资料，自然地分享一个想法。', executionReadset: f.proof, expectedMemoryRevision: 'unrelated-global-revision' }).lifeOccurrence!;
   expect(completed.status).toBe('done');
@@ -61,7 +61,7 @@ for (const change of ['forget_note', 'withdraw_source', 'wrong_owner', 'exact_ac
   else {
     f.proof.frozenMemories = []; f.proof.memories = [{ id: f.note.id, version: f.note.version }];
     f.store.request({ type: 'memory.revise', ...f.scope, id: f.note.id, expectedVersion: f.note.version, candidate: {
-      content: '主动精确版本读取已变化。', tags: [], sourceMessageIds: [f.source.id], evidence: [{ sourceMessageId: f.source.id, quote: f.source.content }] } });
+      artifactKind: 'episode_memory', content: '主动精确版本读取已变化。', tags: [], sourceMessageIds: [f.source.id], evidence: [{ sourceMessageId: f.source.id, quote: f.source.content }] } });
   }
   expect(() => f.store.request({ type: 'life-event.complete', id: f.claimed.id, leaseToken: f.claimed.leaseToken!, text: '不得发布', executionReadset: f.proof })).toThrow('来源');
   expect(f.store.request({ type: 'life-rule.list', companionId: 'alice' }).lifeOccurrences!.find(occ => occ.id === f.claimed.id)?.status).toBe('running');

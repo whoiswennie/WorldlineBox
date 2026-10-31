@@ -115,20 +115,21 @@ export class CompanionMemoryMaintenanceStore {
   }
   narrativeAttempt(sessionId: string, jobId: string): number {
     const session = this.session(sessionId);
-    if (!session || session.dreamJobId !== jobId || session.narrativeStatus !== 'pending'
-      || session.narrativeAttempts >= session.policy.dream.maxAttempts) throw new Error('联想叙述阶段已结束或重试预算已用尽。');
+    if (!session || session.dreamJobId !== jobId || session.narrativeStatus !== 'pending') throw new Error('联想叙述阶段已经结束。');
     session.narrativeAttempts++; this.saveSession(session); return session.narrativeAttempts;
   }
   refundNarrativeAttempt(sessionId: string, jobId: string, attempt: number): number {
     const session = this.session(sessionId);
     if (!session || session.dreamJobId !== jobId || session.narrativeStatus !== 'pending'
       || session.narrativeAttempts !== attempt || attempt < 1) throw new Error('联想准入延期不属于当前尚未完成的尝试。');
-    session.narrativeAttempts--; this.saveSession(session); return session.narrativeAttempts;
+    // An unsent wait is not a quality failure; keep the lifetime attempt
+    // receipt monotone. The actual world job owns bounded retry cycles.
+    return session.narrativeAttempts;
   }
   finishNarrative(sessionId: string, jobId: string, success: boolean, now: number): void {
     const session = this.session(sessionId);
     if (!session || session.dreamJobId !== jobId) throw new Error('联想叙述不属于当前维护会话。');
-    session.narrativeStatus = success ? 'completed' : session.narrativeAttempts >= session.policy.dream.maxAttempts ? 'failed' : 'pending';
+    session.narrativeStatus = success ? 'completed' : 'pending';
     if (success) { const owner = this.owner(session.companionId); owner.lastDreamSuccessAt = now; this.saveOwner(owner); }
     this.saveSession(session);
   }
@@ -136,5 +137,10 @@ export class CompanionMemoryMaintenanceStore {
     const session = this.session(sessionId);
     if (!session || session.dreamJobId !== jobId) return;
     session.narrativeStatus = 'skipped'; this.saveSession(session);
+  }
+  resumeNarrative(sessionId: string, jobId: string): void {
+    const session = this.session(sessionId);
+    if (!session || session.dreamJobId !== jobId || session.narrativeStatus !== 'failed') return;
+    session.narrativeStatus = 'pending'; this.saveSession(session);
   }
 }

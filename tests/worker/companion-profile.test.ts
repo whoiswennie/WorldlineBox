@@ -51,15 +51,16 @@ it('rejects arbitrary paths, unknown/non-image attachments and stale writers wit
   expect(() => store.updatePlayerProfile({ name: '迟到覆盖', description: '' }, initial.revision)).toThrow('已经更新'); expect(store.getPlayerProfile()).toEqual(winner);
   expect(companionsRequestSchema.safeParse({ type: 'player.profile.update', profile: { name: '无修订', description: '' } }).success).toBe(false);
 });
-it('persists companion appearance sheets and checks data revisions before editing or clearing both public images', () => {
+it('persists companion appearance sheets, keeps identity read only, and checks revisions for image changes', () => {
   const { store, filename } = fixture(); image(store, 'companion-avatar'); image(store, 'companion-three-views');
   const draft = { ...seed, name: '新伙伴', avatarAttachmentId: 'companion-avatar', appearanceAttachmentId: 'companion-three-views' };
   const created = store.createCompanion(draft); expect(created).toMatchObject({ revision: 1, appearanceAttachmentId: 'companion-three-views' });
   close(store); const again = open(filename), loaded = again.state().companions.find(companion => companion.id === created.id)!; expect(loaded).toMatchObject(created);
-  const first = again.request({ type: 'companion.update', id: created.id, expectedRevision: loaded.revision, companion: { ...draft, name: '已编辑' } }).companion!;
+  expect(() => again.updateCompanion(created.id, { ...draft, name: '不可改名' }, loaded.revision)).toThrow('身份与人格');
+  const first = again.request({ type: 'companion.update', id: created.id, expectedRevision: loaded.revision, companion: { ...draft, model: 'runtime-model' } }).companion!;
   expect(first.revision).toBe(2);
-  expect(() => again.request({ type: 'companion.update', id: created.id, expectedRevision: loaded.revision, companion: { ...draft, name: '旧窗口覆盖' } })).toThrow('已经更新');
-  const cleared = again.request({ type: 'companion.update', id: created.id, expectedRevision: first.revision, companion: { ...seed, name: '已移除图片' } }).companion!;
+  expect(() => again.request({ type: 'companion.update', id: created.id, expectedRevision: loaded.revision, companion: { ...draft, model: 'stale-runtime-model' } })).toThrow('已经更新');
+  const cleared = again.request({ type: 'companion.update', id: created.id, expectedRevision: first.revision, companion: { ...seed, name: draft.name } }).companion!;
   expect(cleared.revision).toBe(3); expect(cleared.avatarAttachmentId).toBeUndefined(); expect(cleared.appearanceAttachmentId).toBeUndefined();
   expect(companionStorageResponseSchema.safeParse({ ok: true, companion: cleared }).success).toBe(true);
   close(again); const reopened = open(filename).state().companions.find(companion => companion.id === created.id)!;
@@ -69,7 +70,7 @@ it('validates companion image ownership by registered ID, without affecting inde
   const { store } = fixture(), initial = store.getPlayerProfile(), companion = store.state().companions[0]!;
   image(store, 'document', 'application/pdf');
   expect(() => store.createCompanion({ ...seed, appearanceAttachmentId: 'missing' })).toThrow('附件不存在');
-  expect(() => store.updateCompanion('alice', { ...seed, name: '不应保存', appearanceAttachmentId: 'document' }, companion.revision)).toThrow('公开三视图');
+  expect(() => store.updateCompanion('alice', { ...seed, appearanceAttachmentId: 'document' }, companion.revision)).toThrow('公开三视图');
   expect(store.state().companions[0]).toEqual(companion);
   image(store, 'appearance'); const edited = store.updateCompanion('alice', { ...seed, appearanceAttachmentId: 'appearance' }, companion.revision);
   expect(edited.revision).toBe(2); expect(store.getPlayerProfile()).toEqual(initial);
@@ -83,7 +84,7 @@ it('rejects linked chat images as public player or companion pictures until they
   for (const field of ['avatarAttachmentId', 'appearanceAttachmentId'] as const) {
     expect(() => store.updatePlayerProfile({ name: '不要保存', description: '', [field]: 'linked-photo' }, player.revision)).toThrow('应用内图片副本');
     expect(() => store.createCompanion({ ...seed, [field]: 'linked-photo' })).toThrow('应用内图片副本');
-    expect(() => store.updateCompanion('alice', { ...seed, name: '不要保存', [field]: 'linked-photo' }, companion.revision)).toThrow('应用内图片副本');
+    expect(() => store.updateCompanion('alice', { ...seed, [field]: 'linked-photo' }, companion.revision)).toThrow('应用内图片副本');
   }
   expect(store.getPlayerProfile()).toEqual(player); expect(store.state().companions).toEqual([companion]);
   image(store, 'managed-photo'); expect(store.updatePlayerProfile({ name: '我', description: '', appearanceAttachmentId: 'managed-photo' }, player.revision).appearanceAttachmentId).toBe('managed-photo');

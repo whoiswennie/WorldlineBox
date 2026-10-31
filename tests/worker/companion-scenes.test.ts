@@ -89,7 +89,7 @@ it('queries world and social evidence without automatically creating memories, a
     const evidence = queried.memorySources![0]!;
     expect(evidence.worldObservation?.internalized).toBe(false);
     const learned = store.request({ type: 'memory.record', companionId: 'alice', conversationId, beforeSequence: source.sequence,
-        candidate: { content: '我查到联系人bob的标识是bob。', sourceMessageIds: [evidence.id], evidence: [{ sourceMessageId: evidence.id, quote: '"id":"bob","name":"bob"' }] } });
+        candidate: { artifactKind: 'episode_memory' as const, content: '我查到联系人bob的标识是bob。', sourceMessageIds: [evidence.id], evidence: [{ sourceMessageId: evidence.id, quote: '"id":"bob","name":"bob"' }] } });
     expect(learned.memories?.[0]?.status).toBe('queued');
     expect(store.request({ type: 'memory.browse', companionId: 'bob', conversationId: store.openPrivate('bob').id }).memoryPage?.items).toEqual([]);
     const peer = store.request({ type: 'social.conversation.ensure', companionId: 'bob', memberIds: ['bob', 'carol'] }).socialConversation!;
@@ -108,7 +108,7 @@ it('lets an intrinsic action agent query, selectively learn and organize its own
     expect(store.request({ type: 'memory.browse', ...scope }).memoryPage!.items).toEqual([]);
     advance(store, 1600);
     leased = store.request({ type: 'activity.claim' }).activityTask!;
-    const learned = store.request({ type: 'activity.commit', id: task.id, leaseToken: leased.leaseToken!, decision: { status: 'continue', action: null, wait: null, summary: '把核验过的联系人标识记住。', memory: { operation: 'record', candidate: { content: '我查到bob的联系人标识是bob。', sourceMessageIds: [receipt.id], evidence: [{ sourceMessageId: receipt.id, quote: '"id":"bob","name":"bob"' }] } } } }).activityTask!;
+    const learned = store.request({ type: 'activity.commit', id: task.id, leaseToken: leased.leaseToken!, decision: { status: 'continue', action: null, wait: null, summary: '把核验过的联系人标识记住。', memory: { operation: 'record', candidate: { artifactKind: 'episode_memory' as const, content: '我查到bob的联系人标识是bob。', sourceMessageIds: [receipt.id], evidence: [{ sourceMessageId: receipt.id, quote: '"id":"bob","name":"bob"' }] } } } }).activityTask!;
     expect(learned.history).toHaveLength(1);
     const intent = store.request({ type: 'activity.memory.claim' }).activityMemoryIntent!;
     expect(intent.operation.operation).toBe('record');
@@ -146,7 +146,7 @@ it('invalidates queried social evidence and its learned memory after the actual 
     const room = store.request({ type: 'social.conversation.ensure', companionId: 'alice', memberIds: ['alice', 'bob'] }).socialConversation!;
     const query = store.request({ type: 'memory.world_query', ...scope, category: 'social', roomId: room.id });
     const receipt = query.memorySources![0]!, originalId = query.worldKnowledge!.items[0]!.messageId as string;
-    const memory = store.request({ type: 'memory.record', ...scope, candidate: { content: '我发出了听轻快曲子的想法。',
+    const memory = store.request({ type: 'memory.record', ...scope, candidate: { artifactKind: 'episode_memory' as const, content: '我发出了听轻快曲子的想法。',
             sourceMessageIds: [receipt.id], evidence: [{ sourceMessageId: receipt.id, quote: '我今天想听一首轻快的曲子。' }] } }).memories![0]!;
     expect(store.request({ type: 'memory.read', ...scope, id: memory.id }).memoryRead!.memory).toBeDefined();
     store.request({ type: 'memory.forget', companionId: 'alice', conversationId: room.id, sourceMessageIds: [originalId] });

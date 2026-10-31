@@ -14,7 +14,7 @@ function fixture() {
   const root = mkdtempSync(path.join(tmpdir(), 'memory-policy-file-')); roots.push(root);
   const policy = initialCompanionMemoryPolicy(), write = (owner = 'alice') => {
     mkdirSync(path.join(root, owner), { recursive: true });
-    writeFileSync(path.join(root, owner, COMPANION_MEMORY_POLICY_FILE), JSON.stringify({ schema: 'worldlinebox.companion-memory-policy-v1', companionId: owner, policy }));
+    writeFileSync(path.join(root, owner, COMPANION_MEMORY_POLICY_FILE), JSON.stringify({ schema: 'worldlinebox.companion-cognition-policy-v2', companionId: owner, policy }));
   };
   write(); write('bob'); return { root, policy, write, reader: new CompanionMemoryPolicyFiles(root), file: path.join(root, 'alice', COMPANION_MEMORY_POLICY_FILE) };
 }
@@ -32,7 +32,7 @@ it('uses the current authorized policy hash, observes file edits and never cache
 });
 it('rejects owner substitution, hardlinks, relative binding and thresholds beyond host limits', () => {
   const f = fixture(); expect(() => new CompanionMemoryPolicyFiles('relative')).toThrow();
-  writeFileSync(f.file, JSON.stringify({ schema: 'worldlinebox.companion-memory-policy-v1', companionId: 'bob', policy: f.policy }));
+  writeFileSync(f.file, JSON.stringify({ schema: 'worldlinebox.companion-cognition-policy-v2', companionId: 'bob', policy: f.policy }));
   expect(() => f.reader.read('alice')).toThrow(); f.write();
   linkSync(f.file, path.join(f.root, 'borrowed.json')); expect(() => f.reader.read('alice')).toThrow();
   unlinkSync(path.join(f.root, 'borrowed.json')); f.policy.capture.batchSize = 13; f.write(); expect(() => f.reader.read('alice')).toThrow();
