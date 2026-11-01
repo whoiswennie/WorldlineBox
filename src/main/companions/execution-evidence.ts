@@ -12,6 +12,8 @@ import { companionMemoryFileReceiptsSchema } from '../../shared/companion-memory
 import { companionWorldSourceReadSchema } from '../../shared/companion-world';
 import { companionSocialGameContextSchema } from '../../shared/companion-social';
 import type { CompanionMemory } from '../../shared/companions';
+import { companionPublishedMessageContextsMatch, companionPublishedMessageParsedReadset, companionReferenceValidationResult, type CompanionPublishedMessageContexts } from './source-execution-evidence';
+import type { CompanionReferenceValidationGroup } from '../../shared/companion-reference-validation';
 
 type Scope = Pick<CompanionExecutionReadset, 'companionId' | 'conversationId' | 'beforeSequence'>;
 type Fields = Pick<CompanionExecutionReadset, 'memories' | 'memoryReads' | 'frozenMemories' | 'sources' | 'knowledgeReads' | 'contexts' | 'topics'>;
@@ -344,6 +346,18 @@ export function companionExecutionReadsetDigest(value: CompanionExecutionReadset
     knowledgeReads: unique(parsed.knowledgeReads), contexts: unique(parsed.contexts), topics: unique(parsed.topics) }));
 }
 
+/** Predicate-only references carry exact headers, not source or memory bodies.
+ * The ordinary guarded request still admits their execution roots and records
+ * the same fresh final SQL/file/live authority fences. */
+export async function validateCompanionReferenceGroups(groups: readonly CompanionReferenceValidationGroup[], request: (command: CompanionStorageCommand) => Promise<CompanionStorageResponse>): Promise<boolean> {
+  for (let offset = 0; offset < groups.length; offset += 5) {
+    const batch = groups.slice(offset, offset + 5), response = await request({ type: 'memory.references.validate', groups: batch });
+    const result = companionReferenceValidationResult(batch, response);
+    if (!result || result.groups.some(group => !group.valid)) return false;
+  }
+  return true;
+}
+
 export async function verifyCompanionExecutionReadset(value: CompanionExecutionReadset | undefined, scope: Scope, ports: {
   request(command: CompanionStorageCommand): Promise<CompanionStorageResponse>;
   contextValid?(scope: Scope, context: { revision: string; profileKey: string }, files?: CompanionAttestedMemoryFiles): Promise<boolean>;
@@ -354,8 +368,12 @@ export async function verifyCompanionExecutionReadset(value: CompanionExecutionR
   /** Both fields come from the same current worker proof, not persisted/model
    * JSON. The digest alone is a weaker legacy contract and cannot mint files. */
   memoryFileAttestation?: { readsetDigest: string; authorityEpoch: number };
+  /** Opaque, awaited Main authority for an exact certified historical message.
+   * It never applies to an independent memory read or an unfinished task. */
+  publishedFileContexts?: CompanionPublishedMessageContexts;
 }): Promise<boolean> {
-    const parsed = companionExecutionReadsetSchema.safeParse(value);
+    const admitted = ports.sqliteSourcesValidated ? companionPublishedMessageParsedReadset(ports.publishedFileContexts, value, scope) : undefined;
+    const parsed = admitted ? { success: true as const, data: admitted } : companionExecutionReadsetSchema.safeParse(value);
     if (!parsed.success || !parsed.data.complete || parsed.data.companionId !== scope.companionId || parsed.data.conversationId !== scope.conversationId
       || scope.beforeSequence !== undefined && parsed.data.beforeSequence !== scope.beforeSequence) return false;
     const readset = parsed.data, memoryScope = { companionId: readset.companionId, conversationId: readset.conversationId, beforeSequence: readset.beforeSequence };
@@ -376,11 +394,11 @@ export async function verifyCompanionExecutionReadset(value: CompanionExecutionR
         if (!checked.ok || !checked.topicSourcesValid) return false;
       }
     }
+    const referenceGroups: CompanionReferenceValidationGroup[] = [];
     for (let offset = 0; offset < readset.memories.length; offset += 100) {
       const expected = readset.memories.slice(offset, offset + 100).filter(memory => !readset.memoryReads?.some(read => read.id === memory.id && read.version === memory.version));
       if (!expected.length) continue;
-      const response = await ports.request({ type: 'memory.records.describe', ...memoryScope, ids: [...new Set(expected.map(memory => memory.id))] });
-      if (!response.ok || expected.some(memory => !response.memoryDescriptors?.some(current => current.id === memory.id && current.companionId === scope.companionId && current.version === memory.version))) return false;
+      referenceGroups.push({ ...memoryScope, memories: expected, sources: [] });
     }
     const rooms = new Set(readset.sources.map(source => source.conversationId));
     for (const conversationId of rooms) {
@@ -390,12 +408,14 @@ export async function verifyCompanionExecutionReadset(value: CompanionExecutionR
         // Exact host-issued reads can include a fresh observation receipt after
         // the dialogue cursor. Recheck these known IDs against current ACL and
         // bytes, without mistaking them for an enlarged recent-chat window.
-        const response = await ports.request({ type: 'memory.sources.filter', companionId: readset.companionId, conversationId, ids: [...new Set(expected.map(source => source.id))] });
-        if (!response.ok || expected.some(source => !response.memorySources?.some(current => current.id === source.id && current.conversationId === conversationId && hash(current.content) === source.checksum))) return false;
+        referenceGroups.push({ companionId: readset.companionId, conversationId, sources: expected, memories: [] });
       }
     }
+    if (!await validateCompanionReferenceGroups(referenceGroups, ports.request)) return false;
     }
+    const publishedFiles = ports.sqliteSourcesValidated && companionPublishedMessageContextsMatch(ports.publishedFileContexts, value, scope);
     for (const context of readset.contexts) {
+      if (publishedFiles && context.fileReceiptOnly && context.fileReceipts?.length) continue;
       if (!ports.contextValid) return false;
       const contextScope = { ...memoryScope, beforeSequence: context.beforeSequence };
       const attestation = ports.memoryFileAttestation;

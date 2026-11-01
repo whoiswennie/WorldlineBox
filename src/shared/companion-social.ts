@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { companionSocialNotificationReceiptsCommandSchema } from './companion-social-notification-receipts';
 import { companionUserStopSchema } from './companion-task-stop';
 import { messageSchema, type CompanionMessage } from './companions';
 import { companionSocialWorkOfferSchema } from './companion-social-work';
@@ -127,6 +128,7 @@ export const companionSocialPublicCommands = [
   z.strictObject({ type: z.literal('social.days'), companionId: id.optional(), month: month.optional(), query: z.string().trim().max(500).optional() }),
 ] as const;
 export const companionSocialStorageCommands = [...companionSocialPublicCommands,
+  companionSocialNotificationReceiptsCommandSchema,
   z.strictObject({ type: z.literal('social.contact.check'), companionId: id, recipientIds: z.array(id).min(1).max(19) }),
   z.strictObject({ type: z.literal('social.conversation.ensure'), companionId: id, memberIds: z.array(id).min(2).max(20), roomId: id.optional(), title: z.string().trim().max(100).default('') }),
   z.strictObject({ type: z.literal('social.message.append'), conversationId: id, authorId: id, content: z.string().min(1).max(65536), virtualCreatedAt: z.iso.datetime(), clientId: id, recipientIds: z.array(id).max(20).optional(), replyToId: id.optional() }),

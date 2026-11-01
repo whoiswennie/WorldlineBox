@@ -191,6 +191,13 @@ export function CompanionMemoryLibraryWorkspace({ companions, companionId, api, 
   useLayoutEffect(() => { selection.current = { selectedPath, read }; }, [selectedPath, read]);
   useEffect(() => {
     if (!documentsActive) return;
+    let current = true;
+    // Queue/index progress changes counts, not document bytes or policy. Keep
+    // its pending/running indicator current without reopening canonical bodies.
+    const statusUpdates = createCoalescedRefresh(async () => {
+      const result = await request({ type: 'memory.status', companionId });
+      if (current && alive.current) setProcessing(result?.memoryStatus);
+    }, undefined, 1000);
     const updates = createCoalescedRefresh(async () => {
         const generation = recent.generation;
         const selectedEpoch = readEpoch.current;
@@ -204,13 +211,14 @@ export function CompanionMemoryLibraryWorkspace({ companions, companionId, api, 
         if (alive.current && recent.generation !== generation) void updates.trigger();
     }, undefined, 1000);
     const unsubscribe = api?.onChanged(change => {
-      if (change?.kind === 'progress') return;
+      if (change?.kind === 'memory' && change.companionIds.length && !change.companionIds.includes(companionId)) return;
+      if (change?.kind === 'progress' || change?.kind === 'memory' && change.change === 'status') { void statusUpdates.trigger(); return; }
       ++readEpoch.current; setRead(undefined);
       if (!recentReads) recent.clear();
       void updates.trigger();
     });
-    return () => { updates.dispose(); unsubscribe?.(); };
-  }, [api, load, status, readDocument, cursor, documentsActive, recent, recentReads]);
+    return () => { current = false; statusUpdates.dispose(); updates.dispose(); unsubscribe?.(); };
+  }, [api, load, status, readDocument, cursor, documentsActive, recent, recentReads, request, companionId]);
   useEffect(() => {
     if (!documentsActive || !processing || !(processing.pending || processing.running || processing.pendingIndex)) return;
     const timer = setInterval(() => { void status(); }, 3000); return () => clearInterval(timer);

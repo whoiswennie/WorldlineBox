@@ -145,4 +145,16 @@ describe('llama.cpp native video embedding', () => {
     expect(launch.args).toEqual(expect.arrayContaining(['--pooling', 'last', '--n-gpu-layers', '0', '--threads', '4']));
     await session.close();
   });
+  it('separates port allocation, process construction and health readiness without exposing inputs or depending on the observer', async () => {
+    const child = new FakeChild(); spawnMock.mockReturnValue(child);
+    vi.stubGlobal('fetch', vi.fn(async (url: string | URL | Request) => String(url).endsWith('/health') ? new Response(null, { status: 200 })
+      : new Response(JSON.stringify({ data: [{ embedding: [1, 0] }] }), { status: 200 })));
+    const events: Array<{ operation: string; durationMs: number }> = [];
+    const session = await startLlamaEmbeddingSession({ executable: path.join(tmpdir(), 'PRIVATE_RUNTIME', 'llama-server'), files: { corePath: 'PRIVATE_MODEL.gguf' }, gpuLayers: 0,
+      onTiming: event => { events.push(event); throw new Error('timing observer unavailable'); } });
+    expect(await session.embedText('PRIVATE_INPUT')).toEqual([1, 0]); await session.close();
+    expect(events.map(event => event.operation)).toEqual(['embedding.session.port', 'embedding.session.spawn', 'embedding.session.health']);
+    expect(events.every(event => Number.isFinite(event.durationMs) && event.durationMs >= 0 && Object.keys(event).sort().join(',') === 'durationMs,operation')).toBe(true);
+    expect(JSON.stringify(events)).not.toContain('PRIVATE_');
+  });
 });

@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { isLibraryNavigationTimingCommand, observeLibraryNavigationTiming } from '../shared/library-navigation-timing';
 import { applyNodeNetworkEnvironment, networkEnvironmentMessageSchema } from '../shared/network-environment';
 import {
   parseWorkerRequest,
@@ -3081,7 +3082,8 @@ function logWorkerRequestSpan(input: {
 
 const handleLibraryWorkerMessage = async (event: { data: unknown }): Promise<void> => {
   const input: unknown = event.data;
-  const callbackAt = WORKER_CMD_LOG ? Date.now() : 0;
+  const receivedAtMonotonicMs = performance.now();
+  const callbackAt = performance.timeOrigin + receivedAtMonotonicMs;
 
   const linkedMissingVisibility = parseLinkedMissingVisibilityMessage(input);
   if (linkedMissingVisibility) {
@@ -3195,7 +3197,10 @@ const handleLibraryWorkerMessage = async (event: { data: unknown }): Promise<voi
   // command with event-loop wait (message → dispatch) and service time, so
   // browse-latency attribution can see what the single Worker thread was
   // doing while the renderer waited.
-  const cmdLogReceivedAt = WORKER_CMD_LOG ? performance.now() : 0;
+  const cmdLogReceivedAt = receivedAtMonotonicMs;
+  let navigationDispatchAtMs: number | undefined;
+  let navigationRunMs: number | undefined;
+  let navigationFinishedAtMs: number | undefined;
 
   let response: WorkerResponse;
   // WorldlineBox-2cc492: track in-flight commands so the open-reconciliation gate
@@ -3320,6 +3325,7 @@ const handleLibraryWorkerMessage = async (event: { data: unknown }): Promise<voi
     };
     const runScheduled = async (): Promise<WorkerResult> => {
       const dispatchStartedAt = performance.now();
+      if (isLibraryNavigationTimingCommand(request.command.type)) navigationDispatchAtMs = dispatchStartedAt;
       const previousActivity = currentWorkerActivity;
       currentWorkerActivity = `command:${request.command.type}`;
       let outcome: 'ok' | 'failed' = 'ok';
@@ -3356,6 +3362,10 @@ const handleLibraryWorkerMessage = async (event: { data: unknown }): Promise<voi
           closingLibraryIds.delete(lifecycleLibraryId!);
         }
         const executeMs = performance.now() - dispatchStartedAt;
+        if (isLibraryNavigationTimingCommand(request.command.type)) {
+          navigationRunMs = executeMs;
+          navigationFinishedAtMs = performance.now();
+        }
         currentWorkerActivity = previousActivity;
         logWorkerRequestSpan({
           request,
@@ -3454,7 +3464,22 @@ const handleLibraryWorkerMessage = async (event: { data: unknown }): Promise<voi
     };
   }
 
+  const navigationPostAtMs = performance.now();
   parentPort.postMessage(response);
+  const navigationPostReturnedAtMs = performance.now();
+  if (isLibraryNavigationTimingCommand(responseCommandType)) observeLibraryNavigationTiming(() => console.error(JSON.stringify({
+    timestamp: new Date().toISOString(), scope: 'library.navigation.worker',
+    requestId, commandType: responseCommandType, receivedAtEpochMs: callbackAt,
+    ...(navigationDispatchAtMs === undefined ? {} : {
+      dispatchedAtEpochMs: performance.timeOrigin + navigationDispatchAtMs,
+      parseAndSchedulerMs: Math.max(0, navigationDispatchAtMs - receivedAtMonotonicMs),
+    }),
+    ...(navigationRunMs === undefined ? {} : { runMs: navigationRunMs }),
+    ...(navigationFinishedAtMs === undefined ? {} : { responsePreparationMs: Math.max(0, navigationPostAtMs - navigationFinishedAtMs) }),
+    responsePostStartedAtEpochMs: performance.timeOrigin + navigationPostAtMs,
+    responsePostReturnedAtEpochMs: performance.timeOrigin + navigationPostReturnedAtMs,
+    responsePostCallMs: Math.max(0, navigationPostReturnedAtMs - navigationPostAtMs), ok: response.result.ok,
+  })));
   // WorldlineBox-2cc492: settle the open-reconciliation startup gate only after the
   // response has actually been posted to Main — "served" must mean delivered.
   if (startupResponseGate !== undefined) {

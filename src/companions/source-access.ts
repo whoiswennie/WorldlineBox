@@ -1,29 +1,44 @@
 import { createHash } from 'node:crypto';
+import { rethrowCompanionStorageUnavailable } from '../shared/companion-storage-failure';
 import { readVerifiedHostBehaviorReceipt } from './host-behavior-receipts';
 import type { CompanionConnection } from './store';
 import type { CompanionMemory, CompanionMessage } from '../shared/companions';
-import type { z } from 'zod';
+import { z } from 'zod';
 import type { companionMemorySourceSchema, companionMemoryProhibitionSchema } from '../shared/companion-memory';
 import { companionExecutionReadsetValidSync, executionMessageReadsetKey, executionReadsetFromJson, executionSourceInvalidKey } from './execution-source-access';
 import { companionTopicCheckpointEventValid } from './topic-context';
 import type { CompanionTopic } from '../shared/companion-topic';
-import type { CompanionExecutionReadset } from '../shared/companion-execution-evidence';
+import { companionExecutionReadsetSchema, type CompanionExecutionReadset } from '../shared/companion-execution-evidence';
+import { currentPublishedSourceCutValid, observePublishedActionDependencyCut, observePublishedDependencyCut, withPublishedDependencyReadWindow } from './published-dependency-index';
+import type { CompanionSourceReferenceExpectation, CompanionSourceReferenceHeader } from '../shared/companion-reference-validation';
+import { companionAuthorizedSourceHeaderSchema, type CompanionSourceHeadersResult } from '../shared/companion-source-headers';
+import { companionWorldObservationSchema } from '../shared/companion-knowledge';
+import { readCompanionMessageLoopHeader } from './message-loop-headers';
 export type CompanionSourceScope = {
     companionId: string;
     conversationId: string;
     beforeSequence?: number;
 };
+export type CompanionCurrentSourceReference = { id: string; conversationId: string; revision: number; checksum: string };
 type Row = Record<string, string | number | null>;
 const row = (value: unknown) => value as Row;
 const json = <T>(value: unknown) => JSON.parse(String(value)) as T;
+class SourceScopeDenied extends Error {}
 export const companionSourceChecksum = (content: string) => createHash('sha256').update(content).digest('hex');
 /** Message evidence and authorization only. No memory retrieval, facts or vector state. */
 export class CompanionSourceAccess {
     private readonly executionPath = new Set<string>();
+    private publishedCutsReady = false;
+    enablePublishedDependencyCuts(): void { this.publishedCutsReady = true; }
+    /** Read-only snapshot for resolver cuts. Active recursion always wins over
+     * a previously indexed closed SQL dependency graph. */
+    currentExecutionPath(): ReadonlySet<string> { return new Set(this.executionPath); }
     private readonly statements = new Map<string, ReturnType<CompanionConnection['prepare']>>();
     private validation?: { stamp: string; values: Map<string, boolean>; active: Set<string> };
+    private strictReadAvailability = false;
+    private referenceRows?: { stamp: string; rows: Map<string, Row | undefined>; hashes: Map<string, { content: string; hash: string }> };
     constructor(private readonly db: CompanionConnection, private readonly getMessage: (id: string) => CompanionMessage,
-      private readonly memoryValid?: (owner: string, id: string, version: number, scope?: CompanionSourceScope) => boolean,
+      private readonly memoryValid?: (owner: string, id: string, version: number, scope?: CompanionSourceScope, onValidationError?: (error: unknown) => void) => boolean,
       private readonly sourcesBlocked?: (owner: string, ids: readonly string[]) => void) { }
     /** Reuse only compiled static SQL on this connection. Statement results,
      * bindings and authorization proofs are never retained by this cache. */
@@ -52,9 +67,76 @@ export class CompanionSourceAccess {
      * Nested guards reuse it; the finally boundary never retains it for async
      * continuations or a later command. Every memo still rechecks DB mutation. */
     withValidation<T>(operation: () => T): T {
-        if (this.validation) return operation();
-        this.validation = { stamp: this.validationStamp(), values: new Map(), active: new Set() };
-        try { return operation(); } finally { this.validation = undefined; }
+        return withPublishedDependencyReadWindow(this.db, () => {
+            if (this.validation) return operation();
+            this.validation = { stamp: this.validationStamp(), values: new Map(), active: new Set() };
+            try { return operation(); } finally { this.validation = undefined; }
+        });
+    }
+    /** Only the synchronous control poll opts in. Restore the parent mode even
+     * when a legacy nested validator catches and forwards a storage failure. */
+    withCurrentReferencesValidation<T>(operation: () => T): T {
+        const previous = this.strictReadAvailability; this.strictReadAvailability = true;
+        try { return this.withValidation(operation); } finally { this.strictReadAvailability = previous; }
+    }
+    /** Physical SQL rows belong only to this synchronous read transaction.
+     * Every root still runs its own exact scope/visibility predicates. */
+    withCurrentReferenceRows<T>(ids: readonly string[], operation: () => T): T {
+        return this.withCurrentReferencesValidation(() => {
+            const previous = this.referenceRows;
+            if (!previous) this.referenceRows = { stamp: this.validationStamp(), rows: new Map(), hashes: new Map() };
+            try {
+                const window = this.referenceRowWindow()!, missing = [...new Set(ids)].filter(id => !window.rows.has(id));
+                if (missing.length) {
+                    const found = this.statement('SELECT * FROM messages WHERE id IN(SELECT value FROM json_each(?))').all(JSON.stringify(missing));
+                    for (const id of missing) window.rows.set(id, undefined);
+                    for (const value of found) window.rows.set(String(row(value).id), row(value));
+                    this.referenceRowWindow();
+                }
+                return operation();
+            } finally { this.referenceRows = previous; }
+        });
+    }
+    private referenceRowWindow() {
+        const window = this.referenceRows;
+        if (window) {
+            const stamp = this.validationStamp();
+            if (window.stamp !== stamp) { window.stamp = stamp; window.rows.clear(); window.hashes.clear(); }
+        }
+        return window;
+    }
+    /** Raw body authority for an internal validator, never an authorized UI
+     * message. Copies prevent a consumer mutating this window's physical row. */
+    currentSourceRow(id: string): Row | undefined {
+        const window = this.referenceRowWindow();
+        if (!window) {
+            const found = this.statement('SELECT * FROM messages WHERE id=?').get(id); return found ? row(found) : undefined;
+        }
+        if (!window.rows.has(id)) {
+            const found = this.statement('SELECT * FROM messages WHERE id=?').get(id);
+            window.rows.set(id, found ? row(found) : undefined);
+        }
+        const found = window.rows.get(id); return found ? { ...found } : undefined;
+    }
+    currentSourceChecksum(source: Row): string {
+        const window = this.referenceRowWindow(), content = String(source.content), id = String(source.id), known = window?.hashes.get(id);
+        if (known?.content === content) return known.hash;
+        const hash = companionSourceChecksum(content); window?.hashes.set(id, { content, hash }); return hash;
+    }
+    private readValidationError(error: unknown): void {
+        rethrowCompanionStorageUnavailable(error);
+        if (!this.strictReadAvailability) return;
+        const visited = new Set<unknown>(); let cause = error;
+        while (cause && typeof cause === 'object' && !visited.has(cause)) {
+            visited.add(cause);
+            const code = 'code' in cause ? String(cause.code) : '', name = 'name' in cause ? String(cause.name) : '';
+            if (cause instanceof RangeError || code.startsWith('SQLITE_') || code === 'EXECUTION_VALIDATION_UNAVAILABLE' || name === 'AbortError') throw error;
+            cause = 'cause' in cause ? cause.cause : undefined;
+        }
+        if (error instanceof SourceScopeDenied || error instanceof SyntaxError || error instanceof z.ZodError) return;
+        // An unclassified infrastructure exception is not evidence of an
+        // actual withdrawal. The poll may retry; it must not cancel as invalid.
+        throw error;
     }
     private memo(key: string, operation: () => boolean, cycle = false): boolean {
         return this.withValidation(() => {
@@ -81,7 +163,7 @@ export class CompanionSourceAccess {
     private sourceBindingKey(source: Row): string {
         return JSON.stringify([source.id, source.author_id, source.conversation_id, source.sequence, source.revision ?? 1,
           source.status, source.kind, source.action_id ?? null, source.reply_to_id ?? null,
-          companionSourceChecksum(String(source.content)), source.request_fingerprint ?? null]);
+          this.currentSourceChecksum(source), source.request_fingerprint ?? null]);
     }
     /** Note dependencies and execution sources share one read-local validation
      * session, including mutation invalidation and active-path cycle rejection. */
@@ -133,16 +215,16 @@ export class CompanionSourceAccess {
                 }
                 for (const reference of memory.sources) {
                     if (!this.statement('SELECT 1 FROM vcp_note_source_history WHERE note_id=? AND message_id=?').get(memory.id, reference.id)) return false;
-                    const source = this.statement('SELECT * FROM messages WHERE id=?').get(reference.id);
+                    const source = this.currentSourceRow(reference.id);
                     if (!source || row(source).conversation_id !== reference.conversationId
                         || (reference.revision !== undefined && Number(row(source).revision ?? 1) !== reference.revision)
-                        || companionSourceChecksum(String(row(source).content)) !== reference.checksum) return false;
+                        || this.currentSourceChecksum(row(source)) !== reference.checksum) return false;
                     const entrance = { ...scope, conversationId: reference.conversationId };
                     this.requireScope(entrance);
                     if (!this.visible(entrance, row(source))) return false;
                 }
                 return true;
-            } catch { return false; }
+            } catch (error) { this.readValidationError(error); return false; }
         });
     }
     /** Attest only a current stored message's exact typed readset. Main still
@@ -150,13 +232,21 @@ export class CompanionSourceAccess {
     validatedMessageReadsetDigest(id: string, expected: CompanionExecutionReadset): string | undefined {
         return this.withValidation(() => {
             const before = this.validationStamp();
-            const source = this.statement('SELECT * FROM messages WHERE id=?').get(id);
+            const source = this.currentSourceRow(id);
+            const observed = this.publishedCutsReady ? observePublishedDependencyCut(this.db, id, expected, this.executionPath) : undefined;
+            if (observed) {
+                const bytes = expected === observed.readset ? observed.typedReadsetJSON : JSON.stringify(expected);
+                if (!source || row(source).author_id !== expected.companionId || row(source).conversation_id !== expected.conversationId
+                    || bytes !== observed.typedReadsetJSON || !this.formal(row(source)) || before !== this.validationStamp()) return;
+                return observed.typedReadsetDigest;
+            }
             const stored = this.statement('SELECT value FROM metadata WHERE key=?').get(executionMessageReadsetKey(id));
             const readset = stored ? executionReadsetFromJson(String(row(stored).value)) : undefined;
             const bytes = JSON.stringify(expected);
             if (!source || row(source).author_id !== expected.companionId || row(source).conversation_id !== expected.conversationId
                 || !readset || JSON.stringify(readset) !== bytes || !this.formal(row(source))) return;
-            if (!this.readsetScopeValid(readset) || before !== this.validationStamp()) return;
+            if (!(this.publishedCutsReady && observePublishedDependencyCut(this.db, id, readset, this.executionPath)) && !this.readsetScopeValid(readset)
+                || before !== this.validationStamp()) return;
             return companionSourceChecksum(bytes);
         });
     }
@@ -173,7 +263,8 @@ export class CompanionSourceAccess {
             if (!action || row(action).companion_id !== expected.companionId || row(action).conversation_id !== expected.conversationId
                 || !['succeeded', 'failed', 'cancelled'].includes(String(row(action).status)) || !readset || JSON.stringify(readset) !== bytes
                 || !this.executionValid('action', id, expected.companionId, expected.conversationId, readset)
-                || !this.readsetScopeValid(readset) || before !== this.validationStamp()) return;
+                || !(this.publishedCutsReady && observePublishedActionDependencyCut(this.db, id, readset, this.executionPath)) && !this.readsetScopeValid(readset)
+                || before !== this.validationStamp()) return;
             return companionSourceChecksum(bytes);
         });
     }
@@ -183,20 +274,20 @@ export class CompanionSourceAccess {
             // certify a departed source room or a note newer than that cursor.
             for (const reference of readset.sources) {
                 const scope = { companionId: readset.companionId, conversationId: reference.conversationId };
-                const current = this.statement('SELECT * FROM messages WHERE id=?').get(reference.id);
+                const current = this.currentSourceRow(reference.id);
                 if (!current || row(current).conversation_id !== reference.conversationId
-                    || companionSourceChecksum(String(row(current).content)) !== reference.checksum) return false;
-                try { this.requireScope(scope); } catch { return false; }
+                    || this.currentSourceChecksum(row(current)) !== reference.checksum) return false;
+                try { this.requireScope(scope); } catch (error) { this.readValidationError(error); return false; }
                 if (!this.visible(scope, row(current))) return false;
             }
             const memoryScope = { companionId: readset.companionId, conversationId: readset.conversationId, beforeSequence: readset.beforeSequence };
             if (readset.memoryReads?.some(memory => !this.frozenMemoryValid(memoryScope, memory))) return false;
             if (readset.memories.some(note => !readset.memoryReads?.some(read => read.id === note.id && read.version === note.version)
-              && this.memoryValid?.(readset.companionId, note.id, note.version, memoryScope) !== true)) return false;
+              && this.memoryValid?.(readset.companionId, note.id, note.version, memoryScope, error => this.readValidationError(error)) !== true)) return false;
             if (readset.frozenMemories?.some(memory => !this.frozenMemoryValid(memoryScope, memory))) return false;
             for (const reference of readset.topics) {
                 const scope = { companionId: readset.companionId, conversationId: reference.conversationId };
-                try { this.requireScope(scope); } catch { return false; }
+                try { this.requireScope(scope); } catch (error) { this.readValidationError(error); return false; }
                 const found = this.statement('SELECT data FROM companion_topics WHERE id=? AND conversation_id=?').get(reference.topicId, reference.conversationId);
                 const topic = found ? json<CompanionTopic>(row(found).data) : undefined;
                 if (!topic || topic.deletedAt || !topic.participantIds.includes(readset.companionId) && !topic.invitedIds.includes(readset.companionId)
@@ -208,14 +299,21 @@ export class CompanionSourceAccess {
         const key = `${kind}:${id}`;
         if (this.executionPath.has(key) || this.statement('SELECT 1 FROM metadata WHERE key=?').get(executionSourceInvalidKey(kind, id))) return false;
         return this.memo(JSON.stringify(['execution', kind, id, owner, room, companionSourceChecksum(JSON.stringify(readset) ?? '')]), () => {
+        const parsed = companionExecutionReadsetSchema.safeParse(readset);
+        if (this.publishedCutsReady && parsed.success && parsed.data.companionId === owner && parsed.data.conversationId === room) {
+            const cut = kind === 'message' ? observePublishedDependencyCut(this.db, id, parsed.data, this.executionPath)
+                : observePublishedActionDependencyCut(this.db, id, parsed.data, this.executionPath);
+            if (cut) return true;
+        }
         this.executionPath.add(key);
         try { return companionExecutionReadsetValidSync(this.db, readset, owner, room, {
             sourceValid: (owner, sourceRoom, sourceId, checksum) => {
-                const source = this.statement('SELECT * FROM messages WHERE id=?').get(sourceId);
-                return !!source && String(row(source).conversation_id) === sourceRoom && companionSourceChecksum(String(row(source).content)) === checksum && this.visible(this.ownerScope(owner), row(source));
-            }, memoryValid: (owner, id, version) => this.memoryValid?.(owner, id, version) === true,
+                const source = this.currentSourceRow(sourceId);
+                return !!source && String(row(source).conversation_id) === sourceRoom && this.currentSourceChecksum(row(source)) === checksum && this.visible(this.ownerScope(owner), row(source));
+            }, memoryValid: (owner, id, version) => this.memoryValid?.(owner, id, version, undefined, error => this.readValidationError(error)) === true,
             frozenMemoryValid: (owner, memory) => this.frozenMemoryValid({ companionId: owner, conversationId: room }, memory),
             topicSourcesValid: (owner, conversationId, ids) => this.checkpointSourcesValid({ companionId: owner, conversationId }, ids),
+            onValidationError: error => this.readValidationError(error),
         }); } finally { this.executionPath.delete(key); }
         });
     }
@@ -234,10 +332,10 @@ export class CompanionSourceAccess {
     }
     requireScope(scope: CompanionSourceScope): Row {
         if (!this.statement('SELECT 1 FROM companions WHERE id=? AND deleted_at IS NULL').get(scope.companionId))
-            throw new Error('伙伴不存在。');
+            throw new SourceScopeDenied('伙伴不存在。');
         const conversation = this.statement('SELECT * FROM conversations WHERE id=?').get(scope.conversationId);
         if (!conversation || !this.statement('SELECT 1 FROM conversation_members WHERE conversation_id=? AND companion_id=?').get(scope.conversationId, scope.companionId))
-            throw new Error('伙伴不是聊天成员。');
+            throw new SourceScopeDenied('伙伴不是聊天成员。');
         return row(conversation);
     }
     /** Existing host-owned entrance, never opens or creates a conversation. */
@@ -267,21 +365,23 @@ export class CompanionSourceAccess {
         return this.memo('formal:' + this.sourceBindingKey(source), () => this.formalValue(source));
     }
     private formalValue(source: Row): boolean {
-        const derived = this.statement('SELECT value FROM metadata WHERE key=?').get(executionMessageReadsetKey(String(source.id)));
-        if (derived && !this.executionValid('message', String(source.id), String(source.author_id), String(source.conversation_id), executionReadsetFromJson(String(row(derived).value)))) return false;
+        if (!(this.publishedCutsReady && currentPublishedSourceCutValid(this.db, source, this.executionPath))) {
+            const derived = this.statement('SELECT value FROM metadata WHERE key=?').get(executionMessageReadsetKey(String(source.id)));
+            if (derived && !this.executionValid('message', String(source.id), String(source.author_id), String(source.conversation_id), executionReadsetFromJson(String(row(derived).value)))) return false;
+        }
         if (this.statement('SELECT 1 FROM metadata WHERE key=?').get(executionSourceInvalidKey('message', String(source.id)))) return false;
         const manual = this.statement('SELECT value FROM metadata WHERE key=?').get('vcp-manual-input/' + source.id);
         if (manual)
             return source.author_id === 'user' && source.kind === 'notice' && source.status === 'sent'
                 && json<{
                     checksum: string;
-                }>(row(manual).value).checksum === companionSourceChecksum(String(source.content));
+                }>(row(manual).value).checksum === this.currentSourceChecksum(source);
         const observation = this.statement('SELECT value FROM metadata WHERE key=?').get('memory-world-observation/' + source.id);
         if (observation)
             return source.author_id === 'system' && source.kind === 'notice'
                 && json<{
                     checksum: string;
-                }>(row(observation).value).checksum === companionSourceChecksum(String(source.content));
+                }>(row(observation).value).checksum === this.currentSourceChecksum(source);
         if (source.status !== 'sent' || source.author_id === 'system' || source.kind === 'notice')
             return false;
         if (source.kind === 'action' || source.action_id) {
@@ -305,7 +405,8 @@ export class CompanionSourceAccess {
         }
         // A completed loop can contain the entire model context and tool log.
         // Source admission needs its status only, never those historical bytes.
-        const loop = this.statement("SELECT json_extract(value,'$.status') AS status FROM metadata WHERE key=?").get('message-loop/' + source.id);
+        const header = readCompanionMessageLoopHeader(this.db, 'message-loop/' + source.id);
+        const loop = header ?? this.statement("SELECT json_extract(value,'$.status') AS status FROM metadata WHERE key=?").get('message-loop/' + source.id);
         if (loop)
             return row(loop).status === 'done';
         const fingerprint = source.request_fingerprint ? json<{
@@ -338,6 +439,7 @@ export class CompanionSourceAccess {
     prohibitions(scope: CompanionSourceScope): Array<z.infer<typeof companionMemoryProhibitionSchema>> {
         try { this.requireScope(scope); }
         catch (error) {
+            this.readValidationError(error);
             // A departed room still identifies the policies of this owner's
             // actually captured sources. Public callers validate their current
             // entrance before requesting this internal provenance lookup.
@@ -382,7 +484,9 @@ export class CompanionSourceAccess {
         if (source.author_id !== 'user' && source.reply_to_id)
             ancestors.add(String(source.reply_to_id));
         if (source.author_id !== 'user') {
-            const loop = this.statement("SELECT json_extract(value,'$.sourceMessageId') AS source_message_id FROM metadata WHERE key=?").get('message-loop/' + id);
+            const header = readCompanionMessageLoopHeader(this.db, 'message-loop/' + id);
+            const loop = header ? { source_message_id: header.sourceMessageId }
+                : this.statement("SELECT json_extract(value,'$.sourceMessageId') AS source_message_id FROM metadata WHERE key=?").get('message-loop/' + id);
             if (loop)
                 if (typeof row(loop).source_message_id === 'string') ancestors.add(String(row(loop).source_message_id));
         }
@@ -394,7 +498,7 @@ export class CompanionSourceAccess {
                 }>(row(action).data).sourceMessageId);
         }
         for (const ancestorId of ancestors) {
-            const ancestor = this.statement('SELECT * FROM messages WHERE id=?').get(ancestorId);
+            const ancestor = this.currentSourceRow(ancestorId);
             if (ancestor && this.forgotten(scope, row(ancestor), new Set(visited)))
                 return true;
         }
@@ -443,15 +547,15 @@ export class CompanionSourceAccess {
                 const topic = found ? json<CompanionTopic>(row(found).data) : undefined;
                 if (!topic || !reference.checkpointEventIds.length || !reference.checkpointEventIds.every(eventId => companionTopicCheckpointEventValid(this.db, topic, scope.companionId, eventId,
                     ids => ids.every(sourceId => {
-                        const source = this.statement('SELECT * FROM messages WHERE id=?').get(sourceId);
+                        const source = this.currentSourceRow(sourceId);
                         return !!source && this.visible(topicScope, row(source), new Set(visited), true);
-                    })))) return false;
-            } catch { return false; }
+                    }), error => this.readValidationError(error)))) return false;
+            } catch (error) { this.readValidationError(error); return false; }
         }
         if (observation && (observation.companionId !== scope.companionId
             || observation.sources.some(reference => {
-                const original = this.statement('SELECT * FROM messages WHERE id=?').get(reference.id);
-                return !original || companionSourceChecksum(String(row(original).content)) !== reference.checksum
+                const original = this.currentSourceRow(reference.id);
+                return !original || this.currentSourceChecksum(row(original)) !== reference.checksum
                     || !this.visible(scope, row(original), new Set(visited));
             })))
             return false;
@@ -485,7 +589,7 @@ export class CompanionSourceAccess {
         return this.withValidation(() => {
         this.requireScope(scope);
         return ids.every(id => {
-            const source = this.statement('SELECT * FROM messages WHERE id=?').get(id);
+            const source = this.currentSourceRow(id);
             return !!source && this.visible(scope, row(source), new Set<string>(), true);
         });
         });
@@ -494,10 +598,84 @@ export class CompanionSourceAccess {
         return this.withValidation(() => {
         this.requireScope(scope);
         return [...new Set(ids)].flatMap(id => {
-            const source = this.statement('SELECT * FROM messages WHERE id=?').get(id);
+            const source = this.currentSourceRow(id);
             return source && this.visible(scope, row(source)) ? [this.getMessage(id)] : [];
         });
         });
+    }
+    /** Same source admission as filter(), without constructing attachments,
+     * loop drafts/segments or other message presentation bodies. The caller
+     * owns the SQL read transaction; this physical window never survives it. */
+    sourceHeaders(scope: CompanionSourceScope, ids: readonly string[]): CompanionSourceHeadersResult {
+        return this.withCurrentReferenceRows(ids, () => {
+            this.requireScope(scope);
+            const unique = [...new Set(ids)], result: CompanionSourceHeadersResult = { headers: [], unsupportedIds: [] };
+            const projected = unique.length ? this.statement(`SELECT m.id,
+              (SELECT topic_id FROM companion_message_topics WHERE message_id=m.id) AS topic_id,
+              EXISTS(SELECT 1 FROM message_attachments ma JOIN attachments a ON a.id=ma.attachment_id WHERE ma.message_id=m.id) AS has_attachments,
+              EXISTS(SELECT 1 FROM metadata WHERE key='message-memory-evidence/'||m.id) AS memory_evidence,
+              (SELECT CASE WHEN json_valid(value) THEN json_type(value,'$.observation') ELSE 'invalid' END
+                FROM metadata WHERE key='memory-world-observation/'||m.id) AS observation_type,
+              (SELECT CASE WHEN json_valid(value) THEN json_extract(value,'$.observation') END
+                FROM metadata WHERE key='memory-world-observation/'||m.id) AS observation_value,
+              t.message_id AS world_time_id,t.world_at,t.time_zone
+              FROM messages m LEFT JOIN companion_message_times t ON t.message_id=m.id
+              WHERE m.id IN(SELECT value FROM json_each(?))`).all(JSON.stringify(unique)) : [];
+            const metadata = new Map(projected.map(value => [String(row(value).id), row(value)]));
+            for (const id of unique) {
+                const source = this.currentSourceRow(id);
+                // Missing/denied is not an unsupported legacy projection. In
+                // particular it must never cause a fallback to an old body.
+                if (!source || !this.visible(scope, source)) continue;
+                const extra = metadata.get(id);
+                // The old response protocol accepts an absent observation or
+                // a typed object only. A numeric/null/array/invalid projection
+                // must take its original DTO/error path, not become false.
+                if (extra?.observation_type !== null && extra?.observation_type !== undefined
+                    && (extra.observation_type !== 'object' || !companionWorldObservationSchema.safeParse(json(extra.observation_value)).success)) {
+                    result.unsupportedIds.push(id); continue;
+                }
+                const parsed = extra && companionAuthorizedSourceHeaderSchema.safeParse({
+                    id: String(source.id), authorId: String(source.author_id), conversationId: String(source.conversation_id),
+                    revision: source.revision, checksum: this.currentSourceChecksum(source), sequence: source.sequence,
+                    kind: source.kind, status: source.status, createdAt: String(source.created_at),
+                    ...(source.reply_to_id ? { replyToId: String(source.reply_to_id) } : {}),
+                    ...(extra.topic_id ? { topicId: String(extra.topic_id) } : {}),
+                    ...(extra.world_time_id ? { worldCreatedAt: String(extra.world_at), worldTimeZone: String(extra.time_zone) } : {}),
+                    memoryEvidenceOnly: !!extra.memory_evidence, hasWorldObservation: extra.observation_type === 'object',
+                    hasAttachments: !!extra.has_attachments, hasAction: !!source.action_id,
+                });
+                if (!parsed?.success) { result.unsupportedIds.push(id); continue; }
+                result.headers.push(parsed.data);
+            }
+            return result;
+        });
+    }
+    /** One synchronous fresh SQL window. Validate exact references without
+     * hydrating attachments, loop segments or a public message projection. */
+    currentReferencesValid(scope: CompanionSourceScope, references: readonly CompanionCurrentSourceReference[]): boolean {
+        return this.withCurrentReferenceRows(references.map(reference => reference.id), () => this.currentReferenceHeaders(scope, references) !== undefined);
+    }
+    currentReferenceHeaders(scope: CompanionSourceScope, references: readonly CompanionSourceReferenceExpectation[]): CompanionSourceReferenceHeader[] | undefined {
+        try { this.requireScope(scope); } catch (error) { this.readValidationError(error); return; }
+        const headers = new Map<string, CompanionSourceReferenceHeader>();
+        for (const reference of references) {
+            let header = headers.get(reference.id);
+            if (!header) {
+                const source = this.currentSourceRow(reference.id);
+                if (!source || !this.visible(scope, source)) return;
+                // This private header names a real stored revision. The old
+                // DTO adapter remains the fallback for unsupported legacy
+                // projections; never invent a first revision for the caller.
+                if (typeof source.revision !== 'number' || !Number.isSafeInteger(source.revision) || source.revision < 1) return;
+                header = { id: String(source.id), authorId: String(source.author_id), conversationId: String(source.conversation_id),
+                    revision: source.revision, checksum: this.currentSourceChecksum(source) };
+                headers.set(reference.id, header);
+            }
+            if (header.conversationId !== reference.conversationId || header.checksum !== reference.checksum
+                || reference.revision !== undefined && header.revision !== reference.revision) return;
+        }
+        return [...headers.values()];
     }
     block(companionId: string, ids: readonly string[]): void {
       this.db.transaction(() => {

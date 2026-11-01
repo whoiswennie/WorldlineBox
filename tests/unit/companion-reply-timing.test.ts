@@ -40,3 +40,28 @@ it('keeps a terminal interval fixed and never propagates invalid live clocks', (
   expect(companionReplyElapsedMs({ ...progress, phase: 'tools' }, NaN)).toBe(3000);
   expect(companionReplyElapsedMs({ ...progress, phase: 'tools', timing: { elapsedMs: Number.MAX_VALUE, activeSince: at(5) } }, Number.MAX_VALUE)).toBeUndefined();
 });
+
+
+it('freezes an unknown prior-process stop at recorded elapsed only, without inventing a finish time', async () => {
+  const { finishCompanionReplyProgress } = await import('../../src/shared/companion-reply-progress');
+  const old: CompanionReplyProgress = { revision: 5, phase: 'streaming', detail: '', startedAt: at(0), updatedAt: at(30),
+    timing: { elapsedMs: 12000, activeSince: at(30) } };
+  const recovered = finishCompanionReplyProgress(old, { phase: 'interrupted', detail: '先前进程已结束', updatedAt: at(86400) });
+  expect(recovered.finishedAt).toBeUndefined(); expect(recovered.timingIncomplete).toBe(true);
+  expect(recovered.timing).toEqual({ elapsedMs: 12000 });
+  expect(companionReplyElapsedMs(recovered, start + 365 * 86400000)).toBe(12000);
+  const resumed = advanceCompanionReplyTiming(recovered, { ...recovered, revision: 7, phase: 'tools', updatedAt: at(86410), finishedAt: undefined });
+  const stopped = finishCompanionReplyProgress(resumed, { phase: 'completed', detail: '完成', updatedAt: at(86415), at: at(86415) });
+  expect(stopped.timingIncomplete).toBe(true); expect(stopped.timing).toEqual({ elapsedMs: 17000 });
+});
+
+it('records a real host stop rather than a certificate or boot timestamp, and leaves unknown timings unknown', async () => {
+  const { finishCompanionReplyProgress } = await import('../../src/shared/companion-reply-progress');
+  const old: CompanionReplyProgress = { revision: 1, phase: 'context', detail: '', startedAt: at(0), updatedAt: at(5),
+    timing: { elapsedMs: 3000, activeSince: at(5) } };
+  const stopped = finishCompanionReplyProgress(old, { phase: 'completed', detail: '完成', updatedAt: at(17), at: at(15) });
+  expect(stopped.finishedAt).toBe(at(15)); expect(stopped.timing).toEqual({ elapsedMs: 13000 });
+  expect(stopped.timingIncomplete).toBeUndefined();
+  const unknown = finishCompanionReplyProgress({ ...old, timing: undefined }, { phase: 'interrupted', detail: '结束', updatedAt: at(3600) });
+  expect(unknown.timing).toBeUndefined(); expect(unknown.finishedAt).toBeUndefined(); expect(unknown.timingIncomplete).toBe(true);
+});

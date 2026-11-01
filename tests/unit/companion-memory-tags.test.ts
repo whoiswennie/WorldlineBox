@@ -9,6 +9,7 @@ import { CompanionModelAdmissionError } from '../../src/main/companions/model-qu
 import { randomUUID } from 'node:crypto';
 import { managedMemoryFiles } from '../fixtures/managed-memory-files';
 import { companionMemoryRegisteredPath } from '../../src/main/companions/memory-library';
+import type { CompanionMemoryChangeEvent } from '../../src/shared/companions';
 const seeds = [{ id: 'alice', name: 'Alice', persona: '谨慎区分经历和推测。', model: '', description: '', avatar: 'sister' as const, active: true, proactive: false }];
 const prompt = readFileSync(path.resolve('vendor/vcp-memory/Plugin/DailyNote/TagMaster.txt'), 'utf8');
 const roots: string[] = [], stores = new Set<CompanionsStore>(), services = new Set<CompanionMemoryTagService>();
@@ -42,6 +43,20 @@ function tagger(store: CompanionsStore, fetchFn: typeof fetch, format: AiApiForm
 }
 function read(store: CompanionsStore, id: string) { return store.request({ type: 'memory.library.read', companionId: 'alice', id }).memoryRead?.memory; }
 function status(store: CompanionsStore, noteId: string) { return store.request({ type: 'memory.tags.status', companionId: 'alice', noteId }).memoryTagStatus!; }
+
+it('publishes scoped soft status/content events while tagging the real source-backed note without a global refresh', async () => {
+  const f = fixture(), note = record(f.store, { ...f.scope, content: '这条真实记录需要整理标签。' });
+  const changed = vi.fn(), events: CompanionMemoryChangeEvent[] = [], fetchFn = vi.fn<typeof fetch>(async () => response('openai_chat', '[[Tag: 原始记录, 整理]]'));
+  const service = new CompanionMemoryTagService({ request: async command => f.store.request(command),
+    config: async () => ({ apiFormat: 'openai_chat', model: 'fixture', apiKey: 'fixture' }), prompt: async () => prompt,
+    fetchFn, changed, memoryChanged: event => events.push(event), report: vi.fn() }); services.add(service);
+  await service.tick();
+  expect(status(f.store, note.id).note?.state).toBe('completed'); expect(read(f.store, note.id)?.tags).toEqual(['原始记录', '整理']);
+  expect(events).toContainEqual({ kind: 'memory', change: 'content', companionIds: ['alice'] });
+  expect(events).toContainEqual({ kind: 'memory', change: 'status', companionIds: ['alice'] });
+  expect(events.every(event => event.kind === 'memory' && event.companionIds.every(owner => owner === 'alice'))).toBe(true);
+  expect(changed).not.toHaveBeenCalled(); expect(fetchFn).toHaveBeenCalledOnce();
+});
 
 it('scopes tag claims to the agenda owner and renews only the matched live native lease', () => {
   const f = fixture();

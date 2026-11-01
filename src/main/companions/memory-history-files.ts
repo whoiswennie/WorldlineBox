@@ -6,8 +6,10 @@ import type { CompanionStorageCommand, CompanionStorageResponse } from '../../sh
 import { companionMemoryRegisteredPath, memoryArtifactReference, type CompanionMemoryLibrary, type MemoryLibraryDocumentSession } from './memory-library';
 import { companionMemorySourceArtifactId } from './memory-source-files';
 import { cancelRetiredMemoryPublications, removeRetiredMemoryFile } from './memory-retired-files';
-import { memoryFilePublicationOperation, prepareMemoryFilePublication, releaseHeldMemoryFilePublications } from './memory-publication-jobs';
+import { createMemoryPublicationValidation, memoryFilePublicationOperation, prepareMemoryFilePublication, releaseHeldMemoryFilePublications } from './memory-publication-jobs';
 import { CompanionPublicationBusyError } from './artifact-registry';
+import { projectionHistoryDescriptors } from './memory-history-descriptor-witness';
+import { withCompanionExecutionValidation } from './source-execution-evidence';
 
 type Scope = { companionId: string; conversationId: string; beforeSequence?: number };
 export type CompanionMemoryHistoryTraversal = { active: Set<string>; seen: Set<string>; memo: Map<string, CompanionMemory>;
@@ -53,11 +55,14 @@ export class CompanionMemoryHistoryFiles {
     });
     const operationId = memoryFilePublicationOperation('history', job.id, job.retryCycle);
     await prepareMemoryFilePublication(session, operationId, this.options.report);
-    await session.registry.publish({ artifactId, kind: 'revision_history', producer: { kind: 'host', id: 'history-outbox' },
-      relativePath: job.relativePath, expectedRevision: null, content, sourceRefs, dependencyRefs, visibility: { scope: 'owner' }, allowedConsumers: ['audit'], retentionClass: 'history',
-      operationId }, async () => {
-        await this.check(session, job); for (const reference of sourceRefs) await session.registry.read({ artifactId: reference.artifactId, consumer: 'source_verification', audienceIds: [memory.sourceConversationId] });
-      }, { kind: 'history_files', id: job.id, leaseToken: job.leaseToken, retryCycle: job.retryCycle });
+    const validation = createMemoryPublicationValidation(async () => {
+      await this.check(session, job); for (const reference of sourceRefs) await session.registry.read({ artifactId: reference.artifactId, consumer: 'source_verification', audienceIds: [memory.sourceConversationId] });
+    });
+    try {
+      await session.registry.publish({ artifactId, kind: 'revision_history', producer: { kind: 'host', id: 'history-outbox' },
+        relativePath: job.relativePath, expectedRevision: null, content, sourceRefs, dependencyRefs, visibility: { scope: 'owner' }, allowedConsumers: ['audit'], retentionClass: 'history',
+        operationId }, validation.validate, { kind: 'history_files', id: job.id, leaseToken: job.leaseToken, retryCycle: job.retryCycle });
+    } finally { validation.close(); }
     await this.options.afterPublish?.(job);
   }
   private async withdraw(session: MemoryLibraryDocumentSession, job: CompanionMemoryHistoryOutbox) {
@@ -140,7 +145,13 @@ export class CompanionMemoryHistoryFiles {
   /** A whole canonical closure crosses IPC twice, rather than once per node.
    * Bodies remain exclusively in registered files; SQL supplies only current
    * authorized descriptors and never a replacement body. */
-  async readManyInSession(session: MemoryLibraryDocumentSession, scope: Scope, roots: readonly { id: string; contentRevision: number }[]): Promise<CompanionMemory[]> {
+  async readManyInSession(session: MemoryLibraryDocumentSession, scope: Scope, roots: readonly { id: string; contentRevision: number }[],
+    options?: { projectionInputs: true }): Promise<CompanionMemory[]> {
+    return options?.projectionInputs ? withCompanionExecutionValidation(() => this.readManyWithin(session, scope, roots, options))
+      : this.readManyWithin(session, scope, roots);
+  }
+  private async readManyWithin(session: MemoryLibraryDocumentSession, scope: Scope, roots: readonly { id: string; contentRevision: number }[],
+    options?: { projectionInputs: true }): Promise<CompanionMemory[]> {
     if (!roots.length) return [];
     if (session.owner.id !== scope.companionId || roots.length > 10000) throw new Error('历史依赖归属或预算无效。');
     const key = (reference: { id: string; contentRevision: number }) => `${reference.id}:${reference.contentRevision}`;
@@ -151,7 +162,9 @@ export class CompanionMemoryHistoryFiles {
       if (result.size !== response.memoryHistoryDescriptors.length) throw new Error('历史修订闭包包含重复身份。');
       return result;
     };
-    const before = await describe(), active = new Set<string>(), complete = new Set<string>();
+    const shared = options?.projectionInputs ? await projectionHistoryDescriptors(session, scope, roots) : undefined;
+    const before = shared ? new Map([...shared.values()].map(descriptor => [key(descriptor), descriptor])) : await describe();
+    const active = new Set<string>(), complete = new Set<string>();
     const pending = roots.map(reference => ({ key: key(reference), closing: false }));
     while (pending.length) {
       const entry = pending.pop()!;
@@ -172,7 +185,7 @@ export class CompanionMemoryHistoryFiles {
       consumer: 'source_verification' as const, audienceIds: [scope.conversationId] })));
     for (let index = 0; index < sources.length; index++) if (originals[index]?.artifact.kind !== 'source_evidence'
       || originals[index]!.artifact.contentHash !== sources[index]!.checksum) throw new Error('历史真实来源已变化或缺失。');
-    const after = await describe();
+    const after = shared ? before : await describe();
     if (after.size !== before.size) throw new Error('读取期间历史闭包已变化。');
     for (const [identity, expected] of before) {
       const actual = after.get(identity);

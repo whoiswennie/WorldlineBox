@@ -3,6 +3,7 @@ import { closeSync, existsSync, fsyncSync, lstatSync, openSync, readFileSync, re
 import path from 'node:path';
 import BetterSqlite3 from 'better-sqlite3';
 import type { CompanionConnection } from './store';
+import { companionStorageTimingNow, measureCompanionStorageTiming, recordCompanionStorageTiming } from '../shared/companion-storage-timing';
 
 export interface CompanionRecoverySelection { libraryPath: string; libraryId: string }
 export interface CompanionRecoveryHead { lineageId: string; generation: number }
@@ -57,6 +58,45 @@ export function fencedCompanionConnection(raw: CompanionConnection, guard: <T>(r
     return (...args: unknown[]) => { const result: unknown = Reflect.apply(value, target, args); return result === target ? connection : result; };
   } });
   return connection;
+}
+
+export type CompanionRecoveryMutationRunner = <T>(run: () => T) => T;
+
+/** The normal Store and host-only offline maintenance use the same commit
+ * protocol. Nested statement guards belong to their outer primary transaction. */
+export function createCompanionRecoveryMutationRunner(primary: CompanionConnection, fence: CompanionRecoveryFence): CompanionRecoveryMutationRunner {
+  let depth = 0;
+  return <T>(run: () => T): T => {
+    if (depth) return run();
+    measureCompanionStorageTiming('recoveryReconcile', () => fence.reconcile(primary));
+    const before = primary.prepare('SELECT total_changes() AS changes,(SELECT schema_version FROM pragma_schema_version) AS schemaVersion').get() as { changes: number; schemaVersion: number };
+    let generation: number | undefined;
+    ++depth;
+    try {
+      const beginAt = companionStorageTimingNow();
+      let entered = false, commitAt: number | undefined;
+      let result: T;
+      try { result = primary.transaction(() => {
+        entered = true; recordCompanionStorageTiming('recoveryBegin', beginAt);
+        try {
+        const result = run();
+        const after = primary.prepare('SELECT total_changes() AS changes,(SELECT schema_version FROM pragma_schema_version) AS schemaVersion').get() as { changes: number; schemaVersion: number };
+        // Advancing the independent durable fence precedes primary visibility.
+        // If this fails, the primary transaction rolls back with the operation.
+        if (after.changes !== before.changes || after.schemaVersion !== before.schemaVersion)
+          generation = measureCompanionStorageTiming('recoveryPrepare', () => fence.prepare(primary));
+        return result;
+        } finally { commitAt = companionStorageTimingNow(); }
+      }).immediate(); }
+      finally {
+        if (!entered) recordCompanionStorageTiming('recoveryBegin', beginAt);
+        // The transaction exit span includes rollback on a failing operation.
+        recordCompanionStorageTiming('recoveryCommit', commitAt);
+      }
+      if (generation !== undefined) measureCompanionStorageTiming('recoveryFinish', () => fence.finish(generation!));
+      return result;
+    } finally { --depth; }
+  };
 }
 
 /** This small host database is deliberately outside the rollback payload.

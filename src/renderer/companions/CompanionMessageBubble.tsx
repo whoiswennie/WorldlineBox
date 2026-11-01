@@ -5,7 +5,7 @@ import { CompanionCapabilityLink } from './CompanionCapabilityLink';
 import { CompanionCapabilityGroup } from './CompanionCapabilityGroup';
 import { companionAgendaOnlyMessage, companionChatActionIds, companionReplyParts } from './companion-reply-presentation';
 import { MessageContent } from './MessageContent';
-import { type CompanionReplyStreamStore, projectCompanionReply } from './reply-stream';
+import { type CompanionReplyStreamStore, projectCompanionReply, projectCompanionModelUsage } from './reply-stream';
 import { CompanionAttachments } from './CompanionAttachments';
 import { CompanionReplyProgress } from './CompanionReplyProgress';
 import { terminalReplyPhases } from '../../shared/companion-reply-progress';
@@ -28,22 +28,25 @@ export const CompanionMessageBubble = memo(function CompanionMessageBubble({ mes
   const snapshot = useSyncExternalStore(subscribe, getSnapshot, getSnapshot);
   const projected = projectCompanionReply(message, snapshot);
   const { phase, progress } = projected;
+  const model = projectCompanionModelUsage(message, snapshot)?.current;
+  const bodyReceivedAt = model?.phase === 'finished' && model.step === (snapshot.overlays.at(-1)?.step ?? message.replyDraft?.step)
+    && progress && phase !== 'interrupted' && (progress.phase === 'streaming' || progress.phase === 'thinking' && progress.detail === '正在生成回复')
+    && Date.parse(model.updatedAt) >= Date.parse(progress.updatedAt) ? model.updatedAt : undefined;
   const segments = projected.segments?.map(segment => ({ ...segment, actionIds: companionChatActionIds(message, segment.actionIds, actions) }));
   const partial = phase === 'interrupted' || interrupted && !!message.replyDraft && !snapshot.discarded.has(message.replyDraft.attemptId);
   useLayoutEffect(() => { if (snapshot.overlays.length || snapshot.modelUsage) onStreamLayout(message.conversationId); }, [snapshot, message.conversationId, onStreamLayout]);
-  const lastStreamingStep = progress && terminalReplyPhases.has(progress.phase) ? undefined : snapshot.overlays.filter(frame => frame.phase === 'streaming').at(-1)?.step;
+  const lastStreamingStep = bodyReceivedAt || progress && terminalReplyPhases.has(progress.phase) ? undefined : snapshot.overlays.filter(frame => frame.phase === 'streaming').at(-1)?.step;
   const hasText = segments?.some(segment => segment.text.trim());
   const processVersion = progress ? `${message.id}:${progress.workId ?? ''}:${progress.startedAt}:${progress.revision}` : undefined;
   const revealCompleted = progress?.phase === 'completed' && inspectedProcess === processVersion;
   const firstPending = !!progress && !terminalReplyPhases.has(progress.phase) && !hasText && !message.content.trim() && !message.attachments.length
     && !(segments ?? []).some(segment => segment.actionIds.length) && message.kind !== 'action';
   if (companionAgendaOnlyMessage(message, actions)) return null;
-  const progressView = progress ? <CompanionReplyProgress initialBubble={firstPending} progress={progress} now={now} revealCompleted={revealCompleted} scope={{ companionId: message.authorId, conversationId: message.conversationId, messageId: message.id }} onCancel={progress.workId && onCancelReply ? () => onCancelReply(progress.workId!) : undefined} onRetry={progress.workId && onRetryReply ? () => onRetryReply(progress.workId!) : undefined} onGuide={progress.sourceMessageId && onGuideReply ? () => onGuideReply(progress.sourceMessageId!) : undefined} /> : null;
+  const progressView = progress && (progress.phase !== 'completed' || revealCompleted) ? <CompanionReplyProgress initialBubble={firstPending} progress={progress} bodyReceivedAt={bodyReceivedAt} now={now} revealCompleted={revealCompleted} scope={{ companionId: message.authorId, conversationId: message.conversationId, messageId: message.id }} onCancel={progress.workId && onCancelReply ? () => onCancelReply(progress.workId!) : undefined} onRetry={progress.workId && onRetryReply ? () => onRetryReply(progress.workId!) : undefined} onGuide={progress.sourceMessageId && onGuideReply ? () => onGuideReply(progress.sourceMessageId!) : undefined} /> : null;
   const capabilities = (ids: string[], step: number, hasBody: boolean) => <div className={'companions-loop-capabilities' + (hasBody ? ' is-attached' : ' is-standalone')} aria-label={'第 ' + (step + 1) + ' 步能力调用'}>{!hasBody && ids.length > 1
     ? <CompanionCapabilityGroup actionIds={ids} actions={actions} now={now} onOpen={onOpenAction} />
     : ids.map(id => <CompanionCapabilityLink key={id} action={actions.find(value => value.id === id)} actionId={id} now={now} onOpen={onOpenAction} />)}</div>;
   return <div className="companions-reply-thread" data-reply-phase={phase ?? (partial ? 'interrupted' : undefined)} aria-busy={progress ? !terminalReplyPhases.has(progress.phase) : phase === 'streaming'}>
-    {firstPending && <div className="companions-message-bubble is-pending-reply" data-reply-placeholder>{progressView}</div>}
     {message.sourceUnavailable ? <div className="companions-message-bubble"><small className="companions-reply-stream-status" role="status">此消息引用的资料已变化，内容暂不可用。</small></div>
     : firstPending ? null : message.kind === 'action' && message.actionId ? capabilities([message.actionId], 0, false) : segments ? <>
       {!progress && !hasText && !segments.some(segment => segment.actionIds.length) && lastStreamingStep === undefined && <p className="companions-loop-pending"><Icon name="activity" size={13} />正在回复…</p>}
@@ -65,7 +68,10 @@ export const CompanionMessageBubble = memo(function CompanionMessageBubble({ mes
     </div> : null}
     {!message.sourceUnavailable && segments && !!message.attachments.length && <div className="companions-message-bubble"><CompanionAttachments ownerId={message.authorId} conversationId={message.conversationId} attachments={message.attachments} onOpen={onOpenAttachment} /></div>}
     {partial && !progress && <small className="companions-reply-stream-status">回复已中断</small>}
-    {!firstPending && progressView}
+    {/* Keep cancellation state and its real DOM control in one slot when the
+        first body replaces the placeholder. Only presentation classes change. */}
+    {progressView && <div key="reply-process" data-reply-process-slot className={firstPending ? 'companions-message-bubble is-pending-reply' : undefined}
+      data-reply-placeholder={firstPending || undefined} style={{ maxWidth: '100%', minWidth: 0 }}>{progressView}</div>}
     <CompanionMessageModelUsage message={message} companionName={companionName} streamStore={streamStore} now={now} />
     {(tools || progress?.phase === 'completed') && <div className="companions-message-tools">{tools}{progress?.phase === 'completed' && <button type="button" aria-label="查看回复过程" title="查看回复过程" aria-expanded={revealCompleted} onClick={() => setInspectedProcess(value => value === processVersion ? undefined : processVersion)}><Icon name="activity" /></button>}</div>}
   </div>;

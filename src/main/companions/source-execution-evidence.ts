@@ -2,8 +2,18 @@ import { AsyncLocalStorage } from 'node:async_hooks';
 import { createHash } from 'node:crypto';
 import type { CompanionMemory, CompanionMessage } from '../../shared/companions';
 import type { CompanionStorageCommand, CompanionStorageResponse } from '../../shared/companion-storage';
+import { companionMessagePublicationCandidateSchema, companionMessagePublicationCertificateSchema,
+  type CompanionMessagePublicationCandidate, type CompanionMessagePublicationMode, type CompanionPublishedActionFrontier } from '../../shared/companion-message-publication';
+import { CompanionValidationUnavailableError } from './validation-unavailable';
+import { withCompanionStorageBarrier } from './storage-operation-context';
+import { companionReferenceValidationResultSchema, type CompanionReferenceValidationGroup, type CompanionReferenceValidationResult } from '../../shared/companion-reference-validation';
+import { companionSourceHeaderResult } from './source-headers';
+import { companionReplyPublication } from './reply-publication';
+import type { CompanionReplyPublication } from '../../shared/companion-reply-publication';
+import { companionExecutionReadsetSchema, type CompanionExecutionReadset } from '../../shared/companion-execution-evidence';
 
 export type CompanionExecutionSourceProof = NonNullable<CompanionStorageResponse['executionSources']>[number];
+export type CompanionFinalValidationTiming = { phase: 'canonical' | 'assets' | 'sql' | 'sources' | 'authorities' | 'certificates'; durationMs: number; checks: number };
 type CompanionAuthorityVerifier = (proofs: readonly CompanionExecutionSourceProof[]) => Promise<ReadonlyMap<string, boolean>>;
 interface CompanionAuthorityEntry { proof: CompanionExecutionSourceProof; result?: boolean; pending?: Promise<boolean>; consumed: boolean }
 interface CompanionAuthorityGroup { verify: CompanionAuthorityVerifier; entries: Map<string, CompanionAuthorityEntry> }
@@ -16,17 +26,36 @@ interface CompanionSourceGroup {
   storage(command: CompanionStorageCommand): Promise<CompanionStorageResponse>;
   entries: Map<string, CompanionSourceEntry>;
 }
+interface CompanionSourceInitialLane { tail: Promise<void>; closing: AbortController }
+type CompanionSourceBoundary = Pick<CompanionExecutionSourceProof, 'kind' | 'id'>;
 interface CompanionAdmissionEntry { value?: unknown; ready: boolean; cacheable: boolean; consumed: boolean; pending?: Promise<unknown>; verify(): Promise<void> }
+type PublicationInput = CompanionMessagePublicationCandidate & { mode: CompanionMessagePublicationMode };
+interface CompanionPublicationGroup { certify(messages: readonly PublicationInput[], actions?: readonly CompanionPublishedActionFrontier[]): Promise<void>;
+  entries: Map<string, PublicationInput>; actions: Map<string, CompanionPublishedActionFrontier> }
 type CompanionExecutionValidationFrame = { path: ReadonlySet<string>; completed: Map<string, boolean>; pending: Map<string, Promise<boolean>>;
   identities: Map<object, number>; lifetime: { active: boolean }; authorities: CompanionAuthorityFrame;
   witnesses: Map<object, Map<string, CompanionWitnessGroup>>; sqlWitnesses: Map<object, Map<string, CompanionWitnessGroup>>; sources: Map<object, CompanionSourceGroup>;
-  admissions: Map<object, Map<string, CompanionAdmissionEntry>>; signal?: AbortSignal };
+  sourceInitials: Map<object, CompanionSourceInitialLane>; sourceBoundaries: Map<object, Map<string, CompanionSourceBoundary>>;
+  admissions: Map<object, Map<string, CompanionAdmissionEntry>>; publications: Map<object, CompanionPublicationGroup>; signal?: AbortSignal;
+  onFinalTiming?: (timing: CompanionFinalValidationTiming) => void };
 const validationFrame = new AsyncLocalStorage<CompanionExecutionValidationFrame>();
+const validationIdentities = new WeakMap<object, object>();
+/** Identity only, never authority. A consumer may match its own admitted
+ * inputs to the same live finite frame without observing mutable internals. */
+export function currentCompanionExecutionValidationIdentity(): object | undefined {
+  const frame = validationFrame.getStore();
+  if (!frame?.lifetime.active || frame.authorities.sealed) return;
+  let identity = validationIdentities.get(frame.lifetime);
+  if (!identity) { identity = Object.freeze({}); validationIdentities.set(frame.lifetime, identity); }
+  return identity;
+}
 
 function clearValidationFrame(frame: CompanionExecutionValidationFrame): void {
   frame.lifetime.active = false; frame.completed.clear(); frame.pending.clear(); frame.identities.clear();
+  for (const lane of frame.sourceInitials.values()) lane.closing.abort(new CompanionValidationUnavailableError('执行来源核验窗口已经关闭。'));
+  frame.sourceInitials.clear(); frame.sourceBoundaries.clear();
   frame.authorities.sealed = true; frame.authorities.groups.clear();
-  frame.witnesses.clear(); frame.sqlWitnesses.clear(); frame.sources.clear(); frame.admissions.clear();
+  frame.witnesses.clear(); frame.sqlWitnesses.clear(); frame.sources.clear(); frame.admissions.clear(); frame.publications.clear();
 }
 
 /** Cancellation is task control, never evidence that a source was withdrawn. */
@@ -69,7 +98,7 @@ function authorityProofKey(proof: CompanionExecutionSourceProof): string {
     capability && [capability.name, capability.callId, capability.invocationId, capability.agendaRunId, capability.inputHash, capability.audience], proof.executionReadset])).digest('hex');
 }
 
-function sourceProofKey(proof: CompanionExecutionSourceProof): string { return `${proof.kind}:${proof.id}`; }
+function sourceProofKey(proof: CompanionSourceBoundary): string { return `${proof.kind}:${proof.id}`; }
 function sourceReferencesCover(cover: CompanionSourceReferences, wanted: CompanionSourceReferences): boolean {
   const sources = new Set(cover.sourceMessageIds), memories = new Set(cover.memoryIds);
   return wanted.sourceMessageIds.every(id => sources.has(id)) && wanted.memoryIds.every(id => memories.has(id));
@@ -78,14 +107,131 @@ function strongSourceProof(proof: CompanionExecutionSourceProof): boolean {
   return !proof.invalidated && proof.storageValidatedAuthorityEpoch !== undefined && !!proof.executionReadset
     && proof.storageValidatedReadsetDigest === createHash('sha256').update(JSON.stringify(proof.executionReadset)).digest('hex');
 }
-function sourceProofBinding(proof: CompanionExecutionSourceProof): string {
-  return JSON.stringify([proof.kind, proof.id, proof.companionId, proof.conversationId, !!proof.invalidated,
-    proof.executionReadset, proof.capability, proof.storageValidatedReadsetDigest, proof.storageValidatedAuthorityEpoch]);
+function publicationCandidate(proof: CompanionExecutionSourceProof): CompanionMessagePublicationCandidate | undefined {
+  const parsed = companionMessagePublicationCandidateSchema.safeParse(proof.publicationCandidate);
+  if (!parsed.success || !strongSourceProof(proof) || proof.kind !== 'message' || parsed.data.messageId !== proof.id
+    || parsed.data.companionId !== proof.companionId || parsed.data.conversationId !== proof.conversationId) return;
+  return parsed.data;
 }
-function mergeSourceProof(proofs: Map<string, CompanionExecutionSourceProof>, proof: CompanionExecutionSourceProof): void {
+function publicationBinding(value: CompanionMessagePublicationCandidate): string {
+  return JSON.stringify([value.policyVersion, value.companionId, value.conversationId, value.messageId, value.messageRevision,
+    value.bodySHA, value.readsetDigest, value.contextClosureDigest]);
+}
+/** A current Worker certificate is narrower than a generic SQL source proof.
+ * Its presence never authorizes a current memory/file read or a live action. */
+export function companionPublishedMessageCertified(proof: CompanionExecutionSourceProof): boolean {
+  const candidate = publicationCandidate(proof), certificate = companionMessagePublicationCertificateSchema.safeParse(proof.publicationCertificate);
+  return !!candidate && certificate.success && publicationBinding(candidate) === publicationBinding(certificate.data);
+}
+const publishedContextsBrand = Symbol('current Worker certified historical message contexts');
+export type CompanionPublishedMessageContexts = Readonly<{ [publishedContextsBrand]: true }>;
+const publishedContextInputs = new WeakMap<CompanionPublishedMessageContexts, { input: CompanionExecutionReadset; parsed?: CompanionExecutionReadset }>();
+/** Only the awaited historical-message validator receives this opaque token.
+ * A persisted/model lookalike or another readset cannot reuse its authority. */
+export function companionPublishedMessageContextsMatch(token: CompanionPublishedMessageContexts | undefined, value: unknown,
+  scope: { companionId: string; conversationId: string; beforeSequence?: number }): boolean {
+  if (!token) return false;
+  assertCompanionExecutionWitnessActive();
+  const readset = token && publishedContextInputs.get(token)?.input;
+  return !!readset && readset === value && readset.companionId === scope.companionId && readset.conversationId === scope.conversationId
+    && (scope.beforeSequence === undefined || readset.beforeSequence === scope.beforeSequence);
+}
+/** Only an exact, live opaque admission can supply its already parsed input.
+ * Lookalikes, another object/scope and expired callbacks retain normal parsing. */
+export function companionPublishedMessageParsedReadset(token: CompanionPublishedMessageContexts | undefined, value: unknown,
+  scope: { companionId: string; conversationId: string; beforeSequence?: number }): CompanionExecutionReadset | undefined {
+  return companionPublishedMessageContextsMatch(token, value, scope) ? publishedContextInputs.get(token!)?.parsed : undefined;
+}
+function publishedCutBinding(proof: CompanionExecutionSourceProof): unknown {
+  const cut = proof.publishedDependencyCut;
+  // Its generation proves the Worker's current index snapshot, not a change
+  // to the immutable message or its remaining real execution obligations.
+  return cut && [cut.bindingHash, cut.volatileActions, cut.assetOwners];
+}
+function sourceProofBinding(proof: CompanionExecutionSourceProof): string {
+  return sourceProofJSONBinding(proof, JSON.stringify(proof.executionReadset));
+}
+function sourceProofJSONBinding(proof: CompanionExecutionSourceProof, readsetJSON: string | undefined): string {
+  return JSON.stringify([proof.kind, proof.id, proof.companionId, proof.conversationId, !!proof.invalidated,
+    readsetJSON, proof.capability, proof.storageValidatedReadsetDigest, proof.storageValidatedAuthorityEpoch, proof.publicationCandidate,
+    publishedCutBinding(proof), proof.storageActionBinding]);
+}
+type SourceProofObservation = Readonly<{ proof: CompanionExecutionSourceProof; readsetJSON?: string; readsetDigest?: string;
+  candidate?: CompanionMessagePublicationCandidate; strong: boolean; certified: boolean; binding: string; parsedReadset?: CompanionExecutionReadset }>;
+function freezeOwned<T>(value: T): T {
+  if (value && typeof value === 'object' && !Object.isFrozen(value)) {
+    for (const child of Object.values(value)) freezeOwned(child);
+    Object.freeze(value);
+  }
+  return value;
+}
+/** Computation for one raw packet, not an authorization cache. Only a private
+ * owned, deeply frozen published-message snapshot may reuse this description
+ * during async admission. Every final packet is described again from bytes. */
+function observeSourceProof(input: CompanionExecutionSourceProof, ownPublished = false): SourceProofObservation {
+  const readsetJSON = JSON.stringify(input.executionReadset), readsetDigest = readsetJSON === undefined ? undefined
+    : createHash('sha256').update(readsetJSON).digest('hex');
+  const strong = !input.invalidated && input.storageValidatedAuthorityEpoch !== undefined && !!input.executionReadset
+    && input.storageValidatedReadsetDigest === readsetDigest;
+  const parsedCandidate = companionMessagePublicationCandidateSchema.safeParse(input.publicationCandidate);
+  const candidate = parsedCandidate.success && strong && input.kind === 'message' && parsedCandidate.data.messageId === input.id
+    && parsedCandidate.data.companionId === input.companionId && parsedCandidate.data.conversationId === input.conversationId ? parsedCandidate.data : undefined;
+  const certificate = companionMessagePublicationCertificateSchema.safeParse(input.publicationCertificate);
+  const certified = !!candidate && certificate.success && publicationBinding(candidate) === publicationBinding(certificate.data);
+  let proof = input, parsedReadset: CompanionExecutionReadset | undefined;
+  if (ownPublished && certified && input.executionReadset) {
+    const parsed = companionExecutionReadsetSchema.safeParse(input.executionReadset);
+    // Keep the exact Worker digest/field order. A legacy projection with
+    // defaults or a different representation retains its original full path.
+    if (parsed.success && JSON.stringify(parsed.data) === readsetJSON) {
+      const { executionReadset: _readset, ...header } = input; void _readset;
+      proof = freezeOwned({ ...structuredClone(header), executionReadset: parsed.data });
+      parsedReadset = proof.executionReadset;
+    }
+  }
+  return Object.freeze({ proof, readsetJSON, readsetDigest, candidate, strong, certified,
+    binding: sourceProofJSONBinding(proof, readsetJSON), ...(parsedReadset ? { parsedReadset } : {}) });
+}
+function sourceCommand(sourceMessageIds: string[], memoryIds: string[], proofs: Iterable<CompanionExecutionSourceProof>, boundaries: Iterable<CompanionSourceBoundary> = []): Extract<CompanionStorageCommand, { type: 'execution.sources' }> {
+  const expanded = new Map<string, CompanionSourceBoundary>([...boundaries].map(value => [sourceProofKey(value), value]));
+  for (const proof of proofs) if (!proof.publishedDependencyCut && (publicationCandidate(proof) || proof.storageActionBinding))
+    expanded.set(sourceProofKey(proof), { kind: proof.kind, id: proof.id });
+  if (expanded.size > 10000) throw new CompanionValidationUnavailableError('本轮准确来源展开边界超出核验范围。');
+  return { type: 'execution.sources', sourceMessageIds, memoryIds,
+    ...(expanded.size ? { expandPublishedSources: [...expanded.values()] } : {}) };
+}
+
+/** Only raw SQL observation and its frame bookkeeping share this lane. File,
+ * body, native and model work is outside it. No lane survives a task/frame. */
+function initialSourceObservation<T>(frame: CompanionExecutionValidationFrame, identity: object, operation: () => Promise<T>): Promise<T> {
+  if (!frame.identities.has(identity)) frame.identities.set(identity, frame.identities.size + 1);
+  const marker = 'source-sql:' + frame.identities.get(identity);
+  if (frame.path.has(marker)) return Promise.reject(new CompanionValidationUnavailableError('执行来源原始读取发生递归重入。'));
+  let lane = frame.sourceInitials.get(identity);
+  if (!lane) { lane = { tail: Promise.resolve(), closing: new AbortController() }; frame.sourceInitials.set(identity, lane); }
+  const current = lane, signal = frame.signal ? AbortSignal.any([frame.signal, current.closing.signal]) : current.closing.signal;
+  const work = current.tail.then(() => {
+    signal.throwIfAborted();
+    if (!frame.lifetime.active || frame.authorities.sealed) throw new CompanionValidationUnavailableError('执行来源核验窗口已经关闭。');
+    return validationFrame.run({ ...frame, path: new Set([...frame.path, marker]) }, operation);
+  });
+  const settled = work.then(() => undefined, () => undefined);
+  current.tail = settled;
+  void settled.then(() => { if (frame.sourceInitials.get(identity)?.tail === settled) frame.sourceInitials.delete(identity); });
+  // A cancelled waiter returns promptly, while the real in-flight SQL read
+  // still settles before another live branch may enter this same lane.
+  return abortableValidation(() => work, signal);
+}
+function mergeSourceProof(proofs: Map<string, CompanionExecutionSourceProof>, proof: CompanionExecutionSourceProof,
+  observations?: Map<string, SourceProofObservation>, observed?: SourceProofObservation): void {
   const key = sourceProofKey(proof), previous = proofs.get(key);
-  if (previous && sourceProofBinding(previous) !== sourceProofBinding(proof)) throw new Error('派生来源正在变化，当前执行依赖暂不可稳定核验，请稍后重试。');
-  proofs.set(key, previous ? { ...proof, sourceMessageIds: [...new Set([...previous.sourceMessageIds, ...proof.sourceMessageIds])] } : proof);
+  const description = observed ?? (observations ? observeSourceProof(proof) : undefined);
+  if (previous && (observations?.get(key)?.binding ?? sourceProofBinding(previous)) !== (description?.binding ?? sourceProofBinding(proof)))
+    throw new Error('派生来源正在变化，当前执行依赖暂不可稳定核验，请稍后重试。');
+  const merged = previous ? { ...proof, sourceMessageIds: [...new Set([...previous.sourceMessageIds, ...proof.sourceMessageIds])] } : proof;
+  if (description?.parsedReadset) freezeOwned(merged);
+  proofs.set(key, merged);
+  if (observations && description) observations.set(key, Object.freeze({ ...description, proof: merged }));
 }
 
 /** SQL proofs are initial witnesses, never permanent authority. Repeated exact
@@ -94,29 +240,31 @@ async function validateFrameSourceAttestations(frame: CompanionExecutionValidati
   for (const group of frame.sources.values()) {
     const entries = [...group.entries.values()].filter(entry => entry.consumed);
     if (!entries.length) continue;
-    const expected = new Map<string, CompanionExecutionSourceProof>(), sources = new Set<string>(), memories = new Set<string>();
+    const expected = new Map<string, CompanionExecutionSourceProof>(), expectedObservations = new Map<string, SourceProofObservation>(), sources = new Set<string>(), memories = new Set<string>();
     for (const entry of entries) {
       entry.references.sourceMessageIds.forEach(id => sources.add(id)); entry.references.memoryIds.forEach(id => memories.add(id));
       for (const proof of entry.proofs) {
-        mergeSourceProof(expected, proof);
+        mergeSourceProof(expected, proof, expectedObservations);
         // Note-only reads resolve through their original message roots. Make
         // those roots explicit so batching cannot lose a shared association.
         proof.sourceMessageIds.forEach(id => sources.add(id));
       }
     }
-    const sourceMessageIds = [...sources].sort(), memoryIds = [...memories].sort(), actual = new Map<string, CompanionExecutionSourceProof>();
+    const sourceMessageIds = [...sources].sort(), memoryIds = [...memories].sort(), actual = new Map<string, CompanionExecutionSourceProof>(), actualObservations = new Map<string, SourceProofObservation>();
     for (let offset = 0; offset < Math.max(sourceMessageIds.length, memoryIds.length); offset += 100) {
       assertValidationActive();
-      const result = await group.storage({ type: 'execution.sources', sourceMessageIds: sourceMessageIds.slice(offset, offset + 100), memoryIds: memoryIds.slice(offset, offset + 100) });
+      const result = await group.storage(sourceCommand(sourceMessageIds.slice(offset, offset + 100), memoryIds.slice(offset, offset + 100), expected.values()));
       assertValidationActive();
-      if (!frame.lifetime.active) throw new Error('执行来源核验窗口已经关闭。');
+      if (!frame.lifetime.active) throw new CompanionValidationUnavailableError('执行来源核验窗口已经关闭。');
       if (!result.ok) throw new Error('派生来源的当前执行依赖暂不可核验，请稍后重试。');
-      for (const proof of result.executionSources ?? []) mergeSourceProof(actual, proof);
+      for (const proof of result.executionSources ?? []) mergeSourceProof(actual, proof, actualObservations);
     }
     if (actual.size !== expected.size) throw new Error('派生来源的执行依赖已经变化，旧内容不可继续发布，请重新读取。');
     for (const [key, proof] of expected) {
       const current = actual.get(key);
-      if (!current || !strongSourceProof(current) || sourceProofBinding(current) !== sourceProofBinding(proof)
+      const before = expectedObservations.get(key)!, after = actualObservations.get(key);
+      if (!current || !after?.strong || after.binding !== before.binding
+        || before.certified && !after.certified
         || JSON.stringify([...new Set(proof.sourceMessageIds)].sort()) !== JSON.stringify([...new Set(current.sourceMessageIds)].sort()))
         throw new Error('派生来源的执行依赖已经变化，旧内容不可继续发布，请重新读取。');
     }
@@ -125,38 +273,69 @@ async function validateFrameSourceAttestations(frame: CompanionExecutionValidati
 
 /** Seal this finite gate before returning its bodies or dispatching a model.
  * Final checks call the uncached port directly and cannot register new fences. */
+/** Run independent checks in small bounded groups, then drain every started
+ * check before propagating a failure. Phase ordering remains a hard boundary:
+ * no SQL/authority/publication work can overtake outstanding file checks. */
+async function drainIndependentFinalChecks(checks: ReadonlyArray<() => Promise<void>>): Promise<void> {
+  for (let offset = 0; offset < checks.length; offset += 4) {
+    const outcomes = await Promise.allSettled(checks.slice(offset, offset + 4).map(check => Promise.resolve().then(check)));
+    const failed = outcomes.find(outcome => outcome.status === 'rejected');
+    if (failed?.status === 'rejected') throw failed.reason;
+  }
+}
+
 function validateFrameAuthorities(frame: CompanionExecutionValidationFrame): Promise<void> {
+  return withCompanionStorageBarrier(() => validateFrameAuthoritiesWithinBarrier(frame));
+}
+function validateFrameAuthoritiesWithinBarrier(frame: CompanionExecutionValidationFrame): Promise<void> {
   if (frame.authorities.validation) return frame.authorities.validation;
-  if (!frame.lifetime.active) return Promise.reject(new Error('执行来源核验窗口已经关闭。'));
+  if (!frame.lifetime.active) return Promise.reject(new CompanionValidationUnavailableError('执行来源核验窗口已经关闭。'));
   frame.authorities.sealed = true;
   const validation = validationFrame.run(frame, () => abortableValidation(async () => {
+    const timed = async (phase: CompanionFinalValidationTiming['phase'], checks: number, run: () => Promise<void>) => {
+      const started = performance.now();
+      try { await run(); }
+      finally { try { frame.onFinalTiming?.({ phase, durationMs: performance.now() - started, checks }); } catch { /* Observation cannot alter a fresh authority fence. */ } }
+    };
     // Canonical witnesses are bracketed by their own fresh SQL/file fence.
     // Action authority runs afterwards, so revocation during file I/O cannot
     // pass on an authorization checked before that asynchronous work.
+    const checked = async (run: () => Promise<void>) => {
+      assertValidationActive();
+      if (!frame.lifetime.active) throw new CompanionValidationUnavailableError('执行来源核验窗口已经关闭。');
+      await run();
+      assertValidationActive();
+      if (!frame.lifetime.active) throw new CompanionValidationUnavailableError('执行来源核验窗口已经关闭。');
+    };
+    const canonicalChecks: Array<() => Promise<void>> = [];
     for (const scopes of frame.witnesses.values()) for (const group of scopes.values()) {
-      assertValidationActive();
-      await group.verify([...group.entries.values()].filter(entry => entry.consumed).map(entry => ({ key: entry.key, value: entry.value })));
-      assertValidationActive();
-      if (!frame.lifetime.active) throw new Error('执行来源核验窗口已经关闭。');
+      const consumed = [...group.entries.values()].filter(entry => entry.consumed);
+      if (!consumed.length) continue;
+      canonicalChecks.push(() => checked(() => group.verify(consumed.map(entry => ({ key: entry.key, value: entry.value })))));
     }
+    await timed('canonical', canonicalChecks.length, () => drainIndependentFinalChecks(canonicalChecks));
     // External library assets can change during canonical file work. Their
     // fresh revalidation precedes SQL source epochs and live action authority.
-    for (const entries of frame.admissions.values()) for (const entry of entries.values()) if (entry.consumed) {
-      assertValidationActive(); await entry.verify(); assertValidationActive();
-      if (!frame.lifetime.active) throw new Error('执行来源核验窗口已经关闭。');
-    }
+    // Unlike canonical byte checks, these verifiers may formally retract an
+    // imported asset. Preserve their existing order and complete all of them
+    // before any fresh SQL file/source authority can be granted.
+    const admissions = [...frame.admissions.values()].flatMap(entries => [...entries.values()].filter(entry => entry.consumed));
+    await timed('assets', admissions.length, async () => { for (const entry of admissions) await checked(() => entry.verify()); });
     // Exact SQL file authority follows every asynchronous canonical/asset
     // check, including files belonging to another owner in the same gate.
+    const sqlChecks: Array<() => Promise<void>> = [];
     for (const scopes of frame.sqlWitnesses.values()) for (const group of scopes.values()) {
-      assertValidationActive();
-      await group.verify([...group.entries.values()].filter(entry => entry.consumed).map(entry => ({ key: entry.key, value: entry.value })));
-      assertValidationActive();
-      if (!frame.lifetime.active) throw new Error('执行来源核验窗口已经关闭。');
+      const consumed = [...group.entries.values()].filter(entry => entry.consumed);
+      if (!consumed.length) continue;
+      sqlChecks.push(() => checked(() => group.verify(consumed.map(entry => ({ key: entry.key, value: entry.value })))));
     }
+    await timed('sql', sqlChecks.length, () => drainIndependentFinalChecks(sqlChecks));
     // A source closure's final raw SQL snapshot follows all asynchronous file
     // work and precedes live capability checks. No cached proof crosses it.
-    await validateFrameSourceAttestations(frame);
-    for (const group of frame.authorities.groups.values()) {
+    const sourceChecks = [...frame.sources.values()].reduce((count, group) => count + [...group.entries.values()].filter(entry => entry.consumed).length, 0);
+    await timed('sources', sourceChecks, () => validateFrameSourceAttestations(frame));
+    const authorityChecks = [...frame.authorities.groups.values()].reduce((count, group) => count + [...group.entries.values()].filter(entry => entry.consumed).length, 0);
+    await timed('authorities', authorityChecks, async () => { for (const group of frame.authorities.groups.values()) {
       let remaining = [...group.entries.values()].filter(entry => entry.consumed && entry.result === true);
       // A changing exact binding for one action never lets a Map keyed by ID
       // replace an earlier consumed binding. Check each variant independently.
@@ -167,12 +346,23 @@ function validateFrameAuthorities(frame: CompanionExecutionValidationFrame): Pro
         remaining = next;
         const proofs = batch.map(entry => entry.proof), current = await group.verify(proofs);
         assertValidationActive();
-        if (!frame.lifetime.active) throw new Error('执行来源核验窗口已经关闭。');
+        if (!frame.lifetime.active) throw new CompanionValidationUnavailableError('执行来源核验窗口已经关闭。');
         authorityResults(proofs, current);
         if (proofs.some(proof => current.get(proof.id) !== true)) throw new Error('执行来源的授权已经变化，旧内容不可继续发布，请重新读取。');
       }
-    }
+    } });
     assertValidationActive();
+    // This is the only publication-certification side effect. Nothing may be
+    // minted by an individual successful callback before all file, asset, SQL,
+    // source and live-authority final fences above have settled successfully.
+    await timed('certificates', [...frame.publications.values()].reduce((count, group) => count + group.entries.size, 0), async () => { for (const group of frame.publications.values()) {
+      assertCompanionExecutionWitnessActive();
+      if (group.entries.size) {
+        const messages = [...group.entries.values()].map(value => structuredClone(value)), actions = [...group.actions.values()].map(value => structuredClone(value));
+        if (actions.length) await group.certify(messages, actions); else await group.certify(messages);
+      }
+      assertCompanionExecutionWitnessActive();
+    } });
   }, frame.signal));
   frame.authorities.validation = validation;
   return validation;
@@ -188,7 +378,7 @@ export function memoCompanionExecutionAdmission<T>(key: string, port: {
   const frame = validationFrame.getStore();
   assertValidationActive();
   if (!frame?.lifetime.active) return port.read();
-  if (frame.authorities.sealed) return Promise.reject(new Error('执行来源核验窗口已经封口。'));
+  if (frame.authorities.sealed) return Promise.reject(new CompanionValidationUnavailableError('执行来源核验窗口已经封口。'));
   if (!frame.identities.has(port.identity)) frame.identities.set(port.identity, frame.identities.size + 1);
   const marker = `admission:${frame.identities.get(port.identity)}:${key}`;
   if (frame.path.has(marker)) return Promise.reject(new Error('来源准入核验发生递归读取。'));
@@ -202,7 +392,7 @@ export function memoCompanionExecutionAdmission<T>(key: string, port: {
     const current = entry, currentEntries = entries;
     current.pending = Promise.resolve().then(() => { assertValidationActive(); return validationFrame.run({ ...frame, path: new Set([...frame.path, marker]) }, port.read); }).then(value => {
       assertValidationActive();
-      if (!frame.lifetime.active || frame.authorities.sealed) throw new Error('执行来源核验窗口已经关闭。');
+      if (!frame.lifetime.active || frame.authorities.sealed) throw new CompanionValidationUnavailableError('执行来源核验窗口已经关闭。');
       current.value = structuredClone(value); current.ready = true; current.cacheable = port.cacheable(value); return current.value;
     }).catch(error => {
       if (currentEntries.get(key) === current) {
@@ -215,23 +405,32 @@ export function memoCompanionExecutionAdmission<T>(key: string, port: {
   const selected = entry;
   return (selected.ready ? Promise.resolve(selected.value) : selected.pending!).then(value => {
     assertValidationActive();
-    if (!frame.lifetime.active || frame.authorities.sealed) throw new Error('执行来源核验窗口已经关闭。');
+    if (!frame.lifetime.active || frame.authorities.sealed) throw new CompanionValidationUnavailableError('执行来源核验窗口已经关闭。');
     selected.consumed = true; return structuredClone(value) as T;
   });
 }
 
-/** Initial admission is shared only inside one finite gate. The port's final
- * verifier must bypass this ledger and recheck all consumed witnesses fresh. */
-export function memoCompanionExecutionWitnesses<T>(keys: readonly string[], port: {
+interface CompanionExecutionWitnessPort<T> {
   identity: object; scope: string; revision(): number;
   phase?: 'sql-authority';
   read(keys: readonly string[]): Promise<ReadonlyMap<string, T>>;
   verify(entries: readonly { key: string; value: T }[]): Promise<void>;
-}): Promise<ReadonlyMap<string, T>> {
+}
+/** Metadata prefetch is not admission. Only a later ordinary witness read may
+ * consume a prefetched entry and require its fresh final verification. */
+export function preloadCompanionExecutionWitnesses<T>(keys: readonly string[], port: CompanionExecutionWitnessPort<T>): Promise<void> {
+  return readCompanionExecutionWitnesses(keys, port, false).then(() => undefined);
+}
+/** Initial admission is shared only inside one finite gate. The port's final
+ * verifier must bypass this ledger and recheck all consumed witnesses fresh. */
+export function memoCompanionExecutionWitnesses<T>(keys: readonly string[], port: CompanionExecutionWitnessPort<T>): Promise<ReadonlyMap<string, T>> {
+  return readCompanionExecutionWitnesses(keys, port, true);
+}
+function readCompanionExecutionWitnesses<T>(keys: readonly string[], port: CompanionExecutionWitnessPort<T>, consume: boolean): Promise<ReadonlyMap<string, T>> {
   return withCompanionExecutionValidation(async () => {
     const frame = validationFrame.getStore()!;
     assertValidationActive();
-    if (frame.authorities.sealed) throw new Error('执行来源核验窗口已经封口。');
+    if (frame.authorities.sealed) throw new CompanionValidationUnavailableError('执行来源核验窗口已经封口。');
     const ledger = port.phase === 'sql-authority' ? frame.sqlWitnesses : frame.witnesses;
     let scopes = ledger.get(port.identity);
     if (!scopes) { scopes = new Map(); ledger.set(port.identity, scopes); }
@@ -258,7 +457,7 @@ export function memoCompanionExecutionWitnesses<T>(keys: readonly string[], port
       });
       for (const [identity, entry] of missing) entry.pending = work.then(values => {
         assertValidationActive();
-        if (!frame.lifetime.active || frame.authorities.sealed) throw new Error('执行来源核验窗口已经关闭。');
+        if (!frame.lifetime.active || frame.authorities.sealed) throw new CompanionValidationUnavailableError('执行来源核验窗口已经关闭。');
         entry.value = structuredClone(values.get(entry.key)); entry.ready = true; return entry.value;
       }).catch(error => { if (currentGroup.entries.get(identity) === entry) currentGroup.entries.delete(identity); throw error; });
     }
@@ -266,8 +465,11 @@ export function memoCompanionExecutionWitnesses<T>(keys: readonly string[], port
     await Promise.all([...selected].map(async ([key, entry]) => {
       const value = entry.ready ? entry.value : await entry.pending;
       assertValidationActive();
-      if (!frame.lifetime.active || frame.authorities.sealed) throw new Error('执行来源核验窗口已经关闭。');
-      entry.consumed = true; result.set(key, structuredClone(value) as T);
+      if (!frame.lifetime.active || frame.authorities.sealed) throw new CompanionValidationUnavailableError('执行来源核验窗口已经关闭。');
+      if (consume) {
+        entry.consumed = true;
+        result.set(key, structuredClone(value) as T);
+      }
     }));
     return result;
   });
@@ -280,7 +482,7 @@ export function memoCompanionExecutionAuthorities(proofs: readonly CompanionExec
   return withCompanionExecutionValidation(async () => {
     const frame = validationFrame.getStore()!;
     assertValidationActive();
-    if (frame.authorities.sealed) throw new Error('执行来源授权核验已经封口，请开启新的读取窗口。');
+    if (frame.authorities.sealed) throw new CompanionValidationUnavailableError('执行来源授权核验已经封口，请开启新的读取窗口。');
     const exactIds = new Map<string, string>();
     for (const proof of proofs) {
       const key = authorityProofKey(proof), previous = exactIds.get(proof.id);
@@ -318,7 +520,7 @@ export function memoCompanionExecutionAuthorities(proofs: readonly CompanionExec
       }).then(current => { authorityResults(expected, current); return current; });
       for (const [key, entry] of missing) entry.pending = work.then(current => {
         assertValidationActive();
-        if (!frame.lifetime.active || frame.authorities.sealed) throw new Error('执行来源核验窗口已经关闭。');
+        if (!frame.lifetime.active || frame.authorities.sealed) throw new CompanionValidationUnavailableError('执行来源核验窗口已经关闭。');
         entry.result = current.get(entry.proof.id)!; return entry.result;
       }).catch(error => { if (currentGroup.entries.get(key) === entry) currentGroup.entries.delete(key); throw error; });
     }
@@ -326,7 +528,7 @@ export function memoCompanionExecutionAuthorities(proofs: readonly CompanionExec
     await Promise.all([...selected].map(async ([id, entry]) => {
       const valid = entry.result ?? await entry.pending!;
       assertValidationActive();
-      if (!frame.lifetime.active || frame.authorities.sealed) throw new Error('执行来源核验窗口已经关闭。');
+      if (!frame.lifetime.active || frame.authorities.sealed) throw new CompanionValidationUnavailableError('执行来源核验窗口已经关闭。');
       if (valid) entry.consumed = true;
       results.set(id, valid);
     }));
@@ -336,7 +538,8 @@ export function memoCompanionExecutionAuthorities(proofs: readonly CompanionExec
 
 /** Only known host response fields carry source IDs. Source prose, arbitrary
  * native JSON, filenames and metadata lookalikes are never traversed. */
-export function companionExecutionSourceReferences(response: CompanionStorageResponse): { sourceMessageIds: string[]; memoryIds: string[] } {
+export function companionExecutionSourceReferences(response: CompanionStorageResponse, onMessage?: (value: CompanionMessage) => void,
+  publication?: CompanionReplyPublication, documentHistory?: CompanionStorageResponse['memoryHistoryDescriptors']): { sourceMessageIds: string[]; memoryIds: string[] } {
   const sources = new Set<string>(), memories = new Set<string>();
   const message = (value: CompanionMessage | undefined) => {
     // Running text is a UI projection, not a formal inference source. Its
@@ -344,16 +547,25 @@ export function companionExecutionSourceReferences(response: CompanionStorageRes
     // while this read gate is open. Tool cards retain their live authority
     // checks, and user/system fields cannot impersonate a companion draft.
     if (value && !(value.kind === 'text' && value.authorId !== 'user' && value.authorId !== 'system'
-      && (value.isReplyDraft || value.replyDraft))) sources.add(value.id);
+      && (value.isReplyDraft || value.replyDraft))) { sources.add(value.id); onMessage?.(value); }
   };
   const note = (value: Pick<CompanionMemory, 'id' | 'sources'> | undefined) => { if (value) { memories.add(value.id); for (const source of value.sources) sources.add(source.messageId); } };
-  message(response.message); response.messages?.forEach(message); response.memorySources?.forEach(message); response.activityMessages?.forEach(message);
+  message(response.message); response.messages?.forEach(message); response.replyTaskMessages?.forEach(message); response.memorySources?.forEach(message); response.activityMessages?.forEach(message);
+  if (publication) { message(publication.message); sources.add(publication.sourceMessageId); }
   response.activityProgressEvidence?.outbound.forEach(item => message(item.message));
   for (const source of response.activityReport?.executionReadset.sources ?? []) sources.add(source.id);
   response.topicCompactionPage?.items.forEach(item => message(item.message));
   response.searchPage?.items.forEach(hit => sources.add(hit.id));
   response.memories?.forEach(note); response.memoryPage?.items.forEach(hit => note(hit.memory)); response.memorySnapshot?.notes.forEach(note);
   response.memoryDescriptors?.forEach(note);
+  for (const group of response.memorySnapshotRevisions?.groups ?? []) if (group.valid) group.memories.forEach(note);
+  for (const group of response.memoryReferenceValidation?.groups ?? []) if (group.valid) {
+    group.sourceHeaders.forEach(source => sources.add(source.id)); group.memoryHeaders.forEach(note);
+  }
+  response.memorySourceHeaders?.headers.forEach(header => sources.add(header.id));
+  // The private page bundle consumes exact historical source messages, not
+  // today's note row. Keep these roots even on a history-only page.
+  documentHistory?.forEach(descriptor => descriptor.sources.forEach(source => sources.add(source.id)));
   response.memoryCaptureContributions?.items.forEach(note);
   note(response.memoryRead?.memory); response.memoryRead?.related.forEach(note); response.memoryRead?.sources.forEach(message);
   if (response.memoryOutbox?.operation === 'remember') note(response.memoryOutbox.note);
@@ -374,16 +586,21 @@ export function companionExecutionSourceReferences(response: CompanionStorageRes
     notice.progressEvidence?.outbound.forEach(item => message(item.message));
     for (const event of notice.events ?? [notice]) if (event.evidence.messageId) sources.add(event.evidence.messageId);
   }
+  response.socialNotificationReceipts?.forEach(receipt => sources.add(receipt.messageId));
   message(response.socialConversation?.lastMessage?.message); response.socialConversationPage?.items.forEach(room => message(room.lastMessage?.message));
   response.socialFlowPage?.items.forEach(item => message(item.message?.message));
   return { sourceMessageIds: [...sources], memoryIds: [...memories] };
 }
 
 const rereadable = new Set(['messages', 'message.get', 'message.search', 'memory.snapshot', 'memory.records.filter', 'memory.sources.filter',
-  'memory.records.describe',
-  'memory.sources.search', 'memory.read', 'memory.inspect', 'memory.browse', 'memory.list', 'memory.library.read', 'memory.library.page',
+  'memory.records.describe', 'memory.procedures.status',
+  'memory.sources.search', 'memory.read', 'memory.inspect', 'memory.browse', 'memory.list', 'memory.library.read', 'memory.library.read-many', 'memory.library.page',
   'memory.library.index-page', 'memory.library.changes', 'memory.jobs.contributions', 'topic.read', 'topic.sources.valid', 'topic.compaction.sources', 'social.messages', 'social.conversations', 'social.flow', 'activity.progress']);
 const validationReads = new Set([...rereadable, 'execution.sources', 'execution.capabilities.validate', 'action.get', 'capability.for-task', 'checkpoint.get', 'collaboration.read',
+  'social.notifications.receipts',
+  'memory.snapshot.revisions',
+  'memory.references.validate',
+  'memory.sources.headers',
   'cognition.registry.read', 'cognition.registry.page', 'cognition.registry.publication.read', 'cognition.registry.publication.pending', 'cognition.registry.refs.validate',
   'growth.goals.list', 'jobs.inspect', 'jobs.page', 'character.development', 'character.development.scopes.page', 'memory.lifecycle.state', 'state.get', 'state.inspect',
   'companion.creation.status', 'companion.creation.pending',
@@ -400,7 +617,7 @@ const validationReads = new Set([...rereadable, 'execution.sources', 'execution.
   'memory.revision.read', 'memory.revision.describe', 'memory.revisions.describe', 'memory.files.inspect', 'memory.files.state', 'memory.history.outbox.check',
   'memory.projection.state', 'memory.projection.page', 'memory.projection.delta',
   'memory.tags.status', 'memory.tags.validate', 'memory.processing.status', 'memory.policy.list', 'memory.library.index-state', 'memory.library.scope.read', 'memory.outbox.pending',
-  'document.catalog.query', 'world.clock.peek', 'routine.get', 'schedule.list', 'schedule.get', 'activity.list', 'social.days', 'social.graph', 'social.reply.progress', 'task-stop.list', 'tasks.page', 'tasks.resolve', 'tasks.concurrency.get']);
+  'memory.documents.authority', 'document.catalog.query', 'world.clock.peek', 'routine.get', 'schedule.list', 'schedule.get', 'activity.list', 'social.days', 'social.graph', 'social.reply.progress', 'task-stop.list', 'tasks.page', 'tasks.resolve', 'tasks.concurrency.get']);
 // tags.status may discover pending tag jobs, but cannot edit a note. In
 // contrast memory.library.scope can create a hidden private conversation and
 // its membership, so it deliberately retains the conservative mutation fence.
@@ -418,11 +635,17 @@ const validationReads = new Set([...rereadable, 'execution.sources', 'execution.
 // admitted and freshly checked at the finite gate's final authority fence.
 // Actual source withdrawals reported by a tick still advance Main's revision.
 const derivedCatalogWrites = new Set([
+  // Exact existing task progress only; never a body/readset/publication write.
+  'loop.progress.finish',
   // Scheduling/lease admission changes live authority, not historical input
   // bytes. Main checks that authority independently before and after using
   // the finite body DAG, including changes made by another SQLite writer.
   'agenda.tick', 'agenda.claim', 'agenda.run.bindGrant', 'agenda.run.checkpoint', 'agenda.run.heartbeat', 'agenda.run.settle',
   'world.work.begin', 'world.work.end', 'social.job.check', 'social.job.progress',
+  // The private poll returns only current/lease scalars and may renew or
+  // release that lease; it never publishes or replaces consumed source bytes.
+  // Actual source withdrawals still advance the revision via response flags.
+  'world.job.poll',
   'interruption.begin', 'interruption.end', 'work.enqueue', 'work.claim', 'agenda.rule.create',
   // Appending another task/message and advancing its private journal do not
   // rewrite this task's captured sources. Each new row still crosses the
@@ -478,7 +701,7 @@ export function withCompanionExecutionValidation<T>(operation: () => Promise<T>,
     return validationFrame.run({ ...inherited, signal: effectiveSignal }, () => abortableValidation(operation, effectiveSignal));
   }
   const frame: CompanionExecutionValidationFrame = { path: new Set<string>(), completed: new Map<string, boolean>(), pending: new Map<string, Promise<boolean>>(),
-    identities: new Map<object, number>(), lifetime: { active: true }, authorities: { groups: new Map(), sealed: false }, witnesses: new Map(), sqlWitnesses: new Map(), sources: new Map(), admissions: new Map(), signal: effectiveSignal };
+    identities: new Map<object, number>(), lifetime: { active: true }, authorities: { groups: new Map(), sealed: false }, witnesses: new Map(), sqlWitnesses: new Map(), sources: new Map(), sourceInitials: new Map(), sourceBoundaries: new Map(), admissions: new Map(), publications: new Map(), signal: effectiveSignal };
   return validationFrame.run(frame, async () => {
     try {
       const result = await abortableValidation(operation, effectiveSignal);
@@ -497,7 +720,7 @@ export function withCompanionExecutionValidation<T>(operation: () => Promise<T>,
  * dependency DAG until the caller closes it before model dispatch. The session
  * carries no proof into a later task or dispatch. SQL proofs have fresh initial
  * admission and a final union fence; live authority has its own final check. */
-export function createCompanionExecutionValidationSession(signal?: AbortSignal): {
+export function createCompanionExecutionValidationSession(signal?: AbortSignal, onFinalTiming?: (timing: CompanionFinalValidationTiming) => void): {
   run<T>(operation: () => Promise<T>): Promise<T>;
   validate(): Promise<void>;
   close(): void;
@@ -507,7 +730,7 @@ export function createCompanionExecutionValidationSession(signal?: AbortSignal):
   const sessionSignal = inheritedSignal && signal && inheritedSignal !== signal
     ? AbortSignal.any([inheritedSignal, signal]) : signal ?? inheritedSignal;
   const frame: CompanionExecutionValidationFrame = { path: new Set(), completed: new Map(), pending: new Map(), identities: new Map(),
-    lifetime: { active: true }, authorities: { groups: new Map(), sealed: false }, witnesses: new Map(), sqlWitnesses: new Map(), sources: new Map(), admissions: new Map(), signal: sessionSignal };
+    lifetime: { active: true }, authorities: { groups: new Map(), sealed: false }, witnesses: new Map(), sqlWitnesses: new Map(), sources: new Map(), sourceInitials: new Map(), sourceBoundaries: new Map(), admissions: new Map(), publications: new Map(), signal: sessionSignal, onFinalTiming };
   const closed = new DOMException('Execution validation session closed.', 'AbortError');
   return {
     async run<T>(operation: () => Promise<T>): Promise<T> {
@@ -596,9 +819,51 @@ export function memoCompanionExecutionValidationBatch(keys: readonly string[], r
  * valid() may call normal guarded reads: AsyncLocalStorage tracks the current
  * dependency path, so A→B is legal, A→B→A fails, and parallel shared ancestors
  * do not falsely revoke each other. Mutations are never replayed here. */
+export function companionReferenceValidationResult(groups: readonly CompanionReferenceValidationGroup[], response: CompanionStorageResponse): CompanionReferenceValidationResult | undefined {
+  if (!response.ok) return;
+  const parsed = companionReferenceValidationResultSchema.safeParse(response.memoryReferenceValidation);
+  if (!parsed.success || parsed.data.groups.length !== groups.length) return;
+  for (let index = 0; index < groups.length; index++) {
+    const expected = groups[index]!, actual = parsed.data.groups[index]!;
+    if (actual.companionId !== expected.companionId || actual.conversationId !== expected.conversationId || actual.beforeSequence !== expected.beforeSequence) return;
+    if (!actual.valid) { if (actual.sourceHeaders.length || actual.memoryHeaders.length) return; continue; }
+    const sourceIds = new Set([...expected.sources.map(source => source.id), ...actual.memoryHeaders.flatMap(memory => memory.sources.map(source => source.messageId))]);
+    if (new Set(actual.sourceHeaders.map(source => source.id)).size !== actual.sourceHeaders.length
+      || new Set(actual.memoryHeaders.map(memory => memory.id)).size !== actual.memoryHeaders.length
+      || actual.sourceHeaders.length !== sourceIds.size || actual.sourceHeaders.some(source => !sourceIds.has(source.id))
+      || actual.memoryHeaders.length !== new Set(expected.memories.map(memory => memory.id)).size) return;
+    if (expected.sources.some(source => !actual.sourceHeaders.some(header => header.id === source.id && header.conversationId === source.conversationId
+      && header.checksum === source.checksum && (source.revision === undefined || header.revision === source.revision)))
+      || expected.memories.some(memory => !actual.memoryHeaders.some(header => header.id === memory.id && header.companionId === expected.companionId
+        && (memory.version === undefined || header.version === memory.version) && (!memory.artifactKinds || memory.artifactKinds.includes(header.artifactKind))))) return;
+    if (actual.memoryHeaders.some(memory => memory.sources.some(source => !actual.sourceHeaders.some(header => header.id === source.messageId
+      && header.authorId === source.authorId && header.conversationId === source.conversationId && header.checksum === source.checksum)))) return;
+  }
+  return parsed.data;
+}
+
+function referencePredicateBinding(expected: CompanionReferenceValidationGroup, actual: CompanionReferenceValidationResult['groups'][number]): string {
+  const exactSources = new Set([...expected.sources.map(source => source.id), ...actual.memoryHeaders
+    .filter(header => expected.memories.some(memory => memory.id === header.id && memory.version !== undefined))
+    .flatMap(header => header.sources.map(source => source.messageId))]);
+  return JSON.stringify({ ...actual, sourceHeaders: actual.sourceHeaders.filter(header => exactSources.has(header.id)),
+    memoryHeaders: actual.memoryHeaders.map(header => {
+      const reference = expected.memories.find(memory => memory.id === header.id)!;
+      // Kind/existence-only predicates do not consume today's note version or
+      // body. Their own initial roots and the original final closure stay live.
+      return reference.version !== undefined ? header : { id: header.id, companionId: header.companionId,
+        ...(reference.artifactKinds ? { artifactKind: header.artifactKind } : {}) };
+    }) });
+}
+
 export async function guardCompanionExecutionSources(command: CompanionStorageCommand, response: CompanionStorageResponse, ports: {
   storage(command: CompanionStorageCommand): Promise<CompanionStorageResponse>;
-  valid(proof: CompanionExecutionSourceProof, sqliteSourcesValidated?: boolean): Promise<boolean>;
+  valid(proof: CompanionExecutionSourceProof, sqliteSourcesValidated?: boolean, publishedContexts?: CompanionPublishedMessageContexts): Promise<boolean>;
+  /** Private metadata-only Worker port; invoked only after every final fence.
+   * It must not route back through the already sealed consumer frame. */
+  certifyPublications?(messages: readonly PublicationInput[], actions?: readonly CompanionPublishedActionFrontier[]): Promise<void>;
+  /** A closing host cannot interpret unavailable readers as source withdrawal. */
+  assertAvailable?(): void;
   /** Recheck live action grants/thought leases separately from the immutable
    * input DAG. Required before using an action's SQL-attested content epoch. */
   actionAuthority?(proof: CompanionExecutionSourceProof): Promise<boolean>;
@@ -610,11 +875,68 @@ export async function guardCompanionExecutionSources(command: CompanionStorageCo
   /** A bounded host repair may clear only a proven legacy capability-schema
    * mismatch. Actual current capability withdrawals are never recoverable. */
   recoverCapability?(proof: CompanionExecutionSourceProof): Promise<boolean>;
+  /** Optional body-free batching; does not admit a proof or consume a fence. */
+  prepareFileContexts?(proofs: readonly CompanionExecutionSourceProof[]): Promise<void>;
 }): Promise<CompanionStorageResponse> {
   assertValidationActive();
   if (command.type.startsWith('execution.') || !response.ok) return response;
   const frame = validationFrame.getStore();
   if (!frame?.lifetime.active) return withCompanionExecutionValidation(() => guardCompanionExecutionSources(command, response, ports));
+  const publication = companionReplyPublication(command, response);
+  if (publication?.authorizationGrantId) {
+    const receipt = structuredClone(publication), key = JSON.stringify([receipt.companionId, receipt.conversationId, receipt.sourceMessageId,
+      receipt.invocationKey, receipt.authorizationGrantId, receipt.source]);
+    const check = async () => {
+      const current = await ports.storage({ type: 'collaboration.read', id: receipt.authorizationGrantId!, companionId: receipt.companionId });
+      const grant = current.collaboration, participant = grant?.participants.find(member => member.companionId === receipt.companionId);
+      if (!current.ok || !grant || !['accepted', 'running'].includes(grant.status) || participant?.status !== 'running'
+        || participant.conversationId !== receipt.conversationId || grant.sourceMessageId !== receipt.sourceMessageId
+        || grant.conversationId !== receipt.source.conversationId || grant.sourceChecksum !== receipt.source.checksum)
+        throw new Error('正式回复的原始协作授权已停止或与接收入口不一致。');
+      const groups = [{ companionId: grant.ownerId, conversationId: grant.conversationId, memories: [],
+        sources: [{ id: receipt.source.id, conversationId: receipt.source.conversationId, checksum: receipt.source.checksum, revision: receipt.source.revision }] }];
+      const source = companionReferenceValidationResult(groups, await ports.storage({ type: 'memory.references.validate', groups }))?.groups[0];
+      if (!source?.valid || source.sourceHeaders[0]?.authorId !== receipt.source.authorId)
+        throw new Error('正式回复的原始授权来源已经撤回或改写。');
+    };
+    await memoCompanionExecutionWitnesses([key], { identity: ports.identity ?? ports.storage, scope: 'reply-publication-grant', phase: 'sql-authority', revision: () => 0,
+      read: async () => { await check(); return new Map([[key, true]]); }, verify: async () => check() });
+  }
+  const sourceHeaderCommand = command.type === 'memory.sources.headers' ? command
+    : command.type === 'memory.documents.authority' && command.sources
+      ? { type: 'memory.sources.headers' as const, companionId: command.companionId, ...command.sources } : undefined;
+  const sourceHeaders = sourceHeaderCommand ? companionSourceHeaderResult(sourceHeaderCommand.ids, response) : undefined;
+  if (sourceHeaderCommand && !sourceHeaders) throw new CompanionValidationUnavailableError('来源未返回完整准确的获权元数据。');
+  if (sourceHeaders?.headers.length && command.type === 'memory.sources.headers') {
+    const key = JSON.stringify(command), captured = structuredClone(sourceHeaders.headers);
+    await memoCompanionExecutionWitnesses([key], { identity: ports.identity ?? ports.storage, scope: 'authorized-source-headers', phase: 'sql-authority', revision: () => 0,
+      read: async () => new Map([[key, captured]]), verify: async entries => {
+        for (const entry of entries) {
+          const expected = JSON.parse(entry.key) as Extract<CompanionStorageCommand, { type: 'memory.sources.headers' }>;
+          const fresh = companionSourceHeaderResult(expected.ids, await ports.storage(expected));
+          if (!fresh || entry.value.some(header => !fresh.headers.some(actual => actual.id === header.id && JSON.stringify(actual) === JSON.stringify(header))))
+            throw new CompanionValidationUnavailableError('来源正文或呈现范围在本轮准备期间变化。');
+        }
+      } });
+  }
+  const referenceHeaders = command.type === 'memory.references.validate' ? companionReferenceValidationResult(command.groups, response) : undefined;
+  if (command.type === 'memory.references.validate' && !referenceHeaders) throw new CompanionValidationUnavailableError('引用核验未返回与本次输入准确绑定的完整凭证。');
+  if (referenceHeaders && command.type === 'memory.references.validate') {
+    const groups = command.groups.filter((_, index) => referenceHeaders.groups[index]!.valid);
+    const headers = referenceHeaders.groups.filter(group => group.valid), keys = groups.map(group => JSON.stringify(group));
+    const initial = new Map(keys.map((key, index) => [key, headers[index]!]));
+    if (keys.length) await memoCompanionExecutionWitnesses(keys, { identity: ports.identity ?? ports.storage, scope: 'reference-headers', phase: 'sql-authority', revision: () => 0,
+      read: async wanted => new Map(wanted.map(key => [key, initial.get(key)!])),
+      verify: async entries => {
+        for (let offset = 0; offset < entries.length; offset += 5) {
+          const batch = entries.slice(offset, offset + 5), expected = batch.map(entry => JSON.parse(entry.key) as CompanionReferenceValidationGroup);
+          const fresh = companionReferenceValidationResult(expected, await ports.storage({ type: 'memory.references.validate', groups: expected }));
+          if (!fresh || fresh.groups.some((group, index) => !group.valid
+            || referencePredicateBinding(expected[index]!, group) !== referencePredicateBinding(expected[index]!, batch[index]!.value)))
+            throw new CompanionValidationUnavailableError('引用来源或准确版本在本轮准备期间变化。');
+        }
+      } });
+  }
   if (response.memoryOutbox?.operation === 'forget') {
     const outbox = response.memoryOutbox;
     // Deletion consumes identity/version/lease only. Historical source data is
@@ -623,39 +945,77 @@ export async function guardCompanionExecutionSources(command: CompanionStorageCo
       note: { ...outbox.note, content: '仅用于移除过期原生索引的维护凭证。', tags: [], sources: [], metadata: undefined,
         sourceFile: undefined, sourceMessageId: undefined, occurredAt: undefined, diaryName: undefined, sourceSequence: 0 } } };
   }
-  const references = companionExecutionSourceReferences(response);
+  const bodies = new Map<string, CompanionMessage>();
+  const documentHistory = command.type === 'memory.documents.authority' ? response.memoryHistoryDescriptors : undefined;
+  const historySources = new Map<string, Map<string, { conversationId: string; revision: number; checksum: string }>>();
+  for (const descriptor of documentHistory ?? []) for (const source of descriptor.sources) {
+    let expectations = historySources.get(source.id);
+    if (!expectations) { expectations = new Map(); historySources.set(source.id, expectations); }
+    expectations.set(JSON.stringify([source.conversationId, source.revision, source.checksum]), source);
+  }
+  const references = companionExecutionSourceReferences(response, message => bodies.set(message.id, message), publication, documentHistory);
   if (!references.sourceMessageIds.length && !references.memoryIds.length) return response;
-  if (frame.authorities.sealed) throw new Error('执行来源核验窗口已经封口，请开启新的读取窗口。');
+  const assertAvailable = () => { assertCompanionExecutionWitnessActive(); ports.assertAvailable?.(); };
+  assertAvailable();
+  if (frame.authorities.sealed) throw new CompanionValidationUnavailableError('执行来源核验窗口已经封口，请开启新的读取窗口。');
   const proofs = new Map<string, CompanionExecutionSourceProof>(), validatedRevisions = new Map<string, number>(), validatedAuthorityEpochs = new Map<string, number>();
+  const observations = new Map<string, SourceProofObservation>();
+  const observation = (proof: CompanionExecutionSourceProof) => {
+    const known = observations.get(sourceProofKey(proof));
+    // Mutable/legacy/action inputs retain their uncached computation semantics.
+    return known?.proof === proof && known.parsedReadset ? known : observeSourceProof(proof);
+  };
   const total = Math.max(references.sourceMessageIds.length, references.memoryIds.length);
   const sourceIdentity = ports.identity ?? ports.storage, sourceRevision = ports.revision?.(), sourceRequestKey = JSON.stringify([
     [...new Set(references.sourceMessageIds)].sort(), [...new Set(references.memoryIds)].sort()]);
-  let sourceGroup = frame.sources.get(sourceIdentity);
-  // A consumed strong superset already admitted every requested root. Keep
-  // that entry's complete proofs and root associations through the final SQL
-  // fence; never infer coverage from ancestors or combine unrelated entries.
-  const sourceEntry = sourceGroup?.entries.get(sourceRequestKey) ?? [...sourceGroup?.entries.values() ?? []]
-    .find(entry => entry.consumed && sourceReferencesCover(entry.references, references));
-  let attestationEntry = sourceEntry;
+  let attestationEntry: CompanionSourceEntry | undefined;
   const admit = (returned: readonly CompanionExecutionSourceProof[], revision: number | undefined) => {
-    for (const proof of returned) {
-      mergeSourceProof(proofs, proof);
+    for (const input of returned) {
+      const observed = observeSourceProof(input, true), proof = observed.proof;
+      const candidate = observed.candidate, body = bodies.get(proof.id);
+      if (candidate && body && (body.authorId !== candidate.companionId || body.conversationId !== candidate.conversationId
+        || (body.revision ?? 1) !== candidate.messageRevision || createHash('sha256').update(body.content).digest('hex') !== candidate.bodySHA))
+        throw new Error('正式消息正文在来源核验期间变化，请重新读取。');
+      const header = sourceHeaders?.headers.find(header => header.id === proof.id)
+        ?? referenceHeaders?.groups.flatMap(group => group.sourceHeaders).find(header => header.id === proof.id)
+        ?? response.socialNotificationReceipts?.filter(receipt => receipt.messageId === proof.id).map(receipt => ({ authorId: receipt.companionId,
+          conversationId: receipt.conversationId, revision: receipt.revision, checksum: receipt.checksum }))[0];
+      if (candidate && header && (header.authorId !== candidate.companionId || header.conversationId !== candidate.conversationId
+        || header.revision !== candidate.messageRevision || header.checksum !== candidate.bodySHA))
+        throw new CompanionValidationUnavailableError('正式引用的正文或准确版本在来源核验期间变化。');
+      if (candidate && [...historySources.get(proof.id)?.values() ?? []].some(source => source.conversationId !== candidate.conversationId
+        || source.revision !== candidate.messageRevision || source.checksum !== candidate.bodySHA))
+        throw new CompanionValidationUnavailableError('历史文档的来源正文或准确版本在核验期间变化。');
+      mergeSourceProof(proofs, proof, observations, observed);
       const key = sourceProofKey(proof);
       if (revision !== undefined && proof.executionReadset
-        && proof.storageValidatedReadsetDigest === createHash('sha256').update(JSON.stringify(proof.executionReadset)).digest('hex')) {
+        && proof.storageValidatedReadsetDigest === observed.readsetDigest) {
         validatedRevisions.set(key, revision);
         if ((proof.kind === 'message' || ports.actionAuthority || ports.actionAuthorities) && proof.storageValidatedAuthorityEpoch !== undefined) validatedAuthorityEpochs.set(key, proof.storageValidatedAuthorityEpoch);
         else validatedAuthorityEpochs.delete(key);
       } else { validatedRevisions.delete(key); validatedAuthorityEpochs.delete(key); }
+      if (!proof.publishedDependencyCut && (observed.candidate || proof.storageActionBinding)) {
+        let boundaries = frame.sourceBoundaries.get(sourceIdentity);
+        if (!boundaries) { boundaries = new Map(); frame.sourceBoundaries.set(sourceIdentity, boundaries); }
+        boundaries.set(key, { kind: proof.kind, id: proof.id });
+      }
     }
   };
-  if (sourceEntry) admit(structuredClone(sourceEntry.proofs), sourceRevision);
-  else {
+  await initialSourceObservation(frame, sourceIdentity, async () => {
+    assertAvailable();
+    let sourceGroup = frame.sources.get(sourceIdentity);
+    // Only an actually consumed superset supplies authority. The separate
+    // representation boundary below may include unconsumed raw observations.
+    const sourceEntry = sourceGroup?.entries.get(sourceRequestKey) ?? [...sourceGroup?.entries.values() ?? []]
+      .find(entry => entry.consumed && sourceReferencesCover(entry.references, references));
+    attestationEntry = sourceEntry;
+    if (sourceEntry) { admit(structuredClone(sourceEntry.proofs), sourceRevision); return; }
     for (let offset = 0; offset < total; offset += 100) {
-      assertValidationActive();
+      assertAvailable();
       const revision = ports.revision?.();
-      const result = await ports.storage({ type: 'execution.sources', sourceMessageIds: references.sourceMessageIds.slice(offset, offset + 100), memoryIds: references.memoryIds.slice(offset, offset + 100) });
-      assertValidationActive();
+      const boundaries = frame.sourceBoundaries.get(sourceIdentity)?.values() ?? [];
+      const result = await ports.storage(sourceCommand(references.sourceMessageIds.slice(offset, offset + 100), references.memoryIds.slice(offset, offset + 100), [], boundaries));
+      assertAvailable();
       if (!result.ok) throw new Error('派生来源的执行依赖暂不可核验。');
       admit(result.executionSources ?? [], revision);
     }
@@ -664,13 +1024,28 @@ export async function guardCompanionExecutionSources(command: CompanionStorageCo
     // this finite ledger, including every transitive action's input readset.
     // Exact strong entries survive unrelated Main generations only until the
     // gate's fresh union SQL and live-authority fence; weak entries never enter.
-    if (frame.lifetime.active && ports.identity && proofs.size && sourceRevision !== undefined && sourceRevision === ports.revision?.()
-      && [...proofs.values()].every(proof => strongSourceProof(proof) && validatedAuthorityEpochs.has(sourceProofKey(proof)))) {
-      if (frame.authorities.sealed) throw new Error('执行来源核验窗口已经封口。');
+    // Each strong proof is bound to its exact SQL digest and hard authority
+    // epoch. An unrelated write during this observation cannot erase those
+    // inputs; their consumed union is still reread fresh at the final fence.
+    if (frame.lifetime.active && ports.identity && proofs.size && sourceRevision !== undefined
+      && [...proofs.values()].every(proof => observation(proof).strong && validatedAuthorityEpochs.has(sourceProofKey(proof)))) {
+      if (frame.authorities.sealed) throw new CompanionValidationUnavailableError('执行来源核验窗口已经封口。');
       if (!sourceGroup) { sourceGroup = { storage: ports.storage, entries: new Map() }; frame.sources.set(sourceIdentity, sourceGroup); }
       attestationEntry = { references: structuredClone(references), proofs: structuredClone([...proofs.values()]), consumed: false };
       sourceGroup.entries.set(sourceRequestKey, attestationEntry);
     }
+  });
+  if (publication) {
+    const actual = proofs.get('message:' + publication.message.id);
+    if (!actual || !observation(actual).strong || actual.companionId !== publication.companionId || actual.conversationId !== publication.conversationId
+      || actual.storageValidatedReadsetDigest !== publication.executionReadsetDigest)
+      throw new CompanionValidationUnavailableError('正式回复尚未获得与实际发布读集一致的当前SQL凭证。');
+  }
+  for (const receipt of response.socialNotificationReceipts ?? []) {
+    const actual = proofs.get('message:' + receipt.messageId);
+    if (!actual || !observation(actual).strong || !observation(actual).certified || actual.companionId !== receipt.companionId
+      || actual.conversationId !== receipt.conversationId)
+      throw new CompanionValidationUnavailableError('历史来信通知尚未取得与实际已发布正文一致的当前认证。');
   }
   const invalid = new Set<string>(), owners = new Set<string>(), scopes = new Set<string>();
   const checkedProofs = new Map<string, boolean>();
@@ -678,14 +1053,17 @@ export async function guardCompanionExecutionSources(command: CompanionStorageCo
   const batchAuthorities = async (actions: readonly CompanionExecutionSourceProof[]) => {
     if (!ports.actionAuthorities) return;
     const result = await ports.actionAuthorities(actions);
-    assertValidationActive();
+    assertAvailable();
     if (actions.some(proof => !result.has(proof.id))) throw new Error('当前执行授权暂不可完整核验。');
     return result;
   };
+  const fileCandidates = [...proofs.values()].filter(proof => { const observed = observation(proof); return observed.strong && proof.executionReadset?.complete && !observed.certified; });
+  if (fileCandidates.length) await ports.prepareFileContexts?.(fileCandidates);
   let initialAuthorities = await batchAuthorities(actionProofs);
   const proofKey = (proof: CompanionExecutionSourceProof) => `${proof.kind}:${proof.id}`;
   const check = async (proof: CompanionExecutionSourceProof, sqliteSourcesValidated: boolean): Promise<boolean> => {
-    assertValidationActive();
+    assertAvailable();
+    const observed = observation(proof);
     if (ports.identity && !frame.identities.has(ports.identity)) frame.identities.set(ports.identity, frame.identities.size + 1);
     const key = JSON.stringify([ports.identity ? frame.identities.get(ports.identity) : 0,
       proof.kind, proof.id, proof.companionId, proof.conversationId]), ancestors = frame.path;
@@ -697,25 +1075,31 @@ export async function guardCompanionExecutionSources(command: CompanionStorageCo
       // checked freshly outside this memo, before and after asynchronous I/O.
       // A physical world tick must not replay the historical input DAG.
       const attested = authorityEpoch !== undefined;
-      const memoKey = createHash('sha256').update(JSON.stringify([key, proof.executionReadset, proof.capability,
-        attested ? ['authority', authorityEpoch] : ['generation', revision]])).digest('hex');
+      const memoKey = createHash('sha256').update(JSON.stringify([key, observed.readsetJSON, proof.capability,
+        attested ? ['authority', authorityEpoch] : ['generation', revision], proof.publicationCandidate, observed.certified])).digest('hex');
       valid = await memoCompanionExecutionValidation(`source:${attested ? 'attested:' : ''}${memoKey}`, attested ? () => 0 : () => ports.revision?.() ?? 0, async () => {
         const current = validationFrame.getStore()!;
         // Transport failure is availability, never evidence of withdrawal.
-        return validationFrame.run({ ...current, path: new Set([...current.path, key]) }, () => ports.valid(proof, sqliteSourcesValidated));
+        return validationFrame.run({ ...current, path: new Set([...current.path, key]) }, async () => {
+          const published = sqliteSourcesValidated && observed.certified && proof.executionReadset
+            ? Object.freeze({ [publishedContextsBrand]: true as const }) : undefined;
+          if (published) publishedContextInputs.set(published, { input: proof.executionReadset!, ...(observed.parsedReadset ? { parsed: observed.parsedReadset } : {}) });
+          try { return published ? await ports.valid(proof, sqliteSourcesValidated, published) : await ports.valid(proof, sqliteSourcesValidated); }
+          finally { if (published) publishedContextInputs.delete(published); }
+        });
       });
     }
-    assertValidationActive();
+    assertAvailable();
     return valid;
   };
   for (const proof of proofs.values()) {
-    assertValidationActive();
+    assertAvailable();
     if (proof.invalidated && proof.kind === 'action' && proof.capability && await ports.recoverCapability?.(proof)) {
       proof.invalidated = false;
       frame.completed.clear();
       if (ports.actionAuthorities) initialAuthorities = new Map([...initialAuthorities ?? [], ...await batchAuthorities([proof]) ?? []]);
     }
-    assertValidationActive();
+    assertAvailable();
     const authority = proof.kind !== 'action' || (initialAuthorities ? initialAuthorities.get(proof.id) === true
       : !ports.actionAuthority || await ports.actionAuthority(proof));
     checkedProofs.set(proofKey(proof), authority && await check(proof, validatedRevisions.has(proofKey(proof))));
@@ -728,19 +1112,24 @@ export async function guardCompanionExecutionSources(command: CompanionStorageCo
     const refresh = async () => {
       const current = new Map<string, CompanionExecutionSourceProof>();
       for (let offset = 0; offset < total; offset += 100) {
-        assertValidationActive();
-        const result = await ports.storage({ type: 'execution.sources', sourceMessageIds: references.sourceMessageIds.slice(offset, offset + 100), memoryIds: references.memoryIds.slice(offset, offset + 100) });
-        assertValidationActive();
+        assertAvailable();
+        const result = await ports.storage(sourceCommand(references.sourceMessageIds.slice(offset, offset + 100), references.memoryIds.slice(offset, offset + 100), proofs.values()));
+        assertAvailable();
         if (!result.ok) throw new Error('派生来源的当前执行依赖暂不可核验，请稍后重试。');
         for (const proof of result.executionSources ?? []) current.set(proofKey(proof), proof);
       }
       for (const proof of attested) {
         const actual = current.get(proofKey(proof));
         if (actual?.invalidated) { checkedProofs.set(proofKey(proof), false); continue; }
+        const before = observation(proof), after = actual ? observeSourceProof(actual) : undefined;
         if (!actual || actual.companionId !== proof.companionId || actual.conversationId !== proof.conversationId
-          || JSON.stringify(actual.executionReadset) !== JSON.stringify(proof.executionReadset)
+          || after?.readsetJSON !== before.readsetJSON
           || JSON.stringify(actual.capability) !== JSON.stringify(proof.capability)
-          || actual.storageValidatedReadsetDigest !== createHash('sha256').update(JSON.stringify(proof.executionReadset)).digest('hex')
+          || JSON.stringify(actual.publicationCandidate) !== JSON.stringify(proof.publicationCandidate)
+          || JSON.stringify(publishedCutBinding(actual)) !== JSON.stringify(publishedCutBinding(proof))
+          || JSON.stringify(actual.storageActionBinding) !== JSON.stringify(proof.storageActionBinding)
+          || before.certified && !after?.certified
+          || actual.storageValidatedReadsetDigest !== before.readsetDigest
           || validatedAuthorityEpochs.has(proofKey(proof)) && actual.storageValidatedAuthorityEpoch !== validatedAuthorityEpochs.get(proofKey(proof))) {
           throw new Error('派生来源正在变化，当前执行依赖暂不可稳定核验，请稍后重试。');
         }
@@ -764,11 +1153,11 @@ export async function guardCompanionExecutionSources(command: CompanionStorageCo
   const successfulActions = actionProofs.filter(proof => checkedProofs.get(proofKey(proof)));
   const finalAuthorities = await batchAuthorities(successfulActions);
   if (ports.actionAuthority || ports.actionAuthorities) for (const proof of successfulActions) {
-    assertValidationActive();
+    assertAvailable();
     if (finalAuthorities ? finalAuthorities.get(proof.id) !== true : !await ports.actionAuthority!(proof)) checkedProofs.set(proofKey(proof), false);
   }
   for (const proof of proofs.values()) {
-    assertValidationActive();
+    assertAvailable();
     const valid = checkedProofs.get(proofKey(proof));
     if (valid) continue;
     proof.sourceMessageIds.forEach(id => invalid.add(id));
@@ -778,27 +1167,67 @@ export async function guardCompanionExecutionSources(command: CompanionStorageCo
     if (proof.invalidated) continue;
     frame.completed.clear();
     const result = await ports.storage({ type: 'execution.invalidate', kind: proof.kind, id: proof.id, companionId: proof.companionId });
-    assertValidationActive();
+    assertAvailable();
     if (!result.ok) throw new Error('失效的派生来源暂不可安全撤回。');
     result.memoryInvalidatedCompanionIds?.forEach(id => owners.add(id)); result.memoryInvalidatedScopeIds?.forEach(id => scopes.add(id));
     await ports.invalidated?.(result);
-    assertValidationActive();
+    assertAvailable();
   }
-  assertValidationActive();
+  if (ports.certifyPublications) {
+    const identity = ports.identity ?? ports.storage;
+    let group = frame.publications.get(identity);
+    for (const proof of proofs.values()) {
+      const observed = observation(proof), candidate = observed.candidate;
+      // A prefetched/failed sibling is not consumption. An ancestor is used
+      // only through at least one root whose returned body remains lawful.
+      if (!candidate || observed.certified || !checkedProofs.get(proofKey(proof))
+        || !proof.sourceMessageIds.some(id => references.sourceMessageIds.includes(id) && !invalid.has(id))) continue;
+      if (!group) { group = { certify: ports.certifyPublications, entries: new Map(), actions: new Map() }; frame.publications.set(identity, group); }
+      const previous = group.entries.get(candidate.messageId);
+      if (previous && publicationBinding(previous) !== publicationBinding(candidate)) throw new Error('本轮正式消息认证候选已经变化。');
+      // Backfill is bounded per read, never a whole-library scan. A later
+      // actual read may certify additional consumed ancestors independently.
+      if (!previous && group.entries.size >= 100) continue;
+      const mode = command.type === 'message.append' && response.message?.id === candidate.messageId
+        || publication?.newlyPublished && publication.message.id === candidate.messageId ? 'new_publication' : 'revalidated_historical';
+      group.entries.set(candidate.messageId, { ...candidate, mode });
+    }
+    if (group) for (const proof of proofs.values()) {
+      const action = proof.storageActionBinding;
+      if (proof.kind !== 'action' || !action || !observation(proof).strong || !checkedProofs.get(proofKey(proof))
+        || action.id !== proof.id || action.companionId !== proof.companionId || action.conversationId !== proof.conversationId
+        || !proof.sourceMessageIds.some(id => references.sourceMessageIds.includes(id) && !invalid.has(id))) continue;
+      const old = group.actions.get(action.id);
+      if (old && JSON.stringify(old) !== JSON.stringify(action)) throw new Error('本轮实际消费的执行义务已经变化。');
+      group.actions.set(action.id, structuredClone(action));
+    }
+  }
+  assertAvailable();
   if (!invalid.size) {
     if (attestationEntry) {
-      if (!frame.lifetime.active || frame.authorities.sealed) throw new Error('执行来源核验窗口已经关闭。');
+      if (!frame.lifetime.active || frame.authorities.sealed) throw new CompanionValidationUnavailableError('执行来源核验窗口已经关闭。');
       attestationEntry.consumed = true;
     }
     return response;
   }
+  // A composite page cannot use a single-field early redaction: another
+  // component could otherwise retain its Worker true after Main rejects a root.
+  if (command.type === 'memory.documents.authority') throw new CompanionValidationUnavailableError('目录页的实际来源已变化，请重新读取完整准确页面。');
+  if (referenceHeaders) return { ...response, memoryReferenceValidation: { groups: referenceHeaders.groups.map(group =>
+    group.sourceHeaders.some(source => invalid.has(source.id)) || group.memoryHeaders.some(note => note.sources.some(source => invalid.has(source.messageId)))
+      ? { ...group, valid: false, sourceHeaders: [], memoryHeaders: [] } : group) } };
+  if (sourceHeaders) return { ...response, memorySourceHeaders: { headers: sourceHeaders.headers.filter(header => !invalid.has(header.id)),
+    unsupportedIds: sourceHeaders.unsupportedIds.filter(id => !invalid.has(id)) } };
+  if (response.memorySnapshotRevisions) return { ...response, memorySnapshotRevisions: { groups: response.memorySnapshotRevisions.groups.map(group =>
+    group.memories.some(note => note.sources.some(source => invalid.has(source.messageId)))
+      ? { ...group, valid: false, memories: [] } : group) } };
   if (command.type === 'memory.outbox.claim' && response.memoryOutbox?.operation === 'remember') {
     // The invalidation has withdrawn/versioned the note. Acknowledge the old
     // remember lease without publishing it; the normal forget outbox remains
     // pending and can now run instead of waiting for an abandoned lease.
     const outbox = response.memoryOutbox;
     const settled = await ports.storage({ type: 'memory.outbox.complete', id: outbox.id, leaseToken: outbox.leaseToken, indexed: false });
-    assertValidationActive();
+    assertAvailable();
     if (!settled.ok) throw new Error('失效记忆的旧投递租约暂不可安全结算。');
     return { ...response, memoryOutbox: undefined,
       ...((owners.size || response.memoryInvalidatedCompanionIds?.length) ? { memoryInvalidatedCompanionIds: [...new Set([...owners, ...response.memoryInvalidatedCompanionIds ?? []])] } : {}),
@@ -807,9 +1236,10 @@ export async function guardCompanionExecutionSources(command: CompanionStorageCo
   // The worker's normal withdrawal changes the actual snapshot revision and
   // clears affected journal/state/outbox dependencies. Never reuse an old
   // snapshot revision or an old monthly artifact after merely filtering text.
+  if (command.type === 'reply.task.snapshot') throw new CompanionValidationUnavailableError('任务开始快照的实际历史来源已变化，请从任务开头重新读取准确快照。');
   if (!rereadable.has(command.type)) throw new Error('本次读取的派生资料来源已经变化，旧正文不可继续使用。');
   const refreshed = await ports.storage(command);
-  assertValidationActive();
+  assertAvailable();
   if (!refreshed.ok) throw new Error('派生资料已撤回，请重新读取当前仍有效的来源。');
   const redact = (message: CompanionMessage): CompanionMessage => invalid.has(message.id)
     ? { ...message, content: '', sourceUnavailable: 'execution_source_changed', attachments: [], segments: undefined, replyProgress: undefined, replyDraft: undefined } : message;
@@ -817,6 +1247,8 @@ export async function guardCompanionExecutionSources(command: CompanionStorageCo
   if (refreshed.messages) refreshed.messages = refreshed.messages.map(redact);
   if (refreshed.memorySources) refreshed.memorySources = refreshed.memorySources.filter(message => !invalid.has(message.id));
   if (refreshed.memoryDescriptors) refreshed.memoryDescriptors = refreshed.memoryDescriptors.filter(note => !note.sources.some(source => invalid.has(source.messageId)));
+  if (refreshed.memoryProcedureStatuses) refreshed.memoryProcedureStatuses = refreshed.memoryProcedureStatuses.filter(status =>
+    refreshed.memoryDescriptors?.some(header => header.id === status.memoryId && header.contentRevision === status.contentRevision));
   if (refreshed.topicCompactionPage) refreshed.topicCompactionPage.items = refreshed.topicCompactionPage.items.filter(item => !invalid.has(item.message.id));
   if (refreshed.activityMessages) refreshed.activityMessages = refreshed.activityMessages.filter(message => !invalid.has(message.id));
   // A refreshed native result must not recycle a withdrawn outgoing body as

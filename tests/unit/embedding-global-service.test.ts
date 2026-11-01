@@ -195,4 +195,28 @@ describe('one bundled global embedding encoder', () => {
     expect(prepareGlobalEmbeddingText(profile, '生日', 'query')).toBe(`${profile.queryPrefix}生日`);
     await encoder.close();
   });
+  it('separates actual document/query FIFO waiting from cold device, checksum, session and encoding phases without private data', async () => {
+    let enter!: () => void, release!: () => void;
+    const entered = new Promise<void>(resolve => { enter = resolve; }), barrier = new Promise<void>(resolve => { release = resolve; });
+    let calls = 0;
+    const local = session({ embedTexts: vi.fn(async () => { if (++calls === 1) { enter(); await barrier; } return [vector()]; }) });
+    const events: Array<{ operation: string; durationMs: number }> = [];
+    const encoder = new GlobalEmbeddingService({ userDataPath: 'PRIVATE_PATH', startLocalSession: async () => local, ensureDeviceCapability: async () => undefined, onTiming: event => { events.push(event); } });
+    const document = encoder.embed(['PRIVATE_DOCUMENT'], { purpose: 'document' }); await entered;
+    const query = encoder.embed(['PRIVATE_QUERY'], { purpose: 'query' }); await Promise.resolve();
+    expect(events.some(event => event.operation === 'embedding.query.queue')).toBe(false);
+    release(); await document; await query; await encoder.close();
+    const names = events.map(event => event.operation);
+    expect(names).toEqual(expect.arrayContaining(['embedding.document.queue', 'embedding.device.ensure', 'embedding.model.verify', 'embedding.session.start', 'embedding.document.session', 'embedding.document.encode', 'embedding.query.queue', 'embedding.query.session', 'embedding.query.encode']));
+    expect(names.indexOf('embedding.query.queue')).toBeGreaterThan(names.indexOf('embedding.document.encode'));
+    expect(names.filter(name => name === 'embedding.session.start')).toHaveLength(1);
+    expect(events.every(event => Number.isFinite(event.durationMs) && event.durationMs >= 0 && Object.keys(event).sort().join(',') === 'durationMs,operation')).toBe(true);
+    expect(JSON.stringify(events)).not.toContain('PRIVATE_');
+  });
+  it('keeps checksum/device admission and encoder results intact when timing observers fail', async () => {
+    const local = session(), ensureDeviceCapability = vi.fn(async () => undefined);
+    const encoder = new GlobalEmbeddingService({ userDataPath: '.', startLocalSession: async () => local, ensureDeviceCapability, onTiming: () => { throw new Error('timing unavailable'); } });
+    await encoder.prepare(); await expect(encoder.embed(['private question'], { purpose: 'query' })).resolves.toMatchObject({ vectors: [[0.6, 0.8, ...Array<number>(766).fill(0)]] });
+    expect(ensureDeviceCapability).toHaveBeenCalledOnce(); expect(disk.sha).toHaveBeenCalledOnce(); expect(local.embedTexts).toHaveBeenCalledOnce(); await encoder.close();
+  });
 });

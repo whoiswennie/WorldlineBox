@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { isLibraryNavigationTimingCommand, observeLibraryNavigationTiming } from '../shared/library-navigation-timing';
 
 import { utilityProcess, type UtilityProcess } from 'electron';
 
@@ -59,6 +60,7 @@ interface PendingRequest {
   reject(error: Error): void;
   sentAt: number | undefined;
   sentAtEpochMs: number;
+  postedAtMonotonicMs?: number;
   timer: ReturnType<typeof setTimeout> | undefined;
 }
 
@@ -182,6 +184,7 @@ export function isWorkerEventShapedMessage(message: unknown): boolean {
 export class LibraryWorkerClient {
   readonly #modulePath: string;
   #child: UtilityProcess | undefined;
+  #closingChild: UtilityProcess | undefined;
   #ready = false;
   #pending = new Map<string, PendingRequest>();
   #expiredRequestIds = new Set<string>();
@@ -231,7 +234,14 @@ export class LibraryWorkerClient {
     this.#started = true;
     const starting = this.#startWithRetry();
     this.#starting = starting;
-    try { await starting; } finally { if (this.#starting === starting) this.#starting = undefined; }
+    try { await starting; }
+    catch (error) {
+      // A speculative module handshake must not poison the next real request.
+      // This is only a failed bootstrap, not an automatic replacement after
+      // an already-ready worker exits. Closed clients remain permanently closed.
+      if (!this.#closed && !this.#ready) this.#started = false;
+      throw error;
+    } finally { if (this.#starting === starting) this.#starting = undefined; }
   }
 
   async #startWithRetry(): Promise<void> {
@@ -293,7 +303,7 @@ export class LibraryWorkerClient {
         attempt,
       });
     });
-    child.on('exit', this.#onExit);
+    child.on('exit', code => this.#onExit(child, code));
 
     await new Promise<void>((resolve, reject) => {
       const timer = setTimeout(() => {
@@ -305,11 +315,13 @@ export class LibraryWorkerClient {
           new Error('Library Worker ready handshake timed out.'),
           { pid: child.pid, timeoutMs: READY_TIMEOUT_MS, attempt },
         );
+        child.off('message', onInitialMessage);
         child.kill();
         reject(new Error('Library Worker ready handshake timed out.'));
       }, READY_TIMEOUT_MS);
 
       const onInitialMessage = (message: unknown) => {
+        if (this.#child !== child || this.#closed) return;
         try {
           parseWorkerReadyMessage(message);
         } catch (error) {
@@ -395,6 +407,9 @@ export class LibraryWorkerClient {
         sentAtEpochMs,
         timer,
       });
+      const postedAtMonotonicMs = performance.now();
+      const postedAtEpochMs = performance.timeOrigin + postedAtMonotonicMs;
+      if (isLibraryNavigationTimingCommand(command.type)) this.#pending.get(requestId)!.postedAtMonotonicMs = postedAtMonotonicMs;
       child.postMessage({
         requestId,
         command,
@@ -403,6 +418,13 @@ export class LibraryWorkerClient {
         ...(options.dispatch === undefined ? {} : { dispatch: options.dispatch }),
         ...(options.historyContext === undefined ? {} : { historyContext: options.historyContext }),
       });
+      const postReturnedAtMonotonicMs = performance.now();
+      if (isLibraryNavigationTimingCommand(command.type)) observeLibraryNavigationTiming(() => this.logger.info(
+        'library.navigation.transport', 'Library navigation transport boundary.', {
+          stage: 'posted', requestId, commandType: command.type, postStartedAtEpochMs: postedAtEpochMs,
+          postReturnedAtEpochMs: performance.timeOrigin + postReturnedAtMonotonicMs,
+          postCallMs: Math.max(0, postReturnedAtMonotonicMs - postedAtMonotonicMs),
+        }));
     });
   }
 
@@ -688,11 +710,16 @@ export class LibraryWorkerClient {
     this.#shutdownAck = undefined;
     this.#ready = false;
     this.#rejectAll(new Error('Library Worker is shutting down.'));
+    // shutdown() keeps its existing completion contract. Retain only the
+    // identity needed to observe this child's real eventual exit accurately.
+    this.#closingChild = child;
     child.kill();
     this.#child = undefined;
   }
 
   readonly #onMessage = (message: unknown) => {
+    const observedAtMonotonicMs = performance.now();
+    const observedAtEpochMs = performance.timeOrigin + observedAtMonotonicMs;
     // Slice E render requests must be handled before the generic event
     // parsers: the request is answered with a typed response, not forwarded.
     if (this.#dispatchModelThumbnailRenderCancel(message)) return;
@@ -866,10 +893,18 @@ export class LibraryWorkerClient {
         },
       );
     }
+    if (isLibraryNavigationTimingCommand(pending.commandType)) observeLibraryNavigationTiming(() => this.logger.info(
+      'library.navigation.transport', 'Library navigation transport boundary.', {
+        stage: 'settled', requestId: response.requestId, commandType: pending.commandType, observedAtEpochMs,
+        mainCallbackMs: Math.max(0, performance.now() - observedAtMonotonicMs),
+        ...(pending.postedAtMonotonicMs === undefined ? {} : { roundTripMs: Math.max(0, performance.now() - pending.postedAtMonotonicMs) }),
+        ok: response.result.ok,
+      }));
     pending.resolve(response.result);
   };
 
-  readonly #onExit = (code: number) => {
+  readonly #onExit = (child: UtilityProcess, code: number) => {
+    if (this.#child !== child && this.#closingChild !== child) return;
     const expected = this.#shuttingDown;
     if (expected) {
       this.logger.info('worker.exit', 'Library Worker exited during shutdown.', { code });
@@ -880,6 +915,7 @@ export class LibraryWorkerClient {
     }
     this.#ready = false;
     this.#child = undefined;
+    if (this.#closingChild === child) this.#closingChild = undefined;
     this.#shuttingDown = false;
     this.#requestBroker.reset();
     this.#rejectAll(new Error(`Library Worker exited (${code}).`));

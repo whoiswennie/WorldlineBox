@@ -290,7 +290,10 @@ export class CompanionArtifactRegistryStore {
         return { ok: true, registryPublication: publication };
       }
       if (input.type === 'cognition.registry.revoke') {
-        if (!this.read(input.ownerId, input.artifactId)) throw new Error('撤回对象没有登记。');
+        const current = this.read(input.ownerId, input.artifactId);
+        if (!current) throw new Error('撤回对象没有登记。');
+        if (input.expected && (current.contentRevision !== input.expected.contentRevision || current.contentHash !== input.expected.contentHash))
+          throw new Error('撤回对象的准确版本已经变化，未撤回新的版本。');
         const closure = `WITH RECURSIVE affected(id) AS(SELECT ? UNION SELECT e.target_id FROM companion_artifact_edges e JOIN affected a ON e.source_id=a.id WHERE e.owner_id=?) `;
         const parameters = [input.artifactId, input.ownerId, input.ownerId];
         const rows = this.db.prepare(closure + 'SELECT artifact_id FROM companion_artifacts WHERE owner_id=? AND artifact_id IN(SELECT id FROM affected) ORDER BY artifact_id LIMIT 256')

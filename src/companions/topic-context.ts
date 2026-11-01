@@ -28,14 +28,14 @@ export const companionTopicAncestorIds = topicAncestry;
  * but a deleted ancestor/event or any withdrawn transitive source invalidates
  * the whole captured reference. The current reader never imports another role. */
 export function companionTopicCheckpointEventValid(db: CompanionConnection, topic: CompanionTopic, readerId: string,
-  eventId: string, sourcesValid: (ids: readonly string[]) => boolean): boolean {
+  eventId: string, sourcesValid: (ids: readonly string[]) => boolean, onValidationError?: (error: unknown) => void): boolean {
   const allowed = topicAncestry(db, topic);
   const event = db.prepare('SELECT topic_id,reader_id,data FROM companion_topic_events WHERE id=?').get(eventId) as EventRow | undefined;
   if (!allowed || !event || !allowed.has(event.topic_id) || event.reader_id !== '*' && event.reader_id !== readerId) return false;
   try {
     const parsed = companionTopicCheckpointSchema.safeParse(JSON.parse(event.data));
     return parsed.success && parsed.data.sourceEventId === eventId && companionTopicCheckpointValid(db, topic, readerId, parsed.data, sourcesValid);
-  } catch { return false; }
+  } catch (error) { onValidationError?.(error); return false; }
 }
 export function companionTopicCheckpointValid(db: CompanionConnection, topic: CompanionTopic, readerId: string,
   checkpoint: Checkpoint, sourcesValid: (ids: readonly string[]) => boolean): boolean {

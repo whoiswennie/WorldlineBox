@@ -5,6 +5,8 @@ import { CompanionModelError, companionModelAdmissionRetryAfter, type CompanionM
 import { CompanionTopicCompactionChanged, ensureTopicContinuity } from './topic-compaction';
 import { COMPANION_DIALOGUE_WINDOW } from './context-window';
 import { createHash } from 'node:crypto';
+import { withCompanionStorageOperation } from './storage-operation-context';
+import { detachedCompanionExecutionValidation } from './source-execution-evidence';
 
 export interface CompanionTopicCompactionServiceOptions {
   request(command: CompanionStorageCommand): Promise<CompanionStorageResponse>;
@@ -26,6 +28,11 @@ export class CompanionTopicCompactionService {
   private claimTail: Promise<unknown> = Promise.resolve();
   private closed = false;
   constructor(private readonly options: CompanionTopicCompactionServiceOptions) {}
+  private background<T>(operation: () => T): T {
+    // A foreground enqueue only wakes durable maintenance. Its priority,
+    // source witnesses and cancellation frame do not belong to this producer.
+    return withCompanionStorageOperation({ priority: 'background' }, () => detachedCompanionExecutionValidation(operation));
+  }
   private report(error: unknown): void { try { this.options.report(error); } catch { /* Diagnostics cannot create another failed job. */ } }
   private changed(kind?: 'progress'): void { try { this.options.changed?.(kind); } catch (error) { this.report(error); } }
   private async request(command: CompanionStorageCommand): Promise<CompanionStorageResponse> {
@@ -42,7 +49,7 @@ export class CompanionTopicCompactionService {
     if (this.closed || this.wakeTimer || this.pumping) return;
     this.wakeTimer = setTimeout(() => {
       this.wakeTimer = undefined;
-      const work = this.pump(); this.pumping = work;
+      const work = this.background(() => this.pump()); this.pumping = work;
       void work.catch(error => this.report(error)).finally(() => { if (this.pumping === work) this.pumping = undefined; });
     }, 0); this.wakeTimer.unref();
   }
@@ -50,6 +57,9 @@ export class CompanionTopicCompactionService {
     while (!this.closed && this.active.size < 2) { if (!await this.launch()) break; }
   }
   private launch(): Promise<{ finished: Promise<void> } | undefined> {
+    return this.background(() => this.launchInBackground());
+  }
+  private launchInBackground(): Promise<{ finished: Promise<void> } | undefined> {
     const next = this.claimTail.then(async () => {
       if (this.closed || this.active.size >= 2) return;
       const job = (await this.request({ type: 'topic.compaction.claim',
@@ -59,7 +69,7 @@ export class CompanionTopicCompactionService {
       if (this.closed) controller.abort();
       const run: Running = { ownerId: job.companionId, controller, finished: Promise.resolve() };
       this.active.set(job.id, run);
-      run.finished = this.process(job, controller).finally(() => {
+      run.finished = this.background(() => this.process(job, controller)).finally(() => {
         if (this.active.get(job.id) === run) this.active.delete(job.id);
         this.changed('progress'); this.wake();
       });

@@ -3,6 +3,7 @@ import { generateCompanionReply, generateCompanionStructured, parseCompanionRepl
 import { visibleCompanionStreamText } from '../../src/main/companions/provider-stream';
 import type { CompanionReplyInput } from '../../src/main/companions/context';
 import type { AiApiFormat } from '../../src/shared/ai-endpoints';
+import type { CompanionModelUsageCurrent } from '../../src/shared/companion-model-usage';
 
 const input: CompanionReplyInput = {
   companion: { id: 'sister', name: '大肥鱼', description: '', persona: '沉稳温柔', model: '', avatar: 'sister', builtin: true, proactive: false, createdAt: '2026-10-14T00:00:00Z' },
@@ -53,6 +54,46 @@ function fixtures(format: AiApiFormat): { initial: string; first: string; second
 }
 
 describe('real provider streaming', () => {
+  it('reads actual response text before dispatch bookkeeping settles and awaits the same durable boundary before returning a decision', async () => {
+    const source = controlled(), dispatch = deferred<void>(), settlement = deferred<void>(), first = deferred<void>(), finished = deferred<void>();
+    const samples: CompanionModelUsageCurrent[] = [], complete = vi.fn(async () => settlement.promise);
+    const tracked: CompanionModelConfig = { ...config, ownerId: input.companion.id,
+      resolveAssetContext: async context => ({ ...context, frame: { schema: 'worldlinebox.companion-context-v2', companionId: input.companion.id,
+        purpose: 'companion_reply', profileRevision: 'a'.repeat(64), promptRevision: 'b'.repeat(64), revocationEpoch: 0,
+        identity: '真实身份', roleGuidance: '正常聊天', processorContract: '原生调用', input: context.user } }),
+      transportObserver: { prepareAttempt: async () => ({ beforeDispatch: async () => undefined, dispatched: async () => dispatch.promise, complete }) } };
+    let returned = false;
+    const pending = generateCompanionReply(input, tracked, undefined, { loop: true, fetchFn: vi.fn<typeof fetch>().mockResolvedValue(source.response),
+      onTextDelta: () => first.resolve(), onUsage: value => { samples.push(value); if (value.phase === 'finished') finished.resolve(); } }).then(value => { returned = true; return value; });
+    try {
+      source.send(fixtures('openai_chat').first); await first.promise;
+      expect(returned).toBe(false); expect(complete).not.toHaveBeenCalled();
+      expect(samples.some(sample => sample.phase === 'finished')).toBe(false);
+      source.send(fixtures('openai_chat').second + fixtures('openai_chat').finish); source.end(); await finished.promise;
+      expect(returned).toBe(false); expect(complete).not.toHaveBeenCalled();
+      dispatch.resolve(); await vi.waitFor(() => expect(complete).toHaveBeenCalledOnce());
+      expect(returned).toBe(false);
+      settlement.resolve(); expect((await pending).text).toBe('你好，伙伴');
+    } finally { dispatch.resolve(); settlement.resolve(); await pending.catch(() => undefined); }
+  });
+
+  it.each([false, true])('rejects a failed dispatched receipt after preview without returning tool proposals or replaying the paid HTTP (lifecycle failure=%s)', async lifecycleFailure => {
+    const source = controlled(), dispatch = deferred<void>(), first = deferred<void>(), complete = vi.fn();
+    const tracked: CompanionModelConfig = { ...config, ownerId: input.companion.id,
+      ...(lifecycleFailure ? { providerLifecycle: { beforeDispatch: async () => async () => { throw new Error('fixture lifecycle settlement failed too'); } } } : {}),
+      resolveAssetContext: async context => ({ ...context, frame: { schema: 'worldlinebox.companion-context-v2', companionId: input.companion.id,
+        purpose: 'companion_reply', profileRevision: 'a'.repeat(64), promptRevision: 'b'.repeat(64), revocationEpoch: 0,
+        identity: '真实身份', roleGuidance: '正常聊天', processorContract: '原生调用', input: context.user } }),
+      transportObserver: { prepareAttempt: async () => ({ beforeDispatch: async () => undefined,
+        dispatched: async () => { await dispatch.promise; throw new Error('fixture dispatched receipt failed'); }, complete }) } };
+    const fetchFn = vi.fn<typeof fetch>().mockResolvedValue(source.response);
+    const pending = generateCompanionReply(input, tracked, undefined, { loop: true, fetchFn, onTextDelta: () => first.resolve() });
+    const rejected = expect(pending).rejects.toMatchObject({ code: 'CONTEXT_RECORD_FAILED' });
+    source.send(fixtures('openai_chat').first); await first.promise;
+    source.send(fixtures('openai_chat').tools + fixtures('openai_chat').finish); source.end(); dispatch.resolve();
+    await rejected; expect(fetchFn).toHaveBeenCalledOnce(); expect(complete).not.toHaveBeenCalled();
+  });
+
   it.each<AiApiFormat>(['openai_chat', 'openai_responses', 'anthropic', 'gemini_native', 'dashscope_native'])(
     'emits visible text while the actual %s response is unfinished and holds tool calls to the end', async format => {
       const source = controlled(), first = deferred<void>(), second = deferred<void>(), texts: string[] = [], wire = fixtures(format);

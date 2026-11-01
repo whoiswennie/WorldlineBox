@@ -1,8 +1,25 @@
 import type { CompanionRegistryPublication } from '../../shared/companion-registry-storage';
 import type { CompanionJobDisposition } from '../../shared/companion-job-control';
 import type { CompanionArtifact } from '../../shared/companion-artifact';
-import { CompanionArtifactError } from './artifact-registry';
+import { CompanionArtifactError, type CompanionArtifactPublicationValidator } from './artifact-registry';
+import { createCompanionExecutionValidationSession } from './source-execution-evidence';
 import type { MemoryLibraryDocumentSession } from './memory-library';
+
+/** Only immutable inputs belong here, never an old body at the output path.
+ * Every callback still executes its live SQL/lease predicates. The Registry's
+ * explicit final phase seals the source witnesses before its original commit. */
+export function createMemoryPublicationValidation(check: () => Promise<void>): { validate: CompanionArtifactPublicationValidator; close(): void } {
+  const input = createCompanionExecutionValidationSession();
+  return {
+    validate: async phase => {
+      await input.run(check);
+      if (phase === 'commit') {
+        try { await input.validate(); } finally { input.close(); }
+      }
+    },
+    close: () => input.close(),
+  };
+}
 
 export function memoryFilePublicationOperation(kind: 'source' | 'history' | 'memory', jobId: string, retryCycle: number): string {
   if (!/^[a-zA-Z0-9_-]{1,100}$/u.test(jobId) || !Number.isSafeInteger(retryCycle) || retryCycle < 0) throw new Error('文件发布的固定作业周期无效。');

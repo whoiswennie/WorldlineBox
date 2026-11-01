@@ -355,6 +355,28 @@ it('does not mark messages read while the module is hidden or the contact page i
   expect(f.request).toHaveBeenCalledWith({ type: 'conversation.read', id: 'private-sister' });
 });
 
+it('keeps an acknowledged read in the runtime snapshot instead of restoring its old unread count on progress', async () => {
+  vi.useFakeTimers();
+  const f = fixture({ conversations: [{ ...conversation('private-sister', 'private', ['deepseek-sister'], true), unread: 3 }] });
+  const original = f.request.getMockImplementation()!;
+  f.request.mockImplementation(input => input.type === 'state.progress'
+    ? Promise.resolve({ ok: true, runtimeProgress: { queue: [], activities: [], owners: [] } }) : original(input));
+  await mount(f.api);
+  expect(f.request.mock.calls.filter(([input]) => input.type === 'conversation.read')).toHaveLength(1);
+  const changed = vi.mocked(f.api.onChanged).mock.calls[0]![0];
+  f.request.mockClear();
+  for (let i = 0; i < 3; i++) await act(async () => { changed({ kind: 'progress' }); await vi.advanceTimersByTimeAsync(600); });
+  expect(f.request.mock.calls.filter(([input]) => input.type === 'state.progress')).toHaveLength(3);
+  expect(f.request.mock.calls.some(([input]) => ['conversation.read', 'state', 'messages', 'actions', 'topic.list'].includes(input.type))).toBe(false);
+  // A genuinely new host unread state still acknowledges once, and remains
+  // read through subsequent progress; it is not hidden by a permanent cache.
+  await f.publish({ conversations: [{ ...f.state().conversations[0]!, unread: 4 }] });
+  expect(f.request.mock.calls.filter(([input]) => input.type === 'conversation.read')).toHaveLength(1);
+  f.request.mockClear();
+  await act(async () => { changed({ kind: 'progress' }); await vi.advanceTimersByTimeAsync(600); });
+  expect(f.request.mock.calls.some(([input]) => input.type === 'conversation.read')).toBe(false);
+});
+
 it('honors IME and Shift+Enter, accepts new input while the companion is thinking, and does not turn chat into a DSH task', async () => {
   const f = fixture({ activities: [{ companionId: 'deepseek-sister', conversationId: 'private-sister', status: 'thinking' }] }, [message(1), pendingReply()]);
   await mount(f.api); const textarea = await fill('textarea[aria-label="输入消息"]', '你好，今天看海吗？');
@@ -463,6 +485,67 @@ it('coalesces a double send and keeps text entered during the pending acknowledg
   await act(() => finish());
   expect(textarea.value).toBe('等待时想到的另一句话');
   expect(container!.querySelector('[data-companion-messages]')!.textContent).toContain('第一句话');
+});
+
+it('shows the formally acknowledged message without requesting another full history page', async () => {
+  const f = fixture(); await mount(f.api);
+  const reads = f.request.mock.calls.filter(([input]) => input.type === 'messages').length;
+  await fill('textarea[aria-label="输入消息"]', '这句已经正式送达。'); await click('发送');
+  expect(container!.querySelector('[data-companion-messages]')!.textContent).toContain('这句已经正式送达。');
+  expect(f.request.mock.calls.filter(([input]) => input.type === 'messages')).toHaveLength(reads);
+});
+
+it('does not let a history page begun before send acknowledgement replace the accepted message', async () => {
+  vi.useFakeTimers();
+  const initial = message(1, '早先的内容'), f = fixture({}, [initial]); await mount(f.api);
+  const original = f.request.getMockImplementation()!;
+  let finishPage!: (value: CompanionsResponse) => void, acknowledge!: (value: CompanionsResponse) => void;
+  f.request.mockImplementation(input => input.type === 'messages' ? new Promise(resolve => { finishPage = resolve; })
+    : input.type === 'message.send' ? new Promise(resolve => { acknowledge = resolve; }) : original(input));
+  await f.publish(); const reads = f.request.mock.calls.filter(([input]) => input.type === 'messages').length;
+  await fill('textarea[aria-label="输入消息"]', '这句不可被旧页盖掉。'); await click('发送');
+  const accepted = message(2, '这句不可被旧页盖掉。', { id: 'accepted-source', authorId: 'user' });
+  await act(() => acknowledge({ ok: true, message: accepted }));
+  expect(f.request.mock.calls.filter(([input]) => input.type === 'messages')).toHaveLength(reads);
+  await act(() => finishPage({ ok: true, messages: [initial], hasMore: false }));
+  expect(container!.querySelector('[data-companion-messages]')!.textContent).toContain(accepted.content);
+});
+
+it('still rereads on a real full notification and removes an acknowledged message after withdrawal', async () => {
+  vi.useFakeTimers();
+  const f = fixture(); await mount(f.api);
+  await fill('textarea[aria-label="输入消息"]', '随后会撤回的正式消息。'); await click('发送');
+  const reads = f.request.mock.calls.filter(([input]) => input.type === 'messages').length;
+  const command = f.request.mock.calls.find(([input]) => input.type === 'message.send')![0];
+  if (command.type !== 'message.send') throw new Error('Missing source submission');
+  await f.publish({}, [message(1), message(3, '', { id: command.clientId, authorId: 'user', sourceUnavailable: 'execution_source_changed' })]);
+  expect(f.request.mock.calls.filter(([input]) => input.type === 'messages').length).toBeGreaterThan(reads);
+  expect(container!.querySelector('[data-companion-messages]')!.textContent).not.toContain('随后会撤回的正式消息。');
+});
+
+it('does not insert a late acknowledgement into a different selected conversation', async () => {
+  const f = fixture(); await mount(f.api); const original = f.request.getMockImplementation()!;
+  let acknowledge!: (value: CompanionsResponse) => void;
+  f.request.mockImplementation(input => input.type === 'message.send' ? new Promise(resolve => { acknowledge = resolve; }) : original(input));
+  await fill('textarea[aria-label="输入消息"]', '只属于先前私聊。'); await click('发送');
+  await act(() => container!.querySelector<HTMLButtonElement>('[data-companion-conversation="group-home"]')!.click());
+  await act(() => acknowledge({ ok: true, message: message(3, '只属于先前私聊。', { id: 'late-private-source', authorId: 'user' }) }));
+  expect(container!.querySelector('.companions-chat-name')!.textContent).toContain('海边小屋');
+  expect(container!.querySelector('[data-companion-messages]')!.textContent).not.toContain('只属于先前私聊。');
+});
+
+it('does not restore a late send response over a newer host withdrawal page', async () => {
+  vi.useFakeTimers();
+  const f = fixture({}, [message(1)]); await mount(f.api); const original = f.request.getMockImplementation()!;
+  let acknowledge!: (value: CompanionsResponse) => void;
+  f.request.mockImplementation(input => input.type === 'message.send' ? new Promise(resolve => { acknowledge = resolve; }) : original(input));
+  await fill('textarea[aria-label="输入消息"]', '已撤回、不能复活的消息。'); await click('发送');
+  const accepted = message(2, '已撤回、不能复活的消息。', { id: 'withdrawn-before-ack', authorId: 'user' });
+  await f.publish({}, [message(1), { ...accepted, content: '', sourceUnavailable: 'execution_source_changed' }]);
+  const reads = f.request.mock.calls.filter(([input]) => input.type === 'messages').length;
+  await act(() => acknowledge({ ok: true, message: accepted }));
+  expect(container!.querySelector('[data-companion-messages]')!.textContent).not.toContain(accepted.content);
+  expect(f.request.mock.calls.filter(([input]) => input.type === 'messages')).toHaveLength(reads);
 });
 
 it('sends a referenced message and previews its saved image inside the chat before revealing the file', async () => {
@@ -1138,15 +1221,18 @@ it('mounts real progress before a slow history read returns and keeps it through
   let finish!: (value: CompanionsResponse) => void;
   f.request.mockImplementation(input => input.type === 'messages' ? new Promise(resolve => { finish = resolve; }) : original(input));
   await fill('textarea[aria-label="输入消息"]', '请打开浏览器'); await click('发送');
+  // Full content notifications, rather than the send acknowledgement, own
+  // authoritative page refreshes. Keep the real slow-page lifecycle here.
+  await f.publish();
   const sent = f.request.mock.calls.find(([input]) => input.type === 'message.send')![0];
   if (sent.type !== 'message.send') throw new Error('Missing sent source');
   const frame: CompanionReplyStreamEvent = { conversationId: 'private-sister', companionId: 'deepseek-sister', sourceMessageId: sent.clientId!, messageId: 'new-live-reply', step: 0, attemptId: 'progress', text: '', phase: 'progress', messageIdentity: { sequence: 3, createdAt: date }, progress: { workId: 'live-work', sourceMessageId: sent.clientId!, revision: 3, phase: 'memory', detail: '正在构建这次回忆', startedAt: date, updatedAt: date, timing: { elapsedMs: 0, activeSince: date } } };
   await f.stream(frame);
   await click('展开回复过程', container!.querySelector('[data-companion-message="new-live-reply"]')!);
   expect(container!.querySelector('[data-companion-message="new-live-reply"]')!.textContent).toContain('正在构建这次回忆');
-  expect(container!.querySelector('[data-companion-message="new-live-reply"]')!.textContent).toContain('1 秒');
+  expect(container!.querySelector('[data-companion-message="new-live-reply"]')!.textContent).toContain('2 秒');
   await act(async () => { await vi.advanceTimersByTimeAsync(2000); });
-  expect(container!.querySelector('[data-companion-message="new-live-reply"]')!.textContent).toContain('3 秒');
+  expect(container!.querySelector('[data-companion-message="new-live-reply"]')!.textContent).toContain('4 秒');
   await act(() => finish({ ok: true, messages: [initial], hasMore: false }));
   expect(container!.querySelector('[data-companion-message="new-live-reply"]')!.textContent).toContain('正在构建这次回忆');
   expect(container!.querySelector('[data-companion-messages]')!.textContent).toContain('请打开浏览器');
@@ -1159,8 +1245,9 @@ it('mounts real progress before a slow history read returns and keeps it through
 it('buffers progress arriving before the send acknowledgement until its exact source is known', async () => {
   const f = fixture({}, [message(1)]); await mount(f.api);
   const original = f.request.getMockImplementation()!;
-  let acknowledge!: (value: CompanionsResponse) => void, finish!: (value: CompanionsResponse) => void;
-  f.request.mockImplementation(input => input.type === 'message.send' ? new Promise(resolve => { acknowledge = resolve; }) : input.type === 'messages' ? new Promise(resolve => { finish = resolve; }) : original(input));
+  let acknowledge!: (value: CompanionsResponse) => void;
+  const reads = f.request.mock.calls.filter(([input]) => input.type === 'messages').length;
+  f.request.mockImplementation(input => input.type === 'message.send' ? new Promise(resolve => { acknowledge = resolve; }) : original(input));
   await fill('textarea[aria-label="输入消息"]', '新的任务'); await click('发送');
   const source = message(2, '新的任务', { id: 'accepted-source', authorId: 'user' });
   const frame: CompanionReplyStreamEvent = { conversationId: 'private-sister', companionId: 'deepseek-sister', sourceMessageId: source.id, messageId: 'early-reply', step: 0, attemptId: 'progress', text: '', phase: 'progress', messageIdentity: { sequence: 3, createdAt: date }, progress: { revision: 1, phase: 'context', detail: '收到任务，正在准备', startedAt: date, updatedAt: date } };
@@ -1168,7 +1255,7 @@ it('buffers progress arriving before the send acknowledgement until its exact so
   await act(() => acknowledge({ ok: true, message: source }));
   await click('展开回复过程', container!.querySelector('[data-companion-message="early-reply"]')!);
   expect(container!.querySelector('[data-companion-message="early-reply"]')!.textContent).toContain('收到任务，正在准备');
-  await act(() => finish({ ok: true, messages: [message(1), source], hasMore: false }));
+  expect(f.request.mock.calls.filter(([input]) => input.type === 'messages')).toHaveLength(reads);
   expect(container!.querySelector('[data-companion-message="early-reply"]')).not.toBeNull();
 });
 

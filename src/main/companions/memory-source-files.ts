@@ -6,7 +6,7 @@ import type { CompanionMemoryLibrary, MemoryLibraryDocumentSession } from './mem
 import { cancelRetiredMemoryPublications, removeRetiredMemoryFile } from './memory-retired-files';
 import { companionHostBehaviorMatches } from '../../shared/companion-host-behavior';
 import type { CompanionArtifactVisibility } from '../../shared/companion-artifact';
-import { memoryFilePublicationOperation, prepareMemoryFilePublication, releaseHeldMemoryFilePublications } from './memory-publication-jobs';
+import { createMemoryPublicationValidation, memoryFilePublicationOperation, prepareMemoryFilePublication, releaseHeldMemoryFilePublications } from './memory-publication-jobs';
 import { CompanionPublicationBusyError } from './artifact-registry';
 
 const checksum = (text: string) => createHash('sha256').update(text).digest('hex');
@@ -69,10 +69,13 @@ export class CompanionMemorySourceFiles {
             } else {
               const operationId = memoryFilePublicationOperation('source', job.id, job.retryCycle);
               await prepareMemoryFilePublication(session, operationId, this.options.report);
-              await session.registry.publish({ artifactId, kind: 'source_evidence', producer: { kind: 'host', id: 'source-outbox' },
-              relativePath: companionMemorySourceFilePath(job), expectedRevision: null, content: source.content, sourceRefs: [], dependencyRefs: [],
-              visibility, allowedConsumers: ['source_verification', 'audit'], retentionClass: 'evidence',
-              operationId }, check, { kind: 'source_files', id: job.id, leaseToken: job.leaseToken, retryCycle: job.retryCycle });
+              const validation = createMemoryPublicationValidation(check);
+              try {
+                await session.registry.publish({ artifactId, kind: 'source_evidence', producer: { kind: 'host', id: 'source-outbox' },
+                  relativePath: companionMemorySourceFilePath(job), expectedRevision: null, content: source.content, sourceRefs: [], dependencyRefs: [],
+                  visibility, allowedConsumers: ['source_verification', 'audit'], retentionClass: 'evidence',
+                  operationId }, validation.validate, { kind: 'source_files', id: job.id, leaseToken: job.leaseToken, retryCycle: job.retryCycle });
+              } finally { validation.close(); }
             }
           }
           const result = await session.request({ type: 'memory.sources.outbox.complete', id: job.id, leaseToken: job.leaseToken });

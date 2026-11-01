@@ -60,6 +60,16 @@ function fixture(notes: CompanionMemory[], options: Pick<ConstructorParameters<t
     if (command.type === 'memory.lifecycle.state') return { ok: true, memoryLifecycleState: { revocationEpoch } };
     if (command.type === 'memory.records.filter') return { ok: true, memories: corpus.filter(note => command.ids.includes(note.id)) };
     if (command.type === 'memory.records.describe') return { ok: true, memoryDescriptors: corpus.filter(note => command.ids.includes(note.id)).map(note => companionMemoryDescriptorSchema.parse(note)) };
+    if (command.type === 'memory.references.validate') return { ok: true, memoryReferenceValidation: { groups: command.groups.map(group => {
+      const selected = corpus.filter(note => group.memories.some(expected => expected.id === note.id));
+      const valid = group.sources.length === 0 && group.memories.every(expected => selected.some(note => note.companionId === group.companionId
+        && note.id === expected.id && (expected.version === undefined || expected.version === note.version)
+        && (!expected.artifactKinds || expected.artifactKinds.includes(note.artifactKind))));
+      return { companionId: group.companionId, conversationId: group.conversationId, beforeSequence: group.beforeSequence, valid,
+        memoryHeaders: valid ? selected.map(note => companionMemoryDescriptorSchema.parse(note)) : [],
+        sourceHeaders: valid ? [...new Map(selected.flatMap(note => note.sources.map(source => [source.messageId,
+          { id: source.messageId, authorId: source.authorId, conversationId: source.conversationId, revision: source.revision, checksum: source.checksum }] as const))).values()] : [] };
+    }) } };
     if (command.type === 'memory.frozen.valid') return { ok: true, memoryFrozenValid: command.memories.every(expected => corpus.some(note => note.id === expected.id
       && expected.sources.every(source => note.sources.some(actual => actual.messageId === source.id && actual.conversationId === source.conversationId
         && actual.checksum === source.checksum && (source.revision === undefined || source.revision === actual.revision))))) };
@@ -104,11 +114,11 @@ describe('one physical corpus for memory filters, context and citation pages', (
     const query = { companionId: 'owner', conversationId: 'private', query: 'facts' }, controller = new AbortController();
     const first = f.service.search(query, 'passive', controller.signal), rejected = expect(first).rejects.toThrow();
     try {
-      expect(gate).toHaveBeenCalledOnce(); expect(f.service.resourceSnapshot().recallAdmissions).toBe(1);
+      await vi.waitFor(() => expect(gate).toHaveBeenCalledOnce()); expect(f.service.resourceSnapshot().recallAdmissions).toBe(1);
       await expect(f.service.search(query)).rejects.toMatchObject({ code: 'VCP_MEMORY_NATIVE_CAPACITY' });
       expect(gate).toHaveBeenCalledOnce(); expect(f.request).not.toHaveBeenCalled();
       controller.abort(); release(); await rejected;
-      expect(f.service.resourceSnapshot()).toMatchObject({ recallAdmissions: 0, recallOwners: 0 });
+      await vi.waitFor(() => expect(f.service.resourceSnapshot()).toMatchObject({ recallAdmissions: 0, recallOwners: 0 }));
       gate.mockResolvedValue(); expect((await f.service.search(query)).ok).toBe(true);
     } finally { release?.(); await f.service.close(); }
   });

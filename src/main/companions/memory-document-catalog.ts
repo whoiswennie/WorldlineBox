@@ -5,11 +5,17 @@ import type { CompanionStorageCommand, CompanionStorageResponse } from '../../sh
 import type { CompanionMemoryLibrary, MemoryLibraryDocumentSession } from './memory-library';
 import { companionHistoryView, companionNarrativeText } from '../../shared/companion-memory-content';
 import { detachedCompanionExecutionValidation, withCompanionExecutionValidation } from './source-execution-evidence';
+import { withCompanionStorageOperation } from './storage-operation-context';
 
 type State = { generation: string; signature: string; paths: string[]; cursor: number; complete: boolean; indexed: number; dirty: Set<string>; job?: Promise<void>; batch?: Promise<void>; error?: string };
 interface Options {
   library: CompanionMemoryLibrary; request(command: CompanionStorageCommand): Promise<CompanionStorageResponse>;
   describe(relative: string, content: string, updatedAt: string, note?: CompanionMemory, entry?: MemoryLibraryDocumentSession['manifest']['files'][string]): CompanionMemoryDocument;
+}
+/** A stamp is equality identity, not serialized tags. Keep every old input and
+ * use a versioned digest so arbitrarily many lawful tags remain bounded. */
+export function companionMemoryDocumentCatalogStamp(entry: MemoryLibraryDocumentSession['manifest']['files'][string], note?: CompanionMemory): string {
+  return 'v2:' + createHash('sha256').update(JSON.stringify([entry.artifact.artifactId, entry.artifact.contentRevision, entry.hash, note?.version, note?.tags])).digest('hex');
 }
 /** A rebuildable search index over registered artifacts only. No filesystem
  * watcher, directory walk, filename discovery or ingestion permission exists. */
@@ -18,7 +24,7 @@ export class CompanionMemoryDocumentCatalog {
   private readonly states = new Map<string, State>();
   private readonly jobs = new Set<Promise<void>>();
   constructor(private readonly options: Options) {}
-  async ensure(session: MemoryLibraryDocumentSession): Promise<State> {
+  async ensure(session: MemoryLibraryDocumentSession, options?: { deferInitialBatch?: boolean }): Promise<State> {
     const paths = Object.entries(session.manifest.files).filter(([file, entry]) => /\.(?:md|txt)$/iu.test(file) && entry.artifact.kind !== 'context_snapshot' && !file.startsWith('.运行/')).map(([file]) => file).sort();
     const signature = createHash('sha256').update(JSON.stringify(paths.map(file => [file, session.manifest.files[file]!.artifact.contentRevision, session.manifest.files[file]!.hash]))).digest('hex');
     let state = this.states.get(session.owner.id);
@@ -27,7 +33,7 @@ export class CompanionMemoryDocumentCatalog {
     }
     // First paint needs a small useful page, not a serial read of 64 bodies.
     // The remaining registered entries continue on the background lane.
-    if (!state.batch && !state.complete && !state.indexed) await this.batch(session, state, 12);
+    if (!options?.deferInitialBatch && !state.batch && !state.complete && !state.indexed) await this.batch(session, state, 12);
     this.schedule(session.owner.id, state); return state;
   }
   private async one(session: MemoryLibraryDocumentSession, relative: string, state: State) {
@@ -37,7 +43,7 @@ export class CompanionMemoryDocumentCatalog {
     if (entry.noteId && !note) { await this.dropped(session.owner.id, relative); return; }
     if (entry.artifact.kind === 'navigation' && !await session.timelineValid(relative, entry.hash)) { await this.dropped(session.owner.id, relative); return; }
     if (this.states.get(session.owner.id) !== state || this.closed) return;
-    const stamp = JSON.stringify([entry.artifact.contentRevision, entry.hash, note?.version, note?.tags]);
+    const stamp = companionMemoryDocumentCatalogStamp(entry, note);
     const unchanged = await this.options.request({ type: 'document.catalog.touch', companionId: session.owner.id, generation: state.generation, path: relative, stamp });
     if (unchanged.documentCatalogUnchanged) return;
     const content = await session.text(relative);
@@ -46,6 +52,11 @@ export class CompanionMemoryDocumentCatalog {
     const document = this.options.describe(relative, content, entry.artifact.committedAt, note, entry);
     await this.options.request({ type: 'document.catalog.put', companionId: session.owner.id, generation: state.generation,
       entries: [{ document, text: entry.artifact.kind === 'revision_history' ? companionHistoryView(content)?.content ?? '' : companionNarrativeText(content), stamp }] });
+  }
+  async seed(session: MemoryLibraryDocumentSession, state: State,
+    entries: Array<{ document: CompanionMemoryDocument; text: string; stamp: string }>): Promise<void> {
+    if (!entries.length || this.closed || this.states.get(session.owner.id) !== state) return;
+    await this.options.request({ type: 'document.catalog.put', companionId: session.owner.id, generation: state.generation, entries });
   }
   private batch(session: MemoryLibraryDocumentSession, state: State, limit: number): Promise<void> {
     // Foreground and background fills share one cursor; the generation is
@@ -62,10 +73,10 @@ export class CompanionMemoryDocumentCatalog {
     if (this.closed || state.job || state.complete && !state.dirty.size) return;
     // Catalog work belongs to this owner, not the UI read's proof lifetime.
     // Existing closed/state checks still cancel an invalidated owner job.
-    const job = detachedCompanionExecutionValidation(() => new Promise<void>(resolve => setImmediate(resolve)).then(async () => {
+    const job = withCompanionStorageOperation({ priority: 'background' }, () => detachedCompanionExecutionValidation(() => new Promise<void>(resolve => setImmediate(resolve)).then(async () => {
       if (!this.closed && this.states.get(owner) === state) await withCompanionExecutionValidation(() =>
         this.options.library.withDocuments(owner, session => this.batch(session, state, 64), { readOnly: true }));
-    })).catch(cause => { state.error = cause instanceof Error ? cause.message : '登记索引不可核实。'; state.complete = true; }).finally(() => {
+    }))).catch(cause => { state.error = cause instanceof Error ? cause.message : '登记索引不可核实。'; state.complete = true; }).finally(() => {
       this.jobs.delete(job);
       state.job = undefined; if (!this.closed && !state.error && this.states.get(owner) === state) this.schedule(owner, state);
     });

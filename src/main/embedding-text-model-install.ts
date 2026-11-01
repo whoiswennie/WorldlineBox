@@ -1,5 +1,4 @@
-import { createHash } from 'node:crypto';
-import { chmodSync, createReadStream, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import bundledManifest from '../../resources/embedding-models/manifest.json';
 import {
@@ -8,6 +7,7 @@ import {
   type LocalTextEmbeddingInstallStatus,
 } from '../shared/embedding/global-profile';
 import { downloadEmbeddingFile, extractRuntimeArchive, LLAMA_CPP_RELEASE, pinnedLlamaRuntimeUrl, type EmbeddingFileDownloader } from './embedding-install';
+import { EmbeddingFileHashSession } from './embedding-file-hash-worker';
 
 const RUNTIME_ARCHIVE_SHA256 = 'ed20ed40e10c04d0853d8acf8700f0e6c1bb8212f0cc70c3a0da13dcbbc1b802';
 
@@ -98,9 +98,9 @@ export function resolveLocalTextEmbeddingLayout(userDataPath: string, bundleDire
 }
 
 export async function fileSha256(file: string): Promise<string> {
-  const hash = createHash('sha256');
-  for await (const bytes of createReadStream(file)) hash.update(bytes);
-  return hash.digest('hex');
+  const session = new EmbeddingFileHashSession();
+  try { return await session.hash(file); }
+  finally { await session.close(); }
 }
 
 /** Managed model lifecycle; replacement bytes are verified before the installed weights are touched. */
@@ -117,6 +117,7 @@ export class LocalTextEmbeddingInstaller {
     downloadFile?: EmbeddingFileDownloader;
     extractArchive?: typeof extractRuntimeArchive;
     onStatus?: (status: LocalTextEmbeddingInstallStatus) => void;
+    onVerification?: (timing: { durationMs: number; fileCount: number; bytes: number; verifiedFiles: number; verifiedBytes: number; outcome: 'verified' | 'failed' }) => void;
   }) { this.#bundleDirectory = options.bundleDirectory; }
 
   status(): LocalTextEmbeddingInstallStatus {
@@ -168,11 +169,15 @@ export class LocalTextEmbeddingInstaller {
     const runtime = (bundledManifest.runtime.platforms as Record<string, { files: FilePin[]; accelerators?: Record<string, { files: FilePin[] }> }>)[platform];
     if (!runtime) throw new Error('The bundled embedding runtime is unavailable on this platform.');
     const files = [...bundledManifest.files, ...runtime.files, ...Object.values(runtime.accelerators ?? {}).flatMap(item => item.files)];
+    const started = performance.now(); let verifiedFiles = 0, verifiedBytes = 0, outcome: 'verified' | 'failed' = 'failed';
+    const hashes = new EmbeddingFileHashSession();
+    try {
     for (const file of files) {
       const target = path.resolve(bundleDirectory, file.path);
       const relative = path.relative(path.resolve(bundleDirectory), target);
       if (relative.startsWith('..') || path.isAbsolute(relative) || !existsSync(target) || statSync(target).size !== file.bytes
-        || await fileSha256(target) !== file.sha256) throw new Error('The bundled embedding package is incomplete or failed its checksum. Repair the application installation.');
+        || await hashes.hash(target) !== file.sha256) throw new Error('The bundled embedding package is incomplete or failed its checksum. Repair the application installation.');
+      verifiedFiles++; verifiedBytes += file.bytes;
     }
     mkdirSync(localTextEmbeddingDirectory(this.options.userDataPath), { recursive: true });
     writeFileSync(receiptPath(this.options.userDataPath), JSON.stringify({ revision: LOCAL_TEXT_EMBEDDING_MODEL.revision,
@@ -180,7 +185,14 @@ export class LocalTextEmbeddingInstaller {
       verifiedAt: new Date().toISOString(), origin: 'bundled-readonly' }), 'utf8');
     const ready = inspectLocalTextEmbeddingInstall(this.options.userDataPath, this.options.platform, bundleDirectory);
     this.#publish(ready);
+    outcome = 'verified';
     return ready;
+    } finally {
+      await hashes.close();
+      try { this.options.onVerification?.({ durationMs: performance.now() - started, fileCount: files.length,
+        bytes: files.reduce((total, file) => total + file.bytes, 0), verifiedFiles, verifiedBytes, outcome }); }
+      catch { /* Timing cannot change resource admission or hide an integrity failure. */ }
+    }
   }
 
   async #install(input: { update?: boolean; signal?: AbortSignal }): Promise<LocalTextEmbeddingInstallStatus> {

@@ -11,6 +11,7 @@ export function companionExecutionReadsetValidSync(db: CompanionConnection, valu
   memoryValid(owner: string, id: string, version: number): boolean;
   frozenMemoryValid?(owner: string, memory: NonNullable<CompanionExecutionReadset['frozenMemories']>[number]): boolean;
   topicSourcesValid(owner: string, room: string, ids: readonly string[]): boolean;
+  onValidationError?(error: unknown): void;
 }): boolean {
   try {
     const parsed = companionExecutionReadsetSchema.safeParse(value);
@@ -26,7 +27,7 @@ export function companionExecutionReadsetValidSync(db: CompanionConnection, valu
       const found = db.prepare('SELECT data FROM companion_topics WHERE id=? AND conversation_id=?').get(reference.topicId, reference.conversationId) as { data: string } | undefined;
       const topic = found ? JSON.parse(found.data) as CompanionTopic : undefined;
       if (!topic || !reference.checkpointEventIds.every(id => companionTopicCheckpointEventValid(db, topic, owner, id,
-        ids => ports.topicSourcesValid(owner, reference.conversationId, ids)))) return false;
+        ids => ports.topicSourcesValid(owner, reference.conversationId, ids), ports.onValidationError))) return false;
     }
     for (const read of readset.knowledgeReads) {
       if (read.sourceType === 'learning' && !db.prepare('SELECT 1 FROM companion_learning_grants WHERE id=? AND companion_id=? AND enabled=1 AND revision=?').get(read.grantId, owner, read.grantRevision)) return false;
@@ -34,7 +35,7 @@ export function companionExecutionReadsetValidSync(db: CompanionConnection, valu
       if (read.sourceType === 'message' && !ports.sourceValid(owner, read.conversationId, read.sourceId, read.sourceDigest)) return false;
     }
     return true;
-  } catch { return false; }
+  } catch (error) { ports.onValidationError?.(error); return false; }
 }
 
 export const executionSourceInvalidKey = (kind: 'message' | 'action', id: string) => `execution-source-invalid/${kind}/${id}`;

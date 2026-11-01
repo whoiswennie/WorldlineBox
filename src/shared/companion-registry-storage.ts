@@ -44,7 +44,8 @@ export const companionRegistryStorageCommands = [
     expectedState: companionRegistryPublicationStateSchema, nextState: z.enum(['validated', 'file_published', 'conflict', 'revoked', 'cancelled']), fileJobGuard: companionFilePublicationGuardSchema.optional() }),
   z.strictObject({ type: z.literal('cognition.registry.publication.commit'), ownerId, operationId: companionArtifactIdSchema, fileJobGuard: companionFilePublicationGuardSchema.optional() }),
   z.strictObject({ type: z.literal('cognition.registry.refs.validate'), ownerId, references: z.array(companionArtifactReferenceSchema).max(512) }),
-  z.strictObject({ type: z.literal('cognition.registry.revoke'), ownerId, artifactId: companionArtifactIdSchema }),
+  z.strictObject({ type: z.literal('cognition.registry.revoke'), ownerId, artifactId: companionArtifactIdSchema,
+    expected: z.strictObject({ contentRevision: z.number().int().positive(), contentHash: companionArtifactHashSchema }).optional() }),
 ] as const;
 export type CompanionRegistryStorageCommand = z.input<(typeof companionRegistryStorageCommands)[number]>;
 export const companionRegistryStorageResponseShape = {

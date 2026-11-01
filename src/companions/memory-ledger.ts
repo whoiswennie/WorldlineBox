@@ -67,7 +67,20 @@ export class CompanionMemoryLedger {
       .all(note.id) as StoredRevision['dependencies']);
     const bodyChanged = digest(contentValue(note, dependencies ?? previousDependencies)) !== digest(contentValue(previous, previousDependencies));
     const annotationChanged = digest(annotations(note)) !== digest(annotations(previous));
-    note.contentRevision = previous.contentRevision! + Number(bodyChanged);
+    if (bodyChanged) {
+      // An exact host repair can restore the current pointer to an older
+      // published body. Retired CAS aliases still reserve their revisions:
+      // assigning one to new prose would give an old invalid version new life.
+      const reserved = this.db.prepare(`SELECT MAX(revision) AS revision FROM (
+        SELECT ? AS revision
+        UNION ALL SELECT MAX(content_revision) FROM companion_memory_content_revisions WHERE note_id=?
+        UNION ALL SELECT MAX(content_revision) FROM companion_memory_version_revisions WHERE note_id=?
+        UNION ALL SELECT MAX(content_revision) FROM companion_memory_history_files WHERE note_id=?)`)
+        .get(previous.contentRevision, note.id, note.id, note.id) as { revision: number };
+      const next = Number(reserved.revision) + 1;
+      if (!Number.isSafeInteger(next) || next < 1) throw new Error('记忆正文修订超出准确版本范围。');
+      note.contentRevision = next;
+    } else note.contentRevision = previous.contentRevision;
     note.annotationRevision = previous.annotationRevision! + Number(annotationChanged);
     note.semanticRevision = previous.semanticRevision! + Number(bodyChanged);
     if (bodyChanged) return 'content';

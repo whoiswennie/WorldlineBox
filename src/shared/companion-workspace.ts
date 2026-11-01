@@ -20,7 +20,7 @@ export const companionWorkspaceRequestSchema = z.discriminatedUnion('type', [
   ...companionCognitionWorkspaceCommands,
   ...companionLearningWorkspaceCommands,
   ...companionLearningGoalWorkspaceCommands,
-  z.strictObject({ type: z.literal('status') }),
+  z.strictObject({ type: z.literal('status'), includeLibraries: z.boolean().optional() }),
   z.strictObject({ type: z.literal('choose') }),
   z.strictObject({ type: z.literal('select'), libraryId: z.string().min(1).max(4096) }),
   z.strictObject({ type: z.literal('reveal') }),

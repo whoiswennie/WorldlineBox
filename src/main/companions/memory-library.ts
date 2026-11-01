@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import path from 'node:path';
 import type { Companion, CompanionMemory } from '../../shared/companions';
 import type { CompanionStorageCommand, CompanionStorageResponse } from '../../shared/companion-storage';
+import type { CompanionMemoryDocumentAuthorityCommand } from '../../shared/companion-memory-document-authority';
 import { companionArtifactPathSchema, COMPANION_ARTIFACT_CONSUMERS, type CompanionArtifact, type CompanionArtifactReference } from '../../shared/companion-artifact';
 import type { CompanionArtifactKind } from '../../shared/companion-artifact';
 import type { VcpMemoryTimelineArtifacts } from '../vcp-memory/contracts';
@@ -10,9 +11,12 @@ import { type CompanionArtifactRegistry, companionMemoryArtifactPath } from './a
 import { removeOwnedDirectory } from './owned-directory-cleanup';
 import { companionMemoryIdentity, sameCompanionMemoryIdentity } from './memory-identity';
 import type { CompanionMemoryHistoryDescriptor } from '../../shared/companion-memory-history';
-import { memoryFilePublicationOperation, prepareMemoryFilePublication } from './memory-publication-jobs';
+import { createMemoryPublicationValidation, memoryFilePublicationOperation, prepareMemoryFilePublication } from './memory-publication-jobs';
 import type { CompanionFilePublicationGuard } from '../../shared/companion-registry-storage';
 import { CompanionMemoryFilesPending } from './memory-files-pending';
+import { createCompanionExecutionValidationSession, detachedCompanionExecutionValidation } from './source-execution-evidence';
+import { CompanionValidationUnavailableError } from './validation-unavailable';
+import { memoryNavigationValidMany } from './memory-navigation-revisions';
 
 export const companionMemoryLibraryCategories = ['记忆/经历', '记忆/知识', '记忆/自我认识', '记忆/导航'] as const;
 const memoryKinds = new Set(['episode_memory', 'knowledge', 'procedure', 'self_understanding', 'navigation', 'dream_fiction']);
@@ -30,6 +34,13 @@ export interface CompanionMemoryLibraryOptions {
   libraryDirectory: string; profileStore?: CompanionAssetProfileStore;
   artifacts?(owner: string): Promise<CompanionArtifactRegistry>;
   request(command: CompanionStorageCommand): Promise<CompanionStorageResponse>;
+  /** Metadata-only authority fence, isolated from a sealed consumer frame. */
+  requestHistoryMetadata?(command: Extract<CompanionStorageCommand, { type: 'memory.revisions.describe' }>): Promise<CompanionStorageResponse>;
+  /** Final current-note authority only; canonical prose is still read from Registry. */
+  requestCurrentNotesMetadata?(command: Extract<CompanionStorageCommand, { type: 'memory.library.read-many' }>): Promise<CompanionStorageResponse>;
+  requestSnapshotRevisionMetadata?(command: Extract<CompanionStorageCommand, { type: 'memory.snapshot.revisions' }>): Promise<CompanionStorageResponse>;
+  /** Exact fresh-final page predicate, never a general raw request port. */
+  requestPageAuthorityMetadata?(command: CompanionMemoryDocumentAuthorityCommand): Promise<CompanionStorageResponse>;
   /** Trusted owner index only; canonical-file gates do not consume persona. */
   resolveOwnerMetadata?(ownerId: string): Promise<Companion | undefined>;
   report?(error: unknown): void; maxOwnersPerSync?: number; maxFilesPerOwner?: number;
@@ -37,6 +48,13 @@ export interface CompanionMemoryLibraryOptions {
 }
 export interface MemoryLibraryDocumentSession {
   owner: Companion; root: string; registry: CompanionArtifactRegistry; manifest: MemoryLibraryManifest; readOnly?: boolean;
+  historyAuthority?: { identity: object;
+    describe(command: Extract<CompanionStorageCommand, { type: 'memory.revisions.describe' }>): Promise<CompanionStorageResponse> };
+  currentNotesAuthority?: { identity: object;
+    read(command: Extract<CompanionStorageCommand, { type: 'memory.library.read-many' }>): Promise<CompanionStorageResponse> };
+  snapshotRevisionAuthority?: { identity: object;
+    read(command: Extract<CompanionStorageCommand, { type: 'memory.snapshot.revisions' }>): Promise<CompanionStorageResponse> };
+  pageAuthority?: { identity: object; read(command: CompanionMemoryDocumentAuthorityCommand): Promise<CompanionStorageResponse> };
   file(relative: string): string;
   text(relative: string, optional?: boolean): Promise<string | undefined>;
   current(entry: MemoryLibraryEntry): Promise<CompanionMemory | undefined>;
@@ -45,10 +63,14 @@ export interface MemoryLibraryDocumentSession {
   project(relative: string, note: CompanionMemory, publication?: MemoryBodyPublication): Promise<void>;
   reconcile(relative: string): Promise<void>;
   timelineValid(relative: string, contentHash?: string): Promise<boolean>;
+  timelineValidMany?(inputs: readonly { path: string; contentHash?: string }[]): Promise<ReadonlyMap<string, boolean>>;
   request(command: CompanionStorageCommand): Promise<CompanionStorageResponse>;
 }
 const hash = (text: string) => createHash('sha256').update(text).digest('hex');
 export const memoryArtifactReference = (artifact: CompanionArtifact): CompanionArtifactReference => ({ artifactId: artifact.artifactId, contentRevision: artifact.contentRevision, contentHash: artifact.contentHash });
+export function memoryLibraryEntry(artifact: CompanionArtifact): MemoryLibraryEntry {
+  return { artifact, hash: artifact.contentHash, state: 'tracked', ...(memoryKinds.has(artifact.kind) && artifact.artifactId.startsWith('memory:') ? { noteId: artifact.artifactId.slice('memory:'.length) } : {}) };
+}
 export function memoryLibraryPathParts(relative: string): string[] { return companionArtifactPathSchema.parse(relative).split('/'); }
 export function companionMemoryRegisteredPath(note: CompanionMemory): string {
   if (!memoryKinds.has(note.artifactKind)) throw new Error('记忆缺少显式合法认知类型；不会根据目录或笔记本名称推断。');
@@ -83,7 +105,7 @@ export class CompanionMemoryLibrary {
     void pending.finally(() => { if (this.tails.get(owner) === pending) this.tails.delete(owner); }).catch(() => undefined); return pending;
   }
   private entry(artifact: CompanionArtifact): MemoryLibraryEntry {
-    return { artifact, hash: artifact.contentHash, state: 'tracked', ...(memoryKinds.has(artifact.kind) && artifact.artifactId.startsWith('memory:') ? { noteId: artifact.artifactId.slice('memory:'.length) } : {}) };
+    return memoryLibraryEntry(artifact);
   }
   private async view(registry: CompanionArtifactRegistry, inventory = false): Promise<MemoryLibraryManifest> {
     const files: MemoryLibraryManifest['files'] = {};
@@ -96,7 +118,7 @@ export class CompanionMemoryLibrary {
   withDocuments<T>(ownerId: string, work: (session: MemoryLibraryDocumentSession) => Promise<T>, options?: { synchronize?: boolean; readOnly?: boolean; sourceDelivery?: boolean; catalogInventory?: boolean; ifIdle?: boolean }): Promise<T> {
     if (!/^[a-zA-Z0-9_-]{1,100}$/u.test(ownerId)) return Promise.reject(new Error('伙伴标识无效。'));
     const open = async () => {
-      if (this.closed || this.resetting.has(ownerId)) throw new Error('伙伴文件正在关闭或清理。');
+      if (this.closed || this.resetting.has(ownerId)) throw new CompanionValidationUnavailableError('伙伴文件正在关闭或清理。');
       const owner = this.options.resolveOwnerMetadata ? await this.options.resolveOwnerMetadata(ownerId)
         : (await this.call({ type: 'state', companionId: ownerId, includeConversations: false, includeHidden: true })).state?.companions.find(item => item.id === ownerId);
       if (!owner || owner.id !== ownerId) throw new Error('伙伴不存在或已移除。');
@@ -105,6 +127,16 @@ export class CompanionMemoryLibrary {
       const current = async (entry: MemoryLibraryEntry) => entry.noteId ? (await this.call({ type: 'memory.library.read', companionId: ownerId, id: entry.noteId })).memoryRead?.memory : undefined;
       const session: MemoryLibraryDocumentSession = {
         owner, root: registry.root, registry, manifest, readOnly: options?.readOnly,
+        historyAuthority: { identity: this.options.requestHistoryMetadata ?? this.options.request, describe: command => {
+          if (command.type !== 'memory.revisions.describe') return Promise.reject(new Error('历史元数据端口只接受准确修订描述。'));
+          return this.options.requestHistoryMetadata ? this.options.requestHistoryMetadata(command) : this.call(command);
+        } },
+        currentNotesAuthority: { identity: this.options.requestCurrentNotesMetadata ?? this.options.request,
+          read: command => this.options.requestCurrentNotesMetadata ? this.options.requestCurrentNotesMetadata(command) : this.call(command) },
+        snapshotRevisionAuthority: { identity: this.options.requestSnapshotRevisionMetadata ?? this.options.request,
+          read: command => this.options.requestSnapshotRevisionMetadata ? this.options.requestSnapshotRevisionMetadata(command) : this.call(command) },
+        ...(this.options.requestPageAuthorityMetadata ? { pageAuthority: { identity: this.options.requestPageAuthorityMetadata,
+          read: (command: CompanionMemoryDocumentAuthorityCommand) => this.options.requestPageAuthorityMetadata!(command) } } : {}),
         file: relative => path.join(registry.root, ...memoryLibraryPathParts(relative)),
         text: async (relative, optional) => { const artifact = await find(relative); if (!artifact) { if (optional) return undefined; throw new Error('文档未登记或已撤回。'); } return (await registry.read({ artifactId: artifact.artifactId, consumer: 'audit' })).text; },
         current,
@@ -116,17 +148,8 @@ export class CompanionMemoryLibrary {
           await registry.read({ artifactId: entry.artifact.artifactId, consumer: 'audit' });
           if (entry.noteId && !await current(entry)) throw new Error('记忆来源已撤回；不会从文件复活记忆。');
         },
-        timelineValid: async (relative, contentHash) => {
-          const artifact = await find(relative); if (!artifact || artifact.kind !== 'navigation') return false;
-          const body = (await registry.read({ artifactId: artifact.artifactId, consumer: 'navigation' })).text;
-          if (contentHash && hash(body) !== contentHash) return false;
-          try { const match = /^---\n([^]*?)\n---\n/u.exec(body); if (!match) return false;
-            const metadata = JSON.parse(match[1]!) as { schema: string; scope: MemoryLibraryTimelineScope; sourceRevision: string };
-            if (metadata.schema !== 'worldlinebox.companion-navigation-v2' || metadata.scope.companionId !== ownerId) return false;
-            const snapshot = (await this.call({ type: 'memory.snapshot', ...metadata.scope, contentKinds: ['episode_memory'] })).memorySnapshot;
-            return !!snapshot && (snapshot.semanticRevision ?? snapshot.revision) === metadata.sourceRevision;
-          } catch { return false; }
-        },
+        timelineValid: async (relative, contentHash) => (await memoryNavigationValidMany(session, [{ path: relative, contentHash }])).get(relative) ?? false,
+        timelineValidMany: inputs => memoryNavigationValidMany(session, inputs),
         request: command => this.call(command),
       };
       return work(session);
@@ -190,10 +213,22 @@ export class CompanionMemoryLibrary {
       relativePath: relative, expectedRevision: previous?.contentRevision ?? null, content: note.content, sourceRefs, dependencyRefs,
       visibility: { scope: 'owner' as const }, allowedConsumers: [...COMPANION_ARTIFACT_CONSUMERS[note.artifactKind]], retentionClass: 'current' as const,
       operationId };
-    const validate = async () => { await current();
-      for (const reference of sourceRefs) await session.registry.read({ artifactId: reference.artifactId, consumer: 'source_verification', audienceIds: [note.sourceConversationId] }); };
-    const artifact = previous?.publicationState === 'revoked' ? await session.registry.publishRevalidatedMemory(input, validate, publication?.fileJobGuard)
-      : await session.registry.publish(input, validate, publication?.fileJobGuard);
+    const validation = createMemoryPublicationValidation(async () => {
+      for (const reference of sourceRefs) await session.registry.read({ artifactId: reference.artifactId, consumer: 'source_verification', audienceIds: [note.sourceConversationId] });
+    });
+    const validate = async (phase?: 'commit') => {
+      // This current-row guard can legitimately inspect the old output path
+      // through historical execution contexts. Do not witness that mutable
+      // target as an immutable input to its own replacement.
+      const row = createCompanionExecutionValidationSession();
+      try { await row.run(current); await row.validate(); } finally { row.close(); }
+      await validation.validate(phase);
+    };
+    let artifact: CompanionArtifact;
+    try {
+      artifact = previous?.publicationState === 'revoked' ? await session.registry.publishRevalidatedMemory(input, validate, publication?.fileJobGuard)
+        : await session.registry.publish(input, validate, publication?.fileJobGuard);
+    } finally { validation.close(); }
     session.manifest.files[relative] = { artifact, noteId: note.id, conversationId: note.sourceConversationId, version: note.version, hash: artifact.contentHash, state: 'tracked' };
     try { this.options.onPublished?.(note); } catch (cause) { this.options.report?.(cause); }
   }
@@ -300,12 +335,33 @@ export class CompanionMemoryLibrary {
             const content = '---\n' + JSON.stringify({ schema: 'worldlinebox.companion-navigation-v2', scope, sourceRevision: artifacts.sourceRevision }) + '\n---\n' + body;
             const version = hash(content).slice(0, 16), artifactId = `navigation:${scope.conversationId}:${month.month}:${suffix}:${version}`, previous = await session.registry.get(artifactId);
             if (previous) await session.registry.read({ artifactId, consumer: 'navigation' });
-            await session.registry.publish({ artifactId, kind: 'navigation', producer: { kind: 'system', id: 'vcp-navigation' },
-              relativePath: `记忆/导航/${scope.conversationId}/${month.month}-${suffix}-${version}.md`, expectedRevision: previous?.contentRevision ?? null,
-              content, sourceRefs: [], dependencyRefs: [], visibility: { scope: 'owner' }, allowedConsumers: ['navigation', 'audit'], retentionClass: 'current',
-              operationId: `nav:${scope.conversationId}:${month.month}:${suffix}:${hash(content).slice(0, 16)}` }, async () => {
-                if (this.closed || generation !== (this.generations.get(scope.companionId) ?? 0) || !await stillValid()) throw new Error('导航来源已变化，发布取消。');
+            // Each immutable navigation publication owns its source window.
+            // The old target read above must not witness its own replacement.
+            const validation = createCompanionExecutionValidationSession(); let published: CompanionArtifact | undefined;
+            const validate = async () => {
+              if (this.closed || generation !== (this.generations.get(scope.companionId) ?? 0) || !await stillValid()) throw new Error('导航来源已变化，发布取消。');
+            };
+            try {
+              await validation.run(async () => { published = await session.registry.publish({ artifactId, kind: 'navigation', producer: { kind: 'system', id: 'vcp-navigation' },
+                relativePath: `记忆/导航/${scope.conversationId}/${month.month}-${suffix}-${version}.md`, expectedRevision: previous?.contentRevision ?? null,
+                content, sourceRefs: [], dependencyRefs: [], visibility: { scope: 'owner' }, allowedConsumers: ['navigation', 'audit'], retentionClass: 'current',
+                operationId: `nav:${scope.conversationId}:${month.month}:${suffix}:${hash(content).slice(0, 16)}` }, validate);
+                // Raw lifecycle/lease/world predicates are live even if an
+                // idempotent publication returned without invoking validate.
+                await validate();
               });
+              await validation.validate();
+            } catch (cause) {
+              if (published) {
+                // A failed final source fence must not leave this committed
+                // navigation trusted. The worker CAS never withdraws a later
+                // replacement that won a race after our own publication.
+                await detachedCompanionExecutionValidation(() => session.registry.revoke(artifactId, {
+                  contentRevision: published!.contentRevision, contentHash: published!.contentHash,
+                }));
+              }
+              throw cause;
+            } finally { validation.close(); }
           }
         }
       }

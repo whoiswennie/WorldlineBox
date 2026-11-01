@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { CompanionLoopCheckpoint } from '../../src/shared/companion-loop';
 import type { CompanionReplyStreamEvent } from '../../src/shared/companions';
 import { CompanionReplyStream } from '../../src/main/companions/reply-stream';
+import type { CompanionModelUsageCurrent } from '../../src/shared/companion-model-usage';
 
 beforeEach(() => vi.useFakeTimers());
 afterEach(() => vi.useRealTimers());
@@ -13,8 +14,38 @@ function fixture() {
   const stream = new CompanionReplyStream({ checkpoint, step: 0, publish: event => events.push(event), save });
   return { checkpoint, events, saved, save, stream };
 }
+const usage = (phase: CompanionModelUsageCurrent['phase']): CompanionModelUsageCurrent => ({ attemptId: '00000000-0000-4000-8000-000000000001',
+  phase, model: 'actual-model', providerFormat: 'openai_chat', updatedAt: new Date().toISOString(),
+  estimate: { inputTokens: 1, method: 'utf8_bytes_div_3', hasUnmeteredImages: false, breakdown: { system: 1, dialogue: 0, toolDefinitions: 0, toolHistory: 0, other: 0 } } });
 
 describe('actual reply output transport and durable drafts', () => {
+  it('does not mistake a usage report carrying the tail for an already published prose frame', async () => {
+    const f = fixture(); f.stream.onTextDelta('前半句'); f.stream.onTextDelta('前半句，最后一句。');
+    f.stream.onUsage(usage('streaming'));
+    expect(f.events.filter(event => event.phase === 'streaming').at(-1)?.text).toBe('前半句');
+    await vi.advanceTimersByTimeAsync(60);
+    expect(f.events.filter(event => event.phase === 'streaming').at(-1)?.text).toBe('前半句，最后一句。');
+  });
+
+  it('flushes the actual tail on provider completion before review, durable saves or the 60ms timer can finish', async () => {
+    const f = fixture(); f.stream.onTextDelta('第一句。'); f.stream.onTextDelta('第一句。尾句完整。');
+    f.stream.onUsage(usage('finished'));
+    expect(f.events.at(-2)).toMatchObject({ phase: 'streaming', text: '第一句。尾句完整。' });
+    expect(f.events.at(-1)).toMatchObject({ phase: 'usage', modelUsage: { current: { phase: 'finished' } } });
+    await f.stream.complete();
+    expect(f.events.filter(event => event.phase === 'committed')).toHaveLength(0);
+    expect(f.checkpoint.turns).toEqual([]);
+    await vi.advanceTimersByTimeAsync(60);
+    expect(f.events.filter(event => event.phase === 'streaming' && event.text === '第一句。尾句完整。')).toHaveLength(1);
+  });
+
+  it('flushes before complete cancels a pending coalescing timer even without provider usage', async () => {
+    const f = fixture(); f.stream.onTextDelta('开头'); f.stream.onTextDelta('开头和真实尾部');
+    await f.stream.complete();
+    expect(f.events.at(-1)).toMatchObject({ phase: 'streaming', text: '开头和真实尾部' });
+    expect(f.events.some(event => event.phase === 'committed')).toBe(false);
+  });
+
   it('publishes the first fragment immediately, coalesces later events and checkpoints less frequently', async () => {
     const f = fixture();
     f.stream.onTextDelta('你');

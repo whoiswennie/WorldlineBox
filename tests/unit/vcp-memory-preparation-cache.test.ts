@@ -1,9 +1,10 @@
 import { createRequire } from 'node:module';
 import path from 'node:path';
 import { expect, it, vi } from 'vitest';
-import type { VcpMemoryAutomaticDecayPolicy, VcpMemoryContextReference, VcpMemoryMessage, VcpMemoryPreprocessResult, VcpMemoryQueryClock } from '../../src/main/vcp-memory/contracts';
+import type { VcpMemoryAutomaticDecayPolicy, VcpMemoryContextReference, VcpMemoryMessage, VcpMemoryPreprocessResult, VcpMemoryQueryClock, VcpMemoryOwnerPrompts } from '../../src/main/vcp-memory/contracts';
 
 interface Peripherals {
+  setOwnerPrompts(prompts: VcpMemoryOwnerPrompts): void;
   corpusEpoch: number;
   plugins: Map<string, unknown>;
   contextReferences: VcpMemoryContextReference[];
@@ -82,6 +83,23 @@ it('prepares dependencies and a graph without performing a query, message proces
   expect(peripherals.validateTimelines).toHaveBeenCalledOnce();
   expect(runtime.ensureArtifacts).toHaveBeenCalledOnce();
   expect(rag.processMessages).not.toHaveBeenCalled(); expect(timeline.processMessages).not.toHaveBeenCalled();
+});
+
+it('binds native preprocessing receipts and upstream memo answers to every effective owner template and guidance signature', async () => {
+  const { peripherals, rag } = fixture();
+  let effective: VcpMemoryOwnerPrompts = { aimemoTemplate: 'focus {{knowledge_base}}', timelineTemplate: 'timeline {{agentName}}',
+    summaryTemplate: 'summary {{month}}', focusGuidanceSignature: 'a'.repeat(64) };
+  peripherals.setOwnerPrompts(effective);
+  expect((await peripherals.preprocess(messages(), clock)).receiptCache?.hit).toBe(false);
+  expect((await peripherals.preprocess(messages(), clock)).receiptCache?.hit).toBe(true);
+  for (const change of [{ focusGuidanceSignature: 'b'.repeat(64) }, { timelineTemplate: 'new timeline {{agentName}}' },
+    { summaryTemplate: 'new summary {{month}}' }, { aimemoTemplate: 'new focus {{knowledge_base}}' }]) {
+    effective = { ...effective, ...change }; peripherals.setOwnerPrompts(effective);
+    expect((await peripherals.preprocess(messages(), clock)).receiptCache?.hit).toBe(false);
+    expect((await peripherals.preprocess(messages(), clock)).receiptCache?.hit).toBe(true);
+  }
+  expect(rag.processMessages).toHaveBeenCalledTimes(5);
+  expect(rag.cacheManager.clear.mock.calls.filter(([name]) => name === 'aimemo')).toHaveLength(5);
 });
 
 it('reuses a complete receipt with actual references and events, isolated from caller mutations', async () => {

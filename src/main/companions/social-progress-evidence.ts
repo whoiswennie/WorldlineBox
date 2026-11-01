@@ -4,6 +4,19 @@ import { companionStorageResponseSchema } from '../../shared/companion-storage';
 import type { CompanionLoopCall, CompanionLoopTurn } from '../../shared/companion-loop';
 import { normalizeCompanionCapabilityCall } from '../../shared/companion-capability-tools';
 import type { CompanionSocialNotification } from '../../shared/companion-social';
+import { z } from 'zod';
+
+const legacyProgressRead = z.strictObject({ action: z.literal('activity'), parameters: z.strictObject({ action: z.literal('progress'),
+  id: z.string().regex(/^[a-zA-Z0-9_-]{1,100}$/u) }) });
+/** Old successful read receipts remain evidence; this decoder is never used
+ * to dispatch or approve a newly proposed tool. */
+function historicalProgressCall(call: CompanionLoopCall): CompanionLoopCall {
+  if (call.name === 'world') {
+    const legacy = legacyProgressRead.safeParse(JSON.parse(call.arguments));
+    if (legacy.success) return { ...call, name: 'activity', arguments: JSON.stringify(legacy.data.parameters) };
+  }
+  return normalizeCompanionCapabilityCall(call);
+}
 
 export function socialProgressFingerprint(message: CompanionMessage): string {
   return createHash('sha256').update(JSON.stringify([message.id, message.conversationId, message.topicId ?? null,
@@ -49,7 +62,7 @@ export function socialProgressReads(turns: readonly CompanionLoopTurn[]): Map<st
   const reads = new Map<string, CompanionMessage>();
   for (const turn of turns) for (const call of turn.calls) {
     try {
-      const normalized = normalizeCompanionCapabilityCall(call);
+      const normalized = historicalProgressCall(call);
       const action = JSON.parse(normalized.arguments).action;
       const delegated = normalized.name === 'activity' && action === 'progress';
       const ownDelivery = normalized.name === 'world' && ['message', 'social', 'introduce', 'create_group'].includes(action);
@@ -80,7 +93,7 @@ export function socialProgressOutbound(turns: readonly CompanionLoopTurn[]): Com
   const receipts: NonNullable<CompanionSocialNotification['progressEvidence']>[] = [];
   for (const turn of turns) for (const call of turn.calls) {
     try {
-      const normalized = normalizeCompanionCapabilityCall(call), args = JSON.parse(normalized.arguments);
+      const normalized = historicalProgressCall(call), args = JSON.parse(normalized.arguments);
       if (normalized.name !== 'activity' || args.action !== 'progress') continue;
       const result = turn.results?.find(item => item.callId === call.id);
       if (!result) continue;

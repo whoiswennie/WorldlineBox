@@ -16,6 +16,7 @@ type ProgressProps = {
   progress: Progress; now: number; scope: ReplyMemoryScope; onCancel?(): void | Promise<unknown>; onRetry?(): void | Promise<unknown>; onGuide?(): void;
   revealCompleted?: boolean;
   initialBubble?: boolean;
+  bodyReceivedAt?: string;
 };
 
 export function CompanionReplyProgress(props: ProgressProps) {
@@ -23,7 +24,7 @@ export function CompanionReplyProgress(props: ProgressProps) {
   return <ReplyProcess key={props.progress.workId ?? props.progress.startedAt} {...props} />;
 }
 
-function ReplyProcess({ progress, now, scope, onCancel, onRetry, onGuide, initialBubble }: ProgressProps) {
+function ReplyProcess({ progress, bodyReceivedAt, now, scope, onCancel, onRetry, onGuide, initialBubble }: ProgressProps) {
   const [expanded, setExpanded] = useState(false);
   const [memoryOpen, setMemoryOpen] = useState(false);
   useDialogFocusTrap(memoryOpen, scope.messageId);
@@ -37,6 +38,7 @@ function ReplyProcess({ progress, now, scope, onCancel, onRetry, onGuide, initia
   };
   const contentId = useId();
   const terminal = terminalReplyPhases.has(progress.phase), failure = progress.phase === 'failed';
+  const phaseStartedAt = bodyReceivedAt ?? progress.phaseStartedAt;
   const [cancelling, setCancelling] = useState(false), [cancelError, setCancelError] = useState<string>();
   const cancelPending = useRef(false);
   useEffect(() => { if (terminal) cancelPending.current = false; }, [terminal]);
@@ -53,12 +55,13 @@ function ReplyProcess({ progress, now, scope, onCancel, onRetry, onGuide, initia
     // state until the host actually reports cancelled/completed/failed.
   };
   const problem = failure || progress.phase === 'interrupted';
-  const finishedAt = terminal ? progress.finishedAt ?? progress.updatedAt : undefined;
+  const finishedAt = terminal ? progress.finishedAt ?? (progress.timingIncomplete ? undefined : progress.updatedAt) : undefined;
   const elapsedMs = companionReplyElapsedMs(progress, now);
   const duration = elapsedMs === undefined ? undefined : companionDurationMilliseconds(elapsedMs);
   const userStopped = progress.stop?.actor === 'user';
   const memory = progress.memory;
-  const detail = ['正在输出回复', '正在生成回复', '正在整理本轮上下文', '已加入回复队列', '已重新加入回复队列', '这次回复已取消', '回复已完成'].includes(progress.detail) || /^正在调用能力[：:]/u.test(progress.detail) ? '' : progress.detail;
+  const detail = bodyReceivedAt && !terminal ? '正文已接收，正在核验并保存回复'
+    : ['正在输出回复', '正在生成回复', '正在整理本轮上下文', '已加入回复队列', '已重新加入回复队列', '这次回复已取消', '回复已完成'].includes(progress.detail) || /^正在调用能力[：:]/u.test(progress.detail) ? '' : progress.detail;
   const memoryLabel = memory?.status === 'running' ? '正在查找相关回忆'
     : memory?.status === 'unavailable' ? '这次暂时没能读取相关回忆'
       : memory?.injected ? '这次回复参考了相关记忆'
@@ -68,7 +71,7 @@ function ReplyProcess({ progress, now, scope, onCancel, onRetry, onGuide, initia
       <button type="button" className="companions-reply-process-toggle" aria-expanded={expanded} aria-controls={contentId} aria-label={expanded ? '收起回复过程' : '展开回复过程'} onClick={() => setExpanded(value => !value)}>
       <span className="companions-reply-process-symbol">
       <Icon name={initialBubble && !terminal ? 'loader' : failure ? 'alert-circle' : progress.phase === 'completed' ? 'check' : progress.phase === 'queued' || progress.phase === 'waiting' ? 'clock' : terminal ? 'pause' : 'activity'} size={13} />
-      </span><span className="companions-reply-process-heading" role="status" aria-label="本条回复进度"><strong>{userStopped ? '用户已停止' : cancelling && !terminal ? '正在停止…' : labels[progress.phase]}</strong>{duration ? <time aria-label="本条回复总用时" dateTime={terminal ? finishedAt : undefined} title={'累计执行时间，不含排队、中断、停止或应用退出期间' + (terminal || progress.phase === 'queued' || !progress.phaseStartedAt ? '' : '；当前阶段 ' + elapsedTime(progress.phaseStartedAt, now))}>总用时 {duration}</time> : terminal && <span className="companions-bubble-duration-unknown">耗时未记录</span>}</span>
+      </span><span className="companions-reply-process-heading" role="status" aria-label="本条回复进度"><strong>{userStopped ? '用户已停止' : cancelling && !terminal ? '正在停止…' : bodyReceivedAt && !terminal ? '正在核验并保存回复' : labels[progress.phase]}</strong>{duration ? <time aria-label="本条回复总用时" dateTime={terminal ? finishedAt : undefined} title={(progress.timingIncomplete ? '先前进程未记录结束时刻；这里只累计已记录的执行区间' : '累计执行时间，不含排队、中断、停止或应用退出期间') + (terminal || progress.phase === 'queued' || !phaseStartedAt ? '' : '；当前阶段 ' + elapsedTime(phaseStartedAt, now))}>{progress.timingIncomplete ? '已记录用时' : '总用时'} {duration}{progress.timingIncomplete && '（计时不完整）'}</time> : terminal && <span className="companions-bubble-duration-unknown">{progress.timingIncomplete ? '计时不完整，耗时未记录' : '耗时未记录'}</span>}</span>
       <span className="companions-reply-process-chevron" style={{ transform: expanded ? 'rotate(90deg)' : 'rotate(0deg)' }}><Icon name="chevron-right" size={12} /></span>
       </button>
       {memory?.status === 'unavailable' && <span className="companions-reply-memory-warning" title="相关回忆暂时不可用，可展开查看进展"><Icon name="alert-circle" size={12} />回忆暂不可用</span>}
@@ -82,7 +85,7 @@ function ReplyProcess({ progress, now, scope, onCancel, onRetry, onGuide, initia
     <div className="companions-reply-process-content" id={contentId} hidden={!expanded}>{expanded && <>
     {progress.phase !== 'completed' && !problem && detail && <span className="companions-bubble-progress-detail">{detail}</span>}
     {problem && detail && companionCapabilityDiagnostic(detail) !== detail && <details className="companions-reply-diagnostic"><summary>查看原始诊断</summary><pre>{detail}</pre></details>}
-    {!terminal && progress.phaseStartedAt && <small className="companions-reply-phase-time">当前阶段已用时 {elapsedTime(progress.phaseStartedAt, now)}</small>}
+    {!terminal && phaseStartedAt && <small className="companions-reply-phase-time">当前阶段已用时 {elapsedTime(phaseStartedAt, now)}</small>}
     {memory && <div className="companions-bubble-memory"><span>{memoryLabel}</span><button type="button" aria-label="查看这次回复的回忆" aria-haspopup="dialog" onClick={() => setMemoryOpen(true)}>查看回忆<Icon name="arrow-up-right" size={11} /></button></div>}
     </>}</div>
     {memoryOpen && memory && <div className="companions-task-backdrop companions-reply-memory-backdrop" onMouseDown={event => { if (event.target === event.currentTarget) setMemoryOpen(false); }} onKeyDown={event => { if (event.key === 'Escape' && !isImeKeyboardEvent(event.nativeEvent)) { event.stopPropagation(); setMemoryOpen(false); } }}>

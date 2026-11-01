@@ -21,7 +21,7 @@ export function CompanionWorkspace({ api, libraryApi, children }: {
     if (!api?.workspace || lock.current) return;
     const epoch = ++serial.current.epoch;
     try {
-      const value = await api.workspace({ type: 'status' });
+      const value = await api.workspace({ type: 'status', includeLibraries: preserveDialog });
       if (epoch !== serial.current.epoch) return;
       setState(current => value.ok ? value : current ?? value); setError(value.ok ? '' : value.error ?? '无法读取伙伴资产库。');
       if (value.ok && !preserveDialog) setDialogOpen(!value.selected);
@@ -61,7 +61,7 @@ export function CompanionWorkspace({ api, libraryApi, children }: {
   };
   if (!api?.workspace) return <>{children}</>;
   return <>
-  {state?.selected ? <div className="companion-workspace-bound" key={state.selected.libraryPath}>
+  {state?.selected ? <div className="companion-workspace-bound" key={state.selected.libraryId + ':' + state.selected.libraryPath}>
     <div className="companion-workspace-bar"><div className="companion-workspace-location" title={state.selected.libraryPath}><Icon name="folder" size={15} /><span className="companion-workspace-label">记忆资产库</span><span className="companion-workspace-name">{state.selected.displayName}</span></div>
       <div className="companion-workspace-bar-actions"><button type="button" disabled={recoveryBusy} onClick={()=>setRecoveryOpen(true)}>备份与恢复</button><button type="button" disabled={recoveryBusy} onClick={() => { void api.workspace!({ type: 'reveal' }).then(result => { if (!result.ok) setError(result.error ?? '无法打开目录。'); }).catch(() => setError('无法打开伙伴记忆目录。')); }}>打开记忆目录<Icon name="external-link" size={13} /></button>
       <button type="button" disabled={recoveryBusy} onClick={() => { setError(''); setDialogOpen(true); void load(true); }}>更换资产库</button></div></div>

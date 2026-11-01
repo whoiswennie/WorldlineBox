@@ -4,6 +4,8 @@ import type { CompanionMemoryLibrary, MemoryLibraryDocumentSession } from '../..
 import type { CompanionStorageCommand, CompanionStorageResponse } from '../../src/shared/companion-storage';
 import type { CompanionMemoryDocument } from '../../src/shared/companion-memory-documents';
 import type { CompanionArtifact } from '../../src/shared/companion-artifact';
+import { currentCompanionStorageOperation, withCompanionStorageOperation } from '../../src/main/companions/storage-operation-context';
+import { currentCompanionExecutionValidationIdentity, withCompanionExecutionValidation } from '../../src/main/companions/source-execution-evidence';
 
 function fixture() {
   const files: MemoryLibraryDocumentSession['manifest']['files'] = {};
@@ -15,8 +17,9 @@ function fixture() {
     files[relativePath] = { artifact, hash: artifact.contentHash, state: 'tracked' };
   }
   const stamps = new Map<string, string>(); let bodyReads = 0, gate: Promise<void> | undefined;
+  const observations: Array<{ priority?: string; lane?: string; frame?: object }> = [];
   const session = { owner: { id: 'alice' }, manifest: { files }, currentEntry: async (file: string) => files[file],
-    text: async (file: string) => { bodyReads++; if (file.endsWith('/12.md')) await gate; return '# Registered knowledge'; },
+    text: async (file: string) => { bodyReads++; observations.push({ ...currentCompanionStorageOperation(), frame: currentCompanionExecutionValidationIdentity() }); if (file.endsWith('/12.md')) await gate; return '# Registered knowledge'; },
   } as unknown as MemoryLibraryDocumentSession;
   const request = async (command: CompanionStorageCommand): Promise<CompanionStorageResponse> => {
     if (command.type === 'document.catalog.touch') return { ok: true, documentCatalogUnchanged: stamps.get(command.path) === command.stamp };
@@ -25,7 +28,7 @@ function fixture() {
   };
   const make = () => new CompanionMemoryDocumentCatalog({ library: { withDocuments: async (_owner: string, work: (value: MemoryLibraryDocumentSession) => Promise<void>) => work(session) } as unknown as CompanionMemoryLibrary,
     request, describe: relative => ({ path: relative } as CompanionMemoryDocument) });
-  return { session, make, stamps, get bodyReads() { return bodyReads; }, block(value: Promise<void>) { gate = value; } };
+  return { session, make, stamps, observations, get bodyReads() { return bodyReads; }, block(value: Promise<void>) { gate = value; } };
 }
 
 it('returns the first twelve catalogue entries without waiting for an unrelated background body, and subsequent reads do not queue behind it', async () => {
@@ -39,6 +42,25 @@ it('returns the first twelve catalogue entries without waiting for an unrelated 
     const followup = catalog.ensure(f.session).then(() => { accepted = true; });
     await new Promise<void>(resolve => setImmediate(resolve)); expect(accepted).toBe(true);
     release(); await followup;
+  } finally { release(); await catalog.close(); }
+});
+
+it('starts catalogue work in its own background lane and finite frame after an interactive owner view closes', async () => {
+  const f = fixture(), catalog = f.make(); let release!: () => void;
+  f.block(new Promise<void>(resolve => { release = resolve; }));
+  let foreground: { lane?: string; frame?: object } = {};
+  try {
+    await withCompanionStorageOperation({ priority: 'interactive' }, () => withCompanionExecutionValidation(async () => {
+      foreground = { lane: currentCompanionStorageOperation()?.lane, frame: currentCompanionExecutionValidationIdentity() };
+      await catalog.ensure(f.session);
+    }));
+    await new Promise<void>(resolve => setImmediate(resolve));
+    expect(f.observations).toHaveLength(13);
+    expect(f.observations[0]?.priority).toBe('interactive');
+    const background = f.observations[12]!;
+    expect(background.priority).toBe('background'); expect(background.lane).not.toBe(foreground.lane);
+    expect(background.frame).toBeDefined(); expect(background.frame).not.toBe(foreground.frame);
+    release();
   } finally { release(); await catalog.close(); }
 });
 

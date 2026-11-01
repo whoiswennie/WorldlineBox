@@ -4,6 +4,8 @@ import type { CompanionActivityTask } from '../../src/shared/companion-activity-
 import type { CompanionLoopTurn } from '../../src/shared/companion-loop';
 import { COMPANION_ACTIVITY_HANDOFF_NOTICE } from '../../src/shared/companion-activity-task';
 import { socialProgressActions, socialProgressReads, socialProgressOutbound } from '../../src/main/companions/social-progress-evidence';
+import { companionStorageResponseSchema } from '../../src/shared/companion-storage';
+import { normalizeCompanionCapabilityCall } from '../../src/shared/companion-capability-tools';
 
 const now = '2026-10-23T03:00:00.000Z';
 const config = { apiFormat: 'openai_chat' as const, model: 'reviewer', apiKey: 'fixture-only', baseUrl: 'https://fixture.invalid' };
@@ -28,6 +30,40 @@ it('requires an actual proposed claim for a rejection and still blocks unsupport
     fetchFn: async () => response({ supported: false, correction: '尚无附件交付回执。', violation: { kind: 'attachment_delivery', quote: text } }) })).toContain('尚无附件');
 });
 
+it('does not invoke a factual-delivery reviewer for a narrowly recognized future self-contact plan', async () => {
+  const fetchFn = vi.fn<typeof fetch>();
+  expect(await reviewCompanionSocialProgress('等会儿我还得去跟她说一声。', [], config, undefined, { requireReview: true, fetchFn })).toBeUndefined();
+  expect(fetchFn).not.toHaveBeenCalled();
+});
+
+it('reviews all remaining clauses in the real quoted-comparison shape without sending an unrelated future intent', async () => {
+  const remaining = '刚才我整理了桌面。跟你提的那个“云少、风轻”挺不一样的，';
+  const fetchFn = vi.fn<typeof fetch>(async (_url, init) => {
+    const data = JSON.parse(JSON.parse(String(init?.body)).messages[1].content);
+    expect(data.proposedText).toBe(remaining); expect(data.proposedText).not.toContain('等会儿');
+    return response({ supported: true, correction: '' });
+  });
+  expect(await reviewCompanionSocialProgress(remaining + '等会儿我还得去跟她说一声。', [], config, undefined, { requireReview: true, fetchFn })).toBeUndefined();
+  expect(fetchFn).toHaveBeenCalledOnce();
+});
+
+it.each(['我已经联系她了。', '她已经同意了。', '文件已经附上。'])('does not let a future-intent clause conceal another factual claim: %s', claim => {
+  const fetchFn = vi.fn<typeof fetch>(async (_url, init) => {
+    const data = JSON.parse(JSON.parse(String(init?.body)).messages[1].content);
+    expect(data.proposedText).toBe(claim);
+    return response({ supported: false, correction: '这条实际完成或意愿声明没有凭证。',
+      violation: { kind: claim.includes('文件') ? 'attachment_delivery' : 'social_effect', quote: claim } });
+  });
+  return expect(reviewCompanionSocialProgress('等会儿我还得去跟她说一声，' + claim, [], config, undefined,
+    { requireReview: true, fetchFn })).resolves.toContain('没有凭证');
+});
+
+it('will not accept a rejection quote from a clause that the reviewer was never asked to judge', async () => {
+  await expect(reviewCompanionSocialProgress('等会儿我还得去跟她说一声，我已经联系她了。', [], config, undefined, { requireReview: true,
+    fetchFn: async () => response({ supported: false, correction: '这个计划没有已发送凭证。',
+      violation: { kind: 'social_effect', quote: '等会儿我还得去跟她说一声' } }) })).rejects.toMatchObject({ code: 'INVALID_RESPONSE' });
+});
+
 function fileDeliveryTurn(): CompanionLoopTurn {
   return { text: '', rawText: '', calls: [{ id: 'send_audio', name: 'dsh',
     arguments: JSON.stringify({ operation: 'send_file', parameters: { path: 'C:\\private\\蓬莱之梦.ogg' } }) }],
@@ -36,6 +72,17 @@ function fileDeliveryTurn(): CompanionLoopTurn {
     file: { path: 'C:\\private\\蓬莱之梦.ogg', size: 4771020, mime: 'audio/ogg', attachmentId: 'audio_attachment', sha256: 'a'.repeat(64) },
   }) }] };
 }
+
+it('still reviews local attachment claims with no social task and no forced-review flag', async () => {
+  const text = '音频已经附上，我也已经听懂全部内容。';
+  const fetchFn = vi.fn<typeof fetch>(async (_url, init) => {
+    const data = JSON.parse(JSON.parse(String(init?.body)).messages[1].content);
+    expect(data.facts).toEqual([]); expect(data.nativeActions).toBeUndefined(); expect(data.nativeFileActions[0].status).toBe('attached');
+    return response({ supported: false, correction: '附上不证明已播放或理解。', violation: { kind: 'attachment_delivery', quote: text } });
+  });
+  expect(await reviewCompanionSocialProgress(text, [], config, undefined, { turns: [fileDeliveryTurn()], fetchFn })).toContain('不证明');
+  expect(fetchFn).toHaveBeenCalledOnce();
+});
 
 it('gives the social reviewer exact local attachment evidence without treating it as an external message or playback', async () => {
   const turn = fileDeliveryTurn(), original = JSON.stringify(turn);
@@ -278,6 +325,10 @@ it('reads exact historical task progress as evidence without treating it as a ne
   const turn: CompanionLoopTurn = { text: '', rawText: '', calls: [{ id: 'actual_progress', name: 'world',
     arguments: JSON.stringify({ action: 'activity', parameters: { action: 'progress', id: source.id } }) }],
   results: [{ callId: 'actual_progress', content: JSON.stringify({ ok: true, activityTask: source, activityProgressEvidence: evidence }) }] };
+  const typed = companionStorageResponseSchema.safeParse(JSON.parse(turn.results![0]!.content));
+  expect(typed.success, typed.success ? '' : JSON.stringify(typed.error.issues)).toBe(true);
+  // Read old typed receipts without re-enabling this removed live capability.
+  expect(() => normalizeCompanionCapabilityCall(turn.calls[0]!)).toThrow();
   const outbound = socialProgressOutbound([turn]);
   expect(outbound?.outbound).toEqual(evidence.outbound);
   expect(socialProgressReads([turn]).get(message.id)).toEqual(message);

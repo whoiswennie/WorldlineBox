@@ -5,6 +5,8 @@ import { z } from 'zod';
 import { companionStorageRequestSchema } from '../shared/companion-storage';
 import { CompanionsStore } from './store';
 import { inspectSelectedCompanionBackup, restoreCompanionDatabase } from './recovery-package';
+import { emptyCompanionStorageTimingSegments, withCompanionStorageTiming, type CompanionStorageTiming } from '../shared/companion-storage-timing';
+import { companionStorageBusinessFailure } from '../shared/companion-storage-failure';
 
 const port = process.parentPort;
 if (!port) throw new Error('Companion storage requires an Electron UtilityProcess.');
@@ -41,6 +43,7 @@ const recoverySchema = z.strictObject({ type: z.literal('storage.recover.initial
 const recoveryInspectSchema=z.strictObject({type:z.literal('storage.recovery.inspect'),selection:initializeSchema.shape.hostRetention.unwrap(),packagePath:z.string().min(1).max(4096)});
 
 port.on('message', (event: { data: unknown }) => {
+  const receivedEpochMs = performance.timeOrigin + performance.now();
   const input = event.data;
   if (typeof input !== 'object' || !input) return;
   if('type' in input&&input.type==='storage.recovery.inspect'){
@@ -77,7 +80,7 @@ port.on('message', (event: { data: unknown }) => {
     port.postMessage({ type: 'storage.closed' });
     process.exit(0);
   }
-  const request = companionStorageRequestSchema.safeParse(input);
+  const parseStarted = performance.now(), request = companionStorageRequestSchema.safeParse(input), parseMs = performance.now() - parseStarted;
   if (!request.success) {
     // A stale Main/worker pair must settle its pending request rather than
     // silently leave task execution and progress waiting indefinitely.
@@ -95,12 +98,19 @@ port.on('message', (event: { data: unknown }) => {
     void store.recovery(command).then(response=>port.postMessage({requestId,response})).catch(error=>port.postMessage({requestId,response:{ok:false,error:error instanceof Error?error.message:'备份恢复失败。'}}))
       .finally(()=>{recoveryRunning=false;if(store){indexing=setTimeout(indexNextBatch,50);resetting=setImmediate(resetNextBatch);}}); return;
   }
+  const segments = emptyCompanionStorageTimingSegments();
+  let runMs = 0;
+  const timing = (): CompanionStorageTiming => ({ receivedEpochMs, respondedEpochMs: performance.timeOrigin + performance.now(), parseMs, runMs, segments });
   try {
     if (!store) throw new Error('伙伴存储尚未启动。');
-    port.postMessage({ requestId, response: store.request(command) });
+    const runStarted = performance.now();
+    let response;
+    try { response = withCompanionStorageTiming((segment, elapsed) => { segments[segment] += elapsed; }, () => store!.request(command)); }
+    finally { runMs = performance.now() - runStarted; }
+    port.postMessage({ requestId, response, timing: timing() });
     if (command.type.startsWith('companion.retire')) { if (resetting) clearImmediate(resetting); resetting = setImmediate(resetNextBatch); }
   } catch (error) {
-    port.postMessage({ requestId, response: { ok: false, error: error instanceof Error ? error.message : '伙伴记录操作失败。' } });
+    port.postMessage({ requestId, ...companionStorageBusinessFailure(error), timing: timing() });
   }
 });
 

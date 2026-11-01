@@ -4,8 +4,6 @@ import Database from 'better-sqlite3';
 import { expect, it, vi } from 'vitest';
 import { managedMemoryFiles } from '../fixtures/managed-memory-files';
 import type { CompanionConnection } from '../../src/companions/store';
-import type { MemoryLibraryDocumentSession } from '../../src/main/companions/memory-library';
-import type { CompanionMemoryDocumentRead } from '../../src/shared/companion-memory-documents';
 import { companionMemorySourceArtifactId } from '../../src/main/companions/memory-source-files';
 
 async function fixture(count = 12) {
@@ -19,17 +17,16 @@ async function fixture(count = 12) {
   return { f, source, notes, list, ready };
 }
 
-it('shares one source-metadata admission across a real four-reader page and retains the final fresh SQL fences', async () => {
+it('shares one source-metadata admission across a real batch page and retains the final fresh SQL fences', async () => {
   const h = await fixture();
   try {
     await h.ready(); h.f.commands.length = 0;
-    const subject = h.f.documents as unknown as { read(session: MemoryLibraryDocumentSession, relative: string, limit?: number): Promise<CompanionMemoryDocumentRead> };
-    const actual = subject.read.bind(subject); let active = 0, maximum = 0;
-    const reads = vi.spyOn(subject, 'read').mockImplementation(async (...args) => {
-      maximum = Math.max(maximum, ++active); try { return await actual(...args); } finally { active--; }
-    });
-    const page = await h.list(); reads.mockRestore();
-    expect(page.ok, page.error).toBe(true); expect(page.documents?.items).toHaveLength(12); expect(maximum).toBe(4);
+    const page = await h.list();
+    expect(page.ok, page.error).toBe(true); expect(page.documents?.items).toHaveLength(12);
+    expect(h.f.commands.filter(command => command.type === 'memory.library.read')).toHaveLength(0);
+    const batches = h.f.commands.filter(command => command.type === 'memory.library.read-many');
+    expect(batches).toHaveLength(2);
+    for (const batch of batches) if (batch.type === 'memory.library.read-many') expect([...batch.ids].sort()).toEqual(h.notes.map(note => note.id).sort());
     const source = companionMemorySourceArtifactId(h.source.id, 1);
     expect(h.f.commands.filter(command => command.type === 'cognition.registry.read' && command.artifactIds?.includes(source))).toHaveLength(3);
     h.f.commands.length = 0; expect((await h.list()).ok).toBe(true);
@@ -42,12 +39,18 @@ it.each(['same_stat_bytes', 'external_sql_permission'] as const)('rejects late %
   try {
     await h.ready(); const reads = new Map<string, number>(); let mutated = false;
     h.f.intercept(async command => {
-      if (command.type !== 'memory.library.read') return;
-      reads.set(command.id, (reads.get(command.id) ?? 0) + 1);
-      if (mutated || h.notes.some(note => (reads.get(note.id) ?? 0) < 2)) return;
+      if (command.type === 'memory.library.read-many') {
+        for (const id of command.ids) reads.set(id, (reads.get(id) ?? 0) + 1);
+        return;
+      }
+      // All page files and current note metadata have been consumed. Mutate
+      // before the operation finishes, as the old second per-note reader did;
+      // the new raw SQL final callback runs after the canonical final phase.
+      if (command.type !== 'cognition.registry.read' || !command.artifactIds?.includes(companionMemorySourceArtifactId(h.source.id, 1))
+        || mutated || h.notes.some(note => (reads.get(note.id) ?? 0) < 1)) return;
       mutated = true;
       if (change === 'same_stat_bytes') {
-        const target = h.notes.find(note => note.id !== command.id)!, file = h.f.noteFile(target), before = await stat(file);
+        const target = h.notes[0]!, file = h.f.noteFile(target), before = await stat(file);
         await writeFile(file, target.content.replace('准确', '篡改'), 'utf8'); await utimes(file, before.atime, before.mtime);
       } else {
         const db = new (Database as { new(filename: string): CompanionConnection })(path.join(h.f.root, 'state.sqlite'));
@@ -92,9 +95,9 @@ it('does not label an earlier partial SQL page ready when background indexing co
     let touches = 0, queried = false, held = false;
     f.intercept(async command => {
       if (command.type === 'document.catalog.touch' && ++touches === 13) await blocked;
-      if (command.type === 'document.catalog.query') queried = true;
+      if (command.type === 'document.catalog.query') queried = !!f.store.request(command).documentCatalog?.paths.length;
       if (command.type === 'document.catalog.finish') finished();
-      if (queried && !held && command.type === 'cognition.registry.read' && command.relativePath) {
+      if (queried && !held && command.type === 'cognition.registry.read' && (command.relativePath || command.relativePaths?.length || command.artifactIds?.length)) {
         held = true; release(); await complete;
         // Let the real finish response update catalog state before continuing
         // the UI's already selected twelve canonical files.

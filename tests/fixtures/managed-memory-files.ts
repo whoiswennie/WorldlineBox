@@ -14,7 +14,7 @@ import type { CompanionMemory } from '../../src/shared/companions';
 import type { CompanionMemoryCandidate } from '../../src/shared/companion-memory';
 
 /** Real isolated SQL, typed registry and filesystem. It never opens a user library. */
-export function managedMemoryFiles() {
+export function managedMemoryFiles(options: { pageAuthority?: boolean } = {}) {
   const root = mkdtempSync(path.join(tmpdir(), 'wlbox-managed-memory-')), filename = path.join(root, 'state.sqlite'), directory = path.join(root, 'owners');
   const seeds = ['alice', 'bob'].map(id => ({ id, name: id, description: '', persona: '有来源的伙伴。', avatar: 'sister' as const, model: '', active: true, proactive: false }));
   let store = new CompanionsStore(filename, seeds);
@@ -23,7 +23,8 @@ export function managedMemoryFiles() {
   let intercept: ((command: CompanionStorageCommand) => void | Promise<void>) | undefined;
   const request = async (command: CompanionStorageCommand): Promise<CompanionStorageResponse> => { commands.push(command); await intercept?.(command); return store.request(command); };
   const artifacts = async (owner: string) => new CompanionArtifactRegistry(path.join(directory, owner), owner, { registryStorage: { request } });
-  const library = new CompanionMemoryLibrary({ libraryDirectory: directory, artifacts, request, maxFilesPerOwner: 64 });
+  const library = new CompanionMemoryLibrary({ libraryDirectory: directory, artifacts, request, maxFilesPerOwner: 64,
+    ...(options.pageAuthority ? { requestPageAuthorityMetadata: request } : {}) });
   const sources = new CompanionMemorySourceFiles({ library }), history = new CompanionMemoryHistoryFiles({ library }), live = new CompanionMemoryLiveFiles({ library, history });
   const documents = new CompanionMemoryDocuments({ library, libraryDirectory: directory, requestStorage: request });
   const source = (content: string, owner = 'alice') => store.appendMessage({ conversationId: store.openPrivate(owner).id, authorId: 'user', content, replyDirective: 'none' });

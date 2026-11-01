@@ -2,9 +2,56 @@ import { randomUUID } from 'node:crypto';
 import { constants } from 'node:fs';
 import { access, lstat, mkdir, readFile, realpath, rename, writeFile } from 'node:fs/promises';
 import path from 'node:path';
-import { companionWorkspaceLibrarySchema, type CompanionWorkspaceLibrary } from '../../shared/companion-workspace';
+import { companionWorkspaceLibrarySchema, type CompanionWorkspaceLibrary, type CompanionWorkspaceResponse } from '../../shared/companion-workspace';
+import type { LibraryWorkerClient } from '../worker-client';
+import type { InternalLibrarySummary } from '../../shared/protocol/responses';
 
 export interface CompanionWorkspaceSelection extends CompanionWorkspaceLibrary { dataRoot: string; memoryRoot: string }
+
+/** Locator metadata can mount the UI while the same necessary library
+ * admission runs. This response contains no role, avatar or conversation data. */
+export async function readCompanionWorkspaceStatus(store: Pick<CompanionWorkspaceStore, 'current'>, includeLibraries: boolean,
+  ports: { libraries(): Promise<CompanionWorkspaceLibrary[]>; beginAdmission?(selected: CompanionWorkspaceSelection): void }): Promise<CompanionWorkspaceResponse> {
+  const selected = await store.current();
+  if (selected && !includeLibraries) { ports.beginAdmission?.(selected); return { ok: true, selected }; }
+  return { ok: true, selected, libraries: await ports.libraries() };
+}
+
+/** One in-flight admission, shared with the foreground. There is no retained
+ * authorization cache or domain startup. Changing scope/closing stops the next
+ * request; already dispatched Worker effects retain their normal settlement. */
+export function createCompanionLibraryAdmission(ports: { worker(): Pick<LibraryWorkerClient, 'request'> | undefined;
+  isClosing(): boolean; opened(library: InternalLibrarySummary): void }): { ensure(selected: CompanionWorkspaceSelection): Promise<void>; invalidate(): void } {
+  let epoch = 0, pending: { path: string; libraryId: string; epoch: number; promise: Promise<void> } | undefined;
+  return {
+    invalidate() { ++epoch; },
+    ensure(selected) {
+      if (pending?.path === selected.libraryPath && pending.libraryId === selected.libraryId && pending.epoch === epoch) return pending.promise;
+      const captured = epoch;
+      const current = () => { if (ports.isClosing() || captured !== epoch) throw new Error('资产库准入已停止或选择发生变化，请在当前库重新读取。'); };
+      const promise = (async () => {
+        current(); const worker = ports.worker(); if (!worker) throw new Error('资产库服务暂时不可用。');
+        const list = await worker.request({ type: 'library.list' }); current();
+        if (!list.ok || list.type !== 'library.list') throw new Error('无法读取已打开的资产库。');
+        const existing = list.libraries.find(library => library.libraryId === selected.libraryId);
+        if (!existing) {
+          const opened = await worker.request({ type: 'library.open', selectedLibraryPath: selected.libraryPath }); current();
+          if (!opened.ok || opened.type !== 'library.opened' || opened.library.readOnly || opened.library.libraryId !== selected.libraryId) throw new Error('伙伴所选资产库无法重新打开，请检查目录后重新选择。');
+          ports.opened(opened.library);
+        } else if (existing.readOnly) throw new Error('伙伴资产库需要写入权限。');
+        const roots = await worker.request({ type: 'linked-folder.list', libraryId: selected.libraryId }); current();
+        if (!roots.ok || roots.type !== 'linked-folder.list') throw new Error('无法恢复伙伴记忆的资产目录映射。');
+        if (!roots.folders.some(folder => path.resolve(folder.absoluteRootPath) === path.resolve(selected.memoryRoot))) {
+          const linked = await worker.request({ type: 'asset.import-linked', libraryId: selected.libraryId, displayName: '伙伴记忆', sourceRootPath: selected.memoryRoot, companionMemory: true }); current();
+          if (!linked.ok) throw new Error('伙伴目录已准备，但资产库目录映射失败，请重新选择以重试。');
+        }
+      })();
+      pending = { path: selected.libraryPath, libraryId: selected.libraryId, epoch: captured, promise };
+      void promise.finally(() => { if (pending?.promise === promise) pending = undefined; }).catch(() => undefined);
+      return promise;
+    },
+  };
+}
 /** Only a small locator lives in userData. All world, journal, attachment and vector data lives in the library. */
 export class CompanionWorkspaceStore {
   private readonly file: string;

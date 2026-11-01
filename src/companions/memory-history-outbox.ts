@@ -86,6 +86,7 @@ export function forgetCompanionMemoryHistoryNote(db: CompanionConnection, owner:
 export class CompanionMemoryHistoryOutboxStore {
   constructor(private readonly db: CompanionConnection, private readonly ports: {
     ownerScope(owner: string): Scope; authorize(scope: Scope, id: string, contentRevision: number): boolean;
+    withReadWindow?<T>(scope: Scope, operation: () => T): T;
     annotations?(scope: Scope, id: string, contentRevision: number): { procedureValidation?: CompanionMemoryProcedureValidation };
   }) {}
   private descriptor(file: File): CompanionMemoryHistoryDescriptor {
@@ -106,6 +107,7 @@ export class CompanionMemoryHistoryOutboxStore {
       return { ok: true, memoryFileReadiness: { state: file.state, descriptor: this.descriptor(file), historyJob, sourceJobs } };
     }
     if (command.type === 'memory.revisions.describe') return this.db.transaction(() => {
+      const describe = () => {
       const pending = [...command.roots], seen = new Set<string>();
       const descriptors: NonNullable<CompanionStorageResponse['memoryHistoryDescriptors']> = [];
       while (pending.length) {
@@ -119,12 +121,20 @@ export class CompanionMemoryHistoryOutboxStore {
         descriptors.push(descriptor); pending.push(...descriptor.dependencies);
       }
       return { ok: true, memoryHistoryDescriptors: descriptors };
+      };
+      return this.ports.withReadWindow ? this.ports.withReadWindow(command, describe) : describe();
     })();
     if (command.type === 'memory.revision.describe') {
+      const describe = () => {
       const file = this.db.prepare('SELECT * FROM companion_memory_history_files WHERE companion_id=? AND note_id=? AND content_revision=?')
         .get(command.companionId, command.id, command.contentRevision) as File | undefined;
       if (!file || file.state !== 'published' || !this.ports.authorize(command, command.id, command.contentRevision)) throw new Error('历史记忆文件尚未发布、已撤回或当前范围无权读取。');
       return { ok: true, memoryHistoryDescriptor: { ...this.descriptor(file), ...this.ports.annotations?.(command, command.id, command.contentRevision) } };
+      };
+      // Authorization and annotation projection read the same exact immutable
+      // closure. One synchronous transaction owns their physical walk, just
+      // as for a multi-root descriptor; every later command starts afresh.
+      return this.db.transaction(() => this.ports.withReadWindow ? this.ports.withReadWindow(command, describe) : describe())();
     }
     if (command.type === 'memory.history.outbox.owners') {
       const owners = this.db.prepare(`SELECT o.companion_id FROM companion_memory_history_outbox o JOIN companions c ON c.id=o.companion_id

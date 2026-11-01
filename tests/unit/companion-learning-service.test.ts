@@ -7,6 +7,8 @@ import { CompanionLearningService, CompanionLearningReadError, type CompanionLea
 import type { AssetSummary } from '../../src/shared/asset-types';
 import type { CompanionStorageCommand } from '../../src/shared/companion-storage';
 import { companionWorkspaceRequestSchema } from '../../src/shared/companion-workspace';
+import { createCompanionExecutionValidationSession, memoCompanionExecutionWitnesses, withCompanionExecutionValidation } from '../../src/main/companions/source-execution-evidence';
+import { currentCompanionStorageOperation, withCompanionStorageOperation } from '../../src/main/companions/storage-operation-context';
 
 const roots: string[] = [], stores = new Set<CompanionsStore>(), services = new Set<CompanionLearningService>(), releases: Array<() => void> = [];
 beforeEach(() => { vi.useFakeTimers({ toFake: ['Date'] }); vi.setSystemTime('2026-10-22T10:00:00Z'); });
@@ -25,6 +27,43 @@ function fixture() {
   const grant = (owner = 'alice', autonomous = true) => store.request({ type: 'learning.grant', companionId: owner, libraryId: 'library', libraryName: '授权资料库', libraryPath: root, autonomous, intervalMinutes: 30 }).learning!.grants[0]!;
   return { root, store, service, assets, request, end, report, grant };
 }
+
+it.each(['completed', 'cancelled', 'withdrawn'] as const)('owns a fresh background learning job after the foreground frame finishes (%s)', async outcome => {
+  const f = fixture(), held = deferred<void>(), parentController = new AbortController(), foreground = createCompanionExecutionValidationSession(parentController.signal);
+  releases.push(() => held.resolve()); f.grant();
+  const original = f.request.getMockImplementation()!, scanChecked = vi.fn(async () => undefined);
+  f.request.mockImplementation(async command => {
+    expect(currentCompanionStorageOperation()?.priority).toBe('background');
+    expect(currentCompanionStorageOperation()?.lane).not.toBe('foreground_learning');
+    if (command.type === 'learning.claim') await withCompanionExecutionValidation(async () => {
+      await memoCompanionExecutionWitnesses(['source_scope'], { identity: {}, scope: 'learning_scan', revision: () => 0,
+        read: async keys => new Map(keys.map(key => [key, 'current scope'])), verify: scanChecked });
+    });
+    return original(command);
+  });
+  const inputChecked = vi.fn(async () => { if (outcome === 'withdrawn') throw new Error('actual source withdrawn'); });
+  f.assets.read.mockImplementation(async () => {
+    expect(currentCompanionStorageOperation()?.priority).toBe('background'); await held.promise;
+    await withCompanionExecutionValidation(async () => {
+      await memoCompanionExecutionWitnesses(['actual_material'], { identity: {}, scope: 'learning_material', revision: () => 0,
+        read: async keys => new Map(keys.map(key => [key, 'actual bytes'])), verify: inputChecked });
+    });
+    return { content: '实际读取的准确资料。', revisionId: 'revision_hash', truncated: false };
+  });
+  try {
+    await foreground.run(() => withCompanionStorageOperation({ priority: 'interactive', lane: 'foreground_learning' }, () => f.service.tick()));
+    await vi.waitFor(() => expect(f.assets.read).toHaveBeenCalledOnce());
+    const checkedBeforeFinal = scanChecked.mock.calls.length; expect(checkedBeforeFinal).toBeGreaterThan(0);
+    await foreground.validate(); expect(scanChecked).toHaveBeenCalledTimes(checkedBeforeFinal);
+    foreground.close(); parentController.abort();
+    if (outcome === 'cancelled') f.service.cancel('alice');
+    held.resolve(); await vi.waitFor(() => expect(f.end).toHaveBeenCalledOnce());
+    expect(inputChecked).toHaveBeenCalledOnce();
+    const status = f.store.request({ type: 'learning.status', companionId: 'alice' }).learning!;
+    expect(status.reads).toHaveLength(outcome === 'completed' ? 1 : 0);
+    expect(f.request.mock.calls.some(([command]) => command.type === 'learning.commit')).toBe(outcome === 'completed');
+  } finally { foreground.close(); held.resolve(); }
+});
 
 it('never reads an ungranted or non-autonomous source without a human run request', async () => {
   const f = fixture(); await f.service.tick(); f.grant('alice', false); await f.service.tick();

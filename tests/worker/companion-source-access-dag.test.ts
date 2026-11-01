@@ -19,6 +19,13 @@ const fixtures: Array<{ root: string; db: CompanionConnection; store: Companions
 afterEach(() => { for (const f of fixtures.splice(0)) { f.db.close(); f.store.close(); removeOwnedDirectorySync(f.root); } });
 const hash = (content: string) => createHash('sha256').update(content).digest('hex');
 type SqlitePrototype = { prepare(sql: string): ReturnType<CompanionConnection['prepare']> };
+function countedConnection(db: CompanionConnection, prepare: CompanionConnection['prepare']): CompanionConnection {
+  return new Proxy(db, { get(target, property) {
+    if (property === 'prepare') return prepare;
+    const value = Reflect.get(target, property, target);
+    return typeof value === 'function' ? value.bind(target) : value;
+  } });
+}
 function fixture(count: number) {
   const root = mkdtempSync(path.join(tmpdir(), 'companion-source-dag-')), file = path.join(root, 'state.sqlite');
   const store = new CompanionsStore(file, ['alice', 'bob'].map(id => ({ id, name: id, description: '', persona: '核对实际来源。', model: '', avatar: 'sister' as const, active: true, proactive: false })));
@@ -61,10 +68,13 @@ it('projects and shares exact action readsets without parsing a large unrelated 
   f.store.request({ type: 'checkpoint.save', id: action.id, checkpoint: { prompt: '真实任务输入', executionReadset: readset, waitForActionIds: [],
     supplements: Array.from({ length: 100 }, (_, index) => ({ id: 'packet_' + index, mode: 'queue' as const, content: 'UNRELATED_DSH_TRACE_'.repeat(800).slice(0, 15000) })) } });
   let projectedQueries = 0;
-  const counted = { prepare: (sql: string) => {
-    if (sql.includes("json_extract(value,'$.executionReadset')")) projectedQueries++;
+  const counted = countedConnection(f.db, (sql: string) => {
+    // Count this resolver's stored readset projection only. The publication
+    // index independently reads an action tuple (AS proof + activityThought);
+    // that authority query must still execute but is not this adjacency read.
+    if (sql === "SELECT CASE WHEN json_valid(value) THEN json_extract(value,'$.executionReadset') END AS value FROM metadata WHERE key=?") projectedQueries++;
     return f.db.prepare(sql);
-  } } as unknown as CompanionConnection;
+  });
   const resolver = new CompanionExecutionSourceStore(counted, { sources: f.access,
     lifecycleState: (companionId: string) => f.store.request({ type: 'memory.lifecycle.state', companionId }).memoryLifecycleState! } as CompanionMemoryStore);
   const parsed = vi.spyOn(JSON, 'parse');
@@ -95,7 +105,7 @@ it('reads status and original request from large completed loops without parsing
 
 it('resolves each shared adjacency once for many roots and retains all roots affected by a withdrawn ancestor', () => {
   const f = fixture(24), roots = f.nodes.slice(1), queries: string[] = [];
-  const counted = { prepare: (sql: string) => { queries.push(sql); return f.db.prepare(sql); } } as unknown as CompanionConnection;
+  const counted = countedConnection(f.db, (sql: string) => { queries.push(sql); return f.db.prepare(sql); });
   const resolver = new CompanionExecutionSourceStore(counted, { sources: f.access,
     lifecycleState: (companionId: string) => f.store.request({ type: 'memory.lifecycle.state', companionId }).memoryLifecycleState! } as CompanionMemoryStore);
   const proofs = resolver.resolve(roots.map(message => message.id));

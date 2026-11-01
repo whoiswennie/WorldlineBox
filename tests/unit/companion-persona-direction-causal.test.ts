@@ -1,6 +1,7 @@
 import { expect, it } from 'vitest';
 import { companionContextSnapshotSchema } from '../../src/shared/companion-cognition';
 import { messageSchema } from '../../src/shared/companions';
+import { compileCompanionAgentContext } from '../../src/main/companions/agent-context';
 import { PERSONA_DIRECTION_PROBES, PERSONA_DIRECTIONS, PERSONA_DIRECTION_QA_CLOCK, PersonaQaAttemptLedger,
   observePersonaDirection, pairPersonaProvider, personaBlindPackets, personaDirectionDigest as digest,
   assessPersonaBlindReviews, verifyPersonaBlindReviews, expectedPersonaCharacterPerformance, type PersonaBlindRow } from '../fixtures/persona-direction-causal-contract';
@@ -8,13 +9,13 @@ import { PERSONA_DIRECTION_PROBES, PERSONA_DIRECTIONS, PERSONA_DIRECTION_QA_CLOC
 function probe(id: string, persona: string, recall = { context: { text: '真正投影的经历正文', typeScope: { consumer: 'facts', kinds: ['episode_memory'] }, evidence: { references: ['first', 'second'] } }, reasons: ['actual_RAG'], pending: false, degraded: false }) {
   const question = messageSchema.parse({ id, conversationId: 'private-student', authorId: 'user', content: PERSONA_DIRECTION_PROBES[0].question,
     kind: 'text', status: 'sent', sequence: 14, revision: 1, createdAt: PERSONA_DIRECTION_QA_CLOCK, attachments: [] });
-  const profileRevision = digest(persona), data = { invocation: { id: 'student:private-student:' + id, sourceMessageId: id, authorization: { sourceMessageIds: [id] } },
+  const profileRevision = digest(persona), data = { invocation: { id: 'student:private-student:' + id, companionId: 'student', conversationId: question.conversationId, sourceMessageId: id, authorization: { sourceMessageIds: [id] } },
     identity: { self: { id: 'student' }, currentReply: { sourceMessageId: id, replyToMessageId: id }, authorization: { playerRequestMessageId: id } },
-    worldClock: { now: PERSONA_DIRECTION_QA_CLOCK }, messages: [{ id, authorId: 'user', content: question.content, at: question.createdAt }],
+    worldClock: { now: PERSONA_DIRECTION_QA_CLOCK }, messages: [{ id, conversationId: question.conversationId, authorId: 'user', speaker: 'user', kind: question.kind, sequence: question.sequence, content: question.content, at: question.createdAt }],
     memoryEvidenceMessageId: id, contextAssembly: { currentSourceMessageId: id }, cultivationGoals: { items: [] }, assetContext: { profileRevision, promptRevision: 'b'.repeat(64) },
     characterPerformance: expectedPersonaCharacterPerformance(persona, 'student', profileRevision), memoryRecall: recall };
-  const input = JSON.stringify(data), providerBody = JSON.stringify({ model: 'actual-test-contract', messages: [{ role: 'system', content: '完整未忽略的处理合同\n' + persona },
-    { role: 'user', content: input }, { role: 'user', content: '[发言来源 ' + JSON.stringify({ messageId: id, authorId: 'user', at: question.createdAt }) + ']\n' + question.content }] });
+  const input = JSON.stringify(data), compiled = compileCompanionAgentContext({ system: '完整未忽略的处理合同\n' + persona, user: input });
+  const providerBody = JSON.stringify({ model: 'actual-test-contract', messages: [{ role: 'system', content: compiled.system }, ...compiled.messages] });
   const snapshot = companionContextSnapshotSchema.parse({ id: 'ctx_' + 'a'.repeat(32), companionId: 'student', purpose: 'companion_reply', status: 'response', preparedAt: PERSONA_DIRECTION_QA_CLOCK,
     frame: { schema: 'worldlinebox.companion-context-v2', companionId: 'student', purpose: 'companion_reply', conversationId: question.conversationId,
       profileRevision, promptRevision: 'b'.repeat(64), identity: persona, roleGuidance: '实际角色指导', processorContract: '实际处理合同', input, revocationEpoch: 0 },
@@ -46,6 +47,19 @@ it('pairs exact provider bytes only across the preregistered persona/source-ID d
   const bad = structuredClone(c); const wire = JSON.parse(bad.snapshot.providerBody); wire.messages[0].content += '\n偷偷增加另一条处理指令';
   bad.snapshot.providerBody = JSON.stringify(wire); bad.snapshot.bodyHash = digest(bad.snapshot.providerBody);
   expect(pairPersonaProvider(b, bad).qualified).toBe(false);
+});
+
+it('binds the exact native question to its separate source index without relying on an assistant-style provenance prefix', () => {
+  const b = probe('actual_question_b', '中性起点人格'), c = probe('actual_question_c', '正式发布后的有据人格');
+  const wire = JSON.parse(c.snapshot.providerBody); expect(wire.messages[2].content).toBe(c.question.content);
+  expect(wire.messages[2].content).not.toContain('[发言来源 '); expect(pairPersonaProvider(b, c).qualified).toBe(true);
+  for (const [key, value] of [['authorId', 'other_owner'], ['speaker', 'self'], ['at', '2035-01-01T00:00:00Z'], ['transcriptIndex', 2]] as const) {
+    const bad = structuredClone(c), edited = JSON.parse(bad.snapshot.providerBody), envelope = JSON.parse(edited.messages[1].content);
+    envelope.messages[0][key] = value; edited.messages[1].content = JSON.stringify(envelope); bad.snapshot.providerBody = JSON.stringify(edited); bad.snapshot.bodyHash = digest(bad.snapshot.providerBody);
+    expect(pairPersonaProvider(b, bad).qualified, key).toBe(false);
+  }
+  const changed = structuredClone(c), edited = JSON.parse(changed.snapshot.providerBody); edited.messages[2].content += '新增未经配对的问题';
+  changed.snapshot.providerBody = JSON.stringify(edited); changed.snapshot.bodyHash = digest(changed.snapshot.providerBody); expect(pairPersonaProvider(b, changed).qualified).toBe(false);
 });
 
 it('validates the entire parsed persona projection against a separate admitted profile before normalizing its two derived fields', () => {

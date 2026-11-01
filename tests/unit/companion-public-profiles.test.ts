@@ -12,6 +12,7 @@ import { BUILTIN_COMPANIONS } from '../../src/shared/companion-personas';
 import { COMPANION_APPEARANCE_FILES, COMPANION_PORTRAIT_FILES } from '../../src/shared/companion-portrait-files';
 import { CompanionAssetProfileStore } from '../../src/main/companions/asset-profile';
 import { companionPortraitResponse } from '../../src/main/companions/portrait-response';
+import { createCompanionExecutionValidationSession } from '../../src/main/companions/source-execution-evidence';
 
 const roots: string[] = [], stores = new Set<CompanionsStore>();
 const seeds: CompanionSeed[] = ['alice', 'bob', 'carol'].map(id => ({ id, name: id, description: '公开的伙伴介绍 ' + id, persona: '独立且尊重边界。', model: '', avatar: id === 'alice' ? 'sister' : 'custom', proactive: false }));
@@ -65,6 +66,97 @@ async function managedImage(f: Awaited<ReturnType<typeof fixture>>, id: string, 
   const relativePath = 'attachments/' + id + '.png', file = path.join(f.managed, relativePath), bytes = await picture(file, color, width, height);
   f.store.registerAttachment({ attachment: { id, name: id + '.png', mime: 'image/png', size: bytes.length }, relativePath }); return { id, file, bytes };
 }
+async function stableTwoRolePresentation() {
+  const f = await fixture(), previous = f.store.state().companions.find(owner => owner.id === 'alice')!;
+  await f.profiles.bootstrap(previous);
+  f.store.request({ type: 'companion.assets.mark-initialized', companionId: previous.id });
+  const profiles = new CompanionAssetProfileStore(f.libraryDirectory, { registryStorage: { request: f.request },
+    initialized: async companionId => f.store.request({ type: 'companion.assets.initialized', companionId }).assetProfileInitialized === true });
+  const avatar = await managedImage(f, 'stable-avatar', '#193c7a'), board = await managedImage(f, 'stable-board', '#763f20');
+  const owner = f.store.updateCompanion(previous.id, { ...previous, avatar: 'custom', avatarAttachmentId: avatar.id, appearanceAttachmentId: board.id });
+  const loader = new CompanionPublicProfiles({ root: f.managed, appPath: f.appPath, profileStore: profiles, request: f.request });
+  await loader.applyImageSelection(previous, owner);
+  return { ...f, profiles, loader, avatar, board, input: { companionId: owner.id, conversation: f.conversation, sourceAuthorId: 'user', taskKey: 'two_role_task' } };
+}
+
+it('admits both runtime images with one current role read and reopens the role on every later display and protocol entrance', async () => {
+  const f = await stableTwoRolePresentation(), load = vi.spyOn(f.profiles, 'loadProfile');
+  const owner = f.store.state().companions.find(member => member.id === 'alice')!;
+  const first = await f.loader.runtimePresentation(owner, { initialize: false });
+  expect(first.name).toBe((await f.profiles.loadProfile('alice')).profile.name);
+  expect(first.assetImages?.avatar?.sha256).toBe(sha(f.avatar.bytes));
+  expect(first.assetImages?.orthographic?.sha256).toBe(sha(f.board.bytes));
+  expect(load.mock.calls).toEqual([['alice'], ['alice']]); // One display read plus the independent assertion above.
+  load.mockClear();
+  await f.loader.runtimePresentation(owner, { initialize: false });
+  expect(load.mock.calls).toEqual([['alice']]);
+  load.mockClear();
+  expect((await f.loader.readOwnerImage('alice', 'avatar'))?.sha256).toBe(sha(f.avatar.bytes));
+  expect(load.mock.calls).toEqual([['alice'], ['alice']]);
+  await writeFile(path.join(f.libraryDirectory, 'alice', 'profile.md'), 'UNREGISTERED_RUNTIME_ROLE');
+  await expect(f.loader.runtimePresentation(owner, { initialize: false })).rejects.toMatchObject({ code: 'CHANGED' });
+});
+
+it('rejects current role replacement during a runtime display without restoring the SQL persona', async () => {
+  const f = await stableTwoRolePresentation(), owner = f.store.state().companions.find(member => member.id === 'alice')!;
+  const internals = f.loader as unknown as { ownerImageFile(owner: string, role: 'avatar' | 'orthographic', admitted?: { companionId: string; root: string }):
+    Promise<{ path: string; stamp: string; proof: string } | undefined> };
+  const original = internals.ownerImageFile.bind(f.loader); let changed = false;
+  vi.spyOn(internals, 'ownerImageFile').mockImplementation(async (...args) => {
+    const file = await original(...args);
+    if (!changed && args[1] === 'avatar') { changed = true; await writeFile(path.join(f.libraryDirectory, 'alice', 'profile.md'), 'CHANGED_DURING_DISPLAY'); }
+    return file;
+  });
+  await expect(f.loader.runtimePresentation(owner, { initialize: false })).rejects.toThrow();
+  expect(changed).toBe(true);
+  expect(await readFile(path.join(f.libraryDirectory, 'alice', 'profile.md'), 'utf8')).toBe('CHANGED_DURING_DISPLAY');
+});
+
+it('assembles both selected roles from one strict owner profile per finite presentation and reads the final presentation independently', async () => {
+  const f = await stableTwoRolePresentation(), load = vi.spyOn(f.profiles, 'loadProfile'), gate = createCompanionExecutionValidationSession();
+  try {
+    const first = await gate.run(() => f.loader.prepare(f.input));
+    expect(person(first.publicProfiles, 'alice').avatar?.sha256).toBe(sha(f.avatar.bytes));
+    expect(person(first.publicProfiles, 'alice').orthographic?.sha256).toBe(sha(f.board.bytes));
+    expect(load.mock.calls).toEqual([['alice']]);
+    expect(await gate.run(() => f.loader.prepare(f.input))).toEqual(first);
+    expect(load.mock.calls).toEqual([['alice']]);
+    await gate.validate();
+    expect(load.mock.calls).toEqual([['alice'], ['alice']]);
+  } finally { gate.close(); }
+  load.mockClear();
+  expect((await f.loader.readOwnerImage('alice', 'avatar'))?.sha256).toBe(sha(f.avatar.bytes));
+  expect(load.mock.calls).toEqual([['alice'], ['alice']]);
+});
+
+it.each(['persona', 'receipt', 'pixels'] as const)('rejects %s changed after the shared role admission during the same presentation', async change => {
+  const f = await stableTwoRolePresentation(), file = path.join(f.libraryDirectory, 'alice', '形象', 'avatar.png');
+  const internals = f.loader as unknown as { ownerImageFile(owner: string, role: 'avatar' | 'orthographic', admitted?: { companionId: string; root: string }):
+    Promise<{ path: string; stamp: string; proof: string } | undefined> };
+  const original = internals.ownerImageFile.bind(f.loader); let reads = 0, changed = false;
+  const observe = vi.spyOn(internals, 'ownerImageFile').mockImplementation(async (...args) => {
+    const admitted = await original(...args);
+    // Initial preparation's first avatar read feeds its presentation image;
+    // the second feeds the bounded actual pixel read. Change only after both
+    // have observed the old selection/receipt/stat, before that read finishes.
+    if (args[0] === 'alice' && args[1] === 'avatar' && ++reads === 2) {
+      changed = true;
+      if (change === 'persona') await writeFile(path.join(f.libraryDirectory, 'alice', 'profile.md'), 'UNREGISTERED_ROLE_BYTES');
+      else if (change === 'receipt') {
+        const receipt = path.join(f.libraryDirectory, 'alice', '形象', '.avatar-initialized.json');
+        const value = JSON.parse(await readFile(receipt, 'utf8')) as object;
+        await writeFile(receipt, JSON.stringify({ ...value, externalChange: true }));
+      } else await picture(file, '#71c230');
+    }
+    return admitted;
+  });
+  try {
+    await expect(f.loader.prepare(f.input)).rejects.toThrow();
+    expect(changed).toBe(true);
+    if (change === 'persona') expect(await readFile(path.join(f.libraryDirectory, 'alice', 'profile.md'), 'utf8')).toBe('UNREGISTERED_ROLE_BYTES');
+    if (change === 'pixels') expect(sha(await readFile(file))).not.toBe(sha(f.avatar.bytes));
+  } finally { observe.mockRestore(); }
+});
 it('serves live owner pixels to saved UI URLs, refreshes hashes on external edits, and never restores deleted images after restart', async () => {
   const f = await fixture(), initialized = new Set<string>(), profiles = f.profiles;
   const options = { root: f.managed, appPath: f.appPath, profileStore: profiles, request: f.request,
@@ -279,7 +371,69 @@ it('keeps the public player identity and images out of peer-only conversations, 
   const prepared = await f.loader.prepare({ companionId: 'alice', conversation: room, sourceAuthorId: 'bob', audience: 'peers', directory: true });
   expect(prepared.publicProfiles.every(profile => profile.id !== 'user' && profile.kind === 'companion')).toBe(true); expect(prepared.visualInputs.every(image => image.personId !== 'user')).toBe(true);
   expect(JSON.stringify(prepared)).not.toMatch(/PLAYER_NAME|PLAYER_PUBLIC_DESCRIPTION|user-avatar/u); expect(new Set(prepared.visualInputs.map(image => image.personId))).toEqual(new Set(['alice', 'bob']));
-  expect(await f.loader.prepare({ companionId: 'carol', conversation: room, sourceAuthorId: 'bob', audience: 'peers' })).toEqual({ publicProfiles: [], visualInputs: [] });
+  await expect(f.loader.prepare({ companionId: 'carol', conversation: room, sourceAuthorId: 'bob', audience: 'peers' })).rejects.toThrow('真实成员入口');
+});
+it.each(['player', 'member', 'room', 'selection', 'pixels', 'peer_profile', 'owner_profile'] as const)(
+  'freshly rejects changed public presentation authority at the parent fence (%s)', async change => {
+    const f = await fixture(), chosen = await managedImage(f, 'peer-before', '#207040'), next = await managedImage(f, 'peer-after', '#a04080');
+    const bob = f.store.state().companions.find(owner => owner.id === 'bob')!;
+    f.store.updateCompanion('bob', { ...bob, avatar: 'custom', avatarAttachmentId: chosen.id });
+    const room = f.store.createConversation('真实公开展示准入', ['alice', 'bob']);
+    const input = { companionId: 'alice', conversation: room, sourceAuthorId: 'user', taskKey: 'actual_task_a' };
+    // Complete the actual first-use factory before a read-only task admission.
+    await f.loader.prepare(input);
+    const gate = createCompanionExecutionValidationSession();
+    try {
+      const result = await gate.run(() => f.loader.prepare(input));
+      const peer = person(result.publicProfiles, 'bob').avatar!;
+      expect(peer.available).toBe(true); expect(peer.sha256).toBe(sha(chosen.bytes));
+      expect(result.visualInputs.some(image => image.personId === 'bob')).toBe(false);
+      if (change === 'player') f.store.updatePlayerProfile({ name: '新的真实公开姓名', description: '本轮原公开姓名已不适用' }, f.store.getPlayerProfile().revision);
+      if (change === 'member') f.store.updateConversation(room.id, { memberIds: ['alice'] });
+      if (change === 'room') f.store.deleteConversation(room.id, 'dissolve');
+      if (change === 'selection') f.store.updateCompanion('bob', { ...bob, avatar: 'custom', avatarAttachmentId: next.id });
+      if (change === 'pixels') await picture(peer.absolutePath, '#1532c0');
+      if (change === 'peer_profile' || change === 'owner_profile') await writeFile(path.join(f.libraryDirectory, change === 'peer_profile' ? 'bob' : 'alice', 'profile.md'), 'UNREGISTERED_EXTERNAL_ROLE');
+      await expect(gate.validate()).rejects.toThrow();
+      if (change === 'pixels') expect(sha(await readFile(peer.absolutePath))).not.toBe(sha(chosen.bytes));
+      if (change === 'peer_profile' || change === 'owner_profile') expect(await readFile(path.join(f.libraryDirectory, change === 'peer_profile' ? 'bob' : 'alice', 'profile.md'), 'utf8')).toBe('UNREGISTERED_EXTERNAL_ROLE');
+    } finally { gate.close(); }
+  });
+it('shares only a task-bound finite public capture and performs one fresh final read without portrait factories', async () => {
+  const f = await fixture(); await picture(path.join(f.appPath, 'assets', 'companions', 'portraits', 'deepseek-sister.png'));
+  const input = { companionId: 'alice', conversation: f.conversation, sourceAuthorId: 'user', taskKey: 'frozen_task_a' };
+  await f.loader.prepare(input);
+  const internals = f.loader as unknown as { preparePresentation(input: Parameters<CompanionPublicProfiles['prepare']>[0], readOnly: boolean): Promise<unknown>;
+    materializePortrait(...args: unknown[]): Promise<unknown>; materializeAttachment(...args: unknown[]): Promise<unknown> };
+  const reads = vi.spyOn(internals, 'preparePresentation'), portrait = vi.spyOn(internals, 'materializePortrait'), attachment = vi.spyOn(internals, 'materializeAttachment');
+  const bootstrap = vi.spyOn(f.profiles, 'bootstrapProfile'), gate = createCompanionExecutionValidationSession();
+  try {
+    const first = await gate.run(() => f.loader.prepare(input));
+    expect(await gate.run(() => f.loader.prepare(input))).toEqual(first);
+    expect(reads.mock.calls.map(([, readOnly]) => readOnly)).toEqual([false]);
+    portrait.mockClear(); attachment.mockClear(); bootstrap.mockClear();
+    await gate.validate();
+    expect(reads.mock.calls.map(([, readOnly]) => readOnly)).toEqual([false, true]);
+    expect(portrait).not.toHaveBeenCalled(); expect(attachment).not.toHaveBeenCalled(); expect(bootstrap).not.toHaveBeenCalled();
+  } finally { gate.close(); }
+  const other = createCompanionExecutionValidationSession();
+  try {
+    await other.run(() => f.loader.prepare({ ...input, taskKey: 'frozen_task_b' }));
+    await other.validate();
+    expect(reads.mock.calls.map(([, readOnly]) => readOnly)).toEqual([false, true, false, true]);
+  } finally { other.close(); reads.mockRestore(); portrait.mockRestore(); attachment.mockRestore(); bootstrap.mockRestore(); }
+});
+it('retains the optional attachment-only adapter with a fresh, read-only final presentation fence', async () => {
+  const f = await fixture(), image = await managedImage(f, 'adapter-only-avatar', '#6538b0');
+  f.store.updateCompanion('alice', { ...f.store.state().companions.find(owner => owner.id === 'alice')!, avatar: 'custom', avatarAttachmentId: image.id });
+  const loader = new CompanionPublicProfiles({ root: f.managed, appPath: f.appPath, request: f.request });
+  const gate = createCompanionExecutionValidationSession();
+  try {
+    const admitted = await gate.run(() => loader.prepare({ companionId: 'alice', conversation: f.conversation, sourceAuthorId: 'user', taskKey: 'adapter_task' }));
+    expect(person(admitted.publicProfiles, 'alice').avatar?.sha256).toBe(sha(image.bytes));
+    await gate.validate();
+    await expect(access(f.libraryDirectory)).rejects.toMatchObject({ code: 'ENOENT' });
+  } finally { gate.close(); }
 });
 it('refreshes player identity and runtime replacement/removal files while keeping companion cognition read-only', async () => {
   const f = await fixture(), old = await managedImage(f, 'old-avatar', '#d04040'), next = await managedImage(f, 'new-avatar', '#40b0d0'), board = await managedImage(f, 'board', '#60d060');

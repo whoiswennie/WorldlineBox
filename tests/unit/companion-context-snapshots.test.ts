@@ -28,16 +28,92 @@ async function fixture() {
   const registryStore = new CompanionArtifactRegistryStore(db); registryStore.initialize();
   const epochs = new Map<string, number>([['alice', 0], ['bob', 0]]);
   const commands: CompanionRegistryStorageCommand[] = []; let failure: ((command: CompanionRegistryStorageCommand) => boolean) | undefined;
-  const artifacts = async (owner: string) => new CompanionArtifactRegistry(path.join(root, owner), owner, { registryStorage: { request: async command => { commands.push(command); const result = registryStore.execute(command) ?? { ok: false, error: 'Unknown registry command' }; if (failure?.(command)) { failure = undefined; throw new Error('fixture durable publication crash'); } return result; } } });
+  let beforeRequest: ((command: CompanionRegistryStorageCommand) => void | Promise<void>) | undefined;
+  const artifacts = async (owner: string) => new CompanionArtifactRegistry(path.join(root, owner), owner, { registryStorage: { request: async command => { commands.push(command); if (beforeRequest) await beforeRequest(command); const result = registryStore.execute(command) ?? { ok: false, error: 'Unknown registry command' }; if (failure?.(command)) { failure = undefined; throw new Error('fixture durable publication crash'); } return result; } } });
   const options = { artifacts, currentRevocationEpoch: async (owner: string) => epochs.get(owner)!, validateRead: async () => undefined, maxSnapshotsPerOwner: 4 };
   const snapshots = new CompanionContextSnapshots(options);
   const config: CompanionModelConfig = { ownerId: 'alice', apiFormat: 'openai_chat', model: 'gpt-4o-mini', baseUrl: 'https://api.openai.com', apiKey: 'DO_NOT_STORE_THIS_CREDENTIAL',
     resolveAssetContext: async context => ({ ...context, frame: frame('alice', context.user) }), transportObserver: snapshots };
-  return { root, snapshots, config, artifacts, epochs, options, commands, failOnce: (predicate: (command: CompanionRegistryStorageCommand) => boolean) => { failure = predicate; } };
+  return { root, snapshots, config, artifacts, epochs, options, commands, failOnce: (predicate: (command: CompanionRegistryStorageCommand) => boolean) => { failure = predicate; },
+    beforeRequest: (callback?: (command: CompanionRegistryStorageCommand) => void | Promise<void>) => { beforeRequest = callback; } };
 }
 function response(content = '完成', status = 200) { return new Response(JSON.stringify(status === 200 ? { choices: [{ message: { content, reasoning_content: 'HIDDEN_REASONING_MUST_NOT_BE_RECORDED' } }] } : { error: { code: 'unsupported_image_input', message: 'image not supported' } }), { status, headers: { 'Content-Type': 'application/json' } }); }
 
-async function scanFixture() {
+const journalInput = (invocation: string, owner = 'alice'): CompanionTransportAttemptInput => ({ frame: { ...frame(owner), invocationId: owner + ':' + invocation },
+  providerBody: JSON.stringify({ input: invocation }), providerFormat: 'openai_chat', model: 'fixture', imageFallback: false });
+function journalGate() { let resolve!: () => void; const promise = new Promise<void>(done => { resolve = done; }); return { promise, resolve }; }
+async function holdJournalCommit(f: Awaited<ReturnType<typeof fixture>>) {
+  const entered = journalGate(), release = journalGate(), registry = await f.artifacts('alice'); let held = false;
+  f.beforeRequest(async command => {
+    if (held || command.type !== 'cognition.registry.publication.commit' || command.ownerId !== 'alice') return;
+    held = true;
+    // The actual publisher has renamed its canonical index, but the actual
+    // SQLite commit has not executed. This is the packaged failure's gap.
+    const previous = await registry.get('context-index:recent');
+    expect(previous).toBeDefined();
+    expect(digest(await readFile(path.join(registry.root, previous!.relativePath)))).not.toBe(previous!.contentHash);
+    entered.resolve(); await release.promise;
+  });
+  return { entered, release };
+}
+
+it.each(['list', 'read', 'beforeDispatch'] as const)('waits for an actual journal publication SQL commit before its %s read', async kind => {
+  const f = await fixture(), initial = await f.snapshots.prepareAttempt(journalInput('first'));
+  if (kind !== 'beforeDispatch') await initial.complete('cancelled_before_send');
+  const id = (await f.snapshots.list('alice')).items[0]!.id, held = await holdJournalCommit(f);
+  const publication = f.snapshots.prepareAttempt(journalInput('second')); await held.entered.promise;
+  const commandCount = f.commands.length;
+  const reading = (kind === 'list' ? f.snapshots.list('alice') : kind === 'read' ? f.snapshots.read('alice', id) : initial.beforeDispatch())
+    .then(value => ({ ok: true as const, value }), error => ({ ok: false as const, error }));
+  try {
+    await new Promise<void>(resolve => setImmediate(resolve));
+    expect(f.commands).toHaveLength(commandCount); // No old SQL hash is admitted during the publisher's file/commit gap.
+    held.release.resolve(); const second = await publication;
+    const result = await reading; expect(result.ok, result.ok ? '' : String(result.error)).toBe(true);
+    if (kind === 'read') expect(result.ok && result.value && 'providerBody' in result.value ? result.value.providerBody : undefined).toBe(journalInput('first').providerBody);
+    expect((await f.snapshots.list('alice')).items).toHaveLength(2);
+    await second.complete('cancelled_before_send');
+  } finally { held.release.resolve(); await Promise.allSettled([publication, reading]); }
+});
+
+it('does not hold another owner behind an actual paused journal publication', async () => {
+  const f = await fixture(); await (await f.snapshots.prepareAttempt(journalInput('first'))).complete('cancelled_before_send');
+  const held = await holdJournalCommit(f), alice = f.snapshots.prepareAttempt(journalInput('second')); await held.entered.promise;
+  try {
+    const bob = await f.snapshots.prepareAttempt(journalInput('independent', 'bob'));
+    await bob.complete('cancelled_before_send'); expect((await f.snapshots.list('bob')).items).toHaveLength(1);
+    held.release.resolve(); await (await alice).complete('cancelled_before_send');
+  } finally { held.release.resolve(); await Promise.allSettled([alice]); }
+});
+
+it('keeps the source validator unlocked while another journal entry publishes and an unchanged terminal read remains valid', async () => {
+  const f = await fixture(), first = await f.snapshots.prepareAttempt(journalInput('first')); await first.complete('cancelled_before_send');
+  const id = (await f.snapshots.list('alice')).items[0]!.id, entered = journalGate(), release = journalGate();
+  const reader = new CompanionContextSnapshots({ ...f.options, validateRead: async () => { entered.resolve(); await release.promise;
+    expect((await f.snapshots.list('alice')).items).toHaveLength(2); } });
+  const reading = reader.read('alice', id); await entered.promise;
+  try {
+    const second = await f.snapshots.prepareAttempt(journalInput('second')); await second.complete('cancelled_before_send');
+    release.resolve(); expect((await reading).providerBody).toBe(journalInput('first').providerBody);
+  } finally { release.resolve(); await Promise.allSettled([reading]); }
+});
+
+it.each(['same_stat_bytes', 'epoch'] as const)('rejects a late %s change across the unlocked journal source validator', async change => {
+  const f = await fixture(), first = await f.snapshots.prepareAttempt(journalInput('first')); await first.complete('cancelled_before_send');
+  const id = (await f.snapshots.list('alice')).items[0]!.id;
+  let changed = false;
+  const reader = new CompanionContextSnapshots({ ...f.options, validateRead: async () => {
+    changed = true;
+    if (change === 'epoch') f.epochs.set('alice', 1);
+    else {
+      const file = path.join(f.root, 'alice', '.运行', '上下文', id, 'request.json'), before = await stat(file), bytes = await readFile(file);
+      bytes[bytes.length - 1] = bytes[bytes.length - 1]! ^ 1; await writeFile(file, bytes); await utimes(file, before.atime, before.mtime);
+    }
+  } });
+  await expect(reader.read('alice', id)).rejects.toThrow(change === 'epoch' ? '撤回' : /外部|字节|变化/u); expect(changed).toBe(true);
+});
+
+async function scanFixture(legacy = true) {
   const f = await fixture(), registry = await f.artifacts('alice');
   const source = await registry.publish({ artifactId: 'source:audit_shared', kind: 'source_evidence', producer: { kind: 'host', id: 'fixture' },
     relativePath: '证据/来源/audit-shared.md', expectedRevision: null, content: 'UNCHANGED_SHARED_AUDIT_SOURCE', sourceRefs: [], dependencyRefs: [],
@@ -48,15 +124,25 @@ async function scanFixture() {
     providerBody: JSON.stringify({ input: invocation }), providerFormat: 'openai_chat', model: 'fixture', imageFallback: false });
   for (let index = 0; index < 2; index++) await (await snapshots.prepareAttempt(input('old' + index))).complete('cancelled_before_send');
   const old = (await snapshots.list('alice')).items;
+  if (legacy) {
+    const index = (await registry.read({ artifactId: 'context-index:recent', consumer: 'host' }));
+    const value = JSON.parse(index.text) as { companionId: string; ids: string[]; retiredCount: number };
+    await registry.publish({ artifactId: 'context-index:recent', kind: 'runtime_index', producer: { kind: 'host', id: 'provider-transport-index' }, relativePath: '.运行/索引/上下文.json',
+      expectedRevision: index.artifact.contentRevision, content: JSON.stringify({ schema: 'worldlinebox.companion-context-index-v2', companionId: value.companionId, ids: value.ids,
+        retiredCount: value.retiredCount }), sourceRefs: [], dependencyRefs: [], visibility: { scope: 'owner' }, allowedConsumers: ['host'], retentionClass: 'runtime', operationId: 'context:index:fixture-v2' });
+  }
   const stateIds = new Set(old.map(item => 'context-state:' + item.id));
   return { ...f, registry, snapshots, source, input, old, stateIds };
 }
 
 it('batches the readonly old-attempt scan and settlement with fresh SQL fences outside the caller semantic ledger', async () => {
-  const f = await scanFixture(), originalBatch = f.registry.publishBatch.bind(f.registry), originalPublish = f.registry.publish.bind(f.registry);
+  const f = await scanFixture(), originalBatch = f.registry.publishBatch.bind(f.registry);
   let scan: CompanionRegistryStorageCommand[] = [], settlement: CompanionRegistryStorageCommand[] = [];
-  vi.spyOn(f.registry, 'publishBatch').mockImplementation((...args) => { if (args[0].operationId.startsWith('context:prepare:')) scan = [...f.commands]; return originalBatch(...args); });
-  vi.spyOn(f.registry, 'publish').mockImplementation((...args) => { if (args[0].operationId.startsWith('context:cancelled_before_send:')) settlement = [...f.commands]; return originalPublish(...args); });
+  vi.spyOn(f.registry, 'publishBatch').mockImplementation((...args) => {
+    if (args[0].operationId.startsWith('context:prepare:')) scan = [...f.commands];
+    if (args[0].operationId.startsWith('context:cancelled_before_send:')) settlement = [...f.commands];
+    return originalBatch(...args);
+  });
   const session = createCompanionExecutionValidationSession();
   try {
     await session.run(async () => {
@@ -70,7 +156,16 @@ it('batches the readonly old-attempt scan and settlement with fresh SQL fences o
       // there is no redundant prune/index read before or after that publish.
       expect(f.commands.filter(command => command.type === 'cognition.registry.read' && command.artifactId === 'context-index:recent')).toHaveLength(2);
       f.commands.length = 0; await attempt.complete('cancelled_before_send');
-      expect(settlement.filter(command => command.type === 'cognition.registry.refs.validate')).toHaveLength(3);
+      const references = settlement.filter(command => command.type === 'cognition.registry.refs.validate');
+      expect(references).toHaveLength(4); // v3 exact lifecycle header union + original byte-read admission and both final sides.
+      const currentStates = references[0]!.references;
+      expect(currentStates).toHaveLength(3);
+      expect(new Set(currentStates.map(reference => reference.artifactId)).size).toBe(3);
+      expect(currentStates.every(reference => /^context-state:ctx_[a-f0-9]{32}$/u.test(reference.artifactId))).toBe(true);
+      expect(currentStates.map(reference => reference.artifactId)).toEqual(expect.arrayContaining([...f.stateIds]));
+      // The remaining checks retain the actual body/shared-source closure,
+      // rather than substituting the lifecycle index for canonical bytes.
+      expect(references.slice(1).every(command => command.references.some(reference => reference.artifactId === f.source.artifactId))).toBe(true);
     });
     await expect(session.validate()).resolves.toBeUndefined(); // Audit index/state writes never invalidate caller inputs.
     expect((await f.snapshots.list('alice')).items).toHaveLength(3);
@@ -102,17 +197,23 @@ it.each(['same_stat_bytes', 'dependency_withdrawal'] as const)('rejects %s durin
 
 it('keeps settlement state CAS after the readonly gate closes rather than overwriting a concurrent committed state revision', async () => {
   const f = await scanFixture(), attempt = await f.snapshots.prepareAttempt(f.input('state_cas'));
-  const id = (await f.snapshots.list('alice')).items[0]!.id, original = f.registry.publish.bind(f.registry); let raced = false;
-  vi.spyOn(f.registry, 'publish').mockImplementation(async (...args) => {
-    if (!raced && args[0].artifactId === 'context-state:' + id) {
+  const id = (await f.snapshots.list('alice')).items[0]!.id, original = f.registry.publishBatch.bind(f.registry); let raced = false;
+  vi.spyOn(f.registry, 'publishBatch').mockImplementation(async (...args) => {
+    const item = args[0].items.find(item => item.artifactId === 'context-state:' + id);
+    if (!raced && item) {
       raced = true;
-      await original({ ...args[0], operationId: 'context:fixture-cas:' + id,
-        content: await readFile(path.join(f.registry.root, '.运行', '上下文', id, 'attempt.json'), 'utf8') });
+      await original({ operationId: 'context:fixture-cas:' + id, items: [{ ...item,
+        content: await readFile(path.join(f.registry.root, '.运行', '上下文', id, 'attempt.json'), 'utf8') }] });
     }
     return original(...args);
   });
   await expect(attempt.dispatched()).rejects.toMatchObject({ code: 'CONFLICT' });
-  expect(raced).toBe(true); expect((await f.snapshots.read('alice', id)).status).toBe('prepared');
+  expect(raced).toBe(true); await expect(f.snapshots.read('alice', id)).rejects.toThrow('生命周期');
+  expect(JSON.parse(await readFile(path.join(f.registry.root, '.运行', '上下文', id, 'attempt.json'), 'utf8')).status).toBe('prepared');
+});
+
+it('keeps the index CAS after its readonly gate rather than overwriting a concurrent committed index revision', async () => {
+  const f = await scanFixture();
   const originalBatch = f.registry.publishBatch.bind(f.registry); let indexRaced = false;
   vi.spyOn(f.registry, 'publishBatch').mockImplementation(async (...args) => {
     if (!indexRaced && args[0].operationId.startsWith('context:prepare:')) {
@@ -124,7 +225,182 @@ it('keeps settlement state CAS after the readonly gate closes rather than overwr
     return originalBatch(...args);
   });
   await expect(f.snapshots.prepareAttempt(f.input('index_cas'))).rejects.toMatchObject({ code: 'CONFLICT' });
-  expect(indexRaced).toBe(true); expect((await f.snapshots.list('alice')).items).toHaveLength(3);
+  expect(indexRaced).toBe(true); expect((await f.snapshots.list('alice')).items.map(item => item.id)).toEqual(f.old.map(item => item.id));
+});
+
+type LifecycleReceipt = { schema: string; ids: string[]; retiring: string[]; entries: Array<{ state: { id: string; status: string }; revision: number; hash: string }> };
+async function lifecycle(registry: CompanionArtifactRegistry): Promise<LifecycleReceipt> {
+  return JSON.parse((await registry.read({ artifactId: 'context-index:recent', consumer: 'host' })).text) as LifecycleReceipt;
+}
+async function fullLifecycleFixture() {
+  const f = await scanFixture(false);
+  for (const id of ['old2', 'old3']) await (await f.snapshots.prepareAttempt(f.input(id))).complete('cancelled_before_send');
+  const before = await lifecycle(f.registry), retiredId = before.ids.at(-1)!;
+  const config: CompanionModelConfig = { ...f.config, transportObserver: f.snapshots,
+    resolveAssetContext: async context => ({ ...context, frame: { ...f.input('fused_prepare').frame, input: context.user } }) };
+  f.commands.length = 0;
+  return { ...f, before, retiredId, config };
+}
+
+it('fuses only completed prune cleanup into the mandatory new audit batch after its durable tombstone and physical deletion', async () => {
+  const f = await fullLifecycleFixture(), original = f.registry.publishBatch.bind(f.registry); let checked = false;
+  vi.spyOn(f.registry, 'publishBatch').mockImplementation(async input => {
+    if (input.operationId.startsWith('context:prepare:')) {
+      checked = true;
+      const current = await lifecycle(f.registry);
+      expect(current.retiring).toEqual([f.retiredId]); expect(current.ids).not.toContain(f.retiredId);
+      for (const name of ['request.json', 'attempt.json']) await expect(readFile(path.join(f.registry.root, '.运行', '上下文', f.retiredId, name))).rejects.toMatchObject({ code: 'ENOENT' });
+      const content = input.items.find(item => item.artifactId === 'context-index:recent')!.content;
+      if (typeof content !== 'string') throw new Error('Expected the actual JSON index string.');
+      const next = JSON.parse(content) as LifecycleReceipt;
+      expect(next.retiring).toEqual([]); expect(next.ids).toHaveLength(4); expect(next.ids).not.toContain(f.retiredId);
+    }
+    return original(input);
+  });
+  const attempt = await f.snapshots.prepareAttempt(f.input('fused_prepare'));
+  const batches = f.commands.filter(command => command.type === 'cognition.registry.publication.prepare');
+  expect(checked).toBe(true); expect(batches).toHaveLength(2);
+  expect(batches.map(command => command.publication.items.length)).toEqual([1, 3]);
+  expect(batches[0]!.publication.items[0]!.next.artifactId).toBe('context-index:recent');
+  expect((await lifecycle(f.registry)).retiring).toEqual([]);
+  await attempt.beforeDispatch(); await attempt.complete('cancelled_before_send');
+});
+
+it('does not create a new attempt or HTTP after failed fused prune cleanup and reenters only the exact retirement', async () => {
+  const f = await fullLifecycleFixture(), fetchFn = vi.fn<typeof fetch>(async () => response());
+  f.failOnce(command => command.type === 'cognition.registry.revoke' && command.artifactId === 'context:' + f.retiredId);
+  await expect(generateCompanionText({ system: '合同', user: '{}' }, f.config, undefined, { fetchFn })).rejects.toThrow();
+  expect(fetchFn).not.toHaveBeenCalled();
+  expect(f.commands.filter(command => command.type === 'cognition.registry.publication.prepare')).toHaveLength(1);
+  expect((await lifecycle(f.registry)).retiring).toEqual([f.retiredId]);
+  expect(await new CompanionContextSnapshots(f.options).recoverOwner('alice')).toMatchObject({ recovered: 0, cancelled: 0, unknown: 0 });
+  expect((await lifecycle(f.registry)).retiring).toEqual([]);
+  expect((await f.snapshots.list('alice')).items.map(item => item.id)).toEqual(f.before.ids.filter(id => id !== f.retiredId));
+});
+
+it('keeps a completed prune tombstone durable if cancellation arrives before the mandatory new audit batch', async () => {
+  const f = await fullLifecycleFixture(), controller = new AbortController(), original = f.registry.purgeRevokedBody.bind(f.registry);
+  vi.spyOn(f.registry, 'purgeRevokedBody').mockImplementation(async artifactId => {
+    const result = await original(artifactId);
+    if (artifactId === 'context-state:' + f.retiredId) controller.abort();
+    return result;
+  });
+  const fetchFn = vi.fn<typeof fetch>(async () => response());
+  await expect(generateCompanionText({ system: '合同', user: '{}' }, f.config, controller.signal, { fetchFn })).rejects.toMatchObject({ code: 'CANCELLED' });
+  // The public waiter may cancel promptly while already-started, exact cleanup
+  // finishes. Join the real journal lane through its ordinary recovery port.
+  expect(await new CompanionContextSnapshots(f.options).recoverOwner('alice')).toMatchObject({ unknown: 0 });
+  expect(fetchFn).not.toHaveBeenCalled();
+  expect(f.commands.filter(command => command.type === 'cognition.registry.publication.prepare')).toHaveLength(2); // Tombstone + ordinary recovery completion only.
+  expect((await lifecycle(f.registry)).retiring).toEqual([]);
+  expect((await f.snapshots.list('alice')).items.map(item => item.id)).toEqual(f.before.ids.filter(id => id !== f.retiredId));
+});
+
+it('recovers a failed fused new audit batch once, marking only its real prepared attempt unknown without any paid send', async () => {
+  const f = await fullLifecycleFixture(), fetchFn = vi.fn<typeof fetch>(async () => response());
+  f.failOnce(command => command.type === 'cognition.registry.publication.transition' && command.nextState === 'validated'
+    && command.operationId.startsWith('context:prepare:'));
+  await expect(generateCompanionText({ system: '合同', user: '{}' }, f.config, undefined, { fetchFn })).rejects.toThrow();
+  expect(fetchFn).not.toHaveBeenCalled(); expect((await lifecycle(f.registry)).retiring).toEqual([f.retiredId]);
+  expect(await new CompanionContextSnapshots(f.options).recoverOwner('alice')).toMatchObject({ recovered: 1, cancelled: 0, unknown: 1 });
+  const current = await lifecycle(f.registry);
+  expect(current.retiring).toEqual([]); expect(current.ids).toHaveLength(4); expect(current.ids).not.toContain(f.retiredId);
+  expect(current.entries.filter(entry => entry.state.status === 'unknown')).toHaveLength(1);
+  expect(current.entries.filter(entry => f.before.ids.includes(entry.state.id)).every(entry => entry.state.status === 'cancelled_before_send')).toBe(true);
+  await expect(generateCompanionText({ system: '合同', user: '{}' }, f.config, undefined, { fetchFn })).rejects.toMatchObject({ code: 'CONTEXT_RECORD_FAILED' });
+  expect(fetchFn).not.toHaveBeenCalled(); expect((await lifecycle(f.registry)).ids).toEqual(current.ids);
+});
+
+it('uses a formally published v3 lifecycle projection without reopening unrelated old state files and atomically advances its tuple', async () => {
+  const f = await scanFixture(false), reads = vi.spyOn(f.registry, 'readMany');
+  const attempt = await f.snapshots.prepareAttempt(f.input('v3_new'));
+  expect(reads.mock.calls.flatMap(([inputs]) => inputs).some(input => f.stateIds.has(input.artifactId))).toBe(false);
+  await attempt.beforeDispatch();
+  for (const [step, status] of [['prepared', 'prepared'], ['dispatched', 'dispatched'], ['complete', 'response']] as const) {
+    if (step === 'dispatched') await attempt.dispatched();
+    if (step === 'complete') await attempt.complete('response', 200);
+    const index = await lifecycle(f.registry), entry = index.entries[0]!, artifact = await f.registry.get('context-state:' + entry.state.id);
+    expect(index.schema).toBe('worldlinebox.companion-context-index-v3'); expect(entry.state.status).toBe(status);
+    expect(artifact).toMatchObject({ contentRevision: entry.revision, contentHash: entry.hash });
+  }
+});
+
+it('does not treat an unused v3 terminal audit file as new inference input while its direct audit read still rejects same-stat tampering', async () => {
+  const f = await scanFixture(false), id = f.old[0]!.id, file = path.join(f.registry.root, '.运行', '上下文', id, 'attempt.json');
+  const stamp = await stat(file), bytes = Buffer.from(await readFile(file)); bytes[bytes.length - 1] = bytes[bytes.length - 1]! ^ 1;
+  await writeFile(file, bytes); await utimes(file, stamp.atime, stamp.mtime);
+  const attempt = await f.snapshots.prepareAttempt(f.input('v3_terminal_is_not_input'));
+  await attempt.beforeDispatch(); await attempt.complete('cancelled_before_send');
+  await expect(f.snapshots.read('alice', id)).rejects.toMatchObject({ code: 'CHANGED' });
+});
+
+it('keeps a v3 unknown attempt nonretryable when its audit file is externally rewritten as a terminal state', async () => {
+  const f = await scanFixture(false), input = f.input('v3_unknown');
+  await f.snapshots.prepareAttempt(input); await new CompanionContextSnapshots(f.options).recoverOwner('alice');
+  const id = (await lifecycle(f.registry)).entries.find(entry => entry.state.status === 'unknown')!.state.id;
+  const file = path.join(f.registry.root, '.运行', '上下文', id, 'attempt.json'), state = JSON.parse(await readFile(file, 'utf8')) as Record<string, unknown>;
+  await writeFile(file, JSON.stringify({ ...state, status: 'response' }));
+  await expect(f.snapshots.prepareAttempt(input)).rejects.toMatchObject({ code: 'CONTEXT_RECORD_FAILED' });
+  await expect(f.snapshots.read('alice', id)).rejects.toMatchObject({ code: 'CHANGED' });
+});
+
+it('rejects a modified v3 index instead of trusting its lifecycle summaries', async () => {
+  const f = await scanFixture(false), file = path.join(f.registry.root, '.运行', '索引', '上下文.json');
+  const index = JSON.parse(await readFile(file, 'utf8')) as LifecycleReceipt; index.entries[0]!.state.status = 'response';
+  await writeFile(file, JSON.stringify(index));
+  await expect(f.snapshots.prepareAttempt(f.input('v3_bad_index'))).rejects.toMatchObject({ code: 'CHANGED' });
+});
+
+it.each(['revision', 'consumers', 'visibility', 'dependency'] as const)('rejects a v3 current state %s header change by an external SQLite connection', async field => {
+  const f = await scanFixture(false), id = 'context-state:' + f.old[0]!.id;
+  const Database = BetterSqlite3 as { new(filename: string): CompanionConnection }, external = new Database(path.join(f.root, 'registry.sqlite'));
+  try {
+    if (field === 'revision') external.prepare("UPDATE companion_artifacts SET revision=revision+1,metadata=json_set(metadata,'$.contentRevision',revision+1) WHERE owner_id=? AND artifact_id=?").run('alice', id);
+    if (field === 'consumers') external.prepare("UPDATE companion_artifacts SET metadata=json_set(metadata,'$.allowedConsumers',json('[\"host\"]')) WHERE owner_id=? AND artifact_id=?").run('alice', id);
+    if (field === 'visibility') external.prepare("UPDATE companion_artifacts SET metadata=json_set(metadata,'$.visibility',json('{\"scope\":\"public\"}')) WHERE owner_id=? AND artifact_id=?").run('alice', id);
+    if (field === 'dependency') external.prepare("UPDATE companion_artifacts SET metadata=json_set(metadata,'$.dependencyRefs',json('[]')) WHERE owner_id=? AND artifact_id=?").run('alice', id);
+    await expect(f.snapshots.prepareAttempt(f.input('v3_header_changed'))).rejects.toThrow();
+  } finally { external.close(); }
+});
+
+it('does not recreate a deleted v3 lifecycle index as empty when published attempts still exist', async () => {
+  const f = await scanFixture(false), Database = BetterSqlite3 as { new(filename: string): CompanionConnection }, external = new Database(path.join(f.root, 'registry.sqlite'));
+  try { external.prepare('DELETE FROM companion_artifacts WHERE owner_id=? AND artifact_id=?').run('alice', 'context-index:recent'); }
+  finally { external.close(); }
+  await expect(f.snapshots.prepareAttempt(f.input('v3_index_deleted'))).rejects.toThrow('索引缺失');
+});
+
+it('keeps a durable v3 retirement tombstone across a cleanup crash and resumes exact cleanup without reviving the record', async () => {
+  const f = await scanFixture(false), id = f.old[0]!.id;
+  f.failOnce(command => command.type === 'cognition.registry.revoke' && command.artifactId === 'context:' + id);
+  await expect(f.snapshots.revoke('alice', id)).rejects.toThrow('fixture durable');
+  expect(await lifecycle(f.registry)).toMatchObject({ ids: [f.old[1]!.id], retiring: [id] });
+  await expect(f.snapshots.read('alice', id)).rejects.toThrow('退役');
+  await new CompanionContextSnapshots(f.options).recoverOwner('alice');
+  expect((await lifecycle(f.registry)).retiring).toEqual([]);
+  await expect(readFile(path.join(f.registry.root, '.运行', '上下文', id, 'request.json'))).rejects.toMatchObject({ code: 'ENOENT' });
+  expect((await f.snapshots.list('alice')).items.map(item => item.id)).toEqual([f.old[1]!.id]);
+});
+
+it('recovers a v3 state-and-index transition atomically and never clears unknown merely because the prior index was prepared', async () => {
+  const f = await scanFixture(false), input = f.input('v3_transition_crash'), attempt = await f.snapshots.prepareAttempt(input);
+  f.failOnce(command => command.type === 'cognition.registry.publication.transition' && command.nextState === 'validated');
+  await expect(attempt.dispatched()).rejects.toThrow('fixture durable');
+  expect((await lifecycle(f.registry)).entries[0]!.state.status).toBe('prepared');
+  await new CompanionContextSnapshots(f.options).recoverOwner('alice');
+  const entry = (await lifecycle(f.registry)).entries[0]!;
+  expect(entry.state.status).toBe('unknown'); expect(await f.registry.get('context-state:' + entry.state.id)).toMatchObject({ contentRevision: entry.revision, contentHash: entry.hash });
+  await expect(f.snapshots.prepareAttempt(input)).rejects.toMatchObject({ code: 'CONTEXT_RECORD_FAILED' });
+});
+
+it('does not return a legacy audit read after its exact index entry is retired during the final reader check', async () => {
+  const f = await scanFixture(), id = f.old[0]!.id;
+  let entered!: () => void, release!: () => void;
+  const ready = new Promise<void>(resolve => { entered = resolve; }), blocked = new Promise<void>(resolve => { release = resolve; });
+  const reader = new CompanionContextSnapshots({ ...f.options, artifacts: async () => f.registry,
+    validateRead: async () => { entered(); await blocked; } });
+  const read = reader.read('alice', id); await ready; await f.snapshots.revoke('alice', id); release();
+  await expect(read).rejects.toThrow('退役');
 });
 
 it('cancels a real model blocked in the private audit scan without HTTP or an orphan receipt, then admits the next task', async () => {

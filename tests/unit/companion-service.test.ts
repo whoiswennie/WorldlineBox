@@ -1,4 +1,4 @@
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import sharp from 'sharp';
 import BetterSqlite3 from 'better-sqlite3';
 import { tmpdir } from 'node:os';
@@ -10,7 +10,12 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { CompanionsStore, type CompanionConnection, type CompanionSeed } from '../../src/companions/store';
 import type { CompanionStorageCommand, CompanionStorageResponse } from '../../src/shared/companion-storage';
 import type { CreateCompanionAction } from '../../src/shared/companion-storage';
+import type { CompanionLoopCheckpoint } from '../../src/shared/companion-loop';
 import { captureCompanionExecutionReadset, companionExecutionReadsetDigest } from '../../src/main/companions/execution-evidence';
+import { companionAgendaRoutineRuleDrafts } from '../../src/shared/companion-agenda-routine';
+import { companionAgendaRuleDraftSchema } from '../../src/shared/companion-agenda';
+import { companionRoutineConfigSchema } from '../../src/shared/companion-routine';
+import { detachedCompanionExecutionValidation, withCompanionExecutionValidation } from '../../src/main/companions/source-execution-evidence';
 import type { DshLauncherResponse } from '../../src/shared/dsh-launcher';
 import type { DshTaskEvent, DshTaskRecord } from '../../src/shared/dsh-tasks';
 import type { DshTaskSpec } from '../../src/shared/dsh-task-spec';
@@ -19,21 +24,29 @@ import type { DshRecordScope } from '../../src/shared/dsh-task-record';
 import { CompanionService, type CompanionServiceOptions } from '../../src/main/companions/service';
 import { CompanionContextSnapshots } from '../../src/main/companions/context-snapshots';
 import { CompanionGrowthService } from '../../src/main/companions/growth-service';
-import { CompanionModelError } from '../../src/main/companions/model';
+import { CompanionModelError, type generateCompanionStructured } from '../../src/main/companions/model';
+import { CompanionValidationUnavailableError } from '../../src/main/companions/validation-unavailable';
+import type { CompanionAssetProfileStore } from '../../src/main/companions/asset-profile';
+import type { CompanionPublicProfiles } from '../../src/main/companions/public-profiles';
+import type { CompanionMemoryFileReadiness } from '../../src/main/companions/memory-file-readiness';
+import { CompanionArtifactRegistry } from '../../src/main/companions/artifact-registry';
 import type { CompanionFileReader } from '../../src/main/companions/file-reader';
 import type { CompanionMemoryService } from '../../src/main/companions/memory-service';
 import type { CompanionMemoryTagService } from '../../src/main/companions/memory-tags-service';
 import { COMPANION_DIALOGUE_WINDOW } from '../../src/main/companions/context-window';
+import * as topicDialogue from '../../src/main/companions/topic-compaction';
 import { projectCompanionMemoryContextForModel } from '../../src/main/companions/memory-model-context';
 import { companionSearchTokens, companionSearchFacet } from '../../src/shared/companion-search';
 import { compileCompanionAgentContext } from '../../src/main/companions/agent-context';
 import { companionMemoryKinds, COMPANION_MEMORY_SCOPE_MEANINGS } from '../../src/shared/companion-memory-scope';
+import { publishSocialNotificationReceipt } from '../fixtures/social-notification-receipts';
 import type { BrowserWindow } from 'electron';
 import { COMPANION_REPLY_STREAM_CHANNEL, type CompanionReplyStreamEvent } from '../../src/shared/companions';
 
 const transport = vi.hoisted(() => ({
   request: vi.fn<(command: CompanionStorageCommand) => Promise<CompanionStorageResponse>>(),
   start: vi.fn(async () => undefined), close: vi.fn(async () => undefined), fetch: vi.fn<typeof fetch>(), memoryFetch: vi.fn<typeof fetch>(),
+  acquirePreparation: vi.fn<() => () => void>(() => () => undefined),
   worldFetch: vi.fn<typeof fetch>(),
   socialReviewFetch: vi.fn<typeof fetch>(),
   send: vi.fn<(channel: string, payload?: unknown) => void>(),
@@ -46,6 +59,7 @@ vi.mock('../../src/main/companions/storage-client', () => ({ CompanionStorageCli
   start = transport.start;
   request = transport.request;
   close = transport.close;
+  acquireForegroundPreparation = transport.acquirePreparation;
 } }));
 vi.mock('electron', () => ({
   net: { fetch: ((input: Parameters<typeof fetch>[0], init?: RequestInit) => {
@@ -81,6 +95,7 @@ const factsTypeScope = { schema: 'worldlinebox.memory-type-scope-v2' as const, c
   contentKinds: companionMemoryKinds('facts'), meaning: COMPANION_MEMORY_SCOPE_MEANINGS.facts };
 
 beforeEach(() => {
+  transport.acquirePreparation.mockReset(); transport.acquirePreparation.mockImplementation(() => () => undefined);
   vi.clearAllMocks();
   vi.useFakeTimers();
   vi.setSystemTime(new Date(fixedTime));
@@ -111,7 +126,7 @@ afterEach(async () => {
     if (path.dirname(path.resolve(root)) !== path.resolve(tmpdir()) || !path.basename(root).startsWith('worldlinebox-companion-service-')) {
       throw new Error('Unexpected companion test cleanup target.');
     }
-    rmSync(root, { recursive: true, force: true });
+    rmSync(root, { recursive: true, force: true, maxRetries: 3, retryDelay: 50 });
   }
   vi.useRealTimers();
 });
@@ -151,7 +166,7 @@ function currentCapabilityObservations(serialized: readonly string[], snapshot: 
   void _oldTime;
   return serialized.map(value => {
     const current = JSON.parse(value).capabilityAvailability;
-    expect(current).toMatchObject({ companionId, conversationId, boundToolNames: ['world', 'memory', 'dsh'] });
+    expect(current).toMatchObject({ companionId, conversationId, boundToolNames: ['agenda', 'world', 'dsh'] });
     const { observedAt, ...basis } = current;
     // These fixtures change no runtime configuration or grants. Verify every
     // capability field separately; only its actual observation time advances.
@@ -216,6 +231,430 @@ function fixture(dsh: DshLauncher, publish = false, prepareComputer = true, brow
   return { root, databasePath, store, service, conversation, source };
 }
 
+it('mints and consumes admitted dialogue input on the actual ordinary Service preparation path', async () => {
+  const f = fixture(fakeDsh(() => ({ tasks: [], operations: [] }), vi.fn(async () => ({ ok: true as const }))));
+  await f.service.handle({ type: 'state' });
+  const admit = vi.spyOn(topicDialogue, 'admitCompanionTopicDialogue'), continuity = vi.spyOn(topicDialogue, 'prepareTopicContinuity');
+  try {
+    transport.fetch.mockImplementation(async () => {
+      expect(admit).toHaveBeenCalledOnce();
+      const admitted = await admit.mock.results[0]!.value;
+      expect(admitted).toBeDefined();
+      expect(continuity).toHaveBeenCalledOnce();
+      expect(continuity.mock.calls[0]![0].admittedDialogueInput).toBe(admitted);
+      return modelResponse('今天先慢慢来。');
+    });
+    const respond = (f.service as unknown as { respond(room: string, controller: AbortController, proactive: boolean, delivery: 'auto', recovered: boolean, sourceId: string): Promise<void> }).respond;
+    await respond.call(f.service, f.conversation.id, new AbortController(), false, 'auto', false, f.source.id);
+    expect(transport.fetch).toHaveBeenCalledOnce();
+  } finally { admit.mockRestore(); continuity.mockRestore(); }
+});
+
+it('eagerly certifies the actual completed reply before its first UI history read and committed event', async () => {
+  const f = fixture(fakeDsh(() => ({ tasks: [], operations: [] }), vi.fn(async () => ({ ok: true as const }))), true);
+  await f.service.handle({ type: 'state' });
+  let runningSaves = 0;
+  const original = transport.request.getMockImplementation()!;
+  transport.request.mockImplementation(async command => { if (command.type === 'loop.save' && command.checkpoint.status === 'running') runningSaves++; return original(command); });
+  transport.fetch.mockImplementation(async () => modelResponse('正式回复已经完成。'));
+  const respond = Reflect.get(f.service, 'respond') as (room: string, controller: AbortController, proactive: boolean, delivery: 'auto', recovered: boolean, sourceId: string) => Promise<void>;
+  await respond.call(f.service, f.conversation.id, new AbortController(), false, 'auto', false, f.source.id);
+  const loop = f.store.request({ type: 'loop.get', companionId: 'sister', sourceMessageId: f.source.id }).loop!;
+  expect(loop.status).toBe('done');
+  const db = new (BetterSqlite3 as { new(filename: string): CompanionConnection })(f.databasePath);
+  try {
+    const stored = db.prepare('SELECT data FROM companion_message_publication_certificates WHERE message_id=?').get(loop.messageId!) as { data: string } | undefined;
+    expect(stored).toBeDefined(); expect(JSON.parse(stored!.data).mode).toBe('new_publication');
+    const certifyIndex = transport.request.mock.calls.findIndex(([command]) => command.type === 'execution.message.certify' && command.messages.some(message => message.messageId === loop.messageId));
+    expect(certifyIndex).toBeGreaterThanOrEqual(0);
+    const committed = replyEvents().filter(event => event.messageId === loop.messageId && event.phase === 'committed');
+    expect(committed).toHaveLength(1); expect(committed[0]!.text).toBe('正式回复已经完成。');
+    const count = transport.request.mock.calls.filter(([command]) => command.type === 'execution.message.certify' && command.messages.some(message => message.messageId === loop.messageId)).length;
+    expect((await f.service.handle({ type: 'messages', conversationId: f.conversation.id })).messages?.find(message => message.id === loop.messageId)?.content).toBe('正式回复已经完成。');
+    expect(transport.request.mock.calls.filter(([command]) => command.type === 'execution.message.certify' && command.messages.some(message => message.messageId === loop.messageId))).toHaveLength(count);
+    expect(runningSaves).toBeGreaterThan(0);
+  } finally { db.close(); }
+});
+
+it.each(['source', 'membership', 'unavailable', 'cancelled'] as const)('does not commit or certify final prose when %s changes at the actual terminal publication boundary', async failure => {
+  const f = fixture(fakeDsh(() => ({ tasks: [], operations: [] }), vi.fn(async () => ({ ok: true as const }))), true);
+  await f.service.handle({ type: 'state' });
+  const controller = new AbortController(), db = new (BetterSqlite3 as { new(filename: string): CompanionConnection })(f.databasePath);
+  let injected = false;
+  const original = transport.request.getMockImplementation()!;
+  transport.request.mockImplementation(async command => {
+    const response = await original(command);
+    if (!injected && command.type === 'loop.save' && command.checkpoint.status === 'done' && command.executionReadset && response.replyPublication) {
+      injected = true;
+      if (failure === 'source') f.store.request({ type: 'memory.forget', companionId: 'sister', conversationId: f.conversation.id, sourceMessageIds: [f.source.id], persistent: true });
+      else if (failure === 'membership') db.prepare('DELETE FROM conversation_members WHERE conversation_id=? AND companion_id=?').run(f.conversation.id, 'sister');
+      else if (failure === 'unavailable') throw new CompanionValidationUnavailableError('Terminal SQL reader became unavailable.');
+      else controller.abort(new DOMException('Cancelled before Main publication gate.', 'AbortError'));
+    }
+    return response;
+  });
+  transport.fetch.mockImplementation(async () => modelResponse('本稿仅在正式发布门通过后提交。'));
+  const respond = Reflect.get(f.service, 'respond') as (room: string, controller: AbortController, proactive: boolean, delivery: 'auto', recovered: boolean, sourceId: string) => Promise<void>;
+  try {
+    await respond.call(f.service, f.conversation.id, controller, false, 'auto', false, f.source.id);
+    expect(injected).toBe(true); expect(transport.fetch).toHaveBeenCalledOnce();
+    const loop = f.store.request({ type: 'loop.get', companionId: 'sister', sourceMessageId: f.source.id }).loop!;
+    expect(db.prepare('SELECT data FROM companion_message_publication_certificates WHERE message_id=?').get(loop.messageId!)).toBeUndefined();
+    expect(replyEvents().filter(event => event.sourceMessageId === f.source.id && event.phase === 'committed')).toEqual([]);
+    expect(transport.request.mock.calls.some(([command]) => command.type === 'execution.message.certify' && command.messages.some(message => message.messageId === loop.messageId))).toBe(false);
+  } finally { db.close(); }
+});
+
+it.each(['current', 'late-relation'] as const)('uses a real prior same-room phone notification in the %s ordinary reply publication', async state => {
+  const f = fixture(fakeDsh(() => ({ tasks: [], operations: [] }), vi.fn(async () => ({ ok: true as const }))), true);
+  const peer = f.store.createCompanion({ name: '核验伙伴', description: '', persona: '独立真实来源。', avatar: 'flash', model: '', proactive: false });
+  f.store.setCompanionActive(peer.id, true); keepAwake(f.store, peer.id, f.store.openPrivate(peer.id).id); await f.service.handle({ type: 'state' });
+  const notice = publishSocialNotificationReceipt({ store: f.store, filename: f.databasePath, companionId: 'sister', peerId: peer.id,
+    advanceTime: ms => vi.setSystemTime(Date.now() + ms), configureRoutine: false });
+  try {
+    // Actual Main performs the old publication gate; the test does not mint
+    // a supposed Main certificate from a text lookalike or a mock response.
+    await f.service.handle({ type: 'messages', conversationId: f.conversation.id });
+    const source = f.store.appendMessage({ conversationId: f.conversation.id, authorId: 'user', content: '喝点水，慢慢休息。', replyDirective: 'none' });
+    let reviewed = false, injected = false;
+    transport.socialReviewFetch.mockImplementation(async (_url, init) => {
+      const data = JSON.parse(JSON.parse(String(init?.body)).messages[1].content);
+      expect(data.facts).toEqual([]); expect(data.verifiedReceivedNotifications).toHaveLength(1);
+      expect(data.verifiedReceivedNotifications[0].report.id).toBe(notice.report.id);
+      expect(data.verifiedReceivedNotifications[0].report.content).toBe(notice.report.content);
+      reviewed = true;
+      return modelResponseForJson({ supported: true, correction: '' });
+    });
+    const original = transport.request.getMockImplementation()!;
+    transport.request.mockImplementation(async command => {
+      const response = await original(command);
+      if (state === 'late-relation' && command.type === 'loop.save' && command.checkpoint.sourceMessageId === source.id
+        && command.checkpoint.status === 'done' && command.executionReadset && response.replyPublication) {
+        injected = true;
+        notice.db.prepare("UPDATE companion_social_notifications SET data=json_set(data,'$.resultMessageId','changed_result') WHERE id=?").run(notice.notice.id);
+      }
+      return response;
+    });
+    transport.fetch.mockImplementation(async () => modelResponse('伙伴此前已经回复过我了。'));
+    const respond = Reflect.get(f.service, 'respond') as (room: string, controller: AbortController, proactive: boolean, delivery: 'auto', recovered: boolean, sourceId: string) => Promise<void>;
+    await respond.call(f.service, f.conversation.id, new AbortController(), false, 'auto', false, source.id);
+    expect(reviewed).toBe(true); expect(transport.fetch).toHaveBeenCalledOnce();
+    const loop = f.store.request({ type: 'loop.get', companionId: 'sister', sourceMessageId: source.id }).loop!;
+    const certificate = notice.db.prepare('SELECT data FROM companion_message_publication_certificates WHERE message_id=?').get(loop.messageId!);
+    const committed = replyEvents().filter(event => event.sourceMessageId === source.id && event.phase === 'committed');
+    if (state === 'late-relation') { expect(injected).toBe(true); expect(certificate).toBeUndefined(); expect(committed).toEqual([]); }
+    else { expect(certificate).toBeDefined(); expect(committed).toHaveLength(1); }
+  } finally { notice.db.close(); }
+});
+
+it('overlaps fixed task preparation with its sole recall without persisting a partial context', async () => {
+  const f = fixture(fakeDsh(() => ({ tasks: [], operations: [] }), vi.fn(async () => ({ ok: true as const }))));
+  await f.service.handle({ type: 'state' });
+  const recallEntered = deferred<void>(), topicEntered = deferred<void>(), release = deferred<void>();
+  const memory = Reflect.get(f.service, 'memory') as CompanionMemoryService;
+  const recall = vi.spyOn(memory, 'recall').mockImplementation(async input => {
+    recallEntered.resolve(); await release.promise; input.signal?.throwIfAborted();
+    return { memories: [], sources: [], reasons: [], pending: false, degraded: false };
+  });
+  const original = transport.request.getMockImplementation()!;
+  transport.request.mockImplementation(async command => {
+    const result = await original(command);
+    if (command.type === 'topic.read' && command.readerId === 'sister' && command.topicId === f.source.topicId) topicEntered.resolve();
+    return result;
+  });
+  const respond = Reflect.get(f.service, 'respond') as (room: string, controller: AbortController, proactive: boolean, delivery: 'auto', recovered: boolean, sourceId: string) => Promise<void>;
+  const pending = respond.call(f.service, f.conversation.id, new AbortController(), false, 'auto', false, f.source.id);
+  try {
+    await recallEntered.promise; await topicEntered.promise;
+    const during = f.store.request({ type: 'loop.get', companionId: 'sister', sourceMessageId: f.source.id }).loop;
+    expect(during?.context).toBeUndefined(); expect(during?.preparedTask).toBeUndefined(); expect(transport.fetch).not.toHaveBeenCalled();
+  } finally { release.resolve(); }
+  await pending;
+  expect(recall).toHaveBeenCalledOnce(); expect(transport.fetch).toHaveBeenCalledOnce();
+  expect(transport.request.mock.calls.filter(([command]) => command.type === 'topic.read' && command.readerId === 'sister' && command.topicId === f.source.topicId)).toHaveLength(2);
+  recall.mockRestore();
+});
+
+it.each(['recall-error', 'fixed-error', 'parent-cancel'] as const)('drains actual fixed task preparation work after %s, with no HTTP', async outcome => {
+  const f = fixture(fakeDsh(() => ({ tasks: [], operations: [] }), vi.fn(async () => ({ ok: true as const }))));
+  await f.service.handle({ type: 'state' });
+  const recallEntered = deferred<void>(), topicEntered = deferred<void>(), abortObserved = deferred<void>(), release = deferred<void>();
+  const controller = new AbortController(), memory = Reflect.get(f.service, 'memory') as CompanionMemoryService;
+  const recall = vi.spyOn(memory, 'recall').mockImplementation(async input => {
+    recallEntered.resolve();
+    if (outcome === 'recall-error') throw new Error('Controlled recall admission failed.');
+    input.signal?.addEventListener('abort', () => abortObserved.resolve(), { once: true });
+    await release.promise; input.signal?.throwIfAborted();
+    return { memories: [], sources: [], reasons: [], pending: false, degraded: false };
+  });
+  const original = transport.request.getMockImplementation()!;
+  transport.request.mockImplementation(async command => {
+    const result = await original(command);
+    if (command.type === 'topic.read' && command.readerId === 'sister' && command.topicId === f.source.topicId) {
+      topicEntered.resolve();
+      if (outcome === 'fixed-error') throw new Error('Controlled fixed topic unavailable.');
+      if (outcome === 'recall-error') await release.promise;
+    }
+    return result;
+  });
+  const respond = Reflect.get(f.service, 'respond') as (room: string, controller: AbortController, proactive: boolean, delivery: 'auto', recovered: boolean, sourceId: string) => Promise<void>;
+  let finished = false;
+  const pending = respond.call(f.service, f.conversation.id, controller, false, 'auto', false, f.source.id).finally(() => { finished = true; });
+  try {
+    await recallEntered.promise; await topicEntered.promise;
+    if (outcome === 'parent-cancel') controller.abort(new Error('User stopped preparation.'));
+    if (outcome !== 'recall-error') await abortObserved.promise;
+    expect(finished).toBe(false); expect(transport.fetch).not.toHaveBeenCalled();
+  } finally { release.resolve(); }
+  await pending; expect(transport.fetch).not.toHaveBeenCalled(); expect(recall).toHaveBeenCalledOnce(); recall.mockRestore();
+});
+
+it.each([false, true])('retains the fresh source fence when a body changes during parallel fixed task preparation, legacy path=%s', async legacy => {
+  const f = fixture(fakeDsh(() => ({ tasks: [], operations: [] }), vi.fn(async () => ({ ok: true as const }))));
+  await f.service.handle({ type: 'state' });
+  const topicEntered = deferred<void>(), release = deferred<void>(), memory = Reflect.get(f.service, 'memory') as CompanionMemoryService;
+  const fixed = legacy ? vi.spyOn(f.service as unknown as { prepareFixedReplyDialogue(...input: unknown[]): Promise<object | undefined> }, 'prepareFixedReplyDialogue').mockResolvedValue(undefined) : undefined;
+  const recall = vi.spyOn(memory, 'recall').mockImplementation(async () => { await release.promise; return { memories: [], sources: [], reasons: [], pending: false, degraded: false }; });
+  const original = transport.request.getMockImplementation()!;
+  transport.request.mockImplementation(async command => {
+    const result = await original(command);
+    if (command.type === 'topic.read' && command.readerId === 'sister' && command.topicId === f.source.topicId) topicEntered.resolve();
+    return result;
+  });
+  const respond = Reflect.get(f.service, 'respond') as (room: string, controller: AbortController, proactive: boolean, delivery: 'auto', recovered: boolean, sourceId: string) => Promise<void>;
+  const pending = respond.call(f.service, f.conversation.id, new AbortController(), false, 'auto', false, f.source.id);
+  try {
+    if (legacy) await vi.waitFor(() => expect(recall).toHaveBeenCalledOnce());
+    else await topicEntered.promise;
+    const raw = new (BetterSqlite3 as new(filename: string) => CompanionConnection)(f.databasePath);
+    raw.function('companion_search_tokens', { deterministic: true }, companionSearchTokens); raw.function('companion_search_facet', { deterministic: true }, companionSearchFacet);
+    try { raw.prepare('UPDATE messages SET content=?,revision=revision+1 WHERE id=?').run('这个来源正文已经被外部改写。', f.source.id); } finally { raw.close(); }
+  } finally { release.resolve(); }
+  await pending; expect(transport.fetch).not.toHaveBeenCalled(); recall.mockRestore(); fixed?.mockRestore();
+});
+
+it('keeps resumed and after-cursor fixed task preparation on the existing path', async () => {
+  const f = fixture(fakeDsh(() => ({ tasks: [], operations: [] }), vi.fn(async () => ({ ok: true as const }))));
+  await f.service.handle({ type: 'state' });
+  const checkpoint: CompanionLoopCheckpoint = { companionId: 'sister', conversationId: f.conversation.id, sourceMessageId: f.source.id,
+    status: 'running', turns: [], supplements: [] };
+  const prepare = Reflect.get(f.service, 'prepareFixedReplyDialogue') as (...args: unknown[]) => Promise<object | undefined>;
+  const read = Reflect.get(f.service, 'fixedReplyDialogue') as (...args: unknown[]) => unknown;
+  await withCompanionExecutionValidation(async () => {
+    transport.request.mockClear();
+    expect(await prepare.call(f.service, { ...checkpoint, context: { system: '', user: '{}' } }, f.conversation, f.source, [f.source], new AbortController().signal)).toBeUndefined();
+    expect(await prepare.call(f.service, checkpoint, f.conversation, f.source, [{ ...f.source, sequence: f.source.sequence + 1 }], new AbortController().signal)).toBeUndefined();
+    expect(read.call(f.service, {}, checkpoint, { companionId: 'sister', conversationId: f.conversation.id, beforeSequence: f.source.sequence }, f.source.topicId, [f.source])).toBeUndefined();
+    expect(transport.request).not.toHaveBeenCalled();
+  });
+});
+
+function seedAttachmentDialogue(f: ReturnType<typeof fixture>) {
+  mkdirSync(path.join(f.root, 'companions', 'attachments'), { recursive: true });
+  const attached = Array.from({ length: 3 }, (_, index) => {
+    const id = `admitted-history-attachment-${index}`, content = `真实历史附件 ${index}。`;
+    writeFileSync(path.join(f.root, 'companions', 'attachments', `${id}.txt`), content);
+    f.store.request({ type: 'attachment.register', stored: { attachment: { id, name: `${id}.txt`, mime: 'text/plain', size: Buffer.byteLength(content) }, relativePath: `attachments/${id}.txt` } });
+    return f.store.appendMessage({ conversationId: f.conversation.id, authorId: 'user', content: `历史附件消息 ${index}。`, attachmentIds: [id], replyDirective: 'none' });
+  });
+  for (let index = 0; index < 16; index++) f.store.appendMessage({ conversationId: f.conversation.id, authorId: 'user', content: `普通背景消息 ${index}。`, replyDirective: 'none' });
+  const source = f.store.appendMessage({ conversationId: f.conversation.id, authorId: 'user', content: '现在正常聊一句。' });
+  return { attached, source };
+}
+
+it('routes a single-member inbox from its actual member ID without reading any resident persona before the task starts', async () => {
+  const f = fixture(fakeDsh(() => ({ tasks: [], operations: [] }), vi.fn(async () => ({ ok: true as const }))));
+  await f.service.handle({ type: 'state' });
+  const profiles = Reflect.get(f.service, 'assetProfiles') as CompanionAssetProfileStore;
+  const unrelated = f.store.createCompanion({ name: '无关伙伴', description: '', persona: '独立身份', model: '', avatar: 'flash', proactive: false });
+  const unrelatedSnapshot = await profiles.bootstrap(unrelated);
+  const damaged = path.join(unrelatedSnapshot.root, 'profile.md'); writeFileSync(damaged, 'UNREGISTERED_UNRELATED_PROFILE');
+  const load = vi.spyOn(profiles, 'bootstrapProfile');
+  const host = f.service as unknown as { pumpQueue(): Promise<void>; launchReply(room: string, proactive: boolean, delivery: 'auto', recovery: boolean, source: string): Promise<void> };
+  vi.spyOn(host, 'pumpQueue').mockResolvedValue();
+  await host.launchReply(f.conversation.id, false, 'auto', false, f.source.id);
+  expect(load).not.toHaveBeenCalled();
+  expect(f.store.request({ type: 'work.list', sourceMessageId: f.source.id }).works?.map(work => work.companionId)).toEqual(['sister']);
+  expect(readFileSync(damaged, 'utf8')).toBe('UNREGISTERED_UNRELATED_PROFILE');
+  expect(transport.fetch).not.toHaveBeenCalled();
+});
+
+it('reads current canonical names only for actual group members before routing an addressed message', async () => {
+  const f = fixture(fakeDsh(() => ({ tasks: [], operations: [] }), vi.fn(async () => ({ ok: true as const }))));
+  await f.service.handle({ type: 'state' });
+  const profiles = Reflect.get(f.service, 'assetProfiles') as CompanionAssetProfileStore;
+  const peer = f.store.createCompanion({ name: '接收伙伴', description: '', persona: '独立身份', model: '', avatar: 'flash', proactive: false });
+  const unrelated = f.store.createCompanion({ name: '旁观伙伴', description: '', persona: '独立身份', model: '', avatar: 'flash', proactive: false });
+  await profiles.bootstrap(peer); await profiles.bootstrap(unrelated);
+  // Simulate an externally stale SQL label; the registered canonical role
+  // remains authoritative. The normal runtime API correctly forbids renames.
+  const raw = new (BetterSqlite3 as new(filename: string) => CompanionConnection)(f.databasePath);
+  try { raw.prepare("UPDATE companions SET data=json_set(data,'$.name',?) WHERE id=?").run('过期目录名', peer.id); }
+  finally { raw.close(); }
+  const room = f.store.request({ type: 'conversation.create-group', title: '准确接收范围', memberIds: ['sister', peer.id] }).conversation!;
+  const source = f.store.appendMessage({ conversationId: room.id, authorId: 'user', content: '@接收伙伴 请回答这条消息。' });
+  const load = vi.spyOn(profiles, 'bootstrapProfile');
+  const host = f.service as unknown as { pumpQueue(): Promise<void>; launchReply(room: string, proactive: boolean, delivery: 'auto', recovery: boolean, source: string): Promise<void> };
+  vi.spyOn(host, 'pumpQueue').mockResolvedValue();
+  await host.launchReply(room.id, false, 'auto', false, source.id);
+  expect(load.mock.calls.map(([owner]) => owner.id).sort()).toEqual(['sister', peer.id].sort());
+  expect(f.store.request({ type: 'work.list', sourceMessageId: source.id }).works?.map(work => work.companionId)).toEqual([peer.id]);
+  expect(transport.fetch).not.toHaveBeenCalled();
+});
+
+it('prepares independent real attachment entrances together and preserves source order through actual Main guards', async () => {
+  const f = fixture(fakeDsh(() => ({ tasks: [], operations: [] }), vi.fn(async () => ({ ok: true as const }))));
+  await f.service.handle({ type: 'state' });
+  const { attached } = seedAttachmentDialogue(f), seen = new Set<string>();
+  let release!: () => void; const allStarted = new Promise<void>(resolve => { release = resolve; });
+  transport.request.mockImplementation(async command => {
+    const result = f.store.request(command);
+    if (command.type === 'message.get' && attached.some(message => message.id === command.id)) {
+      seen.add(command.id); if (seen.size === attached.length) release(); await allStarted;
+    }
+    return result;
+  });
+  const visibleFiles = Reflect.get(f.service, 'visibleFiles') as (context: string) => Promise<Array<{ messageId: string; attachmentId: string; available: boolean }>>;
+  const files = await withCompanionExecutionValidation(() => visibleFiles.call(f.service, JSON.stringify({ conversation: f.conversation, messages: attached })));
+  expect([...seen]).toEqual(attached.map(message => message.id));
+  expect(files.map(file => file.messageId)).toEqual(attached.map(message => message.id));
+  expect(files.map(file => file.attachmentId)).toEqual(attached.map(message => message.attachments[0]!.id));
+  expect(files.every(file => file.available)).toBe(true);
+  expect(transport.fetch).not.toHaveBeenCalled();
+});
+
+it('drains independent actual attachment reads before reporting a failed entrance', async () => {
+  const f = fixture(fakeDsh(() => ({ tasks: [], operations: [] }), vi.fn(async () => ({ ok: true as const }))));
+  await f.service.handle({ type: 'state' });
+  const { attached } = seedAttachmentDialogue(f); let lateStarted = 0, lateFinished = 0;
+  let release!: () => void, ready!: () => void;
+  const late = new Promise<void>(resolve => { release = resolve; }), started = new Promise<void>(resolve => { ready = resolve; });
+  transport.request.mockImplementation(async command => {
+    if (command.type === 'message.get' && attached.some(message => message.id === command.id)) {
+      if (command.id === attached[0]!.id) throw new Error('attachment entrance unavailable');
+      if (++lateStarted === 2) ready(); await late; lateFinished++;
+    }
+    return f.store.request(command);
+  });
+  const visibleFiles = Reflect.get(f.service, 'visibleFiles') as (context: string) => Promise<unknown>;
+  const pending = withCompanionExecutionValidation(() => visibleFiles.call(f.service, JSON.stringify({ conversation: f.conversation, messages: attached })));
+  let settled = false; void pending.then(() => { settled = true; }, () => { settled = true; });
+  await started; await Promise.resolve(); expect(settled).toBe(false);
+  release(); await expect(pending).rejects.toThrow('attachment entrance unavailable');
+  expect(lateFinished).toBe(2); expect(transport.fetch).not.toHaveBeenCalled();
+});
+
+it('mints and consumes admitted dialogue input with three real historical attachments in the actual Service', async () => {
+  const f = fixture(fakeDsh(() => ({ tasks: [], operations: [] }), vi.fn(async () => ({ ok: true as const }))));
+  await f.service.handle({ type: 'state' });
+  const { attached, source } = seedAttachmentDialogue(f), admit = vi.spyOn(topicDialogue, 'admitCompanionTopicDialogue');
+  try {
+    transport.request.mockClear();
+    transport.fetch.mockImplementation(async () => {
+      expect(admit).toHaveBeenCalledOnce();
+      expect(await admit.mock.results[0]!.value).toBeDefined();
+      expect(admit.mock.calls[0]![0].acquiredFallbackMessages?.map(message => message.id)).toEqual(attached.map(message => message.id));
+      const historyHeaders = transport.request.mock.calls.flatMap(([command]) => command.type === 'memory.sources.headers'
+        && command.ids.includes(source.id) && command.ids.includes(attached[0]!.id) ? [command] : []);
+      expect(historyHeaders).toHaveLength(2); // Initial admission and its real fresh final, no second full-window entrance.
+      const attachmentReads = transport.request.mock.calls.flatMap(([command]) => command.type === 'memory.sources.filter'
+        && command.ids.length === 3 && attached.every(message => command.ids.includes(message.id)) ? [command] : []);
+      expect(attachmentReads).toHaveLength(2); // First guarded full DTOs, then only these exact three at final.
+      return modelResponse('今天慢慢聊。');
+    });
+    const respond = Reflect.get(f.service, 'respond') as (room: string, controller: AbortController, proactive: boolean, delivery: 'auto', recovered: boolean, sourceId: string) => Promise<void>;
+    await respond.call(f.service, f.conversation.id, new AbortController(), false, 'auto', false, source.id);
+    expect(transport.fetch).toHaveBeenCalledOnce();
+  } finally { admit.mockRestore(); }
+});
+
+it.each(['attachment', 'body', 'membership'] as const)('rejects an admitted dialogue %s change before actual Service HTTP', async mutation => {
+  const f = fixture(fakeDsh(() => ({ tasks: [], operations: [] }), vi.fn(async () => ({ ok: true as const }))));
+  await f.service.handle({ type: 'state' });
+  const { attached, source } = seedAttachmentDialogue(f), original = topicDialogue.admitCompanionTopicDialogue;
+  const admit = vi.spyOn(topicDialogue, 'admitCompanionTopicDialogue').mockImplementationOnce(async input => {
+    const token = await original(input); expect(token).toBeDefined();
+    const raw = new (BetterSqlite3 as new(filename: string) => CompanionConnection)(f.databasePath);
+    raw.function('companion_search_tokens', { deterministic: true }, companionSearchTokens); raw.function('companion_search_facet', { deterministic: true }, companionSearchFacet);
+    try {
+      if (mutation === 'attachment') raw.prepare("UPDATE attachments SET data=json_set(data,'$.name',?) WHERE id=?").run('已改名.txt', attached[0]!.attachments[0]!.id);
+      if (mutation === 'body') raw.prepare('UPDATE messages SET content=?,revision=revision+1 WHERE id=?').run('这条附件消息已经改变。', attached[0]!.id);
+      if (mutation === 'membership') raw.prepare('DELETE FROM conversation_members WHERE conversation_id=? AND companion_id=?').run(f.conversation.id, 'sister');
+    } finally { raw.close(); }
+    return token;
+  });
+  try {
+    const respond = Reflect.get(f.service, 'respond') as (room: string, controller: AbortController, proactive: boolean, delivery: 'auto', recovered: boolean, sourceId: string) => Promise<void>;
+    await respond.call(f.service, f.conversation.id, new AbortController(), false, 'auto', false, source.id);
+    expect(admit).toHaveBeenCalledOnce(); expect(transport.fetch).not.toHaveBeenCalled();
+  } finally { admit.mockRestore(); }
+});
+
+it('releases its recipient preparation budget at the first actual primary HTTP, before waiting for the provider', async () => {
+  const f = fixture(fakeDsh(() => ({ tasks: [], operations: [] }), vi.fn(async () => ({ ok: true as const }))));
+  await f.service.handle({ type: 'state' });
+  const release = vi.fn(); transport.acquirePreparation.mockImplementation(() => release);
+  transport.request.mockImplementation(async command => {
+    if (command.type === 'reply.task.snapshot') { expect(transport.acquirePreparation).toHaveBeenCalledOnce(); expect(release).not.toHaveBeenCalled(); }
+    return f.store.request(command);
+  });
+  transport.fetch.mockImplementation(async () => {
+    expect(release).toHaveBeenCalledOnce();
+    expect(transport.request.mock.calls.some(([command]) => command.type === 'memory.sources.headers' && command.ids.includes(f.source.id))).toBe(true);
+    return modelResponse('今天先慢慢来。');
+  });
+  const respond = (f.service as unknown as { respond(room: string, controller: AbortController, proactive: boolean, delivery: 'auto', recovered: boolean, sourceId: string): Promise<void> }).respond;
+  await respond.call(f.service, f.conversation.id, new AbortController(), false, 'auto', false, f.source.id);
+  expect(transport.fetch).toHaveBeenCalledOnce(); expect(transport.acquirePreparation).toHaveBeenCalledOnce(); expect(release).toHaveBeenCalledOnce();
+});
+
+it.each(['recall-error', 'cancelled'] as const)('releases an acquired recipient preparation budget without dispatch after %s', async outcome => {
+  const f = fixture(fakeDsh(() => ({ tasks: [], operations: [] }), vi.fn(async () => ({ ok: true as const }))));
+  await f.service.handle({ type: 'state' });
+  const release = vi.fn(); transport.acquirePreparation.mockImplementation(() => release);
+  const controller = new AbortController();
+  const memory = (f.service as unknown as { memory: { recall(): Promise<never> } }).memory;
+  vi.spyOn(memory, 'recall').mockImplementation(async () => { if (outcome === 'cancelled') controller.abort(new Error('user cancelled')); throw new Error('recall unavailable'); });
+  const respond = (f.service as unknown as { respond(room: string, controller: AbortController, proactive: boolean, delivery: 'auto', recovered: boolean, sourceId: string): Promise<void> }).respond;
+  await respond.call(f.service, f.conversation.id, controller, false, 'auto', false, f.source.id);
+  expect(transport.fetch).not.toHaveBeenCalled(); expect(transport.acquirePreparation).toHaveBeenCalledOnce(); expect(release).toHaveBeenCalledOnce();
+});
+
+it('releases its early recipient preparation budget while still waiting for its real phone reservation', async () => {
+  const f = fixture(fakeDsh(() => ({ tasks: [], operations: [] }), vi.fn(async () => ({ ok: true as const }))));
+  await f.service.handle({ type: 'state' });
+  const release = vi.fn(); transport.acquirePreparation.mockImplementation(() => release);
+  const controller = new AbortController(), world = (f.service as unknown as { world: { ready(input: unknown, signal?: AbortSignal, waiting?: (reason: string) => unknown): Promise<void> } }).world;
+  vi.spyOn(world, 'ready').mockImplementation(async (_input, _signal, waiting) => {
+    await waiting?.('真实身体仍在等待'); expect(transport.acquirePreparation).toHaveBeenCalledOnce(); expect(release).toHaveBeenCalledOnce();
+    controller.abort(new Error('user cancelled while waiting')); throw controller.signal.reason;
+  });
+  const respond = Reflect.get(f.service, 'respond') as (room: string, controller: AbortController, proactive: boolean, delivery: 'auto', recovered: boolean, sourceId: string) => Promise<void>;
+  await respond.call(f.service, f.conversation.id, controller, false, 'auto', false, f.source.id);
+  expect(transport.acquirePreparation).toHaveBeenCalledOnce(); expect(release).toHaveBeenCalledOnce(); expect(transport.fetch).not.toHaveBeenCalled();
+});
+
+it('rejects changed persisted task body bytes before another HTTP even when the Main evidence epoch did not advance', async () => {
+  const f = fixture(fakeDsh(() => ({ tasks: [], operations: [] }), vi.fn(async () => ({ ok: true as const }))));
+  await f.service.handle({ type: 'state' });
+  transport.fetch.mockResolvedValue(modelResponse('先保留这次真实输入。'));
+  const internals = f.service as unknown as {
+    evidenceRevision: number;
+    respond(room: string, controller: AbortController, proactive: boolean, delivery: 'auto', recovered: boolean, sourceId: string): Promise<void>;
+    memoryInference(checkpoint: CompanionLoopCheckpoint, owner: string, room: string, sequence: number): Promise<unknown>;
+  };
+  await internals.respond(f.conversation.id, new AbortController(), false, 'auto', false, f.source.id);
+  const checkpoint = f.store.request({ type: 'loop.get', companionId: 'sister', sourceMessageId: f.source.id }).loop!;
+  expect(checkpoint.preparedTask).toBeDefined();
+  const before = internals.evidenceRevision, raw = new (BetterSqlite3 as new(filename: string) => CompanionConnection)(f.databasePath);
+  raw.function('companion_search_tokens', { deterministic: true }, companionSearchTokens); raw.function('companion_search_facet', { deterministic: true }, companionSearchFacet);
+  try { raw.prepare('UPDATE messages SET content=?,revision=revision+1 WHERE id=?').run('外部同ID已经换成了另一份输入。', f.source.id); }
+  finally { raw.close(); }
+  expect(internals.evidenceRevision).toBe(before); transport.fetch.mockClear();
+  await expect(internals.memoryInference(checkpoint, 'sister', f.conversation.id, f.source.sequence)).rejects.toThrow('任务封存后引用原文已改变');
+  expect(transport.fetch).not.toHaveBeenCalled();
+});
+
 function interruptedDshFixture(interruptions: number) {
   const records: DshTaskRecord[] = [];
   let slowRuns = 0;
@@ -266,6 +705,168 @@ it('refreshes runtime status without reopening historical actions and keeps each
   expect(response.state?.activities).toContainEqual(expect.objectContaining({ companionId: 'sister', conversationId: f.conversation.id, status: 'working' }));
   expect(transport.request.mock.calls.some(([command]) => ['actions', 'actions.page', 'action.get', 'execution.capabilities.validate'].includes(command.type))).toBe(false);
   await closeService(f.service);
+});
+
+describe('attention admission', () => {
+  const scopeFor = (f: ReturnType<typeof fixture>) => ({ companionId: 'sister', conversationId: f.conversation.id });
+  const attentionCalls = () => transport.worldFetch.mock.calls.filter(([, init]) =>
+    JSON.parse(JSON.parse(String(init?.body)).messages[1].content).purpose === 'world_attention');
+  const priorityHost = (service: CompanionService) => service as unknown as {
+    beginPriority(owner: string, room: string, source: string, signal?: AbortSignal): Promise<string | undefined>;
+    endPriority(id: string | undefined): Promise<void>;
+    priorityHolders: Map<string, { owner: string; count: number }>;
+    autonomy: { drainOrder(id: string): Promise<void> };
+  };
+  async function urgentSource(f: ReturnType<typeof fixture>) {
+    const source = f.store.appendMessage({ conversationId: f.conversation.id, authorId: 'user', content: '两分钟后就截止了，请立即帮我检查文件。', replyDirective: 'none' });
+    await transport.request({ type: 'world.attention.record', ...scopeFor(f), sourceMessageId: source.id,
+      sourceChecksum: createHash('sha256').update(source.content).digest('hex'), urgency: 'urgent', confidence: .99,
+      evidence: [source.content], reason: '本任务真实用户本人要求立即处理临近截止的文件。' });
+    return source;
+  }
+
+  it.each(['sleeping', 'eating', 'working'] as const)('answers a %s phone chat without a speculative urgency model or a new computer reservation', async phase => {
+    const f = fixture(fakeDsh(() => ({ tasks: [], operations: [] }), vi.fn(async () => ({ ok: true as const }))), false, phase === 'working');
+    await f.service.handle({ type: 'state' });
+    const scope = scopeFor(f);
+    if (phase === 'working') f.store.request({ type: 'world.work.begin', ...scope, workId: 'existing_physical_work', kind: 'action', sourceMessageId: f.source.id, fixed: true });
+    else {
+      const drafts = companionAgendaRoutineRuleDrafts(companionRoutineConfigSchema.parse({ timeZone: 'UTC',
+        sleepAt: phase === 'sleeping' ? '01:00' : '23:00', wakeAt: phase === 'sleeping' ? '03:00' : '01:00',
+        meals: phase === 'eating' ? [{ name: '正常用餐', at: '02:00', durationMinutes: 30 }] : [], habits: [] }));
+      const sleep = (await f.service.handle({ type: 'agenda.read', companionId: scope.companionId, limit: 50 })).agenda!.rules.find(rule => rule.routine?.kind === 'sleep')!;
+      if (phase === 'sleeping') await f.service.handle({ type: 'agenda.rule.update', companionId: scope.companionId,
+        operationId: 'attention_sleep_window', id: sleep.id, expectedRevision: sleep.revision, rule: companionAgendaRuleDraftSchema.parse(drafts[0]) });
+      else await f.service.handle({ type: 'agenda.rule.create', companionId: scope.companionId,
+        operationId: 'attention_meal_window', rule: companionAgendaRuleDraftSchema.parse(drafts[1]) });
+    }
+    await vi.advanceTimersByTimeAsync(15000);
+    const before = f.store.request({ type: 'world.snapshot' }).world!;
+    if (phase === 'working') expect(before.works.some(work => work.workId === 'existing_physical_work' && work.status !== 'ended')).toBe(true);
+    else expect(before.actors[0]!.routinePhase).toBe(phase);
+    transport.fetch.mockImplementation(async () => modelResponse('我在，我们慢慢聊。'));
+    const source = (await f.service.handle({ type: 'message.send', conversationId: f.conversation.id,
+      content: '今天有点累，陪我聊一会儿吧。', clientId: 'phone_attention_' + phase })).message!;
+    await vi.waitFor(() => expect(f.store.request({ type: 'work.list', sourceMessageId: source.id }).works?.[0]?.status).toBe('done'), { timeout: 15000 });
+    expect(attentionCalls()).toHaveLength(0);
+    const after = f.store.request({ type: 'world.snapshot' }).world!;
+    expect(after.works.filter(work => work.kind === 'chat').every(work => !work.computerId)).toBe(true);
+    if (phase !== 'working') expect(after.actors[0]!.routinePhase).toBe(phase);
+  });
+
+  it.each(['run', 'urgent', 'cancel'] as const)('keeps urgency assessment before real DSH and handles %s without a speculative chat assessment', async outcome => {
+    let started = false;
+    let beforeRun: () => void = () => undefined;
+    const requestTask = vi.fn<DshLauncher['requestTask']>(async request => {
+      if (request.type === 'task.run') { beforeRun(); started = true; return { ok: true, operationId: 'dsh-task' }; }
+      if (request.type === 'task.result') return { ok: true, taskResult: { taskId: 'dsh-task', instanceId: 'instance', runtimeId: 'runtime', runtimeVersion: '1.0', text: '只读检查已结束。' } };
+      return { ok: true };
+    });
+    const f = fixture(fakeDsh(() => ({ tasks: started ? [taskRecord('succeeded')] : [], operations: [] }), requestTask));
+    await f.service.handle({ type: 'state' });
+    const scope = scopeFor(f), reply = deferred<Response>();
+    f.store.request({ type: 'world.work.begin', ...scope, workId: 'physical_attention_hold', kind: 'action', sourceMessageId: f.source.id, fixed: true });
+    const source = outcome === 'urgent' ? f.store.appendMessage({ conversationId: f.conversation.id, authorId: 'user',
+      content: '两分钟后截止，请立即帮我检查文件。', replyDirective: 'none' }) : f.source;
+    const order = outcome === 'urgent' ? f.store.request({ type: 'work-order.create', ...scope, sourceMessageId: f.source.id,
+      title: '原有工作', instruction: '保留这项工作并在紧急任务结束后接续。' }).workOrder : undefined;
+    if (order) beforeRun = () => { expect(f.store.request({ type: 'work-order.list', ...scope }).workOrderPage!.items.find(item => item.id === order.id)?.status).toBe('paused'); };
+    const answer = () => modelResponseForJson({ urgency: outcome === 'urgent' ? 'urgent' : 'ordinary', confidence: .99, evidence: [source.content],
+      reason: outcome === 'urgent' ? '真实用户要求处理临近截止的文件。' : '没有明确现实紧迫性。' });
+    transport.worldFetch.mockImplementation(async () => reply.promise);
+    try {
+      await f.service.handle({ type: 'action.run', ...scope, sourceMessageId: source.id, title: '真实只读检查', prompt: '只读检查用户指定的文件。' });
+      await vi.waitFor(() => expect(attentionCalls()).toHaveLength(1), { timeout: 15000 });
+      expect(started).toBe(false);
+      const action = f.store.listAction()[0]!;
+      if (outcome === 'cancel') await f.service.handle({ type: 'action.cancel', id: action.id });
+      reply.resolve(answer());
+      await vi.advanceTimersByTimeAsync(15000);
+      await vi.waitFor(() => expect((f.service as unknown as { actionJobs: Map<string, Promise<void>> }).actionJobs.size).toBe(0), { timeout: 15000 });
+      expect(started).toBe(outcome !== 'cancel');
+      expect(f.store.getAction(action.id).status).toBe(outcome !== 'cancel' ? 'succeeded' : 'cancelled');
+      expect(attentionCalls()).toHaveLength(1);
+      expect(priorityHost(f.service).priorityHolders.size).toBe(0);
+      if (order) expect(f.store.request({ type: 'work-order.list', ...scope }).workOrderPage!.items.find(item => item.id === order.id)?.status).toBe('accepted');
+    } finally { reply.resolve(answer()); }
+  });
+
+  it('keeps a real paused order until the last parent/parallel action holder ends, with fresh SQL for each holder', async () => {
+    const f = fixture(fakeDsh(() => ({ tasks: [], operations: [] }), vi.fn(async () => ({ ok: true as const }))));
+    await f.service.handle({ type: 'state' });
+    const scope = scopeFor(f), host = priorityHost(f.service);
+    const order = f.store.request({ type: 'work-order.create', ...scope, sourceMessageId: f.source.id, title: '原有工作', instruction: '保留原任务的明确要求。' }).workOrder!;
+    const source = await urgentSource(f);
+    const ids = await Promise.all([1, 2, 3].map(() => host.beginPriority(scope.companionId, scope.conversationId, source.id)));
+    expect(ids[0]).toBeTruthy(); expect(new Set(ids).size).toBe(1);
+    expect(host.priorityHolders.get(ids[0]!)?.count).toBe(3);
+    expect(transport.request.mock.calls.filter(([command]) => command.type === 'interruption.begin' && command.sourceMessageId === source.id)).toHaveLength(3);
+    const currentOrder = () => f.store.request({ type: 'work-order.list', ...scope }).workOrderPage!.items.find(item => item.id === order.id)!;
+    expect(currentOrder().status).toBe('paused');
+    await Promise.all([host.endPriority(ids[0]), host.endPriority(ids[1])]);
+    expect(currentOrder().status).toBe('paused');
+    await host.endPriority(ids[2]); expect(currentOrder().status).toBe('accepted'); expect(host.priorityHolders.size).toBe(0);
+  });
+
+  it('releases a priority holder after a drain failure instead of leaving the real order paused', async () => {
+    const f = fixture(fakeDsh(() => ({ tasks: [], operations: [] }), vi.fn(async () => ({ ok: true as const }))));
+    await f.service.handle({ type: 'state' });
+    const scope = scopeFor(f), host = priorityHost(f.service);
+    const order = f.store.request({ type: 'work-order.create', ...scope, sourceMessageId: f.source.id, title: '待恢复工作', instruction: '原要求不应因停止等待失败而丢失。' }).workOrder!;
+    const source = await urgentSource(f);
+    const drain = vi.spyOn(host.autonomy, 'drainOrder').mockRejectedValueOnce(new Error('injected drain failure'));
+    try {
+      await expect(host.beginPriority(scope.companionId, scope.conversationId, source.id)).rejects.toThrow('injected drain failure');
+      expect(host.priorityHolders.size).toBe(0);
+      expect(f.store.request({ type: 'work-order.list', ...scope }).workOrderPage!.items.find(item => item.id === order.id)?.status).toBe('accepted');
+    } finally { drain.mockRestore(); }
+  });
+
+  it('retains a failed last-holder release for an exact idempotent retry', async () => {
+    const f = fixture(fakeDsh(() => ({ tasks: [], operations: [] }), vi.fn(async () => ({ ok: true as const }))));
+    await f.service.handle({ type: 'state' });
+    const scope = scopeFor(f), host = priorityHost(f.service);
+    const order = f.store.request({ type: 'work-order.create', ...scope, sourceMessageId: f.source.id, title: '准确保留的工作', instruction: '临时打断结束后恢复原工作。' }).workOrder!;
+    const source = await urgentSource(f), id = await host.beginPriority(scope.companionId, scope.conversationId, source.id);
+    const original = transport.request.getMockImplementation()!; let fail = true;
+    transport.request.mockImplementation(async command => {
+      if (command.type === 'interruption.end' && fail) { fail = false; throw new Error('injected priority release failure'); }
+      return original(command);
+    });
+    await expect(host.endPriority(id)).rejects.toThrow('injected priority release failure');
+    expect(host.priorityHolders.get(id!)?.count).toBe(1);
+    expect(f.store.request({ type: 'work-order.list', ...scope }).workOrderPage!.items.find(item => item.id === order.id)?.status).toBe('paused');
+    await host.endPriority(id); expect(host.priorityHolders.size).toBe(0);
+    expect(f.store.request({ type: 'work-order.list', ...scope }).workOrderPage!.items.find(item => item.id === order.id)?.status).toBe('accepted');
+  });
+
+  it.each(['inherited', 'explicit'] as const)('settles a late SQL acquisition and releases its pause after %s cancellation before acknowledgement', async cancellation => {
+    const f = fixture(fakeDsh(() => ({ tasks: [], operations: [] }), vi.fn(async () => ({ ok: true as const }))));
+    await f.service.handle({ type: 'state' });
+    const scope = scopeFor(f), host = priorityHost(f.service);
+    const order = f.store.request({ type: 'work-order.create', ...scope, sourceMessageId: f.source.id, title: '取消后继续的工作', instruction: '不能因新的请求取消而停留在临时暂停。' }).workOrder!;
+    const source = await urgentSource(f), entered = deferred<void>(), release = deferred<void>(), controller = new AbortController();
+    const original = transport.request.getMockImplementation()!;
+    transport.request.mockImplementation(async command => {
+      const result = await original(command);
+      if (command.type === 'interruption.begin') { entered.resolve(); await release.promise; }
+      return result;
+    });
+    let settled = false;
+    const acquire = () => host.beginPriority(scope.companionId, scope.conversationId, source.id, cancellation === 'explicit' ? controller.signal : undefined)
+      .finally(() => { settled = true; });
+    const pending = (cancellation === 'inherited' ? withCompanionExecutionValidation(acquire, controller.signal) : acquire()).catch(error => error);
+    try {
+      await entered.promise;
+      expect(f.store.request({ type: 'work-order.list', ...scope }).workOrderPage!.items.find(item => item.id === order.id)?.status).toBe('paused');
+      const stopped = new Error('cancelled priority acquisition'); controller.abort(stopped);
+      if (cancellation === 'inherited') expect(await pending).toBe(stopped);
+      release.resolve(); await vi.waitFor(() => expect(settled).toBe(true));
+      expect(await pending).toBe(stopped);
+      expect(host.priorityHolders.size).toBe(0);
+      expect(f.store.request({ type: 'work-order.list', ...scope }).workOrderPage!.items.find(item => item.id === order.id)?.status).toBe('accepted');
+    } finally { release.resolve(); }
+  });
 });
 
 it('cancels a host action during capacity preflight without starting an external process', async () => {
@@ -461,6 +1062,9 @@ it('keeps two delegated website loops and peer group replies independent for the
   const f = fixture(fakeDsh(() => ({ tasks: records, operations: [] }), requestTask), false);
   const peers = ['设计伙伴', '资料伙伴'].map(name => f.store.createCompanion({ name, description: '', persona: '独立做事', model: '', avatar: 'flash', proactive: false }));
   for (const peer of peers) { f.store.setCompanionActive(peer.id, true); keepAwake(f.store, peer.id, f.store.openPrivate(peer.id).id); }
+  // Production dispatch waits for full initialization. This case measures
+  // already admitted concurrent tasks, rather than three cold portrait births.
+  await f.service.handle({ type: 'state' });
   const jobs = peers.map((peer, index) => {
     const origin = f.store.openPrivate(peer.id), marker = 'WEB_PRIVATE_' + index;
     f.store.appendMessage({ conversationId: origin.id, authorId: 'user', content: '不可分享的闲聊 PRIVATE_CHAT_' + index, replyDirective: 'none' });
@@ -496,9 +1100,12 @@ it('keeps two delegated website loops and peer group replies independent for the
   const run = f.service as unknown as { runGoal(input: typeof jobs[number], signal: AbortSignal): Promise<{ status: string }> };
   const signals = [new AbortController(), new AbortController()];
   const pending = jobs.map((job, index) => run.runGoal(job, signals[index]!.signal));
-  for (const job of pending) void job.catch(() => undefined);
+  const failures: string[] = [];
+  for (const job of pending) void job.catch(error => { failures.push(String(error)); });
   try {
-  await vi.waitFor(() => expect(records).toHaveLength(2), { timeout: 15000 });
+  await vi.waitFor(() => expect(records, JSON.stringify({ failures,
+    reports: ((Reflect.get(f.service, 'options') as { report: { mock: { calls: unknown[][] } } }).report.mock.calls).map(([error]) => String(error)),
+    calls: transport.request.mock.calls.reduce<Record<string, number>>((counts, [command]) => { counts[command.type] = (counts[command.type] ?? 0) + 1; return counts; }, {}) })).toHaveLength(2), { timeout: 15000 });
   expect(new Set(f.store.listAction().map(action => action.parentMessageId)).size).toBe(2);
   const group = f.store.request({ type: 'social.conversation.ensure', companionId: peers[0]!.id, memberIds: ['sister', ...peers.map(peer => peer.id)] }).socialConversation!;
   const chatSource = f.store.appendMessage({ conversationId: f.store.openPrivate(peers[0]!.id).id, authorId: 'user', content: '到伙伴群里问问大家今天想聊什么。', replyDirective: 'none' });
@@ -661,8 +1268,11 @@ it.each(['launch', 'running'])('delivers guidance across the native %s boundary 
 
 it('does not launch a late resumed DSH task if the reply is cancelled again during native recovery preparation', async () => {
   const f = interruptedDshFixture(1);
+  const report = vi.mocked((Reflect.get(f.service, 'options') as Pick<CompanionServiceOptions, 'report'>).report);
   const source = (await f.service.handle({ type: 'message.send', conversationId: f.conversation.id, content: '完成两项检查', clientId: 'cancel-during-native-resume' })).message!;
-  await vi.waitFor(() => expect(f.store.listAction().find(action => action.title === '已完成的检查')?.status).toBe('succeeded'), { timeout: 15000 });
+  await vi.waitFor(() => expect(f.store.listAction().find(action => action.title === '已完成的检查')?.status,
+    JSON.stringify({ actions: f.store.listAction().map(action => ({ status: action.status, error: action.error })),
+      reports: report.mock.calls.map(([error]) => error instanceof Error ? error.stack : String(error)) })).toBe('succeeded'), { timeout: 15000 });
   await runningNativeCheck(f);
   const workId = f.store.request({ type: 'work.list', sourceMessageId: source.id }).works![0]!.id;
   await f.service.handle({ type: 'reply.cancel', conversationId: f.conversation.id, workId }); await vi.advanceTimersByTimeAsync(1100);
@@ -679,6 +1289,7 @@ it('does not launch a late resumed DSH task if the reply is cancelled again duri
   expect(f.records).toHaveLength(2);
   expect(f.store.request({ type: 'work.list', sourceMessageId: source.id }).works![0]!.status).toBe('cancelled');
   expect(f.store.listAction().find(action => action.title === '可恢复的检查')?.status).toBe('cancelled');
+  expect(report.mock.calls.map(([error]) => String(error)).join('\n')).not.toContain('Execution validation session closed.');
 });
 
 it('keeps the newest cancellation when retry is still draining the previous native execution', async () => {
@@ -2211,8 +2822,149 @@ function modelStream() {
   const response = new Response(new ReadableStream<Uint8Array>({ start(value) { controller = value; }, cancel }), { headers: { 'Content-Type': 'text/event-stream' } });
   return { response, cancel, send(delta: unknown, finish_reason: string | null = null) {
     controller.enqueue(encoder.encode('data: ' + JSON.stringify({ choices: [{ index: 0, delta, finish_reason }] }) + '\n\n'));
+    if (finish_reason) controller.enqueue(encoder.encode('data: [DONE]\n\n'));
   } };
 }
+
+it('rejects a changed final preparation before actual HTTP, dispatched audit or dispatch telemetry', async () => {
+  const f = fixture(fakeDsh(() => ({ tasks: [], operations: [] }), vi.fn(async () => ({ ok: true as const }))), true);
+  const timing = vi.fn(); (f.service as unknown as { options: { onTiming: CompanionServiceOptions['onTiming'] } }).options.onTiming = timing;
+  const prepare = CompanionContextSnapshots.prototype.prepareAttempt, dispatched = vi.fn();
+  const observe = vi.spyOn(CompanionContextSnapshots.prototype, 'prepareAttempt').mockImplementation(async function(this: CompanionContextSnapshots, input) {
+    const attempt = await prepare.call(this, input);
+    const profile = path.join(f.root, 'cognition', '伙伴记忆', 'sister', 'profile.md');
+    writeFileSync(profile, readFileSync(profile, 'utf8') + '\nUNREGISTERED_AFTER_PREPARE\n');
+    return { ...attempt, dispatched: async () => { dispatched(); await attempt.dispatched(); } };
+  });
+  try {
+    const source = (await f.service.handle({ type: 'message.send', conversationId: f.conversation.id,
+      content: '请回答这条真实请求。', clientId: 'final_authority_before_http' })).message!;
+    await vi.waitFor(() => expect(f.store.request({ type: 'loop.get', sourceMessageId: source.id, companionId: 'sister' }).loop?.progress?.phase).toBe('interrupted'), { timeout: 15000 });
+    expect(transport.fetch).not.toHaveBeenCalled(); expect(dispatched).not.toHaveBeenCalled();
+    const snapshots = (f.service as unknown as { contextSnapshots: CompanionContextSnapshots }).contextSnapshots;
+    const items = (await snapshots.list('sister')).items;
+    expect(items).toHaveLength(1); expect(items[0]).toMatchObject({ status: 'cancelled_before_send' }); expect(items[0]!.sentAt).toBeUndefined();
+    expect(timing.mock.calls.some(([event]) => event.operation === 'reply.context.final')).toBe(true);
+    expect(timing.mock.calls.some(([event]) => event.operation === 'reply.http_dispatch')).toBe(false);
+    const preflight = timing.mock.calls.map(([event]) => event.operation);
+    expect(preflight).toEqual(expect.arrayContaining(['reply.preflight.capture_evidence', 'reply.preflight.public_profiles',
+      'reply.preflight.visible_files', 'reply.preflight.tool_images', 'reply.preflight.evidence_current', 'reply.preflight.agenda_tools',
+      'reply.preflight.resolve_assets', 'reply.preflight.prepare_attempt', 'reply.preflight.attempt_before_dispatch', 'reply.preflight.model_to_final']));
+    expect(preflight.indexOf('reply.preflight.model_to_final')).toBeLessThan(preflight.indexOf('reply.context.final'));
+  } finally { observe.mockRestore(); }
+});
+
+it.each(['before_public_profiles', 'before_final_gate'] as const)('keeps the sealed task identity through real source-backed growth (%s)', async boundary => {
+  const f = fixture(fakeDsh(() => ({ tasks: [], operations: [] }), vi.fn(async () => ({ ok: true as const }))), true);
+  const host = f.service as unknown as { assetProfiles: CompanionAssetProfileStore; profiles: CompanionPublicProfiles;
+    fileReadiness: CompanionMemoryFileReadiness; call(command: CompanionStorageCommand): Promise<CompanionStorageResponse> };
+  const scope = { companionId: 'sister', conversationId: f.conversation.id }, formation = '我发现，给建议前先说明自己还不知道什么，能让我表达得更准确。';
+  transport.fetch.mockResolvedValueOnce(modelResponse(formation));
+  const first = (await f.service.handle({ type: 'message.send', conversationId: scope.conversationId,
+    content: '说说你最近怎样组织建议。', clientId: 'growth_card_formation' })).message!;
+  await vi.waitFor(() => expect(f.store.request({ type: 'loop.get', sourceMessageId: first.id, companionId: scope.companionId }).loop?.status).toBe('done'), { timeout: 15000 });
+  const firstLoop = f.store.request({ type: 'loop.get', sourceMessageId: first.id, companionId: scope.companionId }).loop!, own = f.store.getMessage(firstLoop.messageId!);
+  const recorded = f.store.request({ type: 'memory.record', ...scope, candidate: { artifactKind: 'self_understanding', content: formation,
+    tags: ['表达'], sourceMessageIds: [own.id], evidence: [{ sourceMessageId: own.id, quote: formation }], relatedMemoryIds: [],
+    selfDevelopment: { kind: 'voice', topic: '有条件表达', statement: formation, basis: 'self_expression', supersedesMemoryIds: [] } } });
+  const note = recorded.memories![0]!;
+  await host.fileReadiness.ensure(scope, note.id, note.contentRevision!);
+  const before = await host.assetProfiles.load(scope.companionId), fragment = before.personaFragments.fragments[0]!;
+  const generate = vi.fn<typeof generateCompanionStructured>().mockResolvedValue({ decisions: [{ action: 'qualify', fragmentId: fragment.fragmentId,
+    expectedHash: fragment.contentHash, text: '温柔沉稳；提供建议时先说明未知与适用条件。', supportingNoteIds: [note.id], reason: '真实已发布的本人表达支持局部练习。',
+    applicableBehavior: '建议前保留未知。', reevaluateWhen: '后续真实交流出现反例时重新核对。' }], noChangeReason: '' });
+  const growth = new CompanionGrowthService({ profiles: host.assetProfiles, requestStorage: command => host.call(command),
+    getConfig: () => ({ apiFormat: 'openai_chat', model: 'controlled_growth', apiKey: 'fixture' }), generateStructured: generate, report: vi.fn() });
+  let changed = false, taskBlob: string | undefined, growthResult: Awaited<ReturnType<CompanionGrowthService['runOnce']>> | undefined;
+  const denials: Array<{ message: string; artifacts: unknown[] }> = [];
+  const witnessPort = CompanionArtifactRegistry.prototype as unknown as { verifyWitnesses(entries: readonly unknown[]): Promise<void> };
+  const verify = witnessPort.verifyWitnesses;
+  const witness = vi.spyOn(witnessPort, 'verifyWitnesses').mockImplementation(async function(this: CompanionArtifactRegistry, entries) {
+    try { await verify.call(this, entries); }
+    catch (error) { denials.push({ message: error instanceof Error ? error.message : String(error), artifacts: entries.map(entry => {
+      const value = entry as { kind: string; artifactId?: string; artifact?: { artifactId: string }; reference?: { artifactId: string } };
+      return value.artifactId ?? value.artifact?.artifactId ?? value.reference?.artifactId;
+    }) }); throw error; }
+  });
+  const change = async () => {
+    if (changed) return; changed = true;
+    const current = f.store.messages({ conversationId: scope.conversationId }).messages.find(message => message.content === '本任务使用收到消息时的人格继续回答。')!;
+    const loop = f.store.request({ type: 'loop.get', sourceMessageId: current.id, companionId: scope.companionId }).loop!;
+    taskBlob = loop.taskAssets; expect(taskBlob).toBeTruthy();
+    expect(JSON.parse(taskBlob!).snapshot.profile.persona).toBe(before.profile.persona);
+    growthResult = await detachedCompanionExecutionValidation(() => growth.runOnce(scope));
+    expect(growthResult.status, growthResult.reason).toBe('published');
+  };
+  const prepareProfiles = host.profiles.prepare.bind(host.profiles), prepareAttempt = CompanionContextSnapshots.prototype.prepareAttempt;
+  const cards = vi.spyOn(host.profiles, 'prepare').mockImplementation(async input => { if (boundary === 'before_public_profiles') await change(); return prepareProfiles(input); });
+  const audit = vi.spyOn(CompanionContextSnapshots.prototype, 'prepareAttempt').mockImplementation(async function(this: CompanionContextSnapshots, input) {
+    const attempt = await prepareAttempt.call(this, input); if (boundary === 'before_final_gate') await change(); return attempt;
+  });
+  transport.fetch.mockImplementation(async () => modelResponse('我会使用本任务开始时的自我描述回答。'));
+  try {
+    const source = (await f.service.handle({ type: 'message.send', conversationId: scope.conversationId,
+      content: '本任务使用收到消息时的人格继续回答。', clientId: 'growth_card_current_task' })).message!;
+    await vi.waitFor(() => {
+      const current = f.store.request({ type: 'loop.get', sourceMessageId: source.id, companionId: scope.companionId }).loop;
+      const reports = (f.service as unknown as { options: { report: { mock: { calls: unknown[][] } } } }).options.report.mock.calls;
+      expect(current?.status, JSON.stringify({ phase: current?.progress?.phase, detail: current?.progress?.detail, growthResult, denials,
+        errors: reports.map(([error]) => error instanceof Error ? { name: error.name, message: error.message, stack: error.stack?.split('\n').slice(1, 5) } : String(error)) })).toBe('done');
+    }, { timeout: 15000 });
+    const loop = f.store.request({ type: 'loop.get', sourceMessageId: source.id, companionId: scope.companionId }).loop!;
+    expect(loop.taskAssets).toBe(taskBlob); expect(changed).toBe(true); expect(generate).toHaveBeenCalledOnce();
+    const grown = await host.assetProfiles.load(scope.companionId);
+    expect(grown.profileRevision).not.toBe(before.profileRevision);
+    expect(JSON.parse(loop.preparedTask!).companion.persona).toBe(before.profile.persona);
+    const next = (await f.service.handle({ type: 'message.send', conversationId: scope.conversationId,
+      content: '新任务请按你现在的自我描述回答。', clientId: 'growth_card_next_task' })).message!;
+    await vi.waitFor(() => {
+      const current = f.store.request({ type: 'loop.get', sourceMessageId: next.id, companionId: scope.companionId }).loop;
+      const reports = (f.service as unknown as { options: { report: { mock: { calls: unknown[][] } } } }).options.report.mock.calls;
+      expect(current?.status, JSON.stringify({ phase: current?.progress?.phase, detail: current?.progress?.detail, denials,
+        errors: reports.map(([error]) => error instanceof Error ? { name: error.name, message: error.message, stack: error.stack?.split('\n').slice(1, 5) } : String(error)) })).toBe('done');
+    }, { timeout: 15000 });
+    const nextLoop = f.store.request({ type: 'loop.get', sourceMessageId: next.id, companionId: scope.companionId }).loop!;
+    expect(JSON.parse(nextLoop.taskAssets!).snapshot.profileRevision).toBe(grown.profileRevision);
+    expect(JSON.parse(nextLoop.preparedTask!).companion.persona).toBe(grown.profile.persona);
+    expect(f.store.request({ type: 'loop.get', sourceMessageId: source.id, companionId: scope.companionId }).loop!.taskAssets).toBe(taskBlob);
+  } finally { cards.mockRestore(); audit.mockRestore(); witness.mockRestore(); await growth.close(); }
+});
+
+it('withdraws an actual streamed preview and fails once when the paid dispatched receipt cannot settle', async () => {
+  const requestTask = vi.fn<DshLauncher['requestTask']>().mockResolvedValue({ ok: true });
+  const f = fixture(fakeDsh(() => ({ tasks: [], operations: [] }), requestTask), true), wire = modelStream(), dispatch = deferred<void>();
+  const timing = vi.fn((event: Parameters<NonNullable<CompanionServiceOptions['onTiming']>>[0]) => {
+    if (event.operation === 'reply.http_dispatch' || event.operation.startsWith('reply.preflight.')) throw new Error('fixture diagnostic observer failed');
+  });
+  (f.service as unknown as { options: { onTiming: CompanionServiceOptions['onTiming'] } }).options.onTiming = timing;
+  const prepare = CompanionContextSnapshots.prototype.prepareAttempt;
+  const observe = vi.spyOn(CompanionContextSnapshots.prototype, 'prepareAttempt').mockImplementation(async function(this: CompanionContextSnapshots, input) {
+    const attempt = await prepare.call(this, input);
+    return { ...attempt, dispatched: async () => { await dispatch.promise; throw new Error('fixture paid receipt failure'); } };
+  });
+  transport.fetch.mockResolvedValueOnce(wire.response);
+  try {
+    const source = (await f.service.handle({ type: 'message.send', conversationId: f.conversation.id,
+      content: '只读检查这项资料。', clientId: 'paid_receipt_stream_failure' })).message!;
+    await vi.waitFor(() => expect(transport.fetch).toHaveBeenCalledOnce(), { timeout: 15000 });
+    wire.send({ content: '实际收到的前半句' });
+    await vi.waitFor(() => expect(replyEvents().some(event => event.phase === 'streaming' && event.text === '实际收到的前半句')).toBe(true));
+    wire.send({ content: '，真实尾句。', tool_calls: [{ index: 0, id: 'never_execute_unsettled', function: { name: 'dsh',
+      arguments: JSON.stringify({ operation: 'run', tasks: [{ title: '不得启动', prompt: '这份未结算提案不能执行。' }] }) } }] }, 'tool_calls');
+    await vi.advanceTimersByTimeAsync(1100);
+    expect(replyEvents().some(event => event.phase === 'streaming' && event.text.endsWith('真实尾句。'))).toBe(true);
+    dispatch.resolve();
+    await vi.waitFor(() => expect(f.store.request({ type: 'loop.get', sourceMessageId: source.id, companionId: 'sister' }).loop?.progress?.phase).toBe('failed'), { timeout: 15000 });
+    const loop = f.store.request({ type: 'loop.get', sourceMessageId: source.id, companionId: 'sister' }).loop!;
+    expect(loop.turns).toEqual([]); expect(loop.draft).toBeUndefined();
+    expect(replyEvents().some(event => event.phase === 'discarded' && event.sourceMessageId === source.id)).toBe(true);
+    expect(f.store.getMessage(loop.messageId!).content).toBe('');
+    expect(f.store.listAction()).toEqual([]); expect(requestTask).not.toHaveBeenCalled(); expect(transport.fetch).toHaveBeenCalledOnce();
+    const actual = timing.mock.calls.filter(([event]) => event.operation === 'reply.http_dispatch').map(([event]) => event);
+    expect(actual).toEqual([{ operation: 'reply.http_dispatch', durationMs: 0, httpDispatchEpochMs: expect.any(Number),
+      messageHash: createHash('sha256').update(loop.messageId!).digest('hex'), sourceMessageHash: createHash('sha256').update(source.id).digest('hex') }]);
+  } finally { dispatch.resolve(); observe.mockRestore(); }
+});
 
 describe('CompanionService current public player identity', () => {
   it('records a manual reply stop as a user decision and supplies it to the next independent reply', async () => {
@@ -2274,6 +3026,10 @@ describe('CompanionService current public player identity', () => {
   it('discards an in-flight response to an outdated profile and retries with the latest identity', async () => {
     const pending = deferred<Response>();
     const f = fixture(fakeDsh(() => ({ tasks: [], operations: [] }), vi.fn(async () => ({ ok: true as const }))), true);
+    const timing = vi.fn((event: Parameters<NonNullable<CompanionServiceOptions['onTiming']>>[0]) => {
+      if (event.operation === 'reply.retry') throw new Error('retry observer is unavailable');
+    });
+    (f.service as unknown as { options: { onTiming: CompanionServiceOptions['onTiming'] } }).options.onTiming = timing;
     transport.fetch.mockImplementationOnce(() => pending.promise).mockResolvedValue(modelResponse('新的公开资料已生效。'));
     const source = (await f.service.handle({ type: 'message.send', conversationId: f.conversation.id, content: '认识一下彼此', clientId: 'profile-changed-mid-reply' })).message!;
     await vi.waitFor(() => expect(transport.fetch).toHaveBeenCalledOnce(), { timeout: 15000 });
@@ -2289,6 +3045,12 @@ describe('CompanionService current public player identity', () => {
     expect(replyEvents().some(event => event.phase === 'discarded')).toBe(true);
     const loop = f.store.request({ type: 'loop.get', sourceMessageId: source.id, companionId: 'sister' }).loop!;
     expect(f.store.getMessage(loop.messageId!).content).toBe('新的公开资料已生效。');
+    const retries = timing.mock.calls.flatMap(([event]) => event.operation === 'reply.retry' ? [event] : []);
+    expect(retries).toEqual([{ operation: 'reply.retry', durationMs: 0, retryReason: 'public_profile_revision', attempt: 1,
+      sourceMessageHash: createHash('sha256').update(source.id).digest('hex'),
+      messageHash: createHash('sha256').update(loop.messageId!).digest('hex') }]);
+    expect(JSON.stringify(retries)).not.toContain(source.id);
+    expect(JSON.stringify(retries)).not.toContain('这是更新后的公开自述。');
     expect(JSON.stringify(loop.turns)).not.toContain('旧资料中的称呼');
   });
   it('rejects user identity edits during a pending reply while preserving that original identity and source request', async () => {
@@ -3267,6 +4029,44 @@ it('keeps DSH in the background while the main brain handles private user guidan
   expect(f.store.messages({ conversationId: f.conversation.id }).messages.some(message => message.content.includes('网页已经按你的更正完成了'))).toBe(true);
 });
 
+it('rejects a group second recipient frozen body before model dispatch when its formal history revision changes after the shared snapshot', async () => {
+  const f = fixture(fakeDsh(() => ({ tasks: [], operations: [] }), vi.fn(async () => ({ ok: true as const }))));
+  const peer = f.store.createCompanion({ name: '第二接收伙伴', description: '', persona: '独立阅读当前群聊', model: '', avatar: 'flash', proactive: false });
+  f.store.setCompanionActive(peer.id, true); keepAwake(f.store, peer.id, f.store.openPrivate(peer.id).id);
+  const group = f.store.createConversation('准确群聊快照', ['sister', peer.id]);
+  await f.service.handle({ type: 'state' });
+  const authority = f.store.appendMessage({ conversationId: group.id, authorId: 'user', content: '请说明这项已经发生的事实。', replyDirective: 'none' });
+  const draft = f.store.appendMessage({ conversationId: group.id, authorId: 'sister', content: '', loopStep: 0, replyToId: authority.id });
+  const scope = { companionId: 'sister', conversationId: group.id };
+  const readset = captureCompanionExecutionReadset(scope, { sources: [{ id: authority.id, conversationId: group.id, checksum: createHash('sha256').update(authority.content).digest('hex') }] });
+  const publish = (text: string) => f.store.request({ type: 'loop.save', checkpoint: { ...scope, sourceMessageId: authority.id, messageId: draft.id,
+    status: 'done', turns: [{ text, rawText: text, calls: [] }], supplements: [] }, executionReadset: readset });
+  publish('GROUP_FROZEN_OLD_BODY'); const original = f.store.getMessage(draft.id);
+  const source = f.store.appendMessage({ conversationId: group.id, authorId: 'user', content: '两位都根据之前的发言回答。', replyDirective: 'none' });
+  let snapshotObserved = false, revised = false;
+  transport.request.mockImplementation(async command => {
+    if (command.type === 'loop.get' && command.companionId === peer.id && command.sourceMessageId === source.id && !revised) {
+      expect(snapshotObserved).toBe(true); publish('GROUP_CURRENT_REVISED_BODY'); revised = true;
+    }
+    const response = f.store.request(command);
+    if (command.type === 'reply.task.snapshot' && command.sourceMessageId === source.id) {
+      expect(response.messages!.find(message => message.id === original.id)?.content).toBe(original.content); snapshotObserved = true;
+    }
+    return response;
+  });
+  transport.fetch.mockImplementation(async () => modelResponse('只可以基于当前获权事实回复。'));
+  const respond = Reflect.get(f.service, 'respond') as (conversationId: string, controller: AbortController, proactive: boolean,
+    delivery: 'parallel', recovery: boolean, sourceMessageId: string) => Promise<void>;
+  await respond.call(f.service, group.id, new AbortController(), false, 'parallel', false, source.id);
+  expect(revised).toBe(true); expect(f.store.getMessage(original.id).revision).toBeGreaterThan(original.revision!);
+  expect(transport.request.mock.calls.some(([command]) => command.type === 'memory.references.validate' && command.groups.some(group => group.companionId === peer.id
+    && group.sources.some(reference => reference.id === original.id) && group.sources.some(reference => reference.id === source.id)))).toBe(true);
+  const second = f.store.request({ type: 'loop.get', companionId: peer.id, sourceMessageId: source.id }).loop!;
+  expect(second.context).toBeUndefined(); expect(second.progress?.phase).toBe('failed');
+  expect(second.progress?.detail).toContain('来源已变化');
+  expect(transport.fetch.mock.calls.map(([, init]) => String(init?.body)).join('\n')).not.toContain('GROUP_FROZEN_OLD_BODY');
+});
+
 describe('one durable bubble per source and native multi-step main loop', () => {
   it('hands a chat movement to the durable loop and automatically reports freshly observed weather without another player message', async () => {
     const f = fixture(fakeDsh(() => ({ tasks: [], operations: [] }), vi.fn()));
@@ -3404,7 +4204,9 @@ describe('one durable bubble per source and native multi-step main loop', () => 
     expect(sourceContext(restored.messages[1].content)).toEqual(sourceContext(snapshot.user));
     expect(JSON.parse(restored.messages[1].content).taskRequest.sourceMessageId).toBe(source.id);
     const [currentTime] = currentCapabilityObservations([restored.messages[1].content], snapshot.user, 'sister', f.conversation.id);
-    expect(Date.parse(currentTime!)).toBeGreaterThan(Date.parse(JSON.parse(snapshot.user).capabilityAvailability.observedAt));
+    // The same prepared task retains its observation receipt. Actual native
+    // execution has its separate current authorization and readiness gates.
+    expect(currentTime).toBe(JSON.parse(snapshot.user).capabilityAvailability.observedAt);
     await closeService(restarted);
   });
   it('waits for a genuine tool result, then continues the same loop and bubble', async () => {

@@ -58,6 +58,7 @@ import { companionPresence, COMPANION_PRESENCE_LABELS } from '../../shared/compa
 import { trimMessageWindow } from './message-window';
 import { CompanionRecentReadCache } from './recent-read-cache';
 import { companionProgressMessage, preserveCompanionProgressMessages } from './message-progress-projection';
+import { appendCompanionTranscript, type CompanionTranscriptPageIdentity } from './transcript-append';
 import { createCoalescedRefresh } from './coalesced-refresh';
 import { applyCompanionRuntimeProgress } from './runtime-progress';
 import { companionTimestamp, companionTimezone } from '../../shared/companion-time';
@@ -239,6 +240,9 @@ export function Companions({ api, dshApi, onOpenSettings, isActive = true }: { r
   const positionedHighlight = useRef<string | null>(null);
   const loadEpoch = useRef(0);
   const latestLoadEpoch = useRef(0);
+  const acceptedMessagePageEpoch = useRef(0);
+  const acceptedTranscriptPage = useRef<CompanionTranscriptPageIdentity | undefined>(undefined);
+  const transcriptAuthorityEpoch = useRef(0);
   const latestReads = useRef(new Map<string, ReturnType<typeof request>>());
   const actionsEpoch = useRef(0);
   const actionReads = useRef(new Map<string, ReturnType<typeof request>>());
@@ -307,6 +311,7 @@ export function Companions({ api, dshApi, onOpenSettings, isActive = true }: { r
   }, [api]);
 
   const clearResetCaches = useCallback((companionId: string) => {
+    acceptedTranscriptPage.current = undefined; ++transcriptAuthorityEpoch.current;
     recentMessages.clear(); latestReads.current.clear();
     for (const [id, event] of liveProgress.current) if (event.companionId === companionId) liveProgress.current.delete(id);
     setExperienceOwnerId(current => current === companionId ? undefined : current);
@@ -398,7 +403,8 @@ export function Companions({ api, dshApi, onOpenSettings, isActive = true }: { r
     // keep deleted messages (or a previous workspace's rows) alive indefinitely.
     const merged = preserveCompanionProgressMessages(response.messages, messagesRef.current, liveProgress.current.values(), stateRef.current, id, topicId);
     const window = trimMessageWindow(merged, 'newer');
-    messagesRef.current = window; setMessages(window); setHasNewer(false);
+    acceptedTranscriptPage.current = { conversationId: id, topicId };
+    ++acceptedMessagePageEpoch.current; messagesRef.current = window; setMessages(window); setHasNewer(false);
     setHasMore((response.hasMore ?? false) || window.length < merged.length);
     setLoadingMessages(false);
     setMessageLoadFailed(false);
@@ -453,7 +459,12 @@ export function Companions({ api, dshApi, onOpenSettings, isActive = true }: { r
     readInFlight.current = id;
     const response = await request({ type: 'conversation.read', id });
     readInFlight.current = null;
-    if (response?.ok) setState(current => current ? { ...current, conversations: current.conversations.map(item => item.id === id ? { ...item, unread: 0 } : item) } : current);
+    if (response?.ok) {
+      const acknowledge = (current: CompanionState | null) => current ? { ...current,
+        conversations: current.conversations.map(item => item.id === id ? { ...item, unread: 0 } : item) } : current;
+      stateRef.current = acknowledge(stateRef.current);
+      setState(acknowledge);
+    }
   }, [request]);
 
   const applyLiveProgress = useCallback(() => {
@@ -501,10 +512,10 @@ export function Companions({ api, dshApi, onOpenSettings, isActive = true }: { r
   useEffect(() => {
     // A stream of world/message changes must not invalidate every unfinished
     // snapshot. Finish and display one batch, then read again if it became dirty.
-    let refreshContent = true;
+    let refreshContent = true, refreshMetadata = false;
     const refresh = createCoalescedRefresh(async () => {
-      const full = refreshContent; refreshContent = false;
-      const reads: Promise<unknown>[] = [full ? refreshState() : refreshRuntimeProgress()];
+      const full = refreshContent, metadata = refreshMetadata; refreshContent = false; refreshMetadata = false;
+      const reads: Promise<unknown>[] = [full || metadata ? refreshState() : refreshRuntimeProgress()];
       const id = selectedRef.current;
       if (full && id && activeRef.current && pageRef.current === 'messages') {
         reads.push(!historyRef.current ? loadMessages(id, true).then(() => loadActions(id)) : loadActions(id), loadTopics(id));
@@ -513,16 +524,41 @@ export function Companions({ api, dshApi, onOpenSettings, isActive = true }: { r
     }, undefined, 500);
     void refresh.trigger();
     const unsubscribe = api?.onChanged(change => {
+      // Memory indexing/encoding changes its own views, never a published
+      // transcript or current role. Hard/legacy notifications still win.
+      if (change?.kind === 'memory') return;
+      if (change?.kind === 'transcript') {
+        const id = selectedRef.current, result = appendCompanionTranscript({ event: change,
+          conversations: stateRef.current?.conversations ?? [], selectedId: id, topicId: id ? messageTopic(id) : undefined,
+          history: historyRef.current, acceptedPage: acceptedTranscriptPage.current, messages: messagesRef.current });
+        if (result.kind !== 'reload') {
+          // This event carries a fresh append, not permission to reuse a cached
+          // page on the next visit. Preserve active stream/action projections.
+          recentMessages.clear(); latestReads.current.clear(); refreshMetadata = true;
+          if (result.kind === 'append') {
+            ++latestLoadEpoch.current; ++acceptedMessagePageEpoch.current;
+            messagesRef.current = result.messages; setMessages(result.messages);
+            latestSequence.current = Math.max(latestSequence.current, result.sequence);
+            setHasMore(current => current || result.trimmed); setHasNewer(false);
+            setLoadingMessages(false); setMessageLoadFailed(false);
+            if (!stickyRef.current) setNewMessages(true);
+          } else if (result.kind === 'newer') setNewMessages(true);
+          return refresh.trigger();
+        }
+        // No verified current page, an identity conflict, or an unknown room
+        // needs the same authoritative reload as a legacy/full notification.
+      }
       if (change?.kind !== 'progress') {
         // A real content/authority change dominates every progress notification
         // until its full read starts. Pure progress already has its own stream.
         refreshContent = true;
-        recentMessages.clear(); latestReads.current.clear(); actionReads.current.clear(); ++actionsEpoch.current;
+        acceptedTranscriptPage.current = undefined; ++transcriptAuthorityEpoch.current;
+        recentMessages.clear(); latestReads.current.clear(); ++latestLoadEpoch.current; actionReads.current.clear(); ++actionsEpoch.current;
       }
       return refresh.trigger();
     });
     return () => { unsubscribe?.(); refresh.dispose(); };
-  }, [api, refreshState, refreshRuntimeProgress, loadMessages, loadActions, loadTopics, recentMessages]);
+  }, [api, refreshState, refreshRuntimeProgress, loadMessages, loadActions, loadTopics, recentMessages, messageTopic]);
   const previousView = useRef({ page, isActive });
   useEffect(() => {
     const previous = previousView.current; previousView.current = { page, isActive };
@@ -567,6 +603,7 @@ export function Companions({ api, dshApi, onOpenSettings, isActive = true }: { r
     // change inside that same room needs to invalidate an existing window.
     if (!previous || previous.conversationId !== selectedId || previous.topicId === selected?.activeTopicId) return;
     if (!selectedId || topicHistoryFilterRef.current !== 'current') return;
+    acceptedTranscriptPage.current = undefined;
     recentMessages.clear(); latestReads.current.clear();
     liveProgress.current.clear();
     ++loadEpoch.current; ++latestLoadEpoch.current;
@@ -668,6 +705,7 @@ export function Companions({ api, dshApi, onOpenSettings, isActive = true }: { r
     if (key) setDrafts(current => ({ ...current, [key]: { ...EMPTY_DRAFT, ...current[key], ...patch } }));
   }
   function filterTopicHistory(filter: CompanionTopicHistoryFilter) {
+    acceptedTranscriptPage.current = undefined;
     recentMessages.clear(); latestReads.current.clear();
     liveProgress.current.clear();
     topicHistoryFilterRef.current = filter; setTopicHistoryFilter(filter);
@@ -706,6 +744,7 @@ export function Companions({ api, dshApi, onOpenSettings, isActive = true }: { r
   function selectConversation(conversation: CompanionConversation) {
     historyScrollIntent.current = false;
     if (selectedRef.current !== conversation.id) {
+      acceptedTranscriptPage.current = undefined;
       closeAgenda(); liveProgress.current.clear();
       topicHistoryFilterRef.current = 'current'; setTopicHistoryFilter('current');
       ++loadEpoch.current; selectedRef.current = conversation.id; historyRef.current = false; stickyRef.current = true; latestSequence.current = 0;
@@ -797,9 +836,11 @@ export function Companions({ api, dshApi, onOpenSettings, isActive = true }: { r
     const sentDraftKey = draftKey;
     const sentTopicId = selected?.activeTopicId ?? null;
     const sentDraft = draft;
+    const sentPageEpoch = acceptedMessagePageEpoch.current;
+    const sentAuthorityEpoch = transcriptAuthorityEpoch.current;
     sendInFlight.current = true; setSending(true); setError(''); stickyRef.current = true; setHighlightedId(null);
     const wasHistory = historyRef.current;
-    if (wasHistory) { historyRef.current = false; setHistoryMode(false); setMessages([]); }
+    if (wasHistory) { acceptedTranscriptPage.current = undefined; historyRef.current = false; setHistoryMode(false); messagesRef.current = []; setMessages([]); }
     const response = await request({ type: 'message.send', conversationId: id, topicId: sentTopicId, content: sentDraft.content, clientId: crypto.randomUUID(),
       toolPolicy: { ...toolPolicy },
       ...(urgent ? { priority: 'urgent' as const } : {}),
@@ -811,9 +852,16 @@ export function Companions({ api, dshApi, onOpenSettings, isActive = true }: { r
       const currentDraft = current[sentDraftKey] ?? EMPTY_DRAFT;
       return { ...current, [sentDraftKey]: { content: currentDraft.content === sentDraft.content ? '' : currentDraft.content, attachments: currentDraft.attachments.filter(item => !sentDraft.attachments.some(sent => sent.id === item.id)), ...(currentDraft.reply?.id !== sentDraft.reply?.id && currentDraft.reply ? { reply: currentDraft.reply } : {}) } };
     });
-    if (selectedRef.current === id) {
-      if (response.message && (messageTopic(id) === undefined || messageTopic(id) === (response.message.topicId ?? null))) setMessages(current => mergeMessages(current, [response.message!]));
-      await loadMessages(id, !wasHistory);
+    if (selectedRef.current === id && !historyRef.current) {
+      const accepted = response.message, topic = messageTopic(id);
+      if (acceptedMessagePageEpoch.current === sentPageEpoch && transcriptAuthorityEpoch.current === sentAuthorityEpoch
+        && accepted?.conversationId === id && (topic === undefined || topic === (accepted.topicId ?? null))) {
+        // Public ACKs do not attest a newly inserted/current row. Only the
+        // independently verified delta can append it. If no delta/new page
+        // arrived, recover with a fresh page; a late ACK after a hard event
+        // must neither restore its old body nor overtake the withdrawal read.
+        void loadMessages(id, true);
+      }
     }
     void refreshState(); if (selectedRef.current === id) composerRef.current?.focus();
   }

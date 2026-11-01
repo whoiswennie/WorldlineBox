@@ -15,7 +15,7 @@ const frame: CompanionContextFrame = { schema: 'worldlinebox.companion-context-v
   identity: '', roleGuidance: '', processorContract: context.system, input: context.user,
   sourceRefs: [{ artifactId: 'source:source1:r1', contentRevision: 1, contentHash: 'c'.repeat(64) }] };
 
-describe('bounded background global-model structural repair', () => {
+describe('bounded global-model structural repair with inherited admission', () => {
   it('keeps an existing denial while repairing another field and never flips false into authorization', async () => {
     const original = '{"allowed":false,"spellingWrong":"原有拒绝仍有效"}', fetchFn = vi.fn<typeof fetch>()
       .mockResolvedValueOnce(response(original)).mockResolvedValueOnce(response('{"allowed":true,"reason":"原有拒绝仍有效"}'))
@@ -147,7 +147,7 @@ describe('bounded background global-model structural repair', () => {
       repairActive++; peak = Math.max(peak, repairActive);
       if (!releaseAll) await new Promise<void>(resolve => release.push(resolve)); repairActive--; return response('{"notes":[]}');
     };
-    const jobs = Array.from({ length: 5 }, (_, i) => generateCompanionStructured(context, { ...config, ownerId: `owner${i}` }, undefined, { fetchFn, responseSchema: schema }));
+    const jobs = Array.from({ length: 5 }, (_, i) => generateCompanionStructured(context, { ...config, ownerId: `owner${i}`, workPriority: 'background' }, undefined, { fetchFn, responseSchema: schema }));
     try {
       await vi.waitFor(() => { expect(repairActive).toBe(2); expect(companionModelQuota.snapshot().queued).toBeGreaterThanOrEqual(3); });
       expect(await generateCompanionText({ system: '', user: '{"purpose":"foreground_probe"}' }, { ...config, workPriority: 'foreground' }, undefined, { fetchFn })).toBe('still responsive');
@@ -157,6 +157,35 @@ describe('bounded background global-model structural repair', () => {
       }
       await Promise.all(jobs); expect(peak).toBe(2);
     } finally { releaseAll = true; release.splice(0).forEach(resolve => resolve()); await Promise.allSettled(jobs); }
+  });
+  it.each(['foreground', undefined] as const)('keeps %s parent repairs out of a same-owner background preflight queue', async priority => {
+    const ownerId = 'foreground-repair-owner';
+    let releaseBackground: () => void = () => undefined, entered = false;
+    const held = new Promise<void>(resolve => { releaseBackground = resolve; });
+    const backgroundFetch = vi.fn<typeof fetch>().mockResolvedValue(response('maintenance finished'));
+    const background = generateCompanionText({ system: '', user: '{"purpose":"held_background_preflight"}' },
+      { ...config, ownerId, workPriority: 'background', providerLifecycle: { beforeDispatch: async () => { entered = true; await held; return async () => undefined; } } },
+      undefined, { fetchFn: backgroundFetch });
+    let foreground: Promise<unknown> | undefined;
+    try {
+      await vi.waitFor(() => expect(entered).toBe(true));
+      expect(companionModelQuota.snapshot().activeBackground).toBeGreaterThanOrEqual(1);
+      const originalCheck = vi.fn(async () => async () => undefined), globalCheck = vi.fn(async () => async () => undefined);
+      const fetchFn = vi.fn<typeof fetch>().mockResolvedValueOnce(response('{bad')).mockResolvedValueOnce(response('{"notes":[]}'));
+      let finished = false;
+      foreground = generateCompanionStructured(context, { ...config, ownerId, workPriority: priority,
+        providerLifecycle: { beforeDispatch: originalCheck }, resolveStructuredRepairConfig: async () => ({ ...config, ownerId,
+          model: 'global-repair-model', workPriority: 'background', providerLifecycle: { beforeDispatch: globalCheck } }) },
+        undefined, { fetchFn, responseSchema: schema }).then(value => { finished = true; return value; });
+      await vi.waitFor(() => expect(finished).toBe(true));
+      expect(await foreground).toEqual({ notes: [] });
+      expect(backgroundFetch).not.toHaveBeenCalled();
+      expect(originalCheck).toHaveBeenCalledTimes(2); expect(globalCheck).toHaveBeenCalledOnce();
+      expect(fetchFn.mock.calls.map(([, init]) => payload(init).model)).toEqual(['private-role-model', 'global-repair-model']);
+      expect(companionModelQuota.snapshot().activeBackground).toBeGreaterThanOrEqual(1);
+    } finally {
+      releaseBackground(); await Promise.allSettled([background, ...(foreground ? [foreground] : [])]);
+    }
   });
   it('binds child frames to original versions and refuses a changed revocation epoch before another HTTP call', async () => {
     let resolutions = 0;

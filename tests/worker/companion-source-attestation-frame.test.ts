@@ -93,13 +93,15 @@ it.each([false, true])('admits the newly formal same-ID reply freshly in the sam
 });
 
 it.each(['user', 'system'])('does not let %s draft lookalikes bypass the formal-source guard', async authorId => {
-  const f = fixture(), actual = f.messages[0]!;
-  const result = await guardCompanionExecutionSources({ type: 'message.get', id: actual.id }, { ok: true,
+  const f = fixture(), actual = f.messages[0]!, valid = vi.fn(async () => false);
+  await expect(guardCompanionExecutionSources({ type: 'message.get', id: actual.id }, { ok: true,
     message: { ...actual, authorId, isReplyDraft: true, replyDraft: { step: 0, attemptId: 'lookalike', text: '未获权正文' } } }, {
-    storage: f.storage, valid: async () => false,
-  });
-  expect(f.storage.mock.calls.some(([command]) => command.type === 'execution.invalidate')).toBe(true);
-  expect(result.message?.sourceUnavailable).toBe('execution_source_changed'); expect(result.message?.content).toBe('');
+    storage: f.storage, valid,
+  })).rejects.toThrow('正式消息正文');
+  expect(valid).not.toHaveBeenCalled();
+  // A forged response cannot bypass formal identity, or withdraw the actual
+  // healthy published source merely by changing its DTO's author/draft fields.
+  expect(f.storage.mock.calls.some(([command]) => command.type === 'execution.invalidate')).toBe(false);
 });
 
 it.each(['running', 'failed'] as const)('keeps actual %s capability cards behind current authority checks even when they carry draft fields', async status => {
@@ -259,10 +261,14 @@ it.each(['readset', 'withdrawal', 'extra_ancestor', 'root_association'] as const
     expect(f.sqlCount()).toBe(2);
     if (change === 'root_association') {
       const initial: CompanionStorageResponse = await f.storage.mock.results[0]!.value, final: CompanionStorageResponse = await f.storage.mock.results.at(-1)!.value;
-      const bindings = (response: CompanionStorageResponse) => response.executionSources?.map(({ sourceMessageIds: _roots, ...proof }) => {
-        void _roots; return proof;
+      const bindings = (response: CompanionStorageResponse) => response.executionSources?.map(({ sourceMessageIds: _roots, publicationCandidate: _candidate, ...proof }) => {
+        void _roots; void _candidate; return proof;
       }).sort((left, right) => left.id.localeCompare(right.id));
-      expect(bindings(final)).toEqual(bindings(initial)); // Only the root association changed, not any proof binding.
+      expect(bindings(final)).toEqual(bindings(initial)); // All actual execution input tuples remain unchanged.
+      expect(initial.executionSources?.find(proof => proof.kind === 'message' && proof.id === message.id)?.publicationCandidate).toBeDefined();
+      expect(final.executionSources?.find(proof => proof.kind === 'message' && proof.id === message.id)?.publicationCandidate).toBeUndefined();
+      // Rebinding the published row to an action also retires its old candidate;
+      // it cannot mint a new certificate using only the unchanged readset.
       expect(final.executionSources?.map(proof => proof.sourceMessageIds)).not.toEqual(initial.executionSources?.map(proof => proof.sourceMessageIds));
     }
   } finally { external.close(); }

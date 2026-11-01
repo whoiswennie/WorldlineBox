@@ -7,6 +7,7 @@ import { registryStorageFixture } from '../fixtures/companion-registry-storage';
 import { CompanionAssetProfileStore, renderCompanionAssetProfile } from '../../src/main/companions/asset-profile';
 import type { Companion } from '../../src/shared/companions';
 import { companionInstanceSchema } from '../../src/shared/companion-instance';
+import { withCompanionExecutionValidation } from '../../src/main/companions/source-execution-evidence';
 
 const roots: string[] = [];
 const databases: Array<{ close(): void }> = [];
@@ -72,6 +73,42 @@ it('uses one exact owner path batch for body admission and preserves caller orde
   await expect(f.registry.readManyByPaths(['记忆/经历/main/one.md'], () => 'identity')).rejects.toMatchObject({ code: 'DENIED' });
   await expect(f.registry.readManyByPaths(['记忆/经历/main/not_registered.md'], () => 'audit')).rejects.toMatchObject({ code: 'UNREGISTERED' });
   bodies.mockRestore();
+});
+
+it('shares exact first bytes inside one finite gate, isolates mutable consumers and rereads at each final boundary', async () => {
+  const f = await fixture();
+  await f.registry.publish({ ...item(), operationId: 'publish:shared_bytes' });
+  const bodies = vi.spyOn(f.registry as unknown as { bytes(relative: string): Promise<Buffer> }, 'bytes');
+  try {
+    await withCompanionExecutionValidation(async () => {
+      const first = await f.registry.read({ artifactId: 'memory:one', consumer: 'audit' });
+      first.bytes.fill(0);
+      const repeated = await f.registry.read({ artifactId: 'memory:one', consumer: 'episode_recall' });
+      expect(repeated.text).toBe(item().content);
+      expect(Buffer.isBuffer(repeated.bytes)).toBe(true);
+      expect(bodies).toHaveBeenCalledTimes(1);
+      await expect(f.registry.read({ artifactId: 'memory:one', consumer: 'identity' })).rejects.toMatchObject({ code: 'DENIED' });
+    });
+    expect(bodies).toHaveBeenCalledTimes(2);
+    await f.registry.read({ artifactId: 'memory:one', consumer: 'audit' });
+    expect(bodies).toHaveBeenCalledTimes(4);
+  } finally { bodies.mockRestore(); }
+});
+
+it.each(['same_stat_edit', 'external_permission'] as const)('rejects late %s after the exact bytes have been reused', async change => {
+  const f = await fixture();
+  const artifact = await f.registry.publish({ ...item(), operationId: 'publish:late_shared' });
+  await expect(withCompanionExecutionValidation(async () => {
+    await f.registry.read({ artifactId: artifact.artifactId, consumer: 'audit' });
+    await f.registry.read({ artifactId: artifact.artifactId, consumer: 'episode_recall' });
+    if (change === 'same_stat_edit') {
+      const file = path.join(f.ownerRoot, ...artifact.relativePath.split('/')), before = await stat(file);
+      await writeFile(file, String(item().content).replace('真实', '外改')); await utimes(file, before.atime, before.mtime);
+    } else {
+      f.database.sqlite.prepare('UPDATE companion_artifacts SET metadata=? WHERE owner_id=? AND artifact_id=?')
+        .run(JSON.stringify({ ...artifact, allowedConsumers: ['audit'] }), owner.id, artifact.artifactId);
+    }
+  })).rejects.toMatchObject({ code: 'CHANGED' });
 });
 
 it.each(['same_stat_edit', 'withdrawal', 'wrong_consumer', 'wrong_audience', 'during_read'] as const)('rejects %s through the batched canonical gate', async change => {

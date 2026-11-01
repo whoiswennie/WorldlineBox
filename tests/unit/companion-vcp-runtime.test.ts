@@ -14,6 +14,7 @@ const mocks = vi.hoisted(() => ({ clients: [] as Array<{ close: ReturnType<typeo
 const coldMocks = vi.hoisted(() => ({ services: [] as Array<{ close: ReturnType<typeof vi.fn>; options: ColdKnowledgeServiceOptions }> }));
 vi.mock('../../src/main/vcp-memory/client', () => ({ VcpMemoryClient: class {
   setOwnerPrompts = vi.fn();
+  bindOwnerPrompts = vi.fn((prompts: NonNullable<VcpMemoryClientOptions['plugins']>['ownerPrompts']) => { void prompts; return this; });
   close = vi.fn(async () => undefined);
   interruptScope = vi.fn(async () => undefined);
   purgeScope = vi.fn(async () => undefined);
@@ -43,6 +44,42 @@ function runtime(resolveEmbedding: () => Promise<VcpMemoryEmbeddingConfig>, reso
 }
 beforeEach(() => { mocks.clients.length = 0; coldMocks.services.length = 0; });
 
+it('cancels a cold verification waiter immediately without cancelling shared verification or creating a physical client', async () => {
+  let release!: (config: VcpMemoryEmbeddingConfig) => void, enter!: () => void;
+  const entered = new Promise<void>(resolve => { enter = resolve; });
+  const verification = new Promise<VcpMemoryEmbeddingConfig>(resolve => { release = resolve; });
+  const resolveEmbedding = vi.fn(async () => { enter(); return verification; });
+  const resolveStorage = vi.fn(storage('unused-data')), controller = new AbortController();
+  const service = new CompanionVcpRuntime({ resolveOwnerStorage: resolveStorage, resolveOwnerCleanupStorage: storage('unused-data'), vendorRoot: 'unused-vendor', workerPath: 'unused-worker', resolveEmbedding });
+  const first = service.get({ ownerId: 'alice', signal: controller.signal }), cancelled = expect(first).rejects.toThrow('cold verification cancelled');
+  await entered; controller.abort(new Error('cold verification cancelled')); await cancelled;
+  expect(resolveStorage).not.toHaveBeenCalled(); expect(mocks.clients).toHaveLength(0); expect(service.resourceSnapshot().admissions.coreAndCold).toBe(0);
+  const next = service.get({ ownerId: 'alice' }); release(configuration());
+  const lease = await next; expect(mocks.clients).toHaveLength(1); await lease.release?.(); await service.close();
+});
+
+it('cancels an owner-storage waiter and fences its late result before any client can be constructed', async () => {
+  let release!: (value: Awaited<ReturnType<ReturnType<typeof storage>>>) => void, enter!: () => void;
+  const entered = new Promise<void>(resolve => { enter = resolve; });
+  const pendingStorage = new Promise<Awaited<ReturnType<ReturnType<typeof storage>>>>(resolve => { release = resolve; });
+  const resolveStorage = vi.fn(async () => { enter(); return pendingStorage; });
+  const service = new CompanionVcpRuntime({ resolveOwnerStorage: resolveStorage, resolveOwnerCleanupStorage: storage('unused-data'), vendorRoot: 'unused-vendor', workerPath: 'unused-worker', resolveEmbedding: async () => configuration() });
+  const controller = new AbortController(), first = service.get({ ownerId: 'alice', signal: controller.signal }), cancelled = expect(first).rejects.toThrow('storage cancelled');
+  await entered; controller.abort(new Error('storage cancelled')); await cancelled;
+  expect(mocks.clients).toHaveLength(0); release(await storage('unused-data')('alice'));
+  await Promise.resolve(); await Promise.resolve(); expect(mocks.clients).toHaveLength(0); await service.close();
+});
+
+it('reports constant runtime admission phases without leaking scope or credentials and ignores observer failures', async () => {
+  const events: Array<{ operation: string; durationMs: number }> = [];
+  const service = new CompanionVcpRuntime({ resolveOwnerStorage: storage('PRIVATE_PATH'), resolveOwnerCleanupStorage: storage('PRIVATE_PATH'), vendorRoot: 'PRIVATE_VENDOR', workerPath: 'PRIVATE_WORKER',
+    resolveEmbedding: async () => ({ ...configuration(), apiKey: 'PRIVATE_TOKEN' }), onTiming: event => { events.push(event); throw new Error('observer unavailable'); } });
+  const lease = await service.get({ ownerId: 'PRIVATE_OWNER' }); await lease.release?.(); await service.close();
+  expect(events.map(event => event.operation)).toEqual(['runtime.resolveEmbedding', 'runtime.resolveOwnerStorage', 'runtime.tail_queue', 'runtime.resolveOwnerStorage.recheck', 'runtime.client_construct']);
+  expect(events.every(event => Number.isFinite(event.durationMs) && event.durationMs >= 0 && Object.keys(event).sort().join(',') === 'durationMs,operation')).toBe(true);
+  expect(JSON.stringify(events)).not.toContain('PRIVATE_');
+});
+
 describe('VCP semantic space and shutdown boundaries', () => {
   it.each(['memory', 'knowledge'] as const)('cleans one owner’s %s while another owner waits for a full pool', async kind => {
     const service = runtime(async () => configuration()), leases = [];
@@ -66,7 +103,7 @@ describe('VCP semantic space and shutdown boundaries', () => {
       ...(await storage(root)(owner)).ownerPrompts, aimemoTemplate: await readFile(prompt, 'utf8') } }));
     const service = new CompanionVcpRuntime({ resolveOwnerStorage, resolveOwnerCleanupStorage: storage(root), vendorRoot: 'unused', workerPath: 'unused', resolveEmbedding: async () => configuration() });
     try {
-      const query = await service.get({ ownerId: 'alice' }), setPrompts = query.client.setOwnerPrompts as ReturnType<typeof vi.fn>;
+      const query = await service.get({ ownerId: 'alice' }), setPrompts = query.client.bindOwnerPrompts as ReturnType<typeof vi.fn>;
       await query.release?.(); const before = setPrompts.mock.calls.length; await rm(prompt);
       const index = await service.get({ ownerId: 'alice', purpose });
       await index.client.forget({ scopeId: 'synthetic-index' }, 'withdrawn_note'); await index.release?.();
@@ -135,7 +172,7 @@ describe('VCP semantic space and shutdown boundaries', () => {
     try {
       template = 'NEW {{knowledge_base}}'; const second = await service.acquireGeneration({ ownerId: 'alice', config: chat() });
       try { expect(second.client).toBe(first.client); expect(second.profileKey).toBe(first.profileKey);
-        expect(mocks.clients[0]!.close).not.toHaveBeenCalled(); expect(Reflect.get(first.client, 'setOwnerPrompts')).toHaveBeenCalledWith(expect.objectContaining({ aimemoTemplate: template })); }
+        expect(mocks.clients[0]!.close).not.toHaveBeenCalled(); expect(Reflect.get(first.client, 'bindOwnerPrompts')).toHaveBeenCalledWith(expect.objectContaining({ aimemoTemplate: template })); }
       finally { await second.release(); }
     } finally { await first.release(); await service.close(); }
   });
@@ -214,6 +251,24 @@ describe('VCP semantic space and shutdown boundaries', () => {
       await resolve(anotherCallback.dispatchToken)!.beforeDispatch(); expect(otherDispatch).toHaveBeenCalledOnce(); expect(beforeDispatch).toHaveBeenCalledOnce();
       await anotherCallback.release(); expect(() => resolve(anotherCallback.dispatchToken)).toThrow('失效');
     } finally { await service.close(); }
+  });
+  it('selects each concurrent native HTTP lease role by its private dispatch token even without a provider lifecycle', async () => {
+    const routed: Readonly<CompanionModelConfig>[] = [];
+    const service = new CompanionVcpRuntime({ resolveOwnerStorage: storage('unused'), resolveOwnerCleanupStorage: storage('unused'), vendorRoot: 'unused', workerPath: 'unused',
+      resolveEmbedding: async () => configuration(), resolveGenerationPlugins: async input => { routed.push(input.config); return { plugins: {}, dispose: async () => undefined }; } });
+    const oldRole = vi.fn(async () => ({ system: 'old role', user: '' })), newRole = vi.fn(async () => ({ system: 'new role', user: '' }));
+    const leases = [];
+    try {
+      const old = await service.acquireGeneration({ ownerId: 'alice', config: { ...chat(), resolveAssetContext: oldRole } }); leases.push(old);
+      const next = await service.acquireGeneration({ ownerId: 'alice', config: { ...chat(), resolveAssetContext: newRole } }); leases.push(next);
+      const manual = await service.acquireGeneration({ ownerId: 'alice', config: chat() }); leases.push(manual);
+      expect(routed).toHaveLength(1);
+      const resolve = routed[0]!.resolveNativeAssetContext!;
+      expect(resolve(old.dispatchToken)).toBe(oldRole); expect(resolve(next.dispatchToken)).toBe(newRole); expect(resolve(manual.dispatchToken)).toBeUndefined();
+      expect(() => resolve()).toThrow('准确派发凭证'); expect(() => resolve('unknown')).toThrow('失效');
+      await next.release(); expect(() => resolve(next.dispatchToken)).toThrow('失效'); expect(resolve(old.dispatchToken)).toBe(oldRole);
+      await old.release(); expect(() => resolve(old.dispatchToken)).toThrow('失效'); expect(resolve(manual.dispatchToken)).toBeUndefined();
+    } finally { await Promise.all(leases.map(lease => lease.release())); await service.close(); }
   });
   it('keeps durable governance stable across restarts and sensitive endpoint rotations while isolating live caches', async () => {
     const options = { resolveOwnerStorage: storage('unused-data'), resolveOwnerCleanupStorage: storage('unused-data'), vendorRoot: 'unused', workerPath: 'unused',

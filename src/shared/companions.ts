@@ -51,11 +51,12 @@ import { companionTopicPublicCommands, companionTopicSchema, companionTopicState
 export const COMPANIONS_CHANNEL = 'worldlinebox:companions';
 export const COMPANIONS_CHANGED_CHANNEL = 'worldlinebox:companions-changed';
 export const COMPANION_REPLY_STREAM_CHANNEL = 'worldlinebox:companion-reply-stream';
-/** Only a host progress update can avoid rereading authoritative chat bodies.
- * Missing, legacy or unknown notifications always require a full refresh. */
-export const companionChangeEventSchema = z.strictObject({ kind: z.literal('progress') });
-export type CompanionChangeEvent = z.infer<typeof companionChangeEventSchema>;
 export const companionIdSchema = z.string().regex(/^[a-zA-Z0-9_-]{1,100}$/);
+/** This event never represents source/ACL withdrawal or transcript edits.
+ * An empty owner list updates all memory views, not authoritative chat bodies. */
+export const companionMemoryChangeEventSchema = z.strictObject({ kind: z.literal('memory'),
+  change: z.enum(['status', 'content']), companionIds: z.array(companionIdSchema).max(1000) });
+export type CompanionMemoryChangeEvent = z.infer<typeof companionMemoryChangeEventSchema>;
 export const companionReplyStreamEventSchema = z.strictObject({
   conversationId: companionIdSchema, companionId: companionIdSchema, sourceMessageId: companionIdSchema,
   messageId: companionIdSchema, step: z.number().int().nonnegative().safe(), attemptId: companionIdSchema,
@@ -120,6 +121,21 @@ export const messageSchema = z.object({
   segments: z.array(z.object({ text: z.string().max(65536), actionIds: z.array(companionIdSchema).max(16) })).optional(),
 });
 export type CompanionMessage = z.infer<typeof messageSchema>;
+/** Only a host-verified, newly committed append may use this notification.
+ * Transcript edits, withdrawals and permission changes remain full invalidations. */
+export const companionTranscriptChangeEventSchema = z.strictObject({ kind: z.literal('transcript'), change: z.literal('append'), message: messageSchema })
+  .refine(({ message }) => Number.isSafeInteger(message.sequence) && Number.isSafeInteger(message.revision ?? 1)
+    && message.kind === 'text' && message.status === 'sent' && !message.sourceUnavailable
+    && !message.actionId && !message.worldObservation && !message.hostBehavior && !message.memoryEvidenceOnly
+    && message.audience !== 'agenda' && !message.replyDraft && !message.segments?.length
+    && (message.authorId === 'user' && !message.isReplyDraft
+      || message.authorId !== 'user' && message.authorId !== 'system' && message.isReplyDraft === true && !message.content && !message.attachments.length),
+  'Only an ordinary committed append or empty persisted reply draft is a transcript delta.');
+export type CompanionTranscriptChangeEvent = z.infer<typeof companionTranscriptChangeEventSchema>;
+/** Missing, legacy, malformed or unknown notifications require a full refresh. */
+export const companionChangeEventSchema = z.discriminatedUnion('kind', [z.strictObject({ kind: z.literal('progress') }), companionMemoryChangeEventSchema,
+  companionTranscriptChangeEventSchema]);
+export type CompanionChangeEvent = z.infer<typeof companionChangeEventSchema>;
 export const companionMessagesQuerySchema = z.object({
   conversationId: companionIdSchema, before: z.number().int().positive().optional(),
   topicId: companionIdSchema.nullable().optional(),

@@ -1,7 +1,8 @@
 import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import path from 'node:path';
 import { tmpdir } from 'node:os';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
+import { AsyncLocalStorage } from 'node:async_hooks';
 import { afterEach, expect, it, vi } from 'vitest';
 import type { Companion, CompanionMemory, CompanionMessage } from '../../src/shared/companions';
 import type { CompanionStorageCommand, CompanionStorageResponse } from '../../src/shared/companion-storage';
@@ -15,6 +16,10 @@ import { CompanionService } from '../../src/main/companions/service';
 import { CompanionAssetIo } from '../../src/main/companions/asset-io';
 import { prepareCompanionTaskAssets, readCompanionTaskAssets, validateCompanionTaskAssets, type CompanionTaskAssetBinding } from '../../src/main/companions/task-asset-snapshot';
 import type { CompanionLoopCheckpoint } from '../../src/shared/companion-loop';
+import type { CompanionModelConfig } from '../../src/main/companions/model';
+import type { CompanionOwnerRuntimeStorage } from '../../src/main/companions/owner-runtime-storage';
+import type { CompanionTaskAssets } from '../../src/main/companions/task-asset-snapshot';
+import { assembleCompanionAssetContext } from '../../src/main/companions/asset-context';
 
 vi.mock('electron', () => ({ net: { fetch: vi.fn() }, dialog: { showOpenDialog: vi.fn() }, ipcMain: { handle: vi.fn() },
   protocol: { handle: vi.fn() }, shell: { showItemInFolder: vi.fn() }, safeStorage: { isEncryptionAvailable: () => true } }));
@@ -65,6 +70,17 @@ async function fixture(background = false) {
       case 'memory.lifecycle.state': return { ok: true, memoryLifecycleState: { companionId: owner.id, ledgerSequence: 1, revocationEpoch: epoch } };
       case 'memory.records.filter': return { ok: true, memories: command.ids.includes(note.id) ? [note] : [] };
       case 'memory.sources.filter': return { ok: true, memorySources: sourceVisible ? [source, ...extraSources].filter(item => command.ids.includes(item.id)) : [] };
+      case 'memory.references.validate': return { ok: true, memoryReferenceValidation: { groups: command.groups.map(group => {
+        if (group.memories.length) throw new Error('This source fixture must not manufacture memory reference authority.');
+        const actual = sourceVisible ? [source, ...extraSources].filter(message => group.sources.some(expected => expected.id === message.id)
+          && message.conversationId === group.conversationId) : [];
+        return { companionId: group.companionId, conversationId: group.conversationId, ...(group.beforeSequence !== undefined ? { beforeSequence: group.beforeSequence } : {}),
+          valid: group.companionId === owner.id && group.sources.every(expected => actual.some(message => message.id === expected.id
+            && message.conversationId === expected.conversationId && companionArtifactHash(message.content) === expected.checksum
+            && (expected.revision === undefined || expected.revision === (message.revision ?? 1)))),
+          sourceHeaders: actual.map(message => ({ id: message.id, authorId: message.authorId, conversationId: message.conversationId,
+            revision: message.revision ?? 1, checksum: companionArtifactHash(message.content) })), memoryHeaders: [] };
+      }) } };
       default: throw new Error(`Unexpected fixture storage command ${command.type}`);
     }
   });
@@ -97,7 +113,7 @@ async function fixture(background = false) {
     supportingNoteIds: [note.id], reason: '一次真实表达给出了值得练习的具体方向，先保留条件。', applicableBehavior: '给出建议前先说明未知。', reevaluateWhen: '遇到反例或后续交流不适用时重新审视。' }], noChangeReason: '' };
   const make = (generate: typeof generateCompanionStructured) => new CompanionGrowthService({ profiles, requestStorage, getConfig: async () => ({ apiFormat: 'openai_chat', model: 'deterministic-fixture', apiKey: 'fixture-not-a-secret' }),
     generateStructured: generate, report: vi.fn() });
-  return { root, registry, profiles, initial, source, note, requestStorage, validOutput, make, registryCommands: database.commands,
+  return { root, registry, profiles, initial, source, note, requestStorage, validOutput, make, registryCommands: database.commands, registryStorage: database.storage,
     setDebt: (generation: number) => { debt = { generation }; }, debt: () => debt, acknowledgements,
     addSource: (message: CompanionMessage) => { extraSources.push(message); },
     setGoals: (value: CompanionGrowthGoal[]) => { goals = value; },
@@ -105,6 +121,91 @@ async function fixture(background = false) {
     failNextPersonaCommit: () => { failPersonaCommit = true; }, failNextControlCommit: () => { failControlCommit = true; },
     failNextControlPrepare: () => { failControlPrepare = true; }, setActive: (value: boolean) => { active = value; } };
 }
+
+it('keeps concurrent old-task native prompts and guidance sealed across real growth while new tasks and manual reads use current authority', async () => {
+  const f = await fixture(), io = new CompanionAssetIo();
+  const room = { id: scope.conversationId, kind: 'private' as const, title: 'Fixture', memberIds: [owner.id], pinned: false, muted: false,
+    unread: 0, lastMessage: '', updatedAt: owner.createdAt };
+  const request = async (command: CompanionStorageCommand): Promise<CompanionStorageResponse> => {
+    if (command.type === 'message.get') return { ok: true, message: command.id === f.source.id ? f.source : undefined };
+    const response = await f.requestStorage(command);
+    return command.type === 'state' ? { ...response, state: { ...response.state!, conversations: [room] } } : response;
+  };
+  type NativeBinding = Omit<CompanionTaskAssetBinding, 'checkpoint'> & { checkpoint: CompanionLoopCheckpoint };
+  const bindings = new WeakMap<NonNullable<CompanionModelConfig['resolveAssetContext']>, NativeBinding>();
+  const host = Object.assign(Object.create(CompanionService.prototype), {
+    assetProfiles: new CompanionAssetProfileStore(f.root, { registryStorage: f.registryStorage, initialized: async () => true }),
+    assetIo: io, storage: { request }, call: request, resettingCompanions: new Set(), dormantCompanions: new Set(), contextSnapshots: {},
+    nativeTaskBindings: bindings, nativeTaskScope: new AsyncLocalStorage<{ task: NativeBinding; assets: CompanionTaskAssets; active: boolean } | undefined>(),
+    options: { getConfig: () => ({ apiFormat: 'openai_chat', model: 'fixture', apiKey: 'fixture' }) },
+    bindModelTransport: (_owner: string, config: CompanionModelConfig) => config,
+  }) as {
+    configFor(owner: Companion, priority: 'foreground', checkpoint: CompanionLoopCheckpoint, save: () => Promise<void>, socialJobId?: string): Promise<CompanionModelConfig>;
+    withNativeTaskMemory<T>(config: CompanionModelConfig, operation: () => Promise<T>): Promise<T>;
+    currentNativeTask(owner: string): { task: NativeBinding } | undefined;
+    resolveOwnerStorage(id: string): Promise<CompanionOwnerRuntimeStorage>;
+    prepareNativeModelAssetContext(owner: string, context: { system: string; user: string }, kind: 'text', native: undefined,
+      purpose: string, resolver: CompanionModelConfig['resolveAssetContext']): Promise<{ system: string; frame: CompanionContextFrame }>;
+  };
+  const checkpoint = (sourceMessageId: string): CompanionLoopCheckpoint => ({ companionId: owner.id, conversationId: room.id, sourceMessageId,
+    status: 'running', turns: [], supplements: [] });
+  const old = checkpoint('old_task'), save = vi.fn(async () => undefined);
+  const oldConfig = await host.configFor(owner, 'foreground', old, save);
+  const originalBinding = bindings.get(oldConfig.resolveAssetContext!);
+  expect(originalBinding?.checkpoint).toBe(old); expect(originalBinding?.save).toBe(save);
+  expect(originalBinding?.checkpoint.status).toBe('running');
+  expect(originalBinding?.checkpoint.turns).toBe(old.turns); expect(originalBinding?.checkpoint.supplements).toBe(old.supplements);
+  let release!: () => void, entered!: () => void;
+  const barrier = new Promise<void>(resolve => { release = resolve; }), reached = new Promise<void>(resolve => { entered = resolve; });
+  const oldRun = host.withNativeTaskMemory({ ...oldConfig }, async () => {
+    // The real MemoryService config callback re-enters with this complete
+    // checkpoint and the same save function; it must not synthesize a new loop.
+    const task = host.currentNativeTask(owner.id)!.task;
+    const nativeConfig = await host.configFor(owner, 'foreground', task.checkpoint, task.save, task.socialJobId);
+    expect(bindings.get(nativeConfig.resolveAssetContext!)?.checkpoint).toBe(old);
+    expect(bindings.get(nativeConfig.resolveAssetContext!)?.save).toBe(save);
+    const before = await host.resolveOwnerStorage(owner.id); entered(); await barrier;
+    const after = await host.resolveOwnerStorage(owner.id); return { before, after };
+  });
+  try {
+    await reached;
+    expect((await f.make(vi.fn<typeof generateCompanionStructured>().mockResolvedValue(f.validOutput)).runOnce(scope)).status).toBe('published');
+    const fresh = checkpoint('new_task'), newConfig = await host.configFor(owner, 'foreground', fresh, save);
+    const [next, manual] = await Promise.all([
+      host.withNativeTaskMemory(newConfig, () => host.resolveOwnerStorage(owner.id)), host.resolveOwnerStorage(owner.id),
+    ]);
+    release(); const previous = await oldRun;
+    expect(previous.after.ownerPrompts).toEqual(previous.before.ownerPrompts);
+    expect(next.ownerPrompts).toEqual(manual.ownerPrompts);
+    expect(next.ownerRoot).toBe(previous.before.ownerRoot); expect(next.indexRoot).toBe(previous.before.indexRoot);
+    const oldAssets = readCompanionTaskAssets(old.taskAssets!, old), newAssets = readCompanionTaskAssets(fresh.taskAssets!, fresh);
+    const signature = (assets: CompanionTaskAssets) => createHash('sha256')
+      .update(assembleCompanionAssetContext({ system: '', user: '' }, assets.snapshot, 'text', 'vcp_focus_guidance').system).digest('hex');
+    expect(previous.after.ownerPrompts.focusGuidanceSignature).toBe(signature(oldAssets));
+    expect(next.ownerPrompts.focusGuidanceSignature).toBe(signature(newAssets));
+    expect(newAssets.snapshot.profileRevision).not.toBe(oldAssets.snapshot.profileRevision);
+    expect(newAssets.snapshot.profile.persona).toContain('PRIVATE_CANARY'); expect(oldAssets.snapshot.profile.persona).not.toContain('PRIVATE_CANARY');
+    const context = { system: '只按真实来源交流。', user: JSON.stringify({ purpose: 'companion_reply', invocation: { conversationId: room.id } }) };
+    expect((await oldConfig.resolveAssetContext!(context, 'reply')).frame?.identity).toBe(oldAssets.snapshot.profile.persona);
+    expect((await newConfig.resolveAssetContext!(context, 'reply')).frame?.identity).toBe(newAssets.snapshot.profile.persona);
+    // Match the real HTTP gateway: there is no caller ALS at this boundary.
+    const [oldNative, newNative, manualNative] = await Promise.all([
+      host.prepareNativeModelAssetContext(owner.id, { system: '', user: 'opaque native inputs' }, 'text', undefined, 'vcp_focus_guidance', oldConfig.resolveAssetContext),
+      host.prepareNativeModelAssetContext(owner.id, { system: '', user: 'opaque native inputs' }, 'text', undefined, 'vcp_focus_guidance', newConfig.resolveAssetContext),
+      host.prepareNativeModelAssetContext(owner.id, { system: '', user: 'opaque native inputs' }, 'text', undefined, 'vcp_focus_guidance', undefined),
+    ]);
+    expect(oldNative.frame.profileRevision).toBe(oldAssets.snapshot.profileRevision);
+    expect(newNative.frame.profileRevision).toBe(newAssets.snapshot.profileRevision);
+    expect(manualNative.frame.profileRevision).toBe(newNative.frame.profileRevision);
+    expect(oldNative.system).toBe(assembleCompanionAssetContext({ system: '', user: 'opaque native inputs' }, oldAssets.snapshot, 'text', 'vcp_focus_guidance').system);
+    for (const [name, field] of [['aimemoTemplate', 'nativeFocusTemplate'], ['timelineTemplate', 'nativeTimelineTemplate'], ['summaryTemplate', 'nativeSummaryTemplate']] as const) {
+      expect(previous.after.ownerPrompts[name]).toBe(oldAssets.snapshot[field]); expect(next.ownerPrompts[name]).toBe(newAssets.snapshot[field]);
+    }
+    await f.registry.revoke(companionGrowthSourceArtifactId(f.source.id, 1)); f.withdrawSource();
+    await expect(host.withNativeTaskMemory(newConfig, () => host.resolveOwnerStorage(owner.id))).rejects.toThrow('撤回');
+    await expect(host.withNativeTaskMemory(oldConfig, () => host.resolveOwnerStorage(owner.id))).resolves.toHaveProperty('ownerRoot', previous.before.ownerRoot);
+  } finally { release(); await oldRun; await io.close(); }
+});
 
 it('T-018/T-024/T-044 submits a grounded local change that changes later identity and keeps private formation scoped', async () => {
   const f = await fixture(), generate = vi.fn<typeof generateCompanionStructured>().mockResolvedValue(f.validOutput), service = f.make(generate);
@@ -116,6 +217,34 @@ it('T-018/T-024/T-044 submits a grounded local change that changes later identit
   expect(projectCompanionAssetProfile(current, ['another_room']).persona).toContain('我仍在了解自己的表达习惯');
   expect((await f.registry.read({ artifactId: 'origin:creation', consumer: 'audit' })).text).toContain(owner.persona);
   expect((await service.runOnce(scope)).status).toBe('no_input'); expect(generate).toHaveBeenCalledTimes(1);
+});
+
+it('retries an initialized profile read against the complete new identity when actual growth publishes during its old-byte assembly', async () => {
+  const f = await fixture(), profiles = new CompanionAssetProfileStore(f.root, { registryStorage: f.registryStorage, initialized: async () => true });
+  const target = profiles as unknown as { registeredRead(root: string, file: string, current: Awaited<ReturnType<typeof f.registry.read>>, max?: number): Promise<{ text: string; hash: string; stamp: string }> };
+  const original = target.registeredRead.bind(profiles);
+  let entered!: () => void, release!: () => void, paused = false;
+  const reached = new Promise<void>(resolve => { entered = resolve; }), barrier = new Promise<void>(resolve => { release = resolve; });
+  const read = vi.spyOn(target, 'registeredRead').mockImplementation(async (root, file, current, max) => {
+    if (file === 'profile.md' && !paused) { paused = true; entered(); await barrier; }
+    return original(root, file, current, max);
+  });
+  const pending = profiles.bootstrapProfile(owner);
+  const generate = vi.fn<typeof generateCompanionStructured>().mockResolvedValue(f.validOutput);
+  let publication: Promise<Awaited<ReturnType<CompanionGrowthService['runOnce']>>> | undefined;
+  try {
+    await reached;
+    let completed = false;
+    publication = f.make(generate).runOnce(scope).then(result => { completed = true; return result; });
+    try { await vi.waitFor(() => expect(completed).toBe(true), { timeout: 5000 }); }
+    finally { release(); }
+    expect((await publication).status).toBe('published');
+    const snapshot = await pending, current = await f.profiles.load(owner.id);
+    expect(snapshot.profileRevision).toBe(current.profileRevision); expect(snapshot.profile).toEqual(current.profile);
+    expect(snapshot.profileRevision).not.toBe(f.initial.profileRevision); expect(snapshot.profile.persona).toContain('PRIVATE_CANARY');
+    expect(read.mock.calls.filter(([, file]) => file === 'profile.md').length).toBeGreaterThanOrEqual(2);
+    expect(generate).toHaveBeenCalledOnce();
+  } finally { release(); await Promise.allSettled([pending, ...(publication ? [publication] : [])]); read.mockRestore(); }
 });
 
 it('keeps an admitted task initial identity across a real grounded growth publication while new tasks see the scoped trait and actual withdrawal stops its users', async () => {

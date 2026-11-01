@@ -6,6 +6,7 @@ import { memorySchedule } from './memory-processing-schedule';
 import { z } from 'zod';
 import { companionMemoryTagSchema } from '../../shared/companion-memory';
 import type { CompanionAgendaExecutionResult } from './agenda-service';
+import type { CompanionMemoryChangeEvent } from '../../shared/companions';
 
 interface Options {
   request(command: CompanionStorageCommand): Promise<CompanionStorageResponse>;
@@ -17,6 +18,7 @@ interface Options {
   validateInput?(job: CompanionMemoryTagJob, signal: AbortSignal): Promise<void>;
   validate?(job: CompanionMemoryTagJob, tags: readonly string[], signal: AbortSignal): Promise<void>;
   fetchFn: typeof fetch; changed(): void; report(error: unknown): void; busy?(): boolean;
+  memoryChanged?(change: CompanionMemoryChangeEvent): void;
 }
 class StaleTagInput extends CompanionModelError {
   constructor() { super('CANCELLED', '标签处理的原始文档、来源或租约已经失效，旧正文未继续发送。', 'tag_input_stale'); }
@@ -46,6 +48,10 @@ export class CompanionMemoryTagService {
   private agendaWake?: (companionId: string) => void;
   private closed = false;
   constructor(private readonly options: Options) {}
+  private notifyMemory(change: CompanionMemoryChangeEvent['change'], companionId?: string): void {
+    if (this.options.memoryChanged) this.options.memoryChanged({ kind: 'memory', change, companionIds: companionId ? [companionId] : [] });
+    else this.options.changed();
+  }
   async schedulingFor(companionId?: string): Promise<CompanionMemoryJobSchedule> {
     let configured = false;
     try { const config = await this.options.config(companionId); configured = !!config.model?.trim() && !!config.apiKey?.trim(); } catch { /* Read-only configuration check; never an API request. */ }
@@ -68,17 +74,17 @@ export class CompanionMemoryTagService {
   }
   start(): void {
     if (this.closed || this.agendaWake || this.timer) return;
-    const next = () => { this.timer = undefined; this.scheduledAt = undefined; this.options.changed(); void this.tick().catch(this.options.report).finally(() => {
-      if (!this.closed && !this.agendaWake) { this.scheduledAt = Date.now() + 30000; this.timer = setTimeout(next, 30000); this.timer.unref(); this.options.changed(); }
+    const next = () => { this.timer = undefined; this.scheduledAt = undefined; this.notifyMemory('status'); void this.tick().catch(this.options.report).finally(() => {
+      if (!this.closed && !this.agendaWake) { this.scheduledAt = Date.now() + 30000; this.timer = setTimeout(next, 30000); this.timer.unref(); this.notifyMemory('status'); }
     }); };
-    this.scheduledAt = Date.now() + 1000; this.timer = setTimeout(next, 1000); this.timer.unref(); this.options.changed();
+    this.scheduledAt = Date.now() + 1000; this.timer = setTimeout(next, 1000); this.timer.unref(); this.notifyMemory('status');
   }
   tick(): Promise<void> {
     if (this.closed || this.agendaWake) return Promise.resolve();
     if (this.running) return this.running;
     const run = this.process(); this.running = run;
-    this.options.changed();
-    void run.finally(() => { if (this.running === run) { this.running = undefined; this.options.changed(); } }).catch(() => undefined);
+    this.notifyMemory('status');
+    void run.finally(() => { if (this.running === run) { this.running = undefined; this.notifyMemory('status'); } }).catch(() => undefined);
     return run;
   }
   private async process(): Promise<void> {
@@ -119,7 +125,7 @@ export class CompanionMemoryTagService {
   private async processJob(job: CompanionMemoryTagJob, parentSignal?: AbortSignal,
     onProgress?: (progress: CompanionTagAgendaProgress) => Promise<void>): Promise<CompanionAgendaExecutionResult> {
       const controller = new AbortController(), signal = parentSignal ? AbortSignal.any([controller.signal, parentSignal]) : controller.signal;
-      this.activeJobs.set(job.id, { job, controller }); this.options.changed();
+      this.activeJobs.set(job.id, { job, controller }); this.notifyMemory('status', job.companionId);
       let finished = false, renewing: Promise<void> | undefined;
       const heartbeat = setInterval(() => {
         if (finished || signal.aborted || renewing) return;
@@ -175,7 +181,7 @@ export class CompanionMemoryTagService {
         if (admission !== undefined) {
           await this.options.request({ type: 'memory.tags.defer', id: job.id, leaseToken: job.leaseToken, reason: 'admission',
             error: '模型请求尚未发送，等待工程队列或连接恢复；正文和标签任务已保留。', retryAfterMs: admission }).catch(this.options.report);
-          this.options.changed(); return this.wait('等待模型工程队列或连接恢复。', admission);
+          this.notifyMemory('status', job.companionId); return this.wait('等待模型工程队列或连接恢复。', admission);
         }
         const reason = error instanceof CompanionModelError && error.diagnostic === 'tag_input_stale' ? 'stale' : this.closed || error instanceof TagAgendaLinkPending ? 'admission' : signal.aborted || error instanceof CompanionModelError && error.code === 'CANCELLED'
           ? 'cancelled' : error instanceof CompanionModelError && error.code === 'CONFIG' ? 'needs_model' : 'retry';
@@ -189,7 +195,7 @@ export class CompanionMemoryTagService {
           error: (error instanceof Error ? error.message : '标签阶段未完成。').slice(0, 2000) };
       } finally {
         finished = true; clearInterval(heartbeat); await renewing;
-        this.activeJobs.delete(job.id); this.options.changed();
+        this.activeJobs.delete(job.id); this.notifyMemory('status', job.companionId);
       }
     }
   private async completed(job: CompanionMemoryTagJob): Promise<CompanionAgendaExecutionResult> {
@@ -214,13 +220,13 @@ export class CompanionMemoryTagService {
   }
   private async publish(job: CompanionMemoryTagJob, tags: string[], signal: AbortSignal): Promise<void> {
     await this.validateInput(job, signal); await this.options.validate?.(job, tags, signal); signal.throwIfAborted();
-    await this.options.request({ type: 'memory.tags.complete', id: job.id, leaseToken: job.leaseToken, tags }); this.options.changed();
+    await this.options.request({ type: 'memory.tags.complete', id: job.id, leaseToken: job.leaseToken, tags }); this.notifyMemory('content', job.companionId);
   }
   private async defer(job: CompanionMemoryTagJob, reason: 'needs_model' | 'retry' | 'cancelled' | 'stale' | 'admission'): Promise<void> {
     await this.options.request({ type: 'memory.tags.defer', id: job.id, leaseToken: job.leaseToken, reason,
       error: reason === 'needs_model' ? '等待全局聊天模型配置；正文已保存，稍后自动补充标签。' : reason === 'cancelled' ? '本轮标签处理已停止，原始正文保留。' : '自动标签尚未完成，正文已保存，稍后会重试。',
       retryAfterMs: reason === 'needs_model' ? 30000 : Math.min(300000, 5000 * 2 ** Math.min(job.cycleFailureCount + 1, 6)) }).catch(this.options.report);
-    this.options.changed();
+    this.notifyMemory('status', job.companionId);
   }
   cancelCompanion(owner: string): void {
     this.agendaQuanta.get(owner)?.controller.abort();

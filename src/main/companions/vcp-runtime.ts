@@ -72,7 +72,7 @@ interface GenerationEntry {
   key: string; ownerId: string; profileKey: string; connection: string; connectionEpoch: number;
   client: VcpMemoryClient; references: number; used: number; dispose(): Promise<void>; retiring?: Promise<void>;
   storage: CompanionOwnerRuntimeStorage;
-  lifecycles: Map<string, { lifecycle: CompanionModelConfig['providerLifecycle']; active: boolean }>;
+  lifecycles: Map<string, { lifecycle: CompanionModelConfig['providerLifecycle']; assetContext: CompanionModelConfig['resolveAssetContext']; active: boolean }>;
 }
 export interface CompanionVcpRuntimeOptions {
   vendorRoot: string; workerPath: string;
@@ -91,6 +91,8 @@ export interface CompanionVcpRuntimeOptions {
   processBroker?: VcpMemoryProcessBroker;
   nativeMaxOutstanding?: number;
   maxPendingAdmissions?: number;
+  /** Timing labels and elapsed time only; never include owner, path or credentials. */
+  onTiming?(event: { operation: string; durationMs: number }): void;
 }
 
 /** Embedding operations and trusted owner-generation leases have separate
@@ -125,6 +127,24 @@ export class CompanionVcpRuntime implements CompanionMemoryRuntime {
     ...([...this.generations.values(), ...this.cores.values()][0]?.client.preparedResourceSnapshot ? {
       prepared: [...this.generations.values(), ...this.cores.values()][0]!.client.preparedResourceSnapshot() } : {}) }; }
   private capacityError(): Error { return Object.assign(new Error('The native memory runtime admission queue is at capacity.'), { code: 'VCP_MEMORY_NATIVE_CAPACITY' }); }
+  private timing(operation: string, started: number): void {
+    try { this.options.onTiming?.({ operation, durationMs: Math.max(0, performance.now() - started) }); } catch { /* Diagnostics cannot change admission. */ }
+  }
+  private async measured<T>(operation: string, work: () => Promise<T>): Promise<T> {
+    const started = performance.now(); try { return await work(); } finally { this.timing(operation, started); }
+  }
+  /** Cancel only this waiter. Shared verification and tracked asset I/O retain
+   * their original owners until settled; no physical lease is created here. */
+  private wait<T>(work: Promise<T>, signal?: AbortSignal): Promise<T> {
+    if (!signal) return work;
+    return new Promise<T>((resolve, reject) => {
+      const abort = () => { signal.removeEventListener('abort', abort); reject(signal.reason ?? new DOMException('Memory admission cancelled.', 'AbortError')); };
+      const cleanup = () => signal.removeEventListener('abort', abort);
+      signal.addEventListener('abort', abort, { once: true });
+      if (signal.aborted) abort();
+      void work.then(value => { cleanup(); resolve(value); }, error => { cleanup(); reject(error); });
+    });
+  }
   async acknowledgePreparedRecall(reference: CompanionPreparedRecallReference): Promise<void> {
     companionPreparedRecallReferenceSchema.parse(reference);
     const storage = await this.cleanupStorage(reference.ownerId), root = path.join(storage.indexRoot, 'generation', digest(reference.profileKey));
@@ -202,9 +222,9 @@ export class CompanionVcpRuntime implements CompanionMemoryRuntime {
   private retireCore(entry: CoreEntry): Promise<void> { return entry.retiring ??= entry.client.close().then(() => {
     if (this.cores.get(entry.key) === entry) this.cores.delete(entry.key);
   }); }
-  private coreLease(entry: CoreEntry): CompanionEmbeddingLease {
+  private coreLease(entry: CoreEntry, prompts?: CompanionOwnerRuntimeStorage['ownerPrompts']): CompanionEmbeddingLease {
     entry.references++; entry.used = Date.now(); let released = false;
-    return { client: entry.client, profileKey: entry.profileKey, release: async () => { if (!released) { released = true; entry.references--; entry.used = Date.now(); } } };
+    return { client: prompts ? entry.client.bindOwnerPrompts(prompts) : entry.client, profileKey: entry.profileKey, release: async () => { if (!released) { released = true; entry.references--; entry.used = Date.now(); } } };
   }
   get(scope: CompanionMemoryOwnerScope): Promise<CompanionEmbeddingLease> {
     if (this.coreAdmissions.size >= this.maxPendingAdmissions) return Promise.reject(this.capacityError());
@@ -212,18 +232,19 @@ export class CompanionVcpRuntime implements CompanionMemoryRuntime {
     const current = () => { scope.signal?.throwIfAborted(); if (this.closed) throw new Error('记忆服务已关闭。');
       if ((this.ownerEpochs.get(ownerId) ?? 0) !== epoch) throw new Error('伙伴记忆已取消。'); if (Date.now() >= deadline) throw new Error('伙伴记忆连接池仍然繁忙。'); };
     return this.track(Promise.resolve().then(async () => {
-      current(); const { embedding, profileKey } = await this.embedding();
+      current(); const { embedding, profileKey } = await this.measured('runtime.resolveEmbedding', () => this.wait(this.embedding(), scope.signal)); current();
       // Trusted host maintenance only: outbox writes and idle physical prepare
       // never read or change query prompts. A real recall refreshes them below.
       const coreStorage = () => scope.purpose ? this.cleanupStorage(ownerId) : this.storage(ownerId);
-      const storage: CoreEntry['storage'] = await coreStorage(); current();
+      const storage: CoreEntry['storage'] = await this.measured('runtime.resolveOwnerStorage', () => this.wait(coreStorage(), scope.signal)); current();
       const connection = digest(JSON.stringify(embedding)), key = ownerId + ':' + profileKey;
       const existing = this.cores.get(key);
       if (existing && !existing.retiring && existing.connection === connection && existing.storage.indexRoot === storage.indexRoot && !this.ownerPurges.has(ownerId)) {
-        if (storage.ownerPrompts) existing.client.setOwnerPrompts(storage.ownerPrompts);
-        existing.storage = { ...storage, ownerPrompts: storage.ownerPrompts ?? existing.storage.ownerPrompts }; return this.coreLease(existing);
+        existing.storage = { ...storage, ownerPrompts: storage.ownerPrompts ?? existing.storage.ownerPrompts }; return this.coreLease(existing, storage.ownerPrompts);
       }
+      const queuedAt = performance.now();
       const pending = this.tail.then(async () => {
+        this.timing('runtime.tail_queue', queuedAt);
         while (this.ownerPurges.has(ownerId)) { current(); await delay(); } current();
         let entry = this.cores.get(key);
         if (entry && (entry.retiring || entry.connection !== connection || entry.storage.indexRoot !== storage.indexRoot)) {
@@ -236,17 +257,20 @@ export class CompanionVcpRuntime implements CompanionMemoryRuntime {
             current(); const idle = [...this.cores.values()].filter(value => !value.references && !value.retiring).sort((a,b) => a.used-b.used)[0];
             if (idle) { await this.retireCore(idle); continue; } await delay();
           }
-          current(); const actual = await coreStorage(); current();
+          current(); const actual = await this.measured('runtime.resolveOwnerStorage.recheck', () => this.wait(coreStorage(), scope.signal)); current();
           if (actual.indexRoot !== storage.indexRoot) throw new Error('伙伴资产目录在连接期间发生变化。');
-          const client = new VcpMemoryClient({ dataRoot: path.join(storage.indexRoot, 'hot', digest(profileKey)), vendorRoot: this.options.vendorRoot,
+          const constructAt = performance.now();
+          let client: VcpMemoryClient;
+          try { client = new VcpMemoryClient({ dataRoot: path.join(storage.indexRoot, 'hot', digest(profileKey)), vendorRoot: this.options.vendorRoot,
             boundOwnerId: ownerId,
             preparedRecallBudget: { workspaceRoot: storage.workspaceRoot }, workerPath: this.options.workerPath, embedding,
-            plugins: { ownerPrompts: storage.ownerPrompts }, semanticProfileKey: profileKey, processBroker: this.broker, launch: this.options.launch, maxOpenScopes: 4 });
+            plugins: { ownerPrompts: storage.ownerPrompts }, semanticProfileKey: profileKey, processBroker: this.broker, launch: this.options.launch, maxOpenScopes: 4 }); }
+          finally { this.timing('runtime.client_construct', constructAt); }
           entry = { key, ownerId, profileKey, connection, storage, client, references: 0, used: Date.now() }; this.cores.set(key, entry);
         }
-        current(); if (storage.ownerPrompts) entry.client.setOwnerPrompts(storage.ownerPrompts);
-        entry.storage = { ...storage, ownerPrompts: storage.ownerPrompts ?? entry.storage.ownerPrompts }; return this.coreLease(entry);
-      }); this.tail = pending.catch(() => undefined); return pending;
+        current();
+        entry.storage = { ...storage, ownerPrompts: storage.ownerPrompts ?? entry.storage.ownerPrompts }; return this.coreLease(entry, storage.ownerPrompts);
+      }); this.tail = pending.catch(() => undefined); return this.wait(pending, scope.signal);
     }));
   }
   private retireEntry(entry: GenerationEntry): Promise<void> {
@@ -259,10 +283,10 @@ export class CompanionVcpRuntime implements CompanionMemoryRuntime {
       if (this.generations.get(entry.key) === entry) this.generations.delete(entry.key);
     })();
   }
-  private leaseEntry(entry: GenerationEntry, lifecycle: CompanionModelConfig['providerLifecycle']): CompanionGenerationLease {
+  private leaseEntry(entry: GenerationEntry, config: Readonly<CompanionModelConfig>, prompts: CompanionOwnerRuntimeStorage['ownerPrompts']): CompanionGenerationLease {
     entry.references++; entry.used = Date.now(); let released = false;
-    const dispatchToken = randomUUID(), binding = { lifecycle, active: true }; entry.lifecycles.set(dispatchToken, binding);
-    return { ownerId: entry.ownerId, profileKey: entry.profileKey, connectionEpoch: entry.connectionEpoch, client: entry.client, dispatchToken,
+    const dispatchToken = randomUUID(), binding = { lifecycle: config.providerLifecycle, assetContext: config.resolveAssetContext, active: true }; entry.lifecycles.set(dispatchToken, binding);
+    return { ownerId: entry.ownerId, profileKey: entry.profileKey, connectionEpoch: entry.connectionEpoch, client: entry.client.bindOwnerPrompts(prompts), dispatchToken,
       release: async () => { if (released) return; released = true; binding.active = false; entry.lifecycles.delete(dispatchToken); entry.references--; entry.used = Date.now(); } };
   }
   acquireGeneration(input: CompanionGenerationSelection & { signal?: AbortSignal }): Promise<CompanionGenerationLease> {
@@ -280,7 +304,7 @@ export class CompanionVcpRuntime implements CompanionMemoryRuntime {
       // routes join the exclusive admission tail; their writer exclusion is
       // unchanged, including retirement and outstanding old leases.
       if (existing && !existing.retiring && existing.connection === description.connection && existing.storage.indexRoot === storage.indexRoot && !this.ownerPurges.has(selection.ownerId)) {
-        existing.client.setOwnerPrompts(storage.ownerPrompts); existing.storage = storage; return this.leaseEntry(existing, selection.config.providerLifecycle);
+        existing.storage = storage; return this.leaseEntry(existing, selection.config, storage.ownerPrompts);
       }
       const queued = this.generationTail.then(async () => {
         while (this.ownerPurges.has(selection.ownerId)) { current(); await delay(); }
@@ -303,7 +327,15 @@ export class CompanionVcpRuntime implements CompanionMemoryRuntime {
           current();
           if (!this.options.resolveGenerationPlugins) throw new Error('伙伴生成路由未配置。');
           const lifecycles: GenerationEntry['lifecycles'] = new Map();
-          const routedConfig: CompanionModelConfig = { ...selection.config, providerLifecycle: undefined, resolveNativeLifecycle: token => {
+          const routedConfig: CompanionModelConfig = { ...selection.config, providerLifecycle: undefined, resolveNativeAssetContext: token => {
+            if (!token) {
+              if ([...lifecycles.values()].some(binding => binding.assetContext)) throw new Error('原生角色缺少本次作业的准确派发凭证。');
+              return undefined;
+            }
+            const binding = lifecycles.get(token);
+            if (!binding?.active) throw new Error('原生角色的派发凭证已释放或失效。');
+            return binding.assetContext;
+          }, resolveNativeLifecycle: token => {
             if (!token) {
               if ([...lifecycles.values()].some(binding => binding.lifecycle)) throw new Error('原生处理缺少本次作业的准确派发凭证。');
               return undefined;
@@ -328,7 +360,7 @@ export class CompanionVcpRuntime implements CompanionMemoryRuntime {
             this.generations.set(key, entry);
           } catch (error) { await route.dispose(); throw error; }
         }
-        current(); entry.client.setOwnerPrompts(storage.ownerPrompts); entry.storage = storage; return this.leaseEntry(entry, selection.config.providerLifecycle);
+        current(); entry.storage = storage; return this.leaseEntry(entry, selection.config, storage.ownerPrompts);
       });
       this.generationTail = queued.catch(() => undefined); return queued;
     });

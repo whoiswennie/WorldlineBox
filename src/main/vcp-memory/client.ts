@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto';
+import { AsyncLocalStorage } from 'node:async_hooks';
 import path from 'node:path';
 import { EventEmitter } from 'node:events';
 import { createRequire } from 'node:module';
@@ -108,6 +109,7 @@ export class VcpMemoryClient {
   private focusedReceiptBytes = 0;
   readonly supportsDetachedRecall: boolean = true;
   private ownerPrompts?: VcpMemoryOwnerPrompts;
+  private readonly queryPrompts = new AsyncLocalStorage<Readonly<VcpMemoryOwnerPrompts>>();
   private algorithmIdentity?: Promise<string>;
 
   constructor(private readonly options: VcpMemoryClientOptions) {
@@ -117,13 +119,30 @@ export class VcpMemoryClient {
     if (options.plugins?.ownerPrompts) this.setOwnerPrompts(options.plugins.ownerPrompts);
   }
   setOwnerPrompts(prompts: VcpMemoryOwnerPrompts): void {
+    this.ownerPrompts = this.snapshotOwnerPrompts(prompts);
+  }
+  private snapshotOwnerPrompts(prompts: VcpMemoryOwnerPrompts): Readonly<VcpMemoryOwnerPrompts> {
     if (!prompts || typeof prompts.aimemoTemplate !== 'string' || !prompts.aimemoTemplate.trim()) throw new Error('Owner memory focus template is unavailable.');
     for (const value of [prompts.timelineTemplate, prompts.summaryTemplate]) if (value !== undefined && (typeof value !== 'string' || !value.trim())) throw new Error('Owner timeline template is unavailable.');
     if (prompts.focusGuidanceSignature !== undefined && (typeof prompts.focusGuidanceSignature !== 'string' || !/^[a-f0-9]{64}$/u.test(prompts.focusGuidanceSignature))) throw new Error('Owner focus guidance identity is invalid.');
-    this.ownerPrompts = { aimemoTemplate: prompts.aimemoTemplate,
+    return Object.freeze({ aimemoTemplate: prompts.aimemoTemplate,
       ...(prompts.timelineTemplate !== undefined ? { timelineTemplate: prompts.timelineTemplate } : {}),
       ...(prompts.summaryTemplate !== undefined ? { summaryTemplate: prompts.summaryTemplate } : {}),
-      ...(prompts.focusGuidanceSignature !== undefined ? { focusGuidanceSignature: prompts.focusGuidanceSignature } : {}) };
+      ...(prompts.focusGuidanceSignature !== undefined ? { focusGuidanceSignature: prompts.focusGuidanceSignature } : {}) });
+  }
+  /** A host lease owns immutable query semantics while sharing the physical pool. */
+  bindOwnerPrompts(prompts: VcpMemoryOwnerPrompts): VcpMemoryClient {
+    const snapshot = this.snapshotOwnerPrompts(prompts), methods = new Map<PropertyKey, unknown>();
+    return new Proxy(this, { get: (target, key) => {
+      if (key === 'setOwnerPrompts') return () => { throw new Error('Query owner prompts are immutable.'); };
+      const value: unknown = Reflect.get(target, key, target);
+      if (typeof value !== 'function') return value;
+      if (!methods.has(key)) methods.set(key, (...args: unknown[]) => this.queryPrompts.run(snapshot, () => Reflect.apply(value, target, args)));
+      return methods.get(key);
+    } });
+  }
+  private effectiveOwnerPrompts(): Readonly<VcpMemoryOwnerPrompts> | undefined {
+    return this.queryPrompts.getStore() ?? this.ownerPrompts;
   }
   hasOpenScope(scope: VcpMemoryScope): boolean {
     const child = this.scopes.get(scopeKey(scope)); return Boolean(child && !child.failed && !child.stopping);
@@ -296,9 +315,10 @@ export class VcpMemoryClient {
     return result;
   }
   private async request<T>(scope: VcpMemoryScope, command: VcpMemoryCommand): Promise<T> {
+    const ownerPrompts = this.effectiveOwnerPrompts();
     if (this.closed) throw new Error('VCP memory client is closed.');
     if (this.options.boundOwnerId) await inspectVcpOwnedDirectory(path.join(path.resolve(this.options.dataRoot), scopeKey(scope)));
-    if (this.ownerPrompts && ['preprocess', 'prepare-recall', 'plugin', 'timeline'].includes(command.type)) command = { ...command, ownerPrompts: { ...this.ownerPrompts } };
+    if (ownerPrompts && ['preprocess', 'prepare-recall', 'plugin', 'timeline'].includes(command.type)) command = { ...command, ownerPrompts: { ...ownerPrompts } };
     const deadline = Date.now() + (this.options.requestTimeoutMs ?? 180_000);
     const { child, release } = await this.ensureScope(scope, deadline);
     try { await child.ready; return await this.send(child, command, deadline) as T; }
@@ -363,6 +383,7 @@ export class VcpMemoryClient {
     } };
   }
   focusRecall(handle: VcpMemoryPreparedRecall, options: VcpMemoryFocusOptions = {}): Promise<VcpMemoryPreprocessResult> {
+    const ownerPrompts = this.effectiveOwnerPrompts();
     const key = scopeKey(handle), generation = this.recallGenerations.get(key) ?? 0;
     if (this.closed) return Promise.reject(new Error('VCP memory client is closed.'));
     if (this.options.boundOwnerId && (options.ownerId !== this.options.boundOwnerId || handle.hostEvidence?.ownerId !== this.options.boundOwnerId))
@@ -390,14 +411,14 @@ export class VcpMemoryClient {
           return receipt;
         };
         await validate();
-        const cacheKey = this.focusCacheKey(handle.scopeId, lease.payload);
+        const cacheKey = this.focusCacheKey(handle.scopeId, lease.payload, ownerPrompts);
         const cached = cacheKey ? this.focusedReceipts.get(cacheKey) : undefined;
         if (cacheKey && cached && Date.now() - cached.createdAt < 60000) {
           this.focusedReceipts.delete(cacheKey); this.focusedReceipts.set(cacheKey, cached);
           const receipt = JSON.parse(cached.serialized) as VcpMemoryPreprocessResult;
           await validate('publication');
           // A newer owner snapshot may arrive while publication is checked.
-          if (cacheKey === this.focusCacheKey(handle.scopeId, lease.payload))
+          if (cacheKey === this.focusCacheKey(handle.scopeId, lease.payload, ownerPrompts))
             return await finish({ ...receipt, queryClock: lease.payload.receipt.queryClock,
               receiptCache: { hit: true, corpusEpoch: handle.corpusEpoch,
                 ...(receipt.queryClock ? { sourceQueryClock: receipt.queryClock } : {}) } });
@@ -409,7 +430,7 @@ export class VcpMemoryClient {
         const result = await implementation.focusPreparedRecall(lease.payload,
           { vendorRoot: this.options.vendorRoot, chat: this.options.plugins?.chat }, { ...this.nativeFocusTransport(options), signal, validate });
         await validate(); const completed = await finish(result);
-        if (cacheKey && cacheKey === this.focusCacheKey(handle.scopeId, lease.payload)) this.cacheFocusedReceipt(cacheKey, handle.scopeId, result);
+        if (cacheKey && cacheKey === this.focusCacheKey(handle.scopeId, lease.payload, ownerPrompts)) this.cacheFocusedReceipt(cacheKey, handle.scopeId, result);
         return completed;
       } finally {
         try { if (discard || signal.aborted) await this.prepared.remove(handle); }
@@ -507,11 +528,11 @@ export class VcpMemoryClient {
     if (active) await Promise.allSettled([active.settled]);
     await this.prepared.remove(handle);
   }
-  private focusCacheKey(scopeId: string, payload: VcpMemoryPreparedPayload): string | undefined {
+  private focusCacheKey(scopeId: string, payload: VcpMemoryPreparedPayload, ownerPrompts = this.effectiveOwnerPrompts()): string | undefined {
     // The native packet owns its user template; the authenticated gateway
     // separately supplies current common/purpose system guidance. Legacy
     // owner snapshots without that identity cannot reuse a focused receipt.
-    if (this.ownerPrompts && !this.ownerPrompts.focusGuidanceSignature) return;
+    if (ownerPrompts && !ownerPrompts.focusGuidanceSignature) return;
     const groups = payload.groups.map(({ token: _token, ...input }) => { void _token; return input; });
     // Upstream replaces Date/Time after inserting source/user/assistant text.
     // A placeholder inside those bytes therefore also changes the real model
@@ -532,7 +553,7 @@ export class VcpMemoryClient {
     return createHash('sha256').update(JSON.stringify([scopeId, payload.modelIdentity, groups, messages,
       payload.receipt.cacheClock?.bucket, payload.receipt.receiptCache?.corpusEpoch,
       payload.hostEvidence ? [payload.hostEvidence.ownerId, payload.hostEvidence.revocationEpoch, payload.hostEvidence.sourceClosureDigest] : null,
-      renderedClock, this.ownerPrompts?.focusGuidanceSignature ?? null])).digest('hex');
+      renderedClock, ownerPrompts?.focusGuidanceSignature ?? null])).digest('hex');
   }
   private cacheFocusedReceipt(key: string, scopeId: string, receipt: VcpMemoryPreprocessResult): void {
     const serialized = JSON.stringify(receipt), bytes = Buffer.byteLength(serialized) + key.length + 128;

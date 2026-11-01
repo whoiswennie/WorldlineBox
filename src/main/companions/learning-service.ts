@@ -3,6 +3,8 @@ import type { CompanionLearningGrant, CompanionLearningJob, CompanionLearningSta
 import type { CompanionStorageCommand, CompanionStorageResponse } from '../../shared/companion-storage';
 import type { CompanionWorkspaceResponse } from '../../shared/companion-workspace';
 import type { CompanionMemoryInvestigation } from '../../shared/companion-memory-investigation';
+import { withCompanionStorageOperation } from './storage-operation-context';
+import { detachedCompanionExecutionValidation } from './source-execution-evidence';
 
 export type CompanionLearningPendingQuestion = Pick<CompanionMemoryInvestigation, 'id'> & { question: string; hypothesis: string; nonFactual: true };
 
@@ -46,7 +48,7 @@ export class CompanionLearningService {
   tick(): Promise<void> {
     if (this.closed) return Promise.resolve();
     if (this.pumping) return this.pumping;
-    const pending = this.pump(); this.pumping = pending;
+    const pending = withCompanionStorageOperation({ priority: 'background' }, () => detachedCompanionExecutionValidation(() => this.pump())); this.pumping = pending;
     void pending.finally(() => { if (this.pumping === pending) this.pumping = undefined; }).catch(() => undefined);
     return pending;
   }
@@ -58,8 +60,9 @@ export class CompanionLearningService {
       const job = (await this.request({ type: 'learning.claim', excludedOwners: [...this.active.keys()], leaseMs: 120000 })).learningJob;
       if (!job || this.closed) break;
       const controller = new AbortController();
-      const promise = new Promise<void>(resolve => setImmediate(resolve)).then(() => this.process(job, controller.signal))
-        .catch(this.options.report).finally(() => { this.active.delete(job.grant.companionId); this.options.changed(); });
+      const promise = withCompanionStorageOperation({ priority: 'background' }, () => detachedCompanionExecutionValidation(() =>
+        new Promise<void>(resolve => setImmediate(resolve)).then(() => this.process(job, controller.signal))
+          .catch(this.options.report).finally(() => { this.active.delete(job.grant.companionId); this.options.changed(); })));
       this.active.set(job.grant.companionId, { controller, promise, grantId: job.grant.id, jobId: job.assetJobId ?? job.id });
     }
   }

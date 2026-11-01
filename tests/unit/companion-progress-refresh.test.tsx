@@ -7,6 +7,7 @@ import { CompanionRecentReadCache } from '../../src/renderer/companions/recent-r
 import { BUILTIN_COMPANIONS } from '../../src/shared/companion-personas';
 import type { CompanionChangeEvent, CompanionMessage, CompanionReplyStreamEvent, CompanionRuntimeProgress, CompanionState, CompanionsRequest, CompanionsResponse, WorldlineBoxCompanionsApi } from '../../src/shared/companions';
 import { applyCompanionRuntimeProgress } from '../../src/renderer/companions/runtime-progress';
+import { companionChangeEventSchema } from '../../src/shared/companions';
 
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
 let root: Root | undefined, host: HTMLDivElement | undefined;
@@ -42,6 +43,72 @@ async function mount() {
 }
 
 const contentReads = (request: { mock: { calls: [CompanionsRequest][] } }) => request.mock.calls.filter(([input]) => ['messages', 'actions', 'topic.list', 'topic.read'].includes(input.type));
+
+it('ignores continuous memory status/content notifications without clearing chat caches or reading state, history, actions or topics', async () => {
+  const f = await mount(), clear = vi.spyOn(CompanionRecentReadCache.prototype, 'clear');
+  await act(async () => {
+    for (let index = 0; index < 30; index++) {
+      f.changed({ kind: 'memory', change: index % 2 ? 'status' : 'content', companionIds: index % 3 ? [BUILTIN_COMPANIONS[0]!.id] : [] });
+      await vi.advanceTimersByTimeAsync(100);
+    }
+  });
+  expect(f.request.mock.calls.filter(([command]) => ['state', 'state.progress', 'messages', 'actions', 'topic.list', 'topic.read'].includes(command.type))).toEqual([]);
+  expect(clear).not.toHaveBeenCalled();
+  expect(host!.querySelector('[data-companion-messages]')!.textContent).toContain(f.source.content);
+});
+
+it('keeps immediate full invalidation and a fresh withdrawal read when memory events surround the hard notification', async () => {
+  const f = await mount(); f.messages([f.source, f.reply]);
+  await act(async () => { f.changed(); await vi.advanceTimersByTimeAsync(1000); });
+  const clear = vi.spyOn(CompanionRecentReadCache.prototype, 'clear'); f.request.mockClear();
+  f.messages([f.source, { ...f.reply, content: '', segments: undefined, sourceUnavailable: 'execution_source_changed' }]);
+  await act(async () => {
+    f.changed({ kind: 'memory', change: 'content', companionIds: [] }); f.changed();
+    expect(clear).toHaveBeenCalled();
+    for (let index = 0; index < 30; index++) f.changed({ kind: 'memory', change: 'status', companionIds: [] });
+    await vi.advanceTimersByTimeAsync(1000);
+  });
+  expect(f.request.mock.calls.some(([command]) => command.type === 'state')).toBe(true);
+  expect(contentReads(f.request).map(([command]) => command.type)).toEqual(expect.arrayContaining(['messages', 'actions', 'topic.list']));
+  expect(host!.querySelector('[data-companion-messages]')!.textContent).not.toContain(f.reply.content);
+  expect(host!.textContent).toContain('此消息引用的资料已变化');
+});
+
+it('does not suppress a real transcript insertion or unknown/malformed legacy event after memory-only notifications', async () => {
+  const f = await mount(); f.messages([f.source, f.reply]);
+  await act(async () => {
+    f.changed({ kind: 'memory', change: 'content', companionIds: [] }); f.changed(); await vi.advanceTimersByTimeAsync(1000);
+  });
+  expect(host!.querySelector('[data-companion-messages]')!.textContent).toContain(f.reply.content);
+  f.request.mockClear();
+  for (const unknown of [{ kind: 'unrecognized' }, { kind: 'memory', change: 'status', companionIds: ['bad/id'] }, { kind: 'memory' }]) {
+    const parsed = companionChangeEventSchema.safeParse(unknown); expect(parsed.success).toBe(false);
+    // This is the preload bridge's real fallback: invalid inputs are full.
+    await act(async () => { f.changed(parsed.success ? parsed.data : undefined); await vi.advanceTimersByTimeAsync(600); });
+  }
+  expect(f.request.mock.calls.filter(([command]) => command.type === 'messages')).toHaveLength(3);
+});
+
+it('rejects an older in-flight page as soon as a hard event arrives, before the next coalesced read starts', async () => {
+  const f = await mount(), original = f.request.getMockImplementation()!;
+  let finish!: (value: CompanionsResponse) => void, held = false;
+  f.request.mockImplementation(input => {
+    if (input.type === 'messages' && !held) { held = true; return new Promise(resolve => { finish = resolve; }); }
+    return original(input);
+  });
+  await act(async () => { f.changed(); await vi.advanceTimersByTimeAsync(600); });
+  expect(held).toBe(true);
+  f.messages([f.source, { ...f.reply, content: '', segments: undefined, sourceUnavailable: 'execution_source_changed' }]);
+  await act(async () => {
+    f.changed(); f.changed({ kind: 'memory', change: 'content', companionIds: [] });
+    finish({ ok: true, messages: [f.source, f.reply], hasMore: false });
+    await Promise.resolve();
+  });
+  expect(host!.querySelector('[data-companion-messages]')!.textContent).not.toContain(f.reply.content);
+  await act(async () => { await vi.advanceTimersByTimeAsync(1000); });
+  expect(host!.querySelector('[data-companion-messages]')!.textContent).not.toContain(f.reply.content);
+  expect(host!.textContent).toContain('此消息引用的资料已变化');
+});
 
 it('applies streamed progress immediately while its notification refreshes only state and retains chat caches', async () => {
   const f = await mount(), clear = vi.spyOn(CompanionRecentReadCache.prototype, 'clear');
@@ -90,4 +157,36 @@ it('never downgrades a pending full change when progress arrives in the same coa
   await act(async () => { await vi.advanceTimersByTimeAsync(1000); });
   expect(contentReads(f.request).map(([input]) => input.type)).toEqual(expect.arrayContaining(['messages', 'actions', 'topic.list']));
   expect(host!.querySelector('[data-companion-messages]')!.textContent).toContain(f.reply.content);
+});
+
+it('reads history once for a sent message, keeps enqueue/index progress light and still retracts a withdrawn body', async () => {
+  const f = await mount(), original = f.request.getMockImplementation()!;
+  const accepted = { ...f.source, id: 'next-user', sequence: 3, content: '新任务已经送达。' };
+  f.messages([f.source, f.reply]);
+  await act(async () => { f.changed(); await vi.advanceTimersByTimeAsync(1000); });
+  f.request.mockClear();
+  f.request.mockImplementation(async input => {
+    if (input.type !== 'message.send') return original(input);
+    // The real service emits a full insertion event before returning its ACK.
+    f.messages([f.source, f.reply, accepted]); f.changed();
+    return { ok: true, message: accepted, inserted: true };
+  });
+  const input = host!.querySelector<HTMLTextAreaElement>('textarea[aria-label="输入消息"]')!;
+  await act(() => { Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')!.set!.call(input, accepted.content);
+    input.dispatchEvent(new Event('input', { bubbles: true })); });
+  await act(() => host!.querySelector<HTMLButtonElement>('[aria-label="发送"]')!.click());
+  await act(async () => { await vi.advanceTimersByTimeAsync(1000); });
+  expect(host!.querySelector('[data-companion-messages]')!.textContent).toContain(accepted.content);
+  expect(f.request.mock.calls.filter(([command]) => command.type === 'messages')).toHaveLength(1);
+
+  // Enqueue and native-index completion may arrive after the first batch.
+  await act(async () => { f.progress(1); f.changed({ kind: 'progress' }); await vi.advanceTimersByTimeAsync(600);
+    f.changed({ kind: 'progress' }); await vi.advanceTimersByTimeAsync(600); });
+  expect(f.request.mock.calls.filter(([command]) => command.type === 'messages')).toHaveLength(1);
+  expect(f.request.mock.calls.some(([command]) => command.type === 'state.progress')).toBe(true);
+  f.messages([f.source, { ...f.reply, content: '', segments: undefined, sourceUnavailable: 'execution_source_changed' }, accepted]);
+  await act(async () => { f.changed(); f.changed({ kind: 'progress' }); await vi.advanceTimersByTimeAsync(1000); });
+  expect(f.request.mock.calls.filter(([command]) => command.type === 'messages')).toHaveLength(2);
+  expect(host!.querySelector('[data-companion-messages]')!.textContent).not.toContain(f.reply.content);
+  expect(host!.textContent).toContain('此消息引用的资料已变化');
 });

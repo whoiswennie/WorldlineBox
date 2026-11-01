@@ -6,7 +6,7 @@ import type { CompanionStorageCommand } from '../../src/shared/companion-storage
 import { createCoalescedRefresh } from '../../src/renderer/companions/coalesced-refresh';
 import { managedMemoryFiles } from '../fixtures/managed-memory-files';
 
-it('keeps pure memory timer ticks on progress reads while a real durable delivery still refreshes message and action content', async () => {
+it('keeps memory timer and native delivery on progress reads while actual content publication and withdrawal still refresh bodies', async () => {
   const f = managedMemoryFiles(), notifications: Array<'progress' | 'content'> = [], report = vi.fn();
   let memory: CompanionMemoryService | undefined, fullPending = false, settled: Promise<void> = Promise.resolve();
   const ui = vi.fn(async (command: CompanionStorageCommand) => f.store.request(command));
@@ -48,11 +48,17 @@ it('keeps pure memory timer ticks on progress reads while a real durable deliver
     expect(notifications[beforeActualChange]).toBe('content');
     await vi.advanceTimersByTimeAsync(500); await settled;
     expect(full).toHaveBeenCalledOnce(); expect(client.remember).not.toHaveBeenCalled();
+    const beforeDelivery = notifications.length;
     memory.schedule(0); await vi.advanceTimersByTimeAsync(500); await memory.drainDeliveries();
     await vi.advanceTimersByTimeAsync(500); await settled;
     expect(client.remember).toHaveBeenCalledOnce(); expect(client.remember.mock.calls[0]![1]).toMatchObject({ id: note.id, content: source.content });
     expect(f.store.request({ type: 'memory.records.filter', ...f.scope, ids: [note.id] }).memories?.[0]?.status).toBe('indexed');
-    expect(notifications).toContain('content'); expect(full).toHaveBeenCalled();
+    expect(notifications.slice(beforeDelivery).every(kind => kind === 'progress')).toBe(true);
+    expect(full).toHaveBeenCalledOnce();
+    f.store.request({ type: 'memory.forget', ...f.scope, id: note.id }); memory.changed(note.companionId);
+    await vi.advanceTimersByTimeAsync(500); await settled;
+    expect(full).toHaveBeenCalledTimes(2);
+    expect(f.store.request({ type: 'memory.records.filter', ...f.scope, ids: [note.id] }).memories).toEqual([]);
     expect(ui.mock.calls.some(([command]) => command.type === 'messages')).toBe(true);
     expect(ui.mock.calls.some(([command]) => command.type === 'actions')).toBe(true);
     expect(model).not.toHaveBeenCalled(); expect(report).not.toHaveBeenCalled();

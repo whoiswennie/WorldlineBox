@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { withCompanionStorageBackgroundPoll, withCompanionStorageOperation } from './storage-operation-context';
 import type { Companion, CompanionConversation, CompanionMessage, CompanionState } from '../../shared/companions';
 import type { CompanionStorageCommand, CompanionStorageResponse } from '../../shared/companion-storage';
 import type { CompanionWorldJob, CompanionWorldScope, CompanionWorldSnapshot } from '../../shared/companion-world';
@@ -105,11 +106,12 @@ export class CompanionWorldService {
   }
   async tick(): Promise<void> {
     if (this.closed || this.ticking) return;
-    this.ticking = (async () => {
-      await this.options.request({ type: 'world.tick' });
+    this.ticking = withCompanionStorageOperation({ priority: 'background' }, () => (async () => {
+      await withCompanionStorageBackgroundPoll(() => this.options.request({ type: 'world.tick' }));
       for (const job of this.jobs.values()) if (job.worldJob?.kind === 'dream' && job.worldJob.leaseToken) {
-        const current = await this.options.request({ type: 'world.job.check', id: job.worldJob.id, leaseToken: job.worldJob.leaseToken });
-        if (!current.worldJob || this.options.blocked?.(job.companionId)) job.controller.abort();
+        const id = job.worldJob.id, leaseToken = job.worldJob.leaseToken;
+        const current = await withCompanionStorageBackgroundPoll(() => this.options.request({ type: 'world.job.poll', companionId: job.companionId, id, leaseToken }));
+        if (!current.worldJobPoll?.current || this.options.blocked?.(job.companionId)) job.controller.abort();
       }
       if (!this.agendaDriven) await this.options.tickLife?.();
       this.options.wakeWaiting();
@@ -146,10 +148,14 @@ export class CompanionWorldService {
         this.jobs.set(job.id, { promise, controller, companionId: job.companionId,
           kind: job.kind === 'dream' ? 'dream' : 'other', worldJob: job });
       }
-    })().catch(this.options.report).finally(() => { this.ticking = undefined; });
+    })().catch(this.options.report).finally(() => { this.ticking = undefined; }));
     await this.ticking;
   }
   async runAgendaQuantum(input: CompanionAgendaWorldInput, signal: AbortSignal,
+    onProgress?: (stage: string, nativeJob?: CompanionAgendaWorldNativeJob) => void | Promise<void>): Promise<CompanionAgendaWorldResult> {
+    return withCompanionStorageOperation({ priority: 'background' }, () => this.runAgendaQuantumInOperation(input, signal, onProgress));
+  }
+  private async runAgendaQuantumInOperation(input: CompanionAgendaWorldInput, signal: AbortSignal,
     onProgress?: (stage: string, nativeJob?: CompanionAgendaWorldNativeJob) => void | Promise<void>): Promise<CompanionAgendaWorldResult> {
     const basic = (outcome: CompanionAgendaWorldResult['outcome'], reason: string): CompanionAgendaWorldResult => ({ outcome, companionId: input.companionId, reason });
     if (!this.agendaDriven) throw new Error('世界语义行为尚未切换到统一日程调度。');
@@ -242,7 +248,7 @@ export class CompanionWorldService {
       })();
       this.jobs.set(native.job.id, { promise: operation.then(() => undefined, () => undefined), controller, companionId: input.companionId,
         kind: native.lane === 'dream' ? 'dream' : 'other', ...(native.lane === 'decision' || native.lane === 'dream' ? { worldJob: native.job } : {}) });
-      try { return await operation; } finally { signal.removeEventListener('abort', abort); this.jobs.delete(native.job.id); this.options.changed(); }
+      try { return await operation; } finally { signal.removeEventListener('abort', abort); this.jobs.delete(native.job.id); this.options.changed('progress'); }
     } finally { this.agendaOwners.delete(input.companionId); }
   }
   async ready(input: CompanionWorldScope & { workId: string; kind: 'chat' | 'action' | 'schedule' | 'learning'; sourceMessageId?: string;
@@ -270,6 +276,9 @@ export class CompanionWorldService {
     return (await this.options.request({ type: 'world.observe', ...scope })).world;
   }
   private async processSocial(job: CompanionSocialJob, signal: AbortSignal): Promise<void> {
+    return withCompanionStorageOperation({ priority: 'interactive' }, () => this.processSocialInOperation(job, signal));
+  }
+  private async processSocialInOperation(job: CompanionSocialJob, signal: AbortSignal): Promise<void> {
     if (!job.leaseToken) return;
     const leaseToken = job.leaseToken; let interruptionId: string | undefined;
     const progress = async (phase: 'context' | 'memory' | 'thinking' | 'waiting', detail: string,

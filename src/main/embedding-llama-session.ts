@@ -203,9 +203,17 @@ export async function startLlamaEmbeddingSession(input: {
   signal?: AbortSignal;
   /** Resolved by Main relative to the packaged app so the inline owner can load koffi. */
   koffiPath?: string;
+  /** Constant phase labels and durations only; no command arguments or source content. */
+  onTiming?(event: { operation: string; durationMs: number }): void;
 }): Promise<LlamaEmbeddingSession> {
+  const timing = (operation: string, started: number) => {
+    try { input.onTiming?.({ operation, durationMs: Math.max(0, performance.now() - started) }); } catch { /* Diagnostics cannot change process ownership. */ }
+  };
+  const measured = async <T>(operation: string, work: () => Promise<T>): Promise<T> => {
+    const started = performance.now(); try { return await work(); } finally { timing(operation, started); }
+  };
   if (input.signal?.aborted) throw input.signal.reason ?? new Error("Semantic runtime startup was cancelled.");
-  const port = await chooseLoopbackPort();
+  const port = await measured('embedding.session.port', chooseLoopbackPort);
   const baseUrl = `http://127.0.0.1:${port}`;
   const startupTimeoutMs = input.startupTimeoutMs ?? 180_000;
   const requestTimeoutMs = input.requestTimeoutMs ?? 180_000;
@@ -221,9 +229,11 @@ export async function startLlamaEmbeddingSession(input: {
     : [];
   if (input.device && !/^[A-Za-z]+\d+$/u.test(input.device)) throw new Error('Invalid embedding GPU device.');
   const selectedDevice = input.gpuLayers > 0 && path.basename(path.dirname(input.executable)) === 'runtime-vulkan'
-    ? input.device ?? await vulkanDevice(input.executable) : null;
+    ? input.device ?? await measured('embedding.session.device_probe', () => vulkanDevice(input.executable)) : null;
   input.signal?.throwIfAborted();
-  const child = spawnOwnedEmbeddingRuntime(input.executable, [
+  const spawnAt = performance.now();
+  let child: ChildProcess;
+  try { child = spawnOwnedEmbeddingRuntime(input.executable, [
     "--model", input.files.corePath,
     ...(input.files.projectorPath ? ['--mmproj', input.files.projectorPath] : []),
     "--embedding",
@@ -238,7 +248,8 @@ export async function startLlamaEmbeddingSession(input: {
     ...videoRuntimeArgs,
     "--host", "127.0.0.1",
     "--port", String(port),
-  ], path.dirname(input.executable), { signal: input.signal, koffiPath: input.koffiPath });
+  ], path.dirname(input.executable), { signal: input.signal, koffiPath: input.koffiPath }); }
+  finally { timing('embedding.session.spawn', spawnAt); }
   let spawnFailed = false;
   child.once("error", () => {
     spawnFailed = true;
@@ -246,13 +257,13 @@ export async function startLlamaEmbeddingSession(input: {
   child.stdout?.on("data", () => undefined);
   child.stderr?.on("data", () => undefined);
   try {
-    await waitForHealth({
+    await measured('embedding.session.health', () => waitForHealth({
       child,
       baseUrl,
       spawnFailed: () => spawnFailed,
       timeoutMs: startupTimeoutMs,
       signal: input.signal,
-    });
+    }));
   } catch (error) {
     await closeOwnedEmbeddingRuntime(child).catch((cleanupError: unknown) => {
       throw new AggregateError([error, cleanupError], "Semantic runtime startup and cleanup both failed.");

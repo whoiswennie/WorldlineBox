@@ -37,12 +37,30 @@ type WireMessage = { content?: string | WirePart[]; parts?: WirePart[] };
 function transport(body: Record<string, unknown>, format: AiApiFormat) {
   const messages = (format === 'openai_responses' ? body.input : format === 'gemini_native' ? body.contents : format === 'dashscope_native'
     ? (body.input as { messages: WireMessage[] }).messages : body.messages) as WireMessage[];
-  const base = format === 'gemini_native' ? messages[0]!.parts![0]!.text : format === 'dashscope_native' ? (messages[1]!.content as WirePart[])[0]!.text
-    : format === 'openai_responses' || format === 'anthropic' ? messages[0]!.content : messages[1]!.content;
   const parts = (message: WireMessage) => { const value = message.content ?? message.parts; return Array.isArray(value) ? value : []; };
+  const text = (message: WireMessage) => typeof message.content === 'string' ? message.content : parts(message).map(part => part.text ?? '').join('');
+  const base = messages.flatMap(message => { try { return [JSON.parse(text(message))]; } catch { return []; } })
+    .find(value => value?.identity?.self);
+  if (!base) throw new Error('Expected the actual host context envelope.');
   const imageMessages = messages.filter(message => parts(message).some(part => part.type === 'input_image' || part.type === 'image_url' || part.type === 'image' || part.inlineData || part.image));
-  return { base: JSON.parse(String(base)), imageMessages, parts: imageMessages.flatMap(parts) };
+  return { base, imageMessages, parts: imageMessages.flatMap(parts), messages, text };
 }
+it.each(Object.keys(models) as AiApiFormat[])('keeps the actual current chat after public portrait references for %s', async format => {
+  const value = input(), latest = '我刚坐下，先聊今天这件事。';
+  value.messages[0]!.content = latest;
+  const fetchFn = vi.fn<typeof fetch>(async (_url, init) => {
+    const wire = transport(JSON.parse(String(init?.body)), format);
+    const imageIndex = wire.messages.indexOf(wire.imageMessages[0]!);
+    const requestIndex = wire.messages.findIndex(message => wire.text(message) === latest);
+    expect(imageIndex).toBeGreaterThanOrEqual(0);
+    expect(requestIndex).toBeGreaterThan(imageIndex);
+    expect(wire.text(wire.messages.at(-1)!)).toBe(latest);
+    expect(wire.parts).toHaveLength(4);
+    return envelope(format);
+  });
+  await generateCompanionReply(value, config(format), undefined, { fetchFn, loop: true });
+  expect(fetchFn).toHaveBeenCalledOnce();
+});
 it.each(Object.keys(models) as AiApiFormat[])('sends real labeled pixels through %s once while preserving the original JSON user message and native history', async format => {
   const value = input(), fetchFn = vi.fn<typeof fetch>(async (_url, init) => {
     const body = JSON.parse(String(init?.body)), wire = transport(body, format);

@@ -1,6 +1,6 @@
 import { existsSync, linkSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
-import { afterEach, expect, it } from 'vitest';
+import { afterEach, expect, it, vi } from 'vitest';
 import { CompanionMemoryDocuments } from '../../src/main/companions/memory-documents';
 import { companionMemoryRegisteredPath } from '../../src/main/companions/memory-library';
 import type { CompanionMemoryDocumentCommand } from '../../src/shared/companion-memory-documents';
@@ -86,6 +86,12 @@ it('paginates registered management documents beyond both bounded registry pages
   for (let offset = 0; offset < 270; offset += 30) await registry.publishBatch({ operationId: 'fixture:catalog:' + offset, items: Array.from({ length: Math.min(30, 270 - offset) }, (_, index) => {
     const key = String(offset + index).padStart(4, '0'); return { artifactId: 'fixture-knowledge:' + key, kind: 'knowledge' as const, producer: { kind: 'system' as const, id: 'fixture-publisher' }, relativePath: '记忆/知识/研究/' + key + '.md', expectedRevision: null, content: '已登记知识 ' + key, sourceRefs: [], dependencyRefs: [], visibility: { scope: 'owner' as const }, allowedConsumers: ['audit' as const], retentionClass: 'current' as const };
   }) });
+  // A fast first metadata page no longer gives background indexing incidental
+  // wall time. Await its real completion before exercising every SQL cursor.
+  await vi.waitFor(async () => {
+    const first = await f.documents.handle({ type: 'memory.documents.list', companionId: 'alice', directory: '记忆/知识/研究', limit: 64 });
+    expect(first.ok, first.error).toBe(true); expect(first.documents?.index?.state).toBe('ready');
+  }, { interval: 100, timeout: 20000 });
   let cursor: string | undefined; const seen = new Set<string>();
   for (let iteration = 0; iteration < 12; iteration++) {
     const result = await f.documents.handle({ type: 'memory.documents.list', companionId: 'alice', directory: '记忆/知识/研究', limit: 64, ...(cursor ? { cursor } : {}) }); expect(result.ok, result.error).toBe(true);

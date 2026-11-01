@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto';
+import { z } from 'zod';
 import { COMPANION_JOB_FAILURES_PER_CYCLE, type CompanionJobDisposition } from '../shared/companion-job-control';
 import { companionJobInputVersion, initializeCompanionJobDisposition, pageCompanionJobIds, type CompanionJobControlAdapter } from './job-control-store';
 import { indexCompanionJobInputs } from './memory-withdrawal-store';
@@ -11,7 +12,7 @@ import type { CompanionWorldOccupancy } from '../shared/companion-world';
 import { advanceCompanionWorldActor, companionWorldEnvironment, companionWorldRealAt, companionWorldSpeed, companionWorldVirtualAt,
   COMPANION_WORLD_SEATING_MS, COMPANION_WORLD_ACTION_TIMINGS, COMPANION_WORLD_WALK_TILES_PER_SECOND, createCompanionWorldPark, createCompanionWorldHome, routeCompanionWorldActor } from '../shared/companion-world-engine';
 import { companionWorldCellWalkable, findCompanionWorldPath } from '../shared/companion-world-engine';
-import { companionWorldEnergyRate } from '../shared/companion-world-engine';
+import { advanceCompanionWorldEnergy, companionWorldEnergyRate } from '../shared/companion-world-engine';
 import { COMPANION_WORLD_RECOVERY, companionWorldNeedsRecovery } from '../shared/companion-world-recovery';
 import { defaultCompanionRoutineConfig, evaluateCompanionRoutine } from '../shared/companion-routine-time';
 import type { CompanionWorldSleepPlan } from '../shared/companion-life-plan';
@@ -21,9 +22,9 @@ import { resolveCompanionScheduleTimeZone, isCompanionScheduleTimeZone } from '.
 import { companionWorldExpression } from '../shared/companion-world-expression';
 import type { CompanionRoutineConfig } from '../shared/companion-routine';
 import type { CompanionWorldArguments } from '../shared/companion-world-tool';
-import type { CompanionMessage, CompanionMemory } from '../shared/companions';
+import { companionIdSchema, type CompanionMessage, type CompanionMemory } from '../shared/companions';
 import type { CompanionRuntimeState, CompanionStateProposal } from '../shared/companion-state';
-import { companionMemoryConsolidateSchema, type CompanionMemoryCandidate, type CompanionMemoryConsolidation } from '../shared/companion-memory';
+import { companionMemoryConsolidateSchema, companionMemorySourceSchema, type CompanionMemoryCandidate, type CompanionMemoryConsolidation } from '../shared/companion-memory';
 import type { CompanionConnection } from './store';
 import type { CompanionStorageCommand, CompanionStorageResponse } from '../shared/companion-storage';
 import type { CompanionUserStop } from '../shared/companion-task-stop';
@@ -43,7 +44,8 @@ import { CompanionMemoryMaintenanceStore, type MaintenanceMode } from './memory-
 import { bindCompanionMemoryPolicyRoot, resolveCompanionMemoryPolicy, CompanionMemoryPolicyUnavailableError, type CompanionMemoryPolicyReceipt } from './memory-policy-files';
 import { companionSocialGoalOrigin, companionSocialDelegatedPortOrigin } from './social-goal-origin';
 import { findCompanionActivityPortCandidate, listCompanionActivityPortCandidates, publicCompanionActivityPortCandidate, registerCompanionActivityPortCandidate } from './activity-port-candidates';
-import { assertCompanionAgendaNativeClaim, assertCompanionAgendaNativeParent, bindCompanionAgendaNative, companionAgendaNativeBound, companionAgendaNativeParentId } from './agenda-native-parent';
+import { assertCompanionAgendaNativeClaim, assertCompanionAgendaNativeParent, bindCompanionAgendaNative, companionAgendaNativeBound, companionAgendaNativeParentId, CompanionAgendaNativeAuthorityError } from './agenda-native-parent';
+import type { CompanionCurrentSourceReference } from './source-access';
 import type { CompanionExecutionReadset } from '../shared/companion-execution-evidence';
 import { CompanionMemoryInvestigationStore } from './memory-investigation-store';
 import { companionWorldProposalSchema, type CompanionWorldProposal } from '../shared/companion-world-proposals';
@@ -66,6 +68,8 @@ type WorkProof = LearningWorkProof & CollaborationWorkProof;
 type StoredWork = CompanionWorldWork & WorkProof & { conversationId: string; sourceMessageId?: string; urgent: boolean; fixed: boolean; requestedAtReal: number; workOrderId?: string };
 type StoredVisit = CompanionWorldVisit & { settledAt?: number };
 type MaintenanceMemoryReference = { id: string; version: number; contentRevision?: number };
+const pollMemoriesSchema = z.array(z.strictObject({ id: companionIdSchema, version: z.number().int().positive(), contentRevision: z.number().int().positive().optional() })).max(128);
+const pollSourcesSchema = z.array(companionMemorySourceSchema.pick({ messageId: true, conversationId: true, revision: true, checksum: true }));
 type StoredJob = CompanionWorldJob & { memoryVersions?: MaintenanceMemoryReference[]; seedMemoryVersions?: MaintenanceMemoryReference[];
   inputReferenceVersion?: string;
   maintenanceMemoryVersions?: MaintenanceMemoryReference[];
@@ -121,6 +125,8 @@ export class CompanionWorldStore {
   private life?: { completePhysical(id: string, companionId: string, outcome: 'done' | 'cancelled', result: string): void };
   private startActivityTask?: (companionId: string, jobId: string, task: { title: string; goal: string }) => void;
   private readsetValid?: (scope: CompanionWorldScope, proof: CompanionExecutionReadset) => boolean;
+  private sourceReferencesCurrent?: (scope: CompanionWorldScope, references: readonly CompanionCurrentSourceReference[]) => boolean;
+  private withSourceReadAvailability?: <T>(operation: () => T) => T;
   private captureExperience?: (receipt: CompanionWorldExperienceReceipt) => void;
   private atomic<T>(fn: () => T): T {
     try { return this.db.transaction(fn).immediate(); } catch (error) { this.clockAnchors = undefined; this.actorProjection = []; this.activeWorld = undefined; this.through = 0; this.perceptionNextAt = 0; this.dirty = true; throw error; }
@@ -153,6 +159,9 @@ export class CompanionWorldStore {
   connectLife(life: NonNullable<CompanionWorldStore['life']>): void { this.life = life; }
   connectActivity(start: NonNullable<CompanionWorldStore['startActivityTask']>): void { this.startActivityTask = start; }
   connectReadsetValidation(validate: NonNullable<CompanionWorldStore['readsetValid']>): void { this.readsetValid = validate; }
+  connectSourceReferenceValidation(validate: NonNullable<CompanionWorldStore['sourceReferencesCurrent']>, withAvailability?: <T>(operation: () => T) => T): void {
+    this.sourceReferencesCurrent = validate; this.withSourceReadAvailability = withAvailability;
+  }
   /** Synchronous evidence and capture intent share the world event's SQLite transaction. */
   connectExperience(capture: NonNullable<CompanionWorldStore['captureExperience']>): void { this.captureExperience = capture; }
   private ownAddress(owner: string, state = this.load()): CompanionHomeAddress {
@@ -1407,9 +1416,12 @@ export class CompanionWorldStore {
   private maintenanceAuthorityCurrent(_state: StoredWorld, job: StoredJob): boolean {
     // Kept as the lease predicate for the existing internal dream job port.
     // It deliberately checks cognitive authority, not physical sleep.
+    return this.maintenanceOwnerCurrent(job.companionId);
+  }
+  private maintenanceOwnerCurrent(companionId: string): boolean {
     return !!this.db.prepare(`SELECT 1 FROM companions WHERE id=? AND deleted_at IS NULL
       AND COALESCE(json_extract(data,'$.active'),1)=1 AND NOT EXISTS(
-        SELECT 1 FROM companion_reset_jobs r WHERE r.companion_id=companions.id AND r.status!='completed')`).get(job.companionId);
+        SELECT 1 FROM companion_reset_jobs r WHERE r.companion_id=companions.id AND r.status!='completed')`).get(companionId);
   }
   private expireMaintenanceJobs(state: StoredWorld): void {
     for (const found of this.db.prepare("SELECT data FROM companion_world_jobs WHERE kind='dream' AND status IN('pending','running','failed')").all() as Row[]) {
@@ -1604,11 +1616,11 @@ export class CompanionWorldStore {
     // Qualitative relationship records are withdrawn by the state ledger.
     void companionId; void sourceIds;
   }
-  private snapshotValue(state: StoredWorld, now: number, scope?: CompanionWorldScope): CompanionWorldSnapshot {
+  private snapshotValue(state: StoredWorld, now: number, scope?: CompanionWorldScope, runtime = this.runtime): CompanionWorldSnapshot {
     const previous = this.advancing; this.advancing = true;
-    try { return this.buildSnapshotValue(state, now, scope); } finally { this.advancing = previous; }
+    try { return this.buildSnapshotValue(state, now, scope, runtime); } finally { this.advancing = previous; }
   }
-  private buildSnapshotValue(state: StoredWorld, now: number, scope?: CompanionWorldScope): CompanionWorldSnapshot {
+  private buildSnapshotValue(state: StoredWorld, now: number, scope?: CompanionWorldScope, runtimeAt = this.runtime): CompanionWorldSnapshot {
     // Every observed world field uses one materialized instant. realNow alone
     // describes wall time; backlog never claims offline work finished.
     const observedAt = state.cursor, virtualAt = this.virtualFor(state, observedAt), environment = companionWorldEnvironment(virtualAt, state.settings.timeZone), scenes = this.scenes(state);
@@ -1628,7 +1640,7 @@ export class CompanionWorldStore {
       knownAddresses: scope ? this.homeKnowledge(scope.companionId, state) : [],
       ...(perception ? { perception } : {}),
       scenes: allowedScenes, actors: state.actors.filter(actor => scope ? actor.companionId === scope.companionId : visibleIds.has(actor.sceneId)).map(actor => {
-        const runtime = { ...this.runtime(actor.companionId), thermalComfort: Math.max(0, 1 - Math.abs((actor.sceneId === 'park' ? environment.environment.outdoorTemperature : environment.environment.indoorTemperature) - 22) / 15) };
+        const runtime = { ...runtimeAt(actor.companionId), thermalComfort: Math.max(0, 1 - Math.abs((actor.sceneId === 'park' ? environment.environment.outdoorTemperature : environment.environment.indoorTemperature) - 22) / 15) };
         const pose: CompanionWorldActor['artAction'] = actor.activity === 'walking' ? actor.locomotion : actor.activity === 'working' ? 'work' : actor.activity === 'seating' ? 'sitDown' : actor.activity === 'sitting' ? 'sit' :
           actor.activity === 'standingUp' ? 'standUp' : actor.activity === 'lyingDown' ? 'lieDown' : actor.activity === 'waking' ? 'wake' : actor.activity === 'turning' ? 'turn' : actor.activity === 'sleeping' ? 'sleep' : actor.activity === 'eating' ? 'eat' : actor.activity === 'resting' ? 'rest' :
             actor.activity === 'habit' ? actor.manualArtAction ?? this.habitArt(state, actor) : 'idle';
@@ -1662,6 +1674,41 @@ export class CompanionWorldStore {
       }), events,
       relationships: state.relationships.filter(relation => !scope || relation.companionId === scope.companionId), works: state.works.filter(work => !scope || work.companionId === scope.companionId),
       lastEventSequence: Number(row(this.db.prepare('SELECT COALESCE(MAX(sequence),0) AS n FROM companion_world_events').get()).n), backlog: state.cursor + 1 < now });
+  }
+  /** SQL-only task observation: committed actors/events plus the actual task
+   * clock. No catch-up, perception sampling, energy write or world save. */
+  taskSnapshot(scope: CompanionWorldScope, capturedAt: number, runtime: { state: CompanionRuntimeState; energyClock: number }): {
+    world: CompanionWorldSnapshot; settledAt: string; energySampledAt: string; energyElapsedMs: number; energy: number;
+  } | undefined {
+    this.requireScope(scope);
+    const saved = this.db.prepare('SELECT data FROM companion_world WHERE id=1').get() as { data: string } | undefined;
+    if (!saved) return;
+    const state = parse<StoredWorld>(saved.data), anchor = state.anchors.at(-1);
+    const routine = this.db.prepare('SELECT data FROM companion_routines WHERE companion_id=?').get(scope.companionId) as { data: string } | undefined;
+    if (state.sceneVersion !== 2 || state.settings.mode !== 'realtime' || state.settings.dayDurationMinutes !== 1440
+      || !anchor || anchor.realAt !== anchor.virtualAt || !routine) return;
+    // The ordinary routine getter can migrate a withdrawn configuration. That
+    // explicit maintenance stays outside this read-only snapshot.
+    for (const source of parse<{ configurationSources?: Array<{ conversationId: string; messageId: string }> }>(routine.data).configurationSources ?? []) {
+      try { if (!this.visibleSources({ companionId: scope.companionId, conversationId: source.conversationId }, [source.messageId]).some(message => message.authorId === 'user')) return; }
+      catch { return; }
+    }
+    const sampledAt = Math.max(runtime.energyClock, Math.min(capturedAt, state.cursor));
+    const windows = (this.db.prepare('SELECT * FROM companion_world_occupancy WHERE companion_id=? AND COALESCE(ends_at,?)>? AND starts_at<? ORDER BY starts_at')
+      .all(scope.companionId, sampledAt, runtime.energyClock, sampledAt) as Row[]).map(value => ({ start: Math.max(runtime.energyClock, Number(value.starts_at)),
+        end: Math.min(sampledAt, Number(value.ends_at ?? sampledAt)), phase: value.phase as CompanionWorldOccupancy['phase'],
+        ...(value.habit_kind ? { habitKind: String(value.habit_kind) as CompanionWorldOccupancy['habitKind'] } : {}) }));
+    const energy = advanceCompanionWorldEnergy(windows, runtime.energyClock, sampledAt, runtime.state.energy,
+      (at, reference) => { const selected = this.clockAnchor(state.anchors, reference ?? at); return companionWorldVirtualAt(selected, selected.settings, at); },
+      this.clockBoundaries(runtime.energyClock, sampledAt));
+    const world = this.snapshotValue(state, capturedAt, scope, () => ({ energy, expression: runtime.state.expression }));
+    const environment = companionWorldEnvironment(this.virtualFor(state, capturedAt), state.settings.timeZone);
+    world.clock = { ...world.clock, ...environment.clock, realNow: iso(capturedAt), virtualNow: iso(this.virtualFor(state, capturedAt)) };
+    world.environment = { ...world.environment,
+      ...(world.environment.weather !== undefined ? { weather: environment.environment.weather } : {}),
+      ...(world.environment.outdoorTemperature !== undefined ? { outdoorTemperature: environment.environment.outdoorTemperature } : {}),
+      ...(world.environment.indoorTemperature !== undefined ? { indoorTemperature: environment.environment.indoorTemperature } : {}) };
+    return { world, settledAt: iso(state.cursor), energySampledAt: iso(sampledAt), energyElapsedMs: Math.max(0, capturedAt - sampledAt), energy };
   }
   snapshot(scope?: CompanionWorldScope): CompanionWorldSnapshot {
     if (scope) this.requireScope(scope);
@@ -2048,6 +2095,65 @@ export class CompanionWorldStore {
       && Number(row(this.db.prepare('SELECT revision FROM messages WHERE id=? AND conversation_id=?').get(source.id, source.conversationId) ?? {}).revision ?? 1) === reference.revision
       && createHash('sha256').update(source.content).digest('hex') === reference.checksum));
   }
+  private checkedWorldJob(command: { id: string; leaseToken: string }, strictAvailability = false): CompanionStorageResponse {
+    const found = this.db.prepare('SELECT * FROM companion_world_jobs WHERE id=?').get(command.id);
+    if (!found) return { ok: true };
+    const job = parse<StoredJob>(row(found).data);
+    try { assertCompanionAgendaNativeParent(this.db, job.kind, job.id, job.companionId, command.leaseToken); }
+    catch (error) { if (strictAvailability && !(error instanceof CompanionAgendaNativeAuthorityError)) throw error; return { ok: true }; }
+    if (job.status !== 'running' || job.leaseToken !== command.leaseToken || String(row(found).lease_until) < iso()) return { ok: true };
+    if (job.kind === 'dream' && (!this.maintenanceAuthorityCurrent(this.load(), job) || job.memoryVersions?.some(memory => !this.maintenanceMemoryCurrent(job, memory)))) return { ok: true };
+    this.db.prepare('UPDATE companion_world_jobs SET lease_until=? WHERE id=?').run(iso(Date.now() + 120000), job.id);
+    return { ok: true, worldJob: job };
+  }
+  /** Background control polling keeps all live authority predicates but does
+   * not hydrate job proposals, note prose or rendered source messages. */
+  private pollWorldJob(command: Extract<CompanionStorageCommand, { type: 'world.job.poll' }>): CompanionStorageResponse {
+    const unavailable = (): CompanionStorageResponse => ({ ok: true, worldJobPoll: { current: false } });
+    const found = this.db.prepare(`SELECT id,companion_id,kind,status,lease_until,
+      json_extract(data,'$.id') AS data_id,json_extract(data,'$.companionId') AS data_owner,
+      json_extract(data,'$.status') AS data_status,json_extract(data,'$.kind') AS data_kind,
+      json_extract(data,'$.conversationId') AS room,json_extract(data,'$.leaseToken') AS token,
+      json_extract(data,'$.memoryVersions') AS memory_versions FROM companion_world_jobs WHERE id=?`).get(command.id);
+    if (!found) return unavailable(); const job = row(found);
+    if (job.companion_id !== command.companionId || job.data_owner !== command.companionId || job.data_id !== command.id
+      || job.status !== 'running' || job.data_status !== 'running' || job.kind !== job.data_kind || job.token !== command.leaseToken
+      || typeof job.lease_until !== 'string' || job.lease_until < iso()) return unavailable();
+    const room = companionIdSchema.safeParse(job.room);
+    if (!room.success || !this.maintenanceOwnerCurrent(command.companionId)
+      || !this.db.prepare('SELECT 1 FROM conversations c JOIN conversation_members m ON m.conversation_id=c.id WHERE c.id=? AND c.dissolved_at IS NULL AND m.companion_id=?').get(room.data, command.companionId)) return unavailable();
+    try { assertCompanionAgendaNativeParent(this.db, job.kind as CompanionWorldJob['kind'], command.id, command.companionId, command.leaseToken); }
+    catch (error) { if (error instanceof CompanionAgendaNativeAuthorityError) return unavailable(); throw error; }
+    const legacy = (): CompanionStorageResponse => {
+      const current = !!this.checkedWorldJob(command, true).worldJob;
+      const lease = current ? row(this.db.prepare('SELECT lease_until FROM companion_world_jobs WHERE id=?').get(command.id)).lease_until : undefined;
+      return { ok: true, worldJobPoll: { current, ...(typeof lease === 'string' ? { leaseUntil: lease } : {}) } };
+    };
+    const memories = pollMemoriesSchema.safeParse(job.memory_versions == null ? undefined : JSON.parse(String(job.memory_versions)));
+    if (job.kind !== 'dream' || !memories.success || memories.data.some(memory => memory.contentRevision === undefined) || !this.sourceReferencesCurrent) return legacy();
+    const notes = this.db.prepare(`SELECT json_extract(ref.value,'$.id') AS requested_id,
+      json_extract(ref.value,'$.contentRevision') AS requested_revision,n.id,n.companion_id,
+      json_extract(n.data,'$.status') AS status,json_extract(n.data,'$.contentRevision') AS content_revision,
+      json_extract(n.data,'$.sources') AS sources FROM json_each(?) ref
+      LEFT JOIN vcp_memory_notes n ON n.id=json_extract(ref.value,'$.id') AND n.companion_id=?`).all(JSON.stringify(memories.data), command.companionId);
+    const references = new Map<string, CompanionCurrentSourceReference>();
+    for (const value of notes) {
+      const note = row(value);
+      if (note.id !== note.requested_id || note.companion_id !== command.companionId || !['queued', 'indexed'].includes(String(note.status))
+        || note.content_revision !== note.requested_revision) return unavailable();
+      const sources = pollSourcesSchema.safeParse(note.sources == null ? undefined : JSON.parse(String(note.sources)));
+      if (!sources.success) return legacy();
+      for (const source of sources.data) {
+        const reference = { id: source.messageId, conversationId: source.conversationId, revision: source.revision, checksum: source.checksum };
+        references.set(JSON.stringify([reference.id, reference.conversationId, reference.revision, reference.checksum]), reference);
+      }
+    }
+    if (!this.sourceReferencesCurrent({ companionId: command.companionId, conversationId: room.data }, [...references.values()])) return unavailable();
+    const leaseUntil = iso(Date.now() + 120000);
+    if (!this.db.prepare("UPDATE companion_world_jobs SET lease_until=? WHERE id=? AND companion_id=? AND status='running' AND lease_until>=? AND json_extract(data,'$.leaseToken')=?")
+      .run(leaseUntil, command.id, command.companionId, iso(), command.leaseToken).changes) return unavailable();
+    return { ok: true, worldJobPoll: { current: true, leaseUntil } };
+  }
   private claim(kind: CompanionWorldJob['kind'], excludedCompanionIds: readonly string[] = [], input?: Extract<CompanionStorageCommand, { type: 'world.job.claim' }>): CompanionWorldJob | undefined {
     const claimAt = Date.now(); this.advance(claimAt); return this.db.transaction(() => {
       if (input) assertCompanionAgendaNativeClaim(this.db, input, kind);
@@ -2367,16 +2473,8 @@ export class CompanionWorldStore {
         return { ok: true, ...(job ? { worldJob: { ...job, disposition: this.jobControlAdapter().read(command.companionId, command.id),
           agendaParentRunId: companionAgendaNativeParentId(this.db, job.kind, job.id, job.companionId) } } : {}) };
       }
-      case 'world.job.check': return this.atomic(() => {
-        const found = this.db.prepare('SELECT * FROM companion_world_jobs WHERE id=?').get(command.id);
-        if (!found) return { ok: true };
-        const job = parse<StoredJob>(row(found).data);
-        try { assertCompanionAgendaNativeParent(this.db, job.kind, job.id, job.companionId, command.leaseToken); } catch { return { ok: true }; }
-        if (job.status !== 'running' || job.leaseToken !== command.leaseToken || String(row(found).lease_until) < iso()) return { ok: true };
-        if (job.kind === 'dream' && (!this.maintenanceAuthorityCurrent(this.load(), job) || job.memoryVersions?.some(memory => !this.maintenanceMemoryCurrent(job, memory)))) return { ok: true };
-        this.db.prepare('UPDATE companion_world_jobs SET lease_until=? WHERE id=?').run(iso(Date.now() + 120000), job.id);
-        return { ok: true, worldJob: job };
-      });
+      case 'world.job.check': return this.atomic(() => this.checkedWorldJob(command));
+      case 'world.job.poll': return this.atomic(() => this.withSourceReadAvailability ? this.withSourceReadAvailability(() => this.pollWorldJob(command)) : this.pollWorldJob(command));
       case 'world.job.bind-inputs': return this.atomic(() => {
         const found = this.db.prepare('SELECT data,lease_until FROM companion_world_jobs WHERE id=?').get(command.id);
         if (!found) return { ok: true, worldInputAccepted: false };

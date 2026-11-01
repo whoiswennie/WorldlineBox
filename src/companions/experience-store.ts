@@ -5,6 +5,7 @@ import type { CompanionConnection } from './store';
 import { companionExperienceCommands, companionExperienceDetailSchema, companionExperiencePublishSchema, type CompanionExperienceCommand, type CompanionExperienceDetail, type CompanionExperienceEntry } from '../shared/companion-experience';
 import type { CompanionStorageCommand, CompanionStorageResponse } from '../shared/companion-storage';
 import { removeOwnedDirectorySync } from '../main/vcp-memory/filesystem';
+import { measureCompanionStorageTiming } from '../shared/companion-storage-timing';
 
 type Row = Record<string, string | number | null>;
 type ProjectionInput = { source: CompanionExperienceEntry['source']['kind']; id: string; owner: string; status?: string; conversationId?: string; data: Record<string, unknown>; historical?: boolean; observedAt?: string };
@@ -246,7 +247,8 @@ export class CompanionExperienceStore {
   }
   /** A committed outbox survives restart. Files never become an alternate index. */
   flush(limit = 8): void {
-    this.projectPending();
+    measureCompanionStorageTiming('experienceProjection', () => this.projectPending());
+    measureCompanionStorageTiming('experienceArchive', () => {
     for (const job of this.db.prepare('SELECT * FROM companion_experience_archive WHERE attempts<8 AND next_attempt<=? ORDER BY rowid LIMIT ?').all(Date.now(), limit) as Row[]) {
       const row = this.db.prepare('SELECT * FROM companion_experiences WHERE id=? AND companion_id=?').get(job.id, job.companion_id) as Row | undefined;
       if (!row) { this.db.prepare('DELETE FROM companion_experience_archive WHERE id=?').run(job.id); continue; }
@@ -273,6 +275,7 @@ export class CompanionExperienceStore {
         this.db.prepare('DELETE FROM companion_experience_archive WHERE id=? AND revision=?').run(job.id, row.revision);
       } catch (error) { this.db.prepare('UPDATE companion_experience_archive SET attempts=attempts+1,next_attempt=?,error=? WHERE id=?').run(Date.now() + 10000, (error instanceof Error ? error.message : String(error)).slice(0, 1000), job.id); }
     }
+    });
   }
   private writeArchive(directory: string, name: string, content: string): void {
     if (lstatSync(directory).isSymbolicLink()) throw Error('经历归档目录不能是链接。');

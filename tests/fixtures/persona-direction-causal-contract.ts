@@ -70,7 +70,7 @@ export const PERSONA_PROVIDER_DIFFERENCE_ALLOWLIST = { currentSourceId: [...idPa
   profileVersion: ['/assetContext/profileRevision', '/characterPerformance/profileRevision'], system: 'exactly one occurrence of snapshot.frame.identity only',
   profileDerived: { paths: ['/characterPerformance/format', '/characterPerformance/sections'],
     rule: 'First verify the whole characterPerformance equals the production parsers of the independently admitted Registry/audience persona; reject extras or changed invariant metadata.' },
-  nativeSourceHeader: 'messageId only, with exact current question body/author/time retained', clockDifferences: false } as const;
+  nativeSourceHeader: 'historical header messageId only; current native prose must equal the exact question and bind the separate envelope source index', clockDifferences: false } as const;
 const object = (value: Json): value is { [key: string]: Json } => !!value && typeof value === 'object' && !Array.isArray(value);
 function mapInput(value: Json, question: CompanionMessage, profileRevision: string, path = ''): Json {
   if (idPaths.has(path)) { if (value !== question.id) throw new Error('Unpaired current source reference at ' + path); return '<CURRENT_SOURCE>'; }
@@ -104,17 +104,22 @@ function pairedProvider({ snapshot, question, admittedProfile }: PersonaProvider
     throw new Error('Frame persona/version does not match its separately admitted Registry projection');
   const body = JSON.parse(snapshot.providerBody) as { messages?: Array<{ role: string; content: string }> };
   if (!Array.isArray(body.messages) || snapshot.bodyHash !== personaDirectionDigest(snapshot.providerBody)) throw new Error('Provider snapshot is not its exact body');
-  let identities = 0, envelopes = 0;
+  let identities = 0, envelopes = 0, nativeSources = 0, legacySources = 0;
+  let nativeSource: Json | undefined;
   const messages = body.messages.map(message => {
     if (message.role === 'system') {
       const identity = snapshot.frame.identity; if (!identity) throw new Error('No actual current identity');
       const pieces = message.content.split(identity); identities += pieces.length - 1;
       return { ...message, content: pieces.join('<CURRENT_PERSONA>') };
     }
-    if (message.content.startsWith('[发言来源 ')) {
+    if (message.role === 'user' && message.content === question.content) {
+      nativeSources++; return message;
+    }
+    if (message.role === 'user' && message.content.startsWith('[发言来源 ')) {
       const end = message.content.indexOf(']\n'); if (end < 0) throw new Error('Malformed native current source header');
       const header = JSON.parse(message.content.slice('[发言来源 '.length, end)) as { messageId: string; authorId: string; [key: string]: unknown };
       if (header.messageId !== question.id || header.authorId !== 'user' || message.content.slice(end + 2) !== question.content) throw new Error('Native port includes another source or edited question');
+      legacySources++;
       return { ...message, content: '[发言来源 ' + JSON.stringify({ ...header, messageId: '<CURRENT_SOURCE>' }) + ']\n' + question.content };
     }
     if (message.role === 'user') {
@@ -124,11 +129,16 @@ function pairedProvider({ snapshot, question, admittedProfile }: PersonaProvider
       if (!actual || !object(actual) || Object.keys(actual).length !== Object.keys(expected).length
         || Object.entries(expected).some(([key, value]) => JSON.stringify(actual[key]) !== JSON.stringify(value)))
         throw new Error('characterPerformance is not the exact production parse projection of the admitted persona');
+      if (Array.isArray(data.messages) && data.messages.length === 1) nativeSource = data.messages[0];
       envelopes++; return { ...message, content: JSON.stringify(mapInput(data, question, snapshot.frame.profileRevision)) };
     }
     throw new Error('Unexpected tools or prior model answers in paired provider history');
   });
-  if (identities !== 1 || envelopes !== 1) throw new Error('Persona must occur once and the current source must have one envelope');
+  if (identities !== 1 || envelopes !== 1 || nativeSources + legacySources !== 1) throw new Error('Persona must occur once and the current source must have one envelope and exact utterance');
+  if (nativeSources && (!nativeSource || !object(nativeSource) || nativeSource.id !== question.id || nativeSource.authorId !== 'user'
+    || nativeSource.speaker !== 'user' || nativeSource.kind !== question.kind || nativeSource.sequence !== question.sequence
+    || nativeSource.at !== (question.worldCreatedAt ?? question.createdAt) || nativeSource.transcriptIndex !== 1 || 'content' in nativeSource))
+    throw new Error('Native question provenance must remain exact in its separate host index');
   return { body: { ...body, messages }, recall: (JSON.parse(snapshot.frame.input) as { memoryRecall?: unknown }).memoryRecall };
 }
 function differences(a: unknown, b: unknown, path = ''): string[] {

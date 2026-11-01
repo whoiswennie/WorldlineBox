@@ -7,6 +7,7 @@ import { EmbeddingDeviceCapabilityService, EmbeddingDeviceUnavailableError, embe
 import { LOCAL_TEXT_EMBEDDING_MODEL } from '../../src/shared/embedding/global-profile';
 import { embeddingDeviceCapabilitySchema, type EmbeddingDeviceHardware } from '../../src/shared/embedding/device-capability';
 import type { LlamaEmbeddingSession } from '../../src/main/embedding-llama-session';
+import { prepareCompanionMemoryIdleStartup } from '../../src/main/companions/memory-startup';
 
 const disk = vi.hoisted(() => ({ resolveLayout: vi.fn(), sha: vi.fn() }));
 vi.mock('../../src/main/embedding-text-model-install', () => ({ resolveLocalTextEmbeddingLayout: disk.resolveLayout, fileSha256: disk.sha }));
@@ -44,6 +45,21 @@ afterEach(async () => {
 });
 
 describe('local embedding device capability', () => {
+  it('restores a real measured cache for host idle startup without automatically rerunning its model test', async () => {
+    const { service, options, start, hardware } = await fixture();
+    await service.test(); expect(start).toHaveBeenCalledOnce();
+    const restarted = new EmbeddingDeviceCapabilityService(options); services.push(restarted);
+    expect(restarted.snapshot().state).toBe('unchecked');
+    const verifyResources = vi.fn(async () => undefined), requestIdlePrime = vi.fn();
+    await expect(prepareCompanionMemoryIdleStartup({ isCurrent: () => true, readDeviceStatus: () => restarted.status(),
+      verifyResources, requestIdlePrime })).resolves.toBe('requested');
+    expect(restarted.snapshot()).toMatchObject({ state: 'supported', cacheUsed: true });
+    expect(start).toHaveBeenCalledOnce(); expect(verifyResources).toHaveBeenCalledOnce(); expect(requestIdlePrime).toHaveBeenCalledOnce();
+    hardware.availableMemoryBytes = 1 * GiB;
+    await expect(prepareCompanionMemoryIdleStartup({ isCurrent: () => true, readDeviceStatus: () => restarted.status(),
+      verifyResources, requestIdlePrime })).resolves.toBe('unavailable');
+    expect(start).toHaveBeenCalledOnce(); expect(verifyResources).toHaveBeenCalledOnce(); expect(requestIdlePrime).toHaveBeenCalledOnce();
+  });
   it('reads hardware without starting a model and refuses unsafe memory before inference', async () => {
     const { service, start, hardware } = await fixture({ available: 2 * GiB });
     expect(await service.status()).toMatchObject({ state: 'unsupported', reason: 'memory_pressure', retryable: true });

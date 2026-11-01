@@ -8,7 +8,8 @@ import { CompanionGrowthStore } from './growth-store';
 import { CompanionArtifactRegistryStore } from './artifact-registry-store';
 import { importCompanionRetainedHostData } from './retained-host-data';
 import { requireCompanionCognitionProtocol } from './cognition-protocol';
-import { assertCompanionRecoveryLedger, CompanionRecoveryFence, fencedCompanionConnection, type CompanionRecoverySelection } from './recovery-fence';
+import { measureCompanionStorageTiming } from '../shared/companion-storage-timing';
+import { assertCompanionRecoveryLedger, CompanionRecoveryFence, createCompanionRecoveryMutationRunner, fencedCompanionConnection, type CompanionRecoveryMutationRunner, type CompanionRecoverySelection } from './recovery-fence';
 import { createCompanionBackup, inspectCompanionBackup, restoreCurrentCompanionFiles } from './recovery-package';
 import { companionRecoveryCommandSchema, type CompanionRecoveryCommand } from '../shared/companion-recovery';
 import { assertRestoredCompanionWorkHeld } from './recovery-hold';
@@ -21,9 +22,14 @@ import { CompanionTaskConcurrencyStore, companionTaskCanClaim } from './task-con
 import { CompanionInterruptionStore } from './interruption-store';
 import { validateCompanionCapabilityAuthorities } from './capability-evidence-store';
 import { createCompanionCapabilityReadPort } from './capability-evidence-read-port';
+import { CompanionPublishedMessageCertificates, initializeCompanionMessagePublications } from './published-message-certificates';
+import { maintainPublishedDependencyIndex } from './published-dependency-index';
 import { CompanionAgentRunStore } from './agent-run-store';
 import { CompanionDocumentCatalogStore } from './document-catalog-store';
 import { initializeCompanionLifeOverview } from './life-overview-store';
+import { initializeCompanionMessageLoopHeaders, readCompanionTaskMessageLoopHeader, readCompanionReplyProgressRecoveryWorkRows } from './message-loop-headers';
+import { companionReplyTaskMessageSchema, companionReplyTaskSnapshotSchema, type CompanionReplyTaskMessage, type CompanionReplyTaskSnapshot } from '../shared/companion-reply-task-snapshot';
+import { companionReplyPublicationSchema } from '../shared/companion-reply-publication';
 import { CompanionMemoryTraceStore } from './memory-trace-store';
 import { CompanionExperienceStore } from './experience-store';
 import type { CompanionExperienceEntry } from '../shared/companion-experience';
@@ -56,7 +62,7 @@ import {
 import { BUILTIN_COMPANIONS } from '../shared/companion-personas';
 import { companionGroupTitle } from '../shared/companion-titles';
 import { companionLoopCheckpointSchema, companionLoopCheckpointPublishedText, companionWorkSchema, type CompanionWork, type CompanionLoopCheckpoint } from '../shared/companion-loop';
-import { advanceCompanionReplyTiming } from '../shared/companion-reply-progress';
+import { advanceCompanionReplyTiming, finishCompanionReplyProgress, terminalReplyPhases, type CompanionReplyProgress } from '../shared/companion-reply-progress';
 import { withdrawCompanionReplyObservation } from '../shared/companion-reply-observation-content';
 import type { CompanionReplyReceivedState } from '../shared/companion-reply-observation';
 import { assertCompanionTaskAssetsBinding } from '../shared/companion-task-assets-binding';
@@ -83,7 +89,7 @@ import { CompanionCollaborationStore } from './collaboration-store';
 import { CompanionExecutionSourceStore } from './execution-source-store';
 import { readCapabilityRevalidationCandidate, commitCapabilityRevalidation } from './capability-revalidation-store';
 import { companionCapabilityAudience, companionConversationIdentity, companionConversationMessageScopeSql } from './capability-conversation-scope';
-import { executionSourceInvalidKey, companionExecutionReadsetValidSync } from './execution-source-access';
+import { executionMessageReadsetKey, executionSourceInvalidKey, companionExecutionReadsetValidSync } from './execution-source-access';
 import { companionModelUsageView } from '../shared/companion-model-usage';
 import type { CompanionExecutionReadset } from '../shared/companion-execution-evidence';
 import { companionThoughtAuthorizationSchema, type CompanionThoughtAuthorization } from '../shared/companion-activity-thought';
@@ -113,7 +119,7 @@ const decode = <T>(value: string | number | null | undefined): T => JSON.parse(S
 export class CompanionsStore {
   readonly #rawDb: CompanionConnection;
   readonly #recoveryFence?: CompanionRecoveryFence;
-  #recoveryDepth = 0;
+  readonly #recoveryMutation?: CompanionRecoveryMutationRunner;
   readonly #registry: CompanionArtifactRegistryStore;
   readonly #creation: CompanionCreationStore;
   readonly #growth: CompanionGrowthStore;
@@ -156,7 +162,10 @@ export class CompanionsStore {
     catch (error) { this.#db.close(); throw error; }
     try { this.#recoveryFence = options.recoveryAuthority ? new CompanionRecoveryFence(options.recoveryAuthority, databasePath, this.#db) : undefined; }
     catch (error) { this.#db.close(); throw error; }
-    if (this.#recoveryFence) this.#db = fencedCompanionConnection(this.#rawDb, run => this.#withRecoveryMutation(run));
+    if (this.#recoveryFence) {
+      this.#recoveryMutation = createCompanionRecoveryMutationRunner(this.#rawDb, this.#recoveryFence);
+      this.#db = fencedCompanionConnection(this.#rawDb, run => this.#withRecoveryMutation(run));
+    }
     this.#registry = new CompanionArtifactRegistryStore(this.#db, { fileJobValid: guard => {
       try {
         const response = this.#memory.execute(guard.kind === 'source_files'
@@ -315,6 +324,8 @@ export class CompanionsStore {
       (scope, candidate, jobId, leaseToken) => this.#memory.recordPrivateConsolidation(scope, candidate, jobId, leaseToken),
       (scope, plan, jobId, leaseToken) => this.#memory.recordSleepConsolidation(scope, plan, jobId, leaseToken),
       (owner, now) => this.#memory.captureEligibility(owner, now));
+    this.#world.connectSourceReferenceValidation((scope, references) => this.#memory.sources.currentReferencesValid(scope, references),
+      operation => this.#memory.sources.withCurrentReferencesValidation(operation));
     this.#agenda.connectRoutineChanges(id => { this.#world.ensureThrough(Date.now()); this.#runtimeState.energy(id); this.#world.changed(); });
     this.#social = new CompanionSocialStore(this.#db, input => this.appendMessage(input), id => this.getMessage(id),
       (scope, ids) => this.#memory.sourcesFilter(scope, ids), () => this.#world.socialContext(),
@@ -324,6 +335,12 @@ export class CompanionsStore {
         queued: job => registerCompanionSocialAgenda(job, command => this.#agenda.execute(command)),
         captureReceipt: (scope, kind) => this.captureReplyObservation(scope, kind),
         receiptEpoch: owner => this.#memory.lifecycleState(owner).revocationEpoch,
+        publishedReportValid: message => {
+          const certificate = new CompanionPublishedMessageCertificates(this.#db, this.#memory).observe(message.id).publicationCertificate;
+          return !!certificate && certificate.messageId === message.id && certificate.companionId === message.authorId
+            && certificate.conversationId === message.conversationId && certificate.messageRevision === message.revision
+            && certificate.bodySHA === createHash('sha256').update(message.content).digest('hex');
+        },
         topicExecute: command => this.#topics.execute(command),
         activityTaskValid: (id, companionId, conversationId) => {
           try { return this.#activity.execute({ type: 'activity.get', id, companionId, conversationId })?.activityTask?.historyAvailable === true; }
@@ -474,6 +491,9 @@ export class CompanionsStore {
       this.#seed(instantiateSeeds);
       this.backfillSearchIndex();
       this.#memory.initialize();
+      initializeCompanionMessageLoopHeaders(this.#db);
+      initializeCompanionMessagePublications(this.#db);
+      this.#memory.sources.enablePublishedDependencyCuts();
       this.#growth.initialize();
       this.#documents.initialize();
       this.#learning.initialize();
@@ -497,6 +517,7 @@ export class CompanionsStore {
       this.#reset.prepareIndexes();
       for (const room of this.#db.prepare('SELECT id FROM conversations WHERE dissolved_at IS NULL').all() as { id: string }[]) this.#topics.ensurePrimary(room.id);
       this.#experience.backfill(64); this.#experience.flush();
+      maintainPublishedDependencyIndex(this.#db);
       });
     } catch (error) {
       this.#db.close();
@@ -639,25 +660,7 @@ export class CompanionsStore {
   }
 
   #withRecoveryMutation<T>(run: () => T): T {
-    const fence = this.#recoveryFence;
-    if (!fence || this.#recoveryDepth) return run();
-    fence.reconcile(this.#rawDb);
-    const before = this.#rawDb.prepare('SELECT total_changes() AS changes,(SELECT schema_version FROM pragma_schema_version) AS schemaVersion').get() as { changes: number; schemaVersion: number };
-    let generation: number | undefined;
-    ++this.#recoveryDepth;
-    try {
-      const result = this.#rawDb.transaction(() => {
-        const result = run();
-        const after = this.#rawDb.prepare('SELECT total_changes() AS changes,(SELECT schema_version FROM pragma_schema_version) AS schemaVersion').get() as { changes: number; schemaVersion: number };
-        // The independent fixed-size fence commits before the primary SQL
-        // transaction becomes visible. A failed fence write rolls back the
-        // primary mutation instead of silently weakening backup authority.
-        if (after.changes !== before.changes || after.schemaVersion !== before.schemaVersion) generation = fence.prepare(this.#rawDb);
-        return result;
-      }).immediate();
-      if (generation !== undefined) fence.finish(generation);
-      return result;
-    } finally { --this.#recoveryDepth; }
+    return this.#recoveryMutation ? this.#recoveryMutation(run) : run();
   }
   private recordTopicParticipation(receipt: TopicParticipationReceipt): void {
     // A participant may have never activated a world body. Recording an actual
@@ -774,19 +777,23 @@ export class CompanionsStore {
     }
   }
 
-  #conversation(found: Row): CompanionConversation {
-    const primaryTopic = this.#topics.ensurePrimary(String(found.id));
+  #conversation(found: Row, initializePrimary = true): CompanionConversation {
+    const primaryTopicId = initializePrimary ? this.#topics.ensurePrimary(String(found.id))?.id : this.#topics.primaryId(String(found.id));
     const id = String(found.id);
     const identity = companionConversationIdentity(this.#db, { id, kind: found.kind as CompanionConversation['kind'] });
     const visibleTopic = "NOT (m.author_id='system' AND m.kind='notice' AND m.status='failed') AND NOT EXISTS(SELECT 1 FROM companion_message_topics association JOIN companion_topics topic ON topic.id=association.topic_id WHERE association.message_id=m.id AND json_extract(topic.data,'$.deletedAt') IS NOT NULL) AND " + companionConversationMessageScopeSql('m');
     const latest = this.#db.prepare("SELECT content,created_at,COALESCE((SELECT json_extract(value,'$.updatedAt') FROM metadata WHERE key='message-loop/'||m.id),created_at) AS visible_at FROM messages m WHERE conversation_id=? AND NOT EXISTS(SELECT 1 FROM metadata WHERE key='message-memory-evidence/'||m.id) AND " + visibleTopic + " ORDER BY sequence DESC LIMIT 1").get(id);
     const unread = row(this.#db.prepare("SELECT count(*) AS total FROM messages m WHERE conversation_id=? AND sequence>? AND author_id!='user' AND NOT EXISTS(SELECT 1 FROM metadata WHERE key='message-memory-evidence/'||m.id) AND " + visibleTopic).get(id, found.read_sequence)).total;
+    // Retirement retains an empty private room after its owner is removed.
+    // Only its display timestamp falls back; live owners keep strict admission.
+    const livePrivateOwner = !latest && found.private_companion_id
+      && this.#db.prepare('SELECT 1 FROM companions WHERE id=? AND deleted_at IS NULL').get(found.private_companion_id);
     return { id, kind: found.kind as CompanionConversation['kind'], title: found.kind === 'group' && this.#automaticGroupTitle(found) ? this.#groupTitle(id) : String(found.title),
       memberIds: identity.memberIds, pinned: Boolean(found.pinned), muted: Boolean(found.muted),
       peerOnly: identity.peerOnly,
-      unread: Number(unread), updatedAt: latest ? String(row(latest).visible_at) : found.private_companion_id
+      unread: Number(unread), updatedAt: latest ? String(row(latest).visible_at) : livePrivateOwner
         ? this.#requireCompanion(String(found.private_companion_id)).createdAt : String(found.updated_at), lastMessage: latest ? String(row(latest).content).slice(0, 500) : '',
-      ...(primaryTopic ? { defaultTopicId: primaryTopic.id } : {}),
+      ...(primaryTopicId ? { defaultTopicId: primaryTopicId } : {}),
       ...(this.#topics.current(String(found.id)) ? { activeTopicId: this.#topics.current(String(found.id)) } : {}) };
   }
   #automaticGroupTitle(group: Row): boolean {
@@ -800,9 +807,9 @@ export class CompanionsStore {
     }));
   }
 
-  state(includeHidden = false, scope: { includeConversations?: boolean; activeOnly?: boolean; conversationId?: string; companionId?: string } = {}): CompanionState {
-    return { companions: rows(this.#db.prepare(`SELECT data FROM companions WHERE deleted_at IS NULL AND NOT EXISTS(SELECT 1 FROM companion_creation_operations birth WHERE birth.companion_id=companions.id AND json_extract(birth.data,'$.state')!='committed') ${scope.activeOnly ? "AND json_extract(data,'$.active')=1" : ''} ${scope.companionId ? 'AND id=?' : ''} ORDER BY rowid`).all(...(scope.companionId ? [scope.companionId] : []))).map((item) => ({ revision: 1, ...decode<Companion>(item.data) })), playerProfile: this.getPlayerProfile(), resetJobs: this.#reset.list(),
-      conversations: scope.includeConversations === false ? [] : rows(this.#db.prepare(`SELECT * FROM conversations WHERE dissolved_at IS NULL ${includeHidden ? '' : 'AND hidden_at IS NULL'} ${scope.conversationId ? 'AND id=?' : ''} ORDER BY pinned DESC,updated_at DESC,rowid DESC`).all(...(scope.conversationId ? [scope.conversationId] : []))).map((item) => this.#conversation(item))
+  state(includeHidden = false, scope: { includeConversations?: boolean; activeOnly?: boolean; conversationId?: string; companionId?: string } = {}, readOnly = false): CompanionState {
+    return { companions: rows(this.#db.prepare(`SELECT data FROM companions WHERE deleted_at IS NULL AND NOT EXISTS(SELECT 1 FROM companion_creation_operations birth WHERE birth.companion_id=companions.id AND json_extract(birth.data,'$.state')!='committed') ${scope.activeOnly ? "AND json_extract(data,'$.active')=1" : ''} ${scope.companionId ? 'AND id=?' : ''} ORDER BY rowid`).all(...(scope.companionId ? [scope.companionId] : []))).map((item) => ({ revision: 1, ...decode<Companion>(item.data) })), playerProfile: readOnly ? this.#storedPlayerProfile() : this.getPlayerProfile(), resetJobs: this.#reset.list(),
+      conversations: scope.includeConversations === false ? [] : rows(this.#db.prepare(`SELECT * FROM conversations WHERE dissolved_at IS NULL ${includeHidden ? '' : 'AND hidden_at IS NULL'} ${scope.conversationId ? 'AND id=?' : ''} ORDER BY pinned DESC,updated_at DESC,rowid DESC`).all(...(scope.conversationId ? [scope.conversationId] : []))).map((item) => this.#conversation(item, !readOnly))
         .sort((left, right) => Number(right.pinned) - Number(left.pinned) || right.updatedAt.localeCompare(left.updatedAt)),
       activities: [], configured: false, recoveries: this.replyRecoveries() };
   }
@@ -1013,11 +1020,15 @@ export class CompanionsStore {
   }
 
   getPlayerProfile(): PlayerProfile {
-    const existing = this.#db.prepare("SELECT data FROM player_profile WHERE id='user'").get();
-    if (existing) return playerProfileSchema.parse(decode(row(existing).data));
+    const existing = this.#storedPlayerProfile();
+    if (existing) return existing;
     const draft = { name: '我', description: '' }, profile: PlayerProfile = { ...draft, id: 'user', revision: 1, updatedAt: stamp(), contentHash: this.#playerProfileHash(draft) };
     this.#db.prepare("INSERT INTO player_profile(id,revision,data) VALUES('user',?,?)").run(profile.revision, JSON.stringify(profile));
     return profile;
+  }
+  #storedPlayerProfile(): PlayerProfile | undefined {
+    const existing = this.#db.prepare("SELECT data FROM player_profile WHERE id='user'").get();
+    return existing ? playerProfileSchema.parse(decode(row(existing).data)) : undefined;
   }
 
   updatePlayerProfile(input: PlayerProfileDraft, expectedRevision: number): PlayerProfile {
@@ -1101,7 +1112,7 @@ export class CompanionsStore {
     this.#requireCompanion(companionId);
     const existing = this.#db.prepare('SELECT id FROM conversations WHERE private_companion_id=?').get(companionId);
     const scope = existing ? { companionId, conversationId: String(row(existing).id) } : this.#memory.sources.ownerScope(companionId);
-    return this.#conversation(this.#memory.sources.requireScope(scope));
+    return this.#conversation(this.#memory.sources.requireScope(scope), false);
   }
 
   createConversation(title: string, memberIds: string[]): CompanionConversation {
@@ -1213,6 +1224,38 @@ export class CompanionsStore {
     if (loop) return row(loop).status !== 'done';
     return found.request_fingerprint ? decode<{ loopStep?: number }>(found.request_fingerprint).loopStep !== undefined : false;
   }
+
+  /** A task consumes the actual message, not historical stream telemetry or
+   * tool-card segments. Unknown loop shapes keep the original projection. */
+  #taskMessage(found: Row): CompanionReplyTaskMessage {
+    const loopKey = 'message-loop/' + found.id, header = readCompanionTaskMessageLoopHeader(this.#db, loopKey);
+    const exists = header || this.#db.prepare('SELECT 1 FROM metadata WHERE key=?').get(loopKey);
+    const legacy = () => {
+      const actual = this.#message(found);
+      return companionReplyTaskMessageSchema.strip().parse({ ...actual, ...(actual.replyDraft ? { isReplyDraft: true } : {}) });
+    };
+    if (exists && !header) return legacy();
+    if (header && header.draftType !== null) return legacy();
+    const hostBehavior = readVerifiedHostBehaviorReceipt(this.#db, found);
+    const attachments = rows(this.#db.prepare('SELECT a.data FROM message_attachments ma JOIN attachments a ON a.id=ma.attachment_id WHERE ma.message_id=? ORDER BY ma.ordinal').all(found.id))
+      .map(item => decode<StoredCompanionAttachment['attachment']>(item.data));
+    const observation = this.#db.prepare('SELECT value FROM metadata WHERE key=?').get('memory-world-observation/' + found.id);
+    const worldTime = this.#db.prepare('SELECT world_at,time_zone FROM companion_message_times WHERE message_id=?').get(found.id);
+    const action = found.action_id ? this.#db.prepare('SELECT data FROM actions WHERE id=?').get(found.action_id) : undefined;
+    const audience = action ? companionCapabilityAudience(this.#db, decode<CompanionAction>(row(action).data)) : undefined;
+    const topicId = this.#topics.messageTopic(String(found.id));
+    return companionReplyTaskMessageSchema.parse({ id: String(found.id), sequence: Number(found.sequence),
+      ...(found.revision !== undefined ? { revision: Number(found.revision) } : {}), conversationId: String(found.conversation_id),
+      ...(topicId ? { topicId } : {}), authorId: String(found.author_id), kind: found.kind, content: String(found.content),
+      ...(found.author_id === 'user' && found.request_fingerprint && decode<AppendCompanionMessage>(found.request_fingerprint).toolPolicy
+        ? { toolPolicy: decode<AppendCompanionMessage>(found.request_fingerprint).toolPolicy } : {}),
+      createdAt: String(found.created_at), ...(worldTime ? { worldCreatedAt: String(row(worldTime).world_at), worldTimeZone: String(row(worldTime).time_zone) } : {}),
+      status: found.status, attachments, ...((header ? header.status !== 'done' : this.#isReplyDraft(found)) ? { isReplyDraft: true } : {}),
+      ...(observation ? { worldObservation: decode<{ observation: NonNullable<CompanionMessage['worldObservation']> }>(row(observation).value).observation } : {}),
+      ...(hostBehavior ? { hostBehavior } : {}), ...(audience ? { audience } : {}),
+      ...(this.#db.prepare('SELECT 1 FROM metadata WHERE key=?').get('message-memory-evidence/' + found.id) ? { memoryEvidenceOnly: true } : {}),
+      ...(found.reply_to_id ? { replyToId: String(found.reply_to_id) } : {}), ...(found.action_id ? { actionId: String(found.action_id) } : {}) });
+  }
   #indexMessageSearch(id: string): void {
     const found = this.#db.prepare(`SELECT m.*,COALESCE((SELECT group_concat(json_extract(a.data,'$.name'),char(10)) FROM message_attachments ma JOIN attachments a ON a.id=ma.attachment_id WHERE ma.message_id=m.id),'') AS filenames,
       EXISTS(SELECT 1 FROM message_attachments ma JOIN attachments a ON a.id=ma.attachment_id WHERE ma.message_id=m.id AND json_extract(a.data,'$.mime') LIKE 'image/%') AS has_images,
@@ -1322,14 +1365,22 @@ export class CompanionsStore {
     const work = { ...previous, status, stop: status === 'queued' ? undefined : previous.stop,
       ...(explicitRetry ? { agendaAttempt: (previous.agendaAttempt ?? 0) + 1, agendaRunId: undefined, agendaLeaseToken: undefined } : {}),
       resumeOnRestart: status === 'interrupted' && resumeOnRestart || undefined, updatedAt: stamp() };
-    if (['queued', 'cancelled', 'interrupted'].includes(status)) {
+    // Work termination is a process event, including when formal publication
+    // already succeeded. Its progress-only receipt must not publish it again.
+    if (['done', 'cancelled', 'interrupted'].includes(status)) {
       const checkpoint = this.loopCheckpoint(previous.sourceMessageId, previous.companionId, previous.proactive ? previous.id : undefined);
-      if (checkpoint && checkpoint.status !== 'done' && (status !== 'interrupted' || !['failed', 'cancelled'].includes(checkpoint.progress?.phase ?? ''))) {
+      if (checkpoint?.progress && !terminalReplyPhases.has(checkpoint.progress.phase)) {
+        this.#writeLoopProgress(checkpoint, finishCompanionReplyProgress(checkpoint.progress, {
+          phase: status === 'done' && checkpoint.status === 'done' ? 'completed' : status === 'cancelled' ? 'cancelled' : 'interrupted',
+          detail: status === 'done' && checkpoint.status === 'done' ? '回复已完成' : status === 'cancelled' ? '这次回复已取消' : '回复已中断，可继续恢复',
+          updatedAt: work.updatedAt, at: work.updatedAt }));
+      }
+    }
+    if (status === 'queued') {
+      const checkpoint = this.loopCheckpoint(previous.sourceMessageId, previous.companionId, previous.proactive ? previous.id : undefined);
+      if (checkpoint && checkpoint.status !== 'done') {
         checkpoint.progress = { ...checkpoint.progress, workId: id, revision: (checkpoint.progress?.revision ?? 0) + 1,
-          phase: status === 'queued' ? 'queued' : status === 'cancelled' ? 'cancelled' : 'interrupted',
-          phaseStartedAt: stamp(),
-          detail: status === 'queued' ? '已重新加入回复队列' : status === 'cancelled' ? '这次回复已取消' : '回复已中断，可继续恢复',
-          ...(status === 'queued' ? { stop: undefined, finishedAt: undefined } : { finishedAt: checkpoint.progress?.finishedAt ?? stamp() }),
+          phase: 'queued', phaseStartedAt: stamp(), detail: '已重新加入回复队列', stop: undefined, finishedAt: undefined,
           startedAt: checkpoint.progress?.startedAt ?? previous.createdAt, updatedAt: stamp() };
         this.saveLoop(checkpoint);
       }
@@ -1394,6 +1445,58 @@ export class CompanionsStore {
     const found = this.#db.prepare('SELECT value FROM metadata WHERE key=?').get(`loop/${sourceMessageId}/${companionId}` + (invocationKey ? '/invocation/' + invocationKey : ''));
     return found ? companionLoopCheckpointSchema.parse(decode(row(found).value)) : undefined;
   }
+  /** Only presentation progress changes. Existing bodies, task snapshots,
+   * publication timestamps, readsets, certificates and pins are never replayed. */
+  #writeLoopProgress(checkpoint: CompanionLoopCheckpoint, progress: CompanionReplyProgress): void {
+    this.#db.transaction(() => {
+    const loopKey = `loop/${checkpoint.sourceMessageId}/${checkpoint.companionId}`
+      + (checkpoint.invocationKey ? '/invocation/' + checkpoint.invocationKey : '');
+    const keys = [loopKey, ...(checkpoint.messageId ? ['message-loop/' + checkpoint.messageId] : [])];
+    for (const key of keys) {
+      const found = this.#db.prepare('SELECT value FROM metadata WHERE key=?').get(key);
+      const stored = found ? companionLoopCheckpointSchema.parse(decode(row(found).value)) : undefined;
+      if (!stored || stored.sourceMessageId !== checkpoint.sourceMessageId || stored.companionId !== checkpoint.companionId
+        || stored.conversationId !== checkpoint.conversationId || stored.messageId !== checkpoint.messageId
+        || stored.invocationKey !== checkpoint.invocationKey) throw new Error('回复进度不属于这次已保存的任务。');
+    }
+    for (const key of keys) this.#db.prepare("UPDATE metadata SET value=json_set(value,'$.progress',json(?)) WHERE key=?")
+      .run(JSON.stringify(progress), key);
+    }).immediate();
+  }
+  private finishLoopProgress(command: Extract<CompanionStorageCommand, { type: 'loop.progress.finish' }>): void {
+    this.#db.transaction(() => {
+      const checkpoint = this.loopCheckpoint(command.sourceMessageId, command.companionId, command.invocationKey);
+      if (!checkpoint || checkpoint.conversationId !== command.conversationId || checkpoint.messageId !== command.messageId)
+        throw new Error('回复终态回执不属于这次已保存的任务。');
+      const previous = checkpoint.progress, incoming = command.progress;
+      if (!previous) throw new Error('回复尚未保存进度，不能伪造终态。');
+      if (previous.workId !== undefined && previous.workId !== incoming.workId
+        || incoming.sourceMessageId !== undefined && incoming.sourceMessageId !== checkpoint.sourceMessageId)
+        throw new Error('回复终态的任务标识不匹配。');
+      if (incoming.workId) {
+        const found = this.#db.prepare('SELECT data FROM companion_work_queue WHERE id=?').get(incoming.workId);
+        const work = found ? companionWorkSchema.parse(decode(row(found).data)) : undefined;
+        if (!work || work.sourceMessageId !== checkpoint.sourceMessageId || work.companionId !== checkpoint.companionId
+          || work.conversationId !== checkpoint.conversationId || work.messageId !== undefined && work.messageId !== checkpoint.messageId
+          || (work.proactive ? work.id : undefined) !== checkpoint.invocationKey)
+          throw new Error('回复终态的队列任务已变化。');
+        if (work.stop && incoming.phase !== 'cancelled') throw new Error('用户已停止这次回复，迟到终态不可覆盖。');
+      }
+      if (previous.stop && incoming.phase !== 'cancelled') throw new Error('用户已停止这次回复，迟到终态不可覆盖。');
+      if (incoming.phase === 'completed' && checkpoint.status !== 'done') throw new Error('尚未正式发布的回复不能标记完成。');
+      if (incoming.revision <= previous.revision) return;
+      if (terminalReplyPhases.has(previous.phase)) {
+        if (incoming.phase !== previous.phase) throw new Error('回复进程已有终态，迟到回执不可改写。');
+        return;
+      }
+      if (!Number.isFinite(Date.parse(incoming.finishedAt))) throw new Error('回复终态的实际时间无效。');
+      // The caller supplies an observed end, not a duration. SQL recomputes the
+      // accumulated admitted interval from the current saved progress.
+      this.#writeLoopProgress(checkpoint, advanceCompanionReplyTiming(previous, { ...incoming, startedAt: previous.startedAt,
+        sourceMessageId: checkpoint.sourceMessageId, workId: previous.workId ?? incoming.workId,
+        ...(previous.stop ? { stop: previous.stop } : {}) }));
+    }).immediate();
+  }
   private saveLoop(input: CompanionLoopCheckpoint, executionReadset?: CompanionExecutionReadset): void {
     const checkpoint = companionLoopCheckpointSchema.parse(input);
     this.#db.transaction(() => {
@@ -1448,6 +1551,11 @@ export class CompanionsStore {
         return;
       }
       if (previous?.status === 'done' && checkpoint.status !== 'done') throw new Error('已正式完成的回复不能被迟到草稿覆盖。');
+      // A late progress callback cannot reopen a process that already stopped.
+      // Resuming an unfinished loop still requires its explicit queued boundary.
+      if (previous?.progress && checkpoint.progress && !explicitQueueResume
+        && (checkpoint.progress.revision <= previous.progress.revision
+          || terminalReplyPhases.has(previous.progress.phase))) checkpoint.progress = previous.progress;
       if (previous && checkpoint.turns.length < previous.turns.length) throw new Error('回复草稿不能丢失已完成的循环步骤。');
       for (const [index, turn] of checkpoint.turns.entries()) if (turn.topicPublicationRejection) {
         const rejection = turn.topicPublicationRejection, prior = previous?.turns[index];
@@ -1531,6 +1639,11 @@ export class CompanionsStore {
   }
 
   messages(input: { conversationId: string; topicId?: string | null; before?: number; after?: number; around?: string; limit?: number }): { messages: CompanionMessage[]; hasMore: boolean; hasNewer: boolean } {
+    const selected = this.messageRows(input);
+    return { messages: selected.found.map(item => this.#message(item)), hasMore: selected.hasMore, hasNewer: selected.hasNewer };
+  }
+
+  private messageRows(input: { conversationId: string; topicId?: string | null; before?: number; after?: number; around?: string; limit?: number }): { found: Row[]; hasMore: boolean; hasNewer: boolean } {
     input = { ...input, conversationId: this.#conversationId(input.conversationId) };
     if (input.topicId === null) input = { ...input, topicId: this.#topics.ensurePrimary(input.conversationId)?.id ?? null };
     const request = companionStorageCommandSchema.parse({ type: 'messages', ...input });
@@ -1559,7 +1672,7 @@ export class CompanionsStore {
     }
     const hasMore = !!found.length && !!this.#db.prepare(`SELECT 1 FROM messages WHERE conversation_id=? AND sequence<?${topicFilter} LIMIT 1`).get(request.conversationId, found[0]!.sequence, ...topicArgs);
     const hasNewer = !!found.length && !!this.#db.prepare(`SELECT 1 FROM messages WHERE conversation_id=? AND sequence>?${topicFilter} LIMIT 1`).get(request.conversationId, found.at(-1)!.sequence, ...topicArgs);
-    return { messages: found.map((item) => this.#message(item)), hasMore, hasNewer };
+    return { found, hasMore, hasNewer };
   }
 
   search(input: CompanionSearchQuery): { messages: CompanionMessage[]; hasMore: boolean; searchPage: CompanionSearchPage } {
@@ -1791,6 +1904,86 @@ export class CompanionsStore {
       if (oldest) return oldest;
     }
     return undefined;
+  }
+  /** One SQL snapshot for a new host task. This method neither initializes nor
+   * advances actors, leases, routines or memory; their real effects stay live. */
+  private replyTaskSnapshot(command: Extract<CompanionStorageCommand, { type: 'reply.task.snapshot' }>): CompanionStorageResponse {
+    return this.#db.transaction(() => {
+      const conversationId = this.#conversationId(command.conversationId), state = this.state(true, { conversationId }, true);
+      const conversation = state.conversations.find(room => room.id === conversationId);
+      if (!conversation) return { ok: true, state };
+      const replyRecovery = this.replyCheckpoint(conversationId, command.sourceMessageId), sourceId = command.sourceMessageId ?? replyRecovery?.sourceMessageId;
+      if (!sourceId) return { ok: true, state, replyRecovery };
+      const sourceFound = this.#db.prepare('SELECT * FROM messages WHERE id=?').get(sourceId);
+      if (!sourceFound) throw new Error('消息不存在。');
+      this.#requireConversation(String(row(sourceFound).conversation_id));
+      const source = this.#taskMessage(row(sourceFound));
+      if (source.conversationId !== conversationId || source.sourceUnavailable || source.isReplyDraft || source.status !== 'sent')
+        throw new Error('本次任务的实际来源尚不可读取。');
+      const topic = source.topicId ?? (this.#db.prepare("SELECT id FROM companion_topics WHERE conversation_id=? AND json_extract(data,'$.isPrimary')=1 AND json_extract(data,'$.deletedAt') IS NULL ORDER BY rowid LIMIT 1")
+        .get(conversationId) as { id: string } | undefined)?.id;
+      // Legacy primary-topic initialization is an explicit existing command,
+      // never a hidden write inside this read-only bundle.
+      if (!topic) return { ok: true, state, replyRecovery, message: source };
+      const candidates = conversation.memberIds.filter(id => {
+        const role = state.companions.find(role => role.id === id); return role && (source.content.includes('@' + role.name) || source.content.includes(role.name));
+      });
+      const speakers = command.onlyCompanionId ? [command.onlyCompanionId] : candidates.length ? candidates
+        : conversation.kind === 'group' ? conversation.memberIds : conversation.memberIds.slice(0, 1);
+      const prepared = new Set(speakers.filter(owner => {
+        const invocationKey = command.proactive ? command.workId ?? createHash('sha256').update(source.id + ':' + owner + ':' + command.workId).digest('hex') : undefined;
+        return !!this.#db.prepare("SELECT 1 FROM metadata WHERE key=? AND json_type(value,'$.context')='object'")
+          .get('loop/' + source.id + '/' + owner + (invocationKey ? '/invocation/' + invocationKey : ''));
+      }));
+      const history: CompanionReplyTaskMessage[] = [];
+      const historyLimit = command.historyLimit ?? 255;
+      let cursor = command.proactive ? undefined : source.sequence;
+      while (prepared.size < speakers.length && history.length < historyLimit) {
+        const count = Math.min(100, historyLimit - history.length), page = this.messageRows({ conversationId, topicId: topic, before: cursor, limit: count }).found.map(value => this.#taskMessage(value));
+        if (!page.length) break;
+        history.push(...page); const next = Math.min(...page.map(message => message.sequence));
+        if (page.length < count || next === cursor) break; cursor = next;
+      }
+      if (!command.proactive) history.push(source);
+      history.sort((left, right) => left.sequence - right.sequence);
+      const referenceFound = source.replyToId ? this.#db.prepare('SELECT * FROM messages WHERE id=?').get(source.replyToId) : undefined;
+      if (source.replyToId && !referenceFound) throw new Error('消息不存在。');
+      if (referenceFound) this.#requireConversation(String(row(referenceFound).conversation_id));
+      const reference = referenceFound ? this.#taskMessage(row(referenceFound)) : undefined;
+      // The page already owns these exact DTOs inside this SQL transaction.
+      // Authorize their current rows without hydrating every message again.
+      const candidateIds = [...new Set([source.id, ...history.map(message => message.id), ...(reference ? [reference.id] : [])])];
+      const candidateRows = new Map(rows(this.#db.prepare('SELECT * FROM messages WHERE id IN(SELECT value FROM json_each(?))')
+        .all(JSON.stringify(candidateIds))).map(value => [String(value.id), value]));
+      const capturedAt = Date.now(), actors: CompanionReplyTaskSnapshot['actors'] = [], bodies = new Map<string, CompanionReplyTaskMessage>();
+      for (const owner of speakers) {
+        this.#requireMember(conversationId, owner);
+        const scope = { companionId: owner, conversationId, beforeSequence: command.proactive ? history.at(-1)?.sequence ?? source.sequence : source.sequence };
+        const sourceRow = candidateRows.get(source.id);
+        if (!sourceRow || !this.#memory.sources.visible(scope, sourceRow)) continue;
+        const formal = prepared.has(owner) ? [] : history.filter(message => !message.sourceUnavailable && !message.isReplyDraft && message.status === 'sent');
+        const selected = formal.filter(message => { const actual = candidateRows.get(message.id); return actual && this.#memory.sources.visible(scope, actual); });
+        selected.forEach(message => bodies.set(message.id, message));
+        const referenceRow = reference && candidateRows.get(reference.id);
+        const referenceAllowed = !prepared.has(owner) && reference && referenceRow && this.#memory.sources.visible(scope, referenceRow);
+        if (referenceAllowed) bodies.set(reference!.id, reference!);
+        const actor: CompanionReplyTaskSnapshot['actors'][number] = { companionId: owner, historyIds: selected.map(message => message.id),
+          ...(referenceAllowed ? { referenceId: reference!.id } : {}) };
+        const runtime = !prepared.has(owner) ? this.#runtimeState.taskSnapshot(scope, capturedAt) : undefined, world = runtime && this.#world.taskSnapshot(scope, capturedAt, runtime);
+        if (runtime && world) {
+          runtime.state.energy = world.energy;
+          actor.observation = { capturedAt: new Date(capturedAt).toISOString(), worldJson: JSON.stringify(world.world), runtimeStateJson: JSON.stringify(runtime.state),
+            revocationEpoch: this.#memory.lifecycleState(owner).revocationEpoch, kind: 'received', worldSettledAt: world.settledAt,
+            worldBacklog: world.world.backlog, energySampledAt: world.energySampledAt, energyElapsedMs: world.energyElapsedMs };
+          actor.worldSettledAt = world.settledAt; actor.energySampledAt = world.energySampledAt; actor.energyElapsedMs = world.energyElapsedMs;
+        }
+        actors.push(actor);
+      }
+      if (!actors.length) throw new Error('本次任务来源已不在接收伙伴的可见范围。');
+      return { ok: true, state, replyRecovery, message: source, replyTaskMessages: [...bodies.values()].sort((left, right) => left.sequence - right.sequence),
+        replyTaskSnapshot: companionReplyTaskSnapshotSchema.parse({ capturedAt: new Date(capturedAt).toISOString(), sourceMessageId: source.id,
+          sourceRevision: source.revision ?? 1, sourceChecksum: createHash('sha256').update(source.content).digest('hex'), sourceSequence: source.sequence, actors }) };
+    })();
   }
   setReplyStatus(conversationId: string, sourceMessageId: string, status: CompanionReplyRecovery['status']): void {
     if (this.#requireConversation(conversationId).dissolved_at) status = 'cancelled';
@@ -2132,23 +2325,25 @@ export class CompanionsStore {
     }).immediate();
   }
 
-  takeMemoryInvalidations(): Pick<CompanionStorageResponse, 'memoryInvalidatedCompanionIds' | 'memoryInvalidatedScopeIds' | 'memoryChangedCompanionIds' | 'memorySourceChangedCompanionIds'> {
+  takeMemoryInvalidations(): Pick<CompanionStorageResponse, 'memoryInvalidatedCompanionIds' | 'memoryInvalidatedScopeIds' | 'memoryChangedCompanionIds' | 'memorySourceChangedCompanionIds' | 'memorySourcePublicationQueuedCompanionIds'> {
     const owners = this.#memory.takeInvalidatedOwners();
     const scopes = this.#memory.takeInvalidatedScopes();
     const changed = this.#memory.takeChangedOwners().filter(owner => !owners.includes(owner));
-    const sourceChanged = this.#memory.takeSourceOutboxOwners();
+    const sourceOutbox = this.#memory.takeSourceOutboxChanges(), sourceChanged = sourceOutbox.changedOwners;
+    const publicationQueued = sourceOutbox.publicationQueuedOwners.filter(owner => !owners.includes(owner));
     return { ...(owners.length || scopes.length ? { memoryInvalidatedCompanionIds: owners, memoryInvalidatedScopeIds: scopes } : {}),
-      ...(changed.length ? { memoryChangedCompanionIds: changed } : {}), ...(sourceChanged.length ? { memorySourceChangedCompanionIds: sourceChanged } : {}) };
+      ...(changed.length ? { memoryChangedCompanionIds: changed } : {}), ...(sourceChanged.length ? { memorySourceChangedCompanionIds: sourceChanged } : {}),
+      ...(publicationQueued.length ? { memorySourcePublicationQueuedCompanionIds: publicationQueued } : {}) };
   }
   request(input: CompanionStorageCommand): CompanionStorageResponse {
     if (input.type.startsWith('recovery.') && input.type !== 'recovery.review.complete' && input.type !== 'recovery.review.page') throw new Error('备份恢复需要宿主独占停止执行后使用异步恢复入口。');
     return this.#memory.sources.withValidation(() => {
       const run = () => {
-        const capture = this.#taskDetails.captureExpected(input);
-        const response = this.dispatch(input);
-        if (capture) this.#taskDetails.capture(input, response);
-        if (!['tasks.page', 'tasks.resolve', 'task.inspect', 'task.content', 'tasks.concurrency.get', 'agenda.read', 'agenda.event.read', 'agenda.goals.read', 'agenda.grants.read'].includes(input.type)) this.#experience.flush();
-        return { ...response, ...this.takeMemoryInvalidations() };
+        const capture = measureCompanionStorageTiming('captureExpected', () => this.#taskDetails.captureExpected(input));
+        const response = measureCompanionStorageTiming('dispatch', () => this.dispatch(input));
+        if (capture) measureCompanionStorageTiming('capture', () => this.#taskDetails.capture(input, response));
+        if (!['reply.task.snapshot', 'tasks.page', 'tasks.resolve', 'task.inspect', 'task.content', 'tasks.concurrency.get', 'agenda.read', 'agenda.event.read', 'agenda.goals.read', 'agenda.grants.read'].includes(input.type)) this.#experience.flush();
+        return { ...response, ...measureCompanionStorageTiming('invalidations', () => this.takeMemoryInvalidations()) };
       };
       return this.#withRecoveryMutation(() => this.#taskDetails.captures(input.type) ? this.#db.transaction(run).immediate() : run());
     });
@@ -2265,7 +2460,9 @@ export class CompanionsStore {
     if (orderResponse) return orderResponse;
     const lifeResponse = this.#life.execute(command);
     if (lifeResponse) return lifeResponse;
-    const socialResponse = this.#social.execute(command);
+    const socialResponse = command.type === 'social.notifications.receipts'
+      ? this.#memory.sources.withCurrentReferencesValidation(() => this.#memory.sources.withValidation(() => this.#social.execute(command)))
+      : this.#social.execute(command);
     if (socialResponse) return socialResponse;
     const activityResponse = this.#activity.execute(command);
     if (activityResponse) return activityResponse;
@@ -2361,6 +2558,7 @@ export class CompanionsStore {
       case 'checkpoint.input': this.updateCheckpoint(command.id, { input: command.input }); return { ok: true };
       case 'action.resume': return { ok: true, action: this.resumeAction(command.id) };
       case 'reply.checkpoint.get': return { ok: true, replyRecovery: this.replyCheckpoint(command.conversationId, command.sourceMessageId) };
+      case 'reply.task.snapshot': return this.replyTaskSnapshot(command);
       case 'loop.get': return { ok: true, loop: this.loopCheckpoint(command.sourceMessageId, command.companionId, command.invocationKey) };
       case 'loop.for-message': {
         this.getMessage(command.messageId);
@@ -2384,8 +2582,37 @@ export class CompanionsStore {
         return { ok: true, memoryCorpusStamp: JSON.stringify([command.companionId, epoch ? row(epoch).revision : 0,
           row(scopes).total, row(scopes).revisions, row(notes).total, row(notes).indexed, row(notes).versions]) };
       }
-      case 'loop.save': this.saveLoop(command.checkpoint, command.executionReadset); return { ok: true };
-      case 'execution.sources': return { ok: true, executionSources: new CompanionExecutionSourceStore(this.#db, this.#memory).resolve(command.sourceMessageIds, command.memoryIds) };
+      case 'loop.progress.finish': this.finishLoopProgress(command); return { ok: true };
+      case 'loop.save': {
+        if (command.checkpoint.status !== 'done' || !command.checkpoint.messageId || !command.executionReadset) {
+          this.saveLoop(command.checkpoint, command.executionReadset); return { ok: true };
+        }
+        return this.#db.transaction(() => {
+          const checkpoint = command.checkpoint;
+          const priorHeader = readCompanionTaskMessageLoopHeader(this.#db, 'message-loop/' + checkpoint.messageId!);
+          const prior = priorHeader ? undefined : this.getMessage(checkpoint.messageId!);
+          const newlyPublished = !(this.#db.prepare('SELECT 1 FROM metadata WHERE key=?').get(executionMessageReadsetKey(checkpoint.messageId!)))
+            && (priorHeader ? priorHeader.status !== 'done' : !!(prior?.isReplyDraft || prior?.replyDraft));
+          this.saveLoop(checkpoint, command.executionReadset);
+          const source = row(this.#db.prepare('SELECT * FROM messages WHERE id=?').get(checkpoint.sourceMessageId));
+          if (!source) throw new Error('正式回复的原始任务来源不存在。');
+          if (checkpoint.authorizationGrantId) this.#collaborations.assertInvocation(checkpoint);
+          else if (!this.#memory.sources.visible({ companionId: checkpoint.companionId, conversationId: checkpoint.conversationId }, source))
+            throw new Error('正式回复的接收伙伴已无权读取原始任务来源。');
+          const found = this.#db.prepare('SELECT * FROM messages WHERE id=?').get(checkpoint.messageId!);
+          if (!found) throw new Error('正式回复尚未提交实际消息。');
+          const message = this.#taskMessage(row(found));
+          return { ok: true as const, replyPublication: companionReplyPublicationSchema.parse({ schema: 'worldlinebox.companion-reply-publication-v1',
+            companionId: checkpoint.companionId, conversationId: checkpoint.conversationId, sourceMessageId: checkpoint.sourceMessageId,
+            invocationKey: checkpoint.invocationKey, authorizationGrantId: checkpoint.authorizationGrantId,
+            newlyPublished,
+            executionReadsetDigest: createHash('sha256').update(JSON.stringify(command.executionReadset)).digest('hex'),
+            source: { id: source.id, authorId: source.author_id, conversationId: source.conversation_id, revision: Number(source.revision ?? 1),
+              checksum: createHash('sha256').update(String(source.content)).digest('hex') }, message }) };
+        }).immediate();
+      }
+      case 'execution.sources': return { ok: true, executionSources: new CompanionExecutionSourceStore(this.#db, this.#memory).resolve(command.sourceMessageIds, command.memoryIds, command.expandPublishedSources) };
+      case 'execution.message.certify': return { ok: true, messagePublicationCertificates: new CompanionPublishedMessageCertificates(this.#db, this.#memory).certify(command.messages, command.actionBindings) };
       case 'execution.invalidate': new CompanionExecutionSourceStore(this.#db, this.#memory).invalidate(command); return { ok: true };
       case 'work.enqueue': this.enqueueWork(command.work, command.resume); return { ok: true };
       case 'work.claim': return { ok: true, work: this.claimWork(command) };
@@ -2457,16 +2684,33 @@ export class CompanionsStore {
         // routine clock rather than pretending the interrupted job kept running.
         this.#db.transaction(() => {
           const owners = new Set<string>();
-          for (const work of this.workList(undefined, true)) if (work.status === 'running') {
-            this.#routine.recoverWork(work.companionId, 'work:' + work.id);
+          // Normal recovery joins compact, transactionally maintained scalars.
+          // A missing progress field is inactive, not a reason to reopen every
+          // historical loop blob. Only missing/unsupported projections use the
+          // corresponding original checkpoint path.
+          const projected = readCompanionReplyProgressRecoveryWorkRows(this.#db);
+          const candidates = projected ? projected.map(found => {
+            if (typeof found.data !== 'string') throw new Error('任务队列记录不是有效的文本，不能恢复回复进度。');
+            return companionWorkSchema.parse(decode(found.data));
+          })
+            : this.workList().filter(work => ['running', 'done', 'cancelled', 'interrupted'].includes(work.status));
+          for (const work of candidates) {
+            if (!['running', 'done', 'cancelled', 'interrupted'].includes(work.status)) continue;
             const checkpoint = this.loopCheckpoint(work.sourceMessageId, work.companionId, work.proactive ? work.id : undefined);
-            if (checkpoint && checkpoint.status !== 'done' && !['failed', 'cancelled'].includes(checkpoint.progress?.phase ?? '')) {
-              checkpoint.progress = { ...checkpoint.progress, workId: work.id, revision: (checkpoint.progress?.revision ?? 0) + 1,
-                phase: 'interrupted', detail: '应用已重启，先前回复可继续恢复',
-                startedAt: checkpoint.progress?.startedAt ?? work.createdAt, finishedAt: checkpoint.progress?.updatedAt ?? work.updatedAt ?? work.createdAt, updatedAt: stamp() };
-              this.saveLoop(checkpoint);
+            if (checkpoint?.progress && !terminalReplyPhases.has(checkpoint.progress.phase)) {
+              const phase = work.status === 'done' && checkpoint.status === 'done' ? 'completed'
+                : work.status === 'cancelled' ? 'cancelled' : 'interrupted';
+              this.#writeLoopProgress(checkpoint, finishCompanionReplyProgress(checkpoint.progress, { phase,
+                detail: phase === 'completed' ? '回复已完成；先前结束时刻未记录' : phase === 'cancelled'
+                  ? '这次回复已取消；先前结束时刻未记录' : '先前进程已结束，回复已中断；计时不完整',
+                updatedAt: stamp() }));
             }
-            this.#db.prepare('UPDATE companion_work_queue SET status=?,data=? WHERE id=?').run('interrupted', JSON.stringify({ ...work, status: 'interrupted', resumeOnRestart: true, updatedAt: stamp() }), work.id);
+            if (work.status !== 'running') continue;
+            this.#routine.recoverWork(work.companionId, 'work:' + work.id);
+            this.#db.prepare('UPDATE companion_work_queue SET status=?,data=? WHERE id=?').run('interrupted', JSON.stringify({ ...work, status: 'interrupted',
+              // A done publication is not a resumable inference. Unknown prior
+              // acknowledgements never cause model/effect/certificate replay.
+              resumeOnRestart: checkpoint?.status !== 'done' || undefined, updatedAt: stamp() }), work.id);
             owners.add(work.companionId);
           }
           for (const owner of owners) this.#completeRoutineInterruptIfIdle(owner);

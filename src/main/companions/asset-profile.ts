@@ -319,7 +319,12 @@ export class CompanionAssetProfileStore {
     } catch (error) { if (!(error instanceof CompanionAssetProfileError) || error.code !== 'CHANGED' || attempt >= 2) throw error; }
   }
   async bootstrapProfile(owner: Companion): Promise<CompanionAssetProfileFieldsSnapshot> {
-    if (await this.options.initialized?.(owner.id)) return this.serialized(owner.id, () => this.loadProfile(owner.id));
+    if (await this.options.initialized?.(owner.id)) return this.loadProfile(owner.id);
+    return this.bootstrap(owner);
+  }
+  /** Queries retain full strict admission without joining the creation/mutation queue. */
+  async loadOrBootstrap(owner: Companion): Promise<CompanionAssetProfileSnapshot> {
+    if (await this.options.initialized?.(owner.id)) return this.load(owner.id);
     return this.bootstrap(owner);
   }
   private async ensureInstanceLayout(current: CompanionAssetProfileFieldsSnapshot): Promise<void> {
@@ -534,9 +539,16 @@ export class CompanionAssetProfileStore {
     return this.serialized(companionId, () => this.repairRevokedPersonaInternal(companionId));
   }
   private async repairRevokedPersonaInternal(companionId: string): Promise<boolean> {
-    const registry = await this.artifacts(companionId), metadata = await registry.retractionMetadata();
+    const registry = await this.artifacts(companionId), observed = await registry.get('persona:current', true);
+    // Normal strict reads need no directory-wide privacy repair inventory.
+    // This is a fresh negative probe, never a cached publication admission.
+    if (!observed || observed.publicationState !== 'revoked' && !await registry.hasInterruptedPersonaRetraction()) return false;
+    const metadata = await registry.retractionMetadata();
     const current = metadata.find(artifact => artifact.artifactId === 'persona:current');
-    if (!current || current.publicationState !== 'revoked' && !await registry.hasInterruptedPersonaRetraction()) return false;
+    if (!current || current.contentRevision !== observed.contentRevision || current.contentHash !== observed.contentHash
+      || current.publicationState !== observed.publicationState)
+      throw new CompanionAssetProfileError('CHANGED', '撤回修复准备期间当前人格版本已改变，请重读。');
+    if (current.publicationState !== 'revoked' && !await registry.hasInterruptedPersonaRetraction()) return false;
     const [body, ledgerFile] = await Promise.all([registry.readForRetraction(current.artifactId), registry.readForRetraction('host:fragments')]);
     const profile = parseProfile(body.text, companionId), ledger = companionPersonaFragmentsSchema.parse(JSON.parse(ledgerFile.text));
     validateCompanionPersonaFragments(profile.persona, ledger, { companionId, profileHash: current.contentHash });

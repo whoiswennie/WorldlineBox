@@ -6,5 +6,7 @@ export const companionReplyReceivedStateSchema = z.strictObject({
   capturedAt: z.iso.datetime(), worldJson: z.string().min(1).max(2 * 1024 * 1024),
   runtimeStateJson: z.string().min(1).max(512 * 1024), revocationEpoch: z.number().int().nonnegative().safe(),
   kind: z.enum(['received', 'preparation']).default('received'),
+  worldSettledAt: z.iso.datetime().optional(), worldBacklog: z.boolean().optional(),
+  energySampledAt: z.iso.datetime().optional(), energyElapsedMs: z.number().nonnegative().optional(),
 });
 export type CompanionReplyReceivedState = z.infer<typeof companionReplyReceivedStateSchema>;

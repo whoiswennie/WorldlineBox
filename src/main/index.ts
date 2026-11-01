@@ -1,9 +1,10 @@
+import { isLibraryNavigationTimingCommand, observeLibraryNavigationTiming } from '../shared/library-navigation-timing';
 import { StartupWindow } from "./startup-window";
 import { bindStartupHandoff } from "./startup-handoff";
 import { isCurrentDocumentReload } from "./renderer-navigation";
 import { DEFAULT_GLOBAL_LLM_CONFIG, resolveStoredLlmConfig } from "../shared/llm";
 import path from "node:path";
-import { CompanionWorkspaceStore, type CompanionWorkspaceSelection } from './companions/workspace';
+import { CompanionWorkspaceStore, createCompanionLibraryAdmission, readCompanionWorkspaceStatus } from './companions/workspace';
 import { COMPANION_WORKSPACE_CHANNEL, companionWorkspaceRequestSchema, type CompanionWorkspaceLibrary, type CompanionWorkspaceResponse } from '../shared/companion-workspace';
 import type { CompanionMemoryDocumentCommand } from '../shared/companion-memory-documents';
 import type { CompanionLearningWorkspaceCommand } from '../shared/companion-learning';
@@ -14,6 +15,7 @@ import { LocalTextEmbeddingInstaller } from './embedding-text-model-install';
 import { VcpEmbeddingGateway } from './vcp-embedding-gateway';
 import { VcpChatGateway } from './vcp-chat-gateway';
 import { CompanionVcpRuntime } from './companions/vcp-runtime';
+import { createCompanionEmbeddingResourcePreparation, prepareCompanionMemoryIdleStartup } from './companions/memory-startup';
 import type { DshLauncher } from './dsh/launcher';
 import type { LauncherNetwork } from './dsh/launcher-network';
 import { forkNetworkUtility } from './network-utility-process';
@@ -484,6 +486,7 @@ import {
   parseAiContentClearedEvent,
 } from "../shared/protocol/responses";
 import { LibraryWorkerClient, WorkerRequestTimeoutError } from "./worker-client";
+import { prestartLibraryWorkerAfterWindowShown } from "./library-worker-startup";
 import { performanceConsumerIdForWindow } from "../shared/performance-contract";
 import { SyncAutoScheduler, type SyncBindingLike } from "./sync-auto-scheduler";
 import { AppLogger } from "./app-logger";
@@ -669,17 +672,15 @@ let embeddingDeviceCapability: EmbeddingDeviceCapabilityService | undefined;
 let vcpEmbeddingGateway: VcpEmbeddingGateway | undefined;
 let vcpChatGateway: VcpChatGateway | undefined;
 let localTextEmbeddingInstaller: LocalTextEmbeddingInstaller | undefined;
-let preparingBundledEmbedding: Promise<void> | undefined;
 function textEmbeddingInstaller(): LocalTextEmbeddingInstaller {
   return localTextEmbeddingInstaller ??= new LocalTextEmbeddingInstaller({ userDataPath: app.getPath('userData'),
-    bundleDirectory: path.join(app.isPackaged ? process.resourcesPath : path.join(app.getAppPath(), 'resources'), 'embedding-models') });
+    bundleDirectory: path.join(app.isPackaged ? process.resourcesPath : path.join(app.getAppPath(), 'resources'), 'embedding-models'),
+    onVerification: timing => logger?.info('embedding.resources.verify', 'Bundled embedding resource verification finished.', timing) });
 }
-async function prepareBundledEmbedding(): Promise<void> {
-  return preparingBundledEmbedding ??= (async () => {
-    const root = app.isPackaged ? process.resourcesPath : path.join(app.getAppPath(), 'resources');
-    await textEmbeddingInstaller().seedBundledPackage(path.join(root, 'embedding-models'));
-  })().catch(error => { preparingBundledEmbedding = undefined; throw error; });
-}
+const prepareBundledEmbedding = createCompanionEmbeddingResourcePreparation(async () => {
+  const root = app.isPackaged ? process.resourcesPath : path.join(app.getAppPath(), 'resources');
+  await textEmbeddingInstaller().seedBundledPackage(path.join(root, 'embedding-models'));
+});
 
 function globalEmbedding(): GlobalEmbeddingService {
   if (globalEmbeddingService) return globalEmbeddingService;
@@ -689,6 +690,7 @@ function globalEmbedding(): GlobalEmbeddingService {
     ...(process.platform === 'win32' ? { koffiPath: createRequire(path.join(app.getAppPath(), 'package.json')).resolve('koffi') } : {}),
     ensureDeviceCapability: signal => embeddingDevice().ensureSupported(signal),
     devicePreference: () => embeddingDevice().snapshot(),
+    onTiming: timing => logger?.info('embedding.runtime.phase', 'Embedding runtime phase finished.', timing),
   });
   globalEmbeddingService.subscribeInvalidation(() => companionService?.embeddingChanged());
   return globalEmbeddingService;
@@ -3764,6 +3766,16 @@ async function handleLibraryRequest(
     mainEnteredAt: number;
     workerReturnedAt?: number;
   } | undefined;
+  let timedNavigationRequestType: string | undefined;
+  let navigationWorkerResumedAt: number | undefined;
+  const logNavigationMainStage = (stage: string, fields: Record<string, number> = {}): void => {
+    if (!timedNavigationRequestType) return;
+    observeLibraryNavigationTiming(() => logger?.info(
+      'library.navigation.main', 'Library navigation Main result boundary.', {
+        requestType: timedNavigationRequestType, stage,
+        observedAtEpochMs: performance.timeOrigin + performance.now(), ...fields,
+      }));
+  };
   const navigationTraceEnabled =
     process.env.WORLDLINEBOX_NAVIGATION_TRACE === "1" || libraryRequestTraceEnabled();
   const logNavigationStage = (
@@ -3779,6 +3791,10 @@ async function handleLibraryRequest(
   };
   try {
     const request = parseRendererRequest(input);
+    if (request.type.endsWith('.request')
+      && isLibraryNavigationTimingCommand(request.type.slice(0, -'.request'.length))) {
+      timedNavigationRequestType = request.type;
+    }
     if (request.type === "browse.session.open.request" && request.navigationId) {
       navigationTrace = {
         navigationId: request.navigationId,
@@ -4095,6 +4111,10 @@ async function handleLibraryRequest(
         }
         return result;
       })();
+    if (timedNavigationRequestType) {
+      navigationWorkerResumedAt = performance.now();
+      logNavigationMainStage('worker-resumed');
+    }
     if (navigationTrace) {
       navigationTrace.workerReturnedAt = performance.now();
       logNavigationStage("worker-returned", {
@@ -4262,10 +4282,17 @@ async function handleLibraryRequest(
     if (recoveryReport) return recoveryReport;
 
     const rendererWorkerResult = mapBillfishInspectedDisplayName(command, workerResult);
+    const rendererSchemaStartedAt = performance.now();
     const result = toRendererResult(
       rendererWorkerResult,
       relinkPreviewContext?.previewId,
     );
+    logNavigationMainStage('renderer-schema-finished', {
+      schemaMs: Math.max(0, performance.now() - rendererSchemaStartedAt),
+      ...(navigationWorkerResumedAt === undefined ? {} : {
+        preSchemaAfterWorkerMs: Math.max(0, rendererSchemaStartedAt - navigationWorkerResumedAt),
+      }),
+    });
     if (navigationTrace) {
       const responseReadyAt = performance.now();
       logNavigationStage("main-response-ready", {
@@ -4322,6 +4349,8 @@ async function handleLibraryRequest(
     }
     return { ok: false, error: publicError };
   } finally {
+    const navigationFinallyStartedAt = performance.now();
+    logNavigationMainStage('finally-entered');
     if (activeLibraryOpenCancellation === openCancellation) {
       activeLibraryOpenCancellation = undefined;
     }
@@ -4338,6 +4367,12 @@ async function handleLibraryRequest(
         logger?.error("desktop-ingestion.clipboard-cleanup", error);
       }
     }
+    logNavigationMainStage('finally-finished', {
+      finallyMs: Math.max(0, performance.now() - navigationFinallyStartedAt),
+      ...(navigationWorkerResumedAt === undefined ? {} : {
+        afterWorkerMs: Math.max(0, performance.now() - navigationWorkerResumedAt),
+      }),
+    });
   }
 }
 
@@ -4956,33 +4991,12 @@ async function startApplication(): Promise<void> {
   musicService.registerIpc();
   const companionWorkspace = new CompanionWorkspaceStore(app.getPath('userData'));
   let changingCompanionWorkspace = false;
-  let openingCompanionLibrary: { path: string; promise: Promise<void> } | undefined;
-  const ensureCompanionLibrary = (selected: CompanionWorkspaceSelection): Promise<void> => {
-    if (openingCompanionLibrary?.path === selected.libraryPath) return openingCompanionLibrary.promise;
-    const promise = (async () => {
-      if (!workerClient || applicationClosing) throw new Error('资产库服务暂时不可用。');
-      const list = await workerClient.request({ type: 'library.list' });
-      if (!list.ok || list.type !== 'library.list') throw new Error('无法读取已打开的资产库。');
-      const existingLibrary = list.libraries.find(library => library.libraryId === selected.libraryId);
-      if (!existingLibrary) {
-        const opened = await workerClient.request({ type: 'library.open', selectedLibraryPath: selected.libraryPath });
-        if (!opened.ok || opened.type !== 'library.opened' || opened.library.readOnly || opened.library.libraryId !== selected.libraryId) {
-          throw new Error('伙伴所选资产库无法重新打开，请检查目录后重新选择。');
-        }
-        rememberOpenedLibrary(opened.library.libraryPath, opened.library.displayName, opened.library.libraryId);
-        publishLifecycle({ type: 'library.opened', library: { libraryId: opened.library.libraryId, displayName: opened.library.displayName, displayPath: opened.library.libraryPath } });
-      } else if (existingLibrary.readOnly) throw new Error('伙伴资产库需要写入权限。');
-      const roots = await workerClient.request({ type: 'linked-folder.list', libraryId: selected.libraryId });
-      if (!roots.ok || roots.type !== 'linked-folder.list') throw new Error('无法恢复伙伴记忆的资产目录映射。');
-      if (!roots.folders.some(folder => path.resolve(folder.absoluteRootPath) === path.resolve(selected.memoryRoot))) {
-        const linked = await workerClient.request({ type: 'asset.import-linked', libraryId: selected.libraryId, displayName: '伙伴记忆', sourceRootPath: selected.memoryRoot, companionMemory: true });
-        if (!linked.ok) throw new Error('伙伴目录已准备，但资产库目录映射失败，请重新选择以重试。');
-      }
-    })();
-    openingCompanionLibrary = { path: selected.libraryPath, promise };
-    void promise.finally(() => { if (openingCompanionLibrary?.promise === promise) openingCompanionLibrary = undefined; }).catch(() => undefined);
-    return promise;
-  };
+  const companionLibraryAdmission = createCompanionLibraryAdmission({ worker: () => workerClient, isClosing: () => applicationClosing,
+    opened: library => {
+      rememberOpenedLibrary(library.libraryPath, library.displayName, library.libraryId);
+      publishLifecycle({ type: 'library.opened', library: { libraryId: library.libraryId, displayName: library.displayName, displayPath: library.libraryPath } });
+    } });
+  const ensureCompanionLibrary = companionLibraryAdmission.ensure;
   const ensureCompanionService = (): Promise<CompanionService> => {
     if (applicationClosing) return Promise.reject(new CompanionExecutionPausedError('应用正在关闭。'));
     if (companionRecoveryOperation) return Promise.reject(new CompanionExecutionPausedError('伙伴资产库正在备份或恢复，执行暂时停止；请等待该操作完成。'));
@@ -5004,7 +5018,21 @@ async function startApplication(): Promise<void> {
       let workspaceCompanionService: CompanionService | undefined;
       companionService = workspaceCompanionService = new CompanionService({
         getFfmpeg: () => resolveHostMediaBinaries()?.ffmpegPath,
-        onTiming: timing => timing.operation.startsWith('reset.')
+        onTiming: timing => timing.operation === 'reply.first_text'
+          ? logger?.info('companions.reply.first-text', 'First nonempty reply body published to the renderer.', timing)
+          : timing.operation.startsWith('storage.worker.')
+          ? logger?.info('companions.storage.worker', 'Companion storage worker request timing.', timing)
+          : timing.operation === 'reply.http_dispatch'
+          ? logger?.info('companions.reply.http-dispatch', 'Actual reply HTTP invocation started after the final local gate.', timing)
+          : timing.operation === 'reply.retry'
+          ? logger?.info('companions.reply.retry', 'Reply decision retried after a host validation or provider result.', timing)
+          : timing.operation === 'reply.storage.operation'
+          ? logger?.info('companions.reply.storage-operation', 'Reply source bound to its private storage operation hash.', timing)
+          : timing.operation === 'memory.recall.total'
+          ? logger?.info('companions.memory.recall-total', 'Automatic recall wall-clock interval finished.', timing)
+          : timing.operation.startsWith('reply.final.')
+          ? logger?.info('companions.reply.final-stage', 'Fresh final validation stage finished.', timing)
+          : timing.operation.startsWith('reset.')
           ? logger?.info('companions.reset.step', 'Companion reset step updated.', timing)
           : timing.operation.startsWith('shutdown.') ? logger?.info('companions.shutdown.step', 'Companion shutdown phase updated.', timing)
           : logger?.info('companions.context.slow', 'Companion preparation or source validation exceeded 500 ms.', timing),
@@ -5028,6 +5056,7 @@ async function startApplication(): Promise<void> {
           if (!workerClient) throw new Error('资产服务尚未就绪。'); return workerClient.request(command);
         } }),
         memoryRuntime: new CompanionVcpRuntime({
+          onTiming: timing => logger?.info('companions.runtime.phase', 'Companion memory runtime phase finished.', timing),
           resolveOwnerCleanupStorage: async ownerId => {
             if (!workspaceCompanionService) throw new Error('伙伴目录服务尚未就绪。');
             return workspaceCompanionService.resolveOwnerCleanupStorage(ownerId);
@@ -5051,8 +5080,9 @@ async function startApplication(): Promise<void> {
                 const { generateCompanionText, companionNativeProviderLifecycle } = await import('./companions/model');
                 return generateCompanionText(context, workspaceCompanionService!.bindModelTransport(input.ownerId, { ...config, ownerId: input.ownerId, workPriority: work?.priority ?? 'foreground', requestPurpose: work?.nativePrompt ? 'timeline' : 'other',
                   providerLifecycle: companionNativeProviderLifecycle(config, work?.nativeDispatchToken),
-                  resolveAssetContext: (context, kind) => workspaceCompanionService!.prepareModelAssetContext(input.ownerId, context, kind, work?.nativePrompt,
-                    work?.nativePrompt ? work.nativePrompt.kind === 'timeline' ? 'native_timeline' : 'native_summary' : 'vcp_focus_guidance') }), signal,
+                  resolveAssetContext: (context, kind) => workspaceCompanionService!.prepareNativeModelAssetContext(input.ownerId, context, kind, work?.nativePrompt,
+                    work?.nativePrompt ? work.nativePrompt.kind === 'timeline' ? 'native_timeline' : 'native_summary' : 'vcp_focus_guidance',
+                    config.resolveNativeAssetContext?.(work?.nativeDispatchToken)) }), signal,
                   { fetchFn: (input, init) => net.fetch(input instanceof URL ? input.toString() : input, { ...init, credentials: 'omit' }), timeoutMs: 120000 });
               } });
             return { plugins: { chat: route.chat }, dispose: route.dispose };
@@ -5069,6 +5099,17 @@ async function startApplication(): Promise<void> {
         dsh: () => dshLauncher, report: error => logger?.error('companions.service', error), onChanged: () => companionWorldWindows?.changed(),
       });
       companionService.registerIpc({ requests: false, attachments: false });
+      const startupService = companionService;
+      // Navigation does not await this physical preparation. Restore the
+      // existing measured cache without running a device self-test; a real
+      // foreground request joins the same complete resource verification.
+      void prepareCompanionMemoryIdleStartup({
+        isCurrent: () => !applicationClosing && !changingCompanionWorkspace && companionService === startupService,
+        readDeviceStatus: () => embeddingDevice().status(), verifyResources: prepareBundledEmbedding,
+        requestIdlePrime: () => startupService.embeddingChanged(),
+      }).catch(error => {
+        if (!applicationClosing && companionService === startupService) logger?.error('companions.memory.startup', error);
+      });
       logger?.info('companions.activated', 'Companion services activated by their first request.');
       return companionService;
     })().catch(error => { creatingCompanionService = undefined; throw error; });
@@ -5103,6 +5144,7 @@ async function startApplication(): Promise<void> {
           throw new Error('已有备份或恢复操作正在进行，请保留原操作标识等待核对。');
         }
         if (changingCompanionWorkspace) throw new Error('资产库正在切换，不能同时备份或恢复。');
+        companionLibraryAdmission.invalidate();
         const recovery = (async () => {
           const initialized = await creatingCompanionService?.catch(() => undefined);
           companionWorldWindows?.closeAll();
@@ -5144,13 +5186,19 @@ async function startApplication(): Promise<void> {
           if (durationMs >= 500) logger?.info('companions.memory.documents.slow', 'Notebook request exceeded 500 ms.', { type: command.type, durationMs });
         }
       }
-      const selectedWorkspace = command.type === 'status' ? await companionWorkspace.current() : undefined;
-      // A locator read must not open/import the asset library before the
-      // companion UI can mount. Actual data access and explicit selection
-      // already admit the library through ensureCompanionLibrary below.
-      const list = await workerClient?.request({ type: 'library.list' });
-      const libraries: CompanionWorkspaceLibrary[] = list?.ok && list.type === 'library.list' ? list.libraries.filter(library => !library.readOnly) : [];
-      if (command.type === 'status') return { ok: true, selected: selectedWorkspace, libraries };
+      const readLibraries = async (): Promise<CompanionWorkspaceLibrary[]> => {
+        const list = await workerClient?.request({ type: 'library.list' });
+        return list?.ok && list.type === 'library.list' ? list.libraries.filter(library => !library.readOnly) : [];
+      };
+      if (command.type === 'status') return readCompanionWorkspaceStatus(companionWorkspace, command.includeLibraries !== false, {
+        libraries: readLibraries, beginAdmission: selected => {
+          if (applicationClosing || companionRecoveryOperation || changingCompanionWorkspace) return;
+          // The foreground awaits this exact in-flight admission. This warms
+          // neither a model nor a companion execution/domain service.
+          void ensureCompanionLibrary(selected).catch(error => logger?.error('companions.workspace-admission', error));
+        },
+      });
+      const libraries = await readLibraries();
       if (command.type === 'reveal') {
         const selected = await companionWorkspace.current();
         if (!selected) throw new Error('请先选择伙伴资产库。');
@@ -5174,7 +5222,8 @@ async function startApplication(): Promise<void> {
       changingCompanionWorkspace = true;
       try {
         const current = await companionWorkspace.current().catch(() => undefined);
-        if (current?.libraryPath !== library.libraryPath) {
+        if (current?.libraryPath !== library.libraryPath || current.libraryId !== library.libraryId) {
+          companionLibraryAdmission.invalidate();
           await creatingCompanionService?.catch(() => undefined);
           companionWorldWindows?.closeAll();
           const previous = companionService;
@@ -7146,10 +7195,27 @@ async function startApplication(): Promise<void> {
         error: createPublicError("INTERNAL_ERROR"),
       } satisfies RendererResult;
     }
-    await activateLibrary();
-    return handleLibraryRequest(input, {
-      consumerId: performanceConsumerIdForWindow(event.sender.id),
-    });
+    const requestType = typeof input === 'object' && input !== null && 'type' in input && typeof input.type === 'string' ? input.type : undefined;
+    const timedNavigation = requestType?.endsWith('.request') === true && isLibraryNavigationTimingCommand(requestType.slice(0, -'.request'.length));
+    const enteredAtMs = performance.now();
+    let activatedAtMs: number | undefined;
+    try {
+      await activateLibrary();
+      activatedAtMs = performance.now();
+      return await handleLibraryRequest(input, {
+        consumerId: performanceConsumerIdForWindow(event.sender.id),
+      });
+    } finally {
+      if (timedNavigation) observeLibraryNavigationTiming(() => logger?.info(
+        'library.navigation.ipc', 'Library navigation IPC boundary.', {
+          requestType, enteredAtEpochMs: performance.timeOrigin + enteredAtMs,
+          ...(activatedAtMs === undefined ? {} : {
+            activationMs: Math.max(0, activatedAtMs - enteredAtMs),
+            routeMs: Math.max(0, performance.now() - activatedAtMs),
+          }),
+          totalMs: Math.max(0, performance.now() - enteredAtMs),
+        }));
+    }
   });
 
   ipcMain.on(ASSET_NATIVE_DRAG_CHANNEL, (event, input: unknown) => {
@@ -7802,6 +7868,11 @@ async function startApplication(): Promise<void> {
 
   startupWindow?.set("interface", "装载应用界面，随后连接本地内容");
   await createMainWindow();
+  if (mainWindow) prestartLibraryWorkerAfterWindowShown(mainWindow, {
+    isClosing: () => applicationClosing,
+    start: () => activeWorkerClient.start(),
+    report: error => logger?.error('worker.prestart', error),
+  });
   try {
     await embeddedMcpServer?.initialize();
   } catch (error) {

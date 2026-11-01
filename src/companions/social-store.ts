@@ -59,9 +59,9 @@ export class CompanionSocialStore {
     private readonly options: { observationCalendar?(): Calendar; memoryRevision?(scope: { companionId: string; conversationId: string; beforeSequence: number }): string; interrupt?(owner: string, source: CompanionSocialMessage): void; endInterrupt?(owner: string, sourceId: string): void; contactState?(owner: string): CompanionContactState; createPeerWork?(input: CompanionPeerWorkInput): { activityTaskId: string } | void; addressText?(owner: string): string; shareHome?(owner: string, recipients: string[], source: CompanionMessage): void; createPlayerGroup?(title: string, members: string[]): { id: string }; topicExecute?(command: Extract<CompanionStorageCommand, { type: `topic.${string}` }>): CompanionStorageResponse | undefined; activityTaskValid?(id: string, owner: string, conversationId: string): boolean;
       queued?(job: Pick<CompanionSocialJob, 'id' | 'companionId' | 'conversationId' | 'sourceMessageId' | 'createdAt'>): void;
       captureReceipt?(scope: CompanionWorldScope, kind: CompanionReplyReceivedState['kind']): CompanionReplyReceivedState;
-      receiptEpoch?(owner: string): number } = {}) {
+      receiptEpoch?(owner: string): number; publishedReportValid?(message: CompanionMessage): boolean } = {}) {
     this.continuity = new CompanionSocialContinuityStore(db, append, message, visible,
-      owner => available(owner, 'phone', []), () => calendar().backlog);
+      owner => available(owner, 'phone', []), () => calendar().backlog, options.publishedReportValid);
     this.replies = new CompanionSocialReplyStore(db);
   }
   private observationCalendar(): Calendar { return this.options.observationCalendar?.() ?? this.calendar(); }

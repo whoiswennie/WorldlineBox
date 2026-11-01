@@ -74,6 +74,8 @@ export interface CompanionModelConfig {
   /** Owner-loopback capability lookup. Resolved per native call before model
    * admission, never cached as one timeline run or serialized to providers. */
   resolveNativeLifecycle?(dispatchToken?: string): CompanionModelConfig['providerLifecycle'];
+  /** Host loopback only: select the exact live lease's role resolver, never the route's first task. */
+  resolveNativeAssetContext?(dispatchToken?: string): CompanionModelConfig['resolveAssetContext'];
   apiFormat: AiApiFormat;
   model: string;
   baseUrl?: string;
@@ -225,8 +227,8 @@ export async function generateCompanionReply(
           body = await readCompanionProviderStream(response, config.apiFormat, { signal: controller.signal,
             onText: text => { if (!controller.signal.aborted) options.onTextDelta?.(text); }, onActivity: streamActivity, ...(options.onUsage ? { onUsage: reportUsage } : {}) });
         } else { body = await readBoundedJson(response); const actual = companionProviderUsage(config.apiFormat, body); if (actual) reportUsage(actual); }
-      } finally { await transport.complete(); }
-      if (modelUsage) { modelUsage = { ...modelUsage, phase: 'finished', updatedAt: new Date().toISOString() }; emitUsage(); }
+        if (modelUsage) { modelUsage = { ...modelUsage, phase: 'finished', updatedAt: new Date().toISOString() }; emitUsage(); }
+      } finally { clearTimeout(timer); clearTimeout(streamDeadline); await transport.complete(); }
       const loopCalls = options.loop ? extractLoopCalls(config.apiFormat, body) : [];
       const raw = extractProviderText(config.apiFormat, body, loopCalls.length > 0);
       const result = options.loop ? parseLoopText(raw, loopCalls.length > 0) : parseCompanionReply(raw, input.proactive === true || input.conversation.kind === 'group');
@@ -292,7 +294,7 @@ export async function generateCompanionStructured(
 
 /** One completed output, at most two global-model repair requests. No repair
  * path replays native tools, retries a network-unknown result, or commits a
- * domain effect. Every child request uses normal background admission and a
+ * domain effect. Every child request retains its parent's admission class and a
  * deterministic invocation, so restart cannot evade the unknown-send barrier. */
 export async function repairCompanionStructured(input: {
   context: { system: string; user: string }; raw: string; config: CompanionModelConfig; signal?: AbortSignal; options?: CompanionStructuredModelOptions;
@@ -319,7 +321,7 @@ export async function repairCompanionStructured(input: {
     const globalConfig = config.resolveStructuredRepairConfig ? await config.resolveStructuredRepairConfig() : config;
     if (globalConfig.ownerId !== config.ownerId) throw new CompanionModelError('CONFIG', '结构修复不能更换伙伴归属。');
     const resolveRepairContext = globalConfig.resolveAssetContext;
-    const repairConfig: CompanionModelConfig = { ...globalConfig, workPriority: 'background', requestPurpose: 'repair',
+    const repairConfig: CompanionModelConfig = { ...globalConfig, workPriority: config.workPriority ?? 'foreground', requestPurpose: 'repair',
       providerLifecycle: combineProviderLifecycles(config.providerLifecycle, globalConfig.providerLifecycle),
       ...(resolveRepairContext ? { resolveAssetContext: async (value, kind) => {
         const current = await resolveRepairContext(value, kind);
@@ -479,23 +481,33 @@ async function fetchCompanionProvider(signal: AbortSignal, fetchFn: typeof fetch
     catch { await Promise.allSettled([evidence?.complete('cancelled_before_send'), finish?.('cancelled_before_send', 0)]); throw new CompanionModelError('CANCELLED', '实际发送前来源已撤回或授权已变化，旧上下文未发送。'); }
     if (signal.aborted) { await evidence?.complete('cancelled_before_send'); await finish?.('cancelled_before_send', 0); throw new CompanionModelError('CANCELLED', '这次模型请求已取消。'); }
     let response: Response;
+    let dispatchReceipt: Promise<boolean> = Promise.resolve(true);
+    const requireDispatchReceipt = async (received?: Response) => {
+      if (await dispatchReceipt) return;
+      await received?.body?.cancel().catch(() => undefined);
+      try { await finish?.(received ? 'response' : 'network_error', performance.now() - started, received?.status); }
+      catch { /* A second settlement failure cannot make a paid, unrecorded send retryable. */ }
+      throw new CompanionModelError('CONTEXT_RECORD_FAILED', '请求已交给网络层，但发送凭证未能完成保存。为避免重复付费，本次不自动重发。');
+    };
     try {
       // Invoke fetch first: a prepared/cancelled attempt is never labelled sent.
       // Attach both handlers immediately, including if durable state I/O yields.
       const pending = Promise.resolve(fetchFn(...request)).then(value => ({ value }), error => ({ error }));
-      try { await evidence?.dispatched(); }
-      catch { const result = await pending; if ('value' in result) await result.value.body?.cancel().catch(() => undefined); await finish?.('value' in result ? 'response' : 'network_error', performance.now() - started, 'value' in result ? result.value.status : undefined); throw new CompanionModelError('CONTEXT_RECORD_FAILED', '请求已交给网络层，但发送凭证未能完成保存。为避免重复付费，本次不自动重发。'); }
+      // Observe durable settlement immediately, but do not hold already-arrived
+      // response bytes behind it. No decision can leave complete() before this
+      // exact receipt has settled successfully.
+      dispatchReceipt = Promise.resolve().then(() => evidence?.dispatched()).then(() => true, () => false);
       const outcome = await pending;
       if ('error' in outcome) throw outcome.error;
       response = outcome.value;
-    } catch (error) { if (error instanceof CompanionModelError && error.code === 'CONTEXT_RECORD_FAILED') throw error; try { await evidence?.complete('network_error'); } catch { throw new CompanionModelError('CONTEXT_RECORD_FAILED', '网络请求已尝试，但结果凭证未能保存。本次不自动重发。'); } finally { await finish?.('network_error', performance.now() - started); } throw error; }
-    let completed = false;
-    return { response, complete: async () => {
-      if (completed) return; completed = true;
+    } catch (error) { if (error instanceof CompanionModelError && error.code === 'CONTEXT_RECORD_FAILED') throw error; await requireDispatchReceipt(); try { await evidence?.complete('network_error'); } catch { throw new CompanionModelError('CONTEXT_RECORD_FAILED', '网络请求已尝试，但结果凭证未能保存。本次不自动重发。'); } finally { await finish?.('network_error', performance.now() - started); } throw error; }
+    let completion: Promise<void> | undefined;
+    return { response, complete: () => completion ??= (async () => {
+      await requireDispatchReceipt(response);
       try { await evidence?.complete('response', response.status); }
       catch { throw new CompanionModelError('CONTEXT_RECORD_FAILED', '提供方已响应，但结果凭证未能保存。本次不自动重发。'); }
       finally { await finish?.('response', performance.now() - started, response.status); }
-    } };
+    })() };
   };
   const readError = async (value: CompanionProviderResponse) => {
     try { return await readBoundedJson(value.response); } finally { await value.complete(); }
@@ -541,6 +553,8 @@ function providerRequest(config: CompanionModelConfig, context: { system: string
   const tools = (suppliedTools ?? [...(enableDsh ? [COMPANION_DSH_CAPABILITY_TOOL] : []), ...(enableMemory ? [COMPANION_MEMORY_CAPABILITY_TOOL, COMPANION_WORLD_CAPABILITY_TOOL, COMPANION_AGENDA_TOOL] : [])])
     .map(tool => ({ ...tool, parameters: companionProviderToolParameters(tool.parameters) }));
   const bearerHeaders = { Authorization: `Bearer ${config.apiKey}`, 'Content-Type': 'application/json' };
+  // Public portraits are background references, not a newly received chat
+  // message. Keep the actual conversation/request after these reference pixels.
   const imageMessage = images.length ? [{ role: 'user', content: companionImageParts(config.apiFormat, images) }] : [];
   const init = (headers: Record<string, string>, body: unknown): RequestInit => ({ method: 'POST', headers: { ...headers, ...(stream ? { Accept: 'text/event-stream' } : {}) },
     signal, redirect: 'error', body: JSON.stringify(body) });
@@ -550,14 +564,14 @@ function providerRequest(config: CompanionModelConfig, context: { system: string
         model: config.model, max_tokens: COMPANION_TEXT_GENERATION_PROFILE.maxOutputTokens, stream, ...(stream ? { stream_options: { include_usage: true } } : {}),
         ...(tools.length ? { tools: tools.map(tool => ({ type: 'function', function: { ...tool, strict: false } })), parallel_tool_calls: true } : {}),
         ...(deepseek ? { thinking: { type: 'disabled' }, ...(structured ? { response_format: { type: 'json_object' } } : {}) } : {}),
-        messages: [{ role: 'system', content: compiled.system }, ...compiled.messages, ...imageMessage],
+        messages: [{ role: 'system', content: compiled.system }, ...imageMessage, ...compiled.messages],
       })];
     case 'openai_responses':
       return [resolveOpenAiResponsesUrl(config.baseUrl), init(bearerHeaders, {
         model: config.model, max_output_tokens: COMPANION_TEXT_GENERATION_PROFILE.maxOutputTokens, stream,
         ...(tools.length ? { tools: tools.map(tool => ({ type: 'function', ...tool, strict: false })), parallel_tool_calls: true } : {}),
         ...(deepseek ? { reasoning: { effort: 'none' }, ...(structured ? { text: { format: { type: 'json_object' } } } : {}) } : {}),
-        instructions: compiled.system, input: [...compiled.messages, ...imageMessage],
+        instructions: compiled.system, input: [...imageMessage, ...compiled.messages],
       })];
     case 'anthropic':
       return [resolveAnthropicMessagesUrl(config.baseUrl), init({ 'x-api-key': config.apiKey,
@@ -565,7 +579,7 @@ function providerRequest(config: CompanionModelConfig, context: { system: string
         model: config.model, max_tokens: COMPANION_TEXT_GENERATION_PROFILE.maxOutputTokens, stream, system: compiled.system,
         ...(tools.length ? { tools: tools.map(tool => ({ name: tool.name, description: tool.description, input_schema: tool.parameters })) } : {}),
         ...(deepseek ? { thinking: { type: 'disabled' } } : {}),
-        messages: [...compiled.messages, ...imageMessage],
+        messages: [...imageMessage, ...compiled.messages],
       })];
     case 'gemini_native':
       return [resolveGeminiGenerateContentUrl(config.model, config.baseUrl).replace(/:generateContent$/u, stream ? ':streamGenerateContent?alt=sse' : ':generateContent'), init({ 'x-goog-api-key': config.apiKey,
@@ -573,13 +587,13 @@ function providerRequest(config: CompanionModelConfig, context: { system: string
         system_instruction: { parts: [{ text: compiled.system }] },
         ...(tools.length ? { tools: [{ function_declarations: tools.map(tool => ({ name: tool.name,
           description: tool.description, parametersJsonSchema: tool.parameters })) }] } : {}),
-        contents: [...compiled.messages.map(message => ({ role: message.role === 'assistant' ? 'model' : 'user', parts: [{ text: message.content }] })), ...(images.length ? [{ role: 'user', parts: companionImageParts(config.apiFormat, images) }] : [])],
+        contents: [...(images.length ? [{ role: 'user', parts: companionImageParts(config.apiFormat, images) }] : []), ...compiled.messages.map(message => ({ role: message.role === 'assistant' ? 'model' : 'user', parts: [{ text: message.content }] }))],
         generationConfig: { maxOutputTokens: COMPANION_TEXT_GENERATION_PROFILE.maxOutputTokens, ...(structured ? { responseMimeType: 'application/json' } : {}) },
       })];
     case 'dashscope_native':
       return [resolveDashScopeMultimodalGenerationUrl(config.baseUrl), init({ ...bearerHeaders, ...(stream ? { 'X-DashScope-SSE': 'enable' } : {}) }, {
-        model: config.model, input: { messages: [{ role: 'system', content: [{ text: compiled.system }] },
-          ...compiled.messages.map(message => ({ role: message.role, content: [{ text: message.content }] })), ...imageMessage] },
+        model: config.model, input: { messages: [{ role: 'system', content: [{ text: compiled.system }] }, ...imageMessage,
+          ...compiled.messages.map(message => ({ role: message.role, content: [{ text: message.content }] }))] },
         parameters: { result_format: 'message', max_tokens: COMPANION_TEXT_GENERATION_PROFILE.maxOutputTokens, enable_thinking: false, ...(structured ? { response_format: { type: 'json_object' } } : {}),
           ...(stream ? { incremental_output: true } : {}),
           ...(tools.length ? { tools: tools.map(tool => ({ type: 'function', function: tool })) } : {}) },

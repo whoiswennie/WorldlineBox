@@ -100,3 +100,37 @@ it('preserves the existing companion subtree when changing libraries is cancelle
   expect(container.contains(child!)).toBe(true);
   expect(workspace.mock.calls.every(([input]) => input.type === 'status')).toBe(true);
 });
+
+it('mounts the selected workspace from locator metadata without requesting the catalog until the user opens the picker', async () => {
+  let resolveCatalog!: (value: CompanionWorkspaceResponse) => void;
+  const catalog = new Promise<CompanionWorkspaceResponse>(resolve => { resolveCatalog = resolve; });
+  const workspace = vi.fn<NonNullable<WorldlineBoxCompanionsApi['workspace']>>(async input => input.type === 'status' && input.includeLibraries === false
+    ? { ok: true, selected: library } : catalog);
+  await mount(workspace);
+  expect(workspace).toHaveBeenCalledExactlyOnceWith({ type: 'status', includeLibraries: false });
+  expect(container.textContent).toContain('伙伴服务已运行'); expect(container.querySelector('[role="dialog"]')).toBeNull();
+  const child = [...container.querySelectorAll('p')].find(node => node.textContent === '伙伴服务已运行');
+  await click('更换资产库'); expect(workspace).toHaveBeenLastCalledWith({ type: 'status', includeLibraries: true });
+  expect(container.contains(child!)).toBe(true); await click('关闭伙伴资产库设置');
+  await act(() => resolveCatalog({ ok: true, selected: library, libraries: [library] }));
+  expect(container.querySelector('[role="dialog"]')).toBeNull(); expect(container.contains(child!)).toBe(true);
+});
+
+it('does not mount a companion subtree when the fast locator validation fails', async () => {
+  const workspace = vi.fn<NonNullable<WorldlineBoxCompanionsApi['workspace']>>(async () => ({ ok: false, error: '资产库记录指向的目录无效。' }));
+  await mount(workspace);
+  expect(workspace).toHaveBeenCalledWith({ type: 'status', includeLibraries: false });
+  expect(container.textContent).not.toContain('伙伴服务已运行'); expect(container.textContent).toContain('资产库记录指向的目录无效。');
+});
+
+it('does not let a delayed catalog overwrite the newly selected library after the explicit selection boundary', async () => {
+  let resolveCatalog!: (value: CompanionWorkspaceResponse) => void;
+  const catalog = new Promise<CompanionWorkspaceResponse>(resolve => { resolveCatalog = resolve; }), next = { ...library, libraryId: 'new-library', displayName: '新资料库', libraryPath: 'D:/新资料库' };
+  const workspace = vi.fn<NonNullable<WorldlineBoxCompanionsApi['workspace']>>(async input => input.type === 'status'
+    ? input.includeLibraries === false ? { ok: true, selected: library } : catalog
+    : { ok: true, selected: next, libraries: [next] });
+  await mount(workspace); await click('更换资产库'); await existing(); await click('打开其他资产库…');
+  expect(container.querySelector('.companion-workspace-name')?.textContent).toBe('新资料库');
+  await act(() => resolveCatalog({ ok: true, selected: library, libraries: [library] }));
+  expect(container.querySelector('.companion-workspace-name')?.textContent).toBe('新资料库'); expect(container.querySelector('[role="dialog"]')).toBeNull();
+});

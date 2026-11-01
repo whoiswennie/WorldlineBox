@@ -10,6 +10,7 @@ type Source = NonNullable<CompanionMemorySourceOutbox['source']>;
 type Row = { id: string; companion_id: string; source_id: string; source_revision: number; source_checksum: string; operation: 'publish' | 'retract'; attempts: number; retry_cycle: number };
 export class CompanionMemorySourceOutboxStore {
   private readonly changed = new Set<string>();
+  private readonly publicationQueued = new Set<string>();
   constructor(private readonly db: CompanionConnection, private readonly resolve: (owner: string, id: string) => Source | undefined) {}
   initialize(): void {
     this.db.exec(`CREATE TABLE IF NOT EXISTS companion_memory_source_outbox(ordinal INTEGER PRIMARY KEY AUTOINCREMENT,id TEXT NOT NULL UNIQUE,
@@ -20,11 +21,14 @@ export class CompanionMemorySourceOutboxStore {
     this.db.prepare("UPDATE companion_memory_source_outbox SET status='pending',lease_token=NULL,lease_until=NULL WHERE status='running'").run();
     initializeCompanionJobDisposition(this.db, 'companion_memory_source_outbox');
   }
-  takeChangedOwners(): string[] { const result = [...this.changed]; this.changed.clear(); return result; }
+  takeChanges(): { changedOwners: string[]; publicationQueuedOwners: string[] } {
+    const result = { changedOwners: [...this.changed], publicationQueuedOwners: [...this.publicationQueued].filter(owner => !this.changed.has(owner)) };
+    this.changed.clear(); this.publicationQueued.clear(); return result;
+  }
   private enqueue(owner: string, source: Pick<Source, 'messageId' | 'revision' | 'checksum'>, operation: 'publish' | 'retract'): void {
     const result = this.db.prepare('INSERT OR IGNORE INTO companion_memory_source_outbox(id,companion_id,source_id,source_revision,source_checksum,operation) VALUES(?,?,?,?,?,?)')
       .run(randomUUID(), owner, source.messageId, source.revision, source.checksum, operation);
-    if (result.changes) this.changed.add(owner);
+    if (result.changes) (operation === 'publish' ? this.publicationQueued : this.changed).add(owner);
   }
   publish(note: CompanionMemory): void {
     if (note.status === 'invalid' || note.status === 'forgotten') return;
@@ -37,6 +41,9 @@ export class CompanionMemorySourceOutboxStore {
     this.retractVersions(owner, ids);
   }
   private retractVersions(owner: string, ids: readonly string[], retainedChecksum?: string): void {
+    // A withdrawal/change remains hard even if its durable retract row already
+    // exists. It can never be relabelled as another ordinary publish enqueue.
+    if (ids.length) this.changed.add(owner);
     for (const id of new Set(ids)) {
       const known = this.db.prepare("SELECT DISTINCT source_revision,source_checksum FROM companion_memory_source_outbox WHERE companion_id=? AND source_id=? AND operation='publish'")
         .all(owner, id) as Array<{ source_revision: number; source_checksum: string }>;

@@ -1,3 +1,5 @@
+import { CompanionValidationUnavailableError } from './validation-unavailable';
+
 /** Provider cancellation may return before a local resolver finishes. Keep
  * those filesystem operations owned until shutdown has actually drained them. */
 export class CompanionAssetIo {
@@ -5,7 +7,7 @@ export class CompanionAssetIo {
   private closing = false;
   private closed?: Promise<void>;
   run<T>(operation: () => Promise<T>): Promise<T> {
-    if (this.closing) return Promise.reject(new Error('伙伴资产读取正在关闭。'));
+    if (this.closing) return Promise.reject(new CompanionValidationUnavailableError('伙伴资产读取正在关闭。'));
     const job = Promise.resolve().then(operation);
     this.pending.add(job);
     void job.finally(() => { this.pending.delete(job); }).catch(() => undefined);

@@ -23,7 +23,11 @@ export function CompanionMemoryManager({ companions, ownerId, request, api, draf
   const recentReads = useMemo(() => new CompanionRecentReadCache<CompanionMemoryLibraryRecentRead>(8, 8 * 1024 * 1024, api), [api]);
   // Keep invalidating retained metadata while hidden, without doing any I/O.
   // Progress cannot publish/revoke a document or change its canonical body.
-  useEffect(() => api?.onChanged(change => { if (change?.kind !== 'progress') recentReads.clear(); }), [api, recentReads]);
+  useEffect(() => api?.onChanged(change => {
+    if (change?.kind === 'progress' || change?.kind === 'memory' && (change.change === 'status'
+      || change.companionIds.length > 0 && !change.companionIds.includes(ownerId))) return;
+    recentReads.clear();
+  }), [api, recentReads, ownerId]);
   const [materialsOwner, setMaterialsOwner] = useState<string>();
   const [traceOwner, setTraceOwner] = useState<string>();
   const [probeOwner, setProbeOwner] = useState<string>();

@@ -8,6 +8,8 @@ import { companionRegistryPublicationSchema, type CompanionRegistryPublication, 
 import type { CompanionStorageResponse } from '../../shared/companion-storage';
 import { CompanionModelAdmissionError } from './model-quota';
 import { assertCompanionExecutionWitnessActive, memoCompanionExecutionWitnesses, withCompanionExecutionValidation } from './source-execution-evidence';
+import { withCompanionArtifactOperation, withCompanionArtifactResources } from './artifact-publication-locks';
+import { rethrowCompanionValidationUnavailable } from './validation-unavailable';
 
 export interface CompanionRegistryStorage { request(command: CompanionRegistryStorageCommand): Promise<CompanionStorageResponse> }
 export class CompanionArtifactError extends Error {
@@ -33,11 +35,14 @@ export function companionMemoryArtifactPath(kind: 'episode_memory' | 'knowledge'
 }
 export type CompanionArtifactPublish = Omit<CompanionArtifact, 'schema' | 'ownerId' | 'contentRevision' | 'contentHash' | 'publicationState' | 'operationId' | 'committedAt'>
   & { expectedRevision: number | null; content: string | Uint8Array };
+/** Existing callbacks may ignore the phase. Input-sharing publishers must seal
+ * their exact source window at the final gate, before the original commit. */
+export type CompanionArtifactPublicationValidator = (phase?: 'commit') => Promise<void>;
 type PageOptions = { consumer?: CompanionArtifactConsumer; kind?: CompanionArtifactKind; prefix?: string; producerId?: string; newestFirst?: boolean;
   publicationState?: 'committed' | 'revoked'; bodyCleanupRequired?: boolean; includeRevoked?: boolean; afterId?: string; limit?: number };
-const serial = new Map<string, Promise<unknown>>();
 type RegistryWitness = { kind: 'artifact'; artifactId: string; artifact?: CompanionArtifact }
-  | { kind: 'reference'; reference: CompanionArtifactReference } | { kind: 'file'; artifact: CompanionArtifact };
+  | { kind: 'reference'; reference: CompanionArtifactReference }
+  | { kind: 'file'; artifact: CompanionArtifact; bytes: Uint8Array; fileStamp: string };
 const missing = (error: unknown) => (error as NodeJS.ErrnoException).code === 'ENOENT';
 
 /** Indexed SQLite metadata is the sole registry authority. Files remain the
@@ -50,14 +55,30 @@ export class CompanionArtifactRegistry {
     if (!this.options.registryStorage) throw new CompanionArtifactError('BACKEND_REQUIRED', '认知登记需要宿主SQLite元数据端口。');
     let response: CompanionStorageResponse;
     try { response = await this.options.registryStorage.request(command); }
-    catch (error) { throw new CompanionArtifactError('CONFLICT', error instanceof Error ? error.message : String(error)); }
+    catch (error) {
+      rethrowCompanionValidationUnavailable(error);
+      throw new CompanionArtifactError('CONFLICT', error instanceof Error ? error.message : String(error));
+    }
     if (!response.ok) throw new CompanionArtifactError('CONFLICT', response.error ?? '认知登记事务失败。');
     if (response.registryPublicationBusy) throw new CompanionPublicationBusyError(response.registryPublicationBusy);
     return response;
   }
-  private serialized<T>(operation: () => Promise<T>): Promise<T> {
-    const key = path.resolve(this.root), pending = (serial.get(key) ?? Promise.resolve()).catch(() => undefined).then(operation);
-    serial.set(key, pending); void pending.finally(() => { if (serial.get(key) === pending) serial.delete(key); }).catch(() => undefined); return pending;
+  private publicationLocked<T>(operationId: string, operation: () => Promise<T>, proposed: readonly CompanionArtifactPublish[] = []): Promise<T> {
+    return withCompanionArtifactOperation(this.root, operationId, async () => {
+      // Metadata only plans the I/O footprint. The existing operation still
+      // rereads its live SQL state, exact versions, permissions and leases.
+      const publication = await this.publication(operationId);
+      const previous = proposed.length ? await this.getMany(proposed.map(item => item.artifactId), true) : [];
+      const targets = [...proposed, ...previous, ...(publication?.items.flatMap(item => [item.next, ...item.previous ? [item.previous] : []]) ?? [])];
+      const references = targets.flatMap(item => [...item.sourceRefs, ...item.dependencyRefs]);
+      const dependencies = await this.getMany([...new Set(references.map(reference => reference.artifactId))], true);
+      return withCompanionArtifactResources(this.root, {
+        exclusiveOwner: publication?.authorization === 'creation' || proposed.length > 0 && proposed.every(item => item.producer.kind === 'creation'),
+        writeArtifacts: targets.map(item => item.artifactId),
+        writePaths: [...targets.map(item => item.relativePath), ...(publication?.items.flatMap(item => [item.stage, ...item.previousStage ? [item.previousStage] : []]) ?? [])],
+        readArtifacts: references.map(reference => reference.artifactId), readPaths: dependencies.map(item => item.relativePath),
+      }, operation);
+    });
   }
   private async target(relative: string, createParents = false): Promise<string> {
     companionArtifactPathSchema.parse(relative); const base = await lstat(this.root);
@@ -141,10 +162,24 @@ export class CompanionArtifactRegistry {
       return new Map(missing.map(key => [key, { kind: 'reference' as const, reference: unique.get(key)! }]));
     });
   }
-  private async consumedFiles(artifacts: readonly CompanionArtifact[]): Promise<void> {
+  private async admittedFiles(artifacts: readonly CompanionArtifact[]): Promise<Map<string, { bytes: Buffer; fileStamp: string }>> {
     const files = new Map(artifacts.map(artifact => ['file:' + JSON.stringify([artifact.artifactId, artifact.contentRevision, artifact.contentHash, artifact.relativePath]), artifact]));
-    if (!files.size) return;
-    await this.witnesses([...files.keys()], async keys => new Map(keys.map(key => [key, { kind: 'file' as const, artifact: files.get(key)! }])));
+    const values = await this.witnesses([...files.keys()], async keys => {
+      const read = new Map<string, RegistryWitness>();
+      for (let offset = 0; offset < keys.length; offset += 4) await Promise.all(keys.slice(offset, offset + 4).map(async key => {
+        assertCompanionExecutionWitnessActive();
+        const artifact = files.get(key)!; let fileStamp = '';
+        const bytes = await this.bytes(artifact.relativePath, stamp => { fileStamp = stamp; });
+        assertCompanionExecutionWitnessActive();
+        if (companionArtifactHash(bytes) !== artifact.contentHash) throw new CompanionArtifactError('CHANGED', '正文不是合法提交字节，拒绝外部改写。');
+        read.set(key, { kind: 'file', artifact, bytes, fileStamp });
+      }));
+      return read;
+    });
+    // These copies belong to the consumer. The finite gate owns its immutable
+    // first read and still reopens every consumed file at its final fence.
+    return new Map([...values.values()].flatMap(value => value.kind === 'file'
+      ? [[value.artifact.artifactId, { bytes: Buffer.from(value.bytes), fileStamp: value.fileStamp }] as const] : []));
   }
   private async verifyWitnesses(witnesses: readonly RegistryWitness[]): Promise<void> {
     const metadata = witnesses.flatMap(witness => witness.kind === 'artifact' ? [witness] : witness.kind === 'file'
@@ -180,7 +215,9 @@ export class CompanionArtifactRegistry {
       artifactId: input.artifactId, contentRevision: input.contentRevision, contentHash: input.contentHash });
   }
   purgeRevokedBody(artifactId: string): Promise<{ removed: boolean }> {
-    return this.serialized(async () => {
+    return withCompanionArtifactOperation(this.root, JSON.stringify(['body-cleanup', artifactId]), async () => {
+      const planned = await this.get(artifactId, true);
+      return withCompanionArtifactResources(this.root, { writeArtifacts: [artifactId], writePaths: planned ? [planned.relativePath] : [] }, async () => {
       const artifact = await this.get(artifactId, true);
       if (!artifact || artifact.publicationState !== 'revoked' || ['persona_current', 'role_guidance', 'origin_snapshot', 'host_metadata'].includes(artifact.kind))
         throw new CompanionArtifactError('DENIED', '只可精确清除已撤回的非人格正文；当前人格必须先修复。');
@@ -192,6 +229,7 @@ export class CompanionArtifactRegistry {
         throw new CompanionArtifactError('CONFLICT', '清理前正式版本已变化。');
       if (actual) await unlink(await this.target(artifact.relativePath)); await this.markBodyRemoved(artifact);
       return { removed: !!actual };
+      });
     });
   }
   /** A bounded first page. Large management scans must explicitly follow page cursors. */
@@ -234,8 +272,8 @@ export class CompanionArtifactRegistry {
   async read(input: { artifactId: string; consumer: CompanionArtifactConsumer; audienceIds?: string[] }): Promise<{ artifact: CompanionArtifact; bytes: Buffer; text: string; fileStamp: string }> {
     return (await this.readMany([input]))[0]!;
   }
-  /** One finite multi-file gate. Metadata and reference admission are batched;
-   * every distinct body's canonical bytes are opened and hashed on every call. */
+  /** One finite multi-file gate. Exact first reads can be shared until its
+   * fresh file/metadata/authority fence; no body survives into a later gate. */
   async readMany(inputs: readonly { artifactId: string; consumer: CompanionArtifactConsumer; audienceIds?: string[] }[]): Promise<Array<{ artifact: CompanionArtifact; bytes: Buffer; text: string; fileStamp: string }>> {
     if (!inputs.length) return [];
     return withCompanionExecutionValidation(async () => this.readRegisteredMany(inputs,
@@ -278,16 +316,7 @@ export class CompanionArtifactRegistry {
         && reference.contentRevision === profile.contentRevision && reference.contentHash === profile.contentHash)))
         throw new CompanionArtifactError('CONFLICT', '角色指导不是当前同版人格。');
     }
-    const bodies = new Map<string, { bytes: Buffer; fileStamp: string }>();
-    for (let offset = 0; offset < ids.length; offset += 4) await Promise.all(ids.slice(offset, offset + 4).map(async id => {
-      assertCompanionExecutionWitnessActive();
-      const artifact = artifacts.get(id)!; let fileStamp = '';
-      const bytes = await this.bytes(artifact.relativePath, stamp => { fileStamp = stamp; });
-      assertCompanionExecutionWitnessActive();
-      if (companionArtifactHash(bytes) !== artifact.contentHash) throw new CompanionArtifactError('CHANGED', '正文不是合法提交字节，拒绝外部改写。');
-      bodies.set(id, { bytes, fileStamp });
-    }));
-    await this.consumedFiles([...artifacts.values()]);
+    const bodies = await this.admittedFiles([...artifacts.values()]);
     const after = new Map((await this.admittedArtifacts(ids)).map(artifact => [artifact.artifactId, artifact]));
     for (const artifact of artifacts.values()) {
       const current = after.get(artifact.artifactId);
@@ -298,24 +327,24 @@ export class CompanionArtifactRegistry {
     return inputs.map(input => { const artifact = artifacts.get(input.artifactId)!, { bytes, fileStamp } = bodies.get(input.artifactId)!;
       return { artifact, bytes, fileStamp, text: artifact.kind === 'appearance' ? '' : new TextDecoder('utf-8', { fatal: true }).decode(bytes) }; });
   }
-  publish(input: CompanionArtifactPublish & { operationId: string; reason?: string }, validate?: () => Promise<void>, fileJobGuard?: CompanionFilePublicationGuard): Promise<CompanionArtifact> {
+  publish(input: CompanionArtifactPublish & { operationId: string; reason?: string }, validate?: CompanionArtifactPublicationValidator, fileJobGuard?: CompanionFilePublicationGuard): Promise<CompanionArtifact> {
     const { operationId, reason, ...item } = input; return this.publishBatch({ operationId, reason, items: [item] }, validate, fileJobGuard).then(items => items[0]!);
   }
-  publishBatch(input: { operationId: string; reason?: string; items: CompanionArtifactPublish[] }, validate?: () => Promise<void>, fileJobGuard?: CompanionFilePublicationGuard): Promise<CompanionArtifact[]> {
+  publishBatch(input: { operationId: string; reason?: string; items: CompanionArtifactPublish[] }, validate?: CompanionArtifactPublicationValidator, fileJobGuard?: CompanionFilePublicationGuard): Promise<CompanionArtifact[]> {
     return this.publishBatchAuthorized(input, validate, false, false, fileJobGuard);
   }
-  publishRetractionBatch(input: { operationId: string; reason: string; items: CompanionArtifactPublish[] }, validate: () => Promise<void>): Promise<CompanionArtifact[]> {
+  publishRetractionBatch(input: { operationId: string; reason: string; items: CompanionArtifactPublish[] }, validate: CompanionArtifactPublicationValidator): Promise<CompanionArtifact[]> {
     if (!validate) return Promise.reject(new CompanionArtifactError('DENIED', '撤回修复需要宿主核验。')); return this.publishBatchAuthorized(input, validate, true);
   }
-  publishRevalidatedMemory(input: CompanionArtifactPublish & { operationId: string }, validate: () => Promise<void>, fileJobGuard?: CompanionFilePublicationGuard): Promise<CompanionArtifact> {
+  publishRevalidatedMemory(input: CompanionArtifactPublish & { operationId: string }, validate: CompanionArtifactPublicationValidator, fileJobGuard?: CompanionFilePublicationGuard): Promise<CompanionArtifact> {
     if (!validate) return Promise.reject(new CompanionArtifactError('DENIED', '记忆重新收录需要正式宿主复核。'));
     const { operationId, ...item } = input;
     return this.publishBatchAuthorized({ operationId, items: [item] }, validate, false, true, fileJobGuard).then(items => items[0]!);
   }
-  private publishBatchAuthorized(input: { operationId: string; reason?: string; items: CompanionArtifactPublish[] }, validate: (() => Promise<void>) | undefined, retraction: boolean, memoryRevalidation = false, fileJobGuard?: CompanionFilePublicationGuard): Promise<CompanionArtifact[]> {
-    return this.serialized(async () => {
-      companionArtifactIdSchema.parse(input.operationId);
-      if (!input.items.length || input.items.length > 128) throw new CompanionArtifactError('INVALID', '发布包超过对象数量限制。');
+  private async publishBatchAuthorized(input: { operationId: string; reason?: string; items: CompanionArtifactPublish[] }, validate: CompanionArtifactPublicationValidator | undefined, retraction: boolean, memoryRevalidation = false, fileJobGuard?: CompanionFilePublicationGuard): Promise<CompanionArtifact[]> {
+    companionArtifactIdSchema.parse(input.operationId);
+    if (!input.items.length || input.items.length > 128) throw new CompanionArtifactError('INVALID', '发布包超过对象数量限制。');
+    return this.publicationLocked(input.operationId, async () => {
       if (!retraction && !validate && input.items.some(item => ['persona_current', 'role_guidance'].includes(item.kind) && item.producer.kind !== 'creation')) throw new CompanionArtifactError('DENIED', '人格系统发布必须经过宿主核验。');
       const requestHash = companionArtifactHash(JSON.stringify(input.items.map(({ content, ...metadata }) => ({ ...metadata, contentHash: companionArtifactHash(content) }))));
       const previousOperation = await this.publication(input.operationId);
@@ -371,11 +400,11 @@ export class CompanionArtifactRegistry {
       const prepared = (await this.request({ type: 'cognition.registry.publication.prepare', ownerId: this.ownerId, publication, ...(fileJobGuard ? { fileJobGuard } : {}) })).registryPublication;
       if (!prepared) throw new CompanionArtifactError('INVALID', '未获得耐久发布凭证。');
       await this.ensureStages(prepared, input.items, validate); return this.resume(prepared, validate, fileJobGuard);
-    });
+    }, input.items);
   }
   /** Intent is durable before private stage bytes are created. Missing stages
    * can only be filled from this same fixed call, never from a SQL body copy. */
-  private async ensureStages(publication: CompanionRegistryPublication, inputs: CompanionArtifactPublish[], validate?: () => Promise<void>): Promise<void> {
+  private async ensureStages(publication: CompanionRegistryPublication, inputs: CompanionArtifactPublish[], validate?: CompanionArtifactPublicationValidator): Promise<void> {
     if (!['prepared', 'validated', 'file_published'].includes(publication.state)) throw new CompanionArtifactError('CONFLICT', '发布已经终止，不能重新写入暂存正文。');
     const gate = async () => {
       const current = await this.publication(publication.operationId);
@@ -407,7 +436,7 @@ export class CompanionArtifactRegistry {
     return (await this.request({ type: 'cognition.registry.publication.transition', ownerId: this.ownerId, operationId: publication.operationId,
       expectedState: publication.state, nextState, ...(fileJobGuard ? { fileJobGuard } : {}) })).registryPublication!;
   }
-  private async resume(initial: CompanionRegistryPublication, validate?: () => Promise<void>, fileJobGuard?: CompanionFilePublicationGuard): Promise<CompanionArtifact[]> {
+  private async resume(initial: CompanionRegistryPublication, validate?: CompanionArtifactPublicationValidator, fileJobGuard?: CompanionFilePublicationGuard): Promise<CompanionArtifact[]> {
     let publication = initial;
     if (!['prepared', 'validated', 'file_published'].includes(publication.state)) throw new CompanionArtifactError('CONFLICT', '已终结发布不能重放。');
     if (!validate && publication.items.some(item => ['persona_current', 'role_guidance'].includes(item.next.kind) && item.next.producer.kind !== 'creation')) throw new CompanionArtifactError('DENIED', '人格恢复必须重新核验。');
@@ -427,7 +456,7 @@ export class CompanionArtifactRegistry {
       } finally { await unlink(temporary).catch(error => { if (!missing(error)) throw error; }); }
     }
     if (publication.state !== 'file_published') publication = await this.transition(publication, 'file_published', fileJobGuard);
-    await validate?.();
+    await validate?.('commit');
     for (const item of publication.items) if (companionArtifactHash(await this.bytes(item.next.relativePath)) !== item.next.contentHash) throw new CompanionArtifactError('CHANGED', '提交前正文变化。');
     const committed = (await this.request({ type: 'cognition.registry.publication.commit', ownerId: this.ownerId, operationId: publication.operationId, ...(fileJobGuard ? { fileJobGuard } : {}) })).registryPublication;
     if (!committed || committed.state !== 'committed') throw new CompanionArtifactError('CONFLICT', '未获得完成发布凭证。');
@@ -442,8 +471,8 @@ export class CompanionArtifactRegistry {
     }
     await this.request({ type: 'cognition.registry.publication.stages-cleaned', ownerId: this.ownerId, operationId: publication.operationId });
   }
-  recover(operationId: string, validate?: () => Promise<void>, fileJobGuard?: CompanionFilePublicationGuard): Promise<CompanionArtifact[]> {
-    return this.serialized(async () => { const publication = await this.publication(operationId); if (!publication) throw new CompanionArtifactError('UNREGISTERED', '发布凭证不存在。');
+  recover(operationId: string, validate?: CompanionArtifactPublicationValidator, fileJobGuard?: CompanionFilePublicationGuard): Promise<CompanionArtifact[]> {
+    return this.publicationLocked(operationId, async () => { const publication = await this.publication(operationId); if (!publication) throw new CompanionArtifactError('UNREGISTERED', '发布凭证不存在。');
       if (publication.state === 'committed') { await this.cleanStages(publication); return publication.items.map(item => item.next); }
       return this.resume(publication, validate, fileJobGuard); });
   }
@@ -475,7 +504,7 @@ export class CompanionArtifactRegistry {
     else if (!['revoked', 'cancelled'].includes(publication.state)) throw new CompanionArtifactError('DENIED', '已提交正文须先走正式撤回。');
   }
   async purgePublicationStages(operationId: string): Promise<void> {
-    return this.serialized(async () => { const publication = await this.publication(operationId); if (!publication) return;
+    return this.publicationLocked(operationId, async () => { const publication = await this.publication(operationId); if (!publication) return;
       if (publication.state === 'conflict') {
         // Same-state CAS is a worker authorization check against the real
         // file job's durable hold/newer cycle, before any stage is removed.
@@ -484,7 +513,7 @@ export class CompanionArtifactRegistry {
       await this.cleanStages(publication); });
   }
   async discardPublishedFiles(operationId: string, options?: { validateMemoryRestore?(previous: CompanionArtifact): Promise<void> }): Promise<void> {
-    return this.serialized(() => this.discardFiles(operationId, options));
+    return this.publicationLocked(operationId, () => this.discardFiles(operationId, options));
   }
   private async discardFiles(operationId: string, options?: { validateMemoryRestore?(previous: CompanionArtifact): Promise<void> }): Promise<void> {
     const publication = await this.publication(operationId); if (!publication || !['revoked', 'cancelled'].includes(publication.state)) throw new CompanionArtifactError('DENIED', '只可丢弃已终止发布的非人格产物。');
@@ -537,10 +566,10 @@ export class CompanionArtifactRegistry {
   async purgeRetractedPublicationStages(): Promise<void> {
     for (let batch = 0; batch < 4; batch++) {
       const publications = (await this.request({ type: 'cognition.registry.publication.pending', ownerId: this.ownerId, uncleanedOnly: true, limit: 16 })).registryPending ?? [];
-      if (!publications.length) return; for (const publication of publications) await this.cleanStages(publication);
+      if (!publications.length) return; for (const publication of publications) await this.purgePublicationStages(publication.operationId);
     }
   }
-  async revoke(artifactId: string): Promise<string[]> {
-    return (await this.request({ type: 'cognition.registry.revoke', ownerId: this.ownerId, artifactId })).registryRevocation?.artifactIds ?? [];
+  async revoke(artifactId: string, expected?: Pick<CompanionArtifact, 'contentRevision' | 'contentHash'>): Promise<string[]> {
+    return (await this.request({ type: 'cognition.registry.revoke', ownerId: this.ownerId, artifactId, ...(expected ? { expected } : {}) })).registryRevocation?.artifactIds ?? [];
   }
 }

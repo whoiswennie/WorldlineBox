@@ -69,3 +69,12 @@ it('attaches independent persisted counters to each reply and never inherits an 
   expect(host!.querySelector('[role="dialog"]')).toBeNull(); expect(host!.textContent).toBe('耗时未记录');
   expect(projectCompanionModelUsage({ ...persisted, sourceUnavailable: 'execution_source_changed' }, new CompanionReplyStreamStore().snapshot('reply'))).toBeUndefined();
 });
+
+
+it('labels recovered partial timing as recorded time rather than an offline-running total', async () => {
+  await mount([{ ...message, isReplyDraft: false, replyProgress: { revision: 9, phase: 'interrupted', detail: '先前进程已结束',
+    startedAt: '2026-10-28T00:00:00Z', updatedAt: '2026-10-29T00:00:00Z', timingIncomplete: true, timing: { elapsedMs: 12000 } } }]);
+  expect(host!.textContent).toContain('已记录用时'); expect(host!.textContent).toContain('计时不完整');
+  const time = host!.querySelector('time')!; expect(time.getAttribute('data-duration-ms')).toBe('12000');
+  expect(time.getAttribute('data-duration-state')).toBe('fixed');
+});

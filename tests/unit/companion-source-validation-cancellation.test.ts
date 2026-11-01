@@ -1,7 +1,8 @@
 import { expect, it, vi } from 'vitest';
 import { captureCompanionExecutionReadset } from '../../src/main/companions/execution-evidence';
-import { detachedCompanionExecutionValidation, guardCompanionExecutionSources, memoCompanionExecutionValidation, withCompanionExecutionValidation,
+import { createCompanionExecutionValidationSession, detachedCompanionExecutionValidation, guardCompanionExecutionSources, memoCompanionExecutionValidation, withCompanionExecutionValidation,
   type CompanionExecutionSourceProof } from '../../src/main/companions/source-execution-evidence';
+import { CompanionValidationUnavailableError } from '../../src/main/companions/validation-unavailable';
 import type { CompanionMessage } from '../../src/shared/companions';
 import type { CompanionStorageCommand, CompanionStorageResponse } from '../../src/shared/companion-storage';
 
@@ -82,4 +83,22 @@ it('lets an explicitly detached autonomous job start after its scheduling foregr
   io.resolve(); await stopped;
   expect(await newJob).toBe(true);
   expect(foreground).not.toHaveBeenCalled(); expect(background).toHaveBeenCalledOnce();
+});
+
+it.each(['host-closing', 'frame-closed'] as const)('does not write permanent invalidation when an old Boolean validator returns false after %s', async state => {
+  const entered = deferred<void>(), io = deferred<void>(), session = createCompanionExecutionValidationSession();
+  let closing = false;
+  const storage = vi.fn(async (command: CompanionStorageCommand): Promise<CompanionStorageResponse> => {
+    if (command.type === 'execution.sources') return { ok: true, executionSources: [proof] };
+    throw new Error('Unavailable validation must not mutate a source.');
+  });
+  const read = session.run(() => guardCompanionExecutionSources({ type: 'message.get', id: message.id }, { ok: true, message }, {
+    storage, assertAvailable: () => { if (closing) throw new CompanionValidationUnavailableError('Host closing.'); },
+    valid: async () => { entered.resolve(); await io.promise; return false; },
+  }));
+  await entered.promise;
+  const stopped = expect(read).rejects.toThrow();
+  if (state === 'frame-closed') session.close(); else closing = true;
+  io.resolve(); await stopped; session.close();
+  expect(storage.mock.calls.map(([command]) => command.type)).toEqual(['execution.sources']);
 });

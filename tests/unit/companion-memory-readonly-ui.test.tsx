@@ -5,7 +5,7 @@ import { afterEach, expect, it, vi } from 'vitest';
 import { CompanionMemoryLibraryWorkspace } from '../../src/renderer/companions/CompanionMemoryLibraryWorkspace';
 import { CompanionMemoryManager } from '../../src/renderer/companions/CompanionMemoryManager';
 import { CompanionRecentReadCache } from '../../src/renderer/companions/recent-read-cache';
-import type { Companion, CompanionMemory, WorldlineBoxCompanionsApi } from '../../src/shared/companions';
+import type { Companion, CompanionMemory, CompanionsRequest, CompanionsResponse, WorldlineBoxCompanionsApi } from '../../src/shared/companions';
 import type { CompanionMemoryDocumentRead } from '../../src/shared/companion-memory-documents';
 
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
@@ -18,7 +18,7 @@ async function mount(draft = false, manager = false) {
   vi.useFakeTimers();
   const workspace = vi.fn<NonNullable<WorldlineBoxCompanionsApi['workspace']>>(async command => command.type === 'memory.documents.list' ? { ok: true, documents: { companionId: 'alice', directory: '', folders: [{ path: '记忆/知识', name: '知识', count: 1 }, { path: '证据/来源', name: '来源', count: 1 }], items: [read.document], hasMore: false, total: 1 } } : command.type === 'memory.documents.read' ? { ok: true, document: read } : command.type === 'memory.documents.delete' ? { ok: true, deletedPath: read.document.path } : { ok: true });
   const listeners = new Set<Parameters<WorldlineBoxCompanionsApi['onChanged']>[0]>();
-  const request = vi.fn(async () => ({ ok: true }));
+  const request = vi.fn<(command: CompanionsRequest) => Promise<CompanionsResponse>>(async () => ({ ok: true }));
   const api: WorldlineBoxCompanionsApi = { workspace, request, onChanged: callback => { listeners.add(callback); return () => { listeners.delete(callback); }; }, onReplyStream: () => () => undefined };
   const consumed = vi.fn(); host = document.createElement('div'); document.body.append(host); root = createRoot(host);
   const common = { companions: [owner], api, request, draft: draft ? { content: '用户改写的记忆草稿', sourceMessageId: 'message1', nonce: 1 } : undefined, onDraftConsumed: consumed, onOwnerChange: vi.fn(), onLocateSource: vi.fn(), authorName: (id: string) => id, onClose: vi.fn(), onDismissError: vi.fn() };
@@ -27,6 +27,43 @@ async function mount(draft = false, manager = false) {
   await act(async () => { await vi.advanceTimersByTimeAsync(400); }); return { workspace, consumed, request, render, listeners, emit: (change?: Parameters<Parameters<WorldlineBoxCompanionsApi['onChanged']>[0]>[0]) => listeners.forEach(callback => callback(change)) };
 }
 async function click(label: string) { await act(async () => [...host.querySelectorAll('button')].find(button => button.getAttribute('aria-label') === label || button.textContent === label)!.click()); }
+it('updates memory-only job status without clearing the selected body or its shared read cache', async () => {
+  const clear = vi.spyOn(CompanionRecentReadCache.prototype, 'clear'), f = await mount(false, true);
+  const calls = f.workspace.mock.calls.length, statuses = f.request.mock.calls.length;
+  clear.mockClear();
+  await act(async () => {
+    for (let index = 0; index < 20; index++) f.emit({ kind: 'memory', change: 'status', companionIds: ['alice'] });
+    await vi.advanceTimersByTimeAsync(1100);
+  });
+  expect(f.workspace).toHaveBeenCalledTimes(calls); expect(clear).not.toHaveBeenCalled();
+  expect(f.request.mock.calls.slice(statuses).length).toBeGreaterThan(0);
+  expect(f.request.mock.calls.slice(statuses).every(([command]) => command.type === 'memory.status')).toBe(true);
+  expect(host.textContent).toContain(memory.content);
+});
+it('refreshes same-owner memory content from the host even when document metadata did not change', async () => {
+  const f = await mount(false, true), original = f.workspace.getMockImplementation()!, next = { ...read, content: '新的正式记忆正文。' };
+  f.workspace.mockImplementation(command => command.type === 'memory.documents.read' ? Promise.resolve({ ok: true, document: next }) : original(command));
+  f.workspace.mockClear();
+  await act(async () => f.emit({ kind: 'memory', change: 'content', companionIds: ['alice'] }));
+  expect(host.textContent).not.toContain(memory.content);
+  await act(async () => { await vi.advanceTimersByTimeAsync(1100); });
+  expect(f.workspace.mock.calls.some(([command]) => command.type === 'memory.documents.list')).toBe(true);
+  expect(f.workspace.mock.calls.some(([command]) => command.type === 'memory.documents.read')).toBe(true);
+  expect(host.textContent).toContain(next.content);
+});
+it('ignores another owner memory event while retaining hard global withdrawal handling', async () => {
+  const f = await mount(false, true), calls = f.workspace.mock.calls.length, original = f.workspace.getMockImplementation()!;
+  await act(async () => {
+    f.emit({ kind: 'memory', change: 'content', companionIds: ['bob'] });
+    f.emit({ kind: 'memory', change: 'status', companionIds: ['bob'] }); await vi.advanceTimersByTimeAsync(1100);
+  });
+  expect(f.workspace).toHaveBeenCalledTimes(calls); expect(host.textContent).toContain(memory.content);
+  f.workspace.mockImplementation(command => command.type === 'memory.documents.read' ? Promise.resolve({ ok: false, error: '来源已经撤回。' }) : original(command));
+  await act(async () => f.emit());
+  expect(host.textContent).not.toContain(memory.content);
+  await act(async () => { await vi.advanceTimersByTimeAsync(1100); });
+  expect(f.workspace.mock.calls.length).toBeGreaterThan(calls); expect(host.textContent).toContain('来源已经撤回。');
+});
 it('keeps memories read-only even when an old server object incorrectly says editable, while preserving exact text and provenance', async () => {
   const f = await mount(); expect(host.textContent).toContain(memory.content); expect(host.textContent).toContain('知识与方法');
   expect(host.querySelector('textarea')).toBeNull(); for (const label of ['新建记忆文档', '新建记忆文件夹', '编辑记忆 note1']) expect(host.querySelector(`[aria-label="${label}"]`)).toBeNull();
@@ -45,13 +82,30 @@ it('treats privacy withdrawal as an explicit revisioned operation rather than an
   await click('确认撤回记忆'); expect(f.workspace).toHaveBeenCalledWith({ type: 'memory.documents.delete', companionId: 'alice', path: read.document.path, expectedRevision: 'revision2' });
 });
 
-it('keeps memory metadata cached and avoids document or policy reads during progress notifications', async () => {
+it('keeps document metadata cached and refreshes only processing counts during progress notifications', async () => {
   const clear = vi.spyOn(CompanionRecentReadCache.prototype, 'clear');
   const f = await mount(false, true), calls = f.workspace.mock.calls.length, statuses = f.request.mock.calls.length;
   expect(host.textContent).toContain(memory.content);
   await act(async () => { for (let index = 0; index < 20; index++) f.emit({ kind: 'progress' }); await vi.advanceTimersByTimeAsync(1100); });
-  expect(f.workspace).toHaveBeenCalledTimes(calls); expect(f.request).toHaveBeenCalledTimes(statuses); expect(clear).not.toHaveBeenCalled();
+  expect(f.workspace).toHaveBeenCalledTimes(calls);
+  expect(f.request.mock.calls.slice(statuses).length).toBeGreaterThan(0);
+  expect(f.request.mock.calls.slice(statuses).every(([command]) => command.type === 'memory.status')).toBe(true);
+  expect(clear).not.toHaveBeenCalled();
   expect(host.textContent).toContain(memory.content);
+});
+
+it('shows new index work and its completion from progress without rereading document bodies or policies', async () => {
+  const f = await mount(), documents = f.workspace.mock.calls.length;
+  const status = { pending: 0, running: 0, failed: 0, completed: 0, memories: 1, forgotten: 0, indexed: 0, pendingIndex: 1, messageWatermark: 1, captureWatermark: 1 };
+  f.request.mockImplementation(async command => command.type === 'memory.status' ? { ok: true, memoryStatus: { ...status } } : { ok: true });
+  await act(async () => { f.emit({ kind: 'progress' }); await vi.advanceTimersByTimeAsync(1100); });
+  expect(host.textContent).toContain('记忆正在更新');
+  status.pendingIndex = 0; status.indexed = 1;
+  await act(async () => { f.emit({ kind: 'progress' }); await vi.advanceTimersByTimeAsync(1100); });
+  expect(host.textContent).toContain('持续生活，持续记录'); expect(host.textContent).not.toContain('记忆正在更新');
+  expect(f.workspace).toHaveBeenCalledTimes(documents);
+  expect(f.request.mock.calls.every(([command]) => ['memory.status', 'memory.policy.list'].includes(command.type))).toBe(true);
+  expect(f.request.mock.calls.filter(([command]) => command.type === 'memory.policy.list')).toHaveLength(1);
 });
 
 it('revalidates the selected body on a semantic signal even if file metadata is unchanged', async () => {

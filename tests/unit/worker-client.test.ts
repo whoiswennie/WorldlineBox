@@ -11,6 +11,9 @@ class FakeUtilityProcess extends EventEmitter {
   readonly kill = vi.fn();
 }
 
+const workerLogger = () => ({ worker: vi.fn(), error: vi.fn(), info: vi.fn() }) as unknown as AppLogger;
+const runtimeOnlyEnvironment = { WORLDLINEBOX_FFMPEG_PATH: '/fixture/ffmpeg', WORLDLINEBOX_OIIO_PATH: '/fixture/oiio' };
+
 const utilityProcessFork = vi.hoisted(() => vi.fn());
 const networkUpdates = vi.hoisted(() => ({ current: vi.fn(), subscribe: vi.fn<((listener: (value: NetworkEnvironment) => void) => () => void)>(() => vi.fn()) }));
 vi.mock('../../src/main/application-network', () => ({ currentNetworkEnvironment: networkUpdates.current, onNetworkEnvironment: networkUpdates.subscribe }));
@@ -25,6 +28,71 @@ import {
 } from '../../src/main/worker-client';
 
 describe('requestTimeoutForCommand', () => {
+  it('shares a pure runtime prestart with concurrent starts and a real request, posting no business command before ready', async () => {
+    utilityProcessFork.mockReset(); const child = new FakeUtilityProcess(); utilityProcessFork.mockReturnValueOnce(child);
+    const client = new LibraryWorkerClient('/tmp/library-worker.js', workerLogger(), runtimeOnlyEnvironment);
+    const first = client.start(), second = client.start();
+    expect(utilityProcessFork).toHaveBeenCalledTimes(1); expect(child.postMessage).not.toHaveBeenCalled();
+    const request = client.request({ type: 'library.list' });
+    expect(utilityProcessFork).toHaveBeenCalledTimes(1); expect(child.postMessage).not.toHaveBeenCalled();
+    child.emit('message', { type: 'worker.ready' }); await Promise.all([first, second]);
+    await vi.waitFor(() => expect(child.postMessage).toHaveBeenCalledTimes(1));
+    const posted = child.postMessage.mock.calls[0]![0] as { requestId: string; command: { type: string } };
+    expect(posted.command.type).toBe('library.list');
+    child.emit('message', { requestId: posted.requestId, result: { ok: true, type: 'library.list', libraries: [] } });
+    await expect(request).resolves.toMatchObject({ ok: true, libraries: [] });
+    expect(child.postMessage.mock.calls.some(([message]) => message.command?.type === 'library.open')).toBe(false);
+    const shutdown = client.shutdown(); child.emit('message', { type: 'worker.shutdown.ack' }); await shutdown;
+  });
+
+  it('lets a real request retry bounded bootstrap after prestart fails, without accepting late readiness or exit from an old attempt', async () => {
+    vi.useFakeTimers(); utilityProcessFork.mockReset();
+    const first = new FakeUtilityProcess(), second = new FakeUtilityProcess(), current = new FakeUtilityProcess();
+    utilityProcessFork.mockReturnValueOnce(first).mockReturnValueOnce(second).mockReturnValueOnce(current);
+    const client = new LibraryWorkerClient('/tmp/library-worker.js', workerLogger(), runtimeOnlyEnvironment);
+    try {
+      const prestart = client.start(), failed = expect(prestart).rejects.toThrow('ready handshake timed out');
+      await vi.advanceTimersByTimeAsync(15000); await vi.advanceTimersByTimeAsync(15000); await failed;
+      expect(utilityProcessFork).toHaveBeenCalledTimes(2);
+      const request = client.request({ type: 'library.list' });
+      expect(utilityProcessFork).toHaveBeenCalledTimes(3);
+      first.emit('message', { type: 'worker.ready' }); second.emit('message', { type: 'worker.ready' });
+      await Promise.resolve(); expect(current.postMessage).not.toHaveBeenCalled();
+      current.emit('message', { type: 'worker.ready' }); await vi.advanceTimersByTimeAsync(0);
+      first.emit('exit', 1); second.emit('exit', 1);
+      const posted = current.postMessage.mock.calls[0]![0] as { requestId: string; command: { type: string } };
+      expect(posted.command.type).toBe('library.list');
+      current.emit('message', { requestId: posted.requestId, result: { ok: true, type: 'library.list', libraries: [] } });
+      await expect(request).resolves.toMatchObject({ ok: true });
+      const next = client.request({ type: 'library.list' });
+      await vi.waitFor(() => expect(current.postMessage).toHaveBeenCalledTimes(2));
+      const id = current.postMessage.mock.calls.at(-1)![0].requestId;
+      current.emit('message', { requestId: id, result: { ok: true, type: 'library.list', libraries: [] } }); await next;
+      expect(utilityProcessFork).toHaveBeenCalledTimes(3);
+      const shutdown = client.shutdown(); current.emit('message', { type: 'worker.shutdown.ack' }); await shutdown;
+    } finally { vi.useRealTimers(); }
+  });
+
+  it('does not replace an already-ready worker after its real exit', async () => {
+    utilityProcessFork.mockReset(); const child = new FakeUtilityProcess(); utilityProcessFork.mockReturnValueOnce(child);
+    const logger = workerLogger(), client = new LibraryWorkerClient('/tmp/library-worker.js', logger, runtimeOnlyEnvironment);
+    const starting = client.start(); child.emit('message', { type: 'worker.ready' }); await starting;
+    child.emit('exit', 1);
+    await expect(client.request({ type: 'library.list' })).rejects.toThrow('unavailable');
+    expect(utilityProcessFork).toHaveBeenCalledTimes(1); expect(logger.error).toHaveBeenCalledWith('worker.exit', expect.any(Error), { code: 1 });
+    await client.shutdown();
+  });
+
+  it('never revives a runtime closed during its initial handshake and still observes its real shutdown exit', async () => {
+    utilityProcessFork.mockReset(); const child = new FakeUtilityProcess(); utilityProcessFork.mockReturnValueOnce(child);
+    const logger = workerLogger(), client = new LibraryWorkerClient('/tmp/library-worker.js', logger, runtimeOnlyEnvironment);
+    const starting = client.start(), rejected = expect(starting).rejects.toThrow('shutting down');
+    await client.shutdown(); child.emit('message', { type: 'worker.ready' }); child.emit('exit', 0); await rejected;
+    await expect(client.request({ type: 'library.list' })).rejects.toThrow('shutting down');
+    await expect(client.start()).rejects.toThrow('shutting down');
+    expect(utilityProcessFork).toHaveBeenCalledTimes(1); expect(child.postMessage).not.toHaveBeenCalled();
+    expect(logger.info).toHaveBeenCalledWith('worker.exit', 'Library Worker exited during shutdown.', { code: 0 });
+  });
   it('inherits current network settings and updates an already running worker without starting an idle one', async () => {
     const environment: NetworkEnvironment = { HTTP_PROXY: 'http://127.0.0.1:7897', HTTPS_PROXY: 'http://127.0.0.1:7897', NO_PROXY: 'localhost,127.0.0.1,::1', npm_config_registry: 'https://registry.npmmirror.com', PIP_INDEX_URL: 'https://pypi.org/simple', NODE_USE_ENV_PROXY: '1' };
     const unsubscribe = vi.fn(); let publish: ((value: NetworkEnvironment) => void) | undefined;

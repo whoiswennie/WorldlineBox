@@ -1,4 +1,6 @@
 import { createHash } from 'node:crypto';
+import { currentCompanionStorageOperation, withCompanionStorageOperation } from './storage-operation-context';
+import { detachedCompanionExecutionValidation } from './source-execution-evidence';
 import type {
   CompanionAgendaClaim, CompanionAgendaCommand, CompanionAgendaResponse, CompanionAgendaRun, CompanionAgendaStep,
 } from '../../shared/companion-agenda';
@@ -105,7 +107,7 @@ export class CompanionAgendaService {
   tick(now = this.now()): Promise<void> {
     if (this.closed) return Promise.resolve();
     if (this.ticking) return this.ticking;
-    const task = this.pump(now);
+    const task = withCompanionStorageOperation({ priority: 'background' }, () => detachedCompanionExecutionValidation(() => this.pump(now)));
     this.ticking = task;
     void task.finally(() => {
       if (this.ticking !== task) return;
@@ -132,7 +134,9 @@ export class CompanionAgendaService {
     this.timer = setTimeout(() => { this.timer = undefined; this.wake(); }, ms); this.timer.unref();
   }
   private async request(command: CompanionAgendaCommand): Promise<CompanionAgendaResponse> {
-    const response = await this.options.request(command);
+    const response = await (command.type === 'agenda.run.heartbeat' || command.type === 'agenda.run.settle'
+      ? withCompanionStorageOperation({ priority: 'control', lane: currentCompanionStorageOperation()?.lane }, () => this.options.request(command))
+      : this.options.request(command));
     if (!response.ok) throw new Error(response.error ?? '伙伴日程账本暂不可用。');
     return response;
   }
@@ -186,12 +190,12 @@ export class CompanionAgendaService {
   private startJob(claim: CompanionAgendaClaim): void {
     const controller = new AbortController();
     // Register before the first adapter instruction or callback can run.
-    const promise = Promise.resolve().then(() => this.dispatch(claim, controller))
+    const promise = withCompanionStorageOperation({ priority: 'background' }, () => detachedCompanionExecutionValidation(() => Promise.resolve().then(() => this.dispatch(claim, controller))
       .catch(error => { if (!this.closed && !controller.signal.aborted) this.report(error); })
       .finally(() => {
         this.jobs.delete(claim.run.id); this.changed();
         if (this.started && !this.closed) this.arm(0);
-      });
+      })));
     this.jobs.set(claim.run.id, { owner: claim.run.companionId, ruleId: claim.rule.id,
       grants: new Set(claim.rule.grantId ? [claim.rule.grantId] : []), controller, promise }); this.changed();
   }
@@ -199,6 +203,7 @@ export class CompanionAgendaService {
   private async dispatch(claim: CompanionAgendaClaim, controller: AbortController): Promise<void> {
     const signal = AbortSignal.any([this.controller.signal, controller.signal]);
     const scope = { companionId: claim.run.companionId, id: claim.run.id, leaseToken: claim.leaseToken };
+    const storageLane = currentCompanionStorageOperation()?.lane;
     let finished = false, refreshing: Promise<void> | undefined;
     const assertLive = () => {
       signal.throwIfAborted();
@@ -207,14 +212,14 @@ export class CompanionAgendaService {
     };
     const heartbeat = setInterval(() => {
       if (finished || refreshing || signal.aborted) return;
-      const task = (async () => {
+      const task = withCompanionStorageOperation({ priority: 'control', lane: storageLane }, () => (async () => {
         const response = await this.request({ type: 'agenda.run.heartbeat', ...scope, now: this.now().toISOString(), leaseMs: this.leaseMs });
         if (finished) return;
         if (!response.agendaRun || response.agendaRun.status !== 'running' || response.agendaRun.leaseToken !== scope.leaseToken)
           throw new Error('伙伴日程租约已失效，旧执行已停止。');
       })().catch(error => {
         if (!finished) { controller.abort(error); this.report(error); }
-      }).finally(() => { if (refreshing === task) refreshing = undefined; });
+      }).finally(() => { if (refreshing === task) refreshing = undefined; }));
       refreshing = task;
     }, Math.max(250, Math.floor(this.leaseMs / 3))); heartbeat.unref();
     const effectId = (key: string) => {

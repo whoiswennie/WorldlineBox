@@ -46,8 +46,14 @@ function envelope(format: AiApiFormat, tool?: string) {
 }
 function base(body: Record<string, unknown>, format: AiApiFormat) {
   const value = JSON.parse(JSON.stringify(body));
-  return JSON.parse(format === 'gemini_native' ? value.contents[0].parts[0].text : format === 'dashscope_native' ? value.input.messages[1].content[0].text
-    : format === 'openai_responses' || format === 'anthropic' ? value[format === 'openai_responses' ? 'input' : 'messages'][0].content : value.messages[1].content);
+  const messages = format === 'gemini_native' ? value.contents : format === 'dashscope_native' ? value.input.messages
+    : format === 'openai_responses' ? value.input : value.messages;
+  for (const message of messages) {
+    const content = message.content ?? message.parts;
+    const text = typeof content === 'string' ? content : content.map((part: { text?: string }) => part.text ?? '').join('');
+    try { const parsed = JSON.parse(text); if (parsed?.identity?.self) return parsed; } catch { /* Reference pixels and native dialogue are separate messages. */ }
+  }
+  throw new Error('Expected the actual host context envelope.');
 }
 function images(value: unknown): Record<string, unknown>[] {
   if (!value || typeof value !== 'object') return [];
@@ -81,7 +87,22 @@ it.each(formats)('registers read_file/read_image/send_file and parses real calls
   const reply = await generateCompanionReply(input(), config(format), undefined, { fetchFn, loop: true });
   expect(reply.turn?.calls).toEqual([{ id: 'native_read', name: 'dsh', arguments: JSON.stringify({ operation: 'read_image', parameters: { path: 'C:\\user\\source.png' } }) }]);
   const body = JSON.parse(String(fetchFn.mock.calls[0]![1]!.body)), all = JSON.stringify(body);
-  for (const name of ['read_file', 'read_image', 'send_file']) expect(all).toContain('"const":"' + name + '"');
+  const definitions = format === 'gemini_native' ? body.tools.flatMap((entry: { function_declarations: unknown[] }) => entry.function_declarations)
+    : format === 'dashscope_native' ? body.parameters.tools : body.tools;
+  const dsh = definitions.find((entry: { name?: string; function?: { name?: string } }) => (entry.function ?? entry).name === 'dsh');
+  expect(dsh).toBeDefined();
+  const schema = dsh.function?.parameters ?? dsh.input_schema ?? dsh.parametersJsonSchema ?? dsh.parameters;
+  const operations = new Set<string>();
+  const visit = (value: unknown): void => {
+    if (!value || typeof value !== 'object') return;
+    const record = value as Record<string, unknown>, properties = record.properties as Record<string, unknown> | undefined;
+    const operation = properties?.operation as { const?: string; enum?: string[] } | undefined;
+    if (operation?.const) operations.add(operation.const);
+    for (const name of operation?.enum ?? []) operations.add(name);
+    for (const child of Object.values(record)) visit(child);
+  };
+  visit(schema);
+  for (const name of ['read_file', 'read_image', 'send_file']) expect(operations.has(name)).toBe(true);
   expect(all).not.toContain('"name":"exec"'); expect(base(body, format).files).toBeUndefined();
 });
 it.each(formats)('returns actual tool pixels once with native call IDs and truthful scope through %s', async format => {

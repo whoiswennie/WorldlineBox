@@ -39,6 +39,16 @@ async function fixture() {
     if (command.type === 'memory.lifecycle.state') return { ok: true, memoryLifecycleState: { companionId: owner.id, revocationEpoch: epoch, ledgerSequence: 0 } };
     if (command.type === 'growth.goals.list') return { ok: true, growthGoals: goals };
     if (command.type === 'memory.sources.filter') return { ok: true, memorySources: command.ids.flatMap(id => sources.has(id) ? [sources.get(id)!] : []) };
+    if (command.type === 'memory.references.validate') return { ok: true, memoryReferenceValidation: { groups: command.groups.map(group => {
+      const sourceHeaders = group.sources.flatMap(expected => {
+        const source = sources.get(expected.id); return source ? [{ id: source.id, authorId: source.authorId, conversationId: source.conversationId,
+          revision: source.revision ?? 1, checksum: companionArtifactHash(source.content) }] : [];
+      });
+      const valid = group.sources.every(expected => sourceHeaders.some(header => header.id === expected.id && header.conversationId === expected.conversationId
+        && header.checksum === expected.checksum && (expected.revision === undefined || header.revision === expected.revision)));
+      return { companionId: group.companionId, conversationId: group.conversationId, beforeSequence: group.beforeSequence, valid,
+        sourceHeaders: valid ? sourceHeaders : [], memoryHeaders: [] };
+    }) } };
     if (command.type === 'message.get') return { ok: true, message: sources.get(command.id) };
     if (command.type === 'loop.get') return { ok: true, loop: { companionId: owner.id, conversationId: 'room', sourceMessageId: command.sourceMessageId,
       invocationKey: command.invocationKey, status: 'running', turns: [], supplements: [], taskAssets: saved.get(command.sourceMessageId) } };

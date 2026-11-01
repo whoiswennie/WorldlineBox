@@ -5,7 +5,8 @@ import type { CompanionMemoryDocument, CompanionMemoryDocumentCommand, Companion
 import type { CompanionStorageCommand, CompanionStorageResponse } from '../../shared/companion-storage';
 import type { CompanionWorkspaceResponse } from '../../shared/companion-workspace';
 import { memoryLibraryPathParts, type CompanionMemoryLibrary, type MemoryLibraryDocumentSession } from './memory-library';
-import { CompanionMemoryDocumentCatalog } from './memory-document-catalog';
+import { CompanionMemoryDocumentCatalog, companionMemoryDocumentCatalogStamp } from './memory-document-catalog';
+import { readMemoryDocumentPage, type MemoryDocumentPageValue } from './memory-document-page';
 import { companionHistoryView, companionNarrativeText } from '../../shared/companion-memory-content';
 import { withCompanionExecutionValidation } from './source-execution-evidence';
 
@@ -104,7 +105,7 @@ export class CompanionMemoryDocuments {
   }
   private async list(session: MemoryLibraryDocumentSession, command: Extract<CompanionMemoryDocumentCommand, { type: 'memory.documents.list' }>): Promise<CompanionMemoryDocumentsPage> {
     if (command.directory) memoryLibraryPathParts(command.directory);
-    const state = await this.catalog.ensure(session), query = command.query?.trim() ?? '', tags = command.tags ?? [], sort = command.sort ?? 'updated_desc', dateField = command.dateField ?? 'updatedAt';
+    const state = await this.catalog.ensure(session, { deferInitialBatch: true }), query = command.query?.trim() ?? '', tags = command.tags ?? [], sort = command.sort ?? 'updated_desc', dateField = command.dateField ?? 'updatedAt';
     if (command.from && command.to && Date.parse(command.from) > Date.parse(command.to)) throw new Error('开始时间不能晚于结束时间。');
     const semanticMode = command.mode === 'semantic' && !!query;
     const semantic = semanticMode ? await this.options.search?.(session.owner.id, query, command.limit, command.cursor) : undefined;
@@ -112,33 +113,43 @@ export class CompanionMemoryDocuments {
     // A background fill can finish while this page's canonical bodies are
     // being read. That cannot retroactively make its earlier partial SQL
     // page a complete-index page or make its cursor safe to advance.
-    const completeAtQuery = state.complete && !state.dirty.size;
-    const result = await session.request({ type: 'document.catalog.query', companionId: session.owner.id, directory: command.directory, recordsOnly: command.recordsOnly, query: semantic ? '' : query, tags, sort, dateField, from: command.from, to: command.to,
-      ...(semantic ? { noteIds: semantic.hits.map(hit => hit.noteId) } : { cursor: command.cursor }), limit: command.limit });
-    const page = result.documentCatalog; if (!page) throw new Error('登记目录索引尚不可用。');
+    const queryCommand = { type: 'document.catalog.query' as const, companionId: session.owner.id, directory: command.directory, recordsOnly: command.recordsOnly, query: semantic ? '' : query, tags, sort, dateField, from: command.from, to: command.to,
+      ...(semantic ? { noteIds: semantic.hits.map(hit => hit.noteId) } : { cursor: command.cursor }), limit: command.limit };
+    let completeAtQuery = state.complete && !state.dirty.size;
+    let page = (await session.request(queryCommand)).documentCatalog;
+    if (!page) throw new Error('登记目录索引尚不可用。');
+    const admitted = new Map<string, MemoryDocumentPageValue>();
+    if (!page.paths.length && !command.cursor && !state.complete && !state.indexed) {
+      // The index is only a locator. A first-ever empty index can seed a small
+      // canonical page without joining a whole-library rebuild. Existing pages
+      // never wait for the indexer's first twelve full document reads.
+      const candidates = Object.entries(session.manifest.files).filter(([file, entry]) => /\.(?:md|txt)$/iu.test(file)
+        && entry.artifact.kind !== 'context_snapshot' && !file.startsWith('.运行/')
+        && (!command.directory || file.startsWith(command.directory + '/'))
+        && (!command.recordsOnly || !/^(?:提示词|形象)\//u.test(file) && !['profile.md', '同步状态.md'].includes(file)))
+        .map(([file]) => file).sort().slice(0, 12);
+      const seed = await readMemoryDocumentPage(session, candidates);
+      seed.forEach(value => admitted.set(value.path, value));
+      await this.catalog.seed(session, state, seed.map(value => ({
+        document: this.describe(value.path, value.content, value.entry.artifact.committedAt, value.note, value.entry),
+        text: value.entry.artifact.kind === 'revision_history' ? companionHistoryView(value.content)?.content ?? '' : companionNarrativeText(value.content),
+        stamp: companionMemoryDocumentCatalogStamp(value.entry, value.note),
+      })));
+      completeAtQuery = state.complete && !state.dirty.size;
+      page = (await session.request(queryCommand)).documentCatalog;
+      if (!page) throw new Error('登记目录索引尚不可用。');
+    }
     const items: CompanionMemoryDocument[] = [];
     const paths = semantic ? [...page.paths].sort((a, b) => semantic.hits.findIndex(hit => hit.noteId === session.manifest.files[a]?.noteId) - semantic.hits.findIndex(hit => hit.noteId === session.manifest.files[b]?.noteId)) : page.paths;
-    const reads: Array<CompanionMemoryDocumentRead | undefined> = new Array(paths.length); let offset = 0;
-    // Independent canonical reads can overlap; the bound avoids turning a
-    // page of 64 files into either a serial waterfall or unbounded filesystem IO.
-    await Promise.all(Array.from({ length: Math.min(4, paths.length) }, async () => {
-      for (;;) {
-        const index = offset++, file = paths[index]; if (!file) return;
-        if (!session.manifest.files[file]) { await this.catalog.dropped(session.owner.id, file); continue; }
-        try { reads[index] = await this.read(session, file, 1); }
-        catch (cause) {
-          // A derived navigation's older source revision is normal while fresh
-          // diaries arrive, not a failure of all independent human documents.
-          if (!(cause instanceof OutdatedNavigation)) throw cause;
-          await this.catalog.dropped(session.owner.id, file);
-        }
-      }
-    }));
-    for (const read of reads) {
-      if (!read) continue;
-      const item = read.document;
+    const registered = paths.filter(file => !!session.manifest.files[file]);
+    const fresh = await readMemoryDocumentPage(session, registered.filter(file => !admitted.has(file)));
+    fresh.forEach(value => admitted.set(value.path, value));
+    for (const file of paths) {
+      const value = admitted.get(file);
+      if (!value) { await this.catalog.dropped(session.owner.id, file); continue; }
+      const item = this.describe(file, value.content, value.entry.artifact.committedAt, value.note, value.entry);
       if (semantic && !semantic.hits.some(hit => hit.noteId === item.noteId && hit.version === item.version)) continue;
-      if (!semantic && query.toLocaleLowerCase().split(/\s+/u).some(token => !(item.title + '\n' + read.content + '\n' + item.tags.join(' ')).toLocaleLowerCase().includes(token))) continue;
+      if (!semantic && query.toLocaleLowerCase().split(/\s+/u).some(token => !(item.title + '\n' + companionNarrativeText(value.content) + '\n' + item.tags.join(' ')).toLocaleLowerCase().includes(token))) continue;
       if (tags.some(tag => !item.tags.includes(tag))) continue;
       const date = item[dateField]; if ((command.from || command.to) && (!date || command.from && Date.parse(date) < Date.parse(command.from) || command.to && Date.parse(date) > Date.parse(command.to))) continue;
       items.push(item);

@@ -10,6 +10,8 @@ import type { CompanionAssetProfileSnapshot } from './asset-profile';
 import type { CompanionArtifactRegistry } from './artifact-registry';
 import { companionPersonaFragmentsSchema, companionPersonaFragmentVisible, validateCompanionPersonaFragments } from './persona-fragments';
 import { createCompanionExecutionValidationSession } from './source-execution-evidence';
+import { validateCompanionReferenceGroups } from './execution-evidence';
+import type { CompanionReferenceValidationGroup } from '../../shared/companion-reference-validation';
 
 const id = z.string().regex(/^[a-zA-Z0-9_-]{1,100}$/), hash = z.string().regex(/^[a-f0-9]{64}$/);
 const snapshotSchema = z.strictObject({ companionId: id, root: z.string(), profile: z.strictObject({
@@ -56,17 +58,14 @@ async function epoch(owner: string, request: Request): Promise<number> {
 }
 
 async function validateSources(owner: string, sources: readonly z.infer<typeof rawSourceSchema>[], request: Request): Promise<void> {
+  const groups: CompanionReferenceValidationGroup[] = [];
   for (const room of new Set(sources.map(source => source.conversationId))) {
     const scoped = sources.filter(source => source.conversationId === room);
     for (let offset = 0; offset < scoped.length; offset += 100) {
-      const expected = scoped.slice(offset, offset + 100), response = await request({ type: 'memory.sources.filter', companionId: owner,
-        conversationId: room, ids: [...new Set(expected.map(source => source.id))] });
-      if (!response.ok) throw new Error('任务角色快照的原始来源暂不可核验。');
-      if (expected.some(source => !response.memorySources?.some(actual => actual.id === source.id && actual.conversationId === room
-        && digest(actual.content) === source.checksum && (source.revision === undefined || (actual.revision ?? 1) === source.revision))))
-        throw new Error('任务初始人格或培养目标的原始来源已撤回，旧快照不能继续使用。');
+      groups.push({ companionId: owner, conversationId: room, sources: scoped.slice(offset, offset + 100), memories: [] });
     }
   }
+  if (!await validateCompanionReferenceGroups(groups, request)) throw new Error('任务初始人格或培养目标的原始来源已撤回，旧快照不能继续使用。');
 }
 
 /** Ordinary current-role revisions do not rewrite this task. Actual owner,

@@ -433,7 +433,8 @@ class VcpMemoryPeripherals {
     for (const value of [prompts.timelineTemplate, prompts.summaryTemplate]) if (value !== undefined && (typeof value !== 'string' || !value.trim())) throw new Error('Owner timeline template is unavailable.');
     this.ownerPrompts = { aimemoTemplate: prompts.aimemoTemplate,
       ...(prompts.timelineTemplate !== undefined ? { timelineTemplate: prompts.timelineTemplate } : {}),
-      ...(prompts.summaryTemplate !== undefined ? { summaryTemplate: prompts.summaryTemplate } : {}) };
+      ...(prompts.summaryTemplate !== undefined ? { summaryTemplate: prompts.summaryTemplate } : {}),
+      ...(prompts.focusGuidanceSignature !== undefined ? { focusGuidanceSignature: prompts.focusGuidanceSignature } : {}) };
     const handler = this.plugins.get('RAGDiaryPlugin')?.aiMemoHandler;
     if (handler) handler.promptTemplate = prompts.aimemoTemplate;
   }
@@ -527,7 +528,8 @@ class VcpMemoryPeripherals {
     }
     const clockBucket = JSON.stringify([clock ? 'world' : 'real', new Intl.DateTimeFormat('sv', { timeZone, year: 'numeric', month: '2-digit', day: '2-digit' })
       .format(new Date(clock?.now || Date.now())), timeZone, policy?.schema || null, [...policy?.protectedNoteIds || []].sort(), timeIdentity,
-      this.ownerPrompts ? createHash('sha256').update(this.ownerPrompts.aimemoTemplate).digest('hex') : null]);
+      this.ownerPrompts ? createHash('sha256').update(JSON.stringify([this.ownerPrompts.aimemoTemplate,
+        this.ownerPrompts.timelineTemplate ?? null, this.ownerPrompts.summaryTemplate ?? null, this.ownerPrompts.focusGuidanceSignature ?? null])).digest('hex') : null]);
     const cacheClockInvalidated = this.cacheClockBucket !== clockBucket;
     if (cacheClockInvalidated) { rag.cacheManager.clear('aimemo'); rag.cacheManager.clear('query'); this.cacheClockBucket = clockBucket; }
     const epoch = this.corpusEpoch;

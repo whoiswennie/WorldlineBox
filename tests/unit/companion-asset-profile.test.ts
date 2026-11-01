@@ -27,6 +27,37 @@ async function fixture() {
   return { root, library, database, profiles, initial: await profiles.bootstrap(owner) };
 }
 
+it('loads every current template outside the initialized owner mutation queue without marking or bootstrapping again', async () => {
+  const f = await fixture(), initialized = vi.fn(async () => true), markInitialized = vi.fn(async () => undefined);
+  const profiles = new CompanionAssetProfileStore(f.library, { registryStorage: f.database.storage, initialized, markInitialized });
+  const bootstrap = vi.spyOn(profiles, 'bootstrap');
+  const serialized = Reflect.get(profiles, 'serialized') as <T>(id: string, operation: () => Promise<T>) => Promise<T>;
+  let enter!: () => void, release!: () => void;
+  const entered = new Promise<void>(resolve => { enter = resolve; }), barrier = new Promise<void>(resolve => { release = resolve; });
+  const mutation = serialized.call(profiles, owner.id, async () => { enter(); await barrier; });
+  try {
+    await entered;
+    const current = await profiles.loadOrBootstrap(owner);
+    expect(current).toEqual(f.initial); expect(current.nativeFocusTemplate).toBe(f.initial.nativeFocusTemplate);
+    expect(current.nativeTimelineTemplate).toBe(f.initial.nativeTimelineTemplate); expect(current.nativeSummaryTemplate).toBe(f.initial.nativeSummaryTemplate);
+    expect(bootstrap).not.toHaveBeenCalled(); expect(markInitialized).not.toHaveBeenCalled(); expect(initialized).toHaveBeenCalledOnce();
+  } finally { release(); await mutation; }
+});
+
+it('uses the real initialization flag on each full read and never rebuilds initialized corrupt or unavailable assets', async () => {
+  const f = await fixture(); let ready = false;
+  const profiles = new CompanionAssetProfileStore(f.library, { registryStorage: f.database.storage, initialized: async () => ready });
+  const bootstrap = vi.spyOn(profiles, 'bootstrap');
+  expect((await profiles.loadOrBootstrap(owner)).revision).toBe(f.initial.revision); expect(bootstrap).toHaveBeenCalledOnce();
+  ready = true; bootstrap.mockClear();
+  await writeFile(path.join(f.initial.root, f.initial.modules[0]!.path), 'external bytes');
+  await expect(profiles.loadOrBootstrap(owner)).rejects.toBeInstanceOf(Error); expect(bootstrap).not.toHaveBeenCalled();
+  const unavailable = Object.assign(new Error('temporarily unavailable'), { code: 'EXECUTION_VALIDATION_UNAVAILABLE', notDispatched: true });
+  const unavailableProfiles = new CompanionAssetProfileStore(f.library, { registryStorage: f.database.storage, initialized: async () => { throw unavailable; } });
+  const rebuild = vi.spyOn(unavailableProfiles, 'bootstrap');
+  await expect(unavailableProfiles.loadOrBootstrap(owner)).rejects.toBe(unavailable); expect(rebuild).not.toHaveBeenCalled();
+});
+
 it('seals the authored creation profile once with a stable creation payload and empty typed memory directories', async () => {
   const f = await fixture(), registry = await f.profiles.artifacts(owner.id);
   expect((await f.profiles.readInstance(owner.id)).createdAt).toBe(owner.createdAt);
@@ -81,6 +112,92 @@ it('batches strict profile and prompt metadata while reopening every file at eac
   expect(profileReads.filter(command => command.relativePaths)).toMatchObject([{ relativePaths: ['.伙伴配置.json', 'profile.md', 'instance.json'] }]);
   expect(profileReads.length).toBeLessThanOrEqual(10);
   read.mockRestore(); bytes.mockRestore();
+});
+
+it.each(['load', 'loadProfile'] as const)('skips unrelated retraction inventory on normal %s reads while still rejecting changed canonical bytes', async method => {
+  const f = await fixture(); f.database.commands.length = 0;
+  const inventory = vi.spyOn(CompanionArtifactRegistry.prototype, 'retractionMetadata');
+  try {
+    expect((await f.profiles[method](owner.id)).profile.persona).toBe(owner.persona);
+    expect(inventory).not.toHaveBeenCalled();
+    expect(f.database.commands.some(command => command.type === 'cognition.registry.publication.pending'
+      && command.artifactId === 'persona:current' && command.previousTarget)).toBe(true);
+    expect(f.database.commands.some(command => command.type === 'cognition.registry.page' && command.kind === 'role_guidance')).toBe(false);
+    await writeFile(path.join(f.initial.root, 'profile.md'), 'UNKNOWN_EXTERNAL_IDENTITY');
+    await expect(f.profiles[method](owner.id)).rejects.toMatchObject({ code: 'CHANGED' });
+    expect(inventory).not.toHaveBeenCalled();
+  } finally { inventory.mockRestore(); }
+});
+
+it('lets two initialized strict profile readers overlap without taking the owner mutation lane', async () => {
+  const f = await fixture(), profiles = new CompanionAssetProfileStore(f.library, { registryStorage: f.database.storage, initialized: async () => true });
+  const target = profiles as unknown as { registeredRead(root: string, file: string, current: Awaited<ReturnType<CompanionArtifactRegistry['read']>>, max?: number): Promise<{ text: string; hash: string; stamp: string }> };
+  const original = target.registeredRead.bind(profiles);
+  let entered = 0, release!: () => void;
+  const barrier = new Promise<void>(resolve => { release = resolve; });
+  const read = vi.spyOn(target, 'registeredRead').mockImplementation(async (root, file, current, max) => {
+    if (file === 'profile.md') { entered++; await barrier; }
+    return original(root, file, current, max);
+  });
+  const readers = [profiles.bootstrapProfile(owner), profiles.bootstrapProfile(owner)];
+  try {
+    try { await vi.waitFor(() => expect(entered).toBe(2), { timeout: 2000 }); }
+    finally { release(); }
+    const snapshots = await Promise.all(readers);
+    expect(snapshots.map(snapshot => snapshot.profileRevision)).toEqual([f.initial.profileRevision, f.initial.profileRevision]);
+    expect(snapshots.every(snapshot => snapshot.profile.persona === owner.persona)).toBe(true);
+  } finally { release(); await Promise.allSettled(readers); read.mockRestore(); }
+});
+
+it('repairs a revoked interrupted persona publication even when the last committed identity itself remains committed', async () => {
+  const f = await fixture(), registry = await f.profiles.artifacts(owner.id), previous = (await registry.get('persona:current'))!;
+  const evidence = await registry.publish({ artifactId: 'source:interrupted:r1', kind: 'source_evidence', relativePath: '证据/来源/interrupted.md',
+    producer: { kind: 'host', id: 'fixture' }, content: 'PRIVATE_PENDING_FORMATION', expectedRevision: null, sourceRefs: [], dependencyRefs: [],
+    visibility: { scope: 'owner' }, allowedConsumers: ['source_verification', 'audit'], retentionClass: 'evidence', operationId: 'source:interrupted' });
+  const original = f.database.storage.request.bind(f.database.storage);
+  const failure = vi.spyOn(f.database.storage, 'request').mockImplementation(async command => {
+    if (command.type === 'cognition.registry.publication.commit' && command.operationId === 'persona:interrupted') throw new Error('fixture crash before metadata commit');
+    return original(command);
+  });
+  try {
+    await expect(registry.publish({ artifactId: previous.artifactId, kind: previous.kind, relativePath: previous.relativePath,
+      producer: { kind: 'system', id: 'fixture' }, content: 'UNCOMMITTED_PRIVATE_PERSONA', expectedRevision: previous.contentRevision,
+      sourceRefs: [{ artifactId: evidence.artifactId, contentRevision: evidence.contentRevision, contentHash: evidence.contentHash }], dependencyRefs: [],
+      visibility: previous.visibility, allowedConsumers: previous.allowedConsumers, retentionClass: previous.retentionClass,
+      operationId: 'persona:interrupted' }, async () => undefined)).rejects.toThrow('fixture crash');
+  } finally { failure.mockRestore(); }
+  expect((await registry.publication('persona:interrupted'))?.state).toBe('file_published');
+  await registry.revoke(evidence.artifactId);
+  expect((await registry.get('persona:current', true))?.publicationState).toBe('committed');
+  expect(await registry.hasInterruptedPersonaRetraction()).toBe(true);
+  const inventory = vi.spyOn(CompanionArtifactRegistry.prototype, 'retractionMetadata');
+  try {
+    const actual = await f.profiles.loadProfile(owner.id);
+    expect(inventory).toHaveBeenCalled(); expect(actual.profile.persona).toBe(owner.persona);
+    expect(actual.profile.persona).not.toContain('UNCOMMITTED_PRIVATE_PERSONA');
+    expect((await registry.get('persona:current'))?.contentRevision).toBe(previous.contentRevision + 1);
+    expect(await registry.hasInterruptedPersonaRetraction()).toBe(false);
+  } finally { inventory.mockRestore(); }
+});
+
+it('does not repair a newer current identity when its exact revision changes between the repair probe and inventory', async () => {
+  const f = await fixture(), registry = await f.profiles.artifacts(owner.id);
+  await registry.revoke('persona:current');
+  const observed = (await registry.get('persona:current', true))!, original = registry.retractionMetadata.bind(registry);
+  const other = new CompanionAssetProfileStore(f.library, { registryStorage: f.database.storage });
+  const resolve = vi.spyOn(f.profiles, 'artifacts').mockResolvedValue(registry);
+  const inventory = vi.spyOn(registry, 'retractionMetadata').mockImplementationOnce(async () => {
+    expect(await other.repairRevokedPersona(owner.id)).toBe(true); return original();
+  });
+  try {
+    // load/loadProfile call this internal probe without holding the mutation
+    // serial lane, so a real independently admitted repair can win the race.
+    const reader = f.profiles as unknown as { repairRevokedPersonaInternal(id: string): Promise<boolean> };
+    await expect(reader.repairRevokedPersonaInternal(owner.id)).rejects.toMatchObject({ code: 'CHANGED' });
+    const current = (await registry.get('persona:current', true))!;
+    expect(current.contentRevision).toBe(observed.contentRevision + 1); expect(current.publicationState).toBe('committed');
+    expect((await other.loadProfile(owner.id)).profile.persona).toBe(owner.persona);
+  } finally { inventory.mockRestore(); resolve.mockRestore(); }
 });
 
 it('rechecks the full selected artifact union after strict reads so a withdrawn module cannot escape a completed path batch', async () => {

@@ -55,7 +55,7 @@ describe('derived DSH content keeps its exact host dependency closure', () => {
       content: 'new same-id reply' }] as CompanionStorageResponse['memorySources'] }));
     expect(await verifyCompanionExecutionReadset(proof, scope, { request })).toBe(false);
     expect(proof.sources).toEqual([read]);
-    expect(request).toHaveBeenCalledWith({ type: 'memory.sources.filter', companionId: 'alice', conversationId: 'host_room', ids: [read.id] });
+    expect(request).toHaveBeenCalledWith({ type: 'memory.references.validate', groups: [{ companionId: 'alice', conversationId: 'host_room', sources: [read], memories: [] }] });
   });
   it('refuses unversioned legacy quotations and mismatched response pointers while keeping physical observations usable', () => {
     const capture = (world: unknown) => companionWorldReadSources({ context: { user: JSON.stringify({ world }) } });
@@ -156,7 +156,10 @@ describe('derived DSH content keeps its exact host dependency closure', () => {
         revision: 'former-corpus', profileKey: 'former-profile', evidence: { ...evidence, queryClock: { now: '2035-01-01T00:00:00Z', timeZone: 'UTC' } } } } }) } });
       expect(readset.memories).toEqual([{ id: 'real_input', version: 3 }]); expect(readset.contexts).toEqual([]);
       const contextValid = vi.fn(async () => false);
-      const request = async (): Promise<CompanionStorageResponse> => ({ ok: true, memoryDescriptors: [{ id: 'real_input', version: 3, companionId: scope.companionId }] } as CompanionStorageResponse);
+      const request = async (command: CompanionStorageCommand): Promise<CompanionStorageResponse> => command.type === 'memory.references.validate' ? ({ ok: true, memoryReferenceValidation: { groups: command.groups.map(group => ({
+        companionId: group.companionId, conversationId: group.conversationId, beforeSequence: group.beforeSequence, valid: true, sourceHeaders: [],
+        memoryHeaders: [{ id: 'real_input', version: 3, companionId: scope.companionId, artifactKind: 'episode_memory', contentRevision: 1, status: 'indexed', sourceConversationId: scope.conversationId, sourceSequence: 1, sources: [] }],
+      })) } }) : { ok: false };
       expect(await verifyCompanionExecutionReadset(readset, scope, { request, contextValid })).toBe(true); expect(contextValid).not.toHaveBeenCalled();
     }
     const malformed = captureCompanionExecutionReadset(scope, { context: { user: JSON.stringify({ memoryRecall: { context: { text: 'Unproven body', revision: 'corpus', profileKey: 'profile',
@@ -173,14 +176,21 @@ describe('derived DSH content keeps its exact host dependency closure', () => {
       contexts: [{ revision: 'corpus-one', profileKey: 'profile-one', beforeSequence: 42 }], turns: [turn()] });
     let noteVersion = 1, content = sourceText, grantActive = true;
     const request = vi.fn(async (command: CompanionStorageCommand): Promise<CompanionStorageResponse> => {
-      if (command.type === 'memory.records.describe') return { ok: true, memoryDescriptors: [{ id: 'note_one', companionId: 'alice', version: noteVersion }] } as CompanionStorageResponse;
-      if (command.type === 'memory.sources.filter') return { ok: true, memorySources: [{ id: 'source_one', conversationId: 'private_alice', content }] } as CompanionStorageResponse;
+      if (command.type === 'memory.references.validate') return { ok: true, memoryReferenceValidation: { groups: command.groups.map(group => {
+        const valid = group.memories.every(memory => memory.version === noteVersion) && group.sources.every(source => source.checksum === hash(content));
+        return { companionId: group.companionId, conversationId: group.conversationId, beforeSequence: group.beforeSequence, valid,
+          memoryHeaders: valid ? group.memories.map(memory => ({ id: memory.id, companionId: 'alice', version: noteVersion, artifactKind: 'episode_memory', contentRevision: 1, status: 'indexed', sourceConversationId: scope.conversationId, sourceSequence: 1, sources: [] })) : [],
+          sourceHeaders: valid ? group.sources.map(source => ({ id: source.id, authorId: 'user', conversationId: source.conversationId, revision: 1, checksum: hash(content) })) : [] };
+      }) } };
       if (command.type === 'memory.knowledge') return grantActive ? receipt() as CompanionStorageResponse : { ok: false, error: 'Grant withdrawn' };
       throw new Error('Unexpected verification port');
     });
     const contextValid = vi.fn(async () => true), ports = { request, contextValid };
     expect(await verifyCompanionExecutionReadset(readset, scope, ports)).toBe(true);
-    expect(request).toHaveBeenCalledWith({ type: 'memory.sources.filter', companionId: 'alice', conversationId: 'private_alice', ids: ['source_one'] });
+    expect(request).toHaveBeenCalledWith({ type: 'memory.references.validate', groups: [
+      { ...scope, memories: [{ id: 'note_one', version: 1 }], sources: [] },
+      { companionId: 'alice', conversationId: 'private_alice', sources: [{ id: 'source_one', conversationId: 'private_alice', checksum: hash(sourceText) }], memories: [] },
+    ] });
     noteVersion = 2; expect(await verifyCompanionExecutionReadset(readset, scope, ports)).toBe(false); noteVersion = 1;
     content = 'Updated message'; expect(await verifyCompanionExecutionReadset(readset, scope, ports)).toBe(false); content = sourceText;
     contextValid.mockResolvedValue(false); expect(await verifyCompanionExecutionReadset(readset, scope, ports)).toBe(false); contextValid.mockResolvedValue(true);

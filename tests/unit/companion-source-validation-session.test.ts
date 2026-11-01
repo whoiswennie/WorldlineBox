@@ -69,6 +69,19 @@ it('does not reuse a legacy proof after its mutation generation changes between 
   } finally { session.close(); }
 });
 
+it('rejects a task-start bundle after a newly invalid historical body without silently sampling a second world state', async () => {
+  const storage = vi.fn(async (command: CompanionStorageCommand): Promise<CompanionStorageResponse> => {
+    if (command.type === 'execution.sources') return { ok: true, executionSources: [proof] };
+    if (command.type === 'execution.invalidate') return { ok: true };
+    throw new Error('A task snapshot must restart explicitly, never reread behind the sealed input.');
+  });
+  await expect(withCompanionExecutionValidation(() => guardCompanionExecutionSources({ type: 'reply.task.snapshot', conversationId: scope.conversationId },
+    { ok: true, messages: [message] }, { storage, valid: async () => false, revision: () => 0 })))
+    .rejects.toMatchObject({ code: 'EXECUTION_VALIDATION_UNAVAILABLE', message: expect.stringContaining('任务开始快照') });
+  expect(storage.mock.calls.filter(([command]) => command.type === 'execution.invalidate')).toHaveLength(1);
+  expect(storage.mock.calls.every(([command]) => command.type === 'execution.sources' || command.type === 'execution.invalidate')).toBe(true);
+});
+
 it('cancels a later preparation phase immediately and never turns its late false result into source withdrawal', async () => {
   const controller = new AbortController(), session = createCompanionExecutionValidationSession(controller.signal);
   const reason = new Error('user_cancelled'), entered = deferred<void>(), io = deferred<void>();
@@ -104,4 +117,62 @@ it('retains inherited task cancellation when a late branch attempts to create a 
   controller.abort(reason);
   const stopped = expect(background).rejects.toBe(reason);
   io.resolve(); await stopped; expect(work).not.toHaveBeenCalled();
+});
+
+it('fails a raw source-port recursive guard reentry promptly without invalidating any source', async () => {
+  const session = createCompanionExecutionValidationSession(), identity = {};
+  const read = () => guardCompanionExecutionSources({ type: 'message.get', id: message.id }, { ok: true, message }, {
+    identity, revision: () => 0, storage, valid: async () => true });
+  const storage = vi.fn(async (command: CompanionStorageCommand): Promise<CompanionStorageResponse> => {
+    if (command.type === 'execution.sources') return read();
+    throw new Error('Recursive raw observation must not invalidate a source.');
+  });
+  try {
+    await expect(session.run(read)).rejects.toMatchObject({ code: 'EXECUTION_VALIDATION_UNAVAILABLE', message: expect.stringContaining('递归重入') });
+    expect(storage).toHaveBeenCalledOnce();
+  } finally { session.close(); }
+});
+
+it.each(['cancel', 'close'] as const)('releases queued raw-source callers promptly on %s while a late raw response cannot invalidate anything', async stop => {
+  const controller = new AbortController(), session = createCompanionExecutionValidationSession(controller.signal), identity = {};
+  const entered = deferred<void>(), io = deferred<void>(), settled = deferred<void>();
+  const second = { ...message, id: 'second' };
+  const storage = vi.fn(async (command: CompanionStorageCommand): Promise<CompanionStorageResponse> => {
+    if (command.type !== 'execution.sources') throw new Error('Unavailable raw observation must not mutate any source.');
+    entered.resolve(); await io.promise; settled.resolve();
+    return { ok: true, executionSources: [{ ...proof, id: command.sourceMessageIds[0]!, sourceMessageIds: command.sourceMessageIds }] };
+  });
+  const read = (body: CompanionMessage) => guardCompanionExecutionSources({ type: 'message.get', id: body.id }, { ok: true, message: body }, {
+    identity, revision: () => 0, storage, valid: async () => true });
+  const first = session.run(() => read(message)); const firstStopped = expect(first).rejects.toBeDefined();
+  await entered.promise;
+  const queued = session.run(() => read(second)); const queuedStopped = expect(queued).rejects.toBeDefined();
+  await Promise.resolve(); expect(storage).toHaveBeenCalledOnce();
+  if (stop === 'cancel') controller.abort(new Error('Stopped by user.')); else session.close();
+  await Promise.all([firstStopped, queuedStopped]);
+  expect(storage).toHaveBeenCalledOnce();
+  io.resolve(); await settled.promise; await Promise.resolve(); session.close();
+  expect(storage.mock.calls.every(([command]) => command.type === 'execution.sources')).toBe(true);
+});
+
+it.each(['frame', 'storage'] as const)('does not serialize another %s behind an unrelated in-flight raw SQL observation', async independent => {
+  const firstSession = createCompanionExecutionValidationSession(), secondSession = independent === 'frame' ? createCompanionExecutionValidationSession() : firstSession;
+  const entered = deferred<void>(), io = deferred<void>(), firstIdentity = {}, secondIdentity = independent === 'frame' ? firstIdentity : {};
+  const second = { ...message, id: 'second' };
+  let calls = 0;
+  const storage = vi.fn(async (command: CompanionStorageCommand): Promise<CompanionStorageResponse> => {
+    if (command.type !== 'execution.sources') throw new Error('Parallel independent reads must not mutate sources.');
+    if (++calls === 1) { entered.resolve(); await io.promise; }
+    return { ok: true, executionSources: [{ ...proof, id: command.sourceMessageIds[0]!, sourceMessageIds: command.sourceMessageIds }] };
+  });
+  const read = (body: CompanionMessage, identity: object) => guardCompanionExecutionSources({ type: 'message.get', id: body.id }, { ok: true, message: body }, {
+    identity, revision: () => 0, storage, valid: async () => true });
+  const first = firstSession.run(() => read(message, firstIdentity));
+  try {
+    await entered.promise;
+    expect((await secondSession.run(() => read(second, secondIdentity))).message?.content).toBe(second.content);
+    expect(storage).toHaveBeenCalledTimes(2);
+    io.resolve(); await first;
+    await firstSession.validate(); if (secondSession !== firstSession) await secondSession.validate();
+  } finally { io.resolve(); await first; firstSession.close(); secondSession.close(); }
 });

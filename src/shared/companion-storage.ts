@@ -15,12 +15,26 @@ import { companionTaskPageStorageCommand, companionTaskResolveStorageCommand } f
 import { companionTaskInspectCommand, companionTaskContentCommand, companionTaskTimelineRecordCommand } from './companion-task-detail';
 import { companionAgentRunCommands, companionAgentRunSchema } from './companion-agent-run';
 import { companionExecutionReadsetSchema, companionFrozenMemoryDependencySchema } from './companion-execution-evidence';
+import { companionMessagePublicationCandidateSchema, companionMessagePublicationCertificateSchema, companionMessagePublicationModeSchema,
+  companionPublishedDependencyCutSchema, companionPublishedActionFrontierSchema } from './companion-message-publication';
 import { companionPreparedRecallReferenceSchema } from './companion-prepared-recall';
+import { companionReplyTaskMessageSchema, companionReplyTaskSnapshotSchema } from './companion-reply-task-snapshot';
+import { companionStorageTimingSchema } from './companion-storage-timing';
+import { companionReferenceValidationCommandSchema, companionReferenceValidationResultSchema } from './companion-reference-validation';
+import { companionSourceHeadersCommandSchema, companionSourceHeadersResultSchema } from './companion-source-headers';
+import { companionMemorySnapshotRevisionsCommandSchema, companionMemorySnapshotRevisionsResultSchema } from './companion-memory-snapshot-revisions';
+import { companionMemoryDocumentAuthorityCommandSchema, companionMemoryDocumentAuthorityResultSchema } from './companion-memory-document-authority';
+import { companionProcedureStatusCommandSchema } from './companion-procedure-status';
+import { companionMemoryProcedureContextListSchema } from './companion-procedure';
 import { companionThoughtAuthorizationSchema } from './companion-activity-thought';
 import { companionExperienceCommands, companionExperiencePublishSchema } from './companion-experience';
 import { companionKnowledgeCommandSchema } from './companion-knowledge-store';
 import { companionSocialReplyReceiptSchema } from './companion-social-reply';
+import { companionSocialNotificationReceiptSchema } from './companion-social-notification-receipts';
 import { z } from 'zod';
+import { companionStorageFailureSchema } from './companion-storage-failure';
+import { companionReplyPublicationSchema } from './companion-reply-publication';
+import { companionReplyProgressSchema } from './companion-reply-progress';
 import { companionToolPolicySchema } from './companion-tool-policy';
 import { companionJobCommands, companionJobDispositionSchema, companionJobPageSchema } from './companion-job-control';
 import { companionDshMailboxCommands, companionDshMailSchema } from './companion-dsh-background';
@@ -135,6 +149,10 @@ export const companionProactiveStateSchema = z.strictObject({
 export type CompanionProactiveState = z.infer<typeof companionProactiveStateSchema>;
 
 export const companionStorageCommandSchema = z.discriminatedUnion('type', [
+  companionReferenceValidationCommandSchema,
+  companionSourceHeadersCommandSchema,
+  companionMemorySnapshotRevisionsCommandSchema,
+  companionMemoryDocumentAuthorityCommandSchema,
   ...companionAgendaStorageCommands,
   ...companionRecoveryWorkspaceCommands, companionRecoveryReviewCommand, companionRecoveryReviewPageCommand,
   ...companionJobCommands,
@@ -245,11 +263,22 @@ export const companionStorageCommandSchema = z.discriminatedUnion('type', [
   z.strictObject({ type: z.literal('checkpoint.input'), id: companionIdSchema, input: z.strictObject({ id: companionIdSchema, content: z.string().max(16000), mode: z.enum(['steer', 'queue']) }) }),
   z.strictObject({ type: z.literal('action.resume'), id: companionIdSchema }),
   z.strictObject({ type: z.literal('reply.checkpoint.get'), conversationId: companionIdSchema, sourceMessageId: companionIdSchema.optional() }),
+  z.strictObject({ type: z.literal('reply.task.snapshot'), conversationId: companionIdSchema, sourceMessageId: companionIdSchema.optional(),
+    onlyCompanionId: companionIdSchema.optional(), workId: companionIdSchema.optional(), proactive: z.boolean().default(false), historyLimit: z.number().int().min(1).max(256).default(255) }),
+  z.strictObject({ type: z.literal('world.job.poll'), companionId: companionIdSchema, id: companionIdSchema, leaseToken: companionIdSchema }),
   z.strictObject({ type: z.literal('loop.get'), sourceMessageId: companionIdSchema, companionId: companionIdSchema, invocationKey: companionIdSchema.optional() }),
   z.strictObject({ type: z.literal('loop.for-message'), messageId: companionIdSchema }),
   z.strictObject({ type: z.literal('memory.corpus.stamp'), companionId: companionIdSchema }),
+  companionProcedureStatusCommandSchema,
   z.strictObject({ type: z.literal('loop.save'), checkpoint: companionLoopCheckpointSchema, executionReadset: companionExecutionReadsetSchema.optional() }),
-  z.strictObject({ type: z.literal('execution.sources'), sourceMessageIds: z.array(companionIdSchema).max(100), memoryIds: z.array(companionIdSchema).max(100).default([]) }),
+  // Private host control receipt: no message body, readset or publication input.
+  z.strictObject({ type: z.literal('loop.progress.finish'), conversationId: companionIdSchema, sourceMessageId: companionIdSchema,
+    companionId: companionIdSchema, messageId: companionIdSchema.optional(), invocationKey: companionIdSchema.optional(),
+    progress: companionReplyProgressSchema.extend({ phase: z.enum(['completed', 'failed', 'cancelled', 'interrupted']), finishedAt: z.string() }) }),
+  z.strictObject({ type: z.literal('execution.sources'), sourceMessageIds: z.array(companionIdSchema).max(100), memoryIds: z.array(companionIdSchema).max(100).default([]),
+    expandPublishedSources: z.array(z.strictObject({ kind: z.enum(['message', 'action']), id: companionIdSchema })).max(10000).optional() }),
+  z.strictObject({ type: z.literal('execution.message.certify'), messages: z.array(companionMessagePublicationCandidateSchema.extend({
+    mode: companionMessagePublicationModeSchema })).min(1).max(100), actionBindings: z.array(companionPublishedActionFrontierSchema).max(10000).optional() }),
   z.strictObject({ type: z.literal('execution.capabilities.validate'), actions: z.array(z.strictObject({ id: companionIdSchema,
     companionId: companionIdSchema, conversationId: companionIdSchema, capability: actionSchema.shape.capability })).max(512) }),
   z.strictObject({ type: z.literal('execution.invalidate'), kind: z.enum(['message', 'action']), id: companionIdSchema, companionId: companionIdSchema }),
@@ -320,7 +349,10 @@ export const companionStorageResponseSchema = companionsResponseSchema.extend({
     conversationId: companionIdSchema, sourceMessageIds: z.array(companionIdSchema), invalidated: z.boolean().optional(), executionReadset: companionExecutionReadsetSchema.optional(),
     capability: actionSchema.shape.capability,
     storageValidatedReadsetDigest: z.string().regex(/^[a-f0-9]{64}$/u).optional(),
-    storageValidatedAuthorityEpoch: z.number().int().nonnegative().safe().optional() })).optional(),
+    storageValidatedAuthorityEpoch: z.number().int().nonnegative().safe().optional(),
+    publicationCandidate: companionMessagePublicationCandidateSchema.optional(), publicationCertificate: companionMessagePublicationCertificateSchema.optional(),
+    publishedDependencyCut: companionPublishedDependencyCutSchema.optional(), storageActionBinding: companionPublishedActionFrontierSchema.optional() })).optional(),
+  messagePublicationCertificates: z.array(companionMessagePublicationCertificateSchema).max(100).optional(),
   topicSourcesValid: z.boolean().optional(),
   topicCompactionPage: companionTopicCompactionPageSchema.optional(),
   collaboration: companionCollaborationGrantSchema.optional(), collaborations: z.array(companionCollaborationGrantSchema).max(100).optional(),
@@ -336,7 +368,9 @@ export const companionStorageResponseSchema = companionsResponseSchema.extend({
   workOrderClaim: companionWorkOrderClaimSchema.optional(),
   action: actionSchema.optional(),
   proactive: companionProactiveStateSchema.optional(),
-  checkpoint: companionTaskCheckpointSchema.optional(), replyRecovery: companionReplyRecoverySchema.optional(),
+  checkpoint: companionTaskCheckpointSchema.optional(), replyRecovery: companionReplyRecoverySchema.optional(), replyTaskSnapshot: companionReplyTaskSnapshotSchema.optional(),
+  replyTaskMessages: z.array(companionReplyTaskMessageSchema).max(257).optional(),
+  replyPublication: companionReplyPublicationSchema.optional(),
   loop: companionLoopCheckpointSchema.optional(), memoryCorpusStamp: z.string().optional(), memoryRecallAuthorityStamp: z.string().min(1).max(1000).optional(),
   work: companionWorkSchema.optional(), works: z.array(companionWorkSchema).optional(),
   memoryJob: companionMemoryJobSchema.optional(),
@@ -345,6 +379,9 @@ export const companionStorageResponseSchema = companionsResponseSchema.extend({
   memoryOutboxPending: z.boolean().optional(),
   memorySourceOutbox: companionMemorySourceOutboxSchema.optional(), memorySourceOutboxAccepted: z.boolean().optional(),
   memorySourceChangedCompanionIds: z.array(companionIdSchema).optional(), memorySourcePendingOwners: z.array(companionIdSchema).optional(),
+  /** Only publication work was queued; source edits/retractions keep the hard
+   * legacy field, and mixed owners are never downgraded by this signal. */
+  memorySourcePublicationQueuedCompanionIds: z.array(companionIdSchema).optional(),
   assetProfileInitialized: z.boolean().optional(),
   assetPortraitInitialized: z.boolean().optional(),
   memoryTagJob: companionMemoryTagJobSchema.optional(), memoryTagStatus: companionMemoryTagStatusSchema.optional(), memoryTagValid: z.boolean().optional(),
@@ -353,6 +390,7 @@ export const companionStorageResponseSchema = companionsResponseSchema.extend({
   memoryConsolidationDeferred: z.strictObject({ requiresFreshReadSet: z.literal(true), reason: z.string().max(1000) }).optional(),
   memorySnapshot: companionMemorySnapshotSchema.optional(),
   memoryDescriptors: z.array(companionMemoryDescriptorSchema).optional(),
+  memoryProcedureStatuses: companionMemoryProcedureContextListSchema.optional(),
   memorySearchTimings: z.record(z.string(), z.number().nonnegative()).optional(),
   memoryFileReadiness: companionMemoryFileReadinessSchema.optional(),
   memoryFileState: companionMemoryFileStateSchema.optional(),
@@ -390,6 +428,11 @@ export const companionStorageResponseSchema = companionsResponseSchema.extend({
   scheduleOccurrence: companionScheduleOccurrenceSchema.optional(), scheduleOccurrences: z.array(companionScheduleOccurrenceSchema).optional(),
   runtimeState: companionRuntimeStateSchema.optional(),
   world: companionWorldSnapshotSchema.optional(), worldWork: companionWorldWorkSchema.optional(), worldJob: companionWorldJobSchema.optional(),
+  worldJobPoll: z.strictObject({ current: z.boolean(), leaseUntil: z.iso.datetime().optional() }).optional(),
+  memoryReferenceValidation: companionReferenceValidationResultSchema.optional(),
+  memorySourceHeaders: companionSourceHeadersResultSchema.optional(),
+  memorySnapshotRevisions: companionMemorySnapshotRevisionsResultSchema.optional(),
+  memoryDocumentAuthority: companionMemoryDocumentAuthorityResultSchema.optional(),
   worldProposal: companionWorldProposalSchema.optional(),
   memoryInvestigations: z.array(companionMemoryInvestigationSchema).optional(), memoryInvestigation: companionMemoryInvestigationSchema.optional(),
   memoryHistoryDescriptor: companionMemoryHistoryDescriptorSchema.optional(), memoryHistoryDescriptors: z.array(companionMemoryHistoryDescriptorSchema).max(10000).optional(), memoryHistoryOutbox: companionMemoryHistoryOutboxSchema.optional(),
@@ -398,6 +441,7 @@ export const companionStorageResponseSchema = companionsResponseSchema.extend({
   socialReplyReceipt: companionSocialReplyReceiptSchema.optional(),
   socialGameContext: companionSocialGameContextSchema.optional(),
   socialPending: z.boolean().optional(), socialNotification: companionSocialNotificationSchema.optional(),
+  socialNotificationReceipts: z.array(companionSocialNotificationReceiptSchema).max(256).optional(),
   activityProgressEvidence: companionSocialProgressEvidenceSchema.optional(),
   activityReport: z.strictObject({ id: companionIdSchema, leaseToken: companionIdSchema,
     executionReadset: companionExecutionReadsetSchema }).optional(),
@@ -416,5 +460,6 @@ export const companionStorageRequestSchema = z.strictObject({
   requestId: companionIdSchema, command: companionStorageCommandSchema,
 });
 export const companionStorageReplySchema = z.strictObject({
-  requestId: companionIdSchema, response: companionStorageResponseSchema,
-});
+  requestId: companionIdSchema, response: companionStorageResponseSchema, timing: companionStorageTimingSchema.optional(),
+  storageFailure: companionStorageFailureSchema.optional(),
+}).refine(reply => !reply.storageFailure || !reply.response.ok, 'Storage availability failures cannot authorize a successful result.');

@@ -5,14 +5,33 @@ import type { CompanionMemoryHistoryDescriptor } from '../../shared/companion-me
 import type { CompanionMemory } from '../../shared/companions';
 import type { CompanionStorageCommand, CompanionStorageResponse } from '../../shared/companion-storage';
 import { companionMemoryRegisteredPath } from './memory-library';
-import { memoCompanionExecutionValidation, memoCompanionExecutionWitnesses } from './source-execution-evidence';
+import { assertCompanionExecutionWitnessActive, memoCompanionExecutionValidation, memoCompanionExecutionWitnesses,
+  preloadCompanionExecutionWitnesses } from './source-execution-evidence';
 import { companionAttestedMemoryFileCurrent, companionAttestedMemoryFilesKey, companionAttestedMemoryFilesMatch, type CompanionAttestedMemoryFiles } from './execution-evidence';
 
 type Request = (command: CompanionStorageCommand) => Promise<CompanionStorageResponse>;
 type Descriptor = Omit<CompanionMemoryHistoryDescriptor, 'procedureValidation'>;
 type Witness = { receipt: CompanionMemoryFileReceipt; conversationId: string; current?: ReturnType<typeof currentAuthority>;
-  /** A batched read can share dependencies with every other root it admitted. */
+  /** Complete dependencies of this root, without unrelated prefetched roots. */
   descriptors: ReadonlyMap<string, Descriptor> };
+const currentFileWitnessBrand = Symbol('Consumed current memory SQL witnesses');
+export type CompanionCurrentMemoryFileWitness = Readonly<{ [currentFileWitnessBrand]: true }>;
+const currentFileWitnessInputs = new WeakMap<CompanionCurrentMemoryFileWitness, {
+  authority: CompanionAttestedMemoryFiles; witnesses: ReadonlyMap<string, Witness>;
+}>();
+/** Only the awaited canonical callback can use this consumed SQL observation.
+ * Persisted/model JSON cannot manufacture it, and it grants no file authority. */
+export function companionCurrentMemoryFileWitnessInputs(value: CompanionCurrentMemoryFileWitness, authority: CompanionAttestedMemoryFiles,
+  receipts: readonly CompanionMemoryFileReceipt[]): { conversationId: string; notes: ReturnType<typeof currentAuthority>[] } | undefined {
+  assertCompanionExecutionWitnessActive();
+  const input = currentFileWitnessInputs.get(value);
+  if (!input || input.authority !== authority || !receipts.length) return;
+  const selected = receipts.map(receipt => input.witnesses.get(receiptKey(receipt)));
+  if (selected.some(witness => !witness?.current || !companionAttestedMemoryFileCurrent(authority, witness.current))) return;
+  const conversationId = selected[0]!.conversationId;
+  if (selected.some(witness => witness!.conversationId !== conversationId)) return;
+  return structuredClone({ conversationId, notes: selected.map(witness => witness!.current!) });
+}
 const hash = (value: string) => createHash('sha256').update(value).digest('hex');
 const receiptKey = (receipt: CompanionMemoryFileReceipt) => 'receipt:' + JSON.stringify(receipt);
 const descriptorKey = (descriptor: { id: string; contentRevision: number }) => `history:${descriptor.id}:${descriptor.contentRevision}`;
@@ -34,9 +53,25 @@ function descriptorUnion(values: Iterable<Witness>): Map<string, Descriptor> {
   }
   return descriptors;
 }
+function descriptorClosure(root: { id: string; contentRevision: number }, descriptors: ReadonlyMap<string, Descriptor>): Map<string, Descriptor> {
+  const result = new Map<string, Descriptor>(), active = new Set<string>();
+  const pending = [{ key: descriptorKey(root), exit: false }];
+  while (pending.length) {
+    const item = pending.pop()!;
+    if (item.exit) { active.delete(item.key); result.set(item.key, descriptors.get(item.key)!); continue; }
+    if (active.has(item.key)) throw new Error('历史记忆的SQL依赖存在环路。');
+    if (result.has(item.key)) continue;
+    if (active.size + result.size >= 10_000) throw new Error('历史记忆的SQL依赖超过可核验闭包。');
+    const descriptor = descriptors.get(item.key);
+    if (!descriptor) throw new Error('历史记忆的SQL依赖缺少准确修订。');
+    active.add(item.key); pending.push({ key: item.key, exit: true });
+    for (const dependency of [...descriptor.dependencies].reverse()) pending.push({ key: descriptorKey(dependency), exit: false });
+  }
+  return result;
+}
 function currentAuthority(note: CompanionMemory) {
   return { companionId: note.companionId, id: note.id, contentRevision: note.contentRevision, artifactKind: note.artifactKind,
-    path: companionMemoryRegisteredPath(note), bodyHash: hash(note.content), sources: note.sources };
+    sourceConversationId: note.sourceConversationId, path: companionMemoryRegisteredPath(note), bodyHash: hash(note.content), sources: note.sources };
 }
 
 /** SQL is authority metadata only, never a replacement for canonical prose.
@@ -97,8 +132,58 @@ async function capture(owner: string, receipts: readonly CompanionMemoryFileRece
     const { procedureValidation: _practice, ...descriptor } = value; void _practice;
     authorityDescriptors.set(key, descriptor);
   }
-  for (const witness of witnesses.values()) witness.descriptors = authorityDescriptors;
+  // Prefetched siblings may never be consumed (for example an invalid second
+  // message is redacted). Bind each root only to its own complete closure;
+  // the final verifier unions every actually consumed root and dependency.
+  const reached = new Set<string>();
+  for (const witness of witnesses.values()) {
+    witness.descriptors = descriptorClosure({ id: witness.receipt.noteId, contentRevision: witness.receipt.contentRevision }, authorityDescriptors);
+    for (const key of witness.descriptors.keys()) reached.add(key);
+  }
+  if (reached.size !== authorityDescriptors.size) throw new Error('历史记忆的SQL闭包包含未请求的额外修订。');
   return witnesses;
+}
+
+function sqlWitnessPort(owner: string, receipts: readonly CompanionMemoryFileReceipt[], ports: { identity: object; request: Request }) {
+  const byKey = new Map(receipts.map(receipt => [receiptKey(receipt), receipt]));
+  return { identity: ports.identity, scope: 'memory-file-sql:' + owner, phase: 'sql-authority' as const, revision: () => 0,
+    read: (keys: readonly string[]) => capture(owner, keys.map(key => byKey.get(key)!), ports.request),
+    verify: async (entries: readonly { key: string; value: Witness }[]) => {
+      if (!entries.length) return;
+      const used = entries.map(entry => entry.value.receipt), expectedDescriptors = descriptorUnion(entries.map(entry => entry.value));
+      let current: Map<string, Witness>;
+      try { current = await capture(owner, used, ports.request); }
+      catch (error) {
+        if (error instanceof CurrentHistoryNotPublished) throw new Error('准确历史来源已撤回或尚不可核验，旧内容未继续使用。', { cause: error });
+        throw error;
+      }
+      if (current.size !== entries.length || entries.some(entry => !equivalent(current.get(entry.key), entry.value))
+        || !isDeepStrictEqual(descriptorUnion(current.values()), expectedDescriptors))
+        throw new Error('正式记忆的SQL修订、原始来源或当前访问权限已经变化，旧内容未继续使用。');
+    } };
+}
+
+/** Body-free union prefetch in the current frame. It never authorizes a root,
+ * and a failed optimization leaves the ordinary per-context path in charge. */
+export async function preloadCompanionMemoryFileContexts(inputs: readonly { companionId: string;
+  contexts: readonly { fileReceiptOnly?: true; fileReceipts?: readonly CompanionMemoryFileReceipt[] }[] }[],
+ports: { identity: object; request: Request }): Promise<void> {
+  const owners = new Map<string, Map<string, CompanionMemoryFileReceipt>>();
+  for (const input of inputs) for (const context of input.contexts) {
+    if (!context.fileReceiptOnly) continue;
+    const parsed = companionMemoryFileReceiptsSchema.safeParse(context.fileReceipts);
+    if (!parsed.success || parsed.data.some(receipt => receipt.companionId !== input.companionId)) continue;
+    const receipts = owners.get(input.companionId) ?? new Map<string, CompanionMemoryFileReceipt>();
+    for (const receipt of parsed.data) receipts.set(receiptKey(receipt), receipt);
+    if (receipts.size) owners.set(input.companionId, receipts);
+  }
+  for (const [owner, receipts] of owners) try {
+    await preloadCompanionExecutionWitnesses([...receipts.keys()], sqlWitnessPort(owner, [...receipts.values()], ports));
+  } catch {
+    // Cancellation/closure still stops the caller. Other failures are retried
+    // by the original exact-root admission, never reported as withdrawal here.
+    assertCompanionExecutionWitnessActive();
+  }
 }
 
 /** Stable admission is safe only for file-only receipts with both fences:
@@ -107,7 +192,8 @@ async function capture(owner: string, receipts: readonly CompanionMemoryFileRece
 export function validateCompanionMemoryFileContext(scope: { companionId: string; conversationId: string; beforeSequence?: number }, context: {
   revision: string; profileKey: string; fileReceiptOnly?: true; fileReceipts?: readonly CompanionMemoryFileReceipt[];
 }, ports: { identity: object; request: Request; validate(): Promise<boolean>; fallback(): Promise<boolean>;
-  attestedFiles?: CompanionAttestedMemoryFiles; validateAttested?(authority: CompanionAttestedMemoryFiles): Promise<boolean | undefined> }): Promise<boolean> {
+  attestedFiles?: CompanionAttestedMemoryFiles;
+  validateAttested?(authority: CompanionAttestedMemoryFiles, current: CompanionCurrentMemoryFileWitness): Promise<boolean | undefined> }): Promise<boolean> {
   const parsed = companionMemoryFileReceiptsSchema.safeParse(context.fileReceipts);
   if (context.fileReceiptOnly !== true || !parsed.success || !parsed.data.length || parsed.data.some(receipt => receipt.companionId !== scope.companionId)) return Promise.resolve(false);
   const receipts = [...new Map(parsed.data.map(receipt => [receiptKey(receipt), receipt])).values()];
@@ -116,31 +202,17 @@ export function validateCompanionMemoryFileContext(scope: { companionId: string;
   const key = attested ? 'file-context:sql-attested:' + companionAttestedMemoryFilesKey(attested)
     : 'file-context:full:' + hash(JSON.stringify([scope, context]));
   return memoCompanionExecutionValidation(key, () => 0, async () => {
-    const witnesses = await memoCompanionExecutionWitnesses([...byKey.keys()], { identity: ports.identity,
-      scope: 'memory-file-sql:' + scope.companionId, phase: 'sql-authority', revision: () => 0,
-      // Capture only roots absent from this finite gate. Different semantic
-      // contexts can overlap without repeating SQL for their shared receipts.
-      read: keys => capture(scope.companionId, keys.map(identity => byKey.get(identity)!), ports.request),
-      verify: async entries => {
-        const used = entries.map(entry => entry.value.receipt), expectedDescriptors = descriptorUnion(entries.map(entry => entry.value));
-        let current: Map<string, Witness>;
-        try { current = await capture(scope.companionId, used, ports.request); }
-        catch (error) {
-          // A final denial may never downgrade an already admitted strong
-          // proof back to the legacy route or silently retry old authority.
-          if (error instanceof CurrentHistoryNotPublished) throw new Error('准确历史来源已撤回或尚不可核验，旧内容未继续使用。', { cause: error });
-          throw error;
-        }
-        if (current.size !== entries.length || entries.some(entry => !equivalent(current.get(entry.key), entry.value))
-          || !isDeepStrictEqual(descriptorUnion(current.values()), expectedDescriptors))
-          throw new Error('正式记忆的SQL修订、原始来源或当前访问权限已经变化，旧内容未继续使用。');
-      } });
+    const witnesses = await memoCompanionExecutionWitnesses([...byKey.keys()], sqlWitnessPort(scope.companionId, receipts, ports));
     if (attested && ports.validateAttested && receipts.every(receipt => {
       const current = witnesses.get(receiptKey(receipt))?.current;
       return !!current && companionAttestedMemoryFileCurrent(attested, current);
     })) {
-      const checked = await ports.validateAttested(attested);
-      if (checked !== undefined) return checked;
+      const current: CompanionCurrentMemoryFileWitness = Object.freeze({ [currentFileWitnessBrand]: true });
+      currentFileWitnessInputs.set(current, { authority: attested, witnesses });
+      try {
+        const checked = await ports.validateAttested(attested, current);
+        if (checked !== undefined) return checked;
+      } finally { currentFileWitnessInputs.delete(current); }
     }
     return ports.validate();
   }, ports.identity).catch(error => {

@@ -164,6 +164,19 @@ export class CompanionResetStore {
     if (!found.length) return 0; before?.(found);
     const remove = this.db.prepare(`DELETE FROM ${ident(table)} WHERE rowid=?`); for (const item of found) remove.run(item.reset_rowid); return found.length;
   }
+
+  private retiredPublicationIndexes(job: Job, limit: number): number {
+    if (Number(row(this.db.prepare("SELECT COUNT(*) AS n FROM sqlite_master WHERE type='table' AND name IN('companion_published_dependency_nodes','companion_published_dependency_dirty')").get()).n) !== 2) return 0;
+    // The durable stop/retirement gate already denies this owner. Its own
+    // derived indexes and dirty dependants are no longer live authority. Keep
+    // unrelated clean owners intact and use the existing bounded reset lane.
+    return this.removeRows('companion_published_dependency_nodes', `companion_id=? OR (
+      EXISTS(SELECT 1 FROM companion_published_dependency_dirty dirty WHERE dirty.node_key=companion_published_dependency_nodes.node_key)
+      AND (EXISTS(SELECT 1 FROM companion_published_dependency_edges edge WHERE edge.parent_key=companion_published_dependency_nodes.node_key AND edge.target_kind='owner' AND edge.target_key=?)
+        OR EXISTS(SELECT 1 FROM companion_published_dependency_edges edge WHERE edge.parent_key=companion_published_dependency_nodes.node_key AND edge.target_kind='message'
+          AND NOT EXISTS(SELECT 1 FROM messages source WHERE source.id=edge.target_key))))`,
+    [job.companionId, job.companionId], limit);
+  }
   private ownerSteps(job: Job): Array<[string, string, unknown[], ((items: Row[]) => void)?]> {
     const id = job.companionId;
     return [
@@ -408,7 +421,8 @@ export class CompanionResetStore {
         else if (job.phase === 'actions') { count = this.removeRows('actions', 'companion_id=?', [job.companionId], limit, items => { for (const item of items) {  this.db.prepare('UPDATE messages SET action_id=NULL WHERE action_id=?').run(item.id); this.db.prepare('DELETE FROM metadata WHERE key=? OR key GLOB ?').run('task-checkpoint/' + item.id, 'task-attempt/' + item.id + '/*'); } }); if (!count) job.phase = 'attachments'; }
         else if (job.phase === 'attachments') { count = this.garbageBatch(job, limit); if (!count) job.phase = 'files'; }
         else if (job.phase === 'finish') {
-          for (const table of ['companion_reset_rooms']) { count = this.removeRows(table, 'job_id=?', [job.id], limit); if (count) break; }
+          count = this.retiredPublicationIndexes(job, limit);
+          if (!count) for (const table of ['companion_reset_rooms']) { count = this.removeRows(table, 'job_id=?', [job.id], limit); if (count) break; }
           if (!count) {
             const owner = this.db.prepare('SELECT data FROM companions WHERE id=?').get(job.companionId);
             if (!owner) throw new Error('待删除身份的归属标记不存在。');

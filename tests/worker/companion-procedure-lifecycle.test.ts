@@ -3,7 +3,16 @@ import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
-import { CompanionsStore } from '../../src/companions/store';
+import { CompanionsStore, type CompanionConnection } from '../../src/companions/store';
+import Database from 'better-sqlite3';
+import { CompanionService } from '../../src/main/companions/service';
+import { CompanionMemoryService } from '../../src/main/companions/memory-service';
+import { readCompanionProcedureStatuses } from '../../src/main/companions/procedure-status';
+import { createCompanionExecutionValidationSession } from '../../src/main/companions/source-execution-evidence';
+import { companionProcedureStatusCommandSchema, companionProcedureStatusResult } from '../../src/shared/companion-procedure-status';
+import type { CompanionStorageCommand, CompanionStorageResponse } from '../../src/shared/companion-storage';
+import { companionsRequestSchema } from '../../src/shared/companions';
+import { companionSearchFacet, companionSearchTokens } from '../../src/shared/companion-search';
 import { verifyDshDelivery } from '../../src/main/dsh/task-delivery';
 import { companionSourceChecksum } from '../../src/companions/source-access';
 import type { CompanionMemory } from '../../src/shared/companions';
@@ -69,6 +78,92 @@ function fixture(shared = false) {
   };
   return { root, store, scope, source, method, note, index, read, trial };
 }
+
+it('returns fresh procedure annotations and source headers without canonical prose, retaining private-trial scope and exact content revision', async () => {
+  const f = fixture(true), read = () => f.store.request({ type: 'memory.procedures.status', ...f.scope, references: [{ id: f.note.id, contentRevision: f.note.contentRevision! }] });
+  expect(read().memoryProcedureStatuses).toEqual([{ memoryId: f.note.id, contentRevision: f.note.contentRevision, ...f.read().procedure!.validation }]);
+  const trial = await f.trial(), privateScope = { companionId: 'alice', conversationId: f.store.openPrivate('alice').id };
+  const privateRead = f.store.request({ type: 'memory.procedures.status', ...privateScope, references: [{ id: f.note.id, contentRevision: f.note.contentRevision! }] });
+  expect(privateRead.memoryProcedureStatuses?.[0]).toMatchObject({ state: 'validated', successes: 1 });
+  expect(read().memoryProcedureStatuses?.[0]).toMatchObject({ state: 'unverified', evidence: [] });
+  expect(JSON.stringify(read())).not.toContain(trial.action.id); expect(JSON.stringify(privateRead)).not.toContain(f.note.content);
+  expect(privateRead).not.toHaveProperty('memories');
+  expect(f.store.request({ type: 'memory.procedures.status', ...f.scope, references: [{ id: f.note.id, contentRevision: f.note.contentRevision! + 1 }] }).memoryProcedureStatuses).toEqual([]);
+  expect(f.store.request({ type: 'memory.procedures.status', companionId: 'bob', conversationId: f.store.openPrivate('bob').id,
+    references: [{ id: f.note.id, contentRevision: f.note.contentRevision! }] }).memoryProcedureStatuses).toEqual([]);
+  expect(f.store.request({ type: 'memory.procedures.status', ...f.scope, beforeSequence: 0, references: [{ id: f.note.id, contentRevision: f.note.contentRevision! }] }).memoryProcedureStatuses).toEqual([]);
+});
+
+function metadataHost(f: ReturnType<typeof fixture>) {
+  const ensure = vi.fn(async () => { throw new Error('Status predicates cannot open canonical bodies.'); }), materialize = vi.fn();
+  const storage = { request: vi.fn(async (command: CompanionStorageCommand) => f.store.request(command)) };
+  const host = Object.assign(Object.create(CompanionService.prototype), { storage, fileReadiness: { ensure }, liveFiles: { materialize },
+    resettingCompanions: new Set(), sourceValidationRevision: 0, evidenceRevision: 0, options: { report: () => undefined }, memory: { schedule: () => undefined } }) as {
+      call(command: CompanionStorageCommand): Promise<CompanionStorageResponse> };
+  const read = () => readCompanionProcedureStatuses({ scope: f.scope, references: [{ id: f.note.id, contentRevision: f.note.contentRevision! }],
+    identity: storage, request: command => host.call(command), requestFresh: storage.request });
+  return { ensure, materialize, storage, host, read };
+}
+
+it('does not adopt another requested procedure identity from a corrupted SQL data row', () => {
+  const f = fixture(), second = f.store.request({ type: 'memory.record', ...f.scope, candidate: { artifactKind: 'procedure', content: '另一个准确方法。', tags: [],
+    procedure: f.method, sourceMessageIds: [f.source.id], evidence: [{ sourceMessageId: f.source.id, quote: f.source.content }] } }).memories![0]!;
+  const db = new (Database as new(filename: string) => CompanionConnection)(path.join(f.root, 'state.sqlite'));
+  try { db.prepare("UPDATE vcp_memory_notes SET data=json_set(data,'$.id',?) WHERE id=?").run(second.id, f.note.id); }
+  finally { db.close(); }
+  expect(() => f.store.request({ type: 'memory.procedures.status', ...f.scope, references: [
+    { id: f.note.id, contentRevision: f.note.contentRevision! }, { id: second.id, contentRevision: second.contentRevision! }] })).toThrow('SQL行与正文身份');
+});
+
+it('uses the real Main metadata gate and a fresh final SQL status witness without readiness or materialization', async () => {
+  const f = fixture(), h = metadataHost(f), gate = createCompanionExecutionValidationSession();
+  try {
+    expect(await gate.run(h.read)).toEqual([{ memoryId: f.note.id, contentRevision: f.note.contentRevision, ...f.read().procedure!.validation }]);
+    await gate.validate(); expect(h.ensure).not.toHaveBeenCalled(); expect(h.materialize).not.toHaveBeenCalled();
+    expect(h.storage.request.mock.calls.filter(([command]) => command.type === 'memory.procedures.status')).toHaveLength(2);
+  } finally { gate.close(); }
+});
+
+it.each(['source', 'forget', 'content-revision', 'membership', 'practice-status'] as const)('rejects an actual %s change at the Main procedure-status final witness', async mutation => {
+  const f = fixture(), h = metadataHost(f), gate = createCompanionExecutionValidationSession();
+  try {
+    expect(await gate.run(h.read)).toHaveLength(1);
+    if (mutation === 'forget') f.store.request({ type: 'memory.forget', ...f.scope, sourceMessageIds: [f.source.id] });
+    if (mutation === 'content-revision') f.store.request({ type: 'memory.revise', ...f.scope, id: f.note.id, expectedVersion: f.note.version,
+      candidate: { artifactKind: 'procedure', content: '合法更正后的方法。', tags: [], procedure: f.method, sourceMessageIds: [f.source.id], evidence: [{ sourceMessageId: f.source.id, quote: f.source.content }] } });
+    if (mutation === 'practice-status') await f.trial();
+    if (mutation === 'source' || mutation === 'membership') {
+      const db = new (Database as new(filename: string) => CompanionConnection)(path.join(f.root, 'state.sqlite'));
+      db.function('companion_search_tokens', { deterministic: true }, companionSearchTokens); db.function('companion_search_facet', { deterministic: true }, companionSearchFacet);
+      try {
+        if (mutation === 'source') db.prepare('UPDATE messages SET content=?,revision=revision+1 WHERE id=?').run('实际来源已经改写。', f.source.id);
+        else db.prepare('DELETE FROM conversation_members WHERE conversation_id=? AND companion_id=?').run(f.scope.conversationId, 'alice');
+      } finally { db.close(); }
+    }
+    await expect(gate.validate()).rejects.toThrow();
+    expect(h.ensure).not.toHaveBeenCalled(); expect(h.storage.request.mock.calls.some(([command]) => command.type === 'execution.invalidate')).toBe(false);
+  } finally { gate.close(); }
+});
+
+it('keeps memory-service current status selection equivalent while rejecting malformed or foreign metadata and exposing no public command', async () => {
+  const f = fixture(), request = vi.fn(async (command: CompanionStorageCommand) => f.store.request(command));
+  const service = new CompanionMemoryService({ request, changed: () => undefined, busy: () => true, report: () => undefined,
+    configFor: async () => { throw new Error('Status reads do not request a model'); }, fetchFn: async () => { throw new Error('Status reads do not request a model'); } });
+  const read = Reflect.get(service, 'currentProcedureStatuses') as (scope: typeof f.scope, references: Array<{ id: string; contentRevision: number }>) => Promise<unknown>;
+  const command = { type: 'memory.procedures.status' as const, ...f.scope, references: [{ id: f.note.id, contentRevision: f.note.contentRevision! }] };
+  try {
+    expect(await read.call(service, f.scope, command.references)).toEqual([{ memoryId: f.note.id, contentRevision: f.note.contentRevision, ...f.read().procedure!.validation }]);
+    await f.trial(); expect(await read.call(service, f.scope, command.references)).toEqual([{ memoryId: f.note.id, contentRevision: f.note.contentRevision, ...f.read().procedure!.validation }]);
+    expect(request.mock.calls.every(([command]) => command.type === 'memory.procedures.status')).toBe(true);
+    expect(await read.call(service, f.scope, [{ id: f.note.id, contentRevision: f.note.contentRevision! + 1 }])).toEqual([]);
+    const actual = f.store.request(command);
+    expect(companionProcedureStatusResult(command, { ...actual, memoryProcedureStatuses: [...actual.memoryProcedureStatuses!, ...actual.memoryProcedureStatuses!] })).toBeUndefined();
+    expect(companionProcedureStatusResult(command, { ...actual, memoryDescriptors: actual.memoryDescriptors!.map(header => ({ ...header, companionId: 'bob' })) })).toBeUndefined();
+    expect(companionProcedureStatusCommandSchema.safeParse({ ...command, body: 'never accepted' }).success).toBe(false);
+    expect(companionsRequestSchema.safeParse(command).success).toBe(false);
+    request.mockResolvedValueOnce({ ok: true }); await expect(read.call(service, f.scope, command.references)).rejects.toThrow('准确的当前修订');
+  } finally { await service.close(); }
+});
 
 it('starts unverified and accepts only an exact objective delivery contract from an actual focused action result', async () => {
   const f = fixture(); expect(f.note.procedure?.validation).toMatchObject({ state: 'unverified', successes: 0, failures: 0 });

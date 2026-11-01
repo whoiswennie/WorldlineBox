@@ -23,13 +23,23 @@ function fixture(error?: Error, disposition: 'completed' | 'stale' = 'completed'
     return { ok: true };
   });
   const client = { remember: vi.fn(async () => { if (error) throw error; }), interruptScope: vi.fn(async () => undefined) } as unknown as VcpMemoryClient;
+  const changed = vi.fn();
   const service = new CompanionMemoryService({ request, runtime: { get: async () => ({ client, profileKey: 'fixture' }), close: async () => undefined },
     configFor: async () => ({ apiFormat: 'openai_chat', model: 'fixture', apiKey: 'fixture' }), fetchFn: async () => { throw Error('No model requests expected.'); },
-    busy: () => false, changed: () => undefined, report: () => undefined });
+    busy: () => false, changed, report: () => undefined });
   const deliver = async () => { await (service as unknown as { deliver(): Promise<void> }).deliver(); await service.drainDeliveries(); };
   const continuity = vi.spyOn(service as unknown as { queueContinuity(scope: { companionId: string; conversationId: string }): void }, 'queueContinuity');
-  return { service, client, request, deliver, continuity };
+  return { service, client, request, deliver, continuity, changed };
 }
+
+it.each([undefined, 'SQLITE_BUSY', 'VCP_MEMORY_EMBEDDING_RESPONSE_INVALID'])('publishes native delivery lifecycle as status-only progress (%s)', async code => {
+  const f = fixture(code ? Object.assign(new Error('受控投递结果'), { code }) : undefined);
+  try {
+    await f.deliver();
+    expect(f.changed.mock.calls.length).toBeGreaterThanOrEqual(3);
+    expect(f.changed.mock.calls.every(([kind]) => kind === 'progress')).toBe(true);
+  } finally { await f.service.close(); }
+});
 
 it.each(['SQLITE_BUSY', 'SQLITE_LOCKED', 'KNOWLEDGE_STORE_SOURCE_SNAPSHOT_CHANGED', 'KNOWLEDGE_STORE_FILE_VERSION_CONFLICT',
   'KNOWLEDGE_STORE_BATCH_EXPIRED', 'KNOWLEDGE_STORE_MODEL_CHANGED_DURING_EMBEDDING'])('requeues transient %s without marking a permanent indexing failure', async code => {

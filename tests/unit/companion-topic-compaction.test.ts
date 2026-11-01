@@ -38,6 +38,8 @@ function fixture() {
     }
     if (command.type === 'message.get') return { ok: true, message: messages.find(message => message.id === command.id) };
     if (command.type === 'memory.sources.filter') return { ok: true, memorySources: messages.filter(message => command.ids.includes(message.id)) };
+    if (command.type === 'memory.sources.headers') return { ok: true, memorySourceHeaders: { headers: [],
+      unsupportedIds: messages.filter(message => command.ids.includes(message.id)).map(message => message.id) } };
     if (command.type === 'topic.update') {
       expect(command.maintenance).toBe(true); expect(command.readerId).toBe('alice'); expect(command.expectedRevision).toBe(topic.revision);
       topic.revision++; state = { ...state, workingState: { ...command.patch.workingState!, sourceEventId: 'compressed_' + topic.revision,

@@ -12,7 +12,7 @@ afterEach(async () => {
   await act(() => root?.unmount()); container?.remove(); root = undefined; container = undefined; vi.useRealTimers();
 });
 
-it('shows completed replies during sustained changes when IPC reads take longer than one change interval', async () => {
+it('rejects pages overtaken by hard changes, then shows the fresh completed reply after the hard storm settles', async () => {
   (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
   vi.useFakeTimers();
   const at = '2026-10-16T07:43:25.000Z', companion = { ...BUILTIN_COMPANIONS[0]!, builtin: true, createdAt: at };
@@ -21,9 +21,10 @@ it('shows completed replies during sustained changes when IPC reads take longer 
   const source: CompanionMessage = { id: 'refresh-source', sequence: 1, conversationId: room.id, authorId: 'user', kind: 'text', content: '你累吗', createdAt: at, status: 'sent', attachments: [] };
   const reply: CompanionMessage = { ...source, id: 'refresh-reply', sequence: 2, authorId: companion.id, replyToId: source.id,
     content: '收到，我准备去休息一下。', segments: [{ text: '收到，我准备去休息一下。', actionIds: [] }] };
-  let messages = [source], changed: (() => void) | undefined, slow = false;
+  let messages = [source], changed: (() => void) | undefined, slow = false, messageReads = 0;
   const api: WorldlineBoxCompanionsApi = {
     async request(input): Promise<CompanionsResponse> {
+      if (input.type === 'messages') ++messageReads;
       const result: CompanionsResponse = input.type === 'state' ? { ok: true, state }
         : input.type === 'messages' ? { ok: true, messages: [...messages], hasMore: false, hasNewer: false }
           : input.type === 'actions' ? { ok: true, actions: [] } : { ok: true };
@@ -36,11 +37,20 @@ it('shows completed replies during sustained changes when IPC reads take longer 
   container = document.createElement('div'); document.body.append(container); root = createRoot(container);
   await act(() => root!.render(<Companions api={api} onOpenSettings={() => undefined} />));
   expect(container.textContent).not.toContain(reply.content);
+  const beforeStorm = messageReads;
   slow = true; messages = [source, reply];
   const changes = setInterval(() => changed?.(), 10);
   try {
-    // One 500ms coalescing window plus the deliberately slow IPC round trips.
+    // Every undefined notification is a hard authority invalidation. A page
+    // begun before a later one cannot become authoritative during this storm.
+    await act(async () => { await vi.advanceTimersByTimeAsync(1000); });
+    expect(container.querySelector('[data-companion-messages]')!.textContent).not.toContain(reply.content);
+    clearInterval(changes);
+    // Coalescing must still make progress once a fresh page can finish without
+    // being overtaken. This is the original eventual-visible requirement.
     await act(async () => { await vi.advanceTimersByTimeAsync(1000); });
     expect(container.querySelector('[data-companion-messages]')!.textContent).toContain(reply.content);
+    expect(messageReads - beforeStorm).toBeGreaterThan(0);
+    expect(messageReads - beforeStorm).toBeLessThan(10);
   } finally { clearInterval(changes); await act(async () => { await vi.advanceTimersByTimeAsync(100); }); }
 });

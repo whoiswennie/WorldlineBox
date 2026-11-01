@@ -3,9 +3,12 @@ import type { CompanionMemory } from '../../shared/companions';
 import { companionMemoryFileReceiptsSchema, type CompanionMemoryFileReceipt } from '../../shared/companion-memory-files';
 import { companionMemoryRegisteredPath, type CompanionMemoryLibrary, type MemoryLibraryDocumentSession } from './memory-library';
 import type { CompanionMemoryHistoryFiles } from './memory-history-files';
-import { withCompanionExecutionValidation } from './source-execution-evidence';
+import { assertCompanionExecutionWitnessActive, withCompanionExecutionValidation } from './source-execution-evidence';
+import { rethrowCompanionValidationUnavailable } from './validation-unavailable';
+import { CompanionMemoryFilesPending } from './memory-files-pending';
 import { companionAttestedMemoryFileCurrent, companionAttestedMemoryFileInputs, type CompanionAttestedMemoryFiles } from './execution-evidence';
 import type { CompanionStorageCommand, CompanionStorageResponse } from '../../shared/companion-storage';
+import { companionCurrentMemoryFileWitnessInputs, type CompanionCurrentMemoryFileWitness } from './memory-file-context-validation';
 
 const hash = (content: string) => createHash('sha256').update(content).digest('hex');
 export class CompanionMemoryLiveFileError extends Error {
@@ -68,12 +71,51 @@ export class CompanionMemoryLiveFiles {
   }
   materialize(owner: string, notes: readonly CompanionMemory[]): Promise<{ notes: CompanionMemory[]; receipts: CompanionMemoryFileReceipt[] }> {
     return withCompanionExecutionValidation(() => this.options.library.withDocuments(owner, async session => {
+      for (const note of notes) if (note.companionId !== owner || !note.contentRevision)
+        throw new CompanionMemoryLiveFileError('正文缺少当前伙伴的准确修订。', { noteIds: [note.id] });
+      if (!notes.length) return { notes: [], receipts: [] };
       const values: Array<{ note: CompanionMemory; receipt: CompanionMemoryFileReceipt }> = [];
       const sourceChecks = new Map<string, Promise<unknown>>();
-      for (const note of notes) try {
-        const current = await this.authorized(session, note, undefined, undefined, sourceChecks);
+      try {
+      // Current metadata and canonical reads are one set. The worker uses the
+      // same owner-library admission as read(), without constructing N unused
+      // original-message pages or opening N independent SQL validation DAGs.
+      const files = await session.registry.readMany(notes.map(note => ({ artifactId: `memory:${note.id}`, consumer: 'audit' as const })));
+      const actuals = new Map<string, CompanionMemory>(), ids = [...new Set(notes.map(note => note.id))];
+      for (let offset = 0; offset < ids.length; offset += 100) {
+        const response = await session.request({ type: 'memory.library.read-many', companionId: owner, ids: ids.slice(offset, offset + 100) });
+        if (!response.ok || !response.memories) throw new Error('正式当前记忆暂不可批量核验。');
+        for (const note of response.memories) {
+          if (note.companionId !== owner || !ids.includes(note.id) || actuals.has(note.id)) throw new Error('当前记忆批次返回外部或重复身份。');
+          actuals.set(note.id, note);
+        }
+      }
+      const requests = new Map<string, { artifactId: string; consumer: 'source_verification'; audienceIds: string[] }>();
+      for (let index = 0; index < notes.length; ++index) for (const reference of files[index]!.artifact.sourceRefs) {
+        const note = notes[index]!, key = JSON.stringify([reference, note.sourceConversationId]);
+        requests.set(key, { artifactId: reference.artifactId, consumer: 'source_verification', audienceIds: [note.sourceConversationId] });
+      }
+      if (requests.size) {
+        const batch = session.registry.readMany([...requests.values()]);
+        for (const key of requests.keys()) sourceChecks.set(key, batch);
+        await batch;
+      }
+      for (let index = 0; index < notes.length; ++index) {
+        const note = notes[index]!, actual = actuals.get(note.id);
+        if (!actual) throw new CompanionMemoryLiveFileError('正文或真实来源修订已变化；必须重新建立上下文。', { noteIds: [note.id] });
+        const current = await this.authorized(session, note, files[index], actual, sourceChecks);
         values.push({ note: { ...note, content: current.text }, receipt: { companionId: owner, noteId: note.id, contentRevision: note.contentRevision!, path: current.artifact.relativePath, contentHash: current.artifact.contentHash } });
-      } catch (cause) { throw new CompanionMemoryLiveFileError(cause instanceof Error ? cause.message : '正文不可读取。', { cause, noteIds: [note.id] }); }
+      }
+      } catch (cause) {
+        rethrowCompanionValidationUnavailable(cause); assertCompanionExecutionWitnessActive();
+        if (cause instanceof CompanionMemoryLiveFileError && cause.noteIds.length) throw cause;
+        // A failed batch must retain the exact unavailable note identity, not
+        // mark healthy siblings pending. This diagnostic path never supplies
+        // a successful result or reuses a failed batch as authority.
+        for (const note of notes) try { await this.authorized(session, note); }
+        catch (error) { rethrowCompanionValidationUnavailable(error); throw new CompanionMemoryLiveFileError(error instanceof Error ? error.message : '正文不可读取。', { cause: error, noteIds: [note.id] }); }
+        throw new CompanionMemoryLiveFileError(cause instanceof Error ? cause.message : '正文不可读取。', { cause, noteIds: notes.map(note => note.id) });
+      }
       return { notes: values.map(value => value.note), receipts: values.map(value => value.receipt) };
     }, { readOnly: true }));
   }
@@ -86,7 +128,7 @@ export class CompanionMemoryLiveFiles {
       for (const note of notes) if (note.companionId !== owner || !note.contentRevision) throw new CompanionMemoryLiveFileError('原生投影修订身份无效。');
       const currentFiles = await session.registry.readMany(notes.map(note => ({ artifactId: `memory:${note.id}`, consumer: 'audit' as const })));
       const histories = await this.options.history.readManyInSession(session, { companionId: owner, conversationId: scope.id },
-        notes.map(note => ({ id: note.id, contentRevision: note.contentRevision! })));
+        notes.map(note => ({ id: note.id, contentRevision: note.contentRevision! })), { projectionInputs: true });
       for (let index = 0; index < notes.length; index++) {
         const note = notes[index]!, current = currentFiles[index]!, actual = histories[index]!;
         if (note.companionId !== owner || !note.contentRevision) throw new CompanionMemoryLiveFileError('原生投影修订身份无效。');
@@ -102,16 +144,45 @@ export class CompanionMemoryLiveFiles {
   /** Only an outer exact SQL-attested readset can separate current-row
    * authority from the derived execution DAG it is already checking. */
   async validateAttested(authority: CompanionAttestedMemoryFiles,
-    request: (command: CompanionStorageCommand) => Promise<CompanionStorageResponse>, receipts?: readonly CompanionMemoryFileReceipt[]): Promise<boolean | undefined> {
+    request: (command: CompanionStorageCommand) => Promise<CompanionStorageResponse>, receipts?: readonly CompanionMemoryFileReceipt[],
+    currentWitness?: CompanionCurrentMemoryFileWitness): Promise<boolean | undefined> {
     const input = companionAttestedMemoryFileInputs(authority);
     if (!input) return false;
     const selected = companionMemoryFileReceiptsSchema.safeParse(receipts ?? input.receipts);
     const permitted = new Set(input.receipts.map(receipt => JSON.stringify(receipt)));
     if (!selected.success || !selected.data.length || selected.data.some(receipt => !permitted.has(JSON.stringify(receipt)))) return false;
-    return this.validateWithin(input.scope.companionId, selected.data, undefined, { authority, request });
+    return this.validateWithin(input.scope.companionId, selected.data, undefined, { authority, request, currentWitness });
+  }
+  private async validateCurrent(session: MemoryLibraryDocumentSession, owner: string, receipts: readonly CompanionMemoryFileReceipt[],
+    authority: CompanionAttestedMemoryFiles, witness: CompanionCurrentMemoryFileWitness): Promise<boolean | undefined> {
+    const observed = companionCurrentMemoryFileWitnessInputs(witness, authority, receipts);
+    if (!observed) return false;
+    const registrations = await session.registry.getMany(receipts.map(receipt => `memory:${receipt.noteId}`), true);
+    const bodies = await session.registry.readMany(registrations.filter(artifact => artifact.publicationState === 'committed')
+      .map(artifact => ({ artifactId: artifact.artifactId, consumer: 'audit' as const })));
+    const sources = new Map<string, { artifactId: string; contentRevision: number; contentHash: string; audience: string }>();
+    for (let index = 0; index < receipts.length; index++) {
+      const receipt = receipts[index]!, note = observed.notes[index]!;
+      const registered = registrations.find(artifact => artifact.artifactId === `memory:${receipt.noteId}`);
+      if (!registered || registered.relativePath !== receipt.path || note.companionId !== owner) return false;
+      const current = bodies.find(body => body.artifact.artifactId === registered.artifactId);
+      // A real newer canonical version uses the ordinary historical path. A
+      // missing/changed committed file already fails Registry's strict read.
+      if (!current || current.artifact.contentHash !== receipt.contentHash) return undefined;
+      if (note.id !== receipt.noteId || note.contentRevision !== receipt.contentRevision || note.path !== receipt.path
+        || current.artifact.kind !== note.artifactKind || current.artifact.relativePath !== note.path
+        || hash(current.text) !== note.bodyHash || note.bodyHash !== receipt.contentHash) return false;
+      for (const reference of current.artifact.sourceRefs) sources.set(JSON.stringify([reference, note.sourceConversationId]),
+        { ...reference, audience: note.sourceConversationId });
+    }
+    const references = [...sources.values()], originals = await session.registry.readMany(references.map(reference => ({
+      artifactId: reference.artifactId, consumer: 'source_verification' as const, audienceIds: [reference.audience] })));
+    return originals.every((original, index) => original.artifact.kind === 'source_evidence'
+      && original.artifact.contentRevision === references[index]!.contentRevision && original.artifact.contentHash === references[index]!.contentHash);
   }
   private async validateWithin(owner: string, receipts: readonly CompanionMemoryFileReceipt[], validationWindow?: object,
-    attested?: { authority: CompanionAttestedMemoryFiles; request(command: CompanionStorageCommand): Promise<CompanionStorageResponse> }): Promise<boolean | undefined> {
+    attested?: { authority: CompanionAttestedMemoryFiles; request(command: CompanionStorageCommand): Promise<CompanionStorageResponse>;
+      currentWitness?: CompanionCurrentMemoryFileWitness }): Promise<boolean | undefined> {
     // This port always rechecks canonical bytes and source authorization; a
     // caller's shared validation window must not cache filesystem authority.
     void validationWindow;
@@ -119,6 +190,7 @@ export class CompanionMemoryLiveFiles {
     if (!input.success || input.data.some(receipt => receipt.companionId !== owner)) return false;
     try { return await withCompanionExecutionValidation(() => this.options.library.withDocuments(owner, async session => {
       if (!input.data.length) return true;
+      if (attested?.currentWitness) return this.validateCurrent(session, owner, input.data, attested.authority, attested.currentWitness);
       const request = attested ? attested.request : session.request;
       const scope = (await request({ type: 'memory.library.scope.read', companionId: owner })).conversation;
       if (!scope) return false;
@@ -145,7 +217,15 @@ export class CompanionMemoryLiveFiles {
       const historical: CompanionMemoryFileReceipt[] = [];
       for (const receipt of input.data) {
         const registered = registrations.find(artifact => artifact.artifactId === `memory:${receipt.noteId}`);
-        if (!registered || registered.relativePath !== receipt.path) return false;
+        if (!registered) {
+          const readiness = await request({ type: 'memory.files.inspect', companionId: owner, conversationId: scope.id,
+            id: receipt.noteId, contentRevision: receipt.contentRevision });
+          const state = readiness.memoryFileReadiness;
+          if (readiness.ok && state?.state === 'pending' && state.historyJob && state.historyJob.state !== 'done')
+            throw new CompanionMemoryFilesPending('准确记忆文件仍在正式发布，当前不能判定来源失效。');
+          return false;
+        }
+        if (registered.relativePath !== receipt.path) return false;
         // A later revision may lawfully lose one of its sources while an old
         // captured revision retains independent authorization. Active current
         // files still fail closed on any external change before history use.
@@ -167,6 +247,13 @@ export class CompanionMemoryLiveFiles {
         || source.artifact.contentRevision !== witnesses[index]!.contentRevision || source.artifact.contentHash !== witnesses[index]!.contentHash)) return false;
       if (historical.length) {
         if (!this.options.history) return false;
+        for (const receipt of historical) {
+          const readiness = await request({ type: 'memory.files.inspect', companionId: owner, conversationId: scope.id,
+            id: receipt.noteId, contentRevision: receipt.contentRevision });
+          const state = readiness.memoryFileReadiness;
+          if (readiness.ok && state?.state === 'pending' && state.historyJob && state.historyJob.state !== 'done')
+            throw new CompanionMemoryFilesPending('准确历史记忆仍在正式发布，当前不能判定来源失效。');
+        }
         const originals = await this.options.history.readManyInSession(session, { companionId: owner, conversationId: scope.id },
           historical.map(receipt => ({ id: receipt.noteId, contentRevision: receipt.contentRevision })));
         if (originals.some((note, index) => hash(note.content) !== historical[index]!.contentHash)) return false;
@@ -180,6 +267,10 @@ export class CompanionMemoryLiveFiles {
           && JSON.stringify(actual.sources) === JSON.stringify(note.sources)))) return false;
       }
       return true;
-    }, { readOnly: true, sourceDelivery: true })); } catch { return false; }
+    }, { readOnly: true, sourceDelivery: true })); } catch (error) {
+      rethrowCompanionValidationUnavailable(error);
+      assertCompanionExecutionWitnessActive();
+      return false;
+    }
   }
 }

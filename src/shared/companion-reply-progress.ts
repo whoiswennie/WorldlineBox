@@ -8,6 +8,9 @@ export const companionReplyProgressSchema = z.strictObject({
   revision: z.number().int().positive(),
   phase: z.enum(['queued', 'waiting', 'context', 'memory', 'thinking', 'tools', 'streaming', 'completed', 'failed', 'cancelled', 'interrupted']),
   detail: z.string().max(500), updatedAt: z.string(), startedAt: z.string(), phaseStartedAt: z.string().optional(), finishedAt: z.string().optional(), stop: companionUserStopSchema.optional(),
+  // A prior process ended without a reliable stop receipt. Stored elapsed
+  // time is a lower bound; neither restart time nor certificate time fills it.
+  timingIncomplete: z.literal(true).optional(),
   timing: z.strictObject({ elapsedMs: z.number().nonnegative(), activeSince: z.string().optional() }).optional(),
   memory: z.strictObject({ status: z.enum(['running', 'completed', 'unavailable']), count: z.number().int().nonnegative().optional(), injected: z.boolean().optional(), pending: z.boolean().optional() }).optional(),
 });
@@ -27,6 +30,25 @@ export function companionReplyElapsedMs(progress: CompanionReplyProgress, now: n
 export function advanceCompanionReplyTiming(previous: CompanionReplyProgress | undefined, next: CompanionReplyProgress): CompanionReplyProgress {
   const at = Date.parse(next.finishedAt ?? next.updatedAt);
   const elapsedMs = previous ? companionReplyElapsedMs(previous, at) ?? 0 : 0;
-  return { ...next, timing: { elapsedMs,
+  return { ...next, ...(previous?.timingIncomplete ? { timingIncomplete: true as const } : {}), timing: { elapsedMs,
     ...(!terminalReplyPhases.has(next.phase) && next.phase !== 'queued' ? { activeSince: next.updatedAt } : {}) } };
+}
+
+
+/** A real host terminal observation includes its actual `at`. Recovery has no
+ * such observation: keep only an already recorded duration and expose the gap.
+ * This changes process presentation, never publication or execution evidence. */
+export function finishCompanionReplyProgress(previous: CompanionReplyProgress, input: {
+  phase: 'completed' | 'failed' | 'cancelled' | 'interrupted'; detail: string;
+  updatedAt: string; at?: string;
+}): CompanionReplyProgress {
+  const next: CompanionReplyProgress = { ...previous, revision: previous.revision + 1,
+    phase: input.phase, detail: input.detail, updatedAt: input.updatedAt,
+    phaseStartedAt: undefined, finishedAt: input.at };
+  if (input.at !== undefined) {
+    if (!Number.isFinite(Date.parse(input.at))) throw new Error('回复终态的实际时间无效。');
+    return advanceCompanionReplyTiming(previous, next);
+  }
+  return { ...next, timingIncomplete: true,
+    timing: previous.timing ? { elapsedMs: previous.timing.elapsedMs } : undefined };
 }

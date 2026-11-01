@@ -4,12 +4,19 @@ import { companionExecutionReadsetSchema, type CompanionExecutionReadset } from 
 import type { CompanionStorageResponse } from '../shared/companion-storage';
 import { actionSchema, type CompanionAction, type CompanionMemory } from '../shared/companions';
 import { executionMessageReadsetKey, executionSourceInvalidKey } from './execution-source-access';
+import { CompanionPublishedMessageCertificates } from './published-message-certificates';
+import { observePublishedActionDependencyCut, readPublishedActionFrontier, observePublishedDependencyCut, withPublishedDependencyReadWindow } from './published-dependency-index';
 
 type Proof = NonNullable<CompanionStorageResponse['executionSources']>[number];
+type MessageObservation = NonNullable<ReturnType<typeof observePublishedDependencyCut>>;
+type ActionObservation = NonNullable<ReturnType<typeof observePublishedActionDependencyCut>>;
 const parse = <T>(value: unknown): T | undefined => { try { return value ? JSON.parse(String(value)) as T : undefined; } catch { return; } };
 /** Provenance only. This never reads files, runs a model or changes what ran. */
 export class CompanionExecutionSourceStore {
-  constructor(private readonly db: CompanionConnection, private readonly memory: CompanionMemoryStore) {}
+  private readonly publications: CompanionPublishedMessageCertificates;
+  constructor(private readonly db: CompanionConnection, private readonly memory: CompanionMemoryStore) {
+    this.publications = new CompanionPublishedMessageCertificates(db, memory);
+  }
   bind(messageId: string, value: CompanionExecutionReadset): void {
     const readset = companionExecutionReadsetSchema.parse(value);
     const message = this.db.prepare('SELECT author_id,conversation_id FROM messages WHERE id=?').get(messageId) as { author_id: string; conversation_id: string } | undefined;
@@ -22,15 +29,18 @@ export class CompanionExecutionSourceStore {
     const stored = this.db.prepare('SELECT * FROM messages WHERE id=?').get(messageId) as Record<string, string | number | null>;
     if (readset.sources.some(source => source.id === messageId) || !this.memory.sources.formal(stored)) throw new Error('正式回复的执行依赖在提交前已经变化。');
   }
-  resolve(ids: readonly string[], memoryIds: readonly string[] = []): Proof[] {
-    return this.memory.sources.withValidation(() => this.resolveWithinValidation(ids, memoryIds));
+  resolve(ids: readonly string[], memoryIds: readonly string[] = [], expandPublishedSources: readonly Pick<Proof, 'kind' | 'id'>[] = []): Proof[] {
+    return this.db.transaction(() => withPublishedDependencyReadWindow(this.db,
+      () => this.memory.sources.withValidation(() => this.resolveWithinValidation(ids, memoryIds, expandPublishedSources))))();
   }
-  private resolveWithinValidation(ids: readonly string[], memoryIds: readonly string[]): Proof[] {
+  private resolveWithinValidation(ids: readonly string[], memoryIds: readonly string[], expandPublishedSources: readonly Pick<Proof, 'kind' | 'id'>[]): Proof[] {
     const proofs = new Map<string, Proof>();
+    const expanded = new Set(expandPublishedSources.map(value => `${value.kind}:${value.id}`));
     // One synchronous SQLite request observes one database state. Shared roots
     // can reuse its precise metadata/proof fields, never a later request's data.
     const metadataValues = new Map<string, string | undefined>(), decodedMetadata = new Map<string, unknown>();
     const checkedReadsets = new Map<string, CompanionExecutionReadset | undefined>();
+    const ownedReadsets = new Set<string>();
     // Several roots on one page usually share most of their ancestry. Resolve
     // each adjacency list once in this synchronous command, while preserving
     // every root's dependency association for later invalidation/redaction.
@@ -81,17 +91,41 @@ export class CompanionExecutionSourceStore {
       const enqueueMessages = (ids: readonly string[]) => { for (const id of ids) if (!enqueuedMessages.has(id)) { enqueuedMessages.add(id); messages.push(id); } };
       const enqueueNotes = (ids: readonly string[]) => { for (const id of ids) if (!enqueuedNotes.has(id)) { enqueuedNotes.add(id); notes.push(id); } };
       const enqueueEvents = (ids: readonly string[]) => { for (const id of ids) if (!enqueuedEvents.has(id)) { enqueuedEvents.add(id); events.push(id); } };
-      const include = (proof: Omit<Proof, 'sourceMessageIds'>) => {
+      const include = (proof: Omit<Proof, 'sourceMessageIds'>, supplied?: MessageObservation | ActionObservation): void => {
         const key = `${proof.kind}:${proof.id}`;
-        if (!checkedReadsets.has(key)) {
+        if (supplied) { checkedReadsets.set(key, supplied.readset); ownedReadsets.add(key); }
+        else if (!checkedReadsets.has(key)) {
           const parsed = companionExecutionReadsetSchema.safeParse(proof.executionReadset);
           checkedReadsets.set(key, parsed.success ? parsed.data : undefined);
         }
         proof.executionReadset = checkedReadsets.get(key);
         if (metadata(executionSourceInvalidKey(proof.kind, proof.id))) proof.invalidated = true;
+        const cut = !expanded.has(key) && !proof.invalidated && proof.executionReadset ? supplied ?? (proof.kind === 'message'
+          ? observePublishedDependencyCut(this.db, proof.id, proof.executionReadset, this.memory.sources.currentExecutionPath())
+          : observePublishedActionDependencyCut(this.db, proof.id, proof.executionReadset, this.memory.sources.currentExecutionPath())) : undefined;
+        const frontier: Array<{ proof: Omit<Proof, 'sourceMessageIds'>; observation: ActionObservation }> = [];
+        let closed = !!cut;
+        if (cut) for (const header of cut.volatileActions) {
+          const action = actionRow(header.id), current = observePublishedActionDependencyCut(this.db, header.id, undefined, this.memory.sources.currentExecutionPath());
+          if (!action || action.capability || action.companion_id !== header.companionId
+            || action.conversation_id !== header.conversationId || !current || current.binding !== header.actionBindingHash
+            || !current.assetOwners.every(owner => cut.assetOwners.includes(owner))
+            || current.readsetDigest !== header.readsetDigest) {
+            closed = false; break;
+          }
+          frontier.push({ proof: { kind: 'action', id: header.id, companionId: action.companion_id, conversationId: action.conversation_id, executionReadset: current.readset }, observation: current });
+        }
+        if (cut && closed) proof.publishedDependencyCut = { generation: cut.generation, bindingHash: cut.binding,
+          assetOwners: [...cut.assetOwners], volatileActions: [...cut.volatileActions] };
         const previous = proofs.get(key);
         if (previous) { if (!previous.sourceMessageIds.includes(root)) previous.sourceMessageIds.push(root); }
         else proofs.set(key, { ...proof, sourceMessageIds: [root] });
+        if (cut && closed) {
+          // Historical publication is an immutable SQL leaf. Its exact legacy
+          // action frontier remains visible to Main's unchanged file/live gates.
+          for (const action of frontier) if (!(action.proof.kind === proof.kind && action.proof.id === proof.id)) include(action.proof, action.observation);
+          return;
+        }
         const readset = proof.executionReadset;
         if (!readset) return;
         enqueueMessages(readset.sources.map(source => source.id)); enqueueNotes(readset.memories.map(note => note.id));
@@ -110,8 +144,13 @@ export class CompanionExecutionSourceStore {
             // Pre-upgrade completed conversations had no typed proof. Retain
             // their existing ACL/forget behavior; do not invent retrospective
             // evidence or claim their historical inputs were verified here.
-            const derived = metadata(executionMessageReadsetKey(id));
-            if (derived !== undefined) include({ kind: 'message', id, companionId: message.author_id, conversationId: message.conversation_id, executionReadset: decoded<CompanionExecutionReadset>(executionMessageReadsetKey(id)) });
+            const indexed = message.author_id !== 'user' && message.author_id !== 'system' && !message.action_id && !expanded.has('message:' + id)
+              ? observePublishedDependencyCut(this.db, id, undefined, this.memory.sources.currentExecutionPath()) : undefined;
+            if (indexed) include({ kind: 'message', id, companionId: message.author_id, conversationId: message.conversation_id, executionReadset: indexed.readset }, indexed);
+            else {
+              const derived = metadata(executionMessageReadsetKey(id));
+              if (derived !== undefined) include({ kind: 'message', id, companionId: message.author_id, conversationId: message.conversation_id, executionReadset: decoded<CompanionExecutionReadset>(executionMessageReadsetKey(id)) });
+            }
             if (message.action_id) {
               const action = actionRow(message.action_id);
               // Capability cards are traces of their real parent/run, not old
@@ -150,10 +189,10 @@ export class CompanionExecutionSourceStore {
     // precise note-only read port without disclosing arbitrary note contents.
     if (memoryIds.length) {
       const sourceIds = [...new Set(memoryIds.flatMap(id => (this.db.prepare('SELECT message_id FROM vcp_note_sources WHERE note_id=?').all(id) as Array<{ message_id: string }>).map(source => source.message_id)))];
-      for (const proof of this.resolve(sourceIds)) if (!proofs.has(`${proof.kind}:${proof.id}`)) proofs.set(`${proof.kind}:${proof.id}`, proof);
+      for (const proof of this.resolve(sourceIds, [], expandPublishedSources)) if (!proofs.has(`${proof.kind}:${proof.id}`)) proofs.set(`${proof.kind}:${proof.id}`, proof);
     }
     const authorityEpochs = new Map<string, number>();
-    return [...proofs.values()].map(proof => {
+    const observed = [...proofs.values()].map(proof => {
       if (proof.invalidated || !proof.executionReadset) return proof;
       const digest = proof.kind === 'message' ? this.memory.sources.validatedMessageReadsetDigest(proof.id, proof.executionReadset)
         : this.memory.sources.validatedActionReadsetDigest(proof.id, proof.executionReadset);
@@ -161,8 +200,14 @@ export class CompanionExecutionSourceStore {
       // This epoch attests SQL source inputs only. Main must independently
       // check live action collaboration/thought/lease authority on each gate.
       if (!authorityEpochs.has(proof.companionId)) authorityEpochs.set(proof.companionId, this.memory.lifecycleState(proof.companionId).revocationEpoch);
-      return { ...proof, storageValidatedReadsetDigest: digest, storageValidatedAuthorityEpoch: authorityEpochs.get(proof.companionId)! };
+      return { ...proof, storageValidatedReadsetDigest: digest, storageValidatedAuthorityEpoch: authorityEpochs.get(proof.companionId)!,
+        ...(proof.kind === 'message' ? this.publications.observe(proof.id, proof.executionReadset, digest)
+          : { storageActionBinding: readPublishedActionFrontier(this.db, proof.id, proof.executionReadset) }) };
     });
+    // Physical observations are private immutable SQL tuples. Only this exit
+    // materializes a mutable external DTO, once per unique proof, after every
+    // root has independently checked and retained its exact frontier links.
+    return observed.map(proof => ownedReadsets.has(`${proof.kind}:${proof.id}`) ? structuredClone(proof) : proof);
   }
   invalidate(reference: { kind: 'action' | 'message'; id: string; companionId: string }): void {
     this.db.transaction(() => {

@@ -1,5 +1,6 @@
 import { companionAttentionCanClaim } from './attention-queue';
 import { createHash } from 'node:crypto';
+import { isDeepStrictEqual } from 'node:util';
 import type { CompanionConnection } from './store';
 import type { CompanionMessage } from '../shared/companions';
 import type { AppendCompanionMessage, CompanionStorageCommand, CompanionStorageResponse } from '../shared/companion-storage';
@@ -8,6 +9,8 @@ import type { CompanionExecutionReadset } from '../shared/companion-execution-ev
 import type { CompanionUserStop } from '../shared/companion-task-stop';
 import type { CompanionTaskControlResult } from '../shared/companion-task-control';
 import { assertCompanionAgendaNativeClaim, assertCompanionAgendaNativeParent, bindCompanionAgendaNative, companionAgendaNativeBound, companionAgendaNativeParentId, controlCompanionAgendaNative } from './agenda-native-parent';
+import { companionSocialNotificationReceiptSchema, type CompanionSocialNotificationReceipt } from '../shared/companion-social-notification-receipts';
+import { companionExecutionReadsetSchema } from '../shared/companion-execution-evidence';
 
 type Row = Record<string, string | number | null>;
 type Scope = { companionId: string; conversationId: string };
@@ -29,7 +32,8 @@ export class CompanionSocialContinuityStore {
   constructor(private readonly db: CompanionConnection, private readonly append: (message: AppendCompanionMessage) => CompanionMessage,
     private readonly message: (id: string) => CompanionMessage,
     private readonly visible: (scope: Scope, ids: string[]) => CompanionMessage[],
-    private readonly ready: (owner: string) => boolean, private readonly backlog: () => boolean) {}
+    private readonly ready: (owner: string) => boolean, private readonly backlog: () => boolean,
+    private readonly publishedReportValid?: (message: CompanionMessage) => boolean) {}
 
   initialize(): void {
     this.db.exec(`CREATE TABLE IF NOT EXISTS companion_social_delegations(id TEXT PRIMARY KEY,companion_id TEXT NOT NULL,source_message_id TEXT NOT NULL,visit_id TEXT,status TEXT NOT NULL,data TEXT NOT NULL);
@@ -42,6 +46,9 @@ export class CompanionSocialContinuityStore {
       CREATE INDEX IF NOT EXISTS companion_social_notification_due ON companion_social_notifications(status,lease_until,created_at);
       CREATE INDEX IF NOT EXISTS companion_social_notification_owner ON companion_social_notifications(companion_id,status);
       CREATE INDEX IF NOT EXISTS companion_social_notification_origin ON companion_social_notifications(origin_id);
+      CREATE INDEX IF NOT EXISTS companion_social_notification_report ON companion_social_notifications(companion_id,status,
+        CASE WHEN json_valid(data) THEN json_extract(data,'$.conversationId') END,
+        CASE WHEN json_valid(data) THEN json_extract(data,'$.resultMessageId') END);
       CREATE TRIGGER IF NOT EXISTS companion_social_source_deleted BEFORE DELETE ON messages BEGIN
         DELETE FROM companion_social_notifications WHERE origin_id IN(SELECT id FROM companion_social_delegations WHERE source_message_id=old.id);
         DELETE FROM companion_social_chain_origins WHERE origin_id IN(SELECT id FROM companion_social_delegations WHERE source_message_id=old.id);
@@ -185,6 +192,74 @@ export class CompanionSocialContinuityStore {
     return responseSource !== null && hash(responseSource ?? null) === hash(notice.responseSource ?? null)
       && visit.guestId === notice.companionId && visit.hostId === notice.evidence.authorId && visit.status === notice.evidence.visitStatus
       && hash([visit.id, visit.guestId, visit.hostId, visit.status, visit.response]) === notice.evidenceChecksum;
+  }
+  /** Historical receipt projection only. In particular this must not call
+   * get()/validNotice(): their normal scheduling path can cancel stale work.
+   * Every dependency here is freshly authorized without changing that work. */
+  private notificationReceipts(input: Extract<CompanionStorageCommand, { type: 'social.notifications.receipts' }>): CompanionSocialNotificationReceipt[] {
+    return this.db.transaction(() => {
+      if (!this.publishedReportValid || !this.active(input.companionId)) return [];
+      const result: CompanionSocialNotificationReceipt[] = [];
+      const requested = [...new Set(input.messageIds)], byReport = new Map<string, Row[]>();
+      for (const value of this.db.prepare(`SELECT id,companion_id,origin_id,status,data,
+        CASE WHEN json_valid(data) THEN json_extract(data,'$.resultMessageId') END AS result_message_id
+        FROM companion_social_notifications WHERE companion_id=? AND status='done'
+        AND CASE WHEN json_valid(data) THEN json_extract(data,'$.conversationId') END=?
+        AND CASE WHEN json_valid(data) THEN json_extract(data,'$.resultMessageId') END IN(SELECT value FROM json_each(?)) ORDER BY id`)
+        .all(input.companionId, input.conversationId, JSON.stringify(requested)) as Row[]) {
+        const key = String(value.result_message_id), group = byReport.get(key) ?? []; group.push(value); byReport.set(key, group);
+      }
+      for (const messageId of requested) {
+        const records = byReport.get(messageId) ?? [];
+        if (!records.length || records.length > 16) continue;
+        const report = this.visible(input, [messageId]).find(value => value.id === messageId);
+        if (!report || report.authorId !== input.companionId || report.conversationId !== input.conversationId || report.kind !== 'text'
+          || report.status !== 'sent' || report.isReplyDraft || report.replyDraft || !report.revision || !this.publishedReportValid(report)) continue;
+        const stored = this.db.prepare('SELECT client_id FROM messages WHERE id=?').get(messageId) as { client_id?: string } | undefined;
+        if (!records.some(value => stored?.client_id === 'notice_' + value.id)) continue;
+        const proofRow = this.db.prepare('SELECT value FROM metadata WHERE key=?').get('message-execution-readset/' + messageId) as { value: string } | undefined;
+        const parsed = proofRow && companionExecutionReadsetSchema.safeParse(JSON.parse(proofRow.value));
+        if (!parsed || !parsed.success || !parsed.data.complete || parsed.data.companionId !== input.companionId
+          || parsed.data.conversationId !== input.conversationId) continue;
+        const proof = parsed.data, peers = new Map<string, CompanionSocialNotificationReceipt['peerReplies'][number]>(), authorities: unknown[] = [];
+        let valid = true;
+        for (const record of records) {
+          const notice = parse<Notice>(record.data);
+          const saved = this.db.prepare("SELECT id,companion_id,source_message_id,status,data FROM companion_social_delegations WHERE id=? AND status='active'").get(record.origin_id) as Row | undefined;
+          const origin = saved && parse<Delegation>(saved.data);
+          if (!origin || saved!.id !== notice.origin.id || saved!.companion_id !== input.companionId || saved!.source_message_id !== origin.sourceMessageId
+            || notice.id !== record.id || notice.companionId !== input.companionId || notice.conversationId !== input.conversationId
+            || notice.status !== 'done' || notice.kind !== 'peer_reply' || notice.resultMessageId !== messageId
+            || origin.companionId !== input.companionId || origin.conversationId !== input.conversationId || origin.sourceMessageId !== notice.sourceMessageId
+            || notice.sourceMessageId !== report.replyToId || !isDeepStrictEqual(notice.origin, this.publicOrigin(origin))
+            || notice.sourceChecksum !== origin.checksum || origin.recipientIds.some(owner => !this.active(owner))) { valid = false; break; }
+          const source = this.visible(input, [origin.sourceMessageId]).find(value => value.id === origin.sourceMessageId);
+          if (!source || source.authorId !== 'user' || source.conversationId !== input.conversationId || source.status !== 'sent'
+            || source.isReplyDraft || source.replyDraft || checksum(source) !== origin.checksum
+            || this.db.prepare('SELECT 1 FROM metadata WHERE key=?').get('world-room/' + input.conversationId)) { valid = false; break; }
+          const peerId = notice.evidence.messageId;
+          const peer = peerId && notice.peerConversationId ? this.visible({ companionId: input.companionId, conversationId: notice.peerConversationId }, [peerId])
+            .find(value => value.id === peerId) : undefined;
+          if (!peer || !peer.revision || peer.kind !== 'text' || peer.status !== 'sent' || peer.isReplyDraft || peer.replyDraft
+            || peer.conversationId !== notice.peerConversationId || peer.id !== notice.eventId || peer.authorId !== notice.evidence.authorId
+            || !origin.recipientIds.includes(peer.authorId) || peer.authorId === input.companionId || peer.content !== notice.evidence.text
+            || checksum(peer) !== notice.evidenceChecksum || peer.sequence >= report.sequence
+            || !proof.sources.some(value => value.id === peer.id && value.conversationId === peer.conversationId
+              && value.checksum === createHash('sha256').update(peer.content).digest('hex'))
+            || !proof.sources.some(value => value.id === source.id && value.conversationId === source.conversationId
+              && value.checksum === createHash('sha256').update(source.content).digest('hex'))) { valid = false; break; }
+          peers.set(peer.id, { messageId: peer.id, authorId: peer.authorId, conversationId: peer.conversationId, revision: peer.revision,
+            checksum: createHash('sha256').update(peer.content).digest('hex') });
+          authorities.push([record.id, record.companion_id, record.origin_id, record.status, record.data, saved!.data]);
+        }
+        if (!valid || !peers.size) continue;
+        result.push(companionSocialNotificationReceiptSchema.parse({ messageId, companionId: input.companionId, conversationId: input.conversationId,
+          revision: report.revision, checksum: createHash('sha256').update(report.content).digest('hex'), kind: 'peer_reply',
+          notificationIds: records.map(value => String(value.id)), peerReplies: [...peers.values()].sort((left, right) => left.messageId.localeCompare(right.messageId)),
+          observationChecksum: hash(authorities) }));
+      }
+      return result;
+    })();
   }
   stopNotification(companionId: string, id: string, stop: CompanionUserStop): CompanionTaskControlResult {
     return this.db.transaction(() => {
@@ -439,6 +514,7 @@ export class CompanionSocialContinuityStore {
     switch (command.type) {
       case 'social.delegation.record': this.record(command); return { ok: true };
       case 'social.notification.claim': return this.claim(command);
+      case 'social.notifications.receipts': return { ok: true, socialNotificationReceipts: this.notificationReceipts(command) };
       case 'social.notification.read': {
         const found = this.db.prepare('SELECT data FROM companion_social_notifications WHERE id=? AND companion_id=?').get(command.id, command.companionId);
         return { ok: true, ...(found ? { socialNotification: this.publicNotice(parse<Notice>(row(found).data)) } : {}) };

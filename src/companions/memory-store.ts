@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto';
+import { rethrowCompanionStorageUnavailable } from '../shared/companion-storage-failure';
 import { companionMemoryCandidateSchema, companionMemoryConsolidateSchema, companionMemorySearchSchema, companionMemoryForgetSchema, companionMemoryDescriptorSchema, type CompanionMemoryCandidate, type CompanionMemoryJob, type CompanionMemorySearch, type CompanionMemoryPage, type CompanionMemoryWriteReadReferences } from '../shared/companion-memory';
 import type { CompanionMemory, CompanionMessage } from '../shared/companions';
 import type { CompanionStorageCommand, CompanionStorageResponse, SaveCompanionMemory } from '../shared/companion-storage';
@@ -27,8 +28,16 @@ import { companionCaptureProposalSchema, type CompanionCaptureProposal } from '.
 import { companionMemoryContentKinds, companionMemoryKinds, companionMemoryKindAllowed, type CompanionMemoryArtifactKind } from '../shared/companion-memory-scope';
 import { companionQueueJobAdapter, failCompanionQueueJob, initializeCompanionJobDisposition, type CompanionJobControlAdapter } from './job-control-store';
 import type { CompanionJobFailureKind } from '../shared/companion-job-control';
+import type { CompanionReferenceValidationGroup, CompanionReferenceValidationResult } from '../shared/companion-reference-validation';
+import { companionMemorySnapshotRevisionScopeKey, normalizeCompanionMemorySnapshotRevisionScope,
+    type CompanionMemorySnapshotRevisionsResult } from '../shared/companion-memory-snapshot-revisions';
+import type { CompanionMemoryDocumentAuthorityCommand, CompanionMemoryDocumentAuthorityResult } from '../shared/companion-memory-document-authority';
 type Row = Record<string, string | number | null>;
 type MemoryMetadata = Omit<CompanionMemory, 'content'>;
+type RevisionReadWindow = {
+    scope: string; stamp: string; bodies: Map<string, ReturnType<CompanionMemoryLedger['readBody']>>;
+    active: Set<string>; completed: Set<string>; fiction: Map<string, boolean>;
+};
 type HostClassification = { consolidation?: true | 'source_version_graph'; automaticConsolidation?: true; sleepReflection?: true;
   sleepWorldJobId?: string; worldJobId?: string; sleepEpisodeId?: string; maintenanceMode?: 'sleep' | 'background'; maintenanceSessionId?: string;
   dreamMode?: 'sleep_dream' | 'rehearsal_dream'; captureEpisodeId?: string };
@@ -44,6 +53,7 @@ const stamp = () => new Date().toISOString();
 const hash = (value: unknown) => createHash('sha256').update(JSON.stringify(value)).digest('hex');
 /** Host journal ledger, evidence and delivery. Memory retrieval belongs exclusively to VCP. */
 export class CompanionMemoryStore {
+    private revisionReadWindow?: RevisionReadWindow;
     private deletedTopicSource(messageId: string): boolean {
         return !!this.db.prepare(`SELECT 1 FROM companion_message_topics m JOIN companion_topics t ON t.id=m.topic_id
           WHERE m.message_id=? AND json_extract(t.data,'$.deletedAt') IS NOT NULL`).get(messageId);
@@ -99,7 +109,7 @@ export class CompanionMemoryStore {
     takeInvalidatedOwners(): string[] { const ids = [...this.invalidatedOwners]; this.invalidatedOwners.clear(); return ids; }
     takeInvalidatedScopes(): string[] { const ids = [...this.invalidatedScopes]; this.invalidatedScopes.clear(); return ids; }
     takeChangedOwners(): string[] { const ids = [...this.changedOwners]; this.changedOwners.clear(); return ids; }
-    takeSourceOutboxOwners(): string[] { return this.sourceOutbox.takeChangedOwners(); }
+    takeSourceOutboxChanges(): { changedOwners: string[]; publicationQueuedOwners: string[] } { return this.sourceOutbox.takeChanges(); }
     lifecycleState(companionId: string) {
         const state = this.ledger.state(companionId), next = this.episodes.nextAt(companionId);
         return { ...state, ...(next !== undefined ? { nextCaptureAt: new Date(next).toISOString() } : {}) };
@@ -107,6 +117,7 @@ export class CompanionMemoryStore {
     lifecycleChanges(companionId: string, afterSequence: number, limit: number) { return this.ledger.changes(companionId, afterSequence, limit); }
     private readRevision(scope: Scope, id: string, contentRevision: number,
       state = { active: new Set<string>(), memo: new Map<string, CompanionMemory>() }): CompanionMemory {
+        if (this.revisionReadWindow?.scope === this.revisionScope(scope)) return this.readWindowRevision(scope, id, contentRevision);
         this.sources.requireScope(scope);
         const key = id + ':' + contentRevision;
         const checked = state.memo.get(key); if (checked) return checked;
@@ -123,6 +134,72 @@ export class CompanionMemoryStore {
             for (const dependency of revision.dependencies) this.readRevision(scope, dependency.id, dependency.contentRevision, state);
             state.memo.set(key, revision.memory); return revision.memory;
         } finally { state.active.delete(key); }
+    }
+    private revisionScope(scope: Scope): string { return JSON.stringify([scope.companionId, scope.conversationId, scope.beforeSequence ?? null]); }
+    private revisionStamp(): string {
+        const changes = this.db.prepare('SELECT total_changes() AS n').get() as { n: number };
+        const version = this.db.prepare('PRAGMA data_version').get() as { data_version: number };
+        return `${changes.n}:${version.data_version}`;
+    }
+    /** Only the existing synchronous multi-descriptor transaction owns this
+     * window. Completed physical walks confer no scope or root admission. */
+    private withRevisionReadWindow<T>(scope: Scope, operation: () => T): T {
+        const previous = this.revisionReadWindow;
+        // Nested single descriptors in a multi-root query share only this
+        // exact synchronous SQL window. Each root still admits its own scope.
+        if (previous?.scope === this.revisionScope(scope)) return operation();
+        const entryStamp = this.revisionStamp();
+        this.revisionReadWindow = { scope: this.revisionScope(scope), stamp: entryStamp, bodies: new Map(),
+            active: new Set(), completed: new Set(), fiction: new Map() };
+        try {
+            const result = this.sources.withValidation(operation);
+            if (entryStamp !== this.revisionStamp()) throw new Error('历史记忆读取期间数据库已经变化，请重新核验。');
+            return result;
+        } finally { this.revisionReadWindow = previous; }
+    }
+    private readWindowRevision(scope: Scope, id: string, contentRevision: number): CompanionMemory {
+        const window = this.revisionReadWindow!, stamp = this.revisionStamp();
+        if (window.stamp !== stamp) {
+            window.bodies.clear(); window.active.clear(); window.completed.clear(); window.fiction.clear(); window.stamp = stamp;
+        }
+        this.sources.requireScope(scope);
+        const body = (id: string, revision: number) => {
+            const key = id + ':' + revision;
+            if (!window.bodies.has(key)) window.bodies.set(key, this.ledger.readBody(scope.companionId, id, revision));
+            return window.bodies.get(key);
+        };
+        const rootKey = id + ':' + contentRevision;
+        if (window.active.has(rootKey)) throw new Error('历史记忆依赖无法核验。');
+        const root = body(id, contentRevision);
+        // Every root, including a previously walked dependency, needs its own
+        // exact owner/room/cursor admission before cached bytes can be used.
+        if (!root || !this.sources.frozenMemoryValid(scope, { id, contentRevision,
+            sources: root.memory.sources.map(source => ({ id: source.messageId, conversationId: source.conversationId, checksum: source.checksum })) }))
+            throw new Error('历史记忆已遗忘、来源撤回或不属于当前伙伴。');
+        const visit = (id: string, revision: number): void => {
+            const key = id + ':' + revision;
+            if (window.active.has(key)) throw new Error('历史记忆依赖无法核验。');
+            if (window.completed.has(key)) return;
+            if (window.completed.size + window.active.size >= 10000) throw new Error('历史记忆依赖无法核验。');
+            window.active.add(key);
+            try {
+                const current = body(id, revision);
+                if (!current || current.memory.sources.some(source => {
+                    if (!window.fiction.has(source.messageId)) window.fiction.set(source.messageId, this.fictionalSource(source.messageId));
+                    return window.fiction.get(source.messageId);
+                })) throw new Error('历史记忆已遗忘、来源撤回或不属于当前伙伴。');
+                for (const dependency of current.dependencies) visit(dependency.id, dependency.contentRevision);
+                window.completed.add(key);
+            } finally { window.active.delete(key); }
+        };
+        visit(id, contentRevision);
+        if (stamp !== this.revisionStamp()) {
+            window.bodies.clear(); window.completed.clear(); window.fiction.clear(); window.stamp = this.revisionStamp();
+            throw new Error('历史记忆读取期间数据库已经变化，请重新核验。');
+        }
+        // Parsed SQL bodies remain private even if an annotation/projector or
+        // caller mutates the memory it receives later in this same window.
+        return structuredClone(root.memory);
     }
     readonly sources: CompanionSourceAccess;
     private readonly development: CompanionCharacterDevelopmentStore;
@@ -141,14 +218,20 @@ export class CompanionMemoryStore {
         this.projection = new CompanionMemoryProjectionStore(db, { requireScope: scope => this.sources.requireScope(scope),
           visible: (scope, note) => this.visible(scope, note), lifecycle: owner => this.ledger.state(owner) });
         this.episodes = new CompanionMemoryEpisodes(db);
-        this.sources = new CompanionSourceAccess(db, getMessage, (owner, id, version, scope) => {
-          try { const note = this.load(id); return note.companionId === owner && (note.version === version || this.ledger.versionRevision(id, version) === note.contentRevision)
-            && this.visible(scope ?? this.sources.ownerScope(owner), note); } catch { return false; }
+        this.sources = new CompanionSourceAccess(db, getMessage, (owner, id, version, scope, onValidationError) => {
+          try {
+            const found = this.db.prepare('SELECT data FROM vcp_memory_notes WHERE id=?').get(id);
+            if (!found) return false;
+            const note = json<CompanionMemory>(row(found).data);
+            return note.companionId === owner && (note.version === version || this.ledger.versionRevision(id, version) === note.contentRevision)
+              && this.visible(scope ?? this.sources.ownerScope(owner), note);
+          } catch (error) { onValidationError?.(error); return false; }
         }, (owner, ids) => { this.invalidateOwner(owner, { operation: 'source_revoke', eventId: 'source-block/' + randomUUID(), sourceMessageIds: [...ids] });
           withdrawCompanionCaptureSources(this.db, owner, ids);
           retractCompanionMemoryHistorySources(this.db, owner, ids);
           this.sourceOutbox.retract(owner, ids); this.refreshProcedures(owner, ids); }); this.development = new CompanionCharacterDevelopmentStore(db, (scope, note) => this.visible(scope, note));
         this.historyOutbox = new CompanionMemoryHistoryOutboxStore(db, { ownerScope: owner => this.sources.ownerScope(owner),
+          withReadWindow: (scope, operation) => this.withRevisionReadWindow(scope, operation),
           authorize: (scope, id, revision) => { try { this.readRevision(scope, id, revision); return true; } catch { return false; } },
           annotations: (scope, id, revision) => ({ procedureValidation: this.project(this.readRevision(scope, id, revision), scope).procedure?.validation }) });
         this.sourceOutbox = new CompanionMemorySourceOutboxStore(db, (owner, id) => {
@@ -319,7 +402,7 @@ export class CompanionMemoryStore {
             return false;
         if (this.sources.blockedTag({ ...scope, conversationId: note.sourceConversationId }, note.tags, note.sourceSequence))
             return false;
-        if (!note.sources.every(reference => { const source = this.db.prepare('SELECT * FROM messages WHERE id=?').get(reference.messageId); return source && Number(row(source).revision ?? 1) === reference.revision && companionSourceChecksum(String(row(source).content)) === reference.checksum && this.sources.visible(scope, row(source)); }))
+        if (!note.sources.every(reference => { const source = this.sources.currentSourceRow(reference.messageId); return source && Number(row(source).revision ?? 1) === reference.revision && this.sources.currentSourceChecksum(row(source)) === reference.checksum && this.sources.visible(scope, row(source)); }))
             return false;
         return rows(this.db.prepare('SELECT source_note_id,version FROM vcp_note_dependencies WHERE note_id=?').all(note.id)).every(dependency => { const source = this.load(String(dependency.source_note_id)); return source.contentRevision === Number(dependency.version) && this.visible(scope, source, new Set(visited)); });
     }
@@ -1141,6 +1224,52 @@ export class CompanionMemoryStore {
           notes.map(note => [note.id, note.artifactKind, note.contentRevision, note.occurredAt, note.content, note.sources.map(source => [source.messageId, source.revision, source.checksum])])]);
         return { scopeId: 'view_' + revision.slice(0, 48), revision, semanticRevision, revocationEpoch: this.ledger.state(scope.companionId).revocationEpoch, notes: notes.map(note => this.project(note, scope)) };
     }
+    private validateReferences(groups: readonly CompanionReferenceValidationGroup[]): CompanionReferenceValidationResult {
+        return this.db.transaction(() => this.sources.withCurrentReferencesValidation(() => {
+            const ids = [...new Set(groups.flatMap(group => group.memories.map(memory => memory.id)))];
+            // Exact fields used by visibility and the descriptor protocol.
+            // Current prose, prompts and procedure/practice projections never
+            // enter this read or its JSON parse merely to compare a reference.
+            const found = ids.length ? this.db.prepare(`SELECT id,companion_id,json_object(
+              'id',json_extract(data,'$.id'),'companionId',json_extract(data,'$.companionId'),
+              'artifactKind',json_extract(data,'$.artifactKind'),'version',json_extract(data,'$.version'),
+              'contentRevision',json_extract(data,'$.contentRevision'),'status',json_extract(data,'$.status'),
+              'sourceConversationId',json_extract(data,'$.sourceConversationId'),'sourceSequence',json_extract(data,'$.sourceSequence'),
+              'sources',json_extract(data,'$.sources'),'tags',json_extract(data,'$.tags')) AS metadata
+              FROM vcp_memory_notes WHERE id IN(SELECT value FROM json_each(?))`).all(JSON.stringify(ids)) : [];
+            const notes = new Map<string, { owner: string; value: MemoryMetadata }>();
+            for (const entry of rows(found)) {
+                const metadata = json<MemoryMetadata>(entry.metadata);
+                if (metadata.contentRevision === null) delete metadata.contentRevision;
+                notes.set(String(entry.id), { owner: String(entry.companion_id), value: metadata });
+            }
+            const sourceIds = [...groups.flatMap(group => group.sources.map(source => source.id)),
+                ...[...notes.values()].flatMap(note => Array.isArray(note.value.sources) ? note.value.sources.map(source => source.messageId) : [])];
+            return this.sources.withCurrentReferenceRows(sourceIds, () => ({ groups: groups.map(group => {
+                const scope = { companionId: group.companionId, conversationId: group.conversationId,
+                    ...(group.beforeSequence === undefined ? {} : { beforeSequence: group.beforeSequence }) };
+                const denied = () => ({ ...scope, valid: false, sourceHeaders: [], memoryHeaders: [] });
+                const sourceHeaders = this.sources.currentReferenceHeaders(scope, group.sources);
+                if (!sourceHeaders) return denied();
+                const allSources = new Map(sourceHeaders.map(header => [header.id, header]));
+                const memoryHeaders = new Map<string, NonNullable<CompanionStorageResponse['memoryDescriptors']>[number]>();
+                for (const expected of group.memories) {
+                    const actual = notes.get(expected.id), note = actual?.value;
+                    if (!note || note.id !== expected.id || actual!.owner !== scope.companionId || note.companionId !== scope.companionId
+                        || expected.version !== undefined && note.version !== expected.version
+                        || expected.artifactKinds && !expected.artifactKinds.includes(note.artifactKind) || !this.visible(scope, note)) return denied();
+                    memoryHeaders.set(note.id, companionMemoryDescriptorSchema.parse(note));
+                }
+                const noteSources = [...memoryHeaders.values()].flatMap(note => note.sources.map(source => ({ id: source.messageId,
+                    conversationId: source.conversationId, revision: source.revision, checksum: source.checksum })));
+                const noteHeaders = this.sources.currentReferenceHeaders(scope, noteSources);
+                if (!noteHeaders) return denied();
+                for (const header of noteHeaders) allSources.set(header.id, header);
+                if (allSources.size > 10000) throw new RangeError('准确来源元数据超过单批完整核验预算。');
+                return { ...scope, valid: true, sourceHeaders: [...allSources.values()], memoryHeaders: [...memoryHeaders.values()] };
+            }) }));
+        }))();
+    }
     domains(scope: Scope): NonNullable<CompanionStorageResponse['memoryDomains']> { this.sources.requireScope(scope); return rows(this.db.prepare('SELECT * FROM vcp_memory_scopes WHERE companion_id=? ORDER BY scope_id').all(scope.companionId)).map(domain => ({ scopeId: String(domain.scope_id), companionId: String(domain.companion_id), conversationId: String(domain.conversation_id), revision: Number(domain.revision), state: domain.state as 'dirty' | 'ready', updatedAt: String(domain.updated_at) })); }
     private transitiveSourceIds(note: CompanionMemory): string[] {
         const ids = new Set<string>(), visited = new Set<string>(), pending = [note.id];
@@ -1465,7 +1594,7 @@ export class CompanionMemoryStore {
     }
     private libraryVisible(owner: string, note: CompanionMemory): boolean {
         try { return note.companionId === owner && this.visible(this.sources.ownerScope(owner), note); }
-        catch { return false; }
+        catch (error) { rethrowCompanionStorageUnavailable(error); return false; }
     }
     private libraryIndexState(owner: string): NonNullable<CompanionStorageResponse['memoryLibraryIndexState']> {
         if (!this.db.prepare('SELECT 1 FROM companions WHERE id=? AND deleted_at IS NULL').get(owner)) throw new Error('伙伴不存在。');
@@ -1477,6 +1606,58 @@ export class CompanionMemoryStore {
     private libraryFence(owner: string, revision: number, throughOrdinal: number): void {
         const current = this.libraryIndexState(owner);
         if (current.resetRevision !== revision || throughOrdinal > current.throughOrdinal) throw new Error('管理索引来源或权限已变化，请重建授权索引。');
+    }
+    /** One fresh SQL frame for a bounded document page. This shares physical
+     * source rows and the already-existing published-DAG validation window,
+     * never qualification between different reader/room/cursor predicates.
+     * A later final command always starts a new transaction and window. */
+    private documentAuthority(command: CompanionMemoryDocumentAuthorityCommand): CompanionStorageResponse {
+        return this.db.transaction(() => this.sources.withCurrentReferenceRows(command.sources?.ids ?? [], () => {
+            const entryStamp = this.revisionStamp();
+            const memories: CompanionMemory[] = [];
+            const noteIds = [...new Set(command.noteIds)];
+            for (let offset = 0; offset < noteIds.length; offset += 100) {
+                const result = this.execute({ type: 'memory.library.read-many', companionId: command.companionId,
+                    ids: noteIds.slice(offset, offset + 100) });
+                if (!result?.ok || !result.memories) throw new Error('Page current-note authority is unavailable.');
+                memories.push(...result.memories);
+            }
+            const checked = new Map<string, CompanionMemorySnapshotRevisionsResult['groups'][number]>();
+            const matchedScopes = new Set<string>();
+            const navigation: CompanionMemoryDocumentAuthorityResult['navigation'] = [];
+            for (const expected of command.navigation) {
+                const scope = normalizeCompanionMemorySnapshotRevisionScope(expected.scope);
+                if (scope.companionId !== command.companionId) throw new Error('Page navigation owner does not match.');
+                const key = companionMemorySnapshotRevisionScopeKey(scope);
+                let group = checked.get(key);
+                if (!group) {
+                    const result = this.execute({ type: 'memory.snapshot.revisions', scopes: [scope] });
+                    group = result?.ok ? result.memorySnapshotRevisions?.groups[0] : undefined;
+                    if (!group || companionMemorySnapshotRevisionScopeKey(group.scope) !== key)
+                        throw new Error('Page navigation authority is incomplete.');
+                    checked.set(key, group);
+                }
+                const matches = group.valid && (group.semanticRevision ?? group.revision) === expected.expectedRevision;
+                if (matches) matchedScopes.add(key);
+                navigation.push({ scope, expectedRevision: expected.expectedRevision, valid: group.valid, matches,
+                    revision: group.revision, ...(group.semanticRevision !== undefined ? { semanticRevision: group.semanticRevision } : {}) });
+            }
+            const historical = command.history ? this.execute({ type: 'memory.revisions.describe', companionId: command.companionId,
+                conversationId: command.history.conversationId, beforeSequence: command.history.beforeSequence, roots: command.history.roots }) : undefined;
+            if (command.history && (!historical?.ok || !historical.memoryHistoryDescriptors))
+                throw new Error('Page historical authority is incomplete.');
+            const sourceScope = command.sources ? { companionId: command.companionId, conversationId: command.sources.conversationId,
+                beforeSequence: command.sources.beforeSequence } : undefined;
+            const headers = sourceScope && command.sources ? this.sources.sourceHeaders(sourceScope, command.sources.ids) : undefined;
+            const legacy = sourceScope && headers?.unsupportedIds.length ? this.sources.filter(sourceScope, headers.unsupportedIds) : undefined;
+            const response: CompanionStorageResponse = { ok: true, memories, memoryDocumentAuthority: { navigation },
+                ...(checked.size ? { memorySnapshotRevisions: { groups: [...checked].map(([key, group]) => matchedScopes.has(key)
+                    ? group : { ...group, valid: false, memories: [] }) } } : {}),
+                ...(historical ? { memoryHistoryDescriptors: historical.memoryHistoryDescriptors } : {}),
+                ...(headers ? { memorySourceHeaders: headers } : {}), ...(legacy ? { memorySources: legacy } : {}) };
+            if (entryStamp !== this.revisionStamp()) throw new Error('Page SQL authority changed during its read transaction.');
+            return response;
+        }))();
     }
     execute(command: CompanionStorageCommand): CompanionStorageResponse | undefined {
         const projection = this.projection.execute(command); if (projection) return projection;
@@ -1501,6 +1682,10 @@ export class CompanionMemoryStore {
           return { ok: true, memoryFileState: { ...value, pending } };
         }
         switch (command.type) {
+            case 'memory.documents.authority': return this.documentAuthority(command);
+            case 'memory.references.validate': return { ok: true, memoryReferenceValidation: this.validateReferences(command.groups) };
+            case 'memory.sources.headers': return this.db.transaction(() => ({ ok: true,
+                memorySourceHeaders: this.sources.sourceHeaders(command, command.ids) }))();
             case 'memory.procedure.observe-action': return this.db.transaction(() => ({ ok: true,
                 memories: this.procedures.observeAction(command.actionId).flatMap(observation => {
                     const note = this.annotateProcedure(observation.noteId, observation.contentRevision, observation.validation);
@@ -1560,6 +1745,16 @@ export class CompanionMemoryStore {
                 if (!this.libraryVisible(command.companionId, note)) return { ok: true };
                 return { ok: true, memoryRead: this.read(scope, note.id, command.sourceLimit, command.sourceCursor) };
             }
+            case 'memory.library.read-many': return this.sources.withValidation(() => {
+                const scope = this.sources.ownerScope(command.companionId), memories: CompanionMemory[] = [];
+                for (const id of new Set(command.ids)) {
+                    if (!this.db.prepare('SELECT 1 FROM vcp_memory_notes WHERE id=?').get(id)) continue;
+                    const note = this.load(id);
+                    if (note.companionId !== command.companionId) throw new Error('日记不属于此伙伴。');
+                    if (this.libraryVisible(command.companionId, note)) memories.push(this.project(note, scope));
+                }
+                return { ok: true, memories };
+            });
             case 'memory.library.delete': return this.db.transaction(() => {
                 const note = this.load(command.id);
                 if (note.companionId !== command.companionId || note.version !== command.expectedVersion) throw new Error('日记所属伙伴或版本已变化，请重新读取。');
@@ -1581,17 +1776,58 @@ export class CompanionMemoryStore {
             case 'memory.browse': return { ok: true, memoryPage: this.browse(command) };
             case 'memory.sources.filter': return { ok: true, memorySources: this.sourcesFilter(command, command.ids) };
             case 'memory.records.describe': return { ok: true, memoryDescriptors: command.ids.map(id => { try { return this.load(id); } catch { return undefined; } })
-                .filter((note): note is CompanionMemory => !!note && this.visible(command, note)).map(note => companionMemoryDescriptorSchema.parse(this.project(note, command))) };
+                .filter((note): note is CompanionMemory => !!note && this.visible(command, note)).map(note => companionMemoryDescriptorSchema.parse(note)) };
+            case 'memory.procedures.status': return this.db.transaction(() => this.sources.withValidation(() => {
+                this.sources.requireScope(command);
+                const statuses: NonNullable<CompanionStorageResponse['memoryProcedureStatuses']> = [], headers: NonNullable<CompanionStorageResponse['memoryDescriptors']> = [];
+                const seen = new Set<string>();
+                for (const reference of command.references) {
+                    if (seen.has(reference.id)) continue;
+                    const found = this.db.prepare('SELECT data FROM vcp_memory_notes WHERE id=?').get(reference.id);
+                    if (!found) continue;
+                    const note = json<CompanionMemory>(row(found).data);
+                    if (note.id !== reference.id) throw new Error('方法状态的当前SQL行与正文身份不一致。');
+                    if (!command.references.some(expected => expected.id === note.id && expected.contentRevision === note.contentRevision)
+                        || !note.procedure || !this.visible(command, note)) continue;
+                    const actual = this.project(note, command);
+                    if (!actual.procedure || !actual.contentRevision) continue;
+                    seen.add(note.id);
+                    statuses.push({ memoryId: actual.id, contentRevision: actual.contentRevision, ...actual.procedure.validation });
+                    headers.push(companionMemoryDescriptorSchema.parse(actual));
+                }
+                return { ok: true as const, memoryProcedureStatuses: statuses, memoryDescriptors: headers };
+            }))();
             case 'memory.records.filter': return { ok: true, memories: command.ids.map(id => { try {
                     return this.load(id);
                 }
-                catch {
+                catch (error) {
+                    rethrowCompanionStorageUnavailable(error);
                     return undefined;
                 } }).filter((note): note is CompanionMemory => !!note && this.visible(command, note)).map(note => this.project(note, command)) };
             case 'memory.read':
             case 'memory.inspect': return { ok: true, memoryRead: this.read(command, command.id, command.sourceLimit, command.sourceCursor) };
             case 'memory.domains': return { ok: true, memoryDomains: this.domains(command) };
             case 'memory.snapshot': return { ok: true, memorySnapshot: this.snapshot(command) };
+            case 'memory.snapshot.revisions': return this.db.transaction(() => this.sources.withValidation(() => {
+                const checked = new Map<string, CompanionMemorySnapshotRevisionsResult['groups'][number]>();
+                return { ok: true, memorySnapshotRevisions: { groups: command.scopes.map(input => {
+                    const scope = normalizeCompanionMemorySnapshotRevisionScope(input), key = companionMemorySnapshotRevisionScopeKey(scope);
+                    const known = checked.get(key); if (known) return known;
+                    let group: CompanionMemorySnapshotRevisionsResult['groups'][number];
+                    try {
+                        // Exactly the original snapshot algorithm, including current
+                        // source/forget/publication/cursor predicates. Only its prose
+                        // projection is absent from this metadata-only response.
+                        const snapshot = this.snapshot(scope);
+                        group = { scope, valid: true, revision: snapshot.revision, semanticRevision: snapshot.semanticRevision,
+                            memories: snapshot.notes.map(note => companionMemoryDescriptorSchema.parse(note)) };
+                    } catch (error) {
+                        rethrowCompanionStorageUnavailable(error);
+                        group = { scope, valid: false, revision: '', memories: [] };
+                    }
+                    checked.set(key, group); return group;
+                }) } };
+            }))();
             case 'memory.frozen.valid': return { ok: true, memoryFrozenValid: command.memories.every(memory => this.sources.frozenMemoryValid(command, memory)) };
             case 'character.development': this.sources.requireScope(command); return { ok: true, characterDevelopment: this.development.read(command, command.limit ?? 12) };
             case 'character.development.scopes.page': return { ok: true, characterDevelopmentScopes: this.development.scopes(command) };

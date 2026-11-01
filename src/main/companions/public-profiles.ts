@@ -9,6 +9,7 @@ import { CompanionAssetProfileStore } from './asset-profile';
 import { COMPANION_APPEARANCE_FILES, COMPANION_PORTRAIT_FILES } from '../../shared/companion-portrait-files';
 import { builtinCompanionId } from '../../shared/companion-personas';
 import { COMPANION_TEMPLATE_IDS } from '../../shared/companion-template-ids';
+import { createCompanionExecutionValidationSession, memoCompanionExecutionAdmission } from './source-execution-evidence';
 
 const MAX_IMAGE_BYTES = 20 * 1024 * 1024;
 const MAX_VISUAL_BYTES = 1024 * 1024;
@@ -20,11 +21,17 @@ const boardFile = (owner: Pick<Companion, 'id' | 'templateId'>) => {
   return COMPANION_APPEARANCE_FILES[id];
 };
 type PortraitRole = 'avatar' | 'orthographic';
+type RuntimeImageSelection = Pick<Companion, 'id' | 'avatar' | 'templateId' | 'avatarAttachmentId' | 'appearanceAttachmentId'>;
+type PresentationOwnerProfile = { companionId: string; root: string };
+type PublicProfilePrepareInput = { companionId: string; conversation: Pick<CompanionConversation, 'id' | 'memberIds'>;
+  sourceAuthorId?: string; audience?: 'player' | 'peers'; directory?: boolean; taskKey?: string };
+interface PublicPresentation { value: CompanionProfileInput; binding: string; cacheable: boolean }
 export interface CompanionOwnerImage { bytes: Buffer; mime: string; sha256: string; fileRevision: string }
 const imageStamp = (info: Awaited<ReturnType<typeof lstat>>) => [info.dev, info.ino, info.size, info.mtimeMs, info.ctimeMs].join(':');
 
 /** Resolve only host-owned portrait IDs, and keep pixels out of durable chat checkpoints. */
 export class CompanionPublicProfiles {
+  private materializations = 0;
   private readonly portraits = new Map<string, Promise<string | undefined>>();
   private readonly assetProfiles?: CompanionAssetProfileStore;
   private readonly imageChecks = new Map<string, Promise<boolean>>();
@@ -38,6 +45,12 @@ export class CompanionPublicProfiles {
   constructor(private readonly options: { root: string; appPath: string; libraryDirectory?: string; profileStore?: CompanionAssetProfileStore;
     portraitInitialized?(ownerId: string, role: 'avatar' | 'orthographic'): Promise<boolean>;
     markPortraitInitialized?(ownerId: string, role: 'avatar' | 'orthographic'): Promise<void>;
+    /** Live SQL membership/configuration, without hydrating every owner's
+     * canonical profile before prepare admits the actual room members. */
+    readStateMetadata?(): Promise<CompanionStorageResponse['state']>;
+    /** Current image selection only. Its SQL existence check must not hydrate
+     * the canonical persona already admitted by the image/profile read. */
+    readRuntimeSelection?(ownerId: string): Promise<RuntimeImageSelection>;
     request(command: CompanionStorageCommand): Promise<CompanionStorageResponse> }) {
     this.assetProfiles = options.profileStore ?? (options.libraryDirectory ? new CompanionAssetProfileStore(options.libraryDirectory) : undefined);
   }
@@ -75,6 +88,28 @@ export class CompanionPublicProfiles {
   /** Saved contacts expose only their editable owner copy. Template/source
    * materialization is a one-time factory guarded by the durable role receipt. */
   async runtimeImages(owner: Companion, options: { initialize?: boolean } = {}): Promise<CompanionAssetImages> {
+    return this.runtimeImagesInPresentation(owner, options);
+  }
+
+  /** One finite display read admits the current role once. The private root
+   * is used only while this gate is open; protocol image reads and the next
+   * state refresh still enter independently and admit their current files. */
+  async runtimePresentation(owner: Companion, options: { initialize?: boolean } = {}): Promise<Companion> {
+    if (!this.assetProfiles) return { ...owner, assetImages: await this.runtimeImages(owner, options) };
+    const gate = createCompanionExecutionValidationSession();
+    try {
+      const result = await gate.run(async () => {
+        const snapshot = await (options.initialize === false ? this.assetProfiles!.loadProfile(owner.id) : this.assetProfiles!.bootstrapProfile(owner));
+        const current = this.assetProfiles!.hydrateProfileFromSnapshot(owner, snapshot);
+        const assetImages = await this.runtimeImagesInPresentation(current, options, { companionId: snapshot.companionId, root: snapshot.root });
+        return { ...current, assetImages };
+      });
+      await gate.validate();
+      return result;
+    } finally { gate.close(); }
+  }
+
+  private async runtimeImagesInPresentation(owner: Companion, options: { initialize?: boolean }, admitted?: PresentationOwnerProfile): Promise<CompanionAssetImages> {
     if (!this.assetProfiles || owner.assetProfileError) return {};
     const images: CompanionAssetImages = {};
     for (const role of ['avatar', 'orthographic'] as const) {
@@ -83,7 +118,7 @@ export class CompanionPublicProfiles {
         const selected = role === 'avatar' ? owner.avatarAttachmentId : owner.appearanceAttachmentId;
         if (!selected && (role === 'avatar' ? owner.avatar === 'custom' : !owner.builtin || !boardFile(owner))) { this.runtimeImageChecks.delete(key); continue; }
         let file;
-        try { file = options.initialize === false ? await this.ownerImageFile(owner.id, role) : await this.runtimeOwnerImageFile(owner, role); }
+        try { file = options.initialize === false ? await this.ownerImageFile(owner.id, role, admitted) : await this.runtimeOwnerImageFile(owner, role, admitted); }
         catch (error) {
           // A missing body/receipt after durable initialization is an empty
           // state. Only a genuinely new role may enter the copy factory.
@@ -106,7 +141,7 @@ export class CompanionPublicProfiles {
         const signature = sha(Buffer.from([file.path, file.stamp, file.proof].join('\0')));
         let metadata = this.runtimeImageChecks.get(key);
         if (metadata?.signature !== signature) {
-          const image = await this.readOwnerImage(owner.id, role);
+          const image = await (admitted ? this.readOwnerImageInPresentation(owner.id, role, admitted) : this.readOwnerImage(owner.id, role));
           if (!image) { this.runtimeImageChecks.delete(key); continue; }
           metadata = { signature: image.fileRevision, sha256: image.sha256, fileRevision: image.fileRevision, acknowledged: metadata?.acknowledged };
           this.runtimeImageChecks.set(key, metadata);
@@ -128,8 +163,8 @@ export class CompanionPublicProfiles {
     return images;
   }
 
-  private async runtimeOwnerImageFile(owner: Companion, role: PortraitRole) {
-    try { return await this.ownerImageFile(owner.id, role); }
+  private async runtimeOwnerImageFile(owner: Companion, role: PortraitRole, admitted?: PresentationOwnerProfile) {
+    try { return await this.ownerImageFile(owner.id, role, admitted); }
     catch (error) {
       if ((error as { code?: string }).code !== 'MISSING') throw error;
       // Only the profile factory may decide whether this is a new owner.
@@ -139,14 +174,20 @@ export class CompanionPublicProfiles {
     }
   }
 
-  private async runtimeSelection(ownerId: string): Promise<Companion> {
+  private async runtimeSelection(ownerId: string): Promise<RuntimeImageSelection> {
+    if (this.options.readRuntimeSelection) {
+      const selected = await this.options.readRuntimeSelection(ownerId);
+      if (selected.id !== ownerId) throw new Error('伙伴当前运行形象选择不可核验。');
+      return selected;
+    }
     const response = await this.options.request({ type: 'companion.assets.initialized', companionId: ownerId });
     if (!response.ok || !response.companion || response.companion.id !== ownerId) throw new Error('伙伴当前运行形象选择不可核验。');
     return response.companion;
   }
-  private async ownerImageFile(ownerId: string, role: PortraitRole): Promise<{ path: string; stamp: string; proof: string } | undefined> {
+  private async ownerImageFile(ownerId: string, role: PortraitRole, admitted?: PresentationOwnerProfile): Promise<{ path: string; stamp: string; proof: string } | undefined> {
     if (!this.assetProfiles) return undefined;
-    const snapshot = await this.assetProfiles.loadProfile(ownerId), profile = await this.runtimeSelection(ownerId);
+    if (admitted && admitted.companionId !== ownerId) throw new Error('Portrait admission belongs to another owner.');
+    const snapshot = admitted ?? await this.assetProfiles.loadProfile(ownerId), profile = await this.runtimeSelection(ownerId);
     const selected = role === 'avatar' ? profile.avatarAttachmentId : profile.appearanceAttachmentId;
     if (!selected && (role === 'avatar' ? profile.avatar === 'custom' : !boardFile(profile))) return undefined;
     const directory = path.join(snapshot.root, '形象'), actualOwner = await realpath(snapshot.root);
@@ -163,12 +204,18 @@ export class CompanionPublicProfiles {
     const file = path.join(directory, name), stat = await lstat(file);
     if (!stat.isFile() || stat.isSymbolicLink() || stat.nlink !== 1 || stat.size <= 0 || stat.size > MAX_IMAGE_BYTES
       || path.dirname(await realpath(file)) !== await realpath(directory)) throw new Error('Invalid owner portrait file.');
-    return { path: file, stamp: imageStamp(stat), proof: snapshot.profileRevision + '\0' + sha(Buffer.from(text)) };
+    // A current role must remain strictly readable, but a persona-only growth
+    // publication is not a change to these selected pixels or their receipt.
+    return { path: file, stamp: imageStamp(stat), proof: JSON.stringify([ownerId, role, selected ?? null,
+      role === 'avatar' ? profile.avatar : profile.templateId ?? null, sha(Buffer.from(text))]) };
   }
 
   /** Protocol reads are fresh, bounded and never initialize or repair files. */
   async readOwnerImage(ownerId: string, role: PortraitRole): Promise<CompanionOwnerImage | undefined> {
-    const file = await this.ownerImageFile(ownerId, role); if (!file) return undefined;
+    return this.readOwnerImageInPresentation(ownerId, role);
+  }
+  private async readOwnerImageInPresentation(ownerId: string, role: PortraitRole, admitted?: PresentationOwnerProfile): Promise<CompanionOwnerImage | undefined> {
+    const file = await this.ownerImageFile(ownerId, role, admitted); if (!file) return undefined;
     const handle = await open(file.path, 'r');
     try {
       const stat = await handle.stat();
@@ -177,22 +224,54 @@ export class CompanionPublicProfiles {
       while (offset < bytes.length) { const read = await handle.read(bytes, offset, bytes.length - offset, offset); if (!read.bytesRead) throw new Error('Owner portrait truncated.'); offset += read.bytesRead; }
       const metadata = await sharp(bytes, { limitInputPixels: 64 * 1024 * 1024 }).metadata();
       if (!metadata.width || !metadata.height || !['png', 'jpeg', 'webp', 'gif'].includes(metadata.format)) throw new Error('Invalid owner portrait pixels.');
-      const current = await this.ownerImageFile(ownerId, role);
+      const current = await this.ownerImageFile(ownerId, role, admitted);
       if (!current || current.path !== file.path || current.stamp !== file.stamp || current.proof !== file.proof || imageStamp(await handle.stat()) !== file.stamp) throw new Error('Owner portrait changed during read.');
       return { bytes, mime: 'image/' + metadata.format, sha256: sha(bytes), fileRevision: sha(Buffer.from([file.path, file.stamp, file.proof].join('\0'))) };
     } finally { await handle.close(); }
   }
 
-  async prepare(input: { companionId: string; conversation: Pick<CompanionConversation, 'id' | 'memberIds'>;
-    sourceAuthorId?: string; audience?: 'player' | 'peers'; directory?: boolean }): Promise<CompanionProfileInput> {
-    const state = (await this.options.request({ type: 'state', includeHidden: true })).state;
-    if (!state) return { publicProfiles: [], visualInputs: [] };
+  async prepare(input: PublicProfilePrepareInput): Promise<CompanionProfileInput> {
+    let admitted: PublicPresentation | undefined;
+    const key = JSON.stringify([input.companionId, input.conversation.id, input.sourceAuthorId ?? null,
+      input.audience ?? 'player', !!input.directory, input.taskKey ?? null]);
+    return memoCompanionExecutionAdmission(key, { identity: this,
+      read: async () => { admitted = await this.admitPresentation(input, false); return admitted.value; },
+      cacheable: () => admitted?.cacheable === true,
+      verify: async () => {
+        const current = await this.admitPresentation(input, true);
+        if (!admitted || current.binding !== admitted.binding) throw new Error('本轮公开资料、成员或所选形象已经变化，旧展示不可继续发送。');
+      } });
+  }
+  /** Mutable current-role files belong to this finite display admission, not
+   * the task's sealed persona. Its parent retains the actual public projection
+   * and re-admits that exact projection, selection and pixels at its final fence. */
+  private async admitPresentation(input: PublicProfilePrepareInput, readOnly: boolean): Promise<PublicPresentation> {
+    const gate = createCompanionExecutionValidationSession(), before = this.materializations;
+    try {
+      const result = await gate.run(() => this.preparePresentation(input, readOnly));
+      await gate.validate();
+      return { ...result, cacheable: this.materializations === before };
+    } finally { gate.close(); }
+  }
+  private async preparePresentation(input: PublicProfilePrepareInput, readOnly: boolean): Promise<Omit<PublicPresentation, 'cacheable'>> {
+    const state = this.options.readStateMetadata ? await this.options.readStateMetadata()
+      : (await this.options.request({ type: 'state', includeHidden: true })).state;
+    if (!state) throw new Error('本轮公开资料的真实入口暂不可核验。');
     const room = state.conversations.find(item => item.id === input.conversation.id);
-    const memberIds = room?.memberIds ?? input.conversation.memberIds;
-    if (!memberIds.includes(input.companionId)) return { publicProfiles: [], visualInputs: [] };
+    if (!room || !room.memberIds.includes(input.companionId)
+      || !state.companions.some(member => member.id === input.companionId))
+      throw new Error('本轮公开资料的伙伴或真实成员入口已经不可用。');
+    const memberIds = room.memberIds;
+    // One strict role admission per owner in this finite presentation. The
+    // independent final presentation creates its own map and reads it fresh.
+    const admittedOwners = new Map<string, PresentationOwnerProfile>();
     const members = (await Promise.all(state.companions.filter(item => input.directory || memberIds.includes(item.id)).map(async member => {
       if (!this.assetProfiles) return member;
-      try { return this.assetProfiles.hydrateProfileFromSnapshot(member, await this.assetProfiles.bootstrapProfile(member)); }
+      try {
+        const snapshot = await (readOnly ? this.assetProfiles.loadProfile(member.id) : this.assetProfiles.bootstrapProfile(member));
+        admittedOwners.set(member.id, { companionId: snapshot.companionId, root: snapshot.root });
+        return this.assetProfiles.hydrateProfileFromSnapshot(member, snapshot);
+      }
       catch (error) {
         if (member.id === input.companionId) throw error;
         // A damaged peer asset namespace must not stop a healthy resident.
@@ -208,8 +287,25 @@ export class CompanionPublicProfiles {
     }
     for (const member of members) publicProfiles.push({ id: member.id, kind: 'companion', name: member.name,
       description: member.description, revision: member.revision,
-      avatar: member.avatarAttachmentId ? await this.attachment(member.avatarAttachmentId, member, 'avatar') : await this.builtinImage(member),
-      orthographic: member.appearanceAttachmentId ? await this.attachment(member.appearanceAttachmentId, member, 'orthographic') : await this.builtinImage(member, 'orthographic') });
+      avatar: readOnly && this.assetProfiles ? await this.currentOwnerPublicImage(member, 'avatar', admittedOwners.get(member.id))
+        : member.avatarAttachmentId ? await this.attachment(member.avatarAttachmentId, member, 'avatar', false, admittedOwners.get(member.id)) : await this.builtinImage(member),
+      orthographic: readOnly && this.assetProfiles ? await this.currentOwnerPublicImage(member, 'orthographic', admittedOwners.get(member.id))
+        : member.appearanceAttachmentId ? await this.attachment(member.appearanceAttachmentId, member, 'orthographic', false, admittedOwners.get(member.id)) : await this.builtinImage(member, 'orthographic') });
+    const images: unknown[] = [];
+    for (const profile of publicProfiles) for (const role of ['avatar', 'orthographic'] as const) {
+      const image = profile[role]; if (!image?.available) continue;
+      if (profile.kind === 'companion' && this.assetProfiles) {
+        const admitted = admittedOwners.get(profile.id); if (!admitted) throw new Error('Public portrait lacks its current role admission.');
+        const file = await this.ownerImageFile(profile.id, role, admitted), current = await this.readOwnerImageInPresentation(profile.id, role, admitted);
+        if (!file || !current || file.path !== image.absolutePath || current.fileRevision !== sha(Buffer.from([file.path, file.stamp, file.proof].join('\0'))))
+          throw new Error('公开形象的当前选择或像素已经变化。');
+        image.sha256 = current.sha256; images.push([profile.id, role, file.path, file.proof, current.sha256]);
+      } else {
+        const before = await this.fileSignature(image.absolutePath), bytes = await readFile(image.absolutePath);
+        if (!before || await this.fileSignature(image.absolutePath) !== before) throw new Error('玩家公开形象在读取时改变。');
+        image.sha256 = sha(bytes); images.push([profile.id, role, image.absolutePath, image.sha256]);
+      }
+    }
     // Every actual member's public setting is known. Pixels concentrate on the
     // two current speakers, with the standard three-view board taking priority.
     const currentIds = new Set([input.companionId, input.sourceAuthorId].filter(Boolean));
@@ -221,22 +317,40 @@ export class CompanionPublicProfiles {
       if (pixels) visualInputs.push({ personId: profile.id, role, mime: 'image/jpeg', ...pixels });
       else image.available = false;
     }
-    return { publicProfiles, visualInputs };
+    return { value: { publicProfiles, visualInputs }, binding: JSON.stringify({ room: [room.id, room.kind, room.memberIds],
+      audience: input.audience ?? 'player', directory: !!input.directory,
+      members: members.map(member => [member.id, member.active !== false, member.avatar, member.templateId ?? null,
+        member.avatarAttachmentId ?? null, member.appearanceAttachmentId ?? null]),
+      playerSelection: input.audience === 'peers' ? null : [state.playerProfile?.avatarAttachmentId ?? null, state.playerProfile?.appearanceAttachmentId ?? null],
+      publicProfiles, images, visualInputs: visualInputs.map(({ personId, role, mime, sha256 }) => ({ personId, role, mime, sha256 })) }) };
+  }
+  private async currentOwnerPublicImage(owner: Companion, role: PortraitRole, admitted?: PresentationOwnerProfile): Promise<CompanionPublicImage | undefined> {
+    const selected = role === 'avatar' ? owner.avatarAttachmentId : owner.appearanceAttachmentId;
+    const stored = selected ? (await this.options.request({ type: 'attachment.get', id: selected })).storedAttachment : undefined;
+    if (selected && (!stored || !/^image\/(?:png|jpeg|webp|gif)$/u.test(stored.attachment.mime))) return undefined;
+    if (!selected && (role === 'avatar' ? owner.avatar === 'custom' : !owner.builtin || !boardFile(owner))) return undefined;
+    const candidate = path.join(this.assetProfiles!.libraryDirectory, owner.id, '形象', role + '.png');
+    try {
+      const file = await this.ownerImageFile(owner.id, role, admitted);
+      return file ? { absolutePath: file.path, mime: 'image/' + (path.extname(file.path).slice(1) === 'jpg' ? 'jpeg' : path.extname(file.path).slice(1)),
+        available: await this.readableImage(file.path) } : undefined;
+    } catch { return { absolutePath: candidate, mime: stored?.attachment.mime ?? 'image/png', available: false }; }
   }
 
-  private async attachment(id?: string, owner?: Companion, role: 'avatar' | 'orthographic' = 'avatar', explicitSelection = false): Promise<CompanionPublicImage | undefined> {
+  private async attachment(id?: string, owner?: Companion, role: 'avatar' | 'orthographic' = 'avatar', explicitSelection = false, admitted?: PresentationOwnerProfile): Promise<CompanionPublicImage | undefined> {
     if (!id) return undefined;
     const stored = (await this.options.request({ type: 'attachment.get', id })).storedAttachment;
     if (!stored || !/^image\/(?:png|jpeg|webp|gif)$/u.test(stored.attachment.mime)) return undefined;
     const candidate = owner && this.assetProfiles ? path.resolve(this.assetProfiles.libraryDirectory, owner.id, '形象', role + '.png')
       : path.resolve(this.options.root, stored.relativePath);
-    try { const absolutePath = owner && this.assetProfiles ? await this.materializeAttachment(owner, role, stored, explicitSelection) : await this.managedFile(stored);
+    try { const absolutePath = owner && this.assetProfiles ? await this.materializeAttachment(owner, role, stored, explicitSelection, admitted) : await this.managedFile(stored);
       return { absolutePath, mime: stored.attachment.mime, available: await this.readableImage(absolutePath) }; }
     catch { return { absolutePath: candidate, mime: stored.attachment.mime, available: false }; }
   }
-  private async materializeAttachment(owner: Companion, role: 'avatar' | 'orthographic', stored: StoredCompanionAttachment, explicitSelection: boolean): Promise<string> {
+  private async materializeAttachment(owner: Companion, role: 'avatar' | 'orthographic', stored: StoredCompanionAttachment, explicitSelection: boolean, admitted?: PresentationOwnerProfile): Promise<string> {
     if (stored.sourcePath) throw new Error('Public portraits must be managed copies.');
-    const snapshot = await this.assetProfiles!.bootstrapProfile(owner), current = await this.runtimeSelection(owner.id), selected = role === 'avatar' ? current.avatarAttachmentId : current.appearanceAttachmentId;
+    if (admitted && admitted.companionId !== owner.id) throw new Error('Portrait admission belongs to another owner.');
+    const snapshot = admitted ?? await this.assetProfiles!.bootstrapProfile(owner), current = await this.runtimeSelection(owner.id), selected = role === 'avatar' ? current.avatarAttachmentId : current.appearanceAttachmentId;
     if (selected !== stored.attachment.id) throw new Error('The selected owner portrait changed.');
     const initialized = !explicitSelection && await this.options.portraitInitialized?.(owner.id, role) === true;
     this.portraits.delete(owner.id + '/' + role);
@@ -267,6 +381,7 @@ export class CompanionPublicProfiles {
       catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
       try { const current = await lstat(receipt); if (!current.isFile() || current.isSymbolicLink() || current.nlink > 1) throw new Error('Invalid portrait receipt.'); }
       catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
+      this.materializations++;
       await writeFile(temporary, bytes, { flag: 'wx' });
       await writeFile(manifestTemporary, JSON.stringify({ companionId: owner.id, role, path: name, attachmentId: stored.attachment.id,
         initialChecksum: sha(bytes), initializedAt: new Date().toISOString() }), { flag: 'wx' });
@@ -340,6 +455,7 @@ export class CompanionPublicProfiles {
     if (!explicitSelection) try {
       const present = await lstat(destination);
       if (!present.isFile() || present.isSymbolicLink() || present.nlink > 1 || present.size > MAX_IMAGE_BYTES) throw new Error('Invalid authored portrait.');
+      this.materializations++;
       await writeFile(receipt, JSON.stringify({ companionId: companion.id, role, source: 'existing_owner_asset', initializedAt: new Date().toISOString() }), { flag: 'wx' });
       await this.options.markPortraitInitialized?.(companion.id, role);
       return destination;
@@ -369,11 +485,13 @@ export class CompanionPublicProfiles {
       catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
       const temporary = destination + '.' + randomUUID() + '.tmp', receiptTemporary = receipt + '.' + randomUUID() + '.tmp';
       try {
+        this.materializations++;
         await writeFile(temporary, bytes, { flag: 'wx' });
         await writeFile(receiptTemporary, JSON.stringify({ companionId: companion.id, role, source: file, initializedAt: new Date().toISOString() }), { flag: 'wx' });
         await rename(temporary, destination); await rename(receiptTemporary, receipt);
       } finally { await Promise.all([temporary, receiptTemporary].map(file => unlink(file).catch(error => { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }))); }
     } else {
+      this.materializations++;
       await writeFile(destination, bytes, { flag: 'wx' });
       await writeFile(receipt, JSON.stringify({ companionId: companion.id, role, source: file, initializedAt: new Date().toISOString() }), { flag: 'wx' });
     }
@@ -384,11 +502,13 @@ export class CompanionPublicProfiles {
     try {
       const info = await lstat(image.absolutePath);
       if (!info.isFile() || info.isSymbolicLink() || info.nlink > 1 || info.size > MAX_IMAGE_BYTES) return undefined;
-      const key = [image.absolutePath, info.size, info.mtimeMs, info.ctimeMs, role].join('\0');
+      const expected = image.sha256;
+      const key = [image.absolutePath, info.size, info.mtimeMs, info.ctimeMs, role, expected ?? ''].join('\0');
       let pending = this.visuals.get(key);
       if (!pending) {
         pending = (async () => {
           const original = await readFile(image.absolutePath), originalHash = sha(original);
+          if (expected && originalHash !== expected) throw new Error('Public portrait pixels changed before projection.');
           image.sha256 = originalHash;
           const pixels = sharp(original, { limitInputPixels: 64 * 1024 * 1024, animated: false }).rotate().flatten({ background: '#ffffff' });
           let output = await pixels.resize({ width: role === 'orthographic' ? 1536 : 512, height: role === 'orthographic' ? 1536 : 512, fit: 'inside', withoutEnlargement: true }).jpeg({ quality: 88 }).toBuffer();

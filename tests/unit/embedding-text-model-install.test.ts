@@ -1,7 +1,7 @@
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { LocalTextEmbeddingInstaller, inspectLocalTextEmbeddingInstall, localTextEmbeddingDirectory, pinnedCpuEmbeddingRuntimeAsset } from '../../src/main/embedding-text-model-install';
 import { LOCAL_TEXT_EMBEDDING_MODEL, LOCAL_TEXT_EMBEDDING_MODEL_ID } from '../../src/shared/embedding/global-profile';
 
@@ -50,6 +50,18 @@ describe('managed CPU text model installation', () => {
     writeFileSync(path.join(bundle, LOCAL_TEXT_EMBEDDING_MODEL.fileName), 'should never be read or installed');
     await expect(installer.seedBundledPackage(bundle)).rejects.toThrow(/checksum|incomplete/i);
     expect(existsSync(path.join(localTextEmbeddingDirectory(root), LOCAL_TEXT_EMBEDDING_MODEL.fileName))).toBe(false);
+  });
+
+  it('reports bounded verification metadata while preserving an actual integrity failure even if diagnostics throw', async () => {
+    const root = temporary(), bundle = temporary(), onVerification = vi.fn<NonNullable<ConstructorParameters<typeof LocalTextEmbeddingInstaller>[0]['onVerification']>>(() => { throw new Error('diagnostics must not alter admission'); });
+    const installer = new LocalTextEmbeddingInstaller({ userDataPath: root, platform: 'win32', arch: 'x64', onVerification });
+    await expect(installer.seedBundledPackage(bundle)).rejects.toThrow(/checksum|incomplete/i);
+    expect(onVerification).toHaveBeenCalledExactlyOnceWith({ durationMs: expect.any(Number), fileCount: expect.any(Number),
+      bytes: expect.any(Number), verifiedFiles: 0, verifiedBytes: 0, outcome: 'failed' });
+    const timing = onVerification.mock.calls[0]![0];
+    expect(timing.fileCount).toBeGreaterThan(1); expect(timing.bytes).toBeGreaterThan(0);
+    expect(JSON.stringify(timing)).not.toContain(root); expect(JSON.stringify(timing)).not.toContain(bundle);
+    expect(existsSync(path.join(localTextEmbeddingDirectory(root), `${LOCAL_TEXT_EMBEDDING_MODEL_ID}.installed.json`))).toBe(false);
   });
 
   it('reports an incomplete shipped package instead of downloading a repair from the network', async () => {

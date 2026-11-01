@@ -6,6 +6,7 @@ import BetterSqlite3 from 'better-sqlite3';
 import { afterEach, expect, it } from 'vitest';
 import { CompanionsStore, type CompanionConnection } from '../../src/companions/store';
 import { companionRecoveryFencePath, CompanionRecoveryFence } from '../../src/companions/recovery-fence';
+import { withCompanionStorageTiming, type CompanionStorageTimingSegment } from '../../src/shared/companion-storage-timing';
 
 const Database = BetterSqlite3 as { new(file: string, options?: { readonly?: boolean; fileMustExist?: boolean }): CompanionConnection };
 const roots: string[] = [], stores = new Set<CompanionsStore>();
@@ -38,6 +39,23 @@ it('invalidates a prior host ticket after a later real SQL mutation instead of r
     f.store.updatePlayerProfile({ name: 'newer human', description: '' }, f.store.getPlayerProfile().revision);
     expect(() => authority.ticket(ticket.id)).toThrow('过期');
   } finally { authority.close(); }
+});
+it('keeps actual committed and rolled-back recovery transactions unchanged when timing observers throw', () => {
+  const f = fixture(), before = f.store.getPlayerProfile(), head = f.head(), observed: CompanionStorageTimingSegment[] = [];
+  const observer = (segment: CompanionStorageTimingSegment) => { observed.push(segment); throw new Error('unavailable timing observer'); };
+  const response = withCompanionStorageTiming(observer, () => f.store.request({ type: 'player.profile.update',
+    profile: { name: 'committed with telemetry', description: '' }, expectedRevision: before.revision }));
+  expect(response.playerProfile?.name).toBe('committed with telemetry'); expect(f.head().generation).toBe(head.generation + 1);
+  expect(observed).toEqual(expect.arrayContaining(['captureExpected', 'dispatch', 'experienceProjection', 'experienceArchive', 'invalidations',
+    'recoveryReconcile', 'recoveryBegin', 'recoveryPrepare', 'recoveryCommit', 'recoveryFinish']));
+  const committed = f.store.getPlayerProfile(), committedHead = f.head(), blocker = new Database(companionRecoveryFencePath(f.selection));
+  blocker.exec("CREATE TRIGGER timing_fail_authority BEFORE UPDATE ON recovery_authority BEGIN SELECT RAISE(ABORT,'original authority failure'); END");
+  try {
+    expect(() => withCompanionStorageTiming(observer, () => f.store.request({ type: 'player.profile.update',
+      profile: { name: 'must remain rolled back', description: '' }, expectedRevision: committed.revision }))).toThrow('original authority failure');
+    expect(f.store.getPlayerProfile()).toEqual(committed); expect(f.head()).toEqual(committedHead);
+  } finally { blocker.exec('DROP TRIGGER timing_fail_authority'); blocker.close(); }
+  const count = observed.length; f.store.getPlayerProfile(); expect(observed).toHaveLength(count);
 });
 it('rolls back the primary mutation if the independent authority cannot durably advance', () => {
   const f = fixture(), before = f.store.getPlayerProfile(), head = f.head(), blocker = new Database(companionRecoveryFencePath(f.selection));

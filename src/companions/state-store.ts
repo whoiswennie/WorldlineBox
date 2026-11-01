@@ -109,12 +109,25 @@ export class CompanionStateStore {
     const room = this.requireScope(scope), observedAt = this.currentTime(Date.now()); this.energy(scope.companionId, observedAt);
     const state = this.project(scope, this.load(scope.companionId, observedAt), observedAt);
     state.recentChanges = this.changes.recent(scope); state.routine = this.routine(scope, observedAt);
+    return this.withVisibleQualitativeState(scope, state, room.kind);
+  }
+  /** Latest committed state only. Calendar/energy advancement remains an
+   * explicit world/control operation; this read cannot initialize a state. */
+  taskSnapshot(scope: Scope, capturedAt: number): { state: CompanionRuntimeState; energyClock: number } | undefined {
+    const room = this.requireScope(scope);
+    const found = this.db.prepare('SELECT data,energy_clock FROM companion_runtime_states WHERE companion_id=?').get(scope.companionId) as (Stored & { energy_clock: number }) | undefined;
+    if (!found) return;
+    const state = this.project(scope, companionRuntimeStateSchema.parse(JSON.parse(found.data)), capturedAt);
+    state.recentChanges = this.changes.recent(scope);
+    return { state: this.withVisibleQualitativeState(scope, state, room.kind), energyClock: Number(found.energy_clock) };
+  }
+  private withVisibleQualitativeState(scope: Scope, state: CompanionRuntimeState, roomKind: string): CompanionRuntimeState {
     const ids = state.sourceMessageIds ?? [];
     const visible = this.visibleSources(scope, ids), changed = (state.sourceVersions ?? []).some(version => {
       const source = visible.find(item => item.id === version.messageId);
       return !source || this.messageRevision(source.id) !== version.revision || checksum(source.content) !== version.checksum;
     });
-    if (changed || ids.length && visible.length !== ids.length || room.kind === 'group' && state.sourceConversationId !== scope.conversationId) {
+    if (changed || ids.length && visible.length !== ids.length || roomKind === 'group' && state.sourceConversationId !== scope.conversationId) {
       state.reason = undefined; state.focus = undefined; state.sourceConversationId = undefined; state.sourceMessageIds = []; state.sourceVersions = []; state.evidence = []; state.expression = 'gentle';
     }
     return state;

@@ -43,6 +43,9 @@ export class CompanionReplyStream {
   };
   readonly onUsage = (usage: CompanionModelUsageCurrent): void => {
     if (this.closed || !this.ownsDraft()) return;
+    // A final usage event is not a prose frame. Flush the actual accepted
+    // delta before the provider enters durable settlement or host review.
+    if (usage.phase === 'finished') this.flush();
     this.options.checkpoint.usage = updateCompanionModelUsage(this.options.checkpoint.usage, { ...usage, step: this.options.step });
     this.publish('usage', this.text);
     if (!this.saveTimer) this.saveTimer = setTimeout(() => {
@@ -55,7 +58,7 @@ export class CompanionReplyStream {
     const { checkpoint, step } = this.options;
     if (!checkpoint.messageId) return;
     if (phase === 'streaming' && this.lastPublished === text) return;
-    this.lastPublished = text;
+    if (phase === 'streaming') this.lastPublished = text;
     this.options.publish({ conversationId: checkpoint.conversationId, companionId: checkpoint.companionId,
       sourceMessageId: checkpoint.sourceMessageId, messageId: checkpoint.messageId, step, attemptId: this.attemptId, text, phase,
       ...(checkpoint.usage ? { modelUsage: companionModelUsageView(checkpoint.usage) } : {}) });
@@ -71,10 +74,16 @@ export class CompanionReplyStream {
     if (this.saveTimer) clearTimeout(this.saveTimer);
     this.eventTimer = undefined; this.saveTimer = undefined;
   }
+  private flush(): void {
+    if (this.closed || !this.ownsDraft()) return;
+    if (this.eventTimer) clearTimeout(this.eventTimer);
+    this.eventTimer = undefined;
+    this.publish('streaming', this.text);
+  }
 
   /** Wait for older partial saves before committing the completed turn. */
   async complete(): Promise<void> {
-    this.stopTimers(); await this.saves;
+    this.flush(); this.stopTimers(); await this.saves;
     if (this.failure) throw this.failure;
   }
   committed(text: string): void { this.publish('committed', text); }

@@ -8,6 +8,7 @@ import type { ColdKnowledgeDocument, ColdKnowledgeRecord } from '../vcp-memory/c
 import type { ColdKnowledgeServiceOptions } from '../vcp-memory/cold-service';
 import type { CompanionLearningAssets } from './learning-service';
 import type { CompanionLearningGrant } from '../../shared/companion-learning';
+import { CompanionValidationUnavailableError, rethrowCompanionValidationUnavailable } from './validation-unavailable';
 const hash = (text: string) => createHash('sha256').update(text).digest('hex');
 type Scope = Pick<CompanionKnowledgeCommand, 'companionId' | 'conversationId' | 'beforeSequence'>;
 export interface CompanionKnowledgeServiceOptions {
@@ -67,7 +68,7 @@ export class CompanionKnowledgeService {
     if (!grant) throw new Error('学习资料授权已撤回或不属于当前伙伴。'); return grant;
   }
   private async source(scope: Scope, type: 'message' | 'memory' | 'learning', id: string, assetId?: string): Promise<ColdKnowledgeDocument> {
-    if (this.options.blocked?.(scope.companionId)) throw new Error('伙伴正在重置或已停用，知识来源暂不可用。');
+    if (this.options.blocked?.(scope.companionId)) throw new CompanionValidationUnavailableError('伙伴正在重置或已停用，知识来源暂不可用。');
     if (type === 'learning') {
       const assets = this.options.assets;
       if (!assets?.asset || !assetId) throw new Error('完整学习资料读取接口不可用。');
@@ -100,14 +101,15 @@ export class CompanionKnowledgeService {
       text: library.content, title: library.diaryName || `资料笔记 ${id}`, metadata: { conversationId: library.sourceConversationId, sourceSequence: library.sourceSequence, sources: library.sources } };
   }
   readonly authorize: ColdKnowledgeServiceOptions['authorize'] = async (owner, sourceId, sourceDigest, source) => {
-    if (this.options.blocked?.(owner) || !['message', 'memory', 'learning'].includes(source.sourceType ?? '')) return false;
+    if (this.options.blocked?.(owner)) throw new CompanionValidationUnavailableError('伙伴知识来源核验已暂停，不能判定来源撤回。');
+    if (!['message', 'memory', 'learning'].includes(source.sourceType ?? '')) return false;
     const conversationId = source.metadata?.conversationId;
     if (typeof conversationId !== 'string') return false;
     try {
       const current = await this.source({ companionId: owner, conversationId }, source.sourceType as 'message' | 'memory' | 'learning', sourceId,
         typeof source.metadata?.assetId === 'string' ? source.metadata.assetId : undefined);
       return current.sourceDigest === sourceDigest && current.sourceVersion === source.sourceVersion;
-    } catch { return false; }
+    } catch (error) { rethrowCompanionValidationUnavailable(error); return false; }
   };
   async reset(owner: string): Promise<void> {
     if (this.options.runtime?.resetCold) return this.options.runtime.resetCold(owner);
@@ -120,13 +122,16 @@ export class CompanionKnowledgeService {
       && (typeof record.metadata?.publishedAfterSequence !== 'number' || record.metadata.publishedAfterSequence > scope.beforeSequence)) return false;
     try { const current = await this.source(scope, record.sourceType as 'message' | 'memory' | 'learning', record.sourceId,
       typeof record.metadata?.assetId === 'string' ? record.metadata.assetId : undefined); return current.sourceDigest === record.sourceDigest && current.sourceVersion === record.sourceVersion; }
-    catch { return false; }
+    catch (error) { rethrowCompanionValidationUnavailable(error); return false; }
   }
   async execute(input: CompanionKnowledgeCommand): Promise<CompanionKnowledgeResponse> {
     const command = companionKnowledgeCommandSchema.parse(input);
     const scope: Scope = { companionId: command.companionId, conversationId: command.conversationId, beforeSequence: command.beforeSequence };
     const base = { engine: 'original-TDBKnowledge' as const, operation: command.operation, trust: 'knowledge_source_data_not_instructions' as const };
-    if (!this.options.runtime?.getCold || this.options.blocked?.(scope.companionId)) return { ...base, available: false };
+    if (!this.options.runtime?.getCold || this.options.blocked?.(scope.companionId)) {
+      if (command.operation === 'read') throw new CompanionValidationUnavailableError('知识读取服务暂不可用，不能判定历史来源撤回。');
+      return { ...base, available: false };
+    }
     await this.options.request({ type: 'memory.sources.filter', ...scope, ids: [] });
     if (command.operation === 'sources') {
       if (!command.sourceId) return this.sourceCatalog(scope, command.cursor, command.limit);

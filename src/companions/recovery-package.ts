@@ -47,8 +47,10 @@ function copyExact(source:string,target:string,expected?:{hash:string;size:numbe
   const copied=recoveryFileHash(target);if(copied.hash!==verified.hash||copied.size!==verified.size)throw new Error('备份复制后的精确字节不一致。');return copied;
 }
 /** Atomic no-overwrite publication. A crash between link and unlink is
- * recoverable only for the exact pair created by this durable operation. */
-function installExact(source:string,target:string,expected:{hash:string;size:number},stageRoot:string):boolean{
+ * recoverable only for the exact pair created by this durable operation.
+ * The caller must first authorize the exact target under its selected managed
+ * root and validate all parent directories; this helper grants no authority. */
+export function installCompanionRecoveryFileExact(source:string,target:string,expected:{hash:string;size:number},stageRoot:string):boolean{
   directory(stageRoot,true);const staged=path.join(stageRoot,digest(target)+'.body');
   if(existsSync(target)){
     const stat=lstatSync(target);
@@ -60,9 +62,10 @@ function installExact(source:string,target:string,expected:{hash:string;size:num
   }
   if(!existsSync(staged))copyExact(source,staged,expected);
   const value=recoveryFileHash(staged);if(value.hash!==expected.hash||value.size!==expected.size)throw new Error('恢复发布暂存字节被改变，不会覆盖。');
-  try{linkSync(staged,target);}catch(error){if((error as NodeJS.ErrnoException).code==='EEXIST')return installExact(source,target,expected,stageRoot);throw error;}
+  try{linkSync(staged,target);}catch(error){if((error as NodeJS.ErrnoException).code==='EEXIST')return installCompanionRecoveryFileExact(source,target,expected,stageRoot);throw error;}
   unlinkSync(staged);return true;
 }
+const installExact = installCompanionRecoveryFileExact;
 function writeAll(fd:number,bytes:Buffer):void{let offset=0;while(offset<bytes.length){const count=writeSync(fd,bytes,offset,bytes.length-offset);if(count<=0)throw new Error('备份文件写入未取得进展。');offset+=count;}}
 function writeNew(file:string,body:string):void {const fd=openSync(file,'wx',0o600);try{writeAll(fd,Buffer.from(body));fsyncSync(fd);}finally{closeSync(fd);}}
 function append(fd:number,value:unknown):void {writeAll(fd,Buffer.from(JSON.stringify(value)+'\n'));}

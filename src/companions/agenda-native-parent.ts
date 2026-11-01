@@ -5,6 +5,7 @@ import { companionAgendaRuleDraftSchema } from '../shared/companion-agenda';
 export type CompanionAgendaNativeLane = 'decision' | 'dream' | 'social' | 'notification';
 export type CompanionAgendaNativeClaim = { companionId?: string; id?: string; agendaRunId?: string; agendaLeaseToken?: string };
 type Binding = { companionId: string; runId: string; leaseToken: string; nativeLeaseToken: string; lane: CompanionAgendaNativeLane; nativeId: string };
+export class CompanionAgendaNativeAuthorityError extends Error {}
 const key = (lane: CompanionAgendaNativeLane, id: string) => `agenda-native-parent/${lane}/${id}`;
 const ruleMetadata = new Set(['id', 'companionId', 'revision', 'origin', 'status', 'createdAt', 'updatedAt', 'sourceMessageId', 'nextAt', 'category', 'classification', 'taskResponse', 'presentation']);
 const semanticRule = (value: string) => companionAgendaRuleDraftSchema.parse(Object.fromEntries(Object.entries(JSON.parse(value) as Record<string, unknown>).filter(([name]) => !ruleMetadata.has(name))));
@@ -13,25 +14,25 @@ const semanticRule = (value: string) => companionAgendaRuleDraftSchema.parse(Obj
  * occurrence and token, so pause/resume of the same run cannot revive a child. */
 export function assertCompanionAgendaNativeClaim(db: CompanionConnection, input: CompanionAgendaNativeClaim, lane: CompanionAgendaNativeLane): void {
   if (!input.agendaRunId && !input.agendaLeaseToken) return;
-  if (!input.companionId || !input.agendaRunId || !input.agendaLeaseToken) throw new Error('日程子行为缺少完整的主体与执行凭据。');
+  if (!input.companionId || !input.agendaRunId || !input.agendaLeaseToken) throw new CompanionAgendaNativeAuthorityError('日程子行为缺少完整的主体与执行凭据。');
   const parent = db.prepare(`SELECT r.companion_id,r.status,json_extract(r.data,'$.leaseToken') AS token,r.lease_until,
     o.rule_data,s.data AS current_rule_data,s.status AS rule_status,s.revision AS rule_revision FROM companion_agenda_runs r
     JOIN companion_agenda_occurrences o ON o.id=r.occurrence_id JOIN companion_agenda_rules s ON s.id=r.rule_id WHERE r.id=?`)
     .get(input.agendaRunId) as { companion_id: string; status: string; token?: string; lease_until?: string; rule_data: string; current_rule_data: string; rule_status: string; rule_revision: number } | undefined;
   if (!parent || parent.companion_id !== input.companionId || parent.status !== 'running' || parent.token !== input.agendaLeaseToken
-    || !parent.lease_until || parent.lease_until <= new Date().toISOString() || parent.rule_status !== 'active') throw new Error('日程执行已经停止或租约失效，旧子行为不能继续。');
+    || !parent.lease_until || parent.lease_until <= new Date().toISOString() || parent.rule_status !== 'active') throw new CompanionAgendaNativeAuthorityError('日程执行已经停止或租约失效，旧子行为不能继续。');
   const rule = JSON.parse(parent.rule_data) as { companionId: string; revision: number; executor: string; referenceId?: string; referenceVersion?: string; goalId?: string; grantId?: string };
   if (rule.companionId !== input.companionId || rule.revision !== parent.rule_revision && JSON.stringify(semanticRule(parent.rule_data)) !== JSON.stringify(semanticRule(parent.current_rule_data))
     || !(lane === 'dream' ? ['world', 'memory', 'reflection'] : ['world']).includes(rule.executor)
-    || rule.referenceVersion === 'world-native-v1' && rule.referenceId !== input.id) throw new Error('日程不属于当前世界行为或准确事件。');
-  if (db.prepare('SELECT 1 FROM metadata WHERE key=?').get('recovery-review-required/' + input.companionId)) throw new Error('恢复后的伙伴资料仍在等待复核。');
+    || rule.referenceVersion === 'world-native-v1' && rule.referenceId !== input.id) throw new CompanionAgendaNativeAuthorityError('日程不属于当前世界行为或准确事件。');
+  if (db.prepare('SELECT 1 FROM metadata WHERE key=?').get('recovery-review-required/' + input.companionId)) throw new CompanionAgendaNativeAuthorityError('恢复后的伙伴资料仍在等待复核。');
   const owner = db.prepare('SELECT data FROM companions WHERE id=? AND deleted_at IS NULL').get(input.companionId) as { data: string } | undefined;
-  if (!owner || (JSON.parse(owner.data) as { active?: boolean }).active === false) throw new Error('伙伴已经暂停或退役。');
-  if (rule.goalId && !db.prepare("SELECT 1 FROM companion_agenda_goals WHERE id=? AND companion_id=? AND status='active'").get(rule.goalId, input.companionId)) throw new Error('本次行为的长期方向已暂停或结束。');
+  if (!owner || (JSON.parse(owner.data) as { active?: boolean }).active === false) throw new CompanionAgendaNativeAuthorityError('伙伴已经暂停或退役。');
+  if (rule.goalId && !db.prepare("SELECT 1 FROM companion_agenda_goals WHERE id=? AND companion_id=? AND status='active'").get(rule.goalId, input.companionId)) throw new CompanionAgendaNativeAuthorityError('本次行为的长期方向已暂停或结束。');
   if (rule.grantId) {
     const grant = db.prepare("SELECT data FROM companion_agenda_grants WHERE id=? AND companion_id=? AND status='active'").get(rule.grantId, input.companionId) as { data: string } | undefined;
     const expiry = grant ? (JSON.parse(grant.data) as { expiresAt?: string }).expiresAt : undefined;
-    if (!grant || expiry && Date.parse(expiry) <= Date.now()) throw new Error('本次行为的授权已经撤销或到期。');
+    if (!grant || expiry && Date.parse(expiry) <= Date.now()) throw new CompanionAgendaNativeAuthorityError('本次行为的授权已经撤销或到期。');
   }
 }
 export function companionAgendaNativeBound(db: CompanionConnection, lane: CompanionAgendaNativeLane, id: string): boolean {
@@ -52,7 +53,7 @@ export function assertCompanionAgendaNativeParent(db: CompanionConnection, lane:
   const row = db.prepare('SELECT value FROM metadata WHERE key=?').get(key(lane, id)) as { value: string } | undefined;
   if (!row) return;
   const parent = JSON.parse(row.value) as Binding;
-  if (parent.companionId !== companionId || parent.nativeId !== id || parent.lane !== lane || parent.nativeLeaseToken !== nativeLeaseToken) throw new Error('子行为执行凭据已变化，迟到结果不能提交。');
+  if (parent.companionId !== companionId || parent.nativeId !== id || parent.lane !== lane || parent.nativeLeaseToken !== nativeLeaseToken) throw new CompanionAgendaNativeAuthorityError('子行为执行凭据已变化，迟到结果不能提交。');
   assertCompanionAgendaNativeClaim(db, { companionId, id, agendaRunId: parent.runId, agendaLeaseToken: parent.leaseToken }, lane);
 }
 

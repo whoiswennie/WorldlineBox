@@ -6,6 +6,8 @@ import {
 import type {
   CompanionAgendaClaim, CompanionAgendaCommand, CompanionAgendaResponse, CompanionAgendaStep,
 } from '../../src/shared/companion-agenda';
+import { createCompanionExecutionValidationSession, memoCompanionExecutionWitnesses, withCompanionExecutionValidation } from '../../src/main/companions/source-execution-evidence';
+import { currentCompanionStorageOperation, withCompanionStorageOperation } from '../../src/main/companions/storage-operation-context';
 
 const at = '2026-10-29T01:00:00.000Z';
 const services: CompanionAgendaService[] = [];
@@ -80,6 +82,57 @@ function fixture(claims: CompanionAgendaClaim[] = [sample('alice', 1)], options:
   return { service, request, execute, report, changed, claims, steps };
 }
 const settles = (f: ReturnType<typeof fixture>) => f.request.mock.calls.flatMap(([command]) => command.type === 'agenda.run.settle' ? [command] : []);
+
+it('gives a foreground-triggered agenda pump its own fresh source fence instead of adding background roots to the foreground gate', async () => {
+  const checked = vi.fn(async () => undefined), identity = {}, f = fixture([]), original = f.request.getMockImplementation()!;
+  f.request.mockImplementation(async command => {
+    expect(currentCompanionStorageOperation()?.priority).toBe('background');
+    if (command.type === 'agenda.tick') await withCompanionExecutionValidation(async () => {
+      await memoCompanionExecutionWitnesses(['background_scan'], { identity, scope: 'agenda_scan', revision: () => 0,
+        read: async keys => new Map(keys.map(key => [key, 'actual input'])), verify: checked });
+    });
+    return original(command);
+  });
+  const foreground = createCompanionExecutionValidationSession();
+  try {
+    await foreground.run(() => withCompanionStorageOperation({ priority: 'interactive', lane: 'foreground_task' }, async () => {
+      // A nonempty owner ring is required even when there is no claim.
+      const service = new CompanionAgendaService({ request: f.request, owners: async () => ['alice'], execute: f.execute, changed: f.changed, report: f.report });
+      services.push(service); service.wake(); await service.tick();
+    }));
+    expect(checked).toHaveBeenCalledOnce();
+    await foreground.validate(); expect(checked).toHaveBeenCalledOnce();
+  } finally { foreground.close(); }
+});
+
+it.each(['completed', 'cancelled', 'revoked'] as const)('keeps an independent agenda job lawful after its originating foreground gate closes (%s)', async outcome => {
+  const held = deferred<void>(), checked = vi.fn(async () => { if (outcome === 'revoked') throw new Error('actual job input withdrawn'); });
+  releases.push(() => held.resolve());
+  const f = fixture(), parentController = new AbortController(), foreground = createCompanionExecutionValidationSession(parentController.signal);
+  let jobSignal: AbortSignal | undefined;
+  f.execute.mockImplementation(async (_claim, context, signal) => {
+    jobSignal = signal; await held.promise; signal.throwIfAborted();
+    expect(currentCompanionStorageOperation()).toMatchObject({ priority: 'background' });
+    expect(currentCompanionStorageOperation()?.lane).not.toBe('foreground_task');
+    await withCompanionExecutionValidation(async () => {
+      await memoCompanionExecutionWitnesses(['actual_job_input'], { identity: {}, scope: 'agenda_job', revision: () => 0,
+        read: async keys => new Map(keys.map(key => [key, 'actual input'])), verify: checked });
+    }, signal);
+    await context.checkpoint('真实输入已重新核验', { checked: true }); return { outcome: 'completed' };
+  });
+  try {
+    await foreground.run(() => withCompanionStorageOperation({ priority: 'interactive', lane: 'foreground_task' }, () => f.service.tick()));
+    await until(() => !!jobSignal); await foreground.validate(); foreground.close(); parentController.abort();
+    expect(jobSignal?.aborted).toBe(false);
+    if (outcome === 'cancelled') f.service.cancelRun(f.claims[0]!.run.id);
+    held.resolve(); await until(() => f.service.snapshot().active === 0);
+    if (outcome === 'cancelled') { expect(jobSignal?.aborted).toBe(true); expect(checked).not.toHaveBeenCalled(); expect(settles(f)).toHaveLength(0); }
+    else {
+      expect(checked).toHaveBeenCalledOnce(); expect(settles(f).at(-1)?.outcome).toBe(outcome === 'completed' ? 'completed' : 'failed');
+      expect(f.request.mock.calls.some(([command]) => command.type === 'agenda.run.checkpoint')).toBe(outcome === 'completed');
+    }
+  } finally { foreground.close(); held.resolve(); }
+});
 
 it('claims one event per owner per round and coalesces simultaneous ticks without awaiting long adapters', async () => {
   const held = deferred<CompanionAgendaExecutionResult>(); releases.push(() => held.resolve({ outcome: 'completed' }));

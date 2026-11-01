@@ -38,6 +38,8 @@ export type GlobalEmbeddingServiceOptions = {
   /** Production device gate; metadata/profile reads never load the encoder. */
   ensureDeviceCapability?: (signal?: AbortSignal) => Promise<void>;
   devicePreference?: () => { backend?: 'cpu' | 'gpu'; deviceId?: string };
+  /** Observer receives constant operation names and durations, never model input or paths. */
+  onTiming?(event: { operation: string; durationMs: number }): void;
 };
 
 export class EmbeddingProfileChangedError extends Error {
@@ -54,6 +56,12 @@ export class GlobalEmbeddingService {
   #runtimeController: AbortController | null = null;
   #invalidationListeners = new Set<() => void>();
   constructor(private readonly options: GlobalEmbeddingServiceOptions) {}
+  #timing(operation: string, started: number): void {
+    try { this.options.onTiming?.({ operation, durationMs: Math.max(0, performance.now() - started) }); } catch { /* Diagnostics cannot change inference. */ }
+  }
+  async #measured<T>(operation: string, work: () => Promise<T>): Promise<T> {
+    const started = performance.now(); try { return await work(); } finally { this.#timing(operation, started); }
+  }
 
   subscribeInvalidation(listener: () => void): () => void { this.#invalidationListeners.add(listener); return () => { this.#invalidationListeners.delete(listener); }; }
 
@@ -82,7 +90,9 @@ export class GlobalEmbeddingService {
     const selection = input.selectionId ?? GLOBAL_EMBEDDING_SELECTION_ID;
     const profile = await this.resolveProfile(selection);
     if (input.expectedProfileKey && input.expectedProfileKey !== profile.profileKey) throw new EmbeddingProfileChangedError();
+    const purpose = input.purpose === 'query' ? 'query' : 'document', queuedAt = performance.now();
     const work = async (): Promise<{ profile: GlobalEmbeddingProfile; vectors: number[][] }> => {
+      this.#timing(`embedding.${purpose}.queue`, queuedAt);
       input.signal?.throwIfAborted();
       if (this.#closed || generation !== this.#generation || (await this.resolveProfile(selection)).profileKey !== profile.profileKey) throw new EmbeddingProfileChangedError();
       const controller = new AbortController();
@@ -92,9 +102,10 @@ export class GlobalEmbeddingService {
         let vectors: number[][];
         if (!texts.length) vectors = [];
         else {
-          const session = await this.#localSession(profile, signal);
+          const session = await this.#measured(`embedding.${purpose}.session`, () => this.#localSession(profile, signal));
           vectors = [];
-          for (const text of texts) {
+          const encodingAt = performance.now();
+          try { for (const text of texts) {
             signal.throwIfAborted();
             const chunks = await splitLocalEmbeddingText(session, profile, text, input.purpose, signal);
             const encoded: number[][] = [];
@@ -105,7 +116,7 @@ export class GlobalEmbeddingService {
               encoded.push(normalizeEmbedding(result, profile.dimension));
             }
             vectors.push(meanPoolEmbeddings(encoded));
-          }
+          } } finally { this.#timing(`embedding.${purpose}.encode`, encodingAt); }
         }
         signal.throwIfAborted();
         if (vectors.length !== texts.length) throw new Error('Embedding service returned an incomplete batch.');
@@ -123,7 +134,9 @@ export class GlobalEmbeddingService {
     if (this.#closed) throw new Error('Embedding service is closed.');
     input.signal?.throwIfAborted();
     const generation = this.#generation, profile = await this.resolveProfile();
+    const queuedAt = performance.now();
     const work = async () => {
+      this.#timing('embedding.prepare.queue', queuedAt);
       input.signal?.throwIfAborted();
       if (this.#closed || generation !== this.#generation) throw new EmbeddingProfileChangedError();
       const controller = new AbortController(); this.#active.add(controller);
@@ -131,7 +144,7 @@ export class GlobalEmbeddingService {
       // Caller cancellation yields the graph lane after this same load settles;
       // only device invalidation/shutdown tears down the global session startup.
       const signal = controller.signal;
-      try { await this.#localSession(profile, signal); signal.throwIfAborted(); input.signal?.throwIfAborted();
+      try { await this.#measured('embedding.prepare.session', () => this.#localSession(profile, signal)); signal.throwIfAborted(); input.signal?.throwIfAborted();
         if (this.#closed || generation !== this.#generation) throw new EmbeddingProfileChangedError();
       } finally { this.#active.delete(controller); }
     };
@@ -155,11 +168,11 @@ export class GlobalEmbeddingService {
   async #localSession(profile: GlobalEmbeddingProfile, signal: AbortSignal): Promise<LlamaEmbeddingSession> {
     if (this.#session?.key === profile.profileKey) return this.#session.session;
     if (this.#session) { await this.#session.session.close(); this.#session = null; }
-    await this.options.ensureDeviceCapability?.(signal);
+    await this.#measured('embedding.device.ensure', async () => this.options.ensureDeviceCapability?.(signal));
     signal.throwIfAborted();
     const layout = resolveLocalTextEmbeddingLayout(this.options.userDataPath, this.options.bundleDirectory);
     if (!layout) throw new Error('The bundled embedding model is unavailable. Repair its local files in settings.');
-    if (await fileSha256(layout.corePath) !== LOCAL_TEXT_EMBEDDING_MODEL.sha256) throw new Error('The bundled embedding model failed its checksum. Repair its local files in settings.');
+    if (await this.#measured('embedding.model.verify', () => fileSha256(layout.corePath)) !== LOCAL_TEXT_EMBEDDING_MODEL.sha256) throw new Error('The bundled embedding model failed its checksum. Repair its local files in settings.');
     signal.throwIfAborted();
     const runtimeController = new AbortController();
     this.#runtimeController = runtimeController;
@@ -170,6 +183,7 @@ export class GlobalEmbeddingService {
       contextSize: profile.contextTokens ?? 4096, signal: runtimeController.signal, koffiPath: this.options.koffiPath,
       pooling: LOCAL_TEXT_EMBEDDING_MODEL.pooling,
       threads: Math.max(1, Math.min(4, availableParallelism())),
+      onTiming: this.options.onTiming,
     };
     let session: LlamaEmbeddingSession;
     const cancelStartup = () => runtimeController.abort(signal.reason);
@@ -177,14 +191,14 @@ export class GlobalEmbeddingService {
     try {
       // Match the asset encoder: a GPU-capable bundled backend may offload automatically.
       // The shipped CPU build has no GPU dependency and continues to execute on the CPU.
-      session = await startSession({ ...sessionOptions, gpuLayers: preference?.backend === 'cpu' ? 0 : 99,
+      session = await this.#measured('embedding.session.start', () => startSession({ ...sessionOptions, gpuLayers: preference?.backend === 'cpu' ? 0 : 99,
         ...(preference?.backend === 'cpu' ? { executable: layout.cpuRuntimePath ?? layout.runtimePath } : {}),
         ...(preference?.backend === 'gpu' && preference.deviceId ? { device: preference.deviceId } : {}),
-      });
+      }));
     } catch (error) {
       if (signal.aborted || runtimeController.signal.aborted || error instanceof AggregateError) throw error;
       if (preference?.backend) throw new Error('已通过检测的向量运行设备未能启动，请在设置的全局模型中重新检测。', { cause: error });
-      session = await startSession({ ...sessionOptions, executable: layout.cpuRuntimePath ?? layout.runtimePath, gpuLayers: 0 });
+      session = await this.#measured('embedding.session.start.fallback_cpu', () => startSession({ ...sessionOptions, executable: layout.cpuRuntimePath ?? layout.runtimePath, gpuLayers: 0 }));
     } finally { signal.removeEventListener('abort', cancelStartup); }
     if (signal.aborted) { await session.close(); signal.throwIfAborted(); }
     this.#session = { key: profile.profileKey, session };

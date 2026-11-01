@@ -10,6 +10,10 @@ import { prepareTopicNarrativeReferences } from './topic-narrative-references';
 import { workingSummaryBudget, workingSummaryFeedback, workingSummarySchema, type WorkingSummary } from './working-summary-budget';
 import { reviewTopicSummaryCanon } from './topic-summary-canon-review';
 import { selectCompanionDialogue } from './context-window';
+import { companionSourceHeaderMatchesMessage, companionSourceHeaderResult, readCompanionSourceSnapshot } from './source-headers';
+import { companionSourceHeadersCommandSchema, type CompanionSourceHeadersResult } from '../../shared/companion-source-headers';
+import { currentCompanionExecutionValidationIdentity, memoCompanionExecutionWitnesses } from './source-execution-evidence';
+import { CompanionValidationUnavailableError } from './validation-unavailable';
 
 /** Adapted from DSH compaction-basic: pressure threshold, consolidated checkpoint,
  * verbatim tail, immutable source log and atomic publication. Only the topic
@@ -27,7 +31,115 @@ const continuitySchema = z.object({ topicId: z.string(), companionId: z.string()
   scannedThroughSequence: z.number().int().nonnegative().optional(),
   sourceDigest: z.string(), compactedMessages: z.number().int().positive(), createdAt: z.string() });
 type Request = (command: CompanionStorageCommand) => Promise<CompanionStorageResponse>;
+const admittedDialogueBrand = Symbol('admitted-topic-dialogue');
+export type CompanionAdmittedDialogueInput = Readonly<{ [admittedDialogueBrand]: true }>;
+type DialogueAdmission = { frameIdentity: object; binding: string; taskKey: string; identity: object; request: Request };
+const admittedDialogues = new WeakMap<CompanionAdmittedDialogueInput, DialogueAdmission>();
+const messageBinding = (message: CompanionMessage) => [message.id, message.revision, message.sequence, message.conversationId,
+  message.topicId, message.authorId, message.kind, message.content, message.status, message.createdAt, message.worldCreatedAt,
+  message.worldTimeZone, message.replyToId, message.actionId, message.attachments, message.hostBehavior,
+  message.worldObservation, !!message.memoryEvidenceOnly, message.sourceUnavailable, !!message.isReplyDraft, message.replyDraft,
+  message.audience, message.toolPolicy];
+const dialogueBinding = (frame: CompanionReplyInput) => createHash('sha256').update(JSON.stringify([
+  frame.companion, frame.conversation.id, frame.conversation.memberIds, frame.contextThroughSequence ?? null,
+  frame.topic, frame.topicState, frame.sourceMessage && messageBinding(frame.sourceMessage), frame.messages.map(messageBinding),
+])).digest('hex');
+
+/** Main-only reuse of actual guarded inputs, not an authorization proof. A
+ * caller cannot manufacture this handle from model/IPC JSON. Attachment text
+ * can reuse only a full DTO actually acquired by the first guarded fallback;
+ * other exceptional or after-cursor inputs keep the original entrance. */
+export async function admitCompanionTopicDialogue(input: { frame: CompanionReplyInput;
+  scope: { companionId: string; conversationId: string; beforeSequence: number }; taskKey: string;
+  sourceIds: readonly string[]; sourceHeaders: CompanionSourceHeadersResult; identity: object; requestFresh: Request;
+  acquiredFallbackMessages?: readonly CompanionMessage[];
+}): Promise<CompanionAdmittedDialogueInput | undefined> {
+  const frameIdentity = currentCompanionExecutionValidationIdentity(), { frame, scope } = input;
+  if (!frameIdentity || !frame.topic || !frame.topicState || !frame.sourceMessage || frame.sourceMessage.authorId !== 'user'
+    || frame.proactive || frame.invocation?.messagePort.kind === 'invocation' || frame.topic.kind !== 'discussion' || !frame.topic.isPrimary
+    || frame.topic.forkedFromTopicId || frame.topic.deletedAt || frame.topic.status !== 'active'
+    || frame.topicState.readerId !== scope.companionId || frame.topicState.topicId !== frame.topic.id
+    || frame.companion.id !== scope.companionId || frame.conversation.id !== scope.conversationId || frame.topic.conversationId !== scope.conversationId
+    || !frame.topic.participantIds.includes(scope.companionId) || !Number.isSafeInteger(scope.beforeSequence)
+    || scope.beforeSequence < 0 || (frame.contextThroughSequence ?? frame.sourceMessage.sequence) !== scope.beforeSequence
+    || input.sourceIds.length > 1000 || !/^[a-f0-9]{64}$/u.test(input.taskKey)) return;
+  const messages = [...frame.messages, frame.sourceMessage];
+  const headers = new Map(input.sourceHeaders.headers.map(header => [header.id, header]));
+  const exceptional = new Set(input.sourceHeaders.unsupportedIds), requested = new Set(input.sourceIds);
+  const acquired = new Map(input.acquiredFallbackMessages?.map(message => [message.id, message]));
+  if (acquired.size !== (input.acquiredFallbackMessages?.length ?? 0)) return;
+  const attachmentMessages = new Map<string, string>();
+  if (messages.some(message => !requested.has(message.id) || message.conversationId !== scope.conversationId || message.topicId !== frame.topic!.id
+    || message.sequence > scope.beforeSequence || message.status !== 'sent' || message.sourceUnavailable
+    || message.kind !== 'text' || message.actionId || message.hostBehavior || message.memoryEvidenceOnly || message.worldObservation || message.isReplyDraft || message.replyDraft)) return;
+  for (const message of messages) {
+    const header = headers.get(message.id);
+    if (!exceptional.has(message.id) && header && companionSourceHeaderMatchesMessage(header, message)) continue;
+    // Never use a reduced header to attest attachment/presentation fields.
+    // Only the already guarded exact full DTO may supply this narrow branch.
+    const fallback = acquired.get(message.id), binding = JSON.stringify(messageBinding(message));
+    if (!message.attachments.length || !fallback || JSON.stringify(messageBinding(fallback)) !== binding) return;
+    attachmentMessages.set(message.id, binding);
+  }
+  // This is the same exact header witness registered by the guarded initial
+  // read. It retains the final fresh SQL/source fence in this same live frame.
+  if (input.sourceHeaders.headers.length) {
+    const command = { type: 'memory.sources.headers' as const, ...scope, ids: [...input.sourceIds] }, key = JSON.stringify(command);
+    const captured = structuredClone(input.sourceHeaders.headers);
+    await memoCompanionExecutionWitnesses([key], { identity: input.identity, scope: 'authorized-source-headers',
+      phase: 'sql-authority', revision: () => 0, read: async () => new Map([[key, captured]]), verify: async entries => {
+        for (const entry of entries) {
+          const expected = companionSourceHeadersCommandSchema.parse(JSON.parse(entry.key));
+          const fresh = companionSourceHeaderResult(expected.ids, await input.requestFresh(expected));
+          if (!fresh || entry.value.some(header => !fresh.headers.some(actual => actual.id === header.id && JSON.stringify(actual) === JSON.stringify(header))))
+            throw new CompanionValidationUnavailableError('本任务已读取的对话来源在最终核验时变化。');
+        }
+      } });
+  }
+  if (attachmentMessages.size) {
+    const command = { type: 'memory.sources.filter' as const, ...scope, ids: [...attachmentMessages.keys()] };
+    const captured = { command, bindings: [...attachmentMessages].map(([id, binding]) => ({ id, binding })) };
+    await memoCompanionExecutionWitnesses([JSON.stringify(command)], { identity: input.identity, scope: 'admitted-dialogue-attachments',
+      phase: 'sql-authority', revision: () => 0, read: async () => new Map([[JSON.stringify(command), captured]]), verify: async entries => {
+        for (const { value } of entries) {
+          const response = await input.requestFresh(value.command), fresh = response.memorySources ?? [];
+          const actual = new Map(fresh.map(message => [message.id, JSON.stringify(messageBinding(message))]));
+          if (!response.ok || actual.size !== fresh.length || actual.size !== value.bindings.length
+            || value.bindings.some(expected => actual.get(expected.id) !== expected.binding))
+            throw new CompanionValidationUnavailableError('本任务已读取的附件消息在最终核验时变化或失去权限。');
+        }
+      } });
+  }
+  if (currentCompanionExecutionValidationIdentity() !== frameIdentity) return;
+  const token: CompanionAdmittedDialogueInput = Object.freeze({ [admittedDialogueBrand]: true });
+  admittedDialogues.set(token, { frameIdentity, binding: dialogueBinding(frame), taskKey: input.taskKey,
+    identity: input.identity, request: input.requestFresh });
+  return token;
+}
+
+async function admittedTopicDialogue(input: TopicCompactionInput): Promise<boolean> {
+  const admission = input.admittedDialogueInput && admittedDialogues.get(input.admittedDialogueInput);
+  if (!admission || admission.frameIdentity !== currentCompanionExecutionValidationIdentity()
+    || admission.binding !== dialogueBinding(input.frame)) return false;
+  const { frame } = input, topic = frame.topic!;
+  const key = JSON.stringify([admission.taskKey, frame.companion.id, frame.conversation.id, topic.id]);
+  const captured = { companionId: frame.companion.id, conversationId: frame.conversation.id, topicId: topic.id };
+  await memoCompanionExecutionWitnesses([key], { identity: admission.identity, scope: 'admitted-topic-dialogue',
+    phase: 'sql-authority', revision: () => 0, read: async () => new Map([[key, captured]]), verify: async entries => {
+      for (const { value } of entries) {
+        const response = await admission.request({ type: 'topic.read', conversationId: value.conversationId, topicId: value.topicId, readerId: value.companionId });
+        const current = response.topic;
+        if (!response.ok || !current || current.id !== value.topicId || current.conversationId !== value.conversationId
+          || !current.isPrimary || current.kind !== 'discussion' || current.forkedFromTopicId || current.deletedAt
+          || current.status !== 'active' || !current.participantIds.includes(value.companionId))
+          throw new CompanionValidationUnavailableError('本任务的实际话题入口在最终核验时已停止或失去权限。');
+      }
+    } });
+  return true;
+}
+
 export interface TopicCompactionInput { frame: CompanionReplyInput; request: Request; config: CompanionModelConfig; signal?: AbortSignal;
+  admittedDialogueInput?: CompanionAdmittedDialogueInput;
   fetchFn?: typeof fetch; policy?: TopicCompactionPolicy;
   /** Register every source a maintenance model can read before any dispatch.
    * A capacity split may register a smaller prefix later; the host retains the
@@ -91,14 +203,9 @@ export function planTopicCompaction(messages: readonly CompanionMessage[], polic
 }
 
 async function visibleMessages(input: TopicCompactionInput, messages: readonly CompanionMessage[]) {
-  const visible = new Map<string, CompanionMessage>();
-  for (let offset = 0; offset < messages.length; offset += 100) {
-    input.signal?.throwIfAborted();
-    const response = await input.request({ type: 'memory.sources.filter', companionId: input.frame.companion.id,
-      conversationId: input.frame.conversation.id, ids: messages.slice(offset, offset + 100).map(message => message.id) });
-    if (!response.ok) throw new Error('无法核验话题原文可见范围。');
-    for (const message of response.memorySources ?? []) visible.set(message.id, message);
-  }
+  input.signal?.throwIfAborted();
+  const visible = await readCompanionSourceSnapshot({ companionId: input.frame.companion.id, conversationId: input.frame.conversation.id }, messages,
+    command => { input.signal?.throwIfAborted(); return input.request(command); });
   return messages.flatMap(message => {
     const source = visible.get(message.id);
     return source && source.conversationId === input.frame.conversation.id && source.topicId === input.frame.topic?.id ? [source] : [];
@@ -198,7 +305,9 @@ export async function prepareTopicContinuity(input: TopicCompactionInput): Promi
   if (!frame.topic || !frame.topicState || frame.topicState.readerId !== frame.companion.id
     || frame.topicState.topicId !== frame.topic.id || frame.topic.conversationId !== frame.conversation.id) return frame;
   signal?.throwIfAborted();
-  const loaded = await request({ type: 'topic.read', conversationId: frame.conversation.id, topicId: frame.topic.id, readerId: frame.companion.id });
+  const admitted = await admittedTopicDialogue(input);
+  const loaded = admitted ? { topic: frame.topic, topicState: frame.topicState }
+    : await request({ type: 'topic.read', conversationId: frame.conversation.id, topicId: frame.topic.id, readerId: frame.companion.id });
   if (!loaded.topic || !loaded.topicState || loaded.topic.status !== 'active' || !loaded.topic.participantIds.includes(frame.companion.id))
     throw new CompanionModelError('CANCELLED', '话题已暂停、删除或当前伙伴无权读取，原记录保持不变。');
   const port = frame.sourceMessage && !frame.messages.some(message => message.id === frame.sourceMessage!.id)
@@ -206,7 +315,7 @@ export async function prepareTopicContinuity(input: TopicCompactionInput): Promi
   const bounded = selectCompanionDialogue(port, { conversationId: frame.conversation.id, source: frame.sourceMessage,
     throughSequence: frame.contextThroughSequence, proactive: frame.proactive, policy: frame.dialogueWindow,
     checkpointed: coverage({ ...frame, topicState: loaded.topicState }) > 0 }).messages;
-  let messages = await visibleMessages(input, bounded);
+  let messages = admitted ? bounded : await visibleMessages(input, bounded);
   if (frame.sourceMessage && fingerprint(messages.filter(message => message.id === frame.sourceMessage!.id)) !== fingerprint([frame.sourceMessage]))
     throw new CompanionModelError('CANCELLED', '本次请求的真实来源已变化，不能继续推理。');
   const source = frame.sourceMessage ?? messages.at(-1);
