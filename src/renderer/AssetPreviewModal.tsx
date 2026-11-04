@@ -66,6 +66,12 @@ import {
   ViewerContextMenu,
   type ViewerContextMenuPosition,
 } from "./ViewerContextMenu";
+import { viewerShowsPlaybackMenu } from "./viewer-quick-settings-menu";
+import type { ViewerPlaybackHandle } from "./video-player-controls";
+import {
+  loadVideoSeekJumpPreferences,
+  saveVideoSeekJumpPreferences,
+} from "./video-seek-jump-preferences";
 import {
   applyViewerDisplayTransformAction,
   IDENTITY_VIEWER_DISPLAY_TRANSFORM,
@@ -114,8 +120,15 @@ interface AssetPreviewModalProps {
   fullscreenRootRef?: RefObject<HTMLDivElement | null>;
   /** Side arrows appear only when the pointer is near them. Default on. */
   navArrowsOnApproach?: boolean;
+  /**
+   * Which edge the pointer is in. Owned by the transition host so an asset
+   * swap does not hide the arrow under a stationary pointer.
+   */
+  navNear?: "prev" | "next" | null;
   /** Video transport appears only when the pointer is near the bottom. Default off. */
   videoTransportOnApproach?: boolean;
+  onToggleNavArrowsOnApproach?: () => void;
+  onToggleVideoTransportOnApproach?: () => void;
   canTrashAsset?: boolean;
   canDiskDeleteAsset?: boolean;
   canRemoveFromCollection?: boolean;
@@ -126,8 +139,23 @@ interface AssetPreviewModalProps {
   onPermanentDelete?: () => void;
 }
 
-const NAV_APPROACH_EDGE_PX = 96;
-const NAV_APPROACH_CENTER_PX = 160;
+const NAV_APPROACH_EDGE_RATIO = 0.22;
+const NAV_APPROACH_EDGE_MAX_PX = 320;
+const NAV_APPROACH_BOTTOM_PX = 64;
+
+function navApproachSide(
+  bounds: DOMRect,
+  clientX: number,
+  clientY: number,
+): "prev" | "next" | null {
+  const x = clientX - bounds.left;
+  const y = clientY - bounds.top;
+  const edge = Math.min(bounds.width * NAV_APPROACH_EDGE_RATIO, NAV_APPROACH_EDGE_MAX_PX);
+  if (y > bounds.height - NAV_APPROACH_BOTTOM_PX) return null;
+  if (x <= edge) return "prev";
+  if (bounds.width - x <= edge) return "next";
+  return null;
+}
 
 export type AssetPreviewModalHandle = {
   /** Flush text edits (and create a revision if the session changed) then close. */
@@ -221,6 +249,10 @@ const AssetPreviewModalContent = forwardRef<
     onPresentationReady,
     fullscreenRootRef,
     navArrowsOnApproach = true,
+    navNear = null,
+    videoTransportOnApproach = false,
+    onToggleNavArrowsOnApproach,
+    onToggleVideoTransportOnApproach,
     canTrashAsset = false,
     canDiskDeleteAsset = false,
     canRemoveFromCollection = false,
@@ -234,7 +266,6 @@ const AssetPreviewModalContent = forwardRef<
 ) {
   const t = useT();
   const modalRef = useRef<HTMLElement>(null);
-  const [navNear, setNavNear] = useState<"prev" | "next" | null>(null);
   const fullscreenElement = (): Element | null =>
     fullscreenRootRef?.current ?? modalRef.current;
   const viewerSessionControllerRef = useRef<ViewerSessionController | null>(null);
@@ -314,6 +345,7 @@ const AssetPreviewModalContent = forwardRef<
   const directApprovedRef = useRef(false);
   const directGateIdentityRef = useRef<string | null>(null);
   const textViewerRef = useRef<TextViewerControlsHandle>(null);
+  const playbackHandleRef = useRef<ViewerPlaybackHandle | null>(null);
   const {
     volume: viewerVolume,
     muted: viewerMuted,
@@ -956,6 +988,10 @@ const AssetPreviewModalContent = forwardRef<
     asset.mediaType === "video" ||
     illustratorPdfPreview;
   const fitShortcut = viewerTransformable ? "Numpad ." : undefined;
+  const playbackMenu = viewerShowsPlaybackMenu({
+    mediaType: ready ? resolution?.mediaType : null,
+    gif: showImage && isGifDisplayName(asset.displayName) && !preloadOnly,
+  });
   const shortcutPlatform = isMacPlatform(navigator.userAgent) ? "mac" : "windows";
   const copyShortcut = shortcutPlatform === "mac" ? "⌘C" : "Ctrl+C";
   const copyPathShortcut = formatRuntimeShortcut("asset.copy-file-path", shortcutPlatform);
@@ -1179,22 +1215,6 @@ const AssetPreviewModalContent = forwardRef<
         if (preloadOnly) return;
         onChromeActivity("pointerdownOrClick");
       }}
-      onPointerLeave={() => {
-        setNavNear(null);
-      }}
-      onPointerMove={(event) => {
-        if (preloadOnly) return;
-        const bounds = event.currentTarget.getBoundingClientRect();
-        const x = event.clientX - bounds.left;
-        const y = event.clientY - bounds.top;
-        const nearCenter = Math.abs(y - bounds.height / 2) <= NAV_APPROACH_CENTER_PX;
-        const nearPrev = nearCenter && x <= NAV_APPROACH_EDGE_PX;
-        const nearNext = nearCenter && bounds.width - x <= NAV_APPROACH_EDGE_PX;
-        const nextNav = navArrowsOnApproach
-          ? (nearPrev ? "prev" : nearNext ? "next" : null)
-          : null;
-        setNavNear((current) => (current === nextNav ? current : nextNav));
-      }}
       ref={modalRef}
       role="region"
       tabIndex={-1}
@@ -1238,6 +1258,7 @@ const AssetPreviewModalContent = forwardRef<
           ) : ready && resolution?.mediaType === "video" && resolution.url ? (
             <VideoPlayerControls
               autoPlay={!preloadOnly}
+              playbackHandleRef={playbackHandleRef}
               key={`${asset.assetId}:${resolution.url}:${playbackRetryGeneration}`}
               displayTransform={displayTransform}
               fitRequestToken={fitRequestToken}
@@ -1305,6 +1326,7 @@ const AssetPreviewModalContent = forwardRef<
               onReady={() => setDirectApproved(true)}
               onUserActivity={() => onChromeActivity("pointerdownOrClick")}
               onVolumeChange={setViewerVolume}
+              playbackHandleRef={playbackHandleRef}
               src={resolution.url}
               volume={viewerVolume}
               waveformUrl={resolution.posterUrl}
@@ -1422,6 +1444,7 @@ const AssetPreviewModalContent = forwardRef<
             <GifViewerPlayer
               alt={asset.displayName}
               autoPlay
+              playbackHandleRef={playbackHandleRef}
               colorSpaceOptions={resolution?.colorSpace?.options}
               colorSpaceValue={
                 selectedColorSpace ?? resolution?.colorSpace?.id
@@ -1581,7 +1604,10 @@ const AssetPreviewModalContent = forwardRef<
                 tabIndex={VIEWER_CHROME_TAB_INDEX}
                 type="button"
               >
-                <Icon name="chevron-left" size={28} />
+                <span className="preview-nav-glyph">
+                  <Icon name="chevron-left" size={37} />
+                  <Icon name="chevron-left" size={37} />
+                </span>
               </button>
               <button
                 aria-label={t("preview.next")}
@@ -1591,14 +1617,54 @@ const AssetPreviewModalContent = forwardRef<
                 tabIndex={VIEWER_CHROME_TAB_INDEX}
                 type="button"
               >
-                <Icon name="chevron-right" size={28} />
+                <span className="preview-nav-glyph">
+                  <Icon name="chevron-right" size={37} />
+                  <Icon name="chevron-right" size={37} />
+                </span>
               </button>
             </>
           ) : null}
         </div>
         {viewerContextMenu && viewerContextMenuAvailable ? (
           <ViewerContextMenu
+            chromeSettings={
+              onToggleNavArrowsOnApproach && onToggleVideoTransportOnApproach
+                ? {
+                    arrowsOnApproach: navArrowsOnApproach,
+                    onToggleArrows: onToggleNavArrowsOnApproach,
+                    onToggleToolbar: onToggleVideoTransportOnApproach,
+                    toolbarOnApproach: videoTransportOnApproach,
+                  }
+                : null
+            }
             copyShortcut={copyShortcut}
+            playback={
+              playbackMenu
+                ? {
+                    ...(playbackMenu.rate
+                      ? {
+                          fasterShortcut: formatRuntimeShortcut("viewer.video.rate-faster", shortcutPlatform),
+                          onFaster: () => playbackHandleRef.current?.stepRate("faster"),
+                          onSlower: () => playbackHandleRef.current?.stepRate("slower"),
+                          slowerShortcut: formatRuntimeShortcut("viewer.video.rate-slower", shortcutPlatform),
+                        }
+                      : {}),
+                    mode: loadVideoSeekJumpPreferences().mode,
+                    onSeek: (direction, unit) => playbackHandleRef.current?.seekBy(direction, unit),
+                    onToggleMode: () => {
+                      const current = loadVideoSeekJumpPreferences();
+                      saveVideoSeekJumpPreferences({
+                        ...current,
+                        mode: current.mode === "time" ? "percent" : "time",
+                      });
+                    },
+                    percent: loadVideoSeekJumpPreferences().percent,
+                    seconds: loadVideoSeekJumpPreferences().seconds,
+                    seekBackShortcut: formatRuntimeShortcut("viewer.video.seek-back", shortcutPlatform),
+                    seekForwardShortcut: formatRuntimeShortcut("viewer.video.seek-forward", shortcutPlatform),
+                  }
+                : null
+            }
             copyPathShortcut={copyPathShortcut}
             onCopyFilePath={
               asset.deletedAt || asset.availability !== "available"
@@ -1649,6 +1715,8 @@ export const AssetPreviewModal = forwardRef<
   const { asset, ...contentProps } = props;
   const videoTransportOnApproach = props.videoTransportOnApproach ?? false;
   const chromeIdle = props.chromeIdle;
+  const navArrowsOnApproach = props.navArrowsOnApproach ?? true;
+  const [navNear, setNavNear] = useState<"prev" | "next" | null>(null);
   const fullscreenRootRef = useRef<HTMLDivElement>(null);
   const [activeAsset, setActiveAsset] = useState(asset);
   const [promotedTargetId, setPromotedTargetId] = useState<string | null>(null);
@@ -1663,6 +1731,13 @@ export const AssetPreviewModal = forwardRef<
   const seenAssetIdRef = useRef(asset.assetId);
   const latestAssetIdRef = useRef(asset.assetId);
   latestAssetIdRef.current = asset.assetId;
+
+  const readNavNear = useCallback((clientX: number, clientY: number) => {
+    if (!navArrowsOnApproach) return null;
+    const host = fullscreenRootRef.current;
+    if (!host) return null;
+    return navApproachSide(host.getBoundingClientRect(), clientX, clientY);
+  }, [navArrowsOnApproach]);
 
   const readPointerBands = useCallback((clientX: number, clientY: number) => {
     const host = fullscreenRootRef.current;
@@ -1689,6 +1764,7 @@ export const AssetPreviewModal = forwardRef<
         return;
       }
       lastPointerRef.current = { x: event.clientX, y: event.clientY };
+      setNavNear(readNavNear(event.clientX, event.clientY));
       dispatchDrawer({
         type: "pointer-move",
         approach: videoTransportOnApproach,
@@ -1700,6 +1776,7 @@ export const AssetPreviewModal = forwardRef<
     const onLeaveWindow = (event: PointerEvent) => {
       if (event.relatedTarget !== null) return;
       lastPointerRef.current = null;
+      setNavNear(null);
       dispatchDrawer({
         type: "pointer-left-window",
         approach: videoTransportOnApproach,
@@ -1711,19 +1788,20 @@ export const AssetPreviewModal = forwardRef<
       window.removeEventListener("pointermove", onMove, true);
       window.removeEventListener("pointerout", onLeaveWindow, true);
     };
-  }, [dispatchDrawer, readPointerBands, videoTransportOnApproach]);
+  }, [dispatchDrawer, readNavNear, readPointerBands, videoTransportOnApproach]);
 
   useEffect(() => {
     if (seenAssetIdRef.current === asset.assetId) return;
     seenAssetIdRef.current = asset.assetId;
     const last = lastPointerRef.current;
+    setNavNear(last ? readNavNear(last.x, last.y) : null);
     dispatchDrawer({
       type: "asset-changed",
       approach: videoTransportOnApproach,
       hasPointer: last !== null,
       bands: last ? readPointerBands(last.x, last.y) : { bottom: false, top: false },
     });
-  }, [asset.assetId, dispatchDrawer, readPointerBands, videoTransportOnApproach]);
+  }, [asset.assetId, dispatchDrawer, readNavNear, readPointerBands, videoTransportOnApproach]);
 
   useEffect(() => {
     if (!chromeIdle) return;
@@ -1757,6 +1835,7 @@ export const AssetPreviewModal = forwardRef<
           asset={activeAsset}
           fullscreenRootRef={fullscreenRootRef}
           key={activeAsset.assetId}
+          navNear={navNear}
           onPresentationReady={undefined}
           preloadOnly={false}
           ref={ref}
@@ -1768,6 +1847,7 @@ export const AssetPreviewModal = forwardRef<
           asset={asset}
           fullscreenRootRef={fullscreenRootRef}
           key={asset.assetId}
+          navNear={navNear}
           onPresentationReady={targetIsCurrent || targetWasPromoted ? undefined : promoteTarget}
           preloadOnly={!targetIsCurrent && !targetWasPromoted}
           ref={targetIsCurrent || targetWasPromoted ? ref : undefined}

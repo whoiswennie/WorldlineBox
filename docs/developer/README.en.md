@@ -11,7 +11,11 @@ For developers working on WorldlineBox itself: architecture, building from sourc
 - [Setup](setup.md) — dependencies, first build, development environment
 - [Build & packaging](build-packaging.md) — package / make / release pipeline / signing
 - [Architecture](architecture.md) — process model, directory layout, key design
+- [Super Agent runtime](superagent-bot-runtime-guide.md) — current lane/epoch, native DSH loop, VCP, worker and world boundaries, with validation limits
+- [Companion guide](../user-guide/companions.en.md) — current chat, tasks, memory and physical world UI
+- [Refactor research](superagent-bot-research-2026-11-02.md) and [implementation plan](superagent-bot-implementation-plan-2026-11-02.md) — historical evidence and design; [development log](superagent-bot-development-log.md) records progress
 - [Serpent 0.3.2 integration](serpent-032-upgrade/README.md) — source audit, custom-module compatibility, configuration migration and validation
+- [Serpent 0.3.4 asset integration](serpent-034-upgrade/README.md) — linked text writeback, viewer seeking, filtered counts, worker recovery and built-in semantics validation
 - [Testing](testing.md) — test layers and how to run them
 - [Adding media format support](media-format-support.md) — registry, import, preview, filters, protocols, and acceptance
 - [Branches and workflow](workflow.md) — branching strategy, open source contribution process, and maintainer workflow discipline

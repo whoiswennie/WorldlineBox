@@ -1,5 +1,6 @@
 import {
   useEffect,
+  useLayoutEffect,
   useId,
   useRef,
   useState,
@@ -15,9 +16,11 @@ import {
 } from "./roving-list-keyboard";
 import { VIEWER_CHROME_TAB_INDEX } from "./viewer-focus-policy";
 import {
+  playbackRateAfterWheelSteps,
   VIDEO_PLAYBACK_RATES,
   type VideoPlaybackRate,
 } from "./video-player-controls";
+import { bindVerticalWheelSteps } from "./viewer-wheel-intent";
 
 /**
  * Viewer transport rate picker (WorldlineBox-1a846c).
@@ -40,10 +43,25 @@ export function VideoPlaybackRateSelect({
   const t = useT();
   const [open, setOpen] = useState(false);
   const hostRef = useRef<HTMLDivElement>(null);
+  const valueRef = useRef(value);
+  useLayoutEffect(() => {
+    valueRef.current = value;
+  }, [value]);
   const triggerRef = useRef<HTMLButtonElement>(null);
   const listId = useId();
   const rateLabel = t("preview.playbackRateOption", { rate: value });
   const triggerLabel = `${t("preview.playbackRate")}: ${rateLabel}`;
+
+  useEffect(() => {
+    const host = hostRef.current;
+    if (!host) return;
+    return bindVerticalWheelSteps(host, (steps) => {
+      onInteract?.();
+      const next = playbackRateAfterWheelSteps(valueRef.current, steps);
+      valueRef.current = next;
+      onChange(next);
+    });
+  }, [onChange, onInteract]);
 
   function closeList(restoreTriggerFocus: boolean) {
     setOpen(false);

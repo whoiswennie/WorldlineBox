@@ -1,0 +1,31 @@
+.bot-text-field {
+  display:flex;flex-direction:column;gap:7px;min-width:0;
+  color:var(--ui-content-primary);font-family:var(--font-ui,'Segoe UI','Microsoft YaHei UI',sans-serif);
+  font-size:14px;line-height:1.6;
+}
+.bot-text-field__label { align-self:flex-start;font-size:12px;font-weight:550;line-height:1.5;color:var(--ui-content-secondary); }
+.bot-text-field__surface {
+  min-width:0;overflow:hidden;border:1px solid var(--ui-border-subtle);border-radius:8px;
+  background:var(--ui-surface-canvas);transition:border-color .12s ease,box-shadow .12s ease;
+}
+.bot-text-field__surface:focus-within {
+  border-color:var(--ui-border-focus);box-shadow:0 0 0 3px color-mix(in srgb,var(--ui-action-accent) 11%,transparent);
+}
+.bot-text-field textarea.bot-text-field__control {
+  display:block;box-sizing:border-box;width:100%;min-width:0;min-height:0;max-width:100%;margin:0;padding:11px 13px;
+  resize:none;border:0;border-radius:0;outline:none;background:transparent;color:var(--ui-content-primary);
+  font-family:var(--font-ui,'Segoe UI','Microsoft YaHei UI',sans-serif);font-size:14px;line-height:1.6;font-weight:400;
+  overflow-y:auto;overflow-wrap:anywhere;scrollbar-width:thin;
+}
+.bot-text-field__control::placeholder { color:var(--ui-content-tertiary);opacity:1; }
+.bot-text-field__footer { display:flex;align-items:center;gap:12px;min-height:28px;padding:0 13px 9px; }
+.bot-text-field__actions { display:flex;align-items:center;gap:8px;min-width:0; }
+.bot-text-field__count { margin-left:auto;flex-shrink:0;font-size:11px;font-variant-numeric:tabular-nums;color:var(--ui-content-tertiary); }
+.bot-text-field__hint,.bot-text-field__error { margin:0;font-size:12px;line-height:1.6;overflow-wrap:anywhere; }
+.bot-text-field__hint { color:var(--ui-content-secondary); }
+.bot-text-field__error { color:var(--ui-status-danger-content); }
+.bot-text-field.has-error .bot-text-field__surface { border-color:var(--ui-status-danger-content); }
+.bot-text-field.has-error .bot-text-field__surface:focus-within { box-shadow:0 0 0 3px color-mix(in srgb,var(--ui-status-danger-content) 11%,transparent); }
+.bot-text-field.is-disabled .bot-text-field__surface { background:var(--ui-surface-hover);box-shadow:none;border-color:var(--ui-border-subtle); }
+.bot-text-field.is-disabled .bot-text-field__control { cursor:not-allowed;color:var(--ui-content-secondary); }
+@media (prefers-reduced-motion:reduce) { .bot-text-field__surface { transition:none; } }

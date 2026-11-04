@@ -1,8 +1,8 @@
 import { AI_API_FORMATS, resolveOpenAiChatCompletionsUrl, resolveOpenAiResponsesUrl, resolveAnthropicMessagesUrl,
   resolveGeminiGenerateContentUrl, resolveDashScopeTextGenerationUrl, resolveDashScopeMultimodalGenerationUrl, type AiApiFormat } from '../../shared/ai-endpoints';
 import { deepseekStructuredRequestDefaults } from '../../shared/llm';
-import type { CompanionModelConfig } from '../companions/model';
-import { readCompanionProviderStream } from '../companions/provider-stream';
+import type { AiConnectionConfig } from '../../shared/ai-connection';
+import { readProviderStream } from '../llm/provider-stream';
 import { browserAgentDeclarations } from '../../shared/browser-agent-tools';
 
 export interface BrowserAgentCall { id: string; name: string; arguments: string; thoughtSignature?: string }
@@ -13,7 +13,7 @@ const record = (value: unknown): Record<string, unknown> => value && typeof valu
 const array = (value: unknown): unknown[] => Array.isArray(value) ? value : [];
 const text = (value: unknown): string => typeof value === 'string' ? value : array(value).map(item => String(record(item).text ?? '')).join('');
 
-export function browserAgentRequest(config: CompanionModelConfig, system: string, messages: readonly BrowserAgentMessage[], signal: AbortSignal, tools = true, outputTokens = 4096): [string, RequestInit] {
+export function browserAgentRequest(config: AiConnectionConfig, system: string, messages: readonly BrowserAgentMessage[], signal: AbortSignal, tools = true, outputTokens = 4096): [string, RequestInit] {
   const functions = tools ? browserAgentDeclarations : [];
   const chat = messages.map(message => message.role === 'user' ? { role: 'user', content: message.text }
     : message.role === 'tool' ? { role: 'tool', tool_call_id: message.callId, content: message.text }
@@ -95,7 +95,7 @@ export function parseBrowserAgentReply(format: AiApiFormat, value: unknown): Bro
   return { text: output, calls };
 }
 
-export async function generateBrowserAgentReply(input: { config: CompanionModelConfig; system: string; messages: readonly BrowserAgentMessage[];
+export async function generateBrowserAgentReply(input: { config: AiConnectionConfig; system: string; messages: readonly BrowserAgentMessage[];
   signal: AbortSignal; tools?: boolean; onText?(text: string): void; fetchFn?: typeof fetch; outputTokens?: number }): Promise<BrowserAgentReply> {
   const config = input.config;
   if (!AI_API_FORMATS.includes(config.apiFormat) || !config.apiKey.trim() || /[\r\n]/.test(config.apiKey) || !config.model.trim()) throw Error('请先在全局模型设置中配置有效的模型和密钥。');
@@ -114,7 +114,7 @@ export async function generateBrowserAgentReply(input: { config: CompanionModelC
       try { while (true) { const next = await reader.read(); if (next.done) break; size += next.value.byteLength; if (size > 512 * 1024) throw Error('模型返回内容过大。'); chunks.push(next.value); }
         body = JSON.parse(Buffer.concat(chunks).toString('utf8'));
       } finally { await reader.cancel().catch(() => undefined); reader.releaseLock(); }
-    } else body = await readCompanionProviderStream(response, config.apiFormat, { signal: controller.signal, onText: input.onText });
+    } else body = await readProviderStream(response, config.apiFormat, { signal: controller.signal, onText: input.onText });
     return parseBrowserAgentReply(config.apiFormat, body);
   } catch (error) {
     if (input.signal.aborted) throw Error('会话已停止。', { cause: error });

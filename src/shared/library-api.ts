@@ -6,6 +6,7 @@ import type { EmbeddingDeviceCapability } from './embedding/device-capability';
 import type { PublicError, PublicErrorReason } from './protocol/errors';
 import type { LibraryNavigationSummary } from './library-navigation';
 import type { MutationReceipt } from './performance-contract';
+import type { NativeDragReadinessEvent } from './native-drag-readiness';
 
 /** WorldlineBox-xffq：WebDAV 服务端能力探测结果。 */
 export interface SyncCapabilities {
@@ -370,6 +371,15 @@ export interface WorldlineBoxLibraryApi {
     parentFolderId: string | null;
     showIgnored?: boolean;
   }): Promise<LibraryApiResult<FolderBrowseEntry[]>>;
+  listFilteredFolderCounts(input: {
+    libraryId: string;
+    filters?: FilterClause[];
+    showIgnored?: boolean;
+  }): Promise<LibraryApiResult<{
+    all: number;
+    root: number;
+    folders: Array<{ folderId: string; count: number }>;
+  }>>;
   listFolderEntriesByRefs(input: {
     libraryId: string;
     refs: Array<{ locationKind: 'managed' | 'linked'; folderId: string }>;
@@ -943,6 +953,7 @@ export interface WorldlineBoxLibraryApi {
     libraryId: string;
     assetIds: string[];
   }): void;
+  onNativeDragReadiness(listener: (event: NativeDragReadinessEvent) => void): () => void;
   // Folder shell actions (REQ-MENU-006): folder id only crosses the bridge;
   // the absolute path is resolved by the Worker and consumed by Main.
   openFolderInFileManager(input: { libraryId: string; folderId: string }): Promise<LibraryApiResult<void>>;

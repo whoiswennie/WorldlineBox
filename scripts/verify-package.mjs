@@ -4,6 +4,8 @@ import { existsSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
+import { resolveBotMemoryNode, verifyBotMemory } from './bot-memory-runtime-lib.mjs';
+import {verifyBotStickers} from './bot-stickers-lib.mjs';
 
 import {
   currentPlatformKey,
@@ -40,10 +42,11 @@ if (existsSync(path.join(resourcesPath, 'resources', 'embedding-models'))) {
 }
 
 const requiredPaths = [
-  ...['package.json', 'index.js', 'cordis.patch.yml'].map(name => path.join(resourcesPath, 'dsh-bridge', name)),
+  ...['package.json', 'index.js', 'workspace.js', 'cordis.patch.yml'].map(name => path.join(resourcesPath, 'dsh-bridge', name)),
   path.join(resourcesPath, 'embedding-models', 'manifest.json'),
-  path.join(resourcesPath, 'vcp-memory', 'KnowledgeBaseManager.js'),
-  path.join(resourcesPath, 'vcp-memory-host', 'worker.cjs'),
+  path.join(resourcesPath, 'vcp-memory', 'lib', 'client.cjs'),
+  path.join(resourcesPath, 'vcp-memory', 'lib', 'worker.cjs'),
+  path.join(resourcesPath, 'vcp-memory', 'worldlinebox-integration-manifest.json'),
   path.join(resourcesPath, 'app.asar'),
   path.join(
     resourcesPath,
@@ -79,7 +82,7 @@ const missingPaths = requiredPaths.filter((requiredPath) => !existsSync(required
 if (missingPaths.length > 0) {
   throw new Error(`Package is missing required runtime files:\n${missingPaths.join('\n')}`);
 }
-for (const name of ['package.json', 'index.js', 'cordis.patch.yml']) {
+for (const name of ['package.json', 'index.js', 'workspace.js', 'cordis.patch.yml']) {
   const expected = readFileSync(path.join(projectRoot, 'resources', 'dsh-bridge', name));
   const actual = readFileSync(path.join(resourcesPath, 'dsh-bridge', name));
   if (!expected.equals(actual)) throw new Error(`Packaged native DSH bridge differs from source: ${name}`);
@@ -134,27 +137,28 @@ if (existsSync(sqliteNodePath)) {
 
 const asarPath = path.join(resourcesPath, 'app.asar');
 const asarFiles = asar.listPackage(asarPath);
+// Vendor-prefix optimization must not erase Chromium's actual fallback.
+// This checks emitted CSS rather than trusting the source declaration order.
+const rendererCss = asarFiles.filter(entry => String(entry).replaceAll('\\', '/').includes('/.vite/renderer/main_window/assets/') && String(entry).endsWith('.css'));
+const reducedRules = rendererCss.flatMap(entry => {
+  const css = asar.extractFile(asarPath, entry.replace(/^[\\/]+/u, '')).toString('utf8');
+  return [...css.matchAll(/(html\[data-ui-effects=(?:"reduced"|'reduced'|reduced)\][^{]*)\{([^}]*)\}/gu)]
+    .filter(match => match[1].includes('*')).map(match => match[2]);
+});
+if (!reducedRules.some(body => /(?:^|;)\s*backdrop-filter\s*:\s*none\s*!important(?:;|$)/iu.test(body))) {
+  throw new Error('Production renderer CSS lost the unprefixed reduced-effects backdrop-filter rule.');
+}
 if (asarFiles.some(entry => /^\/?\.vite\/vcp-memory(?:-host)?(?:\/|$)/u.test(String(entry).replaceAll('\\', '/')))) {
   throw new Error('VCP resources are duplicated inside ASAR; they must ship only through extraResource.');
 }
-const expectedVcp = JSON.parse(readFileSync(path.join(projectRoot, 'vendor', 'vcp-memory', 'upstream-manifest.json'), 'utf8'));
-for (const entry of expectedVcp.files) {
-  const file = path.join(resourcesPath, 'vcp-memory', entry.path);
-  const bytes = readFileSync(file);
-  if (bytes.length !== entry.bytes || createHash('sha256').update(bytes).digest('hex') !== entry.sha256) {
-    throw new Error(`Packaged VCP upstream checksum mismatch: ${entry.path}`);
-  }
-}
-for (const name of ['runtime.cjs', 'worker.cjs', 'peripherals.cjs', 'prepared-focus.cjs', 'record-catalog.cjs', 'cold-runtime.cjs', 'cold-worker.cjs', 'dream-runtime.cjs']) {
-  const expected = readFileSync(path.join(projectRoot, 'src', 'main', 'vcp-memory', name));
-  const actual = readFileSync(path.join(resourcesPath, 'vcp-memory-host', name));
-  if (!expected.equals(actual)) throw new Error(`Packaged VCP host is stale or changed: ${name}`);
-}
+if (existsSync(path.join(resourcesPath, 'vcp-memory-host'))) throw new Error('Retired companion memory host must not ship with the Super Agent runtime.');
+await verifyBotMemory({ packageRoot: path.join(resourcesPath, 'vcp-memory'), projectRoot,
+  nodePath: await resolveBotMemoryNode(projectRoot) });
+await verifyBotStickers(path.join(resourcesPath,'bot-stickers'));
 const requiredAsarEntries = [
   'plugin_standard_host.js',
   'plugin_trusted_host.js',
   'script_runtime_utility.js',
-  'companion_worker.js',
   'browser-capture.js',
 ];
 const missingAsarEntries = requiredAsarEntries.filter((entry) => {
@@ -175,7 +179,7 @@ const registrySource = readFileSync(
   'utf8',
 );
 const apiVersionMatch = registrySource.match(
-  /export const AUTOMATION_API_VERSION = (\d+) as const;/u,
+  /export const AUTOMATION_API_VERSION = (\d+)\b/u,
 );
 if (!apiVersionMatch) {
   throw new Error('Could not determine AUTOMATION_API_VERSION from the Registry source.');

@@ -6,7 +6,6 @@ const shell = document.getElementById('startup-shell');
 // Screen tools have their own native readiness handshake. Never draw the main
 // application's launch shell into a desktop-sized capture overlay.
 if (new URLSearchParams(location.search).get('window') === 'capture-tools') shell?.remove();
-if (new URLSearchParams(location.search).get('window') === 'companion-world') shell?.classList.add('is-world');
 const started = performance.now();
 try {
   const preference = JSON.parse(localStorage.getItem('worldlinebox.theme-prefs.v1') ?? 'null');

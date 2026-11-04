@@ -8,7 +8,7 @@ import { sanitizeOutput } from './instance-process';
 import type { OperationContext } from './operations';
 import { snapshotDshTaskExecution, type DshTaskExecutionOptions, type DshTaskVisualManifest } from './task-execution';
 import { validateDshTaskVisualInputs } from './task-visual-inputs';
-import { removeOwnedDirectory } from '../companions/owned-directory-cleanup';
+import { removeOwnedDirectory } from '../owned-directory-cleanup';
 import { DshTaskRecordStore } from './task-record-store';
 import type { DshRecordQuery } from '../../shared/dsh-task-record';
 import { dshTaskCapabilitiesSchema, type DshTaskCapabilities } from '../../shared/dsh-task-spec';
@@ -69,7 +69,7 @@ export class DshTaskBroker {
       try {
         const { client } = await this.options.getHost(instanceId, signal);
         await client.request('/companions/reset', { sessionIds: [...new Set(records.flatMap(record => record.sessionId ? [record.sessionId] : []))],
-          workspacePaths: [...new Set(managed.map(record => record.sessionWorkspacePath ?? record.workspacePath!))] }, signal);
+          workspacePaths: [...new Set(managed.map(record => record.sessionWorkspacePath ?? record.workspacePath!))] }, signal, 120000);
       } catch (error) {
         if (signal.aborted) throw new Error('原生任务记录清理超时，请稍后继续重置。', { cause: error });
         throw error;

@@ -3,6 +3,8 @@ export const LIBRARY_REQUEST_CHANNEL = 'worldlinebox:library:request' as const;
 export const ASSET_NATIVE_DRAG_CHANNEL = 'worldlinebox:asset:native-drag' as const;
 /** Renderer → Main: warm drag paths before dragstart, without waiting. */
 export const ASSET_NATIVE_DRAG_PRIME_CHANNEL = 'worldlinebox:asset:native-drag-prime' as const;
+/** Main → Renderer: ids whose validated OS drag paths are cached in Main. */
+export const ASSET_NATIVE_DRAG_READINESS_CHANNEL = 'worldlinebox:asset:native-drag-readiness' as const;
 export const LIBRARY_LIFECYCLE_CHANNEL = 'worldlinebox:library:lifecycle' as const;
 export const ASSET_CHANGE_CHANNEL = 'worldlinebox:asset:changed' as const;
 export const LIBRARY_CHANGED_CHANNEL = 'worldlinebox:library:changed' as const;

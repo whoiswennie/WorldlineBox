@@ -1,5 +1,5 @@
-import type { CompanionWorldScene, CompanionWorldSnapshot } from './companion-world';
-import { companionWorldCellWalkable, findCompanionWorldPath } from './companion-world-engine';
+import type { BotWorldScene as CompanionWorldScene } from './companion-bot-world';
+import { worldCellWalkable as companionWorldCellWalkable, findWorldPath as findCompanionWorldPath } from './world-physics';
 
 export interface CompanionWorldParkPoint { x: number; y: number }
 export interface CompanionWorldParkBounds { x: number; y: number; width: number; height: number }
@@ -22,7 +22,7 @@ export function companionWorldParkContains(bounds: CompanionWorldParkBounds, poi
 }
 
 /** The hazard and physical host share one outdoor safety gate. */
-export function companionWorldParkSuitable(environment: Pick<CompanionWorldSnapshot['environment'], 'weather' | 'outdoorTemperature'>, energy?: number): boolean {
+export function companionWorldParkSuitable(environment: { weather?: string; outdoorTemperature?: number }, energy?: number): boolean {
   return environment.weather !== undefined && !['rain', 'snow'].includes(environment.weather) && environment.outdoorTemperature !== undefined && environment.outdoorTemperature >= 2 && environment.outdoorTemperature <= 34
     && (energy === undefined || energy > 25);
 }

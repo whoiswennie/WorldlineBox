@@ -1,10 +1,10 @@
 import { AdditiveBlending, BoxGeometry, BufferGeometry, CatmullRomCurve3, CircleGeometry, Color, CylinderGeometry, ExtrudeGeometry, Float32BufferAttribute, Group, Mesh, MeshBasicMaterial, MeshStandardMaterial, Points, ShaderMaterial, Shape, ShapeGeometry, SphereGeometry, TorusGeometry, TubeGeometry, Vector3 } from 'three';
 import { RoundedBoxGeometry } from 'three/addons/geometries/RoundedBoxGeometry.js';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
-import type { CompanionWorldScene } from '../../../shared/companion-world';
+import type { BotWorldScene } from '../../../shared/companion-bot-world';
 import { companionWorldParkCircuit, companionWorldParkLayout } from '../../../shared/companion-world-park';
 
-type Furniture = CompanionWorldScene['objects'][number];
+type Furniture = BotWorldScene['objects'][number];
 type Finish = 'stone' | 'garden' | 'foliage' | 'timber' | 'metal' | 'lantern' | 'water';
 const PALETTE = {
   plinth: '#b1bca9', edge: '#c7c7ae', grass: '#94aa82', grassLight: '#9baf89', grassShade: '#8ba17c',
@@ -19,7 +19,7 @@ const PALETTE = {
  * Trunks, bench supports and arbor feet only occupy existing blocking furniture.
  * Everything elsewhere is flush paving or groundcover, never a hidden obstacle.
  */
-export function createWorldParkModel(scene: CompanionWorldScene) {
+export function createWorldParkModel(scene: BotWorldScene) {
   const bounds = companionWorldParkLayout(scene);
   const group = new Group(); group.name = 'public-garden';
   const buckets = new Map<Finish, BufferGeometry[]>();

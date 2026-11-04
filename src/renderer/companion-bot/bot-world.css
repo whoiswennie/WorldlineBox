@@ -1,0 +1,11 @@
+.bot-world{border-bottom:1px solid var(--ui-border-subtle);padding:14px 24px;max-height:55vh;overflow:auto;background:var(--ui-surface-pane)}
+.bot-world>header{display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;font-size:13px}
+.bot-world-toolbar,.bot-world-actions{display:flex;align-items:center;gap:7px;flex-wrap:wrap;margin:8px 0}
+.bot-world select{border:1px solid var(--ui-border-subtle);border-radius:6px;padding:6px;background:var(--ui-surface-pane);color:var(--ui-content-primary);font-size:11px}
+.bot-world-map{display:block;width:100%;height:min(30vh,310px);border:1px solid var(--ui-border-subtle);border-radius:9px;cursor:crosshair;color:var(--ui-content-primary)}
+.bot-world-ground{fill:#e7ddca}.bot-world-ground.is-park{fill:#d5e4c4}
+.bot-world-object rect{fill:#ad9775;stroke:#796a52;stroke-width:.04}.bot-world-object.selected rect{stroke:#3e70b2;stroke-width:.13}.bot-world-object text{fill:#302a21;user-select:none;pointer-events:none}.bot-world-object{cursor:pointer}
+.bot-world-actor circle{fill:#c66852;stroke:#fff;stroke-width:.09}.bot-world-actor.is-self circle{fill:#3e70b2}.bot-world-actor text{fill:#222;paint-order:stroke;stroke:#fff;stroke-width:.05;user-select:none}
+.bot-world-position,.bot-world-hint{font-size:11px;line-height:1.6;color:var(--ui-content-secondary);margin:8px 0 0}
+.bot-world [role=alert]{font-size:12px;color:#c84c4c}
+.bot-world>header nav{display:flex;gap:6px}.bot-world button[aria-pressed=true]{border-color:var(--ui-border-focus)}.bot-world-3d{position:relative;width:100%;height:min(32vh,340px);min-height:240px;border:1px solid var(--ui-border-subtle);border-radius:9px;overflow:hidden}.bot-world-3d canvas{display:block;width:100%;height:100%;outline:none}

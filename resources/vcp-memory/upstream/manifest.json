@@ -1,0 +1,2321 @@
+{
+  "schemaVersion": 1,
+  "createdAt": "2026-11-02T01:31:04.029Z",
+  "sources": {
+    "toolbox": {
+      "path": "C:\\Users\\hp\\Desktop\\project\\VCPToolBox",
+      "commit": "b8e37d4fca6cab99db90c1a66b9a79d32825766b",
+      "dirty": true
+    }
+  },
+  "selection": {
+    "initialFiles": [
+      "KnowledgeBaseManager.js",
+      "TagMemoEngine.js",
+      "TagMemoV10Engine.js",
+      "RiverMemoEngine.js",
+      "ResultDeduplicator.js",
+      "TextChunker.js",
+      "EmbeddingUtils.js",
+      "TDBKnowledge.js",
+      "rag_params.json",
+      "config.env.example",
+      "LICENSE",
+      "Plugin.js",
+      "modules/messageProcessor.js",
+      "modules/associativeDiscovery.js",
+      "modules/contextManager.js",
+      "modules/finalContextStore.js",
+      "modules/roleDivider.js",
+      "modules/jevContextPruner.js",
+      "modules/vcpLoop/toolCallParser.js",
+      "modules/vcpLoop/toolMarkerFuzzyMatcher.js",
+      "modules/chatCompletionHandler.js",
+      "vcpInfoHandler.js",
+      "preprocessor_order.json",
+      "routes/admin/rag.js",
+      "routes/admin/jevRegistry.js",
+      "ToolConfigs/jev_tool_call_exp.json",
+      "ToolConfigs/jev_third_party_catalog.json",
+      "TVStxt/JevToolCallDecision.txt",
+      "Plugin/DailyHot/plugin-manifest.json.block",
+      "Plugin/WeatherInfoNow/plugin-manifest.json",
+      "scripts/guard-server-stopped.js",
+      "scripts/repair_database.js",
+      "scripts/rebuild_vector_indexes.js",
+      "scripts/rebuild_tag_index_custom.js",
+      "scripts/diary-semantic-classifier.js",
+      "scripts/sync_missing_tags.js",
+      "AdminPanel-Vue/src/features/rag-tuning/TagMemoV9ControlPanel.vue",
+      "AdminPanel-Vue/src/features/rag-tuning/RiverMemoV3ControlPanel.vue",
+      "AdminPanel-Vue/src/features/rag-tuning/metadata.ts",
+      "modules/jevRiverReranker.js",
+      "modules/jevToolCallExp.js",
+      "routes/dailyNotesRoutes.js",
+      "docs/vcp-whitepaper.md",
+      "docs/VCP记忆管理系统.md",
+      "docs/MEMORY_SYSTEM.md",
+      "docs/CONTEXT_BRIDGE.md",
+      "docs/TagMemo_Wave_Algorithm_Deep_Dive.md",
+      "docs/RIVERMEMO_TOPOLOGY_V3.md",
+      "docs/RUST_VECTOR_ENGINE.md",
+      "docs/CONTEXT_FOLDING_V2_DEVPLAN.md",
+      "docs/DOCUMENTATION_INDEX.md"
+    ],
+    "initialDirs": [
+      "modules/knowledgeBase/",
+      "modules/tagmemoV10/",
+      "rust-vexus-lite/",
+      "docs/archive/tagmemoV10/",
+      "Plugin/RAGDiaryPlugin/",
+      "Plugin/DailyNote/",
+      "Plugin/DailyNoteManager/",
+      "Plugin/DailyNotePanel/",
+      "Plugin/DailyNoteSearcher/",
+      "Plugin/MemoryMaster/",
+      "Plugin/AgentDream/",
+      "Plugin/MagiAgent/",
+      "Plugin/MemoryThinkingTray/",
+      "Plugin/ContextFoldingV2/",
+      "Plugin/LightMemo/",
+      "Plugin/OneRing/",
+      "Plugin/VCPTimeLine/",
+      "Plugin/PlaceholderExplorer/",
+      "Plugin/SemanticGroupEditor/"
+    ],
+    "policy": "Tracked, explicitly selected source and static dependencies; shipped native binaries; no private env, runtime state, diaries, agents or TVStxt data. Host implementation preserved for traceability and supplied by standalone adapter at runtime.",
+    "pluginCompleteness": [
+      {
+        "name": "RAGDiaryPlugin",
+        "existsInSource": true,
+        "manifest": "Plugin/RAGDiaryPlugin/plugin-manifest.json",
+        "entry": "RAGDiaryPlugin.js",
+        "files": 29
+      },
+      {
+        "name": "DailyNote",
+        "existsInSource": true,
+        "manifest": "Plugin/DailyNote/plugin-manifest.json",
+        "entry": "dailynote.js",
+        "files": 3
+      },
+      {
+        "name": "DailyNoteManager",
+        "existsInSource": true,
+        "manifest": "Plugin/DailyNoteManager/plugin-manifest.json",
+        "entry": "daily-note-manager.js",
+        "files": 3
+      },
+      {
+        "name": "DailyNotePanel",
+        "existsInSource": true,
+        "manifest": "Plugin/DailyNotePanel/plugin-manifest.json.block",
+        "entry": "index.js",
+        "files": 8
+      },
+      {
+        "name": "DailyNoteSearcher",
+        "existsInSource": true,
+        "manifest": "Plugin/DailyNoteSearcher/plugin-manifest.json",
+        "entry": "DailyNoteSearcher.js",
+        "files": 9
+      },
+      {
+        "name": "MemoryMaster",
+        "existsInSource": false
+      },
+      {
+        "name": "AgentDream",
+        "existsInSource": true,
+        "manifest": "Plugin/AgentDream/plugin-manifest.json.block",
+        "entry": "AgentDream.js",
+        "files": 7
+      },
+      {
+        "name": "MagiAgent",
+        "existsInSource": true,
+        "manifest": "Plugin/MagiAgent/plugin-manifest.json",
+        "entry": "MagiAgent.js",
+        "files": 3
+      },
+      {
+        "name": "MemoryThinkingTray",
+        "existsInSource": true,
+        "manifest": "Plugin/MemoryThinkingTray/plugin-manifest.json",
+        "entry": "MemoryThinkingTray.js",
+        "files": 4
+      },
+      {
+        "name": "ContextFoldingV2",
+        "existsInSource": true,
+        "manifest": "Plugin/ContextFoldingV2/plugin-manifest.json",
+        "entry": "ContextFoldingV2.js",
+        "files": 3
+      },
+      {
+        "name": "LightMemo",
+        "existsInSource": true,
+        "manifest": "Plugin/LightMemo/plugin-manifest.json",
+        "entry": "LightMemo.js",
+        "files": 4
+      },
+      {
+        "name": "OneRing",
+        "existsInSource": true,
+        "manifest": "Plugin/OneRing/plugin-manifest.json",
+        "entry": "OneRing.js",
+        "files": 15
+      },
+      {
+        "name": "VCPTimeLine",
+        "existsInSource": true,
+        "manifest": "Plugin/VCPTimeLine/plugin-manifest.json",
+        "entry": "VCPTimeLine.js",
+        "files": 2
+      },
+      {
+        "name": "PlaceholderExplorer",
+        "existsInSource": true,
+        "manifest": "Plugin/PlaceholderExplorer/plugin-manifest.json",
+        "entry": "PlaceholderExplorer.js",
+        "files": 14
+      },
+      {
+        "name": "SemanticGroupEditor",
+        "existsInSource": true,
+        "manifest": "Plugin/SemanticGroupEditor/plugin-manifest.json",
+        "entry": "SemanticGroupEditor.js",
+        "files": 2
+      }
+    ]
+  },
+  "files": [
+    {
+      "project": "toolbox",
+      "path": "AdminPanel-Vue/src/features/rag-tuning/RiverMemoV3ControlPanel.vue",
+      "sha256": "39850c878a3abe405dca086c95a540491a6eb0291ec89d16bfd591f6e1a41e16",
+      "bytes": 17542
+    },
+    {
+      "project": "toolbox",
+      "path": "AdminPanel-Vue/src/features/rag-tuning/TagMemoV9ControlPanel.vue",
+      "sha256": "5ced70531f0647bc871f80973245faa8de471b61d0ce103cf03413198d790273",
+      "bytes": 27858
+    },
+    {
+      "project": "toolbox",
+      "path": "AdminPanel-Vue/src/features/rag-tuning/metadata.ts",
+      "sha256": "4be6417b39ee0ab797f82520f38997aa4d050425b58f50edf0277baf3626d952",
+      "bytes": 46070
+    },
+    {
+      "project": "toolbox",
+      "path": "EmbeddingUtils.js",
+      "sha256": "2eb07fd96c20a66d29f507405c51d63ecde3fa38c6eef32b2cd281a8b9784d31",
+      "bytes": 13478
+    },
+    {
+      "project": "toolbox",
+      "path": "KnowledgeBaseManager.js",
+      "sha256": "946edd60ec935f95d3d1e2f537448034a331006fa33a53962479ffa30e83e0bd",
+      "bytes": 168582
+    },
+    {
+      "project": "toolbox",
+      "path": "LICENSE",
+      "sha256": "5392a8b3f46108fa3494e8c15b57da9e14e9bbd93335590cb5b50364fcf770a8",
+      "bytes": 14022
+    },
+    {
+      "project": "toolbox",
+      "path": "Plugin.js",
+      "sha256": "6e73e1b6aca8af50e7a8df548e6ea2aac3e723fd865b6e5c61788a3739b347b1",
+      "bytes": 137776
+    },
+    {
+      "project": "toolbox",
+      "path": "Plugin/AgentDream/AgentDream.js",
+      "sha256": "76013795e44265dd431accd5b72631c2588dff916901383fb26e804fb6a0eb40",
+      "bytes": 43787
+    },
+    {
+      "project": "toolbox",
+      "path": "Plugin/AgentDream/DreamWaveEngine.js",
+      "sha256": "7a136bbd491323ceff48beaa39a39d9c6b9373ec93b037bae06c0fa41906ef6a",
+      "bytes": 34490
+    },
+    {
+      "project": "toolbox",
+      "path": "Plugin/AgentDream/README.md",
+      "sha256": "5c83f8be673ac9a52790cfd8d17e95da4bef5d75fcfeca2f0c004218393789af",
+      "bytes": 4136
+    },
+    {
+      "project": "toolbox",
+      "path": "Plugin/AgentDream/config.env.example",
+      "sha256": "c5782bd1af915ce5ca8df74ce7c8d2b40569960fce6c6096e6bdd1f6057db69f",
+      "bytes": 3191
+    },
+    {
+      "project": "toolbox",
+      "path": "Plugin/AgentDream/dreampost.txt",
+      "sha256": "09322b937b2e17c92b8600a747a56ae21209265f5aa9011fcabc532d8c13ed79",
+      "bytes": 1814
+    },
+    {
+      "project": "toolbox",
+      "path": "Plugin/AgentDream/plugin-manifest.json.block",
+      "sha256": "1c679711dbf4f99009bcc14aea4dbd197abbee2515805f943baa1c0be7fe032b",
+      "bytes": 4410
+    },
+    {
+      "project": "toolbox",
+      "path": "Plugin/AgentDream/test_dream.js",
+      "sha256": "4bd942e8653e95aa0814670c4bf844c9f7ef63331aeb7f7747eb523ed50a753c",
+      "bytes": 2616
+    },
+    {
+      "project": "toolbox",
+      "path": "Plugin/ContextFoldingV2/ContextFoldingV2.js",
+      "sha256": "de29bd5fc818c8857b461d858f77d9114fb3954d5100bf1b53e913eb1fbd08a9",
+      "bytes": 35644
+    },
+    {
+      "project": "toolbox",
+      "path": "Plugin/ContextFoldingV2/config.env.example",
+      "sha256": "9f9302dafa359bcd16a075dd017e7d581afeca83715571c93faddd0c5eec9c2d",
+      "bytes": 1664
+    },
+    {
+      "project": "toolbox",
+      "path": "Plugin/ContextFoldingV2/plugin-manifest.json",
+      "sha256": "3576779b706b94b0344bdc8bb73c11106fd3cea66864d03f9319f1bbb1cb0f79",
+      "bytes": 1441
+    },
+    {
+      "project": "toolbox",
+      "path": "Plugin/DailyHot/plugin-manifest.json.block",
+      "sha256": "f00433fe979e7a90d595c5dd8c37a4d4bcea03e6cf0d50ef161de350c3fbe4a2",
+      "bytes": 785
+    },
+    {
+      "project": "toolbox",
+      "path": "Plugin/DailyNote/TagMaster.txt",
+      "sha256": "d88ca2d340b639acc6af040c4fc2826e5650eee0f39d0e0a319db9a80d5c246f",
+      "bytes": 1748
+    },
+    {
+      "project": "toolbox",
+      "path": "Plugin/DailyNote/dailynote.js",
+      "sha256": "021e23c975daea121c2ce16a20770fd6a1a3252675e53c1936ab23fcbd231e2e",
+      "bytes": 70721
+    },
+    {
+      "project": "toolbox",
+      "path": "Plugin/DailyNote/plugin-manifest.json",
+      "sha256": "3d140728c5e43f4a8e0956046265271b226372881ff3d0c80a47415bc2fdccb9",
+      "bytes": 6214
+    },
+    {
+      "project": "toolbox",
+      "path": "Plugin/DailyNoteManager/Readme.md",
+      "sha256": "54edfd356f3b249e04d5d6dd05c4ce234fc8d71591a124a028430397039d07b8",
+      "bytes": 8259
+    },
+    {
+      "project": "toolbox",
+      "path": "Plugin/DailyNoteManager/daily-note-manager.js",
+      "sha256": "0eb8fee4a6b53664636ba9b8e411d765b165e9a05d4fb457bb1cd9bb400d92bf",
+      "bytes": 28186
+    },
+    {
+      "project": "toolbox",
+      "path": "Plugin/DailyNoteManager/plugin-manifest.json",
+      "sha256": "00e5f97fe4245fa76920c9ee359578f4daa9c18a1dac9b534cb2c21bfdd2e013",
+      "bytes": 9234
+    },
+    {
+      "project": "toolbox",
+      "path": "Plugin/DailyNotePanel/frontend/VCPNoteBook500.ico",
+      "sha256": "b0037803cb6bb1d3ff2f95d0d01b488bd0a9b0fe0c03e8cbf8bc3226f1897ada",
+      "bytes": 1032062
+    },
+    {
+      "project": "toolbox",
+      "path": "Plugin/DailyNotePanel/frontend/index.html",
+      "sha256": "017d62b480ffcf5ff128870c2ed55b35c9b89ec245e30044e29bc9b46065caa9",
+      "bytes": 13407
+    },
+    {
+      "project": "toolbox",
+      "path": "Plugin/DailyNotePanel/frontend/manifest.json",
+      "sha256": "6ccd9a826d07864abdb93770840e1a515ec4165bf7ca84ac079922fdb782ad55",
+      "bytes": 433
+    },
+    {
+      "project": "toolbox",
+      "path": "Plugin/DailyNotePanel/frontend/script.js",
+      "sha256": "70033d7a1294059825b48ea74f963b3f69dd9e40ea6f28c410d17af49e14ab30",
+      "bytes": 101277
+    },
+    {
+      "project": "toolbox",
+      "path": "Plugin/DailyNotePanel/frontend/style.css",
+      "sha256": "ded36ad3ee021a0605b80b502a6cbf1c49f28fe4244fadd941bbe6ac2447f598",
+      "bytes": 28590
+    },
+    {
+      "project": "toolbox",
+      "path": "Plugin/DailyNotePanel/frontend/sw.js",
+      "sha256": "95d4f0053885681d4f4e79e74117e66beceda128daf298af1ab84e7139a35634",
+      "bytes": 3481
+    },
+    {
+      "project": "toolbox",
+      "path": "Plugin/DailyNotePanel/index.js",
+      "sha256": "21930d03c816410884ae51bbedc4b6ce19ef0a49b12a3dbd9eac3c6221bc79eb",
+      "bytes": 7673
+    },
+    {
+      "project": "toolbox",
+      "path": "Plugin/DailyNotePanel/plugin-manifest.json.block",
+      "sha256": "3bede8aa8d488aaa8caabb941157eb147901d06009e3ee4524e1feea4549981c",
+      "bytes": 1139
+    },
+    {
+      "project": "toolbox",
+      "path": "Plugin/DailyNoteSearcher/DailyNoteSearcher-aarch64-unknown-linux-musl",
+      "sha256": "a1be36b37ed89f15abea7bcc9bbe7f9a5a1c6fc29653d5a99d36a3b32b90cc99",
+      "bytes": 3590672
+    },
+    {
+      "project": "toolbox",
+      "path": "Plugin/DailyNoteSearcher/DailyNoteSearcher-x86_64-pc-windows-msvc.exe",
+      "sha256": "f53e8364f744571ca1f8ea8ef3dc9dac6c745d47b33b8f23a0ad0a31d0377393",
+      "bytes": 2655232
+    },
+    {
+      "project": "toolbox",
+      "path": "Plugin/DailyNoteSearcher/DailyNoteSearcher.exe",
+      "sha256": "f53e8364f744571ca1f8ea8ef3dc9dac6c745d47b33b8f23a0ad0a31d0377393",
+      "bytes": 2655232
+    },
+    {
+      "project": "toolbox",
+      "path": "Plugin/DailyNoteSearcher/DailyNoteSearcher.js",
+      "sha256": "685a1e1d5c02183391454474c8021c4947aa33fb6313f8df7ce9fb9e6992e124",
+      "bytes": 13983
+    },
+    {
+      "project": "toolbox",
+      "path": "Plugin/DailyNoteSearcher/config.env.example",
+      "sha256": "e97dd389a59d07ee37b6bc904b5447476a0dd96c3846e05db544031de09b3278",
+      "bytes": 958
+    },
+    {
+      "project": "toolbox",
+      "path": "Plugin/DailyNoteSearcher/plugin-manifest.json",
+      "sha256": "5e6b9d2782efca039b7692abf4968fd26f7bb6667a6a40ece7244359a0f05eed",
+      "bytes": 9657
+    },
+    {
+      "project": "toolbox",
+      "path": "Plugin/DailyNoteSearcher/src/Cargo.lock",
+      "sha256": "129d4c166442ae6fa73dd0c7507b553a8492d35c287fa4200a026315fc49ac82",
+      "bytes": 14325
+    },
+    {
+      "project": "toolbox",
+      "path": "Plugin/DailyNoteSearcher/src/Cargo.toml",
+      "sha256": "e95d6cf9add3523aef5307c609d5dc3706a930806604059af19ea481d6b2f3a4",
+      "bytes": 285
+    },
+    {
+      "project": "toolbox",
+      "path": "Plugin/DailyNoteSearcher/src/src/main.rs",
+      "sha256": "4f12ec6a390ea154d756a6c1bddb19b9460d1deed7133425f402ad8504095dbb",
+      "bytes": 42205
+    },
+    {
+      "project": "toolbox",
+      "path": "Plugin/LightMemo/LightMemo.js",
+      "sha256": "a72f9561708cea7e4fd4e74db270a8de198190063aa56abd4c4dbeb78b204be1",
+      "bytes": 46700
+    },
+    {
+      "project": "toolbox",
+      "path": "Plugin/LightMemo/config.env.example",
+      "sha256": "1a44d7a1ec9494001bece92ab00582a7d01c975196b27761af8684d843b59f94",
+      "bytes": 2123
+    },
+    {
+      "project": "toolbox",
+      "path": "Plugin/LightMemo/nativeQuery.js",
+      "sha256": "155936b99d2d34218a1895bc70f2a77625e93c6b0adc3eb2045b76c406fa0950",
+      "bytes": 9273
+    },
+    {
+      "project": "toolbox",
+      "path": "Plugin/LightMemo/plugin-manifest.json",
+      "sha256": "da627209440407d41c8037bdd6c51044de41c063371bfa0ae357a2743b70298f",
+      "bytes": 4779
+    },
+    {
+      "project": "toolbox",
+      "path": "Plugin/MagiAgent/MagiAgent.js",
+      "sha256": "c9eb4b3a4e9f4bcc933446118a2777d5f6bc34ecd6ed3732cee00a31aff41437",
+      "bytes": 18540
+    },
+    {
+      "project": "toolbox",
+      "path": "Plugin/MagiAgent/magiAI.txt",
+      "sha256": "9882fba98545eb955b656359c63b1704a4e72985936bd955bf6b1dc71ff8c248",
+      "bytes": 1395
+    },
+    {
+      "project": "toolbox",
+      "path": "Plugin/MagiAgent/plugin-manifest.json",
+      "sha256": "bdb8383014f55b1d6e8aa9efe4206df3434191d307bad9139813ac07c6e9c345",
+      "bytes": 2109
+    },
+    {
+      "project": "toolbox",
+      "path": "Plugin/MemoryThinkingTray/MemoryThinkingTray.js",
+      "sha256": "529adad0acd151e0ec0e42b5eb08bc963650c26ea63b92d5ac0d09ab7ff7d349",
+      "bytes": 5573
+    },
+    {
+      "project": "toolbox",
+      "path": "Plugin/MemoryThinkingTray/README.md",
+      "sha256": "b455c3bc77c76c973ad0fcaa40628fe423dfdcb536a850445eff7c7c649a6680",
+      "bytes": 3826
+    },
+    {
+      "project": "toolbox",
+      "path": "Plugin/MemoryThinkingTray/config.env.example",
+      "sha256": "fc0f6d70781dafae095f765a320ef6a34a74a796c066898cca1aa948dea6f015",
+      "bytes": 526
+    },
+    {
+      "project": "toolbox",
+      "path": "Plugin/MemoryThinkingTray/plugin-manifest.json",
+      "sha256": "377f12bb155e011e2a605eb1a4817a2b0cd9d4c1ae672099ac681e5fcd1599aa",
+      "bytes": 869
+    },
+    {
+      "project": "toolbox",
+      "path": "Plugin/OneRing/OneRing.js",
+      "sha256": "7d417934b2d77a684328c1f8782023af18b81bdfc98d9aa409932f2eab9dbd61",
+      "bytes": 165015
+    },
+    {
+      "project": "toolbox",
+      "path": "Plugin/OneRing/OneRingConfig.json",
+      "sha256": "53e076a84359a2b602f9a8e620ea8f433865756b699ff5042e990c9f1a661919",
+      "bytes": 1025
+    },
+    {
+      "project": "toolbox",
+      "path": "Plugin/OneRing/OneRingDB.js",
+      "sha256": "35be34ad3daf1b15d3185a3d3beb1c36a5b939c0b37b051a7e82ff6452fe9a99",
+      "bytes": 9424
+    },
+    {
+      "project": "toolbox",
+      "path": "Plugin/OneRing/OneRingFuzzy.js",
+      "sha256": "b6c7dd38d85b723d6a6b50019f446748b88360193f3ab84f5ca1e4e59289fe38",
+      "bytes": 9694
+    },
+    {
+      "project": "toolbox",
+      "path": "Plugin/OneRing/OneRingFuzzyPool.js",
+      "sha256": "46f59d6a6006b171f8ddb029de4e644ca0eb6b682ec73d6964a392f2b62e096c",
+      "bytes": 5403
+    },
+    {
+      "project": "toolbox",
+      "path": "Plugin/OneRing/OneRingFuzzyWorker.js",
+      "sha256": "b71a09bfb822ab7b552ef5e9ce2d815be43c102853e94483e6aa63a5d9ec1abc",
+      "bytes": 1057
+    },
+    {
+      "project": "toolbox",
+      "path": "Plugin/OneRing/OneRingMemo.js",
+      "sha256": "5126ebc16b71f4588c702a184cecf28df9c5d811c9aea04f3b383f61dadbd137",
+      "bytes": 19933
+    },
+    {
+      "project": "toolbox",
+      "path": "Plugin/OneRing/OneRingRawClientTimeline.js",
+      "sha256": "d36918bf8de691dfe7bf88f0d171ab80da945cc1ecfb90203cfe328844bf57e6",
+      "bytes": 23190
+    },
+    {
+      "project": "toolbox",
+      "path": "Plugin/OneRing/OneRingServerInferredTimeline.js",
+      "sha256": "453b3e9a955da54ebc32433778ad73757a036c22217a6c48dcbbcf8e5b461f27",
+      "bytes": 15676
+    },
+    {
+      "project": "toolbox",
+      "path": "Plugin/OneRing/OneRingSnapshot.js",
+      "sha256": "304b9d4a83f34eba5de84dc072c781451f2f58bf9d54b5dea5511c735eeb1595",
+      "bytes": 17787
+    },
+    {
+      "project": "toolbox",
+      "path": "Plugin/OneRing/OneRingTimelineCommon.js",
+      "sha256": "7aa58f60c1c17a5a45beb44296bb9a4bb1c33fa4158fda3a6f571160cf70fc7e",
+      "bytes": 4573
+    },
+    {
+      "project": "toolbox",
+      "path": "Plugin/OneRing/README.md",
+      "sha256": "dd33a20425c1f07abc5279b80bfdf565d167a192cff233df551c96a38664bb17",
+      "bytes": 20635
+    },
+    {
+      "project": "toolbox",
+      "path": "Plugin/OneRing/config.env.example",
+      "sha256": "4e3bce09c0626c4f0f588e6a0db305e1e5f457017f863a494b87d2b3fb2f7b1e",
+      "bytes": 5229
+    },
+    {
+      "project": "toolbox",
+      "path": "Plugin/OneRing/onring.bak.js",
+      "sha256": "38ba137fa7a124ee6d9262fa3431ad428a37002581c91e40a8051da536d435e0",
+      "bytes": 167603
+    },
+    {
+      "project": "toolbox",
+      "path": "Plugin/OneRing/plugin-manifest.json",
+      "sha256": "5f0334d93649a9fe40ad6374a9a0c020c0cc594b16997d1b162d100afbd29f61",
+      "bytes": 2352
+    },
+    {
+      "project": "toolbox",
+      "path": "Plugin/PlaceholderExplorer/PlaceholderExplorer.js",
+      "sha256": "1b1cbff4a7045fa789290a28cb34b875b87fcd5fce1c104b725727d444bb3f20",
+      "bytes": 431
+    },
+    {
+      "project": "toolbox",
+      "path": "Plugin/PlaceholderExplorer/README.md",
+      "sha256": "c573c85eff9af3f56dc92f1b33fca4bc5b44a8bbeb0219db008e0df353dde374",
+      "bytes": 3620
+    },
+    {
+      "project": "toolbox",
+      "path": "Plugin/PlaceholderExplorer/config.env.example",
+      "sha256": "a8ead29187fab7b562fd5f043dd4535de815f74bbca159a4b78c9c4fced762fb",
+      "bytes": 744
+    },
+    {
+      "project": "toolbox",
+      "path": "Plugin/PlaceholderExplorer/modules/editor.js",
+      "sha256": "7088a852e057f95e5bdaa048c17d1ccbc635821ea7363746be8d8407251da9e7",
+      "bytes": 8852
+    },
+    {
+      "project": "toolbox",
+      "path": "Plugin/PlaceholderExplorer/modules/envScanner.js",
+      "sha256": "a050568ab306fa7659fa172d4c30a6b1b4453100a920cf58a5a89dd81db2bf32",
+      "bytes": 6585
+    },
+    {
+      "project": "toolbox",
+      "path": "Plugin/PlaceholderExplorer/modules/indexStore.js",
+      "sha256": "9e690b33ec541bc232690e4968b3f58690b03ac2a5e90df9e9f3e3c84e82973c",
+      "bytes": 8785
+    },
+    {
+      "project": "toolbox",
+      "path": "Plugin/PlaceholderExplorer/modules/manifestScanner.js",
+      "sha256": "e7afe44fe529304033948e70f51bf2da74262240526f98a1a7395fcf172ae37a",
+      "bytes": 3420
+    },
+    {
+      "project": "toolbox",
+      "path": "Plugin/PlaceholderExplorer/modules/pathUtils.js",
+      "sha256": "ea5b350e683c8214111a2f4dbef810b67fe190868dbcd9a4750c53bc03d389cc",
+      "bytes": 3294
+    },
+    {
+      "project": "toolbox",
+      "path": "Plugin/PlaceholderExplorer/modules/preview.js",
+      "sha256": "7b1f227a55c61aa11ec115ee2bc3b67983d4a5e12ac3bd902f97b24f55f718f8",
+      "bytes": 4847
+    },
+    {
+      "project": "toolbox",
+      "path": "Plugin/PlaceholderExplorer/modules/reporter.js",
+      "sha256": "18ea9e8c1b7bcb3b977ec591919cc6291c313d902504c7ef5bdfbd971258aaec",
+      "bytes": 1989
+    },
+    {
+      "project": "toolbox",
+      "path": "Plugin/PlaceholderExplorer/modules/scanner.js",
+      "sha256": "609fd4cf318e8ee510f6581746635465586c4d92850c8b23e5beb187afb40dab",
+      "bytes": 8033
+    },
+    {
+      "project": "toolbox",
+      "path": "Plugin/PlaceholderExplorer/modules/sourceScanner.js",
+      "sha256": "e62dfc0f9e28e2a2516bf257cf1c2f9676981b55a598575dabe351c3300b327f",
+      "bytes": 5020
+    },
+    {
+      "project": "toolbox",
+      "path": "Plugin/PlaceholderExplorer/modules/usageScanner.js",
+      "sha256": "e25093e7169ccc698ed42da94b6082e477b3204073e7b2993ac6b78b179d16d0",
+      "bytes": 1925
+    },
+    {
+      "project": "toolbox",
+      "path": "Plugin/PlaceholderExplorer/plugin-manifest.json",
+      "sha256": "a4be7bd448de2316c096457e0b09353bb30e1223707cb8d5a7c73f3b0ad1ff78",
+      "bytes": 1749
+    },
+    {
+      "project": "toolbox",
+      "path": "Plugin/RAGDiaryPlugin/AIMemoHandler.js",
+      "sha256": "3fd7a4a3b4a3c48855523ce8cbbce43fbe5a4dd58331b002b3560bd28a3b1901",
+      "bytes": 41838
+    },
+    {
+      "project": "toolbox",
+      "path": "Plugin/RAGDiaryPlugin/AIMemoPrompt.txt",
+      "sha256": "8cc4cefc7a8ac6353efa449711ab8db6b09d4b69ddd4036d8b613c1758752864",
+      "bytes": 6884
+    },
+    {
+      "project": "toolbox",
+      "path": "Plugin/RAGDiaryPlugin/AttachmentMemoUtils.js",
+      "sha256": "dc1860c5abe1c15c3e73db98cca7742891c4d8ef85b1fe3a4cef9b801ceeae52",
+      "bytes": 2278
+    },
+    {
+      "project": "toolbox",
+      "path": "Plugin/RAGDiaryPlugin/BM25QueryOptimizer.js",
+      "sha256": "a95a196251f31a74d2375ffd47ae1ce31257adee544567f54e5ff1ef5af7cd02",
+      "bytes": 12056
+    },
+    {
+      "project": "toolbox",
+      "path": "Plugin/RAGDiaryPlugin/CacheManager.js",
+      "sha256": "bd43a14486abe874d9f6372fa4c268965f02242224634d7b1dbc5e126114b2d5",
+      "bytes": 4843
+    },
+    {
+      "project": "toolbox",
+      "path": "Plugin/RAGDiaryPlugin/ContextVectorManager.js",
+      "sha256": "e8f6bdfa4a39bf643f331712abdd778c741992be209790bd795b67885cb52e1c",
+      "bytes": 22436
+    },
+    {
+      "project": "toolbox",
+      "path": "Plugin/RAGDiaryPlugin/DirectDiaryTextProcessor.js",
+      "sha256": "a44f0530fddd2bd838d734d7f165d323ea49ef70d796ae73a5190d4498383f7b",
+      "bytes": 49515
+    },
+    {
+      "project": "toolbox",
+      "path": "Plugin/RAGDiaryPlugin/FoldingStore.js",
+      "sha256": "60734cdddfa6c2cfcee10461927e9fdabac8b4421fd88dca4c399e42f5b03c29",
+      "bytes": 12202
+    },
+    {
+      "project": "toolbox",
+      "path": "Plugin/RAGDiaryPlugin/META_THINKING_GUIDE.md",
+      "sha256": "7ab78d8a5131935b48be78b1bcbfddd99f86439039adf14d30f18a84da5be4dd",
+      "bytes": 6497
+    },
+    {
+      "project": "toolbox",
+      "path": "Plugin/RAGDiaryPlugin/MessageContentUtils.js",
+      "sha256": "a18170433e7731be2cc422bc7fd6a140fb09ccb93005929877f63f707d86c1b7",
+      "bytes": 2467
+    },
+    {
+      "project": "toolbox",
+      "path": "Plugin/RAGDiaryPlugin/MetaThinkingManager.js",
+      "sha256": "ab2ed554a31a6c93ce7b5ef2409617306e1732ed5e0bc0ba07e8579bb31a9897",
+      "bytes": 30619
+    },
+    {
+      "project": "toolbox",
+      "path": "Plugin/RAGDiaryPlugin/MoreAIMemoPresets/AIMemoPromptX.txt",
+      "sha256": "4b8d065ee279420b1012a1a2fe39fc94b8397cfd8f81d4a33f1e1077c0e9e637",
+      "bytes": 127
+    },
+    {
+      "project": "toolbox",
+      "path": "Plugin/RAGDiaryPlugin/MoreAIMemoPresets/PresetName01.json",
+      "sha256": "d4a5a173f46d92afcfc3e360fbd89d4b3d165eeffe5c0bed2f6b81ae58aba1d5",
+      "bytes": 212
+    },
+    {
+      "project": "toolbox",
+      "path": "Plugin/RAGDiaryPlugin/RAGDiaryPlugin.js",
+      "sha256": "b1f750fa6341bbbc7955f379b20b56b8aa5d2e5275b69d4681690c9eeec5f325",
+      "bytes": 298497
+    },
+    {
+      "project": "toolbox",
+      "path": "Plugin/RAGDiaryPlugin/RAGResultFormatter.js",
+      "sha256": "34027ece6f6b59b26f5507ec19547259f0dcf9b2f06bd1e7791cd4122cd0e573",
+      "bytes": 8484
+    },
+    {
+      "project": "toolbox",
+      "path": "Plugin/RAGDiaryPlugin/README.md",
+      "sha256": "ddaf207f8e9c50ccb2427ef766c263a8d8569f0a782c93cb2fbf1333e4530e0e",
+      "bytes": 17898
+    },
+    {
+      "project": "toolbox",
+      "path": "Plugin/RAGDiaryPlugin/SemanticGroupManager.js",
+      "sha256": "f7d312a057f9886c32a48f68f3c39179b60b255e1990bc37b19fc60aacffb552",
+      "bytes": 20098
+    },
+    {
+      "project": "toolbox",
+      "path": "Plugin/RAGDiaryPlugin/TDBPlaceholderProcessor.js",
+      "sha256": "ea8a6d769e69302c6e211a90e642e5fabe7e4031a1a26f022ba2d9a7f2f1fd45",
+      "bytes": 24525
+    },
+    {
+      "project": "toolbox",
+      "path": "Plugin/RAGDiaryPlugin/TextSanitizer.js",
+      "sha256": "7e77054847a3eb6a6d536d3bf649afff8cfef1745769d799040cfd6a9310ecde",
+      "bytes": 14446
+    },
+    {
+      "project": "toolbox",
+      "path": "Plugin/RAGDiaryPlugin/TimeExpressionParser.js",
+      "sha256": "e97a64fd5b91c6e2c52009198b30f1fb5eac203ee1545b1b2375dac3c76840d8",
+      "bytes": 9104
+    },
+    {
+      "project": "toolbox",
+      "path": "Plugin/RAGDiaryPlugin/VectorMathUtils.js",
+      "sha256": "28ec8fd0e409671400ca9d88cb2c85efc7199b742e8a2e56522508763a3ff228",
+      "bytes": 5173
+    },
+    {
+      "project": "toolbox",
+      "path": "Plugin/RAGDiaryPlugin/config.env.example",
+      "sha256": "dd0411721821778ed816da7c8217fd7d7e3571248491a721611320c3f39b2c64",
+      "bytes": 5215
+    },
+    {
+      "project": "toolbox",
+      "path": "Plugin/RAGDiaryPlugin/meta_thinking_chains.json",
+      "sha256": "090b124889d2b07aea40bfd115070edc1bee7ba7f206e53e8839be7a3ee873eb",
+      "bytes": 360
+    },
+    {
+      "project": "toolbox",
+      "path": "Plugin/RAGDiaryPlugin/plugin-manifest.json",
+      "sha256": "59010d69def2868e0db4b46995014125cb712c79bc5d3f18bdfb2b1743c51452",
+      "bytes": 2397
+    },
+    {
+      "project": "toolbox",
+      "path": "Plugin/RAGDiaryPlugin/rag_tags.json.example",
+      "sha256": "23ec34dc77fc32b89b53b73bb0d561f953034b7c1bffa3ea44e24ad91e2c89ba",
+      "bytes": 470
+    },
+    {
+      "project": "toolbox",
+      "path": "Plugin/RAGDiaryPlugin/semantic_groups.edit.json.example",
+      "sha256": "fffdcef65799260c9fb4eb2a975b1edbeb10bcd595d9f723e4035726cdc23542",
+      "bytes": 732
+    },
+    {
+      "project": "toolbox",
+      "path": "Plugin/RAGDiaryPlugin/semantic_groups.json.example",
+      "sha256": "fffdcef65799260c9fb4eb2a975b1edbeb10bcd595d9f723e4035726cdc23542",
+      "bytes": 732
+    },
+    {
+      "project": "toolbox",
+      "path": "Plugin/RAGDiaryPlugin/test_reranker.js",
+      "sha256": "6f13118270a44c464e54ec2eb4a713d74d27217dfe193b409d2b82204c79a127",
+      "bytes": 3214
+    },
+    {
+      "project": "toolbox",
+      "path": "Plugin/RAGDiaryPlugin/timeExpressions.config.js",
+      "sha256": "fb329bb8a88b38c9a2cd8d1b505de721e1f6b5367cb81e73c5ed1bab15095e4a",
+      "bytes": 2747
+    },
+    {
+      "project": "toolbox",
+      "path": "Plugin/SemanticGroupEditor/SemanticGroupEditor.js",
+      "sha256": "19a17086240c4454018feb8a8dd8835fda8761405583cb7d27c502d78fc0b84c",
+      "bytes": 9471
+    },
+    {
+      "project": "toolbox",
+      "path": "Plugin/SemanticGroupEditor/plugin-manifest.json",
+      "sha256": "76ac6ff939dd4ac2ee50a27caa7745e43ae04dda3334f5cbaf611010da61a71b",
+      "bytes": 2617
+    },
+    {
+      "project": "toolbox",
+      "path": "Plugin/VCPTimeLine/VCPTimeLine.js",
+      "sha256": "189e62657002bac19c42742e4f8288ef065defda7cb5308afdc256a416276129",
+      "bytes": 41442
+    },
+    {
+      "project": "toolbox",
+      "path": "Plugin/VCPTimeLine/plugin-manifest.json",
+      "sha256": "4017ea5229f8fed5da97ce8b0352363f75cad904729d565f3d74b7082136d44b",
+      "bytes": 635
+    },
+    {
+      "project": "toolbox",
+      "path": "Plugin/WeatherInfoNow/plugin-manifest.json",
+      "sha256": "7749327758c06949314176aa4fe693cbef879d823410a850460d60aee241ff41",
+      "bytes": 684
+    },
+    {
+      "project": "toolbox",
+      "path": "ResultDeduplicator.js",
+      "sha256": "24e71cdd579d65b8ee82e4344b70c116471a5f482be72087f0f20f7c2c52309d",
+      "bytes": 23152
+    },
+    {
+      "project": "toolbox",
+      "path": "RiverMemoEngine.js",
+      "sha256": "bb9c6793f7f9eca541c34e979f59479023a523b2a8df9e71bfdcf5899ff4d023",
+      "bytes": 26992
+    },
+    {
+      "project": "toolbox",
+      "path": "TDBKnowledge.js",
+      "sha256": "8016fa552b7291c4b410832285804480c9886fedc378a57156b3c0f9c76463d5",
+      "bytes": 66004
+    },
+    {
+      "project": "toolbox",
+      "path": "TVStxt/JevToolCallDecision.txt",
+      "sha256": "6ae290ee7d5668aa8ffdb7c2cb8b35d3dafa57c86d3ff634ebb57f30941c5b74",
+      "bytes": 413
+    },
+    {
+      "project": "toolbox",
+      "path": "TagMemoEngine.js",
+      "sha256": "55419c5f5914fece3a35e13c2e054c9637163f5c59e2a3dc73efcde2bf6daa57",
+      "bytes": 23589
+    },
+    {
+      "project": "toolbox",
+      "path": "TagMemoV10Engine.js",
+      "sha256": "2968abfa38123d979cfcd059f79c7aabbeb4fbdac27b81ca4e6190aa02a1d2b7",
+      "bytes": 12302
+    },
+    {
+      "project": "toolbox",
+      "path": "TextChunker.js",
+      "sha256": "6cf674a082cda3cbab3d9fb2ee4c641203371ea62ff1f2e428cf0677430da246",
+      "bytes": 19483
+    },
+    {
+      "project": "toolbox",
+      "path": "ToolConfigs/jev_third_party_catalog.json",
+      "sha256": "d1cc164d2b45a78c58edc2d708aaf690462dde44cf837dde78115e93094069bc",
+      "bytes": 2554
+    },
+    {
+      "project": "toolbox",
+      "path": "ToolConfigs/jev_tool_call_exp.json",
+      "sha256": "2e1705688521e4db16c7817c3e53040ad003bd19f3c584252461959fa933f019",
+      "bytes": 7665
+    },
+    {
+      "project": "toolbox",
+      "path": "config.env.example",
+      "sha256": "f864ed3d4aed091a521e8b70f23431c06357ce12f0df6fdd30713e75400339a8",
+      "bytes": 49014
+    },
+    {
+      "project": "toolbox",
+      "path": "docs/CONTEXT_BRIDGE.md",
+      "sha256": "67fbd958cde3f959000ef0e4755fc8f2f45cb9faf03ad86081b24c966bbd7043",
+      "bytes": 19704
+    },
+    {
+      "project": "toolbox",
+      "path": "docs/CONTEXT_FOLDING_V2_DEVPLAN.md",
+      "sha256": "b330b41fd23b4bfd9ae47d4531b3352f4a904f1c789631c8315af49987cbe183",
+      "bytes": 13026
+    },
+    {
+      "project": "toolbox",
+      "path": "docs/DOCUMENTATION_INDEX.md",
+      "sha256": "bded58f3fe90eff7c43f92c8e4bcab4bfccf0aed1b4bd484e3ee1c649a5e0b2c",
+      "bytes": 10594
+    },
+    {
+      "project": "toolbox",
+      "path": "docs/MEMORY_SYSTEM.md",
+      "sha256": "180d86ecf5fdd84fb2909f9751e09b048b81e4a5b0a2a080db1072f77c27ea66",
+      "bytes": 33067
+    },
+    {
+      "project": "toolbox",
+      "path": "docs/RIVERMEMO_TOPOLOGY_V3.md",
+      "sha256": "7e20228d2d76b97a722e309a576efe21c453e9952726e76691ec558f2a95c37c",
+      "bytes": 62821
+    },
+    {
+      "project": "toolbox",
+      "path": "docs/RUST_VECTOR_ENGINE.md",
+      "sha256": "dea8f6132bc65f5102fff5f4a4381f92c98e2b706ac142e6ba62e5da55713523",
+      "bytes": 30383
+    },
+    {
+      "project": "toolbox",
+      "path": "docs/TagMemo_Wave_Algorithm_Deep_Dive.md",
+      "sha256": "c974f1d3f5d3c0b25edcee224a27e9344cb5c6395ef26422de9d81fa8ac406fd",
+      "bytes": 53288
+    },
+    {
+      "project": "toolbox",
+      "path": "docs/VCP记忆管理系统.md",
+      "sha256": "2e3b1d592d7c693d55789e2fbccfb7905616e977bfdf8a010fa7529f37519486",
+      "bytes": 45261
+    },
+    {
+      "project": "toolbox",
+      "path": "docs/archive/tagmemoV10/README.md",
+      "sha256": "4c8058d8ea97a5d4f781a4c6536fe57a28ca9c2edb5635acb161708c80b8c516",
+      "bytes": 2680
+    },
+    {
+      "project": "toolbox",
+      "path": "docs/archive/tagmemoV10/agentConditioner.js",
+      "sha256": "48b5ea89d57696a414a627cb8f28690bb95df586728810e558a431fd45c8a8c8",
+      "bytes": 29980
+    },
+    {
+      "project": "toolbox",
+      "path": "docs/archive/tagmemoV10/candidateSuperset.js",
+      "sha256": "7245cc744e8f4a46a4184bb18ac914f3e8cc4f621ebc5375d81f814a631d6252",
+      "bytes": 10109
+    },
+    {
+      "project": "toolbox",
+      "path": "docs/archive/tagmemoV10/derivedAssetManager.js",
+      "sha256": "de9cb5160f6cbc672d9007cc6e3425cb17a40df4ee53f832d601b7615412771e",
+      "bytes": 19690
+    },
+    {
+      "project": "toolbox",
+      "path": "docs/archive/tagmemoV10/directAnchorReadout.js",
+      "sha256": "05b9f1c30b432e1617dedb5b624bb07300877d791e72ab8fa60e1a98613aaa74",
+      "bytes": 11547
+    },
+    {
+      "project": "toolbox",
+      "path": "docs/archive/tagmemoV10/dstcObservables.js",
+      "sha256": "22c53d0c00f2f853eed67434549642ab9a58fcc327fde6aea2963b3929933468",
+      "bytes": 13972
+    },
+    {
+      "project": "toolbox",
+      "path": "docs/archive/tagmemoV10/experimentArms.js",
+      "sha256": "13cdb2feda7c5266302526574b731b89d0942f496f8441323224d7dadbb17a5a",
+      "bytes": 55719
+    },
+    {
+      "project": "toolbox",
+      "path": "docs/archive/tagmemoV10/fieldWorkspace.js",
+      "sha256": "875a0291a02a64ff4b4e896e4c06287b96d251f8d43eefbf607caa0f90d9c05b",
+      "bytes": 2469
+    },
+    {
+      "project": "toolbox",
+      "path": "docs/archive/tagmemoV10/provenance.js",
+      "sha256": "b195fd2d54455bfb9d3ec4d85834fa3760de01b252791e119c2db22f87b902f0",
+      "bytes": 11638
+    },
+    {
+      "project": "toolbox",
+      "path": "docs/archive/tagmemoV10/relativeTopologyMatcher.js",
+      "sha256": "e713ba0487268bdb1478f1fcae23af6b6b29f14f1419aaffbbfb774cac7d214e",
+      "bytes": 19632
+    },
+    {
+      "project": "toolbox",
+      "path": "docs/archive/tagmemoV10/riverMemoArtifactRepository.js",
+      "sha256": "f8c494b7e1bc6dcc4371585334776810774b340eae70433c445e15fe34ff2c0a",
+      "bytes": 12004
+    },
+    {
+      "project": "toolbox",
+      "path": "docs/archive/tagmemoV10/scaledFieldSolver.js",
+      "sha256": "b56c188e90b26a1c027e2cf2923e8da296b2fa9e1d6388d1c9e11b412ec2847d",
+      "bytes": 13092
+    },
+    {
+      "project": "toolbox",
+      "path": "docs/archive/tagmemoV10/unifiedPathGeometry.js",
+      "sha256": "596106a0b1b601433c51248c1a975547b768f9ea9c37aaa51cd58d3f353832cf",
+      "bytes": 11078
+    },
+    {
+      "project": "toolbox",
+      "path": "docs/vcp-whitepaper.md",
+      "sha256": "a0998a16ec06eefdc0b2ce459ba552665b0474cc9e059ce8b64796e6724823cc",
+      "bytes": 216669
+    },
+    {
+      "project": "toolbox",
+      "path": "modules/agentManager.js",
+      "sha256": "6a5ebd7d1eaa82b40a9f8c89c2784504bdd8bcd3fe79ff572ba4c78a21bec540",
+      "bytes": 14182
+    },
+    {
+      "project": "toolbox",
+      "path": "modules/associativeDiscovery.js",
+      "sha256": "bd06d17d134ac39061529f8bfac459c9330cdfe1a67eeebf8b5d03da89daa9b6",
+      "bytes": 10760
+    },
+    {
+      "project": "toolbox",
+      "path": "modules/captchaDecoder.js",
+      "sha256": "a05a57a53de945f62aef0202af4337964d72d4c1554c4f2b7cf2eaf22ed1c769",
+      "bytes": 2090
+    },
+    {
+      "project": "toolbox",
+      "path": "modules/chatCompletionHandler.js",
+      "sha256": "cc6bc942996e37618216fe26fbad894b9303c58edb427874ea14f840add253f1",
+      "bytes": 62484
+    },
+    {
+      "project": "toolbox",
+      "path": "modules/contextManager.js",
+      "sha256": "d255550cadf4a80677ce982460b4c35273cc24e056c44f9aaf20f9aeb56f0108",
+      "bytes": 8173
+    },
+    {
+      "project": "toolbox",
+      "path": "modules/dynamicToolRegistry.js",
+      "sha256": "bddbbbad16f3bc45b880cec65103b5a16d24939d2cea2dc1b0c40198311dbb2f",
+      "bytes": 73887
+    },
+    {
+      "project": "toolbox",
+      "path": "modules/finalContextStore.js",
+      "sha256": "f96da1931fab34921d01a05e3f274f76b4be45730c83afb208be2d01e82b0597",
+      "bytes": 11559
+    },
+    {
+      "project": "toolbox",
+      "path": "modules/foldProtocol.js",
+      "sha256": "ebc26f159480513bf7066943c6dee2f70959336d6593c82f294752428a96faa6",
+      "bytes": 2316
+    },
+    {
+      "project": "toolbox",
+      "path": "modules/handlers/interactionCompletion.js",
+      "sha256": "5cbde2b54bc20511de53a4c784b7af8fd5c4704554e13140b3fbf3fb1c6e66d4",
+      "bytes": 2289
+    },
+    {
+      "project": "toolbox",
+      "path": "modules/handlers/nonStreamHandler.js",
+      "sha256": "b24b2075986481d48dacbd42d45ad2a5ecb4ac54b15708b90ba17b4293ad79c6",
+      "bytes": 25513
+    },
+    {
+      "project": "toolbox",
+      "path": "modules/handlers/streamHandler.js",
+      "sha256": "e91f3fc5828b7d8d55a11c3b504770812f71fc479d838cbb7734eacc1bc15137",
+      "bytes": 34329
+    },
+    {
+      "project": "toolbox",
+      "path": "modules/jevClient.js",
+      "sha256": "f88f19d8027280acd195ebaedb635ae713b6c078a0d0e208da8a705c9040e192",
+      "bytes": 19204
+    },
+    {
+      "project": "toolbox",
+      "path": "modules/jevContextPruner.js",
+      "sha256": "a2bf944e14971a076e57248d62b6af6c545784435824dba4736d72784dd979e8",
+      "bytes": 7369
+    },
+    {
+      "project": "toolbox",
+      "path": "modules/jevFoldFilter.js",
+      "sha256": "95c139f65e7b190f8e4e95e11de6a7b0acdf44c1da063d919e9bad38f1823431",
+      "bytes": 16317
+    },
+    {
+      "project": "toolbox",
+      "path": "modules/jevRiverReranker.js",
+      "sha256": "a8b1c5e8dcfb2b2f2a91b5a50ae306433193c709b55ca7587609465987edf93b",
+      "bytes": 6418
+    },
+    {
+      "project": "toolbox",
+      "path": "modules/jevScorer.js",
+      "sha256": "4b5f1efa7bf14d84ee130df422dbdfcfb57449470812632d4b83ba3411973e1d",
+      "bytes": 5879
+    },
+    {
+      "project": "toolbox",
+      "path": "modules/jevThirdPartyRegistry.js",
+      "sha256": "7664e2b27f125ec2e983888426b362ccdd86c764608d076c1a98e37e10e5f0f6",
+      "bytes": 27923
+    },
+    {
+      "project": "toolbox",
+      "path": "modules/jevToolCallExp.js",
+      "sha256": "cfb7013ad189883010817fe62349f330727acb78b29ea422f50f65f5c316006e",
+      "bytes": 55997
+    },
+    {
+      "project": "toolbox",
+      "path": "modules/knowledgeBase/databaseCoordinator.js",
+      "sha256": "54f4cb318eaf3311ebee2a198f2129c0a93b5d58b33c02a564439a67ac2b894e",
+      "bytes": 15797
+    },
+    {
+      "project": "toolbox",
+      "path": "modules/knowledgeBase/diaryMetadataCache.js",
+      "sha256": "24e5e362d7a51ce86ee1f7386d9a502c2fa380a4421626955afb96f89589a1a1",
+      "bytes": 8108
+    },
+    {
+      "project": "toolbox",
+      "path": "modules/knowledgeBase/fileWatcher.js",
+      "sha256": "d17ba552a5831b4af187a501ee04323260e5f96b5f6d671a24128f1e440c02d5",
+      "bytes": 11913
+    },
+    {
+      "project": "toolbox",
+      "path": "modules/knowledgeBase/indexRepository.js",
+      "sha256": "50dcc09089eb42d5d0bb26cefa56019718bf53e2cbef0d752b193b508692e949",
+      "bytes": 23351
+    },
+    {
+      "project": "toolbox",
+      "path": "modules/knowledgeBase/ingestionPipeline.js",
+      "sha256": "9a2f6da6e858b6682b4399eacdf20b1d6c0d97d6be4d7cf694f31370a7ce2a89",
+      "bytes": 37910
+    },
+    {
+      "project": "toolbox",
+      "path": "modules/knowledgeBase/memoConfig.js",
+      "sha256": "3763d457d9b942ddc2e8d246a48fb2e2ce1991391ecb3bf6d2cc058be1de8590",
+      "bytes": 5729
+    },
+    {
+      "project": "toolbox",
+      "path": "modules/knowledgeBase/memoryProfiler.js",
+      "sha256": "7539545d14a7422fc14d36489f4cffc8f5cec981a8a72eeb019a3d821225734b",
+      "bytes": 13149
+    },
+    {
+      "project": "toolbox",
+      "path": "modules/knowledgeBase/searchService.js",
+      "sha256": "d0a613fff293d85f69b544711af8d78d9e43c06aabd7ce2744e9d1d9a4a5ad35",
+      "bytes": 9525
+    },
+    {
+      "project": "toolbox",
+      "path": "modules/knowledgeBase/tagConsistencyService.js",
+      "sha256": "baba47848ed1489fbda03a04ab5686a0aa853558d54e604923fa404cc8981f75",
+      "bytes": 22116
+    },
+    {
+      "project": "toolbox",
+      "path": "modules/knowledgeBase/textPreprocessor.js",
+      "sha256": "d3ce885035f496331143877182a8b455b49a0301591126a9978c0f8613709689",
+      "bytes": 3379
+    },
+    {
+      "project": "toolbox",
+      "path": "modules/knowledgeBase/vectorCodec.js",
+      "sha256": "6464c17e6a9fff45b0c463f97b686dbc079766193cf007ec4cd140b7d539cdd7",
+      "bytes": 1936
+    },
+    {
+      "project": "toolbox",
+      "path": "modules/messageProcessor.js",
+      "sha256": "4093b312e343bd4de51f3363c22639acd48fbee50eeb82fc1936665ec2bd107e",
+      "bytes": 57021
+    },
+    {
+      "project": "toolbox",
+      "path": "modules/multiModalConfigStore.js",
+      "sha256": "a03052795a9f7f1dfe03a8c44b2778cf0990d8edef264775b56708f42fba7d93",
+      "bytes": 10311
+    },
+    {
+      "project": "toolbox",
+      "path": "modules/reasoningContentAdapter.js",
+      "sha256": "270a9237b27c410a6dfa5697897a135a8e9550f44dd39bfc6d844088f55a6be1",
+      "bytes": 4235
+    },
+    {
+      "project": "toolbox",
+      "path": "modules/roleDivider.js",
+      "sha256": "e36f2fb222fd01ec64f1e77f4b42853ed08968fb678411c9f69b0fa38f88c777",
+      "bytes": 21055
+    },
+    {
+      "project": "toolbox",
+      "path": "modules/sarPromptManager.js",
+      "sha256": "6abc9a29b65af8fb2da5d22109bb792ed045b5f6a39fcfb5639979d1c874731c",
+      "bytes": 5637
+    },
+    {
+      "project": "toolbox",
+      "path": "modules/tagmemoV10/immutable.js",
+      "sha256": "94b8b03a9402301d346805962eb51d96447026ff73aade89ab39f6bb6e8ff671",
+      "bytes": 15041
+    },
+    {
+      "project": "toolbox",
+      "path": "modules/tagmemoV10/riverObservability.js",
+      "sha256": "c5c3a19e9cce06dfa148840cd0cb2f6d2102c4c6b002a8c7c3f316b179015bdd",
+      "bytes": 4343
+    },
+    {
+      "project": "toolbox",
+      "path": "modules/toolCallRecordInternalFilter.js",
+      "sha256": "c9ea8641e84ba9d2b266bcf6a2cd4c99c2d1b839f0581206bf4be42a62fd9ff7",
+      "bytes": 1269
+    },
+    {
+      "project": "toolbox",
+      "path": "modules/toolCallRecordStore.js",
+      "sha256": "ec8c44d93d499d76ce2e89294a922cab0566ef8be055880dc3323720406257d6",
+      "bytes": 19824
+    },
+    {
+      "project": "toolbox",
+      "path": "modules/toolboxManager.js",
+      "sha256": "3a41e0ecce85a51952737432c20e3055f4c4fcfacc4493d5b753238f2a1d036a",
+      "bytes": 6602
+    },
+    {
+      "project": "toolbox",
+      "path": "modules/tvsManager.js",
+      "sha256": "3102b326bc37699f2fda74e9179cde0d983a0bc8eb901a5ffada7cee19043cdf",
+      "bytes": 3288
+    },
+    {
+      "project": "toolbox",
+      "path": "modules/vcpLoop/toolCallParser.js",
+      "sha256": "874fc9d0a562e98aaeb55dd4b206ca66f39f99e590e4332390e08f5419efdaad",
+      "bytes": 11625
+    },
+    {
+      "project": "toolbox",
+      "path": "modules/vcpLoop/toolExecutor.js",
+      "sha256": "cee7cc384a232c45dd093a6cd7a38c40b360e3d79bbbc5ed9e2037e9e8333df5",
+      "bytes": 30836
+    },
+    {
+      "project": "toolbox",
+      "path": "modules/vcpLoop/toolMarkerFuzzyMatcher.js",
+      "sha256": "4c8f30684294ef772ae3c035a37a3baf4cb176e75cff40a781c9a65c9af0ce16",
+      "bytes": 3919
+    },
+    {
+      "project": "toolbox",
+      "path": "preprocessor_order.json",
+      "sha256": "b208e5933218e72ad9365f9d2d7a154c4f4b0d01f300debbb6588c5185fc8ba1",
+      "bytes": 222
+    },
+    {
+      "project": "toolbox",
+      "path": "rag_params.json",
+      "sha256": "08a10fbf013c1feaf478a1748aead5d3e046c708d6d5acd55f0f94e49e7067a0",
+      "bytes": 5985
+    },
+    {
+      "project": "toolbox",
+      "path": "routes/admin/jevRegistry.js",
+      "sha256": "b9ebd31bc56588194ad96925193ec201c35267d1aa1af071b8fe6b06ef292572",
+      "bytes": 5425
+    },
+    {
+      "project": "toolbox",
+      "path": "routes/admin/rag.js",
+      "sha256": "784db47cdacc5c68a1bafb27d2ab3953995444984673660af980546186f9a29d",
+      "bytes": 15926
+    },
+    {
+      "project": "toolbox",
+      "path": "routes/dailyNotesRoutes.js",
+      "sha256": "16440613bc30920cf341a20e48ad55a355daa67889e113f81da367e937e1ea51",
+      "bytes": 48886
+    },
+    {
+      "project": "toolbox",
+      "path": "rust-vexus-lite/Cargo.lock",
+      "sha256": "a15ed6b57e0cf87ee38f5794d113652bf5df816ff47cb928a793c7031fd41265",
+      "bytes": 61058
+    },
+    {
+      "project": "toolbox",
+      "path": "rust-vexus-lite/Cargo.toml",
+      "sha256": "bf00152df1801297b8f53f104115fee17d388a29de94b9079ea85bbb9fd3b356",
+      "bytes": 1642
+    },
+    {
+      "project": "toolbox",
+      "path": "rust-vexus-lite/README.md",
+      "sha256": "6be42d8ee5d518776344b4ae326275aee6ef6bf6b4e2bd24359796edf44c3053",
+      "bytes": 52231
+    },
+    {
+      "project": "toolbox",
+      "path": "rust-vexus-lite/benchmarks/sm-search/Cargo.toml",
+      "sha256": "4352b36a292733223b539c43240eff5c9a096cadd0622c285babb336eb0fcf16",
+      "bytes": 379
+    },
+    {
+      "project": "toolbox",
+      "path": "rust-vexus-lite/benchmarks/sm-search/results-summary.json",
+      "sha256": "e809faf55aa59d4d1aad1f760225ac892869ec2f450b8e222e7c1b44ff7553a3",
+      "bytes": 3958
+    },
+    {
+      "project": "toolbox",
+      "path": "rust-vexus-lite/benchmarks/sm-search/src/main.rs",
+      "sha256": "b9bb5b9d36f6524cb5524e28505255b0d2b394552da3cf309dbbac88928b53f0",
+      "bytes": 5015
+    },
+    {
+      "project": "toolbox",
+      "path": "rust-vexus-lite/build.rs",
+      "sha256": "444164a4265ff424fb52c357377cd7655e7c358bc2d70ce1a990675dd6bbd4ff",
+      "bytes": 70
+    },
+    {
+      "project": "toolbox",
+      "path": "rust-vexus-lite/crates/vcp-tdb-index/Cargo.toml",
+      "sha256": "f28b0b3f0a3fb287e05c991d0be89df6544086aa1e1341e5860e3ff275c96399",
+      "bytes": 736
+    },
+    {
+      "project": "toolbox",
+      "path": "rust-vexus-lite/crates/vcp-tdb-index/LICENSE",
+      "sha256": "b939133662bcde79d3f1876bfbb9a40ea22b9d14f677a4b663b7b5f1ac7691a3",
+      "bytes": 11577
+    },
+    {
+      "project": "toolbox",
+      "path": "rust-vexus-lite/crates/vcp-tdb-index/src/asset.rs",
+      "sha256": "8e76a8ba082eff4f14d68f432310c9694fa7ea04a5177aaad0f34653b4f75218",
+      "bytes": 10708
+    },
+    {
+      "project": "toolbox",
+      "path": "rust-vexus-lite/crates/vcp-tdb-index/src/asset_tests.rs",
+      "sha256": "c73b24c67f4784e0ba2375cdb6ed056974309d50ee2da27d0ebc045e533fc002",
+      "bytes": 4256
+    },
+    {
+      "project": "toolbox",
+      "path": "rust-vexus-lite/crates/vcp-tdb-index/src/engine.rs",
+      "sha256": "b6ca7331eddff082131c39abde7a95bec4c9a09fa2be543c5826b17d79579853",
+      "bytes": 17935
+    },
+    {
+      "project": "toolbox",
+      "path": "rust-vexus-lite/crates/vcp-tdb-index/src/engine_tests.rs",
+      "sha256": "573a294158b76ccfdd5da98f64c7971abf63640a4aa3fa23a906712d69519b13",
+      "bytes": 12220
+    },
+    {
+      "project": "toolbox",
+      "path": "rust-vexus-lite/crates/vcp-tdb-index/src/index/bq.rs",
+      "sha256": "cc1ea1b8981350e6fc2828533fa78d362314d3712536382724a4df83a7799216",
+      "bytes": 52676
+    },
+    {
+      "project": "toolbox",
+      "path": "rust-vexus-lite/crates/vcp-tdb-index/src/index/quiver.rs",
+      "sha256": "12ccea70fdf3d621fa950bb9a80345ba536356dc93e59267f0ad16b6437935fb",
+      "bytes": 153607
+    },
+    {
+      "project": "toolbox",
+      "path": "rust-vexus-lite/crates/vcp-tdb-index/src/index/quiver/corrected_sm.rs",
+      "sha256": "7858aa1145422a3ce3aca0363582d63034b06a1925bcb30465595cfcaa888013",
+      "bytes": 75710
+    },
+    {
+      "project": "toolbox",
+      "path": "rust-vexus-lite/crates/vcp-tdb-index/src/index/quiver/corrected_sm/build.rs",
+      "sha256": "66772757234e597975ad2a3e6b0a7e7d90e1633b17d1d685855789de7b79a45f",
+      "bytes": 15750
+    },
+    {
+      "project": "toolbox",
+      "path": "rust-vexus-lite/crates/vcp-tdb-index/src/index/quiver/corrected_sm/dynamic.rs",
+      "sha256": "0f16623febe599e5630a8ab235f5aeda99a1997d314c93080a0183ab93db5a36",
+      "bytes": 39501
+    },
+    {
+      "project": "toolbox",
+      "path": "rust-vexus-lite/crates/vcp-tdb-index/src/index/quiver/corrected_sm/dynamic_search.rs",
+      "sha256": "418c1e67a1249023f9298e1aa4186273d24c616a97d8a1cf3f6629e682907085",
+      "bytes": 11933
+    },
+    {
+      "project": "toolbox",
+      "path": "rust-vexus-lite/crates/vcp-tdb-index/src/index/quiver/corrected_sm/dynamic_tests.rs",
+      "sha256": "c3cdc4fe3275f65e1ff4a5f7114634a5c7bda13195453daeffcd98ac9fc4af80",
+      "bytes": 15811
+    },
+    {
+      "project": "toolbox",
+      "path": "rust-vexus-lite/crates/vcp-tdb-index/src/index/quiver/corrected_sm/filter_tests.rs",
+      "sha256": "fc36115dfe540b4f66e4dbdd8413055d72545f9f0fbc936fd0c9882328c414f5",
+      "bytes": 1690
+    },
+    {
+      "project": "toolbox",
+      "path": "rust-vexus-lite/crates/vcp-tdb-index/src/index/quiver/corrected_sm/l2_tests.rs",
+      "sha256": "ed085c91c06f07610dfa9d822eb4cb6bb826ac4ebdd04601dd307bb57bb72582",
+      "bytes": 10526
+    },
+    {
+      "project": "toolbox",
+      "path": "rust-vexus-lite/crates/vcp-tdb-index/src/index/quiver/corrected_sm/native_l2_tests.rs",
+      "sha256": "6f50f6d2a31796ce7721aebedd5d9ee725361335f71c8e2a36389340bf5c5876",
+      "bytes": 7338
+    },
+    {
+      "project": "toolbox",
+      "path": "rust-vexus-lite/crates/vcp-tdb-index/src/index/quiver/corrected_sm/production.rs",
+      "sha256": "c49c1612e50ea92b923dc5e2ae4497a1817bd9a6022662b97cb9887ba5cc8efb",
+      "bytes": 13726
+    },
+    {
+      "project": "toolbox",
+      "path": "rust-vexus-lite/crates/vcp-tdb-index/src/index/quiver/corrected_sm/production_tests.rs",
+      "sha256": "923fdbe9239db02586a21dc85e0453af48bac8bdb7c577046886bce321a2c7d2",
+      "bytes": 10484
+    },
+    {
+      "project": "toolbox",
+      "path": "rust-vexus-lite/crates/vcp-tdb-index/src/index/quiver/corrected_sm/routing_snapshot.rs",
+      "sha256": "494adaf9401f8a815ffc14fdfc93c690a7725b9c6757b77d624e9178ebf136c6",
+      "bytes": 9095
+    },
+    {
+      "project": "toolbox",
+      "path": "rust-vexus-lite/crates/vcp-tdb-index/src/lib.rs",
+      "sha256": "fdc7b24057a0fc345e556c3ea95f6eaa181d589237d958e75f5088be87902ac6",
+      "bytes": 423
+    },
+    {
+      "project": "toolbox",
+      "path": "rust-vexus-lite/crates/vcp-tdb-index/src/vector.rs",
+      "sha256": "a283401a09a0a763a7fc5f96250c5e6adf2fe4ae8e02eda58dce4ee8a291b2ef",
+      "bytes": 20693
+    },
+    {
+      "project": "toolbox",
+      "path": "rust-vexus-lite/index.d.ts",
+      "sha256": "1af797fe79afde3fabe93817a6ffa227a3aca5af794ca6ff1fc575c20ca03cb1",
+      "bytes": 23292
+    },
+    {
+      "project": "toolbox",
+      "path": "rust-vexus-lite/index.js",
+      "sha256": "2f7d68d1f6b71db1f5adeb4721e8b7ca8c6b7dd43c34d11d1683880f17163be2",
+      "bytes": 9685
+    },
+    {
+      "project": "toolbox",
+      "path": "rust-vexus-lite/package.json",
+      "sha256": "135625768206e4e3ba35c2eceac9a2045738c98c9d1cb40ccc5eb5f15451e33c",
+      "bytes": 641
+    },
+    {
+      "project": "toolbox",
+      "path": "rust-vexus-lite/rust-toolchain.toml",
+      "sha256": "5345848dfcc1171f10672b502d78ee0db32fcadd201747cb79407c5868379d56",
+      "bytes": 52
+    },
+    {
+      "project": "toolbox",
+      "path": "rust-vexus-lite/src/global_chunks.rs",
+      "sha256": "9802d6a57d9d6da6b879d6a8c3e958efbfc7fea2d15cf632cb1bfd0e89665d29",
+      "bytes": 25704
+    },
+    {
+      "project": "toolbox",
+      "path": "rust-vexus-lite/src/index_handle.rs",
+      "sha256": "0333a1165f9d98461fa3de2cd9796e68b59282b84e120a59644be0f9653ff813",
+      "bytes": 3444
+    },
+    {
+      "project": "toolbox",
+      "path": "rust-vexus-lite/src/index_lifecycle.rs",
+      "sha256": "b3adb471abe26ca00175d83bfcc163fb883759927bacc68c3ce2956e41ffde83",
+      "bytes": 88204
+    },
+    {
+      "project": "toolbox",
+      "path": "rust-vexus-lite/src/index_maintenance.rs",
+      "sha256": "067c9db6eb24f5ed5efe4c1d10267674c401302fdebe2f8fa021421ebc053f7d",
+      "bytes": 7300
+    },
+    {
+      "project": "toolbox",
+      "path": "rust-vexus-lite/src/index_source.rs",
+      "sha256": "0608c6b48b40e78902b40ed4568bbcde08e29e84a3d3f477cc57c43bb53fa098",
+      "bytes": 10167
+    },
+    {
+      "project": "toolbox",
+      "path": "rust-vexus-lite/src/ingestion.rs",
+      "sha256": "c71d8b7c64fa720acae04e4ea68012015367c2e758611b0cbd25a21d9d4fcb2c",
+      "bytes": 113633
+    },
+    {
+      "project": "toolbox",
+      "path": "rust-vexus-lite/src/knowledge_runtime.rs",
+      "sha256": "305da4b30dbe2b2b715e82c78f9331594c666c305b3567df220c36b392ae849b",
+      "bytes": 227324
+    },
+    {
+      "project": "toolbox",
+      "path": "rust-vexus-lite/src/lib.rs",
+      "sha256": "c663749faa3978cf2cae9ca96c0a2989fca8be99fd1a56dbd9c5b07a287e4181",
+      "bytes": 89791
+    },
+    {
+      "project": "toolbox",
+      "path": "rust-vexus-lite/src/light_memo.rs",
+      "sha256": "05fc03107f16a941e2e25f31b82f87f79617851a569937b72268c0cf9ee47163",
+      "bytes": 19634
+    },
+    {
+      "project": "toolbox",
+      "path": "rust-vexus-lite/src/memo_artifact_builder.rs",
+      "sha256": "3b913be2e74c185ee7d9bf284891aa962af367984ad86a88ba3485217c8ee8a4",
+      "bytes": 75614
+    },
+    {
+      "project": "toolbox",
+      "path": "rust-vexus-lite/src/memo_geometry.rs",
+      "sha256": "58e84f1de998626f0c58becea178fe14f6742b7e5add4833389da5d077ff9c92",
+      "bytes": 65480
+    },
+    {
+      "project": "toolbox",
+      "path": "rust-vexus-lite/src/memo_pipeline.rs",
+      "sha256": "be592f676878c1414926c64bf3e5cb2158b0b99c1f83399ab6747b611761b5e9",
+      "bytes": 98180
+    },
+    {
+      "project": "toolbox",
+      "path": "rust-vexus-lite/src/memo_projection.rs",
+      "sha256": "4a074ec6c316f070b7d7de7513bead4c59b4c42b0240600aa245d68ab017ce87",
+      "bytes": 20585
+    },
+    {
+      "project": "toolbox",
+      "path": "rust-vexus-lite/src/memo_sensing.rs",
+      "sha256": "a8ed06ca6c91ca215b788174203bbefaee26aef7ec7babd37ff77b6fe7f9e102",
+      "bytes": 43230
+    },
+    {
+      "project": "toolbox",
+      "path": "rust-vexus-lite/src/memo_thinking.rs",
+      "sha256": "425ac8ea04f2d4ab1ae0946ee5ac1da649e14fcd74c25512754212726a02a019",
+      "bytes": 20277
+    },
+    {
+      "project": "toolbox",
+      "path": "rust-vexus-lite/src/memo_workspace.rs",
+      "sha256": "bba9bfc1af608d5e397215895020f314ea8f4f7d291ba304714e4f5104facf77",
+      "bytes": 13731
+    },
+    {
+      "project": "toolbox",
+      "path": "rust-vexus-lite/src/memo_workspace_build_tests.rs",
+      "sha256": "4437603720734c5429d5f7446c6c5a54ac695bffeb41e2a22ce19811fcf1dd1a",
+      "bytes": 5564
+    },
+    {
+      "project": "toolbox",
+      "path": "rust-vexus-lite/src/native_rerank.rs",
+      "sha256": "368a05a98e86176c84e26c8df630bc84badaad5e2ec1edf342df8713ecdb0432",
+      "bytes": 21870
+    },
+    {
+      "project": "toolbox",
+      "path": "rust-vexus-lite/src/publication_gate.rs",
+      "sha256": "b72f4913a290e1577a01390814b7d283c493e0c5a908453de418a16841c87db0",
+      "bytes": 5935
+    },
+    {
+      "project": "toolbox",
+      "path": "rust-vexus-lite/src/result_deduplicator.rs",
+      "sha256": "b60959f163b354a07767208386aab1fc40fe149c3381504f4bfa899516d97071",
+      "bytes": 16857
+    },
+    {
+      "project": "toolbox",
+      "path": "rust-vexus-lite/src/retrieval_index.rs",
+      "sha256": "cd17e47f9847f95971bbc09c18d80938f6649827307c7d95fb8d48317990528d",
+      "bytes": 16525
+    },
+    {
+      "project": "toolbox",
+      "path": "rust-vexus-lite/src/rivermemo_topology_v3.rs",
+      "sha256": "3648f674efbadc3247f8455c21c3793676b39ce0ac1606e763477e28d745e3e2",
+      "bytes": 131644
+    },
+    {
+      "project": "toolbox",
+      "path": "rust-vexus-lite/src/schema.rs",
+      "sha256": "8c8111b15b2dcef446bd2b79e445c5f8c60c0df5ef8af8fa02fe0568515de50f",
+      "bytes": 36520
+    },
+    {
+      "project": "toolbox",
+      "path": "rust-vexus-lite/src/storage.rs",
+      "sha256": "1202f0635db28fd83e004daafa3cb8df089ad4490993cfd06cdec1fd33608b2d",
+      "bytes": 51181
+    },
+    {
+      "project": "toolbox",
+      "path": "rust-vexus-lite/src/tag_consistency.rs",
+      "sha256": "f61f951dbeb93c204d4979961791001eb054681b5cdd3ce3826541f6f27e6455",
+      "bytes": 55512
+    },
+    {
+      "project": "toolbox",
+      "path": "rust-vexus-lite/src/task_lifecycle.rs",
+      "sha256": "3589c4506de4f1cba5f13a068a021e92cf34a606b3af48c6b2ddd7e65284b7b4",
+      "bytes": 5420
+    },
+    {
+      "project": "toolbox",
+      "path": "rust-vexus-lite/src/text.rs",
+      "sha256": "f72f681626641bc15672505131208226e255ab52e9066b5000d97f942467b77d",
+      "bytes": 17193
+    },
+    {
+      "project": "toolbox",
+      "path": "rust-vexus-lite/test.js",
+      "sha256": "5e80dd57405dd81abb8c26a93ff2fe9cddbeaa70ee0757550d4e083f30162efe",
+      "bytes": 1947
+    },
+    {
+      "project": "toolbox",
+      "path": "rust-vexus-lite/vexus-lite.darwin-arm64.node",
+      "sha256": "0e53b4744fd3c2b9dee0394cb6153b25bfb1e8f49a1187f58c7e3b76d57fc057",
+      "bytes": 2412464
+    },
+    {
+      "project": "toolbox",
+      "path": "rust-vexus-lite/vexus-lite.linux-arm64-gnu.node",
+      "sha256": "cabb486e5c5addb1842350c77a8f0534f1e498ca2c584cf0e06bec87190d7774",
+      "bytes": 3754240
+    },
+    {
+      "project": "toolbox",
+      "path": "rust-vexus-lite/vexus-lite.linux-arm64-musl.node",
+      "sha256": "3f8e73750e15676453ee551aa5f3c1949d051a26eca780369d18a3e0aae47a45",
+      "bytes": 2574344
+    },
+    {
+      "project": "toolbox",
+      "path": "rust-vexus-lite/vexus-lite.linux-x64-gnu.node",
+      "sha256": "4e75da75de414a0f392d1f417bf629bdc8c4232e28556491ed925a07b59c6f13",
+      "bytes": 12873296
+    },
+    {
+      "project": "toolbox",
+      "path": "rust-vexus-lite/vexus-lite.linux-x64-musl.node",
+      "sha256": "4633bcfc73cb46e2b8909c86a1492d2c482c2453ee316702a5683c2543d402ae",
+      "bytes": 3057200
+    },
+    {
+      "project": "toolbox",
+      "path": "rust-vexus-lite/vexus-lite.node",
+      "sha256": "b56b9173e5adcd19d08ae2cb7f8bb0fa44e0ea5cb8d23af596b4e77576f37b82",
+      "bytes": 2201088
+    },
+    {
+      "project": "toolbox",
+      "path": "rust-vexus-lite/vexus-lite.win32-x64-msvc.node",
+      "sha256": "aa8adf81c07bc704872a8325ed3c16730f7476b266a17f38c3c1c51e9740a3b4",
+      "bytes": 14564352
+    },
+    {
+      "project": "toolbox",
+      "path": "scripts/diary-semantic-classifier.js",
+      "sha256": "15c1b1cb205088032b5040f578a3e802231574737c8ac9ae18196309aeba98f5",
+      "bytes": 13204
+    },
+    {
+      "project": "toolbox",
+      "path": "scripts/guard-server-stopped.js",
+      "sha256": "f79a412843535028674c16ed8ccd735a3be68fceb6abfa22a62227e47620f16c",
+      "bytes": 2322
+    },
+    {
+      "project": "toolbox",
+      "path": "scripts/rebuild_tag_index_custom.js",
+      "sha256": "9c874016f2117fb9944fd8e901398636d90930398af30b1f771d67d9e9d80929",
+      "bytes": 6135
+    },
+    {
+      "project": "toolbox",
+      "path": "scripts/rebuild_vector_indexes.js",
+      "sha256": "febbd0e0d7e79ec879e4f37045ad492ed91197ad80789af0adcb774c54a6297b",
+      "bytes": 4366
+    },
+    {
+      "project": "toolbox",
+      "path": "scripts/repair_database.js",
+      "sha256": "5dd526bba0ba01cb816ecc54fb37a278b1e63c970cb1d016f634f1c8225ddf2f",
+      "bytes": 6731
+    },
+    {
+      "project": "toolbox",
+      "path": "scripts/sync_missing_tags.js",
+      "sha256": "1f3ec57bff39121a8f5b85a2421caaa3264550ce8299edc0a8641221c32f7cf2",
+      "bytes": 5037
+    },
+    {
+      "project": "toolbox",
+      "path": "tests/abiV2ReviewRegression.test.js",
+      "sha256": "1971faa9b3119b7376d560af587f95eff38c8799d538f1f37aefd496065afc70",
+      "bytes": 9667
+    },
+    {
+      "project": "toolbox",
+      "path": "tests/associativeDiscoveryRiverMemo.test.js",
+      "sha256": "cec8c29a25d7469391ae6089d6168071834dafadc379297294f132f73259753f",
+      "bytes": 12283
+    },
+    {
+      "project": "toolbox",
+      "path": "tests/diaryIndexAtomicDelta.test.js",
+      "sha256": "dc2b7fcd0bdc25681383baa954196509e2e7ec2d0a9b92af65a867ecab6eed5c",
+      "bytes": 7026
+    },
+    {
+      "project": "toolbox",
+      "path": "tests/dynamicToolRegistry.test.js",
+      "sha256": "fc2534ffee51a7b1c89960d92fc5551557ddc8b2b16a84a9db9a45f38c58cb93",
+      "bytes": 45636
+    },
+    {
+      "project": "toolbox",
+      "path": "tests/jevClient.test.js",
+      "sha256": "b6331e66d08d70c4b0e279c724bff688c02cf0b27a3ca64aca82980dfd2de409",
+      "bytes": 7215
+    },
+    {
+      "project": "toolbox",
+      "path": "tests/jevContextPrune.test.js",
+      "sha256": "acb76c25031abf7353ccf0bca6539eafc4e649658fce4be01b48aaf54327719b",
+      "bytes": 10930
+    },
+    {
+      "project": "toolbox",
+      "path": "tests/jevFoldFilter.test.js",
+      "sha256": "a0280f952aa91fcd1117a519aea2c2de937143b639eeee93c9a0e09be5ea47d7",
+      "bytes": 17104
+    },
+    {
+      "project": "toolbox",
+      "path": "tests/jevRedTeamChaosExams.test.js",
+      "sha256": "ef61c3e4e050222b1439ea1df0e13183f07f5fdcdbbabcbd7588b0854f8e6d86",
+      "bytes": 10986
+    },
+    {
+      "project": "toolbox",
+      "path": "tests/jevRiverRerank.test.js",
+      "sha256": "2e720fc9a92fbd5679a057736c928ea9a67d6df82b3a0d8da39a6e7d59148d22",
+      "bytes": 9405
+    },
+    {
+      "project": "toolbox",
+      "path": "tests/jevStressAndChaosMatrix.test.js",
+      "sha256": "85b589ff3ed000ecffd05e5bc81f57cd37a167d83de3a300de7163450d6a4856",
+      "bytes": 11148
+    },
+    {
+      "project": "toolbox",
+      "path": "tests/jevThirdPartyEcosystem.test.js",
+      "sha256": "a0fdcf83ba223aee2062a4d99988f0ecb02ce9bb40a580320ae01cb0aca50b13",
+      "bytes": 70882
+    },
+    {
+      "project": "toolbox",
+      "path": "tests/jevThirdPartyPolicy.test.js",
+      "sha256": "7602890d30a86e08a06f779ef0f46cb62dd2f5745b27608a5effc597d01d2e9b",
+      "bytes": 4182
+    },
+    {
+      "project": "toolbox",
+      "path": "tests/jevThirdPartyRegistry.test.js",
+      "sha256": "3f32276440a599b212967366672faf15b184905e0d2692e484d9afcd9d24d720",
+      "bytes": 13178
+    },
+    {
+      "project": "toolbox",
+      "path": "tests/jevToolCallExp.test.js",
+      "sha256": "a05173a187550a124359423ec1efc5ec32e6037a85cdb36860c65aea6706b454",
+      "bytes": 32028
+    },
+    {
+      "project": "toolbox",
+      "path": "tests/kbmAuditRegression.test.js",
+      "sha256": "36cbc6a5941d1c5d6b0e8c52e43997c75a32cd3a174a7a98461a23c6de8e772e",
+      "bytes": 13764
+    },
+    {
+      "project": "toolbox",
+      "path": "tests/kbmConfigurationCompatibility.test.js",
+      "sha256": "f7ad44687d4df2628910ea553ee9ce31292cce543038cec8ee4cc4046574aed4",
+      "bytes": 3632
+    },
+    {
+      "project": "toolbox",
+      "path": "tests/kbmDeadCodeCleanup.test.js",
+      "sha256": "f916cf7d7aa5e3240eaf703b7415953fac617f412174f1c8c7f649a4a452022c",
+      "bytes": 1856
+    },
+    {
+      "project": "toolbox",
+      "path": "tests/kbmNativeKnnProxy.test.js",
+      "sha256": "70b916d1619efcd14e4e7e107c179e45b8b356b5183462eff849385e48de3205",
+      "bytes": 3767
+    },
+    {
+      "project": "toolbox",
+      "path": "tests/kbmNativeLifecycle.test.js",
+      "sha256": "5a739f5af84539e81804902a26cd1fc681420cb5ed6705b7bd18aafa3ee1d86f",
+      "bytes": 8275
+    },
+    {
+      "project": "toolbox",
+      "path": "tests/kbmOfflineWriteSafety.test.js",
+      "sha256": "d47d8dd3e3712b1ccc176516b5669ef114a323bbae4893294cde571c48c2db70",
+      "bytes": 1356
+    },
+    {
+      "project": "toolbox",
+      "path": "tests/kbmPrecommitSnapshotDiagnostics.test.js",
+      "sha256": "76d593dac42be865f2088386db09df60fc287005c9aeab5bf12104bfb5473e40",
+      "bytes": 3979
+    },
+    {
+      "project": "toolbox",
+      "path": "tests/kbmTaskDrain.test.js",
+      "sha256": "4e5abf6955c648033c87740ca928a6ccab26b07f952c8e203c3bd48591d7295b",
+      "bytes": 1886
+    },
+    {
+      "project": "toolbox",
+      "path": "tests/kbmWatcherBackpressure.test.js",
+      "sha256": "cf8263e718eeff2fe8177280faabd53bf3c02e2406aa3bc6139bd4ef1d80df8a",
+      "bytes": 4922
+    },
+    {
+      "project": "toolbox",
+      "path": "tests/kbmWatcherReconciliation.test.js",
+      "sha256": "fa6d02ca6f042500c78e6242b0b16ab06b86c76b4499056fedf0c8be77a4e37c",
+      "bytes": 3874
+    },
+    {
+      "project": "toolbox",
+      "path": "tests/lightMemoIdleLifecycle.test.js",
+      "sha256": "21e129e4328cb818356039347de12475b62677faf9f2feb167b8386db1a42afe",
+      "bytes": 2766
+    },
+    {
+      "project": "toolbox",
+      "path": "tests/memoConfigCleanup.test.js",
+      "sha256": "8c78adc7d1deb930c7097cdfca62f953a893b6f144e66bfc14eca01b42c4d80d",
+      "bytes": 4384
+    },
+    {
+      "project": "toolbox",
+      "path": "tests/memoObservationSharing.test.js",
+      "sha256": "0ba3e4867e08bc3af7a0f51e5f769b8f01305324653e7866463ebc3624cbcfb6",
+      "bytes": 5524
+    },
+    {
+      "project": "toolbox",
+      "path": "tests/memoProjectionBudget.test.js",
+      "sha256": "9a1ca5f05bd13f55cffd29005254c90214e6c78d5fd231d76e922cc3922a4e5c",
+      "bytes": 3307
+    },
+    {
+      "project": "toolbox",
+      "path": "tests/memoRefreshPolicy.test.js",
+      "sha256": "7426085d5329ea909c66f600842c7e3556a818aad2fc0167165314c4ee593d2a",
+      "bytes": 2963
+    },
+    {
+      "project": "toolbox",
+      "path": "tests/memoSingleTrack.test.js",
+      "sha256": "a1da272a97f5f63f9fa9d594fd8269279968f9f974b5b93ae4657911c33a3244",
+      "bytes": 14306
+    },
+    {
+      "project": "toolbox",
+      "path": "tests/memoryThinkingTray.test.js",
+      "sha256": "b2d8999ef43055c6384eb2adbbc91c65665629eb2159d460968995afcb21ec70",
+      "bytes": 8588
+    },
+    {
+      "project": "toolbox",
+      "path": "tests/nativeGreenLane.test.js",
+      "sha256": "c2d4d3811e97cd61581016c1f920f9b68bce5662aa2c8f3f28021cb7fd1fd069",
+      "bytes": 4141
+    },
+    {
+      "project": "toolbox",
+      "path": "tests/nativeHybridRiverQueryPlan.test.js",
+      "sha256": "5572b3480c6a6814c2753bd9be97fe52a2b01e44b25779da34d27d325dea2ee7",
+      "bytes": 9275
+    },
+    {
+      "project": "toolbox",
+      "path": "tests/nativeKnowledgeRuntimeRegistry.test.js",
+      "sha256": "c2495119cc406f075fe4c420760abc3e4fff230e912080bb7e5163db00a88c3d",
+      "bytes": 8798
+    },
+    {
+      "project": "toolbox",
+      "path": "tests/nativeMemoManifestCompatibility.test.js",
+      "sha256": "1e2fb38830a3b12000fbe4d982bd9360e3d7a693ceed23964f1feb7dbe508843",
+      "bytes": 23310
+    },
+    {
+      "project": "toolbox",
+      "path": "tests/nativeParallelRerank.test.js",
+      "sha256": "c152bf5dffd33073e806a91c6bade34a1dda55efa14b84dba23f100158eb6dbb",
+      "bytes": 4156
+    },
+    {
+      "project": "toolbox",
+      "path": "tests/nativeRerankSearchOptions.test.js",
+      "sha256": "6d72ae3ea163800011eced69a3da2976f0f2a086b76e1035b267a2448fde85fb",
+      "bytes": 3134
+    },
+    {
+      "project": "toolbox",
+      "path": "tests/nativeRiverDefaultMode.test.js",
+      "sha256": "d5a85a1e7bd165a5c1f641dc8b3b7362e1d72eb729d7ae3378514e34006e5288",
+      "bytes": 1362
+    },
+    {
+      "project": "toolbox",
+      "path": "tests/nativeRiverQueryFallback.test.js",
+      "sha256": "0bd2143fac63c2d01c5baf0931af77ee3d0ef7450b85bf627313dc1fc6ce07ca",
+      "bytes": 9402
+    },
+    {
+      "project": "toolbox",
+      "path": "tests/nativeSemanticDeduplication.test.js",
+      "sha256": "51cd90263e5f789022b3dc472792462d63568a7f384b1739080d048ac0e2a103",
+      "bytes": 6357
+    },
+    {
+      "project": "toolbox",
+      "path": "tests/newTagIngestionDerivedInvalidation.test.js",
+      "sha256": "8bc3359c0d47084568505d7a2bfb54262e0d1d8e241e35afee70c06d194a6f82",
+      "bytes": 3608
+    },
+    {
+      "project": "toolbox",
+      "path": "tests/oneRingTemporaryContract.test.js",
+      "sha256": "321ea5ea2db5324a31ae80be7908b303db13fdf0cfc7515935330159fa628340",
+      "bytes": 5631
+    },
+    {
+      "project": "toolbox",
+      "path": "tests/placeholderDeduplication.test.js",
+      "sha256": "5d45bb9156c2bf36300e83b0f53e3114e64afa50f6a401cb4f05f627c7c987d6",
+      "bytes": 5564
+    },
+    {
+      "project": "toolbox",
+      "path": "tests/placeholderExplorer.test.js",
+      "sha256": "b76bb13591c19c0b48e889d1c4494c8d9d92cb39a8c73079a1127c86d050a6ee",
+      "bytes": 6624
+    },
+    {
+      "project": "toolbox",
+      "path": "tests/ragDiaryCopyOnWrite.test.js",
+      "sha256": "8a1182abf5b0995438cc3e2ba7e7594503aa05ebc8525384890a8437518ecc86",
+      "bytes": 4374
+    },
+    {
+      "project": "toolbox",
+      "path": "tests/ragGreenLane.test.js",
+      "sha256": "e462490681a084caa69410a42bc2d224a0846c0cc2222c53f76547048c51a8b6",
+      "bytes": 9704
+    },
+    {
+      "project": "toolbox",
+      "path": "tests/ragJevModifiers.test.js",
+      "sha256": "3cbd4e11873b1bb4b08078cc5b9cc94ae3bf3ed290f60c1063ae511cf6949df6",
+      "bytes": 6115
+    },
+    {
+      "project": "toolbox",
+      "path": "tests/ragNativeChainAudit.test.js",
+      "sha256": "266b537bb9192c6725fef2d5fce7e2dea1fbbafdcd64cc9ad27a6d8b2353ab4f",
+      "bytes": 10826
+    },
+    {
+      "project": "toolbox",
+      "path": "tests/ragRefreshSystemBoundary.test.js",
+      "sha256": "d2632300dc016b18dc05fe51991d65c15c37a4ac0f4f13e9e8c77931db11c0c8",
+      "bytes": 3810
+    },
+    {
+      "project": "toolbox",
+      "path": "tests/resultDeduplicator.test.js",
+      "sha256": "575b8174d756e6db2791c628e3945db29c2bd7dca96a1676ea17d4c7123c510d",
+      "bytes": 8789
+    },
+    {
+      "project": "toolbox",
+      "path": "tests/resultDeduplicatorBounds.test.js",
+      "sha256": "43e0173722d146668a85e44b54676c88af7a1a392f2f5e12511cacfc09edbf00",
+      "bytes": 4157
+    },
+    {
+      "project": "toolbox",
+      "path": "tests/riverThinkingMeta.test.js",
+      "sha256": "7833eee5b808a6a8ae4b120559be822b657b7e4eefd7b846523f6037379673cc",
+      "bytes": 5911
+    },
+    {
+      "project": "toolbox",
+      "path": "tests/roleDividerToolResults.test.js",
+      "sha256": "fb3a5fa6a4cf2c4d14b85214191f8870e87ec0201fc547f21734c62aa169a7db",
+      "bytes": 4306
+    },
+    {
+      "project": "toolbox",
+      "path": "tests/sarPromptManager.test.js",
+      "sha256": "3d3398d541b319e5d44943a07468afbec0f620956e0edf5ce07d3a5e04a2cf97",
+      "bytes": 4269
+    },
+    {
+      "project": "toolbox",
+      "path": "tests/sqlAuthoritativeRoutingQuality.test.js",
+      "sha256": "bf792b77ad37f809b7889ed1af853719aa2aee6ea58a273098c79489e2c96859",
+      "bytes": 7555
+    },
+    {
+      "project": "toolbox",
+      "path": "tests/tagConsistencyIncrementalIndex.test.js",
+      "sha256": "c09fda22c585903bd6ff52e3d047fbf2bc6c943815e42951b6e2574bd361854e",
+      "bytes": 4506
+    },
+    {
+      "project": "toolbox",
+      "path": "tests/tagIndexGenerationalBaseline.test.js",
+      "sha256": "3c4e8fc9e8dda5290eb255073444057f6abad64c6a6d7960cb9f2d26f27e5bfb",
+      "bytes": 7087
+    },
+    {
+      "project": "toolbox",
+      "path": "tests/tdbKnowledge085.test.js",
+      "sha256": "57102631054aec7d1179ce00170c76daed6cb0e125fe3befb2b810effe7fd224",
+      "bytes": 5398
+    },
+    {
+      "project": "toolbox",
+      "path": "tests/tdbKnowledgeWatcher.test.js",
+      "sha256": "89622b85410bda273a2a54e5f8c9e1050ced95db23991971c074f7573120041f",
+      "bytes": 4171
+    },
+    {
+      "project": "toolbox",
+      "path": "tests/tdbLegacyDimensionCompatibility.test.js",
+      "sha256": "979b4d987e18fce9829ef54f0d40dabb40f2bca81d7557d816e77879c0e4e4aa",
+      "bytes": 7293
+    },
+    {
+      "project": "toolbox",
+      "path": "tests/tdbMemoryProfile.test.js",
+      "sha256": "a93e4b201822b8393d35a29f22fdf90ddf2aa28469ce236a11d4c2910fa45a5a",
+      "bytes": 3602
+    },
+    {
+      "project": "toolbox",
+      "path": "tests/tdbNativeAcceptance.test.js",
+      "sha256": "8ad31edb822792f21de591ede10320016e14ed903ed864328ecf3082b54667bf",
+      "bytes": 2478
+    },
+    {
+      "project": "toolbox",
+      "path": "tests/tdbRetrievalQuality.test.js",
+      "sha256": "15f35c0ea760424106181c6dee8730364eb4b2e22fe7f09abfadcf8113710714",
+      "bytes": 6116
+    },
+    {
+      "project": "toolbox",
+      "path": "tests/textChunker.test.js",
+      "sha256": "0c93c15754060ce9ffcf770dcf7465d98928c61459bc75eed8c63bce9d9589f4",
+      "bytes": 8773
+    },
+    {
+      "project": "toolbox",
+      "path": "tests/thoughtClusterPersistence.test.js",
+      "sha256": "3c6ace09cd47669456ec0e6b5c4563588b6aa524c98c7c30990bd2613e8f2805",
+      "bytes": 4493
+    },
+    {
+      "project": "toolbox",
+      "path": "tests/timelineRiverMemo.test.js",
+      "sha256": "b3304931ee3d70ac39c0453d416e9bfe971e333483f7db1cd71a4e71fea85e0d",
+      "bytes": 8698
+    },
+    {
+      "project": "toolbox",
+      "path": "tests/unifiedGeometryScheduling.test.js",
+      "sha256": "2b91ea9ccd047356d7d2b9a4829bf60a1646b5483bd2894cbb7df145f49cae1e",
+      "bytes": 6741
+    },
+    {
+      "project": "toolbox",
+      "path": "vcpInfoHandler.js",
+      "sha256": "ba0cc73bb6c4b8821e372da52646bf65a9a407ac3023e8869d83aa6f8e3c0466",
+      "bytes": 7259
+    }
+  ],
+  "hostBoundaries": [
+    {
+      "from": "Plugin/AgentDream/AgentDream.js",
+      "specifier": "../../Plugin.js",
+      "path": "Plugin.js"
+    }
+  ],
+  "missingRequires": [],
+  "optionalPlatformRequires": [
+    {
+      "from": "rust-vexus-lite/index.js",
+      "specifier": "./vexus-lite.android-arm64.node"
+    },
+    {
+      "from": "rust-vexus-lite/index.js",
+      "specifier": "./vexus-lite.android-arm-eabi.node"
+    },
+    {
+      "from": "rust-vexus-lite/index.js",
+      "specifier": "./vexus-lite.win32-ia32-msvc.node"
+    },
+    {
+      "from": "rust-vexus-lite/index.js",
+      "specifier": "./vexus-lite.win32-arm64-msvc.node"
+    },
+    {
+      "from": "rust-vexus-lite/index.js",
+      "specifier": "./vexus-lite.darwin-universal.node"
+    },
+    {
+      "from": "rust-vexus-lite/index.js",
+      "specifier": "./vexus-lite.darwin-x64.node"
+    },
+    {
+      "from": "rust-vexus-lite/index.js",
+      "specifier": "./vexus-lite.freebsd-x64.node"
+    },
+    {
+      "from": "rust-vexus-lite/index.js",
+      "specifier": "./vexus-lite.linux-arm-musleabihf.node"
+    },
+    {
+      "from": "rust-vexus-lite/index.js",
+      "specifier": "./vexus-lite.linux-arm-gnueabihf.node"
+    },
+    {
+      "from": "rust-vexus-lite/index.js",
+      "specifier": "./vexus-lite.linux-riscv64-musl.node"
+    },
+    {
+      "from": "rust-vexus-lite/index.js",
+      "specifier": "./vexus-lite.linux-riscv64-gnu.node"
+    },
+    {
+      "from": "rust-vexus-lite/index.js",
+      "specifier": "./vexus-lite.linux-s390x-gnu.node"
+    }
+  ],
+  "retiredMaintenanceRequires": [
+    {
+      "from": "scripts/repair_database.js",
+      "specifier": "./rust-vexus-lite"
+    },
+    {
+      "from": "scripts/rebuild_tag_index_custom.js",
+      "specifier": "./rust-vexus-lite"
+    },
+    {
+      "from": "scripts/diary-semantic-classifier.js",
+      "specifier": "./rust-vexus-lite"
+    },
+    {
+      "from": "scripts/diary-semantic-classifier.js",
+      "specifier": "./EmbeddingUtils"
+    }
+  ],
+  "externalPackages": [
+    "@dqbd/tiktoken",
+    "@node-rs/jieba",
+    "axios",
+    "better-sqlite3",
+    "cheerio",
+    "chinese-lunar-calendar",
+    "chokidar",
+    "commander",
+    "dayjs",
+    "dotenv",
+    "express",
+    "https-proxy-agent",
+    "mime-types",
+    "triviumdb",
+    "uuid",
+    "vexus-lite-android-arm-eabi",
+    "vexus-lite-android-arm64",
+    "vexus-lite-darwin-arm64",
+    "vexus-lite-darwin-universal",
+    "vexus-lite-darwin-x64",
+    "vexus-lite-freebsd-x64",
+    "vexus-lite-linux-arm-gnueabihf",
+    "vexus-lite-linux-arm-musleabihf",
+    "vexus-lite-linux-arm64-gnu",
+    "vexus-lite-linux-arm64-musl",
+    "vexus-lite-linux-riscv64-gnu",
+    "vexus-lite-linux-riscv64-musl",
+    "vexus-lite-linux-s390x-gnu",
+    "vexus-lite-linux-x64-gnu",
+    "vexus-lite-linux-x64-musl",
+    "vexus-lite-win32-arm64-msvc",
+    "vexus-lite-win32-ia32-msvc",
+    "vexus-lite-win32-x64-msvc"
+  ]
+}

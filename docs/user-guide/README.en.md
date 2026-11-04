@@ -4,6 +4,7 @@ A WorldlineBox usage guide for end users. For Chinese, switch the site language;
 
 - [Install](installation.md) — macOS / Windows, upgrades
 - [Basics](basics.md) — libraries, importing, workspace tabs, custom folder/collection appearance, browsing layouts, tags, collections, and the viewer
+- [Companions](companions.en.md) — continuous direct/group chat, personas, memory/forgetting, DSH tasks and the physical world
 - [Built-in browser](browser.en.md) — tabs, bookmarks, session storage, downloads, and built-in asset capture
 - [Search and filters](search-and-filters.md) — advanced query syntax, filter dimensions, and Shift multi-select
 - [WebDAV cloud sync](sync.md) — server configuration, library binding, auto-sync, opening remote synced libraries
@@ -24,7 +25,7 @@ Data stays in your local library directory; for syncing across machines, use Web
 
 ## Interface at a glance
 
-The application rail starts with the DSH launcher, the default home page, followed by Assets. Settings stays at the bottom and opens over the current module, also with Ctrl+, (⌘, on macOS). Animated and personal wallpapers apply across modules; switching preserves playback progress. The launcher does not require an asset library. The asset workspace has library navigation, an asset canvas, and an Inspector. On Windows, the Main menu contains File, Edit, Library, Window, and About, including diagnostics and update checks; macOS retains its native menu. Import, search, filtering, and sorting stay in the top toolbar.
+The application rail opens the DSH launcher by default and also provides Companions, Assets and other modules. Settings stays at the bottom and opens over the current module, also with Ctrl+, (⌘, on macOS). Animated and personal wallpapers apply across modules; switching preserves playback progress. Launcher and the new companion module do not require an asset library. The asset workspace has library navigation, an asset canvas, and an Inspector. On Windows, the Main menu contains File, Edit, Library, Window, and About, including diagnostics and update checks; macOS retains its native menu. Import, search, filtering, and sorting stay in the top toolbar.
 
 ![WorldlineBox library overview](../assets/ui/WorldlineBox-Preview.png)
 

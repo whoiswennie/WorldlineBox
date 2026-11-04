@@ -360,6 +360,12 @@ export const rendererRequestSchema = z.discriminatedUnion('type', [
     parentFolderId: z.string().min(1).max(4096).nullable(),
     showIgnored: z.boolean().optional(),
   }),
+  z.strictObject({
+    type: z.literal('folder.filtered-counts.request'),
+    libraryId: identifierSchema,
+    filters: z.array(filterClauseSchema).max(100).optional(),
+    showIgnored: z.boolean().optional(),
+  }),
   // WorldlineBox-f74e48: real FolderBrowseEntry (covers + counts) for concrete
   // folder refs matched by text search, so search results reuse the exact
   // asset-browser folder cards.
@@ -1743,6 +1749,12 @@ export const workerCommandSchema = z.discriminatedUnion('type', [
     type: z.literal('folder.browse-entries'),
     libraryId: identifierSchema,
     parentFolderId: folderScopeIdSchema.nullable(),
+    showIgnored: z.boolean().optional(),
+  }),
+  z.strictObject({
+    type: z.literal('folder.filtered-counts'),
+    libraryId: identifierSchema,
+    filters: z.array(filterClauseSchema).max(100).optional(),
     showIgnored: z.boolean().optional(),
   }),
   z.strictObject({

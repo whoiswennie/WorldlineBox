@@ -412,6 +412,7 @@ function clearCancelledQuery(libraryId: string, queryId: string): void {
 }
 
 function sourceForAsset(asset: {
+  assetId: string;
   mediaType: AssetSummary['mediaType'];
   relativeFilePath: string;
   sequence?: unknown;
@@ -421,11 +422,14 @@ function sourceForAsset(asset: {
   thumbnailStatus?: string | null;
   deletedAt?: string | null;
   displayName: string;
-}, modalities: readonly EmbeddingSourceModality[] = ['audio', 'text', 'image', 'video']): {
+}, modalities: readonly EmbeddingSourceModality[], store: SemanticIndexStore): {
   kind: 'image' | 'video' | 'audio' | 'text';
   revision: string;
 } | null {
-  return embeddingSourceForModalities(asset, modalities);
+  const source = embeddingSourceForModalities(asset, modalities);
+  if (source?.kind !== 'text') return source;
+  const generation = store.textContentGeneration(asset.assetId);
+  return generation ? { ...source, revision: source.revision + '\ntext-content:' + generation } : source;
 }
 
 function legacyCacheFile(cacheKind: 'local' | 'http', libraryId: string, cacheId: string): string | null {
@@ -474,7 +478,7 @@ async function verifyLegacyImport(
     const rows = batch;
     batch = [];
     const assets = service.getSemanticAssetSources(libraryId, rows.map((row) => row.assetId));
-    const current = new Map(assets.map((asset) => [asset.assetId, sourceForAsset(asset, session.modalities)] as const));
+    const current = new Map(assets.map((asset) => [asset.assetId, sourceForAsset(asset, session.modalities, session.store)] as const));
     for (const row of rows) {
       const source = current.get(row.assetId);
       if (!source || source.kind === 'text' || source.revision !== row.revisionId
@@ -558,7 +562,7 @@ async function importLegacyCache(
     const rows = batch;
     batch = [];
     const assets = service.getSemanticAssetSources(libraryId, rows.map((row) => row.assetId));
-    const current = new Map(assets.map((asset) => [asset.assetId, sourceForAsset(asset, session.modalities)] as const));
+    const current = new Map(assets.map((asset) => [asset.assetId, sourceForAsset(asset, session.modalities, session.store)] as const));
     const candidates = rows.flatMap((row) => {
       const source = current.get(row.assetId);
       // Older text revisions omitted the file title. There is no trustworthy
@@ -664,7 +668,7 @@ export async function executeSemanticIndexWorkerCommand(
           const sources = vectorSources.slice(start, start + TARGET_PAGE_SIZE);
           const assets = service.getSemanticAssetSources(command.libraryId, sources.map(({ assetId }) => assetId));
           for (const asset of assets) {
-            const source = sourceForAsset(asset, modalities);
+            const source = sourceForAsset(asset, modalities, store);
             if (source) liveRevisions.set(asset.assetId, source.revision);
           }
           await hooks.runWithoutAdmission(() => new Promise<void>((resolve) => setImmediate(resolve)));
@@ -745,7 +749,7 @@ export async function executeSemanticIndexWorkerCommand(
     const allowedModalities = command.modalities
       .filter((modality): modality is EmbeddingSourceModality => session.modalities.includes(modality));
     const kindById = new Map(assets.flatMap((asset) => {
-      const source = sourceForAsset(asset, allowedModalities);
+      const source = sourceForAsset(asset, allowedModalities, session.store);
       return source
         ? [[asset.assetId, { ...source, modality: source.kind, alreadyIndexed: session.store.hasVector(session.profileId, asset.assetId, source.revision) }] as const]
         : [];
@@ -779,7 +783,7 @@ export async function executeSemanticIndexWorkerCommand(
   if (command.type === 'semantic.index.job') {
     if (command.action === 'claim') {
       const [asset] = service.getSemanticAssetSources(command.libraryId, [command.assetId]);
-      const source = asset ? sourceForAsset(asset, session.modalities) : null;
+      const source = asset ? sourceForAsset(asset, session.modalities, session.store) : null;
       if (source?.revision !== command.sourceRevision) {
         return { ok: true, type: 'semantic.index.job-updated', updated: false };
       }
@@ -801,7 +805,7 @@ export async function executeSemanticIndexWorkerCommand(
     if (command.profileKey !== session.profile.profileKey) throw new Error('Semantic profile changed.');
     const ids = command.vectors.map(({ assetId }) => assetId);
     const assets = service.getSemanticAssetSources(command.libraryId, ids);
-    const current = new Map(assets.map((asset) => [asset.assetId, sourceForAsset(asset, session.modalities)] as const));
+    const current = new Map(assets.map((asset) => [asset.assetId, sourceForAsset(asset, session.modalities, session.store)] as const));
     const staleRevisionIds = command.vectors
       .filter((item) => current.get(item.assetId)?.revision !== item.sourceRevision)
       .map(({ assetId }) => assetId);
@@ -831,7 +835,7 @@ export async function executeSemanticIndexWorkerCommand(
       assetIds: [command.assetId],
     });
     if (!asset) throw new Error('Semantic asset was removed.');
-    const source = sourceForAsset(asset, [command.kind]);
+    const source = sourceForAsset(asset, [command.kind], session.store);
     if (!source || source.kind !== command.kind || source.revision !== command.sourceRevision) {
       throw new Error('Semantic asset revision changed.');
     }
@@ -844,7 +848,7 @@ export async function executeSemanticIndexWorkerCommand(
       });
       currentSession(command.libraryId, command.sessionGeneration);
       const [currentAsset] = service.getSemanticAssetSources(command.libraryId, [command.assetId]);
-      const currentSource = currentAsset && sourceForAsset(currentAsset, [command.kind]);
+      const currentSource = currentAsset && sourceForAsset(currentAsset, [command.kind], session.store);
       if (!currentSource || currentSource.revision !== command.sourceRevision) {
         throw new Error('Semantic asset revision changed during text preparation.');
       }
@@ -865,7 +869,7 @@ export async function executeSemanticIndexWorkerCommand(
       finally { if (activeVideoJobs.get(jobKey) === job) activeVideoJobs.delete(jobKey); }
       currentSession(command.libraryId, command.sessionGeneration);
       const [currentAsset] = service.getSemanticAssetSources(command.libraryId, [command.assetId]);
-      const currentSource = currentAsset && sourceForAsset(currentAsset, [command.kind]);
+      const currentSource = currentAsset && sourceForAsset(currentAsset, [command.kind], session.store);
       if (!currentSource || currentSource.revision !== command.sourceRevision) {
         throw new Error('Semantic video revision changed during preparation.');
       }
@@ -898,7 +902,7 @@ export async function executeSemanticIndexWorkerCommand(
       });
       currentSession(command.libraryId, command.sessionGeneration);
       const [currentAsset] = service.getSemanticAssetSources(command.libraryId, [command.assetId]);
-      const currentSource = currentAsset && sourceForAsset(currentAsset, [command.kind]);
+      const currentSource = currentAsset && sourceForAsset(currentAsset, [command.kind], session.store);
       if (!currentSource || currentSource.revision !== command.sourceRevision) {
         throw new Error('Semantic asset revision changed during image preparation.');
       }
@@ -930,7 +934,7 @@ export async function executeSemanticIndexWorkerCommand(
     currentSession(command.libraryId, command.sessionGeneration);
     // Recheck source identity after conversion; an asset may be deleted or replaced while FFmpeg runs.
     const [currentAsset] = service.listAssets({ libraryId: command.libraryId, recursive: true, assetIds: [command.assetId] });
-    const currentSource = currentAsset && sourceForAsset(currentAsset, [command.kind]);
+    const currentSource = currentAsset && sourceForAsset(currentAsset, [command.kind], session.store);
     if (!currentSource || currentSource.revision !== command.sourceRevision) {
       throw new Error('Semantic asset revision changed during audio preparation.');
     }
@@ -975,7 +979,7 @@ export async function executeSemanticIndexWorkerCommand(
     let similarSourceVector: Float32Array | null = null;
     if (command.type === 'semantic.index.similar') {
       const [source] = service.getSemanticAssetSources(command.libraryId, [command.sourceAssetId]);
-      const sourcePlan = source && sourceForAsset(source, session.modalities);
+      const sourcePlan = source && sourceForAsset(source, session.modalities, session.store);
       similarSourceVector = sourcePlan
         ? session.store.vectorFor(session.profileId, command.sourceAssetId, sourcePlan.revision)
         : null;
@@ -1075,7 +1079,7 @@ export async function executeSemanticIndexWorkerCommand(
       const assets = service.getSemanticAssetSources(command.libraryId,
         candidateIds.slice(start, start + TARGET_PAGE_SIZE));
       for (const asset of assets) {
-        const source = sourceForAsset(asset, session.modalities);
+        const source = sourceForAsset(asset, session.modalities, session.store);
         if (source) revisions.set(asset.assetId, source.revision);
       }
       await hooks.runWithoutAdmission(() => new Promise<void>((resolve) => setImmediate(resolve)));
@@ -1118,7 +1122,7 @@ export async function executeSemanticIndexWorkerCommand(
         if (wasCancelled()) return cancelledResult(candidateIds.length);
         const assets = service.getSemanticAssetSources(command.libraryId,
           candidateIds.slice(start, start + TARGET_PAGE_SIZE));
-        const current = new Map(assets.map((asset) => [asset.assetId, sourceForAsset(asset, session.modalities)?.revision] as const));
+        const current = new Map(assets.map((asset) => [asset.assetId, sourceForAsset(asset, session.modalities, session.store)?.revision] as const));
         if (candidateIds.slice(start, start + TARGET_PAGE_SIZE).some((assetId) => current.get(assetId) !== revisions.get(assetId))) {
           sourceSnapshotValid = false;
           break;

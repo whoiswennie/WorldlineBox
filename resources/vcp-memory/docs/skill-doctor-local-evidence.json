@@ -1,0 +1,11 @@
+{
+  "recordedAt": "2026-11-02T02:19:33.331Z",
+  "embeddingConfigured": true,
+  "localEmbedding": {
+    "enabled": true,
+    "installed": true,
+    "dimension": 768
+  },
+  "embeddingModel": "embeddinggemma-2",
+  "dimension": 768
+}

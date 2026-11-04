@@ -83,6 +83,15 @@
   --viewer-stage: var(--ui-surface-canvas, #16171a);
   /* PDF page paper stays white in both themes (document content, not chrome). */
   --viewer-document-page: #fff;
+  /* Viewer arrows contrast with the picture, not the application theme. */
+  --preview-nav-on-dark-stroke: #000;
+  --preview-nav-on-dark-fill: #fff;
+  --preview-nav-on-light-stroke: #fff;
+  --preview-nav-on-light-fill: #111;
+  --preview-nav-on-dark-disabled-stroke: #2a2a2a;
+  --preview-nav-on-dark-disabled-fill: #8d8d8d;
+  --preview-nav-on-light-disabled-stroke: #f3f3f3;
+  --preview-nav-on-light-disabled-fill: #8a8a8a;
   /* WorldlineBox-627: viewer bottom chrome (zoom bar / video transport /
      fullscreen chip) is semi-transparent rather than near-opaque —
      moderate enough to still read clearly over any media, in both themes. */
@@ -293,6 +302,12 @@ select:focus-visible,
 summary:focus-visible {
   outline: 2px solid var(--accent-ring);
   outline-offset: 1px;
+}
+
+/* A solid fill already draws the edge. Another outline repeats it. */
+.primary-button:focus,
+.primary-button:focus-visible {
+  outline: none;
 }
 
 ::selection {
@@ -1386,6 +1401,7 @@ body.platform-darwin .app-shell.left-collapsed .toolbar-workspace-cluster {
   color: var(--text);
   font-family: inherit;
   font-size: var(--menu-item-font-size);
+  font-weight: 450;
   line-height: var(--menu-item-line-height);
   text-align: left;
   white-space: nowrap;
@@ -1492,8 +1508,35 @@ body.platform-darwin .app-shell.left-collapsed .toolbar-workspace-cluster {
   letter-spacing: 0.02em;
 }
 
+.library-switcher-item > .icon {
+  display: flex;
+  width: 16px;
+  height: 16px;
+  flex: 0 0 16px;
+  align-items: center;
+  justify-content: center;
+  color: var(--secondary);
+}
+
+.library-switcher-menu:not(.is-keyboard-navigation) .library-switcher-item:hover:not(:disabled) > .icon,
+.library-switcher-item:focus-visible:not(:disabled) > .icon {
+  color: var(--text);
+}
+
+.library-switcher-item.is-danger > .icon,
+.library-switcher-item.is-danger:hover:not(:disabled) > .icon,
+.library-switcher-item.is-danger:focus-visible:not(:disabled) > .icon {
+  color: var(--menu-danger-color);
+}
+
+.library-switcher-item:disabled > .icon {
+  color: inherit;
+}
+
 .library-switcher-item-label {
   display: block;
+  flex: 1 1 auto;
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -2576,6 +2619,17 @@ body.platform-darwin .app-shell.left-collapsed .toolbar-workspace-cluster {
 .filter-tag-chip.is-selected button,
 .filter-tag-chip.is-selected button:hover {
   color: var(--accent-soft-fg);
+}
+
+.filter-tag-chip.is-excluding {
+  border-color: var(--filter-exclude-border);
+  background: var(--filter-exclude-soft);
+  color: var(--filter-exclude-fg);
+}
+
+.filter-tag-chip.is-excluding button,
+.filter-tag-chip.is-excluding button:hover {
+  color: var(--filter-exclude-fg);
 }
 
 .filter-tag-chip button {
@@ -4025,10 +4079,10 @@ input[type="range"] {
 }
 
 .primary-button {
-  border: 1px solid color-mix(in srgb, var(--accent) 92%, white);
+  border: none;
   background: var(--accent-dark);
   color: white;
-  box-shadow: inset 0 1px rgb(255 255 255 / 12%);
+  box-shadow: none;
 }
 
 .primary-button:hover {
@@ -5571,7 +5625,7 @@ body.worldlinebox-modal-open .app-shell {
    own native-controls hide timer, which caused the prior VIEW-009 failure. */
 .preview-video-controls {
   position: absolute;
-  z-index: 2;
+  z-index: 4;
   left: 14px;
   right: 14px;
   bottom: 14px;
@@ -6236,11 +6290,17 @@ body.worldlinebox-modal-open .app-shell {
   opacity: 0;
   pointer-events: none;
 }
-.workspace-viewer.is-nav-proximity.is-nav-near-prev:not(.is-chrome-idle) .preview-nav.is-prev.preview-chrome-fade,
-.workspace-viewer.is-nav-proximity.is-nav-near-next:not(.is-chrome-idle) .preview-nav.is-next.preview-chrome-fade,
-.workspace-viewer.is-nav-proximity .preview-nav.preview-chrome-fade:focus-visible {
+.workspace-viewer.is-nav-proximity.is-nav-near-prev:not(.is-chrome-idle) .preview-nav.is-prev.preview-chrome-fade:not(:disabled),
+.workspace-viewer.is-nav-proximity.is-nav-near-next:not(.is-chrome-idle) .preview-nav.is-next.preview-chrome-fade:not(:disabled),
+.workspace-viewer.is-nav-proximity .preview-nav.preview-chrome-fade:focus-visible:not(:disabled) {
   opacity: 0.55;
   pointer-events: auto;
+}
+.workspace-viewer.is-nav-proximity.is-nav-near-prev:not(.is-chrome-idle) .preview-nav.is-prev.preview-chrome-fade:disabled,
+.workspace-viewer.is-nav-proximity.is-nav-near-next:not(.is-chrome-idle) .preview-nav.is-next.preview-chrome-fade:disabled,
+.workspace-viewer.is-nav-proximity .preview-nav.preview-chrome-fade:focus-visible:disabled {
+  opacity: 0.55;
+  pointer-events: none;
 }
 .workspace-viewer.is-nav-proximity .preview-nav.preview-chrome-fade:hover:not(:disabled),
 .workspace-viewer.is-nav-proximity .preview-nav.preview-chrome-fade:focus-visible:not(:disabled) {
@@ -6273,7 +6333,7 @@ body.worldlinebox-modal-open .app-shell {
 }
 .preview-zoom-controls {
   position: absolute;
-  z-index: 2;
+  z-index: 4;
   bottom: 12px;
   left: 50%;
   display: flex;
@@ -6628,20 +6688,57 @@ body.worldlinebox-modal-open .app-shell {
 .preview-nav {
   position: absolute;
   z-index: 2;
-  top: 50%;
-  display: grid;
-  width: 52px;
-  height: 64px;
-  padding: 0;
-  place-items: center;
+  top: 0;
+  bottom: 0;
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  width: 22%;
+  max-width: 320px;
+  height: auto;
+  padding: 0 12px;
   border: 0;
-  border-radius: calc(8px * var(--ui-radius-scale, 1));
+  border-radius: 0;
   background: transparent;
   box-shadow: none;
   color: var(--text);
   cursor: pointer;
   opacity: 0.55;
-  transform: translateY(-50%);
+}
+.preview-nav-glyph {
+  display: grid;
+  place-items: center;
+}
+.preview-nav-glyph .icon {
+  grid-area: 1 / 1;
+}
+.preview-nav.is-on-dark .preview-nav-glyph .icon:first-child {
+  color: var(--preview-nav-on-dark-stroke);
+  stroke-width: 3.5;
+}
+.preview-nav.is-on-dark .preview-nav-glyph .icon:last-child {
+  color: var(--preview-nav-on-dark-fill);
+  stroke-width: 2.85;
+}
+.preview-nav.is-on-light .preview-nav-glyph .icon:first-child {
+  color: var(--preview-nav-on-light-stroke);
+  stroke-width: 3.5;
+}
+.preview-nav.is-on-light .preview-nav-glyph .icon:last-child {
+  color: var(--preview-nav-on-light-fill);
+  stroke-width: 2.85;
+}
+.preview-nav.is-on-dark:disabled .preview-nav-glyph .icon:first-child {
+  color: var(--preview-nav-on-dark-disabled-stroke);
+}
+.preview-nav.is-on-dark:disabled .preview-nav-glyph .icon:last-child {
+  color: var(--preview-nav-on-dark-disabled-fill);
+}
+.preview-nav.is-on-light:disabled .preview-nav-glyph .icon:first-child {
+  color: var(--preview-nav-on-light-disabled-stroke);
+}
+.preview-nav.is-on-light:disabled .preview-nav-glyph .icon:last-child {
+  color: var(--preview-nav-on-light-disabled-fill);
 }
 .preview-exr-plane-selector {
   position: absolute;
@@ -6672,12 +6769,10 @@ body.worldlinebox-modal-open .app-shell {
   box-shadow: 0 0 0 2px var(--accent);
 }
 .preview-nav.is-on-dark {
-  color: rgb(255 255 255 / 88%);
-  filter: drop-shadow(0 1px 2px rgb(0 0 0 / 55%));
+  color: var(--preview-nav-on-dark-fill);
 }
 .preview-nav.is-on-light {
-  color: rgb(20 20 20 / 82%);
-  filter: drop-shadow(0 1px 1px rgb(255 255 255 / 55%));
+  color: var(--preview-nav-on-light-fill);
 }
 .preview-nav:hover:not(:disabled),
 .preview-nav:focus-visible:not(:disabled) {
@@ -6685,19 +6780,19 @@ body.worldlinebox-modal-open .app-shell {
   color: inherit;
   opacity: 1;
   outline: none;
-}
-.preview-nav:focus-visible:not(:disabled) {
-  box-shadow: 0 0 0 2px var(--accent);
+  box-shadow: none;
 }
 .preview-nav:disabled {
-  opacity: 0.2;
+  opacity: 0.45;
   cursor: default;
 }
 .preview-nav.is-prev {
-  left: 4px;
+  left: 0;
+  justify-content: flex-start;
 }
 .preview-nav.is-next {
-  right: 4px;
+  right: 0;
+  justify-content: flex-end;
 }
 .preview-fullscreen-chip {
   position: absolute;
@@ -9963,6 +10058,19 @@ select.ai-config-input.ai-config-languages {
   min-width: 112px;
 }
 
+.video-seek-jump-amount {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--secondary);
+  font-size: calc(12px * var(--ui-font-scale));
+}
+
+.video-seek-jump-amount .text-field {
+  width: 96px;
+  flex: 0 0 auto;
+}
+
 .settings-error-message,
 .settings-success-message {
   margin: 12px 0 0;
@@ -12372,8 +12480,8 @@ select.ai-config-input.ai-config-languages {
 }
 
 
-/* Floating badges on the preview use a frosted chip so they stay legible
-   over any media (Eagle-style format/duration chips).
+/* Solid theme chips keep labels legible without a per-card backdrop blur.
+   Dense video grids otherwise spend most scroll frames rebuilding blur layers.
    WorldlineBox-i07: duration bottom-left; extension bottom-right (non-images). */
 .asset-extension {
   position: absolute;
@@ -12381,8 +12489,7 @@ select.ai-config-input.ai-config-languages {
   right: 6px;
   padding: 2px 6px;
   border-radius: calc(5px * var(--ui-radius-scale, 1));
-  background: rgb(15 17 18 / 62%);
-  backdrop-filter: blur(6px);
+  background: var(--raised-2);
   color: var(--secondary);
   font-family: "IBM Plex Mono", monospace;
   font-size: calc(9px * var(--ui-font-scale));
@@ -12398,8 +12505,7 @@ select.ai-config-input.ai-config-languages {
   left: 6px;
   padding: 2px 6px;
   border-radius: calc(5px * var(--ui-radius-scale, 1));
-  background: rgb(15 17 18 / 68%);
-  backdrop-filter: blur(6px);
+  background: var(--raised-2);
   color: var(--text);
   font-family: "IBM Plex Mono", monospace;
   font-size: calc(9px * var(--ui-font-scale));
@@ -12477,8 +12583,7 @@ select.ai-config-input.ai-config-languages {
   right: 6px;
   padding: 2px 6px;
   border-radius: calc(5px * var(--ui-radius-scale, 1));
-  background: rgb(15 17 18 / 68%);
-  backdrop-filter: blur(6px);
+  background: var(--raised-2);
   color: var(--text);
   font-family: "IBM Plex Mono", monospace;
   font-size: calc(9px * var(--ui-font-scale));
@@ -12579,8 +12684,7 @@ select.ai-config-input.ai-config-languages {
   max-width: calc(100% - 28px);
   padding: 2px 6px;
   border-radius: calc(5px * var(--ui-radius-scale, 1));
-  background: rgb(15 17 18 / 62%);
-  backdrop-filter: blur(6px);
+  background: var(--raised-2);
   color: var(--secondary);
   font-size: calc(9px * var(--ui-font-scale));
   line-height: 1.45;
@@ -12590,20 +12694,15 @@ select.ai-config-input.ai-config-languages {
   pointer-events: none;
 }
 
-/* Light theme: invert chip tint (dark frost + --text is unreadable) but keep
-   the same translucent frosted blur as dark — not opaque white chips. */
+/* Light surfaces need a subtle edge against bright covers. */
 [data-theme="light"] .asset-extension,
 [data-theme="light"] .asset-source-badge {
-  background: rgb(255 255 255 / 58%);
-  backdrop-filter: blur(6px);
-  box-shadow: 0 0 0 1px rgb(0 0 0 / 12%);
+  box-shadow: 0 0 0 1px var(--divider-soft);
   color: var(--secondary);
 }
 [data-theme="light"] .asset-duration-badge,
 [data-theme="light"] .asset-type-badge {
-  background: rgb(255 255 255 / 64%);
-  backdrop-filter: blur(6px);
-  box-shadow: 0 0 0 1px rgb(0 0 0 / 12%);
+  box-shadow: 0 0 0 1px var(--divider-soft);
   color: var(--text);
 }
 
@@ -14379,11 +14478,15 @@ select.ai-config-input.ai-config-languages {
 :root[data-platform="windows"] .app-shell[data-shell-layout="islands"] :is(
     .nav-section-heading,
     .nav-count,
-    .library-switcher-section-label,
-    .library-switcher-item
+    .library-switcher-section-label
   ) {
   font-size: calc(12px * var(--ui-font-scale));
   color: var(--secondary);
+}
+
+:root[data-platform="windows"] .app-shell[data-shell-layout="islands"] .library-switcher-item:not(.is-danger):not(:disabled) {
+  font-size: calc(12px * var(--ui-font-scale));
+  color: var(--text);
 }
 
 :root[data-platform="windows"] :where(
@@ -15843,7 +15946,7 @@ select.ai-config-input.ai-config-languages {
 }
 
 .primary-button {
-  border-color: color-mix(in srgb, var(--accent) 88%, white);
+  border: none;
   background: var(--accent);
   color: var(--ui-content-on-accent);
   box-shadow: none;
@@ -15851,7 +15954,6 @@ select.ai-config-input.ai-config-languages {
 
 .primary-button:hover:not(:disabled) {
   background: var(--ui-action-accent-hover, color-mix(in srgb, var(--accent) 86%, white));
-  border-color: color-mix(in srgb, var(--accent) 80%, white);
 }
 
 .main-menu-section.is-active,
@@ -16060,24 +16162,35 @@ html.worldlinebox-window-square .window-edge-resize-layer.is-disabled {
 }
 
 .preview-nav {
-  width: 44px;
-  height: 56px;
-  border-radius: var(--ui-radius-surface);
+  top: 0;
+  bottom: 0;
+  display: flex;
+  align-items: center;
+  width: 22%;
+  max-width: 320px;
+  height: auto;
+  padding: 0 12px;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
   opacity: 0.45;
 }
 
 .preview-nav:hover:not(:disabled),
 .preview-nav:focus-visible:not(:disabled) {
-  background: color-mix(in srgb, var(--raised) 55%, transparent);
+  background: transparent;
+  box-shadow: none;
   opacity: 1;
 }
 
 .preview-nav.is-prev {
-  left: 8px;
+  left: 0;
+  justify-content: flex-start;
 }
 
 .preview-nav.is-next {
-  right: 8px;
+  right: 0;
+  justify-content: flex-end;
 }
 
 .model-viewer-toolbar {
@@ -17412,6 +17525,7 @@ html.worldlinebox-window-square .window-edge-resize-layer.is-disabled {
   background: var(--ui-content-primary);
   color: var(--ui-content-inverse);
   border: none;
+  outline: none;
   border-radius: 9999px;
   box-shadow: none;
   min-height: 32px;
@@ -18283,6 +18397,10 @@ html.worldlinebox-window-square {
 .app-shell[data-shell-layout="islands"] .filter-tag-chip.is-selected {
   --tag-fill-solid: color-mix(in oklab, var(--accent) 11%, var(--tag-base));
 }
+.app-shell[data-shell-layout="islands"] .filter-tag-chip.is-excluding {
+  --tag-fill-solid: color-mix(in oklab, var(--filter-exclude) 16%, var(--tag-base));
+  color: var(--filter-exclude-fg);
+}
 :root[data-theme="dark"] .app-shell[data-shell-layout="islands"] .tag-chip,
 :root[data-theme="dark"] .app-shell[data-shell-layout="islands"] .filter-tag-chip {
   --tag-base: var(--island-surface-soft);
@@ -18297,6 +18415,10 @@ html.worldlinebox-window-square {
 }
 :root[data-theme="dark"] .app-shell[data-shell-layout="islands"] .filter-tag-chip.is-selected {
   --tag-fill-solid: color-mix(in oklab, var(--accent) 16%, var(--tag-base));
+}
+:root[data-theme="dark"] .app-shell[data-shell-layout="islands"] .filter-tag-chip.is-excluding {
+  --tag-fill-solid: color-mix(in oklab, var(--filter-exclude) 22%, var(--tag-base));
+  color: var(--filter-exclude-fg);
 }
 .app-shell[data-shell-layout="islands"] .tag-chip::before,
 .app-shell[data-shell-layout="islands"] .filter-tag-chip::before {
@@ -19037,22 +19159,21 @@ body.platform-darwin .app-shell[data-shell-layout="islands"] .toolbar-nav-cluste
 .tp-stars i.is-on { background: var(--ui-action-accent); }
 .tp-description { padding: 6px 7px; border-radius: calc(6px * var(--ui-radius-scale, 1)); background: var(--tp-field, color-mix(in oklab, var(--ui-content-primary) 4%, transparent)); color: var(--ui-content-secondary); font-size: 10px; line-height: 1.35; }
 
-/* a93: Settings backdrop fades out only while an appearance control is being
-   adjusted (pointer/drag/input): ~360ms out, back in after ~1200ms idle (a94: doubled)
-   (timer in use-appearance-adjusting.ts) with a 1200ms ease. blur(0px)
-   instead of none keeps backdrop-filter interpolable. */
+/* Appearance previews can fade the scrim, but must not animate a full-window
+   blur radius: that repeatedly resamples the application behind the settings. */
 .dialog-backdrop.app-settings-backdrop {
-  transition:
-    background-color 1200ms ease,
-    -webkit-backdrop-filter 1200ms ease,
-    backdrop-filter 1200ms ease;
+  transition: background-color 160ms ease;
 }
 
 .dialog-backdrop.app-settings-backdrop.is-adjusting:is(*, #appearance-adjusting) {
   background-color: transparent;
   -webkit-backdrop-filter: blur(0px);
   backdrop-filter: blur(0px);
-  transition-duration: 360ms;
+  transition-duration: 160ms;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .dialog-backdrop.app-settings-backdrop { transition: none; }
 }
 
 /* ── a94: wallpaper veil uses the window backdrop colour in islands ────────
@@ -19793,4 +19914,17 @@ body.platform-darwin .app-shell[data-shell-layout="islands"] .toolbar-nav-cluste
   border-color: var(--danger);
   background: var(--danger-muted);
   color: var(--danger);
+}
+/* Hardware effects are selected by the trusted main-window GPU policy.
+ * Keep translucent scrims, but avoid software backdrop resampling across dialogs. */
+html[data-ui-effects="reduced"] *,
+html[data-ui-effects="reduced"] *::before,
+html[data-ui-effects="reduced"] *::after {
+  -webkit-backdrop-filter:none!important;
+  backdrop-filter:none!important;
+}
+html[data-ui-effects="reduced"] .bot-workspace.is-modal-open>:is(.bot-sidebar,.bot-main) {
+  filter:none;
+  will-change:auto;
+  transition:none;
 }

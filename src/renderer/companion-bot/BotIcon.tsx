@@ -1,0 +1,25 @@
+const paths = {
+  plus: 'M12 5v14M5 12h14',
+  search: 'M21 21l-4.4-4.4M19 10.5a8.5 8.5 0 1 1-17 0 8.5 8.5 0 0 1 17 0',
+  users: 'M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2M16 3a4 4 0 0 1 0 8M22 21v-2a4 4 0 0 0-3-3.87M13 7a4 4 0 1 1-8 0 4 4 0 0 1 8 0',
+  world: 'M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0M3 12h18M12 3a17 17 0 0 1 0 18 17 17 0 0 1 0-18',
+  profile: 'M20 21v-2a6 6 0 0 0-6-6h-4a6 6 0 0 0-6 6v2M16 6a4 4 0 1 1-8 0 4 4 0 0 1 8 0',
+  memory: 'M9 3H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V5a2 2 0 0 0-2-2h-3M9 3v5l3-2 3 2V3M8 13h8M8 17h5',
+  tasks: 'M8 5H5a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V7a2 2 0 0 0-2-2h-3M8 3h8v4H8zM8 14l3 3 5-6',
+  history: 'M3 11a9 9 0 1 1 2.4 7M3 4v7h7M12 7v5l3 2',
+  clock: 'M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0M12 7v5l3 2',
+  smile: 'M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0M8 14s1.5 3 4 3 4-3 4-3M8.5 8.5h.01M15.5 8.5h.01',
+  arrow: 'M12 19V5M5 12l7-7 7 7',
+  'chevron-right': 'M9 5l7 7-7 7',
+  settings: 'M4 7h16M4 17h16M8 4v6M16 14v6',
+  download: 'M12 3v12M7 10l5 5 5-5M4 16v4h16v-4',
+  external: 'M14 3h7v7M21 3l-9 9M10 4H4v16h16v-6',
+  file: 'M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8zM14 2v6h6M8 13h8M8 17h5',
+  sticker: 'M21 12V6a3 3 0 0 0-3-3H6a3 3 0 0 0-3 3v12a3 3 0 0 0 3 3h6M21 12h-6a3 3 0 0 0-3 3v6M21 12l-9 9M8 8h.01M15 8h.01M8 12s1 2 3 2',
+  'panel-collapse': 'M4 3h16a1 1 0 0 1 1 1v16a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1M14 3v18M7 9l3 3-3 3',
+  'panel-expand': 'M4 3h16a1 1 0 0 1 1 1v16a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1M14 3v18M10 9l-3 3 3 3',
+  notice: 'M3 10v4h4l11 5V5L7 10H3M7 14l2 6h3M21 9v6',
+} as const;
+export function BotIcon({ name }: { name: keyof typeof paths }) {
+  return <svg className="bot-icon" aria-hidden="true" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round"><path d={paths[name]} /></svg>;
+}

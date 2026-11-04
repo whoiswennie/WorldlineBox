@@ -1,0 +1,12 @@
+{
+  "recordedAt": "2026-11-02T01:49:41.815Z",
+  "result": {
+    "ok": true,
+    "result": {
+      "status": "success",
+      "result": "[回忆片段1]:\n用户: PostgreSQL PAST_MARKER"
+    }
+  },
+  "containsPast": true,
+  "excludesCurrent": true
+}

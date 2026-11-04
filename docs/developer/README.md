@@ -4,7 +4,7 @@
 
 开发者文档分两部分：
 
-伙伴重构的后续验证遵循用户于 2026-10-29 调整的范围：不再运行两小时耐久、十万事件实际灌入、多轮真实模型成长实验，也不再把这些长测作为继续开发或完成的前置条件。优先使用 `npm run test:companion:quick` 及受影响模块的短时定向检查；不要自动启动整套广集、重复打包或真实模型实验。历史结果保留，未完成的长测不能改称通过。
+伙伴模块已切换到新的 Super Agent 入口。定向测试、真实 DSH/VCP 协议、联网模型质量和打包验收分别记录；未完成的检查不能改称通过。当前运行边界见 [Super Agent 运行说明](superagent-bot-runtime-guide.md)。
 
 ## 第一部分：软件开发
 
@@ -16,22 +16,13 @@
 - [应用侧边栏](application-navigation.md)——功能模块登记、状态保留与设置入口
 - [Serpent 0.3.2 增量升级](serpent-032-upgrade/README.md)——来源清单、自有功能适配、配置迁移和验收
 - [Serpent 0.3.3 资产管理升级](serpent-033-upgrade/README.md)——模型双面与透明贴图、浏览刷新、路径快捷键及自有功能边界
-- [伙伴消息系统](companions.md)——独立 SQLite owner、角色模型连接、记忆与 DSH 行动回流
-- [伙伴 Agent 执行流程](companion-agent-flow.md)——角色上下文编译、普通聊天长期接续、原文搜索与宿主能力
-- [伙伴认知与自主成长重构标准](companion-cognition-refactor-standard-2026-10-28.md)——新协议的内容准入、人格演化、只读上下文与发布门；[实施记录](companion-cognition-implementation-2026-10-28.md)和[逐项证据审计](companion-cognition-acceptance-evidence-audit-2026-10-28.md)区分已验证能力与待完成门
-- [新伙伴系统运行与管理说明](companion-cognition-runtime-guide.md)——当前目录职责、日记／反思／人格发布触发、实际上下文、故障搁置与恢复
-- [新伙伴系统源码交付核对](companion-cognition-delivery-2026-10-29.md)——R01～R15逐项实现、最后短检查、源码交付和安装包边界
-- [伙伴界面反馈修复](companion-ui-feedback-fixes-2026-10-29.md)——集中分组管理、同步提示生命周期、Markdown／Mermaid阅读器、记忆页加载与刷新
-- [伙伴统一日程与自主行为重构标准](companion-agenda-autonomy-standard-2026-10-29.md)——唯一事件归属、主脑自我唤醒、持续授权与并发；[实施记录](companion-agenda-implementation-2026-10-29.md)说明实际接入、协商人格、旧入口退役、验证凭证及未验证边界
-- [伙伴主脑与后台 DSH](companion-background-agents.md)——后台执行、双向邮箱、可唤醒等待、并发隔离及验收
-- [伙伴流程验收记录](companion-upgrade-validation-2026-10-27.md)——引导、中断恢复、并发、分页与全量回归的实际结果及限制
-- [伙伴问题修正验收](companion-followup-validation-2026-10-27.md)——DSH 同名分组、运行中引导竞态、大附件与记忆元数据边界
-- [可成长人设与主脑扮演](companion-character-performance.md)——标准字段、15位内置伙伴、实时资料与来源核验的成长
-- [伙伴核心交互验收](companion-core-acceptance-2026-10-26.md)——回忆分段测速、单一注意力队列、后台浏览器、媒体与完整重置
-- [VCP 记忆实施说明](companion-memory-implementation.md)——统一资产库、自然文本日记、原版检索、持续生活及内置多模态向量
-- [伙伴系统验收](companion-system-acceptance.md)——三伙伴、持续生活、授权学习、消息气泡与安装包的实际验证边界
-- [VCP 记忆内容审计](vcp-memory-content-audit.md)——原版源码信息流、真实模型内容测试、修复和额外调用成本
-- [VCP 记忆完整替换调研](research-vcp-memory-replacement.md)——以 VCP 替换无 Embedding 占位方案的源码清单、宿主边界及验证
+- [Serpent 0.3.4 资产管理升级](serpent-034-upgrade/README.md)——链接文本写回、查看器跳转、筛选计数、进程恢复与语义索引兼容验证
+- [Super Agent 伙伴运行说明](superagent-bot-runtime-guide.md)——真实组件边界、lane/epoch、原生 DSH loop、VCP、任务、世界与验证限制
+- [伙伴使用说明](../user-guide/companions.md)——当前聊天、任务、记忆与世界 UI
+- [重构调研报告](superagent-bot-research-2026-11-02.md)——已退役链路的证据、原因分析与设计依据
+- [重构实施方案](superagent-bot-implementation-plan-2026-11-02.md)——分阶段设计与验收要求；[开发记录](superagent-bot-development-log.md)记录实际进展
+- [应用内物理世界](companion-world.md)——新窄 domain、位置图和 Three.js 的实际边界
+- [世界美术资源](companion-world-art.md)及[帧校准记录](companion-world-art-calibration.md)——保留美术资源的格式与来源，不代表旧生活模拟仍在运行
 - [DSH 启动器](dsh-launcher.md)——官方版本管理、原生 Web Host、用户与伙伴共享生态、快照与备份
 - [DSH 整合包格式](dsh-packs-format.md)——依赖封存、来源锁与导入校验
 - [测试](testing.md)——测试体系与运行方式

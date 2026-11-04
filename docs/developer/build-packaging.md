@@ -29,11 +29,11 @@ Windows Forge 构建会将已锁定工具导出至 `.tools/portable-release/<UUI
 
 ## 内置记忆与向量资源
 
-`03-Build-Installer.bat` 同时封装 VCP 运行闭包和唯一内置的 EmbeddingGemma 2 量化模型。`vendor-vcp-memory.mjs` 只从固定提交恢复缺失的原版文件，已有文件必须通过 SHA-256 校验；`stage-vcp-memory-runtime.mjs` 封装原版插件所需依赖。`stage-bundled-embedding.mjs --acquire` 在构建机获取锁定的 GGUF、匹配 projector 和 CPU/Vulkan 组件，所有文件验证后才进入包。已有合格资源时不再下载。
+`03-Build-Installer.bat` 封装独立 VCP Memory 模块与唯一内置的 EmbeddingGemma 2 量化模型。`resources/vcp-memory` 是当前记忆源模块；`stage-bot-memory.mjs` 核验模块清单，使用 Node 24 独立安装生产依赖并检查原生 ABI，生成 `.tools/bot-memory-release/vcp-memory`。它不复用 Electron 重编译的 SQLite 模块，也不另带一套向量权重。`stage-bundled-embedding.mjs --acquire` 获取锁定 GGUF、projector 和 CPU/Vulkan 组件，校验后才进入包；已有合格资源时不再下载。
 
 量化权重约 696.65 MiB；当前 Windows x64 模型及两套运行组件共 105 文件、875,022,906 字节。模型直接从安装资源读取，不向用户配置目录复制大权重，最终用户离线即可运行。资产的文本、图片、音频、视频和伙伴记忆统一使用这套模型，设置不提供外部向量 API 或模型切换。其他平台尚未提供这套 Windows 组件，必须补齐相应平台的固定资源与实机验证后发布。
 
-`verify:package` 校验复制进最终包的模型与运行组件，并检查 VCP 原版内核和宿主入口。伙伴消息、世界和记忆的存储位置由用户选择的资产库决定，不能以安装包目录或用户 C 盘配置目录代替。设计与实测范围见 [VCP 记忆实施说明](companion-memory-implementation.md)。
+`verify:package` 检查最终包的内置模型、独立 VCP 模块、依赖完整性与运行组件，并拒绝旧 `vcp-memory-host`。伙伴的新数据位于应用用户目录的 `companion-bot-v2`，与资产库数据库分开；模块代码和大模型权重从安装资源读取，不把用户数据写入安装目录。运行边界和验证命令见 [Super Agent 运行说明](superagent-bot-runtime-guide.md)。
 
 ## Forge / Vite 配置验证
 

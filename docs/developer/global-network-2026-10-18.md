@@ -1,5 +1,7 @@
 > 历史实现记录：2026-10-25 起网络配置位于 `userData/network`，DSH 原生实例位于 `userData/dsh`；以下旧路径仅描述当时实现。
 
+> 2026-11-02 伙伴重构后，本文的旧伙伴 structured provider 已删除。当前 `global-network-coverage` 仅覆盖资产 Worker AI、主进程语义 HTTP 和固定 IP 的 PAC 下载，共 9 次本地请求；原 13 次收据是旧版本历史结果，不能作为新 DSH 主脑的代理验收。新主脑的原生协议、工具和恢复测试也不等于已验证代理热切换，后者仍需独立补验。
+
 # 全局网络入口与实际请求范围（2026-10-18）
 
 本轮是在已有 Serpent 0.3.0 同步及浏览器修复基础上的增量修改，保留 WorldlineBox 名称、资源库、自定义功能与原网络配置文件。
@@ -24,7 +26,7 @@ Node 的 Main、Library Worker、标准及可信插件 UtilityProcess 和脚本 
 | --- | --- | --- |
 | 浏览器、DSH 工作台、默认 Chromium 请求 | 统一 Session 配置 | 原生代理回归、成品开关及播放/采集回归 |
 | 资产 AI | 真实 LibraryWorkerClient、生产 Worker AI adapter | 同一 Worker 中 A→直连→B，随后系统 PAC 域名分流 |
-| 伙伴模型 | 服务实际注入的默认 Session `net.fetch` | 生产 structured provider 的真实请求 |
+| 旧伙伴模型（已退役） | 当时注入默认 Session 的 `net.fetch` | 仅为历史 structured provider 收据；不覆盖新 DSH 主脑 |
 | 语义 HTTP | Main 的生产 embedding 请求 | A→直连→B、系统 PAC 域名分流 |
 | 资产 URL 下载 | 保留目标 IP 固定的 CONNECT 通道 | HTTP/HTTPS、双层 TLS、取消、认证隔离、原域名 PAC 判断 |
 | 插件与脚本 UtilityProcess | 显式初始环境、私有实时消息 | 绑定/退出竞态单测及原 CLI/QuickJS 回归 |

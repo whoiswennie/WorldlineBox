@@ -34,6 +34,8 @@ flowchart TB
 
 另有一个隐藏 offscreen 窗口（Main 持有），用于 3D 模型缩略图离屏渲染。
 
+以上不变量针对资产库。新伙伴模块另由 Main 中的 `BotStore` 持有小型 `bot.sqlite`，不打开资产库数据库；DSH 原生 Host 与独立 VCP Node Worker 分别负责模型循环和记忆运行时。其 Inbox/Outbox、受众 lane/epoch、任务与数据目录见 [Super Agent 运行说明](superagent-bot-runtime-guide.md)。
+
 ## 技术栈
 
 Electron + TypeScript + SQLite（better-sqlite3，FTS5）+ Vite + React。构建用 electron-forge + Vite 多入口（main / preload / offscreen / worker / 脚本运行时）。

@@ -16,7 +16,7 @@ export class PluginControls {
   async setPluginEnabled(instance: DshInstance, name: string, enabled: boolean, signal?: AbortSignal): Promise<{ application: string; error?: unknown }> {
     if (name === '@worldlinebox/dsh-bridge') throw new Error('The native Host bridge is required for partner sessions.');
     const client = await this.host(instance.id);
-    const result = await client.request<{ application: string; error?: unknown }>('/plugins', { action: 'toggle', spec: name, enabled }, signal);
+    const result = await client.request<{ application: string; error?: unknown }>('/plugins', { action: 'toggle', spec: name, enabled }, signal, 120000);
     if (result.application === 'failed' || result.application === 'cancelled') throw new Error(JSON.stringify(result.error ?? result));
     return result;
   }

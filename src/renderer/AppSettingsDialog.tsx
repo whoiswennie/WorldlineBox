@@ -34,7 +34,6 @@ import type { WorldlineBoxMcpSettingsApi } from "../shared/mcp";
 import { DialogShell } from "./ui/patterns";
 import { MusicSettingsSlot } from './music/MusicProvider';
 import { CaptureToolsSettingsPage } from './capture-tools/CaptureToolsSettingsPage';
-import { UserProfileSettingsPage } from './UserProfileSettingsPage';
 
 export interface AppSettingsDialogProps {
   open: boolean;
@@ -264,7 +263,6 @@ export function AppSettingsDialog({
                 refreshKey={pluginSettingsRefreshToken}
               />
             ) : null}
-            {!showingPluginSettings && activeCategory === "profile" ? <UserProfileSettingsPage /> : null}
             {!showingPluginSettings && activeCategory === "general" ? (
               <GeneralSettingsPage
                 onOpenAppLog={onOpenAppLog}

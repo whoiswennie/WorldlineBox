@@ -348,4 +348,21 @@ describe('createToastNotifications', () => {
     expect(listener.mock.calls.length).toBe(callsAfterUnsubscribe);
     toast.dispose();
   });
+
+  it('clears transient module notices and their timers without dismissing fatal or disabling new notices', () => {
+    const toast = createToastNotifications();
+    toast.setFatal('需要明确处理的阻断。');
+    toast.setNotice('旧同步事件。');
+    toast.setError('旧普通错误。');
+    toast.clearToasts();
+    expect(toast.getSnapshot().renderedStack).toHaveLength(0);
+    expect(toast.getSnapshot().fatal).toBe('需要明确处理的阻断。');
+    const listener = vi.fn(); toast.subscribe(listener);
+    toast.setNotice('新的同步事件。');
+    expect(listener).toHaveBeenCalledTimes(1);
+    vi.advanceTimersByTime(TOAST_NOTICE_DURATION_MS + EXIT_FALLBACK_MS);
+    expect(toast.getSnapshot().renderedStack).toHaveLength(0);
+    expect(toast.getSnapshot().fatal).toBe('需要明确处理的阻断。');
+    toast.dispose();
+  });
 });

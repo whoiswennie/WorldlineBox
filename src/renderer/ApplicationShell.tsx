@@ -63,7 +63,7 @@ export function ApplicationShell({
 
   return (
     <div className="application-shell">
-      <aside aria-label={t("appNavigation.label")} className="application-navigation">
+      <aside aria-label={t("appNavigation.label")} className="application-navigation" data-hover-tip-placement="right">
         <div className="application-navigation-brand">
           <img alt="WorldlineBox" draggable={false} src={startupLogo} />
         </div>

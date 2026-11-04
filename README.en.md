@@ -8,31 +8,48 @@
 [简体中文](README.md) · [Repository](https://github.com/whoiswennie/WorldlineBox)
 </div>
 
-WorldlineBox is intended to keep persistent characters, companions, interactive stories, and virtual worlds together. It will own character identity, memory, relationships and behavior, maintain world state and branching worldlines, and organize the images, voices, music, models and documents those worlds use. Adapters will connect it to DSH (DeepSeek Harness), games, world runners and other ecosystem tools.
+WorldlineBox is a local-first desktop app combining companions, persistent world state, asset management and DSH execution environments. The companion module is being rebuilt around a Super Agent: users stay in their chat while the coordinating brain recalls memories, delegates work and receives durable results.
 
-The character-facing brain can maintain its identity during a conversation while delegating concrete work to an execution backend, then receive progress and results and respond in character. Backend updates should not require rebuilding the character or world.
+## Current implementation
 
-## Current status: 0.1.0 foundation
+| Module | Available surface |
+| --- | --- |
+| Companions | Custom personas, direct/group/world conversations, streaming replies, cancellation, memory tools, independent tasks and a physical world view. |
+| Launcher | Exact DSH artifacts, instances, plugins, skills, terminals, packs, snapshots and backups. |
+| Assets | Local libraries, importing, tags, collections, search, workspaces, media/3D previews, AI analysis, WebDAV, plugins, scripts and MCP. |
+| Browser | Tabs, bookmarks, downloads and built-in asset capture; external browsers can use the extension. |
 
-The current code provides an Electron / React / TypeScript desktop app with local asset libraries, import and organization, tagging, collections, search, workspaces, media and 3D previews, asset AI analysis, WebDAV asset synchronization, browser extension, plugins, scripts and MCP integration. Windows development and installer scripts are included.
+The launcher opens by default. Companion data no longer requires selecting an asset library. The asset manager retains its Serpent foundation and incremental integrations; see the [0.3.2](docs/developer/serpent-032-upgrade/README.md) and [0.3.3](docs/developer/serpent-033-upgrade/README.md) records. Asset features, global capture tools and user notifications remain separate from the companion refactor.
 
-The asset manager incrementally integrates [Serpent 0.3.2](https://github.com/dolag233/Serpent): named AI service profiles for analysis and AI search, faster large-library imports and image-sequence discovery, memory-aware media concurrency, native drag fixes and Windows MCP credential recovery. Extension collection saves, batch cancellation, configurable shortcuts and sidebar ordering retain the earlier integration. WorldlineBox keeps its identity, independent version, bundled embedding model, semantic search and custom modules. See the [0.3.0 validation record](docs/developer/asset-manager-030-upgrade.md), [0.3.1 integration record](docs/developer/serpent-031-upgrade/README.md) and [0.3.2 integration record](docs/developer/serpent-032-upgrade/README.md) for revisions, checks and limits.
+### Continuous companion conversations
 
-The built-in browser includes asset capture without installing an extension. Use **Save to asset library** to choose a library/folder, capture a local image, set save preferences, and follow or cancel jobs. Web images and videos support the original context-menu folder tree and drag save menu. Remote media is limited to 500 MiB and local images to 32 MiB; see the [browser guide](docs/user-guide/browser.en.md#save-to-an-asset-library) for supported media. External Chrome/Edge browsers can still use the separately installed extension.
+The initial contact is 小伴. Create a companion and edit its name and persona, then use direct or group chat. History is paginated and replies stream into the existing conversation. Failed sends retain their drafts. The UI does not require users to create or manage native DSH Sessions.
 
-Windows x64 now includes a [DSH launcher](docs/user-guide/dsh-launcher.md) with exact runtime artifacts, private plugin instances, process controls, packs, snapshots and complete offline backups. Versions and packs share sessions, the default workspace, account authorization and model/API settings. Plugins, skills and execution configuration remain private. The launcher is the first application module and opens by default.
+WorldlineBox owns durable Inbox/Outbox records, trusted sources and audiences, ordered per-audience lanes, cancellation and task state. DSH owns the native model/tool loop and compaction. Different lanes can run concurrently; direct, group and world contexts are separated. Independent DSH workers return task receipts to their source conversation. User direct-chat tasks can use full DSH tools; group, peer and world sources remain scoped. Submitted, running and completed are different states.
 
-The [Companions and Messages module](docs/user-guide/companions.md) sits between Launcher and Assets. It provides persistent direct and group chats, built-in whale companions, custom contacts, automatic journals with inspectable sources, proactive contact, calendar and daily-life activities, and DSH action cards. Characters inherit the complete global chat-model connection by default, or use their own API format, URL, encrypted key and model; personality and names do not select providers.
+The current companion model connection requires OpenAI Chat Completions. The brain and companion workers use the application's configured model connection; launcher terminals and the DSH Web workbench retain their own settings. Asset-analysis protocol support is independent.
 
-On first entry, choose one asset library for the companions. Chats, relationships, schedules and world state live in that library's `.worldlinebox/companions/` directory. Each companion has readable journals, reference material, self-understanding and monthly timelines under `伙伴记忆/<companion ID>/`, linked into asset management. The application profile retains the library selection and device settings.
+### Memory and bounded active context
 
-Memory uses the transplanted VCP database, vector indices, tag and graph algorithms, RiverMemo retrieval, passive context and active recall tools. The former non-vector placeholder has been retired. A quantized EmbeddingGemma 2 model and its inference runtimes ship with the installer: text, images, audio and video share a 768-dimensional space for asset search and companion memory. The app uses a compatible GPU when available and a separate CPU runtime otherwise. It reads model weights from the installation directory, without a second weight copy in the user profile, model selection or an external embedding API setting.
+The new `resources/vcp-memory` module provides diaries, semantic recall, history lookup and preprocessing/response recording. It uses the application's bundled EmbeddingGemma 2 and 768-dimensional embeddings, without a separate external embedding-model setting. A resident Node Worker and durable background jobs replace per-operation process startup and the old cognition/publication chain. Automatic memory encoding can make additional model calls.
 
-Saved messages enter a persistent journal queue. Replies recall relevant authorized material automatically, and a separate memory window supports search, filters, sources, corrections and forgetting. Companion and group visibility follows actual ownership and source permissions. Interrupted processing resumes from its queue; withdrawing a source also withdraws dependent memories and cached context. Automatic understanding can still miss or misinterpret details, so a traceable source is not a guarantee that every relevant memory will be recalled. See the [memory implementation record](docs/developer/companion-memory-implementation.md).
+The Memory panel supports search, explicit notes, recent scoped records and forgetting by ID. Forgetting withdraws related sources from use, fences old captures and isolates prior native context; it does not physically erase DSH cold logs. Recall remains selective and can miss or misinterpret information.
 
-Each companion can read explicitly granted libraries or folders, with shared sources, manual reading, optional autonomous reading and revocation. Life events offer repeated opportunities within configurable windows and cooldowns; actual sleep can produce sourced reflections and clearly marked fictional dreams. Each group reply has its own live progress bubble and cancellation. The [system acceptance record](docs/developer/companion-system-acceptance.md) and [real-model content audit](docs/developer/vcp-memory-content-audit.md) distinguish functional checks from content quality and document the remaining limits.
+Lane epochs and native summary/tail handoff bound individual active sessions while the visible conversation stays continuous. Handoff can invoke a model and take time; failure keeps the old session authoritative. This is not a claim of perfect recall, constant latency or verified unlimited lifetime. Real-model quality and long-running behavior require their own acceptance evidence; controlled protocol fixtures do not establish those results.
 
-The built-in companion world persists its current simulation state. Broader world authoring, branching worldlines and game/world adapters remain planned features. Actual cross-version data migrations and third-party plugin compatibility require version-specific validation.
+### Physical world
+
+World channels can open a position map or Three.js scene. Companions have private homes and can walk along valid paths, use portals to reach the public garden and interact with furniture. Host state persists coordinates, routes, occupancy and activities. Physical “work at the computer” is separate from executing a DSH task.
+
+The new viewport reuses the real house/garden meshes and art. Known art IDs use their corresponding sheets; newly created companions currently use their own name markers. WebGL failures return to the position map. World events go to actual co-located observers, with private observer transcripts.
+
+The former independent world windows, 15 default contacts, relationship/routine simulation, probabilistic daily life, dreams and growth dashboards are retired. QQ/WeChat, phone gateways and broader simulation remain future integrations.
+
+### Data and validation
+
+New companion data lives under the application's `companion-bot-v2` profile directory: `bot.sqlite` holds messages, events, tasks and physical state; `memory` holds scoped VCP data. DSH owns native Sessions and cold logs. Asset libraries remain separate. The new entry point does not migrate or dual-write the old companion database.
+
+Use `npm run test:bot:quick` for targeted tests, `npm run test:bot:e2e` for isolated Electron UI checks, and `npm run test:bot:protocol` for a controlled model fixture through real DSH/VCP boundaries. `npm run test:bot:real` explicitly uses a configured online model; a script existing does not mean its acceptance has passed. The 3D screenshot check used software WebGL and is not a hardware performance result. See the [user guide](docs/user-guide/companions.en.md), [runtime guide](docs/developer/superagent-bot-runtime-guide.md) and [historical research](docs/developer/superagent-bot-research-2026-11-02.md).
 
 ## Target architecture
 
@@ -73,4 +90,4 @@ References: [PCL](https://github.com/Meloong-Git/PCL), [DeepSeek Harness](https:
 
 MIT; see [LICENSE](LICENSE). Thanks to [Serpent](https://github.com/dolag233/Serpent) author dolag233 and its contributors for the asset-management foundation and continued improvements. Their copyright notice is retained; WorldlineBox integrates the 0.3.2 changes by feature and keeps its own name and custom functionality. Third-party components and media follow their own licenses; see [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md). The maintainer supplied the new icon artwork.
 
-The memory-system design draws on [VCPToolBox](https://github.com/lioensky/VCPToolBox) diary, vector-index, RiverMemo and long-term-context ideas. Existing third-party code provenance, pinned revisions and attribution are retained in `vendor/vcp-memory`.
+The memory-system design draws on [VCPToolBox](https://github.com/lioensky/VCPToolBox) diary, vector-index, RiverMemo and long-term-context ideas. The current standalone module in `resources/vcp-memory` retains upstream provenance and licenses; the former vendor runtime and companion memory host are retired.

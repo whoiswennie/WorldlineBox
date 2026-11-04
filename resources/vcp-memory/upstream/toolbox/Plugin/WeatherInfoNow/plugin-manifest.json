@@ -1,0 +1,26 @@
+{
+  "manifestVersion": "1.0.0",
+  "name": "WeatherInfoNow",
+  "version": "1.0.0",
+  "displayName": "实时天气简报",
+  "description": "从 WeatherReporter 的缓存中提取并提供简短的实时天气信息。",
+  "author": "System",
+  "pluginType": "static",
+  "entryPoint": {
+    "type": "nodejs",
+    "command": "node weather-info-now.js"
+  },
+  "communication": {
+    "protocol": "stdio" 
+  },
+  "capabilities": {
+    "systemPromptPlaceholders": [
+      {
+        "placeholder": "{{VCPWeatherInfoNow}}",
+        "description": "简短的实时天气信息。"
+      }
+    ],
+    "invocationCommands": [] 
+  },
+  "refreshIntervalCron": "0 * * * *"
+}

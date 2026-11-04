@@ -26,6 +26,7 @@ import {
   parseAiAnalysisCompletedEvent,
   parseAiContentClearedEvent,
   type WorkerResult,
+  type InternalLibrarySummary,
   type AssetChangeEvent,
   type LibraryChangedEvent,
   type ProgressEvent,
@@ -139,6 +140,20 @@ export class WorkerRequestTimeoutError extends Error {
   }
 }
 
+export class WorkerUnavailableError extends Error {
+  readonly code = 'WORKER_UNAVAILABLE' as const;
+
+  constructor() {
+    super('Library Worker is unavailable.');
+    this.name = 'WorkerUnavailableError';
+  }
+}
+
+export type WorkerRecoveryEvent =
+  | { state: 'recovering'; exitCode: number }
+  | { state: 'recovered'; libraries: InternalLibrarySummary[]; failedLibraryIds: string[] }
+  | { state: 'failed' };
+
 export function requestTimeoutForCommand(
   command: WorkerCommand | WorkerCommand['type'],
 ): number | null {
@@ -195,6 +210,11 @@ export class LibraryWorkerClient {
   #started = false;
   #starting: Promise<void> | undefined;
   #showMissingLinkedFiles: boolean | undefined;
+  #hasStarted = false;
+  #recoveryPromise: Promise<void> | undefined;
+  #recentUnexpectedExits: number[] = [];
+  #knownLibraries = new Map<string, InternalLibrarySummary>();
+  #recoveryListeners = new Set<(event: WorkerRecoveryEvent) => void>();
   #assetChangeListeners = new Set<(event: AssetChangeEvent) => void>();
   #libraryChangedListeners = new Set<(event: LibraryChangedEvent) => void>();
   #progressListeners = new Set<(event: ProgressEvent) => void>();
@@ -227,6 +247,19 @@ export class LibraryWorkerClient {
     });
   }
 
+  get available(): boolean {
+    return !this.#closed && this.#ready && this.#child !== undefined && this.#recoveryPromise === undefined;
+  }
+
+  onRecovery(listener: (event: WorkerRecoveryEvent) => void): () => void {
+    this.#recoveryListeners.add(listener);
+    return () => this.#recoveryListeners.delete(listener);
+  }
+
+  #publishRecovery(event: WorkerRecoveryEvent): void {
+    for (const listener of this.#recoveryListeners) listener(event);
+  }
+
   async start(): Promise<void> {
     if (this.#closed) throw new Error('Library Worker is shutting down.');
     if (this.#ready) return;
@@ -239,7 +272,7 @@ export class LibraryWorkerClient {
       // A speculative module handshake must not poison the next real request.
       // This is only a failed bootstrap, not an automatic replacement after
       // an already-ready worker exits. Closed clients remain permanently closed.
-      if (!this.#closed && !this.#ready) this.#started = false;
+      if (!this.#closed && !this.#ready && !this.#hasStarted) this.#started = false;
       throw error;
     } finally { if (this.#starting === starting) this.#starting = undefined; }
   }
@@ -335,8 +368,11 @@ export class LibraryWorkerClient {
         clearTimeout(timer);
         child.off('message', onInitialMessage);
         this.#ready = true;
+        this.#hasStarted = true;
         if (this.#showMissingLinkedFiles !== undefined) this.publishShowMissingLinkedFiles(this.#showMissingLinkedFiles);
-        child.on('message', this.#onMessage);
+        child.on('message', (message) => {
+          if (this.#child === child) this.#onMessage(message);
+        });
         resolve();
       };
 
@@ -362,11 +398,31 @@ export class LibraryWorkerClient {
     } = {},
   ): Promise<WorkerResult> {
     if (this.#closed) return Promise.reject(new Error('Library Worker is shutting down.'));
+    if (this.#recoveryPromise) {
+      return this.#recoveryPromise.then(() => this.request(command, options));
+    }
     const child = this.#child;
     if (!child || !this.#ready) {
       if (!this.#started || this.#starting) return this.start().then(() => this.request(command, options));
-      return Promise.reject(new Error('Library Worker is unavailable.'));
+      return Promise.reject(new WorkerUnavailableError());
     }
+
+    return this.#requestReady(command, options);
+  }
+
+  #requestReady(
+    command: WorkerCommand,
+    options: {
+      dispatch?: 'automation-readonly';
+      historyContext?: WorkerHistoryContext;
+      consumerId?: string;
+      catalogSequence?: number;
+      snapshotGeneration?: number | null;
+      minCatalogSequence?: number;
+    } = {},
+  ): Promise<WorkerResult> {
+    const child = this.#child;
+    if (this.#closed || !child || !this.#ready) return Promise.reject(new WorkerUnavailableError());
 
     const requestId = randomUUID();
     const sentAtEpochMs = Date.now();
@@ -873,6 +929,7 @@ export class LibraryWorkerClient {
 
     clearTimeout(pending.timer);
     this.#pending.delete(response.requestId);
+    this.#observeLibraryResult(response.result);
     if (WORKER_CMD_LOG && pending.sentAt !== undefined) {
       const roundTrip = correlateBrokerRoundTrip({
         requestId: response.requestId,
@@ -903,6 +960,61 @@ export class LibraryWorkerClient {
     pending.resolve(response.result);
   };
 
+  #observeLibraryResult(result: WorkerResult): void {
+    if (!result.ok) return;
+    if (result.type === 'library.list') {
+      this.#knownLibraries = new Map(result.libraries.map((library) => [library.libraryId, library]));
+    } else if (result.type === 'library.opened' || result.type === 'library.renamed') {
+      this.#knownLibraries.set(result.library.libraryId, result.library);
+    } else if (result.type === 'library.imported') {
+      this.#knownLibraries.set(result.libraryId, {
+        libraryId: result.libraryId,
+        libraryPath: result.libraryPath,
+        displayName: result.displayName,
+      });
+    } else if (result.type === 'library.closed' || result.type === 'library.deleted') {
+      this.#knownLibraries.delete(result.libraryId);
+    }
+  }
+
+  async #recover(): Promise<void> {
+    const expectedLibraries = [...this.#knownLibraries.values()];
+    for (let attempt = 0; attempt < 3 && !this.#closed && this.#recentUnexpectedExits.length < 3; attempt += 1) {
+      await new Promise((resolve) => setTimeout(resolve, [500, 1_000, 2_000][attempt]));
+      if (this.#closed || this.#recentUnexpectedExits.length >= 3) break;
+      try {
+        await this.start();
+        const restored: InternalLibrarySummary[] = [];
+        const failedLibraryIds: string[] = [];
+        for (const library of expectedLibraries) {
+          const result = await this.#requestReady({
+            type: 'library.open',
+            selectedLibraryPath: library.libraryPath,
+          });
+          if (result.ok && result.type === 'library.opened' && result.library.libraryId === library.libraryId) {
+            restored.push(result.library);
+          } else {
+            failedLibraryIds.push(library.libraryId);
+            this.#knownLibraries.delete(library.libraryId);
+            if (result.ok && result.type === 'library.opened') {
+              await this.#requestReady({ type: 'library.close', libraryId: result.library.libraryId });
+            }
+          }
+        }
+        this.#publishRecovery({ state: 'recovered', libraries: restored, failedLibraryIds });
+        return;
+      } catch (error) {
+        this.logger.error('worker.recovery.attempt', error, { attempt: attempt + 1 });
+        this.#child?.kill();
+        this.#ready = false;
+        this.#child = undefined;
+      }
+    }
+    if (this.#closed) return;
+    this.#publishRecovery({ state: 'failed' });
+    throw new WorkerUnavailableError();
+  }
+
   readonly #onExit = (child: UtilityProcess, code: number) => {
     if (this.#child !== child && this.#closingChild !== child) return;
     const expected = this.#shuttingDown;
@@ -918,8 +1030,34 @@ export class LibraryWorkerClient {
     if (this.#closingChild === child) this.#closingChild = undefined;
     this.#shuttingDown = false;
     this.#requestBroker.reset();
-    this.#rejectAll(new Error(`Library Worker exited (${code}).`));
+    this.#rejectAll(new WorkerUnavailableError());
+    if (expected || this.#closed || !this.#hasStarted) return;
+    const now = Date.now();
+    this.#recentUnexpectedExits = this.#recentUnexpectedExits.filter((time) => now - time < 60_000);
+    this.#recentUnexpectedExits.push(now);
+    if (!this.#recoveryPromise) this.#beginRecovery(code);
   };
+
+  #beginRecovery(exitCode: number): void {
+    if (this.#closed) return;
+    if (this.#recentUnexpectedExits.length >= 3) {
+      this.#publishRecovery({ state: 'failed' });
+      return;
+    }
+    this.#publishRecovery({ state: 'recovering', exitCode });
+    let succeeded = false;
+    this.#recoveryPromise = this.#recover().then(() => {
+      succeeded = true;
+    }).finally(() => {
+      this.#recoveryPromise = undefined;
+      // A newly restored child can exit after the recovered notification but
+      // before the admission gate is released. Continue the crash sequence.
+      if (succeeded && !this.#child) this.#beginRecovery(exitCode);
+    });
+    // The recovery promise is also an admission gate; consume its rejection
+    // here when no request happens to be waiting for it.
+    void this.#recoveryPromise.catch(() => undefined);
+  }
 
   #protocolFailure(error: Error): void {
     this.logger.error('worker.protocol', error);

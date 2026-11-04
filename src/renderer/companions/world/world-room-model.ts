@@ -1,15 +1,14 @@
 import { BoxGeometry, BufferGeometry, CanvasTexture, CatmullRomCurve3, Color, CylinderGeometry, Float32BufferAttribute, Group, Mesh, MeshStandardMaterial, PlaneGeometry, SphereGeometry, SRGBColorSpace, TorusGeometry, TubeGeometry, Vector3, type Material } from 'three';
 import { RoundedBoxGeometry } from 'three/addons/geometries/RoundedBoxGeometry.js';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
-import type { CompanionWorldScene } from '../../../shared/companion-world';
-import { CATALOGUE_COMPANION_PROFILES } from '../../../shared/companion-catalogue';
+import type { BotWorldScene } from '../../../shared/companion-bot-world';
 
-type Furniture = CompanionWorldScene['objects'][number];
+type Furniture = BotWorldScene['objects'][number];
 type Surface = 'plaster' | 'ivory' | 'wood' | 'oak' | 'darkWood' | 'sage' | 'blue' | 'linen' | 'rose' | 'metal' | 'screen' | 'glass' | 'soil' | 'leaf' | 'grass' | 'path' | 'tile' | 'light';
 const COLORS: Record<Surface, string> = { plaster: '#f0e7dc', ivory: '#fff9ed', wood: '#bf8f67', oak: '#e5c7a0', darkWood: '#765442', sage: '#94bda9', blue: '#829fbf', linen: '#f3e8d4', rose: '#d4a4a0', metal: '#4c5a62', screen: '#7fb8be', glass: '#bbdfdf', soil: '#9b7e65', leaf: '#608d72', grass: '#a9c29d', path: '#ddd4c2', tile: '#d2ded1', light: '#ffe5ab' };
 
 /** This is a view of the host's footprints, never a second collision or furniture model. */
-export function createWorldRoomModel(scene: CompanionWorldScene) {
+export function createWorldRoomModel(scene: BotWorldScene) {
   const group = new Group();
   const buckets = new Map<Surface, BufferGeometry[]>();
   const resources: { geometry: BufferGeometry[]; materials: Material[]; textures: CanvasTexture[] } = { geometry: [], materials: [], textures: [] };
@@ -143,7 +142,7 @@ export function createWorldRoomModel(scene: CompanionWorldScene) {
     const picture = pictureCanvas.getContext('2d');
     if (picture) {
       picture.fillStyle = '#f6f0dd'; picture.fillRect(0, 0, 320, 240);
-      const subject = scene.ownerId === 'deepseek-sister' ? '海与安静的日子' : scene.ownerId === 'deepseek-flash' ? '音乐与小发现' : CATALOGUE_COMPANION_PROFILES.find(profile => profile.id === scene.ownerId)?.preferences[0]?.subject ?? '小小的日常';
+      const subject = scene.ownerId === 'deepseek-sister' ? '海与安静的日子' : scene.ownerId === 'deepseek-flash' ? '音乐与小发现' : '小小的日常';
       if (scene.ownerId === 'deepseek-sister') {
         picture.fillStyle = '#aed5d7'; picture.fillRect(18, 18, 284, 145); picture.fillStyle = '#7aabb8'; picture.beginPath(); picture.moveTo(18, 104); for (let x = 18; x <= 302; x++) picture.lineTo(x, 106 + Math.sin(x / 28) * 10); picture.lineTo(302, 163); picture.lineTo(18, 163); picture.fill(); picture.fillStyle = '#f4d39c'; picture.beginPath(); picture.arc(242, 54, 20, 0, Math.PI * 2); picture.fill();
       } else if (['deepseek-flash', 'phrolova', 'minimax'].includes(scene.ownerId ?? '')) {

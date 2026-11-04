@@ -1,7 +1,6 @@
 import { expect, it } from 'vitest';
 import { BrowserCompanionActivity } from '../../src/main/browser/companion-activity';
 import { companionBrowserArgumentsSchema } from '../../src/shared/companion-browser';
-import { normalizeCompanionCapabilityCall } from '../../src/shared/companion-capability-tools';
 
 const scope = { companionId: 'alice', companionName: '小爱', conversationId: 'room' };
 it('tracks each actual concurrent call and releases it on completion, failure and cancellation', async () => {
@@ -37,8 +36,7 @@ it('cancels calls on parent abort and global pause, without a durable viewing st
 
 it('binds browser separately from DSH and rejects ambiguous or executable page input', () => {
   const input = { action: 'read', tabId: 'real-tab' };
-  const normalized = normalizeCompanionCapabilityCall({ id: 'call1', name: 'browser', arguments: JSON.stringify(input) });
-  expect(normalized.name).toBe('browser'); expect(JSON.parse(normalized.arguments)).toMatchObject(input);
+  expect(companionBrowserArgumentsSchema.safeParse(input).success).toBe(true);
   for (const args of [{ action: 'read' }, { action: 'open', url: 'javascript:alert(1)' },
     { action: 'open', url: 'https://user:password@example.com' }, { action: 'evaluate', tabId: 'a', code: 'document.cookie' },
     { action: 'screenshot', tabId: 'a', path: 'C:/arbitrary.png' }]) expect(companionBrowserArgumentsSchema.safeParse(args).success).toBe(false);

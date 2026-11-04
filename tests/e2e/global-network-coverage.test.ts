@@ -5,7 +5,7 @@ import { test, expect } from '@playwright/test';
 import { build } from 'vite';
 import { electronLaunchEnv, resolveElectronExecutablePath } from './electron-test-helpers';
 
-test('global proxy switches actual library AI, companion providers and semantic HTTP without restarting modules', async () => {
+test('global proxy switches actual library AI and semantic HTTP without restarting modules', async () => {
   test.setTimeout(120_000);
   await mkdir(path.resolve('.tools/global-network-coverage'), { recursive: true });
   // Keep the isolated Worker underneath the project so its native external
@@ -25,4 +25,8 @@ test('global proxy switches actual library AI, companion providers and semantic 
   const code = await new Promise<number | null>((resolve, reject) => { child.once('error', reject); child.once('exit', resolve); }).finally(() => clearTimeout(timer));
   await test.info().attach('global-network-real-modules', { body: log, contentType: 'text/plain' });
   expect(code, log + '\nEvidence: ' + root).toBe(0); expect(log).toContain('GLOBAL_NETWORK_COVERAGE_RESULT');
+  const result = JSON.parse(log.split(/\r?\n/).find(line => line.startsWith('GLOBAL_NETWORK_COVERAGE_RESULT '))!.slice('GLOBAL_NETWORK_COVERAGE_RESULT '.length));
+  expect(result.requests).toBe(9);
+  expect(result.coverage).toEqual(['library-worker-ai', 'main-embedding-http', 'pinned-resource-pac']);
+  expect(result.nativeDshProxyCoverage).toBe(false);
 });

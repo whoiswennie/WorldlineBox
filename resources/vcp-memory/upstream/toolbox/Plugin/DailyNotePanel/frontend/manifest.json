@@ -1,0 +1,18 @@
+{
+  "name": "DailyNotePanel",
+  "short_name": "DailyNote",
+  "version": "2.0.0",
+  "author": "B3000Kcn & DBL1F7E5",
+  "start_url": "/AdminPanel/DailyNotePanel/",
+  "display": "standalone",
+  "background_color": "#111827",
+  "theme_color": "#111827",
+  "icons": [
+    {
+      "src": "/AdminPanel/DailyNotePanel/VCPNoteBook500.ico",
+      "sizes": "128x128 192x192 512x512",
+      "type": "image/x-icon"
+    }
+  ]
+}
+  

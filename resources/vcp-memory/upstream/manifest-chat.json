@@ -1,0 +1,204 @@
+{
+  "sourceProject": "VCPChat",
+  "revision": "2af26aaddcf82163c9f3e88b55d53518cb9db059",
+  "capturedAt": "2026-11-02T01:22:11.3252376Z",
+  "files": [
+    {
+      "source": "modules/chat/chatContext.js",
+      "target": "upstream/chat/modules/chat/chatContext.js",
+      "sha256": "2ebc742151d6eed9d7b537ee9da584568a89c79de9dae3276f90810e4affeec3",
+      "bytes": 1699
+    },
+    {
+      "source": "modules/chat/chatRepository.js",
+      "target": "upstream/chat/modules/chat/chatRepository.js",
+      "sha256": "fca84ba02feb6a65a41612b9d5ccc435b69db496368a82a6d9edfc287cfef275",
+      "bytes": 1109
+    },
+    {
+      "source": "modules/chat/memoryChatRepository.js",
+      "target": "upstream/chat/modules/chat/memoryChatRepository.js",
+      "sha256": "ed3875949fc0e6b17c901bdd76db8155352156005107d58830a345ec49123193",
+      "bytes": 740
+    },
+    {
+      "source": "modules/chat/chatHistoryMutationAuthority.js",
+      "target": "upstream/chat/modules/chat/chatHistoryMutationAuthority.js",
+      "sha256": "cc150d4f0d8aa4c38150f05410c0182389a5906221c6970791dcc17a33aa6e77",
+      "bytes": 3336
+    },
+    {
+      "source": "modules/chat/chatHistoryPersistence.js",
+      "target": "upstream/chat/modules/chat/chatHistoryPersistence.js",
+      "sha256": "d4fc74b6387b04816aa4bb2e7ed5e8e97cd700c3e590342fb5c6d74bf55a9010",
+      "bytes": 6167
+    },
+    {
+      "source": "modules/chat/contextCompactionState.js",
+      "target": "upstream/chat/modules/chat/contextCompactionState.js",
+      "sha256": "a570c0d917ec5c63455fdf5b451ca5511b2e1973ce9b8e4f858c40ab323267c3",
+      "bytes": 10948
+    },
+    {
+      "source": "modules/chat/contextCompactionService.js",
+      "target": "upstream/chat/modules/chat/contextCompactionService.js",
+      "sha256": "8e0312e971142929c04f7c642dd2e5ac213af67f2e3ce20a3dc7babf688fa80a",
+      "bytes": 9468
+    },
+    {
+      "source": "modules/chat/contextCompactionPrompts.js",
+      "target": "upstream/chat/modules/chat/contextCompactionPrompts.js",
+      "sha256": "9829987f9663012cbe1ed6efc91025d0b901ae8a5e69f105105e847488f294ad",
+      "bytes": 12481
+    },
+    {
+      "source": "modules/chat/contextCompactionFidelity.js",
+      "target": "upstream/chat/modules/chat/contextCompactionFidelity.js",
+      "sha256": "ae7df26ecd0f370cd3b1392a3adf121db6538e28618e87dc03f5a32bdad69c15",
+      "bytes": 5773
+    },
+    {
+      "source": "modules/chat/contextCompactionContinuity.js",
+      "target": "upstream/chat/modules/chat/contextCompactionContinuity.js",
+      "sha256": "e58fa18dbf216778461a72cd624c2aad6fd4a5cf7ae527304b398d31bec68633",
+      "bytes": 4370
+    },
+    {
+      "source": "modules/chat/sideChatSessionService.js",
+      "target": "upstream/chat/modules/chat/sideChatSessionService.js",
+      "sha256": "697e854accacd415fe4c574d1c2998f104f4a216db12456ea76918a160f29428",
+      "bytes": 13393
+    },
+    {
+      "source": "modules/chat/singleChatRequestOrchestrator.js",
+      "target": "upstream/chat/modules/chat/singleChatRequestOrchestrator.js",
+      "sha256": "3fffddffb8acc72ba9c017f41bc19eb0641be764ac4e308f06f93516f53f6de9",
+      "bytes": 18411
+    },
+    {
+      "source": "modules/renderer/side-chat/branch-tree.js",
+      "target": "upstream/chat/modules/renderer/side-chat/branch-tree.js",
+      "sha256": "3eb42e0a16d9a25a7c33aa576039c3f9e9302d335323c37f6a9666fb5346c1e1",
+      "bytes": 6190
+    },
+    {
+      "source": "modules/renderer/side-chat/note-exporter.js",
+      "target": "upstream/chat/modules/renderer/side-chat/note-exporter.js",
+      "sha256": "1ef71671b2ed3ef4d7b9ba5c989982ce6eedc005f80e289b8ca147f27707b556",
+      "bytes": 4179
+    },
+    {
+      "source": "modules/renderer/toolRequestScanner.js",
+      "target": "upstream/chat/modules/renderer/toolRequestScanner.js",
+      "sha256": "f184d81d44350feb7bc8900687e32cc453fc3b4b98e4b2ade3ee1e0020df0b96",
+      "bytes": 16325
+    },
+    {
+      "source": "modules/renderer/toolResultRegions.js",
+      "target": "upstream/chat/modules/renderer/toolResultRegions.js",
+      "sha256": "e7b5382e0d0b7b52f20f991954b26dab71f1ecda44fd9813e8b2b82d76cf8f58",
+      "bytes": 9206
+    },
+    {
+      "source": "modules/renderer/markdownCodeDomainScanner.js",
+      "target": "upstream/chat/modules/renderer/markdownCodeDomainScanner.js",
+      "sha256": "9da5cc185d3b4c61b33d7bccf6b0fa325c73eafc96eec63e210565fc539108eb",
+      "bytes": 8748
+    },
+    {
+      "source": "modules/contextSanitizer.js",
+      "target": "upstream/chat/modules/contextSanitizer.js",
+      "sha256": "ddbef2472d52fb641b25d64690bde04bfc074294a8457561b5b1ed6eeacd057f",
+      "bytes": 18585
+    },
+    {
+      "source": "modules/tavernRulesEngine.js",
+      "target": "upstream/chat/modules/tavernRulesEngine.js",
+      "sha256": "a2ac4cc998848a11c280d3556f36d7aa7d69012d2d8ef889e1e9f1629c235279",
+      "bytes": 10996
+    },
+    {
+      "source": "Groupmodules/groupContextWindow.js",
+      "target": "upstream/chat/Groupmodules/groupContextWindow.js",
+      "sha256": "a98165ff8e9937ee42ebb9fe56093dbc41c31e3715c79ffe90d4feba708f96e7",
+      "bytes": 1786
+    },
+    {
+      "source": "tests/context-compaction-state.test.mjs",
+      "target": "upstream/chat/tests/context-compaction-state.test.mjs",
+      "sha256": "d25cb98adb1bfabd37377ed103ea70afb0136df45c5b0595d6b3f57c244a0aea",
+      "bytes": 6176
+    },
+    {
+      "source": "tests/context-compaction-service.test.mjs",
+      "target": "upstream/chat/tests/context-compaction-service.test.mjs",
+      "sha256": "eb4e2df646bdb3e5b90aa163fb65fc88f3c27cc63dabe01abbb6c6bd6a6cd489",
+      "bytes": 12404
+    },
+    {
+      "source": "tests/context-compaction-fidelity.test.mjs",
+      "target": "upstream/chat/tests/context-compaction-fidelity.test.mjs",
+      "sha256": "d6e92629ec669323501ebc5d39c8b053924d3a2927e91092759c43a0459b7b7e",
+      "bytes": 5372
+    },
+    {
+      "source": "tests/context-compaction-continuity.test.mjs",
+      "target": "upstream/chat/tests/context-compaction-continuity.test.mjs",
+      "sha256": "42bb96a17f28a7b8bbad70d7a6d840a87bc8760e3c57527f30bcccfab1f70124",
+      "bytes": 7823
+    },
+    {
+      "source": "tests/chat-history-persistence.test.mjs",
+      "target": "upstream/chat/tests/chat-history-persistence.test.mjs",
+      "sha256": "1332b20fb96f0bdaaa9f4ab61ff3ad8ee2e609ab28c443b28b39d8623dd540b1",
+      "bytes": 5557
+    },
+    {
+      "source": "tests/chat-history-mutation-authority.test.mjs",
+      "target": "upstream/chat/tests/chat-history-mutation-authority.test.mjs",
+      "sha256": "768a243f432a04fef7c60b5881918a28b2a78d0c0ba5c8d1a42c8826b965ffdd",
+      "bytes": 2206
+    },
+    {
+      "source": "tests/chat-context.test.mjs",
+      "target": "upstream/chat/tests/chat-context.test.mjs",
+      "sha256": "e49ee708b8195a0dcc70ce87e97dab7aef1a043ca4582d712be85eff0582c01a",
+      "bytes": 1109
+    },
+    {
+      "source": "tests/side-chat-session-service.test.mjs",
+      "target": "upstream/chat/tests/side-chat-session-service.test.mjs",
+      "sha256": "3c82a0d8b40899d286baf4570fed5e84ab452fc1e7b7cd5cf88c1bef918a5862",
+      "bytes": 8905
+    },
+    {
+      "source": "tests/group-context-window.test.js",
+      "target": "upstream/chat/tests/group-context-window.test.js",
+      "sha256": "38e7e337fdfba80f632d1f564973eb51a0f3a502c82aaeb647cee76a86fd49c9",
+      "bytes": 2867
+    },
+    {
+      "source": "LICENSE",
+      "target": "upstream/chat/LICENSE",
+      "sha256": "cbd67290c9dac77700617e81a18b4bf9e28104db801d9de181f71d8c2057a61e",
+      "bytes": 14995
+    },
+    {
+      "source": "modules/fileManager.js",
+      "target": "upstream/chat/modules/fileManager.js",
+      "sha256": "59166ac880b56004e4c2c097d79c65d9c7d71df99762dcc9897568d81a0fc313",
+      "bytes": 25751
+    },
+    {
+      "source": "modules/services/pdfAttachmentService.js",
+      "target": "upstream/chat/modules/services/pdfAttachmentService.js",
+      "sha256": "95e5a0ce235d56e633b72c8e616aeb8a21425ef0bb6baee11559e27712c84fed",
+      "bytes": 20073
+    }
+  ],
+  "adapterFiles": [
+    "upstream/chat/modules/chat/package.json",
+    "upstream/chat/modules/renderer/package.json"
+  ],
+  "notes": "All source/test files are byte-identical. Generated package boundaries enable original renderer ES modules under a CommonJS CLI. No AppData or credentials copied."
+}

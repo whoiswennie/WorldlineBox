@@ -9,7 +9,7 @@ import {
 } from 'react';
 import { createPortal } from 'react-dom';
 import { isImeKeyboardEvent } from './ime-safe-dismiss';
-import { placeOverlayInViewport, readOverlayViewport } from './place-overlay';
+import { OVERLAY_VIEWPORT_MARGIN, placeOverlayInViewport, readOverlayViewport } from './place-overlay';
 
 /** Quiet delay before a hover tip appears (REQ-SHELL-013 follow-up). */
 export const HOVER_TIP_SHOW_DELAY_MS = 420;
@@ -28,6 +28,8 @@ type TipState = {
   readonly text: string;
   readonly anchor: TipAnchor;
   readonly variant: "default" | "search-syntax";
+  /** Only explicitly opted-in navigation surfaces use lateral placement. */
+  readonly rightEdge?: number;
 };
 
 type TipBox = {
@@ -65,6 +67,8 @@ export function HoverTipHost() {
   const tipRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
+    let dismissedAnchor: Element | null = null;
+    const rightSurface = (el: Element) => el.closest('[data-hover-tip-placement="right"]');
     const clearTimer = () => {
       if (showTimerRef.current !== null) {
         window.clearTimeout(showTimerRef.current);
@@ -79,6 +83,7 @@ export function HoverTipHost() {
     };
 
     const scheduleShow = (el: Element) => {
+      if (el === dismissedAnchor) return;
       const text = el.getAttribute('data-hover-tip')?.trim();
       if (!text) {
         hide();
@@ -92,6 +97,7 @@ export function HoverTipHost() {
       showTimerRef.current = window.setTimeout(() => {
         if (activeElRef.current !== el) return;
         const rect = el.getBoundingClientRect();
+        const surface = rightSurface(el);
         const variant =
           el.getAttribute('data-hover-tip-variant') === 'search-syntax'
             ? 'search-syntax'
@@ -109,6 +115,7 @@ export function HoverTipHost() {
             height: rect.height,
           },
           variant,
+          ...(surface ? { rightEdge: Math.max(rect.right, surface.getBoundingClientRect().right) } : {}),
         });
         showTimerRef.current = null;
       }, HOVER_TIP_SHOW_DELAY_MS);
@@ -127,6 +134,7 @@ export function HoverTipHost() {
 
     const onPointerOut = (event: PointerEvent) => {
       const related = event.relatedTarget;
+      if (dismissedAnchor?.contains(event.target as Node) && !(related instanceof Node && dismissedAnchor.contains(related))) dismissedAnchor = null;
       if (
         related instanceof Element &&
         activeElRef.current?.contains(related)
@@ -144,7 +152,16 @@ export function HoverTipHost() {
       }
     };
 
-    const onPointerDown = () => hide();
+    const dismissActivatedTip = (event: Event) => {
+      const el = event.target instanceof Element ? event.target.closest('[data-hover-tip]') : null;
+      if (el && rightSurface(el)) dismissedAnchor = el;
+      hide();
+    };
+    const onPointerDown = (event: PointerEvent) => dismissActivatedTip(event);
+    const onClick = (event: MouseEvent) => {
+      const el = event.target instanceof Element ? event.target.closest('[data-hover-tip]') : null;
+      if (el && rightSurface(el)) dismissActivatedTip(event);
+    };
     const onFocusIn = (event: FocusEvent) => {
       const target = event.target;
       if (!(target instanceof Element)) return;
@@ -153,6 +170,7 @@ export function HoverTipHost() {
     };
     const onFocusOut = (event: FocusEvent) => {
       const related = event.relatedTarget;
+      if (dismissedAnchor?.contains(event.target as Node) && !(related instanceof Node && dismissedAnchor.contains(related))) dismissedAnchor = null;
       if (
         related instanceof Element &&
         activeElRef.current?.contains(related)
@@ -171,12 +189,17 @@ export function HoverTipHost() {
     const onKeyDown = (event: KeyboardEvent) => {
       if (isImeKeyboardEvent(event)) return;
       if (event.key === 'Escape') hide();
+      if (event.key === 'Enter' || event.key === ' ') {
+        const el = event.target instanceof Element ? event.target.closest('[data-hover-tip]') : null;
+        if (el && rightSurface(el)) dismissActivatedTip(event);
+      }
     };
     const onScroll = () => hide();
 
     document.addEventListener('pointerover', onPointerOver, true);
     document.addEventListener('pointerout', onPointerOut, true);
     document.addEventListener('pointerdown', onPointerDown, true);
+    document.addEventListener('click', onClick, true);
     document.addEventListener('focusin', onFocusIn, true);
     document.addEventListener('focusout', onFocusOut, true);
     document.addEventListener('keydown', onKeyDown, true);
@@ -188,6 +211,7 @@ export function HoverTipHost() {
       document.removeEventListener('pointerover', onPointerOver, true);
       document.removeEventListener('pointerout', onPointerOut, true);
       document.removeEventListener('pointerdown', onPointerDown, true);
+      document.removeEventListener('click', onClick, true);
       document.removeEventListener('focusin', onFocusIn, true);
       document.removeEventListener('focusout', onFocusOut, true);
       document.removeEventListener('keydown', onKeyDown, true);
@@ -201,12 +225,24 @@ export function HoverTipHost() {
     const measure = () => {
       const node = tipRef.current;
       if (!node) return;
-      const placed = placeOverlayInViewport({
+      const viewport = readOverlayViewport();
+      const verticalPlacement = placeOverlayInViewport({
         anchor: tip.anchor,
         size: { width: node.offsetWidth, height: node.offsetHeight },
-        viewport: readOverlayViewport(),
+        viewport,
         align: 'center',
       });
+      // Keep rail labels outside the entire rail, vertically level with their
+      // button, so a tip can never cover the next module's navigation icon.
+      const placed = tip.rightEdge === undefined ? verticalPlacement : {
+        ...verticalPlacement,
+        left: tip.rightEdge + 6,
+        top: Math.max(OVERLAY_VIEWPORT_MARGIN, Math.min(
+          tip.anchor.top + (tip.anchor.height - node.offsetHeight) / 2,
+          viewport.height - OVERLAY_VIEWPORT_MARGIN - node.offsetHeight,
+        )),
+        maxWidth: Math.max(0, Math.min(280, viewport.width - OVERLAY_VIEWPORT_MARGIN - tip.rightEdge - 6)),
+      };
       setBox((current) => (
         current
         && current.left === placed.left
@@ -229,6 +265,7 @@ export function HoverTipHost() {
         left: box.left,
         top: box.top,
         maxHeight: box.maxHeight,
+        ...(tip.rightEdge !== undefined ? { maxWidth: box.maxWidth } : {}),
         visibility: 'visible',
       }
     : { left: 0, top: 0, visibility: 'hidden' };

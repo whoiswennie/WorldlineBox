@@ -1,0 +1,693 @@
+{
+  "recordedAt": "2026-11-02T01:37:01.104Z",
+  "home": "isolated temporary workspace",
+  "fixture": "tests/helpers/provider.cjs; deterministic protocol fixture, not semantic model validation",
+  "steps": [
+    {
+      "label": "status before initialization",
+      "args": [
+        "status"
+      ],
+      "exit": 1,
+      "elapsedMs": 163,
+      "result": {
+        "ok": false,
+        "error": {
+          "code": "VCP_MEMORY_ERROR",
+          "message": "Workspace not initialized: run vcp-memory --home \"C:\\Users\\hp\\AppData\\Local\\Temp\\vcp-skill-eval-entQlf\\home\" init"
+        }
+      },
+      "stderrTail": ""
+    },
+    {
+      "label": "doctor before initialization",
+      "args": [
+        "doctor"
+      ],
+      "exit": 1,
+      "elapsedMs": 334,
+      "result": {
+        "ok": false,
+        "error": {
+          "code": "VCP_MEMORY_ERROR",
+          "message": "Workspace not initialized: run vcp-memory --home \"C:\\Users\\hp\\AppData\\Local\\Temp\\vcp-skill-eval-entQlf\\home\" init"
+        }
+      },
+      "stderrTail": ""
+    },
+    {
+      "label": "init explicit protocol fixture",
+      "args": [
+        "init",
+        "--input",
+        "<temp input>"
+      ],
+      "exit": 0,
+      "elapsedMs": 162,
+      "result": {
+        "ok": true,
+        "result": {
+          "home": "C:\\Users\\hp\\AppData\\Local\\Temp\\vcp-skill-eval-entQlf\\home",
+          "configFile": "C:\\Users\\hp\\AppData\\Local\\Temp\\vcp-skill-eval-entQlf\\home\\config.json",
+          "created": true
+        }
+      },
+      "stderrTail": ""
+    },
+    {
+      "label": "doctor",
+      "args": [
+        "doctor"
+      ],
+      "exit": 0,
+      "elapsedMs": 554,
+      "result": {
+        "ok": true,
+        "result": {
+          "home": "C:\\Users\\hp\\AppData\\Local\\Temp\\vcp-skill-eval-entQlf\\home",
+          "node": "v22.19.0",
+          "platform": "win32",
+          "architecture": "x64",
+          "snapshot": {
+            "ok": true,
+            "files": 336,
+            "failures": []
+          },
+          "native": {
+            "abiVersion": 2,
+            "dimension": 64,
+            "capabilities": [
+              "sqlite.storage-engine.v1",
+              "sqlite.write-actor.v1",
+              "sqlite.read-pool.v1",
+              "sqlite.schema-init.v1",
+              "sqlite.ingestion-commit.v1",
+              "sqlite.delete-commit.v1",
+              "sqlite.tag-consistency.v1",
+              "tag-consistency.prepare.v1",
+              "text.preparation.v1",
+              "index.async-restore.v1",
+              "index.dual-slot-checkpoint.v1",
+              "index.tdb-vec.v1",
+              "index.sql-authoritative-generational.v1",
+              "index.cosine-score.v1",
+              "index.query-options.v1",
+              "watcher.runtime-owned.v1",
+              "memo.native-artifact.v1",
+              "river.native-query.v1",
+              "lightmemo.native-query.v1"
+            ]
+          },
+          "embeddingConfigured": true,
+          "embeddingModel": "fixture",
+          "dimension": 64,
+          "externalValidation": "Run probe to verify configured providers; doctor checks local prerequisites only."
+        }
+      },
+      "stderrTail": ""
+    },
+    {
+      "label": "discover schemas",
+      "args": [
+        "catalog"
+      ],
+      "exit": 0,
+      "elapsedMs": 169,
+      "result": {
+        "ok": true,
+        "result": [
+          {
+            "name": "AgentDream",
+            "type": "hybridservice",
+            "commands": [
+              "DiaryMerge",
+              "DiaryDelete",
+              "DreamInsight"
+            ]
+          },
+          {
+            "name": "ContextFoldingV2",
+            "type": "messagePreprocessor"
+          },
+          {
+            "name": "DailyHot",
+            "type": "static"
+          },
+          {
+            "name": "DailyNote",
+            "type": "hybridservice",
+            "commands": [
+              "create",
+              "update"
+            ]
+          },
+          {
+            "name": "DailyNoteManager",
+            "type": "hybridservice",
+            "commands": [
+              "list",
+              "organize",
+              "associate"
+            ]
+          },
+          {
+            "name": "DailyNotePanelRouter",
+            "type": "service",
+            "commands": []
+          },
+          {
+            "name": "DailyNoteSearcher",
+            "type": "hybridservice",
+            "commands": [
+              "SearchDailyNote"
+            ]
+          },
+          {
+            "name": "LightMemo",
+            "type": "hybridservice",
+            "commands": [
+              "SearchRAG",
+              "MemoryAB"
+            ]
+          },
+          {
+            "name": "MagiAgent",
+            "type": "hybridservice",
+            "commands": [
+              "start_meeting",
+              "query_meeting"
+            ]
+          },
+          {
+            "name": "MemoryThinkingTray",
+            "type": "messagePreprocessor"
+          },
+          {
+            "name": "OneRing",
+            "type": "messagePreprocessor"
+          },
+          {
+            "name": "PlaceholderExplorer",
+            "type": "static",
+            "commands": []
+          },
+          {
+            "name": "RAGDiaryPlugin",
+            "type": "hybridservice"
+          },
+          {
+            "name": "SemanticGroupEditor",
+            "type": "synchronous",
+            "commands": [
+              "QueryGroups",
+              "UpdateGroups",
+              "SetWeight"
+            ]
+          },
+          {
+            "name": "VCPTimeLine",
+            "type": "hybridservice"
+          },
+          {
+            "name": "WeatherInfoNow",
+            "type": "static",
+            "commands": []
+          }
+        ]
+      },
+      "stderrTail": ""
+    },
+    {
+      "label": "save project decision",
+      "args": [
+        "tool",
+        "DailyNote",
+        "--input",
+        "<temp input>"
+      ],
+      "exit": 0,
+      "elapsedMs": 483,
+      "result": {
+        "ok": true,
+        "result": {
+          "status": "success",
+          "result": {
+            "message": "Project 的日记已保存到 Project 文件夹 (2026-11-02-09_36_52-adr-017.txt)，知识库索引将在后台更新",
+            "folder": "Project",
+            "fileName": "2026-11-02-09_36_52-adr-017.txt",
+            "indexStatus": "queued"
+          }
+        }
+      },
+      "stderrTail": "[DailyNote] ✅ Resident service initialized. Root: C:\\Users\\hp\\AppData\\Local\\Temp\\vcp-skill-eval-entQlf\\home\\dailynote, KBD coordinator: unavailable\n[DailyNote] Resident service shutdown complete.\n"
+    },
+    {
+      "label": "sync and verify receipt",
+      "args": [
+        "sync"
+      ],
+      "exit": 0,
+      "elapsedMs": 1327,
+      "result": {
+        "ok": true,
+        "result": {
+          "home": "C:\\Users\\hp\\AppData\\Local\\Temp\\vcp-skill-eval-entQlf\\home",
+          "runtimeDir": "C:\\Users\\hp\\AppData\\Local\\Temp\\vcp-skill-eval-entQlf\\home\\runtime",
+          "started": true,
+          "vectors": true,
+          "plugins": [
+            "DailyNote",
+            "KnowledgeBaseManager",
+            "TDBKnowledge",
+            "RAGDiaryPlugin"
+          ],
+          "diaries": [
+            "Project"
+          ],
+          "pendingFiles": 0,
+          "pendingDeletes": 0,
+          "health": "healthy",
+          "providers": {
+            "embeddingConfigured": true,
+            "rerankConfigured": false,
+            "jevConfigured": false,
+            "aiMemoConfigured": true,
+            "coldEnabled": false
+          }
+        }
+      },
+      "stderrTail": "pect snapshot diagnostics above.\n[KnowledgeBase] 🚌 Processing 1 files...\n[Embedding] Prepared 1 batches from 1 texts. Executing with concurrency: 5...\n[Embedding] Prepared 1 batches from 3 texts. Executing with concurrency: 5...\n[KnowledgeBase] 🔐 Rust ingestion committed facts and published all resident index deltas.\n[TagMemoEngine] Memo refresh queued: changedTags=3, baselineTags=0, threshold=1 (1%); active graph retained.\n[KnowledgeBase] ⏱️ Phase Breakdown: SQLite=2ms, applyChunkDelta=0ms, Tag&Date=0ms, scheduleMatrix=1ms (Total=4ms)\n[KnowledgeBase] ✅ Batch complete. Updated 1 diary indices.\n[CacheManager] query 清理任务已停止\n[CacheManager] embedding 清理任务已停止\n[CacheManager] aimemo 清理任务已停止\n[FoldingStore] 数据库已关闭\n[RAGDiaryPlugin] 插件已关闭\n[DailyNote] Resident service shutdown complete.\n[TDBKnowledge] shutting down...\n[TDBKnowledge] Shutdown complete.\n[KnowledgeBase] shutting down...\n[KnowledgeBase] 🛡️ Global Tag baseline checkpoint skipped, generation=0, slot=, delta=100.00%, threshold=5.00%, elapsed=1ms.\n[KnowledgeBase] Shutdown complete.\n[VexusWatcher] 🦀 Stable native watcher started for: C:\\Users\\hp\\AppData\\Local\\Temp\\vcp-skill-eval-entQlf\\home\\dailynote (debounce=350ms, stability=150ms, retries=6)\n[VexusWatcher] 🦀 Stable native watcher started for: C:\\Users\\hp\\AppData\\Local\\Temp\\vcp-skill-eval-entQlf\\home\\runtime (debounce=350ms, stability=150ms, retries=6)\n[VexusWatcher] 🦀 Native watcher stopped and workers joined.\n[VexusWatcher] 🦀 Native watcher stopped and workers joined.\n"
+    },
+    {
+      "label": "recall decision",
+      "args": [
+        "search",
+        "ADR-017 PostgreSQL durable metadata",
+        "--diary",
+        "Project",
+        "--knn",
+        "--k",
+        "3"
+      ],
+      "exit": 0,
+      "elapsedMs": 1094,
+      "result": {
+        "ok": true,
+        "result": {
+          "status": "success",
+          "result": {
+            "content": [
+              {
+                "type": "text",
+                "text": "\n[--- LightMemo 轻量回忆 ---]\n[查询内容: \"ADR-017 PostgreSQL durable metadata\"]\n[搜索范围: Project]\n\n[找到 1 条相关记忆片段:]\n--- (来源: Project, 相关性: 58.4%(混合))\n    [路径: file:///C:/Users/hp/AppData/Local/Temp/vcp-skill-eval-entQlf/home/dailynote/Project/2026-11-02-09_36_52-adr-017.txt]\n[2026-11-02] - Project\n[09:36]\nDecision ADR-017: use isolated VCP memory workspaces for persistent project decisions. PostgreSQL is the selected durable metadata store. Source: architecture review on 2026-11-02. Redis was rejected because restart-safe durability is required.\nTag: project-decision, ADR-017, PostgreSQL\n\n\n[--- 回忆结束 ---]\n"
+              }
+            ]
+          }
+        }
+      },
+      "stderrTail": "abled.\n[LightMemo] AIMemoBridge injected. Optional AI memory summarization enabled.\n[LightMemo] JevClient injected. Optional Jev decision rerank enabled.\n[LightMemo] Plugin initialized successfully as a hybrid service.\n[Embedding] Prepared 1 batches from 1 texts. Executing with concurrency: 5...\n[LightMemo] Could not load semantic_groups.json. Proceeding without query expansion. ENOENT: no such file or directory, open 'C:\\Users\\hp\\AppData\\Local\\Temp\\vcp-skill-eval-entQlf\\home\\runtime\\Plugin\\RAGDiaryPlugin\\semantic_groups.json'\n[KnowledgeBase] 🚌 Processing 1 files...\n[LightMemo] Plugin shutdown.\n[CacheManager] query 清理任务已停止\n[CacheManager] embedding 清理任务已停止\n[CacheManager] aimemo 清理任务已停止\n[FoldingStore] 数据库已关闭\n[RAGDiaryPlugin] 插件已关闭\n[DailyNote] Resident service shutdown complete.\n[TDBKnowledge] shutting down...\n[TDBKnowledge] Shutdown complete.\n[KnowledgeBase] shutting down...\n[KnowledgeBase] 🛡️ Global Tag baseline checkpoint skipped, generation=0, slot=, delta=100.00%, threshold=5.00%, elapsed=1ms.\n[KnowledgeBase] Shutdown complete.\n[VexusWatcher] 🦀 Stable native watcher started for: C:\\Users\\hp\\AppData\\Local\\Temp\\vcp-skill-eval-entQlf\\home\\dailynote (debounce=350ms, stability=150ms, retries=6)\n[VexusWatcher] 🦀 Stable native watcher started for: C:\\Users\\hp\\AppData\\Local\\Temp\\vcp-skill-eval-entQlf\\home\\runtime (debounce=350ms, stability=150ms, retries=6)\n[VexusWatcher] 🦀 Native watcher stopped and workers joined.\n[VexusWatcher] 🦀 Native watcher stopped and workers joined.\n"
+    },
+    {
+      "label": "recall decision RiverMemo",
+      "args": [
+        "search",
+        "ADR-017 PostgreSQL durable metadata",
+        "--diary",
+        "Project",
+        "--k",
+        "3"
+      ],
+      "exit": 0,
+      "elapsedMs": 1116,
+      "result": {
+        "ok": true,
+        "result": {
+          "status": "success",
+          "result": {
+            "content": [
+              {
+                "type": "text",
+                "text": "\n[--- LightMemo 轻量回忆 ---]\n[查询内容: \"ADR-017 PostgreSQL durable metadata\"]\n[搜索范围: Project]\n\n[找到 1 条相关记忆片段:]\n--- (来源: Project, 相关性: 24.3%(混合))\n    [路径: file:///C:/Users/hp/AppData/Local/Temp/vcp-skill-eval-entQlf/home/dailynote/Project/2026-11-02-09_36_52-adr-017.txt]\n    [RiverMemo Topology V3: Ω=0.010/collapsed, 角色=atomic_concept, 拓扑+0.0000, 直锚+0.0000]\n[2026-11-02] - Project\n[09:36]\nDecision ADR-017: use isolated VCP memory workspaces for persistent project decisions. PostgreSQL is the selected durable metadata store. Source: architecture review on 2026-11-02. Redis was rejected because restart-safe durability is required.\nTag: project-decision, ADR-017, PostgreSQL\n\n\n[--- 回忆结束 ---]\n"
+              }
+            ]
+          }
+        }
+      },
+      "stderrTail": "abled.\n[LightMemo] AIMemoBridge injected. Optional AI memory summarization enabled.\n[LightMemo] JevClient injected. Optional Jev decision rerank enabled.\n[LightMemo] Plugin initialized successfully as a hybrid service.\n[Embedding] Prepared 1 batches from 1 texts. Executing with concurrency: 5...\n[LightMemo] Could not load semantic_groups.json. Proceeding without query expansion. ENOENT: no such file or directory, open 'C:\\Users\\hp\\AppData\\Local\\Temp\\vcp-skill-eval-entQlf\\home\\runtime\\Plugin\\RAGDiaryPlugin\\semantic_groups.json'\n[KnowledgeBase] 🚌 Processing 1 files...\n[LightMemo] Plugin shutdown.\n[CacheManager] query 清理任务已停止\n[CacheManager] embedding 清理任务已停止\n[CacheManager] aimemo 清理任务已停止\n[FoldingStore] 数据库已关闭\n[RAGDiaryPlugin] 插件已关闭\n[DailyNote] Resident service shutdown complete.\n[TDBKnowledge] shutting down...\n[TDBKnowledge] Shutdown complete.\n[KnowledgeBase] shutting down...\n[KnowledgeBase] 🛡️ Global Tag baseline checkpoint skipped, generation=0, slot=, delta=100.00%, threshold=5.00%, elapsed=1ms.\n[KnowledgeBase] Shutdown complete.\n[VexusWatcher] 🦀 Stable native watcher started for: C:\\Users\\hp\\AppData\\Local\\Temp\\vcp-skill-eval-entQlf\\home\\dailynote (debounce=350ms, stability=150ms, retries=6)\n[VexusWatcher] 🦀 Stable native watcher started for: C:\\Users\\hp\\AppData\\Local\\Temp\\vcp-skill-eval-entQlf\\home\\runtime (debounce=350ms, stability=150ms, retries=6)\n[VexusWatcher] 🦀 Native watcher stopped and workers joined.\n[VexusWatcher] 🦀 Native watcher stopped and workers joined.\n"
+    },
+    {
+      "label": "persist past chat",
+      "args": [
+        "session",
+        "append",
+        "--input",
+        "<temp input>"
+      ],
+      "exit": 0,
+      "elapsedMs": 214,
+      "result": {
+        "ok": true,
+        "result": {
+          "category": "append",
+          "itemId": "Project",
+          "itemType": "agent",
+          "topicId": "architecture-history",
+          "history": [
+            {
+              "id": "u1",
+              "role": "user",
+              "timestamp": 1793577600000,
+              "content": "What metadata store did ADR-017 select?"
+            },
+            {
+              "id": "a1",
+              "role": "assistant",
+              "timestamp": 1793577601000,
+              "content": "ADR-017 selected PostgreSQL for durable metadata. Redis was rejected due to restart-safe durability."
+            }
+          ],
+          "result": {
+            "success": true
+          }
+        }
+      },
+      "stderrTail": ""
+    },
+    {
+      "label": "create main chat",
+      "args": [
+        "session",
+        "append",
+        "--input",
+        "<temp input>"
+      ],
+      "exit": 0,
+      "elapsedMs": 226,
+      "result": {
+        "ok": true,
+        "result": {
+          "category": "append",
+          "itemId": "Project",
+          "itemType": "agent",
+          "topicId": "current",
+          "history": [
+            {
+              "id": "u2",
+              "role": "user",
+              "timestamp": 1793577602000,
+              "content": "Plan the PostgreSQL migration."
+            }
+          ],
+          "result": {
+            "success": true
+          }
+        }
+      },
+      "stderrTail": ""
+    },
+    {
+      "label": "fork exploration",
+      "args": [
+        "session",
+        "fork",
+        "--input",
+        "<temp input>"
+      ],
+      "exit": 0,
+      "elapsedMs": 422,
+      "result": {
+        "ok": true,
+        "result": {
+          "metadata": {
+            "schemaVersion": 1,
+            "id": "sidechat-mvyl99lx-ljt75",
+            "type": "selection-side-chat",
+            "ephemeral": true,
+            "parent": {
+              "itemType": "agent",
+              "itemId": "Project",
+              "topicId": "current",
+              "name": "Project",
+              "avatar": null
+            },
+            "child": {
+              "itemType": "agent",
+              "itemId": "Project",
+              "topicId": "sidechat_123_abc"
+            },
+            "title": "Migration strategy",
+            "createdAt": 1793583416805,
+            "contextMode": "parent-snapshot",
+            "snapshotId": null,
+            "model": null,
+            "open": true,
+            "status": "ready",
+            "draft": "",
+            "references": [],
+            "parentSnapshot": [],
+            "rootTopicId": "sidechat_123_abc",
+            "forkFromTopicId": null,
+            "forkMessageId": "u2",
+            "forkLabel": null,
+            "branchTitle": "Migration strategy",
+            "depth": 0,
+            "crystallized": false
+          },
+          "snapshot": [
+            {
+              "id": "u2",
+              "sourceMessageId": "u2",
+              "role": "user",
+              "content": "Plan the PostgreSQL migration.",
+              "timestamp": 1793577602000,
+              "isInherited": true
+            }
+          ]
+        }
+      },
+      "stderrTail": ""
+    },
+    {
+      "label": "append branch insight",
+      "args": [
+        "session",
+        "append",
+        "--input",
+        "<temp input>"
+      ],
+      "exit": 0,
+      "elapsedMs": 197,
+      "result": {
+        "ok": true,
+        "result": {
+          "category": "append",
+          "itemId": "Project",
+          "itemType": "agent",
+          "topicId": "sidechat_123_abc",
+          "history": [
+            {
+              "id": "branch-answer",
+              "role": "assistant",
+              "content": "Use transactional writes and a reversible migration.",
+              "timestamp": 1793583417014
+            }
+          ],
+          "result": {
+            "success": true
+          }
+        }
+      },
+      "stderrTail": ""
+    },
+    {
+      "label": "read frozen branch",
+      "args": [
+        "session",
+        "branch",
+        "--input",
+        "<temp input>"
+      ],
+      "exit": 0,
+      "elapsedMs": 187,
+      "result": {
+        "ok": true,
+        "result": {
+          "metadata": {
+            "schemaVersion": 1,
+            "id": "sidechat-mvyl99lx-ljt75",
+            "type": "selection-side-chat",
+            "ephemeral": true,
+            "parent": {
+              "itemType": "agent",
+              "itemId": "Project",
+              "topicId": "current",
+              "name": "Project",
+              "avatar": null
+            },
+            "child": {
+              "itemType": "agent",
+              "itemId": "Project",
+              "topicId": "sidechat_123_abc"
+            },
+            "title": "Migration strategy",
+            "createdAt": 1793583416805,
+            "contextMode": "parent-snapshot",
+            "snapshotId": null,
+            "model": null,
+            "open": true,
+            "status": "ready",
+            "draft": "",
+            "references": [],
+            "parentSnapshot": [],
+            "rootTopicId": "sidechat_123_abc",
+            "forkFromTopicId": null,
+            "forkMessageId": "u2",
+            "forkLabel": null,
+            "branchTitle": "Migration strategy",
+            "depth": 0,
+            "crystallized": false
+          },
+          "snapshot": [
+            {
+              "id": "u2",
+              "sourceMessageId": "u2",
+              "role": "user",
+              "content": "Plan the PostgreSQL migration.",
+              "timestamp": 1793577602000,
+              "isInherited": true
+            }
+          ],
+          "history": [
+            {
+              "id": "branch-answer",
+              "role": "assistant",
+              "content": "Use transactional writes and a reversible migration.",
+              "timestamp": 1793583417014
+            }
+          ],
+          "messages": [
+            {
+              "id": "u2",
+              "sourceMessageId": "u2",
+              "role": "user",
+              "content": "Plan the PostgreSQL migration.",
+              "timestamp": 1793577602000,
+              "isInherited": true
+            },
+            {
+              "id": "branch-answer",
+              "sourceMessageId": "branch-answer",
+              "role": "assistant",
+              "content": "Use transactional writes and a reversible migration.",
+              "timestamp": 1793583417014,
+              "isInherited": true
+            }
+          ]
+        }
+      },
+      "stderrTail": ""
+    },
+    {
+      "label": "crystallize branch",
+      "args": [
+        "session",
+        "crystallize",
+        "--input",
+        "<temp input>"
+      ],
+      "exit": 0,
+      "elapsedMs": 218,
+      "result": {
+        "ok": true,
+        "result": {
+          "note": "# 📓 知识结晶 · Migration strategy\n\n> **固化时间**：2026/11/2 09:36:57\n> **来源助手**：Project\n\n---\n\n### 🤖 解答 · 2026/11/2 09:36:57\n\nUse transactional writes and a reversible migration.\n\n[🔗 回到这条解答的对话现场](vcp://sidechat/open?agent=Project&branch=sidechat_123_abc&focus=branch-answer)\n\n---\n\n**拓扑入口**：[🔗 打开本分支完整对话](vcp://sidechat/open?agent=Project&branch=sidechat_123_abc)\n\n*Tag: #知识结晶 #辅助对话分支 #Migration_strategy*\n",
+          "path": "C:\\Users\\hp\\AppData\\Local\\Temp\\vcp-skill-eval-entQlf\\home\\sessions\\agent\\id-Project\\id-sidechat_123_abc\\knowledge-crystal.md"
+        }
+      },
+      "stderrTail": ""
+    },
+    {
+      "label": "recall past chat DeepMemo",
+      "args": [
+        "tool",
+        "DeepMemo",
+        "--input",
+        "<temp input>"
+      ],
+      "exit": 0,
+      "elapsedMs": 968,
+      "result": {
+        "ok": true,
+        "result": {
+          "status": "success",
+          "result": "[回忆片段1]:\n用户: Plan the PostgreSQL migration.\n\n[回忆片段2]:\n用户: What metadata store did ADR-017 select?\nAssistant: ADR-017 selected PostgreSQL for durable metadata. Redis was rejected due to restart-safe durability."
+        }
+      },
+      "stderrTail": "[DailyNote] ✅ Resident service initialized. Root: C:\\Users\\hp\\AppData\\Local\\Temp\\vcp-skill-eval-entQlf\\home\\dailynote, KBD coordinator: unavailable\n[DailyNote] Resident service shutdown complete.\n"
+    },
+    {
+      "label": "list chat topics TopicMemo",
+      "args": [
+        "tool",
+        "TopicMemo",
+        "--input",
+        "<temp input>"
+      ],
+      "exit": 0,
+      "elapsedMs": 1305,
+      "result": {
+        "ok": true,
+        "result": {
+          "status": "success",
+          "result": "## Project 的话题列表\n\n共 3 个话题：\n\n1. **architecture-history**\n   - ID: `id-architecture-history`\n   - 创建时间: 2026/11/02 08:00\n\n2. **current**\n   - ID: `id-current`\n   - 创建时间: 2026/11/02 08:00\n\n3. **Migration strategy**\n   - ID: `id-sidechat_123_abc`\n   - 创建时间: 2026/11/02 09:36\n\n"
+        }
+      },
+      "stderrTail": "[DailyNote] ✅ Resident service initialized. Root: C:\\Users\\hp\\AppData\\Local\\Temp\\vcp-skill-eval-entQlf\\home\\dailynote, KBD coordinator: unavailable\n[DailyNote] Resident service shutdown complete.\n"
+    },
+    {
+      "label": "get past chat TopicMemo",
+      "args": [
+        "tool",
+        "TopicMemo",
+        "--input",
+        "<temp input>"
+      ],
+      "exit": 0,
+      "elapsedMs": 1387,
+      "result": {
+        "ok": true,
+        "result": {
+          "status": "success",
+          "result": "## 话题：architecture-history\n创建时间：2026/11/2 08:00:00\n消息数量：2 条\n\n---\n\n**User**: What metadata store did ADR-017 select?\n\n**Project**: ADR-017 selected PostgreSQL for durable metadata. Redis was rejected due to restart-safe durability.\n\n"
+        }
+      },
+      "stderrTail": "[DailyNote] ✅ Resident service initialized. Root: C:\\Users\\hp\\AppData\\Local\\Temp\\vcp-skill-eval-entQlf\\home\\dailynote, KBD coordinator: unavailable\n[DailyNote] Resident service shutdown complete.\n"
+    }
+  ],
+  "providerCalls": [
+    {
+      "path": "/v1/embeddings",
+      "model": "fixture"
+    },
+    {
+      "path": "/v1/embeddings",
+      "model": "fixture"
+    },
+    {
+      "path": "/v1/embeddings",
+      "model": "fixture"
+    },
+    {
+      "path": "/v1/embeddings",
+      "model": "fixture"
+    },
+    {
+      "path": "/v1/embeddings",
+      "model": "fixture"
+    },
+    {
+      "path": "/v1/embeddings",
+      "model": "fixture"
+    }
+  ]
+}

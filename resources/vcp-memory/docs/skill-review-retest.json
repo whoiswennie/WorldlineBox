@@ -1,0 +1,159 @@
+{
+  "recordedAt": "2026-11-02T01:47:06.209Z",
+  "results": [
+    {
+      "name": "serve session append after status",
+      "ok": true,
+      "result": {
+        "category": "append",
+        "itemId": "Eval",
+        "itemType": "agent",
+        "topicId": "test",
+        "history": [
+          {
+            "role": "user",
+            "content": "persistent",
+            "id": "0cdf4eac-5519-4fd2-9a9e-37e80c9e56e6",
+            "timestamp": 1793584023018
+          }
+        ],
+        "result": {
+          "success": true
+        }
+      }
+    },
+    {
+      "name": "serve probe after status",
+      "ok": true,
+      "result": {
+        "model": "fixture",
+        "dimension": 64,
+        "valid": true
+      }
+    },
+    {
+      "name": "serve config.set after status",
+      "ok": true,
+      "result": {
+        "key": "USER_NAME",
+        "value": "Evaluation"
+      }
+    },
+    {
+      "name": "serve status after config mutation",
+      "ok": true,
+      "result": {
+        "home": "C:\\Users\\hp\\AppData\\Local\\Temp\\vcp-review-retest-2bq7KH\\mixed",
+        "runtimeDir": "C:\\Users\\hp\\AppData\\Local\\Temp\\vcp-review-retest-2bq7KH\\mixed\\runtime",
+        "started": true,
+        "vectors": false,
+        "plugins": [
+          "DailyNote"
+        ],
+        "providers": {
+          "embeddingConfigured": true,
+          "rerankConfigured": false,
+          "jevConfigured": false,
+          "aiMemoConfigured": false,
+          "coldEnabled": false
+        },
+        "routes": {
+          "chat": {
+            "api": "openai-completions",
+            "model": "deepseek-flash",
+            "streaming": false
+          },
+          "embedding": {
+            "configured": true,
+            "api": "openai-embeddings",
+            "model": null
+          },
+          "retries": 0
+        }
+      }
+    },
+    {
+      "name": "recursive config set redaction",
+      "ok": true,
+      "result": {
+        "key": "chat",
+        "value": {
+          "apiKey": "[redacted]",
+          "baseURL": "http://127.0.0.1:54328"
+        }
+      }
+    },
+    {
+      "name": "recursive config get redaction",
+      "ok": true,
+      "result": {
+        "API_URL": "http://127.0.0.1:54328",
+        "API_Key": "[redacted]",
+        "WhitelistEmbeddingModel": "fixture",
+        "VECTORDB_DIMENSION": 64,
+        "DEFAULT_TIMEZONE": "Asia/Shanghai",
+        "TDB_KNOWLEDGE_ENABLED": false,
+        "KNOWLEDGEBASE_BATCH_WINDOW_MS": 100,
+        "KNOWLEDGEBASE_DERIVED_STARTUP_COOLDOWN_MS": 100,
+        "LOCAL_EMBEDDING_ENABLED": false,
+        "chat": {
+          "apiKey": "[redacted]",
+          "baseURL": "http://127.0.0.1:54328"
+        }
+      }
+    },
+    {
+      "name": "header config redaction",
+      "ok": true,
+      "result": {
+        "key": "CHAT_HEADERS",
+        "value": "[redacted]"
+      }
+    },
+    {
+      "name": "environment-only generic endpoint probe",
+      "ok": true,
+      "result": {
+        "model": "fixture",
+        "dimension": 64,
+        "valid": true
+      }
+    },
+    {
+      "name": "chat tool discovery",
+      "ok": true,
+      "names": [
+        "AgentDream",
+        "ContextFoldingV2",
+        "DailyHot",
+        "DailyNote",
+        "DailyNoteManager",
+        "DailyNotePanelRouter",
+        "DailyNoteSearcher",
+        "LightMemo",
+        "MagiAgent",
+        "MemoryThinkingTray",
+        "OneRing",
+        "PlaceholderExplorer",
+        "RAGDiaryPlugin",
+        "SemanticGroupEditor",
+        "VCPTimeLine",
+        "WeatherInfoNow",
+        "DeepMemo",
+        "TopicMemo"
+      ]
+    },
+    {
+      "name": "serve cross-home rejection",
+      "ok": true,
+      "result": {
+        "id": 2,
+        "ok": false,
+        "error": {
+          "code": "VCP_MEMORY_ERROR",
+          "message": "A serve process is bound to one memory workspace"
+        }
+      }
+    }
+  ]
+}

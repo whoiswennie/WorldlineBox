@@ -1,0 +1,318 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<title>DailyNotePanel - 日记卡片面板</title>
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<link rel="stylesheet" href="style.css" />
+<link rel="manifest" href="/AdminPanel/DailyNotePanel/manifest.json" />
+<link rel="icon" href="/AdminPanel/DailyNotePanel/VCPNoteBook500.ico" />
+</head>
+<body>
+  <div id="app-root" class="app-root">
+    <!-- 左侧：日记本选择栏 -->
+    <aside id="sidebar" class="sidebar">
+      <div class="sidebar-header">
+        <h1 class="sidebar-title">日记本</h1>
+        <button id="toggle-sidebar" class="icon-button" title="折叠/展开">≡</button>
+      </div>
+      <div
+        id="workbench-entry"
+        class="notebook-item workbench-entry"
+        title="进入/退出工作台"
+        role="button"
+        tabindex="0"
+      >
+        <div class="notebook-dot"></div>
+        <span class="notebook-name">工作台</span>
+      </div>
+      <div
+        id="workbench-mini-entry"
+        class="notebook-mini-item workbench-mini-entry"
+        title="进入/退出工作台"
+        role="button"
+        tabindex="0"
+      >
+        📋
+      </div>
+      <div id="notebook-list" class="notebook-list">
+        <!-- 日记本列表（全模式） -->
+      </div>
+      <div id="notebook-mini-list" class="notebook-mini-list">
+        <!-- 折叠模式下左侧细栏的小圆圈首字 -->
+      </div>
+      <div class="sidebar-footer">
+        <button id="open-settings" class="icon-button settings-button" title="设置">⚙</button>
+      </div>
+    </aside>
+
+    <!-- 主区域：卡片流 / 编辑视图 / 设置视图 -->
+    <main id="main-view" class="main-view">
+      <!-- 顶部工具栏：根据模式切换显示内容 -->
+      <header id="top-bar" class="top-bar">
+        <!-- 默认模式：搜索框 + 批量选择删除 -->
+        <div id="top-bar-default" class="top-bar-row">
+          <div class="top-bar-left">
+            <button id="create-note-button" class="icon-button" title="创建新日记">+</button>
+            <input
+              id="search-input"
+              type="search"
+              class="search-input"
+              placeholder="多关键词搜索日记（空格分隔）"
+              autocomplete="off"
+            />
+          </div>
+          <div class="top-bar-right">
+            <button id="bulk-move-button" class="icon-button" title="批量选择转移">
+              ⇄
+            </button>
+            <button id="bulk-delete-button" class="icon-button" title="批量选择删除">
+              🗑
+            </button>
+          </div>
+        </div>
+
+        <!-- 编辑模式：返回 + 编辑工具栏 -->
+        <div id="top-bar-editor" class="top-bar-row top-bar-editor hidden">
+          <div class="top-bar-left">
+            <button id="back-to-cards" class="icon-button" title="返回卡片流">←</button>
+            <span id="editor-filename" class="editor-filename"></span>
+            <button id="editor-mode-toggle" class="icon-button" title="编辑/预览切换">📝</button>
+          </div>
+          <div class="top-bar-right">
+            <button id="save-note-button" class="primary-button">保存</button>
+          </div>
+        </div>
+
+        <!-- 设置模式：返回 + 标题 -->
+        <div id="top-bar-settings" class="top-bar-row top-bar-settings hidden">
+          <div class="top-bar-left">
+            <button id="back-from-settings" class="icon-button" title="返回日记">←</button>
+            <span class="settings-title">设置</span>
+          </div>
+          <div class="top-bar-right"></div>
+        </div>
+      </header>
+
+      <!-- 内容区：卡片流 / 编辑器 / 设置 -->
+      <section id="cards-view" class="cards-view">
+        <div id="cards-layout" class="cards-layout">
+          <section id="cards-pane" class="cards-pane">
+            <div id="cards-container" class="cards-container">
+              <!-- 日记卡片将动态渲染到这里 -->
+            </div>
+            <div id="cards-footer" class="cards-footer">
+              <span id="cards-status" class="status-text"></span>
+              <div class="pagination">
+                <button id="prev-page" class="secondary-button pagination-button" type="button">上一页</button>
+                <span id="page-info" class="status-text"></span>
+                <button id="next-page" class="secondary-button pagination-button" type="button">下一页</button>
+              </div>
+            </div>
+          </section>
+
+          <section id="workbench-preview-pane" class="workbench-pane workbench-preview-pane hidden">
+            <div class="workbench-pane-header">
+              <div class="workbench-pane-header-main">
+                <span class="workbench-pane-title">预览</span>
+              </div>
+            </div>
+            <div id="workbench-preview-empty" class="workbench-empty">
+              Markdown 预览会显示在这里
+            </div>
+            <div id="workbench-preview" class="workbench-preview hidden"></div>
+          </section>
+
+          <section id="workbench-editor-pane" class="workbench-pane workbench-editor-pane hidden">
+            <div class="workbench-pane-header">
+              <div class="workbench-pane-header-main">
+                <span id="workbench-filename" class="workbench-filename">未打开日记</span>
+                <span id="workbench-dirty-indicator" class="workbench-dirty-indicator hidden">未保存</span>
+              </div>
+              <button id="workbench-save-button" class="primary-button hidden" type="button" disabled>保存</button>
+            </div>
+            <div id="workbench-editor-empty" class="workbench-empty">
+              点击左侧卡片，在这里开始编辑
+            </div>
+            <textarea
+              id="workbench-editor-textarea"
+              class="workbench-editor-textarea hidden"
+              spellcheck="false"
+            ></textarea>
+          </section>
+        </div>
+      </section>
+
+      <section id="editor-view" class="editor-view hidden">
+        <div class="editor-container">
+          <textarea id="editor-textarea" class="editor-textarea" spellcheck="false"></textarea>
+          <div id="editor-preview" class="editor-preview hidden"></div>
+        </div>
+      </section>
+
+      <section id="settings-view" class="settings-view hidden">
+        <div class="settings-section settings-auth-section">
+          <h2>内化鉴权</h2>
+          <p class="settings-hint">
+            DailyNotePanel 会将这里保存的账号密码转换为 Basic Auth，并自动附加到日记 API 请求中；
+            未配置鉴权时，面板会在本地拦截业务请求，避免无证访问撞到后台。
+          </p>
+          <label class="settings-row settings-auth-row">
+            <span>账号</span>
+            <input
+              id="fallback-auth-username"
+              type="text"
+              autocomplete="username"
+              spellcheck="false"
+              placeholder="请输入账号"
+            />
+          </label>
+          <label class="settings-row settings-auth-row">
+            <span>密码</span>
+            <input
+              id="fallback-auth-password"
+              type="password"
+              autocomplete="current-password"
+              spellcheck="false"
+              placeholder="请输入密码"
+            />
+          </label>
+          <label class="settings-row">
+            <span>旧版请求模式（兼容侧边栏）</span>
+            <input id="legacy-request-mode" type="checkbox" />
+          </label>
+          <div class="settings-footer">
+            <div class="settings-action-group">
+              <button id="save-auth-btn" class="primary-button" type="button">保存鉴权</button>
+              <button id="clear-auth-btn" class="secondary-button" type="button">清空鉴权</button>
+            </div>
+            <span id="auth-status" class="status-text"></span>
+          </div>
+        </div>
+
+        <div class="settings-section">
+          <h2>屏蔽的日记本</h2>
+          <div id="blocked-notebooks-container" class="settings-block-list">
+            <!-- 动态填充复选框列表 -->
+          </div>
+        </div>
+
+        <div class="settings-section">
+          <label class="settings-row">
+            <span>自动屏蔽以“簇”结尾的日记本</span>
+            <input type="checkbox" id="auto-block-clusters" />
+          </label>
+        </div>
+
+        <div class="settings-section">
+          <label class="settings-row">
+            <span>主题模式</span>
+            <select id="theme-mode-select">
+              <option value="auto">跟随系统</option>
+              <option value="light">亮色</option>
+              <option value="dark">暗色</option>
+            </select>
+          </label>
+        </div>
+
+        <div class="settings-section">
+          <label class="settings-row">
+            <span>卡片列数</span>
+            <input id="cards-columns" type="number" min="1" max="8" />
+          </label>
+          <label class="settings-row">
+            <span>卡片内容行数</span>
+            <input id="card-max-lines" type="number" min="1" max="20" />
+          </label>
+          <label class="settings-row">
+            <span>单页最大日记数量</span>
+            <input id="page-size" type="number" min="10" max="500" />
+          </label>
+        </div>
+
+        <div class="settings-section">
+          <label class="settings-row">
+            <span>排序方式</span>
+            <select id="sort-mode">
+              <option value="mtime-desc">按修改时间（新→旧）</option>
+              <option value="mtime-asc">按修改时间（旧→新）</option>
+              <option value="name-asc">按文件名（A→Z）</option>
+              <option value="name-desc">按文件名（Z→A）</option>
+            </select>
+          </label>
+          <label class="settings-row">
+            <span>全局字体大小</span>
+            <input id="global-font-size" type="number" min="10" max="24" />
+          </label>
+        </div>
+
+        <div class="settings-footer">
+          <div>
+            <button id="settings-reset" class="secondary-button">重置为默认</button>
+            <button id="force-update-btn" class="secondary-button" type="button" style="margin-left: 8px; color: var(--danger);">
+              强制刷新缓存
+            </button>
+          </div>
+          <span id="settings-status" class="status-text"></span>
+        </div>
+      </section>
+    </main>
+
+    <!-- 删除确认弹窗 -->
+    <div id="delete-modal-backdrop" class="modal-backdrop hidden">
+      <div class="modal">
+        <h2 class="modal-title">确认删除</h2>
+        <p class="modal-subtitle">
+          将删除 <span id="delete-count" class="modal-count">0</span> 条日记：
+        </p>
+        <div id="delete-list" class="modal-list">
+          <!-- 待删除日记名称列表，支持滚动 -->
+        </div>
+        <div class="modal-footer">
+          <button id="delete-cancel" type="button" class="secondary-button">取消</button>
+          <button id="delete-confirm" type="button" class="primary-button modal-danger">确认删除</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- 转移确认弹窗 -->
+    <div id="move-modal-backdrop" class="modal-backdrop hidden">
+      <div class="modal">
+        <h2 class="modal-title">确认转移</h2>
+        <p class="modal-subtitle">
+          将转移 <span id="move-count" class="modal-count move-count">0</span> 条日记：
+        </p>
+        <div id="move-list" class="modal-list">
+          <!-- 待转移日记名称列表，支持滚动 -->
+        </div>
+        <label class="modal-field" for="move-target-select">
+          <span class="modal-field-label">目标日记本</span>
+          <select id="move-target-select" class="modal-select"></select>
+        </label>
+        <div id="move-target-hint" class="modal-hint"></div>
+        <div class="modal-footer">
+          <button id="move-cancel" type="button" class="secondary-button">取消</button>
+          <button id="move-confirm" type="button" class="primary-button">确认转移</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- 未保存修改确认弹窗 -->
+    <div id="unsaved-modal-backdrop" class="modal-backdrop hidden">
+      <div class="modal">
+        <h2 class="modal-title">放弃未保存修改？</h2>
+        <p id="unsaved-modal-message" class="modal-subtitle">
+          当前日记还有未保存修改，确认离开并放弃这些内容吗？
+        </p>
+        <div class="modal-footer">
+          <button id="unsaved-cancel" type="button" class="secondary-button">继续编辑</button>
+          <button id="unsaved-confirm" type="button" class="primary-button modal-danger">放弃修改</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script src="/AdminPanel/marked.min.js"></script>
+  <script src="script.js"></script>
+</body>
+</html>

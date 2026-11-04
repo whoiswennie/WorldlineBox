@@ -417,6 +417,8 @@ export const assetChangeEventSchema = z.strictObject({
    * 导航与画布；自动同步调度器必须忽略，避免回放后再 `sync.run`。
    */
   source: z.enum(['watcher', 'text-save', 'client', 'content-replace', 'sync']).optional(),
+  /** Main invalidates native drag paths only for filesystem/drag-icon changes. */
+  nativeDragPathsChanged: z.literal(true).optional(),
 });
 
 export type AssetChangeEvent = z.infer<typeof assetChangeEventSchema>;
@@ -827,6 +829,16 @@ const assetOperationSuccessSchemas = [
     ok: z.literal(true),
     type: z.literal('folder.browse-entries'),
     entries: z.array(folderBrowseEntrySchema),
+  }),
+  z.strictObject({
+    ok: z.literal(true),
+    type: z.literal('folder.filtered-counts'),
+    all: z.number().int().nonnegative(),
+    root: z.number().int().nonnegative(),
+    folders: z.array(z.strictObject({
+      folderId: z.string().min(1).max(4096),
+      count: z.number().int().nonnegative(),
+    })).max(50_000),
   }),
   z.strictObject({
     ok: z.literal(true),
@@ -2885,6 +2897,20 @@ const libraryLifecycleOperationSchema = z.enum([
 ]);
 
 export const rendererLifecycleEventSchema = z.discriminatedUnion('type', [
+  z.strictObject({
+    type: z.literal('worker.recovering'),
+    recoverySequence: z.number().int().positive().optional(),
+  }),
+  z.strictObject({
+    type: z.literal('worker.recovered'),
+    libraryIds: z.array(nonBlankString),
+    failedLibraryIds: z.array(nonBlankString),
+    recoverySequence: z.number().int().positive().optional(),
+  }),
+  z.strictObject({
+    type: z.literal('worker.failed'),
+    recoverySequence: z.number().int().positive().optional(),
+  }),
   z.strictObject({
     type: z.literal('library.opening'),
     operation: libraryLifecycleOperationSchema,

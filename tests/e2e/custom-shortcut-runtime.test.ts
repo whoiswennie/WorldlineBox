@@ -116,6 +116,70 @@ async function openShortcutSettings(
   await window.getByRole("tab", { name: "快捷键", exact: true }).click();
 }
 
+async function verifyConfiguredViewerSeeking(
+  application: Awaited<ReturnType<typeof electron.launch>>,
+  window: Page,
+  viewer: ReturnType<Page['getByRole']>,
+): Promise<void> {
+  const video = viewer.locator('video.preview-video');
+  if (!await video.evaluate(element => (element as HTMLVideoElement).paused)) {
+    await viewer.getByRole('button', { name: '暂停', exact: true })
+      .evaluate(button => (button as HTMLButtonElement).click());
+  }
+  await expect.poll(() => video.evaluate(element => (element as HTMLVideoElement).paused)).toBe(true);
+  await window.locator('.application-navigation-settings').click();
+  const settings = window.getByRole('dialog', { name: '通用设置' });
+  await settings.getByRole('tab', { name: '浏览', exact: true }).click();
+  // This case verifies seeking; keep the transport visible while crossing
+  // its controls instead of relying on the optional proximity preference.
+  const toolbarApproach = settings.getByRole('switch', { name: '工具栏在靠近时出现', exact: true });
+  if (await toolbarApproach.getAttribute('aria-checked') === 'true') await toolbarApproach.click();
+  await settings.getByRole('radio', { name: '按时间', exact: true }).click();
+  const amount = settings.getByRole('spinbutton', { name: '每次跳转', exact: true });
+  await amount.fill('0.5');
+  await amount.press('Enter');
+  await settings.getByRole('button', { name: '关闭', exact: true }).click();
+  await viewer.evaluate(element => (element as HTMLElement).focus());
+  await video.evaluate(element => { (element as HTMLVideoElement).currentTime = 1; });
+  await expect.poll(() => video.evaluate(element => (element as HTMLVideoElement).seeking)).toBe(false);
+  // Native Electron input traverses before-input/menu forwarding. The repeat
+  // modifier is the OS autorepeat signal, rather than four unrelated presses.
+  await application.evaluate(({ BrowserWindow }) => {
+    const contents = BrowserWindow.getAllWindows().find(win => !win.isDestroyed())?.webContents;
+    if (!contents) throw new Error('Missing viewer window.');
+    contents.sendInputEvent({ type: 'keyDown', keyCode: 'Right', modifiers: ['control'] });
+    for (let repeat = 0; repeat < 3; repeat += 1) {
+      contents.sendInputEvent({ type: 'keyDown', keyCode: 'Right', modifiers: ['control', 'isautorepeat'] });
+    }
+    contents.sendInputEvent({ type: 'keyUp', keyCode: 'Right', modifiers: ['control'] });
+    contents.sendInputEvent({ type: 'keyUp', keyCode: 'Control' });
+  });
+  await expect.poll(() => video.evaluate(element => (element as HTMLVideoElement).currentTime))
+    .toBeCloseTo(3, 1);
+  await window.waitForTimeout(300);
+  expect(await video.evaluate(element => (element as HTMLVideoElement).currentTime)).toBeCloseTo(3, 1);
+  const track = viewer.locator('.preview-video-track');
+  // Hidden-window native pointer placement varies across hosts. Target the
+  // shipped DOM wheel handler while still asserting the real media seek.
+  await track.dispatchEvent('wheel', { deltaY: -100, deltaMode: 0, bubbles: true, cancelable: true });
+  await expect.poll(() => video.evaluate(element => (element as HTMLVideoElement).currentTime))
+    .toBeCloseTo(3.5, 1);
+  await video.click({ button: 'right' });
+  await window.getByRole('menuitem', { name: '播放', exact: true }).hover();
+  await window.getByRole('menuitem', { name: /快退 0\.5 秒/u }).click();
+  await expect.poll(() => video.evaluate(element => (element as HTMLVideoElement).currentTime))
+    .toBeCloseTo(3, 1);
+  await video.click({ button: 'right' });
+  await window.getByRole('menuitem', { name: '播放', exact: true }).hover();
+  await window.getByRole('menuitem', { name: '改为按进度', exact: true }).click();
+  await window.waitForTimeout(1300);
+  await viewer.evaluate(element => (element as HTMLElement).focus());
+  await sendMainShortcutInput(application, 'Right', ['control']);
+  const duration = await video.evaluate(element => (element as HTMLVideoElement).duration);
+  await expect.poll(() => video.evaluate(element => (element as HTMLVideoElement).currentTime))
+    .toBeCloseTo(3 + duration * 0.05, 1);
+}
+
 async function setShortcutFromSettings(
   window: Page,
   actionName: string,
@@ -224,6 +288,10 @@ test("custom menu accelerators sync, yield to text inputs, and viewer keys run o
     }, { temporaryRoot, mediaPath, secondMediaPath });
     if (process.env.WORLDLINEBOX_E2E_PACKAGED_EXECUTABLE) expect(await application.evaluate(({ app }) => app.isPackaged)).toBe(true);
     const window = await application.firstWindow();
+    // The isolated window stays out of the foreground. Progress-wheel seeks
+    // coalesce through animation frames, which must run in that hidden window.
+    const nativeWindow = await application.browserWindow(window);
+    await nativeWindow.evaluate(win => win.webContents.setBackgroundThrottling(false));
     await expect(window.locator('[data-application-module="dsh"]')).toHaveAttribute('aria-current', 'page', { timeout: 30000 });
     await window.locator('[data-application-module="assets"]').click();
     await window.getByRole("button", { name: "创建资源库" }).click();
@@ -251,6 +319,7 @@ test("custom menu accelerators sync, yield to text inputs, and viewer keys run o
         && media.videoWidth > 0
         && media.duration > 1;
     }), { timeout: 30_000 }).toBe(true);
+    await verifyConfiguredViewerSeeking(application, window, firstViewer);
     await window.keyboard.press("ArrowRight");
     await expect(secondViewer).toBeVisible();
     await window.keyboard.press("ArrowLeft");

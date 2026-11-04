@@ -37,7 +37,10 @@ export function useToastNotifications(): UseToastNotificationsReturn {
   const [controller] = useState<ToastNotifications>(() =>
     createToastNotifications(),
   );
-  useEffect(() => () => controller.dispose(), [controller]);
+  // Activity deactivation runs effect cleanup without destroying this hook's
+  // state. Drop old module notices, but keep the controller subscribable when
+  // the same retained view resumes. useSyncExternalStore owns unsubscription.
+  useEffect(() => () => controller.clearToasts(), [controller]);
   const snapshot = useSyncExternalStore(
     controller.subscribe,
     controller.getSnapshot,

@@ -1,0 +1,35 @@
+{
+  "manifestVersion": "1.0.2",
+  "name": "DailyNotePanelRouter",
+  "version": "1.0.1",
+  "displayName": "DailyNotePanel 路由胶水插件",
+  "description": "通过 PluginManager 在主服务上注册 DailyNotePanel 的静态页面端点和 dailynote API 端点。第一阶段使用测试前缀 /DailyNotePanel2 与 /dailynote_api2，验证通过后可切换为正式前缀。",
+  "author": "B3000Kcn & DBL1F7E5",
+  "pluginType": "service",
+  "entryPoint": {
+    "script": "index.js"
+  },
+  "communication": {
+    "protocol": "direct"
+  },
+  "configSchema": {
+    "DebugMode": {
+      "type": "boolean",
+      "description": "是否启用路由胶水插件的调试日志输出。",
+      "default": false
+    },
+    "PanelPathPrefix": {
+      "type": "string",
+      "description": "DailyNotePanel 页面前缀。",
+      "default": "/AdminPanel/DailyNotePanel"
+    },
+    "ApiPathPrefix": {
+      "type": "string",
+      "description": "DailyNotePanel 所使用的 dailynote API 前缀。",
+      "default": "/AdminPanel/dailynote_api"
+    }
+  },
+  "capabilities": {
+    "invocationCommands": []
+  }
+}

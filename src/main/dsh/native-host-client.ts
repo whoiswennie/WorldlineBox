@@ -1,10 +1,13 @@
 import type { DshTaskEvent } from '../../shared/dsh-tasks';
+import type { BotBrainRequestMetrics } from '../../shared/companion-bot-context';
 
 export const NATIVE_HOST_PROTOCOL = 'worldlinebox-native-web-host-v1';
 export interface NativeHostEvent extends Omit<DshTaskEvent, 'taskId'> {
   status?: 'succeeded' | 'failed' | 'cancelled';
   error?: string;
   reason?: { kind: string };
+  /** App-owned main-brain observation; native workers do not synthesize this. */
+  contextMetrics?: BotBrainRequestMetrics;
 }
 
 /** Authenticated loopback transport to a standard plugin in the actual Web Host. */
@@ -20,12 +23,14 @@ export class NativeHostClient {
     });
     if (!response.ok) {
       const failure = await response.json().catch(() => ({})) as { error?: string };
-      throw new Error(`${endpoint.split('?')[0]}: ${failure.error ?? `Native Web Host returned HTTP ${response.status}.`}`);
+      throw Object.assign(new Error(`${endpoint.split('?')[0]}: ${failure.error ?? `Native Web Host returned HTTP ${response.status}.`}`), { status: response.status });
     }
     return response;
   }
-  async request<T>(endpoint: string, input?: unknown, signal?: AbortSignal): Promise<T> {
-    return (await this.response(endpoint, input, signal ?? AbortSignal.timeout(30000))).json() as Promise<T>;
+  async request<T>(endpoint: string, input?: unknown, signal?: AbortSignal, timeoutMs = 30000): Promise<T> {
+    if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 2147483647) throw new RangeError('Native Host request deadline must be a positive timer duration.');
+    const deadline = AbortSignal.timeout(timeoutMs);
+    return (await this.response(endpoint, input, signal ? AbortSignal.any([signal, deadline]) : deadline)).json() as Promise<T>;
   }
   async health(signal?: AbortSignal): Promise<void> {
     const value = await this.request<{ protocol: string; pid: number }>('/health', undefined, signal);

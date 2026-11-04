@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import path from 'node:path';
 import { readJson, atomicJson } from '../dsh/files';
-import type { CompanionModelConfig } from '../companions/model';
+import type { AiConnectionConfig } from '../../shared/ai-connection';
 import { BROWSER_AI_DEFAULT_CONTEXT_TOKENS, browserAiConfigSchema, browserAiRequestSchema, type BrowserAiConfig, type BrowserAiRequest, type BrowserAiSource, type BrowserAiTask } from '../../shared/browser-ai';
 import { browserAgentDeclarations, parseBrowserAgentTool, type BrowserAgentToolName } from '../../shared/browser-agent-tools';
 import { BrowserAiCredentials } from './ai-credentials';
@@ -10,7 +10,7 @@ import { generateBrowserAgentReply, type BrowserAgentMessage } from './agent-mod
 import { browserAgentTextBytes, compactBrowserAgentHistory, estimateBrowserAgentTokens } from './agent-context';
 
 export interface BrowserAiHooks {
-  getConfig?(): CompanionModelConfig;
+  getConfig?(): AiConnectionConfig;
   changed(): void;
   context(): unknown;
   hasTab(id: string): boolean;
@@ -51,7 +51,7 @@ export class BrowserAiService {
     if (prefs?.version === 2 && parsed.success && parsed.data.type === 'ai.preferences') this.contextTokens = parsed.data.contextTokens;
     else if (prefs) await atomicJson(path.join(this.root, 'ai-preferences.json'), { version: 2, contextTokens: this.contextTokens });
   }
-  private model(): CompanionModelConfig | undefined { try { return this.hooks.getConfig?.(); } catch { return; } }
+  private model(): AiConnectionConfig | undefined { try { return this.hooks.getConfig?.(); } catch { return; } }
   private globalSearchKey(): string {
     const model = this.model();
     try { return model?.apiKey && new URL(model.baseUrl ?? '').origin === 'https://api.deepseek.com' ? model.apiKey : ''; } catch { return ''; }

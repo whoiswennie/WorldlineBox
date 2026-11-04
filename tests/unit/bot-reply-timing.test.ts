@@ -1,0 +1,61 @@
+import { afterEach, beforeEach, expect, it, vi } from 'vitest';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
+import { BotStore } from '../../src/main/companion-bot/store';
+
+let root: string, filename: string, store: BotStore;
+const start = Date.parse('2026-11-03T00:00:00.000Z');
+beforeEach(() => {
+  vi.useFakeTimers({ toFake: ['Date'] }); vi.setSystemTime(start);
+  root = mkdtempSync(path.join(tmpdir(), 'wlb-reply-timing-')); filename = path.join(root, 'bot.sqlite'); store = new BotStore(filename);
+  for (const id of ['alice', 'bob']) store.createCompanion({ id, name: id, persona: '可靠伙伴' });
+});
+afterEach(() => { store.close(); vi.useRealTimers(); rmSync(root, { recursive: true, force: true }); });
+it('retains first queue/text timing and accumulated phases across retry, cold restart and stale callbacks', () => {
+  const direct = store.openDirect('alice'), input = store.enqueue({ conversationId: direct.id, senderId: 'user', content: '请答复' });
+  vi.setSystemTime(start + 250); const first = store.claim({ workerId: 'first' })!;
+  expect(store.getMessage(first.event.replyMessageId)?.timing).toBeUndefined();
+  expect(store.recordTurnTiming(first.event.id, first.leaseToken, { prepareMs: 30.5, modelMs: 400, firstTextAt: start + 700, finishMs: 10 })).toBe(true);
+  expect(store.requeue(first.event.id, first.leaseToken)).toBe(true);
+  store.close(); store = new BotStore(filename); vi.setSystemTime(start + 2000);
+  const second = store.claim({ workerId: 'second' })!;
+  expect(second.event.id).toBe(input.events[0]!.id);
+  expect(store.recordTurnTiming(first.event.id, first.leaseToken, { prepareMs: 999, firstTextAt: start + 1 })).toBe(false);
+  store.recordTurnTiming(second.event.id, second.leaseToken, { prepareMs: 5, modelMs: 100, firstTextAt: start + 2100 });
+  vi.setSystemTime(start + 2500); expect(store.settle({ eventId: second.event.id, leaseToken: second.leaseToken, status: 'done', content: '真实答复' })).toBe(true);
+  const expected = { elapsedMs: 2500, queueMs: 250, prepareMs: 35.5, modelMs: 500, firstTextMs: 700, finishMs: 10 };
+  expect(store.getMessage(second.event.replyMessageId)?.timing).toEqual(expected);
+  expect(store.searchMessages(direct.id, { query: '真实答复' }).items[0]?.timing).toEqual(expected);
+  vi.setSystemTime(start + 9999);
+  expect(store.recordTurnTiming(second.event.id, second.leaseToken, { modelMs: 999 })).toBe(false);
+  expect(store.settle({ eventId: second.event.id, leaseToken: second.leaseToken, status: 'done', content: '重复' })).toBe(false);
+  store.close(); store = new BotStore(filename); expect(store.getMessage(second.event.replyMessageId)?.timing).toEqual(expected);
+});
+it('records real cancellation and failure elapsed time once and rejects invalid phase values', () => {
+  const direct = store.openDirect('alice'), queued = store.enqueue({ conversationId: direct.id, senderId: 'user', content: '取消' });
+  vi.setSystemTime(start + 100); expect(store.cancelEvent(queued.events[0]!.id)).toBe(true);
+  expect(store.getMessage(queued.events[0]!.replyMessageId)?.timing).toEqual({ elapsedMs: 100 });
+  vi.setSystemTime(start + 500); expect(store.cancelEvent(queued.events[0]!.id)).toBe(false);
+  expect(store.getMessage(queued.events[0]!.replyMessageId)?.timing).toEqual({ elapsedMs: 100 });
+  store.enqueue({ conversationId: direct.id, senderId: 'user', content: '错误' }); const claim = store.claim({ workerId: 'failed' })!;
+  expect(() => store.recordTurnTiming(claim.event.id, claim.leaseToken, { modelMs: Number.POSITIVE_INFINITY })).toThrow('有限');
+  expect(() => store.recordTurnTiming(claim.event.id, claim.leaseToken, { prepareMs: -1 })).toThrow('有限');
+  vi.setSystemTime(start + 833); store.settle({ eventId: claim.event.id, leaseToken: claim.leaseToken, status: 'failed', content: '实际失败', error: 'network unavailable' });
+  expect(store.getMessage(claim.event.replyMessageId)?.timing).toEqual({ elapsedMs: 333, queueMs: 0 });
+});
+it('timestamps each actual media/peer emission without pretending the model has finished', () => {
+  const group = store.createGroup({ title: '伙伴群', memberIds: ['alice', 'bob'], participationMode: 'mentions' });
+  store.enqueue({ conversationId: group.id, senderId: 'user', recipientIds: ['alice'], content: '来斗图' });
+  vi.setSystemTime(start + 20); const claim = store.claim({ workerId: 'emitter' })!;
+  store.recordTurnTiming(claim.event.id, claim.leaseToken, { prepareMs: 10 }); vi.setSystemTime(start + 100);
+  const sticker = { id: 'sticker-fixture', kind: 'sticker' as const, name: '好耶', mimeType: 'image/webp', size: 10, url: 'worldlinebox-media://fixture' };
+  const first = store.publishForEvent(claim.event.id, 'one', { attachments: [sticker] });
+  expect(first.timing).toEqual({ elapsedMs: 100, queueMs: 20, prepareMs: 10 });
+  vi.setSystemTime(start + 200); const peer = store.enqueue({ conversationId: group.id, senderId: 'alice', recipientIds: ['bob'], content: '给你看', causationId: claim.event.id }).message;
+  expect(peer.timing).toEqual({ elapsedMs: 200, queueMs: 20, prepareMs: 10 });
+  vi.setSystemTime(start + 1000); store.recordTurnTiming(claim.event.id, claim.leaseToken, { modelMs: 800 });
+  store.settle({ eventId: claim.event.id, leaseToken: claim.leaseToken, status: 'done', content: '' });
+  expect(store.getMessage(first.id)?.timing).toEqual({ elapsedMs: 100, queueMs: 20, prepareMs: 10 });
+  expect(store.getMessage(claim.event.replyMessageId)?.timing).toEqual({ elapsedMs: 1000, queueMs: 20, prepareMs: 10, modelMs: 800 });
+});

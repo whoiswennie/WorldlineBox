@@ -1,0 +1,347 @@
+// modules/vcpLoop/toolCallParser.js
+const toolMarkerFuzzyMatcher = require('./toolMarkerFuzzyMatcher');
+
+class ToolCallParser {
+  static MARKERS = {
+    START: '<<<[TOOL_REQUEST]>>>',
+    END: '<<<[END_TOOL_REQUEST]>>>'
+  };
+
+  static ESCAPE_MARKERS = {
+    START: '「始ESCAPE」',
+    END: '「末ESCAPE」'
+  };
+
+  static ESCAPED_LITERAL_MAP = {
+    '<<<[TOOL_REQUEST_ESCAPE]>>>': '<<<[TOOL_REQUEST]>>>',
+    '<<<[END_TOOL_REQUEST_ESCAPE]>>>': '<<<[END_TOOL_REQUEST]>>>',
+    '「始ESCAPE」': '「始」',
+    '「末ESCAPE」': '「末」'
+  };
+
+  /**
+   * 从可见正文中剥离模型思考块。
+   *
+   * 支持：
+   * - <think>...</think> 与 <thinking>...</thinking>
+   * - 大小写、标签空白和属性变体
+   * - 同类或混合标签嵌套
+   * - 未闭合开始标签：保守丢弃该标签之后的全部内容
+   *
+   * 未配对的结束标签只移除标签本身，不会吞掉其后的可见正文。
+   *
+   * @param {string} content
+   * @returns {string}
+   */
+  static stripReasoningBlocks(content) {
+    if (!content || typeof content !== 'string') return '';
+
+    const tagRegex = /<\s*(\/?)\s*(think(?:ing)?)\b[^>]*>/gi;
+    const chunks = [];
+    let cursor = 0;
+    let depth = 0;
+    let match;
+
+    while ((match = tagRegex.exec(content)) !== null) {
+      if (depth === 0) {
+        chunks.push(content.slice(cursor, match.index));
+      }
+
+      const isClosingTag = match[1] === '/';
+      if (isClosingTag) {
+        if (depth > 0) depth -= 1;
+      } else {
+        depth += 1;
+      }
+
+      cursor = tagRegex.lastIndex;
+    }
+
+    // depth > 0 表示思考标签未闭合。为避免潜藏的工具调用被执行，
+    // 故意不保留最后一个开始标签之后的任何内容。
+    if (depth === 0) {
+      chunks.push(content.slice(cursor));
+    }
+
+    return chunks.join('');
+  }
+
+  /**
+   * 解析AI响应中的所有工具调用
+   * @param {string} content - AI响应内容
+   * @returns {Array<{name: string, args: object, archery: boolean, archeryNoReply?: boolean}>}
+   */
+  static parse(content) {
+    if (!content || typeof content !== 'string') return [];
+
+    const contentWithoutThink = this.stripReasoningBlocks(content);
+    const toolCalls = [];
+    let searchOffset = 0;
+
+    while (searchOffset < contentWithoutThink.length) {
+      const blockInfo = this.extractNextToolBlock(contentWithoutThink, searchOffset);
+      if (!blockInfo) break;
+
+      const parsed = this.parseBlock(blockInfo.blockContent);
+      if (parsed) {
+        toolCalls.push(parsed);
+      }
+
+      searchOffset = blockInfo.nextOffset;
+    }
+
+    return toolCalls;
+  }
+
+  /**
+   * 提取从指定偏移开始的下一个工具块，忽略 ESCAPE 字段中的结束标记。
+   * @param {string} content
+   * @param {number} fromIndex
+   * @returns {{blockContent: string, startIndex: number, endIndex: number, nextOffset: number}|null}
+   */
+  static extractNextToolBlock(content, fromIndex = 0) {
+    if (!content || typeof content !== 'string') return null;
+
+    const startMatch = toolMarkerFuzzyMatcher.findBlockStartMarker(content, fromIndex);
+    if (!startMatch) return null;
+
+    const blockStart = startMatch.index + startMatch.marker.length;
+    const endMatch = this._findBlockEnd(content, blockStart);
+    if (!endMatch) return null;
+
+    return {
+      blockContent: content.substring(blockStart, endMatch.index).trim(),
+      startIndex: startMatch.index,
+      endIndex: endMatch.index,
+      nextOffset: endMatch.index + endMatch.marker.length
+    };
+  }
+
+  /**
+   * 解析单个工具调用块，可供其他入口（如人类直调工具）复用
+   * @param {string} blockContent
+   * @returns {{name: string, args: object, archery: boolean, archeryNoReply: boolean, markHistory: boolean, river: string|null, vref: string|null}|null}
+   */
+  static parseBlock(blockContent) {
+    if (!blockContent || typeof blockContent !== 'string') return null;
+
+    const fields = this._scanFields(blockContent);
+    if (fields.length === 0) return null;
+
+    const args = {};
+    let toolName = null;
+    let jevVirtualField = null;
+    let isArchery = false;
+    let archeryNoReply = false;
+    let markHistory = false;
+    let river = null;
+    let vref = null;
+
+    for (const field of fields) {
+      const trimmedValue = field.value.trim();
+
+      if (field.key === 'tool_name') {
+        toolName = trimmedValue;
+      } else if (field.key.toLowerCase() === 'jev') {
+        // JEV 可能是顶层实验性虚拟工具，也可能是真实工具（如 LightMemo、LexibankOperator）的合法参数。
+        // 暂存该字段，留待全部字段扫描完毕后依据 tool_name 是否显式声明进行延迟裁决，消解顺序敏感与身份抢占歧义。
+        jevVirtualField = field;
+      } else if (field.key === 'archery') {
+        isArchery = trimmedValue === 'true' || trimmedValue === 'no_reply';
+        archeryNoReply = trimmedValue === 'no_reply';
+      } else if (field.key === 'ink') {
+        markHistory = trimmedValue === 'mark_history';
+      } else if (field.key === 'river') {
+        river = trimmedValue;
+      } else if (field.key === 'vref') {
+        vref = trimmedValue;
+      } else {
+        // 工具参数：保留前导缩进（仅剥离首行紧贴标记的单次换行，以及末尾的单次换行/空白）
+        args[field.key] = this._normalizeFieldValue(field.value);
+      }
+    }
+
+    // 字段扫描完成后的延迟裁决：
+    if (jevVirtualField) {
+      if (!toolName) {
+        // 未显式声明 tool_name 时，作为顶层实验性虚拟工具触发：
+        // 它没有真实 plugin manifest，由 ToolExecutor 在插件查找前展开为一个或多个白名单真实工具调用。
+        toolName = 'JEV';
+        args.expression = jevVirtualField.value.trim();
+      } else {
+        // 已显式声明 tool_name（如 LightMemo、LexibankOperator 等）：
+        // jev 作为该实体工具的普通参数处理，保留规范化后的参数值。
+        args[jevVirtualField.key] = this._normalizeFieldValue(jevVirtualField.value);
+      }
+    }
+
+    // 兼容中性署名字段 valet：现有工具链统一读取 args.maid，
+    // 因此当 valet 存在且 maid 未显式提供时，镜像一份到 maid。
+    if (args.valet && !args.maid) {
+      args.maid = args.valet;
+    }
+
+    return toolName ? { name: toolName, args, archery: isArchery, archeryNoReply, markHistory, river, vref } : null;
+  }
+
+  static _findBlockEnd(content, fromIndex) {
+    let cursor = fromIndex;
+    const escapeStartRegex = toolMarkerFuzzyMatcher.getEscapeStartRegex(false);
+    const escapeEndRegex = toolMarkerFuzzyMatcher.getEscapeEndRegex(false);
+
+    while (cursor < content.length) {
+      const remaining = content.slice(cursor);
+      const startMatch = escapeStartRegex.exec(remaining);
+      const nextEscapeStart = startMatch ? cursor + startMatch.index : -1;
+      
+      const endMatch = toolMarkerFuzzyMatcher.findBlockEndMarker(content, cursor);
+
+      if (!endMatch) return null;
+      if (nextEscapeStart === -1 || endMatch.index < nextEscapeStart) {
+        return endMatch;
+      }
+
+      const searchStartFrom = nextEscapeStart + startMatch[0].length;
+      const escapeEndMatch = escapeEndRegex.exec(content.slice(searchStartFrom));
+
+      if (!escapeEndMatch) {
+        return null;
+      }
+
+      const escapedEnd = searchStartFrom + escapeEndMatch.index;
+      cursor = escapedEnd + escapeEndMatch[0].length;
+    }
+
+    return null;
+  }
+
+  static _scanFields(blockContent) {
+    const fields = [];
+    let cursor = 0;
+
+    while (cursor < blockContent.length) {
+      cursor = this._skipWhitespaceAndCommas(blockContent, cursor);
+      if (cursor >= blockContent.length) break;
+
+      const keyMatch = /^[\w_]+/.exec(blockContent.slice(cursor));
+      if (!keyMatch) {
+        cursor += 1;
+        continue;
+      }
+
+      const key = keyMatch[0];
+      cursor += key.length;
+      cursor = this._skipWhitespace(blockContent, cursor);
+
+      if (blockContent[cursor] !== ':') {
+        continue;
+      }
+      cursor += 1;
+      cursor = this._skipWhitespace(blockContent, cursor);
+
+      let startMarker = null;
+      let endMarker = null;
+      let endIndex = -1;
+      let isEscape = false;
+
+      const escapeStartRegex = toolMarkerFuzzyMatcher.getEscapeStartRegex(true);
+      const escapeMatch = escapeStartRegex.exec(blockContent.slice(cursor));
+
+      if (escapeMatch) {
+        isEscape = true;
+        startMarker = escapeMatch[0];
+        cursor += startMarker.length;
+
+        const escapeEndRegex = toolMarkerFuzzyMatcher.getEscapeEndRegex(false);
+        const endMatch = escapeEndRegex.exec(blockContent.slice(cursor));
+        if (endMatch) {
+          endIndex = cursor + endMatch.index;
+          endMarker = endMatch[0];
+        }
+      } else {
+        const startMatch = toolMarkerFuzzyMatcher.matchFieldStartMarker(blockContent, cursor);
+
+        if (!startMatch) {
+          continue;
+        }
+
+        startMarker = startMatch.marker;
+        cursor += startMarker.length;
+
+        const endMatch = toolMarkerFuzzyMatcher.findFieldEndMarker(blockContent, cursor);
+        if (endMatch) {
+          endIndex = endMatch.index;
+          endMarker = endMatch.marker;
+        }
+      }
+
+      if (endIndex === -1) {
+        break;
+      }
+
+      const rawValue = blockContent.slice(cursor, endIndex);
+      const restoredValue = isEscape
+        ? this._restoreEscapedLiterals(rawValue)
+        : rawValue;
+
+      fields.push({ key, value: restoredValue });
+
+      cursor = endIndex + endMarker.length;
+      cursor = this._skipWhitespace(blockContent, cursor);
+      if (blockContent[cursor] === ',') {
+        cursor += 1;
+      }
+    }
+
+    return fields;
+  }
+
+  /**
+   * 规范化参数字段值：
+   * 保护首行与各行的代码/文本前导缩进（禁止直接使用全量 trim()）。
+   * 1. 若首字符紧跟换行（\r\n 或 \n），剥离该换行符，但保留第一行代码的缩进空格。
+   * 2. 剥离末尾的换行及尾随空白。
+   * @param {string} value
+   * @returns {string}
+   */
+  static _normalizeFieldValue(value) {
+    if (typeof value !== 'string') return '';
+    return value.replace(/^(?:\r?\n)/, '').replace(/(?:\r?\n)?[ \t]*$/, '');
+  }
+
+  static _restoreEscapedLiterals(content) {
+    let restored = content;
+    for (const [escapedValue, literalValue] of Object.entries(this.ESCAPED_LITERAL_MAP)) {
+      restored = restored.split(escapedValue).join(literalValue);
+    }
+    restored = restored.replace(toolMarkerFuzzyMatcher.getEscapeStartRegex(false), '「始」');
+    restored = restored.replace(toolMarkerFuzzyMatcher.getEscapeEndRegex(false), '「末」');
+    return restored;
+  }
+
+  static _skipWhitespace(content, index) {
+    while (index < content.length && /\s/.test(content[index])) {
+      index += 1;
+    }
+    return index;
+  }
+
+  static _skipWhitespaceAndCommas(content, index) {
+    while (index < content.length && /[\s,]/.test(content[index])) {
+      index += 1;
+    }
+    return index;
+  }
+
+  /**
+   * 分离普通调用和Archery调用
+   */
+  static separate(toolCalls) {
+    return {
+      normal: toolCalls.filter(tc => !tc.archery),
+      archery: toolCalls.filter(tc => tc.archery)
+    };
+  }
+}
+
+module.exports = ToolCallParser;

@@ -3,7 +3,6 @@ import { mkdtemp, mkdir, rm, symlink } from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
 import { randomUUID } from 'node:crypto';
-import { companionDshArgumentsSchema } from '../../src/shared/companion-dsh-tool';
 import { dshTaskSpecSchema } from '../../src/shared/dsh-task-spec';
 import { snapshotDshTaskExecution } from '../../src/main/dsh/task-execution';
 import { prepareDshTaskWorkspace } from '../../src/main/dsh/task-workspace';
@@ -12,17 +11,15 @@ const roots: string[] = [];
 afterEach(async () => { for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true }); });
 const owner = { actionId: randomUUID(), companionId: 'companion-a', conversationId: 'conversation-a', sourceMessageId: 'message-a' };
 
-describe('Companion task specification', () => {
-  it('keeps every partner in its managed workspace while general launcher tasks retain explicit project workspaces', () => {
+describe('DSH task specification', () => {
+  it('allows explicit project workspaces in general launcher tasks', () => {
     const task = { title: '已有项目', prompt: '在输入中的项目绝对路径继续工作。', workspace: { mode: 'existing', path: path.resolve('project') } };
-    expect(companionDshArgumentsSchema.safeParse({ tasks: [task] }).success).toBe(false);
     expect(dshTaskSpecSchema.safeParse({ workspace: task.workspace }).success).toBe(true);
-    expect(companionDshArgumentsSchema.safeParse({ tasks: [{ ...task, workspace: { mode: 'managed' } }] }).success).toBe(true);
   });
   it('accepts per-task choices while denying plugin, model and credential fields', () => {
-    const task = { title: 'Read', prompt: 'Inspect the file', mode: 'native', tools: ['read'], skills: [], session: { mode: 'new' }, workspace: { mode: 'managed' }, delivery: { format: 'json' } };
-    expect(companionDshArgumentsSchema.safeParse({ tasks: [task] }).success).toBe(true);
-    for (const field of ['plugins', 'model', 'apiKey', 'cwd']) expect(companionDshArgumentsSchema.safeParse({ tasks: [{ ...task, [field]: 'untrusted' }] }).success).toBe(false);
+    const task = { mode: 'native', tools: ['read'], skills: [], session: { mode: 'new' }, workspace: { mode: 'managed' }, delivery: { format: 'json' } };
+    expect(dshTaskSpecSchema.safeParse(task).success).toBe(true);
+    for (const field of ['plugins', 'model', 'apiKey', 'cwd']) expect(dshTaskSpecSchema.safeParse({ ...task, [field]: 'untrusted' }).success).toBe(false);
     expect(dshTaskSpecSchema.safeParse({ session: { mode: 'resume' } }).success).toBe(false);
     expect(dshTaskSpecSchema.safeParse({ workspace: { mode: 'existing' } }).success).toBe(false);
     expect(dshTaskSpecSchema.safeParse({ tools: ['read', 'read'] }).success).toBe(false);

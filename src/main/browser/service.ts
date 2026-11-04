@@ -15,7 +15,7 @@ import { browserTabShortcut } from '../../shared/browser-shortcuts';
 import { setTimeout as delay } from 'node:timers/promises';
 import { BrowserAiService } from './ai-service';
 import { BrowserPageController } from './page-controller';
-import type { CompanionModelConfig } from '../companions/model';
+import type { AiConnectionConfig } from '../../shared/ai-connection';
 import type { BrowserAgentToolName } from '../../shared/browser-agent-tools';
 import { browserAiRequestSchema, type BrowserAiSource } from '../../shared/browser-ai';
 import { companionBrowserArgumentsSchema, type CompanionBrowserArguments, type CompanionBrowserScope } from '../../shared/companion-browser';
@@ -60,7 +60,7 @@ export class BrowserService {
   private readonly companionActivity = new BrowserCompanionActivity(() => { this.layout(); this.changed(false); });
   private readonly companionPages = new Map<string, BrowserPageController>();
   private readonly companionOpenedTabs = new Map<string, string>();
-  constructor(private readonly getWindow: () => BrowserWindow | null | undefined, private readonly root = path.join(app.getPath('userData'), 'browser'), private readonly captureHooks?: BrowserCaptureHooks, private readonly onSelection?: (text: string) => Promise<void>, private readonly fullscreenShortcut?: (input: Electron.Input) => boolean, getModelConfig?: () => CompanionModelConfig) {
+  constructor(private readonly getWindow: () => BrowserWindow | null | undefined, private readonly root = path.join(app.getPath('userData'), 'browser'), private readonly captureHooks?: BrowserCaptureHooks, private readonly onSelection?: (text: string) => Promise<void>, private readonly fullscreenShortcut?: (input: Electron.Input) => boolean, getModelConfig?: () => AiConnectionConfig) {
     this.store = new BrowserStore(root, error => { this.error = '浏览器配置保存失败：' + String(error).slice(0, 600); this.changed(false); });
     this.ai = new BrowserAiService(root, { getConfig: getModelConfig, changed: () => this.changed(false), hasTab: id => this.store.data.tabs.some(tab => tab.id === id),
       context: () => ({ activeTabId: this.store.data.activeTabId, tabCount: this.store.data.tabs.length,
@@ -895,7 +895,7 @@ export class BrowserService {
   }
 }
 
-export function registerBrowserIpc(getWindow: () => BrowserWindow | null | undefined, captureHooks?: BrowserCaptureHooks, onSelection?: (text: string) => Promise<void>, fullscreenShortcut?: (input: Electron.Input) => boolean, getModelConfig?: () => CompanionModelConfig): Pick<BrowserService, 'shutdown' | 'closeLibrary' | 'captureViewport' | 'selectedText' | 'saveScreenshot' | 'companionTool'> {
+export function registerBrowserIpc(getWindow: () => BrowserWindow | null | undefined, captureHooks?: BrowserCaptureHooks, onSelection?: (text: string) => Promise<void>, fullscreenShortcut?: (input: Electron.Input) => boolean, getModelConfig?: () => AiConnectionConfig): Pick<BrowserService, 'shutdown' | 'closeLibrary' | 'captureViewport' | 'selectedText' | 'saveScreenshot' | 'companionTool'> {
   let browser: BrowserService | undefined;
   ipcMain.handle(BROWSER_REQUEST, async (event, input: unknown): Promise<BrowserResponse> => {
     const owner = getWindow(); if (!owner || event.sender !== owner.webContents || event.senderFrame !== owner.webContents.mainFrame) return { ok: false, error: '无权访问浏览器。' };

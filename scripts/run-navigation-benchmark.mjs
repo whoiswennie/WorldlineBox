@@ -45,9 +45,7 @@ if (process.env.WORLDLINEBOX_E2E_PACKAGED_EXECUTABLE) {
 
 const child = spawn(process.execPath, [
   'scripts/run-e2e.mjs',
-  process.env.WORLDLINEBOX_NAV_BENCH_MODULES_ONLY === '1'
-    ? 'tests/e2e/module-navigation-perf-benchmark.test.ts'
-    : 'tests/e2e/navigation-perf-benchmark.test.ts',
+  'tests/e2e/navigation-perf-benchmark.test.ts',
 ], {
   env: {
     ...process.env,

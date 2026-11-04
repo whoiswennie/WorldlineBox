@@ -9,9 +9,8 @@ import { CAPTURE_TOOLS_ARGUMENT } from '../shared/capture-tools';
 import { network } from './bridge/application-network';
 import { llm } from './bridge/llm';
 import { music } from './bridge/music';
-import { companions } from './bridge/companions';
-import { companionWorld } from './bridge/companion-world-window';
-import { COMPANION_WORLD_WINDOW_ARGUMENT } from '../shared/companion-world-window';
+import { companionBot } from './bridge/companion-bot';
+import { companionBotMedia } from './bridge/companion-bot-media';
 import { automation } from './bridge/automation';
 import {
   armE2eBrowseSessionDelay,
@@ -28,7 +27,7 @@ import type { RendererRequest } from '../shared/protocol/requests';
 
 const e2eEnabled = process.env.WORLDLINEBOX_E2E === '1';
 
-if (!process.argv.includes(COMPANION_WORLD_WINDOW_ARGUMENT) && !process.argv.includes(CAPTURE_TOOLS_ARGUMENT)) {
+if (!process.argv.includes(CAPTURE_TOOLS_ARGUMENT)) {
   contextBridge.exposeInMainWorld('worldlineboxStartup', Object.freeze({
     notify(state: StartupRendererState): void {
       if (state === 'ready' || state === 'failed') ipcRenderer.send(STARTUP_RENDERER_STATE_CHANNEL, state);
@@ -76,7 +75,7 @@ const e2eDiagnostics = Object.freeze({
 
 contextBridge.exposeInMainWorld(
   'worldlinebox',
-  process.argv.includes(CAPTURE_TOOLS_ARGUMENT) ? Object.freeze({ captureTools }) : process.argv.includes(COMPANION_WORLD_WINDOW_ARGUMENT) ? Object.freeze({ companionWorld }) : Object.freeze({
+  process.argv.includes(CAPTURE_TOOLS_ARGUMENT) ? Object.freeze({ captureTools }) : Object.freeze({
     library,
     shell,
     shortcuts,
@@ -88,8 +87,8 @@ contextBridge.exposeInMainWorld(
     network,
     llm,
     music,
-    companions,
-    companionWorld,
+    companionBot,
+    companionBotMedia,
     automation,
     mcp,
     plugins,

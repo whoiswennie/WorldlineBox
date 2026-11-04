@@ -1,11 +1,11 @@
-import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { createCanvas } from '@napi-rs/canvas';
 import { _electron as electron, expect, test, type ElectronApplication, type Page } from '@playwright/test';
 import type { WorldlineBoxLibraryApi } from '../../src/shared/library-api';
 import { LOCAL_TEXT_EMBEDDING_MODEL_ID } from '../../src/shared/embedding/global-profile';
-import { removeCompanionTestDirectory, assetCard, electronLaunchEnv, resolveElectronLaunchOptions, waitForLibraryLoadingToFinish } from './electron-test-helpers';
+import { removeCompanionTestDirectory, assetCard, electronLaunchEnv, resolveElectronLaunchOptions, resolveSessionLogPath, waitForLibraryLoadingToFinish } from './electron-test-helpers';
 
 type Bridge = Window & { worldlinebox: { library: WorldlineBoxLibraryApi } };
 function cleanupSemanticFixture(root: string) {
@@ -17,7 +17,7 @@ function cleanupSemanticFixture(root: string) {
 // Only the OS picker is directed to this case's own files; no embedding endpoint,
 // replacement vectors, index writes or user profile are supplied by the fixture.
 // eslint-disable-next-line no-empty-pattern
-test('enables real bundled asset semantics through the UI and reuses SQLite vectors after full restart before releasing runtime cache', async ({}, testInfo) => {
+test('enables real bundled asset semantics and reuses SQLite vectors after worker recovery and full restart before releasing runtime cache', async ({}, testInfo) => {
   test.setTimeout(300_000);
   const root = mkdtempSync(path.join(tmpdir(), 'worldlinebox-semantic-sqlite-e2e-'));
   const evidence = path.resolve('artifacts/vcp-validation/asset-ui-lifecycle'); mkdirSync(evidence, { recursive: true });
@@ -98,6 +98,37 @@ test('enables real bundled asset semantics through the UI and reuses SQLite vect
     await page.screenshot({ path: path.join(evidence, 'bundled-assets-similar.png') });
     await expect.poll(() => persistedVectors(application!, libraryPath)).toEqual(before);
 
+    // Recover the actual library process with the custom bundled encoder active.
+    // This proves replaying the upstream lifecycle keeps our vector store and
+    // global model integration, rather than merely reopening an empty library.
+    const logPath = resolveSessionLogPath(path.join(profile, 'logs'));
+    const spawnedPids = () => readFileSync(logPath, 'utf8').split(/\r?\n/u).filter(Boolean)
+      .map(line => JSON.parse(line) as { scope?: string; context?: { pid?: number } })
+      .filter(entry => entry.scope === 'worker.spawn')
+      .map(entry => entry.context?.pid).filter((pid): pid is number => typeof pid === 'number');
+    const workerPidsBefore = spawnedPids();
+    const workerPidBefore = workerPidsBefore.at(-1);
+    expect(workerPidBefore).toBeGreaterThan(0);
+    const processPids = await application.evaluate(({ app }) => app.getAppMetrics().map(metric => metric.pid));
+    expect(processPids).toContain(workerPidBefore);
+    process.kill(workerPidBefore!);
+    await expect.poll(() => spawnedPids().length, { timeout: 30_000 }).toBeGreaterThan(workerPidsBefore.length);
+    const workerPidAfter = spawnedPids().at(-1);
+    expect(workerPidAfter).not.toBe(workerPidBefore);
+    await expect.poll(() => application!.evaluate(({ app }, pid) =>
+      app.getAppMetrics().some(metric => metric.pid === pid), workerPidAfter)).toBe(true);
+    await waitForLibraryLoadingToFinish(page);
+    await expect(page.locator('.workspace-canvas')).not.toHaveAttribute('inert', '');
+    const recoveredLibraries = await page.evaluate(() => (window as unknown as Bridge).worldlinebox.library.listOpen());
+    expect(recoveredLibraries).toMatchObject({ ok: true, value: [expect.objectContaining({ libraryId })] });
+    await expect.poll(() => indexStatus(page, libraryId), { timeout: 120_000 })
+      .toMatchObject({ phase: 'ready', done: 5, total: 5, failedCount: 0 });
+    expect(await persistedVectors(application, libraryPath)).toEqual(before);
+    await searchFromUi(page, '下雨之前要从哪里拿雨伞');
+    await expect(page.locator('.asset-card').first()).toHaveAttribute('data-asset-name', '雨天备忘.md', { timeout: 60_000 });
+    expect(await persistedVectors(application, libraryPath)).toEqual(before);
+    await page.screenshot({ path: path.join(evidence, 'bundled-assets-worker-recovered.png') });
+
     await application.close(); application = undefined;
     started = await launch(); application = started.application; page = started.page;
     // Asset libraries intentionally reopen through the normal picker. Wait for
@@ -125,7 +156,7 @@ test('enables real bundled asset semantics through the UI and reuses SQLite vect
     const status = await page.evaluate(() => (window as unknown as Bridge).worldlinebox.library.embeddingLocalTextStatus());
     expect(status).toMatchObject({ ok: true, value: { installed: true, runtimeInstalled: true, phase: 'ready' } });
     await page.screenshot({ path: path.join(evidence, 'bundled-assets-cache-released.png') });
-    const proof = { model: LOCAL_TEXT_EMBEDDING_MODEL_ID, actualTextAndImages: 5, uiEnabled: true, uiSemanticSearch: true, uiImageSimilar: true, fullAppRestart: true, unchangedVectorBlobsAndTimestamps: before, activatedRuntimePids: activatedPids, runtimeChildrenAfterClear: [], runtimeCleared: true, bundledFilesPreserved: true };
+    const proof = { model: LOCAL_TEXT_EMBEDDING_MODEL_ID, actualTextAndImages: 5, uiEnabled: true, uiSemanticSearch: true, uiImageSimilar: true, workerRecovery: { previousPid: workerPidBefore, recoveredPid: workerPidAfter, semanticQuerySucceeded: true }, fullAppRestart: true, unchangedVectorBlobsAndTimestamps: before, activatedRuntimePids: activatedPids, runtimeChildrenAfterClear: [], runtimeCleared: true, bundledFilesPreserved: true };
     writeFileSync(path.join(evidence, 'sqlite-reuse-proof.json'), JSON.stringify(proof, null, 2));
     await testInfo.attach('sqlite-reuse-proof', { body: JSON.stringify(proof), contentType: 'application/json' });
   } finally {

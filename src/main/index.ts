@@ -4,36 +4,30 @@ import { bindStartupHandoff } from "./startup-handoff";
 import { isCurrentDocumentReload } from "./renderer-navigation";
 import { DEFAULT_GLOBAL_LLM_CONFIG, resolveStoredLlmConfig } from "../shared/llm";
 import path from "node:path";
-import { CompanionWorkspaceStore, createCompanionLibraryAdmission, readCompanionWorkspaceStatus } from './companions/workspace';
-import { COMPANION_WORKSPACE_CHANNEL, companionWorkspaceRequestSchema, type CompanionWorkspaceLibrary, type CompanionWorkspaceResponse } from '../shared/companion-workspace';
-import type { CompanionMemoryDocumentCommand } from '../shared/companion-memory-documents';
-import type { CompanionLearningWorkspaceCommand } from '../shared/companion-learning';
-import { companionLearningAssets } from './companions/learning-assets';
+import type { BotService } from './companion-bot/service';
+import { BOT_CHANNEL, BOT_EVENT_CHANNEL, botRequestSchema } from '../shared/companion-bot';
+import { BOT_MEDIA_CHANNEL,botMediaRequestSchema,type BotMediaResponse } from '../shared/companion-bot-media';
+import type { BotMediaService } from './companion-bot/media-service';
+import { botCanInspectConversation, botCanImportConversationMedia } from '../shared/companion-bot-access';
 import { GlobalEmbeddingService, createManagedTextEmbeddingService } from './embedding-global-service';
 import { EmbeddingDeviceCapabilityService } from './embedding-device-capability';
 import { LocalTextEmbeddingInstaller } from './embedding-text-model-install';
+import { createEmbeddingResourcePreparation } from './embedding-resource-preparation';
 import { VcpEmbeddingGateway } from './vcp-embedding-gateway';
-import { VcpChatGateway } from './vcp-chat-gateway';
-import { CompanionVcpRuntime } from './companions/vcp-runtime';
-import { createCompanionEmbeddingResourcePreparation, prepareCompanionMemoryIdleStartup } from './companions/memory-startup';
 import type { DshLauncher } from './dsh/launcher';
 import type { LauncherNetwork } from './dsh/launcher-network';
 import { forkNetworkUtility } from './network-utility-process';
 import { APPLICATION_NETWORK_REQUEST } from '../shared/application-network';
-import type { CompanionService } from './companions/service';
-import { CompanionExecutionPausedError } from './companions/execution-pause';
-import { CompanionWorldWindowManager } from './companions/world-windows';
 import type { MusicService } from './music/service';
 import type { CaptureToolsService } from './capture-tools/service';
 import type { BrowserService } from './browser/service';
 import { importCapturedFile } from './browser/import-staged';
 import { parseLinkedVirtualFolderId } from '../shared/linked-folder-tree';
-import { COMPANIONS_CHANNEL } from '../shared/companions';
 import { DSH_LAUNCHER_CHANNEL } from '../shared/dsh-launcher';
 import { spawn } from "node:child_process";
 import { freemem, tmpdir, totalmem } from "node:os";
 import { randomUUID } from "node:crypto";
-import { readFile } from "node:fs/promises";
+import { readFile, realpath } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { createWindowsInstallerCleanupInvocation } from "./windows-installer-cleanup";
 import {
@@ -53,7 +47,6 @@ import {
   clipboard,
   dialog,
   ipcMain,
-  net,
   protocol,
   safeStorage,
   screen,
@@ -292,6 +285,7 @@ import {
 import {
   ASSET_CHANGE_CHANNEL,
   ASSET_NATIVE_DRAG_CHANNEL,
+  ASSET_NATIVE_DRAG_READINESS_CHANNEL,
   ASSET_NATIVE_DRAG_PRIME_CHANNEL,
   EXTENSION_SAVE_COMPLETED_CHANNEL,
   THUMBNAIL_CHANNEL,
@@ -444,7 +438,7 @@ import {
   shouldHideApplicationMenuBar,
   shouldUseFramelessTitleBar,
 } from "../shared/window-controls";
-import { matchViewerVideoLetterShortcut } from "../shared/viewer-video-shortcuts";
+import { matchViewerVideoLetterShortcut, viewerShortcutRepeatForward } from "../shared/viewer-video-shortcuts";
 import {
   resolveOpenExternalUrlTarget,
   type OpenExternalUrlResult,
@@ -586,6 +580,7 @@ import {
   cleanupStaleClipboardImages,
 } from "./desktop-ingestion";
 import { worldlineboxProtocolSchemes } from "./worldlinebox-protocol-privileges";
+import { bindRendererEffects } from './renderer-effects';
 import {
   parsePluginUiAssetRequestFromNavigation,
   rewritePluginUiHtmlAssetUrls,
@@ -657,10 +652,9 @@ let disposeGlobalNetworkIpc: (() => void) | undefined;
 let browserService: Pick<BrowserService, 'shutdown' | 'closeLibrary' | 'captureViewport' | 'selectedText' | 'saveScreenshot' | 'companionTool'> | undefined;
 let captureToolsService: CaptureToolsService | undefined;
 let musicService: MusicService | undefined;
-let companionService: CompanionService | undefined;
-let companionRecoveryOperation: { key: string; promise: Promise<CompanionWorkspaceResponse> } | undefined;
-let creatingCompanionService: Promise<CompanionService> | undefined;
-let companionWorldWindows: CompanionWorldWindowManager | undefined;
+let botService: BotService | undefined;
+let botMediaService: Promise<BotMediaService> | undefined;
+let creatingBotService: Promise<BotService> | undefined;
 const mainProcessSessionId = randomUUID();
 /** Effective UI locale for native dialogs; synced from Renderer (WorldlineBox-bwb). */
 let appLocale: AppLocale = "en";
@@ -670,14 +664,13 @@ let embeddingHttpIndex: EmbeddingHttpIndex | undefined;
 let globalEmbeddingService: GlobalEmbeddingService | undefined;
 let embeddingDeviceCapability: EmbeddingDeviceCapabilityService | undefined;
 let vcpEmbeddingGateway: VcpEmbeddingGateway | undefined;
-let vcpChatGateway: VcpChatGateway | undefined;
 let localTextEmbeddingInstaller: LocalTextEmbeddingInstaller | undefined;
 function textEmbeddingInstaller(): LocalTextEmbeddingInstaller {
   return localTextEmbeddingInstaller ??= new LocalTextEmbeddingInstaller({ userDataPath: app.getPath('userData'),
     bundleDirectory: path.join(app.isPackaged ? process.resourcesPath : path.join(app.getAppPath(), 'resources'), 'embedding-models'),
     onVerification: timing => logger?.info('embedding.resources.verify', 'Bundled embedding resource verification finished.', timing) });
 }
-const prepareBundledEmbedding = createCompanionEmbeddingResourcePreparation(async () => {
+const prepareBundledEmbedding = createEmbeddingResourcePreparation(async () => {
   const root = app.isPackaged ? process.resourcesPath : path.join(app.getAppPath(), 'resources');
   await textEmbeddingInstaller().seedBundledPackage(path.join(root, 'embedding-models'));
 });
@@ -692,7 +685,7 @@ function globalEmbedding(): GlobalEmbeddingService {
     devicePreference: () => embeddingDevice().snapshot(),
     onTiming: timing => logger?.info('embedding.runtime.phase', 'Embedding runtime phase finished.', timing),
   });
-  globalEmbeddingService.subscribeInvalidation(() => companionService?.embeddingChanged());
+  globalEmbeddingService.subscribeInvalidation(() => botService?.embeddingChanged());
   return globalEmbeddingService;
 }
 
@@ -779,7 +772,9 @@ function clearArtifactPathCache(libraryId?: string): void {
 }
 
 function evictArtifactPathCache(libraryId: string): void {
-  artifactPathCache.evictLibrary(libraryId);
+  // An async path batch may have started before this asset change. Fence its
+  // completion as well as evicting existing entries, or stale paths reappear.
+  artifactPathCache.clearLibrary(libraryId);
 }
 
 function cancelArtifactPathBatches(libraryId: string): void {
@@ -869,6 +864,7 @@ function resolveArtifactPathBatched(
   });
 }
 const nativeAssetDragCache = new NativeAssetDragCache();
+const lastVisibleDragAssetIds = new Map<string, string[]>();
 /**
  * WorldlineBox-8ee170: every media completion enqueues here instead of issuing its
  * own Worker request, so a 2,000-job wave cannot become 2,000 background
@@ -899,12 +895,32 @@ const nativeAssetDragPrimer = new NativeAssetDragPrimeScheduler({
     } else {
       nativeAssetDragCache.upsert(libraryId, entries as Parameters<NativeAssetDragCache["upsert"]>[1]);
     }
+    const dragWindow = mainWindow;
+    if (dragWindow && !dragWindow.isDestroyed()) {
+      if (mode === "replace") {
+        dragWindow.webContents.send(ASSET_NATIVE_DRAG_READINESS_CHANNEL, {
+          type: "clear", libraryId,
+        });
+      }
+      dragWindow.webContents.send(ASSET_NATIVE_DRAG_READINESS_CHANNEL, {
+        type: "ready", libraryId,
+        assetIds: (entries as Parameters<NativeAssetDragCache["upsert"]>[1])
+          .map((entry) => entry.assetId),
+      });
+    }
   },
 });
 
 function clearNativeAssetDragCache(libraryId: string): void {
+  lastVisibleDragAssetIds.delete(libraryId);
   nativeAssetDragCache.clear(libraryId);
   nativeAssetDragPrimer.invalidate(libraryId);
+  const dragWindow = mainWindow;
+  if (dragWindow && !dragWindow.isDestroyed()) {
+    dragWindow.webContents.send(ASSET_NATIVE_DRAG_READINESS_CHANNEL, {
+      type: "clear", libraryId,
+    });
+  }
 }
 /**
  * WorldlineBox-1e3d4f: Chromium never persists custom-protocol responses on disk,
@@ -1861,7 +1877,7 @@ function getDecryptedProfileApiKey(profileId: string): string {
 }
 
 function notifyGlobalAiConfigurationChanged(): void {
-  companionService?.configurationChanged();
+  botService?.configurationChanged();
   captureToolsService?.configurationChanged();
 }
 
@@ -2342,10 +2358,15 @@ async function createMainWindow(): Promise<void> {
       sandbox: true,
       contextIsolation: true,
       nodeIntegration: false,
+      // The opt-in performance harness needs frames while remaining hidden.
+      ...(process.env.WORLDLINEBOX_E2E === "1" && process.env.WORLDLINEBOX_E2E_PERF_OFFSCREEN === "1"
+        ? { offscreen: true, backgroundThrottling: false }
+        : {}),
     },
   });
 
   mainWindow = window;
+  bindRendererEffects(app, window);
   if (linuxRoundedCorners) attachLinuxRoundedCorners(window);
   const mainContentsId = window.webContents.id;
   // Keep renderer diagnostics active in both development and packaged builds.
@@ -2510,7 +2531,12 @@ async function createMainWindow(): Promise<void> {
       : null;
     if (!action && !repeatedViewerAction) return;
     event.preventDefault();
-    if (action) forwardViewerVideoShortcut(window.webContents, action);
+    const forward = viewerShortcutRepeatForward(action, repeatedViewerAction);
+    if (forward) {
+      forwardViewerVideoShortcut(window.webContents, forward.action, {
+        repeat: forward.repeat,
+      });
+    }
   });
   // Defense in depth (WorldlineBox-46i9): even if a page-zoom accelerator sneaks
   // back into the menu, Chromium must not rescale the whole UI.
@@ -3062,12 +3088,19 @@ async function reopenLibrariesAfterFailedReplacement(
 
 async function publishAssetChange(event: AssetChangeEvent): Promise<void> {
   const parsed = parseAssetChangeEvent(event);
-  await companionService?.assetsChanged(parsed.libraryId);
   // Asset changes can invalidate a cached source path (delete, relink, move,
   // or replacement). Artifact-only library changes use the separate
   // library.changed channel and do not evict the viewer's hot path.
   sourcePathCache.clearLibrary(parsed.libraryId);
   evictArtifactPathCache(parsed.libraryId);
+  if (parsed.nativeDragPathsChanged === true || parsed.source === "watcher") {
+    const visibleDragIds = lastVisibleDragAssetIds.get(parsed.libraryId);
+    clearNativeAssetDragCache(parsed.libraryId);
+    if (visibleDragIds) {
+      lastVisibleDragAssetIds.set(parsed.libraryId, visibleDragIds);
+      nativeAssetDragPrimer.scheduleVisible(parsed.libraryId, visibleDragIds);
+    }
+  }
   embeddingTestIndex?.catchUp(parsed.libraryId);
   embeddingHttpIndex?.catchUp(parsed.libraryId);
   pluginActivationCoordinator?.fanOutDomainEvent(createPluginDomainEvent({
@@ -3088,7 +3121,6 @@ async function publishAssetChange(event: AssetChangeEvent): Promise<void> {
 
 async function publishLibraryChanged(event: LibraryChangedEvent): Promise<void> {
   const parsed = parseLibraryChangedEvent(event);
-  await companionService?.assetsChanged(parsed.libraryId);
   // `library.changed` is also emitted for immutable derived-artifact writes.
   // Advancing the Main-side path-cache generation here races a thumbnail
   // response that is already resolving: the path lookup returns a valid new
@@ -3450,6 +3482,7 @@ async function commandFor(
     case "folder.cover.set-asset.request":
     case "folder.list.request":
     case "folder.browse-entries.request":
+    case "folder.filtered-counts.request":
     case "folder.entries-request":
     case "folder.indexed-bytes.request":
     case "folder.trash.request":
@@ -3791,6 +3824,14 @@ async function handleLibraryRequest(
   };
   try {
     const request = parseRendererRequest(input);
+    if (request.type === "asset.thumbnail.visible-window.request") {
+      lastVisibleDragAssetIds.set(request.libraryId, [...request.assetIds]);
+      nativeAssetDragPrimer.scheduleVisible(request.libraryId, request.assetIds);
+    } else if (request.type === "browse.session.open.request"
+      || request.type === "browse.session.page.request") {
+      lastVisibleDragAssetIds.delete(request.libraryId);
+      nativeAssetDragPrimer.cancelScheduledVisible(request.libraryId);
+    }
     if (request.type.endsWith('.request')
       && isLibraryNavigationTimingCommand(request.type.slice(0, -'.request'.length))) {
       timedNavigationRequestType = request.type;
@@ -3884,7 +3925,7 @@ async function handleLibraryRequest(
       // vector requests wait for this same check instead of reopening a model.
       void embeddingDevice().test({ force: request.force, beforeTest: async () => {
         await Promise.all([globalEmbeddingService?.invalidate(), embeddingTestIndex?.close(), embeddingHttpIndex?.close()]);
-      } }).then(() => companionService?.embeddingChanged()).catch(error => logger?.error('embedding.device.test', error));
+      } }).then(() => botService?.embeddingChanged()).catch(error => logger?.error('embedding.device.test', error));
       return { ok: true, type: 'embedding.device.status', capability: embeddingDevice().snapshot() };
     }
     if (request.type === 'embedding.index.status.request' || request.type === 'embedding.search.request' || request.type === 'embedding.similar.request') await prepareBundledEmbedding();
@@ -3931,7 +3972,7 @@ async function handleLibraryRequest(
       saveConnectionProfile: saveAiConnectionProfile,
       activateConnectionProfile: activateAiConnectionProfile,
       deleteConnectionProfile: deleteAiConnectionProfile,
-      workerAvailable: () => Boolean(workerClient),
+      workerAvailable: () => workerClient?.available ?? false,
       requestWorker: (command) => {
         if (!workerClient) throw new Error("Library Worker is unavailable.");
         return workerClient.request(command);
@@ -3986,7 +4027,7 @@ async function handleLibraryRequest(
       const ingestion = await tryBuildIngestionCommand(request, {
         isUnpackagedE2e: () => !app.isPackaged && process.env.WORLDLINEBOX_E2E === "1",
         e2eEnv: (name) => process.env[name],
-        workerAvailable: () => Boolean(workerClient),
+        workerAvailable: () => workerClient?.available ?? false,
         requestWorker: (workerCommand) => {
           if (!workerClient) throw new Error("Library Worker is unavailable.");
           return workerClient.request(workerCommand);
@@ -4043,7 +4084,7 @@ async function handleLibraryRequest(
     if (!command || openCancellation?.cancelled) return cancelled();
     const sequenceProbe = await maybeProbeImportSequences(request, command, {
       isUnpackagedE2e: () => !app.isPackaged && process.env.WORLDLINEBOX_E2E === "1",
-      workerAvailable: () => Boolean(workerClient),
+      workerAvailable: () => workerClient?.available ?? false,
       requestWorker: (workerCommand) => {
         if (!workerClient) throw new Error("Library Worker is unavailable.");
         return workerClient.request(workerCommand);
@@ -4947,7 +4988,10 @@ async function startApplication(): Promise<void> {
   try {
     if (!applicationNetwork) throw new Error('Application network policy is unavailable.');
     const { DshLauncher: LauncherService } = await import('./dsh/launcher');
-    dshLauncher = new LauncherService(() => mainWindow, error => logger?.error('dsh.launcher.initialization', error), applicationNetwork, () => companionService?.executionCapabilitiesChanged());
+    dshLauncher = new LauncherService(() => mainWindow, error => logger?.error('dsh.launcher.initialization', error), applicationNetwork, () => botService?.executionCapabilitiesChanged(), progress => {
+      logger?.info('dsh.bot.preparation', 'Shared DSH preparation changed.', { instanceId: progress.instanceId, phase: progress.phase, elapsedMs: progress.elapsedMs });
+      botService?.runtimePreparationChanged();
+    });
     dshLauncher.registerIpc();
   } catch (error) {
     logger.error('dsh.launcher.initialization', error);
@@ -4989,287 +5033,123 @@ async function startApplication(): Promise<void> {
   const { MusicService } = await import('./music/service');
   musicService = new MusicService(app.getPath('userData'), () => mainWindow ?? null, error => logger?.error('music.preferences', error));
   musicService.registerIpc();
-  const companionWorkspace = new CompanionWorkspaceStore(app.getPath('userData'));
-  let changingCompanionWorkspace = false;
-  const companionLibraryAdmission = createCompanionLibraryAdmission({ worker: () => workerClient, isClosing: () => applicationClosing,
-    opened: library => {
-      rememberOpenedLibrary(library.libraryPath, library.displayName, library.libraryId);
-      publishLifecycle({ type: 'library.opened', library: { libraryId: library.libraryId, displayName: library.displayName, displayPath: library.libraryPath } });
-    } });
-  const ensureCompanionLibrary = companionLibraryAdmission.ensure;
-  const ensureCompanionService = (): Promise<CompanionService> => {
-    if (applicationClosing) return Promise.reject(new CompanionExecutionPausedError('应用正在关闭。'));
-    if (companionRecoveryOperation) return Promise.reject(new CompanionExecutionPausedError('伙伴资产库正在备份或恢复，执行暂时停止；请等待该操作完成。'));
-    if (changingCompanionWorkspace) return Promise.reject(new CompanionExecutionPausedError('正在切换伙伴资产库，请稍后重试。'));
-    if (companionService) return Promise.resolve(companionService);
-    return creatingCompanionService ??= (async () => {
-      const activationStarted = performance.now();
-      const phase = async <T>(name: string, operation: () => Promise<T>): Promise<T> => {
-        const started = performance.now();
-        try { return await operation(); }
-        finally { logger?.info('companions.activation.phase', 'Companion activation phase finished.', { phase: name, durationMs: performance.now() - started, totalMs: performance.now() - activationStarted }); }
+  const ensureBotMediaService = ():Promise<BotMediaService> => botMediaService ??= import('./companion-bot/media-service').then(async ({BotMediaService})=>new BotMediaService({
+    root:path.join(app.getPath('userData'),'companion-bot-v2','media'),
+    canUserAccessConversation:conversationId=>botCanInspectConversation(botService?.store.getConversation(conversationId)),
+    // Resolve only the app-owned builtin location. User media still rejects links.
+    builtinRoot:await realpath(app.isPackaged?path.join(process.resourcesPath,'bot-stickers'):path.join(app.getAppPath(),'resources','bot-stickers')),
+  })).catch(error=>{botMediaService=undefined;throw error;});
+  const ensureBotService = (): Promise<BotService> => {
+    if (applicationClosing) return Promise.reject(new Error('应用正在关闭。'));
+    if (botService) return Promise.resolve(botService);
+    return creatingBotService ??= (async () => {
+      const [{ BotService }, { BotMemoryService }, { BotDshBrain }, { BotAppBrain }, { BotBrainRouter }, media] = await Promise.all([
+        import('./companion-bot/service'), import('./companion-bot/memory-service'), import('./companion-bot/dsh-brain'),
+        import('./companion-bot/app-brain'), import('./companion-bot/brain-router'),
+        ensureBotMediaService(),
+      ]);
+      const root = path.join(app.getPath('userData'), 'companion-bot-v2');
+      const launcher = dshLauncher;
+      const { botNativeHostBindingKey } = await import('./companion-bot/host-migration');
+      const { BotModelCapabilities } = await import('./companion-bot/model-capabilities');
+      const modelCapabilities = new BotModelCapabilities({
+        fetchFn: async (input, init) => (await import('electron')).net.fetch(typeof input === 'string' ? input : input instanceof URL ? input.href : input.url, init),
+        changed: () => botService?.configurationChanged(),
+      });
+      app.once('before-quit', () => modelCapabilities.close());
+      const currentBotModel = () => {
+        const config = loadAiConfig();
+        const connection = { apiFormat: config.apiFormat, model: config.model, baseUrl: config.baseUrl, apiKey: config.hasKey ? getDecryptedApiKey() : '' };
+        const limits = modelCapabilities.current(connection);
+        return { connection, limits };
       };
-      const { CompanionService } = await phase('load-service', () => import('./companions/service'));
-      const { COMPANION_TEXT_GENERATION_PROFILE } = await import('./companions/model');
-      const workspace = await phase('workspace', () => companionWorkspace.current());
-      if (!workspace) throw new Error('请先为伙伴选择一个资产库。');
-      await phase('open-library', () => ensureCompanionLibrary(workspace));
-      if (applicationClosing) throw new Error('应用正在关闭。');
-      let workspaceCompanionService: CompanionService | undefined;
-      companionService = workspaceCompanionService = new CompanionService({
-        getFfmpeg: () => resolveHostMediaBinaries()?.ffmpegPath,
-        onTiming: timing => timing.operation === 'reply.first_text'
-          ? logger?.info('companions.reply.first-text', 'First nonempty reply body published to the renderer.', timing)
-          : timing.operation.startsWith('storage.worker.')
-          ? logger?.info('companions.storage.worker', 'Companion storage worker request timing.', timing)
-          : timing.operation === 'reply.http_dispatch'
-          ? logger?.info('companions.reply.http-dispatch', 'Actual reply HTTP invocation started after the final local gate.', timing)
-          : timing.operation === 'reply.retry'
-          ? logger?.info('companions.reply.retry', 'Reply decision retried after a host validation or provider result.', timing)
-          : timing.operation === 'reply.storage.operation'
-          ? logger?.info('companions.reply.storage-operation', 'Reply source bound to its private storage operation hash.', timing)
-          : timing.operation === 'memory.recall.total'
-          ? logger?.info('companions.memory.recall-total', 'Automatic recall wall-clock interval finished.', timing)
-          : timing.operation.startsWith('reply.final.')
-          ? logger?.info('companions.reply.final-stage', 'Fresh final validation stage finished.', timing)
-          : timing.operation.startsWith('reset.')
-          ? logger?.info('companions.reset.step', 'Companion reset step updated.', timing)
-          : timing.operation.startsWith('shutdown.') ? logger?.info('companions.shutdown.step', 'Companion shutdown phase updated.', timing)
-          : logger?.info('companions.context.slow', 'Companion preparation or source validation exceeded 500 ms.', timing),
-        vcpMemoryVendorRoot: app.isPackaged ? path.join(process.resourcesPath, 'vcp-memory') : path.join(app.getAppPath(), 'vendor', 'vcp-memory'),
-        purgeMemoryAssets: async owner => {
-          if (!/^[A-Za-z0-9_-]{1,100}$/.test(owner) || !workerClient) throw new Error('伙伴资产库尚未就绪。');
-          const roots = await workerClient.request({ type: 'linked-folder.list', libraryId: workspace.libraryId });
-          if (!roots.ok || roots.type !== 'linked-folder.list') throw new Error('无法读取伙伴记忆目录映射。');
-          for (const folder of roots.folders.filter(folder => folder.relativePath === ''
-            && folder.folderId === folder.linkedFolderId && path.resolve(folder.absoluteRootPath) === path.resolve(workspace.memoryRoot))) {
-            const result = await workerClient.request({ type: 'linked-folder.delete-subtree', libraryId: workspace.libraryId,
-              linkedFolderId: folder.folderId, relativePath: owner, deleteFromDisk: false, includeDeleted: true });
-            if (!result.ok) throw new Error('伙伴文件已清理，但资产索引清理失败：' + JSON.stringify(result.error));
-          }
-        },
-        memoryDeviceStatus: () => embeddingDevice().snapshot(),
-        learningAssets: companionLearningAssets({ memoryRoot: workspace.memoryRoot, storageRequest: command => {
-          if (!workspaceCompanionService) throw new Error('伙伴资产验证服务尚未就绪。');
-          return workspaceCompanionService.requestAssetValidation(command);
-        }, request: command => {
-          if (!workerClient) throw new Error('资产服务尚未就绪。'); return workerClient.request(command);
-        } }),
-        memoryRuntime: new CompanionVcpRuntime({
-          onTiming: timing => logger?.info('companions.runtime.phase', 'Companion memory runtime phase finished.', timing),
-          resolveOwnerCleanupStorage: async ownerId => {
-            if (!workspaceCompanionService) throw new Error('伙伴目录服务尚未就绪。');
-            return workspaceCompanionService.resolveOwnerCleanupStorage(ownerId);
-          },
-          resolveOwnerStorage: async ownerId => {
-            if (!workspaceCompanionService) throw new Error('伙伴目录服务尚未就绪。');
-            return workspaceCompanionService.resolveOwnerStorage(ownerId);
-          },
-          vendorRoot: app.isPackaged ? path.join(process.resourcesPath, 'vcp-memory') : path.join(app.getAppPath(), 'vendor', 'vcp-memory'),
-          workerPath: app.isPackaged ? path.join(process.resourcesPath, 'vcp-memory-host', 'worker.cjs') : path.join(app.getAppPath(), 'src', 'main', 'vcp-memory', 'worker.cjs'),
-          resolveEmbedding: vcpEmbeddingConfiguration,
-          prepareEmbedding: signal => globalEmbedding().prepare({ signal }),
-          generationProfile: COMPANION_TEXT_GENERATION_PROFILE,
-          resolveGenerationPlugins: async input => {
-            const config = Object.freeze({ ...input.config });
-            vcpChatGateway ??= new VcpChatGateway();
-            const route = await vcpChatGateway.registerOwnerRoute({ ownerId: input.ownerId,
-              semanticProfile: { ownerId: input.ownerId, profileKey: input.profileKey, generation: COMPANION_TEXT_GENERATION_PROFILE },
-              credential: config.apiKey, generate: async (context, signal, work) => {
-                await workspaceCompanionService?.validateAssetsForModel(input.ownerId);
-                const { generateCompanionText, companionNativeProviderLifecycle } = await import('./companions/model');
-                return generateCompanionText(context, workspaceCompanionService!.bindModelTransport(input.ownerId, { ...config, ownerId: input.ownerId, workPriority: work?.priority ?? 'foreground', requestPurpose: work?.nativePrompt ? 'timeline' : 'other',
-                  providerLifecycle: companionNativeProviderLifecycle(config, work?.nativeDispatchToken),
-                  resolveAssetContext: (context, kind) => workspaceCompanionService!.prepareNativeModelAssetContext(input.ownerId, context, kind, work?.nativePrompt,
-                    work?.nativePrompt ? work.nativePrompt.kind === 'timeline' ? 'native_timeline' : 'native_summary' : 'vcp_focus_guidance',
-                    config.resolveNativeAssetContext?.(work?.nativeDispatchToken)) }), signal,
-                  { fetchFn: (input, init) => net.fetch(input instanceof URL ? input.toString() : input, { ...init, credentials: 'omit' }), timeoutMs: 120000 });
-              } });
-            return { plugins: { chat: route.chat }, dispose: route.dispose };
-          } }),
-        userData: app.getPath('userData'), dataRoot: workspace.dataRoot, memoryLibraryRoot: workspace.memoryRoot,
-        libraryPath: workspace.libraryPath, libraryId: workspace.libraryId,
-        workerPath: path.join(__dirname, 'companion_worker.js'), appPath: app.getAppPath(),
-        window: () => mainWindow, hasConfig: () => loadAiConfig().hasKey,
-        getConfig: () => {
-          const config = loadAiConfig();
-          return { apiFormat: config.apiFormat, model: config.model, baseUrl: config.baseUrl, apiKey: getDecryptedApiKey() };
-        },
-        browser: (scope, input, signal) => { if (!browserService) throw Error('内置浏览器尚未就绪。'); return browserService.companionTool(scope, input, signal); },
-        dsh: () => dshLauncher, report: error => logger?.error('companions.service', error), onChanged: () => companionWorldWindows?.changed(),
+      // VCP uses the application's bundled Node ABI. Resolving memory never
+      // starts or depends on a DSH instance or its profile.
+      let memoryNode: Promise<string> | undefined;
+      const memory = new BotMemoryService({ root: path.join(root, 'memory'),
+        runtime: async () => ({ nodePath: await (memoryNode ??= import('./portable-tools').then(({ resolvePortableTools }) => resolvePortableTools()).then(tools => tools.nodeExecutable).catch(error => { memoryNode = undefined; throw error; })), packageRoot: app.isPackaged
+          ? path.join(process.resourcesPath, 'vcp-memory') : path.join(app.getAppPath(), '.tools', 'bot-memory-release', 'vcp-memory') }),
+        embedding: vcpEmbeddingConfiguration,
+        chat: async () => { const config = loadAiConfig(); return { baseUrl: config.baseUrl, model: config.model,
+          apiKey: config.hasKey ? getDecryptedApiKey() : '', apiType: config.apiFormat === 'openai_chat' ? 'openai-completions' : config.apiFormat }; },
+        maxActiveDomains: 3,
+        onDiagnostic: diagnostic => logger?.error('companion-bot.memory-process',
+          new Error('VCP memory process exited; pending operation diagnostics retained.'), diagnostic),
       });
-      companionService.registerIpc({ requests: false, attachments: false });
-      const startupService = companionService;
-      // Navigation does not await this physical preparation. Restore the
-      // existing measured cache without running a device self-test; a real
-      // foreground request joins the same complete resource verification.
-      void prepareCompanionMemoryIdleStartup({
-        isCurrent: () => !applicationClosing && !changingCompanionWorkspace && companionService === startupService,
-        readDeviceStatus: () => embeddingDevice().status(), verifyResources: prepareBundledEmbedding,
-        requestIdlePrime: () => startupService.embeddingChanged(),
-      }).catch(error => {
-        if (!applicationClosing && companionService === startupService) logger?.error('companions.memory.startup', error);
+      const worker = new BotDshBrain({ getHost: async (id, signal, nativeLaneId) => {
+        if (!launcher) throw new Error('DSH 执行器尚未就绪；伙伴主脑仍可正常对话。');
+        const selected = await launcher.resolveBotInstance();
+        const bound = nativeLaneId && botService?.store.getMetadata(botNativeHostBindingKey(nativeLaneId));
+        if (bound && bound !== selected.id) throw Object.assign(new Error('旧执行尚待核实，已保留原记录；不会另启动伙伴专用实例。'), { code: 'BOT_HOST_MIGRATION_BLOCKED' });
+        const host = await launcher.botHost(id ?? selected.id, signal);
+        if (nativeLaneId) botService?.store.setMetadata(botNativeHostBindingKey(nativeLaneId), host.instance.id);
+        return host;
+      } });
+      const appBrain = new BotAppBrain({ root: path.join(root, 'router'),
+        fetchFn: async (input, init) => (await import('electron')).net.fetch(typeof input === 'string' ? input : input instanceof URL ? input.href : input.url, init),
+        reconcileTool: async (call, signal) => botService ? botService.reconcileToolReceipt(call, signal) : { state: 'unknown' as const },
       });
-      logger?.info('companions.activated', 'Companion services activated by their first request.');
-      return companionService;
-    })().catch(error => { creatingCompanionService = undefined; throw error; });
+      const brain = new BotBrainRouter({ app: appBrain, worker,
+        isLegacyNativeLane: laneId => { const owner = botService?.store.getMetadata(botNativeHostBindingKey(laneId)); return !!owner && owner !== 'worldlinebox'; },
+      });
+      const capacity = currentBotModel().limits.window;
+      botService = new BotService({ root, brain, brainRuntime: 'worldlinebox', prewarmMemory: true, memory, media,
+        // Actual context compaction follows the model budget in the App Agent.
+        // Generation retirement is a larger lifetime bound, not a 32k window.
+        retention: { maxTurns: Number.MAX_SAFE_INTEGER, maxBytes: Math.min(Number.MAX_SAFE_INTEGER, capacity * 8) },
+        modelLimits: () => { const { limits } = currentBotModel(); return { window: limits.window, source: limits.source, estimate: limits.contextEstimate }; },
+        model: () => { const { connection, limits } = currentBotModel(); return { ...connection, contextWindow: limits.window, contextWindowSource: limits.source, maxTokens: limits.maxTokens, maxOutputTokens: limits.maxOutputTokens }; },
+        onEvent: event => { if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send(BOT_EVENT_CHANNEL, event); },
+        report: error => logger?.error('companion-bot.runtime', error),
+      });
+      return botService;
+    })().catch(error => { creatingBotService = undefined; throw error; });
   };
-  let workspaceTail: Promise<unknown> = Promise.resolve();
-  ipcMain.handle(COMPANION_WORKSPACE_CHANNEL, (event, input: unknown) => {
-    if (!mainWindow || mainWindow.isDestroyed() || event.sender !== mainWindow.webContents || event.senderFrame !== mainWindow.webContents.mainFrame) return { ok: false, error: '无权管理伙伴资产库。' };
-    const parsed = companionWorkspaceRequestSchema.safeParse(input);
-    if (!parsed.success) return { ok: false, error: '伙伴资产库请求格式不正确。' };
-    const command = parsed.data;
-    const operation = workspaceTail.then(async () => {
-      if (command.type === 'recovery.choose') {
-        const fixturePath = process.env.WORLDLINEBOX_E2E === '1' ? process.env[command.kind === 'package'
-          ? 'WORLDLINEBOX_E2E_RECOVERY_PACKAGE' : 'WORLDLINEBOX_E2E_RECOVERY_DESTINATION'] : undefined;
-        const selected = fixturePath ? { canceled: false, filePaths: [fixturePath] } : await dialog.showOpenDialog(mainWindow!, {
-          title: command.kind === 'package' ? '选择新协议伙伴备份包目录' : '选择伙伴备份的保存位置',
-          buttonLabel: command.kind === 'package' ? '核对备份包' : '保存到这里',
-          properties: command.kind === 'package' ? ['openDirectory'] : ['openDirectory', 'createDirectory'],
-        });
-        return selected.canceled || !selected.filePaths[0] ? { ok: true, cancelled: true } : { ok: true, recoveryPath: selected.filePaths[0] };
-      }
-      if (command.type === 'recovery.backup.create' || command.type === 'recovery.package.inspect' || command.type === 'recovery.restore') {
-        const selected = await companionWorkspace.current();
-        if (!selected) throw new Error('请先选择要核对或恢复的伙伴资产库。');
-        if (command.type !== 'recovery.package.inspect' && command.libraryId !== selected.libraryId) throw new Error('伙伴资产库已变化，请重新核对本次备份或恢复的目标。');
-        const { executeCompanionRecovery } = await import('./companions/recovery');
-        const worker = path.join(__dirname, 'companion_worker.js');
-        if (command.type === 'recovery.package.inspect') return executeCompanionRecovery(worker, selected, command);
-        const key = JSON.stringify([selected.libraryId, command]);
-        if (companionRecoveryOperation) {
-          if (companionRecoveryOperation.key === key) return companionRecoveryOperation.promise;
-          throw new Error('已有备份或恢复操作正在进行，请保留原操作标识等待核对。');
-        }
-        if (changingCompanionWorkspace) throw new Error('资产库正在切换，不能同时备份或恢复。');
-        companionLibraryAdmission.invalidate();
-        const recovery = (async () => {
-          const initialized = await creatingCompanionService?.catch(() => undefined);
-          companionWorldWindows?.closeAll();
-          const previous = companionService ?? initialized;
-          companionService = undefined; creatingCompanionService = undefined;
-          await previous?.shutdown();
-          return executeCompanionRecovery(worker, selected, command);
-        })();
-        companionRecoveryOperation = { key, promise: recovery };
-        try { return await recovery; }
-        finally {
-          if (companionRecoveryOperation?.promise === recovery) companionRecoveryOperation = undefined;
-          mainWindow?.webContents.send('worldlinebox:companions-changed');
-        }
-      }
-      if (companionRecoveryOperation && (command.type === 'select' || command.type === 'choose')) throw new Error('请等待当前备份或恢复操作完成后再切换伙伴资产库。');
-      if (command.type === 'companion.assets.read') return (await ensureCompanionService()).manageCompanionAssets(command);
-      if (command.type === 'growth.releases.read') return (await ensureCompanionService()).manageGrowthReleases(command);
-      if (command.type === 'growth.jobs.read') return (await ensureCompanionService()).manageGrowthJobs(command);
-      if (command.type === 'jobs.inspect' || command.type === 'jobs.control' || command.type === 'jobs.page') return (await ensureCompanionService()).manageJobs(command);
-      if (command.type === 'growth.goals.read' || command.type === 'growth.goals.propose' || command.type === 'growth.goal.status') return (await ensureCompanionService()).manageGrowthGoals(command);
-      if (command.type === 'cognition.context.list' || command.type === 'cognition.context.read') return (await ensureCompanionService()).manageContextSnapshots(command);
-      if (command.type === 'companion.assets.location') {
-        await (await ensureCompanionService()).manageCompanionAssets({ type: 'companion.assets.read', companionId: command.companionId });
-        const selected = await companionWorkspace.current();
-        if (!selected || !workerClient) throw new Error('伙伴资产库尚未就绪。');
-        await ensureCompanionLibrary(selected);
-        const result = await workerClient.request({ type: 'linked-folder.list', libraryId: selected.libraryId });
-        const folder = result.ok && result.type === 'linked-folder.list' ? result.folders.find(item => item.relativePath === '' && path.resolve(item.absoluteRootPath) === path.resolve(selected.memoryRoot)) : undefined;
-        if (!folder) throw new Error('伙伴实例尚未映射到资产管理。');
-        return { ok: true, assetLocation: { libraryId: selected.libraryId, libraryPath: selected.libraryPath, linkedFolderId: folder.linkedFolderId, relativePath: command.companionId } };
-      }
-      if (command.type.startsWith('memory.learning.')) return (await ensureCompanionService()).manageLearningSources(command as CompanionLearningWorkspaceCommand);
-      if (command.type.startsWith('memory.documents.')) {
-        const started = performance.now();
-        try { return await (await ensureCompanionService()).manageMemoryDocuments(command as CompanionMemoryDocumentCommand); }
-        finally {
-          const durationMs = performance.now() - started;
-          if (durationMs >= 500) logger?.info('companions.memory.documents.slow', 'Notebook request exceeded 500 ms.', { type: command.type, durationMs });
-        }
-      }
-      const readLibraries = async (): Promise<CompanionWorkspaceLibrary[]> => {
-        const list = await workerClient?.request({ type: 'library.list' });
-        return list?.ok && list.type === 'library.list' ? list.libraries.filter(library => !library.readOnly) : [];
-      };
-      if (command.type === 'status') return readCompanionWorkspaceStatus(companionWorkspace, command.includeLibraries !== false, {
-        libraries: readLibraries, beginAdmission: selected => {
-          if (applicationClosing || companionRecoveryOperation || changingCompanionWorkspace) return;
-          // The foreground awaits this exact in-flight admission. This warms
-          // neither a model nor a companion execution/domain service.
-          void ensureCompanionLibrary(selected).catch(error => logger?.error('companions.workspace-admission', error));
-        },
-      });
-      const libraries = await readLibraries();
-      if (command.type === 'reveal') {
-        const selected = await companionWorkspace.current();
-        if (!selected) throw new Error('请先选择伙伴资产库。');
-        const error = await shell.openPath(selected.memoryRoot); if (error) throw new Error('无法打开伙伴记忆目录。');
-        return { ok: true, selected, libraries };
-      }
-      let library = command.type === 'select' ? libraries.find(item => item.libraryId === command.libraryId) : undefined;
-      if (command.type === 'choose') {
-        const fixturePath = process.env.WORLDLINEBOX_E2E === '1' ? process.env.WORLDLINEBOX_E2E_COMPANION_LIBRARY_PATH : undefined;
-        const chosen = fixturePath ? { canceled: false, filePaths: [fixturePath] } : await dialog.showOpenDialog(mainWindow!, {
-          title: '选择所有伙伴共同使用的 WorldlineBox 资产库', properties: ['openDirectory'], buttonLabel: '使用此资产库' });
-        if (chosen.canceled || !chosen.filePaths[0]) return { ok: true, cancelled: true, libraries };
-        const opened = await workerClient?.request({ type: 'library.open', selectedLibraryPath: chosen.filePaths[0] });
-        if (!opened?.ok || opened.type !== 'library.opened' || opened.library.readOnly) throw new Error('请选择已有的可写 WorldlineBox 资产库，或返回创建伙伴资产库。');
-        library = opened.library;
-        rememberOpenedLibrary(library.libraryPath, library.displayName, library.libraryId);
-        publishLifecycle({ type: 'library.opened', library: { libraryId: library.libraryId, displayName: library.displayName, displayPath: library.libraryPath } });
-      }
-      if (!library) throw new Error('资产库尚未打开，请重新选择。');
-      if (companionRecoveryOperation) throw new Error('备份或恢复正在进行，尚不能切换伙伴资产库。');
-      changingCompanionWorkspace = true;
-      try {
-        const current = await companionWorkspace.current().catch(() => undefined);
-        if (current?.libraryPath !== library.libraryPath || current.libraryId !== library.libraryId) {
-          companionLibraryAdmission.invalidate();
-          await creatingCompanionService?.catch(() => undefined);
-          companionWorldWindows?.closeAll();
-          const previous = companionService;
-          companionService = undefined; creatingCompanionService = undefined;
-          await previous?.shutdown();
-        }
-        const selected = await companionWorkspace.select(library);
-        await ensureCompanionLibrary(selected);
-        mainWindow?.webContents.send('worldlinebox:companions-changed');
-        return { ok: true, selected, libraries };
-      } finally { changingCompanionWorkspace = false; }
-    }).catch(error => { logger?.error('companions.workspace', error); return { ok: false, error: error instanceof Error && /[\u4e00-\u9fff]/u.test(error.message) ? error.message : '伙伴资产库暂时不可用，请重新选择。' }; });
-    // Only selecting a different library mutates the shared locator. Notebook
-    // reads use their owner's file queue and must not wait for unrelated asset
-    // listing, semantic searches or model-backed imports in other notebooks.
-    if (command.type === 'select' || command.type === 'choose') workspaceTail = operation;
-    return operation;
+  ipcMain.handle(BOT_CHANNEL, async (event, input: unknown) => {
+    if (!mainWindow || mainWindow.isDestroyed() || event.sender !== mainWindow.webContents || event.senderFrame !== mainWindow.webContents.mainFrame)
+      return { ok: false, error: '无权访问伙伴服务。' };
+    const parsed = botRequestSchema.safeParse(input);
+    if (!parsed.success) return { ok: false, error: '伙伴请求格式不正确。' };
+    try { return await (await ensureBotService()).handle(parsed.data); }
+    catch (error) { logger?.error('companion-bot.request', error); return { ok: false, error: error instanceof Error ? error.message : '伙伴服务暂不可用。' }; }
   });
-  // Register before creating renderer processes: a late protocol.handle() is
-  // invisible to an already running Chromium URL loader factory. Keep only the
-  // lightweight route eager; storage and companion workers stay demand loaded.
-  protocol.handle('worldlinebox-companion', async request => (await ensureCompanionService()).attachmentResponse(request));
-  ipcMain.handle(COMPANIONS_CHANNEL, async (event, input: unknown) => {
-    if (!mainWindow || mainWindow.isDestroyed() || event.sender !== mainWindow.webContents || event.senderFrame !== mainWindow.webContents.mainFrame) return { ok: false, error: '无权访问伙伴服务。' };
-    try { return await (await ensureCompanionService()).handleRendererRequest(event, input); }
-    catch (error) {
-      if (error instanceof CompanionExecutionPausedError) return { ok: false, error: error.message, executionPaused: true };
-      logger?.error('companions.initialization', error); return { ok: false, error: '伙伴服务无法初始化，请查看诊断日志。' };
-    }
+  ipcMain.handle(BOT_MEDIA_CHANNEL,async(event,input:unknown):Promise<BotMediaResponse>=>{
+    if(!mainWindow||mainWindow.isDestroyed()||event.sender!==mainWindow.webContents||event.senderFrame!==mainWindow.webContents.mainFrame)return{ok:false,error:'无权访问伙伴附件。'};
+    const parsed=botMediaRequestSchema.safeParse(input);if(!parsed.success)return{ok:false,error:'附件请求格式不正确。'};
+    try{
+      const service=await ensureBotService(),request=parsed.data;await service.handle({type:'state',conversationId:request.conversationId});
+      const room=service.store.getConversation(request.conversationId);
+      if(!botCanInspectConversation(room))throw new Error('附件会话不存在或不对用户开放。');
+      if(['files.pick','files.import','pack.pick','pack.import'].includes(request.type)&&!botCanImportConversationMedia(room))throw new Error('正在旁观伙伴私聊，不能向这段私聊添加附件。');
+      const media=await ensureBotMediaService();
+      switch(request.type){
+        case 'packs.list':return{ok:true,packs:await media.listPacks(request)};
+        case 'stickers.list':return{ok:true,media:await media.listStickers(request)};
+        case 'media.list':return{ok:true,media:await media.listMedia(request.conversationId)};
+        case 'media.text.read':return{ok:true,textPage:await media.readTextPage(request)};
+        case 'files.import':return{ok:true,media:await media.importFiles(request)};
+        case 'pack.import':return{ok:true,pack:await media.importStickerPack(request)};
+        case 'files.pick':{
+          const selection=await dialog.showOpenDialog(mainWindow,{title:'选择发送的附件',properties:['openFile','multiSelections']});
+          return selection.canceled?{ok:true,cancelled:true}:{ok:true,media:await media.importFiles({conversationId:request.conversationId,paths:selection.filePaths})};
+        }
+        case 'pack.pick':{
+          const selection=await dialog.showOpenDialog(mainWindow,{title:'导入表情包文件夹',properties:['openDirectory']});
+          return selection.canceled?{ok:true,cancelled:true}:{ok:true,pack:await media.importStickerPack({conversationId:request.conversationId,directory:selection.filePaths[0]!})};
+        }
+        case 'attachment.save':{
+          const [source]=await media.resolveForConversation(request.conversationId,[request.id]),selection=await dialog.showSaveDialog(mainWindow,{title:'保存附件',defaultPath:source!.originalName||source!.name});
+          if(selection.canceled||!selection.filePath)return{ok:true,cancelled:true};
+          await media.saveAttachment({conversationId:request.conversationId,id:request.id,destination:selection.filePath});
+          return{ok:true,savedPath:selection.filePath};
+        }
+        case 'attachment.open':{
+          const source=await media.getForUserOpen(request.conversationId,request.id),error=await shell.openPath(source.path);
+          if(error)throw new Error(error);return{ok:true};
+        }
+      }
+    }catch(error){return{ok:false,error:error instanceof Error?error.message:'附件操作失败。'};}
   });
-  try {
-    companionWorldWindows = new CompanionWorldWindowManager({
-      ipc: ipcMain, getMainWindow: () => mainWindow, preload: path.join(__dirname, 'index.js'),
-      createWindow: options => { const window = new BrowserWindow(withAppWindowIcon(options)); attachRendererDiagnostics(window); return window; },
-      request: async request => (await ensureCompanionService()).handle(request), report: error => logger?.error('companions.world-window', error),
-      load: async observer => {
-        const window = observer as BrowserWindow;
-        if (MAIN_WINDOW_VITE_DEV_SERVER_URL) {
-          const url = new URL(MAIN_WINDOW_VITE_DEV_SERVER_URL); url.searchParams.set('window', 'companion-world'); await window.loadURL(url.toString());
-        } else await window.loadFile(path.join(__dirname, `../renderer/${MAIN_WINDOW_VITE_NAME}/index.html`), { query: { window: 'companion-world' } });
-      },
-    });
-    companionWorldWindows.register();
-  } catch (error) {
-    logger.error('companions.initialization', error);
-  }
   bindRendererKeyboardFocusLogger(logger);
   appUpdateService = createAppUpdateService({
     currentVersion: app.getVersion(),
@@ -5396,6 +5276,82 @@ async function startApplication(): Promise<void> {
   // WorldlineBox-65d837: remove any `.del-*` aside roots that could not be deleted
   // during a previous session (deferred-cleanup store, backoff loop).
   const activeWorkerClient = workerClient;
+  let workerRecoveryEpoch = 0;
+  workerClient.onRecovery((event) => {
+    if (event.state === 'recovering') {
+      workerRecoveryEpoch += 1;
+      // Semantic sessions belong to the old Worker generation. Status polling
+      // will reopen them against persisted vectors after the Worker recovers.
+      void Promise.all([
+        embeddingTestIndex?.close(),
+        embeddingHttpIndex?.close(),
+      ]).catch((error: unknown) => logger?.error('embedding.worker-recovery', error));
+      publishLifecycle({ type: 'worker.recovering' });
+      return;
+    }
+    if (event.state === 'failed') {
+      workerRecoveryEpoch += 1;
+      publishLifecycle({ type: 'worker.failed' });
+      return;
+    }
+    const recoveryEpoch = ++workerRecoveryEpoch;
+    // Clear generation-bound caches and resend Worker configuration before
+    // the client releases its request gate. Slow plugin/AI work follows below.
+    for (const libraryId of event.failedLibraryIds) {
+      sourcePathCache.clearLibrary(libraryId);
+      clearArtifactPathCache(libraryId);
+      clearNativeAssetDragCache(libraryId);
+    }
+    for (const library of event.libraries) {
+      sourcePathCache.clearLibrary(library.libraryId);
+      clearArtifactPathCache(library.libraryId);
+      clearNativeAssetDragCache(library.libraryId);
+      activeWorkerClient.publishPluginThumbnailExtensions(
+        library.libraryId,
+        pluginThumbnailExtensionsFor(library.libraryId),
+      );
+    }
+    activeWorkerClient.publishShowMissingLinkedFiles(showMissingLinkedFiles);
+    // Plugin activation and AI queue scheduling can call client.request(), so
+    // run them after the gate is released while retaining the epoch guard.
+    setTimeout(() => {
+      void (async () => {
+        if (recoveryEpoch !== workerRecoveryEpoch || !activeWorkerClient.available) return;
+        for (const libraryId of event.failedLibraryIds) {
+          pluginActivationCoordinator?.onLibraryClosed(libraryId);
+          publishLifecycle({ type: 'library.closed', libraryId });
+        }
+        for (const library of event.libraries) {
+          if (recoveryEpoch !== workerRecoveryEpoch || !activeWorkerClient.available) return;
+          try {
+            await notifyLibraryOpenedSideEffects({
+              libraryId: library.libraryId,
+              libraryDirectory: library.libraryPath,
+            });
+          } catch (error) {
+            logger?.error('worker.recovery.library-side-effects', error, {
+              libraryId: library.libraryId,
+            });
+          }
+        }
+        if (recoveryEpoch !== workerRecoveryEpoch || !activeWorkerClient.available) return;
+        publishLifecycle({
+          type: 'worker.recovered',
+          libraryIds: event.libraries.map((library) => library.libraryId),
+          failedLibraryIds: event.failedLibraryIds,
+        });
+      })().catch((error) => {
+        logger?.error('worker.recovery.main-state', error);
+        if (recoveryEpoch === workerRecoveryEpoch && activeWorkerClient.available) {
+          publishLifecycle({
+            type: 'worker.recovered',
+            libraryIds: event.libraries.map((library) => library.libraryId),
+            failedLibraryIds: event.failedLibraryIds,
+          });
+        }
+      });
+    }, 0);
+  });
   // Slice E (WorldlineBox-hnmg): Main owns the shared offscreen window that renders
   // model thumbnails. The worker enqueues model jobs and asks Main to render;
   // Main replies with PNG bytes (or a typed failure) that the worker persists
@@ -6710,6 +6666,7 @@ async function startApplication(): Promise<void> {
   protocol.handle("worldlinebox", async (request) => {
     try {
       const url = new URL(request.url);
+      if(url.hostname==='bot-media')return(await ensureBotMediaService()).response(request);
       if (url.hostname === APP_ASSET_HOST) {
         // Bundled app assets (e.g. .hdr environment maps) that the packaged
         // renderer cannot fetch via file:// (three r185 loaders use fetch).
@@ -7971,15 +7928,13 @@ if (!hasSingleInstanceLock) {
 
   app.on("before-quit", (event) => {
     applicationClosing = true;
-    companionWorldWindows?.dispose();
-    companionWorldWindows = undefined;
     applicationQuitting = true;
     aiQueueScheduler.clearAll();
     criticalConfirmationWindowManager?.dispose();
     criticalConfirmationWindowManager = undefined;
     criticalConfirmationBroker?.dispose();
     criticalConfirmationBroker = undefined;
-    if (quitAfterShutdown || (!workerClient && !embeddingTestIndex && !embeddingHttpIndex && !globalEmbeddingService && !embeddingDeviceCapability && !vcpEmbeddingGateway && !browserService && !captureToolsService && !dshLauncher && !musicService && !companionService && !creatingCompanionService && !companionRecoveryOperation && !closeGlobalNetwork)) return;
+    if (quitAfterShutdown || (!workerClient && !embeddingTestIndex && !embeddingHttpIndex && !globalEmbeddingService && !embeddingDeviceCapability && !vcpEmbeddingGateway && !browserService && !captureToolsService && !dshLauncher && !musicService && !botService && !creatingBotService && !closeGlobalNetwork)) return;
     event.preventDefault();
     if (applicationShutdownPromise) return;
 
@@ -7994,6 +7949,9 @@ if (!hasSingleInstanceLock) {
     const mcpClose = releaseLoopbackListeners();
     // Stop model processes before app.exit(), which bypasses will-quit.
     applicationShutdownPromise = (async (): Promise<void> => {
+      // Fence/requeue bot events and stop its streams before closing the shared DSH Host.
+      try { await (creatingBotService ? creatingBotService.then(service => service.shutdown(), () => undefined) : botService?.shutdown()); }
+      catch (error) { logger?.error('companion-bot.shutdown', error); }
       const results = await Promise.allSettled([
         mcpClose,
         embeddingTestIndex?.close(),
@@ -8001,17 +7959,14 @@ if (!hasSingleInstanceLock) {
         browserService?.shutdown(),
         dshLauncher?.shutdown(),
         musicService?.flush(),
-        creatingCompanionService ? creatingCompanionService.then(service => service.shutdown(), () => undefined) : companionService?.shutdown(),
         captureToolsService?.shutdown(),
         globalEmbeddingService?.close(),
         vcpEmbeddingGateway?.close(),
-        vcpChatGateway?.close(),
         embeddingDeviceCapability?.close(),
-        companionRecoveryOperation?.promise,
       ]);
       for (const [index, result] of results.entries()) {
         if (result.status !== "rejected") continue;
-        const source = ["automation.mcp.close", "embedding.local-index.close", "embedding.http-index.close", "browser.shutdown", "dsh.shutdown", "music.flush", "companion.shutdown", "capture-tools.shutdown", "embedding.global.close", "embedding.gateway.close", "vcp.chat.close", "embedding.device.close", "companion.recovery"][index]
+        const source = ["automation.mcp.close", "embedding.local-index.close", "embedding.http-index.close", "browser.shutdown", "dsh.shutdown", "music.flush", "capture-tools.shutdown", "embedding.global.close", "embedding.gateway.close", "embedding.device.close"][index]
           ?? "application.shutdown.close";
         logger?.error(source, result.reason, { reason: "application-quit" });
       }

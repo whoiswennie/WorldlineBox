@@ -27,7 +27,7 @@ export const dshTaskResultSchema = z.object({ taskId: id, instanceId: id, runtim
 export type DshTaskResult = z.infer<typeof dshTaskResultSchema>;
 export const dshTaskEventSchema = z.object({ taskId: id, sequence: z.number().int().min(0), type: z.string().max(100), receivedAt: z.string(),
   sessionId: dshTaskSessionIdSchema.optional(), text: z.string().max(1024 * 1024).optional(), code: z.string().max(100).optional(),
-  stage: z.enum(['preparing', 'starting', 'session', 'turn_start', 'step_start', 'step_end', 'turn_end', 'tool_prepare', 'tool_start', 'tool_end', 'message', 'completed', 'failed']).optional(),
+  stage: z.enum(['preparing', 'starting', 'session', 'turn_start', 'step_start', 'step_end', 'turn_end', 'tool_prepare', 'tool_start', 'tool_end', 'compaction_start', 'compaction_end', 'output_continuation', 'message', 'completed', 'failed']).optional(),
   contentKind: z.enum(['input', 'output', 'message']).optional(), callId: z.string().max(200).optional(),
   streamId: z.string().max(100).optional(),
   outputState: z.enum(['draft', 'committed', 'abandoned']).optional(),

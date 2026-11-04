@@ -1,0 +1,36 @@
+{
+  "manifestVersion": "1.0.0",
+  "name": "SemanticGroupEditor",
+  "version": "2.0.0",
+  "displayName": "语义组编辑器",
+  "description": "用于查询、更新和设置 RAG 知识库中语义词元组权重的插件。所有命令支持串语法批量操作。",
+  "author": "lionsky & infinite-vector",
+  "pluginType": "synchronous",
+  "entryPoint": {
+    "type": "nodejs",
+    "command": "node SemanticGroupEditor.js"
+  },
+  "communication": {
+    "protocol": "stdio",
+    "timeout": 10000
+  },
+  "capabilities": {
+    "invocationCommands": [
+      {
+        "commandIdentifier": "QueryGroups",
+        "description": "查询语义词元组。不传 groupname 则返回全部组的概览；传入 groupname 则只返回指定组的详细信息。\n参数:\n- groupname (字符串, 可选): 要查询的组名，多个组用英文逗号分隔。不存在的组名会被明确提示。\n\n全量查询:\n\n\n按名查询:\n",
+        "example": "<<<[TOOL_REQUEST]>>>\ntool_name:「始」SemanticGroupEditor「末」,\ncommand:「始」QueryGroups「末」,\ngroupname:「始」绘画与视觉创作「末」\n<<<[END_TOOL_REQUEST]>>>"
+      },
+      {
+        "commandIdentifier": "UpdateGroups",
+        "description": "更新或创建语义词元组的词元列表。组名已存在则覆盖词元；不存在则新建（默认权重1）。\n参数:\n- groupname (字符串, 必需): 组名。\n- groupwords (字符串, 必需): 词元列表，用英文逗号分隔。\n\n单次:\n\n\n批量 (串语法):\n",
+        "example": "<<<[TOOL_REQUEST]>>>\ntool_name:「始」SemanticGroupEditor「末」,\ncommand:「始」UpdateGroups「末」,\ngroupname:「始」科幻概念「末」,\ngroupwords:「始」戴森球,曲率引擎,赛博朋克「末」\n<<<[END_TOOL_REQUEST]>>>"
+      },
+      {
+        "commandIdentifier": "SetWeight",
+        "description": "设置语义组的权重值。权重影响 RAG 检索时该组向量对查询增强的贡献（groupWeight = weight × activationStrength）。\n参数:\n- groupname (字符串, 必需): 组名，多个组用英文逗号分隔可批量设置同一权重。\n- weight (数字, 必需): 大于 0 的有限数字。1 = 默认，0 到 1 之间 = 减弱，>1 = 增强。当前 RAG 管线使用回退表达式，因此不接受 0。\n\n\n\n串语法批量:\n",
+        "example": "<<<[TOOL_REQUEST]>>>\ntool_name:「始」SemanticGroupEditor「末」,\ncommand:「始」SetWeight「末」,\ngroupname:「始」绘画与视觉创作「末」,\nweight:「始」1.5「末」\n<<<[END_TOOL_REQUEST]>>>"
+      }
+    ]
+  }
+}

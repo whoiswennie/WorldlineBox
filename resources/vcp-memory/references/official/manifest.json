@@ -1,0 +1,37 @@
+{
+  "capturedAt": "2026-11-02T01:27:13.251Z",
+  "landingPage": "https://www.vcptoolbox.com/?page=learn-vcp",
+  "assetUrl": "https://www.vcptoolbox.com/assets/index-C6WkicQd.js",
+  "assetSha256": "8c7d1b4b096e54687523d780fbe558693b37bdbfb99b7b2a0bc1897dabc5e246",
+  "note": "Official site embeds Markdown as static JS strings; /docs/*.md is not a public endpoint. Extracted with a static string decoder (no evaluation). Implementation authority remains the local repository snapshot.",
+  "files": [
+    {
+      "file": "vcp-whitepaper.md",
+      "url": "https://www.vcptoolbox.com/?page=learn-vcp",
+      "embeddedReference": "./docs/vcp-whitepaper.md",
+      "bytes": 213217,
+      "sha256": "25b049905ef68d758ec6147b93464dc9fd8713574bdab3c694a6403aae3fcd43"
+    },
+    {
+      "file": "teaching-docs.md",
+      "url": "https://www.vcptoolbox.com/?page=learn-vcp",
+      "embeddedReference": "./docs/teaching-docs.md",
+      "bytes": 1459,
+      "sha256": "c7f6edce51966515e920e0b7cd915508050dc54db88490a3d4f23272400d5ab5"
+    },
+    {
+      "file": "rivermemo-topology-v3.md",
+      "url": "https://www.vcptoolbox.com/?page=learn-vcp",
+      "embeddedReference": "./docs/rivermemo-topology-v3.md",
+      "bytes": 43971,
+      "sha256": "3cfda837436d97a41c19b6907eb474eeb6d5583ae7100d19bc8a9f1cddac8e3c"
+    },
+    {
+      "file": "compact-prompt-layout-guide.md",
+      "url": "https://www.vcptoolbox.com/?page=learn-vcp",
+      "embeddedReference": "./docs/compact-prompt-layout-guide.md",
+      "bytes": 7323,
+      "sha256": "c6043093914f2d466da52585f1d2016673a23a66feca005e338f40f423b800b2"
+    }
+  ]
+}

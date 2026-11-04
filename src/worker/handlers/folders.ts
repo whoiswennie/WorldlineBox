@@ -155,8 +155,18 @@ export async function executeFolderWorkerCommand(
         type: 'folder.list',
         folders: libraryService.listManagedFolders(request.command.libraryId, request.command.showIgnored === true),
       };
+    case 'folder.filtered-counts':
+      return {
+        ok: true,
+        type: 'folder.filtered-counts',
+        ...libraryService.filteredFolderCounts({
+          libraryId: request.command.libraryId,
+          filters: request.command.filters,
+          showIgnored: request.command.showIgnored === true,
+        }),
+      };
     case 'folder.browse-entries': {
-      const entries = libraryService.listFolderBrowseEntries({
+      const entries = await libraryService.listFolderBrowseEntriesAsync({
         libraryId: request.command.libraryId,
         parentFolderId: request.command.parentFolderId,
         showIgnored: request.command.showIgnored === true,
@@ -191,7 +201,7 @@ export async function executeFolderWorkerCommand(
         }),
       };
     case 'folder.entries': {
-      const entries = libraryService.folderEntriesByRefs({
+      const entries = await libraryService.folderEntriesByRefsAsync({
         libraryId: request.command.libraryId,
         refs: request.command.refs,
       });

@@ -81,6 +81,8 @@ export interface ToastNotifications {
   /** Start closing one stack entry without affecting its siblings. */
   dismissToast(id: number): void;
   finishExit(id?: number): void;
+  /** Drop transient module notices when its retained view is deactivated. */
+  clearToasts(): void;
   dispose(): void;
 }
 
@@ -267,6 +269,16 @@ export function createToastNotifications(): ToastNotifications {
     commit();
   }
 
+  function clearToasts(): void {
+    for (const timer of dismissTimers.values()) clearTimeout(timer);
+    for (const timer of exitTimers.values()) clearTimeout(timer);
+    dismissTimers.clear();
+    exitTimers.clear();
+    if (!entries.length) return;
+    entries = [];
+    commit();
+  }
+
   return {
     getSnapshot: () => snapshot,
     subscribe(listener) {
@@ -282,9 +294,9 @@ export function createToastNotifications(): ToastNotifications {
     dismissVisible,
     dismissToast,
     finishExit,
+    clearToasts,
     dispose() {
-      for (const id of dismissTimers.keys()) clearTimer(dismissTimers, id);
-      for (const id of exitTimers.keys()) clearTimer(exitTimers, id);
+      clearToasts();
       listeners.clear();
     },
   };

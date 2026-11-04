@@ -1,0 +1,415 @@
+{
+  "version": 1,
+  "sourceCommit": "ecdace4b419ae7c4176be9be2cfb9e67c7d64f51",
+  "scope": "Static authored character sheets and original artwork only; excludes old runtime data and memories.",
+  "deepseekIdentityPolicy": "Legacy normal and mini source material only. Current registry merges both into one companion with shared identity and memory; latest owner mini reference supersedes the old mini image.",
+  "sources": [
+    {
+      "path": "src/shared/companion-character-templates.ts",
+      "gitBlob": "e01a87be595701d5dfebfa897a715f363f71bd35",
+      "sha256": "cb6ffa54976de85d771a904cf3c763144947e1745bd42948e1ea1ba20a5b0b67"
+    },
+    {
+      "path": "src/shared/companion-catalogue.ts",
+      "gitBlob": "4e3d4f92f0ed105bcb93d54b7c3f0fb083385bd7",
+      "sha256": "1eb9bc7f2c60e5ca0206ff46a4fd7c7331559fc2172d570241e6571ac1ac0186"
+    },
+    {
+      "path": "src/shared/companion-catalogue-data.json",
+      "gitBlob": "3e45a0f1c8189c35a1ee99920a0f2718c49145e5",
+      "sha256": "50eed3b6fb33913eee5ece5b387cd706624a39c9b25eb239743c26a4df7a0606"
+    },
+    {
+      "path": "src/shared/companion-character.ts",
+      "gitBlob": "ad96a22294a98da9d628fccee1b2a11c5e39e9eb",
+      "sha256": "5d10daa3c0d3aaabd0f4bf0bb633a78fe4ba50d02394f075b94f8b4b47fa4455"
+    },
+    {
+      "path": "src/shared/companion-character-document.ts",
+      "gitBlob": "5e806a501d7f34aed0e7e8a1e1979f8865258e2f",
+      "sha256": "dd232c07efb402f4280fa0b8c4ad0cd9ac7699b64f5986b6297868dab190c26c"
+    }
+  ],
+  "portraitManifest": {
+    "path": "assets/companions/portraits/manifest.json",
+    "sha256": "809cc780d079487ca6f8a9893cbc01cb85f7a21a16b4a5173e064f6c2801ce28"
+  },
+  "referenceManifest": {
+    "path": "assets/companions/appearance/catalogue.json",
+    "sha256": "b01206d9b25f793f03143521dfccd2ff357587f43e0a1048e5b979d031dcaa63"
+  },
+  "runtimeAdaptations": [
+    {
+      "from": "现实任务通过当前获权DSH与内置browser处理，记忆只读写本人合法来源。",
+      "to": "现实任务通过当前获权DSH任务与实际提供的工具处理，记忆仅通过VCP记忆工具读写本人当前授权来源。"
+    },
+    {
+      "from": "由当前成长档案体现，保留适用条件。",
+      "to": "以当前人设与本人有来源的授权VCP记忆为依据，保留适用条件。"
+    }
+  ],
+  "personas": [
+    {
+      "oldId": "deepseek-sister",
+      "name": "大肥鱼",
+      "originalPersonaSha256": "d17b2e65394b38c4c9e392b637c5c0b29390a8ebfd986005b18711c37f8d89bc",
+      "adaptedPersonaSha256": "a084ef91ba644e021a283ba96ca9029f7e83e29bbcb065dafe83e5ca1f9f1bea",
+      "characters": 1236,
+      "fields": 19
+    },
+    {
+      "oldId": "deepseek-flash",
+      "name": "小肥鱼",
+      "originalPersonaSha256": "5c6fafe67c42b5a9a19747b9e2310b7820659c56df9cccebcf934559355d055d",
+      "adaptedPersonaSha256": "e832899b583a746e1c6cc56deff2961bf3d19c280ad502e36c8cb659b1b7265a",
+      "characters": 1224,
+      "fields": 19
+    },
+    {
+      "oldId": "huan-white",
+      "name": "白幻",
+      "originalPersonaSha256": "2d4aa21472c9d418c25023d2a8fedd66fecd856869a35bc7f0aa226099b72c2c",
+      "adaptedPersonaSha256": "62910cc9de76ba90e56d4f7d1a4a068a8d4bea669d0cffa8b40a3e8d0f8dfb2e",
+      "characters": 1466,
+      "fields": 19
+    },
+    {
+      "oldId": "huan-black",
+      "name": "黑幻",
+      "originalPersonaSha256": "ff7dc049e54251f12db0e4cba421df8adfc5b89b5bcc5b33f5460c2d32e2b49e",
+      "adaptedPersonaSha256": "5dd5ca65ee62f2806db2a10bb724923a87fd543ab6969445841e3cc1bd34fb10",
+      "characters": 1450,
+      "fields": 19
+    },
+    {
+      "oldId": "gemini",
+      "name": "Gemini",
+      "originalPersonaSha256": "41030ce6bda63ab20017d97f91a1cee384836d576be530f8f3133266f921c96e",
+      "adaptedPersonaSha256": "e15aaea30ebb6ad8c889d400ffa97e0f06066f98e5c0eeeee90e161f92b97618",
+      "characters": 1239,
+      "fields": 19
+    },
+    {
+      "oldId": "gpt",
+      "name": "GPT",
+      "originalPersonaSha256": "13ca7eec743b76737d3f4a9f9b3563f39c46d2a09e2044901bd81ab556893d84",
+      "adaptedPersonaSha256": "d3d8720e7954312d179c1bf0d57e6c3698d6d866d12e2c33b214fd4dee3f3fc4",
+      "characters": 1197,
+      "fields": 19
+    },
+    {
+      "oldId": "grok",
+      "name": "Grok",
+      "originalPersonaSha256": "3d1100340c6bda0ae21c961dc778f050fda54774a1d1ee1a1a7dddfa606b7585",
+      "adaptedPersonaSha256": "9b904473ebe8adca42e31d95d9871d0c6e25944fe503397628adac2e9e3c20db",
+      "characters": 1188,
+      "fields": 19
+    },
+    {
+      "oldId": "kimi",
+      "name": "Kimi",
+      "originalPersonaSha256": "0ebbbe8b1d42515da9459161c63043154960d705a6b935c41ec49a94f0162f50",
+      "adaptedPersonaSha256": "566bc77c118bc18f33db91a47785b59c74ef3a95630acb7ec191af59bee543ba",
+      "characters": 1178,
+      "fields": 19
+    },
+    {
+      "oldId": "minimax",
+      "name": "MiniMax",
+      "originalPersonaSha256": "9c6c688d9bef923c1c6f9a42bb4dcc5d201264778c78cc2969e7a9a3ccba18f4",
+      "adaptedPersonaSha256": "efd722d4d7a67a78bb211d00f7950410b41936be19a532dd1e706ff23c73411e",
+      "characters": 1214,
+      "fields": 19
+    },
+    {
+      "oldId": "qwen",
+      "name": "Qwen",
+      "originalPersonaSha256": "50b576139e071d0a315996c643cda840b80e374fc23dffde76277b12d1901dca",
+      "adaptedPersonaSha256": "6c66c3c347f9a4fe1c60c7da495453044b3b7211208f8ced509827a602ce249b",
+      "characters": 1195,
+      "fields": 19
+    },
+    {
+      "oldId": "gugugaga",
+      "name": "咕咕嘎嘎",
+      "originalPersonaSha256": "09ee0688dc980c94afaa615fca1d7a046d0877fc9459af9c6d75d6dd4023e232",
+      "adaptedPersonaSha256": "9ffded6118eb39a7a4d5c96896ce296207c31bae2bbbcf758e031397aa868e07",
+      "characters": 1233,
+      "fields": 19
+    },
+    {
+      "oldId": "guga",
+      "name": "咕嘎",
+      "originalPersonaSha256": "3aada5a9532c634ee7ab68d2462e1d14942c827a5058429b64bd4b73b4500cf5",
+      "adaptedPersonaSha256": "ffed2422d9464facf1d539e8cd9a8685988fd2c25663a154e878c7e3a33de397",
+      "characters": 1199,
+      "fields": 19
+    },
+    {
+      "oldId": "doro",
+      "name": "Doro",
+      "originalPersonaSha256": "262f4db77f6f6bd01f462fc6c38d9c49f96248af875d7938a9910bd496cb1c7c",
+      "adaptedPersonaSha256": "e11fcff90ba11bf55e68ff8d66ac23d3ceaf38da8d426a52351307e11540027a",
+      "characters": 1221,
+      "fields": 19
+    },
+    {
+      "oldId": "phoebe",
+      "name": "菲比啾比",
+      "originalPersonaSha256": "bb936a1ccd9e7432d85474fa6006d1b25a8a02d42237da0edac4c1ff791b0439",
+      "adaptedPersonaSha256": "6e1062b974000c5955a8d51e9d0656b3271c37aa5927ce5e319fca2bc99764bd",
+      "characters": 1277,
+      "fields": 19
+    },
+    {
+      "oldId": "phrolova",
+      "name": "弗糯糯",
+      "originalPersonaSha256": "da2d1ccf5d9a03e5244d9851393f28e2367d1b84c18cece227c15e17dfbf3502",
+      "adaptedPersonaSha256": "b5d42f87367241a7c119e49cf19d86c3044941d63f9d0d5a1cc366e08afa337a",
+      "characters": 1245,
+      "fields": 19
+    }
+  ],
+  "assets": [
+    {
+      "oldId": "deepseek-sister",
+      "role": "portrait",
+      "source": "assets/companions/portraits/deepseek-sister.png",
+      "publicPath": "companion-bot/builtins/deepseek-sister/portrait.png",
+      "sha256": "67cc6e39ab256ba6a57bd63a751e1480d487e821b31e852d1367b07e0dcfeb5d",
+      "bytes": 2015157
+    },
+    {
+      "oldId": "deepseek-sister",
+      "role": "reference",
+      "source": "assets/companions/appearance/deepseek-sister-orthographic.png",
+      "publicPath": "companion-bot/builtins/deepseek-sister/reference.png",
+      "sha256": "738e020c4d4b17a5e7a0237871ede34bf4293ec3a06cee19164028e83e511217",
+      "bytes": 1656018
+    },
+    {
+      "oldId": "deepseek-flash",
+      "role": "portrait",
+      "source": "assets/companions/portraits/deepseek-flash.png",
+      "publicPath": "companion-bot/builtins/deepseek-flash/portrait.png",
+      "sha256": "7cf75d26edefc8d13a3e6706051c42f327e7f58e97119e477e718b4c7b14314a",
+      "bytes": 1250879
+    },
+    {
+      "oldId": "deepseek-flash",
+      "role": "reference",
+      "source": "assets/companions/appearance/deepseek-flash-orthographic.png",
+      "publicPath": "companion-bot/builtins/deepseek-flash/reference.png",
+      "sha256": "187836c4856532f8db0515c3c5820e2315fa616a4d92705265a239f4c74ccc27",
+      "bytes": 666541
+    },
+    {
+      "oldId": "huan-white",
+      "role": "portrait",
+      "source": "assets/companions/portraits/huan-white-v1.png",
+      "publicPath": "companion-bot/builtins/huan-white/portrait.png",
+      "sha256": "f0f2cf281805460db2c44fb2e041a258d62efc16cc364462afce6d8006e52570",
+      "bytes": 1908000
+    },
+    {
+      "oldId": "huan-white",
+      "role": "reference",
+      "source": "assets/companions/appearance/huan-white-orthographic.png",
+      "publicPath": "companion-bot/builtins/huan-white/reference.png",
+      "sha256": "0b6fec957a2471cc9f4f60d5b55b3e79939c9688791b872edd3f7769b417972e",
+      "bytes": 1644285
+    },
+    {
+      "oldId": "huan-black",
+      "role": "portrait",
+      "source": "assets/companions/portraits/huan-black-v1.png",
+      "publicPath": "companion-bot/builtins/huan-black/portrait.png",
+      "sha256": "e2a68f72a14addcd88c6bc18fffdd317b5eaae4f7a1150b5becd6e04cd9079e6",
+      "bytes": 1981223
+    },
+    {
+      "oldId": "huan-black",
+      "role": "reference",
+      "source": "assets/companions/appearance/huan-black-orthographic.png",
+      "publicPath": "companion-bot/builtins/huan-black/reference.png",
+      "sha256": "50d1f9a01c797712e382a3c812be2421e92f2039c81876677aca96608b55953d",
+      "bytes": 1659554
+    },
+    {
+      "oldId": "gemini",
+      "role": "portrait",
+      "source": "assets/companions/portraits/gemini-v2.png",
+      "publicPath": "companion-bot/builtins/gemini/portrait.png",
+      "sha256": "2d40b1edcf76a30a32a91086276409aab861d885aa234f69f401b1961f9d43de",
+      "bytes": 2174253
+    },
+    {
+      "oldId": "gemini",
+      "role": "reference",
+      "source": "assets/companions/appearance/gemini-orthographic.png",
+      "publicPath": "companion-bot/builtins/gemini/reference.png",
+      "sha256": "5e4ce9bf27ae08b599d6eed0fee8739476f7bd060ffb2d9a68e7f2c259ef8d98",
+      "bytes": 2025572
+    },
+    {
+      "oldId": "gpt",
+      "role": "portrait",
+      "source": "assets/companions/portraits/gpt-v2.png",
+      "publicPath": "companion-bot/builtins/gpt/portrait.png",
+      "sha256": "ad6c289b4707bcfd1d5098db3fb1990f5060e8377d5a61889f1634a39b047d33",
+      "bytes": 2071927
+    },
+    {
+      "oldId": "gpt",
+      "role": "reference",
+      "source": "assets/companions/appearance/gpt-orthographic.png",
+      "publicPath": "companion-bot/builtins/gpt/reference.png",
+      "sha256": "85de394358c5fb8e89b3e5f322504c210d822c642d2fd5350bec528a6ca9715e",
+      "bytes": 1913166
+    },
+    {
+      "oldId": "grok",
+      "role": "portrait",
+      "source": "assets/companions/portraits/grok-v1.png",
+      "publicPath": "companion-bot/builtins/grok/portrait.png",
+      "sha256": "d39e31aa4d4f644b8f8a55d9d1bd59e8f506a3689888145872a4c7ad356b376a",
+      "bytes": 2506200
+    },
+    {
+      "oldId": "grok",
+      "role": "reference",
+      "source": "assets/companions/appearance/grok-orthographic.png",
+      "publicPath": "companion-bot/builtins/grok/reference.png",
+      "sha256": "b42f77207ddbc5cfacd969bfc89ec545c1aec8de5c8ed18ceb46ef78fe24094a",
+      "bytes": 2018869
+    },
+    {
+      "oldId": "kimi",
+      "role": "portrait",
+      "source": "assets/companions/portraits/kimi-v1.png",
+      "publicPath": "companion-bot/builtins/kimi/portrait.png",
+      "sha256": "51e362eca052cc67f816a84e5092ead2e5d69970d7ad99bdcb206239cb59cd60",
+      "bytes": 2451577
+    },
+    {
+      "oldId": "kimi",
+      "role": "reference",
+      "source": "assets/companions/appearance/kimi-orthographic.png",
+      "publicPath": "companion-bot/builtins/kimi/reference.png",
+      "sha256": "e183c22f5d7021dd641bd6e7126b760ea53968c446e67f3c6621de23ee23ab9d",
+      "bytes": 2125607
+    },
+    {
+      "oldId": "minimax",
+      "role": "portrait",
+      "source": "assets/companions/portraits/minimax-v2.png",
+      "publicPath": "companion-bot/builtins/minimax/portrait.png",
+      "sha256": "3bb6e73122084ace4476b545013bfd2fb7baea89d5bc1bd41ddec873e22e0b0a",
+      "bytes": 2053938
+    },
+    {
+      "oldId": "minimax",
+      "role": "reference",
+      "source": "assets/companions/appearance/minimax-orthographic.png",
+      "publicPath": "companion-bot/builtins/minimax/reference.png",
+      "sha256": "5bc8a21fbbaba957c2de7020b5789f9e0496bb86c53585edf8762bbcae556240",
+      "bytes": 1801515
+    },
+    {
+      "oldId": "qwen",
+      "role": "portrait",
+      "source": "assets/companions/portraits/qwen-v2.png",
+      "publicPath": "companion-bot/builtins/qwen/portrait.png",
+      "sha256": "5b87109d23bdccd8e81aa9838e0db0ba03947ec4e22e1bbed834cc7ddf3785f3",
+      "bytes": 2267831
+    },
+    {
+      "oldId": "qwen",
+      "role": "reference",
+      "source": "assets/companions/appearance/qwen-orthographic.png",
+      "publicPath": "companion-bot/builtins/qwen/reference.png",
+      "sha256": "cfe7ce5e69a8e835b947dd4d8df2058635952f9a26a8a2fac4ea137e480e1750",
+      "bytes": 2009480
+    },
+    {
+      "oldId": "gugugaga",
+      "role": "portrait",
+      "source": "assets/companions/portraits/gugugaga-v1.png",
+      "publicPath": "companion-bot/builtins/gugugaga/portrait.png",
+      "sha256": "53ce08a05c427a540ea11c0779141479e082178a416e80a167eee6c3a7bd843d",
+      "bytes": 1662004
+    },
+    {
+      "oldId": "gugugaga",
+      "role": "reference",
+      "source": "assets/companions/appearance/gugugaga-orthographic.png",
+      "publicPath": "companion-bot/builtins/gugugaga/reference.png",
+      "sha256": "6ed69cd7993ee9cfb5cd7d756a954d7e90250013a6de746fd05989931f2a31c3",
+      "bytes": 1354526
+    },
+    {
+      "oldId": "guga",
+      "role": "portrait",
+      "source": "assets/companions/portraits/guga-v1.png",
+      "publicPath": "companion-bot/builtins/guga/portrait.png",
+      "sha256": "5c412ac2c570fc76be32ff4d37861491710f34b8c98fe3f89350847df2817d4e",
+      "bytes": 1641802
+    },
+    {
+      "oldId": "guga",
+      "role": "reference",
+      "source": "assets/companions/appearance/guga-orthographic.png",
+      "publicPath": "companion-bot/builtins/guga/reference.png",
+      "sha256": "c31e83e82ea8ea259091a6c5caa5c776cf315dff71e976469173067338e9c2dd",
+      "bytes": 1401538
+    },
+    {
+      "oldId": "doro",
+      "role": "portrait",
+      "source": "assets/companions/portraits/doro-v1.png",
+      "publicPath": "companion-bot/builtins/doro/portrait.png",
+      "sha256": "b7e3a28413c4d641d520d23fa423db1f7d21f6fdbb974d0a84ca13e7ec64704a",
+      "bytes": 1768428
+    },
+    {
+      "oldId": "doro",
+      "role": "reference",
+      "source": "assets/companions/appearance/doro-orthographic.png",
+      "publicPath": "companion-bot/builtins/doro/reference.png",
+      "sha256": "3f8a8ccb0ea4f68da58a07bc9ed87581ce6df8e0739c5d46dc396348bb00e820",
+      "bytes": 1316029
+    },
+    {
+      "oldId": "phoebe",
+      "role": "portrait",
+      "source": "assets/companions/portraits/phoebe-v1.png",
+      "publicPath": "companion-bot/builtins/phoebe/portrait.png",
+      "sha256": "d28d58244f16459e2cc92840777d64b9c01c2867b4baac1b29fd6f7926a1d64d",
+      "bytes": 1631238
+    },
+    {
+      "oldId": "phoebe",
+      "role": "reference",
+      "source": "assets/companions/appearance/phoebe-orthographic.png",
+      "publicPath": "companion-bot/builtins/phoebe/reference.png",
+      "sha256": "91a71c8e5149d181e4c98f69cdd14597ca321f135f0c7f1df9c45eae90e24042",
+      "bytes": 1430216
+    },
+    {
+      "oldId": "phrolova",
+      "role": "portrait",
+      "source": "assets/companions/portraits/phrolova-v1.png",
+      "publicPath": "companion-bot/builtins/phrolova/portrait.png",
+      "sha256": "acfdf287712546503c4e507f45165de279a8e03a08ac72bba2b8a604b9ca8fb3",
+      "bytes": 1809599
+    },
+    {
+      "oldId": "phrolova",
+      "role": "reference",
+      "source": "assets/companions/appearance/phrolova-orthographic.png",
+      "publicPath": "companion-bot/builtins/phrolova/reference.png",
+      "sha256": "aa733c3be2988a366d9a4448f18161b69c088cbf679e102a71cd7e315d8b0693",
+      "bytes": 1444788
+    }
+  ]
+}

@@ -1,0 +1,49 @@
+{
+  "recordedAt": "2026-11-02T02:12:39.997Z",
+  "results": [
+    {
+      "step": "JSON session.prepare attachment",
+      "containsFile": true
+    },
+    {
+      "step": "auto-compact default provider",
+      "compacted": true,
+      "report": "Fixture summary: preserved memory context and decisions.",
+      "telemetry": {
+        "schema": "vcp-cli-diagnostics-v1",
+        "operation": "session.auto-compact",
+        "host": {
+          "clock": "performance.now",
+          "measurement": "host boundary wall time; not a VCP score; nested durations overlap",
+          "stages": [],
+          "executionDurationMs": 119.6032,
+          "shutdownDurationMs": 0.004500000000007276,
+          "totalDurationMs": 119.70279999999998
+        },
+        "vcp": null,
+        "providerTransport": [
+          {
+            "source": "provider-http",
+            "endpointType": "chat-completions",
+            "api": "openai-completions",
+            "model": "deepseek-flash",
+            "status": 200,
+            "outcome": "success",
+            "hostTiming": {
+              "startedAtMs": 119.4504,
+              "durationMs": 11.03370000000001
+            }
+          }
+        ]
+      }
+    },
+    {
+      "step": "checkpoint-only no model repeat",
+      "compacted": false
+    },
+    {
+      "step": "actual model attempts",
+      "count": 1
+    }
+  ]
+}

@@ -1,5 +1,3 @@
-import type { CompanionAssetLocation } from '../shared/companion-instance';
-import { encodeLinkedVirtualFolderId } from '../shared/linked-folder-tree';
 import { getGlobalLlmApi } from "./global-llm";
 import { isCurrentAiConnectionProbe } from "./ai-connection-probe-guard";
 import { DEFAULT_GLOBAL_LLM_CONFIG } from "../shared/llm";
@@ -17,12 +15,11 @@ import {
   type ReactNode,
   type Ref,
 } from "react";
-import { createPortal, flushSync } from "react-dom";
+import { flushSync } from "react-dom";
 import { createShellPortal } from "./ui/ShellStyleScope";
 
 import { Icon, type IconName } from "./Icons";
 import type { ApplicationShellState } from "./ApplicationShell";
-import type { WorldlineBoxCompanionsApi } from '../shared/companions';
 import type { WorldlineBoxDshLauncherApi } from '../shared/dsh-launcher';
 import { iconActionAttrs } from "./icon-action-attrs";
 import {
@@ -77,6 +74,8 @@ import { LinkedRulesDialog } from "./LinkedRulesDialog";
 import { TagManagementWorkspace } from "./TagManagementWorkspace";
 import { useFolderDeleteActions } from "./use-folder-delete-actions";
 import { canDeleteAssetFromDiskWithShortcut } from "./browse-key-command";
+import { filteredFolderBrowseEntries } from "./filtered-folder-visibility";
+import { useFilteredFolderCounts } from "./use-filtered-folder-counts";
 import { useFolderOrganizeActions } from "./use-folder-organize-actions";
 import { useFolderCommandShortcuts } from "./use-folder-command-shortcuts";
 import { SearchHistoryPopover } from "./SearchHistoryPopover";
@@ -127,6 +126,7 @@ import {
   type LibraryViewSessionToken,
 } from "./library-view-session";
 import { createTrackedLibraryApi } from "./tracked-library-api";
+import { useNativeDragReadyIds } from "./use-native-drag-readiness";
 import { MainMenu } from "./MainMenu";
 import {
   buildMainMenuSections,
@@ -430,6 +430,7 @@ import { PluginWorkspaceViews } from "./plugin-workspace-views";
 import { useExternalImportHandlers } from "./use-external-import-handlers";
 import { useFolderDragDropHandlers } from "./use-folder-drag-drop-handlers";
 import { WorkspaceNoticeBanner } from "./WorkspaceNoticeBanner";
+import { WorkspaceNoticeStack } from "./WorkspaceNoticeStack";
 import { WorkspaceToolsOverflow } from "./WorkspaceToolsOverflow";
 import {
   MANAGED_FOLDERS_DRAG_TYPE,
@@ -446,6 +447,7 @@ import { useInlineFolderEdit } from "./use-inline-folder-edit";
 import { useInlineSmartCollectionEdit } from "./use-inline-smart-collection-edit";
 import { usePanelResize } from "./use-panel-resize";
 import { useToastNotifications } from "./useToastNotifications";
+import { Notice } from "./ui/patterns";
 import {
   AI_CONNECTION_HEARTBEAT_MS,
   aiAnalyzeConnectionReady,
@@ -465,6 +467,7 @@ import {
   showAssetDragPreview,
 } from "./asset-drag-preview";
 import { DimensionFilterBar } from "./DimensionFilterBar";
+import { buildTagFilterClauses, resolveTagFilterSets } from "./dimension-filter-selection";
 import {
   buildActiveFilterChips,
   type ClearableFilterId,
@@ -721,7 +724,6 @@ type RendererWindow = Window & {
     shell?: WorldlineBoxShellApi;
     appUpdate?: WorldlineBoxAppUpdateApi;
     dshLauncher?: WorldlineBoxDshLauncherApi;
-    companions?: WorldlineBoxCompanionsApi;
     automation?: WorldlineBoxAutomationScriptApi;
     plugins?: WorldlineBoxPluginManagerApi;
     mcp?: WorldlineBoxMcpSettingsApi;
@@ -776,6 +778,7 @@ type QueryFilterSnapshot = {
   excludeFormatFilter: boolean;
   tagFilter: string;
   excludeTagFilter: boolean;
+  excludedTagFilter: string;
   includeAiTagFilter: boolean;
   tagFilterMatch: "any" | "all";
   ratingFilter: string;
@@ -886,7 +889,6 @@ function ToolButton({
 export interface AssetManagerHandle {
   openSettings: () => void;
   revealExtensionSave: (event: ExtensionSaveCompletedEvent) => void;
-  openCompanionAssets: (location: CompanionAssetLocation) => void;
 }
 
 function renderApplicationDialog(content: ReactNode) {
@@ -908,6 +910,8 @@ export function AssetManager({
   const t = useT();
   const { locale } = useLocale();
   const rawLibraryApi = (window as RendererWindow).worldlinebox?.library;
+  const nativeAssetDragEnabled = !(window as RendererWindow).worldlinebox?.e2e
+    || Boolean((window as RendererWindow).worldlinebox?.e2e?.useNativeAssetDrag);
   const shellApi = (window as RendererWindow).worldlinebox?.shell;
 
   useEffect(() => {
@@ -918,6 +922,7 @@ export function AssetManager({
 
   // Library / folder / assets (existing)
   const [library, setLibrary] = useState<RendererLibrarySummary | null>(null);
+  const nativeDragReadyIds = useNativeDragReadyIds(rawLibraryApi, library?.libraryId);
   const libraryRef = useRef<RendererLibrarySummary | null>(null);
   libraryRef.current = library;
   const [recentLibraries, setRecentLibraries] = useState<
@@ -989,6 +994,10 @@ export function AssetManager({
   const [rootAssetCount, setRootAssetCount] = useState(0);
   const [selectedAssetId, setSelectedAssetId] = useState<string | undefined>();
   const [selectedAssetIds, setSelectedAssetIds] = useState<string[]>([]);
+  const selectedNativeDragReady = useMemo(
+    () => selectedAssetIds.every((id) => nativeDragReadyIds.has(id)),
+    [nativeDragReadyIds, selectedAssetIds],
+  );
   // Session persistence must wait until the startup restore has applied the
   // saved scope and selection; otherwise the initial empty React state can
   // overwrite the last browsed asset in localStorage.
@@ -1083,6 +1092,9 @@ export function AssetManager({
     dismissToast,
     handleToastTransitionEnd,
   } = useToastNotifications();
+  const workerRecoveryStateRef = useRef<'ready' | 'recovering' | 'failed'>('ready');
+  const lastWorkerRecoverySequenceRef = useRef(0);
+  const [workerRecoveryState, setWorkerRecoveryState] = useState<'ready' | 'recovering' | 'failed'>('ready');
   const topVisibleToastId = renderedToastStack.find(
     (entry) => !entry.closing,
   )?.id;
@@ -1428,6 +1440,7 @@ export function AssetManager({
   const [excludeColorFilter, setExcludeColorFilter] = useState(false);
   const [tagFilter, setTagFilter] = useState("");
   const [excludeTagFilter, setExcludeTagFilter] = useState(false);
+  const [excludedTagFilter, setExcludedTagFilter] = useState("");
   const [includeAiTagFilter, setIncludeAiTagFilter] = useState(true);
   // WorldlineBox-eaxs: tag-management AND search ("包含 N 个标签") splits the tag
   // names into separate clauses (clauses are ANDed; values within one clause
@@ -1487,6 +1500,7 @@ export function AssetManager({
   const [shuffleSeed, setShuffleSeed] = useState<number | null>(null);
   const [searchOffset, setSearchOffset] = useState(0);
   const [searchTotal, setSearchTotal] = useState<number | null>(null);
+  const [filteredFolderCountRefreshToken, setFilteredFolderCountRefreshToken] = useState(0);
   const [searchSnippets, setSearchSnippets] = useState<Map<string, string>>(
     new Map(),
   );
@@ -1903,18 +1917,14 @@ export function AssetManager({
   // REQ-PREF-001: browse-area general settings panel (theme/language/canvas).
   const [appSettingsOpen, setAppSettingsOpen] = useState(false);
   const [deferredExtensionSave, setDeferredExtensionSave] = useState<ExtensionSaveCompletedEvent | null>(null);
-  const [deferredCompanionAssets, setDeferredCompanionAssets] = useState<CompanionAssetLocation>();
-  const handledCompanionAssets = useRef<CompanionAssetLocation | undefined>(undefined);
-  const openingCompanionAssets = useRef<CompanionAssetLocation | undefined>(undefined);
   const handledExtensionSaveRef = useRef<ExtensionSaveCompletedEvent | null>(null);
   const [appSettingsCategory, setAppSettingsCategory] =
-    useState<AppSettingsCategoryId>("profile");
+    useState<AppSettingsCategoryId>("general");
 
   useImperativeHandle(settingsRef, () => ({
     revealExtensionSave: setDeferredExtensionSave,
-    openCompanionAssets: setDeferredCompanionAssets,
     openSettings: () => {
-      setAppSettingsCategory("profile");
+      setAppSettingsCategory("general");
       setAppSettingsOpen(true);
     },
   }), []);
@@ -3385,6 +3395,7 @@ export function AssetManager({
         excludeFormatFilter,
         tagFilter,
         excludeTagFilter,
+        excludedTagFilter,
         tagFilterMatch,
         ratingFilter,
         excludeRatingFilter,
@@ -3414,6 +3425,7 @@ export function AssetManager({
       excludeFormatFilter,
       excludeRatingFilter,
       excludeTagFilter,
+      excludedTagFilter,
       favoriteFilter,
       formatFilter,
       heightRange,
@@ -3485,6 +3497,7 @@ export function AssetManager({
       excludeFormatFilter,
       tagFilter,
       excludeTagFilter,
+      excludedTagFilter,
       includeAiTagFilter,
       ratingFilter,
       excludeRatingFilter,
@@ -3520,6 +3533,7 @@ export function AssetManager({
     excludeFormatFilter,
     tagFilter,
     excludeTagFilter,
+    excludedTagFilter,
     includeAiTagFilter,
     ratingFilter,
     excludeRatingFilter,
@@ -3538,12 +3552,20 @@ export function AssetManager({
 
   // CANVAS-022: folders-only (recursive off, zero direct assets) must not
   // mount an empty asset grid — its min-height:100% left a large void.
+  const filteredFolderCounts = useFilteredFolderCounts({
+    api,
+    libraryId: library?.libraryId,
+    filters: currentQueryDefinition({ searchValue: null }).filters,
+    showIgnored: showIgnoredItems,
+    enabled: !showTrash,
+    refreshToken: filteredFolderCountRefreshToken,
+  });
   const canvasFolderBrowseEntries = useMemo(() => {
-    if (!showTrash) return folderBrowseEntries;
+    if (!showTrash) return filteredFolderBrowseEntries(folderBrowseEntries, filteredFolderCounts);
     return trashedFoldersToBrowseEntries(
       filterTrashedFoldersAtTombstone(trashedFolders, trashBrowseTombstoneId),
     );
-  }, [folderBrowseEntries, showTrash, trashBrowseTombstoneId, trashedFolders]);
+  }, [folderBrowseEntries, filteredFolderCounts, showTrash, trashBrowseTombstoneId, trashedFolders]);
   const trashBreadcrumbHops = useMemo(
     () =>
       showTrash
@@ -4683,7 +4705,7 @@ export function AssetManager({
         /** Navigation keeps sidebar data; mutations/library open opt in to refresh. */
         refreshSidebar?: boolean;
         /** Library replacement hydrates navigation before the new view is shown. */
-        navigationPriority?: "normal" | "library-switch";
+        navigationPriority?: "normal" | "library-switch" | "mutation";
         /** Keep the workspace covered until the complete navigation snapshot is ready. */
         blockingLibraryLoad?: boolean;
         /** A tab/history transition may be superseded independently of the library. */
@@ -4792,7 +4814,8 @@ export function AssetManager({
               if (opts?.blockingLibraryLoad) return loadNavigationSummary();
               return deferNavigationHydration(loadNavigationSummary, {
                 signal: navigationHydrationAbort.signal,
-                immediate: opts?.navigationPriority === "library-switch",
+                immediate: opts?.navigationPriority === "library-switch"
+                  || opts?.navigationPriority === "mutation",
               });
             },
             () => undefined,
@@ -5088,7 +5111,64 @@ export function AssetManager({
   // MCP events (plus the legacy script-preview bootstrap path) are applied.
   useEffect(() => {
     if (!api) return;
+    const closeRetainedLibrary = (closedLibraryId: string) => {
+      const generation = libraryViewSessionRef.current.generation;
+      const isCurrent = () => libraryRef.current?.libraryId === closedLibraryId
+        && libraryViewSessionRef.current.generation === generation;
+      return libraryTransitionLock(async () => {
+        if (!isCurrent()) return;
+        setUiState("closing");
+        try {
+          await closeAssetPreview(false);
+          if (!isCurrent()) return;
+          applyClosedLibraryUi();
+          await refreshRecentLibraries(null);
+        } catch (caught) {
+          if (isCurrent()) setError(toMessage(caught, t("toast.closeFailed"), locale));
+        } finally {
+          if (libraryRef.current === null) setUiState("idle");
+        }
+      });
+    };
     return api.onLifecycle((event) => {
+      if (event.type === 'worker.recovering'
+        || event.type === 'worker.recovered'
+        || event.type === 'worker.failed') {
+        const sequence = event.recoverySequence;
+        if (sequence !== undefined) {
+          if (sequence <= lastWorkerRecoverySequenceRef.current) return;
+          lastWorkerRecoverySequenceRef.current = sequence;
+        }
+      }
+      if (event.type === 'worker.recovering') {
+        workerRecoveryStateRef.current = 'recovering';
+        setWorkerRecoveryState('recovering');
+        setWorkspaceNavigationPending(false);
+        return;
+      }
+      if (event.type === 'worker.failed') {
+        workerRecoveryStateRef.current = 'failed';
+        setWorkerRecoveryState('failed');
+        return;
+      }
+      if (event.type === 'worker.recovered') {
+        workerRecoveryStateRef.current = 'ready';
+        setWorkerRecoveryState('ready');
+        if (event.failedLibraryIds.length > 0) setError(t('toast.workerRestoreFailed'));
+        const activeLibraryId = libraryRef.current?.libraryId;
+        if (activeLibraryId && event.failedLibraryIds.includes(activeLibraryId)) {
+          // Activity may have missed the live library.closed event. Retire the
+          // retained view through the same serialized boundary as a live close.
+          void closeRetainedLibrary(activeLibraryId);
+          return;
+        }
+        if (libraryRef.current && event.libraryIds.includes(libraryRef.current.libraryId)) {
+          void reloadCurrentContentRef.current().catch((caught) => {
+            setError(toMessage(caught, t('toast.readAssetsFailed'), locale));
+          });
+        }
+        return;
+      }
       if (event.type === "library.opening" && shouldDetachLibraryOnOpening(event)) {
         const applyLibraryOpening = async () => {
           // Clear the active library when the replacement starts. The old
@@ -5151,26 +5231,10 @@ export function AssetManager({
           // closes of the same library cannot overwrite one another.
           return;
         }
-        const applyLibraryClosed = async () => {
-          if (libraryRef.current?.libraryId !== closedLibraryId) return;
-          setUiState("closing");
-          try {
-            await closeAssetPreview(false);
-            if (libraryRef.current?.libraryId !== closedLibraryId) return;
-            applyClosedLibraryUi();
-            await refreshRecentLibraries(null);
-          } catch (caught) {
-            if (libraryRef.current?.libraryId === closedLibraryId) {
-              setError(toMessage(caught, t("toast.closeFailed"), locale));
-            }
-          } finally {
-            if (libraryRef.current === null) setUiState("idle");
-          }
-        };
         // Main can close the active library on behalf of MCP. Keep the same
         // serialized boundary as renderer-triggered close; events for the
         // previous library become no-ops after a replacement is committed.
-        void libraryTransitionLock(applyLibraryClosed);
+        void closeRetainedLibrary(closedLibraryId);
         return;
       }
       if (event.type !== "library.opened") return;
@@ -5551,6 +5615,7 @@ export function AssetManager({
     });
     const unsubscribeCleared = api.onAiCleared((event) => {
       if (event.libraryId !== library.libraryId) return;
+      setFilteredFolderCountRefreshToken((token) => token + 1);
       jobStatusCoordinatorRef.current?.noteActivity("ai");
       setAiContent(null);
       setNotice(t("toast.aiContentCleared", { count: event.affectedAssetCount }));
@@ -5605,6 +5670,7 @@ export function AssetManager({
         colorSimilarity,
         tagFilter,
         excludeTagFilter,
+        excludedTagFilter,
         includeAiTagFilter,
         tagFilterMatch,
         ratingFilter,
@@ -5816,6 +5882,7 @@ export function AssetManager({
     setExcludeColorFilter(state.filters.excludeColorFilter);
     setTagFilter(state.filters.tagFilter);
     setExcludeTagFilter(state.filters.excludeTagFilter);
+    setExcludedTagFilter(state.filters.excludedTagFilter ?? "");
     setIncludeAiTagFilter(state.filters.includeAiTagFilter);
     setTagFilterMatch(state.filters.tagFilterMatch);
     setRatingFilter(state.filters.ratingFilter);
@@ -6378,17 +6445,6 @@ export function AssetManager({
     [api, runLibraryOpenPipeline],
   );
 
-  useEffect(() => {
-    if (!deferredCompanionAssets || !isModuleActive || handledCompanionAssets.current === deferredCompanionAssets) return;
-    if (library?.libraryId !== deferredCompanionAssets.libraryId) {
-      if (openingCompanionAssets.current === deferredCompanionAssets) return;
-      openingCompanionAssets.current = deferredCompanionAssets;
-      void openRecentLibrary(deferredCompanionAssets.libraryPath);
-      return;
-    }
-    handledCompanionAssets.current = deferredCompanionAssets;
-    void chooseFolderRef.current(encodeLinkedVirtualFolderId(deferredCompanionAssets.linkedFolderId, deferredCompanionAssets.relativePath));
-  }, [deferredCompanionAssets, isModuleActive, library, openRecentLibrary]);
 
   async function runLibraryOpenPipeline(
     busyState: "creating" | "opening",
@@ -6547,6 +6603,7 @@ export function AssetManager({
     setExcludeColorFilter(false);
     setTagFilter("");
     setExcludeTagFilter(false);
+    setExcludedTagFilter("");
     setIncludeAiTagFilter(true);
     setRatingFilter("");
     setExcludeRatingFilter(false);
@@ -6571,6 +6628,7 @@ export function AssetManager({
     setExcludeColorFilter(false);
     setTagFilter("");
     setExcludeTagFilter(false);
+    setExcludedTagFilter("");
     setIncludeAiTagFilter(true);
     setRatingFilter("");
     setExcludeRatingFilter(false);
@@ -6603,6 +6661,7 @@ export function AssetManager({
       case "tag":
         setTagFilter("");
         setExcludeTagFilter(false);
+        setExcludedTagFilter("");
         setActiveTagId(null);
         return;
       case "rating":
@@ -7000,6 +7059,8 @@ export function AssetManager({
       const definition = currentQueryDefinition({
         tagFilter: joined,
         tagFilterMatch: match,
+        excludeTagFilter: false,
+        excludedTagFilter: "",
       });
       const includeIgnored =
         request.browseState?.showIgnoredItems ?? showIgnoredItems;
@@ -7026,6 +7087,8 @@ export function AssetManager({
       setAssetScope("all");
       clearAssetSelection();
       setTagFilter(joined);
+      setExcludeTagFilter(false);
+      setExcludedTagFilter("");
       setTagFilterMatch(match);
       setSearchOffset(0);
       api.setActiveContext(targetLibraryId);
@@ -7078,7 +7141,11 @@ export function AssetManager({
     try {
       const definition = request.browseState
         ? queryDefinitionForWorkspaceBrowseState(request.browseState)
-        : currentQueryDefinition({ tagFilter: tag.name });
+        : currentQueryDefinition({
+          tagFilter: tag.name,
+          excludeTagFilter: false,
+          excludedTagFilter: "",
+        });
       const includeIgnored =
         request.browseState?.showIgnoredItems ?? showIgnoredItems;
       const result = await api.openBrowseSession({
@@ -7109,6 +7176,8 @@ export function AssetManager({
       clearAssetSelection();
       if (!request.browseState) {
         setTagFilter(tag.name);
+        setExcludeTagFilter(false);
+        setExcludedTagFilter("");
         setTagFilterMatch("any");
       }
       setSearchOffset(0);
@@ -7879,6 +7948,8 @@ export function AssetManager({
     overrides: {
       tagFilter?: string;
       tagFilterMatch?: "any" | "all";
+      excludeTagFilter?: boolean;
+      excludedTagFilter?: string;
       searchValue?: string | null;
       colorFilter?: string | null;
       excludeColorFilter?: boolean;
@@ -7893,6 +7964,7 @@ export function AssetManager({
       excludeFormatFilter,
       tagFilter,
       excludeTagFilter,
+      excludedTagFilter,
       includeAiTagFilter,
       tagFilterMatch,
       ratingFilter,
@@ -7915,10 +7987,6 @@ export function AssetManager({
       .map((value) => value.trim().replace(/^\./, ""))
       .filter(Boolean);
     const formatValues = compactFormatFilterTokens(formatTokens);
-    const selectedTags = (overrides.tagFilter ?? filtersState.tagFilter)
-      .split(",")
-      .map((value) => value.trim())
-      .filter(Boolean);
     const ratings = filtersState.ratingFilter
       .split(",")
       .map((value) => value.trim())
@@ -7943,30 +8011,15 @@ export function AssetManager({
         values: formatValues,
         exclude: filtersState.excludeFormatFilter,
       });
-    if (selectedTags.length > 0) {
-      const matchAll =
-        (overrides.tagFilterMatch ?? filtersState.tagFilterMatch) === "all" &&
-        selectedTags.length > 1;
-      // AND semantics ("包含 N 个标签"): one clause per tag — separate
-      // clauses are ANDed, values within a clause are ORed.
-      if (matchAll) {
-        for (const tag of selectedTags) {
-          filters.push({
-            field: "tag",
-            values: [tag],
-            exclude: filtersState.excludeTagFilter,
-            includeAi: filtersState.includeAiTagFilter,
-          });
-        }
-      } else {
-        filters.push({
-          field: "tag",
-          values: selectedTags,
-          exclude: filtersState.excludeTagFilter,
-          includeAi: filtersState.includeAiTagFilter,
-        });
-      }
-    }
+    filters.push(...buildTagFilterClauses(
+      resolveTagFilterSets({
+        tagFilter: overrides.tagFilter ?? filtersState.tagFilter,
+        excludeTagFilter: overrides.excludeTagFilter ?? filtersState.excludeTagFilter,
+        excludedTagFilter: overrides.excludedTagFilter ?? filtersState.excludedTagFilter,
+      }),
+      overrides.tagFilterMatch ?? filtersState.tagFilterMatch,
+      filtersState.includeAiTagFilter,
+    ));
     if (ratings.length > 0)
       filters.push({
         field: "rating",
@@ -8073,6 +8126,7 @@ export function AssetManager({
         excludeFormatFilter: state.filters.excludeFormatFilter,
         tagFilter: state.filters.tagFilter,
         excludeTagFilter: state.filters.excludeTagFilter,
+        excludedTagFilter: state.filters.excludedTagFilter ?? "",
         includeAiTagFilter: state.filters.includeAiTagFilter,
         tagFilterMatch: state.filters.tagFilterMatch,
         ratingFilter: state.filters.ratingFilter,
@@ -8157,8 +8211,11 @@ export function AssetManager({
   async function reloadCurrentContent(options?: {
     /** Wait for the navigation snapshot before resolving the operation. */
     blockingNavigation?: boolean;
+    /** Folder mutations must publish sidebar changes without the browse idle delay. */
+    navigationPriority?: "mutation";
   }) {
     if (!library) return;
+    if (!showTrash) setFilteredFolderCountRefreshToken((token) => token + 1);
     if (activeSmartCollectionId) {
       await chooseSmartCollection(activeSmartCollectionId);
       return;
@@ -8180,6 +8237,7 @@ export function AssetManager({
       discovery,
       searchScope: currentSearchScope(discovery.search !== undefined),
       blockingLibraryLoad: options?.blockingNavigation,
+      navigationPriority: options?.navigationPriority,
     });
   }
 
@@ -8533,6 +8591,9 @@ export function AssetManager({
 
   function syncBrowseFilterMembership(change: BrowseMembershipChange): void {
     if (change.kind === "dimensions" && showTrash) return;
+    if (!showTrash && (visibleBrowseFilters()?.length ?? 0) > 0) {
+      setFilteredFolderCountRefreshToken((token) => token + 1);
+    }
     const visible = showTrash ? trashedAssets : assets;
     const next = assetsRemainingAfterMembership(visible, visibleBrowseFilters(), change);
     if (next.assets.length < visible.length) {
@@ -9374,7 +9435,7 @@ export function AssetManager({
       setNotice(null);
     } catch (caught) {
       if (request.isCurrent()) {
-        setError(toMessage(caught, t("toast.searchFailed"), locale));
+        if (workerRecoveryStateRef.current === 'ready') setError(toMessage(caught, t("toast.searchFailed"), locale));
         if (!silent) setWorkspaceNavigationPending(false);
       }
     } finally {
@@ -9458,7 +9519,7 @@ export function AssetManager({
         onPreparing: () => setNotice(t("settings.semanticSearch.similarPreparing")),
       });
     } catch (caught) {
-      if (polling()) setError(toMessage(caught, t("toast.searchFailed"), locale));
+      if (polling() && workerRecoveryStateRef.current === 'ready') setError(toMessage(caught, t("toast.searchFailed"), locale));
       return;
     }
     if (!page || !polling()) return;
@@ -9508,7 +9569,7 @@ export function AssetManager({
       }
     } catch (caught) {
       if (request.isCurrent()) {
-        setError(toMessage(caught, t("toast.searchFailed"), locale));
+        if (workerRecoveryStateRef.current === 'ready') setError(toMessage(caught, t("toast.searchFailed"), locale));
         if (!navigation) setWorkspaceNavigationPending(false);
       }
     } finally {
@@ -9521,6 +9582,7 @@ export function AssetManager({
     opts?: { silent?: boolean },
   ) {
     event?.preventDefault();
+    if (workerRecoveryStateRef.current !== 'ready') return;
     if (event) {
       searchHistoryDismissedUntilInputRef.current = true;
       setSearchHistoryOpen(false);
@@ -9544,7 +9606,7 @@ export function AssetManager({
           deferReveal: true,
         });
       } catch (caught) {
-        setError(toMessage(caught, t("toast.searchFailed"), locale));
+        if (workerRecoveryStateRef.current === 'ready') setError(toMessage(caught, t("toast.searchFailed"), locale));
       } finally {
         setUiState("ready");
       }
@@ -9570,7 +9632,7 @@ export function AssetManager({
       }
     } catch (caught) {
       if (request.isCurrent()) {
-        setError(toMessage(caught, t("toast.searchFailed"), locale));
+        if (workerRecoveryStateRef.current === 'ready') setError(toMessage(caught, t("toast.searchFailed"), locale));
         setWorkspaceNavigationPending(false);
       }
     } finally {
@@ -9584,6 +9646,7 @@ export function AssetManager({
       colorFilter.trim() ||
       formatFilter.trim() ||
       tagFilter.trim() ||
+      excludedTagFilter.trim() ||
       ratingFilter.trim() ||
       favoriteFilter !== "any" ||
       sourceUrlFilter !== "any" ||
@@ -9652,6 +9715,7 @@ export function AssetManager({
     excludeFormatFilter,
     tagFilter,
     excludeTagFilter,
+    excludedTagFilter,
     includeAiTagFilter,
     ratingFilter,
     excludeRatingFilter,
@@ -13760,7 +13824,7 @@ export function AssetManager({
       invertSelection: () => void invertBrowseScope(),
       clearSelection: clearAssetSelection,
       openSettings: () => {
-        setAppSettingsCategory("profile");
+        setAppSettingsCategory("general");
         setAppSettingsOpen(true);
       },
       openBackgroundJobs: () => openMediaJobs(),
@@ -13971,10 +14035,12 @@ export function AssetManager({
   const searchActive = searchValue.trim() !== "";
   const folderRowEntries =
     !showTrash && searchActive && searchFolderResults.length > 0
-      ? searchFolderRealKey === searchFolderMatchKey &&
-        searchFolderRealEntries.length > 0
-        ? searchFolderRealEntries
-        : searchFolderResults
+      ? filteredFolderBrowseEntries(
+          searchFolderRealKey === searchFolderMatchKey && searchFolderRealEntries.length > 0
+            ? searchFolderRealEntries
+            : searchFolderResults,
+          filteredFolderCounts,
+        )
       : canvasFolderBrowseEntries;
   const folderCardRowVisible =
     library !== null && folderRowEntries.length > 0;
@@ -14003,6 +14069,11 @@ export function AssetManager({
           key={entry.folderId}
           libraryId={library.libraryId}
           trashed={showTrash}
+          filteredCount={
+            showTrash || !filteredFolderCounts
+              ? undefined
+              : filteredFolderCounts.byFolderId.get(entry.folderId) ?? 0
+          }
           {...(showTrash
             ? {}
             : createFolderCardDropHandlers(entry.folderId))}
@@ -14528,6 +14599,7 @@ export function AssetManager({
         }}
         allAssetCount={allAssetCount}
         rootAssetCount={rootAssetCount}
+        filteredFolderCounts={showTrash ? null : filteredFolderCounts}
         trashedAssetCount={trashedAssetCount}
         folders={folders}
         collections={collections}
@@ -14886,7 +14958,7 @@ export function AssetManager({
                     setAppSettingsOpen(true);
                   },
                   openAppSettings: () => {
-                    setAppSettingsCategory("profile");
+                    setAppSettingsCategory("general");
                     setAppSettingsOpen(true);
                   },
                 }}
@@ -14953,6 +15025,7 @@ export function AssetManager({
             excludeFormatFilter={excludeFormatFilter}
             excludeRatingFilter={excludeRatingFilter}
             excludeTagFilter={excludeTagFilter}
+            excludedTagFilter={excludedTagFilter}
             includeAiRating={includeAiRatingFilter}
             includeAiTag={includeAiTagFilter}
             favoriteFilter={favoriteFilter}
@@ -15002,6 +15075,7 @@ export function AssetManager({
               setTagFilterMatch("any");
               setTagFilter(value);
             }}
+            setExcludedTagFilter={setExcludedTagFilter}
             setWidthRange={setWidthRange}
             shuffleActive={shuffleSeed !== null}
             onShuffle={() => {
@@ -15017,6 +15091,7 @@ export function AssetManager({
               excludeFormatFilter,
               tagFilter,
               excludeTagFilter,
+              excludedTagFilter,
               includeAiTagFilter,
               ratingFilter,
               excludeRatingFilter,
@@ -15108,16 +15183,23 @@ export function AssetManager({
           />
         )}
         <div
-          aria-busy={workspaceNavigationPending}
+          aria-busy={workspaceNavigationPending || workerRecoveryState === 'recovering'}
           className={`workspace-canvas-host${previewAsset || previewRestoring ? " is-viewing" : ""}${previewRestoring ? " is-restoring" : ""}${workspaceNavigationPending ? " is-navigating" : ""}`}
         >
-          {renderedToastStack.length > 0
-            ? createPortal(
+          {renderedToastStack.length > 0 || workerRecoveryState !== 'ready'
+            ? <WorkspaceNoticeStack active={isModuleActive || globalSettingsOverlayOpen}>
                 <div
                   aria-atomic="false"
                   aria-live="polite"
                   className="workspace-notice-stack workspace-notice"
                 >
+                  {workerRecoveryState !== 'ready' ? (
+                    <Notice
+                      className="workspace-notice-item"
+                      message={t(workerRecoveryState === 'recovering' ? 'toast.workerRecovering' : 'toast.workerFailed')}
+                      tone={workerRecoveryState === 'recovering' ? 'warning' : 'error'}
+                    />
+                  ) : null}
                   {renderedToastStack.map((message) => {
                     const isUndoTarget =
                       !message.closing &&
@@ -15147,9 +15229,8 @@ export function AssetManager({
                       />
                     );
                   })}
-                </div>,
-                document.body,
-              )
+                </div>
+              </WorkspaceNoticeStack>
             : null}
         {findSimilarSource
           && findSimilarSource.libraryId === library?.libraryId
@@ -15163,6 +15244,7 @@ export function AssetManager({
           ) : null}
         <div
           className={`workspace-canvas${previewAsset ? " is-viewing" : previewRestoring ? " is-restoring" : ""}${externalDropActive ? " is-external-drop" : ""}`}
+          inert={workerRecoveryState !== 'ready'}
           onDragEnter={handleExternalDragEnter}
           onDragLeave={handleExternalDragLeave}
           onDragOver={handleExternalDragOver}
@@ -15336,7 +15418,15 @@ export function AssetManager({
                       data-asset-id={asset.assetId}
                       data-asset-name={asset.displayName}
                       data-media-type={asset.mediaType}
-                      draggable={!showTrash && !renamingThisAsset}
+                      draggable={
+                        !showTrash && !renamingThisAsset && (
+                          Boolean(activeCollectionId && !collectionRecursive)
+                          || !nativeAssetDragEnabled
+                          || (selectedIdSet.has(asset.assetId)
+                            ? selectedNativeDragReady
+                            : nativeDragReadyIds.has(asset.assetId))
+                        )
+                      }
                       key={renderOptions?.stableSlot
                         ? undefined
                         : assetCardKey(library?.libraryId, asset.assetId)}
@@ -15420,10 +15510,12 @@ export function AssetManager({
                         // explicit diagnostics bridge so E2E HTML5 drops do
                         // not enter Electron's native OS drag loop, while
                         // production still uses startDrag().
-                        const isE2e = Boolean(
-                          (window as RendererWindow).worldlinebox?.e2e,
-                        );
-                        if ((!isE2e || (window as RendererWindow).worldlinebox?.e2e?.useNativeAssetDrag) && api && library) {
+                        if (nativeAssetDragEnabled && api && library) {
+                          if (!ids.every((id) => nativeDragReadyIds.has(id))) {
+                            event.preventDefault();
+                            api.primeAssetDrag({ libraryId: library.libraryId, assetIds: ids });
+                            return;
+                          }
                           // Electron's supported path is an asynchronous
                           // one-way IPC from dragstart. A synchronous round
                           // trip deadlocks when this native file drag returns
@@ -16031,6 +16123,18 @@ export function AssetManager({
             }
             libraryId={library.libraryId}
             navArrowsOnApproach={viewerChromePrefs.navArrowsOnApproach}
+            onToggleNavArrowsOnApproach={() => {
+              setViewerChromePrefs((current) => ({
+                ...current,
+                navArrowsOnApproach: !current.navArrowsOnApproach,
+              }));
+            }}
+            onToggleVideoTransportOnApproach={() => {
+              setViewerChromePrefs((current) => ({
+                ...current,
+                videoTransportOnApproach: !current.videoTransportOnApproach,
+              }));
+            }}
             onDiskDeleteAsset={() => {
               requestSelectionDiskDelete([previewAsset.assetId], []);
             }}
@@ -16409,7 +16513,7 @@ export function AssetManager({
         onActiveCategoryChange={setAppSettingsCategory}
         onClose={() => {
           setAppSettingsOpen(false);
-          setAppSettingsCategory("profile");
+          setAppSettingsCategory("general");
         }}
         onSetViewMode={(mode) => {
           setCanvasPrefs((p) => ({ ...p, viewMode: mode }));

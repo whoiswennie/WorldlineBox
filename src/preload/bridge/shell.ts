@@ -421,7 +421,9 @@ export const shell: WorldlineBoxShellApi = Object.freeze({
         action === 'frame-prev' ||
         action === 'frame-next' ||
         action === 'rate-slower' ||
-        action === 'rate-faster'
+        action === 'rate-faster' ||
+        action === 'seek-back' ||
+        action === 'seek-forward'
       ) {
         listener(action);
       }

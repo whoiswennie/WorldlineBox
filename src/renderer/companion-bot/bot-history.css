@@ -1,0 +1,51 @@
+.bot-history-backdrop { position:absolute;inset:var(--shell-toolbar-height,44px) 0 0;z-index:var(--ui-layer-modal-backdrop);display:grid;place-items:center;padding:24px;background:color-mix(in srgb,var(--ui-content-primary) 12%,transparent);backdrop-filter:blur(3px); }
+.bot-history-dialog { display:flex;flex-direction:column;width:min(820px,100%);height:min(780px,100%);min-height:0;overflow:hidden;border:1px solid var(--ui-border-subtle);border-radius:16px;background:var(--ui-surface-raised);box-shadow:0 24px 80px color-mix(in srgb,var(--ui-content-primary) 18%,transparent); }
+.bot-history-heading { display:flex;align-items:center;justify-content:space-between;gap:20px;padding:22px 28px 14px;flex-shrink:0; }
+.bot-history-heading>div { display:flex;align-items:baseline;gap:12px;min-width:0; }
+.bot-history-heading h2 { font-size:17px;font-weight:600;overflow:hidden;white-space:nowrap;text-overflow:ellipsis; }
+.bot-history-heading span { font-size:12px;color:var(--ui-content-tertiary);white-space:nowrap; }
+.bot-workspace .bot-history-heading>button { width:30px;height:30px;border:0;font-size:24px;font-weight:300;padding:0;color:var(--ui-content-secondary); }
+.bot-history-panel { display:flex;flex-direction:column;min-height:0;flex:1; }
+.bot-history-controls { padding:4px 28px 0;flex-shrink:0; }
+.bot-history-search { display:flex;align-items:center;gap:10px;padding:0 13px;height:42px;border:1px solid transparent;border-radius:9px;background:var(--ui-surface-hover);color:var(--ui-content-tertiary); }
+.bot-history-search:focus-within { border-color:var(--ui-border-focus);background:var(--ui-surface-raised); }
+.bot-history-search>.bot-icon { width:17px;height:17px; }
+.bot-history-search input { width:100%;height:100%;border:0;background:transparent;outline:none;padding:0;font-size:13px; }
+.bot-history-search input::placeholder { color:var(--ui-content-tertiary); }
+.bot-workspace .bot-history-search input:focus-visible { outline:none; }
+.bot-history-tabs { display:flex;gap:27px;align-items:center;margin-top:17px;overflow-x:auto; }
+.bot-workspace .bot-history-tabs>button { position:relative;border:0;border-radius:0;padding:13px 0 15px;white-space:nowrap;color:var(--ui-content-secondary);font-size:13px; }
+.bot-workspace .bot-history-tabs>button:hover { background:transparent;color:var(--ui-content-primary); }
+.bot-workspace .bot-history-tabs>button[aria-selected=true] { color:var(--ui-content-accent);font-weight:600; }
+.bot-history-tabs>button[aria-selected=true]::after { content:'';position:absolute;bottom:0;left:0;right:0;height:2px;border-radius:2px;background:var(--ui-content-accent); }
+.bot-history-content { min-height:0;flex:1;overflow:auto;border-top:1px solid var(--ui-border-subtle);padding:0 28px 24px;scrollbar-gutter:stable; }
+.bot-history-results { margin:0;padding:0;list-style:none; }
+.bot-history-date { padding:19px 0 9px;font-size:12px;font-weight:500;color:var(--ui-content-tertiary); }
+.bot-workspace .bot-history-locate { position:relative;display:flex;align-items:flex-start;gap:13px;text-align:left;width:100%;padding:20px 8px 20px 0;border:0;border-bottom:1px solid var(--ui-border-subtle);border-radius:0;background:transparent; }
+.bot-workspace .bot-history-locate:hover { background:color-mix(in srgb,var(--ui-surface-hover) 65%,transparent); }
+.bot-history-locate>.bot-avatar { width:34px;height:34px;flex-shrink:0; }
+.bot-history-message { min-width:0;flex:1;display:block; }
+.bot-history-meta { display:flex;align-items:baseline;gap:9px;color:var(--ui-content-tertiary);margin-bottom:8px;font-size:12px; }
+.bot-history-meta strong { font-weight:500;color:var(--ui-content-secondary); }
+.bot-history-meta time { font-size:11px; }
+.bot-history-preview { display:block;max-width:100%;font-size:14px;line-height:1.8;white-space:pre-wrap;overflow-wrap:anywhere; }
+.bot-history-preview mark { color:var(--ui-content-accent);background:color-mix(in srgb,var(--ui-action-accent) 12%,transparent);border-radius:3px; }
+.bot-history-locate-label { display:flex;align-items:center;gap:4px;align-self:center;flex-shrink:0;font-size:11px;color:var(--ui-content-accent);opacity:0;transition:opacity .15s; }
+.bot-history-locate:hover .bot-history-locate-label,.bot-history-locate:focus-visible .bot-history-locate-label { opacity:1; }
+.bot-history-attachments { display:flex;align-items:center;flex-wrap:wrap;gap:8px;margin-top:10px; }
+.bot-history-thumbnail { display:block;width:100px;height:86px; }
+.bot-history-thumbnail img { width:100%;height:100%;object-fit:contain;object-position:left center;border-radius:7px; }
+.bot-history-file { display:flex;align-items:center;gap:9px;min-width:0;max-width:270px;border:1px solid var(--ui-border-subtle);border-radius:8px;padding:11px 12px;background:var(--ui-surface-pane); }
+.bot-history-file>.bot-icon { color:var(--ui-content-tertiary);width:17px;height:20px; }
+.bot-history-file>span { overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:12px; }
+.bot-history-attachment-count { font-size:12px;color:var(--ui-content-tertiary); }
+.bot-history-loading { padding:16px 0!important;font-size:12px;color:var(--ui-content-tertiary); }
+.bot-history-empty { display:flex;min-height:270px;flex-direction:column;align-items:center;justify-content:center;gap:13px;color:var(--ui-content-tertiary); }
+.bot-history-empty>.bot-icon { width:34px;height:34px;opacity:.55; }
+.bot-history-empty strong { color:var(--ui-content-secondary);font-size:14px;font-weight:500; }
+.bot-history-empty p { font-size:12px; }
+.bot-history-error { display:flex;align-items:center;justify-content:space-between;gap:12px;margin-top:16px;font-size:12px;color:var(--ui-status-danger-content); }
+.bot-workspace .bot-history-more { display:block;margin:20px auto 0;padding:8px 18px;border:0;font-size:12px;color:var(--ui-content-tertiary); }
+.bot-message-duration { display:inline-flex;align-items:center;gap:4px;color:var(--ui-content-tertiary);font-size:10px;font-weight:400;white-space:nowrap;cursor:help; }
+.bot-message-duration>.bot-icon { width:11px;height:11px; }
+@media(max-width:800px) { .bot-history-backdrop { padding:14px; }.bot-history-dialog { border-radius:12px; }.bot-history-heading { padding:18px 20px 12px; }.bot-history-controls { padding-left:20px;padding-right:20px; }.bot-history-tabs { gap:20px; }.bot-history-content { padding-left:20px;padding-right:20px; }.bot-history-locate-label { font-size:0; }.bot-history-locate-label>span { font-size:15px; }.bot-history-preview { font-size:13px; } }

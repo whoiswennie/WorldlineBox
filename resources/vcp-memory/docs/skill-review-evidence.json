@@ -1,0 +1,170 @@
+{
+  "recordedAt": "2026-11-02T01:38:02.832Z",
+  "observations": [
+    {
+      "name": "serve status acquires runtime lock",
+      "ok": true,
+      "result": {
+        "home": "C:\\Users\\hp\\AppData\\Local\\Temp\\vcp-review-eval-vNUtEt\\mixed",
+        "runtimeDir": "C:\\Users\\hp\\AppData\\Local\\Temp\\vcp-review-eval-vNUtEt\\mixed\\runtime",
+        "started": true,
+        "vectors": false,
+        "plugins": [
+          "DailyNote"
+        ],
+        "providers": {
+          "embeddingConfigured": true,
+          "rerankConfigured": false,
+          "jevConfigured": false,
+          "aiMemoConfigured": false,
+          "coldEnabled": false
+        },
+        "routes": {
+          "chat": {
+            "api": "openai-completions",
+            "model": "deepseek-flash",
+            "streaming": false
+          },
+          "embedding": {
+            "configured": true,
+            "api": "openai-embeddings",
+            "model": null
+          },
+          "retries": 0
+        }
+      }
+    },
+    {
+      "name": "serve session append after status",
+      "ok": false,
+      "error": {
+        "message": "Workspace in use by PID 38352. Use the same serve session or retry after it closes.",
+        "code": "VCP_MEMORY_ERROR"
+      }
+    },
+    {
+      "name": "serve config.set after status",
+      "ok": false,
+      "error": {
+        "message": "Workspace in use by PID 38352. Use the same serve session or retry after it closes.",
+        "code": "VCP_MEMORY_ERROR"
+      }
+    },
+    {
+      "name": "serve invalid provider first startup",
+      "ok": false,
+      "error": {
+        "message": "Unsupported chat API \"invalid-evaluation-protocol\"; supported: openai-completions, anthropic-messages, google-generative-ai",
+        "code": "UNSUPPORTED_API"
+      }
+    },
+    {
+      "name": "serve repeated request after startup failure",
+      "ok": false,
+      "error": {
+        "message": "Unsupported chat API \"invalid-evaluation-protocol\"; supported: openai-completions, anthropic-messages, google-generative-ai",
+        "code": "UNSUPPORTED_API"
+      }
+    },
+    {
+      "name": "serve repair config after startup failure",
+      "ok": true,
+      "result": {
+        "key": "CHAT_API_TYPE",
+        "value": "openai-completions"
+      }
+    },
+    {
+      "name": "config.set nested provider object redaction",
+      "ok": true,
+      "result": {
+        "key": "chat",
+        "value": {
+          "apiKey": "EVAL_FAKE_NESTED_SECRET",
+          "baseURL": "http://127.0.0.1:50905"
+        }
+      }
+    },
+    {
+      "name": "config.get nested provider object redaction",
+      "ok": true,
+      "result": {
+        "API_URL": "http://127.0.0.1:50905",
+        "API_Key": "[redacted]",
+        "WhitelistEmbeddingModel": "fixture",
+        "VECTORDB_DIMENSION": 64,
+        "DEFAULT_TIMEZONE": "Asia/Shanghai",
+        "TDB_KNOWLEDGE_ENABLED": false,
+        "KNOWLEDGEBASE_BATCH_WINDOW_MS": 100,
+        "KNOWLEDGEBASE_DERIVED_STARTUP_COOLDOWN_MS": 100,
+        "LOCAL_EMBEDDING_ENABLED": false,
+        "chat": {
+          "apiKey": "EVAL_FAKE_NESTED_SECRET",
+          "baseURL": "http://127.0.0.1:50905"
+        }
+      }
+    },
+    {
+      "name": "config.set auth headers redaction",
+      "ok": true,
+      "result": {
+        "key": "CHAT_HEADERS",
+        "value": {
+          "Authorization": "Bearer EVAL_FAKE_HEADER_SECRET"
+        }
+      }
+    },
+    {
+      "name": "environment-only legacy endpoint doctor",
+      "ok": true,
+      "result": {
+        "home": "C:\\Users\\hp\\AppData\\Local\\Temp\\vcp-review-eval-vNUtEt\\env",
+        "node": "v22.19.0",
+        "platform": "win32",
+        "architecture": "x64",
+        "snapshot": {
+          "ok": true,
+          "files": 336,
+          "failures": []
+        },
+        "native": {
+          "abiVersion": 2,
+          "dimension": 64,
+          "capabilities": [
+            "sqlite.storage-engine.v1",
+            "sqlite.write-actor.v1",
+            "sqlite.read-pool.v1",
+            "sqlite.schema-init.v1",
+            "sqlite.ingestion-commit.v1",
+            "sqlite.delete-commit.v1",
+            "sqlite.tag-consistency.v1",
+            "tag-consistency.prepare.v1",
+            "text.preparation.v1",
+            "index.async-restore.v1",
+            "index.dual-slot-checkpoint.v1",
+            "index.tdb-vec.v1",
+            "index.sql-authoritative-generational.v1",
+            "index.cosine-score.v1",
+            "index.query-options.v1",
+            "watcher.runtime-owned.v1",
+            "memo.native-artifact.v1",
+            "river.native-query.v1",
+            "lightmemo.native-query.v1"
+          ]
+        },
+        "embeddingConfigured": true,
+        "embeddingModel": "fixture",
+        "dimension": 64,
+        "externalValidation": "Run probe to verify configured providers; doctor checks local prerequisites only."
+      }
+    },
+    {
+      "name": "environment-only legacy endpoint probe",
+      "ok": false,
+      "error": {
+        "message": "Embedding service returned invalid or mismatched dimensions",
+        "code": "VCP_MEMORY_ERROR"
+      }
+    }
+  ]
+}

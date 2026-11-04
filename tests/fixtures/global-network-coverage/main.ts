@@ -2,18 +2,17 @@ import { strict as assert } from 'node:assert';
 import http from 'node:http';
 import net, { type Socket } from 'node:net';
 import path from 'node:path';
-import { app, net as electronNet, session } from 'electron';
+import { app, session } from 'electron';
 import { getApplicationNetwork } from '../../../src/main/application-network';
 import { LibraryWorkerClient } from '../../../src/main/worker-client';
-import { generateCompanionStructured } from '../../../src/main/companions/model';
 import { postEmbeddingHttp } from '../../../src/main/embedding-http';
 import type { AppLogger } from '../../../src/main/app-logger';
 import { defaultPinnedHttpTransport } from '../../../src/worker/secure-http-download';
 
 const root = process.env.WORLDLINEBOX_GLOBAL_NETWORK_COVERAGE_ROOT!;
-const companionHostname = 'global-network.fixture.test';
+const fixtureHostname = 'global-network.fixture.test';
 app.setPath('userData', path.join(root, 'electron-data'));
-app.commandLine.appendSwitch('host-resolver-rules', `MAP ${companionHostname} 127.0.0.1`);
+app.commandLine.appendSwitch('host-resolver-rules', `MAP ${fixtureHostname} 127.0.0.1`);
 app.on('window-all-closed', () => undefined);
 const servers: http.Server[] = [];
 const sockets = new Set<Socket>();
@@ -27,7 +26,7 @@ async function relay(originPort: number) {
   const paths: string[] = [];
   const server = http.createServer((request, response) => {
     const url = new URL(request.url!);
-    if (!['127.0.0.2', companionHostname].includes(url.hostname) || url.port !== String(originPort)) { response.writeHead(403).end(); return; }
+    if (!['127.0.0.2', fixtureHostname].includes(url.hostname) || url.port !== String(originPort)) { response.writeHead(403).end(); return; }
     paths.push(url.pathname);
     const upstream = http.request({ host: '127.0.0.1', port: originPort, method: request.method,
       path: url.pathname + url.search, headers: request.headers, agent: false }, incoming => {
@@ -36,7 +35,7 @@ async function relay(originPort: number) {
     upstream.on('error', () => { response.writeHead(502).end(); }); request.pipe(upstream);
   });
   server.on('connect', (request, incoming, head) => {
-    if (![`127.0.0.2:${originPort}`, `127.0.0.1:${originPort}`, `${companionHostname}:${originPort}`].includes(request.url!)) { incoming.end('HTTP/1.1 403 Forbidden\r\n\r\n'); return; }
+    if (![`127.0.0.2:${originPort}`, `127.0.0.1:${originPort}`, `${fixtureHostname}:${originPort}`].includes(request.url!)) { incoming.end('HTTP/1.1 403 Forbidden\r\n\r\n'); return; }
     assert.equal(request.headers['proxy-authorization'], undefined);
     assert.equal(request.headers['x-worldlinebox-pinned-origin'], undefined);
     const upstream = net.connect(originPort, '127.0.0.1'); sockets.add(upstream);
@@ -86,29 +85,26 @@ app.whenReady().then(async () => {
       const before = served.length;
       const result = await worker!.request({ type: 'ai.test-connection', apiFormat: 'openai_chat', apiKey: 'fixture-key', model: 'fixture-model', baseUrl: `${providerBase}/worker` });
       assert(result.ok, JSON.stringify(result));
-      assert.deepEqual(await generateCompanionStructured({ system: 'Return JSON', user: 'Fixture' },
-        { apiFormat: 'openai_chat', model: 'fixture-model', apiKey: 'fixture-key', baseUrl: `http://${companionHostname}:${port}/companions` }, undefined,
-        { fetchFn: (input, init) => electronNet.fetch(String(input), { ...init, credentials: 'omit' }), timeoutMs: 8000 }), { fixture: 'ok' });
       assert.deepEqual(await postEmbeddingHttp({ baseUrl: `${providerBase}/semantic`, modelName: 'fixture-model', apiKey: null,
         inputs: ['fixture query'], dimensions: 3, timeoutMs: 8000 }), [[1, 0, 0]]);
-      assert.equal(served.length - before, 3);
-      console.log('GLOBAL_COVERAGE_PHASE ' + JSON.stringify({ phase, worker: 'real LibraryWorkerClient and production Worker AI adapter', companions: 'production structured provider using net.fetch', semantic: 'production Main HTTP embeddings', requests: served.slice(before) }));
+      assert.equal(served.length - before, 2);
+      console.log('GLOBAL_COVERAGE_PHASE ' + JSON.stringify({ phase, worker: 'real LibraryWorkerClient and production Worker AI adapter', semantic: 'production Main HTTP embeddings', requests: served.slice(before) }));
     };
     await probe('proxy-a');
-    assert(first.paths.some(url => url.startsWith('/worker/'))); assert(first.paths.some(url => url.startsWith('/companions/'))); assert(first.paths.some(url => url.startsWith('/semantic/')));
+    assert(first.paths.some(url => url.startsWith('/worker/'))); assert(first.paths.some(url => url.startsWith('/semantic/')));
     assert.equal(second.paths.length, 0);
     const beforeDirect = first.paths.length;
     await network.setProxyEnabled(false); await probe('direct');
     assert.equal(first.paths.length, beforeDirect); assert.equal(second.paths.length, 0);
     await network.patch({ proxyMode: 'custom', proxyUrl: second.url }); await probe('proxy-b');
     assert.equal(first.paths.length, beforeDirect);
-    assert(second.paths.some(url => url.startsWith('/worker/'))); assert(second.paths.some(url => url.startsWith('/companions/'))); assert(second.paths.some(url => url.startsWith('/semantic/')));
+    assert(second.paths.some(url => url.startsWith('/worker/'))); assert(second.paths.some(url => url.startsWith('/semantic/')));
 
     // Install a real Chromium PAC in the fixture instead of editing Windows
     // system settings. LauncherNetwork still selects its real system branch.
     // The npm destination is DIRECT while actual AI destinations use proxy A.
-    const pacOrigin = `http://${companionHostname}:${port}`;
-    pacSource = `function FindProxyForURL(url, host) { return host === '${companionHostname}' || host === 'pinned-origin.fixture.test' ? 'PROXY ${new URL(first.url).host}' : 'DIRECT'; }`;
+    const pacOrigin = `http://${fixtureHostname}:${port}`;
+    pacSource = `function FindProxyForURL(url, host) { return host === '${fixtureHostname}' || host === 'pinned-origin.fixture.test' ? 'PROXY ${new URL(first.url).host}' : 'DIRECT'; }`;
     for (const scope of [session.defaultSession, session.fromPartition('persist:worldlinebox-dsh-network')]) {
       const setProxy = scope.setProxy.bind(scope);
       scope.setProxy = config => setProxy(config.mode === 'system'
@@ -120,7 +116,7 @@ app.whenReady().then(async () => {
     assert.equal(await network.resolveProxy(`${pacOrigin}/semantic`), first.url);
     await probe('system-pac-per-destination', pacOrigin);
     assert.equal(second.paths.length, bBeforePac);
-    assert.deepEqual(first.paths.slice(aBeforePac), ['/worker/chat/completions', '/companions/chat/completions', '/semantic/v1/embeddings']);
+    assert.deepEqual(first.paths.slice(aBeforePac), ['/worker/chat/completions', '/semantic/v1/embeddings']);
     const pinned = await defaultPinnedHttpTransport({ url: new URL(`http://pinned-origin.fixture.test:${port}/pinned-resource`),
       address: '127.0.0.1', family: 4, signal: AbortSignal.timeout(8000), headers: { 'User-Agent': 'WorldlineBox pinned PAC fixture' } });
     const pinChunks: Uint8Array[] = []; if (pinned.body) for await (const chunk of pinned.body) pinChunks.push(chunk);
@@ -129,7 +125,14 @@ app.whenReady().then(async () => {
     console.log('GLOBAL_COVERAGE_PAC ' + JSON.stringify({ realChromiumPac: true, npm: 'DIRECT', models: first.url,
       liveWorker: true, privateRelayOriginMetadata: true, pinnedNumericConnect: true, noPrivateHeadersForwarded: true }));
     await worker.shutdown(); worker = undefined;
-    console.log('GLOBAL_NETWORK_COVERAGE_RESULT ' + JSON.stringify({ ok: true, requests: served.length + 1, firstProxyPaths: first.paths, secondProxyPaths: second.paths }));
+    // The retired in-process companion provider no longer exists. Native DSH
+    // serialization/tool/replay contracts are exercised by bot-dsh-native and
+    // bot-dsh-reliability-native; this fixture does not claim DSH proxy coverage.
+    assert.equal(served.length + 1, 9);
+    console.log('GLOBAL_NETWORK_COVERAGE_RESULT ' + JSON.stringify({ ok: true, requests: served.length + 1,
+      coverage: ['library-worker-ai', 'main-embedding-http', 'pinned-resource-pac'],
+      retiredCompanionProvider: true, nativeDshProxyCoverage: false,
+      firstProxyPaths: first.paths, secondProxyPaths: second.paths }));
     for (const socket of sockets) socket.destroy(); for (const server of servers) server.close(); app.exit(0);
   } catch (error) {
     console.error(error); await worker?.shutdown().catch(() => undefined);

@@ -5,7 +5,6 @@ import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { DshTaskRecordStore } from '../../src/main/dsh/task-record-store';
 import { DSH_RECORD_LIMITS, dshRecordQuerySchema } from '../../src/shared/dsh-task-record';
-import { companionDshReceipt } from '../../src/shared/companion-dsh-receipt';
 import { removeManaged } from '../../src/main/dsh/files';
 import type { DshTaskEvent } from '../../src/shared/dsh-tasks';
 
@@ -72,10 +71,6 @@ describe('Indexed DSH execution records', () => {
       actual += page.entries[0]!.event.text; offset = page.entries[0]!.nextTextOffset ?? 0;
     } while (offset);
     expect(actual).toBe(text);
-    const receipt = companionDshReceipt({ id: f.owner.actionId, companionId: 'one', conversationId: 'room', sourceMessageId: 'source', title: '查询', status: 'succeeded',
-      createdAt: record.overview.createdAt, updatedAt: record.overview.finishedAt!, executionSummary: record.overview, events: [{ sequence: 0, type: 'tool_start', summary: 'private event body', receivedAt: '' }] });
-    expect(receipt.statistics).toMatchObject({ turns: 1, steps: 1, toolCalls: 1, recordCount: 4 });
-    expect(JSON.stringify(receipt)).not.toContain('private event body'); expect(receipt.recordId).toBe(f.id);
   });
   it('reads old and late ranges after restart without retaining an in-memory transcript', async () => {
     const f = await fixture();

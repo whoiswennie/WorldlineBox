@@ -14,7 +14,7 @@ import { MarketplaceService } from './marketplace';
 import { SkillInstaller } from './skill-installer';
 import { PackDistributionService } from './pack-distribution';
 import { resolveDshWorkbenchIcon } from './workbench-icon';
-import { InstanceService } from './instance-service';
+import { InstanceService, type DshHostStartupProgress } from './instance-service';
 import { DshCliTerminal } from './cli-terminal';
 import { PackService } from './packs';
 import { extractSealedArchive, writeSealedArchive } from './archive';
@@ -26,7 +26,87 @@ import { configureWorkbenchBrowser } from './workbench-browser';
 import type { DshRecordQuery } from '../../shared/dsh-task-record';
 import { dshTaskCapabilityQuerySchema, type DshTaskCapabilities, type DshTaskCapabilityQuery } from '../../shared/dsh-task-spec';
 
+function supportsBotRuntime(version: string): boolean {
+  const match = /^0\.2\.(\d+)(?:-rc\.(\d+))?$/.exec(version);
+  return !!match && (Number(match[1]) > 1 && match[2] === undefined
+    || Number(match[1]) === 1 && (match[2] === undefined || Number(match[2]) >= 5));
+}
+
 export class DshLauncher {
+  private botInstanceId?: string;
+  private creatingDefaultInstance?: Promise<string>;
+  private readonly botPreparationByInstance = new Map<string, DshHostStartupProgress>();
+  private readonly botPreparations = new Map<string, Promise<void>>();
+  botPreparationState(instanceId = this.botInstanceId): DshHostStartupProgress | undefined {
+    const value = instanceId && this.botPreparationByInstance.get(instanceId); return value ? structuredClone(value) : undefined;
+  }
+  /** Session identities provide companion isolation. Reuse a compatible user
+   * instance/Host; never create another instance just to chat with a partner. */
+  private async botInstance(instanceId?: string): Promise<string> {
+    await this.initialization;
+    if (this.closed) throw new Error('DSH 启动器正在关闭。');
+    if (instanceId) {
+      const instance = this.instances.get(instanceId);
+      if (!supportsBotRuntime(this.runtimes.get(instance.runtimeId).version)) throw new Error('伙伴主脑需要兼容的官方 DSH 版本（0.2.1-rc.5 至 0.3.0 之前）。');
+      return instanceId;
+    }
+    // The retired dedicated instance is eligible only through an explicit
+    // durable lane binding, while its existing native context is still used.
+    const compatible = this.instances.list().filter(instance => instance.name !== 'WorldlineBox 伙伴主脑'
+      && this.runtimes.get(instance.runtimeId).adapter === 'node-cli-web-v1'
+      && supportsBotRuntime(this.runtimes.get(instance.runtimeId).version));
+    const selected = compatible.find(instance => instance.isDefault);
+    if (!selected) {
+      // A brand-new installation can create its ordinary default instance.
+      // Existing profiles are never replaced by a companion-specific one.
+      if (!this.instances.list().length) return this.creatingDefaultInstance ??= (async () => {
+        const runtime = this.runtimes.list().filter(value => value.adapter === 'node-cli-web-v1' && supportsBotRuntime(value.version))
+          .sort((a, b) => b.version.localeCompare(a.version, undefined, { numeric: true }))[0];
+        if (!runtime) throw new Error('请先在 DSH 启动器安装官方 DSH 0.2.1-rc.5 或兼容的 0.2 稳定版。');
+        const created = await this.instances.create('我的 DSH', runtime.id); this.botInstanceId = created.id; return created.id;
+      })().finally(() => { this.creatingDefaultInstance = undefined; });
+      throw new Error('请将使用官方 DSH 0.2.1-rc.5 或兼容 0.2 稳定版的实例设为默认；伙伴会复用默认实例。');
+    }
+    this.botInstanceId = selected.id; return selected.id;
+  }
+  async botHost(instanceId?: string, signal?: AbortSignal) {
+    signal?.throwIfAborted();
+    const selection = this.botInstance(instanceId);
+    const id = signal ? await new Promise<string>((resolve, reject) => {
+      const abort = () => reject(signal.reason); signal.addEventListener('abort', abort, { once: true });
+      selection.then(resolve, reject).finally(() => signal.removeEventListener('abort', abort));
+      if (signal.aborted) abort();
+    }) : await selection;
+    signal?.throwIfAborted();
+    const instance = this.instances.get(id), runtime = this.runtimes.get(instance.runtimeId);
+    const client = await this.instances.ensureHost(id, signal);
+    return { client, instance, runtime };
+  }
+  /** Resolve the trusted execution instance before a native admission, so the
+   * caller can persist a lane binding before any model/tool work is submitted. */
+  async resolveBotInstance(instanceId?: string): Promise<DshInstance> { return this.instances.get(await this.botInstance(instanceId)); }
+  async stopRetiredBotHost(instanceId: string): Promise<void> {
+    const instance = this.instances.get(instanceId);
+    if (instance.name !== 'WorldlineBox 伙伴主脑') throw new Error('只能退休旧伙伴专用实例。');
+    await this.instances.stop(instanceId);
+  }
+  /** Native memory addons use the managed Node ABI, never Electron's binary. */
+  async botNodePath(instanceId?: string): Promise<string> {
+    const id = await this.botInstance(instanceId);
+    // Memory can initialize while the independently shared Host verifies its
+    // runtime/profile. Resolving Node must not wait for package installation.
+    void this.prepareBotInstance(id).catch(() => undefined);
+    return this.instances.launchPlan(id).executable;
+  }
+  /** Warm the real native Host, without creating a Session or calling a model. */
+  async prepareBot(instanceId?: string): Promise<void> { return this.prepareBotInstance(await this.botInstance(instanceId)); }
+  private prepareBotInstance(id: string): Promise<void> {
+    const existing = this.botPreparations.get(id); if (existing) return existing;
+    const pending = this.instances.ensureHost(id).then(() => undefined);
+    this.botPreparations.set(id, pending);
+    void pending.finally(() => { if (this.botPreparations.get(id) === pending) this.botPreparations.delete(id); }).catch(() => undefined);
+    return pending;
+  }
   async taskCapabilities(instanceId?: string, execution?: DshTaskExecutionOptions, query?: DshTaskCapabilityQuery): Promise<DshTaskCapabilities> {
     await this.initialization;
     if (this.closed) throw new Error('DSH 启动器正在关闭。');
@@ -66,10 +146,12 @@ export class DshLauncher {
   private capabilityChangeTimer?: ReturnType<typeof setTimeout>;
   private prewarmTimer?: ReturnType<typeof setTimeout>;
   private prewarmRevision = 0;
+  private defaultPrewarmIdentity?: string;
   private prewarming?: { instanceId: string; promise: Promise<void> };
   private executionReadiness?: DshLauncherState['executionReadiness'];
   constructor(private readonly getMainWindow: () => BrowserWindow | null | undefined, reportInitializationError?: (error: unknown) => void,
-    private readonly applicationNetwork?: LauncherNetwork, private readonly onExecutionCapabilitiesChanged?: () => void) {
+    private readonly applicationNetwork?: LauncherNetwork, private readonly onExecutionCapabilitiesChanged?: () => void,
+    private readonly onBotPreparationChanged?: (progress: DshHostStartupProgress) => void) {
     this.rootPath = path.join(app.getPath('userData'), 'dsh');
     const onChanged = () => {
       if (!this.ready || this.closed) return;
@@ -105,6 +187,10 @@ export class DshLauncher {
     this.runtimes = new RuntimeService({ rootPath: this.rootPath, onChanged, fetch: this.network.fetch,
       nodeTools: () => this.toolchain(), nodeInstallNetwork: signal => this.network.nodeInstallNetwork(signal) });
     this.instances = new InstanceService({ rootPath: this.rootPath, runtimes: this.runtimes, operations: this.operations, onChanged,
+      onStartup: progress => {
+        this.botPreparationByInstance.set(progress.instanceId, progress);
+        try { this.onBotPreparationChanged?.(structuredClone(progress)); } catch { /* Startup observers cannot break the shared Host. */ }
+      },
       bridgePackagePath: app.isPackaged ? path.join(process.resourcesPath, 'dsh-bridge') : path.join(app.getAppPath(), 'resources', 'dsh-bridge'),
       networkEnvironment: env => this.network.environment(env),
       isCliInUse: id => (this.cliTerminal.state().terminals ?? []).some(terminal => terminal.status === 'running' && (!id || terminal.instanceId === id)),
@@ -162,8 +248,16 @@ export class DshLauncher {
     if (identity !== this.capabilityIdentity) {
       const previous = this.capabilityIdentity; this.capabilityIdentity = identity;
       if (previous !== undefined) this.onExecutionCapabilitiesChanged?.();
-      this.scheduleExecutionPrewarm(instance?.id);
-    } else if (mutation) { this.onExecutionCapabilitiesChanged?.(); this.scheduleExecutionPrewarm(instance?.id); }
+    } else if (mutation) { this.onExecutionCapabilitiesChanged?.(); }
+    // Browsing/selecting a profile is not permission to start its processes.
+    // Only the default profile is warmed automatically; explicit execution and
+    // durable native-context bindings select other instances separately.
+    const defaultInstance = this.instances.list().find(value => value.isDefault);
+    const defaultRuntime = this.runtimes.list().find(value => value.id === defaultInstance?.runtimeId);
+    const prewarmIdentity = JSON.stringify([defaultInstance?.id, defaultInstance?.runtimeId, defaultRuntime?.contentSha256]);
+    if (prewarmIdentity !== this.defaultPrewarmIdentity || mutation) {
+      this.defaultPrewarmIdentity = prewarmIdentity; this.scheduleExecutionPrewarm(defaultInstance?.id);
+    }
     const watchIdentity = JSON.stringify([selected, instance?.homePath, instance?.agentsPath]);
     if (watchIdentity === this.watchedCapabilityIdentity) return;
     this.watchedCapabilityIdentity = watchIdentity;
@@ -191,6 +285,7 @@ export class DshLauncher {
     }
   }
   private scheduleExecutionPrewarm(instanceId?: string): void {
+    if (instanceId && !this.instances.list().some(value => value.id === instanceId && value.isDefault)) return;
     clearTimeout(this.prewarmTimer); const revision = ++this.prewarmRevision;
     this.executionReadiness = instanceId ? { instanceId, status: 'warming', updatedAt: new Date().toISOString() } : undefined;
     if (!instanceId || this.closed) return;

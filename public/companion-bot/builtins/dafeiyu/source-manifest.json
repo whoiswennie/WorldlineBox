@@ -1,0 +1,23 @@
+{
+  "version": 1,
+  "identity": "builtin-dafeiyu",
+  "name": "大肥鱼",
+  "identityPolicy": "One DeepSeek fan character with two authored visual designs. Not a software mode switch; no sister or separate mini identity.",
+  "normal": { "source": "../deepseek-sister/portrait.png", "reference": "../deepseek-sister/reference.png", "provenance": "../legacy-source-manifest.json" },
+  "powerSave": {
+    "file": "power-save-reference.jpg",
+    "source": "user-provided bfd41ef34f5a2ae71fa716135c8abfd33546600966195201.jpg",
+    "sha256": "b1b28d95a2500ccfb1cd16c8ad15e408bba0dcf29994c7d87f881be19bb244c9",
+    "width": 1260,
+    "height": 671,
+    "processing": "Original bytes retained. Both visual designs are available as reference images in the profile."
+  },
+  "persona": {
+    "status": "Project-authored interpretation of community fanon, revised to the user's unified identity. Not official DeepSeek characterization.",
+    "references": [
+      "https://github.com/YunYueSama/codex-deepseek-pet/blob/main/docs/%E8%A7%92%E8%89%B2%E8%AE%BE%E5%AE%9A.md",
+      "https://aigengtu.com/persona"
+    ],
+    "legacy": "Normal/mini visual designs retained; sister relationship and separate identities superseded by user instruction."
+  }
+}

@@ -23,6 +23,14 @@ interface Options {
   closeWorkbench: (instanceId: string) => Promise<void>; clearBrowserData: (instanceId: string) => Promise<void>;
   networkEnvironment?: (base: NodeJS.ProcessEnv) => Promise<NodeJS.ProcessEnv>;
   isCliInUse?: (instanceId?: string) => boolean;
+  onStartup?: (progress: DshHostStartupProgress) => void;
+}
+export interface DshHostStartupProgress {
+  instanceId: string;
+  phase: 'verifying-runtime' | 'preparing-profile' | 'starting-host' | 'ready' | 'failed';
+  startedAt: string; updatedAt: string; elapsedMs: number;
+  integrity?: TreeInventoryProgress;
+  error?: string;
 }
 interface Host { child: ChildProcessWithoutNullStreams; client?: NativeHostClient; url?: string; stopping: boolean; finished: Promise<void> }
 const manifestSchema = z.object({ format: z.literal('worldlinebox-native-dsh-backup-v1'), instance: dshInstanceSchema,
@@ -114,7 +122,7 @@ export class InstanceService {
   private async initializeProfile(instance: DshInstance, signal: AbortSignal) {
     const profile = path.join(instance.homePath, 'profiles', 'web');
     if (!await readJson(path.join(profile, 'package.json'))) await this.command(instance, ['web', '--dump-default-config'], signal);
-    const names = ['package.json', 'index.js', 'cordis.patch.yml'];
+    const names = ['package.json', 'index.js', 'workspace.js', 'cordis.patch.yml'];
     const sources = await Promise.all(names.map(name => readFile(path.join(this.options.bridgePackagePath, name))));
     const digest = createHash('sha256'); for (const source of sources) digest.update(source);
     const hash = digest.digest('hex'), target = path.join(instance.homePath, '.worldlinebox', 'bridge', hash);
@@ -122,18 +130,22 @@ export class InstanceService {
     for (let i = 0; i < names.length; i++) await writeFile(path.join(target, names[i]!), sources[i]!);
     const stamp = path.join(this.getRoot(instance.id), 'bridge.json');
     const installed = await readJson<{ hash: string }>(stamp);
-    const entry = await readFile(path.join(profile, 'node_modules', '@worldlinebox', 'dsh-bridge', 'index.js')).catch(() => undefined);
-    if (installed?.hash !== hash || !entry?.equals(sources[1]!)) {
+    const entries = await Promise.all(names.map(name => readFile(path.join(profile, 'node_modules', '@worldlinebox', 'dsh-bridge', name)).catch(() => undefined)));
+    if (installed?.hash !== hash || entries.some((entry, index) => !entry?.equals(sources[index]!))) {
       await this.command(instance, ['plugin', '--profile', 'web', 'add', `file:../../.worldlinebox/bridge/${hash}`, '--save-exact'], signal, profile);
       await atomicJson(stamp, { hash });
     }
   }
   async ensureHost(id: string, signal?: AbortSignal): Promise<NativeHostClient> {
-    signal?.throwIfAborted(); const existing = this.hosts.get(id);
-    if (existing?.stopping) throw new Error('The native DSH Host is stopping. Retry after it has stopped.');
-    if (existing?.client && !existing.stopping) { await existing.client.health(signal); return existing.client; }
+    signal?.throwIfAborted();
     let pending = this.starts.get(id);
     if (!pending) {
+      const existing = this.hosts.get(id);
+      if (existing?.stopping) throw new Error('The native DSH Host is stopping. Retry after it has stopped.');
+      // A bridge may announce its port before the Web token exchange and
+      // final startup checks finish. Only the shared startup result publishes
+      // a usable Host; another caller cannot skip those checks.
+      if (existing?.client) { await existing.client.health(signal); return existing.client; }
       this.available(id); const controller = new AbortController(); this.startControllers.set(id, controller);
       pending = this.startHost(id, controller.signal).finally(() => { this.starts.delete(id); this.startControllers.delete(id); });
       this.starts.set(id, pending);
@@ -142,15 +154,33 @@ export class InstanceService {
     return signal ? new Promise((resolve, reject) => {
       const abort = () => reject(signal.reason); signal.addEventListener('abort', abort, { once: true });
       pending!.then(resolve, reject).finally(() => signal.removeEventListener('abort', abort));
+      if (signal.aborted) abort();
     }) : pending;
   }
   private async startHost(id: string, signal: AbortSignal): Promise<NativeHostClient> {
+    // This shared preparation outlives an individual waiting turn, but profile
+    // package-manager work cannot run forever before the old HTTP-only budget.
+    signal = AbortSignal.any([signal, AbortSignal.timeout(360000)]);
+    const started = performance.now(), startedAt = new Date().toISOString();
+    let phase: DshHostStartupProgress['phase'] = 'verifying-runtime', lastIntegrityReport = 0;
+    const progress = (next: DshHostStartupProgress['phase'], integrity?: TreeInventoryProgress, error?: string) => {
+      phase = next;
+      try { this.options.onStartup?.({ instanceId: id, phase, startedAt, updatedAt: new Date().toISOString(), elapsedMs: performance.now() - started,
+        ...(integrity ? { integrity } : {}), ...(error ? { error } : {}) }); } catch { /* Diagnostics cannot break native preparation. */ }
+    };
     const instance = this.require(id); instance.status = 'starting'; delete instance.lastError; await this.changed();
     let host: Host | undefined;
     try {
+      progress('verifying-runtime');
       await assertOwnedDirectory(this.options.rootPath, this.getRoot(id));
-      await this.options.runtimes.verify(instance.runtimeId, signal);
+      await this.options.runtimes.verify(instance.runtimeId, signal, false, integrity => {
+        if (integrity.phase === 'complete' || performance.now() - lastIntegrityReport >= 1000) {
+          lastIntegrityReport = performance.now(); progress('verifying-runtime', integrity);
+        }
+      });
+      progress('preparing-profile');
       await this.initializeProfile(instance, signal); signal.throwIfAborted();
+      progress('starting-host');
       const token = randomBytes(32).toString('hex');
       const child = await launchCli(this.launchPlan(id), ['web', '--no-open', '--host', '127.0.0.1', '--port', '0'],
         { ...await this.environment(instance), WORLDLINEBOX_DSH_BRIDGE_TOKEN: token }, instance.workspacePath);
@@ -191,10 +221,10 @@ export class InstanceService {
       await new Promise<void>((resolve, reject) => { const abort = () => reject(timeout.reason); timeout.addEventListener('abort', abort, { once: true });
         readiness.then(resolve, reject).finally(() => timeout.removeEventListener('abort', abort)); if (timeout.aborted) abort(); });
       await owned.client!.health(timeout); await verifyReadyUrl(owned.url!, timeout);
-      instance.status = 'running'; delete instance.restartRequired; instance.pid = child.pid; instance.port = Number(new URL(owned.url!).port); await this.changed(); return owned.client!;
+      instance.status = 'running'; delete instance.restartRequired; instance.pid = child.pid; instance.port = Number(new URL(owned.url!).port); await this.changed(); progress('ready'); return owned.client!;
     } catch (error) {
       if (host) { host.stopping = true; await terminateOwnedProcess(host.child); await host.finished; }
-      instance.status = 'failed'; instance.lastError = sanitizeOutput(String(error)); await this.changed(); throw error;
+      instance.status = 'failed'; instance.lastError = sanitizeOutput(String(error)); await this.changed(); progress('failed', undefined, instance.lastError); throw error;
     }
   }
   async stop(id: string): Promise<void> {
@@ -219,7 +249,7 @@ export class InstanceService {
     if (action === 'remove' && spec === '@worldlinebox/dsh-bridge') throw new Error('The Host bridge is required for partner sessions.');
     const client = this.hosts.get(id)?.client;
     if (client) {
-      const value = await client.request<{ application?: string; error?: unknown }>('/plugins', { action, spec }, op.signal);
+      const value = await client.request<{ application?: string; error?: unknown }>('/plugins', { action, spec }, op.signal, action === 'add' ? 600000 : 120000);
       if (value.application === 'failed' || value.application === 'cancelled') throw new Error(`Native plugin ${value.application}: ${JSON.stringify(value.error ?? value)}`);
       await this.recordPluginChange(id, value);
       return JSON.stringify(value, null, 2);

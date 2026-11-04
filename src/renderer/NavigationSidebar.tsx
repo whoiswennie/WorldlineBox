@@ -152,7 +152,7 @@ function NavRow({
   appearance?: EntityAppearance | null;
   linkedBadge?: "link" | "link-off" | null;
   label: string;
-  count?: number;
+  count?: ReactNode;
   active?: boolean;
   onClick?: (event: React.MouseEvent<HTMLButtonElement>) => void;
   onContextMenu?: (e: React.MouseEvent) => void;
@@ -893,6 +893,15 @@ export interface NavigationSidebarProps {
   allAssetCount: number;
   /** Assets stored directly under the library root (distinct from all assets). */
   rootAssetCount: number;
+  /**
+   * Set while a discovery filter is active. Counts show the matching assets.
+   * Missing folder ids count as zero matches.
+   */
+  filteredFolderCounts?: {
+    all: number;
+    root: number;
+    byFolderId: ReadonlyMap<string, number>;
+  } | null;
   trashedAssetCount: number;
   folders: ManagedFolderSummary[];
   collections: CollectionSummary[];
@@ -1082,6 +1091,7 @@ export function NavigationSidebar(props: NavigationSidebarProps) {
     revealTarget = null,
     allAssetCount,
     rootAssetCount,
+    filteredFolderCounts = null,
     trashedAssetCount,
     folders,
     collections,
@@ -1276,14 +1286,21 @@ export function NavigationSidebar(props: NavigationSidebarProps) {
     };
   }, []);
 
-  const persistedCollapsedFolderIds = new Set(navTreePrefs.collapsedFolderIds);
-  const collapsedFolderIds = new Set(persistedCollapsedFolderIds);
+  const persistedCollapsedFolderIds = useMemo(
+    () => new Set(navTreePrefs.collapsedFolderIds),
+    [navTreePrefs.collapsedFolderIds],
+  );
   // Creating under a collapsed parent must reveal the inline create row. Keep
   // this as derived view state: opening or cancelling an editor must not
   // mutate the user's persisted navigation preference.
-  if (inlineFolderEdit?.kind === "create" && inlineFolderEdit.parentFolderId) {
-    collapsedFolderIds.delete(inlineFolderEdit.parentFolderId);
-  }
+  const collapsedFolderIds = useMemo(() => {
+    if (inlineFolderEdit?.kind !== "create" || !inlineFolderEdit.parentFolderId) {
+      return persistedCollapsedFolderIds;
+    }
+    const next = new Set(persistedCollapsedFolderIds);
+    next.delete(inlineFolderEdit.parentFolderId);
+    return next;
+  }, [persistedCollapsedFolderIds, inlineFolderEdit]);
 
   function toggleFolderCollapsed(folderId: string) {
     const nextIds = persistedCollapsedFolderIds.has(folderId)
@@ -1294,12 +1311,24 @@ export function NavigationSidebar(props: NavigationSidebarProps) {
     saveNavTreePreferences(next);
   }
 
-  const unifiedDirectoryEntries = (() => {
+  const unifiedDirectoryEntries = useMemo(() => {
     const entries = buildUnifiedDirectoryNavEntries(folders, linkedFolders);
     return showMissingLinkedFiles
       ? entries
       : hideOfflineLinkedDirectoryEntries(entries);
-  })();
+  }, [folders, linkedFolders, showMissingLinkedFiles]);
+  const sortedDirectoryEntries = useMemo(() => sortManagedTreeEntries(
+    unifiedDirectoryEntries,
+    folderSortPrefs.mode,
+    folderSortPrefs.order,
+    folderCustomOrder,
+  ), [unifiedDirectoryEntries, folderSortPrefs.mode, folderSortPrefs.order, folderCustomOrder]);
+  const sortedCollectionTree = useMemo(() => sortCollectionTree(
+    collectionTree,
+    collectionSortPrefs.mode,
+    collectionSortPrefs.order,
+    collectionCustomOrder,
+  ), [collectionTree, collectionSortPrefs.mode, collectionSortPrefs.order, collectionCustomOrder]);
 
   function applyFolderSubtree(folderId: string, collapse: boolean) {
     const rootId = isLibraryRootFolderId(folderId) || folderId === "root"
@@ -1922,12 +1951,6 @@ export function NavigationSidebar(props: NavigationSidebarProps) {
     };
   }
 
-  const sortedDirectoryEntries = sortManagedTreeEntries(
-    unifiedDirectoryEntries,
-    folderSortPrefs.mode,
-    folderSortPrefs.order,
-    folderCustomOrder,
-  );
   const [folderInsertEdge, setFolderInsertEdge] = useState<{
     folderId: string;
     edge: FolderDropEdge;
@@ -2048,17 +2071,13 @@ export function NavigationSidebar(props: NavigationSidebarProps) {
     }
   }
   const folderSearchActive = folderSearchQuery.trim().length > 0;
-  const directoryEntries = folderSearchActive
+  const directoryEntries = useMemo(() => folderSearchActive
     ? filterDirectoryEntriesByName(sortedDirectoryEntries, folderSearchQuery)
-    : filterCollapsedDirectoryEntries(sortedDirectoryEntries, collapsedFolderIds);
-  const foldersWithChildren = managedFolderIdsWithChildren(
-    unifiedDirectoryEntries,
-  );
-  const sortedCollectionTree = sortCollectionTree(
-    collectionTree,
-    collectionSortPrefs.mode,
-    collectionSortPrefs.order,
-    collectionCustomOrder,
+    : filterCollapsedDirectoryEntries(sortedDirectoryEntries, collapsedFolderIds),
+  [folderSearchActive, sortedDirectoryEntries, folderSearchQuery, collapsedFolderIds]);
+  const foldersWithChildren = useMemo(
+    () => managedFolderIdsWithChildren(unifiedDirectoryEntries),
+    [unifiedDirectoryEntries],
   );
   const collectionSearchActive = collectionSearchQuery.trim().length > 0;
   const visibleCollectionTree = collectionSearchActive
@@ -2102,7 +2121,9 @@ export function NavigationSidebar(props: NavigationSidebarProps) {
         return (
           <NavRow
             active={isManagedFolderNavActive(browseNavFlags, entry.folderId)}
-            count={entry.directAssetCount}
+            count={filteredFolderCounts
+              ? filteredFolderCounts.byFolderId.get(entry.folderId) ?? 0
+              : entry.directAssetCount}
             depth={entry.depth}
             disclosure={
               hasChildren ? (
@@ -2255,7 +2276,9 @@ export function NavigationSidebar(props: NavigationSidebarProps) {
           navFolderId={entry.folderId}
           navFolderKind="linked"
           multiSelected={selectedFolderIds.includes(entry.folderId)}
-          count={entry.assetCount}
+          count={filteredFolderCounts
+            ? filteredFolderCounts.byFolderId.get(entry.folderId) ?? 0
+            : entry.assetCount}
           title={linkedFolderHoverDetail(
             entry.status,
             lf.absoluteRootPath,
@@ -2765,7 +2788,11 @@ export function NavigationSidebar(props: NavigationSidebarProps) {
       <nav className="navigation-scroll">
         <NavRow
           active={library ? isAllAssetsNavActive(browseNavFlags) : true}
-          count={library ? allAssetCount : undefined}
+          count={library
+            ? (filteredFolderCounts
+              ? filteredFolderCounts.all
+              : allAssetCount)
+            : undefined}
           disabled={!library}
           icon="grid"
           label={t("scope.allAssets")}
@@ -2780,7 +2807,11 @@ export function NavigationSidebar(props: NavigationSidebarProps) {
         />
         <NavRow
           active={Boolean(library && isRootFolderNavActive(browseNavFlags))}
-          count={library ? rootAssetCount : undefined}
+          count={library
+            ? (filteredFolderCounts
+              ? filteredFolderCounts.root
+              : rootAssetCount)
+            : undefined}
           disabled={!library}
           icon="folder"
           label={t("scope.rootFolder")}

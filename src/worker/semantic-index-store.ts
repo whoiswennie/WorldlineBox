@@ -1,4 +1,4 @@
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { existsSync, lstatSync, mkdirSync, realpathSync, rmSync, statfsSync } from 'node:fs';
 import { endianness } from 'node:os';
 import path from 'node:path';
@@ -183,6 +183,40 @@ type SqliteDatabase = {
 };
 type SqliteConstructor = new (filename: string, options?: { readonly?: boolean; fileMustExist?: boolean }) => SqliteDatabase;
 const BetterSqlite = Database as SqliteConstructor;
+
+/** Rotate the source fence without creating an index for libraries that have none. */
+export function invalidateSavedTextSemanticContent(libraryPath: string, libraryId: string, assetId: string): void {
+  const candidate = path.join(libraryPath, '.worldlinebox', 'semantic', 'index.sqlite');
+  if (!existsSync(candidate)) return;
+  const databasePath = ensureSemanticDatabasePath(libraryPath);
+  // Future sidecars must only be probed read-only, like normal index open.
+  const probe = new BetterSqlite(databasePath, { readonly: true, fileMustExist: true });
+  try {
+    if (Number(probe.pragma('user_version', { simple: true })) > SEMANTIC_SCHEMA_VERSION) {
+      throw new Error('Semantic index schema is newer than this application.');
+    }
+  } finally {
+    probe.close();
+  }
+  const database = new BetterSqlite(databasePath, { fileMustExist: true });
+  try {
+    database.pragma('busy_timeout = 5000');
+    if (Number(database.pragma('user_version', { simple: true })) > SEMANTIC_SCHEMA_VERSION) {
+      throw new Error('Semantic index schema is newer than this application.');
+    }
+    const identity = database.prepare("SELECT value FROM index_meta WHERE key = 'library_id'").get() as
+      { value: string } | undefined;
+    if (identity?.value !== libraryId) throw new Error('Semantic index belongs to another library identity.');
+    database.transaction(() => {
+      database.prepare('INSERT INTO index_meta(key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value')
+        .run('text-content:' + assetId, randomUUID());
+      database.prepare('DELETE FROM asset_embeddings WHERE asset_id = ?').run(assetId);
+      database.prepare('DELETE FROM embedding_jobs WHERE asset_id = ?').run(assetId);
+    })();
+  } finally {
+    database.close();
+  }
+}
 
 function validateDimensions(dimensions: number): void {
   if (!Number.isInteger(dimensions) || dimensions < 1 || dimensions > MAX_VECTOR_DIMENSIONS) {
@@ -591,11 +625,18 @@ export class SemanticIndexStore {
       ON CONFLICT(content_digest) DO NOTHING`).run({ ...input, completedAt: new Date().toISOString() });
   }
 
+  textContentGeneration(assetId: string): string | null {
+    const row = this.#database.prepare('SELECT value FROM index_meta WHERE key = ?')
+      .get('text-content:' + assetId) as { value: string } | undefined;
+    return row?.value ?? null;
+  }
+
   removeAsset(assetId: string): void {
     const removeJob = this.#database.prepare('DELETE FROM embedding_jobs WHERE asset_id = ?');
     const remove = this.#database.transaction(() => {
       this.#removeAsset.run(assetId);
       removeJob.run(assetId);
+      this.#database.prepare('DELETE FROM index_meta WHERE key = ?').run('text-content:' + assetId);
     });
     remove();
   }

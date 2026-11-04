@@ -1,7 +1,7 @@
 // System UI fonts keep startup independent of hundreds of webfont shards.
 // Font assets opened by the asset viewer continue to load on demand.
 import { lazy, StrictMode, Suspense } from 'react';
-import { RendererReady, StartupBoundary, StartupScreen } from './StartupScreen';
+import { RendererReady, StartupBoundary } from './StartupScreen';
 import { createRoot, type Root } from 'react-dom/client';
 
 import { ElevationProvider } from './ElevationProvider';
@@ -47,9 +47,7 @@ applyFontSizePreferences(loadFontSizePreferences());
 
 const root = document.getElementById('root');
 const App = lazy(() => import('./Application').then(module => ({ default: module.App })));
-const WorldWindow = lazy(() => import('./companions/world/CompanionWorldWindow').then(module => ({ default: module.CompanionWorldWindow })));
 const CaptureWindow = lazy(() => import('./capture-tools/CaptureToolsWindow').then(module => ({ default: module.CaptureToolsWindow })));
-const observer = new URLSearchParams(window.location.search).get('window') === 'companion-world';
 const captureWindow = new URLSearchParams(window.location.search).get('window') === 'capture-tools';
 
 if (!root) {
@@ -69,7 +67,7 @@ applicationRoot.render(
             <RadiusProvider>
             <MenuAcrylicProvider>
               <InspectorCardFeelProvider>
-                <StartupBoundary><Suspense fallback={observer ? <StartupScreen title="正在打开伙伴世界" compact /> : null}><RendererReady>{captureWindow ? <CaptureWindow /> : observer ? <WorldWindow /> : <ShortcutProvider><App /></ShortcutProvider>}</RendererReady></Suspense></StartupBoundary>
+                <StartupBoundary><Suspense fallback={null}><RendererReady>{captureWindow ? <CaptureWindow /> : <ShortcutProvider><App /></ShortcutProvider>}</RendererReady></Suspense></StartupBoundary>
               </InspectorCardFeelProvider>
             </MenuAcrylicProvider>
             </RadiusProvider>

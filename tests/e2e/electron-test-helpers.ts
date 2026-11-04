@@ -1,11 +1,9 @@
 import { createRequire } from 'node:module';
-import { existsSync, readFileSync, readdirSync } from 'node:fs';
+import { readdirSync } from 'node:fs';
 import path from 'node:path';
 
 import { expect, type ElectronApplication, type Locator, type Page } from '@playwright/test';
-import type { WorldlineBoxCompanionsApi } from '../../src/shared/companions';
-import type { WorldlineBoxLibraryApi } from '../../src/shared/library-api';
-export { removeOwnedDirectorySync as removeCompanionTestDirectory } from '../../src/main/vcp-memory/filesystem';
+export { removeOwnedDirectorySync as removeCompanionTestDirectory } from '../helpers/remove-owned-test-directory';
 
 const require = createRequire(path.resolve('package.json'));
 
@@ -75,30 +73,6 @@ export async function preparePackagedCompanionLaunch(application: ElectronApplic
   }, { profile: path.resolve(profile), parent: path.dirname(path.resolve(profile)) });
   expect(details.packaged).toBe(true);
   expect(details.appPath).toMatch(/app\.asar$/u);
-}
-
-/** Real workspace selection for existing companion fixtures; preserves legacy DB migration. */
-export async function ensureCompanionTestWorkspace(page: Page): Promise<void> {
-  await page.waitForFunction(() => !!(window as unknown as { worldlinebox?: { companions?: { workspace?: unknown }; library?: unknown } }).worldlinebox?.companions?.workspace);
-  const result = await page.evaluate(async () => {
-    const bridge = (window as unknown as { worldlinebox: { companions: WorldlineBoxCompanionsApi; library: WorldlineBoxLibraryApi } }).worldlinebox;
-    const status = await bridge.companions.workspace!({ type: 'status' });
-    if (!status.ok) throw new Error(status.error || 'Could not read the fixture workspace.');
-    if (status.selected) return status;
-    const created = await bridge.library.create({ displayName: '伙伴验收资产库' });
-    if (!created.ok) throw new Error(created.error.message);
-    return bridge.companions.workspace!({ type: 'select', libraryId: created.value.libraryId });
-  });
-  expect(result.ok, result.error).toBe(true);
-  expect(result.selected).toBeDefined();
-}
-
-/** Offline seed/read helpers follow the selected library after the first launch. */
-export function companionTestDataRoot(profile: string): string {
-  const locator = path.join(profile, 'companion-library.json');
-  if (!existsSync(locator)) return path.join(profile, 'companions');
-  const selection = JSON.parse(readFileSync(locator, 'utf8')) as { libraryPath: string };
-  return path.join(selection.libraryPath, '.worldlinebox', 'companions');
 }
 
 /** Locate a browse card by filename, independent of caption formatting. */

@@ -57,9 +57,8 @@ const config: ForgeConfig = {
       process.env.VcpkgEnabled = 'false';
       const mediaPlatform = nativeMediaPlatform(platform, arch);
       runNodeGate('scripts/generate-automation-declarations.mjs', []);
-        runNodeGate('scripts/vendor-vcp-memory.mjs', ['--restore-missing']);
-        runNodeGate('scripts/vendor-vcp-memory.mjs', ['--verify']);
-      runNodeGate('scripts/stage-vcp-memory-runtime.mjs', []);
+      runNodeGate('scripts/stage-bot-memory.mjs', []);
+      runNodeGate('scripts/verify-bot-stickers.mjs', []);
       runNodeGate('scripts/stage-bundled-embedding.mjs', ['--acquire']);
       // Recover ignored media executables from the pinned WorldlineBox-Build
       // release when a clean checkout or a local replacement fails the gate.
@@ -148,9 +147,9 @@ const config: ForgeConfig = {
     // checks against this copied directory.
     extraResource: [
       path.join(projectRoot, 'resources', 'dsh-bridge'),
-      path.join(projectRoot, '.tools', 'vcp-memory-release', 'vcp-memory'),
-      path.join(projectRoot, '.tools', 'vcp-memory-release', 'vcp-memory-host'),
+      path.join(projectRoot, '.tools', 'bot-memory-release', 'vcp-memory'),
       path.join(projectRoot, 'resources', 'embedding-models'),
+      path.join(projectRoot, 'resources', 'bot-stickers'),
       packagedResourcesRoot,
       // Browser extension bundle (manual-load distribution): installed at
       // WorldlineBox.app/Contents/Resources/extension (macOS) or
@@ -227,11 +226,6 @@ const config: ForgeConfig = {
         {
           entry: 'src/worker/index.ts',
           config: 'vite.worker.config.ts',
-          target: 'main',
-        },
-        {
-          entry: 'src/companions/worker.ts',
-          config: 'vite.companion-worker.config.ts',
           target: 'main',
         },
         {

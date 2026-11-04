@@ -8,7 +8,7 @@ import { CAPTURE_TOOLS_ARGUMENT, CAPTURE_TOOLS_CHANGED, CAPTURE_TOOLS_REQUEST, C
   DEFAULT_CAPTURE_TOOLS_SETTINGS, captureToolsRequestSchema, captureToolsSettingsSchema, type CaptureDesktopSource,
   type CaptureImageSource, type CaptureToolsRequest, type CaptureToolsResponse, type CaptureToolsSettings,
   type CaptureRecordingControls, type CaptureScreenRect, type CaptureToolsState, type CaptureToolTask } from '../../shared/capture-tools';
-import type { CompanionModelConfig } from '../companions/model';
+import type { AiConnectionConfig } from '../../shared/ai-connection';
 import { atomicJson, readJson } from '../dsh/files';
 import { safeCaptureFilename } from '../browser/capture-download';
 import { answerCaptureImage, getCaptureAiState } from './visual-answer';
@@ -25,7 +25,7 @@ export interface CaptureToolsServiceOptions {
   getMainWindow(): BrowserWindow | null | undefined;
   preloadPath: string;
   loadWindow(window: BrowserWindow): Promise<void>;
-  getModelConfig(): CompanionModelConfig;
+  getModelConfig(): AiConnectionConfig;
   saveToLibrary(bytes: Uint8Array, filename: string): Promise<void>;
   getFfmpeg(): string | undefined | Promise<string | undefined>;
   readBrowserSelection?(): Promise<string>;

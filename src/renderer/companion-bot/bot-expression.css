@@ -1,0 +1,30 @@
+.bot-compose-tools .bot-expression-picker { position:absolute;bottom:43px;left:-4px;width:448px;max-width:calc(100vw - 110px);height:360px;max-height:calc(100dvh - 220px);padding:0;display:flex;flex-direction:column;border:1px solid var(--ui-border-subtle);border-radius:12px;background:var(--ui-surface-raised);color:var(--ui-content-primary);box-shadow:0 10px 32px #00000016,0 2px 6px #00000008;overflow:hidden;z-index:var(--ui-layer-popover); }
+.bot-expression-picker>header { height:48px;flex-shrink:0;display:flex;align-items:center;justify-content:space-between;padding:0 12px;margin:0;color:var(--ui-content-secondary);font-size:11px; }
+.bot-expression-tabs { display:flex;align-items:center;gap:4px;padding:3px;border-radius:10px;background:var(--ui-surface-hover); }
+.bot-compose-tools .bot-expression-picker .bot-expression-tabs button { width:auto;height:29px;padding:0 14px;border:0;border-radius:7px;font-size:12px;font-weight:500;color:var(--ui-content-secondary);background:transparent; }
+.bot-compose-tools .bot-expression-picker .bot-expression-tabs button[aria-selected=true] { background:var(--ui-surface-raised);color:var(--ui-content-primary);box-shadow:0 1px 4px #0000000c; }
+.bot-expression-context { display:flex;justify-content:space-between;gap:8px;padding:0 17px 10px;color:var(--ui-content-secondary);font-size:11px; }
+.bot-expression-context span { color:var(--ui-content-tertiary); }
+.bot-compose-tools .bot-expression-picker>header button { width:24px;height:24px;padding:0;border:0;font-size:19px;background:transparent; }
+.bot-expression-search { display:flex;align-items:center;gap:7px;height:30px;margin:0 14px 9px;padding:0 9px;border-radius:7px;background:var(--ui-surface-hover);color:var(--ui-content-tertiary);flex-shrink:0; }
+.bot-expression-search .bot-icon { width:14px;height:14px; }
+.bot-expression-search input { width:100%;min-width:0;background:transparent;border:0;outline:0;font:inherit;font-size:11px;color:var(--ui-content-primary);padding:0; }
+.bot-compose-tools .bot-expression-search button { width:20px;height:20px;padding:0;flex-shrink:0;border:0;background:transparent;font-size:17px; }
+.bot-expression-picker .bot-sticker-grid { display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:7px;overflow:auto;min-height:0;flex:1;align-content:start;padding:0 14px 12px; }
+.bot-compose-tools .bot-expression-picker .bot-sticker-grid button { width:100%;height:auto;min-width:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:4px;padding:3px;border:0;border-radius:7px;background:transparent; }
+.bot-expression-picker .bot-sticker-grid img { width:100%;aspect-ratio:1;object-fit:contain;min-width:0; }
+.bot-expression-picker .bot-sticker-caption { width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:10px;line-height:1.5;font-weight:400;color:var(--ui-content-secondary); }
+.bot-compose-tools .bot-expression-picker .bot-sticker-grid button:hover { background:var(--ui-surface-hover); }
+.bot-expression-picker .bot-sticker-grid>p { grid-column:1/-1;padding:25px 0;text-align:center;color:var(--ui-content-tertiary);font-size:12px; }
+.bot-expression-picker>footer { display:flex;align-items:center;gap:6px;flex-shrink:0;height:48px;padding:0 11px;border-top:1px solid var(--ui-border-subtle);background:var(--ui-surface-pane); }
+.bot-expression-picker>footer nav { display:flex;align-items:center;gap:6px;flex:1;min-width:0;overflow:auto;margin:0;padding:0; }
+.bot-compose-tools .bot-expression-picker>footer button { flex-shrink:0;display:flex;align-items:center;justify-content:center;width:34px;height:34px;padding:5px;border:0;border-radius:7px;background:transparent; }
+.bot-expression-picker>footer button img { width:25px;height:25px;object-fit:contain; }
+.bot-expression-picker>footer .bot-icon { width:22px;height:22px; }
+.bot-compose-tools .bot-expression-picker>footer button[aria-pressed=true],.bot-compose-tools .bot-expression-picker button:hover { background:var(--ui-surface-hover);color:var(--ui-content-primary); }
+.bot-expression-scroll { overflow:auto;flex:1;min-height:0;padding:0 14px 12px; }
+.bot-expression-scroll h4 { margin:8px 2px 6px;font-size:10px;font-weight:400;color:var(--ui-content-tertiary); }
+.bot-expression-emoji-grid { display:grid;grid-template-columns:repeat(10,minmax(0,1fr));gap:3px; }
+.bot-compose-tools .bot-expression-emoji-grid button { display:flex;align-items:center;justify-content:center;width:100%;height:auto;aspect-ratio:1;padding:3px;font-size:24px;font-family:'Segoe UI Emoji','Apple Color Emoji',sans-serif;background:transparent;border-radius:6px; }
+.bot-expression-error,.bot-expression-picker>p { flex:1;padding:25px;text-align:center;font-size:12px;color:var(--ui-content-secondary); }
+@media(max-width:700px) { .bot-compose-tools .bot-expression-picker { width:370px; } .bot-expression-emoji-grid { grid-template-columns:repeat(8,minmax(0,1fr)); } }

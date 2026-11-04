@@ -24,6 +24,7 @@ import type { ModelCompanionAsset } from '../../shared/model-companions';
 import type { AiSearchPlan, AssetSummary, AssetMetadataResult, ExtractedMetadataResult, CollectionSummary, FilterClause, FolderBrowseEntry, LinkedFolderDirectoryMutation, LinkedFolderRule, LinkedFolderSummary, ManagedFolderSummary, SearchQuery, SearchScope, SmartCollectionSummary, TagCooccurrenceGraph, TagSummary, TrashedFolderSummary } from '../../shared/asset-types';
 import {
   ASSET_CHANGE_CHANNEL,
+  ASSET_NATIVE_DRAG_READINESS_CHANNEL,
   EXTENSION_SAVE_COMPLETED_CHANNEL,
   THUMBNAIL_CHANNEL,
   ACTIVE_CONTEXT_CHANNEL,
@@ -35,6 +36,8 @@ import {
   AI_COMPLETED_CHANNEL,
   AI_CLEARED_CHANNEL,
 } from '../../shared/protocol/channels';
+import { parseNativeDragReadinessEvent } from '../../shared/native-drag-readiness';
+import type { NativeDragReadinessEvent } from '../../shared/native-drag-readiness';
 import { sendNativeAssetDrag, sendNativeAssetDragPrime } from '../native-asset-drag';
 import type { PublicErrorReason } from '../../shared/protocol/errors';
 import {
@@ -77,6 +80,13 @@ import { isImageSequenceImportOffer } from '../../shared/import-outcome';
 import { resolveDroppedFilePaths } from '../dropped-files';
 import { extractWebMediaDrop } from '../web-media-drop';
 import { failure, importRequest, request } from '../transport';
+import { createLibraryLifecycleRelay } from '../library-lifecycle-relay';
+
+const lifecycleRelay = createLibraryLifecycleRelay();
+// This Preload listener outlives React Activity subscriptions in Renderer.
+ipcRenderer.on(LIBRARY_LIFECYCLE_CHANNEL, (_event, input: unknown) => {
+  lifecycleRelay.publish(parseRendererLifecycleEvent(input));
+});
 
 const EMPTY_FBX_CONVERSION_STATS: FbxConversionStats = {
   triangles: 0,
@@ -554,6 +564,31 @@ export const library: WorldlineBoxLibraryApi = Object.freeze({
       throw new Error('Unexpected list-folder-browse-entries response.');
     }
     return { ok: true, value: result.entries };
+  },
+
+  async listFilteredFolderCounts(input: {
+    libraryId: string;
+    filters?: FilterClause[];
+    showIgnored?: boolean;
+  }): Promise<LibraryApiResult<{
+    all: number;
+    root: number;
+    folders: Array<{ folderId: string; count: number }>;
+  }>> {
+    const result = await request({
+      type: 'folder.filtered-counts.request',
+      libraryId: input.libraryId,
+      filters: input.filters,
+      showIgnored: input.showIgnored,
+    });
+    if (!result.ok) return failure(result);
+    if (result.type !== 'folder.filtered-counts') {
+      throw new Error('Unexpected filtered-folder-counts response.');
+    }
+    return {
+      ok: true,
+      value: { all: result.all, root: result.root, folders: result.folders },
+    };
   },
 
   async listFolderEntriesByRefs(input: {
@@ -1736,11 +1771,7 @@ export const library: WorldlineBoxLibraryApi = Object.freeze({
   },
 
   onLifecycle(listener: (event: RendererLifecycleEvent) => void) {
-    const subscription = (_event: Electron.IpcRendererEvent, input: unknown) => {
-      listener(parseRendererLifecycleEvent(input));
-    };
-    ipcRenderer.on(LIBRARY_LIFECYCLE_CHANNEL, subscription);
-    return () => ipcRenderer.removeListener(LIBRARY_LIFECYCLE_CHANNEL, subscription);
+    return lifecycleRelay.subscribe(listener);
   },
 
   onAssetsChanged(listener: (event: AssetChangeEvent) => void) {
@@ -2585,6 +2616,18 @@ export const library: WorldlineBoxLibraryApi = Object.freeze({
       libraryId,
       assetIds,
     });
+  },
+
+  onNativeDragReadiness(listener: (event: NativeDragReadinessEvent) => void) {
+    const subscription = (_event: Electron.IpcRendererEvent, input: unknown) => {
+      try {
+        listener(parseNativeDragReadinessEvent(input));
+      } catch {
+        // A malformed Main event must not reach Renderer.
+      }
+    };
+    ipcRenderer.on(ASSET_NATIVE_DRAG_READINESS_CHANNEL, subscription);
+    return () => ipcRenderer.removeListener(ASSET_NATIVE_DRAG_READINESS_CHANNEL, subscription);
   },
 
   async openFolderInFileManager({ libraryId, folderId }: { libraryId: string; folderId: string }): Promise<LibraryApiResult<void>> {

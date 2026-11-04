@@ -4,7 +4,7 @@ import path from 'node:path';
 import { mkdir } from 'node:fs/promises';
 import type { DshInstance } from '../../shared/dsh-launcher';
 import { redact } from './files';
-import { attachProcessJob, ownedWindowsProcessCreatedAt, type WindowsProcessJob } from './windows-job';
+import { attachProcessJob, ownedWindowsProcessCreatedAt, prepareWindowsProcessJob, type WindowsProcessJob } from './windows-job';
 const processJobs = new WeakMap<ChildProcessWithoutNullStreams, WindowsProcessJob>();
 const processTerminations = new WeakMap<ChildProcessWithoutNullStreams, Promise<void>>();
 
@@ -115,6 +115,9 @@ export async function instanceEnvironment(root: string, instance: DshInstance, p
 }
 
 export async function launchCli(plan: RuntimeLaunchPlan, args: string[], env: NodeJS.ProcessEnv, cwd: string, options?: { ipc?: boolean }): Promise<ChildProcessWithoutNullStreams> {
+  // Resolve FFI/DLLs before a short CLI can exit. Assignment is still mandatory
+  // and any failure below remains fatal; no unsupervised fallback is allowed.
+  prepareWindowsProcessJob();
   const child = spawn(plan.executable, ['--expose-internals', plan.cli, ...args], {
     cwd, env, shell: false, windowsHide: true, stdio: options?.ipc ? ['pipe', 'pipe', 'pipe', 'ipc'] : ['pipe', 'pipe', 'pipe'],
   }) as ChildProcessWithoutNullStreams;

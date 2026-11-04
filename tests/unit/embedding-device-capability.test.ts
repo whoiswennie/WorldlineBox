@@ -7,7 +7,7 @@ import { EmbeddingDeviceCapabilityService, EmbeddingDeviceUnavailableError, embe
 import { LOCAL_TEXT_EMBEDDING_MODEL } from '../../src/shared/embedding/global-profile';
 import { embeddingDeviceCapabilitySchema, type EmbeddingDeviceHardware } from '../../src/shared/embedding/device-capability';
 import type { LlamaEmbeddingSession } from '../../src/main/embedding-llama-session';
-import { prepareCompanionMemoryIdleStartup } from '../../src/main/companions/memory-startup';
+import { prepareEmbeddingIdleStartup } from '../../src/main/embedding-resource-preparation';
 
 const disk = vi.hoisted(() => ({ resolveLayout: vi.fn(), sha: vi.fn() }));
 vi.mock('../../src/main/embedding-text-model-install', () => ({ resolveLocalTextEmbeddingLayout: disk.resolveLayout, fileSha256: disk.sha }));
@@ -51,12 +51,12 @@ describe('local embedding device capability', () => {
     const restarted = new EmbeddingDeviceCapabilityService(options); services.push(restarted);
     expect(restarted.snapshot().state).toBe('unchecked');
     const verifyResources = vi.fn(async () => undefined), requestIdlePrime = vi.fn();
-    await expect(prepareCompanionMemoryIdleStartup({ isCurrent: () => true, readDeviceStatus: () => restarted.status(),
+    await expect(prepareEmbeddingIdleStartup({ isCurrent: () => true, readDeviceStatus: () => restarted.status(),
       verifyResources, requestIdlePrime })).resolves.toBe('requested');
     expect(restarted.snapshot()).toMatchObject({ state: 'supported', cacheUsed: true });
     expect(start).toHaveBeenCalledOnce(); expect(verifyResources).toHaveBeenCalledOnce(); expect(requestIdlePrime).toHaveBeenCalledOnce();
     hardware.availableMemoryBytes = 1 * GiB;
-    await expect(prepareCompanionMemoryIdleStartup({ isCurrent: () => true, readDeviceStatus: () => restarted.status(),
+    await expect(prepareEmbeddingIdleStartup({ isCurrent: () => true, readDeviceStatus: () => restarted.status(),
       verifyResources, requestIdlePrime })).resolves.toBe('unavailable');
     expect(start).toHaveBeenCalledOnce(); expect(verifyResources).toHaveBeenCalledOnce(); expect(requestIdlePrime).toHaveBeenCalledOnce();
   });

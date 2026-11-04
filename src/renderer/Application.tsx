@@ -1,6 +1,3 @@
-import type { CompanionAssetLocation } from '../shared/companion-instance';
-import { CompanionAssetNavigation } from './companions/companion-asset-navigation';
-import { CompanionMediaPlayer } from './companions/CompanionMediaPlayer';
 import { lazy, Suspense, useCallback, useEffect, useRef, useState } from 'react';
 import { ApplicationShell, type ApplicationShellState } from './ApplicationShell';
 import { ContextMenuProvider } from './context-menu';
@@ -15,7 +12,6 @@ import { useT } from './i18n';
 import type { AssetManagerHandle } from './App';
 import type { WorldlineBoxDshLauncherApi } from '../shared/dsh-launcher';
 import type { WorldlineBoxApplicationNetworkApi } from '../shared/application-network';
-import type { WorldlineBoxCompanionsApi } from '../shared/companions';
 import type { WorldlineBoxMusicApi } from '../shared/music';
 import type { WorldlineBoxShellApi } from '../shared/external-url';
 import type { WorldlineBoxBrowserApi } from '../shared/browser';
@@ -24,19 +20,20 @@ import { CaptureToolsToolbar } from './CaptureToolsToolbar';
 import { useApplicationModuleShortcuts } from './use-application-module-shortcuts';
 import type { WorldlineBoxLibraryApi } from '../shared/library-api';
 import type { ExtensionSaveCompletedEvent } from '../shared/protocol/responses';
-import { CompanionWorkspace } from './companions/CompanionWorkspace';
+import type { WorldlineBoxBotApi } from '../shared/companion-bot';
+import type { WorldlineBoxBotMediaApi } from '../shared/companion-bot-media';
 import { featureLoader } from './feature-loader';
 import './feature-loading.css';
 
 const launcherFeature = featureLoader(() => import('./launcher/DshLauncher').then(module => ({ default: module.DshLauncher })));
 const browserFeature = featureLoader(() => import('./browser/BrowserPage').then(module => ({ default: module.BrowserPage })));
-const companionsFeature = featureLoader(() => import('./companions/Companions').then(module => ({ default: module.Companions })));
+const companionsFeature = featureLoader(() => import('./companion-bot/BotWorkspace').then(module => ({ default: module.BotWorkspace })));
 const assetsFeature = featureLoader(() => import('./App').then(module => ({ default: module.AssetManager })));
 const networkFeature = featureLoader(() => import('./network/ApplicationNetworkPage').then(module => ({ default: module.ApplicationNetworkPage })));
 const Launcher = lazy(launcherFeature.load), Browser = lazy(browserFeature.load), Companions = lazy(companionsFeature.load);
 const Assets = lazy(assetsFeature.load), Network = lazy(networkFeature.load);
 const api = (window as Window & { worldlinebox?: { dshLauncher?: WorldlineBoxDshLauncherApi;
-  captureTools?: WorldlineBoxCaptureToolsApi; network?: WorldlineBoxApplicationNetworkApi; companions?: WorldlineBoxCompanionsApi; music?: WorldlineBoxMusicApi; shell?: WorldlineBoxShellApi; browser?: WorldlineBoxBrowserApi; library?: WorldlineBoxLibraryApi } }).worldlinebox;
+  captureTools?: WorldlineBoxCaptureToolsApi; network?: WorldlineBoxApplicationNetworkApi; companionBot?: WorldlineBoxBotApi; companionBotMedia?: WorldlineBoxBotMediaApi; music?: WorldlineBoxMusicApi; shell?: WorldlineBoxShellApi; browser?: WorldlineBoxBrowserApi; library?: WorldlineBoxLibraryApi } }).worldlinebox;
 
 function FeatureLoading() {
   return <div className="feature-loading" role="status"><span className="feature-loading-dot" aria-hidden="true" />正在打开…</div>;
@@ -52,14 +49,12 @@ export function App() {
     void api?.captureTools?.request({ type: 'open', task, ...(source ? { source } : {}) }).then(result => setToolError(result.ok ? '' : result.error)).catch(() => setToolError('无法打开屏幕工具，请重试。'));
   }, []);
   const assetManagerRef = useRef<AssetManagerHandle>(null);
-  const pendingCompanionAssets = useRef<CompanionAssetLocation | undefined>(undefined);
   const pendingSettings = useRef(false);
   const pendingExtensionSave = useRef<ExtensionSaveCompletedEvent | null>(null);
   const [settingsController, setSettingsController] = useState<'idle' | 'opening' | 'open'>('idle');
   const [shellState, setShellState] = useState<ApplicationShellState>({ settingsOpen: false, settingsDisabled: false });
   const attachAssetManager = useCallback((handle: AssetManagerHandle | null) => {
     assetManagerRef.current = handle;
-    if (handle && pendingCompanionAssets.current) { handle.openCompanionAssets(pendingCompanionAssets.current); pendingCompanionAssets.current = undefined; }
     if (handle && pendingSettings.current) { pendingSettings.current = false; handle.openSettings(); }
     if (handle && pendingExtensionSave.current) {
       handle.revealExtensionSave(pendingExtensionSave.current);
@@ -86,22 +81,17 @@ export function App() {
     setSettingsController(current => current === 'idle' ? 'opening' : current);
     if (assetManagerRef.current) { pendingSettings.current = false; assetManagerRef.current.openSettings(); }
   }, []);
-  const openCompanionAssets = useCallback((location: CompanionAssetLocation) => {
-    if (assetManagerRef.current) assetManagerRef.current.openCompanionAssets(location);
-    else pendingCompanionAssets.current = location;
-    setActiveModuleId('assets');
-  }, []);
+  const openCompanionUrl = useCallback((url: string) => { void api?.shell?.openExternalUrl(url); }, []);
   return <ContextMenuProvider><MusicProvider api={api?.music}>
     <div className="application-root"><ThemeBackground /><HoverTipHost /><EditTextContextMenuHost />
       {usesWindowsStyleShell(navigator.userAgent) ? <><WindowsWindowControls shell={api?.shell} /><WindowEdgeResizeHandles shell={api?.shell} /></> : null}
       {toolError ? <div className="application-tool-error" role="alert">{toolError}<button type="button" onClick={() => setToolError('')} aria-label={t('common.close')}>×</button></div> : null}
-      <CompanionMediaPlayer />
       <ApplicationShell activeModuleId={activeModuleId} onSelectModule={setActiveModuleId} onOpenSettings={openSettings}
         tools={api?.captureTools ? <CaptureToolsToolbar onOpen={openTool} /> : null}
         settingsOpen={shellState.settingsOpen} settingsDisabled={activeModuleId === 'assets' && shellState.settingsDisabled}
         modules={[
           { id: 'dsh', preload: launcherFeature.preload, label: t('appNavigation.launcher'), icon: 'box', content: <Suspense fallback={<FeatureLoading />}><Launcher api={api?.dshLauncher} /></Suspense> },
-          { id: 'companions', preload: companionsFeature.preload, label: t('appNavigation.companions'), icon: 'users', content: <CompanionAssetNavigation.Provider value={openCompanionAssets}><CompanionWorkspace api={api?.companions} libraryApi={api?.library}><Suspense fallback={<FeatureLoading />}><Companions api={api?.companions} dshApi={api?.dshLauncher} onOpenSettings={openSettings} isActive={activeModuleId === 'companions'} /></Suspense></CompanionWorkspace></CompanionAssetNavigation.Provider> },
+          { id: 'companions', preload: companionsFeature.preload, label: t('appNavigation.companions'), icon: 'users', content: <Suspense fallback={<FeatureLoading />}><Companions api={api?.companionBot} mediaApi={api?.companionBotMedia} onOpenSettings={openSettings} onOpenUrl={openCompanionUrl} isActive={activeModuleId === 'companions'} /></Suspense> },
           { id: 'assets', preload: assetsFeature.preload, label: t('appNavigation.assets'), icon: 'grid', keepEffectsActive: settingsController !== 'idle', content: <Suspense fallback={<FeatureLoading />}><Assets settingsRef={attachAssetManager} onShellStateChange={reportShellState} isModuleActive={activeModuleId === 'assets'} /></Suspense> },
           { id: 'browser', preload: browserFeature.preload, label: t('appNavigation.browser'), icon: 'globe', content: <Suspense fallback={<FeatureLoading />}><Browser api={api?.browser} active={activeModuleId === 'browser' && settingsController === 'idle' && !shellState.settingsOpen} onScreenshot={() => openTool('screenshot')} onOpenAssets={() => setActiveModuleId('assets')} onOpenNetwork={() => setActiveModuleId('network')} /></Suspense> },
           { id: 'network', preload: networkFeature.preload, label: t('appNavigation.network'), icon: 'network', content: <Suspense fallback={<FeatureLoading />}><Network api={api?.network} /></Suspense> },
