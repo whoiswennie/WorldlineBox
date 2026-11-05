@@ -53,7 +53,7 @@ it.skipIf(!existsSync(nodePath) || !existsSync(path.join(packageRoot, 'node_modu
     chat: async () => ({ baseUrl: base, apiKey: 'fixture', model: 'no-chat' }), onLog: line => logs.push(line) });
   const brain = new BrainBoundary(async input => {
     const prompt = JSON.parse(input.prompt), isAlice = prompt.envelope.companionId === DEFAULT_BOT_COMPANION_ID;
-    if (!isAlice && prompt.trigger.content === 'first') { await bob.promise; return 'Bob较早的回复刚完成'; }
+    if (!isAlice && prompt.trigger.content === 'second') { await bob.promise; return 'Bob较早的回复刚完成'; }
     if (isAlice && prompt.trigger.content === 'second') {
       if (++secondAttempts === 1) throw new BotDshDeliveryUnknownError('lost native event stream');
       await retry.promise; return 'Alice第二轮已从原始输入恢复';
@@ -63,16 +63,17 @@ it.skipIf(!existsSync(nodePath) || !existsSync(path.join(packageRoot, 'node_modu
   const service = new BotService({ root, brain, memory, model: () => ({ apiFormat: 'openai_chat', model: 'fixture', baseUrl: base, apiKey: 'fixture' }), onEvent: () => undefined });
   try {
     await service.handle({ type: 'state' });
-    const createdBob = await service.handle({ type: 'companion.create', name: 'Bob', persona: '另一位伙伴' });
-    const bobId = service.store.getConversation(createdBob.conversationId!)!.memberIds.find(id => id !== 'user')!;
+    const bobId = 'zz-late-bob'; service.store.createCompanion({ id: bobId, name: 'Bob', persona: '另一位伙伴' });
     const group = await service.handle({ type: 'conversation.create', title: '恢复测试群', kind: 'group', memberIds: [DEFAULT_BOT_COMPANION_ID, bobId], participationMode: 'all' });
     const conversationId = group.conversationId!;
     await service.handle({ type: 'message.send', conversationId, content: 'first', requestId: 'first' });
     await waitFor(() => brain.calls.filter(call => !call.laneId.startsWith('memory-encoder-')).length === 2
-      && brain.calls.some(call => service.store.getEvent(call.eventId)?.companionId === DEFAULT_BOT_COMPANION_ID && service.store.getEvent(call.eventId)?.status === 'done'));
-    const earlierBob = brain.calls.find(call => JSON.parse(call.prompt).envelope?.companionId !== DEFAULT_BOT_COMPANION_ID)!;
+      && brain.calls.filter(call => !call.laneId.startsWith('memory-encoder-')).every(call => service.store.getEvent(call.eventId)?.status === 'done'));
     await service.handle({ type: 'message.send', conversationId, content: 'second', requestId: 'second' });
-    await waitFor(() => secondAttempts === 1); bob.resolve();
+    await waitFor(() => secondAttempts === 1);
+    await waitFor(() => brain.calls.some(call => JSON.parse(call.prompt).envelope?.companionId === bobId && JSON.parse(call.prompt).trigger?.content === 'second'));
+    const earlierBob = brain.calls.find(call => JSON.parse(call.prompt).envelope?.companionId === bobId && JSON.parse(call.prompt).trigger?.content === 'second')!;
+    bob.resolve();
     await waitFor(() => service.store.getEvent(earlierBob.eventId)?.status === 'done');
     await waitFor(() => secondAttempts === 2);
     const attempts = brain.calls.filter(call => call.eventId === brain.calls.find(item => JSON.parse(item.prompt).trigger?.content === 'second' && JSON.parse(item.prompt).envelope.companionId === DEFAULT_BOT_COMPANION_ID)!.eventId);

@@ -129,7 +129,9 @@ test('galgame meeting keeps a centered full-bleed companion, card-free dialogue 
           const rect = (element: Element) => { const box = element.getBoundingClientRect(); return { x: box.x, y: box.y, width: box.width, height: box.height, bottom: box.bottom }; };
           return { dialogue: rect(window.querySelector('.bot-call-dialogue')!), scene: rect(window.querySelector('.bot-call-scene')!) };
         });
-        for (const key of ['y', 'bottom'] as const) expect(Math.abs(observed.dialogue[key] - metrics.dialogueRect[key]), `${theme}: caption ${label} ${key}`).toBeLessThanOrEqual(1);
+        const dock = await meeting.locator('.bot-call-composer-host').count() ? await meeting.locator('.bot-call-composer-host').boundingBox() : null;
+        if (dock) expect(observed.dialogue.bottom, `${theme}: caption clears ${label} composer`).toBeLessThanOrEqual(dock.y - 12);
+        expect(observed.dialogue.y, `${theme}: caption clears window header`).toBeGreaterThanOrEqual(metrics.window.y + 66);
         for (const key of ['x', 'y', 'width', 'height'] as const) expect(Math.abs(observed.scene[key] - metrics.scene.rect[key]), `${theme}: scene ${label} ${key}`).toBeLessThanOrEqual(1);
         anchors.push({ label, ...observed }); return observed;
       };
@@ -200,6 +202,18 @@ test('galgame meeting keeps a centered full-bleed companion, card-free dialogue 
         const longText = '我们可以把长回复按自然的语句分成短段，当前字幕只保留正在读的一小页。需要回顾时，再打开完整的聊天记录。'.repeat(24);
         const longReply = await incoming('overlay-long-paged-reply', longText); await expect(dialogue).toHaveAttribute('data-call-dialogue-message', longReply.messageId);
         const captionPage = dialogue.locator('.bot-call-caption-text'); await expect(dialogue.getByRole('button', { name: '查看完整回复', exact: true })).toBeVisible();
+        const stability = await captionPage.evaluate(async element => {
+          const frames: Array<{ width: number; pages: string | null }> = [];
+          for (let index = 0; index < 24; index++) {
+            await new Promise<void>(resolve => requestAnimationFrame(() => resolve()));
+            frames.push({ width: element.getBoundingClientRect().width, pages: element.getAttribute('data-caption-pages') });
+          }
+          return frames;
+        });
+        expect(Math.max(...stability.map(frame => frame.width)) - Math.min(...stability.map(frame => frame.width))).toBeLessThan(1);
+        expect(new Set(stability.map(frame => frame.pages)).size).toBe(1);
+        const stableWidth = await captionPage.evaluate(element => ({ own: element.getBoundingClientRect().width, parent: element.parentElement!.getBoundingClientRect().width }));
+        expect(Math.abs(stableWidth.own - stableWidth.parent)).toBeLessThan(2);
         const pageMetrics = await captionPage.evaluate(element => ({ length: element.textContent?.length ?? 0, height: element.getBoundingClientRect().height, overflow: getComputedStyle(element).overflowY, text: element.textContent, page: Number(element.getAttribute('data-caption-page')), pages: element.getAttribute('data-caption-pages') }));
         expect(pageMetrics.length).toBeLessThan(180); expect(pageMetrics.height).toBeLessThan(155); expect(Number(pageMetrics.pages)).toBeGreaterThan(10);
         await dialogue.getByRole('button', { name: '上一段回应', exact: true }).click(); await expect(captionPage).toHaveAttribute('data-caption-page', String(pageMetrics.page - 1));
@@ -234,5 +248,92 @@ test('galgame meeting keeps a centered full-bleed companion, card-free dialogue 
     }
     expect(errors).toEqual([]);
     await writeFile(path.join(evidence, captureOnly ? 'companion-call-galgame-capture-evidence.json' : 'companion-call-galgame-evidence.json'), JSON.stringify({ displayFixtureOnly: true, paidModelCalls: 0, microphoneOpened: false, presentationOnly: captureOnly, preservedExistingVoicePipeline: true, collapsedSpeechRetryVisibleWithoutOpeningEditorOrResendingChat: captureOnly ? undefined : true, remoteEdgeStreamOnlyFixture: 'Retained neutral MP3 for real media-clock/analyser acceptance; controlled rejection for error UI. No upstream Edge or language-model call; no word-alignment claim.', checks, errors }, null, 2));
+  } finally { await app.close(); await removeProfile(profile); }
+});
+
+// eslint-disable-next-line no-empty-pattern -- The test owns its isolated hidden Electron window.
+test('small meeting layouts keep static portraits, paged captions and the original expanded composer separate without layout oscillation', async ({}, testInfo) => {
+  test.setTimeout(150000);
+  const profile = await mkdtemp(path.join(tmpdir(), 'wlb-call-overlay-'));
+  const fixtures = testInfo.outputPath('small-fixture'); await mkdir(fixtures, { recursive: true });
+  await build({ configFile: false, envDir: false, publicDir: false, logLevel: 'warn', build: { ssr: 'tests/fixtures/bot-call-overlay-fixture.ts', target: 'node24', outDir: fixtures, emptyOutDir: false, rollupOptions: { external: ['electron', 'better-sqlite3'], output: { format: 'cjs', entryFileNames: 'seed.cjs' } } } });
+  const app = await electron.launch({ ...resolveElectronLaunchOptions(), env: electronLaunchEnv({ WORLDLINEBOX_E2E: '1', WORLDLINEBOX_E2E_PERF_OFFSCREEN: '1', WORLDLINEBOX_E2E_USER_DATA_PATH: profile, WORLDLINEBOX_E2E_LOCALE: 'zh-CN' }) });
+  const evidence = path.resolve('artifacts/superagent-bot-development/ui'), checks: unknown[] = [], errors: string[] = [];
+  await mkdir(evidence, { recursive: true });
+  try {
+    const page = await app.firstWindow(); page.on('pageerror', error => errors.push(error.message));
+    await app.evaluate(({ app, BrowserWindow }, owned) => {
+      if (app.getPath('userData') !== owned) throw Error('Small meeting acceptance requires an owned profile');
+      for (const window of BrowserWindow.getAllWindows()) { window.on('show', () => window.hide()); window.hide(); window.webContents.setAudioMuted(true); window.webContents.setBackgroundThrottling(false); window.setMinimumSize(0, 0); window.setContentSize(1040, 680); }
+    }, profile);
+    await page.locator('[data-application-module="companions"]').click();
+    const rooms = await page.evaluate(async () => {
+      const api = (Reflect.get(window, 'worldlinebox') as Bridge).companionBot;
+      const name = '静态头像验收伙伴';
+      const created = await api.request({ type: 'companion.create', name, persona: '仅用于本地布局验收，不执行任务。' }); if (!created.ok) throw Error('Could not create the static portrait fixture');
+      const current = await api.request({ type: 'state' }), companion = current.snapshot!.companions.find(item => item.name === name)!;
+      const opened = await api.request({ type: 'conversation.open', companionId: companion.id }); if (!opened.ok || !opened.conversationId) throw Error('Could not open the static portrait fixture');
+      const conversations = (await api.request({ type: 'state' })).snapshot!.conversations;
+      const live = { id: conversations.find(room => room.kind === 'direct' && room.memberIds.includes('builtin-dafeiyu'))!.id, companionId: 'builtin-dafeiyu', name: '大肥鱼', kind: 'live2d' };
+      return [{ id: opened.conversationId, companionId: companion.id, name, kind: 'static' }, live, { ...live, kind: 'fallback' }];
+    });
+    for (const room of rooms) {
+      const longText = '这一段字幕需要在有限的窗口中自然分段。当前页面显示短句，完整内容随时可以从聊天记录查看。'.repeat(28);
+      await app.evaluate(({ app }, input) => {
+        const { createRequire } = process.getBuiltinModule('node:module'), require = createRequire(process.getBuiltinModule('node:path').join(app.getAppPath(), 'package.json'));
+        const fixture = require(input.fixture) as { seedCallOverlay(profile: string, room: string, companionId: string): unknown; appendCallOverlayReply(profile: string, room: string, key: string, text: string, companionId: string): unknown };
+        fixture.seedCallOverlay(input.profile, input.room.id, input.room.companionId);
+        fixture.appendCallOverlayReply(input.profile, input.room.id, `small-${input.room.kind}`, input.longText, input.room.companionId);
+      }, { fixture: path.join(fixtures, 'seed.cjs'), profile, room, longText });
+      await page.evaluate(() => localStorage.setItem('worldlinebox.companion-call.speech.v1', 'off'));
+      await page.reload(); await page.locator('[data-application-module="companions"]').click();
+      if (room.kind === 'fallback') await page.evaluate(() => {
+        const fetch = window.fetch.bind(window);
+        window.fetch = (input, options) => String(input).includes('/companion-call/deepseek/catalog.json') ? Promise.resolve(new Response('', { status: 404 })) : fetch(input, options);
+      });
+      await page.locator('.bot-sidebar .bot-conversation').filter({ has: page.getByText(room.name, { exact: true }) }).click();
+      await page.getByRole('button', { name: '拨打伙伴电话', exact: true }).click();
+      const meeting = page.getByRole('dialog', { name: `与${room.name}会面`, exact: true }); await meeting.getByRole('button', { name: '接通', exact: true }).click();
+      if (room.kind === 'live2d') { await expect(meeting.locator('.bot-call-loading')).toHaveCount(0, { timeout: 90000 }); await expect(meeting.locator('.bot-call-live2d canvas')).toBeVisible(); }
+      else await expect(meeting.locator('.bot-call-portrait')).toBeVisible();
+      if (room.kind === 'fallback') await expect(meeting.locator('.bot-call-composer-status .bot-call-model-error')).toContainText('可以继续打字聊天');
+      const entry = meeting.getByRole('button', { name: '展开会面输入', exact: true });
+      for (const size of [{ width: 1040, height: 680 }, { width: 850, height: 620 }, { width: 680, height: 520 }]) {
+        await app.evaluate(({ BrowserWindow }, size) => BrowserWindow.getAllWindows()[0]!.setContentSize(size.width, size.height), size);
+        for (const expanded of [false, true]) {
+          if (expanded) { await entry.click(); await meeting.getByRole('textbox', { name: '发送消息…', exact: true }).fill('第一行：保留原输入框。\n第二行：继续编辑。\n第三行：字幕在上方。\n第四行：头像与字幕不重叠。'); }
+          await page.evaluate(() => document.fonts.ready.then(() => new Promise<void>(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve())))));
+          const frames = await meeting.evaluate(async shell => {
+            const rect = (selector: string) => { const element = shell.querySelector<HTMLElement>(selector); if (!element || !element.getClientRects().length) return null; const bounds = element.getBoundingClientRect(); return { x: bounds.x, y: bounds.y, right: bounds.right, bottom: bounds.bottom, width: bounds.width, height: bounds.height }; };
+            const result = [];
+            for (let frame = 0; frame < 28; frame++) {
+              await new Promise<void>(resolve => requestAnimationFrame(() => resolve()));
+              const caption = shell.querySelector<HTMLElement>('.bot-call-caption-text')!;
+              result.push({ shell: shell.getBoundingClientRect().toJSON(), header: rect('.bot-call-header'), portrait: rect('.bot-call-portrait'), avatar: rect('.bot-call-portrait>.bot-avatar'), name: rect('.bot-call-portrait h2'), description: rect('.bot-call-portrait p'), dialogue: rect('.bot-call-dialogue')!, dock: rect('.bot-call-composer-host'), entry: rect('.bot-call-input-row'), status: rect('.bot-call-live-status'), modelError: rect('.bot-call-model-error'), caption: rect('.bot-call-caption-text')!, captionScrollHeight: caption.scrollHeight, pages: caption.dataset.captionPages, text: caption.textContent });
+            }
+            return result;
+          });
+          const stable = frames.at(-1)!;
+          expect(new Set(frames.map(frame => frame.pages)).size).toBe(1); expect(new Set(frames.map(frame => frame.text)).size).toBe(1);
+          for (const part of ['dialogue', 'caption'] as const) for (const dimension of ['x', 'y', 'width', 'height'] as const) expect(Math.max(...frames.map(frame => frame[part][dimension])) - Math.min(...frames.map(frame => frame[part][dimension])), `${room.kind} ${size.width} ${expanded} ${part} ${dimension} oscillates`).toBeLessThan(1);
+          expect(stable.dialogue.y).toBeGreaterThanOrEqual(stable.header!.bottom + 8);
+          expect(stable.captionScrollHeight).toBeLessThanOrEqual(stable.caption.height + 1);
+          expect(stable.dialogue.bottom).toBeLessThanOrEqual((stable.dock ?? stable.entry)!.y - 12);
+          if (stable.modelError) expect(stable.dialogue.bottom).toBeLessThanOrEqual((stable.dock ?? stable.status)!.y - 12);
+          if (stable.portrait && stable.portrait.height > 0) {
+            expect(stable.portrait.bottom).toBeLessThanOrEqual(stable.dialogue.y - 8);
+            for (const part of [stable.avatar, stable.name, stable.description].filter(Boolean)) { expect(part!.y).toBeGreaterThanOrEqual(stable.portrait.y - 1); expect(part!.bottom).toBeLessThanOrEqual(stable.portrait.bottom + 1); }
+          }
+          const name = `companion-call-${room.kind}-${size.width}x${size.height}-${expanded ? 'expanded' : 'collapsed'}.png`;
+          const png = await app.evaluate(async ({ BrowserWindow }) => (await BrowserWindow.getAllWindows()[0]!.webContents.capturePage(undefined, { stayHidden: true, stayAwake: true })).toPNG().toString('base64'));
+          await writeFile(path.join(evidence, name), Buffer.from(png, 'base64')); checks.push({ kind: room.kind, size, expanded, stable, stableFrames: frames.length, screenshot: name });
+          if (expanded) await meeting.getByRole('button', { name: '收起会面输入', exact: true }).click();
+        }
+      }
+      await meeting.getByRole('button', { name: '结束并关闭会面', exact: true }).click();
+      await page.getByRole('textbox', { name: '发送消息…', exact: true }).fill('');
+    }
+    expect(errors).toEqual([]);
+    await writeFile(path.join(evidence, 'companion-call-small-layout-evidence.json'), JSON.stringify({ displayFixtureOnly: true, paidModelCalls: 0, microphoneOpened: false, checks, errors }, null, 2));
   } finally { await app.close(); await removeProfile(profile); }
 });

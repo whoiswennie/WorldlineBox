@@ -28,6 +28,9 @@ import { BotMemoryWorkspace } from './BotMemoryWorkspace';
 import type { BotMediaRef, WorldlineBoxBotMediaApi } from '../../shared/companion-bot-media';
 import type { WorldlineBoxBotSpeechApi } from '../../shared/companion-bot-speech';
 import { BotChatContext } from './BotChatContext';
+import { BotExecutorNotice } from './BotExecutorNotice';
+import { isBotFilePaste } from './clipboard-paste';
+import type { WorldlineBoxDshLauncherApi } from '../../shared/dsh-launcher';
 const ignoreLink = () => undefined;
 const MESSAGE_WINDOW_LIMIT = 400;
 const SIDEBAR_PAGE_SIZE = 40;
@@ -75,7 +78,7 @@ const copy = {
 };
 
 /** A conversation UI backed by one durable event runtime, with no legacy topic/job controllers. */
-export function BotWorkspace({ api, mediaApi, speechApi, onOpenUrl = ignoreLink, isActive = true }: { api?: WorldlineBoxBotApi; mediaApi?: WorldlineBoxBotMediaApi; speechApi?: WorldlineBoxBotSpeechApi; onOpenSettings(): void; onOpenUrl?(url: string): void; isActive?: boolean }) {
+export function BotWorkspace({ api, mediaApi, speechApi, launcherApi, onOpenLauncher, onOpenUrl = ignoreLink, isActive = true }: { api?: WorldlineBoxBotApi; mediaApi?: WorldlineBoxBotMediaApi; speechApi?: WorldlineBoxBotSpeechApi; launcherApi?: WorldlineBoxDshLauncherApi; onOpenLauncher?():void; onOpenSettings(): void; onOpenUrl?(url: string): void; isActive?: boolean }) {
   const { locale } = useLocale(), t = copy[locale];
   const [snapshot, setSnapshot] = useState<BotSnapshot>(), [selected, setSelected] = useState(''), [error, setError] = useState('');
   const [drafts, setDrafts] = useState<Record<string, string>>({}), [busy, setBusy] = useState(false), [streams, setStreams] = useState<Record<string, string>>({});
@@ -290,12 +293,12 @@ export function BotWorkspace({ api, mediaApi, speechApi, onOpenUrl = ignoreLink,
     return result;
   };
   const send = async (kind: 'message' | 'world' = 'message', sticker?: BotMediaRef) => (await sendMessage(kind, sticker)).ok;
-  const addFiles = async (paths?: string[]) => {
+  const addFiles = async (paths?: string[], paste = false) => {
     const origin = selectedRef.current;
     if (!mediaApi || !origin || followups[origin] || snapshotRef.current?.conversations.find(item => item.id === origin)?.kind === 'peer' || activeImports.current.has(origin)) return;
     activeImports.current.add(origin); setImports(current => ({ ...current, [origin]: true }));
     try {
-      const result = await mediaApi.request(paths ? { type: 'files.import', conversationId: origin, paths } : { type: 'files.pick', conversationId: origin });
+      const result = await mediaApi.request(paths ? { type: 'files.import', conversationId: origin, paths } : { type: paste ? 'files.paste' : 'files.pick', conversationId: origin });
       if (result.ok && !result.cancelled) setDraftFiles(current => {
         const combined = new Map((current[origin] ?? []).map(file => [file.id, file])); for (const file of result.media ?? []) combined.set(file.id, file);
         return { ...current, [origin]: [...combined.values()] };
@@ -397,6 +400,13 @@ export function BotWorkspace({ api, mediaApi, speechApi, onOpenUrl = ignoreLink,
             if (result.ok && selectedRef.current === origin) void refresh(origin);
           });
         }}><option value="automatic">{t.automatic}</option><option value="all">{t.all}</option><option value="mentions">{t.mentions}</option></select></label>}
+        {conversation?.kind === 'group' && !observing && <button type="button" disabled={busy || !api} onClick={() => {
+          const origin = selected; setBusy(true);
+          void api?.request({ type: 'message.send', conversationId: origin, requestId: crypto.randomUUID(), content: locale === 'zh-CN' ? '停止讨论' : 'stop' }).then(result => {
+            if (!result.ok) setError(result.error ?? (locale === 'zh-CN' ? '停止讨论失败' : 'Could not stop the discussion'));
+            if (selectedRef.current === origin) void refresh(origin);
+          }).catch(failure => setError(String(failure))).finally(() => setBusy(false));
+        }}>{locale === 'zh-CN' ? '停止讨论' : 'Stop discussion'}</button>}
         {conversation?.kind === 'world' && <button aria-pressed={showWorld} onClick={() => setShowWorld(!showWorld)}>{t.scene}</button>}
         {companion && conversation?.kind === 'direct' && conversation.memberIds.includes('user') && <button className="bot-call-entry" aria-label={locale === 'zh-CN' ? '拨打伙伴电话' : 'Call companion'} title={locale === 'zh-CN' ? '发起文字会面' : 'Start a text conversation'} onClick={() => setCallTarget({ conversationId: selected, companionId: companion.id })}><BotIcon name="phone" /><span>{locale === 'zh-CN' ? '拨号' : 'Call'}</span></button>}
         {conversation && !observing && <button className="bot-chat-tasks" aria-pressed={panel === 'tasks'} title={unreadTaskUpdates ? locale === 'zh-CN' ? '本次打开后收到的任务更新；打开工作台查看' : 'Task updates received since opening; view in the task workspace' : conversation.kind === 'group' ? locale === 'zh-CN' ? '查看本群各位伙伴的任务' : 'Tasks owned by companions in this group' : undefined} onClick={() => panel === 'tasks' ? setPanel(null) : openTask()}><BotIcon name="tasks" />{conversation.kind === 'group' ? locale === 'zh-CN' ? '群任务' : 'Group tasks' : t.tasks}{currentTaskCount > 0 && <span>{currentTaskCount}</span>}{unreadTaskUpdates > 0 && <span className="bot-task-updates" data-count={unreadTaskUpdates} aria-label={locale === 'zh-CN' ? `${unreadTaskUpdates} 项任务有新动态` : `${unreadTaskUpdates} tasks with new updates`}>{locale === 'zh-CN' ? '新动态' : 'Updates'} <b>{unreadTaskUpdates > 99 ? '99+' : unreadTaskUpdates}</b></span>}</button>}
@@ -404,9 +414,11 @@ export function BotWorkspace({ api, mediaApi, speechApi, onOpenUrl = ignoreLink,
         {companion && conversation?.kind === 'direct' && <button onClick={() => startDialog('companion', companion)}><BotIcon name="profile" />{t.edit}</button>}
       </nav></header>
       {error && <div className="bot-error" role="alert">{error}<button aria-label={t.close} onClick={() => setError('')}>×</button></div>}
+      <BotExecutorNotice api={launcherApi} zh={locale==='zh-CN'} onOpenLauncher={onOpenLauncher} />
       {showWorld && conversation?.kind === 'world' && api && companion && <BotWorldScene key={`${selected}:${companion.id}`} api={api} conversationId={selected} companionId={companion.id} isActive={isActive} />}
       <div className="bot-chat-body">
         <section className={`bot-thread-column${draggingFiles ? ' is-file-drag' : ''}`} aria-label={conversation?.title ?? t.title}
+          onPaste={event => { if (!observing && !followedTask && mediaApi && isBotFilePaste(event.clipboardData, () => mediaApi.hasClipboardFiles?.(selected) ?? false)) { event.preventDefault(); void addFiles(undefined, true); } }}
           onDragOver={event => { if (mediaApi && selected && event.dataTransfer.types.includes('Files')) { event.preventDefault(); event.dataTransfer.dropEffect = observing || followedTask ? 'none' : 'copy'; if (!observing && !followedTask) setDraggingFiles(true); } }}
           onDragLeave={event => { if (!(event.relatedTarget instanceof Node) || !event.currentTarget.contains(event.relatedTarget)) setDraggingFiles(false); }}
           onDrop={event => { if (!event.dataTransfer.files.length) return; event.preventDefault(); setDraggingFiles(false); if (observing || followedTask) return; const paths = mediaApi?.getDroppedFilePaths([...event.dataTransfer.files]) ?? []; if (paths.length) void addFiles(paths); }}>
@@ -448,7 +460,7 @@ export function BotWorkspace({ api, mediaApi, speechApi, onOpenUrl = ignoreLink,
       onSave={draft => saveDialog(draft, editorEpoch)} onCancel={closeDialog} />}
     {callTarget && callCompanion && callTarget.conversationId === selected && <BotCallWindow key={`${callTarget.conversationId}:${callTarget.companionId}`} conversationId={callTarget.conversationId} companion={callCompanion} messages={snapshot?.messages.filter(message => message.conversationId === callTarget.conversationId) ?? []} streams={streams} mediaApi={mediaApi} speechApi={speechApi} locale={locale} onHangup={closeCall} onOpenUrl={openCallUrl} composer={renderComposer} registerComposerSend={registerComposerSend} hasPendingDraft={!!draft.trim() || !!draftFiles[selected]?.length || !!followedTask || !!imports[selected]} sendError={error}
       onEditText={text => setDrafts(current => ({ ...current, [selected]: current[selected] ? `${current[selected]}\n${text}` : text }))}
-      onDropFiles={files => { if (observing || followedTask) return; const paths = mediaApi?.getDroppedFilePaths(files) ?? []; if (paths.length) void addFiles(paths); }}
+      onDropFiles={files => { if (observing || followedTask) return; const paths = mediaApi?.getDroppedFilePaths(files) ?? []; if (paths.length) void addFiles(paths); }} onPasteFiles={() => { if (!observing && !followedTask) void addFiles(undefined, true); }}
       send={(content, requestId) => sendMessage('message', undefined, { content, requestId, attachments: [], bypassCallBridge: true })} />}
   </div>;
 }

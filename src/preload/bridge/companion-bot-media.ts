@@ -1,9 +1,13 @@
 import { ipcRenderer, webUtils } from 'electron';
-import { BOT_MEDIA_CHANNEL,botMediaRequestSchema,type BotMediaRequest,type WorldlineBoxBotMediaApi } from '../../shared/companion-bot-media';
+import { BOT_MEDIA_CHANNEL,BOT_MEDIA_CLIPBOARD_CHANNEL,botMediaRequestSchema,type BotMediaRequest,type WorldlineBoxBotMediaApi } from '../../shared/companion-bot-media';
 import { resolveDroppedFilePaths } from '../dropped-files';
 
 const grantedDrops=new Set<string>();
 export const companionBotMedia:WorldlineBoxBotMediaApi=Object.freeze({
+  hasClipboardFiles(conversationId:string){
+    const parsed=botMediaRequestSchema.safeParse({type:'files.paste',conversationId});
+    return parsed.success&&ipcRenderer.sendSync(BOT_MEDIA_CLIPBOARD_CHANNEL,parsed.data.conversationId)===true;
+  },
   async request(input:BotMediaRequest){
     const parsed=botMediaRequestSchema.safeParse(input);if(!parsed.success)return{ok:false,error:'附件请求格式不正确。'};
     const paths=parsed.data.type==='files.import'?parsed.data.paths:parsed.data.type==='pack.import'?[parsed.data.directory]:[];

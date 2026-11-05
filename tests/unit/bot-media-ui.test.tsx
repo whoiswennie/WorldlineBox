@@ -5,7 +5,7 @@ import { afterEach, expect, it } from 'vitest';
 import { BotWorkspace } from '../../src/renderer/companion-bot/BotWorkspace';
 import { LocaleProvider } from '../../src/renderer/i18n';
 import type { BotRequest, BotResponse, BotSnapshot } from '../../src/shared/companion-bot';
-import type { BotMediaRef, BotMediaRequest, BotMediaResponse } from '../../src/shared/companion-bot-media';
+import type { BotMediaRef, BotMediaRequest, BotMediaResponse, WorldlineBoxBotMediaApi } from '../../src/shared/companion-bot-media';
 
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
 let root: Root | undefined, host: HTMLDivElement;
@@ -17,12 +17,12 @@ const base: BotSnapshot = { companions: [{ id: 'alice', name: 'Alice', persona: 
   conversations: [{ id: 'a', title: '私聊甲', kind: 'direct', memberIds: ['user', 'alice'], createdAt: at }, { id: 'b', title: '私聊乙', kind: 'direct', memberIds: ['user', 'bob'], createdAt: at }],
   messages: [], tasks: [], hasMore: false, runtime: { engine: 'worldlinebox', memory: 'vcp-memory', embedding: 'bundled', activeLanes: 0, ready: true, dataRoot: 'fixture' } };
 function deferred<T>() { let resolve!: (value: T) => void; return { promise: new Promise<T>(done => { resolve = done; }), resolve: (value: T) => resolve(value) }; }
-async function mount(mediaHandler: (request: BotMediaRequest) => Promise<BotMediaResponse>, sendHandler: (request: BotRequest) => Promise<BotResponse> = async () => ({ ok: true }), snapshot = base) {
+async function mount(mediaHandler: (request: BotMediaRequest) => Promise<BotMediaResponse>, sendHandler: (request: BotRequest) => Promise<BotResponse> = async () => ({ ok: true }), snapshot = base, mediaOptions:Partial<WorldlineBoxBotMediaApi>={}) {
   const requests: BotRequest[] = [], mediaRequests: BotMediaRequest[] = [];
   host = document.createElement('div'); document.body.append(host); root = createRoot(host);
   await act(async () => root!.render(<LocaleProvider initialPreference="zh-CN"><BotWorkspace onOpenSettings={() => undefined}
     api={{ onEvent: () => () => undefined, request: async request => { requests.push(request); return request.type === 'state' ? { ok: true, snapshot: { ...snapshot, messages: snapshot.messages.filter(message => message.conversationId === request.conversationId) } } : sendHandler(request); } }}
-    mediaApi={{ getDroppedFilePaths: () => [], request: async request => { mediaRequests.push(request); return mediaHandler(request); } }} /></LocaleProvider>));
+    mediaApi={{ getDroppedFilePaths: () => [], request: async request => { mediaRequests.push(request); return mediaHandler(request); },...mediaOptions }} /></LocaleProvider>));
   return { requests, mediaRequests };
 }
 async function click(label: string) { const button = [...host.querySelectorAll<HTMLButtonElement>('button')].find(item => item.getAttribute('aria-label') === label || item.textContent?.trim() === label)!; expect(button).toBeDefined(); await act(async () => { button.click(); await Promise.resolve(); }); }
@@ -64,7 +64,7 @@ it('renders actual animated media without empty reply bubbles and saves files on
   await click('保存'); expect(f.mediaRequests).toContainEqual({ type: 'attachment.save', conversationId: 'a', id: file.id });
 });
 
-it('loads supported players only after opening preview and keeps files over 200MB external', async () => {
+it('offers inline players without preloading, moves the current source into the viewer, and keeps files over 200MB external', async () => {
   const mib = 1024 * 1024;
   const refs: BotMediaRef[] = [
     { ...file, id: 'video-limit', name: '片段.mp4', mimeType: 'application/mp4', size: 200 * mib },
@@ -75,9 +75,11 @@ it('loads supported players only after opening preview and keeps files over 200M
   ];
   const snapshot: BotSnapshot = { ...base, messages: refs.map((ref, index) => ({ id: ref.id, eventId: `e-${index}`, conversationId: 'a', senderId: 'alice', senderName: 'Alice', content: '', sequence: index + 1, status: 'sent', createdAt: at, attachments: [ref] })) };
   const f = await mount(async () => ({ ok: true }), undefined, snapshot);
-  expect(document.querySelectorAll('video,audio')).toHaveLength(0);
+  expect(document.querySelectorAll('video,audio')).toHaveLength(2);
+  for(const player of document.querySelectorAll('video,audio'))expect(player.getAttribute('preload')).toBe('none');
   await click('打开预览 片段.mp4');
   expect(document.querySelectorAll('video')).toHaveLength(1); expect(document.querySelector('video')?.getAttribute('preload')).toBe('metadata');
+  expect(document.querySelector('[data-bot-message="video-limit"] video')).toBeNull();
   await act(() => document.querySelector<HTMLButtonElement>('[aria-label="关闭预览"]')!.click());
   await click('打开预览 声音.mp3'); expect(document.querySelectorAll('audio')).toHaveLength(1); expect(document.querySelector('audio')?.hasAttribute('controls')).toBe(true);
   await act(() => document.querySelector<HTMLButtonElement>('[aria-label="关闭预览"]')!.click());
@@ -85,4 +87,23 @@ it('loads supported players only after opening preview and keeps files over 200M
   const target = host.querySelector<HTMLButtonElement>('[data-bot-message="large-video"] .bot-file-open')!;
   await act(async () => target.click());
   expect(f.mediaRequests).toContainEqual({ type: 'attachment.open', conversationId: 'a', id: 'large-video' });
+});
+
+it('pastes Explorer files without File items, preserves ordinary text, and imports real dropped File paths in the original composer',async()=>{
+  let nativeFiles=false;
+  const f=await mount(async()=>({ok:true,media:[file]}),undefined,base,{hasClipboardFiles:()=>nativeFiles,getDroppedFilePaths:files=>files.length?['C:/selected.txt']:[]});
+  const input=host.querySelector<HTMLTextAreaElement>('.bot-composer textarea')!;
+  const paste=(text:string,types=['text/plain'])=>{
+    const event=new Event('paste',{bubbles:true,cancelable:true});
+    Object.defineProperty(event,'clipboardData',{value:{files:[],items:[],types,getData:(type:string)=>type==='text/plain'?text:''}});return event;
+  };
+  const plain=paste('普通文字');await act(()=>input.dispatchEvent(plain));
+  expect(plain.defaultPrevented).toBe(false);expect(f.mediaRequests).toHaveLength(0);
+  nativeFiles=true;const native=paste('C:\\selected.txt');await act(async()=>input.dispatchEvent(native));
+  expect(native.defaultPrevented).toBe(true);expect(f.mediaRequests).toContainEqual({type:'files.paste',conversationId:'a'});
+  nativeFiles=false;const screenshot=paste('',['image/png']);await act(async()=>input.dispatchEvent(screenshot));
+  expect(screenshot.defaultPrevented).toBe(true);expect(f.mediaRequests.filter(request=>request.type==='files.paste')).toHaveLength(2);
+  const drop=new Event('drop',{bubbles:true,cancelable:true});Object.defineProperty(drop,'dataTransfer',{value:{files:[new File(['x'],'selected.txt')],types:['Files']}});
+  await act(async()=>input.dispatchEvent(drop));expect(drop.defaultPrevented).toBe(true);
+  expect(f.mediaRequests).toContainEqual({type:'files.import',conversationId:'a',paths:['C:/selected.txt']});
 });

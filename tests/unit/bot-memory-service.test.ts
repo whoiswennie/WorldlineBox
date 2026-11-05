@@ -376,9 +376,11 @@ describe('standalone VCP bot memory adapter', () => {
     expect(call[1]).toEqual({ name: 'DeepMemo', args: { keyword: 'SQLite', maid: 'c1', window_size: 4 }, context: { agentId: 'c1', topicId: 'dm1' } });
     await expect(service.tool(scope, 'arbitrary_fs_read', {})).rejects.toThrow('Unsupported');
   });
-  it('awaits the version-specific indexing receipt after original DailyNote writes', async () => {
+  it('acknowledges durable DailyNote writes without waiting for indexing and supports a separate background wait', async () => {
     const { service, sessions } = await fixture();
-    await service.remember(scope, { sourceEventId: 'fact-1', content: 'User prefers tea' });
+    expect(await service.remember(scope, { sourceEventId: 'fact-1', content: 'User prefers tea' })).toMatchObject({ state: 'pending', durable: true, indexed: false });
+    expect(sessions[0]!.request.mock.calls.some(([op]) => op === 'bot.sync')).toBe(false);
+    await service.remember(scope, { sourceEventId: 'fact-1', content: 'User prefers tea', waitForIndex: true });
     const calls = sessions[0]!.request.mock.calls;
     expect(calls.find(([op]) => op === 'bot.remember')?.[1]).toMatchObject({ sourceEventId: 'fact-1' });
     expect(calls.find(([op]) => op === 'bot.sync')?.[1]).toEqual({ id: 'receipt' });

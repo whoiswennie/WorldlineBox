@@ -111,7 +111,7 @@ it.skipIf(!existsSync(nodePath) || !existsSync(path.join(packageRoot, 'node_modu
       } });
     const scope = { companionId: 'inspection-native-owner', conversationId: 'inspection-direct', securityDomainId: 'inspection-direct' };
     try {
-      expect(await service.remember(scope, { sourceEventId: 'inspection-diary-source', content: 'INSPECTDAILY2026：项目决定用 SQLite 保存消息，晚间只喝麦茶。', tags: 'SQLite,决策,麦茶' })).toMatchObject({ indexed: 1, pending: 0 });
+      expect(await service.remember(scope, { sourceEventId: 'inspection-diary-source', content: 'INSPECTDAILY2026：项目决定用 SQLite 保存消息，晚间只喝麦茶。', tags: 'SQLite,决策,麦茶', waitForIndex: true })).toMatchObject({ indexed: 1, pending: 0 });
       await service.appendHistory(scope, [{ id: 'native-original-user', role: 'user', content: 'INSPECTHISTORY2026 原始聊天：今晚只有20分钟，先整理桌角。', timestamp: 1793614000000 },
         { id: 'native-original-answer', role: 'assistant', content: '原始回应：只整理一个小角落，不代替你动手。', timestamp: 1793614001000 }]);
       const prepared = await service.prepareTurn({ scope, requestId: 'ordinary-before-inspection', messages: [{ id: 'ordinary-message', role: 'user', content: 'SQLite 普通对话准备。', timestamp: 1793614002000 }] });

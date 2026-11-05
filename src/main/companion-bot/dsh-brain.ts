@@ -6,6 +6,10 @@ import type { BotAnsweredQuestion, BotWorkerEffectInspection, BotQuestionAnswerI
 export interface BotDshModel {
   apiFormat: AiApiFormat; model: string; baseUrl: string; apiKey: string;
   contextWindow?: number; maxTokens?: number; maxOutputTokens?: number;
+  /** Verified/explicit capability. Unknown compatible routes may attempt native
+   * images and surface the actual provider rejection without inventing support. */
+  imageSupport?: 'supported' | 'unsupported' | 'unknown';
+  inputModalities?: readonly ('text' | 'image')[];
   /** Capacity origin retained when resolved limits are passed into the App loop. */
   contextWindowSource?: 'explicit' | 'metadata' | 'official-default' | 'unknown';
 }
@@ -30,7 +34,7 @@ export interface BotDshRun {
   answeredQuestions?: BotAnsweredQuestion[];
   onEvent?(event: NativeHostEvent): void;
 }
-export interface BotDshResult { text: string; sessionId: string; eventId: string; status: 'succeeded' | 'cancelled' | 'failed'; error?: string; inputContextCommitted?: boolean; outputCheckpoint?: number }
+export interface BotDshResult { text: string; sessionId: string; eventId: string; status: 'succeeded' | 'cancelled' | 'failed'; error?: string; inputContextCommitted?: boolean; outputCheckpoint?: number; quarantined?: true }
 export interface BotDshCancelAck { accepted: boolean; result?: BotDshResult; absent?: boolean; paused?: boolean; sessionId?: string; eventId?: string; requiresAttachment?: boolean }
 export interface BotDshAccessInput { laneId: string; eventId: string; cwd: string; system: string; instanceId?: string; signal?: AbortSignal }
 export interface BotDshAccessAck { absent?: true; previousAccess?: 'scoped' | 'full'; workerAccess?: 'full'; sessionId: string; sameSessionId?: string; eventId: string }
@@ -57,7 +61,7 @@ export class BotDshDeliveryUnknownError extends Error {
 }
 export class BotDshTurnFailedError extends Error {
   readonly code = 'BOT_TERMINAL_FAILED';
-  constructor(readonly eventId: string, message: string, readonly partialText?: string, readonly inputContextCommitted?: boolean) { super(message); }
+  constructor(readonly eventId: string, message: string, readonly partialText?: string, readonly inputContextCommitted?: boolean, readonly quarantined?: true) { super(message); }
 }
 export class BotDshOutputLimitError extends Error {
   readonly code = 'BOT_OUTPUT_LIMIT';

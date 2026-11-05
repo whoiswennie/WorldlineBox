@@ -1,16 +1,18 @@
 import { createServer } from 'node:http';
 import { randomUUID } from 'node:crypto';
 import { once } from 'node:events';
-import { mkdir, readFile } from 'node:fs/promises';
+import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import sharp from 'sharp';
 import path from 'node:path';
 import { expect, it } from 'vitest';
 import { BotDshBrain } from '../../src/main/companion-bot/dsh-brain';
 import { createBotNativeHost } from '../fixtures/bot-native-host';
+import { preserveBotNativeJournals } from '../fixtures/bot-native-journal-evidence';
 
 // Explicit local Host contract test: real installed DSH CLI/Node/persistence
 // and maintained provider serializer, deterministic local protocol fixture.
 // This is not an online model quality test.
-it.runIf(!!process.env.WORLDLINEBOX_BOT_DSH_PROGRAM)('runs isolated native brain lanes, real tool continuation and durable duplicate replay', async () => {
+it.runIf(!!process.env.WORLDLINEBOX_BOT_DSH_PROGRAM)('runs isolated native lanes, read_image wire, preset restart and durable duplicate replay', async () => {
   const requests: Array<{ messages: Array<{ role: string; content: string }>; tools?: Array<{ function: { name: string } }> }> = [];
   let heldResolve!: () => void;
   let writeDispatches = 0;
@@ -36,9 +38,10 @@ it.runIf(!!process.env.WORLDLINEBOX_BOT_DSH_PROGRAM)('runs isolated native brain
       heldResolve(); return;
     }
     const write = data.messages.some((message: { content?: string }) => typeof message.content === 'string' && message.content.includes('write-native-artifact'));
-    const useTool = write || data.messages.some((message: { content?: string }) => typeof message.content === 'string' && message.content.includes('use-memory'));
+    const readImage = content.includes('read-image-from-absolute-path');
+    const useTool = write || readImage || data.messages.some((message: { content?: string }) => typeof message.content === 'string' && message.content.includes('use-memory'));
     const delta = useTool && !used ? { tool_calls: [{ index: 0, id: 'native-tool-' + randomUUID(), type: 'function', function: {
-      name: write ? 'write' : 'memory_search', arguments: JSON.stringify(write ? { file_path: 'native-result.txt', content: 'native worker proof' } : { query: 'frozen fact' }) } }] }
+      name: write ? 'write' : readImage ? 'read_image' : 'memory_search', arguments: JSON.stringify(write ? { file_path: 'native-result.txt', content: 'native worker proof' } : readImage ? { file_path: imagePath } : { query: 'frozen fact' }) } }] }
       : { content: 'pong-from-native-loop' };
     if (write && !used) writeDispatches++;
     response.write('data: ' + JSON.stringify({ id: 'fixture-' + randomUUID(), choices: [{ index: 0, delta, finish_reason: null }] }) + '\n\n');
@@ -53,6 +56,7 @@ it.runIf(!!process.env.WORLDLINEBOX_BOT_DSH_PROGRAM)('runs isolated native brain
   const brain = new BotDshBrain({ getHost: async () => ({ client }) });
   const callbacks = { url: baseUrl + '/bot/tool', token: 'f'.repeat(64) };
   const model = { apiFormat: 'openai_chat' as const, model: 'protocol-fixture', apiKey: 'not-a-provider-secret', baseUrl };
+  const imagePath = path.join(native.root, 'brain', 'image-worker', 'verified-blue.png');
   const tools = [{ name: 'memory_search', description: 'Read a trusted test memory.', parameters: { type: 'object', properties: { query: { type: 'string' } }, required: ['query'], additionalProperties: false } }];
   try {
     const cwd = path.join(native.root, 'brain'); await mkdir(cwd);
@@ -77,6 +81,21 @@ it.runIf(!!process.env.WORLDLINEBOX_BOT_DSH_PROGRAM)('runs isolated native brain
     const workerCalls = requests.slice(before).filter(request => request.messages.some(message => message.role === 'tool'));
     expect(workerCalls.at(-1)?.messages.filter(message => message.role === 'tool').map(message => message.content).join('\n')).not.toMatch(/(?:error|unavailable|denied|not found)/i);
     expect(await readFile(path.join(cwd, 'worker', 'native-result.txt'), 'utf8')).toBe('native worker proof');
+    await mkdir(path.dirname(imagePath), { recursive: true });
+    const imageBytes = await sharp({ create: { width: 12, height: 12, channels: 3, background: '#2244cc' } }).png().toBuffer();
+    await writeFile(imagePath, imageBytes);
+    const beforeImage = requests.length;
+    const visual = await brain.run({ ...a, laneId: 'image-worker', eventId: 'image-event', cwd: path.dirname(imagePath),
+      system: 'Read the actual verified image with native read_image.', prompt: 'read-image-from-absolute-path: ' + imagePath, tools: [], role: 'worker' });
+    expect(visual.status).toBe('succeeded');
+    const wire = JSON.stringify(requests.slice(beforeImage));
+    expect(wire).toContain('image_url'); expect(wire).toMatch(/data:image\/(?:png|jpeg|webp);base64,/u);
+    // Pixels belong to native image blocks, never a text prompt pasted by Main.
+    const textParts = requests.slice(beforeImage).flatMap(request => request.messages).flatMap(message => typeof message.content === 'string' ? [message.content]
+      : ((message.content ?? []) as unknown as Array<{ type: string; text?: string }>).filter(block => block.type === 'text').map(block => block.text ?? ''));
+    expect(textParts.join('\n')).not.toContain('data:image/');
+    const ordinarySessionId = randomUUID(), ordinaryCwd = path.join(cwd, 'ordinary-preset'); await mkdir(ordinaryCwd);
+    expect(await client.request('/sessions', { sessionId: ordinarySessionId, cwd: ordinaryCwd, preset: 'worldlinebox-companion-v2' })).toMatchObject({ sessionId: ordinarySessionId });
     const suspendedInput = { ...a, role: 'worker' as const, tools: [], laneId: 'suspended-lane', eventId: 'suspended-event',
       prompt: 'write-native-artifact hold-until-recovery hold-after-tool', cwd: path.join(cwd, 'suspended') };
     const suspension = new AbortController();
@@ -88,10 +107,23 @@ it.runIf(!!process.env.WORLDLINEBOX_BOT_DSH_PROGRAM)('runs isolated native brain
     await running; await brain.close();
     await native.instances.stop(native.instance.id);
     const restored = await native.instances.ensureHost(native.instance.id);
+    // Resolve a separate ordinary Session after boot, before any bot turn can
+    // lazily register a preset. This follows the official Web resume entry.
+    const beforePresetResume = requests.length;
+    expect(await restored.request('/sessions', { sessionId: ordinarySessionId, cwd: ordinaryCwd, preset: 'worldlinebox-companion-v2', resume: true })).toMatchObject({ sessionId: ordinarySessionId });
+    expect(requests).toHaveLength(beforePresetResume);
     const reopened = new BotDshBrain({ getHost: async () => ({ client: restored }) });
     expect((await reopened.run(suspendedInput)).text).toBe('pong-from-native-loop');
     expect(writeDispatches).toBe(writesBeforeRestart);
     const beforeRestore = requests.length;
     expect(await reopened.run(a)).toEqual(first[0]); expect(requests).toHaveLength(beforeRestore);
+    await mkdir('.tools', { recursive: true });
+    await writeFile('.tools/mouth-native-wire-evidence.json', JSON.stringify({ passed: true, runtimeVersion: native.runtimeVersion,
+      nativeReadImage: true, wireContainsImageUrl: true, textContainsBase64: false, ordinaryPresetRestored: true,
+      durableReplayAvoidedAnotherModelRequest: true, nativeWriteDispatches: writeDispatches }, null, 2) + '\n');
+  } catch (error) {
+    await mkdir('.tools', { recursive: true });
+    await preserveBotNativeJournals(native.root, path.resolve('.tools/native-lanes-diagnostic.json'), value => value.replaceAll(callbacks.token, '<redacted>'));
+    throw error;
   } finally { await brain.close().catch(() => undefined); await native.close(); await new Promise<void>(resolve => server.close(() => resolve())); }
 }, 240000);

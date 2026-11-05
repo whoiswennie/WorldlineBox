@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import type { BotStore } from './store';
 import type { BotClaim } from './types';
 import { isInteractiveBotSource } from './activity-budget';
+import { abortable } from './abortable';
 
 export interface BotSchedulerOptions {
   handle(claim: BotClaim, signal: AbortSignal): Promise<void>;
@@ -72,7 +73,7 @@ export class BotScheduler {
         } catch (error) { controller.abort(error); this.report(error); }
       }, Math.floor(this.leaseMs / 3));
       active.heartbeat.unref?.();
-      active.promise = Promise.resolve().then(() => this.options.handle(claim, controller.signal)).then(() => {
+      active.promise = abortable(Promise.resolve().then(() => this.options.handle(claim, controller.signal)), controller.signal).then(() => {
         if (this.closed) return;
         const event = this.store.getEvent(claim.event.id);
         if (event?.status === 'running') this.store.settle({ eventId: event.id, leaseToken: claim.leaseToken,

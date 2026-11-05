@@ -24,6 +24,19 @@ it('plays bounded speech parts in sequence instead of overlapping paragraph audi
   f.session.observe([message('long')]); await flush();
   expect(f.request.mock.calls.map(([input]) => input.type === 'speech.synthesize' && input.partIndex)).toEqual([0, 1]); expect(f.play).toHaveBeenCalledTimes(2); f.session.dispose();
 });
+it('keeps the playing caption source immutable when an older message snapshot arrives', async () => {
+  const audio = deferred<'ended' | 'cancelled'>(), original = '这是一段已经合成并开始播放的完整回复。';
+  const f = fixture(async () => clip(0, 1, original)); f.play.mockReturnValueOnce(audio.promise);
+  f.session.observe([message('new', original)]); await flush();
+  f.session.updateFrame({ playing: true, level: .5, positionSeconds: 2, durationSeconds: 10 });
+  const before = f.changed.mock.calls.at(-1)![0];
+  f.session.observe([{ ...message('new', '过期草稿'), status: 'running' }]);
+  f.session.updateFrame({ playing: true, level: .4, positionSeconds: 3, durationSeconds: 10 });
+  const after = f.changed.mock.calls.at(-1)![0];
+  expect(after.sourceText).toBe(original); expect(after.messageId).toBe('new');
+  expect(after.displayText!.startsWith(before.displayText!)).toBe(true);
+  audio.resolve('ended'); await flush(); expect(f.session.snapshot().sourceText).toBe(original); f.session.dispose();
+});
 it('cancels a pending synthesis and never plays its late response after hangup', async () => {
   let finish!: (response: BotSpeechResponse) => void;
   const pending = new Promise<BotSpeechResponse>(resolve => { finish = resolve; });

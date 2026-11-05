@@ -9,7 +9,7 @@
 
 import path from "node:path";
 
-import { writeWin32FileClipboard } from "./win32-file-clipboard";
+import { writeWin32FileClipboard, readWin32FileClipboard } from "./win32-file-clipboard";
 
 export type FileClipboardPlatform = "darwin" | "win32" | "other";
 
@@ -26,6 +26,7 @@ export type FileClipboardDeps = {
    * so unit tests can stub it; defaults to the koffi implementation.
    */
   readonly writeNativeWin32?: (filePaths: readonly string[]) => boolean;
+  readonly readNativeWin32?: () => string[] | null;
 };
 
 export function detectFileClipboardPlatform(
@@ -56,6 +57,7 @@ export function createFileClipboardDeps(): FileClipboardDeps {
     clear: () => clipboard.clear(),
     writeText: (text) => clipboard.writeText(text),
     writeNativeWin32: writeWin32FileClipboard,
+    readNativeWin32: readWin32FileClipboard,
   };
 }
 
@@ -203,6 +205,11 @@ export function readFilePathsFromClipboard(deps: FileClipboardDeps): string[] {
       return [];
     }
     if (deps.platform === "win32") {
+      const nativePaths = deps.readNativeWin32?.();
+      // [] means a real CF_HDROP was present but unavailable/invalid; avoid
+      // silently reducing it to FileNameW's first path. null permits legacy
+      // Electron custom formats when the real native format is absent.
+      if (nativePaths) return nativePaths.filter(isAbs);
       if (deps.hasFormat("CF_HDROP")) {
         return parseCfHdrop(deps.readBuffer("CF_HDROP")).filter(isAbs);
       }

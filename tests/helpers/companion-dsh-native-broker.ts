@@ -23,7 +23,7 @@ export async function installedNativeAcceptanceSource(userData = process.env.WOR
   const runtimes = (JSON.parse(await readFile(path.join(manager, 'runtimes.json'), 'utf8')) as unknown[]).map(value => dshRuntimeSchema.parse(value));
   const runtime = runtimes.find(value => value.id === instance.runtimeId);
   if (!runtime || runtime.adapter !== 'node-cli-web-v1') throw new Error('The selected profile does not use the installed native Node runtime.');
-  return { program: path.join(manager, 'runtimes', runtime.id, 'program'),
+  return { program: process.env.WORLDLINEBOX_DSH_ACCEPTANCE_PROGRAM ? path.resolve(process.env.WORLDLINEBOX_DSH_ACCEPTANCE_PROGRAM) : path.join(manager, 'runtimes', runtime.id, 'program'),
     sourceProfile: { instance } };
 }
 
@@ -48,8 +48,9 @@ export async function createNativeAcceptanceBroker(options: NativeAcceptanceOpti
   let patch: unknown[];
   if (options.sourceProfile) {
     const home = options.sourceProfile.instance.homePath;
-    const bytes = await sourceFile(path.join(home, 'cordis.patch.yml'));
-    await writeFile(path.join(instance.homePath, 'cordis.patch.yml'), bytes, { mode: 0o600 });
+    const patchSource=await lstat(path.join(home,'profiles/web/cordis.patch.yml')).then(()=>path.join(home,'profiles/web/cordis.patch.yml')).catch(error=>{if((error as NodeJS.ErrnoException).code==='ENOENT')return path.join(home,'cordis.patch.yml');throw error;});
+    const bytes = await sourceFile(patchSource),targetProfile=path.join(instance.homePath,'profiles/web');await mkdir(targetProfile,{recursive:true});
+    await writeFile(path.join(targetProfile, 'cordis.patch.yml'), bytes, { mode: 0o600 });
     patch = [];
     await writeFile(path.join(instance.homePath, '.credentials.yaml'), await sourceFile(path.join(home, '.credentials.yaml')), { mode: 0o600 });
   } else {
@@ -58,7 +59,7 @@ export async function createNativeAcceptanceBroker(options: NativeAcceptanceOpti
       { id: 'agent-default-model', config: { provider: 'deepseek-official', model: options.model } }];
     await writeFile(path.join(instance.homePath, '.credentials.yaml'), stringify({ version: 1, refs: { DEEPSEEK_API_KEY: options.apiKey } }), { mode: 0o600 });
   }
-  if (!options.sourceProfile) await writeFile(path.join(instance.homePath, 'cordis.patch.yml'), stringify(patch), { mode: 0o600 });
+  if (!options.sourceProfile) {const profile=path.join(instance.homePath,'profiles/web');await mkdir(profile,{recursive:true});await writeFile(path.join(profile, 'cordis.patch.yml'), stringify(patch), { mode: 0o600 });}
   const broker = new DshTaskBroker({ rootPath: root, getHost: async () => {
     const client = await instances.ensureHost(instance.id); options.onWorkerReadyChanged?.(instance.id, true); return { instance, runtime, client };
   } });

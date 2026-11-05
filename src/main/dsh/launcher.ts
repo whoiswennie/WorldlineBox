@@ -26,12 +26,6 @@ import { configureWorkbenchBrowser } from './workbench-browser';
 import type { DshRecordQuery } from '../../shared/dsh-task-record';
 import { dshTaskCapabilityQuerySchema, type DshTaskCapabilities, type DshTaskCapabilityQuery } from '../../shared/dsh-task-spec';
 
-function supportsBotRuntime(version: string): boolean {
-  const match = /^0\.2\.(\d+)(?:-rc\.(\d+))?$/.exec(version);
-  return !!match && (Number(match[1]) > 1 && match[2] === undefined
-    || Number(match[1]) === 1 && (match[2] === undefined || Number(match[2]) >= 5));
-}
-
 export class DshLauncher {
   private botInstanceId?: string;
   private creatingDefaultInstance?: Promise<string>;
@@ -47,25 +41,24 @@ export class DshLauncher {
     if (this.closed) throw new Error('DSH 启动器正在关闭。');
     if (instanceId) {
       const instance = this.instances.get(instanceId);
-      if (!supportsBotRuntime(this.runtimes.get(instance.runtimeId).version)) throw new Error('伙伴主脑需要兼容的官方 DSH 版本（0.2.1-rc.5 至 0.3.0 之前）。');
+      if (this.runtimes.get(instance.runtimeId).adapter !== 'node-cli-web-v1') throw new Error('伙伴需要原生 Node Web 运行环境；请在 DSH 启动器安装或导入该环境。');
       return instanceId;
     }
     // The retired dedicated instance is eligible only through an explicit
     // durable lane binding, while its existing native context is still used.
     const compatible = this.instances.list().filter(instance => instance.name !== 'WorldlineBox 伙伴主脑'
-      && this.runtimes.get(instance.runtimeId).adapter === 'node-cli-web-v1'
-      && supportsBotRuntime(this.runtimes.get(instance.runtimeId).version));
+      && this.runtimes.get(instance.runtimeId).adapter === 'node-cli-web-v1');
     const selected = compatible.find(instance => instance.isDefault);
     if (!selected) {
       // A brand-new installation can create its ordinary default instance.
       // Existing profiles are never replaced by a companion-specific one.
       if (!this.instances.list().length) return this.creatingDefaultInstance ??= (async () => {
-        const runtime = this.runtimes.list().filter(value => value.adapter === 'node-cli-web-v1' && supportsBotRuntime(value.version))
+        const runtime = this.runtimes.list().filter(value => value.adapter === 'node-cli-web-v1')
           .sort((a, b) => b.version.localeCompare(a.version, undefined, { numeric: true }))[0];
-        if (!runtime) throw new Error('请先在 DSH 启动器安装官方 DSH 0.2.1-rc.5 或兼容的 0.2 稳定版。');
+        if (!runtime) throw new Error('请先在 DSH 启动器安装官方 DSH 或导入原生 Node Web 运行环境。');
         const created = await this.instances.create('我的 DSH', runtime.id); this.botInstanceId = created.id; return created.id;
       })().finally(() => { this.creatingDefaultInstance = undefined; });
-      throw new Error('请将使用官方 DSH 0.2.1-rc.5 或兼容 0.2 稳定版的实例设为默认；伙伴会复用默认实例。');
+      throw new Error('请将使用原生 Node Web 运行环境的实例设为默认；伙伴会复用默认实例。');
     }
     this.botInstanceId = selected.id; return selected.id;
   }

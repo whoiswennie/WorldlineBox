@@ -1,12 +1,28 @@
 import { botModelsMetadataUrl, resolveBotModelLimits, type BotModelLimitInput, type BotModelLimits } from './model-limits';
 
 interface Entry { expires: number; metadata?: unknown; controller?: AbortController }
+/** Only the concrete endpoint's exact model record can establish modalities. */
+export function botModelImageSupport(model: string, metadata: unknown): 'supported' | 'unsupported' | 'unknown' {
+  const object = (value: unknown): Record<string, unknown> => value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {};
+  const root = object(metadata), rows = Array.isArray(metadata) ? metadata : Array.isArray(root.data) ? root.data : [root];
+  const row = rows.map(object).find(entry => (entry.id ?? entry.model ?? entry.name) === model);
+  if (!row) return 'unknown';
+  for (const entry of [row, object(row.architecture), object(row.metadata), object(row.capabilities)]) {
+    for (const key of ['input_modalities', 'inputModalities']) if (Array.isArray(entry[key]))
+      return (entry[key] as unknown[]).includes('image') ? 'supported' : 'unsupported';
+    for (const key of ['vision', 'supports_images', 'supports_vision']) if (typeof entry[key] === 'boolean') return entry[key] ? 'supported' : 'unsupported';
+  }
+  return 'unknown';
+}
 /** Model discovery is cached application metadata, never a per-turn inference
  * request or a dependency on a DSH profile/Host. Credentials are not retained. */
 export class BotModelCapabilities {
   private readonly entries = new Map<string, Entry>();
   private closed = false;
   constructor(private readonly options: { fetchFn?: typeof fetch; changed?(): void; now?(): number } = {}) {}
+  imageSupport(input: { apiFormat?: string; baseUrl: string; model: string }): 'supported' | 'unsupported' | 'unknown' {
+    return botModelImageSupport(input.model, this.entries.get(JSON.stringify([input.apiFormat, input.baseUrl, input.model]))?.metadata);
+  }
   current(input: BotModelLimitInput & { apiKey?: string; apiFormat?: string }): BotModelLimits {
     const key = JSON.stringify([input.apiFormat, input.baseUrl, input.model]);
     let entry = this.entries.get(key);
@@ -37,7 +53,7 @@ export class BotModelCapabilities {
             const metadata: unknown = JSON.parse(Buffer.concat(chunks).toString('utf8'));
             if (this.closed || this.entries.get(key) !== selected) return;
             selected.metadata = metadata;
-            if (resolveBotModelLimits(input, metadata).source === 'metadata') this.options.changed?.();
+            if (resolveBotModelLimits(input, metadata).source === 'metadata' || botModelImageSupport(input.model, metadata) !== 'unknown') this.options.changed?.();
           } catch { /* Discovery failure does not disable an already usable chat connection. */ }
           finally { if (selected.controller === controller) selected.controller = undefined; }
         })();

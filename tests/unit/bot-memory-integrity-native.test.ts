@@ -46,7 +46,7 @@ it.skipIf(!existsSync(nodePath) || !existsSync(path.join(packageRoot, 'lib/integ
         const scope = { companionId: companion!, conversationId: `${companion}-private`, securityDomainId: `${companion}-private` };
         const start = performance.now(); await service.warm(scope); const activationMs = performance.now() - start;
         expect(service.isWarm(scope)).toBe(true);
-        const written = await service.remember(scope, { sourceEventId: `${companion}-source`, content: fact! });
+        const written = await service.remember(scope, { sourceEventId: `${companion}-source`, content: fact!, waitForIndex: true });
         expect(written).toMatchObject({ indexed: 1, pending: 0 });
         const recall = performance.now();
         const prepared = await service.prepareTurn({ scope, requestId: `${companion}-query`, messages: [{ id: `${companion}-input`, role: 'user', content: '本项目选了哪个数据库？', timestamp: Date.now() }] });

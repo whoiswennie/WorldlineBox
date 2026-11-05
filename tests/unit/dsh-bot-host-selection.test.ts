@@ -9,7 +9,7 @@ vi.mock('electron', () => ({
   BrowserWindow: class {}, dialog: {}, ipcMain: {}, session: {}, shell: {}, net: {}, nativeImage: {},
 }));
 afterEach(() => { vi.restoreAllMocks(); vi.useRealTimers(); });
-function fixture(allowDefaultCreation = false) {
+function fixture(allowDefaultCreation = false, version = '0.2.1-rc.5') {
   // Constructor wiring remains real; suppress only the unrelated disk/network
   // initialization before supplying the trusted instance catalogue below.
   vi.spyOn(DshLauncher.prototype as unknown as { init(): Promise<void> }, 'init').mockResolvedValue();
@@ -28,8 +28,8 @@ function fixture(allowDefaultCreation = false) {
   });
   Reflect.set(launcher, 'instances', { list: () => records, get: (id: string) => records.find(value => value.id === id), ensureHost, create,
     launchPlan: () => ({ executable: path.join(os.tmpdir(), 'managed-node.exe') }) });
-  Reflect.set(launcher, 'runtimes', { get: () => ({ version: '0.2.1-rc.5', adapter: 'node-cli-web-v1' }),
-    list: () => [{ id: 'compatible', version: '0.2.1-rc.5', adapter: 'node-cli-web-v1' }] });
+  Reflect.set(launcher, 'runtimes', { get: () => ({ version, adapter: 'node-cli-web-v1' }),
+    list: () => [{ id: 'compatible', version, adapter: 'node-cli-web-v1' }] });
   Reflect.set(launcher, 'cliTerminal', { state: () => ({ selectedInstanceId: selected }) });
   return { launcher, records, create, ensureHost, release, select: (id: string) => { selected = id; } };
 }
@@ -38,6 +38,10 @@ it('uses only the default compatible user instance, independent of the recently 
   expect((await f.launcher.resolveBotInstance()).id).toBe('default');
   f.select('missing'); expect((await f.launcher.resolveBotInstance()).id).toBe('default');
   expect(f.create).not.toHaveBeenCalled(); expect(f.ensureHost).not.toHaveBeenCalled();
+});
+it.each(['0.2.2-rc.1','0.2.2-alpha.3','0.3.0','1.0.0-beta.1','0.2.1-rc.2'])('selects the native Web adapter independently of DSH version %s', async version => {
+  const f=fixture(false,version); expect((await f.launcher.resolveBotInstance()).id).toBe('default');
+  expect((await f.launcher.resolveBotInstance('selected')).id).toBe('selected');expect(f.create).not.toHaveBeenCalled();
 });
 it('accepts a legacy Host only through an explicit binding and does not choose it for a new lane', async () => {
   const f = fixture(); f.records.splice(0, 2);

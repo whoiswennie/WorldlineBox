@@ -6,7 +6,7 @@ import { DEFAULT_GLOBAL_LLM_CONFIG, resolveStoredLlmConfig } from "../shared/llm
 import path from "node:path";
 import type { BotService } from './companion-bot/service';
 import { BOT_CHANNEL, BOT_EVENT_CHANNEL, botRequestSchema } from '../shared/companion-bot';
-import { BOT_MEDIA_CHANNEL,botMediaRequestSchema,type BotMediaResponse } from '../shared/companion-bot-media';
+import { BOT_MEDIA_CHANNEL,BOT_MEDIA_CLIPBOARD_CHANNEL,botMediaRequestSchema,type BotMediaResponse } from '../shared/companion-bot-media';
 import type { BotMediaService } from './companion-bot/media-service';
 import { LOCAL_SPEECH_CHANNEL, localSpeechRequestSchema, type LocalSpeechResponse } from '../shared/local-speech';
 import { LocalSpeechService } from './local-speech-service';
@@ -5119,7 +5119,7 @@ async function startApplication(): Promise<void> {
         // Generation retirement is a larger lifetime bound, not a 32k window.
         retention: { maxTurns: Number.MAX_SAFE_INTEGER, maxBytes: Math.min(Number.MAX_SAFE_INTEGER, capacity * 8) },
         modelLimits: () => { const { limits } = currentBotModel(); return { window: limits.window, source: limits.source, estimate: limits.contextEstimate }; },
-        model: () => { const { connection, limits } = currentBotModel(); return { ...connection, contextWindow: limits.window, contextWindowSource: limits.source, maxTokens: limits.maxTokens, maxOutputTokens: limits.maxOutputTokens }; },
+        model: () => { const { connection, limits } = currentBotModel(); return { ...connection, imageSupport: modelCapabilities.imageSupport(connection), contextWindow: limits.window, contextWindowSource: limits.source, maxTokens: limits.maxTokens, maxOutputTokens: limits.maxOutputTokens }; },
         onEvent: event => { if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send(BOT_EVENT_CHANNEL, event); },
         report: error => logger?.error('companion-bot.runtime', error),
       });
@@ -5166,6 +5166,13 @@ async function startApplication(): Promise<void> {
     try { return await (await ensureBotService()).handle(parsed.data); }
     catch (error) { logger?.error('companion-bot.request', error); return { ok: false, error: error instanceof Error ? error.message : '伙伴服务暂不可用。' }; }
   });
+  ipcMain.on(BOT_MEDIA_CLIPBOARD_CHANNEL,(event,conversationId:unknown)=>{
+    event.returnValue=false;
+    if(!mainWindow||mainWindow.isDestroyed()||event.sender!==mainWindow.webContents||event.senderFrame!==mainWindow.webContents.mainFrame)return;
+    const parsed=botMediaRequestSchema.safeParse({type:'files.paste',conversationId});
+    if(!parsed.success||!botCanImportConversationMedia(botService?.store.getConversation(parsed.data.conversationId)))return;
+    event.returnValue=readFilePathsFromClipboard(createFileClipboardDeps()).length>0;
+  });
   ipcMain.handle(BOT_MEDIA_CHANNEL,async(event,input:unknown):Promise<BotMediaResponse>=>{
     if(!mainWindow||mainWindow.isDestroyed()||event.sender!==mainWindow.webContents||event.senderFrame!==mainWindow.webContents.mainFrame)return{ok:false,error:'无权访问伙伴附件。'};
     const parsed=botMediaRequestSchema.safeParse(input);if(!parsed.success)return{ok:false,error:'附件请求格式不正确。'};
@@ -5173,7 +5180,7 @@ async function startApplication(): Promise<void> {
       const service=await ensureBotService(),request=parsed.data;await service.handle({type:'state',conversationId:request.conversationId});
       const room=service.store.getConversation(request.conversationId);
       if(!botCanInspectConversation(room))throw new Error('附件会话不存在或不对用户开放。');
-      if(['files.pick','files.import','pack.pick','pack.import'].includes(request.type)&&!botCanImportConversationMedia(room))throw new Error('正在旁观伙伴私聊，不能向这段私聊添加附件。');
+      if(['files.pick','files.paste','files.import','pack.pick','pack.import'].includes(request.type)&&!botCanImportConversationMedia(room))throw new Error('正在旁观伙伴私聊，不能向这段私聊添加附件。');
       const media=await ensureBotMediaService();
       switch(request.type){
         case 'packs.list':return{ok:true,packs:await media.listPacks(request)};
@@ -5181,6 +5188,12 @@ async function startApplication(): Promise<void> {
         case 'media.list':return{ok:true,media:await media.listMedia(request.conversationId)};
         case 'media.text.read':return{ok:true,textPage:await media.readTextPage(request)};
         case 'files.import':return{ok:true,media:await media.importFiles(request)};
+        case 'files.paste':{
+          const paths=readFilePathsFromClipboard(createFileClipboardDeps());
+          if(paths.length)return{ok:true,media:await media.importFiles({conversationId:request.conversationId,paths})};
+          const image=clipboard.readImage();
+          return image.isEmpty()?{ok:true,cancelled:true}:{ok:true,media:[await media.importClipboardImage(request.conversationId,image.toPNG())]};
+        }
         case 'pack.import':return{ok:true,pack:await media.importStickerPack(request)};
         case 'files.pick':{
           const selection=await dialog.showOpenDialog(mainWindow,{title:'选择发送的附件',properties:['openFile','multiSelections']});

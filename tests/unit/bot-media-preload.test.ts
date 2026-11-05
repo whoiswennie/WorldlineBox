@@ -1,7 +1,16 @@
 import {beforeEach,expect,it,vi} from 'vitest';
-const transport=vi.hoisted(()=>({invoke:vi.fn(),getPathForFile:vi.fn()}));
-vi.mock('electron',()=>({ipcRenderer:{invoke:transport.invoke},webUtils:{getPathForFile:transport.getPathForFile}}));
-beforeEach(()=>{vi.resetModules();transport.invoke.mockReset().mockResolvedValue({ok:true,media:[]});transport.getPathForFile.mockReset();});
+const transport=vi.hoisted(()=>({invoke:vi.fn(),sendSync:vi.fn(),getPathForFile:vi.fn()}));
+vi.mock('electron',()=>({ipcRenderer:{invoke:transport.invoke,sendSync:transport.sendSync},webUtils:{getPathForFile:transport.getPathForFile}}));
+beforeEach(()=>{vi.resetModules();transport.invoke.mockReset().mockResolvedValue({ok:true,media:[]});transport.sendSync.mockReset();transport.getPathForFile.mockReset();});
+it('probes only a valid conversation for native clipboard file metadata and imports via Main-owned paste',async()=>{
+  const {companionBotMedia:api}=await import('../../src/preload/bridge/companion-bot-media');
+  transport.sendSync.mockReturnValue(true);
+  expect(api.hasClipboardFiles?.('a')).toBe(true);
+  expect(transport.sendSync).toHaveBeenCalledWith('companion-bot-media:clipboard-files','a');
+  expect(api.hasClipboardFiles?.('../private')).toBe(false);expect(transport.sendSync).toHaveBeenCalledTimes(1);
+  expect(await api.request({type:'files.paste',conversationId:'a'})).toMatchObject({ok:true});
+  expect(transport.invoke).toHaveBeenCalledWith('companion-bot-media:request',{type:'files.paste',conversationId:'a'});
+});
 it('requires real File path grants for raw imports and consumes them after success',async()=>{
   const {companionBotMedia:api}=await import('../../src/preload/bridge/companion-bot-media');
   const request={type:'files.import' as const,conversationId:'a',paths:['C:/picked.txt']};

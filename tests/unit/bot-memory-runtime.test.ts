@@ -51,7 +51,7 @@ it.skipIf(!existsSync(path.join(packageRoot, 'node_modules', 'better-sqlite3')) 
   const scope = { companionId: '测试伙伴', conversationId: 'dm', securityDomainId: 'dm' };
   try {
     const fact = { sourceEventId: 'decision-17', sourceRootEventId: 'root-decision-17', sourceMessageIds: ['msg-100', 'answer-100'],
-      content: '项目 ADR-017 的最终决定是使用 SQLite 保存消息。', tags: 'SQLite,项目决策' };
+      content: '项目 ADR-017 的最终决定是使用 SQLite 保存消息。', tags: 'SQLite,项目决策', waitForIndex: true };
     const write = await service.remember(scope, fact);
     expect(write).toMatchObject({ indexed: 1, pending: 0 });
     const repeated = await service.remember(scope, fact);

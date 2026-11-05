@@ -18,6 +18,7 @@ const hash = (value:string) => createHash('sha256').update(value).digest('hex');
 const safeId = (value:string) => typeof value==='string' && /^[A-Za-z0-9_-]{1,160}$/.test(value);
 const fileName = (value:string) => Array.from(path.basename(value),character=>character.charCodeAt(0)<32||character==='/'||character==='\\'?'_':character).join('').slice(0,240) || '附件';
 const samePath = (a:string,b:string) => process.platform==='win32' ? a.toLowerCase()===b.toLowerCase() : a===b;
+const AUTOMATIC_IMAGE_BYTES=8*1024*1024, AUTOMATIC_IMAGE_PIXELS=20_000_000;
 
 /** Reject links in every existing component, including junctions above a file. */
 export async function assertBotMediaPhysicalPath(value:string):Promise<void> {
@@ -73,6 +74,7 @@ export class BotMediaService {
   private readonly manifests=new Map<string,Manifest>();
   private builtin?:Promise<Manifest>;
   private readonly verified=new Map<string,string>();
+  private readonly externalDigests=new Map<string,{signature:string;sha256:string}>();
   constructor(options:BotMediaOptions){this.root=path.resolve(options.root);this.builtinRoot=path.resolve(options.builtinRoot);this.canUserAccessConversation=options.canUserAccessConversation;}
   private scope(conversationId:string){if(!safeId(conversationId))throw new Error('媒体会话无效。');return hash(conversationId);}
   private async serial<T>(conversationId:string,run:(manifest:Manifest,home:string)=>Promise<T>):Promise<T>{
@@ -169,11 +171,20 @@ export class BotMediaService {
       return{object,sha256,size};
     }finally{await handle.close();await rm(temporary,{force:true});}
   }
-  private async preview(home:string,object:string):Promise<Pick<StoredMedia,'previewObject'|'previewSha256'|'previewSize'>>{
-    const bytes=await sharp(await readFile(path.join(home,object)),{page:0,pages:1,limitInputPixels:100_000_000}).rotate().resize({width:160,height:160,fit:'inside',withoutEnlargement:true}).webp({quality:80}).toBuffer();
+  private async preview(home:string,object:string,limitInputPixels=100_000_000):Promise<Pick<StoredMedia,'previewObject'|'previewSha256'|'previewSize'>>{
+    const bytes=await sharp(await readFile(path.join(home,object)),{page:0,pages:1,limitInputPixels}).rotate().resize({width:160,height:160,fit:'inside',withoutEnlargement:true}).webp({quality:80}).toBuffer();
     const previewSha256=createHash('sha256').update(bytes).digest('hex'),previewObject=`objects/${previewSha256}.webp`,target=path.join(home,previewObject);
     try{await writeFile(target,bytes,{flag:'wx',mode:0o600});}catch(error){if((error as NodeJS.ErrnoException).code!=='EEXIST')throw error;await this.verifyObject(home,{object:previewObject,sha256:previewSha256,size:bytes.length} as StoredMedia);}
     return{previewObject,previewSha256,previewSize:bytes.length};
+  }
+  private async attachmentImagePreview(home:string,object:string,size:number):Promise<Partial<StoredMedia>>{
+    // Chat thumbnails must not decode a large source or an entire animation.
+    // Larger originals remain available through an explicit viewer click.
+    if(size>AUTOMATIC_IMAGE_BYTES)return{};
+    const info=await inspectBotSticker(path.join(home,object));
+    const dimensions={mimeType:info.mimeType,width:info.width,height:info.height};
+    if(!info.width||!info.height||info.width*info.height>AUTOMATIC_IMAGE_PIXELS)return dimensions;
+    return{...dimensions,...await this.preview(home,object,AUTOMATIC_IMAGE_PIXELS)};
   }
   async importFiles({conversationId,paths}:{conversationId:string;paths:string[]}):Promise<BotMediaRef[]>{
     if(!paths.length||paths.length>64)throw new Error('一次请选择 1 至 64 个附件。');
@@ -187,9 +198,26 @@ export class BotMediaService {
         }
         const maximumSize=declaredMime.startsWith('image/')?BOT_MEDIA_PREVIEW_LIMITS.image:declaredMime.startsWith('audio/')?BOT_MEDIA_PREVIEW_LIMITS.audio:BOT_MEDIA_PREVIEW_LIMITS.video;
         const object=await this.importObject(source,home,maximumSize),id='f_'+object.sha256+'_'+hash(fileName(source)).slice(0,8);
-        let item=manifest.media.find(item=>item.id===id);if(!item){let mimeType=declaredMime;if(mimeType.startsWith('image/'))try{mimeType=(await inspectBotSticker(path.join(home,object.object))).mimeType;}catch{/* Unknown binaries keep their declared extension type; response is sandboxed attachment. */}
-          item={...object,id,name:fileName(source),originalName:fileName(source),mimeType,url:'',kind:'file'};manifest.media.push(item);}result.push(item);}
+        let item=manifest.media.find(item=>item.id===id);if(!item){
+          const preview=declaredMime.startsWith('image/')?await this.attachmentImagePreview(home,object.object,object.size).catch(()=>({})):{};
+          item={...object,mimeType:declaredMime,...preview,id,name:fileName(source),originalName:fileName(source),url:'',kind:'file'};manifest.media.push(item);}result.push(item);}
       await atomicManifest(path.join(home,'manifest.json'),manifest);return result.map(item=>this.reference(item,conversationId));
+    });
+  }
+  /** Bytes originate in Main's native clipboard, never a renderer path or URL. */
+  async importClipboardImage(conversationId:string,bytes:Buffer):Promise<BotMediaRef>{
+    if(!bytes.length||bytes.length>BOT_MEDIA_PREVIEW_LIMITS.image)throw Error('剪贴板图片过大。');
+    await sharp(bytes,{limitInputPixels:100_000_000}).metadata();
+    const sha256=createHash('sha256').update(bytes).digest('hex');
+    return this.serial(conversationId,async(manifest,home)=>{
+      const id='f_'+sha256+'_clipboard',object='objects/'+sha256;let item=manifest.media.find(item=>item.id===id);
+      if(!item){
+        try{await writeFile(path.join(home,object),bytes,{flag:'wx',mode:0o600});}
+        catch(error){if((error as NodeJS.ErrnoException).code!=='EEXIST')throw error;await this.verifyObject(home,{object,sha256,size:bytes.length} as StoredMedia);}
+        const preview=await this.attachmentImagePreview(home,object,bytes.length).catch(()=>({}));
+        item={...preview,id,object,sha256,size:bytes.length,name:'剪贴板图片.png',mimeType:'image/png',kind:'file',url:''};manifest.media.push(item);
+      }
+      await atomicManifest(path.join(home,'manifest.json'),manifest);return this.reference(item,conversationId);
     });
   }
   /** Persist only canonical, bounded microphone recordings; no renderer-supplied paths or transcript. */
@@ -240,6 +268,22 @@ export class BotMediaService {
   async getForAgent(conversationId:string,id:string):Promise<{ref:BotMediaRef;path:string}>{
     const [ref]=await this.resolveForConversation(conversationId,[id]);if(ref?.analysisBlocked||ref?.previewEligibility==='external-only')throw new Error('此大媒体仅支持用户通过系统软件打开，当前任务不可直接读取或分析。');
     return this.sourceForUser(conversationId,id);
+  }
+  /** Host-only projection. Never persist physical paths in renderer media refs.
+   * External-only entries remain blocked for analysis, but their real location
+   * and a streaming digest are available for an honest attachment inventory. */
+  async verifiedLocalFile(conversationId:string,id:string):Promise<{ref:BotMediaRef;path:string}>{
+    const source=await this.sourceForUser(conversationId,id);
+    if(source.ref.sha256)return source;
+    const info=await stat(source.path),signature=[info.dev,info.ino,info.size,info.mtimeMs,info.ctimeMs].join(':');
+    const cached=this.externalDigests.get(source.path);
+    if(cached?.signature===signature)return{path:source.path,ref:{...source.ref,sha256:cached.sha256}};
+    const actual=await digestFile(source.path);
+    await this.sourceForUser(conversationId,id);
+    if(actual.size!==source.ref.size)throw new Error('附件核验期间大小改变。');
+    this.externalDigests.set(source.path,{signature,sha256:actual.sha256});
+    while(this.externalDigests.size>512)this.externalDigests.delete(this.externalDigests.keys().next().value!);
+    return{path:source.path,ref:{...source.ref,sha256:actual.sha256}};
   }
   private async sourceForUser(conversationId:string,id:string):Promise<{ref:BotMediaRef;path:string}>{
     const [ref]=await this.resolveForConversation(conversationId,[id]);const builtin=await this.builtins();const common=builtin.media.find(item=>item.id===id);

@@ -2,6 +2,7 @@ import { z } from 'zod';
 import type { LocalSpeechTranscript } from './local-speech';
 
 export const BOT_MEDIA_CHANNEL = 'companion-bot-media:request';
+export const BOT_MEDIA_CLIPBOARD_CHANNEL = 'companion-bot-media:clipboard-files';
 /** Classify a declared MP4 container without reading or probing its bytes. */
 export function normalizeBotMediaMime(name: string, mimeType: string): string {
   if (mimeType === 'application/mp4') return /\.m4a$/i.test(name) ? 'audio/mp4' : /\.(mp4|m4v)$/i.test(name) ? 'video/mp4' : mimeType;
@@ -45,6 +46,7 @@ export const botMediaRequestSchema = z.discriminatedUnion('type', [
   z.strictObject({ type:z.literal('stickers.list'), conversationId:id, packId:id }),
   z.strictObject({ type:z.literal('media.list'), conversationId:id }),
   z.strictObject({ type:z.literal('files.pick'), conversationId:id }),
+  z.strictObject({ type:z.literal('files.paste'), conversationId:id }),
   z.strictObject({ type:z.literal('files.import'), conversationId:id, paths:z.array(filePath).min(1).max(64) }),
   z.strictObject({ type:z.literal('pack.pick'), conversationId:id }),
   z.strictObject({ type:z.literal('pack.import'), conversationId:id, directory:filePath }),
@@ -56,6 +58,8 @@ export type BotMediaRequest=z.infer<typeof botMediaRequestSchema>;
 export interface BotMediaResponse { ok:boolean; error?:string; cancelled?:boolean; media?:BotMediaRef[]; packs?:BotStickerPack[]; pack?:BotStickerPack; savedPath?:string;textPage?:BotMediaTextPage }
 export interface WorldlineBoxBotMediaApi {
   request(input:BotMediaRequest):Promise<BotMediaResponse>;
+  /** Bounded native file-list probe; never returns paths or reads file contents. */
+  hasClipboardFiles?(conversationId:string):boolean;
   /** Only actual File objects from the desktop drop/picker can yield OS paths. */
   getDroppedFilePaths(files:File[]):string[];
 }

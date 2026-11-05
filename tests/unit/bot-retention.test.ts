@@ -176,6 +176,18 @@ it('records a confirmed native terminal once after UI cancellation has fenced th
   expect(f.store.pendingCancelledNativeAdmissions(current.event.laneId)).toHaveLength(0);
   expect(f.store.getEvent(current.event.id)?.status).toBe('cancelled');
 });
+it('retires a quarantined admission without counting it or replacing the prior confirmed handoff boundary',async()=>{
+  const f=fixture({maxTurns:2}),first=f.claim();await f.complete(first);
+  const isolated=f.claim(),active=await f.retention.beforeTurn(isolated.event,new AbortController().signal);
+  const input={event:isolated.event,nativeLaneId:active.nativeLaneId,system:'identity',cwd:f.options.root,inputBytes:90};f.retention.trackAdmission(input);
+  const previous=f.store.getLaneRetention(isolated.event.laneId);
+  expect(f.store.settle({eventId:isolated.event.id,leaseToken:isolated.leaseToken,status:'failed',metadata:f.retention.quarantineMetadata(input)})).toBe(true);
+  expect(f.store.getLaneRetention(isolated.event.laneId)).toEqual(previous);
+  expect(f.store.getMetadata(`native-terminal-counted:${isolated.event.id}`)).toBe('quarantined');expect(f.store.getMetadata(`native-admission:${isolated.event.id}`)).toBe('');
+  const next=f.claim();await f.complete(next);
+  const rollover=await f.retention.beforeTurn(f.claim().event,new AbortController().signal);
+  expect(rollover.epoch).toBe(2);expect(f.calls.map(call=>call.eventId)).toEqual([next.event.id]);
+});
 
 it('reconciles a persisted cancelled admission before the next event can hand off its native lane', async () => {
   const f = fixture(), stopped = f.claim(), active = await f.retention.beforeTurn(stopped.event, new AbortController().signal);

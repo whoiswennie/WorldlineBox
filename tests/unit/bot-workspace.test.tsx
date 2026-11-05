@@ -50,6 +50,12 @@ async function mount() {
   await act(() => root!.render(<LocaleProvider initialPreference="zh-CN"><BotWorkspace api={api} onOpenSettings={() => undefined} /></LocaleProvider>));
 }
 const composer = () => host.querySelector<HTMLTextAreaElement>('.bot-composer textarea')!;
+it('stops a group discussion through a user message without erasing the current composer draft', async () => {
+  snapshots.a!.conversations[0] = { ...snapshots.a!.conversations[0]!, kind: 'group', memberIds: ['user', 'alice', 'bob'] };
+  await mount(); await input(composer(), '还没发出的草稿'); await click('停止讨论');
+  expect(requests).toContainEqual(expect.objectContaining({ type: 'message.send', conversationId: 'a', content: '停止讨论' }));
+  expect(composer().value).toBe('还没发出的草稿');
+});
 const transcript = () => host.querySelector('.bot-transcript')!.textContent!;
 async function input(field: HTMLTextAreaElement | HTMLInputElement, value: string) {
   await act(() => { Object.getOwnPropertyDescriptor(field instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype, 'value')!.set!.call(field, value); field.dispatchEvent(new Event('input', { bubbles: true })); });

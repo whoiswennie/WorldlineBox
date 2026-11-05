@@ -55,5 +55,7 @@ export function useBotCallSpeech({ api, conversationId, companionId, connected, 
   useLayoutEffect(() => { session.current?.observe(messages); }, [messages, enabled, connected]);
   useEffect(() => () => { player.current?.destroy(); player.current = undefined; }, []);
   const toggle = () => { const next = !enabled; setEnabled(next); session.current?.setEnabled(next); try { localStorage.setItem(preference, next ? 'on' : 'off'); } catch { /* This visit still uses the selected preference. */ } };
-  return { enabled, available: !!api, state, toggle, unlock, stop: () => session.current?.stop(), replay: (messageId: string) => { unlock(); session.current?.replay(messageId); } };
+  const stop = useCallback(() => session.current?.stop(), []);
+  const replay = useCallback((messageId: string) => { unlock(); session.current?.replay(messageId); }, [unlock]);
+  return { enabled, available: !!api, state, toggle, unlock, stop, replay };
 }

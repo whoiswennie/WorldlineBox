@@ -197,6 +197,22 @@ it('keeps an unknown interrupted write fenced instead of guessing that it was ab
   await expect(brain.run({ ...input(root, 'crash-window'), tools: [stickerTool] })).rejects.toMatchObject({ code: 'BOT_DELIVERY_UNKNOWN' });
   expect(reconcileTool).toHaveBeenCalledTimes(1); expect(callTool).not.toHaveBeenCalled(); expect(fetchFn).not.toHaveBeenCalled();
 });
+it('preserves quarantine identity after the retry budget, a restart and a legacy tool upgrade without replaying the write',async()=>{
+  const root=await workspace();let requests=0;
+  const callTool=vi.fn(async()=>{throw Error('The external effect has no receipt');});
+  const fetchFn=vi.fn(async()=>++requests===1?stream(toolFrames()):stream([text('可以继续聊天。','stop')]));
+  const original={...input(root,'unconfirmed-budget'),tools:[stickerTool]},brain=own(new BotAppBrain({root,callTool,fetchFn}));
+  for(let attempt=0;attempt<2;attempt++)await expect(brain.run(original)).rejects.toMatchObject({code:'BOT_DELIVERY_UNKNOWN'});
+  await expect(brain.run(original)).rejects.toMatchObject({code:'BOT_TERMINAL_FAILED',quarantined:true,inputContextCommitted:false});
+  await expect(brain.run(original)).rejects.toMatchObject({code:'BOT_TERMINAL_FAILED',quarantined:true});
+  await brain.close();
+  const reopened=own(new BotAppBrain({root,callTool,fetchFn}));
+  await expect(reopened.run(original)).rejects.toMatchObject({code:'BOT_TERMINAL_FAILED',quarantined:true});
+  legacyWithoutBinding(root,original.eventId);
+  await expect(reopened.run({...original,tools:[{...stickerTool,description:'升级后的工具'}]})).rejects.toMatchObject({code:'BOT_TERMINAL_FAILED',quarantined:true});
+  expect(await reopened.run(input(root,'after-budget'))).toMatchObject({status:'succeeded',text:'可以继续聊天。'});
+  expect(callTool).toHaveBeenCalledOnce();expect(fetchFn).toHaveBeenCalledTimes(2);
+});
 
 it('reuses a legacy terminal receipt after a tool upgrade while rejecting a different input', async () => {
   const root = await workspace(), firstFetch = vi.fn(async () => stream([text('已完成原请求', 'stop')]));
@@ -225,18 +241,18 @@ it('retires an unfinished legacy tool version through proven original effects wi
   expect(fetchFn).toHaveBeenCalledTimes(1); expect(callTool).not.toHaveBeenCalled();
 });
 
-it('keeps an unverified legacy write fenced after a tool upgrade and refuses a newer event on its lane', async () => {
+it('keeps an unverified legacy write fenced after a tool upgrade while allowing newer independent input', async () => {
   const root = await workspace(); await crashAfterPublication(root); legacyWithoutBinding(root, 'crash-window');
-  const fetchFn = vi.fn(async () => { throw Error('Legacy reconciliation cannot replay the model'); });
+  const fetchFn = vi.fn(async () => stream([text('可以继续聊，旧操作仍待核实。', 'stop')]));
   const callTool = vi.fn(async () => { throw Error('Unknown old write cannot be repeated'); });
   const reconcileTool = vi.fn(async () => ({ state: 'unknown' as const }));
   const brain = own(new BotAppBrain({ root, fetchFn, callTool, reconcileTool }));
   const upgraded = { ...input(root, 'crash-window'), tools: [{ ...stickerTool, description: '新版工具表' }] };
   await expect(brain.run({ ...upgraded, prompt: '不同的旧请求' })).rejects.toThrow('其他输入');
   expect(reconcileTool).not.toHaveBeenCalled();
-  await expect(brain.run(upgraded)).rejects.toMatchObject({ code: 'BOT_DELIVERY_UNKNOWN' });
-  await expect(brain.run({ ...upgraded, eventId: 'newer-blocked', prompt: '新的聊天消息' })).rejects.toMatchObject({ code: 'BOT_LANE_BUSY' });
-  expect(fetchFn).not.toHaveBeenCalled(); expect(callTool).not.toHaveBeenCalled();
+  await expect(brain.run(upgraded)).rejects.toMatchObject({ code: 'BOT_TERMINAL_FAILED' });
+  expect(await brain.run({ ...upgraded, eventId: 'newer-independent', prompt: '新的聊天消息' })).toMatchObject({ status: 'succeeded' });
+  expect(fetchFn).toHaveBeenCalledOnce(); expect(callTool).not.toHaveBeenCalled();
 });
 
 it.each(['memory_history', 'agent_memory_scopes'])('can repeat an interrupted %s read when reconciliation has no receipt instead of fencing it as a write', async name => {
@@ -256,16 +272,54 @@ it.each(['memory_history', 'agent_memory_scopes'])('can repeat an interrupted %s
   expect(reconcileTool).toHaveBeenCalledTimes(1); expect(callTool).toHaveBeenCalledTimes(1); expect(fetchFn).toHaveBeenCalledTimes(1);
 });
 
-it('blocks newer events behind an unresolved write in the same lane while another companion lane can still chat', async () => {
+it('quarantines an unresolved write while new input in the same or another companion lane can still chat', async () => {
   const root = await workspace(); let requests = 0;
   const fetchFn = vi.fn(async () => ++requests === 1 ? stream(toolFrames()) : stream([text('另一位伙伴仍然可以正常回应。', 'stop')]));
   const callTool = vi.fn(async () => { throw new Error('The publication connection ended before its receipt'); });
   const brain = own(new BotAppBrain({ root, fetchFn, callTool }));
   await expect(brain.run({ ...input(root, 'unknown-earlier'), tools: [stickerTool] })).rejects.toMatchObject({ code: 'BOT_DELIVERY_UNKNOWN' });
-  await expect(brain.run(input(root, 'newer-same-lane'))).rejects.toMatchObject({ code: 'BOT_LANE_BUSY' });
-  expect(fetchFn).toHaveBeenCalledTimes(1); expect(callTool).toHaveBeenCalledTimes(1);
-  expect(await brain.run({ ...input(root, 'other-companion'), laneId: 'independent-companion-lane' })).toMatchObject({ status: 'succeeded', text: '另一位伙伴仍然可以正常回应。' });
+  expect(await brain.run(input(root, 'newer-same-lane'))).toMatchObject({ status: 'succeeded' });
   expect(fetchFn).toHaveBeenCalledTimes(2); expect(callTool).toHaveBeenCalledTimes(1);
+  expect(await brain.run({ ...input(root, 'other-companion'), laneId: 'independent-companion-lane' })).toMatchObject({ status: 'succeeded', text: '另一位伙伴仍然可以正常回应。' });
+  expect(fetchFn).toHaveBeenCalledTimes(3); expect(callTool).toHaveBeenCalledTimes(1);
+});
+it('recovers a durably saved memory write with a missing callback without reissuing the original write', async () => {
+  const root = await workspace();
+  const tool = { name: 'memory_write', description: '保存事实', parameters: { type: 'object', properties: { content: { type: 'string' } }, required: ['content'] } };
+  await crashAfterPublication(root, tool, { content: '已保存但尚未完成索引的事实' });
+  const callTool = vi.fn(async () => { throw Error('The write must not be duplicated'); });
+  const reconcileTool = vi.fn(async (call: BotToolCall) => {
+    expect(call).toMatchObject({ eventId: 'crash-window', name: 'memory_write', args: { content: '已保存但尚未完成索引的事实' } });
+    return { state: 'committed' as const, result: { id: 'durable-note', state: 'pending', durable: true, indexed: false } };
+  });
+  const brain = own(new BotAppBrain({ root, callTool, reconcileTool, fetchFn: async () => stream([text('现在可以继续聊天。', 'stop')]) }));
+  expect(await brain.run(input(root, 'new-input'))).toMatchObject({ status: 'succeeded' });
+  expect(callTool).not.toHaveBeenCalled(); expect(reconcileTool).toHaveBeenCalledOnce();
+  const journal = new BotAppBrainStore(path.join(root, 'app-brain.sqlite'));
+  try { expect(journal.get('crash-window')?.state).toBe('failed'); expect(journal.steps('crash-window')[0]!.calls[0]!.state).toBe('committed'); }
+  finally { journal.close(); }
+});
+it('blocks the same unresolved write tool after quarantine while allowing a new model reply', async () => {
+  const root = await workspace(); let requests = 0;
+  const callTool = vi.fn(async () => { throw Error('Receipt lost'); });
+  const fetchFn = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
+    if (++requests <= 2) return stream(toolFrames());
+    expect(JSON.parse(String(requestBody(init).messages.findLast(message => message.role === 'tool')?.content))).toMatchObject({ executed: false, recoveryRequired: true });
+    return stream([text('旧操作仍待核实，我先回答新的问题。', 'stop')]);
+  });
+  const brain = own(new BotAppBrain({ root, callTool, fetchFn }));
+  await expect(brain.run({ ...input(root, 'old-write'), tools: [stickerTool] })).rejects.toMatchObject({ code: 'BOT_DELIVERY_UNKNOWN' });
+  expect(await brain.run({ ...input(root, 'new-write'), laneId: 'companion-lane-epoch-2', tools: [stickerTool] })).toMatchObject({ status: 'succeeded' });
+  expect(callTool).toHaveBeenCalledOnce();
+});
+it('bounds a plugin that ignores cancellation and allows the lane to recover for the next request', async () => {
+  const root = await workspace(); let requests = 0;
+  const callTool = vi.fn(async () => new Promise<unknown>(() => undefined));
+  const brain = own(new BotAppBrain({ root, requestTimeoutMs: 40, recoveryTimeoutMs: 30, callTool,
+    fetchFn: async () => ++requests === 1 ? stream(toolFrames()) : stream([text('新请求仍可以处理。', 'stop')]) }));
+  await expect(brain.run({ ...input(root, 'hung-plugin'), tools: [stickerTool] })).rejects.toMatchObject({ code: 'BOT_DELIVERY_UNKNOWN' });
+  expect(await brain.run(input(root, 'after-hung-plugin'))).toMatchObject({ status: 'succeeded' });
+  expect(callTool).toHaveBeenCalledOnce();
 });
 
 it('returns a proven rejected write to the model without poisoning the conversation or replaying the call', async () => {
@@ -296,11 +350,12 @@ it('keeps cancellation unresolved until proof arrives, then retires the original
   const running = brain.run({ ...prior, signal: abort.signal });
   const failed = expect(running).rejects.toMatchObject({ code: 'BOT_DELIVERY_UNKNOWN' });
   await started; abort.abort(new Error('Cancel while awaiting the original tool receipt')); await failed;
-  await expect(brain.cancelDurable(prior)).rejects.toMatchObject({ code: 'BOT_DELIVERY_UNKNOWN' });
+  expect(await brain.cancelDurable(prior)).toMatchObject({ accepted: true, result: { status: 'failed', quarantined: true, inputContextCommitted: false } });
   const journal = new BotAppBrainStore(path.join(root, 'app-brain.sqlite'));
-  try { expect(journal.get(prior.eventId)).toMatchObject({ state: 'tool_unknown', cancelRequested: true, leasePid: 0, leaseUntil: 0 }); }
+  try { expect(journal.get(prior.eventId)).toMatchObject({ state: 'quarantined', cancelRequested: true, leasePid: 0, leaseUntil: 0 });
+    expect(journal.steps(prior.eventId).flatMap(step => step.calls).some(call => call.state === 'invoking')).toBe(true); }
   finally { journal.close(); }
-  await expect(brain.run(input(root, 'newer-after-cancel'))).rejects.toMatchObject({ code: 'BOT_LANE_BUSY' });
+  expect(await brain.run(input(root, 'newer-after-cancel'))).toMatchObject({ status: 'succeeded' });
   proven = true;
   expect(await brain.cancelDurable(prior)).toMatchObject({ accepted: true, result: { status: 'cancelled' } });
   expect(await brain.run(input(root, 'newer-after-cancel'))).toMatchObject({ status: 'succeeded' });

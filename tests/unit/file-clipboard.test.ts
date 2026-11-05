@@ -52,6 +52,17 @@ function makeDeps(
 }
 
 describe("file-clipboard (WorldlineBox-vgp)", () => {
+  it('reads all real Win32 CF_HDROP entries before the Electron fallback and never guesses from plain text',()=>{
+    const paths=['C:\\照片\\a.png','D:\\资料\\b.pdf'];
+    const deps=makeDeps({platform:'win32',readNativeWin32:()=>paths});
+    expect(readFilePathsFromClipboard(deps)).toEqual(paths);
+    const fallback=makeDeps({platform:'win32',readNativeWin32:()=>null});fallback.writeText('C:\\looks-like-a-path.txt');
+    expect(readFilePathsFromClipboard(fallback)).toEqual([]);
+    fallback.writeBuffer('CF_HDROP',buildCfHdrop(paths));
+    expect(readFilePathsFromClipboard(fallback)).toEqual(paths);
+    const invalidNative=makeDeps({platform:'win32',readNativeWin32:()=>[]});invalidNative.writeBuffer('FileNameW',Buffer.from(paths[0]+'\0','utf16le'));
+    expect(readFilePathsFromClipboard(invalidNative)).toEqual([]);
+  });
   it("detects darwin / win32 / other", () => {
     expect(detectFileClipboardPlatform("darwin")).toBe("darwin");
     expect(detectFileClipboardPlatform("win32")).toBe("win32");

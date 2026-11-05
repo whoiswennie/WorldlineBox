@@ -95,6 +95,7 @@ async function executeCore({ operation, payload = {}, home: requestedHome }) {
   if (operation === 'bot.catalog') return bot().catalog(payload);
   if (operation === 'bot.note.read') return bot().readNote(payload);
   if (operation === 'bot.operation.get') return bot().operationReceipt(payload);
+  if (operation === 'bot.remember.receipt') return bot().rememberReceipt(payload);
   if (operation === 'bot.tombstones') return bot().tombstones();
   if (operation === 'bot.source.filter') return bot().filterSources(payload);
   if (operation === 'bot.prepared.get') { bot().assertWithdrawalsSettled(); return bot().getPrepared(payload.id); }

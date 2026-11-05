@@ -19,3 +19,15 @@
 目前 14 项单元 / 实际文件回归覆盖：全部内置原字节与真实格式、用户包、真实 GIF / APNG 动画、任意 binary 重启与去重、会话越界、篡改校验、Range / HEAD / HTML sandbox、task 副本与保存、长文件名、junction 拒绝、preload 真实 File 授权 / 失败重试，以及 50/500/200MiB 临界策略。实际 sparse 大文件以 readFile/open/readStream/copyFile 禁止仪表证明登记、读取元数据、重启和查询拒绝过程中没有源字节读取或 Sharp 调用；仅显式保存才复制，原文件保持。最终主窗口 UI、消息存储及伙伴工具的组合验收由统一 E2E 完成，不能把后端单元结果等同为模型斗图质量验证。
 
 首次测试曾发现 libvips 持有 Windows 图片句柄，已改有界 Buffer 输入，不改变全局图片缓存。该失败轮的精确临时目录 `C:/Users/hp/AppData/Local/Temp/bot-media-test-78pOc8` 在进一步清理时被自动审批拒绝（`blocked by policy`），已停止清理且未改方式重试；目录只剩一个 873,608 字节测试原图及空父目录。后续成功测试的临时根均由 finally 正常清理。此保留路径与前两次策略拒绝目录分别记录，不冒称已经删除。
+
+## 2026-11-06：主脑文件清单与完整任务交接
+
+renderer 的媒体引用继续使用受控 URL。Main 单独生成主脑 `files` 清单，将本受众已发送、未撤回、位于本轮公开历史水位以内的图片、音频、视频和文件投影为已核验绝对路径、名称、MIME、大小及 SHA256；不会把其他会话或未发送草稿纳入。`chat_list_files` 支持 `offset/limit/nextOffset`，`chat_read_message` 也带其附件真实路径。清单过大时上下文明确标记省略，分页工具保留完整入口。
+
+`dsh_task` 未指定附件 ID 时继承本聊天在该水位以前的全部有效附件，不限于触发消息。可处理附件流式复制到该任务自己的 `attachments/`，复制前后复核哈希，已经执行过的任务恢复时复用冻结正文，不重写执行器修改的副本。超限媒体仍保留 `analysisBlocked`，不自动解码、复制或分析；其绝对路径用于完整清单，首次主脑清单请求会流式计算哈希，随后仅在大小、时间及文件身份签名不变时复用摘要。
+
+任务正文仅含原始请求、相关聊天上下文、伙伴交接目标与必要指导及文件绝对路径。事件、队列、授权 grant、原生运行参数留在 Main。完整原文、上下文和文件清单保存为任务内 `.worldlinebox/request-and-context.json`；长正文使用该绝对路径回读，不把 base64 塞入文字提示词。上下文消息和附件的真实授权来源固定到任务，撤回相关原文也会使任务授权失效。
+
+原生图片工具通过官方 PiAiAdapter 的 durable attachment service 与 fs 映射送出 `image_url` 块。未知自定义 OpenAI-compatible route 允许真实图片请求，由实际 provider 决定是否支持；精确模型 metadata 或显式配置证明为 text-only 时禁止图片，不依据任意模型名推定能力。伙伴 preset 在插件启动时注册，覆盖没有 Host token 的直接 CLI 启动。
+
+验证：69 项交接、ACL、群水位和上下文回归，23 项媒体/超限/血缘/文本回归通过；独立安装的官方 DSH `0.2.2-rc.1` 实跑 `read_image` 后检查实际 API wire 含原生图片块、文字块不含 base64，并验证独立普通 preset Session 在 Host 重启后、任何 bot turn 之前恢复。日志为 `.tools/mouth-handoff-unit-final.log`、`.tools/mouth-native-wire-final.log`，原生结果摘要为 `.tools/mouth-native-wire-evidence.json`；这些本地验收产物不属于发布资源。

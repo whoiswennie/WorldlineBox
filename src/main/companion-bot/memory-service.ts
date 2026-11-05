@@ -27,6 +27,8 @@ export interface BotMemoryPrepared {
 export interface BotMemoryNote { id: string; content: string; checksum?: string; sourceEventId?: string; sourceMessageIds: string[]; indexState: string }
 export interface BotMemoryWrite {
   content: string; sourceEventId: string; tags?: string; sourceRootEventId?: string; sourceMessageIds?: string[]; expectedSourceRevision?: string;
+  waitForIndex?: boolean;
+  indexTimeoutMs?: number;
 }
 export interface BotMemoryUpdate extends BotMemoryWrite { operationId: string; id: string; expectedChecksum: string }
 export interface BotMemoryOrganize extends BotMemoryWrite { operationId: string; sources: Array<{ id: string; expectedChecksum: string }> }
@@ -368,8 +370,13 @@ export class BotMemoryService {
       const receipt = checked(await this.request(entry, 'bot.remember', input, signal));
       if (receipt.withdrawn === true) return { ...receipt, indexed: 0 };
       if (receipt.state === 'failed' || receipt.state === 'writing') throw new Error('Memory write outcome is not confirmed');
-      return checked(await this.request(entry, 'bot.sync', { id: receipt.id }, signal));
+      if (input.waitForIndex) return checked(await this.request(entry, 'bot.sync', { id: receipt.id,
+        ...(input.indexTimeoutMs === undefined ? {} : { timeoutMs: Math.min(30000, Math.max(1, input.indexTimeoutMs)) }) }, signal));
+      return { ...receipt, durable: true, indexed: receipt.state === 'indexed', receipts: [receipt] };
     }, signal);
+  }
+  async rememberReceipt(scope: BotMemoryScope, input: BotMemoryWrite, signal?: AbortSignal): Promise<Record<string, unknown>> {
+    return this.run(scope, async entry => checked(await this.request(entry, 'bot.remember.receipt', input, signal)), signal, true, true);
   }
   async list(scope: BotMemoryScope): Promise<BotMemoryNote[]> {
     return this.run(scope, async entry => {

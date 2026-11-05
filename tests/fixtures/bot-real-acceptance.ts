@@ -123,7 +123,14 @@ void app.whenReady().then(async () => {
     await measured(stage, async () => { const result = await service!.handle({ type: 'memory.remember', conversationId, companionId,
       content: '开发验收事实：测试项目代号为青榆舟。该代号只属于本次验收，状态已经确认。' }); if (!result.ok) throw new Error('MEMORY_WRITE_FAILED'); });
     stage = 'memory-search';
-    const recall = await measured(stage, () => service!.handle({ type: 'memory.search', conversationId, companionId, query: '测试项目的代号是什么' }));
+    const recall = await measured(stage, async () => {
+      const deadline=Date.now()+120000;
+      while(true){
+        const result=await service!.handle({type:'memory.search',conversationId,companionId,query:'测试项目的代号是什么'});
+        if(!result.ok||JSON.stringify(result.memory).includes('青榆舟')||Date.now()>deadline)return result;
+        await pause(250);
+      }
+    });
     if (!recall.ok || !JSON.stringify(recall.memory).includes('青榆舟')) throw new Error('MEMORY_FACT_NOT_RECALLED');
     report.memory = { semanticRecallPassed: true };
     stage = 'model-memory-tool';
@@ -140,8 +147,11 @@ void app.whenReady().then(async () => {
     let job = service.store.getMemoryJob(captureJobId(preference.eventId));
     while (job && job.status !== 'done' && job.status !== 'failed' && Date.now() < captureDeadline) { await pause(200); job = service.store.getMemoryJob(captureJobId(preference.eventId)); }
     const conversationScope = service.store.getConversation(conversationId)!;
+    const captureScope={companionId,conversationId,securityDomainId:conversationScope.securityDomainId};
+    let captureNotes=await memory!.list(captureScope);
+    while(captureNotes.some(note=>note.indexState==='pending')&&Date.now()<captureDeadline){await pause(250);captureNotes=await memory!.list(captureScope);}
     const captureEvidence = assertPreferenceCapture({ ...preference, job,
-      notes: await memory!.list({ companionId, conversationId, securityDomainId: conversationScope.securityDomainId }) });
+      notes: captureNotes });
     const captured = await service.handle({ type: 'memory.search', conversationId, companionId, query: '验收夜间饮料偏好是什么，上午是否仍喝咖啡' });
     if (!JSON.stringify(captured.memory).includes('麦茶') || !JSON.stringify(captured.memory).includes('咖啡')) throw new Error('AUTOMATIC_CAPTURE_NOT_RECALLED');
     report.capture = { recordedAndRecalled: true, ...captureEvidence };

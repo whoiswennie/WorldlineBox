@@ -35,10 +35,11 @@ it('summarizes real counts and bytes and shows only six safe tiles plus the actu
   for (const image of host.querySelectorAll('img')) expect(image.getAttribute('src')).toContain('/thumb-');
   expect(host.textContent).not.toMatch(/\d{2}:\d{2}|%|波形|预计/);
 });
-it('keeps one or two attachments as compact individual rows without inventing an archive or bundle download', async () => {
+it('plays one or two media attachments inline and keeps their viewer and file actions available', async () => {
   await mount(refs.slice(5, 7)); expect(host.querySelector('.bot-attachment-bundle')).toBeNull(); expect(host.querySelectorAll('.bot-attachment-card')).toHaveLength(2);
   expect(host.querySelectorAll('.bot-file-save')).toHaveLength(2); expect(host.querySelectorAll('.bot-file-open')).toHaveLength(2);
-  expect(host.querySelector('video,audio')).toBeNull();
+  expect(host.querySelectorAll('video[controls][preload="none"]')).toHaveLength(2);
+  expect(host.querySelectorAll('.bot-attachment-enlarge')).toHaveLength(2);
 });
 it('expands ten actual files per page and searches complete original filenames across the whole bundle', async () => {
   const f = await mount(); await click('查看全部附件'); const list = () => document.querySelector('.bot-attachment-explorer-list')!;

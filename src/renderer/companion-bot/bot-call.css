@@ -268,7 +268,8 @@ body:has(.bot-call-overlay)>.bot-attachment-viewer-backdrop { z-index:calc(var(-
 .is-connected .bot-call-dialogue .bot-message-bubble { display:flex;gap:12px;min-width:0;max-width:100%;margin:0;padding:0;border:0;border-radius:0;background:transparent;box-shadow:none;color:#f8f6fc; }
 .is-connected .bot-call-dialogue .bot-message-bubble>.bot-message-text { margin:0;padding:0;min-width:0;max-width:100%;border:0;border-radius:0;background:transparent;box-shadow:none;backdrop-filter:none;color:inherit;font-size:23px;line-height:1.8;text-shadow:0 2px 12px #080b23aa; }
 .is-connected .bot-call-dialogue .bot-message-text .browser-markdown { color:inherit;font-size:inherit;line-height:inherit; }
-.is-connected .bot-call-dialogue .bot-call-caption-text { min-height:3.6em;max-height:5.4em;overflow:hidden;overflow-wrap:anywhere; }
+.is-connected .bot-call-dialogue .bot-call-caption { width:100%; }
+.is-connected .bot-call-dialogue .bot-call-caption-text { width:100%;box-sizing:border-box;min-height:3.6em;max-height:5.4em;overflow:hidden;overflow-wrap:anywhere; }
 .is-connected .bot-call-dialogue .bot-call-caption-text>p { margin:0;white-space:pre-wrap; }
 .bot-call-caption-controls { display:flex;align-items:center;gap:9px;min-height:24px;font-size:11px;font-variant-numeric:tabular-nums;color:#f8f6fcd9; }
 .bot-call-window .bot-call-caption-controls>button { display:inline-flex;align-items:center;justify-content:center;min-width:23px;height:24px;padding:2px 5px;border:0;border-radius:5px;background:#15182b30;color:inherit;font:inherit; }
@@ -314,3 +315,18 @@ body:has(.bot-call-overlay)>.bot-attachment-viewer-backdrop { z-index:calc(var(-
 @media(max-width:850px) { .is-connected .bot-call-dialogue { left:6%;right:6%; }.is-connected .bot-call-dialogue .bot-message-bubble>.bot-message-text { font-size:20px; }.is-connected .bot-call-dialogue>header { font-size:18px; }.is-connected .bot-call-chat { width:min(420px,48%); }.is-connected .bot-call-header { top:18px;left:20px;right:20px; }.bot-call-hud-menu { right:20px;top:62px; } }
 @media(max-width:620px) { .is-connected .bot-call-dialogue { left:24px;right:24px;bottom:clamp(130px,24dvh,190px); }.is-connected .bot-call-dialogue>header { font-size:17px;margin-bottom:9px;padding-bottom:8px; }.is-connected .bot-call-dialogue .bot-message-bubble>.bot-message-text { font-size:17px;line-height:1.75; }.is-connected .bot-call-dialogue-content { max-height:20dvh; }.is-connected .bot-call-header { left:14px;right:14px;top:14px;gap:5px; }.is-connected .bot-call-chat { left:14px;right:14px;width:auto; }.is-connected .bot-call-composer-host { width:calc(100% - 30px);bottom:56px; }.bot-call-input-row { max-width:calc(100% - 80px);left:45%;gap:3px;bottom:22px; }.bot-call-window .bot-call-input-entry { width:190px;font-size:10px; }.is-connected .bot-call-footer { right:14px;bottom:22px; }.bot-call-live-status { left:24px;width:calc(100% - 48px);bottom:67px; }.bot-call-hud-menu { right:14px;top:58px; } }
 @media(prefers-reduced-motion:reduce) { .bot-call-dialogue,.bot-call-composer-host,.bot-call-input-row,.bot-call-speaking-wave.is-speaking>i { animation:none;transition:none; } }
+.is-connected .bot-call-dialogue { bottom:max(clamp(130px,24dvh,260px),calc(var(--bot-call-dock-height) + 82px),calc(var(--bot-call-status-height) + 95px)); }
+.is-connected .bot-call-composer-status>.bot-call-model-error { position:static;flex-basis:100%;max-width:none;max-height:50px;margin:3px 0;padding:5px 8px;overflow:auto;scrollbar-width:thin; }
+.is-connected.is-static-portrait .bot-call-portrait { inset:76px 24px auto;height:max(0px,calc(var(--bot-call-dialogue-top,65dvh) - 94px));min-height:0;overflow:hidden;gap:10px;container-type:size; }
+.is-static-portrait .bot-call-portrait>.bot-avatar { width:min(clamp(48px,12dvh,130px),max(0px,calc(100cqh - 70px)));height:auto;aspect-ratio:1;min-height:0;flex:0 0 auto; }
+.is-static-portrait .bot-call-portrait h2 { max-width:100%;margin:0;font-size:clamp(17px,2.8dvh,26px);line-height:1.4;overflow:hidden;text-overflow:ellipsis;white-space:nowrap; }
+.is-static-portrait .bot-call-portrait p { margin:0; }
+@media(max-height:680px) { .is-static-portrait .bot-call-portrait p { display:none; }.is-connected.is-static-portrait .bot-call-portrait { top:64px;gap:6px; } }
+@container(max-height:110px) { .is-static-portrait .bot-call-portrait>.bot-avatar,.is-static-portrait .bot-call-portrait p { display:none; } }
+@container(max-height:32px) { .is-static-portrait .bot-call-portrait h2 { display:none; } }
+@media(max-height:680px) {
+  .is-connected .bot-call-dialogue>header { font-size:16px;margin-bottom:8px;padding-bottom:8px; }
+  .is-connected .bot-call-dialogue .bot-message-bubble>.bot-message-text { font-size:18px;line-height:1.65; }
+  .is-connected .bot-call-dialogue .bot-call-caption-text { min-height:3.3em;max-height:3.3em; }
+}
+@media(max-height:580px) { .is-connected .bot-call-dialogue .bot-message-bubble>.bot-message-text { font-size:17px;line-height:1.6; }.is-connected .bot-call-dialogue .bot-call-caption-text { min-height:3.2em;max-height:3.2em; } }

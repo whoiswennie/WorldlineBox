@@ -35,6 +35,17 @@ it('turns a thrown handler into a terminal failure so later input can run', asyn
   scheduler.start(); await tick(); await tick();
   expect(store.getEvent(first.id)?.status).toBe('failed'); expect(store.getEvent(next.id)?.status).toBe('done'); expect(onError).toHaveBeenCalledOnce();
 });
+it('releases its slot after cancellation even when a broken handler ignores AbortSignal forever', async () => {
+  const room = store.openDirect('alice');
+  const first = store.enqueue({ conversationId: room.id, senderId: 'user', content: 'first' }).events[0]!;
+  const next = store.enqueue({ conversationId: room.id, senderId: 'user', content: 'next' }).events[0]!;
+  scheduler = new BotScheduler(store, { concurrency: 1, handle: async claim => {
+    if (claim.event.id === first.id) return new Promise<void>(() => undefined);
+    store.settle({ eventId: claim.event.id, leaseToken: claim.leaseToken, status: 'done', content: '可继续' });
+  } });
+  scheduler.start(); await tick(); scheduler.cancel(first.id); await tick(); await tick();
+  expect(store.getEvent(next.id)?.status).toBe('done'); expect(scheduler.runningCount).toBe(0);
+});
 it('cancels a running event without allowing its late handler to publish', async () => {
   const conversation = store.openDirect('alice');
   const event = store.enqueue({ conversationId: conversation.id, senderId: 'user', content: 'cancel' }).events[0]!;

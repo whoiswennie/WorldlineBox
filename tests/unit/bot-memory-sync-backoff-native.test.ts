@@ -50,6 +50,8 @@ it.skipIf(!enabled)('keeps failed native indexing pending without forced-flush h
       const flushes=[],flush=runtime.kb._flushBatch.bind(runtime.kb);
       runtime.kb._flushBatch=async(...args)=>{flushes.push(Date.now());return flush(...args)};
       const note=await host.remember(runtime,{sourceEventId:'backoff-source',sourceMessageIds:['backoff-message'],content:'唯一隔离事实：保持原始日记待索引。',tags:'事实'});
+      const durable=await host.rememberReceipt({sourceEventId:'backoff-source',sourceMessageIds:['backoff-message'],content:'唯一隔离事实：保持原始日记待索引。'});
+      if(!durable.found||durable.receipt.id!==note.id||durable.receipt.state!=='pending'||!durable.receipt.durable||durable.receipt.indexed)throw Error('Missing durable write receipt independent of indexing');
       // Deterministically overlap the legitimate watcher deadline with the
       // explicit host kick; an unowned repair timer otherwise makes this race flaky.
       await fetch(base+'/fixture/sync',{method:'POST'});runtime.kb._scheduleBatch();const failureAt=Date.now(),beforeFlush=flushes.length;

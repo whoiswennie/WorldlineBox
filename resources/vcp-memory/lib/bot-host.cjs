@@ -87,6 +87,21 @@ class BotHost {
     return absolute;
   }
   receipt(row) { return { id: row.id, state: row.state, path: row.note_path, checksum: row.checksum, error: row.error || undefined }; }
+  async rememberReceipt(payload) {
+    const content = String(payload.content || ''), id = digest(String(payload.sourceEventId || ''));
+    let row = this.db.prepare('SELECT * FROM mutations WHERE id=?').get(id);
+    if (!row) return { found: false };
+    if (row.hash !== digest(content) || row.source_event !== payload.sourceEventId
+      || row.source_root !== (payload.sourceRootEventId || payload.sourceEventId)) throw Object.assign(new Error('Memory write receipt differs from its original input'), { code: 'MEMORY_CONFLICT' });
+    if (row.state === 'writing') {
+      const recovered = await this.recoverUnconfirmedNote(row, { allowMissing: true });
+      if (!recovered) return { found: true, receipt: { id, state: 'unknown' } };
+      row = recovered;
+    }
+    if (row.state === 'failed') return { found: true, receipt: { ...this.receipt(row), executed: false } };
+    if (!['pending', 'indexed', 'archived', 'forgotten'].includes(row.state)) return { found: true, receipt: { id, state: 'unknown' } };
+    return { found: true, receipt: { ...this.receipt(row), durable: true, indexed: row.state === 'indexed', ...(row.state === 'forgotten' ? { withdrawn: true } : {}) } };
+  }
   async recoverUnconfirmedNote(row, { allowMissing = false, timezone = 'Asia/Shanghai' } = {}) {
     if (row.note_path) return row;
     const unknown = message => Object.assign(new Error(message), { code: 'MEMORY_OUTCOME_UNKNOWN' });

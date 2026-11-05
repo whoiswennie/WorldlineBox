@@ -78,14 +78,35 @@ it('provides a focused keyboard dialog with Escape and restores focus after clos
   const escape = new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }); await act(() => close.dispatchEvent(escape)); expect(f.onClose).toHaveBeenCalledOnce(); expect(escape.defaultPrevented).toBe(true);
   await act(() => root!.unmount()); root = undefined; expect(document.activeElement).toBe(previous);
 });
-it('loads a player only after explicit opening and gives decoding failures a system-app fallback', async () => {
+it('does not preload the inline player, replaces it with one viewer player on opening and gives decoding failures a system-app fallback', async () => {
   const av: BotMediaRef = { ...media, id: 'movie', name: '电影片段.mp4', mimeType: 'video/mp4', size: 200 * 1024 * 1024 }, f = boundary(async () => ({ ok: true }));
   await render(<BotAttachment media={av} api={f.api} conversationId="room-a" locale="zh-CN" />);
-  expect(document.querySelector('video,audio,[role=dialog]')).toBeNull(); expect(f.request).not.toHaveBeenCalled();
+  expect(document.querySelector('[role=dialog]')).toBeNull();expect(document.querySelector('video')?.preload).toBe('none'); expect(f.request).not.toHaveBeenCalled();
   await act(() => host!.querySelector<HTMLButtonElement>('.bot-attachment-main')!.click());
+  expect(document.querySelectorAll('video')).toHaveLength(1);expect(host!.querySelector('video')).toBeNull();
   const video = document.querySelector('video')!; expect(video.getAttribute('src')).toBe(av.url); expect(video.hasAttribute('controls')).toBe(true); expect(video.autoplay).toBe(false); expect(video.preload).toBe('metadata');
   await act(() => video.dispatchEvent(new Event('error'))); expect(document.querySelector('[role=dialog]')?.textContent).toContain('可以用系统应用打开原文件');
   expect(document.querySelector('video')).toBeNull(); await click('系统打开'); expect(f.request).toHaveBeenCalledWith({ type: 'attachment.open', conversationId: 'room-a', id: 'movie' });
+});
+it('leaves large and high-resolution originals unloaded until the user explicitly opens them',async()=>{
+  const picture={...media,name:'超大画布.png',mimeType:'image/png',size:7*1024*1024,width:30000,height:30000};
+  await render(<BotAttachment media={picture} conversationId="room-a" locale="zh-CN" />);
+  expect(document.querySelector('img')).toBeNull();
+  await act(()=>host!.querySelector<HTMLButtonElement>('.bot-attachment-main')!.click());
+  expect(document.querySelector('[role=dialog] img')?.getAttribute('src')).toBe(picture.url);
+});
+it('coordinates only attachment playback, pauses the inline source on enlargement and stops the viewer on close',async()=>{
+  const sound={...media,id:'sound-a',name:'声音.wav',mimeType:'audio/wav',size:2048};
+  await render(<><audio aria-label="通话语音"/><BotAttachment media={sound} conversationId="room-a" locale="zh-CN"/><BotAttachment media={{...sound,id:'sound-b',url:sound.url+'/b'}} conversationId="room-a" locale="zh-CN"/></>);
+  const unrelated=host!.querySelector<HTMLAudioElement>('[aria-label="通话语音"]')!,players=[...host!.querySelectorAll<HTMLAudioElement>('[data-bot-attachment-player]')];
+  const unrelatedPause=vi.spyOn(unrelated,'pause'),firstPause=vi.spyOn(players[0]!,'pause'),secondPause=vi.spyOn(players[1]!,'pause');
+  await act(()=>players[0]!.dispatchEvent(new Event('play')));expect(secondPause).toHaveBeenCalledOnce();expect(unrelatedPause).not.toHaveBeenCalled();
+  await act(()=>host!.querySelector<HTMLButtonElement>('.bot-attachment-enlarge')!.click());expect(firstPause).toHaveBeenCalled();
+  expect(host!.querySelectorAll('[data-bot-attachment-player]')).toHaveLength(1);
+  const viewer=document.querySelector<HTMLAudioElement>('[role=dialog] audio')!,viewerPause=vi.spyOn(viewer,'pause');
+  await act(()=>viewer.dispatchEvent(new Event('play')));expect(unrelatedPause).not.toHaveBeenCalled();
+  await click('关闭预览');expect(viewerPause).toHaveBeenCalled();expect(document.querySelector('[role=dialog]')).toBeNull();
+  expect(host!.querySelectorAll('[data-bot-attachment-player]')).toHaveLength(2);
 });
 it('never creates an in-app dialog or assigns a media source for Office and over-limit attachments', async () => {
   const f = boundary(async () => ({ ok: true }));

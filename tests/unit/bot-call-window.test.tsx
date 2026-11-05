@@ -24,15 +24,15 @@ beforeEach(() => {
   vi.stubGlobal('Audio', class { loop = false; muted = false; volume = 0; play = vi.fn().mockResolvedValue(undefined); pause = vi.fn(); removeAttribute = vi.fn(); load = vi.fn(); constructor(readonly src: string) { sounds.push(this); } });
 });
 afterEach(async () => { await act(() => root?.unmount()); host?.remove(); root = undefined; vi.unstubAllGlobals(); vi.useRealTimers(); localStorage.clear(); });
-async function mount(send = vi.fn().mockResolvedValue(true), register = vi.fn<(bridge?: BotCallComposerSendBridge) => void>(), messages: BotMessage[] = [], streams: Record<string, string> = {}, initialDraft = '原聊天的草稿') {
+async function mount(send = vi.fn().mockResolvedValue(true), register = vi.fn<(bridge?: BotCallComposerSendBridge) => void>(), messages: BotMessage[] = [], streams: Record<string, string> = {}, initialDraft = '原聊天的草稿', clipboard?: { paste(): void; probe(): boolean }) {
   host = document.createElement('div'); document.body.append(host); root = createRoot(host); const hangup = vi.fn();
   function Harness() {
     const [draft, setDraft] = useState(initialDraft);
-    return <BotCallWindow conversationId="room" companion={companion} messages={messages} streams={streams} locale="zh-CN" onHangup={hangup} send={send} onOpenUrl={() => undefined} registerComposerSend={register} onEditText={setDraft} hasPendingDraft={!!draft.trim()}
+    return <BotCallWindow conversationId="room" companion={companion} messages={messages} streams={streams} locale="zh-CN" onHangup={hangup} send={send} onOpenUrl={() => undefined} registerComposerSend={register} onEditText={setDraft} hasPendingDraft={!!draft.trim()} onPasteFiles={clipboard?.paste} mediaApi={clipboard ? { request: async () => ({ ok: true }), getDroppedFilePaths: () => [], hasClipboardFiles: clipboard.probe } : undefined}
       composer={options => <BotComposer locale="zh-CN" conversationId="room" draft={draft} setDraft={setDraft} disabled={false} busy={false} group={false} world={false} panel={null} setPanel={() => undefined} send={async () => send(draft)} addFiles={async () => undefined} removeFile={() => undefined} sendSticker={async () => undefined} sendVoice={async () => undefined} extraTools={options.toolbar} cornerControl={options.corner} status={options.status} onVoiceInputStart={options.onVoiceInputStart} onVoiceInputActivity={options.onVoiceInputActivity} />} />;
   }
   await act(() => root!.render(<Harness />));
-  return { hangup, send, register };
+  return { hangup, send, register, refresh: async () => { await act(() => root!.render(<Harness />)); } };
 }
 const button = (text: string) => [...document.querySelectorAll<HTMLButtonElement>('.bot-call-window button')].find(item => item.textContent?.trim() === text)!;
 it('waits for the user to connect, loops the ringtone and ends after exactly 60 seconds', async () => {
@@ -133,6 +133,31 @@ it('keeps read-aloud failure and manual retry visible while the full keyboard co
   expect(document.querySelector('.bot-composer')).toBeNull(); expect(document.querySelector('.bot-call-dialogue-content')?.textContent).toBe('朗读失败后仍应看到这句完整消息。');
   expect(document.querySelector('.bot-call-live-status [role="alert"]')?.textContent).toContain('伙伴声音连接中断');
   await act(() => button('重试朗读').click()); expect(speech.replay).toHaveBeenCalledExactlyOnceWith('failed-audio'); expect(f.send).not.toHaveBeenCalled(); expect(document.querySelector('.bot-composer')).toBeNull();
+});
+it('keeps audio captions on the frozen synthesis source through stale streams, new snapshots and completion', async () => {
+  const sourceText = '已经开始朗读的稳定原文。', messages: BotMessage[] = [{ id: 'spoken', eventId: 'spoken', sequence: 1, conversationId: 'room', createdAt: '2026-11-05T00:00:00Z', senderId: companion.id, senderName: companion.name, status: 'sent', content: sourceText }];
+  const streams = { spoken: '这是仍留在流缓存中的另一段文字。' };
+  speech.available = true; speech.state = { phase: 'preparing', messageId: 'spoken', sourceText, displayText: '', pendingMessageIds: ['spoken'] };
+  const fixture = await mount(undefined, undefined, messages, streams, ''); await act(() => button('接通').click());
+  const caption = () => document.querySelector('.bot-call-caption-text')!.textContent!;
+  expect(caption()).toBe('正在准备语音…');
+  speech.state = { ...speech.state, phase: 'speaking', displayText: sourceText.slice(0, 5) }; await fixture.refresh(); expect(caption()).toBe(sourceText.slice(0, 5));
+  messages[0] = { ...messages[0]!, content: '稍后到达的消息快照不能改写已经开始的字幕。' }; await fixture.refresh(); expect(caption()).toBe(sourceText.slice(0, 5));
+  speech.state = { ...speech.state, phase: 'idle', displayText: sourceText, revealComplete: true, pendingMessageIds: [], textMessageIds: ['spoken'] }; await fixture.refresh();
+  expect(caption()).toBe(sourceText); await act(() => vi.advanceTimersByTime(500)); expect(caption()).toBe(sourceText);
+});
+it('accepts native file paste without browser File items and leaves ordinary text paste to the original editor', async () => {
+  const paste = vi.fn(), probe = vi.fn(() => true);
+  await mount(undefined, undefined, [], {}, '', { paste, probe }); await act(() => button('接通').click());
+  const native = new Event('paste', { bubbles: true, cancelable: true });
+  Object.defineProperty(native, 'clipboardData', { value: { files: [], items: [], types: ['text/plain'], getData: (type: string) => type === 'text/plain' ? 'C:\\example\\report.txt' : '' } });
+  await act(() => document.querySelector('.bot-call-window')!.dispatchEvent(native));
+  expect(paste).toHaveBeenCalledOnce(); expect(probe).toHaveBeenCalledWith('room'); expect(native.defaultPrevented).toBe(true); expect(document.querySelector('.bot-composer')).not.toBeNull();
+  probe.mockReturnValue(false);
+  const normal = new Event('paste', { bubbles: true, cancelable: true });
+  Object.defineProperty(normal, 'clipboardData', { value: { files: [], items: [], types: ['text/plain'], getData: (type: string) => type === 'text/plain' ? '普通文字' : '' } });
+  await act(() => document.querySelector('textarea')!.dispatchEvent(normal));
+  expect(paste).toHaveBeenCalledOnce(); expect(normal.defaultPrevented).toBe(false);
 });
 it('keeps local controls within real model capabilities and formats meeting duration across minutes', () => {
   const profile = botCallProfile({ ParamAngleX: { min: -30, max: 30, default: 0 }, ParamEyeLOpen: { min: 0, max: 1, default: 1 } }, 'local.model3.json');

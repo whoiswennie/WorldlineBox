@@ -6,6 +6,7 @@ import path from 'node:path';
 import { BotService, type BotServiceOptions } from '../../src/main/companion-bot/service';
 import { BotDshBrain, BotDshDeliveryUnknownError, BotDshTurnFailedError, type BotDshRun, type BotDshResult, type BotDshHandoff } from '../../src/main/companion-bot/dsh-brain';
 import { BotMemoryService, type BotMemoryPrepared } from '../../src/main/companion-bot/memory-service';
+import { BotAppBrain } from '../../src/main/companion-bot/app-brain';
 import type { BotRequest, BotResponse } from '../../src/shared/companion-bot';
 
 class Memory extends BotMemoryService {
@@ -81,6 +82,34 @@ describe('new companion orchestration', () => {
     expect((await service.handle({ type: 'state' })).snapshot!.conversations).toHaveLength(1);
     expect(service.store.getMetadata(`native-input:${brain.calls[1]!.eventId}`)).toBe('');
   });
+  it('keeps a real App unknown-write quarantine out of retention while fresh chat and the next rollover continue',async()=>{
+    let modelRequests=0,writes=0,appBrain:BotAppBrain|undefined;
+    const stream=(delta:object,finish='stop')=>new Response('data: '+JSON.stringify({choices:[{index:0,delta,finish_reason:finish}]})+'\n\ndata: [DONE]\n\n',{headers:{'content-type':'text/event-stream'}});
+    class AppLoop extends Brain {
+      override async run(input:BotDshRun):Promise<BotDshResult>{
+        this.calls.push(input);
+        appBrain??=new BotAppBrain({root:input.cwd,
+          callTool:async()=>{writes++;throw Error('An external write occurred before its receipt was lost');},
+          fetchFn:async()=>++modelRequests===1?stream({tool_calls:[{index:0,id:'external-write',type:'function',function:{name:'chat_send_sticker',arguments:'{"stickerId":"builtin-encourage"}'}}]},'tool_calls')
+            :stream({content:modelRequests===2?'新的聊天正常完成':'交接后的聊天正常完成'}),
+          summarize:async()=> '已确认的新聊天已完成；旧工具效果仍待核实。'});
+        return appBrain.run(input);
+      }
+      override async handoff(input:Omit<BotDshRun,'prompt'|'onEvent'>){this.handoffs.push(input.eventId);return appBrain!.handoff(input);}
+      override async close(){await appBrain?.close();}
+    }
+    const brain=new AppLoop(),{service,conversationId}=await fixture(brain,{maxTurns:1});
+    const initial=await send(service,conversationId,'unknown-write-budget');
+    await poll(async()=>service.store.getMessage(initial.replyMessageIds![0]!)?.status==='failed',8000);
+    const unknown=brain.calls[0]!;expect(brain.calls.filter(call=>call.eventId===unknown.eventId)).toHaveLength(3);expect(writes).toBe(1);
+    expect(service.store.getLaneRetention(unknown.laneId)).toMatchObject({turns:0,bytes:0});
+    expect(service.store.getLaneRetention(unknown.laneId).last).toBeUndefined();
+    expect(service.store.getMetadata(`native-terminal-counted:${unknown.eventId}`)).toBe('quarantined');expect(service.store.getMetadata(`native-admission:${unknown.eventId}`)).toBe('');
+    await send(service,conversationId,'fresh-after-isolation');await poll(async()=>brain.calls.some(call=>service.store.getEvent(call.eventId)?.status==='done'));
+    const confirmed=brain.calls.at(-1)!;expect(brain.handoffs).toEqual([]);expect(confirmed.laneId).toBe(unknown.laneId);
+    await send(service,conversationId,'rollover-after-isolation');await poll(async()=>(await service.handle({type:'state',conversationId})).snapshot!.messages.some(message=>message.content==='交接后的聊天正常完成'));
+    expect(brain.handoffs).toEqual([confirmed.eventId]);expect(brain.calls.at(-1)!.laneId).toBe(unknown.laneId+'-epoch-2');expect(writes).toBe(1);expect(modelRequests).toBe(3);
+  });
   it('retries uncertain delivery with exactly the frozen input despite a changed persona', async () => {
     const brain = new Brain(async () => { if (brain.calls.length === 1) throw new BotDshDeliveryUnknownError('fixture disconnect'); return '恢复完成'; });
     const { service, conversationId } = await fixture(brain);
@@ -154,8 +183,7 @@ describe('new companion orchestration', () => {
       return `B:${body.trigger.content}`;
     });
     const { service, memory } = await fixture(brain);
-    const beta = await service.handle({ type: 'companion.create', name: 'Beta', persona: '伙伴 B' });
-    const betaId = service.store.getConversation(beta.conversationId!)!.memberIds.find(id => id !== 'user')!;
+    const betaId = 'zz-late-beta'; service.store.createCompanion({ id: betaId, name: 'Beta', persona: '伙伴 B' });
     const group = await service.handle({ type: 'conversation.create', title: '迟到发言', kind: 'group', memberIds: [DEFAULT_BOT_COMPANION_ID, betaId], participationMode: 'all' });
     const conversationId = group.conversationId!;
     const message = (content: string) => service.handle({ type: 'message.send', conversationId, content, requestId: content });
@@ -163,7 +191,7 @@ describe('new companion orchestration', () => {
       await message('first');
       await poll(async () => (await service.handle({ type: 'state', conversationId })).snapshot!.messages.some(item => item.content === 'A:first'));
       await message('second');
-      await poll(async () => (await service.handle({ type: 'state', conversationId })).snapshot!.messages.some(item => item.content === 'A:second'));
+      expect(brain.calls.some(call => !call.laneId.startsWith('memory-encoder-') && JSON.parse(call.prompt).envelope.companionId === DEFAULT_BOT_COMPANION_ID && JSON.parse(call.prompt).trigger.content === 'second')).toBe(false);
       await poll(async () => brain.calls.some(call => !call.laneId.startsWith('memory-encoder-') && JSON.parse(call.prompt).envelope.companionId === betaId));
       const betaFirst = brain.calls.find(call => !call.laneId.startsWith('memory-encoder-') && JSON.parse(call.prompt).envelope.companionId === betaId)!;
       const betaReply = service.store.getEvent(betaFirst.eventId)!.replyMessageId;
@@ -172,6 +200,9 @@ describe('new companion orchestration', () => {
       for (let index = 0; index < 85; index++) service.store.enqueue({ conversationId, senderId: 'user', source: 'user', sourceMessageId: `filler-${index}`, recipientIds: [], content: `历史记录 ${index}` });
       releaseBeta();
       await poll(async () => service.store.getMessage(betaReply)?.status === 'sent');
+      await poll(async () => brain.calls.some(call => !call.laneId.startsWith('memory-encoder-') && JSON.parse(call.prompt).envelope.companionId === DEFAULT_BOT_COMPANION_ID && JSON.parse(call.prompt).trigger.content === 'second'));
+      const second = brain.calls.find(call => !call.laneId.startsWith('memory-encoder-') && JSON.parse(call.prompt).envelope.companionId === DEFAULT_BOT_COMPANION_ID && JSON.parse(call.prompt).trigger.content === 'second')!;
+      expect(JSON.parse(second.prompt).history.filter((item: { id: string }) => item.id === betaReply)).toEqual([expect.objectContaining({ content: 'B:first' })]);
       expect(service.store.messagesPage(conversationId, { limit: 80 }).items.some(item => item.id === betaReply)).toBe(false);
       let releasePreparation!: () => void, preparingThird = false;
       const preparation = new Promise<void>(resolve => { releasePreparation = resolve; });
@@ -184,7 +215,7 @@ describe('new companion orchestration', () => {
       await message('future'); releasePreparation();
       await poll(async () => brain.calls.some(call => !call.laneId.startsWith('memory-encoder-') && JSON.parse(call.prompt).envelope.companionId === DEFAULT_BOT_COMPANION_ID && JSON.parse(call.prompt).trigger.content === 'third'));
       const third = brain.calls.find(call => !call.laneId.startsWith('memory-encoder-') && JSON.parse(call.prompt).envelope.companionId === DEFAULT_BOT_COMPANION_ID && JSON.parse(call.prompt).trigger.content === 'third')!;
-      expect(JSON.parse(third.prompt).history.filter((item: { id: string }) => item.id === betaReply)).toEqual([expect.objectContaining({ content: 'B:first' })]);
+      expect(JSON.parse(third.prompt).history.some((item: { id: string }) => item.id === betaReply)).toBe(false);
       expect(JSON.parse(third.prompt).history.some((item: { content: string }) => item.content === 'future')).toBe(false);
       await poll(async () => service.store.getEvent(third.eventId)?.status === 'done');
       await message('fourth');

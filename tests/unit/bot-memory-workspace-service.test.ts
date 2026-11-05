@@ -165,6 +165,18 @@ it.each(['foreign-lane', 'foreign-event', 'stale-epoch', 'withdrawn-source', 'ch
     expect(f.operationReceipt).not.toHaveBeenCalled(); expect(f.update).not.toHaveBeenCalled(); expect(f.organize).not.toHaveBeenCalled(); expect(f.getHost).not.toHaveBeenCalled();
   });
 
+it('recovers an original receipt across proven retention handoff but fences subsequent withdrawal rotations', async () => {
+  const f=await recoveryFixture();
+  f.service.store.setMetadata(`lane-retention:${f.lane.id}`,JSON.stringify({epoch:1,turns:1,bytes:1,last:{eventId:f.event.id,system:'identity',cwd:f.root,nativeLaneId:f.lane.id}}));
+  f.service.store.taskTransaction(sql=>sql.prepare("UPDATE bot_inbox SET status='done' WHERE id=?").run(f.event.id));
+  expect(f.service.store.commitLaneHandoff(f.lane.id,1,{format:'worldlinebox-bot-handoff-v1',laneId:f.lane.id,sessionId:'native',throughEventId:f.event.id,nativeCursor:1,summaryText:'已核实',summarySeq:1,compactionId:'receipt-handoff',coveredEventSeqs:[1],tail:[]})).toBe(true);
+  const receipt={state:'indexed',operationId:f.input.operationId};f.operationReceipt.mockResolvedValue({found:true,receipt});
+  expect(await f.service.reconcileToolReceipt(f.call)).toEqual({state:'committed',result:receipt});
+  f.service.store.rotateDomain(f.scope.companionId,f.scope.securityDomainId);f.operationReceipt.mockClear();
+  expect(await f.service.reconcileToolReceipt({...f.call,callId:'unproven-after-withdrawal'})).toEqual({state:'unknown'});
+  expect(f.operationReceipt).not.toHaveBeenCalled();expect(f.update).not.toHaveBeenCalled();expect(f.organize).not.toHaveBeenCalled();
+});
+
 it('rejects changed arguments against a persisted Main effect fingerprint without contacting VCP or writing again', async () => {
   const f = await recoveryFixture(), receipt = { state: 'indexed', id: 'a'.repeat(64), checksum: 'e'.repeat(32) };
   f.operationReceipt.mockResolvedValue({ found: true, receipt });

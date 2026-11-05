@@ -35,14 +35,16 @@ const botTerminalError = record => record.lastError || (record.reason?.kind === 
  * native tool history, replay metadata and cancellation. Secrets stay in the
  * profile snapshot closure, never Session events or plugin configuration. */
 export async function createBotProvider(ctx) {
-  const [{ PiAiAdapter }, { openAICompletionsApi }] = await Promise.all([
-    import('@deepseek-ai/dsh-llm-pi-ai'), import('@earendil-works/pi-ai/api/openai-completions.lazy'),
+  const [{ PiAiAdapter }, { openAICompletionsApi }, { resolveImageAttachmentAccess }] = await Promise.all([
+    import('@deepseek-ai/dsh-llm-pi-ai'), import('@earendil-works/pi-ai/api/openai-completions.lazy'), import('@deepseek-ai/dsh-llm'),
   ]);
   let profiles = new Map(), registration;
   const secrets = new WeakMap();
   const adapter = new PiAiAdapter({
     profiles: () => profiles,
     resolveApiKey: async (_provider, profile) => secrets.get(profile),
+    resolveAttachments: () => ctx.get('attachments'),
+    resolveImageAccess: (attachments, ref) => resolveImageAttachmentAccess(attachments, hostPath => ctx.get('fs')?.processPathFromHostPath(hostPath), ref),
     auth: { credentials: { read: async () => undefined, list: async () => [],
       modify: async () => { throw new Error('Companion model credentials are managed by WorldlineBox.'); }, delete: async () => {} },
     authContext: { env: async () => undefined, fileExists: async () => false } },
@@ -58,8 +60,12 @@ export async function createBotProvider(ctx) {
       const baseUrl = model.baseUrl.replace(/\/+$/, '');
       const provider = 'worldlinebox-bot-' + createHash('sha256').update(JSON.stringify([baseUrl, model.model, capacity, output])).digest('hex').slice(0, 20);
       const api = openAICompletionsApi();
+      // Unknown OpenAI-compatible routes must be allowed to attempt native
+      // image input; the provider, not a model-name table, decides support.
+      // An explicit negative or discovered text-only declaration stays text-only.
+      const imageInput = model.imageSupport !== 'unsupported' && (!Array.isArray(model.inputModalities) || model.inputModalities.includes('image'));
       const descriptor = { id: model.model, name: model.model, provider, api: 'openai-completions', baseUrl,
-        reasoning: false, input: ['text'], contextWindow: capacity, maxTokens: output,
+        reasoning: false, input: imageInput ? ['text', 'image'] : ['text'], contextWindow: capacity, maxTokens: output,
         cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
         compat: { supportsStore: false, supportsDeveloperRole: false, supportsReasoningEffort: false, maxTokensField: 'max_tokens' } };
       const piProvider = { id: provider, name: 'WorldlineBox companion', baseUrl,
@@ -123,7 +129,33 @@ function observationImages(input, record) {
 }
 
 /** A normal profile plugin. Native Web owns Agents, presets, policy and persistence. */
+export async function registerCompanionPreset(ctx) {
+  const id = "worldlinebox-companion-v2";
+  if ((await ctx.agentPresets.list()).some(row => row.id === id)) return { id, release: async () => {} };
+    const [{ load }, { entryListSchema }] = await Promise.all([import('js-yaml'), import('@deepseek-ai/cordis-plugin-include')]);
+    const document = await ctx.agentPresets.readDocument(ctx.agentPresets.defaultId);
+    const plugins = load(document.content, { schema: entryListSchema });
+    let found = false;
+    const configure = rows => {
+      for (const row of rows) {
+        if (row.name === '@deepseek-ai/dsh-compaction-basic') {
+          row.config = { ...row.config, auto: true, thresholdRatio: 0.6, retainRatio: 0.2, headroomTokens: 2048, maxTokens: 2048,
+            compactionRetries: 1, maxOverflowRetries: 1 }; found = true;
+        }
+        if (Array.isArray(row.config)) configure(row.config);
+      }
+    };
+    configure(plugins);
+    if (!found) plugins.push({ name: '@deepseek-ai/dsh-compaction-basic', config: { auto: true, thresholdRatio: 0.6, retainRatio: 0.2,
+      headroomTokens: 2048, maxTokens: 2048, compactionRetries: 1, maxOverflowRetries: 1 } });
+    const release = await ctx.agentPresets.register({ id, name: 'WorldlineBox Super Agent', plugins });
+    return { id, release };
+}
+
 export async function apply(ctx) {
+  // Register before a Web user resumes persisted sessions, including direct CLI startup.
+  const registeredPreset = await registerCompanionPreset(ctx);
+  ctx.effect(() => registeredPreset.release);
   const token = process.env.WORLDLINEBOX_DSH_BRIDGE_TOKEN;
   delete process.env.WORLDLINEBOX_DSH_BRIDGE_TOKEN;
   // A user may also launch this profile through the official CLI.
@@ -131,7 +163,7 @@ export async function apply(ctx) {
   if (!/^[a-f0-9]{64}$/.test(token)) throw new Error('The WorldlineBox Host capability is invalid.');
   const sessions = new Map(), requests = new Map(), clients = new Set(), workerOwners = new Map(), workerAgents = new Map(), botOpenings = new Map(), botCancelChecks = new Map();
   let botProvider;
-  let botPreset, releaseBotPreset;
+  const botPreset = Promise.resolve(registeredPreset.id);
   let closing = false;
   const authorized = request => {
     const value = request.headers.authorization;
@@ -669,9 +701,13 @@ export async function apply(ctx) {
       const allow = record.bot.role === 'brain' ? record.bot.tools.map(tool => tool.name) : [...scopedWorkerTools, ...(record.bot.workerTools ?? []).map(tool => tool.name)];
       // restrict() addresses global/inherited tools only. Callback tools are
       // Agent-local registrations, and naming them here rejects lane creation.
-      accessDisposers.push(record.agent.ctx.tools.restrict({ allow: record.bot.role === 'brain' ? [] : scopedWorkerTools }));
+      accessDisposers.push(record.agent.ctx.tools.restrict({ allow: record.bot.role === 'brain' ? [] : scopedWorkerTools.filter(name => name !== 'worker_report') }));
       accessDisposers.push(record.agent.ctx.on('system-prompt/assemble', async (_assembly, _context, next) => {
-        const value = await next(); return { ...value, tools: value.tools.filter(tool => allow.includes(tool.name)) };
+        const value = await next();
+        // Newer DSH presents text/contexts only in this waterfall; declarations
+        // are provider-owned and already scoped by tools.restrict above.
+        // Older runtimes also expose tools here, so keep that narrow projection.
+        return Array.isArray(value.tools) ? { ...value, tools: value.tools.filter(tool => allow.includes(tool.name)) } : value;
       }, { prepend: true }));
     }
     if (record.bot.role === 'worker' && record.bot.workerAccess !== 'full') accessDisposers.push(record.agent.ctx.on('tools/pre-execute', async (execution, next) => {
@@ -704,27 +740,7 @@ export async function apply(ctx) {
     for (const agent of agents) { setWorkerAccess(agent, true); await ctx.sessions.flush(agent.session); }
     return { previousAccess, workerAccess: 'full', sessionId: record.id, sameSessionId: record.id, eventId: record.bot.eventId };
   };
-  const ensureBotPreset = () => botPreset ??= (async () => {
-    const [{ load }, { entryListSchema }] = await Promise.all([import('js-yaml'), import('@deepseek-ai/cordis-plugin-include')]);
-    const document = await ctx.agentPresets.readDocument(ctx.agentPresets.defaultId);
-    const plugins = load(document.content, { schema: entryListSchema });
-    let found = false;
-    const configure = rows => {
-      for (const row of rows) {
-        if (row.name === '@deepseek-ai/dsh-compaction-basic') {
-          row.config = { ...row.config, auto: true, thresholdRatio: 0.6, retainRatio: 0.2, headroomTokens: 2048, maxTokens: 2048,
-            compactionRetries: 1, maxOverflowRetries: 1 }; found = true;
-        }
-        if (Array.isArray(row.config)) configure(row.config);
-      }
-    };
-    configure(plugins);
-    if (!found) plugins.push({ name: '@deepseek-ai/dsh-compaction-basic', config: { auto: true, thresholdRatio: 0.6, retainRatio: 0.2,
-      headroomTokens: 2048, maxTokens: 2048, compactionRetries: 1, maxOverflowRetries: 1 } });
-    const id = 'worldlinebox-companion-v2';
-    releaseBotPreset = await ctx.agentPresets.register({ id, name: 'WorldlineBox Super Agent', plugins });
-    return id;
-  })();
+  const ensureBotPreset = () => botPreset;
   const createBot = async input => {
     const record = { id: input.sessionId, cwd: input.cwd, preset: 'companion', policy: input.role === 'brain' ? { tools: input.tools.map(tool => tool.name) }
       : input.workerAccess === 'full' ? {} : { tools: [...scopedWorkerTools, ...(input.workerTools ?? []).map(tool => tool.name)] },
@@ -1508,7 +1524,7 @@ export async function apply(ctx) {
       await stopWorkerBackground(record, true, false); await record.handle.dispose();
     }));
     if (botProvider) (await botProvider).close();
-    await releaseBotPreset?.();
+
     for (const record of sessions.values()) for (const dispose of record.disposers) dispose();
     for (const client of clients) client.end();
     server.closeAllConnections(); await new Promise(resolve => server.close(resolve));

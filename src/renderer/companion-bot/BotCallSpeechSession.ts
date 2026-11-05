@@ -3,7 +3,7 @@ import { BOT_SPEECH_MAX_AUDIO_BYTES, BOT_SPEECH_MAX_PARTS, BOT_SPEECH_PART_CHARA
 import type { BotSpeechFrame } from './BotSpeechPlayer';
 
 export interface BotCallSpeechFailure { messageId: string; error: string }
-export interface BotCallSpeechState { phase: 'idle' | 'preparing' | 'speaking' | 'error'; messageId?: string; completedMessageIds?: readonly string[]; error?: string; failures?: readonly BotCallSpeechFailure[]; displayText?: string; revealComplete?: boolean; pendingMessageIds?: readonly string[]; textMessageIds?: readonly string[] }
+export interface BotCallSpeechState { phase: 'idle' | 'preparing' | 'speaking' | 'error'; messageId?: string; sourceText?: string; completedMessageIds?: readonly string[]; error?: string; failures?: readonly BotCallSpeechFailure[]; displayText?: string; revealComplete?: boolean; pendingMessageIds?: readonly string[]; textMessageIds?: readonly string[] }
 interface SpeechPlayer { play(bytes: Uint8Array, mimeType: string): Promise<'ended' | 'cancelled'>; stop(): void }
 
 /** Playback queue for already-created chat replies; it never generates dialogue. */
@@ -94,7 +94,9 @@ export class BotCallSpeechSession {
     this.report(this.state.phase === 'error' ? { ...this.state, phase: 'idle', error: undefined } : this.state); this.start();
   }
   private report(state: BotCallSpeechState): void {
-    this.state = { ...state, pendingMessageIds: this.pendingIds, textMessageIds: this.textIds, failures: [...this.failures].map(([messageId, error]) => ({ messageId, error })) };
+    const sourceText = state.messageId === this.currentMessage ? this.fullText
+      : state.messageId === this.state.messageId ? this.state.sourceText : undefined;
+    this.state = { ...state, sourceText, pendingMessageIds: this.pendingIds, textMessageIds: this.textIds, failures: [...this.failures].map(([messageId, error]) => ({ messageId, error })) };
     this.options.changed(this.state);
   }
   private rememberFailure(messageId: string, error: string): void {

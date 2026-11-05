@@ -18,6 +18,39 @@ const CF_HDROP = 15;
 const CF_UNICODETEXT = 13;
 const GMEM_MOVEABLE = 0x0002;
 
+let readNative: (() => string[] | null) | undefined;
+/** Read the real format 15 instead of a custom format also named CF_HDROP. */
+export function readWin32FileClipboard(): string[] | null {
+  if (process.platform !== 'win32') return null;
+  try {
+    if (!readNative) {
+      const user = koffi.load('user32.dll'), shell = koffi.load('shell32.dll');
+      const available = user.func('bool IsClipboardFormatAvailable(uint32)'), open = user.func('bool OpenClipboard(void*)');
+      const get = user.func('void* GetClipboardData(uint32)'), close = user.func('bool CloseClipboard()');
+      const query = shell.func('uint32 DragQueryFileW(void*, uint32, void*, uint32)');
+      readNative = () => {
+        if (!available(CF_HDROP)) return null;
+        if (!open(null)) return [];
+        try {
+          const drop = get(CF_HDROP); if (!drop) return [];
+          const count = Number(query(drop, 0xffffffff, null, 0));
+          if (count < 1 || count > 1000) return [];
+          const paths: string[] = [];
+          for (let index = 0; index < count; index++) {
+            const length = Number(query(drop, index, null, 0));
+            if (length < 1 || length > 32767) return [];
+            const bytes = Buffer.alloc((length + 1) * 2);
+            if (Number(query(drop, index, bytes, length + 1)) !== length) return [];
+            paths.push(bytes.toString('utf16le', 0, length * 2));
+          }
+          return paths;
+        } catch { return []; } finally { close(); }
+      };
+    }
+    return readNative();
+  } catch { return null; }
+}
+
 type User32Lib = {
   OpenClipboard(owner: unknown): boolean;
   EmptyClipboard(): boolean;

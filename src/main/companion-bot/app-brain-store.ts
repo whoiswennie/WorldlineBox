@@ -23,7 +23,7 @@ interface Connection {
   transaction<T>(fn: () => T): (() => T) & { immediate(): T }; close(): void;
 }
 const alive = (pid: number) => { try { process.kill(pid, 0); return true; } catch (error) { return (error as NodeJS.ErrnoException).code !== 'ESRCH'; } };
-const terminal = new Set(['succeeded', 'failed', 'cancelled']);
+const terminal = new Set(['succeeded', 'failed', 'cancelled', 'quarantined']);
 // At most seven bounded disk views per receipt and projection version. There
 // is no process-wide raw-receipt or view map that grows with conversation age.
 const viewBudgets = [250, 350, 600, 800, 1800, 3500, 7500];
@@ -53,6 +53,7 @@ export class BotAppBrainStore {
     `);
     const columns = this.db.prepare('PRAGMA table_info(app_turns)').all() as Row[];
     if (!columns.some(column => column.name === 'binding_json')) this.db.exec('ALTER TABLE app_turns ADD COLUMN binding_json TEXT');
+    if (!columns.some(column => column.name === 'recovery_attempts')) this.db.exec('ALTER TABLE app_turns ADD COLUMN recovery_attempts INTEGER NOT NULL DEFAULT 0');
   }
   private turn(row: Row): AppBrainTurn { return { seq: Number(row.seq), eventId: String(row.event_id), laneId: String(row.lane_id), fingerprint: String(row.fingerprint),
     prompt: String(row.prompt), state: String(row.state), text: String(row.text), error: row.error ? String(row.error) : undefined,
@@ -78,12 +79,29 @@ export class BotAppBrainStore {
       return this.get(input.eventId)!;
     }).immediate();
   }
-  claim(eventId: string): AppBrainTurn {
+  predecessors(laneId: string, before: number): AppBrainTurn[] {
+    const family = this.laneFamily(laneId);
+    return (this.db.prepare("SELECT * FROM app_turns WHERE (lane_id=? OR lane_id LIKE ? ESCAPE '\\') AND seq<? AND state NOT IN ('succeeded','failed','cancelled') ORDER BY seq LIMIT 32")
+      .all(...family, before) as Row[]).map(value => this.turn(value));
+  }
+  private laneFamily(laneId: string): [string, string] {
+    const base = laneId.replace(/-epoch-[1-9]\d*$/u, '');
+    return [base, base.replace(/[\\%_]/gu, value => '\\' + value) + '-epoch-%'];
+  }
+  unresolvedCalls(laneId: string): Array<{ eventId: string; callId: string; name: string }> {
+    return (this.db.prepare("SELECT c.event_id,c.call_id,c.name FROM app_calls c JOIN app_turns t ON t.event_id=c.event_id WHERE (t.lane_id=? OR t.lane_id LIKE ? ESCAPE '\\') AND t.state IN ('quarantined','tool_unknown','suspended','running') AND c.state='invoking' ORDER BY t.seq LIMIT 64")
+      .all(...this.laneFamily(laneId)) as Row[]).map(value => ({ eventId: String(value.event_id), callId: String(value.call_id), name: String(value.name) }));
+  }
+  noteUnknown(eventId: string): number {
+    this.assertLease(eventId); this.db.prepare('UPDATE app_turns SET recovery_attempts=recovery_attempts+1 WHERE event_id=?').run(eventId);
+    return Number((this.db.prepare('SELECT recovery_attempts FROM app_turns WHERE event_id=?').get(eventId) as Row).recovery_attempts);
+  }
+  claim(eventId: string, recovery = false): AppBrainTurn {
     return this.db.transaction(() => {
       const turn = this.get(eventId); if (!turn) throw new Error('App主脑事件不存在。');
-      if (terminal.has(turn.state)) return turn;
+      if (terminal.has(turn.state) && !(recovery && turn.state === 'quarantined')) return turn;
       if (turn.leaseOwner && turn.leaseOwner !== this.owner && turn.leaseUntil > Date.now() && alive(turn.leasePid)) throw Object.assign(new Error('App主脑事件仍由另一个执行器持有。'), { code: 'BOT_LANE_BUSY' });
-      const other = this.db.prepare("SELECT event_id FROM app_turns WHERE lane_id=? AND seq<? AND state NOT IN ('succeeded','failed','cancelled') ORDER BY seq LIMIT 1").get(turn.laneId, turn.seq) as Row | undefined;
+      const other = this.db.prepare("SELECT event_id FROM app_turns WHERE lane_id=? AND seq<? AND state NOT IN ('succeeded','failed','cancelled','quarantined') ORDER BY seq LIMIT 1").get(turn.laneId, turn.seq) as Row | undefined;
       if (other) throw Object.assign(new Error('App主脑通道的较早事件尚未核实或完成。'), { code: 'BOT_LANE_BUSY' });
       this.db.prepare("UPDATE app_turns SET state='running',lease_owner=?,lease_pid=?,lease_until=? WHERE event_id=?").run(this.owner, process.pid, Date.now() + 60000, eventId);
       return this.get(eventId)!;
@@ -98,7 +116,7 @@ export class BotAppBrainStore {
   release(eventId: string): void { this.db.prepare('UPDATE app_turns SET lease_owner=NULL,lease_pid=0,lease_until=0 WHERE event_id=? AND lease_owner=?').run(eventId, this.owner); }
   requestCancel(eventId: string): void { this.db.prepare('UPDATE app_turns SET cancel_requested=1 WHERE event_id=?').run(eventId); }
   draft(eventId: string, value: string): void { this.assertLease(eventId); this.db.prepare('UPDATE app_turns SET text=? WHERE event_id=?').run(value, eventId); }
-  finish(eventId: string, state: 'succeeded' | 'failed' | 'cancelled' | 'suspended' | 'tool_unknown', text: string, error?: string): AppBrainTurn {
+  finish(eventId: string, state: 'succeeded' | 'failed' | 'cancelled' | 'suspended' | 'tool_unknown' | 'quarantined', text: string, error?: string): AppBrainTurn {
     this.assertLease(eventId); this.db.prepare('UPDATE app_turns SET state=?,text=?,error=? WHERE event_id=?').run(state, text, error ?? null, eventId); return this.get(eventId)!;
   }
   steps(eventId: string): AppBrainStep[] {

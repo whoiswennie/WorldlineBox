@@ -38,6 +38,8 @@ it('observes the actual published message once, creates no duplicate chat source
   f.store.enqueue({conversationId:direct.id,senderId:'user',recipientIds:[],sourceMessageId:'private',content:'PRIVATE_DIRECT_SENTINEL'});
   const source=f.store.enqueue({conversationId:f.room.id,senderId:'user',sourceMessageId:'public',content:'公开讨论一个小问题。'});
   expect(f.store.messagesPage(f.room.id).items).toHaveLength(1);expect(source.events).toHaveLength(2);
+  f.store.setMetadata(`group-discussion:${f.room.id}:${source.events[0]!.correlationId}`,'1');
+  f.store.resolveGroupCandidates(source.message.id,['alice']);
   complete(f.store,source.events.find(event=>event.companionId==='alice')!.id,'PUBLIC_ACTUAL_REPLY');
   const cause=source.events.find(event=>event.companionId==='alice')!,observed=f.store.observeGroupReply(cause.id);
   expect(observed).toHaveLength(1);expect(observed[0]).toMatchObject({conversationId:f.room.id,source:'group',companionId:'bob',sourceMessageRecordId:cause.replyMessageId,correlationId:cause.correlationId,payload:{hop:1}});
@@ -58,12 +60,14 @@ it.each(['acl','dissolve','withdraw'] as const)('refuses new observers after %s 
 
 it('keeps automatic observation under both hop and shared durable event budgets',()=>{
   const f=storeFixture(2),source=f.store.enqueue({conversationId:f.room.id,senderId:'user',sourceMessageId:'bounded',content:'公开讨论。'}),cause=source.events[0]!;
+  f.store.setMetadata(`group-discussion:${f.room.id}:${cause.correlationId}`,'1');f.store.resolveGroupCandidates(source.message.id,[cause.companionId]);
   complete(f.store,cause.id,'公开第一句');let next=f.store.observeGroupReply(cause.id)[0]!;
   complete(f.store,next.id,'公开第二句');next=f.store.observeGroupReply(next.id)[0]!;
   complete(f.store,next.id,'公开第三句');expect(()=>f.store.observeGroupReply(next.id)).toThrow('预算');
   const g=storeFixture(),second=g.store.enqueue({conversationId:g.room.id,senderId:'user',sourceMessageId:'hop',content:'公开讨论。'}),initial=second.events[0]!;
+  g.store.setMetadata(`group-discussion:${g.room.id}:${initial.correlationId}`,'1');g.store.resolveGroupCandidates(second.message.id,[initial.companionId]);
   complete(g.store,initial.id,'起始');let current=initial;
-  for(let hop=1;hop<=6;hop++){const observed=g.store.observeGroupReply(current.id);expect(observed).toHaveLength(1);expect(observed[0]!.payload.hop).toBe(hop);current=observed[0]!;complete(g.store,current.id,`公开进展${hop}`);}
+  for(let hop=1;hop<=3;hop++){const observed=g.store.observeGroupReply(current.id);expect(observed).toHaveLength(1);expect(observed[0]!.payload.hop).toBe(hop);current=observed[0]!;complete(g.store,current.id,`公开进展${hop}`);}
   expect(g.store.observeGroupReply(current.id)).toEqual([]);
 });
 
@@ -114,4 +118,19 @@ it('cancels one recipient while the other completes the same shared assessment w
   await until(()=>f.store.getEvent(second.id)!.status==='done');
   expect(f.brain.calls).toHaveLength(1);expect(f.store.getEvent(first.id)!.status).toBe('cancelled');
   expect(f.store.messagesPage(f.room.id).items.filter(message=>message.content.trim())).toHaveLength(1);
+});
+it('aborts the shared assessment when the whole group is stopped even if its provider ignores cancellation',async()=>{
+  const f=await serviceFixture();
+  f.brain.answer=async()=>new Promise<string>(()=>undefined);
+  const source=f.store.enqueue({conversationId:f.room.id,senderId:'user',sourceMessageId:'whole-group-stopped',content:'讨论一下这个问题。'});
+  await until(()=>f.brain.calls.length===1);
+  const stopped=await f.service.handle({type:'message.send',conversationId:f.room.id,requestId:'stop-everyone',content:'停止讨论'});
+  expect(stopped.ok).toBe(true);
+  await until(()=>source.events.every(event=>f.store.getEvent(event.id)!.status==='cancelled'));
+  await until(()=>f.brain.calls[0]!.signal!.aborted);
+  f.brain.answer=async()=>' {"recipients":[],"reason":"新消息不需要补充。"}';
+  const next=await f.service.handle({type:'message.send',conversationId:f.room.id,requestId:'after-stop',content:'新的公开话题'});
+  await until(()=>f.brain.calls.length===2);
+  await until(()=>next.replyMessageIds!.every(id=>f.store.eventForReply(id)?.status==='done'));
+  expect(f.store.getMetadata(`group-attention:${source.message.id}:${f.room.revision}`)).toBeUndefined();
 });

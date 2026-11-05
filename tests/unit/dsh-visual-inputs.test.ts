@@ -35,7 +35,7 @@ it('sends the exact SDK image blocks through the authenticated native bridge and
   const agent = { id: 'agent', status: 'idle', session: { id: randomUUID(), append: vi.fn() }, whenIdle: async () => undefined,
     ctx: { get: () => undefined, tools: { restrict: vi.fn(() => () => undefined) }, on: vi.fn(() => () => undefined) } };
   const ctx = { loader: { await: async () => undefined }, tools: { guard: () => () => undefined, schemas: () => [] }, agents: { get: () => agent },
-    agentPresets: { defaultId: 'standard', list: async () => [{ id: 'standard' }] }, workspaceRegistry: {}, sessions: { flush: async () => undefined }, get: () => undefined, on: vi.fn(),
+    agentPresets: { defaultId: 'standard', list: async () => [{ id: 'standard' }, { id: 'worldlinebox-companion-v2' }] }, workspaceRegistry: {}, sessions: { flush: async () => undefined }, get: () => undefined, on: vi.fn(),
     effect: (callback: () => (() => unknown)) => disposers.push(callback()),
     sessionController: { create: async () => ({ sessionId: agent.session.id }), resolveAgent: async () => ({ agent }), prompt } };
   try {

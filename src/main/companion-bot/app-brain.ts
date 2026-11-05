@@ -13,6 +13,7 @@ import { BotDshAbortAcknowledgedError, BotDshDeliveryUnknownError, BotDshLaneBus
   type BotDshRun, type BotDshModel, type BotDshResult, type BotDshCancelAck, type BotDshHandoff } from './dsh-brain';
 import { BotAppBrainStore, type AppBrainCall, type AppBrainMessage, type AppBrainStoredCall, type AppBrainTurn } from './app-brain-store';
 import { APP_TOOL_RESULT_READER, toolResultPage, toolResultView, type ToolResultPageInput } from './app-brain-tool-view';
+import { abortable } from './abortable';
 
 export type { AppBrainMessage } from './app-brain-store';
 export type AppToolReconciliation = { state: 'committed'; result: unknown } | { state: 'absent' } | { state: 'unknown' };
@@ -20,7 +21,7 @@ export interface BotAppBrainOptions {
   root: string; fetchFn?: typeof fetch;
   callTool?(call: BotToolCall, signal: AbortSignal): Promise<unknown>;
   reconcileTool?(call: BotToolCall, signal: AbortSignal): Promise<AppToolReconciliation>;
-  maxSteps?: number; maxContextChars?: number; requestTimeoutMs?: number;
+  maxSteps?: number; maxContextChars?: number; requestTimeoutMs?: number; recoveryTimeoutMs?: number;
   summarize?(input: { system: string; messages: AppBrainMessage[]; model: BotDshModel; signal: AbortSignal }): Promise<string>;
 }
 interface Active { eventId: string; controller: AbortController; finished: Promise<void>; sequence: number }
@@ -41,6 +42,8 @@ const summarySystem = '把历史资料归纳成可继续工作的简短摘要。
 export class BotAppBrain {
   private readonly store: BotAppBrainStore;
   private readonly active = new Map<string, Active>();
+  private readonly runs = new Map<string, Promise<BotDshResult>>();
+  private readonly shutdown = new AbortController();
   private readonly fetchFn: typeof fetch;
   private closed = false;
   constructor(private readonly options: BotAppBrainOptions) {
@@ -52,6 +55,7 @@ export class BotAppBrain {
   hasTurn(laneId: string, eventId: string): boolean { return this.store.get(eventId)?.laneId === laneId; }
   private result(turn: AppBrainTurn): BotDshResult { return { sessionId: BotAppBrain.sessionId(turn.laneId), eventId: turn.eventId,
     status: turn.state === 'succeeded' ? 'succeeded' : turn.state === 'cancelled' ? 'cancelled' : 'failed', text: turn.text,
+    ...(turn.state === 'quarantined' ? { quarantined: true as const } : {}),
     ...(turn.error ? { error: turn.error } : {}), inputContextCommitted: this.store.contextCommitted(turn) }; }
   private emit(input: BotDshRun, event: Omit<NativeHostEvent, 'sequence' | 'receivedAt'>): void {
     const active = this.active.get(input.laneId);
@@ -202,6 +206,9 @@ export class BotAppBrain {
   }
   private wire(input: BotDshRun, call: AppBrainStoredCall): BotToolCall { return { laneId: input.laneId, eventId: input.eventId, callId: call.id, name: call.name, args: JSON.parse(call.arguments) as Record<string, unknown> }; }
   private async invoke(input: BotDshRun, call: BotToolCall, signal: AbortSignal): Promise<unknown> {
+    if (!safeRead(call) && this.store.unresolvedCalls(input.laneId).some(prior => prior.eventId !== input.eventId && prior.name === call.name)) {
+      return { executed: false, error: '同类工具的旧操作仍有未确认效果，已阻止重复派发；可以继续查询或处理其他事情。', recoveryRequired: true };
+    }
     if (call.name === APP_TOOL_RESULT_READER.name) {
       signal.throwIfAborted();
       if (typeof call.args.callId !== 'string' || !call.args.callId || call.args.callId.length > 200) return { error: '工具回执callId无效。' };
@@ -230,12 +237,50 @@ export class BotAppBrain {
   private async reconcile(input: BotDshRun, call: AppBrainStoredCall, signal: AbortSignal): Promise<AppToolReconciliation> {
     const wire = this.wire(input, call);
     if (this.options.reconcileTool) {
-      const proof = await this.options.reconcileTool(wire, signal);
+      const bounded = AbortSignal.any([signal, AbortSignal.timeout(this.options.recoveryTimeoutMs ?? 3000)]);
+      const proof = await abortable(this.options.reconcileTool(wire, bounded), bounded);
       if (proof.state !== 'unknown' || !safeRead(wire)) return proof;
     }
     return safeRead(wire) ? { state: 'absent' } : { state: 'unknown' };
   }
+  /** Retire orphaned turns from their original journals before admitting new
+   * input. Unproved effects stay fenced per tool, rather than locking a lane. */
+  private async recoverPredecessors(input: BotDshRun, turn: AppBrainTurn): Promise<void> {
+    const deadline = Date.now() + (this.options.recoveryTimeoutMs ?? 3000);
+    for (const prior of this.store.predecessors(input.laneId, turn.seq)) {
+      input.signal?.throwIfAborted();
+      this.store.claim(prior.eventId, true);
+      try {
+        const original = { ...input, ...this.store.binding(prior.eventId), laneId: prior.laneId, eventId: prior.eventId, prompt: prior.prompt };
+        let unknown = false;
+        for (const step of this.store.steps(prior.eventId)) for (const call of step.calls) {
+          if (call.state === 'committed') continue;
+          if (call.state === 'planned' || safeRead(this.wire(original, call))) {
+            this.store.commitTool(prior.eventId, call.id, { interrupted: true, executed: call.state !== 'planned', effects: 'read-only' }); continue;
+          }
+          let proof: AppToolReconciliation = { state: 'unknown' };
+          if (Date.now() < deadline) {
+            const signal = AbortSignal.any([input.signal ?? new AbortController().signal, AbortSignal.timeout(Math.max(1, deadline - Date.now()))]);
+            try { proof = await this.reconcile(original, call, signal); } catch { /* The durable unknown is preserved below. */ }
+          }
+          if (proof.state === 'unknown') unknown = true;
+          else this.store.commitTool(prior.eventId, call.id, proof.state === 'committed' ? proof.result : { executed: false, interrupted: true });
+        }
+        this.store.finish(prior.eventId, unknown ? 'quarantined' : prior.cancelRequested ? 'cancelled' : 'failed', prior.text,
+          unknown ? '旧操作效果尚未确认，已隔离并保留回执核验；无关新请求可以继续。' : '旧轮次中断后已核实工具结果，未重发工具。');
+      } finally { this.store.release(prior.eventId); }
+    }
+  }
   async run(input: BotDshRun): Promise<BotDshResult> {
+    if (this.closed) throw new Error('App主脑已关闭。');
+    const key = input.laneId.replace(/-epoch-[1-9]\d*$/u, '');
+    if (this.runs.has(key)) throw new BotDshLaneBusyError();
+    const signal = input.signal ? AbortSignal.any([input.signal, this.shutdown.signal]) : this.shutdown.signal;
+    const operation = Promise.resolve().then(() => this.runOwned({ ...input, signal }));
+    this.runs.set(key, operation);
+    try { return await operation; } finally { this.runs.delete(key); }
+  }
+  private async runOwned(input: BotDshRun): Promise<BotDshResult> {
     if (this.closed) throw new Error('App主脑已关闭。');
     if (input.role === 'worker') throw new Error('App主脑不执行DSH worker。');
     if (input.model.apiFormat !== 'openai_chat' || !input.model.apiKey || /[\r\n]/.test(input.model.apiKey)) throw new Error('App主脑需要有效的OpenAI Chat Completions连接。');
@@ -255,7 +300,7 @@ export class BotAppBrain {
         result = retired.result;
         if (result.status === 'cancelled') throw new BotDshAbortAcknowledgedError(result);
       }
-      if (result.status === 'failed') throw new BotDshTurnFailedError(existing.eventId, existing.error ?? result.error ?? '旧App主脑事件此前失败。', result.text, result.inputContextCommitted ?? false);
+      if (result.status === 'failed') throw new BotDshTurnFailedError(existing.eventId, existing.error ?? result.error ?? '旧App主脑事件此前失败。', result.text, result.inputContextCommitted ?? false, result.quarantined);
       return result;
     }
     const turn = this.store.admit({ ...input, fingerprint, binding: { system: input.system, cwd: input.cwd, tools: input.tools } });
@@ -264,8 +309,11 @@ export class BotAppBrain {
       if (digest(JSON.stringify([input.laneId, binding.system, binding.cwd, turn.prompt, binding.tools])) !== turn.fingerprint) throw new Error('主脑原始工具绑定校验失败，保留事件待核实。');
       input = { ...input, ...binding };
     }
-    if (terminal(turn.state)) { const result = this.result(turn); if (turn.state === 'failed') throw new BotDshTurnFailedError(turn.eventId, turn.error ?? 'App主脑此前失败。', turn.text, result.inputContextCommitted ?? false); return result; }
+    if (terminal(turn.state) || turn.state === 'quarantined') { const result = this.result(turn); if (turn.state === 'failed' || turn.state === 'quarantined') throw new BotDshTurnFailedError(turn.eventId, turn.error ?? 'App主脑此前失败。', turn.text, result.inputContextCommitted ?? false, result.quarantined); return result; }
+    await this.recoverPredecessors(input, turn);
     this.store.claim(input.eventId);
+    const unresolved = this.store.unresolvedCalls(input.laneId).filter(call => call.eventId !== input.eventId);
+    if (unresolved.length) input = { ...input, system: input.system + '\n【宿主核验状态】以下旧工具效果仍未知，不得声称成功、失败或已经撤销，也不得重做同类写入。可正常回应和执行无关查询。原始操作及回执仍保留：' + JSON.stringify(unresolved.slice(0, 16)) };
     const controller = new AbortController(), signal = input.signal ? AbortSignal.any([input.signal, controller.signal]) : controller.signal;
     let finish!: () => void; const finished = new Promise<void>(resolve => { finish = resolve; });
     this.active.set(input.laneId, { eventId: input.eventId, controller, finished, sequence: 0 });
@@ -285,11 +333,12 @@ export class BotAppBrain {
           const messages = await this.context(input, this.store.get(input.eventId)!, signal);
           this.store.requestStep(input.eventId, ordinal);
           this.emit(input, { type: 'model_request' });
-          const reply = await this.model(input, input.system, messages, true, signal, value => {
+          const requestSignal = AbortSignal.any([signal, AbortSignal.timeout(this.options.requestTimeoutMs ?? 90000)]);
+          const reply = await abortable(this.model(input, input.system, messages, true, requestSignal, value => {
             if (signal.aborted) return; this.store.assertLease(input.eventId); text = value;
             this.emit(input, { type: 'text_stream', text, sessionId: BotAppBrain.sessionId(input.laneId) });
             if (performance.now() - lastDraft > 300) { lastDraft = performance.now(); this.store.draft(input.eventId, text); }
-          });
+          }), requestSignal);
           signal.throwIfAborted();
           const calls: AppBrainCall[] = reply.calls.map((call, position) => ({ ...call, id: 'app_' + digest(JSON.stringify([input.eventId, ordinal, position, call.id, call.name, call.arguments])).slice(0, 48) }));
           const assistant: AppBrainMessage = { role: 'assistant', content: reply.text || null,
@@ -314,7 +363,9 @@ export class BotAppBrain {
           } else this.store.invoke(input.eventId, call.id);
           this.emit(input, { type: 'tool_call', callId: call.id, toolName: call.name, summary: '调用应用工具' });
           try {
-            const value = await this.invoke(input, wire, AbortSignal.any([signal, AbortSignal.timeout(this.options.requestTimeoutMs ?? 90000)]));
+            const toolSignal = AbortSignal.any([signal, AbortSignal.timeout(this.options.requestTimeoutMs ?? 90000)]);
+            const value = await abortable(this.invoke(input, wire, toolSignal), toolSignal);
+            signal.throwIfAborted();
             this.store.commitTool(input.eventId, call.id, value);
             this.emit(input, { type: 'tool_result', toolName: call.name, callId: call.id });
           } catch (error) {
@@ -341,7 +392,13 @@ export class BotAppBrain {
       throw new Error('本轮App主脑工具步骤达到预算，已停止。');
     } catch (error) {
       const unknown = this.store.steps(input.eventId).some(step => step.calls.some(call => call.state === 'invoking' && !safeRead(this.wire(input, call))));
-      if (unknown || error instanceof BotDshDeliveryUnknownError) { this.store.finish(input.eventId, 'tool_unknown', text); throw error instanceof BotDshDeliveryUnknownError ? error : new BotDshDeliveryUnknownError(error); }
+      if (unknown || error instanceof BotDshDeliveryUnknownError) {
+        const exhausted = this.store.noteUnknown(input.eventId) >= 3;
+        const message = '工具效果尚未确认，已保留原操作记录并阻止重复派发。';
+        this.store.finish(input.eventId, exhausted ? 'quarantined' : 'tool_unknown', text, message);
+        if (exhausted) throw new BotDshTurnFailedError(input.eventId, message, text, false, true);
+        throw error instanceof BotDshDeliveryUnknownError ? error : new BotDshDeliveryUnknownError(error);
+      }
       if (signal.aborted) {
         const reason = signal.reason as { code?: string } | undefined;
         if (reason?.code === 'BOT_SUSPEND') { this.store.finish(input.eventId, 'suspended', text); throw signal.reason; }
@@ -366,7 +423,7 @@ export class BotAppBrain {
     if (this.active.get(input.laneId)?.eventId === turn.eventId) await this.cancel(input.laneId);
     let latest = this.store.get(turn.eventId)!;
     if (terminal(latest.state)) return { accepted: true, result: this.result(latest) };
-    this.store.claim(turn.eventId);
+    this.store.claim(turn.eventId, true);
     try {
       const signal = input.signal ?? AbortSignal.timeout(30000);
       signal.throwIfAborted();
@@ -384,8 +441,10 @@ export class BotAppBrain {
     } catch (error) {
       // Cancellation recovery owns a lease too. An unavailable receipt must
       // remain explicitly unresolved, never a phantom running turn after release.
-      this.store.finish(turn.eventId, this.store.steps(turn.eventId).some(step => step.calls.some(call => call.state === 'invoking'))
-        ? 'tool_unknown' : 'suspended', this.store.get(turn.eventId)!.text);
+      const pending = this.store.steps(turn.eventId).some(step => step.calls.some(call => call.state === 'invoking'));
+      const isolated = this.store.finish(turn.eventId, pending ? 'quarantined' : 'suspended', this.store.get(turn.eventId)!.text,
+        pending ? '本轮已隔离，工具效果仍待核实；没有确认取消工具副作用。' : undefined);
+      if (pending && !input.signal?.aborted) return { accepted: true, result: this.result(isolated) };
       throw error;
     } finally { this.store.release(turn.eventId); }
   }
@@ -408,7 +467,8 @@ export class BotAppBrain {
   async archive(laneId: string, instanceId?: string): Promise<void> { void instanceId; if (this.active.has(laneId)) throw new BotDshLaneBusyError(); }
   async close(): Promise<void> {
     if (this.closed) return; this.closed = true;
+    this.shutdown.abort(Object.assign(new Error('App主脑正在关闭，保留事件供恢复。'), { code: 'BOT_SUSPEND' }));
     for (const active of this.active.values()) active.controller.abort(Object.assign(new Error('App主脑正在关闭，保留事件供恢复。'), { code: 'BOT_SUSPEND' }));
-    await Promise.allSettled([...this.active.values()].map(active => active.finished)); this.store.close();
+    await Promise.allSettled([...this.runs.values()]); this.store.close();
   }
 }

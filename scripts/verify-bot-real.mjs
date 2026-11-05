@@ -15,7 +15,7 @@ const source = process.env.WORLDLINEBOX_REAL_CHAT_CONFIG_ROOT ?? path.join(proce
 const catalog = JSON.parse(await readFile(path.join(source, 'dsh/runtimes.json'), 'utf8'));
 const runtime = catalog.filter(value => value.adapter === 'node-cli-web-v1').sort((a,b) => b.version.localeCompare(a.version, undefined, { numeric: true }))[0];
 if (!runtime) throw new Error('Official installed DSH Node runtime required.');
-const program = path.join(source, 'dsh/runtimes', runtime.id, 'program');
+const program = process.env.WORLDLINEBOX_BOT_DSH_PROGRAM ? path.resolve(process.env.WORLDLINEBOX_BOT_DSH_PROGRAM) : path.join(source, 'dsh/runtimes', runtime.id, 'program');
 const root = await mkdtemp(path.join(os.tmpdir(), 'worldlinebox-bot-real-'));
 const ownedRoots = new Set([root]), profile = path.join(root, 'electron-profile'); await mkdir(profile);
 await writeFile(path.join(root, '.worldlinebox-acceptance.json'), JSON.stringify({ kind: 'acceptance-runner', ownerPid: process.pid }));

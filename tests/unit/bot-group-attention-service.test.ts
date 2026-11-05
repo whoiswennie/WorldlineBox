@@ -39,8 +39,8 @@ async function fixture(options: { hold?: Promise<void>; peer?: boolean; invalid?
       await options.hold;
       const trigger = input.trigger as { senderId: string; content: string };
       const recipients = trigger.senderId !== 'user' ? options.peer && trigger.senderId === 'alpha' ? ['beta'] : []
-        : trigger.content === '大家一起出个主意' ? ['alpha', 'beta'] : trigger.content === '那个蓝色头发的伙伴怎么看' ? ['alpha'] : [];
-      content = JSON.stringify({ recipients: options.invalid ? ['outside-room'] : recipients, reason: 'Local deterministic assessment fixture' });
+        : trigger.content === '大家一起出个主意' ? ['alpha', 'beta'] : ['那个蓝色头发的伙伴怎么看', '你们随便聊'].includes(trigger.content) ? ['alpha'] : [];
+      content = JSON.stringify({ recipients: options.invalid ? ['outside-room'] : recipients, reason: 'Local deterministic assessment fixture', continueDiscussion: options.peer && trigger.content === '你们随便聊' });
     } else if (system.includes('对话记忆编码器')) content = JSON.stringify({ notes: [] });
     else content = '收到，我来回应这个话题。';
     const delta = JSON.stringify({ choices: [{ index: 0, delta: { content }, finish_reason: null }] });
@@ -93,10 +93,13 @@ it('selects zero, one or multiple actual members, lets peers observe without dup
   expect(f.memory.prepared).toHaveLength(4); expect(f.hostCalls).toEqual([]);
 });
 
-it('permits meaningful peer responses in the same user-owned group and rejects an invented assessment member', async () => {
-  const f = await fixture({ peer: true }); await f.send('大肥鱼在吗', 'peer-exchange'); await until(f.idle);
+it('permits bounded peer discussion only after an explicit invitation and rejects an invented assessment member', async () => {
+  const f = await fixture({ peer: true }); await f.send('你们随便聊', 'peer-exchange'); await until(f.idle);
   expect(f.replies().map(message => message.senderId)).toEqual(['alpha', 'beta']);
   expect(f.service.store.getConversation(f.room.id)).toMatchObject({ ownerId: 'user', memberIds: expect.arrayContaining(['user']) });
+  const replies = f.replies();
+  const betaInput = f.requests.find(request => !request.system.includes('轻量参与判断器') && JSON.stringify(request.input).includes(replies[0]!.id));
+  expect(betaInput).toBeDefined();
   const invalid = await fixture({ invalid: true }); await invalid.send('随便聊聊', 'invalid'); await until(invalid.idle);
   expect(invalid.replies()).toEqual([]); expect(invalid.memory.prepared).toEqual([]); expect(invalid.hostCalls).toEqual([]);
 });

@@ -13,6 +13,7 @@ import { useBotCallSpeech } from './useBotCallSpeech';
 import { useBotCallVoice, type BotCallSend } from './useBotCallVoice';
 import { BotCallVoiceControls } from './BotCallVoiceControls';
 import { BotCallCaption } from './BotCallCaption';
+import { isBotFilePaste } from './clipboard-paste';
 import './bot-call.css';
 
 const sceneKey = 'worldlinebox.companion-call.scene.v1';
@@ -28,7 +29,7 @@ const poseFields = [
   ['mouthOpen', '张嘴', 'Mouth open', 0, 1, 0], ['mouthSmile', '嘴角', 'Smile', -1, 1, 0], ['eyeOpen', '睁眼', 'Eyes open', 0, 1.2, 1],
 ] as const;
 function savedScene(): string { try { const saved = localStorage.getItem(sceneKey); return saved === 'plain' || saved === 'evening' || saved && /^data:image\/(?:png|jpeg|webp|avif);base64,[A-Za-z0-9+/]+=*$/u.test(saved) && saved.length < 4_000_000 ? saved : 'evening'; } catch { return 'evening'; } }
-export function BotCallWindow({ conversationId, companion, messages, streams, mediaApi, speechApi, locale, onHangup, send, onOpenUrl, composer, registerComposerSend, onEditText, onDropFiles, hasPendingDraft = false, sendError = '' }: {
+export function BotCallWindow({ conversationId, companion, messages, streams, mediaApi, speechApi, locale, onHangup, send, onOpenUrl, composer, registerComposerSend, onEditText, onDropFiles, onPasteFiles, hasPendingDraft = false, sendError = '' }: {
   conversationId: string;
   companion: BotCompanion; messages: readonly BotMessage[]; streams: Readonly<Record<string, string>>; locale: 'zh-CN' | 'en'; onHangup(): void;
   mediaApi?: WorldlineBoxBotMediaApi;
@@ -36,7 +37,7 @@ export function BotCallWindow({ conversationId, companion, messages, streams, me
   send: BotCallSend; onOpenUrl(url: string): void;
   composer(options: BotCallComposerOptions): ReactNode;
   registerComposerSend?(bridge?: BotCallComposerSendBridge): void;
-  onEditText(text: string): void; onDropFiles?(files: File[]): void;
+  onEditText(text: string): void; onDropFiles?(files: File[]): void; onPasteFiles?():void;
   hasPendingDraft?: boolean;
   sendError?: string;
 }) {
@@ -51,21 +52,22 @@ export function BotCallWindow({ conversationId, companion, messages, streams, me
   const speech = useBotCallSpeech({ api: speechApi, conversationId, companionId: companion.id, connected: phase === 'connected', messages, control });
   const speechPhase = speech.state.phase, stopSpeech = speech.stop;
   const voice = useBotCallVoice({ connected: phase === 'connected', conversationId, companionId: companion.id, messages, send, speech });
-  const box = useRef<HTMLElement>(null), transcript = useRef<HTMLDivElement>(null), composerHost = useRef<HTMLDivElement>(null), liveStatus = useRef<HTMLDivElement>(null);
+  const box = useRef<HTMLElement>(null), transcript = useRef<HTMLDivElement>(null), composerHost = useRef<HTMLDivElement>(null), liveStatus = useRef<HTMLDivElement>(null), dialogueHost = useRef<HTMLElement>(null);
   const deepseek = companion.id === 'builtin-dafeiyu', remaining = Math.max(0, Math.ceil((BOT_CALL_TIMEOUT_MS - (now - openedAt)) / 1000));
   const chat = messages.filter(message => ['user', companion.id].includes(message.senderId) && (message.content || message.attachments?.length || streams[message.id] || ['queued', 'running', 'failed'].includes(message.status)));
   const latest = [...chat].reverse().find(message => message.senderId === companion.id && message.status === 'sent' && message.content);
   const presentingSpeech = speech.available && ['preparing', 'speaking'].includes(speech.state.phase);
-  const pinnedSpeech = (presentingSpeech || speech.state.phase === 'error') && chat.find(message => message.senderId === companion.id && message.id === speech.state.messageId);
+  const ownedSpeech = chat.find(message => message.senderId === companion.id && message.id === speech.state.messageId);
+  const pinnedSpeech = (presentingSpeech || speech.state.phase === 'error') && ownedSpeech;
   const dialogue = pinnedSpeech || chat.find(message => speech.state.pendingMessageIds?.includes(message.id)) || [...chat].reverse().find(message => message.senderId === companion.id);
   const audioText = dialogue && speech.available && speech.state.messageId === dialogue.id && speech.state.phase !== 'error' && !speech.state.failures?.some(failure => failure.messageId === dialogue.id) ? speech.state.displayText : undefined;
   const captionSource = dialogue ? (['queued', 'running'].includes(dialogue.status) ? streams[dialogue.id] || dialogue.content : dialogue.content || streams[dialogue.id]) || '' : '';
-  const captionText = botSpeechText(captionSource);
+  const captionText = audioText !== undefined && speech.state.sourceText !== undefined ? speech.state.sourceText : botSpeechText(captionSource);
   const awaitingSpeech = !!dialogue && audioText === undefined && speech.available && !speech.state.failures?.some(failure => failure.messageId === dialogue.id)
     && (speech.state.pendingMessageIds?.includes(dialogue.id) || speech.enabled && !speech.state.textMessageIds?.includes(dialogue.id) && ['queued', 'running', 'sent'].includes(dialogue.status) && (dialogue.status !== 'sent' || !!captionText));
   const captionReveal = awaitingSpeech ? '' : audioText;
   const captionWaiting = dialogue?.status === 'failed' && !captionText ? zh ? '回复失败，请在聊天记录中查看详情。' : 'Reply failed. See the chat history.'
-    : awaitingSpeech || captionReveal === '' || !captionSource && !!dialogue && ['queued', 'running'].includes(dialogue.status) ? dialogue?.status === 'sent' ? zh ? '正在准备语音…' : 'Preparing speech…' : zh ? '正在回应…' : 'Replying…' : undefined;
+    : awaitingSpeech || captionReveal === '' || !captionText && !!dialogue && ['queued', 'running'].includes(dialogue.status) ? dialogue?.status === 'sent' ? zh ? '正在准备语音…' : 'Preparing speech…' : zh ? '正在回应…' : 'Replying…' : undefined;
   const openHistory = () => { setHistoryFocus(undefined); setInteractions(false); setHistoryOpen(true); };
   const toggleInteractions = () => { setHistoryOpen(false); setInteractions(value => !value); };
   const ready = useCallback((controls: BotLive2DControls) => { setControl(controls); setModelError(''); }, []), failed = useCallback((message: string) => setModelError(message), []);
@@ -84,11 +86,13 @@ export function BotCallWindow({ conversationId, companion, messages, streams, me
     const measure = () => {
       shell.style.setProperty('--bot-call-dock-height', `${host ? Math.max(96, Math.ceil(host.getBoundingClientRect().height)) : 0}px`);
       shell.style.setProperty('--bot-call-status-height', `${status ? Math.ceil(status.getBoundingClientRect().height) : 0}px`);
+      const top = dialogueHost.current?.getBoundingClientRect().top;
+      shell.style.setProperty('--bot-call-dialogue-top', `${top === undefined ? shell.clientHeight - Math.max(130, (host?.clientHeight ?? 0) + 100) : top - shell.getBoundingClientRect().top}px`);
     };
     measure();
-    const observer = new ResizeObserver(measure); if (host) observer.observe(host); if (status) observer.observe(status);
-    return () => { observer.disconnect(); shell.style.removeProperty('--bot-call-dock-height'); shell.style.removeProperty('--bot-call-status-height'); };
-  }, [phase, composerExpanded]);
+    const observer = new ResizeObserver(measure); observer.observe(shell); if (host) observer.observe(host); if (status) observer.observe(status); if (dialogueHost.current) observer.observe(dialogueHost.current);
+    return () => { observer.disconnect(); shell.style.removeProperty('--bot-call-dock-height'); shell.style.removeProperty('--bot-call-status-height'); shell.style.removeProperty('--bot-call-dialogue-top'); };
+  }, [phase, composerExpanded, dialogue?.id, historyOpen, interactions]);
   useEffect(() => { const previous = document.activeElement; return () => { if (previous instanceof HTMLElement && previous.isConnected) previous.focus(); }; }, []);
   useEffect(() => { box.current?.querySelector<HTMLElement>(phase === 'ringing' ? '[data-call-accept]' : composerExpanded ? 'textarea' : '.bot-call-input-entry')?.focus(); }, [phase, composerExpanded]);
   useEffect(() => { const timer = setInterval(() => setNow(Date.now()), 500); return () => clearInterval(timer); }, []);
@@ -141,11 +145,12 @@ export function BotCallWindow({ conversationId, companion, messages, streams, me
   const startVoice = () => { if (speech.available && !speech.enabled) speech.toggle(); voice.start(); };
   const composerTools = <BotCallVoiceControls mode="toolbar" inputActive={voiceInputActive} voice={voice} zh={zh} onStart={startVoice} onEdit={onEditText} />;
   const composerStatus = <div className="bot-call-composer-status">
+    {modelError && <p className="bot-call-model-error" role="status">{modelError} {zh ? '可以继续打字聊天。' : 'You can keep chatting.'}</p>}
     <BotCallVoiceControls voice={voice} zh={zh} onStart={startVoice} onEdit={onEditText} hideErrorDetail={speechFailures.some(failure => failure.error === voice.state.error)} />
     {speech.available && <div className="bot-call-speech-controls" data-speech-phase={speech.state.phase}>{composerExpanded && <button type="button" aria-label={zh ? '自动朗读伙伴回复' : 'Read new replies aloud'} aria-pressed={speech.enabled} disabled={voiceInputActive} onClick={speech.toggle}><BotIcon name="volume" />{zh ? '自动朗读' : 'Read aloud'}</button>}<span role="status">{speech.state.phase === 'preparing' ? zh ? '正在准备语音…' : 'Preparing speech…' : speech.state.phase === 'speaking' ? zh ? `${companion.name}正在说话` : `${companion.name} is speaking` : zh ? '伙伴声音' : 'Companion voice'}</span>{['preparing', 'speaking'].includes(speech.state.phase) && <button type="button" onClick={stopPlayback} aria-label={zh ? '停止朗读' : 'Stop speech'}>{zh ? '停止' : 'Stop'}</button>}</div>}
     {!!speechFailures.length && <div className="bot-call-speech-failures">{speechFailures.map(failure => <div key={failure.messageId} className="bot-call-speech-error" role="alert" data-speech-failure={failure.messageId}><span>{failure.error}<small>{chat.find(message => message.id === failure.messageId)?.content.slice(0, 32)}</small></span><button type="button" disabled={voiceInputActive} onClick={() => replay(failure.messageId)}>{zh ? '重试朗读' : 'Retry speech'}</button></div>)}</div>}
   </div>;
-  return createPortal(<div className="bot-call-overlay"><section ref={box} className={`bot-call-window is-${phase}`} role="dialog" aria-modal="true" aria-label={zh ? `与${companion.name}会面` : `Meet ${companion.name}`} onKeyDown={keyboard} onDragOver={event => { if (event.dataTransfer.types.includes('Files')) { event.preventDefault(); event.dataTransfer.dropEffect = 'copy'; } }} onDrop={event => { if (event.dataTransfer.files.length) { event.preventDefault(); onDropFiles?.([...event.dataTransfer.files]); } }}>
+  return createPortal(<div className="bot-call-overlay"><section ref={box} className={`bot-call-window is-${phase}${!deepseek || modelError ? ' is-static-portrait' : ''}`} role="dialog" aria-modal="true" aria-label={zh ? `与${companion.name}会面` : `Meet ${companion.name}`} onKeyDown={keyboard} onPaste={event => { if (onPasteFiles && isBotFilePaste(event.clipboardData, () => mediaApi?.hasClipboardFiles?.(conversationId) ?? false)) { event.preventDefault(); event.stopPropagation(); onPasteFiles(); setComposerExpanded(true); } }} onDragOver={event => { if (event.dataTransfer.types.includes('Files')) { event.preventDefault(); event.dataTransfer.dropEffect = 'copy'; } }} onDrop={event => { if (event.dataTransfer.files.length) { event.preventDefault(); onDropFiles?.([...event.dataTransfer.files]); } }}>
     <header className="bot-call-header"><div>{phase === 'ringing' && <span className="bot-call-brand">WORLDLINE · {zh ? '伙伴会面' : 'COMPANION'}</span>}<strong>{companion.name}</strong></div>{phase === 'ringing' && <span className="bot-call-mode">{zh ? '文字 / 语音输入' : 'Text / voice input'}</span>}{phase === 'connected' && <><button type="button" className="bot-call-history-toggle" aria-label={zh ? '会面聊天记录' : 'Meeting chat history'} aria-expanded={historyOpen} aria-controls="bot-call-history" onClick={() => { setHistoryFocus(undefined); setHudMenu(false); setInteractions(false); setHistoryOpen(value => !value); }}><BotIcon name="history" /><span>{zh ? '聊天记录' : 'History'}</span></button><button type="button" className="bot-call-menu-toggle" aria-label={zh ? '会面菜单' : 'Meeting menu'} aria-expanded={hudMenu} onClick={() => setHudMenu(value => !value)}><BotIcon name="settings" /></button><time className="bot-call-duration">{botCallClock(now - connectedAt)}</time></>}<button type="button" className="bot-call-close" aria-label={zh ? '结束并关闭会面' : 'End and close'} onClick={onHangup}>×</button></header>
     {phase === 'ringing' ? <div className="bot-call-ringing"><div className="bot-call-dial-orbit"><BotAvatar companion={companion} large /></div><h2>{companion.name}</h2><p>{zh ? '等待你接通' : 'Ready when you are'}</p><small>{zh ? `${remaining} 秒后自动结束` : `Ends automatically in ${remaining}s`}</small>
       <div className="bot-call-dial-actions"><button className="bot-call-hangup" onClick={onHangup}><BotIcon name="phone-off" /><span>{zh ? '取消' : 'Cancel'}</span></button><button className="bot-call-accept" data-call-accept onClick={() => { if (speech.available && speech.enabled) speech.unlock(); setConnectedAt(Date.now()); setPhase('connected'); }}><BotIcon name="phone" /><span>{zh ? '接通' : 'Connect'}</span></button></div>
@@ -154,12 +159,11 @@ export function BotCallWindow({ conversationId, companion, messages, streams, me
     </div> : <><div className="bot-call-connected"><div className="bot-call-scene" style={{ backgroundImage: background }}>
       <div className="bot-call-scene-shade" />
       {deepseek && !modelError ? <><BotLive2DStage onReady={ready} onError={failed} reaction={latest ? { id: latest.id, text: latest.content } : undefined} />{!control && <p className="bot-call-loading" role="status">{zh ? '正在准备形象…' : 'Preparing the character…'}</p>}</> : <div className="bot-call-portrait"><BotAvatar companion={companion} large /><h2>{companion.name}</h2><p>{zh ? '我在这里，慢慢聊。' : 'I’m here. Take your time.'}</p></div>}
-      {modelError && <p className="bot-call-model-error" role="status">{modelError} {zh ? '可以继续打字聊天。' : 'You can keep chatting.'}</p>}
       {hudMenu && <aside className="bot-call-hud-menu" aria-label={zh ? '会面工具' : 'Meeting tools'}><div className="bot-call-scene-tools"><button aria-pressed={interactions} onClick={() => { setHudMenu(false); toggleInteractions(); }}><BotIcon name="sparkles" />{zh ? '场景与互动' : 'Scene & interactions'}</button></div>
       {control && <div className="bot-call-framing-tools" aria-label={zh ? '快捷取景' : 'Quick framing'}><button onClick={() => zoomModel(-.1)} disabled={scale <= .65} aria-label={zh ? '缩小形象' : 'Zoom out'}>−</button><button onClick={() => zoomModel(.1)} disabled={scale >= 2.2} aria-label={zh ? '放大形象' : 'Zoom in'}>+</button><button onClick={() => frameModel(scale < 1.5)}>{scale < 1.5 ? zh ? '半身取景' : 'Portrait view' : zh ? '全身取景' : 'Full body view'}</button></div>}
       </aside>}
       {notice && <button className="bot-call-notice" role="status" onClick={() => setNotice('')}>{notice} ×</button>}
-      {!historyOpen && !interactions && dialogue && <section className="bot-call-dialogue" aria-label={zh ? '伙伴当前回应' : 'Current companion reply'} aria-live="polite" data-call-dialogue-message={dialogue.id}>
+      {!historyOpen && !interactions && dialogue && <section ref={dialogueHost} className="bot-call-dialogue" aria-label={zh ? '伙伴当前回应' : 'Current companion reply'} aria-live="polite" data-call-dialogue-message={dialogue.id}>
         <header><span className={`bot-call-speaking-wave${speech.state.phase === 'speaking' ? ' is-speaking' : ''}`} aria-hidden="true"><i /><i /><i /></span><span>{companion.name}</span>{speech.available && dialogue.status === 'sent' && !!dialogue.content.trim() && <button type="button" className="bot-call-replay" aria-label={speech.state.messageId === dialogue.id && ['preparing', 'speaking'].includes(speech.state.phase) ? zh ? '停止朗读' : 'Stop speech' : zh ? '朗读当前回应' : 'Read current reply'} onClick={() => speech.state.messageId === dialogue.id && ['preparing', 'speaking'].includes(speech.state.phase) ? stopPlayback() : replay(dialogue.id)}><BotIcon name="volume" /></button>}</header>
         <div className="bot-call-dialogue-content"><BotCallCaption key={dialogue.id} text={captionText || (captionSource ? zh ? '这条回复包含代码或附件，可查看完整内容。' : 'This reply contains code or attachments. View the full reply.' : '')} revealedText={captionReveal} waiting={captionWaiting} speaking={presentingSpeech} locale={locale} forceFull={!!captionSource && !captionText} onOpenFull={() => { setHistoryFocus(dialogue.id); setInteractions(false); setHistoryOpen(true); }} />
           {!!dialogue.attachments?.length && <div className="bot-call-caption-attachments"><BotMessageBody message={{ ...dialogue, content: '', status: 'sent' }} statusText="" locale={locale} mediaApi={mediaApi} onOpenUrl={onOpenUrl} /></div>}

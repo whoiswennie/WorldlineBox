@@ -3,7 +3,7 @@ import { mkdir } from 'node:fs/promises';
 import { z } from 'zod';
 import type { BotDshCallback, BotDshModel } from './dsh-brain';
 import type { BotBrain } from './brain-router';
-import type { BotMemoryService, BotMemoryMessage, BotMemoryScope } from './memory-service';
+import type { BotMemoryService, BotMemoryMessage, BotMemoryScope, BotMemoryWrite } from './memory-service';
 import { appBrainRequest, fitsAppBrainRequest } from './app-brain-budget';
 import { resolveBotModelLimits } from './model-limits';
 import { captureCapacity, loadCapturePlan, type CapturePiece } from './memory-capture-plan';
@@ -58,6 +58,7 @@ export interface BotMemoryCaptureInput {
   /** Omitted only for pre-policy jobs whose model receipts must remain stable. */
   policyVersion?: 1 | 2;
   signal?: AbortSignal;
+  onRemember?(input: BotMemoryWrite): void;
 }
 
 /** Background host write policy. Retrieval and scoring remain VCP originals;
@@ -142,15 +143,16 @@ export async function captureBotMemory(input: BotMemoryCaptureInput): Promise<{ 
     if (!result.success) throw new Error(`Memory encoder returned invalid notes: ${result.error.message}`);
     for (let index = 0; index < result.data.notes.length; index++) {
       input.signal?.throwIfAborted(); const note = result.data.notes[index]!;
-      const receipt = await input.memory.remember(input.scope, { content: `${note.content}\n\n来源事件：${input.sourceEventId}\n来源消息：${fragment.sourceLabelIds.join(',')}`
+      const write: BotMemoryWrite = { content: `${note.content}\n\n来源事件：${input.sourceEventId}\n来源消息：${fragment.sourceLabelIds.join(',')}`
         + (fragment.provenance ? `\n来源分段：${JSON.stringify(fragment.provenance)}` : ''),
       tags: note.tags.join(','), sourceEventId: `${input.sourceEventId}:capture:${policy === 1 ? '' : `v${policy}:`}${fragment.noteKey}${index}`, sourceRootEventId: input.sourceEventId,
-      sourceMessageIds: fragment.sourceIds }, input.signal);
+      sourceMessageIds: fragment.sourceIds };
+      const receipt = await input.memory.remember(input.scope, write, input.signal);
       input.signal?.throwIfAborted();
       if (receipt && typeof receipt === 'object' && 'withdrawn' in receipt && receipt.withdrawn === true) {
         throw Object.assign(new Error('Memory capture sources were withdrawn; remaining fragments were not encoded.'), { code: 'MEMORY_SOURCE_WITHDRAWN' });
       }
-      written++;
+      input.onRemember?.(write); written++;
     }
   }
   input.signal?.throwIfAborted();

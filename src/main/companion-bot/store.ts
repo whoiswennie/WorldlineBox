@@ -10,7 +10,7 @@ import { builtinBotPersonaTemplates } from '../../shared/builtin-bot-personas';
 import type { BotMemoryActivity, BotMemoryRecallReport } from '../../shared/companion-bot-memory';
 import { botMessageEvidence } from '../../shared/bot-message-content';
 import { BotActivityBudget, BotActivityLimitError, BotBackpressureError, isInteractiveBotSource, type BotActivityBudgetPolicy } from './activity-budget';
-import { routeGroupAttention, type GroupRouting } from './group-attention';
+import { routeGroupAttention, GROUP_CANDIDATE_LIMIT, GROUP_REPLY_LIMIT, GROUP_DISCUSSION_MS, isGroupStop, type GroupRouting } from './group-attention';
 import { botBrainRequestMetricsSchema, type BotBrainContextSummary, type BotBrainRequestMetrics } from '../../shared/companion-bot-context';
 import type { BotClaim, BotCompanion, BotConversation, BotConversationKind, BotEnqueueInput, BotEvent,
   BotEventStatus, BotLane, BotMemoryJob, BotMemoryJobClaim, BotMemoryJobInput, BotMessage, BotMessagePage, BotSenderType, BotTask, BotTaskStatus, BotAttachmentGrant } from './types';
@@ -110,6 +110,8 @@ export class BotStore {
       CREATE TABLE IF NOT EXISTS bot_inbox(sequence INTEGER PRIMARY KEY AUTOINCREMENT,id TEXT NOT NULL UNIQUE,lane_id TEXT NOT NULL REFERENCES bot_lanes(id),conversation_id TEXT NOT NULL,companion_id TEXT NOT NULL,source TEXT NOT NULL,source_instance_id TEXT NOT NULL,source_message_id TEXT NOT NULL,sender_id TEXT NOT NULL,sender_type TEXT NOT NULL,sender_name TEXT NOT NULL,scope_id TEXT NOT NULL,domain_id TEXT NOT NULL,acl_revision INTEGER NOT NULL,kind TEXT NOT NULL,content TEXT NOT NULL,payload_json TEXT NOT NULL,correlation_id TEXT NOT NULL,causation_id TEXT,source_record_id TEXT NOT NULL,reply_message_id TEXT NOT NULL,status TEXT NOT NULL,attempts INTEGER NOT NULL DEFAULT 0,occurred_at TEXT NOT NULL,received_at TEXT NOT NULL,lease_token TEXT,lease_until INTEGER,available_at INTEGER NOT NULL DEFAULT 0,dsh_event_id TEXT,error TEXT);
       CREATE INDEX IF NOT EXISTS bot_inbox_claim ON bot_inbox(status,available_at,sequence);
       CREATE INDEX IF NOT EXISTS bot_inbox_lane ON bot_inbox(lane_id,status,sequence);
+      CREATE INDEX IF NOT EXISTS bot_inbox_conversation_status ON bot_inbox(conversation_id,status);
+      CREATE INDEX IF NOT EXISTS bot_inbox_conversation_correlation ON bot_inbox(conversation_id,correlation_id,status);
       CREATE TABLE IF NOT EXISTS bot_outbox(id TEXT PRIMARY KEY,event_id TEXT NOT NULL,conversation_id TEXT NOT NULL,message_id TEXT NOT NULL REFERENCES bot_messages(id),status TEXT NOT NULL DEFAULT 'pending',created_at TEXT NOT NULL,delivered_at TEXT);
       CREATE INDEX IF NOT EXISTS bot_outbox_pending ON bot_outbox(status,created_at);
       CREATE TABLE IF NOT EXISTS bot_tasks(id TEXT PRIMARY KEY,conversation_id TEXT NOT NULL REFERENCES bot_conversations(id),companion_id TEXT NOT NULL REFERENCES bot_companions(id),source_event_id TEXT NOT NULL,goal TEXT NOT NULL,status TEXT NOT NULL,attempt_id TEXT NOT NULL,dsh_task_id TEXT,session_id TEXT,summary TEXT,error TEXT,created_at TEXT NOT NULL,updated_at TEXT NOT NULL,extra_json TEXT NOT NULL);
@@ -351,7 +353,11 @@ export class BotStore {
   taskSourceIds(taskId: string): string[] {
     const source = this.taskSourceScope(taskId); if (!source) return [];
     const pinned = this.db.prepare('SELECT DISTINCT s.source_id FROM bot_task_media_grants t JOIN bot_media_grant_sources s ON s.grant_id=t.grant_id WHERE t.task_id=?').all(taskId).map(raw => String(asRow(raw).source_id));
-    return [...new Set([source.sourceEventId, source.sourceMessageRecordId, ...this.messageSources(source.sourceMessageRecordId), ...pinned])];
+    const raw = asRow(this.db.prepare("SELECT json_extract(extra_json,'$.handoffSourceIds') AS ids FROM bot_tasks WHERE id=?").get(taskId));
+    const saved: unknown = raw.ids ? JSON.parse(String(raw.ids)) : [];
+    const context = Array.isArray(saved) ? saved.filter((id): id is string => typeof id === 'string') : [];
+    return [...new Set([source.sourceEventId, source.sourceMessageRecordId, ...this.messageSources(source.sourceMessageRecordId), ...pinned, ...context,
+      ...context.flatMap(id => this.messageSources(id))])];
   }
   taskSourcesWithdrawn(taskId: string): boolean {
     const source = this.taskSourceScope(taskId); if (!source) return true;
@@ -760,7 +766,42 @@ export class BotStore {
   }
   private routeGroup(conversation: BotConversation, senderId: string, content: string): GroupRouting {
     const actors = conversation.memberIds.filter(id => id !== 'user' && id !== senderId).map(id => this.getCompanion(id)!).filter(Boolean);
-    return routeGroupAttention(actors, content, conversation.participationMode ?? 'automatic');
+    const key = `group-candidate-offset:${conversation.id}`, offset = Number(this.getMetadata(key) ?? 0) % Math.max(1, actors.length);
+    const result = routeGroupAttention([...actors.slice(offset), ...actors.slice(0, offset)], content, conversation.participationMode ?? 'automatic');
+    if (result.candidate) this.setMetadata(key, String((offset + GROUP_CANDIDATE_LIMIT) % Math.max(1, actors.length)));
+    return result;
+  }
+  groupCandidates(sourceMessageId: string): string[] {
+    return this.db.prepare('SELECT companion_id FROM bot_inbox WHERE source_record_id=? ORDER BY sequence LIMIT ?')
+      .all(sourceMessageId, GROUP_CANDIDATE_LIMIT).map(raw => String(asRow(raw).companion_id));
+  }
+  hasPendingSource(sourceMessageId: string): boolean {
+    return !!this.db.prepare("SELECT 1 FROM bot_inbox WHERE source_record_id=? AND status IN ('queued','running') LIMIT 1").get(sourceMessageId);
+  }
+  ingressExists(conversationId: string, sourceMessageId: string): boolean {
+    return !!this.db.prepare('SELECT 1 FROM bot_origins WHERE origin_key=?').get(hash(['worldlinebox', sourceMessageId, conversationId]));
+  }
+  resolveGroupCandidates(sourceMessageId: string, recipients: string[]): void {
+    this.db.transaction(() => {
+      const selected = new Set(recipients);
+      const candidates = this.db.prepare("SELECT id,companion_id,reply_message_id FROM bot_inbox WHERE source_record_id=? AND status='queued' AND json_extract(payload_json,'$.groupAttention')=1").all(sourceMessageId).map(asRow);
+      for (const candidate of candidates) if (!selected.has(String(candidate.companion_id))) {
+        this.db.prepare("UPDATE bot_inbox SET status='done' WHERE id=? AND status='queued'").run(candidate.id);
+        this.db.prepare("UPDATE bot_messages SET status='sent' WHERE id=? AND kind='attention'").run(candidate.reply_message_id);
+      }
+    }).immediate();
+  }
+  publishedWatermark(conversationId: string): number {
+    return Number(asRow(this.db.prepare("SELECT COALESCE(MAX(sequence),0) AS n FROM bot_messages WHERE conversation_id=? AND status='sent'").get(conversationId)).n);
+  }
+  /** New user input ends the old automatic discussion; direct assignments keep
+   * their original event IDs. An explicit stop also cancels those assignments. */
+  interruptGroup(conversationId: string, stop = false): string[] {
+    const room = this.getConversation(conversationId); if (room?.kind !== 'group') return [];
+    const ids = this.db.prepare(`SELECT id FROM bot_inbox WHERE conversation_id=? AND status IN ('queued','running')
+      AND (source='group' OR ?)` ).all(conversationId, stop ? 1 : 0).map(raw => String(asRow(raw).id));
+    for (const id of ids) this.cancelEvent(id);
+    return ids;
   }
   conversations(): BotConversation[] {
     const hidden = new Set(this.developmentDefaultCleanup()?.conversationIds ?? []);
@@ -841,7 +882,11 @@ export class BotStore {
   }
   private rotateDomainState(companionId: string, securityDomainId: string): void {
     const lanes = this.db.prepare('SELECT id FROM bot_lanes WHERE companion_id=? AND conversation_id IN(SELECT id FROM bot_conversations WHERE domain_id=?)').all(companionId, securityDomainId);
-    for (const lane of lanes) this.db.prepare('DELETE FROM bot_metadata WHERE key=?').run(botLaneRetentionKey(String(asRow(lane).id)));
+    for (const raw of lanes) {
+      const lane = this.getLane(String(asRow(raw).id))!;
+      this.db.prepare('DELETE FROM bot_metadata WHERE key=?').run(botLaneRetentionKey(lane.id));
+      this.setMetadata(`native-recovery-floor:${lane.id}`, String(lane.epoch + 1));
+    }
     this.db.prepare('UPDATE bot_lanes SET epoch=epoch+1,session_id=NULL WHERE companion_id=? AND conversation_id IN(SELECT id FROM bot_conversations WHERE domain_id=?)').run(companionId, securityDomainId);
   }
   getLaneRetention(laneId: string): BotLaneRetentionState {
@@ -972,6 +1017,9 @@ export class BotStore {
       if (!previous || previous.laneId !== laneId || !['done', 'failed', 'cancelled'].includes(previous.status)) return false;
       const accepted = this.db.prepare('UPDATE bot_lanes SET epoch=epoch+1,session_id=NULL WHERE id=? AND epoch=?').run(laneId, expectedEpoch);
       if (!accepted.changes) return false;
+      // Retention preserves receipt authority; withdrawal rotations raise this
+      // floor. Legacy epochs without that evidence remain conservatively fenced.
+      if (this.getMetadata(`native-recovery-floor:${laneId}`) === undefined) this.setMetadata(`native-recovery-floor:${laneId}`, String(expectedEpoch));
       this.setMetadata(botLaneRetentionKey(laneId), JSON.stringify({ epoch: expectedEpoch + 1, turns: 0, bytes: 0, handoff } satisfies BotLaneRetentionState));
       return true;
     }).immediate();
@@ -1018,6 +1066,7 @@ export class BotStore {
         const r = asRow(prior); if (r.content_hash !== fingerprint) throw new Error('同一来源消息标识对应不同内容，拒绝重复投递。');
         return { message: priorMessage!, events: priorEvents! };
       }
+      if (source === 'user' && conversation.kind === 'group') this.interruptGroup(conversation.id, isGroupStop(content));
       this.assertInboxCapacity(source, recipients.length);
       const stamp = nowIso(), correlationId = input.correlationId ?? randomUUID(), messageId = `message-${originKey}`;
       this.activityBudget.start(correlationId);
@@ -1056,11 +1105,30 @@ export class BotStore {
       if (!room || room.dissolvedAt || !['group', 'peer'].includes(room.kind) || room.participationMode !== 'automatic'
         || room.revision !== cause.aclRevision || !room.memberIds.includes(cause.companionId)
         || !message || message.kind !== 'message' || message.status !== 'sent' || !message.content.trim() && !message.attachments?.length) return [];
+      // Auto-discussion is an explicit, bounded root decision. Completing an
+      // assignment does not authorize a fresh chain of mutual reviews.
+      if (room.kind === 'group' && this.getMetadata(`group-discussion:${room.id}:${cause.correlationId}`) !== '1') return [];
+      const root = this.db.prepare('SELECT source_record_id,received_at FROM bot_inbox WHERE conversation_id=? AND correlation_id=? ORDER BY sequence LIMIT 1')
+        .get(room.id, cause.correlationId) as Record<string, unknown> | undefined;
+      if (!root || Date.now() - Date.parse(String(root.received_at)) > GROUP_DISCUSSION_MS) return [];
+      const replied = this.db.prepare(`SELECT i.companion_id,m.content FROM bot_inbox i JOIN bot_messages m ON m.id=i.reply_message_id
+        WHERE i.conversation_id=? AND i.correlation_id=? AND i.status='done' AND m.status='sent' AND length(m.content)>0`)
+        .all(room.id, cause.correlationId).map(asRow);
+      if (replied.length >= GROUP_REPLY_LIMIT) return [];
+      if (replied.some(row => row.content === message.content && row.companion_id !== cause.companionId)) return [];
+      const newerUser = this.db.prepare("SELECT 1 FROM bot_messages WHERE conversation_id=? AND sender_id='user' AND sequence>? LIMIT 1")
+        .get(room.id, this.getMessage(String(root.source_record_id))?.sequence ?? cause.sourceMessageSequence);
+      if (newerUser) return [];
       const hop = cause.source === 'user' || cause.payload.hop === undefined ? 1 : Number(cause.payload.hop) + 1;
       if (!Number.isSafeInteger(hop) || hop > 6 || this.withdrawnIn(cause.companionId, cause.securityDomainId, this.eventSourceIds(cause.id)).size) return [];
       const originKey = hash(['group-observer', message.id, room.id]);
       if (this.db.prepare('SELECT 1 FROM bot_origins WHERE origin_key=?').get(originKey)) return [];
-      const routing = this.routeGroup(room, cause.companionId, message.content), recipients = routing.targets;
+      const routing = this.routeGroup(room, cause.companionId, message.content);
+      const reserved = Number(asRow(this.db.prepare("SELECT COUNT(*) AS n FROM bot_inbox WHERE conversation_id=? AND correlation_id=? AND status IN ('queued','running')").get(room.id, cause.correlationId)).n);
+      const recipients = routing.targets.filter(id => replied.filter(row => row.companion_id === id).length < 2
+        && !this.db.prepare("SELECT 1 FROM bot_inbox WHERE conversation_id=? AND correlation_id=? AND companion_id=? AND status IN ('queued','running')").get(room.id, cause.correlationId, id))
+        .slice(0, Math.max(0, GROUP_REPLY_LIMIT - replied.length - reserved));
+      if (!recipients.length) return [];
       this.assertInboxCapacity('group', recipients.length);
       this.activityBudget.reserve(cause.correlationId, 'events', originKey, recipients.length);
       const evidence = botMessageEvidence(message), content = evidence.length > 24000 ? evidence.slice(0, 24000) + '\n[消息较长，使用chat_read_message按原消息ID回查其余内容]' : evidence;
@@ -1181,6 +1249,8 @@ export class BotStore {
         WHERE i.status='queued' AND i.available_at<=?${skip}
         AND NOT EXISTS(SELECT 1 FROM bot_inbox older WHERE older.lane_id=i.lane_id AND older.sequence<i.sequence AND older.status IN ('queued','running'))
         AND NOT EXISTS(SELECT 1 FROM bot_inbox active WHERE active.lane_id=i.lane_id AND active.status='running')
+        AND NOT EXISTS(SELECT 1 FROM bot_inbox room_active JOIN bot_conversations room ON room.id=room_active.conversation_id
+          WHERE room_active.conversation_id=i.conversation_id AND room.kind IN ('group','peer') AND room_active.status='running')
         ${input.serialCompanions ? "AND NOT EXISTS(SELECT 1 FROM bot_inbox actor WHERE actor.companion_id=i.companion_id AND actor.status='running')" : ''}
         ORDER BY ${input.preferInteractive ? "CASE WHEN i.source IN ('user','task','gateway') THEN 0 ELSE 1 END," : ''}l.last_claimed_at,i.sequence LIMIT 1`).get(now, ...excluded);
       if (!raw) return;
@@ -1379,7 +1449,7 @@ export class BotStore {
     return row ? this.message(row) : undefined;
   }
   modelAttachments(scope: Pick<BotEvent, 'companionId' | 'conversationId' | 'securityDomainId'>, options: { query?: string; ids?: string[] } = {}): BotMediaRef[] { return this.modelAttachmentGrants(scope, options).map(entry => entry.ref); }
-  modelAttachmentGrants(scope: Pick<BotEvent, 'companionId' | 'conversationId' | 'securityDomainId'>, options: { query?: string; ids?: string[] } = {}): Array<{ ref: BotMediaRef; grantId: string }> {
+  modelAttachmentGrants(scope: Pick<BotEvent, 'companionId' | 'conversationId' | 'securityDomainId'>, options: { query?: string; ids?: string[]; throughSourceSequence?: number; all?: boolean } = {}): Array<{ ref: BotMediaRef; grantId: string }> {
     const conversation = this.getConversation(scope.conversationId);
     if (!conversation?.memberIds.includes(scope.companionId) || conversation.securityDomainId !== scope.securityDomainId) throw new Error('附件查询没有当前主脑受众权限。');
     const key = hash([scope.companionId, scope.securityDomainId]), query = (options.query ?? '').slice(0, 200).replace(/[\\%_]/g, char => `\\${char}`);
@@ -1388,6 +1458,7 @@ export class BotStore {
     return this.db.prepare(`SELECT a.value AS ref_json,mg.grant_id,MAX(m.sequence) AS latest FROM bot_messages m,json_each(m.attachments_json) a
       JOIN bot_message_media_grants mg ON mg.message_id=m.id AND mg.media_id=json_extract(a.value,'$.id')
       WHERE m.conversation_id=? AND m.status='sent' AND m.attachments_json<>'[]'
+      AND m.sequence<=?
       ${ids ? `AND json_extract(a.value,'$.id') IN(${ids.map(() => '?').join(',')})` : ''}
       AND (?='' OR json_extract(a.value,'$.name') LIKE ? ESCAPE '\\')
       AND NOT EXISTS(SELECT 1 FROM bot_withdrawn_sources w WHERE w.domain_key=? AND w.source_id=m.id)
@@ -1396,7 +1467,7 @@ export class BotStore {
         WHERE i.companion_id=? AND (i.source_record_id=m.id OR i.reply_message_id=m.id))
       AND NOT EXISTS(SELECT 1 FROM bot_media_grant_sources s JOIN bot_withdrawn_sources w ON w.domain_key=? AND w.source_id=s.source_id WHERE s.grant_id=mg.grant_id)
       AND NOT EXISTS(SELECT 1 FROM bot_message_sources s JOIN bot_withdrawn_sources w ON w.domain_key=? AND w.source_id=s.source_id WHERE s.message_id=m.id)
-      GROUP BY json_extract(a.value,'$.id') ORDER BY latest DESC LIMIT 80`).all(scope.conversationId, ...(ids ?? []), query, `%${query}%`, key, key, key, scope.companionId, key, key)
+      GROUP BY json_extract(a.value,'$.id') ORDER BY latest DESC ${options.all ? '' : 'LIMIT 80'}`).all(scope.conversationId, options.throughSourceSequence ?? Number.MAX_SAFE_INTEGER, ...(ids ?? []), query, `%${query}%`, key, key, key, scope.companionId, key, key)
       .map(raw => ({ ref: JSON.parse(String(asRow(raw).ref_json)) as BotMediaRef, grantId: String(asRow(raw).grant_id) }));
   }
   getMessage(id: string): BotMessage | undefined { const raw = this.db.prepare('SELECT * FROM bot_messages WHERE id=?').get(id); return raw ? this.message(raw) : undefined; }
@@ -1499,6 +1570,10 @@ export class BotStore {
     this.activityBudget.reserve(source.correlationId, 'tasks', id);
     const stamp = nowIso(); this.db.prepare('INSERT INTO bot_tasks VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)').run(id, input.conversationId, input.companionId, input.sourceEventId, goal,
       'queued', input.attemptId ?? randomUUID(), input.dshTaskId ?? null, input.sessionId ?? null, null, null, stamp, stamp, JSON.stringify(input.extra ?? {}));
+    const contextIds = Array.isArray(input.extra?.handoffSourceIds) ? input.extra.handoffSourceIds : [];
+    if (contextIds.some(id => typeof id !== 'string' || !(() => { const message = this.getMessage(id); return message?.conversationId === source.conversationId
+      && message.status === 'sent' && message.sequence <= Number(input.extra?.handoffThroughSequence ?? source.sourceMessageSequence); })())
+      || this.withdrawnIn(source.companionId, source.securityDomainId, contextIds as string[]).size) throw new Error('任务交接上下文来源无效或已经撤回。');
     const requested = new Set(Array.isArray(input.extra?.attachmentIds) ? input.extra.attachmentIds as string[] : []), selected = input.attachmentGrants ?? [];
     if (selected.length !== requested.size || selected.some(grant => !requested.has(grant.mediaId) || !this.grantValid(source, grant))) throw new Error('任务附件缺少有效的已固定授权来源。');
     for (const grant of selected) this.db.prepare('INSERT INTO bot_task_media_grants VALUES(?,?,?)').run(id, grant.mediaId, grant.grantId);

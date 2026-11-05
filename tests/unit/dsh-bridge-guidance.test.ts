@@ -3,6 +3,17 @@ import { randomUUID } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { setTimeout as delay } from 'node:timers/promises';
 
+it('registers the companion preset during direct CLI startup even without a Host token', async () => {
+  const previous = process.env.WORLDLINEBOX_DSH_BRIDGE_TOKEN;
+  delete process.env.WORLDLINEBOX_DSH_BRIDGE_TOKEN;
+  const list = vi.fn(async () => [{ id: 'worldlinebox-companion-v2' }]), effect = vi.fn();
+  try {
+    const bridgePath = '../../resources/dsh-bridge/index.js', bridge = await import(bridgePath);
+    await bridge.apply({ agentPresets: { list }, effect });
+    expect(list).toHaveBeenCalledOnce(); expect(effect).toHaveBeenCalledOnce();
+  } finally { if (previous !== undefined) process.env.WORLDLINEBOX_DSH_BRIDGE_TOKEN = previous; }
+});
+
 it('does not emit the old completion when guidance arrives during native persistence or prompt admission', async () => {
   const deferred = () => { let resolve!: () => void; const promise = new Promise<void>(done => { resolve = done; }); return { promise, resolve }; };
   const flushing = deferred(), flushRelease = deferred(), admissionRelease = deferred();
@@ -15,7 +26,7 @@ it('does not emit the old completion when guidance arrives during native persist
   }) as typeof process.stdout.write);
   const agent = { status: 'idle', session: { id: randomUUID(), seq: 0 }, ctx: { get: () => undefined }, whenIdle: async () => undefined };
   const ctx = { loader: { await: async () => undefined }, tools: { guard: () => () => undefined, schemas: () => [] },
-    workspaceRegistry: {}, agents: { get: () => agent }, agentPresets: { defaultId: 'standard', list: async () => [{ id: 'standard' }] },
+    workspaceRegistry: {}, agents: { get: () => agent }, agentPresets: { defaultId: 'standard', list: async () => [{ id: 'standard' }, { id: 'worldlinebox-companion-v2' }] },
     sessions: { flush: async () => { if (++flushes === 1) { flushing.resolve(); await flushRelease.promise; } } },
     get: () => undefined, on: (name: string, callback: (...args: unknown[]) => void) => listeners.set(name, callback),
     effect: (callback: () => (() => Promise<void> | void)) => disposers.push(callback()),

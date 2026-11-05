@@ -1,5 +1,13 @@
 .bot-attachment.bot-attachment-card { position:relative;display:flex;align-items:center;gap:0;width:min(470px,100%);max-width:100%;min-width:0;overflow:visible;border:1px solid color-mix(in srgb,var(--ui-border-subtle) 70%,transparent);border-radius:13px;background:color-mix(in srgb,var(--ui-surface-pane) 70%,transparent);box-shadow:0 2px 5px #00000003; }
 .bot-attachment-main,.bot-workspace .bot-attachment-main { display:flex;flex:1;align-items:center;justify-content:flex-start;gap:11px;min-width:0;padding:12px;border:0;border-radius:13px;background:transparent;text-align:left;color:inherit;font:inherit;cursor:pointer; }
+.bot-attachment.has-inline-preview { flex-wrap:wrap; }
+.bot-attachment-inline-preview { display:flex;flex-basis:100%;min-width:0;flex-direction:column;gap:8px;padding:0 12px 12px; }
+.bot-attachment-inline-preview>video { display:block;width:100%;max-height:260px;border-radius:9px;background:#10121a; }
+.bot-attachment-inline-preview>audio { display:block;width:100%;max-width:100%;height:40px; }
+.bot-attachment-inline-preview>.bot-attachment-inline-picture { padding:0;overflow:hidden;border:0;border-radius:9px;background:var(--ui-surface-pane);cursor:zoom-in; }
+.bot-attachment-inline-picture>img { display:block;width:100%;height:210px;object-fit:contain; }
+.bot-attachment-inline-preview>.bot-attachment-enlarge { display:flex;align-items:center;justify-content:center;gap:6px;align-self:flex-end;padding:4px 7px;border:0;border-radius:6px;background:transparent;color:var(--ui-content-secondary);font:inherit;font-size:11px; }
+.bot-attachment-enlarge>.bot-icon { width:14px;height:14px; }
 .bot-attachment-cover { position:relative;display:grid;place-items:center;flex-shrink:0;width:38px;height:44px;overflow:hidden;border:0;border-radius:9px;background:color-mix(in srgb,var(--bot-accent,var(--ui-action-accent)) 9%,transparent);color:var(--bot-accent,var(--ui-content-accent)); }
 .bot-attachment-cover>.bot-icon,.bot-attachment-cover>.bot-attachment-kind-icon { width:23px;height:23px;margin-top:-4px; }
 .bot-attachment-cover>small { position:absolute;bottom:4px;font-size:7px;font-weight:650;letter-spacing:.4px; }

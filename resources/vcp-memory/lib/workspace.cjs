@@ -63,6 +63,12 @@ function stageRuntime(home) {
   const source = path.join(ROOT, 'upstream', 'toolbox');
   if (!fs.existsSync(source)) throw new Error('Upstream source snapshot is missing');
   const runtime = path.join(home, 'runtime');
+  fs.mkdirSync(runtime, { recursive: true });
+  const comparable = value => process.platform === 'win32' ? value.toLowerCase() : value;
+  const ownedRuntime = fs.realpathSync(runtime);
+  if (fs.lstatSync(runtime).isSymbolicLink() || comparable(ownedRuntime) !== comparable(path.join(fs.realpathSync(home), 'runtime'))) {
+    throw Object.assign(new Error('Memory runtime must be an owned physical directory'), { code: 'MEMORY_RUNTIME_PATH_UNSAFE' });
+  }
   const manifestFile = path.join(ROOT, 'upstream', 'manifest.json');
   const signature = crypto.createHash('sha256').update(fs.readFileSync(manifestFile)).digest('hex');
   const marker = path.join(runtime, '.snapshot-version');
@@ -78,8 +84,32 @@ function stageRuntime(home) {
     fs.writeFileSync(marker, signature);
   }
   const dependencies = path.join(runtime, 'node_modules');
-  if (!fs.existsSync(dependencies)) fs.symlinkSync(path.join(ROOT, 'node_modules'), dependencies,
-    process.platform === 'win32' ? 'junction' : 'dir');
+  const expected = path.join(ROOT, 'node_modules');
+  if (!fs.existsSync(expected)) throw Object.assign(new Error('The packaged memory dependency directory is missing'), { code: 'MEMORY_DEPENDENCIES_MISSING' });
+  const inspect = () => { try { return fs.lstatSync(dependencies); } catch (error) { if (error.code !== 'ENOENT') throw error; } };
+  const matches = () => { try { return comparable(fs.realpathSync(dependencies)) === comparable(fs.realpathSync(expected)); } catch (error) { if (error.code !== 'ENOENT') throw error; return false; } };
+  const existing = inspect();
+  let backup;
+  if (existing && !matches()) {
+    if (existing.isSymbolicLink()) fs.unlinkSync(dependencies);
+    else {
+      // Keep an old copied dependency tree intact. Both absolute move targets
+      // are verified children of this workspace's physical runtime directory.
+      backup = path.join(ownedRuntime, `.node_modules.previous-${crypto.randomUUID()}`);
+      const from = path.join(ownedRuntime, 'node_modules');
+      if (path.dirname(from) !== ownedRuntime || path.dirname(backup) !== ownedRuntime) throw new Error('Dependency recovery escaped its runtime');
+      fs.renameSync(from, backup);
+    }
+  }
+  if (!inspect()) {
+    try { fs.symlinkSync(expected, dependencies, process.platform === 'win32' ? 'junction' : 'dir'); }
+    catch (error) {
+      if (error.code !== 'EEXIST' || !matches()) {
+        if (backup && !inspect()) fs.renameSync(backup, dependencies);
+        throw error;
+      }
+    }
+  }
   return runtime;
 }
 function applyEnvironment(home, config, runtimeDir) {

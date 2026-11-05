@@ -33,6 +33,26 @@ it('copies arbitrary binary files, persists stable ids and confines access to th
   expect((await media.response(new Request(tampered))).status).toBe(404);
   await writeFile(stored.path,Buffer.alloc(bytes.length,1));await expect(media.resolveForConversation('a',[first!.id])).rejects.toThrow('校验失败');
 });
+it('creates bounded image thumbnails and keeps large encodings or canvases opaque until explicit opening',async()=>{
+  const {root,media}=await fixture(),small=path.join(root,'截图.png'),wide=path.join(root,'大画布.svg'),large=path.join(root,'大编码.png');
+  const bytes=await sharp({create:{width:320,height:240,channels:4,background:'#4488ff'}}).png().toBuffer();await writeFile(small,bytes);
+  await writeFile(wide,'<svg xmlns="http://www.w3.org/2000/svg" width="6000" height="5000"><rect width="6000" height="5000" fill="red"/></svg>');
+  await writeFile(large,Buffer.alloc(8*1024*1024+1));
+  const [picture,canvas,encoded]=await media.importFiles({conversationId:'a',paths:[small,wide,large]});
+  expect(picture).toMatchObject({mimeType:'image/png',width:320,height:240});expect(picture!.previewUrl).toBeTruthy();
+  const preview=await media.response(new Request(picture!.previewUrl!)),info=await sharp(Buffer.from(await preview.arrayBuffer())).metadata();
+  expect(info.width).toBeLessThanOrEqual(160);expect(info.height).toBeLessThanOrEqual(160);
+  expect(canvas).toMatchObject({width:6000,height:5000});expect(canvas!.previewUrl).toBeUndefined();expect(encoded!.previewUrl).toBeUndefined();
+  expect(new Uint8Array(await(await media.response(new Request(picture!.url))).arrayBuffer())).toEqual(new Uint8Array(bytes));
+});
+it('persists a native clipboard screenshot with an immutable original, bounded preview and exact conversation access',async()=>{
+  const {root,media}=await fixture(),bytes=await sharp({create:{width:64,height:48,channels:4,background:'#ff8899'}}).png().toBuffer();
+  const first=await media.importClipboardImage('a',bytes);expect(first).toMatchObject({name:'剪贴板图片.png',mimeType:'image/png',sha256:hash(bytes),width:64,height:48});expect(first.previewUrl).toBeTruthy();
+  expect(await media.importClipboardImage('a',bytes)).toEqual(first);expect(await readFile((await media.getForAgent('a',first.id)).path)).toEqual(bytes);
+  await expect(media.resolveForConversation('b',[first.id])).rejects.toThrow('不属于当前会话');
+  const restarted=new BotMediaService({root:path.join(root,'media'),builtinRoot:path.resolve('resources/bot-stickers')});expect(await restarted.resolveForConversation('a',[first.id])).toEqual([first]);
+  await expect(media.importClipboardImage('a',Buffer.from('not a PNG'))).rejects.toThrow();
+});
 it('serves verified range bytes/HEAD and rejects bad ranges, traversal and HTML execution',async()=>{
   const {root,media}=await fixture(),file=path.join(root,'notes.html');await writeFile(file,'<script>unsafe</script>');const [ref]=await media.importFiles({conversationId:'a',paths:[file]});
   const range=await media.response(new Request(ref!.url,{headers:{range:'bytes=1-6'}}));expect(range.status).toBe(206);expect(await range.text()).toBe('script');expect(range.headers.get('content-range')).toBe('bytes 1-6/23');

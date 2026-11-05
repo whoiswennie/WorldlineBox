@@ -31,7 +31,16 @@ function fixture() {
 }
 it('archives a group reply that finishes late even though its UI message sequence is below the previous cursor', async () => {
   const f = fixture(), sent = f.store.enqueue({ conversationId: f.scope.conversationId, senderId: 'user', content: '请分别回答' });
-  const a = f.store.claim({ workerId: 'a' })!, b = f.store.claim({ workerId: 'b' })!;
+  const a = f.store.claim({ workerId: 'a' })!;
+  expect(f.store.claim({ workerId: 'b' })).toBeUndefined();
+  // A pre-upgrade process may already have a second in-flight group claim.
+  // Seed that durable legacy claim; the new scheduler cannot create it.
+  const legacy = sent.events.find(event => event.companionId === 'bob')!;
+  f.store.taskTransaction(sql => {
+    sql.prepare("UPDATE bot_inbox SET status='running',lease_token=?,lease_until=? WHERE id=?").run('legacy-b', Date.now() + 60000, legacy.id);
+    sql.prepare("UPDATE bot_messages SET status='running' WHERE id=?").run(legacy.replyMessageId);
+  });
+  const b = { event: f.store.getEvent(legacy.id)!, leaseToken: 'legacy-b' };
   expect(a.event.companionId).toBe('alice'); expect(b.event.companionId).toBe('bob');
   f.store.settle({ eventId: b.event.id, leaseToken: b.leaseToken, status: 'done', content: 'Bob先完成' });
   const projector = new BotHistoryProjector({ store: f.store, memory: f.memory });

@@ -35,7 +35,7 @@ it.skipIf(!existsSync(nodePath) || !existsSync(path.join(packageRoot, 'lib/clien
     const target = store.enqueue({ conversationId: group.id, senderId: 'user', content: 'SCOPE_NATIVE_DIARY_2026：我们决定保持夜间喝麦茶。' }).events[0]!;
     const source = store.enqueue({ conversationId: direct.id, senderId: 'user', content: '回忆我们群里的决定' }).events[0]!;
     const scope = { companionId: 'alice', conversationId: group.id, securityDomainId: group.securityDomainId };
-    expect(await memory.remember(scope, { sourceEventId: target.id, sourceMessageIds: [target.sourceMessageRecordId], content: target.content })).toMatchObject({ indexed: 1, pending: 0 });
+    expect(await memory.remember(scope, { sourceEventId: target.id, sourceMessageIds: [target.sourceMessageRecordId], content: target.content, waitForIndex: true })).toMatchObject({ indexed: 1, pending: 0 });
     const service = Object.create(BotService.prototype) as BotService;
     Object.assign(service, { store, options: { memory }, loadTombstones: async () => undefined });
     const invoke = (name: string, args: Record<string, unknown>) => (service as unknown as { executeTool(event: BotEvent, call: BotToolCall, signal: AbortSignal): Promise<unknown> }).executeTool(source,

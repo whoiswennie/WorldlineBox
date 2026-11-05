@@ -104,6 +104,13 @@ export class BotRetention {
     const { store } = this.options;
     const event = 'event' in input ? input.event : store.getEvent(input.eventId), epoch = 'epoch' in input ? input.epoch : store.getEventNativeEpoch(input.event.id);
     if (!event || epoch === undefined || result.eventId !== event.id || result.sessionId !== BotDshBrain.sessionId(input.nativeLaneId)) throw stale();
+    // An App turn may be detached while its effects remain explicitly unknown.
+    // Clear the admission barrier without counting a cancelled/committed turn
+    // or choosing that unresolved turn as the next handoff boundary.
+    if (result.quarantined === true) {
+      if (result.status !== 'failed' || result.inputContextCommitted === true) throw stale();
+      return store.resolveCancelledNativeAdmission({ eventId: event.id, epoch });
+    }
     const lane = store.getLane(event.laneId);
     const metadata = lane?.epoch === epoch ? this.completionMetadata({ event, system: input.system, cwd: input.cwd,
       inputBytes: input.inputBytes, outputBytes: Buffer.byteLength(result.text), nativeLaneId: input.nativeLaneId,
@@ -123,6 +130,12 @@ export class BotRetention {
       last: { eventId: input.event.id, system: input.system, cwd: input.cwd, nativeLaneId: input.nativeLaneId },
       ...(pendingHandoff ? { handoff: pendingHandoff } : {}) }) },
     { key: `native-terminal-counted:${input.event.id}`, value: '1' }, { key: `native-admission:${input.event.id}`, value: '' }];
+  }
+  /** Retire admission only: an unknown effect cannot count or anchor handoff. */
+  quarantineMetadata(input: Pick<BotTurnCompletion,'event'|'nativeLaneId'>): Array<{key:string;value:string}> {
+    const {store}=this.options,epoch=store.getEventNativeEpoch(input.event.id),lane=store.getLane(input.event.laneId);
+    if(!lane||epoch===undefined||epoch!==lane.epoch||input.nativeLaneId!==nativeId(lane.id,epoch))throw stale();
+    return[{key:`native-terminal-counted:${input.event.id}`,value:'quarantined'},{key:`native-admission:${input.event.id}`,value:''}];
   }
   private validateHandoff(value: BotDshHandoff, laneId: string, eventId: string): BotDshHandoff {
     if (!value || value.format !== 'worldlinebox-bot-handoff-v1' || value.laneId !== laneId || value.throughEventId !== eventId

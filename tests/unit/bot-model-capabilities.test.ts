@@ -1,5 +1,5 @@
 import { afterEach, expect, it, vi } from 'vitest';
-import { BotModelCapabilities } from '../../src/main/companion-bot/model-capabilities';
+import { BotModelCapabilities, botModelImageSupport } from '../../src/main/companion-bot/model-capabilities';
 
 const owned: BotModelCapabilities[] = [];
 afterEach(() => { for (const capabilities of owned.splice(0)) capabilities.close(); });
@@ -9,6 +9,15 @@ const unknown = { ...official, model: 'private-model', baseUrl: 'https://fixture
 function deferred<T>() { let resolve!: (value: T) => void; const promise = new Promise<T>(done => { resolve = done; }); return { promise, resolve }; }
 const response = (rows: unknown[]) => new Response(JSON.stringify({ data: rows }), { headers: { 'content-type': 'application/json' } });
 const settle = () => new Promise<void>(resolve => setImmediate(resolve));
+
+it('uses only the exact custom route metadata for image support and leaves unknown model names unresolved', async () => {
+  expect(botModelImageSupport('private-vision', { data: [{ id: 'private-vision', architecture: { input_modalities: ['text', 'image'] } }] })).toBe('supported');
+  expect(botModelImageSupport('private-vision', { data: [{ id: 'private-vision', input_modalities: ['text'] }] })).toBe('unsupported');
+  expect(botModelImageSupport('gpt-6.1', { data: [{ id: 'other', supports_images: true }] })).toBe('unknown');
+  const capabilities = own(new BotModelCapabilities({ fetchFn: async () => response([{ id: unknown.model, capabilities: { vision: true } }]) }));
+  expect(capabilities.imageSupport(unknown)).toBe('unknown'); capabilities.current(unknown); await settle();
+  expect(capabilities.imageSupport(unknown)).toBe('supported');
+});
 
 it('returns disclosed limits synchronously while one standard GET remains pending across repeated profile polls', async () => {
   const pending = deferred<Response>(), changed = vi.fn();
